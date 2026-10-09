@@ -174,8 +174,6 @@ typedef struct vlx_orbital_t {
     vlx_2d_data_t density;
 	vlx_1d_data_t energy;
 	vlx_1d_data_t occupancy;
-	size_t homo_idx;
-	size_t lumo_idx;
 } vlx_orbital_t;
 
 
@@ -190,6 +188,10 @@ typedef struct vlx_scf_t {
 	vlx_orbital_t beta;
 
 	vlx_2d_data_t S;
+
+	// Whether the file carried ground_state_dipole_moment. Not every version writes it, and a zero
+	// dipole is a value: publishing one for a file that never said so would be a claim about the molecule.
+	bool has_ground_state_dipole_moment;
 } vlx_scf_t;
 
 
@@ -260,8 +262,19 @@ typedef struct vlx_t {
 	int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
 	// ao_remap[shell_ao_idx] = vlx_ao_idx
 	// Maps from shell order (angl→atom→func→isph) to VeloxChem matrix row order (angl→isph→atom→func).
-	// Built once after the basis set is parsed; used to permute C, D, S matrices into shell order.
+	// Built by vlx_resolve_basis_set() straight after the core block; used to permute every AO matrix
+	// the file carries - C, D, S and the density properties - into shell order.
 	int* ao_remap;
+
+	// The number of atomic orbitals the basis set spans over this molecule, in VeloxChem's spherical
+	// (pure) basis: the dimension every AO matrix has AS STORED IN THE FILE, and the length of ao_remap.
+	// Derived from the basis set and the nuclear charges alone, both of which the root of the file
+	// names, so it is known before any block is read and whether or not there is an SCF block at all.
+	// AO-indexed data is checked against this, never the other way round. 0 when no basis is named.
+	//
+	// Not the dimension after vlx_convert_ao_data_to_cartesian(); that is md_gto_basis_num_ao().
+	size_t num_sph_ao;
+
 
 	// The system every block is read INTO. A reader's destination is the attribute table, not this
 	// struct: what stays here is only what a later step still has to look at - the atom list the
@@ -336,13 +349,14 @@ static str_t vlx_opt_type_str(vlx_opt_type_t type) {
 // Forward declarations for the reader-internal accessors below. All static: the vlx object is a
 // parse-time scratch representation and nothing outside this file names it.
 static vlx_t* vlx_create(struct md_allocator_i* backing, struct md_system_t* sys);
+static void   vlx_destroy(vlx_t* vlx);
 static size_t vlx_number_of_atoms(const vlx_t* vlx);
 static size_t vlx_number_of_electrons(const vlx_t* vlx, vlx_spin_t spin);
 static const dvec3_t* vlx_atom_coordinates(const vlx_t* vlx);
 static const uint8_t* vlx_atomic_numbers(const vlx_t* vlx);
 static const int* vlx_local_to_global_atom_idx(const vlx_t* vlx);
 static dvec3_t vlx_scf_ground_state_dipole_moment(const vlx_t* vlx);
-static size_t vlx_scf_number_of_atomic_orbitals (const vlx_t* vlx);
+
 static size_t vlx_scf_number_of_molecular_orbitals(const vlx_t* vlx);
 static const double* vlx_scf_mo_occupancy(const vlx_t* vlx, vlx_spin_t spin);
 static const double* vlx_scf_mo_energy(const vlx_t* vlx, vlx_spin_t spin);
@@ -446,45 +460,33 @@ static size_t basis_set_count_atomic_basis_func(const basis_set_t* basis_set, in
     return count;
 }
 
-static size_t extract_ao_to_atom_idx(int* out_ao_to_atom, const md_atomic_number_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
-	int natoms = (int)number_of_atoms;
-	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
+// The number of atomic orbitals the basis set spans over the molecule, in VeloxChem's spherical basis.
+// A pure function of the basis set and the nuclear charges - nothing any computed block holds - which
+// is what lets the AO dimension be known before, and without, an SCF block.
+//
+// Returns 0 when an atom's element is not in the basis set. A basis that does not cover the molecule
+// has no AO count: a partial sum would be a wrong number that every dimension check downstream then
+// agrees with, where 0 stops the load at the point the cause is still visible.
+static size_t vlx_basis_num_sph_ao(const vlx_t* vlx) {
+	ASSERT(vlx);
+	if (!vlx->basis_set.atom_basis.count || !vlx->atomic_numbers) {
+		return 0;
+	}
 
 	size_t count = 0;
-
-	basis_func_t basis_funcs[128];
-
-	// azimuthal quantum number: s,p,d,f,...
-	for (int angl = 0; angl <= max_angl; angl++) {
-		//CSphericalMomentum sphmom(angl);
-		int nsph = (int)md_gto_num_sph_ao((uint32_t)angl);
-		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
-		for (int isph = 0; isph < nsph; isph++) {
-			// int	ncomp = spherical_momentum_num_factors(angl, isph);
-
-			// go through atoms
-			for (int atomidx = 0; atomidx < natoms; atomidx++) {
-				int idelem = atomic_numbers[atomidx];
-				size_t num_ao = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
-
-				for (size_t iao = 0; iao < num_ao; iao++) {
-					if (out_ao_to_atom) {
-						out_ao_to_atom[count] = atomidx;
-					}
-					count += 1;
-				}
-			}
+	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
+		const int z = (int)vlx->atomic_numbers[i];
+		const basis_set_basis_t* atom_basis = basis_set_get_atom_basis(&vlx->basis_set, z);
+		if (!atom_basis || atom_basis->basis_func_count == 0) {
+			MD_LOG_ERROR("Basis set '" STR_FMT "' has no functions for atom %zu (Z = %i)", STR_ARG(vlx->basis_set_ident), i, z);
+			return 0;
+		}
+		for (size_t j = 0; j < atom_basis->basis_func_count; ++j) {
+			const basis_set_func_t* func = &vlx->basis_set.basis_func.data[atom_basis->basis_func_offset + j];
+			count += md_gto_num_sph_ao(func->type);
 		}
 	}
 	return count;
-}
-
-static size_t compute_basis_num_atomic_orbitals(const vlx_t* vlx) {
-	ASSERT(vlx);
-	if (!vlx->basis_set.atom_basis.count || !vlx->atomic_numbers || vlx->number_of_atoms == 0) {
-		return 0;
-	}
-	return extract_ao_to_atom_idx(NULL, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
 }
 
 // Build a permutation table that maps from shell order (angl→atom→func→isph)
@@ -1778,12 +1780,21 @@ static bool h5_read_density_properties_in_group(vlx_t* vlx, hid_t group_handle, 
 		size_t dims[2] = { 0 };
 		H5Sget_simple_extent_dims(space_id, (hsize_t*)dims, 0);
 
-		size_t num_aos = vlx_scf_number_of_atomic_orbitals(vlx);
+		// Checked against the basis set, not against the SCF block: density properties may come in a
+		// file without one, and it is the basis that gives an AO matrix its meaning in the first place.
+		// (goto done rather than continue: done is what closes dataset_id.)
+		const size_t num_aos = vlx->num_sph_ao;
+		if (num_aos == 0) {
+			MD_LOG_ERROR("Density property dataset '%s' is an AO matrix, but the file names no basis set to interpret it by", name_buf);
+			H5Sclose(space_id);
+			goto done;
+		}
 		if (dims[0] != num_aos || dims[1] != num_aos) {
 			MD_LOG_ERROR("Unexpected dimensions for density property dataset '%s', expected [%zu x %zu], got [%zu x %zu]", name_buf, num_aos, num_aos, dims[0], dims[1]);
 			H5Sclose(space_id);
-			continue;
+			goto done;
 		}
+
 
 		size_t num_points = H5Sget_simple_extent_npoints(space_id);
 		
@@ -1905,6 +1916,22 @@ done:
 	md_temp_end(temp);
 }
 
+// Permute a square AO matrix in place from VeloxChem's AO order into shell order. Absent is fine. A
+// matrix of any other dimension than the basis set's is not, and is reported rather than skipped:
+// left unpermuted it would be read in the wrong AO order with nothing downstream able to tell.
+static bool vlx_ao_permute_square_checked(vlx_2d_data_t* mat, size_t num_ao, const int* remap, const char* label) {
+	ASSERT(mat);
+	if (!mat->data) {
+		return true;
+	}
+	if (mat->size[0] != num_ao || mat->size[1] != num_ao) {
+		MD_LOG_ERROR("%s matrix is [%zu x %zu], but the basis set spans %zu atomic orbitals", label, mat->size[0], mat->size[1], num_ao);
+		return false;
+	}
+	ao_permute_square(mat->data, num_ao, remap);
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Pure/spherical -> Cartesian AO conversion
 // ---------------------------------------------------------------------------
@@ -1992,6 +2019,13 @@ static bool vlx_convert_ao_data_to_cartesian(vlx_t* vlx) {
 		MD_LOG_ERROR("Cartesian AO conversion: empty basis (n_sph=%zu n_cart=%zu)", n_sph, n_cart);
 		goto done;
 	}
+	// Two enumerations of one basis set - this one through md_gto_basis_t, vlx->num_sph_ao directly -
+	// and every AO matrix was checked against the latter. They have to agree.
+	if (n_sph != vlx->num_sph_ao) {
+		MD_LOG_ERROR("Cartesian AO conversion: the GTO basis spans %zu spherical AOs, the basis set %zu", n_sph, vlx->num_sph_ao);
+		goto done;
+	}
+
 
 	// In the restricted case the beta orbital shares alpha's buffers (see the
 	// struct memcpy in the parse path). Detect that so we convert once and
@@ -2220,7 +2254,15 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
+	// The basis set says what the AO dimension is - vlx_resolve_basis_set has run by now - and the SCF
+	// block has to agree with it. When it does not, the basis file that was found is not the one the
+	// calculation used, and every orbital would be evaluated against the wrong functions.
 	const size_t num_ao = den_dim[0];
+	if (vlx->num_sph_ao > 0 && num_ao != vlx->num_sph_ao) {
+		MD_LOG_ERROR("SCF AO dimension is %zu, but basis set '" STR_FMT "' spans %zu atomic orbitals over this molecule",
+			num_ao, STR_ARG(vlx->basis_set_ident), vlx->num_sph_ao);
+		return false;
+	}
 	size_t num_mo = 0;
 	if (!infer_num_mo_from_coeff_dims(&num_mo, dim, num_ao, "Alpha coefficient")) {
 		return false;
@@ -2316,8 +2358,9 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	}
 
 	// The ground state dipole moment is not present in all versions
-	if (!h5_read_dataset_data(&vlx->scf.ground_state_dipole_moment, 3, handle, H5T_NATIVE_DOUBLE, "dipole_moment")) {
-		//return false;
+	vlx->scf.has_ground_state_dipole_moment = h5_read_dataset_data(&vlx->scf.ground_state_dipole_moment, 3, handle, H5T_NATIVE_DOUBLE, "dipole_moment");
+	if (!vlx->scf.has_ground_state_dipole_moment) {
+		vlx->scf.ground_state_dipole_moment = (dvec3_t){0};
 	}
 
 	// NOTE: H5Lexists returns htri_t -- negative on error, which is truthy. Test
@@ -2466,8 +2509,10 @@ static bool h5_read_optional_1d_data(vlx_1d_data_t* out_data, hid_t handle, cons
 // VeloxChem writes num_core/num_valence/num_virtual only for some calculations - none of the files
 // in test_data carries them - and without that split a solution vector is an undifferentiated run
 // of amplitudes that nothing can be reconstructed from. So when the file is silent, derive it: an
-// ordinary valence excitation spans every occupied orbital and every virtual one, which the SCF
-// occupations already say.
+// ordinary valence excitation spans every occupied orbital and every virtual one. The occupied ones
+// are the alpha electrons, which the root of the file states outright; the orbitals in all are the
+// SCF's when there is an SCF block, and the basis set's AO count when there is not - the same number
+// unless the SCF discarded linearly dependent combinations, which the length check below then rejects.
 //
 // Derived, never assumed: the split has to reproduce the solution vector's own length (amp_count,
 // or twice it when the vector carries both X and Y), and it is adopted only when it does. That
@@ -2484,18 +2529,18 @@ static void vlx_rsp_infer_occupied_virtual_split(vlx_t* vlx) {
 		return;
 	}
 
-	const double* occ    = vlx->scf.alpha.occupancy.data;
-	const size_t  num_mo = vlx->scf.alpha.occupancy.size;
-	if (!occ || num_mo == 0) {
-		MD_LOG_ERROR("Response data has no occupied/virtual split and no SCF occupations to derive one from");
+	const size_t nocc   = vlx->number_of_alpha_electrons;
+	const size_t num_mo = vlx->scf.alpha.occupancy.size > 0 ? vlx->scf.alpha.occupancy.size : vlx->num_sph_ao;
+	if (num_mo == 0) {
+		MD_LOG_ERROR("Response data has no occupied/virtual split, and neither SCF orbitals nor a basis set to derive one from");
 		return;
 	}
-
-	size_t nocc = 0;
-	for (size_t i = 0; i < num_mo; ++i) {
-		if (occ[i] > 0.0) nocc += 1;
+	if (nocc >= num_mo) {
+		MD_LOG_ERROR("Cannot derive an occupied/virtual split: %zu alpha electrons in %zu orbitals", nocc, num_mo);
+		return;
 	}
 	const size_t nvir = num_mo - nocc;
+
 
 	if (nocc == 0 || nvir == 0) {
 		MD_LOG_ERROR("Cannot derive an occupied/virtual split: %zu of %zu orbitals are occupied", nocc, num_mo);
@@ -2511,7 +2556,7 @@ static void vlx_rsp_infer_occupied_virtual_split(vlx_t* vlx) {
 
 	vlx->rsp.num_valence = nocc;
 	vlx->rsp.num_virtual = nvir;
-	MD_LOG_DEBUG("Derived the response occupied/virtual split from the SCF occupations: %zu x %zu", nocc, nvir);
+	MD_LOG_DEBUG("Derived the response occupied/virtual split: %zu x %zu", nocc, nvir);
 }
 
 static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
@@ -4073,6 +4118,9 @@ static void vlx_publish_mm(const vlx_t* vlx) {
 	md_temp_end(temp);
 }
 
+// Defined beside vlx_parse_file. Both readers call it straight after the core block.
+static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename);
+
 static bool vlx_read_scf_results(vlx_t* vlx, str_t filename, md_system_state_t* state) {
 	ASSERT(vlx);
 
@@ -4093,6 +4141,12 @@ static bool vlx_read_scf_results(vlx_t* vlx, str_t filename, md_system_state_t* 
 	bool result = false;
 
 	if (!h5_read_core_data(vlx, file_id)) {
+		goto done;
+	}
+
+	// The basis set straight after the core block that names it, and ahead of every block carrying
+	// AO-indexed data, so those are checked against the basis rather than against one another.
+	if (!vlx_resolve_basis_set(vlx, filename)) {
 		goto done;
 	}
 
@@ -4142,6 +4196,12 @@ static bool vlx_read_h5_file(vlx_t* vlx, str_t filename, md_system_state_t* stat
 	// every reader publishes into vlx->sys as it goes, so the table has to exist and must not be
 	// reset again afterwards.
 	if (!h5_read_core_data(vlx, file_id)) {
+		goto done;
+	}
+
+	// The basis set straight after the core block that names it, and ahead of every block carrying
+	// AO-indexed data, so those are checked against the basis rather than against one another.
+	if (!vlx_resolve_basis_set(vlx, filename)) {
 		goto done;
 	}
 
@@ -4427,11 +4487,94 @@ static bool h5_read_xps_data(vlx_t* vlx, hid_t handle) {
 // Reads a file into vlx->sys. The blocks publish as they are read, so what is left to do here is
 // everything that needs the whole file: resolving the basis set, moving the AO matrices into shell
 // order and out of the spherical basis, and publishing what falls out of that.
-static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state) {
+// Resolves the basis set the file names, and with it what all AO-indexed data is interpreted by: the
+// AO dimension (vlx->num_sph_ao) and the permutation from VeloxChem's AO order into shell order
+// (vlx->ao_remap).
+//
+// It needs only what the core block reads from the ROOT of the file - the basis set identifier and
+// the nuclear charges - which is why both readers call it straight after that block. This used to run
+// after the whole file had been read, with the AO dimension taken from whichever SCF matrix happened
+// to be there; a file without an SCF block then had no AO dimension at all, and its density
+// properties were dropped for not matching a dimension of zero.
+static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
+	ASSERT(vlx);
+
+	// No basis named: nothing AO-indexed can be interpreted. num_sph_ao stays 0, and every reader of
+	// an AO matrix checks for that.
+	if (str_empty(vlx->basis_set_ident)) {
+		return true;
+	}
+
 	md_temp_scope_t temp = md_temp_begin();
 	md_allocator_i* temp_alloc = md_temp_allocator(temp);
-
 	bool result = false;
+
+	const size_t cap = KILOBYTES(16);
+	char* buf = md_temp_alloc_array(temp, char, cap);
+	md_strb_t sb = md_strb_create(temp_alloc);
+
+	str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
+	MD_LOG_DEBUG("Basis set ident: '" STR_FMT "'", STR_ARG(ident));
+
+	char exe_buf[1024];
+	str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
+
+	str_t exe_dir = {0};
+	if (!extract_folder_path(&exe_dir, exe_path)) {
+		MD_LOG_ERROR("Failed to extract executable directory");
+	}
+
+	// The basis folder beside the executable first, then the folder of the file itself.
+	md_strb_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
+	str_t basis_filepath = md_strb_to_str(sb);
+	md_file_t basis_file = {0};
+	if (!md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
+		str_t folder = { 0 };
+		if (!extract_folder_path(&folder, filename)) {
+			MD_LOG_ERROR("An error occured when extracting the path to supplied file");
+			goto done;
+		}
+		md_strb_reset(&sb);
+		md_strb_push_str(&sb, folder);
+		md_strb_push_str(&sb, ident);
+		basis_filepath = md_strb_to_str(sb);
+		if (!md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
+			MD_LOG_ERROR("Could not find basis file corresponding to identifier: '" STR_FMT "'", STR_ARG(ident));
+			goto done;
+		}
+	}
+
+	MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
+	md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
+	const bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
+	md_file_close(&basis_file);
+	if (!parse_result) {
+		MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
+		goto done;
+	}
+	normalize_basis_set(&vlx->basis_set);
+
+	vlx->num_sph_ao = vlx_basis_num_sph_ao(vlx);
+	if (vlx->num_sph_ao == 0) {
+		MD_LOG_ERROR("Basis set '" STR_FMT "' does not cover this molecule", STR_ARG(vlx->basis_set_ident));
+		goto done;
+	}
+
+	md_array_resize(vlx->ao_remap, vlx->num_sph_ao, vlx->arena);
+	if (!build_ao_remap(vlx->ao_remap, vlx->num_sph_ao, vlx)) {
+		MD_LOG_ERROR("Failed to build AO remap table");
+		goto done;
+	}
+
+	result = true;
+done:
+	md_temp_end(temp);
+	return result;
+}
+
+static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state) {
+	bool result = false;
+
 
 	if (str_ends_with(filename, STR_LIT(".scf.results.h5"))) {
 		if (!vlx_read_scf_results(vlx, filename, state)) {
@@ -4446,149 +4589,60 @@ static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state)
 		goto done;
 	}
 
-	if (!str_empty(vlx->basis_set_ident)) {
-		size_t cap = KILOBYTES(16);
-		char*  buf = md_temp_alloc_array(temp, char, cap);
-		md_strb_t sb = md_strb_create(temp_alloc);
+	// Every AO matrix the file carried, from VeloxChem's AO order into shell order, and then out of the
+	// spherical basis into the Cartesian one. The dimension and the permutation both come from the
+	// basis set (vlx_resolve_basis_set), so this runs whenever there is a basis - with or without an
+	// SCF block. Density properties need it exactly as much as orbitals do.
+	if (vlx->ao_remap) {
+		const size_t num_ao = vlx->num_sph_ao;
+		const int*   remap  = vlx->ao_remap;
 
-		str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
-		MD_LOG_DEBUG("Basis set ident: '" STR_FMT "'", STR_ARG(ident));
-
-		char exe_buf[1024];
-		str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
-
-		str_t exe_dir = {0};
-		if (!extract_folder_path(&exe_dir, exe_path)) {
-			MD_LOG_ERROR("Failed to extract executable directory");
+		// Normalize SCF coefficients to canonical [num_mo x num_ao] in shell order.
+		if (!normalize_orbital_coefficients(&vlx->scf.alpha, num_ao, remap, "Alpha orbital")) {
+			goto done;
 		}
-
-		md_strb_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
-		str_t basis_filepath = md_strb_to_str(sb);
-		md_file_t basis_file = {0};
-		if (md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
-			MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
-			md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
-			bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
-			md_file_close(&basis_file);
-			if (!parse_result) {
-				MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
+		if (!vlx_ao_permute_square_checked(&vlx->scf.alpha.density, num_ao, remap, "Alpha density")) {
+			goto done;
+		}
+		if (vlx->scf.type == VLX_SCF_UNRESTRICTED) {
+			if (!normalize_orbital_coefficients(&vlx->scf.beta, num_ao, remap, "Beta orbital")) {
 				goto done;
 			}
-			normalize_basis_set(&vlx->basis_set);
-		} else {
-			// Attempt to read basis set file from same folder as file
-			str_t folder = { 0 };
-			if (!extract_folder_path(&folder, filename)) {
-				MD_LOG_ERROR("An error occured when extracting the path to supplied file");
-				goto done;
-			}
-			md_strb_reset(&sb);
-			md_strb_push_str(&sb, folder);
-			md_strb_push_str(&sb, ident);
-			basis_filepath = md_strb_to_str(sb);
-			if (md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
-				MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
-				md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
-				bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
-				md_file_close(&basis_file);
-				if (!parse_result) {
-					MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
-					goto done;
-				}
-				normalize_basis_set(&vlx->basis_set);
-			}
-			else {
-                MD_LOG_ERROR("Could not find basis file corresponding to identifier: '" STR_FMT "'", STR_ARG(ident));
+			if (!vlx_ao_permute_square_checked(&vlx->scf.beta.density, num_ao, remap, "Beta density")) {
 				goto done;
 			}
 		}
-	}
-
-	// Build the AO remap table and apply it to all loaded matrices.
-	// This must happen after the basis set has been successfully resolved,
-	// since build_ao_remap() requires basis topology to be valid.
-	if (vlx->basis_set.atom_basis.count > 0) {
-		size_t num_ao = 0;
-		if (vlx->scf.alpha.density.data) {
-			num_ao = vlx->scf.alpha.density.size[0];
-		} else if (vlx->scf.S.data) {
-			num_ao = vlx->scf.S.size[0];
-		} else if (vlx->scf.alpha.coefficients.data) {
-			num_ao = compute_basis_num_atomic_orbitals(vlx);
-			if (num_ao == 0) {
-				MD_LOG_ERROR("Unable to infer AO dimension for SCF coefficient normalization");
-				goto done;
-			}
+		else {
+			// memcpy again from alpha into beta as dims may have changed.
+			MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(vlx_2d_data_t));
+			MEMCPY(&vlx->scf.beta.density, &vlx->scf.alpha.density, sizeof(vlx_2d_data_t));
 		}
-		// No AO indexed data in the file - a vib or opt only run, say - so there is nothing to
-		// permute and no remap to build. Building one anyway used to fail the whole load, because
-		// a zero length table can never match the basis set's AO count.
-		if (num_ao > 0) {
-			md_array_resize(vlx->ao_remap, num_ao, vlx->arena);
-			if (!build_ao_remap(vlx->ao_remap, num_ao, vlx)) {
-				MD_LOG_ERROR("Failed to build AO remap table");
+		if (!vlx_ao_permute_square_checked(&vlx->scf.S, num_ao, remap, "SCF overlap")) {
+			goto done;
+		}
+
+		// Density properties are AO matrices out of the same program as D and S, in the same AO order,
+		// and were never permuted with them - while the Cartesian conversion below has always treated
+		// them as being in shell order already. Their dimension was checked against num_ao at read.
+		for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
+			vlx_density_property_t* prop = &vlx->density_properties[i];
+			vlx_2d_data_t view = { .size = { prop->dim[0], prop->dim[1] }, .data = prop->data };
+			if (!vlx_ao_permute_square_checked(&view, num_ao, remap, "Density property")) {
 				goto done;
 			}
 		}
 
-		if (num_ao > 0 && vlx->ao_remap) {
-			// Normalize SCF coefficients to canonical [num_mo x num_ao] in shell order.
-			if (!normalize_orbital_coefficients(&vlx->scf.alpha, num_ao, vlx->ao_remap, "Alpha orbital")) {
-				goto done;
-			}
-			if (vlx->scf.alpha.density.data && num_ao == vlx->scf.alpha.density.size[0]) {
-				ao_permute_square(vlx->scf.alpha.density.data, num_ao, vlx->ao_remap);
-			}
-			if (vlx->scf.type == VLX_SCF_UNRESTRICTED) {
-				if (!normalize_orbital_coefficients(&vlx->scf.beta, num_ao, vlx->ao_remap, "Beta orbital")) {
-					goto done;
-				}
-				if (vlx->scf.beta.density.data && num_ao == vlx->scf.beta.density.size[0]) {
-					ao_permute_square(vlx->scf.beta.density.data, num_ao, vlx->ao_remap);
-				}
-			}
-			else {
-				// memcpy again from alpha into beta as dims may have changed.
-				MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(vlx_2d_data_t));
-				MEMCPY(&vlx->scf.beta.density, &vlx->scf.alpha.density, sizeof(vlx_2d_data_t));
-			}
-			if (vlx->scf.S.data && num_ao == vlx->scf.S.size[0]) {
-				ao_permute_square(vlx->scf.S.data, num_ao, vlx->ao_remap);
-			}
-
-			// Everything is now in shell order and no further AO-basis math is
-			// performed, so this is the point to leave VeloxChem's pure/spherical
-			// basis for the Cartesian one that md_gto_basis_t requires.
-			if (!vlx_convert_ao_data_to_cartesian(vlx)) {
-				MD_LOG_ERROR("Failed to convert AO data to the Cartesian basis");
-				goto done;
-			}
+		// Everything is now in shell order and no further AO-basis math is
+		// performed, so this is the point to leave VeloxChem's pure/spherical
+		// basis for the Cartesian one that md_gto_basis_t requires.
+		if (!vlx_convert_ao_data_to_cartesian(vlx)) {
+			MD_LOG_ERROR("Failed to convert AO data to the Cartesian basis");
+			goto done;
 		}
 	}
 
 	if (!validate_scf_canonical_layout(vlx)) {
 		goto done;
-	}
-
-	// Identify homo and lumo
-	if (vlx->scf.alpha.occupancy.data) {
-		for (size_t i = 0; i < vlx->scf.alpha.occupancy.size; ++i) {
-			if (vlx->scf.alpha.occupancy.data[i] == 0.0) {
-				vlx->scf.alpha.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.alpha.lumo_idx = i;
-				break;
-			}
-		}
-	}
-
-	if (vlx->scf.beta.occupancy.data) {
-		for (size_t i = 0; i < vlx->scf.beta.occupancy.size; ++i) {
-			if (vlx->scf.beta.occupancy.data[i] == 0.0) {
-				vlx->scf.beta.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.beta.lumo_idx = i;
-				break;
-			}
-		}
 	}
 
 	// NOTE: the AO to atom map is not built or kept here. It is a pure function of the shell list,
@@ -4597,8 +4651,6 @@ static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state)
 
 	result = true;
 done:
-	md_temp_end(temp);
-
 	return result;
 }
 
@@ -4697,6 +4749,11 @@ size_t vlx_rsp_nto_coefficients_extract(double* out_coefficients, double* out_la
 
 // OPT
 
+// The backing must not be a thread temp arena. The reader opens md_temp scopes of its own while it
+// allocates into vlx->arena - md_temp_begin(), and md_temp_begin_avoid(vlx->arena), which does not
+// see through the arena wrapper to its backing - and both hand back temp arena 0. Any page vlx->arena
+// takes from that same arena inside such a scope is released again by its md_temp_end, with vlx data
+// still in it, and the next temp allocation writes over it. The heap has no scopes to unwind.
 vlx_t* vlx_create(md_allocator_i* backing, md_system_t* sys) {
 	ASSERT(backing);
 	md_allocator_i* arena = md_arena_allocator_create(backing, MEGABYTES(1));
@@ -4704,8 +4761,8 @@ vlx_t* vlx_create(md_allocator_i* backing, md_system_t* sys) {
 	vlx_t* vlx = md_alloc(arena, sizeof(vlx_t));
 	if (!vlx) {
 		MD_LOG_ERROR("Failed to allocate memory for veloxchem object");
-		vlx->sys = sys;
-	return vlx;
+		md_arena_allocator_destroy(arena);
+		return NULL;
 	}
 	MEMSET(vlx, 0, sizeof(vlx_t));
 	vlx->arena = arena;
@@ -4713,13 +4770,24 @@ vlx_t* vlx_create(md_allocator_i* backing, md_system_t* sys) {
 	return vlx;
 }
 
+// Everything the vlx object holds lives in its arena, the object included.
+void vlx_destroy(vlx_t* vlx) {
+	if (vlx && vlx->arena) {
+		md_arena_allocator_destroy(vlx->arena);
+	}
+}
+
 // XPS
 
 
-// The centre of charge, in Angstrom: where a dipole moment is drawn from. Nuclear charge weighted
-// positions less the electronic contribution, per electron. Returns false when the file does not
-// carry what it takes to compute one, in which case no dipole group is published at all - half a
-// group is not a dipole anyone can draw.
+// The centre of charge, in Angstrom: where a dipole moment is drawn from.
+//
+// With the SCF ground state dipole, the centre of ELECTRONIC charge: nuclear charge weighted positions
+// less the dipole, per electron. Without it - no SCF block, or a version that did not write the
+// dipole - the electron distribution is unknown and the centre of NUCLEAR charge is used, which needs
+// nothing but the root of the file and is where the electrons' centre lies for any neutral molecule
+// whose dipole vanishes. Returns false only when not even that can be computed, in which case no
+// dipole group is published at all - half a group is not a dipole anyone can draw.
 static bool vlx_centre_of_charge(dvec3_t* out_angstrom, const vlx_t* vlx) {
 	const size_t   num_atoms     = vlx_number_of_atoms(vlx);
 	const dvec3_t* atom_coord    = vlx_atom_coordinates(vlx);
@@ -4729,27 +4797,38 @@ static bool vlx_centre_of_charge(dvec3_t* out_angstrom, const vlx_t* vlx) {
 		return false;
 	}
 
-	const size_t num_electrons = vlx_number_of_electrons(vlx, VLX_SPIN_ALPHA) + vlx_number_of_electrons(vlx, VLX_SPIN_BETA);
-	if (num_electrons == 0) {
-		return false;
-	}
-
 	// Coordinates are Angstrom while the moment is atomic units, so the nuclear term is taken to
 	// bohr first and the result taken back at the end.
-	double nx = 0.0, ny = 0.0, nz = 0.0;
+	double nx = 0.0, ny = 0.0, nz = 0.0, z_sum = 0.0;
 	for (size_t i = 0; i < num_atoms; ++i) {
 		const double z = (double)atomic_number[i];
 		nx += atom_coord[i].x * ANGSTROM_TO_BOHR * z;
 		ny += atom_coord[i].y * ANGSTROM_TO_BOHR * z;
 		nz += atom_coord[i].z * ANGSTROM_TO_BOHR * z;
+		z_sum += z;
 	}
 
-	const dvec3_t moment = vlx_scf_ground_state_dipole_moment(vlx);
-	const double  inv_ne = 1.0 / (double)num_electrons;
+	if (vlx->scf.has_ground_state_dipole_moment) {
+		const size_t num_electrons = vlx_number_of_electrons(vlx, VLX_SPIN_ALPHA) + vlx_number_of_electrons(vlx, VLX_SPIN_BETA);
+		if (num_electrons == 0) {
+			return false;
+		}
+		const dvec3_t moment = vlx_scf_ground_state_dipole_moment(vlx);
+		const double  inv_ne = 1.0 / (double)num_electrons;
 
-	out_angstrom->x = (nx - moment.x) * inv_ne * BOHR_TO_ANGSTROM;
-	out_angstrom->y = (ny - moment.y) * inv_ne * BOHR_TO_ANGSTROM;
-	out_angstrom->z = (nz - moment.z) * inv_ne * BOHR_TO_ANGSTROM;
+		out_angstrom->x = (nx - moment.x) * inv_ne * BOHR_TO_ANGSTROM;
+		out_angstrom->y = (ny - moment.y) * inv_ne * BOHR_TO_ANGSTROM;
+		out_angstrom->z = (nz - moment.z) * inv_ne * BOHR_TO_ANGSTROM;
+		return true;
+	}
+
+	if (z_sum <= 0.0) {
+		return false;
+	}
+	const double inv_z = 1.0 / z_sum;
+	out_angstrom->x = nx * inv_z * BOHR_TO_ANGSTROM;
+	out_angstrom->y = ny * inv_z * BOHR_TO_ANGSTROM;
+	out_angstrom->z = nz * inv_z * BOHR_TO_ANGSTROM;
 	return true;
 }
 
@@ -4803,8 +4882,8 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 	}
 
 	// The destination is sized by the CALLER's slice, and this writes num_ao^2 per state. Nothing
-	// upstream guarantees the two agree - the shape was published from
-	// vlx_scf_number_of_atomic_orbitals() while num_ao here comes off the coefficient matrix -
+	// upstream guarantees the two agree - the shape was published from the vlx object's coefficient
+	// matrix while num_ao here comes off the published coefficient attribute -
 	// so disagreeing is an overrun, not a wrong picture. Check before writing a single value.
 	const size_t states_written = (slice && slice->num_idx > 0) ? 1 : num_states;
 	const size_t needed = states_written * num_ao * num_ao;
@@ -4936,16 +5015,37 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		if (vlx_gto_basis_extract(&basis, vlx, md_temp_allocator(temp))) {
 			md_qm_publish_basis(sys, &basis);
 
+			// The AO overlap S, {A,A} and symmetric. It belongs to the BASIS and not to a spin
+			// channel: both channels and every density in this table are expressed against this
+			// one metric, so basis/ and not orbital/ - and it is published with the basis, not with
+			// the orbitals. A file without an SCF block still has density properties expressed
+			// against it.
+			//
+			// INTEGRATED from the basis just published, not converted from the file's own S. The
+			// conversion this used to do applied md_gto_sph_to_cart_matrix, which computes
+			// T^T M T - correct for a DENSITY, which is built from coefficients, and wrong for an
+			// overlap, which is built from the basis functions themselves. The result looked
+			// entirely plausible and was not: on test_data/vlx/h2o.h5 it gave tr(D S) = 10.72
+			// electrons for a ten electron molecule, and a C S C^T off the identity by 411. Nor is
+			// there a different conversion that would work - S_sph = T S_cart T^T is not
+			// invertible - so the Cartesian overlap is computed from the basis instead. See
+			// md_qm_publish_overlap.
+			md_qm_publish_overlap(sys);
+
+
 			// The MO matrix is stored [M][A] contiguously and is already Cartesian - the spherical
 			// to Cartesian conversion happens once at parse time - so this is a straight copy into
 			// a rank 2 attribute, and a consumer takes one orbital with a slice extract.
 			//
 			// f64 and not f32: md_gto takes AO coefficients as double to keep the QM code's
 			// precision at the boundary, and there is no point publishing them already narrowed.
-			const size_t num_ao = vlx_scf_number_of_atomic_orbitals(vlx);
+			// The AO axis is the basis just extracted. The coefficients were checked against the same
+			// basis set at load, so disagreeing here is a bug in this file rather than in the data.
+			const size_t num_ao       = md_gto_basis_num_ao(&basis);
+			const size_t coeff_num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
 			if (num_ao > 0 && num_mos > 0) {
-				if (num_ao != md_gto_basis_num_ao(&basis)) {
-					MD_LOG_ERROR("MO coefficients span %zu AOs but the basis has %zu; not publishing them", num_ao, md_gto_basis_num_ao(&basis));
+				if (coeff_num_ao != num_ao) {
+					MD_LOG_ERROR("MO coefficients span %zu AOs but the basis has %zu; not publishing them", coeff_num_ao, num_ao);
 				} else {
 					md_attribute_format_t format = {
 						.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
@@ -4972,20 +5072,7 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 						}
 					}
 
-					// The AO overlap S, {A,A} and symmetric. It belongs to the BASIS and not to a spin
-					// channel: both channels and every density in this table are expressed against this
-					// one metric, so basis/ and not orbital/.
-					//
-					// INTEGRATED from the basis just published, not converted from the file's own S. The
-					// conversion this used to do applied md_gto_sph_to_cart_matrix, which computes
-					// T^T M T - correct for a DENSITY, which is built from coefficients, and wrong for an
-					// overlap, which is built from the basis functions themselves. The result looked
-					// entirely plausible and was not: on test_data/vlx/h2o.h5 it gave tr(D S) = 10.72
-					// electrons for a ten electron molecule, and a C S C^T off the identity by 411. Nor is
-					// there a different conversion that would work - S_sph = T S_cart T^T is not
-					// invertible - so the Cartesian overlap is computed from the basis instead. See
-					// md_qm_publish_overlap.
-					md_qm_publish_overlap(sys);
+
 
 					// Ground state densities: computed on demand from the coefficients and occupations
 					// just published above rather than kept as a second resident [A][A] copy. Which spin
@@ -5054,7 +5141,10 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		// vectors and MO coefficients above. rank {S,A,A}: slice by state for one density, or take
 		// the whole thing and pay for reconstructing every state - see the caveat on
 		// vlx_transition_density_provide() about that cost.
-		const size_t num_ao = vlx_scf_number_of_atomic_orbitals(vlx);
+		// The AO axis of the MO COEFFICIENTS, deliberately, and not the basis set's: these are
+		// reconstructed from the coefficients, so they share their axis - and there is nothing to
+		// reconstruct them from when a file carries response data without orbitals.
+		const size_t num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
 		if (num_ao > 0) {
 			md_attribute_format_t density_format = {
 				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
@@ -5110,7 +5200,9 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		// a transition density is A^2 PER STATE. And it is what keeps this self contained - the NTO
 		// math reads the vlx object, so a provider would have to close over the reader, which is
 		// the one thing the port exists to avoid. Paying it once at load buys that outright.
-		const size_t num_ao_nto = vlx_scf_number_of_atomic_orbitals(vlx);
+		// The coefficients' AO axis, for the same reason as the transition densities above: NTOs are
+		// built from them, and vlx_rsp_extract_nto_from_solution writes rows of exactly that length.
+		const size_t num_ao_nto = number_of_atomic_orbitals(&vlx->scf.alpha);
 		if (max_lambdas > 0 && num_ao_nto > 0) {
 			const vlx_nto_type_t types[2] = { VLX_NTO_PARTICLE, VLX_NTO_HOLE };
 			str_t paths[2] = { STR_INIT("vlx/rsp/nto/particle/coefficient"), STR_INIT("vlx/rsp/nto/hole/coefficient") };
@@ -5147,9 +5239,14 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 	// together when the centre of charge cannot be computed.
 	dvec3_t origin = {0, 0, 0};
 	if (vlx_centre_of_charge(&origin, vlx)) {
-		const dvec3_t ground_state = vlx_scf_ground_state_dipole_moment(vlx);
-		md_qm_publish_vec3_series(sys, STR_LIT("dipole/ground_state/vector"), STR_LIT("Ground State"), e_bohr, &ground_state, 1);
-		md_qm_publish_origin(sys, STR_LIT("dipole/ground_state/origin"), origin);
+		// Only what the file stated: the transition dipoles below are response data and stand on
+		// their own, so a file without an SCF dipole still gets those, anchored at the nuclear centre.
+		if (vlx->scf.has_ground_state_dipole_moment) {
+			const dvec3_t ground_state = vlx_scf_ground_state_dipole_moment(vlx);
+			md_qm_publish_vec3_series(sys, STR_LIT("dipole/ground_state/vector"), STR_LIT("Ground State"), e_bohr, &ground_state, 1);
+			md_qm_publish_origin(sys, STR_LIT("dipole/ground_state/origin"), origin);
+		}
+
 
 		// One per excited state. The magnetic and velocity forms are different quantities in
 		// different units, which is exactly why unit sits on the attribute and not on the group.
@@ -5209,11 +5306,7 @@ static bool vlx_publish_core(const vlx_t* vlx) {
 	// vlx_publish_str already handles by publishing nothing.
 	md_qm_publish_str(sys, STR_LIT("vlx/potfile"), STR_LIT("Potential File"), vlx->potfile_text);
 
-	// WHICH SCF this was. A consumer can guess from whether the two spin channels share their
-	// coefficients and their occupations, and that guess is right until it meets a file where one of
-	// the two is missing. The reader knows; this is it saying so, on the same terms as the response
-	// and optimisation types below.
-	md_qm_publish_str(sys, STR_LIT("vlx/scf/type"), STR_LIT("SCF Type"), vlx_scf_type_str(vlx->scf.type));
+
 
 	// ---- The QM ATOM DOMAIN. ----
 	//
@@ -5409,9 +5502,11 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, str_t filename) {
 	ASSERT(sys);
 
-	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
-	md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-	vlx_t* vlx = vlx_create(temp_arena, sys);
+	// Heap backed, not temp backed - see vlx_create.
+	vlx_t* vlx = vlx_create(md_get_heap_allocator(), sys);
+	if (!vlx) {
+		return false;
+	}
 
 	// The system is built from the core block and everything after it publishes into the table as it
 	// is read - see vlx_system_begin. That is what makes the table a property of the LOAD: a system
@@ -5425,7 +5520,7 @@ bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* st
 		vlx_publish_atom_system_index(sys, vlx, false);
 	}
 
-	md_temp_end(temp_scope);
+	vlx_destroy(vlx);
 	return success;
 }
 
@@ -5437,9 +5532,11 @@ bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename) {
 		return false;
 	}
 
-	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
-	md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-	vlx_t* vlx = vlx_create(temp_arena, sys);
+	// Heap backed, not temp backed - see vlx_create.
+	vlx_t* vlx = vlx_create(md_get_heap_allocator(), sys);
+	if (!vlx) {
+		return false;
+	}
 
 	// A NULL state is what tells vlx_system_begin this file is supplementing: the atoms and the
 	// state belong to whatever loaded the system first and are left alone, and this file only adds
@@ -5452,7 +5549,7 @@ bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename) {
 		vlx_flag_supplemental_qm_region(sys, vlx);
 	}
 
-	md_temp_end(temp_scope);
+	vlx_destroy(vlx);
 	return success;
 }
 
@@ -5564,12 +5661,7 @@ dvec3_t vlx_scf_ground_state_dipole_moment(const vlx_t* vlx) {
 	return (dvec3_t){0};
 }
 
-size_t vlx_scf_number_of_atomic_orbitals(const vlx_t* vlx) {
-	if (vlx) {
-		return number_of_atomic_orbitals(&vlx->scf.alpha);
-	}
-	return 0;
-}
+
 
 size_t vlx_scf_number_of_molecular_orbitals(const vlx_t* vlx) {
 	if (vlx) {

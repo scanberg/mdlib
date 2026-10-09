@@ -1153,3 +1153,163 @@ UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 
 	qm_test_free(&t);
 }
+
+// ---------------------------------------------------------------------------
+// THE SCF BLOCK IS OPTIONAL
+//
+// What gives an AO matrix its meaning is the basis set, and the ROOT of the file names it along with
+// the nuclear charges. These make copies of h2o.h5 carrying a density property - the SCF alpha
+// density itself, in the file's own AO order and spherical basis, which is what a density property
+// written by VeloxChem is - with the SCF block kept, and with it deleted.
+// ---------------------------------------------------------------------------
+
+#define VLX_TEST_DENSITY_PROPERTY "vlx/density_property/test_density"
+
+// A copy of h2o.h5 with scf/D_alpha added at the root as the density property 'test_density', and
+// with the SCF block then deleted when 'drop_scf'.
+static bool vlx_test_write_density_property_h5(str_t dst, bool drop_scf) {
+	md_file_t in = {0};
+	if (!md_file_open(&in, STR_LIT(VLX_PE_DIR "h2o.h5"), MD_FILE_READ)) return false;
+	const size_t size = (size_t)md_file_size(in);
+	void* bytes = md_alloc(md_get_heap_allocator(), size);
+	const bool read = md_file_read(in, bytes, size) == size;
+	md_file_close(&in);
+	const bool written = read && vlx_test_write_file(dst, bytes, size);
+	md_free(md_get_heap_allocator(), bytes, size);
+	if (!written) return false;
+
+	char path[1024];
+	str_copy_to_char_buf(path, sizeof(path), dst);
+	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
+	if (file < 0) return false;
+
+	bool ok = false;
+	double* data = NULL;
+	size_t  count = 0;
+	hid_t src = H5Dopen2(file, "scf/D_alpha", H5P_DEFAULT);
+	if (src >= 0) {
+		hid_t   space = H5Dget_space(src);
+		hsize_t dims[2] = {0};
+		if (H5Sget_simple_extent_ndims(space) == 2 && H5Sget_simple_extent_dims(space, dims, NULL) == 2) {
+			count = (size_t)(dims[0] * dims[1]);
+			data  = md_alloc(md_get_heap_allocator(), sizeof(double) * count);
+			if (H5Dread(src, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0) {
+				hid_t dst_set = H5Dcreate2(file, "test_density", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+				if (dst_set >= 0) {
+					ok = H5Dwrite(dst_set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
+
+					const char* label = "Test Density";
+					hid_t type   = H5Tcopy(H5T_C_S1);
+					H5Tset_size(type, H5T_VARIABLE);
+					H5Tset_cset(type, H5T_CSET_UTF8);
+					hid_t scalar = H5Screate(H5S_SCALAR);
+					hid_t attr   = H5Acreate2(dst_set, "density_property", type, scalar, H5P_DEFAULT, H5P_DEFAULT);
+					ok = ok && attr >= 0 && H5Awrite(attr, type, &label) >= 0;
+					if (attr >= 0) H5Aclose(attr);
+					H5Sclose(scalar);
+					H5Tclose(type);
+					H5Dclose(dst_set);
+				}
+			}
+		}
+		H5Sclose(space);
+		H5Dclose(src);
+	}
+	if (data) md_free(md_get_heap_allocator(), data, sizeof(double) * count);
+
+	if (ok && drop_scf) {
+		ok = H5Ldelete(file, "scf", H5P_DEFAULT) >= 0;
+	}
+	H5Fclose(file);
+	return ok;
+}
+
+static double vlx_test_max_abs_diff(const double* a, const double* b, size_t n) {
+	double m = 0.0;
+	for (size_t i = 0; i < n; ++i) {
+		const double d = fabs(a[i] - b[i]);
+		m = d > m ? d : m;
+	}
+	return m;
+}
+
+// A density property is an AO matrix in the same order as the SCF density, so it has to go through
+// the same permutation into shell order: the SCF density written back as a property must come out
+// equal to the density reconstructed from the coefficients.
+UTEST(vlx, density_property_is_in_the_order_of_the_basis) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, false));
+
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	ASSERT_TRUE(loaded);
+
+	size_t n_prop = 0, n_dens = 0;
+	double* prop = qm_test_matrix(&t, STR_LIT(VLX_TEST_DENSITY_PROPERTY), &n_prop);
+	double* dens = qm_test_matrix(&t, STR_LIT("orbital/alpha/density"), &n_dens);
+	ASSERT_TRUE(prop != NULL);
+	ASSERT_TRUE(dens != NULL);
+	ASSERT_EQ(25u, n_prop);		// Cartesian: 24 spherical AOs, one d shell
+	ASSERT_EQ(n_dens, n_prop);
+	EXPECT_LT(vlx_test_max_abs_diff(prop, dens, n_prop * n_prop), 1.0e-8);
+
+	qm_test_free(&t);
+}
+
+// Without an SCF block: the AO dimension still comes from the basis set and the nuclear charges at
+// the root, so the density property and everything else that belongs to the basis or to the response
+// is there - and nothing that only the SCF can state is made up in its place.
+UTEST(vlx, density_property_without_scf) {
+	const str_t h5_scf    = STR_LIT(VLX_PE_DIR "unittest_density_property_scf.h5");
+	const str_t h5_no_scf = STR_LIT(VLX_PE_DIR "unittest_density_property_no_scf.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_scf,    false));
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_no_scf, true));
+
+	vlx_test_t ref = {0};
+	vlx_test_t t   = {0};
+	const bool loaded_ref = vlx_test_load(&ref, h5_scf,    MEGABYTES(64));
+	const bool loaded     = vlx_test_load(&t,   h5_no_scf, MEGABYTES(64));
+	remove(h5_scf.ptr);
+	remove(h5_no_scf.ptr);
+	ASSERT_TRUE(loaded_ref);
+	ASSERT_TRUE(loaded);
+
+	EXPECT_EQ(3u, t.sys.atom.count);
+
+	// The density property, identical to the one read alongside an SCF block
+	size_t n = 0, n_ref = 0;
+	double* prop     = qm_test_matrix(&t,   STR_LIT(VLX_TEST_DENSITY_PROPERTY), &n);
+	double* prop_ref = qm_test_matrix(&ref, STR_LIT(VLX_TEST_DENSITY_PROPERTY), &n_ref);
+	ASSERT_TRUE(prop != NULL);
+	ASSERT_TRUE(prop_ref != NULL);
+	ASSERT_EQ(n_ref, n);
+	EXPECT_EQ(0.0, vlx_test_max_abs_diff(prop, prop_ref, n * n));
+
+	// The basis and its overlap belong to the basis set, not to the orbitals
+	md_gto_basis_t basis = {0};
+	ASSERT_TRUE(qm_test_basis(&basis, &t));
+	EXPECT_EQ(n, md_gto_basis_num_ao(&basis));
+	EXPECT_TRUE(qm_test_has(&t, STR_LIT("basis/overlap")));
+
+	// Nothing only the SCF states
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("orbital/alpha/coefficient")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("orbital/alpha/density")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/scf/type")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("dipole/ground_state/vector")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/rsp/transition_density/attachment")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/rsp/nto/particle/coefficient")));
+
+	// The response stands on its own: its occupied/virtual split comes from the electron count at the
+	// root and the basis set's AO count, and agrees with the one derived alongside the SCF. The NTO
+	// weights need nothing more than that, and the transition dipoles are drawn from the centre of
+	// nuclear charge.
+	EXPECT_EQ(qm_test_scalar(&ref, STR_LIT("vlx/rsp/num_valence"), -1.0), qm_test_scalar(&t, STR_LIT("vlx/rsp/num_valence"), -2.0));
+	EXPECT_EQ(qm_test_scalar(&ref, STR_LIT("vlx/rsp/num_virtual"), -1.0), qm_test_scalar(&t, STR_LIT("vlx/rsp/num_virtual"), -2.0));
+	EXPECT_TRUE(qm_test_has(&t, STR_LIT("vlx/rsp/nto/lambda")));
+	EXPECT_TRUE(qm_test_has(&t, STR_LIT("dipole/electric_transition/vector")));
+	EXPECT_TRUE(qm_test_has(&t, STR_LIT("dipole/electric_transition/origin")));
+
+	qm_test_free(&ref);
+	qm_test_free(&t);
+}
