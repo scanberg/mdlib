@@ -14,8 +14,10 @@ layout (std140) uniform ubo {
     uint u_atom_base_index;
     uint u_bond_base_index;
     uint _pad;
-    
-    vec4 u_scale;
+
+    vec4  u_scale;
+    uvec4 u_res;
+    uvec4 u_rings;
 };
 
 in Fragment {
@@ -29,11 +31,5 @@ in Fragment {
 #pragma EXTRA_SRC
 
 void main() {
-    vec4 color = in_frag.color;
-    vec3 view_normal = normalize(in_frag.view_normal);
-    vec3 view_coord  = in_frag.view_coord;
-    vec3 view_velocity = in_frag.view_velocity;
-    uint atom_index = in_frag.picking_idx;
-
-    write_fragment(view_coord, view_velocity, view_normal, color, atom_index);
+    write_fragment(in_frag.view_coord, in_frag.view_velocity, normalize(in_frag.view_normal), in_frag.color, in_frag.picking_idx);
 }
