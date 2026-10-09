@@ -209,9 +209,8 @@ set(GL_SHADER_FILES
   src/shaders/compute_velocity.vert
   src/shaders/backbone.vert
   src/shaders/backbone.frag
-  src/shaders/licorice.vert
-  src/shaders/licorice.geom
-  src/shaders/licorice.frag
+  src/shaders/bond.vert
+  src/shaders/bond.frag
   src/shaders/spacefill.vert
   src/shaders/spacefill.geom
   src/shaders/spacefill.frag

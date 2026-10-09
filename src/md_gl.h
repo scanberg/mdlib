@@ -157,6 +157,15 @@ void        md_gl_rep_destroy(md_gl_rep_t rep);
 
 void        md_gl_rep_set_atom_colors(md_gl_rep_t rep, uint32_t offset, uint32_t count, const uint32_t* color, uint32_t byte_stride);
 
+// Weak bonds (e.g. hydrogen bonds) of the representation, drawn by MD_GL_REP_WEAK_BONDS as dashed cylinders between the
+// atoms. Unlike the covalent bonds of the molecule they belong to the representation, and are typically set every frame.
+// Replaces the previous set; count 0 clears it. The arrays match md_hbond_set_t (hydrogen, acceptor, strength).
+//  atom_a, atom_b: [count] atom indices of the bonds. Bonds with an atom outside of the molecule are left out.
+//  weight:         [count] (optional, NULL for 1) scales the radius of each bond, so a bond can fade out continuously. A
+//                  weight of 0 or less hides it.
+// As for the other representations, a bond is shown only when both of its atoms are (alpha of the colors, atom mask).
+void        md_gl_rep_set_weak_bonds(md_gl_rep_t rep, uint32_t count, const uint32_t* atom_a, const uint32_t* atom_b, const float* weight);
+
 /*
  *  DRAW
  *  Interface for defining representations of molecules
@@ -169,6 +178,7 @@ typedef enum {
     MD_GL_REP_BALL_AND_STICK,
     MD_GL_REP_RIBBONS,
     MD_GL_REP_CARTOON,
+    MD_GL_REP_WEAK_BONDS,   // The weak bonds of the representation (md_gl_rep_set_weak_bonds), dashed
 } md_gl_rep_type_t;
 
 // Controls how the color of the bonds are calculated in the licorice and ball-and-stick representations
@@ -211,11 +221,34 @@ typedef struct md_gl_draw_op_t {
             float sheet_scale;
             float helix_scale;
         } cartoon;
+
+        // Dashed cylinders between the atoms: dash_count dashes with flat ends, the first starting at the first atom
+        // and the last ending at the second, each covering the fraction dash_fill of the period of the pattern (1 is a
+        // solid cylinder). The dashes are as many on every bond, so they scale with its length.
+        struct {
+            float radius;           // Ångström, scaled by the weight of each bond
+            uint32_t dash_count;    // At least 1
+            float dash_fill;        // (0, 1]
+            md_gl_bond_mode_t color_mode;
+            float sharpness;
+            uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
+        } weak_bonds;
     } args;
 
     md_gl_rep_t rep;
     const float* model_matrix;              // Column major float[4][4]
 } md_gl_draw_op_t;
+
+// Picking offsets: each renderable element writes base + its own index to the picking target, so the caller
+// reserves one disjoint range per kind. Atoms (spacefill, licorice ends) write their atom index, bonds (licorice
+// middle) their bond index, and the backbone representations (cartoon, ribbons) their protein backbone segment
+// index (md_system_t::protein_backbone.segment). A cartoon is not made of atoms: it writes the segment it stems
+// from, never an atom of it. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
+typedef struct md_gl_picking_offset_t {
+    uint32_t atom_base;
+    uint32_t bond_base;
+    uint32_t backbone_base;
+} md_gl_picking_offset_t;
 
 typedef struct md_gl_draw_args_t {
     md_gl_shaders_t shaders;
@@ -235,14 +268,10 @@ typedef struct md_gl_draw_args_t {
         const float* prev_proj_matrix;
     } view_transform;
 
-    // Picking offset for atoms and bonds, used to assign unique picking ids to each renderable element in the molecule.
-    struct {
-        uint32_t atom_base;
-        uint32_t bond_base;
-    } picking_offset;
+    md_gl_picking_offset_t picking_offset;
 
     uint32_t atom_mask;
-	float max_bond_length;	// Maximum bond length for rendering bonds (in Ångström)
+	float max_bond_length;	// Maximum bond length for rendering bonds, covalent and weak (in Ångström)
 } md_gl_draw_args_t;
 
 bool md_gl_draw(const md_gl_draw_args_t* args);

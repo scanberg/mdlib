@@ -53,6 +53,10 @@
 // Length of the backbone spline per residue (CA - CA distance, Ångström)
 #define BACKBONE_RESIDUE_LENGTH 3.8f
 
+// Bonds are drawn as one quad each (bond.vert), from a static index buffer of this many quads (u16 indices: at most
+// 16384), as instances of the whole buffer followed by a draw of the rest
+#define BOND_QUADS_PER_INSTANCE 16384
+
 #define UBO_SIZE (1 << 10)
 #define SHADER_BUF_SIZE KILOBYTES(14)
 
@@ -83,6 +87,7 @@ enum {
     GL_TEXTURE_BUFFER_2,
     GL_TEXTURE_BUFFER_3,
     GL_TEXTURE_BUFFER_4,
+    GL_TEXTURE_BUFFER_5,
     GL_TEXTURE_MAX_DEPTH,
     GL_TEXTURE_COUNT
 };
@@ -198,7 +203,7 @@ typedef struct {
     uint32_t atom_mask;
     uint32_t atom_index_base;
     uint32_t bond_index_base;
-    uint32_t _pad[1];
+    uint32_t backbone_index_base;
 } gl_ubo_base_t;
 
 typedef struct {
@@ -209,6 +214,7 @@ typedef struct {
     uint32_t id;
     gl_program_t spacefill[MAX_SHADER_PERMUTATIONS];
     gl_program_t licorice[MAX_SHADER_PERMUTATIONS];
+    gl_program_t weak_bonds[MAX_SHADER_PERMUTATIONS];
     gl_program_t ribbons[MAX_SHADER_PERMUTATIONS];
     gl_program_t cartoon[MAX_SHADER_PERMUTATIONS];
 } shaders_t;
@@ -268,6 +274,12 @@ typedef struct {
     uint32_t mol_id; // molecule
     uint32_t pal_id; // palette
     gl_buffer_t atom_color;
+
+    // Weak bonds of the representation (md_gl_rep_set_weak_bonds), capacity in bonds of the buffers
+    uint32_t weak_bond_count;
+    uint32_t weak_bond_capacity;
+    gl_buffer_t weak_bond_atoms;    // u32[2]
+    gl_buffer_t weak_bond_weight;   // f32
 } representation_t;
 
 typedef struct {
@@ -279,6 +291,7 @@ typedef struct {
     gl_texture_t texture[GL_TEXTURE_COUNT];
     gl_program_t program[GL_PROGRAM_COUNT];
     backbone_mesh_t backbone_mesh[BACKBONE_PROFILE_COUNT][BACKBONE_LOD_COUNT];
+    gl_buffer_t bond_quad_index;    // u16, BOND_QUADS_PER_INSTANCE quads of two triangles
     uint32_t version;
 
     // Handle pools
@@ -987,6 +1000,24 @@ void md_gl_initialize(void) {
         }
     }
 
+    {
+        // Quad q has the vertices 4q .. 4q + 3 (bond.vert): triangles (0, 1, 2) and (2, 1, 3), counter clockwise
+        STATIC_ASSERT(BOND_QUADS_PER_INSTANCE * 4 <= 65536, "Bond quad indices must fit in u16");
+        const uint32_t count = BOND_QUADS_PER_INSTANCE * 6;
+        uint16_t* indices = md_alloc(md_get_heap_allocator(), count * sizeof(uint16_t));
+        for (uint32_t q = 0; q < BOND_QUADS_PER_INSTANCE; ++q) {
+            const uint16_t base = (uint16_t)(q * 4);
+            indices[q * 6 + 0] = base + 0;
+            indices[q * 6 + 1] = base + 1;
+            indices[q * 6 + 2] = base + 2;
+            indices[q * 6 + 3] = base + 2;
+            indices[q * 6 + 4] = base + 1;
+            indices[q * 6 + 5] = base + 3;
+        }
+        ctx.bond_quad_index = gl_buffer_create(count * sizeof(uint16_t), indices, GL_STATIC_DRAW);
+        md_free(md_get_heap_allocator(), indices, count * sizeof(uint16_t));
+    }
+
     if (!ctx.arena) {
         ctx.arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     }
@@ -1012,6 +1043,7 @@ void md_gl_shutdown(void) {
             gl_buffer_conditional_delete(&ctx.backbone_mesh[i][lod].index_buffer);
         }
     }
+    gl_buffer_conditional_delete(&ctx.bond_quad_index);
 
     md_arena_allocator_destroy(ctx.arena);
 }
@@ -1034,8 +1066,11 @@ md_gl_shaders_t md_gl_shaders_create(str_t str) {
     }
     const str_t backbone_vert_src = {(const char*)backbone_vert, backbone_vert_size};
     const str_t backbone_frag_src = {(const char*)backbone_frag, backbone_frag_size};
+    const str_t bond_vert_src = {(const char*)bond_vert, bond_vert_size};
+    const str_t bond_frag_src = {(const char*)bond_frag, bond_frag_size};
     if (!create_permuted_program(STR_LIT("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_geom, spacefill_geom_size},   (str_t){(const char*)spacefill_frag, spacefill_frag_size},    str, (str_t){0})) return handle;
-    if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   (str_t){(const char*)licorice_vert, licorice_vert_size},   (str_t){(const char*)licorice_geom, licorice_geom_size},     (str_t){(const char*)licorice_frag, licorice_frag_size},      str, (str_t){0})) return handle;
+    if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 0"))) return handle;
+    if (!create_permuted_program(STR_LIT("WeakBonds"), shaders->weak_bonds, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 1"))) return handle;
     if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 1"))) return handle;
     if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 0"))) return handle;
 
@@ -1050,6 +1085,7 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
         for (int i = 0; i < MAX_SHADER_PERMUTATIONS; ++i) {
             if (glIsProgram(shaders->spacefill[i].id))  glDeleteProgram(shaders->spacefill[i].id);
             if (glIsProgram(shaders->licorice[i].id))   glDeleteProgram(shaders->licorice[i].id);
+            if (glIsProgram(shaders->weak_bonds[i].id)) glDeleteProgram(shaders->weak_bonds[i].id);
             if (glIsProgram(shaders->ribbons[i].id))    glDeleteProgram(shaders->ribbons[i].id);
             if (glIsProgram(shaders->cartoon[i].id))    glDeleteProgram(shaders->cartoon[i].id);
         }
@@ -1136,6 +1172,9 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
                     uint32_t beg = sys->protein_backbone.range.offset[i];
                     uint32_t end = sys->protein_backbone.range.offset[i+1];
                     for (uint32_t j = beg; j < end; ++j) {
+                        // Control point idx is what the backbone shaders pick by (backbone_base + idx), which is
+                        // only the segment index while the ranges cover the segments in order from 0
+                        ASSERT(idx == j);
                         md_component_idx_t comp_idx = sys->protein_backbone.segment.comp_idx[j];
                         uint32_t comp_atom_offset = sys->component.atom_offset[comp_idx];
 
@@ -1315,6 +1354,8 @@ void md_gl_rep_destroy(md_gl_rep_t handle) {
     representation_t* rep = rep_lookup(handle.id);
     if (rep) {
         gl_buffer_conditional_delete(&rep->atom_color);
+        gl_buffer_conditional_delete(&rep->weak_bond_atoms);
+        gl_buffer_conditional_delete(&rep->weak_bond_weight);
         MEMSET(rep, 0, sizeof(representation_t));
         md_handle_pool_free_slot(&ctx.representation_pool, handle.id);
     }
@@ -1358,10 +1399,96 @@ void md_gl_rep_set_atom_colors(md_gl_rep_t handle, uint32_t offset, uint32_t cou
     //md_update_visible_atom_color_range(rep);
 }
 
+void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t* atom_a, const uint32_t* atom_b, const float* weight) {
+    representation_t* rep = rep_lookup(handle.id);
+    if (rep == NULL) {
+        MD_LOG_ERROR("representation was invalid");
+        return;
+    }
+    const molecule_t* mol = mol_lookup(rep->mol_id);
+    if (mol == NULL) {
+        MD_LOG_ERROR("Representation's molecule is invalid");
+        return;
+    }
+    if (count > 0 && (atom_a == NULL || atom_b == NULL)) {
+        MD_LOG_ERROR("Missing atom indices of the weak bonds");
+        return;
+    }
+
+    rep->weak_bond_count = 0;
+    if (count == 0) {
+        return;
+    }
+
+    if (count > rep->weak_bond_capacity) {
+        // The bonds typically change every frame: grow with some slack
+        const uint32_t capacity = MAX(count, rep->weak_bond_capacity + rep->weak_bond_capacity / 2);
+        gl_buffer_conditional_delete(&rep->weak_bond_atoms);
+        gl_buffer_conditional_delete(&rep->weak_bond_weight);
+        rep->weak_bond_atoms  = gl_buffer_create(capacity * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_DRAW);
+        rep->weak_bond_weight = gl_buffer_create(capacity * sizeof(float),        NULL, GL_DYNAMIC_DRAW);
+        rep->weak_bond_capacity = capacity;
+    }
+
+    // Bonds with an atom outside of the molecule are left out (the shaders fetch the atoms without bounds checks)
+    uint32_t written = 0;
+    glBindBuffer(GL_ARRAY_BUFFER, rep->weak_bond_atoms.id);
+    uint32_t* atoms = (uint32_t*)glMapBufferRange(GL_ARRAY_BUFFER, 0, count * sizeof(uint32_t) * 2, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (atoms) {
+        for (uint32_t i = 0; i < count; ++i) {
+            if (atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count) {
+                atoms[written * 2 + 0] = atom_a[i];
+                atoms[written * 2 + 1] = atom_b[i];
+                ++written;
+            }
+        }
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, rep->weak_bond_weight.id);
+    float* w = (float*)glMapBufferRange(GL_ARRAY_BUFFER, 0, count * sizeof(float), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (w) {
+        uint32_t j = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count) {
+                w[j++] = weight ? weight[i] : 1.0f;
+            }
+        }
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    if (!atoms || !w) {
+        MD_LOG_ERROR("Failed to map the buffers of the weak bonds");
+        return;
+    }
+    if (written < count) {
+        MD_LOG_ERROR("%u weak bonds had atom indices outside of the molecule (%u atoms) and were left out", count - written, mol->atom_count);
+    }
+    rep->weak_bond_count = written;
+}
+
 static bool compute_spline(molecule_t* mol);
 
+typedef struct {
+    gl_buffer_t atoms;      // u32[2] per bond
+    gl_buffer_t weight;     // f32 per bond, weak bonds only
+    uint32_t    count;
+} bond_set_t;
+
+// Parameters of bond.vert and bond.frag, after gl_ubo_base_t
+typedef struct {
+    float    radius;
+    float    max_d2;
+    int32_t  mode;
+    float    sharpness;
+    uint32_t uniform_color;
+    uint32_t dash_count;
+    float    dash_fill;
+} bond_params_t;
+
 static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float scale);
-static bool draw_licorice  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length, md_gl_bond_mode_t mode, float sharpness, uint32_t uniform_color);
+static bool draw_bonds     (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, bond_set_t bonds, const bond_params_t* params, const float viewport_size[2]);
 static bool draw_backbone  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, uint32_t profile, const float scale[4], float max_extent, const mat4_t* world_to_clip, float viewport_half_height);
 
 static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_args_t* args, const mat4_t* model_matrix) {
@@ -1390,6 +1517,7 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
     ubo_data->atom_mask = args->atom_mask;
     ubo_data->atom_index_base = args->picking_offset.atom_base;
     ubo_data->bond_index_base = args->picking_offset.bond_base;
+    ubo_data->backbone_index_base = args->picking_offset.backbone_base;
 }
 
 static inline bool is_backbone_representation_type(md_gl_rep_type_t type) {
@@ -1482,6 +1610,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     GLint viewport[4] = {0};
     glGetIntegerv(GL_VIEWPORT, viewport);
     const float viewport_half_height = (float)viewport[3] * 0.5f;
+    const float viewport_size[2] = {(float)viewport[2], (float)viewport[3]};
         
     PUSH_GPU_SECTION("DRAW REPRESENTATIONS")
     for (size_t i = 0; i < md_array_size(draw_ops); i++) {
@@ -1513,13 +1642,45 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
         case MD_GL_REP_SPACE_FILL:
             draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, scale * draw_op->args.space_fill.radius_scale);
             break;
-        case MD_GL_REP_LICORICE:
-            draw_licorice(shaders->licorice[program_permutation],    mol, rep->atom_color, 0.2f * scale * draw_op->args.licorice.radius, max_length, draw_op->args.licorice.color_mode, draw_op->args.licorice.sharpness, draw_op->args.licorice.uniform_color);
+        case MD_GL_REP_LICORICE: {
+            const bond_params_t params = {
+                .radius = 0.2f * scale * draw_op->args.licorice.radius,
+                .max_d2 = max_length * max_length,
+                .mode = draw_op->args.licorice.color_mode,
+                .sharpness = draw_op->args.licorice.sharpness,
+                .uniform_color = draw_op->args.licorice.uniform_color,
+            };
+            const bond_set_t bonds = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, mol->bond_count};
+            draw_bonds(shaders->licorice[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size);
             break;
-        case MD_GL_REP_BALL_AND_STICK:
-            draw_licorice(shaders->licorice[program_permutation],    mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.stick_radius, max_length, draw_op->args.ball_and_stick.color_mode, draw_op->args.ball_and_stick.sharpness, draw_op->args.ball_and_stick.uniform_color);
+        }
+        case MD_GL_REP_BALL_AND_STICK: {
+            const bond_params_t params = {
+                .radius = 0.2f * scale * draw_op->args.ball_and_stick.stick_radius,
+                .max_d2 = max_length * max_length,
+                .mode = draw_op->args.ball_and_stick.color_mode,
+                .sharpness = draw_op->args.ball_and_stick.sharpness,
+                .uniform_color = draw_op->args.ball_and_stick.uniform_color,
+            };
+            const bond_set_t bonds = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, mol->bond_count};
+            draw_bonds(shaders->licorice[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size);
             draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.ball_scale);
             break;
+        }
+        case MD_GL_REP_WEAK_BONDS: {
+            const bond_params_t params = {
+                .radius = scale * draw_op->args.weak_bonds.radius,
+                .max_d2 = max_length * max_length,
+                .mode = draw_op->args.weak_bonds.color_mode,
+                .sharpness = draw_op->args.weak_bonds.sharpness,
+                .uniform_color = draw_op->args.weak_bonds.uniform_color,
+                .dash_count = MAX(1, draw_op->args.weak_bonds.dash_count),
+                .dash_fill = CLAMP(draw_op->args.weak_bonds.dash_fill, 0.0f, 1.0f),
+            };
+            const bond_set_t bonds = {rep->weak_bond_atoms, rep->weak_bond_weight, rep->weak_bond_count};
+            draw_bonds(shaders->weak_bonds[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size);
+            break;
+        }
         case MD_GL_REP_RIBBONS: {
             // Half width and half thickness of the box profile
             const float profile_scale[4] = { scale * draw_op->args.ribbons.width_scale, scale * draw_op->args.ribbons.thickness_scale * 0.1f, 0.0f, 0.0f };
@@ -1607,61 +1768,80 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
     return true;
 }
 
-static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float max_length, md_gl_bond_mode_t mode, float sharpness, uint32_t uniform_color) {
+// Bonds (licorice, weak bonds) by vertex pulling (bond.vert): one quad per bond, the atoms and bonds are read from
+// texture buffers. Full instances of the quad index buffer, then the rest.
+static bool draw_bonds(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, bond_set_t bonds, const bond_params_t* params, const float viewport_size[2]) {
     ASSERT(mol);
+    ASSERT(params);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_POSITION].id);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
-    ASSERT(mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
     ASSERT(atom_color.id);
 
-    if (max_length == 0) {
-        max_length = 1000.0f;
+    if (bonds.count == 0 || !bonds.atoms.id || !ctx.bond_quad_index.id) {
+        return false;
     }
 
-    struct {
-		float radius;
-		float max_d2;
-        int   mode;
-        float sharpness;
-		uint32_t uniform_color;
-	} params = { radius, max_length * max_length, mode, sharpness, uniform_color };
-
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(params), &params);
+    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(bond_params_t), params);
 
     glBindVertexArray(ctx.vao);
 
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_0].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
 
-    glEnableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_1].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
 
-    glEnableVertexAttribArray(2);
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
-    glVertexAttribIPointer(2, 1, GL_UNSIGNED_BYTE, 0, 0);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_2].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
 
-    glEnableVertexAttribArray(3);
-    glBindBuffer(GL_ARRAY_BUFFER, atom_color.id);
-    glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, 0);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_3].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, atom_color.id);
 
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_4].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32UI, bonds.atoms.id);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
+    if (bonds.weight.id) {
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_5].id);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, bonds.weight.id);
+    }
 
     glUseProgram(program.id);
-    glDrawElements(GL_LINES, mol->bond_count * 2, GL_UNSIGNED_INT, 0);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_pos"),   0);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_vel"),   1);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_flags"), 2);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_color"), 3);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_bond"),       4);
+    if (bonds.weight.id) {
+        glUniform1i(glGetUniformLocation(program.id, "u_buf_bond_weight"), 5);
+    }
+    glUniform1ui(glGetUniformLocation(program.id, "u_quads_per_instance"), BOND_QUADS_PER_INSTANCE);
+    glUniform2f(glGetUniformLocation(program.id, "u_viewport_size"), viewport_size[0], viewport_size[1]);
+    const GLint bond_offset_loc = glGetUniformLocation(program.id, "u_bond_offset");
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx.bond_quad_index.id);
+
+    const uint32_t full = bonds.count / BOND_QUADS_PER_INSTANCE;
+    const uint32_t rest = bonds.count % BOND_QUADS_PER_INSTANCE;
+    if (full > 0) {
+        glUniform1ui(bond_offset_loc, 0);
+        glDrawElementsInstanced(GL_TRIANGLES, BOND_QUADS_PER_INSTANCE * 6, GL_UNSIGNED_SHORT, 0, (GLsizei)full);
+    }
+    if (rest > 0) {
+        glUniform1ui(bond_offset_loc, full * BOND_QUADS_PER_INSTANCE);
+        glDrawElements(GL_TRIANGLES, (GLsizei)(rest * 6), GL_UNSIGNED_SHORT, 0);
+    }
+
     glUseProgram(0);
 
+    glActiveTexture(GL_TEXTURE0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-
-    glDisableVertexAttribArray(0);
-    glDisableVertexAttribArray(1);
-    glDisableVertexAttribArray(2);
-    glDisableVertexAttribArray(3);
-
     glBindVertexArray(0);
 
     return true;
