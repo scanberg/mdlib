@@ -40,8 +40,17 @@ static inline int32_t extract_int(str_t line, size_t beg, size_t end) {
 
 static inline float extract_float(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0.0f;
-    str_t str = str_trim(str_substr(line, beg - 1, end-beg + 1));
-    return (float)parse_float_wide(str.ptr, str.len);
+    return (float)parse_float(str_substr(line, beg - 1, end-beg + 1));
+}
+
+// A column the format writes with a fixed number of decimals ("%8.3f" for coordinates, "%6.2f" for
+// occupancy and temperature factor): read without a scan when it is laid out that way, and parsed like
+// any other column when it is not
+static inline float extract_fixed_float(str_t line, size_t beg, size_t end, size_t decimals) {
+    if (line.len < end) return 0.0f;
+    const str_t field = str_substr(line, beg - 1, end-beg + 1);
+    float value;
+    return md_parse_fixed_f32(&value, field, decimals) ? value : (float)parse_float(field);
 }
 
 static inline char extract_char(str_t line, size_t idx) {
@@ -73,11 +82,11 @@ static inline md_pdb_coordinate_t extract_coord(str_t line) {
         .chain_id = chain_id,
         .res_seq = parse_id(line, 23, 26),
         .icode = extract_char(line, 27),
-        .x = extract_float(line, 31, 38),
-        .y = extract_float(line, 39, 46),
-        .z = extract_float(line, 47, 54),
-        .occupancy = extract_float(line, 55, 60),
-        .temp_factor = extract_float(line, 61, 66),
+        .x = extract_fixed_float(line, 31, 38, 3),
+        .y = extract_fixed_float(line, 39, 46, 3),
+        .z = extract_fixed_float(line, 47, 54, 3),
+        .occupancy = extract_fixed_float(line, 55, 60, 2),
+        .temp_factor = extract_fixed_float(line, 61, 66, 2),
         .element = {0},
         .charge = {0},
     };
@@ -426,7 +435,6 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 			seq_id = sys->component.seq_id ? sys->component.seq_id[sys->component.count - 1] + 1 : 1;
 		}
         char chain_id = data->atom_coordinates[i].chain_id;
-        md_flags_t flags = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_HETATM) ? MD_FLAG_HETERO : 0;
         md_atomic_number_t atomic_number = 0;
         md_atom_type_idx_t atom_type_idx = 0;
 
@@ -445,21 +453,16 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 		uint64_t comp_key = md_hash64_str(res_name, md_hash64(&seq_id, sizeof(seq_id), chain_id));
 
         if (comp_key != prev_comp_key || terminator) {
-            // New residue
-            // Propagate HETERO flag to residue
-            md_flags_t comp_flags = flags;
-
+            // New residue. A TER record ends the residue before it, whatever the residue after it is called. Whether it
+            // also ends a chain is left to the chain ids and the bonds: TER is written inconsistently, and a chain
+            // continues over gaps anyway (see md_util_system_infer_entity_and_instance).
             sys->component.count += 1;
             md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
             md_array_push(sys->component.name,   make_label(res_name), sys->alloc);
             md_array_push(sys->component.seq_id, seq_id, sys->alloc);
-            md_array_push(sys->component.flags,  comp_flags, sys->alloc);
+            md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
 
             str_t asym_id = str_trim(str_from_cstrn(&data->atom_coordinates[i].chain_id, 1));
-            if (terminator) {
-                // Trigger a new component for the next residue even if the chain id is the same, to correctly capture chain breaks
-                asym_id.len = 2;
-            }
             md_array_push(comp_auth_asym_ids, asym_id, temp_arena);
         }
 
@@ -467,7 +470,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
         md_array_push_no_grow(atom_name, atom_id);
         md_array_push_no_grow(state->xyz, vec3_set(x, y, z));
-        md_array_push_no_grow(sys->atom.flags, flags);
+        md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
         md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
         md_array_push_no_grow(atom_occupancy, data->atom_coordinates[i].occupancy);
         md_array_push_no_grow(atom_b_factor,  data->atom_coordinates[i].temp_factor);

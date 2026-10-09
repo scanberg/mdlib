@@ -55,6 +55,15 @@ UTEST(trexio, parse) {
     EXPECT_EQ(1.0, z[1]);
     EXPECT_EQ(1.0, z[2]);
 
+    // ...and nucleus_charge is published beside it as the nuclear charge. All electron here, so the two agree.
+    double q[3] = {0};
+    const md_attribute_t* qa = qm_test_attr(&t, STR_LIT("qm/atom/nuclear_charge"));
+    ASSERT_TRUE(qa != NULL);
+    ASSERT_EQ(md_attribute_extract_f64(q, 3, qa, md_attribute_slice_all(), md_unit_elementary_charge()), 3u);
+    EXPECT_EQ(8.0, q[0]);
+    EXPECT_EQ(1.0, q[1]);
+    EXPECT_EQ(1.0, q[2]);
+
     EXPECT_EQ(10.0, qm_test_scalar(&t, STR_LIT("trexio/electron_count/total"), -1.0));
     EXPECT_EQ( 5.0, qm_test_scalar(&t, STR_LIT("trexio/electron_count/up"),    -1.0));
     EXPECT_EQ( 5.0, qm_test_scalar(&t, STR_LIT("trexio/electron_count/down"),  -1.0));

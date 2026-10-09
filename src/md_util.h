@@ -19,10 +19,9 @@ typedef enum {
     MD_UTIL_INFER_INSTANCE_BIT        = 1u << 3,
     MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
     MD_UTIL_INFER_STRUCTURE_BIT       = 1u << 5,
-    //MD_UTIL_INFER_ORDER_BIT           = 0x0200,
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
-    MD_UTIL_INFER_HBOND_BIT           = 1u << 6,
 	MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT = 1u << 7,
+    MD_UTIL_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
 
     MD_UTIL_INFER_ALL                 = -1,
 } md_infer_flags_t;
@@ -56,29 +55,80 @@ bool md_util_resname_nucleotide(str_t str);
 
 void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitfield_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
-// Infers flags and sets them for residues (Amino acids, Nucleotides, Water etc)
+// Classifies the components (md_component_kind_t: amino acid, nucleotide, water, ion) from their names, atoms and
+// bonds. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
+// is either a standard residue by name or linked into a chain (a peptide or phosphodiester bond to another
+// component), is MD_COMPONENT_FLAG_RESOLVED: its atoms are given their roles (MD_ATOM_FLAG_BACKBONE, _SIDE_CHAIN,
+// ...) and its terminal groups are marked. The link keeps out the ligands which name their atoms like a residue
+// (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A component which is only named like an
+// amino acid or nucleotide gets the kind alone. Components a predefined coarse grained type already classified as
+// water or ion are left alone. Requires the bonds.
 bool md_util_system_infer_comp_flags(md_system_t* sys);
 
-bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_atom_auth_asym_id[]);
+// Replaces the entities and instances of the system with inferred ones (MD_ENTITY_FLAG_INFERRED), from the
+// classified components and the bonds (see md_instance_data_t for what an instance is). opt_comp_auth_asym_id is
+// the author chain id of each component, when the format has one (a PDB file): it is kept as the instances'
+// auth_id, a change of it always ends an instance, and a polymer chain continues over gaps while it stays the same.
+bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_comp_auth_asym_id[]);
+
+// The id of the instance with the given index when a loader generates them: A..Z, AA..ZZ, AAA.. (0 is A)
+md_label_t md_util_instance_id_from_index(size_t idx);
+
+// Classifies the entities of kind MD_ENTITY_KIND_UNKNOWN (which a topology names without saying what they are)
+// from the components of their first instance. Requires the components to be classified.
+void md_util_system_infer_entity_kinds(md_system_t* sys);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
-// Computes secondary structures from backbone atoms
-// Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
+// The per segment quantities of a protein backbone (see md_protein_backbone_data_t), computed into the caller's arrays
+// of one entry per segment (capacity at least backbone->segment.count). They do not allocate.
+
+// Secondary structure (DSSP like) from the coordinates of a frame
 bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
-// Computes backbone angles from backbone atoms
-// Does not allocate any data, assumes that backbone_angles has the same length as args->backbone.count
+// Backbone angles (phi, psi) from the coordinates of a frame
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
-// Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
+// Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
+// sys->protein_backbone. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN.
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
+
+// THE BACKBONE OF A STATE. The angles and the secondary structure depend on the coordinates, so they belong to the
+// state they were computed from and live in its attributes (md_system_state_t.attributes), one value per segment of
+// sys->protein_backbone:
+//   MD_BACKBONE_ANGLE_PATH                 F32 x 2 (phi, psi), radians
+//   MD_BACKBONE_SECONDARY_STRUCTURE_PATH   I32, md_secondary_structure_t
+// The same paths below a run (in the system's attributes) hold them for every frame of the run, with the frame as
+// the first axis, and md_system_extract_frame slices a frame of them into a state when asked for them.
+// A state carries them when its producer computed them, like the velocities of a TRR frame: a consumer handles their
+// absence.
+#define MD_BACKBONE_ANGLE_PATH                  "backbone/angle"
+#define MD_BACKBONE_SECONDARY_STRUCTURE_PATH    "backbone/secondary_structure"
+
+// The backbone of a state, NULL when it carries none or what it carries does not fit the backbone of sys
+const md_backbone_angles_t*     md_util_state_backbone_angles(const md_system_state_t* state, const struct md_system_t* sys);
+const md_secondary_structure_t* md_util_state_secondary_structure(const md_system_state_t* state, const struct md_system_t* sys);
+
+// Storage in the state to write the backbone into, created when missing (or of another size) and reused otherwise,
+// so that a producer which writes every frame does not allocate every frame. Each call marks the attribute as
+// changed (md_attributes_touch): call it when about to write. NULL for a state without an allocator (a view) or a
+// system without a protein backbone.
+md_backbone_angles_t*     md_util_state_backbone_angles_write(md_system_state_t* state, const struct md_system_t* sys);
+md_secondary_structure_t* md_util_state_secondary_structure_write(md_system_state_t* state, const struct md_system_t* sys);
+
+// Computes the backbone angles and secondary structure from the state's own coordinates and stores them in it.
+// False when the state has no coordinates, or the system no protein backbone.
+bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_system_t* sys);
 
 void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
+
+// Marks every bond between a metal and a non-metal MD_BOND_FLAG_COORDINATE, whatever its origin, and returns how many
+// it marked. md_util_system_infer does it for each system; a bond added afterwards (by hand) wants it too.
+size_t md_util_system_infer_coordination(md_system_t* sys);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
@@ -91,18 +141,8 @@ void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const md_system_sta
 // Infer rings formed by covalent bonds
 bool md_util_system_infer_rings(md_system_t* sys);
 
-void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, const struct md_system_t* sys, md_allocator_i* alloc);
-
-// Attempts to infer hydrogen bonds based on distance and angle criteria
-// The identified hydrogen bonds are stored in hbond_data
-// atom_xyz: packed atom coordinates
-// unitcell: Periodic boundary conditions, (optional, can be NULL for non-periodic systems)
-// desc: Descriptor for the hydrogen bond calculation (optional, can be NULL for default values)
-void md_util_hydrogen_bond_infer(md_hydrogen_bond_data_t* in_out_hbond_data, const vec3_t* atom_xyz,
-                                 const md_unitcell_t* unitcell, double max_dist, double min_angle);
-
 // Identify isolated structures by covalent bonds.
-// For coarse grained systems (any atom type flagged MD_FLAG_COARSE_GRAINED), beads the bonds leave disconnected are
+// For coarse grained systems (any particle a bead, md_system_is_coarse_grained), beads the bonds leave disconnected are
 // joined through the component hierarchy instead: each bead to its component's backbone (or first) bead, and those
 // anchors along consecutive polymer components. No coordinates are consulted and sys->bond is not modified.
 bool md_util_system_infer_structures(md_system_t* sys);
@@ -112,14 +152,15 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
 
 // Applies the predefined atom type tables (coarse grained beads) to atoms that already have a type,
 // for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
-// parameters of every bead). Only types without an element (z == 0) are considered. The table's
-// flags (coarse grained, backbone, side chain, amino acid) are added to the type, the atoms and their
-// component. Mass and radius are left alone: they are the loader's.
+// parameters of every bead). Only types without an element (z == 0) are considered. The table gives
+// the atoms their role (backbone, side chain), the components their kind (amino acid, water) where
+// they have none, and the types their particle kind where the loader did not say. Mass and radius
+// are left alone: they are the loader's.
 void md_util_system_augment_atom_types(md_system_t* sys);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 // Infers the derivable parts of a system (covalent bonds, rings, structures, backbones, hydrogen
-// bonds) from the supplied state, and records that state as sys->reference.
+// bond roles) from the supplied state, and records that state as sys->reference.
 //
 // The state is an explicit parameter rather than read off the system so that the recorded
 // reference is by construction the input which produced the topology. Requires coordinates for
@@ -137,6 +178,19 @@ bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* stat
 // cell:      Periodic boundary cell
 void md_util_distance_array(float* out_dist_arr, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
+// The minimum (maximum) distance between each group of points of a and the points of b, under the minimum image
+// convention of cell (NULL, or a cell without periodic axes: plain euclidean). The minimum image is exact in triclinic
+// cells too, also where distances reach past half the cell (see MINIMUM AND MAXIMUM DISTANCE BETWEEN SETS in md_util.c).
+// Group g is coord_a[a_offsets[g] .. a_offsets[g + 1]), a_offsets holds num_groups + 1 entries.
+// out_dist:   The distance per group, 0 for an empty group or an empty b
+// out_idx_a:  (optional) Per group, the index into coord_a of the nearest (farthest) pair, -1 where there is none
+// out_idx_b:  (optional) Per group, the index into coord_b of the pair, -1 where there is none
+// Each group starts from the pair of the one before, so groups which follow each other in space are cheaper.
+void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+
+// The same for a single group. The minimum is FLT_MAX and the maximum 0 when a or b is empty, and the indices are then
+// left unwritten (for the maximum also when it is 0).
 float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
@@ -282,45 +336,6 @@ void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count);
 // Sort array of uint32_t by producing a remapping array of source indices
 // The source_indices represents the indices of the sorted array, i.e. source_indices[0] is the index of the smallest element in data
 void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* key, size_t count);
-
-// Structure matching operations
-// In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.
-// This is due to the symmetry of extremities found in molecules.
-
-typedef enum {
-    MD_UTIL_MATCH_LEVEL_STRUCTURE = 0,  // Match within complete structures
-    MD_UTIL_MATCH_LEVEL_COMPONENT,      // Match within components
-    MD_UTIL_MATCH_LEVEL_INSTANCE,       // Match within assymetric instances
-} md_util_match_level_t;
-
-typedef enum {
-    MD_UTIL_MATCH_MODE_UNIQUE = 0,      // Store only unique matches
-    MD_UTIL_MATCH_MODE_FIRST,           // Store the first match
-    MD_UTIL_MATCH_MODE_ALL,		        // Store all matches
-} md_util_match_mode_t;
-
-typedef enum {
-    MD_UTIL_MATCH_FLAGS_NO_H  = 1,              // Disregard hydrogen
-    MD_UTIL_MATCH_FLAGS_NO_CH = 2,              // Disregard hydrogen connected to carbon
-    MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT = 4,  // Enforce a strict edge count for each matched atom pair
-    MD_UTIL_MATCH_FLAGS_STRICT_EDGE_TYPE  = 8,  // Enforce a matching edge type between matches
-} md_util_match_flags_t;
-
-// Performs complete structure matching within the given topology (mol) using a supplied reference structure.
-md_index_data_t md_util_match_by_type   (const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_system_t* sys, md_allocator_i* alloc);
-md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_system_t* sys, md_allocator_i* alloc);
-
-// Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
-// The matcing results are stored into supplied idx_data
-// The returned value is the number of matches found
-size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_system_t* sys, md_allocator_i* alloc);
-
-// Computes the maximum common subgraph between two structures
-// The indices which maps from the source structure to the target structure is written to dst_idx_map
-// The returned value is the number of common atoms
-// It is assumed that the dst_idx_map has the same length as src_count
-size_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_system_t* sys, md_allocator_i* alloc);
-size_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_system_t* sys, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

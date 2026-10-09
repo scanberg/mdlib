@@ -116,12 +116,7 @@ static bool parse_i64(int64_t* out, str_t tok) {
     return true;
 }
 
-// parse_float does not take a leading '+', which is_float accepts and topologies do write
 static float parse_f32(str_t tok) {
-    if (tok.len > 1 && tok.ptr[0] == '+') {
-        tok.ptr += 1;
-        tok.len -= 1;
-    }
     return (float)parse_float(tok);
 }
 
@@ -751,8 +746,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     }
 
     // ## Bonds
-    // Laid out as [kept] [kept topology] [new topology] [user defined]. Re-inference keeps every bond without
-    // MD_BOND_FLAG_INFERRED wherever it sits, so the order is for readability, not a contract.
+    // Laid out as [kept] [kept topology] [new topology] [user defined]. Re-inference keeps every bond which was not
+    // inferred wherever it sits, so the order is for readability, not a contract.
     {
         const size_t old_count = sys->bond.count;
         const size_t cap = old_count + num_topology_bonds;
@@ -763,13 +758,13 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         for (int pass = 0; pass < 2; ++pass) {
             for (size_t i = 0; i < old_count; ++i) {
                 const md_atom_pair_t  pair = sys->bond.pairs[i];
-                const md_bond_flags_t f    = sys->bond.flags[i];
-                if (f & MD_BOND_FLAG_USER_DEFINED) continue;
-                if (((f & MD_BOND_FLAG_TOPOLOGY) != 0) != (pass == 1)) continue;
+                const md_bond_origin_t origin = md_bond_origin(sys->bond.flags[i]);
+                if (origin == MD_BOND_ORIGIN_USER) continue;
+                if ((origin == MD_BOND_ORIGIN_TOPOLOGY) != (pass == 1)) continue;
                 const bool valid = pair.idx[0] >= 0 && pair.idx[1] >= 0 && (size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count;
                 if (valid && covered[pair.idx[0]] && covered[pair.idx[1]]) continue;  // Replaced by the topology
                 pairs[count] = pair;
-                flags[count] = f;
+                flags[count] = sys->bond.flags[i];
                 count += 1;
             }
         }
@@ -780,19 +775,19 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             for (size_t b = 0; b < md_array_size(mol->bonds); ++b) {
                 pairs[count].idx[0] = off + mol->bonds[b].idx[0];
                 pairs[count].idx[1] = off + mol->bonds[b].idx[1];
-                flags[count] = MD_BOND_FLAG_COVALENT | MD_BOND_FLAG_TOPOLOGY;
+                flags[count] = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
                 count += 1;
             }
         }
 
         size_t num_user = 0;
         for (size_t i = 0; i < old_count; ++i) {
-            if (sys->bond.flags[i] & MD_BOND_FLAG_USER_DEFINED) num_user += 1;
+            if (md_bond_origin(sys->bond.flags[i]) == MD_BOND_ORIGIN_USER) num_user += 1;
         }
         md_atom_pair_t*  user_pairs = md_temp_alloc_array(temp, md_atom_pair_t,  num_user + 1);
         md_bond_flags_t* user_flags = md_temp_alloc_array(temp, md_bond_flags_t, num_user + 1);
         for (size_t i = 0, u = 0; i < old_count; ++i) {
-            if (sys->bond.flags[i] & MD_BOND_FLAG_USER_DEFINED) {
+            if (md_bond_origin(sys->bond.flags[i]) == MD_BOND_ORIGIN_USER) {
                 user_pairs[u] = sys->bond.pairs[i];
                 user_flags[u] = sys->bond.flags[i];
                 u += 1;
@@ -812,6 +807,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         }
         sys->bond.count = count + num_user;
         md_bond_build_connectivity(&sys->bond, atom_count, sys->alloc);
+        md_util_system_infer_coordination(sys);
+        md_system_topology_changed(sys);
     }
 
     // ## Charge and mass

@@ -4,7 +4,7 @@ project(md_unittest VERSION 0.1 LANGUAGES C)
 
 add_executable(md_unittest unittest.c)
 
-target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" UTEST_USE_OLD_QPC ${MD_DEFINES})
+target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" MD_UNITTEST_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\" UTEST_USE_OLD_QPC ${MD_DEFINES})
 target_compile_options(md_unittest PRIVATE ${MD_FLAGS_EXT} ${MD_FLAGS_AVX} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(md_unittest PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_unittest PRIVATE mdlib ${MD_LIBS})
@@ -17,7 +17,11 @@ set (SRC_FILES
     test_grid.c
     test_bitfield.c
     test_bitset.c
+    test_bonds.c
+    test_chem.c
     test_contact.c
+    test_hbond.c
+    test_water.c
     test_nonbonded.c
     test_infer_atomic_number.c
     test_str.c
@@ -38,6 +42,7 @@ set (SRC_FILES
     test_tpr.c
     test_trr.c
     test_mmcif.c
+    test_match.c
     test_util.c
     test_unit.c
     test_script.c
@@ -47,7 +52,10 @@ set (SRC_FILES
     test_base64.c
     test_xtc.c
     test_xyz.c
+    test_ase_traj.c
     test_pot.c
+    test_parse.c
+    test_json.c
     test_vector_graphics.c
     test_flow.c
     test_gisaxs.c
@@ -57,6 +65,7 @@ set (SRC_FILES
     test_system_invariants.c
     test_run_cache.c
     test_molden.c
+    test_gto_int.c
 )
 
 if (MD_ENABLE_HDF5)

@@ -19,6 +19,26 @@ struct md_system_state_t;
 //
 //   ATOMS AND STATE      the system's own atom list and coordinates (md_system_t / md_system_state_t)
 //
+//   EMBEDDING            a polarizable embedding run keeps the potential it ran with in the file:
+//                        potfile_text, which current VeloxChem fills with PyFraME's JSON (converted
+//                        from the .pot the run was given, when it was given one). Its sites are
+//                        APPENDED to the system's atoms, after the QM atoms: QM atom i is still system
+//                        atom i. Each fragment becomes a component named for its residue (VeloxChem's
+//                        _pe/_npe tag dropped) and numbered by its fragment number - which is its
+//                        position, the JSON keeps no residue numbers - and the QM atoms one component
+//                        "QM". The JSON keeps no atom names either, so a site is named for its element;
+//                        an 'X' site is a virtual site. A potential that is not PyFraME JSON (a CPPE
+//                        era run), or not one VeloxChem could have written, leaves the environment out
+//                        with a log line - the load itself does not fail. A supplemental load never adds
+//                        it: that system's atoms are not this reader's
+//
+//   atom/charge                                              {N} over the SYSTEM's atoms, when the
+//   atom/polarizability                                      embedding was added: each site's charge
+//                                                            (e) and isotropic polarizability (bohr^3,
+//                                                            a third of the trace); zero
+//                                                            polarizability is a non polarizable site.
+//                                                            NAN for the QM atoms, which are no sites
+//
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}
 //   vlx/basis_set, vlx/dft_functional, vlx/potfile           rank 1 {1} strings
@@ -56,9 +76,14 @@ struct md_system_state_t;
 //   vlx/opt/{energy,coordinate}                              {P} per optimisation step;
 //                                                            vlx/opt/state_index and
 //                                                            vlx/opt/irc_ts_index are rank 0
-//   vlx/density_property/<dataset name>                      {A,A} density properties as the file
-//                                                            carried them
-//   atom/<dataset name>                                      per atom properties from the file
+//   vlx/density_property/<dataset name>                      {A(A+1)/2} f32, PACKED_SYMMETRIC: the
+//                                                            upper triangle of each density property
+//                                                            the file carries, Cartesian. Virtual:
+//                                                            read from the file on every extract, so
+//                                                            the file has to stay where it was
+//   atom/<dataset name>                                      per atom properties from the file; NAN
+//                                                            for the embedding's sites when they are
+//                                                            atoms of the system
 //   orbital/{alpha,beta}/coefficient                         {M,A} MO coefficients, Cartesian AO
 //                                                            order - see the AO CONVENTION block in
 //                                                            md_gto.h

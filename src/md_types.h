@@ -30,69 +30,258 @@ enum {
     MD_RAMACHANDRAN_TYPE_PREPROL,
 };
 
-// These flags are not specific to any distinct subtype, but can appear in both atoms, residues and whatnot.
-// Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
+// CLASSIFICATION
+//
+// What a part of a system is, is stored at the level of the hierarchy it describes, and only there:
+//
+//   atom type  md_atom_type_flags_t  what the particle is: an atom, a coarse grained bead or a virtual site
+//   atom       md_atom_flags_t       the atom's role in its component (backbone, side chain, ...) and its chemistry
+//   component  md_component_flags_t  what the component is (amino acid, nucleotide, water, ion), and where in its chain
+//   entity     md_entity_flags_t     what the molecule is (peptide, DNA, water, ...)
+//
+// Instances have no flags of their own: an instance is one occurrence of its entity (md_system_instance_entity_kind).
+// Nothing is copied from one level to another. A property of an atom's type or of its component is read through the
+// type or the component (md_atom_particle_kind, md_system_atom_component_kind), so there is one copy and it cannot go
+// stale when the type or the component is reclassified.
+//
+// Options which exclude each other are a VALUE, packed into a few bits and read and written through the accessors
+// below (md_component_flags_kind, md_component_flags_set_kind, ...). Independent properties are single bits. No
+// meaning is carried by a combination of bits.
+
+// ### ATOM TYPE ###
+
+// What a particle is. A property of its type: every particle of a type is the same kind of particle.
+typedef enum md_particle_kind_t {
+    MD_PARTICLE_ATOM         = 0,   // An atom. Its element is the type's atomic number, 0 when it is not known.
+    MD_PARTICLE_BEAD         = 1,   // A coarse grained bead which stands for a group of atoms. A system with beads is
+                                    // coarse grained (md_system_is_coarse_grained): bonds and hydrogen bonds are not
+                                    // inferred from the geometry, as atomic radii do not apply.
+    MD_PARTICLE_VIRTUAL_SITE = 2,   // A massless interaction site without an element: the M site of 4 site water models
+                                    // (TIP4P, OPC), the lone pairs of 5 site models (TIP5P). It belongs to its molecule
+                                    // but forms no bonds.
+} md_particle_kind_t;
+
 typedef enum {
-    MD_FLAG_NONE                = 0,
-    MD_FLAG_COARSE_GRAINED      = 0x1,      // Coarse grained representation
+    MD_ATOM_TYPE_FLAG_NONE                  = 0,
+    MD_ATOM_TYPE_FLAG_PARTICLE_KIND_MASK    = 0x3,      // md_particle_kind_t, see md_atom_type_flags_particle_kind
+} md_atom_type_flags_t;
 
-    MD_FLAG_POLYMER             = 0x2,      // Flag for connected polymers
-    MD_FLAG_BACKBONE            = 0x4,      // Backbone atoms
-    MD_FLAG_DERIVED             = 0x8,      // Not defined by the source but derived when loading, e.g. entities (and thereby instances) from md_util_system_infer_entity_and_instance
-    MD_FLAG_TERMINAL_BEG        = 0x10,     // Terminal atoms (N and C terminus in proteins, 5' and 3' in nucleic acids)
-    MD_FLAG_TERMINAL_END        = 0x20,     // Terminal atoms (N and C terminus in proteins, 5' and 3' in nucleic acids)
+ENUM_FLAGS(md_atom_type_flags_t)
 
-    // Proteins, Nucleic acids and their components
-    MD_FLAG_POLYPEPTIDE         = 0x100,    // Top level for connected polypeptide chains (i.e. proteins)
-    MD_FLAG_AMINO_ACID		    = 0x200,    // For expressing an amino acid monomer in the polypeptide chain
-    MD_FLAG_SIDE_CHAIN          = 0x400,    // Amino acid side chain atoms
+// ### ATOM ###
 
-    MD_FLAG_NUCLEIC_ACID        = 0x800,    // Top level for connected nucleic acid chains (i.e. DNA, RNA)
-    MD_FLAG_NUCLEOTIDE          = 0x1000,   // For expressing a nucleotide monomer in the nucleic acid chain
-    MD_FLAG_NUCLEOSIDE          = 0x2000,   // Nucleoside component of a nucleotide
-    MD_FLAG_NUCLEOBASE          = 0x4000,   // Nucleobase component of a nucleotide
+// Hybridization of a heavy atom, see md_chem.h. SP2 includes the N and O whose lone pair takes part in a pi system
+// (amide and aniline N, pyrrole N, furan O).
+typedef enum md_hybridization_t {
+    MD_HYBRIDIZATION_UNKNOWN = 0,   // Not perceived, or not applicable (hydrogens, metals)
+    MD_HYBRIDIZATION_SP      = 1,
+    MD_HYBRIDIZATION_SP2     = 2,
+    MD_HYBRIDIZATION_SP3     = 3,
+} md_hybridization_t;
 
-    // HETERO types
-    MD_FLAG_HETERO              = 0x10000,
-    MD_FLAG_WATER			    = 0x20000,
-    MD_FLAG_ION			        = 0x40000,
-
-    // Chirality
-    MD_FLAG_ISOMER_L            = 0x100000,
-    MD_FLAG_ISOMER_D            = 0x200000,
-
-    // Experimental
-    MD_FLAG_SP                  = 0x1000000,
-    MD_FLAG_SP2                 = 0x2000000,
-    MD_FLAG_SP3                 = 0x4000000,
-    MD_FLAG_AROMATIC            = 0x8000000,
-
-//    MD_FLAG_HBOND_DONOR         = 0x1000000,
-//    MD_FLAG_HBOND_ACCEPTOR      = 0x2000000,
-} md_flags_t;
-
-ENUM_FLAGS(md_flags_t)
-
-// Bond flags. The low byte describes the bond chemically (order, aromatic, coordinate, metal); the bits above it
-// record where the bond came from. Only the low byte is part of a bond's identity when comparing structures.
 typedef enum {
-	MD_BOND_FLAG_NONE           = 0,
-    MD_BOND_FLAG_COVALENT       = 0x1,
-    MD_BOND_FLAG_DOUBLE         = 0x2,
-    MD_BOND_FLAG_TRIPLE         = 0x4,
-    MD_BOND_FLAG_QUADRUPLE      = 0x8,
-    MD_BOND_FLAG_AROMATIC       = 0x10,
-    MD_BOND_FLAG_COORDINATE     = 0x20, // Coordinate / Dative
-    MD_BOND_FLAG_METAL          = 0x40, // Involves a metal atom
+    MD_ATOM_FLAG_NONE                   = 0,
 
-    MD_BOND_FLAG_INFERRED       = 0x100, // Inferred from the structure, not explicitly defined in the topology
-	MD_BOND_FLAG_USER_DEFINED   = 0x200, // User defined bond
-    MD_BOND_FLAG_TOPOLOGY       = 0x400, // Defined by a force field topology, not inferred
+    // The atom's role in its component, set when the component is classified (md_util_system_infer_comp_flags) and
+    // for the beads of the predefined coarse grained types. Only the components whose backbone was verified
+    // (MD_COMPONENT_FLAG_RESOLVED) have their atoms given a role.
+    MD_ATOM_FLAG_BACKBONE               = 0x1,      // N, CA, C of an amino acid; P, O5', C5', C4', C3', O3' of a nucleotide
+    MD_ATOM_FLAG_SIDE_CHAIN             = 0x2,      // Amino acid side chain, from CB outwards
+    MD_ATOM_FLAG_NUCLEOSIDE             = 0x4,      // Sugar and base of a nucleotide
+    MD_ATOM_FLAG_NUCLEOBASE             = 0x8,      // Base of a nucleotide
+    MD_ATOM_FLAG_TERMINAL_BEG           = 0x10,     // In the terminal group which begins a chain (N-terminus, 5' end)
+    MD_ATOM_FLAG_TERMINAL_END           = 0x20,     // In the terminal group which ends a chain (C-terminus, 3' end)
 
-    MD_BOND_FLAG_ORIGIN_MASK    = MD_BOND_FLAG_INFERRED | MD_BOND_FLAG_USER_DEFINED | MD_BOND_FLAG_TOPOLOGY,
+    // Chemistry, see md_chem.h (md_chem_perceive)
+    MD_ATOM_FLAG_HYBRIDIZATION_MASK     = 0x300,    // md_hybridization_t, see md_atom_flags_hybridization
+    MD_ATOM_FLAG_AROMATIC               = 0x400,    // In an aromatic ring
+
+    // Treated quantum mechanically: an atom of the QM calculation the system was loaded from, set by its loader.
+    // A system from a QM calculation alone is QM throughout; one with an embedding or a QM/MM partition has its
+    // QM region flagged, and the atoms without the flag are its environment. Nothing infers it: a system no
+    // loader said it of has no QM region. Selected in scripts by 'qm' and 'environment'.
+    MD_ATOM_FLAG_QM                     = 0x800,
+
+    // Hydrogen bond roles are not flags: they depend on the hydrogen bond model and its options, and a donor is a
+    // D-H pair rather than an atom. See md_hbond_perceive_roles and md_hbond_query_t.
+} md_atom_flags_t;
+
+ENUM_FLAGS(md_atom_flags_t)
+
+// ### COMPONENT ###
+
+// What a component (residue) is, see md_util_system_infer_comp_flags.
+typedef enum md_component_kind_t {
+    MD_COMPONENT_KIND_OTHER         = 0,    // Unclassified, or none of the below: a ligand, a lipid, a sugar, ...
+    MD_COMPONENT_KIND_AMINO_ACID    = 1,
+    MD_COMPONENT_KIND_NUCLEOTIDE    = 2,
+    MD_COMPONENT_KIND_WATER         = 3,
+    MD_COMPONENT_KIND_ION           = 4,    // A monatomic ion
+} md_component_kind_t;
+
+typedef enum {
+    MD_COMPONENT_FLAG_NONE              = 0,
+    MD_COMPONENT_FLAG_KIND_MASK         = 0x7,      // md_component_kind_t, see md_component_flags_kind
+
+    // The backbone of the amino acid or nucleotide was found by atom names and verified by its bonds, and its atoms
+    // were given their roles (MD_ATOM_FLAG_BACKBONE, ...). Without it the component is one by name only: an unusual
+    // naming scheme, missing atoms, or a coarse grained model.
+    MD_COMPONENT_FLAG_RESOLVED          = 0x10,
+    MD_COMPONENT_FLAG_TERMINAL_BEG      = 0x20,     // Begins its chain: a free amino group (N-terminus), a free 5' end
+    MD_COMPONENT_FLAG_TERMINAL_END      = 0x40,     // Ends its chain: a free carboxyl group (C-terminus), a free 3' end
+} md_component_flags_t;
+
+ENUM_FLAGS(md_component_flags_t)
+
+// ### ENTITY ###
+
+// What a molecule is. An entity is a molecule type (or a polymer sequence), each of its instances one molecule or one
+// polymer chain of that type.
+typedef enum md_entity_kind_t {
+    MD_ENTITY_KIND_UNKNOWN      = 0,    // Not classified yet: a topology names its molecule types but does not say what
+                                        // they are. md_util_system_infer classifies these from their components.
+    MD_ENTITY_KIND_NON_POLYMER  = 1,    // A small molecule: a ligand, an ion, a lipid, a single residue
+    MD_ENTITY_KIND_WATER        = 2,
+    MD_ENTITY_KIND_BRANCHED     = 3,    // A branched oligosaccharide (mmCIF 'branched')
+    // Polymers from here on, see md_entity_kind_is_polymer
+    MD_ENTITY_KIND_PEPTIDE      = 4,    // A polypeptide chain (protein)
+    MD_ENTITY_KIND_DNA          = 5,
+    MD_ENTITY_KIND_RNA          = 6,
+    MD_ENTITY_KIND_NUCLEIC      = 7,    // A nucleic acid which is both (a DNA/RNA hybrid), or which could not be told apart
+    MD_ENTITY_KIND_POLYMER      = 8,    // Any other polymer
+} md_entity_kind_t;
+
+typedef enum {
+    MD_ENTITY_FLAG_NONE         = 0,
+    MD_ENTITY_FLAG_KIND_MASK    = 0xF,      // md_entity_kind_t, see md_entity_flags_kind
+
+    // Not given by the source: the entity was inferred together with its instances (md_util_system_infer_entity_and_instance)
+    MD_ENTITY_FLAG_INFERRED     = 0x10,
+} md_entity_flags_t;
+
+ENUM_FLAGS(md_entity_flags_t)
+
+static inline bool md_entity_kind_is_polymer(md_entity_kind_t kind) {
+    return kind >= MD_ENTITY_KIND_PEPTIDE;
+}
+
+static inline bool md_entity_kind_is_nucleic_acid(md_entity_kind_t kind) {
+    return kind == MD_ENTITY_KIND_DNA || kind == MD_ENTITY_KIND_RNA || kind == MD_ENTITY_KIND_NUCLEIC;
+}
+
+// ### ACCESSORS for the packed values ###
+
+static inline md_particle_kind_t md_atom_type_flags_particle_kind(md_atom_type_flags_t flags) {
+    return (md_particle_kind_t)((unsigned int)flags & (unsigned int)MD_ATOM_TYPE_FLAG_PARTICLE_KIND_MASK);
+}
+
+static inline md_atom_type_flags_t md_atom_type_flags_set_particle_kind(md_atom_type_flags_t flags, md_particle_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_ATOM_TYPE_FLAG_PARTICLE_KIND_MASK;
+    return (md_atom_type_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+}
+
+#define MD_ATOM_HYBRIDIZATION_SHIFT 8
+
+static inline md_hybridization_t md_atom_flags_hybridization(md_atom_flags_t flags) {
+    return (md_hybridization_t)(((unsigned int)flags & (unsigned int)MD_ATOM_FLAG_HYBRIDIZATION_MASK) >> MD_ATOM_HYBRIDIZATION_SHIFT);
+}
+
+static inline md_atom_flags_t md_atom_flags_set_hybridization(md_atom_flags_t flags, md_hybridization_t hyb) {
+    const unsigned int mask = (unsigned int)MD_ATOM_FLAG_HYBRIDIZATION_MASK;
+    return (md_atom_flags_t)(((unsigned int)flags & ~mask) | (((unsigned int)hyb << MD_ATOM_HYBRIDIZATION_SHIFT) & mask));
+}
+
+static inline md_component_kind_t md_component_flags_kind(md_component_flags_t flags) {
+    return (md_component_kind_t)((unsigned int)flags & (unsigned int)MD_COMPONENT_FLAG_KIND_MASK);
+}
+
+static inline md_component_flags_t md_component_flags_set_kind(md_component_flags_t flags, md_component_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_COMPONENT_FLAG_KIND_MASK;
+    return (md_component_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+}
+
+static inline md_entity_kind_t md_entity_flags_kind(md_entity_flags_t flags) {
+    return (md_entity_kind_t)((unsigned int)flags & (unsigned int)MD_ENTITY_FLAG_KIND_MASK);
+}
+
+static inline md_entity_flags_t md_entity_flags_set_kind(md_entity_flags_t flags, md_entity_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_ENTITY_FLAG_KIND_MASK;
+    return (md_entity_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+}
+
+
+// Bond flags, on two axes: the low byte describes the bond chemically, the bits above it where the bond and its order
+// came from. Only the low byte is part of a bond's identity when comparing structures. Each field is either one bit or
+// one value, so every combination describes a case (AROMATIC with DELOCALIZED aside, which never occur together).
+//
+// CHEMISTRY
+//   ORDER        A value in bits 0-2, not a set of bits: read it with md_bond_order and write it with
+//                md_bond_flags_set_order. 0 is unknown (not perceived, and not given by the file), which is not the
+//                same as single.
+//   AROMATIC     In an aromatic ring.
+//   DELOCALIZED  Resonance outside of rings: carboxylate, guanidinium, nitro, phosphate, ... AROMATIC and DELOCALIZED
+//                come on top of an order which holds one Kekule structure: a benzene bond is AROMATIC with order 1 or
+//                2, the two C-O of a carboxylate are DELOCALIZED with orders 2 and 1.
+//   COORDINATE   A coordination (dative) bond, which counts towards the valence of neither atom: every bond between a
+//                metal and a non-metal, whatever its origin (md_util_system_infer_coordination), and any other bond a
+//                file says is one. A bond without it is covalent, or metallic between two metals: whether a bond
+//                involves a metal is a question for the elements of its atoms.
+//
+// PROVENANCE
+//   ORIGIN           A value in bits 8-9 (md_bond_origin_t): read it with md_bond_origin and write it with
+//                    md_bond_flags_set_origin.
+//   ORDER_PERCEIVED  The order, AROMATIC and DELOCALIZED were perceived (md_chem_perceive), not given. A known order
+//                    without it was given, by the file or by hand, and stays as it is when the chemistry is perceived
+//                    again; one with it is perceived anew.
+typedef enum {
+    MD_BOND_FLAG_NONE            = 0,
+    MD_BOND_FLAG_ORDER_MASK      = 0x7,     // See md_bond_order
+    MD_BOND_FLAG_AROMATIC        = 0x8,     // In an aromatic ring
+    MD_BOND_FLAG_DELOCALIZED     = 0x10,    // Resonance outside of rings
+    MD_BOND_FLAG_COORDINATE      = 0x20,    // Coordination (dative), always between a metal and a non-metal
+
+    MD_BOND_FLAG_ORIGIN_MASK     = 0x300,   // See md_bond_origin
+    MD_BOND_FLAG_ORDER_PERCEIVED = 0x400,   // The order (and AROMATIC, DELOCALIZED) was perceived, not given
 } md_bond_flags_t;
 
 ENUM_FLAGS(md_bond_flags_t)
+
+enum {
+    MD_BOND_ORDER_UNKNOWN   = 0,
+    MD_BOND_ORDER_SINGLE    = 1,
+    MD_BOND_ORDER_DOUBLE    = 2,
+    MD_BOND_ORDER_TRIPLE    = 3,
+    MD_BOND_ORDER_QUADRUPLE = 4,
+};
+
+// Where a bond came from. FILE is 0, so a bond added without saying where it came from counts as given.
+typedef enum md_bond_origin_t {
+    MD_BOND_ORIGIN_FILE     = 0,    // Given by the file, for some of its atoms (CONECT records, a component's bonds)
+    MD_BOND_ORIGIN_TOPOLOGY = 1,    // A force field topology: all of the bonds of the atoms it covers
+    MD_BOND_ORIGIN_USER     = 2,    // Added by hand
+    MD_BOND_ORIGIN_INFERRED = 3,    // Inferred from the geometry, and replaced when inferred again
+} md_bond_origin_t;
+
+#define MD_BOND_ORDER_SHIFT  0
+#define MD_BOND_ORIGIN_SHIFT 8
+
+static inline int md_bond_order(md_bond_flags_t flags) {
+    return (int)((flags & MD_BOND_FLAG_ORDER_MASK) >> MD_BOND_ORDER_SHIFT);
+}
+
+static inline md_bond_flags_t md_bond_flags_set_order(md_bond_flags_t flags, int order) {
+    const unsigned int value = (order < 0 ? 0u : (order > 4 ? 4u : (unsigned int)order)) << MD_BOND_ORDER_SHIFT;
+    return (md_bond_flags_t)(((unsigned int)flags & ~(unsigned int)MD_BOND_FLAG_ORDER_MASK) | value);
+}
+
+static inline md_bond_origin_t md_bond_origin(md_bond_flags_t flags) {
+    return (md_bond_origin_t)(((unsigned int)flags & (unsigned int)MD_BOND_FLAG_ORIGIN_MASK) >> MD_BOND_ORIGIN_SHIFT);
+}
+
+static inline md_bond_flags_t md_bond_flags_set_origin(md_bond_flags_t flags, md_bond_origin_t origin) {
+    const unsigned int value = ((unsigned int)origin << MD_BOND_ORIGIN_SHIFT) & (unsigned int)MD_BOND_FLAG_ORIGIN_MASK;
+    return (md_bond_flags_t)(((unsigned int)flags & ~(unsigned int)MD_BOND_FLAG_ORIGIN_MASK) | value);
+}
 
 // Atomic number constants for all elements (Z values)
 enum {
@@ -313,6 +502,14 @@ typedef struct md_index_data_t {
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Names of the kinds for printing ("atom", "amino acid", "peptide", ...), "" for a value out of range
+const char* md_particle_kind_name(md_particle_kind_t kind);
+const char* md_component_kind_name(md_component_kind_t kind);
+const char* md_entity_kind_name(md_entity_kind_t kind);
+const char* md_secondary_structure_name(md_secondary_structure_t ss);
+const char* md_hybridization_name(md_hybridization_t hyb);
+const char* md_bond_origin_name(md_bond_origin_t origin);
 
 // Element property functions
 str_t md_atomic_number_name(md_atomic_number_t z);

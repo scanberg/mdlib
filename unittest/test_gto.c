@@ -11,6 +11,7 @@
 #include <md_gto.h>
 
 #include <float.h>
+#include <math.h>
 
 // Conversion from Ångström to Bohr
 #define BLK_DIM 8
@@ -565,6 +566,294 @@ UTEST(gto, h2o_lumo_gpu) {
 }
 
 
+
+// Every density algorithm against the reference kernel, on the water SCF density.
+// Bit test rather than isfinite(): the tests are built with -ffast-math / fp:fast,
+// where isfinite() may be folded to true and comparisons with NaN never fail.
+static bool gto_test_is_finite(float x) {
+    uint32_t u;
+    MEMCPY(&u, &x, sizeof(u));
+    return (u & 0x7F800000u) != 0x7F800000u;
+}
+
+// Fills `tex` with NaN, so that voxels a kernel failed to write cannot pass as
+// correct values left over from an earlier launch.
+static void gto_test_poison(md_gpu_stream_t stream, md_gpu_texture_t tex, float* host_nan, size_t num_vox) {
+    const uint32_t qnan = 0x7FC00000u;
+    for (size_t v = 0; v < num_vox; ++v) MEMCPY(&host_nan[v], &qnan, sizeof(qnan));
+    md_gpu_upload_texture(stream, tex, NULL, host_nan, sizeof(float) * num_vox);
+}
+
+// max |a - ref| / ref_max, or DBL_MAX if any value of `a` is not finite.
+static double gto_test_rel_diff(const float* a, const float* ref, size_t n, double ref_max) {
+    double max_diff = 0.0;
+    for (size_t v = 0; v < n; ++v) {
+        if (!gto_test_is_finite(a[v])) return DBL_MAX;
+        max_diff = MAX(max_diff, fabs((double)a[v] - (double)ref[v]));
+    }
+    return max_diff / ref_max;
+}
+
+UTEST(gto, density_gpu_algorithms_agree) {
+    md_gpu_device_t device = md_gpu_device_create(NULL);
+    if (!device) {
+        UTEST_SKIP(gto_test_no_device_reason());
+    }
+    md_gpu_stream_t stream = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
+    md_temp_scope_t temp = md_temp_begin();
+
+    vlx_test_t t = {0};
+    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
+    const size_t num_atoms = t.sys.atom.count;
+    float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
+    ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
+    md_gto_basis_t basis = {0};
+    ASSERT_TRUE(qm_test_basis(&basis, &t));
+    const size_t num_ao = md_gto_basis_num_ao(&basis);
+
+    size_t dim = 0;
+    double* D = qm_test_matrix(&t, STR_LIT("orbital/total/density"), &dim);
+    if (!D) D = qm_test_matrix(&t, STR_LIT("orbital/alpha/density"), &dim);
+    ASSERT_TRUE(D != NULL);
+    ASSERT_EQ(dim, num_ao);
+
+    md_gto_gpu_initialize(device);
+    md_gto_gpu_basis_t gb = md_gto_gpu_basis_create(stream, &(md_gto_gpu_basis_desc_t){ .basis = &basis, .cutoff = 1.0e-6 });
+    ASSERT_TRUE(gb != NULL);
+    md_gpu_addr_t atoms = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
+    md_gpu_addr_t coeff = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_density(num_ao)).gpu;
+    {
+        float* p = (float*)md_gpu_upload_begin(stream, atoms, md_gto_gpu_atom_buffer_size(num_atoms));
+        md_gto_gpu_atom_pack(p, atom_xyz, 0, num_atoms);
+        md_gpu_upload_end(stream);
+        p = (float*)md_gpu_upload_begin(stream, coeff, md_gto_gpu_coeff_size_density(num_ao));
+        md_gto_gpu_coeff_pack_density(p, D, num_ao);
+        md_gpu_upload_end(stream);
+    }
+
+    // A grid that is not a multiple of 8 on any axis, around the molecule.
+    const int gd[3] = { 37, 29, 34 };
+    const float h = 0.3f;
+    md_grid_t grid = {
+        .orientation = mat3_ident(),
+        .origin  = vec3_set(-5.5f, -4.3f, -5.0f),
+        .spacing = vec3_set(h, h, h),
+        .dim     = { gd[0], gd[1], gd[2] },
+    };
+    const size_t num_vox = (size_t)gd[0] * gd[1] * gd[2];
+    md_gpu_texture_t tex = md_gpu_texture_create(stream, &(md_gpu_texture_desc_t){
+        .type = MD_GPU_TEX_3D, .format = MD_GPU_FORMAT_R32_FLOAT, .usage = MD_GPU_TEX_STORAGE,
+        .width = (uint32_t)gd[0], .height = (uint32_t)gd[1], .depth_or_layers = (uint32_t)gd[2],
+    });
+    md_gpu_mem_t rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * num_vox);
+    ASSERT_TRUE(tex && rb.cpu);
+
+    float* ref = (float*)md_temp_alloc_array(temp, float, num_vox);
+    float* nan_buf = (float*)md_temp_alloc_array(temp, float, num_vox);
+    double ref_max = 0.0;
+    for (int algo = MD_GTO_GPU_DENSITY_ALGO_REFERENCE; algo < MD_GTO_GPU_DENSITY_ALGO_COUNT; ++algo) {
+        md_gto_gpu_density_desc_t desc = {
+            .basis = gb, .atom_xyz = atoms, .coeff = coeff, .out_tex = tex, .grid = &grid,
+            .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = (md_gto_gpu_density_algo_t)algo,
+            .scratch_bytes = 256 * 1024,   // force several GEMM batches
+        };
+        gto_test_poison(stream, tex, nan_buf, num_vox);
+        md_gto_gpu_density_launch(stream, &desc);
+        md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
+        md_gpu_stream_sync(stream);
+        const float* g = (const float*)rb.cpu;
+        if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
+            MEMCPY(ref, g, sizeof(float) * num_vox);
+            for (size_t v = 0; v < num_vox; ++v) {
+                ASSERT_TRUE(gto_test_is_finite(ref[v]));
+                ref_max = MAX(ref_max, fabs(ref[v]));
+            }
+            EXPECT_GT(ref_max, 1.0);
+            continue;
+        }
+        const double rel = gto_test_rel_diff(g, ref, num_vox, ref_max);
+        printf("density algorithm %d: max |diff| / max |rho| = %.3e\n", algo, rel);
+        EXPECT_LT(rel, 1.0e-5);
+    }
+
+    // Both GEMM tile widths, with and without the small-block split, whatever the
+    // automatic choice for this GPU is.
+    const uint32_t gms[2] = { 32, 64 };
+    const int32_t  sns[2] = { -1, 20 };
+    for (int im = 0; im < 2; ++im) for (int is = 0; is < 2; ++is) {
+        md_gto_gpu_density_desc_t desc = {
+            .basis = gb, .atom_xyz = atoms, .coeff = coeff, .out_tex = tex, .grid = &grid,
+            .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = MD_GTO_GPU_DENSITY_ALGO_GEMM,
+            .scratch_bytes = 256 * 1024,
+            .gemm_tile = gms[im], .gemm_small_block = sns[is],
+        };
+        gto_test_poison(stream, tex, nan_buf, num_vox);
+        md_gto_gpu_density_launch(stream, &desc);
+        md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
+        md_gpu_stream_sync(stream);
+        const double rel = gto_test_rel_diff((const float*)rb.cpu, ref, num_vox, ref_max);
+        printf("gemm 128x%u small<=%d: max |diff| / max |rho| = %.3e\n", gms[im], sns[is], rel);
+        EXPECT_LT(rel, 1.0e-5);
+    }
+
+    md_gpu_free(stream, rb.gpu);
+    md_gpu_texture_destroy(tex);
+    md_gpu_free(stream, coeff);
+    md_gpu_free(stream, atoms);
+    md_gto_gpu_basis_destroy(stream, gb);
+    md_gpu_stream_sync(stream);
+    md_gto_gpu_shutdown();
+    qm_test_free(&t);
+    md_temp_end(temp);
+    md_gpu_device_destroy(device);
+}
+
+// Every orbital algorithm against the reference kernel on the water orbitals: one
+// orbital (psi), a few (psi^2, one pass), many (psi^2, several passes / GEMM), and
+// signed weights against a weighted sum of single-orbital reference evaluations.
+UTEST(gto, orbital_gpu_algorithms_agree) {
+    md_gpu_device_t device = md_gpu_device_create(NULL);
+    if (!device) {
+        UTEST_SKIP(gto_test_no_device_reason());
+    }
+    md_gpu_stream_t stream = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
+    md_temp_scope_t temp = md_temp_begin();
+
+    vlx_test_t t = {0};
+    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MEGABYTES(32)));
+    const size_t num_atoms = t.sys.atom.count;
+    float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
+    ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
+    md_gto_basis_t basis = {0};
+    ASSERT_TRUE(qm_test_basis(&basis, &t));
+    const size_t num_ao = md_gto_basis_num_ao(&basis);
+
+    const md_attribute_t* c_attr = md_attributes_find(&t.sys.attributes, STR_LIT("orbital/alpha/coefficient"));
+    ASSERT_TRUE(c_attr != NULL);
+    const size_t num_mo = md_attribute_element_count(&c_attr->format) / num_ao;
+    ASSERT_GE(num_mo, (size_t)12);
+    double** mo = (double**)md_temp_alloc_array(temp, double*, num_mo);
+    for (size_t m = 0; m < num_mo; ++m) {
+        mo[m] = (double*)md_temp_alloc_array(temp, double, num_ao);
+        ASSERT_EQ(qm_test_row(mo[m], num_ao, &t, STR_LIT("orbital/alpha/coefficient"), m), num_ao);
+    }
+
+    md_gto_gpu_initialize(device);
+    md_gto_gpu_basis_t gb = md_gto_gpu_basis_create(stream, &(md_gto_gpu_basis_desc_t){ .basis = &basis, .cutoff = 1.0e-6 });
+    ASSERT_TRUE(gb != NULL);
+    md_gpu_addr_t atoms   = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
+    md_gpu_addr_t coeff   = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_mo(num_mo, num_ao)).gpu;
+    md_gpu_addr_t weights = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * num_mo).gpu;
+    float* w = (float*)md_temp_alloc_array(temp, float, num_mo);
+    for (size_t m = 0; m < num_mo; ++m) w[m] = (m & 1) ? -0.5f : 1.0f + 0.1f * (float)m;
+    {
+        float* p = (float*)md_gpu_upload_begin(stream, atoms, md_gto_gpu_atom_buffer_size(num_atoms));
+        md_gto_gpu_atom_pack(p, atom_xyz, 0, num_atoms);
+        md_gpu_upload_end(stream);
+        p = (float*)md_gpu_upload_begin(stream, coeff, md_gto_gpu_coeff_size_mo(num_mo, num_ao));
+        md_gto_gpu_coeff_pack_mo(p, (const double* const*)mo, NULL, num_mo, num_ao);
+        md_gpu_upload_end(stream);
+        md_gpu_upload(stream, weights, w, sizeof(float) * num_mo);
+    }
+
+    const int gd[3] = { 37, 29, 34 };
+    md_grid_t grid = {
+        .orientation = mat3_ident(),
+        .origin  = vec3_set(-5.5f, -4.3f, -5.0f),
+        .spacing = vec3_set(0.3f, 0.3f, 0.3f),
+        .dim     = { gd[0], gd[1], gd[2] },
+    };
+    const size_t num_vox = (size_t)gd[0] * gd[1] * gd[2];
+    md_gpu_texture_t tex = md_gpu_texture_create(stream, &(md_gpu_texture_desc_t){
+        .type = MD_GPU_TEX_3D, .format = MD_GPU_FORMAT_R32_FLOAT, .usage = MD_GPU_TEX_STORAGE,
+        .width = (uint32_t)gd[0], .height = (uint32_t)gd[1], .depth_or_layers = (uint32_t)gd[2],
+    });
+    md_gpu_mem_t rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * num_vox);
+    ASSERT_TRUE(tex && rb.cpu);
+    float* ref = (float*)md_temp_alloc_array(temp, float, num_vox);
+    float* acc = (float*)md_temp_alloc_array(temp, float, num_vox);
+    float* nan_buf = (float*)md_temp_alloc_array(temp, float, num_vox);
+
+    // Evaluates into `dst`; mo_first selects the first coefficient row.
+    #define RUN_ORBITALS(dst, first, count, mode_, algo_, exact_, w_)                                   \
+        do {                                                                                           \
+            md_gto_gpu_orbital_desc_t od = {                                                           \
+                .basis = gb, .atom_xyz = atoms, .coeff = coeff + sizeof(float) * num_ao * (first),     \
+                .out_tex = tex, .grid = &grid, .sample_offset = {0.5f, 0.5f, 0.5f},                    \
+                .num_orbitals = (count), .eval_mode = (mode_), .op = MD_GTO_OP_SET,                    \
+                .weights = (w_), .algorithm = (algo_),                                                 \
+                .exact_screening = (exact_), .scratch_bytes = 256 * 1024,                              \
+            };                                                                                         \
+            gto_test_poison(stream, tex, nan_buf, num_vox);                                            \
+            md_gto_gpu_orbital_launch(stream, &od);                                                    \
+            md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);                                       \
+            md_gpu_stream_sync(stream);                                                                \
+            MEMCPY((dst), rb.cpu, sizeof(float) * num_vox);                                            \
+        } while (0)
+
+    typedef struct { md_gto_gpu_orbital_algo_t algo; bool exact; const char* name; } cfg_t;
+    const cfg_t cfgs[] = {
+        { MD_GTO_GPU_ORBITAL_ALGO_DEFAULT, false, "default" },
+        { MD_GTO_GPU_ORBITAL_ALGO_SHELL,   true,  "shell exact" },
+        { MD_GTO_GPU_ORBITAL_ALGO_SHELL,   false, "shell" },
+        { MD_GTO_GPU_ORBITAL_ALGO_GEMM,    false, "gemm" },
+    };
+    typedef struct { size_t first, count; md_gto_eval_mode_t mode; const char* name; } set_t;
+    const set_t sets[] = {
+        { 4, 1, MD_GTO_EVAL_MODE_PSI,         "1 orbital, psi" },
+        { 0, 6, MD_GTO_EVAL_MODE_PSI_SQUARED, "6 orbitals, psi^2" },
+        { 0, 12, MD_GTO_EVAL_MODE_PSI_SQUARED, "12 orbitals, psi^2" },
+        { 0, num_mo, MD_GTO_EVAL_MODE_PSI,    "all orbitals, psi" },
+    };
+    for (size_t si = 0; si < ARRAY_SIZE(sets); ++si) {
+        const set_t* S = &sets[si];
+        RUN_ORBITALS(ref, S->first, S->count, S->mode, MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, false, 0);
+        double ref_max = 0.0;
+        for (size_t v = 0; v < num_vox; ++v) {
+            ASSERT_TRUE(gto_test_is_finite(ref[v]));
+            ref_max = MAX(ref_max, fabs(ref[v]));
+        }
+        EXPECT_GT(ref_max, 1.0e-3);
+        for (size_t ci = 0; ci < ARRAY_SIZE(cfgs); ++ci) {
+            RUN_ORBITALS(acc, S->first, S->count, S->mode, cfgs[ci].algo, cfgs[ci].exact, 0);
+            const double rel = gto_test_rel_diff(acc, ref, num_vox, ref_max);
+            printf("orbitals [%s] %s: max |diff| / max |ref| = %.3e\n", S->name, cfgs[ci].name, rel);
+            EXPECT_LT(rel, cfgs[ci].exact || cfgs[ci].algo == MD_GTO_GPU_ORBITAL_ALGO_GEMM ? 1.0e-5 : 1.0e-4);
+        }
+    }
+
+    // Signed weights after squaring: sum_m w_m psi_m^2 against single-orbital reference runs.
+    {
+        const size_t count = 10;
+        float* one = (float*)md_temp_alloc_array(temp, float, num_vox);
+        MEMSET(ref, 0, sizeof(float) * num_vox);
+        for (size_t m = 0; m < count; ++m) {
+            RUN_ORBITALS(one, m, 1, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, false, 0);
+            for (size_t v = 0; v < num_vox; ++v) ref[v] += w[m] * one[v];
+        }
+        double ref_max = 0.0;
+        for (size_t v = 0; v < num_vox; ++v) ref_max = MAX(ref_max, fabs(ref[v]));
+        for (size_t ci = 1; ci < ARRAY_SIZE(cfgs); ++ci) {
+            RUN_ORBITALS(acc, 0, count, MD_GTO_EVAL_MODE_PSI_SQUARED, cfgs[ci].algo, cfgs[ci].exact, weights);
+            const double rel = gto_test_rel_diff(acc, ref, num_vox, ref_max);
+            printf("orbitals [10, signed weights] %s: max |diff| / max |ref| = %.3e\n", cfgs[ci].name, rel);
+            EXPECT_LT(rel, cfgs[ci].exact || cfgs[ci].algo == MD_GTO_GPU_ORBITAL_ALGO_GEMM ? 1.0e-5 : 1.0e-4);
+        }
+    }
+    #undef RUN_ORBITALS
+
+    md_gpu_free(stream, rb.gpu);
+    md_gpu_texture_destroy(tex);
+    md_gpu_free(stream, weights);
+    md_gpu_free(stream, coeff);
+    md_gpu_free(stream, atoms);
+    md_gto_gpu_basis_destroy(stream, gb);
+    md_gpu_stream_sync(stream);
+    md_gto_gpu_shutdown();
+    qm_test_free(&t);
+    md_temp_end(temp);
+    md_gpu_device_destroy(device);
+}
 
 #endif
 

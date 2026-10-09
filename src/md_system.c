@@ -13,9 +13,98 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 
+#if MD_COMPILER_MSVC
+#include <intrin.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// One counter for every system, so that a version is never handed out twice: a consumer which kept the version of a
+// system that has since been freed and loaded anew cannot take the new topology for the one it saw.
+static volatile int64_t topology_version_counter = 0;
+
+uint64_t md_system_topology_changed(md_system_t* sys) {
+    ASSERT(sys);
+#if MD_COMPILER_MSVC
+    const int64_t version = _InterlockedIncrement64(&topology_version_counter);
+#else
+    const int64_t version = __atomic_add_fetch(&topology_version_counter, 1, __ATOMIC_RELAXED);
+#endif
+    sys->topology_version = (uint64_t)version;
+    return sys->topology_version;
+}
+
+const char* md_particle_kind_name(md_particle_kind_t kind) {
+    switch (kind) {
+    case MD_PARTICLE_ATOM:          return "atom";
+    case MD_PARTICLE_BEAD:          return "bead";
+    case MD_PARTICLE_VIRTUAL_SITE:  return "virtual site";
+    default:                        return "";
+    }
+}
+
+const char* md_component_kind_name(md_component_kind_t kind) {
+    switch (kind) {
+    case MD_COMPONENT_KIND_OTHER:       return "other";
+    case MD_COMPONENT_KIND_AMINO_ACID:  return "amino acid";
+    case MD_COMPONENT_KIND_NUCLEOTIDE:  return "nucleotide";
+    case MD_COMPONENT_KIND_WATER:       return "water";
+    case MD_COMPONENT_KIND_ION:         return "ion";
+    default:                            return "";
+    }
+}
+
+const char* md_entity_kind_name(md_entity_kind_t kind) {
+    switch (kind) {
+    case MD_ENTITY_KIND_UNKNOWN:        return "unknown";
+    case MD_ENTITY_KIND_NON_POLYMER:    return "non-polymer";
+    case MD_ENTITY_KIND_WATER:          return "water";
+    case MD_ENTITY_KIND_BRANCHED:       return "branched";
+    case MD_ENTITY_KIND_PEPTIDE:        return "peptide";
+    case MD_ENTITY_KIND_DNA:            return "DNA";
+    case MD_ENTITY_KIND_RNA:            return "RNA";
+    case MD_ENTITY_KIND_NUCLEIC:        return "nucleic acid";
+    case MD_ENTITY_KIND_POLYMER:        return "polymer";
+    default:                            return "";
+    }
+}
+
+const char* md_secondary_structure_name(md_secondary_structure_t ss) {
+    switch (ss) {
+    case MD_SECONDARY_STRUCTURE_UNKNOWN:        return "unknown";
+    case MD_SECONDARY_STRUCTURE_COIL:           return "coil";
+    case MD_SECONDARY_STRUCTURE_TURN:           return "turn";
+    case MD_SECONDARY_STRUCTURE_BEND:           return "bend";
+    case MD_SECONDARY_STRUCTURE_HELIX_310:      return "3-10 helix";
+    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:    return "alpha helix";
+    case MD_SECONDARY_STRUCTURE_HELIX_PI:       return "pi helix";
+    case MD_SECONDARY_STRUCTURE_BETA_SHEET:     return "beta sheet";
+    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:    return "beta bridge";
+    default:                                    return "";
+    }
+}
+
+const char* md_hybridization_name(md_hybridization_t hyb) {
+    switch (hyb) {
+    case MD_HYBRIDIZATION_UNKNOWN:  return "unknown";
+    case MD_HYBRIDIZATION_SP:       return "sp";
+    case MD_HYBRIDIZATION_SP2:      return "sp2";
+    case MD_HYBRIDIZATION_SP3:      return "sp3";
+    default:                        return "";
+    }
+}
+
+const char* md_bond_origin_name(md_bond_origin_t origin) {
+    switch (origin) {
+    case MD_BOND_ORIGIN_FILE:       return "file";
+    case MD_BOND_ORIGIN_TOPOLOGY:   return "topology";
+    case MD_BOND_ORIGIN_USER:       return "user";
+    case MD_BOND_ORIGIN_INFERRED:   return "inferred";
+    default:                        return "";
+    }
+}
 
 void md_system_free(md_system_t* sys) {
     ASSERT(sys);
@@ -31,6 +120,8 @@ void md_system_free(md_system_t* sys) {
     // ATOM
     md_array_free(sys->atom.type_idx, alloc);
     md_array_free(sys->atom.flags, alloc);
+    md_array_free(sys->atom.formal_charge, alloc);
+    md_array_free(sys->atom.hydrogen_count, alloc);
 
     // ATOM TYPE
     md_array_free(sys->atom.type.name, alloc);
@@ -70,9 +161,6 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->protein_backbone.range.offset, alloc);
     md_array_free(sys->protein_backbone.range.inst_idx, alloc);
     md_array_free(sys->protein_backbone.segment.atoms, alloc);
-    md_array_free(sys->protein_backbone.segment.angle, alloc);
-    md_array_free(sys->protein_backbone.segment.secondary_structure, alloc);
-    md_array_free(sys->protein_backbone.segment.rama_type, alloc);
     md_array_free(sys->protein_backbone.segment.comp_idx, alloc);
 
     // NUCLEIC BACKBONE
@@ -87,12 +175,6 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->bond.conn.atom_idx, alloc);
     md_array_free(sys->bond.conn.bond_idx, alloc);
     md_array_free(sys->bond.conn.offset, alloc);
-
-    // HYDROGEN BONDS
-    md_array_free(sys->hydrogen_bond.candidate.acceptor.idx, alloc);
-    md_array_free(sys->hydrogen_bond.candidate.acceptor.num_lone_pairs, alloc);
-    md_array_free(sys->hydrogen_bond.candidate.donor.d_idx, alloc);
-    md_array_free(sys->hydrogen_bond.candidate.donor.h_idx, alloc);
 
     md_index_data_free(&sys->ring);
 
@@ -204,6 +286,8 @@ void md_system_reset(md_system_t* sys) {
     // The table allocates through its own handle, so every loader gets a usable table without
     // having to remember to wire this up itself.
     sys->attributes.alloc = alloc;
+    // Every loader starts here, so whatever it builds has a version of its own
+    md_system_topology_changed(sys);
 }
 
 static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {

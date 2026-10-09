@@ -27,6 +27,8 @@
 
 #include <md_script.h>
 #include <md_contact.h>
+#include <md_match.h>
+#include <md_smiles.h>
 
 #include <md_system.h>
 #include <md_filter.h>
@@ -434,6 +436,10 @@ typedef enum value_domain_t {
     DOMAIN_INST_AUTH_ID,    // Author ids of all instances: auth_id()
     DOMAIN_COUNT_UNIT,      // What count() counts in: 'atom', 'residue', ...
     DOMAIN_ATTR_PATH,       // Paths of the attributes that attr() can read
+    DOMAIN_SMILES,          // A SMILES pattern: smiles(). Free text, nothing to offer
+    DOMAIN_MATCH_LEVEL,     // Where a match lies: 'structure', 'residue', 'chain', ...
+    DOMAIN_MATCH_MODE,      // Which matches are reported: 'unique', 'all', ...
+    DOMAIN_MATCH_LABEL,     // What the atoms of a reference are compared by: 'element', 'name'
 } value_domain_t;
 
 typedef struct param_domain_t {

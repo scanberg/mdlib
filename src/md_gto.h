@@ -256,6 +256,13 @@ void md_gto_grid_evaluate_density_GL(uint32_t vol_tex, const md_grid_t* grid,
     const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
 	const double* density_matrix, bool include_gradients, md_gto_op_t op);
 
+// The same over a density matrix already packed: its upper triangle as float, row i holding columns
+// i..N-1, N(N+1)/2 values (md_qm_extract_packed_symmetric_f32 gives it). The form the shader takes, so
+// a caller holding it this way never has to make the full double matrix only for it to be packed here.
+void md_gto_grid_evaluate_density_packed_GL(uint32_t vol_tex, const md_grid_t* grid,
+    const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+	const float* upper_tri, bool include_gradients, md_gto_op_t op);
+
 static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
 	uint32_t res = 0;
 	res |= ((uint32_t)i) <<  0;
@@ -358,6 +365,27 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
 // GPU dispatch
 // ---------------------------------------------------------------------------
 
+// Density evaluation algorithm.
+typedef enum md_gto_gpu_density_algo_t {
+    // The recommended algorithm, currently MD_GTO_GPU_DENSITY_ALGO_GEMM, which
+    // blocks the calling thread (see below). Pick REFERENCE explicitly where a fully
+    // asynchronous launch matters more than speed.
+    MD_GTO_GPU_DENSITY_ALGO_DEFAULT = 0,
+
+    // Original kernel (eval_gto_density.slang): per-AO tiles of 16, the radial part
+    // evaluated per Cartesian component. Asynchronous; also the reference for tests.
+    MD_GTO_GPU_DENSITY_ALGO_REFERENCE,
+
+    // Two-pass: Phi (voxels x AOs) per 8^3 block into scratch memory, the block's
+    // sub-matrix D_b gathered once, then a tiled GEMM with the
+    // rho = sum(Phi o (Phi D_b)) reduction fused into it (eval_gto_density_gemm.slang).
+    // Reads per-block counts back to plan batches, so this BLOCKS the calling thread
+    // until the counting pass has completed.
+    MD_GTO_GPU_DENSITY_ALGO_GEMM,
+
+    MD_GTO_GPU_DENSITY_ALGO_COUNT
+} md_gto_gpu_density_algo_t;
+
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {
 	md_gto_gpu_basis_t basis;
@@ -370,6 +398,13 @@ typedef struct md_gto_gpu_density_desc_t {
 	float sample_offset[3];
 
     md_gto_op_t op;              // operation mode (add, set, etc.)
+
+    md_gto_gpu_density_algo_t algorithm;  // 0 = MD_GTO_GPU_DENSITY_ALGO_DEFAULT
+    size_t scratch_bytes;                 // GEMM only: Phi (+ D_b) scratch budget per batch, 0 = 256 MB
+
+    // GEMM only: kernel configuration, normally left at 0 = automatic (per GPU vendor).
+    uint32_t gemm_tile;          // AOs per output tile: 32 or 64
+    int32_t  gemm_small_block;   // blocks with at most this many AOs use 32-wide tiles; -1 = never
 } md_gto_gpu_density_desc_t;
 
 // Issue an electron density evaluation into `stream`.
@@ -378,6 +413,29 @@ typedef struct md_gto_gpu_density_desc_t {
 // (md_gto_gpu_coeff_pack_density into md_gpu_upload_begin's pointer).
 // Uploads issued earlier into the same stream are visible by program order.
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
+
+// Orbital evaluation algorithm.
+typedef enum md_gto_gpu_orbital_algo_t {
+    // SHELL for up to 8 orbitals, GEMM for more.
+    MD_GTO_GPU_ORBITAL_ALGO_DEFAULT = 0,
+
+    // Original kernel (eval_gto_mo.slang): per-AO tiles of 16, re-evaluates every AO
+    // once per 4 orbitals. Kept for comparisons. Does not support weights.
+    MD_GTO_GPU_ORBITAL_ALGO_REFERENCE,
+
+    // Shell-based single-pass kernel (eval_gto_mo_shell.slang): radial part once per
+    // shell, no per-tile barriers, coefficient-aware screening, 4 voxels per thread.
+    // Re-evaluates the AOs once per 8 orbitals. Asynchronous.
+    MD_GTO_GPU_ORBITAL_ALGO_SHELL,
+
+    // Two-pass: Phi per 8^3 block into scratch (as for the density), then
+    // Psi = Phi * C as a GEMM with the psi / psi^2 sum fused (eval_gto_mo_gemm.slang).
+    // Every AO is evaluated once whatever the number of orbitals. Reads per-block
+    // counts back, so this BLOCKS the calling thread like MD_GTO_GPU_DENSITY_ALGO_GEMM.
+    MD_GTO_GPU_ORBITAL_ALGO_GEMM,
+
+    MD_GTO_GPU_ORBITAL_ALGO_COUNT
+} md_gto_gpu_orbital_algo_t;
 
 typedef struct md_gto_gpu_orbital_desc_t {
     md_gto_gpu_basis_t basis;
@@ -393,6 +451,15 @@ typedef struct md_gto_gpu_orbital_desc_t {
 
     md_gto_eval_mode_t eval_mode; // whether to accumulate psi or psi^2
     md_gto_op_t op;              // operation mode (add, set, etc.)
+
+    // Optional float[num_orbitals]: w_m multiplies psi_m (or psi_m^2, i.e. after
+    // squaring, so negative weights give differences of orbital densities).
+    // 0 = all weights 1. Not supported by MD_GTO_GPU_ORBITAL_ALGO_REFERENCE.
+    md_gpu_addr_t weights;
+
+    md_gto_gpu_orbital_algo_t algorithm;   // 0 = MD_GTO_GPU_ORBITAL_ALGO_DEFAULT
+    bool     exact_screening;              // SHELL: screen on |phi| only, not on |C| * |phi|
+    size_t   scratch_bytes;                // GEMM: scratch budget per batch, 0 = 256 MB
 } md_gto_gpu_orbital_desc_t;
 
 // Issue an orbital evaluation into `stream`.

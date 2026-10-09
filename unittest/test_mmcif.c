@@ -423,3 +423,55 @@ UTEST(mmcif, advance_to_next_control) {
 
     md_temp_end(temp);
 }
+
+UTEST(mmcif, atom_site_many_columns) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+
+    // More _atom_site columns than a fixed row buffer of 64 would hold, with the ones the reader uses after them
+    const int num_extra = 100;
+    md_strb_t sb = md_strb_create(alloc);
+    md_strb_push_cstr(&sb, "data_test\nloop_\n");
+    for (int i = 0; i < num_extra; ++i) {
+        md_strb_fmt(&sb, "_atom_site.extra_%d\n", i);
+    }
+    md_strb_push_cstr(&sb,
+        "_atom_site.group_PDB\n"
+        "_atom_site.id\n"
+        "_atom_site.type_symbol\n"
+        "_atom_site.label_atom_id\n"
+        "_atom_site.label_alt_id\n"
+        "_atom_site.label_comp_id\n"
+        "_atom_site.label_asym_id\n"
+        "_atom_site.label_entity_id\n"
+        "_atom_site.label_seq_id\n"
+        "_atom_site.pdbx_PDB_ins_code\n"
+        "_atom_site.Cartn_x\n"
+        "_atom_site.Cartn_y\n"
+        "_atom_site.Cartn_z\n"
+        "_atom_site.auth_seq_id\n"
+        "_atom_site.auth_asym_id\n");
+    const char* rows[] = {
+        "ATOM 1 N N  . ALA A 1 1 ? 1.000 2.000 3.000 1 A\n",
+        "ATOM 2 C CA . ALA A 1 1 ? 4.000 5.000 6.000 1 A\n",
+        "ATOM 3 C C  . ALA A 1 1 ? 7.000 8.000 9.000 1 A\n",
+    };
+    for (size_t r = 0; r < ARRAY_SIZE(rows); ++r) {
+        for (int i = 0; i < num_extra; ++i) {
+            md_strb_push_cstr(&sb, "x ");
+        }
+        md_strb_push_cstr(&sb, rows[r]);
+    }
+    md_strb_push_cstr(&sb, "#\n");
+
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &sys_state, md_strb_to_str(sb)));
+    ASSERT_EQ(3, sys.atom.count);
+    EXPECT_STREQ("CA", str_ptr(md_atom_name(&sys.atom, 1)));
+    EXPECT_NEAR(7.0f, sys_state.xyz[2].x, 1.0e-5f);
+    EXPECT_NEAR(8.0f, sys_state.xyz[2].y, 1.0e-5f);
+    EXPECT_NEAR(9.0f, sys_state.xyz[2].z, 1.0e-5f);
+
+    md_temp_end(temp);
+}

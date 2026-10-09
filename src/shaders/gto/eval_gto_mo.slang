@@ -109,7 +109,9 @@ void fill_pgto_tile(uint tile_number, uint num_cgtos, uint tid) {
         float4 center   = float4(0.0f);
 
         if (slot < num_cgtos) {
-            cgto_idx = screened_cgtos[slot];
+            // Clamped so that inactive lanes never form out-of-range addresses
+            // (llvmpipe evaluates their loads).
+            cgto_idx = min(screened_cgtos[slot], args.num_cgtos - 1u);
             uint2 off_len = args.cgto_off_len[cgto_idx];
             src_beg = off_len.x;
             src_len = off_len.y;
@@ -151,7 +153,11 @@ void fill_pgto_tile(uint tile_number, uint num_cgtos, uint tid) {
         for (uint s = 1u; s <= (uint)TILE_SIZE; ++s) {
             ci = (tile_dst_pgto_beg[s] <= k) ? s : ci;
         }
-        PGTO p = args.pgto[tile_src_pgto_beg[ci] + (k - tile_dst_pgto_beg[ci])];
+        // Clamped so that the address is in range for every lane (llvmpipe evaluates the
+        // loads of lanes that have left the loop).
+        ci = min(ci, (uint)TILE_SIZE - 1u);
+        uint src = tile_src_pgto_beg[ci] + (k - min(k, tile_dst_pgto_beg[ci]));
+        PGTO p = args.pgto[src];
         pgto_coeff_tile[k] = p.coeff;
         pgto_alpha_tile[k] = p.alpha;
         pgto_ijkl_tile[k]  = p.ijkl;
@@ -177,9 +183,9 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
     for (uint i = tid; i < args.num_cgtos; i += WG_SIZE) {
         bool passed = false;
         if (i < args.num_cgtos) {
-            float r = args.cgto_r[i];
+            float r = args.cgto_r[min(i, args.num_cgtos - 1u)];
             if (r != 0.0) {
-                uint atom_idx = args.cgto_atom_idx[i];
+                uint atom_idx = args.cgto_atom_idx[min(i, args.num_cgtos - 1u)];
                 float3 center = args.atom_xyz[atom_idx].xyz;
                 float3 model_xyz = mul(args.world_to_model, float4(center, 1.0)).xyz;
                 float r2 = r * r;
@@ -227,9 +233,10 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
                     uint mb       = work / (uint)TILE_SIZE;
                     uint ci       = work % (uint)TILE_SIZE;
                     uint cgto_idx = tile_cgto_idx[ci];
-                    float c = (cgto_idx != INVALID_IDX)
-                            ? args.coeffs[(mo_base + mb) * args.num_cgtos + cgto_idx]
-                            : 0.0f;
+                    // Load with an in-range index first: a select would evaluate the load
+                    // with INVALID_IDX as well.
+                    float c = args.coeffs[(mo_base + mb) * args.num_cgtos + ((cgto_idx != INVALID_IDX) ? cgto_idx : 0u)];
+                    c = (cgto_idx != INVALID_IDX) ? c : 0.0f;
                     coeff_tile[mb][ci] = c;
                 }
                 GroupMemoryBarrierWithGroupSync();
@@ -239,7 +246,7 @@ void main(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID, uint tid: SV_Grou
                 // center and coefficient lookup.
                 uint num_prims = num_pgtos_tile;
                 for (uint j = 0u; j < num_prims; ++j) {
-                    uint   slot = pgto_slot_tile[j];
+                    uint   slot = min(pgto_slot_tile[j], (uint)TILE_SIZE - 1u);   // in range for every lane
                     float3 d    = coord - tile_cgto_xyz[slot].xyz;
                     float  r2   = dot(d, d);
                     float  dx2  = d.x * d.x;

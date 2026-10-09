@@ -252,7 +252,7 @@ static inline md_tpr_lj_t md_tpr_lj_pair(const md_tpr_data_t* data, size_t type_
 // only ever between atoms of the same molecule, and an atom is excluded from itself.
 bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom_b);
 
-// Builds a system from the tpr: atoms, residues, bonds (flagged MD_BOND_FLAG_TOPOLOGY), coordinates
+// Builds a system from the tpr: atoms, residues, bonds (of origin MD_BOND_ORIGIN_TOPOLOGY), coordinates
 // and box. Residues are numbered the way gmx numbers them when it writes the system out (single
 // residue molecules such as water and ions are renumbered consecutively), so the numbers agree with
 // a .gro written from the same tpr.
@@ -261,10 +261,15 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // type, mass and particle type share one. The type's mass is therefore exact for every atom of it,
 // and the force field type is kept on it (md_atom_type_ff_type) to tell same named types apart.
 // Atoms with an atomic number get their element's radius. Atoms without one are coarse grained
-// beads (flagged MD_FLAG_COARSE_GRAINED) with the radius md_tpr_lj_vdw_radius gives for their
-// non-bonded type; the predefined bead tables then add what they know about them (see
+// beads (MD_PARTICLE_BEAD) with the radius md_tpr_lj_vdw_radius gives for their non-bonded type;
+// the predefined bead tables then add what they know about them (see
 // md_util_system_augment_atom_types). A virtual site without Lennard-Jones parameters, such as the
-// M site of TIP4P, has no element and is not a bead.
+// M site of TIP4P, has no element and is not a bead (MD_PARTICLE_VIRTUAL_SITE).
+//
+// Each molecule type is an entity (described by its name) and each molecule an instance of it.
+// The residues are classified (md_util_system_infer_comp_flags) and from them the kinds of the
+// entities (md_util_system_infer_entity_kinds). Molecules of a single residue share the instance id
+// of their molecule block; larger ones have ids of their own.
 //
 // Published attributes: 'atom/charge' (e) and, when present, 'atom/velocity' (nm/ps).
 // The non-bonded force field is kept as sys->nonbonded (md_nonbonded.h) when its interactions can be evaluated pair

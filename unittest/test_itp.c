@@ -70,10 +70,10 @@ static str_t make_msc_gro(md_allocator_i* alloc, int num_mol, int slices, const 
     return md_strb_to_str(sb);
 }
 
-static size_t count_flagged(const md_system_t* sys, md_bond_flags_t flag) {
+static size_t count_origin(const md_system_t* sys, md_bond_origin_t origin) {
     size_t n = 0;
     for (size_t i = 0; i < sys->bond.count; ++i) {
-        if (sys->bond.flags[i] & flag) n += 1;
+        if (md_bond_origin(sys->bond.flags[i]) == origin) n += 1;
     }
     return n;
 }
@@ -208,7 +208,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
 
     const size_t bonds_per_mol = SLICES * 7 - 1;
-    EXPECT_EQ(count_flagged(&sys, MD_BOND_FLAG_TOPOLOGY), MOLS * bonds_per_mol);
+    EXPECT_EQ(count_origin(&sys, MD_BOND_ORIGIN_TOPOLOGY), MOLS * bonds_per_mol);
     EXPECT_EQ(sys.bond.count, MOLS * bonds_per_mol);
     // Three fibrils and the two water beads the topology says nothing about
     EXPECT_EQ(md_structure_count(&sys.structure), (size_t)(MOLS + 2));
@@ -234,7 +234,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     // Re-inferring bonds keeps the topology's and adds nothing on top of them
     md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc);
     md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
-    EXPECT_EQ(count_flagged(&sys, MD_BOND_FLAG_TOPOLOGY), MOLS * bonds_per_mol);
+    EXPECT_EQ(count_origin(&sys, MD_BOND_ORIGIN_TOPOLOGY), MOLS * bonds_per_mol);
 
     md_vm_arena_destroy(alloc);
 }
@@ -326,9 +326,9 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro));
 
     md_bond_data_clear(&sys.bond);
-    md_system_bond_insert(&sys, 1, 2, MD_BOND_FLAG_COVALENT);       // inside: replaced
-    md_system_bond_insert(&sys, 14, 15, MD_BOND_FLAG_COVALENT);     // outside: kept
-    md_system_bond_insert(&sys, 3, 4, MD_BOND_FLAG_USER_DEFINED);   // user: kept, and last
+    md_system_bond_insert(&sys, 1, 2, MD_BOND_FLAG_NONE);           // from the file, inside: replaced
+    md_system_bond_insert(&sys, 14, 15, MD_BOND_FLAG_NONE);         // from the file, outside: kept
+    md_system_bond_insert(&sys, 3, 4, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));   // user: kept, and last
     md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
 
     md_itp_data_t data = {0};
@@ -337,7 +337,7 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
 
     EXPECT_EQ(sys.bond.count, 1u + 13u + 1u);
     EXPECT_EQ(sys.bond.pairs[0].idx[0], 14);
-    EXPECT_EQ((int)sys.bond.flags[sys.bond.count - 1], (int)MD_BOND_FLAG_USER_DEFINED);
+    EXPECT_EQ(MD_BOND_ORIGIN_USER, md_bond_origin(sys.bond.flags[sys.bond.count - 1]));
     EXPECT_EQ(md_bond_find(&sys.bond, 1, 2), -1);
     EXPECT_NE(md_bond_find(&sys.bond, 0, 7), -1);
 

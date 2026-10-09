@@ -630,3 +630,844 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 
 	qm_test_free(&t);
 }
+
+// ---------------------------------------------------------------------------
+// POLARIZABLE EMBEDDING
+//
+// No .h5 of an embedding run is checked in, so these make one: h2o.h5 with a potential named in its
+// SCF settings exactly as VeloxChem writes it (scf/potfile, a scalar UTF-8 string holding the path the
+// run was given). It is written beside h2o.h5, where its basis set is, and removed again as soon as
+// it has been read - before any assertion that could end the test early.
+// ---------------------------------------------------------------------------
+
+#include <hdf5.h>
+#include <stdio.h>	// remove
+#include <core/md_os.h>
+#include <md_util.h>
+#include <md_filter.h>
+#include <md_script.h>
+#include <core/md_bitfield.h>
+#include <string.h>
+#include "system_invariants.h"
+
+#define VLX_PE_DIR MD_UNITTEST_DATA_DIR "/vlx/"
+
+static bool vlx_test_write_file(str_t path, const void* data, size_t size) {
+	md_file_t out = {0};
+	if (!md_file_open(&out, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
+	const bool ok = md_file_write(out, data, size) == size;
+	md_file_close(&out);
+	return ok;
+}
+
+// A copy of h2o.h5 whose SCF settings name 'potfile'
+static bool vlx_test_write_pe_h5(str_t dst, const char* potfile) {
+	md_file_t in = {0};
+	if (!md_file_open(&in, STR_LIT(VLX_PE_DIR "h2o.h5"), MD_FILE_READ)) return false;
+	const size_t size = (size_t)md_file_size(in);
+	void* bytes = md_alloc(md_get_heap_allocator(), size);
+	const bool read = md_file_read(in, bytes, size) == size;
+	md_file_close(&in);
+	const bool written = read && vlx_test_write_file(dst, bytes, size);
+	md_free(md_get_heap_allocator(), bytes, size);
+	if (!written) return false;
+
+	char path[1024];
+	str_copy_to_char_buf(path, sizeof(path), dst);
+	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
+	if (file < 0) return false;
+	hid_t scf   = H5Gopen(file, "scf", H5P_DEFAULT);
+	hid_t type  = H5Tcopy(H5T_C_S1);
+	H5Tset_size(type, H5T_VARIABLE);
+	H5Tset_cset(type, H5T_CSET_UTF8);
+	hid_t space = H5Screate(H5S_SCALAR);
+	hid_t dset  = scf >= 0 ? H5Dcreate2(scf, "potfile", type, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) : -1;
+	const bool ok = dset >= 0 && H5Dwrite(dset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, &potfile) >= 0;
+	if (dset >= 0) H5Dclose(dset);
+	H5Sclose(space);
+	H5Tclose(type);
+	if (scf >= 0) H5Gclose(scf);
+	H5Fclose(file);
+	return ok;
+}
+
+// Read on the bits: the library is built with fast math, where NAN does not compare as itself
+static bool vlx_test_absent(double v) {
+	uint64_t u;
+	memcpy(&u, &v, sizeof(u));
+	return (u & 0x7fffffffffffffffull) > 0x7ff0000000000000ull;
+}
+
+// The reference potential beside h2o.h5's own folder, named relative to it the way a run directory
+// copied as a whole would name it: 50 waters, the 39 polarizable ones (117 sites) listed first and the
+// 11 non-polarizable ones after them, though numbered among them (8, 12, 16, ..., 49). As atoms they
+// follow their numbers: water n is the sites num_qm + 3 (n - 1) and on.
+UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_relative.h5");
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	ASSERT_TRUE(loaded);
+
+	const size_t num_qm = 3, num_mm = 150, num_atoms = num_qm + num_mm;
+	ASSERT_EQ(num_atoms, t.sys.atom.count);
+	ASSERT_EQ(num_atoms, t.state.num_atoms);
+
+	// The QM atom domain is untouched, and its atoms are still the system's first
+	EXPECT_EQ(num_qm, qm_test_count(&t, STR_LIT("qm/atom/atomic_number")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("qm/atom/system_index")));
+	EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, 0));
+	EXPECT_EQ(1, md_atom_atomic_number(&t.sys.atom, 1));
+
+	// The sites follow, with their elements, names and coordinates (already Angstrom in this file)
+	EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, num_qm));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm),     STR_LIT("OW")));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm + 2), STR_LIT("H2")));
+	EXPECT_NEAR(-5.672, t.state.xyz[num_qm].x, 1e-5);
+	EXPECT_NEAR( 2.390, t.state.xyz[num_qm].y, 1e-5);
+	EXPECT_NEAR(-4.911, t.state.xyz[num_qm].z, 1e-5);
+	EXPECT_NEAR(-11.932, t.state.xyz[num_qm + 21].x, 1e-5);	// Water 8, the file's first non-polarizable one
+	EXPECT_NEAR(-5.908, t.state.xyz[num_qm + 146].x, 1e-5);		// Water 49, the file's last site
+	EXPECT_NEAR(-8.589, t.state.xyz[num_atoms - 1].x, 1e-5);	// Water 50, polarizable
+
+	// One component per fragment, named for its residue and numbered by its fragment number, after
+	// one for the QM region - components cover every atom or none.
+	ASSERT_EQ(1u + 50u, t.sys.component.count);
+	EXPECT_VALID_SYSTEM(&t.sys);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 0), STR_LIT("QM")));
+	EXPECT_EQ(0, md_system_component_find_by_atom_idx(&t.sys, 0));
+	EXPECT_EQ(1, md_system_component_find_by_atom_idx(&t.sys, num_qm));
+	md_urange_t first = md_system_component_atom_range(&t.sys, 1);
+	EXPECT_EQ(num_qm, first.beg);
+	EXPECT_EQ(num_qm + 3, first.end);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 1), STR_LIT("HOH")));
+	EXPECT_EQ(1, md_component_seq_id(&t.sys.component, 1));
+	const md_component_idx_t npe = md_system_component_find_by_atom_idx(&t.sys, num_qm + 21);
+	ASSERT_TRUE(npe >= 0);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, npe), STR_LIT("HOH")));
+	EXPECT_EQ(8, md_component_seq_id(&t.sys.component, npe));
+	for (size_t c = 1; c < t.sys.component.count; ++c) {
+		EXPECT_EQ((int)c, md_component_seq_id(&t.sys.component, c));
+		EXPECT_EQ(MD_COMPONENT_KIND_WATER, md_system_component_kind(&t.sys, c));
+	}
+
+	// The parameters, per atom over the system: the type's rows by position in the fragment, and
+	// nothing at all for the QM atoms
+	double q[153], a[153];
+	ASSERT_EQ(num_atoms, qm_test_series(q, num_atoms, &t, STR_LIT("atom/charge")));
+	ASSERT_EQ(num_atoms, qm_test_series(a, num_atoms, &t, STR_LIT("atom/polarizability")));
+	for (size_t i = 0; i < num_qm; ++i) {
+		EXPECT_TRUE(vlx_test_absent(q[i]));
+		EXPECT_TRUE(vlx_test_absent(a[i]));
+	}
+	EXPECT_NEAR(-0.67444, q[num_qm + 0], 1e-8);
+	EXPECT_NEAR( 0.33722, q[num_qm + 1], 1e-8);
+	EXPECT_NEAR( 0.33722, q[num_qm + 2], 1e-8);
+	EXPECT_NEAR(-0.83400, q[num_qm + 21], 1e-8);
+	EXPECT_NEAR( 0.41700, q[num_qm + 146], 1e-8);
+	EXPECT_NEAR( 0.33722, q[num_atoms - 1], 1e-8);
+	EXPECT_NEAR(5.73935, a[num_qm + 0], 1e-8);
+	EXPECT_NEAR(2.30839, a[num_qm + 1], 1e-8);
+	EXPECT_EQ(0.0, a[num_qm + 21]);	// HOH_npe has no polarizabilities: embedded non-polarizably
+	EXPECT_EQ(0.0, a[num_qm + 146]);
+	EXPECT_NEAR(2.30839, a[num_atoms - 1], 1e-8);
+
+	double sum = 0.0;
+	for (size_t i = num_qm; i < num_atoms; ++i) sum += q[i];
+	EXPECT_NEAR(0.0, sum, 1e-6);	// Neutral waters
+
+	const md_attribute_t* charge = qm_test_attr(&t, STR_LIT("atom/charge"));
+	ASSERT_TRUE(charge != NULL);
+	EXPECT_TRUE(md_unit_equal(charge->unit, md_unit_elementary_charge()));
+
+	// The file's own per atom columns run over the system's atoms too, with no value for the sites
+	double z[153];
+	ASSERT_EQ(num_atoms, qm_test_series(z, num_atoms, &t, STR_LIT("atom/nuclear_charges")));
+	EXPECT_EQ(8.0, z[0]);
+	EXPECT_EQ(1.0, z[2]);
+	EXPECT_TRUE(vlx_test_absent(z[num_qm]));
+	EXPECT_TRUE(vlx_test_absent(z[num_atoms - 1]));
+
+	// And what an application infers from that once it is loaded: every water an instance of its own,
+	// the QM region one more
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
+	EXPECT_VALID_SYSTEM(&t.sys);
+	EXPECT_EQ(1u + 50u, t.sys.instance.count);
+	EXPECT_EQ(1u + 50u, t.sys.structure.count);
+
+	qm_test_free(&t);
+}
+
+// A potential written by hand to reach what the reference file does not: atomic units, a site
+// without an element, an anisotropic tensor, and a fragment type the file lists out of order. Named
+// by an absolute path from the machine the run was on, with the file itself copied beside the .h5,
+// which is VeloxChem's own fallback.
+static const char vlx_test_custom_pot[] =
+	"@environment\n"
+	"units: au\n"
+	"xyz:\n"
+	"Na   0.0  0.0 20.0  NA_npe 4 NA\n"
+	"O    0.0  0.0 10.0  HOH_pe 5 OW\n"
+	"H    1.0  0.0 10.0  HOH_pe 5 HW1\n"
+	"H   -1.0  0.0 10.0  HOH_pe 5 HW2\n"
+	"X    0.5  0.0 10.0  HOH_pe 5 X1\n"
+	"@end\n"
+	"@charges\n"
+	"O   -0.8  HOH_pe\n"
+	"H    0.4  HOH_pe\n"
+	"Na   1.0  NA_npe\n"
+	"H    0.5  HOH_pe\n"
+	"X   -0.5  HOH_pe\n"
+	"@end\n"
+	"@polarizabilities\n"
+	"O   6.0 0.0 0.0 6.0 0.0 6.0  HOH_pe\n"
+	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"X   1.0 0.3 0.2 2.0 0.1 6.0  HOH_pe\n"
+	"@end\n";
+
+UTEST(vlx, pe_environment_by_file_name_in_atomic_units) {
+	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_custom.h5");
+	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_custom.pot");
+	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_custom_pot, sizeof(vlx_test_custom_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "/cluster/scratch/run42/unittest_pe_custom.pot"));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	remove(pot.ptr);
+	ASSERT_TRUE(loaded);
+
+	ASSERT_EQ(3u + 5u, t.sys.atom.count);
+
+	const double bohr = 0.5291772109029999;
+	EXPECT_NEAR(20.0 * bohr, t.state.xyz[3].z, 1e-5);
+	EXPECT_NEAR( 1.0 * bohr, t.state.xyz[5].x, 1e-5);
+
+	// The expansion point is a virtual site, not an atom of an unknown element
+	EXPECT_EQ(0, md_atom_atomic_number(&t.sys.atom, 7));
+	EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&t.sys.atom, 7));
+	EXPECT_EQ(MD_PARTICLE_ATOM, md_atom_particle_kind(&t.sys.atom, 4));
+
+	ASSERT_EQ(3u, t.sys.component.count);
+	EXPECT_VALID_SYSTEM(&t.sys);
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 1), STR_LIT("NA")));
+	EXPECT_EQ(4, md_component_seq_id(&t.sys.component, 1));
+	EXPECT_EQ(MD_COMPONENT_KIND_ION, md_system_component_kind(&t.sys, 1));
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 2), STR_LIT("HOH")));
+
+	double q[8], a[8];
+	ASSERT_EQ(8u, qm_test_series(q, 8, &t, STR_LIT("atom/charge")));
+	ASSERT_EQ(8u, qm_test_series(a, 8, &t, STR_LIT("atom/polarizability")));
+	EXPECT_NEAR( 1.0, q[3], 1e-12);
+	EXPECT_NEAR(-0.8, q[4], 1e-12);
+	EXPECT_NEAR( 0.4, q[5], 1e-12);
+	EXPECT_NEAR( 0.5, q[6], 1e-12);	// The HOH_pe rows interleaved with NA_npe's still go in order
+	EXPECT_NEAR(-0.5, q[7], 1e-12);
+	EXPECT_EQ(0.0, a[3]);
+	EXPECT_NEAR(6.0, a[4], 1e-12);
+	EXPECT_NEAR(3.0, a[7], 1e-12);	// (1 + 2 + 6) / 3, the off diagonal plays no part
+
+	qm_test_free(&t);
+}
+
+// The QM region and its environment as script selections: 'qm' the calculation's own atoms, 'environment'
+// the sites of the embedding, both one selection per component, and either a compile error where its
+// region is not there
+UTEST(vlx, pe_regions_are_selectable) {
+	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_regions.h5");
+	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_regions.pot");
+	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_custom_pot, sizeof(vlx_test_custom_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "unittest_pe_regions.pot"));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	remove(pot.ptr);
+	ASSERT_TRUE(loaded);
+	ASSERT_EQ(3u + 5u, t.sys.atom.count);
+
+	for (size_t i = 0; i < t.sys.atom.count; ++i) {
+		EXPECT_EQ(i < 3, (md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
+	}
+
+	char err[256] = "";
+	bool dynamic = false;
+	md_bitfield_t bf = md_bitfield_create(t.alloc);
+
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(3u, md_bitfield_popcount(&bf));
+	EXPECT_EQ(3u, md_bitfield_popcount_range(&bf, 0, 3));
+
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
+	EXPECT_EQ(5u, md_bitfield_popcount_range(&bf, 3, 8));
+
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("not qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
+
+	// One selection per fragment: NA, and HOH with its expansion point
+	md_array(md_bitfield_t) arr = 0;
+	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_EQ(2u, md_array_size(arr));
+	EXPECT_EQ(1u, md_bitfield_popcount(&arr[0]));
+	EXPECT_EQ(4u, md_bitfield_popcount(&arr[1]));
+
+	arr = 0;
+	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_EQ(1u, md_array_size(arr));
+	EXPECT_EQ(3u, md_bitfield_popcount(&arr[0]));
+
+	// They compose like any other selection, and take a context like the residue selectors do
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("within(100, qm) and environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(5u, md_bitfield_popcount(&bf));
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("environment in resname('NA')"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(1u, md_bitfield_popcount(&bf));
+	EXPECT_TRUE(md_bitfield_test_bit(&bf, 3));
+
+	qm_test_free(&t);
+}
+
+// The reference potential, 50 waters around a QM water: the examples of the script reference compile
+// against it, and the environment is one selection per water
+UTEST(vlx, pe_regions_in_a_script) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_script.h5");
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	ASSERT_TRUE(loaded);
+
+	md_script_ir_t* ir = md_script_ir_create(t.alloc);
+	const str_t src = STR_LIT(
+		"d = distance_min(qm(), water());\n"
+		"near_qm = within(5, qm());\n"
+		"first_shell = within(3.5, qm()) and environment();\n"
+		"n_fragments = count(environment(), \"residue\");\n");
+	EXPECT_TRUE(md_script_ir_compile_from_source(ir, src, &t.sys, NULL));
+	EXPECT_TRUE(md_script_ir_valid(ir));
+	for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+		printf("%.*s\n", (int)md_script_ir_errors(ir)[i].text.len, md_script_ir_errors(ir)[i].text.ptr);
+	}
+	md_script_ir_free(ir);
+
+	char err[256] = "";
+	bool dynamic = false;
+	md_array(md_bitfield_t) arr = 0;
+	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_EQ(50u, md_array_size(arr));
+
+	qm_test_free(&t);
+}
+
+// The fragments become components in the order of their numbers, whatever order the file lists them
+// in. VeloxChem writes the polarizable fragments first and the rest after, so a peptide that the
+// polarizable region cuts through arrives scattered: here residue 11 (polarizable), a water, then
+// residues 10 and 12. In file order that is no molecule and no backbone; in number order it is a
+// tripeptide, one instance with one backbone over all three residues. The parameters go with their
+// sites, so residue 11 keeps the polarizable type's charges in the middle of the chain.
+UTEST(vlx, pe_fragments_follow_their_numbers) {
+	static const char pot_text[] =
+		"@environment\n"
+		"units: angstrom\n"
+		"xyz:\n"
+		"N    21.463    0.376   -2.396  GLY_pe 11 N\n"
+		"C    21.899    0.981   -3.649  GLY_pe 11 CA\n"
+		"C    21.768    2.500   -3.602  GLY_pe 11 C\n"
+		"O    22.693    3.219   -3.981  GLY_pe 11 O\n"
+		"O    30.000    0.000    0.000  HOH_pe 997 OW\n"
+		"H    30.957    0.000    0.000  HOH_pe 997 HW1\n"
+		"H    29.760    0.927    0.000  HOH_pe 997 HW2\n"
+		"N    20.000    0.000    0.000  GLY_npe 10 N\n"
+		"C    21.458    0.000    0.000  GLY_npe 10 CA\n"
+		"C    22.009    0.711   -1.231  GLY_npe 10 C\n"
+		"O    22.910    1.543   -1.121  GLY_npe 10 O\n"
+		"N    20.618    2.976   -3.137  GLY_npe 12 N\n"
+		"C    20.364    4.408   -3.041  GLY_npe 12 CA\n"
+		"C    21.421    5.099   -2.187  GLY_npe 12 C\n"
+		"O    21.958    6.137   -2.575  GLY_npe 12 O\n"
+		"@end\n"
+		"@charges\n"
+		"N   -0.41  GLY_pe\n"
+		"C    0.02  GLY_pe\n"
+		"C    0.53  GLY_pe\n"
+		"O   -0.49  GLY_pe\n"
+		"O   -0.80  HOH_pe\n"
+		"H    0.40  HOH_pe\n"
+		"H    0.40  HOH_pe\n"
+		"N   -0.31  GLY_npe\n"
+		"C    0.12  GLY_npe\n"
+		"C    0.43  GLY_npe\n"
+		"O   -0.39  GLY_npe\n"
+		"@end\n"
+		"@polarizabilities\n"
+		"N   7.0 0.0 0.0 7.0 0.0 7.0  GLY_pe\n"
+		"C   8.0 0.0 0.0 8.0 0.0 8.0  GLY_pe\n"
+		"C   9.0 0.0 0.0 9.0 0.0 9.0  GLY_pe\n"
+		"O   6.5 0.0 0.0 6.5 0.0 6.5  GLY_pe\n"
+		"O   6.0 0.0 0.0 6.0 0.0 6.0  HOH_pe\n"
+		"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+		"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+		"@end\n";
+
+	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_order.h5");
+	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_order.pot");
+	ASSERT_TRUE(vlx_test_write_file(pot, pot_text, sizeof(pot_text) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "unittest_pe_order.pot"));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	remove(pot.ptr);
+	ASSERT_TRUE(loaded);
+	ASSERT_EQ(3u + 15u, t.sys.atom.count);
+
+	// QM, then residues 10, 11, 12 and the water
+	ASSERT_EQ(5u, t.sys.component.count);
+	EXPECT_VALID_SYSTEM(&t.sys);
+	const int seq[5] = {0, 10, 11, 12, 997};
+	const uint32_t beg[5] = {0, 3, 7, 11, 15};
+	for (size_t c = 0; c < 5; ++c) {
+		EXPECT_EQ(seq[c], md_component_seq_id(&t.sys.component, c));
+		EXPECT_EQ(beg[c], md_system_component_atom_range(&t.sys, c).beg);
+	}
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 2), STR_LIT("GLY")));
+	EXPECT_TRUE(str_eq(md_component_name(&t.sys.component, 4), STR_LIT("HOH")));
+
+	// A fragment's sites keep the order the file gives them in
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, 3), STR_LIT("N")));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, 6), STR_LIT("O")));
+	EXPECT_NEAR(20.000, t.state.xyz[3].x, 1e-5);
+	EXPECT_NEAR(21.463, t.state.xyz[7].x, 1e-5);
+	EXPECT_NEAR(20.618, t.state.xyz[11].x, 1e-5);
+	EXPECT_NEAR(30.000, t.state.xyz[15].x, 1e-5);
+
+	double q[18], a[18];
+	ASSERT_EQ(18u, qm_test_series(q, 18, &t, STR_LIT("atom/charge")));
+	ASSERT_EQ(18u, qm_test_series(a, 18, &t, STR_LIT("atom/polarizability")));
+	EXPECT_NEAR(-0.31, q[3],  1e-12);	// Residue 10, non-polarizable
+	EXPECT_NEAR( 0.43, q[5],  1e-12);
+	EXPECT_NEAR(-0.41, q[7],  1e-12);	// Residue 11, polarizable
+	EXPECT_NEAR( 0.53, q[9],  1e-12);
+	EXPECT_NEAR(-0.49, q[10], 1e-12);
+	EXPECT_NEAR(-0.31, q[11], 1e-12);	// Residue 12
+	EXPECT_NEAR(-0.80, q[15], 1e-12);	// The water
+	EXPECT_NEAR( 0.40, q[17], 1e-12);
+	EXPECT_EQ(0.0, a[3]);
+	EXPECT_NEAR(7.0, a[7],  1e-12);
+	EXPECT_NEAR(9.0, a[9],  1e-12);
+	EXPECT_EQ(0.0, a[14]);
+	EXPECT_NEAR(6.0, a[15], 1e-12);
+
+	// What viamd infers from it: the three residues one peptide, with one backbone through them all
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
+	EXPECT_VALID_SYSTEM(&t.sys);
+	const md_instance_idx_t inst = md_instance_find_by_comp_idx(&t.sys.instance, 1);
+	ASSERT_TRUE(inst >= 0);
+	EXPECT_EQ(MD_ENTITY_KIND_PEPTIDE, md_system_instance_entity_kind(&t.sys, inst));
+	EXPECT_EQ(3u, md_instance_component_range(&t.sys.instance, inst).end - md_instance_component_range(&t.sys.instance, inst).beg);
+	ASSERT_EQ(1u, t.sys.protein_backbone.range.count);
+	ASSERT_EQ(3u, t.sys.protein_backbone.segment.count);
+	for (size_t s = 0; s < 3; ++s) {
+		EXPECT_EQ((int)(1 + s), t.sys.protein_backbone.segment.comp_idx[s]);
+	}
+
+	qm_test_free(&t);
+}
+
+// A calculation without an embedding is QM throughout: 'qm' is all of it and 'environment' is no selection at all
+UTEST(vlx, qm_without_environment) {
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64)));
+
+	char err[256] = "";
+	bool dynamic = false;
+	md_bitfield_t bf = md_bitfield_create(t.alloc);
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_EQ(3u, md_bitfield_popcount(&bf));
+
+	EXPECT_FALSE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err)));
+	EXPECT_TRUE(strstr(err, "QM throughout") != NULL);
+
+	qm_test_free(&t);
+}
+
+// What VeloxChem would have refused is not the potential the calculation ran with, so none of it is
+// used. A potential that cannot be found leaves the environment out. Neither is a failed load.
+UTEST(vlx, pe_environment_left_out_when_it_cannot_be_the_one) {
+	static const char bad_pot[] =
+		"@environment\n"
+		"xyz:\n"
+		"O  0.0 0.0 0.0  HOH_pe 1 OW\n"
+		"H  1.0 0.0 0.0  HOH_pe 1 H1\n"
+		"H -1.0 0.0 0.0  HOH_pe 1 H2\n"
+		"@end\n"
+		"@charges\n"
+		"O -0.8 HOH_pe\n"
+		"H  0.4 HOH_pe\n"
+		"@end\n";
+
+	const str_t pot     = STR_LIT(VLX_PE_DIR "unittest_pe_bad.pot");
+	const str_t h5_bad  = STR_LIT(VLX_PE_DIR "unittest_pe_bad.h5");
+	const str_t h5_none = STR_LIT(VLX_PE_DIR "unittest_pe_missing.h5");
+	ASSERT_TRUE(vlx_test_write_file(pot, bad_pot, sizeof(bad_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5_bad,  "unittest_pe_bad.pot"));
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5_none, "unittest_pe_not_there.pot"));
+
+	vlx_test_t bad = {0}, none = {0};
+	const bool loaded_bad  = vlx_test_load(&bad,  h5_bad,  MEGABYTES(64));
+	const bool loaded_none = vlx_test_load(&none, h5_none, MEGABYTES(64));
+	remove(h5_bad.ptr);
+	remove(h5_none.ptr);
+	remove(pot.ptr);
+
+	EXPECT_TRUE(loaded_bad);
+	EXPECT_TRUE(loaded_none);
+	EXPECT_EQ(3u, bad.sys.atom.count);
+	EXPECT_EQ(3u, none.sys.atom.count);
+	EXPECT_EQ(0u, bad.sys.component.count);
+	EXPECT_FALSE(qm_test_has(&bad,  STR_LIT("atom/charge")));
+	EXPECT_FALSE(qm_test_has(&none, STR_LIT("atom/charge")));
+	EXPECT_EQ(3u, qm_test_count(&none, STR_LIT("atom/nuclear_charges")));
+
+	qm_test_free(&bad);
+	qm_test_free(&none);
+}
+
+// A supplemental load leaves the atoms of the system it supplements alone, so it adds no sites
+UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_pe_supplement.h5");
+	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
+
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64));
+	const bool supplemented = loaded && md_vlx_system_supplement_from_file(&t.sys, h5);
+	remove(h5.ptr);
+
+	EXPECT_TRUE(supplemented);
+	EXPECT_EQ(3u, t.sys.atom.count);
+	EXPECT_EQ(3u, t.state.num_atoms);
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("atom/charge")));
+	// Without a map the supplement's atoms are the system's own, and they stay its QM region
+	for (size_t i = 0; i < t.sys.atom.count; ++i) {
+		EXPECT_TRUE((md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
+	}
+
+	qm_test_free(&t);
+}
+
+// ---------------------------------------------------------------------------
+// DENSITY PROPERTIES
+//
+// What gives an AO matrix its meaning is the basis set, and the ROOT of the file names it along with
+// the nuclear charges - not the SCF block. And a density property is not held: it is a virtual
+// attribute read from the file on every extract, as the packed upper triangle of its Cartesian
+// matrix. These make copies of h2o.h5 carrying one - the SCF alpha density itself, in the file's own
+// AO order and spherical basis, which is what a density property written by VeloxChem is.
+// ---------------------------------------------------------------------------
+
+#define VLX_TEST_DENSITY_PROPERTY "vlx/density_property/test_density"
+#define VLX_TEST_H2O_NUM_CART 25u	// 24 spherical AOs, one d shell
+
+typedef struct vlx_test_density_file_t {
+	bool drop_scf;		// delete the SCF block afterwards
+	bool compress;		// store the property chunked (and deflated where HDF5 has the filter): not one run of bytes
+	bool padding;		// write a same sized dataset of 1e6 ahead of it, which takes the place it would otherwise have had
+	bool move_atom;		// a different geometry: the first atom moved by 0.1 bohr
+} vlx_test_density_file_t;
+
+// A copy of h2o.h5 with scf/D_alpha added at the root as the density property 'test_density'
+static bool vlx_test_write_density_property_h5(str_t dst, vlx_test_density_file_t opt) {
+	md_file_t in = {0};
+	if (!md_file_open(&in, STR_LIT(VLX_PE_DIR "h2o.h5"), MD_FILE_READ)) return false;
+	const size_t size = (size_t)md_file_size(in);
+	void* bytes = md_alloc(md_get_heap_allocator(), size);
+	const bool read = md_file_read(in, bytes, size) == size;
+	md_file_close(&in);
+	const bool written = read && vlx_test_write_file(dst, bytes, size);
+	md_free(md_get_heap_allocator(), bytes, size);
+	if (!written) return false;
+
+	char path[1024];
+	str_copy_to_char_buf(path, sizeof(path), dst);
+	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
+	if (file < 0) return false;
+
+	bool ok = false;
+	double* data = NULL;
+	size_t  count = 0;
+	hid_t src = H5Dopen2(file, "scf/D_alpha", H5P_DEFAULT);
+	if (src >= 0) {
+		hid_t   space = H5Dget_space(src);
+		hsize_t dims[2] = {0};
+		if (H5Sget_simple_extent_ndims(space) == 2 && H5Sget_simple_extent_dims(space, dims, NULL) == 2) {
+			count = (size_t)(dims[0] * dims[1]);
+			data  = md_alloc(md_get_heap_allocator(), sizeof(double) * count);
+			ok = H5Dread(src, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
+
+			if (ok && opt.padding) {
+				double* pad = md_alloc(md_get_heap_allocator(), sizeof(double) * count);
+				for (size_t i = 0; i < count; ++i) pad[i] = 1.0e6;
+				hid_t pad_set = H5Dcreate2(file, "aaa_padding", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+				ok = pad_set >= 0 && H5Dwrite(pad_set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, pad) >= 0;
+				if (pad_set >= 0) H5Dclose(pad_set);
+				md_free(md_get_heap_allocator(), pad, sizeof(double) * count);
+			}
+
+			hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
+			if (opt.compress) {
+				const hsize_t chunk[2] = { dims[0], dims[1] };
+				H5Pset_chunk(dcpl, 2, chunk);
+				if (H5Zfilter_avail(H5Z_FILTER_DEFLATE) > 0) H5Pset_deflate(dcpl, 6);
+			}
+			hid_t dst_set = ok ? H5Dcreate2(file, "test_density", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT) : -1;
+			H5Pclose(dcpl);
+			if (dst_set >= 0) {
+				ok = H5Dwrite(dst_set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
+
+				const char* label = "Test Density";
+				hid_t type   = H5Tcopy(H5T_C_S1);
+				H5Tset_size(type, H5T_VARIABLE);
+				H5Tset_cset(type, H5T_CSET_UTF8);
+				hid_t scalar = H5Screate(H5S_SCALAR);
+				hid_t attr   = H5Acreate2(dst_set, "density_property", type, scalar, H5P_DEFAULT, H5P_DEFAULT);
+				ok = ok && attr >= 0 && H5Awrite(attr, type, &label) >= 0;
+				if (attr >= 0) H5Aclose(attr);
+				H5Sclose(scalar);
+				H5Tclose(type);
+				H5Dclose(dst_set);
+			} else {
+				ok = false;
+			}
+		}
+		H5Sclose(space);
+		H5Dclose(src);
+	}
+	if (data) md_free(md_get_heap_allocator(), data, sizeof(double) * count);
+
+	if (ok && opt.move_atom) {
+		hid_t coord = H5Dopen2(file, "atom_coordinates", H5P_DEFAULT);
+		double xyz[3 * 3] = {0};
+		ok = coord >= 0 && H5Dread(coord, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, xyz) >= 0;
+		xyz[0] += 0.1;
+		ok = ok && H5Dwrite(coord, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, xyz) >= 0;
+		if (coord >= 0) H5Dclose(coord);
+	}
+	if (ok && opt.drop_scf) {
+		ok = H5Ldelete(file, "scf", H5P_DEFAULT) >= 0;
+	}
+	H5Fclose(file);
+	return ok;
+}
+
+// The packed upper triangle of the symmetric matrix at 'path', from the test's own arena. NULL when absent
+// or not symmetric; *out_n receives N.
+static float* vlx_test_packed(size_t* out_n, const vlx_test_t* t, str_t path) {
+	const md_attribute_t* attr = qm_test_attr(t, path);
+	const size_t n = md_qm_extract_packed_symmetric_f32(NULL, 0, attr, md_attribute_slice_all());
+	if (n == 0) return NULL;
+	const size_t len = n * (n + 1) / 2;
+	float* dst = (float*)md_alloc(t->alloc, sizeof(float) * len);
+	if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, md_attribute_slice_all()) != n) return NULL;
+	*out_n = n;
+	return dst;
+}
+
+static double vlx_test_max_abs_diff_f32(const float* a, const float* b, size_t n) {
+	double m = 0.0;
+	for (size_t i = 0; i < n; ++i) {
+		const double d = fabs((double)a[i] - (double)b[i]);
+		m = d > m ? d : m;
+	}
+	return m;
+}
+
+// Not held: a virtual attribute, read from the file each time, as the packed float upper triangle
+UTEST(vlx, density_property_is_read_from_the_file) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property_virtual.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
+
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	ASSERT_TRUE(loaded);
+
+	const md_attribute_t* attr = qm_test_attr(&t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	ASSERT_TRUE(attr != NULL);
+	EXPECT_TRUE(md_attribute_is_virtual(attr));
+	EXPECT_TRUE((attr->flags & MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC) != 0);
+	EXPECT_EQ(MD_ATTRIBUTE_TYPE_F32, attr->format.type);
+	EXPECT_EQ(1u, attr->format.rank);
+	EXPECT_EQ(VLX_TEST_H2O_NUM_CART * (VLX_TEST_H2O_NUM_CART + 1) / 2, attr->format.shape[0]);
+
+	// Readable as either form, and the two agree
+	size_t n = 0;
+	float* packed = vlx_test_packed(&n, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	ASSERT_TRUE(packed != NULL);
+	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n);
+	double full[VLX_TEST_H2O_NUM_CART * VLX_TEST_H2O_NUM_CART];
+	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, ARRAY_SIZE(full), attr, md_attribute_slice_all()));
+	size_t k = 0;
+	double max_diff = 0.0;
+	for (size_t i = 0; i < n; ++i) {
+		for (size_t j = i; j < n; ++j, ++k) {
+			max_diff = fmax(max_diff, fabs(full[i * n + j] - (double)packed[k]));
+			max_diff = fmax(max_diff, fabs(full[j * n + i] - (double)packed[k]));
+		}
+	}
+	EXPECT_EQ(0.0, max_diff);
+
+	// Gone with its file
+	remove(h5.ptr);
+	EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f32(packed, n * (n + 1) / 2, attr, md_attribute_slice_all()));
+
+	qm_test_free(&t);
+}
+
+// A density property is an AO matrix in the same order as the SCF density, so it has to go through
+// the same permutation into shell order: the SCF density written back as a property must come out
+// equal to the density reconstructed from the coefficients.
+UTEST(vlx, density_property_is_in_the_order_of_the_basis) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
+
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	ASSERT_TRUE(loaded);
+
+	size_t n_prop = 0, n_dens = 0;
+	float* prop = vlx_test_packed(&n_prop, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	float* dens = vlx_test_packed(&n_dens, &t, STR_LIT("orbital/alpha/density"));
+	remove(h5.ptr);
+	ASSERT_TRUE(prop != NULL);
+	ASSERT_TRUE(dens != NULL);
+	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n_prop);
+	ASSERT_EQ(n_dens, n_prop);
+	EXPECT_LT(vlx_test_max_abs_diff_f32(prop, dens, n_prop * (n_prop + 1) / 2), 1.0e-6);
+
+	qm_test_free(&t);
+}
+
+// Without an SCF block: the AO dimension still comes from the basis set and the nuclear charges at
+// the root, so the density property and everything else that belongs to the basis or to the response
+// is there - and nothing that only the SCF can state is made up in its place.
+UTEST(vlx, density_property_without_scf) {
+	const str_t h5_scf    = STR_LIT(VLX_PE_DIR "unittest_density_property_scf.h5");
+	const str_t h5_no_scf = STR_LIT(VLX_PE_DIR "unittest_density_property_no_scf.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_scf,    (vlx_test_density_file_t){0}));
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_no_scf, (vlx_test_density_file_t){ .drop_scf = true }));
+
+	vlx_test_t ref = {0};
+	vlx_test_t t   = {0};
+	const bool loaded_ref = vlx_test_load(&ref, h5_scf,    MEGABYTES(64));
+	const bool loaded     = vlx_test_load(&t,   h5_no_scf, MEGABYTES(64));
+	ASSERT_TRUE(loaded_ref);
+	ASSERT_TRUE(loaded);
+
+	EXPECT_EQ(3u, t.sys.atom.count);
+
+	// The density property, identical to the one read alongside an SCF block
+	size_t n = 0, n_ref = 0;
+	float* prop     = vlx_test_packed(&n,     &t,   STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	float* prop_ref = vlx_test_packed(&n_ref, &ref, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	remove(h5_scf.ptr);
+	remove(h5_no_scf.ptr);
+	ASSERT_TRUE(prop != NULL);
+	ASSERT_TRUE(prop_ref != NULL);
+	ASSERT_EQ(n_ref, n);
+	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(prop, prop_ref, n * (n + 1) / 2));
+
+	// The basis and its overlap belong to the basis set, not to the orbitals
+	md_gto_basis_t basis = {0};
+	ASSERT_TRUE(qm_test_basis(&basis, &t));
+	EXPECT_EQ(n, md_gto_basis_num_ao(&basis));
+	EXPECT_TRUE(qm_test_has(&t, STR_LIT("basis/overlap")));
+
+	// Nothing only the SCF states
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("orbital/alpha/coefficient")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("orbital/alpha/density")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/scf/type")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("dipole/ground_state/vector")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/rsp/transition_density/attachment")));
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("vlx/rsp/nto/particle/coefficient")));
+
+	// The response stands on its own: its occupied/virtual split comes from the electron count at the
+	// root and the basis set's AO count, and agrees with the one derived alongside the SCF. The NTO
+	// weights need nothing more than that, and the transition dipoles are drawn from the centre of
+	// nuclear charge.
+	EXPECT_EQ(qm_test_scalar(&ref, STR_LIT("vlx/rsp/num_valence"), -1.0), qm_test_scalar(&t, STR_LIT("vlx/rsp/num_valence"), -2.0));
+	EXPECT_EQ(qm_test_scalar(&ref, STR_LIT("vlx/rsp/num_virtual"), -1.0), qm_test_scalar(&t, STR_LIT("vlx/rsp/num_virtual"), -2.0));
+	EXPECT_TRUE(qm_test_has(&t, STR_LIT("vlx/rsp/nto/lambda")));
+	EXPECT_TRUE(qm_test_has(&t, STR_LIT("dipole/electric_transition/vector")));
+	EXPECT_TRUE(qm_test_has(&t, STR_LIT("dipole/electric_transition/origin")));
+
+	qm_test_free(&ref);
+	qm_test_free(&t);
+}
+
+// A dataset that is not one run of bytes - chunked, compressed - is read through HDF5, to the same values
+UTEST(vlx, density_property_compressed_is_read_through_hdf5) {
+	const str_t h5_plain = STR_LIT(VLX_PE_DIR "unittest_density_property_plain.h5");
+	const str_t h5_comp  = STR_LIT(VLX_PE_DIR "unittest_density_property_compressed.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_plain, (vlx_test_density_file_t){0}));
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_comp,  (vlx_test_density_file_t){ .compress = true }));
+
+	vlx_test_t plain = {0};
+	vlx_test_t comp  = {0};
+	ASSERT_TRUE(vlx_test_load(&plain, h5_plain, MEGABYTES(64)));
+	ASSERT_TRUE(vlx_test_load(&comp,  h5_comp,  MEGABYTES(64)));
+
+	size_t n = 0, n_comp = 0;
+	float* a = vlx_test_packed(&n,      &plain, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	float* b = vlx_test_packed(&n_comp, &comp,  STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	remove(h5_plain.ptr);
+	remove(h5_comp.ptr);
+	ASSERT_TRUE(a != NULL);
+	ASSERT_TRUE(b != NULL);
+	ASSERT_EQ(n, n_comp);
+	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(a, b, n * (n + 1) / 2));
+
+	qm_test_free(&plain);
+	qm_test_free(&comp);
+}
+
+// Rewritten in place with the same calculation, the property has moved within the file: the old
+// offset now holds the padding. It is found again where it is now.
+UTEST(vlx, density_property_follows_a_rewritten_file) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property_rewritten.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
+
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, h5, MEGABYTES(64)));
+	size_t n = 0, n_after = 0;
+	float* before = vlx_test_packed(&n, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	ASSERT_TRUE(before != NULL);
+
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){ .padding = true }));
+	float* after = vlx_test_packed(&n_after, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	remove(h5.ptr);
+	ASSERT_TRUE(after != NULL);
+	ASSERT_EQ(n, n_after);
+	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(before, after, n * (n + 1) / 2));
+
+	qm_test_free(&t);
+}
+
+// Rewritten with a different geometry, the file no longer holds the calculation that was loaded, and
+// its density is not drawn over these atoms
+UTEST(vlx, density_property_refuses_a_different_calculation) {
+	const str_t h5 = STR_LIT(VLX_PE_DIR "unittest_density_property_moved.h5");
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
+
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, h5, MEGABYTES(64)));
+	size_t n = 0;
+	float* before = vlx_test_packed(&n, &t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	ASSERT_TRUE(before != NULL);
+
+	// Padded as well, so the change is seen by size even where the file system keeps coarse times
+	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){ .padding = true, .move_atom = true }));
+	const md_attribute_t* attr = qm_test_attr(&t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
+	const size_t got = md_qm_extract_packed_symmetric_f32(before, n * (n + 1) / 2, attr, md_attribute_slice_all());
+	remove(h5.ptr);
+	EXPECT_EQ(0u, got);
+
+	qm_test_free(&t);
+}

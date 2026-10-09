@@ -87,11 +87,29 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
 
     ASSERT_EQ(tpr.atom.count, h.sys.atom.count);
     EXPECT_TRUE(str_eq(tpr.description, h.sys.description));
+    size_t num_sites = 0;
     for (size_t i = 0; i < tpr.atom.count; ++i) {
         EXPECT_TRUE(str_eq(md_atom_name(&tpr.atom, i), md_atom_name(&h.sys.atom, i)));
         EXPECT_EQ(md_atom_atomic_number(&tpr.atom, i), md_atom_atomic_number(&h.sys.atom, i));
         EXPECT_EQ(md_atom_mass(&tpr.atom, i), md_atom_mass(&h.sys.atom, i));
-        EXPECT_EQ(md_atom_flags(&tpr.atom, i) & MD_FLAG_COARSE_GRAINED, md_atom_flags(&h.sys.atom, i) & MD_FLAG_COARSE_GRAINED);
+        EXPECT_EQ(md_atom_particle_kind(&tpr.atom, i), md_atom_particle_kind(&h.sys.atom, i));
+        num_sites += md_atom_particle_kind(&tpr.atom, i) == MD_PARTICLE_VIRTUAL_SITE;
+    }
+
+    // The molecules are the topology's, the same as the tpr's
+    ASSERT_EQ(tpr.entity.count, h.sys.entity.count);
+    for (size_t e = 0; e < tpr.entity.count; ++e) {
+        EXPECT_EQ(md_entity_kind(&tpr.entity, e), md_entity_kind(&h.sys.entity, e));
+    }
+    ASSERT_EQ(tpr.instance.count, h.sys.instance.count);
+    for (size_t k = 0; k < tpr.instance.count; ++k) {
+        EXPECT_EQ(md_instance_entity_idx(&tpr.instance, k), md_instance_entity_idx(&h.sys.instance, k));
+        EXPECT_EQ(md_instance_component_range(&tpr.instance, k).beg, md_instance_component_range(&h.sys.instance, k).beg);
+    }
+    if (vsites) {
+        EXPECT_LT(0u, num_sites);
+    } else {
+        EXPECT_EQ(0u, num_sites);
     }
 
     ASSERT_EQ(tpr.component.count, h.sys.component.count);
@@ -110,19 +128,22 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     ASSERT_EQ(md_attribute_element_count(&qa->format), md_attribute_element_count(&qb->format));
     EXPECT_EQ(0, memcmp(qa->data, qb->data, md_attribute_byte_size(&qa->format)));
 
-    // GROMACS writes the chemical bonds, constraints and SETTLE. The tpr reader also ties each
-    // virtual site to its first constructing atom, which the trajectory does not have.
+    // GROMACS writes the chemical bonds, constraints and SETTLE, and nothing for a virtual site: the site
+    // is tied to its molecule by its construction, not by a bond. The tpr reader gives the same bonds.
     size_t missing = 0;
     for (size_t b = 0; b < h.sys.bond.count; ++b) {
-        EXPECT_TRUE(h.sys.bond.flags[b] & MD_BOND_FLAG_TOPOLOGY);
+        EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(h.sys.bond.flags[b]));
         missing += md_bond_find(&tpr.bond, h.sys.bond.pairs[b].idx[0], h.sys.bond.pairs[b].idx[1]) == -1;
     }
     EXPECT_EQ(0u, missing);
-    if (vsites) {
-        EXPECT_LT(h.sys.bond.count, tpr.bond.count);
-    } else {
-        EXPECT_EQ(tpr.bond.count, h.sys.bond.count);
+    EXPECT_EQ(tpr.bond.count, h.sys.bond.count);
+
+    size_t site_bonds = 0;
+    for (size_t b = 0; b < h.sys.bond.count; ++b) {
+        const md_atom_pair_t p = h.sys.bond.pairs[b];
+        site_bonds += md_atom_particle_kind(&h.sys.atom, p.idx[0]) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&h.sys.atom, p.idx[1]) == MD_PARTICLE_VIRTUAL_SITE;
     }
+    EXPECT_EQ(0u, site_bonds);
 
     // The first frame is where the run started, which is what the tpr holds - after mdrun has
     // constrained it and put the atoms in the box, so the same up to a box vector and a little

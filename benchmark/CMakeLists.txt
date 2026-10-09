@@ -17,7 +17,7 @@ set(SRC_FILES
 )
 
 if (MD_ENABLE_HDF5)
-    set (SRC_FILES ${SRC_FILES} bench_gto.c)
+    set (SRC_FILES ${SRC_FILES} bench_gto.c bench_gto_int.c)
 endif()
 
 add_executable(md_benchmark ${SRC_FILES})
