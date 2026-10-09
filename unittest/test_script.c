@@ -4668,3 +4668,155 @@ UTEST_F(script, distribution_ops_and_arrays) {
     md_script_ir_free(ir);
     md_arena_allocator_destroy(alloc);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Review fixes
+
+// Replacing the frames of set 0 forgets its aggregates, not the temporal values it keeps for every set: they stay,
+// and so does frame_mask, which says they are evaluated
+UTEST_F(script, frame_set_replace_keeps_temporal_values) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
+    ASSERT_GE(num_frames, 4u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("d = distance(1, 2); g = rdf(element('C'), element('O'), 6.0);"), mol, NULL));
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
+
+    const eval_property_t* d = find_eval_property(eval, STR_LIT("d"));
+    ASSERT_TRUE(d != NULL);
+    const uint32_t last = num_frames - 1;
+    const float before = d->values[last];
+    EXPECT_TRUE(before == before);
+
+    md_bitfield_t frames = md_bitfield_create(alloc);
+    md_bitfield_set_range(&frames, 0, 2);
+    ASSERT_TRUE(md_script_eval_set_frame_set(eval, 0, &frames));
+    EXPECT_EQ(before, d->values[last]);
+    EXPECT_TRUE(md_bitfield_test_bit(md_script_eval_frame_mask(eval), last));
+    // Its distribution starts over: those two frames are what remains to be evaluated
+    md_bitfield_t pending = md_bitfield_create(alloc);
+    EXPECT_EQ((size_t)2, md_script_eval_pending_frames(eval, &pending));
+
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Without distributions or volumes a set has nothing to add of its own: a frame whose temporal values are
+// evaluated is done for every set, and is not evaluated again
+UTEST_F(script, frame_set_without_aggregates_is_not_reevaluated) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
+    ASSERT_GE(num_frames, 4u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("d = distance(1, 2);"), mol, NULL));
+    md_bitfield_t none = md_bitfield_create(alloc);
+    const md_bitfield_t* sets[2] = { NULL, &none };
+    const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = 2, .frame_sets = sets };
+    md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
+
+    md_bitfield_t frames = md_bitfield_create(alloc);
+    md_bitfield_set_range(&frames, 1, 3);
+    ASSERT_TRUE(md_script_eval_set_frame_set(eval, 1, &frames));
+    md_bitfield_t pending = md_bitfield_create(alloc);
+    EXPECT_EQ((size_t)0, md_script_eval_pending_frames(eval, &pending));
+    // Its completed frames, the mask its temporal values are taken over, are there at once
+    EXPECT_EQ((size_t)2, md_bitfield_popcount(md_script_eval_frame_set_completed(eval, 1)));
+
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// An element past the end of what a reference refers to resolves to nothing, and an empty selection has no closest
+// pair to draw: neither may reach the procedures, which index unchecked
+UTEST_F(script, vis_ref_out_of_range_and_empty) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "d = distance_pair(residue(1), residue(2));"
+        "e = distance_min(residue(1), within_x(1000.0:2000.0));"), mol, NULL));
+
+    md_script_vis_t vis = {0};
+    md_script_vis_init(&vis, alloc);
+    const md_script_vis_ctx_t ctx = { .ir = ir, .sys = mol, .state = &mol->reference };
+    const md_script_vis_ref_t d = md_script_ir_property_vis_ref(ir, STR_LIT("d"));
+    const int dim = md_script_vis_ref_dim(ir, d);
+    ASSERT_GT(dim, 0);
+    EXPECT_TRUE (md_script_vis_eval_ref(&vis, d, dim - 1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_FALSE(md_script_vis_eval_ref(&vis, d, dim,     &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+
+    const md_script_vis_ref_t e = md_script_ir_property_vis_ref(ir, STR_LIT("e"));
+    md_script_vis_clear(&vis);
+    EXPECT_TRUE(md_script_vis_eval_ref(&vis, e, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+
+    md_script_vis_free(&vis);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+static double dist_shown_sum(const eval_property_t* p, size_t off) {
+    double sum = 0;
+    for (size_t i = 0; i < MD_DIST_BINS; ++i) {
+        const float w = p->weights[off + i];
+        sum += w != 0.0f ? p->values[off + i] / w : 0.0;
+    }
+    return sum;
+}
+
+// density() is the three axis profiles: each is the one of density_x/y/z over the longest extent, so the same mass
+// per slab volume, whose cross section is the cell's
+UTEST_F(script, density_axes_agree) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(8));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "all3 = density(all()); dx = density_x(all()); dy = density_y(all()); dz = density_z(all());"), mol, NULL));
+    md_script_eval_t* eval = md_script_eval_create(1, ir, alloc);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, 1));
+
+    const eval_property_t* all3 = find_eval_property(eval, STR_LIT("all3"));
+    const char* names[3] = {"dx", "dy", "dz"};
+    // Over its own extent an axis has bins of its own thickness: the mass per bin times the bin thickness, summed,
+    // is the total mass over the cross section whichever the extent. Compare that.
+    const double L[3] = { mol->reference.unitcell.x, mol->reference.unitcell.y, mol->reference.unitcell.z };
+    const double Lmax = MAX(L[0], MAX(L[1], L[2]));
+    for (int a = 0; a < 3; ++a) {
+        const eval_property_t* single = find_eval_property(eval, str_from_cstr(names[a]));
+        ASSERT_TRUE(single != NULL);
+        const double s_all = dist_shown_sum(all3, (size_t)a * MD_DIST_BINS) * (Lmax / MD_DIST_BINS);
+        const double s_one = dist_shown_sum(single, 0) * (L[a] / MD_DIST_BINS);
+        EXPECT_NEAR(s_one, s_all, 1e-3 * s_one);
+    }
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// An rdf's weights are the pairs a uniform distribution would put in each shell: over the window they add up to
+// the pairs counted, and the first shell is a shell, also when the window starts away from 0
+UTEST_F(script, rdf_shell_weights) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(8));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("g = rdf(element('C'), element('O'), 3.0:8.0);"), mol, NULL));
+    md_script_eval_t* eval = md_script_eval_create(1, ir, alloc);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, 1));
+    const eval_property_t* g = find_eval_property(eval, STR_LIT("g"));
+    ASSERT_TRUE(g != NULL);
+    double sum_v = 0, sum_w = 0;
+    for (size_t i = 0; i < MD_DIST_BINS; ++i) { sum_v += g->values[i]; sum_w += g->weights[i]; }
+    ASSERT_GT(sum_v, 0.0);
+    EXPECT_NEAR(sum_v, sum_w, 1e-3 * sum_v);
+    EXPECT_LT(g->weights[0], 1.01f * g->weights[1]);
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}

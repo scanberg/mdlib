@@ -3977,7 +3977,10 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
-            draw_distance(a_pos[min_i], b_pos[min_j], min_dist, ctx->vis, ctx->vis_flags);
+            // A dynamic selection can be empty in a frame: then there is no closest pair to draw
+            if (a_len && b_len) {
+                draw_distance(a_pos[min_i], b_pos[min_j], min_dist, ctx->vis, ctx->vis_flags);
+            }
         }
     }
     else {
@@ -4072,7 +4075,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 for (size_t ri = 0; ri < md_array_size(ctx->subscript_ranges); ++ri) {
                     irange_t range = ctx->subscript_ranges[ri];
 
-                    for (int i = range.beg; i < range.end; ++i) {
+                    for (int i = range.beg; i < range.end && i < (int)(a_len * b_len); ++i) {
                         // i represents the linear index which we would like to visualize
                         // But we need to map this back to the corresponding indices in a and b
                         // As the distances are essentially calculated and stored like dist[a][b]
@@ -5028,20 +5031,31 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             }
         }
 
-        const double slice_vol = (ext.x * ext.y * ext.z) / MD_DIST_BINS;
+        // The slab of a bin along an axis: the bin's thickness times the cross section of the cell. With all three
+        // axes (axis == -1) every axis is binned over the longest extent, so the thickness is that over the bin
+        // count, while the cross section is still the cell's: the cell's volume over the bins would not be.
+        const double slab_vol[3] = {
+            (double)ext.x / MD_DIST_BINS * re.y * re.z,
+            (double)ext.y / MD_DIST_BINS * re.x * re.z,
+            (double)ext.z / MD_DIST_BINS * re.x * re.y,
+        };
 
         // Convert atomic mass / Ångström^3 to SI units KG/M^3
-        const double factor = (1660.5390666 / slice_vol);
+        const double factor[3] = {
+            slab_vol[0] > 0 ? 1660.5390666 / slab_vol[0] : 0.0,
+            slab_vol[1] > 0 ? 1660.5390666 / slab_vol[1] : 0.0,
+            slab_vol[2] > 0 ? 1660.5390666 / slab_vol[2] : 0.0,
+        };
 
         if (axis == -1) {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[0][i] = (float)(density[0][i] * factor);
-                density[1][i] = (float)(density[1][i] * factor);
-                density[2][i] = (float)(density[2][i] * factor);
+                density[0][i] = (float)(density[0][i] * factor[0]);
+                density[1][i] = (float)(density[1][i] * factor[1]);
+                density[2][i] = (float)(density[2][i] * factor[2]);
             }
         } else {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[axis][i] = (float)(density[axis][i] * factor);
+                density[axis][i] = (float)(density[axis][i] * factor[axis]);
             }
         }
 
@@ -5417,10 +5431,11 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     // Compute normalization factor of bins
     // With respect to the nominal distribution rho
     // Each bin is normalized with respect to the nominal distribution
+    // The shell of bin i is [min + i dr, min + (i + 1) dr), as rdf_increment_bin bins it
     const double dr = (max_cutoff - min_cutoff) / (float)num_bins;
-    double prev_sphere_vol = 0;
+    double prev_sphere_vol = sphere_volume(min_cutoff);
     for (int64_t i = 0; i < num_bins; ++i) {
-        const double sphere_vol = sphere_volume(min_cutoff + (i + 0.5) * dr);
+        const double sphere_vol = sphere_volume(min_cutoff + (i + 1) * dr);
         const double bin_vol = sphere_vol - prev_sphere_vol;
         prev_sphere_vol = sphere_vol;
         weights[i] = (float)(ref_rho * bin_vol);

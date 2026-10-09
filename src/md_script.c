@@ -610,6 +610,10 @@ struct md_script_eval_t {
     md_mutex_t    frame_lock;   // guards frame_mask and the sets' completed
 
     md_array(eval_frame_set_t) sets;    // at least one, sized at creation
+
+    // Whether the IR has properties aggregated over frames (distributions, volumes). Without any, a set has
+    // nothing of its own to add: its frames are done as soon as their temporal values are.
+    bool has_aggregates;
 };
 
 struct parse_context_t {
@@ -6130,7 +6134,11 @@ static void clear_property(eval_property_t* prop) {
 }
 
 // Whether some set has frame f and has not added it yet. The caller holds frame_lock, or accepts a stale answer.
+// Without aggregates a set adds nothing of its own, so a frame is pending only until its temporal values are.
 static bool frame_pending(const md_script_eval_t* eval, uint32_t f) {
+    if (!eval->has_aggregates && md_bitfield_test_bit(&eval->frame_mask, f)) {
+        return false;
+    }
     for (size_t k = 0; k < md_array_size(eval->sets); ++k) {
         const eval_frame_set_t* set = &eval->sets[k];
         if (md_bitfield_test_bit(&set->frames, f) && !md_bitfield_test_bit(&set->completed, f)) {
@@ -6157,6 +6165,9 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
 
     const size_t num_sets = md_array_size(eval->sets);
     bool* claimed = md_temp_alloc_array(temp, bool, num_sets);
+
+    // What the procedures report while evaluating. Not the IR's (it is read-only here): reported below, with the frame
+    eval_log_t log = { .alloc = temp_alloc };
 
     // Per worker states. Each evaluation range owns its coordinates, which is why the whole system
     // had to be copied before: it was the only way to get a private coordinate buffer.
@@ -6198,6 +6209,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
 
     eval_context_t ctx = {
         .ir = ir,   // Read-only, shared with the evaluations of the other frame ranges
+        .log = &log,
         .sys = sys,
         .atom_mass = atom_mass,
         .atom_radius = atom_radius,
@@ -6235,6 +6247,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
         
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = NULL;
+        log = (eval_log_t){ .alloc = temp_alloc };     // its arrays went with the reset
 		MEMSET(&ctx.spatial_acc, 0, sizeof(ctx.spatial_acc));
         ctx.spatial_acc_cutoff = 0.0;
 
@@ -6242,6 +6255,9 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
             if (!evaluate_node_alloc(&data[i], expr[i], &ctx, temp_alloc)) {
                 str_t str = expr[i]->token.str;
                 MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"' at frame %i", STR_ARG(str), (int)f_idx);
+                for (size_t e = 0; e < md_array_size(log.errors); ++e) {
+                    MD_LOG_ERROR("    "STR_FMT, STR_ARG(log.errors[e].text));
+                }
                 result = false;
                 goto done;
             }
@@ -6255,28 +6271,35 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
             }
         }
 
-        // The sets which take the frame into their aggregates. Claimed only now that it is evaluated, and under the
-        // lock: whatever else evaluates the same frame, each set adds it exactly once.
-        md_mutex_lock(&eval->frame_lock);
-        for (size_t k = 0; k < num_sets; ++k) {
-            eval_frame_set_t* set = &eval->sets[k];
-            claimed[k] = md_bitfield_test_bit(&set->frames, f_idx) && !md_bitfield_test_bit(&set->completed, f_idx);
-            if (claimed[k]) {
-                md_bitfield_set_bit(&set->completed, f_idx);
-            }
-        }
-        md_mutex_unlock(&eval->frame_lock);
-
+        // Two passes over the properties. First the temporal values, which are per frame, shared by all sets and
+        // kept in set 0. Then, with the frame in frame_mask, the sets claim it and add it to their aggregates.
+        // In that order, a frame a set has completed always has its temporal values written: completed is the
+        // mask a reader on another thread takes the temporal values of the set over.
         const size_t num_props = md_array_size(eval->sets[0].props);
+        for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) {
+            // The sets which take the frame into their aggregates. Claimed only now that it is evaluated, and under
+            // the lock: whatever else evaluates the same frame, each set adds it exactly once.
+            md_mutex_lock(&eval->frame_lock);
+            md_bitfield_set_bit(&eval->frame_mask, f_idx);
+            for (size_t k = 0; k < num_sets; ++k) {
+                eval_frame_set_t* set = &eval->sets[k];
+                claimed[k] = md_bitfield_test_bit(&set->frames, f_idx) && !md_bitfield_test_bit(&set->completed, f_idx);
+                if (claimed[k]) {
+                    md_bitfield_set_bit(&set->completed, f_idx);
+                }
+            }
+            md_mutex_unlock(&eval->frame_lock);
+        }
         for (size_t s_idx = 0; s_idx < num_sets; ++s_idx)
         for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
             eval_property_t* prop = &eval->sets[s_idx].props[p_idx];
             ASSERT(str_eq(prop->ident, ir->property_names[p_idx]));
 
-            // Temporal values are per frame, shared by all sets and kept in set 0. Aggregates are each set's own,
-            // and take only the frames it claimed.
+            // Temporal values in the first pass, in set 0 only. Aggregates in the second, each set's own, and only
+            // for the frames it claimed.
             const bool temporal = prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
-            if (temporal ? (s_idx != 0) : !claimed[s_idx]) {
+            if (temporal ? (pass != 0 || s_idx != 0) : (pass != 1 || !claimed[s_idx])) {
                 continue;
             }
             ASSERT(prop->values);
@@ -6375,10 +6398,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
                 break;
             }
         }
-
-        md_mutex_lock(&eval->frame_lock);
-        md_bitfield_set_bit(&eval->frame_mask, f_idx);
-        md_mutex_unlock(&eval->frame_lock);
+        }   // pass
         
         //max_arena_pos = MAX(max_arena_pos, vm_arena.commit_pos);
     }
@@ -6883,10 +6903,14 @@ static void frame_set_assign(md_script_eval_t* eval, eval_frame_set_t* set, cons
     }
 }
 
-static void frame_set_clear(eval_frame_set_t* set) {
+// Forgets what the set has added: its completed frames and its aggregates. Temporal values (kept in set 0) are
+// not the set's own and stay, unless also_temporal.
+static void frame_set_clear(eval_frame_set_t* set, bool also_temporal) {
     md_bitfield_clear(&set->completed);
     for (size_t i = 0; i < md_array_size(set->props); ++i) {
-        clear_property(&set->props[i]);
+        if (also_temporal || set->props[i].kind != MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+            clear_property(&set->props[i]);
+        }
     }
 }
 
@@ -6964,6 +6988,11 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     // Sized up front rather than pushed one at a time: a published attribute may hold the address
     // of the property it describes, and a growing array would move it out from under one.
     const size_t num_props = md_array_size(ir->property_names);
+    for (size_t i = 0; i < num_props; ++i) {
+        if (ir->property_flags[i] != MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+            eval->has_aggregates = true;
+        }
+    }
     for (size_t k = 0; k < num_sets; ++k) {
         eval_frame_set_t* set = &eval->sets[k];
         md_array_resize(set->props, num_props, eval->arena);
@@ -6993,7 +7022,7 @@ void md_script_eval_clear_data(md_script_eval_t* eval) {
     ASSERT(eval->magic == SCRIPT_EVAL_MAGIC);
     md_bitfield_clear(&eval->frame_mask);
     for (size_t k = 0; k < md_array_size(eval->sets); ++k) {
-        frame_set_clear(&eval->sets[k]);
+        frame_set_clear(&eval->sets[k], true);
     }
     eval->interrupt = false;
 }
@@ -7009,7 +7038,11 @@ bool md_script_eval_set_frame_set(md_script_eval_t* eval, size_t idx, const md_b
     }
     eval_frame_set_t* set = &eval->sets[idx];
     frame_set_assign(eval, set, frames);
-    frame_set_clear(set);
+    frame_set_clear(set, false);
+    if (!eval->has_aggregates) {
+        // Nothing to add: the frames whose temporal values are evaluated are done
+        md_bitfield_and(&set->completed, &set->frames, &eval->frame_mask);
+    }
     return true;
 }
 
@@ -7538,6 +7571,10 @@ bool md_script_vis_eval_ref(md_script_vis_t* vis, md_script_vis_ref_t ref, int s
 
     if (subidx < -1) {
         MD_LOG_ERROR("Visualize: invalid subidx");
+        return false;
+    }
+    // An element past the end resolves to nothing, like a stale reference: the procedures index by it unchecked
+    if (subidx >= 0 && node->data.type.dim[0] >= 0 && subidx >= node->data.type.dim[0]) {
         return false;
     }
 
