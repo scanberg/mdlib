@@ -166,6 +166,45 @@ md_bitset_t md_bitset_copy  (md_bitset_t s, struct md_allocator_i* alloc);
 // individually; sets in arenas go away with the arena. Resets *s to EMPTY.
 void md_bitset_free(md_bitset_t* s, struct md_allocator_i* alloc);
 
+// --- Builder ---
+//
+// The set itself is immutable, so anything that accumulates (a procedure setting the atoms it matches, a union
+// over many sets, a visualization collecting atoms) goes through a builder and produces the set once, at the
+// end. Folding with md_bitset_or instead allocates every intermediate: n operands cost O(n * span) time and,
+// in an arena, O(n * span) memory.
+//
+// A builder is dense over a DOMAIN [beg, end) fixed at init, the universe or the span of a context. Members
+// outside the domain are dropped, so a builder over a context's span restricts to that context for free.
+// It tracks the words it has touched: finishing and resetting cost O(touched), not O(domain), which is what
+// makes one builder reusable across many small contexts. Its words come from scratch, typically a temp arena
+// distinct from the allocator of the result.
+typedef struct md_bitset_builder_t {
+    uint64_t* words;    // words[k] holds the indices [base + 64 k, base + 64 (k + 1))
+    uint32_t  base;     // beg & ~63
+    uint32_t  beg;      // domain
+    uint32_t  end;
+    uint32_t  num_words;
+    uint32_t  lo;       // touched words [lo, hi), empty when lo >= hi
+    uint32_t  hi;
+} md_bitset_builder_t;
+
+#define MD_BITSET_MAX_INDEX 0xFFFFFFC0u  // indices are < 2^32 - 64
+
+void        md_bitset_builder_init   (md_bitset_builder_t* b, uint32_t beg, uint32_t end, struct md_allocator_i* scratch);
+void        md_bitset_builder_free   (md_bitset_builder_t* b, struct md_allocator_i* scratch);  // only for scratch which frees individually
+void        md_bitset_builder_reset  (md_bitset_builder_t* b);                                  // empty again, O(touched)
+
+void        md_bitset_builder_set        (md_bitset_builder_t* b, uint32_t i);
+void        md_bitset_builder_set_range  (md_bitset_builder_t* b, uint32_t beg, uint32_t end);
+void        md_bitset_builder_set_indices(md_bitset_builder_t* b, const uint32_t* indices, size_t num_indices);
+void        md_bitset_builder_or         (md_bitset_builder_t* b, md_bitset_t s);   // b |= s
+void        md_bitset_builder_and        (md_bitset_builder_t* b, md_bitset_t s);   // b &= s
+void        md_bitset_builder_andnot     (md_bitset_builder_t* b, md_bitset_t s);   // b &= ~s
+
+bool        md_bitset_builder_test   (const md_bitset_builder_t* b, uint32_t i);
+// The set built so far, in canonical form, its payload (if any) in alloc. The builder is left as it is.
+md_bitset_t md_bitset_builder_finish (const md_bitset_builder_t* b, struct md_allocator_i* alloc);
+
 // --- Readers (non-inline) ---
 
 uint64_t md_bitset_count_range   (md_bitset_t s, uint32_t beg, uint32_t end);

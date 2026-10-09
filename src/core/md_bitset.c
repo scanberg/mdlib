@@ -9,7 +9,7 @@
 
 STATIC_ASSERT(sizeof(md_bitset_gpu_t) == 16, "GPU descriptor must be 16 bytes");
 
-#define MAX_INDEX 0xFFFFFFC0u  // sets hold indices < 2^32 - 64, so a window base + 64 never wraps
+#define MAX_INDEX MD_BITSET_MAX_INDEX  // sets hold indices < 2^32 - 64, so a window base + 64 never wraps
 
 // ---------------------------------------------------------------------------------------------------------
 // Payload
@@ -185,7 +185,8 @@ void md_bitset_free(md_bitset_t* s, md_allocator_i* alloc) {
 
 md_bitset_t md_bitset_from_words(const uint64_t* words, size_t num_words, uint32_t base, md_allocator_i* alloc) {
     ASSERT((base & 63) == 0);
-    ASSERT(((uint64_t)base + (uint64_t)num_words * 64) <= (uint64_t)MAX_INDEX + 64);
+    // Every index the words can hold must be below MAX_INDEX, or end (one past the last member) can wrap to 0
+    ASSERT(((uint64_t)base + (uint64_t)num_words * 64) <= (uint64_t)MAX_INDEX);
     if (!words || !num_words) return md_bitset_empty_set();
 
     size_t first = SIZE_MAX, last = 0;
@@ -279,6 +280,150 @@ md_bitset_t md_bitset_xor(md_bitset_t a, md_bitset_t b, md_allocator_i* alloc) {
 md_bitset_t md_bitset_not(md_bitset_t s, uint32_t beg, uint32_t end, md_allocator_i* alloc) {
     ASSERT(end <= MAX_INDEX);
     return md_bitset_andnot(md_bitset_range(beg, end), s, alloc);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Builder
+
+void md_bitset_builder_init(md_bitset_builder_t* b, uint32_t beg, uint32_t end, md_allocator_i* scratch) {
+    ASSERT(b);
+    ASSERT(end <= MAX_INDEX);
+    MEMSET(b, 0, sizeof(*b));
+    if (beg >= end) return;
+    ASSERT(scratch);
+    b->beg  = beg;
+    b->end  = end;
+    b->base = beg & ~63u;
+    b->num_words = (uint32_t)((((uint64_t)end + 63) >> 6) - (beg >> 6));
+    b->words = (uint64_t*)md_alloc(scratch, b->num_words * sizeof(uint64_t));
+    ASSERT(b->words);
+    MEMSET(b->words, 0, b->num_words * sizeof(uint64_t));
+    b->lo = b->num_words;
+    b->hi = 0;
+}
+
+void md_bitset_builder_free(md_bitset_builder_t* b, md_allocator_i* scratch) {
+    ASSERT(b);
+    if (b->words) {
+        ASSERT(scratch);
+        md_free(scratch, b->words, b->num_words * sizeof(uint64_t));
+    }
+    MEMSET(b, 0, sizeof(*b));
+}
+
+void md_bitset_builder_reset(md_bitset_builder_t* b) {
+    ASSERT(b);
+    if (b->lo < b->hi) {
+        MEMSET(b->words + b->lo, 0, (size_t)(b->hi - b->lo) * sizeof(uint64_t));
+    }
+    b->lo = b->num_words;
+    b->hi = 0;
+}
+
+static inline void builder_touch(md_bitset_builder_t* b, uint32_t k0, uint32_t k1) {
+    b->lo = MIN(b->lo, k0);
+    b->hi = MAX(b->hi, k1);
+}
+
+void md_bitset_builder_set(md_bitset_builder_t* b, uint32_t i) {
+    ASSERT(b);
+    if (i - b->beg >= b->end - b->beg) return;  // outside the domain (unsigned wrap), also for an empty one
+    const uint32_t k = (i - b->base) >> 6;
+    b->words[k] |= 1ull << ((i - b->base) & 63);
+    builder_touch(b, k, k + 1);
+}
+
+void md_bitset_builder_set_indices(md_bitset_builder_t* b, const uint32_t* indices, size_t num_indices) {
+    ASSERT(b);
+    ASSERT(indices || !num_indices);
+    for (size_t n = 0; n < num_indices; ++n) {
+        md_bitset_builder_set(b, indices[n]);
+    }
+}
+
+void md_bitset_builder_set_range(md_bitset_builder_t* b, uint32_t beg, uint32_t end) {
+    ASSERT(b);
+    beg = max_u32(beg, b->beg);
+    end = min_u32(end, b->end);
+    if (beg >= end) return;
+    const uint32_t k0 = (beg - b->base) >> 6;
+    const uint32_t k1 = (end - 1 - b->base) >> 6;
+    const uint64_t lo = ~0ull << ((beg - b->base) & 63);
+    const uint64_t hi = ~0ull >> (63 - ((end - 1 - b->base) & 63));
+    if (k0 == k1) {
+        b->words[k0] |= lo & hi;
+    } else {
+        b->words[k0] |= lo;
+        for (uint32_t k = k0 + 1; k < k1; ++k) b->words[k] = ~0ull;
+        b->words[k1] |= hi;
+    }
+    builder_touch(b, k0, k1 + 1);
+}
+
+// The mask of the domain within builder word k: only the first and last words are partial
+static inline uint64_t builder_domain_mask(const md_bitset_builder_t* b, uint32_t k) {
+    uint64_t m = ~0ull;
+    if (k == 0) m &= ~0ull << ((b->beg - b->base) & 63);
+    if (k == b->num_words - 1) m &= ~0ull >> (63 - ((b->end - 1 - b->base) & 63));
+    return m;
+}
+
+void md_bitset_builder_or(md_bitset_builder_t* b, md_bitset_t s) {
+    ASSERT(b);
+    if (md_bitset_empty(s)) return;
+    if (!s.words) {
+        md_bitset_builder_set_range(b, s.beg, s.end);
+        return;
+    }
+    const uint32_t beg = max_u32(s.beg, b->beg);
+    const uint32_t end = min_u32(s.end, b->end);
+    if (beg >= end) return;
+    // Both are aligned to global 64 index windows, so word k of one is a whole word of the other
+    const uint32_t k0 = (beg - b->base) >> 6;
+    const uint32_t k1 = (end - 1 - b->base) >> 6;
+    const uint64_t* src = s.words + ((b->base + 64 * k0 - (s.beg & ~63u)) >> 6);
+    for (uint32_t k = k0; k <= k1; ++k) {
+        b->words[k] |= src[k - k0];
+    }
+    // Members of s outside the domain may have landed in the domain's partial edge words. k0 is the first word
+    // of the domain whenever s starts before it, and k1 the last whenever s ends after it.
+    if (k0 == 0)                b->words[0]  &= builder_domain_mask(b, 0);
+    if (k1 == b->num_words - 1) b->words[k1] &= builder_domain_mask(b, k1);
+    builder_touch(b, k0, k1 + 1);
+}
+
+void md_bitset_builder_and(md_bitset_builder_t* b, md_bitset_t s) {
+    ASSERT(b);
+    for (uint32_t k = b->lo; k < b->hi; ++k) {
+        b->words[k] &= md_bitset_word(s, b->base + 64 * k);
+    }
+}
+
+void md_bitset_builder_andnot(md_bitset_builder_t* b, md_bitset_t s) {
+    ASSERT(b);
+    if (md_bitset_empty(s) || b->lo >= b->hi) return;
+    const uint64_t dom_end = (uint64_t)b->base + 64ull * b->num_words;
+    if (s.end <= b->base || s.beg >= dom_end) return;
+    // The touched words which s overlaps
+    uint32_t k0 = s.beg <= b->base ? 0 : (s.beg - b->base) >> 6;
+    uint32_t k1 = (uint32_t)((((uint64_t)s.end < dom_end ? (uint64_t)s.end : dom_end) - 1 - b->base) >> 6) + 1;
+    k0 = max_u32(k0, b->lo);
+    k1 = min_u32(k1, b->hi);
+    for (uint32_t k = k0; k < k1; ++k) {
+        b->words[k] &= ~md_bitset_word(s, b->base + 64 * k);
+    }
+}
+
+bool md_bitset_builder_test(const md_bitset_builder_t* b, uint32_t i) {
+    ASSERT(b);
+    if (i - b->beg >= b->end - b->beg) return false;
+    return (b->words[(i - b->base) >> 6] >> ((i - b->base) & 63)) & 1;
+}
+
+md_bitset_t md_bitset_builder_finish(const md_bitset_builder_t* b, md_allocator_i* alloc) {
+    ASSERT(b);
+    if (b->lo >= b->hi) return md_bitset_empty_set();
+    return md_bitset_from_words(b->words + b->lo, b->hi - b->lo, b->base + 64 * b->lo, alloc);
 }
 
 // ---------------------------------------------------------------------------------------------------------

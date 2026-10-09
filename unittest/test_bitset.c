@@ -377,3 +377,132 @@ UTEST(bitset, span_edges) {
     }
     EXPECT_EQ(0, failures);
 }
+
+// The builder against the reference: a random sequence of set / set_range / or / and / andnot / reset over a
+// domain, members outside the domain dropped. The sets combined with it are placed at offsets of their own, so
+// they straddle the domain's edges.
+UTEST(bitset, builder) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    static ref_t expect, other;
+    int failures = 0;
+    for (int round = 0; round < NUM_ROUNDS * 4; ++round) {
+        md_temp_scope_t temp = md_temp_begin();
+        md_allocator_i* scratch = md_temp_allocator(temp);
+
+        const uint32_t base = pick_base() + 2 * REF_N;
+        const uint32_t dbeg = base + rnd_range(0, REF_N / 2);
+        const uint32_t dend = dbeg + rnd_range(1, base + REF_N - dbeg);
+        md_bitset_builder_t b;
+        md_bitset_builder_init(&b, dbeg, dend, scratch);
+
+        expect.base = base;
+        memset(expect.ref, 0, REF_N);
+        #define IN_DOM(i) ((i) >= dbeg && (i) < dend)
+
+        const int steps = 1 + rnd() % 10;
+        for (int step = 0; step < steps; ++step) {
+            switch (rnd() % 8) {
+            case 0: case 1: {
+                const uint32_t i = base - 32 + rnd_range(0, REF_N + 64);
+                md_bitset_builder_set(&b, i);
+                if (IN_DOM(i)) expect.ref[i - base] = 1;
+            } break;
+            case 2: {
+                const uint32_t rb = base - 100 + rnd_range(0, REF_N + 200);
+                const uint32_t re = rb + rnd_range(0, 400);
+                md_bitset_builder_set_range(&b, rb, re);
+                for (uint32_t i = rb; i < re; ++i) if (IN_DOM(i)) expect.ref[i - base] = 1;
+            } break;
+            case 3: case 4: case 5: case 6: {
+                other.base = base - REF_N / 2 + rnd_range(0, REF_N);
+                gen(other.ref, rnd() % SHAPE_COUNT);
+                md_bitset_t s = make(&other, alloc);
+                const int op = rnd() % 3;
+                if (op == 0) md_bitset_builder_or(&b, s);
+                if (op == 1) md_bitset_builder_and(&b, s);
+                if (op == 2) md_bitset_builder_andnot(&b, s);
+                for (uint32_t k = 0; k < REF_N; ++k) {
+                    const uint32_t i = base + k;
+                    const bool y = ref_get(&other, i);
+                    if (op == 0) expect.ref[k] |= (uint8_t)(y && IN_DOM(i));
+                    if (op == 1) expect.ref[k] &= (uint8_t)y;
+                    if (op == 2) expect.ref[k] &= (uint8_t)!y;
+                }
+                md_bitset_free(&s, alloc);
+            } break;
+            case 7:
+                if (rnd() % 3 == 0) {
+                    md_bitset_builder_reset(&b);
+                    memset(expect.ref, 0, REF_N);
+                }
+                break;
+            }
+        }
+        #undef IN_DOM
+
+        bool ok = true;
+        for (uint32_t k = 0; ok && k < REF_N; ++k) ok = md_bitset_builder_test(&b, base + k) == (bool)expect.ref[k];
+        md_bitset_t s1 = md_bitset_builder_finish(&b, alloc);
+        md_bitset_t s2 = md_bitset_builder_finish(&b, alloc);   // finishing leaves the builder as it is
+        ok = ok && matches(s1, &expect) && md_bitset_equal(s1, s2);
+        if (!ok) {
+            if (failures < 5) printf("builder failed (round %d): domain [%u,%u) result [%u,%u) %s\n", round, dbeg, dend, s1.beg, s1.end, s1.words ? "bits" : "run");
+            ++failures;
+        }
+        md_bitset_free(&s1, alloc);
+        md_bitset_free(&s2, alloc);
+        md_temp_end(temp);
+    }
+    EXPECT_EQ(0, failures);
+}
+
+// A union of many sets through one builder equals the pairwise fold, and reusing the builder after a reset
+// starts from nothing
+UTEST(bitset, builder_fold) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* scratch = md_temp_allocator(temp);
+
+    enum { NUM = 2000 };
+    md_bitset_builder_t b;
+    md_bitset_builder_init(&b, 0, NUM * 11, scratch);
+    md_bitset_t fold = md_bitset_empty_set();
+    for (uint32_t i = 0; i < NUM; ++i) {
+        const md_bitset_t r = md_bitset_range(i * 11, i * 11 + 10);   // residues with a one atom gap: not a run
+        md_bitset_builder_or(&b, r);
+        md_bitset_t next = md_bitset_or(fold, r, alloc);
+        md_bitset_free(&fold, alloc);
+        fold = next;
+    }
+    md_bitset_t built = md_bitset_builder_finish(&b, alloc);
+    EXPECT_TRUE(md_bitset_equal(built, fold));
+    EXPECT_EQ((uint64_t)NUM * 10, md_bitset_count(built));
+
+    // Reused for a small context: the result is that context only, and a run
+    md_bitset_builder_reset(&b);
+    md_bitset_builder_set_range(&b, 110, 120);
+    md_bitset_t small = md_bitset_builder_finish(&b, alloc);
+    EXPECT_TRUE(md_bitset_is_run(small));
+    EXPECT_EQ(110u, small.beg);
+    EXPECT_EQ(120u, small.end);
+
+    // Empty domain and empty builder
+    md_bitset_builder_t e;
+    md_bitset_builder_init(&e, 5, 5, scratch);
+    md_bitset_builder_set(&e, 5);
+    EXPECT_TRUE(md_bitset_empty(md_bitset_builder_finish(&e, alloc)));
+
+    md_bitset_free(&built, alloc);
+    md_bitset_free(&fold, alloc);
+    md_temp_end(temp);
+}
+
+// from_words takes words only as far as MAX_INDEX: one past the last member must not wrap
+UTEST(bitset, top_window) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    uint64_t w = 1ull << 63;
+    md_bitset_t s = md_bitset_from_words(&w, 1, MD_BITSET_MAX_INDEX - 64, alloc);
+    EXPECT_TRUE(md_bitset_validate(s));
+    EXPECT_EQ(MD_BITSET_MAX_INDEX, s.end);
+    md_bitset_free(&s, alloc);
+}
