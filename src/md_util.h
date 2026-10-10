@@ -142,8 +142,9 @@ void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const md_system_sta
 // smallest set of smallest rings, made symmetric), and their flags (md_util_system_infer_ring_flags)
 bool md_util_system_infer_rings(md_system_t* sys);
 
-// The flags of the rings (sys->ring_flags, md_ring_flags_t) from the rings, the bonds and their flags. Call it again
-// when the bond orders or aromaticity change (md_chem_perceive does).
+// The flags of the rings (sys->ring_flags, md_ring_flags_t) from the rings, the bonds and their flags, and the atoms of
+// sugar rings in canonical order (MD_RING_FLAG_SUGAR). Call it again when the bond orders or aromaticity change
+// (md_chem_perceive does).
 void md_util_system_infer_ring_flags(md_system_t* sys);
 
 // Identify isolated structures by covalent bonds.

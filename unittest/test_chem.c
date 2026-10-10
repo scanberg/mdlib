@@ -584,3 +584,43 @@ UTEST_F(chem, ring_flags) {
         }
     }
 }
+
+// The atoms of sugar rings in canonical order: the ring O, the anomeric C, and on around the ring away from the O
+UTEST_F(chem, sugar_ring_order) {
+    static const struct { const char* id; const char* atoms; } expect[] = {
+        { "NAG", "O5 C1 C2 C3 C4 C5" },                 // Pyranose
+        { "A",   "O4' C1' C2' C3' C4'" },               // Ribose
+        { "DA",  "O4' C1' C2' C3' C4'" },               // 2-deoxyribose
+        { "ATP", "O4' C1' C2' C3' C4'" },
+        { "NAD", "O4B C1B C2B C3B C4B" },               // Both riboses, in the order of the rings
+        { "NAD", "O4D C1D C2D C3D C4D" },
+    };
+    for (int pass = 0; pass < 2; ++pass) {          // All atoms, heavy atoms only
+        const bool strip_h = pass == 1;
+        for (size_t e = 0; e < ARRAY_SIZE(expect); ++e) {
+            const ref_comp_t* c = find_component(utest_fixture->comps, expect[e].id);
+            ASSERT_TRUE_MSG(c != NULL, expect[e].id);
+            md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+            md_system_t sys = { .alloc = alloc };
+            md_system_state_t st = { .alloc = alloc };
+            int* map = md_alloc(alloc, sizeof(int) * (md_array_size(c->atom) + 1));
+            build_component(&sys, &st, map, c, strip_h, false);
+            ASSERT_TRUE(md_chem_perceive(&sys, &st, strip_h ? MD_CHEM_FLAG_PROTONATE_PH7 : MD_CHEM_FLAG_NONE));
+
+            bool found = false;
+            for (size_t r = 0; r < md_index_data_num_ranges(&sys.ring) && !found; ++r) {
+                if (!(md_system_ring_flags(&sys, r) & MD_RING_FLAG_SUGAR)) continue;
+                char buf[64] = {0};
+                int len = 0;
+                const int32_t* ring = md_index_range_beg(&sys.ring, r);
+                for (size_t k = 0; k < md_index_range_size(&sys.ring, r); ++k) {
+                    const str_t name = md_atom_name(&sys.atom, ring[k]);
+                    len += snprintf(buf + len, sizeof(buf) - len, "%s%.*s", k ? " " : "", (int)name.len, name.ptr);
+                }
+                found = !strcmp(buf, expect[e].atoms);
+            }
+            EXPECT_TRUE_MSG(found, expect[e].atoms);
+            md_vm_arena_destroy(alloc);
+        }
+    }
+}

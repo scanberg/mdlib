@@ -309,7 +309,7 @@ typedef struct md_system_t {
     
     md_bond_data_t              bond;               // Persistent covalent bonds
     
-    md_index_data_t             ring;               // Ring structures formed by persistent bonds, 3 to 7 atoms in order around the ring
+    md_index_data_t             ring;               // Ring structures formed by persistent bonds, 3 to 7 atoms in order around the ring (sugars in canonical order, see MD_RING_FLAG_SUGAR)
     md_array(md_ring_flags_t)   ring_flags;         // [ring count] What each ring is (md_ring_flags_t), see md_system_ring_flags
     md_structure_data_t         structure;          // Isolated structures connected by persistent bonds (plus hierarchy links for coarse grained systems)
 

@@ -264,6 +264,8 @@ enum {
 //             bond of a known order above single or aromatic in or out of the ring, and at least two of the C carrying
 //             an O or N outside of the ring (a hydroxyl, a glycosidic link, the N of a nucleoside), one of them next to
 //             the ring O (the anomeric C). Deoxy sugars (the 2-deoxyribose of DNA) count; tetrahydrofuran does not.
+//             The atoms of a sugar ring are in canonical order in md_system_t::ring: the ring O, the anomeric C, and on
+//             around the ring away from the O (O5 C1 C2 C3 C4 C5 of a pyranose, O4' C1' C2' C3' C4' of a furanose).
 typedef enum md_ring_flags_t {
     MD_RING_FLAG_NONE       = 0,
     MD_RING_FLAG_AROMATIC   = 1u << 0,

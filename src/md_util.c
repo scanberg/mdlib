@@ -5061,47 +5061,58 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     return true;
 }
 
-// Is ring (n atoms in order) the ring of a monosaccharide (MD_RING_FLAG_SUGAR)
-static bool ring_is_sugar(const md_system_t* sys, const int32_t* ring, size_t n) {
-    if (n != 5 && n != 6) return false;
+// Is ring (n atoms in order) the ring of a monosaccharide (MD_RING_FLAG_SUGAR). Returns the position in the ring of
+// its anomeric C, -1 if it is not one, and the position of the ring O in out_ring_o. The anomeric C is the neighbor of
+// the ring O with an O or N outside of the ring (C1 of an aldose, C2 of a ketose); with both neighbors carrying one, the
+// one with more, and the first of the two in the ring when they carry as many.
+static int sugar_anomeric(const md_system_t* sys, const int32_t* ring, int n, int* out_ring_o) {
+    if (n != 5 && n != 6) return -1;
     int ring_o = -1;
-    for (size_t k = 0; k < n; ++k) {
+    for (int k = 0; k < n; ++k) {
         const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, ring[k]);
         if (z == MD_Z_O) {
-            if (ring_o >= 0) return false;
-            ring_o = (int)k;
+            if (ring_o >= 0) return -1;
+            ring_o = k;
         } else if (z != MD_Z_C) {
-            return false;
+            return -1;
         }
     }
-    if (ring_o < 0) return false;
+    if (ring_o < 0) return -1;
 
     int substituted = 0;
-    bool anomeric = false;
-    for (size_t k = 0; k < n; ++k) {
-        const int32_t a = ring[k];
-        if ((int)k == ring_o) continue;
-        bool sub = false;
-        md_bond_iter_t it = md_bond_iter(&sys->bond, a);
+    int sub[7] = {0};    // O and N outside of the ring, on each ring C
+    for (int k = 0; k < n; ++k) {
+        if (k == ring_o) continue;
+        md_bond_iter_t it = md_bond_iter(&sys->bond, ring[k]);
         while (md_bond_iter_has_next(&it)) {
             const md_atom_idx_t x = md_bond_iter_atom_index(&it);
             const md_bond_flags_t f = (md_bond_flags_t)md_bond_iter_bond_flags(&it);
             md_bond_iter_next(&it);
             // No double or aromatic bond on the ring atoms, within the ring or out of it
-            if (md_bond_order(f) >= 2 || (f & MD_BOND_FLAG_AROMATIC)) return false;
+            if (md_bond_order(f) >= 2 || (f & MD_BOND_FLAG_AROMATIC)) return -1;
             bool in_ring = false;
-            for (size_t j = 0; j < n; ++j) in_ring |= ring[j] == x;
+            for (int j = 0; j < n; ++j) in_ring |= ring[j] == x;
             if (in_ring) continue;
             const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, x);
-            sub |= z == MD_Z_O || z == MD_Z_N;
+            sub[k] += z == MD_Z_O || z == MD_Z_N;
         }
-        if (sub) {
-            substituted += 1;
-            // Next to the ring O
-            anomeric |= k == (size_t)(ring_o + 1) % n || (k + 1) % n == (size_t)ring_o;
-        }
+        substituted += sub[k] > 0;
     }
-    return substituted >= 2 && anomeric;
+    const int next = (ring_o + 1) % n;
+    const int prev = (ring_o + n - 1) % n;
+    if (substituted < 2 || (!sub[next] && !sub[prev])) return -1;
+    *out_ring_o = ring_o;
+    if (sub[next] != sub[prev]) return sub[next] > sub[prev] ? next : prev;
+    return MIN(next, prev);
+}
+
+// Puts the atoms of a sugar ring in their canonical order: the ring O first, then the anomeric C and on around the
+// ring away from the O (O5 C1 C2 C3 C4 C5 of a pyranose, O4' C1' C2' C3' C4' of the furanose of a nucleotide)
+static void sugar_canonical_order(int32_t* ring, int n, int ring_o, int anomeric) {
+    int32_t tmp[7];
+    const int step = anomeric == (ring_o + 1) % n ? 1 : n - 1;
+    for (int k = 0; k < n; ++k) tmp[k] = ring[(ring_o + k * step) % n];
+    MEMCPY(ring, tmp, n * sizeof(int32_t));
 }
 
 void md_util_system_infer_ring_flags(md_system_t* sys) {
@@ -5141,7 +5152,12 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
             if (bond_rings[b] > 1) flags |= MD_RING_FLAG_FUSED;
         }
         if (aromatic) flags |= MD_RING_FLAG_AROMATIC;
-        if (ring_is_sugar(sys, ring, n)) flags |= MD_RING_FLAG_SUGAR;
+        int ring_o = -1;
+        const int anomeric = sugar_anomeric(sys, ring, (int)n, &ring_o);
+        if (anomeric >= 0) {
+            flags |= MD_RING_FLAG_SUGAR;
+            sugar_canonical_order(md_index_range_ptr(&sys->ring, r), (int)n, ring_o, anomeric);
+        }
         sys->ring_flags[r] = flags;
     }
     md_temp_end(temp);
