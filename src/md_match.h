@@ -11,6 +11,7 @@ struct md_allocator_i;
 struct md_bitfield_t;
 struct md_system_t;
 struct md_smiles_error_t;
+struct md_bitset_t;
 
 // ### STRUCTURE MATCHING ###
 // Finds where a query structure occurs in the covalent bond graph of a system (substructure search).
@@ -112,11 +113,19 @@ struct md_smiles_error_t;
 // ## LEVELS (md_match_level_t)
 //
 // Every match lies within one unit: a molecule (see THE GRAPH), a component (residue) or an instance (a polymer chain
-// or a molecule, see md_instance_data_t). At the component and instance levels the bonds leaving the unit are not part
-// of the graph that is searched: a residue pattern ends at the peptide bonds, and MD_MATCH_FLAG_WHOLE holds a residue
-// against its own atoms only. A query made of disconnected parts (SMILES '.') has all of its parts matched within the
-// same unit.
-// The unit of a match (md_match_result_t.unit) is the index of its molecule, component or instance.
+// or a molecule, see md_instance_data_t), or one of the sets of atoms given as the units (UNITS). At the component and
+// instance levels, and in units given, the bonds leaving the unit are not part of the graph that is searched: a
+// residue pattern ends at the peptide bonds, and MD_MATCH_FLAG_WHOLE holds a residue against its own atoms only. A
+// query made of disconnected parts (SMILES '.') has all of its parts matched within the same unit.
+// The unit of a match (md_match_result_t.unit) is the index of its molecule, component, instance or given unit.
+//
+// UNITS (md_match_desc_t.units): any sets of atoms, in place of those of a level. The graph of a unit is its atoms and
+// the bonds between them. Units may overlap (the rings of a fused system, selections of a script), so UNIQUE and
+// DISJOINT hold within each unit: atoms in two units are a match of each. With the rings of the system as the units
+// (md_system_t::ring) a query matches along a ring: a chain is consecutive atoms of the ring in either direction
+// (CCNCC is in pyridine and in piperidine), a chain closed onto its first atom the whole ring (c1ccncc1), and the
+// parts of a disconnected query are anywhere in the ring on atoms of their own (N.O). A branch never matches there,
+// the atoms of a ring having two neighbors in it.
 //
 // MD_MATCH_FLAG_WHOLE: the match covers every atom of its unit, hydrogens aside, and the unit has no bonds between
 // those atoms beyond those of the query. "Which residues are glycine" is NCC=O at the component level with this flag;
@@ -154,6 +163,7 @@ struct md_smiles_error_t;
 //   - Isotope and chirality are read but not tested: md_system_t has no isotopes, and chirality would take
 //     coordinates.
 //   - '*' matches any atom which is not a hydrogen.
+//   - '~' (from SMARTS) is a bond of any order: C~N matches C-N, C=N, C#N and an aromatic C:N.
 //
 // ## REFERENCE ATOMS AS A QUERY
 //
@@ -313,6 +323,11 @@ typedef struct md_match_desc_t {
     // This is what a script's 'in' context is.
     const struct md_bitfield_t* mask;
 
+    // Optional. The units to match within (see UNITS), in place of those of the level, which is then not used. Each a
+    // set of atoms of the system; they may overlap. The unit of a match is its index here.
+    const struct md_bitset_t* units;
+    size_t num_units;
+
     // Optional, 0 for no limit. The search stops after this many matches.
     size_t limit;
 } md_match_desc_t;
@@ -353,6 +368,8 @@ typedef struct md_match_identify_desc_t {
     md_match_resolve_t charges;
 
     const struct md_bitfield_t* mask;   // Optional, as for md_match_desc_t
+    const struct md_bitset_t* units;    // Optional, as for md_match_desc_t
+    size_t num_units;
 } md_match_identify_desc_t;
 
 typedef struct md_match_identify_result_t {

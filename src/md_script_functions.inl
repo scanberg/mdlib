@@ -696,7 +696,7 @@ static procedure_t procedures[] = {
     {STR_INIT("atom"),      TI_BITFIELD, 1, {TI_IRANGE_ARR},        _atom_irng,     FLAG_STATIC_VALIDATION},
     {STR_INIT("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},           _atom_int,      FLAG_STATIC_VALIDATION},
     
-    {STR_INIT("ring"),      TI_BITFIELD_ARR, 0, {0},                _ring,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {STR_INIT("ring"),      TI_BITFIELD_ARR, 3, {TI_STRING_ARR, TI_STRING_ARR, TI_IRANGE}, _ring, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // Structure matching: one selection per occurrence of a SMILES pattern, or of a reference structure
     {STR_INIT("smiles"),    TI_BITFIELD_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -849,6 +849,9 @@ static const proc_sig_t signatures[] = {
     // smiles(pattern, *, level = "structure", mode = "unique"), match(ref, *, by = "element", level = "structure", mode = "unique")
     {STR_INIT("smiles"),        3, {REQ("pattern"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
     {STR_INIT("match"),         4, {REQ("ref"), KW_STR("by", "element"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
+
+    // ring(pattern = none, *, kind = none, size = none), see _ring
+    {STR_INIT("ring"),          3, {NUL("pattern"), KW_NUL("kind"), KW_NUL("size")}},
 };
 
 #undef REQ
@@ -888,6 +891,8 @@ static const param_domain_t param_domains[] = {
     {STR_INIT("match"),     1, DOMAIN_MATCH_LABEL},
     {STR_INIT("match"),     2, DOMAIN_MATCH_LEVEL},
     {STR_INIT("match"),     3, DOMAIN_MATCH_MODE},
+    {STR_INIT("ring"),      0, DOMAIN_SMILES},
+    {STR_INIT("ring"),      1, DOMAIN_RING_KIND},
 };
 
 // The values of the string parameters of smiles() and match()
@@ -3213,99 +3218,235 @@ static int _match(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    (void)arg;
+// ### RINGS ###
+// ring(pattern = none, *, kind = none, size = none): the rings of the system (md_system_t::ring) which all of the
+// given filters let through, each fully within the context.
+//   pattern  SMILES, one or several: a ring which has any of them along it (md_match with the rings as units). A chain
+//            is consecutive ring atoms in either direction (CCNCC), a chain closed onto its first atom the whole ring
+//            (c1ccncc1), parts separated by '.' are anywhere in the ring (N.O). A branch is not along a ring: an error.
+//   kind     One or several of ring_kinds: a ring of any of them.
+//   size     The number of atoms, an int or a range (5:6).
+typedef enum ring_kind_t {
+    RING_KIND_AROMATIC,
+    RING_KIND_ALIPHATIC,
+    RING_KIND_HETERO,
+    RING_KIND_HETEROAROMATIC,
+    RING_KIND_SUGAR,
+} ring_kind_t;
 
-    int result = 0;
+static const match_name_t ring_kinds[] = {
+    {STR_INIT("aromatic"),       RING_KIND_AROMATIC},          // Every bond of the ring aromatic
+    {STR_INIT("aliphatic"),      RING_KIND_ALIPHATIC},         // Not aromatic
+    {STR_INIT("hetero"),         RING_KIND_HETERO},            // An atom other than C in the ring
+    {STR_INIT("heteroaromatic"), RING_KIND_HETEROAROMATIC},    // Both
+    {STR_INIT("sugar"),          RING_KIND_SUGAR},             // A furanose or pyranose, see MD_RING_FLAG_SUGAR
+};
 
-    if (dst || ctx->vis) {
-        if (dst) {
-            if (!dst->ptr) return 0;
-            
-            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-            md_bitfield_t* bf_arr = as_bitfield(*dst);
-        
-            const size_t num_rings = md_index_data_num_ranges(&ctx->sys->ring);
-            int64_t dst_idx = 0;
-            for (size_t i = 0; i < num_rings; ++i) {
-                md_bitfield_t* bf = &bf_arr[dst_idx];
-            
-                // Only accept the ring if it is fully within the given context
-                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->sys->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->sys->ring, i);
+static bool ring_is_kind(md_ring_flags_t f, int kind) {
+    switch (kind) {
+    case RING_KIND_AROMATIC:       return (f & MD_RING_FLAG_AROMATIC) != 0;
+    case RING_KIND_ALIPHATIC:      return (f & MD_RING_FLAG_AROMATIC) == 0;
+    case RING_KIND_HETERO:         return (f & MD_RING_FLAG_HETERO) != 0;
+    case RING_KIND_HETEROAROMATIC: return (f & MD_RING_FLAG_AROMATIC) && (f & MD_RING_FLAG_HETERO);
+    case RING_KIND_SUGAR:          return (f & MD_RING_FLAG_SUGAR) != 0;
+    default:                       return false;
+    }
+}
 
-                if (ctx->mol_ctx) {
-                    bool discard = false;
-                    for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
-                        if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
-                            discard = true;
-                            break;
-                        }
-                    }
-                    if (discard) continue;
-                }
+// Reports a SMILES syntax error, at the offending character when the pattern is a string literal of its own
+static void report_smiles_error(eval_context_t* ctx, int arg, str_t pattern, const md_smiles_error_t* err) {
+    token_t tok = ctx->arg_tokens[arg];
+    if (tok.type == TOKEN_STRING && tok.str.len == pattern.len + 2) {
+        tok.beg = tok.beg + 1 + (int)err->offset;
+        tok.end = MIN(tok.beg + 1, tok.end - 1);
+        tok.end = MAX(tok.end, tok.beg);
+    }
+    EVAL_LOG_ERROR(ctx, tok, "Invalid SMILES: %s", err->message);
+}
 
-                for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
-                    md_bitfield_set_bit(bf, *it);
-                }
-                dst_idx += 1;
-            }
-        } else {
-            ASSERT(ctx->vis);
-            const size_t num_rings = md_index_data_num_ranges(&ctx->sys->ring);
-            for (size_t i = 0; i < num_rings; ++i) {
-                // Only visualize the ring if it is fully within the given context
-                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->sys->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->sys->ring, i);
-
-                if (ctx->mol_ctx) {
-                    bool discard = false;
-                    for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
-                        if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
-                            discard = true;
-                            break;
-                        }
-                    }
-                    if (discard) continue;
-                }
-
-                md_script_vis_vertex_t vbeg = vertex(vec3_set(ctx->cur_state->xyz[*ring_beg].x, ctx->cur_state->xyz[*ring_beg].y, ctx->cur_state->xyz[*ring_beg].z), COLOR_WHITE);
-                md_script_vis_vertex_t v0 = vbeg;
-                for (const md_atom_idx_t* it = ring_beg+1; it != ring_end; ++it) {
-                    md_script_vis_vertex_t v1 = vertex(vec3_set(ctx->cur_state->xyz[*it].x, ctx->cur_state->xyz[*it].y, ctx->cur_state->xyz[*it].z), COLOR_WHITE);
-                    push_line(v0, v1, ctx->vis);
-                    v0 = v1;
-                }
-                push_line(v0, vbeg, ctx->vis);
-            }
+// The query of a ring pattern, or false (reported when validating) if it cannot be along a ring
+static bool ring_pattern_query(md_match_query_t* query, str_t pattern, bool report, eval_context_t* ctx) {
+    md_smiles_error_t err = {0};
+    if (!md_match_query_init_smiles(query, pattern, ctx->temp_alloc, &err)) {
+        if (report) report_smiles_error(ctx, 0, pattern, &err);
+        return false;
+    }
+    // Hydrogens written as atoms of their own ([H]C) are hydrogen counts, not ring atoms
+    const size_t n = query->num_atoms;
+    uint32_t* degree = md_alloc(ctx->temp_alloc, sizeof(uint32_t) * MAX(n, 1));
+    MEMSET(degree, 0, sizeof(uint32_t) * MAX(n, 1));
+    size_t num_heavy = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const md_match_atom_t* a = &query->atoms[i];
+        num_heavy += !((a->flags & MD_MATCH_ATOM_ELEMENT) && a->z == MD_Z_H);
+    }
+    for (size_t i = 0; i < query->num_bonds; ++i) {
+        const md_match_atom_t* a = &query->atoms[query->bonds[i].a];
+        const md_match_atom_t* b = &query->atoms[query->bonds[i].b];
+        if (((a->flags & MD_MATCH_ATOM_ELEMENT) && a->z == MD_Z_H) || ((b->flags & MD_MATCH_ATOM_ELEMENT) && b->z == MD_Z_H)) continue;
+        degree[query->bonds[i].a]++;
+        degree[query->bonds[i].b]++;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        if (degree[i] > 2) {
+            if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "ring: '" STR_FMT "' branches, and a ring atom has two neighbors along the ring: use smiles() for substituents", STR_ARG(pattern));
+            md_match_query_free(query);
+            return false;
         }
-    } else {
-        // We need to check if the ring is within the given context
-        if (ctx->mol_ctx) {
-            int count = 0;
-            const size_t num_rings = md_index_data_num_ranges(&ctx->sys->ring);
-            for (size_t i = 0; i < num_rings; ++i) {
-                bool discard = false;
-                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->sys->ring, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->sys->ring, i);
-                for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
-                    if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
-                        discard = true;
-                        break;
-                    }
-                }
-                if (!discard) {
-                    count += 1;
-                }
+    }
+    if (num_heavy > MD_RING_MAX_SIZE) {
+        if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "ring: '" STR_FMT "' has %zu atoms, more than the largest ring (%d)", STR_ARG(pattern), num_heavy, MD_RING_MAX_SIZE);
+        md_match_query_free(query);
+        return false;
+    }
+    return true;
+}
+
+// The rings which pass the filters of arg (see above), within the context. Returns the count, or
+// STATIC_VALIDATION_ERROR (reported when validating, dst == NULL). out_ring (optional) receives their indices.
+static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, eval_context_t* ctx) {
+    const md_system_t* sys = ctx->sys;
+    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+
+    // Kinds
+    uint32_t kind_mask = 0;
+    if (!is_absent_type(arg[1].type)) {
+        ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING_ARR));
+        const str_t* kinds = as_string_arr(arg[1]);
+        const size_t num_kinds = element_count(arg[1]);
+        for (size_t i = 0; i < num_kinds; ++i) {
+            int kind = 0;
+            if (!match_lookup(&kind, ring_kinds, ARRAY_SIZE(ring_kinds), kinds[i])) {
+                if (report) match_report_unknown(ctx, 1, "ring kind", ring_kinds, ARRAY_SIZE(ring_kinds), kinds[i]);
+                return STATIC_VALIDATION_ERROR;
             }
-            result = count;
-        } else {
-            return (int)md_index_data_num_ranges(&ctx->sys->ring);
+            kind_mask |= 1u << kind;
         }
     }
 
-    return result;
+    // Size
+    int size_lo = INT32_MIN, size_hi = INT32_MAX;
+    if (!is_absent_type(arg[2].type)) {
+        ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_IRANGE));
+        const irange_t r = as_irange(arg[2]);
+        size_lo = r.beg;
+        size_hi = r.end;
+        if (size_hi < size_lo) {
+            if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[2], "ring: the size range is empty");
+            return STATIC_VALIDATION_ERROR;
+        }
+    }
+
+    // Patterns: the rings which have any of them
+    uint8_t* has_pattern = NULL;
+    if (!is_absent_type(arg[0].type)) {
+        ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
+        const str_t* patterns = as_string_arr(arg[0]);
+        const size_t num_patterns = element_count(arg[0]);
+        has_pattern = md_alloc(ctx->temp_alloc, MAX(num_rings, 1));
+        MEMSET(has_pattern, 0, MAX(num_rings, 1));
+        // The rings as the units to match within
+        md_bitset_t* units = md_alloc(ctx->temp_alloc, sizeof(md_bitset_t) * MAX(num_rings, 1));
+        for (size_t r = 0; r < num_rings; ++r) {
+            units[r] = md_bitset_from_indices((const uint32_t*)md_index_range_beg(&sys->ring, r), md_index_range_size(&sys->ring, r), ctx->temp_alloc);
+        }
+        for (size_t p = 0; p < num_patterns; ++p) {
+            md_match_query_t query = {0};
+            if (!ring_pattern_query(&query, patterns[p], report, ctx)) return STATIC_VALIDATION_ERROR;
+            if (num_rings > 0) {
+                const md_match_desc_t desc = {
+                    .query     = &query,
+                    .mode      = MD_MATCH_MODE_ONE_PER_UNIT,
+                    .units     = units,
+                    .num_units = num_rings,
+                };
+                md_match_result_t res = {0};
+                const bool ok = md_match_find(&res, &desc, sys, ctx->temp_alloc);
+                md_match_query_free(&query);
+                if (!ok) {
+                    if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Ring matching failed, see the log");
+                    return STATIC_VALIDATION_ERROR;
+                }
+                for (size_t i = 0; i < res.count; ++i) {
+                    if (res.unit[i] < num_rings) has_pattern[res.unit[i]] = 1;
+                }
+                md_match_result_free(&res);
+            } else {
+                md_match_query_free(&query);
+            }
+        }
+    }
+
+    int count = 0;
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int n = (int)md_index_range_size(&sys->ring, r);
+        if (n < size_lo || n > size_hi) continue;
+        if (has_pattern && !has_pattern[r]) continue;
+        if (kind_mask) {
+            const md_ring_flags_t f = md_system_ring_flags(sys, r);
+            bool any = false;
+            for (int k = 0; k < (int)ARRAY_SIZE(ring_kinds) && !any; ++k) {
+                any = (kind_mask & (1u << k)) && ring_is_kind(f, k);
+            }
+            if (!any) continue;
+        }
+        // Only a ring fully within the context
+        if (ctx->mol_ctx) {
+            const int32_t* ring = md_index_range_beg(&sys->ring, r);
+            bool inside = true;
+            for (int k = 0; k < n && inside; ++k) inside = md_bitfield_test_bit(ctx->mol_ctx, ring[k]);
+            if (!inside) continue;
+        }
+        if (out_ring) md_array_push(*out_ring, (uint32_t)r, ctx->temp_alloc);
+        count += 1;
+    }
+    return count;
+}
+
+static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    const md_system_t* sys = ctx->sys;
+
+    md_array(uint32_t) rings = 0;
+    const int count = ring_select(&rings, arg, !dst && !ctx->vis, ctx);
+    if (count < 0) return count;
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        if (!dst->ptr) return 0;
+        md_bitfield_t* bf_arr = as_bitfield(*dst);
+        const int64_t cap = type_info_array_len(dst->type);
+        if (cap <= 0) return 0;
+        for (int i = 0; i < count; ++i) {
+            // Flattened (cap 1): all of the rings in one
+            md_bitfield_t* bf = &bf_arr[cap == 1 ? 0 : MIN(i, cap - 1)];
+            const int32_t* ring = md_index_range_beg(&sys->ring, rings[i]);
+            const size_t n = md_index_range_size(&sys->ring, rings[i]);
+            for (size_t k = 0; k < n; ++k) md_bitfield_set_bit(bf, ring[k]);
+        }
+        return 0;
+    }
+
+    if (ctx->vis) {
+        for (int i = 0; i < count; ++i) {
+            const int32_t* ring = md_index_range_beg(&sys->ring, rings[i]);
+            const size_t n = md_index_range_size(&sys->ring, rings[i]);
+            if (n == 0) continue;
+            const vec3_t* xyz = ctx->cur_state->xyz;
+            md_script_vis_vertex_t vbeg = vertex(vec3_set(xyz[ring[0]].x, xyz[ring[0]].y, xyz[ring[0]].z), COLOR_WHITE);
+            md_script_vis_vertex_t v0 = vbeg;
+            for (size_t k = 1; k < n; ++k) {
+                md_script_vis_vertex_t v1 = vertex(vec3_set(xyz[ring[k]].x, xyz[ring[k]].y, xyz[ring[k]].z), COLOR_WHITE);
+                push_line(v0, v1, ctx->vis);
+                v0 = v1;
+            }
+            push_line(v0, vbeg, ctx->vis);
+        }
+        return 0;
+    }
+
+    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MIN(1, count);
+    return count;
 }
 
 static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, md_atom_flags_t flags) {

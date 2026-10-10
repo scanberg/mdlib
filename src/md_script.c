@@ -39,6 +39,7 @@
 #include <core/md_compiler.h>
 #include <core/md_log.h>
 #include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_parse.h>
@@ -440,6 +441,7 @@ typedef enum value_domain_t {
     DOMAIN_MATCH_LEVEL,     // Where a match lies: 'structure', 'residue', 'chain', ...
     DOMAIN_MATCH_MODE,      // Which matches are reported: 'unique', 'all', ...
     DOMAIN_MATCH_LABEL,     // What the atoms of a reference are compared by: 'element', 'name'
+    DOMAIN_RING_KIND,       // What a ring is: 'aromatic', 'sugar', ...
 } value_domain_t;
 
 typedef struct param_domain_t {

@@ -43,6 +43,7 @@ set (SRC_FILES
     test_trr.c
     test_mmcif.c
     test_match.c
+    test_ring.c
     test_util.c
     test_unit.c
     test_script.c

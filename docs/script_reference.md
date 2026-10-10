@@ -485,15 +485,36 @@ bases = nucleobase();
 <!-- proc name=ring category=selector.atom -->
 
 ```text
-ring() -> bitfield[]
+ring(pattern: string[], kind: string[], size: irange) -> bitfield[]
 ```
 
-One selection per ring found in the molecular graph, useful to measure something per ring. Inside a context only
-rings that lie completely within the context are returned.
+**Parameters:** `pattern` (optional), `kind` and `size` (optional, given by name).
+
+One selection per ring of the molecular graph (rings of 3 to 7 atoms, see below), useful to measure something per
+ring. Inside a context only rings that lie completely within the context are returned. Each parameter narrows the
+rings down, and a ring has to pass all of those given; a list given to one of them is any of its entries.
+
+- `pattern`: [SMILES](#smiles), read as there, along the ring. A chain is consecutive atoms of the ring in either
+  direction and from any atom: `"CCNCC"` is in pyridine as in piperidine. A chain closed back onto its first atom is
+  the whole ring: `"c1ccncc1"`. Parts separated by `.` are anywhere in the ring, on atoms of their own: `"N.O"` is a
+  ring with an N and an O (oxazole, morpholine). The atoms of a ring have two neighbours in it, so a pattern which
+  branches is a compile error: substituents are for [`smiles`](#smiles). `~` is a bond of any order: `"C~N"` takes
+  a C=N in a ring which is not aromatic, which `"CN"` (a single bond) does not.
+- `kind`: `"aromatic"` (every bond of the ring aromatic), `"aliphatic"` (not aromatic), `"hetero"` (an atom other than
+  C), `"heteroaromatic"` (both), `"sugar"` (the ring of a furanose or pyranose).
+- `size`: the number of atoms, an int or a range.
+
+The rings are the smallest ones, without those made of smaller rings: naphthalene has two rings and not the ten
+membered one around both, norbornane two five membered rings and not the six membered one around them. Larger cycles
+are loops and not rings. The atoms of a sugar ring are in order from the ring O and the anomeric C.
 
 ```mdscript
-n_ring_atoms = count(ring());                   # the rings are merged into one selection
-d = distance_pair(ring(), vec3(0, 0, 0));       # centre of each ring to the origin, one value per ring
+n_ring_atoms = count(ring());                           # the rings are merged into one selection
+d = distance_pair(ring(), vec3(0, 0, 0));               # centre of each ring to the origin, one value per ring
+aromatic = ring(kind="aromatic");
+pyridines = ring("c1ccncc1");
+azoles = ring({"c[nH]c", "cnc"}, size=5);
+sugars = ring(kind="sugar") in residue(1:20);
 ```
 
 ### Selectors: residue level
@@ -783,6 +804,7 @@ query, the way SMARTS reads the same string:
   aromatic ring as well.
 - Lowercase atoms have to be aromatic. In a pattern with lowercase atoms, the uppercase ones outside of rings have
   to be aliphatic: `Cc1cncn1` is the side chain of a histidine, and not a part of a purine.
+- `~` is a bond of any order (from SMARTS): `C~N` finds C-N, C=N, C#N and aromatic C-N bonds alike.
 - Isotopes, chirality and atom classes are read but not compared. `*` is any atom but a hydrogen. Hydrogens written
   as atoms count towards a bracket atom: `N[C@@]([H])(C)C=O` is `N[C@@H](C)C=O`.
 

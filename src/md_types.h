@@ -254,6 +254,10 @@ enum {
     MD_BOND_ORDER_QUADRUPLE = 4,
 };
 
+// The sizes of the rings of md_system_t::ring (md_util_system_infer_rings). Larger cycles are loops, not rings.
+#define MD_RING_MIN_SIZE 3
+#define MD_RING_MAX_SIZE 7
+
 // Ring flags (md_system_t::ring_flags), what a ring of the system is. md_util_system_infer_ring_flags derives them
 // from the rings, the bonds and their flags; md_util_system_infer_rings and md_chem_perceive call it.
 //   AROMATIC  Every bond of the ring is aromatic (md_chem_perceive, or the bonds a file gives): an aromatic ring, alone

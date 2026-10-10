@@ -4760,8 +4760,8 @@ static void sort_ring(int* arr, int n) {
 }
 
 // Rings of up to 7 atoms: the 7 membered aromatic rings (tropolone, azulene, tropylium) count, larger ones are loops
-#define MIN_RING_SIZE 3
-#define MAX_RING_SIZE 7
+#define MIN_RING_SIZE MD_RING_MIN_SIZE
+#define MAX_RING_SIZE MD_RING_MAX_SIZE
 #define MAX_DEPTH (MAX_RING_SIZE/2 + 1)
 
 // Removes the rings which are sums of smaller ones: rings whose bonds are those of strictly smaller rings, each bond
@@ -5080,7 +5080,7 @@ static int sugar_anomeric(const md_system_t* sys, const int32_t* ring, int n, in
     if (ring_o < 0) return -1;
 
     int substituted = 0;
-    int sub[7] = {0};    // O and N outside of the ring, on each ring C
+    int sub[MD_RING_MAX_SIZE] = {0};    // O and N outside of the ring, on each ring C
     for (int k = 0; k < n; ++k) {
         if (k == ring_o) continue;
         md_bond_iter_t it = md_bond_iter(&sys->bond, ring[k]);
@@ -5109,7 +5109,7 @@ static int sugar_anomeric(const md_system_t* sys, const int32_t* ring, int n, in
 // Puts the atoms of a sugar ring in their canonical order: the ring O first, then the anomeric C and on around the
 // ring away from the O (O5 C1 C2 C3 C4 C5 of a pyranose, O4' C1' C2' C3' C4' of the furanose of a nucleotide)
 static void sugar_canonical_order(int32_t* ring, int n, int ring_o, int anomeric) {
-    int32_t tmp[7];
+    int32_t tmp[MD_RING_MAX_SIZE];
     const int step = anomeric == (ring_o + 1) % n ? 1 : n - 1;
     for (int k = 0; k < n; ++k) tmp[k] = ring[(ring_o + k * step) % n];
     MEMCPY(ring, tmp, n * sizeof(int32_t));

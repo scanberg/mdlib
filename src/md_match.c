@@ -7,6 +7,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_common.h>
 #include <core/md_hash.h>
 #include <core/md_intrinsics.h>
@@ -1414,6 +1415,12 @@ typedef struct search_t {
     uint32_t       unit_end;
     uint32_t       unit_count;
     bool           unit_done;
+    // Units given (md_match_desc_t.units): the current one, whose graph is cut at its edges, its atoms in unit_atoms
+    const md_bitset_t* units;
+    size_t         num_units;
+    md_bitset_t    unit_set;
+    int32_t*       unit_scratch;
+    uint32_t       unit_scratch_cap;
 
     int32_t*  map;          // [plan.num] Atom at each position
     uint32_t* cursor;       // [plan.num] Where the search for the candidates of each position is
@@ -1551,6 +1558,7 @@ static inline bool atom_props_ok(const search_t* s, const pos_atom_t* pa, int32_
 static inline bool in_graph(const search_t* s, int32_t t) {
     if (s->mask && !bit_test(s->mask, t)) return false;
     if (s->ranged && ((uint32_t)t < s->unit_beg || (uint32_t)t >= s->unit_end)) return false;
+    if (s->units && !md_bitset_test(s->unit_set, (uint32_t)t)) return false;
     return true;
 }
 
@@ -1792,6 +1800,8 @@ static void report(search_t* s) {
         if (pl->num > 1) {
             MEMCPY(s->key, s->map, sizeof(int32_t) * pl->num);
             sort_i32(s->key, pl->num);
+            // Units given may overlap: the same atoms are a match of each unit they are in
+            if (s->units) s->key[pl->num] = (int32_t)s->unit;
             if (!uniq_insert(&s->uniq, s->key)) return;
         }
         break;
@@ -2020,6 +2030,22 @@ static size_t level_num_units(const target_t* tg, md_match_level_t level) {
 static void unit_begin(search_t* s, int64_t unit) {
     const target_t* tg = s->tg;
     const md_system_t* sys = tg->sys;
+    if (s->units) {
+        // Units given may overlap: what DISJOINT kept out of the previous one is free in the next
+        if (s->used && s->unit_atoms) {
+            for (uint32_t i = 0; i < s->unit_count; ++i) bit_clear(s->used, s->unit_atoms[i]);
+        }
+        s->unit = unit;
+        s->unit_set = s->units[unit];
+        const uint64_t n = md_bitset_count(s->unit_set);
+        if (n > s->unit_scratch_cap) {
+            s->unit_scratch_cap = (uint32_t)MAX(n, 2 * (uint64_t)s->unit_scratch_cap);
+            s->unit_scratch = md_alloc(s->arena, sizeof(int32_t) * s->unit_scratch_cap);
+        }
+        s->unit_atoms = s->unit_scratch;
+        s->unit_count = (uint32_t)md_bitset_extract_indices((uint32_t*)s->unit_scratch, s->unit_scratch_cap, s->unit_set);
+        return;
+    }
     s->unit = unit;
     s->unit_atoms = NULL;
     uint32_t beg = 0, end = 0;
@@ -2098,7 +2124,8 @@ static void unit_search(search_t* s, bool whole_checked) {
 }
 
 static void search_init(search_t* s, const target_t* tg, md_match_level_t level, md_match_mode_t mode, uint32_t flags, md_match_resolve_t hydrogens,
-                        md_match_resolve_t bond_orders, md_match_resolve_t charges, const md_bitfield_t* mask, md_allocator_i* arena) {
+                        md_match_resolve_t bond_orders, md_match_resolve_t charges, const md_bitfield_t* mask, const md_bitset_t* units, size_t num_units,
+                        md_allocator_i* arena) {
     MEMSET(s, 0, sizeof(search_t));
     s->tg          = tg;
     s->level       = level;
@@ -2107,7 +2134,10 @@ static void search_init(search_t* s, const target_t* tg, md_match_level_t level,
     s->hydrogens   = hydrogens;
     s->bond_orders = bond_orders;
     s->charges     = charges;
-    s->ranged      = level != MD_MATCH_LEVEL_STRUCTURE;
+    s->ranged      = !units && (level == MD_MATCH_LEVEL_COMPONENT || level == MD_MATCH_LEVEL_INSTANCE);
+    s->units       = units;
+    s->num_units   = units ? num_units : 0;
+    s->arena       = arena;
     s->unit        = -1;
     s->mapped      = bits_create(tg->num_atoms, arena);
     s->res_cache   = md_alloc(arena, sizeof(res_cache_t));
@@ -2133,7 +2163,7 @@ static void search_init(search_t* s, const target_t* tg, md_match_level_t level,
 static void search_reserve(search_t* s, uint32_t num, size_t num_atoms, md_allocator_i* arena) {
     s->map           = md_alloc(arena, sizeof(int32_t)  * MAX(1, num));
     s->cursor        = md_alloc(arena, sizeof(uint32_t) * MAX(1, num));
-    s->key           = md_alloc(arena, sizeof(int32_t)  * MAX(1, num));
+    s->key           = md_alloc(arena, sizeof(int32_t)  * (num + 1));     // The unit as well, for units given
     s->group_touched = md_alloc(arena, sizeof(int32_t)  * MAX(1, num));
     s->row           = md_alloc(arena, sizeof(int32_t)  * MAX(1, num_atoms));
     s->leaf_base     = md_alloc(arena, sizeof(uint32_t) * (num + 1));
@@ -2177,6 +2207,17 @@ static bool level_valid(md_match_level_t level, const md_system_t* sys) {
     return true;
 }
 
+static bool units_valid(const md_bitset_t* units, size_t num_units, const md_system_t* sys) {
+    if (!units) return true;
+    for (size_t i = 0; i < num_units; ++i) {
+        if (units[i].end > sys->atom.count) {
+            MD_LOG_ERROR("md_match: unit %zu has atoms beyond those of the system", i);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool desc_validate(const md_match_desc_t* desc, const md_system_t* sys) {
     if (!desc) {
         MD_LOG_ERROR("md_match: no description");
@@ -2186,7 +2227,8 @@ static bool desc_validate(const md_match_desc_t* desc, const md_system_t* sys) {
         MD_LOG_ERROR("md_match: no system");
         return false;
     }
-    if (!level_valid(desc->level, sys)) return false;
+    if (!units_valid(desc->units, desc->num_units, sys)) return false;
+    if (!desc->units && !level_valid(desc->level, sys)) return false;
     if ((uint32_t)desc->mode > MD_MATCH_MODE_DISJOINT) {
         MD_LOG_ERROR("md_match: unknown mode");
         return false;
@@ -2259,7 +2301,7 @@ static bool match_run(size_t* out_count, const md_match_desc_t* desc, const md_s
     target_build(&tg, sys, target_needs(desc->hydrogens, desc->charges, query_states_charge(desc->query)), arena);
 
     search_t s;
-    search_init(&s, &tg, desc->level, desc->mode, desc->flags, desc->hydrogens, desc->bond_orders, desc->charges, desc->mask, arena);
+    search_init(&s, &tg, desc->level, desc->mode, desc->flags, desc->hydrogens, desc->bond_orders, desc->charges, desc->mask, desc->units, desc->num_units, arena);
     s.limit      = desc->limit;
     s.callback   = callback;
     s.user_param = user_param;
@@ -2273,10 +2315,10 @@ static bool match_run(size_t* out_count, const md_match_desc_t* desc, const md_s
     if (!plan.impossible && plan.num <= num_candidates) {
         s.plan = &plan;
         search_reserve(&s, plan.num, plan.num_atoms, arena);
-        s.uniq.width = plan.num;
+        s.uniq.width = plan.num + (s.units ? 1 : 0);
         s.uniq.alloc = arena;
 
-        const size_t num_units = level_num_units(&tg, desc->level);
+        const size_t num_units = s.units ? s.num_units : level_num_units(&tg, desc->level);
         for (size_t u = 0; u < num_units && !s.stop; ++u) {
             unit_begin(&s, (int64_t)u);
             unit_search(&s, false);
@@ -2415,6 +2457,7 @@ bool md_match_query_init_smiles(md_match_query_t* query, str_t smiles, struct md
             case MD_SMILES_BOND_TRIPLE:    order = MD_MATCH_BOND_TRIPLE;    break;
             case MD_SMILES_BOND_QUADRUPLE: order = MD_MATCH_BOND_QUADRUPLE; break;
             case MD_SMILES_BOND_AROMATIC:  order = MD_MATCH_BOND_AROMATIC;  break;
+            case MD_SMILES_BOND_ANY:       order = MD_MATCH_BOND_ANY;       break;
             default: break;
             }
             query->bonds[i] = (md_match_bond_t){.a = src->a, .b = src->b, .order = order};
@@ -2845,7 +2888,8 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
         MD_LOG_ERROR("md_match: no system");
         return false;
     }
-    if (!level_valid(desc->level, sys)) return false;
+    if (!units_valid(desc->units, desc->num_units, sys)) return false;
+    if (!desc->units && !level_valid(desc->level, sys)) return false;
     if (!resolve_valid(desc->hydrogens) || !resolve_valid(desc->bond_orders) || !resolve_valid(desc->charges)) {
         MD_LOG_ERROR("md_match: unknown resolution");
         return false;
@@ -2866,7 +2910,7 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
 
     const bool whole = (desc->flags & MD_MATCH_FLAG_WHOLE) != 0;
     search_t s;
-    search_init(&s, &tg, desc->level, MD_MATCH_MODE_ONE_PER_UNIT, desc->flags, desc->hydrogens, desc->bond_orders, desc->charges, desc->mask, arena);
+    search_init(&s, &tg, desc->level, MD_MATCH_MODE_ONE_PER_UNIT, desc->flags, desc->hydrogens, desc->bond_orders, desc->charges, desc->mask, desc->units, desc->num_units, arena);
 
     uint32_t rarity[256];
     const uint32_t num_candidates = count_candidates(rarity, &s);
@@ -2904,7 +2948,7 @@ bool md_match_identify(md_match_identify_result_t* out, const md_match_identify_
     uint8_t   touched[256];
     uint32_t* cand = md_alloc(arena, sizeof(uint32_t) * num_entries);
 
-    const size_t num_units = level_num_units(&tg, desc->level);
+    const size_t num_units = s.units ? s.num_units : level_num_units(&tg, desc->level);
     for (size_t u = 0; u < num_units; ++u) {
         unit_begin(&s, (int64_t)u);
         if (s.unit_count == 0) continue;

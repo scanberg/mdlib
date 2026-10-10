@@ -270,6 +270,9 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
     case DOMAIN_MATCH_LABEL:
         for (size_t i = 0; i < ARRAY_SIZE(match_labels); ++i) completion_add_value(&values, &seen, match_labels[i].name, alloc);
         break;
+    case DOMAIN_RING_KIND:
+        for (size_t i = 0; i < ARRAY_SIZE(ring_kinds); ++i) completion_add_value(&values, &seen, ring_kinds[i].name, alloc);
+        break;
     case DOMAIN_ATTR_PATH:
         if (sys) {
             completion_attr_paths(&values, &seen, &sys->attributes, typed, alloc);

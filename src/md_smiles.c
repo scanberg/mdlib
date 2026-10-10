@@ -282,6 +282,7 @@ static bool bond_symbol(uint8_t* order, uint8_t* flags, char c) {
     case '#':  *order = MD_SMILES_BOND_TRIPLE;    return true;
     case '$':  *order = MD_SMILES_BOND_QUADRUPLE; return true;
     case ':':  *order = MD_SMILES_BOND_AROMATIC;  return true;
+    case '~':  *order = MD_SMILES_BOND_ANY;       return true;
     case '/':  *order = MD_SMILES_BOND_SINGLE; *flags = MD_SMILES_BOND_UP;   return true;
     case '\\': *order = MD_SMILES_BOND_SINGLE; *flags = MD_SMILES_BOND_DOWN; return true;
     default: return false;

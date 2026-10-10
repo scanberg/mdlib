@@ -18,7 +18,8 @@ struct md_allocator_i;
 //   - Bracket atoms:         [isotope symbol chirality hcount charge :class], every element, aromatic se as te too.
 //                            Charge as +, -, ++, --, +n, -n. Chirality as @ and @@; the extended classes (@TH1, @SP1,
 //                            @TB1, @OH1, ...) are accepted and kept as written but not interpreted.
-//   - Bonds:                 - = # $ : / \, and none (implicit)
+//   - Bonds:                 - = # $ : / \, and none (implicit). Also '~', any bond, from SMARTS: a SMILES given as a
+//                            query may leave a bond open with it (C~N matches C-N, C=N and an aromatic C:N alike).
 //   - Branches:              ( ), nested to any depth
 //   - Ring closures:         0-9 and %nn, with a bond symbol on either or both sides (C=1CCCCC1, C1CCCCC=1). Both
 //                            sides giving different symbols is an error.
@@ -70,6 +71,7 @@ typedef enum md_smiles_bond_order_t {
     MD_SMILES_BOND_TRIPLE    = 3,       // '#'
     MD_SMILES_BOND_QUADRUPLE = 4,       // '$'
     MD_SMILES_BOND_AROMATIC  = 5,       // ':'
+    MD_SMILES_BOND_ANY       = 6,       // '~' (SMARTS): any order
 } md_smiles_bond_order_t;
 
 typedef enum md_smiles_bond_flags_t {
