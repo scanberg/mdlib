@@ -193,6 +193,8 @@ n = count(sel=protein(), unit="residue");
 | `position` | Not a real type: the argument of a geometric procedure. It accepts atom indices or ranges (`1:3`), bitfields (their centre of mass is used), or `float[3]` vectors. See [Coordinate arguments](#coordinate-arguments). |
 | `distribution` | A 1024-bin histogram (for example `rdf`, `density_x`), with a weight per bin; see [Distributions](#distributions). `distribution[n]` is *n* of them, e.g. `rdf(...) in residue(1:3)`. |
 | `volume` | `float[128][128][128]` grid (for example `sdf`). |
+| `contact` | The group pairs in contact in a frame, from [`contacts`](#contacts); read with [`count`](#count) and [`degree`](#degree). |
+| `plane` | The plane fitted to a group of atoms, from [`planes`](#planes): its centroid, oriented normal, radius and how far the atoms are from it; read with [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation) and [`angle`](#angle). `plane[n]` is *n* of them. |
 
 Units propagate through arithmetic: `distance(1,2) - distance(1,3)` is in Å, `distance(1,2) * distance(1,3)` in Å²,
 `distance(1,2) / distance(1,3)` is dimensionless, and scaling by a plain number (`2.0 * distance(1,2)`) keeps the
@@ -301,7 +303,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
 | [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`pool`](#pool), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
-| [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
+| [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`planes`](#planes), [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
 | [Math](#math) | [`sqrt`](#sqrt), [`cbrt`](#cbrt), [`abs`](#abs), [`floor`](#floor), [`ceil`](#ceil), [`sin`](#sin), [`cos`](#cos), [`asin`](#asin), [`acos`](#acos), [`atan`](#atan), [`atan2`](#atan2), [`log`](#log), [`log2`](#log2), [`log10`](#log10), [`exp`](#exp), [`exp2`](#exp2), [`pow`](#pow), [`min`](#min), [`max`](#max) |
 | [Linear algebra](#linear-algebra-and-constructors) | [`vec2`](#vec2), [`vec3`](#vec3), [`vec4`](#vec4), [`dot`](#dot), [`cross`](#cross), [`length`](#length), [`normalize`](#normalize), [`mul`](#mul) |
 | [Combining](#combining-and-reshaping) | [`join`](#join) (`flatten`), [`split`](#split), [`chunks`](#chunks), [`transpose`](#transpose), and the operators `and` `or` `xor` `not` on selections |
@@ -1043,11 +1045,13 @@ to_origin = distance_pair(residue(1:3), vec3(0, 0, 0));        # 3 values, one p
 
 ```text
 angle(a: position[], b: position[], c: position[]) -> float [rad]
+angle(a: plane[], b: plane[]) -> float[] [rad]
 ```
 
-**Parameters:** `a`, `b`, `c` (all required).
+**Parameters:** `a`, `b`, `c` (three positions), or `a`, `b` (two sets of [`planes`](#planes)).
 
-The angle at `b` between the directions to `a` and `c`, in `[0, π]`.
+The angle at `b` between the directions to `a` and `c`, in `[0, π]`. Of two planes, the angle between them, in
+`[0, π/2]`: one value per pair, a single plane against each of the other.
 
 ```mdscript
 bond_angle = angle(1, 2, 3);
@@ -1385,6 +1389,76 @@ direction of least variance) and `d = n · c` with `c` the centre of the points,
 p = plane(resname("PFT"));                          # one plane through all PFT atoms
 planes = plane(1:4) in resname("PFT");              # one plane per residue
 ```
+
+### planes
+
+<!-- proc name=planes category=geometry -->
+
+```text
+planes(groups: bitfield[]) -> plane[]
+```
+
+One plane per group: the least squares plane of the group's atoms (at least three), not weighted by mass. A plane
+record holds what [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation) and
+[`angle`](#angle) read of it, and hovering it shows them. The groups cannot depend on the frame.
+
+The normal is oriented, so that it keeps to the atoms from frame to frame and a time series of it does not flip:
+
+- A group which is a ring of the system ([`ring`](#ring)): the normal is on the side from which the ring goes around
+  anticlockwise, in its order. A sugar ring goes from the ring O to the anomeric C.
+- Any other group: by two of its atoms chosen in the reference structure, the one farthest from the centroid and the
+  one which spans the largest area with it.
+
+Not [`plane`](#plane), which fits one plane through all of the positions it is given (an array of selections being
+their centres).
+
+```mdscript
+p = planes(ring(kind="aromatic"));             # one per aromatic ring
+tilt = angle(planes(ring("c1ccccc1") in resid(10)), planes(ring("c1ccccc1") in resid(20)));
+flat = deviation(planes(residue(1:10)));       # how far each residue is from flat, in Å
+```
+
+### centroid
+
+<!-- proc name=centroid category=geometry -->
+
+```text
+centroid(p: plane[]) -> float[3][]
+```
+
+The centre of each plane: the mean position of its atoms, in Å. A `position`, so `distance_pair(centroid(p), ...)`
+measures from it.
+
+### normal
+
+<!-- proc name=normal category=geometry -->
+
+```text
+normal(p: plane[]) -> float[3][]
+```
+
+The unit normal of each plane, oriented as [`planes`](#planes) describes.
+
+### radius
+
+<!-- proc name=radius category=geometry -->
+
+```text
+radius(p: plane[]) -> float[] [Å]
+```
+
+The mean distance of each plane's atoms from its centroid: the radius of a ring.
+
+### deviation
+
+<!-- proc name=deviation category=geometry -->
+
+```text
+deviation(p: plane[]) -> float[] [Å]
+```
+
+The root mean square distance of each plane's atoms from it: 0 for a flat group, a few tenths of an Å for a puckered
+ring.
 
 ### shape_weights
 

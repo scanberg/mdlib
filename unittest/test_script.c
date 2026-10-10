@@ -21,6 +21,8 @@
 // Test only instrumentation of the evaluator, see test_hook_proc_eval
 #define MD_SCRIPT_TEST_HOOKS
 #include <md_script.c>
+#include <md_chem.h>
+#include "component_util.h"
 
 // Create molecule for evaulation
 #define ATOM_COUNT 16
@@ -4975,4 +4977,240 @@ UTEST_F(script, rdf_shell_weights) {
     md_script_eval_free(eval);
     md_script_ir_free(ir);
     md_arena_allocator_destroy(alloc);
+}
+
+
+// ### PLANES ###
+// planes(): one least squares plane per group, oriented, and what centroid(), normal(), radius(), deviation() and
+// angle() read of it. Checked against references computed here, on dictionary components (no test data needed).
+
+typedef struct plane_sys_t {
+    md_allocator_i*   alloc;
+    md_system_t       sys;
+    md_system_state_t st;
+} plane_sys_t;
+
+static bool plane_sys_init(plane_sys_t* p, const char* id) {
+    p->alloc = md_vm_arena_create(GIGABYTES(1));
+    md_array(ref_comp_t) comps = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), p->alloc);
+    const ref_comp_t* c = find_component(comps, id);
+    if (!c) return false;
+    p->sys = (md_system_t){ .alloc = p->alloc };
+    p->st  = (md_system_state_t){ .alloc = p->alloc };
+    int* map = md_alloc(p->alloc, sizeof(int) * (md_array_size(c->atom) + 1));
+    build_component(&p->sys, &p->st, map, c, false, false);
+    md_chem_perceive(&p->sys, &p->st, MD_CHEM_FLAG_NONE);
+    // The structure the topology is of, as a file gives it
+    p->sys.reference.alloc = p->alloc;
+    md_system_state_copy(&p->sys.reference, &p->st);
+    return true;
+}
+
+static bool plane_eval(data_t* out, md_script_ir_t* ir, const char* name, plane_sys_t* p, const md_system_state_t* state) {
+    identifier_t* ident = get_identifier(ir, str_from_cstr(name));
+    if (!ident || !ident->node) return false;
+    eval_context_t ctx = { .ir = ir, .sys = &p->sys, .temp_alloc = p->alloc, .alloc = p->alloc, .cur_state = state, .ref_state = &p->sys.reference };
+    return evaluate_node_alloc(out, ident->node, &ctx, p->alloc);
+}
+
+static bool plane_compile(md_script_ir_t* ir, const char* src, plane_sys_t* p) {
+    if (md_script_ir_compile_from_source(ir, str_from_cstr(src), &p->sys, NULL)) return true;
+    for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+        const md_log_token_t* e = md_script_ir_errors(ir) + i;
+        printf("  '%s': %.*s\n", src, (int)e->text.len, e->text.ptr);
+    }
+    return false;
+}
+
+static bool plane_compile_fails_with(plane_sys_t* p, const char* src, const char* expected) {
+    md_script_ir_t* ir = md_script_ir_create(p->alloc);
+    const bool ok = md_script_ir_compile_from_source(ir, str_from_cstr(src), &p->sys, NULL);
+    bool found = false;
+    for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+        const md_log_token_t* e = md_script_ir_errors(ir) + i;
+        found |= str_find_str(NULL, e->text, str_from_cstr(expected));
+    }
+    if (ok || !found) printf("  '%s' was expected to fail with '%s'\n", src, expected);
+    md_script_ir_free(ir);
+    return !ok && found;
+}
+
+UTEST(script, planes) {
+    plane_sys_t trp = {0};
+    ASSERT_TRUE(plane_sys_init(&trp, "TRP"));
+    md_system_t* sys = &trp.sys;
+    ASSERT_EQ(2, (int)md_index_data_num_ranges(&sys->ring));
+
+    md_script_ir_t* ir = md_script_ir_create(trp.alloc);
+    ASSERT_TRUE(plane_compile(ir, "p = planes(ring()); c = centroid(p); n = normal(p); r = radius(p); dv = deviation(p); a = angle(p[1], p[2]); s = planes(residue(1));", &trp));
+
+    data_t p = {0}, c = {0}, n = {0}, r = {0}, dv = {0}, a = {0};
+    ASSERT_TRUE(plane_eval(&p,  ir, "p",  &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&c,  ir, "c",  &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&n,  ir, "n",  &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&r,  ir, "r",  &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&dv, ir, "dv", &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&a,  ir, "a",  &trp, &trp.st));
+    ASSERT_EQ(TYPE_PLANE, p.type.base_type);
+    ASSERT_EQ(2, (int)element_count(p));
+    ASSERT_EQ(2, (int)element_count(c));
+    ASSERT_EQ(2, (int)element_count(r));
+    ASSERT_EQ(1, (int)element_count(a));
+
+    for (int i = 0; i < 2; ++i) {
+        // The plane of ring i: the references from its atoms, in the order of the ring
+        const plane_t* pl = &((const plane_t*)p.ptr)[i];
+        const int32_t* ring = md_index_range_beg(&sys->ring, i);
+        const int nr = (int)md_index_range_size(&sys->ring, i);
+        EXPECT_EQ(nr, pl->count);
+        vec3_t mean = {0};
+        for (int k = 0; k < nr; ++k) mean = vec3_add(mean, trp.st.xyz[ring[k]]);
+        mean = vec3_mul1(mean, 1.0f / nr);
+        const vec3_t ci = ((const vec3_t*)c.ptr)[i];
+        const vec3_t ni = ((const vec3_t*)n.ptr)[i];
+        EXPECT_NEAR(mean.x, ci.x, 1e-4f);
+        EXPECT_NEAR(mean.y, ci.y, 1e-4f);
+        EXPECT_NEAR(mean.z, ci.z, 1e-4f);
+        EXPECT_NEAR(1.0f, vec3_length(ni), 1e-4f);
+
+        float rad = 0, dev = 0;
+        vec3_t newell = {0};
+        for (int k = 0; k < nr; ++k) {
+            const vec3_t d = vec3_sub(trp.st.xyz[ring[k]], mean);
+            rad += vec3_length(d);
+            dev += vec3_dot(d, ni) * vec3_dot(d, ni);
+            newell = vec3_add(newell, vec3_cross(d, vec3_sub(trp.st.xyz[ring[(k + 1) % nr]], mean)));
+        }
+        EXPECT_NEAR(rad / nr, ((const float*)r.ptr)[i], 1e-4f);
+        EXPECT_NEAR(sqrtf(dev / nr), ((const float*)dv.ptr)[i], 1e-4f);
+        // Aromatic rings are flat: the normal is that of the polygon, on the side the ring goes around anticlockwise
+        EXPECT_LT(((const float*)dv.ptr)[i], 0.02f);
+        EXPECT_GT(vec3_dot(ni, vec3_normalize(newell)), 0.999f);
+    }
+    // The two rings of indole lie in one plane
+    EXPECT_LT(RAD_TO_DEG(((const float*)a.ptr)[0]), 3.0f);
+
+    // Turned over (180 degrees about an axis in the plane of the first ring): the planes turn with the atoms, and the
+    // normal of a group which is not a ring keeps to its atoms as well
+    data_t s0 = {0}, s1 = {0}, p1 = {0};
+    ASSERT_TRUE(plane_eval(&s0, ir, "s", &trp, &trp.st));
+    const plane_t ring0 = ((const plane_t*)p.ptr)[0];
+    const plane_t res0  = ((const plane_t*)s0.ptr)[0];
+    const vec3_t axis = ring0.axis;
+    md_system_state_t rot = { .alloc = trp.alloc };
+    md_system_state_init(&rot, trp.st.num_atoms);
+    rot.num_atoms = trp.st.num_atoms;
+    for (size_t k = 0; k < trp.st.num_atoms; ++k) {
+        const vec3_t x = trp.st.xyz[k];
+        // 180 degrees about axis through the origin: 2 (x.a) a - x
+        rot.xyz[k] = vec3_sub(vec3_mul1(axis, 2.0f * vec3_dot(x, axis)), x);
+    }
+    ASSERT_TRUE(plane_eval(&p1, ir, "p", &trp, &rot));
+    ASSERT_TRUE(plane_eval(&s1, ir, "s", &trp, &rot));
+    const vec3_t want_ring = vec3_sub(vec3_mul1(axis, 2.0f * vec3_dot(ring0.normal, axis)), ring0.normal);
+    const vec3_t want_res  = vec3_sub(vec3_mul1(axis, 2.0f * vec3_dot(res0.normal, axis)), res0.normal);
+    EXPECT_GT(vec3_dot(((const plane_t*)p1.ptr)[0].normal, want_ring), 0.999f);
+    EXPECT_GT(vec3_dot(((const plane_t*)s1.ptr)[0].normal, want_res), 0.999f);
+
+    // Errors before evaluation
+    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = planes(element('N'));", "a plane needs at least 3"));
+    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = planes(within(3, element('N')));", "cannot depend on the frame"));
+    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = angle(planes(ring()), planes({residue(1), residue(1), residue(1)}));", "as many or one of them a single plane"));
+
+    md_script_ir_free(ir);
+    md_vm_arena_destroy(trp.alloc);
+}
+
+// A sugar ring is in order from its ring O to the anomeric C, and its normal follows that order
+UTEST(script, planes_sugar) {
+    plane_sys_t ade = {0};
+    ASSERT_TRUE(plane_sys_init(&ade, "A"));
+    md_script_ir_t* ir = md_script_ir_create(ade.alloc);
+    ASSERT_TRUE(plane_compile(ir, "p = planes(ring(kind='sugar'));", &ade));
+    data_t p = {0};
+    ASSERT_TRUE(plane_eval(&p, ir, "p", &ade, &ade.st));
+    ASSERT_EQ(1, (int)element_count(p));
+    const plane_t* pl = (const plane_t*)p.ptr;
+    // The ring: O4', C1', C2', C3', C4'
+    int64_t r = -1;
+    for (size_t i = 0; i < md_index_data_num_ranges(&ade.sys.ring); ++i) {
+        if (md_system_ring_flags(&ade.sys, i) & MD_RING_FLAG_SUGAR) r = (int64_t)i;
+    }
+    ASSERT_GE(r, 0);
+    const int32_t* ring = md_index_range_beg(&ade.sys.ring, (size_t)r);
+    EXPECT_TRUE(str_eq(md_atom_name(&ade.sys.atom, ring[0]), STR_LIT("O4'")));
+    vec3_t newell = {0};
+    for (int k = 0; k < 5; ++k) {
+        newell = vec3_add(newell, vec3_cross(vec3_sub(ade.st.xyz[ring[k]], pl->centroid), vec3_sub(ade.st.xyz[ring[(k + 1) % 5]], pl->centroid)));
+    }
+    EXPECT_GT(vec3_dot(pl->normal, vec3_normalize(newell)), 0.99f);
+    // A furanose is puckered: some atoms out of the plane
+    EXPECT_GT(pl->deviation, 0.05f);
+    md_script_ir_free(ir);
+    md_vm_arena_destroy(ade.alloc);
+}
+
+// ### HOVER ###
+// What hovering shows: the type, and what the value is. Calls with defaults or absent arguments show their own type
+// (not that of an argument the call did not write), selections their atoms, and md_script_vis_value_text the value at
+// the given state, for contacts and planes as well.
+
+static const md_script_vis_token_t* hover_token(const md_script_ir_t* ir, const char* src, const char* text) {
+    // The outermost token which spans exactly text
+    const size_t len = strlen(text);
+    const char* at = strstr(src, text);
+    if (!at) return NULL;
+    const int beg = (int)(at - src);
+    const md_script_vis_token_t* tok = md_script_ir_vis_tokens(ir);
+    const md_script_vis_token_t* best = NULL;
+    for (size_t i = 0; i < md_script_ir_num_vis_tokens(ir); ++i) {
+        if (tok[i].range.beg == beg && tok[i].range.end == beg + (int)len && (!best || tok[i].depth < best->depth)) best = &tok[i];
+    }
+    return best;
+}
+
+UTEST(script, hover_text) {
+    plane_sys_t trp = {0};
+    ASSERT_TRUE(plane_sys_init(&trp, "TRP"));
+    const char* src = "k = contacts(ring(), cutoff=5.0);\nm = smiles('cc', level='residue');\nr = ring();\np = planes(ring());\nd = distance(1, 2);";
+    md_script_ir_t* ir = md_script_ir_create(trp.alloc);
+    ASSERT_TRUE(plane_compile(ir, src, &trp));
+
+    for (size_t i = 0; i < md_script_ir_num_vis_tokens(ir); ++i) {
+        const str_t t = md_script_ir_vis_tokens(ir)[i].text;
+        EXPECT_FALSE(str_find_str(NULL, t, STR_LIT("NULL")));
+        EXPECT_FALSE(str_find_str(NULL, t, STR_LIT("undefined")));
+    }
+
+    const md_script_vis_token_t* t;
+    t = hover_token(ir, src, "contacts(ring(), cutoff=5.0)");
+    ASSERT_TRUE(t != NULL);
+    EXPECT_TRUE(str_begins_with(t->text, STR_LIT("contact")));
+    t = hover_token(ir, src, "smiles('cc', level='residue')");
+    ASSERT_TRUE(t != NULL);
+    EXPECT_TRUE(str_begins_with(t->text, STR_LIT("bitfield")));
+    t = hover_token(ir, src, "ring()");
+    ASSERT_TRUE(t != NULL);
+    EXPECT_TRUE(str_find_str(NULL, t->text, STR_LIT("2 selections, 9 atoms in all")));
+
+    // At the state given
+    const md_script_vis_ctx_t ctx = { .ir = ir, .sys = &trp.sys, .state = &trp.st };
+    char buf[1024];
+    t = hover_token(ir, src, "contacts(ring(), cutoff=5.0)");
+    EXPECT_GT(md_script_vis_value_text(buf, sizeof(buf), t->ref, -1, &ctx), 0);
+    EXPECT_TRUE(strstr(buf, "of groups in contact") != NULL);
+    t = hover_token(ir, src, "planes(ring())");
+    EXPECT_GT(md_script_vis_value_text(buf, sizeof(buf), t->ref, -1, &ctx), 0);
+    EXPECT_TRUE(strstr(buf, "2 planes") != NULL);
+    EXPECT_GT(md_script_vis_value_text(buf, sizeof(buf), t->ref, 1, &ctx), 0);
+    EXPECT_TRUE(strstr(buf, "plane 2 of 2") != NULL && strstr(buf, "normal") != NULL);
+    t = hover_token(ir, src, "distance(1, 2)");
+    EXPECT_GT(md_script_vis_value_text(buf, sizeof(buf), t->ref, -1, &ctx), 0);
+    const float d = vec3_distance(trp.st.xyz[0], trp.st.xyz[1]);
+    char want[32];
+    snprintf(want, sizeof(want), "%.2f", d);
+    EXPECT_TRUE(strstr(buf, want) != NULL);
+
+    md_script_ir_free(ir);
+    md_vm_arena_destroy(trp.alloc);
 }

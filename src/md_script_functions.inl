@@ -47,6 +47,8 @@
 #define TI_BITFIELD_ARR {TYPE_BITFIELD, {ANY_LENGTH}}
 
 #define TI_CONTACT        {TYPE_CONTACT, {1}}
+#define TI_PLANE          {TYPE_PLANE, {1}}
+#define TI_PLANE_ARR      {TYPE_PLANE, {ANY_LENGTH}}
 
 #define TI_COORDINATE     {TYPE_COORDINATE, {1}}
 #define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}}
@@ -441,6 +443,12 @@ static int _porosity   (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> 
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
 static int _plane   (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[4]
+static int _planes          (data_t*, data_t[], eval_context_t*);  // (bitfield[]) -> plane[], one per group
+static int _plane_centroid  (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[][3]
+static int _plane_normal    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[][3]
+static int _plane_radius    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[]
+static int _plane_deviation (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[]
+static int _plane_angle     (data_t*, data_t[], eval_context_t*);  // (plane[], plane[]) -> float[]
 static int _coordinate(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3][]
 static int _coordinate_x(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
 static int _coordinate_y(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
@@ -778,6 +786,12 @@ static procedure_t procedures[] = {
     // --- GEOMETRICAL OPERATIONS ---
     {STR_INIT("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {STR_INIT("plane"),         TI_FLOAT4,      1,  {TI_COORDINATE_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {STR_INIT("planes"),        TI_PLANE_ARR,   1,  {TI_BITFIELD_ARR},    _planes,        FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {STR_INIT("centroid"),      TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_centroid,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("normal"),        TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_normal,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("radius"),        TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_radius,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("deviation"),     TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_deviation, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("angle"),         TI_FLOAT_ARR,   2,  {TI_PLANE_ARR, TI_PLANE_ARR}, _plane_angle, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("shape_weights"), TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     {STR_INIT("coord"),      TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
@@ -826,7 +840,8 @@ static const proc_sig_t signatures[] = {
     {STR_INIT("distance_min"),  2, {REQ("a"), REQ("b")}},
     {STR_INIT("distance_max"),  2, {REQ("a"), REQ("b")}},
     {STR_INIT("distance_pair"), 2, {REQ("a"), REQ("b")}},
-    {STR_INIT("angle"),         3, {REQ("a"), REQ("b"), REQ("c")}},
+    // angle(a, b, c) of three positions, angle(a, b) between two sets of planes
+    {STR_INIT("angle"),         3, {REQ("a"), REQ("b"), OPT("c")}},
     {STR_INIT("dihedral"),      4, {REQ("a"), REQ("b"), REQ("c"), REQ("d")}},
 
     // within(radius) takes its centre from the context ('within(3) in x'), within(radius, around) explicitly
@@ -5417,6 +5432,326 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
 
+    return 0;
+}
+
+// ### PLANES ###
+// planes(groups): the least squares plane of each group of atoms, a plane record (plane_t) per group, which centroid(),
+// normal(), radius(), deviation() and angle() read. Not plane(), which fits one plane through all of the positions it
+// is given (an array of selections being their centres).
+//
+// The normal of a plane is oriented, so that it does not flip from frame to frame:
+//   - A group which is a ring of the system (md_system_t::ring): by the order of the ring, the normal on the side from
+//     which the atoms go around anticlockwise. A sugar ring goes from the ring O to the anomeric C (see MD_RING_FLAG_SUGAR).
+//   - Any other group: by two of its atoms chosen in the reference structure, the one farthest from its centroid and
+//     the one which spans the largest area with it. The normal is on the side from which the first turns towards the
+//     second anticlockwise.
+
+// The ring of the system whose atoms are those of bf, -1 if none. first_ring[k] .. holds the rings of atom k.
+typedef struct plane_rings_t {
+    uint32_t* off;      // [num_atoms + 1]
+    uint32_t* ring;
+} plane_rings_t;
+
+static plane_rings_t plane_rings_build(const md_system_t* sys, md_allocator_i* alloc) {
+    plane_rings_t pr = {0};
+    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+    const size_t N = sys->atom.count;
+    if (num_rings == 0 || N == 0) return pr;
+    pr.off = md_alloc(alloc, sizeof(uint32_t) * (N + 1));
+    MEMSET(pr.off, 0, sizeof(uint32_t) * (N + 1));
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const size_t n = md_index_range_size(&sys->ring, r);
+        for (size_t k = 0; k < n; ++k) if ((size_t)ring[k] < N) pr.off[ring[k] + 1] += 1;
+    }
+    for (size_t i = 0; i < N; ++i) pr.off[i + 1] += pr.off[i];
+    pr.ring = md_alloc(alloc, sizeof(uint32_t) * MAX(pr.off[N], 1));
+    uint32_t* fill = md_alloc(alloc, sizeof(uint32_t) * N);
+    MEMCPY(fill, pr.off, sizeof(uint32_t) * N);
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const size_t n = md_index_range_size(&sys->ring, r);
+        for (size_t k = 0; k < n; ++k) if ((size_t)ring[k] < N) pr.ring[fill[ring[k]]++] = (uint32_t)r;
+    }
+    return pr;
+}
+
+static int64_t plane_rings_find(const plane_rings_t* pr, const md_system_t* sys, const int32_t* idx, size_t count) {
+    if (!pr->off || count < MD_RING_MIN_SIZE || count > MD_RING_MAX_SIZE) return -1;
+    const int32_t first = idx[0];
+    for (uint32_t t = pr->off[first]; t < pr->off[first + 1]; ++t) {
+        const uint32_t r = pr->ring[t];
+        if (md_index_range_size(&sys->ring, r) != count) continue;
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        bool same = true;
+        for (size_t k = 0; k < count && same; ++k) {
+            bool found = false;
+            for (size_t j = 0; j < count && !found; ++j) found = ring[k] == idx[j];
+            same = found;
+        }
+        if (same) return r;
+    }
+    return -1;
+}
+
+// Positions of the atoms idx in state, made mutually consistent across the cell, and their centroid
+static vec3_t plane_positions(vec4_t* xyzw, const int32_t* idx, size_t count, const md_system_state_t* state) {
+    for (size_t k = 0; k < count; ++k) {
+        const vec3_t x = state->xyz[idx[k]];
+        xyzw[k] = vec4_set(x.x, x.y, x.z, 1.0f);
+    }
+    vec3_t c = {0};
+    md_util_deperiodize_self_vec4(xyzw, count, &state->unitcell, &c);
+    // The centroid of the points as placed
+    vec3_t sum = {0};
+    for (size_t k = 0; k < count; ++k) sum = vec3_add(sum, vec3_from_vec4(xyzw[k]));
+    return vec3_mul1(sum, 1.0f / (float)count);
+}
+
+static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ring, const eval_context_t* ctx, md_allocator_i* temp) {
+    MEMSET(out, 0, sizeof(plane_t));
+    out->count = (int)count;
+    if (count < 3) return;
+    const md_system_t* sys = ctx->sys;
+
+    vec4_t* xyzw = md_alloc(temp, sizeof(vec4_t) * count);
+    const vec3_t c = plane_positions(xyzw, idx, count, ctx->cur_state);
+    const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, c);
+    const mat3_eigen_t E = mat3_eigen(M);
+
+    // Eigenvalues in descending order: the two in the plane, then the normal
+    int order[3] = {0, 1, 2};
+    for (int i = 0; i < 3; ++i) for (int j = i + 1; j < 3; ++j) {
+        if (E.values.elem[order[j]] > E.values.elem[order[i]]) { int t = order[i]; order[i] = order[j]; order[j] = t; }
+    }
+    vec3_t n    = vec3_normalize(E.vectors.col[order[2]]);
+    vec3_t axis = vec3_normalize(E.vectors.col[order[0]]);
+
+    // Orientation
+    vec3_t ref = {0};
+    if (ring >= 0) {
+        // Around the ring, in its order
+        const int32_t* ring_idx = md_index_range_beg(&sys->ring, (size_t)ring);
+        const size_t n_ring = md_index_range_size(&sys->ring, (size_t)ring);
+        for (size_t k = 0; k < n_ring; ++k) {
+            size_t a = 0, b = 0;
+            for (size_t j = 0; j < count; ++j) {
+                if (idx[j] == ring_idx[k]) a = j;
+                if (idx[j] == ring_idx[(k + 1) % n_ring]) b = j;
+            }
+            ref = vec3_add(ref, vec3_cross(vec3_sub(vec3_from_vec4(xyzw[a]), c), vec3_sub(vec3_from_vec4(xyzw[b]), c)));
+        }
+    } else {
+        // Two anchors chosen in the reference structure, the same in every frame
+        const md_system_state_t* rs = (ctx->ref_state && ctx->ref_state->xyz) ? ctx->ref_state : ctx->cur_state;
+        vec4_t* r = md_alloc(temp, sizeof(vec4_t) * count);
+        const vec3_t rc = plane_positions(r, idx, count, rs);
+        size_t a = 0;
+        float best = -1.0f;
+        for (size_t k = 0; k < count; ++k) {
+            const float d = vec3_length_squared(vec3_sub(vec3_from_vec4(r[k]), rc));
+            if (d > best + 1.0e-6f) { best = d; a = k; }
+        }
+        size_t b = a;
+        best = 1.0e-8f;
+        const vec3_t ra = vec3_sub(vec3_from_vec4(r[a]), rc);
+        for (size_t k = 0; k < count; ++k) {
+            const float area = vec3_length(vec3_cross(ra, vec3_sub(vec3_from_vec4(r[k]), rc)));
+            if (area > best * (1.0f + 1.0e-4f)) { best = area; b = k; }
+        }
+        if (b != a) {
+            ref = vec3_cross(vec3_sub(vec3_from_vec4(xyzw[a]), c), vec3_sub(vec3_from_vec4(xyzw[b]), c));
+        }
+    }
+    if (vec3_dot(n, ref) < 0.0f) n = vec3_mul1(n, -1.0f);
+    // A right handed frame: axis, normal x axis, normal
+    if (vec3_dot(vec3_cross(axis, vec3_cross(n, axis)), n) < 0.0f) axis = vec3_mul1(axis, -1.0f);
+
+    float radius = 0.0f, dev = 0.0f;
+    for (size_t k = 0; k < count; ++k) {
+        const vec3_t d = vec3_sub(vec3_from_vec4(xyzw[k]), c);
+        radius += vec3_length(d);
+        const float h = vec3_dot(d, n);
+        dev += h * h;
+    }
+    out->centroid  = c;
+    out->normal    = n;
+    out->axis      = axis;
+    out->extent[0] = sqrtf(MAX(E.values.elem[order[0]], 0.0f));
+    out->extent[1] = sqrtf(MAX(E.values.elem[order[1]], 0.0f));
+    out->radius    = radius / (float)count;
+    out->deviation = sqrtf(dev / (float)count);
+}
+
+static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
+    if (!(ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) || p->count < 3) return;
+    const vec3_t u = vec3_mul1(p->axis, p->radius);
+    const vec3_t v = vec3_mul1(vec3_cross(p->normal, p->axis), p->radius);
+    const int segments = 32;
+    md_script_vis_vertex_t prev = vertex(vec3_add(p->centroid, u), COLOR_WHITE);
+    for (int i = 1; i <= segments; ++i) {
+        const float t = (float)i / (float)segments * 2.0f * PI;
+        const vec3_t x = vec3_add(p->centroid, vec3_add(vec3_mul1(u, cosf(t)), vec3_mul1(v, sinf(t))));
+        md_script_vis_vertex_t cur = vertex(x, COLOR_WHITE);
+        push_line(prev, cur, ctx->vis);
+        prev = cur;
+    }
+    // The normal, as long as the radius, from the centroid
+    push_point(vertex(p->centroid, COLOR_WHITE), ctx->vis);
+    push_line(vertex(p->centroid, COLOR_WHITE), vertex(vec3_add(p->centroid, vec3_mul1(p->normal, p->radius)), COLOR_WHITE), ctx->vis);
+}
+
+static int _planes(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    const md_bitfield_t* groups = as_bitfield(arg[0]);
+    const size_t num = element_count(arg[0]);
+
+    if (!dst && !ctx->vis) {
+        // The groups have to be fixed, and have the atoms a plane needs
+        if (ctx->arg_flags[0] & FLAG_DYNAMIC) {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: the groups cannot depend on the frame");
+            return STATIC_VALIDATION_ERROR;
+        }
+        md_bitfield_t tmp = md_bitfield_create(ctx->temp_alloc);
+        for (size_t g = 0; g < num; ++g) {
+            const md_bitfield_t* bf = &groups[g];
+            if (ctx->mol_ctx) {
+                md_bitfield_and(&tmp, bf, ctx->mol_ctx);
+                bf = &tmp;
+            }
+            const size_t n = md_bitfield_popcount(bf);
+            if (n < 3) {
+                if (num == 1) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: the group has %zu atom%s, a plane needs at least 3", n, n == 1 ? "" : "s");
+                else          EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: group %zu of %zu has %zu atom%s, a plane needs at least 3", g + 1, num, n, n == 1 ? "" : "s");
+                return STATIC_VALIDATION_ERROR;
+            }
+        }
+        if (ctx->backchannel) {
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_none();
+        }
+        return (int)num;
+    }
+
+    if (dst && ctx->backchannel) {
+        // Evaluated within the static check, for a procedure asking about its argument (centroid() its length):
+        // there are no coordinates there, only the shape
+        MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
+        return 0;
+    }
+
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    const plane_rings_t pr = plane_rings_build(ctx->sys, temp_alloc);
+
+    plane_t* out = dst ? (plane_t*)dst->ptr : NULL;
+    const size_t cap = dst ? element_count(*dst) : num;
+    size_t beg = 0, end = MIN(num, cap);
+    if (!dst && ctx->vis && ctx->subscript_ranges) {
+        beg = (size_t)MAX(ctx->subscript_ranges[0].beg, 0);
+        end = MIN((size_t)MAX(ctx->subscript_ranges[0].end, 0), end);
+    }
+
+    md_bitfield_t tmp = md_bitfield_create(temp_alloc);
+    for (size_t g = beg; g < end; ++g) {
+        const md_bitfield_t* bf = &groups[g];
+        if (ctx->mol_ctx) {
+            md_bitfield_and(&tmp, bf, ctx->mol_ctx);
+            bf = &tmp;
+        }
+        const size_t count = md_bitfield_popcount(bf);
+        int32_t* idx = md_alloc(temp_alloc, sizeof(int32_t) * MAX(count, 1));
+        md_bitfield_iter_extract_indices(idx, count, md_bitfield_iter_create(bf));
+        plane_t p;
+        plane_fit(&p, idx, count, plane_rings_find(&pr, ctx->sys, idx, count), ctx, temp_alloc);
+        if (out) out[g] = p;
+        if (ctx->vis) {
+            visualize_atom_mask(bf, ctx);
+            plane_visualize(&p, ctx);
+        }
+    }
+
+    md_temp_end(temp);
+    return 0;
+}
+
+static inline const plane_t* as_planes(data_t arg) {
+    return (const plane_t*)arg.ptr;
+}
+
+// Static: the length, one value per plane, and the unit of what is read
+static int plane_accessor_static(data_t arg[], md_unit_t unit, eval_context_t* ctx) {
+    if (ctx->backchannel) {
+        ctx->backchannel->unit[0] = md_unit_none();
+        ctx->backchannel->unit[1] = unit;
+    }
+    return (int)element_count(arg[0]);
+}
+
+static int _plane_centroid(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return plane_accessor_static(arg, md_unit_angstrom(), ctx);
+    const plane_t* p = as_planes(arg[0]);
+    vec3_t* out = as_vec3_arr(*dst);
+    const size_t n = MIN(element_count(arg[0]), type_info_total_element_count(dst->type) / 3);
+    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].centroid : (vec3_t){0};
+    return 0;
+}
+
+static int _plane_normal(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return plane_accessor_static(arg, md_unit_none(), ctx);
+    const plane_t* p = as_planes(arg[0]);
+    vec3_t* out = as_vec3_arr(*dst);
+    const size_t n = MIN(element_count(arg[0]), type_info_total_element_count(dst->type) / 3);
+    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].normal : (vec3_t){0};
+    return 0;
+}
+
+static int _plane_radius(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return plane_accessor_static(arg, md_unit_angstrom(), ctx);
+    const plane_t* p = as_planes(arg[0]);
+    float* out = as_float_arr(*dst);
+    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].radius : 0.0f;
+    return 0;
+}
+
+static int _plane_deviation(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return plane_accessor_static(arg, md_unit_angstrom(), ctx);
+    const plane_t* p = as_planes(arg[0]);
+    float* out = as_float_arr(*dst);
+    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].deviation : 0.0f;
+    return 0;
+}
+
+// angle(p, q): the angle between planes, 0 to 90 degrees, element by element (a single plane against each of the other)
+static int _plane_angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    const size_t na = element_count(arg[0]);
+    const size_t nb = element_count(arg[1]);
+    if (!dst) {
+        if (na != nb && na != 1 && nb != 1) {
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "angle: %zu planes against %zu, they have to be as many or one of them a single plane", na, nb);
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (ctx->backchannel) {
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_radian();
+            ctx->backchannel->value_range = (frange_t){0, PI / 2};
+        }
+        return (int)MAX(na, nb);
+    }
+    const plane_t* a = as_planes(arg[0]);
+    const plane_t* b = as_planes(arg[1]);
+    float* out = as_float_arr(*dst);
+    const size_t n = MIN(MAX(na, nb), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) {
+        const plane_t* pa = &a[na == 1 ? 0 : i];
+        const plane_t* pb = &b[nb == 1 ? 0 : i];
+        const float c = fabsf(vec3_dot(pa->normal, pb->normal));
+        out[i] = acosf(CLAMP(c, 0.0f, 1.0f));
+    }
     return 0;
 }
 

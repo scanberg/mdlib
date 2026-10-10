@@ -316,6 +316,12 @@ bool md_script_vis_eval_ref(md_script_vis_t* vis, md_script_vis_ref_t ref, int s
 
 bool md_script_vis_eval_string(md_script_vis_t* vis, str_t str, const md_script_vis_ctx_t* ctx, md_script_vis_flags_t flags);
 
+// What the value of a visualized node is, in a few lines (a selection's atoms, a contact set's pairs, a plane's centroid
+// and normal, the first values of a long array), at ctx->state for a value which depends on the frame. What hovering it
+// shows next to its type. subidx picks one element of an array (-1 for all), as for md_script_vis_eval_ref.
+// Writes a terminated string of at most cap - 1 characters and returns its length, 0 if there is nothing to say.
+size_t md_script_vis_value_text(char* buf, size_t cap, md_script_vis_ref_t ref, int subidx, const md_script_vis_ctx_t* ctx);
+
 // ### MISC ###
 
 bool md_script_identifier_name_valid(str_t ident);

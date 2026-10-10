@@ -193,6 +193,7 @@ typedef enum base_type_t {
     TYPE_CONTACT,       // Opaque: a set of group pairs in contact (md_contact_set_t). Its arrays live in the evaluation's allocator.
     TYPE_DISTRIBUTION,  // A bin of a histogram: a float. Shaped [n][bins], one distribution per row. The weight of each bin,
                         // what normalizes it, is not part of the value: it sits beside it in data_t.weight.
+    TYPE_PLANE,         // The plane fitted to a group of atoms (plane_t), read through centroid(), normal(), radius(), ...
 } base_type_t;
 
 typedef enum flags_t {
@@ -209,6 +210,7 @@ typedef enum flags_t {
     FLAG_CONSTANT                   = 0x00100, // Marks the node as constant and should not be modified. It should also have data in its ptr
     FLAG_CONTEXTS_EQUIVALENT        = 0x00200, // Marks the contexts in the node as equivalent, meaning it
     FLAG_COORDINATE                 = 0x00400, // Marks the node as a coordinate, meaning it can be visualized as a coordinate
+    FLAG_IMPLICIT                   = 0x00800, // Not written in the source: a default or absent argument the binding of a call supplied
 
     // Flags from 0x10000 and upwards are automatically propagated upwards the Nodes of the AST_TREE
     FLAG_DYNAMIC                    = 0x10000, // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependency on atomic positions)
@@ -246,6 +248,17 @@ struct frange_t {
     float beg;
     float end;
 };
+
+// The plane through a group of atoms (planes()): the least squares plane of their positions
+typedef struct plane_t {
+    vec3_t centroid;        // Mean position of the atoms (Å)
+    vec3_t normal;          // Unit normal, oriented (see planes())
+    vec3_t axis;            // Unit direction in the plane along which the atoms spread the most
+    float  extent[2];       // RMS spread of the atoms along axis and along normal x axis (Å)
+    float  radius;          // Mean distance of the atoms from the centroid (Å)
+    float  deviation;       // RMS distance of the atoms from the plane (Å)
+    int    count;           // Atoms fitted
+} plane_t;
 
 struct irange_t {
     int beg;
@@ -869,6 +882,7 @@ static size_t base_type_element_byte_size(base_type_t type) {
     case TYPE_STRING:   return sizeof(str_t);
     case TYPE_CONTACT:  return sizeof(md_contact_set_t);
     case TYPE_DISTRIBUTION: return sizeof(float);
+    case TYPE_PLANE:    return sizeof(plane_t);
     case TYPE_UNDEFINED:
     default:            return 0;
     }
@@ -1272,6 +1286,7 @@ static const char* get_value_type_str(base_type_t type) {
     case TYPE_BITFIELD: return "bitfield";
     case TYPE_CONTACT: return "contact";
     case TYPE_DISTRIBUTION: return "distribution";
+    case TYPE_PLANE: return "plane";
     default: return "type out of range";
     }
 }
@@ -2012,6 +2027,10 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
     if (cap <= 0) return 0;
 
     if (data.ptr) {
+        // An element of an array of arrays ([1][3]) is the inner array ([3]), not its first value
+        while (data.type.dim[0] == 1 && data.type.dim[1] > 1) {
+            dim_shift_left(data.type.dim);
+        }
         if (is_array(data.type) && data.type.base_type != TYPE_BITFIELD) {
             int arr_len = data.type.dim[0];
             if (arr_len == 1) {
@@ -2092,6 +2111,19 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
                 PRINT("%.3f", w != 0.0f ? v / w : 0.0f);
                 break;
             }
+            case TYPE_PLANE:
+            {
+                const plane_t* p = (const plane_t*)data.ptr;
+                PRINT("plane(centroid (%.2f, %.2f, %.2f), normal (%.2f, %.2f, %.2f), radius %.2f)",
+                    p->centroid.x, p->centroid.y, p->centroid.z, p->normal.x, p->normal.y, p->normal.z, p->radius);
+                break;
+            }
+            case TYPE_CONTACT:
+            {
+                const md_contact_set_t* set = (const md_contact_set_t*)data.ptr;
+                PRINT("%zu pairs", set->count);
+                break;
+            }
             default:
                 ASSERT(false);
             }
@@ -2100,13 +2132,143 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
     else {
         PRINT("NULL");
     }
-    if (!md_unit_is_none(data.unit[1])) {
-        len += md_unit_print(buf + len, cap - MIN(len, cap), data.unit[1]);
+    if (data.ptr && !md_unit_is_none(data.unit[1])) {
+        if (len + 1 < cap) buf[len] = ' ';
+        len += 1;
+        len += md_unit_print(buf + MIN(len, cap), cap - MIN(len, cap), data.unit[1]);
     }
     return len;
 }
 
 #undef PRINT
+
+// ### VALUE SUMMARIES ###
+// What hovering a value shows: a few lines which say what it is, rather than every element of it. A selection is its
+// number of atoms, a contact set its pairs, a plane its centroid and normal, and a long array its first values.
+// subidx picks one element of an array (-1 for all), as when stepping through them with the mouse wheel.
+
+#define SUMMARY_MAX_VALUES 8
+
+static void summarize_plane(md_strb_t* sb, const plane_t* p) {
+    md_strb_fmt(sb, "centroid (%.2f, %.2f, %.2f) \xC3\x85\n", p->centroid.x, p->centroid.y, p->centroid.z);
+    md_strb_fmt(sb, "normal (%.3f, %.3f, %.3f)\n", p->normal.x, p->normal.y, p->normal.z);
+    md_strb_fmt(sb, "radius %.2f \xC3\x85, spread %.2f x %.2f \xC3\x85, deviation %.3f \xC3\x85 (%d atoms)", p->radius, p->extent[0], p->extent[1], p->deviation, p->count);
+}
+
+static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
+    if (!data.ptr) {
+        return;
+    }
+    const int len = (int)element_count(data);
+    const bool pick = subidx >= 0 && subidx < len;
+    const size_t stride = type_info_element_byte_stride(data.type);
+
+    switch (data.type.base_type) {
+    case TYPE_BITFIELD: {
+        const md_bitfield_t* bf = (const md_bitfield_t*)data.ptr;
+        if (pick) {
+            const size_t n = md_bitfield_popcount(&bf[subidx]);
+            md_strb_fmt(sb, "selection %d of %d: %zu atom%s", subidx + 1, len, n, n == 1 ? "" : "s");
+        } else if (len == 1) {
+            const size_t n = md_bitfield_popcount(&bf[0]);
+            md_strb_fmt(sb, "%zu atom%s", n, n == 1 ? "" : "s");
+        } else {
+            md_bitfield_t all = md_bitfield_create(md_get_heap_allocator());
+            size_t empty = 0;
+            for (int i = 0; i < len; ++i) {
+                md_bitfield_or_inplace(&all, &bf[i]);
+                empty += md_bitfield_popcount(&bf[i]) == 0;
+            }
+            md_strb_fmt(sb, "%d selections, %zu atoms in all", len, md_bitfield_popcount(&all));
+            if (empty) md_strb_fmt(sb, " (%zu empty)", empty);
+            md_bitfield_free(&all);
+        }
+        return;
+    }
+    case TYPE_CONTACT: {
+        const md_contact_set_t* set = (const md_contact_set_t*)data.ptr;
+        const bool self = set->flags & MD_CONTACT_FLAG_SELF;
+        if (!set->i && set->count == 0) {
+            // The shape only (the static check)
+            if (self) md_strb_fmt(sb, "pairs among %u groups", set->num_a);
+            else      md_strb_fmt(sb, "pairs between %u and %u groups", set->num_a, set->num_b);
+            return;
+        }
+        double atom_pairs = 0;
+        for (size_t k = 0; k < set->count; ++k) atom_pairs += set->atom_pairs ? set->atom_pairs[k] : 0;
+        md_strb_fmt(sb, "%zu pair%s of groups in contact", set->count, set->count == 1 ? "" : "s");
+        if (self) md_strb_fmt(sb, ", among %u groups", set->num_a);
+        else      md_strb_fmt(sb, ", between %u and %u groups", set->num_a, set->num_b);
+        md_strb_fmt(sb, "\n%.0f atom pairs", atom_pairs);
+        if (set->count > 0 && set->d_min) {
+            float d = set->d_min[0];
+            for (size_t k = 1; k < set->count; ++k) d = MIN(d, set->d_min[k]);
+            md_strb_fmt(sb, ", closest %.2f \xC3\x85", d);
+        }
+        return;
+    }
+    case TYPE_PLANE: {
+        const plane_t* p = (const plane_t*)data.ptr;
+        if (pick) {
+            md_strb_fmt(sb, "plane %d of %d\n", subidx + 1, len);
+            summarize_plane(sb, &p[subidx]);
+        } else if (len == 1) {
+            summarize_plane(sb, &p[0]);
+        } else {
+            float r = 0, dev = 0;
+            for (int i = 0; i < len; ++i) {
+                r   += p[i].radius;
+                dev  = MAX(dev, p[i].deviation);
+            }
+            md_strb_fmt(sb, "%d planes, mean radius %.2f \xC3\x85, largest deviation %.3f \xC3\x85\n", len, len ? r / len : 0.0f, dev);
+            md_strb_fmt(sb, "plane 1:\n");
+            summarize_plane(sb, &p[0]);
+        }
+        return;
+    }
+    case TYPE_DISTRIBUTION: {
+        const int bins = data.type.dim[1];
+        if (len == 1) md_strb_fmt(sb, "distribution of %d bins", bins);
+        else          md_strb_fmt(sb, "%d distributions of %d bins", len, bins);
+        if (data.value_range.end > data.value_range.beg) {
+            md_strb_fmt(sb, " over %.2f to %.2f", data.value_range.beg, data.value_range.end);
+            char unit[64];
+            const size_t n = md_unit_print(unit, sizeof(unit), data.unit[0]);
+            if (n) md_strb_fmt(sb, " %.*s", (int)MIN(n, sizeof(unit) - 1), unit);
+        }
+        return;
+    }
+    default:
+        break;
+    }
+
+    // Plain values: printed, the first few of a long array. Angles are read in degrees.
+    data_t view = data;
+    if (data.type.base_type == TYPE_FLOAT && md_unit_equal(data.unit[1], md_unit_radian())) {
+        const size_t total = type_info_total_element_count(data.type);
+        float* deg = md_alloc(sb->alloc, sizeof(float) * MAX(total, 1));
+        for (size_t i = 0; i < total; ++i) deg[i] = RAD_TO_DEG(((const float*)data.ptr)[i]);
+        view.ptr = deg;
+        view.unit[1] = md_unit_degree();
+        data = view;
+    }
+    char buf[512];
+    if (pick && is_array(data.type)) {
+        view.ptr = (char*)data.ptr + stride * subidx;
+        view.weight = data_weight_at(&data, stride * subidx);
+        view.type.dim[0] = 1;
+        md_strb_fmt(sb, "element %d of %d: ", subidx + 1, len);
+    } else if (is_array(data.type) && len > SUMMARY_MAX_VALUES) {
+        view.type.dim[0] = SUMMARY_MAX_VALUES;
+    }
+    const size_t n = print_data_value(buf, sizeof(buf), view);
+    md_strb_push_cstrl(sb, buf, MIN(n, sizeof(buf) - 1));
+    if (!pick && is_array(data.type) && len > SUMMARY_MAX_VALUES) {
+        md_strb_fmt(sb, " ... (%d values)", len);
+    }
+}
+
+#undef SUMMARY_MAX_VALUES
 
 #if DEBUG
 
@@ -4684,6 +4846,7 @@ static int find_param_index(const proc_sig_t* sig, str_t name) {
 static ast_node_t* create_absent_argument_node(md_script_ir_t* ir, token_t token) {
     ast_node_t* node = create_node(ir, AST_CONSTANT_VALUE, token);
     node->data.type = (type_info_t){0};
+    node->flags |= FLAG_IMPLICIT;
     return node;
 }
 
@@ -4693,6 +4856,7 @@ static ast_node_t* create_default_argument_node(md_script_ir_t* ir, const param_
     ast_node_t* node = create_node(ir, AST_CONSTANT_VALUE, token);
     node->data.type = param->def_type;
     node->value     = param->def;
+    node->flags    |= FLAG_IMPLICIT;
     return node;
 }
 
@@ -6500,6 +6664,13 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
 
     ASSERT(node->type != AST_UNDEFINED);
 
+    // An argument the call did not write has nothing in the source to hover, and it carries the token of the call:
+    // a marker of its own would take over the text of the call's
+    if (node->flags & FLAG_IMPLICIT) {
+        md_temp_end(temp);
+        return;
+    }
+
     md_strb_t sb = {0};
     md_strb_init(&sb, temp_arena);
 
@@ -6516,14 +6687,17 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     if (node->type == AST_ATTRIBUTE) {
         md_strb_fmt(&sb, "\n"STR_FMT, STR_ARG(node->attr_path));
     } else if (!(node->flags & FLAG_DYNAMIC)) {
-        if (node->data.type.base_type != TYPE_BITFIELD) {
-            md_strb_push_char(&sb, '\n');
-            char val_buf[128] = {0};
-            // print_data_value returns the length the value WOULD have printed to, not what fit.
-            // Pushing that unclamped reads past val_buf - snprintf leaves at most cap - 1 chars.
-            const size_t val_cap = sizeof(val_buf) - 1;
-            const size_t val_len = MIN(print_data_value(val_buf, sizeof(val_buf), node->data), val_cap);
-            md_strb_push_cstrl(&sb, val_buf, val_len);
+        // A name, or what is assigned to it, holds the value of its expression
+        const ast_node_t* vnode = node;
+        if (!vnode->data.ptr && vnode->type == AST_IDENTIFIER && md_array_size(vnode->children) > 0) vnode = vnode->children[0];
+        if (!vnode->data.ptr && vnode->type == AST_ASSIGNMENT && md_array_size(vnode->children) > 1) vnode = vnode->children[1];
+        if (vnode->data.ptr) {
+            md_strb_t val = md_strb_create(temp_arena);
+            summarize_data(&val, vnode->data, -1);
+            if (md_strb_len(val)) {
+                md_strb_push_char(&sb, '\n');
+                md_strb_push_str(&sb, md_strb_to_str(val));
+            }
         }
     } else {
         md_strb_push_str(&sb, STR_LIT(" [d]"));
@@ -7625,6 +7799,62 @@ bool md_script_vis_eval_ref(md_script_vis_t* vis, md_script_vis_ref_t ref, int s
     md_temp_end(temp);
 
     return true;
+}
+
+size_t md_script_vis_value_text(char* buf, size_t cap, md_script_vis_ref_t ref, int subidx, const md_script_vis_ctx_t* vis_ctx) {
+    ASSERT(vis_ctx);
+    if (!buf || cap == 0) return 0;
+    buf[0] = '\0';
+
+    const ast_node_t* node = resolve_vis_ref(vis_ctx->ir, ref);
+    if (!node || !vis_ctx->sys || !vis_ctx->state) return 0;
+    switch (node->type) {
+    case AST_IDENTIFIER:
+    case AST_ASSIGNMENT:
+        if (md_array_size(node->children) == 0) return 0;
+        node = node->type == AST_IDENTIFIER ? node->children[0] : node->children[md_array_size(node->children) - 1];
+        break;
+    default:
+        break;
+    }
+    if (subidx < -1 || (subidx >= 0 && node->data.type.dim[0] >= 0 && subidx >= node->data.type.dim[0])) return 0;
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_strb_t sb = md_strb_create(temp_alloc);
+
+    if (!(node->flags & FLAG_DYNAMIC) && node->data.ptr) {
+        // Known since the compilation
+        summarize_data(&sb, node->data, subidx);
+    } else {
+        // Within a context ('x in y') the value is that of the first: the one the hover shows first
+        eval_context_t ctx = {
+            .ir = vis_ctx->ir,
+            .sys = vis_ctx->sys,
+            .mol_ctx = (node->type != AST_CONTEXT && node->num_contexts) ? &node->contexts[0] : NULL,
+            .temp_alloc = temp_alloc,
+            .alloc = temp_alloc,
+            .cur_state = vis_ctx->state,
+            .ref_state = &vis_ctx->sys->reference,
+        };
+        data_t data = {0};
+        if (evaluate_node_alloc(&data, node, &ctx, temp_alloc)) {
+            data.unit[0] = node->data.unit[0];
+            data.unit[1] = node->data.unit[1];
+            data.value_range = node->data.value_range;
+            summarize_data(&sb, data, subidx);
+            if (node->type != AST_CONTEXT && node->num_contexts > 1) {
+                md_strb_fmt(&sb, "\n(the first of %zu contexts)", (size_t)node->num_contexts);
+            }
+        }
+    }
+
+    const str_t str = md_strb_to_str(sb);
+    const size_t len = MIN(str.len, cap - 1);
+    MEMCPY(buf, str.ptr, len);
+    buf[len] = '\0';
+    md_temp_end(temp);
+    return len;
 }
 
 bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script_vis_ctx_t* vis_ctx, md_script_vis_flags_t flags) {
