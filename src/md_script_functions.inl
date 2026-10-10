@@ -49,6 +49,8 @@
 #define TI_CONTACT        {TYPE_CONTACT, {1}}
 #define TI_PLANE          {TYPE_PLANE, {1}}
 #define TI_PLANE_ARR      {TYPE_PLANE, {ANY_LENGTH}}
+#define TI_PUCKER         {TYPE_PUCKER, {1}}
+#define TI_PUCKER_ARR     {TYPE_PUCKER, {ANY_LENGTH}}
 
 #define TI_COORDINATE     {TYPE_COORDINATE, {1}}
 #define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}}
@@ -449,6 +451,12 @@ static int _plane_normal    (data_t*, data_t[], eval_context_t*);  // (plane[]) 
 static int _plane_radius    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[]
 static int _plane_deviation (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[]
 static int _plane_angle     (data_t*, data_t[], eval_context_t*);  // (plane[], plane[]) -> float[]
+static int _pucker_rings    (data_t*, data_t[], eval_context_t*);  // (bitfield[]) -> pucker[], one per ring
+static int _pucker_atoms    (data_t*, data_t[], eval_context_t*);  // (int[]) -> pucker[1], the atoms in order
+static int _pucker_amplitude(data_t*, data_t[], eval_context_t*);  // (pucker[]) -> float[]
+static int _pucker_phase    (data_t*, data_t[], eval_context_t*);  // (pucker[]) -> float[]
+static int _pucker_theta    (data_t*, data_t[], eval_context_t*);  // (pucker[]) -> float[]
+static int _pucker_pseudorotation(data_t*, data_t[], eval_context_t*);  // (pucker[]) -> float[]
 static int _coordinate(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3][]
 static int _coordinate_x(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
 static int _coordinate_y(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
@@ -792,6 +800,12 @@ static procedure_t procedures[] = {
     {STR_INIT("radius"),        TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_radius,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("deviation"),     TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_deviation, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("angle"),         TI_FLOAT_ARR,   2,  {TI_PLANE_ARR, TI_PLANE_ARR}, _plane_angle, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_BITFIELD_ARR},    _pucker_rings,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_INT_ARR},         _pucker_atoms,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {STR_INIT("amplitude"),     TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_amplitude, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("phase"),         TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_phase,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("theta"),         TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_theta,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("pseudorotation"), TI_FLOAT_ARR,  1,  {TI_PUCKER_ARR},      _pucker_pseudorotation, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("shape_weights"), TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     {STR_INIT("coord"),      TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
@@ -5752,6 +5766,337 @@ static int _plane_angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const float c = fabsf(vec3_dot(pa->normal, pb->normal));
         out[i] = acosf(CLAMP(c, 0.0f, 1.0f));
     }
+    return 0;
+}
+
+// ### PUCKER ###
+// pucker(rings): how each ring of 5 to 7 atoms is puckered (md_pucker.h), a pucker record per ring, which amplitude(),
+// phase(), theta() and pseudorotation() read. The rings are those of the system, in the order of md_pucker_ring_order
+// (a sugar from its ring O and anomeric C, proline from N and CA). pucker({i, j, ...}) takes the atoms of one ring in
+// the order given instead.
+
+// The locant of the atom at position k of a sugar ring: "O" for the ring O, the number in the atom's name otherwise
+static void pucker_sugar_locant(char out[8], const md_system_t* sys, int32_t atom, size_t k) {
+    if (k == 0) { out[0] = 'O'; out[1] = '\0'; return; }
+    const str_t name = md_atom_name(&sys->atom, atom);
+    size_t n = 0;
+    for (size_t i = 0; i < name.len && n < 7; ++i) {
+        if (name.ptr[i] >= '0' && name.ptr[i] <= '9') out[n++] = name.ptr[i];
+    }
+    if (n == 0) n = (size_t)snprintf(out, 8, "%d", (int)k);
+    out[n] = '\0';
+}
+
+// Writes the description of the conformation of the ring order[0 .. n) into rec->name
+static void pucker_describe(pucker_rec_t* rec, const int32_t* order, size_t n, bool sugar, const vec4_t* xyzw, vec3_t c, const eval_context_t* ctx) {
+    const md_system_t* sys = ctx->sys;
+    const md_pucker_conformer_t conf = md_pucker_conformer(&rec->cp);
+    char* buf = rec->name;
+    const size_t cap = sizeof(rec->name);
+    buf[0] = '\0';
+    if (conf.kind == MD_PUCKER_KIND_NONE) return;
+    if (conf.kind == MD_PUCKER_KIND_PLANAR || (!rec->anchored && !sugar)) {
+        snprintf(buf, cap, "%s", md_pucker_kind_name(conf.kind));
+        return;
+    }
+    char name[MD_RING_MAX_SIZE][8];
+    const char* locants[MD_RING_MAX_SIZE];
+    for (size_t k = 0; k < n; ++k) {
+        if (sugar) {
+            pucker_sugar_locant(name[k], sys, order[k], k);
+        } else {
+            const str_t s = md_atom_name(&sys->atom, order[k]);
+            snprintf(name[k], sizeof(name[k]), "%.*s", (int)MIN(s.len, 7), s.ptr);
+        }
+        locants[k] = name[k];
+    }
+    if (sugar) {
+        size_t len = md_pucker_conformer_name(buf, cap, conf, locants);
+        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), " %s", md_pucker_kind_name(conf.kind));
+        // A furanose: endo is the side of the C outside of the ring on its last C (C5' of a nucleotide)
+        if (n == 5 && (conf.kind == MD_PUCKER_KIND_ENVELOPE || conf.kind == MD_PUCKER_KIND_TWIST)) {
+            int32_t ref = -1;
+            md_bond_iter_t it = md_bond_iter(&sys->bond, order[4]);
+            while (md_bond_iter_has_next(&it)) {
+                const md_atom_idx_t x = md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+                bool in_ring = false;
+                for (size_t k = 0; k < n; ++k) in_ring |= order[k] == x;
+                if (!in_ring && md_atom_atomic_number(&sys->atom, x) == MD_Z_C) ref = x;
+            }
+            if (ref >= 0) {
+                // Above: the side from which the ring is numbered clockwise
+                vec3_t nw = {0};
+                for (size_t k = 0; k < n; ++k) {
+                    nw = vec3_add(nw, vec3_cross(vec3_sub(vec3_from_vec4(xyzw[k]), c), vec3_sub(vec3_from_vec4(xyzw[(k + 1) % n]), c)));
+                }
+                // The reference atom placed next to C4', across the cell if need be
+                vec3_t d = vec3_sub(ctx->cur_state->xyz[ref], vec3_from_vec4(xyzw[4]));
+                md_util_min_image_vec3(&d, 1, &ctx->cur_state->unitcell);
+                const bool ref_above = vec3_dot(vec3_add(vec3_sub(vec3_from_vec4(xyzw[4]), c), d), nw) < 0.0f;
+                char an[16] = "", bn[16] = "";
+                if (conf.above[0] >= 0) { const str_t s = md_atom_name(&sys->atom, order[conf.above[0]]); snprintf(an, sizeof(an), "%.*s", (int)MIN(s.len, 15), s.ptr); }
+                if (conf.below[0] >= 0) { const str_t s = md_atom_name(&sys->atom, order[conf.below[0]]); snprintf(bn, sizeof(bn), "%.*s", (int)MIN(s.len, 15), s.ptr); }
+                const char* up_word = ref_above ? "endo" : "exo";
+                const char* dn_word = ref_above ? "exo" : "endo";
+                if (an[0] && bn[0])  len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s %s-%s", an, up_word, bn, dn_word);
+                else if (an[0])      len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", an, up_word);
+                else if (bn[0])      len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", bn, dn_word);
+            }
+        }
+        return;
+    }
+    // Another ring: the atoms out of the plane by name
+    size_t len = (size_t)snprintf(buf, cap, "%s (", md_pucker_kind_name(conf.kind));
+    bool first = true;
+    for (int i = 0; i < 2; ++i) if (conf.above[i] >= 0) {
+        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s above", first ? "" : ", ", locants[conf.above[i]]);
+        first = false;
+    }
+    for (int i = 0; i < 2; ++i) if (conf.below[i] >= 0) {
+        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s below", first ? "" : ", ", locants[conf.below[i]]);
+        first = false;
+    }
+    snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ")");
+}
+
+static void pucker_compute(pucker_rec_t* rec, const int32_t* order, size_t n, bool anchored, bool sugar, bool pseudo, const eval_context_t* ctx, md_allocator_i* temp) {
+    MEMSET(rec, 0, sizeof(pucker_rec_t));
+    rec->anchored = anchored;
+    rec->has_pseudo = pseudo;
+    vec4_t* xyzw = md_alloc(temp, sizeof(vec4_t) * n);
+    const vec3_t c = plane_positions(xyzw, order, n, ctx->cur_state);
+    vec3_t xyz[MD_RING_MAX_SIZE];
+    for (size_t k = 0; k < n; ++k) xyz[k] = vec3_from_vec4(xyzw[k]);
+    if (!md_pucker_cremer_pople(&rec->cp, xyz, n)) {
+        rec->cp.size = (uint32_t)n;
+        return;
+    }
+    if (pseudo && n == 5) {
+        md_pucker_pseudorotation(&rec->pseudo_phase, &rec->pseudo_amplitude, xyz);
+    }
+    pucker_describe(rec, order, n, sugar, xyzw, c, ctx);
+}
+
+static void pucker_visualize(const int32_t* order, size_t n, eval_context_t* ctx) {
+    md_bitfield_t bf = md_bitfield_create(ctx->temp_alloc);
+    for (size_t k = 0; k < n; ++k) md_bitfield_set_bit(&bf, order[k]);
+    visualize_atom_mask(&bf, ctx);
+    if (!(ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY)) return;
+    vec4_t xyzw[MD_RING_MAX_SIZE];
+    plane_positions(xyzw, order, n, ctx->cur_state);
+    for (size_t k = 0; k < n; ++k) {
+        push_line(vertex(vec3_from_vec4(xyzw[k]), COLOR_WHITE), vertex(vec3_from_vec4(xyzw[(k + 1) % n]), COLOR_WHITE), ctx->vis);
+    }
+}
+
+// The ring of each group, -1 where it is not one of 5 to 7 atoms of the system
+static int64_t pucker_group_ring(const plane_rings_t* pr, const md_bitfield_t* bf, const eval_context_t* ctx, md_allocator_i* temp) {
+    const size_t count = md_bitfield_popcount(bf);
+    if (count < 5 || count > 7) return -1;
+    int32_t* idx = md_alloc(temp, sizeof(int32_t) * count);
+    md_bitfield_iter_extract_indices(idx, count, md_bitfield_iter_create(bf));
+    return plane_rings_find(pr, ctx->sys, idx, count);
+}
+
+static int _pucker_rings(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    const md_bitfield_t* groups = as_bitfield(arg[0]);
+    const size_t num = element_count(arg[0]);
+    const md_system_t* sys = ctx->sys;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    const plane_rings_t pr = plane_rings_build(sys, temp_alloc);
+    int result = 0;
+
+    if (!dst && !ctx->vis) {
+        if (ctx->arg_flags[0] & FLAG_DYNAMIC) {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: the rings cannot depend on the frame");
+            result = STATIC_VALIDATION_ERROR;
+            goto done;
+        }
+        for (size_t g = 0; g < num; ++g) {
+            if (pucker_group_ring(&pr, &groups[g], ctx, temp_alloc) < 0) {
+                const size_t n = md_bitfield_popcount(&groups[g]);
+                char what[32] = "";
+                if (num > 1) snprintf(what, sizeof(what), " %zu of %zu", g + 1, num);
+                if (n < 5 || n > 7) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: group%s has %zu atoms, a ring of 5 to 7 is needed (ring(size=5:7) gives those)", what, n);
+                else                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: group%s is not a ring of the system; pucker({i, j, ...}) takes atoms in the order of a ring", what);
+                result = STATIC_VALIDATION_ERROR;
+                goto done;
+            }
+        }
+        if (ctx->backchannel) {
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_none();
+        }
+        result = (int)num;
+        goto done;
+    }
+
+    pucker_rec_t* out = dst ? (pucker_rec_t*)dst->ptr : NULL;
+    const size_t end = MIN(num, dst ? element_count(*dst) : num);
+    size_t beg = 0, vend = end;
+    if (!dst && ctx->vis && ctx->subscript_ranges) {
+        beg = (size_t)MAX(ctx->subscript_ranges[0].beg, 0);
+        vend = MIN((size_t)MAX(ctx->subscript_ranges[0].end, 0), end);
+    }
+    for (size_t g = beg; g < vend; ++g) {
+        const int64_t r = pucker_group_ring(&pr, &groups[g], ctx, temp_alloc);
+        if (r < 0) {
+            if (out) MEMSET(&out[g], 0, sizeof(pucker_rec_t));
+            continue;
+        }
+        int32_t order[MD_RING_MAX_SIZE];
+        bool anchored = false;
+        const size_t n = md_pucker_ring_order(order, &anchored, sys, (size_t)r);
+        const bool sugar = (md_system_ring_flags(sys, (size_t)r) & MD_RING_FLAG_SUGAR) != 0;
+        if (out) {
+            if (ctx->backchannel) {
+                // The static check asking about the argument of an accessor: the shape only
+                MEMSET(&out[g], 0, sizeof(pucker_rec_t));
+                out[g].cp.size = (uint32_t)n;
+                out[g].anchored = anchored;
+                out[g].has_pseudo = sugar && n == 5;
+            } else {
+                pucker_compute(&out[g], order, n, anchored, sugar, sugar && n == 5, ctx, temp_alloc);
+            }
+        }
+        if (ctx->vis) pucker_visualize(order, n, ctx);
+    }
+
+done:
+    md_temp_end(temp);
+    return result;
+}
+
+static int _pucker_atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    const int* in = as_int_arr(arg[0]);
+    const size_t n = element_count(arg[0]);
+    const irange_t range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
+    int32_t order[MD_RING_MAX_SIZE];
+
+    if (!dst && !ctx->vis) {
+        if (ctx->arg_flags[0] & FLAG_DYNAMIC) {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: the atoms cannot depend on the frame");
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (n < 5 || n > 7) {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: %zu atoms, a ring of 5 to 7 atoms in order is needed", n);
+            return STATIC_VALIDATION_ERROR;
+        }
+    }
+    if (n < 5 || n > 7) return dst ? 0 : 1;
+    for (size_t k = 0; k < n; ++k) {
+        const int idx = range.beg + in[k] - 1;
+        if (idx < range.beg || idx >= range.end) {
+            if (!dst && !ctx->vis) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: atom %d is out of range", in[k]);
+            return STATIC_VALIDATION_ERROR;
+        }
+        order[k] = idx;
+    }
+    if (!dst && !ctx->vis) {
+        // Around a ring: each atom bonded to the next, and the last to the first
+        for (size_t k = 0; k < n; ++k) {
+            if (md_bond_find(&ctx->sys->bond, order[k], order[(k + 1) % n]) < 0) {
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: atoms %d and %d are not bonded, the atoms have to go around a ring", in[k], in[(k + 1) % n]);
+                return STATIC_VALIDATION_ERROR;
+            }
+        }
+        if (ctx->backchannel) {
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_none();
+        }
+        return 1;
+    }
+    if (dst) {
+        pucker_rec_t* out = (pucker_rec_t*)dst->ptr;
+        if (ctx->backchannel) {
+            MEMSET(out, 0, sizeof(pucker_rec_t));
+            out->cp.size = (uint32_t)n;
+            out->anchored = true;
+            out->has_pseudo = n == 5;
+        } else {
+            md_temp_scope_t temp = md_temp_begin_avoid(ctx->alloc);
+            pucker_compute(out, order, n, true, false, n == 5, ctx, md_temp_allocator(temp));
+            md_temp_end(temp);
+        }
+    }
+    if (ctx->vis) pucker_visualize(order, n, ctx);
+    return 0;
+}
+
+static inline const pucker_rec_t* as_puckers(data_t arg) {
+    return (const pucker_rec_t*)arg.ptr;
+}
+
+// What an accessor needs of the rings, checked on their shape (the static check fills it in): 6 membered for theta,
+// a furanose for pseudorotation. A phase of a ring without a first atom only warns.
+typedef enum pucker_need_t { PUCKER_NEED_ANY, PUCKER_NEED_PHASE, PUCKER_NEED_THETA, PUCKER_NEED_PSEUDO } pucker_need_t;
+
+static int pucker_accessor_static(data_t arg[], pucker_need_t need, md_unit_t unit, eval_context_t* ctx) {
+    const pucker_rec_t* p = as_puckers(arg[0]);
+    const size_t n = element_count(arg[0]);
+    if (p) {
+        bool warned = false;
+        for (size_t i = 0; i < n; ++i) {
+            if (p[i].cp.size == 0) continue;
+            if (need == PUCKER_NEED_THETA && p[i].cp.size != 6) {
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "theta: ring %zu has %u atoms, theta is of six membered rings (ring(size=6) gives those)", i + 1, p[i].cp.size);
+                return STATIC_VALIDATION_ERROR;
+            }
+            if (need == PUCKER_NEED_PSEUDO && !p[i].has_pseudo) {
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pseudorotation: ring %zu is not a furanose (ring(kind='sugar', size=5) gives those)", i + 1);
+                return STATIC_VALIDATION_ERROR;
+            }
+            if ((need == PUCKER_NEED_PHASE || need == PUCKER_NEED_THETA) && !p[i].anchored && !p[i].has_pseudo && !warned) {
+                EVAL_LOG_WARNING(ctx, ctx->arg_tokens[0], "ring %zu has no atom to start from (a ring of C alike all around): its %s depends on which atom is taken as the first", i + 1, need == PUCKER_NEED_THETA ? "theta" : "phase");
+                warned = true;
+            }
+        }
+    }
+    if (ctx->backchannel) {
+        ctx->backchannel->unit[0] = md_unit_none();
+        ctx->backchannel->unit[1] = unit;
+    }
+    return (int)n;
+}
+
+static int _pucker_amplitude(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return pucker_accessor_static(arg, PUCKER_NEED_ANY, md_unit_angstrom(), ctx);
+    const pucker_rec_t* p = as_puckers(arg[0]);
+    float* out = as_float_arr(*dst);
+    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? p[i].cp.amplitude : 0.0f;
+    return 0;
+}
+
+static int _pucker_phase(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return pucker_accessor_static(arg, PUCKER_NEED_PHASE, md_unit_radian(), ctx);
+    const pucker_rec_t* p = as_puckers(arg[0]);
+    float* out = as_float_arr(*dst);
+    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? DEG_TO_RAD(p[i].cp.phi2) : 0.0f;
+    return 0;
+}
+
+static int _pucker_theta(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return pucker_accessor_static(arg, PUCKER_NEED_THETA, md_unit_radian(), ctx);
+    const pucker_rec_t* p = as_puckers(arg[0]);
+    float* out = as_float_arr(*dst);
+    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? DEG_TO_RAD(p[i].cp.theta) : 0.0f;
+    return 0;
+}
+
+static int _pucker_pseudorotation(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return pucker_accessor_static(arg, PUCKER_NEED_PSEUDO, md_unit_radian(), ctx);
+    const pucker_rec_t* p = as_puckers(arg[0]);
+    float* out = as_float_arr(*dst);
+    const size_t n = MIN(element_count(arg[0]), element_count(*dst));
+    for (size_t i = 0; i < n; ++i) out[i] = p ? DEG_TO_RAD(p[i].pseudo_phase) : 0.0f;
     return 0;
 }
 

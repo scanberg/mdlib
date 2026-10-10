@@ -23,6 +23,7 @@
 #include <md_script.c>
 #include <md_chem.h>
 #include "component_util.h"
+#include <md_pucker.h>
 
 // Create molecule for evaulation
 #define ATOM_COUNT 16
@@ -5213,4 +5214,131 @@ UTEST(script, hover_text) {
 
     md_script_ir_free(ir);
     md_vm_arena_destroy(trp.alloc);
+}
+
+// ### PUCKER ###
+// pucker(): the Cremer-Pople coordinates of rings (md_pucker), in the order the conventions are written for, and the
+// name of the conformation. The numbers themselves are checked against an independent implementation outside of the
+// unit tests; here what the script makes of them.
+
+static bool pucker_eval(data_t* out, md_script_ir_t* ir, const char* name, plane_sys_t* p, const md_system_state_t* state) {
+    return plane_eval(out, ir, name, p, state);
+}
+
+UTEST(script, pucker_pyranose) {
+    plane_sys_t nag = {0};
+    ASSERT_TRUE(plane_sys_init(&nag, "NAG"));
+    md_script_ir_t* ir = md_script_ir_create(nag.alloc);
+    ASSERT_TRUE(plane_compile(ir, "p = pucker(ring(kind='sugar')); q = amplitude(p); t = theta(p); f = phase(p);", &nag));
+    data_t p = {0}, q = {0}, t = {0};
+    ASSERT_TRUE(pucker_eval(&p, ir, "p", &nag, &nag.st));
+    ASSERT_TRUE(pucker_eval(&q, ir, "q", &nag, &nag.st));
+    ASSERT_TRUE(pucker_eval(&t, ir, "t", &nag, &nag.st));
+    ASSERT_EQ(1, (int)element_count(p));
+    const pucker_rec_t* r = (const pucker_rec_t*)p.ptr;
+    // beta-D-GlcNAc is a 4C1 chair: theta near 0 in the order O5, C1, ..., C5
+    EXPECT_STREQ("4C1 chair", r->name);
+    EXPECT_LT(RAD_TO_DEG(((const float*)t.ptr)[0]), 10.0f);
+    EXPECT_NEAR(0.59f, ((const float*)q.ptr)[0], 0.05f);
+    EXPECT_TRUE(r->anchored);
+
+    // The atoms given the other way around: the same ring seen from the other side, theta goes to 180 - theta
+    // O5 C1 C2 C3 C4 C5 by their indices, then reversed
+    const int32_t* ring = NULL;
+    for (size_t i = 0; i < md_index_data_num_ranges(&nag.sys.ring); ++i) {
+        if (md_system_ring_flags(&nag.sys, i) & MD_RING_FLAG_SUGAR) ring = md_index_range_beg(&nag.sys.ring, i);
+    }
+    ASSERT_TRUE(ring != NULL);
+    char src[256];
+    snprintf(src, sizeof(src), "u = theta(pucker({%d, %d, %d, %d, %d, %d}));", ring[0] + 1, ring[5] + 1, ring[4] + 1, ring[3] + 1, ring[2] + 1, ring[1] + 1);
+    md_script_ir_t* ir2 = md_script_ir_create(nag.alloc);
+    ASSERT_TRUE(plane_compile(ir2, src, &nag));
+    data_t u = {0};
+    ASSERT_TRUE(pucker_eval(&u, ir2, "u", &nag, &nag.st));
+    EXPECT_NEAR(180.0f - RAD_TO_DEG(((const float*)t.ptr)[0]), RAD_TO_DEG(((const float*)u.ptr)[0]), 0.01f);
+
+    // Errors before evaluation
+    EXPECT_TRUE(plane_compile_fails_with(&nag, "x = pseudorotation(pucker(ring(kind='sugar')));", "is not a furanose"));
+    EXPECT_TRUE(plane_compile_fails_with(&nag, "x = pucker(residue(1));", "a ring of 5 to 7 is needed"));
+    snprintf(src, sizeof(src), "x = pucker({%d, %d, %d, %d, %d, %d});", ring[0] + 1, ring[2] + 1, ring[1] + 1, ring[3] + 1, ring[4] + 1, ring[5] + 1);
+    EXPECT_TRUE(plane_compile_fails_with(&nag, src, "are not bonded"));
+    EXPECT_TRUE(plane_compile_fails_with(&nag, "x = pucker({1, 2, 3});", "a ring of 5 to 7 atoms in order"));
+
+    md_script_ir_free(ir2);
+    md_script_ir_free(ir);
+    md_vm_arena_destroy(nag.alloc);
+}
+
+// A furanose: the pseudorotation of nucleic acids, and endo and exo by the side of C5'. In a mirror image (the L-sugar)
+// the IUPAC name turns over and P moves by 180 degrees, but endo stays on the side of C5'.
+UTEST(script, pucker_furanose) {
+    plane_sys_t ade = {0};
+    ASSERT_TRUE(plane_sys_init(&ade, "A"));
+    md_script_ir_t* ir = md_script_ir_create(ade.alloc);
+    ASSERT_TRUE(plane_compile(ir, "p = pucker(ring(kind='sugar')); P = pseudorotation(p); f = phase(p);", &ade));
+    data_t p = {0}, P = {0}, f = {0};
+    ASSERT_TRUE(pucker_eval(&p, ir, "p", &ade, &ade.st));
+    ASSERT_TRUE(pucker_eval(&P, ir, "P", &ade, &ade.st));
+    ASSERT_TRUE(pucker_eval(&f, ir, "f", &ade, &ade.st));
+    const pucker_rec_t* r = (const pucker_rec_t*)p.ptr;
+    // Altona-Sundaralingam P is Cremer-Pople phi2 plus 90 degrees, to within a degree
+    const float d = fmodf(RAD_TO_DEG(((const float*)P.ptr)[0]) - RAD_TO_DEG(((const float*)f.ptr)[0]) - 90.0f + 720.0f, 360.0f);
+    EXPECT_LT(MIN(d, 360.0f - d), 1.5f);
+    // The name agrees with P: an envelope at P = 18 + 36 k, a twist between
+    const char* phrase = strchr(r->name, ',');
+    ASSERT_TRUE(phrase != NULL);
+    char before[64];
+    snprintf(before, sizeof(before), "%s", r->name);
+    const float P0 = r->pseudo_phase;
+    // A D-ribose, so the convention of nucleic acids holds: P 72 to 108 is O4'-endo, 0 to 36 C3'-endo, 144 to 180 C2'-endo
+    if (P0 > 72.0f && P0 < 108.0f)       EXPECT_TRUE(strstr(r->name, "O4'-endo") != NULL);
+    else if (P0 >= 0.0f && P0 < 36.0f)   EXPECT_TRUE(strstr(r->name, "C3'-endo") != NULL);
+    else if (P0 > 144.0f && P0 < 180.0f) EXPECT_TRUE(strstr(r->name, "C2'-endo") != NULL);
+    else                                 EXPECT_TRUE(strstr(r->name, "-endo") != NULL);
+
+    // The mirror image
+    md_system_state_t mir = { .alloc = ade.alloc };
+    md_system_state_init(&mir, ade.st.num_atoms);
+    mir.num_atoms = ade.st.num_atoms;
+    for (size_t k = 0; k < ade.st.num_atoms; ++k) mir.xyz[k] = vec3_set(-ade.st.xyz[k].x, ade.st.xyz[k].y, ade.st.xyz[k].z);
+    data_t pm = {0};
+    ASSERT_TRUE(pucker_eval(&pm, ir, "p", &ade, &mir));
+    const pucker_rec_t* rm = (const pucker_rec_t*)pm.ptr;
+    const float dP = fmodf(rm->pseudo_phase - P0 + 720.0f, 360.0f);
+    EXPECT_NEAR(180.0f, dP, 1.0f);
+    EXPECT_STRNE(before, rm->name);
+    EXPECT_STREQ(strchr(before, ','), strchr(rm->name, ','));
+
+    md_script_ir_free(ir);
+    md_vm_arena_destroy(ade.alloc);
+}
+
+// Proline from N towards CA; rings alike all around get the kind of their conformation only, and warn of a phase
+UTEST(script, pucker_order) {
+    plane_sys_t pro = {0}, phe = {0};
+    ASSERT_TRUE(plane_sys_init(&pro, "PRO"));
+    ASSERT_TRUE(plane_sys_init(&phe, "PHE"));
+    int32_t order[MD_RING_MAX_SIZE];
+    bool anchored = false;
+    ASSERT_EQ(5, (int)md_pucker_ring_order(order, &anchored, &pro.sys, 0));
+    EXPECT_TRUE(anchored);
+    EXPECT_TRUE(str_eq(md_atom_name(&pro.sys.atom, order[0]), STR_LIT("N")));
+    EXPECT_TRUE(str_eq(md_atom_name(&pro.sys.atom, order[1]), STR_LIT("CA")));
+    EXPECT_TRUE(str_eq(md_atom_name(&pro.sys.atom, order[2]), STR_LIT("CB")));
+    EXPECT_TRUE(str_eq(md_atom_name(&pro.sys.atom, order[4]), STR_LIT("CD")));
+
+    ASSERT_EQ(6, (int)md_pucker_ring_order(order, &anchored, &phe.sys, 0));
+    EXPECT_TRUE(str_eq(md_atom_name(&phe.sys.atom, order[0]), STR_LIT("CG")));      // the C bonded to CB
+    EXPECT_FALSE(anchored);                                                          // but either way round
+
+    md_script_ir_t* ir = md_script_ir_create(phe.alloc);
+    ASSERT_TRUE(plane_compile(ir, "p = pucker(ring()); f = phase(p);", &phe));
+    EXPECT_GT((int)md_script_ir_num_warnings(ir), 0);
+    data_t p = {0};
+    ASSERT_TRUE(pucker_eval(&p, ir, "p", &phe, &phe.st));
+    EXPECT_STREQ("planar", ((const pucker_rec_t*)p.ptr)->name);
+
+    md_script_ir_free(ir);
+    md_vm_arena_destroy(pro.alloc);
+    md_vm_arena_destroy(phe.alloc);
 }

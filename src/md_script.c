@@ -27,6 +27,7 @@
 
 #include <md_script.h>
 #include <md_contact.h>
+#include <md_pucker.h>
 #include <md_match.h>
 #include <md_smiles.h>
 
@@ -194,6 +195,7 @@ typedef enum base_type_t {
     TYPE_DISTRIBUTION,  // A bin of a histogram: a float. Shaped [n][bins], one distribution per row. The weight of each bin,
                         // what normalizes it, is not part of the value: it sits beside it in data_t.weight.
     TYPE_PLANE,         // The plane fitted to a group of atoms (plane_t), read through centroid(), normal(), radius(), ...
+    TYPE_PUCKER,        // The puckering of a ring (pucker_rec_t), read through amplitude(), phase(), theta(), pseudorotation()
 } base_type_t;
 
 typedef enum flags_t {
@@ -259,6 +261,17 @@ typedef struct plane_t {
     float  deviation;       // RMS distance of the atoms from the plane (Å)
     int    count;           // Atoms fitted
 } plane_t;
+
+// The puckering of a ring (pucker()): its Cremer-Pople coordinates, the pseudorotation of a furanose, and the name of
+// its conformation. The ring is in the order of md_pucker_ring_order, or as the script gave it.
+typedef struct pucker_rec_t {
+    md_pucker_t cp;
+    float   pseudo_phase;       // Altona-Sundaralingam P (degrees), a furanose only
+    float   pseudo_amplitude;   // tau_m (degrees)
+    uint8_t has_pseudo;         // A five membered sugar ring, or five atoms given in order
+    uint8_t anchored;           // The order is fixed by the chemistry (md_pucker_ring_order): the phases and the name mean something
+    char    name[56];           // The conformation: "4C1 chair", "3E envelope, C3'-endo", "envelope, CG above", "chair"
+} pucker_rec_t;
 
 struct irange_t {
     int beg;
@@ -883,6 +896,7 @@ static size_t base_type_element_byte_size(base_type_t type) {
     case TYPE_CONTACT:  return sizeof(md_contact_set_t);
     case TYPE_DISTRIBUTION: return sizeof(float);
     case TYPE_PLANE:    return sizeof(plane_t);
+    case TYPE_PUCKER:   return sizeof(pucker_rec_t);
     case TYPE_UNDEFINED:
     default:            return 0;
     }
@@ -1287,6 +1301,7 @@ static const char* get_value_type_str(base_type_t type) {
     case TYPE_CONTACT: return "contact";
     case TYPE_DISTRIBUTION: return "distribution";
     case TYPE_PLANE: return "plane";
+    case TYPE_PUCKER: return "pucker";
     default: return "type out of range";
     }
 }
@@ -2124,6 +2139,12 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
                 PRINT("%zu pairs", set->count);
                 break;
             }
+            case TYPE_PUCKER:
+            {
+                const pucker_rec_t* p = (const pucker_rec_t*)data.ptr;
+                PRINT("pucker(%s, Q %.2f)", p->name, p->cp.amplitude);
+                break;
+            }
             default:
                 ASSERT(false);
             }
@@ -2153,6 +2174,18 @@ static void summarize_plane(md_strb_t* sb, const plane_t* p) {
     md_strb_fmt(sb, "centroid (%.2f, %.2f, %.2f) \xC3\x85\n", p->centroid.x, p->centroid.y, p->centroid.z);
     md_strb_fmt(sb, "normal (%.3f, %.3f, %.3f)\n", p->normal.x, p->normal.y, p->normal.z);
     md_strb_fmt(sb, "radius %.2f \xC3\x85, spread %.2f x %.2f \xC3\x85, deviation %.3f \xC3\x85 (%d atoms)", p->radius, p->extent[0], p->extent[1], p->deviation, p->count);
+}
+
+static void summarize_pucker(md_strb_t* sb, const pucker_rec_t* p) {
+    if (p->name[0]) md_strb_fmt(sb, "%s\n", p->name);
+    md_strb_fmt(sb, "Q %.3f \xC3\x85", p->cp.amplitude);
+    if (p->cp.size == 6) md_strb_fmt(sb, ", theta %.1f\xC2\xB0", p->cp.theta);
+    if (p->anchored || p->has_pseudo) {
+        md_strb_fmt(sb, ", phi %.1f\xC2\xB0", p->cp.phi2);
+        if (p->cp.size == 7) md_strb_fmt(sb, ", phi3 %.1f\xC2\xB0", p->cp.phi3);
+    }
+    if (p->has_pseudo) md_strb_fmt(sb, "\nP %.1f\xC2\xB0, tau_m %.1f\xC2\xB0", p->pseudo_phase, p->pseudo_amplitude);
+    if (!p->anchored && !p->has_pseudo) md_strb_fmt(sb, "\n(the ring has no first atom, so no phase)");
 }
 
 static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
@@ -2223,6 +2256,37 @@ static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
             md_strb_fmt(sb, "%d planes, mean radius %.2f \xC3\x85, largest deviation %.3f \xC3\x85\n", len, len ? r / len : 0.0f, dev);
             md_strb_fmt(sb, "plane 1:\n");
             summarize_plane(sb, &p[0]);
+        }
+        return;
+    }
+    case TYPE_PUCKER: {
+        const pucker_rec_t* p = (const pucker_rec_t*)data.ptr;
+        if (pick) {
+            md_strb_fmt(sb, "ring %d of %d\n", subidx + 1, len);
+            summarize_pucker(sb, &p[subidx]);
+        } else if (len == 1) {
+            summarize_pucker(sb, &p[0]);
+        } else {
+            // How many rings are in each conformation, the most common first
+            md_strb_fmt(sb, "%d rings:", len);
+            bool* done = md_alloc(sb->alloc, sizeof(bool) * len);
+            MEMSET(done, 0, sizeof(bool) * len);
+            int shown = 0;
+            for (int i = 0; i < len && shown < 6; ++i) {
+                int best = -1, best_count = 0;
+                for (int k = 0; k < len; ++k) {
+                    if (done[k]) continue;
+                    int c = 0;
+                    for (int m = k; m < len; ++m) c += !done[m] && !strcmp(p[m].name, p[k].name);
+                    if (c > best_count) { best = k; best_count = c; }
+                }
+                if (best < 0) break;
+                for (int m = best; m < len; ++m) if (!strcmp(p[m].name, p[best].name)) done[m] = true;
+                md_strb_fmt(sb, "%s %d %s", shown ? "," : "", best_count, p[best].name[0] ? p[best].name : "unnamed");
+                shown += 1;
+            }
+            md_strb_fmt(sb, "\nring 1:\n");
+            summarize_pucker(sb, &p[0]);
         }
         return;
     }

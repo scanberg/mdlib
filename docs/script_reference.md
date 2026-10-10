@@ -195,6 +195,7 @@ n = count(sel=protein(), unit="residue");
 | `volume` | `float[128][128][128]` grid (for example `sdf`). |
 | `contact` | The group pairs in contact in a frame, from [`contacts`](#contacts); read with [`count`](#count) and [`degree`](#degree). |
 | `plane` | The plane fitted to a group of atoms, from [`planes`](#planes): its centroid, oriented normal, radius and how far the atoms are from it; read with [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation) and [`angle`](#angle). `plane[n]` is *n* of them. |
+| `pucker` | How a ring of 5 to 7 atoms is puckered, from [`pucker`](#pucker): its Cremer-Pople coordinates and the name of its conformation; read with [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta) and [`pseudorotation`](#pseudorotation). |
 
 Units propagate through arithmetic: `distance(1,2) - distance(1,3)` is in Å, `distance(1,2) * distance(1,3)` in Å²,
 `distance(1,2) / distance(1,3)` is dimensionless, and scaling by a plain number (`2.0 * distance(1,2)`) keeps the
@@ -303,7 +304,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
 | [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`pool`](#pool), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
-| [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`planes`](#planes), [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
+| [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`planes`](#planes), [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation), [`pucker`](#pucker), [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta), [`pseudorotation`](#pseudorotation), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
 | [Math](#math) | [`sqrt`](#sqrt), [`cbrt`](#cbrt), [`abs`](#abs), [`floor`](#floor), [`ceil`](#ceil), [`sin`](#sin), [`cos`](#cos), [`asin`](#asin), [`acos`](#acos), [`atan`](#atan), [`atan2`](#atan2), [`log`](#log), [`log2`](#log2), [`log10`](#log10), [`exp`](#exp), [`exp2`](#exp2), [`pow`](#pow), [`min`](#min), [`max`](#max) |
 | [Linear algebra](#linear-algebra-and-constructors) | [`vec2`](#vec2), [`vec3`](#vec3), [`vec4`](#vec4), [`dot`](#dot), [`cross`](#cross), [`length`](#length), [`normalize`](#normalize), [`mul`](#mul) |
 | [Combining](#combining-and-reshaping) | [`join`](#join) (`flatten`), [`split`](#split), [`chunks`](#chunks), [`transpose`](#transpose), and the operators `and` `or` `xor` `not` on selections |
@@ -1459,6 +1460,89 @@ deviation(p: plane[]) -> float[] [Å]
 
 The root mean square distance of each plane's atoms from it: 0 for a flat group, a few tenths of an Å for a puckered
 ring.
+
+### pucker
+
+<!-- proc name=pucker category=geometry -->
+
+```text
+pucker(rings: bitfield[]) -> pucker[]
+pucker(atoms: int[]) -> pucker
+```
+
+How each ring of 5 to 7 atoms is puckered: its Cremer-Pople coordinates (Cremer & Pople, 1975), read with
+[`amplitude`](#amplitude), [`phase`](#phase) and [`theta`](#theta), the pseudorotation of a furanose
+(Altona & Sundaralingam, 1972), read with [`pseudorotation`](#pseudorotation), and the name of its conformation, which
+hovering it shows (`4C1 chair`, `3E envelope, C3'-endo`). The rings are rings of the system ([`ring`](#ring)), and
+cannot depend on the frame; `pucker({i, j, ...})` takes the atoms of one ring in the order given instead.
+
+What the phase and theta mean depends on where the ring starts and which way it goes, so the atoms are taken in the
+order the conventions are written for:
+
+- A sugar ring from its ring O and the anomeric C (O5, C1, ..., C5 of a pyranose; O4', C1', ..., C4' of the furanose of
+  a nucleotide). A 4C1 chair is at theta 0, a 1C4 chair at theta 180.
+- Another ring from the heaviest atom other than C (the N of proline, then CA), or from the C with the most atoms
+  bonded outside of the ring, towards the neighbour with the most of those.
+- A ring alike all around (benzene, cyclohexane) has no such atom: its amplitude and the kind of its conformation (a
+  chair, a boat) mean something, its phase and theta depend on which atom happened to be taken first. `phase` and
+  `theta` warn of it.
+
+The conformations are those of IUPAC (2-Carb-7): the 38 of a six membered ring (two chairs, six boats, six skews,
+twelve half chairs, twelve envelopes) by the nearest on the Cremer-Pople sphere, the 20 of a five membered ring
+(envelopes and twists) by phi2. A ring with an amplitude under 0.1 Å is planar. Seven membered rings get their
+coordinates but no name.
+
+```mdscript
+p = pucker(ring(kind="sugar"));
+P = pseudorotation(pucker(ring(kind="sugar", size=5)));     # nucleotides: C3'-endo near 18, C2'-endo near 162 degrees
+t = theta(pucker(ring(kind="sugar", size=6)));              # pyranoses: 4C1 near 0, 1C4 near 180 degrees
+q = amplitude(pucker(ring("CCNCC", size=5)));               # pyrrolidines, prolines
+```
+
+### amplitude
+
+<!-- proc name=amplitude category=geometry -->
+
+```text
+amplitude(p: pucker[]) -> float[] [Å]
+```
+
+The total Cremer-Pople puckering amplitude Q of each ring: the root of the sum of the squared displacements of its
+atoms from their mean plane. The same whatever the order of the atoms.
+
+### phase
+
+<!-- proc name=phase category=geometry -->
+
+```text
+phase(p: pucker[]) -> float[] [rad]
+```
+
+The Cremer-Pople phase phi2 of each ring, in `[0, 2π)`: where along the pseudorotation of a five membered ring it is,
+or the longitude of a six membered ring on the sphere.
+
+### theta
+
+<!-- proc name=theta category=geometry -->
+
+```text
+theta(p: pucker[]) -> float[] [rad]
+```
+
+The Cremer-Pople theta of each six membered ring, in `[0, π]`: 0 and π the two chairs, π/2 the boats and skews. An
+error for rings of another size.
+
+### pseudorotation
+
+<!-- proc name=pseudorotation category=geometry -->
+
+```text
+pseudorotation(p: pucker[]) -> float[] [rad]
+```
+
+The Altona-Sundaralingam phase P of each furanose, in `[0, 2π)`, the convention of nucleic acids: about 18 degrees
+for C3'-endo (A-form), 162 for C2'-endo (B-form). P is phi2 shifted by a quarter turn. An error for a ring which is not a
+five membered sugar ring, unless its five atoms were given in order (O4', C1', C2', C3', C4').
 
 ### shape_weights
 
