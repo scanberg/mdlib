@@ -96,6 +96,22 @@ md_pucker_conformer_t md_pucker_conformer(const md_pucker_t* p);
 // "chair", "boat", ...
 const char* md_pucker_kind_name(md_pucker_kind_t kind);
 
+// A canonical conformation (see CONFORMATIONS) and where it is: theta and phi2 in degrees, theta 0 for five membered
+// rings. A chair is at a pole, where phi2 means nothing: 0.
+typedef struct md_pucker_canonical_t {
+    float theta;
+    float phi2;
+    md_pucker_conformer_t conf;
+} md_pucker_canonical_t;
+
+// The canonical conformations of rings of size 5 (20) or 6 (38), written to out up to cap. Returns their number, 0 for
+// another size.
+size_t md_pucker_canonical(md_pucker_canonical_t* out, size_t cap, size_t size);
+
+// The locants of the atoms at the positions pos (-1 for none) as a name writes them, numbers first ("3,O"). Returns
+// the length written (snprintf).
+size_t md_pucker_locants(char* buf, size_t cap, const int8_t pos[2], const char* const* locants);
+
 // The IUPAC name of a conformation, its atoms written with locants[position] ("4C1" with the locants "O", "1", ...,
 // "5" of a pyranose, "3,OB" for a boat). Without locants, or for a planar ring, the kind alone. Returns the length
 // written (snprintf).

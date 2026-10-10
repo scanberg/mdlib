@@ -306,6 +306,24 @@ static size_t write_locants(char* buf, size_t cap, const int8_t pos[2], const ch
     return len;
 }
 
+size_t md_pucker_canonical(md_pucker_canonical_t* out, size_t cap, size_t size) {
+    const pucker_canon_t* table = size == 6 ? pucker_canon6 : size == 5 ? pucker_canon5 : NULL;
+    const size_t count = size == 6 ? ARRAY_SIZE(pucker_canon6) : size == 5 ? ARRAY_SIZE(pucker_canon5) : 0;
+    for (size_t i = 0; out && i < MIN(cap, count); ++i) {
+        out[i].theta = table[i].theta;
+        out[i].phi2  = table[i].phi;
+        out[i].conf  = conformer_of(&table[i]);
+    }
+    return count;
+}
+
+size_t md_pucker_locants(char* buf, size_t cap, const int8_t pos[2], const char* const* locants) {
+    if (!buf || cap == 0) return 0;
+    buf[0] = '\0';
+    if (!pos || !locants) return 0;
+    return write_locants(buf, cap, pos, locants);
+}
+
 size_t md_pucker_conformer_name(char* buf, size_t cap, md_pucker_conformer_t c, const char* const* locants) {
     if (!buf || cap == 0) return 0;
     buf[0] = '\0';

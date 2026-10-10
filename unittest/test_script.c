@@ -5342,3 +5342,43 @@ UTEST(script, pucker_order) {
     md_vm_arena_destroy(pro.alloc);
     md_vm_arena_destroy(phe.alloc);
 }
+
+// The table of canonical conformations names itself back, and reads as the conventions do
+UTEST(script, pucker_canonical) {
+    md_pucker_canonical_t c6[64], c5[64];
+    ASSERT_EQ(38, (int)md_pucker_canonical(c6, ARRAY_SIZE(c6), 6));
+    ASSERT_EQ(20, (int)md_pucker_canonical(c5, ARRAY_SIZE(c5), 5));
+    EXPECT_EQ(0, (int)md_pucker_canonical(NULL, 0, 7));
+    EXPECT_EQ(38, (int)md_pucker_canonical(NULL, 0, 6));
+
+    const char* loc6[] = {"O", "1", "2", "3", "4", "5"};
+    const char* loc5[] = {"O", "1", "2", "3", "4"};
+    char buf[32];
+    for (int i = 0; i < 38; ++i) {
+        md_pucker_t p = {6, 0.6f, 0, c6[i].phi2, 0, 0, c6[i].theta};
+        const md_pucker_conformer_t c = md_pucker_conformer(&p);
+        EXPECT_EQ((int)c6[i].conf.kind, (int)c.kind);
+        EXPECT_EQ(c6[i].conf.above[0], c.above[0]);
+        EXPECT_EQ(c6[i].conf.below[0], c.below[0]);
+    }
+    for (int i = 0; i < 20; ++i) {
+        md_pucker_t p = {5, 0.4f, 0, c5[i].phi2, 0, 0, 0};
+        const md_pucker_conformer_t c = md_pucker_conformer(&p);
+        EXPECT_EQ((int)c5[i].conf.kind, (int)c.kind);
+        EXPECT_EQ(c5[i].conf.above[0], c.above[0]);
+        EXPECT_EQ(c5[i].conf.below[0], c.below[0]);
+    }
+    md_pucker_conformer_name(buf, sizeof(buf), c6[0].conf, loc6);
+    EXPECT_STREQ("4C1", buf);
+    md_pucker_locants(buf, sizeof(buf), c6[2].conf.above, loc6);     // the boat at phi 0
+    EXPECT_STREQ("3,O", buf);
+    md_pucker_locants(buf, sizeof(buf), c6[2].conf.below, loc6);
+    EXPECT_STREQ("", buf);
+    // 3E at P = phi2 + 90 = 18, C3'-endo
+    for (int i = 0; i < 20; ++i) {
+        if (c5[i].phi2 == 288.0f) {
+            md_pucker_conformer_name(buf, sizeof(buf), c5[i].conf, loc5);
+            EXPECT_STREQ("3E", buf);
+        }
+    }
+}
