@@ -133,7 +133,21 @@ void md_gl_mol_compute_velocity(md_gl_mol_t handle, const float pbc_ext[3]);
 // Clear the velocity to zero.
 void md_gl_mol_zero_velocity(md_gl_mol_t handle);
 
+// Changing the bonds clears the bond orders: set them again after (md_gl_mol_set_bond_orders)
 void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const struct md_atom_pair_t* bond_pairs, uint32_t byte_stride);
+
+// The orders of the bonds, for the licorice and ball and stick representations with bond_orders set, from the topology
+// of the system: the order and the aromatic and delocalized flags of its bonds (md_chem_perceive), its rings and the
+// hybridization of its atoms. The bonds of the system must be those of the molecule (md_gl_mol_set_bonds), in the same
+// order. md_gl_mol_create sets them.
+//   - double bond: two thinner sticks in the plane of its sp2 centers (the plane of their substituents)
+//   - triple bond: three thinner sticks, perpendicular to the view
+//   - aromatic bond: the stick and a thin dashed line inside its ring, inside both where two rings share the bond
+//   - delocalized bond (carboxylate, nitro, guanidinium, phosphate, ...): the stick and a thin dashed line towards
+//     the next bond of the group
+// A bond whose order is unknown is drawn as a single bond.
+void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
+
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
 // The backbone (ribbons, cartoon) orients its cross sections with temporal coherence: each draw continues from
@@ -201,6 +215,7 @@ typedef struct md_gl_draw_op_t {
 			md_gl_bond_mode_t color_mode;
             float sharpness; // 0.0 = fully smooth, 1.0 = fully sharp
 			uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
+            bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
         } licorice;
 
         struct {
@@ -209,6 +224,7 @@ typedef struct md_gl_draw_op_t {
             md_gl_bond_mode_t color_mode;
             float sharpness;
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
+            bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
         } ball_and_stick;
 
         struct {

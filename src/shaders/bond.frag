@@ -3,9 +3,13 @@
 #extension GL_ARB_shading_language_packing : enable
 
 // Bonds raycast within the quads of bond.vert.
-//   WEAK_BONDS 0: licorice, a capsule (the cylinder of the bond with a half sphere at each end).
-//   WEAK_BONDS 1: weak bonds, a dashed cylinder: u_dash_count dashes with flat ends, the first starting at pa and the
-//                 last ending at pb, each covering the fraction u_dash_fill of the period of the pattern.
+//   Covalent bonds: a capsule (the cylinder of the bond with a half sphere at each end). With bond orders (bond.vert),
+//                   double and triple bonds are two or three thinner capsules and the spheres at the ends; the nearest
+//                   hit counts.
+//   WEAK_BONDS:     weak bonds, a dashed cylinder: u_dash_count dashes with flat ends, the first starting at pa and the
+//                   last ending at pb, each covering the fraction u_dash_fill of the period of the pattern.
+//   BOND_PARTNERS:  the dashed partner of an aromatic or delocalized bond, a dashed cylinder as the weak bonds, which
+//                   colors and picks as the part of its bond it spans.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -15,9 +19,18 @@
 #define WEAK_BONDS 0
 #endif
 
+#ifndef BOND_PARTNERS
+#define BOND_PARTNERS 0
+#endif
+
 #define MODE_NEAREST 0
 #define MODE_SMOOTH  1
 #define MODE_UNIFORM 2
+
+// Kinds of covalent bonds (bond.vert)
+#define KIND_PLAIN      0u
+#define KIND_DOUBLE     1u
+#define KIND_TRIPLE     2u
 
 #ifndef GL_ARB_shading_language_packing
 vec4 unpackUnorm4x8(uint p) {
@@ -48,6 +61,8 @@ layout (std140) uniform ubo {
     uint  u_uniform_color;
     uint  u_dash_count;
     float u_dash_fill;
+    uint  u_bond_orders;
+    float u_spread;
 };
 
 in Fragment {
@@ -58,6 +73,13 @@ in Fragment {
     flat vec3  view_vel[2];
     flat uint  atom_picking_idx[2];
     flat uint  bond_picking_idx;
+#if BOND_PARTNERS
+    flat vec2  seg_range;
+#elif !WEAK_BONDS
+    flat uint  kind;
+    flat vec3  side;
+    flat vec2  sub;
+#endif
     smooth vec3 view_pos;
 } in_frag;
 
@@ -68,7 +90,6 @@ layout (depth_greater) out float gl_FragDepth;
 
 #pragma EXTRA_SRC
 
-#if WEAK_BONDS
 // Ray (ro, rd) against the dashed cylinder from pa to pb of radius r. rd is unit length.
 // Returns (t, normal), t < 0 for a miss, and the coordinate along the axis in [0, 1] in seg_t.
 //
@@ -152,7 +173,7 @@ vec4 dashed_cylinder_intersect(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float r, uint
     }
     return vec4(t, normal);
 }
-#else
+
 // Source from Ingo Quilez (https://www.shadertoy.com/view/Xt3SzX)
 // Returns the ray scalar 't'
 float capIntersect( in vec3 ro, in vec3 rd, in vec3 pa, in vec3 pb, in float r )
@@ -186,6 +207,14 @@ float capIntersect( in vec3 ro, in vec3 rd, in vec3 pa, in vec3 pb, in float r )
     return -1.0;
 }
 
+// Ray against the sphere (c, r), t < 0 for a miss
+float sphIntersect(vec3 ro, vec3 rd, vec3 c, float r) {
+    vec3  oc = ro - c;
+    float b  = dot(oc, rd);
+    float h  = b * b - (dot(oc, oc) - r * r);
+    return h < 0.0 ? -1.0 : -b - sqrt(h);
+}
+
 // compute normal and segment t value (how far along the)
 vec4 capNormalAndSeg( in vec3 pos, in vec3 a, in vec3 b, in float r )
 {
@@ -195,7 +224,6 @@ vec4 capNormalAndSeg( in vec3 pos, in vec3 a, in vec3 b, in float r )
     vec3  n = (pa - h*ba)/r;
     return vec4(n, h);
 }
-#endif
 
 void main() {
     // The ray of the fragment, from its point on the quad, which is in front of the bond
@@ -209,7 +237,7 @@ void main() {
     vec3  pb = in_frag.pb;
     float r  = in_frag.radius;
 
-#if WEAK_BONDS
+#if WEAK_BONDS || BOND_PARTNERS
     float seg_t;
     vec4 hit = dashed_cylinder_intersect(ro, rd, pa, pb, r, u_dash_count, u_dash_fill, seg_t);
     float t = hit.x;
@@ -217,14 +245,59 @@ void main() {
         discard;
     }
     vec3 view_normal = hit.yzw;
+#if BOND_PARTNERS
+    // Along the bond
+    seg_t = mix(in_frag.seg_range.x, in_frag.seg_range.y, seg_t);
+#endif
 #else
-    float t = capIntersect(ro, rd, pa, pb, r);
-    if (t < 0.0) {
-        discard;
+    float t;
+    vec3  view_normal;
+    float seg_t;
+    if (in_frag.kind == KIND_DOUBLE || in_frag.kind == KIND_TRIPLE) {
+        // Thinner sticks at -offset, +offset (and 0 for a triple bond) along the side
+        vec3  o  = in_frag.side * in_frag.sub.x;
+        float rs = in_frag.sub.y;
+        t = -1.0;
+        float k_hit = 0.0;
+        for (int i = 0; i < 3; ++i) {
+            float k = float(i) - 1.0;
+            if (k == 0.0 && in_frag.kind != KIND_TRIPLE) continue;
+            float ti = capIntersect(ro, rd, pa + o * k, pb + o * k, rs);
+            if (ti >= 0.0 && (t < 0.0 || ti < t)) {
+                t = ti;
+                k_hit = k;
+            }
+        }
+        // And the spheres a single bond has at its ends: the joint at the atom in the licorice representation (also
+        // where no other bond gives one, a terminal O), within the ball in ball and stick
+        int end_hit = -1;
+        for (int e = 0; e < 2; ++e) {
+            float te = sphIntersect(ro, rd, e == 0 ? pa : pb, r);
+            if (te >= 0.0 && (t < 0.0 || te < t)) {
+                t = te;
+                end_hit = e;
+            }
+        }
+        if (t < 0.0) {
+            discard;
+        }
+        if (end_hit >= 0) {
+            view_normal = (ro + rd * t - (end_hit == 0 ? pa : pb)) / r;
+            seg_t = float(end_hit);
+        } else {
+            vec4 normal_seg = capNormalAndSeg(ro + rd * t, pa + o * k_hit, pb + o * k_hit, rs);
+            view_normal = normal_seg.xyz;
+            seg_t = normal_seg.w;
+        }
+    } else {
+        t = capIntersect(ro, rd, pa, pb, r);
+        if (t < 0.0) {
+            discard;
+        }
+        vec4 normal_seg = capNormalAndSeg(ro + rd * t, pa, pb, r);
+        view_normal = normal_seg.xyz;
+        seg_t = normal_seg.w;
     }
-    vec4 normal_seg = capNormalAndSeg(ro + rd * t, pa, pb, r);
-    vec3 view_normal = normal_seg.xyz;
-    float seg_t = normal_seg.w;
 #endif
 
     vec3 view_coord = ro + rd * t;

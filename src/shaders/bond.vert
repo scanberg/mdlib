@@ -1,13 +1,14 @@
 #version 330 core
 
-// Bonds (licorice, weak bonds) as raycast impostors, drawn by vertex pulling without a geometry shader.
+// Bonds (licorice, weak bonds, and the dashed partners which show aromatic and delocalized bonds) as raycast impostors,
+// drawn by vertex pulling without a geometry shader.
 //
-// Every bond is one quad of 4 vertices: bond b, corner c = gl_VertexID & 3 with b = u_bond_offset +
+// Every primitive is one quad of 4 vertices: primitive p, corner c = gl_VertexID & 3 with p = u_bond_offset +
 // gl_InstanceID * u_quads_per_instance + (gl_VertexID >> 2). The quads are drawn from a static index buffer (md_gl.c),
-// two triangles (0, 1, 2), (2, 1, 3) per quad.
+// two triangles (0, 1, 2), (2, 1, 3) per quad. A primitive is a bond, or for BOND_PARTNERS an entry of the partners.
 //
-// The quad bounds the image of the capsule around the bond (all points within the radius of the segment), which
-// contains the solid cylinder and its dashes. It is a trapezoid in the image plane:
+// The quad bounds the image of the capsule around the segment (all points within the radius of it), which contains
+// the solid cylinder and its dashes. It is a trapezoid in the image plane:
 //   - The long sides are the two planes through the eye that are tangent to the capsule. They are parallel to the
 //     axis and touch the infinite cylinder of the bond, so they are the exact outline of its body.
 //   - The short sides are perpendicular to the bisector of the long sides and tangent to the outline of the end
@@ -25,18 +26,52 @@
 // The quad is placed at the depth of the point of the capsule closest to the image plane, or at the near plane if that
 // is in front of it. It is in front of every visible point of the capsule, so the raycast starts at the quad, and its
 // depth is a lower bound of the depth the fragment shader writes (layout (depth_greater) in bond.frag).
+//
+// BOND ORDERS (md_gl_mol_set_bond_orders). The plane of a bond is given by its surroundings: an atom bonded to either
+// end (or none), which lies in it. The normal of the plane is the sum of the normals the atoms of both ends give,
+// aligned (cis or trans).
+//   - Double and triple bonds (covalent bonds, u_bond_orders != 0) are two or three thinner sticks in place of the
+//     stick, side by side in the plane of the sp2 centers. A triple bond, or a double bond without a plane (O=O, the
+//     C=O of CO2), has them perpendicular to the view. The thinner sticks stay within u_spread times the radius of
+//     the stick, and the bond keeps the spheres of the radius of the stick at its ends: with u_spread 1 (licorice) the
+//     thinner sticks end within them, as within the joint the representation has at an atom. The quad bounds the
+//     capsule of the axis which contains all of it.
+//   - Aromatic and delocalized bonds keep their stick and get a thin dashed partner (BOND_PARTNERS), a primitive of its
+//     own: an entry is a bond and the atoms which give the side of the partner, inside a ring or within a group. A bond
+//     of two aromatic rings has an entry for each, so there is a partner inside both. The ends of the partner are inset
+//     to where the partners of the neighboring bonds at the same offset meet, as on an inner polygon, and a little
+//     more. The quad bounds the partner alone.
 
 #ifndef ORTHO
 #define ORTHO 0
 #endif
 
-// 0: Covalent bonds of the molecule (licorice), 1: weak bonds of the representation, with a weight per bond
+// 1: weak bonds of the representation, with a weight per bond
 #ifndef WEAK_BONDS
 #define WEAK_BONDS 0
 #endif
 
+// 1: the dashed partners of aromatic and delocalized covalent bonds
+#ifndef BOND_PARTNERS
+#define BOND_PARTNERS 0
+#endif
+
 // Pixels the sides of the quad are moved out by
 #define SUBPIXEL_MARGIN (1.0 / 32.0)
+
+#define REF_NONE        0xFFFFFFFFu
+
+// Kinds of covalent bonds (md_gl.c, bond.frag)
+#define KIND_PLAIN      0u
+#define KIND_DOUBLE     1u
+#define KIND_TRIPLE     2u
+
+// Relative to the radius of the stick (r) and to the envelope of the thinner sticks (u_spread * r)
+#define DOUBLE_RADIUS   0.42    // * envelope
+#define TRIPLE_RADIUS   0.28    // * envelope
+#define PARTNER_RADIUS  0.33    // * r
+#define PARTNER_OFFSET  1.9     // * envelope, axis to axis
+#define PARTNER_GAP     0.08    // * length of the bond, added to the inset of either end
 
 layout (std140) uniform ubo {
     mat4 u_world_to_view;
@@ -60,6 +95,8 @@ layout (std140) uniform ubo {
     uint  u_uniform_color;
     uint  u_dash_count;
     float u_dash_fill;
+    uint  u_bond_orders;
+    float u_spread;
 };
 
 uniform uint u_bond_offset;
@@ -73,6 +110,11 @@ uniform samplerBuffer  u_buf_atom_color;    // RGBA8
 uniform usamplerBuffer u_buf_bond;          // RG32UI, atom indices
 #if WEAK_BONDS
 uniform samplerBuffer  u_buf_bond_weight;   // R32F, scales the radius
+#elif BOND_PARTNERS
+uniform usamplerBuffer u_buf_bond_partner;  // RGBA32UI, (bond, atom bonded to its first atom, to its second atom, -)
+#else
+uniform usamplerBuffer u_buf_bond_order;    // R32UI, kind | index into u_buf_bond_ref << 3
+uniform usamplerBuffer u_buf_bond_ref;      // RG32UI, atom bonded to the first and to the second atom, or REF_NONE
 #endif
 
 out Fragment {
@@ -83,6 +125,13 @@ out Fragment {
     flat vec3  view_vel[2];
     flat uint  atom_picking_idx[2];
     flat uint  bond_picking_idx;
+#if BOND_PARTNERS
+    flat vec2  seg_range;               // The part of the bond the partner spans, in [0, 1] from its first atom
+#elif !WEAK_BONDS
+    flat uint  kind;
+    flat vec3  side;                    // Unit, perpendicular to the axis, in the plane of the bond
+    flat vec2  sub;                     // (offset, radius) of the thinner sticks
+#endif
     smooth vec3 view_pos;               // On the quad, the ray of the fragment starts here
 } out_frag;
 
@@ -114,9 +163,72 @@ void cull() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 }
 
+// The surroundings of a bond (pa, pb, view space): the atoms ref.x bonded to pa and ref.y bonded to pb, as vectors from
+// their end (ca, cb). One farther than a bond can be is across the periodic boundary, and does not count.
+void load_surroundings(uvec2 ref, vec3 pa, vec3 pb, out vec3 ca, out vec3 cb, out bool has_a, out bool has_b) {
+    ca = vec3(0.0);
+    cb = vec3(0.0);
+    has_a = false;
+    has_b = false;
+    if (ref.x != REF_NONE) {
+        ca = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(ref.x)).xyz, 1.0)) - pa;
+        has_a = dot(ca, ca) < u_max_d2;
+    }
+    if (ref.y != REF_NONE) {
+        cb = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(ref.y)).xyz, 1.0)) - pb;
+        has_b = dot(cb, cb) < u_max_d2;
+    }
+}
+
+// Unit direction in the plane of the bond (axis ax), perpendicular to the axis. The normal of the plane is the sum of
+// the normals the surroundings give, aligned. A surrounding atom within 6 degrees of the axis gives none; without a
+// plane (or when asked for none), perpendicular to the view.
+vec3 plane_side(vec3 ax, vec3 pa, vec3 pb, vec3 ca, vec3 cb, bool has_a, bool has_b, bool use_plane) {
+    vec3  n  = vec3(0.0);
+    float c2 = 0.0;
+    if (has_a) {
+        n = cross(ax, ca);
+        c2 = dot(ca, ca);
+    }
+    if (has_b) {
+        vec3 nb = cross(ax, cb);
+        n += dot(n, nb) < 0.0 ? -nb : nb;
+        c2 = max(c2, dot(cb, cb));
+    }
+    if (use_plane && c2 > 0.0 && dot(n, n) > 0.01 * c2) {
+        return normalize(cross(n, ax));
+    }
+#if ORTHO
+    vec3 v = vec3(0.0, 0.0, 1.0);
+#else
+    vec3 v = -0.5 * (pa + pb);
+#endif
+    vec3 s = cross(ax, v);
+    if (dot(s, s) <= 1.0e-12 * dot(v, v)) {
+        s = cross(ax, abs(ax.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0));
+    }
+    return normalize(s);
+}
+
+// 1 / tan(angle / 2) for the angle at an end between the bond (u, unit) and its surrounding atom (c): where the
+// parallels to the two bonds at the same distance on the inside meet, along the bond, per unit of distance. 1 / tan(60)
+// without one.
+float inset_factor(vec3 u, vec3 c, bool has) {
+    if (!has) return 0.57735;
+    float cos_angle = clamp(dot(u, c) * inversesqrt(dot(c, c)), -0.999, 0.999);
+    return sqrt((1.0 + cos_angle) / (1.0 - cos_angle));
+}
+
 void main() {
-    uint bond   = u_bond_offset + uint(gl_InstanceID) * u_quads_per_instance + (uint(gl_VertexID) >> 2u);
+    uint prim   = u_bond_offset + uint(gl_InstanceID) * u_quads_per_instance + (uint(gl_VertexID) >> 2u);
     uint corner = uint(gl_VertexID) & 3u;
+
+#if BOND_PARTNERS
+    uvec4 partner = texelFetch(u_buf_bond_partner, int(prim));
+    uint bond = partner.x;
+#else
+    uint bond = prim;
+#endif
 
     uvec2 atom = texelFetch(u_buf_bond, int(bond)).xy;
 
@@ -145,9 +257,6 @@ void main() {
         return;
     }
 
-    out_frag.pa = pa;
-    out_frag.pb = pb;
-    out_frag.radius = r;
     out_frag.color[0] = color_a;
     out_frag.color[1] = color_b;
     out_frag.view_vel[0] = mat3(u_world_to_view) * texelFetch(u_buf_atom_vel, int(atom.x)).xyz;
@@ -155,6 +264,70 @@ void main() {
     out_frag.atom_picking_idx[0] = u_atom_base_index + atom.x;
     out_frag.atom_picking_idx[1] = u_atom_base_index + atom.y;
     out_frag.bond_picking_idx    = u_bond_base_index + bond;
+
+#if BOND_PARTNERS
+    {
+        // The partner, on the side of the surroundings of this entry, in their plane
+        float len = sqrt(d2);
+        vec3  ax  = d / len;
+        vec3  ca, cb;
+        bool  has_a, has_b;
+        load_surroundings(partner.yz, pa, pb, ca, cb, has_a, has_b);
+        vec3 side = plane_side(ax, pa, pb, ca, cb, has_a, has_b, true);
+        if ((has_a && dot(side, ca) < 0.0) || (!has_a && has_b && dot(side, cb) < 0.0)) {
+            side = -side;
+        }
+        float fa = inset_factor( ax, ca, has_a);
+        float fb = inset_factor(-ax, cb, has_b);
+        // Not past a fraction of the inradius of the ring, len / 2 * tan(angle / 2) for a regular one
+        float offset = min(PARTNER_OFFSET * u_spread * r, 0.225 * len / max(fa, fb));
+        float ia = offset * fa + PARTNER_GAP * len;
+        float ib = offset * fb + PARTNER_GAP * len;
+        float k  = min(1.0, 0.8 * len / (ia + ib));
+        ia *= k;
+        ib *= k;
+        out_frag.seg_range = vec2(ia / len, 1.0 - ib / len);
+        // From here on the primitive is the partner
+        pa = pa + side * offset + ax * ia;
+        pb = pb + side * offset - ax * ib;
+        d  = pb - pa;
+        d2 = dot(d, d);
+        r  = PARTNER_RADIUS * r;
+    }
+    out_frag.pa = pa;
+    out_frag.pb = pb;
+    out_frag.radius = r;
+#elif WEAK_BONDS
+    out_frag.pa = pa;
+    out_frag.pb = pb;
+    out_frag.radius = r;
+#else
+    out_frag.pa = pa;
+    out_frag.pb = pb;
+    out_frag.radius = r;
+
+    uint order = u_bond_orders != 0u ? texelFetch(u_buf_bond_order, int(bond)).x : KIND_PLAIN;
+    uint kind = order & 7u;
+    vec3 side = vec3(0.0);
+    vec2 sub  = vec2(0.0);
+    if (kind == KIND_DOUBLE || kind == KIND_TRIPLE) {
+        vec3 ax = d * inversesqrt(d2);
+        vec3 ca, cb;
+        bool has_a, has_b;
+        load_surroundings(texelFetch(u_buf_bond_ref, int(order >> 3u)).xy, pa, pb, ca, cb, has_a, has_b);
+        side = plane_side(ax, pa, pb, ca, cb, has_a, has_b, kind == KIND_DOUBLE);
+        float envelope = u_spread * r;
+        float rs = (kind == KIND_DOUBLE ? DOUBLE_RADIUS : TRIPLE_RADIUS) * envelope;
+        sub = vec2(envelope - rs, rs);
+        // The quad bounds the thinner sticks and the spheres of radius r at the ends (bond.frag)
+        r = max(envelope, r);
+    } else {
+        kind = KIND_PLAIN;
+    }
+    out_frag.kind = kind;
+    out_frag.side = side;
+    out_frag.sub  = sub;
+#endif
 
     // Distance from the eye to the near plane (z = -near)
 #if ORTHO
