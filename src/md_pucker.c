@@ -1,6 +1,7 @@
 #include <md_pucker.h>
 
 #include <md_system.h>
+#include <md_util.h>
 #include <md_types.h>
 
 #include <core/md_common.h>
@@ -391,4 +392,137 @@ size_t md_pucker_ring_order(int32_t* out, bool* out_anchored, const md_system_t*
     }
     if (out_anchored) *out_anchored = anchored;
     return n;
+}
+
+// The locant of the atom at position k of a sugar ring: "O" for the ring O, the number in the atom's name otherwise
+static void sugar_locant(char out[8], const md_system_t* sys, int32_t atom, size_t k) {
+    if (k == 0) { out[0] = 'O'; out[1] = '\0'; return; }
+    const str_t name = md_atom_name(&sys->atom, atom);
+    size_t n = 0;
+    for (size_t i = 0; i < name.len && n < 7; ++i) {
+        if (name.ptr[i] >= '0' && name.ptr[i] <= '9') out[n++] = name.ptr[i];
+    }
+    if (n == 0) n = (size_t)snprintf(out, 8, "%d", (int)k);
+    out[n] = '\0';
+}
+
+static void atom_label(char* out, size_t cap, const md_system_t* sys, int32_t atom) {
+    const str_t s = md_atom_name(&sys->atom, atom);
+    snprintf(out, cap, "%.*s", (int)MIN(s.len, cap - 1), s.ptr);
+}
+
+static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state, const vec3_t* xyz, vec3_t c) {
+    const md_pucker_conformer_t conf = md_pucker_conformer(&r->cp);
+    char* buf = r->name;
+    const size_t cap = sizeof(r->name);
+    const size_t n = r->size;
+    buf[0] = '\0';
+    if (conf.kind == MD_PUCKER_KIND_NONE) return;
+    if (conf.kind == MD_PUCKER_KIND_PLANAR || (!r->anchored && !r->sugar)) {
+        snprintf(buf, cap, "%s", md_pucker_kind_name(conf.kind));
+        return;
+    }
+    char name[7][8];
+    const char* locants[7];
+    for (size_t k = 0; k < n; ++k) {
+        if (r->sugar) sugar_locant(name[k], sys, r->atoms[k], k);
+        else          atom_label(name[k], sizeof(name[k]), sys, r->atoms[k]);
+        locants[k] = name[k];
+    }
+    if (r->sugar) {
+        size_t len = md_pucker_conformer_name(buf, cap, conf, locants);
+        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), " %s", md_pucker_kind_name(conf.kind));
+        if (n != 5 || (conf.kind != MD_PUCKER_KIND_ENVELOPE && conf.kind != MD_PUCKER_KIND_TWIST)) return;
+        // Endo: the side of the C outside of the ring on the last C (C5' of a nucleotide)
+        int32_t ref = -1;
+        md_bond_iter_t it = md_bond_iter(&sys->bond, r->atoms[4]);
+        while (md_bond_iter_has_next(&it)) {
+            const md_atom_idx_t x = md_bond_iter_atom_index(&it);
+            md_bond_iter_next(&it);
+            bool in_ring = false;
+            for (size_t k = 0; k < n; ++k) in_ring |= r->atoms[k] == x;
+            if (!in_ring && md_atom_atomic_number(&sys->atom, x) == MD_Z_C) ref = x;
+        }
+        if (ref < 0) return;
+        // Above: the side from which the ring is numbered clockwise, against the normal of the polygon
+        vec3_t nw = {0};
+        for (size_t k = 0; k < n; ++k) nw = vec3_add(nw, vec3_cross(vec3_sub(xyz[k], c), vec3_sub(xyz[(k + 1) % n], c)));
+        vec3_t d = vec3_sub(state->xyz[ref], xyz[4]);
+        md_util_min_image_vec3(&d, 1, &state->unitcell);
+        const bool ref_above = vec3_dot(vec3_add(vec3_sub(xyz[4], c), d), nw) < 0.0f;
+        char an[16] = "", bn[16] = "";
+        if (conf.above[0] >= 0) atom_label(an, sizeof(an), sys, r->atoms[conf.above[0]]);
+        if (conf.below[0] >= 0) atom_label(bn, sizeof(bn), sys, r->atoms[conf.below[0]]);
+        const char* up = ref_above ? "endo" : "exo";
+        const char* dn = ref_above ? "exo" : "endo";
+        if (an[0] && bn[0]) len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s %s-%s", an, up, bn, dn);
+        else if (an[0])     len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", an, up);
+        else if (bn[0])     len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", bn, dn);
+        return;
+    }
+    // Another ring: the atoms out of the plane by name
+    size_t len = (size_t)snprintf(buf, cap, "%s (", md_pucker_kind_name(conf.kind));
+    bool first = true;
+    for (int i = 0; i < 2; ++i) if (conf.above[i] >= 0) {
+        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s above", first ? "" : ", ", locants[conf.above[i]]);
+        first = false;
+    }
+    for (int i = 0; i < 2; ++i) if (conf.below[i] >= 0) {
+        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s below", first ? "" : ", ", locants[conf.below[i]]);
+        first = false;
+    }
+    snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ")");
+}
+
+static bool compute_ring(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state) {
+    const size_t n = r->size;
+    vec4_t xyzw[7];
+    for (size_t k = 0; k < n; ++k) {
+        const vec3_t x = state->xyz[r->atoms[k]];
+        xyzw[k] = vec4_set(x.x, x.y, x.z, 1.0f);
+    }
+    vec3_t com = {0};
+    md_util_deperiodize_self_vec4(xyzw, n, &state->unitcell, &com);
+    vec3_t xyz[7];
+    vec3_t c = {0};
+    for (size_t k = 0; k < n; ++k) {
+        xyz[k] = vec3_from_vec4(xyzw[k]);
+        c = vec3_add(c, xyz[k]);
+    }
+    c = vec3_mul1(c, 1.0f / (float)n);
+    if (!md_pucker_cremer_pople(&r->cp, xyz, n)) {
+        r->cp.size = (uint32_t)n;
+        return false;
+    }
+    if (r->has_pseudo && n == 5) {
+        md_pucker_pseudorotation(&r->pseudo_phase, &r->pseudo_amplitude, xyz);
+    }
+    describe(r, sys, state, xyz, c);
+    return true;
+}
+
+bool md_pucker_ring(md_pucker_ring_t* out, const md_system_t* sys, const md_system_state_t* state, size_t ring_idx) {
+    ASSERT(out);
+    MEMSET(out, 0, sizeof(md_pucker_ring_t));
+    if (!sys || !state || !state->xyz || ring_idx >= md_index_data_num_ranges(&sys->ring)) return false;
+    const size_t n = md_index_range_size(&sys->ring, ring_idx);
+    if (n < 5 || n > 7) return false;
+    bool anchored = false;
+    md_pucker_ring_order(out->atoms, &anchored, sys, ring_idx);
+    out->size = (uint8_t)n;
+    out->anchored = anchored;
+    out->sugar = (md_system_ring_flags(sys, ring_idx) & MD_RING_FLAG_SUGAR) != 0;
+    out->has_pseudo = out->sugar && n == 5;
+    return compute_ring(out, sys, state);
+}
+
+bool md_pucker_ring_atoms(md_pucker_ring_t* out, const md_system_t* sys, const md_system_state_t* state, const int32_t* atoms, size_t count) {
+    ASSERT(out);
+    MEMSET(out, 0, sizeof(md_pucker_ring_t));
+    if (!sys || !state || !state->xyz || !atoms || count < 5 || count > 7) return false;
+    MEMCPY(out->atoms, atoms, count * sizeof(int32_t));
+    out->size = (uint8_t)count;
+    out->anchored = true;
+    out->has_pseudo = count == 5;
+    return compute_ring(out, sys, state);
 }

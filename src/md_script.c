@@ -262,16 +262,8 @@ typedef struct plane_t {
     int    count;           // Atoms fitted
 } plane_t;
 
-// The puckering of a ring (pucker()): its Cremer-Pople coordinates, the pseudorotation of a furanose, and the name of
-// its conformation. The ring is in the order of md_pucker_ring_order, or as the script gave it.
-typedef struct pucker_rec_t {
-    md_pucker_t cp;
-    float   pseudo_phase;       // Altona-Sundaralingam P (degrees), a furanose only
-    float   pseudo_amplitude;   // tau_m (degrees)
-    uint8_t has_pseudo;         // A five membered sugar ring, or five atoms given in order
-    uint8_t anchored;           // The order is fixed by the chemistry (md_pucker_ring_order): the phases and the name mean something
-    char    name[56];           // The conformation: "4C1 chair", "3E envelope, C3'-endo", "envelope, CG above", "chair"
-} pucker_rec_t;
+// The puckering of a ring (pucker()), as md_pucker_ring makes it
+typedef md_pucker_ring_t pucker_rec_t;
 
 struct irange_t {
     int beg;

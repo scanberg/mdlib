@@ -7,6 +7,7 @@
 #include <core/md_vec_math.h>
 
 struct md_system_t;
+struct md_system_state_t;
 
 // ### RING PUCKERING ###
 //
@@ -64,6 +65,19 @@ typedef struct md_pucker_conformer_t {
     int8_t below[2];
 } md_pucker_conformer_t;
 
+// A ring of a system, puckered (md_pucker_ring)
+typedef struct md_pucker_ring_t {
+    md_pucker_t cp;
+    float    pseudo_phase;          // Altona-Sundaralingam P (degrees), when has_pseudo
+    float    pseudo_amplitude;      // tau_m (degrees), when has_pseudo
+    uint8_t  has_pseudo;            // A five membered sugar ring, or five atoms given in order
+    uint8_t  anchored;              // The order is fixed by the chemistry: the phases and the name mean something
+    uint8_t  sugar;                 // A sugar ring (MD_RING_FLAG_SUGAR): named with the locants of its atoms ("4C1")
+    uint8_t  size;
+    int32_t  atoms[7];              // The ring, in the order of md_pucker_ring_order (or as given)
+    char     name[56];              // "4C1 chair", "3E envelope, C3'-endo", "envelope (CG above)", "chair", "planar"
+} md_pucker_ring_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -98,6 +112,20 @@ size_t md_pucker_conformer_name(char* buf, size_t cap, md_pucker_conformer_t c, 
 // index of an atom (cyclohexane, benzene): the phases, theta and the names of such a ring depend on that choice, and
 // only the amplitudes and the kind of conformation mean something.
 size_t md_pucker_ring_order(int32_t* out, bool* out_anchored, const struct md_system_t* sys, size_t ring_idx);
+
+// Ring ring_idx of sys at state: in the order of md_pucker_ring_order, its positions made consistent across the cell,
+// its Cremer-Pople coordinates, the pseudorotation of a furanose and the name of its conformation:
+//   - A sugar ring by IUPAC, with the numbers of its atoms' names as locants ("4C1 chair", "2,5B boat"), and for a
+//     furanose endo and exo by the side of the C outside of the ring on its last C (C5' of a nucleotide), which holds
+//     for D- and L-sugars alike ("3E envelope, C3'-endo").
+//   - Another ring with a fixed order by the names of the atoms out of the plane ("envelope (CG above)").
+//   - A ring without one by the kind alone ("chair"); a ring under MD_PUCKER_PLANAR_AMPLITUDE is "planar".
+// Returns false for a ring of another size than 5 to 7.
+bool md_pucker_ring(md_pucker_ring_t* out, const struct md_system_t* sys, const struct md_system_state_t* state, size_t ring_idx);
+
+// The same for the atoms of a ring given in order (5 to 7, each bonded to the next): a fixed order, the pseudorotation
+// of five atoms taken as O4', C1', C2', C3', C4'.
+bool md_pucker_ring_atoms(md_pucker_ring_t* out, const struct md_system_t* sys, const struct md_system_state_t* state, const int32_t* atoms, size_t count);
 
 #ifdef __cplusplus
 }
