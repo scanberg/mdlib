@@ -254,6 +254,26 @@ enum {
     MD_BOND_ORDER_QUADRUPLE = 4,
 };
 
+// Ring flags (md_system_t::ring_flags), what a ring of the system is. md_util_system_infer_ring_flags derives them
+// from the rings, the bonds and their flags; md_util_system_infer_rings and md_chem_perceive call it.
+//   AROMATIC  Every bond of the ring is aromatic (md_chem_perceive, or the bonds a file gives): an aromatic ring, alone
+//             or fused with a neighbor.
+//   HETERO    The ring has an atom other than carbon.
+//   FUSED     The ring shares a bond with another ring.
+//   SUGAR     The ring of a monosaccharide, a furanose or a pyranose: 5 or 6 atoms, one of them O and the rest C, no
+//             bond of a known order above single or aromatic in or out of the ring, and at least two of the C carrying
+//             an O or N outside of the ring (a hydroxyl, a glycosidic link, the N of a nucleoside), one of them next to
+//             the ring O (the anomeric C). Deoxy sugars (the 2-deoxyribose of DNA) count; tetrahydrofuran does not.
+typedef enum md_ring_flags_t {
+    MD_RING_FLAG_NONE       = 0,
+    MD_RING_FLAG_AROMATIC   = 1u << 0,
+    MD_RING_FLAG_HETERO     = 1u << 1,
+    MD_RING_FLAG_FUSED      = 1u << 2,
+    MD_RING_FLAG_SUGAR      = 1u << 3,
+} md_ring_flags_t;
+
+ENUM_FLAGS(md_ring_flags_t)
+
 // Where a bond came from. FILE is 0, so a bond added without saying where it came from counts as given.
 typedef enum md_bond_origin_t {
     MD_BOND_ORIGIN_FILE     = 0,    // Given by the file, for some of its atoms (CONECT records, a component's bonds)

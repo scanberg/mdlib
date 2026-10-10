@@ -309,7 +309,8 @@ typedef struct md_system_t {
     
     md_bond_data_t              bond;               // Persistent covalent bonds
     
-    md_index_data_t             ring;               // Ring structures formed by persistent bonds
+    md_index_data_t             ring;               // Ring structures formed by persistent bonds, 3 to 7 atoms in order around the ring
+    md_array(md_ring_flags_t)   ring_flags;         // [ring count] What each ring is (md_ring_flags_t), see md_system_ring_flags
     md_structure_data_t         structure;          // Isolated structures connected by persistent bonds (plus hierarchy links for coarse grained systems)
 
     md_assembly_data_t          assembly;           // Assemblies of  (duplications of ranges with new transforms)
@@ -1194,6 +1195,15 @@ static inline void md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_id
     ASSERT(sys);
     md_bond_remove(&sys->bond, bond_idx);
     md_system_topology_changed(sys);
+}
+
+// Flags of ring ring_idx of sys->ring, NONE when they have not been inferred
+static inline md_ring_flags_t md_system_ring_flags(const md_system_t* sys, size_t ring_idx) {
+    ASSERT(sys);
+    if (sys->ring_flags && ring_idx < md_array_size(sys->ring_flags)) {
+        return sys->ring_flags[ring_idx];
+    }
+    return MD_RING_FLAG_NONE;
 }
 
 static inline md_bond_flags_t md_system_bond_flags(const md_system_t* sys, md_bond_idx_t bond_idx) {

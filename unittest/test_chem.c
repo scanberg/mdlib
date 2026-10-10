@@ -503,3 +503,84 @@ UTEST(chem, simulation_with_hydrogens) {
     EXPECT_EQ(0, unexpected);
     md_vm_arena_destroy(alloc);
 }
+
+typedef struct ring_expect_t {
+    const char* id;
+    int count;
+    struct { int size; uint32_t flags; } ring[6];    // In any order
+} ring_expect_t;
+
+static int cmp_ring(const void* a, const void* b) {
+    const int* x = a;
+    const int* y = b;
+    return x[0] != y[0] ? x[0] - y[0] : x[1] - y[1];
+}
+
+// The rings (3 to 7 atoms, without those which are sums of smaller ones) and their flags, on dictionary components and
+// on the molecules of ring_chem.txt (7 membered aromatic rings, bridged and fused ring systems, sugars)
+UTEST_F(chem, ring_flags) {
+    static const ring_expect_t expect_ccd[] = {
+        { "PHE", 1, { { 6, MD_RING_FLAG_AROMATIC } } },
+        { "HIS", 1, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO } } },
+        { "TRP", 2, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED } } },
+        { "PRO", 1, { { 5, MD_RING_FLAG_HETERO } } },
+        { "MES", 1, { { 6, MD_RING_FLAG_HETERO } } },                       // Morpholine: an N in the ring, no sugar
+        { "NAG", 1, { { 6, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },   // Pyranose
+        // The purine, and the ribose or deoxyribose
+        { "A",   3, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 5, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },
+        { "DA",  3, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 5, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },
+    };
+    static const ring_expect_t expect_mol[] = {
+        { "AZULENE", 2, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED }, { 7, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED } } },
+        { "TROPOLO", 1, { { 7, MD_RING_FLAG_AROMATIC } } },
+        { "NORBORN", 2, { { 5, MD_RING_FLAG_FUSED }, { 5, MD_RING_FLAG_FUSED } } },               // Not the 6 around both
+        { "CUBANE",  6, { { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED } } },
+        { "BICYCLO", 2, { { 3, MD_RING_FLAG_FUSED }, { 3, MD_RING_FLAG_FUSED } } },               // Bicyclo[1.1.0]butane
+        { "BCO",     3, { { 6, MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_FUSED } } },  // All three
+        { "NORCARA", 2, { { 3, MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_FUSED } } },               // Not the 7 around both
+        { "GLUCOSE", 1, { { 6, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },
+        { "DEOXYRI", 1, { { 5, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },
+        { "THF",     1, { { 5, MD_RING_FLAG_HETERO } } },
+        { "MORPHOL", 1, { { 6, MD_RING_FLAG_HETERO } } },
+        { "INOSITO", 1, { { 6, MD_RING_FLAG_NONE } } },
+    };
+
+    md_array(ref_comp_t) mols = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ring_chem.txt"), utest_fixture->alloc);
+    const struct { const ref_comp_t* comps; const ring_expect_t* expect; size_t count; bool strip_h; } sets[] = {
+        { utest_fixture->comps, expect_ccd, ARRAY_SIZE(expect_ccd), false },
+        { mols,                 expect_mol, ARRAY_SIZE(expect_mol), true  },
+    };
+    for (size_t s = 0; s < ARRAY_SIZE(sets); ++s) {
+        for (size_t e = 0; e < sets[s].count; ++e) {
+            const ring_expect_t* ex = &sets[s].expect[e];
+            const ref_comp_t* c = find_component(sets[s].comps, ex->id);
+            ASSERT_TRUE_MSG(c != NULL, ex->id);
+            md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+            md_system_t sys = { .alloc = alloc };
+            md_system_state_t st = { .alloc = alloc };
+            int* map = md_alloc(alloc, sizeof(int) * (md_array_size(c->atom) + 1));
+            build_component(&sys, &st, map, c, sets[s].strip_h, false);
+            ASSERT_TRUE(md_chem_perceive(&sys, &st, sets[s].strip_h ? MD_CHEM_FLAG_PROTONATE_PH7 : MD_CHEM_FLAG_NONE));
+
+            const int n = (int)md_index_data_num_ranges(&sys.ring);
+            EXPECT_EQ_MSG(ex->count, n, ex->id);
+            EXPECT_EQ_MSG((size_t)n, md_array_size(sys.ring_flags), ex->id);
+            if (n == ex->count) {
+                int got[6][2], want[6][2];
+                for (int r = 0; r < n; ++r) {
+                    got[r][0]  = (int)md_index_range_size(&sys.ring, r);
+                    got[r][1]  = (int)md_system_ring_flags(&sys, r);
+                    want[r][0] = ex->ring[r].size;
+                    want[r][1] = (int)ex->ring[r].flags;
+                }
+                qsort(got, n, sizeof(got[0]), cmp_ring);
+                qsort(want, n, sizeof(want[0]), cmp_ring);
+                for (int r = 0; r < n; ++r) {
+                    EXPECT_EQ_MSG(want[r][0], got[r][0], ex->id);
+                    EXPECT_EQ_MSG(want[r][1], got[r][1], ex->id);
+                }
+            }
+            md_vm_arena_destroy(alloc);
+        }
+    }
+}

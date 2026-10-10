@@ -1464,5 +1464,8 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     }
 
     md_temp_end(temp);
+
+    // The ring flags follow the aromaticity and orders just written
+    md_util_system_infer_ring_flags(sys);
     return true;
 }

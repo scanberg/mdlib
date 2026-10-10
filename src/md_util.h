@@ -138,8 +138,13 @@ void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_syst
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
 void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const md_system_state_t* state, double radius, const struct md_bitfield_t* viable_mask);
 
-// Infer rings formed by covalent bonds
+// Infer rings formed by covalent bonds: the rings of 3 to 7 atoms which are not sums of smaller rings (sys->ring: the
+// smallest set of smallest rings, made symmetric), and their flags (md_util_system_infer_ring_flags)
 bool md_util_system_infer_rings(md_system_t* sys);
+
+// The flags of the rings (sys->ring_flags, md_ring_flags_t) from the rings, the bonds and their flags. Call it again
+// when the bond orders or aromaticity change (md_chem_perceive does).
+void md_util_system_infer_ring_flags(md_system_t* sys);
 
 // Identify isolated structures by covalent bonds.
 // For coarse grained systems (any particle a bead, md_system_is_coarse_grained), beads the bonds leave disconnected are

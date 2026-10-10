@@ -4759,9 +4759,127 @@ static void sort_ring(int* arr, int n) {
 #endif
 }
 
+// Rings of up to 7 atoms: the 7 membered aromatic rings (tropolone, azulene, tropylium) count, larger ones are loops
 #define MIN_RING_SIZE 3
-#define MAX_RING_SIZE 6
+#define MAX_RING_SIZE 7
 #define MAX_DEPTH (MAX_RING_SIZE/2 + 1)
+
+// Removes the rings which are sums of smaller ones: rings whose bonds are those of strictly smaller rings, each bond
+// counted an odd number of times (the 7 membered ring around a cyclopropane fused to a cyclohexane, the 6 membered one
+// around the two 5 membered rings of norbornane, the 4 membered one around the two 3 membered rings of
+// bicyclo[1.1.0]butane, the 6 membered rings around two or three faces of cubane). What remains are the relevant rings
+// of the graph up to the size limit: the smallest set of smallest rings, made symmetric (each of the three 6 membered
+// rings of bicyclo[2.2.2]octane is the sum of the other two, which are not smaller, and all three are kept).
+// The smaller rings considered are those sharing an atom with the ring, which every ring of such a sum does when the
+// rings are this small.
+#define ENVELOPE_MAX_CAND 64
+#define ENVELOPE_MAX_BONDS ((ENVELOPE_MAX_CAND + 1) * MAX_RING_SIZE)
+#define ENVELOPE_WORDS ((ENVELOPE_MAX_BONDS + 63) / 64)
+static void remove_envelope_rings(md_system_t* sys, md_allocator_i* temp_arena) {
+    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+    const size_t num_atoms = md_system_atom_count(sys);
+    if (num_rings < 2) return;
+
+    // The rings of each atom
+    uint32_t* off = md_alloc(temp_arena, (num_atoms + 1) * sizeof(uint32_t));
+    MEMSET(off, 0, (num_atoms + 1) * sizeof(uint32_t));
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const size_t n = md_index_range_size(&sys->ring, r);
+        for (size_t k = 0; k < n; ++k) off[ring[k] + 1] += 1;
+    }
+    for (size_t i = 0; i < num_atoms; ++i) off[i + 1] += off[i];
+    uint32_t* idx = md_alloc(temp_arena, MAX(off[num_atoms], 1) * sizeof(uint32_t));
+    uint32_t* fill = md_alloc(temp_arena, num_atoms * sizeof(uint32_t));
+    MEMCPY(fill, off, num_atoms * sizeof(uint32_t));
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const size_t n = md_index_range_size(&sys->ring, r);
+        for (size_t k = 0; k < n; ++k) idx[fill[ring[k]]++] = (uint32_t)r;
+    }
+
+    uint8_t* removed = md_alloc(temp_arena, num_rings);
+    MEMSET(removed, 0, num_rings);
+    size_t removed_count = 0;
+
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const int n = (int)md_index_range_size(&sys->ring, r);
+        if (n < 4) continue;    // Two rings of 3 make one of 4 at the least
+
+        // Smaller rings which share an atom with this one
+        uint32_t cand[ENVELOPE_MAX_CAND];
+        int num_cand = 0;
+        for (int k = 0; k < n; ++k) {
+            for (uint32_t t = off[ring[k]]; t < off[ring[k] + 1]; ++t) {
+                const uint32_t s = idx[t];
+                if (s == r || (int)md_index_range_size(&sys->ring, s) >= n) continue;
+                bool dup = false;
+                for (int c = 0; c < num_cand; ++c) dup |= cand[c] == s;
+                if (!dup && num_cand < ENVELOPE_MAX_CAND) cand[num_cand++] = s;
+            }
+        }
+        if (num_cand < 2) continue;
+
+        // The bonds, numbered locally, as bit vectors over GF(2): the ring is a sum of the candidates when it reduces to
+        // nothing by them
+        int32_t bonds[ENVELOPE_MAX_BONDS];
+        int num_bonds = 0;
+        uint64_t basis[ENVELOPE_MAX_BONDS][ENVELOPE_WORDS];   // basis[p]: the row whose lowest bit is p
+        uint8_t  has_row[ENVELOPE_MAX_BONDS];
+        MEMSET(has_row, 0, sizeof(has_row));
+        bool valid = true;
+        bool envelope = false;
+        for (int c = 0; c <= num_cand && valid; ++c) {
+            const bool self = c == num_cand;
+            const uint32_t s = self ? (uint32_t)r : cand[c];
+            const int32_t* rs = md_index_range_beg(&sys->ring, s);
+            const int ns = (int)md_index_range_size(&sys->ring, s);
+            uint64_t v[ENVELOPE_WORDS] = {0};
+            for (int k = 0; k < ns; ++k) {
+                const md_bond_idx_t b = md_bond_find(&sys->bond, rs[k], rs[(k + 1) % ns]);
+                if (b < 0) { valid = false; break; }
+                int j = 0;
+                while (j < num_bonds && bonds[j] != b) ++j;
+                if (j == num_bonds) bonds[num_bonds++] = b;
+                v[j >> 6] ^= 1ull << (j & 63);
+            }
+            if (!valid) break;
+            // Reduce by the rows so far
+            int p = -1;
+            for (;;) {
+                p = -1;
+                for (int w = 0; w < ENVELOPE_WORDS; ++w) {
+                    if (v[w]) { p = w * 64 + (int)ctz64(v[w]); break; }
+                }
+                if (p < 0 || !has_row[p]) break;
+                for (int w = 0; w < ENVELOPE_WORDS; ++w) v[w] ^= basis[p][w];
+            }
+            if (self) {
+                envelope = p < 0;
+            } else if (p >= 0) {
+                MEMCPY(basis[p], v, sizeof(v));
+                has_row[p] = 1;
+            }
+        }
+        if (valid && envelope) {
+            removed[r] = 1;
+            removed_count += 1;
+        }
+    }
+    if (!removed_count) return;
+
+    md_index_data_t kept = {0};
+    kept.alloc = sys->ring.alloc;
+    for (size_t r = 0; r < num_rings; ++r) {
+        if (!removed[r]) md_index_data_push_arr(&kept, md_index_range_beg(&sys->ring, r), md_index_range_size(&sys->ring, r));
+    }
+    md_index_data_free(&sys->ring);
+    sys->ring = kept;
+}
+#undef ENVELOPE_MAX_CAND
+#undef ENVELOPE_MAX_BONDS
+#undef ENVELOPE_WORDS
 
 // Inspired by molstars implementation
 // https://github.com/molstar/molstar/blob/master/src/mol-model/structure/structure/unit/rings/compute.ts#L249
@@ -4789,6 +4907,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     }
     sys->ring.alloc = alloc;
     md_index_data_clear(&sys->ring);
+    md_array_shrink(sys->ring_flags, 0);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
@@ -4932,10 +5051,100 @@ bool md_util_system_infer_rings(md_system_t* sys) {
             }
         }
     }
+
+    remove_envelope_rings(sys, temp_arena);
     
     md_temp_end(temp);
 
+    md_util_system_infer_ring_flags(sys);
+
     return true;
+}
+
+// Is ring (n atoms in order) the ring of a monosaccharide (MD_RING_FLAG_SUGAR)
+static bool ring_is_sugar(const md_system_t* sys, const int32_t* ring, size_t n) {
+    if (n != 5 && n != 6) return false;
+    int ring_o = -1;
+    for (size_t k = 0; k < n; ++k) {
+        const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, ring[k]);
+        if (z == MD_Z_O) {
+            if (ring_o >= 0) return false;
+            ring_o = (int)k;
+        } else if (z != MD_Z_C) {
+            return false;
+        }
+    }
+    if (ring_o < 0) return false;
+
+    int substituted = 0;
+    bool anomeric = false;
+    for (size_t k = 0; k < n; ++k) {
+        const int32_t a = ring[k];
+        if ((int)k == ring_o) continue;
+        bool sub = false;
+        md_bond_iter_t it = md_bond_iter(&sys->bond, a);
+        while (md_bond_iter_has_next(&it)) {
+            const md_atom_idx_t x = md_bond_iter_atom_index(&it);
+            const md_bond_flags_t f = (md_bond_flags_t)md_bond_iter_bond_flags(&it);
+            md_bond_iter_next(&it);
+            // No double or aromatic bond on the ring atoms, within the ring or out of it
+            if (md_bond_order(f) >= 2 || (f & MD_BOND_FLAG_AROMATIC)) return false;
+            bool in_ring = false;
+            for (size_t j = 0; j < n; ++j) in_ring |= ring[j] == x;
+            if (in_ring) continue;
+            const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, x);
+            sub |= z == MD_Z_O || z == MD_Z_N;
+        }
+        if (sub) {
+            substituted += 1;
+            // Next to the ring O
+            anomeric |= k == (size_t)(ring_o + 1) % n || (k + 1) % n == (size_t)ring_o;
+        }
+    }
+    return substituted >= 2 && anomeric;
+}
+
+void md_util_system_infer_ring_flags(md_system_t* sys) {
+    ASSERT(sys);
+    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+    md_array_resize(sys->ring_flags, num_rings, sys->alloc);
+    if (num_rings == 0) return;
+    MEMSET(sys->ring_flags, 0, num_rings * sizeof(md_ring_flags_t));
+    if (!sys->bond.conn.offset || !sys->bond.flags) return;
+
+    // Bonds in more than one ring make those rings fused
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    uint8_t* bond_rings = md_temp_alloc(temp, MAX(sys->bond.count, 1));
+    MEMSET(bond_rings, 0, MAX(sys->bond.count, 1));
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const size_t n = md_index_range_size(&sys->ring, r);
+        for (size_t k = 0; k < n; ++k) {
+            const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
+            if (b >= 0 && bond_rings[b] < 255) bond_rings[b] += 1;
+        }
+    }
+
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const size_t n = md_index_range_size(&sys->ring, r);
+        md_ring_flags_t flags = MD_RING_FLAG_NONE;
+        bool aromatic = n > 0;
+        for (size_t k = 0; k < n; ++k) {
+            if (md_atom_atomic_number(&sys->atom, ring[k]) != MD_Z_C) flags |= MD_RING_FLAG_HETERO;
+            const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
+            if (b < 0) {
+                aromatic = false;
+                continue;
+            }
+            aromatic &= (sys->bond.flags[b] & MD_BOND_FLAG_AROMATIC) != 0;
+            if (bond_rings[b] > 1) flags |= MD_RING_FLAG_FUSED;
+        }
+        if (aromatic) flags |= MD_RING_FLAG_AROMATIC;
+        if (ring_is_sugar(sys, ring, n)) flags |= MD_RING_FLAG_SUGAR;
+        sys->ring_flags[r] = flags;
+    }
+    md_temp_end(temp);
 }
 
 #undef MIN_RING_SIZE
