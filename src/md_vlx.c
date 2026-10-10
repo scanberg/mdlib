@@ -13,8 +13,11 @@
 #include <md_gto.h>
 #include <md_qm.h>
 #include <md_util.h>
+#include <md_pot.h>
 
 #include <hdf5.h>
+#include "md_hdf5.h"
+
 
 // ---------------------------------------------------------------------------
 // Reader-internal types.
@@ -90,14 +93,27 @@ typedef enum {
 
 
 
-// Internal only, and for the same reason as vlx_atomic_property_t above: what a density
-// property looks like between reading it out of the h5 file and publishing it as an attribute.
+// How the values of a dataset are laid down in the file, when they are one contiguous run of IEEE
+// floats that can be read with a plain file read. NONE: any other way - chunked, compressed, compact
+// or of another type - and read through HDF5.
+typedef enum vlx_raw_t {
+	VLX_RAW_NONE = 0,
+	VLX_RAW_F32LE,
+	VLX_RAW_F32BE,
+	VLX_RAW_F64LE,
+	VLX_RAW_F64BE,
+} vlx_raw_t;
+
+// Internal only, and for the same reason as vlx_atomic_property_t above: what a density property
+// looks like between finding it in the h5 file and publishing it as an attribute. Where its values
+// are, not the values: they are read from the file when somebody asks (vlx_density_property_provide).
 typedef struct vlx_density_property_t {
-	str_t    label;     // Display text, as authored in the file
-	str_t    name;      // Dataset name in the h5 file. The identity, and what the attribute path is built from
-	uint64_t key;
-	size_t 	 dim[2];
-	double*  data;      // dim[0] * dim[1] values, row major
+	str_t     label;    // Display text, as authored in the file
+	str_t     name;     // Dataset name in the h5 file. The identity, and what the attribute path is built from
+	str_t     dataset;  // Full path of the dataset within the file
+	int64_t   offset;   // First byte of its values in the file, -1 when they are not one run of bytes
+	vlx_raw_t raw;      // How the values at 'offset' are stored
+	size_t    dim;      // [dim x dim] in the file: VeloxChem's spherical AOs, in its AO order
 } vlx_density_property_t;
 
 #include <float.h>
@@ -173,8 +189,6 @@ typedef struct vlx_orbital_t {
     vlx_2d_data_t density;
 	vlx_1d_data_t energy;
 	vlx_1d_data_t occupancy;
-	size_t homo_idx;
-	size_t lumo_idx;
 } vlx_orbital_t;
 
 
@@ -189,6 +203,10 @@ typedef struct vlx_scf_t {
 	vlx_orbital_t beta;
 
 	vlx_2d_data_t S;
+
+	// Whether the file carried ground_state_dipole_moment. Not every version writes it, and a zero
+	// dipole is a value: publishing one for a file that never said so would be a claim about the molecule.
+	bool has_ground_state_dipole_moment;
 } vlx_scf_t;
 
 
@@ -209,6 +227,25 @@ typedef struct vlx_rsp_t {
 	vlx_2d_data_t solution_matrix;
 } vlx_rsp_t;
 
+// The classical environment of a polarizable embedding run: the sites of the potential file the SCF
+// settings name (scf/potfile), resolved once at load. Empty (count 0) when the run had no potential,
+// the file was not found beside the .h5, or this load supplements a system somebody else built.
+//
+// The charges and polarizabilities are PER SITE, already expanded from the file's per fragment TYPE
+// rows by the rule VeloxChem itself applies (see vlx_mm_resolve_parameters). A file that rule does not
+// fit is not the potential the run used, and is then not used at all - count stays 0.
+//
+// The sites become atoms in the order of their FRAGMENT NUMBERS (see vlx_mm_order_sites), not the
+// order the file lists them in: 'order' is the bridge, and the per site arrays stay in file order.
+typedef struct vlx_mm_t {
+	md_pot_t  pot;
+	size_t    count;			// Sites, == pot.num_sites
+	double*   charge;			// [count] e, by file row
+	double*   polarizability;	// [count] isotropic, bohr^3 - one third of the trace of the site's tensor, by file row
+	uint32_t* order;			// [count] the file row of the k-th site as an atom of the system
+	bool      in_system;		// The sites were appended to the system's atoms, after the QM atoms
+} vlx_mm_t;
+
 
 
 typedef struct vlx_t {
@@ -217,6 +254,13 @@ typedef struct vlx_t {
 	str_t  basis_set_ident;
 	str_t  dft_func_label;
 	str_t  potfile_text;
+
+	// The file as it was read, for what is read from it later on demand (the density properties):
+	// where it is, its size and last write time then, and vlx_h5_identity of what it held.
+	str_t          filename;
+	md_file_info_t file_info;
+	uint64_t       identity;
+
 
 	size_t number_of_atoms;
 	size_t number_of_alpha_electrons;
@@ -234,13 +278,25 @@ typedef struct vlx_t {
 	// Data blocks
 	vlx_scf_t scf;
 	vlx_rsp_t rsp;
+	vlx_mm_t  mm;
 
 	md_element_t* atomic_numbers;
 	int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
 	// ao_remap[shell_ao_idx] = vlx_ao_idx
 	// Maps from shell order (angl→atom→func→isph) to VeloxChem matrix row order (angl→isph→atom→func).
-	// Built once after the basis set is parsed; used to permute C, D, S matrices into shell order.
+	// Built by vlx_resolve_basis_set() straight after the core block; used to permute every AO matrix
+	// the file carries - C, D, S and the density properties - into shell order.
 	int* ao_remap;
+
+	// The number of atomic orbitals the basis set spans over this molecule, in VeloxChem's spherical
+	// (pure) basis: the dimension every AO matrix has AS STORED IN THE FILE, and the length of ao_remap.
+	// Derived from the basis set and the nuclear charges alone, both of which the root of the file
+	// names, so it is known before any block is read and whether or not there is an SCF block at all.
+	// AO-indexed data is checked against this, never the other way round. 0 when no basis is named.
+	//
+	// Not the dimension after vlx_convert_ao_data_to_cartesian(); that is md_gto_basis_num_ao().
+	size_t num_sph_ao;
+
 
 	// The system every block is read INTO. A reader's destination is the attribute table, not this
 	// struct: what stays here is only what a later step still has to look at - the atom list the
@@ -315,13 +371,14 @@ static str_t vlx_opt_type_str(vlx_opt_type_t type) {
 // Forward declarations for the reader-internal accessors below. All static: the vlx object is a
 // parse-time scratch representation and nothing outside this file names it.
 static vlx_t* vlx_create(struct md_allocator_i* backing, struct md_system_t* sys);
+static void   vlx_destroy(vlx_t* vlx);
 static size_t vlx_number_of_atoms(const vlx_t* vlx);
 static size_t vlx_number_of_electrons(const vlx_t* vlx, vlx_spin_t spin);
 static const dvec3_t* vlx_atom_coordinates(const vlx_t* vlx);
 static const uint8_t* vlx_atomic_numbers(const vlx_t* vlx);
 static const int* vlx_local_to_global_atom_idx(const vlx_t* vlx);
 static dvec3_t vlx_scf_ground_state_dipole_moment(const vlx_t* vlx);
-static size_t vlx_scf_number_of_atomic_orbitals (const vlx_t* vlx);
+
 static size_t vlx_scf_number_of_molecular_orbitals(const vlx_t* vlx);
 static const double* vlx_scf_mo_occupancy(const vlx_t* vlx, vlx_spin_t spin);
 static const double* vlx_scf_mo_energy(const vlx_t* vlx, vlx_spin_t spin);
@@ -425,45 +482,44 @@ static size_t basis_set_count_atomic_basis_func(const basis_set_t* basis_set, in
     return count;
 }
 
-static size_t extract_ao_to_atom_idx(int* out_ao_to_atom, const md_atomic_number_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
-	int natoms = (int)number_of_atoms;
-	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
+// The number of atomic orbitals the basis set spans over the molecule, in VeloxChem's spherical basis
+// or in the Cartesian one md_gto_basis_t uses.
+// A pure function of the basis set and the nuclear charges - nothing any computed block holds - which
+// is what lets the AO dimension be known before, and without, an SCF block.
+//
+// Returns 0 when an atom's element is not in the basis set. A basis that does not cover the molecule
+// has no AO count: a partial sum would be a wrong number that every dimension check downstream then
+// agrees with, where 0 stops the load at the point the cause is still visible.
+static size_t vlx_basis_num_ao(const vlx_t* vlx, bool cartesian) {
+	ASSERT(vlx);
+	if (!vlx->basis_set.atom_basis.count || !vlx->atomic_numbers) {
+		return 0;
+	}
+
 
 	size_t count = 0;
-
-	basis_func_t basis_funcs[128];
-
-	// azimuthal quantum number: s,p,d,f,...
-	for (int angl = 0; angl <= max_angl; angl++) {
-		//CSphericalMomentum sphmom(angl);
-		int nsph = (int)md_gto_num_sph_ao((uint32_t)angl);
-		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
-		for (int isph = 0; isph < nsph; isph++) {
-			// int	ncomp = spherical_momentum_num_factors(angl, isph);
-
-			// go through atoms
-			for (int atomidx = 0; atomidx < natoms; atomidx++) {
-				int idelem = atomic_numbers[atomidx];
-				size_t num_ao = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
-
-				for (size_t iao = 0; iao < num_ao; iao++) {
-					if (out_ao_to_atom) {
-						out_ao_to_atom[count] = atomidx;
-					}
-					count += 1;
-				}
-			}
+	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
+		const int z = (int)vlx->atomic_numbers[i];
+		const basis_set_basis_t* atom_basis = basis_set_get_atom_basis(&vlx->basis_set, z);
+		if (!atom_basis || atom_basis->basis_func_count == 0) {
+			MD_LOG_ERROR("Basis set '" STR_FMT "' has no functions for atom %zu (Z = %i)", STR_ARG(vlx->basis_set_ident), i, z);
+			return 0;
+		}
+		for (size_t j = 0; j < atom_basis->basis_func_count; ++j) {
+			const basis_set_func_t* func = &vlx->basis_set.basis_func.data[atom_basis->basis_func_offset + j];
+			count += cartesian ? md_gto_num_cart_ao(func->type) : md_gto_num_sph_ao(func->type);
 		}
 	}
 	return count;
 }
 
-static size_t compute_basis_num_atomic_orbitals(const vlx_t* vlx) {
-	ASSERT(vlx);
-	if (!vlx->basis_set.atom_basis.count || !vlx->atomic_numbers || vlx->number_of_atoms == 0) {
-		return 0;
-	}
-	return extract_ao_to_atom_idx(NULL, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
+static size_t vlx_basis_num_sph_ao(const vlx_t* vlx) {
+	return vlx_basis_num_ao(vlx, false);
+}
+
+// The Cartesian count: the dimension of every AO matrix after vlx_convert_ao_data_to_cartesian.
+static size_t vlx_basis_num_cart_ao(const vlx_t* vlx) {
+	return vlx_basis_num_ao(vlx, true);
 }
 
 // Build a permutation table that maps from shell order (angl→atom→func→isph)
@@ -738,25 +794,19 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 	return true;
 }
 
-// HDF5 prints a full diagnostic stack to stderr for every failed call. This reader
-// probes for optional data constantly and reports its own failures through MD_LOG_*
-// with the offending field name, so the automatic handler is pure noise. Silence it
-// for the duration of a parse and restore whatever the host application had set --
-// mdlib must not leave global HDF5 state modified.
-typedef struct h5_error_scope_t {
-	H5E_auto2_t func;
-	void*       client_data;
-} h5_error_scope_t;
+// Every HDF5 call this reader makes is made inside one of these scopes: the shared mdlib HDF5 lock
+// (md_hdf5.h), which serialises it against the other HDF5 readers and the providers they leave behind,
+// and which also silences HDF5's own error printing - this reader probes for optional data constantly
+// and reports its own failures through MD_LOG_* with the offending field name, so the automatic
+// handler is pure noise. Taken at the outermost function that touches HDF5; it is not recursive.
+typedef md_hdf5_lock_t h5_error_scope_t;
 
 static h5_error_scope_t h5_error_scope_begin(void) {
-	h5_error_scope_t scope = {0};
-	H5Eget_auto2(H5E_DEFAULT, &scope.func, &scope.client_data);
-	H5Eset_auto2(H5E_DEFAULT, NULL, NULL);
-	return scope;
+	return md_hdf5_lock();
 }
 
 static void h5_error_scope_end(h5_error_scope_t scope) {
-	H5Eset_auto2(H5E_DEFAULT, scope.func, scope.client_data);
+	md_hdf5_unlock(scope);
 }
 
 // H5Lexists() only tolerates a missing *final* path component. If an intermediate
@@ -1215,14 +1265,15 @@ done:
 	return result;
 }
 
-// Checks a square AO-basis matrix for symmetry and forces it if it is close but not
-// exact. Returns true if it was already symmetric to tolerance.
+// Forces a square AO-basis matrix symmetric when it is not already, to tolerance. Returns true when it
+// already was; the largest deviation and the largest element are reported either way, so a caller can
+// say what it found.
 //
-// Consumers of AO density matrices in this codebase read only the upper triangle, so
-// an asymmetric matrix is not merely inaccurate -- half of it is discarded without a
-// trace. Anything beyond rounding is reported with the offending magnitude so it is
-// visible rather than absorbed.
-static bool vlx_report_and_enforce_symmetry(double* mat, size_t dim, const char* label) {
+// Consumers of AO density matrices in this codebase read only the upper triangle, so an asymmetric
+// matrix is not merely inaccurate -- half of it is discarded without a trace. The SCF and transition
+// densities are symmetric by construction; density properties are a generic pass-through from the
+// file, and nothing else checks them.
+static bool vlx_symmetrize(double* mat, size_t dim, double* out_max_asym, double* out_max_abs) {
 	ASSERT(mat);
 
 	double max_asym = 0.0;
@@ -1235,16 +1286,14 @@ static bool vlx_report_and_enforce_symmetry(double* mat, size_t dim, const char*
 			max_abs  = MAX(max_abs, MAX(fabs(a), fabs(b)));
 		}
 	}
+	if (out_max_asym) *out_max_asym = max_asym;
+	if (out_max_abs)  *out_max_abs  = max_abs;
 
 	// Scale-relative, so this does not fire on accumulated rounding in a large matrix.
 	const double tolerance = 1.0e-10 * (max_abs > 0.0 ? max_abs : 1.0);
 	if (max_asym <= tolerance) {
 		return true;
 	}
-
-	MD_LOG_INFO("Density property '%s' is not symmetric (max deviation %g, largest element %g). "
-				"Symmetrizing: the density evaluation path only reads the upper triangle.",
-				label, max_asym, max_abs);
 
 	for (size_t i = 0; i < dim; ++i) {
 		for (size_t j = i + 1; j < dim; ++j) {
@@ -1557,12 +1606,12 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 	}
 
 	char name_buf[256];
-	for (hsize_t i = 0; i < info.nlinks; ++i) {
-		ssize_t size = H5Gget_objname_by_idx(group_handle, i, name_buf, sizeof(name_buf));
+	for (hsize_t link_idx = 0; link_idx < info.nlinks; ++link_idx) {
+		ssize_t size = H5Gget_objname_by_idx(group_handle, link_idx, name_buf, sizeof(name_buf));
 		if (size < 0) {
 			continue;
 		}
-		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, i);
+		H5G_obj_t type = H5Gget_objtype_by_idx(group_handle, link_idx);
 
 		// Ensure that the type is a dataset, if not we skip
 		if (type != H5G_DATASET) {
@@ -1637,12 +1686,20 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 			continue;
 		}
 
+		// When the system holds an embedding's sites as well (vlx_system_append_mm) its atom axis runs
+		// past the file's: the QM atoms first, then the sites, which carry NAN - the table's mark for
+		// "no value for this atom". An ESP charge of a site that was never part of the fit is not
+		// zero, it is not there.
+		const size_t num_qm_atoms  = vlx->number_of_atoms;
+		const size_t num_sys_atoms = vlx->mm.in_system ? num_qm_atoms + vlx->mm.count : num_qm_atoms;
+
 		md_attribute_format_t format = {
 			.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = (uint32_t)num_dims,
 		};
 		for (int d = 0; d < num_dims; ++d) {
 			format.shape[d] = (uint32_t)dims[d];
 		}
+		format.shape[num_dims - 1] = (uint32_t)num_sys_atoms;
 
 		// The label is what the file called it for a human; when it is the dataset name there is
 		// nothing for it to add, and an absent label is a valid state.
@@ -1656,18 +1713,105 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 			continue;
 		}
 
-		herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dst);
+		herr_t status = -1;
+		if (num_sys_atoms == num_qm_atoms) {
+			status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, dst);
+		} else {
+			// H5S_ALL writes the whole dataset, so it is read into storage of exactly its size and
+			// spread out row by row from there.
+			md_temp_scope_t temp = md_temp_begin_avoid(vlx->arena);
+			double* src = md_temp_alloc_array(temp, double, num_points);
+			status = src ? H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, src) : -1;
+			if (status >= 0) {
+				const size_t num_rows = num_points / num_qm_atoms;
+				for (size_t r = 0; r < num_rows; ++r) {
+					double* row = dst + r * num_sys_atoms;
+					MEMCPY(row, src + r * num_qm_atoms, sizeof(double) * num_qm_atoms);
+					for (size_t i = num_qm_atoms; i < num_sys_atoms; ++i) {
+						row[i] = NAN;
+					}
+				}
+			}
+			md_temp_end(temp);
+		}
 		if (status < 0) {
 			MD_LOG_ERROR("Failed to read data for atomic property dataset '%s'", name_buf);
 			md_attributes_remove(&vlx->sys->attributes, id);
 			goto done;
 		}
-		(void)num_points;
 	done:
 		// The attribute handles are owned and released by h5_read_string_attribute().
 		H5Dclose(dataset_id);
 	}
 	return true;
+}
+
+// Where the values of a dataset are in the file, when they are one contiguous run of IEEE floats:
+// contiguous storage, with its space allocated. VLX_RAW_NONE, and *out_offset -1, otherwise.
+static vlx_raw_t vlx_h5_raw_location(int64_t* out_offset, hid_t dset) {
+	ASSERT(out_offset);
+	*out_offset = -1;
+
+	vlx_raw_t raw = VLX_RAW_NONE;
+	hid_t type = H5Dget_type(dset);
+	if (type != H5I_INVALID_HID) {
+		if      (H5Tequal(type, H5T_IEEE_F64LE) > 0) raw = VLX_RAW_F64LE;
+		else if (H5Tequal(type, H5T_IEEE_F64BE) > 0) raw = VLX_RAW_F64BE;
+		else if (H5Tequal(type, H5T_IEEE_F32LE) > 0) raw = VLX_RAW_F32LE;
+		else if (H5Tequal(type, H5T_IEEE_F32BE) > 0) raw = VLX_RAW_F32BE;
+		H5Tclose(type);
+	}
+	if (raw == VLX_RAW_NONE) {
+		return VLX_RAW_NONE;
+	}
+
+	hid_t dcpl = H5Dget_create_plist(dset);
+	if (dcpl == H5I_INVALID_HID) {
+		return VLX_RAW_NONE;
+	}
+	if (H5Pget_layout(dcpl) == H5D_CONTIGUOUS) {
+		const haddr_t addr = H5Dget_offset(dset);
+		if (addr != HADDR_UNDEF) {
+			*out_offset = (int64_t)addr;
+		}
+	}
+	H5Pclose(dcpl);
+	return *out_offset >= 0 ? raw : VLX_RAW_NONE;
+}
+
+// What says WHICH calculation a file holds: its nuclear charges, its coordinates and its basis set,
+// all at the root. Two files agreeing on these hold the same molecule in the same basis, so their AO
+// matrices index the same functions in the same places - which is what a density property read from
+// the file later has to be able to rely on. Called holding the HDF5 lock.
+static bool vlx_h5_identity(uint64_t* out, hid_t root) {
+	ASSERT(out);
+
+	size_t charge_dims[2] = {0};
+	size_t coord_dims[2]  = {0};
+	const int charge_rank = h5_read_dataset_dims(charge_dims, 2, root, "nuclear_charges");
+	const int coord_rank  = h5_read_dataset_dims(coord_dims,  2, root, "atom_coordinates");
+	if (charge_rank != 1 || coord_rank != 2 || charge_dims[0] == 0 || coord_dims[0] != charge_dims[0] || coord_dims[1] != 3) {
+		return false;
+	}
+
+	const size_t num_atoms = charge_dims[0];
+	md_temp_scope_t temp = md_temp_begin();
+	double* charge = md_temp_alloc_array(temp, double, num_atoms);
+	double* coord  = md_temp_alloc_array(temp, double, num_atoms * 3);
+	char basis[256];
+	const size_t basis_len = h5_read_cstr(basis, sizeof(basis), root, "basis_set");
+
+	bool ok = charge && coord &&
+		h5_read_dataset_data(charge, num_atoms,     root, H5T_NATIVE_DOUBLE, "nuclear_charges") &&
+		h5_read_dataset_data(coord,  num_atoms * 3, root, H5T_NATIVE_DOUBLE, "atom_coordinates");
+	if (ok) {
+		uint64_t hash = md_hash64(charge, sizeof(double) * num_atoms, 0);
+		hash = md_hash64(coord, sizeof(double) * num_atoms * 3, hash);
+		hash = md_hash64(basis, basis_len, hash);
+		*out = hash;
+	}
+	md_temp_end(temp);
+	return ok;
 }
 
 static bool h5_read_density_properties_in_group(vlx_t* vlx, hid_t group_handle, const char* group_path, void* user_data) {
@@ -1730,52 +1874,48 @@ static bool h5_read_density_properties_in_group(vlx_t* vlx, hid_t group_handle, 
 		size_t dims[2] = { 0 };
 		H5Sget_simple_extent_dims(space_id, (hsize_t*)dims, 0);
 
-		size_t num_aos = vlx_scf_number_of_atomic_orbitals(vlx);
+		// Checked against the basis set, not against the SCF block: density properties may come in a
+		// file without one, and it is the basis that gives an AO matrix its meaning in the first place.
+		// (goto done rather than continue: done is what closes dataset_id.)
+		const size_t num_aos = vlx->num_sph_ao;
+		if (num_aos == 0) {
+			MD_LOG_ERROR("Density property dataset '%s' is an AO matrix, but the file names no basis set to interpret it by", name_buf);
+			H5Sclose(space_id);
+			goto done;
+		}
 		if (dims[0] != num_aos || dims[1] != num_aos) {
 			MD_LOG_ERROR("Unexpected dimensions for density property dataset '%s', expected [%zu x %zu], got [%zu x %zu]", name_buf, num_aos, num_aos, dims[0], dims[1]);
 			H5Sclose(space_id);
-			continue;
-		}
-
-		size_t num_points = H5Sget_simple_extent_npoints(space_id);
-		
-		H5Sclose(space_id);
-
-		// Construct a unique uint64_t key for this property.
-		uint64_t key = md_hash64(name_buf, sizeof(name_buf), 0);
-
-		vlx_density_property_t property = {
-			 .label = str_copy_cstr(property_label, vlx->arena),
-			 .name = str_copy_cstr(name_buf, vlx->arena),
-			 .key = key,
-			 .dim[0] = dims[0],
-			 .dim[1] = dims[1],
-			 .data = NULL,
-		};
-
-		md_array_resize(property.data, num_points, vlx->arena);
-		herr_t status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, property.data);
-		if (status < 0) {
-			MD_LOG_ERROR("Failed to read data for density property dataset '%s'", name_buf);
 			goto done;
 		}
 
-		// Symmetry is a load-bearing assumption downstream: the GL/GPU density path packs only the
-		// upper triangle (density_matrix_upper_tri_extract_float in md_gto.c) and the lower half is
-		// never read. The SCF and transition densities are symmetric by construction -- the latter is
-		// explicitly symmetrized -- but density properties are a generic pass-through from the file,
-		// so nothing has checked them until here. Report and enforce rather than letting half the
-		// matrix be silently dropped.
-		//
-		// Staged rather than published here, unlike the atomic properties above: a density property
-		// is an AO matrix, so it goes through the spherical to Cartesian conversion with the rest of
-		// the AO data and comes out a DIFFERENT SIZE. It can only be published once that has run.
-		if (dims[0] == dims[1] && dims[0] > 1) {
-			vlx_report_and_enforce_symmetry(property.data, dims[0], property_label);
+
+		H5Sclose(space_id);
+
+		// Where its values are, not the values. They are read when somebody asks for them
+		// (vlx_density_property_provide), and a density property nobody looks at costs nothing.
+		char dataset_path[1024];
+		if (strcmp(group_path, "/") == 0) {
+			snprintf(dataset_path, sizeof(dataset_path), "/%s", name_buf);
+		} else {
+			snprintf(dataset_path, sizeof(dataset_path), "%s/%s", group_path, name_buf);
 		}
 
+		int64_t offset = -1;
+		const vlx_raw_t raw = vlx_h5_raw_location(&offset, dataset_id);
+
+		vlx_density_property_t property = {
+			 .label   = str_copy_cstr(property_label, vlx->arena),
+			 .name    = str_copy_cstr(name_buf, vlx->arena),
+			 .dataset = str_copy_cstr(dataset_path, vlx->arena),
+			 .offset  = offset,
+			 .raw     = raw,
+			 .dim     = dims[0],
+		};
+
 		md_array_push(vlx->density_properties, property, vlx->arena);
-		MD_LOG_DEBUG("Read density property '%s' with dimensions [%zu x %zu]", property_label, dims[0], dims[1]);
+		MD_LOG_DEBUG("Found density property '%s' [%zu x %zu] at '%s', %s", property_label, dims[0], dims[1], dataset_path,
+			raw != VLX_RAW_NONE ? "read from the file directly" : "read through HDF5");
 	done:
 		// The attribute handles are owned and released by h5_read_string_attribute().
 		H5Dclose(dataset_id);
@@ -1855,6 +1995,22 @@ static void ao_permute_cols(double* mat, size_t num_mo, size_t num_ao, const int
 	}
 done:
 	md_temp_end(temp);
+}
+
+// Permute a square AO matrix in place from VeloxChem's AO order into shell order. Absent is fine. A
+// matrix of any other dimension than the basis set's is not, and is reported rather than skipped:
+// left unpermuted it would be read in the wrong AO order with nothing downstream able to tell.
+static bool vlx_ao_permute_square_checked(vlx_2d_data_t* mat, size_t num_ao, const int* remap, const char* label) {
+	ASSERT(mat);
+	if (!mat->data) {
+		return true;
+	}
+	if (mat->size[0] != num_ao || mat->size[1] != num_ao) {
+		MD_LOG_ERROR("%s matrix is [%zu x %zu], but the basis set spans %zu atomic orbitals", label, mat->size[0], mat->size[1], num_ao);
+		return false;
+	}
+	ao_permute_square(mat->data, num_ao, remap);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1944,6 +2100,13 @@ static bool vlx_convert_ao_data_to_cartesian(vlx_t* vlx) {
 		MD_LOG_ERROR("Cartesian AO conversion: empty basis (n_sph=%zu n_cart=%zu)", n_sph, n_cart);
 		goto done;
 	}
+	// Two enumerations of one basis set - this one through md_gto_basis_t, vlx->num_sph_ao directly -
+	// and every AO matrix was checked against the latter. They have to agree.
+	if (n_sph != vlx->num_sph_ao) {
+		MD_LOG_ERROR("Cartesian AO conversion: the GTO basis spans %zu spherical AOs, the basis set %zu", n_sph, vlx->num_sph_ao);
+		goto done;
+	}
+
 
 	// In the restricted case the beta orbital shares alpha's buffers (see the
 	// struct memcpy in the parse path). Detect that so we convert once and
@@ -1969,18 +2132,9 @@ static bool vlx_convert_ao_data_to_cartesian(vlx_t* vlx) {
 	// basis/overlap publish, and md_qm_publish_overlap for why T^T S T is not that matrix.
 	if (!vlx_cart_convert_square(&vlx->scf.S, &basis, n_sph, n_cart, vlx->arena, "SCF overlap")) goto done;
 
-	// Density properties are AO-basis [N][N] matrices read straight from the file.
-	for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
-		vlx_density_property_t* prop = &vlx->density_properties[i];
-		if (!prop->data) continue;
+	// Density properties are not converted here: they are not held at all, and their provider does
+	// the same permutation and conversion each time one is read from the file.
 
-		vlx_2d_data_t view = { .size = { prop->dim[0], prop->dim[1] }, .data = prop->data };
-		if (!vlx_cart_convert_square(&view, &basis, n_sph, n_cart, vlx->arena, "Density property")) goto done;
-
-		prop->data   = view.data;
-		prop->dim[0] = view.size[0];
-		prop->dim[1] = view.size[1];
-	}
 
 	// Derive the AO -> atom map from the shell list, so it cannot drift out of
 	// step with the AO ordering the evaluator walks.
@@ -2172,7 +2326,15 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
+	// The basis set says what the AO dimension is - vlx_resolve_basis_set has run by now - and the SCF
+	// block has to agree with it. When it does not, the basis file that was found is not the one the
+	// calculation used, and every orbital would be evaluated against the wrong functions.
 	const size_t num_ao = den_dim[0];
+	if (vlx->num_sph_ao > 0 && num_ao != vlx->num_sph_ao) {
+		MD_LOG_ERROR("SCF AO dimension is %zu, but basis set '" STR_FMT "' spans %zu atomic orbitals over this molecule",
+			num_ao, STR_ARG(vlx->basis_set_ident), vlx->num_sph_ao);
+		return false;
+	}
 	size_t num_mo = 0;
 	if (!infer_num_mo_from_coeff_dims(&num_mo, dim, num_ao, "Alpha coefficient")) {
 		return false;
@@ -2268,8 +2430,9 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	}
 
 	// The ground state dipole moment is not present in all versions
-	if (!h5_read_dataset_data(&vlx->scf.ground_state_dipole_moment, 3, handle, H5T_NATIVE_DOUBLE, "dipole_moment")) {
-		//return false;
+	vlx->scf.has_ground_state_dipole_moment = h5_read_dataset_data(&vlx->scf.ground_state_dipole_moment, 3, handle, H5T_NATIVE_DOUBLE, "dipole_moment");
+	if (!vlx->scf.has_ground_state_dipole_moment) {
+		vlx->scf.ground_state_dipole_moment = (dvec3_t){0};
 	}
 
 	// NOTE: H5Lexists returns htri_t -- negative on error, which is truthy. Test
@@ -2418,8 +2581,10 @@ static bool h5_read_optional_1d_data(vlx_1d_data_t* out_data, hid_t handle, cons
 // VeloxChem writes num_core/num_valence/num_virtual only for some calculations - none of the files
 // in test_data carries them - and without that split a solution vector is an undifferentiated run
 // of amplitudes that nothing can be reconstructed from. So when the file is silent, derive it: an
-// ordinary valence excitation spans every occupied orbital and every virtual one, which the SCF
-// occupations already say.
+// ordinary valence excitation spans every occupied orbital and every virtual one. The occupied ones
+// are the alpha electrons, which the root of the file states outright; the orbitals in all are the
+// SCF's when there is an SCF block, and the basis set's AO count when there is not - the same number
+// unless the SCF discarded linearly dependent combinations, which the length check below then rejects.
 //
 // Derived, never assumed: the split has to reproduce the solution vector's own length (amp_count,
 // or twice it when the vector carries both X and Y), and it is adopted only when it does. That
@@ -2436,18 +2601,18 @@ static void vlx_rsp_infer_occupied_virtual_split(vlx_t* vlx) {
 		return;
 	}
 
-	const double* occ    = vlx->scf.alpha.occupancy.data;
-	const size_t  num_mo = vlx->scf.alpha.occupancy.size;
-	if (!occ || num_mo == 0) {
-		MD_LOG_ERROR("Response data has no occupied/virtual split and no SCF occupations to derive one from");
+	const size_t nocc   = vlx->number_of_alpha_electrons;
+	const size_t num_mo = vlx->scf.alpha.occupancy.size > 0 ? vlx->scf.alpha.occupancy.size : vlx->num_sph_ao;
+	if (num_mo == 0) {
+		MD_LOG_ERROR("Response data has no occupied/virtual split, and neither SCF orbitals nor a basis set to derive one from");
 		return;
 	}
-
-	size_t nocc = 0;
-	for (size_t i = 0; i < num_mo; ++i) {
-		if (occ[i] > 0.0) nocc += 1;
+	if (nocc >= num_mo) {
+		MD_LOG_ERROR("Cannot derive an occupied/virtual split: %zu alpha electrons in %zu orbitals", nocc, num_mo);
+		return;
 	}
 	const size_t nvir = num_mo - nocc;
+
 
 	if (nocc == 0 || nvir == 0) {
 		MD_LOG_ERROR("Cannot derive an occupied/virtual split: %zu of %zu orbitals are occupied", nocc, num_mo);
@@ -2463,7 +2628,7 @@ static void vlx_rsp_infer_occupied_virtual_split(vlx_t* vlx) {
 
 	vlx->rsp.num_valence = nocc;
 	vlx->rsp.num_virtual = nvir;
-	MD_LOG_DEBUG("Derived the response occupied/virtual split from the SCF occupations: %zu x %zu", nocc, nvir);
+	MD_LOG_DEBUG("Derived the response occupied/virtual split: %zu x %zu", nocc, nvir);
 }
 
 static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
@@ -3668,6 +3833,366 @@ static size_t vlx_rsp_extract_nto(double* out_coefficients, double* out_lambdas,
 
 	return 0;
 }
+
+// ---------------------------------------------------------------------------
+// POLARIZABLE EMBEDDING ENVIRONMENT
+//
+// A run with polarizable embedding names its potential file in the SCF settings (scf/potfile) - as
+// the path it was GIVEN, relative to wherever VeloxChem ran or absolute on that machine. The file
+// itself is not in the .h5. potfile_text at the root holds whatever pe_options['potfile'] pointed at
+// when the results were written, which for a while has been the PyFraME JSON VeloxChem converted the
+// .pot into (pe_sanity_check -> write_pe_jsonfile). That JSON layout is not current, and is not read:
+// the .pot is, from disk beside the .h5, and a .h5 opened without it is the same calculation minus
+// its context - the environment is left out and the load goes on.
+// ---------------------------------------------------------------------------
+
+// The candidates, in order: the reference resolved against the .h5's folder (a run directory copied
+// as a whole), the reference's file name in that folder (the .pot copied next to the .h5 - also
+// VeloxChem's own fallback in pe_sanity_check), and an absolute reference as written (a local run).
+static bool vlx_resolve_potfile(char* out_buf, size_t out_cap, str_t h5_filename, str_t ref) {
+	str_t folder = {0};
+	extract_folder_path(&folder, h5_filename);	// Stays empty for a bare file name, which is the cwd
+
+	str_t name = ref;
+	extract_file(&name, ref);					// Stays the whole reference when it names no folder
+
+	const bool absolute = md_path_is_absolute(ref);
+
+	char  bufs[2][2048];
+	str_t candidates[3];
+	size_t num_candidates = 0;
+	if (!absolute) {
+		snprintf(bufs[0], sizeof(bufs[0]), STR_FMT STR_FMT, STR_ARG(folder), STR_ARG(ref));
+		candidates[num_candidates++] = str_from_cstr(bufs[0]);
+	}
+	if (absolute || name.len != ref.len) {
+		snprintf(bufs[1], sizeof(bufs[1]), STR_FMT STR_FMT, STR_ARG(folder), STR_ARG(name));
+		candidates[num_candidates++] = str_from_cstr(bufs[1]);
+	}
+	if (absolute) {
+		candidates[num_candidates++] = ref;
+	}
+
+	for (size_t i = 0; i < num_candidates; ++i) {
+		if (md_path_is_valid(candidates[i]) && !md_path_is_directory(candidates[i])) {
+			str_copy_to_char_buf(out_buf, out_cap, candidates[i]);
+			return true;
+		}
+	}
+	return false;
+}
+
+typedef struct vlx_mm_frag_type_t {
+	const char* name;				// Interned by md_pot, so the pointer is the identity
+	md_array(uint32_t) charge_rows;
+	md_array(uint32_t) polarizability_rows;
+} vlx_mm_frag_type_t;
+
+static vlx_mm_frag_type_t* vlx_mm_frag_type(md_array(vlx_mm_frag_type_t)* types, md_hashmap32_t* map, str_t name, md_allocator_i* alloc) {
+	const uint64_t key = (uint64_t)(uintptr_t)name.ptr;
+	const uint32_t* idx = md_hashmap_get(map, key);
+	if (idx) {
+		return *types + *idx;
+	}
+	vlx_mm_frag_type_t type = { .name = name.ptr };
+	md_array_push(*types, type, alloc);
+	md_hashmap_add(map, key, (uint32_t)(md_array_size(*types) - 1));
+	return md_array_last(*types);
+}
+
+// Expands the per fragment TYPE rows of @charges and @polarizabilities into one value per site, by
+// the rule VeloxChem applies when it builds the embedding (write_pe_jsonfile): sites are grouped into
+// fragments by their fragment NUMBER, a fragment is of the type named on its first site, and its k-th
+// site takes the k-th row of that type. A type absent from a section contributes zero there - a type
+// without polarizabilities is embedded non-polarizably, which is all that absence means.
+//
+// Anything VeloxChem would have refused (a site without a fragment, a type whose rows do not match the
+// size of a fragment of it) means this is NOT the potential the calculation ran with, and then nothing
+// of it is used: its sites would be a plausible environment that was never there.
+static bool vlx_mm_resolve_parameters(vlx_mm_t* mm, md_allocator_i* alloc) {
+	const md_pot_t* pot = &mm->pot;
+	const size_t num_sites = pot->num_sites;
+
+	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+	md_allocator_i* temp_alloc = md_temp_allocator(temp);
+	bool result = false;
+
+	uint32_t* local_idx = md_temp_alloc_array(temp, uint32_t, num_sites);	// Index within its fragment
+	uint32_t* first     = md_temp_alloc_array(temp, uint32_t, num_sites);	// The first site of its fragment
+	md_hashmap32_t frag_first = { .allocator = temp_alloc };
+	md_hashmap32_t frag_size  = { .allocator = temp_alloc };
+	md_hashmap32_t type_map   = { .allocator = temp_alloc };
+	md_array(vlx_mm_frag_type_t) types = 0;
+
+	for (size_t i = 0; i < num_sites; ++i) {
+		const md_pot_site_t* site = &pot->sites[i];
+		if (site->fragment_id < 0 || str_empty(site->fragment_name)) {
+			MD_LOG_ERROR("POT: site %zu has no fragment name and number, which a VeloxChem potential requires", i + 1);
+			goto done;
+		}
+		const uint64_t key = (uint64_t)(uint32_t)site->fragment_id;
+		uint32_t* size = md_hashmap_get(&frag_size, key);
+		if (size) {
+			local_idx[i] = (*size)++;
+			first[i]     = *(const uint32_t*)md_hashmap_get(&frag_first, key);
+		} else {
+			local_idx[i] = 0;
+			first[i]     = (uint32_t)i;
+			md_hashmap_add(&frag_size,  key, 1u);
+			md_hashmap_add(&frag_first, key, (uint32_t)i);
+		}
+	}
+
+	for (size_t k = 0; k < pot->num_charges; ++k) {
+		if (str_empty(pot->charges[k].fragment_name)) {
+			MD_LOG_ERROR("POT: @charges row %zu names no fragment type", k + 1);
+			goto done;
+		}
+		vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, pot->charges[k].fragment_name, temp_alloc);
+		md_array_push(type->charge_rows, (uint32_t)k, temp_alloc);
+	}
+	for (size_t k = 0; k < pot->num_polarizabilities; ++k) {
+		if (str_empty(pot->polarizabilities[k].fragment_name)) {
+			MD_LOG_ERROR("POT: @polarizabilities row %zu names no fragment type", k + 1);
+			goto done;
+		}
+		vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, pot->polarizabilities[k].fragment_name, temp_alloc);
+		md_array_push(type->polarizability_rows, (uint32_t)k, temp_alloc);
+	}
+
+	// Every fragment against its type, once, from its first site
+	for (size_t i = 0; i < num_sites; ++i) {
+		if (first[i] != i) continue;
+		const md_pot_site_t* site = &pot->sites[i];
+		const size_t size = *(const uint32_t*)md_hashmap_get(&frag_size, (uint64_t)(uint32_t)site->fragment_id);
+		const vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, site->fragment_name, temp_alloc);
+		const size_t num_q = md_array_size(type->charge_rows);
+		const size_t num_a = md_array_size(type->polarizability_rows);
+		if ((num_q && num_q != size) || (num_a && num_a != size)) {
+			MD_LOG_ERROR("POT: fragment %d of type '" STR_FMT "' has %zu sites, but the type has %zu charges and %zu polarizabilities",
+				site->fragment_id, STR_ARG(site->fragment_name), size, num_q, num_a);
+			goto done;
+		}
+	}
+
+	mm->charge         = md_alloc(alloc, sizeof(double) * num_sites);
+	mm->polarizability = md_alloc(alloc, sizeof(double) * num_sites);
+	for (size_t i = 0; i < num_sites; ++i) {
+		const vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, pot->sites[first[i]].fragment_name, temp_alloc);
+		const uint32_t k = local_idx[i];
+		mm->charge[i] = md_array_size(type->charge_rows) ? pot->charges[type->charge_rows[k]].charge : 0.0;
+
+		double iso = 0.0;
+		if (md_array_size(type->polarizability_rows)) {
+			// The trace alone, which does not depend on how the off diagonal is packed - see the
+			// warning on MD_POT_ALPHA_*
+			const double* a = pot->polarizabilities[type->polarizability_rows[k]].alpha;
+			iso = (a[MD_POT_ALPHA_XX] + a[MD_POT_ALPHA_YY] + a[MD_POT_ALPHA_ZZ]) / 3.0;
+		}
+		mm->polarizability[i] = iso;
+	}
+	result = true;
+
+done:
+	md_temp_end(temp);
+	return result;
+}
+
+typedef struct vlx_mm_site_key_t {
+	int32_t  fragment_id;
+	uint32_t row;
+} vlx_mm_site_key_t;
+
+static int vlx_mm_site_key_cmp(const void* a, const void* b) {
+	const vlx_mm_site_key_t* x = (const vlx_mm_site_key_t*)a;
+	const vlx_mm_site_key_t* y = (const vlx_mm_site_key_t*)b;
+	if (x->fragment_id != y->fragment_id) return x->fragment_id < y->fragment_id ? -1 : 1;
+	return x->row < y->row ? -1 : (x->row > y->row);
+}
+
+// The order the sites become atoms in: the fragments by NUMBER, and a fragment's sites as the file
+// lists them (the order their parameters are taken in, see vlx_mm_resolve_parameters).
+//
+// The file's own order is not a sequence. VeloxChem writes the fragments grouped by how they are
+// embedded - the polarizable ones, then the non-polarizable ones - so a peptide the polarizable
+// region cuts through comes out as residues 2, 6, 8, 15, (a water), 1, 3, 4, 5, 7, 9, ... As atoms
+// in that order it would be no molecule at all: a molecule is a contiguous range of components,
+// and a backbone a run of consecutive residues within one. The fragment number is what identifies
+// a fragment (VeloxChem groups the sites by it, so no two fragments share one), and it is the
+// residue number of the structure the potential was cut from.
+static void vlx_mm_order_sites(vlx_mm_t* mm, md_allocator_i* alloc) {
+	const md_pot_t* pot = &mm->pot;
+	const size_t num_sites = pot->num_sites;
+
+	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+	vlx_mm_site_key_t* keys = md_temp_alloc_array(temp, vlx_mm_site_key_t, num_sites);
+	for (size_t i = 0; i < num_sites; ++i) {
+		keys[i].fragment_id = pot->sites[i].fragment_id;
+		keys[i].row         = (uint32_t)i;
+	}
+	qsort(keys, num_sites, sizeof(vlx_mm_site_key_t), vlx_mm_site_key_cmp);
+
+	mm->order = md_alloc(alloc, sizeof(uint32_t) * num_sites);
+	for (size_t k = 0; k < num_sites; ++k) {
+		mm->order[k] = keys[k].row;
+	}
+	md_temp_end(temp);
+}
+
+// Reads the potential the SCF settings name, when they name one. Never fails the load: what went
+// wrong is logged, and the load goes on without the environment. A SUPPLEMENTAL load leaves it out
+// altogether - the sites would have to become atoms, and that system's atoms are not this reader's.
+static void vlx_read_mm_environment(vlx_t* vlx, hid_t scf_handle, str_t filename, bool supplemental) {
+	ASSERT(vlx);
+	MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+
+	if (!h5_link_exists(scf_handle, "potfile")) {
+		return;
+	}
+	str_t ref = {0};
+	if (!h5_read_str(&ref, scf_handle, "potfile", vlx->arena)) {
+		return;
+	}
+	ref = str_trim(ref);
+	if (str_empty(ref)) {
+		return;
+	}
+
+	if (supplemental) {
+		MD_LOG_INFO("VeloxChem: the embedding environment ('" STR_FMT "') is only added when the file is opened on its own", STR_ARG(ref));
+		return;
+	}
+
+	str_t ext = {0};
+	if (extract_ext(&ext, ref) && str_eq_ignore_case(ext, STR_LIT("json"))) {
+		MD_LOG_INFO("VeloxChem: the embedding potential '" STR_FMT "' is a PyFraME JSON file, which is not read; the environment is not added", STR_ARG(ref));
+		return;
+	}
+
+	char path[2048];
+	if (!vlx_resolve_potfile(path, sizeof(path), filename, ref)) {
+		MD_LOG_INFO("VeloxChem: the embedding potential '" STR_FMT "' was not found beside '" STR_FMT "'; the environment is not added", STR_ARG(ref), STR_ARG(filename));
+		return;
+	}
+
+	if (!md_pot_parse_file(&vlx->mm.pot, str_from_cstr(path), vlx->arena)) {
+		MD_LOG_ERROR("VeloxChem: failed to parse the embedding potential '%s'; the environment is not added", path);
+		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+		return;
+	}
+
+	if (!vlx_mm_resolve_parameters(&vlx->mm, vlx->arena)) {
+		MD_LOG_ERROR("VeloxChem: '%s' is not the potential this calculation ran with; the environment is not added", path);
+		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+		return;
+	}
+
+	vlx_mm_order_sites(&vlx->mm, vlx->arena);
+	vlx->mm.count = vlx->mm.pot.num_sites;
+	MD_LOG_INFO("VeloxChem: %zu embedding sites read from '%s'", vlx->mm.count, path);
+}
+
+// The fragment's residue. VeloxChem names the fragments it writes '<residue>_pe' and '<residue>_npe'
+// (EnsembleDriver.write_pot_files): the tag says HOW a fragment is embedded, which the polarizability
+// column carries, not WHAT it is, which is what a component's name says - and a label holds 6
+// characters, so 'HOH_npe' would not survive anyway. A name without the tag is used as written.
+static str_t vlx_mm_residue_name(str_t fragment_name) {
+	if (str_ends_with(fragment_name, STR_LIT("_npe")) && fragment_name.len > 4) {
+		return str_substr(fragment_name, 0, fragment_name.len - 4);
+	}
+	if (str_ends_with(fragment_name, STR_LIT("_pe")) && fragment_name.len > 3) {
+		return str_substr(fragment_name, 0, fragment_name.len - 3);
+	}
+	return fragment_name;
+}
+
+// The sites as atoms of the system, from atom index 'offset' on: AFTER the QM atoms, so a QM atom's
+// index is its system index and the standalone identity between the two spaces still holds (see
+// vlx_publish_atom_system_index). A fragment is a component, named for its residue and numbered by its
+// fragment number, and the components follow those numbers (vlx_mm_order_sites). A site without an element is an expansion point of the potential rather than an
+// atom (a LoProp bond midpoint): a virtual site, which belongs to its fragment and forms no bonds.
+//
+// Components cover every atom from the first or there are none (system_invariants.h), so the QM
+// atoms become one as well: "QM", the region as a whole. The file says nothing finer about them - no
+// residues, no names - and the region is the thing one wants to select against its environment.
+static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t offset) {
+	md_system_t* sys = vlx->sys;
+	const md_pot_t* pot = &vlx->mm.pot;
+	const double to_angstrom = md_pot_unit_to_angstrom(pot->unit);
+	const md_atom_type_flags_t vsite = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, MD_PARTICLE_VIRTUAL_SITE);
+
+	ASSERT(sys->component.count == 0);
+	md_array_push(sys->component.atom_offset, 0u, sys->alloc);
+	md_array_push(sys->component.name,   make_label(STR_LIT("QM")), sys->alloc);
+	md_array_push(sys->component.seq_id, (md_sequence_id_t)0, sys->alloc);
+	md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
+	sys->component.count += 1;
+
+	for (size_t k = 0; k < pot->num_sites; ++k) {
+		const md_pot_site_t* site = &pot->sites[vlx->mm.order[k]];
+		const size_t atom_idx = offset + k;
+
+		const str_t sym  = str_from_cstr(site->element);
+		const str_t name = str_empty(site->atom_name) ? sym : site->atom_name;
+		const md_atomic_number_t z = md_atomic_number_from_symbol(sym, true);
+
+		md_atom_type_idx_t type_idx = z ?
+			md_atom_type_find_or_add(&sys->atom.type, name, z, md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, sys->alloc) :
+			md_atom_type_find_or_add(&sys->atom.type, name, 0, 0.0f, 0.0f, 0, vsite, sys->alloc);
+		sys->atom.type_idx[atom_idx] = type_idx;
+
+		state->xyz[atom_idx] = vec3_set((float)(site->coord[0] * to_angstrom), (float)(site->coord[1] * to_angstrom), (float)(site->coord[2] * to_angstrom));
+
+		// Every site has a fragment number, vlx_mm_resolve_parameters made sure of it, and a fragment's
+		// sites are adjacent in this order however the file scattered them
+		if (k == 0 || site->fragment_id != pot->sites[vlx->mm.order[k - 1]].fragment_id) {
+			md_array_push(sys->component.atom_offset, (uint32_t)atom_idx, sys->alloc);
+			md_array_push(sys->component.name,   make_label(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
+			md_array_push(sys->component.seq_id, (md_sequence_id_t)site->fragment_id, sys->alloc);
+			md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
+			sys->component.count += 1;
+		}
+	}
+	md_array_push(sys->component.atom_offset, (uint32_t)(offset + pot->num_sites), sys->alloc);	// Sentinel
+
+	vlx->mm.in_system = true;
+}
+
+// The embedding parameters as columns over the SYSTEM's atoms - the domain atom/ is, and where every
+// other loader puts its force field's charges - so colouring by them and summing them need nothing
+// that knows about embedding. The QM atoms are not sites of the potential and carry NAN, the table's
+// mark for "no value for this atom": a QM atom's classical charge is not zero, there is no such thing.
+static void vlx_publish_mm(const vlx_t* vlx) {
+	if (!vlx->mm.in_system || !vlx->mm.charge || !vlx->mm.polarizability) {
+		return;
+	}
+	md_system_t* sys = vlx->sys;
+	const size_t num_qm    = vlx->number_of_atoms;
+	const size_t num_atoms = num_qm + vlx->mm.count;
+
+	md_temp_scope_t temp = md_temp_begin_avoid(vlx->arena);
+	double* charge = md_temp_alloc_array(temp, double, num_atoms);
+	double* polar  = md_temp_alloc_array(temp, double, num_atoms);
+	for (size_t i = 0; i < num_qm; ++i) {
+		charge[i] = NAN;
+		polar[i]  = NAN;
+	}
+	// The parameters are by file row, the atoms in fragment order
+	for (size_t k = 0; k < vlx->mm.count; ++k) {
+		const uint32_t row = vlx->mm.order[k];
+		charge[num_qm + k] = vlx->mm.charge[row];
+		polar [num_qm + k] = vlx->mm.polarizability[row];
+	}
+
+	md_qm_publish_series(sys, STR_LIT("atom/charge"),         STR_LIT("Embedding Charge"),         md_unit_elementary_charge(),               charge, num_atoms);
+	md_qm_publish_series(sys, STR_LIT("atom/polarizability"), STR_LIT("Embedding Polarizability"), md_unit_pow(md_unit_bohr_radius(), 3),     polar,  num_atoms);
+
+	md_temp_end(temp);
+}
+
+// Defined beside vlx_parse_file. Both readers call it straight after the core block.
+static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename);
+
 static bool vlx_read_scf_results(vlx_t* vlx, str_t filename, md_system_state_t* state) {
 	ASSERT(vlx);
 
@@ -3687,7 +4212,21 @@ static bool vlx_read_scf_results(vlx_t* vlx, str_t filename, md_system_state_t* 
 
 	bool result = false;
 
-	if (!h5_read_core_data(vlx, file_id) || !vlx_system_begin(vlx, state)) {
+	if (!h5_read_core_data(vlx, file_id)) {
+		goto done;
+	}
+
+	// The basis set straight after the core block that names it, and ahead of every block carrying
+	// AO-indexed data, so those are checked against the basis rather than against one another.
+	if (!vlx_resolve_basis_set(vlx, filename)) {
+		goto done;
+	}
+
+	// Before the system is built: the embedding's sites become atoms of it. The SCF settings of this
+	// layout are at the root.
+	vlx_read_mm_environment(vlx, file_id, filename, state == NULL);
+
+	if (!vlx_system_begin(vlx, state)) {
 		goto done;
 	}
 
@@ -3728,7 +4267,35 @@ static bool vlx_read_h5_file(vlx_t* vlx, str_t filename, md_system_state_t* stat
 	// The core block first, and the system built from it before anything else is read: from here on
 	// every reader publishes into vlx->sys as it goes, so the table has to exist and must not be
 	// reset again afterwards.
-	if (!h5_read_core_data(vlx, file_id) || !vlx_system_begin(vlx, state)) {
+	if (!h5_read_core_data(vlx, file_id)) {
+		goto done;
+	}
+
+	// The basis set straight after the core block that names it, and ahead of every block carrying
+	// AO-indexed data, so those are checked against the basis rather than against one another.
+	if (!vlx_resolve_basis_set(vlx, filename)) {
+		goto done;
+	}
+
+	// The file as it is being read: the density properties are read from it again later, on demand,
+	// and have to be able to tell whether it is still this file holding this calculation.
+	vlx->filename = str_copy(filename, vlx->arena);
+	md_file_info_extract_from_path(filename, &vlx->file_info);
+	if (!vlx_h5_identity(&vlx->identity, file_id)) {
+		MD_LOG_DEBUG("VeloxChem: '" STR_FMT "' does not state its nuclear charges, coordinates and basis set at its root", STR_ARG(filename));
+	}
+
+	// The embedding environment ahead of the system, as its sites become atoms of it. It is named in
+	// the SCF settings, which the SCF block below reads for everything else.
+	if (h5_link_exists(file_id, "scf")) {
+		hid_t scf_id = H5Gopen(file_id, "scf", H5P_DEFAULT);
+		if (scf_id != H5I_INVALID_HID) {
+			vlx_read_mm_environment(vlx, scf_id, filename, state == NULL);
+			H5Gclose(scf_id);
+		}
+	}
+
+	if (!vlx_system_begin(vlx, state)) {
 		goto done;
 	}
 
@@ -4000,11 +4567,94 @@ static bool h5_read_xps_data(vlx_t* vlx, hid_t handle) {
 // Reads a file into vlx->sys. The blocks publish as they are read, so what is left to do here is
 // everything that needs the whole file: resolving the basis set, moving the AO matrices into shell
 // order and out of the spherical basis, and publishing what falls out of that.
-static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state) {
+// Resolves the basis set the file names, and with it what all AO-indexed data is interpreted by: the
+// AO dimension (vlx->num_sph_ao) and the permutation from VeloxChem's AO order into shell order
+// (vlx->ao_remap).
+//
+// It needs only what the core block reads from the ROOT of the file - the basis set identifier and
+// the nuclear charges - which is why both readers call it straight after that block. This used to run
+// after the whole file had been read, with the AO dimension taken from whichever SCF matrix happened
+// to be there; a file without an SCF block then had no AO dimension at all, and its density
+// properties were dropped for not matching a dimension of zero.
+static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
+	ASSERT(vlx);
+
+	// No basis named: nothing AO-indexed can be interpreted. num_sph_ao stays 0, and every reader of
+	// an AO matrix checks for that.
+	if (str_empty(vlx->basis_set_ident)) {
+		return true;
+	}
+
 	md_temp_scope_t temp = md_temp_begin();
 	md_allocator_i* temp_alloc = md_temp_allocator(temp);
-
 	bool result = false;
+
+	const size_t cap = KILOBYTES(16);
+	char* buf = md_temp_alloc_array(temp, char, cap);
+	md_strb_t sb = md_strb_create(temp_alloc);
+
+	str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
+	MD_LOG_DEBUG("Basis set ident: '" STR_FMT "'", STR_ARG(ident));
+
+	char exe_buf[1024];
+	str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
+
+	str_t exe_dir = {0};
+	if (!extract_folder_path(&exe_dir, exe_path)) {
+		MD_LOG_ERROR("Failed to extract executable directory");
+	}
+
+	// The basis folder beside the executable first, then the folder of the file itself.
+	md_strb_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
+	str_t basis_filepath = md_strb_to_str(sb);
+	md_file_t basis_file = {0};
+	if (!md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
+		str_t folder = { 0 };
+		if (!extract_folder_path(&folder, filename)) {
+			MD_LOG_ERROR("An error occured when extracting the path to supplied file");
+			goto done;
+		}
+		md_strb_reset(&sb);
+		md_strb_push_str(&sb, folder);
+		md_strb_push_str(&sb, ident);
+		basis_filepath = md_strb_to_str(sb);
+		if (!md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
+			MD_LOG_ERROR("Could not find basis file corresponding to identifier: '" STR_FMT "'", STR_ARG(ident));
+			goto done;
+		}
+	}
+
+	MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
+	md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
+	const bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
+	md_file_close(&basis_file);
+	if (!parse_result) {
+		MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
+		goto done;
+	}
+	normalize_basis_set(&vlx->basis_set);
+
+	vlx->num_sph_ao = vlx_basis_num_sph_ao(vlx);
+	if (vlx->num_sph_ao == 0) {
+		MD_LOG_ERROR("Basis set '" STR_FMT "' does not cover this molecule", STR_ARG(vlx->basis_set_ident));
+		goto done;
+	}
+
+	md_array_resize(vlx->ao_remap, vlx->num_sph_ao, vlx->arena);
+	if (!build_ao_remap(vlx->ao_remap, vlx->num_sph_ao, vlx)) {
+		MD_LOG_ERROR("Failed to build AO remap table");
+		goto done;
+	}
+
+	result = true;
+done:
+	md_temp_end(temp);
+	return result;
+}
+
+static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state) {
+	bool result = false;
+
 
 	if (str_ends_with(filename, STR_LIT(".scf.results.h5"))) {
 		if (!vlx_read_scf_results(vlx, filename, state)) {
@@ -4019,149 +4669,51 @@ static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state)
 		goto done;
 	}
 
-	if (!str_empty(vlx->basis_set_ident)) {
-		size_t cap = KILOBYTES(16);
-		char*  buf = md_temp_alloc_array(temp, char, cap);
-		md_strb_t sb = md_strb_create(temp_alloc);
+	// Every AO matrix the file carried, from VeloxChem's AO order into shell order, and then out of the
+	// spherical basis into the Cartesian one. The dimension and the permutation both come from the
+	// basis set (vlx_resolve_basis_set), so this runs whenever there is a basis - with or without an
+	// SCF block. Density properties need it exactly as much as orbitals do.
+	if (vlx->ao_remap) {
+		const size_t num_ao = vlx->num_sph_ao;
+		const int*   remap  = vlx->ao_remap;
 
-		str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
-		MD_LOG_DEBUG("Basis set ident: '" STR_FMT "'", STR_ARG(ident));
-
-		char exe_buf[1024];
-		str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
-
-		str_t exe_dir = {0};
-		if (!extract_folder_path(&exe_dir, exe_path)) {
-			MD_LOG_ERROR("Failed to extract executable directory");
+		// Normalize SCF coefficients to canonical [num_mo x num_ao] in shell order.
+		if (!normalize_orbital_coefficients(&vlx->scf.alpha, num_ao, remap, "Alpha orbital")) {
+			goto done;
 		}
-
-		md_strb_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
-		str_t basis_filepath = md_strb_to_str(sb);
-		md_file_t basis_file = {0};
-		if (md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
-			MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
-			md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
-			bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
-			md_file_close(&basis_file);
-			if (!parse_result) {
-				MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
+		if (!vlx_ao_permute_square_checked(&vlx->scf.alpha.density, num_ao, remap, "Alpha density")) {
+			goto done;
+		}
+		if (vlx->scf.type == VLX_SCF_UNRESTRICTED) {
+			if (!normalize_orbital_coefficients(&vlx->scf.beta, num_ao, remap, "Beta orbital")) {
 				goto done;
 			}
-			normalize_basis_set(&vlx->basis_set);
-		} else {
-			// Attempt to read basis set file from same folder as file
-			str_t folder = { 0 };
-			if (!extract_folder_path(&folder, filename)) {
-				MD_LOG_ERROR("An error occured when extracting the path to supplied file");
-				goto done;
-			}
-			md_strb_reset(&sb);
-			md_strb_push_str(&sb, folder);
-			md_strb_push_str(&sb, ident);
-			basis_filepath = md_strb_to_str(sb);
-			if (md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
-				MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
-				md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
-				bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
-				md_file_close(&basis_file);
-				if (!parse_result) {
-					MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
-					goto done;
-				}
-				normalize_basis_set(&vlx->basis_set);
-			}
-			else {
-                MD_LOG_ERROR("Could not find basis file corresponding to identifier: '" STR_FMT "'", STR_ARG(ident));
+			if (!vlx_ao_permute_square_checked(&vlx->scf.beta.density, num_ao, remap, "Beta density")) {
 				goto done;
 			}
 		}
-	}
-
-	// Build the AO remap table and apply it to all loaded matrices.
-	// This must happen after the basis set has been successfully resolved,
-	// since build_ao_remap() requires basis topology to be valid.
-	if (vlx->basis_set.atom_basis.count > 0) {
-		size_t num_ao = 0;
-		if (vlx->scf.alpha.density.data) {
-			num_ao = vlx->scf.alpha.density.size[0];
-		} else if (vlx->scf.S.data) {
-			num_ao = vlx->scf.S.size[0];
-		} else if (vlx->scf.alpha.coefficients.data) {
-			num_ao = compute_basis_num_atomic_orbitals(vlx);
-			if (num_ao == 0) {
-				MD_LOG_ERROR("Unable to infer AO dimension for SCF coefficient normalization");
-				goto done;
-			}
+		else {
+			// memcpy again from alpha into beta as dims may have changed.
+			MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(vlx_2d_data_t));
+			MEMCPY(&vlx->scf.beta.density, &vlx->scf.alpha.density, sizeof(vlx_2d_data_t));
 		}
-		// No AO indexed data in the file - a vib or opt only run, say - so there is nothing to
-		// permute and no remap to build. Building one anyway used to fail the whole load, because
-		// a zero length table can never match the basis set's AO count.
-		if (num_ao > 0) {
-			md_array_resize(vlx->ao_remap, num_ao, vlx->arena);
-			if (!build_ao_remap(vlx->ao_remap, num_ao, vlx)) {
-				MD_LOG_ERROR("Failed to build AO remap table");
-				goto done;
-			}
+		if (!vlx_ao_permute_square_checked(&vlx->scf.S, num_ao, remap, "SCF overlap")) {
+			goto done;
 		}
 
-		if (num_ao > 0 && vlx->ao_remap) {
-			// Normalize SCF coefficients to canonical [num_mo x num_ao] in shell order.
-			if (!normalize_orbital_coefficients(&vlx->scf.alpha, num_ao, vlx->ao_remap, "Alpha orbital")) {
-				goto done;
-			}
-			if (vlx->scf.alpha.density.data && num_ao == vlx->scf.alpha.density.size[0]) {
-				ao_permute_square(vlx->scf.alpha.density.data, num_ao, vlx->ao_remap);
-			}
-			if (vlx->scf.type == VLX_SCF_UNRESTRICTED) {
-				if (!normalize_orbital_coefficients(&vlx->scf.beta, num_ao, vlx->ao_remap, "Beta orbital")) {
-					goto done;
-				}
-				if (vlx->scf.beta.density.data && num_ao == vlx->scf.beta.density.size[0]) {
-					ao_permute_square(vlx->scf.beta.density.data, num_ao, vlx->ao_remap);
-				}
-			}
-			else {
-				// memcpy again from alpha into beta as dims may have changed.
-				MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(vlx_2d_data_t));
-				MEMCPY(&vlx->scf.beta.density, &vlx->scf.alpha.density, sizeof(vlx_2d_data_t));
-			}
-			if (vlx->scf.S.data && num_ao == vlx->scf.S.size[0]) {
-				ao_permute_square(vlx->scf.S.data, num_ao, vlx->ao_remap);
-			}
 
-			// Everything is now in shell order and no further AO-basis math is
-			// performed, so this is the point to leave VeloxChem's pure/spherical
-			// basis for the Cartesian one that md_gto_basis_t requires.
-			if (!vlx_convert_ao_data_to_cartesian(vlx)) {
-				MD_LOG_ERROR("Failed to convert AO data to the Cartesian basis");
-				goto done;
-			}
+
+		// Everything is now in shell order and no further AO-basis math is
+		// performed, so this is the point to leave VeloxChem's pure/spherical
+		// basis for the Cartesian one that md_gto_basis_t requires.
+		if (!vlx_convert_ao_data_to_cartesian(vlx)) {
+			MD_LOG_ERROR("Failed to convert AO data to the Cartesian basis");
+			goto done;
 		}
 	}
 
 	if (!validate_scf_canonical_layout(vlx)) {
 		goto done;
-	}
-
-	// Identify homo and lumo
-	if (vlx->scf.alpha.occupancy.data) {
-		for (size_t i = 0; i < vlx->scf.alpha.occupancy.size; ++i) {
-			if (vlx->scf.alpha.occupancy.data[i] == 0.0) {
-				vlx->scf.alpha.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.alpha.lumo_idx = i;
-				break;
-			}
-		}
-	}
-
-	if (vlx->scf.beta.occupancy.data) {
-		for (size_t i = 0; i < vlx->scf.beta.occupancy.size; ++i) {
-			if (vlx->scf.beta.occupancy.data[i] == 0.0) {
-				vlx->scf.beta.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.beta.lumo_idx = i;
-				break;
-			}
-		}
 	}
 
 	// NOTE: the AO to atom map is not built or kept here. It is a pure function of the shell list,
@@ -4170,8 +4722,6 @@ static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state)
 
 	result = true;
 done:
-	md_temp_end(temp);
-
 	return result;
 }
 
@@ -4270,6 +4820,11 @@ size_t vlx_rsp_nto_coefficients_extract(double* out_coefficients, double* out_la
 
 // OPT
 
+// The backing must not be a thread temp arena. The reader opens md_temp scopes of its own while it
+// allocates into vlx->arena - md_temp_begin(), and md_temp_begin_avoid(vlx->arena), which does not
+// see through the arena wrapper to its backing - and both hand back temp arena 0. Any page vlx->arena
+// takes from that same arena inside such a scope is released again by its md_temp_end, with vlx data
+// still in it, and the next temp allocation writes over it. The heap has no scopes to unwind.
 vlx_t* vlx_create(md_allocator_i* backing, md_system_t* sys) {
 	ASSERT(backing);
 	md_allocator_i* arena = md_arena_allocator_create(backing, MEGABYTES(1));
@@ -4277,8 +4832,8 @@ vlx_t* vlx_create(md_allocator_i* backing, md_system_t* sys) {
 	vlx_t* vlx = md_alloc(arena, sizeof(vlx_t));
 	if (!vlx) {
 		MD_LOG_ERROR("Failed to allocate memory for veloxchem object");
-		vlx->sys = sys;
-	return vlx;
+		md_arena_allocator_destroy(arena);
+		return NULL;
 	}
 	MEMSET(vlx, 0, sizeof(vlx_t));
 	vlx->arena = arena;
@@ -4286,13 +4841,24 @@ vlx_t* vlx_create(md_allocator_i* backing, md_system_t* sys) {
 	return vlx;
 }
 
+// Everything the vlx object holds lives in its arena, the object included.
+void vlx_destroy(vlx_t* vlx) {
+	if (vlx && vlx->arena) {
+		md_arena_allocator_destroy(vlx->arena);
+	}
+}
+
 // XPS
 
 
-// The centre of charge, in Angstrom: where a dipole moment is drawn from. Nuclear charge weighted
-// positions less the electronic contribution, per electron. Returns false when the file does not
-// carry what it takes to compute one, in which case no dipole group is published at all - half a
-// group is not a dipole anyone can draw.
+// The centre of charge, in Angstrom: where a dipole moment is drawn from.
+//
+// With the SCF ground state dipole, the centre of ELECTRONIC charge: nuclear charge weighted positions
+// less the dipole, per electron. Without it - no SCF block, or a version that did not write the
+// dipole - the electron distribution is unknown and the centre of NUCLEAR charge is used, which needs
+// nothing but the root of the file and is where the electrons' centre lies for any neutral molecule
+// whose dipole vanishes. Returns false only when not even that can be computed, in which case no
+// dipole group is published at all - half a group is not a dipole anyone can draw.
 static bool vlx_centre_of_charge(dvec3_t* out_angstrom, const vlx_t* vlx) {
 	const size_t   num_atoms     = vlx_number_of_atoms(vlx);
 	const dvec3_t* atom_coord    = vlx_atom_coordinates(vlx);
@@ -4302,27 +4868,38 @@ static bool vlx_centre_of_charge(dvec3_t* out_angstrom, const vlx_t* vlx) {
 		return false;
 	}
 
-	const size_t num_electrons = vlx_number_of_electrons(vlx, VLX_SPIN_ALPHA) + vlx_number_of_electrons(vlx, VLX_SPIN_BETA);
-	if (num_electrons == 0) {
-		return false;
-	}
-
 	// Coordinates are Angstrom while the moment is atomic units, so the nuclear term is taken to
 	// bohr first and the result taken back at the end.
-	double nx = 0.0, ny = 0.0, nz = 0.0;
+	double nx = 0.0, ny = 0.0, nz = 0.0, z_sum = 0.0;
 	for (size_t i = 0; i < num_atoms; ++i) {
 		const double z = (double)atomic_number[i];
 		nx += atom_coord[i].x * ANGSTROM_TO_BOHR * z;
 		ny += atom_coord[i].y * ANGSTROM_TO_BOHR * z;
 		nz += atom_coord[i].z * ANGSTROM_TO_BOHR * z;
+		z_sum += z;
 	}
 
-	const dvec3_t moment = vlx_scf_ground_state_dipole_moment(vlx);
-	const double  inv_ne = 1.0 / (double)num_electrons;
+	if (vlx->scf.has_ground_state_dipole_moment) {
+		const size_t num_electrons = vlx_number_of_electrons(vlx, VLX_SPIN_ALPHA) + vlx_number_of_electrons(vlx, VLX_SPIN_BETA);
+		if (num_electrons == 0) {
+			return false;
+		}
+		const dvec3_t moment = vlx_scf_ground_state_dipole_moment(vlx);
+		const double  inv_ne = 1.0 / (double)num_electrons;
 
-	out_angstrom->x = (nx - moment.x) * inv_ne * BOHR_TO_ANGSTROM;
-	out_angstrom->y = (ny - moment.y) * inv_ne * BOHR_TO_ANGSTROM;
-	out_angstrom->z = (nz - moment.z) * inv_ne * BOHR_TO_ANGSTROM;
+		out_angstrom->x = (nx - moment.x) * inv_ne * BOHR_TO_ANGSTROM;
+		out_angstrom->y = (ny - moment.y) * inv_ne * BOHR_TO_ANGSTROM;
+		out_angstrom->z = (nz - moment.z) * inv_ne * BOHR_TO_ANGSTROM;
+		return true;
+	}
+
+	if (z_sum <= 0.0) {
+		return false;
+	}
+	const double inv_z = 1.0 / z_sum;
+	out_angstrom->x = nx * inv_z * BOHR_TO_ANGSTROM;
+	out_angstrom->y = ny * inv_z * BOHR_TO_ANGSTROM;
+	out_angstrom->z = nz * inv_z * BOHR_TO_ANGSTROM;
 	return true;
 }
 
@@ -4376,8 +4953,8 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 	}
 
 	// The destination is sized by the CALLER's slice, and this writes num_ao^2 per state. Nothing
-	// upstream guarantees the two agree - the shape was published from
-	// vlx_scf_number_of_atomic_orbitals() while num_ao here comes off the coefficient matrix -
+	// upstream guarantees the two agree - the shape was published from the vlx object's coefficient
+	// matrix while num_ao here comes off the published coefficient attribute -
 	// so disagreeing is an overrun, not a wrong picture. Check before writing a single value.
 	const size_t states_written = (slice && slice->num_idx > 0) ? 1 : num_states;
 	const size_t needed = states_written * num_ao * num_ao;
@@ -4438,6 +5015,252 @@ static size_t vlx_transition_density_detachment_provider(void* dst, size_t cap, 
 
 static size_t vlx_transition_density_difference_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
 	return vlx_transition_density_provide(dst, cap, attr, slice, user_data, VLX_TRANSITION_DIFFERENCE);
+}
+
+// ---------------------------------------------------------------------------
+// DENSITY PROPERTIES, READ FROM THE FILE ON DEMAND
+//
+// A density property is an N x N AO matrix, and N^2 grows quickly - 7.5 MB as doubles at a thousand
+// Cartesian AOs, 200 MB at five thousand - for something that may never be looked at. So it is not
+// held: what is published is a VIRTUAL attribute whose provider reads it from the file when somebody
+// asks, and keeps nothing in between. HDF5 is what makes that cheap. A dataset stored contiguously is
+// one run of bytes at an offset the library will name, so the load takes only that offset - the
+// dataset's metadata, never its values - and each read after it is a plain file read through
+// md_attribute_io_read_at, with no HDF5 call and so no lock. A dataset stored any other way (chunked,
+// compressed, filtered) is read through HDF5 instead, under the shared lock.
+//
+// What is published is the PACKED upper triangle, as float, of the Cartesian matrix
+// (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC): the form the GTO density kernels take, so a consumer can
+// have exactly that, straight into its own buffer (md_qm_extract_packed_symmetric_f32), and the
+// double matrix is only ever scratch inside the provider.
+//
+// The file can change underneath: rerunning a calculation rewrites its .h5 in place, and an offset
+// into the old layout would read whatever sits there now as a density. So the file's size and last
+// write time are kept beside the offset and checked on every read, and when either has moved the
+// metadata is rebuilt - provided the file still holds the calculation that was loaded: the same
+// nuclear charges, coordinates and basis set (vlx_h5_identity). One that does not is refused with a
+// request to reload it, since a density from a different geometry drawn over these atoms would be
+// wrong without looking it. One that does is read as it now is, which may differ from the rest of the
+// table, which is still the file as it was loaded; the log says so, and a reload makes them agree.
+// ---------------------------------------------------------------------------
+
+// A provider's own state, one per density property, released with its attribute. Variable length:
+// the AO permutation, the file and the dataset follow the struct.
+typedef struct vlx_density_source_t {
+	const md_system_t* sys;      // borrowed, for the basis: a provider never outlives its system
+	uint64_t           identity; // vlx_h5_identity of the file as it was loaded
+	md_file_time_t     mtime;    // the file as it was when 'offset' was taken
+	int64_t            size;
+	int64_t            offset;   // first byte of the values in the file, -1 to read through HDF5
+	uint32_t           raw;      // vlx_raw_t: how the values at 'offset' are stored
+	uint32_t           num_sph;  // the dataset is [num_sph x num_sph], in VeloxChem's AO order
+	uint32_t           num_cart; // published as the packed upper triangle of [num_cart x num_cart]
+	uint32_t           path_len;
+	uint32_t           dataset_len;
+	uint32_t           asymmetry_reported;
+	// int remap[num_sph], then char path[path_len + 1], then char dataset[dataset_len + 1]
+} vlx_density_source_t;
+
+static inline size_t vlx_density_source_bytes(size_t num_sph, size_t path_len, size_t dataset_len) {
+	return sizeof(vlx_density_source_t) + sizeof(int) * num_sph + path_len + 1 + dataset_len + 1;
+}
+static inline int* vlx_density_source_remap(vlx_density_source_t* src) {
+	return (int*)(src + 1);
+}
+static inline char* vlx_density_source_path(vlx_density_source_t* src) {
+	return (char*)(vlx_density_source_remap(src) + src->num_sph);
+}
+static inline char* vlx_density_source_dataset(vlx_density_source_t* src) {
+	return vlx_density_source_path(src) + src->path_len + 1;
+}
+
+// The dataset's dimensions are [n x n]. Called holding the HDF5 lock.
+static bool vlx_h5_dataset_is_square(hid_t dset, size_t n) {
+	hid_t space = H5Dget_space(dset);
+	if (space == H5I_INVALID_HID) {
+		return false;
+	}
+	hsize_t dims[2] = {0};
+	const bool ok = H5Sget_simple_extent_ndims(space) == 2 && H5Sget_simple_extent_dims(space, dims, NULL) == 2 && dims[0] == n && dims[1] == n;
+	H5Sclose(space);
+	return ok;
+}
+
+// Takes the dataset's place in the file again, as the file is now. Called holding the HDF5 lock.
+static bool vlx_density_source_rebuild(vlx_density_source_t* src, const md_file_info_t* info) {
+	const char* path    = vlx_density_source_path(src);
+	const char* dataset = vlx_density_source_dataset(src);
+
+	hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+	if (file == H5I_INVALID_HID) {
+		MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and can no longer be read as HDF5; reload it", path);
+		return false;
+	}
+
+	bool ok = false;
+	uint64_t identity = 0;
+	if (!vlx_h5_identity(&identity, file) || identity != src->identity) {
+		MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and no longer holds the same molecule and basis set; reload it to see its density properties", path);
+	} else {
+		hid_t dset = h5_link_exists(file, dataset) ? H5Dopen(file, dataset, H5P_DEFAULT) : H5I_INVALID_HID;
+		if (dset != H5I_INVALID_HID && vlx_h5_dataset_is_square(dset, src->num_sph)) {
+			int64_t offset = -1;
+			src->raw    = vlx_h5_raw_location(&offset, dset);
+			src->offset = offset;
+			src->mtime  = info->modified_time;
+			src->size   = (int64_t)info->size;
+			ok = true;
+			MD_LOG_INFO("VeloxChem: '%s' has changed since it was loaded; '%s' is read from it as it is now, while the rest of what was loaded is not until it is reloaded", path, dataset);
+		} else {
+			MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and no longer holds '%s' as a [%u x %u] matrix; reload it", path, dataset, src->num_sph, src->num_sph);
+		}
+		if (dset != H5I_INVALID_HID) H5Dclose(dset);
+	}
+	H5Fclose(file);
+	return ok;
+}
+
+// The values, from the run of bytes at 'offset', as double. Read straight into 'out' when they are
+// stored as native doubles already, which is what VeloxChem writes.
+static bool vlx_density_source_read_raw(double* out, size_t count, const char* path, int64_t offset, vlx_raw_t raw, md_attribute_io_t* io) {
+	const uint16_t probe = 1;
+	const bool host_le = *(const uint8_t*)&probe == 1;
+	const bool is_f64  = (raw == VLX_RAW_F64LE || raw == VLX_RAW_F64BE);
+	const bool file_le = (raw == VLX_RAW_F64LE || raw == VLX_RAW_F32LE);
+	const size_t elem  = is_f64 ? 8 : 4;
+	const size_t bytes = count * elem;
+
+	if (is_f64 && file_le == host_le) {
+		return md_attribute_io_read_at(io, str_from_cstr(path), offset, out, bytes) == bytes;
+	}
+
+	md_temp_scope_t temp = md_temp_begin();
+	uint8_t* buf = (uint8_t*)md_temp_alloc(temp, bytes);
+	const bool ok = buf && md_attribute_io_read_at(io, str_from_cstr(path), offset, buf, bytes) == bytes;
+	if (ok) {
+		for (size_t i = 0; i < count; ++i) {
+			uint8_t b[8];
+			const uint8_t* p = buf + i * elem;
+			for (size_t k = 0; k < elem; ++k) {
+				b[k] = (file_le == host_le) ? p[k] : p[elem - 1 - k];
+			}
+			if (is_f64) {
+				double v; MEMCPY(&v, b, 8); out[i] = v;
+			} else {
+				float v;  MEMCPY(&v, b, 4); out[i] = (double)v;
+			}
+		}
+	}
+	md_temp_end(temp);
+	return ok;
+}
+
+// The values through HDF5: for a dataset that is not one run of bytes in the file.
+static bool vlx_density_source_read_hdf5(double* out, vlx_density_source_t* src) {
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	hid_t file = H5Fopen(vlx_density_source_path(src), H5F_ACC_RDONLY, H5P_DEFAULT);
+	hid_t dset = (file != H5I_INVALID_HID && h5_link_exists(file, vlx_density_source_dataset(src))) ? H5Dopen(file, vlx_density_source_dataset(src), H5P_DEFAULT) : H5I_INVALID_HID;
+	const bool ok = dset != H5I_INVALID_HID && vlx_h5_dataset_is_square(dset, src->num_sph) &&
+		H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out) >= 0;
+	if (dset != H5I_INVALID_HID) H5Dclose(dset);
+	if (file != H5I_INVALID_HID) H5Fclose(file);
+	md_hdf5_unlock(lock);
+	return ok;
+}
+
+// Reads one density property from its file into the packed upper triangle of its Cartesian matrix:
+// read, symmetrize, permute into shell order, convert to Cartesian, pack. Read whole only - an element
+// of a packed triangle is not worth reading the file for.
+static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	vlx_density_source_t* src = (vlx_density_source_t*)user_data;
+	if (!src || !dst) {
+		return 0;
+	}
+	if (slice && slice->num_idx > 0) {
+		MD_LOG_ERROR("'" STR_FMT "' is read whole, not by element", STR_ARG(attr->path));
+		return 0;
+	}
+	const size_t n_sph  = src->num_sph;
+	const size_t n_cart = src->num_cart;
+	const size_t len    = n_cart * (n_cart + 1) / 2;
+	if (cap != len) {
+		MD_LOG_ERROR("'" STR_FMT "': asked for %zu values, the packed matrix has %zu", STR_ARG(attr->path), cap, len);
+		return 0;
+	}
+	const char* path = vlx_density_source_path(src);
+
+	md_file_info_t info = {0};
+	if (!md_file_info_extract_from_path(str_from_cstr(path), &info)) {
+		MD_LOG_ERROR("VeloxChem: '%s', which '" STR_FMT "' is read from, can no longer be found; reload it", path, STR_ARG(attr->path));
+		return 0;
+	}
+
+	// The offset and its encoding are shared by every thread reading this attribute, and a rebuild
+	// rewrites them, so they are read - and rebuilt when stale - holding the lock.
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	const bool current = (info.modified_time == src->mtime && (int64_t)info.size == src->size) || vlx_density_source_rebuild(src, &info);
+	const int64_t   offset = src->offset;
+	const vlx_raw_t raw    = (vlx_raw_t)src->raw;
+	md_hdf5_unlock(lock);
+	if (!current) {
+		return 0;
+	}
+
+	// Two matrices of scratch, never three: the permutation goes through the Cartesian buffer, which is
+	// the larger, before the conversion writes into it.
+	md_temp_scope_t temp = md_temp_begin();
+	double* sph  = md_temp_alloc_array(temp, double, n_sph * n_sph);
+	double* cart = md_temp_alloc_array(temp, double, n_cart * n_cart);
+	bool ok = sph && cart;
+	if (ok) {
+		ok = (raw != VLX_RAW_NONE && offset >= 0) ? vlx_density_source_read_raw(sph, n_sph * n_sph, path, offset, raw, io) : vlx_density_source_read_hdf5(sph, src);
+		if (!ok) {
+			MD_LOG_ERROR("VeloxChem: failed to read '%s' from '%s'", vlx_density_source_dataset(src), path);
+		}
+	}
+
+	if (ok) {
+		double max_asym = 0.0, max_abs = 0.0;
+		if (!vlx_symmetrize(sph, n_sph, &max_asym, &max_abs)) {
+			lock = md_hdf5_lock();
+			const bool report = !src->asymmetry_reported;
+			src->asymmetry_reported = 1;
+			md_hdf5_unlock(lock);
+			if (report) {
+				MD_LOG_INFO("Density property '" STR_FMT "' is not symmetric (max deviation %g, largest element %g). "
+							"Symmetrizing: the density evaluation path only reads the upper triangle.", STR_ARG(attr->path), max_asym, max_abs);
+			}
+		}
+
+		const int* remap = vlx_density_source_remap(src);
+		for (size_t i = 0; i < n_sph; ++i) {
+			const size_t si = (size_t)remap[i];
+			for (size_t j = 0; j < n_sph; ++j) {
+				cart[i * n_sph + j] = sph[si * n_sph + (size_t)remap[j]];
+			}
+		}
+		MEMCPY(sph, cart, sizeof(double) * n_sph * n_sph);
+
+		md_gto_basis_t basis = {0};
+		ok = md_gto_basis_extract_attributes(&basis, &src->sys->attributes, md_temp_allocator(temp)) &&
+			md_gto_basis_num_sph_ao(&basis) == n_sph && md_gto_basis_num_ao(&basis) == n_cart &&
+			md_gto_sph_to_cart_matrix(cart, sph, &basis) == n_cart;
+		if (!ok) {
+			MD_LOG_ERROR("'" STR_FMT "': the published basis does not span the %zu spherical AOs it was read in", STR_ARG(attr->path), n_sph);
+		}
+	}
+
+	if (ok) {
+		float* out = (float*)dst;
+		size_t k = 0;
+		for (size_t i = 0; i < n_cart; ++i) {
+			for (size_t j = i; j < n_cart; ++j) {
+				out[k++] = (float)cart[i * n_cart + j];
+			}
+		}
+	}
+	md_temp_end(temp);
+	return ok ? cap : 0;
 }
 
 void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
@@ -4509,16 +5332,37 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		if (vlx_gto_basis_extract(&basis, vlx, md_temp_allocator(temp))) {
 			md_qm_publish_basis(sys, &basis);
 
+			// The AO overlap S, {A,A} and symmetric. It belongs to the BASIS and not to a spin
+			// channel: both channels and every density in this table are expressed against this
+			// one metric, so basis/ and not orbital/ - and it is published with the basis, not with
+			// the orbitals. A file without an SCF block still has density properties expressed
+			// against it.
+			//
+			// INTEGRATED from the basis just published, not converted from the file's own S. The
+			// conversion this used to do applied md_gto_sph_to_cart_matrix, which computes
+			// T^T M T - correct for a DENSITY, which is built from coefficients, and wrong for an
+			// overlap, which is built from the basis functions themselves. The result looked
+			// entirely plausible and was not: on test_data/vlx/h2o.h5 it gave tr(D S) = 10.72
+			// electrons for a ten electron molecule, and a C S C^T off the identity by 411. Nor is
+			// there a different conversion that would work - S_sph = T S_cart T^T is not
+			// invertible - so the Cartesian overlap is computed from the basis instead. See
+			// md_qm_publish_overlap.
+			md_qm_publish_overlap(sys);
+
+
 			// The MO matrix is stored [M][A] contiguously and is already Cartesian - the spherical
 			// to Cartesian conversion happens once at parse time - so this is a straight copy into
 			// a rank 2 attribute, and a consumer takes one orbital with a slice extract.
 			//
 			// f64 and not f32: md_gto takes AO coefficients as double to keep the QM code's
 			// precision at the boundary, and there is no point publishing them already narrowed.
-			const size_t num_ao = vlx_scf_number_of_atomic_orbitals(vlx);
+			// The AO axis is the basis just extracted. The coefficients were checked against the same
+			// basis set at load, so disagreeing here is a bug in this file rather than in the data.
+			const size_t num_ao       = md_gto_basis_num_ao(&basis);
+			const size_t coeff_num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
 			if (num_ao > 0 && num_mos > 0) {
-				if (num_ao != md_gto_basis_num_ao(&basis)) {
-					MD_LOG_ERROR("MO coefficients span %zu AOs but the basis has %zu; not publishing them", num_ao, md_gto_basis_num_ao(&basis));
+				if (coeff_num_ao != num_ao) {
+					MD_LOG_ERROR("MO coefficients span %zu AOs but the basis has %zu; not publishing them", coeff_num_ao, num_ao);
 				} else {
 					md_attribute_format_t format = {
 						.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
@@ -4545,20 +5389,7 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 						}
 					}
 
-					// The AO overlap S, {A,A} and symmetric. It belongs to the BASIS and not to a spin
-					// channel: both channels and every density in this table are expressed against this
-					// one metric, so basis/ and not orbital/.
-					//
-					// INTEGRATED from the basis just published, not converted from the file's own S. The
-					// conversion this used to do applied md_gto_sph_to_cart_matrix, which computes
-					// T^T M T - correct for a DENSITY, which is built from coefficients, and wrong for an
-					// overlap, which is built from the basis functions themselves. The result looked
-					// entirely plausible and was not: on test_data/vlx/h2o.h5 it gave tr(D S) = 10.72
-					// electrons for a ten electron molecule, and a C S C^T off the identity by 411. Nor is
-					// there a different conversion that would work - S_sph = T S_cart T^T is not
-					// invertible - so the Cartesian overlap is computed from the basis instead. See
-					// md_qm_publish_overlap.
-					md_qm_publish_overlap(sys);
+
 
 					// Ground state densities: computed on demand from the coefficients and occupations
 					// just published above rather than kept as a second resident [A][A] copy. Which spin
@@ -4573,39 +5404,81 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		md_temp_end(temp);
 	}
 
-	// ---- Density properties: AO basis {A,A} matrices carried through from the file as they were
-	// found. Unlike the SCF densities above these are not derived from anything else the table
-	// holds - there is nothing to compute them from - so they are resident, one path per property.
+	// ---- Density properties: published, never held. Each is a virtual attribute read from the file
+	// when somebody asks (see DENSITY PROPERTIES, READ FROM THE FILE ON DEMAND above), as the packed
+	// upper triangle of its Cartesian matrix: {A(A+1)/2}, float, MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC.
 	//
 	// The path is built from the DATASET NAME, not from the label and not from the index. An index
 	// silently re-points at a different property whenever the set changes across a reload, and a
 	// label is display text that two datasets are free to share.
-	for (size_t i = 0; i < md_array_size(vlx->density_properties); ++i) {
-		const vlx_density_property_t* prop = &vlx->density_properties[i];
-		if (!prop || !prop->data || prop->dim[0] == 0 || prop->dim[1] == 0) {
-			continue;
-		}
-
-		str_t name = str_empty(prop->name) ? prop->label : prop->name;
-		if (str_empty(name)) {
-			continue;
-		}
-
-		char path_buf[256];
-		str_t path = md_qm_attribute_path(path_buf, sizeof(path_buf), STR_LIT("vlx/density_property"), name);
-		if (str_empty(path)) {
-			continue;
-		}
-
-		// The label is what the file called it for a human, the path is its identity. When they are
-		// the same word there is nothing for the label to add, and an absent one is a valid state.
-		str_t label = str_eq(prop->label, name) ? (str_t){0} : prop->label;
-
-		md_attribute_format_t format = {
-			.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
-			.shape = { (uint32_t)prop->dim[0], (uint32_t)prop->dim[1] },
+	const size_t num_density_properties = md_array_size(vlx->density_properties);
+	if (num_density_properties > 0 && vlx->ao_remap && vlx->num_sph_ao > 0 && !str_empty(vlx->filename)) {
+		const size_t n_sph  = vlx->num_sph_ao;
+		const size_t n_cart = vlx_basis_num_cart_ao(vlx);
+		const md_attribute_format_t format = {
+			.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = { (uint32_t)(n_cart * (n_cart + 1) / 2) },
 		};
-		md_qm_publish(sys, path, label, md_unit_none(), format, prop->data, prop->dim[0] * prop->dim[1] * sizeof(double));
+
+		for (size_t i = 0; i < num_density_properties; ++i) {
+			const vlx_density_property_t* prop = &vlx->density_properties[i];
+			if (prop->dim != n_sph || str_empty(prop->dataset)) {
+				continue;
+			}
+
+			str_t name = str_empty(prop->name) ? prop->label : prop->name;
+			if (str_empty(name)) {
+				continue;
+			}
+
+			char path_buf[256];
+			str_t path = md_qm_attribute_path(path_buf, sizeof(path_buf), STR_LIT("vlx/density_property"), name);
+			if (str_empty(path)) {
+				continue;
+			}
+
+			// The label is what the file called it for a human, the path is its identity. When they are
+			// the same word there is nothing for the label to add, and an absent one is a valid state.
+			str_t label = str_eq(prop->label, name) ? (str_t){0} : prop->label;
+
+			const size_t bytes = vlx_density_source_bytes(n_sph, vlx->filename.len, prop->dataset.len);
+			vlx_density_source_t* src = (vlx_density_source_t*)md_attributes_alloc_user_data(&sys->attributes, bytes);
+			if (!src) {
+				continue;
+			}
+			*src = (vlx_density_source_t){
+				.sys         = sys,
+				.identity    = vlx->identity,
+				.mtime       = vlx->file_info.modified_time,
+				.size        = (int64_t)vlx->file_info.size,
+				.offset      = prop->offset,
+				.raw         = (uint32_t)prop->raw,
+				.num_sph     = (uint32_t)n_sph,
+				.num_cart    = (uint32_t)n_cart,
+				.path_len    = (uint32_t)vlx->filename.len,
+				.dataset_len = (uint32_t)prop->dataset.len,
+			};
+			MEMCPY(vlx_density_source_remap(src), vlx->ao_remap, sizeof(int) * n_sph);
+			char* src_path = vlx_density_source_path(src);
+			MEMCPY(src_path, vlx->filename.ptr, vlx->filename.len);
+			src_path[vlx->filename.len] = '\0';
+			char* src_dataset = vlx_density_source_dataset(src);
+			MEMCPY(src_dataset, prop->dataset.ptr, prop->dataset.len);
+			src_dataset[prop->dataset.len] = '\0';
+
+			const md_attribute_virtual_t virt = { .provider = vlx_density_property_provide, .user_data = src, .user_data_size = bytes };
+			const md_attribute_id_t id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
+				.path   = path,
+				.format = format,
+				.flags  = MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC,
+				.unit   = md_unit_none(),
+				.label  = label,
+				.virt   = &virt,
+			});
+			// Only a published attribute releases its user_data
+			if (id == MD_ATTRIBUTE_INVALID) {
+				md_free(sys->attributes.alloc, src, bytes);
+			}
+		}
 	}
 
 	// The number of EXCITED STATES, which only a linear response resolves.
@@ -4627,7 +5500,10 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		// vectors and MO coefficients above. rank {S,A,A}: slice by state for one density, or take
 		// the whole thing and pay for reconstructing every state - see the caveat on
 		// vlx_transition_density_provide() about that cost.
-		const size_t num_ao = vlx_scf_number_of_atomic_orbitals(vlx);
+		// The AO axis of the MO COEFFICIENTS, deliberately, and not the basis set's: these are
+		// reconstructed from the coefficients, so they share their axis - and there is nothing to
+		// reconstruct them from when a file carries response data without orbitals.
+		const size_t num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
 		if (num_ao > 0) {
 			md_attribute_format_t density_format = {
 				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
@@ -4683,7 +5559,9 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		// a transition density is A^2 PER STATE. And it is what keeps this self contained - the NTO
 		// math reads the vlx object, so a provider would have to close over the reader, which is
 		// the one thing the port exists to avoid. Paying it once at load buys that outright.
-		const size_t num_ao_nto = vlx_scf_number_of_atomic_orbitals(vlx);
+		// The coefficients' AO axis, for the same reason as the transition densities above: NTOs are
+		// built from them, and vlx_rsp_extract_nto_from_solution writes rows of exactly that length.
+		const size_t num_ao_nto = number_of_atomic_orbitals(&vlx->scf.alpha);
 		if (max_lambdas > 0 && num_ao_nto > 0) {
 			const vlx_nto_type_t types[2] = { VLX_NTO_PARTICLE, VLX_NTO_HOLE };
 			str_t paths[2] = { STR_INIT("vlx/rsp/nto/particle/coefficient"), STR_INIT("vlx/rsp/nto/hole/coefficient") };
@@ -4720,9 +5598,14 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 	// together when the centre of charge cannot be computed.
 	dvec3_t origin = {0, 0, 0};
 	if (vlx_centre_of_charge(&origin, vlx)) {
-		const dvec3_t ground_state = vlx_scf_ground_state_dipole_moment(vlx);
-		md_qm_publish_vec3_series(sys, STR_LIT("dipole/ground_state/vector"), STR_LIT("Ground State"), e_bohr, &ground_state, 1);
-		md_qm_publish_origin(sys, STR_LIT("dipole/ground_state/origin"), origin);
+		// Only what the file stated: the transition dipoles below are response data and stand on
+		// their own, so a file without an SCF dipole still gets those, anchored at the nuclear centre.
+		if (vlx->scf.has_ground_state_dipole_moment) {
+			const dvec3_t ground_state = vlx_scf_ground_state_dipole_moment(vlx);
+			md_qm_publish_vec3_series(sys, STR_LIT("dipole/ground_state/vector"), STR_LIT("Ground State"), e_bohr, &ground_state, 1);
+			md_qm_publish_origin(sys, STR_LIT("dipole/ground_state/origin"), origin);
+		}
+
 
 		// One per excited state. The magnetic and velocity forms are different quantities in
 		// different units, which is exactly why unit sits on the attribute and not on the group.
@@ -4782,11 +5665,7 @@ static bool vlx_publish_core(const vlx_t* vlx) {
 	// vlx_publish_str already handles by publishing nothing.
 	md_qm_publish_str(sys, STR_LIT("vlx/potfile"), STR_LIT("Potential File"), vlx->potfile_text);
 
-	// WHICH SCF this was. A consumer can guess from whether the two spin channels share their
-	// coefficients and their occupations, and that guess is right until it meets a file where one of
-	// the two is missing. The reader knows; this is it saying so, on the same terms as the response
-	// and optimisation types below.
-	md_qm_publish_str(sys, STR_LIT("vlx/scf/type"), STR_LIT("SCF Type"), vlx_scf_type_str(vlx->scf.type));
+
 
 	// ---- The QM ATOM DOMAIN. ----
 	//
@@ -4810,7 +5689,7 @@ static bool vlx_publish_core(const vlx_t* vlx) {
 	// works in: a consumer comparing this geometry against md_system_state_t should not have to
 	// convert first. This is the geometry the CALCULATION was run at, which is not necessarily where
 	// the system's atoms are now - a trajectory frame or an optimisation step moves them.
-	md_qm_publish_atoms(sys, vlx->atomic_numbers, vlx->atom_coordinates, vlx->number_of_atoms);
+	md_qm_publish_atoms(sys, vlx->atomic_numbers, NULL, vlx->atom_coordinates, vlx->number_of_atoms);
 
 	return true;
 }
@@ -4847,10 +5726,14 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 		MD_LOG_ERROR("State allocator not set");
 		return false;
 	}
-	md_system_reset(sys);
-	md_system_state_init(state, vlx->number_of_atoms);
 
-	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
+	// The QM atoms, then the sites of the embedding potential when there is one (vlx_system_append_mm)
+	const size_t num_atoms = vlx->number_of_atoms + vlx->mm.count;
+
+	md_system_reset(sys);
+	md_system_state_init(state, num_atoms);
+
+	size_t capacity = ROUND_UP(num_atoms, 16);
 
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
@@ -4871,20 +5754,38 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 
 		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, sys->alloc);
 		sys->atom.type_idx[i] = type_idx;
+		// The calculation's own atoms; the sites of an embedding, appended after them, are its environment
+		sys->atom.flags[i] |= MD_ATOM_FLAG_QM;
 	}
 
-	sys->atom.count = vlx->number_of_atoms;
+	if (vlx->mm.count > 0) {
+		vlx_system_append_mm(vlx, state, vlx->number_of_atoms);
+	}
+
+	sys->atom.count = num_atoms;
     state->num_atoms = sys->atom.count;
 
-	return vlx_publish_core(vlx);
+	if (vlx->mm.in_system) {
+		// The fragments are residues, and what kind of residue (water, above all) is read from their
+		// atoms and bonds - the same two calls a structure file's loader ends with.
+		md_util_system_infer_covalent_bonds(sys, state);
+		md_util_system_infer_comp_flags(sys);
+	}
+
+	if (!vlx_publish_core(vlx)) {
+		return false;
+	}
+	vlx_publish_mm(vlx);
+	return true;
 }
 
 
 // Which system atom each QM atom is, or nothing at all when the two spaces coincide.
 //
 // The file cannot decide this for itself: the same h5 carries a local-to-global map whether it is
-// opened standalone - where the system IS the QM atoms and the map must NOT be applied - or against
-// a larger system, where it must. What resolves it is WHICH ENTRY POINT WAS CALLED, which is why
+// opened standalone - where the QM atoms ARE the system's first atoms (an embedding's sites, when
+// there are any, come after them) and the map must NOT be applied - or against a larger system,
+// where it must. What resolves it is WHICH ENTRY POINT WAS CALLED, which is why
 // this takes the answer as an argument rather than trying to work it out.
 //
 // Publishing nothing is not the same as leaving it alone: a stale map from a previous load would
@@ -4928,12 +5829,43 @@ static void vlx_publish_atom_system_index(md_system_t* sys, const vlx_t* vlx, bo
 	}
 }
 
+// A supplemental file's QM atoms are a region of the system it supplements (a QM/MM run against its
+// MD system): they are flagged where the local-to-global map puts them - or, without a map, where the
+// two atom spaces coincide, as the system's first atoms - and the rest of the system is their
+// environment. The flags of an earlier supplement are cleared first, as its map is (see above).
+static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) {
+	ASSERT(sys);
+	const size_t num_atoms = sys->atom.count;
+	const size_t num_qm_atoms = vlx_number_of_atoms(vlx);
+	if (num_atoms == 0 || num_qm_atoms == 0) {
+		return;
+	}
+	if (md_array_size(sys->atom.flags) < num_atoms) {
+		const size_t size = md_array_size(sys->atom.flags);
+		md_array_resize(sys->atom.flags, num_atoms, sys->alloc);
+		MEMSET(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
+	}
+	for (size_t i = 0; i < num_atoms; ++i) {
+		sys->atom.flags[i] &= ~MD_ATOM_FLAG_QM;
+	}
+
+	const int* local_to_global = vlx_local_to_global_atom_idx(vlx);
+	for (size_t i = 0; i < num_qm_atoms; ++i) {
+		const int idx = local_to_global ? local_to_global[i] : (int)i;
+		if (idx >= 0 && (size_t)idx < num_atoms) {
+			sys->atom.flags[idx] |= MD_ATOM_FLAG_QM;
+		}
+	}
+}
+
 bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, str_t filename) {
 	ASSERT(sys);
 
-	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
-	md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-	vlx_t* vlx = vlx_create(temp_arena, sys);
+	// Heap backed, not temp backed - see vlx_create.
+	vlx_t* vlx = vlx_create(md_get_heap_allocator(), sys);
+	if (!vlx) {
+		return false;
+	}
 
 	// The system is built from the core block and everything after it publishes into the table as it
 	// is read - see vlx_system_begin. That is what makes the table a property of the LOAD: a system
@@ -4943,11 +5875,11 @@ bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* st
 	bool success = vlx_parse_file(vlx, filename, state);
 	if (success) {
 		vlx_publish_whole_file_attributes(sys, vlx);
-		// Standalone: the system IS the QM atoms, so the map is cleared rather than written.
+		// Standalone: the QM atoms are the system's first atoms, so the map is cleared rather than written.
 		vlx_publish_atom_system_index(sys, vlx, false);
 	}
 
-	md_temp_end(temp_scope);
+	vlx_destroy(vlx);
 	return success;
 }
 
@@ -4959,9 +5891,11 @@ bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename) {
 		return false;
 	}
 
-	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
-	md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-	vlx_t* vlx = vlx_create(temp_arena, sys);
+	// Heap backed, not temp backed - see vlx_create.
+	vlx_t* vlx = vlx_create(md_get_heap_allocator(), sys);
+	if (!vlx) {
+		return false;
+	}
 
 	// A NULL state is what tells vlx_system_begin this file is supplementing: the atoms and the
 	// state belong to whatever loaded the system first and are left alone, and this file only adds
@@ -4971,9 +5905,10 @@ bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename) {
 	if (success) {
 		vlx_publish_whole_file_attributes(sys, vlx);
 		vlx_publish_atom_system_index(sys, vlx, true);
+		vlx_flag_supplemental_qm_region(sys, vlx);
 	}
 
-	md_temp_end(temp_scope);
+	vlx_destroy(vlx);
 	return success;
 }
 
@@ -5085,12 +6020,7 @@ dvec3_t vlx_scf_ground_state_dipole_moment(const vlx_t* vlx) {
 	return (dvec3_t){0};
 }
 
-size_t vlx_scf_number_of_atomic_orbitals(const vlx_t* vlx) {
-	if (vlx) {
-		return number_of_atomic_orbitals(&vlx->scf.alpha);
-	}
-	return 0;
-}
+
 
 size_t vlx_scf_number_of_molecular_orbitals(const vlx_t* vlx) {
 	if (vlx) {

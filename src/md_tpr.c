@@ -1439,7 +1439,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
     MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_atom_type_idx_t));
-    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_flags_t));
+    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
     sys->atom.type.count = 0;
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
@@ -1543,7 +1543,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
             float radius = 0.0f;
             uint32_t color = 0;
-            md_flags_t flags = 0;
+            md_particle_kind_t kind = MD_PARTICLE_ATOM;
             if (z) {
                 radius = md_atomic_number_vdw_radius(z);
                 color  = md_atomic_number_cpk_color(z);
@@ -1552,12 +1552,13 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                 radius = lj_radius > 0.0f ? lj_radius : md_atomic_number_vdw_radius(0);
                 // A virtual site without Lennard-Jones is a charge site (TIP4P's M), not a bead
                 if (atom->ptype != MD_TPR_PTYPE_VSITE || lj_radius > 0.0f) {
-                    flags |= MD_FLAG_COARSE_GRAINED;
+                    kind = MD_PARTICLE_BEAD;
                 } else {
-                    flags |= MD_FLAG_VIRTUAL_SITE;
+                    kind = MD_PARTICLE_VIRTUAL_SITE;
                     radius = 0.0f;
                 }
             }
+            const md_atom_type_flags_t flags = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, kind);
 
             const md_atom_type_idx_t type = md_atom_type_add(&sys->atom.type, atom->name, atom->type, z, atom->mass, radius, color, flags, alloc);
 
@@ -1566,16 +1567,44 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
     }
 
-    // ## Atoms and residues
+    // ## Atoms, residues, and the molecules as instances of their molecule types (the entities). Which kind of
+    // molecule a type is the topology does not say: it is classified from the residues below, once they are.
     float* charge = md_temp_alloc_array(temp, float, num_atoms);
+    md_entity_idx_t* moltype_entity = md_temp_alloc_array(temp, md_entity_idx_t, data->num_moltypes + 1);
+    for (size_t t = 0; t < data->num_moltypes; ++t) moltype_entity[t] = -1;
+    size_t num_inst_ids = 0;
 
     size_t ai = 0;
     for (size_t b = 0; b < data->num_molblocks; ++b) {
         const md_tpr_molblock_t* mb = &data->molblocks[b];
         const md_tpr_moltype_t* mt = &data->moltypes[mb->moltype];
         const bool renumber = (int64_t)mt->num_residues <= max_renum;
+        if (mb->nmol <= 0 || mt->num_atoms == 0) continue;
+
+        if (moltype_entity[mb->moltype] == -1) {
+            md_label_t id = {0};
+            id.len = (uint8_t)snprintf(id.buf, sizeof(id.buf), "%i", (int)sys->entity.count + 1);
+            moltype_entity[mb->moltype] = (md_entity_idx_t)sys->entity.count;
+            md_array_push(sys->entity.id, id, alloc);
+            md_array_push(sys->entity.flags, MD_ENTITY_FLAG_NONE, alloc);
+            md_array_push(sys->entity.description, str_copy(mt->name, alloc), alloc);
+            sys->entity.count += 1;
+        }
+
+        // Molecules of a single residue (water, ions, lipids) share the id of their block, as the waters of a chain
+        // share their asym in an mmCIF file. Larger molecules (chains) have ids of their own.
+        const bool shared_id = mt->num_residues <= 1;
+        md_label_t inst_id = md_util_instance_id_from_index(num_inst_ids);
+        if (shared_id) num_inst_ids += 1;
 
         for (int32_t m = 0; m < mb->nmol; ++m) {
+            if (!shared_id) inst_id = md_util_instance_id_from_index(num_inst_ids++);
+            md_array_push(sys->instance.id, inst_id, alloc);
+            md_array_push(sys->instance.auth_id, (md_label_t){0}, alloc);
+            md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);
+            md_array_push(sys->instance.entity_idx, moltype_entity[mb->moltype], alloc);
+            sys->instance.count += 1;
+
             int32_t prev_res = -1;
             for (size_t i = 0; i < mt->num_atoms; ++i, ++ai) {
                 const md_tpr_atom_t* atom = &mt->atoms[i];
@@ -1585,14 +1614,12 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     md_array_push(sys->component.atom_offset, (uint32_t)ai, alloc);
                     md_array_push(sys->component.name, make_label(res->name), alloc);
                     md_array_push(sys->component.seq_id, seq_id, alloc);
-                    md_array_push(sys->component.flags, 0, alloc);
+                    md_array_push(sys->component.flags, MD_COMPONENT_FLAG_NONE, alloc);
                     sys->component.count += 1;
                     prev_res = atom->residue;
                 }
 
-                const md_atom_type_idx_t type = moltype_type[mb->moltype][i];
-                sys->atom.type_idx[ai] = type;
-                sys->atom.flags[ai] = sys->atom.type.flags[type];
+                sys->atom.type_idx[ai] = moltype_type[mb->moltype][i];
                 charge[ai] = atom->charge;
             }
         }
@@ -1602,6 +1629,9 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
     ASSERT(ai == num_atoms);
     md_array_push(sys->component.atom_offset, (uint32_t)num_atoms, alloc);  // Final sentinel
+    if (sys->instance.count) {
+        md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);  // Final sentinel
+    }
     sys->atom.count = num_atoms;
 
     md_util_system_augment_atom_types(sys);
@@ -1661,9 +1691,8 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         size_t kept = 0;
         for (size_t k = 0; k < count; ++k) {
             const md_atom_pair_t pair = sys->bond.pairs[k];
-            const md_flags_t fa = sys->atom.type.flags[sys->atom.type_idx[pair.idx[0]]];
-            const md_flags_t fb = sys->atom.type.flags[sys->atom.type_idx[pair.idx[1]]];
-            if ((fa | fb) & MD_FLAG_VIRTUAL_SITE) continue;
+            if (md_atom_particle_kind(&sys->atom, pair.idx[0]) == MD_PARTICLE_VIRTUAL_SITE ||
+                md_atom_particle_kind(&sys->atom, pair.idx[1]) == MD_PARTICLE_VIRTUAL_SITE) continue;
             sys->bond.pairs[kept] = pair;
             sys->bond.flags[kept] = sys->bond.flags[k];
             kept += 1;
@@ -1675,6 +1704,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
 
     md_util_system_infer_comp_flags(sys);
+    md_util_system_infer_entity_kinds(sys);
 
     // ## Attributes
     md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, num_atoms);

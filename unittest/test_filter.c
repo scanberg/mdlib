@@ -10,6 +10,8 @@
 
 #include <md_filter.h>
 
+#include <string.h>
+
 #define TEST(str) md_filter(&bf, STR_LIT(str), &sys, &state, NULL, &is_dynamic, err, sizeof(err))
 
 UTEST(filter, centered) {
@@ -72,6 +74,30 @@ UTEST(filter, variable_length) {
     md_array(md_bitfield_t) arr = 0;
     EXPECT_TRUE(md_filter_evaluate(&arr, STR_LIT("residue(within(5, residue(1)))"), &sys, &state, NULL, &is_dynamic, err, sizeof(err), alloc));
     EXPECT_EQ(num_residues, md_array_size(arr));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// The QM region and its environment are selectable only in a system loaded from a quantum chemistry
+// calculation: in any other, both are compile errors rather than empty selections
+UTEST(filter, qm_regions_need_a_qm_system) {
+    const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+
+    md_bitfield_t bf = md_bitfield_create(alloc);
+    char err[256] = "";
+    bool is_dynamic = false;
+
+    EXPECT_FALSE(TEST("qm"));
+    EXPECT_TRUE(strstr(err, "no QM region") != NULL);
+    EXPECT_FALSE(TEST("environment"));
+    EXPECT_TRUE(strstr(err, "no QM region") != NULL);
+    EXPECT_FALSE(TEST("within(5, qm)"));
 
     md_arena_allocator_destroy(alloc);
 }

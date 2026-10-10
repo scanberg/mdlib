@@ -90,6 +90,11 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
                 return ptr;
             }
         }
+        if (new_size <= old_size) {
+            // Shrinking an allocation which is not the last one: its tail cannot be given back, but it holds
+            // new_size bytes where it is, so it stays.
+            return ptr;
+        }
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         // ptr is not the last allocation or the new size did not fit into the existing page.
         void* new_ptr = arena_push(arena, new_size, alignment);

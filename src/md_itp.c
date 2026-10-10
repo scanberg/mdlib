@@ -116,12 +116,7 @@ static bool parse_i64(int64_t* out, str_t tok) {
     return true;
 }
 
-// parse_float does not take a leading '+', which is_float accepts and topologies do write
 static float parse_f32(str_t tok) {
-    if (tok.len > 1 && tok.ptr[0] == '+') {
-        tok.ptr += 1;
-        tok.len -= 1;
-    }
     return (float)parse_float(tok);
 }
 
@@ -813,6 +808,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         sys->bond.count = count + num_user;
         md_bond_build_connectivity(&sys->bond, atom_count, sys->alloc);
         md_util_system_infer_coordination(sys);
+        md_system_topology_changed(sys);
     }
 
     // ## Charge and mass

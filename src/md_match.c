@@ -92,7 +92,7 @@ typedef struct target_t {
     // Chemistry, NULL when the system has none (see md_chem.h)
     const uint8_t*    h_count;      // Hydrogens of each atom, explicit and implicit
     const int8_t*     charge;       // Formal charges
-    const md_flags_t* atom_flags;
+    const md_atom_flags_t* atom_flags;
 
     // The graph in compressed rows, the system's own where nothing is left out of it. NULL without bonds.
     const uint32_t*        conn_off;    // [num_atoms + 1]
@@ -180,7 +180,7 @@ static inline bool bond_order_known(md_bond_flags_t f) {
 
 // 1 aromatic, 0 not aromatic, -1 unknown (no bond of known order)
 static inline int target_aromatic(const target_t* tg, int32_t a) {
-    if (tg->atom_flags && (tg->atom_flags[a] & MD_FLAG_AROMATIC)) return 1;
+    if (tg->atom_flags && (tg->atom_flags[a] & MD_ATOM_FLAG_AROMATIC)) return 1;
     bool known = false;
     for (uint32_t c = conn_beg(tg, a); c < conn_end(tg, a); ++c) {
         const md_bond_flags_t f = target_bond_flags(tg, tg->conn_bond[c]);
@@ -223,16 +223,6 @@ static inline bool resolution_h(const resolution_t* res, md_atomic_number_t z) {
     return z < 128 && ((res->h_elem[z >> 6] >> (z & 63)) & 1);
 }
 
-// The atom flags of an atom with those of its type
-static md_flags_t system_atom_flags(const md_system_t* sys, size_t i) {
-    md_flags_t f = sys->atom.flags ? sys->atom.flags[i] : 0;
-    if (sys->atom.type_idx && sys->atom.type.flags) {
-        const md_atom_type_idx_t t = sys->atom.type_idx[i];
-        if (t < sys->atom.type.count) f |= sys->atom.type.flags[t];
-    }
-    return f;
-}
-
 // A coordination bond (a metal to a non-metal) between residues, or any in a system without residues
 static bool is_coordination(const md_system_t* sys, md_bond_flags_t f, int32_t a, int32_t b) {
     if (!(f & MD_BOND_FLAG_COORDINATE)) return false;
@@ -272,7 +262,7 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
     // Virtual sites are not atoms of the graph
     uint8_t* skip = NULL;
     for (size_t i = 0; i < N; ++i) {
-        if (system_atom_flags(sys, i) & MD_FLAG_VIRTUAL_SITE) {
+        if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE) {
             if (!skip) {
                 skip = md_alloc(arena, N);
                 MEMSET(skip, 0, N);
@@ -332,10 +322,7 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
     // Molecules. The structures of the system are its bond graph, cut into connected parts, with links of their own
     // where atoms have no bonds to hold them (coarse grained beads, virtual sites): without those, and without
     // coordination bonds to leave out, they are the molecules.
-    bool coarse_grained = false;
-    for (size_t t = 0; t < sys->atom.type.count && sys->atom.type.flags; ++t) {
-        coarse_grained |= (sys->atom.type.flags[t] & MD_FLAG_COARSE_GRAINED) != 0;
-    }
+    const bool coarse_grained = md_system_is_coarse_grained(sys);
     const md_structure_data_t* st = &sys->structure;
     if (!drop && !skip && !coarse_grained && st->count > 0 && st->offset && st->atom_idx && st->atom_slot && st->offset[st->count] == N) {
         tg->num_mol  = st->count;

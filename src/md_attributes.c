@@ -1,4 +1,5 @@
-﻿#include <md_attributes.h>
+﻿#include <math.h>
+#include <md_attributes.h>
 #include "md_attributes_internal.h"
 
 #include <stdio.h>
@@ -857,6 +858,16 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         return MD_ATTRIBUTE_INVALID;
     }
 
+    // PACKED_SYMMETRIC is a claim about the innermost axis, and checked for the same reason TEMPORAL
+    // is below: an extent that is not triangular cannot be the upper triangle of anything.
+    if (desc->flags & MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC) {
+        if (desc->format.rank == 0 || desc->format.components != 1 ||
+            md_attribute_packed_symmetric_dim(desc->format.shape[desc->format.rank - 1]) == 0) {
+            MD_LOG_ERROR("Attribute '" STR_FMT "' is packed symmetric but its innermost axis is not the upper triangle of a square matrix", STR_ARG(path));
+            return MD_ATTRIBUTE_INVALID;
+        }
+    }
+
     // TEMPORAL is a claim about the outermost axis, so it is checked rather than believed. This is
     // the whole reason for tagging instead of inferring: a shape that merely looks frame sized is a
     // coincidence, while a tag that disagrees with its axis is a bug, and catching it here beats
@@ -1478,6 +1489,17 @@ void md_attribute_io_close_all(md_attribute_io_t* io) {
     for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_FILES; ++i) {
         attr_io_close_slot(io, i);
     }
+}
+
+size_t md_attribute_packed_symmetric_dim(size_t extent) {
+    if (extent == 0) {
+        return 0;
+    }
+    // N = (sqrt(8L + 1) - 1) / 2, and the floating point root is corrected to the exact integer one
+    size_t n = (size_t)((sqrt(8.0 * (double)extent + 1.0) - 1.0) * 0.5);
+    while (n * (n + 1) / 2 > extent) --n;
+    while ((n + 1) * (n + 2) / 2 <= extent) ++n;
+    return n * (n + 1) / 2 == extent ? n : 0;
 }
 
 size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset, void* dst, size_t bytes) {

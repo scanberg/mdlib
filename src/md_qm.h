@@ -161,10 +161,18 @@ size_t md_qm_sph_to_cart_coefficients(double* dst, const double* src, size_t num
 // basis/shell/atom_index indexes the QM ATOM DOMAIN (qm/atom/*), not the system's atoms.
 bool md_qm_publish_basis(struct md_system_t* sys, const struct md_gto_basis_t* basis);
 
-// qm/atom/{atomic_number,coordinate} - the atoms the calculation covered, in ITS order and at ITS
-// geometry, which is not necessarily the system's atom set. Coordinates are taken in ANGSTROM, to
-// match the system's own, and are published as such.
-bool md_qm_publish_atoms(struct md_system_t* sys, const uint8_t atomic_number[], const dvec3_t coord_angstrom[], size_t count);
+// qm/atom/{atomic_number,nuclear_charge,coordinate} - the atoms the calculation covered, in ITS order
+// and at ITS geometry, which is not necessarily the system's atom set. Coordinates are taken in
+// ANGSTROM, to match the system's own, and are published as such.
+//
+// nuclear_charge (e, f64) is the charge of each nucleus as the electrons of the calculation see it:
+// the atomic number, less the core electrons an effective core potential replaces. It is what the
+// density was solved against, so it is what an electrostatic potential, a dipole or a nuclear
+// repulsion has to be computed from - with Z instead, the potential of an ECP calculation is off by
+// n_core / r. Optional: NULL publishes the atomic numbers, which is right for an all electron
+// calculation and the most a reader can say when its format does not state the charges. The
+// attribute is published either way, so a consumer reads it and never chooses.
+bool md_qm_publish_atoms(struct md_system_t* sys, const uint8_t atomic_number[], const double nuclear_charge[], const dvec3_t coord_angstrom[], size_t count);
 
 // basis/overlap - the AO overlap S[a][b] = <phi_a|phi_b> over the Cartesian AOs md_gto evaluates, as
 // a VIRTUAL attribute computed from basis/shell/*, basis/primitive/* and qm/atom/coordinate, which
@@ -178,6 +186,22 @@ bool md_qm_publish_atoms(struct md_system_t* sys, const uint8_t atomic_number[],
 // it. Note that it is SINGULAR for a file that stored spherical data, which is harmless for
 // Mulliken partitioning and tr(DS) and fatal for anything that inverts or factorises it.
 bool md_qm_publish_overlap(struct md_system_t* sys);
+
+// SYMMETRIC AO MATRICES. A density - or an overlap - is a symmetric N x N matrix in the AO basis, and is
+// published one of two ways: square ({A,A}, or {S,A,A} indexed by state), or as its packed upper
+// triangle (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC, {A(A+1)/2} or {S,A(A+1)/2}) when it is large and read
+// from disk on demand. These two read either one, so a consumer never has to know which it was given.
+// 'slice' narrows 'attr' to ONE matrix. Both return N, or 0 on failure; with dst NULL they return N
+// and extract nothing. cap is in elements.
+
+// The packed upper triangle as float - row i holding columns i..N-1, N(N+1)/2 values - which is the
+// layout the GTO density kernels take. A packed attribute is extracted straight into dst, so nothing
+// larger than the triangle is ever made; a square one is extracted whole into scratch first.
+size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const struct md_attribute_t* attr, md_attribute_slice_t slice);
+
+// The whole N x N matrix as double, row major: a packed attribute is extracted into scratch and its
+// lower half mirrored from the upper; a square one is extracted as it is.
+size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const struct md_attribute_t* attr, md_attribute_slice_t slice);
 
 // S[a][b] over the basis's Cartesian AOs, row major, md_gto_basis_num_ao(basis) on a side.
 // 'atom_coord_bohr' holds one position per atom the shell list indexes, in BOHR - the unit the

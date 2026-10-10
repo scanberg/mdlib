@@ -109,29 +109,23 @@ int str_cmp_lex(str_t a, str_t b) {
     return 0;
 }
 
+// Skip, peek and extract agree on what a line is: the text up to a '\n' or the end, without the
+// '\r' of a CRLF, and a last line counts whether or not a newline ends it.
 bool str_skip_line(str_t* in_out_str) {
     ASSERT(in_out_str);
+    if (in_out_str->len == 0) return false;
     const char* c = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
-    if (c) {
-        c = c + 1;
-        in_out_str->len = in_out_str->len - (c - in_out_str->ptr);
-        in_out_str->ptr = c;
-        return in_out_str;
-    }
-    return false;
+    const char* next = c ? c + 1 : in_out_str->ptr + in_out_str->len;
+    in_out_str->len -= (size_t)(next - in_out_str->ptr);
+    in_out_str->ptr = next;
+    return true;
 }
 
 bool str_peek_line(str_t* out_line, const str_t* in_str) {
     ASSERT(out_line);
     ASSERT(in_str);
-    const char* beg = in_str->ptr;
-    const char* end = (const char*)memchr(in_str->ptr, '\n', in_str->len);
-    if (end) {
-        out_line->ptr = beg;
-        out_line->len = end - beg;
-        return true;
-    }
-    return false;
+    str_t rest = *in_str;
+    return str_extract_line(out_line, &rest);
 }
 
 bool str_extract_line(str_t* out_line, str_t* in_out_str) {

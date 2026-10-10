@@ -167,9 +167,7 @@ UTEST(tpr, system_tip3p) {
     EXPECT_TRUE(str_empty(md_atom_type_ff_type(&sys.atom.type, 0)));
 
     // No coarse grained types in an all-atom system
-    for (size_t t = 0; t < sys.atom.type.count; ++t) {
-        EXPECT_FALSE(sys.atom.type.flags[t] & MD_FLAG_COARSE_GRAINED);
-    }
+    EXPECT_FALSE(md_system_is_coarse_grained(&sys));
 
     // Residue names, numbers (the waters and ions renumbered the way gmx does) and coordinates
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "peptide_tip3p.gro"));
@@ -217,8 +215,7 @@ UTEST(tpr, virtual_sites) {
     const size_t ow = PEPTIDE_ATOMS;
     EXPECT_EQ(8, md_atom_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow]));
     EXPECT_EQ(0, md_atom_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow + 3]));
-    EXPECT_TRUE(sys.atom.type.flags[sys.atom.type_idx[ow + 3]] & MD_FLAG_VIRTUAL_SITE);
-    EXPECT_FALSE(sys.atom.type.flags[sys.atom.type_idx[ow + 3]] & MD_FLAG_COARSE_GRAINED);
+    EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&sys.atom, ow + 3));
     EXPECT_EQ(0.0f, md_atom_radius(&sys.atom, ow + 3));
     for (size_t i = 0; i < sys.bond.count; ++i) {
         EXPECT_NE((md_atom_idx_t)(ow + 3), sys.bond.pairs[i].idx[0]);
@@ -245,7 +242,7 @@ static void expect_elements_as(int* utest_result, const md_system_t* ref, const 
     size_t coarse = 0;
     for (size_t i = 0; i < sys.atom.count; ++i) {
         mismatch += md_atom_atomic_number(&sys.atom, i) != md_atom_atomic_number(&ref->atom, i);
-        coarse   += (sys.atom.flags[i] & MD_FLAG_COARSE_GRAINED) != 0;
+        coarse   += md_atom_particle_kind(&sys.atom, i) == MD_PARTICLE_BEAD;
     }
     EXPECT_EQ(0u, mismatch);
     EXPECT_EQ(0u, coarse);
@@ -363,7 +360,7 @@ UTEST(tpr, martini) {
     // chlorine's name and mass, but in a system of beads that is not taken for chlorine.
     for (size_t t = 1; t < sys.atom.type.count; ++t) {
         EXPECT_EQ(0, sys.atom.type.z[t]);
-        EXPECT_TRUE(sys.atom.type.flags[t] & MD_FLAG_COARSE_GRAINED);
+        EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_type_particle_kind(&sys.atom.type, t));
         EXPECT_GT(sys.atom.type.radius[t], 1.8f);    // Tiny beads: sigma 0.34 nm
         EXPECT_LT(sys.atom.type.radius[t], 3.0f);
     }
@@ -383,11 +380,12 @@ UTEST(tpr, martini) {
 
     // Trp's SC3 is a massless virtual site that interacts: still a bead with a radius
     EXPECT_EQ(0.0f, md_atom_mass(&sys.atom, 3));
-    EXPECT_TRUE(sys.atom.type.flags[sys.atom.type_idx[3]] & MD_FLAG_COARSE_GRAINED);
+    EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, 3));
 
     // The bead tables know the protein backbone
-    EXPECT_TRUE(sys.atom.type.flags[trp_bb] & MD_FLAG_BACKBONE);
-    EXPECT_TRUE(sys.component.flags[0] & MD_FLAG_AMINO_ACID);
+    EXPECT_TRUE(md_atom_flags(&sys.atom, 0) & MD_ATOM_FLAG_BACKBONE);
+    EXPECT_FALSE(md_atom_flags(&sys.atom, 1) & MD_ATOM_FLAG_BACKBONE);
+    EXPECT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_component_kind(&sys.component, 0));
 
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "martini3.gro"));
 

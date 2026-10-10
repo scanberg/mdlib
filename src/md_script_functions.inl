@@ -383,6 +383,10 @@ static int _water       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _protein     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleic     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+
+// Regions of a QM calculation (MD_ATOM_FLAG_QM), one selection per component which has atoms in it
+static int _qm          (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _environment (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _comp_name   (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
 static int _comp_seq_id (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
 static int _comp        (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
@@ -400,8 +404,8 @@ static int _chain_auth_id(data_t*, data_t[], eval_context_t*);       // (str[]) 
 
 // Property Compute
 static int _distance        (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
-static int _distance_min    (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
-static int _distance_max    (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
+static int _distance_min    (data_t*, data_t[], eval_context_t*); // (position[N], position[]) -> float[N]
+static int _distance_max    (data_t*, data_t[], eval_context_t*); // (position[N], position[]) -> float[N]
 static int _distance_pair   (data_t*, data_t[], eval_context_t*); // (position[N], position[M]) -> float[N*M]
 
 static int _angle   (data_t*, data_t[], eval_context_t*); // (position[], position[], position[]) -> float
@@ -705,6 +709,10 @@ static procedure_t procedures[] = {
     {STR_INIT("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("nucleotide"),TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
+
+    // A compile error where the system has no such region: a QM region, and atoms which are not in it
+    {STR_INIT("qm"),          TI_BITFIELD_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("environment"), TI_BITFIELD_ARR, 0, {0},              _environment,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("resname"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("residue"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("component"), TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -735,8 +743,8 @@ static procedure_t procedures[] = {
 
     // --- PROPERTY COMPUTE ---
     {STR_INIT("distance"),          TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN },
-    {STR_INIT("distance_min"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {STR_INIT("distance_max"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {STR_INIT("distance_min"),      TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("distance_max"),      TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("distance_pair"),     TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_pair,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
 
     {STR_INIT("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                      _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
@@ -1166,9 +1174,9 @@ static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
     return -1;
 }
 
+// A chain is an instance of a polymer (a peptide, a nucleic acid, ...)
 static inline bool is_instance_chain(const md_system_t* sys, size_t inst_idx) {
-    md_flags_t flags = md_system_instance_flags(sys, inst_idx);
-    return flags & MD_FLAG_POLYMER;
+    return md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst_idx));
 }
 
 static md_array(md_component_idx_t) get_comp_indices_in_context(const md_system_t* sys, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
@@ -3301,7 +3309,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, uint32_t flags) {
+static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, md_atom_flags_t flags) {
     ASSERT(ctx && ctx->sys);
     (void)arg;
 
@@ -3315,13 +3323,13 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
             md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
             while (md_bitfield_iter_next(&it)) {
                 uint64_t idx = md_bitfield_iter_idx(&it);
-                if (ctx->sys->atom.flags[idx] & flags) {
+                if (md_atom_flags(&ctx->sys->atom, idx) & flags) {
                     md_bitfield_set_bit(bf, idx);
                 }
             }
         } else {
             for (size_t i = 0; i < ctx->sys->atom.count; ++i) {
-                if (ctx->sys->atom.flags[i] & flags) {
+                if (md_atom_flags(&ctx->sys->atom, i) & flags) {
                     md_bitfield_set_bit(bf, i);
                 }
             }
@@ -3331,7 +3339,7 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
     return result;
 }
 
-static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, uint32_t flags) {
+static int _select_components_of_kind(data_t* dst, data_t arg[], eval_context_t* ctx, md_component_kind_t kind) {
     ASSERT(ctx && ctx->sys);
     (void)arg;
 
@@ -3352,7 +3360,7 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
         int dst_idx = 0;
         for (size_t i = 0; i < num_comp; ++i) {
             int comp_idx = comp_indices[i];
-            if (ctx->sys->component.flags[comp_idx] & flags) {
+            if (md_component_kind(&ctx->sys->component, comp_idx) == kind) {
                 const md_urange_t range = md_component_atom_range(&ctx->sys->component, comp_idx);
                 ASSERT(dst_idx < cap);
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
@@ -3369,7 +3377,7 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
         int count = 0;
         for (size_t i = 0; i < num_comp; ++i) {
             int32_t comp_idx = comp_indices[i];
-            if (ctx->sys->component.flags[comp_idx] & flags) {
+            if (md_component_kind(&ctx->sys->component, comp_idx) == kind) {
                 count += 1;
             }
         }
@@ -3385,43 +3393,138 @@ static int _select_components_with_flags(data_t* dst, data_t arg[], eval_context
 }
 
 static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_WATER);
+    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_WATER);
 }
 
 static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
-	return _select_components_with_flags(dst, arg, ctx, MD_FLAG_AMINO_ACID);
+	return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_AMINO_ACID);
 }
 
 static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
-	return _select_components_with_flags(dst, arg, ctx, MD_FLAG_NUCLEIC_ACID);
+	return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_NUCLEOTIDE);
 }
 
 static int _nucleotide(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOTIDE);
+    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_NUCLEOTIDE);
 }
 
 static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_components_with_flags(dst, arg, ctx, MD_FLAG_ION);
+    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_ION);
+}
+
+// The atoms of the QM region (MD_ATOM_FLAG_QM), or of its environment: one selection per component with
+// atoms in the region, holding those atoms. A component is not assumed to lie on one side: a QM/MM
+// boundary can cut through a residue. Without components the region is a single selection.
+//
+// Whether the region exists is a property of the SYSTEM, not of the context: 'qm' needs a QM region,
+// 'environment' a QM region and atoms outside it, and without them either is a compile error rather
+// than an empty selection - an empty 'environment' would read as "nothing around the QM region", where
+// the truth is that the system does not say. Within a context ('qm in water') it is the part of the
+// region that lies there, which can be nothing.
+static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool qm) {
+    ASSERT(ctx && ctx->sys);
+    (void)arg;
+
+    const md_system_t* sys = ctx->sys;
+    const size_t num_atoms = sys->atom.count;
+
+    if (!dst) {
+        size_t num_qm = 0;
+        for (size_t i = 0; i < num_atoms; ++i) {
+            num_qm += (md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) ? 1 : 0;
+        }
+        if (num_qm == 0) {
+            LOG_ERROR(ctx->ir, ctx->op_token, qm ?
+                "The system has no QM region: it was not loaded from a quantum chemistry calculation" :
+                "The system has no QM region, and so no environment of one");
+            return -1;
+        }
+        if (!qm && num_qm == num_atoms) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "The system is QM throughout: it has no environment");
+            return -1;
+        }
+    }
+
+    const md_atom_flags_t want = qm ? MD_ATOM_FLAG_QM : MD_ATOM_FLAG_NONE;
+
+    // The groups: the components in the context, or the whole system as one when it has none
+    md_array(md_urange_t) groups = 0;
+    if (sys->component.count) {
+        int* comp_indices = get_comp_indices_in_context(sys, ctx->mol_ctx, ctx->temp_alloc);
+        for (size_t i = 0; i < md_array_size(comp_indices); ++i) {
+            md_array_push(groups, md_component_atom_range(&sys->component, comp_indices[i]), ctx->temp_alloc);
+        }
+        md_array_free(comp_indices, ctx->temp_alloc);
+    } else if (!ctx->mol_ctx || md_bitfield_popcount_range(ctx->mol_ctx, 0, num_atoms)) {
+        md_urange_t all = {0, (uint32_t)num_atoms};
+        md_array_push(groups, all, ctx->temp_alloc);
+    }
+
+    int result = 0;
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
+        const int cap = type_info_array_len(dst->type);
+        if (cap > 0) {
+            int dst_idx = 0;
+            for (size_t g = 0; g < md_array_size(groups); ++g) {
+                bool any = false;
+                for (uint32_t i = groups[g].beg; i < groups[g].end; ++i) {
+                    if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) == want) {
+                        ASSERT(dst_idx < cap);
+                        md_bitfield_set_bit(&bf[dst_idx], i);
+                        any = true;
+                    }
+                }
+                if (any && cap > 1) dst_idx += 1;
+            }
+        }
+    } else {
+        int count = 0;
+        for (size_t g = 0; g < md_array_size(groups); ++g) {
+            for (uint32_t i = groups[g].beg; i < groups[g].end; ++i) {
+                if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) == want) {
+                    count += 1;
+                    break;
+                }
+            }
+        }
+        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+            count = MIN(1, count);
+        }
+        result = count;
+    }
+
+    md_array_free(groups, ctx->temp_alloc);
+    return result;
+}
+
+static int _qm(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_region(dst, arg, ctx, true);
+}
+
+static int _environment(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_region(dst, arg, ctx, false);
 }
 
 static int _backbone(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_BACKBONE);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_BACKBONE);
 }
 
 static int _side(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_SIDE_CHAIN | MD_FLAG_NUCLEOSIDE);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE);
 }
 
 static int _sidechain(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_SIDE_CHAIN);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_SIDE_CHAIN);
 }
 
 static int _nucleoside(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOSIDE);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_NUCLEOSIDE);
 }
 
 static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_NUCLEOBASE);
+    return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_NUCLEOBASE);
 }
 
 static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -4158,84 +4261,137 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
+// distance_min and distance_max: one value per element of a, the shortest (longest) distance from the positions of that
+// element to any position of b. An element of a is a selection, an atom index, a range of atoms or a point, and is
+// measured by its atoms, not by its centre of mass. b is taken as a whole: an array of selections is merged into one.
+static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool largest) {
     ASSERT(ctx);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
+    const size_t num_elem = element_count(arg[0]);
+
     if (dst || ctx->vis) {
-        const vec3_t* a_pos = coordinate_extract(arg[0], ctx);
-        const vec3_t* b_pos = coordinate_extract(arg[1], ctx);
-        const size_t  a_len = md_array_size(a_pos);
+        md_temp_scope_t temp = md_temp_begin_in(ctx->temp_alloc);
+
+        data_t b = arg[1];
+        md_bitfield_t b_bf = {0};
+        if (b.type.base_type == TYPE_BITFIELD && element_count(b) > 1) {
+            b_bf = _internal_flatten_bf(as_bitfield(b), element_count(b), ctx->temp_alloc);
+            b.ptr  = &b_bf;
+            b.size = sizeof(md_bitfield_t);
+            b.type = type_info_element_type(b.type);
+        }
+        const vec3_t* b_pos = coordinate_extract(b, ctx);
         const size_t  b_len = md_array_size(b_pos);
 
-        int64_t min_i, min_j;
-        float min_dist = md_util_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
-
+        // Total count, not element_count: evaluated in a context the result is laid out as [context][N] (see rmsd)
+        float* out = NULL;
+        size_t out_len = 0;
         if (dst) {
-            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = min_dist;
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            out = as_float_arr(*dst);
+            out_len = type_info_total_element_count(dst->type);
+            MEMSET(out, 0, out_len * sizeof(float));
         }
+
+        size_t beg = 0;
+        size_t end = num_elem;
+        md_array(irange_t) subscript_ranges = ctx->subscript_ranges;
+        if (ctx->vis && subscript_ranges) {
+            // Only the elements of the result which are shown, e.g. a hovered element of its plot
+            beg = (size_t)CLAMP(subscript_ranges[0].beg, 0, (int)num_elem);
+            end = (size_t)CLAMP(subscript_ranges[0].end, (int)beg, (int)num_elem);
+            // Which is a subscript of the result, not of the single elements and of b which are visualized below
+            ctx->subscript_ranges = NULL;
+        }
+
+        const type_info_t elem_type   = type_info_element_type(arg[0].type);
+        const size_t      elem_stride = type_info_element_byte_stride(arg[0].type);
+
+        // The positions of the elements one after another, all measured against b in one pass: each element starts
+        // from the pair of the one before, which is what makes it cheap (see md_util_min_distance_groups)
+        const size_t num = end - beg;
+        md_array(vec3_t) a_pos = 0;
+        size_t* a_off = md_temp_alloc_array(temp, size_t, num + 1);
+        for (size_t i = beg; i < end; ++i) {
+            const data_t elem = {
+                .type = elem_type,
+                .ptr  = (char*)arg[0].ptr + i * elem_stride,
+                .size = elem_stride,
+            };
+            const vec3_t* pos = coordinate_extract(elem, ctx);
+            a_off[i - beg] = md_array_size(a_pos);
+            md_array_push_array(a_pos, pos, md_array_size(pos), ctx->temp_alloc);
+            if (ctx->vis) {
+                coordinate_visualize(elem, ctx);
+            }
+        }
+        a_off[num] = md_array_size(a_pos);
+
+        float*   dist = md_temp_alloc_array(temp, float,   num);
+        int64_t* ia   = md_temp_alloc_array(temp, int64_t, num);
+        int64_t* ib   = md_temp_alloc_array(temp, int64_t, num);
+        if (largest) {
+            md_util_max_distance_groups(dist, ia, ib, a_pos, a_off, num, b_pos, b_len, &ctx->cur_state->unitcell);
+        } else {
+            md_util_min_distance_groups(dist, ia, ib, a_pos, a_off, num, b_pos, b_len, &ctx->cur_state->unitcell);
+        }
+
+        for (size_t k = 0; k < num; ++k) {
+            // An empty selection - a dynamic one can be empty in some frames - has no distance to anything: 0
+            if (ib[k] < 0) continue;
+
+            const size_t i = beg + k;
+            if (out && i < out_len) {
+                out[i] = dist[k];
+            }
+            if (ctx->vis) {
+                // The end in b drawn in the image it was measured in
+                const vec3_t a = a_pos[ia[k]];
+                vec4_t b4 = vec4_from_vec3(b_pos[ib[k]], 0);
+                md_util_deperiodize_vec4(&b4, 1, a, &ctx->cur_state->unitcell);
+                draw_distance(a, vec3_from_vec4(b4), dist[k], ctx->vis, ctx->vis_flags);
+            }
+        }
+
         if (ctx->vis) {
-            coordinate_visualize(arg[0], ctx);
-            coordinate_visualize(arg[1], ctx);
-            draw_distance(a_pos[min_i], b_pos[min_j], min_dist, ctx->vis, ctx->vis_flags);
+            coordinate_visualize(b, ctx);
+            ctx->subscript_ranges = subscript_ranges;
         }
-    }
-    else {
-        int res_a = coordinate_validate(arg[0], 0, ctx);
-        int res_b = coordinate_validate(arg[1], 1, ctx);
+
+        md_temp_end(temp);
+    } else {
+        // The positions are validated as for distance, but without its length: the length of the result is the number
+        // of elements of a, which a selection changing size from frame to frame does not change
+        static_backchannel_t* backchannel = ctx->backchannel;
+        ctx->backchannel = NULL;
+        const int res_a = coordinate_validate(arg[0], 0, ctx);
+        const int res_b = coordinate_validate(arg[1], 1, ctx);
+        ctx->backchannel = backchannel;
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
+            // Unless the number of elements of a is what changes, e.g. residue(within(...))
+            if (ctx->arg_flags && (ctx->arg_flags[0] & FLAG_DYNAMIC_LENGTH)) {
+                ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+            }
             ctx->backchannel->unit[0] = md_unit_none();
             ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
-        return 1;
+        return (int)num_elem;
     }
 
     return 0;
 }
 
+static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return distance_extent(dst, arg, ctx, false);
+}
+
 static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
-
-    if (dst || ctx->vis) {
-        const vec3_t* a_pos = coordinate_extract(arg[0], ctx);
-        const vec3_t* b_pos = coordinate_extract(arg[1], ctx);
-        const size_t  a_len = md_array_size(a_pos);
-        const size_t  b_len = md_array_size(b_pos);
-
-        int64_t max_i, max_j;
-        float dist = md_util_max_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
-
-        if (dst) {
-            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = dist;
-        }
-        if (ctx->vis) {
-            coordinate_visualize(arg[0], ctx);
-            coordinate_visualize(arg[1], ctx);
-            draw_distance(a_pos[max_i], b_pos[max_j], dist, ctx->vis, ctx->vis_flags);
-
-        }
-    } else {
-        int res_a = coordinate_validate(arg[0], 0, ctx);
-        int res_b = coordinate_validate(arg[1], 1, ctx);
-        if (res_a < 0) return res_a;
-        if (res_b < 0) return res_b;
-        if (ctx->backchannel) {
-            ctx->backchannel->unit[0] = md_unit_none();
-            ctx->backchannel->unit[1] = md_unit_angstrom();
-            ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
-        }
-        return 1;
-    }
-
-    return 0;
+    return distance_extent(dst, arg, ctx, true);
 }
 
 static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {

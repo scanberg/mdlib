@@ -36,7 +36,8 @@ option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
 # The readers of the HDF5 based formats come as one: they share the one dependency, and a build that
 # has HDF5 has no reason to leave any of them out. Compiled in, they define MD_HDF5.
 option(MD_ENABLE_HDF5 "Enable the HDF5 based readers: VeloxChem, TREXIO and H5MD (requires HDF5)" OFF)
-set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
+set(MD_GL_BACKBONE_SEGMENT_COUNT "12" CACHE STRING "Segments per residue along the spline of the backbone representations (cartoon, ribbons, even)")
+set(MD_GL_BACKBONE_PROFILE_COUNT "16" CACHE STRING "Vertices around the cross section of the cartoon representation (even)")
 
 set(MD_FLAGS)
 set(MD_FLAGS_EXT)
@@ -50,7 +51,7 @@ set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
 set(MD_PROPERTIES)
 
-set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
+set(MD_DEFINES MD_GL_BACKBONE_SEGMENT_COUNT=${MD_GL_BACKBONE_SEGMENT_COUNT} MD_GL_BACKBONE_PROFILE_COUNT=${MD_GL_BACKBONE_PROFILE_COUNT})
 
 #file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
 file(GLOB_RECURSE EXT_FILES ext/*)
@@ -84,6 +85,8 @@ set(CORE_FILES
   src/core/md_handle.h
   src/core/md_hash.h
   src/core/md_intrinsics.h
+  src/core/md_json.c
+  src/core/md_json.h
   src/core/md_linear_allocator.c
   src/core/md_linear_allocator.h
   src/core/md_log.c
@@ -91,6 +94,7 @@ set(CORE_FILES
   src/core/md_lru_cache.inl
   src/core/md_os.c
   src/core/md_os.h
+  src/core/md_parse.c
   src/core/md_parse.h
   src/core/md_platform.h
   src/core/md_ring_allocator.c
@@ -141,6 +145,8 @@ set(SRC_FILES
   src/md_gro.h
   src/md_gto.c
   src/md_gto.h
+  src/md_gto_int.c
+  src/md_gto_int.h
   src/md_itp.c
   src/md_itp.h
   src/md_dcd.c
@@ -190,24 +196,21 @@ set(SRC_FILES
   src/md_xvg.h
   src/md_xyz.c
   src/md_xyz.h
+  src/md_ase_traj.c
+  src/md_ase_traj.h
 )
 
 set(GL_SHADER_FILES 
   src/shaders/compute_spline_extract.vert
-  src/shaders/compute_spline_smooth.vert
+  src/shaders/compute_spline_orient.vert
   src/shaders/compute_spline_subdivide.vert
   src/shaders/compute_spline.vert
   src/shaders/compute_spline.geom
   src/shaders/compute_velocity.vert
-  src/shaders/cartoon.vert
-  src/shaders/cartoon.geom
-  src/shaders/cartoon.frag
-  src/shaders/licorice.vert
-  src/shaders/licorice.geom
-  src/shaders/licorice.frag
-  src/shaders/ribbons.vert
-  src/shaders/ribbons.geom
-  src/shaders/ribbons.frag
+  src/shaders/backbone.vert
+  src/shaders/backbone.frag
+  src/shaders/bond.vert
+  src/shaders/bond.frag
   src/shaders/spacefill.vert
   src/shaders/spacefill.geom
   src/shaders/spacefill.frag
@@ -320,6 +323,8 @@ if (MD_ENABLE_HDF5)
     src/md_trexio.h
     src/md_h5md.c
     src/md_h5md.h
+    src/md_hdf5.c
+    src/md_hdf5.h
   )
   # Relative to the executable, because md_vlx.c always prefixes the executable's own directory
   # before this value. An absolute path here - which is what this defaulted to - produced
@@ -483,7 +488,8 @@ endif()
 set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES}
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
-    src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang)
+    src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
+    src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang)
 
 source_group("src"      FILES ${SRC_FILES}) 
 source_group("src/core" FILES ${CORE_FILES})
@@ -561,6 +567,16 @@ if (MD_ENABLE_GPU)
     ENTRIES   count_main phi_main dgather_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )
+  # md_gto_int: the potential of a Hermite charge distribution. One entry point per Hermite order,
+  # so each kernel is sized for its own unrolled recursion, and the resolve pass.
+  compile_gpu_shaders(eval_gto_int_potential_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential.slang
+    ENTRIES   l0 l1 l2 l3 l4 l5 l6 l7 l8 resolve
+    DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_hermite.slang
+  )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl
                  ${GEN_DIR}/gto_gpu_shaders.inl COPYONLY)
@@ -602,6 +618,14 @@ target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
+
+# md_parse.c rounds decimal numbers exactly, which takes IEEE arithmetic: the fast math the rest of the
+# library is built with licenses dividing by multiplying with a reciprocal and dropping the sign of zero.
+if (COMPILER_TYPE STREQUAL "GCC")
+  set_source_files_properties(src/core/md_parse.c PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
+elseif (COMPILER_TYPE STREQUAL "MSVC")
+  set_source_files_properties(src/core/md_parse.c PROPERTIES COMPILE_OPTIONS "/fp:precise")
+endif()
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PUBLIC ${MD_LIBS})
 

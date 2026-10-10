@@ -132,8 +132,8 @@ static bool load_case(md_system_t* sys, md_system_state_t* st, const water_case_
     return ok && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL);
 }
 
-static inline md_flags_t type_flags(const md_system_t* sys, size_t i) {
-    return md_atom_type_flags(&sys->atom.type, sys->atom.type_idx[i]);
+static inline md_particle_kind_t particle(const md_system_t* sys, size_t i) {
+    return md_atom_particle_kind(&sys->atom, i);
 }
 
 UTEST(water, virtual_sites) {
@@ -148,20 +148,22 @@ UTEST(water, virtual_sites) {
         ASSERT_EQ(2, (int)sys.component.count);
         EXPECT_EQ(2 * (3 + c->num_sites), (int)sys.atom.count);
         for (size_t ci = 0; ci < sys.component.count; ++ci) {
-            EXPECT_TRUE(md_component_flags(&sys.component, ci) & MD_FLAG_WATER);
-            EXPECT_FALSE(md_component_flags(&sys.component, ci) & MD_FLAG_VIRTUAL_SITE);
+            EXPECT_EQ(MD_COMPONENT_KIND_WATER, md_component_kind(&sys.component, ci));
         }
-        for (size_t t = 0; t < sys.atom.type.count; ++t) {
-            EXPECT_FALSE(sys.atom.type.flags[t] & MD_FLAG_COARSE_GRAINED);
-        }
+        EXPECT_FALSE(md_system_is_coarse_grained(&sys));
+        // Each water molecule is an instance of its own, of one water entity
+        ASSERT_EQ(2, (int)sys.instance.count);
+        ASSERT_EQ(1, (int)sys.entity.count);
+        EXPECT_EQ(MD_ENTITY_KIND_WATER, md_system_instance_entity_kind(&sys, 0));
+        EXPECT_EQ(MD_ENTITY_KIND_WATER, md_system_instance_entity_kind(&sys, 1));
         EXPECT_EQ(4, (int)sys.bond.count);
 
         int num_o = 0, num_h = 0, num_sites = 0;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, i);
             const size_t deg = md_bond_conn_count(&sys.bond, i);
-            EXPECT_TRUE(md_atom_flags(&sys.atom, i) & MD_FLAG_WATER);
-            if (type_flags(&sys, i) & MD_FLAG_VIRTUAL_SITE) {
+            EXPECT_EQ(MD_COMPONENT_KIND_WATER, md_system_atom_component_kind(&sys, i));
+            if (particle(&sys, i) == MD_PARTICLE_VIRTUAL_SITE) {
                 EXPECT_EQ(0, (int)z);
                 EXPECT_EQ(0.0f, md_atom_mass(&sys.atom, i));
                 EXPECT_EQ(0.0f, md_atom_radius(&sys.atom, i));
@@ -233,14 +235,14 @@ UTEST(water, tip4p_gro_and_tpr) {
         ASSERT_TRUE(ok);
         ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
         size_t water = 0, sites = 0, bonded_sites = 0, cg = 0;
-        for (size_t ci = 0; ci < sys.component.count; ++ci) water += (md_component_flags(&sys.component, ci) & MD_FLAG_WATER) != 0;
+        for (size_t ci = 0; ci < sys.component.count; ++ci) water += md_component_kind(&sys.component, ci) == MD_COMPONENT_KIND_WATER;
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            if (type_flags(&sys, i) & MD_FLAG_VIRTUAL_SITE) {
+            if (particle(&sys, i) == MD_PARTICLE_VIRTUAL_SITE) {
                 sites += 1;
                 bonded_sites += md_bond_conn_count(&sys.bond, i) != 0;
             }
         }
-        for (size_t t = 0; t < sys.atom.type.count; ++t) cg += (sys.atom.type.flags[t] & MD_FLAG_COARSE_GRAINED) != 0;
+        for (size_t t = 0; t < sys.atom.type.count; ++t) cg += md_atom_type_particle_kind(&sys.atom.type, t) == MD_PARTICLE_BEAD;
         counts[f][0] = water;
         counts[f][1] = sites;
         counts[f][2] = bonded_sites;
@@ -266,8 +268,7 @@ UTEST(water, martini_bead_unchanged) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(text)));
-    EXPECT_TRUE(type_flags(&sys, 0) & MD_FLAG_COARSE_GRAINED);
-    EXPECT_TRUE(type_flags(&sys, 0) & MD_FLAG_WATER);
-    EXPECT_FALSE(type_flags(&sys, 0) & MD_FLAG_VIRTUAL_SITE);
+    EXPECT_EQ(MD_PARTICLE_BEAD, particle(&sys, 0));
+    EXPECT_EQ(MD_COMPONENT_KIND_WATER, md_component_kind(&sys.component, 0));
     md_vm_arena_destroy(alloc);
 }

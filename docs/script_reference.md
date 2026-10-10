@@ -213,7 +213,7 @@ Every procedure documented with `position` arguments (`distance`, `angle`, `dihe
 
 How a selection is turned into positions depends on the procedure, but the rule of thumb is:
 
-| Argument | `distance`, `angle`, `dihedral`, `com`, `distance_min/max` | `distance_pair`, `coord*` | `rdf`, `within`, `plane`, `shape_weights` |
+| Argument | `distance`, `angle`, `dihedral`, `com` | `distance_pair`, `coord*` | `rdf`, `within`, `plane`, `shape_weights` |
 |---|---|---|---|
 | single bitfield / index range | one point: the mass-weighted centre of mass | every atom, individually | every atom, individually (see each entry) |
 | array of bitfields (`residue(1:3)`) | see below | one centre of mass **per element** | see each entry |
@@ -223,6 +223,10 @@ centre of mass of all three residues together and `distance(residue(1:3), vec3(0
 one value per residue, use a [context](#contexts-in-and-out): `distance(1, vec3(0,0,0)) in residue(1:3)`, or use a
 procedure that keeps the elements apart such as `distance_pair(residue(1:3), vec3(0,0,0))` (three values) or
 `coord_x(residue(1:3))` (three values: the x coordinate of each residue's centre of mass).
+
+`distance_min` and `distance_max` follow a rule of their own: they measure atoms, not centres of mass, and give one
+value per element of their first argument (`distance_min(residue(1:3), residue(5))` is three values), while their
+second argument is taken as a whole.
 
 ---
 
@@ -282,7 +286,7 @@ or [destructure](#statements-and-comments) them.
 | Category | Procedures |
 |---|---|
 | [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`ring`](#ring) |
-| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
+| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
 | [Selectors: instances](#selectors-instance-level) | [`instance`](#instance), [`chain`](#chain), [`chain_id`](#chain_id), [`auth_id`](#auth_id) |
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
@@ -496,7 +500,8 @@ is the exception and gives one value per selection).
 protein() -> bitfield[]
 ```
 
-Every residue that is part of a protein.
+Every amino acid residue: those whose backbone was found and verified by its bonds, and those which are only named
+like an amino acid (missing atoms, a coarse grained model).
 
 ```mdscript
 n_protein_atoms = count(protein());                 # the residues are flattened into one selection
@@ -513,7 +518,9 @@ nucleic()     -> bitfield[]
 nucleotide()  -> bitfield[]
 ```
 
-Every residue that is part of a nucleic acid. `nucleotide` is an alias.
+Every nucleotide residue: those whose backbone was found and verified by its bonds, and those which are only named
+like a nucleotide. A free nucleotide ligand (GTP, ATP) is not one unless it is named like a residue of a nucleic acid.
+`nucleotide` is an alias.
 
 ```mdscript
 dna = nucleic();
@@ -533,6 +540,44 @@ Every water molecule.
 ```mdscript
 solvent = water();
 n_waters = count(water(), "residue");
+```
+
+### qm
+
+<!-- proc name=qm category=selector.residue -->
+
+```text
+qm() -> bitfield[]
+```
+
+The QM region: the atoms of the quantum chemistry calculation the system was loaded from (VeloxChem, Molden,
+TREXIO), one selection per residue with atoms in it. A system from a QM calculation alone is QM throughout; in a
+polarizable embedding or QM/MM system it is the region the embedding surrounds. A residue need not lie wholly on one
+side: a QM/MM boundary can cut through it, and its selection then holds the QM atoms only.
+
+Only a loader says which atoms are QM, nothing infers it: in a system without a QM region (a structure or
+trajectory file), `qm` is a **compile error** ("The system has no QM region") rather than an empty selection.
+
+```mdscript
+d = distance_min(qm(), water());     # the closest water atom to each residue of the QM region
+near_qm = within(5, qm());
+```
+
+### environment
+
+<!-- proc name=environment category=selector.residue -->
+
+```text
+environment() -> bitfield[]
+```
+
+The environment of the QM region: every atom which is not in it - the sites of a polarizable embedding, the MM
+atoms of a QM/MM system - one selection per residue (an embedding fragment is one). A **compile error** where the
+system has no QM region, or is QM throughout ("The system is QM throughout: it has no environment").
+
+```mdscript
+first_shell = within(3.5, qm()) and environment();
+n_fragments = count(environment(), "residue");
 ```
 
 ### resname
@@ -611,7 +656,11 @@ named = component("PFT");
 
 ### Selectors: instance level
 
-Instances are the largest building blocks in the file: chains in a PDB file, molecules in a GRO file.
+An instance is one polymer chain or one molecule: each protein or nucleic-acid chain, and each ligand, lipid, ion
+and water molecule on its own. Instances come from the file where it has them (the asyms of an mmCIF file, the
+molecules of a GROMACS topology) and are otherwise inferred from the bonds and the chain ids. The identifier is not
+unique: the small molecules of one chain share it (all waters of chain A in an mmCIF file have one label), so
+`instance("W")` gives one selection per molecule. A **chain** is an instance of a polymer.
 
 ### instance
 
@@ -689,7 +738,7 @@ Both take two named arguments:
 - `level`: where an occurrence lies. `"structure"` (the default): within one molecule, the atoms joined by covalent
   bonds; a metal bound to another residue (the Mg of an ATP, the Zn of a zinc finger) is a molecule of its own.
   `"residue"` (or `"component"`): within one residue, whose bonds to its neighbours are not part of the graph, so a
-  residue pattern ends at the peptide bond. `"chain"` (or `"instance"`): within one chain.
+  residue pattern ends at the peptide bond. `"chain"` (or `"instance"`): within one instance, a chain or a molecule.
 - `mode`: which occurrences there are. `"unique"` (the default): one per set of atoms; a symmetric pattern fits the
   same atoms in several ways (a benzene ring in 12) and counts once. `"all"`: every way it fits. `"one_per_unit"`: the
   first in each unit of `level`. `"disjoint"`: occurrences which share no atoms, the first found winning.
@@ -894,16 +943,26 @@ per_res = distance(1, 2) in residue(:);                         # float[num_resi
 <!-- proc name=distance_min category=property -->
 
 ```text
-distance_min(a: position[], b: position[]) -> float [Å]
+distance_min(a: position[N], b: position[]) -> float[N] [Å]
 ```
 
 **Parameters:** `a`, `b`.
 
-The shortest distance between any atom of `a` and any atom of `b` (closest approach between two groups). Unlike
-`distance`, the result is a single value even when the selections change size from frame to frame.
+One value per element of `a`: the shortest distance from any atom of that element to any atom of `b` (the closest
+approach of each element to `b`). The elements of `a` are the selections of an array of selections (`residue(1:3)`
+gives three values, `protein()` one per protein residue), the atoms of a list of indices (`{1, 5, 9}` gives three
+values) or the points of a list of `float[3]`; a single selection or index range is one element and gives a single
+value. `b` is taken as a whole: an array of selections is merged into one set of atoms. Atoms are measured, not
+centres of mass, and periodic boundary conditions are respected when the system has a unit cell.
+
+The number of values does not change when the selections change size from frame to frame (`within(...)`), and an
+element without atoms, or an empty `b`, gives 0. If the *number* of elements changes from frame to frame
+(`residue(within(...))`) the result is not published as a property.
 
 ```mdscript
-closest = distance_min(residue(1), residue(2));
+closest = distance_min(residue(1), residue(2));                 # one value
+per_res = distance_min(residue(1:10), residue(20));             # float[10]: residues 1 to 10, each to residue 20
+to_ligand = distance_min(protein(), resname("LIG"));            # one value per protein residue
 gap = distance_min(within_x(:20), within_x(30:));
 ```
 
@@ -912,15 +971,18 @@ gap = distance_min(within_x(:20), within_x(30:));
 <!-- proc name=distance_max category=property -->
 
 ```text
-distance_max(a: position[], b: position[]) -> float [Å]
+distance_max(a: position[N], b: position[]) -> float[N] [Å]
 ```
 
 **Parameters:** `a`, `b`.
 
-The largest distance between any atom of `a` and any atom of `b` (the extent between two groups).
+One value per element of `a`: the largest distance from any atom of that element to any atom of `b` (the extent of
+each element and `b` together). The elements of `a` and the handling of `b` are those of
+[`distance_min`](#distance_min).
 
 ```mdscript
-extent = distance_max(residue(1), residue(2));
+extent = distance_max(residue(1), residue(2));                  # one value
+per_res = distance_max(residue(1:10), residue(20));             # float[10]
 ```
 
 ### distance_pair

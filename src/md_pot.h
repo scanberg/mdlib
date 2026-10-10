@@ -58,10 +58,9 @@ typedef enum md_pot_unit_t {
 // row by row. This matches the Dalton/MOLCAS LoProp ordering that PyFraME reads its
 // polarizabilities from.
 //
-// WARNING: every polarizability in the reference file is isotropic (all off-diagonals
-// are exactly zero), so that file cannot discriminate between this order and the
-// alternative column-wise packing (xx, xy, yy, xz, yz, zz). If you ever get an
-// anisotropic .pot, verify against it before trusting an off-diagonal component.
+// VeloxChem's own generator writes them in this order (PEForceFieldGenerator: "in the
+// order xx, xy, xz, yy, yz, zz"), and write_pe_jsonfile hands them to PyFraME as they
+// are, behind the (0,0) and (0,1) blocks of an order [1,1] polarizability.
 enum {
     MD_POT_ALPHA_XX = 0,
     MD_POT_ALPHA_XY = 1,

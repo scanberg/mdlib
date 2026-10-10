@@ -184,6 +184,39 @@ typedef struct {
     str_t description;
 } mmcif_entity_t;
 
+static md_entity_kind_t mmcif_entity_kind(const mmcif_entity_t* entity) {
+    switch (entity->type) {
+    case ENTITY_TYPE_POLYMER:
+        switch (entity->poly_type) {
+        case ENTITY_POLY_TYPE_POLYPEPTIDE_L:
+        case ENTITY_POLY_TYPE_POLYPEPTIDE_D:
+        case ENTITY_POLY_TYPE_CYCLIC_PSEUDO_PEPTIDE:
+            return MD_ENTITY_KIND_PEPTIDE;
+        case ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE:
+            return MD_ENTITY_KIND_DNA;
+        case ENTITY_POLY_TYPE_POLYRIBONUCLEOTIDE:
+            return MD_ENTITY_KIND_RNA;
+        case ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE_POLYRIBONUCLEOTIDE_HYBRID:
+            return MD_ENTITY_KIND_NUCLEIC;
+        case ENTITY_POLY_TYPE_PEPTIDE_NUCLEIC_ACID:
+        case ENTITY_POLY_TYPE_OTHER:
+            return MD_ENTITY_KIND_POLYMER;
+        default:
+            // Classified from its components once they are (md_util_system_infer_entity_kinds)
+            return MD_ENTITY_KIND_UNKNOWN;
+        }
+    case ENTITY_TYPE_BRANCHED:
+        return MD_ENTITY_KIND_BRANCHED;
+    case ENTITY_TYPE_WATER:
+        return MD_ENTITY_KIND_WATER;
+    case ENTITY_TYPE_NON_POLYMER:
+    case ENTITY_TYPE_MACROLIDE:
+        return MD_ENTITY_KIND_NON_POLYMER;
+    default:
+        return MD_ENTITY_KIND_UNKNOWN;
+    }
+}
+
 static inline mmcif_entity_t* mmcif_entity_find(md_array(mmcif_entity_t) entities, str_t id) {
     for (mmcif_entity_t* it = md_array_beg(entities); it != md_array_end(entities); ++it) {
         if (str_eq(it->id, id)) return it;
@@ -641,6 +674,7 @@ done:
 static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, mmcif_parse_state_t* state, md_allocator_i* alloc) {
     ASSERT(atom_entries);
     ASSERT(state);
+    ASSERT(alloc);
     ASSERT(state->in_loop == true);
 
     int table[ATOM_SITE_COUNT];
@@ -677,7 +711,11 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
     bool have_auth_seq_id  = table[ATOM_SITE_AUTH_SEQ_ID]  != -1;
     bool have_auth_asym_id = table[ATOM_SITE_AUTH_ASYM_ID] != -1;
 
-    str_t tok[64] = {0};
+    // One token per column of a row. A file carries as many _atom_site columns as its producer chose to write, so
+    // the row is sized by them rather than by a fixed bound.
+    str_t* tok = md_alloc(alloc, sizeof(str_t) * num_cols);
+    MEMSET(tok, 0, sizeof(str_t) * num_cols);
+
     while (mmcif_advance_to_next_line(state)) {
         str_t peek;
         if (!mmcif_peek_token(&peek, state)) {
@@ -879,35 +917,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         sys->entity.count = num_entities;
 
         for (size_t i = 0; i < num_entities; ++i) {
-            // Determine entity flags
-            md_flags_t flags = 0;
-
-            str_t desc = entities[i].description;
-            bool ion = str_find_str(NULL, desc, STR_LIT("ion")) ||
-                       str_find_str(NULL, desc, STR_LIT("ION")) ||
-                       str_find_str(NULL, desc, STR_LIT("Ion"));
-
-            if (entities[i].type == ENTITY_TYPE_POLYMER) {
-                flags |= MD_FLAG_POLYMER;
-                if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_L) {
-                    flags |= MD_FLAG_POLYPEPTIDE | MD_FLAG_ISOMER_L;
-                } else if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYPEPTIDE_D) {
-                    flags |= MD_FLAG_POLYPEPTIDE | MD_FLAG_ISOMER_D;
-                } else if (entities[i].poly_type == ENTITY_POLY_TYPE_POLYRIBONUCLEOTIDE ||
-                    entities[i].poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE ||
-                    entities[i].poly_type == ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE_POLYRIBONUCLEOTIDE_HYBRID) {
-                    flags |= MD_FLAG_NUCLEIC_ACID;
-                }
-            } else if (entities[i].type == ENTITY_TYPE_WATER) {
-                flags |= MD_FLAG_WATER;
-            } else if (ion) {
-                flags |= MD_FLAG_ION;
-            } else {
-                flags |= MD_FLAG_HETERO;
-            }
-
             md_array_push_no_grow(sys->entity.id, make_label(entities[i].id));
-            md_array_push_no_grow(sys->entity.flags, flags);
+            md_array_push_no_grow(sys->entity.flags, md_entity_flags_set_kind(MD_ENTITY_FLAG_NONE, mmcif_entity_kind(&entities[i])));
             md_array_push_no_grow(sys->entity.description, str_copy(entities[i].description, alloc));
         }
     }
@@ -961,24 +972,23 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             uint32_t color = md_atomic_number_cpk_color(atomic_number);
             md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, color, 0, alloc);
 
-            md_flags_t flags = md_entity_flags(&sys->entity, entity_idx);
-
             if (comp_key != prev_comp_key) {
                 // --- New residue boundary ---
-                static const uint32_t comp_flag_filter = MD_FLAG_HETERO | MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_WATER | MD_FLAG_ISOMER_L | MD_FLAG_ISOMER_D;
-                md_flags_t comp_flags = flags & comp_flag_filter;
-
                 // Start residue (store atom offset before adding any residue atoms)
                 md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
                 md_array_push(sys->component.name, make_label(comp_id), alloc);
                 md_array_push(sys->component.seq_id, seq_id, alloc);
-                md_array_push(sys->component.flags, comp_flags, alloc);
+                md_array_push(sys->component.flags, MD_COMPONENT_FLAG_NONE, alloc);
 
                 md_array_push(comp_auth_asym_ids, auth_asym_id, temp_arena);
 
-                // Instance handling
+                // Instance handling. An instance is one polymer chain or one molecule, and an asym of a polymer or a
+                // branched entity is one. The asym of a non-polymer entity may hold many molecules (the waters of a
+                // chain): each is an instance of its own, sharing the asym id.
                 if (entity_idx != -1) {
-                    if (inst_key != prev_inst_key) {
+                    const md_entity_kind_t entity_kind = md_entity_kind(&sys->entity, entity_idx);
+                    const bool one_per_component = entity_kind == MD_ENTITY_KIND_WATER || entity_kind == MD_ENTITY_KIND_NON_POLYMER;
+                    if (inst_key != prev_inst_key || one_per_component) {
                         // Start a new instance
                         md_label_t inst_id = make_label(label_asym_id);
                         md_label_t inst_auth_id = make_label(auth_asym_id);
@@ -998,7 +1008,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
  
             md_array_push_no_grow(out_state->xyz, vec3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
             md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
-            md_array_push_no_grow(sys->atom.flags, flags);
+            md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
             if (occupancy && b_iso && formal_charge) {
                 occupancy[sys->atom.count]     = atom_entries[i].occupancy;
                 b_iso[sys->atom.count]         = atom_entries[i].b_iso_or_equiv;
@@ -1053,6 +1063,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         // Fallback path if no entities are defined within the cif
 		md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
     }
+    // A polymer entity without _entity_poly does not say which polymer it is
+    md_util_system_infer_entity_kinds(sys);
 
     result = sys->atom.count > 0;
 

@@ -15,6 +15,8 @@
 #include <core/md_vec_math.h>
 
 #include <hdf5.h>
+#include "md_hdf5.h"
+
 
 #include <math.h>
 #include <string.h>
@@ -28,22 +30,17 @@
 // an attribute on a section group, an array is a dataset under it, and everything is either an
 // int64, a double or a string.
 
-typedef struct h5_error_scope_t {
-    H5E_auto2_t func;
-    void*       client_data;
-} h5_error_scope_t;
+// The shared mdlib HDF5 lock (md_hdf5.h): it serialises this reader against the other HDF5 readers
+// and their providers, and silences HDF5's own stack printing on every failed probe while held -
+// probing for absent optional datasets is most of what this reader does.
+typedef md_hdf5_lock_t h5_error_scope_t;
 
-// HDF5 prints its own stack to stderr on every failed probe, and probing for absent optional
-// datasets is most of what this reader does.
 static h5_error_scope_t h5_error_scope_begin(void) {
-    h5_error_scope_t scope = {0};
-    H5Eget_auto2(H5E_DEFAULT, &scope.func, &scope.client_data);
-    H5Eset_auto2(H5E_DEFAULT, NULL, NULL);
-    return scope;
+    return md_hdf5_lock();
 }
 
 static void h5_error_scope_end(h5_error_scope_t scope) {
-    H5Eset_auto2(H5E_DEFAULT, scope.func, scope.client_data);
+    md_hdf5_unlock(scope);
 }
 
 static bool trexio_has(hid_t loc, const char* name) {
@@ -234,6 +231,7 @@ typedef struct trexio_t {
 
     size_t             num_atoms;
     md_array(uint8_t)  atomic_number;
+    md_array(double)   nuclear_charge;  // nucleus_charge: Z less the core electrons of an ECP
     md_array(dvec3_t)  coord;      // Angstrom
 
     bool               cartesian;  // ao_cartesian != 0
@@ -310,6 +308,7 @@ static bool trexio_read_nucleus(trexio_t* trexio, hid_t file) {
                 coord[i * 3 + 2] * TREXIO_BOHR_TO_ANGSTROM,
             };
             md_array_push(trexio->atomic_number, (uint8_t)z, trexio->alloc);
+            md_array_push(trexio->nuclear_charge, charge[i], trexio->alloc);
             md_array_push(trexio->coord, xyz, trexio->alloc);
         }
         result = true;
@@ -850,6 +849,8 @@ static bool trexio_system_begin(md_system_t* sys, md_system_state_t* state, cons
         sys->atom.type_idx[i] = md_atom_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
                                                          md_atomic_number_mass(z), md_atomic_number_vdw_radius(z),
                                                          md_atomic_number_cpk_color(z), 0, sys->alloc);
+        // A QM calculation alone: every atom is in it (MD_ATOM_FLAG_QM)
+        sys->atom.flags[i] |= MD_ATOM_FLAG_QM;
     }
 
     sys->atom.count  = num_atoms;
@@ -877,7 +878,8 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
         md_qm_publish_scalar(sys, STR_LIT("trexio/nuclear_repulsion_energy"), STR_LIT("Nuclear Repulsion Energy"), md_unit_hartree(), trexio->nuclear_repulsion);
     }
 
-    md_qm_publish_atoms(sys, trexio->atomic_number, trexio->coord, trexio->num_atoms);
+    // nucleus_charge is the charge the electrons were solved against, kept apart from the element
+    md_qm_publish_atoms(sys, trexio->atomic_number, trexio->nuclear_charge, trexio->coord, trexio->num_atoms);
 
     if (trexio->num_shells > 0) {
         md_qm_publish_str(sys, STR_LIT("trexio/ao_convention"), STR_LIT("AO Convention"),
