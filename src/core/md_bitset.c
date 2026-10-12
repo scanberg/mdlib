@@ -453,27 +453,46 @@ void md_bitset_pack(md_bitset_gpu_t* out_sets, uint64_t* out_words, const md_bit
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// Serialization, byte compatible with the format of the former md_bitfield:
+// Serialization. Two formats, both of 512-bit blocks, where empty blocks are omitted so that a sparse set stays
+// small however far apart its members are:
+//
+// V1, byte compatible with the format of the former md_bitfield, written whenever the set fits it (every index
+// below 2^24), so files stay readable by versions which know only it:
 //   FastLZ( u16 block_count, u16 block_index[block_count], u8 block_data[64][#blocks not all set] )
-// Blocks are 512 bits. An index with BLOCK_IDX_FLAG_ALL_SET has no data. Empty blocks are omitted.
+// An index with the top bit set is a block with every bit set, which has no data. The 15 bits of the index are
+// what limit it to 2^24 indices.
+//
+// V2, for the sets which do not fit V1:
+//   u8 magic[4] = "MBS2", u32 raw_size, FastLZ( u32 entry_count, entries, u8 block_data[64][#blocks not all set] )
+// An entry is a u32 block index; with the top bit set it is followed by a u32 count, of consecutive blocks with
+// every bit set from that one on (so a range of 100M indices is one entry, not 200k).
+// A FastLZ stream starts with a byte below 0x40 (its level in the top 3 bits, 1 or 2), so 'M' (0x4D) tells the
+// formats apart.
 
 #define BLOCK_BITS             512u
 #define BLOCK_WORDS            8u
-#define BLOCK_IDX_FLAG_ALL_SET 0x8000u
-#define BLOCK_IDX_MASK         0x7FFFu
 #define SERIAL_MIN_INPUT_SIZE  16u
-#define SERIAL_MAX_BLOCK_COUNT ((size_t)BLOCK_IDX_MASK + 1)
-#define SERIAL_MAX_RAW_SIZE    (sizeof(uint16_t) + SERIAL_MAX_BLOCK_COUNT * (sizeof(uint16_t) + BLOCK_WORDS * sizeof(uint64_t)))
+
+#define V1_FLAG_ALL_SET        0x8000u
+#define V1_IDX_MASK            0x7FFFu
+#define V1_MAX_RAW_SIZE        (sizeof(uint16_t) + ((size_t)V1_IDX_MASK + 1) * (sizeof(uint16_t) + BLOCK_WORDS * sizeof(uint64_t)))
+
+#define V2_FLAG_ALL_SET        0x80000000u
+#define V2_IDX_MASK            0x7FFFFFFFu
+#define V2_MAGIC_SIZE          4u
+#define V2_HEADER_SIZE         (V2_MAGIC_SIZE + sizeof(uint32_t))
+static const uint8_t v2_magic[V2_MAGIC_SIZE] = {'M', 'B', 'S', '2'};
 
 static inline size_t fastlz_bound(size_t input_size) {
     size_t b = input_size + (input_size + 19) / 20 + 16;
     return b > 66 ? b : 66;
 }
 
+// The layout of the blocks in V1
 typedef struct {
-    size_t block_count;
-    size_t block_data_bytes;
-    size_t input_size;
+    size_t   block_count;
+    size_t   block_data_bytes;
+    size_t   input_size;
     uint32_t beg_blk;
     uint32_t end_blk;  // inclusive
 } serial_info_t;
@@ -494,15 +513,16 @@ static inline bool block_full(const uint64_t blk[BLOCK_WORDS]) {
     return x == ~0ull;
 }
 
-static bool serial_info(serial_info_t* info, md_bitset_t s) {
+// Whether the set can be written in V1
+static inline bool fits_v1(md_bitset_t s) {
+    return md_bitset_empty(s) || (s.end - 1) / BLOCK_BITS <= V1_IDX_MASK;
+}
+
+static void serial_info(serial_info_t* info, md_bitset_t s) {
     MEMSET(info, 0, sizeof(*info));
-    if (md_bitset_empty(s)) return true;
+    if (md_bitset_empty(s)) return;
     info->beg_blk = s.beg / BLOCK_BITS;
     info->end_blk = (s.end - 1) / BLOCK_BITS;
-    if (info->end_blk > BLOCK_IDX_MASK) {
-        MD_LOG_ERROR("Bitset is too large to serialize with the current format");
-        return false;
-    }
     for (uint32_t blk = info->beg_blk; blk <= info->end_blk; ++blk) {
         uint64_t w[BLOCK_WORDS];
         get_block(w, s, blk);
@@ -512,122 +532,306 @@ static bool serial_info(serial_info_t* info, md_bitset_t s) {
     }
     const size_t raw = sizeof(uint16_t) + info->block_count * sizeof(uint16_t) + info->block_data_bytes;
     info->input_size = raw > SERIAL_MIN_INPUT_SIZE ? raw : SERIAL_MIN_INPUT_SIZE;
-    return true;
+}
+
+// V1: writes the blocks of s, uncompressed, to raw (info->input_size bytes, zeroed)
+static void write_blocks(uint8_t* raw, const serial_info_t* info, md_bitset_t s) {
+    const uint16_t count = (uint16_t)info->block_count;
+    MEMCPY(raw, &count, sizeof(count));
+    uint8_t* block_indices = raw + sizeof(uint16_t);
+    uint8_t* block_data = block_indices + info->block_count * sizeof(uint16_t);
+
+    size_t index_pos = 0, data_pos = 0;
+    for (uint32_t blk = info->beg_blk; blk <= info->end_blk && info->block_count; ++blk) {
+        uint64_t w[BLOCK_WORDS];
+        get_block(w, s, blk);
+        if (block_empty(w)) continue;
+        uint16_t idx = (uint16_t)blk;
+        if (block_full(w)) {
+            idx |= V1_FLAG_ALL_SET;
+        } else {
+            MEMCPY(block_data + data_pos, w, sizeof(w));
+            data_pos += sizeof(w);
+        }
+        MEMCPY(block_indices + index_pos * sizeof(uint16_t), &idx, sizeof(idx));
+        index_pos += 1;
+    }
+    ASSERT(index_pos == info->block_count);
+    ASSERT(data_pos == info->block_data_bytes);
+}
+
+static inline uint16_t get_u16(const uint8_t* src) { uint16_t v; MEMCPY(&v, src, sizeof(v)); return v; }
+
+// V1: reads the blocks written by write_blocks
+static bool read_blocks(md_bitset_t* dst, const uint8_t* data, size_t size, md_allocator_i* alloc) {
+    if (size < sizeof(uint16_t)) return false;
+    const size_t block_count = get_u16(data);
+    if (block_count == 0) {
+        *dst = md_bitset_empty_set();
+        return true;
+    }
+    const size_t header_bytes = sizeof(uint16_t) + block_count * sizeof(uint16_t);
+    if (size < header_bytes) return false;
+
+    const uint8_t* idx_ptr = data + sizeof(uint16_t);
+    size_t data_bytes = 0;
+    for (size_t i = 0; i < block_count; ++i) {
+        const uint16_t v = get_u16(idx_ptr + i * sizeof(uint16_t));
+        if (i > 0 && (v & V1_IDX_MASK) <= (get_u16(idx_ptr + (i - 1) * sizeof(uint16_t)) & V1_IDX_MASK)) return false;
+        if (!(v & V1_FLAG_ALL_SET)) data_bytes += BLOCK_WORDS * sizeof(uint64_t);
+    }
+    if (size < header_bytes + data_bytes) return false;
+
+    const uint32_t beg_blk = get_u16(idx_ptr) & V1_IDX_MASK;
+    const uint32_t end_blk = get_u16(idx_ptr + (block_count - 1) * sizeof(uint16_t)) & V1_IDX_MASK;
+
+    // Through a mask: it holds the words of the blocks there are, not those of the gaps between them
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_bitmask_t m = md_bitmask_create(beg_blk * BLOCK_BITS, (end_blk + 1) * BLOCK_BITS, md_temp_allocator(temp));
+    const uint8_t* blk_data = data + header_bytes;
+    for (size_t i = 0; i < block_count; ++i) {
+        const uint16_t v = get_u16(idx_ptr + i * sizeof(uint16_t));
+        const uint32_t base = (v & V1_IDX_MASK) * BLOCK_BITS;
+        if (v & V1_FLAG_ALL_SET) {
+            md_bitmask_set_range(&m, base, base + BLOCK_BITS);
+        } else {
+            uint64_t w[BLOCK_WORDS];
+            MEMCPY(w, blk_data, sizeof(w));
+            blk_data += sizeof(w);
+            // Not a tidy set (its span is the block's), which the operations of a mask do not need
+            const md_bitset_t block = {base, base + BLOCK_BITS, w};
+            md_bitmask_or(&m, block);
+        }
+    }
+    *dst = md_bitmask_extract(&m, alloc);
+    md_temp_end(temp);
+    return !md_bitset_empty(*dst);
+}
+
+// V2: the entries and the data of the blocks of s, written to raw when it is given (input_size bytes, zeroed).
+// Returns the size of the uncompressed stream.
+static size_t v2_blocks(uint8_t* raw, md_bitset_t s) {
+    uint32_t num_entries = 0;
+    size_t entry_bytes = 0, data_bytes = 0;
+    // Two passes when writing: the first sizes the entries, the data follows them
+    for (int pass = raw ? 0 : 1; pass < 2; ++pass) {
+        uint8_t* entries = raw ? raw + sizeof(uint32_t) : NULL;
+        uint8_t* data = (raw && pass == 1) ? raw + sizeof(uint32_t) + entry_bytes : NULL;
+        num_entries = 0;
+        size_t e_pos = 0, d_pos = 0;
+        size_t run_pos = SIZE_MAX;      // where the count of the open run of full blocks is
+        uint32_t run_next = 0;          // the block which would extend it
+        if (!md_bitset_empty(s)) {
+            const uint32_t beg_blk = s.beg / BLOCK_BITS;
+            const uint32_t end_blk = (s.end - 1) / BLOCK_BITS;
+            for (uint32_t blk = beg_blk; blk <= end_blk; ++blk) {
+                uint64_t w[BLOCK_WORDS];
+                get_block(w, s, blk);
+                if (block_empty(w)) { run_pos = SIZE_MAX; continue; }
+                if (block_full(w)) {
+                    if (run_pos != SIZE_MAX && run_next == blk) {
+                        if (pass == 1 && raw) { uint32_t c; MEMCPY(&c, entries + run_pos, sizeof(c)); c += 1; MEMCPY(entries + run_pos, &c, sizeof(c)); }
+                        run_next = blk + 1;
+                        continue;
+                    }
+                    if (pass == 1 && raw) {
+                        const uint32_t v = blk | V2_FLAG_ALL_SET, c = 1;
+                        MEMCPY(entries + e_pos, &v, sizeof(v));
+                        MEMCPY(entries + e_pos + sizeof(v), &c, sizeof(c));
+                    }
+                    run_pos = e_pos + sizeof(uint32_t);
+                    run_next = blk + 1;
+                    e_pos += 2 * sizeof(uint32_t);
+                } else {
+                    if (pass == 1 && raw) {
+                        MEMCPY(entries + e_pos, &blk, sizeof(blk));
+                        MEMCPY(data + d_pos, w, sizeof(w));
+                    }
+                    run_pos = SIZE_MAX;
+                    e_pos += sizeof(uint32_t);
+                    d_pos += sizeof(w);
+                }
+                num_entries += 1;
+            }
+        }
+        entry_bytes = e_pos;
+        data_bytes = d_pos;
+    }
+    if (raw) MEMCPY(raw, &num_entries, sizeof(num_entries));
+    const size_t size = sizeof(uint32_t) + entry_bytes + data_bytes;
+    return num_entries ? (size > SERIAL_MIN_INPUT_SIZE ? size : SERIAL_MIN_INPUT_SIZE) : 0;
+}
+
+static bool v2_read(md_bitset_t* dst, const uint8_t* data, size_t size, md_allocator_i* alloc) {
+    if (size < sizeof(uint32_t)) return false;
+    uint32_t num_entries;
+    MEMCPY(&num_entries, data, sizeof(num_entries));
+    if (num_entries == 0) return false;
+
+    // The entries first: their extent, and where the data starts
+    size_t pos = sizeof(uint32_t), data_bytes = 0;
+    uint64_t next = 0;      // the first block an entry may name
+    uint32_t beg_blk = 0, end_blk = 0;
+    for (uint32_t i = 0; i < num_entries; ++i) {
+        uint32_t v;
+        if (pos + sizeof(v) > size) return false;
+        MEMCPY(&v, data + pos, sizeof(v));
+        pos += sizeof(v);
+        const uint32_t blk = v & V2_IDX_MASK;
+        uint64_t count = 1;
+        if (v & V2_FLAG_ALL_SET) {
+            uint32_t c;
+            if (pos + sizeof(c) > size) return false;
+            MEMCPY(&c, data + pos, sizeof(c));
+            pos += sizeof(c);
+            if (c == 0) return false;
+            count = c;
+        } else {
+            data_bytes += BLOCK_WORDS * sizeof(uint64_t);
+        }
+        if (blk < next || ((uint64_t)blk + count - 1) * BLOCK_BITS >= MAX_INDEX) return false;
+        if (i == 0) beg_blk = blk;
+        end_blk = (uint32_t)(blk + count - 1);
+        next = (uint64_t)blk + count;
+    }
+    if (pos + data_bytes > size) return false;
+
+    // Through a mask: it holds the words of the blocks there are, not those of the gaps between them. The last
+    // block may reach past the indices a set can hold: the domain drops what lies beyond.
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    const uint32_t dom_end = (uint32_t)MIN((uint64_t)(end_blk + 1) * BLOCK_BITS, (uint64_t)MAX_INDEX);
+    md_bitmask_t m = md_bitmask_create(beg_blk * BLOCK_BITS, dom_end, md_temp_allocator(temp));
+    const uint8_t* blk_data = data + pos;
+    pos = sizeof(uint32_t);
+    for (uint32_t i = 0; i < num_entries; ++i) {
+        uint32_t v;
+        MEMCPY(&v, data + pos, sizeof(v));
+        pos += sizeof(v);
+        const uint32_t base = (v & V2_IDX_MASK) * BLOCK_BITS;
+        if (v & V2_FLAG_ALL_SET) {
+            uint32_t c;
+            MEMCPY(&c, data + pos, sizeof(c));
+            pos += sizeof(c);
+            md_bitmask_set_range(&m, base, (uint32_t)MIN((uint64_t)base + (uint64_t)c * BLOCK_BITS, (uint64_t)MAX_INDEX));
+        } else {
+            uint64_t w[BLOCK_WORDS];
+            MEMCPY(w, blk_data, sizeof(w));
+            blk_data += sizeof(w);
+            // Not a tidy set (its span is the block's), which the operations of a mask do not need
+            const md_bitset_t block = {base, (uint32_t)MIN((uint64_t)base + BLOCK_BITS, (uint64_t)MAX_INDEX), w};
+            md_bitmask_or(&m, block);
+        }
+    }
+    *dst = md_bitmask_extract(&m, alloc);
+    md_temp_end(temp);
+    return !md_bitset_empty(*dst);
 }
 
 size_t md_bitset_serialize_size_in_bytes(md_bitset_t s) {
-    serial_info_t info;
-    if (!serial_info(&info, s) || info.block_count == 0) return 0;
-    return fastlz_bound(info.input_size);
+    if (md_bitset_empty(s)) return 0;
+    if (fits_v1(s)) {
+        serial_info_t info;
+        serial_info(&info, s);
+        return info.block_count ? fastlz_bound(info.input_size) : 0;
+    }
+    const size_t raw_size = v2_blocks(NULL, s);
+    return raw_size ? V2_HEADER_SIZE + fastlz_bound(raw_size) : 0;
 }
 
 size_t md_bitset_serialize(void* dst, md_bitset_t s) {
-    serial_info_t info;
-    if (!dst || !serial_info(&info, s) || info.block_count == 0) return 0;
+    if (!dst || md_bitset_empty(s)) return 0;
+    const bool v1 = fits_v1(s);
+    serial_info_t info = {0};
+    size_t raw_size = 0;
+    if (v1) {
+        serial_info(&info, s);
+        raw_size = info.block_count ? info.input_size : 0;
+    } else {
+        raw_size = v2_blocks(NULL, s);
+    }
+    if (raw_size == 0) return 0;
+    if (raw_size > INT32_MAX) {
+        MD_LOG_ERROR("Bitset is too large to serialize");
+        return 0;
+    }
 
     md_temp_scope_t temp = md_temp_begin();
     size_t result = 0;
-    uint8_t* raw = (uint8_t*)md_temp_alloc_zero(temp, info.input_size);
+    uint8_t* raw = (uint8_t*)md_temp_alloc_zero(temp, raw_size);
     if (raw) {
-        uint16_t* block_count = (uint16_t*)raw;
-        uint16_t* block_indices = block_count + 1;
-        uint8_t*  block_data = (uint8_t*)(block_indices + info.block_count);
-        *block_count = (uint16_t)info.block_count;
-
-        size_t index_pos = 0, data_pos = 0;
-        for (uint32_t blk = info.beg_blk; blk <= info.end_blk; ++blk) {
-            uint64_t w[BLOCK_WORDS];
-            get_block(w, s, blk);
-            if (block_empty(w)) continue;
-            uint16_t idx = (uint16_t)blk;
-            if (block_full(w)) {
-                idx |= BLOCK_IDX_FLAG_ALL_SET;
-            } else {
-                MEMCPY(block_data + data_pos, w, sizeof(w));
-                data_pos += sizeof(w);
-            }
-            block_indices[index_pos++] = idx;
+        uint8_t* out = (uint8_t*)dst;
+        if (v1) {
+            write_blocks(raw, &info, s);
+        } else {
+            v2_blocks(raw, s);
+            const uint32_t raw_size32 = (uint32_t)raw_size;
+            MEMCPY(out, v2_magic, V2_MAGIC_SIZE);
+            MEMCPY(out + V2_MAGIC_SIZE, &raw_size32, sizeof(raw_size32));
+            out += V2_HEADER_SIZE;
         }
-        ASSERT(index_pos == info.block_count);
-        ASSERT(data_pos == info.block_data_bytes);
-
-        int lz_bytes = fastlz_compress_level(2, raw, (int)info.input_size, dst);
-        result = lz_bytes > 0 ? (size_t)lz_bytes : 0;
+        const int lz_bytes = fastlz_compress_level(2, raw, (int)raw_size, out);
+        result = lz_bytes > 0 ? (v1 ? 0 : V2_HEADER_SIZE) + (size_t)lz_bytes : 0;
     }
     md_temp_end(temp);
     return result;
 }
 
-static bool deserialize_raw(md_bitset_t* dst, const uint8_t* data, size_t size, md_allocator_i* alloc) {
-    if (size < sizeof(uint16_t)) return false;
-    uint16_t block_count;
-    MEMCPY(&block_count, data, sizeof(block_count));
-    if (block_count == 0) {
-        *dst = md_bitset_empty_set();
-        return true;
-    }
-    const size_t header_bytes = sizeof(uint16_t) + (size_t)block_count * sizeof(uint16_t);
-    if (size < header_bytes) return false;
-
-    const uint8_t* idx_ptr = data + sizeof(uint16_t);
-    size_t data_bytes = 0;
-    uint32_t prev = 0;
-    for (size_t i = 0; i < block_count; ++i) {
-        uint16_t v; MEMCPY(&v, idx_ptr + i * sizeof(uint16_t), sizeof(v));
-        const uint32_t blk = v & BLOCK_IDX_MASK;
-        if (i > 0 && blk <= prev) return false;
-        prev = blk;
-        if (!(v & BLOCK_IDX_FLAG_ALL_SET)) data_bytes += BLOCK_WORDS * sizeof(uint64_t);
-    }
-    if (size < header_bytes + data_bytes) return false;
-
-    uint16_t first, last;
-    MEMCPY(&first, idx_ptr, sizeof(first));
-    MEMCPY(&last,  idx_ptr + (block_count - 1) * sizeof(uint16_t), sizeof(last));
-    const uint32_t beg_blk = first & BLOCK_IDX_MASK;
-    const uint32_t end_blk = last  & BLOCK_IDX_MASK;
-    const size_t nw = (size_t)(end_blk - beg_blk + 1) * BLOCK_WORDS;
+static bool deserialize_v2(md_bitset_t* dst, const uint8_t* src, size_t num_bytes, md_allocator_i* alloc) {
+    if (num_bytes <= V2_HEADER_SIZE) return false;
+    uint32_t raw_size;
+    MEMCPY(&raw_size, src + V2_MAGIC_SIZE, sizeof(raw_size));
+    if (raw_size < SERIAL_MIN_INPUT_SIZE || raw_size > INT32_MAX) return false;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    uint64_t* words = (uint64_t*)md_temp_alloc_zero(temp, nw * sizeof(uint64_t));
-    const uint8_t* blk_data = data + header_bytes;
-    for (size_t i = 0; i < block_count; ++i) {
-        uint16_t v; MEMCPY(&v, idx_ptr + i * sizeof(uint16_t), sizeof(v));
-        uint64_t* w = words + (size_t)((v & BLOCK_IDX_MASK) - beg_blk) * BLOCK_WORDS;
-        if (v & BLOCK_IDX_FLAG_ALL_SET) {
-            for (uint32_t j = 0; j < BLOCK_WORDS; ++j) w[j] = ~0ull;
-        } else {
-            MEMCPY(w, blk_data, BLOCK_WORDS * sizeof(uint64_t));
-            blk_data += BLOCK_WORDS * sizeof(uint64_t);
-        }
+    bool result = false;
+    uint8_t* raw = (uint8_t*)md_temp_alloc(temp, raw_size);
+    if (raw && fastlz_decompress(src + V2_HEADER_SIZE, (int)(num_bytes - V2_HEADER_SIZE), raw, (int)raw_size) == (int)raw_size) {
+        result = v2_read(dst, raw, raw_size, alloc);
     }
-    *dst = md_bitset_from_words(words, nw, beg_blk * BLOCK_BITS, alloc);
     md_temp_end(temp);
-    return !md_bitset_empty(*dst);
+    return result;
+}
+
+static bool deserialize(md_bitset_t* dst, const void* src, size_t num_bytes, md_allocator_i* alloc) {
+    if (num_bytes >= V2_MAGIC_SIZE && memcmp(src, v2_magic, V2_MAGIC_SIZE) == 0) {
+        return deserialize_v2(dst, (const uint8_t*)src, num_bytes, alloc);
+    }
+
+    // V1 does not store its raw size: decompress into a buffer which grows until it fits
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    bool result = false;
+    size_t cap = num_bytes * 4;
+    if (cap < SERIAL_MIN_INPUT_SIZE) cap = SERIAL_MIN_INPUT_SIZE;
+    if (cap > V1_MAX_RAW_SIZE)       cap = V1_MAX_RAW_SIZE;
+
+    while (cap <= V1_MAX_RAW_SIZE) {
+        md_vm_arena_set_pos_back(temp_alloc, temp.pos);
+        uint8_t* mem = (uint8_t*)md_temp_alloc(temp, cap);
+        if (!mem) break;
+        int size = fastlz_decompress(src, (int)num_bytes, mem, (int)cap);
+        if (size > 0) {
+            result = read_blocks(dst, mem, (size_t)size, alloc);
+            break;
+        }
+        if (cap == V1_MAX_RAW_SIZE) break;
+        cap = cap * 2 < V1_MAX_RAW_SIZE ? cap * 2 : V1_MAX_RAW_SIZE;
+    }
+    md_temp_end(temp);
+    return result;
 }
 
 bool md_bitset_deserialize(md_bitset_t* dst, const void* src, size_t num_bytes, md_allocator_i* alloc) {
     ASSERT(dst);
     if (!dst || !src || num_bytes == 0 || num_bytes > INT32_MAX) return false;
 
+    // FastLZ may read a byte past the end of a malformed stream: decompress from a copy which has zeroed padding
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = false;
-    size_t cap = num_bytes * 4;
-    if (cap < SERIAL_MIN_INPUT_SIZE) cap = SERIAL_MIN_INPUT_SIZE;
-    if (cap > SERIAL_MAX_RAW_SIZE)   cap = SERIAL_MAX_RAW_SIZE;
-
-    while (cap <= SERIAL_MAX_RAW_SIZE) {
-        md_vm_arena_set_pos_back(temp_alloc, temp.pos);
-        uint8_t* mem = (uint8_t*)md_temp_alloc(temp, cap);
-        if (!mem) break;
-        int size = fastlz_decompress(src, (int)num_bytes, mem, (int)cap);
-        if (size > 0) {
-            result = deserialize_raw(dst, mem, (size_t)size, alloc);
-            break;
-        }
-        if (cap == SERIAL_MAX_RAW_SIZE) break;
-        cap = cap * 2 < SERIAL_MAX_RAW_SIZE ? cap * 2 : SERIAL_MAX_RAW_SIZE;
+    uint8_t* in = (uint8_t*)md_temp_alloc_zero(temp, num_bytes + 8);
+    if (in) {
+        MEMCPY(in, src, num_bytes);
+        result = deserialize(dst, in, num_bytes, alloc);
     }
     md_temp_end(temp);
 

@@ -605,3 +605,64 @@ UTEST(bitset, serialization_round_trip) {
         md_bitset_free(&d, alloc);
     }
 }
+
+// Sets reaching beyond the 2^24 indices of the former format are written in the second one, and read back;
+// those within it still write the former format (the golden strings above)
+UTEST(bitset, serialization_large) {
+    count_alloc_t counter; md_allocator_i* alloc = count_alloc_init(&counter);
+    static ref_t r;
+    const uint32_t bases[] = { (1u << 24) - 100, (1u << 24), 100000000u, 3000000000u, MD_BITSET_MAX_INDEX - 64 - REF_N };
+    for (int round = 0; round < 200; ++round) {
+        r.base = bases[round % ARRAY_SIZE(bases)];
+        gen(r.ref, round % SHAPE_COUNT);
+        md_bitset_t s = make(&r, alloc);
+        const size_t cap = md_bitset_serialize_size_in_bytes(s);
+        if (md_bitset_empty(s)) { EXPECT_EQ((size_t)0, cap); continue; }
+        EXPECT_GT(cap, (size_t)0);
+        uint8_t* bytes = (uint8_t*)malloc(cap);
+        const size_t n = md_bitset_serialize(bytes, s);
+        EXPECT_GT(n, (size_t)0);
+        EXPECT_LE(n, cap);
+        // The second format exactly when the former cannot hold the set
+        const bool v2 = n >= 4 && memcmp(bytes, "MBS2", 4) == 0;
+        EXPECT_EQ(s.end > (1u << 24), v2);
+        md_bitset_t d = {0};
+        EXPECT_TRUE(md_bitset_deserialize(&d, bytes, n, alloc));
+        EXPECT_TRUE(md_bitset_equal(d, s));
+        // Truncated, it is rejected
+        if (v2) {
+            md_bitset_t t = {0};
+            EXPECT_FALSE(md_bitset_deserialize(&t, bytes, n - 1, alloc));
+            md_bitset_free(&t, alloc);
+        }
+        free(bytes);
+        md_bitset_free(&s, alloc);
+        md_bitset_free(&d, alloc);
+    }
+    // Sparse far out stays small: the blocks between the members are not written
+    {
+        const uint32_t idx[] = { 5, 20000000, 99999999 };
+        md_bitset_t sp = md_bitset_from_indices(idx, ARRAY_SIZE(idx), alloc);
+        uint8_t bytes[512];
+        ASSERT_LE(md_bitset_serialize_size_in_bytes(sp), sizeof(bytes));
+        const size_t n = md_bitset_serialize(bytes, sp);
+        EXPECT_GT(n, (size_t)0);
+        EXPECT_LT(n, (size_t)400);
+        md_bitset_t d = {0};
+        EXPECT_TRUE(md_bitset_deserialize(&d, bytes, n, alloc));
+        EXPECT_TRUE(md_bitset_equal(d, sp));
+        md_bitset_free(&sp, alloc);
+        md_bitset_free(&d, alloc);
+    }
+    // A RUN far out
+    {
+        const md_bitset_t run = md_bitset_range(50000000u, 90000000u);
+        uint8_t bytes[256];
+        ASSERT_LE(md_bitset_serialize_size_in_bytes(run), sizeof(bytes));
+        const size_t n = md_bitset_serialize(bytes, run);
+        md_bitset_t d = {0};
+        EXPECT_TRUE(n > 0 && md_bitset_deserialize(&d, bytes, n, alloc));
+        EXPECT_TRUE(md_bitset_is_run(d) && md_bitset_equal(d, run));
+    }
+    EXPECT_EQ(0, counter.live_bytes); EXPECT_EQ(0, counter.live_allocs);
+}

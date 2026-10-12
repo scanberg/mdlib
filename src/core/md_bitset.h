@@ -217,8 +217,10 @@ size_t md_bitset_pack_num_words(const md_bitset_t* sets, size_t num_sets);
 void   md_bitset_pack(md_bitset_gpu_t* out_sets, uint64_t* out_words, const md_bitset_t* sets, size_t num_sets);
 
 // --- Serialization ---
-// The byte format is the one the former md_bitfield used (512-bit blocks, FastLZ compressed), so masks stored
-// before md_bitset replaced it (e.g. in workspace files) still read, and the same set writes the same bytes.
+// A set whose indices are all below 2^24 is written in the byte format the former md_bitfield used (512-bit blocks,
+// FastLZ compressed), so masks stored before md_bitset replaced it (e.g. in workspace files) still read, the same
+// set writes the same bytes, and older versions read what this one writes. A set reaching further, which that
+// format cannot hold, is written in a second format that only this version reads. Both are read.
 
 size_t md_bitset_serialize_size_in_bytes(md_bitset_t s);           // upper bound, 0 for an empty set
 size_t md_bitset_serialize(void* dst, md_bitset_t s);              // returns bytes written, 0 on failure or empty
