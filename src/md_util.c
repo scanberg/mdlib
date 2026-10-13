@@ -1502,115 +1502,48 @@ static inline void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], c
     x[2] = md_mm256_add_ps(rx[2], dx[2]);
 }
 
-static inline bool zhang_skolnick_ss(const vec3_t* ca_pos, int seq_beg, int seq_end, int i, const float distances[3], float delta) {
-    for (int j = MAX(seq_beg, i - 2); j <= i; ++j) {
-        for (int k = 2; k < 5; ++k) {
-            if (j + k >= seq_end) continue;
-            const vec3_t pos_j = ca_pos[j];
-            const vec3_t pos_k = ca_pos[j + k];
-            const float d = vec3_distance(pos_j, pos_k);
-            if (fabsf(d - distances[k - 2]) > delta) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
+// ### SECONDARY STRUCTURE ###
+//
+// DSSP (Kabsch & Sander 1983, doi:10.1002/bip.360221211) assigns secondary structure from the hydrogen bonds of the
+// backbone: an n-turn at i is a bond from the C=O of residue i to the N-H of residue i+n, two consecutive n-turns make a
+// helix, and bridges between residues are patterns of bonds between two strands. It is done here in two stages. The
+// bonds go into dssp_res_hbonds_t, where every donor keeps its two best acceptors and every acceptor its two best donors
+// (lowest energy first, a bond being an energy below -0.5). The patterns (dssp_assign) then read the donors' acceptors
+// (dssp_test_bond), the same for atomistic ranges and for traces of coarse grained beads.
+//
+// The bonds of an atomistic range are those of DSSP: the electrostatic energy between N, H, C and O.
+//
+// CG-DSSP. A trace (one bead per residue, the BB bead of Martini) has no atoms to bond, but it has peptide groups, and
+// those are what the patterns are about. Peptide k is the bond between beads k and k+1: it holds the C=O of residue k
+// and the N-H of residue k+1, which point opposite ways in its plane. Its site is the midpoint of the bond and its
+// dipole the direction of the C=O, which the beads do not give, as the peptide plane turns about the bond with the
+// conformation: a linear model of the trace around the residue places its C and O (cg_dssp_dipole, fit by
+// tools/fit_cg_dssp.py). Peptide k bonds peptide l, the C=O of k to the N-H of l+1, when their sites are within R and
+// both dipoles point from k towards l, head to tail, by more than c (the cosine of each dipole with the line between the
+// sites). The local pairs, which make the turns (|k - l| <= 4 within a chain), and the others, which make the sheets,
+// have their own R and c. The pseudo energy -1 - (cos_k + cos_l) / 2 ranks the bonds of a donor. The pairs and their
+// distances are those of the spatial structure (minimum image), and each chain is taken in one image, bead by bonded bead,
+// for the frames of its residues.
+//
+// The model is for Martini 3 BB beads, the center of N, CA, C and O as martinize2 maps them (Martini 2 maps BB to the
+// center of mass of the same atoms; ELNEDYN to the CA, which it is not fit for). The positions of C and O are fit on
+// atomistic structures mapped to beads (9 proteins, 3272 residues), the thresholds on Martini 3 simulations with elastic
+// networks of 3 of them (1 ns), every frame labelled by the DSSP (the atomistic one here) of the structure the model was
+// built from, as the force field holds the secondary structure it was built with. On simulations of 2 others (ubiquitin and
+// lysozyme, 2 ns) helix, sheet and coil agree with that for 83 % of the residues of a frame, 89 to 93 % of the helices
+// and 68 to 78 % of the strands found, where the CA distance criteria of TM-align (Zhang & Skolnick 2005) get 68 to 77 %;
+// 84 to 91 % on the simulations of the tuning. A trace costs about a microsecond per residue, like the atomistic DSSP.
 
-static inline bool is_helical(const vec3_t* ca_pos, int seq_beg, int seq_end, int i) {
-    const float distances[] = { 5.45f, 5.18f, 6.37f };
-    const float delta = 2.1f;
-    return zhang_skolnick_ss(ca_pos, seq_beg, seq_end, i, distances, delta);
-}
+// The thresholds of CG-DSSP: distance between the sites (A) and alignment of the dipoles with the line between them
+#define CG_DSSP_TURN_DISTANCE    5.25f
+#define CG_DSSP_TURN_ALIGNMENT   0.55f
+#define CG_DSSP_SHEET_DISTANCE   7.0f
+#define CG_DSSP_SHEET_ALIGNMENT  0.3f
 
-static inline bool is_sheet(const vec3_t* ca_pos, int seq_beg, int seq_end, int i) {
-    const float distances[] = { 6.1f, 10.4f, 13.0f };
-    const float delta = 1.42f;
-    return zhang_skolnick_ss(ca_pos, seq_beg, seq_end, i, distances, delta);
-}
+// Longer than any bond between the backbone beads of a chain (A): a longer vector between two crosses the boundary
+#define CG_DSSP_MAX_BOND         6.0f
 
-// TM-align: a protein structure alignment algorithm based on the Tm-score
-// doi:10.1093/nar/gki524
-
-enum {
-    TM_ALIGN_VALID = 1,
-	TM_ALIGN_HELIX = 2,
-	TM_ALIGN_SHEET = 4,
-};
-
-bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
-    if (!secondary_structure) return false;
-    if (capacity == 0) return false;
-
-    MEMSET(secondary_structure, 0, capacity * sizeof(md_secondary_structure_t));
-
-    if (!backbone) return false;
-    if (!x) return false;
-    if (!y) return false;
-    if (!z) return false;
-    if (!backbone->segment.atoms) return false;
-    if (!backbone->range.offset)  return false;
-
-    md_temp_scope_t temp = md_temp_begin();
-    int* type_mask = md_temp_alloc_array(temp, int, backbone->segment.count);
-    vec3_t* ca_pos = md_temp_alloc_array(temp, vec3_t, backbone->segment.count);
-
-    for (size_t i = 0; i < backbone->segment.count; ++i) {
-        const md_atom_idx_t ca_idx = backbone->segment.atoms[i].ca;
-        if (ca_idx >= 0) {
-			ca_pos[i] = vec3_set(x[ca_idx], y[ca_idx], z[ca_idx]);
-        }
-		type_mask[i] = ca_idx >= 0 ? TM_ALIGN_VALID : 0;
-	}
-
-    for (size_t bb_idx = 0; bb_idx < backbone->range.count; ++bb_idx) {
-        const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
-        ASSERT(range.end <= capacity);
-
-        if (range.end - range.beg < 4) {
-            continue;
-        }
-
-        // Classify residues
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            md_secondary_structure_t ss = MD_SECONDARY_STRUCTURE_COIL;
-
-            if (is_sheet(ca_pos, range.beg, range.end, i)) {
-                ss = MD_SECONDARY_STRUCTURE_BETA_SHEET;
-            }
-            else if (is_helical(ca_pos, range.beg, range.end, i)) {
-                ss = MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
-            }
-            secondary_structure[i] = ss;
-        }
-
-        // Set squished isolated structures to the surrounding (only for sheets and helices)
-        md_secondary_structure_t* ss = secondary_structure;
-        for (int i = (int)range.beg + 1; i < (int)range.end - 1; ++i) {
-            if (ss[i-1] == ss[i+1] &&
-                ss[i-1] != MD_SECONDARY_STRUCTURE_COIL &&
-                ss[i+1] != MD_SECONDARY_STRUCTURE_COIL)
-            {
-                ss[i] = ss[i-1];
-            }
-        }
-
-        // Set remaining isolated structures to coil
-        if (ss[range.beg] != ss[range.beg + 1]) ss[range.beg] = MD_SECONDARY_STRUCTURE_COIL;
-        for (int i = (int)range.beg + 1; i < (int)range.end - 1; ++i) {
-            if (ss[i] != ss[i-1] &&
-                ss[i] != ss[i+1])
-            {
-                ss[i] = MD_SECONDARY_STRUCTURE_COIL;
-            }
-        }
-        if (ss[range.end - 1] != ss[range.end - 2]) ss[range.end - 1] = MD_SECONDARY_STRUCTURE_COIL;
-    }
-
-    md_temp_end(temp);
-
-    return true;
-}
+#include "md_util_cg_dssp.inl"
 
 typedef struct dssp_hbond_t {
     float energy;
@@ -1629,6 +1562,30 @@ typedef struct dssp_res_hbonds_t {
     dssp_hbond_t acc[2];
     dssp_hbond_t don[2];
 } dssp_res_hbonds_t;
+
+// Keeps a bond of the donor don_idx to the acceptor acc_idx among the two best of each
+static inline void dssp_hbond_insert(dssp_res_hbonds_t res_hbonds[], size_t don_idx, size_t acc_idx, float energy) {
+    dssp_res_hbonds_t* don_hbonds = &res_hbonds[don_idx];
+    dssp_res_hbonds_t* acc_hbonds = &res_hbonds[acc_idx];
+
+    if (energy < don_hbonds->acc[0].energy) {
+        don_hbonds->acc[1] = don_hbonds->acc[0];
+        don_hbonds->acc[0].res_idx = (uint32_t)acc_idx;
+        don_hbonds->acc[0].energy  = energy;
+    } else if (energy < don_hbonds->acc[1].energy) {
+        don_hbonds->acc[1].res_idx = (uint32_t)acc_idx;
+        don_hbonds->acc[1].energy  = energy;
+    }
+
+    if (energy < acc_hbonds->don[0].energy) {
+        acc_hbonds->don[1] = acc_hbonds->don[0];
+        acc_hbonds->don[0].res_idx = (uint32_t)don_idx;
+        acc_hbonds->don[0].energy  = energy;
+    } else if (energy < acc_hbonds->don[1].energy) {
+        acc_hbonds->don[1].res_idx = (uint32_t)don_idx;
+        acc_hbonds->don[1].energy  = energy;
+    }
+}
 
 static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], size_t don_idx, size_t acc_idx) {
     /*
@@ -1654,7 +1611,7 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
         vec4_distance_squared(don->N, acc->C),
         vec4_distance_squared(don->H, acc->O),
     };
-    
+
     const int mask_min = vec4_move_mask(vec4_cmp_lt(d2, vec4_set1(min_distance_sq)));
     if (mask_min > 0) {
         energy = min_bond_energy;
@@ -1669,28 +1626,7 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
 		return 0.0f;
 
     energy = MAX(energy, min_bond_energy);
-
-    dssp_res_hbonds_t* don_hbonds = &res_hbonds[don_idx];
-    dssp_res_hbonds_t* acc_hbonds = &res_hbonds[acc_idx];
-
-    if (energy < don_hbonds->acc[0].energy) {
-        don_hbonds->acc[1] = don_hbonds->acc[0];
-        don_hbonds->acc[0].res_idx = (uint32_t)acc_idx;
-        don_hbonds->acc[0].energy  = energy;
-    } else if (energy < don_hbonds->acc[1].energy) {
-        don_hbonds->acc[1].res_idx = (uint32_t)acc_idx;
-        don_hbonds->acc[1].energy  = energy;
-    }
-
-    if (energy < acc_hbonds->don[0].energy) {
-        acc_hbonds->don[1] = acc_hbonds->don[0];
-        acc_hbonds->don[0].res_idx = (uint32_t)don_idx;
-        acc_hbonds->don[0].energy  = energy;
-    } else if (energy < acc_hbonds->don[1].energy) {
-        acc_hbonds->don[1].res_idx = (uint32_t)don_idx;
-        acc_hbonds->don[1].energy  = energy;
-    }
-
+    dssp_hbond_insert(res_hbonds, don_idx, acc_idx, energy);
     return energy;
 }
 
@@ -1733,20 +1669,25 @@ typedef struct residue_pair_t {
     uint32_t j;
 } residue_pair_t;
 
+// ### THE BONDS OF ATOMISTIC RANGES ###
+
 typedef struct dssp_hbond_energy_user_param_t {
 	const uint32_t* res_range_id;
+    const uint8_t* res_trace;       // [segment] in a trace, which has no atoms to bond
     const dssp_res_coords_t* res_coords;
     dssp_res_hbonds_t* res_hbonds;
 	md_array(residue_pair_t)* sheet_candidates;
 	md_allocator_i* alloc;
 } dssp_hbond_energy_user_param_t;
 
-void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+static void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
     (void)ij_dist2;
     dssp_hbond_energy_user_param_t* param = (dssp_hbond_energy_user_param_t*)user_param;
     for (size_t idx = 0; idx < num_pairs; ++idx) {
         uint32_t i = MIN(i_idx[idx], j_idx[idx]);
         uint32_t j = MAX(i_idx[idx], j_idx[idx]);
+
+        if (param->res_trace[i] || param->res_trace[j]) continue;
 
 		uint32_t ri = param->res_range_id[i];
 		uint32_t rj = param->res_range_id[j];
@@ -1767,44 +1708,16 @@ void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const fl
     }
 }
 
-void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
-    ASSERT(out_secondary_structure);
-    ASSERT(xyz);
-    ASSERT(cell);
-    ASSERT(backbone);
-
-    size_t backbone_segment_count = backbone->segment.count;
-    size_t backbone_range_count   = backbone->range.count;
-    const uint32_t* backbone_range_offsets = backbone->range.offset;
+static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pair_t)* sheet_candidates, const vec3_t* xyz, const md_unitcell_t* cell,
+    const md_protein_backbone_data_t* backbone, const uint32_t* res_range_id, const uint8_t* res_trace, const vec3_t* res_ca, md_allocator_i* temp_alloc)
+{
+    const size_t backbone_segment_count = backbone->segment.count;
     const md_amino_acid_atoms_t* backbone_atoms = backbone->segment.atoms;
+    dssp_res_coords_t* res_coords = md_alloc(temp_alloc, sizeof(dssp_res_coords_t) * backbone_segment_count);
 
-    if (capacity < backbone_segment_count) {
-        MD_LOG_ERROR("Capacity of out_secondary_structure is insufficient to hold the results");
-        return;
-    }
-
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-
-    dssp_res_coords_t* res_coords = md_temp_alloc_array(temp, dssp_res_coords_t, backbone_segment_count);
-    dssp_res_hbonds_t* res_hbonds = md_temp_alloc_array(temp, dssp_res_hbonds_t, backbone_segment_count);
-    uint32_t* res_range_id = md_temp_alloc_array(temp, uint32_t, backbone_segment_count);
-    uint8_t* turn_mask = md_temp_alloc_zero_array(temp, uint8_t, backbone_segment_count);
-    vec3_t* res_ca = md_temp_alloc_array(temp, vec3_t, backbone_segment_count);
-
-    md_array(residue_pair_t) sheet_candidates = NULL;
-	md_array_ensure(sheet_candidates, 1024, temp_alloc);
-
-    for (uint32_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
-        const md_urange_t range = { backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1] };
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            res_range_id[i] = range_idx;
-        }
-    }
-    uint32_t* ss_flags = md_temp_alloc_zero_array(temp, uint32_t, backbone_segment_count);
-
-    for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
-        const md_irange_t range = {(int)backbone_range_offsets[range_idx], (int)backbone_range_offsets[range_idx + 1]};
+    for (size_t range_idx = 0; range_idx < backbone->range.count; ++range_idx) {
+        if (md_protein_backbone_range_is_trace(backbone, range_idx)) continue;
+        const md_irange_t range = {(int)backbone->range.offset[range_idx], (int)backbone->range.offset[range_idx + 1]};
 
         for (int i = range.beg; i < range.end; ++i) {
             md_atom_idx_t ca_idx = backbone_atoms[i].ca;
@@ -1812,8 +1725,6 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
             md_atom_idx_t c_idx  = backbone_atoms[i].c;
             md_atom_idx_t o_idx  = backbone_atoms[i].o;
             md_atom_idx_t hn_idx = backbone_atoms[i].hn;
-
-			res_ca[i] = xyz[ca_idx];
 
             res_coords[i].CA = vec4_from_vec3(xyz[ca_idx], 0);
             res_coords[i].N  = vec4_from_vec3(xyz[n_idx], 0);
@@ -1831,40 +1742,247 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
         }
     }
 
-	// Safe to set to zero, as we will only be comparing energies (which are negative)
-	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
-
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)res_ca, sizeof(vec3_t), NULL, backbone_segment_count);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 9.0, .unitcell = cell });
 
     dssp_hbond_energy_user_param_t user_param = {
 		.res_range_id = res_range_id,
+        .res_trace = res_trace,
         .res_coords = res_coords,
         .res_hbonds = res_hbonds,
-		.sheet_candidates = &sheet_candidates,
+		.sheet_candidates = sheet_candidates,
 		.alloc = temp_alloc,
 	};
-
-    /*
-    // Do N^2 bond energy calculations
-    const float min_ca_dist2 = (9.0f * 9.0f);
-    for (size_t i = 0; i + 1 < backbone_segment_count; ++i) {
-    for (size_t j = i + 1; j < backbone_segment_count; ++j) {
-    // Only apply local-sequence exclusion within the same backbone range (chain)
-    if (res_range_id[i] == res_range_id[j] && (j - i) <= 1) {
-    continue;
-    }
-    if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2) {
-    continue;
-    }
-
-    calc_hbond_energy(res_hbonds, res_coords, i, j);
-    calc_hbond_energy(res_hbonds, res_coords, j, i);
-    }
-    }
-    */
     md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, 9.0, dssp_hbond_energy_cb, &user_param);
+}
+
+// ### THE BONDS OF TRACES (CG-DSSP) ###
+
+// The difference b - a by minimum image, as md_hbond takes it: dist2 is the minimum image distance squared of the pair
+// as the spatial structure found it (negative when there is none, and max_len bounds the vector instead). Only a vector
+// longer than that crosses the periodic boundary and pays for the general minimum image.
+static inline vec3_t min_image_diff(vec3_t a, vec3_t b, float dist2, float max_len, const md_unitcell_t* cell) {
+    vec3_t d = vec3_sub(b, a);
+    const float l2 = vec3_dot(d, d);
+    const float ref2 = dist2 >= 0.0f ? dist2 * 1.0001f + 1.0e-4f : max_len * max_len;
+    if (l2 > ref2) md_util_min_image_vec3(&d, 1, cell);
+    return d;
+}
+
+// IUPAC sign: positive in an alpha helix
+static inline float cg_dssp_dihedral(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
+    const vec3_t b0 = vec3_sub(p0, p1);
+    const vec3_t b1 = vec3_normalize(vec3_sub(p2, p1));
+    const vec3_t b2 = vec3_sub(p3, p2);
+    const vec3_t v = vec3_sub(b0, vec3_mul1(b1, vec3_dot(b0, b1)));
+    const vec3_t w = vec3_sub(b2, vec3_mul1(b1, vec3_dot(b2, b1)));
+    return atan2f(vec3_dot(vec3_cross(b1, v), w), vec3_dot(v, w));
+}
+
+static inline float cg_dssp_angle(vec3_t a, vec3_t b, vec3_t c) {
+    const vec3_t u = vec3_sub(a, b);
+    const vec3_t v = vec3_sub(c, b);
+    return acosf(CLAMP(vec3_dot(u, v) / (vec3_length(u) * vec3_length(v)), -1.0f, 1.0f));
+}
+
+// The direction of the C=O of residue i of the chain x[beg, end) (beads in one image): the virtual C and O of the residue,
+// placed in the frame of its bead by the fit of md_util_cg_dssp.inl, whose script (tools/fit_cg_dssp.py) defines the
+// frame and the features in the order used here. False for a residue without a frame: the ends of the chain, and
+// chains of three beads.
+static bool cg_dssp_dipole(vec3_t* out_dipole, const vec3_t* x, int beg, int end, int i) {
+    if (i < beg + 1 || i + 1 >= end) return false;
+    const bool has_a = i - 2 >= beg;
+    const bool has_b = i + 2 < end;
+    if (!has_a && !has_b) return false;
+
+    const vec3_t t = vec3_normalize(vec3_sub(x[i + 1], x[i - 1]));
+    vec3_t m = vec3_sub(vec3_add(x[i - 1], x[i + 1]), vec3_mul1(x[i], 2.0f));
+    m = vec3_sub(m, vec3_mul1(t, vec3_dot(m, t)));
+    const vec3_t n = vec3_normalize(m);
+    const vec3_t b = vec3_cross(t, n);
+
+    const float tau = cg_dssp_angle(x[i - 1], x[i], x[i + 1]);
+    const float ta  = has_a ? cg_dssp_dihedral(x[i - 2], x[i - 1], x[i], x[i + 1]) : 0.0f;
+    const float tb  = has_b ? cg_dssp_dihedral(x[i - 1], x[i], x[i + 1], x[i + 2]) : 0.0f;
+    const float tp  = has_a ? cg_dssp_angle(x[i - 2], x[i - 1], x[i]) : tau;
+    const float tn  = has_b ? cg_dssp_angle(x[i], x[i + 1], x[i + 2]) : tau;
+
+    const float ct = cosf(tau), st = sinf(tau);
+    const float ca = cosf(ta), sa = sinf(ta);
+    const float cb = cosf(tb), sb = sinf(tb);
+    const float cp = cosf(tp), cn = cosf(tn);
+    const float da[4] = { ca, sa, ca * ca - sa * sa, 2.0f * sa * ca };    // cos, sin of theta_a and of 2 theta_a
+    const float db[4] = { cb, sb, cb * cb - sb * sb, 2.0f * sb * cb };
+
+    float f[34];
+    int k = 0;
+    f[k++] = 1.0f; f[k++] = ct; f[k++] = st; f[k++] = ct * ct;
+    f[k++] = cp; f[k++] = cn; f[k++] = cp * cb; f[k++] = cn * cb; f[k++] = cp * ca; f[k++] = cn * ca;
+    f[k++] = cp * sb; f[k++] = cn * sb; f[k++] = cp * sa; f[k++] = cn * sa;
+    const float (*w)[6];
+    if (has_a && has_b) {
+        for (int j = 0; j < 4; ++j) f[k++] = da[j];
+        for (int j = 0; j < 4; ++j) f[k++] = db[j];
+        f[k++] = ca * cb; f[k++] = sa * sb; f[k++] = sa * cb; f[k++] = ca * sb;
+        for (int j = 0; j < 4; ++j) f[k++] = ct * da[j];
+        for (int j = 0; j < 4; ++j) f[k++] = ct * db[j];
+        w = cg_dssp_carbonyl_w1;
+        ASSERT(k == (int)ARRAY_SIZE(cg_dssp_carbonyl_w1));
+    } else if (has_b) {
+        for (int j = 0; j < 4; ++j) f[k++] = db[j];
+        for (int j = 0; j < 4; ++j) f[k++] = ct * db[j];
+        w = cg_dssp_carbonyl_w2;
+        ASSERT(k == (int)ARRAY_SIZE(cg_dssp_carbonyl_w2));
+    } else {
+        for (int j = 0; j < 4; ++j) f[k++] = da[j];
+        for (int j = 0; j < 4; ++j) f[k++] = ct * da[j];
+        w = cg_dssp_carbonyl_w3;
+        ASSERT(k == (int)ARRAY_SIZE(cg_dssp_carbonyl_w3));
+    }
+
+    // {C, O} in (t, n, b), and O - C in the world
+    float co[6] = {0};
+    for (int j = 0; j < k; ++j) {
+        for (int c = 0; c < 6; ++c) co[c] += f[j] * w[j][c];
+    }
+    const vec3_t d = vec3_add(vec3_add(vec3_mul1(t, co[3] - co[0]), vec3_mul1(n, co[4] - co[1])), vec3_mul1(b, co[5] - co[2]));
+    const float len = vec3_length(d);
+    if (!(len > 0.0f)) return false;
+    *out_dipole = vec3_mul1(d, 1.0f / len);
+    return true;
+}
+
+typedef struct cg_dssp_param_t {
+    const vec3_t* site;             // [peptide]
+    const vec3_t* dipole;           // [peptide]
+    const uint32_t* peptide_seg;    // [peptide] -> segment, whose C=O it holds
+    const uint32_t* res_range_id;   // [segment]
+    const md_unitcell_t* cell;
+    dssp_res_hbonds_t* res_hbonds;
+    md_array(residue_pair_t)* sheet_candidates;
+    md_allocator_i* alloc;
+} cg_dssp_param_t;
+
+// The bond of the C=O of acc to the N-H of don, and the residue pairs whose bridge pattern it can begin: hb(i-1, j),
+// hb(j-1, i), hb(i, j) and hb(i-1, j+1) (see dssp_assign)
+static inline void cg_dssp_bond(cg_dssp_param_t* p, uint32_t acc, uint32_t don, float energy) {
+    dssp_hbond_insert(p->res_hbonds, don, acc, energy);
+    const int64_t a = acc, d = don;
+    const int64_t cand[4][2] = { {a + 1, d}, {d, a + 1}, {a, d}, {a + 1, d - 1} };
+    for (int c = 0; c < 4; ++c) {
+        const int64_t i = MIN(cand[c][0], cand[c][1]);
+        const int64_t j = MAX(cand[c][0], cand[c][1]);
+        // In range: a bond is never to the last segment's successor, and acc + 1 is a segment as acc holds a peptide
+        if (i < 0 || (p->res_range_id[i] == p->res_range_id[j] && j - i <= 2)) continue;
+        residue_pair_t pair = { (uint32_t)i, (uint32_t)j };
+        md_array_push(*p->sheet_candidates, pair, p->alloc);
+    }
+}
+
+static void cg_dssp_pair_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    cg_dssp_param_t* p = (cg_dssp_param_t*)user_param;
+    for (size_t idx = 0; idx < num_pairs; ++idx) {
+        const uint32_t a = i_idx[idx];
+        const uint32_t b = j_idx[idx];
+        const uint32_t k = p->peptide_seg[a];
+        const uint32_t l = p->peptide_seg[b];
+        const bool same_chain = p->res_range_id[k] == p->res_range_id[l];
+        const uint32_t sep = k > l ? k - l : l - k;
+        // Neighbors share a bead
+        if (same_chain && sep < 2) continue;
+
+        const bool turn = same_chain && sep <= 4;
+        const float max_dist = turn ? CG_DSSP_TURN_DISTANCE  : CG_DSSP_SHEET_DISTANCE;
+        const float min_cos  = turn ? CG_DSSP_TURN_ALIGNMENT : CG_DSSP_SHEET_ALIGNMENT;
+        if (ij_dist2[idx] >= max_dist * max_dist) continue;
+
+        // The distance is the spatial structure's (minimum image), the direction the vector of that image
+        const float d = sqrtf(ij_dist2[idx]);
+        if (!(d > 0.0f)) continue;
+        const vec3_t r = vec3_mul1(min_image_diff(p->site[a], p->site[b], ij_dist2[idx], 0.0f, p->cell), 1.0f / d);
+
+        const float cos_a = vec3_dot(p->dipole[a], r);
+        const float cos_b = vec3_dot(p->dipole[b], r);
+        if (cos_a > min_cos && cos_b > min_cos) {
+            // Both point from a to b: the C=O of k to the N-H of l+1
+            cg_dssp_bond(p, k, l + 1, -1.0f - 0.5f * (cos_a + cos_b));
+        } else if (cos_a < -min_cos && cos_b < -min_cos) {
+            cg_dssp_bond(p, l, k + 1, -1.0f + 0.5f * (cos_a + cos_b));
+        }
+    }
+}
+
+static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pair_t)* sheet_candidates, const vec3_t* xyz, const md_unitcell_t* cell,
+    const md_protein_backbone_data_t* backbone, const uint32_t* res_range_id, md_allocator_i* temp_alloc)
+{
+    const size_t num_segments = backbone->segment.count;
+    vec3_t* x = md_alloc(temp_alloc, sizeof(vec3_t) * num_segments);
+    vec3_t* site = md_alloc(temp_alloc, sizeof(vec3_t) * num_segments);
+    vec3_t* dipole = md_alloc(temp_alloc, sizeof(vec3_t) * num_segments);
+    uint32_t* peptide_seg = md_alloc(temp_alloc, sizeof(uint32_t) * num_segments);
+    size_t num_peptides = 0;
+
+    for (size_t range_idx = 0; range_idx < backbone->range.count; ++range_idx) {
+        if (!md_protein_backbone_range_is_trace(backbone, range_idx)) continue;
+        const int beg = (int)backbone->range.offset[range_idx];
+        const int end = (int)backbone->range.offset[range_idx + 1];
+        // The chain in one image: the beads are bonded, and so each the minimum image of the one before it
+        x[beg] = xyz[backbone->segment.atoms[beg].ca];
+        for (int i = beg + 1; i < end; ++i) {
+            x[i] = vec3_add(x[i - 1], min_image_diff(xyz[backbone->segment.atoms[i - 1].ca], xyz[backbone->segment.atoms[i].ca], -1.0f, CG_DSSP_MAX_BOND, cell));
+        }
+        for (int k = beg; k + 1 < end; ++k) {
+            vec3_t mu;
+            if (!cg_dssp_dipole(&mu, x, beg, end, k)) continue;
+            site[num_peptides] = vec3_mul1(vec3_add(x[k], x[k + 1]), 0.5f);
+            dipole[num_peptides] = mu;
+            peptide_seg[num_peptides] = (uint32_t)k;
+            num_peptides += 1;
+        }
+    }
+    if (num_peptides < 2) return;
+
+    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)site, sizeof(vec3_t), NULL, num_peptides);
+    md_spatial_acc_t acc = { .alloc = temp_alloc };
+    const double cutoff = MAX(CG_DSSP_TURN_DISTANCE, CG_DSSP_SHEET_DISTANCE);
+    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = cell });
+
+    cg_dssp_param_t param = {
+        .site = site,
+        .dipole = dipole,
+        .peptide_seg = peptide_seg,
+        .res_range_id = res_range_id,
+        .cell = cell,
+        .res_hbonds = res_hbonds,
+        .sheet_candidates = sheet_candidates,
+        .alloc = temp_alloc,
+    };
+    md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, cg_dssp_pair_cb, &param);
+}
+
+static int residue_pair_cmp(const void* a, const void* b) {
+    const residue_pair_t* x = (const residue_pair_t*)a;
+    const residue_pair_t* y = (const residue_pair_t*)b;
+    if (x->i != y->i) return x->i < y->i ? -1 : 1;
+    if (x->j != y->j) return x->j < y->j ? -1 : 1;
+    return 0;
+}
+
+// ### THE PATTERNS ###
+
+// Turns, helices and bends per range, bridges and ladders between any two residues, from the bonds and the candidate
+// pairs for bridges (i < j, at least 3 apart within a range), and res_ca for the bends
+static void dssp_assign(md_secondary_structure_t out_secondary_structure[], const md_protein_backbone_data_t* backbone, const dssp_res_hbonds_t res_hbonds[],
+    const uint32_t* res_range_id, const vec3_t* res_ca, const md_unitcell_t* cell, const residue_pair_t* sheet_candidates, size_t num_sheet_candidates, md_temp_scope_t temp)
+{
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    const size_t backbone_segment_count = backbone->segment.count;
+    const size_t backbone_range_count   = backbone->range.count;
+    const uint32_t* backbone_range_offsets = backbone->range.offset;
+
+    uint8_t* turn_mask = md_temp_alloc_zero_array(temp, uint8_t, backbone_segment_count);
+    uint32_t* ss_flags = md_temp_alloc_zero_array(temp, uint32_t, backbone_segment_count);
 
     // ---- Per-range passes: helices, turns, bends (set flags only) ----
     // Ground-truth DSSP helix assignment:
@@ -1930,11 +2048,12 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 			}
         }
 
-        // Bends: unchanged
+        // Bends, from the minimum images, so a chain across the periodic boundary bends where it does whole
         for (uint32_t i = range.beg + 2; i + 2 < range.end; ++i) {
-            vec4_t v1 = vec4_sub(res_coords[i - 2].CA, res_coords[i].CA);
-            vec4_t v2 = vec4_sub(res_coords[i + 2].CA, res_coords[i].CA);
-            double angle = vec4_angle(v1, v2);
+            // Residues two apart are never more than 8 A apart, unless split by the boundary
+            const vec3_t v1 = min_image_diff(res_ca[i], res_ca[i - 2], -1.0f, 8.0f, cell);
+            const vec3_t v2 = min_image_diff(res_ca[i], res_ca[i + 2], -1.0f, 8.0f, cell);
+            double angle = vec4_angle(vec4_from_vec3(v1, 0), vec4_from_vec3(v2, 0));
             if (angle < DEG_TO_RAD(70.0)) {
                 for (int k = -2; k <= 2; ++k) {
                     ss_flags[i + k] |= SS_FLAG_BEND;
@@ -1951,18 +2070,16 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 		uint64_t chain_pair_id_and_type; // Unique id for the chain_pair from (res_range_id[i], res_range_id[j]) and the bridge type (parallel/antiparallel)
     } dssp_bridge_t;
 
-    // Worst-case: could be large; allocate generously but not insanely.
-    dssp_bridge_t* bridges = md_temp_alloc_array(temp, dssp_bridge_t, backbone_segment_count * 8);
+    // At most one bridge per candidate
+    dssp_bridge_t* bridges = md_temp_alloc_array(temp, dssp_bridge_t, MAX(num_sheet_candidates, 1));
     size_t num_bridges = 0;
 
     // Helper lambdas are not allowed in C; keep as local inline-ish macros
 #define SAME_RANGE(a,b) (res_range_id[(a)] == res_range_id[(b)])
 
-#if 1
 	md_hashmap32_t parallel_bridge_map     = { .allocator = temp_alloc };
 	md_hashmap32_t antiparallel_bridge_map = { .allocator = temp_alloc };
 
-	size_t num_sheet_candidates = md_array_size(sheet_candidates);
     for (size_t c = 0; c < num_sheet_candidates; ++c) {
         uint32_t i = sheet_candidates[c].i;
         uint32_t j = sheet_candidates[c].j;
@@ -2031,80 +2148,11 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
 			md_hashmap_add(&antiparallel_bridge_map, key, idx);
 		}
     }
-
-#else
-    const float min_ca_dist2_sheet = 9.0f * 9.0f;
-    for (uint32_t i = 0; i < (uint32_t)backbone_segment_count; ++i) {
-        const uint32_t ri = res_range_id[i];
-
-        for (uint32_t j = i + 1; j < (uint32_t)backbone_segment_count; ++j) {
-            const uint32_t rj = res_range_id[j];
-
-            // DSSP excludes very local sequence contacts on the same chain
-            if (ri == rj && (int)j - (int)i <= 2) continue;
-
-            if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2_sheet) continue;
-
-            // Neighbor existence within each chain/range
-            const bool i_has_im1 = (i > 0) && SAME_RANGE(i - 1, i);
-            const bool i_has_ip1 = (i + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(i + 1, i);
-            const bool j_has_jm1 = (j > 0) && SAME_RANGE(j - 1, j);
-            const bool j_has_jp1 = (j + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(j + 1, j);
-
-            // Evaluate DSSP bridge patterns (directed H-bonds)
-            bool antiparallel = false;
-            bool parallel     = false;
-
-            // Antiparallel:
-            // (i -> j && j -> i) OR (i-1 -> j+1 && j-1 -> i+1)
-            if (dssp_test_bond(res_hbonds, i, j) && dssp_test_bond(res_hbonds, j, i)) {
-                antiparallel = true;
-            } else if (i_has_im1 && i_has_ip1 && j_has_jm1 && j_has_jp1) {
-                if (dssp_test_bond(res_hbonds, i - 1, j + 1) && dssp_test_bond(res_hbonds, j - 1, i + 1)) {
-                    antiparallel = true;
-                }
-            }
-
-            // Parallel:
-            // (i-1 -> j && j -> i+1) OR (j-1 -> i && i -> j+1)
-            if (!antiparallel) {
-                if (i_has_im1 && i_has_ip1) {
-                    if (dssp_test_bond(res_hbonds, i - 1, j) && dssp_test_bond(res_hbonds, j, i + 1)) {
-                        parallel = true;
-                    }
-                }
-                if (!parallel && j_has_jm1 && j_has_jp1) {
-                    if (dssp_test_bond(res_hbonds, j - 1, i) && dssp_test_bond(res_hbonds, i, j + 1)) {
-                        parallel = true;
-                    }
-                }
-            }
-
-            if (!(antiparallel || parallel)) {
-                continue;
-            }
-
-		    uint64_t res_range_id = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
-
-            // Record bridge (normalize ordering i<j already true)
-            bridges[num_bridges++] = (dssp_bridge_t){
-                .i = i,
-                .j = j,
-                .chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_id,
-            };
-
-            // DSSP marks both residues as "bridge" even before ladder/sheet conversion
-            ss_flags[i] |= SS_FLAG_BRIDGE;
-            ss_flags[j] |= SS_FLAG_BRIDGE;
-        }
-    }
-#endif
 #undef SAME_RANGE
 
-#if 1
 	// ---- Build ladders by directly looking up bridges in hashmaps ----
     // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
-    bool* used = md_temp_alloc_zero_array(temp, bool, num_bridges);
+    bool* used = md_temp_alloc_zero_array(temp, bool, MAX(num_bridges, 1));
     for (size_t b = 0; b < num_bridges; ++b) {
         if (used[b]) continue;
         const dssp_bridge_t seed = bridges[b];
@@ -2168,74 +2216,6 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
             for (uint32_t k = j_min; k <= j_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
         }
 	}
-#else
-    // ---- Build ladders by chaining bridges ----
-    // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
-    bool* used = md_temp_alloc_zero_array(temp, bool, num_bridges);
-
-    for (size_t b = 0; b < num_bridges; ++b) {
-        if (used[b]) continue;
-
-        const dssp_bridge_t seed = bridges[b];
-		int seed_type = (seed.chain_pair_id_and_type >> 63) != 0 ? 1 : 0;
-        used[b] = true;
-
-        // Ladder endpoints
-        uint32_t i_min = seed.i, i_max = seed.i;
-        uint32_t j_min = seed.j, j_max = seed.j;
-
-        // Chain constraints: ladders should stay within the same chain pair
-        const uint32_t ri = res_range_id[seed.i];
-        const uint32_t rj = res_range_id[seed.j];
-
-        bool grew = true;
-        while (grew) {
-            grew = false;
-
-            for (size_t c = 0; c < num_bridges; ++c) {
-                if (used[c]) continue;
-
-                const dssp_bridge_t br = bridges[c];
-				int br_type = (br.chain_pair_id_and_type >> 63) != 0 ? 1 : 0;
-                if (br_type != seed_type) continue;
-
-                // Must be between the same chain pair (order-insensitive)
-                const uint32_t bri = res_range_id[br.i];
-                const uint32_t brj = res_range_id[br.j];
-                if (!((bri == ri && brj == rj) || (bri == rj && brj == ri))) continue;
-
-                bool connects = false;
-
-                if (seed_type == 1) {
-                    // Parallel ladder: (i+1, j+1)
-                    connects = (br.i == i_max + 1 && br.j == j_max + 1) ||
-                        (br.i + 1 == i_min && br.j + 1 == j_min);
-                } else {
-                    // Antiparallel ladder: (i+1, j-1)
-                    connects = (br.i == i_max + 1 && br.j + 1 == j_min) ||
-                        (br.i + 1 == i_min && br.j == j_max + 1);
-                }
-
-                if (connects) {
-                    used[c] = true;
-                    i_min = MIN(i_min, br.i);
-                    i_max = MAX(i_max, br.i);
-                    j_min = MIN(j_min, br.j);
-                    j_max = MAX(j_max, br.j);
-                    grew = true;
-                }
-            }
-        }
-
-        const uint32_t len_i = i_max - i_min + 1;
-        const uint32_t len_j = j_max - j_min + 1;
-
-        if (len_i >= 3 || len_j >= 3) {
-            for (uint32_t k = i_min; k <= i_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
-            for (uint32_t k = j_min; k <= j_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
-        }
-    }
-#endif
 
     // ---- Final resolution: convert flags to enum with priority ----
     // Priority: HELIX (PI > 310 > ALPHA) > SHEET > BRIDGE > TURN > BEND > COIL
@@ -2262,6 +2242,68 @@ void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, c
             out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_COIL;
         }
     }
+}
+
+static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+    ASSERT(out_secondary_structure);
+    ASSERT(xyz);
+    ASSERT(cell);
+    ASSERT(backbone);
+
+    const size_t backbone_segment_count = backbone->segment.count;
+    const size_t backbone_range_count   = backbone->range.count;
+    const uint32_t* backbone_range_offsets = backbone->range.offset;
+    const md_amino_acid_atoms_t* backbone_atoms = backbone->segment.atoms;
+
+    if (capacity < backbone_segment_count) {
+        MD_LOG_ERROR("Capacity of out_secondary_structure is insufficient to hold the results");
+        return;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+
+    dssp_res_hbonds_t* res_hbonds = md_temp_alloc_array(temp, dssp_res_hbonds_t, backbone_segment_count);
+    uint32_t* res_range_id = md_temp_alloc_array(temp, uint32_t, backbone_segment_count);
+    uint8_t* res_trace = md_temp_alloc_zero_array(temp, uint8_t, backbone_segment_count);
+    vec3_t* res_ca = md_temp_alloc_array(temp, vec3_t, backbone_segment_count);
+
+    md_array(residue_pair_t) sheet_candidates = NULL;
+	md_array_ensure(sheet_candidates, 1024, temp_alloc);
+
+    size_t num_trace = 0;
+    for (uint32_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
+        const md_urange_t range = { backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1] };
+        const bool trace = md_protein_backbone_range_is_trace(backbone, range_idx);
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            res_range_id[i] = range_idx;
+            res_trace[i] = trace;
+            res_ca[i] = xyz[backbone_atoms[i].ca];
+        }
+        num_trace += trace ? range.end - range.beg : 0;
+    }
+
+	// Safe to set to zero, as we will only be comparing energies (which are negative)
+	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
+
+    if (num_trace < backbone_segment_count) {
+        dssp_atomistic_bonds(res_hbonds, &sheet_candidates, xyz, cell, backbone, res_range_id, res_trace, res_ca, temp_alloc);
+    }
+    if (num_trace > 0) {
+        dssp_trace_bonds(res_hbonds, &sheet_candidates, xyz, cell, backbone, res_range_id, temp_alloc);
+        // A bond of a trace gives each pair it can begin a bridge in, so the same pair comes more than once
+        const size_t n = md_array_size(sheet_candidates);
+        if (n > 1) {
+            qsort(sheet_candidates, n, sizeof(residue_pair_t), residue_pair_cmp);
+            size_t u = 1;
+            for (size_t c = 1; c < n; ++c) {
+                if (residue_pair_cmp(&sheet_candidates[u - 1], &sheet_candidates[c]) != 0) sheet_candidates[u++] = sheet_candidates[c];
+            }
+            md_array_shrink(sheet_candidates, u);
+        }
+    }
+
+    dssp_assign(out_secondary_structure, backbone, res_hbonds, res_range_id, res_ca, cell, sheet_candidates, md_array_size(sheet_candidates), temp);
 
     md_temp_end(temp);
 }
@@ -2274,16 +2316,11 @@ bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t seconda
         return false;
     }
 
-    // TODO: Use tm_align when coarse grained
-#if 0
-    return tm_align(secondary_structure, capacity, sys);
-#else
     if (secondary_structure && xyz && backbone) {
         dssp(secondary_structure, capacity, xyz, cell, backbone);
         return true;
     }
     return false;
-#endif
 }
 
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
@@ -2300,7 +2337,8 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
         const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
         ASSERT(range.end <= capacity);
 
-        if (range.end - range.beg < 4) {
+        // A trace has one bead per residue, and so no phi and psi
+        if (range.end - range.beg < 4 || md_protein_backbone_range_is_trace(backbone, bb_idx)) {
             continue;
         }
 
@@ -10430,6 +10468,30 @@ static inline void commit_protein_backbone(md_amino_acid_atoms_t* bb_atoms, size
     }
 }
 
+// The bead which stands for the backbone of an amino acid of a coarse grained model (the BB bead of Martini): its one
+// bead with the backbone role. -1 for a component which is no amino acid, or has none or several.
+static md_atom_idx_t amino_acid_backbone_bead(const md_system_t* sys, size_t comp_idx) {
+    if (md_component_kind(&sys->component, comp_idx) != MD_COMPONENT_KIND_AMINO_ACID) return -1;
+    const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+    md_atom_idx_t bead = -1;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) && md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_BEAD) {
+            if (bead >= 0) return -1;
+            bead = (md_atom_idx_t)i;
+        }
+    }
+    return bead;
+}
+
+// Whether two consecutive backbone beads are bonded. Beads the system has no bonds for (a structure file alone, without
+// bond inference) are taken to be: then the sequence alone tells where a chain breaks, as for atoms.
+static bool backbone_beads_bonded(const md_system_t* sys, md_atom_idx_t a, md_atom_idx_t b) {
+    const md_bond_iter_t it_a = md_bond_iter(&sys->bond, (size_t)a);
+    const md_bond_iter_t it_b = md_bond_iter(&sys->bond, (size_t)b);
+    if (!md_bond_iter_has_next(&it_a) || !md_bond_iter_has_next(&it_b)) return true;
+    return md_bond_find(&sys->bond, a, b) >= 0;
+}
+
 static inline void flush_protein_backbone_segment(md_amino_acid_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
     size_t backbone_length = md_array_size(backbone_atoms);
     if (backbone_length >= min_backbone_length && *comp_base != -1) {
@@ -10632,13 +10694,28 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                         md_amino_acid_atoms_t atoms;
                         md_urange_t atom_range = md_component_atom_range(&sys->component, comp_idx);
                         bool has_backbone_atoms = md_util_amino_acid_atoms_extract(&atoms, &sys->atom, atom_range);
+                        if (!has_backbone_atoms) {
+                            // A coarse grained residue: its backbone bead, a segment of a trace
+                            const md_atom_idx_t bead = amino_acid_backbone_bead(sys, comp_idx);
+                            if (bead >= 0) {
+                                MEMSET(&atoms, -1, sizeof(atoms));
+                                atoms.ca = bead;
+                                has_backbone_atoms = true;
+                            }
+                        }
 
                         if (has_backbone_atoms) {
                             md_sequence_id_t seq_id = md_system_component_seq_id(sys, comp_idx);
                             size_t backbone_length = md_array_size(backbone_atoms);
 
-                            if (backbone_length > 0 && seq_id != prev_seq_id + 1) {
-                                flush_protein_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                            if (backbone_length > 0) {
+                                // A range is atomistic or a trace throughout, and the beads of a trace are bonded where
+                                // the topology says what they are bonded to
+                                const md_amino_acid_atoms_t prev = *md_array_last(backbone_atoms);
+                                const bool trace = atoms.n < 0;
+                                if (seq_id != prev_seq_id + 1 || trace != (prev.n < 0) || (trace && !backbone_beads_bonded(sys, prev.ca, atoms.ca))) {
+                                    flush_protein_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                                }
                             }
 
                             if (comp_base == -1) {

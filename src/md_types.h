@@ -463,6 +463,8 @@ typedef struct md_atom_pair_t {
     md_atom_idx_t idx[2];
 } md_atom_pair_t;
 
+// The atoms of an amino acid of a protein backbone, -1 where it has none. A coarse grained bead which stands for the
+// residue's backbone (the BB bead of Martini) is held in ca, with every other index -1 (md_protein_backbone_data_t).
 typedef struct md_amino_acid_atoms_t {
     // Backbone
     md_atom_idx_t n;

@@ -1527,9 +1527,13 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
 
                         backbone_data[idx].bb_seg_idx = j;
                         backbone_data[idx].atom_base_idx = comp_atom_offset;
-                        backbone_data[idx].ca_idx = (uint8_t)(sys->protein_backbone.segment.atoms[j].ca - comp_atom_offset);
-                        backbone_data[idx].c_idx  = (uint8_t)(sys->protein_backbone.segment.atoms[j].c  - comp_atom_offset);
-                        backbone_data[idx].o_idx  = (uint8_t)(sys->protein_backbone.segment.atoms[j].o  - comp_atom_offset);
+                        // A trace (coarse grained) has its bead in ca and no C or O: the bead stands in for both. The
+                        // orientation comes from the frame of the trace itself; only where the trace runs straight does
+                        // it fall back on the carbonyl, which is then a fixed direction (compute_spline_extract.vert)
+                        const md_amino_acid_atoms_t atoms = sys->protein_backbone.segment.atoms[j];
+                        backbone_data[idx].ca_idx = (uint8_t)(atoms.ca - comp_atom_offset);
+                        backbone_data[idx].c_idx  = (uint8_t)((atoms.c >= 0 ? atoms.c : atoms.ca) - comp_atom_offset);
+                        backbone_data[idx].o_idx  = (uint8_t)((atoms.o >= 0 ? atoms.o : atoms.ca) - comp_atom_offset);
                         backbone_data[idx].flags  = (uint8_t)((j == beg ? 1 : 0) | (j == end - 1 ? 2 : 0));
                         ++idx;
                     }
