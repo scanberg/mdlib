@@ -930,11 +930,12 @@ static inline size_t md_system_bond_count(const md_system_t* sys) {
     return sys->bond.count;
 }
 
-// Whether a protein backbone range is a trace of coarse grained beads rather than atoms (see md_protein_backbone_data_t)
+// Whether a protein backbone range is a trace of coarse grained beads rather than atoms (see md_protein_backbone_data_t).
+// A backbone without atoms, only the residues of its segments, has no traces.
 static inline bool md_protein_backbone_range_is_trace(const md_protein_backbone_data_t* backbone, size_t range_idx) {
     ASSERT(backbone);
     ASSERT(range_idx < backbone->range.count);
-    return backbone->segment.atoms[backbone->range.offset[range_idx]].n < 0;
+    return backbone->segment.atoms && backbone->segment.atoms[backbone->range.offset[range_idx]].n < 0;
 }
 
 static inline size_t md_system_entity_count(const md_system_t* sys) {

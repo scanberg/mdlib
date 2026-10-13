@@ -88,13 +88,15 @@ size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass
 // hydrogen bonds of their backbone. Traces of coarse grained beads (md_protein_backbone_range_is_trace) get the same
 // patterns from bonds between their peptide groups, which the beads give (CG-DSSP, see md_util.c). It is fit for Martini 3
 // BB beads (the center of N, CA, C and O), and to tell helix, sheet and coil apart rather than every class of DSSP.
+// Bonds and bends are taken between nearest periodic images (cell), so a protein split by the boundary gets what it has whole.
 bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Backbone angles (phi, psi) from the coordinates of a frame. A trace has none: its segments are left 0.
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
-// sys->protein_backbone. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN.
+// sys->protein_backbone. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
+// segments of traces, which have no phi and psi.
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
 // THE BACKBONE OF A STATE. The angles and the secondary structure depend on the coordinates, so they belong to the

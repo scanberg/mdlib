@@ -228,12 +228,15 @@ UTEST(secondary_structure, martini_trace_backbone) {
         EXPECT_EQ(-1, a.cb);
     }
 
-    // A trace has no phi and psi
+    // A trace has no phi and psi, and so no Ramachandran type
     md_backbone_angles_t angles[76];
     EXPECT_TRUE(md_util_backbone_angles_compute(angles, 76, state.xyz, &state.unitcell, bb));
+    md_ramachandran_type_t types[76];
+    EXPECT_TRUE(md_util_backbone_ramachandran_classify(types, 76, &sys));
     for (size_t i = 0; i < 76; ++i) {
         EXPECT_EQ(0.0f, angles[i].phi);
         EXPECT_EQ(0.0f, angles[i].psi);
+        EXPECT_EQ(MD_RAMACHANDRAN_TYPE_UNKNOWN, types[i]);
     }
 
     md_arena_allocator_destroy(alloc);
@@ -318,6 +321,106 @@ UTEST(secondary_structure, atomistic_dssp_unchanged) {
     for (size_t i = 0; i < n; ++i) {
         EXPECT_EQ(expected[i], ss_letters[ss[i]]);
     }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// A protein split by the periodic boundary, residues and all (every atom wrapped into the cell on its own), gets the
+// secondary structure it has whole: the bonds between residues in different images are those of the nearest image
+UTEST(secondary_structure, atomistic_dssp_periodic) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    const size_t n = sys.protein_backbone.segment.count;
+    ASSERT_GT(n, (size_t)200);
+
+    md_secondary_structure_t* whole = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
+    md_secondary_structure_t* split = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
+    const md_unitcell_t no_cell = {0};
+    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(whole, n, state.xyz, &no_cell, &sys.protein_backbone));
+
+    // Centered on a corner of a cell wider than the protein and the reach of the bonds: every axis cuts it in two
+    vec3_t com = {0};
+    for (size_t i = 0; i < state.num_atoms; ++i) com = vec3_add(com, state.xyz[i]);
+    com = vec3_mul1(com, 1.0f / (float)state.num_atoms);
+    for (size_t i = 0; i < state.num_atoms; ++i) state.xyz[i] = vec3_sub(state.xyz[i], com);
+    const md_unitcell_t cell = md_unitcell_from_extent(120.0, 120.0, 120.0);
+    ASSERT_TRUE(md_util_pbc(state.xyz, NULL, state.num_atoms, &cell));
+
+    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(split, n, state.xyz, &cell, &sys.protein_backbone));
+    size_t differ = 0;
+    for (size_t i = 0; i < n; ++i) differ += whole[i] != split[i];
+    EXPECT_EQ((size_t)0, differ);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// A trace and an atomistic protein in one backbone, overlapping in space: each gets the secondary structure it has on
+// its own, as the bonds of one kind are never looked for between residues of the other
+UTEST(secondary_structure, mixed_trace_and_atomistic) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_system_t cg = { .alloc = alloc };
+    md_system_state_t cg_state = { .alloc = alloc };
+    ASSERT_TRUE(load_martini3_ubiquitin(&cg, &cg_state));
+    md_system_t aa = { .alloc = alloc };
+    md_system_state_t aa_state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&aa, &aa_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&aa, &aa_state, MD_UTIL_INFER_ALL));
+
+    const md_protein_backbone_data_t* cg_bb = &cg.protein_backbone;
+    const md_protein_backbone_data_t* aa_bb = &aa.protein_backbone;
+    const size_t n_cg = cg_bb->segment.count;
+    const size_t n_aa = aa_bb->segment.count;
+    const size_t n = n_cg + n_aa;
+    md_unitcell_t no_cell = {0};
+
+    md_secondary_structure_t* ref = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
+    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(ref, n_cg, cg_state.xyz, &no_cell, cg_bb));
+    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(ref + n_cg, n_aa, aa_state.xyz, &no_cell, aa_bb));
+
+    // The beads first, then the atoms, both centered on the origin
+    const size_t num_atoms = cg_state.num_atoms + aa_state.num_atoms;
+    vec3_t* xyz = md_alloc(alloc, num_atoms * sizeof(vec3_t));
+    vec3_t c_cg = {0}, c_aa = {0};
+    for (size_t i = 0; i < cg_state.num_atoms; ++i) c_cg = vec3_add(c_cg, cg_state.xyz[i]);
+    for (size_t i = 0; i < aa_state.num_atoms; ++i) c_aa = vec3_add(c_aa, aa_state.xyz[i]);
+    c_cg = vec3_mul1(c_cg, 1.0f / (float)cg_state.num_atoms);
+    c_aa = vec3_mul1(c_aa, 1.0f / (float)aa_state.num_atoms);
+    for (size_t i = 0; i < cg_state.num_atoms; ++i) xyz[i] = vec3_sub(cg_state.xyz[i], c_cg);
+    for (size_t i = 0; i < aa_state.num_atoms; ++i) xyz[cg_state.num_atoms + i] = vec3_sub(aa_state.xyz[i], c_aa);
+
+    const size_t num_ranges = cg_bb->range.count + aa_bb->range.count;
+    uint32_t* offset = md_alloc(alloc, (num_ranges + 1) * sizeof(uint32_t));
+    md_amino_acid_atoms_t* atoms = md_alloc(alloc, n * sizeof(md_amino_acid_atoms_t));
+    for (size_t r = 0; r < cg_bb->range.count; ++r) offset[r] = cg_bb->range.offset[r];
+    for (size_t r = 0; r <= aa_bb->range.count; ++r) offset[cg_bb->range.count + r] = (uint32_t)n_cg + aa_bb->range.offset[r];
+    for (size_t i = 0; i < n_cg; ++i) atoms[i] = cg_bb->segment.atoms[i];
+    const md_atom_idx_t shift = (md_atom_idx_t)cg_state.num_atoms;
+    for (size_t i = 0; i < n_aa; ++i) {
+        md_amino_acid_atoms_t a = aa_bb->segment.atoms[i];
+        a.n  = a.n  < 0 ? a.n  : a.n  + shift;
+        a.ca = a.ca < 0 ? a.ca : a.ca + shift;
+        a.c  = a.c  < 0 ? a.c  : a.c  + shift;
+        a.o  = a.o  < 0 ? a.o  : a.o  + shift;
+        a.cb = a.cb < 0 ? a.cb : a.cb + shift;
+        a.hn = a.hn < 0 ? a.hn : a.hn + shift;
+        atoms[n_cg + i] = a;
+    }
+    md_protein_backbone_data_t mixed = {0};
+    mixed.range.count = num_ranges;
+    mixed.range.offset = offset;
+    mixed.segment.count = n;
+    mixed.segment.atoms = atoms;
+    EXPECT_TRUE(md_protein_backbone_range_is_trace(&mixed, 0));
+    EXPECT_FALSE(md_protein_backbone_range_is_trace(&mixed, num_ranges - 1));
+
+    md_secondary_structure_t* ss = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
+    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(ss, n, xyz, &no_cell, &mixed));
+    size_t differ = 0;
+    for (size_t i = 0; i < n; ++i) differ += ss[i] != ref[i];
+    EXPECT_EQ((size_t)0, differ);
 
     md_arena_allocator_destroy(alloc);
 }
