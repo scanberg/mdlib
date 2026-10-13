@@ -5238,17 +5238,17 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (split == UNKNOWN) {
-        md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
-        md_str_writer_fmt(&sb, "Invalid argument ('" STR_FMT "'), valid arguments are: ", STR_ARG(str_arg));
+        md_str_writer_t sw = md_str_writer_create(ctx->temp_alloc);
+        md_str_writer_fmt(&sw, "Invalid argument ('" STR_FMT "'), valid arguments are: ", STR_ARG(str_arg));
 
         for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
-            md_str_writer_push_str(&sb, entries[i].str);
+            md_str_writer_push_str(&sw, entries[i].str);
             if (i < ARRAY_SIZE(entries) - 1) {
-                md_str_writer_push_str(&sb, STR_LIT(", "));
+                md_str_writer_push_str(&sw, STR_LIT(", "));
             }
         }
 
-        EVAL_LOG_ERROR_STR(ctx, ctx->arg_tokens[1], md_str_writer_to_str(&sb));
+        EVAL_LOG_ERROR_STR(ctx, ctx->arg_tokens[1], md_str_writer_to_str(&sw));
         return STATIC_VALIDATION_ERROR;
     }
 
