@@ -5519,6 +5519,20 @@ UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
     ASSERT_TRUE(eval3);
     EXPECT_EQ((uint64_t)0, md_bitset_count(md_script_eval_property_frames(eval3, 0, STR_LIT("dist"), alloc)));
 
+    // Over another number of frames, another run: nothing is taken over, yet the versions still carry on
+    for (md_attribute_iter_t it = md_attributes_iter(md_script_eval_attributes(eval2), (str_t){0}); md_attributes_next(&it);) {
+        max_version = MAX(max_version, it.attr->version);
+    }
+    const md_script_eval_desc_t fewer = { .num_frames = num_frames - 1 };
+    md_script_eval_t* eval4 = md_script_eval_create_from(eval2, ir2, &fewer, alloc);
+    ASSERT_TRUE(eval4);
+    EXPECT_EQ((uint64_t)0, md_bitset_count(md_script_eval_property_frames(eval4, 0, STR_LIT("dist"), alloc)));
+    EXPECT_EQ((uint64_t)(num_frames - 1), md_bitset_count(md_script_eval_pending_frames(eval4, alloc)));
+    for (md_attribute_iter_t it = md_attributes_iter(md_script_eval_attributes(eval4), (str_t){0}); md_attributes_next(&it);) {
+        EXPECT_GT(it.attr->version, max_version);
+    }
+
+    md_script_eval_free(eval4);
     md_script_eval_free(eval3);
     md_script_eval_free(fresh);
     md_script_eval_free(eval2);

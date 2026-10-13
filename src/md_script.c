@@ -7483,7 +7483,7 @@ static bool same_shape(const eval_property_t* a, const eval_property_t* b) {
 
 md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const md_script_ir_t* ir, const md_script_eval_desc_t* desc, md_allocator_i* alloc) {
     md_script_eval_t* eval = md_script_eval_create_desc(ir, desc, alloc);
-    if (!eval || !validate_eval(prev) || prev->frame_count != eval->frame_count) {
+    if (!eval || !validate_eval(prev)) {
         return eval;
     }
 
@@ -7493,10 +7493,12 @@ md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const
     const size_t prev_props = md_array_size(prev->sets[0].props);
 
     // A property is taken over by what it is computed from, whatever it is called now. An aggregate of a set only
-    // where the set covers the same frames as before: it is what was added over them.
+    // where the set covers the same frames as before: it is what was added over them. Nothing over another number
+    // of frames, which is another run.
+    const size_t num_adopt = prev->frame_count == eval->frame_count ? num_props : 0;
     md_mutex_t* prev_lock = (md_mutex_t*)&prev->frame_lock;
     md_mutex_lock(prev_lock);
-    for (size_t i = 0; i < num_props; ++i) {
+    for (size_t i = 0; i < num_adopt; ++i) {
         const uint64_t fingerprint = eval->sets[0].props[i].fingerprint;
         if (!fingerprint) continue;
         for (size_t j = 0; j < prev_props; ++j) {
