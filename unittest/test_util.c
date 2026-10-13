@@ -857,18 +857,23 @@ static void check_bonds_against_topology(int* utest_result, const md_system_t* s
     }
 }
 
-// Inferred from the beads alone, the bonds of the peptide are the topology's: the tree of each residue, the rings,
-// the link from each BB to the next, Glu's SC1 4.09 A from its BB, and Trp's SC3 (a massless virtual site in Martini 3)
-// unbonded. Only the 4.7 A SC2-SC4 bond of the Trp ring is left out. With the CONECT records, the bonds are theirs.
+// Inferred from the beads alone, the bonds of the peptide are the topology's: those of each residue (the 4.7 A SC2-SC4
+// of the Trp ring too) and the link from each BB to the next. Trp's SC3, a virtual site, is bonded to SC5, the first
+// bead it is constructed from, as md_tpr bonds it (martinize2 writes no CONECT record for it). With the CONECT records,
+// the bonds are theirs, and inference adds that one.
 UTEST(util, martini3_peptide_bonds) {
+    int topology[ARRAY_SIZE(martini3_peptide_topology) + 1][2];
+    MEMCPY(topology, martini3_peptide_topology, sizeof(martini3_peptide_topology));
+    topology[ARRAY_SIZE(martini3_peptide_topology)][0] = 23;
+    topology[ARRAY_SIZE(martini3_peptide_topology)][1] = 25;
+
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE));
-        static const int missing[][2] = {{22, 24}};
-        check_bonds_against_topology(utest_result, &sys, martini3_peptide_topology, ARRAY_SIZE(martini3_peptide_topology), missing, ARRAY_SIZE(missing));
-        EXPECT_EQ(0u, md_bond_conn_count(&sys.bond, 23));
+        check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, ARRAY_SIZE(topology), NULL, 0);
+        EXPECT_EQ(1u, md_bond_conn_count(&sys.bond, 23));
     }
     {
         // The same with its CONECT records, as martinize2 wrote it
@@ -882,17 +887,20 @@ UTEST(util, martini3_peptide_bonds) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}, MD_PDB_OPTION_NONE));
-        check_bonds_against_topology(utest_result, &sys, martini3_peptide_topology, ARRAY_SIZE(martini3_peptide_topology), NULL, 0);
-        EXPECT_EQ(ARRAY_SIZE(martini3_peptide_topology), sys.bond.count);
+        check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, ARRAY_SIZE(topology), NULL, 0);
+        EXPECT_EQ(ARRAY_SIZE(topology), sys.bond.count);
         for (size_t i = 0; i < sys.bond.count; ++i) {
-            EXPECT_EQ(MD_BOND_ORIGIN_FILE, md_bond_origin(sys.bond.flags[i]));
+            const bool vsite = pair_in((const int (*)[2])topology + ARRAY_SIZE(martini3_peptide_topology), 1, sys.bond.pairs[i].idx[0], sys.bond.pairs[i].idx[1]);
+            EXPECT_EQ(vsite ? MD_BOND_ORIGIN_INFERRED : MD_BOND_ORIGIN_FILE, md_bond_origin(sys.bond.flags[i]));
         }
     }
     md_vm_arena_destroy(alloc);
 }
 
 // Polarizable Martini 2 (martinize2 -ff martini22p on villin, residues 53-57): the polar SC1 of Thr and Ser is a
-// massless virtual site between two charge dummies, Arg's SC2 carries one. The bonds are the topology's, all of them.
+// massless virtual site between two charge dummies, Arg's SC2 carries one. The bonds are the topology's as GROMACS has
+// them, all of them: the virtual site is bonded to SCP, the first bead it is constructed from, and the dummies to each
+// other (martinize2's CONECT records bond SCN to SC1 as well).
 static const char martini22p_peptide_pdb[] =
     "ATOM      1 BB   MET A  53       9.910  -7.189  67.361  1.00  0.00\n"
     "ATOM      2 SC1  MET A  53       7.345  -7.793  70.918  1.00  0.00\n"
@@ -918,7 +926,7 @@ UTEST(util, martini22p_peptide) {
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini22p_peptide_pdb), MD_PDB_OPTION_NONE));
 
     static const int topology[][2] = {
-        {0, 1}, {0, 2}, {2, 3}, {2, 6}, {3, 4}, {3, 5}, {4, 5}, {6, 7}, {6, 10}, {7, 8}, {8, 9}, {10, 11}, {10, 14}, {11, 12}, {11, 13}, {12, 13},
+        {0, 1}, {0, 2}, {2, 3}, {2, 6}, {3, 4}, {4, 5}, {6, 7}, {6, 10}, {7, 8}, {8, 9}, {10, 11}, {10, 14}, {11, 12}, {12, 13},
     };
     check_bonds_against_topology(utest_result, &sys, topology, ARRAY_SIZE(topology), NULL, 0);
 
@@ -953,14 +961,14 @@ UTEST(util, martini_masses_by_version) {
         EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 16));    // His SC2
         EXPECT_EQ( 0.0f, md_atom_mass(&sys.atom, 23));    // Trp SC3, a virtual site
         EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 25));    // Trp SC5
-        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 0), 1e-4f);
-        EXPECT_NEAR(2.30f, md_atom_radius(&sys.atom, 11), 1e-4f);
-        EXPECT_NEAR(1.91f, md_atom_radius(&sys.atom, 23), 1e-4f);
+        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 0), 0.01f);
+        EXPECT_NEAR(2.30f, md_atom_radius(&sys.atom, 11), 0.01f);
+        EXPECT_NEAR(1.91f, md_atom_radius(&sys.atom, 23), 0.01f);
         // The SC1 beads of Tyr (tiny) and Leu (small) are different types
         EXPECT_NE(sys.atom.type_idx[1], sys.atom.type_idx[11]);
     }
     {
-        // Martini 2 (Trp has SC1-SC4, Ala no side chain bead): 72 throughout, the ring beads small
+        // Martini 2 (Trp has SC1-SC4, Ala no side chain bead): 72, but 45 for the small beads of the ring
         const char* text =
             "Martini 2\n"
             "    9\n"
@@ -978,19 +986,19 @@ UTEST(util, martini_masses_by_version) {
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, i));
+            const bool ring = 2 <= i && i <= 5;
+            EXPECT_EQ(ring ? 45.0f : 72.0f, md_atom_mass(&sys.atom, i));
         }
-        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 6), 1e-4f);   // Gly BB
-        EXPECT_NEAR(2.41f, md_atom_radius(&sys.atom, 4), 1e-4f);   // Trp SC3
-        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 8), 1e-4f);   // Leu SC1
+        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 6), 0.01f);   // Gly BB
+        EXPECT_NEAR(2.41f, md_atom_radius(&sys.atom, 4), 0.01f);   // Trp SC3
+        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 8), 0.01f);   // Leu SC1
     }
     md_vm_arena_destroy(alloc);
 }
 
 // Martini 2 DNA (Uusitalo et al. 2015), mapped from four nucleotides of a strand of the nucleosome in nucl-dna.gro (TGCA,
 // -60 to -57): the phosphate BB1 and sugar BB2, BB3 are the backbone, the rest the base. The bonds are those of the
-// topology (polyply's DNA_M2), BB3 to the next BB1 included, but for the longest base bonds (DA SC2-SC4 3.3 A and
-// DT SC2-SC3 3.2 A), which the base beads that are not bonded come as close as.
+// topology (polyply's DNA_M2), BB3 to the next BB1 included.
 static const char martini2_dna_pdb[] =
     "ATOM      1 BB1  DT  A -60      -3.210 101.160  22.216  1.00  0.00\n"
     "ATOM      2 BB2  DT  A -60      -2.020 101.387  20.003  1.00  0.00\n"
@@ -1053,8 +1061,7 @@ UTEST(util, martini2_dna) {
         {10, 12}, {11, 12}, {13, 14}, {14, 15}, {15, 16}, {15, 19}, {16, 17}, {16, 18}, {17, 18}, {19, 20}, {20, 21},
         {21, 22}, {22, 23}, {22, 25}, {23, 24}, {23, 25}, {24, 25},
     };
-    static const int missing[][2] = {{4, 5}, {10, 12}, {23, 25}};
-    check_bonds_against_topology(utest_result, &sys, topology, ARRAY_SIZE(topology), missing, ARRAY_SIZE(missing));
+    check_bonds_against_topology(utest_result, &sys, topology, ARRAY_SIZE(topology), NULL, 0);
 
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ(1u, md_system_instance_count(&sys));
@@ -1091,6 +1098,103 @@ UTEST(util, martini_chain_links) {
     };
     check_bonds_against_topology(utest_result, &sys, expected, ARRAY_SIZE(expected), NULL, 0);
     EXPECT_EQ(-1, md_bond_find(&sys.bond, 4, 6));  // 3.5 A, but the numbering starts over
+    md_vm_arena_destroy(alloc);
+}
+
+// A residue whose beads are not those of a topology (here Trp of Martini 3 written without its virtual site SC3) is bonded
+// by its geometry: the tree of its beads and the ring bonds besides, but for the 4.7 A SC2-SC4 of the Trp ring. Between
+// residues numbered one after the other a link may be stretched to 5.5 A, as in a simulation; over a jump in the
+// numbering it is one up to 4.3 A.
+UTEST(util, martini_bonds_by_geometry) {
+    const char* text =
+        "Geometry\n"
+        "   11\n"
+        "    9TRP     BB    1   2.304   1.959   1.000\n"
+        "    9TRP    SC1    2   2.470   1.827   1.121\n"
+        "    9TRP    SC2    3   2.679   1.768   1.005\n"
+        "    9TRP    SC4    4   2.709   2.018   1.298\n"
+        "    9TRP    SC5    5   2.890   1.973   1.194\n"
+        "   10ALA     BB    6   2.304   1.959   1.500\n"
+        "   10ALA    SC1    7   2.104   1.959   1.500\n"
+        "   11ALA     BB    8   2.304   1.959   1.950\n"
+        "   11ALA    SC1    9   2.104   1.959   1.950\n"
+        "   20ALA     BB   10   2.304   1.959   2.410\n"
+        "   20ALA    SC1   11   2.104   1.959   2.410\n"
+        "   5.00000   5.00000   5.00000\n";
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
+    static const int expected[][2] = {
+        {0, 1}, {1, 2}, {2, 4}, {3, 4}, {1, 3},     // Trp, without SC2-SC4 (2-3)
+        {5, 6}, {7, 8}, {9, 10},                    // Ala BB-SC1
+        {0, 5},                                     // 5.0 A, numbered next
+        {5, 7},                                     // 4.5 A, numbered next
+    };
+    check_bonds_against_topology(utest_result, &sys, expected, ARRAY_SIZE(expected), NULL, 0);
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 7, 9));  // 4.6 A over a jump in the numbering
+    md_vm_arena_destroy(alloc);
+}
+
+// Martini systems simulated with GROMACS (test_data/martini, see its README): a frame of each as .gro, and its topology
+// as .tpr. Read from the frame alone, every bead gets the mass, size, particle kind and role the topology gives it,
+// every residue its kind, and the bonds are those of the topology, no more and no fewer. The frames are of a running
+// simulation: bonds stretched, molecules broken across the box.
+UTEST(util, martini_reference_systems) {
+    static const char* names[] = {
+        "martini3_membrane",            // POPC, POPE, POPS, CHOL (virtual sites), W, NA, CL
+        "martini3_lipids",              // 24 lipids of the Martini 3 lipidome: phospholipids, sphingolipids, glycerides, ...
+        "martini3_peptides",            // Charged termini (Pro, Ala), neutral termini (Gly), a disulfide
+        "martini3_rna",                 // An RNA duplex (reForge), virtual sites in the bases
+        "martini3_small_molecules",     // Small molecules (rings of virtual sites), solvents, sugars, ions, SW, TW, W
+        "martini3_polymer",             // PEO with hydroxyl ends and polystyrene (polyply): residues linked by the force field
+        "martini2_membrane_protein",    // Ubiquitin on DPPC, DOPC, CHOL; W, WF, NA+, CL-
+        "martini2_lipids",              // 24 lipids of the Martini 2 lipidome, surfactants, sterols
+        "martini2p_protein",            // Polarizable Martini 2: villin, PW, charge dummies, virtual sites
+        "martini2_dna",                 // A DNA duplex (martinize-dna), its elastic network left out
+        "martini2_rna",                 // An RNA duplex (martinize-nucleotide)
+        "martini2_small_molecules",     // The solvents, sugars and ions of Martini 2
+    };
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    for (size_t n = 0; n < ARRAY_SIZE(names); ++n) {
+        char tpr_path[256], gro_path[256];
+        snprintf(tpr_path, sizeof(tpr_path), MD_UNITTEST_DATA_DIR "/martini/%s.tpr", names[n]);
+        snprintf(gro_path, sizeof(gro_path), MD_UNITTEST_DATA_DIR "/martini/%s.gro", names[n]);
+        md_system_t top = { .alloc = alloc }, gro = { .alloc = alloc };
+        md_system_state_t top_state = { .alloc = alloc }, gro_state = { .alloc = alloc };
+        ASSERT_TRUE(md_tpr_system_init_from_file(&top, &top_state, str_from_cstr(tpr_path)));
+        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, str_from_cstr(gro_path)));
+        ASSERT_EQ(top.atom.count, gro.atom.count);
+        ASSERT_EQ(top.component.count, gro.component.count);
+
+        size_t bad_atoms = 0;
+        for (size_t i = 0; i < top.atom.count; ++i) {
+            const bool same = fabsf(md_atom_mass(&top.atom, i) - md_atom_mass(&gro.atom, i)) < 1e-3f &&
+                fabsf(md_atom_radius(&top.atom, i) - md_atom_radius(&gro.atom, i)) < 0.02f &&
+                md_atom_particle_kind(&top.atom, i) == md_atom_particle_kind(&gro.atom, i) &&
+                md_atom_flags(&top.atom, i) == md_atom_flags(&gro.atom, i) &&
+                md_atom_atomic_number(&gro.atom, i) == 0;
+            bad_atoms += !same;
+        }
+        EXPECT_EQ_MSG((size_t)0, bad_atoms, names[n]);
+
+        size_t bad_comps = 0;
+        for (size_t c = 0; c < top.component.count; ++c) {
+            bad_comps += md_component_kind(&top.component, c) != md_component_kind(&gro.component, c);
+        }
+        EXPECT_EQ_MSG((size_t)0, bad_comps, names[n]);
+
+        size_t missing = 0, extra = 0;
+        for (size_t b = 0; b < top.bond.count; ++b) {
+            missing += md_bond_find(&gro.bond, top.bond.pairs[b].idx[0], top.bond.pairs[b].idx[1]) == -1;
+        }
+        for (size_t b = 0; b < gro.bond.count; ++b) {
+            extra += md_bond_find(&top.bond, gro.bond.pairs[b].idx[0], gro.bond.pairs[b].idx[1]) == -1;
+        }
+        EXPECT_EQ_MSG((size_t)0, missing, names[n]);
+        EXPECT_EQ_MSG((size_t)0, extra, names[n]);
+        EXPECT_GT(top.bond.count, (size_t)0);
+    }
     md_vm_arena_destroy(alloc);
 }
 

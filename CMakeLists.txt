@@ -188,6 +188,7 @@ set(SRC_FILES
   src/md_trr.h
   src/md_types.h
   src/md_util.c
+  src/md_martini_db.inl
   src/md_util.h
   src/md_unitcell.h
   src/md_unitcell.c

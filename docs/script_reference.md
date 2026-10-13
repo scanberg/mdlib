@@ -303,7 +303,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 | Category | Procedures |
 |---|---|
 | [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`ring`](#ring) |
-| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
+| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`lipid`](#lipid), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
 | [Selectors: instances](#selectors-instance-level) | [`instance`](#instance), [`chain`](#chain), [`chain_id`](#chain_id), [`auth_id`](#auth_id) |
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
@@ -578,6 +578,22 @@ Every water molecule.
 ```mdscript
 solvent = water();
 n_waters = count(water(), "residue");
+```
+
+### lipid
+
+<!-- proc name=lipid category=selector.residue -->
+
+```text
+lipid() -> bitfield[]
+```
+
+Every lipid, sterols included: the lipids of the Martini lipidomes, coarse grained or atomistic by the same names
+(POPC, DPPC, CHOL, ...), and the cholesterol of CHARMM (CHL1).
+
+```mdscript
+membrane = lipid();
+n_lipids = count(lipid(), "residue");
 ```
 
 ### qm

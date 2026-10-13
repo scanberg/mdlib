@@ -448,6 +448,7 @@ static int _match           (data_t*, data_t[], eval_context_t*); // (bitfield, 
 
 // Residue level selectors
 static int _water       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _lipid       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _protein     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleic     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
@@ -786,6 +787,7 @@ static procedure_t procedures[] = {
     {STR_INIT("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("nucleotide"),TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("lipid"),     TI_BITFIELD_ARR, 0, {0},                _lipid,         FLAG_QUERYABLE_LENGTH},
 
     // A compile error where the system has no such region: a QM region, and atoms which are not in it
     {STR_INIT("qm"),          TI_BITFIELD_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -3594,6 +3596,10 @@ static int _select_components_of_kind(data_t* dst, data_t arg[], eval_context_t*
 
 static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_WATER);
+}
+
+static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_LIPID);
 }
 
 static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
