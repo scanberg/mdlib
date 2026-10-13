@@ -132,3 +132,25 @@ static inline uint64_t swap_endian64(uint64_t x) {
 	return (x >> 56) | ((x >> 40) & 0x000000000000FF00) | ((x >> 24) & 0x0000000000FF0000) | ((x >> 8) & 0x00000000FF000000) |
 	       ((x << 8) & 0x000000FF00000000) | ((x << 24) & 0x0000FF0000000000) | ((x << 40) & 0x00FF000000000000) | (x << 56);
 }
+
+// ## Atomics
+// On a naturally aligned 64-bit integer shared between threads without a lock, sequentially consistent. A fetch
+// returns the value from before the operation.
+#if (MD_COMPILER_CLANG || MD_COMPILER_GCC)
+static inline uint64_t md_atomic_fetch_add64(volatile uint64_t* ptr, uint64_t value) {
+    return __atomic_fetch_add(ptr, value, __ATOMIC_SEQ_CST);
+}
+
+static inline uint64_t md_atomic_load64(const volatile uint64_t* ptr) {
+    return __atomic_load_n(ptr, __ATOMIC_SEQ_CST);
+}
+#elif MD_COMPILER_MSVC
+static inline uint64_t md_atomic_fetch_add64(volatile uint64_t* ptr, uint64_t value) {
+    return (uint64_t)_InterlockedExchangeAdd64((volatile __int64*)ptr, (__int64)value);
+}
+
+static inline uint64_t md_atomic_load64(const volatile uint64_t* ptr) {
+    // A compare exchange which never exchanges: a full barrier, and a read of all 64 bits at once
+    return (uint64_t)_InterlockedCompareExchange64((volatile __int64*)ptr, 0, 0);
+}
+#endif

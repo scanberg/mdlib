@@ -9,6 +9,7 @@
 #include <core/md_simd.h>
 #include <core/md_array.h>
 #include <core/md_hash.h>
+#include <core/md_intrinsics.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
@@ -23,16 +24,11 @@ extern "C" {
 
 // One counter for every system, so that a version is never handed out twice: a consumer which kept the version of a
 // system that has since been freed and loaded anew cannot take the new topology for the one it saw.
-static volatile int64_t topology_version_counter = 0;
+static volatile uint64_t topology_version_counter = 0;
 
 uint64_t md_system_topology_changed(md_system_t* sys) {
     ASSERT(sys);
-#if MD_COMPILER_MSVC
-    const int64_t version = _InterlockedIncrement64(&topology_version_counter);
-#else
-    const int64_t version = __atomic_add_fetch(&topology_version_counter, 1, __ATOMIC_RELAXED);
-#endif
-    sys->topology_version = (uint64_t)version;
+    sys->topology_version = md_atomic_fetch_add64(&topology_version_counter, 1) + 1;
     return sys->topology_version;
 }
 
