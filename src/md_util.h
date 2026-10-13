@@ -50,20 +50,22 @@ bool md_util_resname_acidic(str_t str);
 bool md_util_resname_basic(str_t str);
 bool md_util_resname_neutral(str_t str);
 bool md_util_resname_water(str_t str);
+bool md_util_resname_lipid(str_t str);      // The lipids of the Martini lipidomes (their names are mostly the atomistic ones)
 bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
 bool md_util_resname_nucleotide(str_t str);
 
 void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
-// Classifies the components (md_component_kind_t: amino acid, nucleotide, water, ion) from their names, atoms and
-// bonds. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
+// Classifies the components (md_component_kind_t: amino acid, nucleotide, water, ion, lipid) from their names, atoms
+// and bonds. A component of coarse grained beads which is a molecule of the Martini force fields by its name and all
+// its bead names (a lipid, water, an ion, a sugar, ...) is of the kind of that molecule. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
 // is either a standard residue by name or linked into a chain (a peptide or phosphodiester bond to another
 // component), is MD_COMPONENT_FLAG_RESOLVED: its atoms are given their roles (MD_ATOM_FLAG_BACKBONE, _SIDE_CHAIN,
 // ...) and its terminal groups are marked. The link keeps out the ligands which name their atoms like a residue
 // (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A component which is only named like an
 // amino acid or nucleotide gets the kind alone. Components a predefined coarse grained type already classified as
-// water or ion are left alone. Requires the bonds.
+// water, ion or lipid are left alone. Requires the bonds.
 bool md_util_system_infer_comp_flags(md_system_t* sys);
 
 // Replaces the entities and instances of the system with inferred ones (MD_ENTITY_FLAG_INFERRED), from the
@@ -128,9 +130,10 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_sy
 
 // Bonds of origin MD_BOND_ORIGIN_INFERRED, replacing those of an earlier inference and keeping every other: an inferred
 // bond never duplicates one of another origin. Atoms are bonded by their covalent radii (derived from the element).
-// Coarse grained systems (md_system_is_coarse_grained) have the beads of their amino acids and nucleotides bonded as
-// in Martini topologies: a minimum spanning tree of each residue with its rings, the backbone bead of each residue to
-// the next unless the numbering starts over, and disulfide bridges (see infer_coarse_grained_bonds in md_util.c).
+// Coarse grained systems (md_system_is_coarse_grained) are bonded as their Martini topologies are: a residue whose beads
+// are those of a residue of the Martini force fields has the bonds of its topology, any other amino acid or nucleotide
+// a minimum spanning tree of its beads with its rings. The backbone bead of each residue is bonded to that of the next
+// unless the numbering starts over, and cysteines are bridged (see infer_coarse_grained_bonds in md_util.c).
 void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
 
 // Infers the covalent bonds of the system (md_util_infer_covalent_bonds) anew. The bonds a user added by hand and those

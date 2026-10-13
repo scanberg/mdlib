@@ -3717,7 +3717,216 @@ static int compare_bond_excess(const void* a, const void* b) {
     return (x->idx > y->idx) - (x->idx < y->idx);
 }
 
-// Coarse grained (Martini) bond inference, for amino acids and nucleotides:
+// ### MARTINI ###
+
+// The versions of Martini, which give beads of the same names different masses and sizes, and some residues different
+// beads. Which one a system is from its residue and bead names tell (martini_system).
+enum {
+    MARTINI_2   = 1,    // martini22, elnedyn21, elnedyn22
+    MARTINI_2P  = 2,    // Polarizable Martini 2: martini22p, elnedyn22p
+    MARTINI_3   = 4,    // martini3001
+    MARTINI_ANY = MARTINI_2 | MARTINI_2P | MARTINI_3,
+};
+
+// The radius of a regular Martini bead (sigma 4.7 A), as md_tpr gives it: half the distance of the minimum of the
+// Lennard-Jones potential, 2^(1/6) sigma / 2
+#define MARTINI_R   2.638f
+
+typedef struct {
+    const char*         name;
+    float               mass;
+    float               radius;     // From the sigma of the bead type with itself, as md_tpr gives it
+    md_particle_kind_t  particle;   // A massless bead is a virtual site; one without Lennard-Jones a charge site
+} martini_db_bead_t;
+
+typedef struct {
+    const char*         name;
+    uint32_t            versions;
+    md_component_kind_t kind;
+    uint16_t            bead_offset;    // Into martini_db_residue_beads
+    uint8_t             num_beads;
+    uint16_t            bond_offset;    // Into martini_db_residue_bonds, pairs of beads of the residue
+    uint8_t             num_bonds;
+} martini_db_residue_t;
+
+typedef struct {
+    const char* name;       // A residue of a polymer (polyply), and its bead bonded to
+    const char* bead;
+    const char* next_name;  // the bead of the residue after it
+    const char* next_bead;
+    uint32_t    versions;
+} martini_db_link_t;
+
+// The residues of the Martini force fields: proteins (vermouth), nucleic acids, the lipidomes, sterols, solvents, ions,
+// small molecules, sugars and polymers (polyply) of Martini 2 and 3, read from their topology files by
+// tools/gen_martini_db.py, and the links between the residues of the polymers.
+#include "md_martini_db.inl"
+
+static inline const martini_db_bead_t* martini_db_bead(const martini_db_residue_t* res, size_t k) {
+    return &martini_db_beads[martini_db_residue_beads[res->bead_offset + k]];
+}
+
+// An amino acid or a nucleotide, of a chain whose residues vary (termini, modifications, missing beads)
+static inline bool martini_db_biopolymer(const martini_db_residue_t* res) {
+    return res->kind == MD_COMPONENT_KIND_AMINO_ACID || res->kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+}
+
+// The residues of the name, [*beg, *end)
+static void martini_db_find(str_t name, size_t* beg, size_t* end) {
+    size_t lo = 0, hi = ARRAY_SIZE(martini_db_residues);
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (str_cmp_lex(str_from_cstr(martini_db_residues[mid].name), name) < 0) lo = mid + 1; else hi = mid;
+    }
+    size_t e = lo;
+    while (e < ARRAY_SIZE(martini_db_residues) && str_eq_cstr(name, martini_db_residues[e].name)) ++e;
+    *beg = lo;
+    *end = e;
+}
+
+// Whether the labels are the beads of the residue, each once (in any order). map[i] is then the bead of label i.
+static bool martini_db_match(const martini_db_residue_t* res, const str_t labels[], size_t num_labels, uint8_t map[]) {
+    if (num_labels != res->num_beads) return false;
+    bool used[256] = {0};
+    for (size_t i = 0; i < num_labels; ++i) {
+        size_t k = 0;
+        while (k < res->num_beads && (used[k] || !str_eq_cstr(labels[i], martini_db_bead(res, k)->name))) ++k;
+        if (k == res->num_beads) return false;
+        used[k] = true;
+        map[i] = (uint8_t)k;
+    }
+    return true;
+}
+
+// The molecule (not an amino acid or a nucleotide) a residue of the labels is, of the version if there is one of it,
+// else of any version. NULL when it is none.
+static const martini_db_residue_t* martini_db_match_molecule(uint32_t version, str_t comp_name, const str_t labels[], size_t num_labels, uint8_t map[]) {
+    if (num_labels == 0 || num_labels > 255) return NULL;
+    size_t beg, end;
+    martini_db_find(comp_name, &beg, &end);
+    const martini_db_residue_t* other = NULL;
+    for (size_t k = beg; k < end; ++k) {
+        const martini_db_residue_t* res = &martini_db_residues[k];
+        if (martini_db_biopolymer(res) || !martini_db_match(res, labels, num_labels, map)) continue;
+        if (res->versions & version) return res;
+        if (!other) other = res;
+    }
+    if (other) martini_db_match(other, labels, num_labels, map);
+    return other;
+}
+
+// Whether the residue is a monomer of a polymer: a link names it
+static bool martini_db_linked(str_t name) {
+    for (size_t k = 0; k < ARRAY_SIZE(martini_db_links); ++k) {
+        if (str_eq_cstr(name, martini_db_links[k].name) || str_eq_cstr(name, martini_db_links[k].next_name)) return true;
+    }
+    return false;
+}
+
+// Bead idx of an amino acid or a nucleotide of the labels: of the residue of the version whose beads they are, else the
+// first bead of its name in a residue of the version (the residue may lack beads), else in one of any version
+static const martini_db_bead_t* martini_db_biopolymer_bead(uint32_t version, str_t comp_name, const str_t labels[], size_t num_labels, size_t idx) {
+    size_t beg, end;
+    martini_db_find(comp_name, &beg, &end);
+    if (num_labels <= 255) {
+        uint8_t map[256];
+        for (size_t r = beg; r < end; ++r) {
+            const martini_db_residue_t* res = &martini_db_residues[r];
+            if (martini_db_biopolymer(res) && (res->versions & version) && martini_db_match(res, labels, num_labels, map)) return martini_db_bead(res, map[idx]);
+        }
+    }
+    const str_t label = labels[idx];
+    const martini_db_bead_t* other = NULL;
+    for (size_t r = beg; r < end; ++r) {
+        const martini_db_residue_t* res = &martini_db_residues[r];
+        if (!martini_db_biopolymer(res)) continue;
+        for (size_t k = 0; k < res->num_beads; ++k) {
+            const martini_db_bead_t* bead = martini_db_bead(res, k);
+            if (!str_eq_cstr(label, bead->name)) continue;
+            if (res->versions & version) return bead;
+            if (!other) other = bead;
+        }
+    }
+    return other;
+}
+
+typedef struct {
+    uint32_t version;
+    bool     martini;   // A Martini system: residues of several beads which are Martini's, Martini water or polymers
+} martini_system_t;
+
+// Which version of Martini a system is from. Each residue whose beads are those of a residue of the database in some
+// versions only votes for those: Ala with SC1, Tyr with SC4 and Trp with SC5 for Martini 3, the charge dummies and the
+// polarizable water for polarizable Martini 2, cholesterol of 8 beads for Martini 2, ... Martini 3 when nothing tells,
+// the current one and martinize2's default, and Martini 2 over polarizable Martini 2 on a tie.
+static martini_system_t martini_system(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data) {
+    size_t votes[3] = {0};  // MARTINI_2, MARTINI_2P, MARTINI_3
+    bool martini = false;
+    str_t labels[256];
+    uint8_t map[256];
+    for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
+        const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+        const size_t n = range.end - range.beg;
+        if (n == 0 || n > 255) continue;
+        size_t beg, end;
+        martini_db_find(md_component_name(&sys->component, comp_idx), &beg, &end);
+        if (beg == end) continue;
+        for (size_t i = 0; i < n; ++i) labels[i] = label(data, range.beg + i);
+        uint32_t versions = 0;
+        for (size_t k = beg; k < end; ++k) {
+            const martini_db_residue_t* res = &martini_db_residues[k];
+            if (!martini_db_match(res, labels, n, map)) continue;
+            versions |= res->versions;
+            // No atomistic residue has the name and the atom names of a Martini residue of several beads, of Martini water
+            // or of a monomer of a Martini polymer
+            if (n > 1 || res->kind == MD_COMPONENT_KIND_WATER || martini_db_linked(str_from_cstr(res->name))) martini = true;
+        }
+        if (versions == 0 || versions == MARTINI_ANY) continue;
+        if (versions & MARTINI_2)  votes[0] += 1;
+        if (versions & MARTINI_2P) votes[1] += 1;
+        if (versions & MARTINI_3)  votes[2] += 1;
+    }
+    martini_system_t result = { .version = MARTINI_3, .martini = martini };
+    if (votes[0] > votes[2] && votes[0] >= votes[1]) result.version = MARTINI_2;
+    else if (votes[1] > votes[2] && votes[1] > votes[0]) result.version = MARTINI_2P;
+    return result;
+}
+
+// Lipids by name: those of the Martini lipidomes (whose names the atomistic force fields mostly share: POPC, DPPC, CHOL,
+// ...) and the cholesterol of CHARMM
+bool md_util_resname_lipid(str_t str) {
+    size_t beg, end;
+    martini_db_find(str, &beg, &end);
+    for (size_t k = beg; k < end; ++k) {
+        if (martini_db_residues[k].kind == MD_COMPONENT_KIND_LIPID) return true;
+    }
+    return str_eq_cstr(str, "CHL1");
+}
+
+static str_t label_of_array(const void* data, size_t i) {
+    return ((const str_t*)data)[i];
+}
+
+static str_t label_of_atom(const void* data, size_t i) {
+    return md_atom_name((const md_atom_data_t*)data, i);
+}
+
+// The type of the name, element, mass, size and particle kind, added when there is none. md_atom_type_find_or_add goes by
+// name and element alone, which gives every bead of a name the mass and size of the first: a Martini SC1 is 36 in Ala
+// and 54 in Leu (Martini 3), and Trp's SC3 is a massless virtual site.
+static md_atom_type_idx_t find_or_add_atom_type(md_atom_type_data_t* type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_atom_type_flags_t flags, md_allocator_i* alloc) {
+    for (size_t t = 1; t < type->count; ++t) {
+        if (type->z[t] == z && type->mass[t] == mass && type->radius[t] == radius && md_atom_type_flags(type, t) == flags && str_eq(md_atom_type_name(type, t), name)) {
+            return (md_atom_type_idx_t)t;
+        }
+    }
+    return md_atom_type_add(type, name, (str_t){0}, z, mass, radius, color, flags, alloc);
+}
+
+// Coarse grained (Martini) bond inference. A residue whose beads are those of a residue of the Martini force fields
+// (martini_db), with their masses, has the bonds of its topology: those within the residue for an amino acid or a
+// nucleotide, all of them for a molecule (a lipid, a sterol, a solvent, a sugar, ...). Amino acids and nucleotides which
+// are not (missing beads, modified residues, other force fields) are bonded by their geometry:
 //
 // Within a residue
 // - A minimum spanning tree of its beads, of bonds up to 6 A: the beads hang together the way their topologies have
@@ -3728,15 +3937,22 @@ static int compare_bond_excess(const void* a, const void* b) {
 // - A massless bead is a virtual site, which the topologies do not bond (Trp SC3 of Martini 3), and stays out, unless
 //   it is all of the side chain there is (the polar SC1 of polarizable Martini 2, bonded to BB in its topology).
 // - The charge dummies of polarizable Martini 2 (SCP, SCN) are bonded to the bead they sit by, and to each other.
-// Between residues
-// - The last backbone bead of a residue to the first of the next (BB to BB; BB3 to BB1 in DNA), up to 4.3 A for amino
-//   acids (bonded pairs reach 4.05 A) and 5.5 A for nucleotides (4.4 A), unless the numbering starts over: a new chain.
-//   The numbering may jump forward over a bond (an engineered insert), so a gap is told by the distance alone.
+// Between residues (of any amino acid or nucleotide)
+// - The last backbone bead of a residue to the first of the next (BB to BB; BB3 to BB1 in DNA and RNA, and BB2 to BB1
+//   as well in Martini 3 RNA), up to 5.5 A when the next is numbered next (bonds stretch in a simulation), else up to
+//   4.3 A for amino acids (bonded pairs of structures reach 4.05 A) and 5.5 A for nucleotides (4.4 A), unless the
+//   numbering starts over: a new chain. The numbering may jump forward over a bond (an engineered insert), so a gap is
+//   told by the distance alone.
 // - The SC1 beads of two cysteines closer than 3 A: a disulfide bridge (2.3-2.5 A; unbonded pairs are 4.5 A apart).
 //
+// The residues of a polymer (polyply's library: PEO, PS, PE, PMMA, dextran, ..., a PEGylated lipid) are bonded to the
+// residue before them by the links of the force field.
+// A virtual site is bonded to the first bead it is constructed from in the topologies, as md_tpr bonds it.
 // Validated against the topologies martinize2 (vermouth 0.15) writes for 16 structures (dipeptides to 300 residues,
-// several chains, disulfides, a chain with gaps) in Martini 3, 2 and polarizable 2, and against Martini 2 DNA (polyply)
-// mapped from a nucleosome: no bond which the topologies do not have.
+// several chains, disulfides, a chain with gaps) in Martini 3, 2 and polarizable 2, against Martini 2 DNA (polyply)
+// mapped from a nucleosome, and against simulated systems of proteins, DNA, RNA, membranes and solvents in Martini 2
+// and 3 (their .tpr): no bond which the topologies do not have, besides elastic networks and the restraints of
+// secondary structure, which are not chemical bonds.
 static inline float cg_bead_distance(const md_system_state_t* state, int i, int j) {
     vec3_t d = vec3_sub(state->xyz[i], state->xyz[j]);
     md_util_min_image_vec3(&d, 1, &state->unitcell);
@@ -3750,6 +3966,54 @@ static inline void cg_push_bond(md_array(bond_pair_t)* candidates, int i, int j,
 
 static inline bool martini_charge_dummy(str_t atom_name) {
     return str_eq_cstr(atom_name, "SCP") || str_eq_cstr(atom_name, "SCN");
+}
+
+// The residue of the database a component is: the one of its name whose beads are its beads, each with the mass of its
+// atom (its type was given by it), and of the version where there are several. map[i] is then the bead of atom i.
+static const martini_db_residue_t* martini_db_match_component(const md_system_t* sys, size_t comp_idx, uint32_t version, str_t labels[], uint8_t map[]) {
+    const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+    const size_t n = range.end - range.beg;
+    if (n == 0 || n > 255) return NULL;
+    const md_component_kind_t kind = md_component_kind(&sys->component, comp_idx);
+    const bool biopolymer = kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+    for (size_t i = 0; i < n; ++i) labels[i] = md_atom_name(&sys->atom, range.beg + i);
+    size_t beg, end;
+    martini_db_find(md_component_name(&sys->component, comp_idx), &beg, &end);
+    const martini_db_residue_t* other = NULL;
+    for (size_t r = beg; r < end; ++r) {
+        const martini_db_residue_t* res = &martini_db_residues[r];
+        if (martini_db_biopolymer(res) != biopolymer || !martini_db_match(res, labels, n, map)) continue;
+        bool same = true;
+        for (size_t i = 0; i < n && same; ++i) same = md_atom_mass(&sys->atom, range.beg + i) == martini_db_bead(res, map[i])->mass;
+        if (!same) continue;
+        if (res->versions & version) return res;
+        if (!other) other = res;
+    }
+    if (other) martini_db_match(other, labels, n, map);
+    return other;
+}
+
+// The bonds of a residue of a polymer (polyply) to the one before it, by the links of the force field, up to 6 A apart
+// (the longest are 4.7 A), unless the numbering starts over: a new chain
+static void cg_polymer_links(md_array(bond_pair_t)* candidates, const md_system_t* sys, const md_system_state_t* state, size_t ci, md_allocator_i* alloc) {
+    const float polymer_cap = 6.0f;
+    const str_t prev_name = md_component_name(&sys->component, ci - 1);
+    const str_t name      = md_component_name(&sys->component, ci);
+    const md_sequence_id_t prev_seq = md_component_seq_id(&sys->component, ci - 1);
+    const md_sequence_id_t seq      = md_component_seq_id(&sys->component, ci);
+    if (seq < prev_seq && !(seq <= 1 && prev_seq >= 9999)) return;
+    const md_urange_t prev = md_component_atom_range(&sys->component, ci - 1);
+    const md_urange_t cur  = md_component_atom_range(&sys->component, ci);
+    for (size_t k = 0; k < ARRAY_SIZE(martini_db_links); ++k) {
+        const martini_db_link_t* link = &martini_db_links[k];
+        if (!str_eq_cstr(prev_name, link->name) || !str_eq_cstr(name, link->next_name)) continue;
+        int a = -1, b = -1;
+        for (uint32_t i = prev.beg; i < prev.end && a == -1; ++i) if (str_eq_cstr(md_atom_name(&sys->atom, i), link->bead)) a = (int)i;
+        for (uint32_t i = cur.beg;  i < cur.end  && b == -1; ++i) if (str_eq_cstr(md_atom_name(&sys->atom, i), link->next_bead)) b = (int)i;
+        if (a == -1 || b == -1) continue;
+        const float d = cg_bead_distance(state, a, b);
+        if (d < polymer_cap) cg_push_bond(candidates, a, b, d, alloc);
+    }
 }
 
 static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
@@ -3769,38 +4033,62 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
     bool*  done   = md_alloc(alloc, sizeof(bool)  * (max_len + 1));
     md_array(int) cys_sc1 = 0;
 
-    int prev_last_bb = -1;
+    int prev_last_bb = -1, prev_also_bb = -1;
     size_t prev_ci = 0;
     md_component_kind_t prev_kind = MD_COMPONENT_KIND_OTHER;
 
+    str_t* labels = md_alloc(alloc, sizeof(str_t) * (max_len + 1));
+    uint8_t map[256];
+    const uint32_t version = martini_system(sys, label_of_atom, &sys->atom).version;
+
     for (size_t ci = 0; ci < sys->component.count; ++ci) {
         const md_component_kind_t kind = md_component_kind(&sys->component, ci);
-        if (kind != MD_COMPONENT_KIND_AMINO_ACID && kind != MD_COMPONENT_KIND_NUCLEOTIDE) {
-            prev_last_bb = -1;
+        const bool biopolymer = kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+        const md_urange_t range = md_component_atom_range(&sys->component, ci);
+
+        if (ci > 0) cg_polymer_links(candidates, sys, state, ci, alloc);
+
+        // The bonds of its topology. A charge site (a virtual site without Lennard-Jones) has none, as md_tpr gives it.
+        const martini_db_residue_t* res = martini_db_match_component(sys, ci, version, labels, map);
+        if (res) {
+            uint8_t local[256];
+            for (size_t i = 0; i < range.end - range.beg; ++i) local[map[i]] = (uint8_t)i;
+            for (size_t b = 0; b < res->num_bonds; ++b) {
+                const int x = (int)range.beg + local[martini_db_residue_bonds[res->bond_offset + b][0]];
+                const int y = (int)range.beg + local[martini_db_residue_bonds[res->bond_offset + b][1]];
+                if (md_atom_particle_kind(&sys->atom, x) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&sys->atom, y) == MD_PARTICLE_VIRTUAL_SITE) continue;
+                cg_push_bond(candidates, x, y, cg_bead_distance(state, x, y), alloc);
+            }
+        }
+        if (!biopolymer) {
+            prev_last_bb = prev_also_bb = -1;
             continue;
         }
         const bool  amino_acid = kind == MD_COMPONENT_KIND_AMINO_ACID;
         const float ring_cap   = amino_acid ? 3.6f : 3.0f;
-        const float link_cap   = amino_acid ? 4.3f : 5.5f;
-        const md_urange_t range = md_component_atom_range(&sys->component, ci);
+        const float link_cap      = amino_acid ? 4.3f : 5.5f;
+        const float link_cap_next = 5.5f;
 
-        // Which beads make up the tree: all but the charge dummies and, where the side chain has beads with a mass, the
-        // massless ones
+        // Without a topology, by the geometry. Which beads make up the tree: all but the charge dummies and, where the
+        // side chain has beads with a mass, the massless ones
         bool side_with_mass = false;
         for (uint32_t i = range.beg; i < range.end; ++i) {
             if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) && !martini_charge_dummy(md_atom_name(&sys->atom, i)) && md_atom_mass(&sys->atom, i) > 0.0f) {
                 side_with_mass = true;
             }
         }
+        // The next residue is linked to the last bead of the backbone, and, in a nucleotide of Martini 3, to BB2 as well
+        const bool m3_nucleotide = !amino_acid && ((res ? res->versions : version) & (MARTINI_2 | MARTINI_2P)) == 0;
         int n = 0;
-        int first_bb = -1, last_bb = -1;
+        int first_bb = -1, last_bb = -1, also_bb = -1;
         for (uint32_t i = range.beg; i < range.end; ++i) {
             const bool backbone = md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE;
             if (backbone) {
                 if (first_bb == -1) first_bb = (int)i;
                 last_bb = (int)i;
+                if (m3_nucleotide && str_eq_cstr(md_atom_name(&sys->atom, i), "BB2")) also_bb = (int)i;
             }
-            if (martini_charge_dummy(md_atom_name(&sys->atom, i))) continue;
+            if (res || martini_charge_dummy(md_atom_name(&sys->atom, i))) continue;
             if (!backbone && side_with_mass && md_atom_mass(&sys->atom, i) == 0.0f) continue;
             tree[n++] = (int)i;
         }
@@ -3845,7 +4133,7 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
         }
 
         // The charge dummies
-        for (uint32_t i = range.beg; i < range.end; ++i) {
+        for (uint32_t i = range.beg; i < range.end && !res; ++i) {
             if (!martini_charge_dummy(md_atom_name(&sys->atom, i))) continue;
             int nearest = -1;
             float nearest_d = dummy_cap;
@@ -3862,17 +4150,27 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
             if (nearest != -1) cg_push_bond(candidates, nearest, (int)i, nearest_d, alloc);
         }
 
-        // To the previous residue of the chain
+        // To the previous residue of the chain. The next number allows for the stretch of a bond in a simulation
+        // (Martini 2's backbone bonds, the softest, pass 4.3 A in one of 200 frames and 5.5 A in one of 10^5).
         if (prev_last_bb != -1 && first_bb != -1 && prev_ci + 1 == ci && prev_kind == kind) {
             const md_sequence_id_t prev_seq = md_component_seq_id(&sys->component, prev_ci);
             const md_sequence_id_t seq      = md_component_seq_id(&sys->component, ci);
             const bool restart = seq < prev_seq && !(seq <= 1 && prev_seq >= 9999);  // GRO and PDB wrap at 99999 and 9999
+            const bool next    = seq == prev_seq + 1 || (seq <= 1 && prev_seq >= 9999);
             if (!restart) {
+                const float cap = next ? link_cap_next : link_cap;
                 const float d = cg_bead_distance(state, prev_last_bb, first_bb);
-                if (d < link_cap) cg_push_bond(candidates, prev_last_bb, first_bb, d, alloc);
+                if (d < cap) {
+                    cg_push_bond(candidates, prev_last_bb, first_bb, d, alloc);
+                    if (prev_also_bb != -1 && prev_also_bb != prev_last_bb) {
+                        const float d2 = cg_bead_distance(state, prev_also_bb, first_bb);
+                        if (d2 < cap) cg_push_bond(candidates, prev_also_bb, first_bb, d2, alloc);
+                    }
+                }
             }
         }
         prev_last_bb = last_bb;
+        prev_also_bb = also_bb;
         prev_ci = ci;
         prev_kind = kind;
 
@@ -4390,6 +4688,15 @@ static inline void set_component_kind(md_system_t* sys, size_t comp_idx, md_comp
     sys->component.flags[comp_idx] = md_component_flags_set_kind(sys->component.flags[comp_idx], kind);
 }
 
+// Whether the atoms of the range are all coarse grained beads (or their virtual sites)
+static bool atoms_are_beads(const md_system_t* sys, md_urange_t range) {
+    if (range.beg >= range.end) return false;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_ATOM || md_atom_atomic_number(&sys->atom, i) != 0) return false;
+    }
+    return true;
+}
+
 // True when every neighbor of the atom other than 'except' is of element allowed_z: the atom ends its chain
 static bool atom_is_chain_end(const md_system_t* sys, int atom, int except, md_atomic_number_t allowed_z) {
     md_bond_iter_t it = md_bond_iter(&sys->bond, atom);
@@ -4522,7 +4829,49 @@ static bool classify_nucleotide(md_system_t* sys, size_t comp_idx, const md_nucl
     return true;
 }
 
-// Classifies the components (amino acid, nucleotide, water, ion) from their names, atoms and bonds, and gives the
+// The ends of coarse grained chains: an amino acid or a nucleotide of beads whose backbone is not bonded to that of the
+// residue before (after) it begins (ends) its chain. Martini 3 gives the backbone bead at either end of a protein chain
+// a regular type, charged (Q5) or neutral (P6, P1, P2) alike, where Gly, Ala, Val and Pro otherwise have a small one: a
+// small backbone bead (54) at an end gets the mass and size of a regular one.
+static void infer_coarse_grained_chain_ends(md_system_t* sys) {
+    if (!md_system_is_coarse_grained(sys) || !sys->component.flags || sys->bond.conn.offset == NULL) return;
+    for (size_t ci = 0; ci < sys->component.count; ++ci) {
+        const md_component_kind_t kind = md_component_kind(&sys->component, ci);
+        if (kind != MD_COMPONENT_KIND_AMINO_ACID && kind != MD_COMPONENT_KIND_NUCLEOTIDE) continue;
+        if (sys->component.flags[ci] & MD_COMPONENT_FLAG_RESOLVED) continue;
+        const md_urange_t range = md_component_atom_range(&sys->component, ci);
+        if (range.beg >= range.end || md_atom_particle_kind(&sys->atom, range.beg) != MD_PARTICLE_BEAD) continue;
+        const md_urange_t prev = ci > 0 ? md_component_atom_range(&sys->component, ci - 1) : (md_urange_t){0, 0};
+        const md_urange_t next = ci + 1 < sys->component.count ? md_component_atom_range(&sys->component, ci + 1) : (md_urange_t){0, 0};
+
+        bool to_prev = false, to_next = false;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE)) continue;
+            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+            while (md_bond_iter_has_next(&it)) {
+                const uint32_t j = (uint32_t)md_bond_iter_atom_index(&it);
+                if (md_atom_flags(&sys->atom, j) & MD_ATOM_FLAG_BACKBONE) {
+                    if (prev.beg <= j && j < prev.end) to_prev = true;
+                    if (next.beg <= j && j < next.end) to_next = true;
+                }
+                md_bond_iter_next(&it);
+            }
+        }
+        if (!to_prev) sys->component.flags[ci] |= MD_COMPONENT_FLAG_TERMINAL_BEG;
+        if (!to_next) sys->component.flags[ci] |= MD_COMPONENT_FLAG_TERMINAL_END;
+
+        if (kind == MD_COMPONENT_KIND_AMINO_ACID && (!to_prev || !to_next)) {
+            for (uint32_t i = range.beg; i < range.end; ++i) {
+                const md_atom_type_idx_t t = sys->atom.type_idx[i];
+                if (md_atom_type_mass(&sys->atom.type, t) != 54.0f || !str_eq_cstr(md_atom_type_name(&sys->atom.type, t), "BB")) continue;
+                sys->atom.type_idx[i] = find_or_add_atom_type(&sys->atom.type, md_atom_type_name(&sys->atom.type, t), 0, 72.0f, MARTINI_R,
+                    md_atom_type_color(&sys->atom.type, t), md_atom_type_flags(&sys->atom.type, t), sys->alloc);
+            }
+        }
+    }
+}
+
+// Classifies the components (amino acid, nucleotide, water, ion, lipid) from their names, atoms and bonds, and gives the
 // atoms of the amino acids and nucleotides whose backbone could be verified their roles.
 bool md_util_system_infer_comp_flags(md_system_t* sys) {
     if (!sys) {
@@ -4557,10 +4906,23 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         size_t len = (size_t)(comp_range.end - comp_range.beg);
 
         const md_component_kind_t kind = md_component_kind(&sys->component, comp_idx);
-        if (kind == MD_COMPONENT_KIND_WATER || kind == MD_COMPONENT_KIND_ION) {
+        if (kind == MD_COMPONENT_KIND_WATER || kind == MD_COMPONENT_KIND_ION || kind == MD_COMPONENT_KIND_LIPID) {
             // Already classified (by a predefined coarse grained type)
             continue;
 		}
+
+        // A molecule of the Martini force fields (a lipid, water, an ion, a sugar, ...): the kind of its topology. Its
+        // name alone may say something else: PCA, a lipid of Martini 2, is pyroglutamic acid in the PDB.
+        if (len <= 255 && atoms_are_beads(sys, comp_range)) {
+            str_t labels[256];
+            uint8_t map[256];
+            for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, comp_range.beg + i);
+            const martini_db_residue_t* mol = martini_db_match_molecule(MARTINI_ANY, comp_name, labels, len, map);
+            if (mol) {
+                set_component_kind(sys, comp_idx, mol->kind);
+                continue;
+            }
+        }
 
         // Amino acids and nucleotides are classified whatever their kind, as a predefined coarse grained type may
         // have given the kind but the atoms of an atomistic one still want their roles
@@ -4596,8 +4958,12 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
             set_component_kind(sys, comp_idx, MD_COMPONENT_KIND_WATER);
         } else if (len == 1 && (md_util_resname_ion(comp_name) || monatomic_ion_element(md_atom_atomic_number(&sys->atom, comp_range.beg)))) {
             set_component_kind(sys, comp_idx, MD_COMPONENT_KIND_ION);
+        } else if (md_util_resname_lipid(comp_name)) {
+            set_component_kind(sys, comp_idx, MD_COMPONENT_KIND_LIPID);
         }
     }
+
+    infer_coarse_grained_chain_ends(sys);
 
     const size_t max_warnings = 10;
     
@@ -5773,20 +6139,14 @@ typedef struct {
     md_component_kind_t comp_kind;  // What its component is, when the particle tells (OTHER when it does not)
 } atom_type_t;
 
-// The radius of a Martini bead from the sigma of its interaction with itself, as md_tpr gives it: half the distance of
-// the minimum of the Lennard-Jones potential, 2^(1/6) sigma / 2. Sigma is 4.7 A for a regular bead, 4.1 A for a small
-// and 3.4 A for a tiny one in Martini 3, 4.3 A for a small one in Martini 2 and 3.2 A for the tiny beads of its DNA.
-#define MARTINI_R   2.64f
-#define MARTINI3_S  2.30f
-#define MARTINI3_T  1.91f
-#define MARTINI2_S  2.41f
-#define MARTINI2_T  1.80f
 
 // Predefined atom types (This include coarse grained types)
 static const atom_type_t predefined_atom_types[] = {
     // Martini proteins: the backbone bead and the side chain beads of any residue named as an amino acid, which covers
     // the names martinize2 gives protonation states and lipidated residues. No atomistic force field names an atom BB
-    // or SC#. The mass and radius are those of a regular bead; martini_beads below has those of each version.
+    // or SC#. The mass and radius are those of a regular bead; the residues of martini_db have those of each version.
+    // Martini molecules other than amino acids and nucleotides (lipids, water, ions, ...) are told by their residue
+    // name and all their bead names at once (martini_db_match_molecule), not here.
     {NULL, "BB",      0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE,   MD_COMPONENT_KIND_AMINO_ACID},
     {NULL, "SC#",     0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
     // The charge dummies of the polar side chains of polarizable Martini 2 (martini22p, elnedyn22p): no Lennard-Jones,
@@ -5800,31 +6160,6 @@ static const atom_type_t predefined_atom_types[] = {
     {NULL, "BB1",     0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_NUCLEOTIDE},
     {NULL, "BB#",     0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_NUCLEOSIDE, MD_COMPONENT_KIND_NUCLEOTIDE},
     {NULL, "SC#",     0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_NUCLEOSIDE, MD_COMPONENT_KIND_NUCLEOTIDE},
-
-	{"POPE", "PO4", 0,  95.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "GL1", 0,  55.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "GL2", 0,  55.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C1A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "D2A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C3A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C4A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C1B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C2B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C3B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C4B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-
-    {"POPG", "GL0", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "PO4", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "GL1", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "GL2", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C1A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "D2A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C3A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C4A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C1B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C2B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C3B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C4B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
 
     {"RAMP", "PO1", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
     {"RAMP", "GM1", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
@@ -5898,9 +6233,6 @@ static const atom_type_t predefined_atom_types[] = {
     {"RAMP", "S38", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
     {"RAMP", "S39", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
 
-	// Depending on the Martini version, water can be represented as a single bead or as 4-to-1 mapping
-	{ "W", "W",     0,  18.015f,     2.3f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_WATER },
-
     // The massless charge sites of 4 and 5 site water models: M of TIP4P and its variants and OPC (MW in GROMACS, OM
     // in CHARMM, EPW in AMBER, M in OpenMM) and the two lone pairs of TIP5P (LP1 LP2, EP1 EP2, M1 M2). These are all
     // atom models of a single molecule, NOT coarse grained: the coarse grained flag would turn off covalent bond and
@@ -5923,56 +6255,6 @@ static const atom_type_t predefined_atom_types[] = {
     {"P40", "X4", 0, 2.12E8f,   200.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
 
     {"C##", "C#?", 0, 1727.7f,   13.5f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-};
-
-// The versions of Martini, which give beads of the same names different masses and sizes. md_util_system_infer_atom_types
-// tells which one a system is from the names of its residues and beads (martini_version).
-enum {
-    MARTINI_2   = 1,    // martini22, elnedyn21, elnedyn22
-    MARTINI_2P  = 2,    // Polarizable Martini 2: martini22p, elnedyn22p
-    MARTINI_3   = 4,    // martini3001, and its betas
-    MARTINI_ANY = MARTINI_2 | MARTINI_2P | MARTINI_3,
-};
-
-typedef struct {
-    uint32_t    versions;
-    const char* comp;
-    const char* atom;
-    float       mass;
-    float       radius;
-} martini_bead_t;
-
-// The Martini beads whose mass or size is not that of a regular bead (72, MARTINI_R), by version, from the force fields
-// of martinize2 (vermouth 0.15). A mass is the force field's own where it gives one, else that of the size of the bead:
-// 72 for a regular, 54 for a small and 36 for a tiny bead in Martini 3, and 72 for all in Martini 2. A massless bead is a
-// virtual site: Trp SC3 of Martini 3, and the polar SC1 of polarizable Martini 2, which its charge dummies are built
-// around. The names are the same in the other versions, where these are beads with a mass, so only the version tells.
-static const martini_bead_t martini_beads[] = {
-    {MARTINI_3,  "GLY|GLYM|ALA|VAL|PRO",                                   "BB",              54.0f, MARTINI3_S},
-    {MARTINI_3,  "ALA|CYS|CYX|SER|CYSF|CYSG",                              "SC1",             36.0f, MARTINI3_T},
-    {MARTINI_3,  "VAL|PRO|LEU|ILE|ASN|ASP|ASPP|ASH|THR|LYS|LSN|LYN|ARG|PHE", "SC1",           54.0f, MARTINI3_S},
-    {MARTINI_3,  "LYS|LSN|LYN|ARG",                                        "SC2",             54.0f, MARTINI3_S},
-    {MARTINI_3,  "HIS|HSD|HSE|HSP|HID|HIE|HIP|HISE|HIH",                   "SC1|SC2|SC3",     36.0f, MARTINI3_T},
-    {MARTINI_3,  "PHE",                                                    "SC2|SC3",         36.0f, MARTINI3_T},
-    {MARTINI_3,  "TYR",                                                    "SC1|SC2|SC3|SC4", 36.0f, MARTINI3_T},
-    {MARTINI_3,  "TRP",                                                    "SC3",              0.0f, MARTINI3_T},
-    {MARTINI_3,  "TRP",                                                    "SC1|SC2|SC4|SC5", 36.0f, MARTINI3_T},
-    {MARTINI_3,  "GLYM|CYSP|CYSF|CYSG",                                    "C1",              54.0f, MARTINI3_S},
-    {MARTINI_3,  "CYSF|CYSG",                                              "C2|C3",           54.0f, MARTINI3_S},
-    {MARTINI_3,  "CYSG",                                                   "C4",              54.0f, MARTINI3_S},
-    {MARTINI_3,  "CYSF",                                                   "C4|C5|C6",        36.0f, MARTINI3_T},
-    {MARTINI_3,  "CYSG",                                                   "C5|C6|C7|C8",     36.0f, MARTINI3_T},
-
-    {MARTINI_2P, "ASN|GLN|SER|THR",                                        "SC1",              0.0f, MARTINI_R},
-    {MARTINI_2P, "ASP|GLU",                                                "SC1",             36.0f, MARTINI_R},
-    {MARTINI_2P, "LYS|ARG",                                                "SC2",             36.0f, MARTINI_R},
-    {MARTINI_2P, "HISH",                                                   "SC3",             36.0f, MARTINI2_S},
-    {MARTINI_2 | MARTINI_2P, "HIS|HSD|HSE|HSP|HISE|HISH|PHE|TYR",          "SC1|SC2|SC3",     72.0f, MARTINI2_S},
-    {MARTINI_2 | MARTINI_2P, "TRP",                                        "SC1|SC2|SC3|SC4", 72.0f, MARTINI2_S},
-
-    // Martini 2 DNA, the Martini DNA there is (polyply names the terminal residues DA5, DA3, ...)
-    {MARTINI_ANY, "DA|DC|DG|DT|DA5|DC5|DG5|DT5|DA3|DC3|DG3|DT3",          "BB2|BB3",         45.0f, MARTINI2_S},
-    {MARTINI_ANY, "DA|DC|DG|DT|DA5|DC5|DG5|DT5|DA3|DC3|DG3|DT3",          "SC#",             45.0f, MARTINI2_T},
 };
 
 static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {
@@ -6055,64 +6337,6 @@ static atom_type_t* find_predefined_atom_type(str_t comp_name, str_t atom_name) 
     return NULL;
 }
 
-static const martini_bead_t* find_martini_bead(uint32_t version, str_t comp_name, str_t atom_name) {
-    for (size_t i = 0; i < ARRAY_SIZE(martini_beads); ++i) {
-        const martini_bead_t* bead = &martini_beads[i];
-        if ((bead->versions & version) && pattern_match_any(bead->atom, atom_name.ptr) && pattern_match_any(bead->comp, comp_name.ptr)) {
-            return bead;
-        }
-    }
-    return NULL;
-}
-
-// Which version of Martini the beads of a system are from, told by beads some residues have in one version and not in
-// another (Ala SC1, Tyr SC4 and Trp SC5 are Martini 3's, the charge dummies polarizable Martini 2's) and by names of
-// residues of one version only. Martini 3, the current one and martinize2's default, when nothing tells.
-static uint32_t martini_version(const md_system_t* sys, const str_t atom_labels[]) {
-    size_t votes_2 = 0;
-    size_t votes_3 = 0;
-    for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
-        const str_t name = md_component_name(&sys->component, comp_idx);
-        if (!md_util_resname_amino_acid(name)) continue;
-        const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
-        bool bb = false, sc1 = false, sc3 = false, sc4 = false, sc5 = false;
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            const str_t label = atom_labels[i];
-            if (str_eq_cstr(label, "SCP") || str_eq_cstr(label, "SCN")) return MARTINI_2P;
-            bb  |= str_eq_cstr(label, "BB");
-            sc1 |= str_eq_cstr(label, "SC1");
-            sc3 |= str_eq_cstr(label, "SC3");
-            sc4 |= str_eq_cstr(label, "SC4");
-            sc5 |= str_eq_cstr(label, "SC5");
-        }
-        if (!bb) continue;
-        if (str_eq_cstr(name, "ALA")) {
-            if (sc1) votes_3 += 1; else votes_2 += 1;
-        } else if (str_eq_cstr(name, "TYR")) {
-            if (sc4) votes_3 += 1; else if (sc3) votes_2 += 1;
-        } else if (str_eq_cstr(name, "TRP")) {
-            if (sc5) votes_3 += 1; else if (sc4) votes_2 += 1;
-        } else if (pattern_match_any("CYSF|CYSG|CYSP|GLYM|HIH", name.ptr)) {
-            votes_3 += 1;
-        } else if (pattern_match_any("ARG0|ASP0|GLU0|LYS0|HISH", name.ptr)) {
-            votes_2 += 1;
-        }
-    }
-    return votes_2 > votes_3 ? MARTINI_2 : MARTINI_3;
-}
-
-// The type of the name, element, mass, size and particle kind, added when there is none. md_atom_type_find_or_add goes by
-// name and element alone, which gives every bead of a name the mass and size of the first: a Martini SC1 is 36 in Ala
-// and 54 in Leu (Martini 3), and Trp's SC3 is a massless virtual site.
-static md_atom_type_idx_t find_or_add_atom_type(md_atom_type_data_t* type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_atom_type_flags_t flags, md_allocator_i* alloc) {
-    for (size_t t = 1; t < type->count; ++t) {
-        if (type->z[t] == z && type->mass[t] == mass && type->radius[t] == radius && md_atom_type_flags(type, t) == flags && str_eq(md_atom_type_name(type, t), name)) {
-            return (md_atom_type_idx_t)t;
-        }
-    }
-    return md_atom_type_add(type, name, (str_t){0}, z, mass, radius, color, flags, alloc);
-}
-
 // The component kind a predefined type tells, applied when the component has none yet
 static inline void apply_predefined_comp_kind(md_system_t* sys, size_t comp_idx, md_component_kind_t kind) {
     if (kind != MD_COMPONENT_KIND_OTHER && sys->component.flags && md_component_kind(&sys->component, comp_idx) == MD_COMPONENT_KIND_OTHER) {
@@ -6148,12 +6372,32 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
 
     if (sys->component.count > 0) {
         // The masses and sizes of Martini beads depend on the version of Martini
-        const uint32_t version = martini_version(sys, atom_labels);
+        const martini_system_t martini = martini_system(sys, label_of_array, atom_labels);
         for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
             str_t comp_name        = md_component_name(&sys->component, comp_idx);
             md_urange_t comp_range = md_component_atom_range(&sys->component, comp_idx);
             size_t comp_size       = comp_range.end - comp_range.beg;
-            uint64_t comp_key      = md_hash64_str(comp_name, comp_size);
+
+            // A Martini molecule (a lipid, water, an ion, ...): its residue name and all its bead names tell it, and give
+            // every bead its mass, size and particle kind. A residue of a single bead is one only in a Martini system:
+            // an ion of Martini 3 (ION NA) is named like an atomistic one.
+            uint8_t map[256];
+            const martini_db_residue_t* mol = martini_db_match_molecule(martini.version, comp_name, atom_labels + comp_range.beg, comp_size, map);
+            if (mol && comp_size == 1 && !martini.martini && mol->kind != MD_COMPONENT_KIND_WATER) mol = NULL;
+            if (mol) {
+                for (size_t i = comp_range.beg; i < comp_range.end; ++i) {
+                    if (sys->atom.type_idx[i] != 0) continue;
+                    const martini_db_bead_t* bead = martini_db_bead(mol, map[i - comp_range.beg]);
+                    const md_atom_type_flags_t flags = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, bead->particle);
+                    sys->atom.type_idx[i] = find_or_add_atom_type(&sys->atom.type, atom_labels[i], 0, bead->mass, bead->radius, 0, flags, alloc);
+                }
+                apply_predefined_comp_kind(sys, comp_idx, mol->kind);
+                continue;
+            }
+
+            // The labels of the component are part of the key, as which of them a name stands for can depend on the others
+            uint64_t comp_key = md_hash64_str(comp_name, comp_size);
+            for (size_t i = comp_range.beg; i < comp_range.end; ++i) comp_key = md_hash64_str(atom_labels[i], comp_key);
 
             // What the predefined types of its atoms say the component is
             md_component_kind_t comp_kind = MD_COMPONENT_KIND_OTHER;
@@ -6184,11 +6428,12 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                         color   = z == 0 ? 0 : md_atomic_number_cpk_color(z);
                         flags   = md_atom_type_flags_set_particle_kind(flags, predef->particle);
                         if (predef->comp_kind == MD_COMPONENT_KIND_AMINO_ACID || predef->comp_kind == MD_COMPONENT_KIND_NUCLEOTIDE) {
-                            // A Martini bead of an amino acid or a nucleotide: its version may tell it apart
-                            const martini_bead_t* bead = find_martini_bead(version, comp_name, atom_name);
+                            // A Martini bead of an amino acid or a nucleotide: its version tells its mass and size
+                            const martini_db_bead_t* bead = martini_db_biopolymer_bead(martini.version, comp_name, atom_labels + comp_range.beg, comp_size, i - comp_range.beg);
                             if (bead) {
                                 mass   = bead->mass;
                                 radius = bead->radius;
+                                flags  = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, bead->particle);
                             }
                         }
                     } else {

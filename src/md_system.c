@@ -52,6 +52,7 @@ const char* md_component_kind_name(md_component_kind_t kind) {
     case MD_COMPONENT_KIND_NUCLEOTIDE:  return "nucleotide";
     case MD_COMPONENT_KIND_WATER:       return "water";
     case MD_COMPONENT_KIND_ION:         return "ion";
+    case MD_COMPONENT_KIND_LIPID:       return "lipid";
     default:                            return "";
     }
 }
