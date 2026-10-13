@@ -154,15 +154,22 @@ static inline md_pdb_sheet_t extract_sheet(str_t line) {
     return sheet;
 }
 
+// A serial of a CONECT record, 0 where there is none. Serials are hybrid-36 as those of the atoms are, past 99999 atoms.
+static inline int32_t extract_connect_serial(str_t line, size_t beg, size_t end) {
+    if (line.len < end) return 0;
+    if (str_empty(str_trim(str_substr(line, beg - 1, end - beg + 1)))) return 0;
+    return parse_id(line, beg, end);
+}
+
 static inline md_pdb_connect_t extract_connect(str_t line) {
     line = str_trim(line);
     md_pdb_connect_t c = {
         .atom_serial = {
-            [0] = extract_int(line, 7, 11),
-            [1] = extract_int(line, 12, 16),
-            [2] = (line.len > 20) ? extract_int(line, 17, 21) : 0,
-            [3] = (line.len > 25) ? extract_int(line, 22, 26) : 0,
-            [4] = (line.len > 30) ? extract_int(line, 27, 31) : 0,
+            [0] = extract_connect_serial(line, 7, 11),
+            [1] = extract_connect_serial(line, 12, 16),
+            [2] = extract_connect_serial(line, 17, 21),
+            [3] = extract_connect_serial(line, 22, 26),
+            [4] = extract_connect_serial(line, 27, 31),
         },
     };
     return c;
@@ -184,8 +191,13 @@ static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
     return c;
 }
 
+// A further CONECT record of the same atom: its bonded atoms go into the free slots, as many as there are
 static inline void append_connect(md_pdb_connect_t* connect, const md_pdb_connect_t* other) {
-    MEMCPY(&connect->atom_serial[5], &other->atom_serial[1], 3 * sizeof(int32_t));
+    size_t n = 1;
+    while (n < ARRAY_SIZE(connect->atom_serial) && connect->atom_serial[n]) ++n;
+    for (size_t k = 1; k < ARRAY_SIZE(other->atom_serial) && other->atom_serial[k] && n < ARRAY_SIZE(connect->atom_serial); ++k) {
+        connect->atom_serial[n++] = other->atom_serial[k];
+    }
 }
 
 // PUBLIC PROCEDURES
@@ -503,6 +515,46 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     if (num_unassigned_atom_types > 0) {
         md_util_system_infer_atom_types(sys, atom_name);
     }
+
+    // The bonds of the CONECT records, of origin MD_BOND_ORIGIN_FILE: inference keeps them and adds the bonds they leave
+    // out (CONECT records usually cover the ligands only, in a coarse grained structure from martinize2 all of it).
+    // Their serials name atoms of the first model; alternate locations other than the first are not loaded.
+    if (data->num_connections > 0) {
+        md_hashmap32_t serial_to_atom = { .allocator = temp_arena };
+        md_hashmap_reserve(&serial_to_atom, sys->atom.count);
+        size_t atom_idx = 0;
+        for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
+            const char alt_loc = data->atom_coordinates[i].alt_loc;
+            if (alt_loc != ' ' && alt_loc != 'A') continue;
+            const uint64_t key = (uint64_t)(uint32_t)data->atom_coordinates[i].atom_serial;
+            if (!md_hashmap_get(&serial_to_atom, key)) md_hashmap_add(&serial_to_atom, key, (uint32_t)atom_idx);
+            atom_idx += 1;
+        }
+        ASSERT(atom_idx == sys->atom.count);
+
+        // Each bond is in the records of both its atoms, and some writers repeat it for its bond order
+        md_hashmap32_t seen = { .allocator = temp_arena };
+        md_hashmap_reserve(&seen, data->num_connections * 4);
+        const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
+        for (size_t i = 0; i < data->num_connections; ++i) {
+            const int32_t* serial = data->connections[i].atom_serial;
+            const uint32_t* a = md_hashmap_get(&serial_to_atom, (uint64_t)(uint32_t)serial[0]);
+            if (!a) continue;
+            for (size_t k = 1; k < ARRAY_SIZE(data->connections[i].atom_serial) && serial[k]; ++k) {
+                const uint32_t* b = md_hashmap_get(&serial_to_atom, (uint64_t)(uint32_t)serial[k]);
+                if (!b || *a == *b) continue;
+                const uint32_t lo = MIN(*a, *b), hi = MAX(*a, *b);
+                const uint64_t pair_key = ((uint64_t)lo << 32) | hi;
+                if (md_hashmap_get(&seen, pair_key)) continue;
+                md_hashmap_add(&seen, pair_key, 1);
+                md_atom_pair_t pair = {{ (md_atom_idx_t)lo, (md_atom_idx_t)hi }};
+                md_array_push(sys->bond.pairs, pair, sys->alloc);
+                md_array_push(sys->bond.flags, file, sys->alloc);
+                sys->bond.count += 1;
+            }
+        }
+    }
+
     // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move
     // out into md_util_system_infer without moving comp_flags with it.
     md_util_system_infer_covalent_bonds(sys, state);

@@ -402,6 +402,21 @@ UTEST(tpr, martini) {
 
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "martini3.gro"));
 
+    // Read from the coordinates alone, the beads of the peptide get what the topology gives them: the masses and sizes
+    // of Martini 3 (Trp's tiny beads, its massless SC3, Ile's small SC1), and the same roles
+    {
+        md_system_t gro = { .alloc = arena };
+        md_system_state_t gro_state = { .alloc = arena };
+        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(TPR_DIR "martini3.gro")));
+        for (size_t i = 0; i < 8; ++i) {
+            EXPECT_EQ(md_atom_mass(&sys.atom, i), md_atom_mass(&gro.atom, i));
+            EXPECT_NEAR(md_atom_radius(&sys.atom, i), md_atom_radius(&gro.atom, i), 0.01f);
+            EXPECT_EQ(md_atom_particle_kind(&sys.atom, i), md_atom_particle_kind(&gro.atom, i));
+            EXPECT_EQ(md_atom_flags(&sys.atom, i), md_atom_flags(&gro.atom, i));
+            EXPECT_EQ(0, md_atom_atomic_number(&gro.atom, i));
+        }
+    }
+
     // One structure per molecule: the peptide, two lipids, four ions, 583 waters
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     EXPECT_EQ(1u + 2u + 4u + 583u, md_structure_count(&sys.structure));

@@ -3,6 +3,7 @@
 
 #include <md_pdb.h>
 #include <md_system.h>
+#include <md_util.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 
@@ -113,6 +114,65 @@ UTEST(pdb, create_system) {
     
     md_pdb_data_free(&pdb_data, arena);
     md_arena_allocator_destroy(arena);
+}
+
+static size_t count_bonds_of_origin(const md_system_t* sys, md_bond_origin_t origin) {
+    size_t count = 0;
+    for (size_t i = 0; i < sys->bond.count; ++i) count += md_bond_origin(sys->bond.flags[i]) == origin;
+    return count;
+}
+
+// The CONECT records are bonds of origin MD_BOND_ORIGIN_FILE, each once though both its atoms list it. Inference adds the
+// bonds they leave out, never one of theirs again, and keeps them when it runs again. 1k4r lists its 18 disulfides.
+UTEST(pdb, conect_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE));
+    EXPECT_EQ((size_t)18, count_bonds_of_origin(&sys, MD_BOND_ORIGIN_FILE));
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        if (md_bond_origin(sys.bond.flags[i]) != MD_BOND_ORIGIN_FILE) continue;
+        EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, sys.bond.pairs[i].idx[0]), STR_LIT("SG")));
+        EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, sys.bond.pairs[i].idx[1]), STR_LIT("SG")));
+    }
+    // Atoms 23 and 226 (Cys 3 and Cys 30): one bond, from the file
+    const md_bond_idx_t b = md_bond_find(&sys.bond, 22, 225);
+    ASSERT_NE(-1, b);
+    EXPECT_EQ(MD_BOND_ORIGIN_FILE, md_bond_origin(sys.bond.flags[b]));
+    EXPECT_GT(count_bonds_of_origin(&sys, MD_BOND_ORIGIN_INFERRED), (size_t)9000);
+
+    const size_t num_bonds = sys.bond.count;
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    EXPECT_EQ((size_t)18, count_bonds_of_origin(&sys, MD_BOND_ORIGIN_FILE));
+    EXPECT_EQ(num_bonds, sys.bond.count);
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        const md_atom_pair_t p = sys.bond.pairs[i];
+        if (md_bond_origin(sys.bond.flags[i]) == MD_BOND_ORIGIN_FILE) {
+            EXPECT_EQ((md_bond_idx_t)i, md_bond_find(&sys.bond, p.idx[0], p.idx[1]));
+        }
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// A record of more than four bonded atoms goes on over several CONECT lines, and the serials of atoms past 99999 are
+// hybrid-36 (A0000 is 100000)
+UTEST(pdb, conect_continued_and_hybrid36) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_pdb_data_t data = {0};
+    const str_t text = STR_LIT(
+        "HETATM    1 FE   HEM A   1       0.000   0.000   0.000  1.00  0.00          FE\n"
+        "CONECT    1    2    3    4    5\n"
+        "CONECT    1    6    7    8\n"
+        "CONECT    1    9\n"
+        "CONECT99999A0000\n");
+    ASSERT_TRUE(md_pdb_data_parse_str(&data, text, alloc));
+    ASSERT_EQ((size_t)2, data.num_connections);
+    for (int k = 1; k < 8; ++k) {
+        EXPECT_EQ(k + 1, data.connections[0].atom_serial[k]);
+    }
+    EXPECT_EQ(99999, data.connections[1].atom_serial[0]);
+    EXPECT_EQ(100000, data.connections[1].atom_serial[1]);
+    md_vm_arena_destroy(alloc);
 }
 
 UTEST(pdb, parse_nonexistent_file) {

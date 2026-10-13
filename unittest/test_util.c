@@ -763,46 +763,45 @@ UTEST(util, martini3_peptide_pdb) {
 
 // The residue names beyond the standard ones that martinize2 writes, in a chain of one each with the beads it gives
 // them: the protonation states (CHARMM, Amber, GROMOS and Martini names), the lipidated residues of Martini 3 with their
-// tails, Ala and Pro, which have a side chain bead in Martini 3 and none in Martini 2, and the charge dummies (SCP, SCN)
-// of polarizable Martini 2. BB beads 3.5A apart, and the other beads of a residue 3A apart off its BB. A name which
-// stands for a standard residue gives the beads they have in common that residue's masses.
+// tails, Ala, which has a side chain bead in Martini 3 and none in Martini 2, and the charge dummies (SCP, SCN) of
+// polarizable Martini 2. BB beads 3.5A apart, and the other beads of a residue 3A apart off its BB.
 UTEST(util, martini_residue_names) {
-    static const struct { const char* name; const char* parent; const char* beads[11]; } res[] = {
-        {"HIS",  NULL,  {"BB", "SC1", "SC2", "SC3"}},
-        {"HSD",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"HSE",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"HSP",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"HID",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"HIE",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"HIP",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"HISE", "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"HISH", "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"HIH",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
-        {"LYS",  NULL,  {"BB", "SC1", "SC2"}},
-        {"LSN",  "LYS", {"BB", "SC1", "SC2"}},
-        {"LYN",  "LYS", {"BB", "SC1", "SC2"}},
-        {"LYS0", "LYS", {"BB", "SC1", "SC2"}},
-        {"ASP",  NULL,  {"BB", "SC1"}},
-        {"ASH",  "ASP", {"BB", "SC1"}},
-        {"ASPP", "ASP", {"BB", "SC1"}},
-        {"ASP0", "ASP", {"BB", "SC1"}},
-        {"GLU",  NULL,  {"BB", "SC1"}},
-        {"GLH",  "GLU", {"BB", "SC1"}},
-        {"GLUP", "GLU", {"BB", "SC1"}},
-        {"GLU0", "GLU", {"BB", "SC1"}},
-        {"ARG",  NULL,  {"BB", "SC1", "SC2"}},
-        {"ARG0", "ARG", {"BB", "SC1", "SC2"}},
-        {"CYS",  NULL,  {"BB", "SC1"}},
-        {"CYX",  "CYS", {"BB", "SC1"}},
-        {"CYSF", "CYS", {"BB", "SC1", "C1", "C2", "C3", "C4", "C5", "C6"}},
-        {"CYSG", "CYS", {"BB", "SC1", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"}},
-        {"CYSP", "CYS", {"BB", "SC1", "C1", "C2", "C3", "C4"}},
-        {"GLY",  NULL,  {"BB"}},
-        {"GLYM", "GLY", {"BB", "C1", "C2", "C3", "C4"}},
-        {"ALA",  NULL,  {"BB", "SC1"}},
-        {"PRO",  NULL,  {"BB", "SC1"}},
-        {"ASN",  NULL,  {"BB", "SC1", "SCP", "SCN"}},
-        {"LYS",  NULL,  {"BB", "SC1", "SC2", "SCP"}},
+    static const struct { const char* name; const char* beads[11]; } res[] = {
+        {"HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HSD", {"BB", "SC1", "SC2", "SC3"}},
+        {"HSE", {"BB", "SC1", "SC2", "SC3"}},
+        {"HSP", {"BB", "SC1", "SC2", "SC3"}},
+        {"HID", {"BB", "SC1", "SC2", "SC3"}},
+        {"HIE", {"BB", "SC1", "SC2", "SC3"}},
+        {"HIP", {"BB", "SC1", "SC2", "SC3"}},
+        {"HISE", {"BB", "SC1", "SC2", "SC3"}},
+        {"HISH", {"BB", "SC1", "SC2", "SC3"}},
+        {"HIH", {"BB", "SC1", "SC2", "SC3"}},
+        {"LYS", {"BB", "SC1", "SC2"}},
+        {"LSN", {"BB", "SC1", "SC2"}},
+        {"LYN", {"BB", "SC1", "SC2"}},
+        {"LYS0", {"BB", "SC1", "SC2"}},
+        {"ASP", {"BB", "SC1"}},
+        {"ASH", {"BB", "SC1"}},
+        {"ASPP", {"BB", "SC1"}},
+        {"ASP0", {"BB", "SC1"}},
+        {"GLU", {"BB", "SC1"}},
+        {"GLH", {"BB", "SC1"}},
+        {"GLUP", {"BB", "SC1"}},
+        {"GLU0", {"BB", "SC1"}},
+        {"ARG", {"BB", "SC1", "SC2"}},
+        {"ARG0", {"BB", "SC1", "SC2"}},
+        {"CYS", {"BB", "SC1"}},
+        {"CYX", {"BB", "SC1"}},
+        {"CYSF", {"BB", "SC1", "C1", "C2", "C3", "C4", "C5", "C6"}},
+        {"CYSG", {"BB", "SC1", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"}},
+        {"CYSP", {"BB", "SC1", "C1", "C2", "C3", "C4"}},
+        {"GLY", {"BB"}},
+        {"GLYM", {"BB", "C1", "C2", "C3", "C4"}},
+        {"ALA", {"BB", "SC1"}},
+        {"PRO", {"BB", "SC1"}},
+        {"ASN", {"BB", "SC1", "SCP", "SCN"}},
+        {"LYS", {"BB", "SC1", "SC2", "SCP"}},
     };
     const int n = (int)ARRAY_SIZE(res);
 
@@ -827,27 +826,271 @@ UTEST(util, martini_residue_names) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}));
     ASSERT_EQ((size_t)n, md_system_component_count(&sys));
+    check_martini_peptide(utest_result, &sys, &state, (size_t)n);
+    md_vm_arena_destroy(alloc);
+}
 
-    for (int i = 0; i < n; ++i) {
-        if (!res[i].parent) continue;
-        int p = 0;
-        while (p < n && strcmp(res[p].name, res[i].parent) != 0) ++p;
-        ASSERT_LT(p, n);
-        const md_urange_t ri = md_component_atom_range(&sys.component, i);
-        const md_urange_t rp = md_component_atom_range(&sys.component, p);
-        size_t num_shared = 0;
-        for (uint32_t a = ri.beg; a < ri.end; ++a) {
-            for (uint32_t b = rp.beg; b < rp.end; ++b) {
-                if (str_eq(md_atom_name(&sys.atom, a), md_atom_name(&sys.atom, b))) {
-                    EXPECT_EQ(md_atom_mass(&sys.atom, b), md_atom_mass(&sys.atom, a));
-                    num_shared += 1;
-                }
+// The bonds of the martinize2 topology of the peptide above (its CONECT records), as atom index pairs
+static const int martini3_peptide_topology[][2] = {
+    {0, 1}, {0, 5}, {1, 2}, {1, 3}, {2, 3}, {2, 4}, {3, 4}, {5, 6}, {5, 7}, {7, 8}, {8, 9}, {8, 10}, {10, 11}, {10, 12},
+    {12, 13}, {12, 14}, {14, 15}, {14, 18}, {15, 16}, {15, 17}, {16, 17}, {18, 19}, {18, 20}, {20, 21}, {21, 22}, {21, 24},
+    {22, 24}, {22, 25}, {24, 25},
+};
+
+static bool pair_in(const int (*pairs)[2], size_t num_pairs, int a, int b) {
+    for (size_t i = 0; i < num_pairs; ++i) {
+        if ((pairs[i][0] == a && pairs[i][1] == b) || (pairs[i][0] == b && pairs[i][1] == a)) return true;
+    }
+    return false;
+}
+
+// Every inferred bond is one of the topology's, and the topology's bonds it leaves out are those named
+static void check_bonds_against_topology(int* utest_result, const md_system_t* sys, const int (*topology)[2], size_t num_topology, const int (*missing)[2], size_t num_missing) {
+    for (size_t i = 0; i < sys->bond.count; ++i) {
+        const int a = sys->bond.pairs[i].idx[0];
+        const int b = sys->bond.pairs[i].idx[1];
+        EXPECT_TRUE_MSG(pair_in(topology, num_topology, a, b), "a bond the topology does not have");
+    }
+    for (size_t i = 0; i < num_topology; ++i) {
+        const bool found = md_bond_find(&sys->bond, topology[i][0], topology[i][1]) != -1;
+        EXPECT_EQ((int)!pair_in(missing, num_missing, topology[i][0], topology[i][1]), (int)found);
+    }
+}
+
+// Inferred from the beads alone, the bonds of the peptide are the topology's: the tree of each residue, the rings,
+// the link from each BB to the next, Glu's SC1 4.09 A from its BB, and Trp's SC3 (a massless virtual site in Martini 3)
+// unbonded. Only the 4.7 A SC2-SC4 bond of the Trp ring is left out. With the CONECT records, the bonds are theirs.
+UTEST(util, martini3_peptide_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    {
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE));
+        static const int missing[][2] = {{22, 24}};
+        check_bonds_against_topology(utest_result, &sys, martini3_peptide_topology, ARRAY_SIZE(martini3_peptide_topology), missing, ARRAY_SIZE(missing));
+        EXPECT_EQ(0u, md_bond_conn_count(&sys.bond, 23));
+    }
+    {
+        // The same with its CONECT records, as martinize2 wrote it
+        char text[8192];
+        int len = snprintf(text, sizeof(text), "%s", martini3_peptide_pdb);
+        len -= (int)strlen("END\n");
+        for (size_t i = 0; i < ARRAY_SIZE(martini3_peptide_topology); ++i) {
+            len += snprintf(text + len, sizeof(text) - len, "CONECT%5d%5d\n", martini3_peptide_topology[i][0] + 1, martini3_peptide_topology[i][1] + 1);
+        }
+        len += snprintf(text + len, sizeof(text) - len, "END\n");
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}, MD_PDB_OPTION_NONE));
+        check_bonds_against_topology(utest_result, &sys, martini3_peptide_topology, ARRAY_SIZE(martini3_peptide_topology), NULL, 0);
+        EXPECT_EQ(ARRAY_SIZE(martini3_peptide_topology), sys.bond.count);
+        for (size_t i = 0; i < sys.bond.count; ++i) {
+            EXPECT_EQ(MD_BOND_ORIGIN_FILE, md_bond_origin(sys.bond.flags[i]));
+        }
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// Polarizable Martini 2 (martinize2 -ff martini22p on villin, residues 53-57): the polar SC1 of Thr and Ser is a
+// massless virtual site between two charge dummies, Arg's SC2 carries one. The bonds are the topology's, all of them.
+static const char martini22p_peptide_pdb[] =
+    "ATOM      1 BB   MET A  53       9.910  -7.189  67.361  1.00  0.00\n"
+    "ATOM      2 SC1  MET A  53       7.345  -7.793  70.918  1.00  0.00\n"
+    "ATOM      3 BB   THR A  54       7.578  -5.503  65.552  1.00  0.00\n"
+    "ATOM      4 SC1  THR A  54       6.937  -7.801  64.213  1.00  0.00\n"
+    "ATOM      5 SCP  THR A  54       6.589  -7.804  63.606  1.00  0.00\n"
+    "ATOM      6 SCN  THR A  54       7.285  -7.798  64.820  1.00  0.00\n"
+    "ATOM      7 BB   ARG A  55       6.195  -2.964  64.028  1.00  0.00\n"
+    "ATOM      8 SC1  ARG A  55       7.904  -0.987  62.207  1.00  0.00\n"
+    "ATOM      9 SC2  ARG A  55       8.217  -1.441  59.751  1.00  0.00\n"
+    "ATOM     10 SCP  ARG A  55       9.317  -1.441  59.751  1.00  0.00\n"
+    "ATOM     11 BB   SER A  56       3.400  -3.710  64.222  1.00  0.00\n"
+    "ATOM     12 SC1  SER A  56       2.364  -4.957  62.032  1.00  0.00\n"
+    "ATOM     13 SCP  SER A  56       1.924  -5.331  61.636  1.00  0.00\n"
+    "ATOM     14 SCN  SER A  56       2.803  -4.583  62.428  1.00  0.00\n"
+    "ATOM     15 BB   ALA A  57       3.595  -4.775  67.236  1.00  0.00\n"
+    "END\n";
+
+UTEST(util, martini22p_peptide) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini22p_peptide_pdb), MD_PDB_OPTION_NONE));
+
+    static const int topology[][2] = {
+        {0, 1}, {0, 2}, {2, 3}, {2, 6}, {3, 4}, {3, 5}, {4, 5}, {6, 7}, {6, 10}, {7, 8}, {8, 9}, {10, 11}, {10, 14}, {11, 12}, {11, 13}, {12, 13},
+    };
+    check_bonds_against_topology(utest_result, &sys, topology, ARRAY_SIZE(topology), NULL, 0);
+
+    // The masses of polarizable Martini 2
+    EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, 1));     // Met SC1
+    EXPECT_EQ( 0.0f, md_atom_mass(&sys.atom, 3));     // Thr SC1, a virtual site
+    EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 4));     // A charge dummy
+    EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 8));     // Arg SC2, charged
+    EXPECT_NEAR(1.0f, md_atom_radius(&sys.atom, 4), 1e-4f);
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, i));
+    }
+    check_martini_peptide(utest_result, &sys, &state, 5);
+    md_vm_arena_destroy(alloc);
+}
+
+// The masses and sizes of Martini beads are those of the version of Martini the system is from: the same names stand
+// for regular, small and tiny beads in Martini 3, for beads of 72 in Martini 2
+UTEST(util, martini_masses_by_version) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    {
+        // Martini 3 (Tyr has SC4 and Trp SC5)
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_gro)));
+        EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, 0));     // Tyr BB, regular
+        EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 4));     // Tyr SC4, tiny
+        EXPECT_EQ(54.0f, md_atom_mass(&sys.atom, 5));     // Val BB, small
+        EXPECT_EQ(54.0f, md_atom_mass(&sys.atom, 7));     // Gly BB
+        EXPECT_EQ(54.0f, md_atom_mass(&sys.atom, 11));    // Leu SC1
+        EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, 9));     // Glu SC1
+        EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 16));    // His SC2
+        EXPECT_EQ( 0.0f, md_atom_mass(&sys.atom, 23));    // Trp SC3, a virtual site
+        EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 25));    // Trp SC5
+        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 0), 1e-4f);
+        EXPECT_NEAR(2.30f, md_atom_radius(&sys.atom, 11), 1e-4f);
+        EXPECT_NEAR(1.91f, md_atom_radius(&sys.atom, 23), 1e-4f);
+        // The SC1 beads of Tyr (tiny) and Leu (small) are different types
+        EXPECT_NE(sys.atom.type_idx[1], sys.atom.type_idx[11]);
+    }
+    {
+        // Martini 2 (Trp has SC1-SC4, Ala no side chain bead): 72 throughout, the ring beads small
+        const char* text =
+            "Martini 2\n"
+            "    9\n"
+            "    1ALA     BB    1   1.000   1.000   1.000\n"
+            "    2TRP     BB    2   1.350   1.000   1.000\n"
+            "    2TRP    SC1    3   1.350   1.300   1.000\n"
+            "    2TRP    SC2    4   1.350   1.600   1.000\n"
+            "    2TRP    SC3    5   1.650   1.600   1.000\n"
+            "    2TRP    SC4    6   1.650   1.300   1.000\n"
+            "    3GLY     BB    7   1.700   1.000   1.000\n"
+            "    4LEU     BB    8   2.050   1.000   1.000\n"
+            "    4LEU    SC1    9   2.050   1.300   1.000\n"
+            "   5.00000   5.00000   5.00000\n";
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
+        for (size_t i = 0; i < sys.atom.count; ++i) {
+            EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, i));
+        }
+        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 6), 1e-4f);   // Gly BB
+        EXPECT_NEAR(2.41f, md_atom_radius(&sys.atom, 4), 1e-4f);   // Trp SC3
+        EXPECT_NEAR(2.64f, md_atom_radius(&sys.atom, 8), 1e-4f);   // Leu SC1
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// Martini 2 DNA (Uusitalo et al. 2015), mapped from four nucleotides of a strand of the nucleosome in nucl-dna.gro (TGCA,
+// -60 to -57): the phosphate BB1 and sugar BB2, BB3 are the backbone, the rest the base. The bonds are those of the
+// topology (polyply's DNA_M2), BB3 to the next BB1 included, but for the longest base bonds (DA SC2-SC4 3.3 A and
+// DT SC2-SC3 3.2 A), which the base beads that are not bonded come as close as.
+static const char martini2_dna_pdb[] =
+    "ATOM      1 BB1  DT  A -60      -3.210 101.160  22.216  1.00  0.00\n"
+    "ATOM      2 BB2  DT  A -60      -2.020 101.387  20.003  1.00  0.00\n"
+    "ATOM      3 BB3  DT  A -60      -1.460  99.483  19.917  1.00  0.00\n"
+    "ATOM      4 SC1  DT  A -60       0.850  99.875  21.345  1.00  0.00\n"
+    "ATOM      5 SC2  DT  A -60       2.520  99.690  19.910  1.00  0.00\n"
+    "ATOM      6 SC3  DT  A -60       2.758  99.835  23.080  1.00  0.00\n"
+    "ATOM      7 BB1  DG  A -59      -3.014  97.266  16.898  1.00  0.00\n"
+    "ATOM      8 BB2  DG  A -59      -1.057  97.917  15.617  1.00  0.00\n"
+    "ATOM      9 BB3  DG  A -59      -0.357  96.060  15.630  1.00  0.00\n"
+    "ATOM     10 SC1  DG  A -59       1.545  96.355  18.015  1.00  0.00\n"
+    "ATOM     11 SC2  DG  A -59       0.887  96.270  19.463  1.00  0.00\n"
+    "ATOM     12 SC3  DG  A -59       3.530  96.343  20.680  1.00  0.00\n"
+    "ATOM     13 SC4  DG  A -59       4.450  96.427  17.973  1.00  0.00\n"
+    "ATOM     14 BB1  DC  A -58       0.198  93.750  12.596  1.00  0.00\n"
+    "ATOM     15 BB2  DC  A -58       2.600  93.820  13.640  1.00  0.00\n"
+    "ATOM     16 BB3  DC  A -58       2.597  91.947  14.360  1.00  0.00\n"
+    "ATOM     17 SC1  DC  A -58       2.015  92.455  17.020  1.00  0.00\n"
+    "ATOM     18 SC2  DC  A -58       3.943  92.957  18.023  1.00  0.00\n"
+    "ATOM     19 SC3  DC  A -58       1.660  92.757  19.563  1.00  0.00\n"
+    "ATOM     20 BB1  DA  A -57       5.052  90.502  11.028  1.00  0.00\n"
+    "ATOM     21 BB2  DA  A -57       6.963  91.600  12.027  1.00  0.00\n"
+    "ATOM     22 BB3  DA  A -57       7.717  89.830  12.417  1.00  0.00\n"
+    "ATOM     23 SC1  DA  A -57       6.215  89.725  15.085  1.00  0.00\n"
+    "ATOM     24 SC2  DA  A -57       4.760  89.077  14.940  1.00  0.00\n"
+    "ATOM     25 SC3  DA  A -57       4.267  89.427  17.783  1.00  0.00\n"
+    "ATOM     26 SC4  DA  A -57       6.710  90.325  17.270  1.00  0.00\n"
+    "END\n";
+
+UTEST(util, martini2_dna) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_EQ(4u, md_system_component_count(&sys));
+
+    for (size_t c = 0; c < 4; ++c) {
+        EXPECT_EQ(MD_COMPONENT_KIND_NUCLEOTIDE, md_component_kind(&sys.component, c));
+        const md_urange_t range = md_component_atom_range(&sys.component, c);
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            const str_t name = md_atom_name(&sys.atom, i);
+            const md_atom_flags_t flags = md_atom_flags(&sys.atom, i);
+            EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, i));
+            EXPECT_EQ(0, md_atom_atomic_number(&sys.atom, i));
+            if (str_eq(name, STR_LIT("BB1"))) {
+                EXPECT_EQ((int)MD_ATOM_FLAG_BACKBONE, (int)flags);
+                EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, i));
+            } else if (str_eq(name, STR_LIT("BB2")) || str_eq(name, STR_LIT("BB3"))) {
+                EXPECT_EQ((int)(MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_NUCLEOSIDE), (int)flags);
+                EXPECT_EQ(45.0f, md_atom_mass(&sys.atom, i));
+            } else {
+                EXPECT_EQ((int)(MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_NUCLEOSIDE), (int)flags);
+                EXPECT_EQ(45.0f, md_atom_mass(&sys.atom, i));
             }
         }
-        EXPECT_GT(num_shared, (size_t)0);
     }
 
-    check_martini_peptide(utest_result, &sys, &state, (size_t)n);
+    static const int topology[][2] = {
+        {0, 1}, {1, 2}, {2, 3}, {2, 6}, {3, 4}, {3, 5}, {4, 5}, {6, 7}, {7, 8}, {8, 9}, {8, 13}, {9, 10}, {9, 12}, {10, 11},
+        {10, 12}, {11, 12}, {13, 14}, {14, 15}, {15, 16}, {15, 19}, {16, 17}, {16, 18}, {17, 18}, {19, 20}, {20, 21},
+        {21, 22}, {22, 23}, {22, 25}, {23, 24}, {23, 25}, {24, 25},
+    };
+    static const int missing[][2] = {{4, 5}, {10, 12}, {23, 25}};
+    check_bonds_against_topology(utest_result, &sys, topology, ARRAY_SIZE(topology), missing, ARRAY_SIZE(missing));
+
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(1u, md_system_instance_count(&sys));
+    EXPECT_EQ(MD_ENTITY_KIND_DNA, md_system_entity_kind(&sys, md_system_instance_entity_idx(&sys, 0)));
+    md_vm_arena_destroy(alloc);
+}
+
+// Between residues: the numbering may jump forward over a bond (an engineered insert) but starting over is a new chain,
+// however close its first residue is. Two cysteines of different chains 2.4 A apart are bridged.
+UTEST(util, martini_chain_links) {
+    const char* text =
+        "Chains\n"
+        "   10\n"
+        "    1ALA     BB    1   1.000   1.000   1.000\n"
+        "    1ALA    SC1    2   1.000   0.750   1.000\n"
+        "    2CYS     BB    3   1.350   1.000   1.000\n"
+        "    2CYS    SC1    4   1.350   1.100   1.200\n"
+        "  921ALA     BB    5   1.700   1.000   1.000\n"
+        "  921ALA    SC1    6   1.700   0.750   1.000\n"
+        "    1ALA     BB    7   1.700   1.350   1.000\n"
+        "    1ALA    SC1    8   1.950   1.350   1.000\n"
+        "    2CYS     BB    9   1.350   1.350   1.000\n"
+        "    2CYS    SC1   10   1.350   1.250   1.380\n"
+        "   5.00000   5.00000   5.00000\n";
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
+    static const int expected[][2] = {
+        {0, 1}, {2, 3}, {4, 5}, {6, 7}, {8, 9},     // BB-SC1
+        {0, 2}, {2, 4},                             // 1-2, and 2-921 over the jump
+        {6, 8},                                     // the second chain
+        {3, 9},                                     // the disulfide
+    };
+    check_bonds_against_topology(utest_result, &sys, expected, ARRAY_SIZE(expected), NULL, 0);
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 4, 6));  // 3.5 A, but the numbering starts over
     md_vm_arena_destroy(alloc);
 }
 

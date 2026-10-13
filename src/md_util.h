@@ -121,10 +121,15 @@ md_secondary_structure_t* md_util_state_secondary_structure_write(md_system_stat
 // False when the state has no coordinates, or the system no protein backbone.
 bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_system_t* sys);
 
+// Bonds of origin MD_BOND_ORIGIN_INFERRED, replacing those of an earlier inference and keeping every other: an inferred
+// bond never duplicates one of another origin. Atoms are bonded by their covalent radii (derived from the element).
+// Coarse grained systems (md_system_is_coarse_grained) have the beads of their amino acids and nucleotides bonded as
+// in Martini topologies: a minimum spanning tree of each residue with its rings, the backbone bead of each residue to
+// the next unless the numbering starts over, and disulfide bridges (see infer_coarse_grained_bonds in md_util.c).
 void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
 
-// Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
-// length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
+// Infers the covalent bonds of the system (md_util_infer_covalent_bonds) anew. The bonds a user added by hand and those
+// the file gives (MD_BOND_ORIGIN_FILE: the CONECT records of a PDB file) are kept, all other bonds are replaced.
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
 
 // Marks every bond between a metal and a non-metal MD_BOND_FLAG_COORDINATE, whatever its origin, and returns how many
@@ -154,7 +159,11 @@ void md_util_system_infer_ring_flags(md_system_t* sys);
 // anchors along consecutive polymer components. No coordinates are consulted and sys->bond is not modified.
 bool md_util_system_infer_structures(md_system_t* sys);
 
-// Identify atom types within the system
+// Identify atom types within the system from the atom labels and the names of their components. Coarse grained beads
+// come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any
+// component named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
+// the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
+// one label with a different element, mass, size or particle kind are of different types.
 void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]);
 
 // Applies the predefined atom type tables (coarse grained beads) to atoms that already have a type,
