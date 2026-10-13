@@ -217,59 +217,91 @@ int md_script_vis_ref_dim(const md_script_ir_t* ir, md_script_vis_ref_t ref);
 // ### EVALUATE ###
 // This API is a dumpster-fire currently and should REALLY be simplified.
 
-// One evaluation holds several FRAME SETS: each is an evaluation over its own frames, and the frames are
-// evaluated once, over the union of them all.
-//   Temporal properties are per frame, so they are shared: evaluated once for every frame of any set, kept
-//   once (in the table of set 0), and taken over a set's frames by masking (md_script_eval_frame_set_completed).
-//   Distributions and volumes are aggregated over frames, so each set has its own (in its own table).
-// A frame is evaluated while some set has it and has not added it yet. Interrupted, nothing is lost: the
-// frames not yet added remain to be evaluated.
+// An evaluation holds every property over the frames it has evaluated. A temporal property holds a value per frame;
+// a distribution or a volume is aggregated over the frames, and what is published (md_script_eval_attributes) is
+// the aggregate over every frame evaluated so far. Over other frames an aggregate is asked for through a SLOT (see
+// SLOTS below), and the frames are evaluated once for all of them. Interrupted, nothing is lost: what remains to be
+// done stays to be done.
+//
+// A distribution is also kept per frame while that fits in frame_budget: an aggregate over any frames is then summed
+// from what is kept, and nothing is evaluated for it. The distributions are given room in script order; one that
+// does not fit is aggregated as frames are evaluated, like a volume.
+#define MD_SCRIPT_EVAL_FRAME_BUDGET_DEFAULT ((size_t)256 << 20)
+
 typedef struct md_script_eval_desc_t {
-    size_t num_frames;                          // frames the evaluation can hold
-    size_t num_frame_sets;                      // 0 is one set of every frame
-    const md_bitset_t* const* frame_sets;       // num_frame_sets of them, NULL for every frame
+    size_t num_frames;      // frames the evaluation can hold
+    size_t frame_budget;    // bytes for distributions kept per frame. 0 for MD_SCRIPT_EVAL_FRAME_BUDGET_DEFAULT,
+                            // and any amount less than one distribution of num_frames frames keeps none.
 } md_script_eval_desc_t;
 
 // Allocate and initialize the data for properties within the evaluation
 // Should be performed as soon as the IR has changed.
 md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_script_eval_desc_t* desc, struct md_allocator_i* alloc);
 
-// One frame set of every frame
+// With the default budget (md_script_eval_desc_t)
 md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
 
 // As md_script_eval_create_desc, taking over from prev every property ir computes from the same thing (see
 // md_script_ir_property_fingerprint), whatever it is called now: its values, and the frames they are of, which
-// are not evaluated again. Aggregates of a set only where the set covers the same frames in both. prev must be
-// over the same system and run and must not be evaluating; it is not changed, and may be freed after.
-// The versions of what is published carry on from prev's, so one of the new evaluation never equals one of prev.
+// are not evaluated again. And its slots, with what they hold. A slot of a property which changed is kept as asked
+// for, empty, as long as there is still an aggregate of its name. Nothing over another number of frames, which is
+// another run. prev must be over the same system and run and must not be evaluating; it is not changed, and may be
+// freed after. The versions of what is published, and of the slots, carry on from prev's, so one of the new
+// evaluation never equals one of prev.
 md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const md_script_ir_t* ir, const md_script_eval_desc_t* desc, struct md_allocator_i* alloc);
 
-// ### FRAME SETS ###
-// Not while frames are being evaluated: interrupt and wait for the evaluation first.
-size_t md_script_eval_frame_set_count(const md_script_eval_t* eval);
-
-// Replaces the frames of set idx (NULL: every frame) and clears what it has aggregated. Temporal values
-// already evaluated are kept: only the frames the set has not added remain to be evaluated.
-bool md_script_eval_set_frame_set(md_script_eval_t* eval, size_t idx, const md_bitset_t* frames);
-
-const md_bitset_t* md_script_eval_frame_set_frames(const md_script_eval_t* eval, size_t idx);
-
-// The frames of set idx which every property holds so far (see md_script_eval_property_frames).
-// A copy allocated with alloc, taken under the lock the evaluating threads mark frames under, so it can be read
+// The frames a property holds: a temporal property the ones it has evaluated, a distribution or a volume the ones its
+// published aggregate holds. Each property its own: one taken over by md_script_eval_create_from holds its frames
+// while a new one holds none yet. A copy taken under the evaluation's lock, allocated with alloc, so it can be read
 // while the evaluation runs.
-md_bitset_t md_script_eval_frame_set_completed(const md_script_eval_t* eval, size_t idx, struct md_allocator_i* alloc);
+md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, str_t ident, struct md_allocator_i* alloc);
 
-// The frames of set idx a property holds: a temporal property the ones it has evaluated, an aggregate of the set
-// the ones it has added. Each property its own: one taken over by md_script_eval_create_from holds its frames while
-// a new one holds none yet. Taken under the evaluation's lock, allocated with alloc.
-md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, size_t idx, str_t ident, struct md_allocator_i* alloc);
-
-// The table of set idx: for set 0 the same as md_script_eval_attributes, temporal properties included.
-// Any other set publishes only its distributions and volumes, under the same paths.
-const struct md_attributes_t* md_script_eval_frame_set_attributes(const md_script_eval_t* eval, size_t idx);
-
-// The frames which remain to be evaluated, allocated with alloc
+// The frames which remain to be evaluated, for the properties and for the slots, allocated with alloc
 md_bitset_t md_script_eval_pending_frames(md_script_eval_t* eval, struct md_allocator_i* alloc);
+
+// ### SLOTS ###
+// A slot is a distribution or a volume over frames of the caller's choosing, asked for under a key of its own. Two
+// callers asking under the same key for the same property share the slot.
+//
+// A slot moves toward the frames it is asked for one frame at a time, as frames are evaluated: each frame it wants
+// and does not hold is added, each it holds and no longer wants is taken out again. Asked for other frames, it keeps
+// what it has in common with them, and moves on from there; nothing restarts. At any moment it holds the aggregate
+// over the frames it holds, exactly.
+//
+// A distribution kept per frame (see md_script_eval_desc_t) is summed over the frames when it is read, and nothing is
+// evaluated for its slots: they hold the frames they want which are evaluated. A volume, or a distribution not kept
+// per frame, is added up as frames are evaluated, also those the evaluation has evaluated before.
+//
+// Every function here may be called while frames are being evaluated, from another thread. A slot asked for new
+// frames needs them evaluated: the frames which remain (md_script_eval_pending_frames) include them, and an
+// evaluation running with an older list of frames does not.
+#define MD_SCRIPT_EVAL_MAX_SLOTS 64
+
+typedef struct md_script_eval_slot_info_t {
+    uint64_t version;       // Changes whenever what the slot holds changes, and never repeats. Never 0.
+    uint32_t num_frames;    // the frames it holds
+    uint32_t num_pending;   // the frames it has yet to add or take out; 0 once it holds what it is asked for
+    size_t   num_values;    // the values of the property: bins of every distribution in it, or voxels
+} md_script_eval_slot_info_t;
+
+// Asks for the property ident over frames (those below the evaluation's frame count) under key. Asked again for the
+// same frames, nothing changes. False if ident is not a distribution or a volume, or there is no room for another slot.
+bool md_script_eval_slot_request(md_script_eval_t* eval, uint64_t key, str_t ident, const md_bitset_t* frames);
+
+// The slot is no longer needed: what it holds is let go
+void md_script_eval_slot_release(md_script_eval_t* eval, uint64_t key, str_t ident);
+
+// What the slot holds, without its values: cheap, to find out whether it holds anything new. False if there is no
+// such slot.
+bool md_script_eval_slot_info(md_script_eval_slot_info_t* out_info, const md_script_eval_t* eval, uint64_t key, str_t ident);
+
+// Copies what the slot holds: the mean of the values over its frames, and for a distribution the mean of the weights,
+// num_values each (see md_script_eval_slot_info_t), as the published aggregate holds them. out_weights may be NULL,
+// and is not written for a volume. With no frames, values of 0 and weights of 1. A slot added up as frames are evaluated is copied under its lock, which
+// holds back adding a frame to it until the copy is done, nothing else. False if there is no such slot, or
+// num_values is too small, in which case only out_info is written.
+bool md_script_eval_slot_extract(md_script_eval_slot_info_t* out_info, float* out_values, float* out_weights, size_t num_values,
+                                 const md_script_eval_t* eval, uint64_t key, str_t ident);
 
 uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval);
 
@@ -283,8 +315,8 @@ void md_script_eval_clear_data(md_script_eval_t* eval);
 // ir               : holds an IR of the script to be evaluated
 // sys              : the system, whose attribute table holds the run
 // run              : "run/<name>", the run whose frames are evaluated (see RUNS in md_system.h)
-// frames           : the frames to evaluate. Those with nothing left to do (see FRAME SETS) are skipped.
-// Safe to call from several threads at once, also with overlapping frames (a frame is added to a set once):
+// frames           : the frames to evaluate. Those with nothing left to do (md_script_eval_pending_frames) are skipped.
+// Safe to call from several threads at once, also with overlapping frames (a frame is added to an aggregate once):
 // each call keeps its own extraction context, and with it its own open files.
 bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_system_t* sys, str_t run, const uint32_t* frames, size_t num_frames);
 

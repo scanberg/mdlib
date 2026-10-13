@@ -51,6 +51,7 @@
 #include <core/md_vec_math.h>
 #include <core/md_str_builder.h>
 #include <core/md_hash.h>
+#include <core/md_intrinsics.h>
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
@@ -618,21 +619,35 @@ typedef struct eval_property_t {
     // property its own, so that one taken over from a previous evaluation (md_script_eval_create_from) keeps its
     // frames while a new one starts without any. Guarded by the eval's frame_lock.
     md_bitmask_t done;
+
+    // A distribution kept per frame (md_script_eval_desc_t::frame_budget): the values and the weights of frame f at
+    // f * num_values, for the frames in done. Written before the frame is marked done, and not again.
+    float* frame_values;
+    float* frame_weights;
 } eval_property_t;
 
-// One of the evaluations an md_script_eval_t holds: a set of frames, and what is aggregated over them.
-typedef struct eval_frame_set_t {
-    md_bitset_t         frames;     // the frames of the set (payload in the eval's arena)
+// A distribution or a volume over frames of the caller's choosing (md_script_eval_slot_request). Everything in it is
+// guarded by its lock, which lives as long as the evaluation, in use or not. Taken after the eval's frame_lock when
+// both are held. It is taken into use and let go (active, key, prop, and whether it has sums) under both, so either
+// will do to find it, and to tell whether it is one added up as frames are evaluated.
+typedef struct eval_slot_t {
+    md_mutex_t   lock;
+    bool         active;
+    uint64_t     key;
+    uint32_t     prop;          // the property, an index into the eval's
+    uint64_t     version;       // of what it holds (next_version)
 
-    // One per property of the IR, in its order. Sized once at creation and never grown: a published attribute
-    // may hold the address of the property it describes. Set 0 holds every property: the temporal ones, which
-    // are shared by all sets, and its own aggregates. Any other set holds only aggregates (distributions,
-    // volumes); its temporal entries have no storage.
-    md_array(eval_property_t) props;
+    // Reserved over every frame when the slot is first used, so that marking a frame never allocates
+    md_bitmask_t wanted;        // the frames asked for
+    md_bitmask_t included;      // the frames it holds: those added to the sums, or for a distribution kept per frame
+                                // those of the wanted which are evaluated
+    uint32_t     count;         // of included
 
-    // Where the properties above live. Owns every buffer they point at.
-    md_attributes_t           attributes;
-} eval_frame_set_t;
+    // Added up over the included frames, for anything not kept per frame. In the heap: let go with the slot.
+    double*      sum_values;
+    double*      sum_weights;   // distribution only
+    size_t       num_values;
+} eval_slot_t;
 
 struct md_script_eval_t {
     uint64_t magic;
@@ -644,7 +659,16 @@ struct md_script_eval_t {
     size_t        frame_count;
     md_mutex_t    frame_lock;   // guards the frames each property holds (eval_property_t::done)
 
-    md_array(eval_frame_set_t) sets;    // at least one, sized at creation
+    // One per property of the IR, in its order. Sized once at creation and never grown: a published attribute may
+    // hold the address of the property it describes.
+    md_array(eval_property_t) props;
+
+    // Where the properties above live. Owns every buffer they point at.
+    md_attributes_t attributes;
+
+    eval_slot_t* slots;             // MD_SCRIPT_EVAL_MAX_SLOTS of them, in use or not
+    uint32_t     num_slots_used;    // slots [0, num_slots_used) have been in use. Guarded by frame_lock.
+    volatile uint64_t version_counter;  // of the slots (next_version)
 
     // Which of the IR's evaluation targets each property needs evaluated for a frame: the one assigning it, and
     // those of every variable it uses, however indirectly. Row p of num_targets, for property p. A frame only
@@ -6454,31 +6478,74 @@ static void clear_property(eval_property_t* prop) {
     md_bitmask_clear(&prop->done);
 }
 
-// What frame f is still needed for: the temporal properties which have not evaluated it while some set has it,
-// and the aggregates of each set which has it and has not added it. todo[k * num_props + p] for property p of set
-// k, may be NULL. The caller holds frame_lock, or accepts a stale answer. Returns whether there is anything.
-static bool frame_todo(const md_script_eval_t* eval, uint32_t f, bool* todo) {
-    const size_t num_sets  = md_array_size(eval->sets);
-    const size_t num_props = md_array_size(eval->sets[0].props);
+// A version of a slot: never repeats, also across md_script_eval_create_from, and is never 0
+static uint64_t next_version(md_script_eval_t* eval) {
+    return md_atomic_fetch_add64(&eval->version_counter, 1) + 1;
+}
 
-    bool in_a_set = false;
-    for (size_t k = 0; k < num_sets && !in_a_set; ++k) {
-        in_a_set = md_bitset_test(eval->sets[k].frames, f);
-    }
+static inline bool is_aggregate(const eval_property_t* prop) {
+    return prop->kind == MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION || prop->kind == MD_SCRIPT_PROPERTY_FLAG_VOLUME;
+}
 
-    bool any = false;
-    for (size_t k = 0; k < num_sets; ++k) {
-        const eval_frame_set_t* set = &eval->sets[k];
-        const bool in_set = md_bitset_test(set->frames, f);
-        for (size_t p = 0; p < num_props; ++p) {
-            const eval_property_t* prop = &set->props[p];
-            // Temporal values are kept in set 0 only, for the frames of every set
-            const bool needed = (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) ? (k == 0 && in_a_set) : in_set;
-            const bool t = needed && !md_bitmask_test_bit(&prop->done, f);
-            if (todo) todo[k * num_props + p] = t;
-            any |= t;
+// Whether the slot has frame f to add or to take out. Only a slot added up as frames are evaluated has: one of a
+// distribution kept per frame needs nothing evaluated. The caller holds the slot's lock.
+static inline bool slot_needs_frame(const eval_slot_t* s, uint32_t f) {
+    return s->active && s->sum_values && md_bitmask_test_bit(&s->wanted, f) != md_bitmask_test_bit(&s->included, f);
+}
+
+// Adds frame f to the slot or takes it out, whichever it needs, from the values (and weights) of the frame. The
+// caller holds the slot's lock.
+static void slot_add_frame(md_script_eval_t* eval, eval_slot_t* s, uint32_t f, const float* values, const float* weights) {
+    if (!slot_needs_frame(s, f)) return;
+    const bool add = md_bitmask_test_bit(&s->wanted, f);
+    if (add) {
+        for (size_t i = 0; i < s->num_values; ++i) s->sum_values[i] += values[i];
+        if (s->sum_weights) {
+            for (size_t i = 0; i < s->num_values; ++i) s->sum_weights[i] += weights[i];
+        }
+        md_bitmask_set_bit(&s->included, f);
+        s->count += 1;
+    } else {
+        s->count -= 1;
+        md_bitmask_clear_bit(&s->included, f);
+        if (s->count == 0) {
+            // What is taken out is never quite what was added, in floating point: empty is zero, exactly
+            MEMSET(s->sum_values, 0, s->num_values * sizeof(double));
+            if (s->sum_weights) MEMSET(s->sum_weights, 0, s->num_values * sizeof(double));
+        } else {
+            for (size_t i = 0; i < s->num_values; ++i) s->sum_values[i] -= values[i];
+            if (s->sum_weights) {
+                for (size_t i = 0; i < s->num_values; ++i) s->sum_weights[i] -= weights[i];
+            }
         }
     }
+    s->version = next_version(eval);
+}
+
+// What frame f is still needed for: the properties which do not hold it, and those with a slot which has it to add
+// or to take out. todo[p] for property p, may be NULL. Takes the eval's frame_lock, then each slot's lock in turn.
+// Returns whether there is anything.
+static bool frame_todo(md_script_eval_t* eval, uint32_t f, bool* todo) {
+    const size_t num_props = md_array_size(eval->props);
+    bool any = false;
+
+    md_mutex_lock(&eval->frame_lock);
+    for (size_t p = 0; p < num_props; ++p) {
+        const bool t = !md_bitmask_test_bit(&eval->props[p].done, f);
+        if (todo) todo[p] = t;
+        any |= t;
+    }
+    for (uint32_t i = 0; i < eval->num_slots_used; ++i) {
+        eval_slot_t* s = &eval->slots[i];
+        if (!s->active || !s->sum_values) continue;
+        md_mutex_lock(&s->lock);
+        if (slot_needs_frame(s, f)) {
+            if (todo) todo[s->prop] = true;
+            any = true;
+        }
+        md_mutex_unlock(&s->lock);
+    }
+    md_mutex_unlock(&eval->frame_lock);
     return any;
 }
 
@@ -6488,7 +6555,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
     ASSERT(ir);
 
     // No properties to evaluate!
-    if (md_array_size(eval->sets[0].props) == 0) return true;
+    if (md_array_size(eval->props) == 0) return true;
     
     const size_t num_expr = md_array_size(ir->eval_targets);
     ast_node_t** const expr = ir->eval_targets;
@@ -6497,12 +6564,13 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = true;
 
-    const size_t num_sets  = md_array_size(eval->sets);
-    const size_t num_props = md_array_size(eval->sets[0].props);
+    const size_t num_props = md_array_size(eval->props);
     ASSERT(num_expr == eval->num_targets);
-    // Per property of each set (k * num_props + p): what the frame is still needed for, and what was claimed
-    bool* todo    = md_temp_alloc_array(temp, bool, num_sets * num_props);
-    bool* claimed = md_temp_alloc_array(temp, bool, num_sets * num_props);
+    // Per property: what the frame is still needed for, whether this added it to its published aggregate, and what
+    // it evaluated to
+    bool* todo    = md_temp_alloc_array(temp, bool, num_props);
+    bool* claimed = md_temp_alloc_array(temp, bool, num_props);
+    const data_t** prop_data = md_temp_alloc_array(temp, const data_t*, num_props);
     // The targets those need evaluated
     uint8_t* needed = md_temp_alloc_array(temp, uint8_t, MAX(num_expr, 1));
 
@@ -6570,23 +6638,19 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
             goto done;
         }
 
-        // Nothing left to do for it: every property which needs it holds it already
-        md_mutex_lock(&eval->frame_lock);
+        // Nothing left to do for it: every property holds it, and no slot has it to add or take out
         const bool pending = f_idx < eval->frame_count && frame_todo(eval, f_idx, todo);
-        md_mutex_unlock(&eval->frame_lock);
         if (!pending) {
             continue;
         }
 
         // What the properties still to do need evaluated, and nothing else
         MEMSET(needed, 0, num_expr);
-        for (size_t k = 0; k < num_sets; ++k) {
-            for (size_t p = 0; p < num_props; ++p) {
-                if (!todo[k * num_props + p]) continue;
-                const uint8_t* row = eval->needs + p * num_expr;
-                for (size_t i = 0; i < num_expr; ++i) {
-                    needed[i] |= row[i];
-                }
+        for (size_t p = 0; p < num_props; ++p) {
+            if (!todo[p]) continue;
+            const uint8_t* row = eval->needs + p * num_expr;
+            for (size_t i = 0; i < num_expr; ++i) {
+                needed[i] |= row[i];
             }
         }
         
@@ -6626,55 +6690,35 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
             }
         }
 
-        // Two passes over the properties. First the temporal values, which are per frame, shared by all sets and
-        // kept in set 0. Then, under the lock, the temporal properties are marked as holding the frame and the
-        // aggregates claim it, and the claimed ones add it. In that order, a frame a property holds always has its
-        // values written: done is the mask a reader on another thread takes them over.
-        for (int pass = 0; pass < 2; ++pass) {
-        if (pass == 1) {
-            // Claimed only now that it is evaluated, and under the lock: whatever else evaluates the same frame,
-            // each aggregate adds it exactly once.
-            md_mutex_lock(&eval->frame_lock);
-            for (size_t k = 0; k < num_sets; ++k) {
-                for (size_t p = 0; p < num_props; ++p) {
-                    const size_t idx = k * num_props + p;
-                    eval_property_t* prop = &eval->sets[k].props[p];
-                    claimed[idx] = todo[idx] && !md_bitmask_test_bit(&prop->done, (uint32_t)f_idx);
-                    if (claimed[idx]) {
-                        md_bitmask_set_bit(&prop->done, (uint32_t)f_idx);
-                    }
-                }
-            }
-            md_mutex_unlock(&eval->frame_lock);
-        }
-        for (size_t s_idx = 0; s_idx < num_sets; ++s_idx)
-        for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
-            eval_property_t* prop = &eval->sets[s_idx].props[p_idx];
-            ASSERT(str_eq(prop->ident, ir->property_names[p_idx]));
-
-            // Temporal values in the first pass, of what was still to do (in set 0 only). Aggregates in the second,
-            // each set's own, and only those which claimed the frame.
-            const size_t idx = s_idx * num_props + p_idx;
-            const bool temporal = prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
-            if (temporal ? (pass != 0 || !todo[idx]) : (pass != 1 || !claimed[idx])) {
-                continue;
-            }
-            ASSERT(prop->values);
-
-            // Find data matching property identifier
+        // What each property still to do evaluated to
+        for (size_t p = 0; p < num_props; ++p) {
+            prop_data[p] = NULL;
+            if (!todo[p]) continue;
+            eval_property_t* prop = &eval->props[p];
+            ASSERT(str_eq(prop->ident, ir->property_names[p]));
             const identifier_t* ident = find_dynamic_identifier(prop->ident, &ctx);
             if (!ident || !ident->data) {
                 MD_LOG_ERROR("Script eval: no evaluated data for property '"STR_FMT"'", STR_ARG(prop->ident));
                 result = false;
                 goto done;
             }
+            prop_data[p] = ident->data;
+            ASSERT(prop->values);
+        }
 
-            const frange_t value_range = ident->data->value_range;
-            const float* values = (const float*)ident->data->ptr;
+        // In three steps. First what is kept per frame: the temporal values, and the distributions kept per frame.
+        // Then, under the lock, the properties are marked as holding the frame, the published aggregates claim it,
+        // and the slots of distributions kept per frame take it. Then the aggregates which claimed it, and the slots
+        // added up as frames are evaluated, add it. In that order, a frame a property holds always has its values
+        // written: done is the mask a reader on another thread takes them over.
+        for (size_t p = 0; p < num_props; ++p) {
+            if (!prop_data[p]) continue;
+            eval_property_t* prop = &eval->props[p];
+            const float* values = (const float*)prop_data[p]->ptr;
+            const frange_t value_range = prop_data[p]->value_range;
 
-            switch (prop->kind) {
-            case MD_SCRIPT_PROPERTY_FLAG_TEMPORAL: {
-                const uint32_t size = (uint32_t)ident->data->type.dim[0];
+            if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+                const uint32_t size = (uint32_t)prop_data[p]->type.dim[0];
                 ASSERT(size == prop->count);
                 MEMCPY(prop->values + (size_t)f_idx * size, values, size * sizeof(float));
 
@@ -6694,17 +6738,54 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
                 prop->range->x = (value_range.beg == -FLT_MAX) ? prop->min_value : value_range.beg;
                 prop->range->y = (value_range.end == +FLT_MAX) ? prop->max_value : value_range.end;
                 md_mutex_unlock(&prop->accum_mutex);
-                break;
+            } else if (prop->frame_values) {
+                ASSERT(prop_data[p]->weight);
+                MEMCPY(prop->frame_values  + (size_t)f_idx * prop->num_values, values,                prop->num_values * sizeof(float));
+                MEMCPY(prop->frame_weights + (size_t)f_idx * prop->num_values, prop_data[p]->weight, prop->num_values * sizeof(float));
             }
+        }
+
+        // Claimed only now that it is evaluated, and under the lock: whatever else evaluates the same frame, each
+        // aggregate adds it exactly once
+        md_mutex_lock(&eval->frame_lock);
+        for (size_t p = 0; p < num_props; ++p) {
+            eval_property_t* prop = &eval->props[p];
+            claimed[p] = prop_data[p] && !md_bitmask_test_bit(&prop->done, f_idx);
+            if (claimed[p]) {
+                md_bitmask_set_bit(&prop->done, f_idx);
+            }
+        }
+        for (uint32_t i = 0; i < eval->num_slots_used; ++i) {
+            eval_slot_t* s = &eval->slots[i];
+            if (!s->active || s->sum_values || !claimed[s->prop]) continue;
+            md_mutex_lock(&s->lock);
+            if (md_bitmask_test_bit(&s->wanted, f_idx) && !md_bitmask_test_bit(&s->included, f_idx)) {
+                md_bitmask_set_bit(&s->included, f_idx);
+                s->count += 1;
+                s->version = next_version(eval);
+            }
+            md_mutex_unlock(&s->lock);
+        }
+        md_mutex_unlock(&eval->frame_lock);
+
+        for (size_t p = 0; p < num_props; ++p) {
+            if (!claimed[p]) continue;
+            eval_property_t* prop = &eval->props[p];
+            const float* values = (const float*)prop_data[p]->ptr;
+            const frange_t value_range = prop_data[p]->value_range;
+
+            switch (prop->kind) {
+            case MD_SCRIPT_PROPERTY_FLAG_TEMPORAL:
+                break;
             case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION: {
                 // Every bin of every distribution in it
                 const size_t num_bins = prop->num_values;
-                ASSERT(ident->data->type.base_type == TYPE_DISTRIBUTION);
-                ASSERT(type_info_total_element_count(ident->data->type) == num_bins);
+                ASSERT(prop_data[p]->type.base_type == TYPE_DISTRIBUTION);
+                ASSERT(type_info_total_element_count(prop_data[p]->type) == num_bins);
                 float min, max, mean, var;
                 compute_min_max_mean_variance(&min, &max, &mean, &var, values, num_bins);
 
-                const float* weights = ident->data->weight;
+                const float* weights = prop_data[p]->weight;
                 ASSERT(weights);
 
                 md_mutex_lock(&prop->accum_mutex);
@@ -6755,7 +6836,21 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
                 break;
             }
         }
-        }   // pass
+
+        // The slots added up as frames are evaluated, of every property evaluated for the frame: whichever needed
+        // it, a slot which has it to add or take out does so now. Read under nothing but the slot's own lock.
+        md_mutex_lock(&eval->frame_lock);
+        const uint32_t num_slots = eval->num_slots_used;
+        md_mutex_unlock(&eval->frame_lock);
+        for (uint32_t i = 0; i < num_slots; ++i) {
+            eval_slot_t* s = &eval->slots[i];
+            md_mutex_lock(&s->lock);
+            if (s->active && s->sum_values && prop_data[s->prop]) {
+                const data_t* d = prop_data[s->prop];
+                slot_add_frame(eval, s, f_idx, (const float*)d->ptr, d->weight);
+            }
+            md_mutex_unlock(&s->lock);
+        }
         
         //max_arena_pos = MAX(max_arena_pos, vm_arena.commit_pos);
     }
@@ -7271,21 +7366,70 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
     return md_script_eval_create_desc(ir, &desc, alloc);
 }
 
-// Sets the frames of a set: those of 'frames' below frame_count, or every frame for NULL
-static void frame_set_assign(md_script_eval_t* eval, eval_frame_set_t* set, const md_bitset_t* frames) {
-    const md_bitset_t all = md_bitset_range(0, (uint32_t)eval->frame_count);
-    md_bitset_free(&set->frames, eval->arena);
-    set->frames = frames ? md_bitset_and(*frames, all, eval->arena) : all;
-}
-
-// Forgets what the set has added: its aggregates and the frames they hold. Temporal values (kept in set 0) are
-// not the set's own and stay, unless also_temporal.
-static void frame_set_clear(eval_frame_set_t* set, bool also_temporal) {
-    for (size_t i = 0; i < md_array_size(set->props); ++i) {
-        if (also_temporal || set->props[i].kind != MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-            clear_property(&set->props[i]);
+// Takes slot s into use for property p under key, holding nothing and asked for nothing. The caller holds the eval's
+// frame_lock and the slot's lock, or is the only one with the eval.
+static void slot_take(md_script_eval_t* eval, eval_slot_t* s, uint64_t key, uint32_t p) {
+    const eval_property_t* prop = &eval->props[p];
+    if (!s->wanted.alloc) {
+        // Over every frame up front, so that marking a frame on an evaluating thread never allocates
+        md_bitmask_init(&s->wanted,   0, (uint32_t)eval->frame_count, eval->arena);
+        md_bitmask_init(&s->included, 0, (uint32_t)eval->frame_count, eval->arena);
+        md_bitmask_reserve(&s->wanted,   0, (uint32_t)eval->frame_count);
+        md_bitmask_reserve(&s->included, 0, (uint32_t)eval->frame_count);
+    }
+    md_bitmask_clear(&s->wanted);
+    md_bitmask_clear(&s->included);
+    s->active = true;
+    s->key    = key;
+    s->prop   = p;
+    s->count  = 0;
+    s->num_values  = prop->num_values;
+    s->sum_values  = NULL;
+    s->sum_weights = NULL;
+    if (!prop->frame_values) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        s->sum_values = md_alloc(heap, s->num_values * sizeof(double));
+        MEMSET(s->sum_values, 0, s->num_values * sizeof(double));
+        if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+            s->sum_weights = md_alloc(heap, s->num_values * sizeof(double));
+            MEMSET(s->sum_weights, 0, s->num_values * sizeof(double));
         }
     }
+    s->version = next_version(eval);
+}
+
+// Lets go of what slot s holds and takes it out of use. The caller holds its lock (and the eval's frame_lock, unless
+// it is the only one with the eval).
+static void slot_let_go(eval_slot_t* s) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    if (s->sum_values)  md_free(heap, s->sum_values,  s->num_values * sizeof(double));
+    if (s->sum_weights) md_free(heap, s->sum_weights, s->num_values * sizeof(double));
+    s->sum_values  = NULL;
+    s->sum_weights = NULL;
+    if (s->wanted.alloc) {
+        md_bitmask_clear(&s->wanted);
+        md_bitmask_clear(&s->included);
+    }
+    s->active = false;
+    s->key    = 0;
+    s->prop   = 0;
+    s->count  = 0;
+}
+
+static int find_property(const md_script_eval_t* eval, str_t ident) {
+    for (size_t p = 0; p < md_array_size(eval->props); ++p) {
+        if (str_eq(eval->props[p].ident, ident)) return (int)p;
+    }
+    return -1;
+}
+
+// The slot under key for property p, NULL if there is none. The caller holds frame_lock.
+static eval_slot_t* find_slot(const md_script_eval_t* eval, uint64_t key, uint32_t p) {
+    for (uint32_t i = 0; i < eval->num_slots_used; ++i) {
+        eval_slot_t* s = &eval->slots[i];
+        if (s->active && s->key == key && s->prop == p) return s;
+    }
+    return NULL;
 }
 
 // The evaluation target which assigns the variable, -1 if none does (a constant, or a name the script does not assign)
@@ -7389,16 +7533,8 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     eval->frame_count = num_frames;
     compute_needs(eval, ir);
 
-    const size_t num_sets = MAX(desc->num_frame_sets, 1);
-    md_array_resize(eval->sets, num_sets, eval->arena);
-    MEMSET(eval->sets, 0, num_sets * sizeof(eval_frame_set_t));
-    for (size_t k = 0; k < num_sets; ++k) {
-        eval_frame_set_t* set = &eval->sets[k];
-        set->frames = md_bitset_empty_set();
-        frame_set_assign(eval, set, desc->num_frame_sets ? desc->frame_sets[k] : NULL);
-        set->attributes.alloc = eval->arena;
-    }
-    md_attributes_t* attributes = &eval->sets[0].attributes;
+    md_attributes_t* attributes = &eval->attributes;
+    attributes->alloc = eval->arena;
 
     // The frame axis every temporal property is checked against. It lives at the ROOT, outside
     // 'script/', so that a property the user happens to call "time" can never become the axis of
@@ -7425,27 +7561,34 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     // Sized up front rather than pushed one at a time: a published attribute may hold the address
     // of the property it describes, and a growing array would move it out from under one.
     const size_t num_props = md_array_size(ir->property_names);
-    for (size_t k = 0; k < num_sets; ++k) {
-        eval_frame_set_t* set = &eval->sets[k];
-        md_array_resize(set->props, num_props, eval->arena);
-        for (size_t i = 0; i < num_props; ++i) {
-            eval_property_t* prop = &set->props[i];
-            const ast_node_t* node = ir->property_nodes[i];
-            if (k > 0 && ir->property_flags[i] == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                // Kept in set 0 only: no storage here
-                MEMSET(prop, 0, sizeof(eval_property_t));
-                prop->ident = ir->property_names[i];
-                prop->kind  = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
-                md_mutex_init(&prop->accum_mutex);
-            } else {
-                init_property(prop, &set->attributes, ir->property_names[i], ir->property_flags[i], node->data.type, node->data.unit, num_frames, eval->arena);
+    const size_t budget = desc->frame_budget ? desc->frame_budget : MD_SCRIPT_EVAL_FRAME_BUDGET_DEFAULT;
+    size_t kept = 0;
+    md_array_resize(eval->props, num_props, eval->arena);
+    for (size_t i = 0; i < num_props; ++i) {
+        eval_property_t* prop = &eval->props[i];
+        const ast_node_t* node = ir->property_nodes[i];
+        init_property(prop, attributes, ir->property_names[i], ir->property_flags[i], node->data.type, node->data.unit, num_frames, eval->arena);
+        prop->fingerprint = i < md_array_size(ir->property_fingerprints) ? ir->property_fingerprints[i] : 0;
+        // Reserved up front, so marking a frame never moves the words while another thread reads them
+        md_bitmask_init(&prop->done, 0, (uint32_t)num_frames, eval->arena);
+        md_bitmask_reserve(&prop->done, 0, (uint32_t)num_frames);
+
+        if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+            // Kept per frame while there is room for it, in script order
+            const size_t bytes = num_frames * prop->num_values * sizeof(float);
+            if (2 * bytes <= budget - kept) {
+                prop->frame_values  = md_alloc(eval->arena, bytes);
+                prop->frame_weights = md_alloc(eval->arena, bytes);
+                kept += 2 * bytes;
             }
-            prop->fingerprint = i < md_array_size(ir->property_fingerprints) ? ir->property_fingerprints[i] : 0;
-            // Reserved up front, so marking a frame never moves the words while another thread reads them
-            md_bitmask_init(&prop->done, 0, (uint32_t)num_frames, eval->arena);
-            md_bitmask_reserve(&prop->done, 0, (uint32_t)num_frames);
-            clear_property(prop);
         }
+        clear_property(prop);
+    }
+
+    eval->slots = md_alloc(eval->arena, MD_SCRIPT_EVAL_MAX_SLOTS * sizeof(eval_slot_t));
+    MEMSET(eval->slots, 0, MD_SCRIPT_EVAL_MAX_SLOTS * sizeof(eval_slot_t));
+    for (size_t i = 0; i < MD_SCRIPT_EVAL_MAX_SLOTS; ++i) {
+        md_mutex_init(&eval->slots[i].lock);
     }
 
     md_mutex_init(&eval->frame_lock);
@@ -7468,6 +7611,10 @@ static void adopt_property(eval_property_t* dst, const eval_property_t* src, siz
         MEMCPY(dst->var,  src->var,  num_frames * sizeof(float));
         MEMCPY(dst->ext,  src->ext,  num_frames * sizeof(vec2_t));
     }
+    if (dst->frame_values && src->frame_values) {
+        MEMCPY(dst->frame_values,  src->frame_values,  num_frames * dst->num_values * sizeof(float));
+        MEMCPY(dst->frame_weights, src->frame_weights, num_frames * dst->num_values * sizeof(float));
+    }
     if (dst->range && src->range) {
         *dst->range = *src->range;
     }
@@ -7477,8 +7624,30 @@ static void adopt_property(eval_property_t* dst, const eval_property_t* src, siz
     md_bitmask_assign(&dst->done, md_bitmask_view(&src->done));
 }
 
+// Of the same kind and shape, and kept the same way: per frame in both or in neither
 static bool same_shape(const eval_property_t* a, const eval_property_t* b) {
-    return a->kind == b->kind && a->count == b->count && a->num_values == b->num_values && a->values && b->values;
+    return a->kind == b->kind && a->count == b->count && a->num_values == b->num_values && a->values && b->values &&
+        (a->frame_values != NULL) == (b->frame_values != NULL);
+}
+
+// The property of eval a slot of prev's property j goes to: the one which took over j's values (of the same name
+// first, as two properties computed alike hold the same values), whose slots it holds as they are. Otherwise an
+// aggregate of j's name, which holds nothing yet. -1 for neither. from[i] is the property of prev that property i
+// took over, -1 for none.
+static int slot_destination(bool* out_held, const md_script_eval_t* eval, const md_script_eval_t* prev, uint32_t j, const int* from) {
+    const eval_property_t* src = &prev->props[j];
+    int named = -1, alike = -1;
+    for (size_t i = 0; i < md_array_size(eval->props); ++i) {
+        const eval_property_t* dst = &eval->props[i];
+        const bool same_name = str_eq(dst->ident, src->ident);
+        if (from[i] >= 0 && dst->fingerprint == src->fingerprint) {
+            if (same_name) { *out_held = true; return (int)i; }
+            if (alike < 0) alike = (int)i;
+        }
+        if (same_name && is_aggregate(dst) && named < 0) named = (int)i;
+    }
+    *out_held = alike >= 0;
+    return alike >= 0 ? alike : named;
 }
 
 md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const md_script_ir_t* ir, const md_script_eval_desc_t* desc, md_allocator_i* alloc) {
@@ -7487,46 +7656,69 @@ md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const
         return eval;
     }
 
-    const size_t num_sets   = md_array_size(eval->sets);
-    const size_t num_props  = md_array_size(eval->sets[0].props);
-    const size_t prev_sets  = md_array_size(prev->sets);
-    const size_t prev_props = md_array_size(prev->sets[0].props);
+    // The versions carry on from the previous evaluation's: a version of this one never equals one of that one, so
+    // nothing derived from a previous property or slot can be taken for what is published now, taken over or not.
+    // Before any slot is taken into use below, which takes a version.
+    eval->version_counter = MAX(eval->version_counter, md_atomic_load64(&prev->version_counter));
 
-    // A property is taken over by what it is computed from, whatever it is called now. An aggregate of a set only
-    // where the set covers the same frames as before: it is what was added over them. Nothing over another number
+    const size_t num_props  = md_array_size(eval->props);
+    const size_t prev_props = md_array_size(prev->props);
+    md_temp_scope_t temp = md_temp_begin();
+    int* from = md_temp_alloc_array(temp, int, MAX(num_props, 1));
+    for (size_t i = 0; i < num_props; ++i) from[i] = -1;
+
+    // A property is taken over by what it is computed from, whatever it is called now. Nothing over another number
     // of frames, which is another run.
-    const size_t num_adopt = prev->frame_count == eval->frame_count ? num_props : 0;
+    const bool same_run = prev->frame_count == eval->frame_count;
     md_mutex_t* prev_lock = (md_mutex_t*)&prev->frame_lock;
     md_mutex_lock(prev_lock);
-    for (size_t i = 0; i < num_adopt; ++i) {
-        const uint64_t fingerprint = eval->sets[0].props[i].fingerprint;
-        if (!fingerprint) continue;
+    for (size_t i = 0; i < num_props && same_run; ++i) {
+        eval_property_t* dst = &eval->props[i];
+        if (!dst->fingerprint) continue;
         for (size_t j = 0; j < prev_props; ++j) {
-            if (prev->sets[0].props[j].fingerprint != fingerprint) continue;
-            for (size_t k = 0; k < num_sets && k < prev_sets; ++k) {
-                eval_property_t* dst = &eval->sets[k].props[i];
-                const eval_property_t* src = &prev->sets[k].props[j];
-                if (!same_shape(dst, src)) continue;
-                if (dst->kind != MD_SCRIPT_PROPERTY_FLAG_TEMPORAL && !md_bitset_equal(eval->sets[k].frames, prev->sets[k].frames)) continue;
+            const eval_property_t* src = &prev->props[j];
+            if (src->fingerprint != dst->fingerprint) continue;
+            if (same_shape(dst, src)) {
                 adopt_property(dst, src, eval->frame_count);
+                from[i] = (int)j;
             }
             break;
         }
     }
-    md_mutex_unlock(prev_lock);
 
-    // The versions carry on from the previous evaluation's: a version of this one never equals one of that one, so
-    // nothing derived from a previous property can be taken for what is published now, taken over or not
-    uint64_t counter = 0;
-    for (size_t k = 0; k < prev_sets; ++k) {
-        counter = MAX(counter, prev->sets[k].attributes.version_counter);
-    }
-    for (size_t k = 0; k < num_sets; ++k) {
-        md_attributes_t* table = &eval->sets[k].attributes;
-        table->version_counter = MAX(table->version_counter, counter);
-        for (md_attribute_iter_t it = md_attributes_iter(table, (str_t){0}); md_attributes_next(&it);) {
-            md_attributes_touch(table, it.attr->id);
+    // And the slots, asked for what they were asked for: with what they hold where their property was taken over
+    for (uint32_t k = 0; k < prev->num_slots_used && same_run; ++k) {
+        eval_slot_t* src = &prev->slots[k];
+        md_mutex_lock(&src->lock);
+        bool held = false;
+        const int i = src->active ? slot_destination(&held, eval, prev, src->prop, from) : -1;
+        if (i >= 0 && !find_slot(eval, src->key, (uint32_t)i) && eval->num_slots_used < MD_SCRIPT_EVAL_MAX_SLOTS) {
+            eval_slot_t* dst = &eval->slots[eval->num_slots_used++];
+            slot_take(eval, dst, src->key, (uint32_t)i);
+            md_bitmask_assign(&dst->wanted, md_bitmask_view(&src->wanted));
+            if (dst->sum_values) {
+                if (held) {
+                    md_bitmask_assign(&dst->included, md_bitmask_view(&src->included));
+                    dst->count = src->count;
+                    MEMCPY(dst->sum_values, src->sum_values, dst->num_values * sizeof(double));
+                    if (dst->sum_weights) MEMCPY(dst->sum_weights, src->sum_weights, dst->num_values * sizeof(double));
+                }
+            } else {
+                // Kept per frame: it holds what it wants of the frames its property holds
+                md_bitmask_assign(&dst->included, md_bitmask_view(&dst->wanted));
+                md_bitmask_and(&dst->included, md_bitmask_view(&eval->props[i].done));
+                dst->count = (uint32_t)md_bitmask_count(&dst->included);
+            }
         }
+        md_mutex_unlock(&src->lock);
+    }
+    md_mutex_unlock(prev_lock);
+    md_temp_end(temp);
+
+    md_attributes_t* table = &eval->attributes;
+    table->version_counter = MAX(table->version_counter, prev->attributes.version_counter);
+    for (md_attribute_iter_t it = md_attributes_iter(table, (str_t){0}); md_attributes_next(&it);) {
+        md_attributes_touch(table, it.attr->id);
     }
 
     return eval;
@@ -7535,52 +7727,39 @@ md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const
 void md_script_eval_clear_data(md_script_eval_t* eval) {
     ASSERT(eval);
     ASSERT(eval->magic == SCRIPT_EVAL_MAGIC);
-    for (size_t k = 0; k < md_array_size(eval->sets); ++k) {
-        frame_set_clear(&eval->sets[k], true);
+    md_mutex_lock(&eval->frame_lock);
+    for (size_t p = 0; p < md_array_size(eval->props); ++p) {
+        clear_property(&eval->props[p]);
     }
+    // The slots hold nothing, and are asked for what they were asked for
+    for (uint32_t i = 0; i < eval->num_slots_used; ++i) {
+        eval_slot_t* s = &eval->slots[i];
+        md_mutex_lock(&s->lock);
+        if (s->active) {
+            md_bitmask_clear(&s->included);
+            s->count = 0;
+            if (s->sum_values)  MEMSET(s->sum_values,  0, s->num_values * sizeof(double));
+            if (s->sum_weights) MEMSET(s->sum_weights, 0, s->num_values * sizeof(double));
+            s->version = next_version(eval);
+        }
+        md_mutex_unlock(&s->lock);
+    }
+    md_mutex_unlock(&eval->frame_lock);
     eval->interrupt = false;
 }
 
-size_t md_script_eval_frame_set_count(const md_script_eval_t* eval) {
-    return validate_eval(eval) ? md_array_size(eval->sets) : 0;
-}
-
-bool md_script_eval_set_frame_set(md_script_eval_t* eval, size_t idx, const md_bitset_t* frames) {
-    if (!validate_eval(eval) || idx >= md_array_size(eval->sets)) {
-        MD_LOG_ERROR("Script eval: no frame set %zu", idx);
-        return false;
-    }
-    eval_frame_set_t* set = &eval->sets[idx];
-    frame_set_assign(eval, set, frames);
-    frame_set_clear(set, false);
-    return true;
-}
-
-const md_bitset_t* md_script_eval_frame_set_frames(const md_script_eval_t* eval, size_t idx) {
-    return (validate_eval(eval) && idx < md_array_size(eval->sets)) ? &eval->sets[idx].frames : NULL;
-}
-
-// The frames of set idx which every property of 'kinds' holds: a temporal property over the set (kept in set 0)
-// the frames it has evaluated, an aggregate of the set those it has added. Or of property p alone, when p >= 0.
-// Of every frame rather than those of the set, when !within_set. Taken under the eval's frame_lock, allocated with alloc.
-static md_bitset_t frames_held(const md_script_eval_t* eval, size_t idx, uint32_t kinds, int p, bool within_set, md_allocator_i* alloc) {
+// The frames which every property of 'kinds' holds, or property p alone when p >= 0. Taken under the eval's
+// frame_lock, allocated with alloc.
+static md_bitset_t frames_held(const md_script_eval_t* eval, uint32_t kinds, int p, md_allocator_i* alloc) {
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_bitmask_t m = md_bitmask_create(0, (uint32_t)eval->frame_count, md_temp_allocator(temp));
+    md_bitmask_set_range(&m, 0, (uint32_t)eval->frame_count);
     md_mutex_t* lock = (md_mutex_t*)&eval->frame_lock;
     md_mutex_lock(lock);
-    if (within_set) {
-        md_bitmask_assign(&m, eval->sets[idx].frames);
-    } else {
-        md_bitmask_set_range(&m, 0, (uint32_t)eval->frame_count);
-    }
-    const size_t num_props = md_array_size(eval->sets[idx].props);
-    for (size_t i = 0; i < num_props; ++i) {
+    for (size_t i = 0; i < md_array_size(eval->props); ++i) {
         if (p >= 0 && (size_t)p != i) continue;
-        const eval_property_t* prop = &eval->sets[idx].props[i];
+        const eval_property_t* prop = &eval->props[i];
         if (!(prop->kind & kinds)) continue;
-        if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-            prop = &eval->sets[0].props[i];
-        }
         md_bitmask_and(&m, md_bitmask_view(&prop->done));
     }
     md_mutex_unlock(lock);
@@ -7591,39 +7770,210 @@ static md_bitset_t frames_held(const md_script_eval_t* eval, size_t idx, uint32_
 
 static const uint32_t all_kinds = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME;
 
-md_bitset_t md_script_eval_frame_set_completed(const md_script_eval_t* eval, size_t idx, md_allocator_i* alloc) {
-    if (!validate_eval(eval) || idx >= md_array_size(eval->sets) || !alloc) return md_bitset_empty_set();
-    return frames_held(eval, idx, all_kinds, -1, true, alloc);
-}
-
-md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, size_t idx, str_t ident, md_allocator_i* alloc) {
-    if (!validate_eval(eval) || idx >= md_array_size(eval->sets) || !alloc) return md_bitset_empty_set();
-    for (size_t i = 0; i < md_array_size(eval->sets[0].props); ++i) {
-        if (str_eq(eval->sets[0].props[i].ident, ident)) {
-            return frames_held(eval, idx, all_kinds, (int)i, true, alloc);
-        }
-    }
-    return md_bitset_empty_set();
-}
-
-const md_attributes_t* md_script_eval_frame_set_attributes(const md_script_eval_t* eval, size_t idx) {
-    return (validate_eval(eval) && idx < md_array_size(eval->sets)) ? &eval->sets[idx].attributes : NULL;
+md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, str_t ident, md_allocator_i* alloc) {
+    if (!validate_eval(eval) || !alloc) return md_bitset_empty_set();
+    const int p = find_property(eval, ident);
+    return p >= 0 ? frames_held(eval, all_kinds, p, alloc) : md_bitset_empty_set();
 }
 
 md_bitset_t md_script_eval_pending_frames(md_script_eval_t* eval, md_allocator_i* alloc) {
     if (!validate_eval(eval) || !alloc) return md_bitset_empty_set();
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    md_bitmask_t pending = md_bitmask_create(0, (uint32_t)eval->frame_count, md_temp_allocator(temp));
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    const uint32_t num_frames = (uint32_t)eval->frame_count;
+    md_bitmask_t held    = md_bitmask_create(0, num_frames, temp_alloc);
+    md_bitmask_t pending = md_bitmask_create(0, num_frames, temp_alloc);
+    md_bitmask_t moving  = md_bitmask_create(0, num_frames, temp_alloc);
+    md_bitmask_set_range(&held,    0, num_frames);
+    md_bitmask_set_range(&pending, 0, num_frames);
+
     md_mutex_lock(&eval->frame_lock);
-    for (uint32_t f = 0; f < (uint32_t)eval->frame_count; ++f) {
-        if (frame_todo(eval, f, NULL)) {
-            md_bitmask_set_bit(&pending, f);
+    // The frames some property does not hold
+    for (size_t p = 0; p < md_array_size(eval->props); ++p) {
+        md_bitmask_and(&held, md_bitmask_view(&eval->props[p].done));
+    }
+    md_bitmask_andnot(&pending, md_bitmask_view(&held));
+    // and those a slot has to add or take out
+    for (uint32_t i = 0; i < eval->num_slots_used; ++i) {
+        eval_slot_t* s = &eval->slots[i];
+        if (!s->active || !s->sum_values) continue;
+        md_mutex_lock(&s->lock);
+        {
+            md_bitmask_assign(&moving, md_bitmask_view(&s->wanted));
+            md_bitmask_xor(&moving, md_bitmask_view(&s->included));
+            md_bitmask_or(&pending, md_bitmask_view(&moving));
         }
+        md_mutex_unlock(&s->lock);
     }
     md_mutex_unlock(&eval->frame_lock);
+
     md_bitset_t result = md_bitmask_extract(&pending, alloc);
     md_temp_end(temp);
     return result;
+}
+
+// ### SLOTS ###
+
+bool md_script_eval_slot_request(md_script_eval_t* eval, uint64_t key, str_t ident, const md_bitset_t* frames) {
+    if (!validate_eval(eval) || !frames) return false;
+    const int p = find_property(eval, ident);
+    if (p < 0 || !is_aggregate(&eval->props[p])) return false;
+    const eval_property_t* prop = &eval->props[p];
+
+    md_temp_scope_t temp = md_temp_begin();
+    const md_bitset_t want = md_bitset_and(*frames, md_bitset_range(0, (uint32_t)eval->frame_count), md_temp_allocator(temp));
+
+    // Under frame_lock: a slot is taken into use under it, and one kept per frame holds what its property does
+    md_mutex_lock(&eval->frame_lock);
+    eval_slot_t* s = find_slot(eval, key, (uint32_t)p);
+    if (s) {
+        md_mutex_lock(&s->lock);
+    } else {
+        for (uint32_t i = 0; i < MD_SCRIPT_EVAL_MAX_SLOTS && !s; ++i) {
+            if (!eval->slots[i].active) s = &eval->slots[i];
+        }
+        if (s) {
+            md_mutex_lock(&s->lock);
+            slot_take(eval, s, key, (uint32_t)p);
+            eval->num_slots_used = MAX(eval->num_slots_used, (uint32_t)(s - eval->slots) + 1);
+        }
+    }
+    if (s) {
+        if (!md_bitset_equal(md_bitmask_view(&s->wanted), want)) {
+            md_bitmask_assign(&s->wanted, want);
+            if (!s->sum_values) {
+                // Kept per frame: it holds at once what it wants of the frames evaluated
+                md_bitmask_assign(&s->included, md_bitmask_view(&s->wanted));
+                md_bitmask_and(&s->included, md_bitmask_view(&prop->done));
+                s->count = (uint32_t)md_bitmask_count(&s->included);
+            }
+            s->version = next_version(eval);
+        }
+        md_mutex_unlock(&s->lock);
+    }
+    md_mutex_unlock(&eval->frame_lock);
+    md_temp_end(temp);
+
+    if (!s) {
+        MD_LOG_ERROR("Script eval: no room for another slot, all %d are in use", MD_SCRIPT_EVAL_MAX_SLOTS);
+    }
+    return s != NULL;
+}
+
+void md_script_eval_slot_release(md_script_eval_t* eval, uint64_t key, str_t ident) {
+    if (!validate_eval(eval)) return;
+    const int p = find_property(eval, ident);
+    if (p < 0) return;
+    md_mutex_lock(&eval->frame_lock);
+    eval_slot_t* s = find_slot(eval, key, (uint32_t)p);
+    if (s) {
+        md_mutex_lock(&s->lock);
+        slot_let_go(s);
+        md_mutex_unlock(&s->lock);
+    }
+    md_mutex_unlock(&eval->frame_lock);
+}
+
+// Finds the slot and returns it locked, NULL if there is none
+static eval_slot_t* lock_slot(const md_script_eval_t* eval, uint64_t key, str_t ident) {
+    const int p = find_property(eval, ident);
+    if (p < 0) return NULL;
+    md_mutex_t* frame_lock = (md_mutex_t*)&eval->frame_lock;
+    md_mutex_lock(frame_lock);
+    eval_slot_t* s = find_slot(eval, key, (uint32_t)p);
+    if (s) md_mutex_lock(&s->lock);
+    md_mutex_unlock(frame_lock);
+    return s;
+}
+
+// What slot s holds. The caller holds its lock.
+static void slot_info(md_script_eval_slot_info_t* out, const eval_slot_t* s) {
+    out->version    = s->version;
+    out->num_frames = s->count;
+    out->num_values = s->num_values;
+    const uint32_t wanted = (uint32_t)md_bitmask_count(&s->wanted);
+    if (s->sum_values) {
+        // Those it wants and does not hold, and those it holds and does not want
+        md_temp_scope_t temp = md_temp_begin();
+        md_bitmask_t both = md_bitmask_create(0, s->wanted.end, md_temp_allocator(temp));
+        md_bitmask_assign(&both, md_bitmask_view(&s->wanted));
+        md_bitmask_and(&both, md_bitmask_view(&s->included));
+        out->num_pending = wanted + s->count - 2 * (uint32_t)md_bitmask_count(&both);
+        md_temp_end(temp);
+    } else {
+        // It holds only frames it wants
+        out->num_pending = wanted - s->count;
+    }
+}
+
+bool md_script_eval_slot_info(md_script_eval_slot_info_t* out_info, const md_script_eval_t* eval, uint64_t key, str_t ident) {
+    if (!validate_eval(eval) || !out_info) return false;
+    eval_slot_t* s = lock_slot(eval, key, ident);
+    if (!s) return false;
+    slot_info(out_info, s);
+    md_mutex_unlock(&s->lock);
+    return true;
+}
+
+// Means of the sums over count frames; with none, values of 0 and weights of 1, as a published aggregate starts out
+static void write_means(float* out_values, float* out_weights, const double* sum_values, const double* sum_weights, size_t num_values, uint32_t count) {
+    const double scl = count ? 1.0 / (double)count : 0.0;
+    for (size_t i = 0; i < num_values; ++i) {
+        out_values[i] = (float)(sum_values[i] * scl);
+    }
+    if (out_weights && sum_weights) {
+        for (size_t i = 0; i < num_values; ++i) {
+            out_weights[i] = count ? (float)(sum_weights[i] * scl) : 1.0f;
+        }
+    }
+}
+
+bool md_script_eval_slot_extract(md_script_eval_slot_info_t* out_info, float* out_values, float* out_weights, size_t num_values,
+                                 const md_script_eval_t* eval, uint64_t key, str_t ident) {
+    if (!validate_eval(eval)) return false;
+    eval_slot_t* s = lock_slot(eval, key, ident);
+    if (!s) return false;
+
+    md_script_eval_slot_info_t info = {0};
+    slot_info(&info, s);
+    if (out_info) *out_info = info;
+    if (!out_values || num_values < s->num_values) {
+        md_mutex_unlock(&s->lock);
+        return false;
+    }
+    const size_t n = s->num_values;
+
+    if (s->sum_values) {
+        // Added up as frames are evaluated: copied under the lock, which holds back only adding a frame to it
+        write_means(out_values, out_weights, s->sum_values, s->sum_weights, n, s->count);
+        md_mutex_unlock(&s->lock);
+        return true;
+    }
+
+    // Kept per frame: summed outside the lock, over the frames it holds as they were when it was taken. What is kept
+    // of a frame is written before the frame is held, and not written again.
+    md_temp_scope_t temp = md_temp_begin();
+    const md_bitset_t frames = md_bitmask_extract(&s->included, md_temp_allocator(temp));
+    const uint32_t count = s->count;
+    const eval_property_t* prop = &eval->props[s->prop];
+    md_mutex_unlock(&s->lock);
+
+    double* sum_values  = md_temp_alloc_array(temp, double, n);
+    double* sum_weights = md_temp_alloc_array(temp, double, n);
+    MEMSET(sum_values,  0, n * sizeof(double));
+    MEMSET(sum_weights, 0, n * sizeof(double));
+    md_bitset_iter_t it = md_bitset_iter(frames);
+    while (md_bitset_iter_next(&it)) {
+        const float* values  = prop->frame_values  + (size_t)it.idx * n;
+        const float* weights = prop->frame_weights + (size_t)it.idx * n;
+        for (size_t i = 0; i < n; ++i) {
+            sum_values [i] += values [i];
+            sum_weights[i] += weights[i];
+        }
+    }
+    write_means(out_values, out_weights, sum_values, sum_weights, n, count);
+    md_temp_end(temp);
+    return true;
 }
 
 void md_script_eval_reset_interrupt(md_script_eval_t* eval) {
@@ -7673,7 +8023,7 @@ bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* 
         }
     }
 
-    if (md_array_size(eval->sets[0].props) == 0) {
+    if (md_array_size(eval->props) == 0) {
         MD_LOG_INFO("Script eval: No properties present, nothing to evaluate");
         return false;
     }
@@ -7681,20 +8031,20 @@ bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* 
     bool result = eval_properties(eval, sys, run, ir, frames, num_frames_to_eval);
 
     // The buffers were written through md_attributes_data, which deliberately does not bump a
-    // version. This is the producer saying it is done.
-    for (size_t k = 0; k < md_array_size(eval->sets); ++k) {
-        md_attributes_t* attributes = &eval->sets[k].attributes;
-        for (md_attribute_iter_t it = md_attributes_iter(attributes, (str_t){0}); md_attributes_next(&it);) {
-            md_attributes_touch(attributes, it.attr->id);
-        }
+    // version. This is the producer saying it is done. Under the lock, as several threads evaluating at once finish
+    // at once, and the table's counter is not for them to race on.
+    md_mutex_lock(&eval->frame_lock);
+    for (md_attribute_iter_t it = md_attributes_iter(&eval->attributes, (str_t){0}); md_attributes_next(&it);) {
+        md_attributes_touch(&eval->attributes, it.attr->id);
     }
+    md_mutex_unlock(&eval->frame_lock);
 
     return result;
 }
 
 const md_attributes_t* md_script_eval_attributes(const md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        return &eval->sets[0].attributes;
+        return &eval->attributes;
     }
     return NULL;
 }
@@ -7708,10 +8058,12 @@ uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval) {
 
 void md_script_eval_free(md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        for (size_t k = 0; k < md_array_size(eval->sets); ++k) {
-            for (size_t i = 0; i < md_array_size(eval->sets[k].props); ++i) {
-                md_mutex_destroy(&eval->sets[k].props[i].accum_mutex);
-            }
+        for (size_t i = 0; i < md_array_size(eval->props); ++i) {
+            md_mutex_destroy(&eval->props[i].accum_mutex);
+        }
+        for (size_t i = 0; i < MD_SCRIPT_EVAL_MAX_SLOTS; ++i) {
+            slot_let_go(&eval->slots[i]);
+            md_mutex_destroy(&eval->slots[i].lock);
         }
         md_mutex_destroy(&eval->frame_lock);
         md_arena_allocator_destroy(eval->arena);
@@ -7720,7 +8072,7 @@ void md_script_eval_free(md_script_eval_t* eval) {
 
 size_t md_script_eval_property_count(const md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        return md_array_size(eval->sets[0].props);
+        return md_array_size(eval->props);
     }
     return 0;
 }
@@ -7735,10 +8087,10 @@ size_t md_script_eval_frame_count(const md_script_eval_t* eval) {
 md_bitset_t md_script_eval_frame_mask(const md_script_eval_t* eval, md_allocator_i* alloc) {
     if (!validate_eval(eval) || !alloc) return md_bitset_empty_set();
     bool any_temporal = false;
-    for (size_t i = 0; i < md_array_size(eval->sets[0].props); ++i) {
-        any_temporal |= eval->sets[0].props[i].kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
+    for (size_t i = 0; i < md_array_size(eval->props); ++i) {
+        any_temporal |= eval->props[i].kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
     }
-    return frames_held(eval, 0, any_temporal ? MD_SCRIPT_PROPERTY_FLAG_TEMPORAL : all_kinds, -1, false, alloc);
+    return frames_held(eval, any_temporal ? MD_SCRIPT_PROPERTY_FLAG_TEMPORAL : all_kinds, -1, alloc);
 }
 
 void md_script_eval_interrupt(md_script_eval_t* eval) {

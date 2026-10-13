@@ -4549,16 +4549,11 @@ UTEST_F(script, node_index_is_position_in_ir) {
     md_arena_allocator_destroy(alloc);
 }
 
-static const eval_property_t* find_set_property(const md_script_eval_t* eval, size_t set, str_t ident) {
-    const eval_frame_set_t* s = &eval->sets[set];
-    for (size_t i = 0; i < md_array_size(s->props); ++i) {
-        if (str_eq(s->props[i].ident, ident)) return &s->props[i];
+static const eval_property_t* find_eval_property(const md_script_eval_t* eval, str_t ident) {
+    for (size_t i = 0; i < md_array_size(eval->props); ++i) {
+        if (str_eq(eval->props[i].ident, ident)) return &eval->props[i];
     }
     return NULL;
-}
-
-static const eval_property_t* find_eval_property(const md_script_eval_t* eval, str_t ident) {
-    return find_set_property(eval, 0, ident);
 }
 
 // A distribution is shown as values / weights, also with bins merged (sum of values / sum of weights). Over several
@@ -4674,18 +4669,49 @@ static bool dist_same(const eval_property_t* a, const eval_property_t* b) {
     return true;
 }
 
-// A distribution evaluated on its own, over the given frames only
+static bool floats_near(const float* a, const float* b, size_t n, float rel);
+
+// The property evaluated on its own, over the given frames only (every frame for NULL): what it publishes is the
+// aggregate over the frames evaluated
 static md_script_eval_t* eval_over(const md_script_ir_t* ir, md_system_t* sys, uint32_t num_frames, const md_bitset_t* frames, md_allocator_i* alloc) {
-    const md_bitset_t* sets[1] = { frames };
-    const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = 1, .frame_sets = sets };
-    md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
-    if (eval) md_script_eval_frame_range(eval, ir, sys, SCRIPT_RUN, 0, num_frames);
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    if (!eval) return NULL;
+    if (!frames) {
+        md_script_eval_frame_range(eval, ir, sys, SCRIPT_RUN, 0, num_frames);
+        return eval;
+    }
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    const size_t count = md_bitset_count(*frames);
+    uint32_t* indices = md_temp_alloc_array(temp, uint32_t, MAX(count, 1));
+    md_bitset_extract_indices(indices, count, *frames);
+    md_script_eval_frames(eval, ir, sys, SCRIPT_RUN, indices, count);
+    md_temp_end(temp);
     return eval;
 }
 
-// Several evaluations in one: frames evaluated once over their union, temporal values shared, and each set
-// with aggregates of its own frames only
-UTEST_F(script, frame_sets) {
+// What a slot holds, extracted into a property of the same shape, so that it compares like one (dist_same)
+static eval_property_t extract_slot(md_script_eval_slot_info_t* out_info, const md_script_eval_t* eval, uint64_t key, str_t ident, md_allocator_i* alloc) {
+    eval_property_t out = {0};
+    md_script_eval_slot_info_t info = {0};
+    if (!md_script_eval_slot_info(&info, eval, key, ident)) return out;
+    out.count      = (uint32_t)info.num_values;
+    out.num_values = info.num_values;
+    out.values  = md_alloc(alloc, info.num_values * sizeof(float));
+    out.weights = md_alloc(alloc, info.num_values * sizeof(float));
+    if (!md_script_eval_slot_extract(out_info, out.values, out.weights, info.num_values, eval, key, ident)) {
+        out.values = NULL;
+    }
+    return out;
+}
+
+static md_script_eval_slot_info_t slot_info_of(const md_script_eval_t* eval, uint64_t key, str_t ident) {
+    md_script_eval_slot_info_t info = {0};
+    md_script_eval_slot_info(&info, eval, key, ident);
+    return info;
+}
+
+// A distribution kept per frame: a slot over any frames is summed from what is kept, and nothing is evaluated for it
+UTEST_F(script, slots_of_a_distribution_kept_per_frame) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
     md_system_t* mol = &utest_fixture->ala;
     const uint32_t n = (uint32_t)script_frames(mol);
@@ -4696,78 +4722,324 @@ UTEST_F(script, frame_sets) {
         "d = distance(1, 10);"
         "r = rdf(element('C'), element('O'), 6.0);"
     ), mol, NULL));
-
-    md_bitset_t sub = md_bitset_range(2, n - 2);
-    const md_bitset_t* sets[2] = { NULL, &sub };
-    const md_script_eval_desc_t desc = { .num_frames = n, .num_frame_sets = 2, .frame_sets = sets };
-    md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
+    md_script_eval_t* eval = md_script_eval_create(n, ir, alloc);
     ASSERT_TRUE(eval);
-    EXPECT_EQ((size_t)2, md_script_eval_frame_set_count(eval));
+    ASSERT_TRUE(find_eval_property(eval, STR_LIT("r"))->frame_values != NULL);
 
+    // Only aggregates have slots
+    const md_bitset_t sub = md_bitset_range(2, n - 2);
+    ASSERT_TRUE (md_script_eval_slot_request(eval, 1, STR_LIT("r"), &sub));
+    EXPECT_FALSE(md_script_eval_slot_request(eval, 1, STR_LIT("d"), &sub));
+    EXPECT_FALSE(md_script_eval_slot_request(eval, 1, STR_LIT("none"), &sub));
+    EXPECT_FALSE(md_script_eval_slot_info(&(md_script_eval_slot_info_t){0}, eval, 2, STR_LIT("r")));
+
+    // Asked for before anything is evaluated, it holds nothing and waits for its frames
+    md_script_eval_slot_info_t info = slot_info_of(eval, 1, STR_LIT("r"));
+    EXPECT_NE((uint64_t)0, info.version);
+    EXPECT_EQ(0u, info.num_frames);
+    EXPECT_EQ(n - 4, info.num_pending);
     EXPECT_EQ((size_t)n, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
 
-    // Each frame once, though most are in both sets
+    // Each frame evaluated once, for the published aggregate and the slot at once
     test_hook_proc_eval.proc_ptr = _rdf_flt;
     test_hook_proc_eval.count = 0;
     ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
     EXPECT_EQ((size_t)n, test_hook_proc_eval.count);
     EXPECT_EQ((size_t)0, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
-    EXPECT_EQ((size_t)n, md_bitset_count(md_script_eval_frame_mask(eval, alloc)));
-    EXPECT_EQ((size_t)n, md_bitset_count(md_script_eval_frame_set_completed(eval, 0, alloc)));
-    EXPECT_TRUE(bits_equal(sub, md_script_eval_frame_set_completed(eval, 1, alloc)));
 
-    // Evaluating again does nothing
-    test_hook_proc_eval.count = 0;
-    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
-    EXPECT_EQ((size_t)0, test_hook_proc_eval.count);
+    eval_property_t held = extract_slot(&info, eval, 1, STR_LIT("r"), alloc);
+    ASSERT_TRUE(held.values != NULL);
+    EXPECT_EQ(n - 4, info.num_frames);
+    EXPECT_EQ(0u, info.num_pending);
 
-    // Temporal values are published once, in set 0; aggregates in each set's own table
-    const md_attributes_t* t0 = md_script_eval_frame_set_attributes(eval, 0);
-    const md_attributes_t* t1 = md_script_eval_frame_set_attributes(eval, 1);
-    EXPECT_TRUE(t0 == md_script_eval_attributes(eval));
-    EXPECT_TRUE(md_attributes_find(t0, STR_LIT("script/d")));
-    EXPECT_TRUE(md_attributes_find(t0, STR_LIT("script/r")));
-    EXPECT_FALSE(md_attributes_find(t1, STR_LIT("script/d")));
-    EXPECT_TRUE(md_attributes_find(t1, STR_LIT("script/r")));
-
-    // Each set's distribution is the one over its frames alone
+    // The distribution over its frames alone, not over all of them
     md_script_eval_t* all  = eval_over(ir, mol, n, NULL, alloc);
     md_script_eval_t* part = eval_over(ir, mol, n, &sub, alloc);
     ASSERT_TRUE(all && part);
-    EXPECT_TRUE(bits_equal(sub, md_script_eval_frame_mask(part, alloc)));   // the union only
-    EXPECT_TRUE(dist_same(find_set_property(eval, 0, STR_LIT("r")), find_eval_property(all,  STR_LIT("r"))));
-    EXPECT_TRUE(dist_same(find_set_property(eval, 1, STR_LIT("r")), find_eval_property(part, STR_LIT("r"))));
-    EXPECT_FALSE(dist_same(find_eval_property(all, STR_LIT("r")), find_eval_property(part, STR_LIT("r"))));
+    EXPECT_TRUE (dist_same(&held, find_eval_property(part, STR_LIT("r"))));
+    EXPECT_FALSE(dist_same(&held, find_eval_property(all,  STR_LIT("r"))));
+    // and the published one is over every frame, as before
+    EXPECT_TRUE (dist_same(find_eval_property(eval, STR_LIT("r")), find_eval_property(all, STR_LIT("r"))));
 
-    // Moved: only the frames the set has not added are evaluated, and it starts over
-    md_bitset_t moved = md_bitset_range(0, 3);
-    ASSERT_TRUE(md_script_eval_set_frame_set(eval, 1, &moved));
-    EXPECT_EQ((size_t)0, md_bitset_count(md_script_eval_frame_set_completed(eval, 1, alloc)));
-    md_bitset_t pending = md_script_eval_pending_frames(eval, alloc);
-    EXPECT_EQ((size_t)3, md_bitset_count(pending));
-    EXPECT_TRUE(bits_equal(moved, pending));
+    // Moved: nothing is evaluated, it holds its new frames at once, under a new version
+    const uint64_t before = info.version;
+    const md_bitset_t moved = md_bitset_range(0, 3);
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 1, STR_LIT("r"), &moved));
+    EXPECT_EQ((size_t)0, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
+    held = extract_slot(&info, eval, 1, STR_LIT("r"), alloc);
+    EXPECT_EQ(3u, info.num_frames);
+    EXPECT_EQ(0u, info.num_pending);
+    EXPECT_NE(before, info.version);
+    md_script_eval_t* moved_alone = eval_over(ir, mol, n, &moved, alloc);
+    EXPECT_TRUE(dist_same(&held, find_eval_property(moved_alone, STR_LIT("r"))));
 
-    // Interrupted, nothing is added, and nothing is lost
-    md_script_eval_interrupt(eval);
-    md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n);
-    EXPECT_EQ((size_t)3, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
-    md_script_eval_reset_interrupt(eval);
+    // Asked for the same frames again, nothing changes
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 1, STR_LIT("r"), &moved));
+    EXPECT_EQ(info.version, slot_info_of(eval, 1, STR_LIT("r")).version);
 
-    test_hook_proc_eval.count = 0;
-    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
-    EXPECT_EQ((size_t)3, test_hook_proc_eval.count);
+    // Another key is another slot, and one let go is gone
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 2, STR_LIT("r"), &sub));
+    EXPECT_EQ(n - 4, slot_info_of(eval, 2, STR_LIT("r")).num_frames);
+    md_script_eval_slot_release(eval, 2, STR_LIT("r"));
+    EXPECT_FALSE(md_script_eval_slot_info(&info, eval, 2, STR_LIT("r")));
+    EXPECT_EQ(3u, slot_info_of(eval, 1, STR_LIT("r")).num_frames);
+
     test_hook_proc_eval.proc_ptr = NULL;
     test_hook_proc_eval.count = 0;
-
-    md_script_eval_t* moved_alone = eval_over(ir, mol, n, &moved, alloc);
-    EXPECT_TRUE(dist_same(find_set_property(eval, 1, STR_LIT("r")), find_eval_property(moved_alone, STR_LIT("r"))));
-    // Set 0 untouched
-    EXPECT_TRUE(dist_same(find_set_property(eval, 0, STR_LIT("r")), find_eval_property(all, STR_LIT("r"))));
-
     md_script_eval_free(moved_alone);
     md_script_eval_free(part);
     md_script_eval_free(all);
     md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A distribution not kept per frame is added up as frames are evaluated: a slot moved evaluates the frames it no
+// longer wants and those it now wants, nothing else, and holds exactly what it would over its frames alone
+UTEST_F(script, slots_added_up_as_frames_are_evaluated) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t n = (uint32_t)script_frames(mol);
+    ASSERT_GT(n, 6u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("r = rdf(element('C'), element('O'), 6.0);"), mol, NULL));
+    const md_script_eval_desc_t desc = { .num_frames = n, .frame_budget = 1 };
+    md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
+    ASSERT_TRUE(eval);
+    ASSERT_TRUE(find_eval_property(eval, STR_LIT("r"))->frame_values == NULL);
+
+    const md_bitset_t sub = md_bitset_range(2, n - 2);
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 1, STR_LIT("r"), &sub));
+
+    test_hook_proc_eval.proc_ptr = _rdf_flt;
+    test_hook_proc_eval.count = 0;
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
+    EXPECT_EQ((size_t)n, test_hook_proc_eval.count);
+
+    md_script_eval_slot_info_t info = {0};
+    eval_property_t held = extract_slot(&info, eval, 1, STR_LIT("r"), alloc);
+    EXPECT_EQ(n - 4, info.num_frames);
+    EXPECT_EQ(0u, info.num_pending);
+    md_script_eval_t* part = eval_over(ir, mol, n, &sub, alloc);
+    EXPECT_TRUE(dist_same(&held, find_eval_property(part, STR_LIT("r"))));
+
+    // Moved: what remains is the frames to take out and those to add
+    const md_bitset_t moved = md_bitset_range(0, 3);
+    const md_bitset_t moving = md_bitset_xor(sub, moved, alloc);
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 1, STR_LIT("r"), &moved));
+    EXPECT_TRUE(bits_equal(moving, md_script_eval_pending_frames(eval, alloc)));
+    info = slot_info_of(eval, 1, STR_LIT("r"));
+    EXPECT_EQ(n - 4, info.num_frames);  // until they are evaluated, it holds what it held
+    EXPECT_EQ((uint32_t)md_bitset_count(moving), info.num_pending);
+
+    test_hook_proc_eval.count = 0;
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
+    EXPECT_EQ((size_t)md_bitset_count(moving), test_hook_proc_eval.count);
+    held = extract_slot(&info, eval, 1, STR_LIT("r"), alloc);
+    EXPECT_EQ(3u, info.num_frames);
+    EXPECT_EQ(0u, info.num_pending);
+    md_script_eval_t* moved_alone = eval_over(ir, mol, n, &moved, alloc);
+    EXPECT_TRUE(dist_same(&held, find_eval_property(moved_alone, STR_LIT("r"))));
+
+    // Asked for nothing, it holds nothing: values of zero and weights of one, exactly
+    const md_bitset_t none = md_bitset_empty_set();
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 1, STR_LIT("r"), &none));
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n));
+    held = extract_slot(&info, eval, 1, STR_LIT("r"), alloc);
+    EXPECT_EQ(0u, info.num_frames);
+    bool empty = held.values != NULL;
+    for (size_t i = 0; i < held.num_values && empty; ++i) {
+        empty = held.values[i] == 0.0f && held.weights[i] == 1.0f;
+    }
+    EXPECT_TRUE(empty);
+
+    // Interrupted, nothing is lost: what remains stays to be done
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 1, STR_LIT("r"), &sub));
+    md_script_eval_interrupt(eval);
+    md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, n);
+    EXPECT_EQ(n - 4, slot_info_of(eval, 1, STR_LIT("r")).num_pending);
+    md_script_eval_reset_interrupt(eval);
+
+    test_hook_proc_eval.proc_ptr = NULL;
+    test_hook_proc_eval.count = 0;
+    md_script_eval_free(moved_alone);
+    md_script_eval_free(part);
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST_F(script, slots_of_a_volume) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(64));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t n = (uint32_t)script_frames(mol);
+    ASSERT_GT(n, 6u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("v = sdf(residue(1), element('H'), 5.0);"), mol, NULL));
+    md_script_eval_t* eval = md_script_eval_create(n, ir, alloc);
+    ASSERT_TRUE(eval);
+
+    const md_bitset_t a = md_bitset_range(0, 4);
+    const md_bitset_t b = md_bitset_range(2, 6);
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 7, STR_LIT("v"), &a));
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, 6));
+
+    const size_t num_voxels = find_eval_property(eval, STR_LIT("v"))->num_values;
+    float* values = md_alloc(alloc, num_voxels * sizeof(float));
+    md_script_eval_slot_info_t info = {0};
+    EXPECT_FALSE(md_script_eval_slot_extract(&info, values, NULL, num_voxels - 1, eval, 7, STR_LIT("v")));
+    EXPECT_EQ(num_voxels, info.num_values);
+    ASSERT_TRUE(md_script_eval_slot_extract(&info, values, NULL, num_voxels, eval, 7, STR_LIT("v")));
+    EXPECT_EQ(4u, info.num_frames);
+    EXPECT_EQ(0u, info.num_pending);
+    md_script_eval_t* over_a = eval_over(ir, mol, n, &a, alloc);
+    EXPECT_TRUE(floats_near(values, find_eval_property(over_a, STR_LIT("v"))->values, num_voxels, 1e-4f));
+    md_script_eval_free(over_a);
+
+    // Moved: two frames out, two in
+    ASSERT_TRUE(md_script_eval_slot_request(eval, 7, STR_LIT("v"), &b));
+    EXPECT_EQ(4u, slot_info_of(eval, 7, STR_LIT("v")).num_pending);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, 6));
+    ASSERT_TRUE(md_script_eval_slot_extract(&info, values, NULL, num_voxels, eval, 7, STR_LIT("v")));
+    EXPECT_EQ(4u, info.num_frames);
+    EXPECT_EQ(0u, info.num_pending);
+    md_script_eval_t* over_b = eval_over(ir, mol, n, &b, alloc);
+    EXPECT_TRUE(floats_near(values, find_eval_property(over_b, STR_LIT("v"))->values, num_voxels, 1e-4f));
+    md_script_eval_free(over_b);
+
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Recompiled, the slots of what did not change keep what they hold; those of what changed are kept as asked for
+UTEST_F(script, slots_carry_over_to_the_next_evaluation) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t n = (uint32_t)script_frames(mol);
+    ASSERT_GT(n, 6u);
+    const md_bitset_t sub = md_bitset_range(2, n - 2);
+
+    for (int kept = 0; kept < 2; ++kept) {
+        const md_script_eval_desc_t desc = { .num_frames = n, .frame_budget = kept ? 0 : 1 };
+        md_script_ir_t* ir1 = md_script_ir_create(alloc);
+        ASSERT_TRUE(md_script_ir_compile_from_source(ir1, STR_LIT(
+            "r = rdf(element('C'), element('O'), 6.0);"
+            "s = rdf(element('N'), element('O'), 6.0);"), mol, NULL));
+        md_script_eval_t* eval1 = md_script_eval_create_desc(ir1, &desc, alloc);
+        ASSERT_TRUE(md_script_eval_slot_request(eval1, 1, STR_LIT("r"), &sub));
+        ASSERT_TRUE(md_script_eval_slot_request(eval1, 1, STR_LIT("s"), &sub));
+        ASSERT_TRUE(md_script_eval_frame_range(eval1, ir1, mol, SCRIPT_RUN, 0, n));
+        const uint64_t version = slot_info_of(eval1, 1, STR_LIT("r")).version;
+
+        // r renamed, s computed from something else
+        md_script_ir_t* ir2 = md_script_ir_create(alloc);
+        ASSERT_TRUE(md_script_ir_compile_from_source(ir2, STR_LIT(
+            "g = rdf(element('C'), element('O'), 6.0);"
+            "s = rdf(element('N'), element('O'), 5.0);"), mol, NULL));
+        md_script_eval_t* eval2 = md_script_eval_create_from(eval1, ir2, &desc, alloc);
+        ASSERT_TRUE(eval2);
+
+        md_script_eval_slot_info_t g = {0}, s = {0};
+        ASSERT_TRUE(md_script_eval_slot_info(&g, eval2, 1, STR_LIT("g")));
+        ASSERT_TRUE(md_script_eval_slot_info(&s, eval2, 1, STR_LIT("s")));
+        EXPECT_EQ(n - 4, g.num_frames);
+        EXPECT_EQ(0u, g.num_pending);
+        EXPECT_GT(g.version, version);
+        EXPECT_EQ(0u, s.num_frames);
+        EXPECT_EQ(n - 4, s.num_pending);
+
+        // What g holds is what r held
+        eval_property_t r_held = extract_slot(NULL, eval1, 1, STR_LIT("r"), alloc);
+        eval_property_t g_held = extract_slot(NULL, eval2, 1, STR_LIT("g"), alloc);
+        EXPECT_TRUE(dist_same(&g_held, &r_held));
+
+        md_script_eval_free(eval2);
+        md_script_eval_free(eval1);
+        md_script_ir_free(ir2);
+        md_script_ir_free(ir1);
+    }
+    md_arena_allocator_destroy(alloc);
+}
+
+typedef struct eval_job_t {
+    md_script_eval_t* eval;
+    const md_script_ir_t* ir;
+    md_system_t* sys;
+    uint32_t num_frames;
+    volatile uint64_t done;
+} eval_job_t;
+
+static void eval_job_run(void* data) {
+    eval_job_t* job = (eval_job_t*)data;
+    md_script_eval_frame_range(job->eval, job->ir, job->sys, SCRIPT_RUN, 0, job->num_frames);
+    md_atomic_fetch_add64(&job->done, 1);
+}
+
+// Read while another thread evaluates: whatever it holds when it is read, it is exactly the aggregate over the frames
+// it holds. Evaluated in order by one thread, those are the first of its frames.
+UTEST_F(script, slots_read_while_evaluating) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t n = (uint32_t)script_frames(mol);
+    ASSERT_GT(n, 6u);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("r = rdf(element('C'), element('O'), 6.0);"), mol, NULL));
+
+    for (int kept = 0; kept < 2; ++kept) {
+        // What each frame holds on its own
+        md_script_eval_t* ref = md_script_eval_create(n, ir, alloc);
+        ASSERT_TRUE(md_script_eval_frame_range(ref, ir, mol, SCRIPT_RUN, 0, n));
+        const eval_property_t* per_frame = find_eval_property(ref, STR_LIT("r"));
+        ASSERT_TRUE(per_frame->frame_values != NULL);
+        const size_t bins = per_frame->num_values;
+
+        const md_script_eval_desc_t desc = { .num_frames = n, .frame_budget = kept ? 0 : 1 };
+        md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
+        const md_bitset_t all = md_bitset_range(0, n);
+        ASSERT_TRUE(md_script_eval_slot_request(eval, 1, STR_LIT("r"), &all));
+
+        eval_job_t job = { .eval = eval, .ir = ir, .sys = mol, .num_frames = n };
+        md_thread_t* thread = md_thread_create(eval_job_run, &job);
+        ASSERT_TRUE(thread != NULL);
+
+        float* values  = md_alloc(alloc, bins * sizeof(float));
+        float* weights = md_alloc(alloc, bins * sizeof(float));
+        double* expect = md_alloc(alloc, bins * sizeof(double));
+        uint32_t reads = 0, mismatches = 0, last = 0;
+        bool backwards = false;
+        for (;;) {
+            const bool finished = md_atomic_load64(&job.done) != 0;
+            md_script_eval_slot_info_t info = {0};
+            if (!md_script_eval_slot_extract(&info, values, weights, bins, eval, 1, STR_LIT("r"))) break;
+            reads += 1;
+            backwards |= info.num_frames < last;
+            last = info.num_frames;
+            if (info.num_frames > 0) {
+                // The first num_frames frames, values over weights summed bin by bin
+                for (size_t i = 0; i < bins; ++i) expect[i] = 0;
+                for (uint32_t f = 0; f < info.num_frames; ++f) {
+                    for (size_t i = 0; i < bins; ++i) expect[i] += per_frame->frame_values[f * bins + i];
+                }
+                for (size_t i = 0; i < bins; ++i) {
+                    const double e = expect[i] / info.num_frames;
+                    if (fabs(values[i] - e) > 1e-4 * MAX(1.0, fabs(e))) { mismatches += 1; break; }
+                }
+            }
+            if (finished) break;
+        }
+        md_thread_join(thread);
+        EXPECT_GT(reads, 0u);
+        EXPECT_FALSE(backwards);
+        EXPECT_EQ(0u, mismatches);
+        EXPECT_EQ(n, slot_info_of(eval, 1, STR_LIT("r")).num_frames);
+
+        md_script_eval_free(eval);
+        md_script_eval_free(ref);
+    }
     md_script_ir_free(ir);
     md_arena_allocator_destroy(alloc);
 }
@@ -4896,64 +5168,6 @@ UTEST_F(script, distribution_ops_and_arrays) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // Review fixes
-
-// Replacing the frames of set 0 forgets its aggregates, not the temporal values it keeps for every set: they stay,
-// and so does frame_mask, which says they are evaluated
-UTEST_F(script, frame_set_replace_keeps_temporal_values) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
-    md_system_t* mol = &utest_fixture->ala;
-    const uint32_t num_frames = (uint32_t)script_frames(mol);
-    ASSERT_GE(num_frames, 4u);
-
-    md_script_ir_t* ir = md_script_ir_create(alloc);
-    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("d = distance(1, 2); g = rdf(element('C'), element('O'), 6.0);"), mol, NULL));
-    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
-    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
-
-    const eval_property_t* d = find_eval_property(eval, STR_LIT("d"));
-    ASSERT_TRUE(d != NULL);
-    const uint32_t last = num_frames - 1;
-    const float before = d->values[last];
-    EXPECT_TRUE(before == before);
-
-    const md_bitset_t frames = md_bitset_range(0, 2);
-    ASSERT_TRUE(md_script_eval_set_frame_set(eval, 0, &frames));
-    EXPECT_EQ(before, d->values[last]);
-    EXPECT_TRUE(md_bitset_test(md_script_eval_frame_mask(eval, alloc), last));
-    // Its distribution starts over: those two frames are what remains to be evaluated
-    EXPECT_EQ((size_t)2, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
-
-    md_script_eval_free(eval);
-    md_script_ir_free(ir);
-    md_arena_allocator_destroy(alloc);
-}
-
-// Without distributions or volumes a set has nothing to add of its own: a frame whose temporal values are
-// evaluated is done for every set, and is not evaluated again
-UTEST_F(script, frame_set_without_aggregates_is_not_reevaluated) {
-    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
-    md_system_t* mol = &utest_fixture->ala;
-    const uint32_t num_frames = (uint32_t)script_frames(mol);
-    ASSERT_GE(num_frames, 4u);
-
-    md_script_ir_t* ir = md_script_ir_create(alloc);
-    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("d = distance(1, 2);"), mol, NULL));
-    const md_bitset_t none = md_bitset_empty_set();
-    const md_bitset_t* sets[2] = { NULL, &none };
-    const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = 2, .frame_sets = sets };
-    md_script_eval_t* eval = md_script_eval_create_desc(ir, &desc, alloc);
-    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
-
-    const md_bitset_t frames = md_bitset_range(1, 3);
-    ASSERT_TRUE(md_script_eval_set_frame_set(eval, 1, &frames));
-    EXPECT_EQ((size_t)0, md_bitset_count(md_script_eval_pending_frames(eval, alloc)));
-    // Its completed frames, the mask its temporal values are taken over, are there at once
-    EXPECT_EQ((size_t)2, md_bitset_count(md_script_eval_frame_set_completed(eval, 1, alloc)));
-
-    md_script_eval_free(eval);
-    md_script_ir_free(ir);
-    md_arena_allocator_destroy(alloc);
-}
 
 // An element past the end of what a reference refers to resolves to nothing, and an empty selection has no closest
 // pair to draw: neither may reach the procedures, which index unchecked
@@ -5482,9 +5696,9 @@ UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
     const eval_property_t* a  = find_eval_property(eval2, STR_LIT("a"));
     ASSERT_TRUE(dist && gr && a);
 
-    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, 0, STR_LIT("dist"), alloc)));
-    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, 0, STR_LIT("gr"), alloc)));
-    EXPECT_EQ((uint64_t)0,          md_bitset_count(md_script_eval_property_frames(eval2, 0, STR_LIT("a"), alloc)));
+    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, STR_LIT("dist"), alloc)));
+    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, STR_LIT("gr"), alloc)));
+    EXPECT_EQ((uint64_t)0,          md_bitset_count(md_script_eval_property_frames(eval2, STR_LIT("a"), alloc)));
     EXPECT_TRUE(floats_near(dist->values, d1->values, num_frames, 0.0f));
     EXPECT_TRUE(floats_near(gr->values, g1->values, gr->num_values, 0.0f));
     EXPECT_EQ(g1->accum_count, gr->accum_count);
@@ -5517,7 +5731,7 @@ UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
     ASSERT_TRUE(md_script_ir_compile_from_source(ir3, STR_LIT("dist = distance(1, 3);"), mol, NULL));
     md_script_eval_t* eval3 = md_script_eval_create_from(eval2, ir3, &desc, alloc);
     ASSERT_TRUE(eval3);
-    EXPECT_EQ((uint64_t)0, md_bitset_count(md_script_eval_property_frames(eval3, 0, STR_LIT("dist"), alloc)));
+    EXPECT_EQ((uint64_t)0, md_bitset_count(md_script_eval_property_frames(eval3, STR_LIT("dist"), alloc)));
 
     // Over another number of frames, another run: nothing is taken over, yet the versions still carry on
     for (md_attribute_iter_t it = md_attributes_iter(md_script_eval_attributes(eval2), (str_t){0}); md_attributes_next(&it);) {
@@ -5526,7 +5740,7 @@ UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
     const md_script_eval_desc_t fewer = { .num_frames = num_frames - 1 };
     md_script_eval_t* eval4 = md_script_eval_create_from(eval2, ir2, &fewer, alloc);
     ASSERT_TRUE(eval4);
-    EXPECT_EQ((uint64_t)0, md_bitset_count(md_script_eval_property_frames(eval4, 0, STR_LIT("dist"), alloc)));
+    EXPECT_EQ((uint64_t)0, md_bitset_count(md_script_eval_property_frames(eval4, STR_LIT("dist"), alloc)));
     EXPECT_EQ((uint64_t)(num_frames - 1), md_bitset_count(md_script_eval_pending_frames(eval4, alloc)));
     for (md_attribute_iter_t it = md_attributes_iter(md_script_eval_attributes(eval4), (str_t){0}); md_attributes_next(&it);) {
         EXPECT_GT(it.attr->version, max_version);
@@ -5566,7 +5780,7 @@ UTEST_F(script, eval_evaluates_only_what_is_needed) {
     eval_property_t* t = (eval_property_t*)find_eval_property(eval2, STR_LIT("t"));
     const eval_property_t* u = find_eval_property(eval2, STR_LIT("u"));
     ASSERT_TRUE(s && t && u);
-    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, 0, STR_LIT("t"), alloc)));
+    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, STR_LIT("t"), alloc)));
 
     const float planted = 12345.0f;
     s->values[1] = planted;
