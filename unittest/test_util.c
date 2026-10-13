@@ -2557,7 +2557,7 @@ UTEST(util, state_backbone) {
     md_backbone_angles_t*     ref_angle = md_alloc(alloc, n * sizeof(md_backbone_angles_t));
     md_secondary_structure_t* ref_ss    = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
     md_util_backbone_angles_compute(ref_angle, n, st.xyz, &st.unitcell, &sys.protein_backbone);
-    md_util_backbone_secondary_structure_infer(ref_ss, n, st.xyz, &st.unitcell, &sys.protein_backbone);
+    md_dssp_compute(ref_ss, n, st.xyz, &st.unitcell, &sys.protein_backbone);
     size_t structured = 0;
     for (size_t i = 0; i < n; ++i) {
         EXPECT_EQ(angle[i].phi, ref_angle[i].phi);

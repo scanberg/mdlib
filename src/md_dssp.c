@@ -922,7 +922,7 @@ static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capa
     md_temp_end(temp);
 }
 
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+bool md_dssp_compute(md_secondary_structure_t secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
 
     if (!backbone) return false;
     if (capacity < backbone->segment.count) {

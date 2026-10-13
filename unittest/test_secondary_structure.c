@@ -254,7 +254,7 @@ UTEST(secondary_structure, martini_cg_dssp) {
     ASSERT_EQ((size_t)76, sys.protein_backbone.segment.count);
 
     md_secondary_structure_t ss[76];
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(ss, 76, state.xyz, &state.unitcell, &sys.protein_backbone));
+    ASSERT_TRUE(md_dssp_compute(ss, 76, state.xyz, &state.unitcell, &sys.protein_backbone));
 
     char three[77] = {0};
     size_t agree = 0;
@@ -284,7 +284,7 @@ UTEST(secondary_structure, martini_cg_dssp_periodic) {
 
     md_secondary_structure_t whole[76];
     const md_unitcell_t no_cell = {0};
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(whole, n, state.xyz, &no_cell, &sys.protein_backbone));
+    ASSERT_TRUE(md_dssp_compute(whole, n, state.xyz, &no_cell, &sys.protein_backbone));
 
     // Centered on a corner of a 60 A box, and wrapped into it: every axis cuts the protein in two
     vec3_t com = {0};
@@ -295,7 +295,7 @@ UTEST(secondary_structure, martini_cg_dssp_periodic) {
     ASSERT_TRUE(md_util_pbc(state.xyz, NULL, state.num_atoms, &cell));
 
     md_secondary_structure_t split[76];
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(split, n, state.xyz, &cell, &sys.protein_backbone));
+    ASSERT_TRUE(md_dssp_compute(split, n, state.xyz, &cell, &sys.protein_backbone));
     for (size_t i = 0; i < n; ++i) {
         EXPECT_EQ(whole[i], split[i]);
     }
@@ -318,7 +318,7 @@ UTEST(secondary_structure, atomistic_dssp_unchanged) {
     EXPECT_FALSE(md_protein_backbone_range_is_trace(&sys.protein_backbone, 0));
 
     md_secondary_structure_t* ss = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(ss, n, state.xyz, &state.unitcell, &sys.protein_backbone));
+    ASSERT_TRUE(md_dssp_compute(ss, n, state.xyz, &state.unitcell, &sys.protein_backbone));
     for (size_t i = 0; i < n; ++i) {
         EXPECT_EQ(expected[i], ss_letters[ss[i]]);
     }
@@ -340,7 +340,7 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
     md_secondary_structure_t* whole = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
     md_secondary_structure_t* split = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
     const md_unitcell_t no_cell = {0};
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(whole, n, state.xyz, &no_cell, &sys.protein_backbone));
+    ASSERT_TRUE(md_dssp_compute(whole, n, state.xyz, &no_cell, &sys.protein_backbone));
 
     // Centered on a corner of a cell wider than the protein and the reach of the bonds: every axis cuts it in two
     vec3_t com = {0};
@@ -350,7 +350,7 @@ UTEST(secondary_structure, atomistic_dssp_periodic) {
     const md_unitcell_t cell = md_unitcell_from_extent(120.0, 120.0, 120.0);
     ASSERT_TRUE(md_util_pbc(state.xyz, NULL, state.num_atoms, &cell));
 
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(split, n, state.xyz, &cell, &sys.protein_backbone));
+    ASSERT_TRUE(md_dssp_compute(split, n, state.xyz, &cell, &sys.protein_backbone));
     size_t differ = 0;
     for (size_t i = 0; i < n; ++i) differ += whole[i] != split[i];
     EXPECT_EQ((size_t)0, differ);
@@ -378,8 +378,8 @@ UTEST(secondary_structure, mixed_trace_and_atomistic) {
     md_unitcell_t no_cell = {0};
 
     md_secondary_structure_t* ref = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(ref, n_cg, cg_state.xyz, &no_cell, cg_bb));
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(ref + n_cg, n_aa, aa_state.xyz, &no_cell, aa_bb));
+    ASSERT_TRUE(md_dssp_compute(ref, n_cg, cg_state.xyz, &no_cell, cg_bb));
+    ASSERT_TRUE(md_dssp_compute(ref + n_cg, n_aa, aa_state.xyz, &no_cell, aa_bb));
 
     // The beads first, then the atoms, both centered on the origin
     const size_t num_atoms = cg_state.num_atoms + aa_state.num_atoms;
@@ -418,7 +418,7 @@ UTEST(secondary_structure, mixed_trace_and_atomistic) {
     EXPECT_FALSE(md_protein_backbone_range_is_trace(&mixed, num_ranges - 1));
 
     md_secondary_structure_t* ss = md_alloc(alloc, n * sizeof(md_secondary_structure_t));
-    ASSERT_TRUE(md_util_backbone_secondary_structure_infer(ss, n, xyz, &no_cell, &mixed));
+    ASSERT_TRUE(md_dssp_compute(ss, n, xyz, &no_cell, &mixed));
     size_t differ = 0;
     for (size_t i = 0; i < n; ++i) differ += ss[i] != ref[i];
     EXPECT_EQ((size_t)0, differ);

@@ -83,7 +83,7 @@ typedef struct md_entity_data_t {
 // The backbones hold only what is static with regard to the topology: which atoms of which components form them, in
 // consecutive ranges along a chain. What depends on a frame (the backbone angles, the secondary structure) or serves a
 // single consumer (the ramachandran classification) is computed from them by whoever needs it, into arrays of its own
-// with one entry per segment (md_util_backbone_angles_compute, md_util_backbone_secondary_structure_infer,
+// with one entry per segment (md_util_backbone_angles_compute, md_dssp_compute,
 // md_util_backbone_ramachandran_classify).
 //
 // A protein range is ATOMISTIC, each segment the N, CA, C and O of its residue (and HN, CB where they are), or a TRACE:

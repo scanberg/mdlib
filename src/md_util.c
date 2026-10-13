@@ -1618,7 +1618,7 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const md_system_t*
     md_secondary_structure_t* ss    = md_util_state_secondary_structure_write(state, sys);
     if (!angle || !ss) return false;
     const bool ok_angle = md_util_backbone_angles_compute(angle, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
-    const bool ok_ss    = md_util_backbone_secondary_structure_infer(ss, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
+    const bool ok_ss    = md_dssp_compute(ss, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
     return ok_angle && ok_ss;
 }
 

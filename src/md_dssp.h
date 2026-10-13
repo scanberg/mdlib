@@ -21,7 +21,7 @@ extern "C" {
 // BB beads (the center of N, CA, C and O), and to tell helix, sheet and coil apart rather than every class of DSSP.
 // Bonds and bends are taken between nearest periodic images (cell), so a protein split by the boundary gets what it has whole.
 // Computed into the caller's array of one entry per segment of the backbone (capacity at least backbone->segment.count).
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const vec3_t* xyz, const struct md_unitcell_t* cell, const struct md_protein_backbone_data_t* backbone);
+bool md_dssp_compute(md_secondary_structure_t secondary_structures[], size_t capacity, const vec3_t* xyz, const struct md_unitcell_t* cell, const struct md_protein_backbone_data_t* backbone);
 
 #ifdef __cplusplus
 }
