@@ -5444,3 +5444,132 @@ UTEST(script, pucker_canonical) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Taking over from a previous evaluation (md_script_eval_create_from)
+
+// What is computed from the same thing as before is taken over, values and frames, and not evaluated again; what is
+// new, or computed from something else now, starts over. The versions published carry on from the previous ones.
+UTEST_F(script, eval_create_from_keeps_what_did_not_change) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
+    ASSERT_GE(num_frames, 4u);
+    const md_script_eval_desc_t desc = { .num_frames = num_frames };
+
+    md_script_ir_t* ir1 = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir1, STR_LIT("d = distance(1, 2);\ng = rdf(element('C'), element('O'), 6.0);"), mol, NULL));
+    md_script_eval_t* eval1 = md_script_eval_create_desc(ir1, &desc, alloc);
+    ASSERT_TRUE(eval1);
+    ASSERT_TRUE(md_script_eval_frame_range(eval1, ir1, mol, SCRIPT_RUN, 0, num_frames));
+    const eval_property_t* d1 = find_eval_property(eval1, STR_LIT("d"));
+    const eval_property_t* g1 = find_eval_property(eval1, STR_LIT("g"));
+    ASSERT_TRUE(d1 && g1);
+
+    uint64_t max_version = 0;
+    for (md_attribute_iter_t it = md_attributes_iter(md_script_eval_attributes(eval1), (str_t){0}); md_attributes_next(&it);) {
+        max_version = MAX(max_version, it.attr->version);
+    }
+
+    // d and g as they were, under other names and after a line of its own; a is new
+    md_script_ir_t* ir2 = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir2, STR_LIT("a = angle(1, 2, 3);\ndist = distance(1, 2);\ngr = rdf(element('C'), element('O'), 6.0);"), mol, NULL));
+    md_script_eval_t* eval2 = md_script_eval_create_from(eval1, ir2, &desc, alloc);
+    ASSERT_TRUE(eval2);
+
+    eval_property_t* dist = (eval_property_t*)find_eval_property(eval2, STR_LIT("dist"));
+    const eval_property_t* gr = find_eval_property(eval2, STR_LIT("gr"));
+    const eval_property_t* a  = find_eval_property(eval2, STR_LIT("a"));
+    ASSERT_TRUE(dist && gr && a);
+
+    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, 0, STR_LIT("dist"), alloc)));
+    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, 0, STR_LIT("gr"), alloc)));
+    EXPECT_EQ((uint64_t)0,          md_bitset_count(md_script_eval_property_frames(eval2, 0, STR_LIT("a"), alloc)));
+    EXPECT_TRUE(floats_near(dist->values, d1->values, num_frames, 0.0f));
+    EXPECT_TRUE(floats_near(gr->values, g1->values, gr->num_values, 0.0f));
+    EXPECT_EQ(g1->accum_count, gr->accum_count);
+
+    // Every frame remains to be evaluated, for a alone
+    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_pending_frames(eval2, alloc)));
+
+    // Nothing published now has a version of before
+    for (md_attribute_iter_t it = md_attributes_iter(md_script_eval_attributes(eval2), (str_t){0}); md_attributes_next(&it);) {
+        EXPECT_GT(it.attr->version, max_version);
+    }
+
+    // Evaluating does not touch what was taken over: a value planted in it stays
+    const float planted = 12345.0f;
+    dist->values[0] = planted;
+    ASSERT_TRUE(md_script_eval_frame_range(eval2, ir2, mol, SCRIPT_RUN, 0, num_frames));
+    EXPECT_EQ(planted, dist->values[0]);
+    EXPECT_EQ(g1->accum_count, gr->accum_count);
+    EXPECT_EQ((uint64_t)0, md_bitset_count(md_script_eval_pending_frames(eval2, alloc)));
+
+    // and what is new comes out as it would from scratch
+    md_script_eval_t* fresh = md_script_eval_create_desc(ir2, &desc, alloc);
+    ASSERT_TRUE(md_script_eval_frame_range(fresh, ir2, mol, SCRIPT_RUN, 0, num_frames));
+    const eval_property_t* a_fresh = find_eval_property(fresh, STR_LIT("a"));
+    ASSERT_TRUE(a_fresh);
+    EXPECT_TRUE(floats_near(a->values, a_fresh->values, num_frames, 1e-6f));
+
+    // Computed from something else now: starts over, whatever it is called
+    md_script_ir_t* ir3 = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir3, STR_LIT("dist = distance(1, 3);"), mol, NULL));
+    md_script_eval_t* eval3 = md_script_eval_create_from(eval2, ir3, &desc, alloc);
+    ASSERT_TRUE(eval3);
+    EXPECT_EQ((uint64_t)0, md_bitset_count(md_script_eval_property_frames(eval3, 0, STR_LIT("dist"), alloc)));
+
+    md_script_eval_free(eval3);
+    md_script_eval_free(fresh);
+    md_script_eval_free(eval2);
+    md_script_eval_free(eval1);
+    md_script_ir_free(ir3);
+    md_script_ir_free(ir2);
+    md_script_ir_free(ir1);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A frame only some properties still need evaluates what those need: the variables they use, not the others
+UTEST_F(script, eval_evaluates_only_what_is_needed) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)script_frames(mol);
+    ASSERT_GE(num_frames, 4u);
+    const md_script_eval_desc_t desc = { .num_frames = num_frames };
+
+    md_script_ir_t* ir1 = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir1, STR_LIT("s = distance(1, 2);\nt = s * 2.0;\nu = angle(1, 2, 3);"), mol, NULL));
+    md_script_eval_t* eval1 = md_script_eval_create_desc(ir1, &desc, alloc);
+    ASSERT_TRUE(md_script_eval_frame_range(eval1, ir1, mol, SCRIPT_RUN, 0, num_frames));
+
+    // u changes, s and t do not: t needs s, u needs neither
+    md_script_ir_t* ir2 = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir2, STR_LIT("s = distance(1, 2);\nt = s * 2.0;\nu = angle(1, 2, 4) + 0.0 * s;"), mol, NULL));
+    md_script_eval_t* eval2 = md_script_eval_create_from(eval1, ir2, &desc, alloc);
+    ASSERT_TRUE(eval2);
+
+    eval_property_t* s = (eval_property_t*)find_eval_property(eval2, STR_LIT("s"));
+    eval_property_t* t = (eval_property_t*)find_eval_property(eval2, STR_LIT("t"));
+    const eval_property_t* u = find_eval_property(eval2, STR_LIT("u"));
+    ASSERT_TRUE(s && t && u);
+    EXPECT_EQ((uint64_t)num_frames, md_bitset_count(md_script_eval_property_frames(eval2, 0, STR_LIT("t"), alloc)));
+
+    const float planted = 12345.0f;
+    s->values[1] = planted;
+    t->values[1] = planted;
+    ASSERT_TRUE(md_script_eval_frame_range(eval2, ir2, mol, SCRIPT_RUN, 0, num_frames));
+    EXPECT_EQ(planted, s->values[1]);
+    EXPECT_EQ(planted, t->values[1]);
+
+    // u used s as it was evaluated for the frame, not as it was planted
+    md_script_eval_t* fresh = md_script_eval_create_desc(ir2, &desc, alloc);
+    ASSERT_TRUE(md_script_eval_frame_range(fresh, ir2, mol, SCRIPT_RUN, 0, num_frames));
+    EXPECT_TRUE(floats_near(u->values, find_eval_property(fresh, STR_LIT("u"))->values, num_frames, 1e-6f));
+
+    md_script_eval_free(fresh);
+    md_script_eval_free(eval2);
+    md_script_eval_free(eval1);
+    md_script_ir_free(ir2);
+    md_script_ir_free(ir1);
+    md_arena_allocator_destroy(alloc);
+}

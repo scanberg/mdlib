@@ -612,12 +612,17 @@ typedef struct eval_property_t {
     // evaluated concurrently, so the accumulation is serialized per property.
     uint32_t   accum_count;
     md_mutex_t accum_mutex;
+
+    uint64_t     fingerprint;   // What it is computed from (md_script_ir_property_fingerprint)
+    // The frames it holds: a temporal property those it has evaluated, an aggregate those it has added. Each
+    // property its own, so that one taken over from a previous evaluation (md_script_eval_create_from) keeps its
+    // frames while a new one starts without any. Guarded by the eval's frame_lock.
+    md_bitmask_t done;
 } eval_property_t;
 
 // One of the evaluations an md_script_eval_t holds: a set of frames, and what is aggregated over them.
 typedef struct eval_frame_set_t {
     md_bitset_t         frames;     // the frames of the set (payload in the eval's arena)
-    md_bitmask_t        completed;  // those added to the aggregates below (claimed under the eval's frame_lock)
 
     // One per property of the IR, in its order. Sized once at creation and never grown: a published attribute
     // may hold the address of the property it describes. Set 0 holds every property: the temporal ones, which
@@ -637,14 +642,15 @@ struct md_script_eval_t {
     volatile bool interrupt;
 
     size_t        frame_count;
-    md_bitmask_t  frame_mask;   // frames whose per frame (temporal) values are evaluated
-    md_mutex_t    frame_lock;   // guards frame_mask and the sets' completed
+    md_mutex_t    frame_lock;   // guards the frames each property holds (eval_property_t::done)
 
     md_array(eval_frame_set_t) sets;    // at least one, sized at creation
 
-    // Whether the IR has properties aggregated over frames (distributions, volumes). Without any, a set has
-    // nothing of its own to add: its frames are done as soon as their temporal values are.
-    bool has_aggregates;
+    // Which of the IR's evaluation targets each property needs evaluated for a frame: the one assigning it, and
+    // those of every variable it uses, however indirectly. Row p of num_targets, for property p. A frame only
+    // some properties still need evaluates what those need, not the whole script.
+    uint8_t* needs;
+    size_t   num_targets;
 };
 
 struct parse_context_t {
@@ -6421,7 +6427,7 @@ static void clear_property(eval_property_t* prop) {
     // it cannot be taken for a value. Distributions and volumes are running means over the evaluated frames
     // (see eval_properties) and start from zero: NaN would poison them for good, as NaN * 0 is NaN.
     // NaN is stored here, but not tested for: the library is built with -ffast-math (/fp:fast), under which
-    // isnan() may be folded away. frame_mask is what says which frames are evaluated.
+    // isnan() may be folded away. done is what says which frames are evaluated.
     const float clear_value = (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) ? NAN : 0.0f;
     fill_float(prop->values, prop->num_values, clear_value);
     if (prop->mean) {
@@ -6445,21 +6451,35 @@ static void clear_property(eval_property_t* prop) {
     prop->min_value = +FLT_MAX;
     prop->max_value = -FLT_MAX;
     prop->accum_count = 0;
+    md_bitmask_clear(&prop->done);
 }
 
-// Whether some set has frame f and has not added it yet. The caller holds frame_lock, or accepts a stale answer.
-// Without aggregates a set adds nothing of its own, so a frame is pending only until its temporal values are.
-static bool frame_pending(const md_script_eval_t* eval, uint32_t f) {
-    if (!eval->has_aggregates && md_bitmask_test_bit(&eval->frame_mask, f)) {
-        return false;
+// What frame f is still needed for: the temporal properties which have not evaluated it while some set has it,
+// and the aggregates of each set which has it and has not added it. todo[k * num_props + p] for property p of set
+// k, may be NULL. The caller holds frame_lock, or accepts a stale answer. Returns whether there is anything.
+static bool frame_todo(const md_script_eval_t* eval, uint32_t f, bool* todo) {
+    const size_t num_sets  = md_array_size(eval->sets);
+    const size_t num_props = md_array_size(eval->sets[0].props);
+
+    bool in_a_set = false;
+    for (size_t k = 0; k < num_sets && !in_a_set; ++k) {
+        in_a_set = md_bitset_test(eval->sets[k].frames, f);
     }
-    for (size_t k = 0; k < md_array_size(eval->sets); ++k) {
+
+    bool any = false;
+    for (size_t k = 0; k < num_sets; ++k) {
         const eval_frame_set_t* set = &eval->sets[k];
-        if (md_bitset_test(set->frames, f) && !md_bitmask_test_bit(&set->completed, f)) {
-            return true;
+        const bool in_set = md_bitset_test(set->frames, f);
+        for (size_t p = 0; p < num_props; ++p) {
+            const eval_property_t* prop = &set->props[p];
+            // Temporal values are kept in set 0 only, for the frames of every set
+            const bool needed = (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) ? (k == 0 && in_a_set) : in_set;
+            const bool t = needed && !md_bitmask_test_bit(&prop->done, f);
+            if (todo) todo[k * num_props + p] = t;
+            any |= t;
         }
     }
-    return false;
+    return any;
 }
 
 static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_t run, const md_script_ir_t* ir, const uint32_t* frames, size_t num_frames) {
@@ -6477,8 +6497,14 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = true;
 
-    const size_t num_sets = md_array_size(eval->sets);
-    bool* claimed = md_temp_alloc_array(temp, bool, num_sets);
+    const size_t num_sets  = md_array_size(eval->sets);
+    const size_t num_props = md_array_size(eval->sets[0].props);
+    ASSERT(num_expr == eval->num_targets);
+    // Per property of each set (k * num_props + p): what the frame is still needed for, and what was claimed
+    bool* todo    = md_temp_alloc_array(temp, bool, num_sets * num_props);
+    bool* claimed = md_temp_alloc_array(temp, bool, num_sets * num_props);
+    // The targets those need evaluated
+    uint8_t* needed = md_temp_alloc_array(temp, uint8_t, MAX(num_expr, 1));
 
     // What the procedures report while evaluating. Not the IR's (it is read-only here): reported below, with the frame
     eval_log_t log = { .alloc = temp_alloc };
@@ -6544,12 +6570,24 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
             goto done;
         }
 
-        // Nothing left to do for it: every set which has it has added it already
+        // Nothing left to do for it: every property which needs it holds it already
         md_mutex_lock(&eval->frame_lock);
-        const bool pending = f_idx < eval->frame_count && frame_pending(eval, f_idx);
+        const bool pending = f_idx < eval->frame_count && frame_todo(eval, f_idx, todo);
         md_mutex_unlock(&eval->frame_lock);
         if (!pending) {
             continue;
+        }
+
+        // What the properties still to do need evaluated, and nothing else
+        MEMSET(needed, 0, num_expr);
+        for (size_t k = 0; k < num_sets; ++k) {
+            for (size_t p = 0; p < num_props; ++p) {
+                if (!todo[k * num_props + p]) continue;
+                const uint8_t* row = eval->needs + p * num_expr;
+                for (size_t i = 0; i < num_expr; ++i) {
+                    needed[i] |= row[i];
+                }
+            }
         }
         
         result = md_system_extract_frame(extract, f_idx, &cur_state);
@@ -6566,6 +6604,9 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
         ctx.spatial_acc_cutoff = 0.0;
 
         for (size_t i = 0; i < num_expr; ++i) {
+            if (!needed[i]) {
+                continue;
+            }
             if (!evaluate_node_alloc(&data[i], expr[i], &ctx, temp_alloc)) {
                 str_t str = expr[i]->token.str;
                 MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"' at frame %i", STR_ARG(str), (int)f_idx);
@@ -6586,21 +6627,22 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
         }
 
         // Two passes over the properties. First the temporal values, which are per frame, shared by all sets and
-        // kept in set 0. Then, with the frame in frame_mask, the sets claim it and add it to their aggregates.
-        // In that order, a frame a set has completed always has its temporal values written: completed is the
-        // mask a reader on another thread takes the temporal values of the set over.
-        const size_t num_props = md_array_size(eval->sets[0].props);
+        // kept in set 0. Then, under the lock, the temporal properties are marked as holding the frame and the
+        // aggregates claim it, and the claimed ones add it. In that order, a frame a property holds always has its
+        // values written: done is the mask a reader on another thread takes them over.
         for (int pass = 0; pass < 2; ++pass) {
         if (pass == 1) {
-            // The sets which take the frame into their aggregates. Claimed only now that it is evaluated, and under
-            // the lock: whatever else evaluates the same frame, each set adds it exactly once.
+            // Claimed only now that it is evaluated, and under the lock: whatever else evaluates the same frame,
+            // each aggregate adds it exactly once.
             md_mutex_lock(&eval->frame_lock);
-            md_bitmask_set_bit(&eval->frame_mask, (uint32_t)f_idx);
             for (size_t k = 0; k < num_sets; ++k) {
-                eval_frame_set_t* set = &eval->sets[k];
-                claimed[k] = md_bitset_test(set->frames, (uint32_t)f_idx) && !md_bitmask_test_bit(&set->completed, (uint32_t)f_idx);
-                if (claimed[k]) {
-                    md_bitmask_set_bit(&set->completed, (uint32_t)f_idx);
+                for (size_t p = 0; p < num_props; ++p) {
+                    const size_t idx = k * num_props + p;
+                    eval_property_t* prop = &eval->sets[k].props[p];
+                    claimed[idx] = todo[idx] && !md_bitmask_test_bit(&prop->done, (uint32_t)f_idx);
+                    if (claimed[idx]) {
+                        md_bitmask_set_bit(&prop->done, (uint32_t)f_idx);
+                    }
                 }
             }
             md_mutex_unlock(&eval->frame_lock);
@@ -6610,10 +6652,11 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
             eval_property_t* prop = &eval->sets[s_idx].props[p_idx];
             ASSERT(str_eq(prop->ident, ir->property_names[p_idx]));
 
-            // Temporal values in the first pass, in set 0 only. Aggregates in the second, each set's own, and only
-            // for the frames it claimed.
+            // Temporal values in the first pass, of what was still to do (in set 0 only). Aggregates in the second,
+            // each set's own, and only those which claimed the frame.
+            const size_t idx = s_idx * num_props + p_idx;
             const bool temporal = prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
-            if (temporal ? (pass != 0 || s_idx != 0) : (pass != 1 || !claimed[s_idx])) {
+            if (temporal ? (pass != 0 || !todo[idx]) : (pass != 1 || !claimed[idx])) {
                 continue;
             }
             ASSERT(prop->values);
@@ -7235,15 +7278,80 @@ static void frame_set_assign(md_script_eval_t* eval, eval_frame_set_t* set, cons
     set->frames = frames ? md_bitset_and(*frames, all, eval->arena) : all;
 }
 
-// Forgets what the set has added: its completed frames and its aggregates. Temporal values (kept in set 0) are
+// Forgets what the set has added: its aggregates and the frames they hold. Temporal values (kept in set 0) are
 // not the set's own and stay, unless also_temporal.
 static void frame_set_clear(eval_frame_set_t* set, bool also_temporal) {
-    md_bitmask_clear(&set->completed);
     for (size_t i = 0; i < md_array_size(set->props); ++i) {
         if (also_temporal || set->props[i].kind != MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
             clear_property(&set->props[i]);
         }
     }
+}
+
+// The evaluation target which assigns the variable, -1 if none does (a constant, or a name the script does not assign)
+static int target_assigning(const md_script_ir_t* ir, str_t name) {
+    for (size_t t = 0; t < md_array_size(ir->eval_targets); ++t) {
+        const ast_node_t* lhs = ir->eval_targets[t]->children[0];
+        if (lhs->type == AST_IDENTIFIER) {
+            if (str_eq(lhs->ident, name)) return (int)t;
+        } else if (lhs->type == AST_ARRAY) {
+            for (size_t j = 0; j < md_array_size(lhs->children); ++j) {
+                if (lhs->children[j]->type == AST_IDENTIFIER && str_eq(lhs->children[j]->ident, name)) return (int)t;
+            }
+        }
+    }
+    return -1;
+}
+
+// Adds to the row of target t the targets of the variables node refers to, and theirs in turn. A reference is not
+// descended into: it stands for the target which assigns it, whose row is complete already, as a variable can only
+// refer to the ones declared before it.
+static void mark_references(uint8_t* row, size_t t, const ast_node_t* node, const md_script_ir_t* ir, const uint8_t* target_needs, size_t num_targets) {
+    if (node->type == AST_IDENTIFIER) {
+        const int u = target_assigning(ir, node->ident);
+        if (u >= 0 && (size_t)u < t) {
+            const uint8_t* dep = target_needs + (size_t)u * num_targets;
+            for (size_t i = 0; i < num_targets; ++i) {
+                row[i] |= dep[i];
+            }
+        }
+        return;
+    }
+    for (size_t i = 0; i < md_array_size(node->children); ++i) {
+        mark_references(row, t, node->children[i], ir, target_needs, num_targets);
+    }
+}
+
+// Which targets each property needs evaluated: eval->needs
+static void compute_needs(md_script_eval_t* eval, const md_script_ir_t* ir) {
+    const size_t num_targets = md_array_size(ir->eval_targets);
+    const size_t num_props   = md_array_size(ir->property_names);
+
+    md_temp_scope_t temp = md_temp_begin_avoid(eval->arena);
+    uint8_t* target_needs = md_temp_alloc_array(temp, uint8_t, MAX(num_targets * num_targets, 1));
+    MEMSET(target_needs, 0, num_targets * num_targets);
+    for (size_t t = 0; t < num_targets; ++t) {
+        uint8_t* row = target_needs + t * num_targets;
+        row[t] = 1;
+        const ast_node_t* expr = ir->eval_targets[t];
+        if (md_array_size(expr->children) == 2) {
+            mark_references(row, t, expr->children[1], ir, target_needs, num_targets);
+        }
+    }
+
+    eval->num_targets = num_targets;
+    eval->needs = md_alloc(eval->arena, MAX(num_props * num_targets, 1));
+    for (size_t p = 0; p < num_props; ++p) {
+        uint8_t* row = eval->needs + p * num_targets;
+        const int t = target_assigning(ir, ir->property_names[p]);
+        if (t >= 0) {
+            MEMCPY(row, target_needs + (size_t)t * num_targets, num_targets);
+        } else {
+            // Cannot happen for a property of the IR; if it did, everything is evaluated as before
+            MEMSET(row, 1, num_targets);
+        }
+    }
+    md_temp_end(temp);
 }
 
 md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_script_eval_desc_t* desc, md_allocator_i* alloc) {
@@ -7279,9 +7387,7 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     eval->ir_fingerprint = ir->fingerprint;
 
     eval->frame_count = num_frames;
-    // Reserved up front, so marking a frame never moves the words while another thread reads them
-    md_bitmask_init(&eval->frame_mask, 0, (uint32_t)num_frames, eval->arena);
-    md_bitmask_reserve(&eval->frame_mask, 0, (uint32_t)num_frames);
+    compute_needs(eval, ir);
 
     const size_t num_sets = MAX(desc->num_frame_sets, 1);
     md_array_resize(eval->sets, num_sets, eval->arena);
@@ -7289,8 +7395,6 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     for (size_t k = 0; k < num_sets; ++k) {
         eval_frame_set_t* set = &eval->sets[k];
         set->frames = md_bitset_empty_set();
-        md_bitmask_init(&set->completed, 0, (uint32_t)num_frames, eval->arena);
-        md_bitmask_reserve(&set->completed, 0, (uint32_t)num_frames);
         frame_set_assign(eval, set, desc->num_frame_sets ? desc->frame_sets[k] : NULL);
         set->attributes.alloc = eval->arena;
     }
@@ -7321,11 +7425,6 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     // Sized up front rather than pushed one at a time: a published attribute may hold the address
     // of the property it describes, and a growing array would move it out from under one.
     const size_t num_props = md_array_size(ir->property_names);
-    for (size_t i = 0; i < num_props; ++i) {
-        if (ir->property_flags[i] != MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-            eval->has_aggregates = true;
-        }
-    }
     for (size_t k = 0; k < num_sets; ++k) {
         eval_frame_set_t* set = &eval->sets[k];
         md_array_resize(set->props, num_props, eval->arena);
@@ -7341,6 +7440,10 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
             } else {
                 init_property(prop, &set->attributes, ir->property_names[i], ir->property_flags[i], node->data.type, node->data.unit, num_frames, eval->arena);
             }
+            prop->fingerprint = i < md_array_size(ir->property_fingerprints) ? ir->property_fingerprints[i] : 0;
+            // Reserved up front, so marking a frame never moves the words while another thread reads them
+            md_bitmask_init(&prop->done, 0, (uint32_t)num_frames, eval->arena);
+            md_bitmask_reserve(&prop->done, 0, (uint32_t)num_frames);
             clear_property(prop);
         }
     }
@@ -7350,10 +7453,86 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     return eval;
 }
 
+// Copies what src holds into dst, a property of the same kind and shape: its values and the frames they are of
+static void adopt_property(eval_property_t* dst, const eval_property_t* src, size_t num_frames) {
+    MEMCPY(dst->values, src->values, dst->num_values * sizeof(float));
+    if (dst->weights && src->weights) {
+        MEMCPY(dst->weights, src->weights, dst->num_values * sizeof(float));
+    }
+    if (dst->sum_values && src->sum_values) {
+        MEMCPY(dst->sum_values,  src->sum_values,  dst->num_values * sizeof(double));
+        MEMCPY(dst->sum_weights, src->sum_weights, dst->num_values * sizeof(double));
+    }
+    if (dst->mean && src->mean) {
+        MEMCPY(dst->mean, src->mean, num_frames * sizeof(float));
+        MEMCPY(dst->var,  src->var,  num_frames * sizeof(float));
+        MEMCPY(dst->ext,  src->ext,  num_frames * sizeof(vec2_t));
+    }
+    if (dst->range && src->range) {
+        *dst->range = *src->range;
+    }
+    dst->min_value   = src->min_value;
+    dst->max_value   = src->max_value;
+    dst->accum_count = src->accum_count;
+    md_bitmask_assign(&dst->done, md_bitmask_view(&src->done));
+}
+
+static bool same_shape(const eval_property_t* a, const eval_property_t* b) {
+    return a->kind == b->kind && a->count == b->count && a->num_values == b->num_values && a->values && b->values;
+}
+
+md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const md_script_ir_t* ir, const md_script_eval_desc_t* desc, md_allocator_i* alloc) {
+    md_script_eval_t* eval = md_script_eval_create_desc(ir, desc, alloc);
+    if (!eval || !validate_eval(prev) || prev->frame_count != eval->frame_count) {
+        return eval;
+    }
+
+    const size_t num_sets   = md_array_size(eval->sets);
+    const size_t num_props  = md_array_size(eval->sets[0].props);
+    const size_t prev_sets  = md_array_size(prev->sets);
+    const size_t prev_props = md_array_size(prev->sets[0].props);
+
+    // A property is taken over by what it is computed from, whatever it is called now. An aggregate of a set only
+    // where the set covers the same frames as before: it is what was added over them.
+    md_mutex_t* prev_lock = (md_mutex_t*)&prev->frame_lock;
+    md_mutex_lock(prev_lock);
+    for (size_t i = 0; i < num_props; ++i) {
+        const uint64_t fingerprint = eval->sets[0].props[i].fingerprint;
+        if (!fingerprint) continue;
+        for (size_t j = 0; j < prev_props; ++j) {
+            if (prev->sets[0].props[j].fingerprint != fingerprint) continue;
+            for (size_t k = 0; k < num_sets && k < prev_sets; ++k) {
+                eval_property_t* dst = &eval->sets[k].props[i];
+                const eval_property_t* src = &prev->sets[k].props[j];
+                if (!same_shape(dst, src)) continue;
+                if (dst->kind != MD_SCRIPT_PROPERTY_FLAG_TEMPORAL && !md_bitset_equal(eval->sets[k].frames, prev->sets[k].frames)) continue;
+                adopt_property(dst, src, eval->frame_count);
+            }
+            break;
+        }
+    }
+    md_mutex_unlock(prev_lock);
+
+    // The versions carry on from the previous evaluation's: a version of this one never equals one of that one, so
+    // nothing derived from a previous property can be taken for what is published now, taken over or not
+    uint64_t counter = 0;
+    for (size_t k = 0; k < prev_sets; ++k) {
+        counter = MAX(counter, prev->sets[k].attributes.version_counter);
+    }
+    for (size_t k = 0; k < num_sets; ++k) {
+        md_attributes_t* table = &eval->sets[k].attributes;
+        table->version_counter = MAX(table->version_counter, counter);
+        for (md_attribute_iter_t it = md_attributes_iter(table, (str_t){0}); md_attributes_next(&it);) {
+            md_attributes_touch(table, it.attr->id);
+        }
+    }
+
+    return eval;
+}
+
 void md_script_eval_clear_data(md_script_eval_t* eval) {
     ASSERT(eval);
     ASSERT(eval->magic == SCRIPT_EVAL_MAGIC);
-    md_bitmask_clear(&eval->frame_mask);
     for (size_t k = 0; k < md_array_size(eval->sets); ++k) {
         frame_set_clear(&eval->sets[k], true);
     }
@@ -7372,11 +7551,6 @@ bool md_script_eval_set_frame_set(md_script_eval_t* eval, size_t idx, const md_b
     eval_frame_set_t* set = &eval->sets[idx];
     frame_set_assign(eval, set, frames);
     frame_set_clear(set, false);
-    if (!eval->has_aggregates) {
-        // Nothing to add: the frames whose temporal values are evaluated are done
-        md_bitmask_assign(&set->completed, set->frames);
-        md_bitmask_and(&set->completed, md_bitmask_view(&eval->frame_mask));
-    }
     return true;
 }
 
@@ -7384,18 +7558,50 @@ const md_bitset_t* md_script_eval_frame_set_frames(const md_script_eval_t* eval,
     return (validate_eval(eval) && idx < md_array_size(eval->sets)) ? &eval->sets[idx].frames : NULL;
 }
 
-// A copy of a mask the eval's frame_lock guards, taken under the lock
-static md_bitset_t frame_mask_snapshot(const md_script_eval_t* eval, const md_bitmask_t* mask, md_allocator_i* alloc) {
+// The frames of set idx which every property of 'kinds' holds: a temporal property over the set (kept in set 0)
+// the frames it has evaluated, an aggregate of the set those it has added. Or of property p alone, when p >= 0.
+// Of every frame rather than those of the set, when !within_set. Taken under the eval's frame_lock, allocated with alloc.
+static md_bitset_t frames_held(const md_script_eval_t* eval, size_t idx, uint32_t kinds, int p, bool within_set, md_allocator_i* alloc) {
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_bitmask_t m = md_bitmask_create(0, (uint32_t)eval->frame_count, md_temp_allocator(temp));
     md_mutex_t* lock = (md_mutex_t*)&eval->frame_lock;
     md_mutex_lock(lock);
-    md_bitset_t s = md_bitmask_extract(mask, alloc);
+    if (within_set) {
+        md_bitmask_assign(&m, eval->sets[idx].frames);
+    } else {
+        md_bitmask_set_range(&m, 0, (uint32_t)eval->frame_count);
+    }
+    const size_t num_props = md_array_size(eval->sets[idx].props);
+    for (size_t i = 0; i < num_props; ++i) {
+        if (p >= 0 && (size_t)p != i) continue;
+        const eval_property_t* prop = &eval->sets[idx].props[i];
+        if (!(prop->kind & kinds)) continue;
+        if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+            prop = &eval->sets[0].props[i];
+        }
+        md_bitmask_and(&m, md_bitmask_view(&prop->done));
+    }
     md_mutex_unlock(lock);
-    return s;
+    md_bitset_t result = md_bitmask_extract(&m, alloc);
+    md_temp_end(temp);
+    return result;
 }
+
+static const uint32_t all_kinds = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME;
 
 md_bitset_t md_script_eval_frame_set_completed(const md_script_eval_t* eval, size_t idx, md_allocator_i* alloc) {
     if (!validate_eval(eval) || idx >= md_array_size(eval->sets) || !alloc) return md_bitset_empty_set();
-    return frame_mask_snapshot(eval, &eval->sets[idx].completed, alloc);
+    return frames_held(eval, idx, all_kinds, -1, true, alloc);
+}
+
+md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, size_t idx, str_t ident, md_allocator_i* alloc) {
+    if (!validate_eval(eval) || idx >= md_array_size(eval->sets) || !alloc) return md_bitset_empty_set();
+    for (size_t i = 0; i < md_array_size(eval->sets[0].props); ++i) {
+        if (str_eq(eval->sets[0].props[i].ident, ident)) {
+            return frames_held(eval, idx, all_kinds, (int)i, true, alloc);
+        }
+    }
+    return md_bitset_empty_set();
 }
 
 const md_attributes_t* md_script_eval_frame_set_attributes(const md_script_eval_t* eval, size_t idx) {
@@ -7408,7 +7614,7 @@ md_bitset_t md_script_eval_pending_frames(md_script_eval_t* eval, md_allocator_i
     md_bitmask_t pending = md_bitmask_create(0, (uint32_t)eval->frame_count, md_temp_allocator(temp));
     md_mutex_lock(&eval->frame_lock);
     for (uint32_t f = 0; f < (uint32_t)eval->frame_count; ++f) {
-        if (frame_pending(eval, f)) {
+        if (frame_todo(eval, f, NULL)) {
             md_bitmask_set_bit(&pending, f);
         }
     }
@@ -7526,7 +7732,11 @@ size_t md_script_eval_frame_count(const md_script_eval_t* eval) {
 
 md_bitset_t md_script_eval_frame_mask(const md_script_eval_t* eval, md_allocator_i* alloc) {
     if (!validate_eval(eval) || !alloc) return md_bitset_empty_set();
-    return frame_mask_snapshot(eval, &eval->frame_mask, alloc);
+    bool any_temporal = false;
+    for (size_t i = 0; i < md_array_size(eval->sets[0].props); ++i) {
+        any_temporal |= eval->sets[0].props[i].kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
+    }
+    return frames_held(eval, 0, any_temporal ? MD_SCRIPT_PROPERTY_FLAG_TEMPORAL : all_kinds, -1, false, alloc);
 }
 
 void md_script_eval_interrupt(md_script_eval_t* eval) {

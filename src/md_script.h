@@ -237,6 +237,13 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
 // One frame set of every frame
 md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
 
+// As md_script_eval_create_desc, taking over from prev every property ir computes from the same thing (see
+// md_script_ir_property_fingerprint), whatever it is called now: its values, and the frames they are of, which
+// are not evaluated again. Aggregates of a set only where the set covers the same frames in both. prev must be
+// over the same system and run and must not be evaluating; it is not changed, and may be freed after.
+// The versions of what is published carry on from prev's, so one of the new evaluation never equals one of prev.
+md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const md_script_ir_t* ir, const md_script_eval_desc_t* desc, struct md_allocator_i* alloc);
+
 // ### FRAME SETS ###
 // Not while frames are being evaluated: interrupt and wait for the evaluation first.
 size_t md_script_eval_frame_set_count(const md_script_eval_t* eval);
@@ -247,11 +254,15 @@ bool md_script_eval_set_frame_set(md_script_eval_t* eval, size_t idx, const md_b
 
 const md_bitset_t* md_script_eval_frame_set_frames(const md_script_eval_t* eval, size_t idx);
 
-// The frames set idx has added so far. The mask to take temporal properties over it with: each was
-// evaluated (md_script_eval_frame_mask) when it was added.
+// The frames of set idx which every property holds so far (see md_script_eval_property_frames).
 // A copy allocated with alloc, taken under the lock the evaluating threads mark frames under, so it can be read
 // while the evaluation runs.
 md_bitset_t md_script_eval_frame_set_completed(const md_script_eval_t* eval, size_t idx, struct md_allocator_i* alloc);
+
+// The frames of set idx a property holds: a temporal property the ones it has evaluated, an aggregate of the set
+// the ones it has added. Each property its own: one taken over by md_script_eval_create_from holds its frames while
+// a new one holds none yet. Taken under the evaluation's lock, allocated with alloc.
+md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, size_t idx, str_t ident, struct md_allocator_i* alloc);
 
 // The table of set idx: for set 0 the same as md_script_eval_attributes, temporal properties included.
 // Any other set publishes only its distributions and volumes, under the same paths.
@@ -307,9 +318,10 @@ size_t md_script_eval_property_count(const md_script_eval_t* eval);
 // a consumer caching something derived from a property compares md_attributes_version.
 const struct md_attributes_t* md_script_eval_attributes(const md_script_eval_t* eval);
 
-// The frames whose temporal values are evaluated, of any set
+// The number of frames the evaluation holds
 size_t md_script_eval_frame_count(const md_script_eval_t* eval);
-// A copy allocated with alloc, taken under the evaluation's lock (see md_script_eval_frame_set_completed)
+// The frames every temporal property has evaluated (see md_script_eval_property_frames for one of them).
+// A copy allocated with alloc, taken under the evaluation's lock.
 md_bitset_t md_script_eval_frame_mask(const md_script_eval_t* eval, struct md_allocator_i* alloc);
 
 // Interrupt the current evaluation. It stays interrupted until reset: reset before evaluating again.
