@@ -391,26 +391,39 @@ static inline vec3_t min_image_diff(vec3_t a, vec3_t b, float dist2, float max_l
     return d;
 }
 
-// IUPAC sign: positive in an alpha helix
-static inline float cg_dssp_dihedral(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
+// The cosine and sine of the dihedral p0-p1-p2-p3 (IUPAC sign: positive in an alpha helix), from the outer bonds
+// projected on the plane normal to the middle one, without the angle itself. Collinear beads have none: 0.
+static inline void cg_dssp_dihedral_cs(float* out_cos, float* out_sin, vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
     const vec3_t b0 = vec3_sub(p0, p1);
     const vec3_t b1 = vec3_normalize(vec3_sub(p2, p1));
     const vec3_t b2 = vec3_sub(p3, p2);
     const vec3_t v = vec3_sub(b0, vec3_mul1(b1, vec3_dot(b0, b1)));
     const vec3_t w = vec3_sub(b2, vec3_mul1(b1, vec3_dot(b2, b1)));
-    return atan2f(vec3_dot(vec3_cross(b1, v), w), vec3_dot(v, w));
+    const float x = vec3_dot(v, w);
+    const float y = vec3_dot(vec3_cross(b1, v), w);
+    const float r2 = x * x + y * y;
+    if (r2 > 0.0f) {
+        const float inv = 1.0f / sqrtf(r2);
+        *out_cos = x * inv;
+        *out_sin = y * inv;
+    } else {
+        *out_cos = 1.0f;
+        *out_sin = 0.0f;
+    }
 }
 
-static inline float cg_dssp_angle(vec3_t a, vec3_t b, vec3_t c) {
+// The cosine of the angle at b between a and c
+static inline float cg_dssp_angle_cos(vec3_t a, vec3_t b, vec3_t c) {
     const vec3_t u = vec3_sub(a, b);
     const vec3_t v = vec3_sub(c, b);
-    return acosf(CLAMP(vec3_dot(u, v) / (vec3_length(u) * vec3_length(v)), -1.0f, 1.0f));
+    return CLAMP(vec3_dot(u, v) / sqrtf(vec3_dot(u, u) * vec3_dot(v, v)), -1.0f, 1.0f);
 }
 
 // The direction of the C=O of residue i of the chain x[beg, end) (beads in one image): the virtual C and O of the residue,
 // placed in the frame of its bead by the fit of md_dssp_cg.inl, whose script (tools/fit_cg_dssp.py) defines the
-// frame and the features in the order used here. False for a residue without a frame: the ends of the chain, and
-// chains of three beads.
+// frame and the features in the order used here. The features are cosines and sines of the angles and dihedrals of
+// the trace, which the geometry gives without the angles themselves. False for a residue without a frame: the ends of
+// the chain, and chains of three beads.
 static bool cg_dssp_dipole(vec3_t* out_dipole, const vec3_t* x, int beg, int end, int i) {
     if (i < beg + 1 || i + 1 >= end) return false;
     const bool has_a = i - 2 >= beg;
@@ -423,16 +436,15 @@ static bool cg_dssp_dipole(vec3_t* out_dipole, const vec3_t* x, int beg, int end
     const vec3_t n = vec3_normalize(m);
     const vec3_t b = vec3_cross(t, n);
 
-    const float tau = cg_dssp_angle(x[i - 1], x[i], x[i + 1]);
-    const float ta  = has_a ? cg_dssp_dihedral(x[i - 2], x[i - 1], x[i], x[i + 1]) : 0.0f;
-    const float tb  = has_b ? cg_dssp_dihedral(x[i - 1], x[i], x[i + 1], x[i + 2]) : 0.0f;
-    const float tp  = has_a ? cg_dssp_angle(x[i - 2], x[i - 1], x[i]) : tau;
-    const float tn  = has_b ? cg_dssp_angle(x[i], x[i + 1], x[i + 2]) : tau;
-
-    const float ct = cosf(tau), st = sinf(tau);
-    const float ca = cosf(ta), sa = sinf(ta);
-    const float cb = cosf(tb), sb = sinf(tb);
-    const float cp = cosf(tp), cn = cosf(tn);
+    // tau, the bond angle at i, is in [0, pi]: its sine is not negative. Where there is no i-2 (i+2), theta_a
+    // (theta_b) is 0 and tau_p (tau_n) is tau.
+    const float ct = cg_dssp_angle_cos(x[i - 1], x[i], x[i + 1]);
+    const float st = sqrtf(1.0f - ct * ct);
+    float ca = 1.0f, sa = 0.0f, cb = 1.0f, sb = 0.0f;
+    if (has_a) cg_dssp_dihedral_cs(&ca, &sa, x[i - 2], x[i - 1], x[i], x[i + 1]);
+    if (has_b) cg_dssp_dihedral_cs(&cb, &sb, x[i - 1], x[i], x[i + 1], x[i + 2]);
+    const float cp = has_a ? cg_dssp_angle_cos(x[i - 2], x[i - 1], x[i]) : ct;
+    const float cn = has_b ? cg_dssp_angle_cos(x[i], x[i + 1], x[i + 2]) : ct;
     const float da[4] = { ca, sa, ca * ca - sa * sa, 2.0f * sa * ca };    // cos, sin of theta_a and of 2 theta_a
     const float db[4] = { cb, sb, cb * cb - sb * sb, 2.0f * sb * cb };
 
