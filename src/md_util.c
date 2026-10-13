@@ -672,144 +672,331 @@ static void sort_arr(int* arr, int n) {
     }
 }
 
-static inline void radix_pass_8(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[256][4], int pass) {
-    int bitoff = pass * 8;
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t id = (src[i] >> bitoff) & 255;
-        dst[hist[id][pass]++] = src[i];
+// ### RADIX SORT ###
+
+// Least significant digit first, 8 bits a digit. The histograms of every digit come from one read of the keys, and a pass
+// whose digit all keys share would leave the order as it is, so it is skipped: keys with constant upper bytes (indices,
+// pairs of them packed) take only the passes they need. Up to RADIX_SMALL_COUNT keys an insertion sort is faster than
+// the histograms, and keys already in order are left as they are.
+//
+// The histograms have a row per bucket and a column per digit, so the prefix sums of every digit are one vector sum per
+// row. The argsorts move each key together with its index, packed in one value, so a pass reads them in order and writes
+// one stream per bucket, rather than looking up the key of each index.
+
+#define RADIX_SMALL_COUNT 64
+
+static void insertion_sort_u32(uint32_t* data, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        const uint32_t k = data[i];
+        size_t j = i;
+        while (j > 0 && data[j - 1] > k) {
+            data[j] = data[j - 1];
+            --j;
+        }
+        data[j] = k;
     }
 }
 
-static void sort_radix_inplace_uint32(uint32_t* data, size_t count, uint32_t* temp) {
-    // Histograms for each pass
-    uint32_t hist[256][4] = {0};
-
-    // Populate histogram
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t id = data[i];
-        hist[(id >> 0)  & 255][0]++;
-        hist[(id >> 8)  & 255][1]++;
-        hist[(id >> 16) & 255][2]++;
-        hist[(id >> 24) & 255][3]++;
+static void insertion_sort_u64(uint64_t* data, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        const uint64_t k = data[i];
+        size_t j = i;
+        while (j > 0 && data[j - 1] > k) {
+            data[j] = data[j - 1];
+            --j;
+        }
+        data[j] = k;
     }
+}
 
-    // Prefix sum
+// The key above the index: the values are unique, in the order of a stable sort
+static void insertion_argsort_u32(uint32_t* out_indices, const uint32_t* keys, size_t count) {
+    ASSERT(count <= RADIX_SMALL_COUNT);
+    uint64_t v[RADIX_SMALL_COUNT];
+    for (size_t i = 0; i < count; ++i) {
+        v[i] = ((uint64_t)keys[i] << 32) | i;
+    }
+    insertion_sort_u64(v, count);
+    for (size_t i = 0; i < count; ++i) {
+        out_indices[i] = (uint32_t)v[i];
+    }
+}
+
+static void insertion_argsort_u64(uint32_t* out_indices, const uint64_t* keys, size_t count) {
+    ASSERT(count <= RADIX_SMALL_COUNT);
+    uint64_t k[RADIX_SMALL_COUNT];
+    for (size_t i = 0; i < count; ++i) {
+        const uint64_t key = keys[i];
+        size_t j = i;
+        // Only past greater keys: equal keys keep their order
+        while (j > 0 && k[j - 1] > key) {
+            k[j] = k[j - 1];
+            out_indices[j] = out_indices[j - 1];
+            --j;
+        }
+        k[j] = key;
+        out_indices[j] = (uint32_t)i;
+    }
+}
+
+static bool is_sorted_u32(const uint32_t* data, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        if (data[i] < data[i - 1]) return false;
+    }
+    return true;
+}
+
+static bool is_sorted_u64(const uint64_t* data, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        if (data[i] < data[i - 1]) return false;
+    }
+    return true;
+}
+
+static void radix_hist_u32(uint32_t hist[256][4], const uint32_t* keys, size_t count) {
+    MEMSET(hist, 0, sizeof(uint32_t) * 256 * 4);
+    for (size_t i = 0; i < count; ++i) {
+        const uint32_t k = keys[i];
+        hist[(k >>  0) & 255][0]++;
+        hist[(k >>  8) & 255][1]++;
+        hist[(k >> 16) & 255][2]++;
+        hist[(k >> 24) & 255][3]++;
+    }
+}
+
+static void radix_hist_u64(uint32_t hist[256][8], const uint64_t* keys, size_t count) {
+    MEMSET(hist, 0, sizeof(uint32_t) * 256 * 8);
+    for (size_t i = 0; i < count; ++i) {
+        const uint64_t k = keys[i];
+        hist[(k >>  0) & 255][0]++;
+        hist[(k >>  8) & 255][1]++;
+        hist[(k >> 16) & 255][2]++;
+        hist[(k >> 24) & 255][3]++;
+        hist[(k >> 32) & 255][4]++;
+        hist[(k >> 40) & 255][5]++;
+        hist[(k >> 48) & 255][6]++;
+        hist[(k >> 56) & 255][7]++;
+    }
+}
+
+// The digits whose pass reorders anything, then the counts turned into the offsets of the buckets. Any key tells whether
+// a digit is shared by all: then its bucket holds every key.
+static int radix_offsets_u32(int passes[4], uint32_t hist[256][4], uint32_t any_key, size_t count) {
+    int num_passes = 0;
+    for (int p = 0; p < 4; ++p) {
+        if (hist[(any_key >> (p * 8)) & 255][p] != count) passes[num_passes++] = p;
+    }
     md_128i sum = md_mm_setzero_si128();
     for (size_t i = 0; i < 256; ++i) {
-        md_128i val = md_mm_loadu_si128(hist[i]);
+        const md_128i c = md_mm_loadu_si128(hist[i]);
         md_mm_storeu_si128(hist[i], sum);
-        sum = md_mm_add_epi32(sum, val);
+        sum = md_mm_add_epi32(sum, c);
     }
-
-    // 4-pass 8-bit radix sort
-    radix_pass_8(temp, data, count, hist, 0);
-    radix_pass_8(data, temp, count, hist, 1);
-    radix_pass_8(temp, data, count, hist, 2);
-    radix_pass_8(data, temp, count, hist, 3);
+    return num_passes;
 }
 
-static inline void radix_pass_idx_8(uint32_t* dst, const uint32_t* src, const uint32_t* keys, size_t count, const uint32_t hist[256], int pass) {
-    int bitoff = pass * 8;
-
-    // Make a working copy of the counts for prefix sums
-    uint32_t offsets[256];
-    MEMCPY(offsets, hist, sizeof(uint32_t) * 256);
-
-    // Prefix sum on offsets
-    uint32_t sum = 0;
-    for (int i = 0; i < 256; ++i) {
-        uint32_t v = offsets[i];
-        offsets[i] = sum;
-        sum += v;
+static int radix_offsets_u64(int passes[8], uint32_t hist[256][8], uint64_t any_key, size_t count) {
+    int num_passes = 0;
+    for (int p = 0; p < 8; ++p) {
+        if (hist[(any_key >> (p * 8)) & 255][p] != count) passes[num_passes++] = p;
     }
+    md_128i sum_lo = md_mm_setzero_si128();
+    md_128i sum_hi = md_mm_setzero_si128();
+    for (size_t i = 0; i < 256; ++i) {
+        const md_128i lo = md_mm_loadu_si128(hist[i] + 0);
+        const md_128i hi = md_mm_loadu_si128(hist[i] + 4);
+        md_mm_storeu_si128(hist[i] + 0, sum_lo);
+        md_mm_storeu_si128(hist[i] + 4, sum_hi);
+        sum_lo = md_mm_add_epi32(sum_lo, lo);
+        sum_hi = md_mm_add_epi32(sum_hi, hi);
+    }
+    return num_passes;
+}
 
-    // Scatter indices to dst using offsets
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t idx = src[i];
-        uint32_t key = keys[idx];
-        uint32_t id  = (key >> bitoff) & 255;
-        dst[offsets[id]++] = idx;
+// The offsets of one digit, out of its column into a table of their own, for the pass to keep close
+static inline void radix_column(uint32_t offset[256], const uint32_t* hist, int num_digits, int digit) {
+    for (int b = 0; b < 256; ++b) {
+        offset[b] = hist[b * num_digits + digit];
     }
 }
 
-static void sort_radix_uint32(uint32_t* out_indices, const uint32_t* keys, size_t count, uint32_t* tmp_indices) {
-    // Initialize indices
+static inline void radix_pass_u32(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[256][4], int digit) {
+    const int shift = digit * 8;
     for (size_t i = 0; i < count; ++i) {
-        out_indices[i] = (uint32_t)i;
-    }
-
-    // Precompute histograms for each pass (counts only)
-    uint32_t hist[4][256] = {0};
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t key = keys[i];
-        hist[0][(key >> 0)  & 255]++;
-        hist[1][(key >> 8)  & 255]++;
-        hist[2][(key >> 16) & 255]++;
-        hist[3][(key >> 24) & 255]++;
-    }
-
-    // 4-pass radix sort using precomputed counts
-    radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[0], 0);
-    radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[1], 1);
-    radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[2], 2);
-    radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[3], 3);
-}
-
-static inline void radix_pass_indices_8(uint32_t* dst_indices, const uint32_t* keys, const uint32_t* src_indices, size_t count, uint32_t hist[256],
-                                        int pass) {
-    int bitoff = pass * 8;
-    uint32_t pos[256];
-    memcpy(pos, hist, sizeof(uint32_t) * 256);
-
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t key = (keys[src_indices[i]] >> bitoff) & 0xFF;
-        dst_indices[pos[key]++] = src_indices[i];
+        const uint32_t k = src[i];
+        dst[hist[(k >> shift) & 255][digit]++] = k;
     }
 }
 
-void radix_sort_indices_uint32(const uint32_t* keys,    // array of keys (e.g., min_x of AABBs)
-                               uint32_t* indices,       // output: sorted indices
-                               uint32_t* temp_indices,  // scratch array of size 'count'
-                               size_t count) {
-    uint32_t hist[256];
+static void sort_radix_u32(uint32_t* data, size_t count, md_temp_scope_t temp) {
+    uint32_t hist[256][4];
+    radix_hist_u32(hist, data, count);
+    int passes[4];
+    const int num_passes = radix_offsets_u32(passes, hist, data[0], count);
+    if (num_passes == 0) return;
 
-    // Initialize indices
-    for (size_t i = 0; i < count; ++i) indices[i] = (uint32_t)i;
-
-    uint32_t* src = indices;
-    uint32_t* dst = temp_indices;
-
-    // 4 passes of 8-bit radix
-    for (int pass = 0; pass < 4; ++pass) {
-        MEMSET(hist, 0, sizeof(hist));
-
-        // Compute histogram for this pass
-        for (size_t i = 0; i < count; ++i) {
-            uint32_t key = (keys[src[i]] >> (pass * 8)) & 0xFF;
-            hist[key]++;
+    uint32_t* src = data;
+    uint32_t* dst = md_temp_alloc_array(temp, uint32_t, count);
+    for (int p = 0; p < num_passes; ++p) {
+        // The digit a constant in each: these loops are the time the sort takes
+        switch (passes[p]) {
+        case 0: radix_pass_u32(dst, src, count, hist, 0); break;
+        case 1: radix_pass_u32(dst, src, count, hist, 1); break;
+        case 2: radix_pass_u32(dst, src, count, hist, 2); break;
+        case 3: radix_pass_u32(dst, src, count, hist, 3); break;
+        default: ASSERT(false); break;
         }
-
-        // Prefix sum
-        uint32_t sum = 0;
-        for (int i = 0; i < 256; ++i) {
-            uint32_t tmp = hist[i];
-            hist[i] = sum;
-            sum += tmp;
-        }
-
-        // Sort pass
-        radix_pass_indices_8(dst, keys, src, count, hist, pass);
-
-        // Swap src and dst for next pass
         uint32_t* tmp = src;
         src = dst;
         dst = tmp;
     }
 
-    // After even number of passes, result is in 'indices' already
-    // If odd, copy back from temp
-    if (src != indices) {
-        MEMCPY(indices, src, count * sizeof(uint32_t));
+    // An odd number of passes leaves the keys in the scratch
+    if (src != data) {
+        MEMCPY(data, src, count * sizeof(uint32_t));
+    }
+}
+
+static void sort_radix_u64(uint64_t* data, size_t count, md_temp_scope_t temp) {
+    uint32_t hist[256][8];
+    radix_hist_u64(hist, data, count);
+    int passes[8];
+    const int num_passes = radix_offsets_u64(passes, hist, data[0], count);
+    if (num_passes == 0) return;
+
+    uint64_t* src = data;
+    uint64_t* dst = md_temp_alloc_array(temp, uint64_t, count);
+    uint32_t offset[256];
+    for (int p = 0; p < num_passes; ++p) {
+        const int shift = passes[p] * 8;
+        radix_column(offset, hist[0], 8, passes[p]);
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t k = src[i];
+            dst[offset[(k >> shift) & 255]++] = k;
+        }
+        uint64_t* tmp = src;
+        src = dst;
+        dst = tmp;
+    }
+
+    if (src != data) {
+        MEMCPY(data, src, count * sizeof(uint64_t));
+    }
+}
+
+// Each key with its index below it in one 64-bit value: the passes sort on the upper half, and the last keeps the index
+static void argsort_radix_u32(uint32_t* out_indices, const uint32_t* keys, size_t count, md_temp_scope_t temp) {
+    uint32_t hist[256][4];
+    radix_hist_u32(hist, keys, count);
+    int passes[4];
+    const int num_passes = radix_offsets_u32(passes, hist, keys[0], count);
+    uint32_t offset[256];
+
+    if (num_passes == 0) {
+        for (size_t i = 0; i < count; ++i) out_indices[i] = (uint32_t)i;
+        return;
+    }
+    if (num_passes == 1) {
+        const int shift = passes[0] * 8;
+        radix_column(offset, hist[0], 4, passes[0]);
+        for (size_t i = 0; i < count; ++i) {
+            out_indices[offset[(keys[i] >> shift) & 255]++] = (uint32_t)i;
+        }
+        return;
+    }
+
+    uint64_t* buf[2] = {
+        md_temp_alloc_array(temp, uint64_t, count),
+        num_passes > 2 ? md_temp_alloc_array(temp, uint64_t, count) : NULL,
+    };
+
+    {
+        const int shift = passes[0] * 8;
+        radix_column(offset, hist[0], 4, passes[0]);
+        uint64_t* dst = buf[0];
+        for (size_t i = 0; i < count; ++i) {
+            const uint32_t k = keys[i];
+            dst[offset[(k >> shift) & 255]++] = ((uint64_t)k << 32) | i;
+        }
+    }
+    for (int p = 1; p < num_passes - 1; ++p) {
+        const int shift = 32 + passes[p] * 8;
+        radix_column(offset, hist[0], 4, passes[p]);
+        const uint64_t* src = buf[(p - 1) & 1];
+        uint64_t* dst = buf[p & 1];
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t v = src[i];
+            dst[offset[(v >> shift) & 255]++] = v;
+        }
+    }
+    {
+        const int shift = 32 + passes[num_passes - 1] * 8;
+        radix_column(offset, hist[0], 4, passes[num_passes - 1]);
+        const uint64_t* src = buf[(num_passes - 2) & 1];
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t v = src[i];
+            out_indices[offset[(v >> shift) & 255]++] = (uint32_t)v;
+        }
+    }
+}
+
+// A 64-bit key leaves no room for its index: the two go together as a record of 16 bytes
+typedef struct radix_record_u64_t {
+    uint64_t key;
+    uint64_t idx;
+} radix_record_u64_t;
+
+static void argsort_radix_u64(uint32_t* out_indices, const uint64_t* keys, size_t count, md_temp_scope_t temp) {
+    uint32_t hist[256][8];
+    radix_hist_u64(hist, keys, count);
+    int passes[8];
+    const int num_passes = radix_offsets_u64(passes, hist, keys[0], count);
+    uint32_t offset[256];
+
+    if (num_passes == 0) {
+        for (size_t i = 0; i < count; ++i) out_indices[i] = (uint32_t)i;
+        return;
+    }
+    if (num_passes == 1) {
+        const int shift = passes[0] * 8;
+        radix_column(offset, hist[0], 8, passes[0]);
+        for (size_t i = 0; i < count; ++i) {
+            out_indices[offset[(keys[i] >> shift) & 255]++] = (uint32_t)i;
+        }
+        return;
+    }
+
+    radix_record_u64_t* buf[2] = {
+        md_temp_alloc_array(temp, radix_record_u64_t, count),
+        num_passes > 2 ? md_temp_alloc_array(temp, radix_record_u64_t, count) : NULL,
+    };
+
+    {
+        const int shift = passes[0] * 8;
+        radix_column(offset, hist[0], 8, passes[0]);
+        radix_record_u64_t* dst = buf[0];
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t k = keys[i];
+            dst[offset[(k >> shift) & 255]++] = (radix_record_u64_t){ k, i };
+        }
+    }
+    for (int p = 1; p < num_passes - 1; ++p) {
+        const int shift = passes[p] * 8;
+        radix_column(offset, hist[0], 8, passes[p]);
+        const radix_record_u64_t* src = buf[(p - 1) & 1];
+        radix_record_u64_t* dst = buf[p & 1];
+        for (size_t i = 0; i < count; ++i) {
+            const radix_record_u64_t r = src[i];
+            dst[offset[(r.key >> shift) & 255]++] = r;
+        }
+    }
+    {
+        const int shift = passes[num_passes - 1] * 8;
+        radix_column(offset, hist[0], 8, passes[num_passes - 1]);
+        const radix_record_u64_t* src = buf[(num_passes - 2) & 1];
+        for (size_t i = 0; i < count; ++i) {
+            out_indices[offset[(src[i].key >> shift) & 255]++] = (uint32_t)src[i].idx;
+        }
     }
 }
 
@@ -10408,22 +10595,73 @@ void md_util_sort_spatial_xyz(uint32_t* source, const float* xyz, size_t stride_
     md_temp_end(temp_scope);
 }
 
-void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count) {
-    if (!data || count <= 0) return;
+void md_util_sort_radix_u32(uint32_t* data, size_t count) {
+    if (!data || count <= 1) return;
+    ASSERT(count <= UINT32_MAX);
+
+    if (count <= RADIX_SMALL_COUNT) {
+        insertion_sort_u32(data, count);
+        return;
+    }
+    if (is_sorted_u32(data, count)) return;
 
     md_temp_scope_t temp_scope = md_temp_begin();
-    uint32_t* temp = md_temp_alloc_array(temp_scope, uint32_t, count);
-    sort_radix_inplace_uint32(data, count, temp);
+    sort_radix_u32(data, count, temp_scope);
     md_temp_end(temp_scope);
 }
 
-void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* in_keys, size_t count) {
-    ASSERT(in_keys);
-    ASSERT(out_indices);
+void md_util_sort_radix_u64(uint64_t* data, size_t count) {
+    if (!data || count <= 1) return;
+    ASSERT(count <= UINT32_MAX);
+
+    if (count <= RADIX_SMALL_COUNT) {
+        insertion_sort_u64(data, count);
+        return;
+    }
+    if (is_sorted_u64(data, count)) return;
 
     md_temp_scope_t temp_scope = md_temp_begin();
-    uint32_t* tmp_indices = md_temp_alloc_array(temp_scope, uint32_t, count);
-    sort_radix_uint32(out_indices, in_keys, count, tmp_indices);
+    sort_radix_u64(data, count, temp_scope);
+    md_temp_end(temp_scope);
+}
+
+void md_util_argsort_radix_u32(uint32_t* out_indices, const uint32_t* keys, size_t count) {
+    if (count == 0) return;
+    ASSERT(out_indices);
+    ASSERT(keys);
+    ASSERT(count <= UINT32_MAX);
+
+    if (count <= RADIX_SMALL_COUNT) {
+        insertion_argsort_u32(out_indices, keys, count);
+        return;
+    }
+    if (is_sorted_u32(keys, count)) {
+        for (size_t i = 0; i < count; ++i) out_indices[i] = (uint32_t)i;
+        return;
+    }
+
+    md_temp_scope_t temp_scope = md_temp_begin();
+    argsort_radix_u32(out_indices, keys, count, temp_scope);
+    md_temp_end(temp_scope);
+}
+
+void md_util_argsort_radix_u64(uint32_t* out_indices, const uint64_t* keys, size_t count) {
+    if (count == 0) return;
+    ASSERT(out_indices);
+    ASSERT(keys);
+    ASSERT(count <= UINT32_MAX);
+
+    if (count <= RADIX_SMALL_COUNT) {
+        insertion_argsort_u64(out_indices, keys, count);
+        return;
+    }
+    if (is_sorted_u64(keys, count)) {
+        for (size_t i = 0; i < count; ++i) out_indices[i] = (uint32_t)i;
+        return;
+    }
+
+    md_temp_scope_t temp_scope = md_temp_begin();
+    argsort_radix_u64(out_indices, keys, count, temp_scope);
     md_temp_end(temp_scope);
 }
 

@@ -16,7 +16,6 @@
 
 #include <float.h>
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
 
 // ### SECONDARY STRUCTURE ###
@@ -600,14 +599,6 @@ static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pa
     md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, cg_dssp_pair_cb, &param);
 }
 
-static int residue_pair_cmp(const void* a, const void* b) {
-    const residue_pair_t* x = (const residue_pair_t*)a;
-    const residue_pair_t* y = (const residue_pair_t*)b;
-    if (x->i != y->i) return x->i < y->i ? -1 : 1;
-    if (x->j != y->j) return x->j < y->j ? -1 : 1;
-    return 0;
-}
-
 // ### THE PATTERNS ###
 
 // Turns, helices and bends per range, bridges and ladders between any two residues, from the bonds, the bends (dssp_bend,
@@ -921,13 +912,19 @@ static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capa
     }
     if (num_trace > 0) {
         dssp_trace_bonds(res_hbonds, &sheet_candidates, res_bend, xyz, cell, backbone, res_range_id, temp);
-        // A bond of a trace gives each pair it can begin a bridge in, so the same pair comes more than once
+        // A bond of a trace gives each pair it can begin a bridge in, so the same pair comes more than once: the pairs are
+        // sorted on (i, j) as one key, i in the upper half, and the repeats dropped
         const size_t n = md_array_size(sheet_candidates);
         if (n > 1) {
-            qsort(sheet_candidates, n, sizeof(residue_pair_t), residue_pair_cmp);
-            size_t u = 1;
-            for (size_t c = 1; c < n; ++c) {
-                if (residue_pair_cmp(&sheet_candidates[u - 1], &sheet_candidates[c]) != 0) sheet_candidates[u++] = sheet_candidates[c];
+            uint64_t* keys = md_temp_alloc_array(temp, uint64_t, n);
+            for (size_t c = 0; c < n; ++c) {
+                keys[c] = ((uint64_t)sheet_candidates[c].i << 32) | sheet_candidates[c].j;
+            }
+            md_util_sort_radix_u64(keys, n);
+            size_t u = 0;
+            for (size_t c = 0; c < n; ++c) {
+                if (c > 0 && keys[c] == keys[c - 1]) continue;
+                sheet_candidates[u++] = (residue_pair_t){ (uint32_t)(keys[c] >> 32), (uint32_t)keys[c] };
             }
             md_array_shrink(sheet_candidates, u);
         }
