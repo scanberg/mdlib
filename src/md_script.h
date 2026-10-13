@@ -189,6 +189,10 @@ md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir,
 // Compared within one process only. 0 if there is no such property.
 uint64_t md_script_ir_property_fingerprint(const md_script_ir_t* ir, str_t name);
 
+// Where the property is named in the source it was compiled from: the bytes of its name where it is assigned. Empty
+// if there is no such property.
+md_script_range_marker_t md_script_ir_property_range(const md_script_ir_t* ir, str_t name);
+
 // ### VISUALIZATION REFERENCES ###
 // A property is found by name, which is what carries over from one compilation to the next: the reference
 // made from it belongs to this compilation of ir. It refers to nothing if ir has no such property.
@@ -245,8 +249,8 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
 // md_script_ir_property_fingerprint), whatever it is called now: its values, and the frames they are of, which
 // are not evaluated again. And its slots, with what they hold. A slot of a property which changed is kept as asked
 // for, empty, as long as there is still an aggregate of its name. Nothing over another number of frames, which is
-// another run. prev must be over the same system and run and must not be evaluating; it is not changed, and may be
-// freed after. The versions of what is published, and of the slots, carry on from prev's, so one of the new
+// another run. A distribution taken over is kept the way it was kept, per frame or not, whatever the budget. prev must
+// be over the same system and run and must not be evaluating; it is not changed, and may be freed after. The versions of what is published, and of the slots, carry on from prev's, so one of the new
 // evaluation never equals one of prev.
 md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const md_script_ir_t* ir, const md_script_eval_desc_t* desc, struct md_allocator_i* alloc);
 
@@ -258,6 +262,34 @@ md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, str_t i
 
 // The frames which remain to be evaluated, for the properties and for the slots, allocated with alloc
 md_bitset_t md_script_eval_pending_frames(md_script_eval_t* eval, struct md_allocator_i* alloc);
+
+// What the property was computed from, as it was compiled when the evaluation was made (see
+// md_script_ir_property_fingerprint). 0 if there is no such property.
+uint64_t md_script_eval_property_fingerprint(const md_script_eval_t* eval, str_t ident);
+
+// ### WHAT AN EDIT CHANGES ###
+// How the properties of a compilation stand against an evaluation made from an earlier one: what
+// md_script_eval_create_from(eval, ir) would take over, and what would then remain to be evaluated. Nothing is
+// evaluated or copied to find out, so it can be asked after every compilation, and while eval is being evaluated.
+typedef enum md_script_eval_status_t {
+    MD_SCRIPT_EVAL_STATUS_NEW = 0,      // nothing to take over: the evaluation has no property computed alike, nor of its name
+    MD_SCRIPT_EVAL_STATUS_CHANGED,      // the evaluation has a property of its name computed from something else, which is let go
+    MD_SCRIPT_EVAL_STATUS_HELD,         // taken over from a property computed alike, with the frames it holds
+} md_script_eval_status_t;
+
+typedef struct md_script_eval_plan_t {
+    md_script_eval_status_t status;
+    str_t    from;          // HELD: the property it is taken over from, which is named otherwise when it was renamed
+    uint32_t num_frames;    // the frames it would hold
+    uint32_t num_pending;   // the frames it would have evaluated, for itself and its slots
+} md_script_eval_plan_t;
+
+// One plan per property of ir, in its order, to out_plans, against an evaluation of num_frames frames made from eval.
+// And the frames which would remain to be evaluated, for all of them and their slots, to out_pending when it is not
+// NULL. Allocated with alloc. eval may be NULL: nothing is taken over. False, and nothing written, if ir is not valid
+// or cap is less than its number of properties (md_script_ir_property_count).
+bool md_script_eval_plan(md_script_eval_plan_t* out_plans, size_t cap, md_bitset_t* out_pending, const md_script_eval_t* eval,
+                         const md_script_ir_t* ir, size_t num_frames, struct md_allocator_i* alloc);
 
 // ### SLOTS ###
 // A slot is a distribution or a volume over frames of the caller's choosing, asked for under a key of its own. Two

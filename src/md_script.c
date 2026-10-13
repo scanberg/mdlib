@@ -7333,6 +7333,17 @@ uint64_t md_script_ir_property_fingerprint(const md_script_ir_t* ir, str_t name)
     return (idx < 0 || (size_t)idx >= md_array_size(ir->property_fingerprints)) ? 0 : ir->property_fingerprints[idx];
 }
 
+md_script_range_marker_t md_script_ir_property_range(const md_script_ir_t* ir, str_t name) {
+    const int idx = ir_property_index(ir, name);
+    if (idx < 0) return (md_script_range_marker_t){0};
+    // The assignment, or the name within a list of them: its name either way
+    const ast_node_t* node = ir->property_nodes[idx];
+    if (node->type == AST_ASSIGNMENT && md_array_size(node->children) > 0) {
+        node = node->children[0];
+    }
+    return (md_script_range_marker_t){ node->token.beg, node->token.end };
+}
+
 md_script_vis_ref_t md_script_ir_property_vis_ref(const md_script_ir_t* ir, str_t name) {
     const int idx = ir_property_index(ir, name);
     return idx < 0 ? (md_script_vis_ref_t){0} : make_vis_ref(ir, ir->property_nodes[idx]);
@@ -7498,7 +7509,20 @@ static void compute_needs(md_script_eval_t* eval, const md_script_ir_t* ir) {
     md_temp_end(temp);
 }
 
-md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_script_eval_desc_t* desc, md_allocator_i* alloc) {
+// The property of prev computed from the same thing (md_script_ir_property_fingerprint), the first of them: what a
+// property of that fingerprint takes over (md_script_eval_create_from). -1 if there is none, and over another number
+// of frames, which is another run.
+static int taken_over_from(const md_script_eval_t* prev, uint64_t fingerprint, size_t num_frames) {
+    if (!prev || !fingerprint || prev->frame_count != num_frames) return -1;
+    for (size_t j = 0; j < md_array_size(prev->props); ++j) {
+        if (prev->props[j].fingerprint == fingerprint) return (int)j;
+    }
+    return -1;
+}
+
+// An evaluation for ir. Of what prev holds nothing is taken over here, but a distribution which will be is kept the way
+// it is kept in prev, per frame or not, so that it comes along as it is (see md_script_eval_create_from).
+static md_script_eval_t* eval_create(const md_script_ir_t* ir, const md_script_eval_desc_t* desc, md_allocator_i* alloc, const md_script_eval_t* prev) {
     if (!desc) {
         MD_LOG_ERROR("Script eval: Descriptor was null");
         return NULL;
@@ -7561,8 +7585,6 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     // Sized up front rather than pushed one at a time: a published attribute may hold the address
     // of the property it describes, and a growing array would move it out from under one.
     const size_t num_props = md_array_size(ir->property_names);
-    const size_t budget = desc->frame_budget ? desc->frame_budget : MD_SCRIPT_EVAL_FRAME_BUDGET_DEFAULT;
-    size_t kept = 0;
     md_array_resize(eval->props, num_props, eval->arena);
     for (size_t i = 0; i < num_props; ++i) {
         eval_property_t* prop = &eval->props[i];
@@ -7572,17 +7594,30 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
         // Reserved up front, so marking a frame never moves the words while another thread reads them
         md_bitmask_init(&prop->done, 0, (uint32_t)num_frames, eval->arena);
         md_bitmask_reserve(&prop->done, 0, (uint32_t)num_frames);
+    }
 
-        if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-            // Kept per frame while there is room for it, in script order
+    // Distributions are kept per frame while there is room for them in the budget, in script order. One taken over
+    // from prev is kept the way it was kept there, and has its room first.
+    const size_t budget = desc->frame_budget ? desc->frame_budget : MD_SCRIPT_EVAL_FRAME_BUDGET_DEFAULT;
+    size_t kept = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t i = 0; i < num_props; ++i) {
+            eval_property_t* prop = &eval->props[i];
+            if (prop->kind != MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) continue;
+            const int j = taken_over_from(prev, prop->fingerprint, num_frames);
+            if ((pass == 0) != (j >= 0)) continue;
             const size_t bytes = num_frames * prop->num_values * sizeof(float);
-            if (2 * bytes <= budget - kept) {
+            const bool per_frame = j >= 0 ? prev->props[j].frame_values != NULL : kept <= budget && 2 * bytes <= budget - kept;
+            if (per_frame) {
                 prop->frame_values  = md_alloc(eval->arena, bytes);
                 prop->frame_weights = md_alloc(eval->arena, bytes);
                 kept += 2 * bytes;
             }
         }
-        clear_property(prop);
+    }
+
+    for (size_t i = 0; i < num_props; ++i) {
+        clear_property(&eval->props[i]);
     }
 
     eval->slots = md_alloc(eval->arena, MD_SCRIPT_EVAL_MAX_SLOTS * sizeof(eval_slot_t));
@@ -7594,6 +7629,10 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
     md_mutex_init(&eval->frame_lock);
 
     return eval;
+}
+
+md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_script_eval_desc_t* desc, md_allocator_i* alloc) {
+    return eval_create(ir, desc, alloc, NULL);
 }
 
 // Copies what src holds into dst, a property of the same kind and shape: its values and the frames they are of
@@ -7651,8 +7690,11 @@ static int slot_destination(bool* out_held, const md_script_eval_t* eval, const 
 }
 
 md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const md_script_ir_t* ir, const md_script_eval_desc_t* desc, md_allocator_i* alloc) {
-    md_script_eval_t* eval = md_script_eval_create_desc(ir, desc, alloc);
-    if (!eval || !validate_eval(prev)) {
+    if (!validate_eval(prev)) {
+        return md_script_eval_create_desc(ir, desc, alloc);
+    }
+    md_script_eval_t* eval = eval_create(ir, desc, alloc, prev);
+    if (!eval) {
         return eval;
     }
 
@@ -7662,27 +7704,22 @@ md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const
     eval->version_counter = MAX(eval->version_counter, md_atomic_load64(&prev->version_counter));
 
     const size_t num_props  = md_array_size(eval->props);
-    const size_t prev_props = md_array_size(prev->props);
     md_temp_scope_t temp = md_temp_begin();
     int* from = md_temp_alloc_array(temp, int, MAX(num_props, 1));
     for (size_t i = 0; i < num_props; ++i) from[i] = -1;
 
-    // A property is taken over by what it is computed from, whatever it is called now. Nothing over another number
-    // of frames, which is another run.
+    // A property is taken over by what it is computed from, whatever it is called now (taken_over_from). Nothing over
+    // another number of frames, which is another run.
     const bool same_run = prev->frame_count == eval->frame_count;
     md_mutex_t* prev_lock = (md_mutex_t*)&prev->frame_lock;
     md_mutex_lock(prev_lock);
-    for (size_t i = 0; i < num_props && same_run; ++i) {
+    for (size_t i = 0; i < num_props; ++i) {
         eval_property_t* dst = &eval->props[i];
-        if (!dst->fingerprint) continue;
-        for (size_t j = 0; j < prev_props; ++j) {
-            const eval_property_t* src = &prev->props[j];
-            if (src->fingerprint != dst->fingerprint) continue;
-            if (same_shape(dst, src)) {
-                adopt_property(dst, src, eval->frame_count);
-                from[i] = (int)j;
-            }
-            break;
+        const int j = taken_over_from(prev, dst->fingerprint, eval->frame_count);
+        // Computed alike, it is alike: of the same kind and shape, and kept the same way (eval_create)
+        if (j >= 0 && same_shape(dst, &prev->props[j])) {
+            adopt_property(dst, &prev->props[j], eval->frame_count);
+            from[i] = j;
         }
     }
 
@@ -7774,6 +7811,68 @@ md_bitset_t md_script_eval_property_frames(const md_script_eval_t* eval, str_t i
     if (!validate_eval(eval) || !alloc) return md_bitset_empty_set();
     const int p = find_property(eval, ident);
     return p >= 0 ? frames_held(eval, all_kinds, p, alloc) : md_bitset_empty_set();
+}
+
+uint64_t md_script_eval_property_fingerprint(const md_script_eval_t* eval, str_t ident) {
+    if (!validate_eval(eval)) return 0;
+    const int p = find_property(eval, ident);
+    return p >= 0 ? eval->props[p].fingerprint : 0;
+}
+
+bool md_script_eval_plan(md_script_eval_plan_t* out_plans, size_t cap, md_bitset_t* out_pending, const md_script_eval_t* eval, const md_script_ir_t* ir, size_t num_frames, md_allocator_i* alloc) {
+    if (!out_plans || !md_script_ir_valid(ir) || !alloc || cap < md_array_size(ir->property_names)) return false;
+    const bool have = validate_eval(eval);
+    const uint32_t n = (uint32_t)num_frames;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_bitmask_t pending = md_bitmask_create(0, n, temp_alloc);
+    md_bitmask_t mine    = md_bitmask_create(0, n, temp_alloc);
+    md_bitmask_t moving  = md_bitmask_create(0, n, temp_alloc);
+
+    // As md_script_eval_create_from would have it: what is computed alike is taken over (taken_over_from), with the
+    // frames it holds and its slots as they are, and kept the way it is kept. Anything else starts over.
+    md_mutex_t* lock = have ? (md_mutex_t*)&eval->frame_lock : NULL;
+    if (lock) md_mutex_lock(lock);
+    for (size_t i = 0; i < md_array_size(ir->property_names); ++i) {
+        md_script_eval_plan_t* plan = &out_plans[i];
+        MEMSET(plan, 0, sizeof(*plan));
+        const uint64_t fingerprint = i < md_array_size(ir->property_fingerprints) ? ir->property_fingerprints[i] : 0;
+        const int j = have ? taken_over_from(eval, fingerprint, num_frames) : -1;
+        if (j < 0) {
+            plan->status = (have && find_property(eval, ir->property_names[i]) >= 0) ? MD_SCRIPT_EVAL_STATUS_CHANGED : MD_SCRIPT_EVAL_STATUS_NEW;
+            plan->num_pending = n;
+            md_bitmask_set_range(&pending, 0, n);
+            continue;
+        }
+        const eval_property_t* src = &eval->props[j];
+        plan->status     = MD_SCRIPT_EVAL_STATUS_HELD;
+        plan->from       = str_copy(src->ident, alloc);
+        plan->num_frames = (uint32_t)md_bitmask_count(&src->done);
+
+        // The frames it does not hold, and those its slots have to add or take out
+        md_bitmask_clear(&mine);
+        md_bitmask_set_range(&mine, 0, n);
+        md_bitmask_andnot(&mine, md_bitmask_view(&src->done));
+        for (uint32_t k = 0; k < eval->num_slots_used; ++k) {
+            eval_slot_t* s = &eval->slots[k];
+            if (!s->active || !s->sum_values || s->prop != (uint32_t)j) continue;
+            md_mutex_lock(&s->lock);
+            md_bitmask_assign(&moving, md_bitmask_view(&s->wanted));
+            md_bitmask_xor(&moving, md_bitmask_view(&s->included));
+            md_bitmask_or(&mine, md_bitmask_view(&moving));
+            md_mutex_unlock(&s->lock);
+        }
+        plan->num_pending = (uint32_t)md_bitmask_count(&mine);
+        md_bitmask_or(&pending, md_bitmask_view(&mine));
+    }
+    if (lock) md_mutex_unlock(lock);
+
+    if (out_pending) {
+        *out_pending = md_bitmask_extract(&pending, alloc);
+    }
+    md_temp_end(temp);
+    return true;
 }
 
 md_bitset_t md_script_eval_pending_frames(md_script_eval_t* eval, md_allocator_i* alloc) {

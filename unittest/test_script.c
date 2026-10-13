@@ -5044,6 +5044,146 @@ UTEST_F(script, slots_read_while_evaluating) {
     md_arena_allocator_destroy(alloc);
 }
 
+// What an edit changes is known before anything is evaluated, and it is what md_script_eval_create_from then does
+UTEST_F(script, plan_is_what_create_from_does) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t n = (uint32_t)script_frames(mol);
+    ASSERT_GT(n, 6u);
+    const md_script_eval_desc_t desc = { .num_frames = n, .frame_budget = 1 };
+
+    md_script_ir_t* ir1 = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir1, STR_LIT(
+        "d = distance(1, 2);"
+        "r = rdf(element('C'), element('O'), 6.0);"
+        "s = rdf(element('N'), element('O'), 6.0);"), mol, NULL));
+    md_script_eval_t* eval1 = md_script_eval_create_desc(ir1, &desc, alloc);
+    ASSERT_TRUE(eval1);
+
+    // Against no evaluation, everything is new
+    md_script_eval_plan_t plans[8] = {0};
+    md_bitset_t pending = {0};
+    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, NULL, ir1, n, alloc));
+    EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_NEW, plans[0].status);
+    EXPECT_EQ(n, plans[0].num_pending);
+    EXPECT_EQ((size_t)n, md_bitset_count(pending));
+
+    // Half of it evaluated, and s over frames of its own
+    const md_bitset_t sub = md_bitset_range(2, n - 2);
+    ASSERT_TRUE(md_script_eval_slot_request(eval1, 1, STR_LIT("s"), &sub));
+    ASSERT_TRUE(md_script_eval_frame_range(eval1, ir1, mol, SCRIPT_RUN, 0, n / 2));
+    EXPECT_EQ(md_script_ir_property_fingerprint(ir1, STR_LIT("r")), md_script_eval_property_fingerprint(eval1, STR_LIT("r")));
+    EXPECT_EQ((uint64_t)0, md_script_eval_property_fingerprint(eval1, STR_LIT("none")));
+
+    // Against itself, what remains is what remains
+    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, eval1, ir1, n, alloc));
+    EXPECT_TRUE(bits_equal(pending, md_script_eval_pending_frames(eval1, alloc)));
+    EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_HELD, plans[0].status);
+    EXPECT_EQ(n / 2, plans[0].num_frames);
+    EXPECT_EQ(n - n / 2, plans[0].num_pending);
+
+    // d renamed, r changed, s as it was, a new
+    md_script_ir_t* ir2 = md_script_ir_create(alloc);
+    const str_t src2 = STR_LIT(
+        "dist = distance(1, 2);\n"
+        "r = rdf(element('C'), element('O'), 5.0);\n"
+        "s = rdf(element('N'), element('O'), 6.0);\n"
+        "a = angle(1, 2, 3);\n"
+        "{cx, cy, cz} = coord(1);");
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir2, src2, mol, NULL));
+    {
+        // Where each is named
+        const char* named[3] = { "dist", "s", "cy" };
+        for (int i = 0; i < 3; ++i) {
+            const md_script_range_marker_t range = md_script_ir_property_range(ir2, str_from_cstr(named[i]));
+            ASSERT_LT(range.beg, range.end);
+            EXPECT_TRUE(str_eq(str_substr(src2, range.beg, range.end - range.beg), str_from_cstr(named[i])));
+        }
+        const md_script_range_marker_t none = md_script_ir_property_range(ir2, STR_LIT("none"));
+        EXPECT_EQ(none.beg, none.end);
+    }
+    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, eval1, ir2, n, alloc));
+    EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_HELD, plans[0].status);
+    EXPECT_TRUE(str_eq(plans[0].from, STR_LIT("d")));
+    EXPECT_EQ(n / 2, plans[0].num_frames);
+    EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_CHANGED, plans[1].status);
+    EXPECT_EQ(0u, plans[1].num_frames);
+    EXPECT_EQ(n, plans[1].num_pending);
+    EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_HELD, plans[2].status);
+    EXPECT_TRUE(str_eq(plans[2].from, STR_LIT("s")));
+    EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_NEW, plans[3].status);
+
+    // and so it goes
+    md_script_eval_t* eval2 = md_script_eval_create_from(eval1, ir2, &desc, alloc);
+    ASSERT_TRUE(eval2);
+    EXPECT_TRUE(bits_equal(pending, md_script_eval_pending_frames(eval2, alloc)));
+    const char* names[4] = { "dist", "r", "s", "a" };
+    for (int i = 0; i < 4; ++i) {
+        const str_t name = str_from_cstr(names[i]);
+        EXPECT_EQ((uint64_t)plans[i].num_frames, md_bitset_count(md_script_eval_property_frames(eval2, name, alloc)));
+    }
+
+    // With s alone: what it has not evaluated, and what its slot has to add, which is within that
+    md_script_ir_t* ir3 = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir3, STR_LIT("s = rdf(element('N'), element('O'), 6.0);"), mol, NULL));
+    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, eval1, ir3, n, alloc));
+    EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_HELD, plans[0].status);
+    md_script_eval_t* eval3 = md_script_eval_create_from(eval1, ir3, &desc, alloc);
+    EXPECT_TRUE(bits_equal(pending, md_script_eval_pending_frames(eval3, alloc)));
+    EXPECT_EQ((size_t)(n - n / 2), md_bitset_count(pending));
+    EXPECT_EQ(n - n / 2, plans[0].num_pending);
+
+    // Too little room: nothing is written
+    EXPECT_FALSE(md_script_eval_plan(plans, 3, &pending, eval1, ir2, n, alloc));
+
+    // Over another number of frames, nothing is taken over
+    ASSERT_TRUE(md_script_eval_plan(plans, ARRAY_SIZE(plans), &pending, eval1, ir3, n - 1, alloc));
+    EXPECT_EQ(MD_SCRIPT_EVAL_STATUS_CHANGED, plans[0].status);
+
+    md_script_eval_free(eval3);
+    md_script_eval_free(eval2);
+    md_script_eval_free(eval1);
+    md_script_ir_free(ir3);
+    md_script_ir_free(ir2);
+    md_script_ir_free(ir1);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A distribution taken over is kept as it was, per frame or not, whatever the budget of the new evaluation: what it
+// holds comes along, its slots too
+UTEST_F(script, taken_over_distribution_is_kept_as_it_was) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(32));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t n = (uint32_t)script_frames(mol);
+    ASSERT_GT(n, 6u);
+    const md_bitset_t sub = md_bitset_range(2, n - 2);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("r = rdf(element('C'), element('O'), 6.0);"), mol, NULL));
+    for (int kept = 0; kept < 2; ++kept) {
+        const md_script_eval_desc_t before = { .num_frames = n, .frame_budget = kept ? 0 : 1 };
+        const md_script_eval_desc_t after  = { .num_frames = n, .frame_budget = kept ? 1 : 0 };
+        md_script_eval_t* eval1 = md_script_eval_create_desc(ir, &before, alloc);
+        ASSERT_TRUE(md_script_eval_slot_request(eval1, 1, STR_LIT("r"), &sub));
+        ASSERT_TRUE(md_script_eval_frame_range(eval1, ir, mol, SCRIPT_RUN, 0, n));
+
+        md_script_eval_t* eval2 = md_script_eval_create_from(eval1, ir, &after, alloc);
+        EXPECT_EQ(kept != 0, find_eval_property(eval2, STR_LIT("r"))->frame_values != NULL);
+        EXPECT_EQ((size_t)0, md_bitset_count(md_script_eval_pending_frames(eval2, alloc)));
+        EXPECT_EQ(n - 4, slot_info_of(eval2, 1, STR_LIT("r")).num_frames);
+
+        // and a new one is kept as the budget says
+        md_script_eval_t* eval3 = md_script_eval_create_desc(ir, &after, alloc);
+        EXPECT_EQ(kept == 0, find_eval_property(eval3, STR_LIT("r"))->frame_values != NULL);
+
+        md_script_eval_free(eval3);
+        md_script_eval_free(eval2);
+        md_script_eval_free(eval1);
+    }
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
 // ### DISTRIBUTIONS ###
 // A distribution is its own type, [n][bins], with the weight of every bin beside its value rather than in the type
 
