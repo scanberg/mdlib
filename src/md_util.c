@@ -557,6 +557,11 @@ static const char* amino_acids[] = {
 
     // Amber
     "HID", "HIE", "HIP", "LYN", "ASH", "GLH",
+
+    // Martini: the neutral Arg, Asp, Glu, Lys and the charged His of Martini 2 (HISH is GROMOS's too) and of Martini 3
+    // beta (HIH), and the lipidated residues of Martini 3: farnesyl, geranylgeranyl and palmitoyl Cys, myristoyl Gly
+    "ARG0", "ASP0", "GLU0", "LYS0", "HISH", "HIH",
+    "CYSF", "CYSG", "CYSP", "GLYM",
 };
 
 #if 0
@@ -5514,35 +5519,45 @@ typedef struct {
 // SQd
 
 
+// The residue names that have the beads of a standard residue: its protonation states (CHARMM, Amber, GROMOS, Martini 2
+// and Martini 3 beta names), and the lipidated residues of Martini 3, whose tails are beads of their own (C# below)
+#define CG_ARG "ARG|ARG0"
+#define CG_ASP "ASP|ASH|ASPP|ASP0"
+#define CG_CYS "CYS|CYX|CYSF|CYSG|CYSP"
+#define CG_GLU "GLU|GLH|GLUP|GLU0"
+#define CG_GLY "GLY|GLYM"
+#define CG_HIS "HIS|HSD|HSE|HSP|HID|HIE|HIP|HISE|HISH|HIH"
+#define CG_LYS "LYS|LSN|LYN|LYS0"
+
 // Predefined atom types (This include coarse grained types)
 static const atom_type_t predefined_atom_types[] = {
     // Martini CG types (BB) + (SC*)
     {"ALA", "BB",  0,   89.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ARG", "BB",  0,  174.20f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ARG", "SC1", 0,  101.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ARG", "SC2", 0,   70.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_ARG, "BB",  0,  174.20f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_ARG, "SC1", 0,  101.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_ARG, "SC2", 0,   70.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
     {"ASN", "BB",  0,  132.12f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
     {"ASN", "SC1", 0,   87.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ASP", "BB",  0,  133.10f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ASP", "SC1", 0,   96.06f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"CYS", "BB",  0,  121.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"CYS", "SC1", 0,  122.17f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_ASP, "BB",  0,  133.10f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_ASP, "SC1", 0,   96.06f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+	{CG_CYS, "BB",  0,  121.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_CYS, "SC1", 0,  122.17f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
     {"GLN", "BB",  0,  146.15f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
     {"GLN", "SC1", 0,  111.14f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"GLU", "BB",  0,  147.13f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"GLU", "SC1", 0,  109.12f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"GLY", "BB",  0,   75.07f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"HIS", "BB",  0,  155.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"HIS", "SC1", 0,  110.14f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"HIS", "SC2", 0,   82.11f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"HIS", "SC3", 0,   40.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_GLU, "BB",  0,  147.13f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_GLU, "SC1", 0,  109.12f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_GLY, "BB",  0,   75.07f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_HIS, "BB",  0,  155.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_HIS, "SC1", 0,  110.14f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+	{CG_HIS, "SC2", 0,   82.11f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+	{CG_HIS, "SC3", 0,   40.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
     {"ILE", "BB",  0,  131.18f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
     {"ILE", "SC1", 0,  113.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
     {"LEU", "BB",  0,  131.18f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
     {"LEU", "SC1", 0,  113.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"LYS", "BB",  0,  146.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"LYS", "SC1", 0,  128.17f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"LYS", "SC2", 0,   84.11f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_LYS, "BB",  0,  146.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+    {CG_LYS, "SC1", 0,  128.17f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+	{CG_LYS, "SC2", 0,   84.11f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 	{"MET", "BB",  0,  149.21f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
     {"MET", "SC1", 0,  149.21f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
     {"PHE", "BB",  0,  165.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
@@ -5566,11 +5581,15 @@ static const atom_type_t predefined_atom_types[] = {
     {"VAL", "BB",  0,  117.15f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
 	{"VAL", "SC1", 0,   99.13f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 
-    // The Martini beads of every other amino acid: the residue names that tell a protonation state (HSD, HSE, HSP,
-    // LSN, HID, HIE, HIP, ASH, GLH, CYX, ...), and the beads Martini 3 has beyond the Martini 2 sets above (Tyr SC4,
-    // Trp SC5). No atomistic force field names an atom BB or SC#. The mass is that of a regular Martini bead.
+    // The lipid tails of the lipidated residues of Martini 3
+    {"CYSF|CYSG|CYSP|GLYM", "C#", 0, 72.00f, 4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+
+    // The Martini beads of every other amino acid, and those Martini 3 has beyond the Martini 2 sets above (Ala and Pro
+    // SC1, Tyr SC4, Trp SC5). No atomistic force field names an atom BB or SC#. The mass is that of a regular bead.
     {NULL,  "BB",  0,   72.00f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
     {NULL,  "SC#", 0,   72.00f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    // The charge dummies of the polar side chains of polarizable Martini 2 (martini22p, elnedyn22p), of mass 36
+    {NULL,  "SCP|SCN", 0, 36.00f,  4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 
 	{"POPE", "PO4", 0,  95.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
 	{"POPE", "GL1", 0,  55.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
@@ -5695,6 +5714,14 @@ static const atom_type_t predefined_atom_types[] = {
 
     {"C##", "C#?", 0, 1727.7f,   13.5f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
 };
+
+#undef CG_ARG
+#undef CG_ASP
+#undef CG_CYS
+#undef CG_GLU
+#undef CG_GLY
+#undef CG_HIS
+#undef CG_LYS
 
 static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {
     char buf[64];

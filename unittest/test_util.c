@@ -761,27 +761,92 @@ UTEST(util, martini3_peptide_pdb) {
     md_vm_arena_destroy(alloc);
 }
 
-// The residue names that tell a protonation state, as martinize2 writes them (the CHARMM and the Amber names), and
-// Ala and Pro, which have a side chain bead in Martini 3 and none in Martini 2, in a chain of one each: BB beads 3.5A
-// apart, and a side chain bead 3A off each
+// The residue names beyond the standard ones that martinize2 writes, in a chain of one each with the beads it gives
+// them: the protonation states (CHARMM, Amber, GROMOS and Martini names), the lipidated residues of Martini 3 with their
+// tails, Ala and Pro, which have a side chain bead in Martini 3 and none in Martini 2, and the charge dummies (SCP, SCN)
+// of polarizable Martini 2. BB beads 3.5A apart, and the other beads of a residue 3A apart off its BB. A name which
+// stands for a standard residue gives the beads they have in common that residue's masses.
 UTEST(util, martini_residue_names) {
-    static const char* names[] = {"HSD", "HSE", "HSP", "HID", "HIE", "HIP", "LSN", "LYN", "ASH", "ASPP", "GLH", "GLUP", "CYX", "ALA", "PRO"};
-    const int n = (int)ARRAY_SIZE(names);
+    static const struct { const char* name; const char* parent; const char* beads[11]; } res[] = {
+        {"HIS",  NULL,  {"BB", "SC1", "SC2", "SC3"}},
+        {"HSD",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HSE",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HSP",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HID",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HIE",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HIP",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HISE", "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HISH", "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"HIH",  "HIS", {"BB", "SC1", "SC2", "SC3"}},
+        {"LYS",  NULL,  {"BB", "SC1", "SC2"}},
+        {"LSN",  "LYS", {"BB", "SC1", "SC2"}},
+        {"LYN",  "LYS", {"BB", "SC1", "SC2"}},
+        {"LYS0", "LYS", {"BB", "SC1", "SC2"}},
+        {"ASP",  NULL,  {"BB", "SC1"}},
+        {"ASH",  "ASP", {"BB", "SC1"}},
+        {"ASPP", "ASP", {"BB", "SC1"}},
+        {"ASP0", "ASP", {"BB", "SC1"}},
+        {"GLU",  NULL,  {"BB", "SC1"}},
+        {"GLH",  "GLU", {"BB", "SC1"}},
+        {"GLUP", "GLU", {"BB", "SC1"}},
+        {"GLU0", "GLU", {"BB", "SC1"}},
+        {"ARG",  NULL,  {"BB", "SC1", "SC2"}},
+        {"ARG0", "ARG", {"BB", "SC1", "SC2"}},
+        {"CYS",  NULL,  {"BB", "SC1"}},
+        {"CYX",  "CYS", {"BB", "SC1"}},
+        {"CYSF", "CYS", {"BB", "SC1", "C1", "C2", "C3", "C4", "C5", "C6"}},
+        {"CYSG", "CYS", {"BB", "SC1", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"}},
+        {"CYSP", "CYS", {"BB", "SC1", "C1", "C2", "C3", "C4"}},
+        {"GLY",  NULL,  {"BB"}},
+        {"GLYM", "GLY", {"BB", "C1", "C2", "C3", "C4"}},
+        {"ALA",  NULL,  {"BB", "SC1"}},
+        {"PRO",  NULL,  {"BB", "SC1"}},
+        {"ASN",  NULL,  {"BB", "SC1", "SCP", "SCN"}},
+        {"LYS",  NULL,  {"BB", "SC1", "SC2", "SCP"}},
+    };
+    const int n = (int)ARRAY_SIZE(res);
 
-    char text[4096];
-    int len = snprintf(text, sizeof(text), "Martini protonation variants\n%5d\n", 2 * n);
+    int num_beads = 0;
+    for (int i = 0; i < n; ++i) {
+        for (int k = 0; k < (int)ARRAY_SIZE(res[i].beads) && res[i].beads[k]; ++k) num_beads += 1;
+    }
+    char text[16384];
+    int len = snprintf(text, sizeof(text), "Martini residue names\n%5d\n", num_beads);
+    int atom_nr = 0;
     for (int i = 0; i < n; ++i) {
         const float x = 1.0f + 0.35f * (float)i;
-        len += snprintf(text + len, sizeof(text) - len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", i + 1, names[i], "BB",  2 * i + 1, x, 1.0f, 1.0f);
-        len += snprintf(text + len, sizeof(text) - len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", i + 1, names[i], "SC1", 2 * i + 2, x, 1.3f, 1.0f);
+        for (int k = 0; k < (int)ARRAY_SIZE(res[i].beads) && res[i].beads[k]; ++k) {
+            len += snprintf(text + len, sizeof(text) - len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", i + 1, res[i].name, res[i].beads[k], ++atom_nr, x, 1.0f + 0.3f * (float)k, 1.0f);
+        }
     }
-    len += snprintf(text + len, sizeof(text) - len, "  10.00000  10.00000  10.00000\n");
+    len += snprintf(text + len, sizeof(text) - len, "  20.00000  20.00000  20.00000\n");
     ASSERT_LT(len, (int)sizeof(text));
 
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}));
+    ASSERT_EQ((size_t)n, md_system_component_count(&sys));
+
+    for (int i = 0; i < n; ++i) {
+        if (!res[i].parent) continue;
+        int p = 0;
+        while (p < n && strcmp(res[p].name, res[i].parent) != 0) ++p;
+        ASSERT_LT(p, n);
+        const md_urange_t ri = md_component_atom_range(&sys.component, i);
+        const md_urange_t rp = md_component_atom_range(&sys.component, p);
+        size_t num_shared = 0;
+        for (uint32_t a = ri.beg; a < ri.end; ++a) {
+            for (uint32_t b = rp.beg; b < rp.end; ++b) {
+                if (str_eq(md_atom_name(&sys.atom, a), md_atom_name(&sys.atom, b))) {
+                    EXPECT_EQ(md_atom_mass(&sys.atom, b), md_atom_mass(&sys.atom, a));
+                    num_shared += 1;
+                }
+            }
+        }
+        EXPECT_GT(num_shared, (size_t)0);
+    }
+
     check_martini_peptide(utest_result, &sys, &state, (size_t)n);
     md_vm_arena_destroy(alloc);
 }
