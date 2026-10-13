@@ -650,6 +650,142 @@ UTEST(util, infer_bonds_coarse_grained) {
     md_vm_arena_destroy(alloc);
 }
 
+// martinize2 (vermouth 0.15, -ff martini3001) on residues 384-392 of 1k4r (YVGELSHQW), with the His renamed HSP as
+// martinize2 names a charged one. Martini 3 has Tyr SC1-SC4 and Trp SC1-SC5. The file carries no bonds, so whether
+// the chain holds together rests on the backbone beads.
+static const char martini3_peptide_gro[] =
+    "Martini 3 peptide (martinize2, YVGELSHQW, HIS as HSP)\n"
+    "   26\n"
+    "    1TYR     BB    1   1.878   1.149   1.615\n"
+    "    1TYR    SC1    2   1.634   1.202   1.502\n"
+    "    1TYR    SC2    3   1.450   1.367   1.498\n"
+    "    1TYR    SC3    4   1.552   1.300   1.291\n"
+    "    1TYR    SC4    5   1.363   1.462   1.288\n"
+    "    2VAL     BB    6   1.793   1.092   1.968\n"
+    "    2VAL    SC1    7   2.047   1.095   2.033\n"
+    "    3GLY     BB    8   1.530   1.000   1.928\n"
+    "    4GLU     BB    9   1.365   1.301   2.000\n"
+    "    4GLU    SC1   10   1.000   1.167   2.124\n"
+    "    5LEU     BB   11   1.625   1.416   1.973\n"
+    "    5LEU    SC1   12   1.822   1.530   2.206\n"
+    "    6SER     BB   13   1.746   1.709   1.799\n"
+    "    6SER    SC1   14   1.552   1.747   1.679\n"
+    "    7HSP     BB   15   1.960   1.818   1.504\n"
+    "    7HSP    SC1   16   2.135   1.902   1.685\n"
+    "    7HSP    SC2   17   2.220   2.095   1.803\n"
+    "    7HSP    SC3   18   2.253   2.095   1.631\n"
+    "    8GLN     BB   19   2.101   2.029   1.314\n"
+    "    8GLN    SC1   20   1.781   2.141   1.166\n"
+    "    9TRP     BB   21   2.304   1.959   1.000\n"
+    "    9TRP    SC1   22   2.470   1.827   1.121\n"
+    "    9TRP    SC2   23   2.679   1.768   1.005\n"
+    "    9TRP    SC3   24   2.708   1.885   1.138\n"
+    "    9TRP    SC4   25   2.709   2.018   1.298\n"
+    "    9TRP    SC5   26   2.890   1.973   1.194\n"
+    "   5.00000   5.00000   5.00000\n";
+
+// The same as martinize2 wrote it, without its CONECT records
+static const char martini3_peptide_pdb[] =
+    "ATOM      1 BB   TYR A 384     -61.526 -17.356 229.581  1.00  0.00\n"
+    "ATOM      2 SC1  TYR A 384     -63.958 -16.821 228.450  1.00  0.00\n"
+    "ATOM      3 SC2  TYR A 384     -65.803 -15.175 228.406  1.00  0.00\n"
+    "ATOM      4 SC3  TYR A 384     -64.786 -15.840 226.333  1.00  0.00\n"
+    "ATOM      5 SC4  TYR A 384     -66.677 -14.229 226.304  1.00  0.00\n"
+    "ATOM      6 BB   VAL A 385     -62.376 -17.927 233.108  1.00  0.00\n"
+    "ATOM      7 SC1  VAL A 385     -59.828 -17.893 233.758  1.00  0.00\n"
+    "ATOM      8 BB   GLY A 386     -65.004 -18.845 232.710  1.00  0.00\n"
+    "ATOM      9 BB   GLU A 387     -66.648 -15.831 233.428  1.00  0.00\n"
+    "ATOM     10 SC1  GLU A 387     -70.302 -17.177 234.666  1.00  0.00\n"
+    "ATOM     11 BB   LEU A 388     -64.049 -14.684 233.156  1.00  0.00\n"
+    "ATOM     12 SC1  LEU A 388     -62.078 -13.547 235.491  1.00  0.00\n"
+    "ATOM     13 BB   SER A 389     -62.839 -11.758 231.415  1.00  0.00\n"
+    "ATOM     14 SC1  SER A 389     -64.783 -11.373 230.216  1.00  0.00\n"
+    "ATOM     15 BB   HSP A 390     -60.700 -10.669 228.464  1.00  0.00\n"
+    "ATOM     16 SC1  HSP A 390     -58.952  -9.827 230.275  1.00  0.00\n"
+    "ATOM     17 SC2  HSP A 390     -58.102  -7.893 231.462  1.00  0.00\n"
+    "ATOM     18 SC3  HSP A 390     -57.772  -7.898 229.740  1.00  0.00\n"
+    "ATOM     19 BB   GLN A 391     -59.295  -8.559 226.571  1.00  0.00\n"
+    "ATOM     20 SC1  GLN A 391     -62.491  -7.433 225.082  1.00  0.00\n"
+    "ATOM     21 BB   TRP A 392     -57.267  -9.252 223.427  1.00  0.00\n"
+    "ATOM     22 SC1  TRP A 392     -55.603 -10.572 224.636  1.00  0.00\n"
+    "ATOM     23 SC2  TRP A 392     -53.517 -11.161 223.475  1.00  0.00\n"
+    "ATOM     24 SC3  TRP A 392     -53.223  -9.997 224.803  1.00  0.00\n"
+    "ATOM     25 SC4  TRP A 392     -53.209  -8.667 226.404  1.00  0.00\n"
+    "ATOM     26 SC5  TRP A 392     -51.401  -9.117 225.366  1.00  0.00\n"
+    "TER      27      TRP A 392\n"
+    "END\n";
+
+// Every particle a bead without an element, every residue an amino acid whose BB bead is its one backbone bead and
+// whose other beads are side chain, and the whole a single peptide
+static void check_martini_peptide(int* utest_result, md_system_t* sys, md_system_state_t* state, size_t num_residues) {
+    for (size_t t = 1; t < sys->atom.type.count; ++t) {
+        EXPECT_EQ(0, sys->atom.type.z[t]);
+        EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_type_particle_kind(&sys->atom.type, t));
+    }
+    ASSERT_EQ(num_residues, md_system_component_count(sys));
+    for (size_t c = 0; c < num_residues; ++c) {
+        EXPECT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_component_kind(&sys->component, c));
+        const md_urange_t range = md_component_atom_range(&sys->component, c);
+        size_t num_backbone = 0;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            const md_atom_flags_t flags = md_atom_flags(&sys->atom, i);
+            const bool bb = str_eq(md_atom_name(&sys->atom, i), STR_LIT("BB"));
+            EXPECT_EQ((int)bb,  (int)((flags & MD_ATOM_FLAG_BACKBONE)   != 0));
+            EXPECT_EQ((int)!bb, (int)((flags & MD_ATOM_FLAG_SIDE_CHAIN) != 0));
+            num_backbone += (flags & MD_ATOM_FLAG_BACKBONE) != 0;
+        }
+        EXPECT_EQ((size_t)1, num_backbone);
+    }
+
+    ASSERT_TRUE(md_util_system_infer(sys, state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ((size_t)1, md_system_instance_count(sys));
+    EXPECT_EQ(num_residues, md_system_instance_comp_count(sys, 0));
+    EXPECT_EQ(MD_ENTITY_KIND_PEPTIDE, md_system_entity_kind(sys, md_system_instance_entity_idx(sys, 0)));
+}
+
+UTEST(util, martini3_peptide_gro) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_gro)));
+    check_martini_peptide(utest_result, &sys, &state, 9);
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST(util, martini3_peptide_pdb) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE));
+    check_martini_peptide(utest_result, &sys, &state, 9);
+    md_vm_arena_destroy(alloc);
+}
+
+// The residue names that tell a protonation state, as martinize2 writes them (the CHARMM and the Amber names), and
+// Ala and Pro, which have a side chain bead in Martini 3 and none in Martini 2, in a chain of one each: BB beads 3.5A
+// apart, and a side chain bead 3A off each
+UTEST(util, martini_residue_names) {
+    static const char* names[] = {"HSD", "HSE", "HSP", "HID", "HIE", "HIP", "LSN", "LYN", "ASH", "ASPP", "GLH", "GLUP", "CYX", "ALA", "PRO"};
+    const int n = (int)ARRAY_SIZE(names);
+
+    char text[4096];
+    int len = snprintf(text, sizeof(text), "Martini protonation variants\n%5d\n", 2 * n);
+    for (int i = 0; i < n; ++i) {
+        const float x = 1.0f + 0.35f * (float)i;
+        len += snprintf(text + len, sizeof(text) - len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", i + 1, names[i], "BB",  2 * i + 1, x, 1.0f, 1.0f);
+        len += snprintf(text + len, sizeof(text) - len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", i + 1, names[i], "SC1", 2 * i + 2, x, 1.3f, 1.0f);
+    }
+    len += snprintf(text + len, sizeof(text) - len, "  10.00000  10.00000  10.00000\n");
+    ASSERT_LT(len, (int)sizeof(text));
+
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}));
+    check_martini_peptide(utest_result, &sys, &state, (size_t)n);
+    md_vm_arena_destroy(alloc);
+}
+
 // Bond inference marks what it produces as of origin MD_BOND_ORIGIN_INFERRED, and re-inference replaces only those.
 // A bond of another origin (read from a file, user defined, from a topology) is kept wherever it sits in the arrays,
 // is never duplicated by an inferred bond naming the same pair, and survives an inference that cannot run.

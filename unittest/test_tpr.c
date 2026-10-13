@@ -382,10 +382,23 @@ UTEST(tpr, martini) {
     EXPECT_EQ(0.0f, md_atom_mass(&sys.atom, 3));
     EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, 3));
 
-    // The bead tables know the protein backbone
+    // The bead tables know the protein backbone: one BB bead in each residue, and every other bead side chain, Trp's
+    // SC4 and SC5 (Martini 3 has five) included
     EXPECT_TRUE(md_atom_flags(&sys.atom, 0) & MD_ATOM_FLAG_BACKBONE);
     EXPECT_FALSE(md_atom_flags(&sys.atom, 1) & MD_ATOM_FLAG_BACKBONE);
-    EXPECT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_component_kind(&sys.component, 0));
+    for (size_t c = 0; c < 2; ++c) {
+        EXPECT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_component_kind(&sys.component, c));
+        const md_urange_t range = md_component_atom_range(&sys.component, c);
+        size_t num_backbone = 0;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            const md_atom_flags_t flags = md_atom_flags(&sys.atom, i);
+            const bool bb = str_eq(md_atom_name(&sys.atom, i), STR_LIT("BB"));
+            EXPECT_EQ((int)bb,  (int)((flags & MD_ATOM_FLAG_BACKBONE)   != 0));
+            EXPECT_EQ((int)!bb, (int)((flags & MD_ATOM_FLAG_SIDE_CHAIN) != 0));
+            num_backbone += (flags & MD_ATOM_FLAG_BACKBONE) != 0;
+        }
+        EXPECT_EQ((size_t)1, num_backbone);
+    }
 
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "martini3.gro"));
 

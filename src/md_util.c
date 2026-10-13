@@ -553,7 +553,7 @@ static const char* amino_acids[] = {
     "MSE", "SEP", "TPO", "PTR",
 
     // Charmm
-    "HSD", "HSP", "LSN", "ASPP", "GLUP",
+    "HSD", "HSE", "HSP", "LSN", "ASPP", "GLUP",
 
     // Amber
     "HID", "HIE", "HIP", "LYN", "ASH", "GLH",
@@ -5483,7 +5483,7 @@ bool md_util_system_infer_structures(md_system_t* sys) {
 }
 
 typedef struct {
-    const char* comp;
+    const char* comp;               // NULL for any component md_util_resname_amino_acid accepts
     const char* atom;
     int   atomic_nr;
     float mass;
@@ -5558,13 +5558,19 @@ static const atom_type_t predefined_atom_types[] = {
     {"TRP", "SC1", 0,  162.20f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 	{"TRP", "SC2", 0,   77.15f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 	{"TRP", "SC3", 0,   44.07f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"TRP", "SC4", 0,   15.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+	{"TRP", "SC4", 0,   15.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
     {"TYR", "BB",  0,  181.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
     {"TYR", "SC1", 0,  136.17f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 	{"TYR", "SC2", 0,   91.11f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 	{"TYR", "SC3", 0,   33.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
     {"VAL", "BB",  0,  117.15f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
 	{"VAL", "SC1", 0,   99.13f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+
+    // The Martini beads of every other amino acid: the residue names that tell a protonation state (HSD, HSE, HSP,
+    // LSN, HID, HIE, HIP, ASH, GLH, CYX, ...), and the beads Martini 3 has beyond the Martini 2 sets above (Tyr SC4,
+    // Trp SC5). No atomistic force field names an atom BB or SC#. The mass is that of a regular Martini bead.
+    {NULL,  "BB",  0,   72.00f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
+    {NULL,  "SC#", 0,   72.00f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 
 	{"POPE", "PO4", 0,  95.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
 	{"POPE", "GL1", 0,  55.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
@@ -5752,7 +5758,8 @@ static bool pattern_match_any(const char* patterns, const char* str) {
 static atom_type_t* find_predefined_atom_type(str_t comp_name, str_t atom_name) {
     for (size_t i = 0; i < ARRAY_SIZE(predefined_atom_types); ++i) {
         atom_type_t type = predefined_atom_types[i];
-        if (pattern_match_any(type.comp, comp_name.ptr) && pattern_match_any(type.atom, atom_name.ptr)) {
+        const bool comp_match = type.comp ? pattern_match_any(type.comp, comp_name.ptr) : md_util_resname_amino_acid(comp_name);
+        if (comp_match && pattern_match_any(type.atom, atom_name.ptr)) {
             return (atom_type_t*)&predefined_atom_types[i];
         }
     }
