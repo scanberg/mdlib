@@ -301,17 +301,17 @@ static inline vec4_t dssp_whole_about(vec4_t ref, vec4_t p, const md_unitcell_t*
 
 // The bonds and the bends of the atomistic ranges (num_trace residues are in traces)
 static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pair_t)* sheet_candidates, uint8_t res_bend[], const vec3_t* xyz, const md_unitcell_t* cell,
-    const md_protein_backbone_data_t* backbone, size_t num_trace, md_allocator_i* temp_alloc)
+    const md_protein_backbone_data_t* backbone, size_t num_trace, md_temp_scope_t temp)
 {
     const size_t backbone_segment_count = backbone->segment.count;
     const md_amino_acid_atoms_t* backbone_atoms = backbone->segment.atoms;
-    dssp_res_coords_t* res_coords = md_alloc(temp_alloc, sizeof(dssp_res_coords_t) * backbone_segment_count);
-    vec3_t* res_ca = md_alloc(temp_alloc, sizeof(vec3_t) * backbone_segment_count);
-    uint32_t* res_key = md_alloc(temp_alloc, sizeof(uint32_t) * backbone_segment_count);
+    dssp_res_coords_t* res_coords = md_temp_alloc_array(temp, dssp_res_coords_t, backbone_segment_count);
+    vec3_t* res_ca = md_temp_alloc_array(temp, vec3_t, backbone_segment_count);
+    uint32_t* res_key = md_temp_alloc_array(temp, uint32_t, backbone_segment_count);
     const float cutoff = 9.0f;
     const dssp_interior_t interior = dssp_interior_init(cell, cutoff);
     // Alongside traces, the query runs over the atomistic residues by their indices
-    int* res_idx = num_trace ? md_alloc(temp_alloc, sizeof(int) * (backbone_segment_count - num_trace)) : NULL;
+    int* res_idx = num_trace ? md_temp_alloc_array(temp, int, backbone_segment_count - num_trace) : NULL;
     size_t num_res = 0;
 
     for (size_t range_idx = 0; range_idx < backbone->range.count; ++range_idx) {
@@ -361,6 +361,8 @@ static void dssp_atomistic_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residu
         }
     }
 
+    // The spatial structure and the candidates grow through the allocator interface
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)res_ca, sizeof(vec3_t), res_idx, num_res);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = cell, .flags = res_idx ? MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX : MD_SPATIAL_ACC_FLAG_NONE });
@@ -534,13 +536,13 @@ static void cg_dssp_pair_cb(const uint32_t* i_idx, const uint32_t* j_idx, const 
 
 // The bonds and the bends of the traces
 static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pair_t)* sheet_candidates, uint8_t res_bend[], const vec3_t* xyz, const md_unitcell_t* cell,
-    const md_protein_backbone_data_t* backbone, const uint32_t* res_range_id, md_allocator_i* temp_alloc)
+    const md_protein_backbone_data_t* backbone, const uint32_t* res_range_id, md_temp_scope_t temp)
 {
     const size_t num_segments = backbone->segment.count;
-    vec3_t* x = md_alloc(temp_alloc, sizeof(vec3_t) * num_segments);
-    vec3_t* site = md_alloc(temp_alloc, sizeof(vec3_t) * num_segments);
-    vec3_t* dipole = md_alloc(temp_alloc, sizeof(vec3_t) * num_segments);
-    uint32_t* peptide_seg = md_alloc(temp_alloc, sizeof(uint32_t) * num_segments);
+    vec3_t* x = md_temp_alloc_array(temp, vec3_t, num_segments);
+    vec3_t* site = md_temp_alloc_array(temp, vec3_t, num_segments);
+    vec3_t* dipole = md_temp_alloc_array(temp, vec3_t, num_segments);
+    uint32_t* peptide_seg = md_temp_alloc_array(temp, uint32_t, num_segments);
     size_t num_peptides = 0;
 
     for (size_t range_idx = 0; range_idx < backbone->range.count; ++range_idx) {
@@ -566,6 +568,8 @@ static void dssp_trace_bonds(dssp_res_hbonds_t res_hbonds[], md_array(residue_pa
     }
     if (num_peptides < 2) return;
 
+    // The spatial structure and the candidates grow through the allocator interface
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_coord_stream_t stream = md_coord_stream_from_aos((const float*)site, sizeof(vec3_t), NULL, num_peptides);
     md_spatial_acc_t acc = { .alloc = temp_alloc };
     const double cutoff = MAX(CG_DSSP_TURN_DISTANCE, CG_DSSP_SHEET_DISTANCE);
@@ -901,10 +905,10 @@ static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capa
 	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
     if (num_trace < backbone_segment_count) {
-        dssp_atomistic_bonds(res_hbonds, &sheet_candidates, res_bend, xyz, cell, backbone, num_trace, temp_alloc);
+        dssp_atomistic_bonds(res_hbonds, &sheet_candidates, res_bend, xyz, cell, backbone, num_trace, temp);
     }
     if (num_trace > 0) {
-        dssp_trace_bonds(res_hbonds, &sheet_candidates, res_bend, xyz, cell, backbone, res_range_id, temp_alloc);
+        dssp_trace_bonds(res_hbonds, &sheet_candidates, res_bend, xyz, cell, backbone, res_range_id, temp);
         // A bond of a trace gives each pair it can begin a bridge in, so the same pair comes more than once
         const size_t n = md_array_size(sheet_candidates);
         if (n > 1) {
