@@ -181,6 +181,14 @@ const str_t* md_script_ir_property_names(const md_script_ir_t* ir);
 // If the name does not exist, it will return 0
 md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir, str_t name);
 
+// What a property is computed from: its expression, with every variable it uses standing for what that variable
+// is computed from in turn, the constants and selections it reads by their contents, the attributes by their
+// version, and the topology of the system it was compiled against. Not its name, nor anything else in the script.
+// Two compilations agree on it exactly when the property's values agree, which is what lets an evaluation keep the
+// values of a property across an edit of the script that does not touch it (see md_script_eval_create_from).
+// Compared within one process only. 0 if there is no such property.
+uint64_t md_script_ir_property_fingerprint(const md_script_ir_t* ir, str_t name);
+
 // ### VISUALIZATION REFERENCES ###
 // A property is found by name, which is what carries over from one compilation to the next: the reference
 // made from it belongs to this compilation of ir. It refers to nothing if ir has no such property.

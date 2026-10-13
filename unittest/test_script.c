@@ -315,6 +315,81 @@ UTEST_F(script, common_subexpression_elimination) {
     md_temp_end(temp_scope);
 }
 
+// Two constant expressions which differ only in their operator are not the same expression: the second must
+// not be given the value of the first.
+UTEST_F(script, common_subexpression_elimination_operators) {
+    md_temp_scope_t temp_scope = md_temp_begin();
+    md_allocator_i* arena = md_temp_allocator(temp_scope);
+    md_script_ir_t* ir = create_ir(arena);
+    str_t src = STR_INIT(
+        "a = 1.0 + 2.0;\n"
+        "b = 1.0 - 2.0;\n"
+        "c = 4.0 * 2.0;\n"
+        "d = 4.0 / 2.0;\n"
+    );
+
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, src, &utest_fixture->ala, NULL));
+
+    const char* names[4] = {"a", "b", "c", "d"};
+    const float expected[4] = {3.0f, -1.0f, 8.0f, 2.0f};
+    for (int i = 0; i < 4; ++i) {
+        identifier_t* ident = get_identifier(ir, str_from_cstr(names[i]));
+        ASSERT_TRUE(ident && ident->data && ident->data->ptr);
+        EXPECT_NEAR(expected[i], *(const float*)ident->data->ptr, 1e-6f);
+    }
+
+    md_temp_end(temp_scope);
+}
+
+// The fingerprint of property 'name' once src is compiled into ir, 0 if it does not compile
+static uint64_t compiled_fingerprint(md_script_ir_t* ir, const char* src, const char* name, md_system_t* sys) {
+    md_script_ir_clear(ir);
+    if (!md_script_ir_compile_from_source(ir, str_from_cstr(src), sys, NULL)) {
+        return 0;
+    }
+    return md_script_ir_property_fingerprint(ir, str_from_cstr(name));
+}
+
+// A property's fingerprint is what it is computed from: not its name, its spelling, or the rest of the script
+UTEST_F(script, property_fingerprint) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* sys = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    const uint64_t base = compiled_fingerprint(ir, "s = residue(1:2);\nd = distance(com(s), 10);", "d", sys);
+    ASSERT_NE(0ull, base);
+
+    // Spacing, comments and the names of the property and of what it uses
+    EXPECT_EQ(base, compiled_fingerprint(ir, "# the first two residues\ns  =  residue(1:2);\n\n  d=distance(com(s),10); # to atom 10", "d", sys));
+    EXPECT_EQ(base, compiled_fingerprint(ir, "s = residue(1:2);\nlen = distance(com(s), 10);", "len", sys));
+    EXPECT_EQ(base, compiled_fingerprint(ir, "sel = residue(1:2);\nd = distance(com(sel), 10);", "d", sys));
+
+    // Another statement before it changes nothing about it
+    EXPECT_EQ(base, compiled_fingerprint(ir, "a = angle(1, 2, 3);\ns = residue(1:2);\nd = distance(com(s), 10);", "d", sys));
+
+    // What it uses, however indirectly, and how it combines it
+    EXPECT_NE(base, compiled_fingerprint(ir, "s = residue(1:3);\nd = distance(com(s), 10);", "d", sys));
+    EXPECT_NE(base, compiled_fingerprint(ir, "s = residue(1:2);\nd = distance(com(s), 11);", "d", sys));
+    EXPECT_NE(base, compiled_fingerprint(ir, "s = residue(1:2);\nd = distance(com(s), 10) * 2.0;", "d", sys));
+
+    const uint64_t plus  = compiled_fingerprint(ir, "d = distance(1, 10) + 1.0;", "d", sys);
+    const uint64_t minus = compiled_fingerprint(ir, "d = distance(1, 10) - 1.0;", "d", sys);
+    EXPECT_NE(0ull, plus);
+    EXPECT_NE(plus, minus);
+
+    // The elements of a destructured value are different values
+    md_script_ir_clear(ir);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("{x, y, z} = com(residue(1));"), sys, NULL));
+    const uint64_t fx = md_script_ir_property_fingerprint(ir, STR_LIT("x"));
+    const uint64_t fy = md_script_ir_property_fingerprint(ir, STR_LIT("y"));
+    EXPECT_NE(0ull, fx);
+    EXPECT_NE(0ull, fy);
+    EXPECT_NE(fx, fy);
+    EXPECT_EQ(0ull, md_script_ir_property_fingerprint(ir, STR_LIT("w")));
+
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(script, type_equal) {
     {
         type_info_t a = {.base_type = TYPE_INT, .dim = {1}};

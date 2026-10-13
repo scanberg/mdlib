@@ -565,6 +565,7 @@ struct md_script_ir_t {
     md_array(md_script_property_flags_t) property_flags;    // List of property infos
     md_array(const ast_node_t*)          property_nodes;    // List of property nodes;
     md_array(str_t)                      property_names;    // List of property names
+    md_array(uint64_t)                   property_fingerprints; // What each property is computed from (see md_script_ir_property_fingerprint)
 
     // These are the final products which can be read through the public part of the structure
     md_array(md_log_token_t)        warnings;
@@ -5857,6 +5858,21 @@ static uint64_t hash_children(const ast_node_t* node, uint64_t seed) {
     return hash;
 }
 
+// What a node is on its own, apart from its children: what it does and what it produces. Two nodes over the
+// same children differ in this alone, '1.0 + 2.0' and '1.0 - 2.0' in their type, two overloads in their procedure.
+// The procedure counts by its address: a hash is only ever compared within the process which made it. Not by
+// 'ident', which the static check overwrites with the name of the variable an expression is assigned to.
+static uint64_t hash_node_self(const ast_node_t* node, uint64_t seed) {
+    uint64_t hash = md_hash64(&node->type, sizeof(node->type), seed);
+    hash = md_hash64(&node->data.type, sizeof(node->data.type), hash);
+    hash = md_hash64(&node->proc, sizeof(node->proc), hash);
+    hash = md_hash64(&node->proc_flags, sizeof(node->proc_flags), hash);
+    if (node->type == AST_ARRAY_SUBSCRIPT && node->subscript_dim > 0) {
+        hash = md_hash64(node->subscript_ranges, node->subscript_dim * sizeof(node->subscript_ranges[0]), hash);
+    }
+    return hash;
+}
+
 static uint64_t hash_node(const ast_node_t* node, uint64_t seed) {
     ASSERT(node);
     switch (node->type) {
@@ -5877,17 +5893,68 @@ static uint64_t hash_node(const ast_node_t* node, uint64_t seed) {
         }
     case AST_IDENTIFIER:
         return md_hash64(node->ident.ptr, node->ident.len, md_hash64(&node->data.type, sizeof(node->data.type), seed));
-    case AST_PROC_CALL:
-        return md_hash64(node->ident.ptr, node->ident.len, md_hash64(&node->data.type, sizeof(node->data.type), hash_children(node, seed)));
     case AST_ATTRIBUTE:
         // What was read and which version of it. The data itself can be large and lives in the
         // system, whose attribute versions already say when it changed.
         return md_hash64(node->attr_path.ptr, node->attr_path.len, md_hash64(&node->attr_version, sizeof(node->attr_version), seed));
-    case AST_ARRAY:
-    case AST_ARRAY_SUBSCRIPT:
     default:
-        return md_hash64(&node->data.type, sizeof(node->data.type), hash_children(node, seed));
+        return hash_children(node, hash_node_self(node, seed));
     }
+}
+
+// The fingerprint of what a node evaluates to. As hash_node, except for identifiers: a reference counts by the
+// definition it refers to, never by its name, so renaming a variable does not change what is computed from it,
+// and redefining one changes everything computed from it, however indirectly. memo holds the fingerprint of each
+// node of the IR by its index, 0 for not yet computed: a definition referred to many times is hashed once.
+static uint64_t dependency_hash_node(const md_script_ir_t* ir, const ast_node_t* node, uint64_t* memo) {
+    ASSERT(node);
+    if (memo[node->index]) {
+        return memo[node->index];
+    }
+
+    uint64_t hash = 0;
+    switch (node->type) {
+    case AST_IDENTIFIER: {
+        // A reference is linked to the expression of its declaration by the static check. A constant one (a
+        // selection added from outside) is declared by a node of its own, whose contents it is.
+        const identifier_t* decl = find_ir_identifier(ir, node->ident);
+        const ast_node_t* def = md_array_size(node->children) == 1 ? node->children[0] : (decl ? decl->node : NULL);
+        hash = def ? dependency_hash_node(ir, def, memo) : md_hash64(node->ident.ptr, node->ident.len, 0);
+        hash = md_hash64(&node->data.type, sizeof(node->data.type), hash);
+        if (decl && decl->is_element) {
+            // One element of what the expression evaluates to: '{x, y} = com(...)'
+            hash = md_hash64(&decl->elem_idx, sizeof(decl->elem_idx), hash);
+        }
+        break;
+    }
+    case AST_CONSTANT_VALUE:
+    case AST_ATTRIBUTE:
+        hash = hash_node(node, 0);
+        break;
+    default:
+        hash = hash_node_self(node, 0);
+        for (size_t i = 0; i < md_array_size(node->children); ++i) {
+            const uint64_t child = dependency_hash_node(ir, node->children[i], memo);
+            hash = md_hash64(&child, sizeof(child), hash);
+        }
+        break;
+    }
+
+    hash |= 1;  // 0 marks a node not hashed yet
+    memo[node->index] = hash;
+    return hash;
+}
+
+// The fingerprint of a dynamic identifier: what its value is computed from, whatever it is called
+static uint64_t identifier_fingerprint(const md_script_ir_t* ir, const identifier_t* decl, uint64_t seed, uint64_t* memo) {
+    if (!decl || !decl->node) {
+        return 0;
+    }
+    uint64_t hash = dependency_hash_node(ir, decl->node, memo);
+    if (decl->is_element) {
+        hash = md_hash64(&decl->elem_idx, sizeof(decl->elem_idx), hash);
+    }
+    return md_hash64(&hash, sizeof(hash), seed) | 1;
 }
 
 // Prunes the tree from AST_EXPRESSION, since that is just an unnecessary indirection for sorting the tree correctly on precedence
@@ -6913,6 +6980,19 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
 
     extract_vis_tokens(ir);
 
+    // What each property is computed from. The topology seeds them: procedures read it without it appearing in
+    // their arguments (residue(), the backbone of ramachandran()), so a property over another topology is another.
+    if (ir->compile_success) {
+        uint64_t* memo = md_temp_alloc_array(temp_scope, uint64_t, MAX(md_array_size(ir->nodes), 1));
+        MEMSET(memo, 0, md_array_size(ir->nodes) * sizeof(uint64_t));
+        const uint64_t seed = md_hash64(&sys->topology_version, sizeof(sys->topology_version), sys->atom.count);
+        for (size_t i = 0; i < md_array_size(ir->property_names); ++i) {
+            const identifier_t* decl = find_ir_identifier(ir, ir->property_names[i]);
+            const uint64_t fingerprint = identifier_fingerprint(ir, decl, seed ^ (uint64_t)ir->property_flags[i], memo);
+            md_array_push(ir->property_fingerprints, fingerprint, ir->arena);
+        }
+    }
+
     md_temp_end(temp_scope);
 
     uint64_t hash = 0;
@@ -7108,6 +7188,11 @@ static int ir_property_index(const md_script_ir_t* ir, str_t name) {
 md_script_property_flags_t md_script_ir_property_flags(const md_script_ir_t* ir, str_t name) {
     const int idx = ir_property_index(ir, name);
     return idx < 0 ? MD_SCRIPT_PROPERTY_FLAG_NONE : ir->property_flags[idx];
+}
+
+uint64_t md_script_ir_property_fingerprint(const md_script_ir_t* ir, str_t name) {
+    const int idx = ir_property_index(ir, name);
+    return (idx < 0 || (size_t)idx >= md_array_size(ir->property_fingerprints)) ? 0 : ir->property_fingerprints[idx];
 }
 
 md_script_vis_ref_t md_script_ir_property_vis_ref(const md_script_ir_t* ir, str_t name) {
