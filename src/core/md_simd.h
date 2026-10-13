@@ -212,8 +212,8 @@ static const uint64_t avx_compress_lut[256] = {
 
 #define md_mm_cmp_ps simde_mm_cmp_ps
 #define md_mm_cmp_pd simde_mm_cmp_pd
-#define md_mm256_cmp_ps simde_mm_cmp_ps
-#define md_mm256_cmp_pd simde_mm_cmp_pd
+#define md_mm256_cmp_ps simde_mm256_cmp_ps
+#define md_mm256_cmp_pd simde_mm256_cmp_pd
 
 #define md_mm_cmpeq_ps simde_mm_cmpeq_ps
 #define md_mm_cmpeq_pd simde_mm_cmpeq_pd
@@ -222,8 +222,8 @@ static const uint64_t avx_compress_lut[256] = {
 
 #define md_mm_cmpneq_ps simde_mm_cmpneq_ps
 #define md_mm_cmpneq_pd simde_mm_cmpneq_pd
-#define md_mm256_cmpneq_ps(a,b) simde_mm256_cmp_ps(a,b, SIMDE_CMP_NEQ_OQ)
-#define md_mm256_cmpneq_pd(a,b) simde_mm256_cmp_pd(a,b, SIMDE_CMP_NEQ_OQ)
+#define md_mm256_cmpneq_ps(a,b) simde_mm256_cmp_ps(a,b, SIMDE_CMP_NEQ_UQ)    // As _mm_cmpneq_ps: true for a NaN
+#define md_mm256_cmpneq_pd(a,b) simde_mm256_cmp_pd(a,b, SIMDE_CMP_NEQ_UQ)
 
 #define md_mm_cmplt_ps simde_mm_cmplt_ps
 #define md_mm_cmplt_pd simde_mm_cmplt_pd
@@ -267,8 +267,6 @@ static const uint64_t avx_compress_lut[256] = {
 
 #define md_mm_add_ss simde_mm_add_ss
 #define md_mm_add_sd simde_mm_add_sd
-#define md_mm256_add_ss simde_mm256_add_ss
-#define md_mm256_add_sd simde_mm256_add_sd
 
 #define md_mm_sub_ps simde_mm_sub_ps
 #define md_mm_sub_pd simde_mm_sub_pd
@@ -323,9 +321,7 @@ static const uint64_t avx_compress_lut[256] = {
 #define md_mm256_sqrt_pd simde_mm256_sqrt_pd
 
 #define md_mm_rsqrt_ps simde_mm_rsqrt_ps
-#define md_mm_rsqrt_pd simde_mm_rsqrt_pd
 #define md_mm256_rsqrt_ps simde_mm256_rsqrt_ps
-#define md_mm256_rsqrt_pd simde_mm256_rsqrt_pd
 
 #define md_mm_min_ps simde_mm_min_ps   
 #define md_mm_min_pd simde_mm_min_pd   
@@ -470,7 +466,7 @@ static const uint64_t avx_compress_lut[256] = {
 #define md_mm_cmplt_epi8  simde_mm_cmplt_epi8
 #define md_mm_cmplt_epi16 simde_mm_cmplt_epi16
 #define md_mm_cmplt_epi32 simde_mm_cmplt_epi32
-#define md_mm_cmplt_epi64 simde_mm_cmplt_epi64
+#define md_mm_cmplt_epi64(a,b) simde_mm_cmpgt_epi64(b,a)
 
 #define md_mm256_cmplt_epi8(a,b)  simde_mm256_cmpgt_epi8(b,a)
 #define md_mm256_cmplt_epi16(a,b) simde_mm256_cmpgt_epi16(b,a)
@@ -497,11 +493,6 @@ static const uint64_t avx_compress_lut[256] = {
 #define md_mm256_castps_pd simde_mm256_castps_pd
 #define md_mm256_castpd_ps simde_mm256_castpd_ps
 
-#define md_mm_castsi128_pd simde_mm_castsi128_pd
-#define md_mm_castpd_si128 simde_mm_castpd_si128
-#define md_mm256_castsi256_pd simde_mm256_castsi256_pd
-#define md_mm256_castpd_si256 simde_mm256_castpd_si256
-
 #define md_mm_cvtepi32_ps simde_mm_cvtepi32_ps
 #define md_mm256_cvtepi32_ps simde_mm256_cvtepi32_ps
 
@@ -525,7 +516,7 @@ static const uint64_t avx_compress_lut[256] = {
 
 // HIGH LEVEL OPERATIONS
 
-#define MD_LOAD_STRIDED_128(ptr, offset, stride) simde_mm_loadu_ps((const float*)((const char*)ptr + offset * stride_in_bytes))
+#define MD_LOAD_STRIDED_128(ptr, offset, stride) simde_mm_loadu_ps((const float*)((const char*)(ptr) + (size_t)(offset) * (stride)))
 
 // Four packed xyz triplets - twelve contiguous floats, x0 y0 z0 x1 y1 ... z3 - split into x, y and z.
 // It reads exactly the twelve floats, so the last four atoms of an array are as safe to load as any
@@ -745,10 +736,11 @@ MD_SIMD_INLINE md_128d md_mm_sign_pd(md_128d a) { return simde_mm_xor_pd(   simd
 MD_SIMD_INLINE md_256  md_mm256_sign_ps(md_256 a)  { return simde_mm256_xor_ps(simde_mm256_and_ps(a, simde_mm256_set1_ps(-0.0)), simde_mm256_set1_ps(1.0)); }
 MD_SIMD_INLINE md_256d md_mm256_sign_pd(md_256d a) { return simde_mm256_xor_pd(simde_mm256_and_pd(a, simde_mm256_set1_pd(-0.0)), simde_mm256_set1_pd(1.0));  }
 
-MD_SIMD_INLINE md_128   md_mm_neg_ps(md_128 a) { return simde_mm_or_ps(a, simde_mm_set1_ps(-0.0)); }
-MD_SIMD_INLINE md_128d  md_mm_neg_pd(md_128d a) { return simde_mm_or_pd(a, simde_mm_set1_pd(-0.0)); }
-MD_SIMD_INLINE md_256   md_mm256_neg_ps(md_256 a) { return simde_mm256_or_ps(a, simde_mm256_set1_ps(-0.0)); }
-MD_SIMD_INLINE md_256d  md_mm256_neg_pd(md_256d a) { return simde_mm256_or_pd(a, simde_mm256_set1_pd(-0.0)); }
+// -a: the sign bit flipped
+MD_SIMD_INLINE md_128   md_mm_neg_ps(md_128 a) { return simde_mm_xor_ps(a, simde_mm_set1_ps(-0.0f)); }
+MD_SIMD_INLINE md_128d  md_mm_neg_pd(md_128d a) { return simde_mm_xor_pd(a, simde_mm_set1_pd(-0.0)); }
+MD_SIMD_INLINE md_256   md_mm256_neg_ps(md_256 a) { return simde_mm256_xor_ps(a, simde_mm256_set1_ps(-0.0f)); }
+MD_SIMD_INLINE md_256d  md_mm256_neg_pd(md_256d a) { return simde_mm256_xor_pd(a, simde_mm256_set1_pd(-0.0)); }
 
 
 MD_SIMD_INLINE float md_mm_reduce_min_ps(md_128 x) {
@@ -763,16 +755,15 @@ MD_SIMD_INLINE float md_mm_reduce_max_ps(md_128 x) {
     return simde_mm_cvtss_f32(simde_mm_max_ps(a,b));
 }
 
+// The halves first: _mm256_shuffle_pd stays within each 128 bit half, so it cannot bring lanes 2 and 3 to lane 0
 MD_SIMD_INLINE double md_mm256_reduce_min_pd(md_256d x) {
-    md_256d a = simde_mm256_min_pd(x, simde_mm256_shuffle_pd(x, x, SIMDE_MM_SHUFFLE(0, 0, 3, 2)));
-    md_256d b = simde_mm256_min_pd(a, simde_mm256_shuffle_pd(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1)));
-    return simde_mm256_cvtsd_f64(simde_mm256_min_pd(a,b));
+    const md_128d a = simde_mm_min_pd(simde_mm256_castpd256_pd128(x), simde_mm256_extractf128_pd(x, 1));
+    return simde_mm_cvtsd_f64(simde_mm_min_pd(a, simde_mm_shuffle_pd(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1))));
 }
 
 MD_SIMD_INLINE double md_mm256_reduce_max_pd(md_256d x) {
-    md_256d a = simde_mm256_max_pd(x, simde_mm256_shuffle_pd(x, x, SIMDE_MM_SHUFFLE(0, 0, 3, 2)));
-    md_256d b = simde_mm256_max_pd(a, simde_mm256_shuffle_pd(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1)));
-    return simde_mm256_cvtsd_f64(simde_mm256_max_pd(a,b));
+    const md_128d a = simde_mm_max_pd(simde_mm256_castpd256_pd128(x), simde_mm256_extractf128_pd(x, 1));
+    return simde_mm_cvtsd_f64(simde_mm_max_pd(a, simde_mm_shuffle_pd(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1))));
 }
 
 // From here https://stackoverflow.com/questions/49941645/get-sum-of-values-stored-in-m256d-with-sse-avx
@@ -1006,12 +997,12 @@ MD_SIMD_INLINE md_256 md_mm256_lerp_ps(md_256 a, md_256 b, float t) {
     return md_mm256_add_ps(md_mm256_mul_ps(a, md_mm256_set1_ps(1.0f - t)), md_mm256_mul_ps(b, md_mm256_set1_ps(t)));
 }
 
-MD_SIMD_INLINE md_128d md_mm_lerp_pd(md_128d a, md_128d b, float t) {
-    return md_mm_add_pd(md_mm_mul_pd(a, md_mm_set1_pd(1.0f - t)), md_mm_mul_pd(b, md_mm_set1_pd(t)));
+MD_SIMD_INLINE md_128d md_mm_lerp_pd(md_128d a, md_128d b, double t) {
+    return md_mm_add_pd(md_mm_mul_pd(a, md_mm_set1_pd(1.0 - t)), md_mm_mul_pd(b, md_mm_set1_pd(t)));
 }
 
-MD_SIMD_INLINE md_256d md_mm256_lerp_pd(md_256d a, md_256d b, float t) {
-    return md_mm256_add_pd(md_mm256_mul_pd(a, md_mm256_set1_pd(1.0f - t)), md_mm256_mul_pd(b, md_mm256_set1_pd(t)));
+MD_SIMD_INLINE md_256d md_mm256_lerp_pd(md_256d a, md_256d b, double t) {
+    return md_mm256_add_pd(md_mm256_mul_pd(a, md_mm256_set1_pd(1.0 - t)), md_mm256_mul_pd(b, md_mm256_set1_pd(t)));
 }
 
 // Constructs a permutation vector for compressing a vector based on a mask. The mask is a bitfield where each set bit indicates that the corresponding element in the input vector should be kept.
@@ -1329,7 +1320,7 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 x, md_256* s, md_256* c) {
     x = ((x - y * DP1) - y * DP2) - y * DP3; */
     x = md_mm256_fmadd_ps(y, md_mm256_set1_ps(-0.78515625f), x);
     x = md_mm256_fmadd_ps(y, md_mm256_set1_ps(-2.4187564849853515625E-4f), x);
-    x = md_mm256_fmadd_ps(y, md_mm256_set1_ps(-3.77489470793079817668E-8f), x);
+    x = md_mm256_fmadd_ps(y, md_mm256_set1_ps(-3.77489497744594108e-8f), x);
 
     const md_256 x2 = md_mm256_mul_ps(x,x);
     const md_256 x3 = md_mm256_mul_ps(x2,x);
@@ -1464,7 +1455,7 @@ MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
     x = ((x - y * DP1) - y * DP2) - y * DP3; */
     x = _mm512_fmadd_ps(y, _mm512_set1_ps(-0.78515625f), x);
     x = _mm512_fmadd_ps(y, _mm512_set1_ps(-2.4187564849853515625E-4f), x);
-    x = _mm512_fmadd_ps(y, _mm512_set1_ps(-3.77489470793079817668E-8f), x);
+    x = _mm512_fmadd_ps(y, _mm512_set1_ps(-3.77489497744594108e-8f), x);
 
     const __m512 x2 = _mm512_mul_ps(x,x);
     const __m512 x3 = _mm512_mul_ps(x2,x);
