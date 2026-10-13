@@ -32,6 +32,7 @@ set (SRC_FILES
     test_fifo.c
     test_intrinsics.c
     test_simd.c
+    test_simd_ops.c
     test_vec_math.c
     test_os.c
     test_pdb.c

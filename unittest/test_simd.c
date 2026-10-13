@@ -401,3 +401,202 @@ UTEST(simd, i32gather_xyz) {
         EXPECT_EQ(oz[i], (float)(3 * idx8[i] + 2));
     }
 }
+
+// THE REDUCTIONS, every width and type, with the extreme in each lane in turn (a reduction that skips a lane, as the
+// 256 bit min and max of doubles did, misses it there)
+UTEST(simd, reduce_all_lanes) {
+    for (int k = 0; k < 8; ++k) {
+        float f[8];
+        double d[4];
+        for (int i = 0; i < 8; ++i) f[i] = 1.0f + 0.25f * (float)i;
+        for (int i = 0; i < 4; ++i) d[i] = 1.0  + 0.25  * (double)i;
+        f[k] = -5.0f;
+        if (k < 4) d[k] = -5.0;
+
+        const md_128 f4 = md_mm_loadu_ps(f + (k & 4));
+        const md_256 f8 = md_mm256_loadu_ps(f);
+        float sum4 = 0, sum8 = 0, min4 = INFINITY, min8 = INFINITY, max4 = -INFINITY, max8 = -INFINITY;
+        for (int i = 0; i < 8; ++i) {
+            sum8 += f[i]; min8 = MIN(min8, f[i]); max8 = MAX(max8, f[i]);
+            if ((i & 4) == (k & 4)) { sum4 += f[i]; min4 = MIN(min4, f[i]); max4 = MAX(max4, f[i]); }
+        }
+        EXPECT_EQ(sum4, md_mm_reduce_add_ps(f4));
+        EXPECT_EQ(min4, md_mm_reduce_min_ps(f4));
+        EXPECT_EQ(max4, md_mm_reduce_max_ps(f4));
+        EXPECT_EQ(sum8, md_mm256_reduce_add_ps(f8));
+        EXPECT_EQ(min8, md_mm256_reduce_min_ps(f8));
+        EXPECT_EQ(max8, md_mm256_reduce_max_ps(f8));
+
+        if (k < 4) {
+            const md_128d d2 = md_mm_loadu_pd(d + (k & 2));
+            const md_256d d4 = md_mm256_loadu_pd(d);
+            EXPECT_EQ(d[k & 2] + d[(k & 2) + 1], md_mm_reduce_add_pd(d2));
+            EXPECT_EQ(MIN(d[k & 2], d[(k & 2) + 1]), md_mm_reduce_min_pd(d2));
+            EXPECT_EQ(MAX(d[k & 2], d[(k & 2) + 1]), md_mm_reduce_max_pd(d2));
+            EXPECT_EQ((d[0] + d[2]) + (d[1] + d[3]), md_mm256_reduce_add_pd(d4));
+            EXPECT_EQ(-5.0, md_mm256_reduce_min_pd(d4));
+            EXPECT_EQ(MAX(MAX(d[0], d[1]), MAX(d[2], d[3])), md_mm256_reduce_max_pd(d4));
+        }
+    }
+}
+
+// The sum adds in one order on every target, ((x0 + x1) + (x2 + x3)): with these values any other order rounds
+// differently
+UTEST(simd, reduce_add_order) {
+    const float v[4] = { 1.0e8f, 1.0f, -1.0e8f, 1.0f };
+    EXPECT_EQ((v[0] + v[1]) + (v[2] + v[3]), md_mm_reduce_add_ps(md_mm_loadu_ps(v)));
+}
+
+UTEST(simd, min_max) {
+    const float a[4] = { 1.0f, -2.0f, 3.0f, -0.5f };
+    const float b[4] = { 0.5f, -3.0f, 4.0f, 2.0f };
+    v4_t mn = { .vec = md_mm_min_ps(md_mm_loadu_ps(a), md_mm_loadu_ps(b)) };
+    v4_t mx = { .vec = md_mm_max_ps(md_mm_loadu_ps(a), md_mm_loadu_ps(b)) };
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(MIN(a[i], b[i]), mn.val[i]);
+        EXPECT_EQ(MAX(a[i], b[i]), mx.val[i]);
+    }
+    // A NaN in the first operand gives the second on every target (what min(x, bound) clamps by)
+    v4_t c = { .vec = md_mm_min_ps(md_mm_set1_ps(NAN), md_mm_set1_ps(88.0f)) };
+    EXPECT_EQ(88.0f, c.val[0]);
+    c.vec = md_mm_max_ps(md_mm_set1_ps(NAN), md_mm_set1_ps(-88.0f));
+    EXPECT_EQ(-88.0f, c.val[0]);
+
+    float a8[8], b8[8];
+    for (int i = 0; i < 8; ++i) { a8[i] = (float)(i * 3 % 8) - 4.0f; b8[i] = (float)(i * 5 % 8) - 3.5f; }
+    v8_t mn8 = { .vec = md_mm256_min_ps(md_mm256_loadu_ps(a8), md_mm256_loadu_ps(b8)) };
+    v8_t mx8 = { .vec = md_mm256_max_ps(md_mm256_loadu_ps(a8), md_mm256_loadu_ps(b8)) };
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(MIN(a8[i], b8[i]), mn8.val[i]);
+        EXPECT_EQ(MAX(a8[i], b8[i]), mx8.val[i]);
+    }
+}
+
+UTEST(simd, cmp_256) {
+    float a[8], b[8];
+    for (int i = 0; i < 8; ++i) { a[i] = (float)i; b[i] = 3.5f; }
+    v8_t lt = { .vec = md_mm256_cmp_ps(md_mm256_loadu_ps(a), md_mm256_loadu_ps(b), SIMDE_CMP_LT_OQ) };
+    EXPECT_EQ(0x0F, md_mm256_movemask_ps(lt.vec));
+    v8_t ge = { .vec = md_mm256_cmpge_ps(md_mm256_loadu_ps(a), md_mm256_loadu_ps(b)) };
+    EXPECT_EQ(0xF0, md_mm256_movemask_ps(ge.vec));
+}
+
+UTEST(simd, movemask) {
+    for (int m = 0; m < 256; ++m) {
+        float f[8];
+        for (int i = 0; i < 8; ++i) f[i] = (m >> i) & 1 ? -1.0f - (float)i : 1.0f + (float)i;
+        EXPECT_EQ(m, md_mm256_movemask_ps(md_mm256_loadu_ps(f)));
+        EXPECT_EQ(m & 15, md_mm_movemask_ps(md_mm_loadu_ps(f)));
+    }
+}
+
+UTEST(simd, select) {
+    const float a[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    const float b[8] = { -1, -2, -3, -4, -5, -6, -7, -8 };
+    const float k[8] = { 0, 1, 0, 1, 1, 0, 0, 1 };
+    v4_t s4 = { .vec = md_mm_select_ps(md_mm_loadu_ps(a), md_mm_loadu_ps(b), md_mm_cmpgt_ps(md_mm_loadu_ps(k), md_mm_setzero_ps())) };
+    v8_t s8 = { .vec = md_mm256_select_ps(md_mm256_loadu_ps(a), md_mm256_loadu_ps(b), md_mm256_cmpgt_ps(md_mm256_loadu_ps(k), md_mm256_setzero_ps())) };
+    for (int i = 0; i < 8; ++i) {
+        if (i < 4) EXPECT_EQ(k[i] > 0 ? b[i] : a[i], s4.val[i]);
+        EXPECT_EQ(k[i] > 0 ? b[i] : a[i], s8.val[i]);
+    }
+}
+
+UTEST(simd, neg) {
+    v4_t r = { .vec = md_mm_neg_ps(md_mm_set_ps(-0.0f, 0.0f, -2.0f, 3.0f)) };
+    EXPECT_EQ(-3.0f, r.val[0]);
+    EXPECT_EQ( 2.0f, r.val[1]);
+    // By the bits: signbit() is folded to x < 0 under -ffast-math
+    EXPECT_EQ(0x80000000u, f32_to_bits(r.val[2]));
+    EXPECT_EQ(0x00000000u, f32_to_bits(r.val[3]));
+    v8_t r8 = { .vec = md_mm256_neg_ps(md_mm256_set1_ps(-1.5f)) };
+    for (int i = 0; i < 8; ++i) EXPECT_EQ(1.5f, r8.val[i]);
+}
+
+// Truncation, and rounding to nearest even, for the lanes in range
+UTEST(simd, convert) {
+    const float f[8] = { 2.5f, 3.5f, -2.5f, -2.7f, 2.7f, 0.49f, -0.5f, 1.0e6f + 0.5f };
+    const int trunc[8] = { 2, 3, -2, -2, 2, 0, 0, 1000000 };
+    const int round[8] = { 2, 4, -2, -3, 3, 0, 0, 1000000 };
+    v8i_t t8 = { .vec = md_mm256_cvttps_epi32(md_mm256_loadu_ps(f)) };
+    v8i_t r8 = { .vec = md_mm256_cvtps_epi32(md_mm256_loadu_ps(f)) };
+    v4i_t t4 = { .vec = md_mm_cvttps_epi32(md_mm_loadu_ps(f)) };
+    v4i_t r4 = { .vec = md_mm_cvtps_epi32(md_mm_loadu_ps(f)) };
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(trunc[i], t8.val[i]);
+        EXPECT_EQ(round[i], r8.val[i]);
+        if (i < 4) {
+            EXPECT_EQ(trunc[i], t4.val[i]);
+            EXPECT_EQ(round[i], r4.val[i]);
+        }
+    }
+}
+
+// At least as accurate as the x86 estimate, 1.5 * 2^-12 relative, on every target
+UTEST(simd, rsqrt) {
+    float worst = 0;
+    for (int i = 0; i < 4096; ++i) {
+        const float x = ldexpf(1.0f + (float)i / 4096.0f, (i % 40) - 20);
+        v4_t r = { .vec = md_mm_rsqrt_ps(md_mm_set1_ps(x)) };
+        const double ref = 1.0 / sqrt((double)x);
+        worst = MAX(worst, (float)(fabs(r.val[0] - ref) / ref));
+    }
+    EXPECT_LT(worst, 1.5f / 4096.0f);
+}
+
+// sin and cos against the double precision library, and the four and eight lane forms against each other
+UTEST(simd, sincos_accuracy) {
+    double worst = 0;
+    for (int i = -4000; i <= 4000; ++i) {
+        const float x = (float)i * 0.0251f;
+        v4_t s4, c4;
+        v8_t s8, c8;
+        md_mm_sincos_ps(md_mm_set1_ps(x), &s4.vec, &c4.vec);
+        md_mm256_sincos_ps(md_mm256_set1_ps(x), &s8.vec, &c8.vec);
+        worst = MAX(worst, fabs(s4.val[0] - sin((double)x)));
+        worst = MAX(worst, fabs(c4.val[0] - cos((double)x)));
+        EXPECT_EQ(s4.val[0], s8.val[7]);
+        EXPECT_EQ(c4.val[0], c8.val[7]);
+    }
+    EXPECT_LT(worst, 2.0e-7);
+}
+
+UTEST(simd, exp_accuracy) {
+    double worst = 0;
+    for (int i = -8000; i <= 8000; ++i) {
+        const float x = (float)i * 0.01f;
+        v4_t e4 = { .vec = md_mm_exp_ps(md_mm_set1_ps(x)) };
+        v8_t e8 = { .vec = md_mm256_exp_ps(md_mm256_set1_ps(x)) };
+        const double ref = exp((double)x);
+        worst = MAX(worst, fabs(e4.val[0] - ref) / ref);
+        EXPECT_EQ(e4.val[0], e8.val[3]);
+    }
+    EXPECT_LT(worst, 3.0e-7);
+}
+
+UTEST(simd, deperiodize) {
+    // A period of 0 leaves the coordinate as it is
+    v4_t r = { .vec = md_mm_deperiodize_ps(md_mm_set_ps(9.0f, 9.0f, -9.0f, 9.0f), md_mm_set1_ps(1.0f), md_mm_set_ps(0.0f, 10.0f, 10.0f, 4.0f)) };
+    EXPECT_NEAR( 1.0f, r.val[0], 1.0e-6f);
+    EXPECT_NEAR( 1.0f, r.val[1], 1.0e-6f);
+    EXPECT_NEAR(-1.0f, r.val[2], 1.0e-6f);
+    EXPECT_EQ(9.0f, r.val[3]);
+}
+
+// The strided unpack: x, y and z of four (eight) records of 16 bytes
+UTEST(simd, unpack_xyz_strided) {
+    float xyzw[32];
+    for (int i = 0; i < 32; ++i) xyzw[i] = (float)i;
+    md_128 x, y, z;
+    md_mm_unpack_xyz_ps(&x, &y, &z, xyzw, 4 * sizeof(float));
+    v4_t ox = { .vec = x }, oy = { .vec = y }, oz = { .vec = z };
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ((float)(4 * i + 0), ox.val[i]);
+        EXPECT_EQ((float)(4 * i + 1), oy.val[i]);
+        EXPECT_EQ((float)(4 * i + 2), oz.val[i]);
+    }
+    md_256 x8, y8, z8, w8;
+    md_mm256_unpack_xyzw_ps(&x8, &y8, &z8, &w8, xyzw, 4 * sizeof(float));
+    v8_t ow = { .vec = w8 };
+    for (int i = 0; i < 8; ++i) EXPECT_EQ((float)(4 * i + 3), ow.val[i]);
+}
