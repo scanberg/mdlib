@@ -866,8 +866,22 @@ MD_VEC_INLINE vec4_t vec4_normalize(vec4_t v) {
     return v;
 }
 
+// The cross product of the xyz of a and b, w 0
 MD_VEC_INLINE vec4_t vec4_cross(vec4_t a, vec4_t b) {
-    vec4_t res = {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x, 0};
+    vec4_t res;
+#if MD_VEC_MATH_USE_SIMD
+    // (a * b.yzx - a.yzx * b).yzx: three shuffles where the textbook a.yzx * b.zxy - a.zxy * b.yzx takes four. Its w,
+    // a.w * b.w - a.w * b.w, is not 0 in general once the multiply and the subtract fuse into one rounding: cleared.
+    const md_128 a_yzx = md_mm_shuffle_ps(a.m128, a.m128, MD_SHUFFLE(3, 0, 2, 1));
+    const md_128 b_yzx = md_mm_shuffle_ps(b.m128, b.m128, MD_SHUFFLE(3, 0, 2, 1));
+    const md_128 c = md_mm_sub_ps(md_mm_mul_ps(a.m128, b_yzx), md_mm_mul_ps(a_yzx, b.m128));
+    res.m128 = md_mm_blend_ps(md_mm_shuffle_ps(c, c, MD_SHUFFLE(3, 0, 2, 1)), md_mm_setzero_ps(), 0x8);
+#else
+    res.x = a.y * b.z - a.z * b.y;
+    res.y = a.z * b.x - a.x * b.z;
+    res.z = a.x * b.y - a.y * b.x;
+    res.w = 0.0f;
+#endif
     return res;
 }
 

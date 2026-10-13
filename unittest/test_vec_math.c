@@ -117,3 +117,28 @@ UTEST(vec_math, mat4x3_mul_vec4) {
 	EXPECT_NEAR(g.z, e.z, 1.0e-5f);
 	EXPECT_NEAR(g.w, 0.0f, 1.0e-6f);
 }
+
+// vec4_cross is the cross product of the xyz, as vec3_cross gives it, whatever the w of its operands, and its own w is
+// exactly 0: a w that is not representable as a product (1/3) would leave the rounding of a.w * b.w there were it not
+// cleared, and vec4_dot and vec4_length take w into account.
+UTEST(vec_math, vec4_cross) {
+	const vec3_t a3[4] = { {1, 0, 0}, {0.3f, -1.7f, 2.5f}, {-4.0f, 0.125f, 9.0f}, {1.0e-3f, 2.0e3f, -7.0f} };
+	const vec3_t b3[4] = { {0, 1, 0}, {2.2f, 0.4f, -1.1f}, {3.5f, -6.0f, 0.75f}, {5.0f, -1.0e-2f, 3.0e2f} };
+	const float  w[3]  = { 0.0f, 1.0f, 1.0f / 3.0f };
+	for (int i = 0; i < 4; ++i) {
+		const vec3_t e = vec3_cross(a3[i], b3[i]);
+		const float tol = 1.0e-6f * (1.0f + vec3_length(a3[i]) * vec3_length(b3[i]));
+		for (int k = 0; k < 3; ++k) {
+			const vec4_t c = vec4_cross(vec4_from_vec3(a3[i], w[k]), vec4_from_vec3(b3[i], -w[k] * 7.0f));
+			EXPECT_NEAR(c.x, e.x, tol);
+			EXPECT_NEAR(c.y, e.y, tol);
+			EXPECT_NEAR(c.z, e.z, tol);
+			EXPECT_EQ(0.0f, c.w);
+		}
+	}
+	// Right handed: x cross y is z
+	const vec4_t z = vec4_cross(vec4_set(1, 0, 0, 0), vec4_set(0, 1, 0, 0));
+	EXPECT_EQ(0.0f, z.x);
+	EXPECT_EQ(0.0f, z.y);
+	EXPECT_EQ(1.0f, z.z);
+}
