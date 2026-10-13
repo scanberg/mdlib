@@ -8,6 +8,7 @@
 #include <md_trr.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_dssp.h>
 #include <md_hbond.h>
 #include <md_script.h>
 #include <core/md_coord_stream.h>

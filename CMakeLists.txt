@@ -151,6 +151,9 @@ set(SRC_FILES
   src/md_itp.h
   src/md_dcd.c
   src/md_dcd.h
+  src/md_dssp.c
+  src/md_dssp.h
+  src/md_dssp_cg.inl
   src/md_lammps.c
   src/md_lammps.h
   src/md_match.c

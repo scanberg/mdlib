@@ -4,11 +4,12 @@
 #include <md_pdb.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_dssp.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 
-// Secondary structure, atomistic (DSSP) and of coarse grained traces (CG-DSSP), see md_util.c
+// Secondary structure, atomistic (DSSP) and of coarse grained traces (CG-DSSP), see md_dssp.c
 
 // The letters of md_secondary_structure_t: unknown, coil, turn, bend, 3-10 helix, alpha helix, pi helix, sheet, bridge
 static const char ss_letters[] = "?CTSGHIEB";

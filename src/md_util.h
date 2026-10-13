@@ -84,14 +84,8 @@ void md_util_system_infer_entity_kinds(md_system_t* sys);
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // The per segment quantities of a protein backbone (see md_protein_backbone_data_t), computed into the caller's arrays
-// of one entry per segment (capacity at least backbone->segment.count). They do not allocate.
-
-// Secondary structure (DSSP like) from the coordinates of a frame. Atomistic ranges get DSSP (Kabsch & Sander) from the
-// hydrogen bonds of their backbone. Traces of coarse grained beads (md_protein_backbone_range_is_trace) get the same
-// patterns from bonds between their peptide groups, which the beads give (CG-DSSP, see md_util.c). It is fit for Martini 3
-// BB beads (the center of N, CA, C and O), and to tell helix, sheet and coil apart rather than every class of DSSP.
-// Bonds and bends are taken between nearest periodic images (cell), so a protein split by the boundary gets what it has whole.
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
+// of one entry per segment (capacity at least backbone->segment.count). They do not allocate. The secondary structure
+// has its own header, md_dssp.h.
 
 // Backbone angles (phi, psi) from the coordinates of a frame. A trace has none: its segments are left 0.
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);

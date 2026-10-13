@@ -11,6 +11,7 @@
 #include <md_lammps.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_dssp.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
