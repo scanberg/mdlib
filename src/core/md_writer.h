@@ -20,7 +20,7 @@ WRITERS
 Where output goes. A procedure which produces text (or bytes) writes it once, to a writer interface (md_writer_i), and
 its caller decides where it ends up by which writer it hands over:
 
-    md_str_writer_t     a string in memory, grown with an allocator (what md_strb_t was)
+    md_str_writer_t     a string in memory, grown with an allocator
     md_buf_writer_t     the caller's fixed array, with snprintf semantics
     md_file_writer_t    a file, through a staging buffer
     md_log_writer_t     the log, a message per line
@@ -113,7 +113,7 @@ struct md_writer_i {
 typedef struct md_str_writer_t {
     md_writer_i w;
 #ifdef __cplusplus
-    // As md_strb_t has them
+    // Appending, and reading what is written as a str_t
     md_str_writer_t& operator+=(str_t str);
     md_str_writer_t& operator+=(const char* cstr);
     md_str_writer_t& operator+=(char c);
@@ -343,7 +343,7 @@ void md_log_writer_close(md_log_writer_t* lw);
 #ifdef __cplusplus
 }
 
-// The operators of md_strb_t, for writers: on the interface, and through it on any writer which converts to it.
+// Appending with operators: on the interface, and through it on any writer which converts to it.
 // The integer overloads are exact matches for each type, so that w << 42 is not ambiguous; a char is a character.
 inline md_writer_i& operator<<(md_writer_i& w, str_t str)            { md_write_str(&w, str);   return w; }
 inline md_writer_i& operator<<(md_writer_i& w, const char* cstr)     { md_write_cstr(&w, cstr); return w; }
