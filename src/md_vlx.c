@@ -5,7 +5,7 @@
 #include <core/md_parse.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_hash.h>
 
 #include <md_types.h>
@@ -4591,7 +4591,7 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
 
 	const size_t cap = KILOBYTES(16);
 	char* buf = md_temp_alloc_array(temp, char, cap);
-	md_strb_t sb = md_strb_create(temp_alloc);
+	md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
 	str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
 	MD_LOG_DEBUG("Basis set ident: '" STR_FMT "'", STR_ARG(ident));
@@ -4605,8 +4605,8 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
 	}
 
 	// The basis folder beside the executable first, then the folder of the file itself.
-	md_strb_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
-	str_t basis_filepath = md_strb_to_str(sb);
+	md_str_writer_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
+	str_t basis_filepath = md_str_writer_to_str(&sb);
 	md_file_t basis_file = {0};
 	if (!md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
 		str_t folder = { 0 };
@@ -4614,10 +4614,10 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
 			MD_LOG_ERROR("An error occured when extracting the path to supplied file");
 			goto done;
 		}
-		md_strb_reset(&sb);
-		md_strb_push_str(&sb, folder);
-		md_strb_push_str(&sb, ident);
-		basis_filepath = md_strb_to_str(sb);
+		md_str_writer_reset(&sb);
+		md_str_writer_push_str(&sb, folder);
+		md_str_writer_push_str(&sb, ident);
+		basis_filepath = md_str_writer_to_str(&sb);
 		if (!md_file_open(&basis_file, basis_filepath, MD_FILE_READ)) {
 			MD_LOG_ERROR("Could not find basis file corresponding to identifier: '" STR_FMT "'", STR_ARG(ident));
 			goto done;

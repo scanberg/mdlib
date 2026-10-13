@@ -1143,7 +1143,11 @@ UTEST_F(script, compile_script) {
     str_t script_src = load_textfile(STR_LIT(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    EXPECT_TRUE(md_script_ir_compile_from_source(ir, script_src, &utest_fixture->amy, NULL));
+    bool success = md_script_ir_compile_from_source(ir, script_src, &utest_fixture->amy, NULL);
+    EXPECT_TRUE(success);
+    if (!success) {
+        md_script_ir_write_diagnostics(md_writer_stderr(), ir);
+    }
 
     md_arena_allocator_destroy(alloc);
 }
@@ -3700,7 +3704,7 @@ UTEST_F(script, pbc_invariance_ortho) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
     pbc_invariance(utest_result, &utest_fixture->ala,
         "r = rmsd(residue(1:8));\n"
-        "rf = rmsd(flatten(residue(1:8)));\n"
+        "rf = rmsd(union(residue(1:8)));\n"
         "a = angle(atom(1), atom(45), atom(90));\n"
         "d = dihedral(atom(1), atom(30), atom(60), atom(90));\n"
         "x = distance(residue(1), residue(8));\n"
@@ -3714,7 +3718,7 @@ UTEST_F(script, pbc_invariance_triclinic) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
     pbc_invariance(utest_result, &utest_fixture->npt,
         "r = rmsd(residue(1:8));\n"
-        "rf = rmsd(flatten(residue(1:8)));\n"
+        "rf = rmsd(union(residue(1:8)));\n"
         "a = angle(atom(1), atom(45), atom(90));\n"
         "d = dihedral(atom(1), atom(30), atom(60), atom(90));\n"
         "x = distance(residue(1), residue(8));\n"
@@ -3725,7 +3729,7 @@ UTEST_F(script, pbc_invariance_triclinic) {
 }
 
 // rmsd takes each bitfield of its argument as a structure of its own: one fit and one value per bitfield.
-// flatten() pools them into a single structure.
+// union() pools them into a single structure.
 UTEST_F(script, rmsd_per_structure) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
     md_system_t* sys = &utest_fixture->ala;
@@ -3733,7 +3737,7 @@ UTEST_F(script, rmsd_per_structure) {
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_script_ir_compile_from_source(ir, STR_LIT(
         "rr = rmsd(residue(1:8));\n"
-        "rf = rmsd(flatten(residue(1:8)));\n"
+        "rf = rmsd(union(residue(1:8)));\n"
         "r1 = rmsd(residue(1));\n"
         "r3 = rmsd(residue(3));\n"
         "r8 = rmsd(residue(8));\n"
@@ -4968,9 +4972,10 @@ UTEST_F(script, rdf_shell_weights) {
 }
 
 
-// ### PLANES ###
-// planes(): one least squares plane per group, oriented, and what centroid(), normal(), radius(), deviation() and
-// angle() read of it. Checked against references computed here, on dictionary components (no test data needed).
+// ### PLANE ###
+// plane(): one least squares plane per group or one through positions, oriented, and what centroid(), normal(),
+// radius(), deviation() and angle() read of it. Checked against references computed here, on dictionary components
+// (no test data needed).
 
 typedef struct plane_sys_t {
     md_allocator_i*   alloc;
@@ -5023,14 +5028,14 @@ static bool plane_compile_fails_with(plane_sys_t* p, const char* src, const char
     return !ok && found;
 }
 
-UTEST(script, planes) {
+UTEST(script, plane) {
     plane_sys_t trp = {0};
     ASSERT_TRUE(plane_sys_init(&trp, "TRP"));
     md_system_t* sys = &trp.sys;
     ASSERT_EQ(2, (int)md_index_data_num_ranges(&sys->ring));
 
     md_script_ir_t* ir = md_script_ir_create(trp.alloc);
-    ASSERT_TRUE(plane_compile(ir, "p = planes(ring()); c = centroid(p); n = normal(p); r = radius(p); dv = deviation(p); a = angle(p[1], p[2]); s = planes(residue(1));", &trp));
+    ASSERT_TRUE(plane_compile(ir, "p = plane(ring()); c = centroid(p); n = normal(p); r = radius(p); dv = deviation(p); a = angle(p[1], p[2]); s = plane(residue(1));", &trp));
 
     data_t p = {0}, c = {0}, n = {0}, r = {0}, dv = {0}, a = {0};
     ASSERT_TRUE(plane_eval(&p,  ir, "p",  &trp, &trp.st));
@@ -5101,20 +5106,120 @@ UTEST(script, planes) {
     EXPECT_GT(vec3_dot(((const plane_t*)s1.ptr)[0].normal, want_res), 0.999f);
 
     // Errors before evaluation
-    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = planes(element('N'));", "a plane needs at least 3"));
-    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = planes(within(3, element('N')));", "cannot depend on the frame"));
-    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = angle(planes(ring()), planes({residue(1), residue(1), residue(1)}));", "as many or one of them a single plane"));
+    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = plane(element('N'));", "a plane needs at least 3"));
+    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = plane(within(3, element('N')));", "cannot depend on the frame"));
+    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = angle(plane(ring()), plane({residue(1), residue(1), residue(1)}));", "as many or one of them a single plane"));
+    // Positions: the centres of the two rings, and a single one
+    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = plane(coord(ring()));", "2 positions, a plane needs at least 3"));
+    EXPECT_TRUE(plane_compile_fails_with(&trp, "x = plane(com(ring()));", "1 position, a plane needs at least 3"));
 
     md_script_ir_free(ir);
     md_vm_arena_destroy(trp.alloc);
 }
 
+// The number of warnings of ir which contain text
+static int warnings_with(const md_script_ir_t* ir, const char* text) {
+    int n = 0;
+    for (size_t i = 0; i < md_script_ir_num_warnings(ir); ++i) {
+        n += str_find_str(NULL, md_script_ir_warnings(ir)[i].text, str_from_cstr(text)) ? 1 : 0;
+    }
+    return n;
+}
+
+// plane(union(groups)): one plane through all of the atoms of the groups. plane(positions): one through the positions,
+// atom indices or float[3], its normal on the side from which they go around anticlockwise in the order given.
+UTEST(script, plane_union_positions) {
+    plane_sys_t trp = {0};
+    ASSERT_TRUE(plane_sys_init(&trp, "TRP"));
+    md_system_t* sys = &trp.sys;
+
+    md_script_ir_t* ir = md_script_ir_create(trp.alloc);
+    ASSERT_TRUE(plane_compile(ir,
+        "p = plane(ring());\n"
+        "u = plane(union(ring()));\n"
+        "t = plane({1, 2, 3});\n"
+        "b = plane({3, 2, 1});\n"
+        "f = plane(coord(1:3));\n"
+        "i = plane(1:4);\n"
+        "k = plane(coord(within(3.0, atom(1))));\n", &trp));
+    EXPECT_EQ(0, (int)md_script_ir_num_warnings(ir));
+
+    data_t p = {0}, u = {0}, t = {0}, b = {0}, f = {0}, i = {0};
+    ASSERT_TRUE(plane_eval(&p, ir, "p", &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&u, ir, "u", &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&t, ir, "t", &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&b, ir, "b", &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&f, ir, "f", &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&i, ir, "i", &trp, &trp.st));
+    ASSERT_EQ(2, (int)element_count(p));
+    ASSERT_EQ(1, (int)element_count(u));
+    ASSERT_EQ(1, (int)element_count(t));
+    ASSERT_EQ(1, (int)element_count(i));
+
+    // Both rings of indole as one: their 9 atoms (two shared), in the plane of either
+    const plane_t* pu = (const plane_t*)u.ptr;
+    const plane_t* p0 = (const plane_t*)p.ptr;
+    EXPECT_EQ(9, pu->count);
+    EXPECT_GT(fabsf(vec3_dot(pu->normal, p0->normal)), 0.999f);
+    EXPECT_LT(pu->deviation, 0.05f);
+
+    // Three atoms in order, and the other way around: the normal is on the side they go around anticlockwise. The
+    // same positions as float[3] give the same plane.
+    const plane_t* pt = (const plane_t*)t.ptr;
+    const plane_t* pb = (const plane_t*)b.ptr;
+    const plane_t* pf = (const plane_t*)f.ptr;
+    EXPECT_EQ(3, pt->count);
+    const vec3_t x0 = trp.st.xyz[0], x1 = trp.st.xyz[1], x2 = trp.st.xyz[2];
+    const vec3_t turn = vec3_normalize(vec3_cross(vec3_sub(x1, x0), vec3_sub(x2, x0)));
+    EXPECT_GT(vec3_dot(pt->normal, turn), 0.999f);
+    EXPECT_GT(vec3_dot(pb->normal, turn), -1.001f);
+    EXPECT_LT(vec3_dot(pb->normal, turn), -0.999f);
+    EXPECT_GT(vec3_dot(pf->normal, pt->normal), 0.999f);
+    const vec3_t c3 = vec3_mul1(vec3_add(vec3_add(x0, x1), x2), 1.0f / 3.0f);
+    EXPECT_NEAR(c3.x, pt->centroid.x, 1e-4f);
+    EXPECT_NEAR(c3.y, pt->centroid.y, 1e-4f);
+    EXPECT_NEAR(c3.z, pt->centroid.z, 1e-4f);
+    EXPECT_NEAR(0.0f, pt->deviation, 1e-4f);
+
+    // Positions which depend on the frame: the atoms around atom 1
+    data_t k = {0};
+    ASSERT_TRUE(plane_eval(&k, ir, "k", &trp, &trp.st));
+    ASSERT_EQ(1, (int)element_count(k));
+    EXPECT_GE(((const plane_t*)k.ptr)->count, 3);
+
+    // Atom indices: the atoms
+    const plane_t* pi = (const plane_t*)i.ptr;
+    EXPECT_EQ(4, pi->count);
+    vec3_t mean = {0};
+    for (int k = 0; k < 4; ++k) mean = vec3_add(mean, trp.st.xyz[k]);
+    mean = vec3_mul1(mean, 0.25f);
+    EXPECT_NEAR(mean.x, pi->centroid.x, 1e-4f);
+    EXPECT_NEAR(mean.y, pi->centroid.y, 1e-4f);
+    EXPECT_NEAR(mean.z, pi->centroid.z, 1e-4f);
+    (void)sys;
+    md_script_ir_free(ir);
+
+    // The old names of union compile, with one warning each
+    ir = md_script_ir_create(trp.alloc);
+    ASSERT_TRUE(plane_compile(ir, "x = plane(join(ring()));\ny = plane(flatten(ring()));\nz = count(flatten(ring()));\n", &trp));
+    EXPECT_EQ(1, warnings_with(ir, "join() is deprecated, use union()"));
+    EXPECT_EQ(2, warnings_with(ir, "use union()") - warnings_with(ir, "join() is deprecated"));
+    data_t x = {0}, y = {0};
+    ASSERT_TRUE(plane_eval(&x, ir, "x", &trp, &trp.st));
+    ASSERT_TRUE(plane_eval(&y, ir, "y", &trp, &trp.st));
+    EXPECT_EQ(9, ((const plane_t*)x.ptr)->count);
+    EXPECT_EQ(9, ((const plane_t*)y.ptr)->count);
+    md_script_ir_free(ir);
+
+    md_vm_arena_destroy(trp.alloc);
+}
+
 // A sugar ring is in order from its ring O to the anomeric C, and its normal follows that order
-UTEST(script, planes_sugar) {
+UTEST(script, plane_sugar) {
     plane_sys_t ade = {0};
     ASSERT_TRUE(plane_sys_init(&ade, "A"));
     md_script_ir_t* ir = md_script_ir_create(ade.alloc);
-    ASSERT_TRUE(plane_compile(ir, "p = planes(ring(kind='sugar'));", &ade));
+    ASSERT_TRUE(plane_compile(ir, "p = plane(ring(kind='sugar'));", &ade));
     data_t p = {0};
     ASSERT_TRUE(plane_eval(&p, ir, "p", &ade, &ade.st));
     ASSERT_EQ(1, (int)element_count(p));
@@ -5160,7 +5265,7 @@ static const md_script_vis_token_t* hover_token(const md_script_ir_t* ir, const 
 UTEST(script, hover_text) {
     plane_sys_t trp = {0};
     ASSERT_TRUE(plane_sys_init(&trp, "TRP"));
-    const char* src = "k = contacts(ring(), cutoff=5.0);\nm = smiles('cc', level='residue');\nr = ring();\np = planes(ring());\nd = distance(1, 2);";
+    const char* src = "k = contacts(ring(), cutoff=5.0);\nm = smiles('cc', level='residue');\nr = ring();\np = plane(ring());\nd = distance(1, 2);";
     md_script_ir_t* ir = md_script_ir_create(trp.alloc);
     ASSERT_TRUE(plane_compile(ir, src, &trp));
 
@@ -5187,7 +5292,7 @@ UTEST(script, hover_text) {
     t = hover_token(ir, src, "contacts(ring(), cutoff=5.0)");
     EXPECT_GT(md_script_vis_value_text(buf, sizeof(buf), t->ref, -1, &ctx), 0);
     EXPECT_TRUE(strstr(buf, "of groups in contact") != NULL);
-    t = hover_token(ir, src, "planes(ring())");
+    t = hover_token(ir, src, "plane(ring())");
     EXPECT_GT(md_script_vis_value_text(buf, sizeof(buf), t->ref, -1, &ctx), 0);
     EXPECT_TRUE(strstr(buf, "2 planes") != NULL);
     EXPECT_GT(md_script_vis_value_text(buf, sizeof(buf), t->ref, 1, &ctx), 0);
@@ -5368,4 +5473,107 @@ UTEST(script, pucker_canonical) {
             EXPECT_STREQ("3E", buf);
         }
     }
+}
+
+// The diagnostics of the last compilation of ir, as md_script_ir_write_diagnostics writes them
+static str_t diagnostics_text(md_str_writer_t* sw, const md_script_ir_t* ir) {
+    md_str_writer_reset(sw);
+    md_script_ir_write_diagnostics(&sw->w, ir);
+    return md_str_writer_to_str(sw);
+}
+
+// The diagnostic written for one log token in src
+static const char* diagnostics_of(md_str_writer_t* sw, const char* src, int beg, int end, bool is_error, const char* msg) {
+    md_str_writer_reset(sw);
+    const md_log_token_t tok = { .range = { beg, end }, .text = str_from_cstr(msg) };
+    diag_append(&sw->w, str_from_cstr(src), &tok, is_error);
+    return md_str_writer_to_cstr(sw);
+}
+
+static bool diagnostics_contain(str_t txt, const char* expected) {
+    if (str_find_str(NULL, txt, str_from_cstr(expected))) return true;
+    printf("Expected the diagnostics to contain:\n%s\nGot:\n" STR_FMT, expected, STR_ARG(txt));
+    return false;
+}
+
+UTEST(script, diagnostics) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    md_str_writer_t sw = md_str_writer_create(alloc);
+
+    // Line and column count characters: the tab and the two byte 'Å' are one each. The echoed line expands the tab
+    // and the marker beneath it follows, so the caret is under the 'y'
+    EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("a = 1;\n\tb = \"\xC3\x85\" + y;"), &test_mol, NULL));
+    str_t txt = diagnostics_text(&sw, ir);
+    EXPECT_TRUE(diagnostics_contain(txt, "<script>:2:12: error: "));
+    EXPECT_TRUE(diagnostics_contain(txt,
+        "    2 |     b = \"\xC3\x85\" + y;\n"
+        "      |               ^\n"
+        "1 error generated.\n"));
+
+    // A warning of a script which compiles, its range underlined
+    md_script_ir_clear(ir);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("c = contacts(all, cutoff=5.0);"), &test_mol, NULL));
+    txt = diagnostics_text(&sw, ir);
+    EXPECT_TRUE(diagnostics_contain(txt, "<script>:1:14: warning: "));
+    EXPECT_TRUE(diagnostics_contain(txt,
+        "    1 | c = contacts(all, cutoff=5.0);\n"
+        "      |              ^~~\n"
+        "1 warning generated.\n"));
+
+    // Nothing to report
+    md_script_ir_clear(ir);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("a = 1;"), &test_mol, NULL));
+    EXPECT_TRUE(str_empty(diagnostics_text(&sw, ir)));
+
+    // A range over several lines is underlined on each, indentation left out
+    EXPECT_STREQ(
+        "<script>:1:5: error: E\n"
+        "    1 | x = f(a,\n"
+        "      |     ^~~~\n"
+        "    2 |   b);\n"
+        "      |   ~~~\n",
+        diagnostics_of(&sw, "x = f(a,\n  b);", 4, 15, true, "E"));
+
+    // Over more than five lines, the first and last two are shown
+    EXPECT_STREQ(
+        "<script>:1:5: error: E\n"
+        "    1 | x = f(a,\n"
+        "      |     ^~~~\n"
+        "    2 |   b,\n"
+        "      |   ~~\n"
+        "      | ...\n"
+        "    5 |   e,\n"
+        "      |   ~~\n"
+        "    6 |   g);\n"
+        "      |   ~~~\n",
+        diagnostics_of(&sw, "x = f(a,\n  b,\n  c,\n  d,\n  e,\n  g);", 4, 34, true, "E"));
+
+    // CRLF line endings: the carriage return is not echoed
+    EXPECT_STREQ(
+        "<script>:2:5: warning: W\n"
+        "    2 | b = y;\n"
+        "      |     ^\n",
+        diagnostics_of(&sw, "a = 1;\r\nb = y;\r\n", 12, 13, false, "W"));
+
+    // A range outside the source is clamped to it: an empty range at its end
+    EXPECT_STREQ(
+        "<script>:1:7: error: E\n"
+        "    1 | a = 1;\n"
+        "      |       ^\n",
+        diagnostics_of(&sw, "a = 1;", 100, 200, true, "E"));
+
+    // The gutter widens for line numbers of more than five digits
+    md_str_writer_t big = md_str_writer_create(alloc);
+    md_write_fill(&big.w, '\n', 100000);
+    md_str_writer_push_cstr(&big, "y;");
+    md_str_writer_t sw_big = md_str_writer_create(alloc);
+    EXPECT_STREQ(
+        "<script>:100001:1: error: E\n"
+        "100001 | y;\n"
+        "       | ^\n",
+        diagnostics_of(&sw_big, md_str_writer_to_cstr(&big), 100000, 100001, true, "E"));
+
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
 }

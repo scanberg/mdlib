@@ -194,7 +194,7 @@ n = count(sel=protein(), unit="residue");
 | `distribution` | A 1024-bin histogram (for example `rdf`, `density_x`), with a weight per bin; see [Distributions](#distributions). `distribution[n]` is *n* of them, e.g. `rdf(...) in residue(1:3)`. |
 | `volume` | `float[128][128][128]` grid (for example `sdf`). |
 | `contact` | The group pairs in contact in a frame, from [`contacts`](#contacts); read with [`count`](#count) and [`degree`](#degree). |
-| `plane` | The plane fitted to a group of atoms, from [`planes`](#planes): its centroid, oriented normal, radius and how far the atoms are from it; read with [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation) and [`angle`](#angle). `plane[n]` is *n* of them. |
+| `plane` | The plane fitted to a group of atoms or to positions, from [`plane`](#plane): its centroid, oriented normal, radius and how far the atoms are from it; read with [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation) and [`angle`](#angle). `plane[n]` is *n* of them. |
 | `pucker` | How a ring of 5 to 7 atoms is puckered, from [`pucker`](#pucker): its Cremer-Pople coordinates and the name of its conformation; read with [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta) and [`pseudorotation`](#pseudorotation). |
 
 Units propagate through arithmetic: `distance(1,2) - distance(1,3)` is in Å, `distance(1,2) * distance(1,3)` in Å²,
@@ -227,6 +227,10 @@ centre of mass of all three residues together and `distance(residue(1:3), vec3(0
 one value per residue, use a [context](#contexts-in-and-out): `distance(1, vec3(0,0,0)) in residue(1:3)`, or use a
 procedure that keeps the elements apart such as `distance_pair(residue(1:3), vec3(0,0,0))` (three values) or
 `coord_x(residue(1:3))` (three values: the x coordinate of each residue's centre of mass).
+
+Procedures that describe a structure rather than reduce it to a point, [`plane`](#plane), [`rmsd`](#rmsd) and
+[`pucker`](#pucker), keep the bitfields of an array apart and give one result per bitfield. Take their
+[`union`](#union) for one result over all of them: `plane(union(residue(1:3)))`.
 
 `distance_min` and `distance_max` follow a rule of their own: they measure atoms, not centres of mass, and give one
 value per element of their first argument (`distance_min(residue(1:3), residue(5))` is three values), while their
@@ -304,10 +308,10 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
 | [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`pool`](#pool), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
-| [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`planes`](#planes), [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation), [`pucker`](#pucker), [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta), [`pseudorotation`](#pseudorotation), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
+| [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation), [`pucker`](#pucker), [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta), [`pseudorotation`](#pseudorotation), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
 | [Math](#math) | [`sqrt`](#sqrt), [`cbrt`](#cbrt), [`abs`](#abs), [`floor`](#floor), [`ceil`](#ceil), [`sin`](#sin), [`cos`](#cos), [`asin`](#asin), [`acos`](#acos), [`atan`](#atan), [`atan2`](#atan2), [`log`](#log), [`log2`](#log2), [`log10`](#log10), [`exp`](#exp), [`exp2`](#exp2), [`pow`](#pow), [`min`](#min), [`max`](#max) |
 | [Linear algebra](#linear-algebra-and-constructors) | [`vec2`](#vec2), [`vec3`](#vec3), [`vec4`](#vec4), [`dot`](#dot), [`cross`](#cross), [`length`](#length), [`normalize`](#normalize), [`mul`](#mul) |
-| [Combining](#combining-and-reshaping) | [`join`](#join) (`flatten`), [`split`](#split), [`chunks`](#chunks), [`transpose`](#transpose), and the operators `and` `or` `xor` `not` on selections |
+| [Combining](#combining-and-reshaping) | [`union`](#union), [`flatten`](#flatten), [`split`](#split), [`chunks`](#chunks), [`transpose`](#transpose), and the operators `and` `or` `xor` `not` on selections |
 | [External data](#data-from-outside-the-structure) | [`attr`](#attr) |
 
 ---
@@ -523,8 +527,8 @@ sugars = ring(kind="sugar") in residue(1:20);
 ### Selectors: residue level
 
 These return a `bitfield[]` with one selection per matching residue. Use them as the right-hand side of `in`, or
-pass them where a bitfield is accepted (an array of bitfields is then flattened into one selection; [`rmsd`](#rmsd)
-is the exception and gives one value per selection).
+pass them where a bitfield is accepted (an array of bitfields is then merged into one selection; [`rmsd`](#rmsd),
+[`plane`](#plane) and [`pucker`](#pucker) are the exceptions and give one value per selection).
 
 ### protein
 
@@ -538,7 +542,7 @@ Every amino acid residue: those whose backbone was found and verified by its bon
 like an amino acid (missing atoms, a coarse grained model).
 
 ```mdscript
-n_protein_atoms = count(protein());                 # the residues are flattened into one selection
+n_protein_atoms = count(protein());                 # the residues are merged into one selection
 d = distance(1, 2) in protein();                    # one value per protein residue
 ```
 
@@ -1049,7 +1053,7 @@ angle(a: position[], b: position[], c: position[]) -> float [rad]
 angle(a: plane[], b: plane[]) -> float[] [rad]
 ```
 
-**Parameters:** `a`, `b`, `c` (three positions), or `a`, `b` (two sets of [`planes`](#planes)).
+**Parameters:** `a`, `b`, `c` (three positions), or `a`, `b` (two sets of planes, from [`plane`](#plane)).
 
 The angle at `b` between the directions to `a` and `c`, in `[0, π]`. Of two planes, the angle between them, in
 `[0, π/2]`: one value per pair, a single plane against each of the other.
@@ -1088,11 +1092,11 @@ rmsd(sel: bitfield[]) -> float[] [Å]
 The mass-weighted root-mean-square deviation of the selected atoms from the system's reference structure (the first
 frame), after removing translation and finding the optimal rotation. Each bitfield of the argument is a structure of
 its own, fitted and reported separately: the result has one value per bitfield. Unlike most procedures, which merge
-an array of selections into one, `rmsd` keeps them apart; use [`flatten`](#flatten) to fit them together as one
+an array of selections into one, `rmsd` keeps them apart; use [`union`](#union) to fit them together as one
 structure. A single selection (`backbone()`, `within(...)`, a combination with `and`/`or`) gives a single value.
 
 The selection may change from frame to frame, and an empty one gives 0. If the *number* of selections changes from
-frame to frame (`residue(within(...))`) the result is not published as a property; `flatten` it. Inside a context
+frame to frame (`residue(within(...))`) the result is not published as a property; take its `union`. Inside a context
 only the atoms of the context are used. Periodic boundaries are handled as long as a structure spans less than half
 the cell.
 
@@ -1100,7 +1104,7 @@ the cell.
 backbone_rmsd = rmsd(backbone());               # one value
 chain_rmsd = rmsd(chain(:));                    # one value per chain, each fitted on its own
 residue_rmsd = rmsd(protein());                 # one value per protein residue
-protein_rmsd = rmsd(flatten(protein()));        # the whole protein as one structure
+protein_rmsd = rmsd(union(protein()));          # the whole protein as one structure
 ligand_rmsd = rmsd(resname("LIG"));             # one value per LIG residue
 ```
 
@@ -1354,8 +1358,8 @@ void_fraction = porosity(all());
 ## Geometry
 
 Procedures that turn atoms into points, vectors and planes. Their results are values you feed into other
-procedures (`com` into `distance`, `plane` into `dot`) rather than properties to plot; those that result in a plain
-`float`, `float[3]` or `float[4]` are published as properties when they change over the trajectory.
+procedures (`com` into `distance`, `plane` into `angle`) rather than properties to plot; those that result in a plain
+`float` or `float[3]` are published as properties when they change over the trajectory.
 
 ### com
 
@@ -1379,29 +1383,19 @@ centre_of_selection = com(within(4.0, atom(1)));
 <!-- proc name=plane category=geometry -->
 
 ```text
-plane(a: position[]) -> float[4]
+plane(groups: bitfield[]) -> plane[]
+plane(points: position[]) -> plane
 ```
 
-The best-fit plane through at least three positions, returned as `(nx, ny, nz, d)` where `n` is the unit normal (the
-direction of least variance) and `d = n · c` with `c` the centre of the points, so points on the plane satisfy
-`n · x = d`.
+The least squares plane of a group of atoms, not weighted by mass: one plane per bitfield of `groups`, or one through
+`points` (atom indices, or `float[3]` positions such as [`coord`](#coord) gives). Each needs at least three atoms
+or positions. A plane record holds what [`centroid`](#centroid), [`normal`](#normal),
+[`radius`](#radius), [`deviation`](#deviation) and [`angle`](#angle) read of it, and hovering it shows them.
 
-```mdscript
-p = plane(resname("PFT"));                          # one plane through all PFT atoms
-planes = plane(1:4) in resname("PFT");              # one plane per residue
-```
-
-### planes
-
-<!-- proc name=planes category=geometry -->
-
-```text
-planes(groups: bitfield[]) -> plane[]
-```
-
-One plane per group: the least squares plane of the group's atoms (at least three), not weighted by mass. A plane
-record holds what [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation) and
-[`angle`](#angle) read of it, and hovering it shows them. The groups cannot depend on the frame.
+Like [`rmsd`](#rmsd), `plane` keeps the groups apart: `plane(residue(1:10))` is ten planes. For one plane through all
+of their atoms take their [`union`](#union) first, `plane(union(residue(1:10)))`; for one through their centres pass
+the centres, `plane(coord(residue(1:10)))`. The groups cannot depend on the frame; positions can
+(`plane(coord(within(...)))`).
 
 The normal is oriented, so that it keeps to the atoms from frame to frame and a time series of it does not flip:
 
@@ -1409,14 +1403,16 @@ The normal is oriented, so that it keeps to the atoms from frame to frame and a 
   anticlockwise, in its order. A sugar ring goes from the ring O to the anomeric C.
 - Any other group: by two of its atoms chosen in the reference structure, the one farthest from the centroid and the
   one which spans the largest area with it.
-
-Not [`plane`](#plane), which fits one plane through all of the positions it is given (an array of selections being
-their centres).
+- Positions: on the side from which they go around anticlockwise in the order given, so give them in order around
+  the plane (`plane({1, 2, 5, 4})`).
 
 ```mdscript
-p = planes(ring(kind="aromatic"));             # one per aromatic ring
-tilt = angle(planes(ring("c1ccccc1") in resid(10)), planes(ring("c1ccccc1") in resid(20)));
-flat = deviation(planes(residue(1:10)));       # how far each residue is from flat, in Å
+p = plane(ring(kind="aromatic"));                  # one per aromatic ring
+tilt = angle(plane(ring("c1ccccc1") in resid(10)), plane(ring("c1ccccc1") in resid(20)));
+flat = deviation(plane(residue(1:10)));            # how far each residue is from flat, in Å
+whole = plane(union(resname("PFT")));              # one plane through all PFT atoms
+per_res = plane(1:4) in resname("PFT");            # atoms 1 to 4 of each PFT residue, in that order
+sheet = plane(coord(residue(1:10)));               # one plane through the centres of the residues
 ```
 
 ### centroid
@@ -1438,7 +1434,7 @@ measures from it.
 normal(p: plane[]) -> float[3][]
 ```
 
-The unit normal of each plane, oriented as [`planes`](#planes) describes.
+The unit normal of each plane, oriented as [`plane`](#plane) describes.
 
 ### radius
 
@@ -2078,23 +2074,37 @@ Matrix–matrix and matrix–vector product. There is no matrix constructor, so 
 
 ## Combining and reshaping
 
-### join
+### union
 
-<!-- proc name=join aliases=flatten category=combine -->
-<a id="flatten"></a>
+<!-- proc name=union aliases=join category=combine -->
+<a id="join"></a>
 
 ```text
-join(sel: bitfield[])    -> bitfield
-flatten(sel: bitfield[]) -> bitfield
-flatten(x: T[..])        -> T[]          # any array, one-dimensional result
+union(sel: bitfield[]) -> bitfield
 ```
 
-Merge an array of selections into one. `flatten` is an alias for selections and additionally flattens any
-multi-dimensional array of numbers into one dimension, for example the per-residue results of a context.
+The atoms of all of the selections, each once: one selection made of an array of them, `or` over all of its
+elements. Where a procedure keeps the selections of an array apart ([`rmsd`](#rmsd), [`plane`](#plane),
+[`pucker`](#pucker)), `union` makes them one structure. `join` is its old name, which still compiles with a warning.
 
 ```mdscript
-all_protein = join(protein());
-merged = flatten(residue(1:3));
+all_protein = union(protein());
+protein_rmsd = rmsd(union(protein()));          # the whole protein as one structure
+```
+
+### flatten
+
+<!-- proc name=flatten category=combine -->
+
+```text
+flatten(x: T[..]) -> T[]          # any array, one-dimensional result
+```
+
+The elements of a multi-dimensional array in one dimension: the per-residue results of a context, or a tensor read
+with [`attr`](#attr). Of selections it gives their [`union`](#union), with a warning: that is not a change of shape
+(an atom in two of them is in the result once), and `union` says what it is.
+
+```mdscript
 per_res = flatten(distance(1, 2) in residue(:));
 ```
 
@@ -2276,7 +2286,7 @@ planarity = abs(abs(d1) - PI / 2) / (PI / 2) +
 
 ```mdscript
 {linear, planar, isotropic} = shape_weights(all());
-axis = plane(all());
+axis = normal(plane(all()));
 ```
 
 ### Structure of the neighbourhood

@@ -6,7 +6,7 @@
 #include "core/md_allocator.h"
 #include "core/md_os.h"
 #include "core/md_log.h"
-#include "core/md_str_builder.h"
+#include "core/md_writer.h"
 #include "core/md_array.h"
 #include <core/md_parse.h>
 
@@ -108,19 +108,21 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
     return false;
 }
 
-static void write(md_strb_t* sb, const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
+void md_csv_write(md_writer_i* w, const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
+    ASSERT(w);
+    if (!field_values || num_fields == 0) {
+        return;
+    }
     if (field_names) {
-        for (size_t i = 0; i < num_fields; ++i) {
-            md_strb_fmt(sb, STR_FMT, STR_ARG(field_names[i]));
-            const char c = i < num_fields - 1 ? ',' : '\n';
-            md_strb_push_char(sb, c);
+        for (size_t col = 0; col < num_fields; ++col) {
+            md_write_str(w, field_names[col]);
+            md_write_char(w, col < num_fields - 1 ? ',' : '\n');
         }
     }
     for (size_t row = 0; row < num_values; ++row) {
         for (size_t col = 0; col < num_fields; ++col) {
-            md_strb_fmt(sb, "%f", field_values[col][row]);
-            const char c = col < num_fields - 1 ? ',' : '\n';
-            md_strb_push_char(sb, c);
+            md_write_f64(w, field_values[col][row], 6);     // as "%f" writes it
+            md_write_char(w, col < num_fields - 1 ? ',' : '\n');
         }
     }
 }
@@ -128,12 +130,9 @@ static void write(md_strb_t* sb, const float* const field_values[], const str_t 
 str_t md_csv_write_to_str (const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* alloc) {
     str_t result = {0};
     if (field_values && num_fields > 0 && num_values > 0) {
-        md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-        md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-        md_strb_t sb = md_strb_create(temp_alloc);
-        write(&sb, field_values, field_names, num_fields, num_values);
-        result = str_copy(md_strb_to_str(sb), alloc);
-        md_temp_end(temp_scope);
+        md_str_writer_t sw = md_str_writer_create(alloc);
+        md_csv_write(&sw.w, field_values, field_names, num_fields, num_values);
+        result = md_str_writer_release(&sw);
     }
     return result;
 }
@@ -142,16 +141,13 @@ bool md_csv_write_to_file(const float* const field_values[], const str_t field_n
     if (field_values && num_fields > 0 && num_values > 0) {
         md_file_t file = {0};
         if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-            md_temp_scope_t temp_scope = md_temp_begin();
-            md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-            md_strb_t sb = md_strb_create(temp_alloc);
-            write(&sb, field_values, field_names, num_fields, num_values);
-            str_t str = md_strb_to_str(sb);
-            const size_t written_bytes = md_file_write(file, str.ptr, str.len);
-            md_temp_end(temp_scope);
+            // Streamed through a staging buffer, rather than built whole in memory first
+            md_file_writer_t fw = md_file_writer_create(file, NULL, 0);
+            md_csv_write(&fw.w, field_values, field_names, num_fields, num_values);
+            const bool written = md_file_writer_close(&fw);
             md_file_close(&file);
-            
-            if (written_bytes == str.len) {
+
+            if (written) {
                 return true;
             } else {
                 MD_LOG_ERROR("CSV: Unexpected error, some bytes were not written");

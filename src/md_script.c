@@ -49,7 +49,8 @@
 #include <core/md_unit.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_vec_math.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
+#include <core/md_writer.h>
 #include <core/md_hash.h>
 
 #ifndef __STDC_FORMAT_MACROS
@@ -250,15 +251,15 @@ struct frange_t {
     float end;
 };
 
-// The plane through a group of atoms (planes()): the least squares plane of their positions
+// The plane through a group of atoms or through positions (plane()): the least squares plane of the positions
 typedef struct plane_t {
     vec3_t centroid;        // Mean position of the atoms (Å)
-    vec3_t normal;          // Unit normal, oriented (see planes())
+    vec3_t normal;          // Unit normal, oriented (see plane())
     vec3_t axis;            // Unit direction in the plane along which the atoms spread the most
     float  extent[2];       // RMS spread of the atoms along axis and along normal x axis (Å)
     float  radius;          // Mean distance of the atoms from the centroid (Å)
     float  deviation;       // RMS distance of the atoms from the plane (Å)
-    int    count;           // Atoms fitted
+    int    count;           // Positions fitted
 } plane_t;
 
 // The puckering of a ring (pucker()), as md_pucker_ring makes it
@@ -1324,7 +1325,15 @@ static void create_log_token_str(log_level_t level, md_script_ir_t* ir, token_t 
         // Stop after first error
         ir->record_log = false;
     }
-    
+
+    if (level == LOG_LEVEL_WARNING) {
+        // The arguments of a procedure are checked again once it is resolved: a warning about one is made twice
+        for (size_t i = 0; i < md_array_size(ir->warnings); ++i) {
+            const md_log_token_t* w = &ir->warnings[i];
+            if (w->range.beg == token.beg && w->range.end == token.end && str_eq(w->text, str)) return;
+        }
+    }
+
     md_log_token_t log_tok = {
         .range = {
             .beg = token.beg,
@@ -2174,25 +2183,25 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
 
 #define SUMMARY_MAX_VALUES 8
 
-static void summarize_plane(md_strb_t* sb, const plane_t* p) {
-    md_strb_fmt(sb, "centroid (%.2f, %.2f, %.2f) \xC3\x85\n", p->centroid.x, p->centroid.y, p->centroid.z);
-    md_strb_fmt(sb, "normal (%.3f, %.3f, %.3f)\n", p->normal.x, p->normal.y, p->normal.z);
-    md_strb_fmt(sb, "radius %.2f \xC3\x85, spread %.2f x %.2f \xC3\x85, deviation %.3f \xC3\x85 (%d atoms)", p->radius, p->extent[0], p->extent[1], p->deviation, p->count);
+static void summarize_plane(md_writer_i* w, const plane_t* p) {
+    md_writef(w, "centroid (%.2f, %.2f, %.2f) \xC3\x85\n", p->centroid.x, p->centroid.y, p->centroid.z);
+    md_writef(w, "normal (%.3f, %.3f, %.3f)\n", p->normal.x, p->normal.y, p->normal.z);
+    md_writef(w, "radius %.2f \xC3\x85, spread %.2f x %.2f \xC3\x85, deviation %.3f \xC3\x85 (%d atoms)", p->radius, p->extent[0], p->extent[1], p->deviation, p->count);
 }
 
-static void summarize_pucker(md_strb_t* sb, const pucker_rec_t* p) {
-    if (p->name[0]) md_strb_fmt(sb, "%s\n", p->name);
-    md_strb_fmt(sb, "Q %.3f \xC3\x85", p->cp.amplitude);
-    if (p->cp.size == 6) md_strb_fmt(sb, ", theta %.1f\xC2\xB0", p->cp.theta);
+static void summarize_pucker(md_writer_i* w, const pucker_rec_t* p) {
+    if (p->name[0]) md_writef(w, "%s\n", p->name);
+    md_writef(w, "Q %.3f \xC3\x85", p->cp.amplitude);
+    if (p->cp.size == 6) md_writef(w, ", theta %.1f\xC2\xB0", p->cp.theta);
     if (p->anchored || p->has_pseudo) {
-        md_strb_fmt(sb, ", phi %.1f\xC2\xB0", p->cp.phi2);
-        if (p->cp.size == 7) md_strb_fmt(sb, ", phi3 %.1f\xC2\xB0", p->cp.phi3);
+        md_writef(w, ", phi %.1f\xC2\xB0", p->cp.phi2);
+        if (p->cp.size == 7) md_writef(w, ", phi3 %.1f\xC2\xB0", p->cp.phi3);
     }
-    if (p->has_pseudo) md_strb_fmt(sb, "\nP %.1f\xC2\xB0, tau_m %.1f\xC2\xB0", p->pseudo_phase, p->pseudo_amplitude);
-    if (!p->anchored && !p->has_pseudo) md_strb_fmt(sb, "\n(the ring has no first atom, so no phase)");
+    if (p->has_pseudo) md_writef(w, "\nP %.1f\xC2\xB0, tau_m %.1f\xC2\xB0", p->pseudo_phase, p->pseudo_amplitude);
+    if (!p->anchored && !p->has_pseudo) md_writef(w, "\n(the ring has no first atom, so no phase)");
 }
 
-static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
+static void summarize_data(md_writer_i* w, data_t data, int subidx) {
     if (!data.ptr) {
         return;
     }
@@ -2205,10 +2214,10 @@ static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
         const md_bitset_t* bf = (const md_bitset_t*)data.ptr;
         if (pick) {
             const size_t n = md_bitset_count(bf[subidx]);
-            md_strb_fmt(sb, "selection %d of %d: %zu atom%s", subidx + 1, len, n, n == 1 ? "" : "s");
+            md_writef(w, "selection %d of %d: %zu atom%s", subidx + 1, len, n, n == 1 ? "" : "s");
         } else if (len == 1) {
             const size_t n = md_bitset_count(bf[0]);
-            md_strb_fmt(sb, "%zu atom%s", n, n == 1 ? "" : "s");
+            md_writef(w, "%zu atom%s", n, n == 1 ? "" : "s");
         } else {
             md_bitmask_t all = md_bitmask_create(0, MD_BITSET_MAX_INDEX, md_get_heap_allocator());
             size_t empty = 0;
@@ -2216,8 +2225,8 @@ static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
                 md_bitmask_or(&all, bf[i]);
                 empty += md_bitset_empty(bf[i]);
             }
-            md_strb_fmt(sb, "%d selections, %zu atoms in all", len, (size_t)md_bitmask_count(&all));
-            if (empty) md_strb_fmt(sb, " (%zu empty)", empty);
+            md_writef(w, "%d selections, %zu atoms in all", len, (size_t)md_bitmask_count(&all));
+            if (empty) md_writef(w, " (%zu empty)", empty);
             md_bitmask_free(&all);
         }
         return;
@@ -2227,53 +2236,54 @@ static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
         const bool self = set->flags & MD_CONTACT_FLAG_SELF;
         if (!set->i && set->count == 0) {
             // The shape only (the static check)
-            if (self) md_strb_fmt(sb, "pairs among %u groups", set->num_a);
-            else      md_strb_fmt(sb, "pairs between %u and %u groups", set->num_a, set->num_b);
+            if (self) md_writef(w, "pairs among %u groups", set->num_a);
+            else      md_writef(w, "pairs between %u and %u groups", set->num_a, set->num_b);
             return;
         }
         double atom_pairs = 0;
         for (size_t k = 0; k < set->count; ++k) atom_pairs += set->atom_pairs ? set->atom_pairs[k] : 0;
-        md_strb_fmt(sb, "%zu pair%s of groups in contact", set->count, set->count == 1 ? "" : "s");
-        if (self) md_strb_fmt(sb, ", among %u groups", set->num_a);
-        else      md_strb_fmt(sb, ", between %u and %u groups", set->num_a, set->num_b);
-        md_strb_fmt(sb, "\n%.0f atom pairs", atom_pairs);
+        md_writef(w, "%zu pair%s of groups in contact", set->count, set->count == 1 ? "" : "s");
+        if (self) md_writef(w, ", among %u groups", set->num_a);
+        else      md_writef(w, ", between %u and %u groups", set->num_a, set->num_b);
+        md_writef(w, "\n%.0f atom pairs", atom_pairs);
         if (set->count > 0 && set->d_min) {
             float d = set->d_min[0];
             for (size_t k = 1; k < set->count; ++k) d = MIN(d, set->d_min[k]);
-            md_strb_fmt(sb, ", closest %.2f \xC3\x85", d);
+            md_writef(w, ", closest %.2f \xC3\x85", d);
         }
         return;
     }
     case TYPE_PLANE: {
         const plane_t* p = (const plane_t*)data.ptr;
         if (pick) {
-            md_strb_fmt(sb, "plane %d of %d\n", subidx + 1, len);
-            summarize_plane(sb, &p[subidx]);
+            md_writef(w, "plane %d of %d\n", subidx + 1, len);
+            summarize_plane(w, &p[subidx]);
         } else if (len == 1) {
-            summarize_plane(sb, &p[0]);
+            summarize_plane(w, &p[0]);
         } else {
             float r = 0, dev = 0;
             for (int i = 0; i < len; ++i) {
                 r   += p[i].radius;
                 dev  = MAX(dev, p[i].deviation);
             }
-            md_strb_fmt(sb, "%d planes, mean radius %.2f \xC3\x85, largest deviation %.3f \xC3\x85\n", len, len ? r / len : 0.0f, dev);
-            md_strb_fmt(sb, "plane 1:\n");
-            summarize_plane(sb, &p[0]);
+            md_writef(w, "%d planes, mean radius %.2f \xC3\x85, largest deviation %.3f \xC3\x85\n", len, len ? r / len : 0.0f, dev);
+            md_writef(w, "plane 1:\n");
+            summarize_plane(w, &p[0]);
         }
         return;
     }
     case TYPE_PUCKER: {
         const pucker_rec_t* p = (const pucker_rec_t*)data.ptr;
         if (pick) {
-            md_strb_fmt(sb, "ring %d of %d\n", subidx + 1, len);
-            summarize_pucker(sb, &p[subidx]);
+            md_writef(w, "ring %d of %d\n", subidx + 1, len);
+            summarize_pucker(w, &p[subidx]);
         } else if (len == 1) {
-            summarize_pucker(sb, &p[0]);
+            summarize_pucker(w, &p[0]);
         } else {
             // How many rings are in each conformation, the most common first
-            md_strb_fmt(sb, "%d rings:", len);
-            bool* done = md_alloc(sb->alloc, sizeof(bool) * len);
+            md_writef(w, "%d rings:", len);
+            md_temp_scope_t temp = md_temp_begin_avoid(md_writer_allocator(w));
+            bool* done = md_temp_alloc(temp, sizeof(bool) * len);
             MEMSET(done, 0, sizeof(bool) * len);
             int shown = 0;
             for (int i = 0; i < len && shown < 6; ++i) {
@@ -2286,23 +2296,24 @@ static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
                 }
                 if (best < 0) break;
                 for (int m = best; m < len; ++m) if (!strcmp(p[m].name, p[best].name)) done[m] = true;
-                md_strb_fmt(sb, "%s %d %s", shown ? "," : "", best_count, p[best].name[0] ? p[best].name : "unnamed");
+                md_writef(w, "%s %d %s", shown ? "," : "", best_count, p[best].name[0] ? p[best].name : "unnamed");
                 shown += 1;
             }
-            md_strb_fmt(sb, "\nring 1:\n");
-            summarize_pucker(sb, &p[0]);
+            md_writef(w, "\nring 1:\n");
+            summarize_pucker(w, &p[0]);
+            md_temp_end(temp);
         }
         return;
     }
     case TYPE_DISTRIBUTION: {
         const int bins = data.type.dim[1];
-        if (len == 1) md_strb_fmt(sb, "distribution of %d bins", bins);
-        else          md_strb_fmt(sb, "%d distributions of %d bins", len, bins);
+        if (len == 1) md_writef(w, "distribution of %d bins", bins);
+        else          md_writef(w, "%d distributions of %d bins", len, bins);
         if (data.value_range.end > data.value_range.beg) {
-            md_strb_fmt(sb, " over %.2f to %.2f", data.value_range.beg, data.value_range.end);
+            md_writef(w, " over %.2f to %.2f", data.value_range.beg, data.value_range.end);
             char unit[64];
             const size_t n = md_unit_print(unit, sizeof(unit), data.unit[0]);
-            if (n) md_strb_fmt(sb, " %.*s", (int)MIN(n, sizeof(unit) - 1), unit);
+            if (n) md_writef(w, " %.*s", (int)MIN(n, sizeof(unit) - 1), unit);
         }
         return;
     }
@@ -2311,10 +2322,11 @@ static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
     }
 
     // Plain values: printed, the first few of a long array. Angles are read in degrees.
+    md_temp_scope_t temp = md_temp_begin_avoid(md_writer_allocator(w));
     data_t view = data;
     if (data.type.base_type == TYPE_FLOAT && md_unit_equal(data.unit[1], md_unit_radian())) {
         const size_t total = type_info_total_element_count(data.type);
-        float* deg = md_alloc(sb->alloc, sizeof(float) * MAX(total, 1));
+        float* deg = md_temp_alloc(temp, sizeof(float) * MAX(total, 1));
         for (size_t i = 0; i < total; ++i) deg[i] = RAD_TO_DEG(((const float*)data.ptr)[i]);
         view.ptr = deg;
         view.unit[1] = md_unit_degree();
@@ -2325,15 +2337,16 @@ static void summarize_data(md_strb_t* sb, data_t data, int subidx) {
         view.ptr = (char*)data.ptr + stride * subidx;
         view.weight = data_weight_at(&data, stride * subidx);
         view.type.dim[0] = 1;
-        md_strb_fmt(sb, "element %d of %d: ", subidx + 1, len);
+        md_writef(w, "element %d of %d: ", subidx + 1, len);
     } else if (is_array(data.type) && len > SUMMARY_MAX_VALUES) {
         view.type.dim[0] = SUMMARY_MAX_VALUES;
     }
     const size_t n = print_data_value(buf, sizeof(buf), view);
-    md_strb_push_cstrl(sb, buf, MIN(n, sizeof(buf) - 1));
+    md_write(w, buf, MIN(n, sizeof(buf) - 1));
     if (!pick && is_array(data.type) && len > SUMMARY_MAX_VALUES) {
-        md_strb_fmt(sb, " ... (%d values)", len);
+        md_writef(w, " ... (%d values)", len);
     }
+    md_temp_end(temp);
 }
 
 #undef SUMMARY_MAX_VALUES
@@ -4732,13 +4745,13 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
     if (!attr) {
         // Relative to a run: look in every one and insist on exactly one match.
         size_t num_matches = 0;
-        md_strb_t candidates = md_strb_create(ctx->temp_alloc);
+        md_str_writer_t candidates = md_str_writer_create(ctx->temp_alloc);
         for (md_attribute_iter_t run = md_attributes_iter_children(attributes, STR_LIT("run")); md_attributes_next(&run);) {
             const md_attribute_t* a = md_attributes_find_in(attributes, run.child_path, path);
             if (a) {
                 attr = a;
                 num_matches += 1;
-                md_strb_fmt(&candidates, "  '"STR_FMT"'\n", STR_ARG(a->path));
+                md_str_writer_fmt(&candidates, "  '"STR_FMT"'\n", STR_ARG(a->path));
             }
         }
         if (num_matches == 0) {
@@ -4747,7 +4760,7 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
         }
         if (num_matches > 1) {
             EVAL_LOG_ERROR(ctx, args[0]->token, "attr: '"STR_FMT"' exists in more than one run, name it in full:\n"STR_FMT,
-                STR_ARG(path), STR_ARG(md_strb_to_str(candidates)));
+                STR_ARG(path), STR_ARG(md_str_writer_to_str(&candidates)));
             return false;
         }
     }
@@ -4838,8 +4851,10 @@ static bool static_check_flatten(ast_node_t* node, eval_context_t* ctx) {
     }
 
     if (node->data.type.base_type == TYPE_BITFIELD) {
-        // If we are dealing with bitfields, we flatten even further by collapsing it into a single bitfield
+        // If we are dealing with bitfields, we flatten even further by collapsing it into a single bitfield. That is not
+        // a change of shape but their union (an atom in two of them is in the result once), which union() names.
         node->data.type.dim[0] = 1;
+        EVAL_LOG_WARNING(ctx, node->token, "flatten() of selections is their union: use union(), flatten() is for the shape of arrays");
     }
 
     return true;
@@ -4967,15 +4982,15 @@ static bool bind_arguments(ast_node_t* node, const proc_sig_t* sig, eval_context
         } else {
             const int idx = find_param_index(sig, named[i].name);
             if (idx < 0) {
-                md_strb_t sb = md_strb_create(ctx->temp_alloc);
-                md_strb_fmt(&sb, "'"STR_FMT"' has no parameter named '"STR_FMT"', valid names are: ", STR_ARG(sig->proc), STR_ARG(named[i].name));
+                md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
+                md_str_writer_fmt(&sb, "'"STR_FMT"' has no parameter named '"STR_FMT"', valid names are: ", STR_ARG(sig->proc), STR_ARG(named[i].name));
                 for (size_t j = 0; j < sig->num_params; ++j) {
-                    md_strb_push_str(&sb, sig->param[j].name);
+                    md_str_writer_push_str(&sb, sig->param[j].name);
                     if (j + 1 < sig->num_params) {
-                        md_strb_push_str(&sb, STR_LIT(", "));
+                        md_str_writer_push_str(&sb, STR_LIT(", "));
                     }
                 }
-                EVAL_LOG_ERROR_STR(ctx, named[i].token, md_strb_to_str(sb));
+                EVAL_LOG_ERROR_STR(ctx, named[i].token, md_str_writer_to_str(&sb));
                 return false;
             }
             p = (size_t)idx;
@@ -6746,42 +6761,42 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
         return;
     }
 
-    md_strb_t sb = {0};
-    md_strb_init(&sb, temp_arena);
+    md_str_writer_t sb = {0};
+    md_str_writer_init(&sb, temp_arena);
 
     char type_buf[128];
     size_t type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
-    md_strb_push_cstrl(&sb, type_buf, type_len);
+    md_str_writer_push_cstrl(&sb, type_buf, type_len);
 
     char unit_buf[128];
     int unit_len = (int)md_unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit[1]);
     if (unit_len) {
-        md_strb_fmt(&sb, " ("STR_FMT")", unit_len, unit_buf);
+        md_str_writer_fmt(&sb, " ("STR_FMT")", unit_len, unit_buf);
     }
 
     if (node->type == AST_ATTRIBUTE) {
-        md_strb_fmt(&sb, "\n"STR_FMT, STR_ARG(node->attr_path));
+        md_str_writer_fmt(&sb, "\n"STR_FMT, STR_ARG(node->attr_path));
     } else if (!(node->flags & FLAG_DYNAMIC)) {
         // A name, or what is assigned to it, holds the value of its expression
         const ast_node_t* vnode = node;
         if (!vnode->data.ptr && vnode->type == AST_IDENTIFIER && md_array_size(vnode->children) > 0) vnode = vnode->children[0];
         if (!vnode->data.ptr && vnode->type == AST_ASSIGNMENT && md_array_size(vnode->children) > 1) vnode = vnode->children[1];
         if (vnode->data.ptr) {
-            md_strb_t val = md_strb_create(temp_arena);
-            summarize_data(&val, vnode->data, -1);
-            if (md_strb_len(val)) {
-                md_strb_push_char(&sb, '\n');
-                md_strb_push_str(&sb, md_strb_to_str(val));
+            md_str_writer_t val = md_str_writer_create(temp_arena);
+            summarize_data(&val.w, vnode->data, -1);
+            if (md_str_writer_len(&val)) {
+                md_str_writer_push_char(&sb, '\n');
+                md_str_writer_push_str(&sb, md_str_writer_to_str(&val));
             }
         }
     } else {
-        md_strb_push_str(&sb, STR_LIT(" [d]"));
+        md_str_writer_push_str(&sb, STR_LIT(" [d]"));
     }
 
     vis.range.beg = node->token.beg;
     vis.range.end = node->token.end;
     vis.depth = depth;
-    vis.text = str_copy(md_strb_to_str(sb), ir->arena);
+    vis.text = str_copy(md_str_writer_to_str(&sb), ir->arena);
     vis.ref = make_vis_ref(ir, node_override ? node_override : node);
 
     // Parent marker should be last marker added (unless empty)
@@ -6911,16 +6926,20 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_sy
         extract_identifiers(ir) &&
         extract_properties(ir);
 
-    extract_vis_tokens(ir);
-
     md_temp_end(temp_scope);
 
-    uint64_t hash = 0;
-    const size_t num_expr = md_array_size(ir->type_checked_expressions);
-    for (size_t i = 0; i < num_expr; ++i) {
-        hash = hash_node(ir->type_checked_expressions[i], hash);
+    
+
+    if (ir->compile_success) {
+        extract_vis_tokens(ir);
+
+        uint64_t hash = 0;
+        const size_t num_expr = md_array_size(ir->type_checked_expressions);
+        for (size_t i = 0; i < num_expr; ++i) {
+            hash = hash_node(ir->type_checked_expressions[i], hash);
+        }
+        ir->fingerprint = hash;
     }
-    ir->fingerprint = hash;
 
     return ir->compile_success;
 }
@@ -7035,6 +7054,195 @@ const md_log_token_t* md_script_ir_errors(const md_script_ir_t* ir) {
         return NULL;
     }
     return ir->errors;
+}
+
+// ### DIAGNOSTICS ###
+// The errors and warnings of a compilation as text, in the format of GCC and clang.
+
+#define DIAG_SOURCE_NAME "<script>"  // Where a file name would be (as <stdin> is for GCC and clang)
+#define DIAG_TAB_WIDTH  4   // A tab is echoed as this many spaces, in the source line and the marker line alike
+#define DIAG_EDGE_LINES 2   // A range over more lines than twice this shows only its first and last ones
+
+typedef struct diag_entry_t {
+    const md_log_token_t* tok;
+    bool is_error;
+} diag_entry_t;
+
+// The trailing bytes of a UTF-8 sequence: they do not start a character
+static inline bool diag_utf8_cont(char c) {
+    return ((unsigned char)c & 0xC0) == 0x80;
+}
+
+// The columns the byte c takes when echoed
+static inline int diag_char_width(char c) {
+    return c == '\t' ? DIAG_TAB_WIDTH : diag_utf8_cont(c) ? 0 : 1;
+}
+
+static int diag_num_digits(int x) {
+    int n = 1;
+    while (x >= 10) {
+        x /= 10;
+        n += 1;
+    }
+    return n;
+}
+
+// One diagnostic as GCC and clang print theirs: its location and message, then each line of the source its range
+// covers, with the range marked beneath it ('^' where it begins, '~' for the rest of it):
+//
+// <script>:2:5: error: Undefined identifier 'y'
+//     2 | b = y + 2;
+//       |     ^
+static void diag_append(md_writer_i* w, str_t src, const md_log_token_t* tok, bool is_error) {
+    const char* level = is_error ? "error" : "warning";
+    const str_t text  = str_trim_end(tok->text);
+    const int   len   = (int)MIN(src.len, (size_t)INT32_MAX);
+
+    if (len == 0) {
+        md_writef(w, "%s: %s: " STR_FMT "\n", DIAG_SOURCE_NAME, level, STR_ARG(text));
+        return;
+    }
+
+    // A range from elsewhere (a token of a context IR) is clamped to the source rather than trusted
+    const int beg = CLAMP(tok->range.beg, 0, len);
+    const int end = CLAMP(tok->range.end, beg, len);
+
+    // Line and column of beg, 1-based. The column counts characters, not bytes
+    int line = 1;
+    int line_beg = 0;
+    for (int i = 0; i < beg; ++i) {
+        if (src.ptr[i] == '\n') {
+            line += 1;
+            line_beg = i + 1;
+        }
+    }
+    int col = 1;
+    for (int i = line_beg; i < beg; ++i) {
+        col += !diag_utf8_cont(src.ptr[i]);
+    }
+
+    md_writef(w, "%s:%d:%d: %s: " STR_FMT "\n", DIAG_SOURCE_NAME, line, col, level, STR_ARG(text));
+
+    // The lines covered: through the one holding the last character of the range, the newline ending it excluded
+    int num_lines = 1;
+    for (int i = beg; i < end - 1; ++i) {
+        num_lines += src.ptr[i] == '\n';
+    }
+    const int  gutter = MAX(5, diag_num_digits(line + num_lines - 1));
+    const bool elide  = num_lines > 2 * DIAG_EDGE_LINES + 1;
+
+    int cur = line_beg;
+    for (int k = 0; k < num_lines; ++k) {
+        int eol = cur;
+        while (eol < len && src.ptr[eol] != '\n') ++eol;
+        const int next = eol < len ? eol + 1 : len;
+        if (eol > cur && src.ptr[eol - 1] == '\r') --eol;
+
+        if (elide && DIAG_EDGE_LINES <= k && k < num_lines - DIAG_EDGE_LINES) {
+            if (k == DIAG_EDGE_LINES) {
+                md_writef(w, "%*s | ...\n", gutter, "");
+            }
+            cur = next;
+            continue;
+        }
+
+        md_writef(w, "%*d | ", gutter, line + k);
+        for (int i = cur; i < eol; ++i) {
+            if (src.ptr[i] == '\t') {
+                md_write_fill(w, ' ', DIAG_TAB_WIDTH);
+            } else {
+                md_write_char(w, src.ptr[i]);
+            }
+        }
+        md_write_char(w, '\n');
+
+        // What of the line the range marks [mb, me[: on the first line from beg, on the following ones from the
+        // first character which is not blank, so that indentation is not marked
+        int mb = MIN(MAX(beg, cur), eol);
+        int me = MAX(mb, MIN(end, eol));
+        if (k > 0) {
+            while (mb < me && (src.ptr[mb] == ' ' || src.ptr[mb] == '\t')) ++mb;
+        }
+
+        // The first line always gets a marker, if only a '^' where the range begins (it may be empty)
+        if (k == 0 || mb < me) {
+            md_writef(w, "%*s | ", gutter, "");
+            for (int i = cur; i < mb; ++i) {
+                md_write_fill(w, ' ', (size_t)diag_char_width(src.ptr[i]));
+            }
+            if (mb == me) {
+                md_write_char(w, '^');
+            } else {
+                for (int i = mb; i < me; ++i) {
+                    const int cw = diag_char_width(src.ptr[i]);
+                    if (cw > 0) {
+                        md_write_char(w, i == beg ? '^' : '~');
+                        md_write_fill(w, '~', (size_t)(cw - 1));
+                    }
+                }
+            }
+            md_write_char(w, '\n');
+        }
+
+        cur = next;
+    }
+}
+
+void md_script_ir_write_diagnostics(md_writer_i* w, const md_script_ir_t* ir) {
+    ASSERT(w);
+    if (!validate_ir(ir)) {
+        MD_LOG_ERROR("IR is not valid");
+        return;
+    }
+
+    const size_t num_errors   = md_array_size(ir->errors);
+    const size_t num_warnings = md_array_size(ir->warnings);
+    const size_t num_entries  = num_errors + num_warnings;
+
+    // A compilation which got under way (it has an id) and failed without saying why: that is worth knowing too
+    const bool silent_failure = ir->id != 0 && !ir->compile_success && num_errors == 0;
+
+    if (num_entries == 0 && !silent_failure) {
+        return;
+    }
+
+    // The writer may grow in a temp arena: the scope must not be opened in the same one
+    md_temp_scope_t temp = md_temp_begin_avoid(md_writer_allocator(w));
+
+    // In the order they appear in the source, an error before a warning at the same place
+    diag_entry_t* entries = md_temp_alloc_array(temp, diag_entry_t, MAX(num_entries, 1));
+    size_t n = 0;
+    for (size_t i = 0; i < num_errors;   ++i) entries[n++] = (diag_entry_t){ &ir->errors[i],   true  };
+    for (size_t i = 0; i < num_warnings; ++i) entries[n++] = (diag_entry_t){ &ir->warnings[i], false };
+    for (size_t i = 1; i < n; ++i) {
+        const diag_entry_t e = entries[i];
+        size_t j = i;
+        while (j > 0 && (entries[j-1].tok->range.beg > e.tok->range.beg ||
+                        (entries[j-1].tok->range.beg == e.tok->range.beg && !entries[j-1].is_error && e.is_error))) {
+            entries[j] = entries[j-1];
+            --j;
+        }
+        entries[j] = e;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        diag_append(w, ir->str, entries[i].tok, entries[i].is_error);
+    }
+
+    if (silent_failure) {
+        md_write_cstr(w, DIAG_SOURCE_NAME ": error: compilation failed without reporting an error\n");
+    }
+
+    // As clang sums up
+    if (num_warnings && num_errors) {
+        md_writef(w, "%d warning%s and %d error%s generated.\n", (int)num_warnings, num_warnings == 1 ? "" : "s", (int)num_errors, num_errors == 1 ? "" : "s");
+    } else if (num_warnings) {
+        md_writef(w, "%d warning%s generated.\n", (int)num_warnings, num_warnings == 1 ? "" : "s");
+    } else if (num_errors) {
+        md_writef(w, "%d error%s generated.\n", (int)num_errors, num_errors == 1 ? "" : "s");
+    }
+
+    md_temp_end(temp);
 }
 
 size_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir) {
@@ -7902,13 +8110,15 @@ size_t md_script_vis_value_text(char* buf, size_t cap, md_script_vis_ref_t ref, 
     }
     if (subidx < -1 || (subidx >= 0 && node->data.type.dim[0] >= 0 && subidx >= node->data.type.dim[0])) return 0;
 
+    // Written straight into buf: what does not fit is dropped
+    md_buf_writer_t bw = md_buf_writer_create(buf, cap);
+
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_strb_t sb = md_strb_create(temp_alloc);
 
     if (!(node->flags & FLAG_DYNAMIC) && node->data.ptr) {
         // Known since the compilation
-        summarize_data(&sb, node->data, subidx);
+        summarize_data(&bw.w, node->data, subidx);
     } else {
         // Within a context ('x in y') the value is that of the first: the one the hover shows first
         eval_context_t ctx = {
@@ -7925,19 +8135,15 @@ size_t md_script_vis_value_text(char* buf, size_t cap, md_script_vis_ref_t ref, 
             data.unit[0] = node->data.unit[0];
             data.unit[1] = node->data.unit[1];
             data.value_range = node->data.value_range;
-            summarize_data(&sb, data, subidx);
+            summarize_data(&bw.w, data, subidx);
             if (node->type != AST_CONTEXT && node->num_contexts > 1) {
-                md_strb_fmt(&sb, "\n(the first of %zu contexts)", (size_t)node->num_contexts);
+                md_writef(&bw.w, "\n(the first of %zu contexts)", (size_t)node->num_contexts);
             }
         }
     }
 
-    const str_t str = md_strb_to_str(sb);
-    const size_t len = MIN(str.len, cap - 1);
-    MEMCPY(buf, str.ptr, len);
-    buf[len] = '\0';
     md_temp_end(temp);
-    return len;
+    return md_buf_writer_to_str(&bw).len;
 }
 
 bool md_script_vis_eval_string(md_script_vis_t* vis, str_t expr, const md_script_vis_ctx_t* vis_ctx, md_script_vis_flags_t flags) {

@@ -5,7 +5,7 @@
 #include <core/md_log.h>
 #include <core/md_hash.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <md_util.h>
 #include <md_system.h>
 
@@ -264,7 +264,7 @@ static inline int parse_int_with_default(str_t tok, int def) {
 
 typedef struct {
     md_buffered_reader_t* reader;
-    md_strb_t sb;
+    md_str_writer_t sb;
     str_t line;
     str_t peek;
     bool has_peek;
@@ -307,9 +307,9 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
                 s->line.len -= (loc+1);
             }
         } else if (first_char == ';') {
-            md_strb_reset(&s->sb);
-            md_strb_push_str(&s->sb, str_substr(tok, 1, SIZE_MAX));
-            md_strb_push_str(&s->sb, s->line);
+            md_str_writer_reset(&s->sb);
+            md_str_writer_push_str(&s->sb, str_substr(tok, 1, SIZE_MAX));
+            md_str_writer_push_str(&s->sb, s->line);
 
             bool term = false;
             while (md_buffered_reader_extract_line(&s->line, s->reader)) {
@@ -318,14 +318,14 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
                     s->line = (str_t) {0};
                     break;
                 }
-                md_strb_push_char(&s->sb, '\n');
-                md_strb_push_str (&s->sb, s->line);
+                md_str_writer_push_char(&s->sb, '\n');
+                md_str_writer_push_str(&s->sb, s->line);
             }
             if (!term) {
                 MD_LOG_ERROR("Unterminated multiline string");
                 return false;
             }
-            tok = md_strb_to_str(s->sb);
+            tok = md_str_writer_to_str(&s->sb);
         }
         break;
     }
@@ -857,7 +857,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
     mmcif_cell_params_t cell = {0};
     mmcif_parse_state_t state = {
         .reader = reader,
-        .sb = md_strb_create(temp_arena),
+        .sb = md_str_writer_create(temp_arena),
     };
 
     while (mmcif_advance_to_next_control_token(&state)) {

@@ -269,7 +269,7 @@ UTEST_F(ring, script_ring) {
     EXPECT_EQ(0, (int)ring_filter_count("ring('[nH]') in element('C')", trp, NULL));
 
     // As one selection: the atoms of all of them
-    EXPECT_EQ(1, (int)ring_filter_count("flatten(ring(kind='aromatic'))", trp, &atoms));
+    EXPECT_EQ(1, (int)ring_filter_count("union(ring(kind='aromatic'))", trp, &atoms));
     EXPECT_EQ(9, (int)atoms);
 
     // Errors, found before evaluating

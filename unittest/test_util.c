@@ -15,7 +15,6 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
-#include <core/md_str_builder.h>
 #include <core/md_bitset.h>
 #include <core/md_hash.h>
 

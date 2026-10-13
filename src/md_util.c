@@ -15,7 +15,6 @@
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_bitset.h>
-#include <core/md_str_builder.h>
 #include <core/md_os.h>
 #include <core/md_hash.h>
 #include <core/md_fifo.h>

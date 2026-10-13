@@ -11,7 +11,7 @@
 #include <core/md_os.h>
 #include <core/md_parse.h>
 #include <core/md_str.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_unit.h>
 
 #include <stdlib.h>
@@ -268,24 +268,24 @@ static void parse_include(itp_parser_t* p, str_t arg, str_t folder) {
         return;
     }
 
-    md_strb_t sb = md_strb_create(p->temp);
+    md_str_writer_t sb = md_str_writer_create(p->temp);
     str_t resolved = {0};
     if (md_path_is_absolute(file)) {
         if (md_path_is_valid(file)) resolved = file;
     } else {
         if (!str_empty(folder)) {
-            md_strb_push_str(&sb, folder);
-            md_strb_push_str(&sb, file);
-            str_t cand = md_strb_to_str(sb);
+            md_str_writer_push_str(&sb, folder);
+            md_str_writer_push_str(&sb, file);
+            str_t cand = md_str_writer_to_str(&sb);
             if (md_path_is_valid(cand)) resolved = cand;
         }
         const char* gmxlib = getenv("GMXLIB");
         if (str_empty(resolved) && gmxlib) {
-            md_strb_reset(&sb);
-            md_strb_push_cstr(&sb, gmxlib);
-            md_strb_push_char(&sb, '/');
-            md_strb_push_str(&sb, file);
-            str_t cand = md_strb_to_str(sb);
+            md_str_writer_reset(&sb);
+            md_str_writer_push_cstr(&sb, gmxlib);
+            md_str_writer_push_char(&sb, '/');
+            md_str_writer_push_str(&sb, file);
+            str_t cand = md_str_writer_to_str(&sb);
             if (md_path_is_valid(cand)) resolved = cand;
         }
     }
@@ -370,7 +370,7 @@ static void parse_directive(itp_parser_t* p, str_t line, str_t folder) {
 }
 
 static bool parse_text(itp_parser_t* p, str_t text, str_t folder) {
-    md_strb_t joined = md_strb_create(p->temp);
+    md_str_writer_t joined = md_str_writer_create(p->temp);
     bool continuing = false;
 
     str_t raw;
@@ -379,14 +379,14 @@ static bool parse_text(itp_parser_t* p, str_t text, str_t folder) {
 
         // Line continuation, before comments like the C preprocessor it imitates
         if (line.len > 0 && line.ptr[line.len - 1] == '\\') {
-            md_strb_push_str(&joined, str_substr(line, 0, line.len - 1));
-            md_strb_push_char(&joined, ' ');
+            md_str_writer_push_str(&joined, str_substr(line, 0, line.len - 1));
+            md_str_writer_push_char(&joined, ' ');
             continuing = true;
             continue;
         }
         if (continuing) {
-            md_strb_push_str(&joined, line);
-            line = md_strb_to_str(joined);
+            md_str_writer_push_str(&joined, line);
+            line = md_str_writer_to_str(&joined);
             continuing = false;
         }
 
@@ -423,7 +423,7 @@ static bool parse_text(itp_parser_t* p, str_t text, str_t folder) {
         }
 
         if (!continuing) {
-            md_strb_reset(&joined);
+            md_str_writer_reset(&joined);
         }
         if (p->error) return false;
     }

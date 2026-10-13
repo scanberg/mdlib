@@ -49,6 +49,8 @@ set (SRC_FILES
     test_filter.c
     test_spatial_hash.c
     test_string_builder.c
+    test_writer.c
+    test_csv.c
     test_base64.c
     test_xtc.c
     test_xyz.c

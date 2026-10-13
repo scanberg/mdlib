@@ -2,7 +2,7 @@
 #include <core/md_gl_util.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_log.h>
 
 #include <GL/gl3w.h>
@@ -18,7 +18,7 @@ void md_gl_debug_pop(void) {
 bool md_gl_shader_compile(uint32_t shader, str_t src, const md_gl_shader_src_injection_t injections[], size_t num_injections) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_strb_t sb = md_strb_create(temp_alloc);
+    md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
     bool result = false;
 
@@ -31,12 +31,12 @@ bool md_gl_shader_compile(uint32_t shader, str_t src, const md_gl_shader_src_inj
         // Insert potential empty markers, they go after #version line
         str_t version_line;
         str_extract_line(&version_line, &src);
-        md_strb_push_str(&sb, version_line);
-        md_strb_push_char(&sb, '\n');
+        md_str_writer_push_str(&sb, version_line);
+        md_str_writer_push_char(&sb, '\n');
         for (size_t i = 0; i < num_injections; ++i) {
             if (str_empty(injections[i].marker)) {
-                md_strb_push_str (&sb, injections[i].src);
-                md_strb_push_char(&sb, '\n');
+                md_str_writer_push_str(&sb, injections[i].src);
+                md_str_writer_push_char(&sb, '\n');
             }
         }
 
@@ -46,20 +46,20 @@ bool md_gl_shader_compile(uint32_t shader, str_t src, const md_gl_shader_src_inj
                 str_t marker = str_trim(str_substr(line, sizeof("#pragma"), SIZE_MAX));
                 for (size_t i = 0; i < num_injections; ++i) {
                     if (str_eq(injections[i].marker, marker)) {
-                        md_strb_push_str (&sb, injections[i].src);
-                        md_strb_push_char(&sb, '\n');
+                        md_str_writer_push_str(&sb, injections[i].src);
+                        md_str_writer_push_char(&sb, '\n');
                     }
                 }
             } else {
-                md_strb_push_str(&sb, line);
-                md_strb_push_char(&sb, '\n');
+                md_str_writer_push_str(&sb, line);
+                md_str_writer_push_char(&sb, '\n');
             }
         }
     } else {
-        md_strb_push_str(&sb, src);
+        md_str_writer_push_str(&sb, src);
     }
 
-    const char* csrc = md_strb_to_cstr(sb);
+    const char* csrc = md_str_writer_to_cstr(&sb);
 
     glShaderSource(shader, 1, &csrc, 0);
     glCompileShader(shader);

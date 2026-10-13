@@ -11,46 +11,46 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_unit.h>
 
 // Mesoscale cellulose (Mehandzhiyski et al.) in the layout of cellulose_msc_50.itp: every slice is a
 // CC hub bonded to two OC and four IC beads, and the CC hubs are chained. The whole molecule is one
 // residue. Written with the file's own clutter: parameters, angles and POSRES behind an #ifdef.
 static str_t make_msc_itp(md_allocator_i* alloc, const char* molname, int slices) {
-    md_strb_t sb = md_strb_create(alloc);
-    md_strb_fmt(&sb, "\n[ defaults ]\n; nbfunc comb-rule\n    1  3  no\n");
-    md_strb_fmt(&sb, "[ atomtypes ]\n; name mass charge ptype sigma epsilon\n    IC 3237.780 0.000 A 0.0 0.0\n    OC 3237.780 0.000 A 0.0 0.0\n    CC 3885.336 0.000 A 0.0 0.0\n");
-    md_strb_fmt(&sb, "[ nonbond_params ]\n  IC IC 1 1.95000E-00 25.00000E-00\n");
-    md_strb_fmt(&sb, "[ moleculetype ]\n; molname nrexcl\n%s\t    4\n\n[ atoms ]\n", molname);
+    md_str_writer_t sb = md_str_writer_create(alloc);
+    md_str_writer_fmt(&sb, "\n[ defaults ]\n; nbfunc comb-rule\n    1  3  no\n");
+    md_str_writer_fmt(&sb, "[ atomtypes ]\n; name mass charge ptype sigma epsilon\n    IC 3237.780 0.000 A 0.0 0.0\n    OC 3237.780 0.000 A 0.0 0.0\n    CC 3885.336 0.000 A 0.0 0.0\n");
+    md_str_writer_fmt(&sb, "[ nonbond_params ]\n  IC IC 1 1.95000E-00 25.00000E-00\n");
+    md_str_writer_fmt(&sb, "[ moleculetype ]\n; molname nrexcl\n%s\t    4\n\n[ atoms ]\n", molname);
     static const char* names[7] = {"CC", "OC", "OC", "IC", "IC", "IC", "IC"};
     int nr = 1;
     for (int s = 0; s < slices; ++s) {
         for (int b = 0; b < 7; ++b, ++nr) {
             // The first slice is heavier in the real file, which is what the type mass test below relies on
             const double mass = (b == 0) ? (s == 0 ? 3981.330 : 3885.336) : (s == 0 ? 3317.775 : 3237.780);
-            md_strb_fmt(&sb, "%6d %5s %6d  MSC %5s %6d  0.00000E+00  %10.3f\n", nr, names[b], 1, names[b], nr, mass);
+            md_str_writer_fmt(&sb, "%6d %5s %6d  MSC %5s %6d  0.00000E+00  %10.3f\n", nr, names[b], 1, names[b], nr, mass);
         }
     }
-    md_strb_fmt(&sb, "\n[ bonds ]\n;   ai     aj funct   table          k\n");
+    md_str_writer_fmt(&sb, "\n[ bonds ]\n;   ai     aj funct   table          k\n");
     for (int s = 0; s < slices; ++s) {
         const int c = 1 + 7 * s;
-        md_strb_fmt(&sb, "%5d %5d 1 1.745 15000.0\n%5d %5d 1 1.745 15000.0\n", c, c + 4, c, c + 6);
-        md_strb_fmt(&sb, "%5d %5d 1 1.227 21000.0\n%5d %5d 1 1.227 21000.0\n", c, c + 3, c, c + 5);
-        md_strb_fmt(&sb, "%5d %5d 1 1.268 22000.0\n%5d %5d 1 1.268 22000.0\n", c, c + 1, c, c + 2);
-        if (s + 1 < slices) md_strb_fmt(&sb, "%5d %5d 1 2.068 500000.0\n", c, c + 7);
+        md_str_writer_fmt(&sb, "%5d %5d 1 1.745 15000.0\n%5d %5d 1 1.745 15000.0\n", c, c + 4, c, c + 6);
+        md_str_writer_fmt(&sb, "%5d %5d 1 1.227 21000.0\n%5d %5d 1 1.227 21000.0\n", c, c + 3, c, c + 5);
+        md_str_writer_fmt(&sb, "%5d %5d 1 1.268 22000.0\n%5d %5d 1 1.268 22000.0\n", c, c + 1, c, c + 2);
+        if (s + 1 < slices) md_str_writer_fmt(&sb, "%5d %5d 1 2.068 500000.0\n", c, c + 7);
     }
-    md_strb_fmt(&sb, "[ angles ]\n    4    1    5    1   41.32   65000.000\n");
-    md_strb_fmt(&sb, "#ifdef POSRES\n[ position_restraints ]\n    1     1    1000.0 1000.0 1000.0\n#endif\n");
-    return md_strb_to_str(sb);
+    md_str_writer_fmt(&sb, "[ angles ]\n    4    1    5    1   41.32   65000.000\n");
+    md_str_writer_fmt(&sb, "#ifdef POSRES\n[ position_restraints ]\n    1     1    1000.0 1000.0 1000.0\n#endif\n");
+    return md_str_writer_to_str(&sb);
 }
 
 // One gro residue per molecule. Slices advance 2.19 nm along x from each molecule's origin, the six
 // satellites sit around the hub, and everything is wrapped into the box.
 static str_t make_msc_gro(md_allocator_i* alloc, int num_mol, int slices, const float origin[][3], float box[3], int trailing_water) {
-    md_strb_t sb = md_strb_create(alloc);
+    md_str_writer_t sb = md_str_writer_create(alloc);
     const int n = num_mol * slices * 7 + trailing_water;
-    md_strb_fmt(&sb, "Mesoscale cellulose\n%d\n", n);
+    md_str_writer_fmt(&sb, "Mesoscale cellulose\n%d\n", n);
     static const char* names[7] = {"CC", "OC", "OC", "IC", "IC", "IC", "IC"};
     static const float off[7][3] = {{0,0,0}, {0,0.4f,-1.2f}, {0,-0.4f,1.2f}, {0,-0.8f,-0.9f}, {0,0.8f,-0.9f}, {0,-0.8f,0.9f}, {0,0.8f,0.9f}};
     int nr = 1;
@@ -59,15 +59,15 @@ static str_t make_msc_gro(md_allocator_i* alloc, int num_mol, int slices, const 
             for (int b = 0; b < 7; ++b, ++nr) {
                 float p[3] = { origin[m][0] + 2.19f * s + off[b][0], origin[m][1] + off[b][1], origin[m][2] + off[b][2] };
                 for (int k = 0; k < 3; ++k) p[k] = fmodf(fmodf(p[k], box[k]) + box[k], box[k]);
-                md_strb_fmt(&sb, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", m + 1, "MSC", names[b], nr, p[0], p[1], p[2]);
+                md_str_writer_fmt(&sb, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", m + 1, "MSC", names[b], nr, p[0], p[1], p[2]);
             }
         }
     }
     for (int w = 0; w < trailing_water; ++w, ++nr) {
-        md_strb_fmt(&sb, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", num_mol + 1 + w, "W", "W", nr, 1.0f, 1.0f, 1.0f + w);
+        md_str_writer_fmt(&sb, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", num_mol + 1 + w, "W", "W", nr, 1.0f, 1.0f, 1.0f + w);
     }
-    md_strb_fmt(&sb, "%10.5f%10.5f%10.5f\n", box[0], box[1], box[2]);
-    return md_strb_to_str(sb);
+    md_str_writer_fmt(&sb, "%10.5f%10.5f%10.5f\n", box[0], box[1], box[2]);
+    return md_str_writer_to_str(&sb);
 }
 
 static size_t count_origin(const md_system_t* sys, md_bond_origin_t origin) {
@@ -282,12 +282,12 @@ UTEST(itp, molecules_section_sequential_and_fallback) {
 
     str_t water = STR_INIT("[ moleculetype ]\nW 1\n[ atoms ]\n1 W 1 W W 1 0.0 72.0\n");
     {
-        md_strb_t top = md_strb_create(alloc);
-        md_strb_push_str(&top, make_msc_itp(alloc, "MSC", 3));
-        md_strb_push_str(&top, water);
-        md_strb_push_cstr(&top, "[ system ]\ntest\n[ molecules ]\nMSC 2\nW 1\n");
+        md_str_writer_t top = md_str_writer_create(alloc);
+        md_str_writer_push_str(&top, make_msc_itp(alloc, "MSC", 3));
+        md_str_writer_push_str(&top, water);
+        md_str_writer_push_cstr(&top, "[ system ]\ntest\n[ molecules ]\nMSC 2\nW 1\n");
         md_itp_data_t data = {0};
-        ASSERT_TRUE(md_itp_data_parse_str(&data, md_strb_to_str(top), STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&top), STR_LIT(""), alloc));
         md_itp_instance_t* inst = 0;
         ASSERT_EQ(md_itp_match_system(&inst, &data, &sys, alloc), 3u);
         EXPECT_EQ(inst[2].type, 1u);
@@ -295,12 +295,12 @@ UTEST(itp, molecules_section_sequential_and_fallback) {
     }
     {
         // Wrong order: W first cannot match atom 0, so the scan places them anyway
-        md_strb_t top = md_strb_create(alloc);
-        md_strb_push_str(&top, make_msc_itp(alloc, "MSC", 3));
-        md_strb_push_str(&top, water);
-        md_strb_push_cstr(&top, "[ molecules ]\nW 1\nMSC 2\n");
+        md_str_writer_t top = md_str_writer_create(alloc);
+        md_str_writer_push_str(&top, make_msc_itp(alloc, "MSC", 3));
+        md_str_writer_push_str(&top, water);
+        md_str_writer_push_cstr(&top, "[ molecules ]\nW 1\nMSC 2\n");
         md_itp_data_t data = {0};
-        ASSERT_TRUE(md_itp_data_parse_str(&data, md_strb_to_str(top), STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&top), STR_LIT(""), alloc));
         md_itp_instance_t* inst = 0;
         EXPECT_EQ(md_itp_match_system(&inst, &data, &sys, alloc), 3u);
     }

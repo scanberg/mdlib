@@ -104,6 +104,8 @@ set(CORE_FILES
   src/core/md_spatial_acc.h
   src/core/md_str_builder.c
   src/core/md_str_builder.h
+  src/core/md_writer.c
+  src/core/md_writer.h
   src/core/md_str.c
   src/core/md_str.h
   src/core/md_tracking_allocator.c

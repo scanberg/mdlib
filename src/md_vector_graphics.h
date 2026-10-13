@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 struct md_allocator_i;
+struct md_writer_i;
 
 typedef uint32_t md_vg_color_t;
 
@@ -225,6 +226,8 @@ void md_vg_scene_clear(md_vg_scene_t* scene);
 void md_vg_scene_set_size(md_vg_scene_t* scene, vec2_t size);
 void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, str_t font_family);
 
+// The scene as an SVG document: written to w, as a string allocated with alloc (freed with str_free), or to a file
+void  md_vg_scene_write_svg(struct md_writer_i* w, const md_vg_scene_t* scene);
 str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, struct md_allocator_i* alloc);
 bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, str_t path);
 

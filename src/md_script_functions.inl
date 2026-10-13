@@ -391,6 +391,7 @@ static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
 static int _join_bf_arr                 (data_t*, data_t[], eval_context_t*);
+static int _join_deprecated            (data_t*, data_t[], eval_context_t*);
 static int _split_bf_int                (data_t*, data_t[], eval_context_t*);
 
 // Basic operations
@@ -506,8 +507,8 @@ static int _porosity   (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> 
 
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
-static int _plane   (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[4]
-static int _planes          (data_t*, data_t[], eval_context_t*);  // (bitfield[]) -> plane[], one per group
+static int _plane_groups    (data_t*, data_t[], eval_context_t*);  // (bitfield[]) -> plane[], one per group
+static int _plane_points    (data_t*, data_t[], eval_context_t*);  // (position[]) -> plane, one through the positions
 static int _plane_centroid  (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[][3]
 static int _plane_normal    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[][3]
 static int _plane_radius    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[]
@@ -855,8 +856,10 @@ static procedure_t procedures[] = {
 
     // --- GEOMETRICAL OPERATIONS ---
     {STR_INIT("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {STR_INIT("plane"),         TI_FLOAT4,      1,  {TI_COORDINATE_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {STR_INIT("planes"),        TI_PLANE_ARR,   1,  {TI_BITFIELD_ARR},    _planes,        FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    // One plane per group, or one through positions. The groups come first: a bitfield is a position as well, and the
+    // first overload which takes the arguments as they are wins. One plane through all the groups is plane(union(...)).
+    {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_BITFIELD_ARR},    _plane_groups,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_COORDINATE_ARR},  _plane_points,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
     {STR_INIT("centroid"),      TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_centroid,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("normal"),        TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_normal,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("radius"),        TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_radius,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
@@ -880,7 +883,9 @@ static procedure_t procedures[] = {
     {STR_INIT("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
 
     // --- MISC ---
-    {STR_INIT("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    {STR_INIT("union"),     TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    // The old name of union: it compiles, with a warning (as flatten of selections does, see static_check_flatten)
+    {STR_INIT("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_deprecated, FLAG_FLATTEN | FLAG_STATIC_VALIDATION},
     {STR_INIT("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
 
     {STR_INIT("split"),     TI_BITFIELD_ARR, 2,  {TI_BITFIELD, TI_INT},  _split_bf_int, FLAG_FLATTEN | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
@@ -3127,11 +3132,11 @@ static bool match_lookup(int* out, const match_name_t* table, size_t count, str_
 }
 
 static void match_report_unknown(eval_context_t* ctx, int arg, const char* what, const match_name_t* table, size_t count, str_t str) {
-    md_strb_t sb = md_strb_create(ctx->temp_alloc);
+    md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
     for (size_t i = 0; i < count; ++i) {
-        md_strb_fmt(&sb, "%s'" STR_FMT "'", i ? ", " : "", STR_ARG(table[i].name));
+        md_str_writer_fmt(&sb, "%s'" STR_FMT "'", i ? ", " : "", STR_ARG(table[i].name));
     }
-    EVAL_LOG_ERROR(ctx, ctx->arg_tokens[arg], "Unknown %s '" STR_FMT "', valid ones are: " STR_FMT, what, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
+    EVAL_LOG_ERROR(ctx, ctx->arg_tokens[arg], "Unknown %s '" STR_FMT "', valid ones are: " STR_FMT, what, STR_ARG(str), STR_ARG(md_str_writer_to_str(&sb)));
 }
 
 // Runs the query in the context and fills dst, or returns the number of matches when validating
@@ -4859,7 +4864,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
 
     // One value per bitfield of the argument: rmsd(residue(:)) gives the deviation of every residue on its
-    // own, each fitted separately. rmsd(flatten(...)) pools them into a single fit and a single value.
+    // own, each fitted separately. rmsd(union(...)) pools them into a single fit and a single value.
     const size_t num_bf = element_count(arg[0]);
 
     if (dst) {
@@ -5134,6 +5139,15 @@ static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+// join(): the old name of union(), which says what becomes of an atom in more than one of the selections
+static int _join_deprecated(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst && !ctx->vis) {
+        EVAL_LOG_WARNING(ctx, ctx->op_token, "join() is deprecated, use union(): every atom of the selections, once");
+        return 0;
+    }
+    return _join_bf_arr(dst, arg, ctx);
+}
+
 // Split a bitfield into an array of bitfields given a criterion (residue, chain, structure or integer > 0)
 static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // Implement integer split for now
@@ -5224,17 +5238,17 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (split == UNKNOWN) {
-        md_strb_t sb = md_strb_create(ctx->temp_alloc);
-        md_strb_fmt(&sb, "Invalid argument ('" STR_FMT "'), valid arguments are: ", STR_ARG(str_arg));
+        md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
+        md_str_writer_fmt(&sb, "Invalid argument ('" STR_FMT "'), valid arguments are: ", STR_ARG(str_arg));
 
         for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
-            md_strb_push_str(&sb, entries[i].str);
+            md_str_writer_push_str(&sb, entries[i].str);
             if (i < ARRAY_SIZE(entries) - 1) {
-                md_strb_push_str(&sb, STR_LIT(", "));
+                md_str_writer_push_str(&sb, STR_LIT(", "));
             }
         }
 
-        EVAL_LOG_ERROR_STR(ctx, ctx->arg_tokens[1], md_strb_to_str(sb));
+        EVAL_LOG_ERROR_STR(ctx, ctx->arg_tokens[1], md_str_writer_to_str(&sb));
         return STATIC_VALIDATION_ERROR;
     }
 
@@ -5340,82 +5354,11 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    (void)ctx;
-
-    if (dst || ctx->vis) {
-        // Compute eigen vectors from covariance matrix
-        // normal should be the third axis (i.e. the smallest eigen value)
-        // We don't know the source of the inputs, so we have to use this as to get the actual coordinates
-        md_array(vec3_t) xyz = coordinate_extract(arg[0], ctx);
-
-        size_t count = md_array_size(xyz);
-        vec4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count);
-        for (size_t i = 0; i < count; ++i) {
-            xyzw[i] = vec4_from_vec3(xyz[i], 1.0f);
-        }
-
-        // Bring the points into mutually consistent images. These may not be atoms at all - they can
-        // be centres of mass produced by another expression - so there is no topology to walk here,
-        // and none is needed: the centre is seeded from the circular mean and iterated to a fixed point.
-        vec3_t com = {0};
-        md_util_deperiodize_self_vec4(xyzw, count, &ctx->cur_state->unitcell, &com);
-        mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
-        mat3_eigen_t eigen = mat3_eigen(M);
-
-        vec3_t normal = vec3_normalize(eigen.vectors.col[2]);
-        float d = vec3_dot(normal, com);
-        vec4_t plane = {normal.x, normal.y, normal.z, d};
-
-        if (dst) {
-            ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT4));
-            as_vec4(*dst) = plane;
-        }
-
-        if (ctx->vis) {
-            coordinate_visualize(arg[0], ctx);
-            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                vec3_t v = vec3_mul1(eigen.vectors.col[0], eigen.values.elem[0]);
-                vec3_t u = vec3_mul1(eigen.vectors.col[1], eigen.values.elem[1]);
-
-                // Draw something plane-ish
-                md_script_vis_vertex_t ci = vertex(com, COLOR_WHITE);
-                md_script_vis_vertex_t ni = vertex(vec3_add(com, normal), COLOR_WHITE);
-
-                md_script_vis_vertex_t corner[4] = {
-                    vertex(vec3_sub(vec3_sub(com, v), u), COLOR_WHITE),
-                    vertex(vec3_sub(vec3_add(com, v), u), COLOR_WHITE),
-                    vertex(vec3_add(vec3_add(com, v), u), COLOR_WHITE),
-                    vertex(vec3_add(vec3_sub(com, v), u), COLOR_WHITE),
-                };
-
-                push_line(corner[0], corner[1], ctx->vis);
-                push_line(corner[1], corner[2], ctx->vis);
-                push_line(corner[2], corner[3], ctx->vis);
-                push_line(corner[3], corner[0], ctx->vis);
-
-                push_line(ci, ni, ctx->vis);
-            }
-        }
-
-        md_free(ctx->temp_alloc, xyzw, sizeof(vec4_t) * count);
-    } else {
-        int count = coordinate_validate(arg[0], 0, ctx);
-        if (count < 0) return -1;
-        if (count < 3) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
-            return -1;
-        }
-    }
-
-    return 0;
-}
-
-// ### PLANES ###
-// planes(groups): the least squares plane of each group of atoms, a plane record (plane_t) per group, which centroid(),
-// normal(), radius(), deviation() and angle() read. Not plane(), which fits one plane through all of the positions it
-// is given (an array of selections being their centres).
+// ### PLANE ###
+// plane(groups): the least squares plane of each group of atoms, a plane record (plane_t) per group, which centroid(),
+// normal(), radius(), deviation() and angle() read. plane(positions): one plane through positions, atom indices in the
+// order given or float[3] (from coord(), ...). One plane through all of the atoms of the groups is
+// plane(union(groups)).
 //
 // The normal of a plane is oriented, so that it does not flip from frame to frame:
 //   - A group which is a ring of the system (md_system_t::ring): by the order of the ring, the normal on the side from
@@ -5423,6 +5366,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
 //   - Any other group: by two of its atoms chosen in the reference structure, the one farthest from its centroid and
 //     the one which spans the largest area with it. The normal is on the side from which the first turns towards the
 //     second anticlockwise.
+//   - Positions: by their order, as a ring is, the normal on the side from which they go around anticlockwise.
 
 // The ring of the system whose atoms are those of bf, -1 if none. first_ring[k] .. holds the rings of atom k.
 typedef struct plane_rings_t {
@@ -5472,28 +5416,38 @@ static int64_t plane_rings_find(const plane_rings_t* pr, const md_system_t* sys,
     return -1;
 }
 
-// Positions of the atoms idx in state, made mutually consistent across the cell, and their centroid
-static vec3_t plane_positions(vec4_t* xyzw, const int32_t* idx, size_t count, const md_system_state_t* state) {
-    for (size_t k = 0; k < count; ++k) {
-        const vec3_t x = state->xyz[idx[k]];
-        xyzw[k] = vec4_set(x.x, x.y, x.z, 1.0f);
-    }
+// The points xyzw made mutually consistent across the cell, and their centroid
+static vec3_t plane_place(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
     vec3_t c = {0};
-    md_util_deperiodize_self_vec4(xyzw, count, &state->unitcell, &c);
+    md_util_deperiodize_self_vec4(xyzw, count, cell, &c);
     // The centroid of the points as placed
     vec3_t sum = {0};
     for (size_t k = 0; k < count; ++k) sum = vec3_add(sum, vec3_from_vec4(xyzw[k]));
     return vec3_mul1(sum, 1.0f / (float)count);
 }
 
-static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ring, const eval_context_t* ctx, md_allocator_i* temp) {
-    MEMSET(out, 0, sizeof(plane_t));
-    out->count = (int)count;
-    if (count < 3) return;
-    const md_system_t* sys = ctx->sys;
+// Positions of the atoms idx in state, made mutually consistent across the cell, and their centroid
+static vec3_t plane_positions(vec4_t* xyzw, const int32_t* idx, size_t count, const md_system_state_t* state) {
+    for (size_t k = 0; k < count; ++k) {
+        const vec3_t x = state->xyz[idx[k]];
+        xyzw[k] = vec4_set(x.x, x.y, x.z, 1.0f);
+    }
+    return plane_place(xyzw, count, &state->unitcell);
+}
 
-    vec4_t* xyzw = md_alloc(temp, sizeof(vec4_t) * count);
-    const vec3_t c = plane_positions(xyzw, idx, count, ctx->cur_state);
+// The side from which the points go around anticlockwise, in their order (twice the area of a planar polygon)
+static vec3_t plane_turn(const vec4_t* xyzw, size_t count, vec3_t c) {
+    vec3_t ref = {0};
+    for (size_t k = 0; k < count; ++k) {
+        const vec3_t a = vec3_sub(vec3_from_vec4(xyzw[k]), c);
+        const vec3_t b = vec3_sub(vec3_from_vec4(xyzw[(k + 1) % count]), c);
+        ref = vec3_add(ref, vec3_cross(a, b));
+    }
+    return ref;
+}
+
+// The least squares plane of count >= 3 points, placed, with centroid c. The normal is on the side of ref.
+static void plane_from_points(plane_t* out, const vec4_t* xyzw, size_t count, vec3_t c, vec3_t ref) {
     const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, c);
     const mat3_eigen_t E = mat3_eigen(M);
 
@@ -5504,6 +5458,36 @@ static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ri
     }
     vec3_t n    = vec3_normalize(E.vectors.col[order[2]]);
     vec3_t axis = vec3_normalize(E.vectors.col[order[0]]);
+
+    if (vec3_dot(n, ref) < 0.0f) n = vec3_mul1(n, -1.0f);
+    // A right handed frame: axis, normal x axis, normal
+    if (vec3_dot(vec3_cross(axis, vec3_cross(n, axis)), n) < 0.0f) axis = vec3_mul1(axis, -1.0f);
+
+    float radius = 0.0f, dev = 0.0f;
+    for (size_t k = 0; k < count; ++k) {
+        const vec3_t d = vec3_sub(vec3_from_vec4(xyzw[k]), c);
+        radius += vec3_length(d);
+        const float h = vec3_dot(d, n);
+        dev += h * h;
+    }
+    out->count     = (int)count;
+    out->centroid  = c;
+    out->normal    = n;
+    out->axis      = axis;
+    out->extent[0] = sqrtf(MAX(E.values.elem[order[0]], 0.0f));
+    out->extent[1] = sqrtf(MAX(E.values.elem[order[1]], 0.0f));
+    out->radius    = radius / (float)count;
+    out->deviation = sqrtf(dev / (float)count);
+}
+
+static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ring, const eval_context_t* ctx, md_allocator_i* temp) {
+    MEMSET(out, 0, sizeof(plane_t));
+    out->count = (int)count;
+    if (count < 3) return;
+    const md_system_t* sys = ctx->sys;
+
+    vec4_t* xyzw = md_alloc(temp, sizeof(vec4_t) * count);
+    const vec3_t c = plane_positions(xyzw, idx, count, ctx->cur_state);
 
     // Orientation
     vec3_t ref = {0};
@@ -5541,24 +5525,7 @@ static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ri
             ref = vec3_cross(vec3_sub(vec3_from_vec4(xyzw[a]), c), vec3_sub(vec3_from_vec4(xyzw[b]), c));
         }
     }
-    if (vec3_dot(n, ref) < 0.0f) n = vec3_mul1(n, -1.0f);
-    // A right handed frame: axis, normal x axis, normal
-    if (vec3_dot(vec3_cross(axis, vec3_cross(n, axis)), n) < 0.0f) axis = vec3_mul1(axis, -1.0f);
-
-    float radius = 0.0f, dev = 0.0f;
-    for (size_t k = 0; k < count; ++k) {
-        const vec3_t d = vec3_sub(vec3_from_vec4(xyzw[k]), c);
-        radius += vec3_length(d);
-        const float h = vec3_dot(d, n);
-        dev += h * h;
-    }
-    out->centroid  = c;
-    out->normal    = n;
-    out->axis      = axis;
-    out->extent[0] = sqrtf(MAX(E.values.elem[order[0]], 0.0f));
-    out->extent[1] = sqrtf(MAX(E.values.elem[order[1]], 0.0f));
-    out->radius    = radius / (float)count;
-    out->deviation = sqrtf(dev / (float)count);
+    plane_from_points(out, xyzw, count, c, ref);
 }
 
 static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
@@ -5579,7 +5546,7 @@ static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
     push_line(vertex(p->centroid, COLOR_WHITE), vertex(vec3_add(p->centroid, vec3_mul1(p->normal, p->radius)), COLOR_WHITE), ctx->vis);
 }
 
-static int _planes(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     const md_bitset_t* groups = as_bitset(arg[0]);
@@ -5588,14 +5555,14 @@ static int _planes(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst && !ctx->vis) {
         // The groups have to be fixed, and have the atoms a plane needs
         if (ctx->arg_flags[0] & FLAG_DYNAMIC) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: the groups cannot depend on the frame");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "plane: the groups cannot depend on the frame (plane(coord(...)) fits the positions of each frame)");
             return STATIC_VALIDATION_ERROR;
         }
         for (size_t g = 0; g < num; ++g) {
             const size_t n = ctx->mol_ctx ? md_bitset_count(md_bitset_and(groups[g], *ctx->mol_ctx, ctx->temp_alloc)) : md_bitset_count(groups[g]);
             if (n < 3) {
-                if (num == 1) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: the group has %zu atom%s, a plane needs at least 3", n, n == 1 ? "" : "s");
-                else          EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: group %zu of %zu has %zu atom%s, a plane needs at least 3", g + 1, num, n, n == 1 ? "" : "s");
+                if (num == 1) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "plane: the group has %zu atom%s, a plane needs at least 3", n, n == 1 ? "" : "s");
+                else          EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "plane: group %zu of %zu has %zu atom%s, a plane needs at least 3", g + 1, num, n, n == 1 ? "" : "s");
                 return STATIC_VALIDATION_ERROR;
             }
         }
@@ -5644,6 +5611,59 @@ static int _planes(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     md_temp_end(temp);
+    return 0;
+}
+
+static int _plane_points(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+
+    if (!dst && !ctx->vis) {
+        // Positions only counted when they are evaluated (coord(within(...))) are checked then
+        if (!(arg[0].type.base_type == TYPE_FLOAT && is_variable_length(arg[0].type))) {
+            const int count = coordinate_validate(arg[0], 0, ctx);
+            if (count < 0) return STATIC_VALIDATION_ERROR;
+            if (count < 3) {
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "plane: %d position%s, a plane needs at least 3", count, count == 1 ? "" : "s");
+                return STATIC_VALIDATION_ERROR;
+            }
+        }
+        if (ctx->backchannel) {
+            // Always one plane, however many positions
+            ctx->backchannel->flags &= ~FLAG_DYNAMIC_LENGTH;
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_none();
+        }
+        return 1;
+    }
+
+    if (dst && ctx->backchannel) {
+        // Evaluated within the static check, for a procedure asking about its argument: the shape only
+        MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
+        return 0;
+    }
+
+    plane_t p = {0};
+    md_array(vec3_t) xyz = coordinate_extract(arg[0], ctx);
+    const size_t count = md_array_size(xyz);
+    p.count = (int)count;
+    if (count >= 3) {
+        vec4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count);
+        for (size_t k = 0; k < count; ++k) {
+            xyzw[k] = vec4_from_vec3(xyz[k], 1.0f);
+        }
+        const vec3_t c = plane_place(xyzw, count, &ctx->cur_state->unitcell);
+        plane_from_points(&p, xyzw, count, c, plane_turn(xyzw, count, c));
+        md_free(ctx->temp_alloc, xyzw, sizeof(vec4_t) * count);
+    }
+
+    if (dst) {
+        *(plane_t*)dst->ptr = p;
+    }
+    if (ctx->vis) {
+        coordinate_visualize(arg[0], ctx);
+        plane_visualize(&p, ctx);
+    }
     return 0;
 }
 
@@ -6746,11 +6766,11 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
         str_t str = as_string(arg[1]);
         count_type_t type = count_type_from_str(str);
         if (type == COUNT_TYPE_UNKNOWN) {
-            md_strb_t sb = md_strb_create(ctx->temp_alloc);
+            md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
             for (int i = 1; i < COUNT_TYPE_COUNT; ++i) {
-                md_strb_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
+                md_str_writer_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
             }
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_str_writer_to_str(&sb)));
             return -1;
         }
     }

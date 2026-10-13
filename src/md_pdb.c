@@ -6,7 +6,6 @@
 #include <core/md_common.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
-#include <core/md_str_builder.h>
 #include <core/md_parse.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
