@@ -522,6 +522,23 @@ UTEST(bitset, equality_by_members) {
     md_bitmask_free(&m);
 }
 
+// The hash of a set depends on its members: distinct spans hash apart. Built by GCC 13 at -O2 with xxHash
+// reading its input through a uint64_t lvalue, every span hashed the same: the hash was of the bytes left on
+// the stack, not of the span (see XXH_FORCE_MEMORY_ACCESS in md_hash.h)
+UTEST(bitset, hash_depends_on_members) {
+    uint64_t h[16];
+    for (uint32_t i = 0; i < 16; ++i) {
+        h[i] = md_bitset_hash64(md_bitset_range(i * 10, i * 10 + 10), 0);
+        for (uint32_t j = 0; j < i; ++j) EXPECT_NE(h[j], h[i]);
+    }
+    // Spans that share an end, or a beginning
+    EXPECT_NE(md_bitset_hash64(md_bitset_range(5, 100), 0), md_bitset_hash64(md_bitset_range(6, 100), 0));
+    EXPECT_NE(md_bitset_hash64(md_bitset_range(5, 100), 0), md_bitset_hash64(md_bitset_range(5, 101), 0));
+    for (uint32_t i = 0; i < 16; ++i) {
+        EXPECT_EQ(h[i], md_bitset_hash64(md_bitset_range(i * 10, i * 10 + 10), 0));
+    }
+}
+
 UTEST(bitset, replace_assign) {
     count_alloc_t counter; md_allocator_i* alloc = count_alloc_init(&counter);
     static ref_t ra, rb;
