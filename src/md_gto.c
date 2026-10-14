@@ -2376,27 +2376,26 @@ static inline void evaluate_grid_ortho_8x8x8_256(float grid_data[], const int gr
         const md_256i pj = md_mm256_set1_epi32(gtos[i].j);
         const md_256i pk = md_mm256_set1_epi32(gtos[i].k);
 
+        // The terms in x are the same for the whole block and the terms in z for a row, so they are formed outside
+        // the loops that do not change them (the compiler may not reorder the products to do it itself)
+        const md_256 dx  = md_mm256_sub_ps(vx, px);
+        const md_256 dx2 = md_mm256_mul_ps(dx, dx);
+        const md_256 cfx = md_mm256_mul_ps(pc, md_mm256_fast_pow(dx, pi));
+
         for (int iz = 0; iz < 8; ++iz) {
             float z = grid_origin[2] + (grid_idx_min[2] + iz) * grid_step[2];
-            md_256 vz = md_mm256_set1_ps(z);
+            const md_256 dz    = md_mm256_sub_ps(md_mm256_set1_ps(z), pz);
+            const md_256 dxz2  = md_mm256_fmadd_ps(dz, dz, dx2);
+            const md_256 cfxfz = md_mm256_mul_ps(cfx, md_mm256_fast_pow(dz, pk));
 
             for (int iy = 0; iy < 8; ++iy) {
                 float y = grid_origin[1] + (grid_idx_min[1] + iy) * grid_step[1];
-                md_256 vy = md_mm256_set1_ps(y);
-
-                md_256 dx = md_mm256_sub_ps(vx, px);
-                md_256 dy = md_mm256_sub_ps(vy, py);
-                md_256 dz = md_mm256_sub_ps(vz, pz);
-                md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+                md_256 dy = md_mm256_sub_ps(md_mm256_set1_ps(y), py);
+                md_256 d2 = md_mm256_fmadd_ps(dy, dy, dxz2);
                 md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
-                md_256 fx = md_mm256_fast_pow(dx, pi);
                 md_256 fy = md_mm256_fast_pow(dy, pj);
-                md_256 fz = md_mm256_fast_pow(dz, pk);
 
-                md_256 prod_a = md_mm256_mul_ps(pc, fx);
-                md_256 prod_b = md_mm256_mul_ps(fy, fz);
-
-                vpsi[iz][iy] = md_mm256_fmadd_ps(md_mm256_mul_ps(prod_a, prod_b), ex, vpsi[iz][iy]);
+                vpsi[iz][iy] = md_mm256_fmadd_ps(md_mm256_mul_ps(cfxfz, fy), ex, vpsi[iz][iy]);
             }
         }
     }
@@ -2532,23 +2531,27 @@ static inline void evaluate_grid_ortho_8x8x8_128(float grid_data[], const int gr
         const md_128i pj = md_mm_set1_epi32(gtos[i].j);
         const md_128i pk = md_mm_set1_epi32(gtos[i].k);
 
+        // The terms in x are the same for the whole block and the terms in z for a row, so they are formed outside
+        // the loops that do not change them (the compiler may not reorder the products to do it itself)
+        const md_128 dx[2]  = { md_mm_sub_ps(vx[0], px), md_mm_sub_ps(vx[1], px) };
+        const md_128 dx2[2] = { md_mm_mul_ps(dx[0], dx[0]), md_mm_mul_ps(dx[1], dx[1]) };
+        const md_128 cfx[2] = { md_mm_mul_ps(pc, md_mm_fast_pow(dx[0], pi)), md_mm_mul_ps(pc, md_mm_fast_pow(dx[1], pi)) };
+
         for (int iz = 0; iz < 8; ++iz) {
-            md_128 vz = md_mm_set1_ps(grid_origin[2] + (grid_idx_min[2] + iz) * grid_step[2]);
+            const md_128 dz = md_mm_sub_ps(md_mm_set1_ps(grid_origin[2] + (grid_idx_min[2] + iz) * grid_step[2]), pz);
+            const md_128 fz = md_mm_fast_pow(dz, pk);
+            const md_128 dxz2[2]  = { md_mm_fmadd_ps(dz, dz, dx2[0]), md_mm_fmadd_ps(dz, dz, dx2[1]) };
+            const md_128 cfxfz[2] = { md_mm_mul_ps(cfx[0], fz), md_mm_mul_ps(cfx[1], fz) };
+
             for (int iy = 0; iy < 8; ++iy) {
-                md_128 vy = md_mm_set1_ps(grid_origin[1] + (grid_idx_min[1] + iy) * grid_step[1]);
+                const md_128 dy = md_mm_sub_ps(md_mm_set1_ps(grid_origin[1] + (grid_idx_min[1] + iy) * grid_step[1]), py);
+                const md_128 fy = md_mm_fast_pow(dy, pj);
 
                 for (int ix = 0; ix < 2; ++ix) {
-                    md_128 dx = md_mm_sub_ps(vx[ix], px);
-                    md_128 dy = md_mm_sub_ps(vy,	 py);
-                    md_128 dz = md_mm_sub_ps(vz,	 pz);
-                    md_128 d2 = md_mm_fmadd_ps(dx, dx, md_mm_fmadd_ps(dy, dy, md_mm_mul_ps(dz, dz)));
-                    md_128 fx = md_mm_fast_pow(dx, pi);
-                    md_128 fy = md_mm_fast_pow(dy, pj);
-                    md_128 fz = md_mm_fast_pow(dz, pk);
+                    md_128 d2 = md_mm_fmadd_ps(dy, dy, dxz2[ix]);
                     md_128 ex = md_mm_exp_ps(md_mm_mul_ps(pa, d2));
-                    md_128 prod = md_mm_mul_ps(md_mm_mul_ps(md_mm_mul_ps(pc, fx), md_mm_mul_ps(fy, fz)), ex);
 
-                    vpsi[iz][iy][ix] = md_mm_add_ps(vpsi[iz][iy][ix], prod);
+                    vpsi[iz][iy][ix] = md_mm_fmadd_ps(md_mm_mul_ps(cfxfz[ix], fy), ex, vpsi[iz][iy][ix]);
                 }
             }
         }

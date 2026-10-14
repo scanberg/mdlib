@@ -64,8 +64,8 @@ static uint32_t f32_ulps(float a, float b) {
     return (uint32_t)(ox > oy ? ox - oy : oy - ox);
 }
 
-// GCC with -ffast-math (the flags mdlib builds with on x86) computes a vector division of floats as an approximate
-// reciprocal and a Newton-Raphson step: within 2 ulp, but a / a is not 1. Everywhere else division is exact.
+// GCC with -ffast-math computes a vector division of floats as an approximate reciprocal and a Newton-Raphson step:
+// within 2 ulp, but a / a is not 1. mdlib does not build with it; division is exact unless a build adds it.
 #if defined(__FAST_MATH__)
 #define DIV_ULPS 2
 #else
@@ -943,7 +943,9 @@ UTEST(simd_ops, periodic) {
             const double e = p[i] != 0.0f ? r[i] + img : x[i];
             // |img| <= p / 2; a lane exactly half a period away may round either way
             if (fabs(fabs(img) - 0.5 * p[i]) < 1e-3) continue;
-#define NEAR_LANE(name, val, ref) if (fabs((val) - (ref)) > 2e-4) { FAIL_F32(name, i, (float)(ref), (float)(val)); fails += 1; }
+            // The fraction of a period is taken of d / p: it carries the rounding of a number as large as |d| / p, p times
+            const double tol = 4e-7 * (fabs(x[i]) + fabs(r[i]) + p[i]) + 1e-6;
+#define NEAR_LANE(name, val, ref) if (fabs((val) - (ref)) > tol) { FAIL_F32(name, i, (float)(ref), (float)(val)); fails += 1; }
             if (i < 4) { NEAR_LANE("md_mm_deperiodize_ps", a4.f[i], e); NEAR_LANE("md_mm_deperiodize2_ps", b4.f[i], e); NEAR_LANE("md_mm_minimage_ps", m4.f[i], img); }
             NEAR_LANE("md_mm256_deperiodize_ps", a8.f[i], e);
             NEAR_LANE("md_mm256_deperiodize2_ps", b8.f[i], e);
@@ -1119,7 +1121,7 @@ UTEST(simd_ops, avx512) {
             _mm512_storeu_ps(o, k ? md_mm512_deperiodize2_ps(A, R, P, rp) : md_mm512_deperiodize_ps(A, R, P));
             for (int i = 0; i < 16; ++i) {
                 if (p[i] == 0.0f) CHECK_F32("md_mm512_deperiodize(2)_ps", i, a[i], o[i]);
-                else if (fabs(o[i] - e[i]) > 1e-5 * (1.0 + fabs(e[i]))) { FAIL_F32("md_mm512_deperiodize(2)_ps", i, e[i], o[i]); fails += 1; }
+                else if (fabs(o[i] - e[i]) > 4e-7 * (fabs(a[i]) + fabs(r[i]) + p[i]) + 1e-6) { FAIL_F32("md_mm512_deperiodize(2)_ps", i, e[i], o[i]); fails += 1; }
             }
         }
         double ad[8], pd[8], rd[8], od[8];
