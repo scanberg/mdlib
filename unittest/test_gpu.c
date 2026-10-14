@@ -2701,7 +2701,7 @@ UTEST(gpu, transient_pages_are_not_recycled_under_pending_data) {
     ASSERT_TRUE(s != NULL);
 
     const size_t big0 = 200 * 1024, big1 = 100 * 1024, big2 = 110 * 1024;
-    uint8_t* zeros = (uint8_t*)calloc(1, big2);
+    uint8_t* zeros = (uint8_t*)calloc(1, MAX(big0, MAX(big1, big2)));   /* the source of every upload below */
     ASSERT_TRUE(zeros != NULL);
     md_gpu_addr_t a = gpu_alloc(&f, s, big0);
     md_gpu_addr_t b = gpu_alloc(&f, s, 64);
