@@ -2344,7 +2344,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         md_order_t order = 1;
         if (str_eq(comp_a, comp_b)) {
             if (str_cmp_lex(type_a, type_b) > 0) {
-                str_swap(type_a, type_b);
+                str_swap(&type_a, &type_b);
             }
             // Intra
             if (str_eq_cstr(type_a, "C") && str_eq_cstr(type_b, "O") && md_util_resname_amino_acid(comp_a)) {
