@@ -493,9 +493,10 @@ bases = nucleobase();
 
 ```text
 ring(pattern: string[], kind: string[], size: irange) -> bitfield[]
+ring(index: irange[], kind: string[], size: irange)   -> bitfield[]      # by position
 ```
 
-**Parameters:** `pattern` (optional), `kind` and `size` (optional, given by name).
+**Parameters:** `pattern` or `index` (optional), `kind` and `size` (optional, given by name).
 
 One selection per ring of the molecular graph (rings of 3 to 7 atoms, see below), useful to measure something per
 ring. Inside a context only rings that lie completely within the context are returned. Each parameter narrows the
@@ -510,6 +511,11 @@ rings down, and a ring has to pass all of those given; a list given to one of th
 - `kind`: `"aromatic"` (every bond of the ring aromatic), `"aliphatic"` (not aromatic), `"hetero"` (an atom other than
   C), `"heteroaromatic"` (both), `"sugar"` (the ring of a furanose or pyranose).
 - `size`: the number of atoms, an int or a range.
+- `index`: rings by their **1-based position** among the rings the other parameters let through, in the order of
+  the system, as [`residue(1:5)`](#residue) counts residues: `ring(3)` is the third ring of the system, which is the
+  index the circle of an aromatic ring shows when hovered. Inside a context the positions count the rings within
+  it: `ring(1) in residue(:)` is the first ring of every residue that has one. A position past the last ring is a
+  compile error without a context, and selects nothing within one; `ring(:)` is every ring.
 
 The rings are the smallest ones, without those made of smaller rings: naphthalene has two rings and not the ten
 membered one around both, norbornane two five membered rings and not the six membered one around them. Larger cycles
@@ -522,6 +528,8 @@ aromatic = ring(kind="aromatic");
 pyridines = ring("c1ccncc1");
 azoles = ring({"c[nH]c", "cnc"}, size=5);
 sugars = ring(kind="sugar") in residue(1:20);
+third = ring(3);                                        # the third ring of the system
+first_aromatic = ring(1, kind="aromatic") in residue(:); # the first aromatic ring of each residue that has one
 ```
 
 ### Selectors: residue level
@@ -680,13 +688,18 @@ residue(sel: bitfield[])     -> bitfield[]      # grow to whole residues
 ```
 
 - `residue("ALA")` — select residues by name.
-- `residue(1:5)` — select residues by their **1-based position** in the system, `residue(:)` selects all.
+- `residue(1:5)` — select residues by their **1-based position** in the system, `residue(:)` selects all. Inside a
+  context the positions count the residues with an atom in the context, each cut to it: `residue(2) in chain(1)` is
+  the second residue of the chain. A position past the last is a compile error without a context, and selects nothing
+  within one (a chain need not have a tenth residue). [`instance`](#instance), [`chain`](#chain) and
+  [`ring`](#ring) count their positions the same way.
 - `residue(sel)` — every residue that the selection touches, expanded to its whole residue.
 
 ```mdscript
 first = residue(1);
 first_five = residue(1:5);
 all_res = residue(:);
+second_of_chain = residue(2) in chain(1);
 ca_residues = residue(name("CA"));           # whole residues that contain a CA atom
 near = residue(within(4.0, residue(1)));     # whole residues within 4 Å of residue 1
 ```
@@ -725,7 +738,8 @@ instance(id: string[])     -> bitfield[]
 instance(index: irange[])  -> bitfield[]
 ```
 
-Select instances by identifier or 1-based position.
+Select instances by identifier or 1-based position, counted as [`residue`](#residue) counts its positions (inside a
+context among the instances with an atom in it).
 
 ```mdscript
 first_instance = instance(1);
@@ -742,8 +756,8 @@ chain(index: irange[])  -> bitfield[]
 chain(sel: bitfield[])  -> bitfield[]      # grow to whole chains
 ```
 
-Select chains by identifier (`"A"`), by 1-based position (`chain(1:2)`), or expand a selection to every chain it
-touches.
+Select chains by identifier (`"A"`), by 1-based position (`chain(1:2)`, counted as [`residue`](#residue) counts its
+positions), or expand a selection to every chain it touches.
 
 ```mdscript
 chain_a = chain("A");

@@ -1,6 +1,6 @@
 #version 330 core
 
-// Bonds (licorice, weak bonds, and the dashed partners which show aromatic and delocalized bonds) as raycast impostors,
+// Bonds (licorice, weak bonds, and the dashed partners which show delocalized bonds) as raycast impostors,
 // drawn by vertex pulling without a geometry shader.
 //
 // Every primitive is one quad of 4 vertices: primitive p, corner c = gl_VertexID & 3 with p = u_bond_offset +
@@ -36,11 +36,11 @@
 //     the stick, and the bond keeps the spheres of the radius of the stick at its ends: with u_spread 1 (licorice) the
 //     thinner sticks end within them, as within the joint the representation has at an atom. The quad bounds the
 //     capsule of the axis which contains all of it.
-//   - Aromatic and delocalized bonds keep their stick and get a thin dashed partner (BOND_PARTNERS), a primitive of its
-//     own: an entry is a bond and the atoms which give the side of the partner, inside a ring or within a group. A bond
-//     of two aromatic rings has an entry for each, so there is a partner inside both. The ends of the partner are inset
-//     to where the partners of the neighboring bonds at the same offset meet, as on an inner polygon, and a little
-//     more. The quad bounds the partner alone.
+//   - Delocalized bonds keep their stick and get a thin dashed partner (BOND_PARTNERS), a primitive of its own: an entry
+//     is a bond and the atoms which give the side of the partner, within its group. So does an aromatic bond in no
+//     circle (aromatic rings are circles, ring.vert), on the side of the aromatic bonds that continue from it. The ends
+//     of the partner are inset to where the partners of the neighboring bonds at the same offset meet, as on an inner
+//     polygon, and a little more. The quad bounds the partner alone.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -51,7 +51,7 @@
 #define WEAK_BONDS 0
 #endif
 
-// 1: the dashed partners of aromatic and delocalized covalent bonds
+// 1: the dashed partners of delocalized covalent bonds (and of aromatic bonds in no circle)
 #ifndef BOND_PARTNERS
 #define BOND_PARTNERS 0
 #endif

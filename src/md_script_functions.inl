@@ -441,6 +441,7 @@ static int _nucleoside      (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _nucleobase      (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
+static int _ring_irng       (data_t*, data_t[], eval_context_t*); // (irange[], ...) -> bitfield[]
 
 // Structure matching, see md_match.h
 static int _smiles          (data_t*, data_t[], eval_context_t*); // (str, level: str, mode: str) -> bitfield[]
@@ -777,6 +778,8 @@ static procedure_t procedures[] = {
     {STR_INIT("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},           _atom_int,      FLAG_STATIC_VALIDATION},
     
     {STR_INIT("ring"),      TI_BITFIELD_ARR, 3, {TI_STRING_ARR, TI_STRING_ARR, TI_IRANGE}, _ring, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    // By position: listed after the pattern, so that ring() (no pattern, an absent argument) stays the one above
+    {STR_INIT("ring"),      TI_BITFIELD_ARR, 3, {TI_IRANGE_ARR, TI_STRING_ARR, TI_IRANGE}, _ring_irng, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // Structure matching: one selection per occurrence of a SMILES pattern, or of a reference structure
     {STR_INIT("smiles"),    TI_BITFIELD_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -948,7 +951,8 @@ static const proc_sig_t signatures[] = {
     {STR_INIT("smiles"),        3, {REQ("pattern"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
     {STR_INIT("match"),         4, {REQ("ref"), KW_STR("by", "element"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
 
-    // ring(pattern = none, *, kind = none, size = none), see _ring
+    // ring(pattern = none, *, kind = none, size = none), see _ring. The first is a pattern or, in the other overload, an
+    // index (_ring_irng): 'pattern' names it in both.
     {STR_INIT("ring"),          3, {NUL("pattern"), KW_NUL("kind"), KW_NUL("size")}},
 };
 
@@ -1261,25 +1265,35 @@ static inline bool is_instance_chain(const md_system_t* sys, size_t inst_idx) {
     return md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst_idx));
 }
 
+// The components with an atom in the context (all of them without one), in their order: what residue(index) counts
+// within it. Only those within the span of the context [beg, end) can have one, so they are found from a binary search
+// rather than a walk over all of the components, which residue(1) in residue(:) would otherwise make once per residue.
 static md_array(md_component_idx_t) get_comp_indices_in_context(const md_system_t* sys, const md_bitset_t* bitfield, md_allocator_i* alloc) {
     ASSERT(sys);
     ASSERT(alloc);
 
     md_array(int32_t) arr = 0;
+    const md_component_data_t* comp = &sys->component;
+    if (!comp->count) return arr;
 
-    if (sys->component.count) {
-        if (bitfield) {
-            for (size_t i = 0; i < sys->component.count; ++i) {
-                md_urange_t res = md_component_atom_range(&sys->component, i);
-                if (md_bitset_count_range(*bitfield, res.beg, res.end)) {
-                    md_array_push(arr, (int32_t)i, alloc);
-                }
+    if (bitfield) {
+        if (!comp->atom_offset || bitfield->end <= bitfield->beg) return arr;
+        // The first component which ends past the beginning of the context
+        size_t lo = 0, hi = comp->count;
+        while (lo < hi) {
+            const size_t mid = lo + (hi - lo) / 2;
+            if (comp->atom_offset[mid + 1] <= bitfield->beg) lo = mid + 1;
+            else hi = mid;
+        }
+        for (size_t i = lo; i < comp->count && comp->atom_offset[i] < bitfield->end; ++i) {
+            if (md_bitset_count_range(*bitfield, comp->atom_offset[i], comp->atom_offset[i + 1])) {
+                md_array_push(arr, (int32_t)i, alloc);
             }
         }
-        else {
-            for (int32_t i = 0; i < (int32_t)sys->component.count; ++i) {
-                md_array_push(arr, i, alloc);
-            }
+    }
+    else {
+        for (int32_t i = 0; i < (int32_t)comp->count; ++i) {
+            md_array_push(arr, i, alloc);
         }
     }
 
@@ -1348,59 +1362,35 @@ static inline irange_t get_atom_range_in_context(const md_system_t* sys, const m
     return range;
 }
 
-static inline irange_t get_comp_range_in_context(const md_system_t* sys, const md_bitset_t* mol_ctx) {
-    ASSERT(sys);
-    irange_t range = { 0, (int32_t)sys->component.count };
-    if (mol_ctx) {
-        range.beg = INT_MAX;
-        range.end = 0;
-        for (size_t i = 0; i < sys->component.count; ++i) {
-            md_urange_t res = md_component_atom_range(&sys->component, i);
-            if (md_bitset_count_range(*mol_ctx, res.beg, res.end)) {
-                range.beg = MIN(range.beg, (int32_t)i);
-                range.end = MAX(range.end, (int32_t)i + 1);
-                break;
+// The positions given to an index selector (residue(1:5), ring(3), chain(2), instance(1:2:7)): 1-based and inclusive,
+// an open end runs to the first or the last, a step takes every step-th. out (optional) receives them 0-based, in the
+// order given, into the num things the selector counts; returns how many, or STATIC_VALIDATION_ERROR (reported when
+// report is set). A position before the first is an error. One past the last is an error without a context, and
+// within one selects nothing: the selector counts what lies in the context, and a chain need not have a tenth residue,
+// nor a residue a second ring.
+static int select_positions(md_array(int32_t)* out, const irange_t* ranges, size_t num_ranges, int64_t num, const char* unit, bool report, eval_context_t* ctx) {
+    int count = 0;
+    for (size_t i = 0; i < num_ranges; ++i) {
+        const int64_t beg  = ranges[i].beg == INT32_MIN ? 1 : ranges[i].beg;
+        const int64_t end  = ranges[i].end == INT32_MAX ? num : ranges[i].end;
+        const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
+        if (beg < 1) {
+            if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: index %" PRId64 " is before the first %s, they are counted from 1", unit, beg, unit);
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (end > num && !ctx->mol_ctx) {
+            if (report) {
+                if (num == 0) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: index %" PRId64 " is past the last %s, there are none", unit, end, unit);
+                else EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: index %" PRId64 " is past the last %s (%" PRId64 ")", unit, end, unit, num);
             }
+            return STATIC_VALIDATION_ERROR;
+        }
+        for (int64_t k = beg; k <= MIN(end, num); k += step) {
+            if (out) md_array_push(*out, (int32_t)(k - 1), ctx->temp_alloc);
+            count += 1;
         }
     }
-    return range;
-}
-
-static inline irange_t get_inst_range_in_context(const md_system_t* sys, const md_bitset_t* mol_ctx) {
-    ASSERT(sys);
-    irange_t range = { 0, (int32_t)sys->instance.count };
-    if (mol_ctx) {
-        range.beg = INT_MAX;
-        range.end = 0;
-        for (size_t i = 0; i < sys->instance.count; ++i) {
-            md_urange_t atom_range = md_system_instance_atom_range(sys, i);
-            if (md_bitset_count_range(*mol_ctx, atom_range.beg, atom_range.end)) {
-                range.beg = MIN(range.beg, (int32_t)i);
-                range.end = MAX(range.end, (int32_t)i + 1);
-                break;
-            }
-        }
-    }
-    return range;
-}
-
-static inline irange_t get_chain_range_in_context(const md_system_t* sys, const md_bitset_t* mol_ctx) {
-    ASSERT(sys);
-    irange_t range = { 0, (int32_t)sys->instance.count };
-    if (mol_ctx) {
-        range.beg = INT_MAX;
-        range.end = 0;
-        for (size_t i = 0; i < sys->instance.count; ++i) {
-            if (!is_instance_chain(sys, i)) continue;
-            md_urange_t atom_range = md_system_instance_atom_range(sys, i);
-            if (md_bitset_count_range(*mol_ctx, atom_range.beg, atom_range.end)) {
-                range.beg = MIN(range.beg, (int32_t)i);
-                range.end = MAX(range.end, (int32_t)i + 1);
-                break;
-            }
-        }
-    }
-    return range;
+    return count;
 }
 
 static bool validate_atom_index_in_context(int32_t in_idx, token_t token, const eval_context_t* ctx) {
@@ -3276,7 +3266,8 @@ static int _match(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // ### RINGS ###
 // ring(pattern = none, *, kind = none, size = none): the rings of the system (md_system_t::ring) which all of the
-// given filters let through, each fully within the context.
+// given filters let through, each fully within the context. ring(index, *, kind = none, size = none) takes rings by
+// their position among those instead (_ring_irng).
 //   pattern  SMILES, one or several: a ring which has any of them along it (md_match with the rings as units). A chain
 //            is consecutive ring atoms in either direction (CCNCC), a chain closed onto its first atom the whole ring
 //            (c1ccncc1), parts separated by '.' are anywhere in the ring (N.O). A branch is not along a ring: an error.
@@ -3459,13 +3450,10 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
     return count;
 }
 
-static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+// The result of ring(): one selection per ring of rings (indices into md_system_t::ring), in their order, or all of them
+// in one when flattened; their outlines when visualizing; their count when validating.
+static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_context_t* ctx) {
     const md_system_t* sys = ctx->sys;
-
-    md_array(uint32_t) rings = 0;
-    const int count = ring_select(&rings, arg, !dst && !ctx->vis, ctx);
-    if (count < 0) return count;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -3513,6 +3501,39 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MIN(1, count);
     return count;
+}
+
+static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+
+    md_array(uint32_t) rings = 0;
+    const int count = ring_select(&rings, arg, !dst && !ctx->vis, ctx);
+    if (count < 0) return count;
+    return ring_result(dst, rings, count, ctx);
+}
+
+// ring(index, *, kind = none, size = none): rings by their 1-based position among those ring(kind = kind, size = size)
+// gives, in the order of md_system_t::ring: within a context the rings fully within it, as residue(index) counts the
+// residues of its context. So without a context or filters, ring(k) is the ring k - 1 of the system, which is what the
+// circle of an aromatic ring picks as (md_gl_picking_offset_t). An index before the first is an error; one past the
+// last is an error without a context, and selects nothing within one (a residue need not have a second ring).
+static int _ring_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    const bool report = !dst && !ctx->vis;
+
+    // The rings to index into: those the filters let through. The index takes the place of the pattern.
+    data_t filter_arg[3] = { {0}, arg[1], arg[2] };
+    md_array(uint32_t) rings = 0;
+    const int num_rings = ring_select(&rings, filter_arg, report, ctx);
+    if (num_rings < 0) return num_rings;
+
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(&pos, as_irange_arr(arg[0]), element_count(arg[0]), num_rings, "ring", report, ctx);
+    if (count < 0) return count;
+    uint32_t* picked = md_alloc(ctx->temp_alloc, sizeof(uint32_t) * MAX(count, 1));
+    for (int i = 0; i < count; ++i) picked[i] = rings[pos[i]];
+    return ring_result(dst, picked, count, ctx);
 }
 
 static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, md_atom_flags_t flags) {
@@ -3741,55 +3762,35 @@ static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_NUCLEOBASE);
 }
 
+// residue(index), component(index): residues by their 1-based position, in a context among the residues with an atom
+// in it (get_comp_indices_in_context), each cut to the context: residue(2) in chain(1) is the second residue of the
+// chain. A position before the first is an error; one past the last is an error without a context, and selects
+// nothing within one (a chain need not have a tenth residue), as ring(index) does.
 static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    const md_system_t* sys = ctx->sys;
 
-    int result = 0;
+    // The residues counted: those of the context, or all of the system (no list)
+    md_array(int32_t) comps = ctx->mol_ctx ? get_comp_indices_in_context(sys, ctx->mol_ctx, ctx->temp_alloc) : NULL;
+    const int64_t num_comps = ctx->mol_ctx ? (int64_t)md_array_size(comps) : (int64_t)sys->component.count;
 
-    const size_t num_ranges = element_count(arg[0]);
-    const irange_t* ranges = as_irange_arr(arg[0]);
-    // Here we use the implicit range given by the context and use that to select substructures within it
-    // The supplied iranges will be used as relative indices into the context
-    const irange_t ctx_range = get_comp_range_in_context(ctx->sys, ctx->mol_ctx);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), num_comps, "residue", !dst, ctx);
+    if (count < 0) return count;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        if (dst->ptr) {
-            const int64_t cap = type_info_array_len(dst->type);
-            if (cap == 0) return 0;
-
-            set_writer_t w = set_writer_begin(dst, ctx, true);
-            for (size_t i = 0; i < num_ranges; ++i) {
-                irange_t range = remap_range_to_context(ranges[i], ctx_range);
-                range = clamp_range(range, ctx_range);
-                const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-                for (int64_t j = range.beg; j < range.end; j += step) {
-                    const md_urange_t atom_range = md_component_atom_range(&ctx->sys->component, j);
-                    set_writer_push_range(&w, atom_range.beg, atom_range.end);
-                }
-            }
-            set_writer_end(&w);
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t atom_range = md_component_atom_range(&sys->component, comps ? (size_t)comps[pos[i]] : (size_t)pos[i]);
+            set_writer_push_range(&w, atom_range.beg, atom_range.end);
         }
+        set_writer_end(&w);
+        return 0;
     }
-    else {
-        int count = 0;
-        for (size_t i = 0; i < num_ranges; ++i) {
-            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
-                return STATIC_VALIDATION_ERROR;
-            }
-            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-            const int64_t len = MAX(0, range.end - range.beg);
-            count += (int)((len + step - 1) / step);
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    return result;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
 }
 
 static int _fill_comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -4051,110 +4052,48 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    int32_t* inst_indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
-    if (inst_indices == NULL) {
-        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any chains");
-        return -1;
-    }
-
-    int result = 0;
-
-    const size_t  num_ranges = element_count(arg[0]);
-    const irange_t*   ranges = as_irange_arr(arg[0]);
-    irange_t ctx_range = {0, (int)md_array_size(inst_indices)};
+    // Those with an atom in the context, or all of the system
+    md_array(int32_t) indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), (int64_t)md_array_size(indices), "instance", !dst, ctx);
+    if (count < 0) return count;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        if (dst->ptr) {
-            const int64_t cap = type_info_array_len(dst->type);
-            if (cap == 0) return 0;
-            set_writer_t w = set_writer_begin(dst, ctx, true);
-
-            for (size_t i = 0; i < num_ranges; ++i) {
-                irange_t range = remap_range_to_context(ranges[i], ctx_range);
-                const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-                for (int64_t j = range.beg; j < range.end; j += step) {
-                    md_instance_idx_t inst_idx = inst_indices[j];
-                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, inst_idx);
-                    set_writer_push_range(&w, atom_range.beg, atom_range.end);
-                }
-            }
-            set_writer_end(&w);
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, indices[pos[i]]);
+            set_writer_push_range(&w, atom_range.beg, atom_range.end);
         }
+        set_writer_end(&w);
+        return 0;
     }
-    else {
-        int count = 0;
-        for (size_t i = 0; i < num_ranges; ++i) {
-            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (range.beg < 0 || range.end > ctx_range.end) {
-                return STATIC_VALIDATION_ERROR;
-            }
-            const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-            const int64_t len = MAX(0, range.end - range.beg);
-            count += (int)((len + step - 1) / step);
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    return result;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
 }
 
 static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    int32_t* chain_indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
-    if (chain_indices == NULL) {
-        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any chains");
-        return -1;
-    }
-
-    int result = 0;
-
-    const size_t  num_ranges = element_count(arg[0]);
-    const irange_t*   ranges = as_irange_arr(arg[0]);
-    irange_t ctx_range = {0, (int)md_array_size(chain_indices)};
+    // Those with an atom in the context, or all of the system
+    md_array(int32_t) indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), (int64_t)md_array_size(indices), "chain", !dst, ctx);
+    if (count < 0) return count;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        if (dst->ptr) {
-            const int64_t cap = type_info_array_len(dst->type);
-            if (cap == 0) return 0;
-            set_writer_t w = set_writer_begin(dst, ctx, true);
-
-            for (size_t i = 0; i < num_ranges; ++i) {
-                irange_t range = remap_range_to_context(ranges[i], ctx_range);
-                const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-                for (int64_t j = range.beg; j < range.end; j += step) {
-                    md_instance_idx_t chain_idx = chain_indices[j];
-                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, chain_idx);
-                    set_writer_push_range(&w, atom_range.beg, atom_range.end);
-                }
-            }
-            set_writer_end(&w);
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, indices[pos[i]]);
+            set_writer_push_range(&w, atom_range.beg, atom_range.end);
         }
+        set_writer_end(&w);
+        return 0;
     }
-    else {
-        int count = 0;
-        for (size_t i = 0; i < num_ranges; ++i) {
-            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (range.beg < 0 || range.end > ctx_range.end) {
-                return STATIC_VALIDATION_ERROR;
-            }
-            const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-            const int64_t len = MAX(0, range.end - range.beg);
-            count += (int)((len + step - 1) / step);
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    return result;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
 }
 
 typedef struct {

@@ -2113,6 +2113,33 @@ static bool named_args_compile_fails_with(md_script_ir_t* ir, md_system_t* sys, 
     return false;
 }
 
+// Index selectors (residue, chain, instance; ring in test_ring.c) count what has an atom in their context, in order,
+// each cut to the context. A position past the last selects nothing within a context, and is an error without one.
+UTEST(script, index_selectors_in_context) {
+    // SOL 1-3, LYS 4-8, PFT 9-12, PFT 13-16
+    EXPECT_TRUE(test_selection("residue(2) in union(resname('PFT'))",   "0000000000001111"));
+    EXPECT_TRUE(test_selection("residue(1:2) in union(resname('PFT'))", "0000000011111111"));
+    // atom(3:9) has atoms of SOL, LYS and the first PFT
+    EXPECT_TRUE(test_selection("residue(2) in atom(3:9)",  "0001111100000000"));
+    EXPECT_TRUE(test_selection("residue(3) in atom(3:9)",  "0000000010000000"));    // Cut to the context
+    EXPECT_TRUE(test_selection("residue(:) in atom(3:9)",  "0011111110000000"));
+    EXPECT_TRUE(test_selection("residue(4) in atom(3:9)",  "0000000000000000"));    // Past the last: nothing
+    EXPECT_TRUE(test_selection("residue(1) in atom(4:16)", "0001111100000000"));
+    // One context per residue of resname('PFT')
+    EXPECT_TRUE(test_selection("residue(1) in resname('PFT')", "0000000011111111"));
+    EXPECT_TRUE(test_selection("residue(2) in resname('PFT')", "0000000000000000"));
+
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = residue(5);",  "past the last residue (4)"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = residue(0);",  "before the first residue"));
+    // test_mol maps no instance to its entity, so none of them is a chain
+    EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = chain(1);",    "past the last chain, there are none"));
+    EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = instance(9);", "past the last instance (4)"));
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST_F(script, named_args_errors) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
     md_system_t* sys = &utest_fixture->ala;
@@ -3743,7 +3770,8 @@ UTEST_F(script, rmsd_per_structure) {
         "r8 = rmsd(residue(8));\n"
         "rp = rmsd(residue(1:8) or residue(1:8));\n"
         "rc = rmsd(all()) in residue(1:8);\n"
-        "rx = rmsd(residue(1:8)) in residue(3);\n"), sys, NULL);
+        "rx = rmsd(residue(1:2)) in union(residue(3:4));\n"
+        "ry = rmsd(residue(1:8)) in residue(3);\n"), sys, NULL);
     for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
         str_t err = md_script_ir_errors(ir)[i].text;
         printf("  %.*s\n", (int)err.len, err.ptr);
@@ -3798,10 +3826,16 @@ UTEST_F(script, rmsd_per_structure) {
     for (int i = 0; i < 8; ++i) {
         EXPECT_NEAR(((const float*)rc.ptr)[i], v[i], 1.0e-5f);
     }
-    // An array argument inside a context gives [context][N]: residue indices are relative to the context,
-    // so residue(1) in residue(3) is residue 3
-    EXPECT_EQ((size_t)8, rx.size / sizeof(float));
+    // An array argument inside a context gives [context][N]: residue indices count the residues of the context,
+    // so residue(1:2) in union(residue(3:4)) is residues 3 and 4
+    EXPECT_EQ((size_t)2, rx.size / sizeof(float));
     EXPECT_NEAR(((const float*)rx.ptr)[0], v[2], 1.0e-5f);
+    EXPECT_NEAR(((const float*)rx.ptr)[1], v[3], 1.0e-5f);
+    // and residue(3) holds one residue: residue(2:8) are past its last and select nothing
+    data_t ry = {0};
+    ASSERT_TRUE(pbc_eval(&ry, ir, "ry", sys, &state, alloc));
+    EXPECT_EQ((size_t)1, ry.size / sizeof(float));
+    EXPECT_NEAR(((const float*)ry.ptr)[0], v[2], 1.0e-5f);
 
     // Over the trajectory, as a property: one value per residue per frame
     const uint32_t num_frames = script_frames(sys);

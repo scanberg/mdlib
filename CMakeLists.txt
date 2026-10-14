@@ -217,6 +217,8 @@ set(GL_SHADER_FILES
   src/shaders/backbone.frag
   src/shaders/bond.vert
   src/shaders/bond.frag
+  src/shaders/ring.vert
+  src/shaders/ring.frag
   src/shaders/spacefill.vert
   src/shaders/spacefill.geom
   src/shaders/spacefill.frag

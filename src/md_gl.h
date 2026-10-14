@@ -137,14 +137,15 @@ void md_gl_mol_zero_velocity(md_gl_mol_t handle);
 void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const struct md_atom_pair_t* bond_pairs, uint32_t byte_stride);
 
 // The orders of the bonds, for the licorice and ball and stick representations with bond_orders set, from the topology
-// of the system: the order and the aromatic and delocalized flags of its bonds (md_chem_perceive), its rings and the
-// hybridization of its atoms. The bonds of the system must be those of the molecule (md_gl_mol_set_bonds), in the same
-// order. md_gl_mol_create sets them.
+// of the system: the order and the aromatic and delocalized flags of its bonds (md_chem_perceive), its rings and their
+// flags and the hybridization of its atoms. The bonds of the system must be those of the molecule
+// (md_gl_mol_set_bonds), in the same order. md_gl_mol_create sets them.
 //   - double bond: two thinner sticks in the plane of its sp2 centers (the plane of their substituents)
 //   - triple bond: three thinner sticks, perpendicular to the view
-//   - aromatic bond: the stick and a thin dashed line inside its ring, inside both where two rings share the bond
+//   - aromatic ring (MD_RING_FLAG_AROMATIC): the sticks of its bonds and a thin solid circle inside it, in its plane,
+//     one in each of two fused rings. The circle picks as the ring (md_gl_picking_offset_t).
 //   - delocalized bond (carboxylate, nitro, guanidinium, phosphate, ...): the stick and a thin dashed line towards
-//     the next bond of the group
+//     the next bond of the group. So is an aromatic bond in no circle (in a ring larger than MD_RING_MAX_SIZE).
 // A bond whose order is unknown is drawn as a single bond.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
 
@@ -260,10 +261,13 @@ typedef struct md_gl_draw_op_t {
 // middle) their bond index, and the backbone representations (cartoon, ribbons) their protein backbone segment
 // index (md_system_t::protein_backbone.segment). A cartoon is not made of atoms: it writes the segment it stems
 // from, never an atom of it. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
+// The circle of an aromatic ring writes the index of the ring in md_system_t::ring (all of its rings, so the range
+// is md_index_data_num_ranges(&sys->ring) long, of which only the aromatic ones are drawn).
 typedef struct md_gl_picking_offset_t {
     uint32_t atom_base;
     uint32_t bond_base;
     uint32_t backbone_base;
+    uint32_t ring_base;
 } md_gl_picking_offset_t;
 
 typedef struct md_gl_draw_args_t {
