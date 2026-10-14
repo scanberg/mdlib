@@ -9914,7 +9914,10 @@ static inline void lerp_xyz8(float* dst, const float* a, const float* b, const m
     }
 }
 
-static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv ext[XYZ_GROUP_VECS], const md_xv inv[XYZ_GROUP_VECS], bool periodic, md_xv t, md_xv s) {
+// One group of eight atoms over four frames, weighted (see md_util_interpolate_cubic_weighted). The weights are applied
+// in order, so a weight of exactly one with the others zero gives that frame back exactly: an interpolating scheme
+// lands on its frames.
+static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv ext[XYZ_GROUP_VECS], const md_xv inv[XYZ_GROUP_VECS], bool periodic, const md_xv w[4]) {
     for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
         md_xv x0 = md_xv_loadu_ps(src[0] + j * MD_XV_WIDTH);
         const md_xv x1 = md_xv_loadu_ps(src[1] + j * MD_XV_WIDTH);
@@ -9925,7 +9928,11 @@ static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv
             x2 = xv_deperiodize_ortho(x2, x1, ext[j], inv[j]);
             x3 = xv_deperiodize_ortho(x3, x2, ext[j], inv[j]);
         }
-        md_xv_storeu_ps(dst + j * MD_XV_WIDTH, md_xv_cubic_spline_ps(x0, x1, x2, x3, t, s));
+        md_xv r = md_xv_mul_ps(w[0], x0);
+        r = md_xv_fmadd_ps(w[1], x1, r);
+        r = md_xv_fmadd_ps(w[2], x2, r);
+        r = md_xv_fmadd_ps(w[3], x3, r);
+        md_xv_storeu_ps(dst + j * MD_XV_WIDTH, r);
     }
 }
 
@@ -9996,18 +10003,48 @@ bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], 
     return true;
 }
 
+void md_util_cubic_spline_weights(float w[4], float t, float s) {
+    ASSERT(w);
+    // The Hermite form, p(t) = h00 p1 + h10 m1 + h01 p2 + h11 m2, with the tangents m1 = s (p2 - p0) and m2 = s (p3 - p1)
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float h00 =  2.0f * t3 - 3.0f * t2 + 1.0f;
+    const float h10 =         t3 - 2.0f * t2 + t;
+    const float h01 = -2.0f * t3 + 3.0f * t2;
+    const float h11 =         t3 -        t2;
+    w[0] = -s * h10;
+    w[1] = h00 - s * h11;
+    w[2] = h01 + s * h10;
+    w[3] = s * h11;
+}
+
+void md_util_cubic_bspline_weights(float w[4], float t) {
+    ASSERT(w);
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float u  = 1.0f - t;
+    w[0] = u * u * u * (1.0f / 6.0f);
+    w[1] = ( 3.0f * t3 - 6.0f * t2 + 4.0f) * (1.0f / 6.0f);
+    w[2] = (-3.0f * t3 + 3.0f * t2 + 3.0f * t + 1.0f) * (1.0f / 6.0f);
+    w[3] = t3 * (1.0f / 6.0f);
+}
+
+bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s) {
+    float w[4];
+    md_util_cubic_spline_weights(w, CLAMP(t, 0.0f, 1.0f), CLAMP(s, 0.0f, 1.0f));
+    return md_util_interpolate_cubic_weighted(out_xyz, in_xyz, count, cell, w);
+}
+
 // As md_util_interpolate_linear: packed floats directly without a cell or in an orthorhombic one,
 // split into x, y and z (and padded) in a triclinic one.
-bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s) {
+bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]) {
     ASSERT(out_xyz);
     ASSERT(in_xyz);
     ASSERT(in_xyz[0]);
     ASSERT(in_xyz[1]);
     ASSERT(in_xyz[2]);
     ASSERT(in_xyz[3]);
-
-    t = CLAMP(t, 0.0f, 1.0f);
-    s = CLAMP(s, 0.0f, 1.0f);
+    ASSERT(w);
 
     const bool ortho = cell && md_unitcell_is_orthorhombic(cell);
     const bool tricl = cell && md_unitcell_is_triclinic(cell);
@@ -10018,10 +10055,8 @@ bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xy
         md_unitcell_I_extract_float(I.elem, cell);
     }
 
-    const md_256 vt = md_mm256_set1_ps(t);
-    const md_256 vs = md_mm256_set1_ps(s);
-    const md_xv xt = md_xv_set1_ps(t);
-    const md_xv xs = md_xv_set1_ps(s);
+    const md_256 vw[4] = { md_mm256_set1_ps(w[0]), md_mm256_set1_ps(w[1]), md_mm256_set1_ps(w[2]), md_mm256_set1_ps(w[3]) };
+    const md_xv  xw[4] = { md_xv_set1_ps(w[0]),    md_xv_set1_ps(w[1]),    md_xv_set1_ps(w[2]),    md_xv_set1_ps(w[3]) };
 
     const float* src[4] = { (const float*)in_xyz[0], (const float*)in_xyz[1], (const float*)in_xyz[2], (const float*)in_xyz[3] };
     float* dst = (float*)out_xyz;
@@ -10037,14 +10072,14 @@ bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xy
             const size_t n = (i == 0 && head) ? head : MIN(8, count - i);
             if (n == 8) {
                 const float* const g[4] = { src[0] + i * 3, src[1] + i * 3, src[2] + i * 3, src[3] + i * 3 };
-                cubic_xyz8(dst + i * 3, g, ext, inv, ortho, xt, xs);
+                cubic_xyz8(dst + i * 3, g, ext, inv, ortho, xw);
             } else {
                 float stage[4][24] = {0}, r[24];
                 for (int k = 0; k < 4; ++k) {
                     MEMCPY(stage[k], src[k] + i * 3, n * sizeof(vec3_t));
                 }
                 const float* const g[4] = { stage[0], stage[1], stage[2], stage[3] };
-                cubic_xyz8(r, g, ext, inv, ortho, xt, xs);
+                cubic_xyz8(r, g, ext, inv, ortho, xw);
                 MEMCPY(dst + i * 3, r, n * sizeof(vec3_t));
             }
             i += n;
@@ -10063,11 +10098,15 @@ bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xy
         simd_deperiodize_triclinic(x2, x1, MD_AS_CONST_MAT3(A.elem));
         simd_deperiodize_triclinic(x3, x2, MD_AS_CONST_MAT3(A.elem));
 
-        const md_256 x = md_mm256_cubic_spline_ps(x0[0], x1[0], x2[0], x3[0], vt, vs);
-        const md_256 y = md_mm256_cubic_spline_ps(x0[1], x1[1], x2[1], x3[1], vt, vs);
-        const md_256 z = md_mm256_cubic_spline_ps(x0[2], x1[2], x2[2], x3[2], vt, vs);
+        md_256 r[3];
+        for (int k = 0; k < 3; ++k) {
+            r[k] = md_mm256_mul_ps(vw[0], x0[k]);
+            r[k] = md_mm256_fmadd_ps(vw[1], x1[k], r[k]);
+            r[k] = md_mm256_fmadd_ps(vw[2], x2[k], r[k]);
+            r[k] = md_mm256_fmadd_ps(vw[3], x3[k], r[k]);
+        }
 
-        md_mm256_store_xyz_packed_ps(dst + i * 3, x, y, z);
+        md_mm256_store_xyz_packed_ps(dst + i * 3, r[0], r[1], r[2]);
     }
 
     return true;

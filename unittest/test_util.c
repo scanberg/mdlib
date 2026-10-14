@@ -2986,6 +2986,84 @@ UTEST(util, interpolate_cubic) {
     }
 }
 
+// Both schemes' weights sum to one and reproduce uniform motion. The cardinal spline lands on the middle frames exactly,
+// through the weighted sum too; the B-spline is short of them by design, at (p0 + 4 p1 + p2) / 6. Across a periodic
+// boundary, orthorhombic or triclinic, the weighted sum takes the frames' images.
+UTEST(util, interpolate_cubic_weights) {
+    for (int i = 0; i <= 16; ++i) {
+        const float t = i / 16.0f;
+        float wc[4], wb[4];
+        md_util_cubic_spline_weights(wc, t, 0.5f);
+        md_util_cubic_bspline_weights(wb, t);
+        EXPECT_NEAR(1.0f, wc[0] + wc[1] + wc[2] + wc[3], 1.0e-6f);
+        EXPECT_NEAR(1.0f, wb[0] + wb[1] + wb[2] + wb[3], 1.0e-6f);
+        // Frames at 0, 1, 2 and 3: the interval between the middle two is at 1 + t
+        EXPECT_NEAR(1.0f + t, wc[1] + 2.0f * wc[2] + 3.0f * wc[3], 1.0e-6f);
+        EXPECT_NEAR(1.0f + t, wb[1] + 2.0f * wb[2] + 3.0f * wb[3], 1.0e-6f);
+    }
+
+    float w[4];
+    md_util_cubic_spline_weights(w, 0.0f, 0.5f);
+    EXPECT_EQ(0.0f, fabsf(w[0]));
+    EXPECT_EQ(1.0f, w[1]);
+    EXPECT_EQ(0.0f, fabsf(w[2]));
+    EXPECT_EQ(0.0f, fabsf(w[3]));
+    md_util_cubic_spline_weights(w, 1.0f, 0.5f);
+    EXPECT_EQ(0.0f, fabsf(w[0]));
+    EXPECT_EQ(0.0f, fabsf(w[1]));
+    EXPECT_EQ(1.0f, w[2]);
+    EXPECT_EQ(0.0f, fabsf(w[3]));
+    md_util_cubic_bspline_weights(w, 0.0f);
+    EXPECT_NEAR(1.0f / 6.0f, w[0], 1.0e-7f);
+    EXPECT_NEAR(4.0f / 6.0f, w[1], 1.0e-7f);
+    EXPECT_NEAR(1.0f / 6.0f, w[2], 1.0e-7f);
+    EXPECT_NEAR(0.0f,        w[3], 1.0e-7f);
+
+    vec3_t f[4][16], out[16];
+    for (int i = 0; i < 16; ++i) {
+        for (int k = 0; k < 4; ++k) {
+            f[k][i] = vec3_set(1.0f * k + i, 2.0f * k * k, -0.5f * k + 0.1f * i);
+        }
+    }
+    const vec3_t* const in[4] = { f[0], f[1], f[2], f[3] };
+
+    md_util_cubic_spline_weights(w, 0.0f, 0.5f);
+    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_EQ(f[1][i].x, out[i].x);
+        EXPECT_EQ(f[1][i].y, out[i].y);
+        EXPECT_EQ(f[1][i].z, out[i].z);
+    }
+
+    md_util_cubic_bspline_weights(w, 0.0f);
+    ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, NULL, w));
+    for (int i = 0; i < 16; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            const float ref = (f[0][i].elem[c] + 4.0f * f[1][i].elem[c] + f[2][i].elem[c]) / 6.0f;
+            EXPECT_NEAR(ref, out[i].elem[c], 1.0e-4f);
+        }
+    }
+
+    // Moving +1 per frame along x, wrapped into a box of 10: 8, 9, 0, 1
+    for (int i = 0; i < 16; ++i) {
+        for (int k = 0; k < 4; ++k) {
+            f[k][i] = vec3_set(fmodf(8.0f + k, 10.0f), 5.0f, 5.0f);
+        }
+    }
+    const md_unitcell_t cells[2] = {
+        md_unitcell_from_extent(10, 10, 10),
+        md_unitcell_from_basis_parameters(10, 10, 10, 2, 0, 0),
+    };
+    for (int c = 0; c < 2; ++c) {
+        md_util_cubic_bspline_weights(w, 0.5f);
+        ASSERT_TRUE(md_util_interpolate_cubic_weighted(out, in, 16, &cells[c], w));
+        for (int i = 0; i < 16; ++i) {
+            EXPECT_NEAR(9.5f, out[i].x, 1.0e-3f);
+            EXPECT_NEAR(5.0f, out[i].y, 1.0e-3f);
+        }
+    }
+}
+
 // The order is a permutation of the atoms, and atoms that share a position end up together.
 UTEST(util, sort_spatial) {
     enum { N = 64 };

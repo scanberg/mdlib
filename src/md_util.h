@@ -338,6 +338,20 @@ bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], 
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
 bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s);
 
+// The weights of four consecutive frames at t (0..1) for a cubic scheme over them, on the interval between the
+// two middle ones: out = w[0] in[0] + w[1] in[1] + w[2] in[2] + w[3] in[3]. They sum to one.
+// Cardinal spline with tangent scale s (0.5 is Catmull-Rom): C1, and passes through in[1] at t = 0 and in[2] at t = 1.
+void md_util_cubic_spline_weights(float out_w[4], float t, float s);
+// Uniform cubic B-spline with the four frames as its control points: C2, and damps frame to frame jitter, but it
+// approximates rather than interpolates: at t = 0 it is (in[0] + 4 in[1] + in[2]) / 6, not in[1].
+void md_util_cubic_bspline_weights(float out_w[4], float t);
+
+// Weighted sum of four consecutive frames of coordinates, out = w[0] in[0] + w[1] in[1] + w[2] in[2] + w[3] in[3]:
+// any cubic scheme over them at a given t (see the weights above). In a periodic cell in[0] and in[2] are taken at
+// the minimum image of in[1], and in[3] at that of in[2].
+// @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
+bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]);
+
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
