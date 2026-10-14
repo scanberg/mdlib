@@ -32,8 +32,6 @@
 
 #define FASTLZ_VERSION_STRING "0.5.0"
 
-#define FASTLZ_USE_MEMMOVE 0
-
 #if defined(__cplusplus)
 extern "C" {
 #endif

@@ -25,14 +25,8 @@
 
 #include <stdint.h>
 
-/*
- * Always check for bound when decompressing.
- * Generally it is best to leave it defined.
- */
-#define FASTLZ_SAFE
-#if defined(FASTLZ_USE_SAFE_DECOMPRESSOR) && (FASTLZ_USE_SAFE_DECOMPRESSOR == 0)
-#undef FASTLZ_SAFE
-#endif
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
 
 /*
  * Give hints to the compiler for branch prediction optimization.
@@ -48,17 +42,15 @@
 /*
  * Specialize custom 64-bit implementation for speed improvements.
  */
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)
 #define FLZ_ARCH64
 #endif
 
-#if defined(FASTLZ_SAFE)
-#define FASTLZ_BOUND_CHECK(cond) \
-  if (FASTLZ_UNLIKELY(!(cond))) return 0;
-#else
-#define FASTLZ_BOUND_CHECK(cond) \
-  do {                           \
-  } while (0)
+/*
+ * Workaround for DJGPP to find uint8_t, uint16_t, etc.
+ */
+#if defined(__MSDOS__) && defined(__GNUC__)
+#include <stdint-gcc.h>
 #endif
 
 #if defined(FASTLZ_USE_MEMMOVE) && (FASTLZ_USE_MEMMOVE == 0)
@@ -70,7 +62,7 @@ static void fastlz_memmove(uint8_t* dest, const uint8_t* src, uint32_t count) {
 }
 
 static void fastlz_memcpy(uint8_t* dest, const uint8_t* src, uint32_t count) {
-  fastlz_memmove(dest, src, count);
+  return fastlz_memmove(dest, src, count);
 }
 
 #else
@@ -107,15 +99,9 @@ static void fastlz_memcpy(uint8_t* dest, const uint8_t* src, uint32_t count) { m
 
 static uint32_t flz_readu32(const void* ptr) { return *(const uint32_t*)ptr; }
 
-static uint64_t flz_readu64(const void* ptr) { return *(const uint64_t*)ptr; }
-
 static uint32_t flz_cmp(const uint8_t* p, const uint8_t* q, const uint8_t* r) {
   const uint8_t* start = p;
 
-  if (flz_readu64(p) == flz_readu64(q)) {
-    p += 8;
-    q += 8;
-  }
   if (flz_readu32(p) == flz_readu32(q)) {
     p += 4;
     q += 4;
@@ -123,31 +109,6 @@ static uint32_t flz_cmp(const uint8_t* p, const uint8_t* q, const uint8_t* r) {
   while (q < r)
     if (*p++ != *q++) break;
   return p - start;
-}
-
-static void flz_copy64(uint8_t* dest, const uint8_t* src, uint32_t count) {
-  const uint64_t* p = (const uint64_t*)src;
-  uint64_t* q = (uint64_t*)dest;
-  if (count < 16) {
-    if (count >= 8) {
-      *q++ = *p++;
-    }
-    *q++ = *p++;
-  } else {
-    *q++ = *p++;
-    *q++ = *p++;
-    *q++ = *p++;
-    *q++ = *p++;
-  }
-}
-
-static void flz_copy256(void* dest, const void* src) {
-  const uint64_t* p = (const uint64_t*)src;
-  uint64_t* q = (uint64_t*)dest;
-  *q++ = *p++;
-  *q++ = *p++;
-  *q++ = *p++;
-  *q++ = *p++;
 }
 
 #endif /* FLZ_ARCH64 */
@@ -166,24 +127,6 @@ static uint32_t flz_cmp(const uint8_t* p, const uint8_t* q, const uint8_t* r) {
   return p - start;
 }
 
-static void flz_copy64(uint8_t* dest, const uint8_t* src, uint32_t count) {
-  const uint8_t* p = (const uint8_t*)src;
-  uint8_t* q = (uint8_t*)dest;
-  int c;
-  for (c = 0; c < count * 8; ++c) {
-    *q++ = *p++;
-  }
-}
-
-static void flz_copy256(void* dest, const void* src) {
-  const uint8_t* p = (const uint8_t*)src;
-  uint8_t* q = (uint8_t*)dest;
-  int c;
-  for (c = 0; c < 32; ++c) {
-    *q++ = *p++;
-  }
-}
-
 #endif /* !FLZ_ARCH64 */
 
 #define MAX_COPY 32
@@ -192,7 +135,7 @@ static void flz_copy256(void* dest, const void* src) {
 #define MAX_L2_DISTANCE 8191
 #define MAX_FARDISTANCE (65535 + MAX_L2_DISTANCE - 1)
 
-#define HASH_LOG 14
+#define HASH_LOG 13
 #define HASH_SIZE (1 << HASH_LOG)
 #define HASH_MASK (HASH_SIZE - 1)
 
@@ -201,43 +144,45 @@ static uint16_t flz_hash(uint32_t v) {
   return h & HASH_MASK;
 }
 
-static uint8_t* flz_literals(uint32_t runs, const uint8_t* src, uint8_t* dest) {
-  while (runs >= MAX_COPY) {
-    *dest++ = MAX_COPY - 1;
-    flz_copy256(dest, src);
-    src += MAX_COPY;
-    dest += MAX_COPY;
-    runs -= MAX_COPY;
-  }
-  if (runs > 0) {
-    *dest++ = runs - 1;
-    flz_copy64(dest, src, runs);
-    dest += runs;
-  }
-  return dest;
-}
-
-/* special case of memcpy: at most 32 bytes */
+/* special case of memcpy: at most MAX_COPY bytes */
 static void flz_smallcopy(uint8_t* dest, const uint8_t* src, uint32_t count) {
 #if defined(FLZ_ARCH64)
-  if (count >= 8) {
-    const uint64_t* p = (const uint64_t*)src;
-    uint64_t* q = (uint64_t*)dest;
-    while (count > 8) {
+  if (count >= 4) {
+    const uint32_t* p = (const uint32_t*)src;
+    uint32_t* q = (uint32_t*)dest;
+    while (count > 4) {
       *q++ = *p++;
-      count -= 8;
-      dest += 8;
-      src += 8;
+      count -= 4;
+      dest += 4;
+      src += 4;
     }
   }
 #endif
   fastlz_memcpy(dest, src, count);
 }
 
-static uint8_t* flz_finalize(uint32_t runs, const uint8_t* src, uint8_t* dest) {
+/* special case of memcpy: exactly MAX_COPY bytes */
+static void flz_maxcopy(void* dest, const void* src) {
+#if defined(FLZ_ARCH64)
+  const uint32_t* p = (const uint32_t*)src;
+  uint32_t* q = (uint32_t*)dest;
+  *q++ = *p++;
+  *q++ = *p++;
+  *q++ = *p++;
+  *q++ = *p++;
+  *q++ = *p++;
+  *q++ = *p++;
+  *q++ = *p++;
+  *q++ = *p++;
+#else
+  fastlz_memcpy(dest, src, MAX_COPY);
+#endif
+}
+
+static uint8_t* flz_literals(uint32_t runs, const uint8_t* src, uint8_t* dest) {
   while (runs >= MAX_COPY) {
     *dest++ = MAX_COPY - 1;
-    flz_smallcopy(dest, src, MAX_COPY);
+    flz_maxcopy(dest, src);
     src += MAX_COPY;
     dest += MAX_COPY;
     runs -= MAX_COPY;
@@ -270,7 +215,10 @@ static uint8_t* flz1_match(uint32_t len, uint32_t distance, uint8_t* op) {
   return op;
 }
 
-int fastlz1_compress(const void* input, int length, void* output) {
+#define FASTLZ_BOUND_CHECK(cond) \
+  if (FASTLZ_UNLIKELY(!(cond))) return 0;
+
+static int fastlz1_compress(const void* input, int length, void* output) {
   const uint8_t* ip = (const uint8_t*)input;
   const uint8_t* ip_start = ip;
   const uint8_t* ip_bound = ip + length - 4; /* because readU32 */
@@ -327,12 +275,12 @@ int fastlz1_compress(const void* input, int length, void* output) {
   }
 
   uint32_t copy = (uint8_t*)input + length - anchor;
-  op = flz_finalize(copy, anchor, op);
+  op = flz_literals(copy, anchor, op);
 
   return op - (uint8_t*)output;
 }
 
-int fastlz1_decompress(const void* input, int length, void* output, int maxout) {
+static int fastlz1_decompress(const void* input, int length, void* output, int maxout) {
   const uint8_t* ip = (const uint8_t*)input;
   const uint8_t* ip_limit = ip + length;
   const uint8_t* ip_bound = ip_limit - 2;
@@ -404,7 +352,7 @@ static uint8_t* flz2_match(uint32_t len, uint32_t distance, uint8_t* op) {
   return op;
 }
 
-int fastlz2_compress(const void* input, int length, void* output) {
+static int fastlz2_compress(const void* input, int length, void* output) {
   const uint8_t* ip = (const uint8_t*)input;
   const uint8_t* ip_start = ip;
   const uint8_t* ip_bound = ip + length - 4; /* because readU32 */
@@ -470,7 +418,7 @@ int fastlz2_compress(const void* input, int length, void* output) {
   }
 
   uint32_t copy = (uint8_t*)input + length - anchor;
-  op = flz_finalize(copy, anchor, op);
+  op = flz_literals(copy, anchor, op);
 
   /* marker for fastlz2 */
   *(uint8_t*)output |= (1 << 5);
@@ -478,7 +426,7 @@ int fastlz2_compress(const void* input, int length, void* output) {
   return op - (uint8_t*)output;
 }
 
-int fastlz2_decompress(const void* input, int length, void* output, int maxout) {
+static int fastlz2_decompress(const void* input, int length, void* output, int maxout) {
   const uint8_t* ip = (const uint8_t*)input;
   const uint8_t* ip_limit = ip + length;
   const uint8_t* ip_bound = ip_limit - 2;
@@ -556,3 +504,5 @@ int fastlz_compress_level(int level, const void* input, int length, void* output
 
   return 0;
 }
+
+#pragma GCC diagnostic pop
