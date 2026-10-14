@@ -1840,13 +1840,76 @@ UTEST(gpu, sync_on_complete) {
    and waited on a fence, and pool and kernel destruction idled the device.
    ========================================================================= */
 
-/* Launch enough spin work to keep `s` busy for a while. Returns its sync. */
+/* Launch spin work that keeps `s` busy. Returns its sync. */
 static md_gpu_sync_t gpu_keep_busy(gpu_fixture_t* f, md_gpu_stream_t s, md_gpu_addr_t scratch, uint32_t n, uint32_t iters) {
     spin_args_t sa = {0};
     sa.n = n; sa.iters = iters; sa.dst = scratch;
     for (int i = 0; i < 8; ++i) md_gpu_launch(s, f->k_spin, grid1(f->k_spin, n), &sa, sizeof(sa));
     return md_gpu_stream_record(s);
 }
+
+/* The spin count that keeps `s` busy for about `target_ms` on this device.
+
+   A fixed count is milliseconds on one device and seconds on another (the old
+   200000 took ~5 s on one Lavapipe setup), and the test below is only as good
+   as the margin between the job and the calls racing it: a call that is
+   merely slow (buffer creation on a paravirtual GPU, say) must not read as
+   one that waited.
+
+   Doubles a probe until its fixed submit-and-wait cost is small next to it,
+   then scales linearly. What fixed cost remains makes the estimate err short,
+   never long. Probing costs at most about a quarter of the target. */
+static uint32_t gpu_busy_iters(gpu_fixture_t* f, md_gpu_stream_t s, md_gpu_addr_t scratch, uint32_t n, double target_ms) {
+    uint32_t probe_iters = 1000;
+    double   probe_ms    = 0.0;
+    for (;;) {
+        const md_tick_t t0 = md_tick_now();
+        md_gpu_sync_wait(gpu_keep_busy(f, s, scratch, n, probe_iters));
+        probe_ms = md_tick_to_milliseconds(md_tick_now() - t0);
+        if (probe_ms >= target_ms / 16.0 || probe_iters >= (1u << 26)) break;
+        probe_iters *= 2;
+    }
+    double scale = target_ms / (probe_ms > 0.01 ? probe_ms : 0.01);
+    if (scale > 64.0) scale = 64.0;   /* a probe that measured nothing must not ask for minutes */
+    const uint32_t iters = (uint32_t)(probe_iters * scale);
+    return iters > 0 ? iters : 1;
+}
+
+/* The long job a test races against, and whether its end is already reported. */
+typedef struct {
+    double        target_ms;
+    md_tick_t     submitted;
+    md_gpu_sync_t job;
+    bool          reported;
+} gpu_busy_watch_t;
+
+/* Run the statement, then expect the job to have outlived it.
+
+   Only the call during which the job is first seen finished is reported --
+   every check after it would fail too and say nothing new. The message tells
+   the two causes apart: a call that waited for the job took about as long as
+   the job had been running; a call that is merely slow took a small part of
+   it, and the job simply ran out, which means raise the target, not hunt for
+   a bug. */
+#define GPU_EXPECT_NO_WAIT(w, ...)                                                             \
+    do {                                                                                       \
+        const md_tick_t t0_ = md_tick_now();                                                   \
+        __VA_ARGS__;                                                                           \
+        const md_tick_t t1_ = md_tick_now();                                                   \
+        if (!(w).reported) {                                                                   \
+            const bool done_ = md_gpu_sync_is_complete((w).job);                               \
+            char msg_[512] = "";                                                               \
+            if (done_) {                                                                       \
+                snprintf(msg_, sizeof(msg_),                                                   \
+                         "the long job (aimed at %.0f ms) finished during `%s`, which took "   \
+                         "%.2f ms and returned %.2f ms after the job was submitted",           \
+                         (w).target_ms, #__VA_ARGS__, md_tick_to_milliseconds(t1_ - t0_),      \
+                         md_tick_to_milliseconds(t1_ - (w).submitted));                        \
+                (w).reported = true;                                                           \
+            }                                                                                  \
+            EXPECT_FALSE_MSG(done_, msg_);                                                     \
+        }                                                                                      \
+    } while (0)
 
 UTEST(gpu, object_lifetime_calls_do_not_wait_for_other_streams) {
     gpu_fixture_t f;
@@ -1875,40 +1938,49 @@ UTEST(gpu, object_lifetime_calls_do_not_wait_for_other_streams) {
     ASSERT_TRUE(old_tex && old_kernel);
     md_gpu_stream_sync(f.compute);
 
-    md_gpu_sync_t job = gpu_keep_busy(&f, busy, scratch, N, 200000);
-    if (md_gpu_sync_is_complete(job)) {
+    /* Far longer than anything below should take without waiting for it, on
+       any device -- the margin is what makes "the job finished" mean "a call
+       waited" rather than "a call was slow". */
+    gpu_busy_watch_t w = {0};
+    w.target_ms = 500.0;
+    const uint32_t iters = gpu_busy_iters(&f, busy, scratch, N, w.target_ms);
+    w.submitted = md_tick_now();
+    w.job = gpu_keep_busy(&f, busy, scratch, N, iters);
+    if (md_gpu_sync_is_complete(w.job)) {
         md_gpu_stream_destroy(busy);
         gpu_close(&f);
         UTEST_SKIP("the long-running job finished too quickly for this test to mean anything");
     }
 
     /* Everything below happens on other streams, or on none. */
-    md_gpu_texture_destroy(old_tex);
-    md_gpu_kernel_destroy(old_kernel);
-    md_gpu_addr_t small = md_gpu_malloc(f.compute, MD_GPU_MEM_DEVICE, 1 << 20).gpu;
-    md_gpu_addr_t large = md_gpu_malloc(f.compute, MD_GPU_MEM_DEVICE, 96u << 20).gpu;   /* a new chunk */
+    md_gpu_addr_t small = 0, large = 0;
+    md_gpu_temp_t frame = {0};
+    void* temp = NULL;
+    GPU_EXPECT_NO_WAIT(w, md_gpu_texture_destroy(old_tex));
+    GPU_EXPECT_NO_WAIT(w, md_gpu_kernel_destroy(old_kernel));
+    GPU_EXPECT_NO_WAIT(w, small = md_gpu_malloc(f.compute, MD_GPU_MEM_DEVICE, 1 << 20).gpu);
+    GPU_EXPECT_NO_WAIT(w, large = md_gpu_malloc(f.compute, MD_GPU_MEM_DEVICE, 96u << 20).gpu);   /* a new chunk */
     ASSERT_TRUE(small && large);
-    md_gpu_free(f.compute, small);
-    md_gpu_free(f.compute, large);
-    md_gpu_temp_t frame = md_gpu_temp_begin(f.compute);
-    ASSERT_TRUE(md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_WRITE, 1 << 20).cpu != NULL);
-    md_gpu_temp_end(f.compute, frame);
-    md_gpu_device_poll(f.dev);
-
-    /* If any of those had waited for the device, the job would be done. */
-    EXPECT_FALSE(md_gpu_sync_is_complete(job));
+    GPU_EXPECT_NO_WAIT(w, md_gpu_free(f.compute, small));
+    GPU_EXPECT_NO_WAIT(w, md_gpu_free(f.compute, large));
+    GPU_EXPECT_NO_WAIT(w, frame = md_gpu_temp_begin(f.compute));
+    GPU_EXPECT_NO_WAIT(w, temp = md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_WRITE, 1 << 20).cpu);
+    ASSERT_TRUE(temp != NULL);
+    GPU_EXPECT_NO_WAIT(w, md_gpu_temp_end(f.compute, frame));
+    GPU_EXPECT_NO_WAIT(w, md_gpu_device_poll(f.dev));
 
     if (!software) {
-        md_gpu_texture_t tex = md_gpu_texture_create(f.compute, &td);
+        md_gpu_texture_t tex = NULL;
+        md_gpu_kernel_t k = NULL;
+        GPU_EXPECT_NO_WAIT(w, tex = md_gpu_texture_create(f.compute, &td));
         ASSERT_TRUE(tex != NULL);
-        md_gpu_kernel_t k = md_gpu_kernel_create(f.dev, &kd);
+        GPU_EXPECT_NO_WAIT(w, k = md_gpu_kernel_create(f.dev, &kd));
         ASSERT_TRUE(k != NULL);
-        EXPECT_FALSE(md_gpu_sync_is_complete(job));
-        md_gpu_kernel_destroy(k);
-        md_gpu_texture_destroy(tex);
+        GPU_EXPECT_NO_WAIT(w, md_gpu_kernel_destroy(k));
+        GPU_EXPECT_NO_WAIT(w, md_gpu_texture_destroy(tex));
     }
 
-    md_gpu_sync_wait(job);
+    md_gpu_sync_wait(w.job);
     md_gpu_device_poll(f.dev);
     md_gpu_free(busy, scratch);
     md_gpu_stream_destroy(busy);
