@@ -61,7 +61,8 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 //   md_*_rsqrt_ps            one Newton-Raphson step on the 8 bit estimate of NEON, so it is at least as
 //                            accurate as the 12 bit estimate of x86 (which callers refine further).
 //   md_mm256_movemask_ps     the two halves of the 128 bit form.
-//   md_*_fmsub_*, fnmsub_*   fused, as on x86 (simde multiplies and subtracts, which may or may not fuse).
+//   md_*_fnmadd_*, fmsub_*,  fused, as on x86 (simde multiplies and subtracts in places, which the compiler
+//   fnmsub_*                 may or may not fuse: MSVC does not).
 #if defined(SIMDE_ARM_NEON_A64V8_NATIVE)
 #define MD_SIMD_NEON 1
 #endif
@@ -326,14 +327,20 @@ static const uint64_t avx_compress_lut[256] = {
 #define md_mm256_fmadd_ps simde_mm256_fmadd_ps
 #define md_mm256_fmadd_pd simde_mm256_fmadd_pd
 
-#define md_mm_fnmadd_ps simde_mm_fnmadd_ps
-#define md_mm_fnmadd_pd simde_mm_fnmadd_pd
-#define md_mm256_fnmadd_ps simde_mm256_fnmadd_ps
-#define md_mm256_fnmadd_pd simde_mm256_fnmadd_pd
-
 #if defined(MD_SIMD_NEON)
 // simde composes these from a multiply and a subtract on NEON, which the compiler may or may not fuse: one rounding
-// here as on x86. a * b - c, and -(a * b) - c.
+// here as on x86. -(a * b) + c, a * b - c, and -(a * b) - c. For fnmadd simde has the fused instruction at four lanes
+// but builds the eight lane float form from scalar code, which clang contracts and MSVC does not.
+MD_SIMD_INLINE md_128  md_mm_fnmadd_ps(md_128 a, md_128 b, md_128 c)    { return MD_FROM_F32(vfmsq_f32(MD_NEON_F32(c), MD_NEON_F32(a), MD_NEON_F32(b))); }
+MD_SIMD_INLINE md_128d md_mm_fnmadd_pd(md_128d a, md_128d b, md_128d c) { return MD_FROM_F64(vfmsq_f64(MD_NEON_F64(c), MD_NEON_F64(a), MD_NEON_F64(b))); }
+MD_SIMD_INLINE md_256  md_mm256_fnmadd_ps(md_256 a, md_256 b, md_256 c) {
+    return simde_mm256_set_m128(md_mm_fnmadd_ps(simde_mm256_extractf128_ps(a, 1), simde_mm256_extractf128_ps(b, 1), simde_mm256_extractf128_ps(c, 1)),
+                                md_mm_fnmadd_ps(simde_mm256_castps256_ps128(a), simde_mm256_castps256_ps128(b), simde_mm256_castps256_ps128(c)));
+}
+MD_SIMD_INLINE md_256d md_mm256_fnmadd_pd(md_256d a, md_256d b, md_256d c) {
+    return simde_mm256_set_m128d(md_mm_fnmadd_pd(simde_mm256_extractf128_pd(a, 1), simde_mm256_extractf128_pd(b, 1), simde_mm256_extractf128_pd(c, 1)),
+                                 md_mm_fnmadd_pd(simde_mm256_castpd256_pd128(a), simde_mm256_castpd256_pd128(b), simde_mm256_castpd256_pd128(c)));
+}
 MD_SIMD_INLINE md_128  md_mm_fmsub_ps(md_128 a, md_128 b, md_128 c)     { return MD_FROM_F32(vfmaq_f32(vnegq_f32(MD_NEON_F32(c)), MD_NEON_F32(a), MD_NEON_F32(b))); }
 MD_SIMD_INLINE md_128d md_mm_fmsub_pd(md_128d a, md_128d b, md_128d c)  { return MD_FROM_F64(vfmaq_f64(vnegq_f64(MD_NEON_F64(c)), MD_NEON_F64(a), MD_NEON_F64(b))); }
 MD_SIMD_INLINE md_128  md_mm_fnmsub_ps(md_128 a, md_128 b, md_128 c)    { return MD_FROM_F32(vfmsq_f32(vnegq_f32(MD_NEON_F32(c)), MD_NEON_F32(a), MD_NEON_F32(b))); }
@@ -355,6 +362,11 @@ MD_SIMD_INLINE md_256d md_mm256_fnmsub_pd(md_256d a, md_256d b, md_256d c) {
                                  md_mm_fnmsub_pd(simde_mm256_castpd256_pd128(a), simde_mm256_castpd256_pd128(b), simde_mm256_castpd256_pd128(c)));
 }
 #else
+#define md_mm_fnmadd_ps simde_mm_fnmadd_ps
+#define md_mm_fnmadd_pd simde_mm_fnmadd_pd
+#define md_mm256_fnmadd_ps simde_mm256_fnmadd_ps
+#define md_mm256_fnmadd_pd simde_mm256_fnmadd_pd
+
 #define md_mm_fmsub_ps simde_mm_fmsub_ps
 #define md_mm_fmsub_pd simde_mm_fmsub_pd
 #define md_mm256_fmsub_ps simde_mm256_fmsub_ps
