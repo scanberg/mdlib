@@ -1122,7 +1122,7 @@ static inline md_256 simd_deperiodize_ortho(md_256 x, md_256 r, md_256 period, m
     md_256 dx = md_mm256_mul_ps(d, inv_period);
     dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
     md_256 x_prim = md_mm256_add_ps(r, md_mm256_mul_ps(dx, period));
-    return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(period, md_mm256_setzero_ps()));
+    return md_mm256_select_ps(x_prim, x, md_mm256_cmpeq_ps(period, md_mm256_setzero_ps()));
 }
 
 // PACKED XYZ, COMPONENT WISE
@@ -1171,7 +1171,7 @@ static inline md_xv xv_deperiodize_ortho(md_xv x, md_xv r, md_xv period, md_xv i
     md_xv d = md_xv_mul_ps(md_xv_sub_ps(x, r), inv_period);
     d = md_xv_sub_ps(d, md_xv_round_ps(d));
     const md_xv p = md_xv_fmadd_ps(d, period, r);
-    return md_xv_blendv_ps(p, x, md_xv_cmpeq_ps(period, md_xv_setzero_ps()));
+    return md_xv_select_ps(p, x, md_xv_cmpeq_ps(period, md_xv_setzero_ps()));
 }
 
 // Atoms to step over before packed coordinates at p are aligned to the given boundary, so every load
@@ -1650,10 +1650,10 @@ static inline void simd_minimum_image_triclinic(md_256 dx[3], const float box[3]
                 rz[2] = md_mm256_add_ps(dx[2], md_mm256_mul_ps(md_mm256_set1_ps(box[2][2]), fiz));
                 dsq = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(rz[0], rz[0]), md_mm256_mul_ps(rz[1], rz[1])), md_mm256_mul_ps(rz[2], rz[2]));
                 md_256 mask = md_mm256_cmplt_ps(dsq, dsq_min);
-                dsq_min = md_mm256_blendv_ps(dsq_min, dsq, mask);
-                dx_min[0] = md_mm256_blendv_ps(dx_min[0], rz[0], mask);
-                dx_min[1] = md_mm256_blendv_ps(dx_min[1], rz[1], mask);
-                dx_min[2] = md_mm256_blendv_ps(dx_min[2], rz[2], mask);
+                dsq_min = md_mm256_select_ps(dsq_min, dsq, mask);
+                dx_min[0] = md_mm256_select_ps(dx_min[0], rz[0], mask);
+                dx_min[1] = md_mm256_select_ps(dx_min[1], rz[1], mask);
+                dx_min[2] = md_mm256_select_ps(dx_min[2], rz[2], mask);
             }
         }
     }
@@ -9237,7 +9237,7 @@ static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t 
                 md_xv d = md_xv_mul_ps(md_xv_sub_ps(v, v_ref[j]), v_inv[j]);
                 d = md_xv_sub_ps(d, md_xv_round_ps(d));
                 const md_xv p = md_xv_fmadd_ps(d, v_ext[j], v_ref[j]);
-                md_xv_storeu_ps(f + i * 3 + j * MD_XV_WIDTH, md_xv_blendv_ps(p, v, v_keep[j]));
+                md_xv_storeu_ps(f + i * 3 + j * MD_XV_WIDTH, md_xv_select_ps(p, v, v_keep[j]));
             }
         }
     }

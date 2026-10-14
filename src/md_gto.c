@@ -2188,10 +2188,10 @@ static inline md_128 md_mm_fast_pow(md_128 base1, md_128i exp) {
     md_128 mask4 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(4)));
 
     md_128 res = md_mm_set1_ps(1.0f);
-    res = md_mm_blendv_ps(res, base1, mask1);
-    res = md_mm_blendv_ps(res, base2, mask2);
-    res = md_mm_blendv_ps(res, base3, mask3);
-    res = md_mm_blendv_ps(res, base4, mask4);
+    res = md_mm_select_ps(res, base1, mask1);
+    res = md_mm_select_ps(res, base2, mask2);
+    res = md_mm_select_ps(res, base3, mask3);
+    res = md_mm_select_ps(res, base4, mask4);
     return res;
 }
 
@@ -2206,10 +2206,10 @@ static inline md_256 md_mm256_fast_pow(md_256 base1, md_256i exp) {
     md_256 mask4 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(4)));
 
     md_256 res = md_mm256_set1_ps(1.0f);
-    res = md_mm256_blendv_ps(res, base1, mask1);
-    res = md_mm256_blendv_ps(res, base2, mask2);
-    res = md_mm256_blendv_ps(res, base3, mask3);
-    res = md_mm256_blendv_ps(res, base4, mask4);
+    res = md_mm256_select_ps(res, base1, mask1);
+    res = md_mm256_select_ps(res, base2, mask2);
+    res = md_mm256_select_ps(res, base3, mask3);
+    res = md_mm256_select_ps(res, base4, mask4);
     return res;
 }
 
