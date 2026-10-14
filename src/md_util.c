@@ -1118,10 +1118,10 @@ static md_256 simd_min_image_tric(md_256 dx, md_256 dy, md_256 dz, const float b
 }
 
 static inline md_256 simd_deperiodize_ortho(md_256 x, md_256 r, md_256 period, md_256 inv_period) {
-    md_256 d = md_mm256_sub_ps(x, r);
-    md_256 dx = md_mm256_mul_ps(d, inv_period);
+    // As md_mm256_deperiodize2_ps: d from a fused multiply-subtract, see the deperiodize comment in md_simd.h
+    md_256 dx = md_mm256_fmsub_ps(x, inv_period, md_mm256_mul_ps(r, inv_period));
     dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
-    md_256 x_prim = md_mm256_add_ps(r, md_mm256_mul_ps(dx, period));
+    md_256 x_prim = md_mm256_fmadd_ps(dx, period, r);
     return md_mm256_select_ps(x_prim, x, md_mm256_cmpeq_ps(period, md_mm256_setzero_ps()));
 }
 
@@ -1166,9 +1166,10 @@ static inline void xyz_lane_reduce_add(double out[3], const md_xv v[XYZ_GROUP_VE
     for (int p = 0; p < 24; ++p) out[p % 3] += t[p];
 }
 
-// x brought to the image nearest r, lane by lane; a lane with no period (zero) is left alone
+// x brought to the image nearest r, lane by lane; a lane with no period (zero) is left alone. As
+// md_mm256_deperiodize2_ps: d from a fused multiply-subtract, see the deperiodize comment in md_simd.h.
 static inline md_xv xv_deperiodize_ortho(md_xv x, md_xv r, md_xv period, md_xv inv_period) {
-    md_xv d = md_xv_mul_ps(md_xv_sub_ps(x, r), inv_period);
+    md_xv d = md_xv_fmsub_ps(x, inv_period, md_xv_mul_ps(r, inv_period));
     d = md_xv_sub_ps(d, md_xv_round_ps(d));
     const md_xv p = md_xv_fmadd_ps(d, period, r);
     return md_xv_select_ps(p, x, md_xv_cmpeq_ps(period, md_xv_setzero_ps()));
@@ -9217,12 +9218,13 @@ static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t 
 
     size_t i = 0;
     if (!indices) {
-        md_xv v_ext[XYZ_GROUP_VECS], v_inv[XYZ_GROUP_VECS], v_ref[XYZ_GROUP_VECS], v_keep[XYZ_GROUP_VECS];
+        md_xv v_ext[XYZ_GROUP_VECS], v_inv[XYZ_GROUP_VECS], v_ref[XYZ_GROUP_VECS], v_refi[XYZ_GROUP_VECS], v_keep[XYZ_GROUP_VECS];
         xyz_lane_pattern(v_ext, ext.x, ext.y, ext.z);
         xyz_lane_pattern(v_inv, ext.x > 0 ? 1.0f / ext.x : 0.0f, ext.y > 0 ? 1.0f / ext.y : 0.0f, ext.z > 0 ? 1.0f / ext.z : 0.0f);
         xyz_lane_pattern(v_ref, ref.x, ref.y, ref.z);
         for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
             v_keep[j] = md_xv_cmpeq_ps(v_ext[j], md_xv_setzero_ps());
+            v_refi[j] = md_xv_mul_ps(v_ref[j], v_inv[j]);
         }
 
         // Scalar up to alignment, then eight atoms at a time
@@ -9234,7 +9236,8 @@ static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t 
         for (; i + 8 <= count; i += 8) {
             for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
                 const md_xv v = md_xv_loadu_ps(f + i * 3 + j * MD_XV_WIDTH);
-                md_xv d = md_xv_mul_ps(md_xv_sub_ps(v, v_ref[j]), v_inv[j]);
+                // Into [0, ext]: d from a fused multiply-subtract, see the deperiodize comment in md_simd.h
+                md_xv d = md_xv_fmsub_ps(v, v_inv[j], v_refi[j]);
                 d = md_xv_sub_ps(d, md_xv_round_ps(d));
                 const md_xv p = md_xv_fmadd_ps(d, v_ext[j], v_ref[j]);
                 md_xv_storeu_ps(f + i * 3 + j * MD_XV_WIDTH, md_xv_select_ps(p, v, v_keep[j]));
