@@ -2,6 +2,7 @@
 
 #include <md_system.h>
 #include <md_chem.h>
+#include <md_dssp.h>
 
 #include <core/md_coord_stream.h>
 #include <core/md_compiler.h>
@@ -15,7 +16,6 @@
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_bitset.h>
-#include <core/md_str_builder.h>
 #include <core/md_os.h>
 #include <core/md_hash.h>
 #include <core/md_fifo.h>
@@ -554,10 +554,15 @@ static const char* amino_acids[] = {
     "MSE", "SEP", "TPO", "PTR",
 
     // Charmm
-    "HSD", "HSP", "LSN", "ASPP", "GLUP",
+    "HSD", "HSE", "HSP", "LSN", "ASPP", "GLUP",
 
     // Amber
     "HID", "HIE", "HIP", "LYN", "ASH", "GLH",
+
+    // Martini: the neutral Arg, Asp, Glu, Lys and the charged His of Martini 2 (HISH is GROMOS's too) and of Martini 3
+    // beta (HIH), and the lipidated residues of Martini 3: farnesyl, geranylgeranyl and palmitoyl Cys, myristoyl Gly
+    "ARG0", "ASP0", "GLU0", "LYS0", "HISH", "HIH",
+    "CYSF", "CYSG", "CYSP", "GLYM",
 };
 
 #if 0
@@ -667,144 +672,331 @@ static void sort_arr(int* arr, int n) {
     }
 }
 
-static inline void radix_pass_8(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[256][4], int pass) {
-    int bitoff = pass * 8;
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t id = (src[i] >> bitoff) & 255;
-        dst[hist[id][pass]++] = src[i];
+// ### RADIX SORT ###
+
+// Least significant digit first, 8 bits a digit. The histograms of every digit come from one read of the keys, and a pass
+// whose digit all keys share would leave the order as it is, so it is skipped: keys with constant upper bytes (indices,
+// pairs of them packed) take only the passes they need. Up to RADIX_SMALL_COUNT keys an insertion sort is faster than
+// the histograms, and keys already in order are left as they are.
+//
+// The histograms have a row per bucket and a column per digit, so the prefix sums of every digit are one vector sum per
+// row. The argsorts move each key together with its index, packed in one value, so a pass reads them in order and writes
+// one stream per bucket, rather than looking up the key of each index.
+
+#define RADIX_SMALL_COUNT 64
+
+static void insertion_sort_u32(uint32_t* data, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        const uint32_t k = data[i];
+        size_t j = i;
+        while (j > 0 && data[j - 1] > k) {
+            data[j] = data[j - 1];
+            --j;
+        }
+        data[j] = k;
     }
 }
 
-static void sort_radix_inplace_uint32(uint32_t* data, size_t count, uint32_t* temp) {
-    // Histograms for each pass
-    uint32_t hist[256][4] = {0};
-
-    // Populate histogram
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t id = data[i];
-        hist[(id >> 0)  & 255][0]++;
-        hist[(id >> 8)  & 255][1]++;
-        hist[(id >> 16) & 255][2]++;
-        hist[(id >> 24) & 255][3]++;
+static void insertion_sort_u64(uint64_t* data, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        const uint64_t k = data[i];
+        size_t j = i;
+        while (j > 0 && data[j - 1] > k) {
+            data[j] = data[j - 1];
+            --j;
+        }
+        data[j] = k;
     }
+}
 
-    // Prefix sum
+// The key above the index: the values are unique, in the order of a stable sort
+static void insertion_argsort_u32(uint32_t* out_indices, const uint32_t* keys, size_t count) {
+    ASSERT(count <= RADIX_SMALL_COUNT);
+    uint64_t v[RADIX_SMALL_COUNT];
+    for (size_t i = 0; i < count; ++i) {
+        v[i] = ((uint64_t)keys[i] << 32) | i;
+    }
+    insertion_sort_u64(v, count);
+    for (size_t i = 0; i < count; ++i) {
+        out_indices[i] = (uint32_t)v[i];
+    }
+}
+
+static void insertion_argsort_u64(uint32_t* out_indices, const uint64_t* keys, size_t count) {
+    ASSERT(count <= RADIX_SMALL_COUNT);
+    uint64_t k[RADIX_SMALL_COUNT];
+    for (size_t i = 0; i < count; ++i) {
+        const uint64_t key = keys[i];
+        size_t j = i;
+        // Only past greater keys: equal keys keep their order
+        while (j > 0 && k[j - 1] > key) {
+            k[j] = k[j - 1];
+            out_indices[j] = out_indices[j - 1];
+            --j;
+        }
+        k[j] = key;
+        out_indices[j] = (uint32_t)i;
+    }
+}
+
+static bool is_sorted_u32(const uint32_t* data, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        if (data[i] < data[i - 1]) return false;
+    }
+    return true;
+}
+
+static bool is_sorted_u64(const uint64_t* data, size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        if (data[i] < data[i - 1]) return false;
+    }
+    return true;
+}
+
+static void radix_hist_u32(uint32_t hist[256][4], const uint32_t* keys, size_t count) {
+    MEMSET(hist, 0, sizeof(uint32_t) * 256 * 4);
+    for (size_t i = 0; i < count; ++i) {
+        const uint32_t k = keys[i];
+        hist[(k >>  0) & 255][0]++;
+        hist[(k >>  8) & 255][1]++;
+        hist[(k >> 16) & 255][2]++;
+        hist[(k >> 24) & 255][3]++;
+    }
+}
+
+static void radix_hist_u64(uint32_t hist[256][8], const uint64_t* keys, size_t count) {
+    MEMSET(hist, 0, sizeof(uint32_t) * 256 * 8);
+    for (size_t i = 0; i < count; ++i) {
+        const uint64_t k = keys[i];
+        hist[(k >>  0) & 255][0]++;
+        hist[(k >>  8) & 255][1]++;
+        hist[(k >> 16) & 255][2]++;
+        hist[(k >> 24) & 255][3]++;
+        hist[(k >> 32) & 255][4]++;
+        hist[(k >> 40) & 255][5]++;
+        hist[(k >> 48) & 255][6]++;
+        hist[(k >> 56) & 255][7]++;
+    }
+}
+
+// The digits whose pass reorders anything, then the counts turned into the offsets of the buckets. Any key tells whether
+// a digit is shared by all: then its bucket holds every key.
+static int radix_offsets_u32(int passes[4], uint32_t hist[256][4], uint32_t any_key, size_t count) {
+    int num_passes = 0;
+    for (int p = 0; p < 4; ++p) {
+        if (hist[(any_key >> (p * 8)) & 255][p] != count) passes[num_passes++] = p;
+    }
     md_128i sum = md_mm_setzero_si128();
     for (size_t i = 0; i < 256; ++i) {
-        md_128i val = md_mm_loadu_si128(hist[i]);
+        const md_128i c = md_mm_loadu_si128(hist[i]);
         md_mm_storeu_si128(hist[i], sum);
-        sum = md_mm_add_epi32(sum, val);
+        sum = md_mm_add_epi32(sum, c);
     }
-
-    // 4-pass 8-bit radix sort
-    radix_pass_8(temp, data, count, hist, 0);
-    radix_pass_8(data, temp, count, hist, 1);
-    radix_pass_8(temp, data, count, hist, 2);
-    radix_pass_8(data, temp, count, hist, 3);
+    return num_passes;
 }
 
-static inline void radix_pass_idx_8(uint32_t* dst, const uint32_t* src, const uint32_t* keys, size_t count, const uint32_t hist[256], int pass) {
-    int bitoff = pass * 8;
-
-    // Make a working copy of the counts for prefix sums
-    uint32_t offsets[256];
-    MEMCPY(offsets, hist, sizeof(uint32_t) * 256);
-
-    // Prefix sum on offsets
-    uint32_t sum = 0;
-    for (int i = 0; i < 256; ++i) {
-        uint32_t v = offsets[i];
-        offsets[i] = sum;
-        sum += v;
+static int radix_offsets_u64(int passes[8], uint32_t hist[256][8], uint64_t any_key, size_t count) {
+    int num_passes = 0;
+    for (int p = 0; p < 8; ++p) {
+        if (hist[(any_key >> (p * 8)) & 255][p] != count) passes[num_passes++] = p;
     }
+    md_128i sum_lo = md_mm_setzero_si128();
+    md_128i sum_hi = md_mm_setzero_si128();
+    for (size_t i = 0; i < 256; ++i) {
+        const md_128i lo = md_mm_loadu_si128(hist[i] + 0);
+        const md_128i hi = md_mm_loadu_si128(hist[i] + 4);
+        md_mm_storeu_si128(hist[i] + 0, sum_lo);
+        md_mm_storeu_si128(hist[i] + 4, sum_hi);
+        sum_lo = md_mm_add_epi32(sum_lo, lo);
+        sum_hi = md_mm_add_epi32(sum_hi, hi);
+    }
+    return num_passes;
+}
 
-    // Scatter indices to dst using offsets
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t idx = src[i];
-        uint32_t key = keys[idx];
-        uint32_t id  = (key >> bitoff) & 255;
-        dst[offsets[id]++] = idx;
+// The offsets of one digit, out of its column into a table of their own, for the pass to keep close
+static inline void radix_column(uint32_t offset[256], const uint32_t* hist, int num_digits, int digit) {
+    for (int b = 0; b < 256; ++b) {
+        offset[b] = hist[b * num_digits + digit];
     }
 }
 
-static void sort_radix_uint32(uint32_t* out_indices, const uint32_t* keys, size_t count, uint32_t* tmp_indices) {
-    // Initialize indices
+static inline void radix_pass_u32(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[256][4], int digit) {
+    const int shift = digit * 8;
     for (size_t i = 0; i < count; ++i) {
-        out_indices[i] = (uint32_t)i;
-    }
-
-    // Precompute histograms for each pass (counts only)
-    uint32_t hist[4][256] = {0};
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t key = keys[i];
-        hist[0][(key >> 0)  & 255]++;
-        hist[1][(key >> 8)  & 255]++;
-        hist[2][(key >> 16) & 255]++;
-        hist[3][(key >> 24) & 255]++;
-    }
-
-    // 4-pass radix sort using precomputed counts
-    radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[0], 0);
-    radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[1], 1);
-    radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[2], 2);
-    radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[3], 3);
-}
-
-static inline void radix_pass_indices_8(uint32_t* dst_indices, const uint32_t* keys, const uint32_t* src_indices, size_t count, uint32_t hist[256],
-                                        int pass) {
-    int bitoff = pass * 8;
-    uint32_t pos[256];
-    memcpy(pos, hist, sizeof(uint32_t) * 256);
-
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t key = (keys[src_indices[i]] >> bitoff) & 0xFF;
-        dst_indices[pos[key]++] = src_indices[i];
+        const uint32_t k = src[i];
+        dst[hist[(k >> shift) & 255][digit]++] = k;
     }
 }
 
-void radix_sort_indices_uint32(const uint32_t* keys,    // array of keys (e.g., min_x of AABBs)
-                               uint32_t* indices,       // output: sorted indices
-                               uint32_t* temp_indices,  // scratch array of size 'count'
-                               size_t count) {
-    uint32_t hist[256];
+static void sort_radix_u32(uint32_t* data, size_t count, md_temp_scope_t temp) {
+    uint32_t hist[256][4];
+    radix_hist_u32(hist, data, count);
+    int passes[4];
+    const int num_passes = radix_offsets_u32(passes, hist, data[0], count);
+    if (num_passes == 0) return;
 
-    // Initialize indices
-    for (size_t i = 0; i < count; ++i) indices[i] = (uint32_t)i;
-
-    uint32_t* src = indices;
-    uint32_t* dst = temp_indices;
-
-    // 4 passes of 8-bit radix
-    for (int pass = 0; pass < 4; ++pass) {
-        MEMSET(hist, 0, sizeof(hist));
-
-        // Compute histogram for this pass
-        for (size_t i = 0; i < count; ++i) {
-            uint32_t key = (keys[src[i]] >> (pass * 8)) & 0xFF;
-            hist[key]++;
+    uint32_t* src = data;
+    uint32_t* dst = md_temp_alloc_array(temp, uint32_t, count);
+    for (int p = 0; p < num_passes; ++p) {
+        // The digit a constant in each: these loops are the time the sort takes
+        switch (passes[p]) {
+        case 0: radix_pass_u32(dst, src, count, hist, 0); break;
+        case 1: radix_pass_u32(dst, src, count, hist, 1); break;
+        case 2: radix_pass_u32(dst, src, count, hist, 2); break;
+        case 3: radix_pass_u32(dst, src, count, hist, 3); break;
+        default: ASSERT(false); break;
         }
-
-        // Prefix sum
-        uint32_t sum = 0;
-        for (int i = 0; i < 256; ++i) {
-            uint32_t tmp = hist[i];
-            hist[i] = sum;
-            sum += tmp;
-        }
-
-        // Sort pass
-        radix_pass_indices_8(dst, keys, src, count, hist, pass);
-
-        // Swap src and dst for next pass
         uint32_t* tmp = src;
         src = dst;
         dst = tmp;
     }
 
-    // After even number of passes, result is in 'indices' already
-    // If odd, copy back from temp
-    if (src != indices) {
-        MEMCPY(indices, src, count * sizeof(uint32_t));
+    // An odd number of passes leaves the keys in the scratch
+    if (src != data) {
+        MEMCPY(data, src, count * sizeof(uint32_t));
+    }
+}
+
+static void sort_radix_u64(uint64_t* data, size_t count, md_temp_scope_t temp) {
+    uint32_t hist[256][8];
+    radix_hist_u64(hist, data, count);
+    int passes[8];
+    const int num_passes = radix_offsets_u64(passes, hist, data[0], count);
+    if (num_passes == 0) return;
+
+    uint64_t* src = data;
+    uint64_t* dst = md_temp_alloc_array(temp, uint64_t, count);
+    uint32_t offset[256];
+    for (int p = 0; p < num_passes; ++p) {
+        const int shift = passes[p] * 8;
+        radix_column(offset, hist[0], 8, passes[p]);
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t k = src[i];
+            dst[offset[(k >> shift) & 255]++] = k;
+        }
+        uint64_t* tmp = src;
+        src = dst;
+        dst = tmp;
+    }
+
+    if (src != data) {
+        MEMCPY(data, src, count * sizeof(uint64_t));
+    }
+}
+
+// Each key with its index below it in one 64-bit value: the passes sort on the upper half, and the last keeps the index
+static void argsort_radix_u32(uint32_t* out_indices, const uint32_t* keys, size_t count, md_temp_scope_t temp) {
+    uint32_t hist[256][4];
+    radix_hist_u32(hist, keys, count);
+    int passes[4];
+    const int num_passes = radix_offsets_u32(passes, hist, keys[0], count);
+    uint32_t offset[256];
+
+    if (num_passes == 0) {
+        for (size_t i = 0; i < count; ++i) out_indices[i] = (uint32_t)i;
+        return;
+    }
+    if (num_passes == 1) {
+        const int shift = passes[0] * 8;
+        radix_column(offset, hist[0], 4, passes[0]);
+        for (size_t i = 0; i < count; ++i) {
+            out_indices[offset[(keys[i] >> shift) & 255]++] = (uint32_t)i;
+        }
+        return;
+    }
+
+    uint64_t* buf[2] = {
+        md_temp_alloc_array(temp, uint64_t, count),
+        num_passes > 2 ? md_temp_alloc_array(temp, uint64_t, count) : NULL,
+    };
+
+    {
+        const int shift = passes[0] * 8;
+        radix_column(offset, hist[0], 4, passes[0]);
+        uint64_t* dst = buf[0];
+        for (size_t i = 0; i < count; ++i) {
+            const uint32_t k = keys[i];
+            dst[offset[(k >> shift) & 255]++] = ((uint64_t)k << 32) | i;
+        }
+    }
+    for (int p = 1; p < num_passes - 1; ++p) {
+        const int shift = 32 + passes[p] * 8;
+        radix_column(offset, hist[0], 4, passes[p]);
+        const uint64_t* src = buf[(p - 1) & 1];
+        uint64_t* dst = buf[p & 1];
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t v = src[i];
+            dst[offset[(v >> shift) & 255]++] = v;
+        }
+    }
+    {
+        const int shift = 32 + passes[num_passes - 1] * 8;
+        radix_column(offset, hist[0], 4, passes[num_passes - 1]);
+        const uint64_t* src = buf[(num_passes - 2) & 1];
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t v = src[i];
+            out_indices[offset[(v >> shift) & 255]++] = (uint32_t)v;
+        }
+    }
+}
+
+// A 64-bit key leaves no room for its index: the two go together as a record of 16 bytes
+typedef struct radix_record_u64_t {
+    uint64_t key;
+    uint64_t idx;
+} radix_record_u64_t;
+
+static void argsort_radix_u64(uint32_t* out_indices, const uint64_t* keys, size_t count, md_temp_scope_t temp) {
+    uint32_t hist[256][8];
+    radix_hist_u64(hist, keys, count);
+    int passes[8];
+    const int num_passes = radix_offsets_u64(passes, hist, keys[0], count);
+    uint32_t offset[256];
+
+    if (num_passes == 0) {
+        for (size_t i = 0; i < count; ++i) out_indices[i] = (uint32_t)i;
+        return;
+    }
+    if (num_passes == 1) {
+        const int shift = passes[0] * 8;
+        radix_column(offset, hist[0], 8, passes[0]);
+        for (size_t i = 0; i < count; ++i) {
+            out_indices[offset[(keys[i] >> shift) & 255]++] = (uint32_t)i;
+        }
+        return;
+    }
+
+    radix_record_u64_t* buf[2] = {
+        md_temp_alloc_array(temp, radix_record_u64_t, count),
+        num_passes > 2 ? md_temp_alloc_array(temp, radix_record_u64_t, count) : NULL,
+    };
+
+    {
+        const int shift = passes[0] * 8;
+        radix_column(offset, hist[0], 8, passes[0]);
+        radix_record_u64_t* dst = buf[0];
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t k = keys[i];
+            dst[offset[(k >> shift) & 255]++] = (radix_record_u64_t){ k, i };
+        }
+    }
+    for (int p = 1; p < num_passes - 1; ++p) {
+        const int shift = passes[p] * 8;
+        radix_column(offset, hist[0], 8, passes[p]);
+        const radix_record_u64_t* src = buf[(p - 1) & 1];
+        radix_record_u64_t* dst = buf[p & 1];
+        for (size_t i = 0; i < count; ++i) {
+            const radix_record_u64_t r = src[i];
+            dst[offset[(r.key >> shift) & 255]++] = r;
+        }
+    }
+    {
+        const int shift = passes[num_passes - 1] * 8;
+        radix_column(offset, hist[0], 8, passes[num_passes - 1]);
+        const radix_record_u64_t* src = buf[(num_passes - 2) & 1];
+        for (size_t i = 0; i < count; ++i) {
+            out_indices[offset[(src[i].key >> shift) & 255]++] = (uint32_t)src[i].idx;
+        }
     }
 }
 
@@ -926,11 +1118,11 @@ static md_256 simd_min_image_tric(md_256 dx, md_256 dy, md_256 dz, const float b
 }
 
 static inline md_256 simd_deperiodize_ortho(md_256 x, md_256 r, md_256 period, md_256 inv_period) {
-    md_256 d = md_mm256_sub_ps(x, r);
-    md_256 dx = md_mm256_mul_ps(d, inv_period);
+    // As md_mm256_deperiodize2_ps: d from a fused multiply-subtract, see the deperiodize comment in md_simd.h
+    md_256 dx = md_mm256_fmsub_ps(x, inv_period, md_mm256_mul_ps(r, inv_period));
     dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
-    md_256 x_prim = md_mm256_add_ps(r, md_mm256_mul_ps(dx, period));
-    return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(period, md_mm256_setzero_ps()));
+    md_256 x_prim = md_mm256_fmadd_ps(dx, period, r);
+    return md_mm256_select_ps(x_prim, x, md_mm256_cmpeq_ps(period, md_mm256_setzero_ps()));
 }
 
 // PACKED XYZ, COMPONENT WISE
@@ -974,12 +1166,13 @@ static inline void xyz_lane_reduce_add(double out[3], const md_xv v[XYZ_GROUP_VE
     for (int p = 0; p < 24; ++p) out[p % 3] += t[p];
 }
 
-// x brought to the image nearest r, lane by lane; a lane with no period (zero) is left alone
+// x brought to the image nearest r, lane by lane; a lane with no period (zero) is left alone. As
+// md_mm256_deperiodize2_ps: d from a fused multiply-subtract, see the deperiodize comment in md_simd.h.
 static inline md_xv xv_deperiodize_ortho(md_xv x, md_xv r, md_xv period, md_xv inv_period) {
-    md_xv d = md_xv_mul_ps(md_xv_sub_ps(x, r), inv_period);
+    md_xv d = md_xv_fmsub_ps(x, inv_period, md_xv_mul_ps(r, inv_period));
     d = md_xv_sub_ps(d, md_xv_round_ps(d));
     const md_xv p = md_xv_fmadd_ps(d, period, r);
-    return md_xv_blendv_ps(p, x, md_xv_cmpeq_ps(period, md_xv_setzero_ps()));
+    return md_xv_select_ps(p, x, md_xv_cmpeq_ps(period, md_xv_setzero_ps()));
 }
 
 // Atoms to step over before packed coordinates at p are aligned to the given boundary, so every load
@@ -1458,10 +1651,10 @@ static inline void simd_minimum_image_triclinic(md_256 dx[3], const float box[3]
                 rz[2] = md_mm256_add_ps(dx[2], md_mm256_mul_ps(md_mm256_set1_ps(box[2][2]), fiz));
                 dsq = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(rz[0], rz[0]), md_mm256_mul_ps(rz[1], rz[1])), md_mm256_mul_ps(rz[2], rz[2]));
                 md_256 mask = md_mm256_cmplt_ps(dsq, dsq_min);
-                dsq_min = md_mm256_blendv_ps(dsq_min, dsq, mask);
-                dx_min[0] = md_mm256_blendv_ps(dx_min[0], rz[0], mask);
-                dx_min[1] = md_mm256_blendv_ps(dx_min[1], rz[1], mask);
-                dx_min[2] = md_mm256_blendv_ps(dx_min[2], rz[2], mask);
+                dsq_min = md_mm256_select_ps(dsq_min, dsq, mask);
+                dx_min[0] = md_mm256_select_ps(dx_min[0], rz[0], mask);
+                dx_min[1] = md_mm256_select_ps(dx_min[1], rz[1], mask);
+                dx_min[2] = md_mm256_select_ps(dx_min[2], rz[2], mask);
             }
         }
     }
@@ -1498,790 +1691,6 @@ static inline void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], c
     x[2] = md_mm256_add_ps(rx[2], dx[2]);
 }
 
-static inline bool zhang_skolnick_ss(const vec3_t* ca_pos, int seq_beg, int seq_end, int i, const float distances[3], float delta) {
-    for (int j = MAX(seq_beg, i - 2); j <= i; ++j) {
-        for (int k = 2; k < 5; ++k) {
-            if (j + k >= seq_end) continue;
-            const vec3_t pos_j = ca_pos[j];
-            const vec3_t pos_k = ca_pos[j + k];
-            const float d = vec3_distance(pos_j, pos_k);
-            if (fabsf(d - distances[k - 2]) > delta) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-static inline bool is_helical(const vec3_t* ca_pos, int seq_beg, int seq_end, int i) {
-    const float distances[] = { 5.45f, 5.18f, 6.37f };
-    const float delta = 2.1f;
-    return zhang_skolnick_ss(ca_pos, seq_beg, seq_end, i, distances, delta);
-}
-
-static inline bool is_sheet(const vec3_t* ca_pos, int seq_beg, int seq_end, int i) {
-    const float distances[] = { 6.1f, 10.4f, 13.0f };
-    const float delta = 1.42f;
-    return zhang_skolnick_ss(ca_pos, seq_beg, seq_end, i, distances, delta);
-}
-
-// TM-align: a protein structure alignment algorithm based on the Tm-score
-// doi:10.1093/nar/gki524
-
-enum {
-    TM_ALIGN_VALID = 1,
-	TM_ALIGN_HELIX = 2,
-	TM_ALIGN_SHEET = 4,
-};
-
-bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, const float* x, const float* y, const float* z, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
-    if (!secondary_structure) return false;
-    if (capacity == 0) return false;
-
-    MEMSET(secondary_structure, 0, capacity * sizeof(md_secondary_structure_t));
-
-    if (!backbone) return false;
-    if (!x) return false;
-    if (!y) return false;
-    if (!z) return false;
-    if (!backbone->segment.atoms) return false;
-    if (!backbone->range.offset)  return false;
-
-    md_temp_scope_t temp = md_temp_begin();
-    int* type_mask = md_temp_alloc_array(temp, int, backbone->segment.count);
-    vec3_t* ca_pos = md_temp_alloc_array(temp, vec3_t, backbone->segment.count);
-
-    for (size_t i = 0; i < backbone->segment.count; ++i) {
-        const md_atom_idx_t ca_idx = backbone->segment.atoms[i].ca;
-        if (ca_idx >= 0) {
-			ca_pos[i] = vec3_set(x[ca_idx], y[ca_idx], z[ca_idx]);
-        }
-		type_mask[i] = ca_idx >= 0 ? TM_ALIGN_VALID : 0;
-	}
-
-    for (size_t bb_idx = 0; bb_idx < backbone->range.count; ++bb_idx) {
-        const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
-        ASSERT(range.end <= capacity);
-
-        if (range.end - range.beg < 4) {
-            continue;
-        }
-
-        // Classify residues
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            md_secondary_structure_t ss = MD_SECONDARY_STRUCTURE_COIL;
-
-            if (is_sheet(ca_pos, range.beg, range.end, i)) {
-                ss = MD_SECONDARY_STRUCTURE_BETA_SHEET;
-            }
-            else if (is_helical(ca_pos, range.beg, range.end, i)) {
-                ss = MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
-            }
-            secondary_structure[i] = ss;
-        }
-
-        // Set squished isolated structures to the surrounding (only for sheets and helices)
-        md_secondary_structure_t* ss = secondary_structure;
-        for (int i = (int)range.beg + 1; i < (int)range.end - 1; ++i) {
-            if (ss[i-1] == ss[i+1] &&
-                ss[i-1] != MD_SECONDARY_STRUCTURE_COIL &&
-                ss[i+1] != MD_SECONDARY_STRUCTURE_COIL)
-            {
-                ss[i] = ss[i-1];
-            }
-        }
-
-        // Set remaining isolated structures to coil
-        if (ss[range.beg] != ss[range.beg + 1]) ss[range.beg] = MD_SECONDARY_STRUCTURE_COIL;
-        for (int i = (int)range.beg + 1; i < (int)range.end - 1; ++i) {
-            if (ss[i] != ss[i-1] &&
-                ss[i] != ss[i+1])
-            {
-                ss[i] = MD_SECONDARY_STRUCTURE_COIL;
-            }
-        }
-        if (ss[range.end - 1] != ss[range.end - 2]) ss[range.end - 1] = MD_SECONDARY_STRUCTURE_COIL;
-    }
-
-    md_temp_end(temp);
-
-    return true;
-}
-
-typedef struct dssp_hbond_t {
-    float energy;
-    uint32_t res_idx;
-} dssp_hbond_t;
-
-typedef struct dssp_res_coords_t {
-    vec4_t N;
-    vec4_t O;
-    vec4_t C;
-    vec4_t H;
-    vec4_t CA;
-} dssp_res_coords_t;
-
-typedef struct dssp_res_hbonds_t {
-    dssp_hbond_t acc[2];
-    dssp_hbond_t don[2];
-} dssp_res_hbonds_t;
-
-static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], size_t don_idx, size_t acc_idx) {
-    /*
-    float d_NO = vec3_distance(donor->N, acceptor->O);
-    float d_HC = vec3_distance(donor->H, acceptor->C);
-    float d_NC = vec3_distance(donor->N, acceptor->C);
-    float d_OH = vec3_distance(donor->O, acceptor->H);
-    double e_ref = 0.084 * (1.0 / d_NO + 1.0 / d_HC - 1.0 / d_NC - 1.0 / d_OH) * 332.0;
-    */
-
-    const dssp_res_coords_t* don = &res_coords[don_idx];
-    const dssp_res_coords_t* acc = &res_coords[acc_idx];
-
-    float energy = 0.0f;
-
-    const float min_distance_sq = 0.5f * 0.5f;
-    const float min_bond_energy = -9.9f;
-	const float energy_cutoff   = -0.5f;
-
-    const vec4_t d2 = {
-        vec4_distance_squared(don->N, acc->O),
-        vec4_distance_squared(don->H, acc->C),
-        vec4_distance_squared(don->N, acc->C),
-        vec4_distance_squared(don->H, acc->O),
-    };
-    
-    const int mask_min = vec4_move_mask(vec4_cmp_lt(d2, vec4_set1(min_distance_sq)));
-    if (mask_min > 0) {
-        energy = min_bond_energy;
-    } else {
-        const vec4_t inv_d = vec4_rsqrt(d2);
-		const vec4_t w = vec4_set(1.0f, 1.0f, -1.0f, -1.0f);
-        const float Q  = 27.888f; // 0.084f * 332.0f;
-        energy = Q * vec4_reduce_add(vec4_mul(inv_d, w));
-    }
-
-    if (energy > energy_cutoff)
-		return 0.0f;
-
-    energy = MAX(energy, min_bond_energy);
-
-    dssp_res_hbonds_t* don_hbonds = &res_hbonds[don_idx];
-    dssp_res_hbonds_t* acc_hbonds = &res_hbonds[acc_idx];
-
-    if (energy < don_hbonds->acc[0].energy) {
-        don_hbonds->acc[1] = don_hbonds->acc[0];
-        don_hbonds->acc[0].res_idx = (uint32_t)acc_idx;
-        don_hbonds->acc[0].energy  = energy;
-    } else if (energy < don_hbonds->acc[1].energy) {
-        don_hbonds->acc[1].res_idx = (uint32_t)acc_idx;
-        don_hbonds->acc[1].energy  = energy;
-    }
-
-    if (energy < acc_hbonds->don[0].energy) {
-        acc_hbonds->don[1] = acc_hbonds->don[0];
-        acc_hbonds->don[0].res_idx = (uint32_t)don_idx;
-        acc_hbonds->don[0].energy  = energy;
-    } else if (energy < acc_hbonds->don[1].energy) {
-        acc_hbonds->don[1].res_idx = (uint32_t)don_idx;
-        acc_hbonds->don[1].energy  = energy;
-    }
-
-    return energy;
-}
-
-static inline vec4_t estimate_HN(vec4_t N, vec4_t CA, vec4_t C_prev) {
-    const float NH_dist = 1.01f;
-    vec4_t U = vec4_normalize(vec4_sub(N, CA));
-    vec4_t V = vec4_normalize(vec4_sub(N, C_prev));
-    return vec4_add(N, vec4_mul1(vec4_normalize(vec4_add(U, V)), NH_dist));
-}
-
-static inline vec4_t estimate_HN_term(vec4_t N, vec4_t CA, vec4_t C) {
-    // i == range.beg (N-terminus): estimate previous C by extrapolation
-    // C_prev_est = N + (CA - C)
-    vec4_t CA_minus_C = vec4_sub(CA, C);
-    vec4_t Cprev_est  = vec4_add(N, CA_minus_C);
-
-    // Try to construct H using the standard estimator
-    return estimate_HN(N, CA, Cprev_est);
-}
-
-static inline bool dssp_test_bond(const dssp_res_hbonds_t res_hbonds[], size_t acceptor, size_t donor) {
-    const float max_hbond_energy = -0.5f;
-    return (res_hbonds[donor].acc[0].res_idx == acceptor && res_hbonds[donor].acc[0].energy < max_hbond_energy) ||
-        (res_hbonds[donor].acc[1].res_idx == acceptor && res_hbonds[donor].acc[1].energy < max_hbond_energy);
-}
-
-enum {
-    SS_FLAG_NONE = 0,
-    SS_FLAG_TURN = 1,
-    SS_FLAG_BEND = 2,
-    SS_FLAG_HELIX_310 = 4,
-    SS_FLAG_HELIX_ALPHA = 8,
-    SS_FLAG_HELIX_PI = 16,
-    SS_FLAG_SHEET = 32,
-    SS_FLAG_BRIDGE = 64,
-};
-
-typedef struct residue_pair_t {
-    uint32_t i;
-    uint32_t j;
-} residue_pair_t;
-
-typedef struct dssp_hbond_energy_user_param_t {
-	const uint32_t* res_range_id;
-    const dssp_res_coords_t* res_coords;
-    dssp_res_hbonds_t* res_hbonds;
-	md_array(residue_pair_t)* sheet_candidates;
-	md_allocator_i* alloc;
-} dssp_hbond_energy_user_param_t;
-
-void dssp_hbond_energy_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
-    (void)ij_dist2;
-    dssp_hbond_energy_user_param_t* param = (dssp_hbond_energy_user_param_t*)user_param;
-    for (size_t idx = 0; idx < num_pairs; ++idx) {
-        uint32_t i = MIN(i_idx[idx], j_idx[idx]);
-        uint32_t j = MAX(i_idx[idx], j_idx[idx]);
-
-		uint32_t ri = param->res_range_id[i];
-		uint32_t rj = param->res_range_id[j];
-
-        int d = (int)j - (int)i;
-
-        if (ri == rj && d <= 1) continue;
-
-        calc_hbond_energy(param->res_hbonds, param->res_coords, i, j);
-        calc_hbond_energy(param->res_hbonds, param->res_coords, j, i);
-
-        // DSSP excludes very local sequence contacts on the same chain
-        if (ri == rj && d <= 2) continue;
-
-		// Ensure that pairs are sorted (i < j) to avoid duplicates
-		residue_pair_t pair = { i, j };
-		md_array_push(*param->sheet_candidates, pair, param->alloc);
-    }
-}
-
-void dssp(md_secondary_structure_t out_secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
-    ASSERT(out_secondary_structure);
-    ASSERT(xyz);
-    ASSERT(cell);
-    ASSERT(backbone);
-
-    size_t backbone_segment_count = backbone->segment.count;
-    size_t backbone_range_count   = backbone->range.count;
-    const uint32_t* backbone_range_offsets = backbone->range.offset;
-    const md_amino_acid_atoms_t* backbone_atoms = backbone->segment.atoms;
-
-    if (capacity < backbone_segment_count) {
-        MD_LOG_ERROR("Capacity of out_secondary_structure is insufficient to hold the results");
-        return;
-    }
-
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-
-    dssp_res_coords_t* res_coords = md_temp_alloc_array(temp, dssp_res_coords_t, backbone_segment_count);
-    dssp_res_hbonds_t* res_hbonds = md_temp_alloc_array(temp, dssp_res_hbonds_t, backbone_segment_count);
-    uint32_t* res_range_id = md_temp_alloc_array(temp, uint32_t, backbone_segment_count);
-    uint8_t* turn_mask = md_temp_alloc_zero_array(temp, uint8_t, backbone_segment_count);
-    vec3_t* res_ca = md_temp_alloc_array(temp, vec3_t, backbone_segment_count);
-
-    md_array(residue_pair_t) sheet_candidates = NULL;
-	md_array_ensure(sheet_candidates, 1024, temp_alloc);
-
-    for (uint32_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
-        const md_urange_t range = { backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1] };
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            res_range_id[i] = range_idx;
-        }
-    }
-    uint32_t* ss_flags = md_temp_alloc_zero_array(temp, uint32_t, backbone_segment_count);
-
-    for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
-        const md_irange_t range = {(int)backbone_range_offsets[range_idx], (int)backbone_range_offsets[range_idx + 1]};
-
-        for (int i = range.beg; i < range.end; ++i) {
-            md_atom_idx_t ca_idx = backbone_atoms[i].ca;
-            md_atom_idx_t n_idx  = backbone_atoms[i].n;
-            md_atom_idx_t c_idx  = backbone_atoms[i].c;
-            md_atom_idx_t o_idx  = backbone_atoms[i].o;
-            md_atom_idx_t hn_idx = backbone_atoms[i].hn;
-
-			res_ca[i] = xyz[ca_idx];
-
-            res_coords[i].CA = vec4_from_vec3(xyz[ca_idx], 0);
-            res_coords[i].N  = vec4_from_vec3(xyz[n_idx], 0);
-            res_coords[i].C  = vec4_from_vec3(xyz[c_idx], 0);
-            res_coords[i].O  = vec4_from_vec3(xyz[o_idx], 0);
-
-            if (hn_idx >= 0) {
-                res_coords[i].H = vec4_from_vec3(xyz[hn_idx], 0);
-            } else {
-                if (i > range.beg)
-                    res_coords[i].H = estimate_HN(res_coords[i].N, res_coords[i].CA, res_coords[i - 1].C);
-                else
-                    res_coords[i].H = estimate_HN_term(res_coords[i].N, res_coords[i].CA, res_coords[i].C);
-            }
-        }
-    }
-
-	// Safe to set to zero, as we will only be comparing energies (which are negative)
-	MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
-
-    md_coord_stream_t stream = md_coord_stream_from_aos((const float*)res_ca, sizeof(vec3_t), NULL, backbone_segment_count);
-    md_spatial_acc_t acc = { .alloc = temp_alloc };
-    md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = 9.0, .unitcell = cell });
-
-    dssp_hbond_energy_user_param_t user_param = {
-		.res_range_id = res_range_id,
-        .res_coords = res_coords,
-        .res_hbonds = res_hbonds,
-		.sheet_candidates = &sheet_candidates,
-		.alloc = temp_alloc,
-	};
-
-    /*
-    // Do N^2 bond energy calculations
-    const float min_ca_dist2 = (9.0f * 9.0f);
-    for (size_t i = 0; i + 1 < backbone_segment_count; ++i) {
-    for (size_t j = i + 1; j < backbone_segment_count; ++j) {
-    // Only apply local-sequence exclusion within the same backbone range (chain)
-    if (res_range_id[i] == res_range_id[j] && (j - i) <= 1) {
-    continue;
-    }
-    if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2) {
-    continue;
-    }
-
-    calc_hbond_energy(res_hbonds, res_coords, i, j);
-    calc_hbond_energy(res_hbonds, res_coords, j, i);
-    }
-    }
-    */
-    md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, 9.0, dssp_hbond_energy_cb, &user_param);
-
-    // ---- Per-range passes: helices, turns, bends (set flags only) ----
-    // Ground-truth DSSP helix assignment:
-    // Two consecutive n-turns define a helix, and then residues i+1..i+n get helix flag.
-    for (size_t range_idx = 0; range_idx < backbone_range_count; ++range_idx) {
-        const md_urange_t range = {backbone_range_offsets[range_idx], backbone_range_offsets[range_idx + 1]};
-
-        // Bits in turn_mask (local indices): 1 = 3-turn, 2 = 4-turn, 4 = 5-turn
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            if (i + 3 < range.end && dssp_test_bond(res_hbonds, i, i + 3)) {
-                turn_mask[i] |= 1;
-            }
-            if (i + 4 < range.end && dssp_test_bond(res_hbonds, i, i + 4)) {
-                turn_mask[i] |= 2;
-            }
-            if (i + 5 < range.end && dssp_test_bond(res_hbonds, i, i + 5)) {
-                turn_mask[i] |= 4;
-            }
-        }
-
-        // DSSP helix assignment from consecutive turns:
-        // If turn_n(i) && turn_n(i+1) then mark residues (i+1 ... i+n) as helix_n.
-        // n=3 => 3_10 helix, n=4 => alpha helix, n=5 => pi helix.
-        for (uint32_t i = range.beg; i + 1 < range.end; ++i) {
-            const uint8_t a = turn_mask[i];
-            const uint8_t b = turn_mask[i + 1];
-
-            // 3_10 helix (G)
-            if ((a & 1) && (b & 1)) {
-                const uint32_t beg = i + 1;
-                const uint32_t end = MIN(i + 3, range.end - 1);
-                for (uint32_t r = beg; r <= end; ++r) {
-                    ss_flags[r] |= SS_FLAG_HELIX_310;
-                }
-            }
-
-            // alpha helix (H)
-            if ((a & 2) && (b & 2)) {
-                const uint32_t beg = i + 1;
-                const uint32_t end = MIN(i + 4, range.end - 1);
-                for (uint32_t r = beg; r <= end; ++r) {
-                    ss_flags[r] |= SS_FLAG_HELIX_ALPHA;
-                }
-            }
-
-            // pi helix (I)
-            if ((a & 4) && (b & 4)) {
-                const uint32_t beg = i + 1;
-                const uint32_t end = MIN(i + 5, range.end - 1);
-                for (uint32_t r = beg; r <= end; ++r) {
-                    ss_flags[r] |= SS_FLAG_HELIX_PI;
-                }
-            }
-
-            // Just turn
-            if (a) {
-				const int len = (a & 4) ? 5 : (a & 2) ? 4 : 3;
-                const uint32_t beg = i + 1;
-                const uint32_t end = MIN(i + len, range.end - 1);
-                for (uint32_t r = beg; r <= end; ++r) {
-                    ss_flags[r] |= SS_FLAG_TURN;
-                }
-			}
-        }
-
-        // Bends: unchanged
-        for (uint32_t i = range.beg + 2; i + 2 < range.end; ++i) {
-            vec4_t v1 = vec4_sub(res_coords[i - 2].CA, res_coords[i].CA);
-            vec4_t v2 = vec4_sub(res_coords[i + 2].CA, res_coords[i].CA);
-            double angle = vec4_angle(v1, v2);
-            if (angle < DEG_TO_RAD(70.0)) {
-                for (int k = -2; k <= 2; ++k) {
-                    ss_flags[i + k] |= SS_FLAG_BEND;
-				}
-            }
-        }
-    }
-
-    // ---- Global pass: sheets / bridges ----
-
-    typedef struct {
-        uint32_t i;
-        uint32_t j;
-		uint64_t chain_pair_id_and_type; // Unique id for the chain_pair from (res_range_id[i], res_range_id[j]) and the bridge type (parallel/antiparallel)
-    } dssp_bridge_t;
-
-    // Worst-case: could be large; allocate generously but not insanely.
-    dssp_bridge_t* bridges = md_temp_alloc_array(temp, dssp_bridge_t, backbone_segment_count * 8);
-    size_t num_bridges = 0;
-
-    // Helper lambdas are not allowed in C; keep as local inline-ish macros
-#define SAME_RANGE(a,b) (res_range_id[(a)] == res_range_id[(b)])
-
-#if 1
-	md_hashmap32_t parallel_bridge_map     = { .allocator = temp_alloc };
-	md_hashmap32_t antiparallel_bridge_map = { .allocator = temp_alloc };
-
-	size_t num_sheet_candidates = md_array_size(sheet_candidates);
-    for (size_t c = 0; c < num_sheet_candidates; ++c) {
-        uint32_t i = sheet_candidates[c].i;
-        uint32_t j = sheet_candidates[c].j;
-
-        // Neighbor existence within each chain/range
-        const bool i_has_im1 = (i > 0) && SAME_RANGE(i - 1, i);
-        const bool i_has_ip1 = (i + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(i + 1, i);
-        const bool j_has_jm1 = (j > 0) && SAME_RANGE(j - 1, j);
-        const bool j_has_jp1 = (j + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(j + 1, j);
-
-        // Evaluate DSSP bridge patterns (directed H-bonds)
-        bool antiparallel = false;
-        bool parallel     = false;
-
-        // Antiparallel:
-        // (i -> j && j -> i) OR (i-1 -> j+1 && j-1 -> i+1)
-        if (dssp_test_bond(res_hbonds, i, j) && dssp_test_bond(res_hbonds, j, i)) {
-            antiparallel = true;
-        } else if (i_has_im1 && i_has_ip1 && j_has_jm1 && j_has_jp1) {
-            if (dssp_test_bond(res_hbonds, i - 1, j + 1) && dssp_test_bond(res_hbonds, j - 1, i + 1)) {
-                antiparallel = true;
-            }
-        }
-
-        // Parallel:
-        // (i-1 -> j && j -> i+1) OR (j-1 -> i && i -> j+1)
-        if (!antiparallel) {
-            if (i_has_im1 && i_has_ip1) {
-                if (dssp_test_bond(res_hbonds, i - 1, j) && dssp_test_bond(res_hbonds, j, i + 1)) {
-                    parallel = true;
-                }
-            }
-            if (!parallel && j_has_jm1 && j_has_jp1) {
-                if (dssp_test_bond(res_hbonds, j - 1, i) && dssp_test_bond(res_hbonds, i, j + 1)) {
-                    parallel = true;
-                }
-            }
-        }
-
-        if (!(antiparallel || parallel)) {
-            continue;
-        }
-
-		uint32_t ri = res_range_id[i];
-		uint32_t rj = res_range_id[j];
-
-		uint64_t res_range_packed = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
-
-        uint32_t idx = (uint32_t)(num_bridges++);
-
-        // Record bridge (normalize ordering i<j already true)
-        bridges[idx] = (dssp_bridge_t){
-            .i = i,
-            .j = j,
-            .chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_packed,
-        };
-
-        // DSSP marks both residues as "bridge" even before ladder/sheet conversion
-        ss_flags[i] |= SS_FLAG_BRIDGE;
-        ss_flags[j] |= SS_FLAG_BRIDGE;
-
-		uint64_t key = md_hash64(&bridges[idx], sizeof(dssp_bridge_t), 0);
-		if (parallel) {
-			md_hashmap_add(&parallel_bridge_map, key, idx);
-		} else {
-			md_hashmap_add(&antiparallel_bridge_map, key, idx);
-		}
-    }
-
-#else
-    const float min_ca_dist2_sheet = 9.0f * 9.0f;
-    for (uint32_t i = 0; i < (uint32_t)backbone_segment_count; ++i) {
-        const uint32_t ri = res_range_id[i];
-
-        for (uint32_t j = i + 1; j < (uint32_t)backbone_segment_count; ++j) {
-            const uint32_t rj = res_range_id[j];
-
-            // DSSP excludes very local sequence contacts on the same chain
-            if (ri == rj && (int)j - (int)i <= 2) continue;
-
-            if (vec4_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist2_sheet) continue;
-
-            // Neighbor existence within each chain/range
-            const bool i_has_im1 = (i > 0) && SAME_RANGE(i - 1, i);
-            const bool i_has_ip1 = (i + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(i + 1, i);
-            const bool j_has_jm1 = (j > 0) && SAME_RANGE(j - 1, j);
-            const bool j_has_jp1 = (j + 1 < (uint32_t)backbone_segment_count) && SAME_RANGE(j + 1, j);
-
-            // Evaluate DSSP bridge patterns (directed H-bonds)
-            bool antiparallel = false;
-            bool parallel     = false;
-
-            // Antiparallel:
-            // (i -> j && j -> i) OR (i-1 -> j+1 && j-1 -> i+1)
-            if (dssp_test_bond(res_hbonds, i, j) && dssp_test_bond(res_hbonds, j, i)) {
-                antiparallel = true;
-            } else if (i_has_im1 && i_has_ip1 && j_has_jm1 && j_has_jp1) {
-                if (dssp_test_bond(res_hbonds, i - 1, j + 1) && dssp_test_bond(res_hbonds, j - 1, i + 1)) {
-                    antiparallel = true;
-                }
-            }
-
-            // Parallel:
-            // (i-1 -> j && j -> i+1) OR (j-1 -> i && i -> j+1)
-            if (!antiparallel) {
-                if (i_has_im1 && i_has_ip1) {
-                    if (dssp_test_bond(res_hbonds, i - 1, j) && dssp_test_bond(res_hbonds, j, i + 1)) {
-                        parallel = true;
-                    }
-                }
-                if (!parallel && j_has_jm1 && j_has_jp1) {
-                    if (dssp_test_bond(res_hbonds, j - 1, i) && dssp_test_bond(res_hbonds, i, j + 1)) {
-                        parallel = true;
-                    }
-                }
-            }
-
-            if (!(antiparallel || parallel)) {
-                continue;
-            }
-
-		    uint64_t res_range_id = (uint64_t)MIN(ri, rj) << 32 | MAX(ri, rj);
-
-            // Record bridge (normalize ordering i<j already true)
-            bridges[num_bridges++] = (dssp_bridge_t){
-                .i = i,
-                .j = j,
-                .chain_pair_id_and_type = (uint64_t)(parallel ? 1 : 0) << 63 | res_range_id,
-            };
-
-            // DSSP marks both residues as "bridge" even before ladder/sheet conversion
-            ss_flags[i] |= SS_FLAG_BRIDGE;
-            ss_flags[j] |= SS_FLAG_BRIDGE;
-        }
-    }
-#endif
-#undef SAME_RANGE
-
-#if 1
-	// ---- Build ladders by directly looking up bridges in hashmaps ----
-    // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
-    bool* used = md_temp_alloc_zero_array(temp, bool, num_bridges);
-    for (size_t b = 0; b < num_bridges; ++b) {
-        if (used[b]) continue;
-        const dssp_bridge_t seed = bridges[b];
-        used[b] = true;
-        // Ladder endpoints
-        uint32_t i_min = seed.i, i_max = seed.i;
-        uint32_t j_min = seed.j, j_max = seed.j;
-        // Chain pair and type
-        const uint64_t chain_pair_id_and_type = seed.chain_pair_id_and_type;
-        const bool is_parallel = (chain_pair_id_and_type >> 63) != 0;
-        md_hashmap32_t* bridge_map = is_parallel ? &parallel_bridge_map : &antiparallel_bridge_map;
-
-        bool grew = true;
-        while (grew) {
-            grew = false;
-            // Look for the next bridge in the ladder by checking the expected next positions based on the ladder type
-            uint32_t next_i_min, next_i_max, next_j_min, next_j_max;
-            if (is_parallel) {
-                // Parallel ladder: (i+1, j+1)
-                next_i_min = i_max + 1;
-                next_j_min = j_max + 1;
-                next_i_max = i_min - 1;
-                next_j_max = j_min - 1;
-            } else {
-                // Antiparallel ladder: (i+1, j-1)
-                next_i_min = i_max + 1;
-                next_j_min = j_min - 1;
-                next_i_max = i_min - 1;
-                next_j_max = j_max + 1;
-            }
-            // Check both possible extensions of the ladder
-            dssp_bridge_t query_bridge_1 = { .i = next_i_min, .j = next_j_min, .chain_pair_id_and_type = chain_pair_id_and_type };
-            dssp_bridge_t query_bridge_2 = { .i = next_i_max, .j = next_j_max, .chain_pair_id_and_type = chain_pair_id_and_type };
-			uint64_t key_1 = md_hash64(&query_bridge_1, sizeof(dssp_bridge_t), 0);
-			uint64_t key_2 = md_hash64(&query_bridge_2, sizeof(dssp_bridge_t), 0);
-
-            uint32_t* found_idx_1 = md_hashmap_get(bridge_map, key_1);
-            uint32_t* found_idx_2 = md_hashmap_get(bridge_map, key_2);
-            if (found_idx_1) {
-                const dssp_bridge_t next_bridge = bridges[*found_idx_1];
-                used[*found_idx_1] = true;
-                i_min = MIN(i_min, next_bridge.i);
-                i_max = MAX(i_max, next_bridge.i);
-                j_min = MIN(j_min, next_bridge.j);
-                j_max = MAX(j_max, next_bridge.j);
-                grew = true;
-            } else if (found_idx_2) {
-                const dssp_bridge_t next_bridge = bridges[*found_idx_2];
-                used[*found_idx_2] = true;
-                i_min = MIN(i_min, next_bridge.i);
-                i_max = MAX(i_max, next_bridge.i);
-                j_min = MIN(j_min, next_bridge.j);
-                j_max = MAX(j_max, next_bridge.j);
-                grew = true;
-            }
-        }
-        const uint32_t len_i = i_max - i_min + 1;
-        const uint32_t len_j = j_max - j_min + 1;
-        if (len_i >= 3 || len_j >= 3) {
-            for (uint32_t k = i_min; k <= i_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
-            for (uint32_t k = j_min; k <= j_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
-        }
-	}
-#else
-    // ---- Build ladders by chaining bridges ----
-    // We mark as SHEET if a ladder has >= 2 bridges (i.e. spans >= 3 residues on at least one strand).
-    bool* used = md_temp_alloc_zero_array(temp, bool, num_bridges);
-
-    for (size_t b = 0; b < num_bridges; ++b) {
-        if (used[b]) continue;
-
-        const dssp_bridge_t seed = bridges[b];
-		int seed_type = (seed.chain_pair_id_and_type >> 63) != 0 ? 1 : 0;
-        used[b] = true;
-
-        // Ladder endpoints
-        uint32_t i_min = seed.i, i_max = seed.i;
-        uint32_t j_min = seed.j, j_max = seed.j;
-
-        // Chain constraints: ladders should stay within the same chain pair
-        const uint32_t ri = res_range_id[seed.i];
-        const uint32_t rj = res_range_id[seed.j];
-
-        bool grew = true;
-        while (grew) {
-            grew = false;
-
-            for (size_t c = 0; c < num_bridges; ++c) {
-                if (used[c]) continue;
-
-                const dssp_bridge_t br = bridges[c];
-				int br_type = (br.chain_pair_id_and_type >> 63) != 0 ? 1 : 0;
-                if (br_type != seed_type) continue;
-
-                // Must be between the same chain pair (order-insensitive)
-                const uint32_t bri = res_range_id[br.i];
-                const uint32_t brj = res_range_id[br.j];
-                if (!((bri == ri && brj == rj) || (bri == rj && brj == ri))) continue;
-
-                bool connects = false;
-
-                if (seed_type == 1) {
-                    // Parallel ladder: (i+1, j+1)
-                    connects = (br.i == i_max + 1 && br.j == j_max + 1) ||
-                        (br.i + 1 == i_min && br.j + 1 == j_min);
-                } else {
-                    // Antiparallel ladder: (i+1, j-1)
-                    connects = (br.i == i_max + 1 && br.j + 1 == j_min) ||
-                        (br.i + 1 == i_min && br.j == j_max + 1);
-                }
-
-                if (connects) {
-                    used[c] = true;
-                    i_min = MIN(i_min, br.i);
-                    i_max = MAX(i_max, br.i);
-                    j_min = MIN(j_min, br.j);
-                    j_max = MAX(j_max, br.j);
-                    grew = true;
-                }
-            }
-        }
-
-        const uint32_t len_i = i_max - i_min + 1;
-        const uint32_t len_j = j_max - j_min + 1;
-
-        if (len_i >= 3 || len_j >= 3) {
-            for (uint32_t k = i_min; k <= i_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
-            for (uint32_t k = j_min; k <= j_max; ++k) ss_flags[k] |= SS_FLAG_SHEET;
-        }
-    }
-#endif
-
-    // ---- Final resolution: convert flags to enum with priority ----
-    // Priority: HELIX (PI > 310 > ALPHA) > SHEET > BRIDGE > TURN > BEND > COIL
-    MEMSET(out_secondary_structure, 0, sizeof(md_secondary_structure_t) * backbone_segment_count);
-
-    for (size_t i = 0; i < backbone_segment_count; ++i) {
-        uint32_t f = ss_flags[i];
-
-        if (f & SS_FLAG_HELIX_PI) {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_PI;
-        } else if (f & SS_FLAG_HELIX_ALPHA) {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
-        } else if (f & SS_FLAG_HELIX_310) {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX_310;
-        } else if (f & SS_FLAG_SHEET) {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_BETA_SHEET;
-        } else if (f & SS_FLAG_BRIDGE) {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_BETA_BRIDGE;
-        } else if (f & SS_FLAG_TURN) {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_TURN;
-        } else if (f & SS_FLAG_BEND) {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_BEND;
-        } else {
-            out_secondary_structure[i] = MD_SECONDARY_STRUCTURE_COIL;
-        }
-    }
-
-    md_temp_end(temp);
-}
-
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structure[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
-
-    if (!backbone) return false;
-    if (capacity < backbone->segment.count) {
-        MD_LOG_ERROR("Secondary structure capacity is not sufficient to hold the number of segments in the protein backbone");
-        return false;
-    }
-
-    // TODO: Use tm_align when coarse grained
-#if 0
-    return tm_align(secondary_structure, capacity, sys);
-#else
-    if (secondary_structure && xyz && backbone) {
-        dssp(secondary_structure, capacity, xyz, cell, backbone);
-        return true;
-    }
-    return false;
-#endif
-}
-
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     if (!backbone_angles) return false;
     if (capacity == 0) return false;
@@ -2296,7 +1705,8 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
         const md_urange_t range = {backbone->range.offset[bb_idx], backbone->range.offset[bb_idx + 1]};
         ASSERT(range.end <= capacity);
 
-        if (range.end - range.beg < 4) {
+        // A trace has one bead per residue, and so no phi and psi
+        if (range.end - range.beg < 4 || md_protein_backbone_range_is_trace(backbone, bb_idx)) {
             continue;
         }
 
@@ -2396,7 +1806,7 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const md_system_t*
     md_secondary_structure_t* ss    = md_util_state_secondary_structure_write(state, sys);
     if (!angle || !ss) return false;
     const bool ok_angle = md_util_backbone_angles_compute(angle, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
-    const bool ok_ss    = md_util_backbone_secondary_structure_infer(ss, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
+    const bool ok_ss    = md_dssp_compute(ss, num_segments, state->xyz, &state->unitcell, &sys->protein_backbone);
     return ok_angle && ok_ss;
 }
 
@@ -2420,6 +1830,8 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     // Walked range by range, because a residue is pre-proline only when the proline follows it in the same chain. The
     // last segment of a range has no successor; segment i + 1 is then the first residue of another chain.
     for (size_t range_idx = 0; range_idx < backbone->range.count; ++range_idx) {
+        // A trace has no phi and psi to plot: its segments stay UNKNOWN
+        if (md_protein_backbone_range_is_trace(backbone, range_idx)) continue;
         const size_t range_beg = backbone->range.offset[range_idx];
         const size_t range_end = backbone->range.offset[range_idx + 1];
         // Written up to the capacity, but the successor is read from the system, so the last written type is still
@@ -2932,7 +2344,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
         md_order_t order = 1;
         if (str_eq(comp_a, comp_b)) {
             if (str_cmp_lex(type_a, type_b) > 0) {
-                str_swap(type_a, type_b);
+                str_swap(&type_a, &type_b);
             }
             // Intra
             if (str_eq_cstr(type_a, "C") && str_eq_cstr(type_b, "O") && md_util_resname_amino_acid(comp_a)) {
@@ -3539,20 +2951,6 @@ static int compare_atom_pair(const void* a, const void* b) {
     return 0;
 }
 
-static inline void test_bb_pair(int atom_i, int atom_j, float cutoff, const vec3_t* xyz, const md_unitcell_t* cell, md_array(bond_pair_t)* candidates, md_allocator_i* alloc) {
-    vec3_t d = vec3_sub(xyz[atom_i], xyz[atom_j]);
-    md_util_min_image_vec3(&d, 1, cell);
-    float dist = vec3_length(d);
-    if (dist < cutoff) {
-        bond_pair_t cp = {
-            .atom_i = atom_i,
-            .atom_j = atom_j,
-            .dist   = dist,
-        };
-        md_array_push(*candidates, cp, alloc);
-    }
-}
-
 // The most covalent bonds an atom of the element takes, 0 for no limit. Generous: the limit is there to catch
 // atoms that clash (a hydrogen within bonding distance of two atoms), not to judge chemistry.
 static inline int max_covalent_bonds(md_atomic_number_t z) {
@@ -3588,6 +2986,481 @@ static int compare_bond_excess(const void* a, const void* b) {
     if (x->inter != y->inter) return x->inter > y->inter ? -1 : 1;
     if (x->deviation != y->deviation) return x->deviation > y->deviation ? -1 : 1;
     return (x->idx > y->idx) - (x->idx < y->idx);
+}
+
+// ### MARTINI ###
+
+// The versions of Martini, which give beads of the same names different masses and sizes, and some residues different
+// beads. Which one a system is from its residue and bead names tell (martini_system).
+enum {
+    MARTINI_2   = 1,    // martini22, elnedyn21, elnedyn22
+    MARTINI_2P  = 2,    // Polarizable Martini 2: martini22p, elnedyn22p
+    MARTINI_3   = 4,    // martini3001
+    MARTINI_ANY = MARTINI_2 | MARTINI_2P | MARTINI_3,
+};
+
+// The radius of a regular Martini bead (sigma 4.7 A), as md_tpr gives it: half the distance of the minimum of the
+// Lennard-Jones potential, 2^(1/6) sigma / 2
+#define MARTINI_R   2.638f
+
+typedef struct {
+    const char*         name;
+    float               mass;
+    float               radius;     // From the sigma of the bead type with itself, as md_tpr gives it
+    md_particle_kind_t  particle;   // A massless bead is a virtual site; one without Lennard-Jones a charge site
+} martini_db_bead_t;
+
+typedef struct {
+    const char*         name;
+    uint32_t            versions;
+    md_component_kind_t kind;
+    uint16_t            bead_offset;    // Into martini_db_residue_beads
+    uint8_t             num_beads;
+    uint16_t            bond_offset;    // Into martini_db_residue_bonds, pairs of beads of the residue
+    uint8_t             num_bonds;
+} martini_db_residue_t;
+
+typedef struct {
+    const char* name;       // A residue of a polymer (polyply), and its bead bonded to
+    const char* bead;
+    const char* next_name;  // the bead of the residue after it
+    const char* next_bead;
+    uint32_t    versions;
+} martini_db_link_t;
+
+// The residues of the Martini force fields: proteins (vermouth), nucleic acids, the lipidomes, sterols, solvents, ions,
+// small molecules, sugars and polymers (polyply) of Martini 2 and 3, read from their topology files by
+// tools/gen_martini_db.py, and the links between the residues of the polymers.
+#include "md_martini_db.inl"
+
+static inline const martini_db_bead_t* martini_db_bead(const martini_db_residue_t* res, size_t k) {
+    return &martini_db_beads[martini_db_residue_beads[res->bead_offset + k]];
+}
+
+// An amino acid or a nucleotide, of a chain whose residues vary (termini, modifications, missing beads)
+static inline bool martini_db_biopolymer(const martini_db_residue_t* res) {
+    return res->kind == MD_COMPONENT_KIND_AMINO_ACID || res->kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+}
+
+// The residues of the name, [*beg, *end)
+static void martini_db_find(str_t name, size_t* beg, size_t* end) {
+    size_t lo = 0, hi = ARRAY_SIZE(martini_db_residues);
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (str_cmp_lex(str_from_cstr(martini_db_residues[mid].name), name) < 0) lo = mid + 1; else hi = mid;
+    }
+    size_t e = lo;
+    while (e < ARRAY_SIZE(martini_db_residues) && str_eq_cstr(name, martini_db_residues[e].name)) ++e;
+    *beg = lo;
+    *end = e;
+}
+
+// Whether the labels are the beads of the residue, each once (in any order). map[i] is then the bead of label i.
+static bool martini_db_match(const martini_db_residue_t* res, const str_t labels[], size_t num_labels, uint8_t map[]) {
+    if (num_labels != res->num_beads) return false;
+    bool used[256] = {0};
+    for (size_t i = 0; i < num_labels; ++i) {
+        size_t k = 0;
+        while (k < res->num_beads && (used[k] || !str_eq_cstr(labels[i], martini_db_bead(res, k)->name))) ++k;
+        if (k == res->num_beads) return false;
+        used[k] = true;
+        map[i] = (uint8_t)k;
+    }
+    return true;
+}
+
+// The molecule (not an amino acid or a nucleotide) a residue of the labels is, of the version if there is one of it,
+// else of any version. NULL when it is none.
+static const martini_db_residue_t* martini_db_match_molecule(uint32_t version, str_t comp_name, const str_t labels[], size_t num_labels, uint8_t map[]) {
+    if (num_labels == 0 || num_labels > 255) return NULL;
+    size_t beg, end;
+    martini_db_find(comp_name, &beg, &end);
+    const martini_db_residue_t* other = NULL;
+    for (size_t k = beg; k < end; ++k) {
+        const martini_db_residue_t* res = &martini_db_residues[k];
+        if (martini_db_biopolymer(res) || !martini_db_match(res, labels, num_labels, map)) continue;
+        if (res->versions & version) return res;
+        if (!other) other = res;
+    }
+    if (other) martini_db_match(other, labels, num_labels, map);
+    return other;
+}
+
+// Whether the residue is a monomer of a polymer: a link names it
+static bool martini_db_linked(str_t name) {
+    for (size_t k = 0; k < ARRAY_SIZE(martini_db_links); ++k) {
+        if (str_eq_cstr(name, martini_db_links[k].name) || str_eq_cstr(name, martini_db_links[k].next_name)) return true;
+    }
+    return false;
+}
+
+// Bead idx of an amino acid or a nucleotide of the labels: of the residue of the version whose beads they are, else the
+// first bead of its name in a residue of the version (the residue may lack beads), else in one of any version
+static const martini_db_bead_t* martini_db_biopolymer_bead(uint32_t version, str_t comp_name, const str_t labels[], size_t num_labels, size_t idx) {
+    size_t beg, end;
+    martini_db_find(comp_name, &beg, &end);
+    if (num_labels <= 255) {
+        uint8_t map[256];
+        for (size_t r = beg; r < end; ++r) {
+            const martini_db_residue_t* res = &martini_db_residues[r];
+            if (martini_db_biopolymer(res) && (res->versions & version) && martini_db_match(res, labels, num_labels, map)) return martini_db_bead(res, map[idx]);
+        }
+    }
+    const str_t label = labels[idx];
+    const martini_db_bead_t* other = NULL;
+    for (size_t r = beg; r < end; ++r) {
+        const martini_db_residue_t* res = &martini_db_residues[r];
+        if (!martini_db_biopolymer(res)) continue;
+        for (size_t k = 0; k < res->num_beads; ++k) {
+            const martini_db_bead_t* bead = martini_db_bead(res, k);
+            if (!str_eq_cstr(label, bead->name)) continue;
+            if (res->versions & version) return bead;
+            if (!other) other = bead;
+        }
+    }
+    return other;
+}
+
+typedef struct {
+    uint32_t version;
+    bool     martini;   // A Martini system: residues of several beads which are Martini's, Martini water or polymers
+} martini_system_t;
+
+// Which version of Martini a system is from. Each residue whose beads are those of a residue of the database in some
+// versions only votes for those: Ala with SC1, Tyr with SC4 and Trp with SC5 for Martini 3, the charge dummies and the
+// polarizable water for polarizable Martini 2, cholesterol of 8 beads for Martini 2, ... Martini 3 when nothing tells,
+// the current one and martinize2's default, and Martini 2 over polarizable Martini 2 on a tie.
+static martini_system_t martini_system(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data) {
+    size_t votes[3] = {0};  // MARTINI_2, MARTINI_2P, MARTINI_3
+    bool martini = false;
+    str_t labels[256];
+    uint8_t map[256];
+    for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
+        const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+        const size_t n = range.end - range.beg;
+        if (n == 0 || n > 255) continue;
+        size_t beg, end;
+        martini_db_find(md_component_name(&sys->component, comp_idx), &beg, &end);
+        if (beg == end) continue;
+        for (size_t i = 0; i < n; ++i) labels[i] = label(data, range.beg + i);
+        uint32_t versions = 0;
+        for (size_t k = beg; k < end; ++k) {
+            const martini_db_residue_t* res = &martini_db_residues[k];
+            if (!martini_db_match(res, labels, n, map)) continue;
+            versions |= res->versions;
+            // No atomistic residue has the name and the atom names of a Martini residue of several beads, of Martini water
+            // or of a monomer of a Martini polymer
+            if (n > 1 || res->kind == MD_COMPONENT_KIND_WATER || martini_db_linked(str_from_cstr(res->name))) martini = true;
+        }
+        if (versions == 0 || versions == MARTINI_ANY) continue;
+        if (versions & MARTINI_2)  votes[0] += 1;
+        if (versions & MARTINI_2P) votes[1] += 1;
+        if (versions & MARTINI_3)  votes[2] += 1;
+    }
+    martini_system_t result = { .version = MARTINI_3, .martini = martini };
+    if (votes[0] > votes[2] && votes[0] >= votes[1]) result.version = MARTINI_2;
+    else if (votes[1] > votes[2] && votes[1] > votes[0]) result.version = MARTINI_2P;
+    return result;
+}
+
+// Lipids by name: those of the Martini lipidomes (whose names the atomistic force fields mostly share: POPC, DPPC, CHOL,
+// ...) and the cholesterol of CHARMM
+bool md_util_resname_lipid(str_t str) {
+    size_t beg, end;
+    martini_db_find(str, &beg, &end);
+    for (size_t k = beg; k < end; ++k) {
+        if (martini_db_residues[k].kind == MD_COMPONENT_KIND_LIPID) return true;
+    }
+    return str_eq_cstr(str, "CHL1");
+}
+
+static str_t label_of_array(const void* data, size_t i) {
+    return ((const str_t*)data)[i];
+}
+
+static str_t label_of_atom(const void* data, size_t i) {
+    return md_atom_name((const md_atom_data_t*)data, i);
+}
+
+// The type of the name, element, mass, size and particle kind, added when there is none. md_atom_type_find_or_add goes by
+// name and element alone, which gives every bead of a name the mass and size of the first: a Martini SC1 is 36 in Ala
+// and 54 in Leu (Martini 3), and Trp's SC3 is a massless virtual site.
+static md_atom_type_idx_t find_or_add_atom_type(md_atom_type_data_t* type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_atom_type_flags_t flags, md_allocator_i* alloc) {
+    for (size_t t = 1; t < type->count; ++t) {
+        if (type->z[t] == z && type->mass[t] == mass && type->radius[t] == radius && md_atom_type_flags(type, t) == flags && str_eq(md_atom_type_name(type, t), name)) {
+            return (md_atom_type_idx_t)t;
+        }
+    }
+    return md_atom_type_add(type, name, (str_t){0}, z, mass, radius, color, flags, alloc);
+}
+
+// Coarse grained (Martini) bond inference. A residue whose beads are those of a residue of the Martini force fields
+// (martini_db), with their masses, has the bonds of its topology: those within the residue for an amino acid or a
+// nucleotide, all of them for a molecule (a lipid, a sterol, a solvent, a sugar, ...). Amino acids and nucleotides which
+// are not (missing beads, modified residues, other force fields) are bonded by their geometry:
+//
+// Within a residue
+// - A minimum spanning tree of its beads, of bonds up to 6 A: the beads hang together the way their topologies have
+//   them, and a stray bead stays unbonded.
+// - The rings: side chain beads closer than 3.6 A (base beads closer than 3.0 A) besides those the tree bonds. Longer
+//   ring bonds (Trp SC2-SC4 of Martini 3, 4.7 A; purine SC2-SC4 of Martini 2 DNA) are left out, as beads of the rings
+//   that are not bonded come as close as 3.3 A.
+// - A massless bead is a virtual site, which the topologies do not bond (Trp SC3 of Martini 3), and stays out, unless
+//   it is all of the side chain there is (the polar SC1 of polarizable Martini 2, bonded to BB in its topology).
+// - The charge dummies of polarizable Martini 2 (SCP, SCN) are bonded to the bead they sit by, and to each other.
+// Between residues (of any amino acid or nucleotide)
+// - The last backbone bead of a residue to the first of the next (BB to BB; BB3 to BB1 in DNA and RNA, and BB2 to BB1
+//   as well in Martini 3 RNA), up to 5.5 A when the next is numbered next (bonds stretch in a simulation), else up to
+//   4.3 A for amino acids (bonded pairs of structures reach 4.05 A) and 5.5 A for nucleotides (4.4 A), unless the
+//   numbering starts over: a new chain. The numbering may jump forward over a bond (an engineered insert), so a gap is
+//   told by the distance alone.
+// - The SC1 beads of two cysteines closer than 3 A: a disulfide bridge (2.3-2.5 A; unbonded pairs are 4.5 A apart).
+//
+// The residues of a polymer (polyply's library: PEO, PS, PE, PMMA, dextran, ..., a PEGylated lipid) are bonded to the
+// residue before them by the links of the force field.
+// A virtual site is bonded to the first bead it is constructed from in the topologies, as md_tpr bonds it.
+// Validated against the topologies martinize2 (vermouth 0.15) writes for 16 structures (dipeptides to 300 residues,
+// several chains, disulfides, a chain with gaps) in Martini 3, 2 and polarizable 2, against Martini 2 DNA (polyply)
+// mapped from a nucleosome, and against simulated systems of proteins, DNA, RNA, membranes and solvents in Martini 2
+// and 3 (their .tpr): no bond which the topologies do not have, besides elastic networks and the restraints of
+// secondary structure, which are not chemical bonds.
+static inline float cg_bead_distance(const md_system_state_t* state, int i, int j) {
+    vec3_t d = vec3_sub(state->xyz[i], state->xyz[j]);
+    md_util_min_image_vec3(&d, 1, &state->unitcell);
+    return vec3_length(d);
+}
+
+static inline void cg_push_bond(md_array(bond_pair_t)* candidates, int i, int j, float dist, md_allocator_i* alloc) {
+    bond_pair_t cp = { .atom_i = i, .atom_j = j, .dist = dist };
+    md_array_push(*candidates, cp, alloc);
+}
+
+static inline bool martini_charge_dummy(str_t atom_name) {
+    return str_eq_cstr(atom_name, "SCP") || str_eq_cstr(atom_name, "SCN");
+}
+
+// The residue of the database a component is: the one of its name whose beads are its beads, each with the mass of its
+// atom (its type was given by it), and of the version where there are several. map[i] is then the bead of atom i.
+static const martini_db_residue_t* martini_db_match_component(const md_system_t* sys, size_t comp_idx, uint32_t version, str_t labels[], uint8_t map[]) {
+    const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+    const size_t n = range.end - range.beg;
+    if (n == 0 || n > 255) return NULL;
+    const md_component_kind_t kind = md_component_kind(&sys->component, comp_idx);
+    const bool biopolymer = kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+    for (size_t i = 0; i < n; ++i) labels[i] = md_atom_name(&sys->atom, range.beg + i);
+    size_t beg, end;
+    martini_db_find(md_component_name(&sys->component, comp_idx), &beg, &end);
+    const martini_db_residue_t* other = NULL;
+    for (size_t r = beg; r < end; ++r) {
+        const martini_db_residue_t* res = &martini_db_residues[r];
+        if (martini_db_biopolymer(res) != biopolymer || !martini_db_match(res, labels, n, map)) continue;
+        bool same = true;
+        for (size_t i = 0; i < n && same; ++i) same = md_atom_mass(&sys->atom, range.beg + i) == martini_db_bead(res, map[i])->mass;
+        if (!same) continue;
+        if (res->versions & version) return res;
+        if (!other) other = res;
+    }
+    if (other) martini_db_match(other, labels, n, map);
+    return other;
+}
+
+// The bonds of a residue of a polymer (polyply) to the one before it, by the links of the force field, up to 6 A apart
+// (the longest are 4.7 A), unless the numbering starts over: a new chain
+static void cg_polymer_links(md_array(bond_pair_t)* candidates, const md_system_t* sys, const md_system_state_t* state, size_t ci, md_allocator_i* alloc) {
+    const float polymer_cap = 6.0f;
+    const str_t prev_name = md_component_name(&sys->component, ci - 1);
+    const str_t name      = md_component_name(&sys->component, ci);
+    const md_sequence_id_t prev_seq = md_component_seq_id(&sys->component, ci - 1);
+    const md_sequence_id_t seq      = md_component_seq_id(&sys->component, ci);
+    if (seq < prev_seq && !(seq <= 1 && prev_seq >= 9999)) return;
+    const md_urange_t prev = md_component_atom_range(&sys->component, ci - 1);
+    const md_urange_t cur  = md_component_atom_range(&sys->component, ci);
+    for (size_t k = 0; k < ARRAY_SIZE(martini_db_links); ++k) {
+        const martini_db_link_t* link = &martini_db_links[k];
+        if (!str_eq_cstr(prev_name, link->name) || !str_eq_cstr(name, link->next_name)) continue;
+        int a = -1, b = -1;
+        for (uint32_t i = prev.beg; i < prev.end && a == -1; ++i) if (str_eq_cstr(md_atom_name(&sys->atom, i), link->bead)) a = (int)i;
+        for (uint32_t i = cur.beg;  i < cur.end  && b == -1; ++i) if (str_eq_cstr(md_atom_name(&sys->atom, i), link->next_bead)) b = (int)i;
+        if (a == -1 || b == -1) continue;
+        const float d = cg_bead_distance(state, a, b);
+        if (d < polymer_cap) cg_push_bond(candidates, a, b, d, alloc);
+    }
+}
+
+static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
+    const float tree_cap      = 6.0f;
+    const float dummy_cap     = 3.0f;   // A charge dummy sits 1.1-1.4 A from its bead
+    const float dummy_pair    = 3.2f;   // SCP-SCN are constrained at 2.8 A
+    const float disulfide_cap = 3.0f;
+
+    size_t max_len = 0;
+    for (size_t ci = 0; ci < sys->component.count; ++ci) {
+        const md_urange_t r = md_component_atom_range(&sys->component, ci);
+        max_len = MAX(max_len, (size_t)(r.end - r.beg));
+    }
+    int*   tree   = md_alloc(alloc, sizeof(int)   * (max_len + 1));
+    int*   parent = md_alloc(alloc, sizeof(int)   * (max_len + 1));
+    float* best   = md_alloc(alloc, sizeof(float) * (max_len + 1));
+    bool*  done   = md_alloc(alloc, sizeof(bool)  * (max_len + 1));
+    md_array(int) cys_sc1 = 0;
+
+    int prev_last_bb = -1, prev_also_bb = -1;
+    size_t prev_ci = 0;
+    md_component_kind_t prev_kind = MD_COMPONENT_KIND_OTHER;
+
+    str_t* labels = md_alloc(alloc, sizeof(str_t) * (max_len + 1));
+    uint8_t map[256];
+    const uint32_t version = martini_system(sys, label_of_atom, &sys->atom).version;
+
+    for (size_t ci = 0; ci < sys->component.count; ++ci) {
+        const md_component_kind_t kind = md_component_kind(&sys->component, ci);
+        const bool biopolymer = kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+        const md_urange_t range = md_component_atom_range(&sys->component, ci);
+
+        if (ci > 0) cg_polymer_links(candidates, sys, state, ci, alloc);
+
+        // The bonds of its topology. A charge site (a virtual site without Lennard-Jones) has none, as md_tpr gives it.
+        const martini_db_residue_t* res = martini_db_match_component(sys, ci, version, labels, map);
+        if (res) {
+            uint8_t local[256];
+            for (size_t i = 0; i < range.end - range.beg; ++i) local[map[i]] = (uint8_t)i;
+            for (size_t b = 0; b < res->num_bonds; ++b) {
+                const int x = (int)range.beg + local[martini_db_residue_bonds[res->bond_offset + b][0]];
+                const int y = (int)range.beg + local[martini_db_residue_bonds[res->bond_offset + b][1]];
+                if (md_atom_particle_kind(&sys->atom, x) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&sys->atom, y) == MD_PARTICLE_VIRTUAL_SITE) continue;
+                cg_push_bond(candidates, x, y, cg_bead_distance(state, x, y), alloc);
+            }
+        }
+        if (!biopolymer) {
+            prev_last_bb = prev_also_bb = -1;
+            continue;
+        }
+        const bool  amino_acid = kind == MD_COMPONENT_KIND_AMINO_ACID;
+        const float ring_cap   = amino_acid ? 3.6f : 3.0f;
+        const float link_cap      = amino_acid ? 4.3f : 5.5f;
+        const float link_cap_next = 5.5f;
+
+        // Without a topology, by the geometry. Which beads make up the tree: all but the charge dummies and, where the
+        // side chain has beads with a mass, the massless ones
+        bool side_with_mass = false;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) && !martini_charge_dummy(md_atom_name(&sys->atom, i)) && md_atom_mass(&sys->atom, i) > 0.0f) {
+                side_with_mass = true;
+            }
+        }
+        // The next residue is linked to the last bead of the backbone, and, in a nucleotide of Martini 3, to BB2 as well
+        const bool m3_nucleotide = !amino_acid && ((res ? res->versions : version) & (MARTINI_2 | MARTINI_2P)) == 0;
+        int n = 0;
+        int first_bb = -1, last_bb = -1, also_bb = -1;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            const bool backbone = md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE;
+            if (backbone) {
+                if (first_bb == -1) first_bb = (int)i;
+                last_bb = (int)i;
+                if (m3_nucleotide && str_eq_cstr(md_atom_name(&sys->atom, i), "BB2")) also_bb = (int)i;
+            }
+            if (res || martini_charge_dummy(md_atom_name(&sys->atom, i))) continue;
+            if (!backbone && side_with_mass && md_atom_mass(&sys->atom, i) == 0.0f) continue;
+            tree[n++] = (int)i;
+        }
+
+        // Prim's minimum spanning tree
+        for (int k = 0; k < n; ++k) {
+            best[k] = FLT_MAX;
+            parent[k] = -1;
+            done[k] = false;
+        }
+        if (n > 0) best[0] = 0.0f;
+        for (int iter = 0; iter < n; ++iter) {
+            int k = -1;
+            for (int m = 0; m < n; ++m) {
+                if (!done[m] && (k == -1 || best[m] < best[k])) k = m;
+            }
+            done[k] = true;
+            if (parent[k] >= 0 && best[k] <= tree_cap) {
+                cg_push_bond(candidates, tree[parent[k]], tree[k], best[k], alloc);
+            } else {
+                parent[k] = -1;
+            }
+            for (int m = 0; m < n; ++m) {
+                if (done[m]) continue;
+                const float d = cg_bead_distance(state, tree[k], tree[m]);
+                if (d < best[m]) {
+                    best[m] = d;
+                    parent[m] = k;
+                }
+            }
+        }
+
+        // Ring bonds between side chain beads, besides the tree's
+        for (int a = 0; a < n; ++a) {
+            if (md_atom_flags(&sys->atom, tree[a]) & MD_ATOM_FLAG_BACKBONE) continue;
+            for (int b = a + 1; b < n; ++b) {
+                if (md_atom_flags(&sys->atom, tree[b]) & MD_ATOM_FLAG_BACKBONE) continue;
+                if (parent[a] == b || parent[b] == a) continue;
+                const float d = cg_bead_distance(state, tree[a], tree[b]);
+                if (d < ring_cap) cg_push_bond(candidates, tree[a], tree[b], d, alloc);
+            }
+        }
+
+        // The charge dummies
+        for (uint32_t i = range.beg; i < range.end && !res; ++i) {
+            if (!martini_charge_dummy(md_atom_name(&sys->atom, i))) continue;
+            int nearest = -1;
+            float nearest_d = dummy_cap;
+            for (uint32_t j = range.beg; j < range.end; ++j) {
+                if (j == i) continue;
+                const float d = cg_bead_distance(state, (int)i, (int)j);
+                if (martini_charge_dummy(md_atom_name(&sys->atom, j))) {
+                    if (j > i && d < dummy_pair) cg_push_bond(candidates, (int)i, (int)j, d, alloc);
+                } else if (d < nearest_d) {
+                    nearest = (int)j;
+                    nearest_d = d;
+                }
+            }
+            if (nearest != -1) cg_push_bond(candidates, nearest, (int)i, nearest_d, alloc);
+        }
+
+        // To the previous residue of the chain. The next number allows for the stretch of a bond in a simulation
+        // (Martini 2's backbone bonds, the softest, pass 4.3 A in one of 200 frames and 5.5 A in one of 10^5).
+        if (prev_last_bb != -1 && first_bb != -1 && prev_ci + 1 == ci && prev_kind == kind) {
+            const md_sequence_id_t prev_seq = md_component_seq_id(&sys->component, prev_ci);
+            const md_sequence_id_t seq      = md_component_seq_id(&sys->component, ci);
+            const bool restart = seq < prev_seq && !(seq <= 1 && prev_seq >= 9999);  // GRO and PDB wrap at 99999 and 9999
+            const bool next    = seq == prev_seq + 1 || (seq <= 1 && prev_seq >= 9999);
+            if (!restart) {
+                const float cap = next ? link_cap_next : link_cap;
+                const float d = cg_bead_distance(state, prev_last_bb, first_bb);
+                if (d < cap) {
+                    cg_push_bond(candidates, prev_last_bb, first_bb, d, alloc);
+                    if (prev_also_bb != -1 && prev_also_bb != prev_last_bb) {
+                        const float d2 = cg_bead_distance(state, prev_also_bb, first_bb);
+                        if (d2 < cap) cg_push_bond(candidates, prev_also_bb, first_bb, d2, alloc);
+                    }
+                }
+            }
+        }
+        prev_last_bb = last_bb;
+        prev_also_bb = also_bb;
+        prev_ci = ci;
+        prev_kind = kind;
+
+        const str_t comp_name = md_component_name(&sys->component, ci);
+        if (amino_acid && (str_eq_cstr(comp_name, "CYS") || str_eq_cstr(comp_name, "CYX"))) {
+            for (uint32_t i = range.beg; i < range.end; ++i) {
+                if (str_eq_cstr(md_atom_name(&sys->atom, i), "SC1")) md_array_push(cys_sc1, (int)i, alloc);
+            }
+        }
+    }
+
+    // Disulfide bridges
+    const size_t num_cys = md_array_size(cys_sc1);
+    for (size_t a = 0; a < num_cys; ++a) {
+        for (size_t b = a + 1; b < num_cys; ++b) {
+            const float d = cg_bead_distance(state, cys_sc1[a], cys_sc1[b]);
+            if (d < disulfide_cap) cg_push_bond(candidates, cys_sc1[a], cys_sc1[b], d, alloc);
+        }
+    }
 }
 
 void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc) {
@@ -3626,34 +3499,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
     md_array_ensure(candidates, num_atoms, temp_arena);
 
     if (is_coarse_grained) {
-        // In coarse-grained systems, use a simple distance cutoff: every bead pair within an amino acid component,
-        // and the backbone beads of consecutive amino acid components.
-        //
-        // @NOTE: Two bugs lived here. The component loop started at 1, so the first component never got its
-        // internal bonds, and the inner loop started at beg + 1 rather than i + 1, which tested every bead
-        // against itself (distance 0, always under the cutoff, so a self bond) and every other pair twice.
-        int bb_prev = -1;
-        for (size_t ci = 0; ci < sys->component.count; ++ci) {
-            int bb_i = -1;
-            if (md_component_kind(&sys->component, ci) == MD_COMPONENT_KIND_AMINO_ACID) {
-                md_urange_t atom_range = md_component_atom_range(&sys->component, ci);
-                for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
-                    if (md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) {
-                        bb_i = (int)i;
-                        break;
-                    }
-                }
-                for (size_t i = atom_range.beg; i < atom_range.end; ++i) {
-                    for (size_t j = i + 1; j < atom_range.end; ++j) {
-                        test_bb_pair((int)i, (int)j, 4.0f, state->xyz, &state->unitcell, &candidates, temp_arena);
-                    }
-                }
-            }
-            if (bb_prev >= 0 && bb_i >= 0) {
-                test_bb_pair(bb_prev, bb_i, 4.0f, state->xyz, &state->unitcell, &candidates, temp_arena);
-            }
-            bb_prev = bb_i;
-        }
+        infer_coarse_grained_bonds(&candidates, sys, state, temp_arena);
 
         size_t num_candidates = md_array_size(candidates);
 		md_array_ensure(bond->pairs, num_candidates, alloc);
@@ -3984,10 +3830,12 @@ done:
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state) {
     md_system_topology_changed(sys);
     // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate, except the bonds a user
-    // added by hand, which md_util_infer_covalent_bonds keeps and reconciles with the inferred ones.
+    // added by hand and those the file gives (CONECT records), which md_util_infer_covalent_bonds keeps and reconciles
+    // with the inferred ones: an inferred bond never stands in for one of them.
     size_t num_user = 0;
     for (size_t i = 0; i < sys->bond.count; ++i) {
-        if (md_bond_origin(sys->bond.flags[i]) == MD_BOND_ORIGIN_USER) {
+        const md_bond_origin_t origin = md_bond_origin(sys->bond.flags[i]);
+        if (origin == MD_BOND_ORIGIN_USER || origin == MD_BOND_ORIGIN_FILE) {
             sys->bond.pairs[num_user] = sys->bond.pairs[i];
             sys->bond.flags[num_user] = sys->bond.flags[i];
             num_user += 1;
@@ -4109,6 +3957,15 @@ static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exc
 
 static inline void set_component_kind(md_system_t* sys, size_t comp_idx, md_component_kind_t kind) {
     sys->component.flags[comp_idx] = md_component_flags_set_kind(sys->component.flags[comp_idx], kind);
+}
+
+// Whether the atoms of the range are all coarse grained beads (or their virtual sites)
+static bool atoms_are_beads(const md_system_t* sys, md_urange_t range) {
+    if (range.beg >= range.end) return false;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_ATOM || md_atom_atomic_number(&sys->atom, i) != 0) return false;
+    }
+    return true;
 }
 
 // True when every neighbor of the atom other than 'except' is of element allowed_z: the atom ends its chain
@@ -4243,7 +4100,49 @@ static bool classify_nucleotide(md_system_t* sys, size_t comp_idx, const md_nucl
     return true;
 }
 
-// Classifies the components (amino acid, nucleotide, water, ion) from their names, atoms and bonds, and gives the
+// The ends of coarse grained chains: an amino acid or a nucleotide of beads whose backbone is not bonded to that of the
+// residue before (after) it begins (ends) its chain. Martini 3 gives the backbone bead at either end of a protein chain
+// a regular type, charged (Q5) or neutral (P6, P1, P2) alike, where Gly, Ala, Val and Pro otherwise have a small one: a
+// small backbone bead (54) at an end gets the mass and size of a regular one.
+static void infer_coarse_grained_chain_ends(md_system_t* sys) {
+    if (!md_system_is_coarse_grained(sys) || !sys->component.flags || sys->bond.conn.offset == NULL) return;
+    for (size_t ci = 0; ci < sys->component.count; ++ci) {
+        const md_component_kind_t kind = md_component_kind(&sys->component, ci);
+        if (kind != MD_COMPONENT_KIND_AMINO_ACID && kind != MD_COMPONENT_KIND_NUCLEOTIDE) continue;
+        if (sys->component.flags[ci] & MD_COMPONENT_FLAG_RESOLVED) continue;
+        const md_urange_t range = md_component_atom_range(&sys->component, ci);
+        if (range.beg >= range.end || md_atom_particle_kind(&sys->atom, range.beg) != MD_PARTICLE_BEAD) continue;
+        const md_urange_t prev = ci > 0 ? md_component_atom_range(&sys->component, ci - 1) : (md_urange_t){0, 0};
+        const md_urange_t next = ci + 1 < sys->component.count ? md_component_atom_range(&sys->component, ci + 1) : (md_urange_t){0, 0};
+
+        bool to_prev = false, to_next = false;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE)) continue;
+            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+            while (md_bond_iter_has_next(&it)) {
+                const uint32_t j = (uint32_t)md_bond_iter_atom_index(&it);
+                if (md_atom_flags(&sys->atom, j) & MD_ATOM_FLAG_BACKBONE) {
+                    if (prev.beg <= j && j < prev.end) to_prev = true;
+                    if (next.beg <= j && j < next.end) to_next = true;
+                }
+                md_bond_iter_next(&it);
+            }
+        }
+        if (!to_prev) sys->component.flags[ci] |= MD_COMPONENT_FLAG_TERMINAL_BEG;
+        if (!to_next) sys->component.flags[ci] |= MD_COMPONENT_FLAG_TERMINAL_END;
+
+        if (kind == MD_COMPONENT_KIND_AMINO_ACID && (!to_prev || !to_next)) {
+            for (uint32_t i = range.beg; i < range.end; ++i) {
+                const md_atom_type_idx_t t = sys->atom.type_idx[i];
+                if (md_atom_type_mass(&sys->atom.type, t) != 54.0f || !str_eq_cstr(md_atom_type_name(&sys->atom.type, t), "BB")) continue;
+                sys->atom.type_idx[i] = find_or_add_atom_type(&sys->atom.type, md_atom_type_name(&sys->atom.type, t), 0, 72.0f, MARTINI_R,
+                    md_atom_type_color(&sys->atom.type, t), md_atom_type_flags(&sys->atom.type, t), sys->alloc);
+            }
+        }
+    }
+}
+
+// Classifies the components (amino acid, nucleotide, water, ion, lipid) from their names, atoms and bonds, and gives the
 // atoms of the amino acids and nucleotides whose backbone could be verified their roles.
 bool md_util_system_infer_comp_flags(md_system_t* sys) {
     if (!sys) {
@@ -4278,10 +4177,23 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         size_t len = (size_t)(comp_range.end - comp_range.beg);
 
         const md_component_kind_t kind = md_component_kind(&sys->component, comp_idx);
-        if (kind == MD_COMPONENT_KIND_WATER || kind == MD_COMPONENT_KIND_ION) {
+        if (kind == MD_COMPONENT_KIND_WATER || kind == MD_COMPONENT_KIND_ION || kind == MD_COMPONENT_KIND_LIPID) {
             // Already classified (by a predefined coarse grained type)
             continue;
 		}
+
+        // A molecule of the Martini force fields (a lipid, water, an ion, a sugar, ...): the kind of its topology. Its
+        // name alone may say something else: PCA, a lipid of Martini 2, is pyroglutamic acid in the PDB.
+        if (len <= 255 && atoms_are_beads(sys, comp_range)) {
+            str_t labels[256];
+            uint8_t map[256];
+            for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, comp_range.beg + i);
+            const martini_db_residue_t* mol = martini_db_match_molecule(MARTINI_ANY, comp_name, labels, len, map);
+            if (mol) {
+                set_component_kind(sys, comp_idx, mol->kind);
+                continue;
+            }
+        }
 
         // Amino acids and nucleotides are classified whatever their kind, as a predefined coarse grained type may
         // have given the kind but the atoms of an atomistic one still want their roles
@@ -4317,8 +4229,12 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
             set_component_kind(sys, comp_idx, MD_COMPONENT_KIND_WATER);
         } else if (len == 1 && (md_util_resname_ion(comp_name) || monatomic_ion_element(md_atom_atomic_number(&sys->atom, comp_range.beg)))) {
             set_component_kind(sys, comp_idx, MD_COMPONENT_KIND_ION);
+        } else if (md_util_resname_lipid(comp_name)) {
+            set_component_kind(sys, comp_idx, MD_COMPONENT_KIND_LIPID);
         }
     }
+
+    infer_coarse_grained_chain_ends(sys);
 
     const size_t max_warnings = 10;
     
@@ -5484,7 +5400,7 @@ bool md_util_system_infer_structures(md_system_t* sys) {
 }
 
 typedef struct {
-    const char* comp;
+    const char* comp;               // NULL for any component named as its comp_kind: an amino acid or a nucleotide
     const char* atom;
     int   atomic_nr;
     float mass;
@@ -5494,103 +5410,27 @@ typedef struct {
     md_component_kind_t comp_kind;  // What its component is, when the particle tells (OTHER when it does not)
 } atom_type_t;
 
-// Estimated radius based on (C12/C6)^(1/6) parameters given for martini particle types
-// P5 4.7
-// P4 4.7
-// P3 4.7
-// P1 4.7
-// C5 4.7          CYS
-// C3 4.7          PRO
-// C2 4.7          VAL
-// C1              LEU
-// Nda             ASN
-// N0
-// D
-// Qa              ASP
-// Qd
-// SC5
-// SC4
-// SP1
-// SNd
-// SQd
-
 
 // Predefined atom types (This include coarse grained types)
 static const atom_type_t predefined_atom_types[] = {
-    // Martini CG types (BB) + (SC*)
-    {"ALA", "BB",  0,   89.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ARG", "BB",  0,  174.20f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ARG", "SC1", 0,  101.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ARG", "SC2", 0,   70.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ASN", "BB",  0,  132.12f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ASN", "SC1", 0,   87.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ASP", "BB",  0,  133.10f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ASP", "SC1", 0,   96.06f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"CYS", "BB",  0,  121.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"CYS", "SC1", 0,  122.17f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"GLN", "BB",  0,  146.15f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"GLN", "SC1", 0,  111.14f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"GLU", "BB",  0,  147.13f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"GLU", "SC1", 0,  109.12f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"GLY", "BB",  0,   75.07f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"HIS", "BB",  0,  155.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"HIS", "SC1", 0,  110.14f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"HIS", "SC2", 0,   82.11f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"HIS", "SC3", 0,   40.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ILE", "BB",  0,  131.18f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"ILE", "SC1", 0,  113.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"LEU", "BB",  0,  131.18f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"LEU", "SC1", 0,  113.16f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"LYS", "BB",  0,  146.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"LYS", "SC1", 0,  128.17f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"LYS", "SC2", 0,   84.11f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"MET", "BB",  0,  149.21f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"MET", "SC1", 0,  149.21f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"PHE", "BB",  0,  165.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"PHE", "SC1", 0,  135.18f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"PHE", "SC2", 0,   77.15f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"PHE", "SC3", 0,   39.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"PRO", "BB",  0,  115.13f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"SER", "BB",  0,  105.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"SER", "SC1", 0,   73.06f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"THR", "BB",  0,  119.12f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"THR", "SC1", 0,   87.09f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"TRP", "BB",  0,  204.23f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"TRP", "SC1", 0,  162.20f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"TRP", "SC2", 0,   77.15f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"TRP", "SC3", 0,   44.07f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"TRP", "SC4", 0,   15.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"TYR", "BB",  0,  181.19f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-    {"TYR", "SC1", 0,  136.17f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"TYR", "SC2", 0,   91.11f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-	{"TYR", "SC3", 0,   33.04f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
-    {"VAL", "BB",  0,  117.15f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_AMINO_ACID},
-	{"VAL", "SC1", 0,   99.13f,    4.3f, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    // Martini proteins: the backbone bead and the side chain beads of any residue named as an amino acid, which covers
+    // the names martinize2 gives protonation states and lipidated residues. No atomistic force field names an atom BB
+    // or SC#. The mass and radius are those of a regular bead; the residues of martini_db have those of each version.
+    // Martini molecules other than amino acids and nucleotides (lipids, water, ions, ...) are told by their residue
+    // name and all their bead names at once (martini_db_match_molecule), not here.
+    {NULL, "BB",      0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE,   MD_COMPONENT_KIND_AMINO_ACID},
+    {NULL, "SC#",     0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    // The charge dummies of the polar side chains of polarizable Martini 2 (martini22p, elnedyn22p): no Lennard-Jones,
+    // so the radius of element 0, as md_tpr gives a particle without
+    {NULL, "SCP|SCN", 0, 36.0f, 1.0f,      MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
+    // The lipid tails of the lipidated residues of Martini 3: farnesyl, geranylgeranyl and palmitoyl Cys, myristoyl Gly
+    {"CYSF|CYSG|CYSP|GLYM", "C#", 0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_SIDE_CHAIN, MD_COMPONENT_KIND_AMINO_ACID},
 
-	{"POPE", "PO4", 0,  95.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "GL1", 0,  55.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "GL2", 0,  55.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C1A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "D2A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C3A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C4A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C1B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C2B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C3B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-	{"POPE", "C4B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-
-    {"POPG", "GL0", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "PO4", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "GL1", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "GL2", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C1A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "D2A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C3A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C4A", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C1B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C2B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C3B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-    {"POPG", "C4B", 0,  72.00f,    4.1f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
+    // Martini nucleotides (Martini 2 DNA, Uusitalo et al. 2015): the phosphate (BB1) and the sugar (BB2, BB3) of the
+    // backbone, and the base (SC1-SC4), of any residue named as a nucleotide
+    {NULL, "BB1",     0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE, MD_COMPONENT_KIND_NUCLEOTIDE},
+    {NULL, "BB#",     0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_NUCLEOSIDE, MD_COMPONENT_KIND_NUCLEOTIDE},
+    {NULL, "SC#",     0, 72.0f, MARTINI_R, MD_PARTICLE_BEAD, MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_NUCLEOSIDE, MD_COMPONENT_KIND_NUCLEOTIDE},
 
     {"RAMP", "PO1", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
     {"RAMP", "GM1", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
@@ -5663,9 +5503,6 @@ static const atom_type_t predefined_atom_types[] = {
     {"RAMP", "S37", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
     {"RAMP", "S38", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
     {"RAMP", "S39", 0, 50.f, 4.0f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_OTHER},
-
-	// Depending on the Martini version, water can be represented as a single bead or as 4-to-1 mapping
-	{ "W", "W",     0,  18.015f,     2.3f, MD_PARTICLE_BEAD, 0, MD_COMPONENT_KIND_WATER },
 
     // The massless charge sites of 4 and 5 site water models: M of TIP4P and its variants and OPC (MW in GROMACS, OM
     // in CHARMM, EPW in AMBER, M in OpenMM) and the two lone pairs of TIP5P (LP1 LP2, EP1 EP2, M1 M2). These are all
@@ -5750,10 +5587,21 @@ static bool pattern_match_any(const char* patterns, const char* str) {
     }
 }
 
+// Whether a component name is that of the kind: what a predefined type without a component name matches
+static bool resname_of_kind(str_t comp_name, md_component_kind_t kind) {
+    switch (kind) {
+    case MD_COMPONENT_KIND_AMINO_ACID: return md_util_resname_amino_acid(comp_name);
+    case MD_COMPONENT_KIND_NUCLEOTIDE: return md_util_resname_nucleotide(comp_name);
+    default: return false;
+    }
+}
+
 static atom_type_t* find_predefined_atom_type(str_t comp_name, str_t atom_name) {
     for (size_t i = 0; i < ARRAY_SIZE(predefined_atom_types); ++i) {
         atom_type_t type = predefined_atom_types[i];
-        if (pattern_match_any(type.comp, comp_name.ptr) && pattern_match_any(type.atom, atom_name.ptr)) {
+        if (!pattern_match_any(type.atom, atom_name.ptr)) continue;
+        const bool comp_match = type.comp ? pattern_match_any(type.comp, comp_name.ptr) : resname_of_kind(comp_name, type.comp_kind);
+        if (comp_match) {
             return (atom_type_t*)&predefined_atom_types[i];
         }
     }
@@ -5794,11 +5642,33 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
     STATIC_ASSERT(ARRAY_SIZE(predefined_atom_types) < 0xFFFF, "The cache packs a predefined type in 16 bits");
 
     if (sys->component.count > 0) {
+        // The masses and sizes of Martini beads depend on the version of Martini
+        const martini_system_t martini = martini_system(sys, label_of_array, atom_labels);
         for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
             str_t comp_name        = md_component_name(&sys->component, comp_idx);
             md_urange_t comp_range = md_component_atom_range(&sys->component, comp_idx);
             size_t comp_size       = comp_range.end - comp_range.beg;
-            uint64_t comp_key      = md_hash64_str(comp_name, comp_size);
+
+            // A Martini molecule (a lipid, water, an ion, ...): its residue name and all its bead names tell it, and give
+            // every bead its mass, size and particle kind. A residue of a single bead is one only in a Martini system:
+            // an ion of Martini 3 (ION NA) is named like an atomistic one.
+            uint8_t map[256];
+            const martini_db_residue_t* mol = martini_db_match_molecule(martini.version, comp_name, atom_labels + comp_range.beg, comp_size, map);
+            if (mol && comp_size == 1 && !martini.martini && mol->kind != MD_COMPONENT_KIND_WATER) mol = NULL;
+            if (mol) {
+                for (size_t i = comp_range.beg; i < comp_range.end; ++i) {
+                    if (sys->atom.type_idx[i] != 0) continue;
+                    const martini_db_bead_t* bead = martini_db_bead(mol, map[i - comp_range.beg]);
+                    const md_atom_type_flags_t flags = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, bead->particle);
+                    sys->atom.type_idx[i] = find_or_add_atom_type(&sys->atom.type, atom_labels[i], 0, bead->mass, bead->radius, 0, flags, alloc);
+                }
+                apply_predefined_comp_kind(sys, comp_idx, mol->kind);
+                continue;
+            }
+
+            // The labels of the component are part of the key, as which of them a name stands for can depend on the others
+            uint64_t comp_key = md_hash64_str(comp_name, comp_size);
+            for (size_t i = comp_range.beg; i < comp_range.end; ++i) comp_key = md_hash64_str(atom_labels[i], comp_key);
 
             // What the predefined types of its atoms say the component is
             md_component_kind_t comp_kind = MD_COMPONENT_KIND_OTHER;
@@ -5828,6 +5698,15 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                         radius  = predef->radius;
                         color   = z == 0 ? 0 : md_atomic_number_cpk_color(z);
                         flags   = md_atom_type_flags_set_particle_kind(flags, predef->particle);
+                        if (predef->comp_kind == MD_COMPONENT_KIND_AMINO_ACID || predef->comp_kind == MD_COMPONENT_KIND_NUCLEOTIDE) {
+                            // A Martini bead of an amino acid or a nucleotide: its version tells its mass and size
+                            const martini_db_bead_t* bead = martini_db_biopolymer_bead(martini.version, comp_name, atom_labels + comp_range.beg, comp_size, i - comp_range.beg);
+                            if (bead) {
+                                mass   = bead->mass;
+                                radius = bead->radius;
+                                flags  = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, bead->particle);
+                            }
+                        }
                     } else {
                         z       = md_atomic_number_infer_from_label(atom_name, comp_name, comp_size);
                         mass    = md_atomic_number_mass(z);
@@ -5835,7 +5714,7 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                         color   = md_atomic_number_cpk_color(z);
                     }
 
-                    md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, atom_name, z, mass, radius, color, flags, alloc);
+                    md_atom_type_idx_t type = find_or_add_atom_type(&sys->atom.type, atom_name, z, mass, radius, color, flags, alloc);
                     sys->atom.type_idx[i] = type;
                     const uint32_t entry = predef ? (uint32_t)(predef - predefined_atom_types) + 1 : 0;
                     md_hashmap_add(&atom_type_cache, key, (uint32_t)type | (entry << 16));
@@ -9339,12 +9218,13 @@ static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t 
 
     size_t i = 0;
     if (!indices) {
-        md_xv v_ext[XYZ_GROUP_VECS], v_inv[XYZ_GROUP_VECS], v_ref[XYZ_GROUP_VECS], v_keep[XYZ_GROUP_VECS];
+        md_xv v_ext[XYZ_GROUP_VECS], v_inv[XYZ_GROUP_VECS], v_ref[XYZ_GROUP_VECS], v_refi[XYZ_GROUP_VECS], v_keep[XYZ_GROUP_VECS];
         xyz_lane_pattern(v_ext, ext.x, ext.y, ext.z);
         xyz_lane_pattern(v_inv, ext.x > 0 ? 1.0f / ext.x : 0.0f, ext.y > 0 ? 1.0f / ext.y : 0.0f, ext.z > 0 ? 1.0f / ext.z : 0.0f);
         xyz_lane_pattern(v_ref, ref.x, ref.y, ref.z);
         for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
             v_keep[j] = md_xv_cmpeq_ps(v_ext[j], md_xv_setzero_ps());
+            v_refi[j] = md_xv_mul_ps(v_ref[j], v_inv[j]);
         }
 
         // Scalar up to alignment, then eight atoms at a time
@@ -9356,10 +9236,11 @@ static void pbc_ortho(vec3_t* xyz, const int32_t* indices, size_t count, vec3_t 
         for (; i + 8 <= count; i += 8) {
             for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
                 const md_xv v = md_xv_loadu_ps(f + i * 3 + j * MD_XV_WIDTH);
-                md_xv d = md_xv_mul_ps(md_xv_sub_ps(v, v_ref[j]), v_inv[j]);
+                // Into [0, ext]: d from a fused multiply-subtract, see the deperiodize comment in md_simd.h
+                md_xv d = md_xv_fmsub_ps(v, v_inv[j], v_refi[j]);
                 d = md_xv_sub_ps(d, md_xv_round_ps(d));
                 const md_xv p = md_xv_fmadd_ps(d, v_ext[j], v_ref[j]);
-                md_xv_storeu_ps(f + i * 3 + j * MD_XV_WIDTH, md_xv_blendv_ps(p, v, v_keep[j]));
+                md_xv_storeu_ps(f + i * 3 + j * MD_XV_WIDTH, md_xv_select_ps(p, v, v_keep[j]));
             }
         }
     }
@@ -10033,7 +9914,10 @@ static inline void lerp_xyz8(float* dst, const float* a, const float* b, const m
     }
 }
 
-static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv ext[XYZ_GROUP_VECS], const md_xv inv[XYZ_GROUP_VECS], bool periodic, md_xv t, md_xv s) {
+// One group of eight atoms over four frames, weighted (see md_util_interpolate_cubic_weighted). The weights are applied
+// in order, so a weight of exactly one with the others zero gives that frame back exactly: an interpolating scheme
+// lands on its frames.
+static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv ext[XYZ_GROUP_VECS], const md_xv inv[XYZ_GROUP_VECS], bool periodic, const md_xv w[4]) {
     for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
         md_xv x0 = md_xv_loadu_ps(src[0] + j * MD_XV_WIDTH);
         const md_xv x1 = md_xv_loadu_ps(src[1] + j * MD_XV_WIDTH);
@@ -10044,7 +9928,11 @@ static inline void cubic_xyz8(float* dst, const float* const src[4], const md_xv
             x2 = xv_deperiodize_ortho(x2, x1, ext[j], inv[j]);
             x3 = xv_deperiodize_ortho(x3, x2, ext[j], inv[j]);
         }
-        md_xv_storeu_ps(dst + j * MD_XV_WIDTH, md_xv_cubic_spline_ps(x0, x1, x2, x3, t, s));
+        md_xv r = md_xv_mul_ps(w[0], x0);
+        r = md_xv_fmadd_ps(w[1], x1, r);
+        r = md_xv_fmadd_ps(w[2], x2, r);
+        r = md_xv_fmadd_ps(w[3], x3, r);
+        md_xv_storeu_ps(dst + j * MD_XV_WIDTH, r);
     }
 }
 
@@ -10115,18 +10003,48 @@ bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], 
     return true;
 }
 
+void md_util_cubic_spline_weights(float w[4], float t, float s) {
+    ASSERT(w);
+    // The Hermite form, p(t) = h00 p1 + h10 m1 + h01 p2 + h11 m2, with the tangents m1 = s (p2 - p0) and m2 = s (p3 - p1)
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float h00 =  2.0f * t3 - 3.0f * t2 + 1.0f;
+    const float h10 =         t3 - 2.0f * t2 + t;
+    const float h01 = -2.0f * t3 + 3.0f * t2;
+    const float h11 =         t3 -        t2;
+    w[0] = -s * h10;
+    w[1] = h00 - s * h11;
+    w[2] = h01 + s * h10;
+    w[3] = s * h11;
+}
+
+void md_util_cubic_bspline_weights(float w[4], float t) {
+    ASSERT(w);
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float u  = 1.0f - t;
+    w[0] = u * u * u * (1.0f / 6.0f);
+    w[1] = ( 3.0f * t3 - 6.0f * t2 + 4.0f) * (1.0f / 6.0f);
+    w[2] = (-3.0f * t3 + 3.0f * t2 + 3.0f * t + 1.0f) * (1.0f / 6.0f);
+    w[3] = t3 * (1.0f / 6.0f);
+}
+
+bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s) {
+    float w[4];
+    md_util_cubic_spline_weights(w, CLAMP(t, 0.0f, 1.0f), CLAMP(s, 0.0f, 1.0f));
+    return md_util_interpolate_cubic_weighted(out_xyz, in_xyz, count, cell, w);
+}
+
 // As md_util_interpolate_linear: packed floats directly without a cell or in an orthorhombic one,
 // split into x, y and z (and padded) in a triclinic one.
-bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s) {
+bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]) {
     ASSERT(out_xyz);
     ASSERT(in_xyz);
     ASSERT(in_xyz[0]);
     ASSERT(in_xyz[1]);
     ASSERT(in_xyz[2]);
     ASSERT(in_xyz[3]);
-
-    t = CLAMP(t, 0.0f, 1.0f);
-    s = CLAMP(s, 0.0f, 1.0f);
+    ASSERT(w);
 
     const bool ortho = cell && md_unitcell_is_orthorhombic(cell);
     const bool tricl = cell && md_unitcell_is_triclinic(cell);
@@ -10137,10 +10055,8 @@ bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xy
         md_unitcell_I_extract_float(I.elem, cell);
     }
 
-    const md_256 vt = md_mm256_set1_ps(t);
-    const md_256 vs = md_mm256_set1_ps(s);
-    const md_xv xt = md_xv_set1_ps(t);
-    const md_xv xs = md_xv_set1_ps(s);
+    const md_256 vw[4] = { md_mm256_set1_ps(w[0]), md_mm256_set1_ps(w[1]), md_mm256_set1_ps(w[2]), md_mm256_set1_ps(w[3]) };
+    const md_xv  xw[4] = { md_xv_set1_ps(w[0]),    md_xv_set1_ps(w[1]),    md_xv_set1_ps(w[2]),    md_xv_set1_ps(w[3]) };
 
     const float* src[4] = { (const float*)in_xyz[0], (const float*)in_xyz[1], (const float*)in_xyz[2], (const float*)in_xyz[3] };
     float* dst = (float*)out_xyz;
@@ -10156,14 +10072,14 @@ bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xy
             const size_t n = (i == 0 && head) ? head : MIN(8, count - i);
             if (n == 8) {
                 const float* const g[4] = { src[0] + i * 3, src[1] + i * 3, src[2] + i * 3, src[3] + i * 3 };
-                cubic_xyz8(dst + i * 3, g, ext, inv, ortho, xt, xs);
+                cubic_xyz8(dst + i * 3, g, ext, inv, ortho, xw);
             } else {
                 float stage[4][24] = {0}, r[24];
                 for (int k = 0; k < 4; ++k) {
                     MEMCPY(stage[k], src[k] + i * 3, n * sizeof(vec3_t));
                 }
                 const float* const g[4] = { stage[0], stage[1], stage[2], stage[3] };
-                cubic_xyz8(r, g, ext, inv, ortho, xt, xs);
+                cubic_xyz8(r, g, ext, inv, ortho, xw);
                 MEMCPY(dst + i * 3, r, n * sizeof(vec3_t));
             }
             i += n;
@@ -10182,11 +10098,15 @@ bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xy
         simd_deperiodize_triclinic(x2, x1, MD_AS_CONST_MAT3(A.elem));
         simd_deperiodize_triclinic(x3, x2, MD_AS_CONST_MAT3(A.elem));
 
-        const md_256 x = md_mm256_cubic_spline_ps(x0[0], x1[0], x2[0], x3[0], vt, vs);
-        const md_256 y = md_mm256_cubic_spline_ps(x0[1], x1[1], x2[1], x3[1], vt, vs);
-        const md_256 z = md_mm256_cubic_spline_ps(x0[2], x1[2], x2[2], x3[2], vt, vs);
+        md_256 r[3];
+        for (int k = 0; k < 3; ++k) {
+            r[k] = md_mm256_mul_ps(vw[0], x0[k]);
+            r[k] = md_mm256_fmadd_ps(vw[1], x1[k], r[k]);
+            r[k] = md_mm256_fmadd_ps(vw[2], x2[k], r[k]);
+            r[k] = md_mm256_fmadd_ps(vw[3], x3[k], r[k]);
+        }
 
-        md_mm256_store_xyz_packed_ps(dst + i * 3, x, y, z);
+        md_mm256_store_xyz_packed_ps(dst + i * 3, r[0], r[1], r[2]);
     }
 
     return true;
@@ -10202,6 +10122,30 @@ static inline void commit_protein_backbone(md_amino_acid_atoms_t* bb_atoms, size
         int32_t comp_idx = (int32_t)(comp_base_idx + i);
         md_array_push(bb_data->segment.comp_idx, comp_idx, alloc);
     }
+}
+
+// The bead which stands for the backbone of an amino acid of a coarse grained model (the BB bead of Martini): its one
+// bead with the backbone role. -1 for a component which is no amino acid, or has none or several.
+static md_atom_idx_t amino_acid_backbone_bead(const md_system_t* sys, size_t comp_idx) {
+    if (md_component_kind(&sys->component, comp_idx) != MD_COMPONENT_KIND_AMINO_ACID) return -1;
+    const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+    md_atom_idx_t bead = -1;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) && md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_BEAD) {
+            if (bead >= 0) return -1;
+            bead = (md_atom_idx_t)i;
+        }
+    }
+    return bead;
+}
+
+// Whether two consecutive backbone beads are bonded. Beads the system has no bonds for (a structure file alone, without
+// bond inference) are taken to be: then the sequence alone tells where a chain breaks, as for atoms.
+static bool backbone_beads_bonded(const md_system_t* sys, md_atom_idx_t a, md_atom_idx_t b) {
+    const md_bond_iter_t it_a = md_bond_iter(&sys->bond, (size_t)a);
+    const md_bond_iter_t it_b = md_bond_iter(&sys->bond, (size_t)b);
+    if (!md_bond_iter_has_next(&it_a) || !md_bond_iter_has_next(&it_b)) return true;
+    return md_bond_find(&sys->bond, a, b) >= 0;
 }
 
 static inline void flush_protein_backbone_segment(md_amino_acid_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
@@ -10406,13 +10350,28 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                         md_amino_acid_atoms_t atoms;
                         md_urange_t atom_range = md_component_atom_range(&sys->component, comp_idx);
                         bool has_backbone_atoms = md_util_amino_acid_atoms_extract(&atoms, &sys->atom, atom_range);
+                        if (!has_backbone_atoms) {
+                            // A coarse grained residue: its backbone bead, a segment of a trace
+                            const md_atom_idx_t bead = amino_acid_backbone_bead(sys, comp_idx);
+                            if (bead >= 0) {
+                                MEMSET(&atoms, -1, sizeof(atoms));
+                                atoms.ca = bead;
+                                has_backbone_atoms = true;
+                            }
+                        }
 
                         if (has_backbone_atoms) {
                             md_sequence_id_t seq_id = md_system_component_seq_id(sys, comp_idx);
                             size_t backbone_length = md_array_size(backbone_atoms);
 
-                            if (backbone_length > 0 && seq_id != prev_seq_id + 1) {
-                                flush_protein_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                            if (backbone_length > 0) {
+                                // A range is atomistic or a trace throughout, and the beads of a trace are bonded where
+                                // the topology says what they are bonded to
+                                const md_amino_acid_atoms_t prev = *md_array_last(backbone_atoms);
+                                const bool trace = atoms.n < 0;
+                                if (seq_id != prev_seq_id + 1 || trace != (prev.n < 0) || (trace && !backbone_beads_bonded(sys, prev.ca, atoms.ca))) {
+                                    flush_protein_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                                }
                             }
 
                             if (comp_base == -1) {
@@ -10678,22 +10637,73 @@ void md_util_sort_spatial_xyz(uint32_t* source, const float* xyz, size_t stride_
     md_temp_end(temp_scope);
 }
 
-void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count) {
-    if (!data || count <= 0) return;
+void md_util_sort_radix_u32(uint32_t* data, size_t count) {
+    if (!data || count <= 1) return;
+    ASSERT(count <= UINT32_MAX);
+
+    if (count <= RADIX_SMALL_COUNT) {
+        insertion_sort_u32(data, count);
+        return;
+    }
+    if (is_sorted_u32(data, count)) return;
 
     md_temp_scope_t temp_scope = md_temp_begin();
-    uint32_t* temp = md_temp_alloc_array(temp_scope, uint32_t, count);
-    sort_radix_inplace_uint32(data, count, temp);
+    sort_radix_u32(data, count, temp_scope);
     md_temp_end(temp_scope);
 }
 
-void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* in_keys, size_t count) {
-    ASSERT(in_keys);
-    ASSERT(out_indices);
+void md_util_sort_radix_u64(uint64_t* data, size_t count) {
+    if (!data || count <= 1) return;
+    ASSERT(count <= UINT32_MAX);
+
+    if (count <= RADIX_SMALL_COUNT) {
+        insertion_sort_u64(data, count);
+        return;
+    }
+    if (is_sorted_u64(data, count)) return;
 
     md_temp_scope_t temp_scope = md_temp_begin();
-    uint32_t* tmp_indices = md_temp_alloc_array(temp_scope, uint32_t, count);
-    sort_radix_uint32(out_indices, in_keys, count, tmp_indices);
+    sort_radix_u64(data, count, temp_scope);
+    md_temp_end(temp_scope);
+}
+
+void md_util_argsort_radix_u32(uint32_t* out_indices, const uint32_t* keys, size_t count) {
+    if (count == 0) return;
+    ASSERT(out_indices);
+    ASSERT(keys);
+    ASSERT(count <= UINT32_MAX);
+
+    if (count <= RADIX_SMALL_COUNT) {
+        insertion_argsort_u32(out_indices, keys, count);
+        return;
+    }
+    if (is_sorted_u32(keys, count)) {
+        for (size_t i = 0; i < count; ++i) out_indices[i] = (uint32_t)i;
+        return;
+    }
+
+    md_temp_scope_t temp_scope = md_temp_begin();
+    argsort_radix_u32(out_indices, keys, count, temp_scope);
+    md_temp_end(temp_scope);
+}
+
+void md_util_argsort_radix_u64(uint32_t* out_indices, const uint64_t* keys, size_t count) {
+    if (count == 0) return;
+    ASSERT(out_indices);
+    ASSERT(keys);
+    ASSERT(count <= UINT32_MAX);
+
+    if (count <= RADIX_SMALL_COUNT) {
+        insertion_argsort_u64(out_indices, keys, count);
+        return;
+    }
+    if (is_sorted_u64(keys, count)) {
+        for (size_t i = 0; i < count; ++i) out_indices[i] = (uint32_t)i;
+        return;
+    }
+
+    md_temp_scope_t temp_scope = md_temp_begin();
+    argsort_radix_u64(out_indices, keys, count, temp_scope);
     md_temp_end(temp_scope);
 }
 

@@ -269,7 +269,7 @@ UTEST_F(ring, script_ring) {
     EXPECT_EQ(0, (int)ring_filter_count("ring('[nH]') in element('C')", trp, NULL));
 
     // As one selection: the atoms of all of them
-    EXPECT_EQ(1, (int)ring_filter_count("flatten(ring(kind='aromatic'))", trp, &atoms));
+    EXPECT_EQ(1, (int)ring_filter_count("union(ring(kind='aromatic'))", trp, &atoms));
     EXPECT_EQ(9, (int)atoms);
 
     // Errors, found before evaluating
@@ -279,4 +279,86 @@ UTEST_F(ring, script_ring) {
     EXPECT_TRUE(ring_filter_fails_with("ring(kind='flat')", "Unknown ring kind 'flat'", trp));
     EXPECT_TRUE(ring_filter_fails_with("ring(size=6:5)", "ascending", trp));
     EXPECT_TRUE(ring_filter_fails_with("ring('cc', 'aromatic')", "can only be given by name", trp));
+}
+
+// The rings ring() and the like give, as indices into md_system_t::ring (-1 for a selection which is no ring), in
+// their order. Returns how many, -1 on an error.
+static int ring_filter_indices(int* out, int cap, const char* expr, const ring_sys_t* r) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_array(md_bitset_t) arr = 0;
+    char err[256] = {0};
+    bool is_dynamic = false;
+    int result = -1;
+    if (md_filter_evaluate(&arr, str_from_cstr(expr), &r->sys, &r->st, NULL, &is_dynamic, err, sizeof(err), alloc)) {
+        result = (int)md_array_size(arr);
+        for (int i = 0; i < result && i < cap; ++i) {
+            out[i] = -1;
+            for (size_t k = 0; k < md_index_data_num_ranges(&r->sys.ring); ++k) {
+                const int32_t* ring = md_index_range_beg(&r->sys.ring, k);
+                const size_t n = md_index_range_size(&r->sys.ring, k);
+                bool same = md_bitset_count(arr[i]) == n;
+                for (size_t j = 0; j < n && same; ++j) same = md_bitset_test(arr[i], (uint32_t)ring[j]);
+                if (same) { out[i] = (int)k; break; }
+            }
+        }
+    } else {
+        printf("'%s': %s\n", expr, err);
+    }
+    md_arena_allocator_destroy(alloc);
+    return result;
+}
+
+// ring(index): by position among the rings the filters let through, within the context. Without either, ring(k) is
+// the ring k - 1 of the system, which is what the circle of an aromatic ring picks as (md_gl) and the tooltip names.
+UTEST_F(ring, script_ring_index) {
+    const ring_sys_t* trp = &utest_fixture->trp;
+    const ring_sys_t* ade = &utest_fixture->ade;
+    ASSERT_EQ(2, (int)md_index_data_num_ranges(&trp->sys.ring));
+    ASSERT_EQ(3, (int)md_index_data_num_ranges(&ade->sys.ring));
+    int idx[8];
+
+    // The rings of the system, in its order
+    EXPECT_EQ(1, ring_filter_indices(idx, 8, "ring(1)", trp));
+    EXPECT_EQ(0, idx[0]);
+    EXPECT_EQ(1, ring_filter_indices(idx, 8, "ring(2)", trp));
+    EXPECT_EQ(1, idx[0]);
+    EXPECT_EQ(2, ring_filter_indices(idx, 8, "ring(1:2)", trp));
+    EXPECT_EQ(0, idx[0]);
+    EXPECT_EQ(1, idx[1]);
+    EXPECT_EQ(3, ring_filter_indices(idx, 8, "ring(:)", ade));
+    EXPECT_EQ(2, ring_filter_indices(idx, 8, "ring(2:)", ade));
+    EXPECT_EQ(1, idx[0]);
+    EXPECT_EQ(2, idx[1]);
+    // In the order given, as residue() takes them
+    EXPECT_EQ(2, ring_filter_indices(idx, 8, "ring({3, 1})", ade));
+    EXPECT_EQ(2, idx[0]);
+    EXPECT_EQ(0, idx[1]);
+
+    // Among the rings the filters let through: the 6 membered ring of indole is ring(1, size=6) whatever its index
+    const int six = md_index_range_size(&trp->sys.ring, 0) == 6 ? 0 : 1;
+    EXPECT_EQ(1, ring_filter_indices(idx, 8, "ring(1, size=6)", trp));
+    EXPECT_EQ(six, idx[0]);
+    EXPECT_EQ(1, ring_filter_indices(idx, 8, "ring(1, kind='heteroaromatic')", trp));
+    EXPECT_EQ(1 - six, idx[0]);
+    EXPECT_EQ(2, ring_filter_indices(idx, 8, "ring(:, kind='heteroaromatic')", ade));
+
+    // Within a context: the rings within it. The benzene ring is the only one of indole made of C alone.
+    EXPECT_EQ(1, ring_filter_indices(idx, 8, "ring(1) in element('C')", trp));
+    EXPECT_EQ(six, idx[0]);
+    EXPECT_EQ(0, ring_filter_indices(idx, 8, "ring(2) in element('C')", trp));    // Past the last: nothing
+    EXPECT_EQ(1, ring_filter_indices(idx, 8, "ring(1) in residue(:)", trp));
+
+    // The same selection as the patterns give
+    size_t atoms = 0;
+    EXPECT_EQ(1, (int)ring_filter_count("union(ring(1:2))", trp, &atoms));
+    EXPECT_EQ(9, (int)atoms);
+
+    // Errors, found before evaluating
+    EXPECT_TRUE(ring_filter_fails_with("ring(3)", "past the last ring (2)", trp));
+    EXPECT_TRUE(ring_filter_fails_with("ring(1:5)", "past the last ring (2)", trp));
+    EXPECT_TRUE(ring_filter_fails_with("ring(2, kind='heteroaromatic')", "past the last ring (1)", trp));
+    EXPECT_TRUE(ring_filter_fails_with("ring(1)", "there are none", &utest_fixture->ala));
+    EXPECT_TRUE(ring_filter_fails_with("ring(0)", "before the first ring", trp));
+    EXPECT_TRUE(ring_filter_fails_with("ring(0) in element('C')", "before the first ring", trp));
+    EXPECT_TRUE(ring_filter_fails_with("ring(1, 'aromatic')", "can only be given by name", trp));
 }

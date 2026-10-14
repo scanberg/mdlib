@@ -8,8 +8,8 @@
 //                   hit counts.
 //   WEAK_BONDS:     weak bonds, a dashed cylinder: u_dash_count dashes with flat ends, the first starting at pa and the
 //                   last ending at pb, each covering the fraction u_dash_fill of the period of the pattern.
-//   BOND_PARTNERS:  the dashed partner of an aromatic or delocalized bond, a dashed cylinder as the weak bonds, which
-//                   colors and picks as the part of its bond it spans.
+//   BOND_PARTNERS:  the dashed partner of a delocalized bond (or of an aromatic bond in no circle, ring.vert), a dashed
+//                   cylinder as the weak bonds, which colors and picks as the part of its bond it spans.
 
 #ifndef ORTHO
 #define ORTHO 0

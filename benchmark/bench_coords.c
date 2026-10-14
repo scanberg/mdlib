@@ -8,6 +8,7 @@
 #include <md_trr.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_dssp.h>
 #include <md_hbond.h>
 #include <md_script.h>
 #include <core/md_coord_stream.h>
@@ -206,7 +207,7 @@ UBENCH_EX(coords, protein_backbone) {
         md_secondary_structure_t* ss = md_alloc(arena, n * sizeof(md_secondary_structure_t));
         md_backbone_angles_t* ang = md_alloc(arena, n * sizeof(md_backbone_angles_t));
         UBENCH_DO_BENCHMARK() {
-            md_util_backbone_secondary_structure_infer(ss, n, st.xyz, &st.unitcell, &sys.protein_backbone);
+            md_dssp_compute(ss, n, st.xyz, &st.unitcell, &sys.protein_backbone);
             md_util_backbone_angles_compute(ang, n, st.xyz, &st.unitcell, &sys.protein_backbone);
             UBENCH_DO_NOTHING(ss);
         }

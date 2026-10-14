@@ -6,7 +6,7 @@
 #include "core/md_allocator.h"
 #include "core/md_os.h"
 #include "core/md_log.h"
-#include "core/md_str_builder.h"
+#include "core/md_writer.h"
 #include "core/md_array.h"
 #include <core/md_parse.h>
 
@@ -17,37 +17,37 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, si
 	
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(str_alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-	md_strb_t sb = md_strb_create(temp_alloc);
+	md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
 	time_t t;
 	struct tm* info;
 	time(&t);
 	info = localtime(&t);
 	
-	md_strb_fmt(&sb, "# This file was created %s", asctime(info));
-	md_strb_fmt(&sb, "# Created by:\n");
-	md_strb_fmt(&sb, "# VIAMD \n");
+	md_str_writer_fmt(&sb, "# This file was created %s", asctime(info));
+	md_str_writer_fmt(&sb, "# Created by:\n");
+	md_str_writer_fmt(&sb, "# VIAMD \n");
 
 	if (!str_empty(title)) {
-		md_strb_fmt(&sb, "@    title \"%.*s\"\n", (int)title.len, title.ptr);
+		md_str_writer_fmt(&sb, "@    title \"%.*s\"\n", (int)title.len, title.ptr);
 	} else {
-		md_strb_fmt(&sb, "@    title \"VIAMD export\"\n");
+		md_str_writer_fmt(&sb, "@    title \"VIAMD export\"\n");
 	}
-	md_strb_fmt(&sb, "@    xaxis  label \"%.*s\"\n", (int)xaxis_label.len, xaxis_label.ptr);
-	md_strb_fmt(&sb, "@    yaxis  label \"%.*s\"\n", (int)yaxis_label.len, yaxis_label.ptr);
-	md_strb_fmt(&sb, "@ TYPE xy\n");
-	md_strb_fmt(&sb, "@ view 0.15, 0.15, 0.75, 0.85\n");
-	md_strb_fmt(&sb, "@ legend on\n");
-	md_strb_fmt(&sb, "@ legend box on\n");
-	md_strb_fmt(&sb, "@ legend loctype view\n");
-	md_strb_fmt(&sb, "@ legend 0.78, 0.8\n");
-	md_strb_fmt(&sb, "@ legend length 2\n");
+	md_str_writer_fmt(&sb, "@    xaxis  label \"%.*s\"\n", (int)xaxis_label.len, xaxis_label.ptr);
+	md_str_writer_fmt(&sb, "@    yaxis  label \"%.*s\"\n", (int)yaxis_label.len, yaxis_label.ptr);
+	md_str_writer_fmt(&sb, "@ TYPE xy\n");
+	md_str_writer_fmt(&sb, "@ view 0.15, 0.15, 0.75, 0.85\n");
+	md_str_writer_fmt(&sb, "@ legend on\n");
+	md_str_writer_fmt(&sb, "@ legend box on\n");
+	md_str_writer_fmt(&sb, "@ legend loctype view\n");
+	md_str_writer_fmt(&sb, "@ legend 0.78, 0.8\n");
+	md_str_writer_fmt(&sb, "@ legend length 2\n");
 	
 	for (size_t i = 0; i < num_legends; ++i) {
-		md_strb_fmt(&sb, "@ s%d legend \"%.*s\"\n", (int)i, (int)legends[i].len, legends[i].ptr);
+		md_str_writer_fmt(&sb, "@ s%d legend \"%.*s\"\n", (int)i, (int)legends[i].len, legends[i].ptr);
 	}
 
-	str_t result = str_copy(md_strb_to_str(sb), str_alloc);
+	str_t result = str_copy(md_str_writer_to_str(&sb), str_alloc);
 
 	md_temp_end(temp_scope);
 	return result;
@@ -74,19 +74,19 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
 
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(str_alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-	md_strb_t sb = {0};
-	md_strb_init(&sb, temp_alloc);
-	md_strb_push_str(&sb, header);
+	md_str_writer_t sb = {0};
+	md_str_writer_init(&sb, temp_alloc);
+	md_str_writer_push_str(&sb, header);
 
 	for (size_t i = 0; i < num_values; ++i) {
 		for (size_t j = 0; j < num_fields; ++j) {
-			md_strb_fmt(&sb, "%12.6f", field_values[j][i]);
+			md_str_writer_fmt(&sb, "%12.6f", field_values[j][i]);
 			const char c = (j < num_fields - 1) ? ' ' : '\n';
-			md_strb_push_char(&sb, c);
+			md_str_writer_push_char(&sb, c);
 		}
 	}
 
-	str = str_copy(md_strb_to_str(sb), str_alloc);
+	str = str_copy(md_str_writer_to_str(&sb), str_alloc);
 	md_temp_end(temp_scope);
 	return str;
 }
@@ -134,22 +134,22 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	bool result = false;
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-	md_strb_t sb = md_strb_create(temp_alloc);
+	md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
 	while (md_buffered_reader_peek_line(&line, reader)) {
 		if (line.ptr[0] != '#' && line.ptr[0] != '@') break;
 		md_buffered_reader_skip_line(reader);
-		md_strb_push_str(&sb, line);
-		md_strb_push_char(&sb, '\n');
+		md_str_writer_push_str(&sb, line);
+		md_str_writer_push_char(&sb, '\n');
 	}
 
-	if (md_strb_len(sb) == 0) {
+	if (md_str_writer_len(&sb) == 0) {
 		MD_LOG_ERROR("XVG: Expected header section");
 		goto done;
 	}
 
 	// Extract string from reader
-	str_t header = str_copy(md_strb_to_str(sb), alloc);
+	str_t header = str_copy(md_str_writer_to_str(&sb), alloc);
 	header_info->header = header;
 
 	// read comment

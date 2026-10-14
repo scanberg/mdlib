@@ -11,7 +11,6 @@
 #include <core/md_log.h>
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
-#include <core/md_str_builder.h>
 
 #include <string.h>
 #include <stdio.h>

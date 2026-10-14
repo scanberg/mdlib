@@ -50,20 +50,22 @@ bool md_util_resname_acidic(str_t str);
 bool md_util_resname_basic(str_t str);
 bool md_util_resname_neutral(str_t str);
 bool md_util_resname_water(str_t str);
+bool md_util_resname_lipid(str_t str);      // The lipids of the Martini lipidomes (their names are mostly the atomistic ones)
 bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
 bool md_util_resname_nucleotide(str_t str);
 
 void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
-// Classifies the components (md_component_kind_t: amino acid, nucleotide, water, ion) from their names, atoms and
-// bonds. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
+// Classifies the components (md_component_kind_t: amino acid, nucleotide, water, ion, lipid) from their names, atoms
+// and bonds. A component of coarse grained beads which is a molecule of the Martini force fields by its name and all
+// its bead names (a lipid, water, an ion, a sugar, ...) is of the kind of that molecule. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
 // is either a standard residue by name or linked into a chain (a peptide or phosphodiester bond to another
 // component), is MD_COMPONENT_FLAG_RESOLVED: its atoms are given their roles (MD_ATOM_FLAG_BACKBONE, _SIDE_CHAIN,
 // ...) and its terminal groups are marked. The link keeps out the ligands which name their atoms like a residue
 // (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A component which is only named like an
 // amino acid or nucleotide gets the kind alone. Components a predefined coarse grained type already classified as
-// water or ion are left alone. Requires the bonds.
+// water, ion or lipid are left alone. Requires the bonds.
 bool md_util_system_infer_comp_flags(md_system_t* sys);
 
 // Replaces the entities and instances of the system with inferred ones (MD_ENTITY_FLAG_INFERRED), from the
@@ -82,16 +84,15 @@ void md_util_system_infer_entity_kinds(md_system_t* sys);
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // The per segment quantities of a protein backbone (see md_protein_backbone_data_t), computed into the caller's arrays
-// of one entry per segment (capacity at least backbone->segment.count). They do not allocate.
+// of one entry per segment (capacity at least backbone->segment.count). They do not allocate. The secondary structure
+// has its own header, md_dssp.h.
 
-// Secondary structure (DSSP like) from the coordinates of a frame
-bool md_util_backbone_secondary_structure_infer(md_secondary_structure_t secondary_structures[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
-
-// Backbone angles (phi, psi) from the coordinates of a frame
+// Backbone angles (phi, psi) from the coordinates of a frame. A trace has none: its segments are left 0.
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
-// sys->protein_backbone. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN.
+// sys->protein_backbone. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
+// segments of traces, which have no phi and psi.
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
 // THE BACKBONE OF A STATE. The angles and the secondary structure depend on the coordinates, so they belong to the
@@ -121,10 +122,16 @@ md_secondary_structure_t* md_util_state_secondary_structure_write(md_system_stat
 // False when the state has no coordinates, or the system no protein backbone.
 bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_system_t* sys);
 
+// Bonds of origin MD_BOND_ORIGIN_INFERRED, replacing those of an earlier inference and keeping every other: an inferred
+// bond never duplicates one of another origin. Atoms are bonded by their covalent radii (derived from the element).
+// Coarse grained systems (md_system_is_coarse_grained) are bonded as their Martini topologies are: a residue whose beads
+// are those of a residue of the Martini force fields has the bonds of its topology, any other amino acid or nucleotide
+// a minimum spanning tree of its beads with its rings. The backbone bead of each residue is bonded to that of the next
+// unless the numbering starts over, and cysteines are bridged (see infer_coarse_grained_bonds in md_util.c).
 void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
 
-// Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
-// length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
+// Infers the covalent bonds of the system (md_util_infer_covalent_bonds) anew. The bonds a user added by hand and those
+// the file gives (MD_BOND_ORIGIN_FILE: the CONECT records of a PDB file) are kept, all other bonds are replaced.
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
 
 // Marks every bond between a metal and a non-metal MD_BOND_FLAG_COORDINATE, whatever its origin, and returns how many
@@ -154,7 +161,11 @@ void md_util_system_infer_ring_flags(md_system_t* sys);
 // anchors along consecutive polymer components. No coordinates are consulted and sys->bond is not modified.
 bool md_util_system_infer_structures(md_system_t* sys);
 
-// Identify atom types within the system
+// Identify atom types within the system from the atom labels and the names of their components. Coarse grained beads
+// come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any
+// component named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
+// the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
+// one label with a different element, mass, size or particle kind are of different types.
 void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]);
 
 // Applies the predefined atom type tables (coarse grained beads) to atoms that already have a type,
@@ -327,6 +338,20 @@ bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], 
 // @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
 bool md_util_interpolate_cubic_spline(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, float t, float s);
 
+// The weights of four consecutive frames at t (0..1) for a cubic scheme over them, on the interval between the
+// two middle ones: out = w[0] in[0] + w[1] in[1] + w[2] in[2] + w[3] in[3]. They sum to one.
+// Cardinal spline with tangent scale s (0.5 is Catmull-Rom): C1, and passes through in[1] at t = 0 and in[2] at t = 1.
+void md_util_cubic_spline_weights(float out_w[4], float t, float s);
+// Uniform cubic B-spline with the four frames as its control points: C2, and damps frame to frame jitter, but it
+// approximates rather than interpolates: at t = 0 it is (in[0] + 4 in[1] + in[2]) / 6, not in[1].
+void md_util_cubic_bspline_weights(float out_w[4], float t);
+
+// Weighted sum of four consecutive frames of coordinates, out = w[0] in[0] + w[1] in[1] + w[2] in[2] + w[3] in[3]:
+// any cubic scheme over them at a given t (see the weights above). In a periodic cell in[0] and in[2] are taken at
+// the minimum image of in[1], and in[3] at that of in[2].
+// @NOTE: Input and output must be padded to a multiple of eight atoms: it works on full simd width
+bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_xyz[4], size_t count, const md_unitcell_t* cell, const float w[4]);
+
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
@@ -337,12 +362,13 @@ void md_util_sort_spatial(uint32_t* source_indices, const vec3_t* xyz, size_t co
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
 void md_util_sort_spatial_xyz(uint32_t* source_indices, const float* xyz, size_t stride_in_bytes, size_t count);
 
-// Sort array of uint32_t in place using radix sort
-void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count);
-
-// Sort array of uint32_t by producing a remapping array of source indices
-// The source_indices represents the indices of the sorted array, i.e. source_indices[0] is the index of the smallest element in data
-void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* key, size_t count);
+// Radix sorts of unsigned integer keys, in place (sort) or as the order of the keys (argsort): out_indices[0] is the index
+// of the smallest key. The argsorts are stable: indices of equal keys come in increasing order. They take temporary memory
+// from the temp arena of the calling thread, for the keys and indices between passes.
+void md_util_sort_radix_u32(uint32_t* data, size_t count);
+void md_util_sort_radix_u64(uint64_t* data, size_t count);
+void md_util_argsort_radix_u32(uint32_t* out_indices, const uint32_t* keys, size_t count);
+void md_util_argsort_radix_u64(uint32_t* out_indices, const uint64_t* keys, size_t count);
 
 #ifdef __cplusplus
 }

@@ -4,6 +4,7 @@
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_writer_i;
 
 // Utils for comma separated value files (CSV)
 
@@ -23,6 +24,11 @@ typedef struct md_csv_t {
 bool md_csv_parse_str (md_csv_t* csv, str_t in_str,  struct md_allocator_i* alloc);
 bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* alloc);
 
+// Writes the fields as columns, a row per value, with field_names (if not NULL) as the first row.
+// Values are written as "%f" writes them.
+void  md_csv_write(struct md_writer_i* w, const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values);
+
+// The same, as a string allocated with str_alloc (freed with str_free), and to a file which is created or truncated
 str_t md_csv_write_to_str (const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* str_alloc);
 bool  md_csv_write_to_file(const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path_to_file);
 

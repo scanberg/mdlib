@@ -56,7 +56,7 @@
 // Bonds are drawn as one quad each (bond.vert), from a static index buffer of this many quads (u16 indices: at most
 // 16384), as instances of the whole buffer followed by a draw of the rest
 #define BOND_QUADS_PER_INSTANCE 16384
-// Pattern of the dashed partners of aromatic and delocalized bonds
+// Pattern of the dashed partners of delocalized bonds (and of aromatic bonds outside of a ring drawn as a circle)
 #define BOND_PARTNER_DASHES 3
 #define BOND_PARTNER_FILL   0.5f
 
@@ -107,7 +107,8 @@ enum {
     GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
     GL_BUFFER_BOND_ORDER,                      // u32 per bond: kind | index into GL_BUFFER_BOND_ORDER_REF << 3 (md_gl_mol_set_bond_orders)
     GL_BUFFER_BOND_ORDER_REF,                  // u32[2] per double or triple bond: atoms bonded to its first and its second atom
-    GL_BUFFER_BOND_PARTNER,                    // u32[4] per dashed partner of an aromatic or delocalized bond: bond, atoms bonded to its first and its second atom, 0
+    GL_BUFFER_BOND_PARTNER,                    // u32[4] per dashed partner of a delocalized bond, or of an aromatic bond in no circle: bond, atoms bonded to its first and its second atom, 0
+    GL_BUFFER_AROMATIC_RING,                   // u32[8] per aromatic ring drawn as a circle: ring index | atom count << 29, its atoms in order around it (RING_ATOM_NONE past the count)
     GL_BUFFER_BACKBONE_DATA,                   // u32: residue index, u32: residue atom offset, u8: CA index, C index and O Index, u8: flags
     GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE,    // u8[4]  (0: Unknown, 1: Coil, 2: Helix, 3: Sheet)
     GL_BUFFER_BACKBONE_CONTROL_POINT_DATA,     // Extracted control points
@@ -225,6 +226,7 @@ typedef struct {
     gl_program_t licorice[MAX_SHADER_PERMUTATIONS];
     gl_program_t weak_bonds[MAX_SHADER_PERMUTATIONS];
     gl_program_t bond_partners[MAX_SHADER_PERMUTATIONS];
+    gl_program_t aromatic_rings[MAX_SHADER_PERMUTATIONS];
     gl_program_t ribbons[MAX_SHADER_PERMUTATIONS];
     gl_program_t cartoon[MAX_SHADER_PERMUTATIONS];
 } shaders_t;
@@ -248,6 +250,7 @@ typedef struct {
     uint32_t bond_count;
     uint32_t bond_order_count;      // Bonds GL_BUFFER_BOND_ORDER was computed for, 0 when the bonds changed since
     uint32_t bond_partner_count;    // Entries of GL_BUFFER_BOND_PARTNER
+    uint32_t aromatic_ring_count;   // Entries of GL_BUFFER_AROMATIC_RING
     uint32_t backbone_count;
     uint32_t backbone_control_point_index_count;
 
@@ -627,6 +630,7 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
         // The bond orders refer to the bonds by index: set them again (md_gl_mol_set_bond_orders)
         mol->bond_order_count = 0;
         mol->bond_partner_count = 0;
+        mol->aromatic_ring_count = 0;
 
         if (offset == 0) {
             gl_buffer_set_data(mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], count * sizeof(md_atom_pair_t), bonds);
@@ -1084,10 +1088,13 @@ md_gl_shaders_t md_gl_shaders_create(str_t str) {
     const str_t backbone_frag_src = {(const char*)backbone_frag, backbone_frag_size};
     const str_t bond_vert_src = {(const char*)bond_vert, bond_vert_size};
     const str_t bond_frag_src = {(const char*)bond_frag, bond_frag_size};
+    const str_t ring_vert_src = {(const char*)ring_vert, ring_vert_size};
+    const str_t ring_frag_src = {(const char*)ring_frag, ring_frag_size};
     if (!create_permuted_program(STR_LIT("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_geom, spacefill_geom_size},   (str_t){(const char*)spacefill_frag, spacefill_frag_size},    str, (str_t){0})) return handle;
     if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 0"))) return handle;
     if (!create_permuted_program(STR_LIT("WeakBonds"), shaders->weak_bonds, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 1"))) return handle;
     if (!create_permuted_program(STR_LIT("BondPartners"), shaders->bond_partners, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define BOND_PARTNERS 1"))) return handle;
+    if (!create_permuted_program(STR_LIT("AromaticRings"), shaders->aromatic_rings, ring_vert_src, (str_t){0}, ring_frag_src, str, (str_t){0})) return handle;
     if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 1"))) return handle;
     if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 0"))) return handle;
 
@@ -1104,6 +1111,7 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
             if (glIsProgram(shaders->licorice[i].id))   glDeleteProgram(shaders->licorice[i].id);
             if (glIsProgram(shaders->weak_bonds[i].id)) glDeleteProgram(shaders->weak_bonds[i].id);
             if (glIsProgram(shaders->bond_partners[i].id)) glDeleteProgram(shaders->bond_partners[i].id);
+            if (glIsProgram(shaders->aromatic_rings[i].id)) glDeleteProgram(shaders->aromatic_rings[i].id);
             if (glIsProgram(shaders->ribbons[i].id))    glDeleteProgram(shaders->ribbons[i].id);
             if (glIsProgram(shaders->cartoon[i].id))    glDeleteProgram(shaders->cartoon[i].id);
         }
@@ -1117,8 +1125,11 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 // either end which lies in it. The plane is that of the sp2 centers: the substituents of a double bond, the ring of an
 // aromatic bond, the group of a delocalized one.
 //   - Double and triple bonds have a kind per bond, which replaces the stick, and their surroundings.
-//   - Aromatic and delocalized bonds keep the stick and get dashed partners, a list of entries of their own: a bond and
-//     the surroundings which give the side of the partner. A bond in two aromatic rings has an entry for each ring.
+//   - Aromatic rings are a circle inside the ring (ring.vert), an entry per ring: its index and its atoms. Their bonds
+//     keep the stick. Two fused rings have a circle each.
+//   - Delocalized bonds keep the stick and get dashed partners, a list of entries of their own: a bond and the
+//     surroundings which give the side of the partner. So does an aromatic bond in no circle (in a ring larger than
+//     MD_RING_MAX_SIZE, or of a system without ring flags): no aromatic bond goes unmarked.
 //
 // BEGIN BOND ORDER DERIVATION (plain arrays in, the contents of the buffers out; tested on its own)
 
@@ -1129,6 +1140,12 @@ enum {
     BOND_KIND_TRIPLE  = 2,
 };
 #define BOND_REF_NONE 0xFFFFFFFFu
+
+// Entries of GL_BUFFER_AROMATIC_RING (ring.vert): u32[8], the index of the ring | its atom count << 29, then its atoms
+// in order around it and RING_ATOM_NONE past the count. Seven atoms at most, MD_RING_MAX_SIZE.
+#define RING_ENTRY_U32  8
+#define RING_ATOM_NONE  0xFFFFFFFFu
+#define RING_COUNT_SHIFT 29
 
 typedef struct {
     uint32_t        bond_count;
@@ -1143,6 +1160,7 @@ typedef struct {
     uint32_t        ring_count;
     const uint32_t* ring_offset;    // [ring_count + 1]
     const int32_t*  ring_atom;      // Atoms of each ring, in order around it
+    const md_ring_flags_t* ring_flags;  // [ring_count] (optional, no circles without)
 } bond_order_input_t;
 
 static uint32_t bo_find_bond(const bond_order_input_t* in, uint32_t a, uint32_t b) {
@@ -1239,19 +1257,59 @@ static void bo_delocalized_refs(const bond_order_input_t* in, uint32_t a, uint32
     else             *ref_b = ref;
 }
 
-// The ring r is aromatic: all of its bonds are
-static bool bo_aromatic_ring(const bond_order_input_t* in, uint32_t r) {
+// An aromatic bond in no circle has its partner on the side of the aromatic bonds which continue from its ends (along its
+// ring, when that is too large for a circle), failing those in its plane
+static uint32_t bo_aromatic_ref(const bond_order_input_t* in, uint32_t e, uint32_t o) {
+    for (uint32_t j = in->adj_offset[e]; j < in->adj_offset[e + 1]; ++j) {
+        const uint32_t c = in->adj_atom[j];
+        const uint32_t f = in->flags[in->adj_bond[j]];
+        if (c != o && (f & MD_BOND_FLAG_AROMATIC) && !(f & MD_BOND_FLAG_COORDINATE) && bo_off_axis(in, e, o, c)) return c;
+    }
+    return bo_plane_ref(in, e, o);
+}
+
+// The ring r is drawn as a circle: aromatic (MD_RING_FLAG_AROMATIC, which says that every bond of it is), of at most
+// RING_ENTRY_U32 - 1 atoms, each bonded to the next by a bond the molecule draws
+static bool bo_circle_ring(const bond_order_input_t* in, uint32_t r) {
+    if (!in->ring_flags || !(in->ring_flags[r] & MD_RING_FLAG_AROMATIC) || r >= (1u << RING_COUNT_SHIFT)) return false;
     const uint32_t beg = in->ring_offset[r];
     const uint32_t n   = in->ring_offset[r + 1] - beg;
-    if (n < 3) return false;
+    if (n < 3 || n > RING_ENTRY_U32 - 1) return false;
     const int32_t* ring = in->ring_atom + beg;
     for (uint32_t k = 0; k < n; ++k) {
         const uint32_t a = (uint32_t)ring[k];
         const uint32_t b = (uint32_t)ring[(k + 1) % n];
         const uint32_t bond = (a < in->atom_count && b < in->atom_count) ? bo_find_bond(in, a, b) : BOND_REF_NONE;
-        if (bond == BOND_REF_NONE || !(in->flags[bond] & MD_BOND_FLAG_AROMATIC) || !bo_valid_bond(in, bond)) return false;
+        if (bond == BOND_REF_NONE || !bo_valid_bond(in, bond)) return false;
     }
     return true;
+}
+
+// The aromatic rings drawn as circles, RING_ENTRY_U32 u32 per entry (see GL_BUFFER_AROMATIC_RING). Marks the bonds of
+// those rings in out_covered [bond_count] (optional): they need no dashed partner (compute_bond_partners).
+// Returns the number of entries, and writes them when out_ring is not NULL: call once to count.
+static uint32_t compute_aromatic_rings(uint32_t* out_ring, uint8_t* out_covered, const bond_order_input_t* in) {
+    uint32_t count = 0;
+    for (uint32_t r = 0; r < in->ring_count; ++r) {
+        if (!bo_circle_ring(in, r)) continue;
+        const uint32_t beg = in->ring_offset[r];
+        const uint32_t n   = in->ring_offset[r + 1] - beg;
+        const int32_t* ring = in->ring_atom + beg;
+        if (out_ring) {
+            uint32_t* e = out_ring + RING_ENTRY_U32 * count;
+            e[0] = r | (n << RING_COUNT_SHIFT);
+            for (uint32_t k = 0; k < RING_ENTRY_U32 - 1; ++k) {
+                e[1 + k] = k < n ? (uint32_t)ring[k] : RING_ATOM_NONE;
+            }
+        }
+        if (out_covered) {
+            for (uint32_t k = 0; k < n; ++k) {
+                out_covered[bo_find_bond(in, (uint32_t)ring[k], (uint32_t)ring[(k + 1) % n])] = 1;
+            }
+        }
+        ++count;
+    }
+    return count;
 }
 
 // Double and triple bonds. out_order [bond_count]: kind | entry << 3, where entry indexes out_ref for double and triple
@@ -1283,42 +1341,30 @@ static uint32_t compute_bond_orders(uint32_t* out_order, uint32_t* out_ref, cons
     return entries;
 }
 
-// The dashed partners of aromatic and delocalized bonds, u32[4] per entry: the bond, the atoms bonded to its first and
-// to its second atom which give the side of the partner, and 0.
-//   - An aromatic bond has an entry for every aromatic ring it is in, with its neighbors along that ring: a bond of two
-//     fused rings (naphthalene) has a partner inside each. An aromatic bond in no ring of all aromatic bonds has none.
+// The dashed partners, u32[4] per entry: the bond, the atoms bonded to its first and to its second atom which give the
+// side of the partner, and 0.
 //   - A delocalized bond has one, within its group (bo_delocalized_refs).
+//   - An aromatic bond which no circle covers (covered [bond_count], from compute_aromatic_rings, optional) has one on
+//     the side of the aromatic bonds that continue from it (bo_aromatic_ref). Those of the circles have none.
 // Returns the number of entries, and writes them when out_partner is not NULL: call once to count.
-static uint32_t compute_bond_partners(uint32_t* out_partner, const bond_order_input_t* in) {
+static uint32_t compute_bond_partners(uint32_t* out_partner, const uint8_t* covered, const bond_order_input_t* in) {
     uint32_t count = 0;
-    for (uint32_t r = 0; r < in->ring_count; ++r) {
-        if (!bo_aromatic_ring(in, r)) continue;
-        const uint32_t beg = in->ring_offset[r];
-        const uint32_t n   = in->ring_offset[r + 1] - beg;
-        const int32_t* ring = in->ring_atom + beg;
-        for (uint32_t k = 0; k < n; ++k) {
-            if (out_partner) {
-                const uint32_t a    = (uint32_t)ring[k];
-                const uint32_t b    = (uint32_t)ring[(k + 1) % n];
-                const uint32_t prev = (uint32_t)ring[(k + n - 1) % n];
-                const uint32_t next = (uint32_t)ring[(k + 2) % n];
-                const uint32_t bond = bo_find_bond(in, a, b);
-                const bool same = in->pairs[2 * bond] == a;
-                uint32_t* e = out_partner + 4 * count;
-                e[0] = bond;
-                e[1] = same ? prev : next;
-                e[2] = same ? next : prev;
-                e[3] = 0;
-            }
-            ++count;
-        }
-    }
     for (uint32_t i = 0; i < in->bond_count; ++i) {
-        if (!(in->flags[i] & MD_BOND_FLAG_DELOCALIZED) || (in->flags[i] & MD_BOND_FLAG_AROMATIC) || !bo_valid_bond(in, i)) continue;
+        const uint32_t f = in->flags[i];
+        const bool aromatic    = (f & MD_BOND_FLAG_AROMATIC) && !(covered && covered[i]);
+        const bool delocalized = (f & MD_BOND_FLAG_DELOCALIZED) && !(f & MD_BOND_FLAG_AROMATIC);
+        if (!(aromatic || delocalized) || !bo_valid_bond(in, i)) continue;
         if (out_partner) {
+            const uint32_t a = in->pairs[2 * i + 0];
+            const uint32_t b = in->pairs[2 * i + 1];
             uint32_t* e = out_partner + 4 * count;
             e[0] = i;
-            bo_delocalized_refs(in, in->pairs[2 * i + 0], in->pairs[2 * i + 1], &e[1], &e[2]);
+            if (aromatic) {
+                e[1] = bo_aromatic_ref(in, a, b);
+                e[2] = bo_aromatic_ref(in, b, a);
+            } else {
+                bo_delocalized_refs(in, a, b, &e[1], &e[2]);
+            }
             e[3] = 0;
         }
         ++count;
@@ -1336,6 +1382,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     }
     mol->bond_order_count = 0;
     mol->bond_partner_count = 0;
+    mol->aromatic_ring_count = 0;
     if (!sys) {
         MD_LOG_ERROR("The system is missing");
         return;
@@ -1400,6 +1447,8 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
 
     const bool has_xyz = md_system_state_has_coords(&sys->reference) && sys->reference.num_atoms >= atom_count;
     const uint32_t ring_count = (uint32_t)md_index_data_num_ranges(&sys->ring);
+    // Without flags for every ring there are no circles, and the aromatic bonds get dashed partners
+    const bool has_ring_flags = ring_count && sys->ring_flags && md_array_size(sys->ring_flags) == ring_count;
 
     const bond_order_input_t in = {
         .bond_count    = bond_count,
@@ -1414,22 +1463,38 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
         .ring_count    = ring_count,
         .ring_offset   = ring_count ? sys->ring.offsets : NULL,
         .ring_atom     = ring_count ? sys->ring.indices : NULL,
+        .ring_flags    = has_ring_flags ? sys->ring_flags : NULL,
     };
     const uint32_t entries = compute_bond_orders(order, ref, &in);
-    const uint32_t partner_count = compute_bond_partners(NULL, &in);
+
+    // The circles first: the bonds they cover need no dashed partner
+    uint8_t* covered = md_alloc(alloc, bond_count * sizeof(uint8_t));
+    MEMSET(covered, 0, bond_count * sizeof(uint8_t));
+    const uint32_t ring_entry_count = compute_aromatic_rings(NULL, NULL, &in);
+    const size_t   ring_entry_bytes = MAX(ring_entry_count, 1) * RING_ENTRY_U32 * sizeof(uint32_t);
+    uint32_t* ring_entry = md_alloc(alloc, ring_entry_bytes);
+    MEMSET(ring_entry, 0, ring_entry_bytes);
+    compute_aromatic_rings(ring_entry, covered, &in);
+
+    const uint32_t partner_count = compute_bond_partners(NULL, covered, &in);
     uint32_t* partner = md_alloc(alloc, MAX(partner_count, 1) * 4 * sizeof(uint32_t));
     MEMSET(partner, 0, MAX(partner_count, 1) * 4 * sizeof(uint32_t));
-    compute_bond_partners(partner, &in);
+    compute_bond_partners(partner, covered, &in);
 
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_ORDER]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_ORDER_REF]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_PARTNER]);
+    gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_AROMATIC_RING]);
     mol->buffer[GL_BUFFER_BOND_ORDER]     = gl_buffer_create(bond_count * sizeof(uint32_t), order, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_BOND_ORDER_REF] = gl_buffer_create(MAX(entries, 1) * 2 * sizeof(uint32_t), ref, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_BOND_PARTNER]   = gl_buffer_create(MAX(partner_count, 1) * 4 * sizeof(uint32_t), partner, GL_STATIC_DRAW);
-    mol->bond_order_count   = bond_count;
-    mol->bond_partner_count = partner_count;
+    mol->buffer[GL_BUFFER_AROMATIC_RING]  = gl_buffer_create((uint32_t)ring_entry_bytes, ring_entry, GL_STATIC_DRAW);
+    mol->bond_order_count    = bond_count;
+    mol->bond_partner_count  = partner_count;
+    mol->aromatic_ring_count = ring_entry_count;
     md_free(alloc, partner, MAX(partner_count, 1) * 4 * sizeof(uint32_t));
+    md_free(alloc, ring_entry, ring_entry_bytes);
+    md_free(alloc, covered, bond_count * sizeof(uint8_t));
 
     md_free(alloc, adj_offset, (atom_count + 1) * sizeof(uint32_t));
     md_free(alloc, adj_atom,   2 * bond_count * sizeof(uint32_t));
@@ -1527,9 +1592,13 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
 
                         backbone_data[idx].bb_seg_idx = j;
                         backbone_data[idx].atom_base_idx = comp_atom_offset;
-                        backbone_data[idx].ca_idx = (uint8_t)(sys->protein_backbone.segment.atoms[j].ca - comp_atom_offset);
-                        backbone_data[idx].c_idx  = (uint8_t)(sys->protein_backbone.segment.atoms[j].c  - comp_atom_offset);
-                        backbone_data[idx].o_idx  = (uint8_t)(sys->protein_backbone.segment.atoms[j].o  - comp_atom_offset);
+                        // A trace (coarse grained) has its bead in ca and no C or O: the bead stands in for both. The
+                        // orientation comes from the frame of the trace itself; only where the trace runs straight does
+                        // it fall back on the carbonyl, which is then a fixed direction (compute_spline_extract.vert)
+                        const md_amino_acid_atoms_t atoms = sys->protein_backbone.segment.atoms[j];
+                        backbone_data[idx].ca_idx = (uint8_t)(atoms.ca - comp_atom_offset);
+                        backbone_data[idx].c_idx  = (uint8_t)((atoms.c >= 0 ? atoms.c : atoms.ca) - comp_atom_offset);
+                        backbone_data[idx].o_idx  = (uint8_t)((atoms.o >= 0 ? atoms.o : atoms.ca) - comp_atom_offset);
                         backbone_data[idx].flags  = (uint8_t)((j == beg ? 1 : 0) | (j == end - 1 ? 2 : 0));
                         ++idx;
                     }
@@ -1840,9 +1909,22 @@ typedef struct {
     float    spread;        // Envelope of the thinner sticks of multiple bonds, relative to the radius
 } bond_params_t;
 
+// Parameters of ring.vert and ring.frag, after gl_ubo_base_t. The picking base of the rings is here rather than in
+// gl_ubo_base_t, which every shader declares: it is 16 byte aligned (vec4_t), and a fifth index would pad it.
+typedef struct {
+    float    radius;        // Of the sticks
+    float    max_d2;
+    int32_t  mode;
+    float    sharpness;
+    uint32_t uniform_color;
+    float    spread;
+    uint32_t ring_index_base;
+} ring_params_t;
+
 static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float scale);
 static bool draw_bonds     (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, bond_set_t bonds, const bond_params_t* params, const float viewport_size[2]);
 static bool draw_bond_partners(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, const bond_params_t* bond_params, const float viewport_size[2]);
+static bool draw_aromatic_rings(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, const bond_params_t* bond_params, uint32_t ring_index_base, const float viewport_size[2]);
 static bool draw_backbone  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, uint32_t profile, const float scale[4], float max_extent, const mat4_t* world_to_clip, float viewport_half_height);
 
 static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_args_t* args, const mat4_t* model_matrix) {
@@ -2012,6 +2094,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             draw_bonds(shaders->licorice[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size);
             if (orders) {
                 draw_bond_partners(shaders->bond_partners[program_permutation], mol, rep->atom_color, &params, viewport_size);
+                draw_aromatic_rings(shaders->aromatic_rings[program_permutation], mol, rep->atom_color, &params, args->picking_offset.ring_base, viewport_size);
             }
             break;
         }
@@ -2031,6 +2114,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             draw_bonds(shaders->licorice[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size);
             if (orders) {
                 draw_bond_partners(shaders->bond_partners[program_permutation], mol, rep->atom_color, &params, viewport_size);
+                draw_aromatic_rings(shaders->aromatic_rings[program_permutation], mol, rep->atom_color, &params, args->picking_offset.ring_base, viewport_size);
             }
             draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.ball_scale);
             break;
@@ -2251,6 +2335,88 @@ static bool draw_bond_partners(gl_program_t program, const molecule_t* mol, gl_b
     params.bond_orders = 0;
     const bond_set_t partners = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, {0}, {0}, mol->buffer[GL_BUFFER_BOND_PARTNER], mol->bond_partner_count};
     return draw_bonds(program, mol, atom_color, partners, &params, viewport_size);
+}
+
+// The circles of the aromatic rings (md_gl_mol_set_bond_orders), drawn with the bonds of the licorice and ball and stick
+// representations, by vertex pulling (ring.vert): one quad per ring, from the index buffer of the bonds. They take the
+// radius, the colors and the reach of the bonds (bond_params), and write ring_index_base + the index of the ring to the
+// picking target.
+static bool draw_aromatic_rings(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, const bond_params_t* bond_params, uint32_t ring_index_base, const float viewport_size[2]) {
+    ASSERT(mol);
+    ASSERT(bond_params);
+    ASSERT(mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+    ASSERT(mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
+    ASSERT(mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
+    ASSERT(atom_color.id);
+
+    if (mol->aromatic_ring_count == 0 || mol->bond_order_count != mol->bond_count || !mol->buffer[GL_BUFFER_AROMATIC_RING].id || !ctx.bond_quad_index.id) {
+        return false;
+    }
+
+    const ring_params_t params = {
+        .radius          = bond_params->radius,
+        .max_d2          = bond_params->max_d2,
+        .mode            = bond_params->mode,
+        .sharpness       = bond_params->sharpness,
+        .uniform_color   = bond_params->uniform_color,
+        .spread          = bond_params->spread,
+        .ring_index_base = ring_index_base,
+    };
+    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(ring_params_t), &params);
+
+    glBindVertexArray(ctx.vao);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_0].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_1].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_2].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
+
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_3].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, atom_color.id);
+
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_4].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32UI, mol->buffer[GL_BUFFER_AROMATIC_RING].id);
+
+    glUseProgram(program.id);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_pos"),   0);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_vel"),   1);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_flags"), 2);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_color"), 3);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_ring"),       4);
+    glUniform1ui(glGetUniformLocation(program.id, "u_quads_per_instance"), BOND_QUADS_PER_INSTANCE);
+    glUniform2f(glGetUniformLocation(program.id, "u_viewport_size"), viewport_size[0], viewport_size[1]);
+    const GLint ring_offset_loc = glGetUniformLocation(program.id, "u_ring_offset");
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx.bond_quad_index.id);
+
+    const uint32_t count = mol->aromatic_ring_count;
+    const uint32_t full  = count / BOND_QUADS_PER_INSTANCE;
+    const uint32_t rest  = count % BOND_QUADS_PER_INSTANCE;
+    if (full > 0) {
+        glUniform1ui(ring_offset_loc, 0);
+        glDrawElementsInstanced(GL_TRIANGLES, BOND_QUADS_PER_INSTANCE * 6, GL_UNSIGNED_SHORT, 0, (GLsizei)full);
+    }
+    if (rest > 0) {
+        glUniform1ui(ring_offset_loc, full * BOND_QUADS_PER_INSTANCE);
+        glDrawElements(GL_TRIANGLES, (GLsizei)(rest * 6), GL_UNSIGNED_SHORT, 0);
+    }
+
+    glUseProgram(0);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+
+    return true;
 }
 
 enum {

@@ -12,6 +12,7 @@
 struct md_attributes_t;
 struct md_system_t;
 struct md_allocator_i;
+struct md_writer_i;
 
 /*
 
@@ -162,6 +163,19 @@ const md_log_token_t* md_script_ir_errors(const md_script_ir_t* ir);
 
 size_t md_script_ir_num_warnings(const md_script_ir_t* ir);
 const md_log_token_t* md_script_ir_warnings(const md_script_ir_t* ir);
+
+// Writes the errors and warnings of the last compilation to w, in the format of GCC and clang: in the order they
+// appear in the source, each with its location (line:column, 1-based, '<script>' in place of a file name) and message,
+// followed by the line(s) of the source it refers to with its range marked beneath. Ends with clang's summary:
+//
+//   <script>:2:5: error: Undefined identifier 'y'
+//       2 | b = y + 2;
+//         |     ^
+//   1 error generated.
+//
+// Writes nothing if there is nothing to report. To see why a script did not compile, in a test or a tool:
+//   md_script_ir_write_diagnostics(md_writer_stdout(), ir);
+void md_script_ir_write_diagnostics(struct md_writer_i* w, const md_script_ir_t* ir);
 
 size_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir);
 const md_script_vis_token_t* md_script_ir_vis_tokens(const md_script_ir_t* ir);

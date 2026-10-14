@@ -83,8 +83,13 @@ typedef struct md_entity_data_t {
 // The backbones hold only what is static with regard to the topology: which atoms of which components form them, in
 // consecutive ranges along a chain. What depends on a frame (the backbone angles, the secondary structure) or serves a
 // single consumer (the ramachandran classification) is computed from them by whoever needs it, into arrays of its own
-// with one entry per segment (md_util_backbone_angles_compute, md_util_backbone_secondary_structure_infer,
+// with one entry per segment (md_util_backbone_angles_compute, md_dssp_compute,
 // md_util_backbone_ramachandran_classify).
+//
+// A protein range is ATOMISTIC, each segment the N, CA, C and O of its residue (and HN, CB where they are), or a TRACE:
+// one bead per residue of a coarse grained model (the BB bead of Martini), held in ca, with n, c, o, hn and cb -1. A
+// range is one or the other throughout (md_protein_backbone_range_is_trace). The secondary structure of a trace is
+// inferred from its beads alone, and a trace has no backbone angles.
 typedef struct md_protein_backbone_data_t {
     // This holds the consecutive ranges which form the backbones
     struct {
@@ -923,6 +928,14 @@ static inline size_t md_system_instance_count(const md_system_t* sys) {
 static inline size_t md_system_bond_count(const md_system_t* sys) {
     ASSERT(sys);
     return sys->bond.count;
+}
+
+// Whether a protein backbone range is a trace of coarse grained beads rather than atoms (see md_protein_backbone_data_t).
+// A backbone without atoms, only the residues of its segments, has no traces.
+static inline bool md_protein_backbone_range_is_trace(const md_protein_backbone_data_t* backbone, size_t range_idx) {
+    ASSERT(backbone);
+    ASSERT(range_idx < backbone->range.count);
+    return backbone->segment.atoms && backbone->segment.atoms[backbone->range.offset[range_idx]].n < 0;
 }
 
 static inline size_t md_system_entity_count(const md_system_t* sys) {

@@ -226,7 +226,7 @@ MD_VEC_INLINE double deperiodize_ortho(double x, double r, double period) {
 MD_VEC_INLINE double deperiodize_ortho2(double x, double r, double period, double r_period) {
     if (period == 0.0) return x;
     const double dx  = (x - r) * r_period;
-    const double dxp = dx - round(dx);
+    const double dxp = CLAMP(dx - round(dx), -0.5, 0.5); // As in vec4_min_image
     const double x_prim = r + dxp * period;
     return x_prim;
 }
@@ -580,7 +580,8 @@ MD_VEC_INLINE vec3_t vec3_round(vec3_t v) {
 }
 
 MD_VEC_INLINE vec3_t vec3_min_image(vec3_t dx, vec3_t ext, vec3_t inv_ext) {
-    const vec3_t dxp = vec3_sub(vec3_mul(dx, inv_ext), vec3_round(dx));
+    const vec3_t d   = vec3_mul(dx, inv_ext);
+    const vec3_t dxp = vec3_clamp_f(vec3_sub(d, vec3_round(d)), -0.5f, 0.5f); // As in vec4_min_image
     return vec3_mul(dxp, ext);
 }
 
@@ -866,8 +867,22 @@ MD_VEC_INLINE vec4_t vec4_normalize(vec4_t v) {
     return v;
 }
 
+// The cross product of the xyz of a and b, w 0
 MD_VEC_INLINE vec4_t vec4_cross(vec4_t a, vec4_t b) {
-    vec4_t res = {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x, 0};
+    vec4_t res;
+#if MD_VEC_MATH_USE_SIMD
+    // (a * b.yzx - a.yzx * b).yzx: three shuffles where the textbook a.yzx * b.zxy - a.zxy * b.yzx takes four. Its w,
+    // a.w * b.w - a.w * b.w, is not 0 in general once the multiply and the subtract fuse into one rounding: cleared.
+    const md_128 a_yzx = md_mm_shuffle_ps(a.m128, a.m128, MD_SHUFFLE(3, 0, 2, 1));
+    const md_128 b_yzx = md_mm_shuffle_ps(b.m128, b.m128, MD_SHUFFLE(3, 0, 2, 1));
+    const md_128 c = md_mm_sub_ps(md_mm_mul_ps(a.m128, b_yzx), md_mm_mul_ps(a_yzx, b.m128));
+    res.m128 = md_mm_blend_ps(md_mm_shuffle_ps(c, c, MD_SHUFFLE(3, 0, 2, 1)), md_mm_setzero_ps(), 0x8);
+#else
+    res.x = a.y * b.z - a.z * b.y;
+    res.y = a.z * b.x - a.x * b.z;
+    res.z = a.x * b.y - a.y * b.x;
+    res.w = 0.0f;
+#endif
     return res;
 }
 
@@ -1205,12 +1220,13 @@ MD_VEC_INLINE vec4_t vec4_mask(bool x, bool y, bool z, bool w) {
     return r;
 }
 
+// b where the mask is set and a where it is clear, for a mask whose lanes are all ones or all zeros, as
+// vec4_mask and the comparisons give them (md_mm_select_ps)
 MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.m128 = md_mm_blendv_ps(a.m128, b.m128, mask.m128);
+    r.m128 = md_mm_select_ps(a.m128, b.m128, mask.m128);
 #else
-    // b where the mask is set, as blendv does
     r.x = (mask.x != 0) ? b.x : a.x;
     r.y = (mask.y != 0) ? b.y : a.y;
     r.z = (mask.z != 0) ? b.z : a.z;
@@ -1246,23 +1262,25 @@ MD_VEC_INLINE int vec4_move_mask(vec4_t v) {
 #endif
 }
 
+// dx brought within half a period of zero. The fraction of a period is clamped to [-1/2, 1/2]: a compiler that contracts
+// may fuse the product into the subtraction of its own rounding and land an ulp past a half (see the deperiodize
+// comment in md_simd.h).
 MD_VEC_INLINE vec4_t vec4_min_image(vec4_t dx, vec4_t ext, vec4_t inv_ext) {
     dx = vec4_mul(dx, inv_ext);
-    const vec4_t dxp = vec4_sub(dx, vec4_round(dx));
+    const vec4_t dxp = vec4_clamp(vec4_sub(dx, vec4_round(dx)), vec4_set1(-0.5f), vec4_set1(0.5f));
     return vec4_mul(dxp, ext);
 }
 
-MD_VEC_INLINE vec4_t vec4_deperiodize_ortho(vec4_t x, vec4_t r, vec4_t ext) {
-    const vec4_t inv_ext = vec4_div(vec4_set1(1.0f), ext);
-    const vec4_t dx     = vec4_min_image(vec4_sub(x, r), ext, inv_ext);
-    const vec4_t x_prim = vec4_add(r, dx);
+// x brought to the image nearest r, as md_mm_deperiodize2_ps: within half a period of r, in [0, ext] for r = ext / 2
+MD_VEC_INLINE vec4_t vec4_deperiodize_ortho2(vec4_t x, vec4_t r, vec4_t ext, vec4_t inv_ext) {
+    vec4_t d = vec4_fmsub(x, inv_ext, vec4_mul(r, inv_ext));
+    d = vec4_sub(d, vec4_round(d));
+    const vec4_t x_prim = vec4_fmadd(d, ext, r);
     return vec4_blend(x_prim, x, vec4_cmp_eq(ext, vec4_zero()));
 }
 
-MD_VEC_INLINE vec4_t vec4_deperiodize_ortho2(vec4_t x, vec4_t r, vec4_t ext, vec4_t inv_ext) {
-    const vec4_t dx = vec4_min_image(vec4_sub(x, r), ext, inv_ext);
-    const vec4_t x_prim = vec4_add(r, dx);
-    return vec4_blend(x_prim, x, vec4_cmp_eq(ext, vec4_zero()));
+MD_VEC_INLINE vec4_t vec4_deperiodize_ortho(vec4_t x, vec4_t r, vec4_t ext) {
+    return vec4_deperiodize_ortho2(x, r, ext, vec4_div(vec4_set1(1.0f), ext));
 }
 
 MD_VEC_INLINE float vec4_periodic_distance_squared(vec4_t a, vec4_t b, vec4_t period) {

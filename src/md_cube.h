@@ -6,6 +6,7 @@
 #include <core/md_str.h>
 
 struct md_allocator_i;
+struct md_writer_i;
 
 typedef float md_cube_v3[3];
 
@@ -40,6 +41,9 @@ typedef struct md_cube_t {
 extern "C" {
 #endif
 
+// The cube in the cube file format: written to w, or as a string allocated with alloc (freed with str_free).
+// False (and nothing written) if the cube is not valid.
+bool  md_cube_write(struct md_writer_i* w, const md_cube_t* cube);
 str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc);
 bool  md_cube_deserialize(md_cube_t* cube, str_t data, struct md_allocator_i* alloc);
 	

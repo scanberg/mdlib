@@ -102,8 +102,8 @@ set(CORE_FILES
   src/core/md_simd.h
   src/core/md_spatial_acc.c
   src/core/md_spatial_acc.h
-  src/core/md_str_builder.c
-  src/core/md_str_builder.h
+  src/core/md_writer.c
+  src/core/md_writer.h
   src/core/md_str.c
   src/core/md_str.h
   src/core/md_tracking_allocator.c
@@ -151,6 +151,9 @@ set(SRC_FILES
   src/md_itp.h
   src/md_dcd.c
   src/md_dcd.h
+  src/md_dssp.c
+  src/md_dssp.h
+  src/md_dssp_cg.inl
   src/md_lammps.c
   src/md_lammps.h
   src/md_match.c
@@ -186,6 +189,7 @@ set(SRC_FILES
   src/md_trr.h
   src/md_types.h
   src/md_util.c
+  src/md_martini_db.inl
   src/md_util.h
   src/md_unitcell.h
   src/md_unitcell.c
@@ -213,6 +217,8 @@ set(GL_SHADER_FILES
   src/shaders/backbone.frag
   src/shaders/bond.vert
   src/shaders/bond.frag
+  src/shaders/ring.vert
+  src/shaders/ring.frag
   src/shaders/spacefill.vert
   src/shaders/spacefill.geom
   src/shaders/spacefill.frag
@@ -396,7 +402,16 @@ if (COMPILER_TYPE MATCHES "Clang")
   endif()
 
   if (MD_ENABLE_FMA)
-    list(APPEND MD_FLAGS_AVX "-mfma" "-ffp-contract=fast")
+    list(APPEND MD_FLAGS_AVX "-mfma")
+  endif()
+
+  # Floating point: IEEE semantics, with a multiply and an add fused into one instruction wherever the
+  # target has it (arm64 always, x86 with -mfma), also across statements and the inlined SIMD wrappers.
+  # The default contracts only within one expression. Math functions do not set errno.
+  if (COMPILER_TYPE STREQUAL "MSVC-Clang")
+    list(APPEND MD_FLAGS "/clang:-ffp-contract=fast" "/clang:-fno-math-errno")
+  else()
+    list(APPEND MD_FLAGS "-ffp-contract=fast" "-fno-math-errno")
   endif()
 
 elseif (COMPILER_TYPE STREQUAL "GCC")
@@ -420,8 +435,15 @@ elseif (COMPILER_TYPE STREQUAL "GCC")
     endif()
 
     if (MD_ENABLE_FMA)
-        list(APPEND MD_FLAGS_AVX "-mfma" "-ffast-math")
+        list(APPEND MD_FLAGS_AVX "-mfma")
     endif()
+
+    # Floating point: IEEE semantics, with a multiply and an add fused wherever the target has it (as the
+    # GNU dialects of C already do), math functions not setting errno, and no floating point traps to
+    # preserve, which lets conditional code be vectorized. Not -ffast-math: it also assumes there are no
+    # NaN or infinities, reassociates, divides by multiplying with an approximate reciprocal and drops
+    # the sign of zero.
+    list(APPEND MD_FLAGS "-ffp-contract=fast" "-fno-math-errno" "-fno-trapping-math")
 
     if (MD_LINK_STDLIB_STATIC)
       list(APPEND MD_LIBS
@@ -445,14 +467,22 @@ elseif ((COMPILER_TYPE STREQUAL "MSVC"))
       "/MP"
       "/GR-"
       "/Oi"
+      "/fp:precise"
       "/fp:except-")
 
+    # A multiply and an add fused where the target has it (/arch:AVX2 and above on x64, always on ARM64),
+    # with the semantics of /fp:precise otherwise. /fp:contract came with Visual Studio 2022; before it,
+    # only /fp:fast contracted.
+    if (MSVC_VERSION GREATER_EQUAL 1930)
+        list(APPEND MD_FLAGS "/fp:contract")
+    endif()
+
     if (MD_ENABLE_AVX512)
-        list(APPEND MD_FLAGS_AVX "/arch:AVX512" "/fp:fast")
+        list(APPEND MD_FLAGS_AVX "/arch:AVX512")
     elseif (MD_ENABLE_AVX2)
-        list(APPEND MD_FLAGS_AVX "/arch:AVX2" "/fp:fast")
+        list(APPEND MD_FLAGS_AVX "/arch:AVX2")
     elseif (MD_ENABLE_AVX)
-        list(APPEND MD_FLAGS_AVX "/arch:AVX" "/fp:fast")
+        list(APPEND MD_FLAGS_AVX "/arch:AVX")
     endif()
       
     list(APPEND MD_DEFINES "_CRT_SECURE_NO_WARNINGS")
@@ -612,13 +642,6 @@ target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DE
 target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
 
-# md_parse.c rounds decimal numbers exactly, which takes IEEE arithmetic: the fast math the rest of the
-# library is built with licenses dividing by multiplying with a reciprocal and dropping the sign of zero.
-if (COMPILER_TYPE STREQUAL "GCC")
-  set_source_files_properties(src/core/md_parse.c PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
-elseif (COMPILER_TYPE STREQUAL "MSVC")
-  set_source_files_properties(src/core/md_parse.c PROPERTIES COMPILE_OPTIONS "/fp:precise")
-endif()
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PUBLIC ${MD_LIBS})
 

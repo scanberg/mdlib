@@ -112,11 +112,12 @@ ENUM_FLAGS(md_atom_flags_t)
 
 // What a component (residue) is, see md_util_system_infer_comp_flags.
 typedef enum md_component_kind_t {
-    MD_COMPONENT_KIND_OTHER         = 0,    // Unclassified, or none of the below: a ligand, a lipid, a sugar, ...
+    MD_COMPONENT_KIND_OTHER         = 0,    // Unclassified, or none of the below: a ligand, a sugar, ...
     MD_COMPONENT_KIND_AMINO_ACID    = 1,
     MD_COMPONENT_KIND_NUCLEOTIDE    = 2,
     MD_COMPONENT_KIND_WATER         = 3,
     MD_COMPONENT_KIND_ION           = 4,    // A monatomic ion
+    MD_COMPONENT_KIND_LIPID         = 5,    // A lipid, sterols included (by name, see md_util_resname_lipid)
 } md_component_kind_t;
 
 typedef enum {
@@ -463,6 +464,8 @@ typedef struct md_atom_pair_t {
     md_atom_idx_t idx[2];
 } md_atom_pair_t;
 
+// The atoms of an amino acid of a protein backbone, -1 where it has none. A coarse grained bead which stands for the
+// residue's backbone (the BB bead of Martini) is held in ca, with every other index -1 (md_protein_backbone_data_t).
 typedef struct md_amino_acid_atoms_t {
     // Backbone
     md_atom_idx_t n;

@@ -32,6 +32,7 @@ set (SRC_FILES
     test_fifo.c
     test_intrinsics.c
     test_simd.c
+    test_simd_ops.c
     test_vec_math.c
     test_os.c
     test_pdb.c
@@ -44,11 +45,13 @@ set (SRC_FILES
     test_match.c
     test_ring.c
     test_util.c
+    test_secondary_structure.c
     test_unit.c
     test_script.c
     test_filter.c
     test_spatial_hash.c
-    test_string_builder.c
+    test_writer.c
+    test_csv.c
     test_base64.c
     test_xtc.c
     test_xyz.c

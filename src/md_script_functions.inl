@@ -391,6 +391,7 @@ static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
 static int _join_bf_arr                 (data_t*, data_t[], eval_context_t*);
+static int _join_deprecated            (data_t*, data_t[], eval_context_t*);
 static int _split_bf_int                (data_t*, data_t[], eval_context_t*);
 
 // Basic operations
@@ -440,6 +441,7 @@ static int _nucleoside      (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _nucleobase      (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
+static int _ring_irng       (data_t*, data_t[], eval_context_t*); // (irange[], ...) -> bitfield[]
 
 // Structure matching, see md_match.h
 static int _smiles          (data_t*, data_t[], eval_context_t*); // (str, level: str, mode: str) -> bitfield[]
@@ -447,6 +449,7 @@ static int _match           (data_t*, data_t[], eval_context_t*); // (bitfield, 
 
 // Residue level selectors
 static int _water       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _lipid       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _protein     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleic     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
@@ -506,8 +509,8 @@ static int _porosity   (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> 
 
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
-static int _plane   (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[4]
-static int _planes          (data_t*, data_t[], eval_context_t*);  // (bitfield[]) -> plane[], one per group
+static int _plane_groups    (data_t*, data_t[], eval_context_t*);  // (bitfield[]) -> plane[], one per group
+static int _plane_points    (data_t*, data_t[], eval_context_t*);  // (position[]) -> plane, one through the positions
 static int _plane_centroid  (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[][3]
 static int _plane_normal    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[][3]
 static int _plane_radius    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[]
@@ -775,6 +778,8 @@ static procedure_t procedures[] = {
     {STR_INIT("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},           _atom_int,      FLAG_STATIC_VALIDATION},
     
     {STR_INIT("ring"),      TI_BITFIELD_ARR, 3, {TI_STRING_ARR, TI_STRING_ARR, TI_IRANGE}, _ring, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    // By position: listed after the pattern, so that ring() (no pattern, an absent argument) stays the one above
+    {STR_INIT("ring"),      TI_BITFIELD_ARR, 3, {TI_IRANGE_ARR, TI_STRING_ARR, TI_IRANGE}, _ring_irng, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // Structure matching: one selection per occurrence of a SMILES pattern, or of a reference structure
     {STR_INIT("smiles"),    TI_BITFIELD_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -785,6 +790,7 @@ static procedure_t procedures[] = {
     {STR_INIT("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("nucleotide"),TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("lipid"),     TI_BITFIELD_ARR, 0, {0},                _lipid,         FLAG_QUERYABLE_LENGTH},
 
     // A compile error where the system has no such region: a QM region, and atoms which are not in it
     {STR_INIT("qm"),          TI_BITFIELD_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -855,8 +861,10 @@ static procedure_t procedures[] = {
 
     // --- GEOMETRICAL OPERATIONS ---
     {STR_INIT("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {STR_INIT("plane"),         TI_FLOAT4,      1,  {TI_COORDINATE_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {STR_INIT("planes"),        TI_PLANE_ARR,   1,  {TI_BITFIELD_ARR},    _planes,        FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    // One plane per group, or one through positions. The groups come first: a bitfield is a position as well, and the
+    // first overload which takes the arguments as they are wins. One plane through all the groups is plane(union(...)).
+    {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_BITFIELD_ARR},    _plane_groups,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_COORDINATE_ARR},  _plane_points,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
     {STR_INIT("centroid"),      TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_centroid,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("normal"),        TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_normal,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("radius"),        TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_radius,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
@@ -880,7 +888,9 @@ static procedure_t procedures[] = {
     {STR_INIT("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
 
     // --- MISC ---
-    {STR_INIT("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    {STR_INIT("union"),     TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    // The old name of union: it compiles, with a warning (as flatten of selections does, see static_check_flatten)
+    {STR_INIT("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_deprecated, FLAG_FLATTEN | FLAG_STATIC_VALIDATION},
     {STR_INIT("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
 
     {STR_INIT("split"),     TI_BITFIELD_ARR, 2,  {TI_BITFIELD, TI_INT},  _split_bf_int, FLAG_FLATTEN | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
@@ -941,7 +951,8 @@ static const proc_sig_t signatures[] = {
     {STR_INIT("smiles"),        3, {REQ("pattern"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
     {STR_INIT("match"),         4, {REQ("ref"), KW_STR("by", "element"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
 
-    // ring(pattern = none, *, kind = none, size = none), see _ring
+    // ring(pattern = none, *, kind = none, size = none), see _ring. The first is a pattern or, in the other overload, an
+    // index (_ring_irng): 'pattern' names it in both.
     {STR_INIT("ring"),          3, {NUL("pattern"), KW_NUL("kind"), KW_NUL("size")}},
 };
 
@@ -1254,25 +1265,35 @@ static inline bool is_instance_chain(const md_system_t* sys, size_t inst_idx) {
     return md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst_idx));
 }
 
+// The components with an atom in the context (all of them without one), in their order: what residue(index) counts
+// within it. Only those within the span of the context [beg, end) can have one, so they are found from a binary search
+// rather than a walk over all of the components, which residue(1) in residue(:) would otherwise make once per residue.
 static md_array(md_component_idx_t) get_comp_indices_in_context(const md_system_t* sys, const md_bitset_t* bitfield, md_allocator_i* alloc) {
     ASSERT(sys);
     ASSERT(alloc);
 
     md_array(int32_t) arr = 0;
+    const md_component_data_t* comp = &sys->component;
+    if (!comp->count) return arr;
 
-    if (sys->component.count) {
-        if (bitfield) {
-            for (size_t i = 0; i < sys->component.count; ++i) {
-                md_urange_t res = md_component_atom_range(&sys->component, i);
-                if (md_bitset_count_range(*bitfield, res.beg, res.end)) {
-                    md_array_push(arr, (int32_t)i, alloc);
-                }
+    if (bitfield) {
+        if (!comp->atom_offset || bitfield->end <= bitfield->beg) return arr;
+        // The first component which ends past the beginning of the context
+        size_t lo = 0, hi = comp->count;
+        while (lo < hi) {
+            const size_t mid = lo + (hi - lo) / 2;
+            if (comp->atom_offset[mid + 1] <= bitfield->beg) lo = mid + 1;
+            else hi = mid;
+        }
+        for (size_t i = lo; i < comp->count && comp->atom_offset[i] < bitfield->end; ++i) {
+            if (md_bitset_count_range(*bitfield, comp->atom_offset[i], comp->atom_offset[i + 1])) {
+                md_array_push(arr, (int32_t)i, alloc);
             }
         }
-        else {
-            for (int32_t i = 0; i < (int32_t)sys->component.count; ++i) {
-                md_array_push(arr, i, alloc);
-            }
+    }
+    else {
+        for (int32_t i = 0; i < (int32_t)comp->count; ++i) {
+            md_array_push(arr, i, alloc);
         }
     }
 
@@ -1341,59 +1362,35 @@ static inline irange_t get_atom_range_in_context(const md_system_t* sys, const m
     return range;
 }
 
-static inline irange_t get_comp_range_in_context(const md_system_t* sys, const md_bitset_t* mol_ctx) {
-    ASSERT(sys);
-    irange_t range = { 0, (int32_t)sys->component.count };
-    if (mol_ctx) {
-        range.beg = INT_MAX;
-        range.end = 0;
-        for (size_t i = 0; i < sys->component.count; ++i) {
-            md_urange_t res = md_component_atom_range(&sys->component, i);
-            if (md_bitset_count_range(*mol_ctx, res.beg, res.end)) {
-                range.beg = MIN(range.beg, (int32_t)i);
-                range.end = MAX(range.end, (int32_t)i + 1);
-                break;
+// The positions given to an index selector (residue(1:5), ring(3), chain(2), instance(1:2:7)): 1-based and inclusive,
+// an open end runs to the first or the last, a step takes every step-th. out (optional) receives them 0-based, in the
+// order given, into the num things the selector counts; returns how many, or STATIC_VALIDATION_ERROR (reported when
+// report is set). A position before the first is an error. One past the last is an error without a context, and
+// within one selects nothing: the selector counts what lies in the context, and a chain need not have a tenth residue,
+// nor a residue a second ring.
+static int select_positions(md_array(int32_t)* out, const irange_t* ranges, size_t num_ranges, int64_t num, const char* unit, bool report, eval_context_t* ctx) {
+    int count = 0;
+    for (size_t i = 0; i < num_ranges; ++i) {
+        const int64_t beg  = ranges[i].beg == INT32_MIN ? 1 : ranges[i].beg;
+        const int64_t end  = ranges[i].end == INT32_MAX ? num : ranges[i].end;
+        const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
+        if (beg < 1) {
+            if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: index %" PRId64 " is before the first %s, they are counted from 1", unit, beg, unit);
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (end > num && !ctx->mol_ctx) {
+            if (report) {
+                if (num == 0) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: index %" PRId64 " is past the last %s, there are none", unit, end, unit);
+                else EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: index %" PRId64 " is past the last %s (%" PRId64 ")", unit, end, unit, num);
             }
+            return STATIC_VALIDATION_ERROR;
+        }
+        for (int64_t k = beg; k <= MIN(end, num); k += step) {
+            if (out) md_array_push(*out, (int32_t)(k - 1), ctx->temp_alloc);
+            count += 1;
         }
     }
-    return range;
-}
-
-static inline irange_t get_inst_range_in_context(const md_system_t* sys, const md_bitset_t* mol_ctx) {
-    ASSERT(sys);
-    irange_t range = { 0, (int32_t)sys->instance.count };
-    if (mol_ctx) {
-        range.beg = INT_MAX;
-        range.end = 0;
-        for (size_t i = 0; i < sys->instance.count; ++i) {
-            md_urange_t atom_range = md_system_instance_atom_range(sys, i);
-            if (md_bitset_count_range(*mol_ctx, atom_range.beg, atom_range.end)) {
-                range.beg = MIN(range.beg, (int32_t)i);
-                range.end = MAX(range.end, (int32_t)i + 1);
-                break;
-            }
-        }
-    }
-    return range;
-}
-
-static inline irange_t get_chain_range_in_context(const md_system_t* sys, const md_bitset_t* mol_ctx) {
-    ASSERT(sys);
-    irange_t range = { 0, (int32_t)sys->instance.count };
-    if (mol_ctx) {
-        range.beg = INT_MAX;
-        range.end = 0;
-        for (size_t i = 0; i < sys->instance.count; ++i) {
-            if (!is_instance_chain(sys, i)) continue;
-            md_urange_t atom_range = md_system_instance_atom_range(sys, i);
-            if (md_bitset_count_range(*mol_ctx, atom_range.beg, atom_range.end)) {
-                range.beg = MIN(range.beg, (int32_t)i);
-                range.end = MAX(range.end, (int32_t)i + 1);
-                break;
-            }
-        }
-    }
-    return range;
+    return count;
 }
 
 static bool validate_atom_index_in_context(int32_t in_idx, token_t token, const eval_context_t* ctx) {
@@ -3127,11 +3124,11 @@ static bool match_lookup(int* out, const match_name_t* table, size_t count, str_
 }
 
 static void match_report_unknown(eval_context_t* ctx, int arg, const char* what, const match_name_t* table, size_t count, str_t str) {
-    md_strb_t sb = md_strb_create(ctx->temp_alloc);
+    md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
     for (size_t i = 0; i < count; ++i) {
-        md_strb_fmt(&sb, "%s'" STR_FMT "'", i ? ", " : "", STR_ARG(table[i].name));
+        md_str_writer_fmt(&sb, "%s'" STR_FMT "'", i ? ", " : "", STR_ARG(table[i].name));
     }
-    EVAL_LOG_ERROR(ctx, ctx->arg_tokens[arg], "Unknown %s '" STR_FMT "', valid ones are: " STR_FMT, what, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
+    EVAL_LOG_ERROR(ctx, ctx->arg_tokens[arg], "Unknown %s '" STR_FMT "', valid ones are: " STR_FMT, what, STR_ARG(str), STR_ARG(md_str_writer_to_str(&sb)));
 }
 
 // Runs the query in the context and fills dst, or returns the number of matches when validating
@@ -3269,7 +3266,8 @@ static int _match(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // ### RINGS ###
 // ring(pattern = none, *, kind = none, size = none): the rings of the system (md_system_t::ring) which all of the
-// given filters let through, each fully within the context.
+// given filters let through, each fully within the context. ring(index, *, kind = none, size = none) takes rings by
+// their position among those instead (_ring_irng).
 //   pattern  SMILES, one or several: a ring which has any of them along it (md_match with the rings as units). A chain
 //            is consecutive ring atoms in either direction (CCNCC), a chain closed onto its first atom the whole ring
 //            (c1ccncc1), parts separated by '.' are anywhere in the ring (N.O). A branch is not along a ring: an error.
@@ -3452,13 +3450,10 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
     return count;
 }
 
-static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
+// The result of ring(): one selection per ring of rings (indices into md_system_t::ring), in their order, or all of them
+// in one when flattened; their outlines when visualizing; their count when validating.
+static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_context_t* ctx) {
     const md_system_t* sys = ctx->sys;
-
-    md_array(uint32_t) rings = 0;
-    const int count = ring_select(&rings, arg, !dst && !ctx->vis, ctx);
-    if (count < 0) return count;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -3506,6 +3501,39 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MIN(1, count);
     return count;
+}
+
+static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+
+    md_array(uint32_t) rings = 0;
+    const int count = ring_select(&rings, arg, !dst && !ctx->vis, ctx);
+    if (count < 0) return count;
+    return ring_result(dst, rings, count, ctx);
+}
+
+// ring(index, *, kind = none, size = none): rings by their 1-based position among those ring(kind = kind, size = size)
+// gives, in the order of md_system_t::ring: within a context the rings fully within it, as residue(index) counts the
+// residues of its context. So without a context or filters, ring(k) is the ring k - 1 of the system, which is what the
+// circle of an aromatic ring picks as (md_gl_picking_offset_t). An index before the first is an error; one past the
+// last is an error without a context, and selects nothing within one (a residue need not have a second ring).
+static int _ring_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    const bool report = !dst && !ctx->vis;
+
+    // The rings to index into: those the filters let through. The index takes the place of the pattern.
+    data_t filter_arg[3] = { {0}, arg[1], arg[2] };
+    md_array(uint32_t) rings = 0;
+    const int num_rings = ring_select(&rings, filter_arg, report, ctx);
+    if (num_rings < 0) return num_rings;
+
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(&pos, as_irange_arr(arg[0]), element_count(arg[0]), num_rings, "ring", report, ctx);
+    if (count < 0) return count;
+    uint32_t* picked = md_alloc(ctx->temp_alloc, sizeof(uint32_t) * MAX(count, 1));
+    for (int i = 0; i < count; ++i) picked[i] = rings[pos[i]];
+    return ring_result(dst, picked, count, ctx);
 }
 
 static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, md_atom_flags_t flags) {
@@ -3589,6 +3617,10 @@ static int _select_components_of_kind(data_t* dst, data_t arg[], eval_context_t*
 
 static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_WATER);
+}
+
+static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_LIPID);
 }
 
 static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -3730,55 +3762,35 @@ static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_NUCLEOBASE);
 }
 
+// residue(index), component(index): residues by their 1-based position, in a context among the residues with an atom
+// in it (get_comp_indices_in_context), each cut to the context: residue(2) in chain(1) is the second residue of the
+// chain. A position before the first is an error; one past the last is an error without a context, and selects
+// nothing within one (a chain need not have a tenth residue), as ring(index) does.
 static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    const md_system_t* sys = ctx->sys;
 
-    int result = 0;
+    // The residues counted: those of the context, or all of the system (no list)
+    md_array(int32_t) comps = ctx->mol_ctx ? get_comp_indices_in_context(sys, ctx->mol_ctx, ctx->temp_alloc) : NULL;
+    const int64_t num_comps = ctx->mol_ctx ? (int64_t)md_array_size(comps) : (int64_t)sys->component.count;
 
-    const size_t num_ranges = element_count(arg[0]);
-    const irange_t* ranges = as_irange_arr(arg[0]);
-    // Here we use the implicit range given by the context and use that to select substructures within it
-    // The supplied iranges will be used as relative indices into the context
-    const irange_t ctx_range = get_comp_range_in_context(ctx->sys, ctx->mol_ctx);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), num_comps, "residue", !dst, ctx);
+    if (count < 0) return count;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        if (dst->ptr) {
-            const int64_t cap = type_info_array_len(dst->type);
-            if (cap == 0) return 0;
-
-            set_writer_t w = set_writer_begin(dst, ctx, true);
-            for (size_t i = 0; i < num_ranges; ++i) {
-                irange_t range = remap_range_to_context(ranges[i], ctx_range);
-                range = clamp_range(range, ctx_range);
-                const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-                for (int64_t j = range.beg; j < range.end; j += step) {
-                    const md_urange_t atom_range = md_component_atom_range(&ctx->sys->component, j);
-                    set_writer_push_range(&w, atom_range.beg, atom_range.end);
-                }
-            }
-            set_writer_end(&w);
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t atom_range = md_component_atom_range(&sys->component, comps ? (size_t)comps[pos[i]] : (size_t)pos[i]);
+            set_writer_push_range(&w, atom_range.beg, atom_range.end);
         }
+        set_writer_end(&w);
+        return 0;
     }
-    else {
-        int count = 0;
-        for (size_t i = 0; i < num_ranges; ++i) {
-            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
-                return STATIC_VALIDATION_ERROR;
-            }
-            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-            const int64_t len = MAX(0, range.end - range.beg);
-            count += (int)((len + step - 1) / step);
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    return result;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
 }
 
 static int _fill_comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -4040,110 +4052,48 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    int32_t* inst_indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
-    if (inst_indices == NULL) {
-        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any chains");
-        return -1;
-    }
-
-    int result = 0;
-
-    const size_t  num_ranges = element_count(arg[0]);
-    const irange_t*   ranges = as_irange_arr(arg[0]);
-    irange_t ctx_range = {0, (int)md_array_size(inst_indices)};
+    // Those with an atom in the context, or all of the system
+    md_array(int32_t) indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), (int64_t)md_array_size(indices), "instance", !dst, ctx);
+    if (count < 0) return count;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        if (dst->ptr) {
-            const int64_t cap = type_info_array_len(dst->type);
-            if (cap == 0) return 0;
-            set_writer_t w = set_writer_begin(dst, ctx, true);
-
-            for (size_t i = 0; i < num_ranges; ++i) {
-                irange_t range = remap_range_to_context(ranges[i], ctx_range);
-                const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-                for (int64_t j = range.beg; j < range.end; j += step) {
-                    md_instance_idx_t inst_idx = inst_indices[j];
-                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, inst_idx);
-                    set_writer_push_range(&w, atom_range.beg, atom_range.end);
-                }
-            }
-            set_writer_end(&w);
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, indices[pos[i]]);
+            set_writer_push_range(&w, atom_range.beg, atom_range.end);
         }
+        set_writer_end(&w);
+        return 0;
     }
-    else {
-        int count = 0;
-        for (size_t i = 0; i < num_ranges; ++i) {
-            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (range.beg < 0 || range.end > ctx_range.end) {
-                return STATIC_VALIDATION_ERROR;
-            }
-            const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-            const int64_t len = MAX(0, range.end - range.beg);
-            count += (int)((len + step - 1) / step);
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    return result;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
 }
 
 static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    int32_t* chain_indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
-    if (chain_indices == NULL) {
-        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any chains");
-        return -1;
-    }
-
-    int result = 0;
-
-    const size_t  num_ranges = element_count(arg[0]);
-    const irange_t*   ranges = as_irange_arr(arg[0]);
-    irange_t ctx_range = {0, (int)md_array_size(chain_indices)};
+    // Those with an atom in the context, or all of the system
+    md_array(int32_t) indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), (int64_t)md_array_size(indices), "chain", !dst, ctx);
+    if (count < 0) return count;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        if (dst->ptr) {
-            const int64_t cap = type_info_array_len(dst->type);
-            if (cap == 0) return 0;
-            set_writer_t w = set_writer_begin(dst, ctx, true);
-
-            for (size_t i = 0; i < num_ranges; ++i) {
-                irange_t range = remap_range_to_context(ranges[i], ctx_range);
-                const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-                for (int64_t j = range.beg; j < range.end; j += step) {
-                    md_instance_idx_t chain_idx = chain_indices[j];
-                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, chain_idx);
-                    set_writer_push_range(&w, atom_range.beg, atom_range.end);
-                }
-            }
-            set_writer_end(&w);
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, indices[pos[i]]);
+            set_writer_push_range(&w, atom_range.beg, atom_range.end);
         }
+        set_writer_end(&w);
+        return 0;
     }
-    else {
-        int count = 0;
-        for (size_t i = 0; i < num_ranges; ++i) {
-            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (range.beg < 0 || range.end > ctx_range.end) {
-                return STATIC_VALIDATION_ERROR;
-            }
-            const int64_t step = ranges[i].step > 0 ? ranges[i].step : 1;
-            const int64_t len = MAX(0, range.end - range.beg);
-            count += (int)((len + step - 1) / step);
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
-
-    return result;
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
 }
 
 typedef struct {
@@ -4859,7 +4809,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
 
     // One value per bitfield of the argument: rmsd(residue(:)) gives the deviation of every residue on its
-    // own, each fitted separately. rmsd(flatten(...)) pools them into a single fit and a single value.
+    // own, each fitted separately. rmsd(union(...)) pools them into a single fit and a single value.
     const size_t num_bf = element_count(arg[0]);
 
     if (dst) {
@@ -5134,6 +5084,15 @@ static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+// join(): the old name of union(), which says what becomes of an atom in more than one of the selections
+static int _join_deprecated(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst && !ctx->vis) {
+        EVAL_LOG_WARNING(ctx, ctx->op_token, "join() is deprecated, use union(): every atom of the selections, once");
+        return 0;
+    }
+    return _join_bf_arr(dst, arg, ctx);
+}
+
 // Split a bitfield into an array of bitfields given a criterion (residue, chain, structure or integer > 0)
 static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // Implement integer split for now
@@ -5224,17 +5183,17 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (split == UNKNOWN) {
-        md_strb_t sb = md_strb_create(ctx->temp_alloc);
-        md_strb_fmt(&sb, "Invalid argument ('" STR_FMT "'), valid arguments are: ", STR_ARG(str_arg));
+        md_str_writer_t sw = md_str_writer_create(ctx->temp_alloc);
+        md_str_writer_fmt(&sw, "Invalid argument ('" STR_FMT "'), valid arguments are: ", STR_ARG(str_arg));
 
         for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
-            md_strb_push_str(&sb, entries[i].str);
+            md_str_writer_push_str(&sw, entries[i].str);
             if (i < ARRAY_SIZE(entries) - 1) {
-                md_strb_push_str(&sb, STR_LIT(", "));
+                md_str_writer_push_str(&sw, STR_LIT(", "));
             }
         }
 
-        EVAL_LOG_ERROR_STR(ctx, ctx->arg_tokens[1], md_strb_to_str(sb));
+        EVAL_LOG_ERROR_STR(ctx, ctx->arg_tokens[1], md_str_writer_to_str(&sw));
         return STATIC_VALIDATION_ERROR;
     }
 
@@ -5340,82 +5299,11 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    (void)ctx;
-
-    if (dst || ctx->vis) {
-        // Compute eigen vectors from covariance matrix
-        // normal should be the third axis (i.e. the smallest eigen value)
-        // We don't know the source of the inputs, so we have to use this as to get the actual coordinates
-        md_array(vec3_t) xyz = coordinate_extract(arg[0], ctx);
-
-        size_t count = md_array_size(xyz);
-        vec4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count);
-        for (size_t i = 0; i < count; ++i) {
-            xyzw[i] = vec4_from_vec3(xyz[i], 1.0f);
-        }
-
-        // Bring the points into mutually consistent images. These may not be atoms at all - they can
-        // be centres of mass produced by another expression - so there is no topology to walk here,
-        // and none is needed: the centre is seeded from the circular mean and iterated to a fixed point.
-        vec3_t com = {0};
-        md_util_deperiodize_self_vec4(xyzw, count, &ctx->cur_state->unitcell, &com);
-        mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
-        mat3_eigen_t eigen = mat3_eigen(M);
-
-        vec3_t normal = vec3_normalize(eigen.vectors.col[2]);
-        float d = vec3_dot(normal, com);
-        vec4_t plane = {normal.x, normal.y, normal.z, d};
-
-        if (dst) {
-            ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT4));
-            as_vec4(*dst) = plane;
-        }
-
-        if (ctx->vis) {
-            coordinate_visualize(arg[0], ctx);
-            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                vec3_t v = vec3_mul1(eigen.vectors.col[0], eigen.values.elem[0]);
-                vec3_t u = vec3_mul1(eigen.vectors.col[1], eigen.values.elem[1]);
-
-                // Draw something plane-ish
-                md_script_vis_vertex_t ci = vertex(com, COLOR_WHITE);
-                md_script_vis_vertex_t ni = vertex(vec3_add(com, normal), COLOR_WHITE);
-
-                md_script_vis_vertex_t corner[4] = {
-                    vertex(vec3_sub(vec3_sub(com, v), u), COLOR_WHITE),
-                    vertex(vec3_sub(vec3_add(com, v), u), COLOR_WHITE),
-                    vertex(vec3_add(vec3_add(com, v), u), COLOR_WHITE),
-                    vertex(vec3_add(vec3_sub(com, v), u), COLOR_WHITE),
-                };
-
-                push_line(corner[0], corner[1], ctx->vis);
-                push_line(corner[1], corner[2], ctx->vis);
-                push_line(corner[2], corner[3], ctx->vis);
-                push_line(corner[3], corner[0], ctx->vis);
-
-                push_line(ci, ni, ctx->vis);
-            }
-        }
-
-        md_free(ctx->temp_alloc, xyzw, sizeof(vec4_t) * count);
-    } else {
-        int count = coordinate_validate(arg[0], 0, ctx);
-        if (count < 0) return -1;
-        if (count < 3) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
-            return -1;
-        }
-    }
-
-    return 0;
-}
-
-// ### PLANES ###
-// planes(groups): the least squares plane of each group of atoms, a plane record (plane_t) per group, which centroid(),
-// normal(), radius(), deviation() and angle() read. Not plane(), which fits one plane through all of the positions it
-// is given (an array of selections being their centres).
+// ### PLANE ###
+// plane(groups): the least squares plane of each group of atoms, a plane record (plane_t) per group, which centroid(),
+// normal(), radius(), deviation() and angle() read. plane(positions): one plane through positions, atom indices in the
+// order given or float[3] (from coord(), ...). One plane through all of the atoms of the groups is
+// plane(union(groups)).
 //
 // The normal of a plane is oriented, so that it does not flip from frame to frame:
 //   - A group which is a ring of the system (md_system_t::ring): by the order of the ring, the normal on the side from
@@ -5423,6 +5311,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
 //   - Any other group: by two of its atoms chosen in the reference structure, the one farthest from its centroid and
 //     the one which spans the largest area with it. The normal is on the side from which the first turns towards the
 //     second anticlockwise.
+//   - Positions: by their order, as a ring is, the normal on the side from which they go around anticlockwise.
 
 // The ring of the system whose atoms are those of bf, -1 if none. first_ring[k] .. holds the rings of atom k.
 typedef struct plane_rings_t {
@@ -5472,28 +5361,38 @@ static int64_t plane_rings_find(const plane_rings_t* pr, const md_system_t* sys,
     return -1;
 }
 
-// Positions of the atoms idx in state, made mutually consistent across the cell, and their centroid
-static vec3_t plane_positions(vec4_t* xyzw, const int32_t* idx, size_t count, const md_system_state_t* state) {
-    for (size_t k = 0; k < count; ++k) {
-        const vec3_t x = state->xyz[idx[k]];
-        xyzw[k] = vec4_set(x.x, x.y, x.z, 1.0f);
-    }
+// The points xyzw made mutually consistent across the cell, and their centroid
+static vec3_t plane_place(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
     vec3_t c = {0};
-    md_util_deperiodize_self_vec4(xyzw, count, &state->unitcell, &c);
+    md_util_deperiodize_self_vec4(xyzw, count, cell, &c);
     // The centroid of the points as placed
     vec3_t sum = {0};
     for (size_t k = 0; k < count; ++k) sum = vec3_add(sum, vec3_from_vec4(xyzw[k]));
     return vec3_mul1(sum, 1.0f / (float)count);
 }
 
-static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ring, const eval_context_t* ctx, md_allocator_i* temp) {
-    MEMSET(out, 0, sizeof(plane_t));
-    out->count = (int)count;
-    if (count < 3) return;
-    const md_system_t* sys = ctx->sys;
+// Positions of the atoms idx in state, made mutually consistent across the cell, and their centroid
+static vec3_t plane_positions(vec4_t* xyzw, const int32_t* idx, size_t count, const md_system_state_t* state) {
+    for (size_t k = 0; k < count; ++k) {
+        const vec3_t x = state->xyz[idx[k]];
+        xyzw[k] = vec4_set(x.x, x.y, x.z, 1.0f);
+    }
+    return plane_place(xyzw, count, &state->unitcell);
+}
 
-    vec4_t* xyzw = md_alloc(temp, sizeof(vec4_t) * count);
-    const vec3_t c = plane_positions(xyzw, idx, count, ctx->cur_state);
+// The side from which the points go around anticlockwise, in their order (twice the area of a planar polygon)
+static vec3_t plane_turn(const vec4_t* xyzw, size_t count, vec3_t c) {
+    vec3_t ref = {0};
+    for (size_t k = 0; k < count; ++k) {
+        const vec3_t a = vec3_sub(vec3_from_vec4(xyzw[k]), c);
+        const vec3_t b = vec3_sub(vec3_from_vec4(xyzw[(k + 1) % count]), c);
+        ref = vec3_add(ref, vec3_cross(a, b));
+    }
+    return ref;
+}
+
+// The least squares plane of count >= 3 points, placed, with centroid c. The normal is on the side of ref.
+static void plane_from_points(plane_t* out, const vec4_t* xyzw, size_t count, vec3_t c, vec3_t ref) {
     const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, c);
     const mat3_eigen_t E = mat3_eigen(M);
 
@@ -5504,6 +5403,36 @@ static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ri
     }
     vec3_t n    = vec3_normalize(E.vectors.col[order[2]]);
     vec3_t axis = vec3_normalize(E.vectors.col[order[0]]);
+
+    if (vec3_dot(n, ref) < 0.0f) n = vec3_mul1(n, -1.0f);
+    // A right handed frame: axis, normal x axis, normal
+    if (vec3_dot(vec3_cross(axis, vec3_cross(n, axis)), n) < 0.0f) axis = vec3_mul1(axis, -1.0f);
+
+    float radius = 0.0f, dev = 0.0f;
+    for (size_t k = 0; k < count; ++k) {
+        const vec3_t d = vec3_sub(vec3_from_vec4(xyzw[k]), c);
+        radius += vec3_length(d);
+        const float h = vec3_dot(d, n);
+        dev += h * h;
+    }
+    out->count     = (int)count;
+    out->centroid  = c;
+    out->normal    = n;
+    out->axis      = axis;
+    out->extent[0] = sqrtf(MAX(E.values.elem[order[0]], 0.0f));
+    out->extent[1] = sqrtf(MAX(E.values.elem[order[1]], 0.0f));
+    out->radius    = radius / (float)count;
+    out->deviation = sqrtf(dev / (float)count);
+}
+
+static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ring, const eval_context_t* ctx, md_allocator_i* temp) {
+    MEMSET(out, 0, sizeof(plane_t));
+    out->count = (int)count;
+    if (count < 3) return;
+    const md_system_t* sys = ctx->sys;
+
+    vec4_t* xyzw = md_alloc(temp, sizeof(vec4_t) * count);
+    const vec3_t c = plane_positions(xyzw, idx, count, ctx->cur_state);
 
     // Orientation
     vec3_t ref = {0};
@@ -5541,24 +5470,7 @@ static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ri
             ref = vec3_cross(vec3_sub(vec3_from_vec4(xyzw[a]), c), vec3_sub(vec3_from_vec4(xyzw[b]), c));
         }
     }
-    if (vec3_dot(n, ref) < 0.0f) n = vec3_mul1(n, -1.0f);
-    // A right handed frame: axis, normal x axis, normal
-    if (vec3_dot(vec3_cross(axis, vec3_cross(n, axis)), n) < 0.0f) axis = vec3_mul1(axis, -1.0f);
-
-    float radius = 0.0f, dev = 0.0f;
-    for (size_t k = 0; k < count; ++k) {
-        const vec3_t d = vec3_sub(vec3_from_vec4(xyzw[k]), c);
-        radius += vec3_length(d);
-        const float h = vec3_dot(d, n);
-        dev += h * h;
-    }
-    out->centroid  = c;
-    out->normal    = n;
-    out->axis      = axis;
-    out->extent[0] = sqrtf(MAX(E.values.elem[order[0]], 0.0f));
-    out->extent[1] = sqrtf(MAX(E.values.elem[order[1]], 0.0f));
-    out->radius    = radius / (float)count;
-    out->deviation = sqrtf(dev / (float)count);
+    plane_from_points(out, xyzw, count, c, ref);
 }
 
 static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
@@ -5579,7 +5491,7 @@ static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
     push_line(vertex(p->centroid, COLOR_WHITE), vertex(vec3_add(p->centroid, vec3_mul1(p->normal, p->radius)), COLOR_WHITE), ctx->vis);
 }
 
-static int _planes(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     const md_bitset_t* groups = as_bitset(arg[0]);
@@ -5588,14 +5500,14 @@ static int _planes(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst && !ctx->vis) {
         // The groups have to be fixed, and have the atoms a plane needs
         if (ctx->arg_flags[0] & FLAG_DYNAMIC) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: the groups cannot depend on the frame");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "plane: the groups cannot depend on the frame (plane(coord(...)) fits the positions of each frame)");
             return STATIC_VALIDATION_ERROR;
         }
         for (size_t g = 0; g < num; ++g) {
             const size_t n = ctx->mol_ctx ? md_bitset_count(md_bitset_and(groups[g], *ctx->mol_ctx, ctx->temp_alloc)) : md_bitset_count(groups[g]);
             if (n < 3) {
-                if (num == 1) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: the group has %zu atom%s, a plane needs at least 3", n, n == 1 ? "" : "s");
-                else          EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "planes: group %zu of %zu has %zu atom%s, a plane needs at least 3", g + 1, num, n, n == 1 ? "" : "s");
+                if (num == 1) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "plane: the group has %zu atom%s, a plane needs at least 3", n, n == 1 ? "" : "s");
+                else          EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "plane: group %zu of %zu has %zu atom%s, a plane needs at least 3", g + 1, num, n, n == 1 ? "" : "s");
                 return STATIC_VALIDATION_ERROR;
             }
         }
@@ -5644,6 +5556,59 @@ static int _planes(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     md_temp_end(temp);
+    return 0;
+}
+
+static int _plane_points(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+
+    if (!dst && !ctx->vis) {
+        // Positions only counted when they are evaluated (coord(within(...))) are checked then
+        if (!(arg[0].type.base_type == TYPE_FLOAT && is_variable_length(arg[0].type))) {
+            const int count = coordinate_validate(arg[0], 0, ctx);
+            if (count < 0) return STATIC_VALIDATION_ERROR;
+            if (count < 3) {
+                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "plane: %d position%s, a plane needs at least 3", count, count == 1 ? "" : "s");
+                return STATIC_VALIDATION_ERROR;
+            }
+        }
+        if (ctx->backchannel) {
+            // Always one plane, however many positions
+            ctx->backchannel->flags &= ~FLAG_DYNAMIC_LENGTH;
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_none();
+        }
+        return 1;
+    }
+
+    if (dst && ctx->backchannel) {
+        // Evaluated within the static check, for a procedure asking about its argument: the shape only
+        MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
+        return 0;
+    }
+
+    plane_t p = {0};
+    md_array(vec3_t) xyz = coordinate_extract(arg[0], ctx);
+    const size_t count = md_array_size(xyz);
+    p.count = (int)count;
+    if (count >= 3) {
+        vec4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count);
+        for (size_t k = 0; k < count; ++k) {
+            xyzw[k] = vec4_from_vec3(xyz[k], 1.0f);
+        }
+        const vec3_t c = plane_place(xyzw, count, &ctx->cur_state->unitcell);
+        plane_from_points(&p, xyzw, count, c, plane_turn(xyzw, count, c));
+        md_free(ctx->temp_alloc, xyzw, sizeof(vec4_t) * count);
+    }
+
+    if (dst) {
+        *(plane_t*)dst->ptr = p;
+    }
+    if (ctx->vis) {
+        coordinate_visualize(arg[0], ctx);
+        plane_visualize(&p, ctx);
+    }
     return 0;
 }
 
@@ -6746,11 +6711,11 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
         str_t str = as_string(arg[1]);
         count_type_t type = count_type_from_str(str);
         if (type == COUNT_TYPE_UNKNOWN) {
-            md_strb_t sb = md_strb_create(ctx->temp_alloc);
+            md_str_writer_t sb = md_str_writer_create(ctx->temp_alloc);
             for (int i = 1; i < COUNT_TYPE_COUNT; ++i) {
-                md_strb_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
+                md_str_writer_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
             }
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_str_writer_to_str(&sb)));
             return -1;
         }
     }

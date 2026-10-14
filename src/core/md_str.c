@@ -12,64 +12,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-bool str_eq_n(str_t str_a, str_t str_b, size_t n) {
-    if (!str_a.ptr || !str_b.ptr) return false;
-    if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
-    if (str_a.ptr[0] != str_b.ptr[0]) return false;
-    // str_a & str_b have equal len at this point
-    n = n < str_a.len ? n : str_a.len;
-    return MEMCMP(str_a.ptr, str_b.ptr, n) == 0;
-}
-
-
-bool str_eq_ignore_case(const str_t str_a, const str_t str_b) {
-    if (!str_a.ptr || !str_b.ptr) return false;
-    if (str_a.len != str_b.len) return false;
-    for (size_t i = 0; i < str_a.len; ++i) {
-        if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
-    }
-    return true;
-}
-
-bool str_eq_n_ignore_case(const str_t str_a, const str_t str_b, size_t n) {
-    if (!str_a.ptr || !str_b.ptr) return false;
-	if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
-
-	// str_a & str_b have equal len.
-	n = n < str_a.len ? n : str_a.len;
-	for (size_t i = 0; i < n; ++i) {
-    	if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
-    }
-	return true;
-}
-
-// Compare str and cstr only up to n characters
-bool str_eq_cstr_n(str_t str, const char* cstr, size_t n) {
-    if (!n) return false;
-    if (!str.ptr || !str.len || !cstr) return false;
-    if (str.ptr[0] != cstr[0]) return false;
-    n = n < str.len ? n : str.len;
-    return strncmp(str.ptr, cstr, n) == 0;
-}
-
-bool str_eq_cstr_ignore_case(str_t str, const char* cstr) {
-    if (!str.ptr || !str.len || !cstr) return false;
-    for (size_t i = 0; i < str.len; ++i) {
-        if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
-    }
-    return cstr[str.len] == '\0';
-}
-
-bool str_eq_cstr_n_ignore_case(str_t str, const char* cstr, size_t n) {
-    if (!n) return false;
-    if (!str.ptr || !str.len || !cstr) return false;
-    n = n < str.len ? n : str.len;
-    for (size_t i = 0; i < n; ++i) {
-        if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
-    }
-    return true;
-}
-
 size_t str_count_equal_chars(str_t a, str_t b) {
     if (!a.ptr || a.len <= 0 || !b.ptr || b.len <= 0) return 0;
     const size_t len = MIN(a.len, b.len);
@@ -87,69 +29,6 @@ size_t str_count_occur_char(str_t str, char c) {
         if (str.ptr[i] == c) count += 1;
     }
     return count;
-}
-
-str_t str_join(str_t first, str_t last) {
-    ASSERT(first.ptr < last.ptr + last.len);
-    str_t str = {
-        str_beg(first),
-        str_end(last) - str_beg(first)
-    };
-    return str;
-}
-
-int str_cmp_lex(str_t a, str_t b) {
-    size_t len = a.len < b.len ? a.len : b.len;
-    for (size_t i = 0; i < len; ++i) {
-        if (a.ptr[i] < b.ptr[i]) return -1;
-        if (a.ptr[i] > b.ptr[i]) return 1;
-    }
-    if (a.len < b.len) return -1;
-    if (a.len > b.len) return 1;
-    return 0;
-}
-
-// Skip, peek and extract agree on what a line is: the text up to a '\n' or the end, without the
-// '\r' of a CRLF, and a last line counts whether or not a newline ends it.
-bool str_skip_line(str_t* in_out_str) {
-    ASSERT(in_out_str);
-    if (in_out_str->len == 0) return false;
-    const char* c = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
-    const char* next = c ? c + 1 : in_out_str->ptr + in_out_str->len;
-    in_out_str->len -= (size_t)(next - in_out_str->ptr);
-    in_out_str->ptr = next;
-    return true;
-}
-
-bool str_peek_line(str_t* out_line, const str_t* in_str) {
-    ASSERT(out_line);
-    ASSERT(in_str);
-    str_t rest = *in_str;
-    return str_extract_line(out_line, &rest);
-}
-
-bool str_extract_line(str_t* out_line, str_t* in_out_str) {
-    ASSERT(out_line);
-    ASSERT(in_out_str);
-    if (in_out_str->len == 0) return false;
-
-    const char* beg = in_out_str->ptr;
-    const char* end = in_out_str->ptr + in_out_str->len;
-    const char* c = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
-    if (c) {
-        end = c + 1;
-        if (c > beg && c[-1] == '\r') --c;
-    } else {
-        c = end;
-    }
-
-    out_line->ptr = beg;
-    out_line->len = MAX(0, c - beg);
-
-    in_out_str->len = in_out_str->ptr + in_out_str->len - end;
-    in_out_str->ptr = end;
-    
-    return true;
 }
 
 bool str_extract_i32(int32_t* val, str_t* str) {
@@ -204,41 +83,6 @@ bool str_extract_f64(double* val, str_t* str) {
     return true;
 }
 
-bool str_find_char(size_t* loc, str_t str, int c) {
-    // @TODO: Implement support for UTF encodings here.
-    // Identify the effective width used in c and search for that.
-
-    for (size_t i = 0; i < str.len; ++i) {
-        if (str.ptr[i] == c) {
-            if (loc) *loc = i;
-            return true;
-        }
-    }
-    return false;
-}
-
-// Insired by this
-// https://github.com/Alexpux/Cygwin/blob/master/newlib/libc/string/memrchr.c#L62
-// memrchr is a GNU extension
-bool str_rfind_char(size_t* loc, str_t str, int c) {
-    const char* ptr = str.ptr + str.len - 1;
-    size_t len = str.len;
-
-    // This should only be used until the pointer is aligned to 8-bytes
-    while (true) {
-        if (!len--) {
-            return false;
-        }
-        if (*ptr == c) {
-            if (loc) *loc = (size_t)(ptr - str.ptr);
-            return true;
-        }
-        ptr--;
-    }
-
-    // @TODO: Check for character 8-characters at a time
-}
-
 bool str_find_str(size_t* loc, str_t haystack, str_t needle) {
     if (needle.len == 0 || needle.len > haystack.len) return false;
 
@@ -256,14 +100,6 @@ bool str_find_str(size_t* loc, str_t haystack, str_t needle) {
     }
 
     return false;
-}
-
-bool str_begins_with(str_t str, str_t prefix) {
-    return str.len >= prefix.len && MEMCMP(str.ptr, prefix.ptr, prefix.len) == 0;
-}
-
-bool str_ends_with(str_t str, str_t suffix) {
-    return str.len >= suffix.len && MEMCMP(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
 }
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
@@ -441,16 +277,6 @@ void convert_to_upper(char* str, size_t len) {
     for (char* c = str; c != str + len; ++c) {
         *c = (char)to_upper(*c);
     }
-}
-
-size_t str_copy_to_char_buf(char* buf, size_t cap, str_t str) {
-    ASSERT(buf);
-    if (cap == 0) return 0;
-    // An empty str still writes the terminator, so the buffer never keeps what it held before
-    const size_t len = str_empty(str) ? 0 : MIN(str.len, cap - 1);
-    if (len) MEMCPY(buf, str.ptr, len);
-    buf[len] = '\0';
-    return len;
 }
 
 // Ported from Martin Ettl's version available on

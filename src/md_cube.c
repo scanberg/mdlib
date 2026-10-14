@@ -3,7 +3,7 @@
 #include "core/md_allocator.h"
 #include "core/md_os.h"
 #include "core/md_log.h"
-#include "core/md_str_builder.h"
+#include "core/md_writer.h"
 #include "core/md_vec_math.h"
 #include "core/md_array.h"
 
@@ -73,57 +73,56 @@ str_t tidy_comment(str_t comment) {
     return comment;
 }
 
-str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
-    ASSERT(alloc);
-	str_t str = {0};
-
+bool md_cube_write(md_writer_i* w, const md_cube_t* cube) {
+    ASSERT(w);
 	if (!md_cube_valid(cube)) {
 		MD_LOG_ERROR("CUBE: cube-object was invalid");
-		goto done;
+		return false;
 	}
 
-	md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-	md_strb_t sb = {0};
-	md_strb_init(&sb, temp_alloc);
-	
-	md_strb_push_str(&sb, tidy_comment(cube->title));   md_strb_push_char(&sb, '\n');
-	md_strb_push_str(&sb, tidy_comment(cube->comment)); md_strb_push_char(&sb, '\n');
+	md_write_str(w, tidy_comment(cube->title));   md_write_char(w, '\n');
+	md_write_str(w, tidy_comment(cube->comment)); md_write_char(w, '\n');
 
 	int atom_count = cube->data.id ? -cube->atom.count : cube->atom.count;
 	int num_val = cube->data.id ? 1 : cube->data.num_m;
-	md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f%5d\n", atom_count, cube->origin[0], cube->origin[1], cube->origin[2], num_val);
-    md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_x, cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
-	md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_y, cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
-	md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_z, cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
+	md_writef(w, "%5d%12.6f%12.6f%12.6f%5d\n", atom_count, cube->origin[0], cube->origin[1], cube->origin[2], num_val);
+    md_writef(w, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_x, cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
+	md_writef(w, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_y, cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
+	md_writef(w, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_z, cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
 	
 	for (int i = 0; i < cube->atom.count; ++i) {
-		md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f%12.6f\n", cube->atom.number[i], cube->atom.charge[i], cube->atom.coord[i][0], cube->atom.coord[i][1], cube->atom.coord[i][2]);
+		md_writef(w, "%5d%12.6f%12.6f%12.6f%12.6f\n", cube->atom.number[i], cube->atom.charge[i], cube->atom.coord[i][0], cube->atom.coord[i][1], cube->atom.coord[i][2]);
 	}
 
 	if (cube->data.id) {
-		md_strb_fmt(&sb, "%5d", cube->data.num_m);
+		md_writef(w, "%5d", cube->data.num_m);
 		for (int i = 0; i < cube->data.num_m; ++i) {
-			md_strb_fmt(&sb, "%5d", cube->data.id[i]);
+			md_writef(w, "%5d", cube->data.id[i]);
 			if (i % 23 == 22) {
-				md_strb_push_char(&sb, '\n');
+				md_write_char(w, '\n');
 			}
 		}
-		md_strb_push_char(&sb, '\n');
+		md_write_char(w, '\n');
 	}
 	
 	const int64_t data_count = cube->data.num_x * cube->data.num_y * cube->data.num_z;
 	for (int64_t i = 0; i < data_count; ++i) {
-        md_strb_fmt(&sb, " %12.5E", cube->data.val[i]);
+        md_writef(w, " %12.5E", cube->data.val[i]);
         if (i % 6 == 5) {
-			md_strb_push_char(&sb, '\n');
+			md_write_char(w, '\n');
 		}
 	}
-	
-	str = str_copy(md_strb_to_str(sb), alloc);
-	md_temp_end(temp_scope);
-done:
-	return str;
+	return true;
+}
+
+str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
+    ASSERT(alloc);
+	md_str_writer_t sw = md_str_writer_create(alloc);
+	if (!md_cube_write(&sw.w, cube)) {
+		md_str_writer_free(&sw);
+		return (str_t){0};
+	}
+	return md_str_writer_release(&sw);
 }
 
 static inline bool str_extract_v3(md_cube_v3 v, str_t* str) {
@@ -262,13 +261,10 @@ bool md_cube_file_store(const md_cube_t* cube, str_t path) {
 	md_file_t file = {0};
 	bool success = false;
 	if (open_file(&file, path)) {
-		md_temp_scope_t temp_scope = md_temp_begin();
-		md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-		str_t str = md_cube_serialize(cube, temp_alloc);
-        if (!str_empty(str)) {
-			success = md_file_write(file, str_ptr(str), str_len(str)) == str_len(str);
-        }
-		md_temp_end(temp_scope);
+		// Streamed through a staging buffer, rather than built whole in memory first
+		md_file_writer_t fw = md_file_writer_create(file, NULL, 0);
+		md_cube_write(&fw.w, cube);
+		success = md_file_writer_close(&fw);
 		md_file_close(&file);
 	}
 	

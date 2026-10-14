@@ -3,7 +3,7 @@
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 
 #include <math.h>
 #include <string.h>
@@ -55,26 +55,26 @@ static void push_cmd(md_vg_scene_t* scene, const md_vg_cmd_t* cmd) {
     md_array_push(scene->commands, *cmd, scene->alloc);
 }
 
-static void emit_xml_escaped(md_strb_t* sb, str_t text) {
+static void emit_xml_escaped(md_writer_i* w, str_t text) {
     for (size_t i = 0; i < text.len; ++i) {
         switch (text.ptr[i]) {
         case '&':
-            md_strb_push_cstr(sb, "&amp;");
+            md_write_cstr(w, "&amp;");
             break;
         case '<':
-            md_strb_push_cstr(sb, "&lt;");
+            md_write_cstr(w, "&lt;");
             break;
         case '>':
-            md_strb_push_cstr(sb, "&gt;");
+            md_write_cstr(w, "&gt;");
             break;
         case '\"':
-            md_strb_push_cstr(sb, "&quot;");
+            md_write_cstr(w, "&quot;");
             break;
         case '\'':
-            md_strb_push_cstr(sb, "&apos;");
+            md_write_cstr(w, "&apos;");
             break;
         default:
-            md_strb_push_char(sb, text.ptr[i]);
+            md_write_char(w, text.ptr[i]);
             break;
         }
     }
@@ -87,26 +87,26 @@ static void color_unpack(md_vg_color_t color, uint8_t rgba[4]) {
     rgba[3] = (uint8_t)(color & 0xFFu);
 }
 
-static void emit_color_attr(md_strb_t* sb, const char* attr_name, md_vg_color_t color) {
+static void emit_color_attr(md_writer_i* w, const char* attr_name, md_vg_color_t color) {
     uint8_t rgba[4];
     color_unpack(color, rgba);
-    md_strb_fmt(sb, " %s=\"rgb(%u,%u,%u)\"", attr_name, rgba[0], rgba[1], rgba[2]);
+    md_writef(w, " %s=\"rgb(%u,%u,%u)\"", attr_name, rgba[0], rgba[1], rgba[2]);
     if (rgba[3] != 255) {
-        md_strb_fmt(sb, " %s-opacity=\"%.9g\"", attr_name, rgba[3] / 255.0);
+        md_writef(w, " %s-opacity=\"%.9g\"", attr_name, rgba[3] / 255.0);
     }
 }
 
-static void emit_paint_attr(md_strb_t* sb, const char* attr_name, md_vg_paint_t paint, size_t cmd_idx) {
+static void emit_paint_attr(md_writer_i* w, const char* attr_name, md_vg_paint_t paint, size_t cmd_idx) {
     switch (paint.type) {
     default:
     case MD_VG_PAINT_NONE:
-        md_strb_fmt(sb, " %s=\"none\"", attr_name);
+        md_writef(w, " %s=\"none\"", attr_name);
         break;
     case MD_VG_PAINT_COLOR:
-        emit_color_attr(sb, attr_name, paint.data.color);
+        emit_color_attr(w, attr_name, paint.data.color);
         break;
     case MD_VG_PAINT_LINEAR_GRADIENT:
-        md_strb_fmt(sb, " %s=\"url(#mdvg-grad-%zu-%s)\"", attr_name, cmd_idx, attr_name);
+        md_writef(w, " %s=\"url(#mdvg-grad-%zu-%s)\"", attr_name, cmd_idx, attr_name);
         break;
     }
 }
@@ -137,45 +137,45 @@ static const char* fill_rule_str(md_vg_fill_rule_t fill_rule) {
     }
 }
 
-static void emit_style(md_strb_t* sb, const md_vg_style_t* style, size_t cmd_idx) {
-    emit_paint_attr(sb, "fill", style->fill, cmd_idx);
-    emit_paint_attr(sb, "stroke", style->stroke, cmd_idx);
+static void emit_style(md_writer_i* w, const md_vg_style_t* style, size_t cmd_idx) {
+    emit_paint_attr(w, "fill", style->fill, cmd_idx);
+    emit_paint_attr(w, "stroke", style->stroke, cmd_idx);
 
     if (!paint_is_none(style->stroke)) {
-        md_strb_fmt(sb, " stroke-width=\"%.9g\"", style->stroke_width);
-        md_strb_fmt(sb, " stroke-linecap=\"%s\"", line_cap_str(style->line_cap));
-        md_strb_fmt(sb, " stroke-linejoin=\"%s\"", line_join_str(style->line_join));
-        md_strb_fmt(sb, " stroke-miterlimit=\"%.9g\"", style->miter_limit);
+        md_writef(w, " stroke-width=\"%.9g\"", style->stroke_width);
+        md_writef(w, " stroke-linecap=\"%s\"", line_cap_str(style->line_cap));
+        md_writef(w, " stroke-linejoin=\"%s\"", line_join_str(style->line_join));
+        md_writef(w, " stroke-miterlimit=\"%.9g\"", style->miter_limit);
     }
     if (!paint_is_none(style->fill)) {
-        md_strb_fmt(sb, " fill-rule=\"%s\"", fill_rule_str(style->fill_rule));
+        md_writef(w, " fill-rule=\"%s\"", fill_rule_str(style->fill_rule));
     }
 }
 
-static void emit_gradient_def(md_strb_t* sb, size_t cmd_idx, const char* slot, const md_vg_linear_gradient_t* grad) {
+static void emit_gradient_def(md_writer_i* w, size_t cmd_idx, const char* slot, const md_vg_linear_gradient_t* grad) {
     uint8_t rgba0[4];
     uint8_t rgba1[4];
     color_unpack(grad->col0, rgba0);
     color_unpack(grad->col1, rgba1);
 
-    md_strb_fmt(sb, "    <linearGradient id=\"mdvg-grad-%zu-%s\" gradientUnits=\"userSpaceOnUse\" x1=\"%.9g\" y1=\"%.9g\" x2=\"%.9g\" y2=\"%.9g\">\n",
+    md_writef(w, "    <linearGradient id=\"mdvg-grad-%zu-%s\" gradientUnits=\"userSpaceOnUse\" x1=\"%.9g\" y1=\"%.9g\" x2=\"%.9g\" y2=\"%.9g\">\n",
         cmd_idx, slot,
         grad->p0.x, grad->p0.y,
         grad->p1.x, grad->p1.y);
-    md_strb_fmt(sb, "      <stop offset=\"0%%\" stop-color=\"rgb(%u,%u,%u)\"", rgba0[0], rgba0[1], rgba0[2]);
+    md_writef(w, "      <stop offset=\"0%%\" stop-color=\"rgb(%u,%u,%u)\"", rgba0[0], rgba0[1], rgba0[2]);
     if (rgba0[3] != 255) {
-        md_strb_fmt(sb, " stop-opacity=\"%.9g\"", rgba0[3] / 255.0);
+        md_writef(w, " stop-opacity=\"%.9g\"", rgba0[3] / 255.0);
     }
-    md_strb_push_cstr(sb, "/>\n");
-    md_strb_fmt(sb, "      <stop offset=\"100%%\" stop-color=\"rgb(%u,%u,%u)\"", rgba1[0], rgba1[1], rgba1[2]);
+    md_write_cstr(w, "/>\n");
+    md_writef(w, "      <stop offset=\"100%%\" stop-color=\"rgb(%u,%u,%u)\"", rgba1[0], rgba1[1], rgba1[2]);
     if (rgba1[3] != 255) {
-        md_strb_fmt(sb, " stop-opacity=\"%.9g\"", rgba1[3] / 255.0);
+        md_writef(w, " stop-opacity=\"%.9g\"", rgba1[3] / 255.0);
     }
-    md_strb_push_cstr(sb, "/>\n");
-    md_strb_push_cstr(sb, "    </linearGradient>\n");
+    md_write_cstr(w, "/>\n");
+    md_write_cstr(w, "    </linearGradient>\n");
 }
 
-static void emit_defs(md_strb_t* sb, const md_vg_scene_t* scene) {
+static void emit_defs(md_writer_i* w, const md_vg_scene_t* scene) {
     bool has_gradients = false;
     for (size_t i = 0; i < md_array_size(scene->commands); ++i) {
         const md_vg_style_t* style = &scene->commands[i].style;
@@ -183,27 +183,27 @@ static void emit_defs(md_strb_t* sb, const md_vg_scene_t* scene) {
     }
     if (!has_gradients) return;
 
-    md_strb_push_cstr(sb, "  <defs>\n");
+    md_write_cstr(w, "  <defs>\n");
     for (size_t i = 0; i < md_array_size(scene->commands); ++i) {
         const md_vg_style_t* style = &scene->commands[i].style;
         if (paint_is_gradient(style->fill)) {
-            emit_gradient_def(sb, i, "fill", &style->fill.data.linear_gradient);
+            emit_gradient_def(w, i, "fill", &style->fill.data.linear_gradient);
         }
         if (paint_is_gradient(style->stroke)) {
-            emit_gradient_def(sb, i, "stroke", &style->stroke.data.linear_gradient);
+            emit_gradient_def(w, i, "stroke", &style->stroke.data.linear_gradient);
         }
     }
-    md_strb_push_cstr(sb, "  </defs>\n");
+    md_write_cstr(w, "  </defs>\n");
 }
 
-static void emit_points(md_strb_t* sb, const vec2_t* points, size_t count) {
+static void emit_points(md_writer_i* w, const vec2_t* points, size_t count) {
     for (size_t i = 0; i < count; ++i) {
-        if (i) md_strb_push_char(sb, ' ');
-        md_strb_fmt(sb, "%.9g,%.9g", points[i].x, points[i].y);
+        if (i) md_write_char(w, ' ');
+        md_writef(w, "%.9g,%.9g", points[i].x, points[i].y);
     }
 }
 
-static void emit_path_data(md_strb_t* sb, const md_vg_scene_t* scene, const md_vg_cmd_t* cmd) {
+static void emit_path_data(md_writer_i* w, const md_vg_scene_t* scene, const md_vg_cmd_t* cmd) {
     const md_vg_path_verb_t* verbs = scene->verbs + cmd->data.path.verb_offset;
     const vec2_t* points = scene->points + cmd->data.path.point_offset;
     size_t point_idx = 0;
@@ -211,28 +211,28 @@ static void emit_path_data(md_strb_t* sb, const md_vg_scene_t* scene, const md_v
     for (size_t i = 0; i < cmd->data.path.verb_count; ++i) {
         switch (verbs[i]) {
         case MD_VG_PATH_MOVE_TO:
-            md_strb_fmt(sb, "M %.9g %.9g ", points[point_idx + 0].x, points[point_idx + 0].y);
+            md_writef(w, "M %.9g %.9g ", points[point_idx + 0].x, points[point_idx + 0].y);
             point_idx += 1;
             break;
         case MD_VG_PATH_LINE_TO:
-            md_strb_fmt(sb, "L %.9g %.9g ", points[point_idx + 0].x, points[point_idx + 0].y);
+            md_writef(w, "L %.9g %.9g ", points[point_idx + 0].x, points[point_idx + 0].y);
             point_idx += 1;
             break;
         case MD_VG_PATH_QUADRATIC_TO:
-            md_strb_fmt(sb, "Q %.9g %.9g %.9g %.9g ",
+            md_writef(w, "Q %.9g %.9g %.9g %.9g ",
                 points[point_idx + 0].x, points[point_idx + 0].y,
                 points[point_idx + 1].x, points[point_idx + 1].y);
             point_idx += 2;
             break;
         case MD_VG_PATH_CUBIC_TO:
-            md_strb_fmt(sb, "C %.9g %.9g %.9g %.9g %.9g %.9g ",
+            md_writef(w, "C %.9g %.9g %.9g %.9g %.9g %.9g ",
                 points[point_idx + 0].x, points[point_idx + 0].y,
                 points[point_idx + 1].x, points[point_idx + 1].y,
                 points[point_idx + 2].x, points[point_idx + 2].y);
             point_idx += 3;
             break;
         case MD_VG_PATH_CLOSE:
-            md_strb_push_cstr(sb, "Z ");
+            md_write_cstr(w, "Z ");
             break;
         default:
             break;
@@ -240,118 +240,118 @@ static void emit_path_data(md_strb_t* sb, const md_vg_scene_t* scene, const md_v
     }
 }
 
-static void emit_svg_scene(md_strb_t* sb, const md_vg_scene_t* scene) {
+static void emit_svg_scene(md_writer_i* w, const md_vg_scene_t* scene) {
     const char* font_family = scene->default_font_family.ptr ? scene->default_font_family.ptr : "sans-serif";
     const int font_family_len = scene->default_font_family.ptr ? (int)scene->default_font_family.len : (int)strlen(font_family);
 
-    md_strb_push_cstr(sb, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    md_strb_fmt(sb,
+    md_write_cstr(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    md_writef(w,
         "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"%.9g\" height=\"%.9g\" viewBox=\"0 0 %.9g %.9g\">\n",
         scene->size.x, scene->size.y, scene->size.x, scene->size.y);
 
-    emit_defs(sb, scene);
+    emit_defs(w, scene);
 
     for (size_t i = 0; i < md_array_size(scene->commands); ++i) {
         const md_vg_cmd_t* cmd = &scene->commands[i];
         switch (cmd->type) {
         case MD_VG_CMD_LINE:
-            md_strb_fmt(sb, "  <line x1=\"%.9g\" y1=\"%.9g\" x2=\"%.9g\" y2=\"%.9g\"",
+            md_writef(w, "  <line x1=\"%.9g\" y1=\"%.9g\" x2=\"%.9g\" y2=\"%.9g\"",
                 cmd->data.line.p0.x, cmd->data.line.p0.y,
                 cmd->data.line.p1.x, cmd->data.line.p1.y);
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_RECT: {
             const vec2_t size = { cmd->data.rect.max.x - cmd->data.rect.min.x, cmd->data.rect.max.y - cmd->data.rect.min.y };
-            md_strb_fmt(sb, "  <rect x=\"%.9g\" y=\"%.9g\" width=\"%.9g\" height=\"%.9g\"",
+            md_writef(w, "  <rect x=\"%.9g\" y=\"%.9g\" width=\"%.9g\" height=\"%.9g\"",
                 cmd->data.rect.min.x, cmd->data.rect.min.y, size.x, size.y);
             if (cmd->data.rect.rounding > 0.0f) {
-                md_strb_fmt(sb, " rx=\"%.9g\" ry=\"%.9g\"", cmd->data.rect.rounding, cmd->data.rect.rounding);
+                md_writef(w, " rx=\"%.9g\" ry=\"%.9g\"", cmd->data.rect.rounding, cmd->data.rect.rounding);
             }
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         }
         case MD_VG_CMD_CIRCLE:
-            md_strb_fmt(sb, "  <circle cx=\"%.9g\" cy=\"%.9g\" r=\"%.9g\"",
+            md_writef(w, "  <circle cx=\"%.9g\" cy=\"%.9g\" r=\"%.9g\"",
                 cmd->data.circle.center.x, cmd->data.circle.center.y, cmd->data.circle.radius);
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_ELLIPSE:
-            md_strb_fmt(sb, "  <ellipse cx=\"%.9g\" cy=\"%.9g\" rx=\"%.9g\" ry=\"%.9g\"",
+            md_writef(w, "  <ellipse cx=\"%.9g\" cy=\"%.9g\" rx=\"%.9g\" ry=\"%.9g\"",
                 cmd->data.ellipse.center.x, cmd->data.ellipse.center.y,
                 cmd->data.ellipse.radius.x, cmd->data.ellipse.radius.y);
             if (cmd->data.ellipse.rotation != 0.0f) {
-                md_strb_fmt(sb, " transform=\"rotate(%.9g %.9g %.9g)\"",
+                md_writef(w, " transform=\"rotate(%.9g %.9g %.9g)\"",
                     cmd->data.ellipse.rotation * (180.0 / PI),
                     cmd->data.ellipse.center.x,
                     cmd->data.ellipse.center.y);
             }
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_POLYLINE: {
             const vec2_t* points = scene->points + cmd->data.polyline.point_offset;
             if (cmd->data.polyline.closed) {
-                md_strb_push_cstr(sb, "  <polygon points=\"");
+                md_write_cstr(w, "  <polygon points=\"");
             } else {
-                md_strb_push_cstr(sb, "  <polyline points=\"");
+                md_write_cstr(w, "  <polyline points=\"");
             }
-            emit_points(sb, points, cmd->data.polyline.point_count);
-            md_strb_push_char(sb, '\"');
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            emit_points(w, points, cmd->data.polyline.point_count);
+            md_write_char(w, '\"');
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         }
         case MD_VG_CMD_POLYGON: {
             const vec2_t* points = scene->points + cmd->data.polygon.point_offset;
-            md_strb_push_cstr(sb, "  <polygon points=\"");
-            emit_points(sb, points, cmd->data.polygon.point_count);
-            md_strb_push_char(sb, '\"');
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            md_write_cstr(w, "  <polygon points=\"");
+            emit_points(w, points, cmd->data.polygon.point_count);
+            md_write_char(w, '\"');
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         }
         case MD_VG_CMD_BEZIER_QUADRATIC:
-            md_strb_fmt(sb, "  <path d=\"M %.9g %.9g Q %.9g %.9g %.9g %.9g\"",
+            md_writef(w, "  <path d=\"M %.9g %.9g Q %.9g %.9g %.9g %.9g\"",
                 cmd->data.bezier_quadratic.p1.x, cmd->data.bezier_quadratic.p1.y,
                 cmd->data.bezier_quadratic.p2.x, cmd->data.bezier_quadratic.p2.y,
                 cmd->data.bezier_quadratic.p3.x, cmd->data.bezier_quadratic.p3.y);
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_BEZIER_CUBIC:
-            md_strb_fmt(sb, "  <path d=\"M %.9g %.9g C %.9g %.9g %.9g %.9g %.9g %.9g\"",
+            md_writef(w, "  <path d=\"M %.9g %.9g C %.9g %.9g %.9g %.9g %.9g %.9g\"",
                 cmd->data.bezier_cubic.p1.x, cmd->data.bezier_cubic.p1.y,
                 cmd->data.bezier_cubic.p2.x, cmd->data.bezier_cubic.p2.y,
                 cmd->data.bezier_cubic.p3.x, cmd->data.bezier_cubic.p3.y,
                 cmd->data.bezier_cubic.p4.x, cmd->data.bezier_cubic.p4.y);
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_PATH:
-            md_strb_push_cstr(sb, "  <path d=\"");
-            emit_path_data(sb, scene, cmd);
-            md_strb_push_char(sb, '\"');
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, " />\n");
+            md_write_cstr(w, "  <path d=\"");
+            emit_path_data(w, scene, cmd);
+            md_write_char(w, '\"');
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, " />\n");
             break;
         case MD_VG_CMD_TEXT: {
             const str_t text = {
                 .ptr = scene->strings + cmd->data.text.text_offset,
                 .len = cmd->data.text.text_len,
             };
-            md_strb_fmt(sb, "  <text x=\"%.9g\" y=\"%.9g\" font-size=\"%.9g\" font-family=\"%.*s\" dominant-baseline=\"hanging\" xml:space=\"preserve\"",
+            md_writef(w, "  <text x=\"%.9g\" y=\"%.9g\" font-size=\"%.9g\" font-family=\"%.*s\" dominant-baseline=\"hanging\" xml:space=\"preserve\"",
                 cmd->data.text.pos.x,
                 cmd->data.text.pos.y,
                 cmd->data.text.font_size,
                 font_family_len,
                 font_family);
-            emit_style(sb, &cmd->style, i);
-            md_strb_push_cstr(sb, ">");
-            emit_xml_escaped(sb, text);
-            md_strb_push_cstr(sb, "</text>\n");
+            emit_style(w, &cmd->style, i);
+            md_write_cstr(w, ">");
+            emit_xml_escaped(w, text);
+            md_write_cstr(w, "</text>\n");
             break;
         }
         default:
@@ -359,7 +359,7 @@ static void emit_svg_scene(md_strb_t* sb, const md_vg_scene_t* scene) {
         }
     }
 
-    md_strb_push_cstr(sb, "</svg>\n");
+    md_write_cstr(w, "</svg>\n");
 }
 
 md_vg_color_t md_vg_color_from_vec4(vec4_t color) {
@@ -424,36 +424,31 @@ void md_vg_scene_set_default_font_family(md_vg_scene_t* scene, str_t font_family
     scene->default_font_family = str_copy(font_family, scene->alloc);
 }
 
+void md_vg_scene_write_svg(md_writer_i* w, const md_vg_scene_t* scene) {
+    ASSERT(w);
+    ASSERT(scene);
+    emit_svg_scene(w, scene);
+}
+
 str_t md_vg_scene_to_svg(const md_vg_scene_t* scene, md_allocator_i* alloc) {
     ASSERT(scene);
     ASSERT(alloc);
-
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-    md_strb_t sb = md_strb_create(temp_alloc);
-    emit_svg_scene(&sb, scene);
-    str_t result = str_copy(md_strb_to_str(sb), alloc);
-    md_temp_end(temp_scope);
-    return result;
+    md_str_writer_t sw = md_str_writer_create(alloc);
+    emit_svg_scene(&sw.w, scene);
+    return md_str_writer_release(&sw);
 }
 
 bool md_vg_scene_write_svg_file(const md_vg_scene_t* scene, str_t path) {
     ASSERT(scene);
-
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(scene->alloc);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-    md_strb_t sb = md_strb_create(temp_alloc);
-    emit_svg_scene(&sb, scene);
-    str_t svg = md_strb_to_str(sb);
-
     md_file_t file = {0};
-    bool result = false;
-    if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-        result = md_file_write(file, svg.ptr, svg.len) == svg.len;
-        md_file_close(&file);
+    if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+        return false;
     }
-
-    md_temp_end(temp_scope);
+    // Streamed through a staging buffer, rather than built whole in memory first
+    md_file_writer_t fw = md_file_writer_create(file, NULL, 0);
+    emit_svg_scene(&fw.w, scene);
+    const bool result = md_file_writer_close(&fw);
+    md_file_close(&file);
     return result;
 }
 
