@@ -5938,7 +5938,6 @@ UTEST(script, pucker_canonical) {
     }
 }
 
-<<<<<<< HEAD
 // ---------------------------------------------------------------------------------------------------------------
 // Taking over from a previous evaluation (md_script_eval_create_from)
 
