@@ -34,7 +34,8 @@ on one target only. Landing one on a 16-byte boundary fixes where it starts and
 nothing else. Use a 4-vector with an unused .w, or scalars.
 
 This script is what makes that a rule rather than a convention. For each entry
-point it compiles the shader for both targets and rejects an argument struct if
+point it takes the shader as compiled for both targets and rejects an argument
+struct if
 
   1. it contains a 3-component vector, or
   2. the SPIR-V and MSL layouts disagree at any member.
@@ -52,19 +53,26 @@ launches downstream.
 
 Kernel descriptors
 ------------------
-With --emit, the script also writes a header with one function per entry point
-returning a ready md_gpu_kernel_desc_t:
+descriptor_source() turns what the check reads out of the compiled shader into
+a ready descriptor for the entry point:
 
     static inline md_gpu_kernel_desc_t <ns>_<stem>_<entry>_kernel(void);
+    static inline md_gpu_shader_t      <ns>_<stem>_<entry>_shader(void);
 
 filled with the embedded code, the group size read from the SPIR-V
 (OpExecutionMode LocalSize) and the argument-struct size from the same layout
 model the check uses -- so no call site ever repeats [numthreads] or sizeof by
 hand, and md_gpu can reject a launch whose argument block has the wrong size.
 
-Usage:
+Usage
+-----
+The build does not run this script: tools/md_gpu_build_shader.py compiles each
+entry point once, for both targets in one slangc run, and calls check_entry()
+and descriptor_source() on the result. Run on its own, the script checks the
+entry points of a file without building anything:
+
     python3 tools/check_gpu_arg_layout.py --slangc <path> <file.slang> <entry>...
-        [--emit <out.inl> --namespace <ns>]
+        [--vertex <entry>...] [--fragment <entry>...]
 """
 
 import argparse
@@ -287,165 +295,140 @@ def model_offsets(fields, table):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--slangc", required=True)
-    ap.add_argument("--bindless-space", default="0")
-    ap.add_argument("source")
-    ap.add_argument("entries", nargs="*", help="compute entry points (kernels)")
-    ap.add_argument("--vertex", nargs="*", default=[], help="vertex entry points")
-    ap.add_argument("--fragment", nargs="*", default=[], help="fragment entry points")
-    ap.add_argument("--emit", help="write kernel and shader descriptors to this header")
-    ap.add_argument("--namespace", default="md_shader")
-    args = ap.parse_args()
+def check_entry(src_name, entry, raster, spv, msl):
+    """Check the argument structs of one entry point.
 
-    src = Path(args.source)
-    problems, checked = [], 0
-    descs = {}   # entry -> (group_size, args_size); group_size None for raster stages
-    raster = set(args.vertex) | set(args.fragment)
-    all_entries = list(args.entries) + list(args.vertex) + list(args.fragment)
-    if not all_entries:
-        print(f"{src.name}: no entry points given", file=sys.stderr)
-        return 1
+    `spv` is the SPIR-V module and `msl` the MSL source that slangc produced
+    for the entry point; `raster` is true for a vertex or fragment stage.
 
-    for entry in all_entries:
-        spv = run_slang(args.slangc, src, entry, "spirv",
-                        ["-emit-spirv-directly", "-profile", "glsl_450",
-                         "-bindless-space-index", args.bindless_space], ".spv")
-        msl = run_slang(args.slangc, src, entry, "metal", [], ".metal").decode('utf8', 'replace')
+    Returns (problems, group_size, args_size). group_size is the LocalSize
+    (x, y, z), None for a raster stage; args_size is the size of the argument
+    struct the stage receives, 0 if it takes none.
+    """
+    problems, checked, args_size = [], 0, 0
+    spv_layout = spirv_struct_offsets(spv)
+    structs    = msl_structs(msl)
+    targets    = msl_arg_struct_names(structs)
+    local      = None if raster else spirv_local_size(spv)
+    if not raster and local is None:
+        return [f"{src_name}:{entry}: no LocalSize in the SPIR-V; is [numthreads] missing?"], None, 0
+    root_args = msl_root_arg_struct(msl, structs)
+    if not targets:
+        if not raster:            # a vertex or fragment stage may take no arguments
+            problems.append(f"{src_name}:{entry}: no argument struct found in the generated MSL")
+        return problems, local, 0
 
-        spv_layout = spirv_struct_offsets(spv)
-        structs    = msl_structs(msl)
-        targets    = msl_arg_struct_names(structs)
-        local      = None if entry in raster else spirv_local_size(spv)
-        if entry not in raster and local is None:
-            problems.append(f"{src.name}:{entry}: no LocalSize in the SPIR-V; is [numthreads] missing?")
+    for mname in sorted(targets):
+        body = structs.get(mname)
+        if body is None:
             continue
-        descs[entry] = (local, 0)
-        root_args = msl_root_arg_struct(msl, structs)
-        if not targets:
-            if entry in raster:
-                continue          # a vertex or fragment stage may take no arguments
-            problems.append(f"{src.name}:{entry}: no argument struct found in the generated MSL")
+        base   = base_name(mname)
+        fields = msl_fields(body)
+        s_off  = spv_layout.get(base)
+        if fields is None:
+            problems.append(f"{src_name}:{entry}: {base} has a member type this check does "
+                            f"not model; verify its layout by hand")
+            continue
+        if s_off is None:
+            problems.append(f"{src_name}:{entry}: {base} has no SPIR-V member offsets "
+                            f"(is it used by this entry point?)")
+            continue
+        checked += 1
+
+        # Rule 1: no 3-component vectors. Report every offender rather
+        # than the first, since the fix is the same for all of them and the
+        # author would otherwise rebuild once per member.
+        bad3 = [f for f, ty in fields if ty in VEC3_TYPES]
+        if bad3:
+            for f in bad3:
+                problems.append(
+                    f"{src_name}:{entry}: {base}.{plain(f)} is a 3-component vector, which is "
+                    f"12 bytes in SPIR-V and 16 in MSL. No padding fixes this -- use a "
+                    f"4-vector with an unused .w, or separate scalars.")
             continue
 
-        for mname in sorted(targets):
-            body = structs.get(mname)
-            if body is None:
-                continue
-            base   = base_name(mname)
-            fields = msl_fields(body)
-            s_off  = spv_layout.get(base)
-            if fields is None:
-                problems.append(f"{src.name}:{entry}: {base} has a member type this check does "
-                                f"not model; verify its layout by hand")
-                continue
-            if s_off is None:
-                problems.append(f"{src.name}:{entry}: {base} has no SPIR-V member offsets "
-                                f"(is it used by this entry point?)")
-                continue
-            checked += 1
+        # SPIR-V is measured from the module; Metal is modelled from the MSL
+        # layout rules, because there is no Metal compiler here. Check the
+        # model against the measurement first: if the two disagree, Slang has
+        # changed its layout and every conclusion below is worthless.
+        spv_model = model_offsets(fields, SCALAR_TYPES)
+        msl_model = model_offsets(fields, MSL_TYPES)
+        if mname == root_args:
+            args_size = model_size(fields, MSL_TYPES)
 
-            # Rule 1: no 3-component vectors. Report every offender rather
-            # than the first, since the fix is the same for all of them and the
-            # author would otherwise rebuild once per member.
-            bad3 = [f for f, ty in fields if ty in VEC3_TYPES]
-            if bad3:
-                for f in bad3:
-                    problems.append(
-                        f"{src.name}:{entry}: {base}.{plain(f)} is a 3-component vector, which is "
-                        f"12 bytes in SPIR-V and 16 in MSL. No padding fixes this -- use a "
-                        f"4-vector with an unused .w, or separate scalars.")
-                continue
+        if len(s_off) != len(spv_model):
+            problems.append(f"{src_name}:{entry}: {base}: SPIR-V reports {len(s_off)} members, "
+                            f"the model expects {len(spv_model)}")
+            continue
+        stale = False
+        for (n1, o1), (_, o2) in zip(s_off, spv_model):
+            if o1 != o2:
+                problems.append(
+                    f"{src_name}:{entry}: {base}.{n1} is at offset {o1} in SPIR-V but this "
+                    f"script's model of scalar layout says {o2}. Slang's layout rules have "
+                    f"changed; SCALAR_TYPES here (and the ABI rule in md_gpu.h) need "
+                    f"revisiting before anything else in this report is trustworthy.")
+                stale = True
+                break
+        if stale:
+            continue
 
-            # SPIR-V is measured from the module; Metal is modelled from the MSL
-            # layout rules, because there is no Metal compiler here. Check the
-            # model against the measurement first: if the two disagree, Slang has
-            # changed its layout and every conclusion below is worthless.
-            spv_model = model_offsets(fields, SCALAR_TYPES)
-            msl_model = model_offsets(fields, MSL_TYPES)
-            if mname == root_args:
-                descs[entry] = (local, model_size(fields, MSL_TYPES))
+        # Rule 2: the two targets must agree member for member. Under the
+        # ABI rule they can, and where they do not it is always the same
+        # cause -- a vector sitting at an offset that does not satisfy its
+        # Metal alignment -- so say what to pad and by how much.
+        for (n1, o1), (_, o2) in zip(spv_model, msl_model):
+            if o1 != o2:
+                need = MSL_TYPES.get(kind(dict(fields).get(n1, '')), (0, 0))[1]
+                hint = (f" Pad the members before it so {plain(n1)} starts on a "
+                        f"{need}-byte boundary." if need else "")
+                problems.append(
+                    f"{src_name}:{entry}: {base}.{plain(n1)} lands at offset {o1} in "
+                    f"SPIR-V but {o2} in MSL, so one C mirror cannot be right for "
+                    f"both.{hint} (offsets in {base}: "
+                    f"SPIR-V {[o for _, o in spv_model]}, MSL {[o for _, o in msl_model]})")
+                break
 
-            if len(s_off) != len(spv_model):
-                problems.append(f"{src.name}:{entry}: {base}: SPIR-V reports {len(s_off)} members, "
-                                f"the model expects {len(spv_model)}")
-                continue
-            stale = False
-            for (n1, o1), (_, o2) in zip(s_off, spv_model):
-                if o1 != o2:
-                    problems.append(
-                        f"{src.name}:{entry}: {base}.{n1} is at offset {o1} in SPIR-V but this "
-                        f"script's model of scalar layout says {o2}. Slang's layout rules have "
-                        f"changed; SCALAR_TYPES here (and the ABI rule in md_gpu.h) need "
-                        f"revisiting before anything else in this report is trustworthy.")
-                    stale = True
-                    break
-            if stale:
-                continue
-
-            # Rule 2: the two targets must agree member for member. Under the
-            # ABI rule they can, and where they do not it is always the same
-            # cause -- a vector sitting at an offset that does not satisfy its
-            # Metal alignment -- so say what to pad and by how much.
-            for (n1, o1), (_, o2) in zip(spv_model, msl_model):
-                if o1 != o2:
-                    need = MSL_TYPES.get(kind(dict(fields).get(n1, '')), (0, 0))[1]
-                    hint = (f" Pad the members before it so {plain(n1)} starts on a "
-                            f"{need}-byte boundary." if need else "")
-                    problems.append(
-                        f"{src.name}:{entry}: {base}.{plain(n1)} lands at offset {o1} in "
-                        f"SPIR-V but {o2} in MSL, so one C mirror cannot be right for "
-                        f"both.{hint} (offsets in {base}: "
-                        f"SPIR-V {[o for _, o in spv_model]}, MSL {[o for _, o in msl_model]})")
-                    break
-
-    if problems:
-        print("md_gpu argument structs are not portable across backends:\n", file=sys.stderr)
-        for p in sorted(set(problems)):
-            print("  " + p, file=sys.stderr)
-        return 1
-    if checked == 0 and args.entries:
-        print(f"{src.name}: no argument structs found to check", file=sys.stderr)
-        return 1
-
-    if args.emit:
-        write_descs(Path(args.emit), args.namespace, src, all_entries, descs)
-
-    print(f"md_gpu arg layout OK: {src.name} "
-          f"({len(all_entries)} entry points, {checked} argument structs compared field by field)")
-    return 0
+    if not raster and checked == 0 and not problems:
+        problems.append(f"{src_name}:{entry}: no argument structs found to check")
+    return problems, local, args_size
 
 
-def write_descs(path, ns, src, entries, descs):
-    stem = src.stem
+def report(problems, out=sys.stderr):
+    print("md_gpu argument structs are not portable across backends:\n", file=out)
+    for p in sorted(set(problems)):
+        print("  " + p, file=out)
+
+
+def descriptor_source(ns, stem, entry, group_size, args_size, origin):
+    """C source of the descriptor function for one entry point. `group_size`
+    is None for a vertex or fragment stage. `origin` names the generator in
+    the do-not-edit banner."""
+    sym = f"{ns}_{stem}_{entry}"
     lines = [
-        "/* Generated by tools/check_gpu_arg_layout.py from " + src.name + " -- do not edit. */",
+        f"/* Generated by {origin} -- do not edit. */",
         "#pragma once",
         "#include <core/md_gpu.h>",
         "",
     ]
-    for entry in entries:
-        local, size = descs[entry]
-        sym = f"{ns}_{stem}_{entry}"
-        if local is None:
-            lines += [
-                f"/* vertex / fragment stage, argument struct {size} bytes"
-                + (" (none)" if size == 0 else "") + " */",
-                f"static inline md_gpu_shader_t {sym}_shader(void) {{",
-                f"    md_gpu_shader_t d = {{0}};",
-                f"    d.code      = {sym}_start;",
-                f"    d.code_size = {sym}_byte_size;",
-                f"    d.args_size = {size};",
-                f"    return d;",
-                f"}}",
-                "",
-            ]
-            continue
-        gx, gy, gz = local
+    if group_size is None:
         lines += [
-            f"/* [numthreads({gx}, {gy}, {gz})], argument struct {size} bytes"
-            + (" (unchecked)" if size == 0 else "") + " */",
+            f"/* vertex / fragment stage, argument struct {args_size} bytes"
+            + (" (none)" if args_size == 0 else "") + " */",
+            f"static inline md_gpu_shader_t {sym}_shader(void) {{",
+            f"    md_gpu_shader_t d = {{0}};",
+            f"    d.code      = {sym}_start;",
+            f"    d.code_size = {sym}_byte_size;",
+            f"    d.args_size = {args_size};",
+            f"    return d;",
+            f"}}",
+            "",
+        ]
+    else:
+        gx, gy, gz = group_size
+        lines += [
+            f"/* [numthreads({gx}, {gy}, {gz})], argument struct {args_size} bytes"
+            + (" (unchecked)" if args_size == 0 else "") + " */",
             f"static inline md_gpu_kernel_desc_t {sym}_kernel(void) {{",
             f"    md_gpu_kernel_desc_t d = {{0}};",
             f"    d.code          = {sym}_start;",
@@ -454,13 +437,46 @@ def write_descs(path, ns, src, entries, descs):
             f"    d.group_size[0] = {gx};",
             f"    d.group_size[1] = {gy};",
             f"    d.group_size[2] = {gz};",
-            f"    d.args_size     = {size};",
+            f"    d.args_size     = {args_size};",
             f"    return d;",
             f"}}",
             "",
         ]
-    text = "\n".join(lines)
-    path.write_text(text)
+    return "\n".join(lines)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Check that the md_gpu argument structs of a .slang file lay out "
+                    "identically in SPIR-V and MSL.")
+    ap.add_argument("--slangc", required=True)
+    ap.add_argument("--bindless-space", default="0")
+    ap.add_argument("source")
+    ap.add_argument("entries", nargs="*", help="compute entry points (kernels)")
+    ap.add_argument("--vertex", nargs="*", default=[], help="vertex entry points")
+    ap.add_argument("--fragment", nargs="*", default=[], help="fragment entry points")
+    args = ap.parse_args()
+
+    src = Path(args.source)
+    raster = set(args.vertex) | set(args.fragment)
+    all_entries = list(args.entries) + list(args.vertex) + list(args.fragment)
+    if not all_entries:
+        print(f"{src.name}: no entry points given", file=sys.stderr)
+        return 1
+
+    problems = []
+    for entry in all_entries:
+        spv = run_slang(args.slangc, src, entry, "spirv",
+                        ["-emit-spirv-directly", "-profile", "glsl_450",
+                         "-bindless-space-index", args.bindless_space], ".spv")
+        msl = run_slang(args.slangc, src, entry, "metal", [], ".metal").decode('utf8', 'replace')
+        problems += check_entry(src.name, entry, entry in raster, spv, msl)[0]
+
+    if problems:
+        report(problems)
+        return 1
+    print(f"md_gpu arg layout OK: {src.name} ({len(all_entries)} entry points)")
+    return 0
 
 
 if __name__ == "__main__":

@@ -6,8 +6,8 @@
 # md_gpu has no descriptor sets and no per-dispatch resource declarations, so
 # there is no generated binding table. What the host side needs is the raw
 # SPIR-V (Vulkan) or metallib/MSL (Metal) bytes, plus each kernel's group size
-# and argument-struct size, which tools/check_gpu_arg_layout.py reads out of the
-# compiled shader while it checks argument-struct portability.
+# and argument-struct size, which are read out of the compiled shader while its
+# argument structs are checked for portability (tools/check_gpu_arg_layout.py).
 #
 #   compile_gpu_shaders(<out_header>
 #       TARGET   <target>
@@ -38,9 +38,19 @@
 #   md_gpu_pipeline_desc_t pd = {0};
 #   pd.vertex   = md_shader_spheres_vs_main_shader();
 #   pd.fragment = md_shader_spheres_fs_main_shader();
+#
+# Each entry point is built by a single command, tools/md_gpu_build_shader.py:
+# one slangc run for both SPIR-V and MSL, the argument-struct check on the two,
+# the SPIR-V post-pass, the descriptor, and the binary embedded as C. Nothing
+# else in the target waits on that command, so every generator -- MSBuild
+# included, see CMP0147 in CMakeLists.txt -- can run all of them in parallel.
 
 include_guard(GLOBAL)
-include(${CMAKE_CURRENT_LIST_DIR}/EmbedBinaryFiles.cmake)
+
+# Every shader build step is a Python script. Found once, here: inside
+# compile_gpu_shaders() the result would not outlive the call, and FindPython
+# re-validates the interpreter every time it runs.
+find_package(Python3 COMPONENTS Interpreter QUIET)
 
 # Descriptor set that Slang's DescriptorHandle<T> heap is placed in. Slang then
 # uses (space, binding 0) for samplers, 2 for sampled images and 3 for storage
@@ -130,15 +140,14 @@ function(compile_gpu_shaders OUT_HEADER)
     if (NOT ALL_ENTRIES)
         message(FATAL_ERROR "compile_gpu_shaders: at least one of ENTRIES, VERTEX, FRAGMENT is required")
     endif()
-    set(STAGE_ARGS "")
-    if (G2_VERTEX)
-        list(APPEND STAGE_ARGS --vertex ${G2_VERTEX})
-    endif()
-    if (G2_FRAGMENT)
-        list(APPEND STAGE_ARGS --fragment ${G2_FRAGMENT})
-    endif()
     if (NOT DEFINED SLANG_EXECUTABLE)
         message(FATAL_ERROR "compile_gpu_shaders: SLANG_EXECUTABLE not defined")
+    endif()
+    if (NOT Python3_Interpreter_FOUND)
+        message(FATAL_ERROR "compile_gpu_shaders: Python 3 is required to build md_gpu shaders")
+    endif()
+    if (NOT MD_GPU_BACKEND STREQUAL "VULKAN" AND NOT MD_GPU_BACKEND STREQUAL "METAL")
+        message(FATAL_ERROR "compile_gpu_shaders: unknown MD_GPU_BACKEND '${MD_GPU_BACKEND}'")
     endif()
 
     get_filename_component(ABS_SRC ${G2_SOURCE} ABSOLUTE)
@@ -150,108 +159,114 @@ function(compile_gpu_shaders OUT_HEADER)
     set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
     file(MAKE_DIRECTORY ${GEN_DIR})
 
-    # Metal reserves 'main', so Slang renames entry points; silence that note.
-    set(SLANG_FLAGS "-Wno-40100")
+    set(TOOLS_DIR    ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools)
+    set(BUILD_SCRIPT ${TOOLS_DIR}/md_gpu_build_shader.py)
+    set(BIN2C_SCRIPT ${TOOLS_DIR}/bin2c.py)
+    # The build script imports the others, so editing any of them rebuilds.
+    set(SCRIPT_DEPS ${BUILD_SCRIPT} ${BIN2C_SCRIPT}
+                    ${TOOLS_DIR}/check_gpu_arg_layout.py ${TOOLS_DIR}/spirv_deforward.py)
 
-    # Reject argument structs whose layout differs between SPIR-V and MSL.
-    # Vectors and bindless handles are the constructs that diverge, and they
-    # diverge silently, so this is checked at build time rather than trusted.
-    #
-    # The stamp is wired in as a file dependency of the shader binaries rather
-    # than as a custom target. A target per kernel would put ten pseudo-targets
-    # in every IDE's target list to run one script; a stamp the compile step
-    # already depends on gives the same ordering and the same incremental
-    # behaviour with nothing to look at. Same pattern EmbedBinaryFiles.cmake
-    # uses for its generated sources.
-    find_package(Python3 COMPONENTS Interpreter QUIET)
-    if (NOT Python3_Interpreter_FOUND)
-        message(FATAL_ERROR "compile_gpu_shaders: Python 3 is required to check argument "
-                            "structs and to generate kernel descriptors")
+    # With Apple's offline compiler the embedded binary is a metallib, built
+    # from the MSL by a second command. Otherwise the build script embeds the
+    # binary itself: the SPIR-V, or on Metal the MSL, which the Metal framework
+    # then compiles at runtime (see md_mtl_library_from_blob).
+    set(USE_METALLIB OFF)
+    if (MD_GPU_BACKEND STREQUAL "METAL" AND MD_GPU_METAL_COMPILER)
+        set(USE_METALLIB ON)
     endif()
-    set(LINT_SCRIPT ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/check_gpu_arg_layout.py)
-    # Post-pass on every SPIR-V binary: Slang forward-declares each buffer-pointer
-    # type, which some drivers (Intel Gen9 on Windows) cannot compile when the
-    # pointer comes out of an access chain. See the script for details.
-    set(DEFORWARD_SCRIPT ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/spirv_deforward.py)
-    set(LINT_STAMP  ${GEN_DIR}/${STEM}.arglayout.stamp)
-    # Kernel descriptors: one md_gpu_kernel_desc_t per entry point, with the
-    # group size and argument-struct size read from the compiled shader.
-    set(KERNELS_INL ${GEN_DIR}/${STEM}_kernels.inl)
-    add_custom_command(
-        OUTPUT ${LINT_STAMP} ${KERNELS_INL}
-        COMMAND ${Python3_EXECUTABLE} ${LINT_SCRIPT}
-            --slangc ${SLANG_EXECUTABLE}
-            --bindless-space ${MD_GPU_BINDLESS_SPACE}
-            --emit ${KERNELS_INL}
-            --namespace ${G2_NAMESPACE}
-            ${ABS_SRC} ${G2_ENTRIES} ${STAGE_ARGS}
-        COMMAND ${CMAKE_COMMAND} -E touch ${LINT_STAMP}
-        DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_SCRIPT}
-        COMMENT "md_gpu: checking ${STEM}.slang argument-struct portability"
-        VERBATIM
-    )
-    target_sources(${G2_TARGET} PRIVATE ${KERNELS_INL})
 
-    set(BIN_FILES "")
+    # A shader build reads only its sources and the scripts, never the output of
+    # another target. Ninja would otherwise hold every command back until all of
+    # the target's dependencies are built -- for md_unittest, all of mdlib.
+    # (CMake 3.27+; ignored before.)
+    set(CMAKE_ADD_CUSTOM_COMMAND_DEPENDS_EXPLICIT_ONLY ON)
+
+    set(DECLS "")
+    set(DESCS "")
     foreach(ENTRY ${ALL_ENTRIES})
-        if (MD_GPU_BACKEND STREQUAL "VULKAN")
-            set(BIN "${GEN_DIR}/${STEM}_${ENTRY}.spv")
-            add_custom_command(
-                OUTPUT ${BIN}
-                COMMAND ${SLANG_EXECUTABLE}
-                    ${ABS_SRC} ${SLANG_FLAGS}
-                    -target spirv
-                    -emit-spirv-directly
-                    -profile glsl_450
-                    -bindless-space-index ${MD_GPU_BINDLESS_SPACE}
-                    -entry ${ENTRY}
-                    -o ${BIN}
-                COMMAND ${Python3_EXECUTABLE} ${DEFORWARD_SCRIPT} ${BIN} ${BIN}
-                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_STAMP} ${DEFORWARD_SCRIPT}
-                COMMENT "slangc: ${STEM}.slang [${ENTRY}] -> ${STEM}_${ENTRY}.spv"
-            )
-        elseif (MD_GPU_BACKEND STREQUAL "METAL")
-            set(MSL "${GEN_DIR}/${STEM}_${ENTRY}.metal")
-            set(AIR "${GEN_DIR}/${STEM}_${ENTRY}.air")
-            add_custom_command(
-                OUTPUT ${MSL}
-                COMMAND ${SLANG_EXECUTABLE}
-                    ${ABS_SRC} ${SLANG_FLAGS}
-                    -target metal
-                    -entry ${ENTRY}
-                    -o ${MSL}
-                DEPENDS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${LINT_STAMP}
-                COMMENT "slangc: ${STEM}.slang [${ENTRY}] -> ${STEM}_${ENTRY}.metal"
-            )
-            if (MD_GPU_METAL_COMPILER)
-                set(BIN "${GEN_DIR}/${STEM}_${ENTRY}.metallib")
-                add_custom_command(
-                    OUTPUT ${BIN}
-                    COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${MSL} -o ${AIR}
-                    COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metallib ${AIR} -o ${BIN}
-                    DEPENDS ${MSL}
-                    COMMENT "metallib: ${STEM}_${ENTRY}.metal -> ${STEM}_${ENTRY}.metallib"
-                )
-            else()
-                # Embed the MSL itself. embed_binary_files() names its symbols
-                # from NAME_WE, so <stem>_<entry>.metal and <stem>_<entry>.metallib
-                # produce the *same* md_shader_<stem>_<entry>_start symbol and no
-                # consumer changes. The backend tells the two apart by their bytes.
-                set(BIN ${MSL})
-            endif()
+        if (ENTRY IN_LIST G2_ENTRIES)
+            set(STAGE compute)
+        elseif (ENTRY IN_LIST G2_VERTEX)
+            set(STAGE vertex)
         else()
-            message(FATAL_ERROR "compile_gpu_shaders: unknown MD_GPU_BACKEND '${MD_GPU_BACKEND}'")
+            set(STAGE fragment)
         endif()
-        list(APPEND BIN_FILES ${BIN})
+
+        # Must match the symbol md_gpu_build_shader.py and bin2c.py define.
+        set(SYMBOL ${G2_NAMESPACE}_${STEM}_${ENTRY})
+        set(SPV    ${GEN_DIR}/${STEM}_${ENTRY}.spv)
+        set(MSL    ${GEN_DIR}/${STEM}_${ENTRY}.metal)
+        set(DESC   ${GEN_DIR}/${STEM}_${ENTRY}_desc.inl)
+        set(C_FILE ${GEN_DIR}/${SYMBOL}.c)
+
+        set(BUILD_CMD ${Python3_EXECUTABLE} ${BUILD_SCRIPT}
+            --slangc         ${SLANG_EXECUTABLE}
+            --bindless-space ${MD_GPU_BINDLESS_SPACE}
+            --backend        ${MD_GPU_BACKEND}
+            --stage          ${STAGE}
+            --namespace      ${G2_NAMESPACE}
+            --spv ${SPV} --msl ${MSL} --desc ${DESC})
+        set(BUILD_DEPS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${SCRIPT_DEPS})
+
+        if (USE_METALLIB)
+            set(AIR      ${GEN_DIR}/${STEM}_${ENTRY}.air)
+            set(METALLIB ${GEN_DIR}/${STEM}_${ENTRY}.metallib)
+            add_custom_command(
+                OUTPUT  ${SPV} ${MSL} ${DESC}
+                COMMAND ${BUILD_CMD} ${ABS_SRC} ${ENTRY}
+                DEPENDS ${BUILD_DEPS}
+                COMMENT "slangc: ${STEM}.slang [${ENTRY}]"
+                VERBATIM
+            )
+            add_custom_command(
+                OUTPUT  ${METALLIB} ${C_FILE}
+                COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${MSL} -o ${AIR}
+                COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metallib ${AIR} -o ${METALLIB}
+                COMMAND ${Python3_EXECUTABLE} ${BIN2C_SCRIPT} ${METALLIB} ${C_FILE} ${SYMBOL}
+                DEPENDS ${MSL} ${BIN2C_SCRIPT}
+                COMMENT "metallib: ${STEM}_${ENTRY}.metal -> ${STEM}_${ENTRY}.metallib"
+                VERBATIM
+            )
+        else()
+            add_custom_command(
+                OUTPUT  ${SPV} ${MSL} ${DESC} ${C_FILE}
+                COMMAND ${BUILD_CMD} --embed ${C_FILE} ${ABS_SRC} ${ENTRY}
+                DEPENDS ${BUILD_DEPS}
+                COMMENT "slangc: ${STEM}.slang [${ENTRY}]"
+                VERBATIM
+            )
+        endif()
+        target_sources(${G2_TARGET} PRIVATE ${C_FILE} ${DESC})
+
+        string(APPEND DECLS
+"// ${STEM}.slang [${ENTRY}]
+extern const uint8_t ${SYMBOL}_start[];
+extern const size_t ${SYMBOL}_byte_size;
+static inline size_t ${SYMBOL}_size(void) {
+    return ${SYMBOL}_byte_size;
+}
+
+")
+        string(APPEND DESCS "#include \"${STEM}_${ENTRY}_desc.inl\"\n")
     endforeach()
 
-    embed_binary_files(
-        TARGET     ${G2_TARGET}
-        NAMESPACE  ${G2_NAMESPACE}
-        OUTPUT     ${OUT_HEADER}
-        FILES      ${BIN_FILES}
-    )
-    # The embed header declares the code symbols; the descriptors built on
-    # them come after, so including <OUT_HEADER> gives both.
-    file(APPEND ${GEN_DIR}/${OUT_HEADER} "#include \"${STEM}_kernels.inl\"\n")
+    # The code symbols, then the descriptors built on them. Written at configure
+    # time, and only when its content changes, so that reconfiguring does not
+    # recompile everything that includes it.
+    file(CONFIGURE OUTPUT ${GEN_DIR}/${OUT_HEADER} @ONLY CONTENT
+"/* Generated by compile_gpu_shaders() from ${STEM}.slang -- do not edit. */
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern \"C\" {
+#endif
+
+${DECLS}#ifdef __cplusplus
+}
+#endif
+
+${DESCS}")
+    target_include_directories(${G2_TARGET} PRIVATE ${GEN_DIR})
 endfunction()

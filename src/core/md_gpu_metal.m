@@ -3386,11 +3386,9 @@ static uint32_t md_mtl_vendor_id(const char* name) {
 }
 
 static md_gpu_device_type_t md_mtl_device_type(id<MTLDevice> d) {
-    if ([d hasUnifiedMemory]) return MD_GPU_DEVICE_TYPE_INTEGRATED;
-#if defined(TARGET_OS_OSX) && TARGET_OS_OSX
-    if ([d isLowPower]) return MD_GPU_DEVICE_TYPE_INTEGRATED;
-#endif
-    return MD_GPU_DEVICE_TYPE_DISCRETE;
+    /* Every integrated GPU a Mac has shipped with, Intel or Apple Silicon,
+       shares memory with the CPU, so this alone decides it. */
+    return [d hasUnifiedMemory] ? MD_GPU_DEVICE_TYPE_INTEGRATED : MD_GPU_DEVICE_TYPE_DISCRETE;
 }
 
 static void md_mtl_adapter_info(id<MTLDevice> d, md_gpu_adapter_info_t* out) {

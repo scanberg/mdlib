@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.27)
 
 # Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(cmake/CheckVCPKG.cmake)
@@ -603,34 +603,9 @@ if (MD_ENABLE_GPU)
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl
                  ${GEN_DIR}/gto_gpu_shaders.inl COPYONLY)
-  # md_gpu needs no reflection, so these produce raw shader binaries only.
-  compile_gpu_shaders(gpu_test_shaders.inl
-    TARGET   mdlib
-    NAMESPACE md_shader
-    SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_test.slang
-    ENTRIES  fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe sample_read spin
-  )
-  compile_gpu_shaders(gpu_render_test_shaders.inl
-    TARGET   mdlib
-    NAMESPACE md_shader
-    SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_render_test.slang
-    ENTRIES  read_tex gen_pos
-    VERTEX   basic_vs indirect_vs point_vs
-    FRAGMENT color_fs mrt_fs id_fs depth_fs
-  )
-  compile_gpu_shaders(gpu_imgui_test_shaders.inl
-    TARGET   mdlib
-    NAMESPACE md_shader
-    SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/unittest/shaders/gpu_imgui_test.slang
-    VERTEX   imgui_vs
-    FRAGMENT imgui_fs
-  )
-  compile_gpu_shaders(gpu_volume_shaders.inl
-    TARGET   mdlib
-    NAMESPACE md_shader
-    SOURCE   ${CMAKE_CURRENT_SOURCE_DIR}/examples/shaders/gpu_volume.slang
-    ENTRIES  eval_field compact_above gather
-  )
+  # The unit-test shaders are compiled into md_unittest (unittest/CMakeLists.txt),
+  # not into the library. examples/shaders/gpu_volume.slang is not compiled at
+  # all: nothing builds examples/gpu_volume.c.
 endif()
 
 if (MD_PROPERTIES)

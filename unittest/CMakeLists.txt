@@ -1,6 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.15)
-
-project(md_unittest VERSION 0.1 LANGUAGES C)
+﻿project(md_unittest VERSION 0.1 LANGUAGES C)
 
 add_executable(md_unittest unittest.c)
 
@@ -77,9 +75,29 @@ endif()
 
 if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))
   set (SRC_FILES ${SRC_FILES} test_gpu.c test_gpu_tlsf.c test_gpu_render.c)
-  # gpu_test_shaders.inl and the embedded kernel blobs are generated into
-  # mdlib's gen/ directory by compile_gpu_shaders().
-  target_include_directories(md_unittest PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/../gen)
+  # The kernels and shaders the GPU tests launch. They belong to the test
+  # executable: nothing in mdlib uses them.
+  compile_gpu_shaders(gpu_test_shaders.inl
+    TARGET    md_unittest
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gpu_test.slang
+    ENTRIES   fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe sample_read spin
+  )
+  compile_gpu_shaders(gpu_render_test_shaders.inl
+    TARGET    md_unittest
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gpu_render_test.slang
+    ENTRIES   read_tex gen_pos
+    VERTEX    basic_vs indirect_vs point_vs
+    FRAGMENT  color_fs mrt_fs id_fs depth_fs
+  )
+  compile_gpu_shaders(gpu_imgui_test_shaders.inl
+    TARGET    md_unittest
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gpu_imgui_test.slang
+    VERTEX    imgui_vs
+    FRAGMENT  imgui_fs
+  )
 endif()
 
 target_sources(md_unittest PRIVATE ${SRC_FILES})

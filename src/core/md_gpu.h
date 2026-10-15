@@ -467,14 +467,14 @@ typedef enum md_gpu_ordering_t {
 
 typedef uint32_t md_gpu_stage_flags_t;
 enum {
-    MD_GPU_STAGE_TRANSFER = 1u << 0,   /* copy, upload, memset, texture copies   */
-    MD_GPU_STAGE_COMPUTE  = 1u << 1,   /* kernel launches                        */
-    MD_GPU_STAGE_INDIRECT = 1u << 2,   /* consumer side: indirect grids and draws */
-    MD_GPU_STAGE_VERTEX     = 1u << 3, /* index fetch and vertex shading          */
-    MD_GPU_STAGE_FRAGMENT   = 1u << 4, /* fragment shading                        */
-    MD_GPU_STAGE_ATTACHMENT = 1u << 5, /* depth test, colour output, attachment
-                                          load and store                          */
-    MD_GPU_STAGE_ALL      = 0xFFFFFFFFu,
+    MD_GPU_STAGE_TRANSFER   = 1 << 0, /* copy, upload, memset, texture copies    */
+    MD_GPU_STAGE_COMPUTE    = 1 << 1, /* kernel launches                         */
+    MD_GPU_STAGE_INDIRECT   = 1 << 2, /* consumer side: indirect grids and draws */
+    MD_GPU_STAGE_VERTEX     = 1 << 3, /* index fetch and vertex shading          */
+    MD_GPU_STAGE_FRAGMENT   = 1 << 4, /* fragment shading                        */
+    MD_GPU_STAGE_ATTACHMENT = 1 << 5, /* depth test, colour output, attachment
+                                          load and store                         */
+    MD_GPU_STAGE_ALL        = -1,
 };
 
 void md_gpu_stream_set_ordering(md_gpu_stream_t stream, md_gpu_ordering_t ordering);

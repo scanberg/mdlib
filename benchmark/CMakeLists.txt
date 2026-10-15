@@ -1,6 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
-
-project(md_benchmark VERSION 0.1 LANGUAGES C)
+project(md_benchmark LANGUAGES C)
 
 set(SRC_FILES
     benchmark.c
