@@ -8,6 +8,10 @@
 //   - whether the cursor is left of the '=' of an assignment, where the name of a variable is written.
 // What string parameters take is declared in the 'param_domains' table (md_script_functions.inl) and read from the
 // system here, with the same accessors as the procedures use to match their arguments.
+//
+// What a parameter takes and what a procedure gives are known from the procedures table, so each item says whether it
+// fits where the cursor is. md_filter_complete does the same for a filter: one expression, which has to pick atoms,
+// and whose names are those of a compiled script rather than those it assigns to.
 
 #include <stdlib.h>
 
@@ -289,8 +293,105 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
     return values;
 }
 
-static void completion_push(md_array(md_script_completion_t)* items, md_script_completion_kind_t kind, str_t label, str_t pre, str_t post, md_allocator_i* alloc) {
-    md_script_completion_t item = {.kind = kind};
+// ### TYPES ###
+// What fits where the cursor is, by base type: a bit for each. What a name gives and what a parameter takes are read
+// from the procedures (all overloads of a name), and what is expected at the cursor from the call it is in.
+
+#define TYPE_BIT(t) (1u << (t))
+
+// The base types a type stands for. A coordinate is anything that can be read as one: atoms, by index or selection, or
+// floats in threes, which are marked as such with the bit of the coordinate (a float on its own is no position).
+static uint32_t completion_type_bits(type_info_t ti) {
+    if (ti.base_type == TYPE_COORDINATE) {
+        return TYPE_BIT(TYPE_INT) | TYPE_BIT(TYPE_IRANGE) | TYPE_BIT(TYPE_BITFIELD) | TYPE_BIT(TYPE_COORDINATE);
+    }
+    if (ti.base_type == TYPE_FLOAT && is_type_position_compatible(ti)) {
+        return TYPE_BIT(TYPE_FLOAT) | TYPE_BIT(TYPE_COORDINATE);
+    }
+    return ti.base_type == TYPE_UNDEFINED ? 0 : TYPE_BIT(ti.base_type);
+}
+
+// What a procedure gives. 0 for those the parser handles itself (attr, flatten, transpose), which depends on how.
+static uint32_t completion_return_types(str_t name) {
+    uint32_t bits = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+        if (str_eq(procedures[i].name, name)) bits |= completion_type_bits(procedures[i].return_type);
+    }
+    return bits;
+}
+
+// What the parameter at position param of a procedure takes
+static uint32_t completion_param_types(str_t name, int param) {
+    if (param < 0) return 0;
+    uint32_t bits = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+        if (str_eq(procedures[i].name, name) && (size_t)param < procedures[i].num_args) {
+            bits |= completion_type_bits(procedures[i].arg_type[param]);
+        }
+    }
+    return bits;
+}
+
+// What is expected at the cursor: what the parameter of the call it is in takes, looking through the brackets and the
+// array literals around it; at the top, a selection in a filter and nothing in particular in a script. 0 when not
+// known. at_top tells whether it is at the top, outside of every call.
+static uint32_t completion_expected(const completion_context_t* ctx, bool filter, bool* at_top) {
+    *at_top = false;
+    if (ctx->depth > COMPLETION_MAX_DEPTH) return 0;
+    for (int d = ctx->depth - 1; d >= 0; --d) {
+        const completion_frame_t* frame = &ctx->frame[d];
+        if (frame->open == '(' && !str_empty(frame->callee)) return completion_param_types(frame->callee, completion_param(frame));
+        if (frame->open == '[') return 0;
+    }
+    *at_top = true;
+    return filter ? TYPE_BIT(TYPE_BITFIELD) : 0;
+}
+
+// Whether what gives types can be written where expected is: as it is, or converted implicitly (an int where a float
+// is expected). A number is not converted into a selection, whatever an array of them can be: it picks no atoms.
+static bool completion_fits(uint32_t types, uint32_t expected) {
+    if (!types || !expected) return false;
+    if (types & expected) return true;
+    for (size_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+        const base_type_t from = casts[i].arg_type[0].base_type;
+        const base_type_t to   = casts[i].return_type.base_type;
+        if (to != TYPE_BITFIELD && (types & TYPE_BIT(from)) && (expected & TYPE_BIT(to))) return true;
+    }
+    return false;
+}
+
+// The keywords that join two operands: written after one, not where one goes
+static bool is_binary_keyword(str_t kw) {
+    return str_eq_cstr(kw, "and") || str_eq_cstr(kw, "or") || str_eq_cstr(kw, "xor") || str_eq_cstr(kw, "in");
+}
+
+// What a keyword gives: the logic of selections (and of bools). 'in' and 'out' give what their operand does.
+static uint32_t completion_keyword_types(str_t kw) {
+    if (str_eq_cstr(kw, "and") || str_eq_cstr(kw, "or") || str_eq_cstr(kw, "xor") || str_eq_cstr(kw, "not")) {
+        return TYPE_BIT(TYPE_BITFIELD) | TYPE_BIT(TYPE_BOOL);
+    }
+    return 0;
+}
+
+// Whether the token ends an operand, after which an operator is written rather than another operand
+static bool ends_operand(const token_t* token) {
+    switch (token->type) {
+    case TOKEN_IDENT: case TOKEN_INT: case TOKEN_FLOAT: case TOKEN_STRING: case ')': case ']': case '}':
+        return true;
+    default:
+        return false;
+    }
+}
+
+// The names of a compiled script, and what they hold
+static uint32_t completion_identifier_types(const identifier_t* ident) {
+    if (ident->data) return completion_type_bits(ident->data->type);
+    if (ident->node) return completion_type_bits(ident->node->data.type);
+    return 0;
+}
+
+static void completion_push(md_array(md_script_completion_t)* items, md_script_completion_kind_t kind, str_t label, str_t pre, str_t post, bool fits, md_allocator_i* alloc) {
+    md_script_completion_t item = {.kind = kind, .fits = fits};
     item.label = str_copy(label, alloc);
     if (pre.len == 0 && post.len == 0) {
         item.text = item.label;
@@ -309,11 +410,12 @@ static void completion_push(md_array(md_script_completion_t)* items, md_script_c
 static void completion_push_values(md_array(md_script_completion_t)* items, value_domain_t domain, const md_system_t* sys, str_t typed, str_t pre, str_t post, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
     md_array(str_t) values = completion_domain_values(domain, sys, typed, temp_alloc);
     for (size_t i = 0; i < md_array_size(values); ++i) {
-        completion_push(items, MD_SCRIPT_COMPLETION_VALUE, values[i], pre, post, alloc);
+        completion_push(items, MD_SCRIPT_COMPLETION_VALUE, values[i], pre, post, true, alloc);
     }
 }
 
-md_script_completions_t md_script_complete(str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc) {
+// A script (filter false), or a filter, an expression which picks atoms and whose names are those of ctx_ir
+static md_script_completions_t complete(str_t src, int cursor, const md_system_t* sys, const md_script_ir_t* ctx_ir, bool filter, md_allocator_i* alloc) {
     ASSERT(alloc);
     md_script_completions_t result = {0};
     if (!src.ptr) src.len = 0;
@@ -377,20 +479,52 @@ md_script_completions_t md_script_complete(str_t src, int cursor, const md_syste
         const value_domain_t domain = call ? find_param_domain(call->callee, completion_param(call)) : DOMAIN_NONE;
         const str_t quote_str = {partial == PARTIAL_STRING ? &quote : "\"", 1};
 
+        bool at_top = false;
+        const uint32_t expected = completion_expected(&ctx, filter, &at_top);
+        // A filter is one expression, which has to pick atoms: what cannot is left out where nothing but a selection
+        // goes, and where an operand has been written, only an operator can follow
+        const bool selection_only = filter && at_top;
+        const bool after_operand = filter && num_tokens > 0 && ends_operand(&tokens[num_tokens - 1]);
+
         if (partial == PARTIAL_STRING) {
             // Only the values the argument takes, and the closing quote if the string does not have one yet
             if (domain != DOMAIN_NONE) {
                 const bool closed = end < (int)src.len && src.ptr[end] == quote;
                 completion_push_values(&items, domain, sys, result.prefix, (str_t){0}, closed ? (str_t){0} : quote_str, alloc, temp_alloc);
             }
+        } else if (after_operand) {
+            for (size_t i = 0; i < ARRAY_SIZE(script_keywords); ++i) {
+                if (!is_binary_keyword(script_keywords[i])) continue;
+                const bool fits = completion_fits(completion_keyword_types(script_keywords[i]), expected);
+                completion_push(&items, MD_SCRIPT_COMPLETION_KEYWORD, script_keywords[i], (str_t){0}, (str_t){0}, fits, alloc);
+            }
         } else {
-            const token_t* all_tokens = completion_tokenize(src, temp_alloc);
-            md_array(str_t) variables = completion_variables(all_tokens, md_array_size(all_tokens), cursor, temp_alloc);
+            // The names a script assigns to (of no known type, as nothing is compiled), or those of a compiled one
+            md_array(str_t)    variables = 0;
+            md_array(uint32_t) variable_types = 0;
+            if (filter) {
+                const size_t num_idents = ctx_ir ? md_array_size(ctx_ir->identifiers) : 0;
+                for (size_t i = 0; i < num_idents; ++i) {
+                    const identifier_t* ident = &ctx_ir->identifiers[i];
+                    bool found = false;
+                    for (size_t j = 0; j < md_array_size(variables) && !found; ++j) found = str_eq(variables[j], ident->name);
+                    if (found || str_empty(ident->name)) continue;
+                    md_array_push(variables, ident->name, temp_alloc);
+                    md_array_push(variable_types, completion_identifier_types(ident), temp_alloc);
+                }
+            } else {
+                const token_t* all_tokens = completion_tokenize(src, temp_alloc);
+                variables = completion_variables(all_tokens, md_array_size(all_tokens), cursor, temp_alloc);
+                for (size_t i = 0; i < md_array_size(variables); ++i) md_array_push(variable_types, 0, temp_alloc);
+            }
 
-            if (ctx.lhs) {
+            // Left out where only a selection goes and it is known not to be one
+            #define OFFERED(types) (!selection_only || !(types) || completion_fits((types), expected))
+
+            if (ctx.lhs && !filter) {
                 // Where a variable is named, only the names that are taken
                 for (size_t i = 0; i < md_array_size(variables); ++i) {
-                    completion_push(&items, MD_SCRIPT_COMPLETION_VARIABLE, variables[i], (str_t){0}, (str_t){0}, alloc);
+                    completion_push(&items, MD_SCRIPT_COMPLETION_VARIABLE, variables[i], (str_t){0}, (str_t){0}, false, alloc);
                 }
             } else {
                 const bool arg_start = top && top->arg_tokens == 0;
@@ -400,29 +534,37 @@ md_script_completions_t md_script_complete(str_t src, int cursor, const md_syste
                 if (arg_start && top == call && str_empty(top->arg_name) && top->sig) {
                     for (size_t i = 0; i < top->sig->num_params; ++i) {
                         if (i < 64 && (top->given & (1ULL << i))) continue;
-                        completion_push(&items, MD_SCRIPT_COMPLETION_PARAMETER, top->sig->param[i].name, (str_t){0}, STR_LIT("="), alloc);
+                        completion_push(&items, MD_SCRIPT_COMPLETION_PARAMETER, top->sig->param[i].name, (str_t){0}, STR_LIT("="), true, alloc);
                     }
                 }
                 for (size_t i = 0; i < md_array_size(variables); ++i) {
-                    completion_push(&items, MD_SCRIPT_COMPLETION_VARIABLE, variables[i], (str_t){0}, (str_t){0}, alloc);
+                    if (!OFFERED(variable_types[i])) continue;
+                    completion_push(&items, MD_SCRIPT_COMPLETION_VARIABLE, variables[i], (str_t){0}, (str_t){0}, completion_fits(variable_types[i], expected), alloc);
                 }
                 for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
-                    if (!procedure_name_before(i, procedures[i].name)) {
-                        completion_push(&items, MD_SCRIPT_COMPLETION_PROCEDURE, procedures[i].name, (str_t){0}, (str_t){0}, alloc);
-                    }
+                    if (procedure_name_before(i, procedures[i].name)) continue;
+                    const uint32_t types = completion_return_types(procedures[i].name);
+                    if (!OFFERED(types)) continue;
+                    completion_push(&items, MD_SCRIPT_COMPLETION_PROCEDURE, procedures[i].name, (str_t){0}, (str_t){0}, completion_fits(types, expected), alloc);
                 }
                 for (size_t i = 0; i < ARRAY_SIZE(script_intrinsics); ++i) {
                     if (!procedure_name_before(ARRAY_SIZE(procedures), script_intrinsics[i])) {
-                        completion_push(&items, MD_SCRIPT_COMPLETION_PROCEDURE, script_intrinsics[i], (str_t){0}, (str_t){0}, alloc);
+                        completion_push(&items, MD_SCRIPT_COMPLETION_PROCEDURE, script_intrinsics[i], (str_t){0}, (str_t){0}, false, alloc);
                     }
                 }
                 for (size_t i = 0; i < ARRAY_SIZE(constants); ++i) {
-                    completion_push(&items, MD_SCRIPT_COMPLETION_CONSTANT, constants[i].name, (str_t){0}, (str_t){0}, alloc);
+                    const uint32_t types = TYPE_BIT(TYPE_FLOAT);
+                    if (!OFFERED(types)) continue;
+                    completion_push(&items, MD_SCRIPT_COMPLETION_CONSTANT, constants[i].name, (str_t){0}, (str_t){0}, completion_fits(types, expected), alloc);
                 }
                 for (size_t i = 0; i < ARRAY_SIZE(script_keywords); ++i) {
-                    completion_push(&items, MD_SCRIPT_COMPLETION_KEYWORD, script_keywords[i], (str_t){0}, (str_t){0}, alloc);
+                    // In a filter, where an operand goes: not the operators which join two, nor 'of', which is reserved
+                    if (filter && (is_binary_keyword(script_keywords[i]) || str_eq_cstr(script_keywords[i], "of"))) continue;
+                    const bool fits = completion_fits(completion_keyword_types(script_keywords[i]), expected);
+                    completion_push(&items, MD_SCRIPT_COMPLETION_KEYWORD, script_keywords[i], (str_t){0}, (str_t){0}, fits, alloc);
                 }
             }
+            #undef OFFERED
         }
     }
 
@@ -430,4 +572,12 @@ md_script_completions_t md_script_complete(str_t src, int cursor, const md_syste
     result.items = items;
     result.count = md_array_size(items);
     return result;
+}
+
+md_script_completions_t md_script_complete(str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc) {
+    return complete(src, cursor, sys, NULL, false, alloc);
+}
+
+md_script_completions_t md_filter_complete(str_t expr, int cursor, const md_filter_context_t* ctx, md_allocator_i* alloc) {
+    return complete(expr, cursor, ctx ? ctx->sys : NULL, ctx ? ctx->ir : NULL, true, alloc);
 }

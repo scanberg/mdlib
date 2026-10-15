@@ -454,6 +454,11 @@ typedef struct md_script_completion_t {
     str_t text;                         // What replaces the range: "ALA" (quoted if the cursor is not in a string),
                                         // cutoff=
     md_script_completion_kind_t kind;
+    bool fits;                          // It has the type that is expected at the cursor: that of the parameter the
+                                        // argument is for, or a selection at the top of a filter (md_filter_complete).
+                                        // The values and the names of parameters always do. Where nothing in
+                                        // particular is expected, or what an item gives is not known (the variables
+                                        // of a script), it does not.
 } md_script_completion_t;
 
 typedef struct md_script_completions_t {
@@ -467,9 +472,9 @@ typedef struct md_script_completions_t {
 // What can be written at the byte offset cursor of the script src, for completion in an editor.
 // The source may be incomplete, as it is while being typed: this follows the tokens up to the cursor and does not
 // compile anything. The items are all that is valid at the cursor, neither filtered by what has been typed nor
-// ranked, which is left to the editor. Nothing is offered in comments and numbers, and inside a string only when the
-// argument it is given to takes known values. Values from the system are only offered if sys is not NULL.
-// Everything returned (items and strings) is allocated from alloc, which is meant to be a temporary arena.
+// ranked, which is left to the editor (with fits to go by). Nothing is offered in comments and numbers, and inside a
+// string only when the argument it is given to takes known values. Values from the system are only offered if sys is
+// not NULL. Everything returned (items and strings) is allocated from alloc, which is meant to be a temporary arena.
 md_script_completions_t md_script_complete(str_t src, int cursor, const struct md_system_t* sys, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus

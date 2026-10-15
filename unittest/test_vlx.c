@@ -890,37 +890,36 @@ UTEST(vlx, pe_regions_are_selectable) {
 		EXPECT_EQ(i < 3, (md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
 	}
 
-	char err[256] = "";
-	bool dynamic = false;
+	const md_filter_context_t fctx = {&t.sys, &t.state, NULL};
 	md_bitset_t bf = {0};
 
-	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &fctx, t.alloc).success);
 	EXPECT_EQ(3u, md_bitset_count(bf));
 	EXPECT_EQ(3u, md_bitset_count_range(bf, 0, 3));
 
-	ASSERT_TRUE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("environment"), &fctx, t.alloc).success);
 	EXPECT_EQ(5u, md_bitset_count(bf));
 	EXPECT_EQ(5u, md_bitset_count_range(bf, 3, 8));
 
-	ASSERT_TRUE(md_filter(&bf, STR_LIT("not qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("not qm"), &fctx, t.alloc).success);
 	EXPECT_EQ(5u, md_bitset_count(bf));
 
 	// One selection per fragment: NA, and HOH with its expansion point
 	md_array(md_bitset_t) arr = 0;
-	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_TRUE(md_filter_sets(&arr, STR_LIT("environment"), &fctx, t.alloc).success);
 	ASSERT_EQ(2u, md_array_size(arr));
 	EXPECT_EQ(1u, md_bitset_count(arr[0]));
 	EXPECT_EQ(4u, md_bitset_count(arr[1]));
 
 	arr = 0;
-	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_TRUE(md_filter_sets(&arr, STR_LIT("qm"), &fctx, t.alloc).success);
 	ASSERT_EQ(1u, md_array_size(arr));
 	EXPECT_EQ(3u, md_bitset_count(arr[0]));
 
 	// They compose like any other selection, and take a context like the residue selectors do
-	EXPECT_TRUE(md_filter(&bf, STR_LIT("within(100, qm) and environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("within(100, qm) and environment"), &fctx, t.alloc).success);
 	EXPECT_EQ(5u, md_bitset_count(bf));
-	EXPECT_TRUE(md_filter(&bf, STR_LIT("environment in resname('NA')"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	EXPECT_TRUE(md_filter(&bf, STR_LIT("environment in resname('NA')"), &fctx, t.alloc).success);
 	EXPECT_EQ(1u, md_bitset_count(bf));
 	EXPECT_TRUE(md_bitset_test(bf, 3));
 
@@ -950,10 +949,9 @@ UTEST(vlx, pe_regions_in_a_script) {
 	}
 	md_script_ir_free(ir);
 
-	char err[256] = "";
-	bool dynamic = false;
+	const md_filter_context_t fctx = {&t.sys, &t.state, NULL};
 	md_array(md_bitset_t) arr = 0;
-	ASSERT_TRUE(md_filter_evaluate(&arr, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_TRUE(md_filter_sets(&arr, STR_LIT("environment"), &fctx, t.alloc).success);
 	EXPECT_EQ(50u, md_array_size(arr));
 
 	qm_test_free(&t);
@@ -1078,14 +1076,14 @@ UTEST(vlx, qm_without_environment) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64)));
 
-	char err[256] = "";
-	bool dynamic = false;
+	const md_filter_context_t fctx = {&t.sys, &t.state, NULL};
 	md_bitset_t bf = {0};
-	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
+	ASSERT_TRUE(md_filter(&bf, STR_LIT("qm"), &fctx, t.alloc).success);
 	EXPECT_EQ(3u, md_bitset_count(bf));
 
-	EXPECT_FALSE(md_filter(&bf, STR_LIT("environment"), &t.sys, &t.state, NULL, &dynamic, err, sizeof(err), t.alloc));
-	EXPECT_TRUE(strstr(err, "QM throughout") != NULL);
+	const md_filter_result_t res = md_filter(&bf, STR_LIT("environment"), &fctx, t.alloc);
+	EXPECT_FALSE(res.success);
+	EXPECT_TRUE(strstr(res.error, "QM throughout") != NULL);
 
 	qm_test_free(&t);
 }

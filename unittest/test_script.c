@@ -12,6 +12,7 @@
 #include <core/md_bitop.inl>
 #include <core/md_os.h>
 #include <md_script.h>
+#include <md_filter.h>
 #include <md_system.h>
 #include <md_gro.h>
 #include <md_pdb.h>
@@ -4234,6 +4235,123 @@ UTEST(script, completion_arguments) {
     c = complete_at("x = count(residue(|", &test_mol, alloc);
     EXPECT_EQ(0, count_kind(c, MD_SCRIPT_COMPLETION_PARAMETER));
     EXPECT_EQ(3, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+
+    md_vm_arena_destroy(alloc);
+}
+
+// The completions of a filter at the '|' in expr, which is taken out
+static md_script_completions_t complete_filter_at(const char* expr_with_cursor, const md_script_ir_t* ir, md_allocator_i* alloc) {
+    const char* bar = strchr(expr_with_cursor, '|');
+    const int cursor = bar ? (int)(bar - expr_with_cursor) : (int)strlen(expr_with_cursor);
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%.*s%s", cursor, expr_with_cursor, bar ? bar + 1 : "");
+    const md_filter_context_t ctx = {&test_mol, NULL, ir};
+    return md_filter_complete(str_copy_cstr(buf, alloc), cursor, &ctx, alloc);
+}
+
+static const md_script_completion_t* find_item(md_script_completions_t c, md_script_completion_kind_t kind, const char* text) {
+    for (size_t i = 0; i < c.count; ++i) {
+        if (c.items[i].kind == kind && str_eq(c.items[i].text, str_from_cstr(text))) return &c.items[i];
+    }
+    return NULL;
+}
+
+// Offered, and of the type expected at the cursor
+static bool fits_item(md_script_completions_t c, md_script_completion_kind_t kind, const char* text) {
+    const md_script_completion_t* item = find_item(c, kind, text);
+    return item && item->fits;
+}
+
+// In a call, what has the type of the parameter the argument is for fits; at the top of a script nothing in particular
+UTEST(script, completion_fits_the_parameter) {
+    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_script_completions_t c;
+
+    c = complete_at("x = within(5, |", &test_mol, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "resname"));
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "protein"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "distance"));   // Offered, a script is not a filter
+    EXPECT_FALSE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "distance"));
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_KEYWORD, "not"));
+
+    c = complete_at("x = within(|", &test_mol, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "distance"));
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_CONSTANT, "PI"));
+    EXPECT_FALSE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "resname"));
+
+    // Given by name, and through an array literal
+    c = complete_at("x = count(sel=|", &test_mol, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "residue"));
+    c = complete_at("x = within(5, {resname(\"SOL\"), |", &test_mol, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "element"));
+
+    // The values an argument takes and the names of parameters always do
+    c = complete_at("x = resname(|", &test_mol, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_VALUE, "\"PFT\""));
+    c = complete_at("x = count(|", &test_mol, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "unit="));
+
+    // At the top of a script anything goes
+    c = complete_at("x = |", &test_mol, alloc);
+    ASSERT_GT((int)c.count, 0);
+    int num_fit = 0;
+    for (size_t i = 0; i < c.count; ++i) num_fit += c.items[i].fits;
+    EXPECT_EQ(0, num_fit);
+
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST(script, completion_of_filters) {
+    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+    md_script_completions_t c;
+
+    // Outside of a call: what picks atoms, and the keyword that negates, but nothing that joins two
+    c = complete_filter_at("|", NULL, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "resname"));
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "within"));
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_KEYWORD, "not"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "distance"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_CONSTANT, "PI"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_KEYWORD, "and"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_KEYWORD, "of"));
+    EXPECT_EQ(0, count_kind(c, MD_SCRIPT_COMPLETION_VARIABLE));
+    c = complete_filter_at("protein and |", NULL, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "water"));
+
+    // After an operand, only what joins it to another, also while it is typed
+    c = complete_filter_at("resname('PFT') |", NULL, alloc);
+    EXPECT_EQ(4, (int)c.count);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_KEYWORD, "and"));
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_KEYWORD, "or"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_KEYWORD, "in"));
+    c = complete_filter_at("protein a|", NULL, alloc);
+    EXPECT_EQ(4, (int)c.count);
+    EXPECT_TRUE(str_eq(c.prefix, STR_LIT("a")));
+
+    // In a call everything, with what fits the parameter marked
+    c = complete_filter_at("within(|", NULL, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "distance"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "resname"));
+    EXPECT_FALSE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "resname"));
+    c = complete_filter_at("within(5, |", NULL, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "resname"));
+    EXPECT_FALSE(fits_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "distance"));
+
+    // The values of the system in strings, as in a script
+    c = complete_filter_at("resname('P|", NULL, alloc);
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "PFT'"));
+
+    // The names of a compiled script, those which pick atoms where only that goes
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sel = resname(\"PFT\");\nd = distance(1, 2);"), &test_mol, NULL));
+    c = complete_filter_at("|", ir, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "sel"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "d"));
+    c = complete_filter_at("within(|", ir, alloc);
+    EXPECT_TRUE(fits_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "d"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "sel"));
+    EXPECT_FALSE(fits_item(c, MD_SCRIPT_COMPLETION_VARIABLE, "sel"));
+    md_script_ir_free(ir);
 
     md_vm_arena_destroy(alloc);
 }

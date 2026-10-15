@@ -1226,11 +1226,11 @@ UTEST(match, identify_order) {
 // ### SCRIPT ###
 
 static size_t filter_count(md_array(md_bitset_t)* arr, const char* expr, sys_id_t id, md_allocator_i* alloc) {
-    char err[256] = {0};
-    bool is_dynamic = false;
     md_array_shrink(*arr, 0);
-    if (!md_filter_evaluate(arr, str_from_cstr(expr), get_sys(id), get_state(id), NULL, &is_dynamic, err, sizeof(err), alloc)) {
-        printf("'%s': %s\n", expr, err);
+    const md_filter_context_t ctx = {get_sys(id), get_state(id), NULL};
+    const md_filter_result_t res = md_filter_sets(arr, str_from_cstr(expr), &ctx, alloc);
+    if (!res.success) {
+        printf("'%s': %s\n", expr, res.error);
         return SIZE_MAX;
     }
     return md_array_size(*arr);
@@ -1238,16 +1238,15 @@ static size_t filter_count(md_array(md_bitset_t)* arr, const char* expr, sys_id_
 
 static bool filter_fails_with(const char* expr, const char* expected, sys_id_t id) {
     md_bitset_t bf = {0};
-    char err[256] = {0};
-    bool is_dynamic = false;
-    const bool ok = md_filter(&bf, str_from_cstr(expr), get_sys(id), get_state(id), NULL, &is_dynamic, err, sizeof(err), md_get_heap_allocator());
+    const md_filter_context_t ctx = {get_sys(id), get_state(id), NULL};
+    const md_filter_result_t res = md_filter(&bf, str_from_cstr(expr), &ctx, md_get_heap_allocator());
     md_bitset_free(&bf, md_get_heap_allocator());
-    if (ok) {
+    if (res.success) {
         printf("'%s' was expected to fail\n", expr);
         return false;
     }
-    if (!strstr(err, expected)) {
-        printf("'%s' failed with '%s', expected '%s'\n", expr, err, expected);
+    if (!strstr(res.error, expected)) {
+        printf("'%s' failed with '%s', expected '%s'\n", expr, res.error, expected);
         return false;
     }
     return true;
@@ -1273,10 +1272,10 @@ UTEST(match, script_smiles) {
 
     // As one selection: the 15 carbonyl carbons and 16 oxygens, without hydrogens of their own
     md_bitset_t bf = {0};
-    char err[256];
-    bool is_dynamic = false;
-    EXPECT_TRUE(md_filter(&bf, STR_LIT("smiles('C=O')"), get_sys(SYS_ALA), get_state(SYS_ALA), NULL, &is_dynamic, err, sizeof(err), alloc));
-    EXPECT_FALSE(is_dynamic);
+    const md_filter_context_t ctx = {get_sys(SYS_ALA), get_state(SYS_ALA), NULL};
+    const md_filter_result_t res = md_filter(&bf, STR_LIT("smiles('C=O')"), &ctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_FALSE(res.is_dynamic);
     EXPECT_EQ(31, (int)md_bitset_count(bf));
 
     EXPECT_TRUE(filter_fails_with("smiles('C1CC')", "Ring bond 1 is never closed", SYS_ALA));
