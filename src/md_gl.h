@@ -304,6 +304,7 @@ typedef struct md_gl_draw_op_t {
             float coil_scale;
             float sheet_scale;
             float helix_scale;
+            bool  raycast;          // Ray cast the profile (sphere traced, a quad per segment of the spline) rather than draw a mesh of it
         } cartoon;
 
         // Dashed cylinders between the atoms: dash_count dashes with flat ends, the first starting at the first atom
@@ -320,6 +321,7 @@ typedef struct md_gl_draw_op_t {
 
         struct {
             float radius_scale;     // Of the profiles at the control points
+            bool  raycast;          // As for the cartoon
         } tubes;
 
         struct {

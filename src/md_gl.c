@@ -250,6 +250,8 @@ typedef struct {
     gl_program_t cartoon[MAX_SHADER_PERMUTATIONS];
     gl_program_t tubes[MAX_SHADER_PERMUTATIONS];
     gl_program_t slabs[MAX_SHADER_PERMUTATIONS];
+    gl_program_t cartoon_rc[MAX_SHADER_PERMUTATIONS];   // Ray cast (backbone_rc.vert)
+    gl_program_t tubes_rc[MAX_SHADER_PERMUTATIONS];
 } shaders_t;
 
 // CPU side bounds of the backbone chains, for culling and level of detail
@@ -1190,6 +1192,10 @@ md_gl_shaders_t md_gl_shaders_create(str_t str) {
     if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 1"))) return handle;
     if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 0"))) return handle;
     if (!create_permuted_program(STR_LIT("Tubes"),     shaders->tubes,      backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_TUBES 1"))) return handle;
+    const str_t backbone_rc_vert_src = {(const char*)backbone_rc_vert, backbone_rc_vert_size};
+    const str_t backbone_rc_frag_src = {(const char*)backbone_rc_frag, backbone_rc_frag_size};
+    if (!create_permuted_program(STR_LIT("CartoonRaycast"), shaders->cartoon_rc, backbone_rc_vert_src, (str_t){0}, backbone_rc_frag_src, str, STR_LIT("#define REP_TUBES 0"))) return handle;
+    if (!create_permuted_program(STR_LIT("TubesRaycast"),   shaders->tubes_rc,   backbone_rc_vert_src, (str_t){0}, backbone_rc_frag_src, str, STR_LIT("#define REP_TUBES 1"))) return handle;
     if (!create_permuted_program(STR_LIT("Slabs"),     shaders->slabs,      (str_t){(const char*)slab_vert, slab_vert_size}, (str_t){0}, (str_t){(const char*)slab_frag, slab_frag_size}, str, (str_t){0})) return handle;
 
     handle.id = id;
@@ -1210,6 +1216,8 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
             if (glIsProgram(shaders->cartoon[i].id))    glDeleteProgram(shaders->cartoon[i].id);
             if (glIsProgram(shaders->tubes[i].id))      glDeleteProgram(shaders->tubes[i].id);
             if (glIsProgram(shaders->slabs[i].id))      glDeleteProgram(shaders->slabs[i].id);
+            if (glIsProgram(shaders->cartoon_rc[i].id)) glDeleteProgram(shaders->cartoon_rc[i].id);
+            if (glIsProgram(shaders->tubes_rc[i].id))   glDeleteProgram(shaders->tubes_rc[i].id);
         }
         md_handle_pool_free_slot(&ctx.shader_pool, handle.id);
     }
@@ -2375,7 +2383,7 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
 static bool draw_bonds     (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, bond_set_t bonds, const bond_params_t* params, const float viewport_size[2]);
 static bool draw_bond_partners(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, const bond_params_t* bond_params, const float viewport_size[2]);
 static bool draw_aromatic_rings(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, const bond_params_t* bond_params, uint32_t ring_index_base, const float viewport_size[2]);
-static bool draw_backbone  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, uint32_t profile, const float scale[4], float max_extent, const mat4_t* world_to_clip, float viewport_half_height);
+static bool draw_backbone  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, uint32_t profile, const float scale[4], float max_extent, const mat4_t* world_to_clip, float viewport_half_height, bool raycast, const float viewport_size[2]);
 static bool draw_slabs     (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float plate, float max_length, uint32_t slab_index_base, const float viewport_size[2]);
 
 static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_args_t* args, const mat4_t* model_matrix) {
@@ -2588,7 +2596,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             // Half width and half thickness of the box profile
             const float profile_scale[4] = { scale * draw_op->args.ribbons.width_scale, scale * draw_op->args.ribbons.thickness_scale * 0.1f, 0.0f, 0.0f };
             const float max_extent = sqrtf(profile_scale[0] * profile_scale[0] + profile_scale[1] * profile_scale[1]);
-            draw_backbone(shaders->ribbons[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_BOX, profile_scale, max_extent, &world_to_clip, viewport_half_height);
+            draw_backbone(shaders->ribbons[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_BOX, profile_scale, max_extent, &world_to_clip, viewport_half_height, false, viewport_size);
             break;
         }
         case MD_GL_REP_CARTOON: {
@@ -2596,7 +2604,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             const float profile_scale[4] = { scale * draw_op->args.cartoon.coil_scale, draw_op->args.cartoon.helix_scale, draw_op->args.cartoon.sheet_scale, 0.0f };
             // Largest semi axis of the profiles in backbone.vert
             const float max_extent = MAX(MAX(0.2f * profile_scale[0], 1.2f * profile_scale[1]), 1.5f * profile_scale[2]);
-            draw_backbone(shaders->cartoon[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_STADIUM, profile_scale, max_extent, &world_to_clip, viewport_half_height);
+            const bool rc = draw_op->args.cartoon.raycast;
+            draw_backbone(rc ? shaders->cartoon_rc[program_permutation] : shaders->cartoon[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_STADIUM, profile_scale, max_extent, &world_to_clip, viewport_half_height, rc, viewport_size);
             break;
         }
         case MD_GL_REP_SLABS: {
@@ -2609,7 +2618,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             // A circle, the radius of each control point times the scale, and round caps
             const float profile_scale[4] = { scale * draw_op->args.tubes.radius_scale, 0.0f, 0.0f, 0.0f };
             const float max_extent = mol->tube_max_extent * profile_scale[0];
-            draw_backbone(shaders->tubes[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_TUBE, profile_scale, max_extent, &world_to_clip, viewport_half_height);
+            const bool rc = draw_op->args.tubes.raycast;
+            draw_backbone(rc ? shaders->tubes_rc[program_permutation] : shaders->tubes[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_TUBE, profile_scale, max_extent, &world_to_clip, viewport_half_height, rc, viewport_size);
             break;
         }
         default:
@@ -3022,7 +3032,13 @@ static bool draw_slabs(gl_program_t program, const molecule_t* mol, gl_buffer_t 
 }
 
 // One instance per control point (residue), see backbone.vert. Consecutive chains with the same level of detail are drawn together.
-static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, uint32_t profile, const float scale[4], float max_extent, const mat4_t* world_to_clip, float viewport_half_height) {
+// Ray cast (backbone_rc.vert): segments per control point at each level of detail, even divisors of
+// MD_GL_BACKBONE_SEGMENT_COUNT. The segments are straight, what matters is how far a chord is from the curve.
+static const uint32_t backbone_rc_segments[BACKBONE_LOD_COUNT] = { 6, 4, 2 };
+
+// With raycast, the stadium profile is ray cast (backbone_rc.vert) with a quad per segment, the meshes of profile only
+// decide the level of detail
+static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, uint32_t profile, const float scale[4], float max_extent, const mat4_t* world_to_clip, float viewport_half_height, bool raycast, const float viewport_size[2]) {
     ASSERT(mol);
     ASSERT(profile < BACKBONE_PROFILE_COUNT);
     ASSERT(world_to_clip);
@@ -3071,6 +3087,9 @@ static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer
     glUniform1i(glGetUniformLocation(program.id, "u_buf_neighbors"), 3);
     glUniform1i(glGetUniformLocation(program.id, "u_buf_rings"), 4);
     const GLint instance_offset_loc = glGetUniformLocation(program.id, "u_instance_offset");
+    if (raycast) {
+        glUniform2f(glGetUniformLocation(program.id, "u_viewport_size"), viewport_size[0], viewport_size[1]);
+    }
 
     for (uint32_t lod = 0; lod < BACKBONE_LOD_COUNT; ++lod) {
         const backbone_mesh_t* mesh = &meshes[lod];
@@ -3086,6 +3105,7 @@ static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer
             while (c < bounds->chain_count && chain_lod[c] == lod) ++c;
             const uint32_t end = bounds->chain_offset[c];
 
+            const uint32_t segments = raycast ? backbone_rc_segments[lod] : mesh->segments;
             if (!bound) {
                 struct {
                     float    scale[4];
@@ -3093,16 +3113,18 @@ static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer
                     uint32_t rings[4];
                 } params = {
                     {scale[0], scale[1], scale[2], scale[3]},
-                    {mesh->segments, mesh->profile_count, mesh->outline_count, profile == BACKBONE_PROFILE_BOX ? mesh->face_subdivisions : mesh->dome_rings},
-                    {MD_GL_BACKBONE_SEGMENT_COUNT, MD_GL_BACKBONE_SEGMENT_COUNT / mesh->segments, 0, 0},
+                    {segments, mesh->profile_count, mesh->outline_count, profile == BACKBONE_PROFILE_BOX ? mesh->face_subdivisions : mesh->dome_rings},
+                    {MD_GL_BACKBONE_SEGMENT_COUNT, MD_GL_BACKBONE_SEGMENT_COUNT / segments, 0, 0},
                 };
                 gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(params), &params);
-                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh->index_buffer.id);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, raycast ? ctx.bond_quad_index.id : mesh->index_buffer.id);
                 bound = true;
             }
 
             glUniform1ui(instance_offset_loc, beg);
-            glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)mesh->index_count, GL_UNSIGNED_SHORT, 0, (GLsizei)(end - beg));
+            // A quad (two triangles of 6 indices) per segment, or the mesh
+            const GLsizei index_count = raycast ? (GLsizei)(segments * 6) : (GLsizei)mesh->index_count;
+            glDrawElementsInstanced(GL_TRIANGLES, index_count, GL_UNSIGNED_SHORT, 0, (GLsizei)(end - beg));
         }
     }
 
