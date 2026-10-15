@@ -7,6 +7,8 @@
 // defines (s1 above), and is evaluated in a state of the system. What it picks may depend on the coordinates of the
 // state (within() does), and then it has to be evaluated again for another state (is_dynamic).
 //
+// An empty expression (or one of only whitespace) picks every atom, as 'all' does.
+//
 // Where something goes wrong, the result says what, and where in the expression, so that an input can point at it.
 // While a filter is typed, md_filter_complete says what can be written at the cursor.
 

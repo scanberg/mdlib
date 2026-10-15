@@ -123,14 +123,21 @@ UTEST(filter, errors_say_where) {
     EXPECT_EQ(27, res.error_range.end);
     EXPECT_EQ(0u, md_bitset_count(bf));
 
-    // Something that does not pick atoms, and nothing at all
+    // Something that does not pick atoms
     res = md_filter(&bf, STR_LIT("distance(1, 2)"), &fctx, alloc);
     EXPECT_FALSE(res.success);
     EXPECT_TRUE(strstr(res.error, "does not pick atoms") != NULL);
+
+    // Nothing at all picks every atom, as one set
     res = md_filter(&bf, STR_LIT("   "), &fctx, alloc);
-    EXPECT_FALSE(res.success);
-    EXPECT_TRUE(strstr(res.error, "empty") != NULL);
-    EXPECT_EQ(res.error_range.beg, res.error_range.end);
+    EXPECT_TRUE(res.success);
+    EXPECT_FALSE(res.is_dynamic);
+    EXPECT_EQ('\0', res.error[0]);
+    EXPECT_EQ(sys.atom.count, md_bitset_count(bf));
+    md_array(md_bitset_t) all_sets = 0;
+    EXPECT_TRUE(md_filter_sets(&all_sets, STR_LIT(""), &fctx, alloc).success);
+    ASSERT_EQ(1, md_array_size(all_sets));
+    EXPECT_EQ(sys.atom.count, md_bitset_count(all_sets[0]));
 
     // Without a state, in the reference one; static or not
     const md_filter_context_t reference = {&sys, NULL, NULL};

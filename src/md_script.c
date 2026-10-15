@@ -8558,9 +8558,9 @@ static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, str_t expr, 
         snprintf(res->error, sizeof(res->error), "The system has no atoms");
         return false;
     }
+    // Nothing written picks everything, as 'all' does
     if (str_empty(str_trim(expr))) {
-        snprintf(res->error, sizeof(res->error), "The expression is empty");
-        return false;
+        expr = STR_LIT("all");
     }
 
     f->ir = create_ir(temp_alloc);
