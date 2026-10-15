@@ -302,7 +302,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 
 | Category | Procedures |
 |---|---|
-| [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`headgroup`](#headgroup), [`tail`](#tail), [`ring`](#ring) |
+| [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`head`](#head), [`tail`](#tail), [`ring`](#ring) |
 | [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`lipid`](#lipid), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
 | [Selectors: instances](#selectors-instance-level) | [`instance`](#instance), [`chain`](#chain), [`chain_id`](#chain_id), [`auth_id`](#auth_id) |
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
@@ -487,21 +487,22 @@ Atoms flagged as part of the nucleobase of nucleic-acid residues.
 bases = nucleobase();
 ```
 
-### headgroup
+### head
 
-<!-- proc name=headgroup category=selector.atom -->
+<!-- proc name=head category=selector.atom -->
 
 ```text
-headgroup() -> bitfield
+head() -> bitfield
 ```
 
-The atoms of the lipids which are not in their tails (see [`tail`](#tail)), hydrogens included: the head group, the
-phosphate, the glycerol and the ester or ether linkages of a phospholipid, the hydroxyl of a sterol, both heads of a
-bolalipid. For a Martini lipid the beads of its head and linker (NC3, PO4, GL1, GL2, ROH, ...).
+The atoms of the heads of the lipids: all of a lipid but its tails (see [`tail`](#tail)), hydrogens included. For a
+phospholipid the head group, the phosphate, the glycerol and the ester or ether linkages; for a sterol its hydroxyl;
+for a bolalipid both of its heads; for a Martini lipid the beads of its head and linker (NC3, PO4, GL1, GL2, ROH, ...).
+`head() or tail()` is every lipid whose heads and tails are known: a lipid by name in a system without bonds has none.
 
 ```mdscript
-heads = headgroup();
-p_z = coord_z(headgroup() and element("P"));
+heads = head();
+p_z = coord_z(head() and element("P"));
 ```
 
 ### tail
@@ -637,13 +638,14 @@ lipid() -> bitfield[]
 Every lipid, sterols included: the lipids of the Martini lipidomes, coarse grained or atomistic by the same names
 (POPC, DPPC, CHOL, ...), the cholesterol of CHARMM (CHL1), and the molecules which are lipids by their structure
 whatever they are named: a polar head with a hydrocarbon chain of at least 8 carbons (a fatty acid, a phospholipid
-whose residue is named DPP in a PDB file, a lipid split into head and tail residues), or a sterol. One selection per
-residue: a lipid of several residues is several selections. See [`tail`](#tail) and [`headgroup`](#headgroup) for its
+whose residue is named DPP in a PDB file), or a sterol. One selection per lipid MOLECULE, as for
+[`instance`](#instance): a lipid split into several residues (head and tails, as the AMBER lipids are) is one selection
+of all of them. Within a context, the lipids with an atom in it, whole. See [`head`](#head) and [`tail`](#tail) for its
 parts.
 
 ```mdscript
 membrane = lipid();
-n_lipids = count(lipid(), "residue");
+n_lipids = count(lipid(), "structure");               # lipid molecules
 ```
 
 ### qm

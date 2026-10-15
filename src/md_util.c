@@ -10311,6 +10311,21 @@ static int lipid_cmp_i32(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
+// Records the molecule of the components [comp_beg, comp_end) as a lipid, with the heads and tails pushed for it since
+// the last one (none when its anatomy is not known), and its components as lipids
+static void record_lipid(md_system_t* sys, size_t comp_beg, size_t comp_end) {
+    md_lipid_data_t* lipid = &sys->lipid;
+    md_allocator_i* alloc = sys->alloc;
+    const md_urange_t comp_range = { (uint32_t)comp_beg, (uint32_t)comp_end };
+    md_array_push(lipid->comp_range, comp_range, alloc);
+    md_array_push(lipid->head_offset, (uint32_t)lipid->head.count, alloc);
+    md_array_push(lipid->tail_offset, (uint32_t)lipid->tail.count, alloc);
+    lipid->count += 1;
+    for (size_t c = comp_beg; c < comp_end; ++c) {
+        set_component_kind(sys, c, MD_COMPONENT_KIND_LIPID);
+    }
+}
+
 // The lipid of the components [comp_beg, comp_end), if it is one
 static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_end, const uint8_t* in_fused_ring, md_allocator_i* temp_arena) {
     md_lipid_data_t* lipid = &sys->lipid;
@@ -10319,7 +10334,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     const uint32_t a0 = md_component_atom_range(&sys->component, comp_beg).beg;
     const uint32_t a1 = md_component_atom_range(&sys->component, comp_end - 1).end;
     const int32_t n = (int32_t)(a1 - a0);
-    if (n <= 1 || n > LIPID_MAX_ATOMS) return;
+    if (n <= 0) return;
 
     // Lipids by name. Those which are lipids by their structure alone are classified anew, so that inferring again gives
     // what inferring once did.
@@ -10339,8 +10354,13 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
             sterol_beads |= lipid_bead_sterol_ring(md_atom_name(&sys->atom, i));
         }
     }
-    // Coarse grained molecules are told apart by the force field (martini_db), not by their structure
+    // Coarse grained molecules are told apart by the force field (martini_db), not by their structure. A lipid by name
+    // too small or too large to look into is one without heads and tails.
     if (cg && !named) return;
+    if (n <= 1 || n > LIPID_MAX_ATOMS) {
+        if (named) record_lipid(sys, comp_beg, comp_end);
+        return;
+    }
 
     const size_t pos = md_vm_arena_get_pos(temp_arena);
 
@@ -10494,8 +10514,13 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         }
     }
 
+    // A lipid by name in which no tails are found (no bonds, a naming the beads do not follow) is one without heads and
+    // tails: it is a lipid molecule still
     const size_t num_tails = md_array_size(spine_ranges);
-    if (num_tails == 0) goto done;
+    if (num_tails == 0) {
+        if (named) record_lipid(sys, comp_beg, comp_end);
+        goto done;
+    }
 
     // A molecule of no lipid needs a polar head: an atom other than carbon outside of its tails. Its head is of the
     // elements of lipids (C, N, O, P, S) and is not aromatic: a porphyrin with a phytyl or farnesyl tail (chlorophyll,
@@ -10587,17 +10612,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
 
     lipid->head.count += num_heads;
     lipid->tail.count += num_tails;
-    {
-        md_urange_t comp_range = { (uint32_t)comp_beg, (uint32_t)comp_end };
-        md_array_push(lipid->comp_range, comp_range, alloc);
-    }
-    md_array_push(lipid->head_offset, (uint32_t)lipid->head.count, alloc);
-    md_array_push(lipid->tail_offset, (uint32_t)lipid->tail.count, alloc);
-    lipid->count += 1;
-
-    for (size_t c = comp_beg; c < comp_end; ++c) {
-        set_component_kind(sys, c, MD_COMPONENT_KIND_LIPID);
-    }
+    record_lipid(sys, comp_beg, comp_end);
 
 done:
     md_vm_arena_set_pos_back(temp_arena, pos);
@@ -10627,7 +10642,8 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
         MEMSET(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
     }
     for (size_t i = 0; i < sys->atom.count; ++i) sys->atom.flags[i] &= ~MD_ATOM_FLAG_LIPID_TAIL;
-    if (sys->atom.count == 0 || sys->component.count == 0 || sys->bond.count == 0 || !sys->bond.conn.offset) {
+    // Without bonds every lipid by name is a molecule of its own residue, without heads and tails
+    if (sys->atom.count == 0 || sys->component.count == 0) {
         return true;
     }
     if (md_array_size(sys->component.flags) < sys->component.count) {

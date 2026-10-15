@@ -135,8 +135,10 @@ typedef struct md_nucleic_backbone_data_t {
 // tip (or, for a spanning chain, on to where it joins its other head). Methyl branches and the atoms of the rings off the
 // shortest way through a skeleton are not on it. The spine is what a spline of the tail follows.
 //
-// A lipid is a run of consecutive components bonded to each other (a lipid split into head and tails, as the AMBER
-// lipids are, is one), all of them MD_COMPONENT_KIND_LIPID. The atoms of the tails are MD_ATOM_FLAG_LIPID_TAIL.
+// A lipid is a molecule: a run of consecutive components bonded to each other (a lipid split into head and tails, as the
+// AMBER lipids are, is one), all of them MD_COMPONENT_KIND_LIPID. Every lipid molecule of the system is here, also one
+// whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of the
+// tails are MD_ATOM_FLAG_LIPID_TAIL.
 typedef struct md_lipid_data_t {
     size_t count;                       // Lipid molecules
     md_urange_t* comp_range;            // [count] The components of each lipid

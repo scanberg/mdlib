@@ -439,7 +439,7 @@ static int _side            (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _sidechain       (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _nucleoside      (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _nucleobase      (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _headgroup       (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _head            (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _tail            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
@@ -771,7 +771,7 @@ static procedure_t procedures[] = {
     {STR_INIT("nucleoside"),    TI_BITFIELD, 0, {0},                _nucleoside},
     {STR_INIT("nucleobase"),    TI_BITFIELD, 0, {0},                _nucleobase},
     // The parts of lipids (md_lipid_data_t): their heads, and one selection per tail
-    {STR_INIT("headgroup"),     TI_BITFIELD, 0, {0},                _headgroup},
+    {STR_INIT("head"),          TI_BITFIELD, 0, {0},                _head},
     {STR_INIT("tail"),          TI_BITFIELD_ARR, 0, {0},            _tail,          FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     {STR_INIT("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
@@ -3624,8 +3624,39 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_WATER);
 }
 
+// lipid(): one selection per lipid molecule (md_lipid_data_t), all of its residues: a lipid split into several residues
+// (the AMBER lipids) is one, as an instance is. Within a context the lipids with an atom in it, whole, as protein() takes
+// its residues. A system whose lipids were not inferred has a lipid per residue of the kind.
 static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_LIPID);
+    ASSERT(ctx && ctx->sys);
+    const md_system_t* sys = ctx->sys;
+    const md_lipid_data_t* lipid = &sys->lipid;
+    if (lipid->count == 0) {
+        return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_LIPID);
+    }
+
+    md_array(md_urange_t) ranges = 0;
+    for (size_t l = 0; l < lipid->count; ++l) {
+        const md_urange_t cr = lipid->comp_range[l];
+        const md_urange_t r = {
+            md_component_atom_range(&sys->component, cr.beg).beg,
+            md_component_atom_range(&sys->component, cr.end - 1).end,
+        };
+        if (ctx->mol_ctx && md_bitset_count_range(*ctx->mol_ctx, r.beg, r.end) == 0) continue;
+        md_array_push(ranges, r, ctx->temp_alloc);
+    }
+    const int count = (int)md_array_size(ranges);
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, false);
+        for (int i = 0; i < count; ++i) set_writer_push_range(&w, ranges[i].beg, ranges[i].end);
+        set_writer_end(&w);
+        return 0;
+    }
+    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MIN(1, count);
+    return count;
 }
 
 static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -3767,9 +3798,10 @@ static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_NUCLEOBASE);
 }
 
-// headgroup(): the atoms of the lipids outside of their tails (md_lipid_data_t), hydrogens included: the head group, the
-// glycerol and the linkages of a phospholipid, the hydroxyl of a sterol, both heads of a bolalipid
-static int _headgroup(data_t* dst, data_t arg[], eval_context_t* ctx) {
+// head(): the atoms of the heads of the lipids (md_lipid_data_t), hydrogens included: all of a lipid but its tails, the
+// head group, the phosphate, the glycerol and the linkages of a phospholipid, the hydroxyl of a sterol, both heads of a
+// bolalipid. A lipid whose heads and tails are not known has none.
+static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     (void)arg;
     if (dst) {
@@ -3777,6 +3809,7 @@ static int _headgroup(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const md_system_t* sys = ctx->sys;
         md_bitmask_t b = result_mask(ctx);
         for (size_t l = 0; l < sys->lipid.count; ++l) {
+            if (sys->lipid.head_offset[l + 1] == sys->lipid.head_offset[l]) continue;
             const md_urange_t cr = sys->lipid.comp_range[l];
             const uint32_t beg = md_component_atom_range(&sys->component, cr.beg).beg;
             const uint32_t end = md_component_atom_range(&sys->component, cr.end - 1).end;
