@@ -202,7 +202,9 @@ void main() {
 
     vec3 a0 = p0 - e0, a1 = p0 + e0;
     vec3 b0 = p1 - e1, b1 = p1 + e1;
-    float r_max = max(s0.y, s1.y);
+    // Out by a little more than the radius: a face which touches the box (one parallel to an axis of the view) is then
+    // inside it, and the march starts outside the segment (backbone_rc.frag)
+    float r_max = max(s0.y, s1.y) * 1.01;
     vec3 box_lo = min(min(a0, a1), min(b0, b1)) - r_max;
     vec3 box_hi = max(max(a0, a1), max(b0, b1)) + r_max;
 

@@ -4,23 +4,22 @@
 // Segments of the backbone with the stadium profile sphere traced within the quads of backbone_rc.vert (see there for
 // the solid). The distance to it is Lindow's: from the point p, the closest point pa on the core of ring 0 and pb on
 // that of ring 1, then the closest point q on the segment between them, and |p - q| less the radius blended along it.
-// That is exact for a capsule (no flat sides) and close for a band, which twists little over a segment; the steps are
-// shortened a little to stay on the safe side of it.
+// That is exact for a capsule (no flat sides) and close for a band, which twists little over a segment.
 //
 // The normal is p - q, that of the capsule which holds the hit, with the component along the tangent of the spline
 // (blended between the rings) taken out: the segments are straight, and their own normals would crease the surface where
 // they meet (a helix bends by more than 15 degrees a segment). Taken perpendicular to the tangent of the curve, the normal
 // is continuous over the joints, as that of the mesh is. Not at the round end of a chain, which keeps its own.
 //
-// The march starts where the ray enters the box of the segment and ends where it leaves it. A ray that ends near the
-// surface without meeting it (grazing an edge) is a miss, and so is one that starts inside the segment.
+// The march starts where the ray enters the box of the segment and ends where it leaves it (see main for how). A ray
+// that starts inside the segment is a miss.
 
 #ifndef ORTHO
 #define ORTHO 0
 #endif
 
-#define MAX_STEPS 48
-#define STEP_SCALE 0.9
+#define MAX_STEPS 64
+#define MAX_REFINE 10
 
 layout (std140) uniform ubo {
     mat4 u_world_to_view;
@@ -99,24 +98,63 @@ void main() {
         discard;
     }
 
-    // A hit is within a thousandth of the thinner radius
-    float eps = 1.0e-3 * min(in_frag.radius.x, in_frag.radius.y) + 1.0e-5;
-    float t = t0;
+    // Sphere trace until the distance changes sign, then find the root in that bracket (Illinois regula falsi). A plain
+    // sphere tracer that stops where the distance is below a threshold converges slowly at grazing angles, where the ray
+    // runs along a flat face: it ran out of steps there (holes) or stopped anywhere along the stretch within the
+    // threshold (a depth off by threshold / sin(angle), which made the overlapping segments fight). With the sign change
+    // the hit is the surface itself, and a step is never less than h_min, which bounds the steps through the box.
+    // The distance is 1-Lipschitz (its gradient is that of the distance to the point q), so a step by it never crosses
+    // the surface; the steps by h_min may cross pieces thinner than that along the ray, which are the slivers at the
+    // silhouettes of the round edges (a percent of the radius).
+    float r_min = min(in_frag.radius.x, in_frag.radius.y);
+    float h_min = max(0.25 * r_min, length(in_frag.box_hi - in_frag.box_lo) / float(MAX_STEPS - 16));
+    float tol   = 1.0e-4 * r_min;
+
     vec3  q;
     float h;
-    float d = segment_distance(ro + rd * t, q, h);
-    if (d < -eps) {
+    float t  = t0;
+    float d  = segment_distance(ro + rd * t, q, h);
+    if (d < 0.0) {
         // The ray starts inside (the eye, or the near plane cutting through the segment): seen from within it is open,
         // as a mesh is to back face culling
         discard;
     }
+
+    bool  bracketed = false;
+    float ta = t, fa = d, tb = t, fb = d;
     for (int i = 0; i < MAX_STEPS; ++i) {
-        d = segment_distance(ro + rd * t, q, h);
-        if (d < eps || t > t1) break;
-        t += d * STEP_SCALE;
+        float tn = min(t + max(d, h_min), t1);
+        float dn = segment_distance(ro + rd * tn, q, h);
+        if (dn < 0.0) {
+            ta = t;  fa = d;
+            tb = tn; fb = dn;
+            bracketed = true;
+            break;
+        }
+        if (tn >= t1) break;
+        t = tn;
+        d = dn;
     }
-    if (!(d < 10.0 * eps) || t > t1) {
+    if (!bracketed) {
         discard;
+    }
+
+    // Illinois: regula falsi which halves the value kept at an end that stays twice, so it converges from both sides
+    int side = 0;
+    t = tb;
+    for (int j = 0; j < MAX_REFINE; ++j) {
+        t = (ta * fb - tb * fa) / (fb - fa);
+        float ft = segment_distance(ro + rd * t, q, h);
+        if (abs(ft) < tol) break;
+        if (ft < 0.0) {
+            tb = t; fb = ft;
+            if (side == -1) fa *= 0.5;
+            side = -1;
+        } else {
+            ta = t; fa = ft;
+            if (side == 1) fb *= 0.5;
+            side = 1;
+        }
     }
 
     vec3 view_coord  = ro + rd * t;
