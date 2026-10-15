@@ -295,6 +295,7 @@ typedef struct {
 enum {
     BACKBONE_PROFILE_ELLIPSE,   // Cartoon
     BACKBONE_PROFILE_BOX,       // Ribbons
+    BACKBONE_PROFILE_TUBE,      // Tubes: the ellipse (a circle) with round caps
     BACKBONE_PROFILE_COUNT
 };
 
@@ -304,6 +305,7 @@ typedef struct {
     uint32_t profile_count;     // P: vertices per ring
     uint32_t outline_count;     // O: vertices on the outline of a cap
     uint32_t face_subdivisions; // K: segments across the wide faces of the box profile
+    uint32_t dome_rings;        // D: rings of a round cap of the tube profile, from its rim to before its pole
     uint32_t index_count;
     gl_buffer_t index_buffer;   // u16, GL_TRIANGLES
 } backbone_mesh_t;
@@ -843,21 +845,25 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
 }
 
 // Triangulation of one backbone instance, matching the vertex decoding in backbone.vert:
-// Tube vertices ring * P + k for ring in [0, S], k in [0, P), then a cap (center, O outline vertices) at the beginning and one at the end.
+// Tube vertices ring * P + k for ring in [0, S], k in [0, P), then a cap at the beginning and one at the end. A cap is
+// flat, its center and its O outline vertices, or round for the tube profile: a dome of D rings of O vertices, d * O + m
+// for ring d in [0, D) (ring 0 is the rim), and its pole.
 // Triangles are counter clockwise seen from the outside.
-// segments: even, profile_count: even (ellipse), face_subdivisions: >= 1 (box)
+// segments: even, profile_count: even (ellipse, tube), face_subdivisions: >= 1 (box)
 static bool create_backbone_mesh(backbone_mesh_t* mesh, uint32_t profile, uint32_t segments, uint32_t profile_count, uint32_t face_subdivisions) {
     ASSERT(mesh);
     ASSERT(segments >= 2 && segments % 2 == 0);
     const uint32_t S = segments;
-    uint32_t P, O, K = 0;
+    uint32_t P, O, K = 0, D = 0;
     uint32_t edges[64][2];
     uint32_t edge_count = 0;
 
-    if (profile == BACKBONE_PROFILE_ELLIPSE) {
+    if (profile == BACKBONE_PROFILE_ELLIPSE || profile == BACKBONE_PROFILE_TUBE) {
         ASSERT(profile_count >= 4 && profile_count % 2 == 0 && profile_count <= 64);
         P = profile_count;
         O = P;
+        // The quarter circle of a dome as finely as the profile
+        D = profile == BACKBONE_PROFILE_TUBE ? MAX(1, P / 4) : 0;
         for (uint32_t k = 0; k < P; ++k) {
             edges[edge_count][0] = k;
             edges[edge_count][1] = (k + 1) % P;
@@ -883,8 +889,10 @@ static bool create_backbone_mesh(backbone_mesh_t* mesh, uint32_t profile, uint32
         }
     }
 
-    const uint32_t vertex_count = (S + 1) * P + 2 * (O + 1);
-    const uint32_t index_count  = S * edge_count * 6 + 2 * O * 3;
+    const uint32_t cap_vertex_count = D ? D * O + 1 : O + 1;
+    const uint32_t cap_index_count  = D ? ((D - 1) * 6 + 3) * O : O * 3;
+    const uint32_t vertex_count = (S + 1) * P + 2 * cap_vertex_count;
+    const uint32_t index_count  = S * edge_count * 6 + 2 * cap_index_count;
     if (vertex_count > 0xFFFF) {
         MD_LOG_ERROR("Backbone mesh resolution is too high");
         return false;
@@ -906,15 +914,42 @@ static bool create_backbone_mesh(backbone_mesh_t* mesh, uint32_t profile, uint32
     }
 
     // Caps: the beginning faces backwards, the end forwards
-    const uint32_t cap_base[2] = { (S + 1) * P, (S + 1) * P + O + 1 };
+    const uint32_t cap_base[2] = { (S + 1) * P, (S + 1) * P + cap_vertex_count };
     for (uint32_t cap = 0; cap < 2; ++cap) {
-        const uint16_t center = (uint16_t)cap_base[cap];
-        for (uint32_t m = 0; m < O; ++m) {
-            const uint16_t r0 = (uint16_t)(cap_base[cap] + 1 + m);
-            const uint16_t r1 = (uint16_t)(cap_base[cap] + 1 + (m + 1) % O);
-            idx[len++] = center;
-            idx[len++] = cap == 0 ? r1 : r0;
-            idx[len++] = cap == 0 ? r0 : r1;
+        if (D == 0) {
+            const uint16_t center = (uint16_t)cap_base[cap];
+            for (uint32_t m = 0; m < O; ++m) {
+                const uint16_t r0 = (uint16_t)(cap_base[cap] + 1 + m);
+                const uint16_t r1 = (uint16_t)(cap_base[cap] + 1 + (m + 1) % O);
+                idx[len++] = center;
+                idx[len++] = cap == 0 ? r1 : r0;
+                idx[len++] = cap == 0 ? r0 : r1;
+            }
+            continue;
+        }
+        // A dome: ring d + 1 lies further out than ring d, beyond the end of the tube (backwards for the beginning). The
+        // end continues the tube as its next ring would, the beginning as its previous ring would.
+        const uint16_t pole = (uint16_t)(cap_base[cap] + D * O);
+        for (uint32_t d = 0; d < D; ++d) {
+            for (uint32_t m = 0; m < O; ++m) {
+                const uint16_t a = (uint16_t)(cap_base[cap] + d * O + m);
+                const uint16_t b = (uint16_t)(cap_base[cap] + d * O + (m + 1) % O);
+                if (d + 1 < D) {
+                    const uint16_t c = (uint16_t)(a + O);
+                    const uint16_t e = (uint16_t)(b + O);
+                    if (cap == 1) {
+                        idx[len++] = a; idx[len++] = b; idx[len++] = c;
+                        idx[len++] = b; idx[len++] = e; idx[len++] = c;
+                    } else {
+                        idx[len++] = c; idx[len++] = e; idx[len++] = a;
+                        idx[len++] = e; idx[len++] = b; idx[len++] = a;
+                    }
+                } else {
+                    idx[len++] = cap == 1 ? a : pole;
+                    idx[len++] = cap == 1 ? b : b;
+                    idx[len++] = cap == 1 ? pole : a;
+                }
+            }
         }
     }
     ASSERT(len == index_count);
@@ -925,6 +960,7 @@ static bool create_backbone_mesh(backbone_mesh_t* mesh, uint32_t profile, uint32
     mesh->profile_count = P;
     mesh->outline_count = O;
     mesh->face_subdivisions = K;
+    mesh->dome_rings = D;
     mesh->index_count = index_count;
 
     md_temp_end(temp);
@@ -1053,7 +1089,8 @@ void md_gl_initialize(void) {
         uint32_t face_subdivisions = BACKBONE_RIBBONS_FACE_SUBDIVISIONS;
         for (uint32_t lod = 0; lod < BACKBONE_LOD_COUNT; ++lod) {
             if (!create_backbone_mesh(&ctx.backbone_mesh[BACKBONE_PROFILE_ELLIPSE][lod], BACKBONE_PROFILE_ELLIPSE, segments, profile_count, 0) ||
-                !create_backbone_mesh(&ctx.backbone_mesh[BACKBONE_PROFILE_BOX][lod],     BACKBONE_PROFILE_BOX,     segments, 0, face_subdivisions)) {
+                !create_backbone_mesh(&ctx.backbone_mesh[BACKBONE_PROFILE_BOX][lod],     BACKBONE_PROFILE_BOX,     segments, 0, face_subdivisions) ||
+                !create_backbone_mesh(&ctx.backbone_mesh[BACKBONE_PROFILE_TUBE][lod],    BACKBONE_PROFILE_TUBE,    segments, profile_count, 0)) {
                 MD_LOG_ERROR("Failed to create backbone mesh");
                 return;
             }
@@ -2491,10 +2528,10 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             break;
         }
         case MD_GL_REP_TUBES: {
-            // A circle, the radius of each control point times the scale
+            // A circle, the radius of each control point times the scale, and round caps
             const float profile_scale[4] = { scale * draw_op->args.tubes.radius_scale, 0.0f, 0.0f, 0.0f };
             const float max_extent = mol->tube_max_radius * profile_scale[0];
-            draw_backbone(shaders->tubes[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_ELLIPSE, profile_scale, max_extent, &world_to_clip, viewport_half_height);
+            draw_backbone(shaders->tubes[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_TUBE, profile_scale, max_extent, &world_to_clip, viewport_half_height);
             break;
         }
         default:
@@ -2906,7 +2943,7 @@ static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer
                     uint32_t rings[4];
                 } params = {
                     {scale[0], scale[1], scale[2], scale[3]},
-                    {mesh->segments, mesh->profile_count, mesh->outline_count, mesh->face_subdivisions},
+                    {mesh->segments, mesh->profile_count, mesh->outline_count, profile == BACKBONE_PROFILE_BOX ? mesh->face_subdivisions : mesh->dome_rings},
                     {MD_GL_BACKBONE_SEGMENT_COUNT, MD_GL_BACKBONE_SEGMENT_COUNT / mesh->segments, 0, 0},
                 };
                 gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(params), &params);

@@ -23,7 +23,8 @@
 //
 // Tubes (md_gl_mol_set_tubes) are the backbone of a molecule of particles, each control point a particle: their profile
 // is a circle of the radius of the ring (u_scale.x times the radius of the control points, blended along the spline).
-// The frame does not matter to a circle but for where its vertices are, so it is the one of the protein backbone.
+// The frame does not matter to a circle but for where its vertices are, so it is the one of the protein backbone. Their
+// caps are round: a half sphere of the radius of the end, D rings from its rim to before its pole and the pole.
 
 #ifndef REP_RIBBONS
 #define REP_RIBBONS 0
@@ -59,7 +60,7 @@ layout (std140) uniform ubo {
     uint u_backbone_base_index;
 
     vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Ribbons: (half width, half thickness, -, -). Tubes: (radius scale, -, -, -)
-    uvec4 u_res;    // (S: segments per residue, P: profile vertex count, O: cap outline vertex count, K: ribbon face subdivisions)
+    uvec4 u_res;    // (S: segments per residue, P: profile vertex count, O: cap outline vertex count, K: ribbon face subdivisions or D: dome rings of a tube cap)
     uvec4 u_rings;  // (R: rings per control point in the ring buffer, stride = R / S, -, -)
 };
 
@@ -246,8 +247,13 @@ void main() {
         k = vid - j * P;
     } else {
         uint cv = vid - tube_count;
-        cap = cv / (O + 1u);
-        cap_vertex = cv - cap * (O + 1u);
+#if REP_TUBES
+        uint cap_size = u_res.w * O + 1u;
+#else
+        uint cap_size = O + 1u;
+#endif
+        cap = cv / cap_size;
+        cap_vertex = cv - cap * cap_size;
         j = cap == 0u ? 0u : S;
         // A cap closes the tube at the end of a chain or next to a hidden residue
         bool open = cap == 0u ? (chain_beg || !atom_visible(load_atom_idx(nb.x))) : (chain_end || !atom_visible(load_atom_idx(nb.y)));
@@ -301,9 +307,22 @@ void main() {
         position = r.position + x * pv.pos.x + y * pv.pos.y;
         normal   = x * n_local.x + y * n_local.y + z * n_local.z;
     } else {
+        vec3 out_dir = cap == 0u ? -z : z;
+#if REP_TUBES
+        // Ring d of the dome at the angle theta from its rim, the pole after the last ring
+        uint D = u_res.w;
+        uint d = cap_vertex / O;
+        vec2 p = outline_vertex(d < D ? cap_vertex - d * O : 0u, extent);
+        float theta = float(d) / float(D) * (0.5 * PI);
+        float c_t = d < D ? cos(theta) : 0.0;
+        float s_t = d < D ? sin(theta) : 1.0;
+        position = r.position + (x * p.x + y * p.y) * c_t + out_dir * (extent.x * s_t);
+        normal   = (x * (p.x / extent.x) + y * (p.y / extent.y)) * c_t + out_dir * s_t;
+#else
         vec2 p = cap_vertex == 0u ? vec2(0.0) : outline_vertex(cap_vertex - 1u, extent);
         position = r.position + x * p.x + y * p.y;
-        normal   = cap == 0u ? -z : z;
+        normal   = out_dir;
+#endif
     }
 
     vec4 view_coord = u_world_to_view * vec4(position, 1.0);

@@ -147,7 +147,8 @@ void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell
 // profile: the backbone of a molecule of particles, as the protein backbone is that of a system (MD_GL_REP_CARTOON), and
 // computed the same way (uniform cubic B-splines, which pass near rather than through their control points). Tube t has
 // the control points particle[offset[t] .. offset[t + 1]) in order, of the radii radius[offset[t] .. offset[t + 1])
-// (Ångström, at most 8, the profile follows them smoothly). A tube of fewer than two control points is not drawn.
+// (Ångström, at most 8, the profile follows them smoothly), and round ends: a half sphere of the radius there, which
+// also closes a tube next to a part of it that is hidden. A tube of fewer than two control points is not drawn.
 // Replaces the previous tubes; count 0 clears them.
 // A part of a tube belongs to its control point: it picks as it (md_gl_picking_offset_t), takes its colour from the
 // particle and is shown when the particle is (the alpha of its colour, the atom mask), so the particles of the control
