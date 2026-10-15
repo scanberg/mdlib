@@ -21,10 +21,16 @@
 // The level of detail is chosen per chain (md_gl.c): a coarser mesh has fewer segments, which use every stride:th
 // ring, and fewer profile vertices. Chains do not share rings, so chains of different levels do not crack.
 //
-// Tubes (md_gl_mol_set_tubes) are the backbone of a molecule of particles, each control point a particle: their profile
-// is a circle of the radius of the ring (u_scale.x times the radius of the control points, blended along the spline).
-// The frame does not matter to a circle but for where its vertices are, so it is the one of the protein backbone. Their
-// caps are round: a half sphere of the radius of the end, D rings from its rim to before its pole and the pole.
+// The profile of the cartoon and of the tubes is a stadium (a 2D capsule): the segment from (-l, 0) to (l, 0) of the
+// frame (x = support, y = cross(z, x)) widened by a radius r, two half circles joined by flat sides that face +-y. A
+// circle is l = 0. The cartoon blends (l, r) by the secondary structure (coil: a circle, helix and sheet: flat bands of
+// the same width and thickness as the ellipses that came before), the tubes have the (l, r) of their control points.
+// The ribbons are a box.
+//
+// Tubes (md_gl_mol_set_tubes) are the backbone of a molecule of particles, each control point a particle: l and r are
+// those of the control points (times u_scale.x), blended along the spline. Their caps are round: the Minkowski sum of
+// the segment and a half sphere of radius r (a half sphere for a circle), D + 1 rings from the rim to the top, which is
+// the segment itself moved out by r.
 
 #ifndef REP_RIBBONS
 #define REP_RIBBONS 0
@@ -178,30 +184,41 @@ vec2 outline_vertex(uint m, vec2 extent) {
 }
 
 #else
-// Ellipse of semi axes extent. The angles are distributed between uniform in angle (round profile) and uniform along
-// the major axis (flat profile), which keeps the faces of a flat, twisted ribbon from folding over wide triangles
-// while the round edges keep enough vertices.
-vec2 ellipse_dir(uint k, vec2 extent) {
-    uint P = u_res.y;
-    uint half_count = P / 2u;
-    float sgn = k < half_count ? 1.0 : -1.0;
-    float f = float(k < half_count ? k : k - half_count) / float(half_count);
-    float flatness = 1.0 - min(extent.x, extent.y) / max(max(extent.x, extent.y), 1.0e-6);
-    float theta = mix(f * PI, acos(1.0 - 2.0 * f), flatness);
-    return sgn * vec2(cos(theta), sin(theta));
-}
-
+// Stadium of extent = (l, r) (see above), and extent_t = d(l, r)/du. The vertices are spread uniformly along the outline,
+// so a flat band has vertices across its faces and a circle is uniform in angle, and they move continuously as l and r
+// change along the spline. Half k < P / 2 goes from (l, -r) around the half circle about (l, 0) to (l, r) and along the
+// side at y = r towards (-l, r), where the point reflection (the other half) begins.
+// The derivative of a vertex along the spline is taken at a fixed point of the outline: how the vertices slide along it
+// is along dir, which the normal does not see.
 ProfileVertex profile_vertex(uint k, vec2 extent, vec2 extent_t) {
-    vec2 cs = ellipse_dir(k, extent);
+    uint  H   = u_res.y / 2u;
+    float sgn = k < H ? 1.0 : -1.0;
+    float u   = float(k < H ? k : k - H) / float(H);
+    float l   = extent.x;
+    float r   = extent.y;
+    float arc = PI * r;
+    float s   = u * (arc + 2.0 * l);
+
     ProfileVertex v;
-    v.pos   = cs * extent;
-    v.dir   = vec2(-cs.y * extent.x, cs.x * extent.y);
-    v.pos_t = cs * extent_t;
+    if (s < arc) {
+        float theta = s / r - 0.5 * PI;
+        vec2  cs    = vec2(cos(theta), sin(theta));
+        v.pos   = vec2(l, 0.0) + r * cs;
+        v.dir   = vec2(-cs.y, cs.x);
+        v.pos_t = vec2(extent_t.x, 0.0) + extent_t.y * cs;
+    } else {
+        v.pos   = vec2(l - (s - arc), r);
+        v.dir   = vec2(-1.0, 0.0);
+        v.pos_t = vec2(0.0, extent_t.y);
+    }
+    v.pos   *= sgn;
+    v.dir   *= sgn;
+    v.pos_t *= sgn;
     return v;
 }
 
 vec2 outline_vertex(uint m, vec2 extent) {
-    return ellipse_dir(m, extent) * extent;
+    return profile_vertex(m, extent, vec2(0.0)).pos;
 }
 
 #endif
@@ -248,7 +265,7 @@ void main() {
     } else {
         uint cv = vid - tube_count;
 #if REP_TUBES
-        uint cap_size = u_res.w * O + 1u;
+        uint cap_size = (u_res.w + 1u) * O;
 #else
         uint cap_size = O + 1u;
 #endif
@@ -285,16 +302,18 @@ void main() {
     vec2 extent   = u_scale.xy;
     vec2 extent_t = vec2(0.0);
 #elif REP_TUBES
-    vec2 extent   = vec2(max(r.radius * u_scale.x, 1.0e-3));
-    vec2 extent_t = vec2(r.radius_t * u_scale.x);
+    // (l, r): the half length of the flat sides in the y of the secondary structure, the radius
+    vec2 extent   = max(vec2(r.ss.y * TUBE_RADIUS_MAX, r.radius) * u_scale.x, vec2(0.0, 1.0e-3));
+    vec2 extent_t = vec2(r.ss_t.y * TUBE_RADIUS_MAX, r.radius_t) * u_scale.x;
 #else
-    const vec2 coil_scale  = vec2(0.2, 0.2);
-    const vec2 helix_scale = vec2(1.2, 0.2);
-    const vec2 sheet_scale = vec2(1.5, 0.1);
+    // (l, r) of the stadiums of coil, helix and sheet: half widths 0.2, 1.2 and 1.5, half thicknesses 0.2, 0.2 and 0.1
+    const vec2 coil_scale  = vec2(0.0, 0.2);
+    const vec2 helix_scale = vec2(1.0, 0.2);
+    const vec2 sheet_scale = vec2(1.4, 0.1);
     vec2 cs = coil_scale  * u_scale.x;
     vec2 hs = helix_scale * u_scale.y;
     vec2 ss = sheet_scale * u_scale.z;
-    vec2 extent   = max(r.ss.x * cs + r.ss.y * hs + r.ss.z * ss, vec2(1.0e-3));
+    vec2 extent   = max(r.ss.x * cs + r.ss.y * hs + r.ss.z * ss, vec2(0.0, 1.0e-3));
     vec2 extent_t = r.ss_t.x * cs + r.ss_t.y * hs + r.ss_t.z * ss;
 #endif
 
@@ -309,15 +328,17 @@ void main() {
     } else {
         vec3 out_dir = cap == 0u ? -z : z;
 #if REP_TUBES
-        // Ring d of the dome at the angle theta from its rim, the pole after the last ring
-        uint D = u_res.w;
-        uint d = cap_vertex / O;
-        vec2 p = outline_vertex(d < D ? cap_vertex - d * O : 0u, extent);
+        // Ring d of the dome at the angle theta from the rim: each vertex of the rim moves towards the point of the segment
+        // of the stadium it is r from, and out by r. The last ring is the segment moved out by r.
+        uint  D = u_res.w;
+        uint  d = cap_vertex / O;
+        ProfileVertex pv = profile_vertex(cap_vertex - d * O, extent, vec2(0.0));
+        vec2  n2    = vec2(pv.dir.y, -pv.dir.x);    // Outward, unit
+        vec2  core  = pv.pos - extent.y * n2;
         float theta = float(d) / float(D) * (0.5 * PI);
-        float c_t = d < D ? cos(theta) : 0.0;
-        float s_t = d < D ? sin(theta) : 1.0;
-        position = r.position + (x * p.x + y * p.y) * c_t + out_dir * (extent.x * s_t);
-        normal   = (x * (p.x / extent.x) + y * (p.y / extent.y)) * c_t + out_dir * s_t;
+        vec2  p     = core + n2 * (extent.y * cos(theta));
+        position = r.position + x * p.x + y * p.y + out_dir * (extent.y * sin(theta));
+        normal   = (x * n2.x + y * n2.y) * cos(theta) + out_dir * sin(theta);
 #else
         vec2 p = cap_vertex == 0u ? vec2(0.0) : outline_vertex(cap_vertex - 1u, extent);
         position = r.position + x * p.x + y * p.y;

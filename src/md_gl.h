@@ -143,17 +143,42 @@ void md_gl_mol_set_derived(md_gl_mol_t mol, md_gl_mol_t source, const uint32_t* 
 void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell, const vec3_t* source_xyz);
 
 // ### TUBES ###
-// Splines through the particles of a molecule (md_gl_mol_create_particles), drawn by MD_GL_REP_TUBES with a round
-// profile: the backbone of a molecule of particles, as the protein backbone is that of a system (MD_GL_REP_CARTOON), and
-// computed the same way (uniform cubic B-splines, which pass near rather than through their control points). Tube t has
-// the control points particle[offset[t] .. offset[t + 1]) in order, of the radii radius[offset[t] .. offset[t + 1])
-// (Ångström, at most 8, the profile follows them smoothly), and round ends: a half sphere of the radius there, which
-// also closes a tube next to a part of it that is hidden. A tube of fewer than two control points is not drawn.
-// Replaces the previous tubes; count 0 clears them.
+// Splines through the particles of a molecule (md_gl_mol_create_particles), drawn by MD_GL_REP_TUBES: the backbone of a
+// molecule of particles, as the protein backbone is that of a system (MD_GL_REP_CARTOON), and computed the same way
+// (uniform cubic B-splines, which pass near rather than through their control points, and smooth them: or through
+// them, within about a tenth of what the B-spline is off by, for a tube with through set). Tube t has the control points
+// [offset[t], offset[t + 1]), each a particle, in order.
+// The profile is a stadium (a 2D capsule, as the cartoon's): a segment of half length flat widened by radius, two half
+// circles joined by flat sides, a circle for a flat of 0. Both follow the control points smoothly along the tube
+// (Ångström, at most 8 each). The flat sides face the particle face of a control point, where it has one: the backbone
+// of a nucleic acid faces its bases. Otherwise the profile turns with the curve as the cartoon of a protein does.
+// The ends are round: the Minkowski sum of the segment and a half sphere of the radius there, which also closes a tube
+// next to a part of it that is hidden. A tube of fewer than two control points is not drawn.
 // A part of a tube belongs to its control point: it picks as it (md_gl_picking_offset_t), takes its colour from the
 // particle and is shown when the particle is (the alpha of its colour, the atom mask), so the particles of the control
 // points can have colours and flags while a radius of 0 keeps them from being drawn as spheres.
-void md_gl_mol_set_tubes(md_gl_mol_t mol, uint32_t count, const uint32_t* offset, const uint32_t* particle, const float* radius);
+typedef struct md_gl_tubes_t {
+    uint32_t        count;      // Tubes
+    const uint32_t* offset;     // [count + 1] The control points of each tube in the arrays below
+    const uint32_t* particle;   // The particle of each control point
+    const float*    radius;     // The radius of the profile, half its thickness
+    const float*    flat;       // (optional) Half the length of the flat sides of the profile, NULL for 0: round tubes
+    const uint32_t* face;       // (optional) The particle the flat sides face, UINT32_MAX for none
+    const uint8_t*  through;    // (optional) [count] Per tube: it passes (nearly) through its control points rather than near them
+} md_gl_tubes_t;
+
+// Replaces the previous tubes; NULL or a count of 0 clears them
+void md_gl_mol_set_tubes(md_gl_mol_t mol, const md_gl_tubes_t* tubes);
+
+// ### SLABS ###
+// Flat rounded polygons through the particles of a molecule (md_gl_mol_create_particles), drawn by MD_GL_REP_SLABS: the
+// rings of a cartoon, the sugars and bases of nucleic acids. Slab s has the corners particle[offset[s] .. offset[s + 1]),
+// 3 to 7 particles in order around it. It lies in the plane that fits its corners best, through their centroid, and is
+// the polygon of the corners projected on that plane, made solid by a sphere: a rim of capsules along its edges and a
+// plate between them (md_gl_draw_op_t args.slabs). The polygon is taken to be convex, as a ring is.
+// A slab is raycast, exactly: it picks as md_gl_picking_offset_t ring_base + its index, takes the colour of its first
+// corner and is shown when all its corners are. Replaces the previous slabs; a count of 0 clears them.
+void md_gl_mol_set_slabs(md_gl_mol_t mol, uint32_t count, const uint32_t* offset, const uint32_t* particle);
 
 // ### Set molecule data fields ###
 void md_gl_mol_set_index_base   (md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base);
@@ -235,6 +260,7 @@ typedef enum {
     MD_GL_REP_CARTOON,
     MD_GL_REP_WEAK_BONDS,   // The weak bonds of the representation (md_gl_rep_set_weak_bonds), dashed
     MD_GL_REP_TUBES,        // The tubes of a molecule of particles (md_gl_mol_set_tubes)
+    MD_GL_REP_SLABS,        // The slabs of a molecule of particles (md_gl_mol_set_slabs)
 } md_gl_rep_type_t;
 
 // Controls how the color of the bonds are calculated in the licorice and ball-and-stick representations
@@ -293,8 +319,13 @@ typedef struct md_gl_draw_op_t {
         } weak_bonds;
 
         struct {
-            float radius_scale;     // Of the radii of the control points
+            float radius_scale;     // Of the profiles at the control points
         } tubes;
+
+        struct {
+            float radius;           // Ångström, of the rim: half the thickness of the slab, and how far out of its corners it reaches
+            float plate;            // The half thickness of the plate within the rim, as a fraction of the radius: 1 is flat
+        } slabs;
     } args;
 
     md_gl_rep_t rep;
@@ -306,7 +337,7 @@ typedef struct md_gl_draw_op_t {
 // middle) their bond index, and the backbone representations (cartoon, ribbons) their protein backbone segment
 // index (md_system_t::protein_backbone.segment). A cartoon is not made of atoms: it writes the segment it stems
 // from, never an atom of it. A tube writes the index of its control point among those of all tubes (md_gl_mol_set_tubes)
-// as a backbone. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
+// as a backbone, a slab its index (md_gl_mol_set_slabs) as a ring. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
 // The circle of an aromatic ring writes the index of the ring in md_system_t::ring (all of its rings, so the range
 // is md_index_data_num_ranges(&sys->ring) long, of which only the aromatic ones are drawn).
 typedef struct md_gl_picking_offset_t {

@@ -20,8 +20,20 @@
 // (nearest direction) makes pairs close to 90 degrees apart flip back and forth with thermal noise,
 // which shows up as segments that suddenly rotate during playback. The decision is stored in
 // FLAG_FLIP_NEXT and consumed by the subdivision.
+//
+// A control point with FLAG_FIXED_FACE (the tubes of md_gl_mol_set_tubes with a particle to face, the backbone of a
+// nucleic acid facing its bases) takes no orientation from the curve: the flat faces of its profile face the direction
+// extracted for it, so the support (the long axis of the profile) is perpendicular to that and to the tangent.
 
-#define FLAG_FLIP_NEXT 16u
+//
+// A control point with FLAG_THROUGH is moved so that the B-spline passes (nearly) through it rather than near it: the
+// subdivision evaluates (P[i-1] + 4 P[i] + P[i+1]) / 6 at the control points, which shrinks a curve (a helix by 6% of
+// its radius at 36 degrees a step, more than half an Ångström for a nucleic acid). Two Jacobi steps towards the P that
+// make this the particle x, from P = x, bring that to about a tenth. They are linear, so the velocity takes them as well.
+
+#define FLAG_FLIP_NEXT  16u
+#define FLAG_FIXED_FACE 32u
+#define FLAG_THROUGH    64u
 
 uniform usamplerBuffer u_buf_control_point_words;       // Extracted control points (gl_control_point_t as uint32 words)
 uniform usamplerBuffer u_buf_prev_control_point_words;  // Oriented control points of the previous computation
@@ -64,12 +76,26 @@ vec3 load_position(uint cp_idx) {
     );
 }
 
+vec3 load_velocity(uint cp_idx) {
+    int base = int(cp_idx * 12u);
+    return vec3(
+        uintBitsToFloat(texelFetch(u_buf_control_point_words, base + 4).r),
+        uintBitsToFloat(texelFetch(u_buf_control_point_words, base + 5).r),
+        uintBitsToFloat(texelFetch(u_buf_control_point_words, base + 6).r)
+    );
+}
+
 // Normalized O - C written by the extraction pass
 vec3 load_carbonyl(uint cp_idx) {
     int base = int(cp_idx * 12u);
     vec2 xy = unpackSnorm2x16(texelFetch(u_buf_control_point_words, base +  9).r);
     vec2 zw = unpackSnorm2x16(texelFetch(u_buf_control_point_words, base + 10).r);
     return vec3(xy, zw.x);
+}
+
+uint load_flags(uint cp_idx) {
+    int base = int(cp_idx * 12u);
+    return (texelFetch(u_buf_control_point_words, base + 8).r >> 24u) & 0xFFu;
 }
 
 uint load_prev_flags(uint cp_idx) {
@@ -98,6 +124,13 @@ void frame_at(uint j, out vec3 tangent, out vec3 support) {
 
     float t2 = dot(T, T);
     tangent = t2 > 0.0 ? T * inversesqrt(t2) : vec3(0.0, 0.0, 1.0);
+
+    if ((load_flags(j) & FLAG_FIXED_FACE) != 0u) {
+        vec3 s = cross(load_carbonyl(j), tangent);
+        float s2 = dot(s, s);
+        support = s2 > 1.0e-6 ? s * inversesqrt(s2) : any_perpendicular(tangent);
+        return;
+    }
 
     vec3 B = cross(N, tangent);
     float len_b = length(B);    // |component of N perpendicular to T| (Angstrom)
@@ -137,6 +170,22 @@ void main() {
     frame_at(cp_idx, tangent, support);
 
     uint flags = (in_secondary_structure_and_flags >> 24u) & ~FLAG_FLIP_NEXT;
+
+    if ((flags & FLAG_THROUGH) != 0u) {
+        // P1[j] = (6 x[j] - x[j-1] - x[j+1]) / 4 at the neighbours, P2[i] = (6 x[i] - P1[i-1] - P1[i+1]) / 4, with the
+        // neighbours clamped to the chain
+        vec3 xp  = load_position(nb.x),  xn  = load_position(nb.y);
+        vec3 xpp = load_position(nb.z),  xnn = load_position(nb.w);
+        vec3 vp  = load_velocity(nb.x),  vn  = load_velocity(nb.y);
+        vec3 vpp = load_velocity(nb.z),  vnn = load_velocity(nb.w);
+        vec3 p1p = (6.0 * xp - xpp - in_position) * 0.25;
+        vec3 p1n = (6.0 * xn - in_position - xnn) * 0.25;
+        vec3 v1p = (6.0 * vp - vpp - in_velocity) * 0.25;
+        vec3 v1n = (6.0 * vn - in_velocity - vnn) * 0.25;
+        out_position = (6.0 * in_position - p1p - p1n) * 0.25;
+        out_velocity = (6.0 * in_velocity - v1p - v1n) * 0.25;
+    }
+
     if (nb.y != cp_idx) {
         vec3 next_tangent, next_support;
         frame_at(nb.y, next_tangent, next_support);

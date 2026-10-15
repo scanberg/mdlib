@@ -220,6 +220,8 @@ set(GL_SHADER_FILES
   src/shaders/bond.frag
   src/shaders/ring.vert
   src/shaders/ring.frag
+  src/shaders/slab.vert
+  src/shaders/slab.frag
   src/shaders/spacefill.vert
   src/shaders/spacefill.geom
   src/shaders/spacefill.frag
