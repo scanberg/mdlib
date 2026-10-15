@@ -91,6 +91,9 @@ typedef enum {
     MD_ATOM_FLAG_NUCLEOBASE             = 0x8,      // Base of a nucleotide
     MD_ATOM_FLAG_TERMINAL_BEG           = 0x10,     // In the terminal group which begins a chain (N-terminus, 5' end)
     MD_ATOM_FLAG_TERMINAL_END           = 0x20,     // In the terminal group which ends a chain (C-terminus, 3' end)
+    // In a tail of a lipid (md_util_system_infer_lipids): an acyl, alkyl or sphingoid chain, or the ring skeleton of a
+    // sterol, with its branches and hydrogens. The other atoms of a lipid are its head(s).
+    MD_ATOM_FLAG_LIPID_TAIL             = 0x40,
 
     // Chemistry, see md_chem.h (md_chem_perceive)
     MD_ATOM_FLAG_HYBRIDIZATION_MASK     = 0x300,    // md_hybridization_t, see md_atom_flags_hybridization
@@ -117,7 +120,8 @@ typedef enum md_component_kind_t {
     MD_COMPONENT_KIND_NUCLEOTIDE    = 2,
     MD_COMPONENT_KIND_WATER         = 3,
     MD_COMPONENT_KIND_ION           = 4,    // A monatomic ion
-    MD_COMPONENT_KIND_LIPID         = 5,    // A lipid, sterols included (by name, see md_util_resname_lipid)
+    MD_COMPONENT_KIND_LIPID         = 5,    // A lipid, sterols included: by name (md_util_resname_lipid), or by its structure
+                                            // (a polar head with hydrocarbon tails, see md_util_system_infer_lipids)
 } md_component_kind_t;
 
 typedef enum {
@@ -161,6 +165,13 @@ typedef enum {
 } md_entity_flags_t;
 
 ENUM_FLAGS(md_entity_flags_t)
+
+// What a tail of a lipid is (md_lipid_data_t)
+typedef enum md_lipid_tail_kind_t {
+    MD_LIPID_TAIL_CHAIN     = 0,    // A hydrocarbon chain: acyl, alkyl, alkenyl or sphingoid, branched or not (phytanyl).
+                                    // It hangs off a head, or spans two (the chains of a bolalipid).
+    MD_LIPID_TAIL_SKELETON  = 1,    // The fused ring system of a sterol, with its side chain
+} md_lipid_tail_kind_t;
 
 static inline bool md_entity_kind_is_polymer(md_entity_kind_t kind) {
     return kind >= MD_ENTITY_KIND_PEPTIDE;

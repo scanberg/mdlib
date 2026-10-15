@@ -113,6 +113,10 @@ static inline md_gl_secondary_structure_t md_gl_secondary_structure_convert(md_s
 
 
 md_gl_mol_t md_gl_mol_create(const struct md_system_t* mol);
+// A molecule of bare particles without bonds or a backbone, for geometry which stands in for parts of a system (the
+// spheres and capsules of a cartoon of lipids and nucleic acids): set their positions and radii, and draw them with
+// MD_GL_REP_SPACE_FILL and the weak bonds of a representation (MD_GL_REP_WEAK_BONDS). Positions and radii start at 0.
+md_gl_mol_t md_gl_mol_create_particles(uint32_t count);
 void md_gl_mol_destroy(md_gl_mol_t handle);
 
 // ### Set molecule data fields ###

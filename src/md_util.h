@@ -23,6 +23,7 @@ typedef enum {
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
 	MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT = 1u << 7,
     MD_UTIL_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
+    MD_UTIL_INFER_LIPID_BIT           = 1u << 9,     // The heads and tails of the lipids (md_util_system_infer_lipids)
 
     MD_UTIL_INFER_ALL                 = -1,
 } md_infer_flags_t;
@@ -67,6 +68,16 @@ void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bit
 // amino acid or nucleotide gets the kind alone. Components a predefined coarse grained type already classified as
 // water, ion or lipid are left alone. Requires the bonds.
 bool md_util_system_infer_comp_flags(md_system_t* sys);
+
+// The lipids of the system (sys->lipid, see md_lipid_data_t): their heads and tails, and the atoms of the tails
+// (MD_ATOM_FLAG_LIPID_TAIL). A molecule (a run of consecutive components bonded to each other, none of them an amino
+// acid, a nucleotide, water or an ion) whose components are lipids by name gets the tails found in it. One whose
+// components are not is a lipid by its structure when it has a polar head and a hydrocarbon chain of at least 8 carbons
+// or the skeleton of a sterol (atomistic molecules only), and its components become MD_COMPONENT_KIND_LIPID: lipids of
+// names nothing knows (the 3 letter names of PDB files, the codes of the PDB, lipids split into several residues).
+// Tails are found from the bonds alone for atoms, and from the names of the beads (the conventions of the Martini
+// lipidomes) for coarse grained lipids. Requires the bonds, the classified components and, for sterols, the rings.
+bool md_util_system_infer_lipids(md_system_t* sys);
 
 // Replaces the entities and instances of the system with inferred ones (MD_ENTITY_FLAG_INFERRED), from the
 // classified components and the bonds (see md_instance_data_t for what an instance is). opt_comp_auth_asym_id is

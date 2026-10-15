@@ -439,6 +439,8 @@ static int _side            (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _sidechain       (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _nucleoside      (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _nucleobase      (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _headgroup       (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _tail            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 static int _ring_irng       (data_t*, data_t[], eval_context_t*); // (irange[], ...) -> bitfield[]
@@ -768,6 +770,9 @@ static procedure_t procedures[] = {
     {STR_INIT("sidechain"),     TI_BITFIELD, 0, {0},                _sidechain},
     {STR_INIT("nucleoside"),    TI_BITFIELD, 0, {0},                _nucleoside},
     {STR_INIT("nucleobase"),    TI_BITFIELD, 0, {0},                _nucleobase},
+    // The parts of lipids (md_lipid_data_t): their heads, and one selection per tail
+    {STR_INIT("headgroup"),     TI_BITFIELD, 0, {0},                _headgroup},
+    {STR_INIT("tail"),          TI_BITFIELD_ARR, 0, {0},            _tail,          FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     {STR_INIT("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
     {STR_INIT("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
@@ -3760,6 +3765,96 @@ static int _nucleoside(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _nucleobase(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_atoms_with_flags(dst, arg, ctx, MD_ATOM_FLAG_NUCLEOBASE);
+}
+
+// headgroup(): the atoms of the lipids outside of their tails (md_lipid_data_t), hydrogens included: the head group, the
+// glycerol and the linkages of a phospholipid, the hydroxyl of a sterol, both heads of a bolalipid
+static int _headgroup(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    (void)arg;
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        const md_system_t* sys = ctx->sys;
+        md_bitmask_t b = result_mask(ctx);
+        for (size_t l = 0; l < sys->lipid.count; ++l) {
+            const md_urange_t cr = sys->lipid.comp_range[l];
+            const uint32_t beg = md_component_atom_range(&sys->component, cr.beg).beg;
+            const uint32_t end = md_component_atom_range(&sys->component, cr.end - 1).end;
+            for (uint32_t i = beg; i < end; ++i) {
+                if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_LIPID_TAIL)) md_bitmask_set_bit(&b, i);
+            }
+        }
+        restrict_to_context(&b, ctx);
+        finish_result(dst, 0, &b, ctx);
+    }
+    return 0;
+}
+
+// tail(): one selection per tail of the lipids (md_lipid_data_t), in their order, with their branches and hydrogens: the
+// acyl, alkyl and sphingoid chains, and the ring skeleton of a sterol. Within a context the tails fully within it, as
+// ring() takes the rings. Visualized as the spines of the tails.
+static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    (void)arg;
+    const md_system_t* sys = ctx->sys;
+    const md_lipid_data_t* lipid = &sys->lipid;
+
+    // The tails taken
+    md_array(uint32_t) tails = 0;
+    for (size_t t = 0; t < lipid->tail.count; ++t) {
+        if (ctx->mol_ctx) {
+            const int32_t* atoms = md_index_range_beg(&lipid->tail.atoms, t);
+            const size_t n = md_index_range_size(&lipid->tail.atoms, t);
+            bool inside = true;
+            for (size_t k = 0; k < n && inside; ++k) inside = md_bitset_test(*ctx->mol_ctx, (uint32_t)atoms[k]);
+            if (!inside) continue;
+        }
+        md_array_push(tails, (uint32_t)t, ctx->temp_alloc);
+    }
+    const int count = (int)md_array_size(tails);
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        if (!dst->ptr) return 0;
+        md_bitset_t* bf_arr = as_bitset(*dst);
+        const int64_t cap = type_info_array_len(dst->type);
+        if (cap <= 0) return 0;
+        // Flattened (cap 1): all of the tails in one. Tails beyond the capacity go into the last set.
+        md_allocator_i* alloc = data_bitset_alloc(dst, ctx);
+        md_bitmask_t b = result_mask(ctx);
+        int64_t slot = 0;
+        for (int i = 0; i < count; ++i) {
+            const int64_t s = cap == 1 ? 0 : MIN(i, cap - 1);
+            if (s != slot) {
+                bf_arr[slot] = md_bitmask_extract(&b, alloc);
+                md_bitmask_clear(&b);
+                slot = s;
+            }
+            const int32_t* atoms = md_index_range_beg(&lipid->tail.atoms, tails[i]);
+            const size_t n = md_index_range_size(&lipid->tail.atoms, tails[i]);
+            for (size_t k = 0; k < n; ++k) md_bitmask_set_bit(&b, (uint32_t)atoms[k]);
+        }
+        if (count > 0) bf_arr[slot] = md_bitmask_extract(&b, alloc);
+        md_bitmask_free(&b);
+        return 0;
+    }
+
+    if (ctx->vis) {
+        const vec3_t* xyz = ctx->cur_state->xyz;
+        for (int i = 0; i < count; ++i) {
+            const int32_t* spine = md_index_range_beg(&lipid->tail.spine, tails[i]);
+            const size_t n = md_index_range_size(&lipid->tail.spine, tails[i]);
+            for (size_t k = 1; k < n; ++k) {
+                const vec3_t a = xyz[spine[k - 1]];
+                const vec3_t c = xyz[spine[k]];
+                push_line(vertex(vec3_set(a.x, a.y, a.z), COLOR_WHITE), vertex(vec3_set(c.x, c.y, c.z), COLOR_WHITE), ctx->vis);
+            }
+        }
+        return 0;
+    }
+
+    if (ctx->eval_flags & EVAL_FLAG_FLATTEN) return MIN(1, count);
+    return count;
 }
 
 // residue(index), component(index): residues by their 1-based position, in a context among the residues with an atom

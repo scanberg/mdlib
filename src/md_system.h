@@ -122,6 +122,44 @@ typedef struct md_nucleic_backbone_data_t {
     } segment;
 } md_nucleic_backbone_data_t;
 
+// LIPIDS (md_util_system_infer_lipids): the anatomy of each lipid molecule, its heads and its tails.
+//
+// A tail is a hydrocarbon part of the molecule which hangs off the rest of it at one point: an acyl, alkyl or sphingoid
+// chain (MD_LIPID_TAIL_CHAIN), or the fused ring skeleton of a sterol with its side chain (MD_LIPID_TAIL_SKELETON). A
+// chain which hangs between two points spans them: the chains of a bolalipid, which join its two heads. A head is a
+// connected part of what is not a tail, so a lipid has one head, a bolalipid two. For an atomistic lipid the tails are
+// found from the bonds alone (carbons bonded to carbons and hydrogens only), whatever the atoms are named; for a
+// coarse grained (Martini) lipid from the names of its beads.
+//
+// Each tail has a SPINE: its atoms (heavy atoms or beads) in order along it, from where it hangs off its head out to its
+// tip (or, for a spanning chain, on to where it joins its other head). Methyl branches and the atoms of the rings off the
+// shortest way through a skeleton are not on it. The spine is what a spline of the tail follows.
+//
+// A lipid is a run of consecutive components bonded to each other (a lipid split into head and tails, as the AMBER
+// lipids are, is one), all of them MD_COMPONENT_KIND_LIPID. The atoms of the tails are MD_ATOM_FLAG_LIPID_TAIL.
+typedef struct md_lipid_data_t {
+    size_t count;                       // Lipid molecules
+    md_urange_t* comp_range;            // [count] The components of each lipid
+    uint32_t* head_offset;              // [count + 1] The heads of lipid i are head_offset[i] .. head_offset[i + 1]
+    uint32_t* tail_offset;              // [count + 1] Its tails, tail_offset[i] .. tail_offset[i + 1]
+
+    struct {
+        size_t count;
+        md_index_data_t atoms;          // The heavy atoms (beads) of each head, ascending
+    } head;
+
+    struct {
+        size_t count;
+        md_index_data_t spine;          // The spine of each tail, in order from its head
+        md_index_data_t atoms;          // All atoms of each tail (branches and hydrogens too), ascending
+        md_atom_idx_t* anchor_beg;      // [count] The atom of the head the tail hangs off (the carbonyl C of an ester, a GL bead)
+        md_atom_idx_t* anchor_end;      // [count] The atom of the other head a spanning chain joins, -1 for a free tip
+        uint32_t* head_beg;             // [count] The head (index into head) the tail hangs off
+        uint32_t* head_end;             // [count] The head a spanning chain joins, UINT32_MAX for a free tip
+        md_lipid_tail_kind_t* kind;     // [count]
+    } tail;
+} md_lipid_data_t;
+
 // This represents symmetries which are instanced, commonly found
 // in PDB and mmcif data. It is up to the renderer to properly render this instanced data.
 typedef struct md_assembly_data_t {
@@ -311,6 +349,7 @@ typedef struct md_system_t {
 
     md_protein_backbone_data_t  protein_backbone;
     md_nucleic_backbone_data_t  nucleic_backbone;
+    md_lipid_data_t             lipid;              // The heads and tails of the lipids, see md_lipid_data_t
     
     md_bond_data_t              bond;               // Persistent covalent bonds
     
@@ -1279,6 +1318,9 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
 
 void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocator
 void md_system_free(md_system_t* sys); // Free all memory associated with the system, including the allocator if set.
+
+// Frees the lipids of a system (allocated from alloc, the system's) and leaves them empty
+void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc);
 
 // STATE
 // A state owns its coordinate arrays and must be freed with the same allocator it was created with.

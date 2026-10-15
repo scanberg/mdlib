@@ -1713,6 +1713,40 @@ done:
     return handle;
 }
 
+md_gl_mol_t md_gl_mol_create_particles(uint32_t count) {
+    md_gl_mol_t handle = {0};
+    if (count == 0) {
+        MD_LOG_ERROR("A molecule of no particles");
+        return handle;
+    }
+    uint32_t id = md_handle_pool_alloc_slot(&ctx.molecule_pool);
+    if (id == MD_HANDLE_INVALID_ID) {
+        MD_LOG_ERROR("Fatal error: ran out of slots!");
+        return handle;
+    }
+    molecule_t* gl_mol = ctx.molecules + md_handle_index(id);
+    MEMSET(gl_mol, 0, sizeof(molecule_t));
+    gl_mol->id = id;
+    handle.id = id;
+
+    gl_mol->atom_count = count;
+    gl_mol->buffer[GL_BUFFER_ATOM_POSITION]      = gl_buffer_create(count * sizeof(float) * 3, NULL, GL_DYNAMIC_DRAW);
+    gl_mol->buffer[GL_BUFFER_ATOM_POSITION_PREV] = gl_buffer_create(count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
+    gl_mol->buffer[GL_BUFFER_ATOM_VELOCITY]      = gl_buffer_create(count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
+    gl_mol->buffer[GL_BUFFER_ATOM_RADIUS]        = gl_buffer_create(count * sizeof(float) * 1, NULL, GL_STATIC_DRAW);
+    gl_mol->buffer[GL_BUFFER_ATOM_FLAGS]         = gl_buffer_create(count * sizeof(uint8_t),   NULL, GL_STATIC_DRAW);
+
+    md_temp_scope_t temp = md_temp_begin();
+    void* zero = md_temp_alloc_zero(temp, count * sizeof(float) * 3);
+    gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_ATOM_POSITION],      0, count * sizeof(float) * 3, zero);
+    gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_ATOM_POSITION_PREV], 0, count * sizeof(float) * 3, zero);
+    gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_ATOM_RADIUS],        0, count * sizeof(float),     zero);
+    gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_ATOM_FLAGS],         0, count * sizeof(uint8_t),   zero);
+    md_temp_end(temp);
+    md_gl_mol_zero_velocity(handle);
+    return handle;
+}
+
 void md_gl_mol_destroy(md_gl_mol_t handle) {
     if (handle.id == MD_HANDLE_INVALID_ID) return;
     molecule_t* mol = mol_lookup(handle.id);

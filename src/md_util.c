@@ -10210,6 +10210,469 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
     return (vec3_t){r, g, b};
 }
 
+// ### LIPIDS ###
+//
+// md_util_system_infer_lipids: the heads and tails of the lipids (md_lipid_data_t). A molecule is a run of consecutive
+// components which are not amino acids, nucleotides, water or ions, each bonded to the ones before it. Its apolar atoms
+// are the carbons bonded to carbons (and hydrogens) only, or, for coarse grained beads, the beads named as the beads of
+// the tails of the Martini lipidomes (lipid_bead_apolar). Each connected part of them which hangs off the rest of the
+// molecule at one atom (its anchor) is a tail: a chain, or the skeleton of a sterol when it holds fused rings (or the
+// ring beads of a coarse grained sterol). A chain which hangs between two anchors spans them (a bolalipid). The rest of the molecule, in connected parts, is its heads.
+//
+// A molecule whose components are lipids by name is a lipid with the tails found. One of no lipid is a lipid by its
+// structure: a polar head (an atom other than carbon outside of the tails) and a chain without rings of at least
+// LIPID_MIN_CHAIN_UNNAMED carbons, or the skeleton of a sterol. Coarse grained molecules are lipids by name only.
+
+#define LIPID_MIN_CHAIN_NAMED       4   // Carbons on the spine of a chain of a lipid by name (hexanoyl: 5)
+#define LIPID_MIN_CHAIN_UNNAMED     8   // Of a molecule which is a lipid by its structure alone (octanoyl: 7, decanoyl: 9)
+#define LIPID_MIN_CHAIN_BEADS       2   // Beads on the spine of a chain of a coarse grained lipid
+#define LIPID_MIN_SKELETON_ATOMS    15  // Carbons of the skeleton of a sterol (cholesterol: 26 besides C3)
+#define LIPID_MIN_SKELETON_BEADS    4   // Beads of it (Martini cholesterol: 7 and 8)
+#define LIPID_MAX_ATOMS             16384   // Larger molecules (polymers) are no lipids
+
+// The beads of the tails of the Martini lipidomes: C (saturated), D (unsaturated) or T (trans), the number of the bead
+// and the letter of its tail, with the number of the acyl chain after it in cardiolipins (C1A, D2A, C4B, T1A, C1A1);
+// the ring skeleton of a sterol R and a number (R1 .. R6), and its side chain C and a number (C1, C2). A C and a number
+// alone is the side chain of a sterol only: the inositol of a phosphatidylinositol (C1 .. C4) and the sugars of
+// glycolipids and detergents are named so too. The beads of the heads (NC3, NH3, CNO, PO4, GL1, GL2, AM1, ROH, ...) are
+// none of these.
+static bool lipid_bead_apolar(str_t name, bool sterol) {
+    if (name.len < 2) return false;
+    const char c = name.ptr[0];
+    if (c != 'C' && c != 'D' && c != 'T' && c != 'R') return false;
+    size_t i = 1;
+    if (!is_digit(name.ptr[i])) return false;
+    while (i < name.len && is_digit(name.ptr[i])) ++i;
+    if (i == name.len) return c == 'R' || (c == 'C' && sterol);
+    if (name.ptr[i] < 'A' || name.ptr[i] > 'H') return false;
+    ++i;
+    while (i < name.len && is_digit(name.ptr[i])) ++i;
+    return i == name.len;
+}
+
+static inline bool lipid_atom_is_bead(const md_system_t* sys, size_t i) {
+    return md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM && md_atom_atomic_number(&sys->atom, i) == 0;
+}
+
+// A heavy atom, or a bead: what a head or the spine of a tail is made of
+static inline bool lipid_atom_is_heavy(const md_system_t* sys, size_t i) {
+    return lipid_atom_is_bead(sys, i) || md_atom_atomic_number(&sys->atom, i) > MD_Z_H;
+}
+
+// A ring bead of a coarse grained sterol (R1 .. R6)
+static inline bool lipid_bead_sterol_ring(str_t name) {
+    return name.len >= 2 && name.ptr[0] == 'R' && is_digit(name.ptr[1]);
+}
+
+static bool lipid_atom_is_apolar(const md_system_t* sys, size_t i, bool sterol) {
+    if (lipid_atom_is_bead(sys, i)) {
+        return lipid_bead_apolar(md_atom_name(&sys->atom, i), sterol);
+    }
+    if (md_atom_atomic_number(&sys->atom, i) != MD_Z_C) return false;
+    md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+    while (md_bond_iter_has_next(&it)) {
+        const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, md_bond_iter_atom_index(&it));
+        if (z != MD_Z_C && z != MD_Z_H) return false;
+        md_bond_iter_next(&it);
+    }
+    return true;
+}
+
+static inline bool lipid_candidate_comp(const md_system_t* sys, size_t comp_idx) {
+    const md_component_kind_t kind = md_component_kind(&sys->component, comp_idx);
+    return kind == MD_COMPONENT_KIND_OTHER || kind == MD_COMPONENT_KIND_LIPID;
+}
+
+// Whether an atom of the component is bonded to an atom of [beg, end)
+static bool lipid_comp_bonded_to(const md_system_t* sys, size_t comp_idx, uint32_t beg, uint32_t end) {
+    const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+        while (md_bond_iter_has_next(&it)) {
+            const uint32_t j = (uint32_t)md_bond_iter_atom_index(&it);
+            if (beg <= j && j < end) return true;
+            md_bond_iter_next(&it);
+        }
+    }
+    return false;
+}
+
+typedef struct {
+    int32_t  beg, end;      // its atoms (local indices) in part_atoms
+    int32_t  anchor[2];     // atoms (global) of the rest of the molecule it hangs off
+    int32_t  num_anchors;   // distinct anchors, more than 2 counts as 3
+    bool     outside;       // hangs off an atom outside of the molecule
+    bool     skeleton;      // holds an atom of a fused ring, or a ring bead of a sterol (R1 .. R6)
+    int32_t  bonds;         // bonds within it, each counted from both ends
+} lipid_part_t;
+
+static int lipid_cmp_i32(const void* a, const void* b) {
+    const int32_t x = *(const int32_t*)a, y = *(const int32_t*)b;
+    return (x > y) - (x < y);
+}
+
+// The lipid of the components [comp_beg, comp_end), if it is one
+static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_end, const uint8_t* in_fused_ring, md_allocator_i* temp_arena) {
+    md_lipid_data_t* lipid = &sys->lipid;
+    md_allocator_i* alloc = sys->alloc;
+
+    const uint32_t a0 = md_component_atom_range(&sys->component, comp_beg).beg;
+    const uint32_t a1 = md_component_atom_range(&sys->component, comp_end - 1).end;
+    const int32_t n = (int32_t)(a1 - a0);
+    if (n <= 1 || n > LIPID_MAX_ATOMS) return;
+
+    // Lipids by name. Those which are lipids by their structure alone are classified anew, so that inferring again gives
+    // what inferring once did.
+    bool named = false;
+    for (size_t c = comp_beg; c < comp_end; ++c) {
+        if (md_util_resname_lipid(md_component_name(&sys->component, c))) {
+            named = true;
+        } else if (md_component_kind(&sys->component, c) == MD_COMPONENT_KIND_LIPID) {
+            set_component_kind(sys, c, MD_COMPONENT_KIND_OTHER);
+        }
+    }
+    bool cg = false;
+    bool sterol_beads = false;
+    for (uint32_t i = a0; i < a1; ++i) {
+        if (lipid_atom_is_bead(sys, i)) {
+            cg = true;
+            sterol_beads |= lipid_bead_sterol_ring(md_atom_name(&sys->atom, i));
+        }
+    }
+    // Coarse grained molecules are told apart by the force field (martini_db), not by their structure
+    if (cg && !named) return;
+
+    const size_t pos = md_vm_arena_get_pos(temp_arena);
+
+    uint8_t* apolar     = md_alloc(temp_arena, n);
+    int32_t* part       = md_alloc(temp_arena, n * sizeof(int32_t));   // the apolar part of an atom, -1
+    int32_t* part_atoms = md_alloc(temp_arena, n * sizeof(int32_t));   // the atoms of each part, contiguous
+    int32_t* dist       = md_alloc(temp_arena, n * sizeof(int32_t));
+    int32_t* prev       = md_alloc(temp_arena, n * sizeof(int32_t));
+    int32_t* queue      = md_alloc(temp_arena, n * sizeof(int32_t));
+    int32_t* head       = md_alloc(temp_arena, n * sizeof(int32_t));   // the head of a heavy atom outside of the tails, -1
+    uint8_t* tail       = md_alloc(temp_arena, n);                      // in a tail
+    md_array(lipid_part_t) parts = 0;
+
+    for (int32_t k = 0; k < n; ++k) {
+        apolar[k] = (uint8_t)(lipid_atom_is_heavy(sys, a0 + k) && lipid_atom_is_apolar(sys, a0 + k, sterol_beads));
+        part[k] = -1;
+        head[k] = -1;
+        tail[k] = 0;
+    }
+
+    // The connected apolar parts and what they hang off. The atoms of a part are part_atoms[beg, end), in the order
+    // they were reached.
+    int32_t num_part_atoms = 0;
+    for (int32_t s = 0; s < n; ++s) {
+        if (!apolar[s] || part[s] != -1) continue;
+        const int32_t id = (int32_t)md_array_size(parts);
+        lipid_part_t p = { .beg = num_part_atoms, .anchor = {-1, -1} };
+        int32_t qb = num_part_atoms;
+        part_atoms[num_part_atoms++] = s;
+        part[s] = id;
+        while (qb < num_part_atoms) {
+            const int32_t k = part_atoms[qb++];
+            if (in_fused_ring && in_fused_ring[a0 + k]) p.skeleton = true;
+            // The ring beads of a sterol, whose bonds (a star of virtual sites in Martini 3) need not form rings
+            if (lipid_atom_is_bead(sys, a0 + k) && lipid_bead_sterol_ring(md_atom_name(&sys->atom, a0 + k))) p.skeleton = true;
+            md_bond_iter_t it = md_bond_iter(&sys->bond, a0 + k);
+            while (md_bond_iter_has_next(&it)) {
+                const int32_t j = md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+                if (!lipid_atom_is_heavy(sys, j)) continue;
+                if (j < (int32_t)a0 || j >= (int32_t)a1) {
+                    p.outside = true;
+                    continue;
+                }
+                const int32_t l = j - (int32_t)a0;
+                if (apolar[l]) {
+                    p.bonds += 1;
+                    if (part[l] == -1) {
+                        part[l] = id;
+                        part_atoms[num_part_atoms++] = l;
+                    }
+                } else if (j != p.anchor[0] && j != p.anchor[1]) {
+                    if (p.num_anchors < 2) p.anchor[p.num_anchors] = j;
+                    p.num_anchors = MIN(p.num_anchors + 1, 3);
+                }
+            }
+        }
+        p.end = num_part_atoms;
+        md_array_push(parts, p, temp_arena);
+    }
+
+    // The tails among the parts, and their spines. The spine is found by a breadth first search within the part: from
+    // every atom bonded to the anchor out to the farthest atom, or for a spanning chain to the nearest atom bonded to its
+    // other anchor.
+    typedef struct { int32_t beg, end; } spine_range_t;
+    md_array(int32_t) spines = 0;
+    md_array(spine_range_t) spine_ranges = 0;
+    md_array(int32_t) tail_part = 0;
+    md_array(md_lipid_tail_kind_t) tail_kind = 0;
+    md_array(int32_t) tail_anchor_beg = 0;
+    md_array(int32_t) tail_anchor_end = 0;
+
+    const size_t num_parts = md_array_size(parts);
+    for (size_t pi = 0; pi < num_parts; ++pi) {
+        const lipid_part_t* p = &parts[pi];
+        if (p->outside || p->num_anchors == 0 || p->num_anchors > 2) continue;
+        const int32_t size = p->end - p->beg;
+        const bool skeleton = p->skeleton;
+        if (skeleton) {
+            // The skeleton of a sterol hangs off its hydroxyl (or ester) alone
+            if (p->num_anchors != 1 || size < (cg ? LIPID_MIN_SKELETON_BEADS : LIPID_MIN_SKELETON_ATOMS)) continue;
+        } else if (!named && p->bonds / 2 != size - 1) {
+            // The chains of a lipid of no name hold no rings: a ring with alkyl groups (a drug, a dye) is no tail. Those of
+            // lipids by name may (the cyclopropane of a fatty acid, the cyclopentanes of the chains of archaeal lipids).
+            continue;
+        }
+
+        // Anchors in order of their index, so that a spanning chain runs from the head of the lower one
+        int32_t anchor_beg = p->anchor[0];
+        int32_t anchor_end = p->num_anchors == 2 ? p->anchor[1] : -1;
+        if (anchor_end != -1 && anchor_end < anchor_beg) {
+            const int32_t t = anchor_beg; anchor_beg = anchor_end; anchor_end = t;
+        }
+
+        int32_t qb = 0, qe = 0;
+        for (int32_t m = p->beg; m < p->end; ++m) {
+            const int32_t k = part_atoms[m];
+            prev[k] = -1;
+            dist[k] = -1;
+            if (md_bond_find(&sys->bond, a0 + k, anchor_beg) >= 0) {
+                dist[k] = 0;
+                queue[qe++] = k;
+            }
+        }
+        int32_t tip = -1;
+        while (qb < qe) {
+            const int32_t k = queue[qb++];
+            if (anchor_end != -1) {
+                if (md_bond_find(&sys->bond, a0 + k, anchor_end) >= 0) {
+                    tip = k;
+                    break;
+                }
+            } else if (tip == -1 || dist[k] > dist[tip] || (dist[k] == dist[tip] && k > tip)) {
+                // The farthest atom, the last of them on a tie (the end of the side chain of a Martini cholesterol)
+                tip = k;
+            }
+            md_bond_iter_t it = md_bond_iter(&sys->bond, a0 + k);
+            while (md_bond_iter_has_next(&it)) {
+                const int32_t j = md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+                if (j < (int32_t)a0 || j >= (int32_t)a1) continue;
+                const int32_t l = j - (int32_t)a0;
+                if (part[l] == (int32_t)pi && dist[l] == -1) {
+                    dist[l] = dist[k] + 1;
+                    prev[l] = k;
+                    queue[qe++] = l;
+                }
+            }
+        }
+        if (tip == -1) continue;
+
+        const int32_t len = dist[tip] + 1;
+        const int32_t min_len = skeleton ? 1 : (cg ? LIPID_MIN_CHAIN_BEADS : (named ? LIPID_MIN_CHAIN_NAMED : LIPID_MIN_CHAIN_UNNAMED));
+        if (len < min_len) continue;
+
+        const int32_t base = (int32_t)md_array_size(spines);
+        spine_range_t r = { base, base + len };
+        md_array_resize(spines, (size_t)r.end, temp_arena);
+        int32_t at = r.end - 1;
+        for (int32_t k = tip; k != -1; k = prev[k]) {
+            spines[at--] = (int32_t)a0 + k;
+        }
+        ASSERT(at == base - 1);
+        md_array_push(spine_ranges, r, temp_arena);
+        md_array_push(tail_part, (int32_t)pi, temp_arena);
+        md_array_push(tail_kind, skeleton ? MD_LIPID_TAIL_SKELETON : MD_LIPID_TAIL_CHAIN, temp_arena);
+        md_array_push(tail_anchor_beg, anchor_beg, temp_arena);
+        md_array_push(tail_anchor_end, anchor_end, temp_arena);
+        for (int32_t m = p->beg; m < p->end; ++m) {
+            tail[part_atoms[m]] = 1;
+        }
+    }
+
+    const size_t num_tails = md_array_size(spine_ranges);
+    if (num_tails == 0) goto done;
+
+    // A molecule of no lipid needs a polar head: an atom other than carbon outside of its tails. Its head is of the
+    // elements of lipids (C, N, O, P, S) and is not aromatic: a porphyrin with a phytyl or farnesyl tail (chlorophyll,
+    // pheophytin, heme A) and the like are cofactors to be shown as such.
+    if (!named) {
+        bool polar = false;
+        for (int32_t k = 0; k < n; ++k) {
+            if (tail[k]) continue;
+            const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, a0 + k);
+            if (z <= MD_Z_H) continue;
+            if (z != MD_Z_C && z != MD_Z_N && z != MD_Z_O && z != MD_Z_P && z != MD_Z_S) goto done;
+            if (md_atom_flags(&sys->atom, a0 + k) & MD_ATOM_FLAG_AROMATIC) goto done;
+            polar |= z != MD_Z_C;
+        }
+        if (!polar) goto done;
+    }
+
+    // The heads: the connected parts of the heavy atoms outside of the tails, each in ascending order
+    const uint32_t head_base = (uint32_t)lipid->head.count;
+    uint32_t num_heads = 0;
+    for (int32_t s = 0; s < n; ++s) {
+        if (tail[s] || head[s] != -1 || !lipid_atom_is_heavy(sys, a0 + s)) continue;
+        int32_t qb = 0, qe = 0;
+        queue[qe++] = s;
+        head[s] = (int32_t)num_heads;
+        while (qb < qe) {
+            const int32_t k = queue[qb++];
+            md_bond_iter_t it = md_bond_iter(&sys->bond, a0 + k);
+            while (md_bond_iter_has_next(&it)) {
+                const int32_t j = md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+                if (j < (int32_t)a0 || j >= (int32_t)a1) continue;
+                const int32_t l = j - (int32_t)a0;
+                if (!tail[l] && head[l] == -1 && lipid_atom_is_heavy(sys, j)) {
+                    head[l] = (int32_t)num_heads;
+                    queue[qe++] = l;
+                }
+            }
+        }
+        for (int32_t m = 0; m < qe; ++m) queue[m] += (int32_t)a0;
+        qsort(queue, (size_t)qe, sizeof(int32_t), lipid_cmp_i32);
+        md_index_data_push_arr(&lipid->head.atoms, queue, (size_t)qe);
+        num_heads += 1;
+    }
+
+    for (size_t t = 0; t < num_tails; ++t) {
+        const spine_range_t r = spine_ranges[t];
+        md_index_data_push_arr(&lipid->tail.spine, spines + r.beg, (size_t)(r.end - r.beg));
+
+        // Its atoms and their hydrogens, ascending
+        const lipid_part_t* p = &parts[tail_part[t]];
+        int32_t m = 0;
+        for (int32_t q = p->beg; q < p->end; ++q) {
+            const uint32_t i = a0 + (uint32_t)part_atoms[q];
+            queue[m++] = (int32_t)i;
+            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+            while (md_bond_iter_has_next(&it)) {
+                const int32_t j = md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+                if (a0 <= (uint32_t)j && (uint32_t)j < a1 && md_atom_atomic_number(&sys->atom, j) == MD_Z_H && m < n) {
+                    queue[m++] = j;
+                }
+            }
+        }
+        qsort(queue, (size_t)m, sizeof(int32_t), lipid_cmp_i32);
+        {
+            // A hydrogen bonded to two atoms of the tail (an inferred bond too many) is in it once
+            int32_t u = 0;
+            for (int32_t q = 0; q < m; ++q) {
+                if (u == 0 || queue[q] != queue[u - 1]) queue[u++] = queue[q];
+            }
+            m = u;
+        }
+        md_index_data_push_arr(&lipid->tail.atoms, queue, (size_t)m);
+        for (int32_t q = 0; q < m; ++q) {
+            sys->atom.flags[queue[q]] |= MD_ATOM_FLAG_LIPID_TAIL;
+        }
+
+        const int32_t ab = tail_anchor_beg[t];
+        const int32_t ae = tail_anchor_end[t];
+        const uint32_t hb = head_base + (uint32_t)head[ab - (int32_t)a0];
+        const uint32_t he = ae != -1 ? head_base + (uint32_t)head[ae - (int32_t)a0] : UINT32_MAX;
+        md_array_push(lipid->tail.anchor_beg, ab, alloc);
+        md_array_push(lipid->tail.anchor_end, ae, alloc);
+        md_array_push(lipid->tail.head_beg, hb, alloc);
+        md_array_push(lipid->tail.head_end, he, alloc);
+        md_array_push(lipid->tail.kind, tail_kind[t], alloc);
+    }
+
+    lipid->head.count += num_heads;
+    lipid->tail.count += num_tails;
+    {
+        md_urange_t comp_range = { (uint32_t)comp_beg, (uint32_t)comp_end };
+        md_array_push(lipid->comp_range, comp_range, alloc);
+    }
+    md_array_push(lipid->head_offset, (uint32_t)lipid->head.count, alloc);
+    md_array_push(lipid->tail_offset, (uint32_t)lipid->tail.count, alloc);
+    lipid->count += 1;
+
+    for (size_t c = comp_beg; c < comp_end; ++c) {
+        set_component_kind(sys, c, MD_COMPONENT_KIND_LIPID);
+    }
+
+done:
+    md_vm_arena_set_pos_back(temp_arena, pos);
+}
+
+bool md_util_system_infer_lipids(md_system_t* sys) {
+    ASSERT(sys);
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+    md_allocator_i* alloc = sys->alloc;
+    md_system_topology_changed(sys);
+
+    // Derived from scratch
+    md_lipid_data_free(&sys->lipid, alloc);
+    md_lipid_data_t* lipid = &sys->lipid;
+    lipid->head.atoms.alloc = alloc;
+    lipid->tail.spine.alloc = alloc;
+    lipid->tail.atoms.alloc = alloc;
+    md_array_push(lipid->head_offset, 0, alloc);
+    md_array_push(lipid->tail_offset, 0, alloc);
+
+    if (md_array_size(sys->atom.flags) < sys->atom.count) {
+        const size_t size = md_array_size(sys->atom.flags);
+        md_array_resize(sys->atom.flags, sys->atom.count, alloc);
+        MEMSET(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
+    }
+    for (size_t i = 0; i < sys->atom.count; ++i) sys->atom.flags[i] &= ~MD_ATOM_FLAG_LIPID_TAIL;
+    if (sys->atom.count == 0 || sys->component.count == 0 || sys->bond.count == 0 || !sys->bond.conn.offset) {
+        return true;
+    }
+    if (md_array_size(sys->component.flags) < sys->component.count) {
+        const size_t size = md_array_size(sys->component.flags);
+        md_array_resize(sys->component.flags, sys->component.count, alloc);
+        MEMSET(sys->component.flags + size, 0, (sys->component.count - size) * sizeof(md_component_flags_t));
+    }
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+    // The atoms of fused rings: a skeleton (a sterol) rather than a chain
+    uint8_t* in_fused_ring = NULL;
+    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+    for (size_t r = 0; r < num_rings; ++r) {
+        if (!(md_system_ring_flags(sys, r) & MD_RING_FLAG_FUSED)) continue;
+        if (!in_fused_ring) {
+            in_fused_ring = md_alloc(temp_arena, sys->atom.count);
+            MEMSET(in_fused_ring, 0, sys->atom.count);
+        }
+        const int32_t* beg = md_index_range_beg(&sys->ring, r);
+        const int32_t* end = md_index_range_end(&sys->ring, r);
+        for (const int32_t* it = beg; it < end; ++it) in_fused_ring[*it] = 1;
+    }
+
+    size_t comp = 0;
+    while (comp < sys->component.count) {
+        if (!lipid_candidate_comp(sys, comp)) {
+            comp += 1;
+            continue;
+        }
+        const uint32_t beg = md_component_atom_range(&sys->component, comp).beg;
+        size_t end = comp + 1;
+        while (end < sys->component.count && lipid_candidate_comp(sys, end) &&
+               lipid_comp_bonded_to(sys, end, beg, md_component_atom_range(&sys->component, end - 1).end)) {
+            end += 1;
+        }
+        infer_lipid_molecule(sys, comp, end, in_fused_ring, temp_arena);
+        comp = end;
+    }
+
+    md_temp_end(temp);
+    return true;
+}
+
 // Try to fill in missing fields for molecule struct
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
@@ -10454,6 +10917,11 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
             }
             md_vm_arena_set_pos_back(temp_arena, temp_pos);
         }
+    }
+
+    if (flags & MD_UTIL_INFER_LIPID_BIT) {
+        // After the bonds, the rings (a sterol is told by its fused rings) and the classification of the components
+        md_util_system_infer_lipids(sys);
     }
 
 #if 0

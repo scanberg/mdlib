@@ -166,6 +166,9 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->nucleic_backbone.segment.atoms, alloc);
     md_array_free(sys->nucleic_backbone.segment.comp_idx, alloc);
 
+    // LIPIDS
+    md_lipid_data_free(&sys->lipid, alloc);
+
     // BONDS
     md_array_free(sys->bond.pairs, alloc);
     md_array_free(sys->bond.flags, alloc);
@@ -274,6 +277,22 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
     // the system with nothing keeping the two in step, which is the whole class of problem the
     // reference field's own rule exists to prevent.
     return true;
+}
+
+void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
+    ASSERT(lipid);
+    md_array_free(lipid->comp_range, alloc);
+    md_array_free(lipid->head_offset, alloc);
+    md_array_free(lipid->tail_offset, alloc);
+    if (lipid->head.atoms.alloc)  md_index_data_free(&lipid->head.atoms);
+    if (lipid->tail.spine.alloc)  md_index_data_free(&lipid->tail.spine);
+    if (lipid->tail.atoms.alloc)  md_index_data_free(&lipid->tail.atoms);
+    md_array_free(lipid->tail.anchor_beg, alloc);
+    md_array_free(lipid->tail.anchor_end, alloc);
+    md_array_free(lipid->tail.head_beg, alloc);
+    md_array_free(lipid->tail.head_end, alloc);
+    md_array_free(lipid->tail.kind, alloc);
+    MEMSET(lipid, 0, sizeof(md_lipid_data_t));
 }
 
 void md_system_reset(md_system_t* sys) {
