@@ -17,10 +17,10 @@ static const int size = 1024 * 1024;
 	float* w = md_alloc(alloc, size * sizeof(float)); \
 	srand(0); \
 	for (int i = 0; i < size; ++i) { \
-		x[i] = (float)rand() / RAND_MAX * pbc_ext.x; \
-		y[i] = (float)rand() / RAND_MAX * pbc_ext.y; \
-		z[i] = (float)rand() / RAND_MAX * pbc_ext.z; \
-		w[i] = (float)rand() / RAND_MAX * 1.0f + 1.0f; \
+		x[i] = (float)rand() / (float)RAND_MAX * pbc_ext.x; \
+		y[i] = (float)rand() / (float)RAND_MAX * pbc_ext.y; \
+		z[i] = (float)rand() / (float)RAND_MAX * pbc_ext.z; \
+		w[i] = (float)rand() / (float)RAND_MAX * 1.0f + 1.0f; \
 	}
 
 #define SETUP_XYZW_VEC4 \
@@ -28,10 +28,10 @@ static const int size = 1024 * 1024;
 	srand(0); \
 	for (int i = 0; i < size; ++i) { \
 		xyzw[i] = vec4_set( \
-			(float)rand() / RAND_MAX * pbc_ext.x, \
-			(float)rand() / RAND_MAX * pbc_ext.y, \
-			(float)rand() / RAND_MAX * pbc_ext.z, \
-			(float)rand() / RAND_MAX * 1.0f + 1.0f); \
+			(float)rand() / (float)RAND_MAX * pbc_ext.x, \
+			(float)rand() / (float)RAND_MAX * pbc_ext.y, \
+			(float)rand() / (float)RAND_MAX * pbc_ext.z, \
+			(float)rand() / (float)RAND_MAX * 1.0f + 1.0f); \
 	}
 
 #define SETUP_INDICES \
