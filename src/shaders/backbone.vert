@@ -28,9 +28,9 @@
 // The ribbons are a box.
 //
 // Tubes (md_gl_mol_set_tubes) are the backbone of a molecule of particles, each control point a particle: l and r are
-// those of the control points (times u_scale.x), blended along the spline. Their caps are round: the Minkowski sum of
-// the segment and a half sphere of radius r (a half sphere for a circle), D + 1 rings from the rim to the top, which is
-// the segment itself moved out by r.
+// those of the control points (times u_scale.x, and the r of a band, l > 0, times u_scale.y too), blended along the
+// spline. Their caps are round: the Minkowski sum of the segment and a half sphere of radius r (a half sphere for a
+// circle), D + 1 rings from the rim to the top, which is the segment itself moved out by r.
 
 #ifndef REP_RIBBONS
 #define REP_RIBBONS 0
@@ -65,7 +65,7 @@ layout (std140) uniform ubo {
     uint u_bond_base_index;
     uint u_backbone_base_index;
 
-    vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Ribbons: (half width, half thickness, -, -). Tubes: (radius scale, -, -, -)
+    vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Ribbons: (half width, half thickness, -, -). Tubes: (radius scale, band radius scale, -, -)
     uvec4 u_res;    // (S: segments per residue, P: profile vertex count, O: cap outline vertex count, K: ribbon face subdivisions or D: dome rings of a tube cap)
     uvec4 u_rings;  // (R: rings per control point in the ring buffer, stride = R / S, -, -)
 };
@@ -302,9 +302,10 @@ void main() {
     vec2 extent   = u_scale.xy;
     vec2 extent_t = vec2(0.0);
 #elif REP_TUBES
-    // (l, r): the half length of the flat sides in the y of the secondary structure, the radius
-    vec2 extent   = max(vec2(r.ss.y * TUBE_RADIUS_MAX, r.radius) * u_scale.x, vec2(0.0, 1.0e-3));
-    vec2 extent_t = vec2(r.ss_t.y * TUBE_RADIUS_MAX, r.radius_t) * u_scale.x;
+    // (l, r): the half length of the flat sides in the y of the secondary structure, the radius, that of a band scaled
+    vec2 band     = vec2(1.0, r.ss.y > 0.0 ? u_scale.y : 1.0) * u_scale.x;
+    vec2 extent   = max(vec2(r.ss.y * TUBE_RADIUS_MAX, r.radius) * band, vec2(0.0, 1.0e-3));
+    vec2 extent_t = vec2(r.ss_t.y * TUBE_RADIUS_MAX, r.radius_t) * band;
 #else
     // (l, r) of the stadiums of coil, helix and sheet: half widths 0.2, 1.2 and 1.5, half thicknesses 0.2, 0.2 and 0.1
     const vec2 coil_scale  = vec2(0.0, 0.2);

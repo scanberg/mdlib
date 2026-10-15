@@ -49,7 +49,7 @@ layout (std140) uniform ubo {
     uint u_bond_base_index;
     uint u_backbone_base_index;
 
-    vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Tubes: (scale, -, -, -)
+    vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Tubes: (scale, band radius scale, -, -)
     uvec4 u_res;    // (S: segments per control point, -, -, -)
     uvec4 u_rings;  // (R: rings per control point in the ring buffer, stride = R / S, -, -)
 };
@@ -121,7 +121,8 @@ bool atom_visible(uint atom_idx) {
 // (l, r) of the stadium at a ring, as backbone.vert takes them
 vec2 stadium(Ring r) {
 #if REP_TUBES
-    return max(vec2(r.ss.y * TUBE_RADIUS_MAX, r.radius) * u_scale.x, vec2(0.0, 1.0e-3));
+    vec2 band = vec2(1.0, r.ss.y > 0.0 ? u_scale.y : 1.0) * u_scale.x;
+    return max(vec2(r.ss.y * TUBE_RADIUS_MAX, r.radius) * band, vec2(0.0, 1.0e-3));
 #else
     const vec2 coil_scale  = vec2(0.0, 0.2);
     const vec2 helix_scale = vec2(1.0, 0.2);

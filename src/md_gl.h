@@ -173,9 +173,11 @@ void md_gl_mol_set_tubes(md_gl_mol_t mol, const md_gl_tubes_t* tubes);
 // ### SLABS ###
 // Flat rounded polygons through the particles of a molecule (md_gl_mol_create_particles), drawn by MD_GL_REP_SLABS: the
 // rings of a cartoon, the sugars and bases of nucleic acids. Slab s has the corners particle[offset[s] .. offset[s + 1]),
-// 3 to 7 particles in order around it. It lies in the plane that fits its corners best, through their centroid, and is
+// 2 to 7 particles in order around it. It lies in the plane that fits its corners best, through their centroid, and is
 // the polygon of the corners projected on that plane, made solid by a sphere: a rim of capsules along its edges and a
-// plate between them (md_gl_draw_op_t args.slabs). The polygon is taken to be convex, as a ring is.
+// plate between them (md_gl_draw_op_t args.slabs). The polygon is taken to be convex, as a ring is. A slab of two
+// corners is the capsule between them, of the radius of the rims: a stick which joins two rings as smoothly as their
+// own edges do (the sugar and the base of a nucleotide).
 // A slab is raycast, exactly: it picks as md_gl_picking_offset_t ring_base + its index, takes the colour of its first
 // corner and is shown when all its corners are. Replaces the previous slabs; a count of 0 clears them.
 void md_gl_mol_set_slabs(md_gl_mol_t mol, uint32_t count, const uint32_t* offset, const uint32_t* particle);
@@ -321,6 +323,8 @@ typedef struct md_gl_draw_op_t {
 
         struct {
             float radius_scale;     // Of the profiles at the control points
+            float band_scale;       // Of the radius of the profiles with flat sides (bands), on top of radius_scale: their
+                                    // thickness, the flat sides keep their length. 0 or less is taken as 1
             bool  raycast;          // As for the cartoon
         } tubes;
 

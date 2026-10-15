@@ -2140,8 +2140,8 @@ void md_gl_mol_set_slabs(md_gl_mol_t handle, uint32_t count, const uint32_t* off
     }
     for (uint32_t i = 0; i < count; ++i) {
         const uint32_t n = offset[i + 1] - offset[i];
-        if (offset[i + 1] < offset[i] || n < 3 || n > SLAB_MAX_CORNERS) {
-            MD_LOG_ERROR("A slab has %u corners, it takes 3 to %u", offset[i + 1] < offset[i] ? 0 : n, SLAB_MAX_CORNERS);
+        if (offset[i + 1] < offset[i] || n < 2 || n > SLAB_MAX_CORNERS) {
+            MD_LOG_ERROR("A slab has %u corners, it takes 2 to %u", offset[i + 1] < offset[i] ? 0 : n, SLAB_MAX_CORNERS);
             return;
         }
         for (uint32_t j = offset[i]; j < offset[i + 1]; ++j) {
@@ -2615,9 +2615,10 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             break;
         }
         case MD_GL_REP_TUBES: {
-            // A circle, the radius of each control point times the scale, and round caps
-            const float profile_scale[4] = { scale * draw_op->args.tubes.radius_scale, 0.0f, 0.0f, 0.0f };
-            const float max_extent = mol->tube_max_extent * profile_scale[0];
+            // The (l, r) of each control point times the scale, the r of a band (l > 0) times the band scale, and round caps
+            const float band = draw_op->args.tubes.band_scale > 0.0f ? draw_op->args.tubes.band_scale : 1.0f;
+            const float profile_scale[4] = { scale * draw_op->args.tubes.radius_scale, band, 0.0f, 0.0f };
+            const float max_extent = mol->tube_max_extent * profile_scale[0] * MAX(band, 1.0f);
             const bool rc = draw_op->args.tubes.raycast;
             draw_backbone(rc ? shaders->tubes_rc[program_permutation] : shaders->tubes[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_TUBE, profile_scale, max_extent, &world_to_clip, viewport_half_height, rc, viewport_size);
             break;

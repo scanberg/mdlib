@@ -7,7 +7,8 @@
 // A slab follows its corners in every frame. In view space:
 //   - center: the centroid of the corners
 //   - normal: Newell's, the sum of the cross products of consecutive corners about the center, which the corners go
-//     counter clockwise about. Robust for a puckered ring (a sugar).
+//     counter clockwise about. Robust for a puckered ring (a sugar). Two corners have no plane of their own, and any
+//     through them will do: the slab is the capsule between them (a stick), the same in every one.
 //   - polygon: the corners projected on the plane through the center, in the 2D frame (tangent towards the first corner,
 //     bitangent = normal x tangent)
 // The solid is the Minkowski sum of that polygon with a sphere of radius u_radius, with its faces moved in to the half
@@ -98,7 +99,7 @@ void main() {
     int  n   = int(e0.x);
     uint idx[MAX_CORNERS] = uint[MAX_CORNERS](e0.y, e0.z, e0.w, e1.x, e1.y, e1.z, e1.w);
 
-    if (n < 3 || n > MAX_CORNERS) {
+    if (n < 2 || n > MAX_CORNERS) {
         cull();
         return;
     }
@@ -131,8 +132,14 @@ void main() {
         }
         N += cross(a - c, b - c);
     }
-    float N2 = dot(N, N);
     float size2 = dot(p[0] - c, p[0] - c);
+    if (n == 2) {
+        // A capsule: the plane through its axis and the coordinate axis furthest from it
+        vec3 e = p[1] - p[0];
+        vec3 a = abs(e);
+        N = cross(e, (a.x <= a.y && a.x <= a.z) ? vec3(1.0, 0.0, 0.0) : (a.y <= a.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0)));
+    }
+    float N2 = dot(N, N);
     if (!(N2 > 1.0e-8 * size2 * size2)) {
         cull();
         return;

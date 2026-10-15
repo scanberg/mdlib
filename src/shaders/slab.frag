@@ -8,7 +8,7 @@
 //
 // The polygon is taken to be convex (a ring of a sugar or a base, projected on its plane): a point is within it when it
 // is to the left of every edge, which go counter clockwise. A concave one would get its plate filled in at the concave
-// corners, under the rim.
+// corners, under the rim. A slab of two corners has no plate, its rim is the one capsule between them.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -118,7 +118,7 @@ void main() {
     vec3  n_hit = vec3(0.0);
 
     // The plates: the face the ray comes from, within the polygon
-    if (abs(ld.z) > 1.0e-6) {
+    if (n >= 3 && abs(ld.z) > 1.0e-6) {
         float side = lo.z > 0.0 ? 1.0 : -1.0;
         float t = (side * h - lo.z) / ld.z;
         if (t > 0.0) {
@@ -139,9 +139,10 @@ void main() {
         }
     }
 
-    // The rim
+    // The rim, an edge each way between two corners
+    int edges = n == 2 ? 1 : n;
     for (int k = 0; k < MAX_CORNERS; ++k) {
-        if (k >= n) break;
+        if (k >= edges) break;
         vec3 a = vec3(corner_pos(k), 0.0);
         vec3 b = vec3(corner_pos((k + 1) % n), 0.0);
         float t = capIntersect(lo, ld, a, b, r);
