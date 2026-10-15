@@ -213,6 +213,7 @@ set(GL_SHADER_FILES
   src/shaders/compute_spline.vert
   src/shaders/compute_spline.geom
   src/shaders/compute_velocity.vert
+  src/shaders/compute_derived.vert
   src/shaders/backbone.vert
   src/shaders/backbone.frag
   src/shaders/bond.vert

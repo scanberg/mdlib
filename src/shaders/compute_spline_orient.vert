@@ -32,14 +32,14 @@ uniform float u_flip_threshold = -0.64278760968;        // -sin(hysteresis angle
 layout (location = 0) in vec3  in_position;
 layout (location = 1) in uint  in_atom_idx;
 layout (location = 2) in vec3  in_velocity;
-layout (location = 3) in float in_segment_t;
+layout (location = 3) in float in_radius;
 layout (location = 4) in uint  in_secondary_structure_and_flags;
 layout (location = 5) in uvec3 in_support_and_tangent_vector;
 
 out vec3  out_position;
 out uint  out_atom_idx;
 out vec3  out_velocity;
-out float out_segment_t;
+out float out_radius;
 out uint  out_secondary_structure_and_flags;
 out uvec3 out_support_and_tangent_vector;
 
@@ -128,7 +128,7 @@ void main() {
     out_position = in_position;
     out_atom_idx = in_atom_idx;
     out_velocity = in_velocity;
-    out_segment_t = in_segment_t;
+    out_radius = in_radius;
 
     uint cp_idx = uint(gl_VertexID);
     uvec4 nb = texelFetch(u_buf_neighbors, int(cp_idx));

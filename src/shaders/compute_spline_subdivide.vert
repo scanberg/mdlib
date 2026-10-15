@@ -11,11 +11,12 @@
 //
 // Ring record, 3 x uvec4 (u is the spline parameter, one unit per residue):
 // [0] position.xyz, velocity.x (f32)
-// [1] velocity.yz (f32), |dp/du| (unorm16, x LENGTH_SCALE) | twist (snorm16, x TWIST_SCALE), d(ss)/du (snorm8 x 3, x SS_T_SCALE)
-// [2] x.xy, x.z | z.x, z.yz (snorm16, x = support, z = tangent), ss (unorm8 x 3)
+// [1] velocity.yz (f32), |dp/du| (unorm16, x LENGTH_SCALE) | twist (snorm16, x TWIST_SCALE), d(ss)/du (snorm8 x 3, x SS_T_SCALE) | d(radius)/du (snorm8, x RADIUS_T_SCALE)
+// [2] x.xy, x.z | z.x, z.yz (snorm16, x = support, z = tangent), ss (unorm8 x 3) | radius (unorm8, x TUBE_RADIUS_MAX)
 //
 // twist is the rotation of the frame around the tangent per unit u. ss holds the secondary structure fractions
-// (coil, helix, sheet), blended with a Catmull-Rom spline: they control the size of the cartoon profile.
+// (coil, helix, sheet), blended with a Catmull-Rom spline: they control the size of the cartoon profile. radius is that
+// of a tube (md_gl_mol_set_tubes), blended with the B-spline of the positions, 0 for a protein.
 
 #define FLAG_FLIP_NEXT 16u
 
@@ -23,6 +24,8 @@
 #define LENGTH_SCALE 16.0
 #define TWIST_SCALE 8.0
 #define SS_T_SCALE 4.0
+#define TUBE_RADIUS_MAX 8.0     // And md_gl.c, compute_spline_extract.vert
+#define RADIUS_T_SCALE 8.0
 
 uniform usamplerBuffer u_buf_control_points;    // Oriented control points, gl_control_point_t as 3 x uvec4
 uniform usamplerBuffer u_buf_neighbors;         // uvec4(prev, next, prev2, next2) per control point, clamped to the chain
@@ -48,6 +51,7 @@ struct ControlPoint {
     vec3 ss;        // Secondary structure fractions (coil, helix, sheet)
     vec3 support;
     uint flags;
+    float radius;   // Of a tube
 };
 
 ControlPoint load_cp(uint idx) {
@@ -59,6 +63,7 @@ ControlPoint load_cp(uint idx) {
     ControlPoint cp;
     cp.position = uintBitsToFloat(w0.xyz);
     cp.velocity = uintBitsToFloat(w1.xyz);
+    cp.radius   = uintBitsToFloat(w1.w);
     cp.ss       = vec3(unpack_unorm8(w2.x), unpack_unorm8(w2.x >> 8u), unpack_unorm8(w2.x >> 16u));
     cp.flags    = (w2.x >> 24u) & 0xFFu;
     cp.support  = vec3(unpack_snorm16(w2.y), unpack_snorm16(w2.y >> 16u), unpack_snorm16(w2.z));
@@ -143,6 +148,9 @@ void main() {
     vec3 velocity   = blend(w,  c0.velocity, c1.velocity, c2.velocity, c3.velocity);
     vec3 ss         = blend(cw,  c0.ss, c1.ss, c2.ss, c3.ss);
     vec3 ss_t       = blend(dcw, c0.ss, c1.ss, c2.ss, c3.ss);
+    vec4 radii      = vec4(c0.radius, c1.radius, c2.radius, c3.radius);
+    float radius    = dot(w,  radii);
+    float radius_t  = dot(dw, radii);
 
     // The end of a chain is evaluated on the segment of the previous control point: bring it into the frame of c
     if (chain_end) {
@@ -163,9 +171,9 @@ void main() {
     out_ring_0 = uvec4(floatBitsToUint(position), floatBitsToUint(velocity.x));
     out_ring_1 = uvec4(floatBitsToUint(velocity.yz),
                        pack_unorm16(len_t / LENGTH_SCALE) | (pack_snorm16(twist / TWIST_SCALE) << 16u),
-                       pack_snorm8(ss_t.x / SS_T_SCALE) | (pack_snorm8(ss_t.y / SS_T_SCALE) << 8u) | (pack_snorm8(ss_t.z / SS_T_SCALE) << 16u));
+                       pack_snorm8(ss_t.x / SS_T_SCALE) | (pack_snorm8(ss_t.y / SS_T_SCALE) << 8u) | (pack_snorm8(ss_t.z / SS_T_SCALE) << 16u) | (pack_snorm8(radius_t / RADIUS_T_SCALE) << 24u));
     out_ring_2 = uvec4(pack_snorm16x2(x.x, x.y),
                        pack_snorm16x2(x.z, z.x),
                        pack_snorm16x2(z.y, z.z),
-                       pack_unorm8(ss.x) | (pack_unorm8(ss.y) << 8u) | (pack_unorm8(ss.z) << 16u));
+                       pack_unorm8(ss.x) | (pack_unorm8(ss.y) << 8u) | (pack_unorm8(ss.z) << 16u) | (pack_unorm8(radius / TUBE_RADIUS_MAX) << 24u));
 }

@@ -1,6 +1,6 @@
 #version 330 core
 
-// Backbone representations (cartoon and ribbons) by vertex pulling.
+// Backbone representations (cartoon, ribbons and tubes) by vertex pulling.
 //
 // One instance is drawn per control point (one per residue), covering the part of the spline that belongs to its
 // residue: the spline parameter u in [-0.5, 0.5] around the control point. The instance is a tube of S + 1 rings of
@@ -20,9 +20,17 @@
 //
 // The level of detail is chosen per chain (md_gl.c): a coarser mesh has fewer segments, which use every stride:th
 // ring, and fewer profile vertices. Chains do not share rings, so chains of different levels do not crack.
+//
+// Tubes (md_gl_mol_set_tubes) are the backbone of a molecule of particles, each control point a particle: their profile
+// is a circle of the radius of the ring (u_scale.x times the radius of the control points, blended along the spline).
+// The frame does not matter to a circle but for where its vertices are, so it is the one of the protein backbone.
 
 #ifndef REP_RIBBONS
 #define REP_RIBBONS 0
+#endif
+
+#ifndef REP_TUBES
+#define REP_TUBES 0
 #endif
 
 #define FLAG_FLIP_NEXT 16u
@@ -32,6 +40,8 @@
 #define LENGTH_SCALE 16.0
 #define TWIST_SCALE 8.0
 #define SS_T_SCALE 4.0
+#define TUBE_RADIUS_MAX 8.0
+#define RADIUS_T_SCALE 8.0
 
 layout (std140) uniform ubo {
     mat4 u_world_to_view;
@@ -48,7 +58,7 @@ layout (std140) uniform ubo {
     uint u_bond_base_index;
     uint u_backbone_base_index;
 
-    vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Ribbons: (half width, half thickness, -, -)
+    vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Ribbons: (half width, half thickness, -, -). Tubes: (radius scale, -, -, -)
     uvec4 u_res;    // (S: segments per residue, P: profile vertex count, O: cap outline vertex count, K: ribbon face subdivisions)
     uvec4 u_rings;  // (R: rings per control point in the ring buffer, stride = R / S, -, -)
 };
@@ -83,6 +93,8 @@ struct Ring {
     float twist;    // Rotation of the frame around z per unit u
     vec3  ss;
     vec3  ss_t;
+    float radius;   // Of a tube
+    float radius_t;
 };
 
 Ring load_ring(uint idx) {
@@ -100,6 +112,8 @@ Ring load_ring(uint idx) {
     r.x        = vec3(unpack_snorm16(w2.x), unpack_snorm16(w2.x >> 16u), unpack_snorm16(w2.y));
     r.z        = vec3(unpack_snorm16(w2.y >> 16u), unpack_snorm16(w2.z), unpack_snorm16(w2.z >> 16u));
     r.ss       = vec3(unpack_unorm8(w2.w), unpack_unorm8(w2.w >> 8u), unpack_unorm8(w2.w >> 16u));
+    r.radius   = unpack_unorm8(w2.w >> 24u) * TUBE_RADIUS_MAX;
+    r.radius_t = unpack_snorm8(w1.w >> 24u) * RADIUS_T_SCALE;
     return r;
 }
 
@@ -264,6 +278,9 @@ void main() {
 #if REP_RIBBONS
     vec2 extent   = u_scale.xy;
     vec2 extent_t = vec2(0.0);
+#elif REP_TUBES
+    vec2 extent   = vec2(max(r.radius * u_scale.x, 1.0e-3));
+    vec2 extent_t = vec2(r.radius_t * u_scale.x);
 #else
     const vec2 coil_scale  = vec2(0.2, 0.2);
     const vec2 helix_scale = vec2(1.2, 0.2);

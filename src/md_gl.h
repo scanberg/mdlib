@@ -18,6 +18,7 @@
 
 // Forward declarations
 struct md_system_t;
+struct md_unitcell_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -114,10 +115,44 @@ static inline md_gl_secondary_structure_t md_gl_secondary_structure_convert(md_s
 
 md_gl_mol_t md_gl_mol_create(const struct md_system_t* mol);
 // A molecule of bare particles without bonds or a backbone, for geometry which stands in for parts of a system (the
-// spheres and capsules of a cartoon of lipids and nucleic acids): set their positions and radii, and draw them with
-// MD_GL_REP_SPACE_FILL and the weak bonds of a representation (MD_GL_REP_WEAK_BONDS). Positions and radii start at 0.
+// cartoon of lipids and nucleic acids): set their positions, or derive them from the atoms of the system
+// (md_gl_mol_set_derived), and their radii, and draw them as spheres (MD_GL_REP_SPACE_FILL, a radius of 0 is not
+// drawn), as capsules between them (the weak bonds of a representation, MD_GL_REP_WEAK_BONDS) and as tubes through them
+// (md_gl_mol_set_tubes, MD_GL_REP_TUBES). Positions and radii start at 0.
 md_gl_mol_t md_gl_mol_create_particles(uint32_t count);
 void md_gl_mol_destroy(md_gl_mol_t handle);
+
+// ### DERIVED PARTICLES ###
+// The particles of a molecule (md_gl_mol_create_particles) derived on the GPU from the atoms of another molecule, their
+// source: particle i is the weighted sum of the atoms atom[offset[i] .. offset[i + 1]) of the source, with the weights
+// weight[offset[i] .. offset[i + 1]) (their mean when the weights sum to 1), and its velocity the same sum of theirs.
+// Each atom is taken in its periodic image nearest to the atom ref[i] of the source, so the particles which share a
+// reference stay whole and together across the periodic boundary of the cell (the points of one molecule).
+//  offset: [particle count + 1], atom and weight: [offset[particle count]], ref: [particle count]
+// Atoms outside of the source are left out; a particle of no atoms is at the origin. Replaces a previous derivation.
+// The source must outlive it.
+void md_gl_mol_set_derived(md_gl_mol_t mol, md_gl_mol_t source, const uint32_t* offset, const uint32_t* atom, const float* weight, const uint32_t* ref);
+
+// Computes the positions and velocities of the derived particles from the positions and velocities of the atoms of their
+// source on the GPU (md_gl_mol_set_atom_position, md_gl_mol_compute_velocity, md_gl_mol_zero_velocity): call it after
+// those change.
+//  cell:       (optional) the unit cell of the positions, for the periodic images. Without it there are none.
+//  source_xyz: (optional) the positions of the atoms of the source on the CPU, the same as on the GPU. They place the
+//              tubes (md_gl_mol_set_tubes) for their culling and level of detail; without them the tubes are drawn in
+//              full detail and never culled.
+void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell, const vec3_t* source_xyz);
+
+// ### TUBES ###
+// Splines through the particles of a molecule (md_gl_mol_create_particles), drawn by MD_GL_REP_TUBES with a round
+// profile: the backbone of a molecule of particles, as the protein backbone is that of a system (MD_GL_REP_CARTOON), and
+// computed the same way (uniform cubic B-splines, which pass near rather than through their control points). Tube t has
+// the control points particle[offset[t] .. offset[t + 1]) in order, of the radii radius[offset[t] .. offset[t + 1])
+// (Ångström, at most 8, the profile follows them smoothly). A tube of fewer than two control points is not drawn.
+// Replaces the previous tubes; count 0 clears them.
+// A part of a tube belongs to its control point: it picks as it (md_gl_picking_offset_t), takes its colour from the
+// particle and is shown when the particle is (the alpha of its colour, the atom mask), so the particles of the control
+// points can have colours and flags while a radius of 0 keeps them from being drawn as spheres.
+void md_gl_mol_set_tubes(md_gl_mol_t mol, uint32_t count, const uint32_t* offset, const uint32_t* particle, const float* radius);
 
 // ### Set molecule data fields ###
 void md_gl_mol_set_index_base   (md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base);
@@ -198,6 +233,7 @@ typedef enum {
     MD_GL_REP_RIBBONS,
     MD_GL_REP_CARTOON,
     MD_GL_REP_WEAK_BONDS,   // The weak bonds of the representation (md_gl_rep_set_weak_bonds), dashed
+    MD_GL_REP_TUBES,        // The tubes of a molecule of particles (md_gl_mol_set_tubes)
 } md_gl_rep_type_t;
 
 // Controls how the color of the bonds are calculated in the licorice and ball-and-stick representations
@@ -254,6 +290,10 @@ typedef struct md_gl_draw_op_t {
             float sharpness;
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
         } weak_bonds;
+
+        struct {
+            float radius_scale;     // Of the radii of the control points
+        } tubes;
     } args;
 
     md_gl_rep_t rep;
@@ -264,7 +304,8 @@ typedef struct md_gl_draw_op_t {
 // reserves one disjoint range per kind. Atoms (spacefill, licorice ends) write their atom index, bonds (licorice
 // middle) their bond index, and the backbone representations (cartoon, ribbons) their protein backbone segment
 // index (md_system_t::protein_backbone.segment). A cartoon is not made of atoms: it writes the segment it stems
-// from, never an atom of it. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
+// from, never an atom of it. A tube writes the index of its control point among those of all tubes (md_gl_mol_set_tubes)
+// as a backbone. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
 // The circle of an aromatic ring writes the index of the ring in md_system_t::ring (all of its rings, so the range
 // is md_index_data_num_ranges(&sys->ring) long, of which only the aromatic ones are drawn).
 typedef struct md_gl_picking_offset_t {
