@@ -5,34 +5,40 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 
+# Mirrors SRC_DIR into DST_DIR at build time, for executables that find their resources
+# relative to themselves. Added, edited and removed files all reach DST_DIR, and nothing
+# else is written there, so the folder can ship as it is.
 function(create_copy_resource_dir_target target_name SRC_DIR DST_DIR)
-    if (CMAKE_VERSION VERSION_LESS 3.26)
-      message(FATAL_ERROR "create_copy_resource_dir_target requires CMake 3.26 or newer")
+    # DST_DIR is deleted and copied anew, so refuse anything outside the build tree.
+    cmake_path(IS_PREFIX CMAKE_BINARY_DIR "${DST_DIR}" NORMALIZE inside)
+    if (NOT inside)
+        message(FATAL_ERROR "create_copy_resource_dir_target: ${DST_DIR} is outside the build tree")
     endif()
 
-    file(GLOB_RECURSE COPY_FILES CONFIGURE_DEPENDS LIST_DIRECTORIES false RELATIVE "${SRC_DIR}" "${SRC_DIR}/*")
+    file(GLOB_RECURSE files CONFIGURE_DEPENDS LIST_DIRECTORIES false RELATIVE "${SRC_DIR}" "${SRC_DIR}/*")
+    if (NOT files)
+        message(FATAL_ERROR "create_copy_resource_dir_target: ${SRC_DIR} has no files")
+    endif()
+    list(TRANSFORM files PREPEND "${SRC_DIR}/" OUTPUT_VARIABLE src_files)
+    list(TRANSFORM files PREPEND "${DST_DIR}/" OUTPUT_VARIABLE dst_files)
 
-    set(SRC_FILES)
-    set(DST_FILES)
-    foreach(FILE IN LISTS COPY_FILES)
-      list(APPEND SRC_FILES "${SRC_DIR}/${FILE}")
-      list(APPEND DST_FILES "${DST_DIR}/${FILE}")
-    endforeach()
+    # The file list, rewritten only when a file is added or removed: a removal leaves every
+    # remaining output up to date, and this is what makes the copy run and drop the file.
+    # Rewriting it on every configure would make every reconfigure copy again.
+    set(manifest "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${target_name}.files")
+    list(JOIN files "\n" content)
+    file(CONFIGURE OUTPUT "${manifest}" CONTENT "${content}\n" @ONLY)
 
-    set(MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/${target_name}_resources.txt")
-    string(REPLACE ";" "\n" MANIFEST_CONTENT "${COPY_FILES}")
-    file(WRITE "${MANIFEST}" "${MANIFEST_CONTENT}\n")
-
-    set(STAMP "${DST_DIR}/.${target_name}.stamp")
     add_custom_command(
-      OUTPUT ${DST_FILES} "${STAMP}"
-      COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${SRC_DIR}" "${DST_DIR}"
-      COMMAND ${CMAKE_COMMAND} -E touch ${DST_FILES} "${STAMP}"
-      DEPENDS ${SRC_FILES} "${MANIFEST}"
-      COMMENT "Copying ${target_name} resources"
-      VERBATIM
+        OUTPUT  ${dst_files}
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${DST_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${SRC_DIR}" "${DST_DIR}"
+        DEPENDS ${src_files} "${manifest}"
+        COMMENT "Copying ${target_name} resources"
+        VERBATIM
     )
-    add_custom_target(${target_name} DEPENDS "${STAMP}" ${DST_FILES})
+    add_custom_target(${target_name} DEPENDS ${dst_files})
+    set_target_properties(${target_name} PROPERTIES FOLDER "resources")
 endfunction()
 
 # https://stackoverflow.com/questions/11813271/embed-resources-eg-shader-code-images-into-executable-library-with-cmake

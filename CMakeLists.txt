@@ -515,6 +515,29 @@ if (MD_BENCHMARK)
   add_subdirectory(benchmark)
 endif()
 
+# The basis sets have to sit beside the executables, because MD_VLX_BASIS_FOLDER is resolved
+# against the executable - the same arrangement a consuming application uses, so the tests and
+# benchmarks exercise the lookup as it actually ships rather than a path that only exists in
+# this source tree. md_unittest and md_benchmark share the bin directory, so one copy serves both,
+# and each waits for it.
+#
+# Only when mdlib owns the bin directory. Embedded in a parent project, the parent copies them
+# there for its own executables and makes these wait for it; copying again from here would
+# declare the same output files twice.
+if (MD_ENABLE_HDF5 AND NOT MD_HAS_PARENT AND (TARGET md_unittest OR TARGET md_benchmark))
+  set(MD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+  get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+  if (_is_multi_config)
+    set(MD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
+  endif()
+  create_copy_resource_dir_target(md_copy_basis "${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis" "${MD_BIN_DIR}/basis")
+  foreach(_exe md_unittest md_benchmark)
+    if (TARGET ${_exe})
+      add_dependencies(${_exe} md_copy_basis)
+    endif()
+  endforeach()
+endif()
+
 set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${GTO_SLANG_FILES}
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang

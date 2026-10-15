@@ -42,8 +42,8 @@
 # Each entry point is built by a single command, tools/md_gpu_build_shader.py:
 # one slangc run for both SPIR-V and MSL, the argument-struct check on the two,
 # the SPIR-V post-pass, the descriptor, and the binary embedded as C. Nothing
-# else in the target waits on that command, so every generator -- MSBuild
-# included, see CMP0147 in CMakeLists.txt -- can run all of them in parallel.
+# else in the target waits on that command, so every generator can run all of
+# them in parallel -- MSBuild included, since CMake 3.27 (policy CMP0147).
 
 include_guard(GLOBAL)
 
@@ -175,12 +175,6 @@ function(compile_gpu_shaders OUT_HEADER)
         set(USE_METALLIB ON)
     endif()
 
-    # A shader build reads only its sources and the scripts, never the output of
-    # another target. Ninja would otherwise hold every command back until all of
-    # the target's dependencies are built -- for md_unittest, all of mdlib.
-    # (CMake 3.27+; ignored before.)
-    set(CMAKE_ADD_CUSTOM_COMMAND_DEPENDS_EXPLICIT_ONLY ON)
-
     set(DECLS "")
     set(DESCS "")
     foreach(ENTRY ${ALL_ENTRIES})
@@ -207,6 +201,10 @@ function(compile_gpu_shaders OUT_HEADER)
             --namespace      ${G2_NAMESPACE}
             --spv ${SPV} --msl ${MSL} --desc ${DESC})
         set(BUILD_DEPS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${SCRIPT_DEPS})
+        # DEPENDS_EXPLICIT_ONLY below: a shader build reads only its sources and
+        # the scripts, never the output of another target. Without it Ninja would
+        # hold every command back until all of the target's dependencies are
+        # built -- for md_unittest, all of mdlib.
 
         if (USE_METALLIB)
             set(AIR      ${GEN_DIR}/${STEM}_${ENTRY}.air)
@@ -215,6 +213,7 @@ function(compile_gpu_shaders OUT_HEADER)
                 OUTPUT  ${SPV} ${MSL} ${DESC}
                 COMMAND ${BUILD_CMD} ${ABS_SRC} ${ENTRY}
                 DEPENDS ${BUILD_DEPS}
+                DEPENDS_EXPLICIT_ONLY
                 COMMENT "slangc: ${STEM}.slang [${ENTRY}]"
                 VERBATIM
             )
@@ -224,6 +223,7 @@ function(compile_gpu_shaders OUT_HEADER)
                 COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metallib ${AIR} -o ${METALLIB}
                 COMMAND ${Python3_EXECUTABLE} ${BIN2C_SCRIPT} ${METALLIB} ${C_FILE} ${SYMBOL}
                 DEPENDS ${MSL} ${BIN2C_SCRIPT}
+                DEPENDS_EXPLICIT_ONLY
                 COMMENT "metallib: ${STEM}_${ENTRY}.metal -> ${STEM}_${ENTRY}.metallib"
                 VERBATIM
             )
@@ -232,6 +232,7 @@ function(compile_gpu_shaders OUT_HEADER)
                 OUTPUT  ${SPV} ${MSL} ${DESC} ${C_FILE}
                 COMMAND ${BUILD_CMD} --embed ${C_FILE} ${ABS_SRC} ${ENTRY}
                 DEPENDS ${BUILD_DEPS}
+                DEPENDS_EXPLICIT_ONLY
                 COMMENT "slangc: ${STEM}.slang [${ENTRY}]"
                 VERBATIM
             )
