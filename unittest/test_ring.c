@@ -107,10 +107,10 @@ static size_t ring_count_in_rings(const char* smiles, md_match_mode_t mode, cons
 static size_t ring_filter_count(const char* expr, const ring_sys_t* r, size_t* out_atoms) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     md_array(md_bitset_t) arr = 0;
-    char err[256] = {0};
-    bool is_dynamic = false;
     size_t result = SIZE_MAX;
-    if (md_filter_evaluate(&arr, str_from_cstr(expr), &r->sys, &r->st, NULL, &is_dynamic, err, sizeof(err), alloc)) {
+    const md_filter_context_t ctx = {&r->sys, &r->st, NULL};
+    const md_filter_result_t res = md_filter_sets(&arr, str_from_cstr(expr), &ctx, alloc);
+    if (res.success) {
         result = md_array_size(arr);
         if (out_atoms) {
             md_bitmask_t all = md_bitmask_create(0, (uint32_t)r->sys.atom.count, alloc);
@@ -118,7 +118,7 @@ static size_t ring_filter_count(const char* expr, const ring_sys_t* r, size_t* o
             *out_atoms = md_bitmask_count(&all);
         }
     } else {
-        printf("'%s': %s\n", expr, err);
+        printf("'%s': %s\n", expr, res.error);
     }
     md_arena_allocator_destroy(alloc);
     return result;
@@ -126,16 +126,15 @@ static size_t ring_filter_count(const char* expr, const ring_sys_t* r, size_t* o
 
 static bool ring_filter_fails_with(const char* expr, const char* expected, const ring_sys_t* r) {
     md_bitset_t bf = {0};
-    char err[256] = {0};
-    bool is_dynamic = false;
-    const bool ok = md_filter(&bf, str_from_cstr(expr), &r->sys, &r->st, NULL, &is_dynamic, err, sizeof(err), md_get_heap_allocator());
+    const md_filter_context_t ctx = {&r->sys, &r->st, NULL};
+    const md_filter_result_t res = md_filter(&bf, str_from_cstr(expr), &ctx, md_get_heap_allocator());
     md_bitset_free(&bf, md_get_heap_allocator());
-    if (ok) {
+    if (res.success) {
         printf("'%s' was expected to fail\n", expr);
         return false;
     }
-    if (!strstr(err, expected)) {
-        printf("'%s' failed with '%s', expected '%s'\n", expr, err, expected);
+    if (!strstr(res.error, expected)) {
+        printf("'%s' failed with '%s', expected '%s'\n", expr, res.error, expected);
         return false;
     }
     return true;
@@ -286,10 +285,10 @@ UTEST_F(ring, script_ring) {
 static int ring_filter_indices(int* out, int cap, const char* expr, const ring_sys_t* r) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     md_array(md_bitset_t) arr = 0;
-    char err[256] = {0};
-    bool is_dynamic = false;
     int result = -1;
-    if (md_filter_evaluate(&arr, str_from_cstr(expr), &r->sys, &r->st, NULL, &is_dynamic, err, sizeof(err), alloc)) {
+    const md_filter_context_t ctx = {&r->sys, &r->st, NULL};
+    const md_filter_result_t res = md_filter_sets(&arr, str_from_cstr(expr), &ctx, alloc);
+    if (res.success) {
         result = (int)md_array_size(arr);
         for (int i = 0; i < result && i < cap; ++i) {
             out[i] = -1;
@@ -302,7 +301,7 @@ static int ring_filter_indices(int* out, int cap, const char* expr, const ring_s
             }
         }
     } else {
-        printf("'%s': %s\n", expr, err);
+        printf("'%s': %s\n", expr, res.error);
     }
     md_arena_allocator_destroy(alloc);
     return result;

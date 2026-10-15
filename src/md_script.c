@@ -8517,173 +8517,165 @@ static ast_node_t* filter_compile(md_script_ir_t* ir, eval_context_t* ctx, str_t
     return checked ? node : NULL;
 }
 
-static void filter_report(char* err_buf, size_t err_cap, const char* msg) {
-    if (err_buf && err_cap) {
-        snprintf(err_buf, err_cap, "%s\n", msg);
-    } else {
-        MD_LOG_DEBUG("md_filter: %s", msg);
-    }
-}
-
-// Errors take precedence over whatever filter_report put there: they are the cause. Those of the
-// compilation come first, then those of the evaluation.
-static void filter_write_errors(char* err_buf, size_t err_cap, const md_script_ir_t* ir, const eval_log_t* log) {
-    if (!err_buf || !err_cap) {
-        return;
-    }
+// The errors of the compilation, then those of the evaluation, one line each, and where the first one is. What
+// went wrong otherwise (msg) only when nothing more specific did.
+static void filter_write_errors(md_filter_result_t* res, const md_script_ir_t* ir, const eval_log_t* log, const char* msg) {
     const md_log_token_t* lists[2] = { ir->errors, log->errors };
+    const size_t cap = sizeof(res->error);
     size_t len = 0;
+    bool first = true;
     for (size_t l = 0; l < ARRAY_SIZE(lists); ++l) {
-        for (size_t i = 0; i < md_array_size(lists[l]) && len + 1 < err_cap; ++i) {
-            const int n = snprintf(err_buf + len, err_cap - len, STR_FMT"\n", STR_ARG(lists[l][i].text));
+        for (size_t i = 0; i < md_array_size(lists[l]) && len + 1 < cap; ++i) {
+            const int n = snprintf(res->error + len, cap - len, "%s" STR_FMT, len ? "\n" : "", STR_ARG(lists[l][i].text));
             if (n < 0) return;
-            len += (size_t)n;
+            len = MIN(len + (size_t)n, cap - 1);
+            if (first) {
+                res->error_range = lists[l][i].range;
+                first = false;
+            }
         }
     }
+    if (len == 0 && msg) {
+        snprintf(res->error, cap, "%s", msg);
+    }
 }
 
-bool md_filter_evaluate(md_array(md_bitset_t)* sets, str_t expr, const md_system_t* sys, const md_system_state_t* state, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
-    ASSERT(sets);
-    ASSERT(sys);
-    ASSERT(alloc);
+// What both filters share: the context of the evaluation, and the expression compiled in it
+typedef struct filter_eval_t {
+    md_script_ir_t* ir;
+    eval_log_t      log;
+    eval_context_t  ctx;
+    ast_node_t*     node;   // NULL if it did not compile
+} filter_eval_t;
 
-    bool success = false;
+static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, str_t expr, const md_filter_context_t* ctx, uint32_t eval_flags, md_allocator_i* temp_alloc) {
+    MEMSET(res, 0, sizeof(*res));
+    if (!ctx || !ctx->sys) {
+        snprintf(res->error, sizeof(res->error), "No system to pick atoms from");
+        return false;
+    }
+    if (ctx->sys->atom.count == 0) {
+        snprintf(res->error, sizeof(res->error), "The system has no atoms");
+        return false;
+    }
+    if (str_empty(str_trim(expr))) {
+        snprintf(res->error, sizeof(res->error), "The expression is empty");
+        return false;
+    }
+
+    f->ir = create_ir(temp_alloc);
+    f->log = (eval_log_t){ .alloc = temp_alloc };
+    f->ctx = (eval_context_t){
+        .ir = f->ir,
+        .log = &f->log,
+        .sys = ctx->sys,
+        .temp_alloc = temp_alloc,
+        .alloc = temp_alloc,
+        .cur_state = ctx->state ? ctx->state : &ctx->sys->reference,
+        .ref_state = &ctx->sys->reference,
+        .eval_flags = eval_flags,
+    };
+    f->node = filter_compile(f->ir, &f->ctx, expr, ctx->ir);
+    if (f->node) {
+        res->is_dynamic = (f->node->flags & FLAG_DYNAMIC) != 0;
+    }
+    return true;
+}
+
+md_filter_result_t md_filter_sets(md_array(md_bitset_t)* dst, str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
+    ASSERT(dst);
+    ASSERT(alloc);
+    md_filter_result_t res;
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
-    md_script_ir_t* ir = create_ir(temp_alloc);
-    eval_log_t log = { .alloc = temp_alloc };
-    eval_context_t ctx = {
-        .ir = ir,
-        .log = &log,
-        .sys = sys,
-        .temp_alloc = temp_alloc,
-        .alloc = temp_alloc,
-        .cur_state = state,
-        .ref_state = &sys->reference,
-        .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
-    };
-
-    ast_node_t* node = filter_compile(ir, &ctx, expr, ctx_ir);
-    if (node) {
-        if (node->data.type.base_type == TYPE_BITFIELD) {
+    filter_eval_t f;
+    if (filter_begin(&f, &res, expr, ctx, EVAL_FLAG_NO_STATIC_EVAL, temp_alloc)) {
+        const char* msg = NULL;
+        if (f.node && f.node->data.type.base_type == TYPE_BITFIELD) {
             data_t data = {0};
-            if (evaluate_node_alloc(&data, node, &ctx, temp_alloc)) {
+            if (evaluate_node_alloc(&data, f.node, &f.ctx, temp_alloc)) {
                 const int64_t len = type_info_array_len(data.type);
                 const md_bitset_t* bs_arr = data.ptr;
-                if (bs_arr) {
-                    for (int64_t i = 0; i < len; ++i) {
-                        md_array_push(*sets, md_bitset_copy(bs_arr[i], alloc), alloc);
-                    }
+                for (int64_t i = 0; bs_arr && i < len; ++i) {
+                    md_array_push(*dst, md_bitset_copy(bs_arr[i], alloc), alloc);
                 }
-                if (is_dynamic) *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
-                success = true;
+                res.success = true;
             }
+        } else if (f.node) {
+            msg = "The expression does not pick atoms";
         }
-        if (!success) {
-            filter_report(err_buf, err_cap, "Expression did not evaluate to a bitfield");
+        if (!res.success) {
+            filter_write_errors(&res, f.ir, &f.log, msg);
         }
     }
-
-    filter_write_errors(err_buf, err_cap, ir, &log);
 
     md_temp_end(temp_scope);
-    return success;
+    return res;
 }
 
-bool md_filter(md_bitset_t* dst, str_t expr, const md_system_t* sys, const md_system_state_t* state, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
-    if (!dst || !alloc) {
-        MD_LOG_ERROR("md_filter: Passed in set or allocator was NULL.");
-        return false;
-    }
-
-    if (!sys) {
-        MD_LOG_ERROR("md_filter: Passed in system was NULL");
-        return false;
-    }
-
-    if (sys->atom.count == 0) {
-        MD_LOG_ERROR("md_filter: Passed in molecule was empty");
-        return false;
-    }
+md_filter_result_t md_filter(md_bitset_t* dst, str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
+    ASSERT(dst);
+    ASSERT(alloc);
+    md_filter_result_t res;
 
     md_bitset_free(dst, alloc);
 
-    if (str_empty(expr)) {
-        if (err_buf && err_cap) snprintf(err_buf, err_cap, "Expression is empty\n");
-        return false;
-    }
-
-    bool success = false;
-
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 
-    md_script_ir_t* ir = create_ir(temp_alloc);
-    eval_log_t log = { .alloc = temp_alloc };
-    eval_context_t ctx = {
-        .ir = ir,
-        .log = &log,
-        .sys = sys,
-        .temp_alloc = temp_alloc,
-        .alloc = temp_alloc,
-        .cur_state = state,
-        .ref_state = &sys->reference,
-        .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL,
-    };
+    filter_eval_t f;
+    if (filter_begin(&f, &res, expr, ctx, EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL, temp_alloc)) {
+        const char* msg = NULL;
+        ast_node_t* node = f.node;
+        if (node) {
+            const bool is_bitfield = node->data.type.base_type == TYPE_BITFIELD;
+            const bool variable = is_bitfield && is_variable_length(node->data.type);
 
-    ast_node_t* node = filter_compile(ir, &ctx, expr, ctx_ir);
-    if (node) {
-        const bool is_bitfield = node->data.type.base_type == TYPE_BITFIELD;
-        const bool variable = is_bitfield && is_variable_length(node->data.type);
-
-        // A variable length is known once evaluated
-        data_t data = {0};
-        bool evaluated = false;
-        if (variable) {
-            evaluated = evaluate_node_alloc(&data, node, &ctx, temp_alloc);
-        }
-        const int len = !is_bitfield ? 0 : variable ? (evaluated ? (int)type_info_array_len(data.type) : -1) : (int)type_info_array_len(node->data.type);
-
-        if (variable && !evaluated) {
-            success = false;
-        } else if (len == 1 && !evaluated) {
-            // A single set needs no array. Evaluated in temp like everything in a script (whose data lives in
-            // arenas), then copied out to the caller's allocator, which may well be a heap.
-            md_bitset_t result = {0};
-            data = (data_t){
-                .type = node->data.type,
-                .ptr  = &result,
-                .size = sizeof(md_bitset_t),
-                .alloc = temp_alloc,
-            };
-            success = evaluate_node(&data, node, &ctx);
-            *dst = success ? md_bitset_copy(result, alloc) : md_bitset_empty_set();
-        } else if (len >= 1) {
-            success = evaluated || (allocate_data(&data, node->data.type, temp_alloc) && evaluate_node(&data, node, &ctx));
-            if (success) {
-                const md_bitset_t* src = (const md_bitset_t*)data.ptr;
-                md_bitmask_t b = md_bitmask_create(0, (uint32_t)sys->atom.count, temp_alloc);
-                for (int i = 0; i < len; ++i) {
-                    md_bitmask_or(&b, src[i]);
-                }
-                *dst = md_bitmask_extract(&b, alloc);
+            // A variable length is known once evaluated
+            data_t data = {0};
+            bool evaluated = false;
+            if (variable) {
+                evaluated = evaluate_node_alloc(&data, node, &f.ctx, temp_alloc);
             }
-        } else {
-            filter_report(err_buf, err_cap, node->data.type.base_type == TYPE_BITFIELD ?
-                "Expression did not evaluate to a valid bitfield" : "Expression did not evaluate to a bitfield");
-        }
+            const int len = !is_bitfield ? 0 : variable ? (evaluated ? (int)type_info_array_len(data.type) : -1) : (int)type_info_array_len(node->data.type);
 
-        if (success && is_dynamic) {
-            *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
+            if (variable && !evaluated) {
+                res.success = false;
+            } else if (len == 1 && !evaluated) {
+                // A single set needs no array. Evaluated in temp like everything in a script (whose data lives in
+                // arenas), then copied out to the caller's allocator, which may well be a heap.
+                md_bitset_t result = {0};
+                data = (data_t){
+                    .type = node->data.type,
+                    .ptr  = &result,
+                    .size = sizeof(md_bitset_t),
+                    .alloc = temp_alloc,
+                };
+                res.success = evaluate_node(&data, node, &f.ctx);
+                *dst = res.success ? md_bitset_copy(result, alloc) : md_bitset_empty_set();
+            } else if (len >= 1) {
+                res.success = evaluated || (allocate_data(&data, node->data.type, temp_alloc) && evaluate_node(&data, node, &f.ctx));
+                if (res.success) {
+                    const md_bitset_t* src = (const md_bitset_t*)data.ptr;
+                    md_bitmask_t b = md_bitmask_create(0, (uint32_t)ctx->sys->atom.count, temp_alloc);
+                    for (int i = 0; i < len; ++i) {
+                        md_bitmask_or(&b, src[i]);
+                    }
+                    *dst = md_bitmask_extract(&b, alloc);
+                }
+            } else {
+                msg = is_bitfield ? "The expression does not pick a valid set of atoms" : "The expression does not pick atoms";
+            }
+        }
+        if (!res.success) {
+            filter_write_errors(&res, f.ir, &f.log, msg);
         }
     }
 
-    filter_write_errors(err_buf, err_cap, ir, &log);
-
     md_temp_end(temp_scope);
-    return success;
+    return res;
 }
 
 #define VIS_MAGIC 0xbc6169abd9628947
