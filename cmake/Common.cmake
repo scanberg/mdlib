@@ -44,6 +44,9 @@ endfunction()
 # https://stackoverflow.com/questions/11813271/embed-resources-eg-shader-code-images-into-executable-library-with-cmake
 # Creates C resources file from files in given directory
 function(create_resources input_list output_file)
+    # The resources are embedded when CMake configures: a change to one of the files has to configure again, or a build
+    # keeps the old contents without a word (the shaders, which are edited without touching any CMake file)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${input_list})
     # Create empty output file
     file(WRITE ${output_file} "")
     message(STATUS "Writing resources to ${output_file}")
