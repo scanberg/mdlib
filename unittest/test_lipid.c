@@ -406,43 +406,42 @@ UTEST(lipid, script) {
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
 
-    char err[256] = {0};
-    bool is_dynamic = false;
+    const md_filter_context_t fctx = { &sys, &st, NULL };
     md_bitset_t bf = {0};
 
     // 64 lipids of 50 united atoms: 2 x 15 in the tails, 20 in the head
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("lipid()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("lipid()"), &fctx, alloc).success);
     EXPECT_EQ(64 * 50, (int)md_bitset_count(bf));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail()"), &fctx, alloc).success);
     EXPECT_EQ(64 * 30, (int)md_bitset_count(bf));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("head()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("head()"), &fctx, alloc).success);
     EXPECT_EQ(64 * 20, (int)md_bitset_count(bf));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail() and head()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail() and head()"), &fctx, alloc).success);
     EXPECT_EQ(0, (int)md_bitset_count(bf));
     // The phosphorus of the heads
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("head() and element('P')"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("head() and element('P')"), &fctx, alloc).success);
     EXPECT_EQ(64, (int)md_bitset_count(bf));
     // One selection per lipid molecule, of all of its atoms
     md_array(md_bitset_t) lipids = 0;
-    ASSERT_TRUE(md_filter_evaluate(&lipids, STR_LIT("lipid()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter_sets(&lipids, STR_LIT("lipid()"), &fctx, alloc).success);
     ASSERT_EQ(64, (int)md_array_size(lipids));
     for (size_t i = 0; i < md_array_size(lipids); ++i) EXPECT_EQ(50, (int)md_bitset_count(lipids[i]));
     // Within a context, the lipids with an atom in it, whole
     md_array(md_bitset_t) near = 0;
-    ASSERT_TRUE(md_filter_evaluate(&near, STR_LIT("lipid() in atom(1:3)"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter_sets(&near, STR_LIT("lipid() in atom(1:3)"), &fctx, alloc).success);
     ASSERT_EQ(1, (int)md_array_size(near));
     EXPECT_EQ(50, (int)md_bitset_count(near[0]));
 
     // One selection per tail, 15 carbons each
     md_array(md_bitset_t) sets = 0;
-    ASSERT_TRUE(md_filter_evaluate(&sets, STR_LIT("tail()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("tail()"), &fctx, alloc).success);
     ASSERT_EQ(128, (int)md_array_size(sets));
     for (size_t i = 0; i < md_array_size(sets); ++i) EXPECT_EQ(15, (int)md_bitset_count(sets[i]));
     // Written without parentheses, as the default representations write them
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("head or tail"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("head or tail"), &fctx, alloc).success);
     EXPECT_EQ(64 * 50, (int)md_bitset_count(bf));
     // Within a context, the tails fully within it: those of the first lipid
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail() in residue(1)"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("tail() in residue(1)"), &fctx, alloc).success);
     EXPECT_EQ(30, (int)md_bitset_count(bf));
 
     md_arena_allocator_destroy(alloc);
@@ -466,10 +465,9 @@ UTEST(lipid, molecule_of_several_residues) {
 
     md_system_state_t st = { .alloc = alloc };
     md_system_state_init(&st, sys.atom.count);
-    char err[256] = {0};
-    bool is_dynamic = false;
+    const md_filter_context_t fctx = { &sys, &st, NULL };
     md_array(md_bitset_t) sets = 0;
-    ASSERT_TRUE(md_filter_evaluate(&sets, STR_LIT("lipid()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("lipid()"), &fctx, alloc).success);
     ASSERT_EQ(1, (int)md_array_size(sets));
     EXPECT_EQ((int)sys.atom.count, (int)md_bitset_count(sets[0]));
     md_arena_allocator_destroy(alloc);
@@ -488,12 +486,11 @@ UTEST(lipid, by_name_without_bonds) {
 
     md_system_state_t st = { .alloc = alloc };
     md_system_state_init(&st, sys.atom.count);
-    char err[256] = {0};
-    bool is_dynamic = false;
+    const md_filter_context_t fctx = { &sys, &st, NULL };
     md_bitset_t bf = {0};
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("lipid()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("lipid()"), &fctx, alloc).success);
     EXPECT_EQ((int)sys.atom.count, (int)md_bitset_count(bf));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("head() or tail()"), &sys, &st, NULL, &is_dynamic, err, sizeof(err), alloc));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("head() or tail()"), &fctx, alloc).success);
     EXPECT_EQ(0, (int)md_bitset_count(bf));
     md_arena_allocator_destroy(alloc);
 }
