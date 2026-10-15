@@ -151,3 +151,120 @@ UTEST(filter, errors_say_where) {
 
     md_arena_allocator_destroy(alloc);
 }
+
+// Within a context the expression is the left hand side of 'in' with the context as one structure: the same as
+// (expression) in union(context) wherever 'in' can be written, and also where it cannot, for a context which
+// depends on the coordinates
+UTEST(filter, in_context) {
+    const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+
+    const md_filter_context_t whole = {&sys, &state, NULL, NULL};
+
+    static const char* cases[][2] = {
+        // context              expression
+        {"chain(2)",            "residue(1)"},      // relative to the context: the first residue of the chain
+        {"chain(2)",            "residue(1:3)"},
+        {"chain(2)",            "all"},
+        {"chain(2)",            "element('C')"},
+        {"protein",             "residue(1)"},      // one context, however many structures it is made of
+        {"resname('PFT')",      "residue(1)"},
+        {"chain(1:2)",          "chain(2)"},
+        {"chain(1)",            "out resname('PFT')"},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        md_bitset_t context = {0};
+        ASSERT_TRUE(md_filter(&context, str_from_cstr(cases[i][0]), &whole, alloc).success);
+
+        const md_filter_context_t within = {&sys, &state, NULL, &context};
+        md_bitset_t in_context = {0};
+        EXPECT_TRUE(md_filter(&in_context, str_from_cstr(cases[i][1]), &within, alloc).success);
+
+        char buf[256];
+        snprintf(buf, sizeof(buf), "(%s) in union(%s)", cases[i][1], cases[i][0]);
+        md_bitset_t in_union = {0};
+        EXPECT_TRUE(md_filter(&in_union, str_from_cstr(buf), &whole, alloc).success);
+
+        EXPECT_TRUE(md_bitset_count(in_context) > 0);
+        EXPECT_TRUE(md_bitset_equal(in_union, in_context));
+    }
+
+    md_bitset_t context = {0};
+    md_bitset_t bf = {0};
+    md_filter_result_t res;
+
+    // The context is what the expression sees of the system, its validation included
+    ASSERT_TRUE(md_filter(&context, STR_LIT("chain(1)"), &whole, alloc).success);
+    const md_filter_context_t chain = {&sys, &state, NULL, &context};
+    EXPECT_TRUE(md_filter(&bf, STR_LIT("all"), &chain, alloc).success);
+    EXPECT_TRUE(md_bitset_equal(context, bf));
+    EXPECT_TRUE(md_filter(&bf, STR_LIT("  "), &chain, alloc).success);     // Nothing written is 'all', so the context
+    EXPECT_TRUE(md_bitset_equal(context, bf));
+    res = md_filter(&bf, STR_LIT("resname('PFT')"), &chain, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_TRUE(strstr(res.error, "within the context") != NULL);
+    EXPECT_LT(res.error_range.beg, res.error_range.end);     // and where, in the expression as it was written
+
+    // A context which depends on the coordinates: 'in' cannot have it, as it evaluates its context when compiling
+    md_bitset_t near = {0};
+    res = md_filter(&near, STR_LIT("within(5, resname('PFT'))"), &whole, alloc);
+    ASSERT_TRUE(res.success);
+    EXPECT_TRUE(res.is_dynamic);
+    EXPECT_FALSE(md_filter(&bf, STR_LIT("(all) in (within(5, resname('PFT')))"), &whole, alloc).success);
+
+    const md_filter_context_t around = {&sys, &state, NULL, &near};
+    res = md_filter(&bf, STR_LIT("all"), &around, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_TRUE(md_bitset_equal(near, bf));
+    EXPECT_FALSE(res.is_dynamic);   // Of the expression alone: the context is the caller's to know about
+
+    md_bitset_t carbons = {0};
+    EXPECT_TRUE(md_filter(&carbons, STR_LIT("element('C') and within(5, resname('PFT'))"), &whole, alloc).success);
+    EXPECT_TRUE(md_filter(&bf, STR_LIT("element('C')"), &around, alloc).success);
+    EXPECT_TRUE(md_bitset_count(bf) > 0);
+    EXPECT_TRUE(md_bitset_equal(carbons, bf));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+static bool completes_with(md_script_completions_t c, const char* text) {
+    for (size_t i = 0; i < c.count; ++i) {
+        if (c.items[i].kind == MD_SCRIPT_COMPLETION_VALUE && str_eq(c.items[i].text, str_from_cstr(text))) return true;
+    }
+    return false;
+}
+
+// The values a selector is completed with are those within the context: one that is not there would not match
+UTEST(filter, completion_within_context) {
+    const str_t gro_file = STR_INIT(MD_UNITTEST_DATA_DIR "/centered.gro");
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+
+    const md_filter_context_t whole = {&sys, &state, NULL, NULL};
+    md_bitset_t context = {0};
+    ASSERT_TRUE(md_filter(&context, STR_LIT("chain(1)"), &whole, alloc).success);
+    const md_filter_context_t chain = {&sys, &state, NULL, &context};
+
+    const str_t expr = STR_LIT("resname()");
+    const int cursor = 8;
+
+    md_script_completions_t c = md_filter_complete(expr, cursor, &whole, alloc);
+    EXPECT_TRUE(completes_with(c, "\"PFT\""));
+    EXPECT_TRUE(completes_with(c, "\"ALA\""));
+
+    c = md_filter_complete(expr, cursor, &chain, alloc);
+    EXPECT_FALSE(completes_with(c, "\"PFT\""));
+    EXPECT_TRUE(completes_with(c, "\"ALA\""));
+
+    md_arena_allocator_destroy(alloc);
+}

@@ -212,9 +212,15 @@ static void completion_attr_paths(md_array(str_t)* values, md_hashmap32_t* seen,
     }
 }
 
-// The distinct values of a domain, sorted. The strings point into the system or static memory.
+// Whether any of a range of atoms is within the context, which without one is the whole system
+static bool completion_in_context(const md_bitset_t* atoms, md_urange_t range) {
+    return !atoms || md_bitset_test_any_range(*atoms, (uint32_t)range.beg, (uint32_t)range.end);
+}
+
+// The distinct values of a domain, sorted. The strings point into the system or static memory. With a context (atoms),
+// those of the system within it: a value that is not there would not match.
 // typed is what has been typed of the value so far, which only decides the form of attribute paths.
-static md_array(str_t) completion_domain_values(value_domain_t domain, const md_system_t* sys, str_t typed, md_allocator_i* alloc) {
+static md_array(str_t) completion_domain_values(value_domain_t domain, const md_system_t* sys, const md_bitset_t* atoms, str_t typed, md_allocator_i* alloc) {
     md_array(str_t) values = 0;
     md_hashmap32_t seen = {.allocator = alloc};
 
@@ -222,8 +228,21 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
     case DOMAIN_ATOM_NAME:
         // Atom names are the names of their types (md_atom_name), as matched by _name
         if (sys && sys->atom.type.name) {
-            for (size_t i = 0; i < sys->atom.type.count; ++i) {
-                completion_add_value(&values, &seen, LBL_TO_STR(sys->atom.type.name[i]), alloc);
+            if (atoms && sys->atom.type_idx) {
+                bool* present = (bool*)md_alloc(alloc, sys->atom.type.count + 1);
+                MEMSET(present, 0, sys->atom.type.count + 1);
+                for (md_bitset_iter_t it = md_bitset_iter(*atoms); md_bitset_iter_next(&it);) {
+                    if (it.idx < sys->atom.count && sys->atom.type_idx[it.idx] < sys->atom.type.count) {
+                        present[sys->atom.type_idx[it.idx]] = true;
+                    }
+                }
+                for (size_t i = 0; i < sys->atom.type.count; ++i) {
+                    if (present[i]) completion_add_value(&values, &seen, LBL_TO_STR(sys->atom.type.name[i]), alloc);
+                }
+            } else {
+                for (size_t i = 0; i < sys->atom.type.count; ++i) {
+                    completion_add_value(&values, &seen, LBL_TO_STR(sys->atom.type.name[i]), alloc);
+                }
             }
         }
         break;
@@ -231,6 +250,7 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
         if (sys) {
             bool present[256] = {0};
             for (size_t i = 0; i < sys->atom.count; ++i) {
+                if (atoms && !md_bitset_test(*atoms, (uint32_t)i)) continue;
                 present[md_atom_atomic_number(&sys->atom, i)] = true;
             }
             for (int z = 1; z < 256; ++z) {
@@ -242,6 +262,7 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
         if (sys && sys->component.name) {
             str_t prev = {0};
             for (size_t i = 0; i < sys->component.count; ++i) {
+                if (!completion_in_context(atoms, md_component_atom_range(&sys->component, i))) continue;
                 const str_t name = LBL_TO_STR(sys->component.name[i]);
                 if (str_eq(name, prev)) continue;   // Runs of the same component (water) are common
                 completion_add_value(&values, &seen, name, alloc);
@@ -255,6 +276,7 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
         if (sys) {
             for (size_t i = 0; i < md_system_instance_count(sys); ++i) {
                 if (domain == DOMAIN_CHAIN_ID && !is_instance_chain(sys, i)) continue;
+                if (!completion_in_context(atoms, md_system_instance_atom_range(sys, i))) continue;
                 const str_t id = domain == DOMAIN_INST_AUTH_ID ? md_system_instance_auth_id(sys, i) : md_system_instance_id(sys, i);
                 completion_add_value(&values, &seen, id, alloc);
             }
@@ -407,15 +429,16 @@ static void completion_push(md_array(md_script_completion_t)* items, md_script_c
     md_array_push(*items, item, alloc);
 }
 
-static void completion_push_values(md_array(md_script_completion_t)* items, value_domain_t domain, const md_system_t* sys, str_t typed, str_t pre, str_t post, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
-    md_array(str_t) values = completion_domain_values(domain, sys, typed, temp_alloc);
+static void completion_push_values(md_array(md_script_completion_t)* items, value_domain_t domain, const md_system_t* sys, const md_bitset_t* atoms, str_t typed, str_t pre, str_t post, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
+    md_array(str_t) values = completion_domain_values(domain, sys, atoms, typed, temp_alloc);
     for (size_t i = 0; i < md_array_size(values); ++i) {
         completion_push(items, MD_SCRIPT_COMPLETION_VALUE, values[i], pre, post, true, alloc);
     }
 }
 
-// A script (filter false), or a filter, an expression which picks atoms and whose names are those of ctx_ir
-static md_script_completions_t complete(str_t src, int cursor, const md_system_t* sys, const md_script_ir_t* ctx_ir, bool filter, md_allocator_i* alloc) {
+// A script (filter false), or a filter, an expression which picks atoms and whose names are those of ctx_ir, evaluated
+// within atoms (NULL for the whole system)
+static md_script_completions_t complete(str_t src, int cursor, const md_system_t* sys, const md_bitset_t* atoms, const md_script_ir_t* ctx_ir, bool filter, md_allocator_i* alloc) {
     ASSERT(alloc);
     md_script_completions_t result = {0};
     if (!src.ptr) src.len = 0;
@@ -490,7 +513,7 @@ static md_script_completions_t complete(str_t src, int cursor, const md_system_t
             // Only the values the argument takes, and the closing quote if the string does not have one yet
             if (domain != DOMAIN_NONE) {
                 const bool closed = end < (int)src.len && src.ptr[end] == quote;
-                completion_push_values(&items, domain, sys, result.prefix, (str_t){0}, closed ? (str_t){0} : quote_str, alloc, temp_alloc);
+                completion_push_values(&items, domain, sys, atoms, result.prefix, (str_t){0}, closed ? (str_t){0} : quote_str, alloc, temp_alloc);
             }
         } else if (after_operand) {
             for (size_t i = 0; i < ARRAY_SIZE(script_keywords); ++i) {
@@ -529,7 +552,7 @@ static md_script_completions_t complete(str_t src, int cursor, const md_system_t
             } else {
                 const bool arg_start = top && top->arg_tokens == 0;
                 if (domain != DOMAIN_NONE && arg_start) {
-                    completion_push_values(&items, domain, sys, result.prefix, quote_str, quote_str, alloc, temp_alloc);
+                    completion_push_values(&items, domain, sys, atoms, result.prefix, quote_str, quote_str, alloc, temp_alloc);
                 }
                 if (arg_start && top == call && str_empty(top->arg_name) && top->sig) {
                     for (size_t i = 0; i < top->sig->num_params; ++i) {
@@ -575,9 +598,9 @@ static md_script_completions_t complete(str_t src, int cursor, const md_system_t
 }
 
 md_script_completions_t md_script_complete(str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc) {
-    return complete(src, cursor, sys, NULL, false, alloc);
+    return complete(src, cursor, sys, NULL, NULL, false, alloc);
 }
 
 md_script_completions_t md_filter_complete(str_t expr, int cursor, const md_filter_context_t* ctx, md_allocator_i* alloc) {
-    return complete(expr, cursor, ctx ? ctx->sys : NULL, ctx ? ctx->ir : NULL, true, alloc);
+    return complete(expr, cursor, ctx ? ctx->sys : NULL, ctx ? ctx->atoms : NULL, ctx ? ctx->ir : NULL, true, alloc);
 }

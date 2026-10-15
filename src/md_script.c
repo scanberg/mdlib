@@ -8569,6 +8569,9 @@ static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, str_t expr, 
         .ir = f->ir,
         .log = &f->log,
         .sys = ctx->sys,
+        // The context the left hand side of 'in' is compiled and evaluated in: the static validation ("did not match
+        // any residue within the context") sees it as much as the evaluation does
+        .mol_ctx = ctx->atoms,
         .temp_alloc = temp_alloc,
         .alloc = temp_alloc,
         .cur_state = ctx->state ? ctx->state : &ctx->sys->reference,
