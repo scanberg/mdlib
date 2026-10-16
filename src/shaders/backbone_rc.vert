@@ -8,13 +8,18 @@
 // each segment is one quad: the instance of control point c covers u in [-0.5, 0.5] about it with S segments, as an
 // instance of backbone.vert does with its S + 1 rings (see there: the same rings, flipped into the frame of c, collapsed
 // at the ends of a chain). At a ring the profile is a stadium, the core segment from P - l X to P + l X (P the position,
-// X the support) widened by r. The segment between rings 0 and 1 is the union of the capsules between a point of the
-// core of ring 0 and the corresponding point of the core of ring 1, of radius blended from r0 to r1 (a ruled surface
-// thickened by the radius): backbone_rc.frag sphere traces it. A circle (l = 0) makes it one capsule, exactly. The
-// segments of a chain overlap at their rings, round, so the chain is closed and its ends round without caps.
+// X the support) widened by r, its flat sides facing +-Y = Z x X. The segment between rings 0 and 1 is the ruled
+// surface between the cores thickened by the radius, blended from r0 to r1: backbone_rc.frag ray casts it in closed form
+// (see there). A circle (l = 0) makes it one round cone, exactly. A segment is closed at a ring where the band ends:
+// the end of a chain, or a neighbor which is not drawn (its control point hidden); elsewhere the next segment closes it.
 //
-// The quad bounds the image of the box of the segment (view space: the box of the four ends of the cores, out by the
-// larger radius), at the depth of the point of that box closest to the image plane, or at the near plane if that is in
+// The segment lies within the convex hull of the four spheres at the ends of its cores (radius r0 at ring 0, r1 at ring
+// 1), and its image within the hull of their images (central projection keeps convex hulls in front of the eye). The
+// quad is the rectangle about those images along the image of the cores or of the axis of the segment, whichever is
+// smaller: a band is a long thin parallelogram on screen at any angle, which a rectangle along the axes of the screen
+// bounds poorly (half of it empty, measured over random orientations; a tenth or so along its own axes). Its sides are
+// tangent to the outlines of the spheres (bond.vert). Across the near plane, the box of the segment bounds it instead.
+// It lies at the depth of the point of the segment's box closest to the image plane, or at the near plane if that is in
 // front of it, as ring.vert places its quads: the ray of a fragment starts on it, in front of the segment.
 
 #ifndef ORTHO
@@ -66,11 +71,10 @@ uniform usamplerBuffer u_atom_flags_buffer;
 out Fragment {
     flat vec3  core[4];         // View space: the core of ring 0 (a0, a1), then that of ring 1 (b0, b1)
     flat vec2  radius;          // r0, r1
+    flat vec3  normal[2];       // View space normals of the flat sides at the rings (Y), unit, on the same side
     flat vec3  vel[2];          // View space velocities at the rings
     flat vec3  tangent[2];      // View space tangents of the spline at the rings, unit
-    flat uvec2 open_end;        // Ring 0 begins the chain, ring 1 ends it
-    flat vec3  box_lo;          // View space box of the segment
-    flat vec3  box_hi;
+    flat uvec2 open_end;        // The band ends at ring 0, at ring 1: the segment is closed there
     flat vec4  color;
     flat uint  picking_idx;
     smooth vec3 view_pos;       // On the quad, the ray of the fragment starts here
@@ -160,6 +164,39 @@ vec2 box_support(vec3 lo, vec3 hi, float near, vec2 n) {
     return vec2(min((m - e) / d0, (m - e) / d1), max((m + e) / d0, (m + e) / d1));
 }
 
+// Support of the image of the sphere (c, r) along the unit direction n of the image plane z = -1, as (s_min, s_max). As
+// in bond.vert. Requires the sphere to be in front of the eye (c.z + r < 0).
+vec2 sphere_support(vec3 c, float r, vec2 n) {
+#if ORTHO
+    float m = dot(n, c.xy);
+    return vec2(m - r, m + r);
+#else
+    float m = dot(n, c.xy);
+    float k = c.z * c.z - r * r;
+    float h = r * sqrt(max(k + m * m, 0.0));
+    float s = -c.z * m;
+    return vec2(s - h, s + h) / k;
+#endif
+}
+
+// Support of the image of the four spheres along n
+vec2 spheres_support(vec3 c[4], vec2 r, vec2 n) {
+    vec2 s0 = sphere_support(c[0], r.x, n);
+    vec2 s1 = sphere_support(c[1], r.x, n);
+    vec2 s2 = sphere_support(c[2], r.y, n);
+    vec2 s3 = sphere_support(c[3], r.y, n);
+    return vec2(min(min(s0.x, s1.x), min(s2.x, s3.x)), max(max(s0.y, s1.y), max(s2.y, s3.y)));
+}
+
+// The image of a point in front of the eye, on the image plane z = -1 (or the view plane)
+vec2 image(vec3 p) {
+#if ORTHO
+    return p.xy;
+#else
+    return p.xy / -p.z;
+#endif
+}
+
 void cull() {
     // All corners of the quad coincide: no area, no fragments
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -196,27 +233,31 @@ void main() {
     mat3 to_view = mat3(u_world_to_view);
     vec3 p0 = vec3(u_world_to_view * vec4(r0.position, 1.0));
     vec3 p1 = vec3(u_world_to_view * vec4(r1.position, 1.0));
-    vec3 e0 = to_view * (r0.x * sgn0) * s0.x;
-    vec3 e1 = to_view * (r1.x * sgn1) * s1.x;
-    // The cores in the same order at both rings, so the ruled surface between them does not twist through itself
-    if (dot(e0, e1) < 0.0) e1 = -e1;
+    vec3 x0 = to_view * (r0.x * sgn0);
+    vec3 x1 = to_view * (r1.x * sgn1);
+    // The supports in the same sense at both rings, so the ruled surface between the cores does not twist through itself
+    if (dot(x0, x1) < 0.0) x1 = -x1;
+    vec3 z0 = normalize(to_view * r0.z);
+    vec3 z1 = normalize(to_view * r1.z);
+    vec3 e0 = x0 * s0.x;
+    vec3 e1 = x1 * s1.x;
 
     vec3 a0 = p0 - e0, a1 = p0 + e0;
     vec3 b0 = p1 - e1, b1 = p1 + e1;
-    // Out by a little more than the radius: a face which touches the box (one parallel to an axis of the view) is then
-    // inside it, and the march starts outside the segment (backbone_rc.frag)
-    float r_max = max(s0.y, s1.y) * 1.01;
+    float r_max = max(s0.y, s1.y);
     vec3 box_lo = min(min(a0, a1), min(b0, b1)) - r_max;
     vec3 box_hi = max(max(a0, a1), max(b0, b1)) + r_max;
 
+    // The band ends where the chain does, and where the segment of the neighboring instance is not drawn
+    bool end0 = (chain_beg && j == half_S) || (j == 0u && !atom_visible(load_atom_idx(nb.x)));
+    bool end1 = (chain_end && j + 1u == half_S) || (j + 1u == S && !atom_visible(load_atom_idx(nb.y)));
+
     out_frag.core        = vec3[4](a0, a1, b0, b1);
     out_frag.radius      = vec2(s0.y, s1.y);
+    out_frag.normal      = vec3[2](normalize(cross(z0, x0)), normalize(cross(z1, x1)));
     out_frag.vel         = vec3[2](to_view * r0.velocity, to_view * r1.velocity);
-    out_frag.tangent     = vec3[2](normalize(to_view * r0.z), normalize(to_view * r1.z));
-    // The first segment of a chain starts at its beginning, the last ends at its end
-    out_frag.open_end    = uvec2(chain_beg && j == half_S ? 1u : 0u, chain_end && j + 1u == half_S ? 1u : 0u);
-    out_frag.box_lo      = box_lo;
-    out_frag.box_hi      = box_hi;
+    out_frag.tangent     = vec3[2](z0, z1);
+    out_frag.open_end    = uvec2(end0 ? 1u : 0u, end1 ? 1u : 0u);
     out_frag.color       = texelFetch(u_atom_color_buffer, int(atom_idx));
     // As the mesh: the part of the spline that belongs to the control point picks as it
     out_frag.picking_idx = u_backbone_base_index + c;
@@ -238,38 +279,54 @@ void main() {
     vec2 px = 2.0 / (u_viewport_size * vec2(u_view_to_clip[0][0], u_view_to_clip[1][1]));
     float margin = u_viewport_size.x > 0.0 ? SUBPIXEL_MARGIN * max(abs(px.x), abs(px.y)) : 0.0;
 
-    vec2 img_lo, img_hi;
-#if ORTHO
-    img_lo = box_lo.xy;
-    img_hi = box_hi.xy;
-#else
+    // The rectangle (g, gp) of the image: (sg, st) its extents along g and gp
+    vec2 g  = vec2(1.0, 0.0);
+    vec2 gp = vec2(0.0, 1.0);
+    vec2 sg, st;
+#if !ORTHO
     if (z_front > -near) {
-        vec2 sx = box_support(box_lo, box_hi, near, vec2(1.0, 0.0));
-        vec2 sy = box_support(box_lo, box_hi, near, vec2(0.0, 1.0));
-        img_lo = vec2(sx.x, sy.x);
-        img_hi = vec2(sx.y, sy.y);
-    } else {
-        img_lo = vec2( 3.4e38);
-        img_hi = vec2(-3.4e38);
-        for (int i = 0; i < 8; ++i) {
-            vec3 v = vec3((i & 1) != 0 ? box_hi.x : box_lo.x, (i & 2) != 0 ? box_hi.y : box_lo.y, (i & 4) != 0 ? box_hi.z : box_lo.z);
-            vec2 s = v.xy / -v.z;
-            img_lo = min(img_lo, s);
-            img_hi = max(img_hi, s);
+        // Across the near plane the segment may reach behind the eye, where its image is unbounded: the box of its part
+        // behind the near plane, along the axes of the screen
+        sg = box_support(box_lo, box_hi, near, g);
+        st = box_support(box_lo, box_hi, near, gp);
+    } else
+#endif
+    {
+        vec3 c[4] = vec3[4](a0, a1, b0, b1);
+        vec2 r = vec2(s0.y, s1.y);
+        vec2 ia0 = image(a0), ia1 = image(a1), ib0 = image(b0), ib1 = image(b1);
+        vec2 dir[2] = vec2[2]((ia1 - ia0) + (ib1 - ib0), (ib0 + ib1) - (ia0 + ia1));
+        float best = 3.4e38;
+        for (int k = 0; k < 2; ++k) {
+            float d2 = dot(dir[k], dir[k]);
+            if (!(d2 > 1.0e-16)) continue;
+            vec2 u = dir[k] * inversesqrt(d2);
+            vec2 v = vec2(-u.y, u.x);
+            vec2 su = spheres_support(c, r, u);
+            vec2 sv = spheres_support(c, r, v);
+            float area = (su.y - su.x) * (sv.y - sv.x);
+            if (area < best) {
+                best = area;
+                g = u; gp = v; sg = su; st = sv;
+            }
+        }
+        if (best == 3.4e38) {
+            // Seen end on, a point: along the axes of the screen
+            sg = spheres_support(c, r, g);
+            st = spheres_support(c, r, gp);
         }
     }
-#endif
-    img_lo -= margin;
-    img_hi += margin;
+    sg += vec2(-margin, margin);
+    st += vec2(-margin, margin);
 
     bool hi = (corner & 1u) != 0u;
     bool up = (corner & 2u) != 0u;
-    vec2 st = vec2(hi ? img_hi.x : img_lo.x, up ? img_hi.y : img_lo.y);
+    vec2 img = (hi ? sg.y : sg.x) * g + (up ? st.y : st.x) * gp;
 
 #if ORTHO
-    vec3 view_pos = vec3(st, z_quad);
+    vec3 view_pos = vec3(img, z_quad);
 #else
-    vec3 view_pos = vec3(st, -1.0) * -z_quad;
+    vec3 view_pos = vec3(img, -1.0) * -z_quad;
 #endif
 
     vec4 clip = u_view_to_clip * vec4(view_pos, 1.0);
