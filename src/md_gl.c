@@ -2405,6 +2405,12 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
         const mat4_t* prev_world_to_view = (const mat4_t*)args->view_transform.prev_view_matrix;
         const mat4_t* prev_view_to_clip  = (const mat4_t*)args->view_transform.prev_proj_matrix;
         ubo_data->view_transform.prev_world_to_clip = mat4_mul(*prev_view_to_clip, *prev_world_to_view);
+        if (model_matrix) {
+            // The model matrix as it was in the previous frame too (the images of a periodic cell, say). Without it the
+            // velocities took view_to_world, which holds its inverse, against the previous view without it: a copy moved
+            // by the matrix showed as moving by it, every frame
+            ubo_data->view_transform.prev_world_to_clip = mat4_mul(ubo_data->view_transform.prev_world_to_clip, *model_matrix);
+        }
         ubo_data->view_transform.curr_view_to_prev_clip = mat4_mul(ubo_data->view_transform.prev_world_to_clip, ubo_data->view_transform.view_to_world);
         extract_jitter_uv(ubo_data->jitter_uv.elem + 0, ubo_data->view_transform.view_to_clip);
         extract_jitter_uv(ubo_data->jitter_uv.elem + 2, *prev_view_to_clip);
