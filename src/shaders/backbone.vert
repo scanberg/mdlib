@@ -184,30 +184,34 @@ vec2 outline_vertex(uint m, vec2 extent) {
 }
 
 #else
-// Stadium of extent = (l, r) (see above), and extent_t = d(l, r)/du. The vertices are spread uniformly along the outline,
-// so a flat band has vertices across its faces and a circle is uniform in angle, and they move continuously as l and r
-// change along the spline. Half k < P / 2 goes from (l, -r) around the half circle about (l, 0) to (l, r) and along the
-// side at y = r towards (-l, r), where the point reflection (the other half) begins.
+// Stadium of extent = (l, r) (see above), and extent_t = d(l, r)/du. The vertices are spread along the outline by the
+// angle it turns through on the half circle, and by a radian per half width (l + r) along the flat side: a circle is
+// uniform in angle, a flat band gets most of them on its round edges and a couple across each face, and they move
+// continuously as l and r change along the spline. Spread uniformly by length, a sheet (l = 14 r) got one vertex on a
+// half circle of P = 16: its edge was a slanted chamfer from one face to the other, shaded as if round, which folded
+// along the diagonals of its quads where the strand twists. A face needs few: it is flat across, and its normal changes
+// linearly across it. Half k < P / 2 goes from (l, -r) around the half circle about (l, 0) to (l, r) and along the side
+// at y = r towards (-l, r), where the point reflection (the other half) begins.
 // The derivative of a vertex along the spline is taken at a fixed point of the outline: how the vertices slide along it
 // is along dir, which the normal does not see.
 ProfileVertex profile_vertex(uint k, vec2 extent, vec2 extent_t) {
-    uint  H   = u_res.y / 2u;
-    float sgn = k < H ? 1.0 : -1.0;
-    float u   = float(k < H ? k : k - H) / float(H);
-    float l   = extent.x;
-    float r   = extent.y;
-    float arc = PI * r;
-    float s   = u * (arc + 2.0 * l);
+    uint  H    = u_res.y / 2u;
+    float sgn  = k < H ? 1.0 : -1.0;
+    float u    = float(k < H ? k : k - H) / float(H);
+    float l    = extent.x;
+    float r    = extent.y;
+    float side = 2.0 * l / (l + r);     // The flat side, in radians of the parameter
+    float s    = u * (PI + side);
 
     ProfileVertex v;
-    if (s < arc) {
-        float theta = s / r - 0.5 * PI;
+    if (s < PI) {
+        float theta = s - 0.5 * PI;
         vec2  cs    = vec2(cos(theta), sin(theta));
         v.pos   = vec2(l, 0.0) + r * cs;
         v.dir   = vec2(-cs.y, cs.x);
         v.pos_t = vec2(extent_t.x, 0.0) + extent_t.y * cs;
     } else {
-        v.pos   = vec2(l - (s - arc), r);
+        v.pos   = vec2(l - (s - PI) * (l + r), r);
         v.dir   = vec2(-1.0, 0.0);
         v.pos_t = vec2(0.0, extent_t.y);
     }
