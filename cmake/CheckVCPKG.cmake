@@ -27,6 +27,9 @@ if (NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
         endif()
     endif()
 
-    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-    message(STATUS "VCPKG_ROOT is defined, using vcpkg-toolchain: " ${CMAKE_TOOLCHAIN_FILE})
+    # VCPKG_ROOT uses backslashes on Windows. Convert to a CMake path, otherwise the path gets
+    # written verbatim into CMakeSystem.cmake as include("C:\...") and fails to parse as an invalid escape.
+    file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" _md_vcpkg_root)
+    set(CMAKE_TOOLCHAIN_FILE "${_md_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
+    message(STATUS "VCPKG_ROOT is defined, using vcpkg-toolchain: ${CMAKE_TOOLCHAIN_FILE}")
 endif()
