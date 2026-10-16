@@ -81,12 +81,12 @@ uniform usamplerBuffer u_atom_flags_buffer;
 
 out Fragment {
     flat vec3  core[4];         // View space: the core of ring 0 (a0, a1), then that of ring 1 (b0, b1)
-    flat vec2  radius;          // r0, r1
+    flat vec3  radius;          // r0, r1, and the sine of the largest angle between the normals of the faces and the mean of
+                                // normal[] (faces_margin)
     flat vec3  normal[2];       // View space normals of the flat sides at the rings (Y), unit, on the same side
     flat vec3  vel[2];          // View space velocities at the rings
     flat vec3  tangent[2];      // View space tangents of the spline at the rings, unit
     flat uvec2 open_end;        // How the band ends at ring 0, at ring 1: 0 not, 1 round (a chain), 2 flat (a neighbor not drawn)
-    flat float face_margin;     // sin of the largest angle between the normals of the faces and the mean of normal[]
     flat vec4  color;
     flat uint  picking_idx;
     smooth vec3 view_pos;       // On the quad, the ray of the fragment starts here
@@ -213,29 +213,32 @@ uint segment_step(uint c, uvec4 nb, bool chain_beg, bool chain_end) {
 // How far the normals of the two faces (bilinear patches, the cores moved by +-yr0, +-yr1) turn from the mean normal of
 // the rings: the sine of the largest angle, 1 where a face folds over (its normals point both ways). The normal of a
 // patch is bilinear over it, so it lies within the cone of those at its corners, and a ray can enter the face of +Y
-// only if dot(rd, Y) < this (backbone_rc.frag): the face of -Y if dot(rd, Y) > -this.
-float face_margin(vec3 a0, vec3 a1, vec3 b0, vec3 b1, vec3 yr0, vec3 yr1) {
+// only if dot(rd, Y) < this (backbone_rc.frag): the face of -Y if dot(rd, Y) > -this. Within one structured pass (no
+// early return), the result in the radius varying: the interface is as small as it can be.
+float faces_margin(vec3 a0, vec3 a1, vec3 b0, vec3 b1, vec3 yr0, vec3 yr1) {
     vec3  ym    = normalize(yr0 + yr1);
     float cos_m = 1.0;
+    bool  fold  = false;
     for (int f = 0; f < 2; ++f) {
         float sg  = f == 0 ? 1.0 : -1.0;
-        vec3  q00 = a0 + yr0 * sg;
-        vec3  q10 = a1 + yr0 * sg;
-        vec3  q01 = b0 + yr1 * sg;
-        vec3  q11 = b1 + yr1 * sg;
-        vec3  du0 = q10 - q00, du1 = q11 - q01;     // d/du at v = 0, 1
-        vec3  dv0 = q01 - q00, dv1 = q11 - q10;     // d/dv at u = 0, 1
-        vec3  n[4] = vec3[4](cross(du0, dv0), cross(du0, dv1), cross(du1, dv0), cross(du1, dv1));
+        vec3  du0 = a1 - a0;                                    // d/du at v = 0, 1 (the same for both faces)
+        vec3  du1 = b1 - b0;
+        vec3  dv0 = (b0 + yr1 * sg) - (a0 + yr0 * sg);          // d/dv at u = 0, 1
+        vec3  dv1 = (b1 + yr1 * sg) - (a1 + yr0 * sg);
+        vec3  n00 = cross(du0, dv0);
+        vec3  n10 = cross(du0, dv1);
+        vec3  n01 = cross(du1, dv0);
+        vec3  n11 = cross(du1, dv1);
         // All on the side of Y of that at the first corner, or the face folds over
-        float s0 = dot(n[0], ym);
-        for (int c = 0; c < 4; ++c) {
-            float len = length(n[c]);
-            float cy  = dot(n[c], ym);
-            if (!(len > 0.0) || !(cy * s0 > 0.0)) return 1.0;
-            cos_m = min(cos_m, abs(cy) / len);
-        }
+        float c00 = dot(n00, ym);
+        float c10 = dot(n10, ym);
+        float c01 = dot(n01, ym);
+        float c11 = dot(n11, ym);
+        fold = fold || !(c00 * c10 > 0.0 && c00 * c01 > 0.0 && c00 * c11 > 0.0);
+        cos_m = min(cos_m, min(min(abs(c00) / max(length(n00), 1.0e-30), abs(c10) / max(length(n10), 1.0e-30)),
+                               min(abs(c01) / max(length(n01), 1.0e-30), abs(c11) / max(length(n11), 1.0e-30))));
     }
-    return min(sqrt(max(1.0 - cos_m * cos_m, 0.0)) + 0.01, 1.0);
+    return fold ? 1.0 : min(sqrt(max(1.0 - cos_m * cos_m, 0.0)) + 0.01, 1.0);
 }
 
 // Support of the image of the part of the box [lo, hi] (view space) behind the near plane, along the unit direction n
@@ -344,12 +347,11 @@ void main() {
     }
 
     out_frag.core        = vec3[4](a0, a1, b0, b1);
-    out_frag.radius      = vec2(s0.y, s1.y);
+    out_frag.radius      = vec3(s0.y, s1.y, faces_margin(a0, a1, b0, b1, y0 * s0.y, y1 * s1.y));
     out_frag.normal      = vec3[2](y0, y1);
     out_frag.vel         = vec3[2](to_view * r0.velocity, to_view * r1.velocity);
     out_frag.tangent     = vec3[2](z0, z1);
     out_frag.open_end    = uvec2(end0, end1);
-    out_frag.face_margin = face_margin(a0, a1, b0, b1, y0 * s0.y, y1 * s1.y);
     out_frag.color       = texelFetch(u_atom_color_buffer, int(atom_idx));
     // As the mesh: the part of the spline that belongs to the control point picks as it
     out_frag.picking_idx = u_backbone_base_index + c;

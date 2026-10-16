@@ -15,7 +15,7 @@
 //     ray can enter it, against its normal somewhere: across a twisted band the normal of a face turns away from those
 //     of the rings by more than ten degrees (it is normal to the sides, which slant where the band twists), so the
 //     normals of the rings do not tell (a ray at a grazing angle entered a face they said it left, and went through the
-//     band). The normal of the patch is bilinear over it, within the cone of those at its corners: within face_margin
+//     band). The normal of the patch is bilinear over it, within the cone of those at its corners: within radius.z
 //     of the mean normal of the rings (backbone_rc.vert).
 //   - the rounded sides: as the mesh makes them, the ruled surfaces between the circles of radius r0 and r1 about the
 //     core ends in the planes of the rings, through the points at the same angle about them (the profile of the mesh at
@@ -75,12 +75,11 @@ layout (std140) uniform ubo {
 
 in Fragment {
     flat vec3  core[4];
-    flat vec2  radius;
+    flat vec3  radius;          // r0, r1, the margin of the faces (backbone_rc.vert)
     flat vec3  normal[2];
     flat vec3  vel[2];
     flat vec3  tangent[2];
     flat uvec2 open_end;        // 0 not, 1 round (a chain), 2 flat (a neighbor not drawn)
-    flat float face_margin;     // sin of the angle by which the normals of the faces turn from that of the rings
     flat vec4  color;
     flat uint  picking_idx;
     smooth vec3 view_pos;
@@ -359,11 +358,9 @@ void side_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, vec3 X0, v
     // Newton's steps, each along the tangent of the circle and back onto it (the angle moves by atan(step), which keeps
     // the convergence quadratic, without a trigonometric function)
     for (int i = 0; i < 3; ++i) {
-        float cs = e.x;
-        float sn = e.y;
-        float f  = k0 + cs * k1 + sn * k2 + cs * cs * k11 + cs * sn * k12 + sn * sn * k22;
-        float fp = cs * k2 - sn * k1 + 2.0 * cs * sn * (k22 - k11) + (cs * cs - sn * sn) * k12;
-        if (fp != 0.0) e = normalize(e + vec2(sn, -cs) * (f / fp));
+        float f  = k0 + e.x * k1 + e.y * k2 + e.x * e.x * k11 + e.x * e.y * k12 + e.y * e.y * k22;
+        float fp = e.x * k2 - e.y * k1 + 2.0 * e.x * e.y * (k22 - k11) + (e.x * e.x - e.y * e.y) * k12;
+        if (fp != 0.0) e = normalize(e + vec2(e.y, -e.x) * (f / fp));
     }
     float cs = e.x;
     float sn = e.y;
@@ -417,8 +414,8 @@ void main() {
         vec3 y0 = in_frag.normal[0] * r0;
         vec3 y1 = in_frag.normal[1] * r1;
         float sy = dot(rd, normalize(in_frag.normal[0] + in_frag.normal[1]));
-        if (sy <  in_frag.face_margin) patch_hit(ro, rd, a0 + y0, a1 + y0, b0 + y1, b1 + y1, t, n, ns);
-        if (sy > -in_frag.face_margin) patch_hit(ro, rd, a0 - y0, a1 - y0, b0 - y1, b1 - y1, t, n, ns);
+        if (sy <  in_frag.radius.z) patch_hit(ro, rd, a0 + y0, a1 + y0, b0 + y1, b1 + y1, t, n, ns);
+        if (sy > -in_frag.radius.z) patch_hit(ro, rd, a0 - y0, a1 - y0, b0 - y1, b1 - y1, t, n, ns);
     }
 
     // A side, or the whole of a round tube; the other side. Where the guess is behind the nearest hit so far by more than
