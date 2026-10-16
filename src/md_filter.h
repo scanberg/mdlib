@@ -9,6 +9,12 @@
 //
 // An empty expression (or one of only whitespace) picks every atom, as 'all' does.
 //
+// A filter can be evaluated within a context, a set of atoms which is then all there is to it, as the right hand side
+// of 'in' is to its left in a script: residue(1) is the first residue of the context and all is the context (and so is
+// an empty expression), and 'out' leaves it. What it picks is what (expr) in union(context) would, but the context is a
+// set of atoms by the time it is passed, so one which depends on the coordinates is fine - 'in' requires its right hand
+// side to be known when the script is compiled.
+//
 // Where something goes wrong, the result says what, and where in the expression, so that an input can point at it.
 // While a filter is typed, md_filter_complete says what can be written at the cursor.
 
@@ -33,11 +39,13 @@ typedef struct md_filter_context_t {
     const struct md_system_t*       sys;    // The system the atoms are picked from. Required.
     const struct md_system_state_t* state;  // The coordinates it is evaluated in. NULL for the system's reference state.
     const struct md_script_ir_t*    ir;     // A compiled script whose names the expression may use. May be NULL.
+    const struct md_bitset_t*       atoms;  // The atoms it is evaluated within (see above). NULL for the whole system.
 } md_filter_context_t;
 
 typedef struct md_filter_result_t {
     bool success;                           // The expression picked atoms (possibly none)
-    bool is_dynamic;                        // What it picks depends on the coordinates: another state may give others
+    bool is_dynamic;                        // What it picks depends on the coordinates: another state may give others.
+                                            // Of the expression alone: whether ctx->atoms do is the caller's to know.
     md_script_range_marker_t error_range;   // The bytes of the expression the first error is about. Empty when there is
                                             // none, or it is about the expression as a whole.
     char error[256];                        // Why it failed, one line per error. Empty on success.
@@ -54,7 +62,8 @@ md_filter_result_t md_filter_sets(md_array(struct md_bitset_t)* dst, str_t expr,
 // What can be written at the byte offset cursor of expr, while it is typed (see md_script_complete). The variables
 // are the names of ctx->ir. Outside of a call only what can be a selection is offered (and the keywords that combine
 // them); in the argument of a call everything is, and what has the type of the parameter is marked (fits). The
-// system gives the values that selectors take, such as the residue names in resname('|'); ctx->state is not read.
+// system gives the values that selectors take, such as the residue names in resname('|'), those within ctx->atoms
+// when there is a context: a name that is not there would not match. ctx->state is not read.
 md_script_completions_t md_filter_complete(str_t expr, int cursor, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
