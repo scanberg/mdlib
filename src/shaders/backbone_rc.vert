@@ -14,15 +14,23 @@
 //
 // At a ring the profile is a stadium, the core segment from P - l X to P + l X (P the position, X the support) widened
 // by r, its flat sides facing +-Y = Z x X. The segment between rings 0 and 1 is the ruled surface between the cores
-// thickened by the radius, blended from r0 to r1: backbone_rc.frag ray casts it in closed form (see there). A circle (l = 0) makes it one round cone, exactly. A segment is closed at a ring where the band ends:
-// the end of a chain, or a neighbor which is not drawn (its control point hidden); elsewhere the next segment closes it.
+// thickened by the radius, blended from r0 to r1: backbone_rc.frag ray casts it in closed form (see there). A circle
+// (l = 0) makes it one round cone, exactly. Where the band ends a segment is closed: round at the end of a chain, flat
+// (cut at the plane of the ring) where the neighbor is not drawn (its control point hidden, or not of this pass: a pass
+// of the highlighted atoms only must give the same depth where it draws as the pass of all did); elsewhere the next
+// segment closes it.
 //
-// The segment lies within the convex hull of the four spheres at the ends of its cores (radius r0 at ring 0, r1 at ring
-// 1), and its image within the hull of their images (central projection keeps convex hulls in front of the eye). The
-// quad is the rectangle about those images along the image of the cores or of the axis of the segment, whichever is
-// smaller: a band is a long thin parallelogram on screen at any angle, which a rectangle along the axes of the screen
-// bounds poorly (half of it empty, measured over random orientations; a tenth or so along its own axes). Its sides are
-// tangent to the outlines of the spheres (bond.vert). Across the near plane, the box of the segment bounds it instead.
+// A segment is cut at the planes of its rings (backbone_rc.frag), but where the chain ends, so the segments of a
+// chain do not overlap: a quad bounds its own part of the band, and no pixel is ray cast twice where they meet (a
+// segment of a helix is 0.3 A long, and its quad reached a radius past either ring; a lipid tail is 2.2 A thick). Between
+// the planes it lies within the hull of its cross sections there: the stadium of the ring, whose round ends are the
+// round cones of the sides cut by the plane, ellipses a little longer than the circles (bounded here by the rectangle of
+// the stadium widened by 1 / cos of the angle between a side and the tangent, and the half angle of the cone where the
+// radius changes). Where the band ends, the rung capsule and the end spheres reach out by r past the plane: the box
+// out to there. The image of the segment lies within the hull of the images of those corners (a central projection keeps
+// convex hulls in front of the eye), and the quad is the rectangle about them along the image of the cores or of the
+// axis of the segment, whichever is smaller: a band is a long thin parallelogram on screen at any angle, which a
+// rectangle along the axes of the screen bounds poorly. Across the near plane, the box of the corners bounds it instead.
 // It lies at the depth of the point of the segment's box closest to the image plane, or at the near plane if that is in
 // front of it, as ring.vert places its quads: the ray of a fragment starts on it, in front of the segment.
 
@@ -79,7 +87,7 @@ out Fragment {
     flat vec3  normal[2];       // View space normals of the flat sides at the rings (Y), unit, on the same side
     flat vec3  vel[2];          // View space velocities at the rings
     flat vec3  tangent[2];      // View space tangents of the spline at the rings, unit
-    flat uvec2 open_end;        // The band ends at ring 0, at ring 1: the segment is closed there
+    flat uvec2 open_end;        // How the band ends at ring 0, at ring 1: 0 not, 1 round (a chain), 2 flat (a neighbor not drawn)
     flat vec4  color;
     flat uint  picking_idx;
     smooth vec3 view_pos;       // On the quad, the ray of the fragment starts here
@@ -213,30 +221,6 @@ vec2 box_support(vec3 lo, vec3 hi, float near, vec2 n) {
     return vec2(min((m - e) / d0, (m - e) / d1), max((m + e) / d0, (m + e) / d1));
 }
 
-// Support of the image of the sphere (c, r) along the unit direction n of the image plane z = -1, as (s_min, s_max). As
-// in bond.vert. Requires the sphere to be in front of the eye (c.z + r < 0).
-vec2 sphere_support(vec3 c, float r, vec2 n) {
-#if ORTHO
-    float m = dot(n, c.xy);
-    return vec2(m - r, m + r);
-#else
-    float m = dot(n, c.xy);
-    float k = c.z * c.z - r * r;
-    float h = r * sqrt(max(k + m * m, 0.0));
-    float s = -c.z * m;
-    return vec2(s - h, s + h) / k;
-#endif
-}
-
-// Support of the image of the four spheres along n
-vec2 spheres_support(vec3 c[4], vec2 r, vec2 n) {
-    vec2 s0 = sphere_support(c[0], r.x, n);
-    vec2 s1 = sphere_support(c[1], r.x, n);
-    vec2 s2 = sphere_support(c[2], r.y, n);
-    vec2 s3 = sphere_support(c[3], r.y, n);
-    return vec2(min(min(s0.x, s1.x), min(s2.x, s3.x)), max(max(s0.y, s1.y), max(s2.y, s3.y)));
-}
-
 // The image of a point in front of the eye, on the image plane z = -1 (or the view plane)
 vec2 image(vec3 p) {
 #if ORTHO
@@ -300,20 +284,50 @@ void main() {
 
     vec3 a0 = p0 - e0, a1 = p0 + e0;
     vec3 b0 = p1 - e1, b1 = p1 + e1;
-    float r_max = max(s0.y, s1.y);
-    vec3 box_lo = min(min(a0, a1), min(b0, b1)) - r_max;
-    vec3 box_hi = max(max(a0, a1), max(b0, b1)) + r_max;
+    vec3 y0 = normalize(cross(z0, x0));
+    vec3 y1 = normalize(cross(z1, x1));
 
-    // The band ends where the chain does, and where the segment of the neighboring instance is not drawn
-    bool end0 = (chain_beg && j == half_S) || (j == 0u && !atom_visible(load_atom_idx(nb.x)));
-    bool end1 = (chain_end && j + step == half_S) || (j + step == S && !atom_visible(load_atom_idx(nb.y)));
+    // The band ends round where the chain does, flat where the segment of the neighboring instance is not drawn
+    uint end0 = (chain_beg && j == half_S) ? 1u : (j == 0u && !atom_visible(load_atom_idx(nb.x))) ? 2u : 0u;
+    uint end1 = (chain_end && j + step == half_S) ? 1u : (j + step == S && !atom_visible(load_atom_idx(nb.y))) ? 2u : 0u;
+
+    // The corners of the rectangles of the cross sections at the rings, and of the boxes out past them where the band
+    // ends round. k widens the round ends to the cuts of the round cones of the sides (1 / cos(angle + half angle of the cone)).
+    vec3  d0 = b0 - a0;
+    vec3  d1 = b1 - a1;
+    float len = max(min(length(d0), length(d1)), 1.0e-6);
+    vec3  u0 = d0 / max(length(d0), 1.0e-6);
+    vec3  u1 = d1 / max(length(d1), 1.0e-6);
+    float cos_side = min(min(abs(dot(u0, z0)), abs(dot(u1, z0))), min(abs(dot(u0, z1)), abs(dot(u1, z1))));
+    float k = 1.01 / max(cos_side - abs(s0.y - s1.y) / len, 0.5);
+    vec3 corner_pt[16];
+    int  n_pt = 0;
+    for (int i = 0; i < 2; ++i) {
+        vec3  P   = i == 0 ? p0 : p1;
+        vec3  X   = (i == 0 ? x0 : x1) * ((i == 0 ? s0.x : s1.x) + k * (i == 0 ? s0.y : s1.y));
+        vec3  Y   = (i == 0 ? y0 : y1) * (k * (i == 0 ? s0.y : s1.y));
+        bool  end = (i == 0 ? end0 : end1) == 1u;
+        vec3  out_dir = i == 0 ? -z0 * s0.y : z1 * s1.y;
+        for (int q = 0; q < 4; ++q) {
+            vec3 v = P + X * ((q & 1) != 0 ? 1.0 : -1.0) + Y * ((q & 2) != 0 ? 1.0 : -1.0);
+            corner_pt[n_pt++] = v;
+            if (end) corner_pt[n_pt++] = v + out_dir;
+        }
+    }
+    vec3 box_lo = vec3( 3.4e38);
+    vec3 box_hi = vec3(-3.4e38);
+    for (int i = 0; i < 16; ++i) {
+        if (i >= n_pt) break;
+        box_lo = min(box_lo, corner_pt[i]);
+        box_hi = max(box_hi, corner_pt[i]);
+    }
 
     out_frag.core        = vec3[4](a0, a1, b0, b1);
     out_frag.radius      = vec2(s0.y, s1.y);
-    out_frag.normal      = vec3[2](normalize(cross(z0, x0)), normalize(cross(z1, x1)));
+    out_frag.normal      = vec3[2](y0, y1);
     out_frag.vel         = vec3[2](to_view * r0.velocity, to_view * r1.velocity);
     out_frag.tangent     = vec3[2](z0, z1);
-    out_frag.open_end    = uvec2(end0 ? 1u : 0u, end1 ? 1u : 0u);
+    out_frag.open_end    = uvec2(end0, end1);
     out_frag.color       = texelFetch(u_atom_color_buffer, int(atom_idx));
     // As the mesh: the part of the spline that belongs to the control point picks as it
     out_frag.picking_idx = u_backbone_base_index + c;
@@ -348,28 +362,32 @@ void main() {
     } else
 #endif
     {
-        vec3 c[4] = vec3[4](a0, a1, b0, b1);
-        vec2 r = vec2(s0.y, s1.y);
-        vec2 ia0 = image(a0), ia1 = image(a1), ib0 = image(b0), ib1 = image(b1);
-        vec2 dir[2] = vec2[2]((ia1 - ia0) + (ib1 - ib0), (ib0 + ib1) - (ia0 + ia1));
+        vec2 im[16];
+        for (int i = 0; i < 16; ++i) {
+            im[i] = i < n_pt ? image(corner_pt[i]) : vec2(0.0);
+        }
+        // Along the image of the support (across the band) or of the axis, whichever bounds it the tighter
+        vec2 dir[3] = vec2[3](image(p0 + x0) - image(p0) + image(p1 + x1) - image(p1), image(p1) - image(p0), vec2(1.0, 0.0));
         float best = 3.4e38;
-        for (int k = 0; k < 2; ++k) {
-            float d2 = dot(dir[k], dir[k]);
+        for (int d = 0; d < 3; ++d) {
+            float d2 = dot(dir[d], dir[d]);
             if (!(d2 > 1.0e-16)) continue;
-            vec2 u = dir[k] * inversesqrt(d2);
+            vec2 u = dir[d] * inversesqrt(d2);
             vec2 v = vec2(-u.y, u.x);
-            vec2 su = spheres_support(c, r, u);
-            vec2 sv = spheres_support(c, r, v);
+            vec2 su = vec2(3.4e38, -3.4e38);
+            vec2 sv = vec2(3.4e38, -3.4e38);
+            for (int i = 0; i < 16; ++i) {
+                if (i >= n_pt) break;
+                float a = dot(im[i], u);
+                float b = dot(im[i], v);
+                su = vec2(min(su.x, a), max(su.y, a));
+                sv = vec2(min(sv.x, b), max(sv.y, b));
+            }
             float area = (su.y - su.x) * (sv.y - sv.x);
             if (area < best) {
                 best = area;
                 g = u; gp = v; sg = su; st = sv;
             }
-        }
-        if (best == 3.4e38) {
-            // Seen end on, a point: along the axes of the screen
-            sg = spheres_support(c, r, g);
-            st = spheres_support(c, r, gp);
         }
     }
     sg += vec2(-margin, margin);

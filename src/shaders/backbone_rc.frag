@@ -14,11 +14,17 @@
 //     (y = z x x, as the mesh of backbone.vert places its profile). Reshetov's ray / patch, a quadratic.
 //   - the rounded sides: the round cones (convex hulls) of the spheres at the ends of the cores, (a0, r0) to (b0, r1)
 //     and (a1, r0) to (b1, r1). Quilez's ray / round cone, a quadratic.
-//   - the rungs, the capsules along the cores, where the band ends (open_end): the end of a chain, or the neighbor
-//     segment is not drawn. Elsewhere the faces of the next segment meet these at the shared ring exactly, and the
-//     capsule lies within the two: the segments of a chain close each other.
+//   - where the band ends (open_end): at the end of a chain the rungs, the capsules along the cores, and the round cones
+//     whole; where the neighbor is not drawn a flat cap, the plane of the ring within the stadium, the segment cut there
+//     as elsewhere (a pass which draws the highlighted atoms only gives the same depth where it draws as the pass of
+//     all, which drew the neighbor). Elsewhere the faces of the next segment meet these at the shared ring exactly: the
+//     segments of a chain close each other.
 // The side walls between the faces (the core ends moved by up to r) lie within the round cones, so the union is closed
-// and the first hit is the nearest hit with any piece: no iteration. Against the thickened ruled patch (dense sampling)
+// and the first hit is the nearest hit with any piece: no iteration. The segment is cut at the planes of its rings
+// (through the middle of the core, along the tangent), but where the chain ends: a hit with a piece past one is
+// dropped, the neighbor there holds the same part of the band (the round cones of the two meet in nearly the same
+// ellipse, a few thousandths of r apart). So the segments of a chain do not overlap, and the quads of backbone_rc.vert
+// bound their own parts only. The faces lie between the planes, the round cones reach past them. Against the thickened ruled patch (dense sampling)
 // it is off by 0.01 Angstrom at full detail and a few hundredths at the coarsest (the march: up to 0.13).
 // A round tube (l = 0 at both rings) is the round cone alone, exactly.
 //
@@ -60,7 +66,7 @@ in Fragment {
     flat vec3  normal[2];
     flat vec3  vel[2];
     flat vec3  tangent[2];
-    flat uvec2 open_end;
+    flat uvec2 open_end;        // 0 not, 1 round (a chain), 2 flat (a neighbor not drawn)
     flat vec4  color;
     flat uint  picking_idx;
     smooth vec3 view_pos;
@@ -77,7 +83,7 @@ layout (depth_greater) out float gl_FragDepth;
 // with u and v in [0, 1] and 0 < t < t_hit, and the normal of the patch there (either side). Reshetov, "Cool Patches: A
 // Geometric Approach to Ray/Bilinear Patch Intersections" (Ray Tracing Gems, 2019): the ray meets the line of the patch
 // at u where the two are coplanar, a quadratic in u, then t and v on that line.
-void patch_hit(vec3 ro, vec3 rd, vec3 q00, vec3 q10, vec3 q01, vec3 q11, inout float t_hit, inout vec3 n_hit) {
+void patch_hit(vec3 ro, vec3 rd, vec3 q00, vec3 q10, vec3 q01, vec3 q11, inout float t_hit, inout vec3 n_hit, inout vec3 n_side) {
     vec3 e10 = q10 - q00;
     vec3 e11 = q11 - q10;
     vec3 e00 = q01 - q00;
@@ -112,15 +118,47 @@ void patch_hit(vec3 ro, vec3 rd, vec3 q00, vec3 q10, vec3 q01, vec3 q11, inout f
         float t = dot(n, pb) / dd;
         float v = dot(n, rd) / dd;
         if (t > 0.0 && t < t_hit && v >= 0.0 && v <= 1.0) {
-            t_hit = t;
-            n_hit = cross(mix(e10, q11 - q01, v), pb);
+            t_hit  = t;
+            n_hit  = cross(mix(e10, q11 - q01, v), pb);
+            n_side = n_hit;
         }
     }
 }
 
+// Whether a point is within the segment: between the planes of its rings, but where the chain ends
+bool kept(vec3 p) {
+    float tol = 1.0e-3 * (in_frag.radius.x + in_frag.radius.y);
+    vec3  m0  = 0.5 * (in_frag.core[0] + in_frag.core[1]);
+    vec3  m1  = 0.5 * (in_frag.core[2] + in_frag.core[3]);
+    return (in_frag.open_end.x == 1u || dot(p - m0, in_frag.tangent[0]) >= -tol) &&
+           (in_frag.open_end.y == 1u || dot(p - m1, in_frag.tangent[1]) <=  tol);
+}
+
+// Ray against the flat cap at a ring: its plane (through the middle of the core [a, b], normal z), within r of the core
+void cap_hit(vec3 ro, vec3 rd, vec3 a, vec3 b, float r, vec3 z, inout float t_hit, inout vec3 n_hit, inout vec3 n_side) {
+    float dz = dot(rd, z);
+    if (abs(dz) < 1.0e-8) return;
+    vec3  m = 0.5 * (a + b);
+    float t = dot(m - ro, z) / dz;
+    if (!(t > 0.0 && t < t_hit)) return;
+    vec3  p  = ro + rd * t;
+    vec3  ba = b - a;
+    float h  = clamp(dot(p - a, ba) / max(dot(ba, ba), 1.0e-12), 0.0, 1.0);
+    vec3  q  = p - (a + ba * h);
+    // Within r, not the ellipses the round cones of the sides make cut at a slant (wider by a few thousandths of r): a
+    // cap must never reach out of the surface, which would change the depth where the pass of all drew the segment
+    if (dot(q, q) <= r * r && kept(p)) {
+        t_hit  = t;
+        n_hit  = z;
+        n_side = z;
+    }
+}
+
 // Ray (ro, rd) against the round cone of the spheres (pa, ra) and (pb, rb), their convex hull (a capsule for ra = rb):
-// the nearest hit with 0 < t < t_hit and the outward normal there. Quilez, https://iquilezles.org/articles/intersectors
-void round_cone_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, inout float t_hit, inout vec3 n_hit) {
+// the nearest hit with 0 < t < t_hit, within the segment (kept), and the outward normal there. Quilez,
+// https://iquilezles.org/articles/intersectors. Its nearest hit past a plane of the segment drops it: the ray entered
+// the band there through the neighbor.
+void round_cone_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, inout float t_hit, inout vec3 n_hit, inout vec3 n_side) {
     vec3  ba = pb - pa;
     vec3  oa = ro - pa;
     vec3  ob = ro - pb;
@@ -144,28 +182,29 @@ void round_cone_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, inou
         float t = (-sqrt(h) - k1) / k2;
         float y = m1 - ra * rr + t * m2;
         if (y > 0.0 && y < d2) {
-            if (t > 0.0 && t < t_hit) {
-                t_hit = t;
-                n_hit = d2 * (oa + t * rd) - ba * y;
+            if (t > 0.0 && t < t_hit && kept(ro + rd * t)) {
+                t_hit  = t;
+                n_hit  = d2 * (oa + t * rd) - ba * y;
+                n_side = n_hit;
             }
             return;
         }
     }
+    // The spheres: the nearer hit of the two
     float h1 = m3 * m3 - m5 + ra * ra;
     float h2 = m6 * m6 - m7 + rb * rb;
-    if (h1 > 0.0) {
-        float t = -m3 - sqrt(h1);
-        if (t > 0.0 && t < t_hit) {
-            t_hit = t;
-            n_hit = oa + t * rd;
-        }
-    }
-    if (h2 > 0.0) {
-        float t = -m6 - sqrt(h2);
-        if (t > 0.0 && t < t_hit) {
-            t_hit = t;
-            n_hit = ob + t * rd;
-        }
+    float t1 = h1 > 0.0 ? -m3 - sqrt(h1) : NO_HIT;
+    float t2 = h2 > 0.0 ? -m6 - sqrt(h2) : NO_HIT;
+    t1 = t1 > 0.0 ? t1 : NO_HIT;
+    t2 = t2 > 0.0 ? t2 : NO_HIT;
+    float t = min(t1, t2);
+    if (t < t_hit && kept(ro + rd * t)) {
+        t_hit = t;
+        n_hit = t1 <= t2 ? oa + t * rd : ob + t * rd;
+        // That of the cone through it: where a segment meets the next, its sphere is cut at the plane of the ring, and
+        // turned with the curve the normal of the sphere would turn twice
+        float y = m1 - ra * rr + t * m2;
+        n_side = d2 > 0.0 ? d2 * (oa + t * rd) - ba * y : n_hit;
     }
 }
 
@@ -184,17 +223,18 @@ void main() {
     float r0 = in_frag.radius.x;
     float r1 = in_frag.radius.y;
 
-    float t = NO_HIT;
-    vec3  n = vec3(0.0);
+    float t  = NO_HIT;
+    vec3  n  = vec3(0.0);   // Of the surface
+    vec3  ns = vec3(0.0);   // Of the band along the segment, to be turned with the curve
 
     // A side, or the whole of a round tube
-    round_cone_hit(ro, rd, a0, b0, r0, r1, t, n);
+    round_cone_hit(ro, rd, a0, b0, r0, r1, t, n, ns);
 
     vec3 ca = a1 - a0;
     vec3 cb = b1 - b0;
     float rs = r0 + r1;
     if (dot(ca, ca) + dot(cb, cb) > 1.0e-8 * rs * rs) {
-        round_cone_hit(ro, rd, a1, b1, r0, r1, t, n);
+        round_cone_hit(ro, rd, a1, b1, r0, r1, t, n, ns);
 
         // The faces towards the ray: a ray enters the solid through a face only against its normal. Both where the
         // normals of the rings disagree about it (grazing).
@@ -202,27 +242,33 @@ void main() {
         vec3  y1 = in_frag.normal[1] * r1;
         float s0 = dot(rd, y0);
         float s1 = dot(rd, y1);
-        if (s0 <= 0.0 || s1 <= 0.0) patch_hit(ro, rd, a0 + y0, a1 + y0, b0 + y1, b1 + y1, t, n);
-        if (s0 >= 0.0 || s1 >= 0.0) patch_hit(ro, rd, a0 - y0, a1 - y0, b0 - y1, b1 - y1, t, n);
+        if (s0 <= 0.0 || s1 <= 0.0) patch_hit(ro, rd, a0 + y0, a1 + y0, b0 + y1, b1 + y1, t, n, ns);
+        if (s0 >= 0.0 || s1 >= 0.0) patch_hit(ro, rd, a0 - y0, a1 - y0, b0 - y1, b1 - y1, t, n, ns);
 
-        if (in_frag.open_end.x != 0u) round_cone_hit(ro, rd, a0, a1, r0, r0, t, n);
-        if (in_frag.open_end.y != 0u) round_cone_hit(ro, rd, b0, b1, r1, r1, t, n);
+        if (in_frag.open_end.x == 1u) round_cone_hit(ro, rd, a0, a1, r0, r0, t, n, ns);
+        if (in_frag.open_end.y == 1u) round_cone_hit(ro, rd, b0, b1, r1, r1, t, n, ns);
     }
+
+    // The flat caps, last: a cap which is the nearest hit keeps its own normal
+    float t_before = t;
+    if (in_frag.open_end.x == 2u) cap_hit(ro, rd, a0, a1, r0, -in_frag.tangent[0], t, n, ns);
+    if (in_frag.open_end.y == 2u) cap_hit(ro, rd, b0, b1, r1,  in_frag.tangent[1], t, n, ns);
+    bool cap = t < t_before;
 
     if (t >= NO_HIT) {
         discard;
     }
 
     vec3 view_coord  = ro + rd * t;
-    vec3 view_normal = normalize(n);
-    if (dot(view_normal, rd) > 0.0) view_normal = -view_normal;
 
     // Along the segment, from the middle of the core of ring 0 to that of ring 1
     vec3  m0 = 0.5 * (a0 + a1);
     vec3  ax = 0.5 * (b0 + b1) - m0;
     float h  = dot(view_coord - m0, ax) / max(dot(ax, ax), 1.0e-12);
-    bool at_end = (h < 0.0 && in_frag.open_end.x != 0u) || (h > 1.0 && in_frag.open_end.y != 0u);
+    bool at_end = cap || (h < 0.0 && in_frag.open_end.x == 1u) || (h > 1.0 && in_frag.open_end.y == 1u);
     h = clamp(h, 0.0, 1.0);
+    vec3 view_normal = normalize(at_end ? n : ns);
+    if (dot(view_normal, rd) > 0.0) view_normal = -view_normal;
     if (!at_end && dot(ax, ax) > 1.0e-12) {
         // Rodrigues, without the angle: v + w x v + w x (w x v) / (1 + a.b), w = a x b
         vec3  a = normalize(ax);
