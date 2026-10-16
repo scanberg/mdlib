@@ -155,10 +155,10 @@ void cap_hit(vec3 ro, vec3 rd, vec3 a, vec3 b, float r, vec3 z, inout float t_hi
 }
 
 // Ray (ro, rd) against the round cone of the spheres (pa, ra) and (pb, rb), their convex hull (a capsule for ra = rb):
-// the nearest hit with 0 < t < t_hit, within the segment (kept), and the outward normal there. Quilez,
-// https://iquilezles.org/articles/intersectors. Its nearest hit past a plane of the segment drops it: the ray entered
-// the band there through the neighbor.
-void round_cone_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, inout float t_hit, inout vec3 n_hit, inout vec3 n_side) {
+// t where the ray enters it (NO_HIT for a miss) and the outward normal there. Quilez,
+// https://iquilezles.org/articles/intersectors
+float round_cone_enter(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, out vec3 n) {
+    n = vec3(0.0);
     vec3  ba = pb - pa;
     vec3  oa = ro - pa;
     vec3  ob = ro - pb;
@@ -178,34 +178,80 @@ void round_cone_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, inou
         float k0 = d2 * m5 - m1 * m1 + m1 * rr * ra * 2.0 - m0 * ra * ra;
         float h  = k1 * k1 - k0 * k2;
         // The spheres are within the cone: a ray which misses it misses them
-        if (h < 0.0) return;
+        if (h < 0.0) return NO_HIT;
         float t = (-sqrt(h) - k1) / k2;
         float y = m1 - ra * rr + t * m2;
         if (y > 0.0 && y < d2) {
-            if (t > 0.0 && t < t_hit && kept(ro + rd * t)) {
-                t_hit  = t;
-                n_hit  = d2 * (oa + t * rd) - ba * y;
-                n_side = n_hit;
-            }
-            return;
+            n = d2 * (oa + t * rd) - ba * y;
+            return t;
         }
     }
-    // The spheres: the nearer hit of the two
     float h1 = m3 * m3 - m5 + ra * ra;
     float h2 = m6 * m6 - m7 + rb * rb;
     float t1 = h1 > 0.0 ? -m3 - sqrt(h1) : NO_HIT;
     float t2 = h2 > 0.0 ? -m6 - sqrt(h2) : NO_HIT;
-    t1 = t1 > 0.0 ? t1 : NO_HIT;
-    t2 = t2 > 0.0 ? t2 : NO_HIT;
+    if (t1 >= NO_HIT && t2 >= NO_HIT) return NO_HIT;
     float t = min(t1, t2);
-    if (t < t_hit && kept(ro + rd * t)) {
-        t_hit = t;
-        n_hit = t1 <= t2 ? oa + t * rd : ob + t * rd;
-        // That of the cone through it: where a segment meets the next, its sphere is cut at the plane of the ring, and
-        // turned with the curve the normal of the sphere would turn twice
-        float y = m1 - ra * rr + t * m2;
-        n_side = d2 > 0.0 ? d2 * (oa + t * rd) - ba * y : n_hit;
+    n = t1 <= t2 ? oa + t * rd : ob + t * rd;
+    return t;
+}
+
+// The normal of the cone of the round cone at p, also off its body: where a segment meets the next its spheres are cut
+// at the plane of the ring, and turned with the curve the normal of a sphere would turn twice
+vec3 round_cone_side_normal(vec3 p, vec3 pa, vec3 pb, float ra, float rb) {
+    vec3  ba = pb - pa;
+    float rr = ra - rb;
+    float d2 = dot(ba, ba) - rr * rr;
+    if (!(d2 > 0.0)) return p - (ra >= rb ? pa : pb);
+    float y = dot(ba, p - pa) - ra * rr;
+    return d2 * (p - pa) - ba * y;
+}
+
+// Narrows the interval s of the ray to the side of the plane through m with the inward normal z
+void clip_to_plane(vec3 ro, vec3 rd, vec3 m, vec3 z, float tol, inout vec2 s) {
+    float d = dot(rd, z);
+    float f = dot(ro - m, z) + tol;     // >= 0 inside
+    if (abs(d) < 1.0e-12) {
+        if (f < 0.0) s = vec2(NO_HIT, -NO_HIT);
+        return;
     }
+    float t = -f / d;
+    if (d > 0.0) s.x = max(s.x, t);
+    else         s.y = min(s.y, t);
+}
+
+// The interval of the ray between the planes of the rings, but where the chain ends (kept)
+vec2 segment_interval(vec3 ro, vec3 rd) {
+    float tol = 1.0e-3 * (in_frag.radius.x + in_frag.radius.y);
+    vec2  s   = vec2(-NO_HIT, NO_HIT);
+    if (in_frag.open_end.x != 1u) clip_to_plane(ro, rd, 0.5 * (in_frag.core[0] + in_frag.core[1]),  in_frag.tangent[0], tol, s);
+    if (in_frag.open_end.y != 1u) clip_to_plane(ro, rd, 0.5 * (in_frag.core[2] + in_frag.core[3]), -in_frag.tangent[1], tol, s);
+    return s;
+}
+
+// Ray against the round cone cut to the segment: where it enters the part of the cone between the planes of the rings,
+// the intersection of the two intervals, if nearer than t_hit. That is on the cone, or on a plane: within the cone a ray
+// enters the segment through the cut, which its neighbor covers but where their cuts differ a little (the cones of the
+// two meet the plane in slightly different ellipses), and there the cut is the surface. Its normal is that of the cone
+// (n_side). Dropping a cone whose entry is past a plane instead left a sliver open there.
+void round_cone_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, inout float t_hit, inout vec3 n_hit, inout vec3 n_side) {
+    vec3  n_in;
+    float t_in = round_cone_enter(ro, rd, pa, pb, ra, rb, n_in);
+    if (t_in >= NO_HIT) return;
+    // Where it leaves: where the ray back from beyond the cone enters it
+    float far = t_in + length(pb - pa) + 2.0 * (ra + rb) + 1.0e-3;
+    vec3  n_out;
+    float t_back = round_cone_enter(ro + rd * far, -rd, pa, pb, ra, rb, n_out);
+    float t_out  = t_back < NO_HIT ? far - t_back : t_in;
+
+    vec2  s  = segment_interval(ro, rd);
+    float t0 = max(t_in, s.x);
+    float t1 = min(t_out, s.y);
+    if (!(t0 <= t1 && t0 > 0.0 && t0 < t_hit)) return;
+    vec3 p = ro + rd * t0;
+    t_hit  = t0;
+    n_side = round_cone_side_normal(p, pa, pb, ra, rb);
+    n_hit  = t0 == t_in ? n_in : n_side;
 }
 
 void main() {
