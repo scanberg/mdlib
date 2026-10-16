@@ -14,8 +14,8 @@
 //
 // At a ring the profile is a stadium, the core segment from P - l X to P + l X (P the position, X the support) widened
 // by r, its flat sides facing +-Y = Z x X. The segment between rings 0 and 1 is the ruled surface between the cores
-// thickened by the radius, blended from r0 to r1: backbone_rc.frag ray casts it in closed form (see there). A circle
-// (l = 0) makes it one round cone, exactly. Where the band ends a segment is closed: round at the end of a chain, flat
+// thickened by the radius, blended from r0 to r1, its profile in the planes of the rings as that of the mesh:
+// backbone_rc.frag ray casts it (see there). A circle (l = 0) makes it a tube, as the mesh. Where the band ends a segment is closed: round at the end of a chain, flat
 // (cut at the plane of the ring) where the neighbor is not drawn (its control point hidden, or not of this pass: a pass
 // of the highlighted atoms only must give the same depth where it draws as the pass of all did); elsewhere the next
 // segment closes it.
@@ -23,11 +23,9 @@
 // A segment is cut at the planes of its rings (backbone_rc.frag), but where the chain ends, so the segments of a
 // chain do not overlap: a quad bounds its own part of the band, and no pixel is ray cast twice where they meet (a
 // segment of a helix is 0.3 A long, and its quad reached a radius past either ring; a lipid tail is 2.2 A thick). Between
-// the planes it lies within the hull of its cross sections there: the stadium of the ring, whose round ends are the
-// round cones of the sides cut by the plane, ellipses a little longer than the circles (bounded here by the rectangle of
-// the stadium widened by 1 / cos of the angle between a side and the tangent, and the half angle of the cone where the
-// radius changes). Where the band ends, the rung capsule and the end spheres reach out by r past the plane: the box
-// out to there. The image of the segment lies within the hull of the images of those corners (a central projection keeps
+// the planes it lies within the hull of its cross sections there, the stadiums of the rings (its faces and sides are
+// ruled between them), bounded by their rectangles. Where the band ends, the rung capsule reaches out by r past the
+// plane: the box out to there. The image of the segment lies within the hull of the images of those corners (a central projection keeps
 // convex hulls in front of the eye), and the quad is the rectangle about them along the image of the cores or of the
 // axis of the segment, whichever is smaller: a band is a long thin parallelogram on screen at any angle, which a
 // rectangle along the axes of the screen bounds poorly. Across the near plane, the box of the corners bounds it instead.
@@ -88,6 +86,7 @@ out Fragment {
     flat vec3  vel[2];          // View space velocities at the rings
     flat vec3  tangent[2];      // View space tangents of the spline at the rings, unit
     flat uvec2 open_end;        // How the band ends at ring 0, at ring 1: 0 not, 1 round (a chain), 2 flat (a neighbor not drawn)
+    flat float face_margin;     // sin of the largest angle between the normals of the faces and the mean of normal[]
     flat vec4  color;
     flat uint  picking_idx;
     smooth vec3 view_pos;       // On the quad, the ray of the fragment starts here
@@ -211,6 +210,34 @@ uint segment_step(uint c, uvec4 nb, bool chain_beg, bool chain_end) {
     return 1u;
 }
 
+// How far the normals of the two faces (bilinear patches, the cores moved by +-yr0, +-yr1) turn from the mean normal of
+// the rings: the sine of the largest angle, 1 where a face folds over (its normals point both ways). The normal of a
+// patch is bilinear over it, so it lies within the cone of those at its corners, and a ray can enter the face of +Y
+// only if dot(rd, Y) < this (backbone_rc.frag): the face of -Y if dot(rd, Y) > -this.
+float face_margin(vec3 a0, vec3 a1, vec3 b0, vec3 b1, vec3 yr0, vec3 yr1) {
+    vec3  ym    = normalize(yr0 + yr1);
+    float cos_m = 1.0;
+    for (int f = 0; f < 2; ++f) {
+        float sg  = f == 0 ? 1.0 : -1.0;
+        vec3  q00 = a0 + yr0 * sg;
+        vec3  q10 = a1 + yr0 * sg;
+        vec3  q01 = b0 + yr1 * sg;
+        vec3  q11 = b1 + yr1 * sg;
+        vec3  du0 = q10 - q00, du1 = q11 - q01;     // d/du at v = 0, 1
+        vec3  dv0 = q01 - q00, dv1 = q11 - q10;     // d/dv at u = 0, 1
+        vec3  n[4] = vec3[4](cross(du0, dv0), cross(du0, dv1), cross(du1, dv0), cross(du1, dv1));
+        // All on the side of Y of that at the first corner, or the face folds over
+        float s0 = dot(n[0], ym);
+        for (int c = 0; c < 4; ++c) {
+            float len = length(n[c]);
+            float cy  = dot(n[c], ym);
+            if (!(len > 0.0) || !(cy * s0 > 0.0)) return 1.0;
+            cos_m = min(cos_m, abs(cy) / len);
+        }
+    }
+    return min(sqrt(max(1.0 - cos_m * cos_m, 0.0)) + 0.01, 1.0);
+}
+
 // Support of the image of the part of the box [lo, hi] (view space) behind the near plane, along the unit direction n
 // of the image plane z = -1, as (s_min, s_max). As in bond.vert.
 vec2 box_support(vec3 lo, vec3 hi, float near, vec2 n) {
@@ -292,14 +319,8 @@ void main() {
     uint end1 = (chain_end && j + step == half_S) ? 1u : (j + step == S && !atom_visible(load_atom_idx(nb.y))) ? 2u : 0u;
 
     // The corners of the rectangles of the cross sections at the rings, and of the boxes out past them where the band
-    // ends round. k widens the round ends to the cuts of the round cones of the sides (1 / cos(angle + half angle of the cone)).
-    vec3  d0 = b0 - a0;
-    vec3  d1 = b1 - a1;
-    float len = max(min(length(d0), length(d1)), 1.0e-6);
-    vec3  u0 = d0 / max(length(d0), 1.0e-6);
-    vec3  u1 = d1 / max(length(d1), 1.0e-6);
-    float cos_side = min(min(abs(dot(u0, z0)), abs(dot(u1, z0))), min(abs(dot(u0, z1)), abs(dot(u1, z1))));
-    float k = 1.01 / max(cos_side - abs(s0.y - s1.y) / len, 0.5);
+    // ends round (k: a margin for rounding)
+    const float k = 1.01;
     vec3 corner_pt[16];
     int  n_pt = 0;
     for (int i = 0; i < 2; ++i) {
@@ -328,6 +349,7 @@ void main() {
     out_frag.vel         = vec3[2](to_view * r0.velocity, to_view * r1.velocity);
     out_frag.tangent     = vec3[2](z0, z1);
     out_frag.open_end    = uvec2(end0, end1);
+    out_frag.face_margin = face_margin(a0, a1, b0, b1, y0 * s0.y, y1 * s1.y);
     out_frag.color       = texelFetch(u_atom_color_buffer, int(atom_idx));
     // As the mesh: the part of the spline that belongs to the control point picks as it
     out_frag.picking_idx = u_backbone_base_index + c;

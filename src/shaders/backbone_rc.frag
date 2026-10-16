@@ -11,22 +11,35 @@
 //
 // Here the segment is the union of pieces which each meet a ray in closed form:
 //   - the flat faces: two bilinear patches, the core ends moved by +-r along the normal of the flat sides at their ring
-//     (y = z x x, as the mesh of backbone.vert places its profile). Reshetov's ray / patch, a quadratic.
-//   - the rounded sides: the round cones (convex hulls) of the spheres at the ends of the cores, (a0, r0) to (b0, r1)
-//     and (a1, r0) to (b1, r1). Quilez's ray / round cone, a quadratic.
-//   - where the band ends (open_end): at the end of a chain the rungs, the capsules along the cores, and the round cones
-//     whole; where the neighbor is not drawn a flat cap, the plane of the ring within the stadium, the segment cut there
-//     as elsewhere (a pass which draws the highlighted atoms only gives the same depth where it draws as the pass of
-//     all, which drew the neighbor). Elsewhere the faces of the next segment meet these at the shared ring exactly: the
-//     segments of a chain close each other.
-// The side walls between the faces (the core ends moved by up to r) lie within the round cones, so the union is closed
-// and the first hit is the nearest hit with any piece: no iteration. The segment is cut at the planes of its rings
-// (through the middle of the core, along the tangent), but where the chain ends: a hit with a piece past one is
-// dropped, the neighbor there holds the same part of the band (the round cones of the two meet in nearly the same
-// ellipse, a few thousandths of r apart). So the segments of a chain do not overlap, and the quads of backbone_rc.vert
-// bound their own parts only. The faces lie between the planes, the round cones reach past them. Against the thickened ruled patch (dense sampling)
-// it is off by 0.01 Angstrom at full detail and a few hundredths at the coarsest (the march: up to 0.13).
-// A round tube (l = 0 at both rings) is the round cone alone, exactly.
+//     (y = z x x, as the mesh of backbone.vert places its profile). Reshetov's ray / patch, a quadratic. Each where the
+//     ray can enter it, against its normal somewhere: across a twisted band the normal of a face turns away from those
+//     of the rings by more than ten degrees (it is normal to the sides, which slant where the band twists), so the
+//     normals of the rings do not tell (a ray at a grazing angle entered a face they said it left, and went through the
+//     band). The normal of the patch is bilinear over it, within the cone of those at its corners: within face_margin
+//     of the mean normal of the rings (backbone_rc.vert).
+//   - the rounded sides: as the mesh makes them, the ruled surfaces between the circles of radius r0 and r1 about the
+//     core ends in the planes of the rings, through the points at the same angle about them (the profile of the mesh at
+//     its rings, its quads between them). A ray meets the line of the surface at an angle where a trigonometric
+//     polynomial of degree 2 vanishes (a quartic): Newton's method, from where the ray enters the oblique cone of the
+//     circles about the side in the planes normal to the mean tangent w (a quadratic), which differs from the surface by
+//     a hundredth of r or two. Three steps reach its first root to a millionth of an Angstrom (against the roots
+//     bracketed densely). The faces meet the sides along their lines at the angles of Y, tangent to them, and the
+//     sides of the next segment meet these in the same circles: the band is closed and smooth at the joints but for the
+//     turn of the curve. A quadric for a side cannot do that: about the side (from a0 to b0), which slants from the
+//     tangent where the band twists (by 6 and 14 degrees at the two ends of a segment of a helix), its extents across
+//     the planes of the two rings keep the ratio of the cosines of those slants (2.5 %), a step at every joint and a
+//     saw tooth along the edge, where it bulges over the face and sinks below it in turn.
+//   - where the band ends (open_end): at the end of a chain the rungs, the capsules along the cores (a sphere for a round
+//     tube), and the sides cut at the plane normal to w there; where the neighbor is not drawn a flat cap, the plane of
+//     the ring within the stadium, the segment cut there as elsewhere (a pass which draws the highlighted atoms only
+//     gives the same depth where it draws as the pass of all, which drew the neighbor). Elsewhere the faces of the next
+//     segment meet these at the shared ring exactly: the segments of a chain close each other.
+// The side walls between the faces (the core ends moved by up to r) lie within the sides, so the union is closed and the
+// first hit is the nearest hit with any piece: no iteration but that within a side. The segment is cut at the planes
+// of its rings (through the middle of the core, along the tangent), but where the chain ends: a hit with a piece past
+// one is dropped, the neighbor there holds the same part of the band. So the segments of a chain do not overlap, and
+// the quads of backbone_rc.vert bound their own parts only. The faces and the sides lie between the planes.
+// A round tube (l = 0 at both rings) is a side alone, as the mesh makes it.
 //
 // The normal is that of the piece, turned by the rotation which takes the axis of the segment to the tangent of the
 // spline there (blended between the rings): the segments are straight, and their own normals would crease the surface
@@ -67,6 +80,7 @@ in Fragment {
     flat vec3  vel[2];
     flat vec3  tangent[2];
     flat uvec2 open_end;        // 0 not, 1 round (a chain), 2 flat (a neighbor not drawn)
+    flat float face_margin;     // sin of the angle by which the normals of the faces turn from that of the rings
     flat vec4  color;
     flat uint  picking_idx;
     smooth vec3 view_pos;
@@ -145,8 +159,7 @@ void cap_hit(vec3 ro, vec3 rd, vec3 a, vec3 b, float r, vec3 z, inout float t_hi
     vec3  ba = b - a;
     float h  = clamp(dot(p - a, ba) / max(dot(ba, ba), 1.0e-12), 0.0, 1.0);
     vec3  q  = p - (a + ba * h);
-    // Within r, not the ellipses the round cones of the sides make cut at a slant (wider by a few thousandths of r): a
-    // cap must never reach out of the surface, which would change the depth where the pass of all drew the segment
+    // Within r: the sides meet the plane of the ring in the circles of the stadium
     if (dot(q, q) <= r * r && kept(p)) {
         t_hit  = t;
         n_hit  = z;
@@ -154,8 +167,8 @@ void cap_hit(vec3 ro, vec3 rd, vec3 a, vec3 b, float r, vec3 z, inout float t_hi
     }
 }
 
-// Ray (ro, rd) against the round cone of the spheres (pa, ra) and (pb, rb), their convex hull (a capsule for ra = rb):
-// t where the ray enters it (NO_HIT for a miss) and the outward normal there. Quilez,
+// Ray (ro, rd) against the round cone of the spheres (pa, ra) and (pb, rb), their convex hull (a capsule for ra = rb, a
+// sphere for pa = pb): t where the ray enters it (NO_HIT for a miss) and the outward normal there. Quilez,
 // https://iquilezles.org/articles/intersectors
 float round_cone_enter(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, out vec3 n) {
     n = vec3(0.0);
@@ -196,8 +209,7 @@ float round_cone_enter(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, o
     return t;
 }
 
-// The normal of the cone of the round cone at p, also off its body: where a segment meets the next its spheres are cut
-// at the plane of the ring, and turned with the curve the normal of a sphere would turn twice
+// The normal of the cone of the round cone at p, also off its body (where the ray enters it through a cut)
 vec3 round_cone_side_normal(vec3 p, vec3 pa, vec3 pb, float ra, float rb) {
     vec3  ba = pb - pa;
     float rr = ra - rb;
@@ -229,11 +241,9 @@ vec2 segment_interval(vec3 ro, vec3 rd) {
     return s;
 }
 
-// Ray against the round cone cut to the segment: where it enters the part of the cone between the planes of the rings,
-// the intersection of the two intervals, if nearer than t_hit. That is on the cone, or on a plane: within the cone a ray
-// enters the segment through the cut, which its neighbor covers but where their cuts differ a little (the cones of the
-// two meet the plane in slightly different ellipses), and there the cut is the surface. Its normal is that of the cone
-// (n_side). Dropping a cone whose entry is past a plane instead left a sliver open there.
+// Ray against the round cone cut to the segment (a rung): where it enters the part of it between the planes of the rings,
+// the intersection of the two intervals, if nearer than t_hit. Within the cone a ray enters the segment through a cut,
+// and there the cut is the surface, with the normal of the cone (n_side).
 void round_cone_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, inout float t_hit, inout vec3 n_hit, inout vec3 n_side) {
     vec3  n_in;
     float t_in = round_cone_enter(ro, rd, pa, pb, ra, rb, n_in);
@@ -252,6 +262,131 @@ void round_cone_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, inou
     t_hit  = t0;
     n_side = round_cone_side_normal(p, pa, pb, ra, rb);
     n_hit  = t0 == t_in ? n_in : n_side;
+}
+
+// The direction the circles of a side are normal to: the mean tangent of the segment w, or the side itself where it
+// slants from that by more than 84 degrees (the cone would be cut nearly along its axis). As backbone_rc.vert.
+vec3 side_axis(vec3 d, vec3 w) {
+    float ld = length(d);
+    float lw = length(w);
+    return dot(d, w) > 0.1 * ld * lw ? w / lw : d / max(ld, 1.0e-12);
+}
+
+// Ray (ro, rd) against the oblique cone of the circles about pa + s d (d = pb - pa) of radius ra + s (rb - ra), in the
+// planes normal to w (d.w > 0), s unbounded: the interval of t within it (empty: x > y). The point of the axis in the
+// plane of p is at s = (p - pa).w / d.w, and |p - pa - s d|^2 = (ra + s (rb - ra))^2 is a quadratic in t.
+vec2 oblique_cone_interval(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, vec3 w) {
+    const vec2 none = vec2(NO_HIT, -NO_HIT);
+    vec3  d  = pb - pa;
+    float dw = dot(d, w);
+    float dr = rb - ra;
+    vec3  oa = ro - pa;
+    float so = dot(oa, w) / dw;
+    float sd = dot(rd, w) / dw;
+    vec3  q0 = oa - d * so;         // p - pa - s d = q0 + t q1
+    vec3  q1 = rd - d * sd;
+    float R0 = ra + dr * so;        // The radius there, R0 + t R1
+    float R1 = dr * sd;
+    float A  = dot(q1, q1) - R1 * R1;
+    float B  = dot(q0, q1) - R0 * R1;
+    float C  = dot(q0, q0) - R0 * R0;
+    if (abs(A) <= 1.0e-7) {
+        // Along a generator, or the axis of a cylinder: 2 B t + C <= 0
+        if (abs(B) < 1.0e-12) return C <= 0.0 ? vec2(-NO_HIT, NO_HIT) : none;
+        float t = -0.5 * C / B;
+        return B > 0.0 ? vec2(-NO_HIT, t) : vec2(t, NO_HIT);
+    }
+    float h = B * B - A * C;
+    if (h < 0.0) return none;
+    h = sqrt(h);
+    // The roots without cancellation
+    float q  = -(B + (B < 0.0 ? -h : h));
+    float t1 = q / A;
+    float t2 = q != 0.0 ? C / q : t1;
+    vec2  r  = vec2(min(t1, t2), max(t1, t2));
+    if (A > 0.0) {
+        // Across the cone: within it between the roots, unless that is the other nappe, past the apex
+        return R0 + R1 * 0.5 * (r.x + r.y) >= 0.0 ? r : none;
+    }
+    // Along the axis, within the half angle of the cone: within it beyond a root, on the side of the nappe (R > 0)
+    return R1 > 0.0 ? vec2(r.y, NO_HIT) : vec2(-NO_HIT, r.x);
+}
+
+// Where the ray enters the oblique cone of a side, cut to the segment (the planes of the rings, or where the chain ends
+// the plane normal to w through the end of the side, the rung covers the rest): NO_HIT for none
+float side_guess(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, vec3 w) {
+    vec2 iv = oblique_cone_interval(ro, rd, pa, pb, ra, rb, w);
+    if (!(iv.x <= iv.y)) return NO_HIT;
+    vec2 s = segment_interval(ro, rd);
+    if (in_frag.open_end.x == 1u) clip_to_plane(ro, rd, pa,  w, 0.0, s);
+    if (in_frag.open_end.y == 1u) clip_to_plane(ro, rd, pb, -w, 0.0, s);
+    float t0 = max(iv.x, s.x);
+    return t0 <= min(iv.y, s.y) ? t0 : NO_HIT;
+}
+
+// Ray against a side as the mesh makes it, P(phi, v) = mix(pa + ra R0(phi), pb + rb R1(phi), v), R_i = cos(phi) X_i +
+// sin(phi) Y_i (the frames of the rings, X = Y x Z), from where it enters the oblique cone at t_guess. The ray meets the
+// line of P at phi where A = pa + ra R0 - ro, B = pb + rb R1 - ro and the ray are coplanar: f(phi) = (A x B).rd = 0, a
+// trigonometric polynomial of degree 2. Then the point of that line on the ray, at v. Kept if it lies on the ray (to a
+// fiftieth of r: at a grazing angle Newton's method converges slowly, and the guess is that close), within the segment
+// (with a sliver of overlap, so no ray slips between the two at a joint) and nearer than t_hit.
+void side_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, vec3 X0, vec3 Y0, vec3 X1, vec3 Y1, vec3 w, float t_guess,
+              inout float t_hit, inout vec3 n_hit, inout vec3 n_side) {
+    vec3  d   = pb - pa;
+    vec3  p   = ro + rd * t_guess;
+    float v   = clamp(dot(p - pa, w) / dot(d, w), 0.0, 1.0);
+    vec3  q   = p - mix(pa, pb, v);
+    // (cos, sin) of the angle, as a unit vector
+    vec2  e   = vec2(dot(q, mix(X0, X1, v)), dot(q, mix(Y0, Y1, v)));
+    e = dot(e, e) > 0.0 ? normalize(e) : vec2(-1.0, 0.0);
+
+    vec3  A0  = pa - ro;
+    vec3  A1  = X0 * ra;
+    vec3  A2  = Y0 * ra;
+    vec3  B0  = pb - ro;
+    vec3  B1  = X1 * rb;
+    vec3  B2  = Y1 * rb;
+    vec3  c0  = cross(B0, rd);
+    vec3  c1  = cross(B1, rd);
+    vec3  c2  = cross(B2, rd);
+    // f = k0 + k1 cos + k2 sin + k11 cos^2 + k12 cos sin + k22 sin^2
+    float k0  = dot(A0, c0);
+    float k1  = dot(A1, c0) + dot(A0, c1);
+    float k2  = dot(A2, c0) + dot(A0, c2);
+    float k11 = dot(A1, c1);
+    float k12 = dot(A1, c2) + dot(A2, c1);
+    float k22 = dot(A2, c2);
+    // Newton's steps, each along the tangent of the circle and back onto it (the angle moves by atan(step), which keeps
+    // the convergence quadratic, without a trigonometric function)
+    for (int i = 0; i < 3; ++i) {
+        float cs = e.x;
+        float sn = e.y;
+        float f  = k0 + cs * k1 + sn * k2 + cs * cs * k11 + cs * sn * k12 + sn * sn * k22;
+        float fp = cs * k2 - sn * k1 + 2.0 * cs * sn * (k22 - k11) + (cs * cs - sn * sn) * k12;
+        if (fp != 0.0) e = normalize(e + vec2(sn, -cs) * (f / fp));
+    }
+    float cs = e.x;
+    float sn = e.y;
+    vec3  A  = A0 + A1 * cs + A2 * sn;
+    vec3  E  = B0 + B1 * cs + B2 * sn - A;
+    vec3  cE = cross(E, rd);
+    float ee = dot(cE, cE);
+    if (!(ee > 0.0)) return;
+    v = -dot(cross(A, rd), cE) / ee;
+    vec3  pt = A + E * v;
+    float t  = dot(pt, rd);
+    vec3  off = pt - rd * t;
+    float tol = 0.02 * max(ra, rb);
+    if (!(dot(off, off) <= tol * tol && v >= -1.0e-3 && v <= 1.0 + 1.0e-3 && t > 0.0 && t < t_hit)) return;
+
+    // The normal, P_phi x P_v, outward (along the radius of the circles)
+    vec3 R0 = X0 * cs + Y0 * sn;
+    vec3 R1 = X1 * cs + Y1 * sn;
+    vec3 n  = cross(mix((Y0 * cs - X0 * sn) * ra, (Y1 * cs - X1 * sn) * rb, v), E);
+    if (dot(n, mix(R0 * ra, R1 * rb, v)) < 0.0) n = -n;
+    t_hit  = t;
+    n_hit  = n;
+    n_side = n;
 }
 
 void main() {
@@ -273,27 +408,37 @@ void main() {
     vec3  n  = vec3(0.0);   // Of the surface
     vec3  ns = vec3(0.0);   // Of the band along the segment, to be turned with the curve
 
-    // A side, or the whole of a round tube
-    round_cone_hit(ro, rd, a0, b0, r0, r1, t, n, ns);
-
+    // The faces the ray can enter (see above)
     vec3 ca = a1 - a0;
     vec3 cb = b1 - b0;
     float rs = r0 + r1;
-    if (dot(ca, ca) + dot(cb, cb) > 1.0e-8 * rs * rs) {
-        round_cone_hit(ro, rd, a1, b1, r0, r1, t, n, ns);
-
-        // The faces towards the ray: a ray enters the solid through a face only against its normal. Both where the
-        // normals of the rings disagree about it (grazing).
-        vec3  y0 = in_frag.normal[0] * r0;
-        vec3  y1 = in_frag.normal[1] * r1;
-        float s0 = dot(rd, y0);
-        float s1 = dot(rd, y1);
-        if (s0 <= 0.0 || s1 <= 0.0) patch_hit(ro, rd, a0 + y0, a1 + y0, b0 + y1, b1 + y1, t, n, ns);
-        if (s0 >= 0.0 || s1 >= 0.0) patch_hit(ro, rd, a0 - y0, a1 - y0, b0 - y1, b1 - y1, t, n, ns);
-
-        if (in_frag.open_end.x == 1u) round_cone_hit(ro, rd, a0, a1, r0, r0, t, n, ns);
-        if (in_frag.open_end.y == 1u) round_cone_hit(ro, rd, b0, b1, r1, r1, t, n, ns);
+    bool band = dot(ca, ca) + dot(cb, cb) > 1.0e-8 * rs * rs;
+    if (band) {
+        vec3 y0 = in_frag.normal[0] * r0;
+        vec3 y1 = in_frag.normal[1] * r1;
+        float sy = dot(rd, normalize(in_frag.normal[0] + in_frag.normal[1]));
+        if (sy <  in_frag.face_margin) patch_hit(ro, rd, a0 + y0, a1 + y0, b0 + y1, b1 + y1, t, n, ns);
+        if (sy > -in_frag.face_margin) patch_hit(ro, rd, a0 - y0, a1 - y0, b0 - y1, b1 - y1, t, n, ns);
     }
+
+    // A side, or the whole of a round tube; the other side. Where the guess is behind the nearest hit so far by more than
+    // the guess can be off, the side is behind it too.
+    vec3  wt = in_frag.tangent[0] + in_frag.tangent[1];
+    vec3  X0 = cross(in_frag.normal[0], in_frag.tangent[0]);
+    vec3  X1 = cross(in_frag.normal[1], in_frag.tangent[1]);
+    float slack = 0.1 * rs;
+    for (int k = 0; k < 2; ++k) {
+        if (k == 1 && !band) break;
+        vec3  pa = k == 0 ? a0 : a1;
+        vec3  pb = k == 0 ? b0 : b1;
+        vec3  w  = side_axis(pb - pa, wt);
+        float tg = side_guess(ro, rd, pa, pb, r0, r1, w);
+        if (tg < NO_HIT && tg < t + slack) side_hit(ro, rd, pa, pb, r0, r1, X0, in_frag.normal[0], X1, in_frag.normal[1], w, tg, t, n, ns);
+    }
+
+    // Where the chain ends, the rungs (a sphere for a round tube)
+    if (in_frag.open_end.x == 1u) round_cone_hit(ro, rd, a0, a1, r0, r0, t, n, ns);
+    if (in_frag.open_end.y == 1u) round_cone_hit(ro, rd, b0, b1, r1, r1, t, n, ns);
 
     // The flat caps, last: a cap which is the nearest hit keeps its own normal
     float t_before = t;
