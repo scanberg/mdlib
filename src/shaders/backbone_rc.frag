@@ -22,8 +22,8 @@
 //     its rings, its quads between them). A ray meets the line of the surface at an angle where a trigonometric
 //     polynomial of degree 2 vanishes (a quartic): Newton's method, from where the ray enters the oblique cone of the
 //     circles about the side in the planes normal to the mean tangent w (a quadratic), which differs from the surface by
-//     a hundredth of r or two. Three steps reach its first root to a millionth of an Angstrom (against the roots
-//     bracketed densely). The faces meet the sides along their lines at the angles of Y, tangent to them, and the
+//     a hundredth of r or two. Two steps reach its first root to a few ten thousandths of an Angstrom (three to a
+//     millionth, against the roots bracketed densely). The faces meet the sides along their lines at the angles of Y, tangent to them, and the
 //     sides of the next segment meet these in the same circles: the band is closed and smooth at the joints but for the
 //     turn of the curve. A quadric for a side cannot do that: about the side (from a0 to b0), which slants from the
 //     tangent where the band twists (by 6 and 14 degrees at the two ends of a segment of a helix), its extents across
@@ -39,7 +39,9 @@
 // of its rings (through the middle of the core, along the tangent), but where the chain ends: a hit with a piece past
 // one is dropped, the neighbor there holds the same part of the band. So the segments of a chain do not overlap, and
 // the quads of backbone_rc.vert bound their own parts only. The faces and the sides lie between the planes.
-// A round tube (l = 0 at both rings) is a side alone, as the mesh makes it.
+// A round tube (l = 0 at both rings) is the oblique cone alone: its side is its axis, which follows the tangent, so
+// the cones of two segments meet the plane of their ring in the same circle to second order in the turn (0.2 % of r at
+// 7.7 degrees), and the ruled surface would pinch the tube where its frame twists (as the mesh does, an artifact of it).
 //
 // The normal is that of the piece, turned by the rotation which takes the axis of the segment to the tangent of the
 // spline there (blended between the rings): the segments are straight, and their own normals would crease the surface
@@ -311,12 +313,22 @@ vec2 oblique_cone_interval(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float r
     return R1 > 0.0 ? vec2(r.y, NO_HIT) : vec2(-NO_HIT, r.x);
 }
 
-// Where the ray enters the oblique cone of a side, cut to the segment (the planes of the rings, or where the chain ends
-// the plane normal to w through the end of the side, the rung covers the rest): NO_HIT for none
-float side_guess(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, vec3 w) {
+// The outward normal of the oblique cone at p (the gradient of the quadratic), also off it
+vec3 oblique_cone_normal(vec3 p, vec3 pa, vec3 pb, float ra, float rb, vec3 w) {
+    vec3  d  = pb - pa;
+    float dw = dot(d, w);
+    float dr = rb - ra;
+    float s  = dot(p - pa, w) / dw;
+    vec3  q  = p - pa - d * s;
+    return q - w * ((dot(d, q) + (ra + dr * s) * dr) / dw);
+}
+
+// Where the ray enters the oblique cone of a side, cut to the segment (s, the interval between the planes of the rings,
+// segment_interval, or where the chain ends the plane normal to w through the end of the side, the rung covers the
+// rest): NO_HIT for none
+float side_guess(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, vec3 w, vec2 s) {
     vec2 iv = oblique_cone_interval(ro, rd, pa, pb, ra, rb, w);
     if (!(iv.x <= iv.y)) return NO_HIT;
-    vec2 s = segment_interval(ro, rd);
     if (in_frag.open_end.x == 1u) clip_to_plane(ro, rd, pa,  w, 0.0, s);
     if (in_frag.open_end.y == 1u) clip_to_plane(ro, rd, pb, -w, 0.0, s);
     float t0 = max(iv.x, s.x);
@@ -357,7 +369,7 @@ void side_hit(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, vec3 X0, v
     float k22 = dot(A2, c2);
     // Newton's steps, each along the tangent of the circle and back onto it (the angle moves by atan(step), which keeps
     // the convergence quadratic, without a trigonometric function)
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 2; ++i) {
         float f  = k0 + e.x * k1 + e.y * k2 + e.x * e.x * k11 + e.x * e.y * k12 + e.y * e.y * k22;
         float fp = e.x * k2 - e.y * k1 + 2.0 * e.x * e.y * (k22 - k11) + (e.x * e.x - e.y * e.y) * k12;
         if (fp != 0.0) e = normalize(e + vec2(e.y, -e.x) * (f / fp));
@@ -409,28 +421,55 @@ void main() {
     vec3 ca = a1 - a0;
     vec3 cb = b1 - b0;
     float rs = r0 + r1;
-    bool band = dot(ca, ca) + dot(cb, cb) > 1.0e-8 * rs * rs;
+    bool band    = dot(ca, ca) + dot(cb, cb) > 1.0e-8 * rs * rs;
+    bool face_in = false;
     if (band) {
-        vec3 y0 = in_frag.normal[0] * r0;
-        vec3 y1 = in_frag.normal[1] * r1;
-        float sy = dot(rd, normalize(in_frag.normal[0] + in_frag.normal[1]));
+        vec3  y0 = in_frag.normal[0] * r0;
+        vec3  y1 = in_frag.normal[1] * r1;
+        vec3  ym = normalize(in_frag.normal[0] + in_frag.normal[1]);
+        float sy = dot(rd, ym);
+        float t0 = t;
         if (sy <  in_frag.radius.z) patch_hit(ro, rd, a0 + y0, a1 + y0, b0 + y1, b1 + y1, t, n, ns);
+        bool  top = t < t0;
+        float t1 = t;
         if (sy > -in_frag.radius.z) patch_hit(ro, rd, a0 - y0, a1 - y0, b0 - y1, b1 - y1, t, n, ns);
+        if (t < t1) top = false;
+        // Into the band through a face (against its outward normal, which leans to +-ym): the sides lie within the faces
+        // (each line of a side is that of the face moved towards the core, and out past its end), a ray which enters
+        // a face from outside has met neither before
+        face_in = t < NO_HIT && dot(rd, n) * dot(n, top ? ym : -ym) < 0.0;
     }
 
-    // A side, or the whole of a round tube; the other side. Where the guess is behind the nearest hit so far by more than
-    // the guess can be off, the side is behind it too.
-    vec3  wt = in_frag.tangent[0] + in_frag.tangent[1];
-    vec3  X0 = cross(in_frag.normal[0], in_frag.tangent[0]);
-    vec3  X1 = cross(in_frag.normal[1], in_frag.tangent[1]);
-    float slack = 0.1 * rs;
-    for (int k = 0; k < 2; ++k) {
-        if (k == 1 && !band) break;
-        vec3  pa = k == 0 ? a0 : a1;
-        vec3  pb = k == 0 ? b0 : b1;
-        vec3  w  = side_axis(pb - pa, wt);
-        float tg = side_guess(ro, rd, pa, pb, r0, r1, w);
-        if (tg < NO_HIT && tg < t + slack) side_hit(ro, rd, pa, pb, r0, r1, X0, in_frag.normal[0], X1, in_frag.normal[1], w, tg, t, n, ns);
+    // A side, or the whole of a round tube; the other side: the one the guess meets first, then the other where it may
+    // still be nearer. Where the guess is behind the nearest hit so far by more than the guess can be off (a tenth of
+    // r), the side is behind it too.
+    if (!face_in) {
+        vec3  wt  = in_frag.tangent[0] + in_frag.tangent[1];
+        vec3  X0  = cross(in_frag.normal[0], in_frag.tangent[0]);
+        vec3  X1  = cross(in_frag.normal[1], in_frag.tangent[1]);
+        vec2  seg = segment_interval(ro, rd);
+        vec3  w0  = side_axis(b0 - a0, wt);
+        vec3  w1  = band ? side_axis(b1 - a1, wt) : w0;
+        float g0  = side_guess(ro, rd, a0, b0, r0, r1, w0, seg);
+        float g1  = band ? side_guess(ro, rd, a1, b1, r0, r1, w1, seg) : NO_HIT;
+        bool  near1 = g1 < g0;
+        float slack = 0.1 * rs;
+        if (!band) {
+            // A round tube is the oblique cone (see above)
+            if (g0 < t) {
+                t  = g0;
+                n  = oblique_cone_normal(ro + rd * g0, a0, b0, r0, r1, w0);
+                ns = n;
+            }
+        } else {
+            for (int k = 0; k < 2; ++k) {
+                bool  one = (k == 0) == near1;
+                float tg  = one ? g1 : g0;
+                if (tg < NO_HIT && tg < t + slack) {
+                    side_hit(ro, rd, one ? a1 : a0, one ? b1 : b0, r0, r1, X0, in_frag.normal[0], X1, in_frag.normal[1], one ? w1 : w0, tg, t, n, ns);
+                }
+            }
+        }
     }
 
     // Where the chain ends, the rungs (a sphere for a round tube)
