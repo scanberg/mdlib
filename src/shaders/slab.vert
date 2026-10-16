@@ -18,9 +18,16 @@
 // A slab is culled when one of its corners is hidden (alpha 0, u_atom_mask), when an edge is longer than a bond can be
 // (across the periodic boundary), or when it has no plane. Its color is that of its first corner.
 //
-// The quad bounds the image of the box of the slab and lies at the depth of the point of that box closest to the image
-// plane (or at the near plane, if that is in front of it), so it is in front of every visible point of the slab: the
-// raycast starts at the quad, and its depth is a lower bound of the depth slab.frag writes (layout (depth_greater)).
+// The slab lies within the convex hull of the spheres of radius u_radius at its corners (in the plane), and its image
+// within the hull of their images (a central projection keeps convex hulls in front of the eye). The quad is the
+// rectangle about those images along the principal axis of the images of the corners, or along the axes of the screen
+// if that is smaller, its sides tangent to the outlines of the spheres (bond.vert). slab.frag tests every edge of a slab
+// for each fragment, hit or not, so the cost is in the area of the quad: a ring at an angle to the screen, or a stick,
+// fills a rectangle along the screen axes poorly (about 38% of it was hit, measured over random orientations; along its
+// principal axis 75% for a ring and 95% for a stick). Across the near plane, the box of the spheres bounds it instead.
+// The quad lies at the depth of the point of the spheres closest to the image plane (or at the near plane, if that is in
+// front of it), so it is in front of every visible point of the slab: the raycast starts at the quad, and its depth is a
+// lower bound of the depth slab.frag writes (layout (depth_greater)).
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -83,6 +90,30 @@ vec2 box_support(vec3 lo, vec3 hi, float near, vec2 n) {
     float d0 = near;
     float d1 = max(-lo.z, near);
     return vec2(min((m - e) / d0, (m - e) / d1), max((m + e) / d0, (m + e) / d1));
+}
+
+// Support of the image of the sphere (c, r) along the unit direction n of the image plane z = -1, as (s_min, s_max). As
+// in bond.vert. Requires the sphere to be in front of the eye (c.z + r < 0).
+vec2 sphere_support(vec3 c, float r, vec2 n) {
+#if ORTHO
+    float m = dot(n, c.xy);
+    return vec2(m - r, m + r);
+#else
+    float m = dot(n, c.xy);
+    float k = c.z * c.z - r * r;
+    float h = r * sqrt(max(k + m * m, 0.0));
+    float s = -c.z * m;
+    return vec2(s - h, s + h) / k;
+#endif
+}
+
+// The image of a point in front of the eye, on the image plane z = -1 (or the view plane)
+vec2 image(vec3 p) {
+#if ORTHO
+    return p.xy;
+#else
+    return p.xy / -p.z;
+#endif
 }
 
 void cull() {
@@ -150,17 +181,13 @@ void main() {
     vec3 tng = dot(q0, q0) > 0.0 ? normalize(q0) : normalize(cross(nrm, abs(nrm.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
     vec3 bit = cross(nrm, tng);
 
-    // The polygon in the plane, and its extent
+    // The polygon in the plane
     vec2 q[MAX_CORNERS];
-    vec2 q_lo = vec2( 3.4e38);
-    vec2 q_hi = vec2(-3.4e38);
     for (int k = 0; k < MAX_CORNERS; ++k) {
         q[k] = vec2(0.0);
         if (k >= n) continue;
         vec3 d = p[k] - c;
         q[k] = vec2(dot(d, tng), dot(d, bit));
-        q_lo = min(q_lo, q[k]);
-        q_hi = max(q_hi, q[k]);
     }
 
     float r = u_radius;
@@ -173,19 +200,15 @@ void main() {
     out_frag.picking  = u_slab_base_index + prim;
     out_frag.view_vel = mat3(u_world_to_view) * (vel / float(n));
 
-    // The box of the slab: the extent of the polygon and r about it in the plane, r along the normal
-    q_lo -= r;
-    q_hi += r;
+    // The corners in the plane, and the box of the spheres about them
+    vec3 pc[MAX_CORNERS];
     vec3 box_lo = vec3( 3.4e38);
     vec3 box_hi = vec3(-3.4e38);
-    vec3 box_corner[8];
-    for (int i = 0; i < 8; ++i) {
-        vec3 v = c + tng * ((i & 1) != 0 ? q_hi.x : q_lo.x)
-                   + bit * ((i & 2) != 0 ? q_hi.y : q_lo.y)
-                   + nrm * ((i & 4) != 0 ? r : -r);
-        box_corner[i] = v;
-        box_lo = min(box_lo, v);
-        box_hi = max(box_hi, v);
+    for (int k = 0; k < MAX_CORNERS; ++k) {
+        pc[k] = c + tng * q[k].x + bit * q[k].y;
+        if (k >= n) continue;
+        box_lo = min(box_lo, pc[k] - r);
+        box_hi = max(box_hi, pc[k] + r);
     }
 
     // Distance from the eye to the near plane (z = -near)
@@ -200,7 +223,7 @@ void main() {
         cull();
         return;
     }
-    // The point of the box closest to the image plane is in front of the slab
+    // The point of the spheres closest to the image plane is in front of the slab
     float z_front = box_hi.z;
     float z_quad  = min(z_front, -near);
 
@@ -208,39 +231,67 @@ void main() {
     vec2 px = 2.0 / (u_viewport_size * vec2(u_view_to_clip[0][0], u_view_to_clip[1][1]));
     float margin = u_viewport_size.x > 0.0 ? SUBPIXEL_MARGIN * max(abs(px.x), abs(px.y)) : 0.0;
 
-    vec2 img_lo, img_hi;
-#if ORTHO
-    img_lo = box_lo.xy;
-    img_hi = box_hi.xy;
-#else
+    // The rectangle (g, gp) of the image: (sg, st) its extents along g and gp
+    vec2 g  = vec2(1.0, 0.0);
+    vec2 gp = vec2(0.0, 1.0);
+    vec2 sg, st;
+#if !ORTHO
     if (z_front > -near) {
         // Crosses the near plane: the part behind it, within the box in view space
-        vec2 sx = box_support(box_lo, box_hi, near, vec2(1.0, 0.0));
-        vec2 sy = box_support(box_lo, box_hi, near, vec2(0.0, 1.0));
-        img_lo = vec2(sx.x, sy.x);
-        img_hi = vec2(sx.y, sy.y);
-    } else {
-        // The corners of the oriented box, all behind the near plane: their images bound that of the box
-        img_lo = vec2( 3.4e38);
-        img_hi = vec2(-3.4e38);
-        for (int i = 0; i < 8; ++i) {
-            vec2 s = box_corner[i].xy / -box_corner[i].z;
-            img_lo = min(img_lo, s);
-            img_hi = max(img_hi, s);
+        sg = box_support(box_lo, box_hi, near, g);
+        st = box_support(box_lo, box_hi, near, gp);
+    } else
+#endif
+    {
+        // The principal axis of the images of the corners
+        vec2 img[MAX_CORNERS];
+        vec2 mean = vec2(0.0);
+        for (int k = 0; k < MAX_CORNERS; ++k) {
+            img[k] = vec2(0.0);
+            if (k >= n) continue;
+            img[k] = image(pc[k]);
+            mean += img[k];
+        }
+        mean /= float(n);
+        vec3 m2 = vec3(0.0);    // xx, yy, xy
+        for (int k = 0; k < MAX_CORNERS; ++k) {
+            if (k >= n) continue;
+            vec2 d = img[k] - mean;
+            m2 += vec3(d.x * d.x, d.y * d.y, d.x * d.y);
+        }
+        float angle = 0.5 * atan(2.0 * m2.z, m2.x - m2.y + 1.0e-30);
+        vec2 dir[2] = vec2[2](vec2(cos(angle), sin(angle)), vec2(1.0, 0.0));
+        float best = 3.4e38;
+        for (int i = 0; i < 2; ++i) {
+            vec2 u = dir[i];
+            vec2 v = vec2(-u.y, u.x);
+            vec2 su = vec2(3.4e38, -3.4e38);
+            vec2 sv = vec2(3.4e38, -3.4e38);
+            for (int k = 0; k < MAX_CORNERS; ++k) {
+                if (k >= n) continue;
+                vec2 a = sphere_support(pc[k], r, u);
+                vec2 b = sphere_support(pc[k], r, v);
+                su = vec2(min(su.x, a.x), max(su.y, a.y));
+                sv = vec2(min(sv.x, b.x), max(sv.y, b.y));
+            }
+            float area = (su.y - su.x) * (sv.y - sv.x);
+            if (area < best) {
+                best = area;
+                g = u; gp = v; sg = su; st = sv;
+            }
         }
     }
-#endif
-    img_lo -= margin;
-    img_hi += margin;
+    sg += vec2(-margin, margin);
+    st += vec2(-margin, margin);
 
     bool hi = (corner & 1u) != 0u;
     bool up = (corner & 2u) != 0u;
-    vec2 st = vec2(hi ? img_hi.x : img_lo.x, up ? img_hi.y : img_lo.y);
+    vec2 at = (hi ? sg.y : sg.x) * g + (up ? st.y : st.x) * gp;
 
 #if ORTHO
-    vec3 view_pos = vec3(st, z_quad);
+    vec3 view_pos = vec3(at, z_quad);
 #else
-    vec3 view_pos = vec3(st, -1.0) * -z_quad;
+    vec3 view_pos = vec3(at, -1.0) * -z_quad;
 #endif
 
     vec4 clip = u_view_to_clip * vec4(view_pos, 1.0);
