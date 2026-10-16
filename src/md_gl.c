@@ -3033,9 +3033,12 @@ static bool draw_slabs(gl_program_t program, const molecule_t* mol, gl_buffer_t 
 }
 
 // One instance per control point (residue), see backbone.vert. Consecutive chains with the same level of detail are drawn together.
-// Ray cast (backbone_rc.vert): segments per control point at each level of detail, even divisors of
-// MD_GL_BACKBONE_SEGMENT_COUNT. The segments are straight, what matters is how far a chord is from the curve.
-static const uint32_t backbone_rc_segments[BACKBONE_LOD_COUNT] = { 6, 4, 2 };
+// Ray cast (backbone_rc.vert): the most segments per control point at each level of detail, even divisors of
+// MD_GL_BACKBONE_SEGMENT_COUNT (those of the mesh), and the largest angle a segment may turn by, which decides how many
+// of them each control point uses (a helix all, a strand few). The segments are straight: where they meet the surface
+// creases by that angle.
+static const uint32_t backbone_rc_segments[BACKBONE_LOD_COUNT] = { 12, 6, 2 };
+static const float    backbone_rc_turn[BACKBONE_LOD_COUNT]     = { (float)DEG_TO_RAD(6.0), (float)DEG_TO_RAD(12.0), 0.0f };
 
 // With raycast, the stadium profile is ray cast (backbone_rc.vert) with a quad per segment, the meshes of profile only
 // decide the level of detail
@@ -3113,7 +3116,7 @@ static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer
                     uint32_t res[4];
                     uint32_t rings[4];
                 } params = {
-                    {scale[0], scale[1], scale[2], scale[3]},
+                    {scale[0], scale[1], scale[2], raycast ? backbone_rc_turn[lod] : scale[3]},
                     {segments, mesh->profile_count, mesh->outline_count, profile == BACKBONE_PROFILE_BOX ? mesh->face_subdivisions : mesh->dome_rings},
                     {MD_GL_BACKBONE_SEGMENT_COUNT, MD_GL_BACKBONE_SEGMENT_COUNT / segments, 0, 0},
                 };

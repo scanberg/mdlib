@@ -22,10 +22,11 @@
 // it is off by 0.01 Angstrom at full detail and a few hundredths at the coarsest (the march: up to 0.13).
 // A round tube (l = 0 at both rings) is the round cone alone, exactly.
 //
-// The normal is that of the piece, with the component along the tangent of the spline (blended between the rings)
-// taken out: the segments are straight, and their own normals would crease the surface where they meet (a helix bends
-// by more than 15 degrees a segment). Taken perpendicular to the tangent of the curve, the normal is continuous over the
-// joints, as that of the mesh is. Not past the round end of a band, which keeps its own.
+// The normal is that of the piece, turned by the rotation which takes the axis of the segment to the tangent of the
+// spline there (blended between the rings): the segments are straight, and their own normals would crease the surface
+// where they meet. Turned with the curve, the normal is continuous over the joints, as that of the mesh is, and keeps
+// the tilt the twist of a band or a change of its profile gives it (taking out its component along the tangent would
+// lose that). Not past the round end of a band, which keeps its own.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -222,11 +223,16 @@ void main() {
     float h  = dot(view_coord - m0, ax) / max(dot(ax, ax), 1.0e-12);
     bool at_end = (h < 0.0 && in_frag.open_end.x != 0u) || (h > 1.0 && in_frag.open_end.y != 0u);
     h = clamp(h, 0.0, 1.0);
-    if (!at_end) {
-        vec3 tng = normalize(mix(in_frag.tangent[0], in_frag.tangent[1], h));
-        vec3 nt  = view_normal - tng * dot(view_normal, tng);
-        float n2 = dot(nt, nt);
-        if (n2 > 1.0e-6) view_normal = nt * inversesqrt(n2);
+    if (!at_end && dot(ax, ax) > 1.0e-12) {
+        // Rodrigues, without the angle: v + w x v + w x (w x v) / (1 + a.b), w = a x b
+        vec3  a = normalize(ax);
+        vec3  b = normalize(mix(in_frag.tangent[0], in_frag.tangent[1], h));
+        vec3  w = cross(a, b);
+        float cab = dot(a, b);
+        if (cab > -0.9) {
+            vec3 wv = cross(w, view_normal);
+            view_normal = normalize(view_normal + wv + cross(w, wv) / (1.0 + cab));
+        }
     }
     vec3 view_vel = mix(in_frag.vel[0], in_frag.vel[1], h);
 

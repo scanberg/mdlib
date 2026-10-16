@@ -4,13 +4,17 @@
 // Visualization of RNA and DNA Structures, 2019): the alternative to the mesh of backbone.vert, which costs little per
 // control point and per pixel what the backbone covers.
 //
-// The spline is cut into straight segments between its rings (compute_spline_subdivide.vert), S per control point, and
-// each segment is one quad: the instance of control point c covers u in [-0.5, 0.5] about it with S segments, as an
+// The spline is cut into straight segments between its rings (compute_spline_subdivide.vert), and each segment is one
+// quad: the instance of control point c covers u in [-0.5, 0.5] about it with up to S segments (S quads, u_res.x), as an
 // instance of backbone.vert does with its S + 1 rings (see there: the same rings, flipped into the frame of c, collapsed
-// at the ends of a chain). At a ring the profile is a stadium, the core segment from P - l X to P + l X (P the position,
-// X the support) widened by r, its flat sides facing +-Y = Z x X. The segment between rings 0 and 1 is the ruled
-// surface between the cores thickened by the radius, blended from r0 to r1: backbone_rc.frag ray casts it in closed form
-// (see there). A circle (l = 0) makes it one round cone, exactly. A segment is closed at a ring where the band ends:
+// at the ends of a chain). How many it uses depends on how much the spline turns there and how much its profile
+// changes (segment_step): straight segments of a curve crease where they meet, by the angle the curve turns over one,
+// which the ambient occlusion shows as bands across a helix (it turns by 80 to 90 degrees a residue). A helix gets all
+// S, a strand or a straight coil as few as 2, each turning by at most u_scale.w radians. The rest of the quads collapse.
+//
+// At a ring the profile is a stadium, the core segment from P - l X to P + l X (P the position, X the support) widened
+// by r, its flat sides facing +-Y = Z x X. The segment between rings 0 and 1 is the ruled surface between the cores
+// thickened by the radius, blended from r0 to r1: backbone_rc.frag ray casts it in closed form (see there). A circle (l = 0) makes it one round cone, exactly. A segment is closed at a ring where the band ends:
 // the end of a chain, or a neighbor which is not drawn (its control point hidden); elsewhere the next segment closes it.
 //
 // The segment lies within the convex hull of the four spheres at the ends of its cores (radius r0 at ring 0, r1 at ring
@@ -54,8 +58,9 @@ layout (std140) uniform ubo {
     uint u_bond_base_index;
     uint u_backbone_base_index;
 
-    vec4  u_scale;  // Cartoon: (coil, helix, sheet, -) scale. Tubes: (scale, band radius scale, -, -)
-    uvec4 u_res;    // (S: segments per control point, -, -, -)
+    vec4  u_scale;  // Cartoon: (coil, helix, sheet, max turn) scale. Tubes: (scale, band radius scale, -, max turn). The
+                    // largest angle a segment may turn by (radians), 0 for S segments everywhere
+    uvec4 u_res;    // (S: most segments per control point, -, -, -)
     uvec4 u_rings;  // (R: rings per control point in the ring buffer, stride = R / S, -, -)
 };
 
@@ -135,6 +140,20 @@ vec2 stadium(Ring r) {
 #endif
 }
 
+// The tangent and the stadium (l, r) of a ring, from the last word of its record
+void ring_shape(uint idx, out vec3 z, out vec2 lr) {
+    uvec4 w2 = texelFetch(u_buf_rings, int(idx) * 3 + 2);
+    Ring r;
+    r.position = vec3(0.0);
+    r.velocity = vec3(0.0);
+    r.x        = vec3(0.0);
+    r.z        = vec3(unpack_snorm16(w2.y >> 16u), unpack_snorm16(w2.z), unpack_snorm16(w2.z >> 16u));
+    r.ss       = vec3(unpack_unorm8(w2.w), unpack_unorm8(w2.w >> 8u), unpack_unorm8(w2.w >> 16u));
+    r.radius   = unpack_unorm8(w2.w >> 24u) * TUBE_RADIUS_MAX;
+    z  = normalize(r.z);
+    lr = stadium(r);
+}
+
 // Ring j in [0, S] of the instance of control point c, and the sign that brings its support into the frame of c
 void instance_ring(uint c, uint j, uvec4 nb, bool chain_beg, bool chain_end, out uint ring_idx, out float sgn) {
     uint S = u_res.x;
@@ -152,6 +171,36 @@ void instance_ring(uint c, uint j, uvec4 nb, bool chain_beg, bool chain_end, out
     } else {
         ring_idx = chain_end ? c * R : c * R + (j - half_S) * stride;
     }
+}
+
+// The rings a segment of the instance of c spans: the most for which each segment turns by at most u_scale.w and its
+// profile changes by at most a tenth of its extent, from the turn and the change over each half of the instance (rings
+// 0, S / 2 and S). It divides S / 2, so no segment straddles the control point, nor the ends of a chain.
+uint segment_step(uint c, uvec4 nb, bool chain_beg, bool chain_end) {
+    uint S = u_res.x;
+    uint half_S = S / 2u;
+    if (!(u_scale.w > 0.0) || half_S < 2u) return 1u;
+
+    uint i0, ih, i1;
+    float sg;
+    instance_ring(c, 0u,     nb, chain_beg, chain_end, i0, sg);
+    instance_ring(c, half_S, nb, chain_beg, chain_end, ih, sg);
+    instance_ring(c, S,      nb, chain_beg, chain_end, i1, sg);
+    vec3 z0, zh, z1;
+    vec2 s0, sh, s1;
+    ring_shape(i0, z0, s0);
+    ring_shape(ih, zh, sh);
+    ring_shape(i1, z1, s1);
+
+    float turn   = acos(clamp(dot(z0, zh), -1.0, 1.0)) + acos(clamp(dot(zh, z1), -1.0, 1.0));
+    float extent = max(max(s0.x + s0.y, sh.x + sh.y), s1.x + s1.y);
+    float change = (length(s0 - sh) + length(sh - s1)) / max(extent, 1.0e-6);
+    for (uint k = half_S; k > 1u; --k) {
+        if (half_S % k != 0u) continue;
+        float n = float(S / k);
+        if (turn <= u_scale.w * n && change <= 0.1 * n) return k;
+    }
+    return 1u;
 }
 
 // Support of the image of the part of the box [lo, hi] (view space) behind the near plane, along the unit direction n
@@ -220,10 +269,17 @@ void main() {
         return;
     }
 
+    // The segments this instance uses: a quad of every step-th ring, the others collapse
+    uint step = segment_step(c, nb, chain_beg, chain_end);
+    if (j % step != 0u) {
+        cull();
+        return;
+    }
+
     uint  idx0, idx1;
     float sgn0, sgn1;
-    instance_ring(c, j,      nb, chain_beg, chain_end, idx0, sgn0);
-    instance_ring(c, j + 1u, nb, chain_beg, chain_end, idx1, sgn1);
+    instance_ring(c, j,        nb, chain_beg, chain_end, idx0, sgn0);
+    instance_ring(c, j + step, nb, chain_beg, chain_end, idx1, sgn1);
     Ring r0 = load_ring(idx0);
     Ring r1 = load_ring(idx1);
 
@@ -250,7 +306,7 @@ void main() {
 
     // The band ends where the chain does, and where the segment of the neighboring instance is not drawn
     bool end0 = (chain_beg && j == half_S) || (j == 0u && !atom_visible(load_atom_idx(nb.x)));
-    bool end1 = (chain_end && j + 1u == half_S) || (j + 1u == S && !atom_visible(load_atom_idx(nb.y)));
+    bool end1 = (chain_end && j + step == half_S) || (j + step == S && !atom_visible(load_atom_idx(nb.y)));
 
     out_frag.core        = vec3[4](a0, a1, b0, b1);
     out_frag.radius      = vec2(s0.y, s1.y);
