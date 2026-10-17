@@ -700,6 +700,114 @@ UTEST(gto_int, h2o_gpu_matches_cpu) {
     md_gpu_device_destroy(device);
 }
 
+// Evaluates `q` at the points `xyz` (stride bytes apart, float) on the GPU and reads the result back.
+static bool int_test_gpu_xyz(float* out, md_gpu_stream_t stream, const md_gto_int_charges_t* q, const float* xyz, size_t n,
+                             uint32_t stride, uint64_t work_per_dispatch) {
+    const size_t bytes = (size_t)(stride ? stride : 12) * n;
+    md_gpu_mem_t pts = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, bytes);
+    md_gpu_mem_t res = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * n);
+    md_gpu_mem_t rb  = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * n);
+    md_gto_int_gpu_charges_t gq = md_gto_int_gpu_charges_create(stream, q);
+    if (!pts.gpu || !res.gpu || !rb.cpu || !gq) return false;
+    void* dst = md_gpu_upload_begin(stream, pts.gpu, bytes);
+    MEMCPY(dst, xyz, bytes);
+    md_gpu_upload_end(stream);
+
+    md_gto_int_gpu_potential_xyz_desc_t desc = {
+        .charges = gq, .xyz = pts.gpu, .xyz_stride = stride, .num_xyz = (uint32_t)n,
+        .out_potential = res.gpu, .work_per_dispatch = work_per_dispatch,
+    };
+    if (!md_gto_int_gpu_potential_xyz_launch(stream, &desc)) return false;
+    md_gpu_copy(stream, rb.gpu, res.gpu, sizeof(float) * n);
+    md_gpu_stream_sync(stream);
+    MEMCPY(out, rb.cpu, sizeof(float) * n);
+
+    md_gto_int_gpu_charges_destroy(stream, gq);
+    md_gpu_free(stream, pts.gpu);
+    md_gpu_free(stream, res.gpu);
+    md_gpu_free(stream, rb.gpu);
+    md_gpu_stream_sync(stream);
+    return true;
+}
+
+#ifdef MD_HDF5
+// md_gto_int_gpu_potential_xyz_launch against md_gto_int_potential_xyz at scattered points, packed and
+// with the 16 byte stride of a float4 vertex buffer (md_gto_iso_gpu_mesh_t::position)
+UTEST(gto_int, vlx_amide_gpu_xyz_matches_cpu) {
+    md_gpu_device_t device = md_gpu_device_create(NULL);
+    if (!device) {
+        UTEST_SKIP(int_test_no_device_reason());
+    }
+    md_gpu_stream_t stream = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
+    md_gto_int_gpu_initialize(device);
+
+    vlx_test_t t = {0};
+    ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.h5"), MEGABYTES(64)));
+    int_test_qm_t m;
+    ASSERT_TRUE(int_test_extract(&m, &t));
+    md_gto_int_charges_t q = {0};
+    ASSERT_TRUE(int_test_charges(&q, &m, 1e-10, true, t.alloc));
+
+    // Points 0.5 - 4 bohr from the atoms, in every direction: where isosurfaces are
+    const size_t n = 10007;     // not a multiple of the group size
+    float*  p3  = (float*)md_alloc(t.alloc, sizeof(float) * 3 * n);
+    float*  p4  = (float*)md_alloc(t.alloc, sizeof(float) * 4 * n);
+    double* V   = (double*)md_alloc(t.alloc, sizeof(double) * n);
+    double* E   = (double*)md_alloc(t.alloc, sizeof(double) * 3 * n);
+    float*  gpu = (float*)md_alloc(t.alloc, sizeof(float) * n);
+    float*  gpu4 = (float*)md_alloc(t.alloc, sizeof(float) * n);
+    float*  gpu_split = (float*)md_alloc(t.alloc, sizeof(float) * n);
+    uint32_t rng = 12345u;
+    for (size_t i = 0; i < n; ++i) {
+        const size_t a = i % m.num_atoms;
+        float d[3], len2 = 0.0f;
+        do {
+            len2 = 0.0f;
+            for (int k = 0; k < 3; ++k) {
+                rng = rng * 1664525u + 1013904223u;
+                d[k] = (float)(rng >> 8) * (2.0f / 16777216.0f) - 1.0f;
+                len2 += d[k] * d[k];
+            }
+        } while (len2 < 1e-4f || len2 > 1.0f);
+        rng = rng * 1664525u + 1013904223u;
+        const float r = 0.5f + 3.5f * (float)(rng >> 8) / 16777216.0f;
+        for (int k = 0; k < 3; ++k) {
+            p3[i * 3 + k] = (float)m.atom_xyz[a * 3 + k] + r * d[k] / sqrtf(len2);
+            p4[i * 4 + k] = p3[i * 3 + k];
+        }
+        p4[i * 4 + 3] = 1.0f;
+    }
+    md_gto_int_potential_xyz(V, E, p3, n, 0, &q);
+
+    ASSERT_TRUE(int_test_gpu_xyz(gpu, stream, &q, p3, n, 0, 0));
+    ASSERT_TRUE(int_test_gpu_xyz(gpu4, stream, &q, p4, n, 16, 0));
+    EXPECT_EQ(0, memcmp(gpu, gpu4, sizeof(float) * n));
+
+    // As for the grid: what is left beyond what the position explains. The points are absolute floats,
+    // moved into the frame of the distribution in float on the device (the grid's are formed in double):
+    // a rounding of their own, so 2e-6 bohr rather than the grid's 1e-6.
+    double rel = 0.0, excess = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const double e = sqrt(E[i * 3] * E[i * 3] + E[i * 3 + 1] * E[i * 3 + 1] + E[i * 3 + 2] * E[i * 3 + 2]);
+        const double d = fabs((double)gpu[i] - V[i]);
+        rel    = MAX(rel, d / MAX(1.0, fabs(V[i])));
+        excess = MAX(excess, (d - e * 2e-6) / MAX(1.0, fabs(V[i])));
+    }
+    printf("amide def2-SVP potential at %zu points, GPU vs CPU: max |diff| / max(1,|V|) = %.3e, beyond 2e-6 bohr of position %.3e\n", n, rel, excess);
+    EXPECT_LT(rel, 5e-6);
+    EXPECT_LT(excess, 1e-6);
+
+    // Split into many batches and runs of gaussians: bit identical
+    ASSERT_TRUE(int_test_gpu_xyz(gpu_split, stream, &q, p3, n, 0, 20000));
+    EXPECT_EQ(0, memcmp(gpu, gpu_split, sizeof(float) * n));
+
+    md_gto_int_charges_free(&q, t.alloc);
+    qm_test_free(&t);
+    md_gto_int_gpu_shutdown();
+    md_gpu_device_destroy(device);
+}
+#endif
+
 // Every Hermite order the GPU has a kernel for: s, p, d, f and g shells on three centres, so the
 // pairs reach g x g (L = 8), with a random symmetric AO matrix.
 UTEST(gto_int, all_orders_gpu_match_cpu) {

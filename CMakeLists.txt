@@ -147,6 +147,9 @@ set(SRC_FILES
   src/md_gto.h
   src/md_gto_int.c
   src/md_gto_int.h
+  src/md_gto_iso.c
+  src/md_gto_iso.h
+  src/md_gto_iso_gpu.inl
   src/md_itp.c
   src/md_itp.h
   src/md_dcd.c
@@ -547,7 +550,8 @@ set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${T
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
-    src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang)
+    src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
+    src/shaders/gto/eval_gto_int_potential_xyz.slang src/shaders/gto/gto_int_potential_common.slang)
 
 source_group("src"      FILES ${SRC_FILES}) 
 source_group("src/core" FILES ${CORE_FILES})
@@ -627,6 +631,26 @@ if (MD_ENABLE_GPU)
     ENTRIES   l0 l1 l2 l3 l4 l5 l6 l7 l8 resolve
     DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
               ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_hermite.slang
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_potential_common.slang
+  )
+  # The same at arbitrary points (md_gto_int_gpu_potential_xyz_launch)
+  compile_gpu_shaders(eval_gto_int_potential_xyz_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential_xyz.slang
+    ENTRIES   l0 l1 l2 l3 l4 l5 l6 l7 l8 resolve
+    DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_hermite.slang
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_potential_common.slang
+  )
+  # md_gto_iso: the gridless isosurface pipeline (md_gto_iso_gpu.inl)
+  compile_gpu_shaders(gto_iso_gpu_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/iso/gto_iso_gpu.slang
+    ENTRIES   iso_grid iso_octree iso_hash iso_corners iso_eval iso_cells iso_quads iso_newton iso_relax
+              iso_bucket_count iso_bucket_scan iso_bucket_vertices iso_bucket_triangles iso_eval_orbital
+              iso_corners_orbital
   )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl

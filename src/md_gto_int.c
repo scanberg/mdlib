@@ -946,6 +946,7 @@ void md_gto_int_potential_grid(float* out_values, const md_grid_t* grid, const f
 #if MD_ENABLE_GPU
 
 #include <eval_gto_int_potential_shaders.inl>
+#include <eval_gto_int_potential_xyz_shaders.inl>
 
 // Must match eval_gto_int_potential.slang.
 #define GTO_INT_BOYS_DT    0.1
@@ -978,9 +979,33 @@ typedef struct {
     md_gpu_storage_tex_t out_tex;
 } gto_int_potential_args_t;
 
+/* Mirrors RootArgs in eval_gto_int_potential_xyz.slang. */
+typedef struct {
+    float           ref[4];
+    uint32_t        first;
+    uint32_t        count;
+    uint32_t        coeff_first;
+    uint32_t        num_points;
+    uint32_t        xyz_first;
+    uint32_t        xyz_count;
+    uint32_t        xyz_stride;
+    uint32_t        _pad0;
+    md_gpu_addr_t   xyz;
+    md_gpu_addr_t   gaussians;
+    md_gpu_addr_t   coeffs;
+    md_gpu_addr_t   boys;
+    md_gpu_addr_t   points;
+    md_gpu_addr_t   accum;
+    md_gpu_addr_t   out;
+    uint32_t        _pad_end[2];
+} gto_int_potential_xyz_args_t;
+STATIC_ASSERT(sizeof(gto_int_potential_xyz_args_t) == 112, "gto_int_potential_xyz_args_t must match RootArgs in eval_gto_int_potential_xyz.slang");
+
 static md_gpu_device_t gto_int_gpu_device = NULL;
 static md_gpu_kernel_t gto_int_k_order[MD_GTO_INT_MAX_ORDER + 1] = {0};
 static md_gpu_kernel_t gto_int_k_resolve = NULL;
+static md_gpu_kernel_t gto_int_k_xyz_order[MD_GTO_INT_MAX_ORDER + 1] = {0};
+static md_gpu_kernel_t gto_int_k_xyz_resolve = NULL;
 
 void md_gto_int_gpu_initialize(md_gpu_device_t device) {
     gto_int_gpu_device = device;
@@ -991,6 +1016,10 @@ void md_gto_int_gpu_shutdown(void) {
         if (gto_int_k_order[L]) { md_gpu_kernel_destroy(gto_int_k_order[L]); gto_int_k_order[L] = NULL; }
     }
     if (gto_int_k_resolve) { md_gpu_kernel_destroy(gto_int_k_resolve); gto_int_k_resolve = NULL; }
+    for (int L = 0; L <= MD_GTO_INT_MAX_ORDER; ++L) {
+        if (gto_int_k_xyz_order[L]) { md_gpu_kernel_destroy(gto_int_k_xyz_order[L]); gto_int_k_xyz_order[L] = NULL; }
+    }
+    if (gto_int_k_xyz_resolve) { md_gpu_kernel_destroy(gto_int_k_xyz_resolve); gto_int_k_xyz_resolve = NULL; }
     gto_int_gpu_device = NULL;
 }
 
@@ -1014,6 +1043,21 @@ static md_gpu_kernel_t gto_int_order_kernel(uint32_t L) {
     case 6: return gto_int_kernel(&gto_int_k_order[6], md_shader_eval_gto_int_potential_l6_kernel());
     case 7: return gto_int_kernel(&gto_int_k_order[7], md_shader_eval_gto_int_potential_l7_kernel());
     case 8: return gto_int_kernel(&gto_int_k_order[8], md_shader_eval_gto_int_potential_l8_kernel());
+    default: return NULL;
+    }
+}
+
+static md_gpu_kernel_t gto_int_xyz_order_kernel(uint32_t L) {
+    switch (L) {
+    case 0: return gto_int_kernel(&gto_int_k_xyz_order[0], md_shader_eval_gto_int_potential_xyz_l0_kernel());
+    case 1: return gto_int_kernel(&gto_int_k_xyz_order[1], md_shader_eval_gto_int_potential_xyz_l1_kernel());
+    case 2: return gto_int_kernel(&gto_int_k_xyz_order[2], md_shader_eval_gto_int_potential_xyz_l2_kernel());
+    case 3: return gto_int_kernel(&gto_int_k_xyz_order[3], md_shader_eval_gto_int_potential_xyz_l3_kernel());
+    case 4: return gto_int_kernel(&gto_int_k_xyz_order[4], md_shader_eval_gto_int_potential_xyz_l4_kernel());
+    case 5: return gto_int_kernel(&gto_int_k_xyz_order[5], md_shader_eval_gto_int_potential_xyz_l5_kernel());
+    case 6: return gto_int_kernel(&gto_int_k_xyz_order[6], md_shader_eval_gto_int_potential_xyz_l6_kernel());
+    case 7: return gto_int_kernel(&gto_int_k_xyz_order[7], md_shader_eval_gto_int_potential_xyz_l7_kernel());
+    case 8: return gto_int_kernel(&gto_int_k_xyz_order[8], md_shader_eval_gto_int_potential_xyz_l8_kernel());
     default: return NULL;
     }
 }
@@ -1238,6 +1282,77 @@ bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gp
             }
 
             md_gpu_launch(stream, k_resolve, md_gpu_grid_for(k_resolve, dx, dy, nz), &a, sizeof(a));
+        }
+    }
+    md_gpu_temp_end(stream, scope);
+    md_gpu_stream_set_ordering(stream, prev_ordering);
+    return a.accum != 0;
+}
+
+bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc) {
+    if (!stream || !desc || !desc->charges || (desc->num_xyz && (!desc->xyz || !desc->out_potential)) || (desc->xyz_stride & 3u)) {
+        MD_LOG_ERROR("md_gto_int_gpu_potential_xyz_launch: invalid input");
+        return false;
+    }
+    if (desc->num_xyz == 0) return true;
+    const md_gto_int_gpu_charges* g = desc->charges;
+
+    md_gpu_kernel_t k_resolve = gto_int_kernel(&gto_int_k_xyz_resolve, md_shader_eval_gto_int_potential_xyz_resolve_kernel());
+    if (!k_resolve) {
+        MD_LOG_ERROR("md_gto_int_gpu_potential_xyz_launch: kernels unavailable (md_gto_int_gpu_initialize not called?)");
+        return false;
+    }
+    for (uint32_t L = 0; L <= g->max_order; ++L) {
+        if (g->order_offset[L + 1] > g->order_offset[L] && !gto_int_xyz_order_kernel(L)) return false;   // logged by gto_int_kernel
+    }
+
+    const uint64_t budget = desc->work_per_dispatch ? desc->work_per_dispatch : GTO_INT_DEFAULT_WORK;
+    const uint32_t n = desc->num_xyz;
+    // Batches of points: bounded by the accumulator size, and by the budget so that a single gaussian of
+    // the highest order present still fits one dispatch
+    const uint32_t batch = (uint32_t)CLAMP(MIN((uint64_t)GTO_INT_MAX_SLAB_VOXELS, budget / gto_int_cost(g->max_order)), 1, n);
+
+    gto_int_potential_xyz_args_t a = {0};
+    for (int k = 0; k < 3; ++k) a.ref[k] = (float)g->ref[k];
+    a.num_points = g->num_points;
+    a.xyz_stride = (desc->xyz_stride ? desc->xyz_stride : 12u) / 4u;
+    a.xyz        = desc->xyz;
+    a.gaussians  = g->buffer + g->off_gaussians;
+    a.coeffs     = g->buffer + g->off_coeffs;
+    a.boys       = g->buffer + g->off_boys;
+    a.points     = g->buffer + g->off_points;
+    a.out        = desc->out_potential;
+
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
+    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
+
+    md_gpu_temp_t scope = md_gpu_temp_begin(stream);
+    const size_t accum_bytes = sizeof(uint32_t) * 2 * (size_t)batch;
+    a.accum = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
+    if (!a.accum) {
+        MD_LOG_ERROR("md_gto_int_gpu_potential_xyz_launch: failed to allocate %zu bytes of accumulator", accum_bytes);
+    } else {
+        for (uint32_t p0 = 0; p0 < n; p0 += batch) {
+            const uint32_t np = MIN(batch, n - p0);
+            a.xyz_first = p0;
+            a.xyz_count = np;
+            md_gpu_memset(stream, a.accum, 0, sizeof(uint32_t) * 2 * (size_t)np);
+
+            for (uint32_t L = 0; L <= g->max_order; ++L) {
+                const uint32_t begin = g->order_offset[L], end = g->order_offset[L + 1];
+                if (begin == end) continue;
+                md_gpu_kernel_t k = gto_int_xyz_order_kernel(L);
+                const uint64_t per = MAX(1, budget / ((uint64_t)np * gto_int_cost(L)));
+                const uint32_t nh  = md_gto_int_num_hermite(L);
+                const md_gpu_grid_t groups = md_gpu_grid_for(k, np, 1, 1);
+                for (uint32_t first = begin; first < end; first += (uint32_t)MIN(per, (uint64_t)(end - first))) {
+                    a.first       = first;
+                    a.count       = (uint32_t)MIN(per, (uint64_t)(end - first));
+                    a.coeff_first = g->coeff_first[L] + (first - begin) * nh;
+                    md_gpu_launch(stream, k, groups, &a, sizeof(a));
+                }
+            }
+            md_gpu_launch(stream, k_resolve, md_gpu_grid_for(k_resolve, np, 1, 1), &a, sizeof(a));
         }
     }
     md_gpu_temp_end(stream, scope);

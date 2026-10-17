@@ -254,6 +254,23 @@ typedef struct md_gto_int_gpu_potential_desc_t {
 // by ~5e-4 au on C60, a few percent of its surface potential.
 bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc);
 
+// The potential at arbitrary points already on the device, the counterpart of md_gto_int_potential_xyz:
+// e.g. the vertices of an isosurface mesh (md_gto_iso_gpu_mesh_t::position, xyz_stride 16), evaluated
+// where they are with no readback in between.
+typedef struct md_gto_int_gpu_potential_xyz_desc_t {
+    md_gto_int_gpu_charges_t charges;
+    md_gpu_addr_t    xyz;               // positions, bohr, float: point i at xyz + i * xyz_stride
+    uint32_t         xyz_stride;        // bytes between points, a multiple of 4; 0 = packed (12)
+    uint32_t         num_xyz;
+    md_gpu_addr_t    out_potential;     // float [num_xyz], hartree / e
+    uint64_t         work_per_dispatch; // as md_gto_int_gpu_potential_desc_t; 0 = default
+} md_gto_int_gpu_potential_xyz_desc_t;
+
+// Issue the evaluation into `stream`. Asynchronous: no readbacks, no waits. Returns false, logged, when
+// nothing was issued (invalid input, a kernel that could not be made, no memory for the accumulator).
+// Precision and summation as md_gto_int_gpu_potential_launch.
+bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc);
+
 #endif
 
 #ifdef __cplusplus

@@ -1,0 +1,282 @@
+#pragma once
+
+// md_gto_iso - isosurface meshes of molecular orbitals and densities, built straight from the basis
+//
+// No volume is ever evaluated. The surface f = +iso / f = -iso of an orbital (f = psi) or a
+// density (f = rho: SCF, spin, transition, attachment / detachment, any AO density matrix) is found
+// with a lazily built octree whose cells are kept only where a rigorous bound on f admits the iso
+// value, stopped at bricks of 4^3 lattice cells. The bricks' lattice corners are evaluated once;
+// Surface Nets on them gives the topology, Newton steps along the analytic gradient put the
+// vertices ON the true surface, tangential relaxation evens out the triangles and optional edge
+// splitting refines where the surface curves.
+//
+// THE GUARANTEE
+// A lattice cell whose corners show a crossing is never discarded: the bound is conservative, so
+// the mesh is exactly the Surface Nets mesh of the full lattice at the same spacing, at a fraction
+// of the evaluations (typically 10-100x fewer). What no method at spacing h sees - a surface piece
+// that crosses no lattice edge - is not seen here either.
+//
+// TWO TIMESCALES
+//   md_gto_iso_cache_t   per field and spacing, for an interval of iso values: the octree, the
+//                        bricks and their corner values (~0.5 KB per brick). Building it is the
+//                        expensive part; for a density mostly the corner values, which can be
+//                        spread over threads (md_gto_iso_cache_desc_t.defer_corners).
+//   md_gto_iso_mesh_t    per iso value inside the cache's interval: Surface Nets on the cached
+//                        corners plus the vertex refinement. Dragging an iso slider inside the
+//                        interval only pays for this.
+//
+// The field and the cache are immutable once created, so meshes can be extracted from several
+// threads at once, and different fields can be processed in parallel.
+//
+// PRECISION AND UNITS
+// Double precision throughout, positions in bohr, the same atom coordinates as the basis is
+// evaluated at. Corner values are stored as float, which only decides on which side of the iso
+// value a corner lies; vertex positions come from the double precision projection.
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#include <md_gto.h>
+
+struct md_allocator_i;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// ---------------------------------------------------------------------------
+// FIELD: an orbital or a density, prepared for bounding and evaluation
+// ---------------------------------------------------------------------------
+// Everything below (cache, mesh) works the same for both kinds; f denotes the field's value. The
+// positive sheet is f = +iso, the negative one f = -iso (an orbital's two phases; the negative
+// regions of a difference or transition density).
+//
+// Common to the constructors: atom_xyz in bohr, stride in bytes (0 = tightly packed float3); AO
+// vectors and matrices in the Cartesian AO order of the basis (md_gto_basis_num_ao entries per
+// vector), as for md_gto_expand_with_ao_coeffs and the orbital/coefficient attributes. Each returns
+// NULL on failure.
+typedef struct md_gto_iso_field_t md_gto_iso_field_t;
+
+// An orbital, f = psi = sum_i c_i phi_i.
+md_gto_iso_field_t* md_gto_iso_field_create(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                            const double* ao_coeffs, struct md_allocator_i* alloc);
+
+// A density as a sum of orbital products, f = sum_k w_k a_k b_k, with a_k = left[k] . phi and
+// b_k = right[k] . phi (count rows of num_ao each). right == NULL means squares, b_k = a_k.
+// This is the form a density usually arrives in, so nothing is decomposed:
+//   SCF density:            left = the occupied MOs, weight = the occupations
+//   spin density:           alpha and beta MOs, weights +n and -n
+//   transition density:     left = NTO holes, right = NTO particles, weight = the NTO amplitudes
+//   attachment/detachment:  NTO particles / holes squared, weight = the NTO weights (lambda)
+// Cost grows with count (each function is bounded and evaluated on its own), so pass only the
+// significant products.
+md_gto_iso_field_t* md_gto_iso_field_create_products(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                                     const double* left, const double* right, const double* weight, size_t count,
+                                                     struct md_allocator_i* alloc);
+
+// A density from its AO density matrix, f = phi^T D phi (num_ao x num_ao, row major). Only the
+// symmetric part of D contributes, so a non-symmetric (transition) matrix is fine. D is split into
+// signed squares: pivoted LDL^T (pivoted Cholesky for a semidefinite D, whose factors are localized
+// and give tight bounds), or an eigendecomposition where 1x1 pivots are unstable. The splitting's
+// residual is bounded everywhere and carried in every bound (md_gto_iso_field_info: residual).
+// The number of factors is the rank of D: the occupied count for an SCF density. A correlated
+// density is close to full rank and costs accordingly; prefer _create_products where the products
+// are at hand.
+md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                                    const double* density_matrix, struct md_allocator_i* alloc);
+
+void md_gto_iso_field_destroy(md_gto_iso_field_t* field);
+
+enum {
+    MD_GTO_ISO_FIELD_ORBITAL = 0,
+    MD_GTO_ISO_FIELD_DENSITY = 1,
+};
+
+enum {
+    MD_GTO_ISO_SPLIT_NONE = 0,      // an orbital, or products given by the caller
+    MD_GTO_ISO_SPLIT_LDL  = 1,      // a density matrix, pivoted LDL^T
+    MD_GTO_ISO_SPLIT_EIGEN = 2,     // a density matrix, eigendecomposition
+};
+
+typedef struct md_gto_iso_field_info_t {
+    uint32_t kind;                  // MD_GTO_ISO_FIELD_*
+    uint32_t split;                 // MD_GTO_ISO_SPLIT_*
+    uint32_t num_functions;         // orbital-like functions (1 for an orbital, the rank for a matrix)
+    uint32_t num_terms;             // products (0 for an orbital)
+    uint32_t num_groups;            // what a bound sums over: (atom, l) groups of an orbital, shells of a density
+    double   residual;              // bound of |phi^T D phi - the split| over all space (matrix input)
+    size_t   memory_bytes;
+} md_gto_iso_field_info_t;
+
+void md_gto_iso_field_info(md_gto_iso_field_info_t* out, const md_gto_iso_field_t* field);
+
+// f (and optionally its gradient, 3 per point) at points in bohr.
+void md_gto_iso_field_evaluate(const md_gto_iso_field_t* field, const float* xyz, size_t count, size_t stride,
+                               double* out_psi, double* out_grad);
+
+// ---------------------------------------------------------------------------
+// CACHE: bricks and corner values for every iso value in [iso_min, iso_max]
+// ---------------------------------------------------------------------------
+typedef struct md_gto_iso_cache_t md_gto_iso_cache_t;
+
+typedef struct md_gto_iso_cache_desc_t {
+    double cell_size;   // lattice spacing in bohr; 0.1 - 0.15 is a good range for display
+    double iso_min;     // > 0. The cache serves every iso in [iso_min, iso_max], both signs.
+    double iso_max;     // >= iso_min; 0 means iso_min (a single value)
+    bool   defer_corners;   // return after the octree; the caller fills the corner values with
+                            // md_gto_iso_cache_evaluate, e.g. spread over threads
+} md_gto_iso_cache_desc_t;
+
+// The field must outlive the cache. Returns NULL on failure.
+md_gto_iso_cache_t* md_gto_iso_cache_create(const md_gto_iso_field_t* field, const md_gto_iso_cache_desc_t* desc, struct md_allocator_i* alloc);
+void md_gto_iso_cache_destroy(md_gto_iso_cache_t* cache);
+
+// Evaluates the corner values of bricks [first_brick, first_brick + num_bricks) (num_bricks from
+// md_gto_iso_cache_info). Building the cache does all of them unless desc.defer_corners was set;
+// then every brick must be evaluated before a mesh is extracted. Disjoint ranges may be evaluated
+// from several threads at once. This is the expensive part of a density cache: one AO evaluation
+// and a num_ao x num_functions product per corner, 125 corners per brick.
+void md_gto_iso_cache_evaluate(md_gto_iso_cache_t* cache, uint32_t first_brick, uint32_t num_bricks);
+
+// Whether a mesh at this iso value can be extracted from the cache.
+bool md_gto_iso_cache_covers(const md_gto_iso_cache_t* cache, double iso);
+
+typedef struct md_gto_iso_cache_info_t {
+    double   cell_size;
+    double   iso_min, iso_max;
+    double   origin[3];         // lattice origin, bohr
+    uint32_t num_bricks;        // 4^3 cells each
+    uint32_t cells_per_axis;    // of the (virtual) full lattice
+    size_t   memory_bytes;
+    double   seconds_octree;    // building it: the bounds
+    double   seconds_corners;   // building it: the corner values of the bricks
+} md_gto_iso_cache_info_t;
+
+void md_gto_iso_cache_info(md_gto_iso_cache_info_t* out, const md_gto_iso_cache_t* cache);
+
+// ---------------------------------------------------------------------------
+// MESH
+// ---------------------------------------------------------------------------
+enum {
+    MD_GTO_ISO_SHEET_POSITIVE = 1,   // f = +iso
+    MD_GTO_ISO_SHEET_NEGATIVE = 2,   // f = -iso
+    MD_GTO_ISO_SHEET_BOTH     = 3,
+};
+
+typedef struct md_gto_iso_mesh_desc_t {
+    double   iso;                  // > 0 and covered by the cache
+    uint32_t sheets;               // MD_GTO_ISO_SHEET_*, 0 = both
+    // Zero initialized: the raw Surface Nets mesh with analytic normals - the cheap choice while an
+    // iso value is being dragged. For display quality: project 8, relax 3.
+    uint32_t project_iterations;   // Newton steps onto the true surface (stops early when converged)
+    uint32_t relax_iterations;     // tangential relaxation passes, each followed by a projection
+    uint32_t refine_passes;        // edge splits where the mesh strays from the surface (0-2)
+} md_gto_iso_mesh_desc_t;
+
+// Triangles are counter-clockwise seen from outside, outside being away from |f| > iso; normals
+// point outward and are the analytic surface normals at the vertices. The positive sheet comes
+// first, in both the vertex and the index arrays.
+typedef struct md_gto_iso_mesh_t {
+    uint32_t  vertex_count;
+    uint32_t  index_count;
+    float*    position;              // 3 per vertex, bohr
+    float*    normal;                // 3 per vertex
+    uint32_t* index;                 // 3 per triangle
+    uint32_t  sheet_vertex_offset[2], sheet_vertex_count[2];   // [0] positive, [1] negative
+    uint32_t  sheet_index_offset[2],  sheet_index_count[2];
+    struct md_allocator_i* alloc;
+} md_gto_iso_mesh_t;
+
+bool md_gto_iso_mesh_extract(md_gto_iso_mesh_t* out, const md_gto_iso_cache_t* cache, const md_gto_iso_mesh_desc_t* desc, struct md_allocator_i* alloc);
+void md_gto_iso_mesh_free(md_gto_iso_mesh_t* mesh);
+
+#if MD_ENABLE_GPU
+// ---------------------------------------------------------------------------
+// GPU: the same meshes, built on md_gpu
+// ---------------------------------------------------------------------------
+// The CPU path above is the double precision reference; this one is the fast path. The pipeline is
+// the same - octree from rigorous bounds, bricks of 4^3 cells, Surface Nets, Newton projection,
+// relaxation - in float, with every rounding step of the bounds accounted for, so no lattice cell
+// whose (float) corner values cross the iso value is missed.
+//
+// A SET is up to MD_GTO_ISO_GPU_MAX_FIELDS fields over the same basis and atoms - the orbitals of a
+// grid of views, or one density - extracted together: the octree and the corner values are shared,
+// so the AOs at a corner are evaluated once whatever the number of fields. Orbitals and densities
+// mix freely.
+
+#define MD_GTO_ISO_GPU_MAX_FIELDS 16
+
+// Kernels are created on the first extraction, so this costs nothing until then.
+void md_gto_iso_gpu_initialize(md_gpu_device_t device);
+void md_gto_iso_gpu_shutdown(void);
+
+typedef struct md_gto_iso_gpu_set_t md_gto_iso_gpu_set_t;
+
+// A field may be given more than once (one density at several iso values): its copies share their
+// functions, so they cost nothing beyond the extra sheets.
+// The fields must have been created from this basis and these atom positions, and must outlive the
+// set (each extraction derives the root box from their tails). Uploads on 'stream'. Returns NULL on
+// failure (too many fields, more than 1024 functions in all).
+md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                                const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc);
+void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set);
+
+typedef struct md_gto_iso_gpu_desc_t {
+    double   cell_size;                               // lattice spacing in bohr
+    double   iso[MD_GTO_ISO_GPU_MAX_FIELDS];          // per field, > 0
+    uint32_t sheets[MD_GTO_ISO_GPU_MAX_FIELDS];       // per field, MD_GTO_ISO_SHEET_*, 0 = both
+    uint32_t project_iterations;                      // as md_gto_iso_mesh_desc_t
+    uint32_t relax_iterations;
+    bool     time_stages;                             // wait for and time every stage (slower)
+} md_gto_iso_gpu_desc_t;
+
+enum {
+    MD_GTO_ISO_GPU_STAGE_OCTREE,
+    MD_GTO_ISO_GPU_STAGE_CORNERS,
+    MD_GTO_ISO_GPU_STAGE_NETS,          // cells and quads
+    MD_GTO_ISO_GPU_STAGE_PROJECT,
+    MD_GTO_ISO_GPU_STAGE_RELAX,
+    MD_GTO_ISO_GPU_STAGE_OUTPUT,        // regrouping, triangles, the final readback of the counts
+    MD_GTO_ISO_GPU_STAGE_COUNT
+};
+
+// The meshes of a set, in device memory: one vertex and one index buffer for all fields, each field
+// and sheet a contiguous range ([field][0] positive, [field][1] negative). Indices are into the
+// whole vertex buffer. Triangles are counter-clockwise from outside, as on the CPU.
+typedef struct md_gto_iso_gpu_mesh_t {
+    md_gpu_addr_t position;            // float4 per vertex: xyz in bohr, w = 1
+    md_gpu_addr_t normal;              // float4 per vertex: outward unit normal, w: |f| / |grad f|
+    md_gpu_addr_t index;               // uint32 per triangle corner
+    uint32_t vertex_count;
+    uint32_t index_count;
+    uint32_t vertex_offset[MD_GTO_ISO_GPU_MAX_FIELDS][2], vertex_count_of[MD_GTO_ISO_GPU_MAX_FIELDS][2];
+    uint32_t index_offset[MD_GTO_ISO_GPU_MAX_FIELDS][2],  index_count_of[MD_GTO_ISO_GPU_MAX_FIELDS][2];
+    uint32_t num_fields;
+    double   origin[3];                // the lattice: origin (bohr), cell size, cells per axis of the root
+    double   cell_size;
+    uint32_t cells_per_axis;
+    // what it took
+    uint32_t num_bricks;               // union over the fields
+    uint32_t num_corner_slots;         // (brick, field) pairs whose corners were stored
+    uint32_t open_edges;               // crossing edges whose four cells were not all present (0)
+    double   seconds[MD_GTO_ISO_GPU_STAGE_COUNT];   // with desc.time_stages
+    double   seconds_total;            // wall clock of md_gto_iso_gpu_extract
+} md_gto_iso_gpu_mesh_t;
+
+// Blocking: waits for the GPU three times (brick count, vertex count, final counts). Returns false
+// on failure (lattice too large for the cell size, out of device memory).
+bool md_gto_iso_gpu_extract(md_gpu_stream_t stream, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_desc_t* desc, md_gto_iso_gpu_mesh_t* out);
+void md_gto_iso_gpu_mesh_free(md_gpu_stream_t stream, md_gto_iso_gpu_mesh_t* mesh);
+
+// One field's mesh copied to the host in the CPU layout (blocking). Free with md_gto_iso_mesh_free.
+bool md_gto_iso_gpu_mesh_read(md_gpu_stream_t stream, const md_gto_iso_gpu_mesh_t* mesh, uint32_t field, md_gto_iso_mesh_t* out, struct md_allocator_i* alloc);
+
+// All of it as it is on the device, with one wait: position and normal float4 per vertex (vertex_count),
+// index uint32 per triangle corner (index_count) into the whole vertex buffer. Any may be NULL.
+bool md_gto_iso_gpu_mesh_read_all(md_gpu_stream_t stream, const md_gto_iso_gpu_mesh_t* mesh, float* position, float* normal, uint32_t* index);
+#endif
+
+#ifdef __cplusplus
+}
+#endif

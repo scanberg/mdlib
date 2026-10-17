@@ -71,7 +71,7 @@ set (SRC_FILES
 )
 
 if (MD_ENABLE_HDF5)
-    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c test_trexio.c test_h5md.c)
+    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c test_gto_iso.c test_trexio.c test_h5md.c)
 endif()
 
 if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))
@@ -92,6 +92,16 @@ if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQU
     VERTEX    basic_vs indirect_vs point_vs
     FRAGMENT  color_fs mrt_fs id_fs depth_fs
   )
+  if (MD_ENABLE_HDF5)
+    # test_gto_iso.c: gridless GTO isosurface extraction (prototype)
+    compile_gpu_shaders(gto_iso_shaders.inl
+      TARGET    md_unittest
+      NAMESPACE md_shader
+      SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gto_iso.slang
+      ENTRIES   iso_grid iso_octree_level iso_brick_hash iso_corners iso_cells iso_quads iso_project iso_relax iso_triangulate
+      DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/../src/shaders/md_gpu.slang
+    )
+  endif()
   compile_gpu_shaders(gpu_imgui_test_shaders.inl
     TARGET    md_unittest
     NAMESPACE md_shader
@@ -106,6 +116,8 @@ target_sources(md_unittest PRIVATE ${SRC_FILES})
 target_include_directories(md_unittest
   PRIVATE
   ../ext/xtc/
+  ${mdlib_BINARY_DIR}/gen   # generated shader headers of mdlib (test_gto_iso.c includes md_gto_iso.c); not
+                            # CMAKE_BINARY_DIR, which is the parent's when mdlib is built as a subproject
 )
 
 # adapted from https://github.com/Kitware/CMake/blob/master/Modules/GoogleTest.cmake
