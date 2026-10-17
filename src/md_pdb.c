@@ -461,7 +461,10 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             num_unassigned_atom_types += 1;
         }
 
-		uint64_t comp_key = md_hash64_str(res_name, md_hash64(&seq_id, sizeof(seq_id), chain_id));
+        // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B are three
+        // residues of the same number (the insertions of Kabat numbered antibodies), also when they share a name
+        const char icode = data->atom_coordinates[i].icode;
+        uint64_t comp_key = md_hash64_str(res_name, md_hash64(&icode, sizeof(icode), md_hash64(&seq_id, sizeof(seq_id), chain_id)));
 
         if (comp_key != prev_comp_key || terminator) {
             // New residue. A TER record ends the residue before it, whatever the residue after it is called. Whether it

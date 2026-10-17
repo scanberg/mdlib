@@ -64,6 +64,14 @@
 #define BOND_PARTNER_DASHES 3
 #define BOND_PARTNER_FILL   0.5f
 
+// The gaps of the chains (md_gl_mol_set_chain_gaps): the radius of the dashed line relative to the coil of the cartoon
+// (and to the thickness of the ribbons), and to the sticks of licorice and ball and stick, and its dashes, of a length of
+// their own along it (Ångström, the period of the pattern) whatever the length of the gap
+#define CHAIN_GAP_RADIUS_TRACE  0.7f
+#define CHAIN_GAP_RADIUS_LINK   0.5f
+#define CHAIN_GAP_DASH_PERIOD   1.2f
+#define CHAIN_GAP_DASH_FILL     0.5f
+
 #define UBO_SIZE (1 << 10)
 #define SHADER_BUF_SIZE KILOBYTES(14)
 
@@ -127,6 +135,8 @@ enum {
     GL_BUFFER_DERIVED_ATOM,                    // u32 Atoms of the source
     GL_BUFFER_DERIVED_WEIGHT,                  // f32 Their weights
     GL_BUFFER_SLAB,                            // u32[8] per slab (md_gl_mol_set_slabs): its corner count, then up to SLAB_MAX_CORNERS particles in order around it
+    GL_BUFFER_CHAIN_GAP,                       // u32[4] per gap of a chain (md_gl_mol_set_chain_gaps): atom a, its neighbour, atom b, its neighbour
+    GL_BUFFER_CHAIN_GAP_COMP,                  // u32 per gap of a chain: the component before its break, what it picks as
     GL_BUFFER_COUNT
 };
 
@@ -245,6 +255,7 @@ typedef struct {
     gl_program_t licorice[MAX_SHADER_PERMUTATIONS];
     gl_program_t weak_bonds[MAX_SHADER_PERMUTATIONS];
     gl_program_t bond_partners[MAX_SHADER_PERMUTATIONS];
+    gl_program_t chain_gaps[MAX_SHADER_PERMUTATIONS];
     gl_program_t aromatic_rings[MAX_SHADER_PERMUTATIONS];
     gl_program_t ribbons[MAX_SHADER_PERMUTATIONS];
     gl_program_t cartoon[MAX_SHADER_PERMUTATIONS];
@@ -274,6 +285,8 @@ typedef struct {
     uint32_t bond_order_count;      // Bonds GL_BUFFER_BOND_ORDER was computed for, 0 when the bonds changed since
     uint32_t bond_partner_count;    // Entries of GL_BUFFER_BOND_PARTNER
     uint32_t aromatic_ring_count;   // Entries of GL_BUFFER_AROMATIC_RING
+    uint32_t gap_trace_count;       // Entries of GL_BUFFER_CHAIN_GAP for the cartoon and ribbons, first
+    uint32_t gap_link_count;        // Entries of GL_BUFFER_CHAIN_GAP for licorice and ball and stick, after them
     uint32_t backbone_count;
     uint32_t backbone_control_point_index_count;
 
@@ -1188,6 +1201,7 @@ md_gl_shaders_t md_gl_shaders_create(str_t str) {
     if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 0"))) return handle;
     if (!create_permuted_program(STR_LIT("WeakBonds"), shaders->weak_bonds, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 1"))) return handle;
     if (!create_permuted_program(STR_LIT("BondPartners"), shaders->bond_partners, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define BOND_PARTNERS 1"))) return handle;
+    if (!create_permuted_program(STR_LIT("ChainGaps"), shaders->chain_gaps, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define CHAIN_GAPS 1"))) return handle;
     if (!create_permuted_program(STR_LIT("AromaticRings"), shaders->aromatic_rings, ring_vert_src, (str_t){0}, ring_frag_src, str, (str_t){0})) return handle;
     if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 1"))) return handle;
     if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 0"))) return handle;
@@ -1211,6 +1225,7 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
             if (glIsProgram(shaders->licorice[i].id))   glDeleteProgram(shaders->licorice[i].id);
             if (glIsProgram(shaders->weak_bonds[i].id)) glDeleteProgram(shaders->weak_bonds[i].id);
             if (glIsProgram(shaders->bond_partners[i].id)) glDeleteProgram(shaders->bond_partners[i].id);
+            if (glIsProgram(shaders->chain_gaps[i].id)) glDeleteProgram(shaders->chain_gaps[i].id);
             if (glIsProgram(shaders->aromatic_rings[i].id)) glDeleteProgram(shaders->aromatic_rings[i].id);
             if (glIsProgram(shaders->ribbons[i].id))    glDeleteProgram(shaders->ribbons[i].id);
             if (glIsProgram(shaders->cartoon[i].id))    glDeleteProgram(shaders->cartoon[i].id);
@@ -1609,6 +1624,127 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     md_free(alloc, ref,        2 * bond_count * sizeof(uint32_t));
 }
 
+// ### CHAIN GAPS ###
+//
+// One entry per break (md_gl_mol_set_chain_gaps), u32[4] in GL_BUFFER_CHAIN_GAP: the atoms of its two ends and a
+// neighbour of each, (a, neighbour of a, b, neighbour of b), and in GL_BUFFER_CHAIN_GAP_COMP the component before the
+// break, which it picks as. bond.vert (CHAIN_GAPS) draws the gap from 5/6 of the way from the neighbour of a to a, to
+// the same point at b: where the uniform cubic B-spline of the cartoon ends at the control point which ends a chain,
+// with its neighbours clamped to the chain (compute_spline_subdivide.vert), so that the line starts at the end of the
+// cartoon rather than a little past it. An end which is its own neighbour is the atom itself.
+// The entries of the cartoon and ribbons (trace) come first: from the control point (CA, or the bead of a trace) of the
+// protein backbone on either side, or where a side has no cartoon (a piece of chain too short for one), from the atom
+// of the link there. Then those of licorice and ball and stick (link): between the atoms a link would join
+// (md_util_chain_break_atoms), each its own neighbour.
+void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
+    molecule_t* mol = mol_lookup(handle.id);
+    if (!mol) {
+        MD_LOG_ERROR("Invalid molecule");
+        return;
+    }
+    gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_CHAIN_GAP]);
+    gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_CHAIN_GAP_COMP]);
+    mol->gap_trace_count = 0;
+    mol->gap_link_count  = 0;
+    if (!sys || !sys->component.flags || sys->component.count < 2) return;
+    if (sys->atom.count != mol->atom_count) {
+        MD_LOG_ERROR("The system is not the one of the molecule: it has %zu atoms, the molecule %u", sys->atom.count, mol->atom_count);
+        return;
+    }
+
+    const size_t comp_count = MIN(sys->component.count, md_array_size(sys->component.flags));
+    uint32_t break_count = 0;
+    for (size_t i = 0; i + 1 < comp_count; ++i) {
+        if (sys->component.flags[i] & MD_COMPONENT_FLAG_BREAK_AFTER) ++break_count;
+    }
+    if (break_count == 0) return;
+
+    md_temp_scope_t temp = md_temp_begin();
+
+    // The segment of each component in the protein backbone (-1 for none) and the range of each segment
+    const md_protein_backbone_data_t* bb = &sys->protein_backbone;
+    int32_t* comp_seg = md_temp_alloc(temp, comp_count * sizeof(int32_t));
+    MEMSET(comp_seg, -1, comp_count * sizeof(int32_t));
+    uint32_t* seg_beg = NULL;
+    uint32_t* seg_end = NULL;
+    if (bb->range.count > 0 && bb->range.offset && bb->segment.count > 0 && bb->segment.atoms && bb->segment.comp_idx) {
+        seg_beg = md_temp_alloc(temp, bb->segment.count * sizeof(uint32_t));
+        seg_end = md_temp_alloc(temp, bb->segment.count * sizeof(uint32_t));
+        for (size_t r = 0; r < bb->range.count; ++r) {
+            const uint32_t beg = bb->range.offset[r];
+            const uint32_t end = (uint32_t)MIN(bb->range.offset[r + 1], bb->segment.count);
+            for (uint32_t j = beg; j < end; ++j) {
+                seg_beg[j] = beg;
+                seg_end[j] = end;
+                const int32_t c = bb->segment.comp_idx[j];
+                if (0 <= c && (size_t)c < comp_count) comp_seg[c] = (int32_t)j;
+            }
+        }
+    }
+
+    uint32_t* trace      = md_temp_alloc(temp, 2 * (size_t)break_count * 4 * sizeof(uint32_t));
+    uint32_t* trace_comp = md_temp_alloc(temp, 2 * (size_t)break_count * sizeof(uint32_t));
+    uint32_t* link       = md_temp_alloc(temp, (size_t)break_count * 4 * sizeof(uint32_t));
+    uint32_t* link_comp  = md_temp_alloc(temp, (size_t)break_count * sizeof(uint32_t));
+    uint32_t trace_count = 0;
+    uint32_t link_count  = 0;
+
+    for (size_t i = 0; i + 1 < comp_count; ++i) {
+        if (!(sys->component.flags[i] & MD_COMPONENT_FLAG_BREAK_AFTER)) continue;
+        md_atom_idx_t atoms[2];
+        if (!md_util_chain_break_atoms(atoms, sys, i)) continue;
+        const uint32_t la = (uint32_t)atoms[0];
+        const uint32_t lb = (uint32_t)atoms[1];
+        if (la >= mol->atom_count || lb >= mol->atom_count) continue;
+
+        uint32_t* e = link + 4 * link_count;
+        e[0] = la;
+        e[1] = la;
+        e[2] = lb;
+        e[3] = lb;
+        link_comp[link_count++] = (uint32_t)i;
+
+        // The cartoon: a protein chain with a cartoon on at least one side
+        const int32_t sa = comp_seg[i];
+        const int32_t sb = comp_seg[i + 1];
+        if (sa < 0 && sb < 0) continue;
+        uint32_t a  = la;
+        uint32_t na = la;
+        uint32_t b  = lb;
+        uint32_t nb = lb;
+        if (sa >= 0) {
+            // The end of a range has the control point before it as its neighbour. A segment the range goes on past (a
+            // break the backbone did not end the range at) or one alone is its own.
+            a  = (uint32_t)bb->segment.atoms[sa].ca;
+            na = ((uint32_t)sa + 1 == seg_end[sa] && (uint32_t)sa > seg_beg[sa]) ? (uint32_t)bb->segment.atoms[sa - 1].ca : a;
+        }
+        if (sb >= 0) {
+            b  = (uint32_t)bb->segment.atoms[sb].ca;
+            nb = ((uint32_t)sb == seg_beg[sb] && (uint32_t)sb + 1 < seg_end[sb]) ? (uint32_t)bb->segment.atoms[sb + 1].ca : b;
+        }
+        if (a >= mol->atom_count || na >= mol->atom_count || b >= mol->atom_count || nb >= mol->atom_count) continue;
+        e = trace + 4 * trace_count;
+        e[0] = a;
+        e[1] = na;
+        e[2] = b;
+        e[3] = nb;
+        trace_comp[trace_count++] = (uint32_t)i;
+    }
+
+    const uint32_t total = trace_count + link_count;
+    if (total > 0) {
+        // The links after the traces
+        MEMCPY(trace + 4 * trace_count, link, link_count * 4 * sizeof(uint32_t));
+        MEMCPY(trace_comp + trace_count, link_comp, link_count * sizeof(uint32_t));
+        mol->buffer[GL_BUFFER_CHAIN_GAP]      = gl_buffer_create(total * 4 * sizeof(uint32_t), trace, GL_STATIC_DRAW);
+        mol->buffer[GL_BUFFER_CHAIN_GAP_COMP] = gl_buffer_create(total * sizeof(uint32_t), trace_comp, GL_STATIC_DRAW);
+        mol->gap_trace_count = trace_count;
+        mol->gap_link_count  = link_count;
+    }
+
+    md_temp_end(temp);
+}
+
 static const uint32_t backbone_buffers[] = {
     GL_BUFFER_BACKBONE_DATA,
     GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE,
@@ -1794,6 +1930,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
             md_gl_mol_set_bonds(handle, 0, gl_mol->bond_count, sys->bond.pairs, sizeof(md_atom_pair_t));
             md_gl_mol_set_bond_orders(handle, sys);
         }
+        md_gl_mol_set_chain_gaps(handle, sys);
     }
 
 done:
@@ -2365,7 +2502,26 @@ typedef struct {
     float    dash_fill;
     uint32_t bond_orders;   // Show the orders of covalent bonds (bond_set_t order, order_ref)
     float    spread;        // Envelope of the thinner sticks of multiple bonds, relative to the radius
+    float    dash_period;   // The gaps of the chains (CHAIN_GAPS): the period of the dashes (Ångström), dash_count unused
+    uint32_t gap_index_base;// The gaps of the chains: their picking base (md_gl_picking_offset_t gap_base)
 } bond_params_t;
+
+// The parameters of the gaps of the chains (draw_chain_gaps): dashes of the radius, colored as the bonds are, drawn
+// at any length
+static inline bond_params_t chain_gap_params(float radius, int32_t mode, float sharpness, uint32_t uniform_color, uint32_t gap_index_base) {
+    bond_params_t params = {
+        .radius = radius,
+        .max_d2 = 3.4e38f,
+        .mode = mode,
+        .sharpness = sharpness,
+        .uniform_color = uniform_color,
+        .dash_count = 2,
+        .dash_fill = CHAIN_GAP_DASH_FILL,
+        .dash_period = CHAIN_GAP_DASH_PERIOD,
+        .gap_index_base = gap_index_base,
+    };
+    return params;
+}
 
 // Parameters of ring.vert and ring.frag, after gl_ubo_base_t. The picking base of the rings is here rather than in
 // gl_ubo_base_t, which every shader declares: it is 16 byte aligned (vec4_t), and a fifth index would pad it.
@@ -2382,6 +2538,7 @@ typedef struct {
 static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float scale);
 static bool draw_bonds     (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, bond_set_t bonds, const bond_params_t* params, const float viewport_size[2]);
 static bool draw_bond_partners(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, const bond_params_t* bond_params, const float viewport_size[2]);
+static bool draw_chain_gaps(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, bool trace, const bond_params_t* params, const float viewport_size[2]);
 static bool draw_aromatic_rings(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, const bond_params_t* bond_params, uint32_t ring_index_base, const float viewport_size[2]);
 static bool draw_backbone  (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, uint32_t profile, const float scale[4], float max_extent, const mat4_t* world_to_clip, float viewport_half_height, bool raycast, const float viewport_size[2]);
 static bool draw_slabs     (gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float radius, float plate, float max_length, uint32_t slab_index_base, const float viewport_size[2]);
@@ -2561,6 +2718,10 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 draw_bond_partners(shaders->bond_partners[program_permutation], mol, rep->atom_color, &params, viewport_size);
                 draw_aromatic_rings(shaders->aromatic_rings[program_permutation], mol, rep->atom_color, &params, args->picking_offset.ring_base, viewport_size);
             }
+            if (draw_op->args.licorice.chain_gaps) {
+                const bond_params_t gap = chain_gap_params(CHAIN_GAP_RADIUS_LINK * params.radius, params.mode, params.sharpness, params.uniform_color, args->picking_offset.gap_base);
+                draw_chain_gaps(shaders->chain_gaps[program_permutation], mol, rep->atom_color, false, &gap, viewport_size);
+            }
             break;
         }
         case MD_GL_REP_BALL_AND_STICK: {
@@ -2580,6 +2741,10 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             if (orders) {
                 draw_bond_partners(shaders->bond_partners[program_permutation], mol, rep->atom_color, &params, viewport_size);
                 draw_aromatic_rings(shaders->aromatic_rings[program_permutation], mol, rep->atom_color, &params, args->picking_offset.ring_base, viewport_size);
+            }
+            if (draw_op->args.ball_and_stick.chain_gaps) {
+                const bond_params_t gap = chain_gap_params(CHAIN_GAP_RADIUS_LINK * params.radius, params.mode, params.sharpness, params.uniform_color, args->picking_offset.gap_base);
+                draw_chain_gaps(shaders->chain_gaps[program_permutation], mol, rep->atom_color, false, &gap, viewport_size);
             }
             draw_space_fill(shaders->spacefill[program_permutation], mol, rep->atom_color, 0.2f * scale * draw_op->args.ball_and_stick.ball_scale);
             break;
@@ -2603,6 +2768,12 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             const float profile_scale[4] = { scale * draw_op->args.ribbons.width_scale, scale * draw_op->args.ribbons.thickness_scale * 0.1f, 0.0f, 0.0f };
             const float max_extent = sqrtf(profile_scale[0] * profile_scale[0] + profile_scale[1] * profile_scale[1]);
             draw_backbone(shaders->ribbons[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_BOX, profile_scale, max_extent, &world_to_clip, viewport_half_height, false, viewport_size);
+            if (draw_op->args.ribbons.chain_gaps) {
+                // As thick as the gap of a cartoon of the same thickness: the box is 0.1 thick at a scale of 1, the coil 0.2
+                const float radius = CHAIN_GAP_RADIUS_TRACE * 0.2f * scale * draw_op->args.ribbons.thickness_scale;
+                const bond_params_t gap = chain_gap_params(radius, MD_GL_BOND_MODE_SMOOTH, 0.0f, 0, args->picking_offset.gap_base);
+                draw_chain_gaps(shaders->chain_gaps[program_permutation], mol, rep->atom_color, true, &gap, viewport_size);
+            }
             break;
         }
         case MD_GL_REP_CARTOON: {
@@ -2612,6 +2783,12 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             const float max_extent = MAX(MAX(0.2f * profile_scale[0], 1.2f * profile_scale[1]), 1.5f * profile_scale[2]);
             const bool rc = draw_op->args.cartoon.raycast;
             draw_backbone(rc ? shaders->cartoon_rc[program_permutation] : shaders->cartoon[program_permutation], mol, rep->atom_color, BACKBONE_PROFILE_STADIUM, profile_scale, max_extent, &world_to_clip, viewport_half_height, rc, viewport_size);
+            if (draw_op->args.cartoon.chain_gaps) {
+                // Thinner than the coil (radius 0.2 at a scale of 1), its colors blended smoothly from end to end
+                const float radius = CHAIN_GAP_RADIUS_TRACE * 0.2f * profile_scale[0];
+                const bond_params_t gap = chain_gap_params(radius, MD_GL_BOND_MODE_SMOOTH, 0.0f, 0, args->picking_offset.gap_base);
+                draw_chain_gaps(shaders->chain_gaps[program_permutation], mol, rep->atom_color, true, &gap, viewport_size);
+            }
             break;
         }
         case MD_GL_REP_SLABS: {
@@ -2816,6 +2993,80 @@ static bool draw_bond_partners(gl_program_t program, const molecule_t* mol, gl_b
     params.bond_orders = 0;
     const bond_set_t partners = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, {0}, {0}, mol->buffer[GL_BUFFER_BOND_PARTNER], mol->bond_partner_count};
     return draw_bonds(program, mol, atom_color, partners, &params, viewport_size);
+}
+
+// The gaps of the chains (md_gl_mol_set_chain_gaps) as dashed cylinders (bond.vert and bond.frag, CHAIN_GAPS): the
+// entries of the cartoon and ribbons (trace), or those of licorice and ball and stick, one primitive per entry
+static bool draw_chain_gaps(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, bool trace, const bond_params_t* params, const float viewport_size[2]) {
+    ASSERT(mol);
+    ASSERT(params);
+    ASSERT(atom_color.id);
+
+    const uint32_t offset = trace ? 0 : mol->gap_trace_count;
+    const uint32_t count  = trace ? mol->gap_trace_count : mol->gap_link_count;
+    if (count == 0 || !mol->buffer[GL_BUFFER_CHAIN_GAP].id || !mol->buffer[GL_BUFFER_CHAIN_GAP_COMP].id || !ctx.bond_quad_index.id) {
+        return false;
+    }
+
+    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(bond_params_t), params);
+
+    glBindVertexArray(ctx.vao);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_0].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_1].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_2].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
+
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_3].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, atom_color.id);
+
+    glActiveTexture(GL_TEXTURE6);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_6].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, mol->buffer[GL_BUFFER_CHAIN_GAP_COMP].id);
+
+    glActiveTexture(GL_TEXTURE8);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_8].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32UI, mol->buffer[GL_BUFFER_CHAIN_GAP].id);
+
+    glUseProgram(program.id);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_pos"),   0);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_vel"),   1);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_flags"), 2);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_color"), 3);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_gap_comp"),   6);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_gap"),        8);
+    glUniform1ui(glGetUniformLocation(program.id, "u_quads_per_instance"), BOND_QUADS_PER_INSTANCE);
+    glUniform2f(glGetUniformLocation(program.id, "u_viewport_size"), viewport_size[0], viewport_size[1]);
+    const GLint offset_loc = glGetUniformLocation(program.id, "u_bond_offset");
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx.bond_quad_index.id);
+
+    const uint32_t full = count / BOND_QUADS_PER_INSTANCE;
+    const uint32_t rest = count % BOND_QUADS_PER_INSTANCE;
+    if (full > 0) {
+        glUniform1ui(offset_loc, offset);
+        glDrawElementsInstanced(GL_TRIANGLES, BOND_QUADS_PER_INSTANCE * 6, GL_UNSIGNED_SHORT, 0, (GLsizei)full);
+    }
+    if (rest > 0) {
+        glUniform1ui(offset_loc, offset + full * BOND_QUADS_PER_INSTANCE);
+        glDrawElements(GL_TRIANGLES, (GLsizei)(rest * 6), GL_UNSIGNED_SHORT, 0);
+    }
+
+    glUseProgram(0);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+
+    return true;
 }
 
 // The circles of the aromatic rings (md_gl_mol_set_bond_orders), drawn with the bonds of the licorice and ball and stick

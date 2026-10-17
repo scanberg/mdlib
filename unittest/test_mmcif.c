@@ -5,6 +5,7 @@
 #include <md_system.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 
 #define MAX_VALIDATION_SAMPLES 100
 
@@ -474,4 +475,41 @@ UTEST(mmcif, atom_site_many_columns) {
     EXPECT_NEAR(9.0f, sys_state.xyz[2].z, 1.0e-5f);
 
     md_temp_end(temp);
+}
+
+// 9gfu misses residues within both of its chains (_pdbx_unobs_or_zero_occ_residues): label_seq_id 40-41, 67-72 and
+// 259-260 of chain A, and 62-71 of chain B. Each leaves a break between the residues on either side, whose numbers (the
+// residues of the sequence) count the missing ones exactly. The residues missing at the ends of the chains leave none.
+UTEST(mmcif, chain_breaks) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif")));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+
+    const struct {
+        const char* chain;
+        int before;
+        int after;
+    } expected[] = {
+        {"A", 39, 42}, {"A", 66, 73}, {"A", 258, 261}, {"B", 61, 72},
+    };
+    size_t found = 0;
+    for (size_t i = 0; i + 1 < sys.component.count; ++i) {
+        if (!(md_component_flags(&sys.component, i) & MD_COMPONENT_FLAG_BREAK_AFTER)) continue;
+        if (found < ARRAY_SIZE(expected)) {
+            const md_instance_idx_t inst = md_instance_find_by_comp_idx(&sys.instance, i);
+            EXPECT_TRUE(str_eq_cstr(md_system_instance_id(&sys, (size_t)inst), expected[found].chain));
+            EXPECT_EQ(expected[found].before, md_component_seq_id(&sys.component, i));
+            EXPECT_EQ(expected[found].after,  md_component_seq_id(&sys.component, i + 1));
+            EXPECT_TRUE(md_component_flags(&sys.component, i + 1) & MD_COMPONENT_FLAG_BREAK_BEFORE);
+            EXPECT_EQ(inst, md_instance_find_by_comp_idx(&sys.instance, i + 1));
+            md_atom_idx_t atoms[2];
+            EXPECT_TRUE(md_util_chain_break_atoms(atoms, &sys, i));
+        }
+        ++found;
+    }
+    EXPECT_EQ(ARRAY_SIZE(expected), found);
+
+    md_vm_arena_destroy(alloc);
 }

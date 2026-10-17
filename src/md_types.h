@@ -134,6 +134,12 @@ typedef enum {
     MD_COMPONENT_FLAG_RESOLVED          = 0x10,
     MD_COMPONENT_FLAG_TERMINAL_BEG      = 0x20,     // Begins its chain: a free amino group (N-terminus), a free 5' end
     MD_COMPONENT_FLAG_TERMINAL_END      = 0x40,     // Ends its chain: a free carboxyl group (C-terminus), a free 3' end
+
+    // The chain is broken next to it: its backbone is not linked to that of the residue before (after) it in its chain,
+    // which carries BREAK_AFTER (BREAK_BEFORE) in turn. Residues missing in a crystal structure leave such a break. See
+    // CHAIN BREAKS in md_util.h.
+    MD_COMPONENT_FLAG_BREAK_BEFORE      = 0x80,
+    MD_COMPONENT_FLAG_BREAK_AFTER       = 0x100,
 } md_component_flags_t;
 
 ENUM_FLAGS(md_component_flags_t)

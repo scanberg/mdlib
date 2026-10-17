@@ -216,6 +216,18 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // A bond whose order is unknown is drawn as a single bond.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
 
+// The gaps of the chains, from the chain breaks of the system (MD_COMPONENT_FLAG_BREAK_AFTER, CHAIN BREAKS in md_util.h):
+// for the representations with chain_gaps set, a straight dashed line over each break, from the residue before it to
+// the one after it. Where the missing residues went is not known, so the line claims no more than that the chain goes
+// on. The cartoon and ribbons draw it between the ends of the cartoon of the chain on either side (near the CA of the
+// residue, where the spline ends) for the breaks of protein chains; licorice and ball and stick draw it between the
+// atoms a link would join (md_util_chain_break_atoms: C and N, O3' and P, the backbone beads). Its dashes are of a
+// length of their own (Ångström), as many as fit, so a long gap reads as a gap and not as a bond. It takes the colors
+// of its two ends (the atoms it is drawn between), is shown when both of them are, and is drawn at any length: its
+// ends are where the atoms are, not their minimum image. It picks as the component before the break
+// (md_gl_picking_offset_t gap_base). The system must be the one of the molecule. md_gl_mol_create sets them.
+void md_gl_mol_set_chain_gaps(md_gl_mol_t mol, const struct md_system_t* sys);
+
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
 // The backbone (ribbons, cartoon) orients its cross sections with temporal coherence: each draw continues from
@@ -286,6 +298,7 @@ typedef struct md_gl_draw_op_t {
             float sharpness; // 0.0 = fully smooth, 1.0 = fully sharp
 			uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
+            bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
         } licorice;
 
         struct {
@@ -295,11 +308,13 @@ typedef struct md_gl_draw_op_t {
             float sharpness;
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
+            bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
         } ball_and_stick;
 
         struct {
             float width_scale;
             float thickness_scale;
+            bool  chain_gaps;       // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
         } ribbons;
 
         struct {
@@ -307,6 +322,7 @@ typedef struct md_gl_draw_op_t {
             float sheet_scale;
             float helix_scale;
             bool  raycast;          // Ray cast the profile (in closed form, a quad per segment of the spline) rather than draw a mesh of it
+            bool  chain_gaps;       // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
         } cartoon;
 
         // Dashed cylinders between the atoms: dash_count dashes with flat ends, the first starting at the first atom
@@ -345,12 +361,15 @@ typedef struct md_gl_draw_op_t {
 // from, never an atom of it. A tube writes the index of its control point among those of all tubes (md_gl_mol_set_tubes)
 // as a backbone, a slab its index (md_gl_mol_set_slabs) as a ring. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
 // The circle of an aromatic ring writes the index of the ring in md_system_t::ring (all of its rings, so the range
-// is md_index_data_num_ranges(&sys->ring) long, of which only the aromatic ones are drawn).
+// is md_index_data_num_ranges(&sys->ring) long, of which only the aromatic ones are drawn). The gap of a chain
+// (md_gl_mol_set_chain_gaps) writes the index of the component before its break (a range of the system's component
+// count, of which only those with MD_COMPONENT_FLAG_BREAK_AFTER are drawn).
 typedef struct md_gl_picking_offset_t {
     uint32_t atom_base;
     uint32_t bond_base;
     uint32_t backbone_base;
     uint32_t ring_base;
+    uint32_t gap_base;
 } md_gl_picking_offset_t;
 
 typedef struct md_gl_draw_args_t {

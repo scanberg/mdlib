@@ -10,6 +10,8 @@
 //                   last ending at pb, each covering the fraction u_dash_fill of the period of the pattern.
 //   BOND_PARTNERS:  the dashed partner of a delocalized bond (or of an aromatic bond in no circle, ring.vert), a dashed
 //                   cylinder as the weak bonds, which colors and picks as the part of its bond it spans.
+//   CHAIN_GAPS:     the gap of a chain over a break, a dashed cylinder as the weak bonds with the number of dashes
+//                   bond.vert gives it, which picks as the gap.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -21,6 +23,10 @@
 
 #ifndef BOND_PARTNERS
 #define BOND_PARTNERS 0
+#endif
+
+#ifndef CHAIN_GAPS
+#define CHAIN_GAPS 0
 #endif
 
 #define MODE_NEAREST 0
@@ -63,6 +69,8 @@ layout (std140) uniform ubo {
     float u_dash_fill;
     uint  u_bond_orders;
     float u_spread;
+    float u_dash_period;
+    uint  u_gap_index_base;
 };
 
 in Fragment {
@@ -75,6 +83,8 @@ in Fragment {
     flat uint  bond_picking_idx;
 #if BOND_PARTNERS
     flat vec2  seg_range;
+#elif CHAIN_GAPS
+    flat uint  dash_count;
 #elif !WEAK_BONDS
     flat uint  kind;
     flat vec3  side;
@@ -237,9 +247,13 @@ void main() {
     vec3  pb = in_frag.pb;
     float r  = in_frag.radius;
 
-#if WEAK_BONDS || BOND_PARTNERS
+#if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
     float seg_t;
+#if CHAIN_GAPS
+    vec4 hit = dashed_cylinder_intersect(ro, rd, pa, pb, r, in_frag.dash_count, u_dash_fill, seg_t);
+#else
     vec4 hit = dashed_cylinder_intersect(ro, rd, pa, pb, r, u_dash_count, u_dash_fill, seg_t);
+#endif
     float t = hit.x;
     if (t < 0.0) {
         discard;
@@ -323,6 +337,9 @@ void main() {
 #if WEAK_BONDS
     // A weak bond is not a bond of the molecule: it picks as the atom it is closest to
     uint picking_index = in_frag.atom_picking_idx[side];
+#elif CHAIN_GAPS
+    // Nor is a gap: it picks as itself, the component before its break
+    uint picking_index = in_frag.bond_picking_idx;
 #else
     uint picking_index = abs(0.5 - seg_t) > 0.25 ? in_frag.atom_picking_idx[side] : in_frag.bond_picking_idx;
 #endif

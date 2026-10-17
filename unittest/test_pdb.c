@@ -284,3 +284,208 @@ UTEST(pdb, columns_match_parse_float) {
     EXPECT_EQ(0, pdb_test_compare_with_columns(STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb")));
     EXPECT_EQ(0, pdb_test_compare_with_columns(STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb")));
 }
+
+// ### CHAIN BREAKS AND INSERTION CODES ###
+//
+// The backbone (N, CA, C, O) of the first ten residues of chain A of 1k4r: a stretch of a real chain, to cut and number
+// as a test needs
+typedef struct {
+    const char* name;
+    float xyz[4][3];
+} peptide_residue_t;
+
+static const peptide_residue_t k4r_backbone[10] = {
+    {"SER", {{-42.732f, -19.665f, 235.272f}, {-41.832f, -20.531f, 234.522f}, {-40.476f, -19.848f, 234.349f}, {-40.419f, -18.708f, 233.902f}}},
+    {"ARG", {{-39.391f, -20.558f, 234.642f}, {-38.057f, -19.971f, 234.546f}, {-37.710f, -19.352f, 233.192f}, {-37.158f, -18.261f, 233.145f}}},
+    {"CYS", {{-38.028f, -20.029f, 232.098f}, {-37.719f, -19.493f, 230.781f}, {-38.347f, -18.131f, 230.486f}, {-37.844f, -17.403f, 229.623f}}},
+    {"THR", {{-39.415f, -17.754f, 231.195f}, {-40.030f, -16.449f, 230.952f}, {-39.151f, -15.306f, 231.495f}, {-39.421f, -14.127f, 231.234f}}},
+    {"HIS", {{-38.116f, -15.655f, 232.265f}, {-37.208f, -14.673f, 232.855f}, {-36.184f, -14.111f, 231.867f}, {-35.542f, -13.086f, 232.156f}}},
+    {"LEU", {{-35.940f, -14.814f, 230.765f}, {-34.949f, -14.342f, 229.809f}, {-35.477f, -14.072f, 228.420f}, {-36.570f, -14.498f, 228.063f}}},
+    {"GLU", {{-34.677f, -13.353f, 227.641f}, {-35.030f, -12.991f, 226.273f}, {-34.728f, -14.158f, 225.333f}, {-35.482f, -14.422f, 224.388f}}},
+    {"ASN", {{-33.645f, -14.875f, 225.612f}, {-33.249f, -16.007f, 224.792f}, {-34.011f, -17.276f, 225.201f}, {-33.574f, -18.011f, 226.085f}}},
+    {"ARG", {{-35.120f, -17.555f, 224.519f}, {-35.940f, -18.715f, 224.825f}, {-36.367f, -19.442f, 223.563f}, {-36.713f, -18.805f, 222.576f}}},
+    {"ASP", {{-36.336f, -20.772f, 223.589f}, {-36.761f, -21.574f, 222.451f}, {-37.908f, -22.442f, 222.896f}, {-38.035f, -22.753f, 224.083f}}},
+};
+
+// A residue of a test peptide: one of k4r_backbone, its number, insertion code and name (NULL for its own)
+typedef struct {
+    int res;
+    int seq;
+    char icode;
+    const char* name;
+} peptide_pick_t;
+
+// The peptide as the ATOM records of chain A of a PDB file
+static str_t peptide_pdb(md_allocator_i* alloc, const peptide_pick_t* pick, size_t count) {
+    static const char* atom_name[4] = {" N  ", " CA ", " C  ", " O  "};
+    static const char* element[4]   = {"N", "C", "C", "O"};
+    const size_t cap = count * 4 * 82 + 1;
+    char* buf = md_alloc(alloc, cap);
+    size_t len = 0;
+    int serial = 1;
+    for (size_t i = 0; i < count; ++i) {
+        const peptide_residue_t* r = &k4r_backbone[pick[i].res];
+        for (int a = 0; a < 4; ++a) {
+            len += (size_t)snprintf(buf + len, cap - len, "ATOM  %5d %4s %3s A%4d%c   %8.3f%8.3f%8.3f%6.2f%6.2f          %2s\n",
+                serial++, atom_name[a], pick[i].name ? pick[i].name : r->name, pick[i].seq, pick[i].icode ? pick[i].icode : ' ',
+                r->xyz[a][0], r->xyz[a][1], r->xyz[a][2], 1.0, 0.0, element[a]);
+        }
+    }
+    return (str_t){buf, len};
+}
+
+static bool load_peptide(md_system_t* sys, md_system_state_t* state, const peptide_pick_t* pick, size_t count, md_allocator_i* alloc) {
+    md_pdb_data_t data = {0};
+    if (!md_pdb_data_parse_str(&data, peptide_pdb(alloc, pick, count), alloc)) return false;
+    if (!md_pdb_system_init_from_data(sys, state, &data, MD_PDB_OPTION_NONE)) return false;
+    return md_util_system_infer(sys, state, MD_UTIL_INFER_ALL);
+}
+
+static size_t count_components_with(const md_system_t* sys, md_component_flags_t flag) {
+    size_t count = 0;
+    for (size_t i = 0; i < sys->component.count; ++i) count += (md_component_flags(&sys->component, i) & flag) != 0;
+    return count;
+}
+
+// 52, 52A and 52B are three residues of the same number, also when two of them share a name, and a chain whose backbone is
+// bonded through them is not broken by their numbers
+UTEST(pdb, insertion_codes) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const peptide_pick_t pick[] = {
+        {0, 50, 0, NULL}, {1, 51, 0, NULL}, {2, 52, 0, "CYS"}, {3, 52, 'A', "CYS"}, {4, 52, 'B', NULL}, {5, 53, 0, NULL},
+    };
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
+
+    ASSERT_EQ((size_t)6, sys.component.count);
+    for (size_t i = 0; i < sys.component.count; ++i) {
+        EXPECT_EQ(pick[i].seq, md_component_seq_id(&sys.component, i));
+        EXPECT_EQ((size_t)4, md_component_atom_count(&sys.component, i));
+    }
+    EXPECT_EQ((size_t)1, sys.instance.count);
+    EXPECT_EQ((size_t)0, count_components_with(&sys, MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER));
+    ASSERT_EQ((size_t)1, sys.protein_backbone.range.count);
+    EXPECT_EQ((size_t)6, sys.protein_backbone.segment.count);
+
+    md_vm_arena_destroy(alloc);
+}
+
+// Numbering that skips (1, 2, 3, 14, 15, 16) over a bonded backbone is no break
+UTEST(pdb, numbering_jump_is_no_break) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const peptide_pick_t pick[] = {
+        {0, 1, 0, NULL}, {1, 2, 0, NULL}, {2, 3, 0, NULL}, {3, 14, 0, NULL}, {4, 15, 0, NULL}, {5, 16, 0, NULL},
+    };
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
+
+    ASSERT_EQ((size_t)6, sys.component.count);
+    EXPECT_EQ((size_t)0, count_components_with(&sys, MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER));
+    ASSERT_EQ((size_t)1, sys.protein_backbone.range.count);
+    EXPECT_EQ((size_t)6, sys.protein_backbone.segment.count);
+
+    md_atom_idx_t atoms[2];
+    for (size_t i = 0; i < sys.component.count; ++i) {
+        EXPECT_FALSE(md_util_chain_break_atoms(atoms, &sys, i));
+        EXPECT_EQ(-1, atoms[0]);
+        EXPECT_EQ(-1, atoms[1]);
+    }
+
+    md_vm_arena_destroy(alloc);
+}
+
+// Two residues cut out of the chain: a break after the fourth residue, whether the numbering skips them or runs on. The
+// chain is one instance with two backbone ranges, and neither side of the break is a terminus.
+static void expect_break_after_fourth(int* utest_result, const md_system_t* sys) {
+    ASSERT_EQ((size_t)8, sys->component.count);
+    EXPECT_EQ((size_t)1, sys->instance.count);
+    for (size_t i = 0; i < sys->component.count; ++i) {
+        const md_component_flags_t flags = md_component_flags(&sys->component, i);
+        EXPECT_EQ(i == 3, (flags & MD_COMPONENT_FLAG_BREAK_AFTER)  != 0);
+        EXPECT_EQ(i == 4, (flags & MD_COMPONENT_FLAG_BREAK_BEFORE) != 0);
+    }
+    EXPECT_FALSE(md_component_flags(&sys->component, 3) & MD_COMPONENT_FLAG_TERMINAL_END);
+    EXPECT_FALSE(md_component_flags(&sys->component, 4) & MD_COMPONENT_FLAG_TERMINAL_BEG);
+
+    ASSERT_EQ((size_t)2, sys->protein_backbone.range.count);
+    EXPECT_EQ(0u, sys->protein_backbone.range.offset[0]);
+    EXPECT_EQ(4u, sys->protein_backbone.range.offset[1]);
+    EXPECT_EQ(8u, sys->protein_backbone.range.offset[2]);
+
+    // The C of the fourth residue and the N of the fifth
+    md_atom_idx_t atoms[2];
+    ASSERT_TRUE(md_util_chain_break_atoms(atoms, sys, 3));
+    EXPECT_EQ(3 * 4 + 2, atoms[0]);
+    EXPECT_EQ(4 * 4 + 0, atoms[1]);
+    EXPECT_FALSE(md_util_chain_break_atoms(atoms, sys, 4));
+}
+
+UTEST(pdb, chain_break_numbering_runs_on) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const peptide_pick_t pick[] = {
+        {0, 1, 0, NULL}, {1, 2, 0, NULL}, {2, 3, 0, NULL}, {3, 4, 0, NULL}, {6, 5, 0, NULL}, {7, 6, 0, NULL}, {8, 7, 0, NULL}, {9, 8, 0, NULL},
+    };
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
+    expect_break_after_fourth(utest_result, &sys);
+
+    // Without bonds the distance of the C and the N tells the same
+    sys.bond.count = 0;
+    md_array_shrink(sys.bond.pairs, 0);
+    md_array_shrink(sys.bond.flags, 0);
+    md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_BACKBONE_BIT));
+    expect_break_after_fourth(utest_result, &sys);
+
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST(pdb, chain_break_numbering_skips) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const peptide_pick_t pick[] = {
+        {0, 1, 0, NULL}, {1, 2, 0, NULL}, {2, 3, 0, NULL}, {3, 4, 0, NULL}, {6, 7, 0, NULL}, {7, 8, 0, NULL}, {8, 9, 0, NULL}, {9, 10, 0, NULL},
+    };
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
+    expect_break_after_fourth(utest_result, &sys);
+
+    // Inferring again finds the same breaks, not more
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    expect_break_after_fourth(utest_result, &sys);
+
+    md_vm_arena_destroy(alloc);
+}
+
+// 1LAF ends chain E at Asp 238, whose carboxyl group is whole (OXT): the arginine numbered 240 after it is a free
+// amino acid bound to the protein, not the chain going on. 1k4r and 1a64 are whole (1a64 misses the first residues of its
+// chains only, which leaves no break)
+UTEST(pdb, chain_breaks_of_files) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        EXPECT_EQ((size_t)0, count_components_with(&sys, MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER));
+        size_t asp = SIZE_MAX;
+        for (size_t i = 0; i + 1 < sys.component.count; ++i) {
+            if (md_component_seq_id(&sys.component, i) == 238 && md_component_seq_id(&sys.component, i + 1) == 240) asp = i;
+        }
+        ASSERT_NE(SIZE_MAX, asp);
+        EXPECT_TRUE(str_eq(md_component_name(&sys.component, asp), STR_LIT("ASP")));
+        EXPECT_TRUE(md_component_flags(&sys.component, asp) & MD_COMPONENT_FLAG_TERMINAL_END);
+    }
+    const str_t whole[] = {STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb")};
+    for (size_t f = 0; f < ARRAY_SIZE(whole); ++f) {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, whole[f], MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        EXPECT_EQ((size_t)0, count_components_with(&sys, MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER));
+    }
+    md_vm_arena_destroy(alloc);
+}

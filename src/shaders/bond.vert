@@ -41,6 +41,12 @@
 //     circle (aromatic rings are circles, ring.vert), on the side of the aromatic bonds that continue from it. The ends
 //     of the partner are inset to where the partners of the neighboring bonds at the same offset meet, as on an inner
 //     polygon, and a little more. The quad bounds the partner alone.
+//
+// CHAIN GAPS (md_gl_mol_set_chain_gaps). A primitive is an entry of the gaps: (a, neighbour of a, b, neighbour of b). The
+// gap runs from 5/6 of the way from the neighbour of a to a, where the cartoon of a chain ends (its uniform cubic
+// B-spline at the clamped end of a chain), to the same point at b; an end which is its own neighbour is the atom itself.
+// It is a dashed cylinder as the weak bonds are, with dashes of a length of their own (u_dash_period, Ångström, the
+// period of the pattern), at least two: as many as fit whatever the length of the gap.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -54,6 +60,11 @@
 // 1: the dashed partners of delocalized covalent bonds (and of aromatic bonds in no circle)
 #ifndef BOND_PARTNERS
 #define BOND_PARTNERS 0
+#endif
+
+// 1: the gaps of the chains of the molecule, dashed lines over the breaks
+#ifndef CHAIN_GAPS
+#define CHAIN_GAPS 0
 #endif
 
 // Pixels the sides of the quad are moved out by
@@ -97,6 +108,8 @@ layout (std140) uniform ubo {
     float u_dash_fill;
     uint  u_bond_orders;
     float u_spread;
+    float u_dash_period;
+    uint  u_gap_index_base;
 };
 
 uniform uint u_bond_offset;
@@ -107,9 +120,15 @@ uniform samplerBuffer  u_buf_atom_pos;      // RGB32F
 uniform samplerBuffer  u_buf_atom_vel;      // RGB32F
 uniform usamplerBuffer u_buf_atom_flags;    // R8UI
 uniform samplerBuffer  u_buf_atom_color;    // RGBA8
+#if CHAIN_GAPS
+uniform usamplerBuffer u_buf_gap;           // RGBA32UI, (a, neighbour of a, b, neighbour of b)
+uniform usamplerBuffer u_buf_gap_comp;      // R32UI, the component before the break, which the gap picks as
+#else
 uniform usamplerBuffer u_buf_bond;          // RG32UI, atom indices
+#endif
 #if WEAK_BONDS
 uniform samplerBuffer  u_buf_bond_weight;   // R32F, scales the radius
+#elif CHAIN_GAPS
 #elif BOND_PARTNERS
 uniform usamplerBuffer u_buf_bond_partner;  // RGBA32UI, (bond, atom bonded to its first atom, to its second atom, -)
 #else
@@ -127,6 +146,8 @@ out Fragment {
     flat uint  bond_picking_idx;
 #if BOND_PARTNERS
     flat vec2  seg_range;               // The part of the bond the partner spans, in [0, 1] from its first atom
+#elif CHAIN_GAPS
+    flat uint  dash_count;
 #elif !WEAK_BONDS
     flat uint  kind;
     flat vec3  side;                    // Unit, perpendicular to the axis, in the plane of the bond
@@ -230,7 +251,12 @@ void main() {
     uint bond = prim;
 #endif
 
+#if CHAIN_GAPS
+    uvec4 gap  = texelFetch(u_buf_gap, int(prim));
+    uvec2 atom = gap.xz;
+#else
     uvec2 atom = texelFetch(u_buf_bond, int(bond)).xy;
+#endif
 
     uint flags_a = texelFetch(u_buf_atom_flags, int(atom.x)).x;
     uint flags_b = texelFetch(u_buf_atom_flags, int(atom.y)).x;
@@ -247,8 +273,19 @@ void main() {
     r *= texelFetch(u_buf_bond_weight, int(bond)).x;
 #endif
 
-    vec3 pa = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(atom.x)).xyz, 1.0));
-    vec3 pb = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(atom.y)).xyz, 1.0));
+    vec3 wa = texelFetch(u_buf_atom_pos, int(atom.x)).xyz;
+    vec3 wb = texelFetch(u_buf_atom_pos, int(atom.y)).xyz;
+    vec3 va = texelFetch(u_buf_atom_vel, int(atom.x)).xyz;
+    vec3 vb = texelFetch(u_buf_atom_vel, int(atom.y)).xyz;
+#if CHAIN_GAPS
+    // Where the cartoon ends: 5/6 of the way from the neighbour (the atom itself for a link)
+    wa = (5.0 * wa + texelFetch(u_buf_atom_pos, int(gap.y)).xyz) * (1.0 / 6.0);
+    wb = (5.0 * wb + texelFetch(u_buf_atom_pos, int(gap.w)).xyz) * (1.0 / 6.0);
+    va = (5.0 * va + texelFetch(u_buf_atom_vel, int(gap.y)).xyz) * (1.0 / 6.0);
+    vb = (5.0 * vb + texelFetch(u_buf_atom_vel, int(gap.w)).xyz) * (1.0 / 6.0);
+#endif
+    vec3 pa = vec3(u_world_to_view * vec4(wa, 1.0));
+    vec3 pb = vec3(u_world_to_view * vec4(wb, 1.0));
 
     vec3  d  = pb - pa;
     float d2 = dot(d, d);
@@ -259,11 +296,15 @@ void main() {
 
     out_frag.color[0] = color_a;
     out_frag.color[1] = color_b;
-    out_frag.view_vel[0] = mat3(u_world_to_view) * texelFetch(u_buf_atom_vel, int(atom.x)).xyz;
-    out_frag.view_vel[1] = mat3(u_world_to_view) * texelFetch(u_buf_atom_vel, int(atom.y)).xyz;
+    out_frag.view_vel[0] = mat3(u_world_to_view) * va;
+    out_frag.view_vel[1] = mat3(u_world_to_view) * vb;
     out_frag.atom_picking_idx[0] = u_atom_base_index + atom.x;
     out_frag.atom_picking_idx[1] = u_atom_base_index + atom.y;
+#if CHAIN_GAPS
+    out_frag.bond_picking_idx    = u_gap_index_base + texelFetch(u_buf_gap_comp, int(prim)).x;
+#else
     out_frag.bond_picking_idx    = u_bond_base_index + bond;
+#endif
 
 #if BOND_PARTNERS
     {
@@ -301,6 +342,17 @@ void main() {
     out_frag.pa = pa;
     out_frag.pb = pb;
     out_frag.radius = r;
+#elif CHAIN_GAPS
+    out_frag.pa = pa;
+    out_frag.pb = pb;
+    out_frag.radius = r;
+    {
+        // As many dashes of the period as fit, the first starting at pa and the last ending at pb: the length is
+        // (n - 1 + fill) periods
+        float fill = clamp(u_dash_fill, 0.0, 1.0);
+        float n = floor(sqrt(d2) / max(u_dash_period, 1.0e-3) + 1.0 - fill + 0.5);
+        out_frag.dash_count = uint(clamp(n, 2.0, 4096.0));
+    }
 #else
     out_frag.pa = pa;
     out_frag.pb = pb;

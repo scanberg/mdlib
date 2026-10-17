@@ -95,6 +95,30 @@ void md_util_system_infer_entity_kinds(md_system_t* sys);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
+// CHAIN BREAKS. A polymer chain is broken between two consecutive residues of it (amino acids, nucleotides) whose
+// backbones are not linked: no peptide bond from the C of the one to the N of the next, no phosphodiester bond from the
+// O3' of the one to the P of the next, no bond between the backbone beads of a coarse grained chain. The residues a
+// crystal structure could not resolve leave such breaks, as does a model built in pieces.
+// Where the chemistry says so unambiguously the chain ends there instead: a free carboxyl group (O and OXT) before it,
+// a free amino group (two or three hydrogens on the N) after it, a free amino acid after it (a lone residue with a free
+// carboxyl group of its own, which a PDB file can number on after the chain, as 1LAF does its bound arginine), a
+// nucleotide without its P after it (a 5' end), or a free hydroxyl (with its hydrogen) on either side. A crystal
+// structure rarely has the hydrogens and often leaves out the OXT, so the ends of the pieces of a broken chain look like
+// termini to the classification of the components: the residues on either side of a break lose the terminal flags it
+// gave them (MD_COMPONENT_FLAG_TERMINAL_BEG, _END, and those of their atoms).
+// The bonds decide, not the sequence numbers: an insertion code (52, 52A) or numbering that skips (antibodies, the
+// chymotrypsin numbering of proteases) does not break a chain whose backbone is bonded, and numbering that runs on
+// does not join one whose backbone is not. Atoms without bonds (a structure file read without inferring them) are
+// linked by their distance, the shortest way round a periodic cell, and without coordinates by consecutive sequence
+// numbers. md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT) marks the residues on either side of each break,
+// MD_COMPONENT_FLAG_BREAK_AFTER the one before it and MD_COMPONENT_FLAG_BREAK_BEFORE the one after it, and ends the
+// backbone ranges there (md_protein_backbone_data_t, md_nucleic_backbone_data_t).
+
+// The atoms a link over the break after the component comp_idx (MD_COMPONENT_FLAG_BREAK_AFTER) would join: the C and
+// the N of a peptide bond, the O3' and the P of a phosphodiester bond, the backbone beads of coarse grained residues.
+// False, and out_atoms -1, when there is no break after it.
+bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sys, size_t comp_idx);
+
 // The per segment quantities of a protein backbone (see md_protein_backbone_data_t), computed into the caller's arrays
 // of one entry per segment (capacity at least backbone->segment.count). They do not allocate. The secondary structure
 // has its own header, md_dssp.h.
