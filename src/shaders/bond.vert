@@ -45,8 +45,11 @@
 // CHAIN GAPS (md_gl_mol_set_chain_gaps). A primitive is an entry of the gaps: (a, neighbour of a, b, neighbour of b). The
 // gap runs from 5/6 of the way from the neighbour of a to a, where the cartoon of a chain ends (its uniform cubic
 // B-spline at the clamped end of a chain), to the same point at b; an end which is its own neighbour is the atom itself.
-// It is a dashed cylinder as the weak bonds are, with dashes of a length of their own (u_dash_period, Ångström, the
-// period of the pattern), at least two: as many as fit whatever the length of the gap.
+//
+// DASHED LINES (weak bonds, partners, gaps): dashes of u_dash_length with u_gap_length between them (Ångström), never a
+// number of dashes. A line of length L gets the number of dashes n that comes closest to the lengths,
+// n = round((L + gap) / (dash + gap)), at least 2, and bond.frag draws the first from pa and the last up to pb, the
+// dashes and gaps stretched or shrunk alike by L / (n dash + (n - 1) gap) to fit: no dash is cut off at either end.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -104,11 +107,10 @@ layout (std140) uniform ubo {
     int   u_mode;
     float u_sharpness;
     uint  u_uniform_color;
-    uint  u_dash_count;
-    float u_dash_fill;
+    float u_dash_length;
+    float u_gap_length;
     uint  u_bond_orders;
     float u_spread;
-    float u_dash_period;
     uint  u_gap_index_base;
 };
 
@@ -146,12 +148,13 @@ out Fragment {
     flat uint  bond_picking_idx;
 #if BOND_PARTNERS
     flat vec2  seg_range;               // The part of the bond the partner spans, in [0, 1] from its first atom
-#elif CHAIN_GAPS
-    flat uint  dash_count;
-#elif !WEAK_BONDS
+#elif !WEAK_BONDS && !CHAIN_GAPS
     flat uint  kind;
     flat vec3  side;                    // Unit, perpendicular to the axis, in the plane of the bond
     flat vec2  sub;                     // (offset, radius) of the thinner sticks
+#endif
+#if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
+    flat uint  dash_count;              // DASHED LINES
 #endif
     smooth vec3 view_pos;               // On the quad, the ray of the fragment starts here
 } out_frag;
@@ -346,13 +349,6 @@ void main() {
     out_frag.pa = pa;
     out_frag.pb = pb;
     out_frag.radius = r;
-    {
-        // As many dashes of the period as fit, the first starting at pa and the last ending at pb: the length is
-        // (n - 1 + fill) periods
-        float fill = clamp(u_dash_fill, 0.0, 1.0);
-        float n = floor(sqrt(d2) / max(u_dash_period, 1.0e-3) + 1.0 - fill + 0.5);
-        out_frag.dash_count = uint(clamp(n, 2.0, 4096.0));
-    }
 #else
     out_frag.pa = pa;
     out_frag.pb = pb;
@@ -379,6 +375,17 @@ void main() {
     out_frag.kind = kind;
     out_frag.side = side;
     out_frag.sub  = sub;
+#endif
+
+#if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
+    {
+        // DASHED LINES: the number of dashes which comes closest to their length and that of the gaps, over the line
+        // as drawn (a partner inset from its bond)
+        float dash = max(u_dash_length, 1.0e-4);
+        float gap  = max(u_gap_length, 0.0);
+        float n = floor((sqrt(d2) + gap) / (dash + gap) + 0.5);
+        out_frag.dash_count = uint(clamp(n, 2.0, 4096.0));
+    }
 #endif
 
     // Distance from the eye to the near plane (z = -near)

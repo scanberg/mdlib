@@ -60,17 +60,26 @@
 // Bonds are drawn as one quad each (bond.vert), from a static index buffer of this many quads (u16 indices: at most
 // 16384), as instances of the whole buffer followed by a draw of the rest
 #define BOND_QUADS_PER_INSTANCE 16384
-// Pattern of the dashed partners of delocalized bonds (and of aromatic bonds outside of a ring drawn as a circle)
-#define BOND_PARTNER_DASHES 3
-#define BOND_PARTNER_FILL   0.5f
+// DASHED LINES. Every dashed line md_gl draws (the weak bonds, the partners of delocalized bonds, the gaps of chains)
+// is given by the length of its dashes and of the gaps between them, never by a number of dashes: as many dashes fit
+// as come closest to the lengths, at least two, the first starting at one end and the last ending at the other, the
+// dashes and gaps stretched or shrunk alike to fit (bond.vert). So no dash is cut off at an end, and each kind of line
+// keeps a look of its own at any length. The lines md_gl styles itself have their lengths in proportion to their
+// radius, so they keep that look at any thickness too.
+
+// The dashed partners of delocalized bonds (and of aromatic bonds outside of a ring drawn as a circle): the lengths of
+// their dashes and gaps relative to the radius of the stick (the partner is a third of it thick): short and tight,
+// about three dashes along the partner of a bond in a ring
+#define BOND_PARTNER_DASH_LENGTH 0.75f
+#define BOND_PARTNER_GAP_LENGTH  0.75f
 
 // The gaps of the chains (md_gl_mol_set_chain_gaps): the radius of the dashed line relative to the coil of the cartoon
-// (and to the thickness of the ribbons), and to the sticks of licorice and ball and stick, and its dashes, of a length of
-// their own along it (Ångström, the period of the pattern) whatever the length of the gap
-#define CHAIN_GAP_RADIUS_TRACE  0.7f
-#define CHAIN_GAP_RADIUS_LINK   0.5f
-#define CHAIN_GAP_DASH_PERIOD   1.2f
-#define CHAIN_GAP_DASH_FILL     0.5f
+// (and to the thickness of the ribbons), and to the sticks of licorice and ball and stick, and the lengths of its
+// dashes and gaps relative to that radius: long dashes, which tell a gap from a bond
+#define CHAIN_GAP_RADIUS_TRACE    0.7f
+#define CHAIN_GAP_RADIUS_LINK     0.5f
+#define CHAIN_GAP_DASH_LENGTH     4.0f
+#define CHAIN_GAP_GAP_LENGTH      4.0f
 
 #define UBO_SIZE (1 << 10)
 #define SHADER_BUF_SIZE KILOBYTES(14)
@@ -2498,16 +2507,15 @@ typedef struct {
     int32_t  mode;
     float    sharpness;
     uint32_t uniform_color;
-    uint32_t dash_count;
-    float    dash_fill;
+    float    dash_length;   // Dashed lines (weak bonds, partners, gaps): the length of the dashes (Ångström), see DASHED LINES
+    float    gap_length;    // And of the gaps between them
     uint32_t bond_orders;   // Show the orders of covalent bonds (bond_set_t order, order_ref)
     float    spread;        // Envelope of the thinner sticks of multiple bonds, relative to the radius
-    float    dash_period;   // The gaps of the chains (CHAIN_GAPS): the period of the dashes (Ångström), dash_count unused
     uint32_t gap_index_base;// The gaps of the chains: their picking base (md_gl_picking_offset_t gap_base)
 } bond_params_t;
 
-// The parameters of the gaps of the chains (draw_chain_gaps): dashes of the radius, colored as the bonds are, drawn
-// at any length
+// The parameters of the gaps of the chains (draw_chain_gaps): a line of the radius with its dashes in proportion,
+// colored as the bonds are, drawn at any length
 static inline bond_params_t chain_gap_params(float radius, int32_t mode, float sharpness, uint32_t uniform_color, uint32_t gap_index_base) {
     bond_params_t params = {
         .radius = radius,
@@ -2515,9 +2523,8 @@ static inline bond_params_t chain_gap_params(float radius, int32_t mode, float s
         .mode = mode,
         .sharpness = sharpness,
         .uniform_color = uniform_color,
-        .dash_count = 2,
-        .dash_fill = CHAIN_GAP_DASH_FILL,
-        .dash_period = CHAIN_GAP_DASH_PERIOD,
+        .dash_length = CHAIN_GAP_DASH_LENGTH * radius,
+        .gap_length = CHAIN_GAP_GAP_LENGTH * radius,
         .gap_index_base = gap_index_base,
     };
     return params;
@@ -2750,14 +2757,20 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             break;
         }
         case MD_GL_REP_WEAK_BONDS: {
+            const float dash = draw_op->args.weak_bonds.dash_length;
+            const float gap  = draw_op->args.weak_bonds.gap_length > 0.0f ? draw_op->args.weak_bonds.gap_length : dash;
+            if (!(dash > 0.0f)) {
+                MD_LOG_ERROR("Weak bonds with a dash length of %f: it must be positive", dash);
+                break;
+            }
             const bond_params_t params = {
                 .radius = scale * draw_op->args.weak_bonds.radius,
                 .max_d2 = max_length * max_length,
                 .mode = draw_op->args.weak_bonds.color_mode,
                 .sharpness = draw_op->args.weak_bonds.sharpness,
                 .uniform_color = draw_op->args.weak_bonds.uniform_color,
-                .dash_count = MAX(1, draw_op->args.weak_bonds.dash_count),
-                .dash_fill = CLAMP(draw_op->args.weak_bonds.dash_fill, 0.0f, 1.0f),
+                .dash_length = scale * dash,
+                .gap_length = scale * gap,
             };
             const bond_set_t bonds = {rep->weak_bond_atoms, rep->weak_bond_weight, {0}, {0}, {0}, rep->weak_bond_count};
             draw_bonds(shaders->weak_bonds[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size);
@@ -2988,8 +3001,8 @@ static bool draw_bond_partners(gl_program_t program, const molecule_t* mol, gl_b
         return false;
     }
     bond_params_t params = *bond_params;
-    params.dash_count  = BOND_PARTNER_DASHES;
-    params.dash_fill   = BOND_PARTNER_FILL;
+    params.dash_length = BOND_PARTNER_DASH_LENGTH * bond_params->radius;
+    params.gap_length  = BOND_PARTNER_GAP_LENGTH  * bond_params->radius;
     params.bond_orders = 0;
     const bond_set_t partners = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, {0}, {0}, mol->buffer[GL_BUFFER_BOND_PARTNER], mol->bond_partner_count};
     return draw_bonds(program, mol, atom_color, partners, &params, viewport_size);

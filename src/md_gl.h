@@ -221,8 +221,9 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
 // the one after it. Where the missing residues went is not known, so the line claims no more than that the chain goes
 // on. The cartoon and ribbons draw it between the ends of the cartoon of the chain on either side (near the CA of the
 // residue, where the spline ends) for the breaks of protein chains; licorice and ball and stick draw it between the
-// atoms a link would join (md_util_chain_break_atoms: C and N, O3' and P, the backbone beads). Its dashes are of a
-// length of their own (Ångström), as many as fit, so a long gap reads as a gap and not as a bond. It takes the colors
+// atoms a link would join (md_util_chain_break_atoms: C and N, O3' and P, the backbone beads). Its dashes are long, a
+// length of their own in proportion to its thickness, as many as fit (see the weak bonds below), so that a long gap
+// reads as a gap and not as a bond, nor as one of the shorter dashed lines (delocalized bonds). It takes the colors
 // of its two ends (the atoms it is drawn between), is shown when both of them are, and is drawn at any length: its
 // ends are where the atoms are, not their minimum image. It picks as the component before the break
 // (md_gl_picking_offset_t gap_base). The system must be the one of the molecule. md_gl_mol_create sets them.
@@ -325,13 +326,15 @@ typedef struct md_gl_draw_op_t {
             bool  chain_gaps;       // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
         } cartoon;
 
-        // Dashed cylinders between the atoms: dash_count dashes with flat ends, the first starting at the first atom
-        // and the last ending at the second, each covering the fraction dash_fill of the period of the pattern (1 is a
-        // solid cylinder). The dashes are as many on every bond, so they scale with its length.
+        // Dashed cylinders between the atoms. As every dashed line of md_gl (the partners of delocalized bonds, the gaps
+        // of chains), they are given by the lengths of their dashes and of the gaps between them, not by a number of
+        // dashes: a bond has as many flat ended dashes as come closest to the lengths, at least two, the first starting
+        // at the first atom and the last ending at the second, the dashes and gaps stretched or shrunk alike to fit. No
+        // dash is cut off at an end, and the pattern looks the same on a bond of any length.
         struct {
             float radius;           // Ångström, scaled by the weight of each bond
-            uint32_t dash_count;    // At least 1
-            float dash_fill;        // (0, 1]
+            float dash_length;      // Ångström, positive: a draw op without it draws nothing
+            float gap_length;       // Ångström, 0 or less for the dash length
             md_gl_bond_mode_t color_mode;
             float sharpness;
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM

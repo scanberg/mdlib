@@ -6,12 +6,12 @@
 //   Covalent bonds: a capsule (the cylinder of the bond with a half sphere at each end). With bond orders (bond.vert),
 //                   double and triple bonds are two or three thinner capsules and the spheres at the ends; the nearest
 //                   hit counts.
-//   WEAK_BONDS:     weak bonds, a dashed cylinder: u_dash_count dashes with flat ends, the first starting at pa and the
-//                   last ending at pb, each covering the fraction u_dash_fill of the period of the pattern.
+//   WEAK_BONDS:     weak bonds, a dashed cylinder: the number of dashes bond.vert gives it (DASHED LINES), with flat
+//                   ends, the first starting at pa and the last ending at pb, each dash u_dash_length / (u_dash_length +
+//                   u_gap_length) of the period of the pattern.
 //   BOND_PARTNERS:  the dashed partner of a delocalized bond (or of an aromatic bond in no circle, ring.vert), a dashed
 //                   cylinder as the weak bonds, which colors and picks as the part of its bond it spans.
-//   CHAIN_GAPS:     the gap of a chain over a break, a dashed cylinder as the weak bonds with the number of dashes
-//                   bond.vert gives it, which picks as the gap.
+//   CHAIN_GAPS:     the gap of a chain over a break, a dashed cylinder as the weak bonds, which picks as the gap.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -65,11 +65,10 @@ layout (std140) uniform ubo {
     int   u_mode;
     float u_sharpness;
     uint  u_uniform_color;
-    uint  u_dash_count;
-    float u_dash_fill;
+    float u_dash_length;
+    float u_gap_length;
     uint  u_bond_orders;
     float u_spread;
-    float u_dash_period;
     uint  u_gap_index_base;
 };
 
@@ -83,12 +82,13 @@ in Fragment {
     flat uint  bond_picking_idx;
 #if BOND_PARTNERS
     flat vec2  seg_range;
-#elif CHAIN_GAPS
-    flat uint  dash_count;
-#elif !WEAK_BONDS
+#elif !WEAK_BONDS && !CHAIN_GAPS
     flat uint  kind;
     flat vec3  side;
     flat vec2  sub;
+#endif
+#if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
+    flat uint  dash_count;
 #endif
     smooth vec3 view_pos;
 } in_frag;
@@ -249,11 +249,8 @@ void main() {
 
 #if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
     float seg_t;
-#if CHAIN_GAPS
-    vec4 hit = dashed_cylinder_intersect(ro, rd, pa, pb, r, in_frag.dash_count, u_dash_fill, seg_t);
-#else
-    vec4 hit = dashed_cylinder_intersect(ro, rd, pa, pb, r, u_dash_count, u_dash_fill, seg_t);
-#endif
+    float dash = max(u_dash_length, 1.0e-4);
+    vec4 hit = dashed_cylinder_intersect(ro, rd, pa, pb, r, in_frag.dash_count, dash / (dash + max(u_gap_length, 0.0)), seg_t);
     float t = hit.x;
     if (t < 0.0) {
         discard;
