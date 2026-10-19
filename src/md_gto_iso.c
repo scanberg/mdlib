@@ -1653,16 +1653,31 @@ static void iso_surface_box(const iso_field_t* f, double iso, double lo[3], doub
     for (int a = 0; a < 3; ++a) { lo[a] = f->atom_min[a] - pad; hi[a] = f->atom_max[a] + pad; }
 }
 
-// Root: the cube of edge leaf_edge * 2^L centred on that box. Returns L and the root's origin.
-static int iso_root(const iso_field_t* f, double iso, double leaf_edge, double origin[3]) {
-    double lo[3], hi[3], ext = 0.0;
-    iso_surface_box(f, iso, lo, hi);
+// The lattice is given in floats: its origin and its cell size are values a float holds. The GPU path
+// forms its lattice points as origin + index * h in float, and an origin or h it cannot hold would move
+// (or scale) its whole lattice against the one reported and the CPU's: by up to half an ulp of
+// |origin| - the largest coordinate there is, the root's corner lying farthest from the molecule
+// (6e-7 bohr at 16 bohr, 3e-4 of a core density's 45 au a tenth of a bohr from an oxygen). Held in
+// floats, the two lattices differ only by the rounding of each point.
+static inline double iso_lattice_float(double x) { return (double)(float)x; }
+
+// Root over the box [lo, hi]: the cube of edge leaf_edge * 2^L centred on it. Returns L and the
+// root's origin. The CPU and the GPU paths both take their root from here, so their lattices agree.
+static int iso_root_box(const double lo[3], const double hi[3], double leaf_edge, double origin[3]) {
+    double ext = 0.0;
     for (int a = 0; a < 3; ++a) ext = fmax(ext, hi[a] - lo[a]);
     int L = 0;
     while (leaf_edge * (double)(1 << L) < ext) L++;
     const double edge = leaf_edge * (double)(1 << L);
-    for (int a = 0; a < 3; ++a) origin[a] = 0.5 * (lo[a] + hi[a]) - 0.5 * edge;
+    for (int a = 0; a < 3; ++a) origin[a] = iso_lattice_float(0.5 * (lo[a] + hi[a]) - 0.5 * edge);
     return L;
+}
+
+// Root: the cube of edge leaf_edge * 2^L centred on the field's surface box.
+static int iso_root(const iso_field_t* f, double iso, double leaf_edge, double origin[3]) {
+    double lo[3], hi[3];
+    iso_surface_box(f, iso, lo, hi);
+    return iso_root_box(lo, hi, leaf_edge, origin);
 }
 
 static void iso_octree_build_range(iso_octree_t* o, const iso_field_t* f, double iso_lo, double iso_hi, double h, int scheme, uint32_t mask, double t2_max_size) {
@@ -2448,7 +2463,7 @@ md_gto_iso_cache_t* md_gto_iso_cache_create(const md_gto_iso_field_t* field, con
         MD_LOG_ERROR("md_gto_iso_cache_create: missing argument");
         return NULL;
     }
-    const double h = desc->cell_size;
+    const double h = iso_lattice_float(desc->cell_size);
     const double iso_min = desc->iso_min;
     const double iso_max = desc->iso_max > iso_min ? desc->iso_max : iso_min;
     if (!(h > 0.0) || !(iso_min > 0.0)) {

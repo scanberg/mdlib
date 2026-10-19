@@ -786,16 +786,26 @@ UTEST(gto_int, vlx_amide_gpu_xyz_matches_cpu) {
     // As for the grid: what is left beyond what the position explains. The points are absolute floats,
     // moved into the frame of the distribution in float on the device (the grid's are formed in double):
     // a rounding of their own, so 2e-6 bohr rather than the grid's 1e-6.
+    // What is left is the rounding of the float terms, which goes with the size of the terms, not of V:
+    // a few bohr from the molecule the nuclei's potential and the electrons' cancel to a fraction of
+    // either (V 0.16 from 12.9 and -12.7), so it is measured against |V_nuc| + |V_el|, the size of what
+    // cancels, in float epsilons. Backends round differently (Metal compiles with fast math, Vulkan
+    // allows its exp, rsqrt and division a few ulps): a couple of epsilons, not a fraction of one.
     double rel = 0.0, excess = 0.0;
     for (size_t i = 0; i < n; ++i) {
         const double e = sqrt(E[i * 3] * E[i * 3] + E[i * 3 + 1] * E[i * 3 + 1] + E[i * 3 + 2] * E[i * 3 + 2]);
         const double d = fabs((double)gpu[i] - V[i]);
+        double vn = 0.0;
+        for (uint32_t k = 0; k < q.num_points; ++k) {
+            const double dx = p3[i * 3 + 0] - q.point_xyz[k * 3 + 0], dy = p3[i * 3 + 1] - q.point_xyz[k * 3 + 1], dz = p3[i * 3 + 2] - q.point_xyz[k * 3 + 2];
+            vn += q.point_charge[k] / sqrt(dx * dx + dy * dy + dz * dz);
+        }
         rel    = MAX(rel, d / MAX(1.0, fabs(V[i])));
-        excess = MAX(excess, (d - e * 2e-6) / MAX(1.0, fabs(V[i])));
+        excess = MAX(excess, (d - e * 2e-6) / ((fabs(vn) + fabs(V[i] - vn)) * FLT_EPSILON));
     }
-    printf("amide def2-SVP potential at %zu points, GPU vs CPU: max |diff| / max(1,|V|) = %.3e, beyond 2e-6 bohr of position %.3e\n", n, rel, excess);
+    printf("amide def2-SVP potential at %zu points, GPU vs CPU: max |diff| / max(1,|V|) = %.3e, beyond 2e-6 bohr of position %.2f eps of |V_nuc| + |V_el|\n", n, rel, excess);
     EXPECT_LT(rel, 5e-6);
-    EXPECT_LT(excess, 1e-6);
+    EXPECT_LT(excess, 2.0);
 
     // Split into many batches and runs of gaussians: bit identical
     ASSERT_TRUE(int_test_gpu_xyz(gpu_split, stream, &q, p3, n, 0, 20000));
