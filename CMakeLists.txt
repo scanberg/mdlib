@@ -219,8 +219,6 @@ set(GL_SHADER_FILES
   src/shaders/compute_derived.vert
   src/shaders/backbone.vert
   src/shaders/backbone.frag
-  src/shaders/backbone_rc.vert
-  src/shaders/backbone_rc.frag
   src/shaders/bond.vert
   src/shaders/bond.frag
   src/shaders/ring.vert

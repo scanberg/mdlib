@@ -322,7 +322,6 @@ typedef struct md_gl_draw_op_t {
             float coil_scale;
             float sheet_scale;
             float helix_scale;
-            bool  raycast;          // Ray cast the profile (in closed form, a quad per segment of the spline) rather than draw a mesh of it
             bool  chain_gaps;       // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
         } cartoon;
 
@@ -344,7 +343,6 @@ typedef struct md_gl_draw_op_t {
             float radius_scale;     // Of the profiles at the control points
             float band_scale;       // Of the radius of the profiles with flat sides (bands), on top of radius_scale: their
                                     // thickness, the flat sides keep their length. 0 or less is taken as 1
-            bool  raycast;          // As for the cartoon
         } tubes;
 
         struct {
