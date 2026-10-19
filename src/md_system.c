@@ -137,6 +137,13 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->component.seq_id, alloc);
     md_array_free(sys->component.atom_offset, alloc);
     md_array_free(sys->component.flags, alloc);
+    md_array_free(sys->component.type_idx, alloc);
+
+    // COMPONENT TYPE
+    md_array_free(sys->component.type.name, alloc);
+    md_array_free(sys->component.type.kind, alloc);
+    md_array_free(sys->component.type.monomer, alloc);
+    md_array_free(sys->component.type.color, alloc);
 
     // INSTANCE
     md_array_free(sys->instance.id, alloc);

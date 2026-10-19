@@ -93,6 +93,13 @@ md_label_t md_util_instance_id_from_index(size_t idx);
 // from the components of their first instance. Requires the components to be classified.
 void md_util_system_infer_entity_kinds(md_system_t* sys);
 
+// The component types of the system (sys->component.type, see md_component_type_data_t): one per name and kind of
+// component, with the standard monomer it is a form of (md_monomer_from_comp_name) and a default color: that of the
+// monomer, that of the element of a monatomic ion, else one made from its name. The types the system has already are
+// kept (with the colors they were given), the components which match none get new ones. Requires the classified
+// components, lipids included; md_util_system_infer calls it last.
+bool md_util_system_infer_component_types(md_system_t* sys);
+
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // CHAIN BREAKS. A polymer chain is broken between two consecutive residues of it (amino acids, nucleotides) whose

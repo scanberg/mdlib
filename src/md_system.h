@@ -43,6 +43,18 @@ typedef struct md_atom_data_t {
     md_atom_type_data_t type;
 } md_atom_data_t;
 
+// Component type: the components of the system of one name and kind. The ALA of every chain is one type, the HIE and
+// the HID of a protein are two, which are both forms of the standard monomer HIS. Inferred from the components
+// (md_util_system_infer_component_types), as the components are classified late (a lipid is found by its structure
+// after the components are classified). Like the atom types they carry what the components look like, their color.
+typedef struct md_component_type_data_t {
+    size_t count;
+    md_label_t*          name;
+    md_component_kind_t* kind;
+    md_monomer_t*        monomer;   // The standard monomer it is a form of, MD_MONOMER_NONE if none (md_monomer_from_comp_name)
+    uint32_t*            color;
+} md_component_type_data_t;
+
 // Component (Residue): a contiguous range of atoms
 typedef struct md_component_data_t {
     size_t count;
@@ -50,6 +62,9 @@ typedef struct md_component_data_t {
     md_sequence_id_t* seq_id;
     uint32_t* atom_offset;          // [count + 1]
     md_component_flags_t* flags;    // Kind (amino acid, nucleotide, water, ion) and place in the chain, see md_types.h
+
+    md_component_type_idx_t* type_idx;  // [count] Once inferred (md_util_system_infer_component_types), NULL before
+    md_component_type_data_t type;
 } md_component_data_t;
 
 // Instance: ONE molecule, or ONE polymer chain, as a contiguous range of components.
@@ -711,6 +726,76 @@ static inline size_t md_component_atom_count(const md_component_data_t* comp, si
         count = comp->atom_offset[comp_idx + 1] - comp->atom_offset[comp_idx];
     }
     return count;
+}
+
+// The type of the component, -1 when the types have not been inferred
+static inline md_component_type_idx_t md_component_type_idx(const md_component_data_t* comp, size_t comp_idx) {
+    ASSERT(comp);
+    if (comp->type_idx && comp_idx < comp->count) {
+        return comp->type_idx[comp_idx];
+    }
+    return -1;
+}
+
+// Component type
+
+static inline size_t md_component_type_count(const md_component_type_data_t* type) {
+    ASSERT(type);
+    return type->count;
+}
+
+// The type of the given name and kind, -1 when there is none
+static inline md_component_type_idx_t md_component_type_find(const md_component_type_data_t* type, str_t name, md_component_kind_t kind) {
+    ASSERT(type);
+    for (size_t i = 0; i < type->count; ++i) {
+        if (type->kind[i] == kind && str_eq(LBL_TO_STR(type->name[i]), name)) {
+            return (md_component_type_idx_t)i;
+        }
+    }
+    return -1;
+}
+
+static inline md_component_type_idx_t md_component_type_add(md_component_type_data_t* type, str_t name, md_component_kind_t kind, md_monomer_t monomer, uint32_t color, struct md_allocator_i* alloc) {
+    ASSERT(type);
+    ASSERT(alloc);
+    md_array_push(type->name, make_label(name), alloc);
+    md_array_push(type->kind, kind, alloc);
+    md_array_push(type->monomer, monomer, alloc);
+    md_array_push(type->color, color, alloc);
+    type->count++;
+    return (md_component_type_idx_t)(type->count - 1);
+}
+
+static inline str_t md_component_type_name(const md_component_type_data_t* type, size_t type_idx) {
+    ASSERT(type);
+    if (type_idx < type->count) {
+        return LBL_TO_STR(type->name[type_idx]);
+    }
+    return STR_LIT("");
+}
+
+static inline md_component_kind_t md_component_type_kind(const md_component_type_data_t* type, size_t type_idx) {
+    ASSERT(type);
+    if (type_idx < type->count) {
+        return type->kind[type_idx];
+    }
+    return MD_COMPONENT_KIND_OTHER;
+}
+
+static inline md_monomer_t md_component_type_monomer(const md_component_type_data_t* type, size_t type_idx) {
+    ASSERT(type);
+    if (type_idx < type->count) {
+        return type->monomer[type_idx];
+    }
+    return MD_MONOMER_NONE;
+}
+
+static inline uint32_t md_component_type_color(const md_component_type_data_t* type, size_t type_idx) {
+    ASSERT(type);
+    if (type_idx < type->count) {
+        return type->color[type_idx];
+    }
+    return 0;
 }
 
 // Instance

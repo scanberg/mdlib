@@ -10825,6 +10825,79 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
     return true;
 }
 
+// ### COMPONENT TYPES ###
+
+// The color a new component type starts out with: that of its standard monomer, that of the element of a monatomic
+// ion, and otherwise one of its name, the same in every system
+static uint32_t component_type_default_color(const md_system_t* sys, size_t comp_idx, str_t name, md_component_kind_t kind, md_monomer_t monomer) {
+    if (monomer != MD_MONOMER_NONE) {
+        return md_monomer_color(monomer);
+    }
+    if (kind == MD_COMPONENT_KIND_ION) {
+        const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+        const md_atomic_number_t z = range.end > range.beg ? md_atom_atomic_number(&sys->atom, range.beg) : 0;
+        if (z) return md_atomic_number_cpk_color(z);
+    }
+    // The golden ratio spreads the hues of names which hash alike
+    const uint32_t h = (uint32_t)md_hash64_str(name, 0) * 0x9E3779B9u;
+    const float hue = (float)(h >> 8) * (1.0f / 16777216.0f);
+    const vec3_t rgb = hcl_to_rgb(hue, 0.5f, 0.7f);    // Channels within [0.45, 0.95]
+    const uint32_t r = (uint32_t)(CLAMP(rgb.x, 0.0f, 1.0f) * 255.0f + 0.5f);
+    const uint32_t g = (uint32_t)(CLAMP(rgb.y, 0.0f, 1.0f) * 255.0f + 0.5f);
+    const uint32_t b = (uint32_t)(CLAMP(rgb.z, 0.0f, 1.0f) * 255.0f + 0.5f);
+    return (0xFFu << 24) | (b << 16) | (g << 8) | r;
+}
+
+static inline uint64_t component_type_key(str_t name, md_component_kind_t kind) {
+    return md_hash64_str(name, (uint64_t)kind + 1);
+}
+
+bool md_util_system_infer_component_types(md_system_t* sys) {
+    ASSERT(sys);
+    md_component_data_t* comp = &sys->component;
+    if (comp->count == 0) return false;
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+    md_allocator_i* alloc = sys->alloc;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+    // The types the system has already, so that inferring again keeps them and what was made of them (their colors).
+    // A type no component is of any more (a component which was reclassified) stays, used by none.
+    md_hashmap32_t lookup = { .allocator = temp_arena };
+    for (size_t t = 0; t < comp->type.count; ++t) {
+        md_hashmap_add(&lookup, component_type_key(LBL_TO_STR(comp->type.name[t]), comp->type.kind[t]), (uint32_t)t);
+    }
+
+    md_array_resize(comp->type_idx, comp->count, alloc);
+    for (size_t c = 0; c < comp->count; ++c) {
+        const str_t name = md_component_name(comp, c);
+        const md_component_kind_t kind = md_component_kind(comp, c);
+        const uint64_t key = component_type_key(name, kind);
+
+        md_component_type_idx_t type_idx = -1;
+        const uint32_t* found = md_hashmap_get(&lookup, key);
+        if (found && comp->type.kind[*found] == kind && str_eq(LBL_TO_STR(comp->type.name[*found]), name)) {
+            type_idx = (md_component_type_idx_t)*found;
+        } else if (found) {
+            type_idx = md_component_type_find(&comp->type, name, kind);    // Two keys which collide
+        }
+        if (type_idx < 0) {
+            const md_monomer_t monomer = md_monomer_from_comp_name(name, kind);
+            const uint32_t color = component_type_default_color(sys, c, name, kind, monomer);
+            type_idx = md_component_type_add(&comp->type, name, kind, monomer, color, alloc);
+            if (!found) md_hashmap_add(&lookup, key, (uint32_t)type_idx);
+        }
+        comp->type_idx[c] = type_idx;
+    }
+
+    md_temp_end(temp);
+    return true;
+}
+
 // Try to fill in missing fields for molecule struct
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
@@ -11094,6 +11167,10 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         // After the bonds, the rings (a sterol is told by its fused rings) and the classification of the components
         md_util_system_infer_lipids(sys);
     }
+
+    // Last of what depends on the classification of the components, which the lipids are the last to change. Cheap,
+    // and what a component type is follows from the components alone, so not behind a bit.
+    md_util_system_infer_component_types(sys);
 
 #if 0
     if ((flags & MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT) && 

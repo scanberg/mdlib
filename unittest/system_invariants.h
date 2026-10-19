@@ -55,6 +55,34 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
         }
     }
 
+    // The component types, once inferred: a type for every component, of its name and kind
+    {
+        const md_component_type_data_t* type = &sys->component.type;
+        if (md_array_size(type->name) != type->count || md_array_size(type->kind) != type->count ||
+            md_array_size(type->monomer) != type->count || md_array_size(type->color) != type->count) {
+            FAIL("component.type arrays do not hold count = %zu entries", type->count);
+        }
+        if (sys->component.type_idx) {
+            if (md_array_size(sys->component.type_idx) != sys->component.count) {
+                FAIL("component.type_idx holds %zu entries, expected component.count = %zu",
+                     md_array_size(sys->component.type_idx), sys->component.count);
+            } else {
+                for (size_t i = 0; i < sys->component.count; ++i) {
+                    const md_component_type_idx_t t = sys->component.type_idx[i];
+                    if (t < 0 || (size_t)t >= type->count) {
+                        FAIL("component[%zu] has type %d, out of [0, %zu)", i, t, type->count);
+                        break;
+                    }
+                    if (type->kind[t] != md_component_kind(&sys->component, i) ||
+                        !str_eq(LBL_TO_STR(type->name[t]), md_component_name(&sys->component, i))) {
+                        FAIL("component[%zu] is not of the name and kind of its type %d", i, t);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     if (sys->instance.count) {
         if (!sys->instance.comp_offset) {
             FAIL("instance.comp_offset is NULL with instance.count = %zu", sys->instance.count);
