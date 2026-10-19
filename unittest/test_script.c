@@ -6302,20 +6302,199 @@ UTEST(script, diagnostics) {
     md_arena_allocator_destroy(alloc);
 }
 
+// An operator where an operand belongs is an error. It used to be accepted by the parser as a node with a NULL
+// operand, which the static check then crashed on
 UTEST(script, stray_mult) {
-    // This is a test used to debug a strange crash induced where a stray '*' in the wrong place causes a crash.
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    md_str_writer_t sw = md_str_writer_create(alloc);
 
-	str_t src = str_from_cstr("a = distance(1,*2);");
+    EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("a = distance(1,*2);"), &test_mol, NULL));
+    str_t txt = diagnostics_text(&sw, ir);
+    EXPECT_TRUE(diagnostics_contain(txt, "<script>:1:16: error: Invalid arithmetic expression, left operand of '*' is missing."));
+    EXPECT_TRUE(diagnostics_contain(txt,
+        "    1 | a = distance(1,*2);\n"
+        "      |                ^\n"
+        "1 error generated.\n"));
 
-	md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-	md_script_ir_t* ir = md_script_ir_create(alloc);
-	EXPECT_FALSE(md_script_ir_compile_from_source(ir, src, &test_mol, NULL));
-	str_t txt = diagnostics_text(NULL, ir);
-	EXPECT_TRUE(diagnostics_contain(txt, "<script>:1:15: error: "));
-	EXPECT_TRUE(diagnostics_contain(txt,
-		"    1 | a = distance(1, *2);\n"
-		"      |               ^\n"
-		"1 error generated.\n"));
-	md_script_ir_free(ir);
-	md_arena_allocator_destroy(alloc);
+    // Only '-' has a unary form: every other binary operator needs its left operand
+    const char* missing_left[] = {
+        "a = distance(1,+2);",
+        "a = distance(1,/2);",
+        "a = distance(1,//2);",
+        "a = distance(1,<2);",
+        "a = distance(1,==2);",
+        "a = *2;",
+        "a = 1 * * 2;",
+        "a = (*2);",
+        "a = not *2;",
+        "*2;",
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(missing_left); ++i) {
+        md_script_ir_clear(ir);
+        EXPECT_FALSE(md_script_ir_compile_from_source(ir, str_from_cstr(missing_left[i]), &test_mol, NULL));
+        EXPECT_TRUE(diagnostics_contain(diagnostics_text(&sw, ir), "left operand of"));
+    }
+
+    // A comparison without its right operand says so, where it is
+    md_script_ir_clear(ir);
+    EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("a = 1 < ;"), &test_mol, NULL));
+    EXPECT_TRUE(diagnostics_contain(diagnostics_text(&sw, ir), "<script>:1:7: error: Invalid comparison, right operand of '<' is missing."));
+
+    // A statement which logged an error is not kept, whatever came back from it. The argument list which failed to
+    // parse made this a call to all() without arguments, which compiled
+    md_script_ir_clear(ir);
+    EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("a = all(<2);"), &test_mol, NULL));
+    EXPECT_EQ((size_t)1, md_script_ir_num_errors(ir));
+
+    // The unary minus is unaffected
+    md_script_ir_clear(ir);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("a = -2 * 3;\nb = 2 * -3;\nc = 1 - -a;"), &test_mol, NULL));
+
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// What is wrong with a script is an error of its compilation: never an assertion, nor a crash in a release build
+// (where the assertion is gone), nor a script which compiles into something other than what was written
+UTEST_F(script, malformed_scripts_are_errors) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    md_str_writer_t sw = md_str_writer_create(alloc);
+
+    struct {
+        const char* src;
+        const char* error;
+    } cases[] = {
+        // Expressions next to each other, without an operator between them: the second took the place of the first
+        {"a = 3 4;",                                "<script>:1:5: error: Invalid syntax, expressions must be separated by an operator"},
+        {"a = distance(1 2, 3);",                   "<script>:1:14: error: Invalid syntax, expressions must be separated by an operator"},
+        {"a = residue(1) not residue(2);",          "error: Invalid syntax, expressions must be separated by an operator"},
+        // An assignment within an expression declared its identifier as often as the expression was checked
+        {"a = distance(1, (b = 2));",               "<script>:1:18: error: An assignment is a statement of its own"},
+        {"c = contacts(residue(:), cutoff = 5 x = 3);", "error: "},
+        // More arguments than the evaluation has room for
+        {"v = vec4(1, 2, 3, 4, 5, 6, 7, 8, 9);",    "<script>:1:5: error: Too many arguments (9) in call to 'vec4'"},
+        // A context which is not known at compile time was reported, and the statement kept without a type
+        {"x = distance(1, 2) in within(3, residue(1));", "error: Right hand side of 'in' must be known at compile time."},
+        // Integer division traps on a zero divisor
+        {"a = -1 // 0;",                            "<script>:1:5: error: Integer division by zero"},
+        {"a = {4, 2} // {2, 0};",                   "error: Integer division by zero"},
+        // The int[2] could neither be taken as it was nor converted, and did not fill its part of the array
+        {"f = {{1, 2}, {3, 4:5}};",                 "<script>:1:6: error: Incompatible types wihin array construct"},
+        // A selection which is empty (the system has no water) where one atom is needed
+        {"m = match(water);",                       "error: match: the reference is empty"},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        md_script_ir_clear(ir);
+        EXPECT_FALSE(md_script_ir_compile_from_source(ir, str_from_cstr(cases[i].src), mol, NULL));
+        EXPECT_FALSE(md_script_ir_valid(ir));
+        EXPECT_TRUE(diagnostics_contain(diagnostics_text(&sw, ir), cases[i].error));
+    }
+
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Visualizing what an editor hovers: the procedures are called without a destination, which only some of them take
+UTEST_F(script, visualize_without_destination) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    const char* src =
+        "arr = {vec4(1, 0, 0, 0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0)};\n"
+        "cx = coord_x(residue(1)) in residue(1:2);\n"
+        "c = coord(residue(1)) in residue(1:2);\n"
+        "r = rmsd(residue(1:2));\n";
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(src), mol, NULL));
+
+    md_script_vis_ctx_t vctx = { .ir = ir, .sys = mol, .state = &mol->reference };
+    const char* names[] = {"arr", "cx", "c", "r"};
+    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+        identifier_t* ident = get_identifier(ir, str_from_cstr(names[i]));
+        ASSERT_TRUE(ident);
+        // An element of an array: the others are skipped, they used to be called as if for the length of their result
+        for (int subidx = -1; subidx < 2; ++subidx) {
+            md_script_vis_t vis = {0};
+            md_script_vis_init(&vis, alloc);
+            EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, ident->node), subidx, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+            md_script_vis_free(&vis);
+        }
+        char buf[256];
+        md_script_vis_value_text(buf, sizeof(buf), make_vis_ref(ir, ident->node), -1, &vctx);
+    }
+
+    // In a context each part has the length fixed at compile time. All of a part is written, which coord_x did not
+    // (it wrote one value of each, and asserted), and what it has room for beyond the values of its context is zero
+    data_t res1 = {0}, res2 = {0}, both = {0};
+    ASSERT_TRUE(eval_expression(&res1, STR_LIT("coord_x(residue(1))"), mol, alloc));
+    ASSERT_TRUE(eval_expression(&res2, STR_LIT("coord_x(residue(2))"), mol, alloc));
+    ASSERT_TRUE(eval_expression(&both, STR_LIT("coord_x(residue(1)) in residue(1:2)"), mol, alloc));
+    const size_t n1 = res1.size / sizeof(float);
+    const size_t n2 = res2.size / sizeof(float);
+    ASSERT_GT(n1, n2);
+    ASSERT_EQ(2 * n1 * sizeof(float), both.size);
+    const float* x = (const float*)both.ptr;
+    for (size_t i = 0; i < n1; ++i) {
+        EXPECT_EQ(((const float*)res1.ptr)[i], x[i]);
+        EXPECT_EQ(i < n2 ? ((const float*)res2.ptr)[i] : 0.0f, x[n1 + i]);
+    }
+
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Scripts which compile, and crashed when they were evaluated or visualized
+UTEST_F(script, evaluate_edge_cases) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(4));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)MIN(script_frames(mol), 4);
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    const char* srcs[] = {
+        // The center of mass of a range, within a context
+        "c = com(1:3) in chain(:); d = distance(com(1:3), 1) in residue(1:2);",
+        // Element wise operations on arrays which can be empty: the dims of an empty array made for one element
+        "s = within(3.0, residue(1:)); m = max(coord_x(s) + coord_y(s));",
+        // The residues of nothing
+        "n = count(residue(residue(within(0:0, residue(1)))));",
+        // Parts of a context which are empty
+        "x = coord(not residue(1)) in residue(1:2); y = coord_x(not residue(1)) in residue(1:2);",
+        // An empty array is typed as a scalar (its dims are all 0) and matched with the scalar operations, which have
+        // nothing to read: the evaluation fails, with an error
+        "e = -coord_z(flatten(water)); f = sqrt(coord_z(flatten(water)));",
+        "g = -coord_x(not residue(1)) in residue(1:2);",
+    };
+    md_script_vis_ctx_t vctx = { .ir = ir, .sys = mol, .state = &mol->reference };
+    for (size_t i = 0; i < ARRAY_SIZE(srcs); ++i) {
+        md_script_ir_clear(ir);
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(srcs[i]), mol, NULL));
+        if (!md_script_ir_valid(ir)) {
+            md_script_ir_write_diagnostics(md_writer_stderr(), ir);
+            continue;
+        }
+        if (md_script_ir_property_count(ir) > 0) {
+            md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+            ASSERT_NE(NULL, eval);
+            md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames);
+            md_script_eval_free(eval);
+        }
+        // What hovering each of its tokens does
+        const md_script_vis_token_t* toks = md_script_ir_vis_tokens(ir);
+        for (size_t t = 0; t < md_script_ir_num_vis_tokens(ir); ++t) {
+            for (int subidx = -1; subidx < 1; ++subidx) {
+                md_script_vis_t vis = {0};
+                md_script_vis_init(&vis, alloc);
+                md_script_vis_eval_ref(&vis, toks[t].ref, subidx, &vctx, MD_SCRIPT_VISUALIZE_DEFAULT);
+                md_script_vis_free(&vis);
+            }
+            char buf[256];
+            md_script_vis_value_text(buf, sizeof(buf), toks[t].ref, -1, &vctx);
+        }
+    }
+
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
 }

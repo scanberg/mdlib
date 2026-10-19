@@ -686,6 +686,19 @@ struct parse_context_t {
 };
 
 
+// What the parser and the static check guarantee the rest of the compilation and the evaluation: the shape of
+// the tree, the types settled on, the sizes of the data. No script should be able to break one of these, and one
+// which does is a bug. It is not one to bring the application down with, though: an ASSERT is compiled out of a
+// release build, which then carries on into whatever the broken assumption leads to (a NULL dereference, a write
+// out of bounds). INTERNAL_CHECK reports the broken invariant as an error at the token instead, and is false, so
+// that the caller fails what it was doing:
+//     if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 2)) return false;
+// INTERNAL_ERROR is the same for a place which should never be reached, such as the default of a switch.
+#define INTERNAL_CHECK(ctx, tok, cond) ((cond) ? true : (internal_error((ctx), (tok), "'" #cond "' does not hold", __FILE__, __LINE__), false))
+#define INTERNAL_ERROR(ctx, tok, what) internal_error((ctx), (tok), (what), __FILE__, __LINE__)
+
+static void internal_error(const eval_context_t* ctx, token_t tok, const char* what, const char* file, int line);
+
 // ##########################
 // ###   CORE FUNCTIONS   ###
 // ##########################
@@ -1074,12 +1087,15 @@ static size_t bitfield_byte_size(size_t num_bits) {
 
 static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc) {
     ASSERT(data);
-    ASSERT(!is_undefined_type(type));
     ASSERT(alloc);
     
-    // The convention should be that we only allocate data for known lengths
+    // The convention should be that we only allocate data for known lengths: a length of -1 would make for a
+    // negative size, taken for an enormous one
     const int64_t array_len = type_info_array_len(type);
-    ASSERT(array_len > -1);
+    if (is_undefined_type(type) || array_len < 0) {
+        MD_LOG_ERROR("Script: internal error, data allocated for a type %s", is_undefined_type(type) ? "which is undefined" : "of unknown length");
+        return false;
+    }
 
     // Do the base type allocation (array)
     const int64_t bytes = type_info_element_byte_stride(type) * array_len;
@@ -1176,21 +1192,22 @@ static inline md_allocator_i* data_bitset_alloc(const data_t* d, const eval_cont
     return ctx->alloc ? ctx->alloc : ctx->temp_alloc;
 }
 
-static void copy_data(data_t* dst, const data_t* src, const eval_context_t* ctx) {
+// False, with an error, if dst cannot hold src
+static bool copy_data(data_t* dst, const data_t* src, const eval_context_t* ctx) {
     ASSERT(dst);
     ASSERT(src);
-    ASSERT(dst->size == src->size);
+    // A smaller dst would be written past its end
+    if (!INTERNAL_CHECK(ctx, ctx->op_token, dst->size >= src->size)) return false;
 
     dst->type = src->type;
     if (src->size == 0) {
         // An empty array, 'residue(x)' of an empty x: nothing to copy, and possibly no memory behind either
-        return;
+        return true;
     }
-    ASSERT(src->ptr);
-    ASSERT(dst->ptr);
+    if (!INTERNAL_CHECK(ctx, ctx->op_token, src->ptr && dst->ptr)) return false;
 
     if (dst->type.base_type == TYPE_BITFIELD) {
-        const uint64_t num_elem = element_count(*dst);
+        const uint64_t num_elem = MIN(element_count(*src), src->size / sizeof(md_bitset_t));
 
         md_bitset_t* dst_bs = (md_bitset_t*)dst->ptr;
         const md_bitset_t* src_bs = (const md_bitset_t*)src->ptr;
@@ -1201,6 +1218,7 @@ static void copy_data(data_t* dst, const data_t* src, const eval_context_t* ctx)
     } else {
         copy_data_block(dst, 0, src, 0, src->size);
     }
+    return true;
 }
 
 
@@ -1451,6 +1469,16 @@ static void eval_log_fmt(log_level_t level, const eval_context_t* ctx, token_t t
 
 #define EVAL_LOG_WARNING_STR(ctx, tok, str)   eval_log_str(LOG_LEVEL_WARNING, ctx, tok, str)
 #define EVAL_LOG_ERROR_STR(ctx, tok, str)     eval_log_str(LOG_LEVEL_ERROR, ctx, tok, str)
+
+// Reports a broken invariant (see INTERNAL_CHECK)
+static void internal_error(const eval_context_t* ctx, token_t tok, const char* what, const char* file, int line) {
+    // The name of the file is enough to find the line, the path it was built from is noise
+    for (const char* c = file; *c; ++c) {
+        if (*c == '/' || *c == '\\') file = c + 1;
+    }
+    MD_LOG_ERROR("Script: internal error, %s (%s:%d)", what, file, line);
+    EVAL_LOG_ERROR(ctx, tok, "Internal error: %s (%s:%d). This is a bug, please report it", what, file, line);
+}
 
 // Include all procedures, operators and defines
 #ifdef MD_SCRIPT_TEST_HOOKS
@@ -2830,11 +2858,18 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
     ASSERT(token.type == '<' || token.type == '>' || token.type == TOKEN_EQ || token.type == TOKEN_LE || token.type == TOKEN_GE);
     
     ast_node_t* lhs = ctx->node;
+    if (!lhs) {
+        LOG_ERROR(ctx->ir, token, "Invalid comparison, left operand of '"STR_FMT"' is missing.", STR_ARG(token.str));
+        return NULL;
+    }
+
     ctx->node = 0; // The right hand side is parsed on its own, otherwise 'a < b' is mistaken for two adjacent identifiers
     ast_node_t* rhs = parse_expression(ctx);
     ast_node_t* node = 0;
 
-    if (lhs && rhs) {
+    if (!rhs) {
+        LOG_ERROR(ctx->ir, token, "Invalid comparison, right operand of '"STR_FMT"' is missing.", STR_ARG(token.str));
+    } else {
         ast_type_t type = 0;
         switch(token.type) {
             case TOKEN_EQ: type = AST_EQ; break;
@@ -2858,6 +2893,13 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
     ASSERT(token.type == '-' || token.type == '+' || token.type == '*' || token.type == '/' || token.type == TOKEN_INT_DIV);
 
     ast_node_t* lhs = ctx->node;
+    // Only '-' has a unary form. Any other operator without a left operand, e.g. the '*' of 'f(1, *2)', would get a
+    // NULL child, which nothing after the parser expects
+    if (!lhs && token.type != '-') {
+        LOG_ERROR(ctx->ir, token, "Invalid arithmetic expression, left operand of '"STR_FMT"' is missing.", STR_ARG(token.str));
+        return NULL;
+    }
+
     ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
    
@@ -3115,6 +3157,27 @@ ast_node_t* parse_parentheses(parse_context_t* ctx) {
 ast_node_t* parse_expression(parse_context_t* ctx) {
     token_t token = {0};
     while (token = tokenizer_peek_next(ctx->tokenizer), token.type != TOKEN_END) {
+        // What begins an expression of its own ('3', 'x', '(', 'not', ...) right where one has ended: 'a = 3 4;',
+        // 'f(x y)'. Parsed on, the new expression would silently take the place of the one before it.
+        switch (token.type) {
+        case TOKEN_IDENT:
+        case TOKEN_FLOAT:
+        case TOKEN_INT:
+        case TOKEN_STRING:
+        case ':':
+        case '(':
+        case '{':
+        case TOKEN_NOT:
+        case TOKEN_OUT:
+            if (ctx->node) {
+                LOG_ERROR(ctx->ir, concat_tokens(ctx->node->token, token), "Invalid syntax, expressions must be separated by an operator");
+                return NULL;
+            }
+            break;
+        default:
+            break;
+        }
+
         switch (token.type) {
         case TOKEN_AND:
         case TOKEN_OR:
@@ -3208,6 +3271,7 @@ typedef struct proc_args_t {
     data_t  data  [MAX_SUPPORTED_PROC_ARGS];
     token_t tokens[MAX_SUPPORTED_PROC_ARGS];
     flags_t flags [MAX_SUPPORTED_PROC_ARGS];
+    md_bitset_t empty[MAX_SUPPORTED_PROC_ARGS];   // What an argument which is an empty array of bitfields points at
 } proc_args_t;
 
 // Evaluates the arguments of a call to proc, each exactly once. An argument whose length is only known at run
@@ -3232,11 +3296,29 @@ static bool proc_args_evaluate(proc_args_t* pa, const procedure_t* proc, ast_nod
         pa->flags[i]  = args[i]->flags;
 
         if (args[i]->flags & FLAG_CONSTANT) {
-            ASSERT(args[i]->data.type.base_type != TYPE_UNDEFINED || args[i]->data.size == 0);    // Absent
-            ASSERT(args[i]->data.type.dim[0] != -1);
+            // Evaluated by the static check: a type (or absent, without data) and a length
+            if (!INTERNAL_CHECK(ctx, args[i]->token, (args[i]->data.type.base_type != TYPE_UNDEFINED || args[i]->data.size == 0) && args[i]->data.type.dim[0] != -1)) {
+                result = false;
+                break;
+            }
             MEMCPY(&pa->data[i], &args[i]->data, sizeof(data_t));
         } else if (!evaluate_node_alloc(&pa->data[i], args[i], ctx, ctx->temp_alloc)) {
             // Only used as arguments, so the data goes in the temp alloc
+            result = false;
+            break;
+        }
+        // An empty array of bitfields ('water' of a system without any) has no data at all, while a procedure which
+        // takes a bitfield reads one through the pointer: it reads an empty one. Its length is still 0.
+        if (pa->data[i].type.base_type == TYPE_BITFIELD && !pa->data[i].ptr) {
+            pa->data[i].ptr = &pa->empty[i];
+        }
+        // A parameter of a fixed size (a float, a vec3, a range) of which the argument holds less. An empty array is
+        // typed as a scalar (all its dimensions are 0): 'sqrt(coord_z(flatten(water)))' is matched with sqrt(float),
+        // and has no float to read.
+        const type_info_t param = proc->arg_type[i];
+        if (param.base_type != TYPE_BITFIELD && param.base_type != TYPE_COORDINATE && !is_variable_length(param) &&
+            !is_absent_type(pa->data[i].type) && pa->data[i].size < type_info_total_byte_size(param)) {
+            EVAL_LOG_ERROR(ctx, args[i]->token, "The argument has no value: it is empty");
             result = false;
             break;
         }
@@ -3289,6 +3371,13 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
     ASSERT(proc);
     ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
 
+    // Without a destination and without a visualization, a call can only be to validate the arguments or to ask
+    // for the length of the result, which only some procedures do. The others are written for a destination
+    // (they dereference it): for them there is nothing to do.
+    if (!dst && !ctx->vis && !(proc->flags & (FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH))) {
+        return 0;
+    }
+
     const bool visualize_only = ctx->vis && !dst;
     if (visualize_only && !(proc->flags & FLAG_VISUALIZE)) {
         // If the node has not been flagged with visualize, it should not be called during visualization
@@ -3313,8 +3402,7 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
 static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
-    //ASSERT(node->type == AST_PROC_CALL);
-    ASSERT(node->proc);
+    if (!INTERNAL_CHECK(ctx, node->token, node->proc && md_array_size(node->children) < MAX_SUPPORTED_PROC_ARGS)) return false;
 
     token_t old_token = ctx->op_token;
     const ast_node_t* old_node = ctx->op_node;
@@ -3332,9 +3420,9 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
     (void)ctx;
 
     if (dst) {
-        ASSERT(node->data.ptr && node->data.size > 0);  // Assume that the static check set the data already
-        ASSERT(dst->ptr && dst->size >= node->data.size); // Make sure we have the expected size
-        copy_data(dst, &node->data, ctx);
+        // The static check set the data, and dst has room for it
+        if (!INTERNAL_CHECK(ctx, node->token, node->data.ptr && node->data.size > 0)) return false;
+        return copy_data(dst, &node->data, ctx);
     }
 
     return true;
@@ -3347,7 +3435,7 @@ static bool evaluate_attribute(data_t* dst, const ast_node_t* node, eval_context
     if (!dst) {
         return true;
     }
-    ASSERT(dst->ptr && dst->size >= type_info_total_byte_size(node->data.type));
+    if (!INTERNAL_CHECK(ctx, node->token, dst->ptr && dst->size >= type_info_total_byte_size(node->data.type))) return false;
 
     if (!ctx->cur_state || !md_state_has_frame(ctx->cur_state)) {
         MD_LOG_ERROR("attr: the evaluated state carries no frame");
@@ -3383,7 +3471,7 @@ static bool evaluate_attribute(data_t* dst, const ast_node_t* node, eval_context
 
 static bool evaluate_flatten(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_FLATTEN);
-    ASSERT(node->children && md_array_size(node->children) == 1);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1)) return false;
     const ast_node_t* arg = node->children[0];
 
     if (dst) {
@@ -3428,7 +3516,7 @@ static bool evaluate_flatten(data_t* dst, const ast_node_t* node, eval_context_t
 
 static bool evaluate_transpose(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_TRANSPOSE);
-    ASSERT(node->children && md_array_size(node->children) == 1);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1)) return false;
     const ast_node_t* arg = node->children[0];
     int ndim = dim_ndims(arg->data.type.dim);
 
@@ -3437,9 +3525,8 @@ static bool evaluate_transpose(data_t* dst, const ast_node_t* node, eval_context
             EVAL_LOG_ERROR(ctx, node->token, "Incorrect dimensions in transpose operation");
             return false;
         }
-        ASSERT(dst->type.base_type == arg->data.type.base_type);
-        ASSERT(dst->type.dim[0] == arg->data.type.dim[1]);
-        ASSERT(dst->type.dim[1] == arg->data.type.dim[0]);
+        if (!INTERNAL_CHECK(ctx, node->token, dst->type.base_type == arg->data.type.base_type &&
+            dst->type.dim[0] == arg->data.type.dim[1] && dst->type.dim[1] == arg->data.type.dim[0])) return false;
 
         data_t data = arg->data;
         data.ptr = 0;
@@ -3455,7 +3542,10 @@ static bool evaluate_transpose(data_t* dst, const ast_node_t* node, eval_context
             dst->type.dim[1] = arg->data.type.dim[0];
         }
         */
-        allocate_data(&data, data.type, ctx->temp_alloc);
+        if (!allocate_data(&data, data.type, ctx->temp_alloc)) {
+            EVAL_LOG_ERROR(ctx, node->token, "Failed to allocate data to evaluate transpose operation");
+            return false;
+        }
         if (!evaluate_node(&data, arg, ctx)) {
             EVAL_LOG_ERROR(ctx, node->token, "Failed to evaluate subexpression in transpose operation");
             return false;
@@ -3541,7 +3631,7 @@ static bool evaluate_identifier_element(data_t* dst, const identifier_t* decl, c
                 .size = stride,
                 .weight = data_weight_at(&whole, stride * decl->elem_idx),
             };
-            copy_data(dst, &elem, ctx);
+            result = copy_data(dst, &elem, ctx);
         } else {
             MD_LOG_ERROR("Script: size mismatch when extracting element %u of '"STR_FMT"'", decl->elem_idx, STR_ARG(decl->name));
             result = false;
@@ -3553,20 +3643,18 @@ static bool evaluate_identifier_element(data_t* dst, const identifier_t* decl, c
 
 static bool evaluate_identifier_reference(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_IDENTIFIER);
-    ASSERT(md_array_size(node->children) == 1 && node->children[0]);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1 && node->children[0])) return false;
 
     // Only copy data if the node is constant
     if (dst && node->flags & FLAG_CONSTANT) {
-        ASSERT(dst->size >= node->data.size && (node->data.size == 0 || (dst->ptr && node->data.ptr)));
-        copy_data(dst, &node->data, ctx);
-        return true;
+        return copy_data(dst, &node->data, ctx);
     }
 
     if (dst) {
         // A dynamic identifier is evaluated once per frame, references reuse that value
         const data_t* value = find_evaluated_identifier(node->ident, ctx);
         if (value && value->size == dst->size) {
-            copy_data(dst, value, ctx);
+            if (!copy_data(dst, value, ctx)) return false;
             // Visualization is not memoized, it is produced by evaluating the expression
             return ctx->vis ? evaluate_node(NULL, node->children[0], ctx) : true;
         }
@@ -3591,14 +3679,10 @@ static bool evaluate_identifier_reference(data_t* dst, const ast_node_t* node, e
 
 static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_ASSIGNMENT);
-    ASSERT(node->children);
-
-    ASSERT(md_array_size(node->children) == 2);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 2 && node->children[0] && node->children[1])) return false;
     ast_node_t* lhs = node->children[0];
     ast_node_t* rhs = node->children[1];
-
-    ASSERT(lhs && (lhs->type == AST_IDENTIFIER || lhs->type == AST_ARRAY));
-    ASSERT(rhs);
+    if (!INTERNAL_CHECK(ctx, node->token, lhs->type == AST_IDENTIFIER || lhs->type == AST_ARRAY)) return false;
 
     // We know from the static check that the lhs (child[0]) is one or more identifiers and the rhs is a valid expression with a known data size
     // the data size could be zero if it is an array of length 0, in that case we don't need to allocate anything.
@@ -3610,9 +3694,8 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
 
         const identifier_t* static_ident = find_static_identifier(lhs->ident, ctx);
         if (static_ident) {
-            ASSERT(static_ident->node->flags & FLAG_CONSTANT);
-            if (dst) {
-                copy_data(dst, static_ident->data, ctx);
+            if (dst && !copy_data(dst, static_ident->data, ctx)) {
+                return false;
             }
             if (ctx->vis) {
                 return evaluate_node(NULL, rhs, ctx);
@@ -3640,8 +3723,8 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
         // e.g {x,y,z} = coord(1);
         int count = (int)md_array_size(lhs->children);
         if (rhs->flags & FLAG_CONSTANT) {
-            if (dst) {
-                copy_data(dst, &rhs->data, ctx);
+            if (dst && !copy_data(dst, &rhs->data, ctx)) {
+                return false;
             }
             if (ctx->vis) {
                 return evaluate_node(NULL, rhs, ctx);
@@ -3656,7 +3739,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
         for (int i = 0; i < count; ++i) {
             ast_node_t* child = lhs->children[i];
             int stride = (int)type_info_element_byte_stride(child->data.type);
-            ASSERT(child->type == AST_IDENTIFIER);
+            if (!INTERNAL_CHECK(ctx, child->token, child->type == AST_IDENTIFIER)) return false;
             identifier_t* ident = find_dynamic_identifier(child->ident, ctx);
 
             if (!ident && ctx->alloc) {
@@ -3703,8 +3786,6 @@ static md_array(irange_t) extract_subscript_ranges(const data_t data, md_allocat
         int len = type_info_array_len(data.type);
         irange_t* ranges = (irange_t*)(data.ptr);
         md_array_push_array(result, ranges, len, alloc);
-    } else {
-        ASSERT(false);
     }
 
     return result;
@@ -3722,8 +3803,6 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
     ctx->subscript_ranges = 0;
 
     if (dst) {
-        ASSERT(type_info_equal(type_info_element_type(dst->type), type_info_element_type(node->data.type)));
-
         size_t byte_offset = 0;
         for (size_t i = 0; i < num_args; ++i) {
             type_info_t type = args[i]->data.type;
@@ -3740,29 +3819,31 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
                 .alloc = dst->alloc,
                 .weight = data_weight_at(dst, byte_offset),
             };
+            // Within a context dst has the type of the part, which need not be the type of the node: what matters is
+            // that the elements fit
+            if (!INTERNAL_CHECK(ctx, args[i]->token, byte_offset + data.size <= dst->size)) goto done;
             md_script_vis_t* vis = ctx->vis;
             if (ranges && !index_in_range((int)i, ranges[0])) {
                 ctx->vis = 0;
             }
-            if (!evaluate_node(&data, args[i], ctx)) {
+            const bool ok = evaluate_node(&data, args[i], ctx);
+            ctx->vis = vis;
+            if (!ok) {
                 goto done;
             }
-            ctx->vis = vis;
             byte_offset += data.size;
         }
-        ASSERT(byte_offset == dst->size);
     }
     else {
-
+        // Without a destination there is nothing to evaluate but what is visualized. An element which is not, is
+        // skipped: evaluated without either, a procedure call would be taken for a query of its length.
         for (size_t i = 0; i < num_args; ++i) {
-            md_script_vis_t* vis = ctx->vis;
-            if (ranges && !index_in_range((int)i, ranges[0])) {
-                ctx->vis = 0;
+            if (!ctx->vis || (ranges && !index_in_range((int)i, ranges[0]))) {
+                continue;
             }
             if (!evaluate_node(NULL, args[i], ctx)) {
                 goto done;
             }
-            ctx->vis = vis;
         }
     }
 
@@ -3774,7 +3855,7 @@ done:
 
 static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_ARRAY_SUBSCRIPT);
-    ASSERT(node->children);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) > 0 && node->subscript_dim <= MAX_NUM_DIMS)) return false;
 
     const ast_node_t* arr = node->children[0];
     data_t arr_data = {0};
@@ -3787,8 +3868,10 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     MEMCPY(idx_ranges, node->subscript_ranges, sizeof(irange_t) * node->subscript_dim);
 
     if (ext_ranges) {
+        // The ranges from outside may cover fewer dimensions: those beyond are taken as they are subscripted here
+        const size_t num_ext = md_array_size(ext_ranges);
         for (size_t i = 0; i < node->subscript_dim; ++i) {
-            if (ext_ranges[i].beg == 0 && ext_ranges[i].end == 0) {
+            if (i >= num_ext || (ext_ranges[i].beg == 0 && ext_ranges[i].end == 0)) {
                 idx_ranges[i].beg = node->subscript_ranges[i].beg;
                 idx_ranges[i].end = node->subscript_ranges[i].end;
             } else {
@@ -3802,19 +3885,19 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     }
     ctx->subscript_ranges = idx_ranges;
 
+    bool evaluated = false;
     if (dst) {
-        if (!allocate_data(&arr_data, arr->data.type, ctx->temp_alloc)) return false;
-        if (!evaluate_node(&arr_data, arr, ctx)) return false;
+        evaluated = allocate_data(&arr_data, arr->data.type, ctx->temp_alloc) && evaluate_node(&arr_data, arr, ctx);
     } else {
-        if (!evaluate_node(0, arr, ctx)) return false;
+        evaluated = evaluate_node(0, arr, ctx);
     }
     ctx->subscript_ranges = ext_ranges;
+    if (!evaluated) return false;
 
     if (dst) {
-        ASSERT(arr_data.ptr);
-        // Extract data from the underlying type given the subscript ranges
-        ASSERT(type_info_equal(dst->type, node->data.type));
-        ASSERT(dst->ptr);
+        // Extract data from the underlying type given the subscript ranges. Within a context dst has the type of the
+        // part (with a leading dimension of one), which is not the type of the node: the blocks are checked to fit.
+        if (!INTERNAL_CHECK(ctx, node->token, arr_data.ptr && dst->ptr)) return false;
 
     const base_type_t base_type = arr_data.type.base_type;
         const size_t base_size = base_type_element_byte_size(base_type);
@@ -3834,6 +3917,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                 const size_t block_bytes = block_elems * base_size;
                 for (int i = src_rng[0].beg; i < src_rng[0].end; i += MAX(src_rng[0].step,1)) {
                     const size_t read_offset = (size_t)i * block_bytes;
+                    if (!INTERNAL_CHECK(ctx, node->token, write_offset + block_bytes <= dst->size && read_offset + block_bytes <= arr_data.size)) return false;
                     if (base_type == TYPE_BITFIELD) {
                         md_bitset_t* dst_bs = (md_bitset_t*)((char*)dst->ptr + write_offset);
                         const md_bitset_t* src_bs = (const md_bitset_t*)((char*)arr_data.ptr + read_offset);
@@ -3858,6 +3942,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                         for (int j = src_rng[1].beg; j < src_rng[1].end; j += MAX(src_rng[1].step,1)) {
                             const size_t lin = (size_t)i * (size_t)src_dim[1] + (size_t)j;
                             const size_t read_offset = lin * block_bytes;
+                            if (!INTERNAL_CHECK(ctx, node->token, write_offset + block_bytes <= dst->size && read_offset + block_bytes <= arr_data.size)) return false;
                             if (base_type == TYPE_BITFIELD) {
                                 md_bitset_t* dst_bs = (md_bitset_t*)((char*)dst->ptr + write_offset);
                                 const md_bitset_t* src_bs = (const md_bitset_t*)((char*)arr_data.ptr + read_offset);
@@ -3886,6 +3971,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                             for (int i = src_rng[2].beg; i < src_rng[2].end; i += MAX(src_rng[2].step,1)) {
                                 const size_t lin = ((size_t)k * (size_t)src_dim[1] + (size_t)j) * (size_t)src_dim[2] + (size_t)i;
                                 const size_t read_offset = lin * block_bytes;
+                                if (!INTERNAL_CHECK(ctx, node->token, write_offset + block_bytes <= dst->size && read_offset + block_bytes <= arr_data.size)) return false;
                                 if (base_type == TYPE_BITFIELD) {
                                     md_bitset_t* dst_bs = (md_bitset_t*)((char*)dst->ptr + write_offset);
                                     const md_bitset_t* src_bs = (const md_bitset_t*)((char*)arr_data.ptr + read_offset);
@@ -3916,6 +4002,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                                 for (int i = src_rng[3].beg; i < src_rng[3].end; i += MAX(src_rng[3].step,1)) {
                                     const size_t lin = (((size_t)l * (size_t)src_dim[1] + (size_t)k) * (size_t)src_dim[2] + (size_t)j) * (size_t)src_dim[3] + (size_t)i;
                                     const size_t read_offset = lin * block_bytes;
+                                    if (!INTERNAL_CHECK(ctx, node->token, write_offset + block_bytes <= dst->size && read_offset + block_bytes <= arr_data.size)) return false;
                                     if (base_type == TYPE_BITFIELD) {
                                         md_bitset_t* dst_bs = (md_bitset_t*)((char*)dst->ptr + write_offset);
                                         const md_bitset_t* src_bs = (const md_bitset_t*)((char*)arr_data.ptr + read_offset);
@@ -3933,10 +4020,9 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                 }
                 break;
             default:
-                ASSERT(false);
+                INTERNAL_ERROR(ctx, node->token, "an array subscript of more dimensions than there are");
+                return false;
         }
-        ASSERT(write_offset <= dst->size);
-        ASSERT(write_offset == dst->size);
     }
 
     return true;
@@ -3945,7 +4031,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
 static bool evaluate_out(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(node && node->type == AST_OUT);
-    ASSERT(md_array_size(node->children) == 1);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1)) return false;
 
     const ast_node_t* expr = node->children[0];
     const md_bitset_t* old_ctx = ctx->mol_ctx;
@@ -3961,18 +4047,17 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     ASSERT(node && node->type == AST_CONTEXT);
 
     if (dst && node->flags & FLAG_CONSTANT) {
-        copy_data(dst, &node->data, ctx);
-        return true;
+        return copy_data(dst, &node->data, ctx);
     }
 
-    ASSERT(md_array_size(node->children) == 2);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 2)) return false;
 
     const ast_node_t* expr_node = node->children[0];
     ast_node_t* ctx_node  = node->children[1];
 
     // No need to reevaluate CTX_NODE here since it has already been done during static type checking and its results should be stored in the data ptr
 
-    ASSERT(ctx_node->data.type.base_type == TYPE_BITFIELD);
+    if (!INTERNAL_CHECK(ctx, ctx_node->token, ctx_node->data.type.base_type == TYPE_BITFIELD)) return false;
     data_t ctx_data = ctx_node->data;
     if (!ctx_data.ptr) {
         // A compilation stores what it computes in the AST. An evaluation does not write to the IR, so it
@@ -3993,9 +4078,9 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     }
     const md_bitset_t* ctx_bf = (const md_bitset_t*)ctx_data.ptr;
 
-    ASSERT(node->lhs_context_types);
+    // A type for the left hand side within each context, from the static check
     const type_info_t* lhs_types = node->lhs_context_types;
-    ASSERT((int)md_array_size(lhs_types) == num_ctx);
+    if (!INTERNAL_CHECK(ctx, node->token, lhs_types && (int)md_array_size(lhs_types) == num_ctx)) return false;
 
     data_t data = {0};
     data.unit[0] = expr_node->data.unit[0];
@@ -4068,11 +4153,10 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
 }
 
 static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(node);
+    if (!INTERNAL_CHECK(ctx, ctx->op_token, node)) return false;
 
     if (dst && node->flags & FLAG_CONSTANT) {
-        copy_data(dst, &node->data, ctx);
-        return true;
+        return copy_data(dst, &node->data, ctx);
     }
 
     switch (node->type) {
@@ -4116,7 +4200,7 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
         case AST_CAST:      // Casts should have been resolved during static check and converted into a proc-call
         case AST_UNDEFINED:
         default:
-            ASSERT(false);
+            INTERNAL_ERROR(ctx, node->token, "a node which the static check should have resolved into a procedure call");
     }
     return false;
 }
@@ -4144,7 +4228,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
                 if (res.procedure->flags & FLAG_DEDUCE_LENGTH_FROM_ARG) {
                     to.dim[0] = from.dim[0];
                 } else {
-                    ASSERT(res.procedure->flags & FLAG_QUERYABLE_LENGTH);
+                    if (!INTERNAL_CHECK(ctx, node->token, res.procedure->flags & FLAG_QUERYABLE_LENGTH)) return false;
 
                     token_t  old_op_token = ctx->op_token;
                     ctx->op_token = node->token;
@@ -4162,17 +4246,18 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
                 }
             }
 
-            ASSERT(to.dim[0] > -1);
+            if (!INTERNAL_CHECK(ctx, node->token, to.dim[0] > -1)) return false;
 
             data_t new_data = {0};
             if (node->type == AST_CONSTANT_VALUE && to.base_type != TYPE_BITFIELD) {
                 new_data = node->data;
-                ASSERT(is_scalar(to));
+                if (!INTERNAL_CHECK(ctx, node->token, is_scalar(to))) return false;
                 new_data.type = to;
                 new_data.size = type_info_total_byte_size(to);
                 new_data.ptr  = &node->value;
-            } else {
-                allocate_data(&new_data, to, ctx->alloc);        
+            } else if (!allocate_data(&new_data, to, ctx->alloc)) {
+                EVAL_LOG_ERROR(ctx, node->token, "Failed to allocate data for the conversion of static data");
+                return false;
             }
 
             // Perform the data conversion
@@ -4201,7 +4286,10 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
         }
     }
 
-    ASSERT(false);
+    char from_buf[64], to_buf[64];
+    print_type_info(from_buf, sizeof(from_buf), from);
+    print_type_info(to_buf, sizeof(to_buf), to);
+    EVAL_LOG_ERROR(ctx, node->token, "No conversion from '%s' to '%s'", from_buf, to_buf);
     return false;
 }
 
@@ -4237,6 +4325,7 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
     ASSERT(ctx);
 
     *type = node->data.type;
+    if (!INTERNAL_CHECK(ctx, node->token, node->proc)) return false;
 
     ast_node_t** args = node->children;
     const size_t num_args = md_array_size(node->children);
@@ -4251,7 +4340,7 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
             return false;
         }
     } else {
-        ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
+        if (!INTERNAL_CHECK(ctx, node->token, node->proc->flags & FLAG_QUERYABLE_LENGTH)) return false;
 
         // Perform the call
         md_script_vis_t* old_vis = ctx->vis;
@@ -4307,14 +4396,12 @@ static bool finalize_type(type_info_t* type, const ast_node_t* node, eval_contex
 
     switch (node->type) {
     case AST_ASSIGNMENT:
-        ASSERT(node->children);
-        ASSERT(md_array_size(node->children) == 2);
+        if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 2)) return false;
         return finalize_type(type, node->children[1], ctx);
     case AST_ARRAY:
         return finalize_type_array(type, node, ctx);
     case AST_IDENTIFIER: {
-        ASSERT(node->children);
-        ASSERT(md_array_size(node->children) == 1);
+        if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1)) return false;
         // The length of an identifier already evaluated this frame is known, asking its expression would evaluate it again
         const data_t* value = find_evaluated_identifier(node->ident, ctx);
         if (value) {
@@ -4341,12 +4428,20 @@ static bool finalize_type(type_info_t* type, const ast_node_t* node, eval_contex
     case AST_PROC_CALL:
         return finalize_type_proc(type, node, ctx);
 
+    case AST_OUT: {
+        // The length of what is evaluated outside of the context
+        if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1)) return false;
+        const md_bitset_t* old_ctx = ctx->mol_ctx;
+        ctx->mol_ctx = NULL;
+        const bool result = finalize_type(type, node->children[0], ctx);
+        ctx->mol_ctx = old_ctx;
+        return result;
+    }
     case AST_ARRAY_SUBSCRIPT: // Array subscripts should not be variable length, since the input should be statically evaluated so no out of bounds accesses occur...
     case AST_CONSTANT_VALUE:
-    case AST_OUT:
     case AST_CONTEXT:   // We don't allow dynamic length expressions for Contexts for now... Perhaps in the future...
     default:
-        ASSERT(false);
+        INTERNAL_ERROR(ctx, node->token, "the length of this expression is not known until it is evaluated, and it cannot be determined");
     }
     return false;
 }
@@ -4431,7 +4526,7 @@ static bool evaluate_node_alloc(data_t* out, const ast_node_t* node, eval_contex
             }
             break;
         case AST_IDENTIFIER:
-            ASSERT(md_array_size(node->children) == 1);
+            if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1)) return false;
             if (!find_evaluated_identifier(node->ident, ctx)) {
                 // Not evaluated in this context, the reference is its expression
                 return evaluate_node_alloc(out, node->children[0], ctx, alloc);
@@ -4473,8 +4568,7 @@ static bool evaluate_node_alloc(data_t* out, const ast_node_t* node, eval_contex
 static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(ctx);
-    ASSERT(node->proc);
-    ASSERT(node->type == AST_PROC_CALL);
+    if (!INTERNAL_CHECK(ctx, node->token, node->proc && node->type == AST_PROC_CALL)) return false;
 
     node->data.type = node->proc->return_type;
 
@@ -4484,7 +4578,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     if (num_args > 0) {
         if (node->proc_flags & FLAG_SYMMETRIC_ARGS) {
             // If the symmetric flag is set, we swap the first two arguments
-            ASSERT(num_args >= 2);
+            if (!INTERNAL_CHECK(ctx, node->token, num_args >= 2)) return false;
             ast_node_t* tmp_child = node->children[0];
             node->children[0] = node->children[1];
             node->children[1] = tmp_child;
@@ -4495,7 +4589,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
         for (size_t i = 0; i < num_args; ++i) {
             if (!is_absent_type(args[i]->data.type) && !is_type_directly_compatible(args[i]->data.type, node->proc->arg_type[i])) {
                 // Types are not directly compatible, but should be implicitly convertible (otherwise the match should never have been found)
-                ASSERT(is_type_implicitly_convertible(args[i]->data.type, node->proc->arg_type[i]));
+                if (!INTERNAL_CHECK(ctx, args[i]->token, is_type_implicitly_convertible(args[i]->data.type, node->proc->arg_type[i]))) return false;
                 if (!convert_node(args[i], node->proc->arg_type[i], ctx)) {
                     return false;
                 }
@@ -4505,8 +4599,9 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
         }
 
         if (node->proc->flags & FLAG_ARGS_EQUAL_LENGTH) {
-            ASSERT(num_args > 1); // This flag should only be set for procedures with multiple arguments
-                                  // Make sure that the input arrays are of equal length. Otherwise create an error.
+            // This flag should only be set for procedures with multiple arguments
+            if (!INTERNAL_CHECK(ctx, node->token, num_args > 1)) return false;
+            // Make sure that the input arrays are of equal length. Otherwise create an error.
             const int expected_len = type_info_array_len(args[0]->data.type);
             for (size_t i = 1; i < num_args; ++i) {
                 int len = type_info_array_len(args[i]->data.type);
@@ -4564,8 +4659,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             }
         } else if (node->proc->flags & FLAG_DEDUCE_LENGTH_FROM_ARG) {
             // We can deduce the length of the array by using the type of the first argument
-            ASSERT(num_args > 0);
-            ASSERT(node->proc->arg_type[0].base_type == args[0]->data.type.base_type);
+            if (!INTERNAL_CHECK(ctx, node->token, num_args > 0 && node->proc->arg_type[0].base_type == args[0]->data.type.base_type)) return false;
 
             // An argument whose length is only known at run time leaves the length of the result to run time as
             // well. Deducing from it here would take the -1 as a length and let any other argument decide it:
@@ -4590,7 +4684,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
 static bool static_check_children(ast_node_t* node, eval_context_t* ctx) {
     const size_t num_children = md_array_size(node->children);
     for (size_t i = 0; i < num_children; ++i) {
-        ASSERT(node != node->children[i]);
+        if (!INTERNAL_CHECK(ctx, node->token, node->children[i] && node->children[i] != node)) return false;
         if (static_check_node(node->children[i], ctx)) {
             node->flags |= node->children[i]->flags & FLAG_AST_PROPAGATION_MASK;
         } else {
@@ -4603,8 +4697,10 @@ static bool static_check_children(ast_node_t* node, eval_context_t* ctx) {
 static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(is_operator(node->type));
-    ASSERT(node->children);
     ASSERT(ctx);
+    // One operand or two: arg_type below has room for no more
+    const size_t num_operands = md_array_size(node->children);
+    if (!INTERNAL_CHECK(ctx, node->token, num_operands == 1 || num_operands == 2)) return false;
 
     // @NOTE: if we have a bitwise operator in the tree, we flag this
     // so that we can shortcut some ambigious operations such as 'protein' 'residue' etc.
@@ -4861,10 +4957,11 @@ static bool static_check_flatten(ast_node_t* node, eval_context_t* ctx) {
 
     uint32_t flags = ctx->eval_flags;
     ctx->eval_flags |= EVAL_FLAG_FLATTEN;
-    if (!static_check_children(node, ctx)) {
+    const bool children_ok = static_check_children(node, ctx);
+    ctx->eval_flags = flags;
+    if (!children_ok) {
         return false;
     }
-    ctx->eval_flags = flags;
 
     const ast_node_t* arg = node->children[0];
     if (arg->data.type.base_type == TYPE_UNDEFINED) {
@@ -5104,13 +5201,15 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             const size_t num_args = md_array_size(node->children);
             const str_t proc_name = node->ident;
 
-            // One or more arguments
-            ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
+            // No procedure takes this many, and the arguments would not fit below (nor where it is evaluated)
+            if (num_args >= MAX_SUPPORTED_PROC_ARGS) {
+                EVAL_LOG_ERROR(ctx, node->token, "Too many arguments (%zu) in call to '"STR_FMT"', no procedure takes more than %i",
+                    num_args, STR_ARG(proc_name), MAX_SUPPORTED_PROC_ARGS - 1);
+                ctx->eval_flags = backup_flags;
+                return false;
+            }
             type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS] = { 0 };
-            
-            size_t arg_len = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
-            ASSERT(arg_len == num_args);
-            (void)arg_len;
+            extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
 
             procedure_match_result_t res = find_procedure_supporting_arg_types(proc_name, arg_type, num_args, true);
             result = result && res.success;
@@ -5190,7 +5289,7 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
         node->flags |= FLAG_CONSTANT;
         return true;
     }
-    ASSERT(is_scalar(node->data.type));
+    if (!INTERNAL_CHECK(ctx, node->token, is_scalar(node->data.type))) return false;
 
     if (node->data.type.base_type == TYPE_IRANGE) {
         // Validate ascending format and positive step
@@ -5304,8 +5403,13 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
             type_info_t converted_type = array_type;
             converted_type.dim[0] = type_info_array_len(elem[i]->data.type);
 
-            if (!is_type_directly_compatible(elem[i]->data.type, converted_type) &&
-                is_type_implicitly_convertible(elem[i]->data.type, converted_type)) {
+            if (!is_type_directly_compatible(elem[i]->data.type, converted_type)) {
+                if (!is_type_implicitly_convertible(elem[i]->data.type, converted_type)) {
+                    // An element accepted before the type of the array was promoted, which cannot follow it: the
+                    // int[2] of '{{1,2},{3,4:5}}'. Taken as it is, it would not fill its part of the array.
+                    EVAL_LOG_ERROR(ctx, elem[i]->token, "Incompatible types wihin array construct");
+                    return false;
+                }
                 if (!convert_node(elem[i], converted_type, ctx)) {
                     return false;
                 }
@@ -5370,8 +5474,9 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
 
     uint32_t eval_flags = ctx->eval_flags;
     ctx->eval_flags = ctx->eval_flags & ~(EVAL_FLAG_FLATTEN);
-    if (!static_check_node(elem[0], ctx)) return false;
+    const bool lhs_ok = static_check_node(elem[0], ctx);
     ctx->eval_flags = eval_flags;
+    if (!lhs_ok) return false;
 
     for (size_t i = 1; i < num_elem; ++i) {
         if (!static_check_node(elem[i], ctx)) return false;
@@ -5506,12 +5611,10 @@ static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* 
 }
 
 static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(node && node->type == AST_ASSIGNMENT && node->children && md_array_size(node->children) == 2);
+    ASSERT(node && node->type == AST_ASSIGNMENT);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 2 && node->children[0] && node->children[1])) return false;
     ast_node_t* lhs = node->children[0];
     ast_node_t* rhs = node->children[1];
-
-    ASSERT(lhs);
-    ASSERT(rhs);
 
     int num_idents = 1;
     ast_node_t** idents = &lhs;
@@ -5535,14 +5638,17 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
         // Assignment, therefore a new identifier
         if (find_constant(ident)) {
             EVAL_LOG_ERROR(ctx, idents[i]->token, "The identifier is occupied by a constant and cannot be assigned.");
+            return false;
         }
         else if (get_identifier(ctx->compile_ir, ident)) {
             EVAL_LOG_ERROR(ctx, idents[i]->token, "The identifier is already taken. Variables cannot be reassigned.");
+            return false;
         }
     }
 
     if (static_check_node(rhs, ctx)) {
-        ASSERT(rhs->data.type.base_type != TYPE_UNDEFINED);  // Right hand side type must be known
+        // Right hand side type must be known
+        if (!INTERNAL_CHECK(ctx, rhs->token, rhs->data.type.base_type != TYPE_UNDEFINED)) return false;
         node->data   = rhs->data;
         node->flags  = rhs->flags;
 
@@ -5573,7 +5679,8 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
             }
 
             for (int i = 0; i < num_idents; ++i) {
-                ASSERT(idents[i]->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
+                // Identifiers type should always be undefined until explicitly assigned.
+                if (!INTERNAL_CHECK(ctx, idents[i]->token, idents[i]->data.type.base_type == TYPE_UNDEFINED)) return false;
                 identifier_t* ident = create_identifier(ctx->compile_ir, idents[i]->ident);
                 if (!ident) {
                     EVAL_LOG_ERROR(ctx, node->token, "Failed to create identifier. Is the identifier already taken?");
@@ -5608,7 +5715,8 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                 }
             }
         } else {
-            ASSERT(lhs->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
+            // Identifiers type should always be undefined until explicitly assigned.
+            if (!INTERNAL_CHECK(ctx, lhs->token, lhs->data.type.base_type == TYPE_UNDEFINED)) return false;
 
             identifier_t* ident = create_identifier(ctx->compile_ir, lhs->ident);
             if (!ident) {
@@ -5649,10 +5757,9 @@ static void propagate_contexts(ast_node_t* node, const md_bitset_t* contexts, in
 static bool static_check_out(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(node->type == AST_OUT);
-    ASSERT(md_array_size(node->children) == 1);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1 && node->children[0])) return false;
 
     ast_node_t* expr = node->children[0];
-    ASSERT(expr);
 
     const md_bitset_t* old_ctx = ctx->mol_ctx;
     ctx->mol_ctx = 0;
@@ -5671,7 +5778,8 @@ static bool static_check_out(ast_node_t* node, eval_context_t* ctx) {
 }
 
 static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(node && node->type == AST_CONTEXT && node->children && md_array_size(node->children) == 2);
+    ASSERT(node && node->type == AST_CONTEXT);
+    if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 2 && node->children[0] && node->children[1])) return false;
 
     // The rules are as follows:
     // A context RHS must be a bitfield type.
@@ -5702,12 +5810,10 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                 md_bitset_t* contexts = 0;
 
                 if (rhs->flags & FLAG_CONSTANT) {
-                    ASSERT(rhs->data.ptr);
-                    ASSERT(rhs->data.size == num_contexts * sizeof(md_bitset_t));
+                    if (!INTERNAL_CHECK(ctx, rhs->token, rhs->data.ptr && rhs->data.size == num_contexts * sizeof(md_bitset_t))) return false;
                     contexts = (md_bitset_t*)rhs->data.ptr;
                 } else {
                     md_array_resize(contexts, num_contexts, ctx->compile_ir->arena);
-                    ASSERT(md_array_size(contexts) == num_contexts);
                     MEMSET(contexts, 0, num_contexts * sizeof(md_bitset_t));
                     rhs->data.ptr = contexts;
                     rhs->data.size = num_contexts * sizeof(md_bitset_t);
@@ -5794,12 +5900,15 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
 
                 } else {
                     EVAL_LOG_ERROR(ctx, node->token, "Right hand side of 'in' failed to evaluate at compile time.");
+                    result = false;
                 }
             } else {
                 EVAL_LOG_ERROR(ctx, node->token, "The context is empty.");
+                result = false;
             }
         } else {
             EVAL_LOG_ERROR(ctx, node->token, "Right hand side of 'in' must be known at compile time.");
+            result = false;
         }
     } else {
         char buf[128];
@@ -5818,7 +5927,7 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     // The type will propagate back throughout the tree and we will remap nodes into concrete function calls.
     // This is not done in the parsing step as we want the full context before attempting this operation.
 
-    ASSERT(node);
+    if (!INTERNAL_CHECK(ctx, ctx->op_token, node)) return false;
 
     bool result = false;
 
@@ -5876,7 +5985,8 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
         break;
     case AST_CAST: // Should never happen since we insert casts here in type checking phase.
     default:
-        ASSERT(false);
+        INTERNAL_ERROR(ctx, node->token, "a node of a kind the static check does not know");
+        return false;
     }
 
     // Prune trailing ones in dimensions
@@ -6019,6 +6129,20 @@ static ast_node_t* prune_expressions(ast_node_t* node) {
     return node;
 }
 
+// An assignment below node, where the parser lets one through: 'f(1, (a = 2))'. An assignment declares an
+// identifier, which only a statement does: as a part of an expression it would be checked as often as the
+// expression is (the arguments of a call are checked twice), and declare its identifier more than once.
+static const ast_node_t* find_nested_assignment(const ast_node_t* node) {
+    for (size_t i = 0; i < md_array_size(node->children); ++i) {
+        const ast_node_t* child = node->children[i];
+        if (!child) continue;
+        if (child->type == AST_ASSIGNMENT) return child;
+        const ast_node_t* nested = find_nested_assignment(child);
+        if (nested) return nested;
+    }
+    return NULL;
+}
+
 static bool parse_script(md_script_ir_t* ir, md_allocator_i* temp_arena) {
     ASSERT(ir);
     md_temp_scope_t temp = md_temp_begin_in(temp_arena);
@@ -6042,8 +6166,16 @@ static bool parse_script(md_script_ir_t* ir, md_allocator_i* temp_arena) {
     while (tok = tokenizer_peek_next(ctx.tokenizer), tok.type != TOKEN_END) {
         ctx.node = 0;
         ir->record_log = true;   // We reset the error recording flag before each statement
+        const size_t num_errors = md_array_size(ir->errors);
         ast_node_t* raw_node = parse_expression(&ctx);
-        ast_node_t* pruned_node = prune_expressions(raw_node);
+        // A tree which comes back from a statement that logged an error is not what was written: a call whose
+        // argument list failed to parse, say, comes back as a call without arguments. It is not checked or run.
+        ast_node_t* pruned_node = (md_array_size(ir->errors) == num_errors) ? prune_expressions(raw_node) : NULL;
+        const ast_node_t* nested = pruned_node ? find_nested_assignment(pruned_node) : NULL;
+        if (nested) {
+            LOG_ERROR(ir, nested->token, "An assignment is a statement of its own, it cannot be a part of an expression");
+            pruned_node = NULL;
+        }
         if (pruned_node) {
             tok = tokenizer_consume_next(ctx.tokenizer);
             if (tok.type != ';') {
@@ -6085,7 +6217,10 @@ static bool static_type_check(md_script_ir_t* ir, const md_system_t* sys, md_all
 
     for (size_t i = 0; i < md_array_size(ir->parsed_expressions); ++i) {
         ir->record_log = true;   // We reset the error recording flag before each statement
-        if (static_check_node(ir->parsed_expressions[i], &ctx)) {
+        // A check which logged an error and still succeeded leaves a node which is not what was written, or has no
+        // type: it is not evaluated
+        const size_t num_errors = md_array_size(ir->errors);
+        if (static_check_node(ir->parsed_expressions[i], &ctx) && md_array_size(ir->errors) == num_errors) {
             md_array_push(ir->type_checked_expressions, ir->parsed_expressions[i], ir->arena);
             ir->flags |= (ir->parsed_expressions[i]->flags & FLAG_IR_PROPAGATION_MASK);
         } else {
@@ -8510,9 +8645,18 @@ static ast_node_t* filter_compile(md_script_ir_t* ir, eval_context_t* ctx, str_t
         .temp_alloc = ctx->temp_alloc,
     };
 
+    const size_t num_errors = md_array_size(ir->errors);
     ast_node_t* node = prune_expressions(parse_expression(&parse_ctx));
+    if (md_array_size(ir->errors) != num_errors) {
+        node = NULL;    // As for a statement of a script: the tree of a parse which logged an error is not what was written
+    }
+    const ast_node_t* nested = node ? find_nested_assignment(node) : NULL;
+    if (nested) {
+        LOG_ERROR(ir, nested->token, "An assignment is a statement of its own, it cannot be a part of an expression");
+        node = NULL;
+    }
     ctx->compile_ir = ir;
-    const bool checked = node && static_check_node(node, ctx);
+    const bool checked = node && static_check_node(node, ctx) && md_array_size(ir->errors) == num_errors;
     ctx->compile_ir = NULL;
     return checked ? node : NULL;
 }
@@ -8693,13 +8837,11 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
     // Take some shortcuts in specific cases
     switch (node->type) {
     case AST_IDENTIFIER:
-        ASSERT(node->children);
-        ASSERT(md_array_size(node->children) == 1);
+        if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 1 && node->children[0])) return;
         node = node->children[0];
         break;
     case AST_ASSIGNMENT:
-        ASSERT(node->children);
-        ASSERT(md_array_size(node->children) == 2);
+        if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 2 && node->children[1])) return;
         node = node->children[1];
         break;
     default:

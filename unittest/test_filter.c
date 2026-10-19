@@ -123,6 +123,16 @@ UTEST(filter, errors_say_where) {
     EXPECT_EQ(27, res.error_range.end);
     EXPECT_EQ(0u, md_bitset_count(bf));
 
+    // An operator without its left operand: an error at it, not a crash
+    res = md_filter(&bf, STR_LIT("resname('ALA') or *2"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_EQ(18, res.error_range.beg);
+    EXPECT_EQ(19, res.error_range.end);
+
+    // An argument list which failed to parse is not taken for an empty one
+    res = md_filter(&bf, STR_LIT("all(<2)"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+
     // Something that does not pick atoms
     res = md_filter(&bf, STR_LIT("distance(1, 2)"), &fctx, alloc);
     EXPECT_FALSE(res.success);
