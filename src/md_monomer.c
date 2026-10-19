@@ -20,38 +20,42 @@ typedef struct monomer_info_t {
 #define NT MD_COMPONENT_KIND_NUCLEOTIDE
 
 // Default colors:
-//  - Amino acids: the 'shapely' colors of RasMol and Jmol (http://jmol.sourceforge.net/jscolors/), which is where the
-//    CPK colors of the elements come from too. SEC and PYL, which shapely has no color for, take the colors of the
-//    amino acids they are analogues of (CYS, LYS). UNK takes the neutral 'other' color of the 'amino' scheme rather
-//    than the magenta of shapely, as it is the color of every modified residue and cap of a chain.
+//  - Amino acids: a palette made for viamd in OKLCH. The hue tells the physicochemical family (acidic red, basic blue,
+//    hydroxyl orange, amide teal, aliphatic green, sulfur yellow, aromatic violet, conformationally special neutral),
+//    the lightness tells the members of a family apart (the aliphatics darken with their size), and the chroma stays
+//    moderate. Tuned so that the smallest difference between any two (in OKLab) is about 0.08, and 0.06 as the Linear
+//    color input of viamd shows them or with deuteranopia. The classic schemes (shapely, amino, Taylor) are of fully
+//    saturated RGB: shapely colors PHE and PRO nearly alike (0.02). SEC and PYL take shades of the families of the
+//    amino acids they are analogues of (CYS, LYS), UNK a neutral grey, as it is the color of every modified residue and
+//    cap of a chain.
 //  - Nucleotides: the colors the sequence view of viamd used, one hue per base, the same for DNA and RNA. Shapely
-//    colors G and U nearly alike (FF7070, FF8080). Inosine takes the shapely color, N the neutral one of UNK.
+//    colors G and U nearly alike (FF7070, FF8080). Inosine takes the shapely color, N the neutral grey of UNK.
 static const monomer_info_t monomer_table[MD_MONOMER_COUNT] = {
     [MD_MONOMER_NONE] = { STR_INIT(""),    STR_INIT(""),                      0,   MD_COMPONENT_KIND_OTHER, 0 },
 
-    [MD_MONOMER_ALA] = { STR_INIT("ALA"), STR_INIT("Alanine"),               'A', AA, MONOMER_RGB(140, 255, 140) },
-    [MD_MONOMER_ARG] = { STR_INIT("ARG"), STR_INIT("Arginine"),              'R', AA, MONOMER_RGB(  0,   0, 124) },
-    [MD_MONOMER_ASN] = { STR_INIT("ASN"), STR_INIT("Asparagine"),            'N', AA, MONOMER_RGB(255, 124, 112) },
-    [MD_MONOMER_ASP] = { STR_INIT("ASP"), STR_INIT("Aspartic acid"),         'D', AA, MONOMER_RGB(160,   0,  66) },
-    [MD_MONOMER_CYS] = { STR_INIT("CYS"), STR_INIT("Cysteine"),              'C', AA, MONOMER_RGB(255, 255, 112) },
-    [MD_MONOMER_GLN] = { STR_INIT("GLN"), STR_INIT("Glutamine"),             'Q', AA, MONOMER_RGB(255,  76,  76) },
-    [MD_MONOMER_GLU] = { STR_INIT("GLU"), STR_INIT("Glutamic acid"),         'E', AA, MONOMER_RGB(102,   0,   0) },
-    [MD_MONOMER_GLY] = { STR_INIT("GLY"), STR_INIT("Glycine"),               'G', AA, MONOMER_RGB(255, 255, 255) },
-    [MD_MONOMER_HIS] = { STR_INIT("HIS"), STR_INIT("Histidine"),             'H', AA, MONOMER_RGB(112, 112, 255) },
-    [MD_MONOMER_ILE] = { STR_INIT("ILE"), STR_INIT("Isoleucine"),            'I', AA, MONOMER_RGB(  0,  76,   0) },
-    [MD_MONOMER_LEU] = { STR_INIT("LEU"), STR_INIT("Leucine"),               'L', AA, MONOMER_RGB( 69,  94,  69) },
-    [MD_MONOMER_LYS] = { STR_INIT("LYS"), STR_INIT("Lysine"),                'K', AA, MONOMER_RGB( 71,  71, 184) },
-    [MD_MONOMER_MET] = { STR_INIT("MET"), STR_INIT("Methionine"),            'M', AA, MONOMER_RGB(184, 160,  66) },
-    [MD_MONOMER_PHE] = { STR_INIT("PHE"), STR_INIT("Phenylalanine"),         'F', AA, MONOMER_RGB( 83,  76,  82) },
-    [MD_MONOMER_PRO] = { STR_INIT("PRO"), STR_INIT("Proline"),               'P', AA, MONOMER_RGB( 82,  82,  82) },
-    [MD_MONOMER_SER] = { STR_INIT("SER"), STR_INIT("Serine"),                'S', AA, MONOMER_RGB(255, 112,  66) },
-    [MD_MONOMER_THR] = { STR_INIT("THR"), STR_INIT("Threonine"),             'T', AA, MONOMER_RGB(184,  76,   0) },
-    [MD_MONOMER_TRP] = { STR_INIT("TRP"), STR_INIT("Tryptophan"),            'W', AA, MONOMER_RGB( 79,  70,   0) },
-    [MD_MONOMER_TYR] = { STR_INIT("TYR"), STR_INIT("Tyrosine"),              'Y', AA, MONOMER_RGB(140, 112,  76) },
-    [MD_MONOMER_VAL] = { STR_INIT("VAL"), STR_INIT("Valine"),                'V', AA, MONOMER_RGB(255, 140, 255) },
-    [MD_MONOMER_SEC] = { STR_INIT("SEC"), STR_INIT("Selenocysteine"),        'U', AA, MONOMER_RGB(255, 255, 112) },
-    [MD_MONOMER_PYL] = { STR_INIT("PYL"), STR_INIT("Pyrrolysine"),           'O', AA, MONOMER_RGB( 71,  71, 184) },
-    [MD_MONOMER_UNK] = { STR_INIT("UNK"), STR_INIT("Unknown amino acid"),    'X', AA, MONOMER_RGB(190, 160, 110) },
+    [MD_MONOMER_ALA] = { STR_INIT("ALA"), STR_INIT("Alanine"),               'A', AA, MONOMER_RGB(186, 231, 165) },
+    [MD_MONOMER_ARG] = { STR_INIT("ARG"), STR_INIT("Arginine"),              'R', AA, MONOMER_RGB( 46,  82, 136) },
+    [MD_MONOMER_ASN] = { STR_INIT("ASN"), STR_INIT("Asparagine"),            'N', AA, MONOMER_RGB( 94, 218, 217) },
+    [MD_MONOMER_ASP] = { STR_INIT("ASP"), STR_INIT("Aspartic acid"),         'D', AA, MONOMER_RGB(191,  86,  56) },
+    [MD_MONOMER_CYS] = { STR_INIT("CYS"), STR_INIT("Cysteine"),              'C', AA, MONOMER_RGB(242, 222,  78) },
+    [MD_MONOMER_GLN] = { STR_INIT("GLN"), STR_INIT("Glutamine"),             'Q', AA, MONOMER_RGB( 56, 175, 167) },
+    [MD_MONOMER_GLU] = { STR_INIT("GLU"), STR_INIT("Glutamic acid"),         'E', AA, MONOMER_RGB(162,  48,  50) },
+    [MD_MONOMER_GLY] = { STR_INIT("GLY"), STR_INIT("Glycine"),               'G', AA, MONOMER_RGB(245, 245, 245) },
+    [MD_MONOMER_HIS] = { STR_INIT("HIS"), STR_INIT("Histidine"),             'H', AA, MONOMER_RGB(114, 177, 246) },
+    [MD_MONOMER_ILE] = { STR_INIT("ILE"), STR_INIT("Isoleucine"),            'I', AA, MONOMER_RGB( 30, 135,  86) },
+    [MD_MONOMER_LEU] = { STR_INIT("LEU"), STR_INIT("Leucine"),               'L', AA, MONOMER_RGB( 94, 161,  93) },
+    [MD_MONOMER_LYS] = { STR_INIT("LYS"), STR_INIT("Lysine"),                'K', AA, MONOMER_RGB( 90, 137, 216) },
+    [MD_MONOMER_MET] = { STR_INIT("MET"), STR_INIT("Methionine"),            'M', AA, MONOMER_RGB(189, 173,  62) },
+    [MD_MONOMER_PHE] = { STR_INIT("PHE"), STR_INIT("Phenylalanine"),         'F', AA, MONOMER_RGB(150, 110, 175) },
+    [MD_MONOMER_PRO] = { STR_INIT("PRO"), STR_INIT("Proline"),               'P', AA, MONOMER_RGB(138, 133, 128) },
+    [MD_MONOMER_SER] = { STR_INIT("SER"), STR_INIT("Serine"),                'S', AA, MONOMER_RGB(251, 184, 113) },
+    [MD_MONOMER_THR] = { STR_INIT("THR"), STR_INIT("Threonine"),             'T', AA, MONOMER_RGB(204, 127,  51) },
+    [MD_MONOMER_TRP] = { STR_INIT("TRP"), STR_INIT("Tryptophan"),            'W', AA, MONOMER_RGB(104,  87, 167) },
+    [MD_MONOMER_TYR] = { STR_INIT("TYR"), STR_INIT("Tyrosine"),              'Y', AA, MONOMER_RGB(198, 152, 208) },
+    [MD_MONOMER_VAL] = { STR_INIT("VAL"), STR_INIT("Valine"),                'V', AA, MONOMER_RGB(145, 183, 135) },
+    [MD_MONOMER_SEC] = { STR_INIT("SEC"), STR_INIT("Selenocysteine"),        'U', AA, MONOMER_RGB(239, 188,  58) },
+    [MD_MONOMER_PYL] = { STR_INIT("PYL"), STR_INIT("Pyrrolysine"),           'O', AA, MONOMER_RGB( 89, 105, 174) },
+    [MD_MONOMER_UNK] = { STR_INIT("UNK"), STR_INIT("Unknown amino acid"),    'X', AA, MONOMER_RGB(187, 183, 175) },
 
     [MD_MONOMER_DA]  = { STR_INIT("DA"),  STR_INIT("Deoxyadenosine"),        'A', NT, MONOMER_RGB(252, 105, 122) },
     [MD_MONOMER_DC]  = { STR_INIT("DC"),  STR_INIT("Deoxycytidine"),         'C', NT, MONOMER_RGB(248, 238,  92) },
@@ -64,7 +68,7 @@ static const monomer_info_t monomer_table[MD_MONOMER_COUNT] = {
     [MD_MONOMER_G]   = { STR_INIT("G"),   STR_INIT("Guanosine"),             'G', NT, MONOMER_RGB(213, 179, 239) },
     [MD_MONOMER_U]   = { STR_INIT("U"),   STR_INIT("Uridine"),               'U', NT, MONOMER_RGB(254, 157,  45) },
     [MD_MONOMER_I]   = { STR_INIT("I"),   STR_INIT("Inosine"),               'I', NT, MONOMER_RGB(128, 255, 255) },
-    [MD_MONOMER_N]   = { STR_INIT("N"),   STR_INIT("Unknown nucleotide"),    'N', NT, MONOMER_RGB(190, 160, 110) },
+    [MD_MONOMER_N]   = { STR_INIT("N"),   STR_INIT("Unknown nucleotide"),    'N', NT, MONOMER_RGB(187, 183, 175) },
 };
 
 #undef AA
