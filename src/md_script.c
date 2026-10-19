@@ -8716,6 +8716,8 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         if (data.ptr) {
             const md_bitset_t* bs_arr = data.ptr;
             ASSERT(ctx->vis_atom_mask);
+            // Each element visualized is a group of its own
+            md_script_vis_t* vis = ctx->vis;
             if (ctx->subscript_ranges) {
                 int count = (int)element_count(data);
                 for (size_t i = 0; i < md_array_size(ctx->subscript_ranges); ++i) {
@@ -8723,11 +8725,13 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
                     for (int j = rng.beg; j < rng.end; ++j) {
                         if (j >= count) break;
                         md_bitmask_or(ctx->vis_atom_mask, bs_arr[j]);
+                        if (vis) md_array_push(vis->groups, md_bitset_copy(bs_arr[j], vis->alloc), vis->alloc);
                     }
                 }
             } else {
                 for (size_t i = 0; i < element_count(data); ++i) {
                     md_bitmask_or(ctx->vis_atom_mask, bs_arr[i]);
+                    if (vis) md_array_push(vis->groups, md_bitset_copy(bs_arr[i], vis->alloc), vis->alloc);
                 }
             }
             free_data(&data, ctx->temp_alloc);
@@ -8973,6 +8977,12 @@ bool md_script_vis_free(md_script_vis_t* vis) {
         }
 
         md_array_free(vis->structures, vis->alloc);
+
+        for (size_t i = 0; i < md_array_size(vis->groups); ++i) {
+            md_bitset_free(&vis->groups[i], vis->alloc);
+        }
+        md_array_free(vis->groups, vis->alloc);
+
         md_array_free(vis->points, vis->alloc);
         md_array_free(vis->lines, vis->alloc);
         md_array_free(vis->triangles, vis->alloc);
@@ -9006,6 +9016,11 @@ bool md_script_vis_clear(md_script_vis_t* vis) {
     for (size_t i = 0; i < md_array_size(vis->sdf.structures); ++i) {
         md_bitset_free(&vis->sdf.structures[i], vis->alloc);
     }
+
+    for (size_t i = 0; i < md_array_size(vis->groups); ++i) {
+        md_bitset_free(&vis->groups[i], vis->alloc);
+    }
+    md_array_shrink(vis->groups, 0);
 
     md_array_shrink(vis->structures, 0);
     md_array_shrink(vis->points, 0);

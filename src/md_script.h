@@ -115,6 +115,10 @@ typedef struct md_script_vis_t {
 
     md_array(md_bitset_t) structures;       // payloads in alloc
 
+    // The atoms of each element of the bitfields visualized, in order: of residue(:) one set per residue, of a
+    // single bitfield one set (payloads in alloc). For telling the elements apart, as groups of the atom mask.
+    md_array(md_bitset_t) groups;
+
     // This is an all encompassing atom mask, when there may be no real 'substructures' (payload in alloc)
     md_bitset_t atom_mask;
 } md_script_vis_t;
