@@ -11,6 +11,7 @@ in GS_FS {
     flat vec3 view_velocity;
     flat vec4 color;
     flat uint atom_idx;
+    flat uint flags;
     smooth vec2 uv;
 } in_frag;
 
@@ -67,5 +68,5 @@ void main() {
     vec3 view_velocity = in_frag.view_velocity;
     uint atom_index = in_frag.atom_idx;
 
-    write_fragment(view_coord, view_velocity, view_normal, color, atom_index);
+    write_fragment(view_coord, view_velocity, view_normal, color, atom_index, in_frag.flags);
 }

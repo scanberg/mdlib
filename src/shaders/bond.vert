@@ -146,6 +146,7 @@ out Fragment {
     flat vec3  view_vel[2];
     flat uint  atom_picking_idx[2];
     flat uint  bond_picking_idx;
+    flat uint  flags[2];                // Of the atoms, a half each
 #if BOND_PARTNERS
     flat vec2  seg_range;               // The part of the bond the partner spans, in [0, 1] from its first atom
 #elif !WEAK_BONDS && !CHAIN_GAPS
@@ -297,6 +298,8 @@ void main() {
         return;
     }
 
+    out_frag.flags[0] = flags_a;
+    out_frag.flags[1] = flags_b;
     out_frag.color[0] = color_a;
     out_frag.color[1] = color_b;
     out_frag.view_vel[0] = mat3(u_world_to_view) * va;

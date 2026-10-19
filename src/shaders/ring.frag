@@ -74,6 +74,7 @@ in Fragment {
     flat uvec4 color[2];
     flat uvec2 count_picking;
     flat vec3  view_vel;
+    flat uint  flags;
     smooth vec3 view_pos;
 } in_frag;
 
@@ -243,5 +244,5 @@ void main() {
         color = unpackUnorm4x8(u_uniform_color);
     }
 
-    write_fragment(view_coord, in_frag.view_vel, view_normal, color, in_frag.count_picking.y);
+    write_fragment(view_coord, in_frag.view_vel, view_normal, color, in_frag.count_picking.y, in_frag.flags);
 }

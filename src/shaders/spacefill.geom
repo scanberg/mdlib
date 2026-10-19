@@ -12,6 +12,7 @@ in VS_GS {
     flat vec3 view_velocity;
     flat vec4 color;
     flat uint atom_idx;
+    flat uint flags;
 } in_vert[];
 
 out GS_FS {
@@ -20,6 +21,7 @@ out GS_FS {
     flat vec3 view_velocity;
     flat vec4 color;
     flat uint atom_idx;
+    flat uint flags;
     smooth vec2 uv;
 } out_frag;
 
@@ -92,6 +94,7 @@ void main()
     out_frag.view_velocity = in_vert[0].view_velocity;
     out_frag.color = in_vert[0].color;
     out_frag.atom_idx = u_atom_base_index + in_vert[0].atom_idx;
+    out_frag.flags = in_vert[0].flags;
 
 #if ORTHO
     emit_vertex_ortho(vec2(-1, -1));

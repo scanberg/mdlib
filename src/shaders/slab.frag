@@ -46,6 +46,7 @@ in Fragment {
     flat vec4  color;
     flat uint  picking;
     flat vec3  view_vel;
+    flat uint  flags;
     smooth vec3 view_pos;
 } in_frag;
 
@@ -166,5 +167,5 @@ void main() {
     vec4 clip_coord = u_view_to_clip * vec4(view_coord, 1);
     gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
 
-    write_fragment(view_coord, in_frag.view_vel, view_normal, in_frag.color, in_frag.picking);
+    write_fragment(view_coord, in_frag.view_vel, view_normal, in_frag.color, in_frag.picking, in_frag.flags);
 }

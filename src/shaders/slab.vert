@@ -79,6 +79,7 @@ out Fragment {
     flat vec4  color;
     flat uint  picking;
     flat vec3  view_vel;        // Mean velocity of the corners
+    flat uint  flags;           // Of all its corners: those they have in common
     smooth vec3 view_pos;       // On the quad, the ray of the fragment starts here
 } out_frag;
 
@@ -138,6 +139,7 @@ void main() {
     vec3 p[MAX_CORNERS];
     vec3 c   = vec3(0.0);
     vec3 vel = vec3(0.0);
+    uint common_flags = 0xFFFFFFFFu;
     for (int k = 0; k < MAX_CORNERS; ++k) {
         if (k >= n) continue;
         uint flags = texelFetch(u_buf_atom_flags, int(idx[k])).x;
@@ -146,6 +148,7 @@ void main() {
             cull();
             return;
         }
+        common_flags &= flags;
         p[k] = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(idx[k])).xyz, 1.0));
         vel += texelFetch(u_buf_atom_vel, int(idx[k])).xyz;
         c   += p[k];
@@ -199,6 +202,7 @@ void main() {
     out_frag.color    = texelFetch(u_buf_atom_color, int(idx[0]));
     out_frag.picking  = u_slab_base_index + prim;
     out_frag.view_vel = mat3(u_world_to_view) * (vel / float(n));
+    out_frag.flags    = common_flags;
 
     // The corners in the plane, and the box of the spheres about them
     vec3 pc[MAX_CORNERS];

@@ -84,6 +84,7 @@ out Fragment {
     flat uvec4 color[2];        // Packed RGBA8 of atom k (in color[k / 4][k % 4])
     flat uvec2 count_picking;   // Atoms, picking index
     flat vec3  view_vel;        // Mean velocity of the atoms
+    flat uint  flags;           // Of all its atoms: those they have in common
     smooth vec3 view_pos;       // On the quad, the ray of the fragment starts here
 } out_frag;
 
@@ -126,6 +127,7 @@ void main() {
     uint col[MAX_RING_ATOMS];
     vec3 c   = vec3(0.0);
     vec3 vel = vec3(0.0);
+    uint common_flags = 0xFFFFFFFFu;
     for (int k = 0; k < MAX_RING_ATOMS; ++k) {
         col[k] = 0u;
         if (k >= n) continue;
@@ -135,6 +137,7 @@ void main() {
             cull();
             return;
         }
+        common_flags &= flags;
         p[k]   = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(atom[k])).xyz, 1.0));
         col[k] = pack_color(color);
         vel   += texelFetch(u_buf_atom_vel, int(atom[k])).xyz;
@@ -206,6 +209,7 @@ void main() {
     out_frag.color   = uvec4[2](uvec4(col[0], col[1], col[2], col[3]), uvec4(col[4], col[5], col[6], 0u));
     out_frag.count_picking = uvec2(uint(n), u_ring_base_index + ring_idx);
     out_frag.view_vel = mat3(u_world_to_view) * (vel / float(n));
+    out_frag.flags    = common_flags;
 
     // The box of the torus in view space: half extents R + r along the tangent and bitangent, r along the normal
     vec3 ext = abs(tng) * (R + r) + abs(bit) * (R + r) + abs(nrm) * r;

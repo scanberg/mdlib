@@ -84,6 +84,7 @@ out Fragment {
     smooth vec4 color;
     smooth vec3 view_normal;
     flat   uint picking_idx;
+    flat   uint flags;
 } out_frag;
 
 float unpack_unorm8 (uint v) { return float(v & 0xFFu) * (1.0 / 255.0); }
@@ -233,6 +234,7 @@ void emit_hidden() {
     out_frag.color         = vec4(0.0);
     out_frag.view_normal   = vec3(0.0, 0.0, 1.0);
     out_frag.picking_idx   = 0u;
+    out_frag.flags         = 0u;
     // Every vertex of a hidden primitive gets the same position outside of the clip volume
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 }
@@ -359,5 +361,6 @@ void main() {
     // The instance is the part of the spline that belongs to one residue: it picks as that backbone segment (control
     // point c is segment c), not as its CA, which other representations may show and pick as an atom of its own
     out_frag.picking_idx   = u_backbone_base_index + c;
+    out_frag.flags         = texelFetch(u_atom_flags_buffer, int(atom_idx)).x;
     gl_Position = u_view_to_clip * view_coord;
 }

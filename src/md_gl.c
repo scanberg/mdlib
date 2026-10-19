@@ -87,7 +87,7 @@
 
 static const str_t default_shader_output = STR_INIT(
 "layout(location = 0) out vec4 out_color;\n"
-"void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {\n"
+"void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index, uint atom_flags) {\n"
 "    out_color = color;\n"
 "}\n");
 
@@ -872,6 +872,16 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
         program_permutations[perm].id = glCreateProgram();
         const GLuint shaders[] = {vert_shader, frag_shader, geom_shader};
         if (!md_gl_program_attach_and_link(program_permutations[perm].id, shaders, has_geom ? 3 : 2)) return false;
+
+        // The textures of the caller's that the output snippet samples: their units are set once, here, as no draw sets them
+        glUseProgram(program_permutations[perm].id);
+        for (int i = 0; i < MD_GL_USER_TEXTURE_COUNT; ++i) {
+            char name[32];
+            snprintf(name, sizeof(name), "md_user_texture_%d", i);
+            const GLint loc = glGetUniformLocation(program_permutations[perm].id, name);
+            if (loc != -1) glUniform1i(loc, MD_GL_USER_TEXTURE_UNIT + i);
+        }
+        glUseProgram(0);
     }
 
     glDeleteShader(vert_shader);

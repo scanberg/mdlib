@@ -26,10 +26,11 @@ in Fragment {
     smooth vec4 color;
     smooth vec3 view_normal;
     flat   uint picking_idx;
+    flat   uint flags;
 } in_frag;
 
 #pragma EXTRA_SRC
 
 void main() {
-    write_fragment(in_frag.view_coord, in_frag.view_velocity, normalize(in_frag.view_normal), in_frag.color, in_frag.picking_idx);
+    write_fragment(in_frag.view_coord, in_frag.view_velocity, normalize(in_frag.view_normal), in_frag.color, in_frag.picking_idx, in_frag.flags);
 }

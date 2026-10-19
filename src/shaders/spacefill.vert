@@ -11,6 +11,7 @@ out VS_GS {
     flat vec3 view_velocity;
     flat vec4 color;
     flat uint atom_idx;
+    flat uint flags;
 } out_vert;
 
 layout (std140) uniform ubo {
@@ -44,4 +45,5 @@ void main() {
 	out_vert.view_velocity = vec3(u_world_to_view * vec4(in_atom_vel, 0));
 	out_vert.color = col;
 	out_vert.atom_idx = uint(gl_VertexID);
+    out_vert.flags = in_atom_flags;
 }

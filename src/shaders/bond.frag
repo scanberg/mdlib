@@ -80,6 +80,7 @@ in Fragment {
     flat vec3  view_vel[2];
     flat uint  atom_picking_idx[2];
     flat uint  bond_picking_idx;
+    flat uint  flags[2];
 #if BOND_PARTNERS
     flat vec2  seg_range;
 #elif !WEAK_BONDS && !CHAIN_GAPS
@@ -341,5 +342,5 @@ void main() {
     uint picking_index = abs(0.5 - seg_t) > 0.25 ? in_frag.atom_picking_idx[side] : in_frag.bond_picking_idx;
 #endif
 
-    write_fragment(view_coord, view_velocity, view_normal, color, picking_index);
+    write_fragment(view_coord, view_velocity, view_normal, color, picking_index, in_frag.flags[side]);
 }

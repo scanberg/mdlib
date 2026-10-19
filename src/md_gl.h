@@ -40,10 +40,23 @@ If no custom_shader_snippet is supplied to md_gl_context_init, then a default_sh
 
 layout(location = 0) out vec4 out_color;
 
-void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint element_index) {
+void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint element_index, uint atom_flags) {
    out_color  = color;
 }
+
+element_index is what the fragment picks as (md_gl_picking_offset_t). atom_flags are the flags (md_gl_mol_set_atom_flags)
+of the atom the fragment shows, as its colour is: an atom's own, on a bond those of the atom of the half it is on (as it
+is coloured, whatever the colouring), on a ring or a slab those all of its atoms have, on a backbone segment those of
+the atom of its control point.
+
+The snippet is in the fragment shader of every representation, after the uniform block of the view (u_view_to_clip,
+u_clip_to_view, ...), and may sample textures of the caller's: a sampler uniform named md_user_texture_<i>, i in
+[0, MD_GL_USER_TEXTURE_COUNT), samples texture unit MD_GL_USER_TEXTURE_UNIT + i, which md_gl never binds anything to.
+The caller binds its textures there before md_gl_draw. ORTHO is 1 when the projection is orthographic, otherwise 0.
 */
+
+#define MD_GL_USER_TEXTURE_UNIT  12
+#define MD_GL_USER_TEXTURE_COUNT 4
 
 // The shaders are customizable in their output as mentioned in the comment above.
 // You could have multiple versions of shaders each compiled for a specific output.
