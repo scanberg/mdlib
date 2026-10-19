@@ -26,6 +26,7 @@
 #include <Shlwapi.h>
 #include <ShlObj.h>
 #include <direct.h>
+#include <locale.h>
 
 // If we need to explicitly link against some lib
 #pragma comment(lib, "User32.lib")
@@ -60,6 +61,7 @@ STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SE
 #include <sys/types.h>
 #include <pthread.h>
 #include <pwd.h>
+#include <locale.h>
 
 #endif
 
@@ -76,6 +78,7 @@ STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit
 #include <mach/task.h>
 #include <mach/semaphore.h>
 #include <mach-o/dyld.h>
+#include <xlocale.h>
 
 STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
 #endif
@@ -375,9 +378,9 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
             if (cwd_len == 0) {
                 return 0;
             }
-            written = snprintf(buf, cap, "%.*s/%s", (int)cwd_len, cwd, zbuf);
+            written = md_snprintf(buf, cap, "%.*s/%s", (int)cwd_len, cwd, zbuf);
         } else {
-            written = snprintf(buf, cap, "%s", zbuf);
+            written = md_snprintf(buf, cap, "%s", zbuf);
         }
         if (written < 0 || (size_t)written >= cap) {
             MD_LOG_ERROR("Failed to resolve path, it is too long: '" STR_FMT "'", STR_ARG(path));
@@ -527,7 +530,7 @@ size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
         MD_LOG_ERROR("Failed to get home directory");
         return 0;
     }
-    const int written = snprintf(buf, buf_cap, "%s", homedir);
+    const int written = md_snprintf(buf, buf_cap, "%s", homedir);
     if (written < 0 || (size_t)written >= buf_cap) {
         MD_LOG_ERROR("Failed to get home directory, the path is too long");
         buf[0] = '\0';
@@ -749,6 +752,76 @@ bool md_path_is_directory(str_t path) {
 #endif
 }
 
+
+// ### FORMAT ###
+
+// The "C" locale md_vsnprintf formats in, made on first use. Each call is handed it, so neither the
+// process locale (setlocale) nor the calling thread's (uselocale) has a say in what is written.
+#if MD_PLATFORM_WINDOWS
+
+#if !(defined(_UCRT) || (defined(_MSC_VER) && _MSC_VER >= 1900))
+#error "md_vsnprintf takes the Universal CRT (Visual Studio 2015 or later)"
+#endif
+
+static _locale_t c_locale;
+static INIT_ONCE c_locale_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK c_locale_init(PINIT_ONCE once, PVOID param, PVOID* ctx) {
+    (void)once;
+    (void)param;
+    (void)ctx;
+    c_locale = _create_locale(LC_ALL, "C");
+    return TRUE;
+}
+
+int md_vsnprintf(char* buf, size_t cap, const char* format, va_list args) {
+    InitOnceExecuteOnce(&c_locale_once, c_locale_init, NULL, NULL);
+    if (c_locale) {
+        // What vsnprintf is in the Universal CRT's stdio.h, with this locale in place of the thread's.
+        // Not _vsnprintf_l: that one has the legacy behaviour, -1 and no terminator when it does not fit.
+        const int res = __stdio_common_vsprintf(_CRT_INTERNAL_LOCAL_PRINTF_OPTIONS | _CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR,
+                                                buf, cap, format, c_locale, args);
+        return res < 0 ? -1 : res;
+    }
+    // Only if the C library could not make its own "C" locale
+    return vsnprintf(buf, cap, format, args);
+}
+
+#elif MD_PLATFORM_UNIX
+
+static locale_t c_locale;
+static pthread_once_t c_locale_once = PTHREAD_ONCE_INIT;
+
+static void c_locale_init(void) {
+    c_locale = newlocale(LC_ALL_MASK, "C", (locale_t)0);
+}
+
+int md_vsnprintf(char* buf, size_t cap, const char* format, va_list args) {
+    pthread_once(&c_locale_once, c_locale_init);
+    if (c_locale) {
+#if MD_PLATFORM_OSX
+        return vsnprintf_l(buf, cap, c_locale, format, args);
+#else
+        // glibc has no vsnprintf_l: the thread takes the locale for the call, and gives it back
+        const locale_t prev = uselocale(c_locale);
+        const int res = vsnprintf(buf, cap, format, args);
+        uselocale(prev);
+        return res;
+#endif
+    }
+    // Only if the C library could not make its own "C" locale
+    return vsnprintf(buf, cap, format, args);
+}
+
+#endif
+
+int md_snprintf(char* buf, size_t cap, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    const int res = md_vsnprintf(buf, cap, format, args);
+    va_end(args);
+    return res;
+}
 
 // ### FILE ###
 
@@ -1496,7 +1569,7 @@ size_t md_file_printf(md_file_t file, const char* format, ...) {
 
     va_list probe_args;
     va_copy(probe_args, args);
-    const int count = vsnprintf(stack_buf, sizeof(stack_buf), format, probe_args);
+    const int count = md_vsnprintf(stack_buf, sizeof(stack_buf), format, probe_args);
     va_end(probe_args);
 
     if (count < 0) {
@@ -1520,7 +1593,7 @@ size_t md_file_printf(md_file_t file, const char* format, ...) {
         goto done;
     }
 
-    const int written = vsnprintf(heap_buf, buf_size, format, args);
+    const int written = md_vsnprintf(heap_buf, buf_size, format, args);
     va_end(args);
     args_active = false;
 

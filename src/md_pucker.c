@@ -301,7 +301,7 @@ static size_t write_locants(char* buf, size_t cap, const int8_t pos[2], const ch
     if (n == 2 && !locant_before(l[0], l[1])) { const char* t = l[0]; l[0] = l[1]; l[1] = t; }
     size_t len = 0;
     for (int i = 0; i < n; ++i) {
-        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s", i ? "," : "", l[i]);
+        len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s", i ? "," : "", l[i]);
     }
     return len;
 }
@@ -329,10 +329,10 @@ size_t md_pucker_conformer_name(char* buf, size_t cap, md_pucker_conformer_t c, 
     buf[0] = '\0';
     if (c.kind == MD_PUCKER_KIND_NONE) return 0;
     if (!locants || c.kind == MD_PUCKER_KIND_PLANAR) {
-        return (size_t)snprintf(buf, cap, "%s", md_pucker_kind_name(c.kind));
+        return (size_t)md_snprintf(buf, cap, "%s", md_pucker_kind_name(c.kind));
     }
     size_t len = write_locants(buf, cap, c.above, locants);
-    len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%c", kind_letter(c.kind));
+    len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%c", kind_letter(c.kind));
     len += write_locants(buf + MIN(len, cap), cap - MIN(len, cap), c.below, locants);
     return len;
 }
@@ -420,13 +420,13 @@ static void sugar_locant(char out[8], const md_system_t* sys, int32_t atom, size
     for (size_t i = 0; i < name.len && n < 7; ++i) {
         if (name.ptr[i] >= '0' && name.ptr[i] <= '9') out[n++] = name.ptr[i];
     }
-    if (n == 0) n = (size_t)snprintf(out, 8, "%d", (int)k);
+    if (n == 0) n = (size_t)md_snprintf(out, 8, "%d", (int)k);
     out[n] = '\0';
 }
 
 static void atom_label(char* out, size_t cap, const md_system_t* sys, int32_t atom) {
     const str_t s = md_atom_name(&sys->atom, atom);
-    snprintf(out, cap, "%.*s", (int)MIN(s.len, cap - 1), s.ptr);
+    md_snprintf(out, cap, "%.*s", (int)MIN(s.len, cap - 1), s.ptr);
 }
 
 static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state, const vec3_t* xyz, vec3_t c) {
@@ -437,7 +437,7 @@ static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_syste
     buf[0] = '\0';
     if (conf.kind == MD_PUCKER_KIND_NONE) return;
     if (conf.kind == MD_PUCKER_KIND_PLANAR || (!r->anchored && !r->sugar)) {
-        snprintf(buf, cap, "%s", md_pucker_kind_name(conf.kind));
+        md_snprintf(buf, cap, "%s", md_pucker_kind_name(conf.kind));
         return;
     }
     char name[7][8];
@@ -449,7 +449,7 @@ static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_syste
     }
     if (r->sugar) {
         size_t len = md_pucker_conformer_name(buf, cap, conf, locants);
-        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), " %s", md_pucker_kind_name(conf.kind));
+        len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), " %s", md_pucker_kind_name(conf.kind));
         if (n != 5 || (conf.kind != MD_PUCKER_KIND_ENVELOPE && conf.kind != MD_PUCKER_KIND_TWIST)) return;
         // Endo: the side of the C outside of the ring on the last C (C5' of a nucleotide)
         int32_t ref = -1;
@@ -473,23 +473,23 @@ static void describe(md_pucker_ring_t* r, const md_system_t* sys, const md_syste
         if (conf.below[0] >= 0) atom_label(bn, sizeof(bn), sys, r->atoms[conf.below[0]]);
         const char* up = ref_above ? "endo" : "exo";
         const char* dn = ref_above ? "exo" : "endo";
-        if (an[0] && bn[0]) len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s %s-%s", an, up, bn, dn);
-        else if (an[0])     len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", an, up);
-        else if (bn[0])     len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", bn, dn);
+        if (an[0] && bn[0]) len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s %s-%s", an, up, bn, dn);
+        else if (an[0])     len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", an, up);
+        else if (bn[0])     len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ", %s-%s", bn, dn);
         return;
     }
     // Another ring: the atoms out of the plane by name
-    size_t len = (size_t)snprintf(buf, cap, "%s (", md_pucker_kind_name(conf.kind));
+    size_t len = (size_t)md_snprintf(buf, cap, "%s (", md_pucker_kind_name(conf.kind));
     bool first = true;
     for (int i = 0; i < 2; ++i) if (conf.above[i] >= 0) {
-        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s above", first ? "" : ", ", locants[conf.above[i]]);
+        len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s above", first ? "" : ", ", locants[conf.above[i]]);
         first = false;
     }
     for (int i = 0; i < 2; ++i) if (conf.below[i] >= 0) {
-        len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s below", first ? "" : ", ", locants[conf.below[i]]);
+        len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), "%s%s below", first ? "" : ", ", locants[conf.below[i]]);
         first = false;
     }
-    snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ")");
+    md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ")");
 }
 
 static bool compute_ring(md_pucker_ring_t* r, const md_system_t* sys, const md_system_state_t* state) {

@@ -569,7 +569,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     for (size_t aidx = 0; aidx < data->num_assemblies; ++aidx) {
         const md_pdb_assembly_t* assembly = &data->assemblies[aidx];
         md_label_t instance_label = {0};
-        instance_label.len = (uint8_t)snprintf(instance_label.buf, sizeof(instance_label.buf), "ASM_%i", assembly->id);
+        instance_label.len = (uint8_t)md_snprintf(instance_label.buf, sizeof(instance_label.buf), "ASM_%i", assembly->id);
 
         for (uint32_t tidx = assembly->transform_offset; tidx < assembly->transform_offset + assembly->transform_count; ++tidx) {
             if (mat4_equal(data->transforms[tidx], mat4_ident())) {

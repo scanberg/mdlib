@@ -178,7 +178,7 @@ static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_
 	str_t str = str_trim(str_from_cstr(atom_format));
 	if (str_empty(str)) {
 		if (err_buf) {
-			snprintf(err_buf, err_cap, "Lammps atom format: Empty format string");
+			md_snprintf(err_buf, err_cap, "Lammps atom format: Empty format string");
 		} else {
 			MD_LOG_ERROR("Lammps atom format: Empty format string");
 		}
@@ -193,7 +193,7 @@ static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_
 			if (str_eq(token, str_from_cstr(atom_field_name[j]))) {
 				if (mappings[j] != -1) {
 					if (err_buf) {
-						snprintf(err_buf, err_cap, "Lammps atom format: Contains duplicate field name '"STR_FMT"'", STR_ARG(token));
+						md_snprintf(err_buf, err_cap, "Lammps atom format: Contains duplicate field name '"STR_FMT"'", STR_ARG(token));
 					} else {
 						MD_LOG_ERROR("Lammps atom format: Contains duplicate field name '"STR_FMT"'", STR_ARG(token));
 					}
@@ -210,7 +210,7 @@ static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_
 		int idx = atom_field_required[i];
 		if (mappings[idx] == -1) {
 			if (err_buf) {
-				snprintf(err_buf, err_cap, "Lammps atom format: Missing required identifier '%s'", atom_field_name[idx]);
+				md_snprintf(err_buf, err_cap, "Lammps atom format: Missing required identifier '%s'", atom_field_name[idx]);
 			} else {
 				MD_LOG_ERROR("Lammps atom format: Missing required identifier '%s'", atom_field_name[idx]);
 			}
@@ -851,8 +851,8 @@ static str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_ur
 		const md_atomic_number_t z = first[k];
 		if (count[z] == 0) continue;
 		const str_t sym = md_atomic_number_symbol(z);
-		len += snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
-		if (count[z] > 1 && len < (int)cap) len += snprintf(buf + len, cap - len, "%u", count[z]);
+		len += md_snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+		if (count[z] > 1 && len < (int)cap) len += md_snprintf(buf + len, cap - len, "%u", count[z]);
 		if (len >= (int)cap) return (str_t){0};
 		count[z] = 0;
 	}
@@ -865,8 +865,8 @@ static str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_ur
 		}
 		if (best == -1) break;
 		const str_t sym = md_atomic_number_symbol((md_atomic_number_t)best);
-		len += snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
-		if (count[best] > 1 && len < (int)cap) len += snprintf(buf + len, cap - len, "%u", count[best]);
+		len += md_snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+		if (count[best] > 1 && len < (int)cap) len += md_snprintf(buf + len, cap - len, "%u", count[best]);
 		if (len >= (int)cap) return (str_t){0};
 		count[best] = 0;
 	}
@@ -896,11 +896,11 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 			md_hashmap_add(&entity_map, key, (uint32_t)entity_idx);
 
 			md_label_t id = {0};
-			id.len = (uint8_t)snprintf(id.buf, sizeof(id.buf), "%i", entity_idx + 1);
+			id.len = (uint8_t)md_snprintf(id.buf, sizeof(id.buf), "%i", entity_idx + 1);
 			char buf[64];
 			str_t desc = lammps_formula(buf, sizeof(buf), sys, range);
 			if (str_empty(desc)) {
-				const int len = snprintf(buf, sizeof(buf), "molecule type %i", entity_idx + 1);
+				const int len = md_snprintf(buf, sizeof(buf), "molecule type %i", entity_idx + 1);
 				desc = (str_t){ buf, (size_t)len };
 			}
 			md_array_push(sys->entity.id, id, sys->alloc);
@@ -971,7 +971,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	
 	for (size_t i = 0; i < data->num_atom_types; ++i) {
 		char buf[8];
-		int len = snprintf(buf, sizeof(buf), "type_%i", data->atom_types[i].id);
+		int len = md_snprintf(buf, sizeof(buf), "type_%i", data->atom_types[i].id);
 		
 		str_t type_id = {buf, len};
 		float mass   = data->atom_types[i].mass;
@@ -994,7 +994,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 		if (has_resid) {
 			if (resid != prev_resid) {
 				char buf[8];
-				int len = snprintf(buf, sizeof(buf), "comp_%i", resid);
+				int len = md_snprintf(buf, sizeof(buf), "comp_%i", resid);
 				str_t name = {buf, len};
 				md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
 				md_array_push(sys->component.seq_id, resid, sys->alloc);

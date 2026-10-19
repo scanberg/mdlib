@@ -419,7 +419,7 @@ struct md_system_extract_t {
 };
 
 static str_t extract_run_path(char* buf, size_t cap, str_t run, str_t leaf) {
-    const int len = snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(run), STR_ARG(leaf));
+    const int len = md_snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(run), STR_ARG(leaf));
     return (len > 0 && (size_t)len < cap) ? (str_t){buf, (size_t)len} : (str_t){0};
 }
 
@@ -623,7 +623,7 @@ bool md_system_extract_frame(md_system_extract_t* ex, int64_t frame, md_system_s
 // ### RUNS ###
 
 static str_t run_cache_path(char* buf, size_t cap, str_t source_path) {
-    const int len = snprintf(buf, cap, STR_FMT ".cache", STR_ARG(source_path));
+    const int len = md_snprintf(buf, cap, STR_FMT ".cache", STR_ARG(source_path));
     return (len > 0 && (size_t)len < cap) ? (str_t){buf, (size_t)len} : (str_t){0};
 }
 
@@ -907,7 +907,7 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
         char slug[128];
         size_t len = run_series_slug(slug, sizeof(slug) - 8, d->names[k]);
         if (len == 0) {
-            len = (size_t)snprintf(slug, sizeof(slug), "column%zu", k + 1);
+            len = (size_t)md_snprintf(slug, sizeof(slug), "column%zu", k + 1);
         }
         const size_t base = len;
         for (int n = 2;; ++n) {
@@ -916,7 +916,7 @@ bool md_run_publish_series(md_system_t* sys, str_t run, const md_run_series_desc
                 if (str_eq(taken[t], (str_t){slug, len})) { clash = true; break; }
             }
             if (!clash) break;
-            len = base + (size_t)snprintf(slug + base, sizeof(slug) - base, "_%d", n);
+            len = base + (size_t)md_snprintf(slug + base, sizeof(slug) - base, "_%d", n);
         }
         md_array_push(taken, str_copy((str_t){slug, len}, temp_alloc), temp_alloc);
 

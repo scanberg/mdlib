@@ -476,7 +476,7 @@ static bool trr_publish_sparse_section(md_system_t* sys, str_t run, str_t path, 
     const str_t leaf = str_from_cstr(trr_run_sections[kind].leaf);
     const str_t name = str_substr(leaf, 5, SIZE_MAX);
     char group_buf[512];
-    const int group_len = snprintf(group_buf, sizeof(group_buf), STR_FMT "/trr/" STR_FMT, STR_ARG(run), STR_ARG(name));
+    const int group_len = md_snprintf(group_buf, sizeof(group_buf), STR_FMT "/trr/" STR_FMT, STR_ARG(run), STR_ARG(name));
     if (group_len <= 0 || group_len >= (int)sizeof(group_buf)) {
         return false;
     }

@@ -155,7 +155,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_
         }
 
 		char combined_key_buf[16];
-		int len = snprintf(combined_key_buf, sizeof(combined_key_buf), STR_FMT ":" STR_FMT, STR_ARG(res_name), STR_ARG(atom_name));
+		int len = md_snprintf(combined_key_buf, sizeof(combined_key_buf), STR_FMT ":" STR_FMT, STR_ARG(res_name), STR_ARG(atom_name));
 		str_t combined_key = { combined_key_buf, (size_t)len };
 
 		// Check predefined resname : atomlabel mappings first

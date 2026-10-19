@@ -1034,7 +1034,7 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 			char slug[128];
 			size_t slug_len = edr_slug(slug, sizeof(slug) - 8, out->label);
 			if (slug_len == 0) {
-				slug_len = (size_t)snprintf(slug, sizeof(slug), "term%zu", o);
+				slug_len = (size_t)md_snprintf(slug, sizeof(slug), "term%zu", o);
 			}
 			const size_t base_len = slug_len;
 			for (int n = 2;; ++n) {
@@ -1043,7 +1043,7 @@ bool md_edr_system_supplement(md_system_t* sys, const md_edr_energies_t* energie
 					if (str_eq(taken[k], (str_t){slug, slug_len})) { clash = true; break; }
 				}
 				if (!clash) break;
-				slug_len = base_len + (size_t)snprintf(slug + base_len, sizeof(slug) - base_len, "_%d", n);
+				slug_len = base_len + (size_t)md_snprintf(slug + base_len, sizeof(slug) - base_len, "_%d", n);
 			}
 			if (slug_len != base_len) {
 				MD_LOG_INFO("EDR: '" STR_FMT "' published as '%s', its plain name was taken", STR_ARG(out->label), slug);

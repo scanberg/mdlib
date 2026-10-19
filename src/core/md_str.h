@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include <core/md_common.h>  // ASSERT, MIN, MAX
 
@@ -317,6 +318,24 @@ str_t str_copy_cstr(const char* cstr, struct md_allocator_i* alloc);
 str_t str_copy_cstrn(const char* cstr, size_t len, struct md_allocator_i* alloc);
 
 str_t str_printf(struct md_allocator_i* alloc, const char* format, ...);
+
+#if defined(__GNUC__) || defined(__clang__)
+#define MD_STR_PRINTF(fmt_idx, arg_idx) __attribute__((format(printf, fmt_idx, arg_idx)))
+#else
+#define MD_STR_PRINTF(fmt_idx, arg_idx)
+#endif
+
+// snprintf and vsnprintf as C99 has them, in the "C" locale whatever the process or the calling thread
+// has set: the decimal point is always '.'. The process locale is not ours to rely on. A GTK file dialog
+// switches it to the user's, and so may a shell extension a Windows file dialog loads, and under a decimal
+// comma locale the C library writes 1.5 as "1,5" - which md_parse, as it does not follow the locale either,
+// reads back as 1 and 5. Everything mdlib formats goes through these (str_printf, the writers,
+// md_file_printf and the log too), so what it writes is the same text in every locale.
+//
+// Implemented in md_os.c: each call is handed a "C" locale of its own through the platform's API, rather
+// than setlocale, which is process wide and would change what every other thread prints meanwhile.
+int md_snprintf (char* buf, size_t cap, const char* format, ...) MD_STR_PRINTF(3, 4);
+int md_vsnprintf(char* buf, size_t cap, const char* format, va_list args);
 
 // This should probably be removed
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);

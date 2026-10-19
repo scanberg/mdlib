@@ -59,7 +59,7 @@ static bool fail(parser_t* p, const char* at, const char* fmt, ...) {
             p->err->offset = (size_t)(at - p->str);
             va_list args;
             va_start(args, fmt);
-            vsnprintf(p->err->message, sizeof(p->err->message), fmt, args);
+            md_vsnprintf(p->err->message, sizeof(p->err->message), fmt, args);
             va_end(args);
         }
     }

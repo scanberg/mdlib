@@ -278,7 +278,7 @@ static size_t h5_children(md_array(str_t)* out, hid_t loc, const char* path, md_
 }
 
 static bool h5_path(char* buf, size_t cap, const char* parent, str_t child) {
-    const int len = snprintf(buf, cap, "%s/" STR_FMT, parent, STR_ARG(child));
+    const int len = md_snprintf(buf, cap, "%s/" STR_FMT, parent, STR_ARG(child));
     return len > 0 && (size_t)len < cap;
 }
 
@@ -402,10 +402,10 @@ static bool h5md_element_open(h5md_element_t* e, hid_t file, const char* path, m
     MEMSET(e, 0, sizeof(*e));
     const H5I_type_t kind = h5_kind(file, path);
     if (kind == H5I_DATASET) {
-        snprintf(e->value, sizeof(e->value), "%s", path);
+        md_snprintf(e->value, sizeof(e->value), "%s", path);
     } else if (kind == H5I_GROUP) {
         e->temporal = true;
-        const int len = snprintf(e->value, sizeof(e->value), "%s/value", path);
+        const int len = md_snprintf(e->value, sizeof(e->value), "%s/value", path);
         if (len <= 0 || (size_t)len >= sizeof(e->value) || h5_kind(file, e->value) != H5I_DATASET) {
             return false;   // a group, but not an element: a subgroup of observables, say
         }
@@ -444,7 +444,7 @@ static bool h5md_element_open(h5md_element_t* e, hid_t file, const char* path, m
                     MD_LOG_ERROR("H5MD: '%s' has a time that does not match its %zu frames", path, e->num_frames);
                 } else {
                     char time_path[H5MD_PATH_MAX];
-                    snprintf(time_path, sizeof(time_path), "%s/time", path);
+                    md_snprintf(time_path, sizeof(time_path), "%s/time", path);
                     h5md_unit_of(&e->time_unit, file, time_path, alloc);
                 }
             }
@@ -488,10 +488,10 @@ static size_t h5md_group_size(hid_t file, const char* group) {
     static const char* names[] = { "position", "species", "mass", "charge", "id", "velocity", "force" };
     for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
         char path[H5MD_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", group, names[i]);
+        md_snprintf(path, sizeof(path), "%s/%s", group, names[i]);
         const H5I_type_t kind = h5_kind(file, path);
         if (kind == H5I_GROUP) {
-            snprintf(path, sizeof(path), "%s/%s/value", group, names[i]);
+            md_snprintf(path, sizeof(path), "%s/%s/value", group, names[i]);
         } else if (kind != H5I_DATASET) {
             continue;
         }
@@ -537,7 +537,7 @@ static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
         const size_t n = h5md_group_size(file, path);
         if (n > p->num_particles) {
             p->num_particles = n;
-            snprintf(p->path, sizeof(p->path), "%s", path);
+            md_snprintf(p->path, sizeof(p->path), "%s", path);
         }
     }
     if (p->num_particles == 0) {
@@ -546,14 +546,14 @@ static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
     }
 
     char path[H5MD_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/id", p->path);
+    md_snprintf(path, sizeof(path), "%s/id", p->path);
     h5md_element_t id;
     if (h5md_element_open(&id, file, path, alloc) && id.temporal) {
         MD_LOG_ERROR("H5MD: the particles of '%s' change between frames (a time dependent id), which is not read", p->path);
         return false;
     }
 
-    snprintf(path, sizeof(path), "%s/position", p->path);
+    md_snprintf(path, sizeof(path), "%s/position", p->path);
     p->has_position = h5md_element_open(&p->position, file, path, alloc);
     if (p->has_position) {
         const int axis = p->position.temporal ? 1 : 0;
@@ -568,7 +568,7 @@ static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
     }
 
     // The box: a periodic dimension has a box vector, a dimension without a boundary does not
-    snprintf(path, sizeof(path), "%s/box", p->path);
+    md_snprintf(path, sizeof(path), "%s/box", p->path);
     hid_t box = H5Gopen(file, path, H5P_DEFAULT);
     if (box >= 0) {
         int32_t dimension = 3;
@@ -583,7 +583,7 @@ static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
         for (int k = 0; k < 3; ++k) {
             p->periodic[k] = str_eq_cstr(boundary[k], "periodic");
         }
-        snprintf(path, sizeof(path), "%s/box/edges", p->path);
+        md_snprintf(path, sizeof(path), "%s/box/edges", p->path);
         p->has_edges = h5md_element_open(&p->edges, file, path, alloc);
         if (p->has_edges) {
             const int tensor = p->edges.rank - (p->edges.temporal ? 1 : 0);
@@ -656,7 +656,7 @@ static bool h5md_read_cells(float* out, hid_t file, const h5md_particles_t* p, m
 static bool h5md_read_ids(int64_t** out, hid_t file, const h5md_particles_t* p, md_allocator_i* alloc) {
     *out = NULL;
     char path[H5MD_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/id", p->path);
+    md_snprintf(path, sizeof(path), "%s/id", p->path);
     if (h5_kind(file, path) != H5I_DATASET) {
         return true;
     }
@@ -781,7 +781,7 @@ static void h5md_read_bonds(md_array(md_atom_pair_t)* out, hid_t file, const h5m
 // floats. False when the group has no such element or it is not 'components' values per particle.
 static bool h5md_read_particle_values(float* out, h5md_element_t* e, hid_t file, const h5md_particles_t* p, const char* name, size_t components, md_allocator_i* alloc) {
     char path[H5MD_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", p->path, name);
+    md_snprintf(path, sizeof(path), "%s/%s", p->path, name);
     if (!h5md_element_open(e, file, path, alloc)) {
         return false;
     }
@@ -950,7 +950,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     bool from_label = false;
     for (size_t i = 0; i < N; ++i) names[i] = STR_LIT("X");
     char path[H5MD_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/species", p->path);
+    md_snprintf(path, sizeof(path), "%s/species", p->path);
     if (h5md_element_open(&e, file, path, scratch)) {
         const int axis = e.temporal ? 1 : 0;
         hid_t dset = H5Dopen(file, e.value, H5P_DEFAULT);
@@ -1128,13 +1128,13 @@ bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, s
     static const char* columns[] = { "velocity", "force", "image" };
     for (size_t k = 0; k < ARRAY_SIZE(columns); ++k) {
         char probe[H5MD_PATH_MAX];
-        snprintf(probe, sizeof(probe), "%s/%s", p.path, columns[k]);
+        md_snprintf(probe, sizeof(probe), "%s/%s", p.path, columns[k]);
         h5md_element_t e;
         if (h5_kind(file, probe) != H5I_DATASET) continue;
         float* values = md_alloc(scratch, N * 3 * sizeof(float));
         if (h5md_read_particle_values(values, &e, file, &p, columns[k], 3, scratch)) {
             char attr_path[64];
-            snprintf(attr_path, sizeof(attr_path), "atom/%s", columns[k]);
+            md_snprintf(attr_path, sizeof(attr_path), "atom/%s", columns[k]);
             md_attributes_publish_atom_column(&sys->attributes, str_from_cstr(attr_path), e.unit, 3, values, N);
         }
     }
@@ -1514,9 +1514,9 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
 
         const bool aligned = e.num_frames == F && MEMCMP(e.step, p->position.step, F * sizeof(int64_t)) == 0;
         char group_buf[512];
-        const int group_len = snprintf(group_buf, sizeof(group_buf), STR_FMT "/h5md/particles/" STR_FMT, STR_ARG(run), STR_ARG(name));
+        const int group_len = md_snprintf(group_buf, sizeof(group_buf), STR_FMT "/h5md/particles/" STR_FMT, STR_ARG(run), STR_ARG(name));
         char leaf_buf[256];
-        const int leaf_len = snprintf(leaf_buf, sizeof(leaf_buf), "atom/" STR_FMT, STR_ARG(name));
+        const int leaf_len = md_snprintf(leaf_buf, sizeof(leaf_buf), "atom/" STR_FMT, STR_ARG(name));
         if (group_len <= 0 || group_len >= (int)sizeof(group_buf) || leaf_len <= 0 || leaf_len >= (int)sizeof(leaf_buf)) continue;
         const str_t group = { group_buf, (size_t)group_len };
         const str_t leaf  = { leaf_buf, (size_t)leaf_len };
@@ -1533,7 +1533,7 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
         src.raw        = raw;
         src.components = (uint32_t)K;
         src.scale      = 1.0f;
-        snprintf(src.dataset, sizeof(src.dataset), "%s", e.value);
+        md_snprintf(src.dataset, sizeof(src.dataset), "%s", e.value);
         ok = ok && h5md_publish_virtual(attributes, (md_attribute_desc_t){
             .path = aligned ? md_run_path(buf, sizeof(buf), run, leaf) : md_run_path(buf, sizeof(buf), group, leaf),
             .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = (uint32_t)K, .rank = 2, .shape = { (uint32_t)e.num_frames, (uint32_t)N } },
@@ -1591,7 +1591,7 @@ static bool h5md_publish_observables(md_system_t* sys, hid_t file, const char* d
 
         // "/observables/a/b" -> "<run>/h5md/observables/a/b"
         char group_buf[512];
-        const int group_len = snprintf(group_buf, sizeof(group_buf), STR_FMT "/h5md%s", STR_ARG(run), path);
+        const int group_len = md_snprintf(group_buf, sizeof(group_buf), STR_FMT "/h5md%s", STR_ARG(run), path);
         if (group_len <= 0 || group_len >= (int)sizeof(group_buf)) continue;
         const str_t group = { group_buf, (size_t)group_len };
 
@@ -1688,7 +1688,7 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
         .components = 3,
         .scale      = (float)scale,
     };
-    snprintf(src.dataset, sizeof(src.dataset), "%s", p.position.value);
+    md_snprintf(src.dataset, sizeof(src.dataset), "%s", p.position.value);
 
     h5md_source_t* state = md_attributes_alloc_user_data(attributes, sizeof(h5md_source_t));
     if (!state) {

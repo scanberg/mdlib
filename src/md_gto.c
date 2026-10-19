@@ -1702,9 +1702,9 @@ static bool gto_gemm_config(gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t
         cfg->small    = gto_density_gemm2_kernel(32);
         cfg->small_gp = GTO_GEMM_GROUP_VOXELS;
         cfg->small_n  = (uint32_t)sn;
-        snprintf(cfg->label, sizeof(cfg->label), "%ux%u, %ux32 for n<=%d", GTO_GEMM_GROUP_VOXELS, gm, GTO_GEMM_GROUP_VOXELS, sn);
+        md_snprintf(cfg->label, sizeof(cfg->label), "%ux%u, %ux32 for n<=%d", GTO_GEMM_GROUP_VOXELS, gm, GTO_GEMM_GROUP_VOXELS, sn);
     } else {
-        snprintf(cfg->label, sizeof(cfg->label), "%ux%u", GTO_GEMM_GROUP_VOXELS, gm);
+        md_snprintf(cfg->label, sizeof(cfg->label), "%ux%u", GTO_GEMM_GROUP_VOXELS, gm);
     }
     return true;
 }
@@ -2068,7 +2068,7 @@ static void gto_orbital_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_orb
     gto_gemm_cfg_t cfg = {0};
     cfg.large    = gto_mo_gemm_kernel();
     cfg.large_gp = GTO_GEMM_GROUP_VOXELS;
-    snprintf(cfg.label, sizeof(cfg.label), "mo %ux32", GTO_GEMM_GROUP_VOXELS);
+    md_snprintf(cfg.label, sizeof(cfg.label), "mo %ux32", GTO_GEMM_GROUP_VOXELS);
     if (!cfg.large) {
         MD_LOG_ERROR("md_gto_gpu_orbital_launch: GEMM kernel not available (md_gto_gpu_initialize not called?)");
         return;

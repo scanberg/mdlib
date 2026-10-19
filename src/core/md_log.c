@@ -220,7 +220,7 @@ int md_logf(md_log_type_t log_type, const char* format, ...) {
 
     va_list args;
     va_start(args, format);
-    int res = vsnprintf(buf, sizeof(buf), format, args);
+    int res = md_vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
 
     for (int i = 0; i < num_loggers; ++i) {

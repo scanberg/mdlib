@@ -4536,7 +4536,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
         if (entity_idx == -1) {
             entity_idx = (md_entity_idx_t)sys->entity.count;
             md_label_t entity_id = {0};
-            entity_id.len = (uint8_t)snprintf(entity_id.buf, sizeof(entity_id.buf), "%i", entity_idx + 1);
+            entity_id.len = (uint8_t)md_snprintf(entity_id.buf, sizeof(entity_id.buf), "%i", entity_idx + 1);
 
             // That the entity was inferred is carried by its flags, the description only says what it is: the kind of
             // a polymer, the component names of anything else
@@ -4548,7 +4548,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
                 int len = 0;
                 for (size_t c = i; c < j; ++c) {
                     const str_t name = md_component_name(&sys->component, c);
-                    len += snprintf(buf + len, sizeof(buf) - len, "%s" STR_FMT, c > i ? "-" : "", STR_ARG(name));
+                    len += md_snprintf(buf + len, sizeof(buf) - len, "%s" STR_FMT, c > i ? "-" : "", STR_ARG(name));
                     len = MIN(len, (int)sizeof(buf) - 1);
                 }
                 desc = (str_t){ buf, (size_t)len };
@@ -5530,7 +5530,7 @@ static const atom_type_t predefined_atom_types[] = {
 
 static inline uint64_t gen_key_from_names(str_t comp_name, str_t atom_name) {
     char buf[64];
-    int len = snprintf(buf, sizeof(buf), STR_FMT "_" STR_FMT, STR_ARG(comp_name), STR_ARG(atom_name));
+    int len = md_snprintf(buf, sizeof(buf), STR_FMT "_" STR_FMT, STR_ARG(comp_name), STR_ARG(atom_name));
     str_t str = {buf, (size_t)len};
     return md_hash64_str(str, 0);
 }

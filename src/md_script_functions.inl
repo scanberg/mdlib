@@ -1125,14 +1125,14 @@ static inline void push_quantity_text(vec3_t xyz, double value, md_unit_t unit, 
     ASSERT(vis->alloc);
 
     char buf[64];
-    size_t len = (size_t)snprintf(buf, sizeof(buf), "%.2f", value);
+    size_t len = (size_t)md_snprintf(buf, sizeof(buf), "%.2f", value);
     if (len < sizeof(buf) && !md_unit_is_none(unit)) {
         char unit_buf[32];
         const size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), unit);
         if (unit_len > 0) {
             // The degree sign hugs the number the way the convention has it, everything else takes a space.
             const char* sep = strcmp(unit_buf, "\xC2\xB0") == 0 ? "" : " ";
-            len += (size_t)snprintf(buf + len, sizeof(buf) - len, "%s%s", sep, unit_buf);
+            len += (size_t)md_snprintf(buf + len, sizeof(buf) - len, "%s%s", sep, unit_buf);
         }
     }
     len = MIN(len, sizeof(buf) - 1);
@@ -5866,7 +5866,7 @@ static int _pucker_rings(data_t* dst, data_t arg[], eval_context_t* ctx) {
             if (pucker_group_ring(&pr, &groups[g], ctx, temp_alloc) < 0) {
                 const size_t n = md_bitset_count(groups[g]);
                 char what[32] = "";
-                if (num > 1) snprintf(what, sizeof(what), " %zu of %zu", g + 1, num);
+                if (num > 1) md_snprintf(what, sizeof(what), " %zu of %zu", g + 1, num);
                 if (n < 5 || n > 7) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: group%s has %zu atoms, a ring of 5 to 7 is needed (ring(size=5:7) gives those)", what, n);
                 else                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "pucker: group%s is not a ring of the system; pucker({i, j, ...}) takes atoms in the order of a ring", what);
                 result = STATIC_VALIDATION_ERROR;

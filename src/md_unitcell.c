@@ -1,11 +1,13 @@
 #include "md_unitcell.h"
 
+#include <core/md_str.h>
+
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 int md_unitcell_print(char* out_buf, size_t buf_cap, const md_unitcell_t* cell) {
-    return snprintf(out_buf, buf_cap, "x: %f, y: %f, z: %f \nxy: %f, xz: %f, yz: %f \nflags: %i", cell->x, cell->y, cell->z, cell->xy, cell->xz, cell->yz, cell->flags);
+    return md_snprintf(out_buf, buf_cap, "x: %f, y: %f, z: %f \nxy: %f, xz: %f, yz: %f \nflags: %i", cell->x, cell->y, cell->z, cell->xy, cell->xz, cell->yz, cell->flags);
 }
 
 md_unitcell_t md_unitcell_from_basis_parameters(double x, double y, double z, double xy, double xz, double yz) {

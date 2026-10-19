@@ -3,7 +3,46 @@
 #include <core/md_str.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
+#include <core/md_writer.h>
 #include <float.h>
+
+#include "comma_locale.h"
+
+// What mdlib formats reads back with md_parse, which does not follow the locale either: under a decimal
+// comma locale 1.5 is still written "1.5", by md_snprintf and by everything formatting through it
+UTEST(str, printf_ignores_the_locale) {
+    comma_locale_t loc;
+    if (!comma_locale_enter(&loc)) {
+        return;
+    }
+
+    char buf[128];
+    // The C library follows the locale, or this would check nothing
+    snprintf(buf, sizeof(buf), "%.2f", 1.5);
+    EXPECT_STREQ("1,50", buf);
+
+    EXPECT_EQ(4, md_snprintf(buf, sizeof(buf), "%.2f", 1.5));
+    EXPECT_STREQ("1.50", buf);
+    md_snprintf(buf, sizeof(buf), "%.9g|%.17g|%e|%g", (double)0.1f, 0.25, 1.5e-7, -2.5);
+    EXPECT_STREQ("0.100000001|0.25|1.500000e-07|-2.5", buf);
+
+    // Measured, and cut short, the way C99 has it
+    EXPECT_EQ(4, md_snprintf(NULL, 0, "%.2f", 1.5));
+    EXPECT_EQ(4, md_snprintf(buf, 3, "%.2f", 1.5));
+    EXPECT_STREQ("1.", buf);
+
+    md_allocator_i* alloc = md_get_heap_allocator();
+    str_t str = str_printf(alloc, "%.3f", 2.25);
+    EXPECT_TRUE(str_eq_cstr(str, "2.250"));
+    str_free(str, alloc);
+
+    md_str_writer_t sw = md_str_writer_create(alloc);
+    md_str_writer_fmt(&sw, "%g,%g", 0.5, 1.5);
+    EXPECT_TRUE(str_eq_cstr(md_str_writer_to_str(&sw), "0.5,1.5"));
+    md_str_writer_free(&sw);
+
+    comma_locale_leave(&loc);
+}
 
 UTEST(str, extract_line) {
     str_t str = STR_INIT(

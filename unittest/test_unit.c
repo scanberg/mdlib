@@ -3,6 +3,8 @@
 #include <core/md_unit.h>
 #include <core/md_str.h>
 
+#include "comma_locale.h"
+
 #define UNIT_KILOGRAM       {.base = {.dim = {.mass = 1,}},     .mult = 1.0}
 #define UNIT_NANOMETER      {.base = {.dim = {.length = 1,}},   .mult = 1e-9}
 
@@ -261,4 +263,24 @@ UTEST(unit, charge_and_dipole) {
     // adding 'e' to the table must not have shadowed the electronvolt
     ASSERT_TRUE(md_unit_parse(&parsed, STR_LIT("eV")));
     EXPECT_TRUE(md_unit_equal(parsed, md_unit_electronvolt()));
+}
+
+// A scale that is no prefix is printed as a number, which has to read back: under a decimal comma locale
+// "1,5*m" would not
+UTEST(unit, print_ignores_the_locale) {
+	const md_unit_t unit = md_unit_scl(md_unit_meter(), 1.5);
+	char ref[64];
+	md_unit_print(ref, sizeof(ref), unit);
+	EXPECT_STREQ("1.5*m", ref);
+
+	comma_locale_t loc;
+	if (!comma_locale_enter(&loc)) {
+		return;
+	}
+	char buf[64];
+	md_unit_print(buf, sizeof(buf), unit);
+	comma_locale_leave(&loc);
+
+	EXPECT_STREQ(ref, buf);
+	EXPECT_TRUE(md_unit_equal(unit, parse(str_from_cstr(buf))));
 }

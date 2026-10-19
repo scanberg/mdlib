@@ -252,7 +252,7 @@ md_attribute_id_t md_qm_publish_or_alias(md_system_t* sys, md_attribute_id_t alp
 }
 
 str_t md_qm_attribute_path(char* buf, size_t cap, str_t group, str_t name) {
-    int len = snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(group), STR_ARG(name));
+    int len = md_snprintf(buf, cap, STR_FMT "/" STR_FMT, STR_ARG(group), STR_ARG(name));
     if (len <= 0 || (size_t)len >= cap) {
         MD_LOG_ERROR("Attribute path '" STR_FMT "/" STR_FMT "' does not fit in %zu characters", STR_ARG(group), STR_ARG(name), cap - 1);
         return (str_t){0};
