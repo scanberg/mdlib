@@ -39,6 +39,10 @@ enum {
 //   component  md_component_flags_t  what the component is (amino acid, nucleotide, water, ion), and where in its chain
 //   entity     md_entity_flags_t     what the molecule is (peptide, DNA, water, ...)
 //
+// Components of the same name and kind share a component type (md_component_type_data_t), as atoms share an atom
+// type. What an atom type is a form of is its element, what a component type is a form of is its standard monomer
+// (md_monomer_t): HIE, HSD and MSE are forms of HIS, HIS and MET. Both are where the defaults of the type come from.
+//
 // Instances have no flags of their own: an instance is one occurrence of its entity (md_system_instance_entity_kind).
 // Nothing is copied from one level to another. A property of an atom's type or of its component is read through the
 // type or the component (md_atom_particle_kind, md_system_atom_component_kind), so there is one copy and it cannot go
@@ -143,6 +147,34 @@ typedef enum {
 } md_component_flags_t;
 
 ENUM_FLAGS(md_component_flags_t)
+
+// ### MONOMER ###
+
+// The standard monomers of proteins and nucleic acids, the predefined table component types are matched against
+// (md_monomer_from_comp_name), as atom types are matched against the elements. A monomer has its id in the Chemical
+// Component Dictionary of the PDB, a one letter code, a kind and a default color (md_monomer_*). The values are not
+// stable across versions: store a monomer by its id (md_monomer_id, md_monomer_from_id), not by its value.
+typedef enum md_monomer_t {
+    MD_MONOMER_NONE = 0,    // Not a form of a standard monomer: a ligand, water, an ion, a lipid, ...
+
+    // Amino acids
+    MD_MONOMER_ALA, MD_MONOMER_ARG, MD_MONOMER_ASN, MD_MONOMER_ASP, MD_MONOMER_CYS,
+    MD_MONOMER_GLN, MD_MONOMER_GLU, MD_MONOMER_GLY, MD_MONOMER_HIS, MD_MONOMER_ILE,
+    MD_MONOMER_LEU, MD_MONOMER_LYS, MD_MONOMER_MET, MD_MONOMER_PHE, MD_MONOMER_PRO,
+    MD_MONOMER_SER, MD_MONOMER_THR, MD_MONOMER_TRP, MD_MONOMER_TYR, MD_MONOMER_VAL,
+    MD_MONOMER_SEC,         // Selenocysteine (U)
+    MD_MONOMER_PYL,         // Pyrrolysine (O)
+    MD_MONOMER_UNK,         // An amino acid which is none of the above (a modified residue of no known parent), or a
+                            // cap of a chain (ACE, NME)
+
+    // Deoxyribonucleotides
+    MD_MONOMER_DA, MD_MONOMER_DC, MD_MONOMER_DG, MD_MONOMER_DT, MD_MONOMER_DU, MD_MONOMER_DI,
+    // Ribonucleotides
+    MD_MONOMER_A, MD_MONOMER_C, MD_MONOMER_G, MD_MONOMER_U, MD_MONOMER_I,
+    MD_MONOMER_N,           // A nucleotide which is none of the above
+
+    MD_MONOMER_COUNT
+} md_monomer_t;
 
 // ### ENTITY ###
 
@@ -459,6 +491,7 @@ typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_sequence_id_t;
 typedef int32_t     md_bond_idx_t;
 typedef uint16_t    md_atom_type_idx_t;
+typedef int32_t     md_component_type_idx_t;
 typedef uint8_t     md_atomic_number_t;
 typedef uint8_t     md_ramachandran_type_t;
 typedef uint8_t     md_order_t;
@@ -580,6 +613,23 @@ md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 // Returns the number of successfully inferred atomic numbers
 // All of the supplied arrays must have at least 'count' elements
 size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const float masses[], size_t count);
+
+// Standard monomers (md_monomer_t), "" / 0 for MD_MONOMER_NONE or a value out of range
+str_t    md_monomer_id(md_monomer_t monomer);          // Id in the Chemical Component Dictionary: "ALA", "DA", "A"
+str_t    md_monomer_name(md_monomer_t monomer);        // "Alanine", "Deoxyadenosine", "Adenosine"
+char     md_monomer_letter(md_monomer_t monomer);      // One letter code: 'A' for ALA, DA and A
+md_component_kind_t md_monomer_kind(md_monomer_t monomer);  // MD_COMPONENT_KIND_AMINO_ACID or _NUCLEOTIDE
+uint32_t md_monomer_color(md_monomer_t monomer);       // Default color (RGBA, R in the lowest byte, as the CPK colors)
+
+// The monomer of the given id ("HIS"), exactly and ignoring case. MD_MONOMER_NONE if there is none.
+md_monomer_t md_monomer_from_id(str_t id);
+
+// The standard monomer a component of the given name and kind is a form of. Only amino acids and nucleotides are forms
+// of one: the variants of the force fields (HID, HIE, HSP, HISH, CYX, ASH, LYN, the Martini ARG0, ...), the termini of
+// Amber (NALA, CALA, DA5, RA3), the names of CHARMM (ADE, CYT, ...) and the common modified residues (MSE, SEP, PSU,
+// 5MC, ...). An amino acid or nucleotide which is not known is MD_MONOMER_UNK or MD_MONOMER_N, any other kind
+// MD_MONOMER_NONE, except the caps of a peptide chain (ACE, NME, ...) which are MD_MONOMER_UNK.
+md_monomer_t md_monomer_from_comp_name(str_t comp_name, md_component_kind_t kind);
 
 #ifdef __cplusplus
 }
