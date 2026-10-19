@@ -723,7 +723,7 @@ static bool molden_coefficients_to_cartesian(double* dst, size_t dst_cap, const 
 // consumer cannot recover it afterwards: the basis in the table is Cartesian whichever way the file
 // stated it, which is the point of converting at load time.
 static str_t molden_ao_convention(const molden_t* molden, char* buf, size_t cap) {
-    int len = snprintf(buf, cap, "%s%s%s",
+    int len = md_snprintf(buf, cap, "%s%s%s",
                        molden->pure[2] ? "5D"  : "6D",
                        molden->pure[3] ? "7F"  : "10F",
                        molden->pure[4] ? "9G"  : "15G");

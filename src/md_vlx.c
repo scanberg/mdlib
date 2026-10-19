@@ -1357,9 +1357,9 @@ static bool h5_visit_groups_recursive_impl(vlx_t* vlx, hid_t group_handle, const
 
 		char child_path[512];
 		if (strcmp(group_path, "/") == 0) {
-			snprintf(child_path, sizeof(child_path), "/%s", name_buf);
+			md_snprintf(child_path, sizeof(child_path), "/%s", name_buf);
 		} else {
-			snprintf(child_path, sizeof(child_path), "%s/%s", group_path, name_buf);
+			md_snprintf(child_path, sizeof(child_path), "%s/%s", group_path, name_buf);
 		}
 
 		bool result = h5_visit_groups_recursive_impl(vlx, child_group, child_path, callback, user_data, depth + 1);
@@ -1633,7 +1633,7 @@ static bool h5_read_atomic_properties_in_group(vlx_t* vlx, hid_t group_handle, c
 
 		if (property_label[0] == '\0') {
 			// Not an error, just use the field name as the property label
-			snprintf(property_label, sizeof(property_label), "%s", name_buf);
+			md_snprintf(property_label, sizeof(property_label), "%s", name_buf);
 		}
 
 		// We have a property label, we attempt to read the dataset as an array of doubles with the length of number of atoms
@@ -1849,7 +1849,7 @@ static bool h5_read_density_properties_in_group(vlx_t* vlx, hid_t group_handle, 
 		}
 
 		if (property_label[0] == '\0') {
-			snprintf(property_label, sizeof(property_label), "%s", name_buf);
+			md_snprintf(property_label, sizeof(property_label), "%s", name_buf);
 		}
 
 		hid_t space_id = H5Dget_space(dataset_id);
@@ -1896,9 +1896,9 @@ static bool h5_read_density_properties_in_group(vlx_t* vlx, hid_t group_handle, 
 		// (vlx_density_property_provide), and a density property nobody looks at costs nothing.
 		char dataset_path[1024];
 		if (strcmp(group_path, "/") == 0) {
-			snprintf(dataset_path, sizeof(dataset_path), "/%s", name_buf);
+			md_snprintf(dataset_path, sizeof(dataset_path), "/%s", name_buf);
 		} else {
-			snprintf(dataset_path, sizeof(dataset_path), "%s/%s", group_path, name_buf);
+			md_snprintf(dataset_path, sizeof(dataset_path), "%s/%s", group_path, name_buf);
 		}
 
 		int64_t offset = -1;
@@ -2470,7 +2470,7 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		size_t num_iter = 0;
 		for (size_t i = 0; i < num_links; ++i) {
 			char name_buf[64];
-			snprintf(name_buf, sizeof(name_buf), "%zu", i);
+			md_snprintf(name_buf, sizeof(name_buf), "%zu", i);
 			if (H5Lexists(scf_history, name_buf, H5P_DEFAULT) > 0) {
 				num_iter += 1;
 			}
@@ -2494,7 +2494,7 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 			size_t iter = 0;
 			for (size_t i = 0; i < num_links && iter < num_iter; ++i) {
 				char name_buf[64];
-				snprintf(name_buf, sizeof(name_buf), "%zu", i);
+				md_snprintf(name_buf, sizeof(name_buf), "%zu", i);
 				if (H5Lexists(scf_history, name_buf, H5P_DEFAULT) <= 0) {
 					continue;
 				}
@@ -2671,7 +2671,7 @@ static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
 				vlx->rsp.solution_matrix.size[1] = dims[1];
 				char field_name[16];
 				for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_frequencies; ++state_idx) {
-					snprintf(field_name, sizeof(field_name), "S%zu", state_idx + 1);
+					md_snprintf(field_name, sizeof(field_name), "S%zu", state_idx + 1);
 					double* dst = vlx->rsp.solution_matrix.data + state_idx * vlx->rsp.solution_matrix.size[1];
 					if (!h5_read_dataset_data(dst, vlx->rsp.solution_matrix.size[1], handle, H5T_NATIVE_DOUBLE, field_name)) {
 						return false;
@@ -2996,7 +2996,7 @@ static bool h5_read_vib_data(vlx_t* vlx, hid_t handle) {
 
 			char lbl[32];
 			for (size_t i = 0; i < number_of_modes; ++i) {
-				snprintf(lbl, sizeof(lbl), "%zu", i + 1);
+				md_snprintf(lbl, sizeof(lbl), "%zu", i + 1);
 				if (!h5_read_dataset_data(dst + i * mode_len, mode_len, normal_modes_id, H5T_NATIVE_DOUBLE, lbl)) {
 					MD_LOG_ERROR("Failed to extract dataset in '%s' normal mode", lbl);
 					md_attributes_remove(&sys->attributes, id);
@@ -3066,7 +3066,7 @@ static bool h5_extract_group_as_array_double(md_array(double)* out_data, hid_t g
 
 	for (size_t i = 0; i < expected_count; ++i) {
 		char dataset_name[64];
-		snprintf(dataset_name, sizeof(dataset_name), "%zu", i);
+		md_snprintf(dataset_name, sizeof(dataset_name), "%zu", i);
 		if (!h5_check_dataset_exists(group_handle, dataset_name)) {
 			MD_LOG_ERROR("Expected dataset '%s' in group not found", dataset_name);
 			return false;
@@ -3129,8 +3129,8 @@ static bool h5_read_opt_data(vlx_t* vlx, hid_t handle) {
 		char energy_name[32];
 		char coord_name[32];
 
-		snprintf(energy_name, sizeof(energy_name), "%s_energies", valid_prefixes[i]);
-		snprintf(coord_name, sizeof(coord_name), "%s_coordinates_au", valid_prefixes[i]);
+		md_snprintf(energy_name, sizeof(energy_name), "%s_energies", valid_prefixes[i]);
+		md_snprintf(coord_name, sizeof(coord_name), "%s_coordinates_au", valid_prefixes[i]);
 
 		type = h5_get_object_type(handle, coord_name);
 		if (type == H5I_DATASET || type == H5I_GROUP) {
@@ -3862,11 +3862,11 @@ static bool vlx_resolve_potfile(char* out_buf, size_t out_cap, str_t h5_filename
 	str_t candidates[3];
 	size_t num_candidates = 0;
 	if (!absolute) {
-		snprintf(bufs[0], sizeof(bufs[0]), STR_FMT STR_FMT, STR_ARG(folder), STR_ARG(ref));
+		md_snprintf(bufs[0], sizeof(bufs[0]), STR_FMT STR_FMT, STR_ARG(folder), STR_ARG(ref));
 		candidates[num_candidates++] = str_from_cstr(bufs[0]);
 	}
 	if (absolute || name.len != ref.len) {
-		snprintf(bufs[1], sizeof(bufs[1]), STR_FMT STR_FMT, STR_ARG(folder), STR_ARG(name));
+		md_snprintf(bufs[1], sizeof(bufs[1]), STR_FMT STR_FMT, STR_ARG(folder), STR_ARG(name));
 		candidates[num_candidates++] = str_from_cstr(bufs[1]);
 	}
 	if (absolute) {
@@ -4484,7 +4484,7 @@ static bool h5_read_xps_data(vlx_t* vlx, hid_t handle) {
 		// regardless of how HDF5 chose to order the links.
 		for (hsize_t j = 0; j < num_links; ++j) {
 			char idx_buf[32];
-			snprintf(idx_buf, sizeof(idx_buf), "%i", (int)j);
+			md_snprintf(idx_buf, sizeof(idx_buf), "%i", (int)j);
 			if (H5Lexists(elem_group, idx_buf, H5P_DEFAULT) <= 0) {
 				continue;
 			}

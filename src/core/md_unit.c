@@ -387,7 +387,7 @@ bool md_unit_conversion_factor(double* factor, md_unit_t from_unit, md_unit_t to
     return true;
 }
 
-#define PRINT(...) len += (size_t)snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ##__VA_ARGS__)
+#define PRINT(...) len += (size_t)md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ##__VA_ARGS__)
 
 // Each print_* procedure writes from the beginning of buf and returns the length written.
 // A return value of zero means that the representation was not applicable and the next one should be tried.
@@ -400,7 +400,7 @@ static size_t print_scale(char* buf, size_t cap, double scale) {
     size_t len = 0;
     char tmp[64];
     for (int precision = 6; precision <= 17; ++precision) {
-        snprintf(tmp, sizeof(tmp), "%.*g", precision, scale);
+        md_snprintf(tmp, sizeof(tmp), "%.*g", precision, scale);
         if (value_equal(parse_float(str_from_cstr(tmp)), scale)) {
             break;
         }

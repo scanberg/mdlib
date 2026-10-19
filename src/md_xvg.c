@@ -305,7 +305,7 @@ static str_t xvg_group(char* buf, size_t cap, const char* kind, str_t filename) 
     if (str_rfind_char(&dot, file, '.') && dot > 0) {
         file = str_substr(file, 0, dot);
     }
-    size_t len = (size_t)snprintf(buf, cap, "%s/", kind);
+    size_t len = (size_t)md_snprintf(buf, cap, "%s/", kind);
     const size_t base = len;
     bool sep = false;
     for (size_t i = 0; i < file.len && len + 2 < cap; ++i) {
@@ -315,7 +315,7 @@ static str_t xvg_group(char* buf, size_t cap, const char* kind, str_t filename) 
         if (sep) { buf[len++] = '_'; sep = false; }
         buf[len++] = c;
     }
-    if (len == base) len += (size_t)snprintf(buf + len, cap - len, "data");
+    if (len == base) len += (size_t)md_snprintf(buf + len, cap - len, "data");
     buf[len] = '\0';
     return (str_t){ buf, len };
 }

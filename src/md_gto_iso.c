@@ -331,7 +331,7 @@ static void iso_shell_finish(iso_field_t* f, iso_shell_t* s, int orders) {
 // Builds the field from a basis, positions (bohr) and one Cartesian AO coefficient vector.
 static bool iso_field_init(iso_field_t* f, const md_gto_basis_t* basis, const float* atom_xyz, size_t num_atoms, const double* ao_coeffs, const char* name) {
     memset(f, 0, sizeof(*f));
-    snprintf(f->name, sizeof(f->name), "%s", name);
+    md_snprintf(f->name, sizeof(f->name), "%s", name);
     md_allocator_i* heap = md_get_heap_allocator();
     f->num_input_shells = (int)basis->num_shells;
 
@@ -931,7 +931,7 @@ static bool iso_density_build_groups = false;
 static bool iso_field_init_density(iso_field_t* f, const md_gto_basis_t* basis, const float* atom_xyz, size_t num_atoms,
                                    const double* rows, int num_fn, const iso_term_t* terms, int num_terms, double slack, int factor, const char* name) {
     memset(f, 0, sizeof(*f));
-    snprintf(f->name, sizeof(f->name), "%s", name);
+    md_snprintf(f->name, sizeof(f->name), "%s", name);
     md_allocator_i* heap = md_get_heap_allocator();
     f->num_input_shells = (int)basis->num_shells;
     for (int k = 0; k < 3; ++k) { f->atom_min[k] = DBL_MAX; f->atom_max[k] = -DBL_MAX; }

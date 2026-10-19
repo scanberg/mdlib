@@ -194,7 +194,7 @@ static double slow_value(const float_parts_t* p) {
     // Clamped so it prints in a few characters; anything this far out is 0 or infinity either way
     if (exp10 >  100000) exp10 =  100000;
     if (exp10 < -100000) exp10 = -100000;
-    snprintf(buf + n, sizeof(buf) - n, "e%lld", (long long)exp10);
+    md_snprintf(buf + n, sizeof(buf) - n, "e%lld", (long long)exp10);
     return strtod(buf, NULL);
 }
 

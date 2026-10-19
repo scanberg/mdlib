@@ -115,7 +115,7 @@ void md_vwritef(md_writer_i* w, const char* format, va_list args) {
     const size_t avail = room(w);
     va_list probe;
     va_copy(probe, args);
-    const int res = vsnprintf(w->cur, avail, format, probe);
+    const int res = md_vsnprintf(w->cur, avail, format, probe);
     va_end(probe);
 
     if (res < 0) {
@@ -132,7 +132,7 @@ void md_vwritef(md_writer_i* w, const char* format, va_list args) {
     // It did not fit, terminator included: make room for it and format it again
     char* dst = md_writer_reserve(w, len + 1);
     if (dst) {
-        vsnprintf(dst, len + 1, format, args);
+        md_vsnprintf(dst, len + 1, format, args);
         w->cur += len;
         return;
     }
@@ -140,12 +140,12 @@ void md_vwritef(md_writer_i* w, const char* format, va_list args) {
     // The writer cannot hold it in one piece (a fixed buffer, or none): format it elsewhere and write it through
     char stack_buf[1024];
     if (len < sizeof(stack_buf)) {
-        vsnprintf(stack_buf, sizeof(stack_buf), format, args);
+        md_vsnprintf(stack_buf, sizeof(stack_buf), format, args);
         md_write(w, stack_buf, len);
     } else {
         md_allocator_i* heap = md_get_heap_allocator();
         char* tmp = (char*)md_alloc(heap, len + 1);
-        vsnprintf(tmp, len + 1, format, args);
+        md_vsnprintf(tmp, len + 1, format, args);
         md_write(w, tmp, len);
         md_free(heap, tmp, len + 1);
     }

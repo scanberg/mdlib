@@ -5,6 +5,8 @@
 #include <core/md_os.h>
 #include <core/md_allocator.h>
 
+#include "comma_locale.h"
+
 #include <float.h>
 #include <math.h>
 #include <locale.h>
@@ -252,18 +254,8 @@ UTEST(parse, f64_ignores_the_locale) {
         ref[i] = strtod(inputs[i], NULL);
     }
 
-    const char* prev = setlocale(LC_NUMERIC, NULL);
-    char prev_name[256];
-    snprintf(prev_name, sizeof(prev_name), "%s", prev ? prev : "C");
-
-    static const char* comma_locales[] = { "sv_SE.UTF-8", "sv_SE.utf8", "de_DE.UTF-8", "de_DE.utf8", "sv-SE", "de-DE", "Swedish_Sweden.1252" };
-    const char* active = NULL;
-    for (size_t i = 0; i < ARRAY_SIZE(comma_locales) && !active; ++i) {
-        active = setlocale(LC_NUMERIC, comma_locales[i]);
-    }
-    if (!active || localeconv()->decimal_point[0] != ',') {
-        printf("  no decimal comma locale installed, nothing to check\n");
-        setlocale(LC_NUMERIC, prev_name);
+    comma_locale_t loc;
+    if (!comma_locale_enter(&loc)) {
         return;
     }
 
@@ -272,7 +264,7 @@ UTEST(parse, f64_ignores_the_locale) {
         EXPECT_EQ(strlen(inputs[i]), md_parse_f64(&v, str_of(inputs[i])));
         EXPECT_EQ(bits_of(ref[i]), bits_of(v));
     }
-    setlocale(LC_NUMERIC, prev_name);
+    comma_locale_leave(&loc);
 }
 
 // ---------------------------------------------------------------------------

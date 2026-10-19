@@ -126,7 +126,7 @@ static VkInstance md_vk_live_instance = VK_NULL_HANDLE;
 static bool md_vk_fail(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(md_vk_error_buf, sizeof(md_vk_error_buf), fmt, ap);
+    md_vsnprintf(md_vk_error_buf, sizeof(md_vk_error_buf), fmt, ap);
     va_end(ap);
     md_vk_has_error = true;
     MD_LOG_ERROR("md_gpu: %s", md_vk_error_buf);
@@ -1102,7 +1102,7 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
 #define MD_VK_MISSING(name) do {                                                              \
         ok = false;                                                                            \
         if (missing_len + 1 < missing_cap) {                                                   \
-            int w_ = snprintf(missing + missing_len, missing_cap - missing_len, "%s%s",        \
+            int w_ = md_snprintf(missing + missing_len, missing_cap - missing_len, "%s%s",        \
                               missing_len ? ", " : "", (name));                                \
             if (w_ > 0) missing_len = MIN(missing_len + (size_t)w_, missing_cap - 1);           \
         }                                                                                      \
@@ -1115,7 +1115,7 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
        directly rather than their KHR aliases. */
     if (props.apiVersion < VK_API_VERSION_1_3) {
         char v[64];
-        snprintf(v, sizeof(v), "Vulkan 1.3 (driver has %u.%u.%u)", VK_API_VERSION_MAJOR(props.apiVersion),
+        md_snprintf(v, sizeof(v), "Vulkan 1.3 (driver has %u.%u.%u)", VK_API_VERSION_MAJOR(props.apiVersion),
                  VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion));
         MD_VK_MISSING(v);
     }
@@ -1219,10 +1219,10 @@ static void md_vk_driver_string(VkPhysicalDevice pd, const VkPhysicalDevicePrope
         VkPhysicalDeviceDriverProperties drv = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &drv};
         vkGetPhysicalDeviceProperties2(pd, &p2);
-        snprintf(out, cap, "%s %s (Vulkan %u.%u.%u)", drv.driverName, drv.driverInfo,
+        md_snprintf(out, cap, "%s %s (Vulkan %u.%u.%u)", drv.driverName, drv.driverInfo,
                  VK_API_VERSION_MAJOR(p->apiVersion), VK_API_VERSION_MINOR(p->apiVersion), VK_API_VERSION_PATCH(p->apiVersion));
     } else {
-        snprintf(out, cap, "driver version 0x%08X (Vulkan %u.%u.%u)", p->driverVersion,
+        md_snprintf(out, cap, "driver version 0x%08X (Vulkan %u.%u.%u)", p->driverVersion,
                  VK_API_VERSION_MAJOR(p->apiVersion), VK_API_VERSION_MINOR(p->apiVersion), VK_API_VERSION_PATCH(p->apiVersion));
     }
 }
@@ -1248,13 +1248,13 @@ static uint32_t md_vk_collect_adapters(VkInstance instance, struct md_allocator_
         vkGetPhysicalDeviceProperties(pds[i], &p);
         md_gpu_adapter_info_t* info = &ad[i].info;
         ad[i].pd = pds[i];
-        snprintf(info->name, sizeof(info->name), "%s", p.deviceName);
+        md_snprintf(info->name, sizeof(info->name), "%s", p.deviceName);
         info->vendor_id = p.vendorID;
         info->device_id = p.deviceID;
         info->type      = md_vk_device_type(p.deviceType);
         md_vk_driver_string(pds[i], &p, info->driver, sizeof(info->driver));
         info->usable = md_vk_probe_device(pds[i], alloc, &ad[i].caps, info->missing, sizeof(info->missing));
-        if (!info->usable && !info->missing[0]) snprintf(info->missing, sizeof(info->missing), "?");
+        if (!info->usable && !info->missing[0]) md_snprintf(info->missing, sizeof(info->missing), "?");
     }
     md_free(alloc, pds, n * sizeof(VkPhysicalDevice));
     *out = ad;
@@ -1650,8 +1650,8 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->device_id                = dev->props.deviceID;
     info->type                     = md_vk_device_type(dev->props.deviceType);
     info->adapter_index            = dev->adapter_index;
-    snprintf(info->driver, sizeof(info->driver), "%s", dev->driver_desc);
-    snprintf(info->name, sizeof(info->name), "%s", dev->props.deviceName);
+    md_snprintf(info->driver, sizeof(info->driver), "%s", dev->driver_desc);
+    md_snprintf(info->name, sizeof(info->name), "%s", dev->props.deviceName);
     return true;
 }
 
@@ -1919,7 +1919,7 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
     s->ordering   = MD_GPU_ORDER_IMPLICIT;
     s->next_value = 1;
     s->is_default = is_default;
-    snprintf(s->label, sizeof(s->label), "%s", label ? label : "stream");
+    md_snprintf(s->label, sizeof(s->label), "%s", label ? label : "stream");
 
     md_mutex_lock(&dev->device_mutex);
     if (kind == MD_GPU_STREAM_TRANSFER) {
@@ -3137,7 +3137,7 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
     t->device = dev;
     t->fi     = fi;
     t->desc   = d;
-    snprintf(t->label, sizeof(t->label), "%s", label);
+    md_snprintf(t->label, sizeof(t->label), "%s", label);
     t->desc.label = t->label;
 
     if (!md_vk_check(vkCreateImage(dev->device, &ici, NULL, &t->image), "vkCreateImage")) goto fail;
@@ -3569,7 +3569,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     k->group_size[1] = desc->group_size[1];
     k->group_size[2] = desc->group_size[2];
     k->args_size    = desc->args_size;
-    snprintf(k->label, sizeof(k->label), "%s", label);
+    md_snprintf(k->label, sizeof(k->label), "%s", label);
 
     VkShaderModuleCreateInfo smci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     smci.codeSize = desc->code_size;
@@ -3911,7 +3911,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     for (uint32_t i = 0; i < desc->color_count; ++i) p->color[i] = desc->color[i].format;
     p->depth       = desc->depth_format;
     p->args_size   = vs_args ? vs_args : fs_args;
-    snprintf(p->label, sizeof(p->label), "%s", label);
+    md_snprintf(p->label, sizeof(p->label), "%s", label);
 
     VkShaderModule modules[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkPipelineShaderStageCreateInfo stages[2];
@@ -4059,8 +4059,8 @@ static VkImageView md_vk_attach_view(md_gpu_texture_t t, uint32_t mip, uint32_t 
 static bool md_vk_check_attachment(md_gpu_stream_t s, md_gpu_texture_t t, uint32_t mip, uint32_t layer,
                                    bool depth, uint32_t index, uint32_t* w, uint32_t* h) {
     char what[32];
-    if (depth) snprintf(what, sizeof(what), "depth attachment");
-    else       snprintf(what, sizeof(what), "colour attachment %u", index);
+    if (depth) md_snprintf(what, sizeof(what), "depth attachment");
+    else       md_snprintf(what, sizeof(what), "colour attachment %u", index);
     if (!t) return md_vk_fail("md_gpu_render_begin: %s has no texture", what);
     if (t->device != s->device) return md_vk_fail("md_gpu_render_begin: %s '%s' belongs to another device", what, t->label);
     if (!(t->desc.usage & MD_GPU_TEX_RENDER_TARGET)) {
@@ -4500,7 +4500,7 @@ static md_gpu_texture_t md_vk_wrap_image_locked(md_gpu_surface_t sf, VkImage ima
     t->desc.height          = h;
     t->desc.depth_or_layers = 1;
     t->desc.mip_levels      = 1;
-    snprintf(t->label, sizeof(t->label), "%s[%u]", sf->label, index);
+    md_snprintf(t->label, sizeof(t->label), "%s[%u]", sf->label, index);
     t->desc.label = t->label;
 
     if (sf->desc.usage & MD_GPU_TEX_SAMPLED) {
@@ -4706,7 +4706,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
     sf->device  = dev;
     sf->surface = vs;
     sf->desc    = *desc;
-    snprintf(sf->label, sizeof(sf->label), "%s", label);
+    md_snprintf(sf->label, sizeof(sf->label), "%s", label);
     sf->desc.label = sf->label;
     if (sf->desc.format == MD_GPU_FORMAT_INVALID) sf->desc.format = MD_GPU_FORMAT_BGRA8_UNORM;
     sf->desc.usage &= ~MD_GPU_TEX_RENDER_TARGET;
@@ -4738,7 +4738,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
             for (uint32_t i = 0; i < n && len < sizeof(avail) - 32; ++i) {
                 md_gpu_format_t mf = md_vk_surface_format_from_vk(fmts[i].format);
                 if (mf == MD_GPU_FORMAT_INVALID) continue;
-                len += (size_t)snprintf(avail + len, sizeof(avail) - len, "%s%s", len ? ", " : "", md_vk_format_info(mf).name);
+                len += (size_t)md_snprintf(avail + len, sizeof(avail) - len, "%s%s", len ? ", " : "", md_vk_format_info(mf).name);
             }
             md_vk_fail("surface '%s': %s is not supported (the surface offers: %s)", label, fi.name, len ? avail : "nothing md_gpu knows");
             goto fail;

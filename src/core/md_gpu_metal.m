@@ -150,7 +150,7 @@ static __thread bool md_mtl_has_error;
 static bool md_mtl_fail(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(md_mtl_error_buf, sizeof(md_mtl_error_buf), fmt, ap);
+    md_vsnprintf(md_mtl_error_buf, sizeof(md_mtl_error_buf), fmt, ap);
     va_end(ap);
     md_mtl_has_error = true;
     MD_LOG_ERROR("md_gpu: %s", md_mtl_error_buf);
@@ -970,7 +970,7 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
     s->ordering   = MD_GPU_ORDER_IMPLICIT;
     s->next_value = 1;
     s->is_default = is_default;
-    snprintf(s->label, sizeof(s->label), "%s", label ? label : "stream");
+    md_snprintf(s->label, sizeof(s->label), "%s", label ? label : "stream");
     md_mtl_vec_init(&s->arena.pages, sizeof(md_mtl_page_t*));
     for (uint32_t k = 0; k < MD_MTL_TEMP_KINDS; ++k) {
         md_mtl_vec_init(&s->temp[k].active, sizeof(md_mtl_chunk_t*));
@@ -1765,7 +1765,7 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
     t->device = dev;
     t->fi     = fi;
     t->desc   = d;
-    snprintf(t->label, sizeof(t->label), "%s", label);
+    md_snprintf(t->label, sizeof(t->label), "%s", label);
     t->desc.label = t->label;
 
     bool ok = true;
@@ -2194,7 +2194,7 @@ static md_gpu_kernel_t md_mtl_kernel_from_library(md_gpu_device_t dev, id<MTLLib
     k->group_size[2]    = group_size[2];
     k->args_size        = args_size;
     k->arg_buffer_index = md_mtl_reflect_arg_buffer_index(refl, label);
-    snprintf(k->label, sizeof(k->label), "%s", label);
+    md_snprintf(k->label, sizeof(k->label), "%s", label);
     return k;
 }
 
@@ -2512,7 +2512,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     p->args_size   = vs_args ? vs_args : fs_args;
     p->vs_root     = UINT32_MAX;
     p->fs_root     = UINT32_MAX;
-    snprintf(p->label, sizeof(p->label), "%s", label);
+    md_snprintf(p->label, sizeof(p->label), "%s", label);
 
     bool ok = true;
     @autoreleasepool {
@@ -2617,8 +2617,8 @@ void md_gpu_pipeline_destroy(md_gpu_pipeline_t p) {
 static bool md_mtl_check_attachment(md_gpu_stream_t s, md_gpu_texture_t t, uint32_t mip, uint32_t layer,
                                     bool depth, uint32_t index, uint32_t* w, uint32_t* h) {
     char what[32];
-    if (depth) snprintf(what, sizeof(what), "depth attachment");
-    else       snprintf(what, sizeof(what), "colour attachment %u", index);
+    if (depth) md_snprintf(what, sizeof(what), "depth attachment");
+    else       md_snprintf(what, sizeof(what), "colour attachment %u", index);
     if (!t) return md_mtl_fail("md_gpu_render_begin: %s has no texture", what);
     if (t->device != s->device) return md_mtl_fail("md_gpu_render_begin: %s '%s' belongs to another device", what, t->label);
     if (!(t->desc.usage & MD_GPU_TEX_RENDER_TARGET)) {
@@ -3088,7 +3088,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
     sf->desc   = *desc;
     sf->desc.format = fmt;
     sf->desc.usage &= ~MD_GPU_TEX_RENDER_TARGET;
-    snprintf(sf->label, sizeof(sf->label), "%s", label);
+    md_snprintf(sf->label, sizeof(sf->label), "%s", label);
     sf->desc.label  = sf->label;
     sf->want_width  = desc->width;
     sf->want_height = desc->height;
@@ -3215,7 +3215,7 @@ md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) 
         t->desc.height          = (uint32_t)tex.height;
         t->desc.depth_or_layers = 1;
         t->desc.mip_levels      = 1;
-        snprintf(t->label, sizeof(t->label), "%s[%llu]", sf->label, (unsigned long long)sf->frame++);
+        md_snprintf(t->label, sizeof(t->label), "%s[%llu]", sf->label, (unsigned long long)sf->frame++);
         t->desc.label = t->label;
         if (sf->desc.usage & MD_GPU_TEX_SAMPLED) t->sampled_handle = (uint64_t)tex.gpuResourceID._impl;
         if (sf->desc.usage & MD_GPU_TEX_STORAGE) {
@@ -3393,8 +3393,8 @@ static md_gpu_device_type_t md_mtl_device_type(id<MTLDevice> d) {
 
 static void md_mtl_adapter_info(id<MTLDevice> d, md_gpu_adapter_info_t* out) {
     memset(out, 0, sizeof(*out));
-    snprintf(out->name, sizeof(out->name), "%s", [[d name] UTF8String]);
-    snprintf(out->driver, sizeof(out->driver), "Metal, %s",
+    md_snprintf(out->name, sizeof(out->name), "%s", [[d name] UTF8String]);
+    md_snprintf(out->driver, sizeof(out->driver), "Metal, %s",
              [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String]);
     out->vendor_id = md_mtl_vendor_id(out->name);
     out->type      = md_mtl_device_type(d);
@@ -3538,11 +3538,11 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->preferred_group_multiple = dev->make_grid_kernel ? (uint32_t)dev->make_grid_kernel->pso.threadExecutionWidth : 32;
     info->supports_graphics        = true;
     info->supports_present         = dev->can_present;
-    snprintf(info->name, sizeof(info->name), "%s", [[dev->device name] UTF8String]);
+    md_snprintf(info->name, sizeof(info->name), "%s", [[dev->device name] UTF8String]);
     info->vendor_id                = md_mtl_vendor_id(info->name);
     info->type                     = md_mtl_device_type(dev->device);
     info->adapter_index            = dev->adapter_index;
-    snprintf(info->driver, sizeof(info->driver), "Metal, %s",
+    md_snprintf(info->driver, sizeof(info->driver), "Metal, %s",
              [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String]);
     return true;
 }

@@ -184,7 +184,7 @@ str_t str_printf(struct md_allocator_i* alloc, const char* format, ...) {
     va_list args;
 
     va_start(args, format);
-    int64_t len = vsnprintf(NULL, 0, format, args);
+    int64_t len = md_vsnprintf(NULL, 0, format, args);
     va_end(args);
 
     if (len <= 0) {
@@ -194,7 +194,7 @@ str_t str_printf(struct md_allocator_i* alloc, const char* format, ...) {
     char* buf = md_alloc(alloc, len + 1);
 
     va_start(args, format);
-    vsnprintf(buf, len + 1, format, args);
+    md_vsnprintf(buf, len + 1, format, args);
     va_end(args);
 
     return (str_t) {buf, len};

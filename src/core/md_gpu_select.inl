@@ -90,19 +90,19 @@ static int md_gpu_sel_pick(const md_gpu_adapter_info_t* list, uint32_t count, co
     /* Nothing: explain, naming every adapter. */
     size_t len = 0;
     if (have_sel && matched_unusable >= 0) {
-        len += (size_t)snprintf(why + len, why_cap - len, "adapter '%s' (selected by '%s') lacks %s",
+        len += (size_t)md_snprintf(why + len, why_cap - len, "adapter '%s' (selected by '%s') lacks %s",
                                 list[matched_unusable].name, sel, list[matched_unusable].missing);
     } else if (have_sel) {
-        len += (size_t)snprintf(why + len, why_cap - len, "no adapter matches '%s'", sel);
+        len += (size_t)md_snprintf(why + len, why_cap - len, "no adapter matches '%s'", sel);
     } else {
-        len += (size_t)snprintf(why + len, why_cap - len, "no usable adapter");
+        len += (size_t)md_snprintf(why + len, why_cap - len, "no usable adapter");
     }
-    if (len < why_cap) len += (size_t)snprintf(why + len, why_cap - len, "; adapters:");
+    if (len < why_cap) len += (size_t)md_snprintf(why + len, why_cap - len, "; adapters:");
     for (uint32_t i = 0; i < count && len < why_cap; ++i) {
-        len += (size_t)snprintf(why + len, why_cap - len, " [%u] %s (%s%s%s)", i, list[i].name,
+        len += (size_t)md_snprintf(why + len, why_cap - len, " [%u] %s (%s%s%s)", i, list[i].name,
                                 md_gpu_sel_type_str(list[i].type), list[i].usable ? "" : ", lacks ",
                                 list[i].usable ? "" : list[i].missing);
     }
-    if (count == 0 && len < why_cap) snprintf(why + len, why_cap - len, " none");
+    if (count == 0 && len < why_cap) md_snprintf(why + len, why_cap - len, " none");
     return -1;
 }

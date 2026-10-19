@@ -1389,7 +1389,7 @@ static void create_log_token_fmt(log_level_t level, md_script_ir_t* ir, token_t 
     char buf[1024];
     va_list args;
     va_start(args, format);
-    int len = vsnprintf(buf, ARRAY_SIZE(buf), format, args);
+    int len = md_vsnprintf(buf, ARRAY_SIZE(buf), format, args);
     va_end(args);
 
     len = MAX(len, 0);
@@ -1437,7 +1437,7 @@ static void eval_log_fmt(log_level_t level, const eval_context_t* ctx, token_t t
     char buf[1024];
     va_list args;
     va_start(args, format);
-    int len = vsnprintf(buf, ARRAY_SIZE(buf), format, args);
+    int len = md_vsnprintf(buf, ARRAY_SIZE(buf), format, args);
     va_end(args);
 
     len = CLAMP(len, 0, (int)ARRAY_SIZE(buf) - 1);
@@ -2037,14 +2037,14 @@ static tokenizer_t tokenizer_init(str_t str) {
 // ####################
 
 static size_t print_type_info(char* buf, size_t cap, type_info_t info) {
-    size_t len = snprintf(buf, cap, "%s", get_value_type_str(info.base_type));
+    size_t len = md_snprintf(buf, cap, "%s", get_value_type_str(info.base_type));
 
     for (size_t i = 0; i < MAX_NUM_DIMS; ++i) {
         if (info.dim[i] == -1) {
-            len += snprintf(buf + len, cap - MIN(len, cap), "[..]");
+            len += md_snprintf(buf + len, cap - MIN(len, cap), "[..]");
         }
         else if (info.dim[i] >= 1) {
-            len += snprintf(buf + len, cap - MIN(len, cap), "[%i]", (int)info.dim[i]);
+            len += md_snprintf(buf + len, cap - MIN(len, cap), "[%i]", (int)info.dim[i]);
         }
         else if (info.dim[i] == 0) {
             break;
@@ -2061,7 +2061,7 @@ static size_t print_type_info(char* buf, size_t cap, type_info_t info) {
 // can exceed cap. buf + MIN(len, cap) keeps the pointer inside the buffer when that happens; the
 // size argument is then zero and nothing is written. Callers that need the number of bytes
 // actually present must clamp the result to cap - 1.
-#define PRINT(...) len += snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ##__VA_ARGS__)
+#define PRINT(...) len += md_snprintf(buf + MIN(len, cap), cap - MIN(len, cap), ##__VA_ARGS__)
 
 static size_t print_bitfield(char* buf, size_t cap, const md_bitset_t* set) {
     ASSERT(set);
@@ -4683,7 +4683,7 @@ static size_t print_argument_list(char* buf, size_t cap, const type_info_t arg_t
     for (size_t i = 0; i < num_args; ++i) {
         len += print_type_info(buf + len, cap - len, arg_type[i]);
         if (i + 1 != num_args) {
-            len += snprintf(buf + len, cap - len, ", ");
+            len += md_snprintf(buf + len, cap - len, ", ");
         }
     }
     return len;
@@ -8526,7 +8526,7 @@ static void filter_write_errors(md_filter_result_t* res, const md_script_ir_t* i
     bool first = true;
     for (size_t l = 0; l < ARRAY_SIZE(lists); ++l) {
         for (size_t i = 0; i < md_array_size(lists[l]) && len + 1 < cap; ++i) {
-            const int n = snprintf(res->error + len, cap - len, "%s" STR_FMT, len ? "\n" : "", STR_ARG(lists[l][i].text));
+            const int n = md_snprintf(res->error + len, cap - len, "%s" STR_FMT, len ? "\n" : "", STR_ARG(lists[l][i].text));
             if (n < 0) return;
             len = MIN(len + (size_t)n, cap - 1);
             if (first) {
@@ -8536,7 +8536,7 @@ static void filter_write_errors(md_filter_result_t* res, const md_script_ir_t* i
         }
     }
     if (len == 0 && msg) {
-        snprintf(res->error, cap, "%s", msg);
+        md_snprintf(res->error, cap, "%s", msg);
     }
 }
 
@@ -8551,11 +8551,11 @@ typedef struct filter_eval_t {
 static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, str_t expr, const md_filter_context_t* ctx, uint32_t eval_flags, md_allocator_i* temp_alloc) {
     MEMSET(res, 0, sizeof(*res));
     if (!ctx || !ctx->sys) {
-        snprintf(res->error, sizeof(res->error), "No system to pick atoms from");
+        md_snprintf(res->error, sizeof(res->error), "No system to pick atoms from");
         return false;
     }
     if (ctx->sys->atom.count == 0) {
-        snprintf(res->error, sizeof(res->error), "The system has no atoms");
+        md_snprintf(res->error, sizeof(res->error), "The system has no atoms");
         return false;
     }
     // Nothing written picks everything, as 'all' does
