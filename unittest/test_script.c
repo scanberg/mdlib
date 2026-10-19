@@ -6498,3 +6498,168 @@ UTEST_F(script, evaluate_edge_cases) {
     md_script_ir_free(ir);
     md_arena_allocator_destroy(alloc);
 }
+
+// The operands of an operator are taken in the order they are written. FLAG_SYMMETRIC_ARGS lets a match swap them,
+// and was set on '-', '/' and '//' with an array and a scalar: '2.0 - {1.0, 2.0}' was {1.0, 2.0} - 2.0
+UTEST_F(script, operand_order) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* mol = &utest_fixture->ala;
+
+    struct {
+        const char* expr;
+        float expected[2];
+    } cases[] = {
+        {"2.0 - {1.0, 2.0}",    {1.0f, 0.0f}},
+        {"{1.0, 2.0} - 2.0",    {-1.0f, 0.0f}},
+        {"10.0 / {2.0, 5.0}",   {5.0f, 2.0f}},
+        {"{2.0, 5.0} / 10.0",   {0.2f, 0.5f}},
+        {"2.0 + {1.0, 2.0}",    {3.0f, 4.0f}},
+        {"3.0 * {1.0, 2.0}",    {3.0f, 6.0f}},
+        // Integers are taken as floats by '-' and '/', and stay integers for '//'
+        {"2 - {1, 2}",          {1.0f, 0.0f}},
+        {"{1, 2} - 2",          {-1.0f, 0.0f}},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        data_t d = {0};
+        ASSERT_TRUE(eval_expression(&d, str_from_cstr(cases[i].expr), mol, alloc));
+        ASSERT_EQ((size_t)2, (size_t)type_info_array_len(d.type));
+        for (int j = 0; j < 2; ++j) {
+            const float v = d.type.base_type == TYPE_INT ? (float)((int*)d.ptr)[j] : ((float*)d.ptr)[j];
+            EXPECT_NEAR(cases[i].expected[j], v, 1e-6f);
+        }
+    }
+
+    struct {
+        const char* expr;
+        int expected[2];
+    } int_cases[] = {
+        {"10 // {2, 5}",        {5, 2}},
+        {"{10, 20} // 5",       {2, 4}},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(int_cases); ++i) {
+        data_t d = {0};
+        ASSERT_TRUE(eval_expression(&d, str_from_cstr(int_cases[i].expr), mol, alloc));
+        ASSERT_EQ(TYPE_INT, d.type.base_type);
+        EXPECT_EQ(int_cases[i].expected[0], ((int*)d.ptr)[0]);
+        EXPECT_EQ(int_cases[i].expected[1], ((int*)d.ptr)[1]);
+    }
+
+    // Volumes: s - v and s / v against v
+    data_t v = {0}, sv = {0}, dv = {0};
+    ASSERT_TRUE(eval_expression(&v,  STR_LIT("sdf(residue(1), element('H'), 5.0) + 1.0"), mol, alloc));
+    ASSERT_TRUE(eval_expression(&sv, STR_LIT("3.0 - (sdf(residue(1), element('H'), 5.0) + 1.0)"), mol, alloc));
+    ASSERT_TRUE(eval_expression(&dv, STR_LIT("3.0 / (sdf(residue(1), element('H'), 5.0) + 1.0)"), mol, alloc));
+    ASSERT_EQ(v.size, sv.size);
+    ASSERT_EQ(v.size, dv.size);
+    const float* fv = (const float*)v.ptr;
+    for (size_t i = 0; i < v.size / sizeof(float); i += 997) {
+        EXPECT_NEAR(3.0f - fv[i], ((const float*)sv.ptr)[i], 1e-5f);
+        EXPECT_NEAR(3.0f / fv[i], ((const float*)dv.ptr)[i], 1e-5f);
+    }
+
+    // Only what is commutative swaps its operands
+    const procedure_t* tables[] = {operators, procedures};
+    const size_t table_len[] = {ARRAY_SIZE(operators), ARRAY_SIZE(procedures)};
+    const str_t commutative[] = {STR_LIT("+"), STR_LIT("*"), STR_LIT("and"), STR_LIT("or"), STR_LIT("xor"), STR_LIT("min"), STR_LIT("max")};
+    for (size_t t = 0; t < ARRAY_SIZE(tables); ++t) {
+        for (size_t i = 0; i < table_len[t]; ++i) {
+            if (!(tables[t][i].flags & FLAG_SYMMETRIC_ARGS)) continue;
+            bool ok = false;
+            for (size_t c = 0; c < ARRAY_SIZE(commutative); ++c) {
+                ok |= str_eq(tables[t][i].name, commutative[c]);
+            }
+            if (!ok) printf("FLAG_SYMMETRIC_ARGS on '" STR_FMT "', which is not commutative\n", STR_ARG(tables[t][i].name));
+            EXPECT_TRUE(ok);
+        }
+    }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// An array of volumes is a property of its own: published {n, x, y, z}, its i-th volume what the i-th expression of
+// it is as a volume alone. A context makes one, and so does an array of volumes, which stacks them: '{sdf(a), sdf(b)}'
+// was one volume twice as long along x, and not a property.
+UTEST_F(script, volume_arrays) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(16));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = (uint32_t)MIN(script_frames(mol), 2);
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    const char* src =
+        // The density of the hydrogens of the system ('out' of the context) around each residue
+        "ctx = sdf(residue(1), out element('H'), 5.0) in residue(1:2);\n"
+        "ctx1 = sdf(residue(1), out element('H'), 5.0) in residue(1);\n"
+        "ctx2 = sdf(residue(1), out element('H'), 5.0) in residue(2);\n"
+        "arr = {sdf(residue(1), element('H'), 5.0), sdf(residue(2), element('H'), 5.0)};\n"
+        "arr1 = sdf(residue(1), element('H'), 5.0);\n"
+        "arr2 = sdf(residue(2), element('H'), 5.0);\n";
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(src), mol, NULL));
+    EXPECT_EQ(MD_SCRIPT_PROPERTY_FLAG_VOLUME, md_script_ir_property_flags(ir, STR_LIT("ctx")) & MD_SCRIPT_PROPERTY_FLAG_VOLUME);
+    EXPECT_EQ(MD_SCRIPT_PROPERTY_FLAG_VOLUME, md_script_ir_property_flags(ir, STR_LIT("arr")) & MD_SCRIPT_PROPERTY_FLAG_VOLUME);
+
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_NE(NULL, eval);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
+    const md_attributes_t* table = md_script_eval_attributes(eval);
+
+    struct { const char* array; const char* member[2]; } cases[] = {
+        {"script/ctx", {"script/ctx1", "script/ctx2"}},
+        {"script/arr", {"script/arr1", "script/arr2"}},
+    };
+    const size_t vol_size = (size_t)MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM;
+    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+        const md_attribute_t* a = md_attributes_find(table, str_from_cstr(cases[c].array));
+        ASSERT_TRUE(a);
+        ASSERT_EQ(4u, a->format.rank);
+        EXPECT_EQ(2u, a->format.shape[0]);
+        EXPECT_EQ((uint32_t)MD_VOL_DIM, a->format.shape[1]);
+        EXPECT_EQ((uint32_t)MD_VOL_DIM, a->format.shape[3]);
+        for (int m = 0; m < 2; ++m) {
+            const md_attribute_t* v = md_attributes_find(table, str_from_cstr(cases[c].member[m]));
+            ASSERT_TRUE(v);
+            ASSERT_EQ(3u, v->format.rank);
+            const float* x = (const float*)a->data + m * vol_size;
+            const float* y = (const float*)v->data;
+            size_t num_diff = 0;
+            double sum = 0;
+            for (size_t i = 0; i < vol_size; ++i) {
+                num_diff += x[i] != y[i];
+                sum += y[i];
+            }
+            EXPECT_EQ((size_t)0, num_diff);
+            EXPECT_GT(sum, 0.0);
+        }
+    }
+    md_script_eval_free(eval);
+
+    // Visualized, element m of the array is the structure of its own volume: residue m + 1
+    md_script_vis_ctx_t vctx = { .ir = ir, .sys = mol, .state = &mol->reference };
+    const char* arrays[] = {"ctx", "arr"};
+    for (size_t a = 0; a < ARRAY_SIZE(arrays); ++a) {
+        identifier_t* ident = get_identifier(ir, str_from_cstr(arrays[a]));
+        ASSERT_TRUE(ident);
+        for (int m = 0; m < 2; ++m) {
+            md_script_vis_t vis = {0};
+            md_script_vis_init(&vis, alloc);
+            EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, ident->node), m, &vctx, MD_SCRIPT_VISUALIZE_SDF));
+            ASSERT_EQ((size_t)1, md_array_size(vis.sdf.structures));
+            const md_urange_t res = md_component_atom_range(&mol->component, (size_t)m);
+            EXPECT_EQ((size_t)(res.end - res.beg), md_bitset_count(vis.sdf.structures[0]));
+            EXPECT_TRUE(md_bitset_test(vis.sdf.structures[0], res.beg));
+            md_script_vis_free(&vis);
+        }
+    }
+
+    // No more than so many volumes as one property
+    md_script_ir_clear(ir);
+    char big[1024];
+    int len = snprintf(big, sizeof(big), "v = sdf(residue(1), element('H'), 5.0);\nw = {v");
+    for (int i = 1; i < MAX_PROPERTY_VOLUMES + 1; ++i) len += snprintf(big + len, sizeof(big) - len, ", v");
+    snprintf(big + len, sizeof(big) - len, "};");
+    EXPECT_FALSE(md_script_ir_compile_from_source(ir, str_from_cstr(big), mol, NULL));
+    md_str_writer_t sw = md_str_writer_create(alloc);
+    EXPECT_TRUE(diagnostics_contain(diagnostics_text(&sw, ir), "An array of 33 volumes"));
+
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}

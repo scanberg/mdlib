@@ -206,6 +206,14 @@ struct md_smiles_error_t;
 // per unit (its size, for WHOLE) or per molecule (resolution) is worked out once.
 // The search runs on one thread. Units are independent of each other, which is where it splits when it needs to.
 //
+// What does not hold for a connected query holds for one in several parts: the first atom of every part after the
+// first is looked for anywhere in the unit, so the parts are placed independently and the mappings multiply. Two
+// single carbon atoms (C.C) are every pair of carbons of a protein chain, millions of matches, and the 15 CA atoms of
+// a peptide of 45 carbons, as a reference, any 15 of them: 3 * 10^11. Measured: connected queries of up to 3000 atoms
+// take at most a few 10^5 steps in systems of 10^5 atoms, C.C in a protein of 9000 atoms 3 * 10^7 steps (9 * 10^6
+// matches).
+// md_match_desc_t.max_steps bounds a search whose query comes from a user.
+//
 // SYMMETRY. A query with symmetries fits the same atoms in several ways: a phenyl ring flipped over, the oxygens of a
 // sulfonate in any order, and a reference of a chain with 40 such groups in 2^40 and more. Outside of ALL they are not
 // all searched. Atoms with a single bond which hang from the same atom (the O of a sulfonate, the methyls of a valine)
@@ -329,12 +337,18 @@ typedef struct md_match_desc_t {
 
     // Optional, 0 for no limit. The search stops after this many matches.
     size_t limit;
+
+    // Optional, 0 for no limit. The search gives up after this many steps (a candidate atom tried for a query atom,
+    // a set of neighbours for a group of leaves, 16 for a match reported), and is then incomplete: what it reports is
+    // the matches found until then. See HOW THE SEARCH RUNS for what a search costs, and when it explodes.
+    uint64_t max_steps;
 } md_match_desc_t;
 
 // ### RESULT ###
 
 typedef struct md_match_result_t {
     size_t    count;                    // Number of matches
+    bool      incomplete;               // The search gave up at md_match_desc_t.max_steps: count is what it found until then
     size_t    width;                    // Atoms per match: the number of atoms of the query
     int32_t*  atom_idx;                 // [count * width]: the atom matched to query atom j in match i is
                                         // atom_idx[i * width + j]; -1 for a query hydrogen the system does not resolve
@@ -394,9 +408,10 @@ bool md_match_query_init_atoms(md_match_query_t* query, const int32_t* atom_idx,
 void md_match_query_free(md_match_query_t* query);
 
 // Streams the matches to callback, which may be NULL to only count them (UNIQUE and DISJOINT still keep the atoms
-// seen so far). The number of matches goes to out_count (optional). Returns false if the query or the description is
-// invalid (logged), true otherwise, also when nothing is found.
-bool md_match_for_each(size_t* out_count, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param);
+// seen so far). The number of matches goes to out_count (optional), and whether the search gave up at
+// md_match_desc_t.max_steps to out_incomplete (optional). Returns false if the query or the description is invalid
+// (logged), true otherwise, also when nothing is found.
+bool md_match_for_each(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param);
 
 // Collects the matches. Returns false if the query or the description is invalid (logged), true otherwise, also when
 // nothing is found.

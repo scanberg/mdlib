@@ -1446,7 +1446,30 @@ typedef struct search_t {
     md_allocator_i* arena;
     bool     stop;          // The search is over
     bool     root_done;     // The search from the current start atom is over
+    uint64_t steps;         // Candidates tried so far (see md_match_desc_t.max_steps)
+    uint64_t max_steps;     // 0 for no limit
+    bool     incomplete;    // Stopped at max_steps
 } search_t;
+
+// n steps taken. False once the steps allowed are spent: the search is then over, and incomplete.
+static inline bool spend_n(search_t* s, uint64_t n) {
+    s->steps += n;
+    if (s->max_steps && s->steps > s->max_steps) {
+        s->stop = true;
+        s->incomplete = true;
+        return false;
+    }
+    return true;
+}
+
+// One candidate tried
+static inline bool spend(search_t* s) {
+    return spend_n(s, 1);
+}
+
+// What a match reported costs, in steps: the row, its key for UNIQUE, and what the caller makes of it, which is
+// measured to be some 15 times a step for a script that makes a selection of each match
+#define REPORT_STEPS 16
 
 typedef struct res_cache_t {
     int64_t  mol;
@@ -1649,6 +1672,7 @@ static bool next_candidate(search_t* s, uint32_t k, int32_t* out) {
     if (p >= 0) {
         const uint32_t end = conn_end(s->tg, s->map[p]);
         while (s->cursor[k] < end) {
+            if (!spend(s)) return false;
             const uint32_t c = s->cursor[k]++;
             const int32_t t = s->tg->conn_atom[c];
             if (!atom_ok(s, pa, t)) continue;
@@ -1661,6 +1685,7 @@ static bool next_candidate(search_t* s, uint32_t k, int32_t* out) {
     } else {
         // The first atom of a later part of the query: anywhere in the unit
         while (s->cursor[k] < s->unit_count) {
+            if (!spend(s)) return false;
             const int32_t t = unit_atom(s, s->cursor[k]++);
             if (target_skipped(s->tg, t)) continue;
             if (!atom_ok(s, pa, t)) continue;
@@ -1788,6 +1813,7 @@ static bool groups_ok(search_t* s) {
 
 static void report(search_t* s) {
     const plan_t* pl = s->plan;
+    if (!spend_n(s, REPORT_STEPS)) return;
     for (uint32_t p = 0; p < pl->num; ++p) {
         s->row[pl->order[p]] = s->map[p];
     }
@@ -1908,6 +1934,7 @@ static bool leaves_next(search_t* s, uint32_t g) {
     uint32_t* comb = s->leaf_comb + beg;
     if (m < k) return false;
     for (;;) {
+        if (!spend(s)) return false;
         if (s->leaf_fresh[g]) {
             s->leaf_fresh[g] = false;
         } else {
@@ -2287,8 +2314,9 @@ static bool elements_suffice(const md_match_query_t* q, const md_system_t* sys) 
     return true;
 }
 
-static bool match_run(size_t* out_count, const md_match_desc_t* desc, const md_system_t* sys, md_match_callback_t callback, void* user_param) {
+static bool match_run(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const md_system_t* sys, md_match_callback_t callback, void* user_param) {
     if (out_count) *out_count = 0;
+    if (out_incomplete) *out_incomplete = false;
     if (!desc_validate(desc, sys)) return false;
     if (sys->atom.count == 0 || !elements_suffice(desc->query, sys)) return true;
 
@@ -2302,6 +2330,7 @@ static bool match_run(size_t* out_count, const md_match_desc_t* desc, const md_s
     search_t s;
     search_init(&s, &tg, desc->level, desc->mode, desc->flags, desc->hydrogens, desc->bond_orders, desc->charges, desc->mask, desc->units, desc->num_units, arena);
     s.limit      = desc->limit;
+    s.max_steps  = desc->max_steps;
     s.callback   = callback;
     s.user_param = user_param;
 
@@ -2325,6 +2354,7 @@ static bool match_run(size_t* out_count, const md_match_desc_t* desc, const md_s
     }
 
     if (out_count) *out_count = s.count;
+    if (out_incomplete) *out_incomplete = s.incomplete;
     md_vm_arena_destroy(arena);
     return true;
 }
@@ -2626,8 +2656,8 @@ void md_match_query_free(md_match_query_t* query) {
     MEMSET(query, 0, sizeof(md_match_query_t));
 }
 
-bool md_match_for_each(size_t* out_count, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param) {
-    return match_run(out_count, desc, sys, callback, user_param);
+bool md_match_for_each(size_t* out_count, bool* out_incomplete, const md_match_desc_t* desc, const struct md_system_t* sys, md_match_callback_t callback, void* user_param) {
+    return match_run(out_count, out_incomplete, desc, sys, callback, user_param);
 }
 
 typedef struct collect_t {
@@ -2650,14 +2680,16 @@ bool md_match_find(md_match_result_t* out, const md_match_desc_t* desc, const st
 
     collect_t c = {.alloc = alloc};
     size_t count = 0;
-    if (!match_run(&count, desc, sys, collect_callback, &c)) {
+    bool incomplete = false;
+    if (!match_run(&count, &incomplete, desc, sys, collect_callback, &c)) {
         md_array_free(c.atom_idx, alloc);
         md_array_free(c.unit, alloc);
         return false;
     }
 
-    out->count    = count;
-    out->width    = desc->query->num_atoms;
+    out->count      = count;
+    out->incomplete = incomplete;
+    out->width      = desc->query->num_atoms;
     out->atom_idx = c.atom_idx;
     out->unit     = c.unit;
     out->alloc    = alloc;

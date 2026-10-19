@@ -381,7 +381,10 @@ size_t md_script_eval_property_count(const md_script_eval_t* eval);
 //
 //   script/<ident>            the values. Temporal properties carry MD_ATTRIBUTE_FLAG_TEMPORAL and
 //                             are shaped {num_frames, population}; a distribution is {num_bins};
-//                             a volume is {x, y, z}. The unit is the unit of the values.
+//                             a volume is {x, y, z}, an array of n volumes ('sdf(...) in
+//                             residue(1:n)', '{sdf(a), sdf(b)}') {n, x, y, z}, the i-th volume a
+//                             slice of the first axis, visualized with subidx i
+//                             (md_script_vis_eval_ref). The unit is the unit of the values.
 //   script/<ident>/range      rank 0, 2 components (min, max). The range the script declared for
 //                             the property, or the observed one when it declared none. Temporal:
 //                             the range of the values. Distribution: the range of the bin axis.
