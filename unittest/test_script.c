@@ -6301,3 +6301,21 @@ UTEST(script, diagnostics) {
     md_script_ir_free(ir);
     md_arena_allocator_destroy(alloc);
 }
+
+UTEST(script, stray_mult) {
+    // This is a test used to debug a strange crash induced where a stray '*' in the wrong place causes a crash.
+
+	str_t src = str_from_cstr("a = distance(1,*2);");
+
+	md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+	md_script_ir_t* ir = md_script_ir_create(alloc);
+	EXPECT_FALSE(md_script_ir_compile_from_source(ir, src, &test_mol, NULL));
+	str_t txt = diagnostics_text(NULL, ir);
+	EXPECT_TRUE(diagnostics_contain(txt, "<script>:1:15: error: "));
+	EXPECT_TRUE(diagnostics_contain(txt,
+		"    1 | a = distance(1, *2);\n"
+		"      |               ^\n"
+		"1 error generated.\n"));
+	md_script_ir_free(ir);
+	md_arena_allocator_destroy(alloc);
+}
