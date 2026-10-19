@@ -251,6 +251,20 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         return 0; \
     }
 
+// The scalar on the left: 's - a', 's / a'. The operators which are not commutative have one of these for an array on
+// the right, rather than FLAG_SYMMETRIC_ARGS, which swaps the operands into 'a - s'.
+#define BAKE_OP_S_M(name, op, base_type) \
+    static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
+        (void)ctx; \
+        if (!dst) return 0; \
+        const base_type s = *((base_type*)arg[0].ptr); \
+        const size_t n = ELEMENTWISE_COUNT(*dst, arg[1], base_type); \
+        for (size_t i = 0; i < n; ++i) { \
+            ((base_type*)dst->ptr)[i] = s op ((base_type*)arg[1].ptr)[i]; \
+        } \
+        return 0; \
+    }
+
 #define BAKE_OP_M_M(name, op, base_type) \
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
@@ -299,6 +313,25 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         md_256 s = md_mm256_set1_ps(as_float(arg[1])); \
         for (size_t i = 0; i < count; i += 8) { \
             md_mm256_storeu_ps(dst_arr + i, op(md_mm256_loadu_ps(src_arr + i), s)); \
+        } \
+        return 0; \
+    }
+
+#define BAKE_SIMDF_OP_S_M(name, op) \
+    static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
+        (void)ctx; \
+        ASSERT(dst); \
+        ASSERT(dst->type.base_type == TYPE_FLOAT); \
+        ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT)); \
+        ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
+        const size_t count = (size_t)type_info_dim_size(dst->type); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[1].type)); \
+        ASSERT(count % 8 == 0); \
+        const float* src_arr = as_float_arr(arg[1]); \
+        float* dst_arr = as_float_arr(*dst); \
+        md_256 s = md_mm256_set1_ps(as_float(arg[0])); \
+        for (size_t i = 0; i < count; i += 8) { \
+            md_mm256_storeu_ps(dst_arr + i, op(s, md_mm256_loadu_ps(src_arr + i))); \
         } \
         return 0; \
     }
@@ -363,6 +396,7 @@ BAKE_OP_UNARY_M(_op_neg_iarr, -, int)
 
 BAKE_OP_M_S(_op_add_iarr_i, +, int)
 BAKE_OP_M_S(_op_sub_iarr_i, -, int)
+BAKE_OP_S_M(_op_sub_i_iarr, -, int)
 BAKE_OP_M_S(_op_mul_iarr_i, *, int)
 static int _op_div_iarr_i(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return 0;
@@ -373,6 +407,19 @@ static int _op_div_iarr_i(data_t* dst, data_t arg[], eval_context_t* ctx) {
     for (size_t i = 0; i < n; ++i) {
         if (!int_div_valid(a[i], b, ctx)) return -1;
         d[i] = a[i] / b;
+    }
+    return 0;
+}
+
+static int _op_div_i_iarr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return 0;
+    const int a = as_int(arg[0]);
+    const int* b = (const int*)arg[1].ptr;
+    int* d = (int*)dst->ptr;
+    const size_t n = ELEMENTWISE_COUNT(*dst, arg[1], int);
+    for (size_t i = 0; i < n; ++i) {
+        if (!int_div_valid(a, b[i], ctx)) return -1;
+        d[i] = a / b[i];
     }
     return 0;
 }
@@ -398,12 +445,14 @@ BAKE_SIMDF_OP_M_S(_op_simd_add_farr_f,    md_mm256_add_ps)
 
 BAKE_SIMDF_OP_M_M(_op_simd_sub_farr_farr, md_mm256_sub_ps)
 BAKE_SIMDF_OP_M_S(_op_simd_sub_farr_f,    md_mm256_sub_ps)
+BAKE_SIMDF_OP_S_M(_op_simd_sub_f_farr,    md_mm256_sub_ps)
 
 BAKE_SIMDF_OP_M_M(_op_simd_mul1arr_farr, md_mm256_mul_ps)
 BAKE_SIMDF_OP_M_S(_op_simd_mul1arr_f,    md_mm256_mul_ps)
 
 BAKE_SIMDF_OP_M_M(_op_simd_div_farr_farr, md_mm256_div_ps)
 BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    md_mm256_div_ps)
+BAKE_SIMDF_OP_S_M(_op_simd_div_f_farr,    md_mm256_div_ps)
 
 BAKE_SIMDF_OP_M(_op_simd_abs_farr,        md_mm256_abs_ps)
 
@@ -421,8 +470,10 @@ BAKE_OP_UNARY_M(_op_neg_farr,   -, float)
 
 BAKE_OP_M_S(_op_add_farr_f, +, float)
 BAKE_OP_M_S(_op_sub_farr_f, -, float)
+BAKE_OP_S_M(_op_sub_f_farr, -, float)
 BAKE_OP_M_S(_op_mul1arr_f, *, float)
 BAKE_OP_M_S(_op_div_farr_f, /, float)
+BAKE_OP_S_M(_op_div_f_farr, /, float)
 
 BAKE_OP_M_M(_op_add_farr_farr, +, float)
 BAKE_OP_M_M(_op_sub_farr_farr, -, float)
@@ -720,15 +771,19 @@ static procedure_t operators[] = {
 
     // Binary sub
     {STR_INIT("-"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_sub_f_f},
-    {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    // Not commutative: the scalar on either side has an overload of its own (FLAG_SYMMETRIC_ARGS would swap the operands)
+    {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT,      TI_FLOAT_ARR},          _op_sub_f_farr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
 
     {STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {STR_INIT("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {STR_INIT("-"),      TI_VOLUME,         2,  {TI_FLOAT,   TI_VOLUME},                _op_simd_sub_f_farr,    FLAG_DEDUCE_LENGTH_FROM_ARG},
 
     {STR_INIT("-"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_sub_i_i},
-    {STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT,        TI_INT_ARR},            _op_sub_i_iarr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary mul
@@ -748,16 +803,19 @@ static procedure_t operators[] = {
 
     // Binary div
     {STR_INIT("/"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_div_f_f},
-    {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT,      TI_FLOAT_ARR},          _op_div_f_farr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     {STR_INIT("/"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_FLOAT},       _dist_div,             FLAG_QUERYABLE_LENGTH},
     
     {STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
-    {STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {STR_INIT("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {STR_INIT("/"),      TI_VOLUME,         2,  {TI_FLOAT,   TI_VOLUME},                _op_simd_div_f_farr,    FLAG_DEDUCE_LENGTH_FROM_ARG},
 
     {STR_INIT("//"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
-    {STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT,        TI_INT_ARR},            _op_div_i_iarr,         FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 };
 
@@ -3197,7 +3255,31 @@ static void match_report_unknown(eval_context_t* ctx, int arg, const char* what,
 }
 
 // Runs the query in the context and fills dst, or returns the number of matches when validating
-static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], int level_arg, int mode_arg, uint32_t select_flags, eval_context_t* ctx) {
+// The steps a match of a script may take (md_match_desc_t.max_steps). A connected reference or SMILES stays far below
+// it (a few 10^5 steps in a system of 10^5 atoms); what goes past it is a query in several parts, each placed anywhere
+// in its unit, which fit in more ways than anyone wants listed (see HOW THE SEARCH RUNS in md_match.h). Some 10^7 steps
+// are a fraction of a second, which a compilation can wait for and an evaluation can take per frame.
+#define MATCH_MAX_STEPS(num_atoms) (10000000ull + 64ull * (uint64_t)(num_atoms))
+
+// The parts of a query which are not bonded to each other
+static size_t match_query_parts(const md_match_query_t* q, md_allocator_i* alloc) {
+    if (q->num_atoms == 0) return 0;
+    int32_t* parent = md_alloc(alloc, sizeof(int32_t) * q->num_atoms);
+    for (size_t i = 0; i < q->num_atoms; ++i) parent[i] = (int32_t)i;
+    for (size_t i = 0; i < q->num_bonds; ++i) {
+        int32_t a = (int32_t)q->bonds[i].a, b = (int32_t)q->bonds[i].b;
+        while (parent[a] != a) a = parent[a] = parent[parent[a]];
+        while (parent[b] != b) b = parent[b] = parent[parent[b]];
+        if (a != b) parent[MAX(a, b)] = MIN(a, b);
+    }
+    size_t num = 0;
+    for (size_t i = 0; i < q->num_atoms; ++i) num += parent[i] == (int32_t)i;
+    md_free(alloc, parent, sizeof(int32_t) * q->num_atoms);
+    return num;
+}
+
+// proc: the procedure, what: what the query was made from, as the error names them ("match", "reference")
+static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], int level_arg, int mode_arg, uint32_t select_flags, const char* proc, const char* what, eval_context_t* ctx) {
     int level = 0, mode = 0;
     if (!match_lookup(&level, match_levels, ARRAY_SIZE(match_levels), as_string(arg[level_arg]))) {
         if (!dst) match_report_unknown(ctx, level_arg, "level", match_levels, ARRAY_SIZE(match_levels), as_string(arg[level_arg]));
@@ -3222,10 +3304,25 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
         .mode  = mode == MATCH_MODE_WHOLE ? MD_MATCH_MODE_UNIQUE : (md_match_mode_t)mode,
         .flags = mode == MATCH_MODE_WHOLE ? MD_MATCH_FLAG_WHOLE : MD_MATCH_FLAG_NONE,
         .mask  = ctx->mol_ctx,
+        .max_steps = MATCH_MAX_STEPS(ctx->sys->atom.count),
     };
     md_match_result_t res = {0};
     if (!md_match_find(&res, &desc, ctx->sys, ctx->temp_alloc)) {
         if (!dst) EVAL_LOG_ERROR(ctx, ctx->op_token, "Structure matching failed, see the log");
+        return STATIC_VALIDATION_ERROR;
+    }
+    if (res.incomplete) {
+        // Reported by the evaluation as well: the search depends on the frame through the context
+        const size_t num_parts = match_query_parts(query, ctx->temp_alloc);
+        const char* unit = level == MD_MATCH_LEVEL_COMPONENT ? "residue" : level == MD_MATCH_LEVEL_INSTANCE ? "chain" : "molecule";
+        if (num_parts > 1) {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: the search was given up, the %s is in %zu parts which are not bonded to each other. "
+                "Each is placed anywhere in the %s, and together they fit in too many ways: give a %s whose atoms are bonded "
+                "(a chain with a gap is two parts)", proc, what, num_parts, unit, what);
+        } else {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: the search was given up, the %s fits in too many ways", proc, what);
+        }
+        md_match_result_free(&res);
         return STATIC_VALIDATION_ERROR;
     }
 
@@ -3285,7 +3382,7 @@ static int _smiles(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     // A SMILES describes its atoms with their hydrogens: the selections have them
-    const int result = match_eval(dst, &query, arg, 1, 2, MD_MATCH_SELECT_HYDROGENS, ctx);
+    const int result = match_eval(dst, &query, arg, 1, 2, MD_MATCH_SELECT_HYDROGENS, "smiles", "SMILES", ctx);
     md_match_query_free(&query);
     return result;
 }
@@ -3320,7 +3417,7 @@ static int _match(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = STATIC_VALIDATION_ERROR;
     if (md_match_query_init_atoms(&query, atom_idx, num_idx, (md_match_label_t)label, ctx->sys, ctx->temp_alloc)) {
         // The atoms the reference maps, its hydrogens if it has them, and nothing else
-        result = match_eval(dst, &query, arg, 2, 3, MD_MATCH_SELECT_NONE, ctx);
+        result = match_eval(dst, &query, arg, 2, 3, MD_MATCH_SELECT_NONE, "match", "reference", ctx);
         md_match_query_free(&query);
     } else if (!dst) {
         EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "match: the reference cannot be made into a query, see the log");

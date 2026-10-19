@@ -201,7 +201,7 @@ typedef enum base_type_t {
 
 typedef enum flags_t {
     // Procedure Flags
-    FLAG_SYMMETRIC_ARGS             = 0x00001, // Indicates that the first two arguments are symmetric, meaning they can be swapped
+    FLAG_SYMMETRIC_ARGS             = 0x00001, // The first two arguments can be swapped to match: the procedure is called with them swapped, so only for commutative ones (a - s is not s - a)
     FLAG_ARGS_EQUAL_LENGTH          = 0x00002, // Arguments should have the same array length
     FLAG_DEDUCE_LENGTH_FROM_ARG     = 0x00004, // Return type array length matches argument arrays' length
     FLAG_DYNAMIC_LENGTH             = 0x00008, // Return type has a varying length which is not constant over frames
@@ -1494,6 +1494,19 @@ static size_t test_hook_contact_local_prepares;    // Evaluations which found no
 #endif
 
 #include "md_script_functions.inl"
+
+// The volumes of a type: 1 for a volume, float[128][128][128] (or [1][128][128][128]), n for an array of them,
+// float[n][128][128][128], which is what 'sdf(...) in residue(1:n)' or '{sdf(...), sdf(...)}' is. 0 for anything else.
+static inline int volume_count(type_info_t ti) {
+    if (ti.dim[0] == -1) return 0;
+    if (is_type_directly_compatible(ti, (type_info_t)TI_VOLUME)) return 1;
+    if (ti.base_type == TYPE_FLOAT && dim_ndims(ti.dim) == 4 && ti.dim[0] > 0 &&
+        ti.dim[1] == MD_VOL_DIM && ti.dim[2] == MD_VOL_DIM && ti.dim[3] == MD_VOL_DIM) {
+        return ti.dim[0];
+    }
+    return 0;
+}
+
 
 // ############################
 // ###   HELPER FUNCTIONS   ###
@@ -5434,6 +5447,22 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
         // Finalize the type of the array (dimensionality)
         array_type.dim[0] = (int32_t)array_len;
+
+        // Volumes are stacked rather than concatenated: '{sdf(a), sdf(b)}' is float[2][128][128][128], two volumes,
+        // not float[256][128][128], one twice as long along x. The data is the same, one volume after the other: only
+        // the type says which it is.
+        int num_volumes = 0;
+        for (size_t i = 0; i < num_elem; ++i) {
+            const int n = volume_count(elem[i]->data.type);
+            if (n == 0) {
+                num_volumes = 0;
+                break;
+            }
+            num_volumes += n;
+        }
+        if (num_volumes > 0) {
+            array_type = (type_info_t){TYPE_FLOAT, {num_volumes, MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM}};
+        }
         node->data.type = array_type;
         node->data.unit[0] = array_unit[0];
         node->data.unit[1] = array_unit[1];
@@ -6258,8 +6287,12 @@ static inline bool is_distribution_type(type_info_t ti) {
 }
 
 static inline bool is_volume_type(type_info_t ti) {
-    return ti.dim[0] != -1 && is_type_directly_compatible(ti, (type_info_t)TI_VOLUME);
+    return volume_count(ti) > 0;
 }
+
+// An array of volumes evaluated as one property: each is 8 MiB (MD_VOL_DIM^3 floats), held by the evaluation, its
+// periods and every thread evaluating a frame. 32 are 256 MiB.
+#define MAX_PROPERTY_VOLUMES 32
 
 static inline bool is_property_type(type_info_t ti) {
     return is_temporal_type(ti) || is_distribution_type(ti) || is_volume_type(ti);
@@ -6547,15 +6580,17 @@ static void init_property(eval_property_t* prop, md_attributes_t* attributes, st
             break;
         }
         case MD_SCRIPT_PROPERTY_FLAG_VOLUME: {
+            // A volume is {x, y, z}, an array of n of them {n, x, y, z}: one more index axis, which picks the volume
+            const int num_volumes = volume_count(type);
             if (dim_ndims(type.dim) < 4) {
                 dim_shift_right(type.dim);
             }
-            // @NOTE: Multidimensional volumes are not supported yet
-            ASSERT(type.dim[0] == 1);
-            const uint32_t shape[3] = { (uint32_t)type.dim[1], (uint32_t)type.dim[2], (uint32_t)type.dim[3] };
-            prop->num_values = (size_t)shape[0] * (size_t)shape[1] * (size_t)shape[2];
+            const uint32_t shape[4] = { (uint32_t)num_volumes, (uint32_t)type.dim[1], (uint32_t)type.dim[2], (uint32_t)type.dim[3] };
+            prop->num_values = (size_t)shape[0] * (size_t)shape[1] * (size_t)shape[2] * (size_t)shape[3];
             prop->count      = (uint32_t)prop->num_values;
-            prop->values = script_attr_storage(attributes, alloc, ident, NULL, value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 3, shape);
+            prop->values = num_volumes == 1 ?
+                script_attr_storage(attributes, alloc, ident, NULL, value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 3, shape + 1) :
+                script_attr_storage(attributes, alloc, ident, NULL, value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 4, shape);
             break;
         }
         default:
@@ -7208,6 +7243,12 @@ static bool extract_properties(md_script_ir_t* ir) {
         if (expr->type == AST_ASSIGNMENT) {
             ASSERT(expr->children);
             ast_node_t* lhs = expr->children[0];
+            const int num_volumes = volume_count(expr->data.type);
+            if (num_volumes > MAX_PROPERTY_VOLUMES) {
+                LOG_ERROR(ir, expr->token, "An array of %i volumes is %i MiB to evaluate, no more than %i (%i MiB) are evaluated as one property",
+                    num_volumes, num_volumes * 8, MAX_PROPERTY_VOLUMES, MAX_PROPERTY_VOLUMES * 8);
+                return false;
+            }
             if (expr->children[0]->type == AST_IDENTIFIER && is_property_type(expr->data.type)) {
                 create_property(ir, lhs->ident, expr);
             } else if (expr->children[0]->type == AST_ARRAY) {
@@ -8553,7 +8594,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_system_t* sys, md_alloca
 
     eval_log_t log = { .alloc = temp_alloc };
 
-    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc});
+    ast_node_t* node = prune_expressions(parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc}));
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
@@ -8604,7 +8645,7 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_s
     ir->str = str_copy(expr, ir->arena);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
-    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc});
+    ast_node_t* node = prune_expressions(parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc}));
     if (node) {
         eval_context_t ctx = {
             .ir = ir,

@@ -88,7 +88,7 @@ static size_t count_smiles_ex(const char* smiles, const md_match_desc_t* base, c
     md_match_desc_t desc = *base;
     desc.query = &query;
     size_t count = 0;
-    const bool ok = md_match_for_each(&count, &desc, sys, NULL, NULL);
+    const bool ok = md_match_for_each(&count, NULL, &desc, sys, NULL, NULL);
     md_match_query_free(&query);
     return ok ? count : SIZE_MAX;
 }
@@ -101,7 +101,7 @@ static size_t count_smiles(const char* smiles, md_match_level_t level, md_match_
 // md_match_for_each as a count, SIZE_MAX for an invalid query or description
 static size_t count_matches(const md_match_desc_t* desc, const md_system_t* sys, md_match_callback_t callback, void* user_param) {
     size_t count = 0;
-    return md_match_for_each(&count, desc, sys, callback, user_param) ? count : SIZE_MAX;
+    return md_match_for_each(&count, NULL, desc, sys, callback, user_param) ? count : SIZE_MAX;
 }
 
 static bool atoms_bonded(const md_system_t* sys, int32_t a, int32_t b) {
@@ -344,14 +344,14 @@ UTEST(match, query_validation) {
     desc.query = &empty;
     EXPECT_FALSE(md_match_find(&res, &desc, sys, alloc));
     size_t count = 7;
-    EXPECT_FALSE(md_match_for_each(&count, &desc, sys, NULL, NULL));
+    EXPECT_FALSE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL));
     EXPECT_EQ(0, (int)count);
 
     // A valid search which finds nothing is not a failure
     md_match_atom_t gold = {.flags = MD_MATCH_ATOM_ELEMENT, .z = 79};
     md_match_query_t none = {.num_atoms = 1, .atoms = &gold};
     desc.query = &none;
-    EXPECT_TRUE(md_match_for_each(&count, &desc, sys, NULL, NULL));
+    EXPECT_TRUE(md_match_for_each(&count, NULL, &desc, sys, NULL, NULL));
     EXPECT_EQ(0, (int)count);
 }
 
@@ -454,6 +454,39 @@ UTEST(match, callback_stops) {
     int n = 0;
     EXPECT_EQ(2, (int)count_matches(&desc, sys, stop_after_two, &n));
     EXPECT_EQ(2, n);
+    md_match_query_free(&q);
+}
+
+// A query in parts places each anywhere in the unit: the pairs of carbons of the peptide (45 of them) are C(45, 2). A
+// budget of steps stops the search, which is then incomplete, and none leaves it as it is.
+UTEST(match, max_steps) {
+    const md_system_t* sys = get_sys(SYS_ALA);
+    md_match_query_t q = {0};
+    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("C.C"), md_get_heap_allocator(), NULL));
+    md_match_desc_t desc = {.query = &q};
+
+    size_t count = 0;
+    bool incomplete = true;
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    EXPECT_FALSE(incomplete);
+    EXPECT_EQ((size_t)(45 * 44 / 2), count);
+
+    desc.max_steps = 1000000000;
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    EXPECT_FALSE(incomplete);
+    EXPECT_EQ((size_t)(45 * 44 / 2), count);
+
+    desc.max_steps = 100;
+    ASSERT_TRUE(md_match_for_each(&count, &incomplete, &desc, sys, NULL, NULL));
+    EXPECT_TRUE(incomplete);
+    EXPECT_LT(count, (size_t)(45 * 44 / 2));
+
+    md_match_result_t res = {0};
+    ASSERT_TRUE(md_match_find(&res, &desc, sys, md_get_heap_allocator()));
+    EXPECT_TRUE(res.incomplete);
+    EXPECT_EQ(count, res.count);
+    md_match_result_free(&res);
+
     md_match_query_free(&q);
 }
 
@@ -1302,6 +1335,9 @@ UTEST(match, script_match) {
     EXPECT_EQ(15, (int)filter_count(&arr, "match(name('CB') in residue(5), by='name')", SYS_ALA, alloc));
 
     EXPECT_TRUE(filter_fails_with("match(within(3, residue(1)))", "cannot depend on the frame", SYS_ALA));
+    // The 15 CA atoms are not bonded to each other: any 15 of the 45 carbons, 3 * 10^11 matches. The search is given up.
+    EXPECT_TRUE(filter_fails_with("match(name('CA'))", "the reference is in 15 parts", SYS_ALA));
+    EXPECT_TRUE(filter_fails_with("smiles('C.C.C.C.C')", "the SMILES is in 5 parts", SYS_ALA));
     EXPECT_TRUE(filter_fails_with("match(residue(5), by='type')", "Unknown label", SYS_ALA));
 
     md_arena_allocator_destroy(alloc);

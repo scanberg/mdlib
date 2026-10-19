@@ -310,7 +310,8 @@ static void isog_stage(md_gpu_stream_t s, const md_gto_iso_gpu_desc_t* desc, md_
 }
 
 bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_desc_t* desc, md_gto_iso_gpu_mesh_t* out) {
-    if (!s || !set || !desc || !out || !(desc->cell_size > 0.0)) {
+    const double h = desc ? iso_lattice_float(desc->cell_size) : 0.0;
+    if (!s || !set || !desc || !out || !(h > 0.0)) {
         MD_LOG_ERROR("md_gto_iso_gpu_extract: invalid arguments");
         return false;
     }
@@ -319,7 +320,6 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     out->num_fields = set->num_fields;
     const md_tick_t t_start = md_tick_now();
     md_tick_t ts = t_start;
-    const double h = desc->cell_size;
     const uint32_t F = set->num_fields;
 
     // root: the union of every field's surface box, as on the CPU (the same lattice for one field)
@@ -336,12 +336,9 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         const uint32_t sheets = desc->sheets[k] ? (desc->sheets[k] & 3u) : 3u;
         root_mask |= sheets << (2u * k);
     }
-    double ext = 0.0, origin[3];
-    for (int a = 0; a < 3; ++a) ext = fmax(ext, hi[a] - lo[a]);
-    int L = 0;
-    while (4.0 * h * (double)(1 << L) < ext) L++;
+    double origin[3];
+    const int L = iso_root_box(lo, hi, 4.0 * h, origin);
     if (L > 8) { MD_LOG_ERROR("md_gto_iso_gpu_extract: lattice too large for cell size %g", h); return false; }
-    for (int a = 0; a < 3; ++a) origin[a] = 0.5 * (lo[a] + hi[a]) - 0.5 * 4.0 * h * (double)(1 << L);
 
     memcpy(out->origin, origin, sizeof(origin));
     out->cell_size = h;

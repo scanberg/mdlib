@@ -79,7 +79,7 @@ static size_t ring_count_matches(const char* smiles, md_match_level_t level, md_
     }
     const md_match_desc_t desc = { .query = &query, .level = level, .mode = mode };
     size_t count = 0;
-    const bool ok = md_match_for_each(&count, &desc, sys, NULL, NULL);
+    const bool ok = md_match_for_each(&count, NULL, &desc, sys, NULL, NULL);
     md_match_query_free(&query);
     return ok ? count : SIZE_MAX;
 }
@@ -96,7 +96,7 @@ static size_t ring_count_in_rings(const char* smiles, md_match_mode_t mode, cons
     size_t count = SIZE_MAX;
     if (md_match_query_init_smiles(&query, str_from_cstr(smiles), alloc, NULL)) {
         const md_match_desc_t desc = { .query = &query, .mode = mode, .units = units, .num_units = num_rings };
-        if (!md_match_for_each(&count, &desc, sys, NULL, NULL)) count = SIZE_MAX;
+        if (!md_match_for_each(&count, NULL, &desc, sys, NULL, NULL)) count = SIZE_MAX;
         md_match_query_free(&query);
     }
     md_arena_allocator_destroy(alloc);
@@ -207,11 +207,11 @@ UTEST_F(ring, match_level) {
     units[2] = md_bitset_range(0, (uint32_t)trp->atom.count);
     desc.num_units = 3;
     size_t count = 0;
-    ASSERT_TRUE(md_match_for_each(&count, &desc, trp, NULL, NULL));
+    ASSERT_TRUE(md_match_for_each(&count, NULL, &desc, trp, NULL, NULL));
     EXPECT_EQ(2, (int)count);
     // A unit beyond the atoms of the system is an error
     units[2] = md_bitset_range(0, (uint32_t)trp->atom.count + 1);
-    EXPECT_FALSE(md_match_for_each(&count, &desc, trp, NULL, NULL));
+    EXPECT_FALSE(md_match_for_each(&count, NULL, &desc, trp, NULL, NULL));
 
     md_match_query_free(&query);
     for (size_t r = 0; r < 2; ++r) md_bitset_free(&units[r], alloc);

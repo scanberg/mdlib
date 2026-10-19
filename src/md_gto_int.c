@@ -1116,7 +1116,9 @@ md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, c
         for (uint32_t i = 0; i < q->num_points; ++i) for (int k = 0; k < 3; ++k) {
             lo[k] = MIN(lo[k], q->point_xyz[i * 3 + k]); hi[k] = MAX(hi[k], q->point_xyz[i * 3 + k]);
         }
-        for (int k = 0; k < 3; ++k) g->ref[k] = (q->num_gaussians + q->num_points) ? 0.5 * (lo[k] + hi[k]) : 0.0;
+        // A float: the xyz kernel subtracts it from the points in float, and a ref the device could not
+        // hold would shift every point against the frame the gaussians were placed in.
+        for (int k = 0; k < 3; ++k) g->ref[k] = (q->num_gaussians + q->num_points) ? (double)(float)(0.5 * (lo[k] + hi[k])) : 0.0;
     }
 
     // One allocation: Boys table | gaussians (float4) | coefficients | point charges (float4)
