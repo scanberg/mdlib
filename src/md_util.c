@@ -4848,7 +4848,11 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     color_t current_color = 1;
     mark_t  current_mark  = 1;
 
-    // Water and ions have no rings
+    // Water and ions have no rings, and neither do coarse grained beads or virtual sites: a ring is made of atoms.
+    // Martini closes a few beads into a rigid triangle where the atoms had a ring (one bead per two or three ring
+    // atoms, fused rings a triangulated patch), and the elastic network and secondary structure bonds of a coarse
+    // grained protein close thousands of cycles which are no rings at all. Skipped atoms are neither roots nor
+    // passed through, so a ring of atoms in a molecule which also holds beads is still found.
     uint64_t* skip = make_bitfield(num_atoms, temp_arena);
     for (size_t ci = 0; ci < sys->component.count; ++ci) {
         const md_component_kind_t kind = md_component_kind(&sys->component, ci);
@@ -4856,6 +4860,9 @@ bool md_util_system_infer_rings(md_system_t* sys) {
             const md_urange_t range = md_component_atom_range(&sys->component, ci);
             for (uint32_t i = range.beg; i < range.end && i < num_atoms; ++i) bitfield_set_bit(skip, i);
         }
+    }
+    for (size_t i = 0; i < num_atoms; ++i) {
+        if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
     }
 
     for (int atom_idx = 0; atom_idx < (int)num_atoms; ++atom_idx) {
@@ -4881,6 +4888,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
 
                 //if (next > idx) continue;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
+                if (bitfield_test_bit(skip, next)) continue;
 
                 if (mark[next] == current_mark && depth[idx] >= MIN_RING_SIZE) {
                     // We found a junction point where the graph connects

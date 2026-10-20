@@ -1044,10 +1044,21 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
     uint8_t* aromatic_ring = md_alloc(c->alloc, num);
     MEMSET(aromatic_ring, 0, num);
 
+    // The rings which can be aromatic, alone or fused: of 4 atoms or more, all of them taking part. Huckel rejects the
+    // others anyway, but the search for fused pairs below would still visit every ring sharing an atom with them.
+    uint8_t* candidate = md_alloc(c->alloc, num);
     for (size_t r = 0; r < num; ++r) {
         const int32_t* ring = md_index_range_beg(rings, r);
         const size_t n = md_index_range_size(rings, r);
-        if (n < 4) continue;
+        bool ok = n >= 4;
+        for (size_t k = 0; k < n && ok; ++k) ok = ring[k] >= 0 && (size_t)ring[k] < c->N && c->part[ring[k]];
+        candidate[r] = ok;
+    }
+
+    for (size_t r = 0; r < num; ++r) {
+        if (!candidate[r]) continue;
+        const int32_t* ring = md_index_range_beg(rings, r);
+        const size_t n = md_index_range_size(rings, r);
         if (huckel(c, ring, n, member)) aromatic_ring[r] = 1;
     }
     // Fused pairs: rings that are not aromatic alone but are as a system with a neighbour sharing a bond. The
@@ -1071,19 +1082,18 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
 
     int32_t buf[64];
     for (size_t r = 0; r < num; ++r) {
-        if (aromatic_ring[r]) continue;
+        if (aromatic_ring[r] || !candidate[r]) continue;
         const int32_t* ra = md_index_range_beg(rings, r);
         const size_t na = md_index_range_size(rings, r);
-        if (na < 4) continue;
         for (size_t i = 0; i < na && !aromatic_ring[r]; ++i) {
             if (ra[i] < 0 || (size_t)ra[i] >= c->N) continue;
             for (uint32_t t = ring_off[ra[i]]; t < ring_off[ra[i] + 1]; ++t) {
                 const size_t s = ring_idx[t];
                 // Each pair once from the ring of lower index; skip pairs met through an earlier shared atom
-                if (s == r) continue;
+                if (s == r || !candidate[s]) continue;
                 const int32_t* rb = md_index_range_beg(rings, s);
                 const size_t nb = md_index_range_size(rings, s);
-                if (nb < 4 || na + nb > ARRAY_SIZE(buf)) continue;
+                if (na + nb > ARRAY_SIZE(buf)) continue;
                 bool earlier = false;
                 for (size_t j = 0; j < i && !earlier; ++j) for (size_t l = 0; l < nb; ++l) earlier |= ra[j] == rb[l];
                 if (earlier) continue;
