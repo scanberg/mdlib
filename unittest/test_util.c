@@ -1199,6 +1199,132 @@ UTEST(util, martini_reference_systems) {
     md_vm_arena_destroy(alloc);
 }
 
+// The nucleic acids of Martini (test_data/martini): each strand a coarse grained nucleic backbone of all its
+// nucleotides, read from the frame alone or with its topology. A segment holds the phosphate bead BB1 in p (none at the
+// 5' end, which starts a strand) and the sugar beads BB2 and BB3 in c4 and c1, the C4' and C1' they hold; no breaks.
+UTEST(util, martini_nucleic_backbones) {
+    static const struct {
+        const char* name;
+        size_t      strand;     // Nucleotides of each of its two strands
+        md_entity_kind_t kind;
+    } systems[] = {
+        { "martini2_dna", 12, MD_ENTITY_KIND_DNA },
+        { "martini2_rna", 14, MD_ENTITY_KIND_RNA },
+        { "martini3_rna", 22, MD_ENTITY_KIND_RNA },
+    };
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    for (size_t n = 0; n < ARRAY_SIZE(systems); ++n) {
+        for (int with_tpr = 0; with_tpr < 2; ++with_tpr) {
+            char path[256];
+            snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.%s", systems[n].name, with_tpr ? "tpr" : "gro");
+            md_system_t sys = { .alloc = alloc };
+            md_system_state_t state = { .alloc = alloc };
+            ASSERT_TRUE(with_tpr ? md_tpr_system_init_from_file(&sys, &state, str_from_cstr(path)) : md_gro_system_init_from_file(&sys, &state, str_from_cstr(path)));
+            ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+
+            const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
+            ASSERT_EQ_MSG((size_t)2, bb->range.count, path);
+            ASSERT_EQ_MSG(2 * systems[n].strand, bb->segment.count, path);
+            for (size_t r = 0; r < bb->range.count; ++r) {
+                EXPECT_TRUE(md_nucleic_backbone_range_is_coarse_grained(bb, r));
+                EXPECT_EQ(systems[n].strand, (size_t)(bb->range.offset[r + 1] - bb->range.offset[r]));
+                EXPECT_TRUE(md_entity_kind_is_nucleic_acid(md_system_instance_entity_kind(&sys, bb->range.inst_idx[r])));
+                EXPECT_EQ((int)systems[n].kind, (int)md_system_instance_entity_kind(&sys, bb->range.inst_idx[r]));
+                for (uint32_t s = bb->range.offset[r]; s < bb->range.offset[r + 1]; ++s) {
+                    const md_nucleic_acid_atoms_t a = bb->segment.atoms[s];
+                    const md_component_idx_t comp = bb->segment.comp_idx[s];
+                    EXPECT_EQ(-1, a.o5);
+                    EXPECT_EQ(-1, a.o3);
+                    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.c4), STR_LIT("BB2")));
+                    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.c1), STR_LIT("BB3")));
+                    EXPECT_EQ(comp, (md_component_idx_t)md_system_component_find_by_atom_idx(&sys, (size_t)a.c4));
+                    if (s == bb->range.offset[r]) {
+                        EXPECT_EQ(-1, a.p);
+                    } else {
+                        ASSERT_GE(a.p, 0);
+                        EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.p), STR_LIT("BB1")));
+                    }
+                    EXPECT_EQ(0, (int)(md_component_flags(&sys.component, (size_t)comp) & (MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER)));
+                }
+            }
+        }
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// A strand of Martini 2 DNA (one chain, the first seven nucleotides of martini/martini2_dna but the fourth) is broken
+// where the fourth is missing: no bead of the third is bonded to the BB1 of the fifth, 8.8 A away. Two ranges, the
+// residues on either side of the break marked as such, and the link over it from the BB3 to the BB1. A nucleotide with
+// its BB1 does not start a strand.
+static const char martini2_dna_gap_pdb[] =
+    "ATOM      1 BB2   DC A   1      33.620  44.890  45.110  1.00  0.00\n"
+    "ATOM      2 BB3   DC A   1      33.350  43.570  43.660  1.00  0.00\n"
+    "ATOM      3 SC1   DC A   1      31.610  41.910  45.080  1.00  0.00\n"
+    "ATOM      4 SC2   DC A   1      32.610  40.180  45.990  1.00  0.00\n"
+    "ATOM      5 SC3   DC A   1      29.800  40.440  46.390  1.00  0.00\n"
+    "ATOM      6 BB1   DG A   2      36.200  43.640  41.430  1.00  0.00\n"
+    "ATOM      7 BB2   DG A   2      36.750  40.590  42.920  1.00  0.00\n"
+    "ATOM      8 BB3   DG A   2      36.400  39.240  41.580  1.00  0.00\n"
+    "ATOM      9 SC1   DG A   2      33.990  38.330  42.990  1.00  0.00\n"
+    "ATOM     10 SC2   DG A   2      33.420  35.860  44.500  1.00  0.00\n"
+    "ATOM     11 SC3   DG A   2      30.930  37.410  44.160  1.00  0.00\n"
+    "ATOM     12 SC4   DG A   2      32.640  39.140  42.680  1.00  0.00\n"
+    "ATOM     13 BB1   DC A   3      39.410  37.770  40.920  1.00  0.00\n"
+    "ATOM     14 BB2   DC A   3      37.700  34.940  42.220  1.00  0.00\n"
+    "ATOM     15 BB3   DC A   3      36.840  33.840  40.970  1.00  0.00\n"
+    "ATOM     16 SC1   DC A   3      34.700  35.320  40.920  1.00  0.00\n"
+    "ATOM     17 SC2   DC A   3      33.060  34.200  41.880  1.00  0.00\n"
+    "ATOM     18 SC3   DC A   3      32.370  36.510  40.360  1.00  0.00\n"
+    "ATOM     19 BB1   DA A   5      35.490  25.450  38.650  1.00  0.00\n"
+    "ATOM     20 BB2   DA A   5      32.050  25.760  39.770  1.00  0.00\n"
+    "ATOM     21 BB3   DA A   5      30.960  25.540  38.160  1.00  0.00\n"
+    "ATOM     22 SC1   DA A   5      30.910  28.390  37.490  1.00  0.00\n"
+    "ATOM     23 SC2   DA A   5      29.070  29.740  37.340  1.00  0.00\n"
+    "ATOM     24 SC3   DA A   5      30.630  31.410  35.990  1.00  0.00\n"
+    "ATOM     25 SC4   DA A   5      32.100  29.000  36.570  1.00  0.00\n"
+    "ATOM     26 BB1   DA A   6      29.490  22.800  38.560  1.00  0.00\n"
+    "ATOM     27 BB2   DA A   6      26.770  24.910  38.020  1.00  0.00\n"
+    "ATOM     28 BB3   DA A   6      26.250  24.770  36.130  1.00  0.00\n"
+    "ATOM     29 SC1   DA A   6      27.410  27.350  35.400  1.00  0.00\n"
+    "ATOM     30 SC2   DA A   6      26.480  29.330  34.710  1.00  0.00\n"
+    "ATOM     31 SC3   DA A   6      28.770  29.740  33.420  1.00  0.00\n"
+    "ATOM     32 SC4   DA A   6      28.780  27.100  34.580  1.00  0.00\n"
+    "ATOM     33 BB1   DT A   7      23.110  23.480  35.870  1.00  0.00\n"
+    "ATOM     34 BB2   DT A   7      22.770  26.750  34.350  1.00  0.00\n"
+    "ATOM     35 BB3   DT A   7      22.660  26.780  32.400  1.00  0.00\n"
+    "ATOM     36 SC1   DT A   7      25.320  26.770  32.060  1.00  0.00\n"
+    "ATOM     37 SC2   DT A   7      25.960  28.690  31.290  1.00  0.00\n"
+    "ATOM     38 SC3   DT A   7      27.780  26.040  31.410  1.00  0.00\n"
+    "END\n";
+
+UTEST(util, martini_nucleic_break) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_gap_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ((size_t)6, md_system_component_count(&sys));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 14, 18));    // BB3 of 3 and BB1 of 5
+    EXPECT_NE(-1, md_bond_find(&sys.bond, 7, 12));     // BB3 of 2 and BB1 of 3
+
+    const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
+    ASSERT_EQ((size_t)2, bb->range.count);
+    EXPECT_EQ((size_t)6, bb->segment.count);
+    EXPECT_TRUE(md_nucleic_backbone_range_is_coarse_grained(bb, 0));
+    EXPECT_TRUE(md_nucleic_backbone_range_is_coarse_grained(bb, 1));
+    EXPECT_EQ(3u, bb->range.offset[1]);
+    EXPECT_EQ(-1, bb->segment.atoms[0].p);
+    EXPECT_EQ(18, bb->segment.atoms[3].p);
+    EXPECT_TRUE(md_component_flags(&sys.component, 2) & MD_COMPONENT_FLAG_BREAK_AFTER);
+    EXPECT_TRUE(md_component_flags(&sys.component, 3) & MD_COMPONENT_FLAG_BREAK_BEFORE);
+    md_atom_idx_t link[2];
+    ASSERT_TRUE(md_util_chain_break_atoms(link, &sys, 2));
+    EXPECT_EQ(14, link[0]);
+    EXPECT_EQ(18, link[1]);
+    EXPECT_FALSE(md_util_chain_break_atoms(link, &sys, 1));
+    md_vm_arena_destroy(alloc);
+}
+
 // Bond inference marks what it produces as of origin MD_BOND_ORIGIN_INFERRED, and re-inference replaces only those.
 // A bond of another origin (read from a file, user defined, from a topology) is kept wherever it sits in the arrays,
 // is never duplicated by an inferred bond naming the same pair, and survives an inference that cannot run.

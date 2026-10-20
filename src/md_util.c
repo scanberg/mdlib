@@ -10346,6 +10346,31 @@ static md_atom_idx_t amino_acid_backbone_bead(const md_system_t* sys, size_t com
     return bead;
 }
 
+// The backbone beads of a nucleotide of a coarse grained model, in the fields of the atoms they hold (Martini 2 DNA and
+// RNA, Uusitalo et al. 2015, 2017; Martini 3 RNA of reForge): the phosphate bead BB1 in p, the sugar bead BB2 which
+// holds the C4' in c4 and the sugar bead BB3 which holds the C1' in c1, the other fields -1. A 5' end has no BB1. False
+// for a component which is no nucleotide, or lacks BB2 or BB3. Their o5 is -1, which that of atoms never is
+// (md_util_nucleic_acid_atoms_extract requires it): that tells beads from atoms (nucleic_atoms_are_beads).
+static bool nucleotide_backbone_beads(md_nucleic_acid_atoms_t* out, const md_system_t* sys, size_t comp_idx) {
+    if (md_component_kind(&sys->component, comp_idx) != MD_COMPONENT_KIND_NUCLEOTIDE) return false;
+    md_nucleic_acid_atoms_t na;
+    MEMSET(&na, -1, sizeof(na));
+    const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) || md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_BEAD) continue;
+        const str_t name = md_atom_name(&sys->atom, i);
+        if      (str_eq_cstr(name, "BB1")) na.p  = (md_atom_idx_t)i;
+        else if (str_eq_cstr(name, "BB2")) na.c4 = (md_atom_idx_t)i;
+        else if (str_eq_cstr(name, "BB3")) na.c1 = (md_atom_idx_t)i;
+    }
+    if (out) *out = na;
+    return na.c4 >= 0 && na.c1 >= 0;
+}
+
+static inline bool nucleic_atoms_are_beads(const md_nucleic_acid_atoms_t* na) {
+    return na->o5 < 0;
+}
+
 // ### CHAIN BREAKS ### (see md_util.h)
 
 // Ångström within which the atoms of a link are linked when they have no bonds: a peptide bond (C-N) is 1.33 long, a
@@ -10382,9 +10407,15 @@ static bool protein_backbone_linked(const md_system_t* sys, const md_system_stat
     return chain_atoms_linked(sys, state, prev->c, next->n, CHAIN_LINK_MAX_DIST, seq_next);
 }
 
-// Whether the consecutive residues of a nucleic acid chain with the backbone atoms prev and next are linked: by a
-// phosphodiester bond from the O3' of prev to the P of next. Without its P (a 5' end) next is linked to nothing.
+// Whether the consecutive residues of a nucleic acid chain with the backbone atoms prev and next, both atomistic or
+// both beads, are linked: by a phosphodiester bond from the O3' of prev to the P of next, or for beads by a bond from a
+// sugar bead of prev to the phosphate bead of next (BB3 to BB1 in Martini 2, BB2 and BB3 to BB1 in Martini 3), by
+// consecutive sequence numbers alone without bonds. Without its P or phosphate bead (a 5' end) next is linked to
+// nothing.
 static bool nucleic_backbone_linked(const md_system_t* sys, const md_system_state_t* state, const md_nucleic_acid_atoms_t* prev, const md_nucleic_acid_atoms_t* next, bool seq_next) {
+    if (nucleic_atoms_are_beads(prev)) {
+        return chain_atoms_linked(sys, state, prev->c1, next->p, 0.0f, seq_next) || chain_atoms_linked(sys, state, prev->c4, next->p, 0.0f, seq_next);
+    }
     return chain_atoms_linked(sys, state, prev->o3, next->p, CHAIN_LINK_MAX_DIST, seq_next);
 }
 
@@ -10432,8 +10463,9 @@ static bool protein_chain_ends_between(const md_system_t* sys, size_t a, size_t 
 
 // Whether the chain ends between the consecutive residues of a nucleic acid chain whose backbones are not linked: b
 // has no P (a 5' end, which a crystal structure gives the first residue of a strand), or a hydrogen on the O3' of a or
-// the O5' of b makes a free 3' or 5' hydroxyl
+// the O5' of b makes a free 3' or 5' hydroxyl. Beads tell only the first: a b without its phosphate bead.
 static bool nucleic_chain_ends_between(const md_system_t* sys, const md_nucleic_acid_atoms_t* atoms_a, const md_nucleic_acid_atoms_t* atoms_b) {
+    if (nucleic_atoms_are_beads(atoms_a)) return atoms_b->p < 0;
     if (atoms_a->o3 < 0 || atoms_b->p < 0) return true;
     bool has_bonds;
     return bonded_count_of_element(sys, atoms_a->o3, MD_Z_H, &has_bonds) > 0 || bonded_count_of_element(sys, atoms_b->o5, MD_Z_H, &has_bonds) > 0;
@@ -10467,7 +10499,7 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
     if (!(md_component_flags(&sys->component, comp_idx) & MD_COMPONENT_FLAG_BREAK_AFTER)) return false;
 
     // The atoms the backbone was found by (md_util_system_infer): an amino acid by its atom names, else by its backbone
-    // bead, a nucleotide by its atom names
+    // bead, a nucleotide by its atom names, else by its backbone beads
     const size_t next = comp_idx + 1;
     const md_urange_t range_a = md_component_atom_range(&sys->component, comp_idx);
     const md_urange_t range_b = md_component_atom_range(&sys->component, next);
@@ -10483,6 +10515,9 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
         b = amino_acid_backbone_bead(sys, next);
     } else if (md_util_nucleic_acid_atoms_extract(&na_a, &sys->atom, range_a) && md_util_nucleic_acid_atoms_extract(&na_b, &sys->atom, range_b)) {
         a = na_a.o3;
+        b = na_b.p;
+    } else if (nucleotide_backbone_beads(&na_a, sys, comp_idx) && nucleotide_backbone_beads(&na_b, sys, next)) {
+        a = na_a.c1;
         b = na_b.p;
     }
     if (a < 0 || b < 0) return false;
@@ -11590,16 +11625,23 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                         md_nucleic_acid_atoms_t atoms;
                         md_urange_t atom_range = md_component_atom_range(&sys->component, comp_idx);
                         bool has_backbone_atoms = md_util_nucleic_acid_atoms_extract(&atoms, &sys->atom, atom_range);
+                        if (!has_backbone_atoms) {
+                            // A coarse grained nucleotide: its backbone beads
+                            has_backbone_atoms = nucleotide_backbone_beads(&atoms, sys, (size_t)comp_idx);
+                        }
 
                         if (has_backbone_atoms) {
                             md_sequence_id_t seq_id = md_system_component_seq_id(sys, comp_idx);
                             size_t backbone_length = md_array_size(backbone_atoms);
 
                             if (backbone_length > 0) {
-                                // The residue before it in the chain: a range ends where the chain breaks (CHAIN BREAKS
-                                // in md_util.h), and a residue without its P, which is linked to nothing before it, begins one
+                                // The residue before it in the chain: a range is of atoms or of beads throughout, and
+                                // ends where the chain breaks (CHAIN BREAKS in md_util.h); a residue without its P (or
+                                // phosphate bead), which is linked to nothing before it, begins one
                                 const md_nucleic_acid_atoms_t prev = *md_array_last(backbone_atoms);
-                                if (!nucleic_backbone_linked(sys, state, &prev, &atoms, seq_id == prev_seq_id + 1)) {
+                                if (nucleic_atoms_are_beads(&atoms) != nucleic_atoms_are_beads(&prev)) {
+                                    flush_nucleic_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                                } else if (!nucleic_backbone_linked(sys, state, &prev, &atoms, seq_id == prev_seq_id + 1)) {
                                     if (!nucleic_chain_ends_between(sys, &prev, &atoms)) {
                                         mark_chain_break(sys, (size_t)comp_idx - 1, (size_t)comp_idx);
                                     }
