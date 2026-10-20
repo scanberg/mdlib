@@ -1041,12 +1041,27 @@ interface IKBuf {
     static float4 ld4(uint i4);
     static void   st(uint i, float v);
 }
+// Groupshared buffers that threads write a float at a time and read as float4. SPIR-V: float4
+// elements (one 16-byte load per float4); Metal: plain floats, since Metal may write one component
+// of a threadgroup vector as a read-modify-write of the whole vector, and two threads writing
+// different components of the same float4 then lose one of the writes.
 #define K_BUF(NAME, FLOATS)                                                         \
-    groupshared float4 NAME##_data[(FLOATS) / 4];                                   \
+    groupshared float4 NAME##_d4[(FLOATS) / 4];                                     \
+    groupshared float  NAME##_d1[(FLOATS)];                                         \
     struct NAME : IKBuf {                                                           \
-        static float  ld(uint i)          { return NAME##_data[i >> 2][i & 3u]; }   \
-        static float4 ld4(uint i4)        { return NAME##_data[i4]; }               \
-        static void   st(uint i, float v) { NAME##_data[i >> 2][i & 3u] = v; }      \
+        static float ld(uint i) {                                                   \
+            __target_switch { case spirv: return NAME##_d4[i >> 2][i & 3u];         \
+                              default:    return NAME##_d1[i]; }                    \
+        }                                                                           \
+        static float4 ld4(uint i4) {                                                \
+            __target_switch { case spirv: return NAME##_d4[i4];                     \
+                              default:    return float4(NAME##_d1[4u * i4], NAME##_d1[4u * i4 + 1u], \
+                                                        NAME##_d1[4u * i4 + 2u], NAME##_d1[4u * i4 + 3u]); } \
+        }                                                                           \
+        static void st(uint i, float v) {                                           \
+            __target_switch { case spirv: NAME##_d4[i >> 2][i & 3u] = v;            \
+                              default:    NAME##_d1[i] = v; }                       \
+        }                                                                           \
     };
 K_BUF(KBuf1, 64)
 K_BUF(KBuf8, 512)
@@ -1812,7 +1827,24 @@ void eval_reg<let F : int, B : IKBuf>(uint3 gid, uint tid) {
 
 #define G_GROUP 128
 #define G_CK    16
-groupshared float4 g_phi[G_CK * 32];     // [AO row][point group]: 4 rows' AO values; the epilogues' staging
+groupshared float4 g_phi4[G_CK * 32];    // [AO row][point group]: 4 rows' AO values; the epilogues' staging
+groupshared float  g_phi1[G_CK * 32 * 4]; // the same as floats (Metal: see K_BUF)
+float4 gp_ld4(uint i) {
+    __target_switch { case spirv: return g_phi4[i];
+                      default:    return float4(g_phi1[4u * i], g_phi1[4u * i + 1u], g_phi1[4u * i + 2u], g_phi1[4u * i + 3u]); }
+}
+float gp_ld(uint i, uint c) {
+    __target_switch { case spirv: return g_phi4[i][c];
+                      default:    return g_phi1[4u * i + c]; }
+}
+void gp_st(uint i, uint c, float v) {
+    __target_switch { case spirv: g_phi4[i][c] = v;
+                      default:    g_phi1[4u * i + c] = v; }
+}
+void gp_st4(uint i, float4 v) {
+    __target_switch { case spirv: g_phi4[i] = v;
+                      default:    g_phi1[4u * i] = v.x; g_phi1[4u * i + 1u] = v.y; g_phi1[4u * i + 2u] = v.z; g_phi1[4u * i + 3u] = v.w; }
+}
 groupshared float  g_red[4 * G_GROUP];   // epilogues: per column group and row
 groupshared float4 g_lohi[2 * 32];       // per wave: the rows' box
 groupshared uint   g_done;
@@ -1820,15 +1852,15 @@ K_BUF(GBuf16, 256)                       // the chunk's rows of C: G_CK x F
 K_BUF(GBuf32, 512)
 K_BUF(GBuf64, 1024)
 
-float g_ld(uint i)          { return g_phi[i >> 2][i & 3u]; }
-void  g_st(uint i, float v) { g_phi[i >> 2][i & 3u] = v; }
+float g_ld(uint i)          { return gp_ld(i >> 2, i & 3u); }
+void  g_st(uint i, float v) { gp_st(i >> 2, i & 3u, v); }
 
 // VERT 0: corner values of the point list's count_in[0] entries; VERT 1: value and gradient at the
 // vertices (vval), skipping groups of converged vertices
 // The chunk's row k of AO values (4 rows) against its row of C (this thread's F / 4 columns)
 [ForceInline]
 void g_mac<let F : int, B : IKBuf>(inout float acc[F], uint k, uint pg, uint cg) {
-    float4 ph = g_phi[k * 32u + pg];
+    float4 ph = gp_ld4(k * 32u + pg);
     uint cb = k * uint(F / 4) + cg * uint(F / 16);
     [ForceUnroll] for (int c4 = 0; c4 < F / 16; ++c4) {
         float4 cv = B::ld4(cb + uint(c4));
@@ -1916,7 +1948,7 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int, let PIPE : int>(uint3 gid
                     if (VERT == 0 && (a.diag == 1u || a.diag == 5u)) {   // DIAGNOSTIC: no AO values made
                         uint rbd = k_row[i] * 32u + pg;
                         uint ncd = k_nc[i];
-                        for (uint n = 0u; n < ncd; ++n) g_phi[rbd + n * 32u][cg] = 0.01;
+                        for (uint n = 0u; n < ncd; ++n) gp_st(rbd + n * 32u, cg, 0.01);
                         continue;
                     }
                     float3 d;
@@ -1940,13 +1972,13 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int, let PIPE : int>(uint3 gid
                         if (uint(n) < nc) {                 // uniform
                             float phi = m[n] * A;
                             if (VERT != 0) phi += g[n] * Bg;
-                            g_phi[rb + uint(n) * 32u][cg] = phi;
+                            gp_st(rb + uint(n) * 32u, cg, phi);
                         }
                     }
                 }
                 uint nrows = k_nrows[c];
                 if (PIPE == 2) {                           // the rows past the chunk: zero AO values and C
-                    for (uint k = nrows; k < uint(G_CK); ++k) g_phi[k * 32u + pg][cg] = 0.0;
+                    for (uint k = nrows; k < uint(G_CK); ++k) gp_st(k * 32u + pg, cg, 0.0);
                     for (uint e = nrows * uint(F) + tid; e < uint(G_CK * F); e += uint(G_GROUP)) B::st(e, 0.0);
                 }
                 GroupMemoryBarrierWithGroupSync();
@@ -2094,7 +2126,16 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int, let PIPE : int>(uint3 gid
 
 #define W_GROUP 256
 #define W_ROWS  64
-groupshared float4 w_phi[G_CK * 16];     // [AO row][point group]: 4 rows' AO values
+groupshared float4 w_phi4[G_CK * 16];    // [AO row][point group]: 4 rows' AO values
+groupshared float  w_phi1[G_CK * 16 * 4]; // the same as floats (Metal: see K_BUF)
+float4 wp_ld4(uint i) {
+    __target_switch { case spirv: return w_phi4[i];
+                      default:    return float4(w_phi1[4u * i], w_phi1[4u * i + 1u], w_phi1[4u * i + 2u], w_phi1[4u * i + 3u]); }
+}
+void wp_st(uint i, uint c, float v) {
+    __target_switch { case spirv: w_phi4[i][c] = v;
+                      default:    w_phi1[4u * i + c] = v; }
+}
 // the epilogue's per column group and row sums go through B (free by then): every wide kernel stays
 // within 32 KB of groupshared memory (the Apple GPUs' limit)
 K_BUF(WBuf128, 2048)                     // the chunk's rows of C: G_CK x F
@@ -2170,7 +2211,7 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
                 for (uint i = i0 + js; i < i1; i += 4u) {
                     uint rb = k_row[i] * 16u + pg;
                     if (VERT == 0 && (a.diag == 1u || a.diag == 5u)) {   // DIAGNOSTIC: no AO values made
-                        for (uint n = 0u; n < k_nc[i]; ++n) w_phi[rb + n * 16u][ce] = 0.01;
+                        for (uint n = 0u; n < k_nc[i]; ++n) wp_st(rb + n * 16u, ce, 0.01);
                         continue;
                     }
                     float3 d;
@@ -2192,7 +2233,7 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
                         if (uint(n) < nc) {
                             float phi = m[n] * A;
                             if (VERT != 0) phi += g[n] * Bg;
-                            w_phi[rb + uint(n) * 16u][ce] = phi;
+                            wp_st(rb + uint(n) * 16u, ce, phi);
                         }
                     }
                 }
@@ -2200,7 +2241,7 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
                 if (VERT != 0 || a.diag != 2u) {           // DIAGNOSTIC 2: no multiply-adds
                     uint nrows = k_nrows[c];
                     for (uint k = 0u; k < nrows; ++k) {
-                        float4 ph = w_phi[k * 16u + pg];
+                        float4 ph = wp_ld4(k * 16u + pg);
                         uint cb = k * uint(F / 4) + cg * uint(F / 64);
                         [ForceUnroll] for (int c4 = 0; c4 < F / 64; ++c4) {
                             float4 cv = B::ld4(cb + uint(c4));
@@ -2426,7 +2467,7 @@ bool d_shell(uint li, float3 p, bool deriv, out float3 d, out float R, out float
 // This row's values of the staged chunk's AOs (or channel ch of their gradient) into g_phi; rows past
 // the list's end zero
 void d_phi(float3 p, uint pg, uint cg, bool deriv, uint ch) {
-    [ForceUnroll] for (int k = 0; k < D_CH; ++k) g_phi[uint(k) * 32u + pg][cg] = 0.0;
+    [ForceUnroll] for (int k = 0; k < D_CH; ++k) gp_st(uint(k) * 32u + pg, cg, 0.0);
     uint ax = ch > 0u ? ch - 1u : 0u;
     uint ns = d_cns;
     for (uint j = 0u; j < ns; ++j) {
@@ -2450,7 +2491,7 @@ void d_phi(float3 p, uint pg, uint cg, bool deriv, uint ch) {
             if (uint(n) < nc && row >= 0 && row < D_CH) {
                 float phi = m[n] * A;
                 if (deriv) phi += g[n] * Bg;
-                g_phi[uint(row) * 32u + pg][cg] = phi;
+                gp_st(uint(row) * 32u + pg, cg, phi);
             }
         }
     }
@@ -2564,7 +2605,7 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
                 }
                 GroupMemoryBarrierWithGroupSync();
                 [ForceUnroll] for (int k = 0; k < D_CH; ++k) {
-                    float4 ph = g_phi[uint(k) * 32u + pg];
+                    float4 ph = gp_ld4(uint(k) * 32u + pg);
                     uint cb = uint(k) * 16u + cg * 4u;
                     [ForceUnroll] for (int c4 = 0; c4 < 4; ++c4) {
                         float4 cv = GBuf64::ld4(cb + uint(c4));
@@ -2588,7 +2629,7 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
                 GroupMemoryBarrierWithGroupSync();
                 if (cg == c2) {
                     [ForceUnroll] for (int k = 0; k < D_CH; ++k) {
-                        float4 ph = g_phi[uint(k) * 32u + pg];
+                        float4 ph = gp_ld4(uint(k) * 32u + pg);
                         if (VERT == 0) {
                             [ForceUnroll] for (int v = 0; v < 4; ++v) part[v] += ph[v] * acc[v * 16 + k];
                         } else {
@@ -2731,7 +2772,7 @@ void dq_cols(uint J, uint par, uint tid, uint nc) {
 // when j0 == 0. The chunk's shells cover its rows below A once each.
 void dq_phi(uint buf, uint ns, uint j0, uint js, uint nvalid, float3 p, uint pg, uint cg, bool deriv, uint ch) {
     IsoArgs a = MD_ARGS;
-    if (j0 == 0u) for (uint k = nvalid; k < uint(D_CH); ++k) g_phi[k * 32u + pg][cg] = 0.0;
+    if (j0 == 0u) for (uint k = nvalid; k < uint(D_CH); ++k) gp_st(k * 32u + pg, cg, 0.0);
     uint ax = ch > 0u ? ch - 1u : 0u;
     for (uint j = j0; j < ns; j += js) {
         uint s = buf * uint(D_CH) + j;
@@ -2744,14 +2785,14 @@ void dq_phi(uint buf, uint ns, uint j0, uint js, uint nvalid, float3 p, uint pg,
         if (!deriv && a.diag == 1u) {                      // DIAGNOSTIC: no AO values made
             for (uint n = 0u; n < nc; ++n) {
                 int row = rb + int(n);
-                if (row >= 0 && row < D_CH) g_phi[uint(row) * 32u + pg][cg] = 0.01;
+                if (row >= 0 && row < D_CH) gp_st(uint(row) * 32u + pg, cg, 0.01);
             }
             continue;
         }
         if (r2 > cs.w) {                                   // beyond the cutoff: its rows zero
             [ForceUnroll] for (int n = 0; n < 15; ++n) {
                 int row = rb + n;
-                if (uint(n) < nc && row >= 0 && row < D_CH) g_phi[uint(row) * 32u + pg][cg] = 0.0;
+                if (uint(n) < nc && row >= 0 && row < D_CH) gp_st(uint(row) * 32u + pg, cg, 0.0);
             }
             continue;
         }
@@ -2791,7 +2832,7 @@ void dq_phi(uint buf, uint ns, uint j0, uint js, uint nvalid, float3 p, uint pg,
             if (uint(n) < nc && row >= 0 && row < D_CH) {
                 float phi = m[n] * A;
                 if (deriv) phi += g[n] * Bg;
-                g_phi[uint(row) * 32u + pg][cg] = phi;
+                gp_st(uint(row) * 32u + pg, cg, phi);
             }
         }
     }
@@ -2933,7 +2974,7 @@ void gemm_dform2<let VERT : int, let NW : int, B : IKBuf>(uint3 gid, uint tid) {
                 GroupMemoryBarrierWithGroupSync();
                 if (cq < nq && q <= cq && (VERT != 0 || a.diag != 2u)) {   // uniform per wave (DIAGNOSTIC 2: none)
                     [ForceUnroll] for (int k = 0; k < D_CH; ++k) {
-                        float4 ph = g_phi[uint(k) * 32u + pg];
+                        float4 ph = gp_ld4(uint(k) * 32u + pg);
                         uint cb = uint(k) * uint(NW) * 4u + cg * 4u;
                         [ForceUnroll] for (int c4 = 0; c4 < 4; ++c4) {
                             float4 cv = B::ld4(cb + uint(c4));
@@ -2949,7 +2990,7 @@ void gemm_dform2<let VERT : int, let NW : int, B : IKBuf>(uint3 gid, uint tid) {
                     if (q == cq) {                         // the column chunk is complete: Phi_q . T_q
                         GroupMemoryBarrier();              // AO values read again, not kept from the loop above (64 registers)
                         [ForceUnroll] for (int k = 0; k < D_CH; ++k) {
-                            float4 ph = g_phi[uint(k) * 32u + pg];
+                            float4 ph = gp_ld4(uint(k) * 32u + pg);
                             if (VERT == 0) {
                                 [ForceUnroll] for (int v = 0; v < 4; ++v) part[v] += ph[v] * acc[v * 16 + k];
                             } else {
@@ -2964,11 +3005,11 @@ void gemm_dform2<let VERT : int, let NW : int, B : IKBuf>(uint3 gid, uint tid) {
             }
         }
         // rows 4 pg + v summed over the waves; row tid's sum
-        g_phi[cg * 32u + pg] = float4(part[0], part[1], part[2], part[3]);
+        gp_st4(cg * 32u + pg, float4(part[0], part[1], part[2], part[3]));
         GroupMemoryBarrierWithGroupSync();
         float r = 0.0;
         if (tid < uint(G_GROUP)) {
-            [ForceUnroll] for (int c = 0; c < NW; ++c) r += g_phi[uint(c) * 32u + (tid >> 2)][tid & 3u];
+            [ForceUnroll] for (int c = 0; c < NW; ++c) r += gp_ld(uint(c) * 32u + (tid >> 2), tid & 3u);
         }
         if (VERT == 0) {
             if (out_active) {
@@ -2983,9 +3024,9 @@ void gemm_dform2<let VERT : int, let NW : int, B : IKBuf>(uint3 gid, uint tid) {
     }
     if (VERT != 0) {
         GroupMemoryBarrierWithGroupSync();
-        if (tid < uint(G_GROUP)) g_phi[tid >> 2][tid & 3u] = res;
+        if (tid < uint(G_GROUP)) gp_st(tid >> 2, tid & 3u, res);
         GroupMemoryBarrierWithGroupSync();
-        if (tid < 32u && v0 + tid < a.count) { float4 t = g_phi[tid]; a.vval[v0 + tid] = float4(t.y, t.z, t.w, t.x); }
+        if (tid < 32u && v0 + tid < a.count) { float4 t = gp_ld4(tid); a.vval[v0 + tid] = float4(t.y, t.z, t.w, t.x); }
     }
 }
 

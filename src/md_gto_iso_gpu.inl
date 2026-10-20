@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r18"
+#define ISOG_REVISION "r19"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
