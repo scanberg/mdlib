@@ -43,7 +43,8 @@ typedef struct isog_args_t {         // mirrors IsoArgs
 
 enum {
     ISOG_K_GRID, ISOG_K_OCTREE, ISOG_K_HASH, ISOG_K_CORNERS, ISOG_K_EVAL, ISOG_K_CELLS, ISOG_K_QUADS,
-    ISOG_K_NEWTON, ISOG_K_RELAX, ISOG_K_BCOUNT, ISOG_K_BSCAN, ISOG_K_BVERTS, ISOG_K_BTRIS, ISOG_K_EVAL1, ISOG_K_CORNERS1, ISOG_K_COUNT
+    ISOG_K_NEWTON, ISOG_K_RELAX, ISOG_K_BCOUNT, ISOG_K_BSCAN, ISOG_K_BVERTS, ISOG_K_BTRIS, ISOG_K_EVAL1, ISOG_K_CORNERS1,
+    ISOG_K_CORNERS_F1, ISOG_K_CORNERS_F8, ISOG_K_CORNERS_F16, ISOG_K_CORNERS_F32, ISOG_K_CORNERS_F64, ISOG_K_COUNT
 };
 
 static md_gpu_kernel_t isog_k[ISOG_K_COUNT];
@@ -51,10 +52,23 @@ static md_gpu_kernel_t isog_k[ISOG_K_COUNT];
 static md_gpu_device_t isog_device;
 static bool             isog_failed;
 
+// EXPERIMENT (temporary, branch gto-iso-gpu-opt): switches between the old and the new forms, also
+// from the environment (read at initialization) so one build measures both:
+//   GTO_ISO_RELAX_FIRST=0   project, then 3 x (relax with the field normals, project)
+//                       1   relax on the lattice surface (trilinear normals), then project (default)
+//   GTO_ISO_CORNERS_V2=0    iso_corners (GEMM tiles) and iso_corners_orbital
+//                      1    the register form, iso_corners_f* (default)
+static int isog_relax_first = 1;
+static int isog_corners_v2 = 1;
+
 // The kernels are made on first use, so initializing costs nothing until a mesh is extracted
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     isog_device = device;
     isog_failed = false;
+    const char* e = getenv("GTO_ISO_RELAX_FIRST");
+    if (e && e[0]) isog_relax_first = atoi(e);
+    e = getenv("GTO_ISO_CORNERS_V2");
+    if (e && e[0]) isog_corners_v2 = atoi(e);
 }
 
 static bool isog_kernels_ready(void) {
@@ -77,6 +91,11 @@ static bool isog_kernels_ready(void) {
         md_shader_gto_iso_gpu_iso_bucket_triangles_kernel(),
         md_shader_gto_iso_gpu_iso_eval_orbital_kernel(),
         md_shader_gto_iso_gpu_iso_corners_orbital_kernel(),
+        md_shader_gto_iso_gpu_iso_corners_f1_kernel(),
+        md_shader_gto_iso_gpu_iso_corners_f8_kernel(),
+        md_shader_gto_iso_gpu_iso_corners_f16_kernel(),
+        md_shader_gto_iso_gpu_iso_corners_f32_kernel(),
+        md_shader_gto_iso_gpu_iso_corners_f64_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -111,6 +130,7 @@ struct md_gto_iso_gpu_set_t {
     iso_field_t  host[MD_GTO_ISO_GPU_MAX_FIELDS];         // shallow copies for the root box (their tails): the fields outlive the set
     const md_gto_iso_field_t* src[MD_GTO_ISO_GPU_MAX_FIELDS];
     struct md_allocator_i* alloc;
+    isog_shell_t* prof_shells;      // BENCHMARK: the shells on the host, for the profile's work counts
 };
 
 static inline float isog_f32_dn(double x) { float f = (float)x; return (double)f > x ? nextafterf(f, -INFINITY) : f; }
@@ -138,6 +158,10 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         first_of[k] = (int)k;
         for (uint32_t j = 0; j < k; ++j) if (fields[j] == fields[k]) { first_of[k] = (int)j; break; }
     }
+    // a set of orbitals has no pair terms, so its functions need no alignment
+    bool orbitals_only = true;
+    for (uint32_t k = 0; k < num_fields; ++k) orbitals_only &= fields[k] && fields[k]->f.dens == NULL;
+    const uint32_t align = orbitals_only ? 0u : 1u;
     uint32_t nf = 0;
     for (uint32_t k = 0; k < num_fields; ++k) {
         const md_gto_iso_field_t* fk = fields[k];
@@ -145,7 +169,7 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         if (first_of[k] != (int)k) continue;
         const uint32_t n = fk->f.dens ? (uint32_t)fk->f.dens->num_fn : 1u;
         if ((fk->f.dens ? (uint32_t)fk->f.dens->num_ao : (uint32_t)fk->num_coeff) != nao) { ok = false; break; }
-        nf = (nf + 1u) & ~1u;
+        nf = (nf + align) & ~align;
         nf += n;
     }
     if (!ok || nf > ISOG_FN_CAP) {
@@ -167,7 +191,7 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         set->src[k] = fk;
         set->host[k] = fk->f;
         if (first_of[k] != (int)k) { set->fields[k] = set->fields[first_of[k]]; continue; }
-        f0 = (f0 + 1u) & ~1u;
+        f0 = (f0 + align) & ~align;
         set->fields[k].term_off = (uint32_t)md_array_size(terms);
         if (fk->f.dens) {
             const iso_density_t* d = fk->f.dens;
@@ -228,8 +252,7 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
     set->num_fn = nf;
     set->fn_stride = stride;
     set->num_fields = num_fields;
-    set->orbitals_only = true;
-    for (uint32_t k = 0; k < num_fields; ++k) set->orbitals_only &= fields[k]->f.dens == NULL;
+    set->orbitals_only = orbitals_only;
 
 #define ISOG_UP(mem, ptr, bytes) do { const size_t nb_ = (bytes); set->mem = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, nb_ > 0 ? nb_ : 16); if (set->mem.gpu && nb_ > 0) md_gpu_upload(stream, set->mem.gpu, (ptr), nb_); ok &= set->mem.gpu != 0; } while (0)
     if (ok) {
@@ -242,7 +265,8 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         ISOG_UP(terms,  terms, sizeof(isog_term_t) * md_array_size(terms));
     }
 #undef ISOG_UP
-    free(sh); free(nrm); free(ijk); free(C);
+    set->prof_shells = sh;          // BENCHMARK: kept for the profile's work counts
+    free(nrm); free(ijk); free(C);
     md_array_free(pr, heap); md_array_free(cr, heap); md_array_free(terms, heap);
     md_array_free(B.radial.shells, heap); md_array_free(B.radial.crit, heap); free(B.ao_shells);
     if (!ok) {
@@ -258,6 +282,7 @@ void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* se
     md_gpu_free(stream, set->shells.gpu); md_gpu_free(stream, set->prims.gpu); md_gpu_free(stream, set->crit.gpu);
     md_gpu_free(stream, set->ao_nrm.gpu); md_gpu_free(stream, set->ao_ijk.gpu); md_gpu_free(stream, set->C.gpu);
     md_gpu_free(stream, set->terms.gpu);
+    free(set->prof_shells);
     md_free(set->alloc, set, sizeof(*set));
 }
 
@@ -312,6 +337,12 @@ static md_gto_iso_gpu_profile_t* isog_prof = NULL;
 static md_tick_t isog_prof_tick;
 
 void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile) { isog_prof = profile; }
+
+const char* md_gto_iso_gpu_profile_variant(void) {
+    static char buf[128];
+    snprintf(buf, sizeof(buf), "GTO_ISO_RELAX_FIRST=%d GTO_ISO_CORNERS_V2=%d", isog_relax_first, isog_corners_v2);
+    return buf;
+}
 
 // Waits for the GPU and appends a step: the time since the previous one. Returns its index (or ~0u).
 static uint32_t isog_mark(md_gpu_stream_t s, const char* name, uint32_t items, uint32_t aux) {
@@ -410,7 +441,23 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
         ISOG_PR("    %-26s %4u %9.3f %9.3f %11llu %11llu\n", name[k], cnt[k], ms[k], w > 0.0 ? w : 0.0, (unsigned long long)items[k], (unsigned long long)aux[k]);
     }
     ISOG_PR("    %-26s %4u %9.3f %9.3f   (one empty wait: %.3f ms)\n", "all", p->num_steps, total, fmax(0.0, total - p->num_steps * p->wait_ms), p->wait_ms);
+    // work: the corner GEMM's multiply-adds (points x reaching AOs x function columns), the octree's
+    for (int k = 0; k < nn; ++k) {
+        const double w = fmax(1e-6, ms[k] - cnt[k] * p->wait_ms);
+        if (strncmp(name[k], "corners", 7) == 0 && items[k] > 0) {
+            const double cols = (double)p->corner_cols;
+            const double fma = 128.0 * (double)p->brick_ao_sum * cols;
+            ISOG_PR("    corners: %.1f AOs reach a brick (max %u of %u), %u functions: %.3g multiply-adds, %.1f G/s\n",
+                    (double)p->brick_ao_sum / (double)items[k], p->brick_ao_max, p->num_ao, p->num_fn, fma, fma / (w * 1e6));
+        }
+        if (strcmp(name[k], "octree level") == 0 && items[k] > 0) {
+            const double fma = (double)items[k] * (double)p->num_ao * (double)p->fn_stride * 5.0;
+            ISOG_PR("    octree: %llu nodes x %u AOs x %u function columns x 5: %.3g multiply-adds, %.1f G/s\n",
+                    (unsigned long long)items[k], p->num_ao, p->fn_stride, fma, fma / (w * 1e6));
+        }
+    }
     // per pass: vertices still moving at each evaluation (and the groups holding them)
+    ISOG_PR("    variant: %s\n", md_gto_iso_gpu_profile_variant());
     ISOG_PR("    eval passes, moving vertices (groups):");
     int col = 0;
     for (uint32_t i = 0; i < p->num_steps; ++i) {
@@ -447,6 +494,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     // root: the union of every field's surface box, as on the CPU (the same lattice for one field)
     double lo[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, hi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
     isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];
+    memset(fields, 0, sizeof(fields));     // all 16 uploaded: unrolled loops may read past num_fields
     uint32_t root_mask = 0;
     for (uint32_t k = 0; k < F; ++k) {
         if (!(desc->iso[k] > 0.0)) { MD_LOG_ERROR("md_gto_iso_gpu_extract: iso[%u] must be positive", k); return false; }
@@ -483,7 +531,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     a.shells = set->shells.gpu; a.prims = set->prims.gpu; a.crit = set->crit.gpu;
     a.ao_nrm = set->ao_nrm.gpu; a.ao_ijk = set->ao_ijk.gpu; a.C = set->C.gpu; a.terms = set->terms.gpu;
     a.fields = isog_temp(s, sizeof(fields));
-    md_gpu_upload(s, a.fields, fields, sizeof(isog_field_t) * F);
+    md_gpu_upload(s, a.fields, fields, sizeof(fields));
     a.counters = isog_temp(s, sizeof(uint32_t) * 8);
     a.grid_out = isog_temp(s, sizeof(uint32_t) * 4);
     md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 8);
@@ -551,6 +599,34 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     }
     out->num_corner_slots = nslots;
     isog_mark(s, "readback: bricks, slots", nb, nslots);
+    if (isog_prof) {    // BENCHMARK: the AOs that reach each brick (what the corner kernels list), not timed
+        uint64_t sum = 0;
+        uint32_t mx = 0;
+        const float he = (float)h;
+        for (uint32_t b = 0; b < nb; ++b) {
+            const float blo[3] = {(float)origin[0] + (float)(bl[b].x * 4u) * he, (float)origin[1] + (float)(bl[b].y * 4u) * he, (float)origin[2] + (float)(bl[b].z * 4u) * he};
+            uint32_t n = 0;
+            for (uint32_t k = 0; k < set->num_shells; ++k) {
+                const isog_shell_t* sh = &set->prof_shells[k];
+                const float c[3] = {sh->c.x, sh->c.y, sh->c.z};
+                float d2 = 0.0f;
+                for (int ax = 0; ax < 3; ++ax) {
+                    const float d = fmaxf(fmaxf(blo[ax] - c[ax], c[ax] - (blo[ax] + 4.0f * he)), 0.0f);
+                    d2 += d * d;
+                }
+                if (d2 <= sh->c.w) n += sh->info.y;
+            }
+            sum += n;
+            mx = n > mx ? n : mx;
+        }
+        isog_prof->brick_ao_sum = sum;
+        isog_prof->brick_ao_max = mx;
+        isog_prof->num_ao = set->num_ao;
+        isog_prof->num_fn = set->num_fn;
+        isog_prof->fn_stride = set->fn_stride;
+        isog_prof->orbitals_only = set->orbitals_only;
+        isog_mark_skip(s);
+    }
     a.bricks = bricks;
     a.count = nb;
     a.brick_slot = isog_temp(s, sizeof(uint32_t) * (nb + 1));
@@ -567,8 +643,21 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         md_gpu_memset(s, a.hash_keys, 0, sizeof(uint32_t) * hcap);
         MD_GPU_LAUNCH(s, isog_k[ISOG_K_HASH], md_gpu_grid_for(isog_k[ISOG_K_HASH], nb, 1, 1), a);
         isog_mark(s, "hash", nb, hcap);
-        MD_GPU_LAUNCH(s, isog_k[set->orbitals_only ? ISOG_K_CORNERS1 : ISOG_K_CORNERS], isog_groups(nb), a);
-        isog_mark(s, set->orbitals_only ? "corners (orbital)" : "corners (gemm)", nb, nslots);
+        if (isog_corners_v2) {
+            // the function columns in registers: all of the set's, or tiles of 64
+            const uint32_t nfn = set->num_fn;
+            const int kc = (nfn == 1 && F == 1) ? ISOG_K_CORNERS_F1 : nfn <= 8 ? ISOG_K_CORNERS_F8 : nfn <= 16 ? ISOG_K_CORNERS_F16
+                         : nfn <= 32 ? ISOG_K_CORNERS_F32 : ISOG_K_CORNERS_F64;
+            MD_GPU_LAUNCH(s, isog_k[kc], isog_groups(nb), a);
+            static const uint32_t kcols[] = {1, 8, 16, 32, 64};
+            if (isog_prof) isog_prof->corner_cols = kcols[kc - ISOG_K_CORNERS_F1] * ((nfn + kcols[kc - ISOG_K_CORNERS_F1] - 1) / kcols[kc - ISOG_K_CORNERS_F1]);
+            static const char* kname[] = {"corners (f1)", "corners (f8)", "corners (f16)", "corners (f32)", "corners (f64)"};
+            isog_mark(s, kname[kc - ISOG_K_CORNERS_F1], nb, nslots);
+        } else {
+            MD_GPU_LAUNCH(s, isog_k[set->orbitals_only ? ISOG_K_CORNERS1 : ISOG_K_CORNERS], isog_groups(nb), a);
+            if (isog_prof) isog_prof->corner_cols = set->orbitals_only ? set->num_fn : set->fn_stride;
+            isog_mark(s, set->orbitals_only ? "corners (orbital)" : "corners (gemm)", nb, nslots);
+        }
     }
     isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &ts);
 
@@ -644,17 +733,38 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
                 isog_mark(s, v.mode ? "vertex normals" : "vertex newton", act_, 0);    \
             }                                                                          \
         } while (0)
-        ISOG_PROJECT(desc->project_iterations);
-        isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_PROJECT, &ts);
-        for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
-            MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
-            isog_mark(s, "relax", nv, 0);
-            md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
-            isog_mark(s, "relax: copy", nv, 0);
-            ISOG_PROJECT(3u);
+        if (isog_relax_first) {
+            // relaxed on the lattice's own (trilinear) surface, with its normals from iso_cells, then
+            // projected once: no field evaluation before the projection
+            for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
+                isog_mark(s, "relax", nv, 0);
+                md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
+                isog_mark(s, "relax: copy", nv, 0);
+            }
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &ts);
+            ISOG_PROJECT(desc->project_iterations);
+            for (int r = 1; r < isog_relax_first && desc->relax_iterations; ++r) {   // EXPERIMENT: polish with the true normals
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
+                isog_mark(s, "relax", nv, 0);
+                md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
+                isog_mark(s, "relax: copy", nv, 0);
+                ISOG_PROJECT(3u);
+            }
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_PROJECT, &ts);
+        } else {
+            ISOG_PROJECT(desc->project_iterations);
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_PROJECT, &ts);
+            for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
+                isog_mark(s, "relax", nv, 0);
+                md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
+                isog_mark(s, "relax: copy", nv, 0);
+                ISOG_PROJECT(3u);
+            }
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &ts);
         }
         #undef ISOG_PROJECT
-        isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &ts);
     }
 
     // ---- regroup per (field, sheet) into the output buffers

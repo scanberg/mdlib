@@ -296,6 +296,12 @@ typedef struct md_gto_iso_gpu_profile_t {
     uint32_t num_steps;
     md_gto_iso_gpu_profile_step_t step[MD_GTO_ISO_GPU_PROFILE_CAP];
     double   wait_ms;       // one wait with nothing to wait for: the floor under every step's ms
+    // work counts
+    uint64_t brick_ao_sum;  // over the bricks: the AOs whose shells reach the brick
+    uint32_t brick_ao_max;
+    uint32_t num_ao, num_fn, fn_stride;
+    uint32_t corner_cols;   // function columns the corner kernel multiplied
+    bool     orbitals_only;
 } md_gto_iso_gpu_profile_t;
 
 // NULL turns it off. One profile for every extraction (not thread safe); each extraction restarts it.
@@ -304,6 +310,9 @@ void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile);
 // The steps summed by name, in order of first appearance, as a text table (nul terminated, truncated
 // to cap). Returns the length written.
 size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* profile, char* buf, size_t cap);
+
+// Which experimental forms the extraction runs (GTO_ISO_* environment switches), as one line
+const char* md_gto_iso_gpu_profile_variant(void);
 #endif
 
 #ifdef __cplusplus

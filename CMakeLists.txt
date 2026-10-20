@@ -649,7 +649,7 @@ if (MD_ENABLE_GPU)
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/iso/gto_iso_gpu.slang
     ENTRIES   iso_grid iso_octree iso_hash iso_corners iso_eval iso_cells iso_quads iso_newton iso_relax
               iso_bucket_count iso_bucket_scan iso_bucket_vertices iso_bucket_triangles iso_eval_orbital
-              iso_corners_orbital
+              iso_corners_orbital iso_corners_f1 iso_corners_f8 iso_corners_f16 iso_corners_f32 iso_corners_f64
   )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl
