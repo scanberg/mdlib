@@ -410,3 +410,47 @@ UTEST(itp, elastic_bonds) {
 
     md_vm_arena_destroy(alloc);
 }
+
+UTEST(itp, supplement_beads_by_mass) {
+    // Particles a GRO file leaves for elements by their names are beads when the topology's masses are those of beads
+    // (C1 72 Da, not a carbon's 12) and stay atoms when they are atoms: the CH2 and CH3 of a united atom topology are 14
+    // and 15 Da, a carbon of 12 by its name; a heavy hydrogen of hydrogen mass repartitioning is 3 Da.
+    static const struct { const char* res; const char* names[4]; float mass[4]; md_particle_kind_t kind; } cases[] = {
+        { "OCT", { "C1", "C2", "C3", "C4" }, { 72.0f, 72.0f, 72.0f, 72.0f }, MD_PARTICLE_BEAD },
+        { "BUT", { "C1", "C2", "C3", "C4" }, { 15.035f, 14.027f, 14.027f, 15.035f }, MD_PARTICLE_ATOM },
+        { "MET", { "C",  "H1", "H2", "H3" }, { 5.96f, 3.024f, 3.024f, 3.024f }, MD_PARTICLE_ATOM },
+    };
+    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        char gro[1024];
+        int len = snprintf(gro, sizeof(gro), "t\n    4\n");
+        for (int i = 0; i < 4; ++i) {
+            len += snprintf(gro + len, sizeof(gro) - (size_t)len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", 1, cases[c].res, cases[c].names[i], i + 1, 1.0 + 0.15 * i, 1.0, 1.0);
+        }
+        len += snprintf(gro + len, sizeof(gro) - (size_t)len, "   5.00000   5.00000   5.00000\n");
+        char itp[1024];
+        int il = snprintf(itp, sizeof(itp), "[ moleculetype ]\n%s 1\n[ atoms ]\n", cases[c].res);
+        for (int i = 0; i < 4; ++i) {
+            il += snprintf(itp + il, sizeof(itp) - (size_t)il, "%d X 1 %s %s %d 0 %.3f\n", i + 1, cases[c].res, cases[c].names[i], i + 1, cases[c].mass[i]);
+        }
+        il += snprintf(itp + il, sizeof(itp) - (size_t)il, "[ bonds ]\n1 2 1\n2 3 1\n3 4 1\n");
+
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (str_t){gro, (size_t)len}));
+        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL);
+        md_itp_data_t data = {0};
+        ASSERT_TRUE(md_itp_data_parse_str(&data, (str_t){itp, (size_t)il}, STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+        for (size_t i = 0; i < 4; ++i) {
+            EXPECT_EQ(cases[c].kind, md_atom_particle_kind(&sys.atom, i));
+        }
+        if (cases[c].kind == MD_PARTICLE_BEAD) {
+            EXPECT_EQ(0, (int)md_atom_atomic_number(&sys.atom, 0));
+            EXPECT_NEAR(72.0f, md_atom_mass(&sys.atom, 0), 1e-3f);
+        } else {
+            EXPECT_NE(0, (int)md_atom_atomic_number(&sys.atom, 0));
+        }
+        md_vm_arena_destroy(alloc);
+    }
+}

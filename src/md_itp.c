@@ -297,6 +297,9 @@ static void parse_include(itp_parser_t* p, str_t arg, str_t folder) {
             md_str_writer_push_str(&sb, file);
             str_t cand = md_str_writer_to_str(&sb);
             if (md_path_is_valid(cand)) resolved = cand;
+        } else if (md_path_is_valid(file)) {
+            // A topology named without a folder (topol.top): the included file is beside it, in the working directory
+            resolved = file;
         }
         const char* gmxlib = getenv("GMXLIB");
         if (str_empty(resolved) && gmxlib) {
@@ -854,6 +857,62 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/mass"),   md_unit_dalton(),            1, mass,   atom_count);
     }
 
+    // ## Beads
+    // A structure file does not say what its particles are, and a coarse grained molecule the force field database
+    // does not know (a lipopolysaccharide, a ganglioside of a topology of its own) has its beads taken for elements by
+    // their names: the C1A of a tail for a carbon, the PO1 of a phosphate for a phosphorus, the AM1 of an amide for
+    // americium. The masses of the topology tell: a bead stands for several atoms. An atom is like a bead when its mass
+    // is at least BEAD_MIN_MASS and off that of its element by a factor of two or more, or it has none: a united atom
+    // CH3 is 15 Da, a hydrogen of hydrogen mass repartitioning 3, a carbon which gave it some 10, a Martini bead 36 to 72.
+    // The atom types of a molecule whose atoms are almost all like beads are beads, unless an atom of another molecule
+    // shares the type.
+    if (sys->atom.type_idx && sys->atom.type.count > 0 && sys->atom.type.z) {
+        const float BEAD_MIN_MASS = 20.0f;
+        const size_t num_atom_types = sys->atom.type.count;
+        uint8_t* bead = md_temp_alloc_array(temp, uint8_t, num_atom_types);    // 0 unseen, 1 of beads, 2 of atoms
+        MEMSET(bead, 0, num_atom_types);
+        for (size_t k = 0; k < num_instances; ++k) {
+            const md_itp_moleculetype_t* mol = &data->moleculetypes[instances[k].type];
+            const size_t off = instances[k].atom_offset;
+            const size_t n = md_array_size(mol->atoms);
+            size_t like = 0;
+            for (size_t i = 0; i < n; ++i) {
+                const size_t t = sys->atom.type_idx[off + i];
+                if (t >= num_atom_types) continue;
+                const float m = mass[off + i];
+                const md_atomic_number_t z = sys->atom.type.z[t];
+                const float element_mass = z ? md_atomic_number_mass(z) : 0.0f;
+                like += (m >= BEAD_MIN_MASS && (z == 0 || m >= 2.0f * element_mass || 2.0f * m <= element_mass)) ? 1 : 0;
+            }
+            const uint8_t mark = (n > 0 && 10 * like >= 9 * n) ? 1 : 2;
+            for (size_t i = 0; i < n; ++i) {
+                const size_t t = sys->atom.type_idx[off + i];
+                if (t < num_atom_types && bead[t] != 2) bead[t] = mark;
+            }
+        }
+        for (size_t i = 0; i < atom_count; ++i) {
+            const size_t t = sys->atom.type_idx[i];
+            if (!covered[i] && t < num_atom_types) bead[t] = 2;
+        }
+        if (md_array_size(sys->atom.type.flags) < num_atom_types) {
+            const size_t size = md_array_size(sys->atom.type.flags);
+            md_array_resize(sys->atom.type.flags, num_atom_types, sys->alloc);
+            MEMSET(sys->atom.type.flags + size, 0, (num_atom_types - size) * sizeof(md_atom_type_flags_t));
+        }
+        size_t num_bead_types = 0;
+        for (size_t t = 1; t < num_atom_types; ++t) {
+            if (bead[t] != 1 || md_atom_type_flags_particle_kind(sys->atom.type.flags[t]) != MD_PARTICLE_ATOM) continue;
+            sys->atom.type.flags[t] = md_atom_type_flags_set_particle_kind(sys->atom.type.flags[t], MD_PARTICLE_BEAD);
+            sys->atom.type.z[t] = 0;
+            // The mass of its element was a guess: the topology's, below, where the beads of the type agree on one
+            if (sys->atom.type.mass) sys->atom.type.mass[t] = 0.0f;
+            num_bead_types += 1;
+        }
+        if (num_bead_types) {
+            MD_LOG_INFO("Topology: %zu atom types are coarse grained beads by their masses", num_bead_types);
+        }
+    }
+
     // ## Blank type masses
     // Only where the type has none, and only when every matched atom of the type agrees: a type is shared
     // by atoms the topology may give different masses (the end beads of a chain), and picking one of them
@@ -887,6 +946,9 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     if (sys->bond.count) {
         md_util_system_infer_rings(sys);
     }
+    // The lipids follow from the bonds, and the kinds of the components from the lipids
+    md_util_system_infer_lipids(sys);
+    md_util_system_infer_component_types(sys);
 
     MD_LOG_INFO("Topology applied: %zu molecules covering %zu of %zu atoms, %zu bonds, %zu structures",
         num_instances, num_covered, atom_count, num_topology_bonds, md_structure_count(&sys->structure));
