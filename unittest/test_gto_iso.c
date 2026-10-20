@@ -1402,13 +1402,22 @@ static void iso_dens_products(iso_dens_prod_t* p, const iso_dens_src_t* s, int k
     p->left = (double*)calloc(cap * nao, sizeof(double));
     p->w = (double*)calloc(cap, sizeof(double));
     switch (kind) {
-    case ISO_D_SCF:
+    case ISO_D_SCF: {
+        // BENCHMARK: GTO_ISO_SCF_EXTRA=N adds the first N virtual orbitals at weight 0.01 (a set of
+        // as many more functions, for the wide kernels on a small system)
+        int extra = getenv("GTO_ISO_SCF_EXTRA") ? atoi(getenv("GTO_ISO_SCF_EXTRA")) : 0;
         for (size_t m = 0; m < s->num_mo; ++m) {
-            if (s->occ[m] == 0.0) continue;
+            double w = s->occ[m];
+            if (w == 0.0) {
+                if (extra <= 0) continue;
+                extra--;
+                w = 0.01;
+            }
             memcpy(p->left + p->count * nao, s->C + m * nao, sizeof(double) * nao);
-            p->w[p->count++] = s->occ[m];
+            p->w[p->count++] = w;
         }
         break;
+    }
     case ISO_D_ATTACH:
     case ISO_D_DETACH:
     case ISO_D_DIFF:
@@ -2703,7 +2712,8 @@ UTEST(gto_iso_gpu_lib, matches_cpu_reference) {
     if (getenv("GTO_ISO_CORNERS_V2")) isog_corners_v2 = atoi(getenv("GTO_ISO_CORNERS_V2"));
     md_gto_iso_gpu_initialize(g.dev);
     iso_dens_src_t s;
-    ASSERT_TRUE(iso_dens_src_load(&s, "amide.h5"));
+    // TEST: GTO_ISO_REF_FILE=mol.h5 compares another system (the cases keep their amide labels)
+    ASSERT_TRUE(iso_dens_src_load(&s, getenv("GTO_ISO_REF_FILE") ? getenv("GTO_ISO_REF_FILE") : "amide.h5"));
     static const iso_gl_case_t cases[] = {
         {-1,          "amide_homo",  0.05},
         {ISO_D_SCF,   "amide_scf",   0.02},

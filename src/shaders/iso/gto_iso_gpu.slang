@@ -2078,6 +2078,206 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int, let PIPE : int>(uint3 gid
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_f64_p2(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<64, GBuf64, 1, 2>(gid, tid); }
 
 // ------------------------------------------------------------------------------------------
+// The wide GEMM (canonical terms only): 64 rows per group of 256 threads and F = 128, 192 or 256
+// function columns per pass, so a set of up to 256 functions lists its shells, stages its chunks
+// and makes its AO values once (gemm_eval: once per tile of 64). Thread (pg, cg), pg = tid % 16,
+// cg = tid / 16, multiplies rows 4 pg .. 4 pg + 3 by the F / 16 columns cg F / 16 ..; the AO
+// values of row 4 pg + cg % 4 are made by the four threads cg / 4 = 0 .. 3, each for every fourth
+// shell of the chunk (the shells cover the chunk's rows once each). Rows: corners, 64 consecutive
+// points of the list; vertices, 16 vertices x 4 channels. Results: rows 0 .. 63 by threads 0 .. 63.
+// ------------------------------------------------------------------------------------------
+
+#define W_GROUP 256
+#define W_ROWS  64
+groupshared float4 w_phi[G_CK * 16];     // [AO row][point group]: 4 rows' AO values
+groupshared float  w_red[16 * W_ROWS];   // epilogue: per column group and row
+K_BUF(WBuf128, 2048)                     // the chunk's rows of C: G_CK x F
+K_BUF(WBuf192, 3072)
+K_BUF(WBuf256, 4096)
+
+void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
+    IsoArgs a = MD_ARGS;
+    const int FC = F / 16;                                 // columns per thread
+    uint pg = tid & 15u, cg = tid >> 4;
+    uint ce = cg & 3u, js = cg >> 2;                       // AO values: row 4 pg + ce, shells js, js + 4, ...
+    uint b = 0u, pt = 0u, slot0 = 0u, mask = 0u, v0 = 0u;
+    bool active, out_active;
+    float3 p;
+    if (VERT == 0) {
+        uint total = a.count_in[0];
+        uint e0 = node_index(gid) * uint(W_ROWS);
+        if (e0 >= total) return;                           // uniform per group
+        active = e0 + 4u * pg + ce < total;
+        uint ee = a.plist[min(e0 + 4u * pg + ce, total - 1u)];
+        p = corner_point(a.bricks[ee >> 7], ee & 127u);
+        out_active = tid < uint(W_ROWS) && e0 + tid < total;
+        uint ent = a.plist[min(e0 + min(tid, uint(W_ROWS) - 1u), total - 1u)];
+        b = ent >> 7;
+        pt = ent & 127u;
+        mask = a.bricks[b].w;
+        slot0 = a.brick_slot[b];
+    } else {
+        v0 = node_index(gid) * 16u;
+        if (v0 >= a.count) return;                         // uniform per group
+        if (tid == 0u) {
+            uint done = 1u;
+            for (uint k = 0u; k < 16u && v0 + k < a.count; ++k) done &= a.vdone[v0 + k] != 0u ? 1u : 0u;
+            g_done = done;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (g_done != 0u) return;                          // uniform: every vertex here has converged
+        active = v0 + pg < a.count;
+        out_active = tid < uint(W_ROWS) && v0 + (tid >> 2) < a.count;
+        p = a.vpos[min(v0 + pg, a.count - 1u)].xyz;
+    }
+    {
+        uint lanes = WaveGetLaneCount();
+        uint w = min(iso_wave_index(tid, lanes), 31u);
+        float3 lo = WaveActiveMin(active ? p : float3(3.0e38));
+        float3 hi = WaveActiveMax(active ? p : float3(-3.0e38));
+        if (WaveIsFirstLane()) { g_lohi[2u * w] = float4(lo, 0.0); g_lohi[2u * w + 1u] = float4(hi, 0.0); }
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) {
+            uint nw = min(iso_num_waves(W_GROUP, lanes), 32u);
+            float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
+            for (uint k = 1u; k < nw; ++k) { glo = min(glo, g_lohi[2u * k].xyz); ghi = max(ghi, g_lohi[2u * k + 1u].xyz); }
+            g_lohi[0] = float4(glo, 0.0);
+            g_lohi[1] = float4(ghi, 0.0);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
+    uint ax = ce > 0u ? ce - 1u : 0u;                      // vertices: this thread's AO values are channel ce
+    float res = 0.0;                                       // vertices: row tid's channel
+    uint stride = a.fn_stride;
+
+    for (uint f0 = 0u; f0 < a.num_fn; f0 += uint(F)) {
+        float acc[F / 4];                                  // [row 4 pg + v][column cg FC + c] at v FC + c
+        [ForceUnroll] for (int j = 0; j < F / 4; ++j) acc[j] = 0.0;
+        for (uint s0 = 0u; s0 < a.num_shells; s0 += uint(K_LIST)) {
+            GroupMemoryBarrierWithGroupSync();             // the previous block's lists consumed
+            k_list(s0, glo, ghi, tid, W_GROUP, G_CK);
+            uint nchunk = k_nchunk;
+            for (uint c = 0u; c < nchunk; ++c) {
+                k_load_chunk<F, B>(c, f0, tid, W_GROUP);
+                uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
+                for (uint i = i0 + js; i < i1; i += 4u) {
+                    uint rb = k_row[i] * 16u + pg;
+                    if (VERT == 0 && a.diag == 1u) {       // DIAGNOSTIC: no AO values made
+                        for (uint n = 0u; n < k_nc[i]; ++n) w_phi[rb + n * 16u][ce] = 0.01;
+                        continue;
+                    }
+                    float3 d;
+                    float R, R1 = 0.0;
+                    uint l, nc;
+                    if (VERT == 0) k_shell(i - i0, p, d, R, l, nc);
+                    else           k_shell_d(i - i0, p, d, R, R1, l, nc);
+                    float m[15];
+                    cart_monomials(l, d, m);
+                    float A = R, Bg = 0.0;
+                    float g[15];
+                    if (VERT != 0) {
+                        cart_monomials_d(l, d, ax, g);
+                        float da = ax == 0u ? d.x : (ax == 1u ? d.y : d.z);
+                        A = ce == 0u ? R : 2.0 * da * R1;
+                        Bg = ce == 0u ? 0.0 : R;
+                    }
+                    [ForceUnroll] for (int n = 0; n < 15; ++n) {
+                        if (uint(n) < nc) {
+                            float phi = m[n] * A;
+                            if (VERT != 0) phi += g[n] * Bg;
+                            w_phi[rb + uint(n) * 16u][ce] = phi;
+                        }
+                    }
+                }
+                GroupMemoryBarrierWithGroupSync();
+                if (VERT != 0 || a.diag != 2u) {           // DIAGNOSTIC 2: no multiply-adds
+                    uint nrows = k_nrows[c];
+                    for (uint k = 0u; k < nrows; ++k) {
+                        float4 ph = w_phi[k * 16u + pg];
+                        uint cb = k * uint(F / 4) + cg * uint(F / 64);
+                        [ForceUnroll] for (int c4 = 0; c4 < F / 64; ++c4) {
+                            float4 cv = B::ld4(cb + uint(c4));
+                            [ForceUnroll] for (int v = 0; v < 4; ++v) {
+                                float pv = ph[v];
+                                acc[v * FC + 4 * c4 + 0] += pv * cv.x;
+                                acc[v * FC + 4 * c4 + 1] += pv * cv.y;
+                                acc[v * FC + 4 * c4 + 2] += pv * cv.z;
+                                acc[v * FC + 4 * c4 + 3] += pv * cv.w;
+                            }
+                        }
+                    }
+                }
+                GroupMemoryBarrierWithGroupSync();         // w_phi and the rows of C consumed
+            }
+        }
+
+        // canonical terms: per row, the partial sums of this thread's columns, reduced over the 16
+        // column groups in w_red
+        uint col0 = f0 + cg * uint(FC);
+        for (uint f = 0u; f < (VERT == 0 ? a.num_fields : 1u); ++f) {
+            uint fw = f;
+            if (VERT != 0) fw = min(a.vinfo[min(v0 + pg, a.count - 1u)].z, 15u);   // the vertex's field
+            uint wb = fw * 3u * stride;
+            float part[4] = {0.0, 0.0, 0.0, 0.0};
+            [ForceUnroll] for (int c = 0; c < FC; ++c) {
+                // columns past the row of weights (a pass of 256 over a stride of 320, say): zero
+                // (their C is zero too), and not read
+                uint cc = col0 + uint(c);
+                bool in = cc < stride;
+                uint wi = wb + min(cc, stride - 1u);
+                float wl = in ? a.wts[wi] : 0.0, wd = in ? a.wts[wi + stride] : 0.0;
+                float wp = ((c & 1) == 0 && in) ? a.wts[wi + 2u * stride] : 0.0;
+                if (VERT == 0) {
+                    [ForceUnroll] for (int v = 0; v < 4; ++v) {
+                        float x = acc[v * FC + c];
+                        part[v] += x * (wl + wd * x);
+                        if ((c & 1) == 0) part[v] += wp * x * acc[v * FC + c + 1];
+                    }
+                } else {
+                    float x = acc[c];
+                    part[0] += x * (wl + wd * x);
+                    [ForceUnroll] for (int k = 1; k < 4; ++k) part[k] += acc[k * FC + c] * (wl + 2.0 * wd * x);
+                    if ((c & 1) == 0) {
+                        float x1 = acc[c + 1];
+                        part[0] += wp * x * x1;
+                        [ForceUnroll] for (int k = 1; k < 4; ++k) part[k] += wp * (x * acc[k * FC + c + 1] + x1 * acc[k * FC + c]);
+                    }
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();             // w_red free
+            [ForceUnroll] for (int v = 0; v < 4; ++v) w_red[cg * uint(W_ROWS) + pg * 4u + uint(v)] = part[v];
+            GroupMemoryBarrierWithGroupSync();
+            if (tid < uint(W_ROWS)) {
+                float sum = 0.0;
+                [ForceUnroll] for (int k = 0; k < 16; ++k) sum += w_red[uint(k) * uint(W_ROWS) + tid];
+                if (VERT == 0) {
+                    if (out_active && ((field_bits(mask) >> (2u * f)) & 1u) != 0u) {
+                        uint ci = (slot0 + field_slot(mask, f)) * 125u + pt;
+                        a.corners[ci] = f0 == 0u ? sum : a.corners[ci] + sum;
+                    }
+                } else {
+                    res += sum;
+                }
+            }
+        }
+    }
+    if (VERT != 0) {
+        GroupMemoryBarrierWithGroupSync();
+        if (tid < uint(W_ROWS)) w_red[tid] = res;
+        GroupMemoryBarrierWithGroupSync();
+        if (tid < 16u && v0 + tid < a.count) a.vval[v0 + tid] = float4(w_red[4u * tid + 1u], w_red[4u * tid + 2u], w_red[4u * tid + 3u], w_red[4u * tid]);
+    }
+}
+
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_w128(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<128, WBuf128, 0>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_w192(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<192, WBuf192, 0>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_w256(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<256, WBuf256, 0>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_w128(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<128, WBuf128, 1>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_w192(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<192, WBuf192, 1>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_w256(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<256, WBuf256, 1>(gid, tid); }
+
+// ------------------------------------------------------------------------------------------
 // Densities as phi^T D phi (dform): over the AOs that reach the group's box (the local list, in shell
 // order), in chunks of 16 AOs and tiles J of 64. Per tile, T_J = sum over chunks I <= J of
 // Phi_I D'_IJ (D' = 2 D for I before J: the upper block triangle), then rho += Phi_J . T_J, the
