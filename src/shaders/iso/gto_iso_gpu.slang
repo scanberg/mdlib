@@ -2025,13 +2025,23 @@ bool d_shell(uint li, float3 p, bool deriv, out float3 d, out float R, out float
     R1 = 0.0;
     if (r2 > cs.w) return false;
     uint np = (ci >> 8) & 255u;
-    bool glob = (ci >> 31) != 0u;
-    uint po = glob ? d_pg[li] : ((ci >> 16) & 0x7FFFu);
-    for (uint q = 0u; q < np; ++q) {
-        float2 pr = glob ? a.prims[po + q] : k_pr[po + q];
-        float t = pr.y * exp(-pr.x * r2);
-        R += t;
-        if (deriv) R1 -= pr.x * t;
+    if ((ci >> 31) != 0u) {                                // uniform (one shell for every thread)
+        uint po = d_pg[li];
+        for (uint q = 0u; q < np; ++q) {
+            float2 pr = a.prims[po + q];
+            float t = pr.y * exp(-pr.x * r2);
+            R += t;
+            if (deriv) R1 -= pr.x * t;
+        }
+    } else {
+        // the staged primitives only: a select between the two loads would issue the global one too
+        uint po = (ci >> 16) & 0x7FFFu;
+        for (uint q = 0u; q < np; ++q) {
+            float2 pr = k_pr[po + q];
+            float t = pr.y * exp(-pr.x * r2);
+            R += t;
+            if (deriv) R1 -= pr.x * t;
+        }
     }
     return true;
 }

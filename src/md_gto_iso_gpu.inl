@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r10"
+#define ISOG_REVISION "r11"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -105,11 +105,17 @@ static int isog_gemm = 1;
 //                             registers (default 1)
 static int isog_octree_small = 1;
 //   GTO_ISO_DFORM=1           sets of densities: corners (point list) and vertices as phi^T D phi over the AOs
-//                             reaching each group, D from the fields' terms (default 1)
-static int isog_dform = 1;
-//   GTO_ISO_DFORM_OCTREE=1    with the D form, the octree bounds phi^T D phi too (centred form over the AOs a
-//                             node reaches; no factors, so no limit on the rank) (default 1)
+//                             reaching each group, D from the fields' terms (default 0: on C60 at A ~ r it is
+//                             slower than the factored GEMM; sets beyond the factored kernels' 1024 functions
+//                             use it regardless)
+static int isog_dform = 0;
+//   GTO_ISO_DFORM_OCTREE=1    sets of densities: the octree bounds phi^T D phi (centred form over the AOs a node
+//                             reaches; no factors, so no limit on the rank), whichever evaluation (default 1)
 static int isog_dform_octree = 1;
+//   GTO_ISO_COEF_SCREEN=1     sets of orbitals: a shell is dropped where its largest coefficient times its AOs is
+//                             below eps (as the volume path screens), not its AOs alone; the bound's tail per
+//                             function becomes 2 eps n_AO (default 1)
+static int isog_coef_screen = 1;
 
 // The kernels are made on first use, so initializing costs nothing until a mesh is extracted
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
@@ -141,6 +147,8 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_dform = atoi(e);
     e = getenv("GTO_ISO_DFORM_OCTREE");
     if (e && e[0]) isog_dform_octree = atoi(e);
+    e = getenv("GTO_ISO_COEF_SCREEN");
+    if (e && e[0]) isog_coef_screen = atoi(e);
 }
 
 static bool isog_kernels_ready(void) {
@@ -237,6 +245,8 @@ struct md_gto_iso_gpu_set_t {
     double*       sh_amin;          // per shell: the smallest exponent
     md_gpu_float2* host_prims;      // alpha, contraction coefficient
     double*       colsum;           // per function column: sum of |C|
+    double*       sh_cmax;          // per shell: the largest |C| of its AOs over the functions (coefficient screening)
+    int           screen;           // the radii are coefficient-screened (orbitals with isog_coef_screen)
 };
 
 static inline float isog_f32_up(double x);
@@ -269,18 +279,33 @@ static void isog_set_dprop(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, do
 }
 
 // The shells' radii and the functions' tails for the cutoff 1e-eps_exp, uploaded
-static void isog_set_eps(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int eps_exp) {
+static void isog_set_eps(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int eps_exp, int screen) {
     const double eps = pow(10.0, -(double)eps_exp);
-    for (uint32_t s = 0; s < set->num_shells; ++s) set->prof_shells[s].c.w = isog_f32_up(isog_shell_r2(set, s, eps));
+    screen = screen && set->orbitals_only && set->sh_cmax;
+    for (uint32_t s = 0; s < set->num_shells; ++s) {
+        if (!screen) {
+            set->prof_shells[s].c.w = isog_f32_up(isog_shell_r2(set, s, eps));
+        } else if (set->sh_cmax[s] > 0.0) {
+            // coefficient screening: |C| |AO| below eps beyond the radius
+            set->prof_shells[s].c.w = isog_f32_up(isog_shell_r2(set, s, eps / set->sh_cmax[s]));
+        } else {
+            set->prof_shells[s].c.w = -1.0f;    // no coefficient: never listed
+        }
+    }
     md_gpu_upload(stream, set->shells.gpu, set->prof_shells, sizeof(isog_shell_t) * set->num_shells);
     // per function: what the shells that do not reach a box can add over it, every AO of theirs being
-    // below eps there; twice that, for the float distances that decide it
+    // below eps there (screened: every coefficient times its AO), twice that for the float distances
+    // that decide it
     float* tail = (float*)calloc(set->fn_stride + 1, sizeof(float));
-    for (uint32_t j = 0; j < set->num_fn; ++j) tail[j] = isog_f32_up(2.0 * eps * set->colsum[j] * (1.0 + 1.0e-6));
+    for (uint32_t j = 0; j < set->num_fn; ++j) {
+        const double t = screen ? 2.0 * eps * (double)set->num_ao : 2.0 * eps * set->colsum[j];
+        tail[j] = isog_f32_up(t * (1.0 + 1.0e-6));
+    }
     md_gpu_upload(stream, set->fn_tail.gpu, tail, sizeof(float) * set->fn_stride);
     free(tail);
     isog_set_dprop(stream, set, eps);
     set->eps_exp = eps_exp;
+    set->screen = screen;
 }
 
 static inline float isog_f32_dn(double x) { float f = (float)x; return (double)f > x ? nextafterf(f, -INFINITY) : f; }
@@ -559,6 +584,18 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
     set->colsum = colsum;
     set->host_prims = (md_gpu_float2*)malloc(sizeof(md_gpu_float2) * (md_array_size(pr) + 1));
     memcpy(set->host_prims, pr, sizeof(md_gpu_float2) * md_array_size(pr));
+    // per shell, the largest coefficient of its AOs over the set's functions (orbitals: coefficient screening)
+    if (orbitals_only) {
+        set->sh_cmax = (double*)calloc(B.num_ao_shells + 1, sizeof(double));
+        for (int k = 0; k < B.num_ao_shells && set->sh_cmax; ++k) {
+            double m = 0.0;
+            for (uint32_t n = 0; n < sh[k].info.y; ++n) {
+                const size_t ao = sh[k].info2.x + n;
+                for (uint32_t j = 0; j < nf; ++j) m = fmax(m, fabs((double)C[ao * stride + j]));
+            }
+            set->sh_cmax[k] = m;
+        }
+    }
     free(nrm); free(ijk); free(C);
     md_array_free(pr, heap); md_array_free(cr, heap); md_array_free(terms, heap);
     md_array_free(B.radial.shells, heap); md_array_free(B.radial.crit, heap); free(B.ao_shells);
@@ -578,7 +615,7 @@ void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* se
     md_gpu_free(stream, set->dmat.gpu); md_gpu_free(stream, set->fdmat.gpu);
     md_gpu_free(stream, set->drs.gpu); md_gpu_free(stream, set->dprop.gpu);
     free(set->prof_shells);
-    free(set->sh_nmax); free(set->sh_amin); free(set->colsum); free(set->host_prims);
+    free(set->sh_nmax); free(set->sh_amin); free(set->colsum); free(set->host_prims); free(set->sh_cmax);
     md_free(set->alloc, set, sizeof(*set));
 }
 
@@ -649,6 +686,7 @@ void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     out->octree_small = isog_octree_small != 0;
     out->dform = isog_dform != 0;
     out->dform_octree = isog_dform_octree != 0;
+    out->coef_screen = isog_coef_screen != 0;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
@@ -666,13 +704,14 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     isog_octree_small = in->octree_small;
     isog_dform = in->dform;
     isog_dform_octree = in->dform_octree;
+    isog_coef_screen = in->coef_screen;
 }
 
 const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[256];
-    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_octree %d newton_predict %d skip_brick_test %d eval_eps 1e-%d",
+    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_octree %d coef_screen %d newton_predict %d skip_brick_test %d eval_eps 1e-%d",
              ISOG_REVISION, isog_relax_first, isog_corners_v2, isog_corners_list, isog_shared_corners, isog_eval_v2, isog_canon_terms,
-             isog_gemm, isog_octree_small, isog_dform, isog_dform_octree, isog_newton_predict, isog_skip_brick_test, isog_eval_eps_exp);
+             isog_gemm, isog_octree_small, isog_dform, isog_dform_octree, isog_coef_screen, isog_newton_predict, isog_skip_brick_test, isog_eval_eps_exp);
     return buf;
 }
 
@@ -838,7 +877,10 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         return false;
     }
     if (!isog_kernels_ready()) return false;
-    if (set->eps_exp != isog_eval_eps_exp) isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, isog_eval_eps_exp);   // EXPERIMENT
+    {   // EXPERIMENT: the cutoff and the screening as switched
+        const int screen = isog_coef_screen && set->orbitals_only && set->sh_cmax;
+        if (set->eps_exp != isog_eval_eps_exp || set->screen != screen) isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, isog_eval_eps_exp, screen);
+    }
     memset(out, 0, sizeof(*out));
     out->num_fields = set->num_fields;
     isog_prof_begin(s);
@@ -894,7 +936,9 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     a.dform = ((isog_dform || set->factorless) && set->num_dmat > 0) ? 1u : 0u;
     a.drs = set->drs.gpu;
     a.dprop = set->dprop.gpu;
-    const bool odform = a.dform && (isog_dform_octree || set->factorless);
+    // the D form's octree bounds the matrix's density, within the factors' slack of what the factored
+    // evaluation gives (the slack is in the bound): either evaluation goes with it
+    const bool odform = set->num_dmat > 0 && (isog_dform_octree || set->factorless);
     a.fields = isog_temp(s, sizeof(fields));
     md_gpu_upload(s, a.fields, fields, sizeof(fields));
     a.counters = isog_temp(s, sizeof(uint32_t) * 8);
