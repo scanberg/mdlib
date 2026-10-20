@@ -275,6 +275,35 @@ bool md_gto_iso_gpu_mesh_read(md_gpu_stream_t stream, const md_gto_iso_gpu_mesh_
 // All of it as it is on the device, with one wait: position and normal float4 per vertex (vertex_count),
 // index uint32 per triangle corner (index_count) into the whole vertex buffer. Any may be NULL.
 bool md_gto_iso_gpu_mesh_read_all(md_gpu_stream_t stream, const md_gto_iso_gpu_mesh_t* mesh, float* position, float* normal, uint32_t* index);
+
+// ---------------------------------------------------------------------------
+// BENCHMARK (temporary, branch gto-iso-gpu-opt): a step by step profile of the extractions
+// ---------------------------------------------------------------------------
+// With a profile set, md_gto_iso_gpu_extract waits for the GPU after every step (so it runs slower than
+// without) and appends one entry per step: the wall clock since the previous entry and what the step
+// worked on. Before every vertex evaluation it also reads back how many vertices are still moving;
+// that readback is not timed.
+#define MD_GTO_ISO_GPU_PROFILE_CAP 512
+
+typedef struct md_gto_iso_gpu_profile_step_t {
+    const char* name;       // static
+    double   ms;            // since the previous entry: the work and one wait for it
+    uint32_t items;         // what it worked on: nodes in, bricks, vertices still moving, ...
+    uint32_t aux;           // nodes kept, active 64-vertex groups, ...
+} md_gto_iso_gpu_profile_step_t;
+
+typedef struct md_gto_iso_gpu_profile_t {
+    uint32_t num_steps;
+    md_gto_iso_gpu_profile_step_t step[MD_GTO_ISO_GPU_PROFILE_CAP];
+    double   wait_ms;       // one wait with nothing to wait for: the floor under every step's ms
+} md_gto_iso_gpu_profile_t;
+
+// NULL turns it off. One profile for every extraction (not thread safe); each extraction restarts it.
+void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile);
+
+// The steps summed by name, in order of first appearance, as a text table (nul terminated, truncated
+// to cap). Returns the length written.
+size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* profile, char* buf, size_t cap);
 #endif
 
 #ifdef __cplusplus

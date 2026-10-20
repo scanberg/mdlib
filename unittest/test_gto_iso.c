@@ -1338,11 +1338,11 @@ static void iso_dens_src_free(iso_dens_src_t* s) {
     memset(s, 0, sizeof(*s));
 }
 
-static bool iso_dens_src_load(iso_dens_src_t* s, const char* file) {
+static bool iso_dens_src_load_ex(iso_dens_src_t* s, const char* file, bool need_nto) {
     memset(s, 0, sizeof(*s));
     char path[512];
     snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
-    if (!vlx_test_load(&s->t, str_from_cstr(path), MEGABYTES(128))) return false;
+    if (!vlx_test_load(&s->t, str_from_cstr(path), MEGABYTES(512))) return false;
     s->num_atoms = s->t.sys.atom.count;
     s->xyz = (float*)malloc(sizeof(float) * 3 * s->num_atoms);
     if (vlx_test_atom_xyz_bohr(s->xyz, 3 * s->num_atoms, &s->t) != s->num_atoms || !qm_test_basis(&s->basis, &s->t)) return false;
@@ -1365,7 +1365,7 @@ static bool iso_dens_src_load(iso_dens_src_t* s, const char* file) {
     const md_attribute_t* la = qm_test_attr(&s->t, STR_LIT("vlx/rsp/nto/lambda"));
     const md_attribute_t* pa = qm_test_attr(&s->t, STR_LIT("vlx/rsp/nto/particle/coefficient"));
     const md_attribute_t* ha = qm_test_attr(&s->t, STR_LIT("vlx/rsp/nto/hole/coefficient"));
-    if (!la || !pa || !ha) return false;
+    if (!la || !pa || !ha) return !need_nto;
     const size_t lmax = la->format.shape[1];
     double* lam = (double*)calloc(lmax, sizeof(double));
     if (md_attribute_extract_f64(lam, lmax, la, md_attribute_slice_1(0), md_unit_none()) != lmax) return false;
@@ -1380,8 +1380,10 @@ static bool iso_dens_src_load(iso_dens_src_t* s, const char* file) {
         if (md_attribute_extract_f64(s->particle + n * s->num_ao, s->num_ao, pa, md_attribute_slice_2(0, (uint32_t)k), md_unit_none()) != s->num_ao) return false;
     }
     free(lam);
-    return s->num_nto > 0;
+    return s->num_nto > 0 || !need_nto;
 }
+
+static bool iso_dens_src_load(iso_dens_src_t* s, const char* file) { return iso_dens_src_load_ex(s, file, true); }
 
 // The products of one density kind: count terms, rows left/right (right NULL: squares).
 typedef struct iso_dens_prod_t {
@@ -3059,6 +3061,12 @@ UTEST(gto_iso_gpu_lib, benchmark) {
     if (nh == 0) { hs[0] = 0.2; hs[1] = 0.15; hs[2] = 0.1; nh = 3; }
     const int reps = getenv("GTO_ISO_BENCH_REPS") ? atoi(getenv("GTO_ISO_BENCH_REPS")) : 5;
     const bool with_cpu = getenv("GTO_ISO_BENCH_CPU") && getenv("GTO_ISO_BENCH_CPU")[0] == '1';
+    // BENCHMARK (temporary): one extra run per case with the step by step profile; off with GTO_ISO_BENCH_PROFILE=0
+    const bool with_profile = !(getenv("GTO_ISO_BENCH_PROFILE") && getenv("GTO_ISO_BENCH_PROFILE")[0] == '0');
+    // only the cases whose name contains this (e.g. "scf", "mol ")
+    const char* only = getenv("GTO_ISO_BENCH_ONLY");
+    static md_gto_iso_gpu_profile_t prof;
+    static char prof_text[32768];
 
     static const iso_bench_field_t cases[] = {
         {"amide.h5", "amide homo",   -1,          0.05},
@@ -3070,6 +3078,9 @@ UTEST(gto_iso_gpu_lib, benchmark) {
         {"mol.h5",   "mol diff",     ISO_D_DIFF,  0.002},
         {"mol.h5",   "mol trans",    ISO_D_TRANS, 0.002},
         {"mol.h5",   "mol 16 MOs",   -16,         0.05},
+        {"tq.scf.results.h5",   "tq homo",    -1,        0.05},
+        {"tq.scf.results.h5",   "tq scf",     ISO_D_SCF, 0.002},
+        {"tq.scf.results.h5",   "tq 16 MOs",  -16,       0.05},
     };
     printf("\n  device: %s, %s | display meshes (project 8, relax 3) | median of %d\n", info.name, info.driver, reps);
     printf("  %-12s %5s | %4s %6s %6s %7s | %8s %7s %7s %7s %7s %7s %7s | %9s %8s %13s", "field", "h", "fn", "bricks", "slots", "verts",
@@ -3079,8 +3090,13 @@ UTEST(gto_iso_gpu_lib, benchmark) {
 
     for (int ci = 0; ci < (int)(sizeof(cases) / sizeof(cases[0])); ++ci) {
         const iso_bench_field_t* bc = &cases[ci];
+        if (only && !strstr(bc->name, only)) continue;
         iso_dens_src_t s;
-        if (!iso_dens_src_load(&s, bc->file)) { printf("  %-12s (could not load %s)\n", bc->name, bc->file); continue; }
+        const bool need_nto = bc->kind >= 0 && bc->kind != ISO_D_SCF;
+        if (!iso_dens_src_load_ex(&s, bc->file, need_nto)) { printf("  %-12s (could not load %s)\n", bc->name, bc->file); iso_dens_src_free(&s); continue; }
+        if (ci == 0 || strcmp(cases[ci - 1].file, bc->file) != 0 || (only && !strstr(cases[ci - 1].name, only))) {
+            printf("  -- %s: %zu atoms, %u shells, %zu AOs, %zu MOs, %zu NTO pairs\n", bc->file, s.num_atoms, s.basis.num_shells, s.num_ao, s.num_mo, s.num_nto);
+        }
         const size_t lumo = vlx_test_lumo_idx(&s.t, STR_LIT("orbital/alpha/occupation"));
         md_gto_iso_field_t* fields[16] = {0};
         const double* rows[16] = {0};
@@ -3140,6 +3156,15 @@ UTEST(gto_iso_gpu_lib, benchmark) {
             if (isnan(dense)) printf(" | %9s %8s %13s", "-", "-", "-");
             else printf(" | %9.2f %7.2fx %4dx%3dx%3d", dense, dense / t, dd[0], dd[1], dd[2]);
             md_gto_iso_gpu_mesh_free(g.s, &gm);
+            if (with_profile) {
+                md_gto_iso_gpu_desc_t pd = gd;
+                pd.time_stages = false;
+                md_gto_iso_gpu_profile_set(&prof);
+                const bool pok = md_gto_iso_gpu_extract(g.s, set, &pd, &gm);
+                md_gto_iso_gpu_profile_set(NULL);
+                if (pok) md_gto_iso_gpu_mesh_free(g.s, &gm);
+                md_gto_iso_gpu_profile_print(&prof, prof_text, sizeof(prof_text));
+            }
             if (with_cpu && nf == 1) {
                 md_tick_t t0 = md_tick_now();
                 md_gto_iso_cache_t* cache = md_gto_iso_cache_create(fields[0], &(md_gto_iso_cache_desc_t){.cell_size = h, .iso_min = iso[0]}, md_get_heap_allocator());
@@ -3150,6 +3175,7 @@ UTEST(gto_iso_gpu_lib, benchmark) {
                 md_gto_iso_cache_destroy(cache);
             }
             printf("\n");
+            if (with_profile) printf("%s", prof_text);
         }
         md_gto_iso_gpu_set_destroy(g.s, set);
         for (int k = 0; k < nf; ++k) md_gto_iso_field_destroy(fields[k]);
