@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r20"
+#define ISOG_REVISION "r21"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -62,6 +62,9 @@ enum {
     ISOG_K_GCORN_F64_P1, ISOG_K_GCORN_F64_P2, ISOG_K_GEVAL_F64_P1, ISOG_K_GEVAL_F64_P2, ISOG_K_CLIST_F1V4, ISOG_K_DCORN2, ISOG_K_DEVAL2,
     ISOG_K_DCORN3, ISOG_K_DEVAL3, ISOG_K_SCAN,
     ISOG_K_GCORN_W128, ISOG_K_GCORN_W192, ISOG_K_GCORN_W256, ISOG_K_GEVAL_W128, ISOG_K_GEVAL_W192, ISOG_K_GEVAL_W256,
+    ISOG_K_ODFORM8,
+    ISOG_K_GCORN_X128, ISOG_K_GCORN_X192, ISOG_K_GCORN_X256, ISOG_K_GEVAL_X128, ISOG_K_GEVAL_X192, ISOG_K_GEVAL_X256,
+    ISOG_K_GCORN_Y128, ISOG_K_GCORN_Y192, ISOG_K_GCORN_Y256, ISOG_K_GEVAL_Y128, ISOG_K_GEVAL_Y192, ISOG_K_GEVAL_Y256,
     ISOG_K_COUNT
 };
 
@@ -160,6 +163,26 @@ static int isog_diag = 0;
 //                             shells are listed and staged and the AO values made once per pass instead of once
 //                             per tile of 64 (default 1; TEST: 2 for sets of more than 16 functions)
 static int isog_gemm_wide = 1;
+//   GTO_ISO_OCTREE8=1         the D form's octree below the root with a node's 8 children in one group
+//                             (iso_octree_dform8): the shells reaching the parent listed once, each element of
+//                             D loaded once for the 8 instead of once per child; the same sums (default 1)
+static int isog_octree8 = 1;
+//   GTO_ISO_WIDE_KERNEL=0|1|2 the wide GEMM's kernels: 0 those of r16 (iso_gcorners_w*, iso_geval_w*); 1 the
+//                             group's shells listed once (all, in rounds of 256) and staged as they are listed,
+//                             chunks of 16 consecutive AOs of the list, so a chunk stages only its rows of C
+//                             (iso_gcorners_x*, iso_geval_x*); 2 the same with the next chunk's rows of C loaded
+//                             into registers during this chunk's AO values and products (iso_gcorners_y*,
+//                             iso_geval_y*: F / 16 more registers) (default 1)
+static int isog_wide_kernel = 1;
+
+// The wide kernel k (one of the six ISOG_K_GCORN_W* / ISOG_K_GEVAL_W*) in the form chosen, where the
+// device could make it
+static int isog_wide_form(int k) {
+    const int base = isog_wide_kernel == 2 ? ISOG_K_GCORN_Y128 : isog_wide_kernel == 1 ? ISOG_K_GCORN_X128 : -1;
+    if (base < 0) return k;
+    const int alt = base + (k - ISOG_K_GCORN_W128);
+    return isog_k[alt] ? alt : k;
+}
 
 // The kernels are made on first use, so initializing costs nothing until a mesh is extracted
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
@@ -210,6 +233,11 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_diag = atoi(e);
     e = getenv("GTO_ISO_GEMM_WIDE");
     if (e && e[0]) isog_gemm_wide = atoi(e);
+    e = getenv("GTO_ISO_OCTREE8");
+    if (e && e[0]) isog_octree8 = atoi(e);
+    e = getenv("GTO_ISO_WIDE_KERNEL");
+    if (e && e[0]) isog_wide_kernel = atoi(e);
+    if (isog_wide_kernel < 0 || isog_wide_kernel > 2) isog_wide_kernel = 1;
     e = getenv("GTO_ISO_DFORM_KERNEL");
     if (e && e[0]) isog_dform_kernel = atoi(e);
     if (isog_dform_kernel < 0 || isog_dform_kernel > 2) isog_dform_kernel = 2;
@@ -296,6 +324,19 @@ static bool isog_kernels_ready(void) {
         md_shader_gto_iso_gpu_iso_geval_w128_kernel(),
         md_shader_gto_iso_gpu_iso_geval_w192_kernel(),
         md_shader_gto_iso_gpu_iso_geval_w256_kernel(),
+        md_shader_gto_iso_gpu_iso_octree_dform8_kernel(),
+        md_shader_gto_iso_gpu_iso_gcorners_x128_kernel(),
+        md_shader_gto_iso_gpu_iso_gcorners_x192_kernel(),
+        md_shader_gto_iso_gpu_iso_gcorners_x256_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_x128_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_x192_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_x256_kernel(),
+        md_shader_gto_iso_gpu_iso_gcorners_y128_kernel(),
+        md_shader_gto_iso_gpu_iso_gcorners_y192_kernel(),
+        md_shader_gto_iso_gpu_iso_gcorners_y256_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_y128_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_y192_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_y256_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -878,6 +919,8 @@ void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     out->ordered = isog_ordered != 0;
     out->diag = isog_diag;
     out->gemm_wide = isog_gemm_wide != 0;
+    out->octree8 = isog_octree8 != 0;
+    out->wide_kernel = isog_wide_kernel;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
@@ -905,13 +948,15 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     isog_ordered = in->ordered;
     isog_diag = (in->diag >= 0 && in->diag <= 5) ? in->diag : 0;
     isog_gemm_wide = in->gemm_wide ? (isog_gemm_wide ? isog_gemm_wide : 1) : 0;
+    isog_octree8 = in->octree8;
+    if (in->wide_kernel >= 0 && in->wide_kernel <= 2) isog_wide_kernel = in->wide_kernel;
 }
 
 const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[512];
-    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
+    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d wide_kernel %d octree8 %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
              ISOG_REVISION, isog_relax_first, isog_corners_v2, isog_corners_list, isog_shared_corners, isog_eval_v2, isog_canon_terms,
-             isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
+             isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_wide_kernel, isog_octree8, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
              isog_diag == 1 ? " DIAG: no AO values" : isog_diag == 2 ? " DIAG: no multiply-adds" : isog_diag == 3 ? " DIAG: lists only"
              : isog_diag == 4 ? " DIAG: no C rows staged" : isog_diag == 5 ? " DIAG: no shells staged, no AO values" : "");
     return buf;
@@ -1052,7 +1097,7 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
             ISOG_PR("    vertex groups: %.1f AOs reach a group of %u vertices (%u groups)\n",
                     (double)p->vgroup_ao_sum / (double)p->vgroup_count, p->vgroup_size, p->vgroup_count);
         }
-        if (strcmp(name[k], "octree level") == 0 && items[k] > 0 && (p->kernels_used & (1ull << ISOG_K_ODFORM))) {
+        if (strcmp(name[k], "octree level") == 0 && items[k] > 0 && (p->kernels_used & ((1ull << ISOG_K_ODFORM) | (1ull << ISOG_K_ODFORM8)))) {
             ISOG_PR("    octree (dform): %llu nodes, about 4 A^2 multiply-adds each for A AOs reaching a node\n", (unsigned long long)items[k]);
         } else if (strcmp(name[k], "octree level") == 0 && items[k] > 0) {
             const double fma = (double)items[k] * (double)p->num_ao * (double)p->fn_stride * 5.0;
@@ -1196,6 +1241,10 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
             MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), o);
             int ko = odform ? ISOG_K_ODFORM : (isog_octree_small && set->num_fn <= 4) ? ISOG_K_OCTREE_SMALL : ISOG_K_OCTREE;
             if (ko == ISOG_K_OCTREE_SMALL && !isog_k[ko]) ko = ISOG_K_OCTREE;
+            if (ko == ISOG_K_ODFORM && l > 0 && isog_octree8 && isog_k[ISOG_K_ODFORM8]) {
+                ko = ISOG_K_ODFORM8;    // a group per 8 siblings (below the root they come 8 at a time)
+                o.grid_div = 8;
+            }
             if (!isog_have(ko)) { ok = false; break; }
             md_gpu_launch_indirect(s, isog_k[ko], a.grid_out, &o, sizeof(o));
             isog_used(ko);
@@ -1311,7 +1360,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
             while (dk > 0 && !isog_k[kdc[dk]]) dk--;        // a D form kernel this device could make
             const int kc = one ? ((isog_corners_v4 && isog_k[ISOG_K_CLIST_F1V4]) ? ISOG_K_CLIST_F1V4 : ISOG_K_CLIST_F1)
                          : a.dform ? kdc[dk]
-                         : wide ? (nfn <= 128 ? ISOG_K_GCORN_W128 : nfn <= 192 ? ISOG_K_GCORN_W192 : ISOG_K_GCORN_W256)
+                         : wide ? isog_wide_form(kw)
                          : gemm ? (nfn <= 16 ? ISOG_K_GCORN_F16 : (nfn <= 32 || isog_gemm_t32) ? ISOG_K_GCORN_F32
                                    : isog_gemm_pipe == 1 ? ISOG_K_GCORN_F64_P1 : isog_gemm_pipe == 2 ? ISOG_K_GCORN_F64_P2 : ISOG_K_GCORN_F64)
                          : (nfn <= 8 ? ISOG_K_CLIST_F8 : nfn <= 16 ? ISOG_K_CLIST_F16 : nfn <= 32 ? ISOG_K_CLIST_F32 : ISOG_K_CLIST_F64);
@@ -1343,6 +1392,12 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
                 case ISOG_K_GCORN_W128: fc = 128; kn = "corners (gemm w128)"; break;
                 case ISOG_K_GCORN_W192: fc = 192; kn = "corners (gemm w192)"; break;
                 case ISOG_K_GCORN_W256: fc = 256; kn = "corners (gemm w256)"; break;
+                case ISOG_K_GCORN_X128: fc = 128; kn = "corners (gemm x128)"; break;
+                case ISOG_K_GCORN_X192: fc = 192; kn = "corners (gemm x192)"; break;
+                case ISOG_K_GCORN_X256: fc = 256; kn = "corners (gemm x256)"; break;
+                case ISOG_K_GCORN_Y128: fc = 128; kn = "corners (gemm y128)"; break;
+                case ISOG_K_GCORN_Y192: fc = 192; kn = "corners (gemm y192)"; break;
+                case ISOG_K_GCORN_Y256: fc = 256; kn = "corners (gemm y256)"; break;
                 default:               fc = 64; kn = "corners (gemm f64)"; break;
             }
             if (isog_prof) isog_prof->corner_cols = fc ? fc * ((nfn + fc - 1) / fc) : 0;
@@ -1506,7 +1561,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
             while (dk > 0 && !isog_k[kde[dk]]) dk--;
             ke = kde[dk];
         } else if (geval && a.canon && isog_gemm_wide && nfv > (isog_gemm_wide == 2 ? 16u : 64u) && isog_k[kwv]) {
-            ke = kwv;
+            ke = isog_wide_form(kwv);
         } else if (geval) {
             const uint32_t nfn = set->num_fn;
             ke = nfn <= 16 ? ISOG_K_GEVAL_F16 : (nfn <= 32 || isog_gemm_t32) ? ISOG_K_GEVAL_F32
@@ -1517,7 +1572,8 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         }
         const bool elist = set->orbitals_only && set->num_fn == 1 && set->num_fields == 1 && isog_eval_list;
         if (elist) ke = ISOG_K_EVAL_LIST1;
-        const bool vwide = ke == ISOG_K_GEVAL_W128 || ke == ISOG_K_GEVAL_W192 || ke == ISOG_K_GEVAL_W256;
+        const bool vwide = (ke >= ISOG_K_GEVAL_W128 && ke <= ISOG_K_GEVAL_W256) || (ke >= ISOG_K_GEVAL_X128 && ke <= ISOG_K_GEVAL_X256) ||
+                           (ke >= ISOG_K_GEVAL_Y128 && ke <= ISOG_K_GEVAL_Y256);
         if (!isog_have(ke)) ok = false;
         md_gpu_kernel_t k_eval = isog_k[ke];
         isog_used(ke);

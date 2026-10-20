@@ -353,6 +353,8 @@ typedef struct md_gto_iso_gpu_switches_t {
     int  diag;              // DIAGNOSTIC (corner GEMM kernels): 1 no AO values made, 2 no multiply-adds, 3 lists only,
                             // 4 no rows of C staged, 5 no shells staged and no AO values (no surface)
     bool gemm_wide;         // canonical sets of more than 64 functions: the GEMM in passes of up to 256 columns
+    bool octree8;           // the D form's octree below the root: a node's 8 children in one group
+    int  wide_kernel;       // the wide GEMM's kernels: 0 r16, 1 shells listed once, 2 and rows of C a chunk ahead
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
