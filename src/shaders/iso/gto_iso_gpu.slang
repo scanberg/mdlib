@@ -69,7 +69,7 @@ struct IsoArgs {
     float     lambda;         // relaxation step
     float     tol;            // Newton: converged below this distance
     uint      canon;          // every field's terms in the canonical form: wts (the register-form epilogues)
-    uint      _pad1;
+    uint      diag;           // DIAGNOSTIC (corner GEMM kernels): 1 no AO values made (constants), 2 no multiply-adds
     uint      dform;          // the density fields as phi^T D phi: dmat, fdmat (corners from the list, vertices)
     uint      num_dmat;
     IsoShell* shells;
@@ -112,6 +112,7 @@ struct IsoArgs {
     uint*     fdmat;          // dform: per field, its matrix
     float*    drs;            // dform: per matrix and AO mu, sum over nu of |D_mu nu| / |nrm_nu| (the octree's tails)
     float4*   dprop;          // dform: per matrix: (2 eps)^2 sum |D raw|, 4 eps, positive semidefinite (1), slack
+    uint*     scan;           // ordered lists: per brick, its count (iso_points, iso_cells), then its offset (iso_scan)
 };
 MD_SHADER_ARGS(IsoArgs);
 
@@ -1354,9 +1355,10 @@ void iso_corners_fill(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 
 groupshared uint p_base;
 
-// One group per brick: appends its points to plist (one atomic per brick, so the list keeps roughly
-// the order of the bricks; a brick's points are contiguous). mode 1: shared corners. The count is
-// counters[5].
+// One group per brick: appends its points to plist, a brick's points contiguous. The count is
+// counters[5]. mode bit 1: shared corners. Without bits 2, 4: one atomic per brick (the list in the
+// order the groups get there); bit 2: only the count, per brick into scan as well; bit 4: at the
+// brick's offset in scan (iso_scan of the counts): the list in the order of the bricks.
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void iso_points(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
@@ -1365,7 +1367,7 @@ void iso_points(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     if (b >= a.count) return;                              // uniform per group
     uint4 brick = a.bricks[b];
     bool mine = tid < 125u && brick.w != 0u;
-    if (a.mode == 1u && mine) {
+    if ((a.mode & 1u) != 0u && mine) {
         uint op;
         mine = corner_owner(brick, tid, op) == INVALID;
     }
@@ -1373,11 +1375,48 @@ void iso_points(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     uint at = iso_group_prefix(mine, tid, 128u, n);
     if (tid == 0u) {
         uint base = 0u;
-        if (n > 0u) InterlockedAdd(a.counters[5], n, base);
+        if ((a.mode & 4u) != 0u) base = a.scan[b];
+        else if (n > 0u) InterlockedAdd(a.counters[5], n, base);
+        if ((a.mode & 2u) != 0u) a.scan[b] = n;
         p_base = base;
     }
     GroupMemoryBarrierWithGroupSync();
+    if ((a.mode & 2u) != 0u) return;
     if (mine) a.plist[p_base + at] = (b << 7) | tid;
+}
+
+// ------------------------------------------------------------------------------------------
+// Exclusive prefix sum over scan[0, count) in place, the total in scan[count]: one group of
+// SC_GROUP threads, SC_PER consecutive entries each per pass
+// ------------------------------------------------------------------------------------------
+
+#define SC_GROUP 512
+#define SC_PER   4
+
+[shader("compute")]
+[numthreads(SC_GROUP, 1, 1)]
+void iso_scan(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint n = a.count;
+    uint run = 0u;
+    for (uint base = 0u; base < n; base += uint(SC_GROUP * SC_PER)) {
+        uint i0 = base + tid * uint(SC_PER);
+        uint v[SC_PER];
+        uint sum = 0u;
+        [ForceUnroll] for (int k = 0; k < SC_PER; ++k) {
+            v[k] = i0 + uint(k) < n ? a.scan[i0 + uint(k)] : 0u;
+            sum += v[k];
+        }
+        uint tot;
+        uint pre = iso_group_prefix_sum(sum, tid, uint(SC_GROUP), tot);   // barriers inside: earlier reads done
+        uint at = run + pre;
+        [ForceUnroll] for (int k = 0; k < SC_PER; ++k) {
+            if (i0 + uint(k) < n) a.scan[i0 + uint(k)] = at;
+            at += v[k];
+        }
+        run += tot;
+    }
+    if (tid == 0u) a.scan[n] = run;
 }
 
 #define L_GROUP 256
@@ -1869,6 +1908,12 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int, let PIPE : int>(uint3 gid
                 uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
                 // this row's AO values of the chunk's shells (zero beyond a shell's cutoff)
                 for (uint i = i0; i < i1; ++i) {
+                    if (VERT == 0 && a.diag == 1u) {               // DIAGNOSTIC: no AO values made
+                        uint rbd = k_row[i] * 32u + pg;
+                        uint ncd = k_nc[i];
+                        for (uint n = 0u; n < ncd; ++n) g_phi[rbd + n * 32u][cg] = 0.01;
+                        continue;
+                    }
                     float3 d;
                     float R, R1 = 0.0;
                     uint l, nc;
@@ -1900,7 +1945,9 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int, let PIPE : int>(uint3 gid
                     for (uint e = nrows * uint(F) + tid; e < uint(G_CK * F); e += uint(G_GROUP)) B::st(e, 0.0);
                 }
                 GroupMemoryBarrierWithGroupSync();
-                if (PIPE == 2) {
+                if (VERT == 0 && a.diag == 2u) {
+                    // DIAGNOSTIC: no multiply-adds
+                } else if (PIPE == 2) {
                     [ForceUnroll] for (int k = 0; k < G_CK; ++k) g_mac<F, B>(acc, uint(k), pg, cg);
                 } else if (PIPE == 1) {
                     [loop] for (uint k = 0u; k < nrows; ++k) g_mac<F, B>(acc, k, pg, cg);
@@ -2487,6 +2534,13 @@ void dq_phi(uint buf, uint ns, uint j0, uint js, uint nvalid, float3 p, uint pg,
         uint l = ci & 15u, nc = (ci >> 4) & 15u, np = (ci >> 8) & 255u;
         float3 d = p - cs.xyz;
         float r2 = dot(d, d);
+        if (!deriv && a.diag == 1u) {                      // DIAGNOSTIC: no AO values made
+            for (uint n = 0u; n < nc; ++n) {
+                int row = rb + int(n);
+                if (row >= 0 && row < D_CH) g_phi[uint(row) * 32u + pg][cg] = 0.01;
+            }
+            continue;
+        }
         if (r2 > cs.w) {                                   // beyond the cutoff: its rows zero
             [ForceUnroll] for (int n = 0; n < 15; ++n) {
                 int row = rb + n;
@@ -2536,11 +2590,9 @@ void dq_phi(uint buf, uint ns, uint j0, uint js, uint nvalid, float3 p, uint pg,
     }
 }
 
-void dq_ld(uint i4, uint NW, out float4 v) {
-    if (NW == 4u) v = GBuf64::ld4(i4); else v = GBuf128::ld4(i4);
-}
-
-void gemm_dform2<let VERT : int, let NW : int>(uint3 gid, uint tid) {
+// B: the tile's chunk of D' (GBuf64 for NW 4, GBuf128 for 8; a type parameter, so a kernel references
+// only its own: the driver allocates every groupshared array a kernel's code names)
+void gemm_dform2<let VERT : int, let NW : int, B : IKBuf>(uint3 gid, uint tid) {
     IsoArgs a = MD_ARGS;
     const uint GS = 32u * uint(NW);                        // threads
     const uint TC = 16u * uint(NW);                        // columns per tile
@@ -2670,18 +2722,14 @@ void gemm_dform2<let VERT : int, let NW : int>(uint3 gid, uint tid) {
                 }
                 uint la0 = q * uint(D_CH);
                 dq_phi(buf, dq_span(q, nq).y, cg >> 2, SP, min(A - la0, uint(D_CH)), p, pg, ce, VERT != 0, ce);
-                [ForceUnroll] for (int i = 0; i < 8; ++i) {
-                    if (NW == 4) GBuf64::st(tid + GS * uint(i), dv[i]);
-                    else         GBuf128::st(tid + GS * uint(i), dv[i]);
-                }
+                [ForceUnroll] for (int i = 0; i < 8; ++i) B::st(tid + GS * uint(i), dv[i]);
                 GroupMemoryBarrierWithGroupSync();
-                if (cq < nq && q <= cq) {                  // uniform per wave
+                if (cq < nq && q <= cq && (VERT != 0 || a.diag != 2u)) {   // uniform per wave (DIAGNOSTIC 2: none)
                     [ForceUnroll] for (int k = 0; k < D_CH; ++k) {
                         float4 ph = g_phi[uint(k) * 32u + pg];
                         uint cb = uint(k) * uint(NW) * 4u + cg * 4u;
                         [ForceUnroll] for (int c4 = 0; c4 < 4; ++c4) {
-                            float4 cv;
-                            dq_ld(cb + uint(c4), uint(NW), cv);
+                            float4 cv = B::ld4(cb + uint(c4));
                             [ForceUnroll] for (int v = 0; v < 4; ++v) {
                                 float pv = ph[v];
                                 acc[v * 16 + 4 * c4 + 0] += pv * cv.x;
@@ -2734,10 +2782,10 @@ void gemm_dform2<let VERT : int, let NW : int>(uint3 gid, uint tid) {
     }
 }
 
-[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_dcorners2(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<0, 4>(gid, tid); }
-[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_deval2(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<1, 4>(gid, tid); }
-[shader("compute")] [numthreads(256, 1, 1)] void iso_dcorners3(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<0, 8>(gid, tid); }
-[shader("compute")] [numthreads(256, 1, 1)] void iso_deval3(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<1, 8>(gid, tid); }
+[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_dcorners2(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<0, 4, GBuf64>(gid, tid); }
+[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_deval2(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<1, 4, GBuf64>(gid, tid); }
+[shader("compute")] [numthreads(256, 1, 1)] void iso_dcorners3(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<0, 8, GBuf128>(gid, tid); }
+[shader("compute")] [numthreads(256, 1, 1)] void iso_deval3(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<1, 8, GBuf128>(gid, tid); }
 
 #define OD_BLK 256                       // local AOs per block (two per thread)
 groupshared float4 od_q[OD_BLK];         // a block of local AOs: value at the centre, deviation bound, magnitude bound, AO
@@ -3000,7 +3048,7 @@ groupshared uint c_count[64];
 groupshared uint c_base;
 
 // One group per brick, one thread per cell. mode 0 counts the vertices, mode 1 writes them, a
-// brick's vertices contiguous (one atomic per brick).
+// brick's vertices contiguous (one atomic per brick; with mode bit 2 at the brick's offset in scan).
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void iso_cells(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
@@ -3033,10 +3081,15 @@ void iso_cells(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         for (uint k = 0u; k < 64u; ++k) { uint c = c_count[k]; c_count[k] = total; total += c; }
         uint base = 0u;
         if (total > 0u) InterlockedAdd(a.counters[0], total, base);
+        // mode bit 2: the vertices in the order of the bricks, at offsets from iso_scan of the counts
+        if ((a.mode & 2u) != 0u) {
+            if ((a.mode & 1u) == 0u) a.scan[b] = total;
+            else base = a.scan[b];
+        }
         c_base = base;
     }
     GroupMemoryBarrierWithGroupSync();
-    if (a.mode == 0u) return;
+    if ((a.mode & 1u) == 0u) return;
 
     uint vi = c_base + c_count[tid];
     for (uint f = 0u; f < a.num_fields; ++f) {

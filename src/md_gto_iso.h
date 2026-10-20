@@ -305,6 +305,12 @@ typedef struct md_gto_iso_gpu_profile_t {
     uint32_t corner_points; // lattice points the register-form corner kernels evaluated (0: not counted)
     uint64_t kernels_used;  // bit per kernel launched (the print lists what the driver reports of them)
     bool     orbitals_only;
+    // the groups the list kernels take (consecutive points, consecutive vertices): the AOs whose shells
+    // reach a group's box, what its kernel lists (larger than a brick's when its points are far apart)
+    uint64_t cgroup_ao_sum; // corner groups of cgroup_size points
+    uint32_t cgroup_count, cgroup_size;
+    uint64_t vgroup_ao_sum; // vertex groups of vgroup_size vertices
+    uint32_t vgroup_count, vgroup_size;
 } md_gto_iso_gpu_profile_t;
 
 // NULL turns it off. One profile for every extraction (not thread safe); each extraction restarts it.
@@ -339,6 +345,8 @@ typedef struct md_gto_iso_gpu_switches_t {
     bool corners_v4;        // one function: four corner points per thread (iso_corners_list_f1v4)
     int  newton_tol_exp;    // vertices converge within 1e-N h of the surface (1..6)
     int  dform_kernel;      // the D form's kernels: 0 those of r9, 1 triangular by chunks, tiles of 64, 2 tiles of 128
+    bool ordered;           // bricks in Morton order, the point list and the vertices in that order
+    int  diag;              // DIAGNOSTIC (corner GEMM kernels): 1 no AO values made, 2 no multiply-adds (no surface)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
