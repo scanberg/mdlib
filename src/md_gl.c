@@ -66,6 +66,9 @@
 // dashes and gaps stretched or shrunk alike to fit (bond.vert). So no dash is cut off at an end, and each kind of line
 // keeps a look of its own at any length. The lines md_gl styles itself have their lengths in proportion to their
 // radius, so they keep that look at any thickness too.
+// The one exception are the dashed circles of fused aromatic rings (ring.vert): a closed loop tied to the atoms of its
+// ring, so a number of dashes per bond, the gaps centred on the atoms, which follows from the size of the ring and the
+// radius of the sticks alone and so does not change from frame to frame as the atoms move.
 
 // The dashed partners of delocalized bonds (and of aromatic bonds outside of a ring drawn as a circle): the lengths of
 // their dashes and gaps relative to the radius of the stick (the partner is a third of it thick): short and tight,
@@ -130,7 +133,7 @@ enum {
     GL_BUFFER_BOND_ORDER,                      // u32 per bond: kind | index into GL_BUFFER_BOND_ORDER_REF << 3 (md_gl_mol_set_bond_orders)
     GL_BUFFER_BOND_ORDER_REF,                  // u32[2] per double or triple bond: atoms bonded to its first and its second atom
     GL_BUFFER_BOND_PARTNER,                    // u32[4] per dashed partner of a delocalized bond, or of an aromatic bond in no circle: bond, atoms bonded to its first and its second atom, 0
-    GL_BUFFER_AROMATIC_RING,                   // u32[8] per aromatic ring drawn as a circle: ring index | atom count << 29, its atoms in order around it (RING_ATOM_NONE past the count)
+    GL_BUFFER_AROMATIC_RING,                   // u32[8] per aromatic ring drawn as a circle: ring index | dashed << 28 | atom count << 29, its atoms in order around it (RING_ATOM_NONE past the count)
     GL_BUFFER_BACKBONE_DATA,                   // u32: residue index, u32: residue atom offset, u8: CA index, C index and O Index, u8: flags
     GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE,    // u8[4]  (0: Unknown, 1: Coil, 2: Helix, 3: Sheet)
     GL_BUFFER_BACKBONE_CONTROL_POINT_DATA,     // Extracted control points
@@ -1256,7 +1259,10 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 // aromatic bond, the group of a delocalized one.
 //   - Double and triple bonds have a kind per bond, which replaces the stick, and their surroundings.
 //   - Aromatic rings are a circle inside the ring (ring.vert), an entry per ring: its index and its atoms. Their bonds
-//     keep the stick. Two fused rings have a circle each.
+//     keep the stick. Two fused rings have a circle each. The circle is solid where the ring holds a sextet of its
+//     own (benzene, the benzene ring of tetralin), dashed in the rings of a fused aromatic system, which share their
+//     sextets (MD_RING_FLAG_FUSED_AROMATIC: naphthalene, indole, a purine): it says that they are aromatic, and claims
+//     no more about which ring holds which electrons.
 //   - Delocalized bonds keep the stick and get dashed partners, a list of entries of their own: a bond and the
 //     surroundings which give the side of the partner. So does an aromatic bond in no circle (in a ring larger than
 //     MD_RING_MAX_SIZE, or of a system without ring flags): no aromatic bond goes unmarked.
@@ -1271,10 +1277,12 @@ enum {
 };
 #define BOND_REF_NONE 0xFFFFFFFFu
 
-// Entries of GL_BUFFER_AROMATIC_RING (ring.vert): u32[8], the index of the ring | its atom count << 29, then its atoms
-// in order around it and RING_ATOM_NONE past the count. Seven atoms at most, MD_RING_MAX_SIZE.
+// Entries of GL_BUFFER_AROMATIC_RING (ring.vert): u32[8], the index of the ring | dashed << 28 | its atom count << 29,
+// then its atoms in order around it and RING_ATOM_NONE past the count. Seven atoms at most, MD_RING_MAX_SIZE. Dashed:
+// the circle of a ring of a fused aromatic system (MD_RING_FLAG_FUSED_AROMATIC).
 #define RING_ENTRY_U32  8
 #define RING_ATOM_NONE  0xFFFFFFFFu
+#define RING_DASHED_SHIFT 28
 #define RING_COUNT_SHIFT 29
 
 typedef struct {
@@ -1399,9 +1407,9 @@ static uint32_t bo_aromatic_ref(const bond_order_input_t* in, uint32_t e, uint32
 }
 
 // The ring r is drawn as a circle: aromatic (MD_RING_FLAG_AROMATIC, which says that every bond of it is), of at most
-// RING_ENTRY_U32 - 1 atoms, each bonded to the next by a bond the molecule draws
+// RING_ENTRY_U32 - 1 atoms, each bonded to the next by a bond the molecule draws, and its index fits in its entry
 static bool bo_circle_ring(const bond_order_input_t* in, uint32_t r) {
-    if (!in->ring_flags || !(in->ring_flags[r] & MD_RING_FLAG_AROMATIC) || r >= (1u << RING_COUNT_SHIFT)) return false;
+    if (!in->ring_flags || !(in->ring_flags[r] & MD_RING_FLAG_AROMATIC) || r >= (1u << RING_DASHED_SHIFT)) return false;
     const uint32_t beg = in->ring_offset[r];
     const uint32_t n   = in->ring_offset[r + 1] - beg;
     if (n < 3 || n > RING_ENTRY_U32 - 1) return false;
@@ -1426,8 +1434,9 @@ static uint32_t compute_aromatic_rings(uint32_t* out_ring, uint8_t* out_covered,
         const uint32_t n   = in->ring_offset[r + 1] - beg;
         const int32_t* ring = in->ring_atom + beg;
         if (out_ring) {
+            const uint32_t dashed = (in->ring_flags[r] & MD_RING_FLAG_FUSED_AROMATIC) ? 1u : 0u;
             uint32_t* e = out_ring + RING_ENTRY_U32 * count;
-            e[0] = r | (n << RING_COUNT_SHIFT);
+            e[0] = r | (dashed << RING_DASHED_SHIFT) | (n << RING_COUNT_SHIFT);
             for (uint32_t k = 0; k < RING_ENTRY_U32 - 1; ++k) {
                 e[1 + k] = k < n ? (uint32_t)ring[k] : RING_ATOM_NONE;
             }

@@ -222,8 +222,10 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // (md_gl_mol_set_bonds), in the same order. md_gl_mol_create sets them.
 //   - double bond: two thinner sticks in the plane of its sp2 centers (the plane of their substituents)
 //   - triple bond: three thinner sticks, perpendicular to the view
-//   - aromatic ring (MD_RING_FLAG_AROMATIC): the sticks of its bonds and a thin solid circle inside it, in its plane,
-//     one in each of two fused rings. The circle picks as the ring (md_gl_picking_offset_t).
+//   - aromatic ring (MD_RING_FLAG_AROMATIC): the sticks of its bonds and a thin circle inside it, in its plane, one in
+//     each of two fused rings. Solid where the ring holds a sextet of its own (benzene, the benzene ring of tetralin),
+//     dashed in the rings of a fused aromatic system (MD_RING_FLAG_FUSED_AROMATIC: naphthalene, indole, a purine),
+//     whose sextets are not assigned to particular rings. The circle picks as the ring (md_gl_picking_offset_t).
 //   - delocalized bond (carboxylate, nitro, guanidinium, phosphate, ...): the stick and a thin dashed line towards
 //     the next bond of the group. So is an aromatic bond in no circle (in a ring larger than MD_RING_MAX_SIZE).
 // A bond whose order is unknown is drawn as a single bond.

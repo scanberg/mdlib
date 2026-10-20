@@ -320,12 +320,18 @@ enum {
 //             the ring O (the anomeric C). Deoxy sugars (the 2-deoxyribose of DNA) count; tetrahydrofuran does not.
 //             The atoms of a sugar ring are in canonical order in md_system_t::ring: the ring O, the anomeric C, and on
 //             around the ring away from the O (O5 C1 C2 C3 C4 C5 of a pyranose, O4' C1' C2' C3' C4' of a furanose).
+//   FUSED_AROMATIC
+//             The ring shares a bond with an aromatic ring. With AROMATIC: a ring of a fused aromatic system, whose
+//             sextets are not assigned to particular rings (naphthalene, indole, a purine, azulene). An aromatic ring
+//             without it holds a sextet of its own, alone or fused to rings which are not aromatic (benzene, the
+//             benzene ring of tetralin or of estradiol, those of biphenylene).
 typedef enum md_ring_flags_t {
-    MD_RING_FLAG_NONE       = 0,
-    MD_RING_FLAG_AROMATIC   = 1u << 0,
-    MD_RING_FLAG_HETERO     = 1u << 1,
-    MD_RING_FLAG_FUSED      = 1u << 2,
-    MD_RING_FLAG_SUGAR      = 1u << 3,
+    MD_RING_FLAG_NONE           = 0,
+    MD_RING_FLAG_AROMATIC       = 1u << 0,
+    MD_RING_FLAG_HETERO         = 1u << 1,
+    MD_RING_FLAG_FUSED          = 1u << 2,
+    MD_RING_FLAG_SUGAR          = 1u << 3,
+    MD_RING_FLAG_FUSED_AROMATIC = 1u << 4,
 } md_ring_flags_t;
 
 ENUM_FLAGS(md_ring_flags_t)

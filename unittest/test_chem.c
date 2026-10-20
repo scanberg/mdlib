@@ -425,21 +425,22 @@ static int cmp_ring(const void* a, const void* b) {
 }
 
 // The rings (3 to 7 atoms, without those which are sums of smaller ones) and their flags, on dictionary components and
-// on the molecules of ring_chem.txt (7 membered aromatic rings, bridged and fused ring systems, sugars)
+// on the molecules of ring_chem.txt (7 membered aromatic rings, bridged and fused ring systems, aromatic rings fused to
+// rings which are not aromatic, sugars)
 UTEST_F(chem, ring_flags) {
     static const ring_expect_t expect_ccd[] = {
         { "PHE", 1, { { 6, MD_RING_FLAG_AROMATIC } } },
         { "HIS", 1, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO } } },
-        { "TRP", 2, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED } } },
+        { "TRP", 2, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC } } },
         { "PRO", 1, { { 5, MD_RING_FLAG_HETERO } } },
         { "MES", 1, { { 6, MD_RING_FLAG_HETERO } } },                       // Morpholine: an N in the ring, no sugar
         { "NAG", 1, { { 6, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },   // Pyranose
         // The purine, and the ribose or deoxyribose
-        { "A",   3, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 5, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },
-        { "DA",  3, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED }, { 5, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },
+        { "A",   3, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC }, { 5, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },
+        { "DA",  3, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC }, { 5, MD_RING_FLAG_HETERO | MD_RING_FLAG_SUGAR } } },
     };
     static const ring_expect_t expect_mol[] = {
-        { "AZULENE", 2, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED }, { 7, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED } } },
+        { "AZULENE", 2, { { 5, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC }, { 7, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC } } },
         { "TROPOLO", 1, { { 7, MD_RING_FLAG_AROMATIC } } },
         { "NORBORN", 2, { { 5, MD_RING_FLAG_FUSED }, { 5, MD_RING_FLAG_FUSED } } },               // Not the 6 around both
         { "CUBANE",  6, { { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED } } },
@@ -451,6 +452,10 @@ UTEST_F(chem, ring_flags) {
         { "THF",     1, { { 5, MD_RING_FLAG_HETERO } } },
         { "MORPHOL", 1, { { 6, MD_RING_FLAG_HETERO } } },
         { "INOSITO", 1, { { 6, MD_RING_FLAG_NONE } } },
+        // Aromatic rings fused only to rings which are not aromatic keep a sextet of their own: not FUSED_AROMATIC,
+        // while the rings fused to them are
+        { "TETRALI", 2, { { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC } } },
+        { "BIPHENY", 3, { { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED }, { 6, MD_RING_FLAG_AROMATIC | MD_RING_FLAG_FUSED }, { 4, MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC } } },
     };
 
     md_array(ref_comp_t) mols = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ring_chem.txt"), utest_fixture->alloc);
