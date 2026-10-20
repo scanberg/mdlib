@@ -301,6 +301,7 @@ typedef struct md_gto_iso_gpu_profile_t {
     uint32_t brick_ao_max;
     uint32_t num_ao, num_fn, fn_stride;
     uint32_t corner_cols;   // function columns the corner kernel multiplied
+    uint32_t corner_points; // lattice points the register-form corner kernels evaluated (0: not counted)
     bool     orbitals_only;
 } md_gto_iso_gpu_profile_t;
 

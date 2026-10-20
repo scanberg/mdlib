@@ -46,7 +46,7 @@ enum {
     ISOG_K_GRID, ISOG_K_OCTREE, ISOG_K_HASH, ISOG_K_CORNERS, ISOG_K_EVAL, ISOG_K_CELLS, ISOG_K_QUADS,
     ISOG_K_NEWTON, ISOG_K_RELAX, ISOG_K_BCOUNT, ISOG_K_BSCAN, ISOG_K_BVERTS, ISOG_K_BTRIS, ISOG_K_EVAL1, ISOG_K_CORNERS1,
     ISOG_K_CORNERS_F1, ISOG_K_CORNERS_F8, ISOG_K_CORNERS_F16, ISOG_K_CORNERS_F32, ISOG_K_CORNERS_F64,
-    ISOG_K_EVAL_F8, ISOG_K_EVAL_F16, ISOG_K_EVAL_F32, ISOG_K_EVAL_F64, ISOG_K_COUNT
+    ISOG_K_EVAL_F8, ISOG_K_EVAL_F16, ISOG_K_EVAL_F32, ISOG_K_EVAL_F64, ISOG_K_CORNERS_FILL, ISOG_K_COUNT
 };
 
 static md_gpu_kernel_t isog_k[ISOG_K_COUNT];
@@ -68,6 +68,12 @@ static int isog_eval_v2 = 1;
 //   GTO_ISO_NEWTON_PREDICT=1 a Newton step whose next error is predicted far below the tolerance ends
 //                            the vertex without an evaluation to check it (default 1)
 static int isog_newton_predict = 1;
+//   GTO_ISO_SKIP_BRICK_TEST=1 the octree's last level (the bricks) is not bounded: every child of a kept
+//                             node is a brick (default 0)
+static int isog_skip_brick_test = 0;
+//   GTO_ISO_SHARED_CORNERS=1  a brick's high-face corners taken from the neighbour that owns them when it
+//                             is present, instead of evaluated twice (default 1; with the register form)
+static int isog_shared_corners = 1;
 
 // The kernels are made on first use, so initializing costs nothing until a mesh is extracted
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
@@ -81,6 +87,10 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_eval_v2 = atoi(e);
     e = getenv("GTO_ISO_NEWTON_PREDICT");
     if (e && e[0]) isog_newton_predict = atoi(e);
+    e = getenv("GTO_ISO_SKIP_BRICK_TEST");
+    if (e && e[0]) isog_skip_brick_test = atoi(e);
+    e = getenv("GTO_ISO_SHARED_CORNERS");
+    if (e && e[0]) isog_shared_corners = atoi(e);
 }
 
 static bool isog_kernels_ready(void) {
@@ -112,6 +122,7 @@ static bool isog_kernels_ready(void) {
         md_shader_gto_iso_gpu_iso_eval_f16_kernel(),
         md_shader_gto_iso_gpu_iso_eval_f32_kernel(),
         md_shader_gto_iso_gpu_iso_eval_f64_kernel(),
+        md_shader_gto_iso_gpu_iso_corners_fill_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -367,8 +378,8 @@ void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile) { isog_prof =
 
 const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[128];
-    snprintf(buf, sizeof(buf), "GTO_ISO_RELAX_FIRST=%d GTO_ISO_CORNERS_V2=%d GTO_ISO_EVAL_V2=%d GTO_ISO_NEWTON_PREDICT=%d",
-             isog_relax_first, isog_corners_v2, isog_eval_v2, isog_newton_predict);
+    snprintf(buf, sizeof(buf), "GTO_ISO_RELAX_FIRST=%d GTO_ISO_CORNERS_V2=%d GTO_ISO_EVAL_V2=%d GTO_ISO_NEWTON_PREDICT=%d GTO_ISO_SKIP_BRICK_TEST=%d GTO_ISO_SHARED_CORNERS=%d",
+             isog_relax_first, isog_corners_v2, isog_eval_v2, isog_newton_predict, isog_skip_brick_test, isog_shared_corners);
     return buf;
 }
 
@@ -406,6 +417,10 @@ static void isog_mark_skip(md_gpu_stream_t s) {
 static void isog_prof_begin(md_gpu_stream_t s) {
     if (!isog_prof) return;
     isog_prof->num_steps = 0;
+    isog_prof->brick_ao_sum = 0;
+    isog_prof->brick_ao_max = 0;
+    isog_prof->corner_cols = 0;
+    isog_prof->corner_points = 0;
     md_gpu_stream_sync(s);
     double best = 1e30;
     for (int i = 0; i < 8; ++i) {
@@ -472,11 +487,13 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
     // work: the corner GEMM's multiply-adds (points x reaching AOs x function columns), the octree's
     for (int k = 0; k < nn; ++k) {
         const double w = fmax(1e-6, ms[k] - cnt[k] * p->wait_ms);
-        if (strncmp(name[k], "corners", 7) == 0 && items[k] > 0) {
+        if (strncmp(name[k], "corners (", 9) == 0 && items[k] > 0) {
             const double cols = (double)p->corner_cols;
-            const double fma = 128.0 * (double)p->brick_ao_sum * cols;
-            ISOG_PR("    corners: %.1f AOs reach a brick (max %u of %u), %u functions: %.3g multiply-adds, %.1f G/s\n",
-                    (double)p->brick_ao_sum / (double)items[k], p->brick_ao_max, p->num_ao, p->num_fn, fma, fma / (w * 1e6));
+            // the points evaluated per brick: 128 threads' worth, or those left after sharing (counted)
+            const double pts = p->corner_points ? (double)p->corner_points / (double)items[k] : 128.0;
+            const double fma = pts * (double)p->brick_ao_sum * cols;
+            ISOG_PR("    corners: %.1f AOs reach a brick (max %u of %u), %.1f points evaluated per brick, %u functions: %.3g multiply-adds, %.1f G/s\n",
+                    (double)p->brick_ao_sum / (double)items[k], p->brick_ao_max, p->num_ao, pts, p->num_fn, fma, fma / (w * 1e6));
         }
         if (strcmp(name[k], "octree level") == 0 && items[k] > 0) {
             const double fma = (double)items[k] * (double)p->num_ao * (double)p->fn_stride * 5.0;
@@ -580,7 +597,11 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         md_gpu_upload(s, counts, &one, sizeof(one));
         isog_mark(s, "octree setup", 0, 0);
         uint32_t level_step[10];
-        for (int l = 0; l <= L; ++l) {
+        // EXPERIMENT: GTO_ISO_SKIP_BRICK_TEST=1 keeps every child of the last tested level as a brick
+        // (with its parent's sheet bits): the corners decide, which costs less than the bound when most
+        // candidates are kept anyway. A superset of the bricks, so no cell is missed.
+        const int Lt = isog_skip_brick_test ? L - 1 : L;
+        for (int l = 0; l <= Lt; ++l) {
             isog_args_t o = a;
             o.level = (uint32_t)l;
             o.nodes_in  = nodes[l & 1];
@@ -597,11 +618,11 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         if (isog_prof) {    // nodes per level: in, and kept (children appended, 8 per kept node above the bricks)
             uint32_t cn[12] = {0};
             isog_read(s, cn, counts, sizeof(uint32_t) * (L + 2));
-            for (int l = 0; l <= L; ++l) isog_mark_set(level_step[l], cn[l], l < L ? cn[l + 1] / 8 : cn[l + 1]);
+            for (int l = 0; l <= Lt; ++l) isog_mark_set(level_step[l], cn[l], l < L ? cn[l + 1] / 8 : cn[l + 1]);
             isog_mark_skip(s);
         }
-        bricks = nodes[(L + 1) & 1];
-        isog_read(s, &nb, counts + sizeof(uint32_t) * (L + 1), sizeof(nb));
+        bricks = nodes[(Lt + 1) & 1];
+        isog_read(s, &nb, counts + sizeof(uint32_t) * (Lt + 1), sizeof(nb));
         isog_read(s, ctr, a.counters, sizeof(ctr));
         isog_mark(s, "readback: brick count", nb, 0);
         if (!ctr[3] && nb <= cap) break;
@@ -677,11 +698,24 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
             const uint32_t nfn = set->num_fn;
             const int kc = (nfn == 1 && F == 1) ? ISOG_K_CORNERS_F1 : nfn <= 8 ? ISOG_K_CORNERS_F8 : nfn <= 16 ? ISOG_K_CORNERS_F16
                          : nfn <= 32 ? ISOG_K_CORNERS_F32 : ISOG_K_CORNERS_F64;
-            MD_GPU_LAUNCH(s, isog_k[kc], isog_groups(nb), a);
+            isog_args_t ac = a;
+            ac.mode = isog_shared_corners ? 1u : 0u;
+            MD_GPU_LAUNCH(s, isog_k[kc], isog_groups(nb), ac);
             static const uint32_t kcols[] = {1, 8, 16, 32, 64};
             if (isog_prof) isog_prof->corner_cols = kcols[kc - ISOG_K_CORNERS_F1] * ((nfn + kcols[kc - ISOG_K_CORNERS_F1] - 1) / kcols[kc - ISOG_K_CORNERS_F1]);
             static const char* kname[] = {"corners (f1)", "corners (f8)", "corners (f16)", "corners (f32)", "corners (f64)"};
-            isog_mark(s, kname[kc - ISOG_K_CORNERS_F1], nb, nslots);
+            const uint32_t ck = isog_mark(s, kname[kc - ISOG_K_CORNERS_F1], nb, nslots);
+            if (isog_prof) {    // aux: the lattice points evaluated (of 125 per brick)
+                uint32_t c8[8];
+                isog_read(s, c8, a.counters, sizeof(c8));
+                isog_mark_set(ck, nb, c8[5]);
+                isog_prof->corner_points = c8[5];
+                isog_mark_skip(s);
+            }
+            if (isog_shared_corners) {
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_CORNERS_FILL], isog_groups(nb), a);
+                isog_mark(s, "corners: fill shared", nb, 0);
+            }
         } else {
             MD_GPU_LAUNCH(s, isog_k[set->orbitals_only ? ISOG_K_CORNERS1 : ISOG_K_CORNERS], isog_groups(nb), a);
             if (isog_prof) isog_prof->corner_cols = set->orbitals_only ? set->num_fn : set->fn_stride;
@@ -763,7 +797,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
                 isog_mark(s, "vertex eval", act_, grp_);                               \
                 v.mode = it == (iters) ? 1u : (isog_newton_predict ? 2u : 0u);         \
                 MD_GPU_LAUNCH(s, isog_k[ISOG_K_NEWTON], g_vert, v);                    \
-                isog_mark(s, v.mode ? "vertex normals" : "vertex newton", act_, 0);    \
+                isog_mark(s, v.mode == 1u ? "vertex normals" : "vertex newton", act_, 0);\
             }                                                                          \
         } while (0)
         if (isog_relax_first) {

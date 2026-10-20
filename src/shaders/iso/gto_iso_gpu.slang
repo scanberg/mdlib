@@ -93,7 +93,7 @@ struct IsoArgs {
     float4*   vval;           // iso_eval: gradient xyz, value w
     uint4*    vinfo;          // brick, cell, field, sheet
     uint4*    quads;
-    uint*     counters;       // 0 vertices, 1 quads, 2 open edges, 3 overflow, 4 bricks
+    uint*     counters;       // 0 vertices, 1 quads, 2 open edges, 3 overflow, 4 -, 5 corner points evaluated
     uint*     bucket;         // [0, 32) vertex counts, [32, 64) quad counts, [64, 96) vertex offsets,
                               // [96, 128) quad offsets, [128, 160) vertex cursors, [160, 192) quad cursors
     uint*     remap;          // old vertex -> bucketed vertex
@@ -484,6 +484,24 @@ float corner_value(uint slot, int3 lc) {   // lc in [0, 4]^3
     return MD_ARGS.corners[slot * 125u + uint(lc.x + lc.y * 5 + lc.z * 25)];
 }
 
+// Shared corners: a lattice point on a brick's high face (a local coordinate 4) is the low-face point
+// of the neighbour across it. When that neighbour is present with every field of this brick, the
+// value is taken from it (iso_corners_fill) instead of evaluated twice. Returns the neighbour, or
+// INVALID when the point is the brick's own to evaluate; *owner_p: the point's index there.
+uint corner_owner(uint4 brick, uint p, out uint owner_p) {
+    IsoArgs a = MD_ARGS;
+    uint k = min(p, 124u);
+    uint3 lc = uint3(k % 5u, (k / 5u) % 5u, k / 25u);
+    uint3 dd = uint3(lc.x == 4u ? 1u : 0u, lc.y == 4u ? 1u : 0u, lc.z == 4u ? 1u : 0u);
+    uint3 ol = lc - 4u * dd;
+    owner_p = ol.x + ol.y * 5u + ol.z * 25u;
+    if (all(dd == uint3(0u))) return INVALID;
+    uint nb = brick_lookup(int3(brick.xyz + dd));
+    uint nmask = a.bricks[nb == INVALID ? 0u : nb].w;      // brick 0 when absent: llvmpipe loads anyway
+    uint need = field_bits(brick.w);
+    return (nb != INVALID && (field_bits(nmask) & need) == need) ? nb : INVALID;
+}
+
 // ------------------------------------------------------------------------------------------
 // Values at points: the AO values of a group of points times C, register tiled, terms in the
 // epilogue. iso_corners: 128 points (a brick's 125 corners), value only. iso_eval: 64 vertices,
@@ -685,7 +703,7 @@ void iso_eval(uint3 gid : SV_GroupID, uint3 gt : SV_GroupThreadID, uint tid : SV
     uint tx = gt.x, ty = gt.y;
     if (tid == 0u) {
         uint done = 1u;
-        for (uint k = 0u; k < 64u && v0 + k < a.count; ++k) done &= a.vdone[v0 + k];
+        for (uint k = 0u; k < 64u && v0 + k < a.count; ++k) done &= a.vdone[v0 + k] != 0u ? 1u : 0u;   // 1 converged, 2 predicted
         e_nlist = done;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -870,6 +888,7 @@ groupshared uint  k_chunk[K_LIST + 1];   // chunk c: listed shells [k_chunk[c], 
 groupshared uint  k_nchunk;
 groupshared uint  k_nrows[K_LIST];       // rows per chunk
 groupshared uint  k_row_ao[K_CK];        // the current chunk: global AO of each row
+groupshared uint  k_pts[K_GROUP];        // corners: the points evaluated, in thread order
 
 // The chunk rows of C (times the AO normalization) [row][F], and the epilogue's staging [64 points][F]:
 // 64 F floats, sized per F so that a narrow kernel keeps its occupancy. Read as float4 where F allows.
@@ -971,8 +990,22 @@ void corners_reg<let F : int, B : IKBuf>(uint3 gid, uint tid) {
     float h = a.origin_h.w;
     float3 blo = a.origin_h.xyz + float3(brick.xyz * 4u) * h;
     float3 bhi = blo + 4.0 * h;
-    float3 p = corner_point(brick, tid);                   // threads 125.. repeat point 124
     uint fbits = field_bits(brick.w);
+    // the points this brick evaluates, first in thread order: all 125, or (mode 1, shared corners)
+    // those not taken from a neighbour; the threads past them skip the work, whole warps of them free
+    bool mine = tid < 125u;
+    if (a.mode == 1u && mine) {
+        uint op;
+        mine = corner_owner(brick, tid, op) == INVALID;
+    }
+    uint npts;
+    uint at = iso_group_prefix(mine, tid, K_GROUP, npts);
+    if (mine) k_pts[at] = tid;
+    if (tid == 0u) InterlockedAdd(a.counters[5], npts);
+    GroupMemoryBarrierWithGroupSync();
+    bool active = tid < npts;
+    uint pt = active ? k_pts[tid] : 124u;
+    float3 p = corner_point(brick, pt);
 
     float val[16];
     [ForceUnroll] for (int f = 0; f < 16; ++f) val[f] = 0.0;
@@ -986,8 +1019,8 @@ void corners_reg<let F : int, B : IKBuf>(uint3 gid, uint tid) {
             uint nchunk = k_nchunk;
             for (uint c = 0u; c < nchunk; ++c) {
                 k_load_chunk<F, B>(c, f0, tid, K_GROUP);
-                uint i1 = k_chunk[c + 1];
-                for (uint i = k_chunk[c]; i < i1; ++i) {    // uniform
+                uint i1 = active ? k_chunk[c + 1] : k_chunk[c];
+                for (uint i = k_chunk[c]; i < i1; ++i) {    // uniform among the active threads
                     IsoShell sh = a.shells[min(k_sh[i], a.num_shells - 1u)];
                     float3 d = p - sh.c.xyz;
                     float r2 = dot(d, d);
@@ -1059,13 +1092,33 @@ void corners_reg<let F : int, B : IKBuf>(uint3 gid, uint tid) {
             }
         }
     }
-    if (tid >= 125u) return;
+    if (!active) return;
     uint slot = a.brick_slot[b];
     [ForceUnroll] for (int f = 0; f < 16; ++f) {
         if (uint(f) < a.num_fields && ((fbits >> (2u * uint(f))) & 1u) != 0u) {
-            a.corners[slot * 125u + tid] = val[f];
+            a.corners[slot * 125u + pt] = val[f];
             slot++;
         }
+    }
+}
+
+// Shared corners: the points a brick took from its neighbours, copied from their slots
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void iso_corners_fill(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint b = node_index(gid);
+    if (b >= a.count || tid >= 125u) return;
+    uint4 brick = a.bricks[b];
+    uint op;
+    uint nb = corner_owner(brick, tid, op);
+    if (nb == INVALID) return;
+    uint nmask = a.bricks[nb].w;
+    uint slot = a.brick_slot[b], nslot0 = a.brick_slot[nb];
+    for (uint f = 0u; f < a.num_fields; ++f) {
+        if (((field_bits(brick.w) >> (2u * f)) & 1u) == 0u) continue;
+        a.corners[slot * 125u + tid] = a.corners[(nslot0 + field_slot(nmask, f)) * 125u + op];
+        slot++;
     }
 }
 
@@ -1123,7 +1176,7 @@ void eval_reg<let F : int, B : IKBuf>(uint3 gid, uint tid) {
     uint vi = min(v0 + vl, a.count - 1u);
     if (tid == 0u) {
         uint done = 1u;
-        for (uint k = 0u; k < 64u && v0 + k < a.count; ++k) done &= a.vdone[v0 + k];
+        for (uint k = 0u; k < 64u && v0 + k < a.count; ++k) done &= a.vdone[v0 + k] != 0u ? 1u : 0u;   // 1 converged, 2 predicted
         v_done = done;
     }
     GroupMemoryBarrierWithGroupSync();
