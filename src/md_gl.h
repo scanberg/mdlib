@@ -285,15 +285,23 @@ void        md_gl_rep_set_weak_bonds(md_gl_rep_t rep, uint32_t count, const uint
 
 /*
  *  SUBSETS
- *  A part of a molecule which a draw op shows (md_gl_draw_op_t subset), given by its atoms
+ *  A part of a molecule which a draw op shows (md_gl_draw_op_t subset), given by its atoms: any set of them, such as the
+ *  instances a part of an assembly copies (drawn with the operators of the part as copies, md_gl_copies_t), or what a
+ *  filter picks within a structure
  *
  *  What of the representation holds only atoms of the subset: an atom of it, a bond, ring, slab or gap of a chain all of
  *  whose atoms are in it, the dashed partner of a delocalized bond whose atoms are, a backbone segment whose control
- *  point is, and of the weak bonds those with both atoms in it. A draw of a subset costs about as much as the subset,
- *  not as the molecule: what it holds is found on the CPU from its atoms, once after they or what the molecule draws
- *  changed (its bonds, bond orders, gaps, slabs, backbone), and kept with the subset. Each of its draws then names
- *  exactly that. So one molecule can be drawn as many disjoint or overlapping parts, each with its own transform
- *  (md_gl_copies_t) and colours (md_gl_rep_t), without a copy of the molecule or of its colours per part.
+ *  point is (closed with a cap where the next is not), and of the weak bonds those with both atoms in it. A draw of a
+ *  subset costs about as much as the subset, not as the molecule:
+ *  - What it holds is found on the CPU from its atoms, once after they or what the molecule draws changed (its bonds,
+ *    bond orders, gaps, slabs, backbone), through which primitives each atom is in. The atoms of the primitives are read
+ *    back from the GPU when a subset first needs them: a molecule drawn without subsets keeps no copy of them.
+ *  - It is kept with the subset in a buffer of its own on the GPU, uploaded when it changes: a draw of a subset which did
+ *    not change uploads nothing, and names exactly what it holds.
+ *  - The copies of an op of a subset are culled with the box of the subset, kept where positions are set (or derived),
+ *    and otherwise found from the positions on the GPU once.
+ *  So one molecule can be drawn as many disjoint or overlapping parts, each with its own transforms (md_gl_copies_t)
+ *  and colours (md_gl_rep_t), without a copy of the molecule or of its colours per part.
  *
  *  A subset is of the molecule it was created for, and is drawn only with representations of it. The atom mask of a
  *  draw (md_gl_draw_args_t atom_mask) still applies within it, as does the alpha of the colours.
@@ -309,6 +317,11 @@ void           md_gl_subset_destroy(md_gl_subset_t subset);
 // The atoms of the subset, in any order: duplicates and atoms outside of the molecule are left out. Replaces the
 // previous set; count 0 leaves it empty, which draws nothing.
 void           md_gl_subset_set_atoms(md_gl_subset_t subset, const uint32_t* atoms, uint32_t count);
+
+// Of a molecule of particles derived from another (md_gl_mol_set_derived, such as the cartoon of the lipids and nucleic
+// acids), the subset which a subset of that other one makes: the particles whose reference atom is in source. Set it
+// again after either changes.
+void           md_gl_subset_set_derived(md_gl_subset_t subset, md_gl_subset_t source);
 
 /*
  *  DRAW

@@ -356,13 +356,15 @@ typedef struct {
 // The primitives of a kind (bonds, rings, control points, ...). In blocks of QUAD_BLOCK, with the range of the atoms
 // each block reads the flags of: a block holds an atom with the mask of a draw only if one in its range has it (MARKS).
 // And the atoms each primitive is shown with, PRIM_ATOM_NONE past those of one: a primitive is in a subset when all of
-// them are (SUBSETS). Which primitives each atom is in (adj) is found when a subset first needs it after they changed.
+// them are (SUBSETS). Those of the control points and of the weak bonds are kept as they are set, the others are read
+// back from the buffers of the molecule when a subset first needs them (mol_kind_atoms), so that a molecule drawn
+// without subsets keeps no copy of its bonds. Which primitives each atom is in (adj) is found then too.
 typedef struct {
     uint32_t  count;            // Blocks
     uint32_t* range;            // [2 * count] (first, last) atom, first > last for none
     uint32_t  prim_count;
     uint32_t  stride;           // Atoms per primitive
-    uint32_t* atoms;            // [prim_count * stride]
+    uint32_t* atoms;            // [prim_count * stride] NULL until read back, where they are not kept
     uint64_t  version;          // Changes with the atoms of the primitives, never 0 once initialized
     uint32_t  adj_n;            // Atoms adj was found for, 0 for not found
     uint64_t  adj_version;      // Of the atoms it was found from
@@ -525,6 +527,11 @@ typedef struct {
     uint32_t* prims;            // [count] The primitives within the subset, in order
 } subset_list_t;
 
+// The lists a draw of a subset reads (LIST_* bits of mol_lists_t): its atoms, control points and the primitives of each
+// kind, one after another in a buffer of its own on the GPU, uploaded when one of them changes: a draw of a subset
+// which did not change uploads nothing
+#define SUBSET_GPU_LISTS 8
+
 typedef struct {
     uint32_t id;
     uint32_t mol_id;
@@ -532,6 +539,18 @@ typedef struct {
     uint32_t atom_capacity;
     uint32_t* atoms;            // [atom_count] In order, each once, within the molecule
     subset_list_t list[SUBSET_KIND_COUNT];
+
+    gl_buffer_t gpu;
+    uint32_t    gpu_lists;      // LIST_* bits of the lists in it
+    uint32_t    gpu_offset[SUBSET_GPU_LISTS];
+    uint32_t    gpu_count[SUBSET_GPU_LISTS];
+    bool        gpu_stale;      // Its atoms changed since
+
+    // The box of the positions of its atoms, as last set (md_gl_mol_set_atom_position) or derived, for the culling of
+    // the copies of an op of it. Not valid: found from the positions on the GPU when a draw of copies needs it.
+    vec3_t aabb_min;
+    vec3_t aabb_max;
+    bool   aabb_valid;
 } subset_t;
 
 typedef struct {
@@ -563,6 +582,9 @@ typedef struct {
 
     // The last version given to the primitives of a kind (prim_blocks_t version)
     uint64_t prim_version;
+
+    // The buffer the list texture of a draw is on (LIST_TEXTURE_UNIT): the lists of the draw, or those of a subset
+    GLuint list_bound;
 
     md_allocator_i* arena;
 } context_t;
@@ -628,6 +650,11 @@ static inline subset_t* subset_lookup(uint32_t id) {
     }
     return ctx.subsets + index;
 }
+
+// SUBSETS: the boxes of the subsets of a molecule, from positions of its atoms [offset, offset + count) as they are set:
+// of all of them, or grown by those of a part. Not known: found again when needed.
+static void subsets_aabb_update(const molecule_t* mol, uint32_t offset, uint32_t count, const vec3_t* xyz);
+static void subsets_aabb_invalidate(const molecule_t* mol);
 
 static inline bool validate_context(void) {
     if (ctx.version == 0) {
@@ -728,8 +755,8 @@ static void blocks_free(prim_blocks_t* blocks) {
 }
 
 // The blocks of prim_count primitives of at most stride atoms each, none of which holds an atom yet: add each atom of
-// each primitive after
-static void blocks_init(prim_blocks_t* blocks, uint32_t prim_count, uint32_t stride) {
+// each primitive after. keep_atoms: their atoms are kept as they are added, otherwise read back when needed.
+static void blocks_init(prim_blocks_t* blocks, uint32_t prim_count, uint32_t stride, bool keep_atoms) {
     blocks_free(blocks);
     blocks->count = DIV_UP(prim_count, QUAD_BLOCK);
     if (blocks->count == 0) return;
@@ -741,8 +768,10 @@ static void blocks_init(prim_blocks_t* blocks, uint32_t prim_count, uint32_t str
     }
     blocks->prim_count = prim_count;
     blocks->stride = stride;
-    blocks->atoms = md_alloc(alloc, (size_t)prim_count * stride * sizeof(uint32_t));
-    MEMSET(blocks->atoms, 0xFF, (size_t)prim_count * stride * sizeof(uint32_t));    // PRIM_ATOM_NONE
+    if (keep_atoms) {
+        blocks->atoms = md_alloc(alloc, (size_t)prim_count * stride * sizeof(uint32_t));
+        MEMSET(blocks->atoms, 0xFF, (size_t)prim_count * stride * sizeof(uint32_t));    // PRIM_ATOM_NONE
+    }
 }
 
 static inline void blocks_add(prim_blocks_t* blocks, uint32_t prim, uint32_t atom) {
@@ -751,11 +780,13 @@ static inline void blocks_add(prim_blocks_t* blocks, uint32_t prim, uint32_t ato
     uint32_t* r = blocks->range + 2 * b;
     r[0] = MIN(r[0], atom);
     r[1] = MAX(r[1], atom);
-    uint32_t* a = blocks->atoms + (size_t)prim * blocks->stride;
-    for (uint32_t k = 0; k < blocks->stride; ++k) {
-        if (a[k] == PRIM_ATOM_NONE) {
-            a[k] = atom;
-            break;
+    if (blocks->atoms) {
+        uint32_t* a = blocks->atoms + (size_t)prim * blocks->stride;
+        for (uint32_t k = 0; k < blocks->stride; ++k) {
+            if (a[k] == PRIM_ATOM_NONE) {
+                a[k] = atom;
+                break;
+            }
         }
     }
     blocks->version = ++ctx.prim_version;
@@ -764,8 +795,10 @@ static inline void blocks_add(prim_blocks_t* blocks, uint32_t prim, uint32_t ato
 // The primitive holds no atoms: set its atoms again (blocks_add). The range of its block keeps those it had.
 static inline void blocks_clear_prim(prim_blocks_t* blocks, uint32_t prim) {
     if (prim >= blocks->prim_count) return;
-    uint32_t* a = blocks->atoms + (size_t)prim * blocks->stride;
-    for (uint32_t k = 0; k < blocks->stride; ++k) a[k] = PRIM_ATOM_NONE;
+    if (blocks->atoms) {
+        uint32_t* a = blocks->atoms + (size_t)prim * blocks->stride;
+        for (uint32_t k = 0; k < blocks->stride; ++k) a[k] = PRIM_ATOM_NONE;
+    }
     blocks->version = ++ctx.prim_version;
 }
 
@@ -998,6 +1031,8 @@ void md_gl_mol_set_atom_position(md_gl_mol_t handle, uint32_t offset, uint32_t c
                 mol->aabb_min = vec3_min(mol->aabb_min, mn);
                 mol->aabb_max = vec3_max(mol->aabb_max, mx);
             }
+            // And of the subsets of the molecule (SUBSETS)
+            subsets_aabb_update(mol, offset, count, xyz);
         }
     }
 }
@@ -1134,7 +1169,7 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
         if (offset == 0) {
             gl_buffer_set_data(mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], count * sizeof(md_atom_pair_t), bonds);
             mol->bond_count = count;
-            blocks_init(&mol->bond_blocks, count, 2);
+            blocks_init(&mol->bond_blocks, count, 2, false);
         }
         // The blocks: of all bonds, or grown by those of a part
         for (uint32_t i = 0; i < count; ++i) {
@@ -2093,7 +2128,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     mol->aromatic_ring_count = ring_entry_count;
 
     // The blocks (MARKS): a partner is shown when the atoms of its bond are, a circle when all atoms of its ring are
-    blocks_init(&mol->partner_blocks, partner_count, 2);
+    blocks_init(&mol->partner_blocks, partner_count, 2, false);
     for (uint32_t i = 0; i < partner_count; ++i) {
         const uint32_t bond = partner[4 * i + 0];
         if (bond < bond_count) {
@@ -2101,7 +2136,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
             blocks_add(&mol->partner_blocks, i, pairs[2 * bond + 1]);
         }
     }
-    blocks_init(&mol->ring_blocks, ring_entry_count, RING_ENTRY_U32 - 1);
+    blocks_init(&mol->ring_blocks, ring_entry_count, RING_ENTRY_U32 - 1, false);
     for (uint32_t i = 0; i < ring_entry_count; ++i) {
         const uint32_t* e = ring_entry + i * RING_ENTRY_U32;
         const uint32_t n = MIN(e[0] >> RING_COUNT_SHIFT, RING_ENTRY_U32 - 1);
@@ -2242,8 +2277,8 @@ void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
         mol->gap_link_count  = link_count;
 
         // The blocks of each kind (MARKS): a gap is shown when its two ends are
-        blocks_init(&mol->gap_trace_blocks, trace_count, 2);
-        blocks_init(&mol->gap_link_blocks, link_count, 2);
+        blocks_init(&mol->gap_trace_blocks, trace_count, 2, false);
+        blocks_init(&mol->gap_link_blocks, link_count, 2, false);
         for (uint32_t i = 0; i < total; ++i) {
             const uint32_t* e = trace + 4 * i;
             prim_blocks_t* blocks = i < trace_count ? &mol->gap_trace_blocks : &mol->gap_link_blocks;
@@ -2348,7 +2383,7 @@ static void mol_set_backbone(molecule_t* mol, uint32_t cp_count, uint32_t chain_
     bounds->valid = false;
 
     // The control points as primitives of their atoms (SUBSETS)
-    blocks_init(&mol->cp_blocks, cp_count, 1);
+    blocks_init(&mol->cp_blocks, cp_count, 1, true);
     for (uint32_t c = 0; c < cp_count; ++c) {
         blocks_add(&mol->cp_blocks, c, bounds_atom[c]);
     }
@@ -2634,6 +2669,7 @@ static void derived_bounds_update(molecule_t* mol, const vec3_t* xyz, const mat3
     mol->aabb_min = mn;
     mol->aabb_max = mx;
     mol->aabb_valid = true;
+    subsets_aabb_update(mol, 0, mol->atom_count, pos);
 
     backbone_bounds_t* bounds = &mol->backbone_bounds;
     if (bounds->chain_count) {
@@ -2723,6 +2759,7 @@ void md_gl_mol_compute_derived(md_gl_mol_t handle, const md_unitcell_t* cell, co
     } else {
         // Moved, to where is not known on the CPU: not culled
         mol->aabb_valid = false;
+        subsets_aabb_invalidate(mol);
     }
 }
 
@@ -2857,7 +2894,7 @@ void md_gl_mol_set_slabs(md_gl_mol_t handle, uint32_t count, const uint32_t* off
     mol->buffer[GL_BUFFER_SLAB] = gl_buffer_create(count * SLAB_ENTRY_U32 * sizeof(uint32_t), entry, GL_STATIC_DRAW);
     mol->slab_count = count;
     // The blocks (MARKS): a slab is shown when all its corners are
-    blocks_init(&mol->slab_blocks, count, SLAB_MAX_CORNERS);
+    blocks_init(&mol->slab_blocks, count, SLAB_MAX_CORNERS, false);
     for (uint32_t i = 0; i < count; ++i) {
         for (uint32_t j = offset[i]; j < offset[i + 1]; ++j) {
             blocks_add(&mol->slab_blocks, i, particle[j]);
@@ -3052,7 +3089,7 @@ void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t
     rep->weak_bond_count = written;
 
     // The reach of the bonds beyond their atoms, for the culling of copies, and their blocks (MARKS)
-    blocks_init(&rep->weak_bond_blocks, written, 2);
+    blocks_init(&rep->weak_bond_blocks, written, 2, true);
     uint32_t j = 0;
     for (uint32_t i = 0; i < count; ++i) {
         if (atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count) {
@@ -3098,12 +3135,19 @@ static uint32_t sort_unique_u32(uint32_t* items, uint32_t count) {
     return n;
 }
 
+static uint64_t* subset_bits_set(molecule_t* mol, const subset_t* s);
+static void subset_bits_clear(molecule_t* mol, const subset_t* s);
+static inline bool bit_test(const uint64_t* bits, uint32_t i) {
+    return (bits[i >> 6] >> (i & 63)) & 1;
+}
+
 static void subset_free(subset_t* s) {
     md_allocator_i* alloc = md_get_heap_allocator();
     if (s->atoms) md_free(alloc, s->atoms, s->atom_capacity * sizeof(uint32_t));
     for (int k = 0; k < SUBSET_KIND_COUNT; ++k) {
         if (s->list[k].prims) md_free(alloc, s->list[k].prims, s->list[k].capacity * sizeof(uint32_t));
     }
+    gl_buffer_conditional_delete(&s->gpu);
     MEMSET(s, 0, sizeof(subset_t));
 }
 
@@ -3164,6 +3208,39 @@ void md_gl_subset_set_atoms(md_gl_subset_t handle, const uint32_t* atoms, uint32
     for (int k = 0; k < SUBSET_KIND_COUNT; ++k) {
         s->list[k].version = SUBSET_LIST_STALE;
     }
+    s->gpu_stale = true;
+    s->aabb_valid = false;
+}
+
+void md_gl_subset_set_derived(md_gl_subset_t handle, md_gl_subset_t source_handle) {
+    subset_t* s = subset_lookup(handle.id);
+    const subset_t* src = subset_lookup(source_handle.id);
+    if (!s || !src) {
+        MD_LOG_ERROR("Invalid subset");
+        return;
+    }
+    const molecule_t* mol = mol_lookup(s->mol_id);
+    molecule_t* src_mol = mol_lookup(src->mol_id);
+    if (!mol || !src_mol) {
+        MD_LOG_ERROR("The molecule of a subset is invalid");
+        return;
+    }
+    if (!mol->derived.data || mol->derived.source_id != src_mol->id) {
+        MD_LOG_ERROR("The molecule of the subset is not derived from that of the source (md_gl_mol_set_derived)");
+        return;
+    }
+    // The particles whose reference atom is in the source
+    md_temp_scope_t temp = md_temp_begin();
+    uint32_t* particles = md_temp_alloc(temp, MAX(mol->atom_count, 1) * sizeof(uint32_t));
+    uint32_t count = 0;
+    const uint64_t* bits = subset_bits_set(src_mol, src);
+    for (uint32_t p = 0; p < mol->atom_count; ++p) {
+        const uint32_t ref = mol->derived.data[3 * p + 2];
+        if (ref < src_mol->atom_count && bit_test(bits, ref)) particles[count++] = p;
+    }
+    subset_bits_clear(src_mol, src);
+    md_gl_subset_set_atoms(handle, particles, count);
+    md_temp_end(temp);
 }
 
 static prim_blocks_t* mol_kind_blocks(molecule_t* mol, int kind) {
@@ -3197,10 +3274,6 @@ static void subset_bits_clear(molecule_t* mol, const subset_t* s) {
     for (uint32_t i = 0; i < s->atom_count; ++i) {
         mol->scratch_bits[s->atoms[i] >> 6] = 0;
     }
-}
-
-static inline bool bit_test(const uint64_t* bits, uint32_t i) {
-    return (bits[i >> 6] >> (i & 63)) & 1;
 }
 
 // Whether all atoms of the primitive are in bits, and the first of them
@@ -3239,21 +3312,168 @@ static void subset_find(subset_list_t* l, const subset_t* s, prim_blocks_t* b, c
     qsort(l->prims, l->count, sizeof(uint32_t), cmp_u32);
 }
 
-// The lists of the kinds (SUBSET_* bits) found again where the subset or the primitives changed since
-static void subset_refresh(subset_t* s, molecule_t* mol, uint32_t kinds) {
+// The u32 of a buffer, read back from the GPU
+static void buffer_read_u32(uint32_t* out, gl_buffer_t buf, size_t count) {
+    if (count == 0 || !buf.id) return;
+    glBindBuffer(GL_COPY_READ_BUFFER, buf.id);
+    glGetBufferSubData(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)(count * sizeof(uint32_t)), out);
+    glBindBuffer(GL_COPY_READ_BUFFER, 0);
+}
+
+// The atoms of the primitives of a kind, read back from the buffers of the molecule where they are not kept on the CPU
+// (prim_blocks_t): once a subset needs them, and again after the primitives change (blocks_init frees them)
+static const prim_blocks_t* mol_kind_atoms(molecule_t* mol, int kind) {
+    prim_blocks_t* b = mol_kind_blocks(mol, kind);
+    if (b->atoms || b->prim_count == 0) return b;
+    md_allocator_i* heap = md_get_heap_allocator();
+    const uint32_t n = b->prim_count;
+    const size_t slots = (size_t)n * b->stride;
+    b->atoms = md_alloc(heap, slots * sizeof(uint32_t));
+    MEMSET(b->atoms, 0xFF, slots * sizeof(uint32_t));   // PRIM_ATOM_NONE
+    md_temp_scope_t temp = md_temp_begin();
+    switch (kind) {
+    case SUBSET_BONDS:
+        // The pairs as they are, two atoms each
+        if (n == mol->bond_count) buffer_read_u32(b->atoms, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], 2 * (size_t)n);
+        break;
+    case SUBSET_PARTNERS:
+        // The atoms of the bond of each (GL_BUFFER_BOND_PARTNER)
+        if (n == mol->bond_partner_count && mol->bond_count > 0) {
+            uint32_t* partner = md_temp_alloc(temp, 4 * (size_t)n * sizeof(uint32_t));
+            uint32_t* pairs   = md_temp_alloc(temp, 2 * (size_t)mol->bond_count * sizeof(uint32_t));
+            buffer_read_u32(partner, mol->buffer[GL_BUFFER_BOND_PARTNER], 4 * (size_t)n);
+            buffer_read_u32(pairs, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], 2 * (size_t)mol->bond_count);
+            for (uint32_t i = 0; i < n; ++i) {
+                const uint32_t bond = partner[4 * i];
+                if (bond >= mol->bond_count) continue;
+                b->atoms[2 * i + 0] = pairs[2 * bond + 0];
+                b->atoms[2 * i + 1] = pairs[2 * bond + 1];
+            }
+        }
+        break;
+    case SUBSET_RINGS:
+        // Their atoms in order around them (GL_BUFFER_AROMATIC_RING)
+        if (n == mol->aromatic_ring_count) {
+            uint32_t* entry = md_temp_alloc(temp, RING_ENTRY_U32 * (size_t)n * sizeof(uint32_t));
+            buffer_read_u32(entry, mol->buffer[GL_BUFFER_AROMATIC_RING], RING_ENTRY_U32 * (size_t)n);
+            for (uint32_t i = 0; i < n; ++i) {
+                const uint32_t* e = entry + RING_ENTRY_U32 * i;
+                const uint32_t c = MIN(e[0] >> RING_COUNT_SHIFT, (uint32_t)(RING_ENTRY_U32 - 1));
+                for (uint32_t k = 0; k < c; ++k) b->atoms[(RING_ENTRY_U32 - 1) * i + k] = e[1 + k];
+            }
+        }
+        break;
+    case SUBSET_GAP_TRACE:
+    case SUBSET_GAP_LINK: {
+        // Their two ends (GL_BUFFER_CHAIN_GAP), the traces first
+        const uint32_t total = mol->gap_trace_count + mol->gap_link_count;
+        const uint32_t base  = kind == SUBSET_GAP_TRACE ? 0 : mol->gap_trace_count;
+        const uint32_t count = kind == SUBSET_GAP_TRACE ? mol->gap_trace_count : mol->gap_link_count;
+        if (n == count) {
+            uint32_t* entry = md_temp_alloc(temp, 4 * (size_t)total * sizeof(uint32_t));
+            buffer_read_u32(entry, mol->buffer[GL_BUFFER_CHAIN_GAP], 4 * (size_t)total);
+            for (uint32_t i = 0; i < n; ++i) {
+                b->atoms[2 * i + 0] = entry[4 * (base + i) + 0];
+                b->atoms[2 * i + 1] = entry[4 * (base + i) + 2];
+            }
+        }
+        break;
+    }
+    case SUBSET_SLABS:
+        // Their corners (GL_BUFFER_SLAB)
+        if (n == mol->slab_count) {
+            uint32_t* entry = md_temp_alloc(temp, SLAB_ENTRY_U32 * (size_t)n * sizeof(uint32_t));
+            buffer_read_u32(entry, mol->buffer[GL_BUFFER_SLAB], SLAB_ENTRY_U32 * (size_t)n);
+            for (uint32_t i = 0; i < n; ++i) {
+                const uint32_t* e = entry + SLAB_ENTRY_U32 * i;
+                const uint32_t c = MIN(e[0], (uint32_t)SLAB_MAX_CORNERS);
+                for (uint32_t k = 0; k < c; ++k) b->atoms[SLAB_MAX_CORNERS * i + k] = e[1 + k];
+            }
+        }
+        break;
+    default:
+        // The control points keep their atoms
+        ASSERT(false);
+        break;
+    }
+    md_temp_end(temp);
+    return b;
+}
+
+// The lists of the kinds (SUBSET_* bits) found again where the subset or the primitives changed since. Returns whether
+// any was.
+static bool subset_refresh(subset_t* s, molecule_t* mol, uint32_t kinds) {
     uint32_t stale = 0;
     for (int k = 0; k < SUBSET_KIND_COUNT; ++k) {
         if ((kinds & (1u << k)) && s->list[k].version != mol_kind_blocks(mol, k)->version) stale |= 1u << k;
     }
-    if (!stale) return;
+    if (!stale) return false;
     const uint64_t* bits = subset_bits_set(mol, s);
     for (int k = 0; k < SUBSET_KIND_COUNT; ++k) {
         if (!(stale & (1u << k))) continue;
-        prim_blocks_t* b = mol_kind_blocks(mol, k);
+        prim_blocks_t* b = (prim_blocks_t*)mol_kind_atoms(mol, k);
         subset_find(s->list + k, s, b, bits, mol->atom_count);
         s->list[k].version = b->version;
     }
     subset_bits_clear(mol, s);
+    return true;
+}
+
+// The box of the atoms of a subset in positions xyz of the atoms [offset, offset + count) of its molecule, merged into
+// mn, mx; whether it has any there
+static bool subset_aabb_of(const subset_t* s, uint32_t offset, uint32_t count, const vec3_t* xyz, vec3_t* mn, vec3_t* mx) {
+    // The first of its atoms at or past offset: they are in order
+    uint32_t lo = 0, hi = s->atom_count;
+    while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if (s->atoms[mid] < offset) lo = mid + 1; else hi = mid; }
+    bool any = false;
+    for (uint32_t i = lo; i < s->atom_count && s->atoms[i] < offset + count; ++i) {
+        const vec3_t p = xyz[s->atoms[i] - offset];
+        *mn = vec3_min(*mn, p);
+        *mx = vec3_max(*mx, p);
+        any = true;
+    }
+    return any;
+}
+
+static void subsets_aabb_update(const molecule_t* mol, uint32_t offset, uint32_t count, const vec3_t* xyz) {
+    const bool all = offset == 0 && count == mol->atom_count;
+    for (int i = 1; i < ctx.subset_pool.size; ++i) {
+        subset_t* s = ctx.subsets + i;
+        if (s->id == MD_HANDLE_INVALID_ID || s->mol_id != mol->id) continue;
+        if (all) {
+            s->aabb_min = (vec3_t){ FLT_MAX,  FLT_MAX,  FLT_MAX};
+            s->aabb_max = (vec3_t){-FLT_MAX, -FLT_MAX, -FLT_MAX};
+            subset_aabb_of(s, 0, count, xyz, &s->aabb_min, &s->aabb_max);
+            s->aabb_valid = true;
+        } else if (s->aabb_valid) {
+            subset_aabb_of(s, offset, count, xyz, &s->aabb_min, &s->aabb_max);
+        }
+    }
+}
+
+static void subsets_aabb_invalidate(const molecule_t* mol) {
+    for (int i = 1; i < ctx.subset_pool.size; ++i) {
+        subset_t* s = ctx.subsets + i;
+        if (s->id != MD_HANDLE_INVALID_ID && s->mol_id == mol->id) s->aabb_valid = false;
+    }
+}
+
+// The box of a subset for the culling of the copies of an op, found from the positions on the GPU if it is not known
+// (read back once per draw and molecule, into *xyz). False when there is none to cull with: the box of the molecule then.
+static bool subset_aabb(subset_t* s, const molecule_t* mol, const vec3_t** xyz, md_allocator_i* alloc) {
+    if (s->aabb_valid) return true;
+    if (!mol->aabb_valid) return false;
+    if (!*xyz) {
+        vec3_t* pos = md_alloc(alloc, MAX(mol->atom_count, 1) * sizeof(vec3_t));
+        STATIC_ASSERT(sizeof(vec3_t) == 3 * sizeof(uint32_t), "The positions are packed xyz");
+        buffer_read_u32((uint32_t*)pos, mol->buffer[GL_BUFFER_ATOM_POSITION], 3 * (size_t)mol->atom_count);
+        *xyz = pos;
+    }
+    s->aabb_min = (vec3_t){ FLT_MAX,  FLT_MAX,  FLT_MAX};
+    s->aabb_max = (vec3_t){-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    subset_aabb_of(s, 0, mol->atom_count, *xyz, &s->aabb_min, &s->aabb_max);
+    s->aabb_valid = true;
+    return true;
 }
 
 static bool compute_spline(molecule_t* mol);
@@ -3273,6 +3493,7 @@ typedef struct {
     bool         masked;
     bool         exact;
     list_range_t list;
+    GLuint       buf;           // The buffer the list is in: a subset's own, 0 for the lists of the draw (ctx.list_buf)
 } draw_range_t;
 
 typedef struct {
@@ -3360,6 +3581,7 @@ typedef struct {
     list_range_t    bonds, partners, rings, gap_trace, gap_link, slabs;    // Blocks with marked atoms, or the primitives of the subset
     const uint32_t* cp_items;   // The control points of cps, on the CPU
     uint32_t        cp_item_count;
+    GLuint          buf;        // The buffer the lists are in: of a subset its own, otherwise 0 for those of the draw
 } mol_lists_t;
 
 enum {
@@ -3620,36 +3842,77 @@ static list_range_t push_blocks(md_array(uint32_t)* data, const prim_blocks_t* b
 static const int list_subset_kind[] = { -1, SUBSET_CPS, SUBSET_BONDS, SUBSET_PARTNERS, SUBSET_RINGS, SUBSET_GAP_TRACE, SUBSET_GAP_LINK, SUBSET_SLABS };
 
 // The lists of a subset which an op needs (LIST_* bits), pushed once per draw
-static void subset_lists_need(mol_lists_t* l, uint32_t need, md_array(uint32_t)* data, md_allocator_i* alloc) {
+// The lists of a subset, those of lists (LIST_* bits) which are found, uploaded to its buffer on the GPU one after another
+static void subset_upload(subset_t* s, const molecule_t* mol, uint32_t lists) {
+    uint32_t count[SUBSET_GPU_LISTS] = {0};
+    uint32_t total = 0;
+    uint32_t uploaded = 0;
+    for (int i = 0; i < SUBSET_GPU_LISTS; ++i) {
+        if (!(lists & (1u << i))) continue;
+        const int k = list_subset_kind[i];
+        if (k >= 0 && s->list[k].version != mol_kind_blocks((molecule_t*)mol, k)->version) continue;   // Not found: not drawn
+        count[i] = k < 0 ? s->atom_count : s->list[k].count;
+        total += count[i];
+        uploaded |= 1u << i;
+    }
+    md_temp_scope_t temp = md_temp_begin();
+    uint32_t* data = md_temp_alloc(temp, MAX(total, 1) * sizeof(uint32_t));
+    uint32_t at = 0;
+    for (int i = 0; i < SUBSET_GPU_LISTS; ++i) {
+        s->gpu_offset[i] = at;
+        s->gpu_count[i] = count[i];
+        if (!(uploaded & (1u << i))) continue;
+        const int k = list_subset_kind[i];
+        if (k < 0) {
+            MEMCPY(data + at, s->atoms, count[i] * sizeof(uint32_t));
+        } else if (k == SUBSET_CPS) {
+            // Each with whether its neighbours are out of the subset, where the backbone is closed (backbone.vert)
+            const subset_list_t* cps = s->list + SUBSET_CPS;
+            for (uint32_t j = 0; j < cps->count; ++j) {
+                const uint32_t c = cps->prims[j];
+                const bool prev_in = j > 0 && cps->prims[j - 1] + 1 == c;
+                const bool next_in = j + 1 < cps->count && cps->prims[j + 1] == c + 1;
+                data[at + j] = c | (prev_in ? 0 : CP_PREV_OUT) | (next_in ? 0 : CP_NEXT_OUT);
+            }
+        } else {
+            MEMCPY(data + at, s->list[k].prims, count[i] * sizeof(uint32_t));
+        }
+        at += count[i];
+    }
+    const uint32_t bytes = MAX(total, 1) * sizeof(uint32_t);
+    if (!s->gpu.id) {
+        s->gpu = gl_buffer_create(bytes, data, GL_STATIC_DRAW);
+    } else {
+        gl_buffer_set_data(s->gpu, bytes, data);
+    }
+    s->gpu_lists = uploaded;
+    s->gpu_stale = false;
+    md_temp_end(temp);
+}
+
+// The lists of a subset which an op needs (LIST_* bits): found again where the subset or the primitives changed, and
+// then uploaded again, with those it had, to the buffer of the subset, which the draws of the op read (mol_lists_t buf).
+// A subset which did not change uploads nothing.
+static void subset_lists_need(mol_lists_t* l, uint32_t need) {
     const uint32_t todo = need & ~l->pushed;
     subset_t* s = l->subset;
     uint32_t kinds = 0;
     for (int i = 0; i < (int)ARRAY_SIZE(list_subset_kind); ++i) {
         if ((todo & (1u << i)) && list_subset_kind[i] >= 0) kinds |= 1u << list_subset_kind[i];
     }
-    subset_refresh(s, l->mol, kinds);
-#define SUBSET_LIST(k) push_list(data, s->list[k].prims, s->list[k].count, alloc)
-    if (todo & LIST_ATOMS)     l->atoms     = push_list(data, s->atoms, s->atom_count, alloc);
-    if (todo & LIST_CPS) {
-        // Each with whether its neighbours are out of the subset, where the backbone is closed (backbone.vert)
-        const subset_list_t* cps = s->list + SUBSET_CPS;
-        l->cps = (list_range_t){(uint32_t)md_array_size(*data), cps->count};
-        for (uint32_t k = 0; k < cps->count; ++k) {
-            const uint32_t c = cps->prims[k];
-            const bool prev_in = k > 0 && cps->prims[k - 1] + 1 == c;
-            const bool next_in = k + 1 < cps->count && cps->prims[k + 1] == c + 1;
-            md_array_push(*data, c | (prev_in ? 0 : CP_PREV_OUT) | (next_in ? 0 : CP_NEXT_OUT), alloc);
-        }
-        l->cp_items = cps->prims;
-        l->cp_item_count = cps->count;
+    const bool found = subset_refresh(s, l->mol, kinds);
+    if (found || s->gpu_stale || !s->gpu.id || (todo & ~s->gpu_lists)) {
+        subset_upload(s, l->mol, s->gpu_lists | todo);
     }
-    if (todo & LIST_BONDS)     l->bonds     = SUBSET_LIST(SUBSET_BONDS);
-    if (todo & LIST_PARTNERS)  l->partners  = SUBSET_LIST(SUBSET_PARTNERS);
-    if (todo & LIST_RINGS)     l->rings     = SUBSET_LIST(SUBSET_RINGS);
-    if (todo & LIST_GAP_TRACE) l->gap_trace = SUBSET_LIST(SUBSET_GAP_TRACE);
-    if (todo & LIST_GAP_LINK)  l->gap_link  = SUBSET_LIST(SUBSET_GAP_LINK);
-    if (todo & LIST_SLABS)     l->slabs     = SUBSET_LIST(SUBSET_SLABS);
-#undef SUBSET_LIST
+    list_range_t* range[SUBSET_GPU_LISTS] = {&l->atoms, &l->cps, &l->bonds, &l->partners, &l->rings, &l->gap_trace, &l->gap_link, &l->slabs};
+    for (int i = 0; i < SUBSET_GPU_LISTS; ++i) {
+        if (todo & (1u << i)) *range[i] = (list_range_t){s->gpu_offset[i], s->gpu_count[i]};
+    }
+    if (todo & LIST_CPS) {
+        l->cp_items = s->list[SUBSET_CPS].prims;
+        l->cp_item_count = s->list[SUBSET_CPS].count;
+    }
+    l->buf = s->gpu.id;
     l->pushed |= need;
 }
 
@@ -3672,7 +3935,7 @@ static list_range_t push_weak_subset(md_array(uint32_t)* data, const prim_blocks
 // The lists of a molecule which an op needs (LIST_* bits), pushed once per draw
 static void mol_lists_need(mol_lists_t* l, uint32_t need, md_array(uint32_t)* data, md_allocator_i* alloc) {
     if (l->subset) {
-        subset_lists_need(l, need, data, alloc);
+        subset_lists_need(l, need);
         return;
     }
     const uint32_t todo = need & ~l->pushed;
@@ -3707,15 +3970,27 @@ static uint32_t op_lists(const md_gl_draw_op_t* op) {
     }
 }
 
-static inline draw_range_t draw_range(const op_prep_t* prep, const list_range_t* list) {
+// buf: the buffer of the list, 0 for the lists of the draw
+static inline draw_range_t draw_range(const op_prep_t* prep, const list_range_t* list, GLuint buf) {
     draw_range_t r = {
         .inst_base  = prep->inst_base,
         .inst_count = prep->inst_count,
         .masked     = list != NULL,
         .exact      = list != NULL && prep->lists && prep->lists->subset != NULL,
+        .buf        = buf,
     };
     if (list) r.list = *list;
     return r;
+}
+
+// The list texture (LIST_TEXTURE_UNIT) on the buffer of a list: a subset's own, or (0) the lists of the draw
+static void bind_list(GLuint buf) {
+    if (!buf) buf = ctx.list_buf.id;
+    if (buf == ctx.list_bound) return;
+    glActiveTexture(GL_TEXTURE0 + LIST_TEXTURE_UNIT);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, buf);
+    glActiveTexture(GL_TEXTURE0);
+    ctx.list_bound = buf;
 }
 
 typedef struct {
@@ -3724,9 +3999,11 @@ typedef struct {
     float               viewport_half_height;
     md_array(vec4_t)*   inst_data;
     md_array(uint32_t)* list_data;
-    md_array(mol_lists_t)* mol_lists;   // With an atom mask
+    md_array(mol_lists_t)* mol_lists;   // With an atom mask or subsets
     uint32_t            atom_mask;
     md_allocator_i*     alloc;
+    const molecule_t*   xyz_mol;        // The positions of this molecule read back for the boxes of its subsets, if any
+    const vec3_t*       xyz;
 } prep_ctx_t;
 
 // The copies of an op in view, pushed to the instance data (in groups of the levels of detail of the chains for the
@@ -3738,12 +4015,30 @@ static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* m
     const uint32_t count = (inst->count && inst->transforms) ? inst->count : 1;
     const float reach = op_reach(op, mol, rep);
 
+    // The box of what the op shows, which its copies are culled with: of its subset, or of the molecule
+    subset_t* subset = op->subset.id ? subset_lookup(op->subset.id) : NULL;
+    bool   culled  = mol->aabb_valid;
+    vec3_t box_min = mol->aabb_min;
+    vec3_t box_max = mol->aabb_max;
+    if (subset) {
+        if (subset->atom_count == 0) return;     // Nothing to show
+        if (pc->xyz_mol != mol) {
+            pc->xyz_mol = mol;
+            pc->xyz = NULL;
+        }
+        if (subset_aabb(subset, mol, &pc->xyz, alloc)) {
+            culled  = true;
+            box_min = subset->aabb_min;
+            box_max = subset->aabb_max;
+        }
+    }
+
     // In view
     uint32_t* visible = md_alloc(alloc, count * sizeof(uint32_t));
     uint32_t visible_count = 0;
     for (uint32_t i = 0; i < count; ++i) {
         const mat4_t T = (inst->count && inst->transforms) ? instance_transform(inst->transforms, i) : mat4_ident();
-        if (mol->aabb_valid && box_out_of_view(pc->frame, &T, mol->aabb_min, mol->aabb_max, reach)) {
+        if (culled && box_out_of_view(pc->frame, &T, box_min, box_max, reach)) {
             continue;
         }
         visible[visible_count++] = i;
@@ -3838,7 +4133,6 @@ static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* m
 
     // MARKS, SUBSETS: of a subset its lists, which the atom mask applies within (in the shaders); otherwise with an atom
     // mask those of the marked atoms
-    subset_t* subset = op->subset.id ? subset_lookup(op->subset.id) : NULL;
     if ((pc->atom_mask || subset) && visible_count > 0) {
         mol_lists_t* lists = NULL;
         for (size_t k = 0; k < md_array_size(*pc->mol_lists); ++k) {
@@ -4021,6 +4315,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     glActiveTexture(GL_TEXTURE0 + LIST_TEXTURE_UNIT);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_LIST].id);
     glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, ctx.list_buf.id);
+    ctx.list_bound = ctx.list_buf.id;
     glActiveTexture(GL_TEXTURE0);
 
     // The meshes of mirrored copies face the other way (draw_backbone): the caller's front face, asked for only then,
@@ -4046,7 +4341,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
         const molecule_t* mol       = mol_lookup(rep->mol_id);
         const mol_lists_t* lists    = prep->lists;
         // With an atom mask, what holds marked atoms
-#define RANGE(member) draw_range(prep, lists ? &lists->member : NULL)
+#define RANGE(member) draw_range(prep, lists ? &lists->member : NULL, lists ? lists->buf : 0)
         switch (draw_op->type) {
         case MD_GL_REP_SPACE_FILL: {
             const draw_range_t range = RANGE(atoms);
@@ -4134,7 +4429,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 .gap_length = gap,
             };
             const bond_set_t bonds = {rep->weak_bond_atoms, rep->weak_bond_weight, {0}, {0}, {0}, rep->weak_bond_count};
-            const draw_range_t range = draw_range(prep, lists ? &prep->weak_blocks : NULL);
+            // Found in this draw, in its lists
+            const draw_range_t range = draw_range(prep, lists ? &prep->weak_blocks : NULL, 0);
             draw_bonds(shaders->weak_bonds[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size, &range);
             break;
         }
@@ -4211,6 +4507,7 @@ static void issue_quads(GLuint program, uint32_t offset, uint32_t count, const d
     glUniform1i (glGetUniformLocation(program, "u_block_list"),  range->masked && !range->exact ? (GLint)range->list.offset : -1);
     glUniform1i (glGetUniformLocation(program, "u_prim_list"),   range->exact ? (GLint)range->list.offset : -1);
     const GLint base_loc = glGetUniformLocation(program, "u_instance_base");
+    if (range->masked) bind_list(range->buf);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx.quad_index.id);
     // gl_InstanceID is a signed int: the copies in as few draws as keep blocks * copies within it
@@ -4263,8 +4560,8 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
     glUseProgram(program.id);
     glUniform1i(glGetUniformLocation(program.id, "u_instance_base"), (GLint)range->inst_base);
     if (range->masked) {
-        // The marked atoms: the index of a vertex is its atom (gl_VertexID, and the attributes)
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx.list_buf.id);
+        // The marked atoms, or those of a subset: the index of a vertex is its atom (gl_VertexID, and the attributes)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, range->buf ? range->buf : ctx.list_buf.id);
         glDrawElementsInstanced(GL_POINTS, (GLsizei)range->list.count, GL_UNSIGNED_INT, (const void*)((uintptr_t)range->list.offset * sizeof(uint32_t)), (GLsizei)range->inst_count);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     } else {
@@ -4604,6 +4901,7 @@ static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer
     if (masked && cp_count == 0) {
         return false;
     }
+    if (masked) bind_list(prep->lists->buf);
 
     glBindVertexArray(ctx.vao);
 
