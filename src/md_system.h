@@ -150,13 +150,18 @@ typedef struct md_nucleic_backbone_data_t {
 // tip (or, for a spanning chain, on to where it joins its other head). Methyl branches and the atoms of the rings off the
 // shortest way through a skeleton are not on it. The spine is what a spline of the tail follows.
 //
-// A lipid is a molecule: a run of consecutive components bonded to each other (a lipid split into head and tails, as the
-// AMBER lipids are, is one), all of them MD_COMPONENT_KIND_LIPID. Every lipid molecule of the system is here, also one
-// whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of the
-// tails are MD_ATOM_FLAG_LIPID_TAIL.
+// A lipid is a molecule, components bonded to each other wherever they are in the system (a lipid split into head and
+// tails, as the AMBER lipids are, is one; so is a lipid A whose acyl chains are ligands of their own), all of them
+// MD_COMPONENT_KIND_LIPID. Of a molecule of several components which holds a lipid and more (a glycolipid or a
+// lipopolysaccharide whose sugars are residues of their own, a PEG lipid whose monomers are), the lipid is the
+// components which hold the tails and those between them, and the components bonded to these: the head group of a
+// residue of its own, the first sugar of a glycolipid, the first Kdo of a lipid A. The rest of the molecule is attached
+// to the lipid but no part of it, nor of its heads, and keeps its kind. Every lipid molecule of the system is here, also
+// one whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of
+// the tails are MD_ATOM_FLAG_LIPID_TAIL.
 typedef struct md_lipid_data_t {
     size_t count;                       // Lipid molecules
-    md_urange_t* comp_range;            // [count] The components of each lipid
+    md_index_data_t comps;              // The components of each lipid, ascending (not necessarily consecutive)
     uint32_t* head_offset;              // [count + 1] The heads of lipid i are head_offset[i] .. head_offset[i + 1]
     uint32_t* tail_offset;              // [count + 1] Its tails, tail_offset[i] .. tail_offset[i + 1]
 

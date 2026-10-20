@@ -288,7 +288,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
 
 void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
     ASSERT(lipid);
-    md_array_free(lipid->comp_range, alloc);
+    if (lipid->comps.alloc)       md_index_data_free(&lipid->comps);
     md_array_free(lipid->head_offset, alloc);
     md_array_free(lipid->tail_offset, alloc);
     if (lipid->head.atoms.alloc)  md_index_data_free(&lipid->head.atoms);

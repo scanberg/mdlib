@@ -3782,8 +3782,9 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 // lipid(): one selection per lipid molecule (md_lipid_data_t), all of its residues: a lipid split into several residues
-// (the AMBER lipids) is one, as an instance is. Within a context the lipids with an atom in it, whole, as protein() takes
-// its residues. A system whose lipids were not inferred has a lipid per residue of the kind.
+// (the AMBER lipids) is one, as an instance is. What is attached to a lipid (the further sugars of a glycolipid, the core
+// and O antigen of a lipopolysaccharide) is not of it. Within a context the lipids with an atom in it, whole, as
+// protein() takes its residues. A system whose lipids were not inferred has a lipid per residue of the kind.
 static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     const md_system_t* sys = ctx->sys;
@@ -3792,23 +3793,35 @@ static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return _select_components_of_kind(dst, arg, ctx, MD_COMPONENT_KIND_LIPID);
     }
 
-    md_array(md_urange_t) ranges = 0;
+    // The atoms of each lipid: a run when its components are consecutive, as they mostly are
+    md_array(md_bitset_t) sets = 0;
     for (size_t l = 0; l < lipid->count; ++l) {
-        const md_urange_t cr = lipid->comp_range[l];
-        const md_urange_t r = {
-            md_component_atom_range(&sys->component, cr.beg).beg,
-            md_component_atom_range(&sys->component, cr.end - 1).end,
-        };
-        if (ctx->mol_ctx && md_bitset_count_range(*ctx->mol_ctx, r.beg, r.end) == 0) continue;
-        md_array_push(ranges, r, ctx->temp_alloc);
+        const int32_t* comps = md_index_range_beg(&lipid->comps, l);
+        const size_t num_comps = md_index_range_size(&lipid->comps, l);
+        if (num_comps == 0) continue;
+        md_bitset_t set = md_bitset_empty_set();
+        bool in_ctx = !ctx->mol_ctx;
+        md_urange_t run = md_component_atom_range(&sys->component, (size_t)comps[0]);
+        for (size_t i = 1; i <= num_comps; ++i) {
+            const md_urange_t r = i < num_comps ? md_component_atom_range(&sys->component, (size_t)comps[i]) : (md_urange_t){0, 0};
+            if (i < num_comps && r.beg == run.end) {
+                run.end = r.end;
+                continue;
+            }
+            in_ctx |= ctx->mol_ctx && md_bitset_count_range(*ctx->mol_ctx, run.beg, run.end) > 0;
+            set = md_bitset_empty(set) ? md_bitset_range(run.beg, run.end) : md_bitset_or(set, md_bitset_range(run.beg, run.end), ctx->temp_alloc);
+            run = r;
+        }
+        if (!in_ctx) continue;
+        md_array_push(sets, set, ctx->temp_alloc);
     }
-    const int count = (int)md_array_size(ranges);
+    const int count = (int)md_array_size(sets);
 
     if (dst) {
         ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, false);
-        for (int i = 0; i < count; ++i) set_writer_push_range(&w, ranges[i].beg, ranges[i].end);
+        for (int i = 0; i < count; ++i) set_writer_push(&w, sets[i]);
         set_writer_end(&w);
         return 0;
     }
@@ -3967,11 +3980,13 @@ static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t b = result_mask(ctx);
         for (size_t l = 0; l < sys->lipid.count; ++l) {
             if (sys->lipid.head_offset[l + 1] == sys->lipid.head_offset[l]) continue;
-            const md_urange_t cr = sys->lipid.comp_range[l];
-            const uint32_t beg = md_component_atom_range(&sys->component, cr.beg).beg;
-            const uint32_t end = md_component_atom_range(&sys->component, cr.end - 1).end;
-            for (uint32_t i = beg; i < end; ++i) {
-                if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_LIPID_TAIL)) md_bitmask_set_bit(&b, i);
+            const int32_t* comps = md_index_range_beg(&sys->lipid.comps, l);
+            const size_t num_comps = md_index_range_size(&sys->lipid.comps, l);
+            for (size_t c = 0; c < num_comps; ++c) {
+                const md_urange_t r = md_component_atom_range(&sys->component, (size_t)comps[c]);
+                for (uint32_t i = r.beg; i < r.end; ++i) {
+                    if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_LIPID_TAIL)) md_bitmask_set_bit(&b, i);
+                }
             }
         }
         restrict_to_context(&b, ctx);
