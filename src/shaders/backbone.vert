@@ -5,6 +5,9 @@
 // One instance is drawn per control point (one per residue), covering the part of the spline that belongs to its
 // residue: the spline parameter u in [-0.5, 0.5] around the control point. The instance is a tube of S + 1 rings of
 // P profile vertices, plus a cap at each end, triangulated by a static index buffer (built in md_gl.c).
+// A draw is a run of u_run_length control points, from u_cp_offset or (u_cp_list >= 0) those of the list there in
+// u_buf_list, for each of its instances of the molecule (INSTANCES in md_gl.c), instance-major in gl_InstanceID: the
+// mesh is taken into world space by the transform of the instance.
 //
 // The rings are evaluated once per frame by compute_spline_subdivide.vert, R per control point: ring s of control
 // point c lies at u = s / R after c, in the frame of c. With stride = R / S, ring j of the instance of c is ring
@@ -70,7 +73,11 @@ layout (std140) uniform ubo {
     uvec4 u_rings;  // (R: rings per control point in the ring buffer, stride = R / S, -, -)
 };
 
-uniform uint u_instance_offset;                 // Control point of instance 0
+#pragma INSTANCES
+
+uniform uint u_cp_offset;                       // First control point of the run
+uniform uint u_run_length;                      // Control points of the run
+uniform int  u_cp_list;                         // Or the control points of the run in u_buf_list from here, -1 for none
 
 uniform usamplerBuffer u_buf_rings;             // Ring records (compute_spline_subdivide.vert), 3 x uvec4, R per control point
 uniform usamplerBuffer u_buf_control_points;    // Oriented control points, gl_control_point_t as 3 x uvec4
@@ -248,7 +255,10 @@ void main() {
     uint R = u_rings.x;
     uint stride = u_rings.y;
 
-    uint c = u_instance_offset + uint(gl_InstanceID);
+    uint inst = uint(gl_InstanceID) / u_run_length;
+    uint k_cp = uint(gl_InstanceID) - inst * u_run_length;
+    uint c = u_cp_list >= 0 ? texelFetch(u_buf_list, u_cp_list + int(k_cp)).x : u_cp_offset + k_cp;
+    instance_load(inst);
     uint atom_idx = load_atom_idx(c);
 
     uvec4 nb = texelFetch(u_buf_neighbors, int(c));
@@ -353,11 +363,12 @@ void main() {
 #endif
     }
 
-    vec4 view_coord = u_world_to_view * vec4(position, 1.0);
+    vec4 view_coord = u_world_to_view * vec4(instance_point(position), 1.0);
     out_frag.view_coord    = view_coord.xyz;
-    out_frag.view_velocity = vec3(u_world_to_view * vec4(r.velocity, 0.0));
+    out_frag.view_velocity = vec3(u_world_to_view * vec4(instance_velocity(position, r.velocity), 0.0));
     out_frag.color         = texelFetch(u_atom_color_buffer, int(atom_idx));
-    out_frag.view_normal   = mat3(u_world_to_view_normal) * normal;
+    // A rigid transform: its inverse transpose is itself
+    out_frag.view_normal   = mat3(u_world_to_view_normal) * instance_vector(normal);
     // The instance is the part of the spline that belongs to one residue: it picks as that backbone segment (control
     // point c is segment c), not as its CA, which other representations may show and pick as an atom of its own
     out_frag.picking_idx   = u_backbone_base_index + c;

@@ -2,7 +2,7 @@
 
 // Aromatic rings (md_gl_mol_set_bond_orders) as raycast tori: a circle inside each ring, drawn with the bonds of the
 // licorice and ball and stick representations. Vertex pulling as bond.vert, from the same index buffer: primitive
-// p = u_ring_offset + gl_InstanceID * u_quads_per_instance + (gl_VertexID >> 2) is one quad of 4 vertices, a ring.
+// p (quad_primitive, QUADS in md_gl.c) is one quad of 4 vertices, a ring, of an instance of the molecule (INSTANCES).
 //
 // The circle follows the atoms of the ring in every frame. In view space:
 //   - center: the centroid of the atoms
@@ -76,8 +76,8 @@ layout (std140) uniform ubo {
     uint  u_ring_base_index;    // Picking: a ring writes u_ring_base_index + its index
 };
 
-uniform uint u_ring_offset;
-uniform uint u_quads_per_instance;
+#pragma INSTANCES
+
 uniform vec2 u_viewport_size;           // Pixels
 
 uniform samplerBuffer  u_buf_atom_pos;      // RGB32F
@@ -121,8 +121,12 @@ uint pack_color(vec4 c) {
 }
 
 void main() {
-    uint prim   = u_ring_offset + uint(gl_InstanceID) * u_quads_per_instance + (uint(gl_VertexID) >> 2u);
+    uint prim   = quad_primitive();
     uint corner = uint(gl_VertexID) & 3u;
+    if (prim == QUAD_NONE) {
+        cull();
+        return;
+    }
 
     uvec4 e0 = texelFetch(u_buf_ring, int(2u * prim + 0u));
     uvec4 e1 = texelFetch(u_buf_ring, int(2u * prim + 1u));
@@ -140,6 +144,7 @@ void main() {
     uint col[MAX_RING_ATOMS];
     vec3 c   = vec3(0.0);
     vec3 vel = vec3(0.0);
+    vec3 local_center = vec3(0.0);  // The centroid in the molecule, for the velocity
     uint common_flags = 0xFFFFFFFFu;
     for (int k = 0; k < MAX_RING_ATOMS; ++k) {
         col[k] = 0u;
@@ -151,7 +156,9 @@ void main() {
             return;
         }
         common_flags &= flags;
-        p[k]   = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(atom[k])).xyz, 1.0));
+        vec3 w = texelFetch(u_buf_atom_pos, int(atom[k])).xyz;
+        p[k]   = vec3(u_world_to_view * vec4(instance_point(w), 1.0));
+        local_center += w;
         col[k] = pack_color(color);
         vel   += texelFetch(u_buf_atom_vel, int(atom[k])).xyz;
         c     += p[k];
@@ -232,7 +239,7 @@ void main() {
     out_frag.angle   = angle;
     out_frag.color   = uvec4[2](uvec4(col[0], col[1], col[2], col[3]), uvec4(col[4], col[5], col[6], 0u));
     out_frag.count_picking = uvec2(uint(n), u_ring_base_index + ring_idx);
-    out_frag.view_vel = mat3(u_world_to_view) * (vel / float(n));
+    out_frag.view_vel = mat3(u_world_to_view) * instance_velocity(local_center / float(n), vel / float(n));
     out_frag.flags    = common_flags;
     out_frag.dashes   = dashes;
 
