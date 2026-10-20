@@ -1633,22 +1633,34 @@ static void iso_octree_visit_density(iso_octree_t* o, int level, int ix, int iy,
     }
 }
 
+// The sum of all group tails at distance r (fn_tail: num_fn scratch for a density)
+static double iso_surface_tail(const iso_field_t* f, double r, double* fn_tail) {
+    if (f->dens) return iso_density_tail(f, r, fn_tail);
+    double t = 0.0;
+    for (int i = 0; i < f->num_shells; ++i) t += iso_shell_tail(&f->shells[i], r);
+    return t;
+}
+
 // The atom box padded until the sum of all group tails is below iso/2: no surface exists outside.
 static void iso_surface_box(const iso_field_t* f, double iso, double lo[3], double hi[3]) {
     double r0 = 0.0;
     for (int i = 0; i < f->num_shells; ++i) r0 = fmax(r0, iso_shell_tail_r0(&f->shells[i]));
     if (f->dens) for (int i = 0; i < f->dens->radial.num_shells; ++i) r0 = fmax(r0, iso_shell_tail_r0(&f->dens->radial.shells[i]));
-    double pad = r0;
+    // the first pad = r0 + 0.05 k (k >= 0) with the tails below iso/2. Beyond r0 every tail decreases
+    // (r^l exp(-a r^2) does for r^2 >= l / 2a), so k is found by doubling and bisection.
     double* fn_tail = f->dens ? (double*)malloc(sizeof(double) * (f->dens->num_fn + 1)) : NULL;
-    for (;; pad += 0.05) {
-        double t = 0.0;
-        if (f->dens) {
-            t = iso_density_tail(f, pad, fn_tail);
-        } else {
-            for (int i = 0; i < f->num_shells; ++i) t += iso_shell_tail(&f->shells[i], pad);
+#define ISO_TAIL_AT(k_) iso_surface_tail(f, r0 + 0.05 * (double)(k_), fn_tail)
+    int k_hi = 0;
+    while (ISO_TAIL_AT(k_hi) >= 0.5 * iso && r0 + 0.05 * k_hi <= 1.0e3) k_hi = k_hi ? 2 * k_hi : 1;
+    int k_lo = k_hi / 2;    // tail(k_lo) >= iso/2 unless k_hi == 0
+    if (k_hi > 0) {
+        while (k_hi - k_lo > 1) {
+            const int k = (k_lo + k_hi) / 2;
+            if (ISO_TAIL_AT(k) < 0.5 * iso) k_hi = k; else k_lo = k;
         }
-        if (t < 0.5 * iso || pad > 1.0e3) break;
     }
+#undef ISO_TAIL_AT
+    const double pad = r0 + 0.05 * (double)k_hi;
     free(fn_tail);
     for (int a = 0; a < 3; ++a) { lo[a] = f->atom_min[a] - pad; hi[a] = f->atom_max[a] + pad; }
 }

@@ -39,6 +39,7 @@ typedef struct isog_args_t {         // mirrors IsoArgs
     md_gpu_addr_t bricks, brick_slot, hash_keys, hash_vals, corners, cell_vert;
     md_gpu_addr_t vpos, vpos_out, vnrm, vval, vinfo, quads, counters, bucket, remap, vdone;
     md_gpu_addr_t out_pos, out_nrm, out_idx;
+    md_gpu_addr_t fn_tail;
 } isog_args_t;
 
 enum {
@@ -123,7 +124,7 @@ void md_gto_iso_gpu_shutdown(void) {
 #define ISOG_FN_CAP 1024     // O_FN_CAP in the shader
 
 struct md_gto_iso_gpu_set_t {
-    md_gpu_mem_t shells, prims, crit, ao_nrm, ao_ijk, C, terms;
+    md_gpu_mem_t shells, prims, crit, ao_nrm, ao_ijk, C, terms, fn_tail;
     uint32_t     num_shells, num_ao, num_fn, fn_stride, num_fields;
     bool         orbitals_only;     // every field one function, one linear term: iso_eval_orbital
     isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];    // iso filled in per extraction
@@ -254,6 +255,15 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
     set->num_fields = num_fields;
     set->orbitals_only = orbitals_only;
 
+    // per function: what the shells that do not reach a box can add over it, every AO of theirs being
+    // below 1e-10 there (shells' w); twice that, for the float distances that decide it
+    float* tail = (float*)calloc(stride + 1, sizeof(float));
+    for (uint32_t j = 0; j < nf; ++j) {
+        double t = 0.0;
+        for (uint32_t i = 0; i < nao; ++i) t += fabs((double)C[(size_t)i * stride + j]);
+        tail[j] = isog_f32_up(2.0e-10 * t * (1.0 + 1.0e-6));
+    }
+
 #define ISOG_UP(mem, ptr, bytes) do { const size_t nb_ = (bytes); set->mem = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, nb_ > 0 ? nb_ : 16); if (set->mem.gpu && nb_ > 0) md_gpu_upload(stream, set->mem.gpu, (ptr), nb_); ok &= set->mem.gpu != 0; } while (0)
     if (ok) {
         ISOG_UP(shells, sh, sizeof(isog_shell_t) * B.num_ao_shells);
@@ -263,7 +273,9 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         ISOG_UP(ao_ijk, ijk, sizeof(uint32_t) * nao);
         ISOG_UP(C,      C,   sizeof(float) * (size_t)nao * stride);
         ISOG_UP(terms,  terms, sizeof(isog_term_t) * md_array_size(terms));
+        ISOG_UP(fn_tail, tail, sizeof(float) * stride);
     }
+    free(tail);
 #undef ISOG_UP
     set->prof_shells = sh;          // BENCHMARK: kept for the profile's work counts
     free(nrm); free(ijk); free(C);
@@ -281,7 +293,7 @@ void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* se
     if (!set) return;
     md_gpu_free(stream, set->shells.gpu); md_gpu_free(stream, set->prims.gpu); md_gpu_free(stream, set->crit.gpu);
     md_gpu_free(stream, set->ao_nrm.gpu); md_gpu_free(stream, set->ao_ijk.gpu); md_gpu_free(stream, set->C.gpu);
-    md_gpu_free(stream, set->terms.gpu);
+    md_gpu_free(stream, set->terms.gpu); md_gpu_free(stream, set->fn_tail.gpu);
     free(set->prof_shells);
     md_free(set->alloc, set, sizeof(*set));
 }
@@ -530,6 +542,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     a.tol        = (float)(1.0e-4 * h);
     a.shells = set->shells.gpu; a.prims = set->prims.gpu; a.crit = set->crit.gpu;
     a.ao_nrm = set->ao_nrm.gpu; a.ao_ijk = set->ao_ijk.gpu; a.C = set->C.gpu; a.terms = set->terms.gpu;
+    a.fn_tail = set->fn_tail.gpu;
     a.fields = isog_temp(s, sizeof(fields));
     md_gpu_upload(s, a.fields, fields, sizeof(fields));
     a.counters = isog_temp(s, sizeof(uint32_t) * 8);
