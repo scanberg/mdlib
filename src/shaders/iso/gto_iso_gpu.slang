@@ -2095,7 +2095,8 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int, let PIPE : int>(uint3 gid
 #define W_GROUP 256
 #define W_ROWS  64
 groupshared float4 w_phi[G_CK * 16];     // [AO row][point group]: 4 rows' AO values
-groupshared float  w_red[16 * W_ROWS];   // epilogue: per column group and row
+// the epilogue's per column group and row sums go through B (free by then): every wide kernel stays
+// within 32 KB of groupshared memory (the Apple GPUs' limit)
 K_BUF(WBuf128, 2048)                     // the chunk's rows of C: G_CK x F
 K_BUF(WBuf192, 3072)
 K_BUF(WBuf256, 4096)
@@ -2218,7 +2219,7 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
         }
 
         // canonical terms: per row, the partial sums of this thread's columns, reduced over the 16
-        // column groups in w_red
+        // column groups in B
         uint col0 = f0 + cg * uint(FC);
         for (uint f = 0u; f < (VERT == 0 ? a.num_fields : 1u); ++f) {
             uint fw = f;
@@ -2250,12 +2251,12 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
                     }
                 }
             }
-            GroupMemoryBarrierWithGroupSync();             // w_red free
-            [ForceUnroll] for (int v = 0; v < 4; ++v) w_red[cg * uint(W_ROWS) + pg * 4u + uint(v)] = part[v];
+            GroupMemoryBarrierWithGroupSync();             // B free
+            [ForceUnroll] for (int v = 0; v < 4; ++v) B::st(cg * uint(W_ROWS) + pg * 4u + uint(v), part[v]);
             GroupMemoryBarrierWithGroupSync();
             if (tid < uint(W_ROWS)) {
                 float sum = 0.0;
-                [ForceUnroll] for (int k = 0; k < 16; ++k) sum += w_red[uint(k) * uint(W_ROWS) + tid];
+                [ForceUnroll] for (int k = 0; k < 16; ++k) sum += B::ld(uint(k) * uint(W_ROWS) + tid);
                 if (VERT == 0) {
                     if (out_active && ((field_bits(mask) >> (2u * f)) & 1u) != 0u) {
                         uint ci = (slot0 + field_slot(mask, f)) * 125u + pt;
@@ -2269,9 +2270,9 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
     }
     if (VERT != 0) {
         GroupMemoryBarrierWithGroupSync();
-        if (tid < uint(W_ROWS)) w_red[tid] = res;
+        if (tid < uint(W_ROWS)) B::st(tid, res);
         GroupMemoryBarrierWithGroupSync();
-        if (tid < 16u && v0 + tid < a.count) a.vval[v0 + tid] = float4(w_red[4u * tid + 1u], w_red[4u * tid + 2u], w_red[4u * tid + 3u], w_red[4u * tid]);
+        if (tid < 16u && v0 + tid < a.count) a.vval[v0 + tid] = float4(B::ld(4u * tid + 1u), B::ld(4u * tid + 2u), B::ld(4u * tid + 3u), B::ld(4u * tid));
     }
 }
 
@@ -2643,8 +2644,9 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
 // many (the tiles twice as wide) and so are the AO values made per row.
 // ------------------------------------------------------------------------------------------
 
-#define DQ_PMAX 16                       // primitives per staged shell in groupshared memory (more: global memory)
-#define DQ_CAP  1024                     // chunks in the table: at most 16384 local AOs (more: the extraction fails)
+// (sizes kept so every kernel stays within 32 KB of groupshared memory, the Apple GPUs' limit)
+#define DQ_PMAX 8                        // primitives per staged shell in groupshared memory (more: global memory)
+#define DQ_CAP  512                      // chunks in the table: at most 8192 local AOs (more: the extraction fails)
 groupshared uint   dq_tab[DQ_CAP / 2];   // per chunk q, 16 bits: the local shell holding local AO 16 q
 groupshared float4 dq_cs[2 * D_CH];      // [buffer][staged shell]: centre, r^2 cutoff
 groupshared uint   dq_ci[2 * D_CH];      // l | ncart << 4 | nprim << 8 | 1 << 31 when its primitives are read globally
