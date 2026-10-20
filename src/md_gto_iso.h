@@ -346,7 +346,8 @@ typedef struct md_gto_iso_gpu_switches_t {
     int  newton_tol_exp;    // vertices converge within 1e-N h of the surface (1..6)
     int  dform_kernel;      // the D form's kernels: 0 those of r9, 1 triangular by chunks, tiles of 64, 2 tiles of 128
     bool ordered;           // bricks in Morton order, the point list and the vertices in that order
-    int  diag;              // DIAGNOSTIC (corner GEMM kernels): 1 no AO values made, 2 no multiply-adds (no surface)
+    int  diag;              // DIAGNOSTIC (corner GEMM kernels): 1 no AO values made, 2 no multiply-adds, 3 lists only,
+                            // 4 no rows of C staged, 5 no shells staged and no AO values (no surface)
     bool gemm_wide;         // canonical sets of more than 64 functions: the GEMM in passes of up to 256 columns
 } md_gto_iso_gpu_switches_t;
 

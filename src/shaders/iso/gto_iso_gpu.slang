@@ -1116,7 +1116,7 @@ void k_load_chunk<let F : int, B : IKBuf>(uint c, uint f0, uint tid, uint gs) {
     uint i = min(i0 + tid, i1 - 1u);       // clamped: see k_list
     IsoShell sh = a.shells[min(k_sh[i], a.num_shells - 1u)];
     uint ao0 = sh.info2.x;
-    if (tid < i1 - i0) {
+    if (tid < i1 - i0 && a.diag != 5u) {   // DIAGNOSTIC 5: no shells staged (nor AO values made)
         uint np = sh.info.z, po = k_poff[i];
         for (uint n = 0u; n < k_nc[i]; ++n) k_row_ao[k_row[i] + n] = ao0 + n;
         k_cs[tid] = sh.c;
@@ -1125,6 +1125,11 @@ void k_load_chunk<let F : int, B : IKBuf>(uint c, uint f0, uint tid, uint gs) {
     }
     GroupMemoryBarrierWithGroupSync();
     uint nrows = k_nrows[c];
+    if (a.diag == 4u) {                    // DIAGNOSTIC 4: no rows of C loaded (zeros staged)
+        for (uint e = tid; e < nrows * uint(F); e += gs) B::st(e, 0.0);
+        GroupMemoryBarrierWithGroupSync();
+        return;
+    }
     for (uint e = tid; e < nrows * uint(F); e += gs) {
         uint row = e / uint(F), col = e % uint(F);
         uint ao = min(k_row_ao[min(row, uint(K_CK) - 1u)], a.num_ao - 1u);
@@ -1902,13 +1907,13 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int, let PIPE : int>(uint3 gid
         for (uint s0 = 0u; s0 < a.num_shells; s0 += uint(K_LIST)) {
             GroupMemoryBarrierWithGroupSync();             // the previous block's lists consumed
             k_list(s0, glo, ghi, tid, G_GROUP, G_CK);
-            uint nchunk = k_nchunk;
+            uint nchunk = (VERT == 0 && a.diag == 3u) ? 0u : k_nchunk;      // DIAGNOSTIC 3: the lists only
             for (uint c = 0u; c < nchunk; ++c) {
                 k_load_chunk<F, B>(c, f0, tid, G_GROUP);
                 uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
                 // this row's AO values of the chunk's shells (zero beyond a shell's cutoff)
                 for (uint i = i0; i < i1; ++i) {
-                    if (VERT == 0 && a.diag == 1u) {               // DIAGNOSTIC: no AO values made
+                    if (VERT == 0 && (a.diag == 1u || a.diag == 5u)) {   // DIAGNOSTIC: no AO values made
                         uint rbd = k_row[i] * 32u + pg;
                         uint ncd = k_nc[i];
                         for (uint n = 0u; n < ncd; ++n) g_phi[rbd + n * 32u][cg] = 0.01;
@@ -2157,13 +2162,13 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
         for (uint s0 = 0u; s0 < a.num_shells; s0 += uint(K_LIST)) {
             GroupMemoryBarrierWithGroupSync();             // the previous block's lists consumed
             k_list(s0, glo, ghi, tid, W_GROUP, G_CK);
-            uint nchunk = k_nchunk;
+            uint nchunk = (VERT == 0 && a.diag == 3u) ? 0u : k_nchunk;      // DIAGNOSTIC 3: the lists only
             for (uint c = 0u; c < nchunk; ++c) {
                 k_load_chunk<F, B>(c, f0, tid, W_GROUP);
                 uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
                 for (uint i = i0 + js; i < i1; i += 4u) {
                     uint rb = k_row[i] * 16u + pg;
-                    if (VERT == 0 && a.diag == 1u) {       // DIAGNOSTIC: no AO values made
+                    if (VERT == 0 && (a.diag == 1u || a.diag == 5u)) {   // DIAGNOSTIC: no AO values made
                         for (uint n = 0u; n < k_nc[i]; ++n) w_phi[rb + n * 16u][ce] = 0.01;
                         continue;
                     }

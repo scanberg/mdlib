@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r16"
+#define ISOG_REVISION "r17"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -149,9 +149,11 @@ static int isog_dform_kernel = 2;
 //                             order the groups' atomics happen in: consecutive points and vertices close
 //                             together, so a group's box (and the shells it lists) stays small (default 1)
 static int isog_ordered = 1;
-//   GTO_ISO_DIAG=0|1|2        DIAGNOSTIC, the corner GEMM kernels only (iso_gcorners_*, iso_dcorners2/3): 1 the
-//                             AO values not made (a constant), 2 no multiply-adds. The values are wrong (no
-//                             surface): only the corner kernel's time means anything (default 0)
+//   GTO_ISO_DIAG=0..5         DIAGNOSTIC, the corner GEMM kernels only (iso_gcorners_*, iso_dcorners2/3): 1 the
+//                             AO values not made (a constant), 2 no multiply-adds; iso_gcorners_*: 3 the shell
+//                             lists only (no chunks), 4 no rows of C staged, 5 no shells staged and no AO values.
+//                             The values are wrong (no surface): only the corner kernel's time means anything
+//                             (default 0)
 static int isog_diag = 0;
 //   GTO_ISO_GEMM_WIDE=1       canonical sets of more than 64 functions: the GEMM in passes of 128, 192 or 256
 //                             columns, 64 rows per group of 256 threads (iso_gcorners_w*, iso_geval_w*), so the
@@ -881,7 +883,7 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     if (in->newton_tol_exp >= 1 && in->newton_tol_exp <= 6) isog_newton_tol_exp = in->newton_tol_exp;
     if (in->dform_kernel >= 0 && in->dform_kernel <= 2) isog_dform_kernel = in->dform_kernel;
     isog_ordered = in->ordered;
-    isog_diag = (in->diag >= 0 && in->diag <= 2) ? in->diag : 0;
+    isog_diag = (in->diag >= 0 && in->diag <= 5) ? in->diag : 0;
     isog_gemm_wide = in->gemm_wide ? (isog_gemm_wide ? isog_gemm_wide : 1) : 0;
 }
 
@@ -890,7 +892,8 @@ const char* md_gto_iso_gpu_profile_variant(void) {
     snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
              ISOG_REVISION, isog_relax_first, isog_corners_v2, isog_corners_list, isog_shared_corners, isog_eval_v2, isog_canon_terms,
              isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
-             isog_diag == 1 ? " DIAG: no AO values" : isog_diag == 2 ? " DIAG: no multiply-adds" : "");
+             isog_diag == 1 ? " DIAG: no AO values" : isog_diag == 2 ? " DIAG: no multiply-adds" : isog_diag == 3 ? " DIAG: lists only"
+             : isog_diag == 4 ? " DIAG: no C rows staged" : isog_diag == 5 ? " DIAG: no shells staged, no AO values" : "");
     return buf;
 }
 
