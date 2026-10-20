@@ -1416,11 +1416,23 @@ static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, c
     return (bits & backbone_bits) == backbone_bits;
 }
 
-// There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3)
-static bool cmp_nuc_atom(str_t id, const char* base, size_t len) {
-    if (!str_eq_cstr_n(id, base, len)) return false;
-    char next = str_ptr(id)[len];
-    return next == 0 || next == '\'' || next == '*';
+// There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3). How the name matches: 0 not
+// at all, 1 the bare name (C3), 2 the primed name (C3' or C3*).
+static int cmp_nuc_atom(str_t id, const char* base, size_t len) {
+    if (id.len < len || !str_eq_cstr_n(id, base, len)) return 0;
+    if (id.len == len) return 1;
+    const char next = str_ptr(id)[len];
+    return (id.len == len + 1 && (next == '\'' || next == '*')) ? 2 : 0;
+}
+
+// Whether the atom whose name matches (cmp_nuc_atom) takes the slot (bit) of the sugar or backbone: a free slot takes any
+// match, and a primed name takes the slot from a bare one. A residue which primes the atoms of its sugar has base atoms
+// of the bare names (C2, C4, C5, O4 of a pyrimidine), and some list the base first: OMU and PSU of the PDB (3G71).
+static inline bool nuc_atom_take_slot(uint32_t* bits, uint32_t* primed, uint32_t bit, int match) {
+    if (!match || (*primed & bit) || (match == 1 && (*bits & bit))) return false;
+    *bits |= bit;
+    if (match == 2) *primed |= bit;
+    return true;
 }
 
 static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
@@ -1431,6 +1443,7 @@ static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atom
     static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256;
 
     uint32_t bits = 0;
+    uint32_t primed = 0; // The slots taken by a primed name, which no other atom takes back
     md_nucleic_acid_atoms_t na;
 	MEMSET(&na, -1, sizeof(md_nucleic_acid_atoms_t));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
@@ -1438,20 +1451,19 @@ static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atom
         if (str_empty(id)) continue;
 
         if (!(bits & 1)  && cmp(id, "P",   1))               { na.p  = i; bits |= 1;  continue; }
-        if (!(bits & 2)  && cmp_nuc_atom(id, "O5", 2))       { na.o5 = i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp_nuc_atom(id, "C5", 2))       { na.c5 = i; bits |= 4;  continue; }
-        if (!(bits & 8)  && cmp_nuc_atom(id, "C4", 2))       { na.c4 = i; bits |= 8;  continue; }
-        if (!(bits & 16) && cmp_nuc_atom(id, "C3", 2))       { na.c3 = i; bits |= 16; continue; }
-        if (!(bits & 32) && (cmp_nuc_atom(id, "O3", 2) || cmp(id, "O3P", 3))) {
-            na.o3 = i; bits |= 32; continue;
-        }
+        if (nuc_atom_take_slot(&bits, &primed, 2,  cmp_nuc_atom(id, "O5", 2))) { na.o5 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 4,  cmp_nuc_atom(id, "C5", 2))) { na.c5 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 8,  cmp_nuc_atom(id, "C4", 2))) { na.c4 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 16, cmp_nuc_atom(id, "C3", 2))) { na.c3 = i; continue; }
+        // O3P (exact) counts as a bare O3
+        if (nuc_atom_take_slot(&bits, &primed, 32, cmp(id, "O3P", 3) ? 1 : cmp_nuc_atom(id, "O3", 2))) { na.o3 = i; continue; }
 
-        if (!(bits & 64)  && cmp_nuc_atom(id, "C1", 2))      { na.c1 = i; bits |= 64;  continue; }
-        if (!(bits & 128) && cmp_nuc_atom(id, "C2", 2))      { na.c2 = i; bits |= 128; continue; }
-        if (!(bits & 256) && cmp_nuc_atom(id, "O4", 2))      { na.o4 = i; bits |= 256; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 64,  cmp_nuc_atom(id, "C1", 2))) { na.c1 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 128, cmp_nuc_atom(id, "C2", 2))) { na.c2 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 256, cmp_nuc_atom(id, "O4", 2))) { na.o4 = i; continue; }
 
-        // Check if done
-        if (bits == all_bits) break;
+        // Done when the P is found and every other slot holds a primed name: a bare name could still be taken back
+        if ((bits & 1) && primed == (all_bits & ~1u)) break;
     }
 
     static const uint32_t req_bits = 2 | 4 | 8 | 16 | 32; // No phosphor in first terminal component (starts with O5)
