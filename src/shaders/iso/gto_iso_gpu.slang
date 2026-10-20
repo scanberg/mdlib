@@ -102,6 +102,7 @@ struct IsoArgs {
     float4*   out_nrm;
     uint*     out_idx;
     float*    fn_tail;        // per function: bound of what the shells dropped from a box can add
+    uint*     plist;          // corners: the lattice points to evaluate, brick << 7 | point
 };
 MD_SHADER_ARGS(IsoArgs);
 
@@ -405,6 +406,15 @@ void iso_octree(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         }
     }
     GroupMemoryBarrierWithGroupSync();
+    if (a.level == a.brick_level && a.mode == 1u) {
+        // the bricks keep their slots, a rejected one with no sheet bits: siblings stay together
+        // (what the point list of the corners relies on to keep its groups compact)
+        if (tid == 0u) {
+            a.nodes_out[ni] = uint4(node.xyz, o_mask);
+            if (ni == 0u) a.count_out[0] = min(a.count_in[0], a.cap);
+        }
+        return;
+    }
     if (tid == 0u && o_mask != 0u) {
         if (a.level < a.brick_level) {
             uint idx;
@@ -440,7 +450,7 @@ uint hash_u32(uint x) {
 [numthreads(64, 1, 1)]
 void iso_hash(uint3 tid : SV_DispatchThreadID) {
     IsoArgs a = MD_ARGS;
-    if (tid.x >= a.count) return;
+    if (tid.x >= a.count || a.bricks[tid.x].w == 0u) return;      // a rejected sibling
     uint key = brick_key(a.bricks[tid.x].xyz);
     uint slot = hash_u32(key) & a.hash_mask;
     for (uint probe = 0u; probe <= a.hash_mask; ++probe) {
@@ -1121,6 +1131,177 @@ void iso_corners_fill(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         slot++;
     }
 }
+
+// ------------------------------------------------------------------------------------------
+// Corners from a point list: the lattice points to evaluate, brick by brick (all 125 of a brick with
+// sheets, or with shared corners those not taken from a neighbour), and groups of 256 consecutive
+// points - 2 to 4 neighbouring bricks - evaluated together: every thread busy, and the setup of each
+// shell shared by 256 points instead of one brick's
+// ------------------------------------------------------------------------------------------
+
+groupshared uint p_base;
+
+// One group per brick: appends its points to plist (one atomic per brick, so the list keeps roughly
+// the order of the bricks; a brick's points are contiguous). mode 1: shared corners. The count is
+// counters[5].
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void iso_points(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint b = node_index(gid);
+    if (b >= a.count) return;                              // uniform per group
+    uint4 brick = a.bricks[b];
+    bool mine = tid < 125u && brick.w != 0u;
+    if (a.mode == 1u && mine) {
+        uint op;
+        mine = corner_owner(brick, tid, op) == INVALID;
+    }
+    uint n;
+    uint at = iso_group_prefix(mine, tid, 128u, n);
+    if (tid == 0u) {
+        uint base = 0u;
+        if (n > 0u) InterlockedAdd(a.counters[5], n, base);
+        p_base = base;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (mine) a.plist[p_base + at] = (b << 7) | tid;
+}
+
+#define L_GROUP 256
+groupshared float4 l_lohi[2 * 64];       // per wave: the points' box
+
+void corners_list<let F : int, B : IKBuf>(uint3 gid, uint tid) {
+    IsoArgs a = MD_ARGS;
+    uint total = a.count_in[0];
+    uint e0 = node_index(gid) * uint(L_GROUP);
+    if (e0 >= total) return;                               // uniform per group
+    uint e = e0 + tid;
+    bool active = e < total;
+    uint ent = a.plist[min(e, total - 1u)];
+    uint b = ent >> 7, pt = ent & 127u;
+    uint4 brick = a.bricks[b];
+    float3 p = corner_point(brick, pt);
+
+    // the group's box: its points'
+    {
+        uint lanes = WaveGetLaneCount();
+        uint w = iso_wave_index(tid, lanes);
+        float3 lo = WaveActiveMin(active ? p : float3(3.0e38));
+        float3 hi = WaveActiveMax(active ? p : float3(-3.0e38));
+        if (WaveIsFirstLane()) { l_lohi[2u * w] = float4(lo, 0.0); l_lohi[2u * w + 1u] = float4(hi, 0.0); }
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) {
+            uint nw = iso_num_waves(L_GROUP, lanes);
+            float3 glo = l_lohi[0].xyz, ghi = l_lohi[1].xyz;
+            for (uint k = 1u; k < nw; ++k) { glo = min(glo, l_lohi[2u * k].xyz); ghi = max(ghi, l_lohi[2u * k + 1u].xyz); }
+            l_lohi[0] = float4(glo, 0.0); l_lohi[1] = float4(ghi, 0.0);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float3 glo = l_lohi[0].xyz, ghi = l_lohi[1].xyz;
+    uint fbits = field_bits(brick.w);
+
+    float val[16];
+    [ForceUnroll] for (int f = 0; f < 16; ++f) val[f] = 0.0;
+
+    for (uint f0 = 0u; f0 < a.num_fn; f0 += uint(F)) {
+        float acc[F];
+        [ForceUnroll] for (int j = 0; j < F; ++j) acc[j] = 0.0;
+        for (uint s0 = 0u; s0 < a.num_shells; s0 += L_GROUP) {
+            GroupMemoryBarrierWithGroupSync();             // the previous block's lists consumed
+            k_list(s0, glo, ghi, tid, L_GROUP);
+            uint nchunk = k_nchunk;
+            for (uint c = 0u; c < nchunk; ++c) {
+                k_load_chunk<F, B>(c, f0, tid, L_GROUP);
+                uint i1 = active ? k_chunk[c + 1] : k_chunk[c];
+                for (uint i = k_chunk[c]; i < i1; ++i) {    // uniform among the active threads
+                    IsoShell sh = a.shells[min(k_sh[i], a.num_shells - 1u)];
+                    float3 d = p - sh.c.xyz;
+                    float r2 = dot(d, d);
+                    // the group's box spans several bricks: a shell out of reach of the point is skipped,
+                    // by whole waves where none of its points is in reach
+                    if (r2 > sh.c.w) continue;
+                    float R = 0.0;
+                    for (uint q = 0u; q < sh.info.z; ++q) {
+                        float2 pr = a.prims[sh.info.w + q];
+                        R += pr.y * exp(-pr.x * r2);
+                    }
+                    float m[15];
+                    cart_monomials(sh.info.x, d, m);
+                    uint nc = sh.info.y;
+                    uint row0 = k_row[i];
+                    if (F == 1) {
+                        float P = 0.0;
+                        [ForceUnroll] for (int n = 0; n < 15; ++n) {
+                            if (uint(n) < nc) P += m[n] * B::ld(row0 + uint(n));
+                        }
+                        acc[0] += P * R;
+                    } else {
+                        [ForceUnroll] for (int n = 0; n < 15; ++n) {
+                            if (uint(n) < nc) {
+                                float phi = m[n] * R;
+                                uint rb4 = (row0 + uint(n)) * uint(F / 4);
+                                [ForceUnroll] for (int j4 = 0; j4 < F / 4; ++j4) {
+                                    float4 cv = B::ld4(rb4 + uint(j4));
+                                    acc[4 * j4 + 0] += phi * cv.x;
+                                    acc[4 * j4 + 1] += phi * cv.y;
+                                    acc[4 * j4 + 2] += phi * cv.z;
+                                    acc[4 * j4 + 3] += phi * cv.w;
+                                }
+                            }
+                        }
+                    }
+                }
+                GroupMemoryBarrierWithGroupSync();         // the chunk's rows consumed
+            }
+        }
+        if (F == 1) {
+            IsoTerm tm = a.terms[a.fields[0].term_off];
+            val[0] += tm.w * acc[0];
+        } else {
+            // the terms of each point's fields (its brick's), from the accumulators staged 64 points at a time
+            for (uint round = 0u; round < uint(L_GROUP) / 64u; ++round) {
+                GroupMemoryBarrierWithGroupSync();
+                if ((tid >> 6) == round) {
+                    uint row = tid & 63u;
+                    [ForceUnroll] for (int j = 0; j < F; ++j) B::st(row * uint(F) + uint(j), acc[j]);
+                }
+                GroupMemoryBarrierWithGroupSync();
+                if ((tid >> 6) == round && active) {
+                    uint row = tid & 63u;
+                    [ForceUnroll] for (int f = 0; f < 16; ++f) {
+                        if (uint(f) < a.num_fields && ((fbits >> (2u * uint(f))) & 1u) != 0u) {
+                            IsoField fd = a.fields[f];
+                            float v = 0.0;
+                            for (uint t = 0u; t < fd.term_count; ++t) {
+                                IsoTerm tm = a.terms[fd.term_off + t];
+                                if (tm.a < f0 || tm.a >= f0 + uint(F)) continue;
+                                float xa = B::ld(row * uint(F) + tm.a - f0);
+                                if (tm.b == INVALID) { v += tm.w * xa; continue; }
+                                v += tm.w * xa * B::ld(row * uint(F) + tm.b - f0);
+                            }
+                            val[f] += v;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (!active) return;
+    uint slot = a.brick_slot[b];
+    [ForceUnroll] for (int f = 0; f < 16; ++f) {
+        if (uint(f) < a.num_fields && ((fbits >> (2u * uint(f))) & 1u) != 0u) {
+            a.corners[slot * 125u + pt] = val[f];
+            slot++;
+        }
+    }
+}
+
+[shader("compute")] [numthreads(L_GROUP, 1, 1)] void iso_corners_list_f1 (uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_list<1, KBuf1>(gid, tid); }
+[shader("compute")] [numthreads(L_GROUP, 1, 1)] void iso_corners_list_f8 (uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_list<8, KBuf8>(gid, tid); }
+[shader("compute")] [numthreads(L_GROUP, 1, 1)] void iso_corners_list_f16(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_list<16, KBuf16>(gid, tid); }
+[shader("compute")] [numthreads(L_GROUP, 1, 1)] void iso_corners_list_f32(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_list<32, KBuf32>(gid, tid); }
+[shader("compute")] [numthreads(L_GROUP, 1, 1)] void iso_corners_list_f64(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_list<64, KBuf64>(gid, tid); }
 
 [shader("compute")] [numthreads(K_GROUP, 1, 1)] void iso_corners_f1 (uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_reg<1, KBuf1>(gid, tid); }
 [shader("compute")] [numthreads(K_GROUP, 1, 1)] void iso_corners_f8 (uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_reg<8, KBuf8>(gid, tid); }

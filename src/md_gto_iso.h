@@ -324,6 +324,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     bool skip_brick_test;   // the octree's last level not bounded
     bool shared_corners;    // high-face corners taken from the neighbour (with corners_v2)
     int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12)
+    bool corners_list;      // corners from a point list, 256 points per group (with corners_v2)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
