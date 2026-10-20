@@ -45,7 +45,8 @@ typedef struct isog_args_t {         // mirrors IsoArgs
 enum {
     ISOG_K_GRID, ISOG_K_OCTREE, ISOG_K_HASH, ISOG_K_CORNERS, ISOG_K_EVAL, ISOG_K_CELLS, ISOG_K_QUADS,
     ISOG_K_NEWTON, ISOG_K_RELAX, ISOG_K_BCOUNT, ISOG_K_BSCAN, ISOG_K_BVERTS, ISOG_K_BTRIS, ISOG_K_EVAL1, ISOG_K_CORNERS1,
-    ISOG_K_CORNERS_F1, ISOG_K_CORNERS_F8, ISOG_K_CORNERS_F16, ISOG_K_CORNERS_F32, ISOG_K_CORNERS_F64, ISOG_K_COUNT
+    ISOG_K_CORNERS_F1, ISOG_K_CORNERS_F8, ISOG_K_CORNERS_F16, ISOG_K_CORNERS_F32, ISOG_K_CORNERS_F64,
+    ISOG_K_EVAL_F8, ISOG_K_EVAL_F16, ISOG_K_EVAL_F32, ISOG_K_EVAL_F64, ISOG_K_COUNT
 };
 
 static md_gpu_kernel_t isog_k[ISOG_K_COUNT];
@@ -59,8 +60,14 @@ static bool             isog_failed;
 //                       1   relax on the lattice surface (trilinear normals), then project (default)
 //   GTO_ISO_CORNERS_V2=0    iso_corners (GEMM tiles) and iso_corners_orbital
 //                      1    the register form, iso_corners_f* (default)
+//   GTO_ISO_EVAL_V2=0       iso_eval (GEMM tiles) at the vertices of densities
+//                   1       the register form, iso_eval_f* (default)
 static int isog_relax_first = 1;
 static int isog_corners_v2 = 1;
+static int isog_eval_v2 = 1;
+//   GTO_ISO_NEWTON_PREDICT=1 a Newton step whose next error is predicted far below the tolerance ends
+//                            the vertex without an evaluation to check it (default 1)
+static int isog_newton_predict = 1;
 
 // The kernels are made on first use, so initializing costs nothing until a mesh is extracted
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
@@ -70,6 +77,10 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_relax_first = atoi(e);
     e = getenv("GTO_ISO_CORNERS_V2");
     if (e && e[0]) isog_corners_v2 = atoi(e);
+    e = getenv("GTO_ISO_EVAL_V2");
+    if (e && e[0]) isog_eval_v2 = atoi(e);
+    e = getenv("GTO_ISO_NEWTON_PREDICT");
+    if (e && e[0]) isog_newton_predict = atoi(e);
 }
 
 static bool isog_kernels_ready(void) {
@@ -97,6 +108,10 @@ static bool isog_kernels_ready(void) {
         md_shader_gto_iso_gpu_iso_corners_f16_kernel(),
         md_shader_gto_iso_gpu_iso_corners_f32_kernel(),
         md_shader_gto_iso_gpu_iso_corners_f64_kernel(),
+        md_shader_gto_iso_gpu_iso_eval_f8_kernel(),
+        md_shader_gto_iso_gpu_iso_eval_f16_kernel(),
+        md_shader_gto_iso_gpu_iso_eval_f32_kernel(),
+        md_shader_gto_iso_gpu_iso_eval_f64_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -352,7 +367,8 @@ void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile) { isog_prof =
 
 const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[128];
-    snprintf(buf, sizeof(buf), "GTO_ISO_RELAX_FIRST=%d GTO_ISO_CORNERS_V2=%d", isog_relax_first, isog_corners_v2);
+    snprintf(buf, sizeof(buf), "GTO_ISO_RELAX_FIRST=%d GTO_ISO_CORNERS_V2=%d GTO_ISO_EVAL_V2=%d GTO_ISO_NEWTON_PREDICT=%d",
+             isog_relax_first, isog_corners_v2, isog_eval_v2, isog_newton_predict);
     return buf;
 }
 
@@ -730,7 +746,11 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         isog_args_t v = a;
         v.count = nv;
         const md_gpu_grid_t g_vert = md_gpu_grid_for(isog_k[ISOG_K_NEWTON], nv, 1, 1);
-        const md_gpu_kernel_t k_eval = set->orbitals_only ? isog_k[ISOG_K_EVAL1] : isog_k[ISOG_K_EVAL];
+        md_gpu_kernel_t k_eval = set->orbitals_only ? isog_k[ISOG_K_EVAL1] : isog_k[ISOG_K_EVAL];
+        if (!set->orbitals_only && isog_eval_v2) {
+            const uint32_t nfn = set->num_fn;
+            k_eval = isog_k[nfn <= 8 ? ISOG_K_EVAL_F8 : nfn <= 16 ? ISOG_K_EVAL_F16 : nfn <= 32 ? ISOG_K_EVAL_F32 : ISOG_K_EVAL_F64];
+        }
         const md_gpu_grid_t g_eval = set->orbitals_only ? g_vert : isog_groups((nv + 63) / 64);
         // Newton steps; converged vertices are flagged and skipped (they no longer move, so their
         // values stay valid for the final normals)
@@ -741,7 +761,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
                 isog_prof_active(s, v.vdone, nv, &act_, &grp_);                        \
                 MD_GPU_LAUNCH(s, k_eval, g_eval, v);                                   \
                 isog_mark(s, "vertex eval", act_, grp_);                               \
-                v.mode = it == (iters) ? 1u : 0u;                                      \
+                v.mode = it == (iters) ? 1u : (isog_newton_predict ? 2u : 0u);         \
                 MD_GPU_LAUNCH(s, isog_k[ISOG_K_NEWTON], g_vert, v);                    \
                 isog_mark(s, v.mode ? "vertex normals" : "vertex newton", act_, 0);    \
             }                                                                          \

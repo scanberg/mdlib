@@ -860,14 +860,15 @@ void iso_corners_orbital(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 // functions of the set) or 64 (tiles of 64 functions, as the pair terms require).
 // ------------------------------------------------------------------------------------------
 
-#define K_GROUP 128
+#define K_GROUP 128                      // corners: threads (points) per group
+#define K_LIST  256                      // the most shells listed at once (the group size)
 #define K_CK    32                       // AOs per chunk (whole shells)
-groupshared uint  k_sh[K_GROUP];         // listed shells
-groupshared uint  k_nc[K_GROUP];         // their AO counts
-groupshared uint  k_row[K_GROUP];        // their first row within their chunk
-groupshared uint  k_chunk[K_GROUP + 1];  // chunk c: listed shells [k_chunk[c], k_chunk[c + 1])
+groupshared uint  k_sh[K_LIST];          // listed shells
+groupshared uint  k_nc[K_LIST];          // their AO counts
+groupshared uint  k_row[K_LIST];         // their first row within their chunk
+groupshared uint  k_chunk[K_LIST + 1];   // chunk c: listed shells [k_chunk[c], k_chunk[c + 1])
 groupshared uint  k_nchunk;
-groupshared uint  k_nrows[K_GROUP];      // rows per chunk
+groupshared uint  k_nrows[K_LIST];       // rows per chunk
 groupshared uint  k_row_ao[K_CK];        // the current chunk: global AO of each row
 
 // The chunk rows of C (times the AO normalization) [row][F], and the epilogue's staging [64 points][F]:
@@ -912,8 +913,9 @@ void cart_monomials(uint l, float3 d, out float m[15]) {
     }
 }
 
-// Lists the shells of block s0 that reach [lo, hi] and packs them into chunks (all threads).
-void k_list(uint s0, float3 lo, float3 hi, uint tid) {
+// Lists the shells of block [s0, s0 + gs) that reach [lo, hi] and packs them into chunks (all gs
+// threads of the group).
+void k_list(uint s0, float3 lo, float3 hi, uint tid, uint gs) {
     IsoArgs a = MD_ARGS;
     // indices clamped into range: some implementations (llvmpipe) load for inactive lanes too
     uint s = min(s0 + tid, a.num_shells - 1u);
@@ -921,10 +923,10 @@ void k_list(uint s0, float3 lo, float3 hi, uint tid) {
     bool reach = s0 + tid < a.num_shells && box_dist2(sh.c.xyz, lo, hi) <= sh.c.w;
     uint nc = sh.info.y;
     uint total;
-    uint at = iso_group_prefix(reach, tid, K_GROUP, total);
+    uint at = iso_group_prefix(reach, tid, gs, total);
     if (reach) { k_sh[at] = s; k_nc[at] = nc; }
     GroupMemoryBarrierWithGroupSync();
-    if (tid == 0u) {        // greedy packing over groupshared memory: at most 128 steps
+    if (tid == 0u) {        // greedy packing over groupshared memory: at most gs steps
         uint c = 0u, rows = 0u;
         k_chunk[0] = 0u;
         for (uint i = 0u; i < total; ++i) {
@@ -942,7 +944,7 @@ void k_list(uint s0, float3 lo, float3 hi, uint tid) {
 
 // Stages chunk c's rows of C times the AO normalization, columns [f0, f0 + F) (all threads; ends
 // with a barrier).
-void k_load_chunk<let F : int, B : IKBuf>(uint c, uint f0, uint tid) {
+void k_load_chunk<let F : int, B : IKBuf>(uint c, uint f0, uint tid, uint gs) {
     IsoArgs a = MD_ARGS;
     uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
     uint i = min(i0 + tid, i1 - 1u);       // clamped: see k_list
@@ -952,7 +954,7 @@ void k_load_chunk<let F : int, B : IKBuf>(uint c, uint f0, uint tid) {
     }
     GroupMemoryBarrierWithGroupSync();
     uint nrows = k_nrows[c];
-    for (uint e = tid; e < nrows * uint(F); e += K_GROUP) {
+    for (uint e = tid; e < nrows * uint(F); e += gs) {
         uint row = e / uint(F), col = e % uint(F);
         uint ao = min(k_row_ao[min(row, uint(K_CK) - 1u)], a.num_ao - 1u);
         float v = a.C[ao * a.fn_stride + min(f0 + col, a.fn_stride - 1u)] * a.ao_nrm[ao];
@@ -980,10 +982,10 @@ void corners_reg<let F : int, B : IKBuf>(uint3 gid, uint tid) {
         [ForceUnroll] for (int j = 0; j < F; ++j) acc[j] = 0.0;
         for (uint s0 = 0u; s0 < a.num_shells; s0 += K_GROUP) {
             GroupMemoryBarrierWithGroupSync();             // the previous block's lists consumed
-            k_list(s0, blo, bhi, tid);
+            k_list(s0, blo, bhi, tid, K_GROUP);
             uint nchunk = k_nchunk;
             for (uint c = 0u; c < nchunk; ++c) {
-                k_load_chunk<F, B>(c, f0, tid);
+                k_load_chunk<F, B>(c, f0, tid, K_GROUP);
                 uint i1 = k_chunk[c + 1];
                 for (uint i = k_chunk[c]; i < i1; ++i) {    // uniform
                     IsoShell sh = a.shells[min(k_sh[i], a.num_shells - 1u)];
@@ -1072,6 +1074,155 @@ void corners_reg<let F : int, B : IKBuf>(uint3 gid, uint tid) {
 [shader("compute")] [numthreads(K_GROUP, 1, 1)] void iso_corners_f16(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_reg<16, KBuf16>(gid, tid); }
 [shader("compute")] [numthreads(K_GROUP, 1, 1)] void iso_corners_f32(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_reg<32, KBuf32>(gid, tid); }
 [shader("compute")] [numthreads(K_GROUP, 1, 1)] void iso_corners_f64(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { corners_reg<64, KBuf64>(gid, tid); }
+
+// The derivatives of the Cartesian monomials of degree l at d along axis ax (0 x, 1 y, 2 z), in
+// md_gto's order: d/dx x^i y^j z^k = i x^(i-1) y^j z^k
+void cart_monomials_d(uint l, float3 d, uint ax, out float g[15]) {
+    [ForceUnroll] for (int n = 0; n < 15; ++n) g[n] = 0.0;
+    float x = d.x, y = d.y, z = d.z;
+    if (l == 1u) {
+        g[ax] = 1.0;
+    } else if (l == 2u) {
+        if (ax == 0u)      { g[0] = 2.0 * x; g[1] = y; g[2] = z; }
+        else if (ax == 1u) { g[1] = x; g[3] = 2.0 * y; g[4] = z; }
+        else               { g[2] = x; g[4] = y; g[5] = 2.0 * z; }
+    } else if (l == 3u) {
+        if (ax == 0u)      { g[0] = 3.0 * x * x; g[1] = 2.0 * x * y; g[2] = 2.0 * x * z; g[3] = y * y; g[4] = y * z; g[5] = z * z; }
+        else if (ax == 1u) { g[1] = x * x; g[3] = 2.0 * x * y; g[4] = x * z; g[6] = 3.0 * y * y; g[7] = 2.0 * y * z; g[8] = z * z; }
+        else               { g[2] = x * x; g[4] = x * y; g[5] = 2.0 * x * z; g[7] = y * y; g[8] = 2.0 * y * z; g[9] = 3.0 * z * z; }
+    } else if (l == 4u) {
+        float xx = x * x, yy = y * y, zz = z * z;
+        if (ax == 0u) {
+            g[0] = 4.0 * xx * x; g[1] = 3.0 * xx * y; g[2] = 3.0 * xx * z; g[3] = 2.0 * x * yy; g[4] = 2.0 * x * y * z;
+            g[5] = 2.0 * x * zz; g[6] = yy * y; g[7] = yy * z; g[8] = y * zz; g[9] = zz * z;
+        } else if (ax == 1u) {
+            g[1] = xx * x; g[3] = 2.0 * xx * y; g[4] = xx * z; g[6] = 3.0 * x * yy; g[7] = 2.0 * x * y * z;
+            g[8] = x * zz; g[10] = 4.0 * yy * y; g[11] = 3.0 * yy * z; g[12] = 2.0 * y * zz; g[13] = zz * z;
+        } else {
+            g[2] = xx * x; g[4] = xx * y; g[5] = 2.0 * xx * z; g[7] = x * yy; g[8] = 2.0 * x * y * z;
+            g[9] = 3.0 * x * zz; g[11] = yy * y; g[12] = 2.0 * yy * z; g[13] = 3.0 * y * zz; g[14] = 4.0 * zz * z;
+        }
+    }
+}
+
+// Value and gradient at 64 vertices per group, register form: 256 threads, thread (channel, vertex)
+// with channel = tid / 64 (a warp holds one channel: 0 the value, 1..3 d/dx, d/dy, d/dz) accumulating
+// that channel of F function columns. The shells that reach the group's box are listed and staged
+// as for the corners; the terms per field are applied by one thread per vertex from the channels
+// staged 16 vertices at a time.
+#define V_GROUP 256
+groupshared float4 v_res[64];            // per vertex: gradient xyz, value w, over the tiles
+groupshared float4 v_lohi[2];
+groupshared uint   v_done;
+
+void eval_reg<let F : int, B : IKBuf>(uint3 gid, uint tid) {
+    IsoArgs a = MD_ARGS;
+    uint v0 = node_index(gid) * 64u;
+    if (v0 >= a.count) return;                             // uniform per group
+    uint vl = tid & 63u, ch = tid >> 6;
+    uint vi = min(v0 + vl, a.count - 1u);
+    if (tid == 0u) {
+        uint done = 1u;
+        for (uint k = 0u; k < 64u && v0 + k < a.count; ++k) done &= a.vdone[v0 + k];
+        v_done = done;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (v_done != 0u) return;                              // uniform: every vertex here has converged
+    float3 p = a.vpos[vi].xyz;
+    if (ch == 0u) { e_p[vl] = float4(p, 0.0); v_res[vl] = float4(0.0); }
+    GroupMemoryBarrierWithGroupSync();
+    if (tid == 0u) {
+        float3 lo = e_p[0].xyz, hi = e_p[0].xyz;
+        for (uint k = 1u; k < 64u; ++k) { lo = min(lo, e_p[k].xyz); hi = max(hi, e_p[k].xyz); }
+        v_lohi[0] = float4(lo, 0.0); v_lohi[1] = float4(hi, 0.0);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    float3 glo = v_lohi[0].xyz, ghi = v_lohi[1].xyz;
+    uint ax = ch > 0u ? ch - 1u : 0u;
+
+    for (uint f0 = 0u; f0 < a.num_fn; f0 += uint(F)) {
+        float acc[F];
+        [ForceUnroll] for (int j = 0; j < F; ++j) acc[j] = 0.0;
+        for (uint s0 = 0u; s0 < a.num_shells; s0 += V_GROUP) {
+            GroupMemoryBarrierWithGroupSync();             // the previous block's lists consumed
+            k_list(s0, glo, ghi, tid, V_GROUP);
+            uint nchunk = k_nchunk;
+            for (uint c = 0u; c < nchunk; ++c) {
+                k_load_chunk<F, B>(c, f0, tid, V_GROUP);
+                uint i1 = k_chunk[c + 1];
+                for (uint i = k_chunk[c]; i < i1; ++i) {    // uniform
+                    IsoShell sh = a.shells[min(k_sh[i], a.num_shells - 1u)];
+                    float3 d = p - sh.c.xyz;
+                    float r2 = dot(d, d);
+                    float R = 0.0, R1 = 0.0;
+                    for (uint q = 0u; q < sh.info.z; ++q) {
+                        float2 pr = a.prims[sh.info.w + q];
+                        float t = pr.y * exp(-pr.x * r2);
+                        R += t;
+                        R1 -= pr.x * t;
+                    }
+                    float m[15], g[15];
+                    cart_monomials(sh.info.x, d, m);
+                    cart_monomials_d(sh.info.x, d, ax, g);
+                    // channel 0: m R; channel 1 + ax: g R + m 2 d[ax] R1
+                    float da = ax == 0u ? d.x : (ax == 1u ? d.y : d.z);
+                    float A = ch == 0u ? R : 2.0 * da * R1;
+                    float Bg = ch == 0u ? 0.0 : R;
+                    uint nc = sh.info.y;
+                    uint row0 = k_row[i];
+                    [ForceUnroll] for (int n = 0; n < 15; ++n) {
+                        if (uint(n) < nc) {                 // uniform
+                            float phi = m[n] * A + g[n] * Bg;
+                            uint rb4 = (row0 + uint(n)) * uint(F / 4);
+                            [ForceUnroll] for (int j4 = 0; j4 < F / 4; ++j4) {
+                                float4 cv = B::ld4(rb4 + uint(j4));
+                                acc[4 * j4 + 0] += phi * cv.x;
+                                acc[4 * j4 + 1] += phi * cv.y;
+                                acc[4 * j4 + 2] += phi * cv.z;
+                                acc[4 * j4 + 3] += phi * cv.w;
+                            }
+                        }
+                    }
+                }
+                GroupMemoryBarrierWithGroupSync();         // the chunk's rows consumed
+            }
+        }
+        // the terms of each vertex's field, from the channels staged 16 vertices at a time
+        for (uint quarter = 0u; quarter < 4u; ++quarter) {
+            GroupMemoryBarrierWithGroupSync();
+            if ((vl >> 4) == quarter) {
+                uint row = (vl & 15u) * 4u + ch;
+                [ForceUnroll] for (int j = 0; j < F; ++j) B::st(row * uint(F) + uint(j), acc[j]);
+            }
+            GroupMemoryBarrierWithGroupSync();
+            if (ch == 0u && (vl >> 4) == quarter) {
+                uint rb = (vl & 15u) * 4u * uint(F);
+                IsoField fd = a.fields[min(a.vinfo[vi].z, 15u)];
+                float4 r = float4(0.0);
+                for (uint t = 0u; t < fd.term_count; ++t) {
+                    IsoTerm tm = a.terms[fd.term_off + t];
+                    if (tm.a < f0 || tm.a >= f0 + uint(F)) continue;
+                    uint ia = tm.a - f0;
+                    float xa = B::ld(rb + ia);
+                    float3 ga = float3(B::ld(rb + uint(F) + ia), B::ld(rb + 2u * uint(F) + ia), B::ld(rb + 3u * uint(F) + ia));
+                    if (tm.b == INVALID) { r += tm.w * float4(ga, xa); continue; }
+                    uint ib = tm.b - f0;
+                    float xb = B::ld(rb + ib);
+                    float3 gb = float3(B::ld(rb + uint(F) + ib), B::ld(rb + 2u * uint(F) + ib), B::ld(rb + 3u * uint(F) + ib));
+                    r += tm.w * float4(xa * gb + xb * ga, xa * xb);
+                }
+                v_res[vl] += r;
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (ch == 0u && v0 + vl < a.count) a.vval[v0 + vl] = v_res[vl];
+}
+
+[shader("compute")] [numthreads(V_GROUP, 1, 1)] void iso_eval_f8 (uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { eval_reg<8, KBuf8>(gid, tid); }
+[shader("compute")] [numthreads(V_GROUP, 1, 1)] void iso_eval_f16(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { eval_reg<16, KBuf16>(gid, tid); }
+[shader("compute")] [numthreads(V_GROUP, 1, 1)] void iso_eval_f32(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { eval_reg<32, KBuf32>(gid, tid); }
+[shader("compute")] [numthreads(V_GROUP, 1, 1)] void iso_eval_f64(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { eval_reg<64, KBuf64>(gid, tid); }
 
 // Sets of single-function fields (orbitals): one thread per vertex, its field's one column of C.
 // The tiled GEMM above would compute every field's function at every vertex.
@@ -1278,7 +1429,8 @@ void iso_newton(uint3 tid : SV_DispatchThreadID) {
     IsoArgs a = MD_ARGS;
     uint v = tid.x;
     if (v >= a.count) return;
-    if (a.mode == 0u && a.vdone[v] != 0u) return;
+    bool normals = a.mode == 1u;
+    if (!normals && a.vdone[v] != 0u) return;
     float4 pv = a.vpos[v];
     float4 gv = a.vval[v];
     float sg = pv.w;
@@ -1287,19 +1439,28 @@ void iso_newton(uint3 tid : SV_DispatchThreadID) {
     float3 g = sg * gv.xyz;
     float g2 = dot(g, g);
     if (g2 <= 1.0e-30) {
-        if (a.mode != 0u) a.vnrm[v] = float4(0.0, 0.0, 0.0, 1.0e30);
+        if (normals) a.vnrm[v] = float4(0.0, 0.0, 0.0, 1.0e30);
         return;
     }
     float gl = sqrt(g2);
-    if (a.mode != 0u) {
+    if (normals) {
         a.vnrm[v] = float4(-g / gl, abs(f) / gl);    // f > 0 inside: outward is -grad f
         return;
     }
-    if (abs(f) / gl < a.tol) { a.vdone[v] = 1u; return; }  // converged: stays put, its values stay valid
+    float s = abs(f) / gl;
+    if (s < a.tol) { a.vdone[v] = 1u; return; }      // converged: stays put, its values stay valid
     float step = f / g2;
     float len = abs(step) * gl;
     if (len > a.step_max) step *= a.step_max / len;
     a.vpos[v] = float4(pv.xyz - step * g, sg);
+    if (a.mode == 2u && len <= a.step_max) {
+        // EXPERIMENT: the error after this step predicted instead of checked by another evaluation:
+        // about |f''| / (2 |f'|) s^2 along the gradient, with |f''| / |f'| ~ |f'| / |f| for the
+        // exponentially decaying fields here. Predicted well below the tolerance: done (its normal and
+        // values then those of the evaluation before the step)
+        float K = gl / max(abs(sg * gv.w), 1.0e-30);
+        if (0.5 * K * s * s < 0.1 * a.tol) a.vdone[v] = 2u;
+    }
 }
 
 [shader("compute")]

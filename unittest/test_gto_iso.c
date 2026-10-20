@@ -3265,6 +3265,23 @@ UTEST(gto_iso_gpu_lib, schedule_experiment) {
                     nsh++;
                     iso_mesh_free(&mg);
                 }
+                // the vertices' distance from the surface, |f - iso| / |grad f| in the double field, units of h
+                double vres_max = 0.0;
+                {
+                    const uint32_t nvh = hm.vertex_count;
+                    double* fv = (double*)malloc(sizeof(double) * (nvh + 1));
+                    double* gv = (double*)malloc(sizeof(double) * 3 * (nvh + 1));
+                    md_gto_iso_field_evaluate(field, hm.position, nvh, 0, fv, gv);
+                    for (int sh = 0; sh < 2; ++sh) {
+                        const double sg = sh == 0 ? 1.0 : -1.0;
+                        for (uint32_t i = hm.sheet_vertex_offset[sh]; i < hm.sheet_vertex_offset[sh] + hm.sheet_vertex_count[sh]; ++i) {
+                            const double gl = sqrt(gv[3 * i] * gv[3 * i] + gv[3 * i + 1] * gv[3 * i + 1] + gv[3 * i + 2] * gv[3 * i + 2]);
+                            if (gl > 0.0) vres_max = fmax(vres_max, fabs(sg * fv[i] - cases[ci].iso) / gl / hs[hi]);
+                        }
+                    }
+                    free(fv); free(gv);
+                }
+                acc.vert_res_max = vres_max;
                 const double nt = acc.nt > 0 ? acc.nt : 1;
                 printf("  %-12s %5.3f %4d | %6u %7llu %7.2f %6llu | %5.1f %5.1f %5.1f %5.2f%% | %7.4f %7.5f %8.1e\n", cases[ci].name, hs[hi], mode,
                        gm.vertex_count, (unsigned long long)evals, (double)evals / fmax(1.0, gm.vertex_count), (unsigned long long)groups,
