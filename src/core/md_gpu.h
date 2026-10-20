@@ -799,6 +799,10 @@ typedef struct md_gpu_kernel_info_t {
     uint32_t args_size;
     uint32_t max_threads_per_group;
     uint32_t preferred_group_multiple;
+    /* What the driver reports of the compiled kernel, "" if nothing: Vulkan's pipeline executable
+       statistics (VK_KHR_pipeline_executable_properties: registers, shared memory, ... as the
+       driver names them), Metal's thread limit and threadgroup memory. For profiling. */
+    char     stats[256];
 } md_gpu_kernel_info_t;
 
 bool md_gpu_kernel_info(md_gpu_kernel_t kernel, md_gpu_kernel_info_t* out_info);

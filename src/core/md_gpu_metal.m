@@ -2256,6 +2256,8 @@ bool md_gpu_kernel_info(md_gpu_kernel_t k, md_gpu_kernel_info_t* info) {
     info->args_size                = k->args_size;
     info->max_threads_per_group    = (uint32_t)k->pso.maxTotalThreadsPerThreadgroup;
     info->preferred_group_multiple = (uint32_t)k->pso.threadExecutionWidth;
+    md_snprintf(info->stats, sizeof(info->stats), "max threads per group %u, threadgroup memory %u B",
+                (uint32_t)k->pso.maxTotalThreadsPerThreadgroup, (uint32_t)k->pso.staticThreadgroupMemoryLength);
     return true;
 }
 

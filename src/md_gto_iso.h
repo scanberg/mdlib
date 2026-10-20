@@ -302,6 +302,7 @@ typedef struct md_gto_iso_gpu_profile_t {
     uint32_t num_ao, num_fn, fn_stride;
     uint32_t corner_cols;   // function columns the corner kernel multiplied
     uint32_t corner_points; // lattice points the register-form corner kernels evaluated (0: not counted)
+    uint64_t kernels_used;  // bit per kernel launched (the print lists what the driver reports of them)
     bool     orbitals_only;
 } md_gto_iso_gpu_profile_t;
 
@@ -325,6 +326,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     bool shared_corners;    // high-face corners taken from the neighbour (with corners_v2)
     int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12)
     bool corners_list;      // corners from a point list, 256 points per group (with corners_v2)
+    bool canon_terms;       // the register-form epilogues take the terms as per-column weights where they can
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);

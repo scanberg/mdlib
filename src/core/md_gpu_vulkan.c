@@ -477,6 +477,7 @@ typedef struct md_gpu_kernel {
     uint32_t        group_size[3];
     uint32_t        args_size;
     char            label[64];
+    char            stats[256];     /* the driver's statistics of the compiled pipeline, if reported */
 } md_gpu_kernel;
 
 typedef struct md_vk_hostfn_t {
@@ -601,6 +602,7 @@ typedef struct md_gpu_device {
     bool            supports_graphics;
     bool            supports_present;   /* surface + swapchain extensions enabled */
     bool            depth_bias_clamp;   /* feature; otherwise the clamp must be 0 */
+    bool            pipeline_stats;     /* VK_KHR_pipeline_executable_properties: kernels capture statistics */
     bool            has_xlib_surface, has_win32_surface, has_wayland_surface, has_headless_surface;
 } md_gpu_device;
 
@@ -1550,11 +1552,25 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
 
     /* Swapchains, when the instance can make surfaces and the device can
        present through a graphics queue. */
-    const char* dev_exts[1];
+    const char* dev_exts[2];
     uint32_t    dev_ext_count = 0;
     if (caps.graphics && surface_ext_count > 0 && md_vk_device_ext_available(dev->phys, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
         dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         dev->supports_present = true;
+    }
+    /* The compiled kernels' statistics (registers, shared memory, ...), for profiling, where the
+       driver reports them: md_gpu_kernel_info's stats. */
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR fpe = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+    if (md_vk_device_ext_available(dev->phys, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 q2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        q2.pNext = &fpe;
+        vkGetPhysicalDeviceFeatures2(dev->phys, &q2);
+        if (fpe.pipelineExecutableInfo) {
+            fpe.pNext = NULL;
+            f13.pNext = &fpe;
+            dev_exts[dev_ext_count++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
+            dev->pipeline_stats = true;
+        }
     }
 
     VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
@@ -3535,6 +3551,37 @@ static void md_vk_kernel_free(md_gpu_device_t dev, md_gpu_kernel_t k) {
     md_free(dev->alloc, k, sizeof(*k));
 }
 
+/* The driver's statistics of a kernel's pipeline as "name value, ..." (its first executable). */
+static void md_vk_kernel_stats(md_gpu_device_t dev, md_gpu_kernel_t k) {
+    VkPipelineInfoKHR pi = {VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+    pi.pipeline = k->pipeline;
+    uint32_t nexe = 0;
+    if (vkGetPipelineExecutablePropertiesKHR(dev->device, &pi, &nexe, NULL) != VK_SUCCESS || nexe == 0) return;
+    VkPipelineExecutableInfoKHR ei = {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
+    ei.pipeline = k->pipeline;
+    ei.executableIndex = 0;
+    uint32_t n = 0;
+    if (vkGetPipelineExecutableStatisticsKHR(dev->device, &ei, &n, NULL) != VK_SUCCESS || n == 0) return;
+    if (n > 32) n = 32;
+    VkPipelineExecutableStatisticKHR st[32];
+    for (uint32_t i = 0; i < n; ++i) st[i] = (VkPipelineExecutableStatisticKHR){VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR};
+    VkResult r = vkGetPipelineExecutableStatisticsKHR(dev->device, &ei, &n, st);
+    if (r != VK_SUCCESS && r != VK_INCOMPLETE) return;
+    size_t len = 0;
+    for (uint32_t i = 0; i < n && len + 1 < sizeof(k->stats); ++i) {
+        char v[32];
+        switch (st[i].format) {
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:  md_snprintf(v, sizeof(v), "%s", st[i].value.b32 ? "yes" : "no"); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:   md_snprintf(v, sizeof(v), "%lld", (long long)st[i].value.i64); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:  md_snprintf(v, sizeof(v), "%llu", (unsigned long long)st[i].value.u64); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR: md_snprintf(v, sizeof(v), "%g", st[i].value.f64); break;
+            default: v[0] = 0; break;
+        }
+        len += (size_t)md_snprintf(k->stats + len, sizeof(k->stats) - len, "%s%s %s", i ? ", " : "", st[i].name, v);
+    }
+    if (len >= sizeof(k->stats)) k->stats[sizeof(k->stats) - 1] = 0;
+}
+
 md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_desc_t* desc) {
     if (!dev || !desc || !desc->code || desc->code_size == 0) {
         md_vk_fail("md_gpu_kernel_create: missing code");
@@ -3585,6 +3632,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     cpci.stage.module = k->module;
     cpci.stage.pName  = desc->entry_point ? desc->entry_point : "main";
     cpci.layout       = dev->pipeline_layout;
+    if (dev->pipeline_stats) cpci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     if (!md_vk_check(vkCreateComputePipelines(dev->device, VK_NULL_HANDLE, 1, &cpci, NULL, &k->pipeline), "vkCreateComputePipelines")) {
         md_vk_kernel_free(dev, k);
         return NULL;
@@ -3598,6 +3646,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
         md_vk_kernel_free(dev, k);
         return NULL;
     }
+    if (dev->pipeline_stats) md_vk_kernel_stats(dev, k);
 
     md_mutex_lock(&dev->device_mutex);
     md_gpu_kernel_t* slot = (md_gpu_kernel_t*)md_vk_vec_push(&dev->kernels, dev->alloc);
@@ -3625,6 +3674,7 @@ bool md_gpu_kernel_info(md_gpu_kernel_t k, md_gpu_kernel_info_t* info) {
     info->args_size                = k->args_size;
     info->max_threads_per_group    = k->device->props.limits.maxComputeWorkGroupInvocations;
     info->preferred_group_multiple = k->device->subgroup_size;
+    md_snprintf(info->stats, sizeof(info->stats), "%s", k->stats);
     return true;
 }
 
