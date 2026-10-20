@@ -87,6 +87,174 @@ UTEST(mmcif, 8g7u) {
     md_system_state_free(&sys_state);
 }
 
+
+// ASSEMBLIES. A chain A of two alanines, a chain B of one and two waters in asym C, and assemblies which take them by
+// rows of their own, by a product of operators and by ranges.
+static const char assembly_cif[] =
+"data_TEST\n"
+"loop_\n"
+"_entity.id\n"
+"_entity.type\n"
+"_entity.pdbx_description\n"
+"1 polymer 'Peptide'\n"
+"2 water 'water'\n"
+"#\n"
+"_entity_poly.entity_id 1\n"
+"_entity_poly.type 'polypeptide(L)'\n"
+"#\n"
+"loop_\n"
+"_pdbx_struct_assembly_gen.assembly_id\n"
+"_pdbx_struct_assembly_gen.oper_expression\n"
+"_pdbx_struct_assembly_gen.asym_id_list\n"
+"1 1 A,C\n"
+"1 2 B\n"
+"2 '(1,2)(3)' A\n"
+"3 1 A\n"
+"3 1 C\n"
+"4 '1-2' B\n"
+"5 1 Q\n"
+"#\n"
+"loop_\n"
+"_pdbx_struct_oper_list.id\n"
+"_pdbx_struct_oper_list.type\n"
+"_pdbx_struct_oper_list.matrix[1][1]\n"
+"_pdbx_struct_oper_list.matrix[1][2]\n"
+"_pdbx_struct_oper_list.matrix[1][3]\n"
+"_pdbx_struct_oper_list.vector[1]\n"
+"_pdbx_struct_oper_list.matrix[2][1]\n"
+"_pdbx_struct_oper_list.matrix[2][2]\n"
+"_pdbx_struct_oper_list.matrix[2][3]\n"
+"_pdbx_struct_oper_list.vector[2]\n"
+"_pdbx_struct_oper_list.matrix[3][1]\n"
+"_pdbx_struct_oper_list.matrix[3][2]\n"
+"_pdbx_struct_oper_list.matrix[3][3]\n"
+"_pdbx_struct_oper_list.vector[3]\n"
+"1 'identity operation' 1 0 0 0 0 1 0 0 0 0 1 0\n"
+"2 'point symmetry operation' -1 0 0 10 0 -1 0 0 0 0 1 0\n"
+"3 'point symmetry operation' 0 -1 0 0 1 0 0 0 0 0 1 5\n"
+"#\n"
+"loop_\n"
+"_atom_site.group_PDB\n"
+"_atom_site.id\n"
+"_atom_site.type_symbol\n"
+"_atom_site.label_atom_id\n"
+"_atom_site.label_alt_id\n"
+"_atom_site.label_comp_id\n"
+"_atom_site.label_asym_id\n"
+"_atom_site.label_entity_id\n"
+"_atom_site.label_seq_id\n"
+"_atom_site.Cartn_x\n"
+"_atom_site.Cartn_y\n"
+"_atom_site.Cartn_z\n"
+"_atom_site.auth_asym_id\n"
+"_atom_site.auth_seq_id\n"
+"ATOM 1 N N . ALA A 1 1 0.000 0.000 0.000 A 1\n"
+"ATOM 2 C CA . ALA A 1 1 1.458 0.000 0.000 A 1\n"
+"ATOM 3 C C . ALA A 1 1 2.009 1.420 0.000 A 1\n"
+"ATOM 4 O O . ALA A 1 1 1.251 2.390 0.000 A 1\n"
+"ATOM 5 N N . ALA A 1 2 3.332 1.536 0.000 A 2\n"
+"ATOM 6 C CA . ALA A 1 2 3.988 2.839 0.000 A 2\n"
+"ATOM 7 C C . ALA A 1 2 5.504 2.693 0.000 A 2\n"
+"ATOM 8 O O . ALA A 1 2 6.030 1.580 0.000 A 2\n"
+"ATOM 9 N N . ALA B 1 1 0.000 10.000 0.000 B 1\n"
+"ATOM 10 C CA . ALA B 1 1 1.458 10.000 0.000 B 1\n"
+"ATOM 11 C C . ALA B 1 1 2.009 11.420 0.000 B 1\n"
+"ATOM 12 O O . ALA B 1 1 1.251 12.390 0.000 B 1\n"
+"HETATM 13 O O . HOH C 2 . 0.000 0.000 6.000 A 101\n"
+"HETATM 14 O O . HOH C 2 . 0.000 0.000 9.000 A 102\n"
+"#\n";
+
+static bool part_is(const md_assembly_data_t* a, uint32_t part, const md_instance_idx_t* inst, size_t inst_count, const uint32_t* oper, size_t oper_count) {
+    const md_urange_t ir = md_assembly_part_inst_range(a, part);
+    const md_urange_t orr = md_assembly_part_oper_range(a, part);
+    if (ir.end - ir.beg != inst_count || orr.end - orr.beg != oper_count) return false;
+    for (size_t i = 0; i < inst_count; ++i) if (a->inst[ir.beg + i] != inst[i]) return false;
+    for (size_t i = 0; i < oper_count; ++i) if (a->oper[orr.beg + i] != oper[i]) return false;
+    return true;
+}
+
+UTEST(mmcif, assemblies) {
+    md_system_t sys = { .alloc = md_get_heap_allocator() };
+    md_system_state_t state = { .alloc = md_get_heap_allocator() };
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, (str_t){assembly_cif, sizeof(assembly_cif) - 1}));
+    ASSERT_EQ(14, sys.atom.count);
+    // A, B, and the waters of C each an instance of their own
+    ASSERT_EQ(4, sys.instance.count);
+
+    const md_assembly_data_t* a = &sys.assembly;
+    // 5 names an asym which has no atoms: it has nothing to show and is left out
+    ASSERT_EQ(4, a->count);
+    EXPECT_STREQ("1", str_ptr(md_assembly_id(a, 0)));
+    EXPECT_STREQ("4", str_ptr(md_assembly_id(a, 3)));
+    // The three operators, and the two of the product (1)(3), (2)(3)
+    ASSERT_EQ(5, a->oper_count);
+    EXPECT_STREQ("1x3", str_ptr(LBL_TO_STR(a->oper_id[3])));
+    EXPECT_STREQ("2x3", str_ptr(LBL_TO_STR(a->oper_id[4])));
+
+    // 1: A and the waters by the identity, B by the other
+    {
+        const md_urange_t parts = md_assembly_part_range(a, 0);
+        ASSERT_EQ(2, parts.end - parts.beg);
+        const md_instance_idx_t i0[] = {0, 2, 3};
+        const uint32_t o0[] = {0};
+        const md_instance_idx_t i1[] = {1};
+        const uint32_t o1[] = {1};
+        EXPECT_TRUE(part_is(a, parts.beg + 0, i0, 3, o0, 1));
+        EXPECT_TRUE(part_is(a, parts.beg + 1, i1, 1, o1, 1));
+        EXPECT_EQ(2, md_assembly_copy_count(a, 0));
+    }
+    // 2: A by the products, the factor of the last group applied first: 2 (half a turn about z and 10 along x) after 3
+    // (a quarter turn about z and 5 along z), the matrices of the file by rows
+    {
+        const md_urange_t parts = md_assembly_part_range(a, 1);
+        ASSERT_EQ(1, parts.end - parts.beg);
+        const md_instance_idx_t i0[] = {0};
+        const uint32_t o0[] = {3, 4};
+        EXPECT_TRUE(part_is(a, parts.beg, i0, 1, o0, 2));
+        const vec4_t p = {1, 2, 3, 1};
+        const vec4_t q = mat4_mul_vec4(a->oper_transform[4], p);
+        EXPECT_NEAR(12.0f, q.x, 1e-5f);
+        EXPECT_NEAR(-1.0f, q.y, 1e-5f);
+        EXPECT_NEAR(8.0f, q.z, 1e-5f);
+    }
+    // 3: two rows of the same operator are one part
+    {
+        const md_urange_t parts = md_assembly_part_range(a, 2);
+        ASSERT_EQ(1, parts.end - parts.beg);
+        const md_instance_idx_t i0[] = {0, 2, 3};
+        const uint32_t o0[] = {0};
+        EXPECT_TRUE(part_is(a, parts.beg, i0, 3, o0, 1));
+    }
+    // 4: a range of operators
+    {
+        const md_urange_t parts = md_assembly_part_range(a, 3);
+        ASSERT_EQ(1, parts.end - parts.beg);
+        const md_instance_idx_t i0[] = {1};
+        const uint32_t o0[] = {0, 1};
+        EXPECT_TRUE(part_is(a, parts.beg, i0, 1, o0, 2));
+    }
+
+    md_system_free(&sys);
+    md_system_state_free(&state);
+}
+
+// The assembly of a file in the key-value form of mmCIF (a single row of each category): all asyms by the identity
+UTEST(mmcif, assembly_key_value) {
+    md_system_t sys = { .alloc = md_get_heap_allocator() };
+    md_system_state_t state = { .alloc = md_get_heap_allocator() };
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+    const md_assembly_data_t* a = &sys.assembly;
+    ASSERT_EQ(1, a->count);
+    ASSERT_EQ(1, a->part_count);
+    ASSERT_EQ(1, a->oper_count);
+    const md_urange_t ir = md_assembly_part_inst_range(a, 0);
+    EXPECT_EQ(sys.instance.count, ir.end - ir.beg);
+    const mat4_t I = mat4_ident();
+    EXPECT_EQ(0, MEMCMP(&I, &a->oper_transform[0], sizeof(mat4_t)));
+    md_system_free(&sys);
+    md_system_state_free(&state);
+}
+
 #include <md_mmcif.c>
 
 UTEST(mmcif, tokenizer) {

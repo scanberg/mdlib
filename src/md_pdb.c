@@ -208,6 +208,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
     ASSERT(alloc);
 
     str_t line;
+    int32_t biomolecule = 0;    // REMARK 350: the one whose groups of chains follow
     while (md_buffered_reader_extract_line(&line, reader)) {
         if (line.len < 6) continue;
         if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
@@ -269,54 +270,56 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
             md_array_push(data->cryst1, cryst1, alloc);
         }
         else if (str_eq_cstr_n(line, "REMARK 350", 10)) {
-            if (str_eq_cstr(str_substr(line, 11, 12), "BIOMOLECULE:")) {
-                md_pdb_assembly_t assembly = {0};
-                assembly.id = (int32_t)parse_int(str_substr(line, 23, SIZE_MAX));
-                assembly.transform_offset = (int32_t)md_array_size(data->transforms);
-                md_array_push(data->assemblies, assembly, alloc);
+            // A biomolecule is one or more groups of chains, each followed by the BIOMT transforms which copy them
+            const str_t rest = str_substr(line, 11, SIZE_MAX);
+            if (str_eq_cstr_n(rest, "BIOMOLECULE:", 12)) {
+                biomolecule = (int32_t)parse_int(str_trim(str_substr(rest, 12, SIZE_MAX)));
             }
-            else if (str_eq_cstr(str_substr(line, 11, 30), "APPLY THE FOLLOWING TO CHAINS:") ||
-                     str_eq_cstr(str_substr(line, 11, 30), "                   AND CHAINS:")) {
-                md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
-                if (assembly) {
-                    str_t chains = str_trim(str_substr(line, 41, 30));
+            else if (str_eq_cstr_n(rest, "APPLY THE FOLLOWING TO CHAINS:", 30) || str_eq_cstr_n(str_trim(rest), "AND CHAINS:", 11)) {
+                // A group begins with the chains to apply to, which AND CHAINS lines continue
+                if (str_eq_cstr_n(rest, "APPLY", 5)) {
+                    const md_pdb_assembly_t group = {
+                        .id = biomolecule,
+                        .chain_offset = (uint32_t)md_array_size(data->assembly_chains),
+                        .transform_offset = (uint32_t)md_array_size(data->transforms),
+                    };
+                    md_array_push(data->assemblies, group, alloc);
+                }
+                md_pdb_assembly_t* group = md_array_last(data->assemblies);
+                if (group) {
+                    size_t colon = 0;
+                    str_find_char(&colon, rest, ':');
+                    str_t chains = str_substr(rest, colon + 1, SIZE_MAX);
                     str_t chain;
-
-                    // Find the next index of insertion for chain
-                    size_t next_idx = 0;
-                    while (next_idx < ARRAY_SIZE(assembly->apply_to_chains) && assembly->apply_to_chains[next_idx] != 0) {
-                        next_idx += 1;
-                    }
-                    while (extract_token_delim(&chain, &chains, ',') && next_idx < ARRAY_SIZE(assembly->apply_to_chains)) {
-                        assembly->apply_to_chains[next_idx] = str_trim(chain).ptr[0];
-                        next_idx += 1;
+                    while (extract_token_delim(&chain, &chains, ',')) {
+                        chain = str_trim(chain);
+                        if (str_empty(chain)) continue;
+                        md_array_push(data->assembly_chains, chain.ptr[0], alloc);
+                        group->chain_count += 1;
                     }
                 } else {
-                    md_log(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, assembly is missing");
+                    MD_LOG_DEBUG("REMARK 350: chains of no biomolecule");
                 }
             }
-            else if (str_eq_cstr(str_substr(line, 13, 5), "BIOMT")) {
-                md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
-                if (assembly) {
-                    const int32_t row_idx = char_to_digit(line.ptr[18]) - 1;
-                    ASSERT(-1 < row_idx && row_idx < 4);
-
-                    if (row_idx == 0) {
-                        mat4_t transform = mat4_ident();
-                        md_array_push(data->transforms, transform, alloc);
-                        assembly->transform_count += 1;
+            else if (str_eq_cstr_n(str_trim(rest), "BIOMT", 5) && line.len > 18) {
+                // REMARK 350   BIOMTr   n  m[r][1] m[r][2] m[r][3]  t[r], the rows of transform n of the group
+                md_pdb_assembly_t* group = md_array_last(data->assemblies);
+                const int32_t row = char_to_digit(line.ptr[18]) - 1;
+                str_t fields = str_substr(line, 19, SIZE_MAX);
+                str_t tok[5];
+                const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &fields);
+                if (!group || row < 0 || row > 2 || num_tok < 5) {
+                    MD_LOG_DEBUG("REMARK 350: a malformed BIOMT record");
+                } else {
+                    if (row == 0) {
+                        md_array_push(data->transforms, mat4_ident(), alloc);
+                        group->transform_count += 1;
                     }
                     mat4_t* transform = md_array_last(data->transforms);
-                    if (transform) {
-                        transform->elem[0][row_idx] = (float)parse_float(str_trim(str_substr(line, 23, 10)));
-                        transform->elem[1][row_idx] = (float)parse_float(str_trim(str_substr(line, 33, 10)));
-                        transform->elem[2][row_idx] = (float)parse_float(str_trim(str_substr(line, 43, 10)));
-                        transform->elem[3][row_idx] = (float)parse_float(str_trim(str_substr(line, 53, SIZE_MAX)));
-                    } else {
-                        md_log(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, transform is missing");
+                    for (int c = 0; c < 3; ++c) {
+                        transform->elem[c][row] = (float)parse_float(tok[1 + c]);
                     }
-                } else {
-                    md_log(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, assembly is missing");
+                    transform->elem[3][row] = (float)parse_float(tok[4]);
                 }
             }
         }
@@ -329,6 +332,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
     data->num_connections       = md_array_size(data->connections);
     data->num_cryst1            = md_array_size(data->cryst1);
     data->num_assemblies        = md_array_size(data->assemblies);
+    data->num_assembly_chains   = md_array_size(data->assembly_chains);
     data->num_transforms        = md_array_size(data->transforms);
 
     return true;
@@ -369,6 +373,72 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     if (data->sheets)               md_array_free(data->sheets, alloc);
     if (data->connections)          md_array_free(data->connections, alloc);
     if (data->assemblies)           md_array_free(data->assemblies, alloc);
+    if (data->assembly_chains)      md_array_free(data->assembly_chains, alloc);
+    if (data->transforms)           md_array_free(data->transforms, alloc);
+}
+
+// The assemblies of REMARK 350: the chains of a group of a biomolecule are the instances of their ids (a chain, and
+// the molecules it holds: its ligands, its waters). A transform in two groups (the identity of each) is one operator,
+// so that the copy it makes is one, named by its number in the first group which has it.
+static void pdb_assemblies(md_system_t* sys, const md_pdb_data_t* data, md_allocator_i* temp_alloc) {
+    if (data->num_assemblies == 0 || data->num_transforms == 0) return;
+
+    md_array(mat4_t)     transform = 0;
+    md_array(md_label_t) oper_id = 0;
+    md_array(md_assembly_gen_t) gen = 0;
+
+    for (size_t a = 0; a < data->num_assemblies; ++a) {
+        const md_pdb_assembly_t* group = data->assemblies + a;
+        if (group->chain_offset + group->chain_count > data->num_assembly_chains || group->transform_offset + group->transform_count > data->num_transforms) {
+            MD_LOG_ERROR("REMARK 350: a group of chains out of range");
+            continue;
+        }
+
+        md_array(md_instance_idx_t) inst = 0;
+        for (uint32_t c = 0; c < group->chain_count; ++c) {
+            const char chain = data->assembly_chains[group->chain_offset + c];
+            bool found = false;
+            for (size_t i = 0; i < sys->instance.count; ++i) {
+                const str_t auth = md_instance_auth_id(&sys->instance, i);
+                if (auth.len == 1 && auth.ptr[0] == chain) {
+                    md_array_push(inst, (md_instance_idx_t)i, temp_alloc);
+                    found = true;
+                }
+            }
+            if (!found) {
+                MD_LOG_DEBUG("REMARK 350: biomolecule %d names chain '%c', which has no atoms", group->id, chain);
+            }
+        }
+
+        md_array(uint32_t) oper = 0;
+        for (uint32_t t = 0; t < group->transform_count; ++t) {
+            const mat4_t M = data->transforms[group->transform_offset + t];
+            size_t k = 0;
+            for (; k < md_array_size(transform); ++k) {
+                if (MEMCMP(&transform[k], &M, sizeof(mat4_t)) == 0) break;
+            }
+            if (k == md_array_size(transform)) {
+                char buf[16];
+                const int len = snprintf(buf, sizeof(buf), "%u", t + 1);
+                md_array_push(transform, M, temp_alloc);
+                md_array_push(oper_id, make_label((str_t){buf, (size_t)MAX(len, 0)}), temp_alloc);
+            }
+            md_array_push(oper, (uint32_t)k, temp_alloc);
+        }
+
+        char buf[16];
+        const int len = snprintf(buf, sizeof(buf), "%d", group->id);
+        const md_assembly_gen_t row = {
+            .assembly_id = make_label((str_t){buf, (size_t)MAX(len, 0)}),
+            .inst        = inst,
+            .inst_count  = md_array_size(inst),
+            .oper        = oper,
+            .oper_count  = md_array_size(oper),
+        };
+        md_array_push(gen, row, temp_alloc);
+    }
+
+    md_system_assemblies_init(sys, gen, md_array_size(gen), transform, oper_id, md_array_size(transform));
 }
 
 bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options) {
@@ -564,70 +634,8 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     md_util_system_infer_comp_flags(sys);
     md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
 
-    /*
-    // Create instances from assemblies
-    for (size_t aidx = 0; aidx < data->num_assemblies; ++aidx) {
-        const md_pdb_assembly_t* assembly = &data->assemblies[aidx];
-        md_label_t instance_label = {0};
-        instance_label.len = (uint8_t)md_snprintf(instance_label.buf, sizeof(instance_label.buf), "ASM_%i", assembly->id);
-
-        for (uint32_t tidx = assembly->transform_offset; tidx < assembly->transform_offset + assembly->transform_count; ++tidx) {
-            if (mat4_equal(data->transforms[tidx], mat4_ident())) {
-                // Do not add the identity transform as an instance, that is implicit in the structure
-                // Only add the additional instances
-                continue;
-            }
-            md_urange_t instance_range = {0,0};
-            for (size_t cidx = 0; cidx < ARRAY_SIZE(data->assemblies[aidx].apply_to_chains); ++cidx) {
-                // A transform can be applied to multiple chains,
-                // We extract the consecutive ranges of the chains and possibly split this into multiple instances with the same label and transform
-
-                char chain_id = data->assemblies[aidx].apply_to_chains[cidx];
-                if (chain_id == 0) {
-                    break;
-                }
-
-				// Find the chain index
-                int chain_idx = -1;
-                for (size_t i = 0; i < num_chains; ++i) {
-                    int chain_id_i = chain_ids[i];
-                    if (chain_id_i == chain_id) {
-						chain_idx = (int)i;
-						break;
-					}
-                }
-                if (chain_idx != -1) {
-                    if (instance_range.beg == 0 && instance_range.end == 0) {
-                        instance_range = chain_atom_ranges[chain_idx];
-                    } else {
-                        // Append if possible
-                        if (instance_range.end == chain_atom_ranges[chain_idx].beg) {
-                            instance_range.end = chain_atom_ranges[chain_idx].end;
-                        } else {
-                            // Discontinous range, we need to commit and reset the range
-                            md_array_push(mol->assembly.atom_range, instance_range, mol_alloc);
-                            md_array_push(mol->assembly.label,      instance_label, mol_alloc);
-                            md_array_push(mol->assembly.transform,  data->transforms[tidx], mol_alloc);
-                            instance_range = chain_atom_ranges[chain_idx];
-                        }
-                    }
-                } else {
-                    // Fatal error
-                    MD_LOG_ERROR("Malformed PDB dataset, an assembly refers to a non existing chain id");
-                    goto done;
-                }
-            }
-
-            md_array_push(mol->assembly.atom_range, instance_range, mol_alloc);
-            md_array_push(mol->assembly.label, instance_label, mol_alloc);
-            md_array_push(mol->assembly.transform, data->transforms[tidx], mol_alloc);
-        }
-    }
-
-    mol->assembly.count = md_array_size(mol->assembly.transform);
-    ASSERT(md_array_size(mol->assembly.label) == mol->assembly.count);
-    ASSERT(md_array_size(mol->assembly.atom_range) == mol->assembly.count); 
-    */
+    // The assemblies name the chains by the ids they have in the file, which are those of the instances
+    pdb_assemblies(sys, data, temp_arena);
 
     result = true;
     md_temp_end(temp_scope);

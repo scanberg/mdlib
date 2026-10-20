@@ -32,6 +32,231 @@ uint64_t md_system_topology_changed(md_system_t* sys) {
     return sys->topology_version;
 }
 
+// ### ASSEMBLIES ###
+
+void md_system_assemblies_free(md_system_t* sys) {
+    ASSERT(sys);
+    md_allocator_i* alloc = sys->alloc;
+    md_assembly_data_t* a = &sys->assembly;
+    md_array_free(a->id, alloc);
+    md_array_free(a->part_offset, alloc);
+    md_array_free(a->part_inst_offset, alloc);
+    md_array_free(a->inst, alloc);
+    md_array_free(a->part_oper_offset, alloc);
+    md_array_free(a->oper, alloc);
+    md_array_free(a->oper_id, alloc);
+    md_array_free(a->oper_transform, alloc);
+    MEMSET(a, 0, sizeof(md_assembly_data_t));
+}
+
+static inline bool label_equal(md_label_t a, md_label_t b) {
+    return a.len == b.len && MEMCMP(a.buf, b.buf, a.len) == 0;
+}
+
+static int compare_u64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a;
+    const uint64_t y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+static int compare_i32(const void* a, const void* b) {
+    const int32_t x = *(const int32_t*)a;
+    const int32_t y = *(const int32_t*)b;
+    return (x > y) - (x < y);
+}
+
+// The operators of an assembly with the same instances: a part
+typedef struct {
+    md_array(uint32_t)          rows;   // The rows which name the operators (those of the first, while grouping by rows)
+    md_array(uint32_t)          oper;   // In the order they first appear
+    md_array(md_instance_idx_t) inst;   // Ascending, unique
+} assembly_group_t;
+
+bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const mat4_t* oper_transform, const md_label_t* oper_id, size_t oper_count) {
+    ASSERT(sys);
+    md_system_assemblies_free(sys);
+    if (gen_count == 0 || oper_count == 0) {
+        return true;
+    }
+    if (!gen || !oper_transform) {
+        MD_LOG_ERROR("Assemblies: missing rows or operators");
+        return false;
+    }
+    if (oper_count >= UINT32_MAX) {
+        MD_LOG_ERROR("Assemblies: too many operators");
+        return false;
+    }
+
+    md_allocator_i* alloc = sys->alloc;
+    md_assembly_data_t* A = &sys->assembly;
+    const size_t inst_count = sys->instance.count;
+
+    // The operators, all of them: the transforms of the coordinates. A rotation which is not orthonormal (a scale, a
+    // shear, digits lost) would be drawn wrongly, its normals and radii are not transformed as positions are.
+    md_array_push_array(A->oper_transform, oper_transform, oper_count, alloc);
+    for (size_t i = 0; i < oper_count; ++i) {
+        md_label_t id = {0};
+        if (oper_id) {
+            id = oper_id[i];
+        } else {
+            char buf[16];
+            const int len = snprintf(buf, sizeof(buf), "%zu", i + 1);
+            id = make_label((str_t){buf, (size_t)MAX(len, 0)});
+        }
+        md_array_push(A->oper_id, id, alloc);
+
+        const mat4_t M = oper_transform[i];
+        float dev = 0.0f;
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                const float d = M.elem[r][0] * M.elem[c][0] + M.elem[r][1] * M.elem[c][1] + M.elem[r][2] * M.elem[c][2];
+                dev = MAX(dev, fabsf(d - (r == c ? 1.0f : 0.0f)));
+            }
+        }
+        if (dev > 1.0e-3f || M.elem[0][3] != 0.0f || M.elem[1][3] != 0.0f || M.elem[2][3] != 0.0f || M.elem[3][3] != 1.0f) {
+            MD_LOG_INFO("Assemblies: operator '" STR_FMT "' is not rigid (off by %g)", STR_ARG(LBL_TO_STR(id)), dev);
+        }
+    }
+    A->oper_count = oper_count;
+
+    md_array_push(A->part_offset, 0, alloc);
+    md_array_push(A->part_inst_offset, 0, alloc);
+    md_array_push(A->part_oper_offset, 0, alloc);
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* ta = md_temp_allocator(temp);
+
+    bool*     row_done = md_temp_alloc_zero(temp, gen_count * sizeof(bool));
+    uint32_t* oper_row_beg = md_temp_alloc(temp, oper_count * sizeof(uint32_t));    // The (operator, row) pairs of each operator
+    uint32_t* oper_row_end = md_temp_alloc(temp, oper_count * sizeof(uint32_t));
+
+    for (size_t g0 = 0; g0 < gen_count; ++g0) {
+        if (row_done[g0]) continue;
+        const md_label_t asm_id = gen[g0].assembly_id;
+
+        // The (operator, row) pairs of the rows of the assembly, and the operators in the order they first appear
+        md_array(uint64_t) pairs = 0;
+        md_array(uint32_t) opers = 0;
+        for (size_t g = g0; g < gen_count; ++g) {
+            if (row_done[g] || !label_equal(gen[g].assembly_id, asm_id)) continue;
+            row_done[g] = true;
+            for (size_t k = 0; k < gen[g].oper_count; ++k) {
+                const uint32_t o = gen[g].oper[k];
+                if (o >= oper_count) {
+                    MD_LOG_ERROR("Assemblies: assembly '" STR_FMT "' names operator %u of %zu", STR_ARG(LBL_TO_STR(asm_id)), o, oper_count);
+                    continue;
+                }
+                md_array_push(pairs, ((uint64_t)o << 32) | (uint64_t)g, ta);
+                md_array_push(opers, o, ta);
+            }
+        }
+        const size_t pair_count = md_array_size(pairs);
+        if (pair_count == 0) continue;
+        qsort(pairs, pair_count, sizeof(uint64_t), compare_u64);
+
+        for (size_t i = 0; i < pair_count; ) {
+            const uint32_t o = (uint32_t)(pairs[i] >> 32);
+            size_t j = i;
+            while (j < pair_count && (uint32_t)(pairs[j] >> 32) == o) ++j;
+            oper_row_beg[o] = (uint32_t)i;
+            oper_row_end[o] = (uint32_t)j;
+            i = j;
+        }
+
+        // The operators by the rows which name them: the same rows, the same instances
+        md_array(assembly_group_t) groups = 0;
+        uint8_t*  seen = md_temp_alloc_zero(temp, oper_count);
+        uint32_t* rank = md_temp_alloc(temp, oper_count * sizeof(uint32_t));   // Of the first appearance of each operator
+        uint32_t  rank_count = 0;
+        for (size_t k = 0; k < md_array_size(opers); ++k) {
+            const uint32_t o = opers[k];
+            if (seen[o]) continue;
+            seen[o] = 1;
+            rank[o] = rank_count++;
+            md_array(uint32_t) rows = 0;
+            uint64_t prev = UINT64_MAX;
+            for (uint32_t p = oper_row_beg[o]; p < oper_row_end[o]; ++p) {
+                if (pairs[p] != prev) md_array_push(rows, (uint32_t)pairs[p], ta);
+                prev = pairs[p];
+            }
+            size_t g = 0;
+            for (; g < md_array_size(groups); ++g) {
+                if (md_array_size(groups[g].rows) == md_array_size(rows) && MEMCMP(groups[g].rows, rows, md_array_bytes(rows)) == 0) break;
+            }
+            if (g == md_array_size(groups)) {
+                const assembly_group_t grp = {.rows = rows};
+                md_array_push(groups, grp, ta);
+            }
+            md_array_push(groups[g].oper, o, ta);
+        }
+
+        // The instances of each group: those of its rows
+        for (size_t g = 0; g < md_array_size(groups); ++g) {
+            assembly_group_t* grp = groups + g;
+            for (size_t r = 0; r < md_array_size(grp->rows); ++r) {
+                const md_assembly_gen_t* row = gen + grp->rows[r];
+                for (size_t k = 0; k < row->inst_count; ++k) {
+                    const md_instance_idx_t inst = row->inst[k];
+                    if (inst >= 0 && (size_t)inst < inst_count) md_array_push(grp->inst, inst, ta);
+                }
+            }
+            const size_t n = md_array_size(grp->inst);
+            if (n == 0) continue;
+            qsort(grp->inst, n, sizeof(md_instance_idx_t), compare_i32);
+            size_t u = 1;
+            for (size_t k = 1; k < n; ++k) {
+                if (grp->inst[k] != grp->inst[u - 1]) grp->inst[u++] = grp->inst[k];
+            }
+            md_array_shrink(grp->inst, u);
+        }
+
+        // Groups of the same instances are one part (rows that differ only in what else they name)
+        const uint32_t first_part = (uint32_t)A->part_count;
+        for (size_t g = 0; g < md_array_size(groups); ++g) {
+            const assembly_group_t* grp = groups + g;
+            const size_t n = md_array_size(grp->inst);
+            if (n == 0) continue;
+            bool merged = false;
+            for (size_t h = 0; h < g && !merged; ++h) {
+                const assembly_group_t* prev_grp = groups + h;
+                if (md_array_size(prev_grp->inst) == n && MEMCMP(prev_grp->inst, grp->inst, n * sizeof(md_instance_idx_t)) == 0) {
+                    md_array_push_array(groups[h].oper, grp->oper, md_array_size(grp->oper), ta);
+                    merged = true;
+                }
+            }
+            if (merged) {
+                md_array_shrink(groups[g].inst, 0);
+            }
+        }
+        for (size_t g = 0; g < md_array_size(groups); ++g) {
+            assembly_group_t* grp = groups + g;
+            if (md_array_size(grp->inst) == 0) continue;
+            // The operators of a merged part in the order they first appear
+            const size_t n = md_array_size(grp->oper);
+            uint64_t* key = md_temp_alloc(temp, n * sizeof(uint64_t));
+            for (size_t k = 0; k < n; ++k) key[k] = ((uint64_t)rank[grp->oper[k]] << 32) | grp->oper[k];
+            qsort(key, n, sizeof(uint64_t), compare_u64);
+            for (size_t k = 0; k < n; ++k) grp->oper[k] = (uint32_t)key[k];
+
+            md_array_push_array(A->inst, grp->inst, md_array_size(grp->inst), alloc);
+            md_array_push_array(A->oper, grp->oper, md_array_size(grp->oper), alloc);
+            md_array_push(A->part_inst_offset, (uint32_t)md_array_size(A->inst), alloc);
+            md_array_push(A->part_oper_offset, (uint32_t)md_array_size(A->oper), alloc);
+            A->part_count += 1;
+        }
+        if (A->part_count == first_part) {
+            MD_LOG_INFO("Assemblies: assembly '" STR_FMT "' holds none of the instances of the system and was left out", STR_ARG(LBL_TO_STR(asm_id)));
+            continue;
+        }
+        md_array_push(A->id, asm_id, alloc);
+        md_array_push(A->part_offset, (uint32_t)A->part_count, alloc);
+        A->count += 1;
+    }
+
+    md_temp_end(temp);
+    return true;
+}
+
 const char* md_particle_kind_name(md_particle_kind_t kind) {
     switch (kind) {
     case MD_PARTICLE_ATOM:          return "atom";
@@ -192,9 +417,7 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->structure.atom_slot, alloc);
 
     // ASSEMBLY
-    md_array_free(sys->assembly.atom_range, alloc);
-    md_array_free(sys->assembly.label, alloc);
-    md_array_free(sys->assembly.transform, alloc);
+    md_system_assemblies_free(sys);
 
     if (!str_empty(sys->description)) {
         str_free(sys->description, alloc);

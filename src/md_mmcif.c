@@ -10,6 +10,7 @@
 #include <md_system.h>
 
 #include <math.h>
+#include <inttypes.h>
 
 
 // Enumerate fields in _atom_site
@@ -102,8 +103,9 @@ typedef struct {
     float b_iso_or_equiv;
     float formal_charge;
 
-    char label_asym_id[4];
-    char auth_asym_id[4];
+    // As long as a label holds (md_label_t): large entries have asym ids of four characters, which the assemblies name
+    char label_asym_id[8];
+    char auth_asym_id[8];
     char type_symbol[3];
     char label_alt_id;
 } mmcif_atom_site_entry_t;
@@ -671,6 +673,276 @@ done:
     return success;
 }
 
+// ASSEMBLIES. A row of _pdbx_struct_assembly_gen: the asyms (label_asym_id) its operators copy
+typedef struct {
+    str_t assembly_id;
+    str_t oper_expression;
+    str_t asym_id_list;
+} mmcif_assembly_gen_t;
+
+// An operator of _pdbx_struct_oper_list
+typedef struct {
+    str_t  id;
+    mat4_t transform;
+} mmcif_oper_t;
+
+static bool mmcif_parse_assembly_gen(md_array(mmcif_assembly_gen_t)* rows, mmcif_parse_state_t* state, md_allocator_i* alloc) {
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    bool success = false;
+
+    mmcif_section_t sec = {0};
+    if (!mmcif_parse_section(&sec, state, temp_alloc)) {
+        goto done;
+    }
+    const int id_col   = mmcif_section_find_col_idx(&sec, STR_LIT("_pdbx_struct_assembly_gen.assembly_id"));
+    const int expr_col = mmcif_section_find_col_idx(&sec, STR_LIT("_pdbx_struct_assembly_gen.oper_expression"));
+    const int asym_col = mmcif_section_find_col_idx(&sec, STR_LIT("_pdbx_struct_assembly_gen.asym_id_list"));
+    if (id_col == -1 || expr_col == -1 || asym_col == -1) {
+        MD_LOG_ERROR("_pdbx_struct_assembly_gen lacks assembly_id, oper_expression or asym_id_list");
+        goto done;
+    }
+    for (size_t i = 0; i < sec.num_rows; ++i) {
+        const mmcif_assembly_gen_t row = {
+            .assembly_id     = str_copy(mmcif_section_value(&sec, i, id_col), alloc),
+            .oper_expression = str_copy(mmcif_section_value(&sec, i, expr_col), alloc),
+            .asym_id_list    = str_copy(mmcif_section_value(&sec, i, asym_col), alloc),
+        };
+        md_array_push(*rows, row, alloc);
+    }
+    success = true;
+done:
+    md_temp_end(temp);
+    return success;
+}
+
+static bool mmcif_parse_oper_list(md_array(mmcif_oper_t)* opers, mmcif_parse_state_t* state, md_allocator_i* alloc) {
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    bool success = false;
+
+    mmcif_section_t sec = {0};
+    if (!mmcif_parse_section(&sec, state, temp_alloc)) {
+        goto done;
+    }
+    const int id_col = mmcif_section_find_col_idx(&sec, STR_LIT("_pdbx_struct_oper_list.id"));
+    int m_col[3][3];
+    int v_col[3];
+    for (int r = 0; r < 3; ++r) {
+        char name[64];
+        for (int c = 0; c < 3; ++c) {
+            const int len = snprintf(name, sizeof(name), "_pdbx_struct_oper_list.matrix[%d][%d]", r + 1, c + 1);
+            m_col[r][c] = mmcif_section_find_col_idx(&sec, (str_t){name, (size_t)len});
+        }
+        const int len = snprintf(name, sizeof(name), "_pdbx_struct_oper_list.vector[%d]", r + 1);
+        v_col[r] = mmcif_section_find_col_idx(&sec, (str_t){name, (size_t)len});
+    }
+    if (id_col == -1) {
+        MD_LOG_ERROR("_pdbx_struct_oper_list lacks id");
+        goto done;
+    }
+    for (int r = 0; r < 3; ++r) {
+        if (v_col[r] == -1 || m_col[r][0] == -1 || m_col[r][1] == -1 || m_col[r][2] == -1) {
+            MD_LOG_ERROR("_pdbx_struct_oper_list lacks the elements of its matrices or vectors");
+            goto done;
+        }
+    }
+    for (size_t i = 0; i < sec.num_rows; ++i) {
+        // Row r column c of the matrix, column major as mat4_t: elem[c][r]
+        mmcif_oper_t op = {.id = str_copy(mmcif_section_value(&sec, i, id_col), alloc), .transform = mat4_ident()};
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                op.transform.elem[c][r] = (float)parse_float(mmcif_section_value(&sec, i, m_col[r][c]));
+            }
+            op.transform.elem[3][r] = (float)parse_float(mmcif_section_value(&sec, i, v_col[r]));
+        }
+        md_array_push(*opers, op, alloc);
+    }
+    success = true;
+done:
+    md_temp_end(temp);
+    return success;
+}
+
+// The operators of an oper_expression, indices of opers: "1", "1,2,5", "1-4", "(1-4)" or a product of such groups
+// "(X0)(1-60)", "(1-60)(61-88)": an operator for each combination of one of each group, the transform of the product
+// in the order written (that of the last group applied first, as Mol* reads it), appended to opers. ids are numbers
+// in a range ("1-4"), any name otherwise. False for an expression which names an operator not in opers.
+static bool mmcif_oper_expression(md_array(uint32_t)* out, str_t expr, md_array(mmcif_oper_t)* opers, md_allocator_i* alloc) {
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* ta = md_temp_allocator(temp);
+    bool result = false;
+
+    // The groups: the parenthesized parts, or the whole expression
+    md_array(str_t) groups = 0;
+    expr = str_trim(expr);
+    if (str_find_char(NULL, expr, '(')) {
+        while (!str_empty(expr)) {
+            size_t beg, end;
+            if (!str_find_char(&beg, expr, '(') || !str_find_char(&end, expr, ')') || end < beg) {
+                MD_LOG_ERROR("Unbalanced operator expression: '" STR_FMT "'", STR_ARG(expr));
+                goto done;
+            }
+            md_array_push(groups, str_substr(expr, beg + 1, end - beg - 1), ta);
+            expr = str_trim(str_substr(expr, end + 1, SIZE_MAX));
+        }
+    } else {
+        md_array_push(groups, expr, ta);
+    }
+
+    // The operators of each group
+    const size_t group_count = md_array_size(groups);
+    md_array(uint32_t)* group_ops = md_temp_alloc_zero(temp, MAX(group_count, 1) * sizeof(md_array(uint32_t)));
+    const size_t base_count = md_array_size(*opers);
+    for (size_t g = 0; g < group_count; ++g) {
+        str_t list = groups[g];
+        str_t item;
+        while (extract_token_delim(&item, &list, ',')) {
+            item = str_trim(item);
+            if (str_empty(item)) continue;
+            size_t dash;
+            int64_t lo = 0, hi = -1;
+            if (str_find_char(&dash, item, '-') && dash > 0) {
+                lo = parse_int(str_trim(str_substr(item, 0, dash)));
+                hi = parse_int(str_trim(str_substr(item, dash + 1, SIZE_MAX)));
+            }
+            if (hi >= lo) {
+                for (int64_t v = lo; v <= hi; ++v) {
+                    size_t k = 0;
+                    for (; k < base_count; ++k) {
+                        const str_t id = (*opers)[k].id;
+                        if (!str_empty(id) && is_digit(id.ptr[0]) && parse_int(id) == v) break;
+                    }
+                    if (k == base_count) {
+                        MD_LOG_ERROR("Operator %" PRId64 " of the expression is not in _pdbx_struct_oper_list", v);
+                        goto done;
+                    }
+                    md_array_push(group_ops[g], (uint32_t)k, ta);
+                }
+            } else {
+                size_t k = 0;
+                for (; k < base_count; ++k) {
+                    if (str_eq((*opers)[k].id, item)) break;
+                }
+                if (k == base_count) {
+                    MD_LOG_ERROR("Operator '" STR_FMT "' of the expression is not in _pdbx_struct_oper_list", STR_ARG(item));
+                    goto done;
+                }
+                md_array_push(group_ops[g], (uint32_t)k, ta);
+            }
+        }
+        if (md_array_size(group_ops[g]) == 0) {
+            MD_LOG_ERROR("An empty group in an operator expression");
+            goto done;
+        }
+    }
+
+    if (group_count == 1) {
+        md_array_push_array(*out, group_ops[0], md_array_size(group_ops[0]), alloc);
+    } else {
+        // Every combination, the first group varying slowest
+        size_t total = 1;
+        for (size_t g = 0; g < group_count; ++g) {
+            total *= md_array_size(group_ops[g]);
+            if (total > 1000000) {
+                MD_LOG_ERROR("An operator expression of more than a million operators");
+                goto done;
+            }
+        }
+        size_t* idx = md_temp_alloc_zero(temp, group_count * sizeof(size_t));
+        for (size_t n = 0; n < total; ++n) {
+            mmcif_oper_t op = {.transform = mat4_ident()};
+            char name[64];
+            int len = 0;
+            for (size_t g = 0; g < group_count; ++g) {
+                const mmcif_oper_t* f = *opers + group_ops[g][idx[g]];
+                op.transform = mat4_mul(op.transform, f->transform);
+                len += snprintf(name + len, sizeof(name) - len, "%s" STR_FMT, g ? "x" : "", STR_ARG(f->id));
+                len = MIN(len, (int)sizeof(name) - 1);
+            }
+            op.id = str_copy((str_t){name, (size_t)len}, alloc);
+            md_array_push(*out, (uint32_t)md_array_size(*opers), alloc);
+            md_array_push(*opers, op, alloc);
+            for (size_t g = group_count; g-- > 0; ) {
+                if (++idx[g] < md_array_size(group_ops[g])) break;
+                idx[g] = 0;
+            }
+        }
+    }
+    result = true;
+done:
+    md_temp_end(temp);
+    return result;
+}
+
+// The assemblies of the system from the rows of _pdbx_struct_assembly_gen and the operators of _pdbx_struct_oper_list.
+// An asym names every instance of its id: a polymer chain, or each of the molecules of a non-polymer asym (its waters).
+static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen_t) rows, md_array(mmcif_oper_t) opers, md_allocator_i* temp_alloc) {
+    const size_t row_count = md_array_size(rows);
+    if (row_count == 0 || md_array_size(opers) == 0) return;
+
+    md_array(md_assembly_gen_t) gen = 0;
+    // The operators of rows with the same expression, which the products of one keep the same
+    md_array(str_t) expr_seen = 0;
+    md_array(md_array(uint32_t)) expr_ops = 0;
+
+    for (size_t r = 0; r < row_count; ++r) {
+        md_array(md_instance_idx_t) inst = 0;
+        str_t list = rows[r].asym_id_list;
+        str_t asym;
+        while (extract_token_delim(&asym, &list, ',')) {
+            asym = str_trim(asym);
+            if (str_empty(asym)) continue;
+            bool found = false;
+            for (size_t i = 0; i < sys->instance.count; ++i) {
+                if (str_eq(md_instance_id(&sys->instance, i), asym)) {
+                    md_array_push(inst, (md_instance_idx_t)i, temp_alloc);
+                    found = true;
+                }
+            }
+            if (!found) {
+                // An asym of no atoms the file kept (one of alternate locations only), or of those left out
+                MD_LOG_DEBUG("Assembly '" STR_FMT "' names asym '" STR_FMT "', which has no atoms", STR_ARG(rows[r].assembly_id), STR_ARG(asym));
+            }
+        }
+
+        const str_t expr = str_trim(rows[r].oper_expression);
+        md_array(uint32_t) ops = 0;
+        for (size_t e = 0; e < md_array_size(expr_seen); ++e) {
+            if (str_eq(expr_seen[e], expr)) {
+                ops = expr_ops[e];
+                break;
+            }
+        }
+        if (!ops) {
+            if (!mmcif_oper_expression(&ops, expr, &opers, temp_alloc)) {
+                MD_LOG_ERROR("Assembly '" STR_FMT "': could not read the operator expression '" STR_FMT "'", STR_ARG(rows[r].assembly_id), STR_ARG(expr));
+                continue;
+            }
+            md_array_push(expr_seen, expr, temp_alloc);
+            md_array_push(expr_ops, ops, temp_alloc);
+        }
+
+        const md_assembly_gen_t g = {
+            .assembly_id = make_label(rows[r].assembly_id),
+            .inst        = inst,
+            .inst_count  = md_array_size(inst),
+            .oper        = ops,
+            .oper_count  = md_array_size(ops),
+        };
+        md_array_push(gen, g, temp_alloc);
+    }
+
+    const size_t oper_count = md_array_size(opers);
+    mat4_t*     transform = md_alloc(temp_alloc, oper_count * sizeof(mat4_t));
+    md_label_t* id        = md_alloc(temp_alloc, oper_count * sizeof(md_label_t));
+    for (size_t i = 0; i < oper_count; ++i) {
+        transform[i] = opers[i].transform;
+        id[i] = make_label(opers[i].id);
+    }
+    md_system_assemblies_init(sys, gen, md_array_size(gen), transform, id, oper_count);
+}
+
 static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, mmcif_parse_state_t* state, md_allocator_i* alloc) {
     ASSERT(atom_entries);
     ASSERT(state);
@@ -844,12 +1116,16 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
     bool cell_parsed = false;
     bool entity_parsed = false;
     bool entity_poly_parsed = false;
+    bool assembly_gen_parsed = false;
+    bool oper_list_parsed = false;
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
     md_array(mmcif_atom_site_entry_t) atom_entries = 0;
     md_array(mmcif_entity_t) entities = 0;
+    md_array(mmcif_assembly_gen_t) assembly_gen = 0;
+    md_array(mmcif_oper_t) opers = 0;
 
     md_array_ensure(atom_entries, 1024, temp_arena);
     md_array_ensure(entities, 4, temp_arena);
@@ -897,11 +1173,22 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
                 goto done;
             }
             entity_poly_parsed = true;
+        } else if (str_eq_cstr_n(tok, "_pdbx_struct_assembly_gen.", 26)) {
+            // The assemblies are read as far as they can be: without them the structure is still the structure
+            if (!mmcif_parse_assembly_gen(&assembly_gen, &state, temp_arena)) {
+                MD_LOG_ERROR("Failed to parse _pdbx_struct_assembly_gen section");
+            }
+            assembly_gen_parsed = true;
+        } else if (str_eq_cstr_n(tok, "_pdbx_struct_oper_list.", 23)) {
+            if (!mmcif_parse_oper_list(&opers, &state, temp_arena)) {
+                MD_LOG_ERROR("Failed to parse _pdbx_struct_oper_list section");
+            }
+            oper_list_parsed = true;
         } else {
             mmcif_next_token(&tok, &state);
         }
 
-        if (atom_site_parsed && cell_parsed && entity_parsed && entity_poly_parsed) {
+        if (atom_site_parsed && cell_parsed && entity_parsed && entity_poly_parsed && assembly_gen_parsed && oper_list_parsed) {
             break;
         }
 
@@ -1065,6 +1352,9 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
     }
     // A polymer entity without _entity_poly does not say which polymer it is
     md_util_system_infer_entity_kinds(sys);
+
+    // The assemblies name the instances by their asym ids
+    mmcif_assemblies(sys, assembly_gen, opers, temp_arena);
 
     result = sys->atom.count > 0;
 

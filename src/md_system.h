@@ -182,14 +182,42 @@ typedef struct md_lipid_data_t {
     } tail;
 } md_lipid_data_t;
 
-// This represents symmetries which are instanced, commonly found
-// in PDB and mmcif data. It is up to the renderer to properly render this instanced data.
+// ASSEMBLIES. The biological assemblies of a deposited structure (mmCIF pdbx_struct_assembly, PDB REMARK 350): an
+// assembly is made of parts, and a part is a set of instances of the system copied by each of a set of operators,
+// rigid transforms of the coordinates of the system. The atoms are not copied: an assembly is a way of showing those of
+// the system, with the copies of its instances where the operators take them. The coordinates of the system are an
+// assembly only where one says so: one which keeps them as they are has the identity among its operators, and of the
+// instances only those it names.
+//
+// The form is canonical: within an assembly every operator is in one part only (the rows of a file which share an
+// operator are merged, md_system_assemblies_init), so that the operator names one copy, and what is bonded across
+// instances of a copy (a glycan, a ligand, a disulfide between chains) is in the same part. The operators are the
+// system's, shared by its assemblies; a product of operators (mmCIF "(1-60)(61-88)") is an operator of its own.
 typedef struct md_assembly_data_t {
-    size_t count;
-    md_urange_t* atom_range;
-    md_label_t* label;
-    mat4_t* transform;
+    size_t              count;              // Assemblies
+    md_label_t*         id;                 // [count] As the file names them ("1", "2", "PAU")
+    uint32_t*           part_offset;        // [count + 1] The parts of assembly i: [part_offset[i], part_offset[i + 1])
+
+    size_t              part_count;
+    uint32_t*           part_inst_offset;   // [part_count + 1] The instances of each part in inst
+    md_instance_idx_t*  inst;               // In increasing order within a part
+    uint32_t*           part_oper_offset;   // [part_count + 1] The operators of each part in oper
+    uint32_t*           oper;               // Operator indices, in the order the file gives them
+
+    size_t              oper_count;
+    md_label_t*         oper_id;            // [oper_count] As the file names it ("1", "X0"); a product its factors ("1x61")
+    mat4_t*             oper_transform;     // [oper_count] Rigid: a rotation (possibly improper) and a translation
 } md_assembly_data_t;
+
+// One row of the description of an assembly, as the files give them: the instances which each of the operators copies
+// (mmCIF pdbx_struct_assembly_gen, a group of chains of REMARK 350 with its BIOMT)
+typedef struct md_assembly_gen_t {
+    md_label_t                  assembly_id;
+    const md_instance_idx_t*    inst;
+    size_t                      inst_count;
+    const uint32_t*             oper;       // Indices of operators
+    size_t                      oper_count;
+} md_assembly_gen_t;
 
 // Atom centric representation of bonds: the graph of the molecules, every bond but the elastic ones
 // (MD_BOND_FLAG_ELASTIC), which are springs of the force field and connect nothing. Whatever follows bonds through it
@@ -381,7 +409,7 @@ typedef struct md_system_t {
     md_array(md_ring_flags_t)   ring_flags;         // [ring count] What each ring is (md_ring_flags_t), see md_system_ring_flags
     md_structure_data_t         structure;          // Isolated structures connected by persistent bonds (plus hierarchy links for coarse grained systems)
 
-    md_assembly_data_t          assembly;           // Assemblies of  (duplications of ranges with new transforms)
+    md_assembly_data_t          assembly;           // The biological assemblies of a deposited structure, see md_assembly_data_t
     
     // ONE table, holding everything this system carries that is not one of the fields above.
     //
@@ -408,6 +436,74 @@ extern "C" {
 
 // Records that the topology of the system changed: gives it a new topology_version, which it returns
 uint64_t md_system_topology_changed(md_system_t* sys);
+
+// ASSEMBLIES (md_assembly_data_t). Sets the assemblies of the system from the rows of a file and its operators: the
+// rows of an assembly id are merged into its parts in canonical form, the instances of each operator the union of those
+// of the rows which name it, and the operators with the same instances one part. The assemblies are in the order their
+// ids first appear, an assembly's parts in the order of their first operator, and the operators of a part in the order
+// they first appear. Instances out of range are left out; a row without instances or operators adds nothing.
+// An operator which is not rigid is logged, and kept. Replaces the previous assemblies; false (and none) on bad input.
+bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const mat4_t* oper_transform, const md_label_t* oper_id, size_t oper_count);
+void md_system_assemblies_free(md_system_t* sys);
+
+static inline size_t md_assembly_count(const md_assembly_data_t* a) {
+    ASSERT(a);
+    return a->count;
+}
+
+// The parts of an assembly
+static inline md_urange_t md_assembly_part_range(const md_assembly_data_t* a, size_t asm_idx) {
+    ASSERT(a);
+    md_urange_t r = {0};
+    if (a->part_offset && asm_idx < a->count) {
+        r.beg = a->part_offset[asm_idx];
+        r.end = a->part_offset[asm_idx + 1];
+    }
+    return r;
+}
+
+// The instances of a part: inst[beg, end)
+static inline md_urange_t md_assembly_part_inst_range(const md_assembly_data_t* a, size_t part_idx) {
+    ASSERT(a);
+    md_urange_t r = {0};
+    if (a->part_inst_offset && part_idx < a->part_count) {
+        r.beg = a->part_inst_offset[part_idx];
+        r.end = a->part_inst_offset[part_idx + 1];
+    }
+    return r;
+}
+
+// The operators of a part: oper[beg, end)
+static inline md_urange_t md_assembly_part_oper_range(const md_assembly_data_t* a, size_t part_idx) {
+    ASSERT(a);
+    md_urange_t r = {0};
+    if (a->part_oper_offset && part_idx < a->part_count) {
+        r.beg = a->part_oper_offset[part_idx];
+        r.end = a->part_oper_offset[part_idx + 1];
+    }
+    return r;
+}
+
+static inline str_t md_assembly_id(const md_assembly_data_t* a, size_t asm_idx) {
+    ASSERT(a);
+    str_t id = STR_INIT("");
+    if (a->id && asm_idx < a->count) {
+        id = LBL_TO_STR(a->id[asm_idx]);
+    }
+    return id;
+}
+
+// The copies an assembly is made of: the operators of all of its parts
+static inline size_t md_assembly_copy_count(const md_assembly_data_t* a, size_t asm_idx) {
+    ASSERT(a);
+    size_t n = 0;
+    const md_urange_t parts = md_assembly_part_range(a, asm_idx);
+    for (uint32_t p = parts.beg; p < parts.end; ++p) {
+        const md_urange_t ops = md_assembly_part_oper_range(a, p);
+        n += ops.end - ops.beg;
+    }
+    return n;
+}
 
 // Atom type table helper functions
 static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
