@@ -331,6 +331,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     bool gemm;              // corners (point list) and density vertices as a tiled GEMM (iso_gcorners_f*, iso_geval_f*)
     bool octree_small;      // sets of at most 4 functions: the octree with a thread per shell (iso_octree_small)
     bool dform;             // sets of densities: corners (point list) and vertices as phi^T D phi (iso_dcorners, iso_deval)
+    bool dform_octree;      // with dform: the octree bounds phi^T D phi too (iso_octree_dform)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);

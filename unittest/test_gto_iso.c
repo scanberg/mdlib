@@ -2744,7 +2744,12 @@ UTEST(gto_iso_gpu_lib, matches_cpu_reference) {
         // rigor: every cell whose double corners cross lies in a GPU brick with that sheet
         iso_map_t gmap;
         iso_map_init(&gmap, dbg.num_bricks + 1);
-        for (uint32_t b = 0; b < dbg.num_bricks; ++b) iso_map_put(&gmap, iso_key3((int)dbg.bricks[4 * b], (int)dbg.bricks[4 * b + 1], (int)dbg.bricks[4 * b + 2]), b);
+        uint32_t gpu_bricks = 0;
+        for (uint32_t b = 0; b < dbg.num_bricks; ++b) {
+            if (dbg.bricks[4 * b + 3] == 0) continue;   // a rejected sibling that kept its slot (the point list's order)
+            iso_map_put(&gmap, iso_key3((int)dbg.bricks[4 * b], (int)dbg.bricks[4 * b + 1], (int)dbg.bricks[4 * b + 2]), b);
+            gpu_bricks++;
+        }
         long crossing = 0, missed = 0, compared = 0, sign_flips = 0;
         double max_err = 0.0, max_val = 0.0;
         const iso_brick_store_t* st = &cache->store;
@@ -2786,7 +2791,7 @@ UTEST(gto_iso_gpu_lib, matches_cpu_reference) {
         md_gto_iso_mesh_t hm;
         ASSERT_TRUE(md_gto_iso_gpu_mesh_read(g.s, &gm, 0, &hm, md_get_heap_allocator()));
         printf("  %-12s h %.2f iso %.3f: bricks GPU %u CPU %u | crossing cells %ld, missed by GPU %ld | corners %ld: max |gpu-cpu| %.1e (max |f| %.1e), sign flips at iso %ld | %.2fs\n",
-            gc->name, h, gc->iso, dbg.num_bricks, st->num_bricks, crossing, missed, compared, max_err, max_val, sign_flips, t_gpu);
+            gc->name, h, gc->iso, gpu_bricks, st->num_bricks, crossing, missed, compared, max_err, max_val, sign_flips, t_gpu);
         EXPECT_EQ(missed, 0);
         EXPECT_LT(max_err, 1.0e-5 * fmax(max_val, 1.0));
         EXPECT_EQ(gm.open_edges, 0u);

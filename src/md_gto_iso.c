@@ -2284,6 +2284,8 @@ struct md_gto_iso_field_t {
     struct md_allocator_i* alloc;
     double*                coeff;      // an orbital's AO coefficients (the GPU path takes them as a function)
     size_t                 num_coeff;
+    float*                 dmat;       // a density matrix's symmetric part [num_ao][num_ao] (the GPU path's phi^T D phi)
+    size_t                 dmat_dim;
 };
 
 static float* iso_pack_atoms(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, size_t* out_num_atoms) {
@@ -2410,6 +2412,15 @@ md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis,
         for (int k = 0; k < r; ++k) terms[k] = (iso_term_t){w[k], k, k};
         field = iso_density_create(basis, atom_xyz, atom_xyz_stride, rows, r, terms, r, slack, factor, alloc, "md_gto_iso_field_create_density");
         free(terms);
+        // the matrix itself as well (symmetric part, float): the GPU path evaluates phi^T D phi from it
+        if (field) {
+            field->dmat = (float*)md_alloc(alloc, sizeof(float) * ((size_t)nao * nao + 1));
+            if (field->dmat) {
+                field->dmat_dim = (size_t)nao;
+                for (int i = 0; i < nao; ++i) for (int j = 0; j < nao; ++j)
+                    field->dmat[(size_t)i * nao + j] = (float)(0.5 * (density_matrix[(size_t)i * nao + j] + density_matrix[(size_t)j * nao + i]));
+            }
+        }
     }
     free(rows);
     free(w);
@@ -2419,6 +2430,7 @@ md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis,
 void md_gto_iso_field_destroy(md_gto_iso_field_t* field) {
     if (!field) return;
     if (field->coeff) md_free(field->alloc, field->coeff, sizeof(double) * (field->num_coeff + 1));
+    if (field->dmat) md_free(field->alloc, field->dmat, sizeof(float) * (field->dmat_dim * field->dmat_dim + 1));
     iso_field_free(&field->f);
     md_free(field->alloc, field, sizeof(*field));
 }

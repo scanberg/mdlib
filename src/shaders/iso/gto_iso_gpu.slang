@@ -97,7 +97,7 @@ struct IsoArgs {
     float4*   vval;           // iso_eval: gradient xyz, value w
     uint4*    vinfo;          // brick, cell, field, sheet
     uint4*    quads;
-    uint*     counters;       // 0 vertices, 1 quads, 2 open edges, 3 overflow, 4 -, 5 corner points evaluated
+    uint*     counters;       // 0 vertices, 1 quads, 2 open edges, 3 overflow, 4 -, 5 corner points evaluated, 6 -, 7 dform list overflow
     uint*     bucket;         // [0, 32) vertex counts, [32, 64) quad counts, [64, 96) vertex offsets,
                               // [96, 128) quad offsets, [128, 160) vertex cursors, [160, 192) quad cursors
     uint*     remap;          // old vertex -> bucketed vertex
@@ -110,6 +110,8 @@ struct IsoArgs {
     float*    wts;            // canon: per field 3 x fn_stride weights: w a, w a^2, w a b (a even, b = a + 1)
     float*    dmat;           // dform: num_dmat symmetric matrices [num_ao][num_ao], with the AO normalization
     uint*     fdmat;          // dform: per field, its matrix
+    float*    drs;            // dform: per matrix and AO mu, sum over nu of |D_mu nu| / |nrm_nu| (the octree's tails)
+    float4*   dprop;          // dform: per matrix: (2 eps)^2 sum |D raw|, 4 eps, positive semidefinite (1), slack
 };
 MD_SHADER_ARGS(IsoArgs);
 
@@ -291,12 +293,12 @@ OShell octree_shell_setup(uint s, float3 lo, float3 hi, float3 cen) {
 // AO n of the shell over the box: its range (mid, rad), its value at the centre and the largest
 // deviation from it; the powers taken directly (an array of them indexed by the AO's exponents is
 // spilled to local memory)
-void octree_ao(OShell o, uint n, out float mid, out float rad, out float pc, out float dev, out uint ao) {
+void octree_ao(OShell o, uint n, out float mid, out float rad, out float pc, out float dev, out uint ao, bool raw) {
     IsoArgs a = MD_ARGS;
     ao = o.ao0 + n;
     uint ijk = a.ao_ijk[ao];
     uint i = ijk & 0xFu, j = (ijk >> 4) & 0xFu, kk = (ijk >> 8) & 0xFu;
-    float nrm = a.ao_nrm[ao];
+    float nrm = raw ? 1.0 : a.ao_nrm[ao];               // raw: without the normalization (dform's D carries it)
     float2 M = iv_mul(iv_mul(iv_pow(float2(o.dlo.x, o.dhi.x), i), iv_pow(float2(o.dlo.y, o.dhi.y), j)), iv_pow(float2(o.dlo.z, o.dhi.z), kk));
     float2 P = iv_mul(M, o.R) * nrm;
     if (nrm < 0.0) P = P.yx;
@@ -314,7 +316,7 @@ void octree_shell(uint s, float3 lo, float3 hi, float3 cen, uint off) {
     for (uint n = 0u; n < o.ncart; ++n) {
         float mid, rad, pc, dev;
         uint ao;
-        octree_ao(o, n, mid, rad, pc, dev, ao);
+        octree_ao(o, n, mid, rad, pc, dev, ao, false);
         uint slot = off + n;
         o_mid[slot] = mid;
         o_rad[slot] = rad;
@@ -380,6 +382,12 @@ void octree_finish(uint4 node, uint ni, uint tid) {
             if (bits != 0u) InterlockedOr(o_mask, bits << (2u * tid));
         }
     }
+    octree_emit(node, ni, tid);
+}
+
+// The node's sheet bits in o_mask: its children (or itself as a brick)
+void octree_emit(uint4 node, uint ni, uint tid) {
+    IsoArgs a = MD_ARGS;
     GroupMemoryBarrierWithGroupSync();
     if (a.level == a.brick_level && a.mode == 1u) {
         // the bricks keep their slots, a rejected one with no sheet bits: siblings stay together
@@ -508,7 +516,7 @@ void iso_octree_small(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         for (uint n = 0u; n < o.ncart; ++n) {
             float mid, rad, pc, dev;
             uint ao;
-            octree_ao(o, n, mid, rad, pc, dev, ao);
+            octree_ao(o, n, mid, rad, pc, dev, ao, false);
             float gm = abs(mid) + rad + abs(pc) + dev;
             uint row = min(ao, a.num_ao - 1u) * a.fn_stride;
             [ForceUnroll] for (int f = 0; f < O_SMALL; ++f) {
@@ -545,6 +553,14 @@ void iso_octree_small(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     }
     octree_finish(node, ni, tid);
 }
+
+// The octree for densities as phi^T D phi (dform): over the AOs the node's box reaches (the local
+// list), with pc the AOs' values at the centre and dev bounds of their deviation from them over the
+// box, rho = pc^T D pc + 2 g . delta + delta^T D delta (g = D pc, |delta| <= dev): its range
+// rho_c +- (2 sum |g| dev + sum dev |D| dev), intersected with |rho| <= m^T |D| m (m: the AOs' bounds;
+// rho >= 0 for a positive semidefinite D, less the slack), plus what the dropped AOs (each below eps
+// over the box) can add. No factors, so no limit on the rank. A list that overflows keeps the node.
+// Defined after the dform section (it shares the local list): see iso_octree_dform below.
 
 // ------------------------------------------------------------------------------------------
 // Bricks: hash and lookups
@@ -1902,11 +1918,12 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
 // A local AOs, whatever the density's rank.
 // ------------------------------------------------------------------------------------------
 
-#define D_LS 1024                        // shells in the local list (the set uses dform up to this many shells)
+#define D_LS 2048                        // shells in the local list (more: the extraction fails, the octree keeps the node)
 #define D_CH 16                          // AOs per chunk
-groupshared uint  d_sh[D_LS];            // the local list: shells reaching the group's box, in order
-groupshared uint  d_off[D_LS + 1];       // their first local AO; d_off[d_nsh] = A
-groupshared uint  d_nsh;
+groupshared uint  d_ent[D_LS];           // the local list: shells reaching the box, in order: shell | first local AO << 16
+groupshared uint  d_nsh;                 // shells listed
+groupshared uint  d_atot;                // A, the local AOs
+groupshared uint  d_ovf;                 // the list overflowed
 groupshared uint  d_jao[64];             // tile J: global AO of each column (INVALID past A)
 groupshared uint  d_rao[D_CH];           // chunk: global AO of each row (INVALID past A)
 groupshared int   d_rb[K_CK];            // chunk: per staged shell, the chunk row of its first AO
@@ -1914,34 +1931,42 @@ groupshared uint  d_pg[K_CK];            // chunk: per staged shell, its first p
 groupshared uint  d_cs0, d_cns;          // chunk: first local shell, shells staged
 groupshared uint  d_any;
 
-// The local shell holding local AO la (d_off ascending)
+uint d_sh(uint i)  { return d_ent[i] & 0xFFFFu; }
+uint d_off(uint i) { return i < d_nsh ? d_ent[i] >> 16 : d_atot; }
+
+// The local shell holding local AO la (first AOs ascending)
 uint d_find(uint la) {
-    uint lo = 0u, hi = d_nsh;                           // d_off[lo] <= la < d_off[hi]
+    uint lo = 0u, hi = d_nsh;                           // d_off(lo) <= la < d_off(hi)
     while (hi - lo > 1u) {
         uint mid = (lo + hi) >> 1;
-        if (d_off[mid] <= la) lo = mid; else hi = mid;
+        if ((d_ent[mid] >> 16) <= la) lo = mid; else hi = mid;
     }
     return lo;
 }
 
-// The local list for the box (all threads; barriers inside)
-void d_list(float3 lo, float3 hi, uint tid) {
+// The local list for the box, the shells reaching it within r^2 cutoff * reach (all threads of a
+// group of G_GROUP; barriers inside). An overflow sets d_ovf and keeps the first D_LS.
+void d_list(float3 lo, float3 hi, uint tid, float reach) {
     IsoArgs a = MD_ARGS;
     uint nsh = 0u, nao = 0u;
     for (uint s0 = 0u; s0 < a.num_shells; s0 += uint(G_GROUP)) {
         uint s = min(s0 + tid, a.num_shells - 1u);
         IsoShell sh = a.shells[s];
-        bool reach = s0 + tid < a.num_shells && box_dist2(sh.c.xyz, lo, hi) <= sh.c.w;
+        bool in = s0 + tid < a.num_shells && box_dist2(sh.c.xyz, lo, hi) <= sh.c.w * reach;
         uint tot;
-        uint pre = iso_group_prefix_sum(reach ? (1u | (sh.info.y << 16)) : 0u, tid, G_GROUP, tot);
-        if (reach) {
+        uint pre = iso_group_prefix_sum(in ? (1u | (sh.info.y << 16)) : 0u, tid, G_GROUP, tot);
+        if (in) {
             uint at = nsh + (pre & 0xFFFFu);
-            if (at < uint(D_LS)) { d_sh[at] = s; d_off[at] = nao + (pre >> 16); }
+            if (at < uint(D_LS)) d_ent[at] = s | ((nao + (pre >> 16)) << 16);
         }
         nsh += tot & 0xFFFFu;
         nao += tot >> 16;
     }
-    if (tid == 0u) { d_nsh = min(nsh, uint(D_LS)); d_off[min(nsh, uint(D_LS))] = nao; }
+    if (tid == 0u) {
+        d_nsh = min(nsh, uint(D_LS));
+        d_ovf = nsh > uint(D_LS) ? 1u : 0u;
+        d_atot = nsh > uint(D_LS) ? (d_ent[D_LS - 1] >> 16) + a.shells[d_ent[D_LS - 1] & 0xFFFFu].info.y : nao;
+    }
     GroupMemoryBarrierWithGroupSync();
 }
 
@@ -1949,13 +1974,13 @@ void d_list(float3 lo, float3 hi, uint tid) {
 // the global AO of each row (all threads; barriers inside, the first after earlier reads of them)
 void d_stage(uint q, uint tid) {
     IsoArgs a = MD_ARGS;
-    uint A = d_off[d_nsh];
+    uint A = d_atot;
     uint la0 = q * uint(D_CH);
     GroupMemoryBarrierWithGroupSync();
     if (tid == 0u) {
         uint s0 = d_find(la0);
         uint n = 0u;
-        while (s0 + n < d_nsh && d_off[s0 + n] < la0 + uint(D_CH) && n < uint(K_CK)) n++;
+        while (s0 + n < d_nsh && d_off(s0 + n) < la0 + uint(D_CH) && n < uint(K_CK)) n++;
         d_cs0 = s0;
         d_cns = n;
     }
@@ -1964,13 +1989,13 @@ void d_stage(uint q, uint tid) {
         uint ao = INVALID;
         if (la < A) {
             uint ls = d_find(la);
-            ao = a.shells[d_sh[ls]].info2.x + (la - d_off[ls]);
+            ao = a.shells[d_sh(ls)].info2.x + (la - d_off(ls));
         }
         d_rao[tid] = ao;
     }
     GroupMemoryBarrierWithGroupSync();
     uint ns = d_cns;
-    IsoShell sh = a.shells[d_sh[min(d_cs0 + min(tid, ns - 1u), d_nsh - 1u)]];
+    IsoShell sh = a.shells[d_sh(min(d_cs0 + min(tid, max(ns, 1u) - 1u), d_nsh - 1u))];
     if (tid < ns) k_np[tid] = sh.info.z;
     GroupMemoryBarrierWithGroupSync();
     if (tid < ns) {
@@ -1980,7 +2005,7 @@ void d_stage(uint q, uint tid) {
         bool fits = po + np <= uint(K_PR);
         k_cs[tid] = sh.c;
         k_ci[tid] = sh.info.x | (sh.info.y << 4) | (np << 8) | ((fits ? po : 0u) << 16) | (fits ? 0u : 0x80000000u);
-        d_rb[tid] = int(d_off[d_cs0 + tid]) - int(la0);
+        d_rb[tid] = int(d_off(d_cs0 + tid)) - int(la0);
         d_pg[tid] = sh.info.w;
         if (fits) for (uint k = 0u; k < np; ++k) k_pr[po + k] = a.prims[sh.info.w + k];
     }
@@ -2096,8 +2121,12 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
         GroupMemoryBarrierWithGroupSync();
     }
     float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
-    d_list(glo, ghi, tid);
-    uint A = d_off[d_nsh];
+    d_list(glo, ghi, tid, 1.0);
+    if (d_ovf != 0u) {                                     // uniform: the values would be wrong
+        if (tid == 0u) InterlockedAdd(a.counters[7], 1u);
+        return;
+    }
+    uint A = d_atot;
     uint nq = (A + uint(D_CH) - 1u) / uint(D_CH);
     uint nj = (A + 63u) / 64u;
     uint n = a.num_ao;
@@ -2129,7 +2158,7 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
                 uint ao = INVALID;
                 if (la < A) {
                     uint ls = d_find(la);
-                    ao = a.shells[d_sh[ls]].info2.x + (la - d_off[ls]);
+                    ao = a.shells[d_sh(ls)].info2.x + (la - d_off(ls));
                 }
                 d_jao[tid] = ao;
             }
@@ -2209,6 +2238,127 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
 
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_dcorners(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<0>(gid, tid); }
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_deval(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<1>(gid, tid); }
+
+#define OD_BLK 256                       // local AOs per block (two per thread)
+groupshared float4 od_q[OD_BLK];         // a block of local AOs: value at the centre, deviation bound, magnitude bound, AO
+groupshared float  od_sum[8 * 32];       // per wave: the node's sums
+
+// Local AO la over the box: its raw value at the centre, deviation and magnitude bounds, global AO
+float4 od_ao(uint la, float3 lo, float3 hi, float3 cen) {
+    uint ls = d_find(la);
+    OShell o = octree_shell_setup(d_sh(ls), lo, hi, cen);
+    float mid, rad, pc, dev;
+    uint ao;
+    octree_ao(o, la - d_off(ls), mid, rad, pc, dev, ao, true);
+    return float4(pc, dev, abs(mid) + rad, asfloat(ao));
+}
+
+[shader("compute")]
+[numthreads(G_GROUP, 1, 1)]
+void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint ni = node_index(gid);
+    if (ni >= min(a.count_in[0], a.cap)) return;          // uniform per group
+    uint4 node = a.nodes_in[ni];
+    float3 lo, hi, cen;
+    octree_box(node, lo, hi, cen);
+    if (tid == 0u) o_mask = 0u;
+    d_list(lo, hi, tid, 1.0 + 16.0 * U);
+    bool ovf = d_ovf != 0u;
+    uint A = d_atot;
+    uint nb = (A + uint(OD_BLK) - 1u) / uint(OD_BLK);
+    uint n = a.num_ao;
+    uint lanes = WaveGetLaneCount();
+    uint w = min(iso_wave_index(tid, lanes), 31u);
+    uint nw = min(iso_num_waves(G_GROUP, lanes), 32u);
+
+    for (uint u = 0u; u < a.num_dmat; ++u) {
+        bool any = false;
+        for (uint f = 0u; f < a.num_fields; ++f) any = any || (((node.w >> (2u * f)) & 3u) != 0u && a.fdmat[f] == u);
+        if (!any) continue;                                // uniform
+        float sm[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // rho_c, sum |pc| ga, sum |g| dev, sum dev ga, sum dev h, m^T |D| m, sum m rs
+        if (!ovf) {
+            float* D = a.dmat + u * n * n;
+            for (uint pb = 0u; pb < nb; ++pb) {
+                uint la0 = pb * uint(OD_BLK) + tid, la1 = la0 + uint(G_GROUP);
+                float4 m0 = la0 < A ? od_ao(la0, lo, hi, cen) : float4(0.0);
+                float4 m1 = la1 < A ? od_ao(la1, lo, hi, cen) : float4(0.0);
+                uint a0 = asuint(m0.w), a1 = asuint(m1.w);
+                float g0 = 0.0, ga0 = 0.0, h0 = 0.0, k0 = 0.0, g1 = 0.0, ga1 = 0.0, h1 = 0.0, k1 = 0.0;
+                for (uint qb = 0u; qb < nb; ++qb) {
+                    GroupMemoryBarrierWithGroupSync();
+                    if (qb == pb) {
+                        od_q[tid] = m0;
+                        od_q[tid + uint(G_GROUP)] = m1;
+                    } else {
+                        uint lb = qb * uint(OD_BLK) + tid;
+                        od_q[tid] = lb < A ? od_ao(lb, lo, hi, cen) : float4(0.0);
+                        od_q[tid + uint(G_GROUP)] = lb + uint(G_GROUP) < A ? od_ao(lb + uint(G_GROUP), lo, hi, cen) : float4(0.0);
+                    }
+                    GroupMemoryBarrierWithGroupSync();
+                    uint qn = min(uint(OD_BLK), A - qb * uint(OD_BLK));
+                    for (uint v = 0u; v < qn; ++v) {
+                        float4 q = od_q[v];
+                        float* row = D + asuint(q.w) * n;      // D symmetric: row nu, the threads' columns mu
+                        float apc = abs(q.x);
+                        if (la0 < A) {
+                            float d = row[a0], ad = abs(d);
+                            g0 += d * q.x; ga0 += ad * apc; h0 += ad * q.y; k0 += ad * q.z;
+                        }
+                        if (la1 < A) {
+                            float d = row[a1], ad = abs(d);
+                            g1 += d * q.x; ga1 += ad * apc; h1 += ad * q.y; k1 += ad * q.z;
+                        }
+                    }
+                }
+                if (la0 < A) {
+                    sm[0] += m0.x * g0; sm[1] += abs(m0.x) * ga0; sm[2] += abs(g0) * m0.y; sm[3] += m0.y * ga0;
+                    sm[4] += m0.y * h0; sm[5] += m0.z * k0; sm[6] += m0.z * a.drs[u * n + a0];
+                }
+                if (la1 < A) {
+                    sm[0] += m1.x * g1; sm[1] += abs(m1.x) * ga1; sm[2] += abs(g1) * m1.y; sm[3] += m1.y * ga1;
+                    sm[4] += m1.y * h1; sm[5] += m1.z * k1; sm[6] += m1.z * a.drs[u * n + a1];
+                }
+            }
+        }
+        // the sums over the group (in any order: the allowances below cover it)
+        GroupMemoryBarrierWithGroupSync();
+        [ForceUnroll] for (int k = 0; k < 7; ++k) {
+            float t = WaveActiveSum(sm[k]);
+            if (WaveIsFirstLane()) od_sum[w * 8u + uint(k)] = t;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) {
+            float2 rho;
+            if (ovf) {
+                rho = float2(-3.0e38, 3.0e38);
+            } else {
+                float t[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+                for (uint k = 0u; k < nw; ++k) [ForceUnroll] for (int c = 0; c < 7; ++c) t[c] += od_sum[k * 8u + uint(c)];
+                float4 pr = a.dprop[u];
+                float gam = float(A + 8u) * 2.0 * U;
+                float tail = pr.x + pr.y * t[6] * (1.0 + gam) + pr.w;
+                float W = (2.0 * t[2] + 2.0 * gam * t[3] + t[4]) * (1.0 + gam) + 2.0 * gam * t[1] + tail + 1.0e-35;
+                float2 c = float2(t[0] - W, t[0] + W);
+                float nh = t[5] * (1.0 + gam) + tail + 1.0e-35;
+                float2 nat = float2(pr.z != 0.0 ? -pr.w : -nh, nh);
+                rho = float2(max(c.x, nat.x), min(c.y, nat.y));
+                if (rho.x > rho.y) rho = float2(min(c.x, nat.x), max(c.y, nat.y));   // only by rounding; keep the hull
+            }
+            for (uint f = 0u; f < a.num_fields; ++f) {
+                uint fbits = (node.w >> (2u * f)) & 3u;
+                if (fbits == 0u || a.fdmat[f] != u) continue;
+                float iso = a.fields[f].iso;
+                uint bits = 0u;
+                if (rho.x <= iso && rho.y >= iso)   bits |= 1u;
+                if (rho.x <= -iso && rho.y >= -iso) bits |= 2u;
+                bits &= fbits;
+                if (bits != 0u) InterlockedOr(o_mask, bits << (2u * f));
+            }
+        }
+    }
+    octree_emit(node, ni, tid);
+}
 
 // Sets of single-function fields (orbitals): one thread per vertex, its field's one column of C.
 // The tiled GEMM above would compute every field's function at every vertex.
