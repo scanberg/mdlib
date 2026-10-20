@@ -169,6 +169,12 @@ typedef struct md_tpr_moltype_t {
     // the structure of the molecule it is part of.
     size_t num_bonds;
     md_atom_pair_t* bonds;
+    // Elastic bonds in local, zero based atom indices, idx[0] < idx[1], sorted and unique: the pairs held at a distance
+    // by an interaction GROMACS does not count as a chemical bond (bond types 6, 9 and 10, constraints of type 2): the
+    // elastic network of a coarse grained protein or nucleic acid, a restraint. A pair which is also in bonds is not
+    // repeated here.
+    size_t num_elastic_bonds;
+    md_atom_pair_t* elastic_bonds;
     // Non-bonded exclusions in local, zero based atom indices, as grompp wrote them: the atoms within nrexcl
     // bonds and the explicit [ exclusions ]. The atoms excluded from atom i are excl[excl_offset[i]] ..
     // excl[excl_offset[i + 1] - 1], ascending, without i itself. Symmetric. NULL when the molecule type has none.
@@ -214,9 +220,12 @@ typedef struct md_tpr_data_t {
     size_t num_molblocks;
     md_tpr_molblock_t* molblocks;
 
-    // Bonds between atoms of different molecules ([ intermolecular_interactions ]), in global atom indices
+    // Bonds between atoms of different molecules ([ intermolecular_interactions ]), in global atom indices, and the
+    // elastic bonds among those interactions (restraints between molecules)
     size_t num_intermolecular_bonds;
     md_atom_pair_t* intermolecular_bonds;
+    size_t num_intermolecular_elastic_bonds;
+    md_atom_pair_t* intermolecular_elastic_bonds;
 
     size_t num_atoms;
     bool   has_box;
@@ -253,7 +262,9 @@ static inline md_tpr_lj_t md_tpr_lj_pair(const md_tpr_data_t* data, size_t type_
 bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom_b);
 
 // Builds a system from the tpr: atoms, residues, bonds (of origin MD_BOND_ORIGIN_TOPOLOGY), coordinates
-// and box. Residues are numbered the way gmx numbers them when it writes the system out (single
+// and box. The elastic bonds of the topology (md_tpr_moltype_t::elastic_bonds) are bonds of the system with
+// MD_BOND_FLAG_ELASTIC, and so are the bonds of an elastic network written as plain bonds
+// (md_util_system_infer_elastic_bonds). Residues are numbered the way gmx numbers them when it writes the system out (single
 // residue molecules such as water and ions are renumbered consecutively), so the numbers agree with
 // a .gro written from the same tpr.
 //

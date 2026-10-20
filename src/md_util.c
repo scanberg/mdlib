@@ -3784,18 +3784,22 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             const size_t num_atoms = state->num_atoms;
             uint64_t* covered = make_bitfield(num_atoms, temp_arena);
 
+            // An elastic bond is no bond of the molecule: it neither stands in for an inferred bond nor says that a
+            // topology covers its atoms
             md_atom_pair_t* saved_sorted = md_temp_alloc_array(temp_scope, md_atom_pair_t, num_saved);
+            size_t num_sorted = 0;
             for (size_t i = 0; i < num_saved; ++i) {
+                if (bond_flags[i] & MD_BOND_FLAG_ELASTIC) continue;
                 md_atom_pair_t pair = bond_pairs[i];
                 if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
-                saved_sorted[i] = pair;
+                saved_sorted[num_sorted++] = pair;
                 if (md_bond_origin(bond_flags[i]) == MD_BOND_ORIGIN_TOPOLOGY) {
                     for (int k = 0; k < 2; ++k) {
                         if (pair.idx[k] >= 0 && (size_t)pair.idx[k] < num_atoms) bitfield_set_bit(covered, pair.idx[k]);
                     }
                 }
             }
-            qsort(saved_sorted, num_saved, sizeof(md_atom_pair_t), compare_atom_pair);
+            qsort(saved_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair);
 
             size_t w = 0;
             for (size_t i = 0; i < bond->count; ++i) {
@@ -3803,7 +3807,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 if (bitfield_test_bit(covered, pair.idx[0]) && bitfield_test_bit(covered, pair.idx[1])) continue;
                 md_atom_pair_t key = pair;
                 if (key.idx[0] > key.idx[1]) { md_atom_idx_t t = key.idx[0]; key.idx[0] = key.idx[1]; key.idx[1] = t; }
-                if (bsearch(&key, saved_sorted, num_saved, sizeof(md_atom_pair_t), compare_atom_pair)) continue;
+                if (num_sorted && bsearch(&key, saved_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair)) continue;
                 bond->pairs[w] = pair;
                 bond->flags[w] = bond->flags[i];
                 w += 1;
@@ -3831,11 +3835,12 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
     md_system_topology_changed(sys);
     // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate, except the bonds a user
     // added by hand and those the file gives (CONECT records), which md_util_infer_covalent_bonds keeps and reconciles
-    // with the inferred ones: an inferred bond never stands in for one of them.
+    // with the inferred ones: an inferred bond never stands in for one of them. The elastic bonds are kept as well,
+    // whatever their origin: they are no bonds of the molecule, which is what is inferred, and nothing infers them.
     size_t num_user = 0;
     for (size_t i = 0; i < sys->bond.count; ++i) {
         const md_bond_origin_t origin = md_bond_origin(sys->bond.flags[i]);
-        if (origin == MD_BOND_ORIGIN_USER || origin == MD_BOND_ORIGIN_FILE) {
+        if (origin == MD_BOND_ORIGIN_USER || origin == MD_BOND_ORIGIN_FILE || (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) {
             sys->bond.pairs[num_user] = sys->bond.pairs[i];
             sys->bond.flags[num_user] = sys->bond.flags[i];
             num_user += 1;
@@ -3856,6 +3861,7 @@ size_t md_util_system_infer_coordination(md_system_t* sys) {
     for (size_t i = 0; i < sys->bond.count; ++i) {
         const md_atom_pair_t p = sys->bond.pairs[i];
         if (p.idx[0] < 0 || p.idx[1] < 0 || (size_t)p.idx[0] >= sys->atom.count || (size_t)p.idx[1] >= sys->atom.count) continue;
+        if (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC) continue;   // A spring, of no chemistry
         const bool metal_a = is_metal(md_atom_atomic_number(&sys->atom, p.idx[0]));
         const bool metal_b = is_metal(md_atom_atomic_number(&sys->atom, p.idx[1]));
         if (metal_a != metal_b && !(sys->bond.flags[i] & MD_BOND_FLAG_COORDINATE)) {
@@ -4474,6 +4480,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             }
         }
         for (size_t i = 0; i < sys->bond.count; ++i) {
+            if (sys->bond.flags && (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
             const md_atom_pair_t pair = sys->bond.pairs[i];
             const md_component_idx_t a = atom_comp_idx[pair.idx[0]];
             const md_component_idx_t b = atom_comp_idx[pair.idx[1]];
@@ -5151,6 +5158,113 @@ static bool uf_union(int32_t* parent, int32_t a, int32_t b) {
     return true;
 }
 
+// ### ELASTIC BONDS ###
+//
+// The chemistry of a coarse grained chain is that of infer_coarse_grained_bonds: between two of its residues there is the
+// link from the last backbone bead of one to the first of the next, and a disulfide between the SC1 of two cysteines. A
+// chain goes on while the residues are of one kind and their numbering does not start over.
+static inline bool cg_chain_restarts(md_sequence_id_t prev_seq, md_sequence_id_t seq) {
+    return seq < prev_seq && !(seq <= 1 && prev_seq >= 9999);  // GRO and PDB wrap at 99999 and 9999
+}
+
+static inline bool cg_cysteine_sc1(const md_system_t* sys, int32_t comp_idx, int32_t atom_idx) {
+    const str_t comp_name = md_component_name(&sys->component, comp_idx);
+    return (str_eq_cstr(comp_name, "CYS") || str_eq_cstr(comp_name, "CYX")) && str_eq_cstr(md_atom_name(&sys->atom, atom_idx), "SC1");
+}
+
+size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
+    ASSERT(sys);
+    const size_t N = sys->atom.count;
+    const size_t C = sys->component.count;
+    if (sys->bond.count == 0 || !sys->bond.flags || N == 0 || C == 0 || !sys->component.atom_offset) return 0;
+    if (!md_system_is_coarse_grained(sys)) return 0;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_allocator_i* arena = md_temp_allocator(temp);
+
+    int32_t* comp_of = md_alloc(arena, sizeof(int32_t) * N);
+    for (size_t i = 0; i < N; ++i) comp_of[i] = -1;
+    // The beads a residue of a chain links by: the first and the last bead of its backbone, and in a nucleotide of
+    // Martini 3 its BB2, which is linked to the next residue as well
+    int32_t* first_bb = md_alloc(arena, sizeof(int32_t) * C);
+    int32_t* last_bb  = md_alloc(arena, sizeof(int32_t) * C);
+    int32_t* also_bb  = md_alloc(arena, sizeof(int32_t) * C);
+    const uint32_t version = martini_system(sys, label_of_atom, &sys->atom).version;
+    const bool m3 = (version & (MARTINI_2 | MARTINI_2P)) == 0;
+    for (size_t ci = 0; ci < C; ++ci) {
+        first_bb[ci] = last_bb[ci] = also_bb[ci] = -1;
+        const md_urange_t range = md_component_atom_range(&sys->component, ci);
+        const md_component_kind_t kind = md_component_kind(&sys->component, ci);
+        const bool biopolymer = kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+        for (uint32_t i = range.beg; i < range.end && i < N; ++i) {
+            comp_of[i] = (int32_t)ci;
+            if (!biopolymer || md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_BEAD) continue;
+            if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE)) continue;
+            if (first_bb[ci] == -1) first_bb[ci] = (int32_t)i;
+            last_bb[ci] = (int32_t)i;
+            if (m3 && kind == MD_COMPONENT_KIND_NUCLEOTIDE && str_eq_cstr(md_atom_name(&sys->atom, i), "BB2")) also_bb[ci] = (int32_t)i;
+        }
+    }
+
+    // The links of the chains first: they say where a chain begins and ends, which the bond closing a cyclic one needs
+    uint8_t* has_prev = md_alloc(arena, C);
+    uint8_t* has_next = md_alloc(arena, C);
+    MEMSET(has_prev, 0, C);
+    MEMSET(has_next, 0, C);
+    int32_t* chain = md_alloc(arena, sizeof(int32_t) * C);
+    for (size_t ci = 0; ci < C; ++ci) chain[ci] = (int32_t)ci;
+    md_array(uint32_t) candidates = 0;
+
+    for (size_t b = 0; b < sys->bond.count; ++b) {
+        if (sys->bond.flags[b] & MD_BOND_FLAG_ELASTIC) continue;
+        int32_t x = sys->bond.pairs[b].idx[0];
+        int32_t y = sys->bond.pairs[b].idx[1];
+        if (x < 0 || y < 0 || (size_t)x >= N || (size_t)y >= N) continue;
+        if (comp_of[x] > comp_of[y]) { const int32_t t = x; x = y; y = t; }
+        const int32_t ca = comp_of[x];
+        const int32_t cb = comp_of[y];
+        if (ca < 0 || ca == cb) continue;  // Within a residue
+        if (md_atom_particle_kind(&sys->atom, x) != MD_PARTICLE_BEAD || md_atom_particle_kind(&sys->atom, y) != MD_PARTICLE_BEAD) continue;
+        const md_component_kind_t ka = md_component_kind(&sys->component, ca);
+        const md_component_kind_t kb = md_component_kind(&sys->component, cb);
+        if (!(ka == MD_COMPONENT_KIND_AMINO_ACID || ka == MD_COMPONENT_KIND_NUCLEOTIDE) || ka != kb) continue;
+
+        const bool link = cb == ca + 1 && (x == last_bb[ca] || x == also_bb[ca]) && y == first_bb[cb] &&
+                          !cg_chain_restarts(md_component_seq_id(&sys->component, ca), md_component_seq_id(&sys->component, cb));
+        if (link) {
+            has_next[ca] = 1;
+            has_prev[cb] = 1;
+            uf_union(chain, ca, cb);
+        } else if (ka == MD_COMPONENT_KIND_AMINO_ACID && cg_cysteine_sc1(sys, ca, x) && cg_cysteine_sc1(sys, cb, y)) {
+            // A disulfide
+        } else {
+            md_array_push(candidates, (uint32_t)b, arena);
+        }
+    }
+
+    size_t count = 0;
+    for (size_t k = 0; k < md_array_size(candidates); ++k) {
+        const uint32_t b = candidates[k];
+        int32_t x = sys->bond.pairs[b].idx[0];
+        int32_t y = sys->bond.pairs[b].idx[1];
+        if (comp_of[x] > comp_of[y]) { const int32_t t = x; x = y; y = t; }
+        const int32_t ca = comp_of[x];
+        const int32_t cb = comp_of[y];
+        // The bond which closes a cyclic chain: from the first bead of the backbone at its start to the last at its end
+        const bool closure = cb > ca + 1 && x == first_bb[ca] && y == last_bb[cb] && !has_prev[ca] && !has_next[cb] && uf_find(chain, ca) == uf_find(chain, cb);
+        if (closure) continue;
+        sys->bond.flags[b] |= MD_BOND_FLAG_ELASTIC;
+        count += 1;
+    }
+
+    md_temp_end(temp);
+    if (count) {
+        md_bond_build_connectivity(&sys->bond, N, sys->alloc);
+        md_system_topology_changed(sys);
+    }
+    return count;
+}
+
 // Hierarchy links for coarse grained systems, used where bonds leave the topology disconnected.
 //
 // md_structure_data_t is a spanning forest and unwrap only needs each atom's parent to stay within half a cell
@@ -5182,6 +5296,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
     for (size_t i = 0; i < atom_count; ++i) set[i] = (int32_t)i;
 
     for (size_t i = 0; i < sys->bond.count; ++i) {
+        if (sys->bond.flags && (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
         const md_atom_pair_t pair = sys->bond.pairs[i];
         if ((size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count) {
             uf_union(set, pair.idx[0], pair.idx[1]);
@@ -5328,8 +5443,12 @@ bool md_util_system_infer_structures(md_system_t* sys) {
         if (num_links > 0) {
             link_graph.count = sys->bond.count + num_links;
             md_array_resize(link_graph.pairs, link_graph.count, temp_arena);
+            md_array_resize(link_graph.flags, link_graph.count, temp_arena);
+            MEMSET(link_graph.flags, 0, sizeof(md_bond_flags_t) * link_graph.count);
             if (sys->bond.count) {
                 MEMCPY(link_graph.pairs, sys->bond.pairs, sizeof(md_atom_pair_t) * sys->bond.count);
+                // With the flags, so that its connectivity leaves the elastic bonds out as that of the system does
+                if (sys->bond.flags) MEMCPY(link_graph.flags, sys->bond.flags, sizeof(md_bond_flags_t) * sys->bond.count);
             }
             MEMCPY(link_graph.pairs + sys->bond.count, links, sizeof(md_atom_pair_t) * num_links);
             md_bond_build_connectivity(&link_graph, atom_count, temp_arena);

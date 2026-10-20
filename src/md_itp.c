@@ -27,7 +27,8 @@ typedef enum {
     SECTION_ATOMTYPES,
     SECTION_MOLECULETYPE,
     SECTION_ATOMS,
-    SECTION_BONDS,          // [ bonds ], [ constraints ]: ai aj ...
+    SECTION_BONDS,          // [ bonds ]: ai aj funct ... (funct 6, 9, 10: elastic)
+    SECTION_CONSTRAINTS,    // [ constraints ]: ai aj funct ... (funct 2: elastic)
     SECTION_SETTLES,        // ow funct doh dhh -> ow-(ow+1), ow-(ow+2)
     SECTION_VSITE,          // site ai ... -> site-ai
     SECTION_VSITEN,         // site funct ai ... -> site-ai
@@ -73,7 +74,7 @@ static section_t section_from_name(str_t name) {
         {"moleculetype",    SECTION_MOLECULETYPE},
         {"atoms",           SECTION_ATOMS},
         {"bonds",           SECTION_BONDS},
-        {"constraints",     SECTION_BONDS},
+        {"constraints",     SECTION_CONSTRAINTS},
         {"settles",         SECTION_SETTLES},
         {"virtual_sites1",  SECTION_VSITE},
         {"virtual_sites2",  SECTION_VSITE},
@@ -98,7 +99,7 @@ static md_itp_moleculetype_t* current_mol(itp_parser_t* p) {
     return &p->data->moleculetypes[p->mol];
 }
 
-static void add_local_bond(itp_parser_t* p, int64_t a1, int64_t b1) {
+static void add_local_pair(itp_parser_t* p, int64_t a1, int64_t b1, bool elastic) {
     md_itp_moleculetype_t* mol = current_mol(p);
     if (!mol) return;
     const int64_t n = (int64_t)md_array_size(mol->atoms);
@@ -107,7 +108,23 @@ static void add_local_bond(itp_parser_t* p, int64_t a1, int64_t b1) {
         return;
     }
     md_atom_pair_t pair = {{ (md_atom_idx_t)(MIN(a1, b1) - 1), (md_atom_idx_t)(MAX(a1, b1) - 1) }};
-    md_array_push(mol->bonds, pair, p->alloc);
+    if (elastic) {
+        md_array_push(mol->elastic_bonds, pair, p->alloc);
+    } else {
+        md_array_push(mol->bonds, pair, p->alloc);
+    }
+}
+
+static void add_local_bond(itp_parser_t* p, int64_t a1, int64_t b1) {
+    add_local_pair(p, a1, b1, false);
+}
+
+// The function types which make no connection, which GROMACS does not count as chemical bonds: harmonic potentials
+// (bond type 6), tabulated bonds without exclusions (9), restraint potentials (10), constraints without a connection
+// (constraint type 2). An elastic network is written as harmonic potentials as often as not.
+static bool itp_elastic_funct(section_t section, int64_t funct) {
+    if (section == SECTION_CONSTRAINTS) return funct == 2;
+    return funct == 6 || funct == 9 || funct == 10;
 }
 
 static bool parse_i64(int64_t* out, str_t tok) {
@@ -197,10 +214,12 @@ static void parse_data_line(itp_parser_t* p, str_t line) {
         md_array_push(mol->atoms, atom, p->alloc);
         break;
     }
-    case SECTION_BONDS: {
-        int64_t a, b;
+    case SECTION_BONDS:
+    case SECTION_CONSTRAINTS: {
+        int64_t a, b, funct = 1;
         if (num_tok >= 2 && parse_i64(&a, tok[0]) && parse_i64(&b, tok[1])) {
-            add_local_bond(p, a, b);
+            if (num_tok >= 3 && !parse_i64(&funct, tok[2])) funct = 1;
+            add_local_pair(p, a, b, itp_elastic_funct(p->section, funct));
         }
         break;
     }
@@ -438,6 +457,16 @@ static int compare_pair(const void* a, const void* b) {
     return 0;
 }
 
+static size_t sort_unique_pairs(md_atom_pair_t* pairs, size_t count) {
+    if (count < 2) return count;
+    qsort(pairs, count, sizeof(md_atom_pair_t), compare_pair);
+    size_t w = 1;
+    for (size_t r = 1; r < count; ++r) {
+        if (compare_pair(&pairs[r], &pairs[w - 1]) != 0) pairs[w++] = pairs[r];
+    }
+    return w;
+}
+
 bool md_itp_data_parse_str(md_itp_data_t* data, str_t str, str_t base_folder, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
@@ -456,20 +485,19 @@ bool md_itp_data_parse_str(md_itp_data_t* data, str_t str, str_t base_folder, md
         ok = false;
     }
 
-    // Bonds, constraints and settles may name the same pair more than once
+    // Bonds, constraints and settles may name the same pair more than once, and an elastic bond may double a bond
     for (size_t i = 0; i < md_array_size(data->moleculetypes); ++i) {
         md_itp_moleculetype_t* mol = &data->moleculetypes[i];
-        size_t n = md_array_size(mol->bonds);
-        if (n > 1) {
-            qsort(mol->bonds, n, sizeof(md_atom_pair_t), compare_pair);
-            size_t w = 1;
-            for (size_t r = 1; r < n; ++r) {
-                if (compare_pair(&mol->bonds[r], &mol->bonds[w - 1]) != 0) {
-                    mol->bonds[w++] = mol->bonds[r];
-                }
-            }
-            md_array_shrink(mol->bonds, w);
+        md_array_shrink(mol->bonds, sort_unique_pairs(mol->bonds, md_array_size(mol->bonds)));
+        size_t n = sort_unique_pairs(mol->elastic_bonds, md_array_size(mol->elastic_bonds));
+        const size_t num_bonds = md_array_size(mol->bonds);
+        size_t w = 0;
+        for (size_t r = 0, j = 0; r < n; ++r) {
+            while (j < num_bonds && compare_pair(&mol->bonds[j], &mol->elastic_bonds[r]) < 0) ++j;
+            if (j < num_bonds && compare_pair(&mol->bonds[j], &mol->elastic_bonds[r]) == 0) continue;
+            mol->elastic_bonds[w++] = mol->elastic_bonds[r];
         }
+        md_array_shrink(mol->elastic_bonds, w);
     }
 
     md_temp_end(temp);
@@ -510,6 +538,7 @@ void md_itp_data_free(md_itp_data_t* data, md_allocator_i* alloc) {
         str_free(mol->name, alloc);
         md_array_free(mol->atoms, alloc);
         md_array_free(mol->bonds, alloc);
+        md_array_free(mol->elastic_bonds, alloc);
     }
     for (size_t i = 0; i < md_array_size(data->molecules); ++i) {
         str_free(data->molecules[i].name, alloc);
@@ -742,7 +771,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             mass[off + i]    = type_mass[t][i];
         }
         num_covered += n;
-        num_topology_bonds += md_array_size(mol->bonds);
+        num_topology_bonds += md_array_size(mol->bonds) + md_array_size(mol->elastic_bonds);
     }
 
     // ## Bonds
@@ -778,6 +807,12 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
                 flags[count] = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
                 count += 1;
             }
+            for (size_t b = 0; b < md_array_size(mol->elastic_bonds); ++b) {
+                pairs[count].idx[0] = off + mol->elastic_bonds[b].idx[0];
+                pairs[count].idx[1] = off + mol->elastic_bonds[b].idx[1];
+                flags[count] = md_bond_flags_set_origin(MD_BOND_FLAG_ELASTIC, MD_BOND_ORIGIN_TOPOLOGY);
+                count += 1;
+            }
         }
 
         size_t num_user = 0;
@@ -808,6 +843,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         sys->bond.count = count + num_user;
         md_bond_build_connectivity(&sys->bond, atom_count, sys->alloc);
         md_util_system_infer_coordination(sys);
+        // An elastic network written as plain bonds (bond type 1)
+        md_util_system_infer_elastic_bonds(sys);
         md_system_topology_changed(sys);
     }
 

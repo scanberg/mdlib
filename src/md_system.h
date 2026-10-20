@@ -186,7 +186,9 @@ typedef struct md_assembly_data_t {
     mat4_t* transform;
 } md_assembly_data_t;
 
-// Atom centric representation of bonds
+// Atom centric representation of bonds: the graph of the molecules, every bond but the elastic ones
+// (MD_BOND_FLAG_ELASTIC), which are springs of the force field and connect nothing. Whatever follows bonds through it
+// (md_bond_iter, md_bond_find, the structures, rings and chemistry) leaves them out.
 typedef struct md_bond_conn_data_t {
     size_t count;
     md_atom_idx_t* atom_idx; // Indices to the 'other' atoms
@@ -197,12 +199,12 @@ typedef struct md_bond_conn_data_t {
     uint32_t* offset;
 } md_bond_conn_data_t;
 
-// Bond centric representation
+// Bond centric representation: every bond, the elastic ones (MD_BOND_FLAG_ELASTIC) included
 typedef struct md_bond_data_t {
     size_t count;
     md_atom_pair_t*  pairs;
     md_bond_flags_t* flags;
-    md_bond_conn_data_t  conn;   // Connectivity
+    md_bond_conn_data_t  conn;   // Connectivity, without the elastic bonds
 } md_bond_data_t;
 
 typedef struct md_bond_iter_t {
@@ -1220,7 +1222,7 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
     return it;
 }
 
-// This is not something which should be done frequently
+// This is not something which should be done frequently. The elastic bonds (MD_BOND_FLAG_ELASTIC) are left out.
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc);
 void md_system_bond_build_connectivity(md_system_t* sys);
 
@@ -1264,6 +1266,7 @@ static inline uint32_t md_bond_iter_bond_flags(const md_bond_iter_t* it) {
     return it->data->flags[it->data->conn.bond_idx[it->i]];
 }
 
+// The bond between two atoms in the connectivity, -1 when there is none: an elastic bond is not found
 static inline md_bond_idx_t md_bond_find(const md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
     ASSERT(bond_data);
 	md_bond_iter_t it = md_bond_iter(bond_data, atom_idx_a);
@@ -1281,7 +1284,8 @@ static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_
     ASSERT(bond_data);
     ASSERT(alloc);
 
-    // Ensure that the bond does not exist
+    // Ensure that the bond does not exist. An elastic bond between the two atoms is not found, and does not stand in for
+    // a bond of the molecule.
 	md_bond_idx_t bond_idx = md_bond_find(bond_data, atom_idx_a, atom_idx_b);
     if (bond_idx != -1) {
         return;

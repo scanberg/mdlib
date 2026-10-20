@@ -343,3 +343,70 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
 
     md_vm_arena_destroy(alloc);
 }
+
+// A Martini 3 hexa-alanine (BB and SC1 per residue) with an elastic network the way topologies write one: bonds of type 6
+// and constraints of type 2, which make no connection, and plain bonds and constraints (type 1) between residues other
+// than the links of the chain. The elastic bonds are kept, apart from the bonds of the molecule. A type 6 bond doubling
+// a bond is no elastic bond of its own.
+UTEST(itp, elastic_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    md_str_writer_t gro = md_str_writer_create(alloc);
+    md_str_writer_fmt(&gro, "Hexa-alanine\n12\n");
+    for (int r = 0; r < 6; ++r) {
+        md_str_writer_fmt(&gro, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", r + 1, "ALA", "BB",  2 * r + 1, 1.0f + 0.35f * r, 1.0f, 1.0f);
+        md_str_writer_fmt(&gro, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", r + 1, "ALA", "SC1", 2 * r + 2, 1.0f + 0.35f * r, 1.25f, 1.0f);
+    }
+    md_str_writer_fmt(&gro, "%10.5f%10.5f%10.5f\n", 5.0f, 5.0f, 5.0f);
+
+    // BB of residue r (1 based) is atom 2r - 1, its SC1 atom 2r
+    md_str_writer_t itp = md_str_writer_create(alloc);
+    md_str_writer_fmt(&itp, "[ moleculetype ]\nPEP 1\n\n[ atoms ]\n");
+    for (int r = 1; r <= 6; ++r) {
+        md_str_writer_fmt(&itp, "%3d P2  %d ALA BB  %3d 0.0\n", 2 * r - 1, r, 2 * r - 1);
+        md_str_writer_fmt(&itp, "%3d TC3 %d ALA SC1 %3d 0.0\n", 2 * r,     r, 2 * r);
+    }
+    md_str_writer_fmt(&itp, "\n[ bonds ]\n; Backbone bonds\n");
+    for (int r = 1; r < 6; ++r) md_str_writer_fmt(&itp, "%3d %3d 1 0.350 4000\n", 2 * r - 1, 2 * r + 1);
+    md_str_writer_fmt(&itp, "; Side chain bonds\n");
+    for (int r = 1; r <= 6; ++r) md_str_writer_fmt(&itp, "%3d %3d 1 0.270 100000\n", 2 * r - 1, 2 * r);
+    md_str_writer_fmt(&itp, "; Rubber bands\n  1   7 1 0.700 500\n  3  11 6 0.800 500\n  1   3 6 0.350 500\n");
+    md_str_writer_fmt(&itp, "\n[ constraints ]\n  5   9 2 0.700\n  2   4 1 0.500\n");
+
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&gro)));
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
+
+    md_itp_data_t data = {0};
+    ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&itp), STR_LIT(""), alloc));
+    ASSERT_EQ(1u, md_array_size(data.moleculetypes));
+    const md_itp_moleculetype_t* mol = &data.moleculetypes[0];
+    // 5 backbone, 6 side chain, the plain rubber band and the constraint of type 1; 3-11 and 5-9 apart, 1-3 doubles a bond
+    EXPECT_EQ(13u, md_array_size(mol->bonds));
+    ASSERT_EQ(2u, md_array_size(mol->elastic_bonds));
+    EXPECT_EQ(2, mol->elastic_bonds[0].idx[0]);
+    EXPECT_EQ(10, mol->elastic_bonds[0].idx[1]);
+    EXPECT_EQ(4, mol->elastic_bonds[1].idx[0]);
+    EXPECT_EQ(8, mol->elastic_bonds[1].idx[1]);
+
+    ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+    EXPECT_EQ(15u, sys.bond.count);
+    size_t elastic = 0;
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        if (!(sys.bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+        elastic += 1;
+        EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(sys.bond.flags[i]));
+    }
+    EXPECT_EQ(4u, elastic);
+    // Out of the connectivity: 3-11 and 5-9 by their types, 1-7 (residues 1 and 4) and 2-4 (the side chains of residues 1
+    // and 2) as plain bonds between residues which are no link of the chain
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 0, 6));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 2, 10));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 4, 8));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 1, 3));
+    for (int r = 0; r < 5; ++r) EXPECT_TRUE(md_bond_find(&sys.bond, 2 * r, 2 * r + 2) >= 0);
+    EXPECT_EQ(1u, md_structure_count(&sys.structure));
+
+    md_vm_arena_destroy(alloc);
+}

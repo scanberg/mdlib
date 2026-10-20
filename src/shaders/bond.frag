@@ -70,6 +70,8 @@ layout (std140) uniform ubo {
     uint  u_bond_orders;
     float u_spread;
     uint  u_gap_index_base;
+    uint  u_bond_kinds;     // u_buf_bond_order is bound: the kind of every bond is known
+    uint  u_elastic_bonds;  // Draw the elastic bonds (KIND_ELASTIC), which are left out otherwise
 };
 
 in Fragment {

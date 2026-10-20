@@ -276,6 +276,14 @@ static inline md_entity_flags_t md_entity_flags_set_kind(md_entity_flags_t flags
 //                metal and a non-metal, whatever its origin (md_util_system_infer_coordination), and any other bond a
 //                file says is one. A bond without it is covalent, or metallic between two metals: whether a bond
 //                involves a metal is a question for the elements of its atoms.
+//   ELASTIC      Not a bond of the molecule but a spring of its force field which holds two particles at a distance:
+//                the elastic network of a coarse grained protein or nucleic acid (the rubber bands of martinize,
+//                ElNeDyn), the restraints of its secondary structure, a restraint between two atoms. GROMACS writes
+//                them as bonds which make no connection (bond types 6, 9 and 10, constraints of type 2), or as plain
+//                bonds (md_util_system_infer_elastic_bonds). They are kept, as information, and left out of
+//                everything which follows the bonds of a molecule: the connectivity (md_bond_conn_data_t, so
+//                md_bond_iter and md_bond_find), the structures, rings, chemistry and matching. Nothing else of the
+//                CHEMISTRY applies to them, and the representations do not draw them unless asked to.
 //
 // PROVENANCE
 //   ORIGIN           A value in bits 8-9 (md_bond_origin_t): read it with md_bond_origin and write it with
@@ -289,6 +297,7 @@ typedef enum {
     MD_BOND_FLAG_AROMATIC        = 0x8,     // In an aromatic ring
     MD_BOND_FLAG_DELOCALIZED     = 0x10,    // Resonance outside of rings
     MD_BOND_FLAG_COORDINATE      = 0x20,    // Coordination (dative), always between a metal and a non-metal
+    MD_BOND_FLAG_ELASTIC         = 0x40,    // A spring of the force field, not a bond of the molecule
 
     MD_BOND_FLAG_ORIGIN_MASK     = 0x300,   // See md_bond_origin
     MD_BOND_FLAG_ORDER_PERCEIVED = 0x400,   // The order (and AROMATIC, DELOCALIZED) was perceived, not given
