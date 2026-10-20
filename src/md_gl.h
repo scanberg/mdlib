@@ -198,17 +198,6 @@ void md_gl_mol_set_tubes(md_gl_mol_t mol, const md_gl_tubes_t* tubes);
 // corner and is shown when all its corners are. Replaces the previous slabs; a count of 0 clears them.
 void md_gl_mol_set_slabs(md_gl_mol_t mol, uint32_t count, const uint32_t* offset, const uint32_t* particle);
 
-// ### SEGMENTS ###
-// A partition of the atoms of a molecule into segments, so that a draw op can show some of them (md_gl_draw_op_t
-// segments): the instances of a system (its chains and molecules), of which a part of an assembly shows a set. Segment
-// s is the atoms [atom_offset[s], atom_offset[s + 1]), from atom_offset[0] = 0 to atom_offset[count] = the atom count.
-// A count of 0 clears them. The particles derived from a molecule (md_gl_mol_set_derived) have its segments too: a
-// particle is in the segment of its reference atom.
-// The primitives the molecule draws (bonds, rings, gaps of chains, slabs, weak bonds) are kept in the order of their
-// segments, so that what a draw op of some segments shows is a few ranges of them: set the segments once, after the
-// molecule is made (a few reads of its buffers back from the GPU), rather than every frame.
-void md_gl_mol_set_segments(md_gl_mol_t mol, uint32_t count, const uint32_t* atom_offset);
-
 // ### Set molecule data fields ###
 void md_gl_mol_set_index_base   (md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base);
 // Packed xyz, the buffers' own layout. Setting positions keeps the current ones as the previous.
@@ -295,6 +284,33 @@ void        md_gl_rep_set_atom_colors(md_gl_rep_t rep, uint32_t offset, uint32_t
 void        md_gl_rep_set_weak_bonds(md_gl_rep_t rep, uint32_t count, const uint32_t* atom_a, const uint32_t* atom_b, const float* weight);
 
 /*
+ *  SUBSETS
+ *  A part of a molecule which a draw op shows (md_gl_draw_op_t subset), given by its atoms
+ *
+ *  What of the representation holds only atoms of the subset: an atom of it, a bond, ring, slab or gap of a chain all of
+ *  whose atoms are in it, the dashed partner of a delocalized bond whose atoms are, a backbone segment whose control
+ *  point is, and of the weak bonds those with both atoms in it. A draw of a subset costs about as much as the subset,
+ *  not as the molecule: what it holds is found on the CPU from its atoms, once after they or what the molecule draws
+ *  changed (its bonds, bond orders, gaps, slabs, backbone), and kept with the subset. Each of its draws then names
+ *  exactly that. So one molecule can be drawn as many disjoint or overlapping parts, each with its own transform
+ *  (md_gl_copies_t) and colours (md_gl_rep_t), without a copy of the molecule or of its colours per part.
+ *
+ *  A subset is of the molecule it was created for, and is drawn only with representations of it. The atom mask of a
+ *  draw (md_gl_draw_args_t atom_mask) still applies within it, as does the alpha of the colours.
+ */
+
+typedef struct {
+    uint32_t id;
+} md_gl_subset_t;
+
+md_gl_subset_t md_gl_subset_create(md_gl_mol_t mol);
+void           md_gl_subset_destroy(md_gl_subset_t subset);
+
+// The atoms of the subset, in any order: duplicates and atoms outside of the molecule are left out. Replaces the
+// previous set; count 0 leaves it empty, which draws nothing.
+void           md_gl_subset_set_atoms(md_gl_subset_t subset, const uint32_t* atoms, uint32_t count);
+
+/*
  *  DRAW
  *  Interface for defining representations of molecules
  *
@@ -323,7 +339,7 @@ typedef enum {
 // transforms[i]. A transform is rigid: a rotation, or a rotation and a reflection (a mirror image, determinant -1), and
 // a translation. It is not scaled: a scale is not applied to the radii and thicknesses of the representations.
 // Each copy is culled against the view on the CPU with the box of the positions of what the op shows (of the molecule,
-// or of its segments, as set on it or derived): a copy out of view costs nothing on the GPU. Of the backbone
+// or of its subset, as set on it or derived): a copy out of view costs nothing on the GPU. Of the backbone
 // representations, each chain of each copy is culled and gets its level of detail.
 // What a copy draws picks as the same elements (md_gl_picking_offset_t) as the molecule itself would.
 typedef struct md_gl_copies_t {
@@ -402,15 +418,8 @@ typedef struct md_gl_draw_op_t {
     } args;
 
     md_gl_rep_t rep;
+    md_gl_subset_t subset;                  // Zero: all of the molecule. Of the molecule of rep (SUBSETS)
     md_gl_copies_t copies;                  // Zero: drawn once, as it is. Must outlive md_gl_draw
-
-    // SEGMENTS (optional): the segments of the molecule (md_gl_mol_set_segments) the op shows, NULL for all of it. Of what
-    // the molecule draws, it shows an atom in one of them, a bond, ring, slab, weak bond or gap of a chain all of whose
-    // atoms are in them, a chain of the backbone whose first control point is: a part of an assembly, its copies the
-    // operators. A molecule without segments is shown whole. Must outlive md_gl_draw: an op of the same array as
-    // another (the same pointer and count) shares what md_gl_draw finds for it.
-    const uint32_t* segments;
-    uint32_t        segment_count;
 } md_gl_draw_op_t;
 
 // Picking offsets: each renderable element writes base + its own index to the picking target, so the caller
