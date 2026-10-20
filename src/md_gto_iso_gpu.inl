@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r12"
+#define ISOG_REVISION "r13"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -130,6 +130,9 @@ static int isog_gemm_pipe = 0;
 //   GTO_ISO_CORNERS_V4=1      one function: four corner points per thread (iso_corners_list_f1v4), a shell's
 //                             data read once for the four (default 1)
 static int isog_corners_v4 = 1;
+//   GTO_ISO_NEWTON_TOL=4|3|2  a vertex has converged within 1e-N h of the surface (default 4; the facets' own
+//                             deviation from the surface is about 3e-2 h rms)
+static int isog_newton_tol_exp = 4;
 
 // The kernels are made on first use, so initializing costs nothing until a mesh is extracted
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
@@ -171,6 +174,9 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_gemm_pipe = atoi(e);
     e = getenv("GTO_ISO_CORNERS_V4");
     if (e && e[0]) isog_corners_v4 = atoi(e);
+    e = getenv("GTO_ISO_NEWTON_TOL");
+    if (e && e[0]) isog_newton_tol_exp = atoi(e);
+    if (isog_newton_tol_exp < 1 || isog_newton_tol_exp > 6) isog_newton_tol_exp = 4;
 }
 
 static bool isog_kernels_ready(void) {
@@ -719,6 +725,7 @@ void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     out->gemm_t32 = isog_gemm_t32 != 0;
     out->gemm_pipe = isog_gemm_pipe;
     out->corners_v4 = isog_corners_v4 != 0;
+    out->newton_tol_exp = isog_newton_tol_exp;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
@@ -741,13 +748,14 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     isog_gemm_t32 = in->gemm_t32;
     if (in->gemm_pipe >= 0 && in->gemm_pipe <= 2) isog_gemm_pipe = in->gemm_pipe;
     isog_corners_v4 = in->corners_v4;
+    if (in->newton_tol_exp >= 1 && in->newton_tol_exp <= 6) isog_newton_tol_exp = in->newton_tol_exp;
 }
 
 const char* md_gto_iso_gpu_profile_variant(void) {
-    static char buf[256];
-    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d skip_brick_test %d eval_eps 1e-%d",
+    static char buf[512];
+    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d",
              ISOG_REVISION, isog_relax_first, isog_corners_v2, isog_corners_list, isog_shared_corners, isog_eval_v2, isog_canon_terms,
-             isog_gemm, isog_octree_small, isog_dform, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_skip_brick_test, isog_eval_eps_exp);
+             isog_gemm, isog_octree_small, isog_dform, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp);
     return buf;
 }
 
@@ -960,7 +968,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     a.brick_level = (uint32_t)L;
     a.step_max   = (float)(0.5 * h);
     a.lambda     = 0.5f;
-    a.tol        = (float)(1.0e-4 * h);
+    a.tol        = (float)(pow(10.0, -(double)isog_newton_tol_exp) * h);
     a.shells = set->shells.gpu; a.prims = set->prims.gpu; a.crit = set->crit.gpu;
     a.ao_nrm = set->ao_nrm.gpu; a.ao_ijk = set->ao_ijk.gpu; a.C = set->C.gpu; a.terms = set->terms.gpu;
     a.fn_tail = set->fn_tail.gpu;

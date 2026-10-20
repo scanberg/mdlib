@@ -337,6 +337,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     bool gemm_t32;          // the GEMM kernels in tiles of 32 functions for larger sets
     int  gemm_pipe;         // the F = 64 GEMM kernels' loop over a chunk's rows: 0 the compiler's, 1 not unrolled, 2 unrolled
     bool corners_v4;        // one function: four corner points per thread (iso_corners_list_f1v4)
+    int  newton_tol_exp;    // vertices converge within 1e-N h of the surface (1..6)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
