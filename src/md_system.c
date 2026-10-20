@@ -288,7 +288,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
 
 void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
     ASSERT(lipid);
-    md_array_free(lipid->comp_range, alloc);
+    if (lipid->comps.alloc)       md_index_data_free(&lipid->comps);
     md_array_free(lipid->head_offset, alloc);
     md_array_free(lipid->tail_offset, alloc);
     if (lipid->head.atoms.alloc)  md_index_data_free(&lipid->head.atoms);
@@ -314,7 +314,13 @@ void md_system_reset(md_system_t* sys) {
     md_system_topology_changed(sys);
 }
 
-static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {
+// The connectivity is the graph of the molecules: every bond but the elastic ones (MD_BOND_FLAG_ELASTIC), springs of the
+// force field which connect nothing. bond_flags NULL: no bond is elastic.
+static inline bool conn_has_bond(const md_bond_flags_t* bond_flags, size_t i) {
+    return !bond_flags || !(bond_flags[i] & MD_BOND_FLAG_ELASTIC);
+}
+
+static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, const md_bond_flags_t* bond_flags, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {
     ASSERT(conn);
     ASSERT(alloc);
 
@@ -326,8 +332,11 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
     md_array_resize(conn->offset, conn->offset_count, alloc);
     MEMSET(conn->offset, 0, md_array_bytes(conn->offset));
 
+    size_t graph_count = 0;
+    for (size_t i = 0; i < bond_pair_count; ++i) graph_count += conn_has_bond(bond_flags, i);
+
     // This have length of 2 * bond_count (one for each direction of the bond)
-    conn->count = 2 * bond_pair_count;
+    conn->count = 2 * graph_count;
     md_array_resize(conn->atom_idx, conn->count, alloc);
     md_array_resize(conn->bond_idx, conn->count, alloc);
 
@@ -343,6 +352,7 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
     // Two packed 16-bit local offsets for each of the bond idx
     // Use offsets as accumulators for length
     for (size_t i = 0; i < bond_pair_count; ++i) {
+        if (!conn_has_bond(bond_flags, i)) continue;
 		ASSERT(bond_pairs[i].idx[0] < (md_atom_idx_t)atom_count);
 		ASSERT(bond_pairs[i].idx[1] < (md_atom_idx_t)atom_count);
         local_offset[i].off[0] = (uint16_t)conn->offset[bond_pairs[i].idx[0]]++;
@@ -359,6 +369,7 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
 
     // Write edge indices to correct location
     for (size_t i = 0; i < bond_pair_count; ++i) {
+        if (!conn_has_bond(bond_flags, i)) continue;
         const md_atom_pair_t p = bond_pairs[i];
         const int atom_a = p.idx[0];
         const int atom_b = p.idx[1];
@@ -387,7 +398,7 @@ static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* 
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc) {
     ASSERT(in_out_bond);
     ASSERT(alloc);
-	build_connectivity(&in_out_bond->conn, in_out_bond->pairs, in_out_bond->count, atom_count, alloc);
+	build_connectivity(&in_out_bond->conn, in_out_bond->pairs, in_out_bond->flags, in_out_bond->count, atom_count, alloc);
 }
 
 void md_system_bond_build_connectivity(md_system_t* sys) {

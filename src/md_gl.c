@@ -189,7 +189,7 @@ enum {
     GL_BUFFER_ATOM_VELOCITY,                   // vec3
     GL_BUFFER_ATOM_FLAGS,                      // u8
     GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
-    GL_BUFFER_BOND_ORDER,                      // u32 per bond: kind | index into GL_BUFFER_BOND_ORDER_REF << 3 (md_gl_mol_set_bond_orders)
+    GL_BUFFER_BOND_ORDER,                      // u32 per bond: kind (plain, double, triple, elastic) | index into GL_BUFFER_BOND_ORDER_REF << 3 (md_gl_mol_set_bond_orders)
     GL_BUFFER_BOND_ORDER_REF,                  // u32[2] per double or triple bond: atoms bonded to its first and its second atom
     GL_BUFFER_BOND_PARTNER,                    // u32[4] per dashed partner of a delocalized bond, or of an aromatic bond in no circle: bond, atoms bonded to its first and its second atom, 0
     GL_BUFFER_AROMATIC_RING,                   // u32[8] per aromatic ring drawn as a circle: ring index | dashed << 28 | atom count << 29, its atoms in order around it (RING_ATOM_NONE past the count)
@@ -261,7 +261,7 @@ typedef struct {
 typedef struct {
     uint32_t bb_seg_idx;            // Backbone Segment index (To access secondary structure)
     uint32_t ca;                    // The atom (particle) of the control point
-    uint32_t c, o;                  // The fallback orientation O - C (a protein: its carbonyl), or with BACKBONE_FLAG_FIXED_FACE the normal of the flat faces
+    uint32_t c, o;                  // The fallback orientation O - C (a protein: its carbonyl), or with BACKBONE_FLAG_FIXED_FACE the normal of the flat faces, with BACKBONE_FLAG_FIXED_SIDE the long axis of the profile
     uint32_t flags;                 // BACKBONE_FLAG_*
 } gl_backbone_data_t;
 
@@ -272,6 +272,7 @@ enum {
     BACKBONE_FLAG_FLIP_NEXT  = 16,  // Set by the orient pass
     BACKBONE_FLAG_FIXED_FACE = 32,  // The flat faces of the profile face O - C, rather than following the curve (compute_spline_orient.vert)
     BACKBONE_FLAG_THROUGH    = 64,  // The spline passes through the control point rather than near it (compute_spline_orient.vert)
+    BACKBONE_FLAG_FIXED_SIDE = 128, // The long axis of the profile points along O - C, rather than following the curve (compute_spline_orient.vert)
 };
 
 typedef struct {
@@ -1574,11 +1575,13 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 //
 // BEGIN BOND ORDER DERIVATION (plain arrays in, the contents of the buffers out; tested on its own)
 
-// Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert)
+// Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert). An elastic bond (MD_BOND_FLAG_ELASTIC) is drawn as a plain one
+// where the representation shows the elastic bonds, and not at all elsewhere.
 enum {
     BOND_KIND_PLAIN   = 0,
     BOND_KIND_DOUBLE  = 1,
     BOND_KIND_TRIPLE  = 2,
+    BOND_KIND_ELASTIC = 3,
 };
 #define BOND_REF_NONE 0xFFFFFFFFu
 
@@ -1616,7 +1619,7 @@ static uint32_t bo_find_bond(const bond_order_input_t* in, uint32_t a, uint32_t 
 static bool bo_valid_bond(const bond_order_input_t* in, uint32_t i) {
     const uint32_t a = in->pairs[2 * i + 0];
     const uint32_t b = in->pairs[2 * i + 1];
-    return a < in->atom_count && b < in->atom_count && a != b && !(in->flags[i] & MD_BOND_FLAG_COORDINATE);
+    return a < in->atom_count && b < in->atom_count && a != b && !(in->flags[i] & (MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_ELASTIC));
 }
 
 // c is off the axis e - o by more than 10 degrees in the reference coordinates (or there are none)
@@ -1764,7 +1767,7 @@ static uint32_t compute_bond_orders(uint32_t* out_order, uint32_t* out_ref, cons
     uint32_t entries = 0;
     for (uint32_t i = 0; i < in->bond_count; ++i) {
         const uint32_t f = in->flags[i];
-        out_order[i] = BOND_KIND_PLAIN;
+        out_order[i] = (f & MD_BOND_FLAG_ELASTIC) ? BOND_KIND_ELASTIC : BOND_KIND_PLAIN;
         if (!bo_valid_bond(in, i) || (f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED))) continue;
         const uint32_t a = in->pairs[2 * i + 0];
         const uint32_t b = in->pairs[2 * i + 1];
@@ -1848,7 +1851,8 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     md_allocator_i* alloc = md_get_heap_allocator();
     const uint32_t atom_count = mol->atom_count;
 
-    // Connectivity from the pairs, which are what the molecule draws
+    // Connectivity from the pairs, which are what the molecule draws. The elastic bonds are no part of it: they give
+    // no plane to a double bond and close no ring.
     const uint32_t* pairs = (const uint32_t*)sys->bond.pairs;
     uint32_t* adj_offset = md_alloc(alloc, (atom_count + 1) * sizeof(uint32_t));
     uint32_t* adj_atom   = md_alloc(alloc, 2 * bond_count * sizeof(uint32_t));
@@ -1863,7 +1867,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
         const uint32_t a = pairs[2 * i + 0];
         const uint32_t b = pairs[2 * i + 1];
         flags[i] = (uint32_t)sys->bond.flags[i];
-        if (a < atom_count && b < atom_count) {
+        if (a < atom_count && b < atom_count && !(flags[i] & MD_BOND_FLAG_ELASTIC)) {
             adj_offset[a + 1] += 1;
             adj_offset[b + 1] += 1;
         }
@@ -1876,7 +1880,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     for (uint32_t i = 0; i < bond_count; ++i) {
         const uint32_t a = pairs[2 * i + 0];
         const uint32_t b = pairs[2 * i + 1];
-        if (a < atom_count && b < atom_count) {
+        if (a < atom_count && b < atom_count && !(flags[i] & MD_BOND_FLAG_ELASTIC)) {
             adj_atom[cursor[a]] = b;
             adj_bond[cursor[a]++] = i;
             adj_atom[cursor[b]] = a;
@@ -2582,6 +2586,7 @@ void md_gl_mol_set_tubes(md_gl_mol_t handle, const md_gl_tubes_t* tubes) {
     const float*    radius   = count ? tubes->radius : NULL;
     const float*    flat     = count ? tubes->flat : NULL;
     const uint32_t* face     = count ? tubes->face : NULL;
+    const uint32_t* side     = count ? tubes->side : NULL;
     const uint8_t*  through  = count ? tubes->through : NULL;
     if (count > 0 && (!offset || !particle || !radius)) {
         MD_LOG_ERROR("Missing one or more arguments");
@@ -2600,7 +2605,8 @@ void md_gl_mol_set_tubes(md_gl_mol_t handle, const md_gl_tubes_t* tubes) {
     const uint32_t base = count ? offset[0] : 0;
     const uint32_t cp_count = count ? offset[count] - base : 0;
     for (uint32_t j = 0; j < cp_count; ++j) {
-        if (particle[base + j] >= mol->atom_count || (face && face[base + j] != UINT32_MAX && face[base + j] >= mol->atom_count)) {
+        if (particle[base + j] >= mol->atom_count || (face && face[base + j] != UINT32_MAX && face[base + j] >= mol->atom_count) ||
+            (side && side[base + j] != UINT32_MAX && side[base + j] >= mol->atom_count)) {
             MD_LOG_ERROR("A control point of a tube is not a particle of the molecule (%u particles)", mol->atom_count);
             return;
         }
@@ -2622,15 +2628,17 @@ void md_gl_mol_set_tubes(md_gl_mol_t handle, const md_gl_tubes_t* tubes) {
         for (uint32_t j = beg; j < end; ++j) {
             const uint32_t p = particle[base + j];
             const uint32_t f = face ? face[base + j] : UINT32_MAX;
+            const uint32_t sd = (f == UINT32_MAX && side) ? side[base + j] : UINT32_MAX;
             const float    r = CLAMP(radius[base + j], 0.0f, TUBE_RADIUS_MAX);
             const float    l = flat ? CLAMP(flat[base + j], 0.0f, TUBE_RADIUS_MAX) : 0.0f;
             data[j] = (gl_backbone_data_t){
                 .bb_seg_idx = j,
                 .ca         = p,
                 .c          = p,
-                .o          = f != UINT32_MAX ? f : p,
+                .o          = f != UINT32_MAX ? f : (sd != UINT32_MAX ? sd : p),
                 .flags      = (j == beg ? BACKBONE_FLAG_CHAIN_BEG : 0) | (j == end - 1 ? BACKBONE_FLAG_CHAIN_END : 0) |
-                              (f != UINT32_MAX ? BACKBONE_FLAG_FIXED_FACE : 0) | ((through && through[t]) ? BACKBONE_FLAG_THROUGH : 0),
+                              (f != UINT32_MAX ? BACKBONE_FLAG_FIXED_FACE : 0) | (sd != UINT32_MAX ? BACKBONE_FLAG_FIXED_SIDE : 0) |
+                              ((through && through[t]) ? BACKBONE_FLAG_THROUGH : 0),
             };
             ss[j] = ss_coil | (pack_tube_length(l) << 8) | (pack_tube_length(r) << 24);
             bounds_particle[j] = p;
@@ -2934,6 +2942,8 @@ typedef struct {
     uint32_t bond_orders;   // Show the orders of covalent bonds (bond_set_t order, order_ref)
     float    spread;        // Envelope of the thinner sticks of multiple bonds, relative to the radius
     uint32_t gap_index_base;// The gaps of the chains: their picking base (md_gl_picking_offset_t gap_base)
+    uint32_t bond_kinds;    // The kind of each bond is known (bond_set_t order, which tells the elastic bonds)
+    uint32_t elastic_bonds; // Show the elastic bonds (BOND_KIND_ELASTIC), which are left out otherwise
 } bond_params_t;
 
 // The parameters of the gaps of the chains (draw_chain_gaps): a line of the radius with its dashes in proportion,
@@ -3604,7 +3614,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             break;
         }
         case MD_GL_REP_LICORICE: {
-            const bool orders = draw_op->args.licorice.bond_orders && mol->bond_order_count == mol->bond_count;
+            const bool kinds  = mol->bond_order_count == mol->bond_count;
+            const bool orders = draw_op->args.licorice.bond_orders && kinds;
             const bond_params_t params = {
                 .radius = 0.2f * draw_op->args.licorice.radius,
                 .max_d2 = max_length * max_length,
@@ -3614,6 +3625,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 .bond_orders = orders,
                 // Within the stick: their ends stay within the sphere at the atom
                 .spread = 1.0f,
+                .bond_kinds = kinds,
+                .elastic_bonds = draw_op->args.licorice.elastic_bonds,
             };
             const bond_set_t bonds = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, mol->buffer[GL_BUFFER_BOND_ORDER], mol->buffer[GL_BUFFER_BOND_ORDER_REF], {0}, mol->bond_count};
             const draw_range_t bond_range = RANGE(bonds);
@@ -3632,7 +3645,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             break;
         }
         case MD_GL_REP_BALL_AND_STICK: {
-            const bool orders = draw_op->args.ball_and_stick.bond_orders && mol->bond_order_count == mol->bond_count;
+            const bool kinds  = mol->bond_order_count == mol->bond_count;
+            const bool orders = draw_op->args.ball_and_stick.bond_orders && kinds;
             const bond_params_t params = {
                 .radius = 0.2f * draw_op->args.ball_and_stick.stick_radius,
                 .max_d2 = max_length * max_length,
@@ -3642,6 +3656,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 .bond_orders = orders,
                 // The balls are larger than the sticks
                 .spread = 1.3f,
+                .bond_kinds = kinds,
+                .elastic_bonds = draw_op->args.ball_and_stick.elastic_bonds,
             };
             const bond_set_t bonds = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, mol->buffer[GL_BUFFER_BOND_ORDER], mol->buffer[GL_BUFFER_BOND_ORDER_REF], {0}, mol->bond_count};
             const draw_range_t bond_range = RANGE(bonds);
@@ -3841,6 +3857,8 @@ static bool draw_bonds(gl_program_t program, const molecule_t* mol, gl_buffer_t 
 
     bond_params_t p = *params;
     p.bond_orders = (p.bond_orders && bonds.order.id && bonds.order_ref.id) ? 1 : 0;
+    p.bond_kinds  = (p.bond_kinds && bonds.order.id) ? 1 : 0;
+    p.elastic_bonds = p.elastic_bonds ? 1 : 0;
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(bond_params_t), &p);
 
     glBindVertexArray(ctx.vao);
@@ -3877,11 +3895,12 @@ static bool draw_bonds(gl_program_t program, const molecule_t* mol, gl_buffer_t 
         glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32UI, bonds.partner.id);
     }
 
-    if (p.bond_orders) {
+    if (p.bond_kinds || p.bond_orders) {
         glActiveTexture(GL_TEXTURE6);
         glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_6].id);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, bonds.order.id);
-
+    }
+    if (p.bond_orders) {
         glActiveTexture(GL_TEXTURE7);
         glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_7].id);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32UI, bonds.order_ref.id);

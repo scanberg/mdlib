@@ -574,3 +574,124 @@ UTEST(tpr, nonbonded_parameters_and_exclusions) {
     md_tpr_data_free(&data, arena);
     md_arena_allocator_destroy(arena);
 }
+
+// ### ELASTIC BONDS ###
+
+static size_t count_elastic(const md_system_t* sys) {
+    size_t n = 0;
+    for (size_t i = 0; i < sys->bond.count; ++i) n += (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC) != 0;
+    return n;
+}
+
+// The bead of name in residue res (zero based) of a molecule type, -1 when there is none
+static int32_t moltype_bead(const md_tpr_moltype_t* mt, int32_t res, const char* name) {
+    for (size_t i = 0; i < mt->num_atoms; ++i) {
+        if (mt->atoms[i].residue == res && str_eq_cstr(mt->atoms[i].name, name)) return (int32_t)i;
+    }
+    return -1;
+}
+
+static const md_tpr_moltype_t* find_moltype(const md_tpr_data_t* data, const char* name) {
+    for (size_t t = 0; t < data->num_moltypes; ++t) {
+        if (str_eq_cstr(data->moltypes[t].name, name)) return &data->moltypes[t];
+    }
+    return NULL;
+}
+
+// The test systems have their elastic networks left out (test_data/martini/README.md), so every bond between residues
+// they have is a link of a chain or a disulfide: none is taken for an elastic bond. DNA and RNA link BB3 to BB1 (and
+// BB2 to BB1 in Martini 3 RNA), proteins BB to BB.
+UTEST(tpr, martini_no_elastic_bonds) {
+    static const char* files[] = {
+        "martini3_membrane", "martini3_lipids", "martini3_peptides", "martini3_rna", "martini3_small_molecules", "martini3_polymer",
+        "martini2_membrane_protein", "martini2_lipids", "martini2p_protein", "martini2_dna", "martini2_rna", "martini2_small_molecules",
+    };
+    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+        md_system_t sys = { .alloc = arena };
+        md_system_state_t state = { .alloc = arena };
+        char path[512];
+        snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.tpr", files[f]);
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, str_from_cstr(path)));
+        EXPECT_EQ(0u, count_elastic(&sys));
+        if (count_elastic(&sys)) printf("%s: %zu bonds taken for elastic ones\n", files[f], count_elastic(&sys));
+        md_arena_allocator_destroy(arena);
+    }
+}
+
+// BPTI 13-40 (with its disulfide) and chignolin of martini3_peptides, with an elastic network put in: a bond of type 6
+// (which the file keeps apart) and a plain bond between residues which are not neighbours, which the system tells. A bond
+// between the ends of chignolin closes it into a cyclic peptide, which is a bond of the chain.
+UTEST(tpr, elastic_bonds) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_tpr_data_t data = {0};
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_peptides.tpr"), arena));
+
+    md_system_t base = { .alloc = arena };
+    md_system_state_t base_state = { .alloc = arena };
+    ASSERT_TRUE(md_tpr_system_init_from_data(&base, &base_state, &data));
+    EXPECT_EQ(0u, count_elastic(&base));
+
+    md_tpr_moltype_t* bpti = (md_tpr_moltype_t*)find_moltype(&data, "PEP1_0");
+    md_tpr_moltype_t* chig = (md_tpr_moltype_t*)find_moltype(&data, "PEP2_0");
+    ASSERT_TRUE(bpti && chig);
+    ASSERT_EQ(10u, chig->num_residues);
+    EXPECT_EQ(0u, bpti->num_elastic_bonds);
+
+    const int32_t b1 = moltype_bead(bpti, 1, "BB"), b5 = moltype_bead(bpti, 5, "BB");
+    const int32_t b2 = moltype_bead(bpti, 2, "BB"), b8 = moltype_bead(bpti, 8, "BB");
+    const int32_t c0 = moltype_bead(chig, 0, "BB"), c9 = moltype_bead(chig, 9, "BB");
+    ASSERT_TRUE(b1 >= 0 && b5 >= 0 && b2 >= 0 && b8 >= 0 && c0 >= 0 && c9 >= 0);
+
+    md_atom_pair_t plain   = {{ b1, b5 }};
+    md_atom_pair_t cyclic  = {{ c0, c9 }};
+    md_array_push(bpti->bonds, plain, arena);
+    bpti->num_bonds += 1;
+    md_array_push(chig->bonds, cyclic, arena);
+    chig->num_bonds += 1;
+    md_atom_pair_t harmonic = {{ b2, b8 }};
+    md_array_push(bpti->elastic_bonds, harmonic, arena);
+    bpti->num_elastic_bonds = 1;
+
+    md_system_t sys = { .alloc = arena };
+    md_system_state_t state = { .alloc = arena };
+    ASSERT_TRUE(md_tpr_system_init_from_data(&sys, &state, &data));
+    EXPECT_EQ(base.bond.count + 3, sys.bond.count);
+    EXPECT_EQ(2u, count_elastic(&sys));
+
+    // The atoms of the molecules in the system: BPTI first, then chignolin (one molecule each)
+    size_t off_bpti = 0, off_chig = 0, off = 0;
+    for (size_t b = 0; b < data.num_molblocks; ++b) {
+        const md_tpr_moltype_t* mt = &data.moltypes[data.molblocks[b].moltype];
+        if (mt == bpti) off_bpti = off;
+        if (mt == chig) off_chig = off;
+        off += (size_t)data.molblocks[b].nmol * mt->num_atoms;
+    }
+    // The elastic bonds are not in the connectivity, the cyclic bond is
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, (md_atom_idx_t)(off_bpti + b1), (md_atom_idx_t)(off_bpti + b5)));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, (md_atom_idx_t)(off_bpti + b2), (md_atom_idx_t)(off_bpti + b8)));
+    const md_bond_idx_t closure = md_bond_find(&sys.bond, (md_atom_idx_t)(off_chig + c0), (md_atom_idx_t)(off_chig + c9));
+    ASSERT_TRUE(closure >= 0);
+    EXPECT_FALSE(sys.bond.flags[closure] & MD_BOND_FLAG_ELASTIC);
+    EXPECT_EQ(sys.bond.conn.count, 2 * (sys.bond.count - 2));
+
+    // The links of the chains and the disulfide stay bonds of the molecules
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        if (!(sys.bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+        const md_atom_pair_t p = sys.bond.pairs[i];
+        EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, p.idx[0]), "BB") && str_eq_cstr(md_atom_name(&sys.atom, p.idx[1]), "BB"));
+    }
+
+    // Structures, rings and chemistry go by the molecules alone
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
+    md_util_system_infer(&base, &base_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
+    EXPECT_EQ(md_structure_count(&base.structure), md_structure_count(&sys.structure));
+    EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
+    EXPECT_EQ(2u, count_elastic(&sys));
+
+    // Inferring the bonds anew keeps the elastic bonds: nothing infers them
+    md_util_system_infer_covalent_bonds(&sys, &state);
+    EXPECT_EQ(2u, count_elastic(&sys));
+
+    md_arena_allocator_destroy(arena);
+}

@@ -181,6 +181,17 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
 // it marked. md_util_system_infer does it for each system; a bond added afterwards (by hand) wants it too.
 size_t md_util_system_infer_coordination(md_system_t* sys);
 
+// Marks the bonds of a coarse grained topology which hold a protein or nucleic acid in shape without being bonds of it
+// MD_BOND_FLAG_ELASTIC, and returns how many it marked: an elastic network (ElNeDyn, the rubber bands of martinize) and
+// the restraints of secondary structure, when they are written as plain bonds (bond type 1), as they are as often as
+// not. Between two residues of a chain (amino acids or nucleotides, beads) a Martini topology has the link from the last
+// backbone bead of one to the first of the next (BB to BB, BB3 to BB1, and BB2 to BB1 as well in Martini 3 RNA), a
+// disulfide (the SC1 of two cysteines), and the bond which closes a cyclic chain; every other bond between beads of
+// two residues of a chain is elastic. Bonds within a residue, and to anything other than amino acids and nucleotides,
+// are left as they are. Needs the kinds of the components and the backbone beads (md_util_system_infer_comp_flags),
+// and rebuilds the connectivity when it marks any. The topology readers (md_tpr, md_itp) call it.
+size_t md_util_system_infer_elastic_bonds(md_system_t* sys);
+
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
 void md_util_mask_grow_by_bonds(struct md_bitmask_t* mask, const struct md_system_t* sys, size_t extent, const struct md_bitset_t* viable_mask);
@@ -190,7 +201,8 @@ void md_util_mask_grow_by_bonds(struct md_bitmask_t* mask, const struct md_syste
 void md_util_mask_grow_by_radius(struct md_bitmask_t* mask, const md_system_state_t* state, double radius, const struct md_bitset_t* viable_mask);
 
 // Infer rings formed by covalent bonds: the rings of 3 to 7 atoms which are not sums of smaller rings (sys->ring: the
-// smallest set of smallest rings, made symmetric), and their flags (md_util_system_infer_ring_flags)
+// smallest set of smallest rings, made symmetric), and their flags (md_util_system_infer_ring_flags). Only atoms
+// (MD_PARTICLE_ATOM) make rings: the cycles of coarse grained beads and virtual sites are not searched.
 bool md_util_system_infer_rings(md_system_t* sys);
 
 // The flags of the rings (sys->ring_flags, md_ring_flags_t) from the rings, the bonds and their flags, and the atoms of

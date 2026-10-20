@@ -509,6 +509,22 @@ static bool is_chemical_bond(int ftype) {
     }
 }
 
+// The types which hold two atoms at a distance without GROMACS counting them as a chemical bond (no IF_CHEMBOND, no
+// exclusions): harmonic potentials (bond type 6), tabulated bonds without exclusions (9), restraint potentials (10) and
+// constraints without a connection (constraint type 2). An elastic network is written as harmonic potentials as often
+// as not (martinize2, martinize-nucleotide); the rest are restraints.
+static bool is_elastic_bond(int ftype) {
+    switch (ftype) {
+    case F_HARMONIC:
+    case F_TABBONDSNC:
+    case F_RESTRBONDS:
+    case F_CONSTRNC:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static inline void push_pair(md_array(md_atom_pair_t)* pairs, int32_t a, int32_t b, size_t num_atoms, tpr_reader_t* r, md_allocator_i* alloc) {
     if (a < 0 || b < 0 || (size_t)a >= num_atoms || (size_t)b >= num_atoms) {
         rd_fail(r);
@@ -520,8 +536,9 @@ static inline void push_pair(md_array(md_atom_pair_t)* pairs, int32_t a, int32_t
 }
 
 // Reads the interaction lists of a molecule type (or the intermolecular ones) and keeps the pairs
-// that make up the connectivity. Atom indices are validated against num_atoms.
-static void rd_ilists(tpr_reader_t* r, md_array(md_atom_pair_t)* pairs, size_t num_atoms, md_allocator_i* alloc) {
+// that make up the connectivity, and those held by elastic bonds (is_elastic_bond) apart. Atom indices are validated
+// against num_atoms.
+static void rd_ilists(tpr_reader_t* r, md_array(md_atom_pair_t)* pairs, md_array(md_atom_pair_t)* elastic, size_t num_atoms, md_allocator_i* alloc) {
     for (int ftype = 0; ftype < F_NRE && rd_ok(r); ++ftype) {
         if (ftype_absent(ftype, r->version)) {
             continue;
@@ -551,6 +568,10 @@ static void rd_ilists(tpr_reader_t* r, md_array(md_atom_pair_t)* pairs, size_t n
             for (size_t i = 0; i + 3 <= n; i += 3) {
                 push_pair(pairs, IATOM(i + 1), IATOM(i + 2), num_atoms, r, alloc);
             }
+        } else if (is_elastic_bond(ftype)) {
+            for (size_t i = 0; i + 3 <= n; i += 3) {
+                push_pair(elastic, IATOM(i + 1), IATOM(i + 2), num_atoms, r, alloc);
+            }
         } else if (vsite_num_atoms(ftype)) {
             // The site to its first constructing atom. An N-site is stored as one entry per
             // constructing atom, and only the first of those is wanted.
@@ -573,6 +594,17 @@ static int compare_pair(const void* a, const void* b) {
     if (pa->idx[0] != pb->idx[0]) return pa->idx[0] < pb->idx[0] ? -1 : 1;
     if (pa->idx[1] != pb->idx[1]) return pa->idx[1] < pb->idx[1] ? -1 : 1;
     return 0;
+}
+
+// Removes from the sorted pairs those which are also in the sorted other: an elastic bond doubling a chemical one
+static size_t remove_sorted_pairs(md_atom_pair_t* pairs, size_t count, const md_atom_pair_t* other, size_t other_count) {
+    size_t out = 0, j = 0;
+    for (size_t i = 0; i < count; ++i) {
+        while (j < other_count && compare_pair(&other[j], &pairs[i]) < 0) ++j;
+        if (j < other_count && compare_pair(&other[j], &pairs[i]) == 0) continue;
+        pairs[out++] = pairs[i];
+    }
+    return out;
 }
 
 // Sorts and removes duplicates (a bond and a constraint between the same pair, say)
@@ -640,10 +672,14 @@ static void rd_moltype(tpr_reader_t* r, md_tpr_moltype_t* mt, const tpr_symtab_t
     }
 
     md_array(md_atom_pair_t) bonds = 0;
-    rd_ilists(r, &bonds, num_atoms, alloc);
+    md_array(md_atom_pair_t) elastic = 0;
+    rd_ilists(r, &bonds, &elastic, num_atoms, alloc);
     mt->num_bonds = sort_unique_pairs(bonds, md_array_size(bonds));
     if (bonds) md_array_shrink(bonds, mt->num_bonds);
     mt->bonds = bonds;
+    mt->num_elastic_bonds = remove_sorted_pairs(elastic, sort_unique_pairs(elastic, md_array_size(elastic)), mt->bonds, mt->num_bonds);
+    if (elastic) md_array_shrink(elastic, mt->num_elastic_bonds);
+    mt->elastic_bonds = elastic;
 
     // Charge groups (obsolete but still written)
     const size_t num_cg = rd_count(r);
@@ -854,9 +890,12 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
     if (r->version >= tpxv_IntermolecularBondeds) {
         if (rd_bool(r)) {
             md_array(md_atom_pair_t) bonds = 0;
-            rd_ilists(r, &bonds, num_atoms, alloc);
+            md_array(md_atom_pair_t) elastic = 0;
+            rd_ilists(r, &bonds, &elastic, num_atoms, alloc);
             data->num_intermolecular_bonds = sort_unique_pairs(bonds, md_array_size(bonds));
             data->intermolecular_bonds = bonds;
+            data->num_intermolecular_elastic_bonds = remove_sorted_pairs(elastic, sort_unique_pairs(elastic, md_array_size(elastic)), bonds, data->num_intermolecular_bonds);
+            data->intermolecular_elastic_bonds = elastic;
         }
     }
 
@@ -1288,6 +1327,7 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
         md_array_free(data->moltypes[i].atoms, alloc);
         md_array_free(data->moltypes[i].residues, alloc);
         md_array_free(data->moltypes[i].bonds, alloc);
+        md_array_free(data->moltypes[i].elastic_bonds, alloc);
         const md_tpr_moltype_t* mt = &data->moltypes[i];
         if (mt->excl_offset) {
             md_free(alloc, mt->excl, sizeof(uint32_t) * MAX(mt->excl_offset[mt->num_atoms], 1));
@@ -1297,6 +1337,7 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
     md_array_free(data->moltypes, alloc);
     md_array_free(data->molblocks, alloc);
     md_array_free(data->intermolecular_bonds, alloc);
+    md_array_free(data->intermolecular_elastic_bonds, alloc);
     md_array_free(data->lj, alloc);
     md_array_free(data->x, alloc);
     md_array_free(data->v, alloc);
@@ -1656,16 +1697,18 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
     state->num_atoms = num_atoms;
 
-    // ## Bonds, laid out per molecule
+    // ## Bonds, laid out per molecule: its bonds, then its elastic bonds. Then those between molecules.
     {
-        size_t count = data->num_intermolecular_bonds;
+        size_t count = data->num_intermolecular_bonds + data->num_intermolecular_elastic_bonds;
         for (size_t b = 0; b < data->num_molblocks; ++b) {
-            count += (size_t)data->molblocks[b].nmol * data->moltypes[data->molblocks[b].moltype].num_bonds;
+            const md_tpr_moltype_t* mt = &data->moltypes[data->molblocks[b].moltype];
+            count += (size_t)data->molblocks[b].nmol * (mt->num_bonds + mt->num_elastic_bonds);
         }
         md_array_resize(sys->bond.pairs, count, alloc);
         md_array_resize(sys->bond.flags, count, alloc);
 
         const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
+        const md_bond_flags_t elastic_flags = flags | MD_BOND_FLAG_ELASTIC;
         size_t bi = 0;
         md_atom_idx_t offset = 0;
         for (size_t b = 0; b < data->num_molblocks; ++b) {
@@ -1676,12 +1719,21 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     sys->bond.pairs[bi].idx[1] = offset + mt->bonds[k].idx[1];
                     sys->bond.flags[bi] = flags;
                 }
+                for (size_t k = 0; k < mt->num_elastic_bonds; ++k, ++bi) {
+                    sys->bond.pairs[bi].idx[0] = offset + mt->elastic_bonds[k].idx[0];
+                    sys->bond.pairs[bi].idx[1] = offset + mt->elastic_bonds[k].idx[1];
+                    sys->bond.flags[bi] = elastic_flags;
+                }
                 offset += (md_atom_idx_t)mt->num_atoms;
             }
         }
         for (size_t k = 0; k < data->num_intermolecular_bonds; ++k, ++bi) {
             sys->bond.pairs[bi] = data->intermolecular_bonds[k];
             sys->bond.flags[bi] = flags;
+        }
+        for (size_t k = 0; k < data->num_intermolecular_elastic_bonds; ++k, ++bi) {
+            sys->bond.pairs[bi] = data->intermolecular_elastic_bonds[k];
+            sys->bond.flags[bi] = elastic_flags;
         }
         ASSERT(bi == count);
 
@@ -1705,6 +1757,13 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
     md_util_system_infer_comp_flags(sys);
     md_util_system_infer_entity_kinds(sys);
+
+    // An elastic network written as plain bonds, which most Martini proteins have: elastic too, now that the residues
+    // know what they are
+    const size_t num_elastic = md_util_system_infer_elastic_bonds(sys);
+    if (num_elastic) {
+        MD_LOG_INFO("TPR: %zu bonds between the residues of coarse grained chains are an elastic network, not bonds of the chains", num_elastic);
+    }
 
     // ## Attributes
     md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, num_atoms);

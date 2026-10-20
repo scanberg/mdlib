@@ -150,13 +150,18 @@ typedef struct md_nucleic_backbone_data_t {
 // tip (or, for a spanning chain, on to where it joins its other head). Methyl branches and the atoms of the rings off the
 // shortest way through a skeleton are not on it. The spine is what a spline of the tail follows.
 //
-// A lipid is a molecule: a run of consecutive components bonded to each other (a lipid split into head and tails, as the
-// AMBER lipids are, is one), all of them MD_COMPONENT_KIND_LIPID. Every lipid molecule of the system is here, also one
-// whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of the
-// tails are MD_ATOM_FLAG_LIPID_TAIL.
+// A lipid is a molecule, components bonded to each other wherever they are in the system (a lipid split into head and
+// tails, as the AMBER lipids are, is one; so is a lipid A whose acyl chains are ligands of their own), all of them
+// MD_COMPONENT_KIND_LIPID. Of a molecule of several components which holds a lipid and more (a glycolipid or a
+// lipopolysaccharide whose sugars are residues of their own, a PEG lipid whose monomers are), the lipid is the
+// components which hold the tails and those between them, and the components bonded to these: the head group of a
+// residue of its own, the first sugar of a glycolipid, the first Kdo of a lipid A. The rest of the molecule is attached
+// to the lipid but no part of it, nor of its heads, and keeps its kind. Every lipid molecule of the system is here, also
+// one whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of
+// the tails are MD_ATOM_FLAG_LIPID_TAIL.
 typedef struct md_lipid_data_t {
     size_t count;                       // Lipid molecules
-    md_urange_t* comp_range;            // [count] The components of each lipid
+    md_index_data_t comps;              // The components of each lipid, ascending (not necessarily consecutive)
     uint32_t* head_offset;              // [count + 1] The heads of lipid i are head_offset[i] .. head_offset[i + 1]
     uint32_t* tail_offset;              // [count + 1] Its tails, tail_offset[i] .. tail_offset[i + 1]
 
@@ -186,7 +191,9 @@ typedef struct md_assembly_data_t {
     mat4_t* transform;
 } md_assembly_data_t;
 
-// Atom centric representation of bonds
+// Atom centric representation of bonds: the graph of the molecules, every bond but the elastic ones
+// (MD_BOND_FLAG_ELASTIC), which are springs of the force field and connect nothing. Whatever follows bonds through it
+// (md_bond_iter, md_bond_find, the structures, rings and chemistry) leaves them out.
 typedef struct md_bond_conn_data_t {
     size_t count;
     md_atom_idx_t* atom_idx; // Indices to the 'other' atoms
@@ -197,12 +204,12 @@ typedef struct md_bond_conn_data_t {
     uint32_t* offset;
 } md_bond_conn_data_t;
 
-// Bond centric representation
+// Bond centric representation: every bond, the elastic ones (MD_BOND_FLAG_ELASTIC) included
 typedef struct md_bond_data_t {
     size_t count;
     md_atom_pair_t*  pairs;
     md_bond_flags_t* flags;
-    md_bond_conn_data_t  conn;   // Connectivity
+    md_bond_conn_data_t  conn;   // Connectivity, without the elastic bonds
 } md_bond_data_t;
 
 typedef struct md_bond_iter_t {
@@ -1220,7 +1227,7 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
     return it;
 }
 
-// This is not something which should be done frequently
+// This is not something which should be done frequently. The elastic bonds (MD_BOND_FLAG_ELASTIC) are left out.
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc);
 void md_system_bond_build_connectivity(md_system_t* sys);
 
@@ -1264,6 +1271,7 @@ static inline uint32_t md_bond_iter_bond_flags(const md_bond_iter_t* it) {
     return it->data->flags[it->data->conn.bond_idx[it->i]];
 }
 
+// The bond between two atoms in the connectivity, -1 when there is none: an elastic bond is not found
 static inline md_bond_idx_t md_bond_find(const md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
     ASSERT(bond_data);
 	md_bond_iter_t it = md_bond_iter(bond_data, atom_idx_a);
@@ -1281,7 +1289,8 @@ static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_
     ASSERT(bond_data);
     ASSERT(alloc);
 
-    // Ensure that the bond does not exist
+    // Ensure that the bond does not exist. An elastic bond between the two atoms is not found, and does not stand in for
+    // a bond of the molecule.
 	md_bond_idx_t bond_idx = md_bond_find(bond_data, atom_idx_a, atom_idx_b);
     if (bond_idx != -1) {
         return;

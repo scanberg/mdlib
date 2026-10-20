@@ -164,7 +164,9 @@ void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell
 // The profile is a stadium (a 2D capsule, as the cartoon's): a segment of half length flat widened by radius, two half
 // circles joined by flat sides, a circle for a flat of 0. Both follow the control points smoothly along the tube
 // (Ångström, at most 8 each). The flat sides face the particle face of a control point, where it has one: the backbone
-// of a nucleic acid faces its bases. Otherwise the profile turns with the curve as the cartoon of a protein does.
+// of a nucleic acid faces its bases. Or they lie towards the particle side, the long axis of the profile pointing at it:
+// the ring system of a sterol is flat in the plane of its rings, which a particle off its axis in that plane gives where
+// no particle lies off the plane. Otherwise the profile turns with the curve as the cartoon of a protein does.
 // The ends are round: the Minkowski sum of the segment and a half sphere of the radius there, which also closes a tube
 // next to a part of it that is hidden. A tube of fewer than two control points is not drawn.
 // A part of a tube belongs to its control point: it picks as it (md_gl_picking_offset_t), takes its colour from the
@@ -177,6 +179,7 @@ typedef struct md_gl_tubes_t {
     const float*    radius;     // The radius of the profile, half its thickness
     const float*    flat;       // (optional) Half the length of the flat sides of the profile, NULL for 0: round tubes
     const uint32_t* face;       // (optional) The particle the flat sides face, UINT32_MAX for none
+    const uint32_t* side;       // (optional) The particle the long axis of the profile points at, UINT32_MAX for none (a face wins)
     const uint8_t*  through;    // (optional) [count] Per tube: it passes (nearly) through its control points rather than near them
 } md_gl_tubes_t;
 
@@ -229,6 +232,9 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 //   - delocalized bond (carboxylate, nitro, guanidinium, phosphate, ...): the stick and a thin dashed line towards
 //     the next bond of the group. So is an aromatic bond in no circle (in a ring larger than MD_RING_MAX_SIZE).
 // A bond whose order is unknown is drawn as a single bond.
+// It also tells the elastic bonds (MD_BOND_FLAG_ELASTIC), springs of the force field, which the licorice and ball and
+// stick representations leave out unless their elastic_bonds is set, and then draw as single bonds. Until it is set
+// for the bonds of the molecule every bond is drawn.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
 
 // The gaps of the chains, from the chain breaks of the system (MD_COMPONENT_FLAG_BREAK_AFTER, CHAIN BREAKS in md_util.h):
@@ -331,6 +337,7 @@ typedef struct md_gl_draw_op_t {
 			uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
             bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
+            bool elastic_bonds;     // Show the elastic bonds (MD_BOND_FLAG_ELASTIC), which are left out otherwise
         } licorice;
 
         struct {
@@ -341,6 +348,7 @@ typedef struct md_gl_draw_op_t {
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
             bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
+            bool elastic_bonds;     // Show the elastic bonds (MD_BOND_FLAG_ELASTIC), which are left out otherwise
         } ball_and_stick;
 
         struct {

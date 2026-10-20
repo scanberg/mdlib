@@ -76,10 +76,11 @@
 
 #define REF_NONE        0xFFFFFFFFu
 
-// Kinds of covalent bonds (md_gl.c, bond.frag)
+// Kinds of bonds (md_gl.c, bond.frag). An elastic bond is drawn as a plain one, where it is drawn at all.
 #define KIND_PLAIN      0u
 #define KIND_DOUBLE     1u
 #define KIND_TRIPLE     2u
+#define KIND_ELASTIC    3u
 
 // Relative to the radius of the stick (r) and to the envelope of the thinner sticks (u_spread * r)
 #define DOUBLE_RADIUS   0.42    // * envelope
@@ -113,6 +114,8 @@ layout (std140) uniform ubo {
     uint  u_bond_orders;
     float u_spread;
     uint  u_gap_index_base;
+    uint  u_bond_kinds;     // u_buf_bond_order is bound: the kind of every bond is known
+    uint  u_elastic_bonds;  // Draw the elastic bonds (KIND_ELASTIC), which are left out otherwise
 };
 
 #pragma INSTANCES
@@ -260,6 +263,16 @@ void main() {
     uint bond = prim;
 #endif
 
+#if !WEAK_BONDS && !BOND_PARTNERS && !CHAIN_GAPS
+    // ELASTIC BONDS (MD_BOND_FLAG_ELASTIC): springs of the force field, not bonds of the molecule, drawn only where the
+    // representation shows them
+    uint order = u_bond_kinds != 0u ? texelFetch(u_buf_bond_order, int(bond)).x : KIND_PLAIN;
+    if ((order & 7u) == KIND_ELASTIC && u_elastic_bonds == 0u) {
+        cull();
+        return;
+    }
+#endif
+
 #if CHAIN_GAPS
     uvec4 gap  = texelFetch(u_buf_gap, int(prim));
     uvec2 atom = gap.xz;
@@ -362,8 +375,8 @@ void main() {
     out_frag.pb = pb;
     out_frag.radius = r;
 
-    uint order = u_bond_orders != 0u ? texelFetch(u_buf_bond_order, int(bond)).x : KIND_PLAIN;
-    uint kind = order & 7u;
+    // Without the orders shown every bond is a single stick, and so is an elastic one where it is shown
+    uint kind = u_bond_orders != 0u ? (order & 7u) : KIND_PLAIN;
     vec3 side = vec3(0.0);
     vec2 sub  = vec2(0.0);
     if (kind == KIND_DOUBLE || kind == KIND_TRIPLE) {

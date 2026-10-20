@@ -2114,6 +2114,31 @@ UTEST(util, rings_ciprofloxacin) {
     md_temp_end(temp_scope);
 }
 
+// Beads make no rings. Their cycles are the rigid triangles Martini closes where the atoms had a ring (the side chains
+// of PHE, TYR, TRP, HIS, the small molecules) and, in a protein, those its secondary structure bonds and elastic
+// network close: thousands for an elastic network, all of which the ring search and the aromaticity of
+// md_chem_perceive went through.
+UTEST(util, rings_coarse_grained) {
+    static const char* files[] = { "martini3_small_molecules.tpr", "martini2_membrane_protein.tpr", "martini3_peptides.tpr" };
+    for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
+        md_temp_scope_t temp_scope = md_temp_begin();
+        md_allocator_i* alloc = md_temp_allocator(temp_scope);
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t sys_state = { .alloc = alloc };
+        char path[512];
+        snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s", files[f]);
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, str_from_cstr(path)));
+        ASSERT_TRUE(md_system_is_coarse_grained(&sys));
+        // The bonds of the topology close cycles: more bonds than a forest of the molecules has
+        EXPECT_GT(sys.bond.count + sys.instance.count, sys.atom.count);
+
+        md_infer_flags_t flags = MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT;
+        EXPECT_TRUE(md_util_system_infer(&sys, &sys_state, flags));
+        EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
+        md_temp_end(temp_scope);
+    }
+}
+
 // splitmix64: the same keys on every platform (unlike rand), with all 64 bits random
 static uint64_t radix_test_rand(uint64_t* state) {
     uint64_t z = (*state += 0x9e3779b97f4a7c15ULL);
@@ -3391,4 +3416,23 @@ UTEST(util, ramachandran_classify) {
     EXPECT_EQ(0xAB, buf[0]);
     for (int i = 0; i < 4; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
     EXPECT_EQ(0xAB, buf[5]);
+}
+
+UTEST(util, index_data_cleared) {
+    // A cleared index data keeps its arrays, emptied: no ranges, as one never pushed to, and none in range
+    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(1));
+    md_index_data_t data = { .alloc = alloc };
+    EXPECT_EQ(0u, md_index_data_num_ranges(&data));
+    const int32_t a[] = { 1, 2, 3 };
+    md_index_data_push_arr(&data, a, 3);
+    md_index_data_push_arr(&data, a, 2);
+    EXPECT_EQ(2u, md_index_data_num_ranges(&data));
+    md_index_data_clear(&data);
+    EXPECT_EQ(0u, md_index_data_num_ranges(&data));
+    EXPECT_TRUE(md_index_range_beg(&data, 0) == NULL);
+    EXPECT_EQ(0u, md_index_range_size(&data, 0));
+    md_index_data_push_arr(&data, a, 1);
+    EXPECT_EQ(1u, md_index_data_num_ranges(&data));
+    EXPECT_EQ(1u, md_index_range_size(&data, 0));
+    md_vm_arena_destroy(alloc);
 }
