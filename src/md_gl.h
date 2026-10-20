@@ -198,6 +198,17 @@ void md_gl_mol_set_tubes(md_gl_mol_t mol, const md_gl_tubes_t* tubes);
 // corner and is shown when all its corners are. Replaces the previous slabs; a count of 0 clears them.
 void md_gl_mol_set_slabs(md_gl_mol_t mol, uint32_t count, const uint32_t* offset, const uint32_t* particle);
 
+// ### SEGMENTS ###
+// A partition of the atoms of a molecule into segments, so that a draw op can show some of them (md_gl_draw_op_t
+// segments): the instances of a system (its chains and molecules), of which a part of an assembly shows a set. Segment
+// s is the atoms [atom_offset[s], atom_offset[s + 1]), from atom_offset[0] = 0 to atom_offset[count] = the atom count.
+// A count of 0 clears them. The particles derived from a molecule (md_gl_mol_set_derived) have its segments too: a
+// particle is in the segment of its reference atom.
+// The primitives the molecule draws (bonds, rings, gaps of chains, slabs, weak bonds) are kept in the order of their
+// segments, so that what a draw op of some segments shows is a few ranges of them: set the segments once, after the
+// molecule is made (a few reads of its buffers back from the GPU), rather than every frame.
+void md_gl_mol_set_segments(md_gl_mol_t mol, uint32_t count, const uint32_t* atom_offset);
+
 // ### Set molecule data fields ###
 void md_gl_mol_set_index_base   (md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base);
 // Packed xyz, the buffers' own layout. Setting positions keeps the current ones as the previous.
@@ -307,20 +318,20 @@ typedef enum {
     MD_GL_BOND_MODE_UNIFORM,
 } md_gl_bond_mode_t;
 
-// INSTANCES. The copies of the molecule a draw op shows (the periodic images of a cell, the copies of an assembly),
-// drawn by instancing: each draw of the op covers all of them, whatever their number. Instance i is the molecule moved
-// by transforms[i]. A transform is rigid: a rotation, or a rotation and a reflection (a mirror image, determinant -1),
-// and a translation. It is not scaled: a scale is not applied to the radii and thicknesses of the representations.
-// Each instance is culled against the view on the CPU with the box of the positions of the molecule (as set on it, or
-// derived): an instance out of view costs nothing on the GPU. Of the backbone representations, each chain of each
-// instance is culled and gets its level of detail.
-// What an instance draws picks as the same elements (md_gl_picking_offset_t) as the molecule itself would.
-typedef struct md_gl_instances_t {
+// COPIES. The copies of the molecule a draw op shows (the periodic images of a cell, the copies of an assembly), drawn
+// by instancing: each draw of the op covers all of them, whatever their number. Copy i is the molecule moved by
+// transforms[i]. A transform is rigid: a rotation, or a rotation and a reflection (a mirror image, determinant -1), and
+// a translation. It is not scaled: a scale is not applied to the radii and thicknesses of the representations.
+// Each copy is culled against the view on the CPU with the box of the positions of what the op shows (of the molecule,
+// or of its segments, as set on it or derived): a copy out of view costs nothing on the GPU. Of the backbone
+// representations, each chain of each copy is culled and gets its level of detail.
+// What a copy draws picks as the same elements (md_gl_picking_offset_t) as the molecule itself would.
+typedef struct md_gl_copies_t {
     const float* transforms;        // [count] Column major float[4][4]
-    const float* prev_transforms;   // [count] (optional) As of the previous frame, for the velocities: an instance which
+    const float* prev_transforms;   // [count] (optional) As of the previous frame, for the velocities: a copy which
                                     // moved shows as moving. NULL: each as in transforms, standing still
     uint32_t     count;             // 0: once, as it is (transforms are then not read)
-} md_gl_instances_t;
+} md_gl_copies_t;
 
 typedef struct md_gl_draw_op_t {
     md_gl_rep_type_t type;
@@ -391,7 +402,15 @@ typedef struct md_gl_draw_op_t {
     } args;
 
     md_gl_rep_t rep;
-    md_gl_instances_t instances;            // Zero: drawn once, as it is. Must outlive md_gl_draw
+    md_gl_copies_t copies;                  // Zero: drawn once, as it is. Must outlive md_gl_draw
+
+    // SEGMENTS (optional): the segments of the molecule (md_gl_mol_set_segments) the op shows, NULL for all of it. Of what
+    // the molecule draws, it shows an atom in one of them, a bond, ring, slab, weak bond or gap of a chain all of whose
+    // atoms are in them, a chain of the backbone whose first control point is: a part of an assembly, its copies the
+    // operators. A molecule without segments is shown whole. Must outlive md_gl_draw: an op of the same array as
+    // another (the same pointer and count) shares what md_gl_draw finds for it.
+    const uint32_t* segments;
+    uint32_t        segment_count;
 } md_gl_draw_op_t;
 
 // Picking offsets: each renderable element writes base + its own index to the picking target, so the caller
