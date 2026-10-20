@@ -311,6 +311,10 @@ typedef struct md_gto_iso_gpu_profile_t {
     uint32_t cgroup_count, cgroup_size;
     uint64_t vgroup_ao_sum; // vertex groups of vgroup_size vertices
     uint32_t vgroup_count, vgroup_size;
+    // the bricks given corners, by what the corners show (with ordered vertices; 0 otherwise)
+    uint32_t brick_surf;    // with surface cells
+    uint32_t brick_in;      // without: every corner inside a sheet (the bound's low side kept it)
+    uint32_t brick_out;     // without: every corner outside (the high side kept it)
 } md_gto_iso_gpu_profile_t;
 
 // NULL turns it off. One profile for every extraction (not thread safe); each extraction restarts it.

@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r19"
+#define ISOG_REVISION "r20"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -963,6 +963,7 @@ static void isog_prof_begin(md_gpu_stream_t s) {
     isog_prof->corner_points = 0;
     isog_prof->cgroup_ao_sum = 0; isog_prof->cgroup_count = 0; isog_prof->cgroup_size = 0;
     isog_prof->vgroup_ao_sum = 0; isog_prof->vgroup_count = 0; isog_prof->vgroup_size = 0;
+    isog_prof->brick_surf = 0; isog_prof->brick_in = 0; isog_prof->brick_out = 0;
     md_gpu_stream_sync(s);
     double best = 1e30;
     for (int i = 0; i < 8; ++i) {
@@ -1039,6 +1040,10 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
                     (double)p->brick_ao_sum / (double)items[k], p->brick_ao_max, p->num_ao, pts, p->num_fn, cols > 0.0 ? "" : " (as D: A^2/2)",
                     fma, fma / (w * 1e6));
         }
+        if (strncmp(name[k], "corners (", 9) == 0 && items[k] > 0 && p->brick_surf + p->brick_in + p->brick_out > 0) {
+            ISOG_PR("    corner bricks: %u with surface cells, %u without (all corners inside %u, outside %u)\n",
+                    p->brick_surf, p->brick_in + p->brick_out, p->brick_in, p->brick_out);
+        }
         if (strncmp(name[k], "corners (", 9) == 0 && items[k] > 0 && p->cgroup_count > 0) {
             ISOG_PR("    corner groups: %.1f AOs reach a group of %u points (%u groups)\n",
                     (double)p->cgroup_ao_sum / (double)p->cgroup_count, p->cgroup_size, p->cgroup_count);
@@ -1066,10 +1071,10 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
         col++;
     }
     ISOG_PR("\n");
-    ISOG_PR("    octree levels, nodes in -> kept:");
+    ISOG_PR("    octree levels, nodes in -> kept (ms):");
     for (uint32_t i = 0; i < p->num_steps; ++i) {
         if (strcmp(p->step[i].name, "octree level") != 0) continue;
-        ISOG_PR(" %u->%u", p->step[i].items, p->step[i].aux);
+        ISOG_PR(" %u->%u (%.2f)", p->step[i].items, p->step[i].aux, p->step[i].ms);
     }
     ISOG_PR("\n");
     // the main kernels as the driver compiled them (registers, shared memory: what limits occupancy)
@@ -1415,6 +1420,35 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         isog_mark(s, "cells: count", nb, 0);
         isog_read(s, &nv, a.counters, sizeof(nv));
         isog_mark(s, "readback: vertex count", nv, 0);
+        if (isog_prof && ordered) {     // BENCHMARK: the bricks given corners, by their corners (not timed)
+            uint32_t* sc = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
+            float* cv = (float*)malloc(sizeof(float) * 125 * ((size_t)nslots + 1));
+            if (sc && cv && isog_read(s, sc, a.scan, sizeof(uint32_t) * (nb + 1)) &&
+                isog_read(s, cv, a.corners, sizeof(float) * 125 * (size_t)nslots)) {
+                for (uint32_t b = 0; b < nb; ++b) {
+                    const uint32_t m = bl[b].w;
+                    if (m == 0) continue;
+                    if (sc[b + 1] > sc[b]) { isog_prof->brick_surf++; continue; }
+                    bool in = false;
+                    for (uint32_t f = 0; f < F && !in; ++f) {
+                        const uint32_t fb = (m >> (2 * f)) & 3u;
+                        if (fb == 0) continue;
+                        const float* c = cv + (size_t)(slot[b] + popcnt32((m | (m >> 1)) & 0x55555555u & ((1u << (2 * f)) - 1u))) * 125;
+                        for (uint32_t sh = 0; sh < 2 && !in; ++sh) {
+                            if (!(fb & (1u << sh))) continue;
+                            const float sg = sh == 0 ? 1.0f : -1.0f;
+                            bool all = true;
+                            for (int k = 0; k < 125 && all; ++k) all = sg * c[k] > fields[f].iso;
+                            in = all;
+                        }
+                    }
+                    if (in) isog_prof->brick_in++; else isog_prof->brick_out++;
+                }
+            }
+            free(sc);
+            free(cv);
+            isog_mark_skip(s);
+        }
     }
     if (isog_debug) {
         isog_debug_t* dbg = isog_debug;

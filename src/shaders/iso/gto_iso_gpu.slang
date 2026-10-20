@@ -2688,6 +2688,16 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
 // (sizes kept so every kernel stays within 32 KB of groupshared memory, the Apple GPUs' limit)
 #define DQ_PMAX 8                        // primitives per staged shell in groupshared memory (more: global memory)
 #define DQ_CAP  512                      // chunks in the table: at most 8192 local AOs (more: the extraction fails)
+// A fence for groupshared memory in wave-uniform control flow (no execution barrier for the group): on
+// Vulkan OpMemoryBarrier; on Metal simdgroup_barrier, as threadgroup_barrier would also wait for the
+// other SIMD-groups
+void iso_wave_fence() {
+    __target_switch {
+    case metal: __intrinsic_asm "simdgroup_barrier(mem_flags::mem_threadgroup)";
+    default: GroupMemoryBarrier();
+    }
+}
+
 groupshared uint   dq_tab[DQ_CAP / 2];   // per chunk q, 16 bits: the local shell holding local AO 16 q
 groupshared float4 dq_cs[2 * D_CH];      // [buffer][staged shell]: centre, r^2 cutoff
 groupshared uint   dq_ci[2 * D_CH];      // l | ncart << 4 | nprim << 8 | 1 << 31 when its primitives are read globally
@@ -2988,7 +2998,10 @@ void gemm_dform2<let VERT : int, let NW : int, B : IKBuf>(uint3 gid, uint tid) {
                         }
                     }
                     if (q == cq) {                         // the column chunk is complete: Phi_q . T_q
-                        GroupMemoryBarrier();              // AO values read again, not kept from the loop above (64 registers)
+                        // AO values read again, not kept from the loop above (64 registers). A fence only: on
+                        // Metal GroupMemoryBarrier() is threadgroup_barrier, an execution barrier, and this
+                        // branch is taken by one wave at a time (the waves then fell out of step: wrong values)
+                        iso_wave_fence();
                         [ForceUnroll] for (int k = 0; k < D_CH; ++k) {
                             float4 ph = gp_ld4(uint(k) * 32u + pg);
                             if (VERT == 0) {
