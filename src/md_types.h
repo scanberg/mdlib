@@ -719,20 +719,18 @@ static inline void md_index_data_clear(md_index_data_t* data) {
     md_array_shrink(data->indices, 0);
 }
 
+// The offsets of a cleared index data are empty rather than NULL: it has no ranges, as one never pushed to
 static inline size_t md_index_data_num_ranges(const md_index_data_t* data) {
     ASSERT(data);
-    size_t num_ranges = 0;
-    if (data->offsets) {
-        num_ranges = md_array_size(data->offsets) - 1;
-    }
-    return num_ranges;
+    const size_t num_offsets = md_array_size(data->offsets);
+    return num_offsets > 0 ? num_offsets - 1 : 0;
 }
 
 // Access to individual substructures
 static inline const int32_t* md_index_range_beg(const md_index_data_t* data, size_t range_idx) {
     ASSERT(data);
     const int32_t* ptr = NULL;
-    if (data->indices && data->offsets && range_idx < md_array_size(data->offsets) - 1) {
+    if (data->indices && data->offsets && range_idx + 1 < md_array_size(data->offsets)) {
         ptr = data->indices + data->offsets[range_idx];
     }
     return ptr;
@@ -741,7 +739,7 @@ static inline const int32_t* md_index_range_beg(const md_index_data_t* data, siz
 static inline const int32_t* md_index_range_end(const md_index_data_t* data, size_t range_idx) {
     ASSERT(data);
     const int32_t* ptr = NULL;
-    if (data->indices && data->offsets && range_idx < md_array_size(data->offsets) - 1) {
+    if (data->indices && data->offsets && range_idx + 1 < md_array_size(data->offsets)) {
         ptr = data->indices + data->offsets[range_idx + 1];
     }
     return ptr;
@@ -751,7 +749,7 @@ static inline const int32_t* md_index_range_end(const md_index_data_t* data, siz
 static inline int32_t* md_index_range_ptr(md_index_data_t* data, size_t range_idx) {
     ASSERT(data);
     int32_t* ptr = NULL;
-    if (data->indices && data->offsets && range_idx < md_array_size(data->offsets) - 1) {
+    if (data->indices && data->offsets && range_idx + 1 < md_array_size(data->offsets)) {
         ptr = data->indices + data->offsets[range_idx];
     }
     return ptr;
@@ -760,7 +758,7 @@ static inline int32_t* md_index_range_ptr(md_index_data_t* data, size_t range_id
 static inline size_t md_index_range_size(const md_index_data_t* data, size_t range_idx) {
     ASSERT(data);
     size_t size = 0;
-    if (data->offsets && range_idx < md_array_size(data->offsets) - 1) {
+    if (data->offsets && range_idx + 1 < md_array_size(data->offsets)) {
         size = data->offsets[range_idx+1] - data->offsets[range_idx];
     }
     return size;

@@ -3417,3 +3417,22 @@ UTEST(util, ramachandran_classify) {
     for (int i = 0; i < 4; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
     EXPECT_EQ(0xAB, buf[5]);
 }
+
+UTEST(util, index_data_cleared) {
+    // A cleared index data keeps its arrays, emptied: no ranges, as one never pushed to, and none in range
+    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(1));
+    md_index_data_t data = { .alloc = alloc };
+    EXPECT_EQ(0u, md_index_data_num_ranges(&data));
+    const int32_t a[] = { 1, 2, 3 };
+    md_index_data_push_arr(&data, a, 3);
+    md_index_data_push_arr(&data, a, 2);
+    EXPECT_EQ(2u, md_index_data_num_ranges(&data));
+    md_index_data_clear(&data);
+    EXPECT_EQ(0u, md_index_data_num_ranges(&data));
+    EXPECT_TRUE(md_index_range_beg(&data, 0) == NULL);
+    EXPECT_EQ(0u, md_index_range_size(&data, 0));
+    md_index_data_push_arr(&data, a, 1);
+    EXPECT_EQ(1u, md_index_data_num_ranges(&data));
+    EXPECT_EQ(1u, md_index_range_size(&data, 0));
+    md_vm_arena_destroy(alloc);
+}
