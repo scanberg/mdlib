@@ -3086,6 +3086,30 @@ static const martini_db_residue_t* martini_db_match_molecule(uint32_t version, s
     return other;
 }
 
+// The molecule (not an amino acid or a nucleotide) whose beads the labels are, whatever its name: a residue renamed, as the
+// three letters of a PDB file make CHOL CHL, PSM SPM and PCER CER. Of the version where there is one of it, and with the
+// masses (optional) of its beads. NULL for a single bead, which says too little, and where molecules of different kinds
+// have those beads. The names of a molecule of the Martini force fields are those of its chemistry, so molecules of the
+// same beads are the same molecule as far as anything here goes (its kind, its bonds, its anatomy as a lipid).
+static const martini_db_residue_t* martini_db_match_beads(uint32_t version, const str_t labels[], const float masses[], size_t num_labels, uint8_t map[]) {
+    if (num_labels < 2 || num_labels > 255) return NULL;
+    const martini_db_residue_t* match = NULL;   // Of the version
+    const martini_db_residue_t* other = NULL;   // Of any
+    for (size_t r = 0; r < ARRAY_SIZE(martini_db_residues); ++r) {
+        const martini_db_residue_t* res = &martini_db_residues[r];
+        if (res->num_beads != num_labels || martini_db_biopolymer(res) || !martini_db_match(res, labels, num_labels, map)) continue;
+        bool same = true;
+        for (size_t i = 0; i < num_labels && masses && same; ++i) same = masses[i] == martini_db_bead(res, map[i])->mass;
+        if (!same) continue;
+        if (other && other->kind != res->kind) return NULL;
+        if (!other) other = res;
+        if (!match && (res->versions & version)) match = res;
+    }
+    const martini_db_residue_t* res = match ? match : other;
+    if (res) martini_db_match(res, labels, num_labels, map);
+    return res;
+}
+
 // Whether the residue is a monomer of a polymer: a link names it
 static bool martini_db_linked(str_t name) {
     for (size_t k = 0; k < ARRAY_SIZE(martini_db_links); ++k) {
@@ -3260,8 +3284,15 @@ static const martini_db_residue_t* martini_db_match_component(const md_system_t*
         if (res->versions & version) return res;
         if (!other) other = res;
     }
-    if (other) martini_db_match(other, labels, n, map);
-    return other;
+    if (other) {
+        martini_db_match(other, labels, n, map);
+        return other;
+    }
+    // A molecule renamed: by its beads and their masses
+    if (biopolymer) return NULL;
+    float masses[256];
+    for (size_t i = 0; i < n; ++i) masses[i] = md_atom_mass(&sys->atom, range.beg + i);
+    return martini_db_match_beads(version, labels, masses, n, map);
 }
 
 // The bonds of a residue of a polymer (polyply) to the one before it, by the links of the force field, up to 6 A apart
@@ -4195,6 +4226,10 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
             uint8_t map[256];
             for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, comp_range.beg + i);
             const martini_db_residue_t* mol = martini_db_match_molecule(MARTINI_ANY, comp_name, labels, len, map);
+            // Renamed (CHL for CHOL): by its beads, unless it is named as a residue of a chain
+            if (!mol && !md_util_resname_amino_acid(comp_name) && !md_util_resname_nucleotide(comp_name)) {
+                mol = martini_db_match_beads(MARTINI_ANY, labels, NULL, len, map);
+            }
             if (mol) {
                 set_component_kind(sys, comp_idx, mol->kind);
                 continue;
@@ -5782,6 +5817,11 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
             uint8_t map[256];
             const martini_db_residue_t* mol = martini_db_match_molecule(martini.version, comp_name, atom_labels + comp_range.beg, comp_size, map);
             if (mol && comp_size == 1 && !martini.martini && mol->kind != MD_COMPONENT_KIND_WATER) mol = NULL;
+            // A molecule renamed (CHL for CHOL, the three letters of a PDB file) is told by its beads, in a Martini system
+            // only: atomistic residues are named as their atoms, which may be the names of beads
+            if (!mol && martini.martini && !md_util_resname_amino_acid(comp_name) && !md_util_resname_nucleotide(comp_name)) {
+                mol = martini_db_match_beads(martini.version, atom_labels + comp_range.beg, NULL, comp_size, map);
+            }
             if (mol) {
                 for (size_t i = comp_range.beg; i < comp_range.end; ++i) {
                     if (sys->atom.type_idx[i] != 0) continue;
@@ -10478,39 +10518,53 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
 // md_util_system_infer_lipids: the heads and tails of the lipids (md_lipid_data_t). A molecule is a run of consecutive
 // components which are not amino acids, nucleotides, water or ions, each bonded to the ones before it. Its apolar atoms
 // are the carbons bonded to carbons (and hydrogens) only, or, for coarse grained beads, the beads named as the beads of
-// the tails of the Martini lipidomes (lipid_bead_apolar). Each connected part of them which hangs off the rest of the
+// the tails of the Martini lipidomes (lipid_bead_kind). Each connected part of them which hangs off the rest of the
 // molecule at one atom (its anchor) is a tail: a chain, or the skeleton of a sterol when it holds fused rings (or the
 // ring beads of a coarse grained sterol). A chain which hangs between two anchors spans them (a bolalipid). The rest of the molecule, in connected parts, is its heads.
 //
 // A molecule whose components are lipids by name is a lipid with the tails found. One of no lipid is a lipid by its
 // structure: a polar head (an atom other than carbon outside of the tails) and a chain without rings of at least
-// LIPID_MIN_CHAIN_UNNAMED carbons, or the skeleton of a sterol. Coarse grained molecules are lipids by name only.
+// LIPID_MIN_CHAIN_UNNAMED carbons, or the skeleton of a sterol. Coarse grained molecules are lipids by the force field
+// only: by their names, or by their beads where the name is not Martini's (md_util_system_infer_comp_flags).
 
 #define LIPID_MIN_CHAIN_NAMED       4   // Carbons on the spine of a chain of a lipid by name (hexanoyl: 5)
 #define LIPID_MIN_CHAIN_UNNAMED     8   // Of a molecule which is a lipid by its structure alone (octanoyl: 7, decanoyl: 9)
-#define LIPID_MIN_CHAIN_BEADS       2   // Beads on the spine of a chain of a coarse grained lipid
+#define LIPID_MIN_CHAIN_BEADS       1   // Beads on the spine of a chain of a coarse grained lipid (the C1B of a lyso PC)
+#define LIPID_MIN_CHAIN_LETTERLESS  2   // Of a chain of beads named without the letter of their tail (COO C1 C2 C3 C4)
 #define LIPID_MIN_SKELETON_ATOMS    15  // Carbons of the skeleton of a sterol (cholesterol: 26 besides C3)
 #define LIPID_MIN_SKELETON_BEADS    4   // Beads of it (Martini cholesterol: 7 and 8)
 #define LIPID_MAX_ATOMS             16384   // Larger molecules (polymers) are no lipids
 
-// The beads of the tails of the Martini lipidomes: C (saturated), D (unsaturated) or T (trans), the number of the bead
-// and the letter of its tail, with the number of the acyl chain after it in cardiolipins (C1A, D2A, C4B, T1A, C1A1);
-// the ring skeleton of a sterol R and a number (R1 .. R6), and its side chain C and a number (C1, C2). A C and a number
-// alone is the side chain of a sterol only: the inositol of a phosphatidylinositol (C1 .. C4) and the sugars of
-// glycolipids and detergents are named so too. The beads of the heads (NC3, NH3, CNO, PO4, GL1, GL2, AM1, ROH, ...) are
-// none of these.
-static bool lipid_bead_apolar(str_t name, bool sterol) {
-    if (name.len < 2) return false;
+// What a bead of a lipid of the Martini lipidomes is to its tails, by its name:
+//   CHAIN       A bead of a tail: C (saturated), D (unsaturated) or T (trans), the number of the bead and the letter of
+//               its tail, with the number of the acyl chain after it in cardiolipins (C1A, D2A, C4B, T1A, C1A1); the ring
+//               skeleton of a sterol R and a number (R1 .. R6), and in a sterol its side chain C and a number (C1, C2).
+//   LETTERLESS  C, D or T and a number alone elsewhere: the chain of a fatty acid or a detergent of Martini 2 (COO C1 C2
+//               C3 C4, SO3 C1 C2 C4, the B1 B2 B3 C1 C2 of an octyl glucoside), but also the inositol of a
+//               phosphatidylinositol (C1 .. C4) and the sugars of glycolipids. Such beads are a tail only where they
+//               make a chain: an unbranched run of two beads or more, without rings, which the inositol and sugars are.
+//   POLAR       Any other: the beads of the heads (NC3, NH3, CNO, PO4, GL1, GL2, AM1, ROH, COO, ...).
+typedef enum {
+    LIPID_BEAD_POLAR = 0,
+    LIPID_BEAD_CHAIN,
+    LIPID_BEAD_LETTERLESS,
+} lipid_bead_t;
+
+static lipid_bead_t lipid_bead_kind(str_t name, bool sterol) {
+    if (name.len < 2) return LIPID_BEAD_POLAR;
     const char c = name.ptr[0];
-    if (c != 'C' && c != 'D' && c != 'T' && c != 'R') return false;
+    if (c != 'C' && c != 'D' && c != 'T' && c != 'R') return LIPID_BEAD_POLAR;
     size_t i = 1;
-    if (!is_digit(name.ptr[i])) return false;
+    if (!is_digit(name.ptr[i])) return LIPID_BEAD_POLAR;
     while (i < name.len && is_digit(name.ptr[i])) ++i;
-    if (i == name.len) return c == 'R' || (c == 'C' && sterol);
-    if (name.ptr[i] < 'A' || name.ptr[i] > 'H') return false;
+    if (i == name.len) {
+        if (c == 'R' || (c == 'C' && sterol)) return LIPID_BEAD_CHAIN;
+        return LIPID_BEAD_LETTERLESS;
+    }
+    if (name.ptr[i] < 'A' || name.ptr[i] > 'H') return LIPID_BEAD_POLAR;
     ++i;
     while (i < name.len && is_digit(name.ptr[i])) ++i;
-    return i == name.len;
+    return i == name.len ? LIPID_BEAD_CHAIN : LIPID_BEAD_POLAR;
 }
 
 static inline bool lipid_atom_is_bead(const md_system_t* sys, size_t i) {
@@ -10527,18 +10581,19 @@ static inline bool lipid_bead_sterol_ring(str_t name) {
     return name.len >= 2 && name.ptr[0] == 'R' && is_digit(name.ptr[1]);
 }
 
-static bool lipid_atom_is_apolar(const md_system_t* sys, size_t i, bool sterol) {
+// What an atom is to the tails: a bead by its name, an atom a CHAIN when it is a carbon bonded to carbons and hydrogens only
+static lipid_bead_t lipid_atom_kind(const md_system_t* sys, size_t i, bool sterol) {
     if (lipid_atom_is_bead(sys, i)) {
-        return lipid_bead_apolar(md_atom_name(&sys->atom, i), sterol);
+        return lipid_bead_kind(md_atom_name(&sys->atom, i), sterol);
     }
-    if (md_atom_atomic_number(&sys->atom, i) != MD_Z_C) return false;
+    if (md_atom_atomic_number(&sys->atom, i) != MD_Z_C) return LIPID_BEAD_POLAR;
     md_bond_iter_t it = md_bond_iter(&sys->bond, i);
     while (md_bond_iter_has_next(&it)) {
         const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, md_bond_iter_atom_index(&it));
-        if (z != MD_Z_C && z != MD_Z_H) return false;
+        if (z != MD_Z_C && z != MD_Z_H) return LIPID_BEAD_POLAR;
         md_bond_iter_next(&it);
     }
-    return true;
+    return LIPID_BEAD_CHAIN;
 }
 
 static inline bool lipid_candidate_comp(const md_system_t* sys, size_t comp_idx) {
@@ -10566,6 +10621,8 @@ typedef struct {
     int32_t  num_anchors;   // distinct anchors, more than 2 counts as 3
     bool     outside;       // hangs off an atom outside of the molecule
     bool     skeleton;      // holds an atom of a fused ring, or a ring bead of a sterol (R1 .. R6)
+    bool     letterless;    // all of its beads are named without the letter of a tail (LIPID_BEAD_LETTERLESS)
+    bool     branched;      // an atom of it is bonded to more than two others of it
     int32_t  bonds;         // bonds within it, each counted from both ends
 } lipid_part_t;
 
@@ -10599,22 +10656,23 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     const int32_t n = (int32_t)(a1 - a0);
     if (n <= 0) return;
 
-    // Lipids by name. Those which are lipids by their structure alone are classified anew, so that inferring again gives
-    // what inferring once did.
-    bool named = false;
-    for (size_t c = comp_beg; c < comp_end; ++c) {
-        if (md_util_resname_lipid(md_component_name(&sys->component, c))) {
-            named = true;
-        } else if (md_component_kind(&sys->component, c) == MD_COMPONENT_KIND_LIPID) {
-            set_component_kind(sys, c, MD_COMPONENT_KIND_OTHER);
-        }
-    }
     bool cg = false;
     bool sterol_beads = false;
     for (uint32_t i = a0; i < a1; ++i) {
         if (lipid_atom_is_bead(sys, i)) {
             cg = true;
             sterol_beads |= lipid_bead_sterol_ring(md_atom_name(&sys->atom, i));
+        }
+    }
+    // Lipids by name. Those which are lipids by their structure alone are classified anew, so that inferring again gives
+    // what inferring once did. A coarse grained lipid is one of the force field, by its name or, where that is not
+    // Martini's, by its beads (the kind md_util_system_infer_comp_flags gave it): never by its structure.
+    bool named = false;
+    for (size_t c = comp_beg; c < comp_end; ++c) {
+        if (md_util_resname_lipid(md_component_name(&sys->component, c)) || (cg && md_component_kind(&sys->component, c) == MD_COMPONENT_KIND_LIPID)) {
+            named = true;
+        } else if (md_component_kind(&sys->component, c) == MD_COMPONENT_KIND_LIPID) {
+            set_component_kind(sys, c, MD_COMPONENT_KIND_OTHER);
         }
     }
     // Coarse grained molecules are told apart by the force field (martini_db), not by their structure. A lipid by name
@@ -10628,6 +10686,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     const size_t pos = md_vm_arena_get_pos(temp_arena);
 
     uint8_t* apolar     = md_alloc(temp_arena, n);
+    uint8_t* letterless = md_alloc(temp_arena, n);                      // apolar, if it makes a chain (LIPID_BEAD_LETTERLESS)
     int32_t* part       = md_alloc(temp_arena, n * sizeof(int32_t));   // the apolar part of an atom, -1
     int32_t* part_atoms = md_alloc(temp_arena, n * sizeof(int32_t));   // the atoms of each part, contiguous
     int32_t* dist       = md_alloc(temp_arena, n * sizeof(int32_t));
@@ -10638,7 +10697,9 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     md_array(lipid_part_t) parts = 0;
 
     for (int32_t k = 0; k < n; ++k) {
-        apolar[k] = (uint8_t)(lipid_atom_is_heavy(sys, a0 + k) && lipid_atom_is_apolar(sys, a0 + k, sterol_beads));
+        const lipid_bead_t kind = lipid_atom_is_heavy(sys, a0 + k) ? lipid_atom_kind(sys, a0 + k, sterol_beads) : LIPID_BEAD_POLAR;
+        apolar[k] = (uint8_t)(kind != LIPID_BEAD_POLAR);
+        letterless[k] = (uint8_t)(kind == LIPID_BEAD_LETTERLESS);
         part[k] = -1;
         head[k] = -1;
         tail[k] = 0;
@@ -10650,12 +10711,14 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     for (int32_t s = 0; s < n; ++s) {
         if (!apolar[s] || part[s] != -1) continue;
         const int32_t id = (int32_t)md_array_size(parts);
-        lipid_part_t p = { .beg = num_part_atoms, .anchor = {-1, -1} };
+        lipid_part_t p = { .beg = num_part_atoms, .anchor = {-1, -1}, .letterless = true };
         int32_t qb = num_part_atoms;
         part_atoms[num_part_atoms++] = s;
         part[s] = id;
         while (qb < num_part_atoms) {
             const int32_t k = part_atoms[qb++];
+            int32_t degree = 0;
+            p.letterless &= letterless[k] != 0;
             if (in_fused_ring && in_fused_ring[a0 + k]) p.skeleton = true;
             // The ring beads of a sterol, whose bonds (a star of virtual sites in Martini 3) need not form rings
             if (lipid_atom_is_bead(sys, a0 + k) && lipid_bead_sterol_ring(md_atom_name(&sys->atom, a0 + k))) p.skeleton = true;
@@ -10671,6 +10734,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
                 const int32_t l = j - (int32_t)a0;
                 if (apolar[l]) {
                     p.bonds += 1;
+                    degree += 1;
                     if (part[l] == -1) {
                         part[l] = id;
                         part_atoms[num_part_atoms++] = l;
@@ -10680,6 +10744,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
                     p.num_anchors = MIN(p.num_anchors + 1, 3);
                 }
             }
+            p.branched |= degree > 2;
         }
         p.end = num_part_atoms;
         md_array_push(parts, p, temp_arena);
@@ -10705,6 +10770,10 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         if (skeleton) {
             // The skeleton of a sterol hangs off its hydroxyl (or ester) alone
             if (p->num_anchors != 1 || size < (cg ? LIPID_MIN_SKELETON_BEADS : LIPID_MIN_SKELETON_ATOMS)) continue;
+        } else if (p->letterless && (p->bonds / 2 != size - 1 || p->branched || size < LIPID_MIN_CHAIN_LETTERLESS)) {
+            // Beads named without the letter of a tail are one only as a chain: the inositol of a phosphatidylinositol and
+            // the sugars of a glycolipid, named so too, are rings
+            continue;
         } else if (!named && p->bonds / 2 != size - 1) {
             // The chains of a lipid of no name hold no rings: a ring with alkyl groups (a drug, a dye) is no tail. Those of
             // lipids by name may (the cyclopropane of a fatty acid, the cyclopentanes of the chains of archaeal lipids).
@@ -10756,7 +10825,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         if (tip == -1) continue;
 
         const int32_t len = dist[tip] + 1;
-        const int32_t min_len = skeleton ? 1 : (cg ? LIPID_MIN_CHAIN_BEADS : (named ? LIPID_MIN_CHAIN_NAMED : LIPID_MIN_CHAIN_UNNAMED));
+        const int32_t min_len = skeleton ? 1 : (cg ? (p->letterless ? LIPID_MIN_CHAIN_LETTERLESS : LIPID_MIN_CHAIN_BEADS) : (named ? LIPID_MIN_CHAIN_NAMED : LIPID_MIN_CHAIN_UNNAMED));
         if (len < min_len) continue;
 
         const int32_t base = (int32_t)md_array_size(spines);

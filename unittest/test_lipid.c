@@ -494,3 +494,166 @@ UTEST(lipid, by_name_without_bonds) {
     EXPECT_EQ(0, (int)md_bitset_count(bf));
     md_arena_allocator_destroy(alloc);
 }
+
+// ### MARTINI LIPIDS OF EVERY NAMING ###
+
+// A system of Martini molecules from their bead names alone, as a GRO file has them: one residue per entry (its name,
+// then its bead names), the beads 4 A apart along a zigzag
+typedef struct { const char* name; const char* beads; } martini_residue_t;
+
+static bool martini_system_from_beads(md_system_t* sys, md_system_state_t* st, const martini_residue_t* res, size_t num_res) {
+    char gro[16384];
+    char body[16000];
+    int len = 0, num_atoms = 0;
+    for (size_t r = 0; r < num_res; ++r) {
+        char beads[512];
+        snprintf(beads, sizeof(beads), "%s", res[r].beads);
+        for (char* b = strtok(beads, " "); b; b = strtok(NULL, " ")) {
+            len += snprintf(body + len, sizeof(body) - len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", (int)r + 1, res[r].name, b, num_atoms + 1,
+                            1.0 + 0.4 * num_atoms, 1.0 + 0.2 * (num_atoms & 1), 1.0 + 2.0 * r);
+            num_atoms += 1;
+        }
+    }
+    const int n = snprintf(gro, sizeof(gro), "beads\n%5d\n%s%10.5f%10.5f%10.5f\n", num_atoms, body, 60.0, 60.0, 60.0);
+    return md_gro_system_init_from_str(sys, st, (str_t){gro, (size_t)n}) && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL);
+}
+
+// The lipid whose first component is comp, -1 when none
+static int lipid_of_comp(const md_system_t* sys, size_t comp) {
+    for (size_t l = 0; l < sys->lipid.count; ++l) {
+        if (sys->lipid.comp_range[l].beg == comp) return (int)l;
+    }
+    return -1;
+}
+
+// The beads of the head of lipid l, the names in order, space separated
+static void lipid_head_names(char* buf, size_t cap, const md_system_t* sys, int l) {
+    buf[0] = '\0';
+    size_t len = 0;
+    for (uint32_t h = sys->lipid.head_offset[l]; h < sys->lipid.head_offset[l + 1]; ++h) {
+        const int32_t* atoms = md_index_range_beg(&sys->lipid.head.atoms, h);
+        for (size_t k = 0; k < md_index_range_size(&sys->lipid.head.atoms, h); ++k) {
+            const str_t s = md_atom_name(&sys->atom, atoms[k]);
+            len += snprintf(buf + len, cap - len, "%s" STR_FMT, len ? " " : "", STR_ARG(s));
+        }
+    }
+}
+
+// Martini molecules renamed, as the three letters of a PDB file make cholesterol CHL, PSM SPM and PCER CER: told by
+// their beads, which give them their bonds, kinds and anatomy, in a Martini system (here the POPC tells)
+UTEST(lipid, martini_renamed_by_beads) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    static const martini_residue_t res[] = {
+        {"POPC", "NC3 PO4 GL1 GL2 C1A D2A C3A C4A C1B C2B C3B C4B"},
+        {"CHL",  "ROH R1 R2 R3 R4 R5 R6 C1 C2"},
+        {"SPM",  "NC3 PO4 OH1 AM2 T1A C2A C3A C4A C1B C2B C3B C4B"},
+        {"CER",  "COH OH1 AM2 T1A C2A C3A C4A C1B C2B C3B C4B"},
+    };
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_EQ(4u, sys.lipid.count);
+    EXPECT_TRUE(lipid_invariants_hold(&sys));
+    char head[256];
+
+    const int chl = lipid_of_comp(&sys, 1);
+    ASSERT_TRUE(chl >= 0);
+    EXPECT_EQ(1u, lipid_num_tails(&sys, chl));
+    EXPECT_EQ(MD_LIPID_TAIL_SKELETON, sys.lipid.tail.kind[sys.lipid.tail_offset[chl]]);
+    lipid_head_names(head, sizeof(head), &sys, chl);
+    EXPECT_STREQ("ROH", head);
+    // Its beads are those of Martini 3 cholesterol: no carbons C1 and C2, the mass of the rings on R1 and R2 and none on
+    // the virtual sites of the rest of them
+    for (uint32_t i = 12; i < 21; ++i) EXPECT_EQ(0, (int)md_atom_atomic_number(&sys.atom, i));
+    EXPECT_NEAR(159.8f, md_atom_mass(&sys.atom, 13), 1e-3f);
+    EXPECT_NEAR(0.0f, md_atom_mass(&sys.atom, 18), 1e-3f);
+    EXPECT_NEAR(72.0f, md_atom_mass(&sys.atom, 20), 1e-3f);
+
+    const int spm = lipid_of_comp(&sys, 2);
+    ASSERT_TRUE(spm >= 0);
+    EXPECT_EQ(2u, lipid_num_tails(&sys, spm));
+    lipid_head_names(head, sizeof(head), &sys, spm);
+    EXPECT_STREQ("NC3 PO4 OH1 AM2", head);
+
+    const int cer = lipid_of_comp(&sys, 3);
+    ASSERT_TRUE(cer >= 0);
+    EXPECT_EQ(2u, lipid_num_tails(&sys, cer));
+    lipid_head_names(head, sizeof(head), &sys, cer);
+    EXPECT_STREQ("COH OH1 AM2", head);
+    for (uint32_t t = sys.lipid.tail_offset[cer]; t < sys.lipid.tail_offset[cer + 1]; ++t) EXPECT_EQ(4u, tail_spine_len(&sys, t));
+
+    md_vm_arena_destroy(alloc);
+}
+
+// The same through a topology: the cholesterol of martini3_membrane.tpr renamed CHL is still a sterol
+UTEST(lipid, martini_renamed_tpr) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_tpr_data_t data = {0};
+    ASSERT_TRUE(md_tpr_data_parse_file(&data, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"), alloc));
+    size_t renamed = 0;
+    for (size_t t = 0; t < data.num_moltypes; ++t) {
+        for (size_t r = 0; r < data.moltypes[t].num_residues; ++r) {
+            if (str_eq_cstr(data.moltypes[t].residues[r].name, "CHOL")) {
+                data.moltypes[t].residues[r].name = STR_LIT("CHL");
+                renamed += 1;
+            }
+        }
+    }
+    ASSERT_GT(renamed, (size_t)0);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_tpr_system_init_from_data(&sys, &st, &data));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
+    size_t sterols = 0;
+    for (size_t l = 0; l < sys.lipid.count; ++l) {
+        if (!str_eq_cstr(md_component_name(&sys.component, sys.lipid.comp_range[l].beg), "CHL")) continue;
+        const uint32_t t = sys.lipid.tail_offset[l];
+        EXPECT_EQ(1u, lipid_num_tails(&sys, l));
+        EXPECT_EQ(MD_LIPID_TAIL_SKELETON, sys.lipid.tail.kind[t]);
+        sterols += 1;
+    }
+    EXPECT_EQ(16u, sterols);
+    EXPECT_EQ(32u + 16u + 8u + 16u, sys.lipid.count);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Martini 2 molecules whose chains are named without the letter of a tail: fatty acids, detergents, the lyso PC whose
+// tail is one bead. The inositol of a phosphatidylinositol is named so too (C1 C2 C3) and stays in its head: a ring.
+UTEST(lipid, martini2_letterless_chains) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    static const martini_residue_t res[] = {
+        {"DPPC", "NC3 PO4 GL1 GL2 C1A C2A C3A C4A C1B C2B C3B C4B"},
+        {"PCA",  "COO C1 C2 C3 C4"},                            // Palmitic acid
+        {"DDM",  "B1 B2 B3 B4 B5 B6 C1 C2 C3"},                 // Dodecyl maltoside
+        {"SDS",  "SO3 C1 C2 C4"},
+        {"CPC",  "NC3 PO4 GL1 GL2 C1B"},                        // A lyso PC of a short tail
+        {"POPI", "C1 C2 C3 PO4 GL1 GL2 C1A D2A C3A C4A C1B C2B C3B C4B"},
+    };
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_EQ(6u, sys.lipid.count);
+    EXPECT_TRUE(lipid_invariants_hold(&sys));
+
+    static const struct { const char* head; size_t tails; size_t spine; } expected[] = {
+        {"NC3 PO4 GL1 GL2", 2, 4},
+        {"COO", 1, 4},
+        {"B1 B2 B3 B4 B5 B6", 1, 3},
+        {"SO3", 1, 3},
+        {"NC3 PO4 GL1 GL2", 1, 1},
+        {"C1 C2 C3 PO4 GL1 GL2", 2, 4},
+    };
+    char head[256];
+    for (size_t c = 0; c < ARRAY_SIZE(expected); ++c) {
+        const int l = lipid_of_comp(&sys, c);
+        ASSERT_TRUE(l >= 0);
+        lipid_head_names(head, sizeof(head), &sys, l);
+        EXPECT_STREQ(expected[c].head, head);
+        EXPECT_EQ(expected[c].tails, lipid_num_tails(&sys, l));
+        for (uint32_t t = sys.lipid.tail_offset[l]; t < sys.lipid.tail_offset[l + 1]; ++t) {
+            EXPECT_EQ(MD_LIPID_TAIL_CHAIN, sys.lipid.tail.kind[t]);
+            EXPECT_EQ(expected[c].spine, tail_spine_len(&sys, t));
+        }
+    }
+    md_vm_arena_destroy(alloc);
+}
