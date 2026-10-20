@@ -327,6 +327,8 @@ typedef struct md_gto_iso_gpu_switches_t {
     int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12)
     bool corners_list;      // corners from a point list, 256 points per group (with corners_v2)
     bool canon_terms;       // the register-form epilogues take the terms as per-column weights where they can
+    bool gemm;              // corners (point list) and density vertices as a tiled GEMM (iso_gcorners_f*, iso_geval_f*)
+    bool octree_small;      // sets of at most 4 functions: the octree with a thread per shell (iso_octree_small)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
