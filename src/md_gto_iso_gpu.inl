@@ -9,6 +9,9 @@
 #include <core/md_gpu.h>
 #include <gto_iso_gpu_shaders.inl>
 
+// BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
+#define ISOG_REVISION "r5"
+
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
     md_gpu_uint4  info;
@@ -74,6 +77,9 @@ static int isog_skip_brick_test = 0;
 //   GTO_ISO_SHARED_CORNERS=1  a brick's high-face corners taken from the neighbour that owns them when it
 //                             is present, instead of evaluated twice (default 1; with the register form)
 static int isog_shared_corners = 1;
+//   GTO_ISO_EVAL_EPS=10|8|6   the AO cutoff 1e-N of the evaluation (and of the octree's culling, whose
+//                             bound adds the dropped part): the volume path uses 1e-6 (default 6)
+static int isog_eval_eps_exp = 6;
 
 // The kernels are made on first use, so initializing costs nothing until a mesh is extracted
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
@@ -91,6 +97,8 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_skip_brick_test = atoi(e);
     e = getenv("GTO_ISO_SHARED_CORNERS");
     if (e && e[0]) isog_shared_corners = atoi(e);
+    e = getenv("GTO_ISO_EVAL_EPS");
+    if (e && e[0]) isog_eval_eps_exp = atoi(e);
 }
 
 static bool isog_kernels_ready(void) {
@@ -158,7 +166,42 @@ struct md_gto_iso_gpu_set_t {
     const md_gto_iso_field_t* src[MD_GTO_ISO_GPU_MAX_FIELDS];
     struct md_allocator_i* alloc;
     isog_shell_t* prof_shells;      // BENCHMARK: the shells on the host, for the profile's work counts
+    // the evaluation cutoff the shells' radii (c.w) and fn_tail are for, and what re-derives them
+    int           eps_exp;
+    double*       sh_nmax;          // per shell: the largest AO normalization
+    double*       sh_amin;          // per shell: the smallest exponent
+    md_gpu_float2* host_prims;      // alpha, contraction coefficient
+    double*       colsum;           // per function column: sum of |C|
 };
+
+static inline float isog_f32_up(double x);
+
+// Every AO of shell s below eps beyond the returned radius (squared)
+static double isog_shell_r2(const md_gto_iso_gpu_set_t* set, uint32_t s, double eps) {
+    const isog_shell_t* sh = &set->prof_shells[s];
+    const uint32_t l = sh->info.x, nprim = sh->info.z, poff = sh->info.w;
+    double r = sqrt(l / (2.0 * set->sh_amin[s]));
+    for (;; r += 0.05) {
+        double t = 0.0;
+        for (uint32_t q = 0; q < nprim; ++q) t += fabs((double)set->host_prims[poff + q].y) * exp(-(double)set->host_prims[poff + q].x * r * r);
+        if (set->sh_nmax[s] * pow(r, (double)l) * t < eps || r > 1.0e3) break;
+    }
+    return r * r;
+}
+
+// The shells' radii and the functions' tails for the cutoff 1e-eps_exp, uploaded
+static void isog_set_eps(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int eps_exp) {
+    const double eps = pow(10.0, -(double)eps_exp);
+    for (uint32_t s = 0; s < set->num_shells; ++s) set->prof_shells[s].c.w = isog_f32_up(isog_shell_r2(set, s, eps));
+    md_gpu_upload(stream, set->shells.gpu, set->prof_shells, sizeof(isog_shell_t) * set->num_shells);
+    // per function: what the shells that do not reach a box can add over it, every AO of theirs being
+    // below eps there; twice that, for the float distances that decide it
+    float* tail = (float*)calloc(set->fn_stride + 1, sizeof(float));
+    for (uint32_t j = 0; j < set->num_fn; ++j) tail[j] = isog_f32_up(2.0 * eps * set->colsum[j] * (1.0 + 1.0e-6));
+    md_gpu_upload(stream, set->fn_tail.gpu, tail, sizeof(float) * set->fn_stride);
+    free(tail);
+    set->eps_exp = eps_exp;
+}
 
 static inline float isog_f32_dn(double x) { float f = (float)x; return (double)f > x ? nextafterf(f, -INFINITY) : f; }
 static inline float isog_f32_up(double x) { float f = (float)x; return (double)f < x ? nextafterf(f,  INFINITY) : f; }
@@ -242,6 +285,8 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
 
     // shells, primitives, radial critical intervals (outward rounded), AO tables
     isog_shell_t* sh = (isog_shell_t*)calloc(B.num_ao_shells + 1, sizeof(isog_shell_t));
+    double* sh_nmax = (double*)calloc(B.num_ao_shells + 1, sizeof(double));
+    double* sh_amin = (double*)calloc(B.num_ao_shells + 1, sizeof(double));
     md_gpu_float2* pr = NULL;
     md_gpu_float4* cr = NULL;
     float*    nrm = (float*)calloc(nao + 1, sizeof(float));
@@ -254,6 +299,8 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         double nmax = 0.0, amin = DBL_MAX;
         for (int n = 0; n < a->ncart; ++n) nmax = fmax(nmax, fabs(a->nrm[n]));
         for (int q = 0; q < a->nprim; ++q) amin = fmin(amin, a->alpha[q]);
+        sh_nmax[s] = nmax;
+        sh_amin[s] = amin;
         double r = sqrt(a->l / (2.0 * amin));
         for (;; r += 0.05) {
             double t = 0.0;
@@ -281,14 +328,15 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
     set->num_fields = num_fields;
     set->orbitals_only = orbitals_only;
 
-    // per function: what the shells that do not reach a box can add over it, every AO of theirs being
-    // below 1e-10 there (shells' w); twice that, for the float distances that decide it
-    float* tail = (float*)calloc(stride + 1, sizeof(float));
+    // per function column: the sum of |C| (the tails for the shells a box drops: isog_set_eps)
+    double* colsum = (double*)calloc(stride + 1, sizeof(double));
     for (uint32_t j = 0; j < nf; ++j) {
         double t = 0.0;
         for (uint32_t i = 0; i < nao; ++i) t += fabs((double)C[(size_t)i * stride + j]);
-        tail[j] = isog_f32_up(2.0e-10 * t * (1.0 + 1.0e-6));
+        colsum[j] = t;
     }
+    float* tail = (float*)calloc(stride + 1, sizeof(float));
+    for (uint32_t j = 0; j < nf; ++j) tail[j] = isog_f32_up(2.0e-10 * colsum[j] * (1.0 + 1.0e-6));
 
 #define ISOG_UP(mem, ptr, bytes) do { const size_t nb_ = (bytes); set->mem = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, nb_ > 0 ? nb_ : 16); if (set->mem.gpu && nb_ > 0) md_gpu_upload(stream, set->mem.gpu, (ptr), nb_); ok &= set->mem.gpu != 0; } while (0)
     if (ok) {
@@ -304,6 +352,12 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
     free(tail);
 #undef ISOG_UP
     set->prof_shells = sh;          // BENCHMARK: kept for the profile's work counts
+    set->eps_exp = 10;
+    set->sh_nmax = sh_nmax;
+    set->sh_amin = sh_amin;
+    set->colsum = colsum;
+    set->host_prims = (md_gpu_float2*)malloc(sizeof(md_gpu_float2) * (md_array_size(pr) + 1));
+    memcpy(set->host_prims, pr, sizeof(md_gpu_float2) * md_array_size(pr));
     free(nrm); free(ijk); free(C);
     md_array_free(pr, heap); md_array_free(cr, heap); md_array_free(terms, heap);
     md_array_free(B.radial.shells, heap); md_array_free(B.radial.crit, heap); free(B.ao_shells);
@@ -321,6 +375,7 @@ void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* se
     md_gpu_free(stream, set->ao_nrm.gpu); md_gpu_free(stream, set->ao_ijk.gpu); md_gpu_free(stream, set->C.gpu);
     md_gpu_free(stream, set->terms.gpu); md_gpu_free(stream, set->fn_tail.gpu);
     free(set->prof_shells);
+    free(set->sh_nmax); free(set->sh_amin); free(set->colsum); free(set->host_prims);
     md_free(set->alloc, set, sizeof(*set));
 }
 
@@ -376,10 +431,33 @@ static md_tick_t isog_prof_tick;
 
 void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile) { isog_prof = profile; }
 
+void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
+    if (!out) return;
+    out->relax_first = isog_relax_first != 0;
+    out->corners_v2 = isog_corners_v2 != 0;
+    out->eval_v2 = isog_eval_v2 != 0;
+    out->newton_predict = isog_newton_predict != 0;
+    out->skip_brick_test = isog_skip_brick_test != 0;
+    out->shared_corners = isog_shared_corners != 0;
+    out->eval_eps_exp = isog_eval_eps_exp;
+}
+
+void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
+    if (!in) return;
+    isog_relax_first = in->relax_first;
+    isog_corners_v2 = in->corners_v2;
+    isog_eval_v2 = in->eval_v2;
+    isog_newton_predict = in->newton_predict;
+    isog_skip_brick_test = in->skip_brick_test;
+    isog_shared_corners = in->shared_corners;
+    if (in->eval_eps_exp >= 4 && in->eval_eps_exp <= 12) isog_eval_eps_exp = in->eval_eps_exp;
+}
+
 const char* md_gto_iso_gpu_profile_variant(void) {
-    static char buf[128];
-    snprintf(buf, sizeof(buf), "GTO_ISO_RELAX_FIRST=%d GTO_ISO_CORNERS_V2=%d GTO_ISO_EVAL_V2=%d GTO_ISO_NEWTON_PREDICT=%d GTO_ISO_SKIP_BRICK_TEST=%d GTO_ISO_SHARED_CORNERS=%d",
-             isog_relax_first, isog_corners_v2, isog_eval_v2, isog_newton_predict, isog_skip_brick_test, isog_shared_corners);
+    static char buf[256];
+    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d shared_corners %d eval_v2 %d newton_predict %d skip_brick_test %d eval_eps 1e-%d",
+             ISOG_REVISION, isog_relax_first, isog_corners_v2, isog_shared_corners, isog_eval_v2, isog_newton_predict, isog_skip_brick_test,
+             isog_eval_eps_exp);
     return buf;
 }
 
@@ -529,6 +607,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         return false;
     }
     if (!isog_kernels_ready()) return false;
+    if (set->eps_exp != isog_eval_eps_exp) isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, isog_eval_eps_exp);   // EXPERIMENT
     memset(out, 0, sizeof(*out));
     out->num_fields = set->num_fields;
     isog_prof_begin(s);

@@ -312,8 +312,22 @@ void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile);
 // to cap). Returns the length written.
 size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* profile, char* buf, size_t cap);
 
-// Which experimental forms the extraction runs (GTO_ISO_* environment switches), as one line
+// Which experimental forms the extraction runs, as one line
 const char* md_gto_iso_gpu_profile_variant(void);
+
+// The experimental forms (also read from GTO_ISO_* in the environment at initialization)
+typedef struct md_gto_iso_gpu_switches_t {
+    bool relax_first;       // relax on the lattice surface, then project (else project, 3 x (relax, project))
+    bool corners_v2;        // corners in registers (iso_corners_f*), else iso_corners / iso_corners_orbital
+    bool eval_v2;           // density vertices in registers (iso_eval_f*), else iso_eval
+    bool newton_predict;    // Newton ends on a predicted error
+    bool skip_brick_test;   // the octree's last level not bounded
+    bool shared_corners;    // high-face corners taken from the neighbour (with corners_v2)
+    int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12)
+} md_gto_iso_gpu_switches_t;
+
+void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
+void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in);
 #endif
 
 #ifdef __cplusplus
