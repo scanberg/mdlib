@@ -3,9 +3,10 @@
 // Bonds (licorice, weak bonds, and the dashed partners which show delocalized bonds) as raycast impostors,
 // drawn by vertex pulling without a geometry shader.
 //
-// Every primitive is one quad of 4 vertices: primitive p, corner c = gl_VertexID & 3 with p = u_bond_offset +
-// gl_InstanceID * u_quads_per_instance + (gl_VertexID >> 2). The quads are drawn from a static index buffer (md_gl.c),
-// two triangles (0, 1, 2), (2, 1, 3) per quad. A primitive is a bond, or for BOND_PARTNERS an entry of the partners.
+// Every primitive is one quad of 4 vertices: primitive p (quad_primitive, QUADS in md_gl.c), corner c = gl_VertexID & 3.
+// The quads are drawn in blocks from a static index buffer (md_gl.c), two triangles (0, 1, 2), (2, 1, 3) per quad, each
+// block once per instance of the molecule (INSTANCES): the atoms are taken into world space by its transform. A
+// primitive is a bond, or for BOND_PARTNERS an entry of the partners.
 //
 // The quad bounds the image of the capsule around the segment (all points within the radius of it), which contains
 // the solid cylinder and its dashes. It is a trapezoid in the image plane:
@@ -114,8 +115,8 @@ layout (std140) uniform ubo {
     uint  u_gap_index_base;
 };
 
-uniform uint u_bond_offset;
-uniform uint u_quads_per_instance;
+#pragma INSTANCES
+
 uniform vec2 u_viewport_size;           // Pixels
 
 uniform samplerBuffer  u_buf_atom_pos;      // RGB32F
@@ -196,11 +197,11 @@ void load_surroundings(uvec2 ref, vec3 pa, vec3 pb, out vec3 ca, out vec3 cb, ou
     has_a = false;
     has_b = false;
     if (ref.x != REF_NONE) {
-        ca = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(ref.x)).xyz, 1.0)) - pa;
+        ca = vec3(u_world_to_view * vec4(instance_point(texelFetch(u_buf_atom_pos, int(ref.x)).xyz), 1.0)) - pa;
         has_a = dot(ca, ca) < u_max_d2;
     }
     if (ref.y != REF_NONE) {
-        cb = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(ref.y)).xyz, 1.0)) - pb;
+        cb = vec3(u_world_to_view * vec4(instance_point(texelFetch(u_buf_atom_pos, int(ref.y)).xyz), 1.0)) - pb;
         has_b = dot(cb, cb) < u_max_d2;
     }
 }
@@ -245,8 +246,12 @@ float inset_factor(vec3 u, vec3 c, bool has) {
 }
 
 void main() {
-    uint prim   = u_bond_offset + uint(gl_InstanceID) * u_quads_per_instance + (uint(gl_VertexID) >> 2u);
+    uint prim   = quad_primitive();
     uint corner = uint(gl_VertexID) & 3u;
+    if (prim == QUAD_NONE) {
+        cull();
+        return;
+    }
 
 #if BOND_PARTNERS
     uvec4 partner = texelFetch(u_buf_bond_partner, int(prim));
@@ -288,8 +293,8 @@ void main() {
     va = (5.0 * va + texelFetch(u_buf_atom_vel, int(gap.y)).xyz) * (1.0 / 6.0);
     vb = (5.0 * vb + texelFetch(u_buf_atom_vel, int(gap.w)).xyz) * (1.0 / 6.0);
 #endif
-    vec3 pa = vec3(u_world_to_view * vec4(wa, 1.0));
-    vec3 pb = vec3(u_world_to_view * vec4(wb, 1.0));
+    vec3 pa = vec3(u_world_to_view * vec4(instance_point(wa), 1.0));
+    vec3 pb = vec3(u_world_to_view * vec4(instance_point(wb), 1.0));
 
     vec3  d  = pb - pa;
     float d2 = dot(d, d);
@@ -302,8 +307,8 @@ void main() {
     out_frag.flags[1] = flags_b;
     out_frag.color[0] = color_a;
     out_frag.color[1] = color_b;
-    out_frag.view_vel[0] = mat3(u_world_to_view) * va;
-    out_frag.view_vel[1] = mat3(u_world_to_view) * vb;
+    out_frag.view_vel[0] = mat3(u_world_to_view) * instance_velocity(wa, va);
+    out_frag.view_vel[1] = mat3(u_world_to_view) * instance_velocity(wb, vb);
     out_frag.atom_picking_idx[0] = u_atom_base_index + atom.x;
     out_frag.atom_picking_idx[1] = u_atom_base_index + atom.y;
 #if CHAIN_GAPS

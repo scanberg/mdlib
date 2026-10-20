@@ -246,8 +246,9 @@ void md_gl_mol_set_chain_gaps(md_gl_mol_t mol, const struct md_system_t* sys);
 
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_gl_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
-// The backbone (ribbons, cartoon) orients its cross sections with temporal coherence: each draw continues from
-// the orientation computed by the previous one, which keeps segments from flipping while the structure moves.
+// The backbone (ribbons, cartoon) orients its cross sections with temporal coherence: the spline is computed again in
+// the first draw after its positions, velocities or secondary structure changed, once, and continues from the
+// orientation computed the time before, which keeps segments from flipping while the structure moves.
 // Call this when the positions jump discontinuously (e.g. seeking to a distant frame) so the next draw starts
 // from the structure alone.
 void md_gl_mol_reset_backbone_history(md_gl_mol_t mol);
@@ -299,6 +300,21 @@ typedef enum {
 	MD_GL_BOND_MODE_SMOOTH,
     MD_GL_BOND_MODE_UNIFORM,
 } md_gl_bond_mode_t;
+
+// INSTANCES. The copies of the molecule a draw op shows (the periodic images of a cell, the copies of an assembly),
+// drawn by instancing: each draw of the op covers all of them, whatever their number. Instance i is the molecule moved
+// by transforms[i]. A transform is rigid: a rotation, or a rotation and a reflection (a mirror image, determinant -1),
+// and a translation. It is not scaled: a scale is not applied to the radii and thicknesses of the representations.
+// Each instance is culled against the view on the CPU with the box of the positions of the molecule (as set on it, or
+// derived): an instance out of view costs nothing on the GPU. Of the backbone representations, each chain of each
+// instance is culled and gets its level of detail.
+// What an instance draws picks as the same elements (md_gl_picking_offset_t) as the molecule itself would.
+typedef struct md_gl_instances_t {
+    const float* transforms;        // [count] Column major float[4][4]
+    const float* prev_transforms;   // [count] (optional) As of the previous frame, for the velocities: an instance which
+                                    // moved shows as moving. NULL: each as in transforms, standing still
+    uint32_t     count;             // 0: once, as it is (transforms are then not read)
+} md_gl_instances_t;
 
 typedef struct md_gl_draw_op_t {
     md_gl_rep_type_t type;
@@ -367,7 +383,7 @@ typedef struct md_gl_draw_op_t {
     } args;
 
     md_gl_rep_t rep;
-    const float* model_matrix;              // Column major float[4][4]
+    md_gl_instances_t instances;            // Zero: drawn once, as it is. Must outlive md_gl_draw
 } md_gl_draw_op_t;
 
 // Picking offsets: each renderable element writes base + its own index to the picking target, so the caller
@@ -408,6 +424,10 @@ typedef struct md_gl_draw_args_t {
 
     md_gl_picking_offset_t picking_offset;
 
+    // Only what the atoms with all of these flags show (md_gl_mol_set_atom_flags): an atom, a bond, ring or slab all of
+    // whose atoms have them, a backbone segment whose control point has them. 0 for all. With a mask, the draws cover
+    // only the parts of the molecule which hold such atoms, found on the CPU from the flags as last set: a pass of a
+    // few marked atoms (a selection, a highlight) costs about as much as those atoms, not as the whole molecule.
     uint32_t atom_mask;
 	float max_bond_length;	// Maximum bond length for rendering bonds, covalent and weak (in Ångström)
 } md_gl_draw_args_t;

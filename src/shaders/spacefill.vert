@@ -32,9 +32,13 @@ layout (std140) uniform ubo {
     float u_radius_scale;
 };
 
+// The instances of the draw (md_gl.c): one per instance of the draw, the atom is the vertex
+#pragma INSTANCES
+
 void main() {
+    instance_load(uint(gl_InstanceID));
 	vec4  col = in_atom_col;
-	vec3  pos = in_atom_pos;
+	vec3  pos = instance_point(in_atom_pos);
     float rad = in_atom_rad * u_radius_scale;
     if ((in_atom_flags & u_atom_mask) != u_atom_mask) rad = 0;
 
@@ -42,7 +46,7 @@ void main() {
 	vec4 view_sphere = vec4(view_pos, rad);
 
 	out_vert.view_sphere = view_sphere;
-	out_vert.view_velocity = vec3(u_world_to_view * vec4(in_atom_vel, 0));
+	out_vert.view_velocity = vec3(u_world_to_view * vec4(instance_velocity(in_atom_pos, in_atom_vel), 0));
 	out_vert.color = col;
 	out_vert.atom_idx = uint(gl_VertexID);
     out_vert.flags = in_atom_flags;

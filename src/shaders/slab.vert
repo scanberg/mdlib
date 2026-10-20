@@ -2,7 +2,7 @@
 
 // Slabs (md_gl_mol_set_slabs): flat rounded polygons through particles, the rings of a cartoon (the sugars and bases of
 // nucleic acids), raycast within quads by slab.frag. Vertex pulling as ring.vert, from the quad index buffer of the
-// bonds: primitive p = u_slab_offset + gl_InstanceID * u_quads_per_instance + (gl_VertexID >> 2) is one quad, a slab.
+// bonds: primitive p (quad_primitive, QUADS in md_gl.c) is one quad, a slab, of an instance of the molecule (INSTANCES).
 //
 // A slab follows its corners in every frame. In view space:
 //   - center: the centroid of the corners
@@ -60,8 +60,8 @@ layout (std140) uniform ubo {
     uint  u_slab_base_index;    // Picking: a slab writes u_slab_base_index + its index
 };
 
-uniform uint u_slab_offset;
-uniform uint u_quads_per_instance;
+#pragma INSTANCES
+
 uniform vec2 u_viewport_size;           // Pixels
 
 uniform samplerBuffer  u_buf_atom_pos;      // RGB32F
@@ -123,8 +123,12 @@ void cull() {
 }
 
 void main() {
-    uint prim   = u_slab_offset + uint(gl_InstanceID) * u_quads_per_instance + (uint(gl_VertexID) >> 2u);
+    uint prim   = quad_primitive();
     uint corner = uint(gl_VertexID) & 3u;
+    if (prim == QUAD_NONE) {
+        cull();
+        return;
+    }
 
     uvec4 e0 = texelFetch(u_buf_slab, int(2u * prim + 0u));
     uvec4 e1 = texelFetch(u_buf_slab, int(2u * prim + 1u));
@@ -139,6 +143,7 @@ void main() {
     vec3 p[MAX_CORNERS];
     vec3 c   = vec3(0.0);
     vec3 vel = vec3(0.0);
+    vec3 local_center = vec3(0.0);  // The centroid in the molecule, for the velocity
     uint common_flags = 0xFFFFFFFFu;
     for (int k = 0; k < MAX_CORNERS; ++k) {
         if (k >= n) continue;
@@ -149,7 +154,9 @@ void main() {
             return;
         }
         common_flags &= flags;
-        p[k] = vec3(u_world_to_view * vec4(texelFetch(u_buf_atom_pos, int(idx[k])).xyz, 1.0));
+        vec3 w = texelFetch(u_buf_atom_pos, int(idx[k])).xyz;
+        p[k] = vec3(u_world_to_view * vec4(instance_point(w), 1.0));
+        local_center += w;
         vel += texelFetch(u_buf_atom_vel, int(idx[k])).xyz;
         c   += p[k];
     }
@@ -201,7 +208,7 @@ void main() {
     out_frag.count    = uint(n);
     out_frag.color    = texelFetch(u_buf_atom_color, int(idx[0]));
     out_frag.picking  = u_slab_base_index + prim;
-    out_frag.view_vel = mat3(u_world_to_view) * (vel / float(n));
+    out_frag.view_vel = mat3(u_world_to_view) * instance_velocity(local_center / float(n), vel / float(n));
     out_frag.flags    = common_flags;
 
     // The corners in the plane, and the box of the spheres about them
