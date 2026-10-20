@@ -200,7 +200,7 @@ typedef struct {
 typedef struct {
     uint32_t bb_seg_idx;            // Backbone Segment index (To access secondary structure)
     uint32_t ca;                    // The atom (particle) of the control point
-    uint32_t c, o;                  // The fallback orientation O - C (a protein: its carbonyl), or with BACKBONE_FLAG_FIXED_FACE the normal of the flat faces
+    uint32_t c, o;                  // The fallback orientation O - C (a protein: its carbonyl), or with BACKBONE_FLAG_FIXED_FACE the normal of the flat faces, with BACKBONE_FLAG_FIXED_SIDE the long axis of the profile
     uint32_t flags;                 // BACKBONE_FLAG_*
 } gl_backbone_data_t;
 
@@ -211,6 +211,7 @@ enum {
     BACKBONE_FLAG_FLIP_NEXT  = 16,  // Set by the orient pass
     BACKBONE_FLAG_FIXED_FACE = 32,  // The flat faces of the profile face O - C, rather than following the curve (compute_spline_orient.vert)
     BACKBONE_FLAG_THROUGH    = 64,  // The spline passes through the control point rather than near it (compute_spline_orient.vert)
+    BACKBONE_FLAG_FIXED_SIDE = 128, // The long axis of the profile points along O - C, rather than following the curve (compute_spline_orient.vert)
 };
 
 typedef struct {
@@ -2211,6 +2212,7 @@ void md_gl_mol_set_tubes(md_gl_mol_t handle, const md_gl_tubes_t* tubes) {
     const float*    radius   = count ? tubes->radius : NULL;
     const float*    flat     = count ? tubes->flat : NULL;
     const uint32_t* face     = count ? tubes->face : NULL;
+    const uint32_t* side     = count ? tubes->side : NULL;
     const uint8_t*  through  = count ? tubes->through : NULL;
     if (count > 0 && (!offset || !particle || !radius)) {
         MD_LOG_ERROR("Missing one or more arguments");
@@ -2229,7 +2231,8 @@ void md_gl_mol_set_tubes(md_gl_mol_t handle, const md_gl_tubes_t* tubes) {
     const uint32_t base = count ? offset[0] : 0;
     const uint32_t cp_count = count ? offset[count] - base : 0;
     for (uint32_t j = 0; j < cp_count; ++j) {
-        if (particle[base + j] >= mol->atom_count || (face && face[base + j] != UINT32_MAX && face[base + j] >= mol->atom_count)) {
+        if (particle[base + j] >= mol->atom_count || (face && face[base + j] != UINT32_MAX && face[base + j] >= mol->atom_count) ||
+            (side && side[base + j] != UINT32_MAX && side[base + j] >= mol->atom_count)) {
             MD_LOG_ERROR("A control point of a tube is not a particle of the molecule (%u particles)", mol->atom_count);
             return;
         }
@@ -2251,15 +2254,17 @@ void md_gl_mol_set_tubes(md_gl_mol_t handle, const md_gl_tubes_t* tubes) {
         for (uint32_t j = beg; j < end; ++j) {
             const uint32_t p = particle[base + j];
             const uint32_t f = face ? face[base + j] : UINT32_MAX;
+            const uint32_t sd = (f == UINT32_MAX && side) ? side[base + j] : UINT32_MAX;
             const float    r = CLAMP(radius[base + j], 0.0f, TUBE_RADIUS_MAX);
             const float    l = flat ? CLAMP(flat[base + j], 0.0f, TUBE_RADIUS_MAX) : 0.0f;
             data[j] = (gl_backbone_data_t){
                 .bb_seg_idx = j,
                 .ca         = p,
                 .c          = p,
-                .o          = f != UINT32_MAX ? f : p,
+                .o          = f != UINT32_MAX ? f : (sd != UINT32_MAX ? sd : p),
                 .flags      = (j == beg ? BACKBONE_FLAG_CHAIN_BEG : 0) | (j == end - 1 ? BACKBONE_FLAG_CHAIN_END : 0) |
-                              (f != UINT32_MAX ? BACKBONE_FLAG_FIXED_FACE : 0) | ((through && through[t]) ? BACKBONE_FLAG_THROUGH : 0),
+                              (f != UINT32_MAX ? BACKBONE_FLAG_FIXED_FACE : 0) | (sd != UINT32_MAX ? BACKBONE_FLAG_FIXED_SIDE : 0) |
+                              ((through && through[t]) ? BACKBONE_FLAG_THROUGH : 0),
             };
             ss[j] = ss_coil | (pack_tube_length(l) << 8) | (pack_tube_length(r) << 24);
             bounds_particle[j] = p;
