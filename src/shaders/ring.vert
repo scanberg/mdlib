@@ -12,6 +12,10 @@
 //     dashed partners have from their bond (bond.vert), at most a fraction of the apothem. The circle sits where the
 //     dashes of a delocalized group do, and keeps clear of the sticks in an irregular ring (a pyrrole).
 //   - tube radius: a fraction of the radius of the sticks, as the dashes
+//   - dashes: none (a solid circle) or the dashes over each bond of a dashed circle, the circle of a ring of a fused
+//     aromatic system (md_gl.c). DASHED_PER_BOND, or one where those would be shorter than the tube is thick (thick
+//     sticks), as in a ring of the same size with bonds of RING_IDEAL_BOND and the same sticks: the number follows from
+//     the size of the ring and the sticks alone, and does not change from frame to frame as the atoms move.
 // A ring is culled when one of its atoms is hidden (alpha 0, u_atom_mask), as a bond is when either atom is: so it is in
 // the selection and highlight passes exactly when all of its atoms are. Also when an edge is longer than a bond can be
 // (across the periodic boundary), or when the ring has no plane or no room inside for the circle.
@@ -28,9 +32,10 @@
 // Pixels the sides of the quad are moved out by
 #define SUBPIXEL_MARGIN (1.0 / 32.0)
 
-// Entries of the rings (md_gl.c, GL_BUFFER_AROMATIC_RING): two RGBA32UI texels, the index of the ring | its atom count
-// << RING_COUNT_SHIFT, then up to MAX_RING_ATOMS atoms in order around it
+// Entries of the rings (md_gl.c, GL_BUFFER_AROMATIC_RING): two RGBA32UI texels, the index of the ring | dashed <<
+// RING_DASHED_SHIFT | its atom count << RING_COUNT_SHIFT, then up to MAX_RING_ATOMS atoms in order around it
 #define MAX_RING_ATOMS      7
+#define RING_DASHED_SHIFT   28u
 #define RING_COUNT_SHIFT    29u
 
 // Relative to the radius of the sticks (r), as the dashed partners of bond.vert
@@ -38,6 +43,12 @@
 #define RING_OFFSET         1.9     // * u_spread * r, from the axes of the bonds to the axis of the tube
 #define RING_MAX_INSET      0.45    // * apothem, the most the offset may take...
 #define RING_MIN_GAP        0.5     // ...unless the tube would then come closer to a stick than this * its radius
+
+// Dashed circles (ring.frag): dashes over each bond, the gaps centred on the atoms
+#define DASHED_PER_BOND     2u
+#define RING_DASH_FILL      0.5     // Of each dash and its gap, the dash (as ring.frag)
+#define RING_IDEAL_BOND     1.39    // Å, of the ring the number of dashes is decided on
+#define RING_MIN_DASH       1.0     // * the diameter of the tube, the shortest dash (otherwise one dash per bond)
 
 #define PI 3.14159265358979
 
@@ -85,6 +96,7 @@ out Fragment {
     flat uvec2 count_picking;   // Atoms, picking index
     flat vec3  view_vel;        // Mean velocity of the atoms
     flat uint  flags;           // Of all its atoms: those they have in common
+    flat uint  dashes;          // Over each bond, 0 for a solid circle
     smooth vec3 view_pos;       // On the quad, the ray of the fragment starts here
 } out_frag;
 
@@ -114,7 +126,8 @@ void main() {
 
     uvec4 e0 = texelFetch(u_buf_ring, int(2u * prim + 0u));
     uvec4 e1 = texelFetch(u_buf_ring, int(2u * prim + 1u));
-    uint ring_idx = e0.x & ((1u << RING_COUNT_SHIFT) - 1u);
+    uint ring_idx = e0.x & ((1u << RING_DASHED_SHIFT) - 1u);
+    bool dashed   = ((e0.x >> RING_DASHED_SHIFT) & 1u) != 0u;
     int  n        = int(e0.x >> RING_COUNT_SHIFT);
     uint atom[MAX_RING_ATOMS] = uint[MAX_RING_ATOMS](e0.y, e0.z, e0.w, e1.x, e1.y, e1.z, e1.w);
 
@@ -189,6 +202,17 @@ void main() {
         return;
     }
 
+    // Dashes over each bond, from the ring of the same size with ideal bonds (in view space: scaled as the sticks are)
+    uint dashes = 0u;
+    if (dashed) {
+        float scale   = (length(u_world_to_view[0].xyz) + length(u_world_to_view[1].xyz) + length(u_world_to_view[2].xyz)) / 3.0;
+        float ideal_a = RING_IDEAL_BOND * scale / (2.0 * tan(PI / float(n)));
+        float ideal_o = max(min(RING_OFFSET * u_spread * r_stick, RING_MAX_INSET * ideal_a), r_stick + (1.0 + RING_MIN_GAP) * r);
+        float arc     = 2.0 * PI * (ideal_a - ideal_o) / float(n);
+        float dash    = arc / float(DASHED_PER_BOND) * RING_DASH_FILL;
+        dashes = dash >= RING_MIN_DASH * 2.0 * r ? DASHED_PER_BOND : 1u;
+    }
+
     // Frame of the torus: x towards the first atom, z along the normal
     vec3 q0  = (p[0] - c) - nrm * dot(p[0] - c, nrm);
     vec3 tng = dot(q0, q0) > 0.0 ? normalize(q0) : normalize(cross(nrm, abs(nrm.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
@@ -210,6 +234,7 @@ void main() {
     out_frag.count_picking = uvec2(uint(n), u_ring_base_index + ring_idx);
     out_frag.view_vel = mat3(u_world_to_view) * (vel / float(n));
     out_frag.flags    = common_flags;
+    out_frag.dashes   = dashes;
 
     // The box of the torus in view space: half extents R + r along the tangent and bitangent, r along the normal
     vec3 ext = abs(tng) * (R + r) + abs(bit) * (R + r) + abs(nrm) * r;

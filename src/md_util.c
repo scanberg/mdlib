@@ -5076,6 +5076,34 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
         }
         sys->ring_flags[r] = flags;
     }
+
+    // Bonds of aromatic rings fuse the other rings they are in to an aromatic ring: an aromatic ring which shares a
+    // bond with another is of a fused aromatic system (naphthalene), one fused only to rings which are not aromatic
+    // keeps a sextet of its own (tetralin)
+    uint8_t* bond_aromatic = md_temp_alloc(temp, MAX(sys->bond.count, 1));
+    MEMSET(bond_aromatic, 0, MAX(sys->bond.count, 1));
+    for (size_t r = 0; r < num_rings; ++r) {
+        if (!(sys->ring_flags[r] & MD_RING_FLAG_AROMATIC)) continue;
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const size_t n = md_index_range_size(&sys->ring, r);
+        for (size_t k = 0; k < n; ++k) {
+            const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
+            if (b >= 0 && bond_aromatic[b] < 255) bond_aromatic[b] += 1;
+        }
+    }
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        const size_t n = md_index_range_size(&sys->ring, r);
+        // Aromatic rings other than this one
+        const uint8_t self = (sys->ring_flags[r] & MD_RING_FLAG_AROMATIC) ? 1 : 0;
+        for (size_t k = 0; k < n; ++k) {
+            const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
+            if (b >= 0 && bond_aromatic[b] > self) {
+                sys->ring_flags[r] |= MD_RING_FLAG_FUSED_AROMATIC;
+                break;
+            }
+        }
+    }
     md_temp_end(temp);
 }
 
