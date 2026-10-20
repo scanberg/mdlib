@@ -299,6 +299,7 @@ typedef struct md_gto_iso_gpu_profile_t {
     // work counts
     uint64_t brick_ao_sum;  // over the bricks: the AOs whose shells reach the brick
     uint32_t brick_ao_max;
+    uint64_t brick_ao_sq;   // over the bricks: the square of that (dform's work)
     uint32_t num_ao, num_fn, fn_stride;
     uint32_t corner_cols;   // function columns the corner kernel multiplied
     uint32_t corner_points; // lattice points the register-form corner kernels evaluated (0: not counted)
@@ -329,6 +330,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     bool canon_terms;       // the register-form epilogues take the terms as per-column weights where they can
     bool gemm;              // corners (point list) and density vertices as a tiled GEMM (iso_gcorners_f*, iso_geval_f*)
     bool octree_small;      // sets of at most 4 functions: the octree with a thread per shell (iso_octree_small)
+    bool dform;             // sets of densities: corners (point list) and vertices as phi^T D phi (iso_dcorners, iso_deval)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
