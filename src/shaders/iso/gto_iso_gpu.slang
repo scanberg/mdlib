@@ -3420,18 +3420,33 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                     }
                     GroupMemoryBarrierWithGroupSync();
                     uint qn = min(uint(OD_BLK), A - qb * uint(OD_BLK));
-                    for (uint v = 0u; v < qn; ++v) {
+                    // D symmetric: row nu, the threads' columns mu. Four rows' loads issued before any is
+                    // used (one load per 4 multiply-adds: the loop waits on memory otherwise). Every lane
+                    // loads: a thread past A has AO 0 and its sums go unused. Summed in the order of v.
+                    uint v = 0u;
+                    for (; v + 4u <= qn; v += 4u) {
+                        float4 q[4];
+                        float d0[4], d1[4];
+                        [ForceUnroll] for (int j = 0; j < 4; ++j) {
+                            q[j] = od_q[v + uint(j)];
+                            float* row = D + asuint(q[j].w) * n;
+                            d0[j] = row[a0];
+                            d1[j] = row[a1];
+                        }
+                        [ForceUnroll] for (int j = 0; j < 4; ++j) {
+                            float apc = abs(q[j].x), e0 = abs(d0[j]), e1 = abs(d1[j]);
+                            g0 += d0[j] * q[j].x; ga0 += e0 * apc; h0 += e0 * q[j].y; k0 += e0 * q[j].z;
+                            g1 += d1[j] * q[j].x; ga1 += e1 * apc; h1 += e1 * q[j].y; k1 += e1 * q[j].z;
+                        }
+                    }
+                    for (; v < qn; ++v) {
                         float4 q = od_q[v];
-                        float* row = D + asuint(q.w) * n;      // D symmetric: row nu, the threads' columns mu
+                        float* row = D + asuint(q.w) * n;
                         float apc = abs(q.x);
-                        if (la0 < A) {
-                            float d = row[a0], ad = abs(d);
-                            g0 += d * q.x; ga0 += ad * apc; h0 += ad * q.y; k0 += ad * q.z;
-                        }
-                        if (la1 < A) {
-                            float d = row[a1], ad = abs(d);
-                            g1 += d * q.x; ga1 += ad * apc; h1 += ad * q.y; k1 += ad * q.z;
-                        }
+                        float d = row[a0], e = abs(d);
+                        g0 += d * q.x; ga0 += e * apc; h0 += e * q.y; k0 += e * q.z;
+                        d = row[a1]; e = abs(d);
+                        g1 += d * q.x; ga1 += e * apc; h1 += e * q.y; k1 += e * q.z;
                     }
                 }
                 if (la0 < A) {

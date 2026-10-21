@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r21"
+#define ISOG_REVISION "r22"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -165,8 +165,15 @@ static int isog_diag = 0;
 static int isog_gemm_wide = 1;
 //   GTO_ISO_OCTREE8=1         the D form's octree below the root with a node's 8 children in one group
 //                             (iso_octree_dform8): the shells reaching the parent listed once, each element of
-//                             D loaded once for the 8 instead of once per child; the same sums (default 1)
-static int isog_octree8 = 1;
+//                             D loaded once for the 8 instead of once per child; the same sums. Off by default
+//                             since r22: on the M4 Pro (mm density, r21) the levels of few nodes ran a group
+//                             where there were 8 (octree 15.1 ms against 11.4), the bricks' level 6% faster
+static int isog_octree8 = 0;
+//   GTO_ISO_OCTREE_START=2    the first level the octree tests: the levels above it keep every node (the root
+//                             box holds the surfaces, so levels 0 and 1 never dropped one in the series). Their
+//                             few nodes reach every AO and take a group each, one after the other: on the M4
+//                             Pro the D form's levels 0 and 1 took 2.9 ms (default 2)
+static int isog_octree_start = 2;
 //   GTO_ISO_WIDE_KERNEL=0|1|2 the wide GEMM's kernels: 0 those of r16 (iso_gcorners_w*, iso_geval_w*); 1 the
 //                             group's shells listed once (all, in rounds of 256) and staged as they are listed,
 //                             chunks of 16 consecutive AOs of the list, so a chunk stages only its rows of C
@@ -235,6 +242,9 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_gemm_wide = atoi(e);
     e = getenv("GTO_ISO_OCTREE8");
     if (e && e[0]) isog_octree8 = atoi(e);
+    e = getenv("GTO_ISO_OCTREE_START");
+    if (e && e[0]) isog_octree_start = atoi(e);
+    if (isog_octree_start < 0 || isog_octree_start > 3) isog_octree_start = 2;
     e = getenv("GTO_ISO_WIDE_KERNEL");
     if (e && e[0]) isog_wide_kernel = atoi(e);
     if (isog_wide_kernel < 0 || isog_wide_kernel > 2) isog_wide_kernel = 1;
@@ -921,6 +931,7 @@ void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     out->gemm_wide = isog_gemm_wide != 0;
     out->octree8 = isog_octree8 != 0;
     out->wide_kernel = isog_wide_kernel;
+    out->octree_start = isog_octree_start;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
@@ -950,13 +961,14 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     isog_gemm_wide = in->gemm_wide ? (isog_gemm_wide ? isog_gemm_wide : 1) : 0;
     isog_octree8 = in->octree8;
     if (in->wide_kernel >= 0 && in->wide_kernel <= 2) isog_wide_kernel = in->wide_kernel;
+    if (in->octree_start >= 0 && in->octree_start <= 3) isog_octree_start = in->octree_start;
 }
 
 const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[512];
-    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d wide_kernel %d octree8 %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
+    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d wide_kernel %d octree8 %d octree_start %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
              ISOG_REVISION, isog_relax_first, isog_corners_v2, isog_corners_list, isog_shared_corners, isog_eval_v2, isog_canon_terms,
-             isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_wide_kernel, isog_octree8, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
+             isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_wide_kernel, isog_octree8, isog_octree_start, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
              isog_diag == 1 ? " DIAG: no AO values" : isog_diag == 2 ? " DIAG: no multiply-adds" : isog_diag == 3 ? " DIAG: lists only"
              : isog_diag == 4 ? " DIAG: no C rows staged" : isog_diag == 5 ? " DIAG: no shells staged, no AO values" : "");
     return buf;
@@ -1217,17 +1229,31 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         if (!nodes[0] || !nodes[1] || !counts) { ok = false; break; }
         md_gpu_memset(s, counts, 0, sizeof(uint32_t) * (L + 2));
         md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 8);
-        const md_gpu_uint4 root = {0, 0, 0, root_mask};
-        const uint32_t one = 1;
-        md_gpu_upload(s, nodes[0], &root, sizeof(root));
-        md_gpu_upload(s, counts, &one, sizeof(one));
-        isog_mark(s, "octree setup", 0, 0);
-        uint32_t level_step[10];
         // EXPERIMENT: GTO_ISO_SKIP_BRICK_TEST=1 keeps every child of the last tested level as a brick
         // (with its parent's sheet bits): the corners decide, which costs less than the bound when most
         // candidates are kept anyway. A superset of the bricks, so no cell is missed.
         const int Lt = isog_skip_brick_test ? L - 1 : L;
-        for (int l = 0; l <= Lt; ++l) {
+        // the first tested level l0, its nodes every node of the levels above (siblings together, as the
+        // kernels append them), with the root's sheet bits
+        const int l0 = Lt > 0 ? (isog_octree_start < Lt ? isog_octree_start : Lt) : 0;
+        {
+            md_gpu_uint4 lv[512];
+            uint32_t nl = 1;
+            lv[0] = (md_gpu_uint4){0, 0, 0, root_mask};
+            for (int l = 0; l < l0; ++l) {
+                md_gpu_uint4 nx[512];
+                for (uint32_t i = 0; i < nl; ++i)
+                    for (uint32_t c = 0; c < 8; ++c)
+                        nx[8 * i + c] = (md_gpu_uint4){lv[i].x * 2 + (c & 1), lv[i].y * 2 + ((c >> 1) & 1), lv[i].z * 2 + (c >> 2), root_mask};
+                nl *= 8;
+                memcpy(lv, nx, sizeof(md_gpu_uint4) * nl);
+            }
+            md_gpu_upload(s, nodes[l0 & 1], lv, sizeof(md_gpu_uint4) * nl);
+            md_gpu_upload(s, counts + sizeof(uint32_t) * l0, &nl, sizeof(nl));
+        }
+        isog_mark(s, "octree setup", 0, 0);
+        uint32_t level_step[10];
+        for (int l = l0; l <= Lt; ++l) {
             isog_args_t o = a;
             o.level = (uint32_t)l;
             o.nodes_in  = nodes[l & 1];
@@ -1253,7 +1279,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         if (isog_prof) {    // nodes per level: in, and kept (children appended, 8 per kept node above the bricks)
             uint32_t cn[12] = {0};
             isog_read(s, cn, counts, sizeof(uint32_t) * (L + 2));
-            for (int l = 0; l <= Lt; ++l) isog_mark_set(level_step[l], cn[l], l < L ? cn[l + 1] / 8 : cn[l + 1]);
+            for (int l = l0; l <= Lt; ++l) isog_mark_set(level_step[l], cn[l], l < L ? cn[l + 1] / 8 : cn[l + 1]);
             isog_mark_skip(s);
         }
         bricks = nodes[(Lt + 1) & 1];

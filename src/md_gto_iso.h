@@ -355,6 +355,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     bool gemm_wide;         // canonical sets of more than 64 functions: the GEMM in passes of up to 256 columns
     bool octree8;           // the D form's octree below the root: a node's 8 children in one group
     int  wide_kernel;       // the wide GEMM's kernels: 0 r16, 1 shells listed once, 2 and rows of C a chunk ahead
+    int  octree_start;      // the first level the octree tests (0..3), the levels above keeping every node
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
