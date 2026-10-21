@@ -3362,6 +3362,220 @@ void gemm_dform2<let VERT : int, let NW : int, B : IKBuf>(uint3 gid, uint tid) {
 [shader("compute")] [numthreads(256, 1, 1)] void iso_dcorners3(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<0, 8, GBuf128>(gid, tid); }
 [shader("compute")] [numthreads(256, 1, 1)] void iso_deval3(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform2<1, 8, GBuf128>(gid, tid); }
 
+// ------------------------------------------------------------------------------------------
+// The D form's corners, fourth version (iso_dcorners4): 64 points per group of 256 threads, one tile of
+// up to D4_TC columns (local AOs) spread evenly over the 8 waves, so that
+//  - a list of A <= D4_TC AOs is one tile: each chunk's AO values made once (iso_dcorners3 remakes
+//    them per tile of 128: 18 chunks made for A = 158 where 10 are needed);
+//  - every wave has columns (dcorners3 gives a wave a chunk of 16 columns: a last tile of 2 chunks keeps
+//    2 waves of 8 busy for every row chunk);
+// Thread (lane, wave w): rows 2 lane, 2 lane + 1 by columns [w CW, w CW + CW) of the tile, CW a multiple
+// of 4 (at most D4_TC / 8). Per row chunk q: the 16 rows of D' (upper triangular by chunks as in
+// dcorners2/3) for the tile's columns, thread t loading column t into registers before the chunk's AO
+// values are made (zeros for the columns before chunk q, no loads); then T += Phi_q D'_q, and for the
+// columns of chunk q, Phi . T. A wave whose columns all lie before chunk q skips it.
+// ------------------------------------------------------------------------------------------
+
+#define D4_TC 192                        // columns per tile (D' rows staged: 16 x D4_TC)
+#define D4_CW (D4_TC / 8)                // columns per wave at most
+groupshared float d4_phi[D_CH * 64];     // [chunk row][point]: the chunk's AO values
+groupshared uint  d4_cao[D4_TC];         // the tile's columns: global AO (INVALID past A)
+K_BUF(D4Buf, 3072)                       // [chunk row][column]: the chunk's rows of D' (16 x D4_TC); the epilogue's sums
+
+// This point's AO values of the chunk in buffer buf into d4_phi (as dq_phi; 4 threads per point, shells
+// j0, j0 + 4, ...); rows past the list's end zero when j0 == 0
+void d4_phi_chunk(uint buf, uint ns, uint j0, uint nvalid, float3 p, uint pt) {
+    IsoArgs a = MD_ARGS;
+    if (j0 == 0u) for (uint k = nvalid; k < uint(D_CH); ++k) d4_phi[k * 64u + pt] = 0.0;
+    for (uint j = j0; j < ns; j += 4u) {
+        uint s = buf * uint(D_CH) + j;
+        float4 cs = dq_cs[s];
+        uint ci = dq_ci[s];
+        int rb = dq_rb[s];
+        uint l = ci & 15u, nc = (ci >> 4) & 15u, np = (ci >> 8) & 255u;
+        float3 d = p - cs.xyz;
+        float r2 = dot(d, d);
+        if (a.diag == 1u) {                                // DIAGNOSTIC: no AO values made
+            for (uint n = 0u; n < nc; ++n) {
+                int row = rb + int(n);
+                if (row >= 0 && row < D_CH) d4_phi[uint(row) * 64u + pt] = 0.01;
+            }
+            continue;
+        }
+        float R = 0.0;
+        if (r2 <= cs.w) {
+            if ((ci >> 31) != 0u) {                        // uniform: the same shell for every thread
+                uint po = dq_pg[s];
+                for (uint q = 0u; q < np; ++q) { float2 pr = a.prims[po + q]; R += pr.y * exp(-pr.x * r2); }
+            } else {
+                uint po = s * uint(DQ_PMAX);
+                for (uint q = 0u; q < np; ++q) { float2 pr = dq_pr[po + q]; R += pr.y * exp(-pr.x * r2); }
+            }
+        }
+        float m[15];
+        cart_monomials(l, d, m);
+        [ForceUnroll] for (int n = 0; n < 15; ++n) {
+            int row = rb + n;
+            if (uint(n) < nc && row >= 0 && row < D_CH) d4_phi[uint(row) * 64u + pt] = m[n] * R;
+        }
+    }
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void iso_dcorners4(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint lane = tid & 31u, w = tid >> 5;                   // MAC: rows 2 lane, 2 lane + 1; columns of wave w
+    uint apt = tid & 63u, asub = tid >> 6;                 // AO values: point apt, shells asub, asub + 4, ...
+    uint total = a.count_in[0];
+    uint e0 = node_index(gid) * 64u;
+    if (e0 >= total) return;                               // uniform per group
+    bool active = e0 + apt < total;
+    uint ee = a.plist[min(e0 + apt, total - 1u)];
+    float3 p = corner_point(a.bricks[ee >> 7], ee & 127u);
+    bool out_active = tid < 64u && active;                 // threads 0 .. 63 write point tid
+    uint b = ee >> 7, pt = ee & 127u;
+    uint mask = a.bricks[b].w;
+    uint slot0 = a.brick_slot[b];
+    {
+        uint lanes = WaveGetLaneCount();
+        uint wi = min(iso_wave_index(tid, lanes), 31u);
+        float3 lo = WaveActiveMin(active ? p : float3(3.0e38));
+        float3 hi = WaveActiveMax(active ? p : float3(-3.0e38));
+        if (WaveIsFirstLane()) { g_lohi[2u * wi] = float4(lo, 0.0); g_lohi[2u * wi + 1u] = float4(hi, 0.0); }
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) {
+            uint nw = min(iso_num_waves(256u, lanes), 32u);
+            float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
+            for (uint k = 1u; k < nw; ++k) { glo = min(glo, g_lohi[2u * k].xyz); ghi = max(ghi, g_lohi[2u * k + 1u].xyz); }
+            g_lohi[0] = float4(glo, 0.0);
+            g_lohi[1] = float4(ghi, 0.0);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
+    d_list_gs(glo, ghi, tid, 1.0, 256u);
+    uint A = d_atot;
+    uint nq = (A + uint(D_CH) - 1u) / uint(D_CH);
+    if (d_ovf != 0u || nq > uint(DQ_CAP)) {                // uniform: the values would be wrong
+        if (tid == 0u) InterlockedAdd(a.counters[7], 1u);
+        return;
+    }
+    if (A == 0u) {                                         // uniform: nothing reaches the box
+        if (out_active) {
+            for (uint f = 0u; f < a.num_fields; ++f)
+                if (((field_bits(mask) >> (2u * f)) & 1u) != 0u) a.corners[(slot0 + field_slot(mask, f)) * 125u + pt] = 0.0;
+        }
+        return;
+    }
+    dq_table(tid, 256u, nq);
+    uint n = a.num_ao;
+    uint nt = (A + uint(D4_TC) - 1u) / uint(D4_TC);
+
+    for (uint u = 0u; u < a.num_dmat; ++u) {
+        // skipped where no point of the group needs this matrix
+        bool need = false;
+        if (out_active) for (uint f = 0u; f < a.num_fields; ++f) need = need || (((field_bits(mask) >> (2u * f)) & 1u) != 0u && a.fdmat[f] == u);
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) d_any = 0u;
+        GroupMemoryBarrierWithGroupSync();
+        if (need) d_any = 1u;
+        GroupMemoryBarrierWithGroupSync();
+        if (d_any == 0u) continue;
+        float* D = a.dmat + u * n * n;
+        float part0 = 0.0, part1 = 0.0;                    // rows 2 lane, 2 lane + 1: Phi . T over this wave's columns
+
+        for (uint J = 0u; J < nt; ++J) {
+            uint cb = J * uint(D4_TC);                     // the tile's first column (local AO)
+            uint nc = min(uint(D4_TC), A - cb);            // its columns
+            uint cw = (((nc + 7u) / 8u) + 3u) & ~3u;       // per wave, a multiple of 4
+            uint wc0 = w * cw;                             // this wave's first column in the tile
+            uint wce = min(wc0 + cw, nc);                  // and its end
+            uint lastq = (cb + nc - 1u) / uint(D_CH);      // the row chunks the tile needs: 0 .. lastq
+            // the wave's last chunk (its columns past their end: none)
+            uint wq = wce > wc0 ? (cb + wce - 1u) / uint(D_CH) : 0u;
+            bool wact = wce > wc0;
+            // the tile's columns' global AOs
+            GroupMemoryBarrierWithGroupSync();
+            if (tid < uint(D4_TC)) {
+                uint la = cb + tid;
+                uint ao = INVALID;
+                if (tid < nc) {
+                    uint i = dq_first(la / uint(D_CH));
+                    while (i + 1u < d_nsh && (d_ent[i + 1u] >> 16) <= la) ++i;
+                    ao = a.shells[d_sh(i)].info2.x + (la - (d_ent[i] >> 16));
+                }
+                d4_cao[tid] = ao;
+            }
+            dq_stage(0u, nq, 0u, tid);
+            GroupMemoryBarrierWithGroupSync();
+            float acc[2 * D4_CW];                          // [row r][column j] at r D4_CW + j
+            [ForceUnroll] for (int j = 0; j < 2 * D4_CW; ++j) acc[j] = 0.0;
+            uint ca = tid < uint(D4_TC) ? d4_cao[tid] : INVALID;   // the column this thread loads D' for
+            uint ccol = (cb + tid) / uint(D_CH);           // its chunk
+            for (uint q = 0u; q <= lastq; ++q) {
+                uint buf = q & 1u;
+                // this chunk's rows of D' for column tid (none before the column's chunk), loaded first
+                float fac = (tid < nc && q <= ccol) ? (q < ccol ? 2.0 : 1.0) : 0.0;
+                float dv[D_CH];
+                [ForceUnroll] for (int k = 0; k < D_CH; ++k) {
+                    uint ra = dq_rao[buf * uint(D_CH) + uint(k)];
+                    bool ok = fac != 0.0 && ra != INVALID && ca != INVALID;
+                    float v = D[ok ? ra * n + ca : 0u];
+                    dv[k] = ok ? fac * v : 0.0;
+                }
+                if (q < lastq) dq_stage(q + 1u, nq, buf ^ 1u, tid);
+                uint la0 = q * uint(D_CH);
+                d4_phi_chunk(buf, dq_span(q, nq).y, asub, min(A - la0, uint(D_CH)), p, apt);
+                if (tid < uint(D4_TC)) { [ForceUnroll] for (int k = 0; k < D_CH; ++k) D4Buf::st(uint(k) * uint(D4_TC) + tid, dv[k]); }
+                GroupMemoryBarrierWithGroupSync();
+                if (wact && q <= wq) {                     // uniform per wave
+                    uint krows = min(uint(D_CH), A - la0);
+                    if (a.diag != 2u) {                    // DIAGNOSTIC 2: no multiply-adds
+                        for (uint k = 0u; k < krows; ++k) {
+                            float ph0 = d4_phi[k * 64u + 2u * lane], ph1 = d4_phi[k * 64u + 2u * lane + 1u];
+                            uint bb = k * uint(D4_TC) + wc0;
+                            [ForceUnroll] for (int c4 = 0; c4 < D4_CW / 4; ++c4) {
+                                if (uint(4 * c4) < cw) {   // uniform
+                                    float4 cv = D4Buf::ld4((bb >> 2) + uint(c4));
+                                    acc[4 * c4 + 0] += ph0 * cv.x; acc[D4_CW + 4 * c4 + 0] += ph1 * cv.x;
+                                    acc[4 * c4 + 1] += ph0 * cv.y; acc[D4_CW + 4 * c4 + 1] += ph1 * cv.y;
+                                    acc[4 * c4 + 2] += ph0 * cv.z; acc[D4_CW + 4 * c4 + 2] += ph1 * cv.z;
+                                    acc[4 * c4 + 3] += ph0 * cv.w; acc[D4_CW + 4 * c4 + 3] += ph1 * cv.w;
+                                }
+                            }
+                        }
+                    }
+                    // the wave's columns of chunk q are complete: Phi . T
+                    iso_wave_fence();                      // AO values read again, not kept from the loop above
+                    [ForceUnroll] for (int j = 0; j < D4_CW; ++j) {
+                        uint col = cb + wc0 + uint(j);     // local AO
+                        if (uint(j) < cw && wc0 + uint(j) < nc && col / uint(D_CH) == q) {   // uniform
+                            uint k = col - la0;
+                            part0 += d4_phi[k * 64u + 2u * lane] * acc[j];
+                            part1 += d4_phi[k * 64u + 2u * lane + 1u] * acc[D4_CW + j];
+                        }
+                    }
+                }
+                GroupMemoryBarrierWithGroupSync();
+            }
+        }
+        // rows summed over the waves (D4Buf free), written by threads 0 .. 63
+        D4Buf::st(w * 64u + 2u * lane, part0);
+        D4Buf::st(w * 64u + 2u * lane + 1u, part1);
+        GroupMemoryBarrierWithGroupSync();
+        if (out_active) {
+            float r = 0.0;
+            [ForceUnroll] for (int k = 0; k < 8; ++k) r += D4Buf::ld(uint(k) * 64u + tid);
+            for (uint f = 0u; f < a.num_fields; ++f) {
+                if (((field_bits(mask) >> (2u * f)) & 1u) == 0u || a.fdmat[f] != u) continue;
+                a.corners[(slot0 + field_slot(mask, f)) * 125u + pt] = r;
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+}
+
 #define OD_BLK 256                       // local AOs per block (two per thread)
 groupshared float4 od_q[OD_BLK];         // a block of local AOs: value at the centre, deviation bound, magnitude bound, AO
 groupshared float  od_sum[8 * 32];       // per wave: the node's sums
