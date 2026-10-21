@@ -236,6 +236,7 @@ typedef struct md_gto_iso_gpu_desc_t {
     uint32_t project_iterations;                      // as md_gto_iso_mesh_desc_t
     uint32_t relax_iterations;
     bool     time_stages;                             // wait for and time every stage (slower)
+    bool     read_back;                               // jobs: also copy the mesh to the host (mesh.host_*)
 } md_gto_iso_gpu_desc_t;
 
 enum {
@@ -268,13 +269,52 @@ typedef struct md_gto_iso_gpu_mesh_t {
     uint32_t num_corner_slots;         // (brick, field) pairs whose corners were stored
     uint32_t open_edges;               // crossing edges whose four cells were not all present (0)
     double   seconds[MD_GTO_ISO_GPU_STAGE_COUNT];   // with desc.time_stages
-    double   seconds_total;            // wall clock of md_gto_iso_gpu_extract
+    double   seconds_total;            // wall clock from the start to the mesh
+    // With desc.read_back (jobs): the mesh on the host, as on the device (position and normal float4 per
+    // vertex, index uint32 per triangle corner); valid until md_gto_iso_gpu_mesh_free
+    const float*    host_position;
+    const float*    host_normal;
+    const uint32_t* host_index;
+    md_gpu_addr_t   host_mem;
 } md_gto_iso_gpu_mesh_t;
 
-// Blocking: waits for the GPU three times (brick count, vertex count, final counts). Returns false
-// on failure (lattice too large for the cell size, out of device memory).
+// Blocking: a job (below) polled until it is done. Returns false on failure (lattice too large for
+// the cell size, out of device memory).
 bool md_gto_iso_gpu_extract(md_gpu_stream_t stream, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_desc_t* desc, md_gto_iso_gpu_mesh_t* out);
 void md_gto_iso_gpu_mesh_free(md_gpu_stream_t stream, md_gto_iso_gpu_mesh_t* mesh);
+
+// The extraction as a job that never blocks the caller: begin issues the GPU work up to the first
+// point where the host needs a count from the device (the bricks, the vertices, the triangles: four
+// or more such points, one per flood round besides); poll takes each count once the GPU has made it
+// and issues the work after it. A job polled once a frame runs alongside the rendering; what the GPU
+// does meanwhile is as without it. Its device memory is its own (md_gpu_malloc), so the stream may be
+// used for other work between polls, temp scopes included.
+//   md_gto_iso_gpu_job_t* job = md_gto_iso_gpu_job_begin(stream, set, &desc);
+//   ... once a frame: if (md_gto_iso_gpu_job_poll(job, 2.0) != MD_GTO_ISO_GPU_JOB_RUNNING) {
+//           md_gto_iso_gpu_job_end(job, &mesh); ... }
+// The set must outlive the job. One thread at a time, the stream's (md_gpu.h).
+typedef struct md_gto_iso_gpu_job_t md_gto_iso_gpu_job_t;
+
+typedef enum md_gto_iso_gpu_job_status_t {
+    MD_GTO_ISO_GPU_JOB_RUNNING,
+    MD_GTO_ISO_GPU_JOB_DONE,
+    MD_GTO_ISO_GPU_JOB_FAILED,
+} md_gto_iso_gpu_job_status_t;
+
+// NULL on invalid arguments or when the kernels are missing; the job may still fail later
+md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t stream, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_desc_t* desc);
+
+// Advances the job as far as the GPU allows, waiting for it at most budget_ms in all (0: not at all,
+// < 0: as long as it takes, which blocks until the job is done)
+md_gto_iso_gpu_job_status_t md_gto_iso_gpu_job_poll(md_gto_iso_gpu_job_t* job, double budget_ms);
+
+// How far the job is, 0 to 1, by the counts the host has taken (coarse: a few steps per extraction)
+float md_gto_iso_gpu_job_progress(const md_gto_iso_gpu_job_t* job);
+
+// Ends the job. Done: the mesh goes to 'out' (free it with md_gto_iso_gpu_mesh_free) and true is
+// returned. Running or failed: what it made is dropped (the GPU work in flight completes unseen), 'out'
+// is zeroed and false is returned. Never waits for the GPU.
+bool md_gto_iso_gpu_job_end(md_gto_iso_gpu_job_t* job, md_gto_iso_gpu_mesh_t* out);
 
 // One field's mesh copied to the host in the CPU layout (blocking). Free with md_gto_iso_mesh_free.
 bool md_gto_iso_gpu_mesh_read(md_gpu_stream_t stream, const md_gto_iso_gpu_mesh_t* mesh, uint32_t field, md_gto_iso_mesh_t* out, struct md_allocator_i* alloc);

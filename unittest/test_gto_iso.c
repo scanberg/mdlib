@@ -2903,6 +2903,154 @@ UTEST(gto_iso_gpu_lib, fields_batch_like_alone) {
 }
 
 
+// A mesh's triangles by their corners' positions, each from its least corner (the winding kept), sorted:
+// the same for two meshes that differ only in the order of their vertices and triangles (the outputs'
+// order within a (field, sheet) range comes from atomics)
+typedef struct iso_tri9_t { float v[9]; } iso_tri9_t;
+static int iso_tri9_cmp(const void* pa, const void* pb) {
+    const float* x = ((const iso_tri9_t*)pa)->v;
+    const float* y = ((const iso_tri9_t*)pb)->v;
+    for (int i = 0; i < 9; ++i) if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+}
+static iso_tri9_t* iso_canon_tris(const float* pos4, const uint32_t* idx, uint32_t ni) {
+    const uint32_t nt = ni / 3;
+    iso_tri9_t* t = (iso_tri9_t*)malloc(sizeof(iso_tri9_t) * (nt + 1));
+    for (uint32_t i = 0; i < nt; ++i) {
+        int r = 0;      // the least corner first
+        for (int c = 1; c < 3; ++c) {
+            const float* pc = pos4 + 4 * idx[3 * i + c];
+            const float* pr = pos4 + 4 * idx[3 * i + r];
+            if (pc[0] < pr[0] || (pc[0] == pr[0] && (pc[1] < pr[1] || (pc[1] == pr[1] && pc[2] < pr[2])))) r = c;
+        }
+        for (int c = 0; c < 3; ++c) {
+            const float* pc = pos4 + 4 * idx[3 * i + (r + c) % 3];
+            for (int k = 0; k < 3; ++k) t[i].v[3 * c + k] = pc[k];
+        }
+    }
+    qsort(t, nt, sizeof(iso_tri9_t), iso_tri9_cmp);
+    return t;
+}
+
+// The extraction as a job (md_gto_iso_gpu_job_*): polled without waiting, with other work on the stream
+// between the polls (a temp scope, a fill), it gives the mesh md_gto_iso_gpu_extract gives, to the bit;
+// its host copy (desc.read_back) is that mesh; a job ended before it is done keeps no device memory.
+UTEST(gto_iso_gpu_lib, job_matches_extract) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    iso_dens_src_t s;
+    ASSERT_TRUE(iso_dens_src_load(&s, "amide.h5"));
+    static const iso_gl_case_t cases[] = {
+        {-1,          "amide_homo",  0.05},
+        {ISO_D_SCF,   "amide_scf",   0.02},     // flooded (marked below): a readback per round
+        {ISO_D_DIFF,  "amide_diff",  0.004},
+    };
+    for (int ci = 0; ci < 3; ++ci) {
+        iso_dens_prod_t p;
+        md_gto_iso_field_t* field = iso_gl_field(&s, cases[ci].kind, &p);
+        ASSERT_TRUE(field != NULL);
+        md_gto_iso_field_set_maxima_at_atoms(field, cases[ci].kind == ISO_D_SCF);
+        const md_gto_iso_field_t* fl[1] = {field};
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        md_gto_iso_gpu_desc_t gd = {.cell_size = 0.2, .project_iterations = 8, .relax_iterations = 3};
+        gd.iso[0] = cases[ci].iso;
+
+        md_gto_iso_gpu_mesh_t ref;
+        ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &ref));
+        const uint32_t nv = ref.vertex_count, ni = ref.index_count;
+        float* rp = (float*)malloc(sizeof(float) * 4 * (nv + 1));
+        float* rn = (float*)malloc(sizeof(float) * 4 * (nv + 1));
+        uint32_t* ri = (uint32_t*)malloc(sizeof(uint32_t) * (ni + 1));
+        ASSERT_TRUE(md_gto_iso_gpu_mesh_read_all(g.s, &ref, rp, rn, ri));
+
+        md_gpu_sync_t sync = md_gpu_stream_record(g.s);
+        md_gpu_sync_wait(sync);
+        md_gpu_memory_stats_t m0;
+        md_gpu_memory_stats(g.dev, MD_GPU_MEM_DEVICE, &m0);
+
+        md_gto_iso_gpu_desc_t jd = gd;
+        jd.read_back = true;
+        md_gto_iso_gpu_job_t* job = md_gto_iso_gpu_job_begin(g.s, set, &jd);
+        ASSERT_TRUE(job != NULL);
+        md_gpu_mem_t scratch = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, 4096);
+        uint32_t polls = 0;
+        float prog = 0.0f;
+        md_gto_iso_gpu_job_status_t st;
+        while ((st = md_gto_iso_gpu_job_poll(job, 0.0)) == MD_GTO_ISO_GPU_JOB_RUNNING) {
+            polls++;
+            const float pr = md_gto_iso_gpu_job_progress(job);
+            EXPECT_TRUE(pr >= prog);    // never goes back
+            prog = pr;
+            // other work on the stream between the polls
+            md_gpu_temp_t t = md_gpu_temp_begin(g.s);
+            md_gpu_mem_t tm = md_gpu_temp_alloc(g.s, MD_GPU_MEM_DEVICE, 1 << 16);
+            if (tm.gpu) md_gpu_memset(g.s, tm.gpu, 0x5A, 1 << 16);
+            md_gpu_temp_end(g.s, t);
+            md_gpu_memset(g.s, scratch.gpu, 0, 4096);
+            md_gpu_stream_flush(g.s);
+        }
+        ASSERT_EQ((int)st, (int)MD_GTO_ISO_GPU_JOB_DONE);
+        EXPECT_EQ(md_gto_iso_gpu_job_progress(job), 1.0f);
+        md_gto_iso_gpu_mesh_t jm;
+        ASSERT_TRUE(md_gto_iso_gpu_job_end(job, &jm));
+        printf("  %-12s %6u vertices: %u polls\n", cases[ci].name, nv, polls);
+        EXPECT_TRUE(polls > 0);
+        ASSERT_EQ(jm.vertex_count, nv);
+        ASSERT_EQ(jm.index_count, ni);
+        EXPECT_EQ(memcmp(jm.vertex_offset, ref.vertex_offset, sizeof(ref.vertex_offset)), 0);
+        EXPECT_EQ(memcmp(jm.index_count_of, ref.index_count_of, sizeof(ref.index_count_of)), 0);
+        if (nv > 0) {
+            ASSERT_TRUE(jm.host_position != NULL && jm.host_normal != NULL && jm.host_index != NULL);
+            // as the device has it (the job's own copy), and the same triangles as the blocking extraction's
+            float* dp = (float*)malloc(sizeof(float) * 4 * (nv + 1));
+            uint32_t* di = (uint32_t*)malloc(sizeof(uint32_t) * (ni + 1));
+            ASSERT_TRUE(md_gto_iso_gpu_mesh_read_all(g.s, &jm, dp, NULL, di));
+            EXPECT_EQ(memcmp(jm.host_position, dp, sizeof(float) * 4 * nv), 0);
+            EXPECT_EQ(memcmp(jm.host_index, di, sizeof(uint32_t) * ni), 0);
+            iso_tri9_t* ta = iso_canon_tris(rp, ri, ni);
+            iso_tri9_t* tb = iso_canon_tris(jm.host_position, jm.host_index, ni);
+            uint32_t diff = 0;
+            for (uint32_t i = 0; i < ni / 3; ++i) diff += iso_tri9_cmp(&ta[i], &tb[i]) != 0;
+            EXPECT_EQ(diff, 0u);
+            if (diff) printf("    %u of %u triangles differ\n", diff, ni / 3);
+            free(ta); free(tb); free(dp); free(di);
+        }
+        md_gto_iso_gpu_mesh_free(g.s, &jm);
+
+        // ended early, at each of its first few waits: nothing kept
+        for (int stop = 0; stop < 4; ++stop) {
+            md_gto_iso_gpu_job_t* jb = md_gto_iso_gpu_job_begin(g.s, set, &jd);
+            ASSERT_TRUE(jb != NULL);
+            for (int k = 0; k < stop; ++k) {
+                md_gpu_sync_wait(md_gpu_stream_record(g.s));
+                md_gto_iso_gpu_job_poll(jb, 0.0);
+            }
+            md_gto_iso_gpu_mesh_t none;
+            const bool handed = md_gto_iso_gpu_job_end(jb, &none);
+            if (handed) md_gto_iso_gpu_mesh_free(g.s, &none);
+            else EXPECT_EQ(none.position, (md_gpu_addr_t)0);
+        }
+        md_gpu_free(g.s, scratch.gpu);
+        md_gpu_sync_wait(md_gpu_stream_record(g.s));
+        md_gpu_device_poll(g.dev);
+        md_gpu_memory_stats_t m1;
+        md_gpu_memory_stats(g.dev, MD_GPU_MEM_DEVICE, &m1);
+        EXPECT_EQ(m1.allocations, m0.allocations);
+        EXPECT_EQ(m1.bytes_in_use, m0.bytes_in_use);
+
+        free(rp); free(rn); free(ri);
+        md_gto_iso_gpu_mesh_free(g.s, &ref);
+        md_gto_iso_gpu_set_destroy(g.s, set);
+        md_gto_iso_field_destroy(field);
+        iso_dens_prod_free(&p);
+    }
+    iso_dens_src_free(&s);
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
 // One field given twice at two iso values (a density at two thresholds): the copies share their functions
 // and each gives what it gives in a set of its own on the same lattice
 UTEST(gto_iso_gpu_lib, repeated_field_shares_functions) {

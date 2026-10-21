@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r27"
+#define ISOG_REVISION "r28"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -920,10 +920,6 @@ static bool isog_sort_bricks(md_gpu_uint4* bl, uint32_t nb) {
     return ok;
 }
 
-static md_gpu_addr_t isog_temp(md_gpu_stream_t s, size_t bytes) {
-    return md_gpu_temp_alloc(s, MD_GPU_MEM_DEVICE, bytes ? bytes : 16).gpu;
-}
-
 static md_gpu_grid_t isog_groups(uint32_t n) {     // one group per item, split over y
     if (n == 0) return md_gpu_grid(0, 0, 0);
     return md_gpu_grid(n < 65535u ? n : 65535u, (n + 65534u) / 65535u, 1);
@@ -1190,31 +1186,817 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
     return len < cap ? len : cap - 1;
 }
 
-bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_desc_t* desc, md_gto_iso_gpu_mesh_t* out) {
-    const double h = desc ? iso_lattice_float(desc->cell_size) : 0.0;
-    if (!s || !set || !desc || !out || !(h > 0.0)) {
-        MD_LOG_ERROR("md_gto_iso_gpu_extract: invalid arguments");
-        return false;
+// ---------------------------------------------------------------------------------------------
+// The extraction as a job: the host steps through it, and where it needs a count from the device it
+// copies the count to host-readable memory, records a sync and returns; md_gto_iso_gpu_job_poll takes
+// the count once the sync has passed and issues the work after it.
+// ---------------------------------------------------------------------------------------------
+
+enum {
+    ISOG_J_OCTREE,          // issue the octree (an attempt), then read the brick count
+    ISOG_J_OCTREE_READ,     // the brick count: retry with more room, or read the bricks
+    ISOG_J_BRICKS_READ,     // the bricks: order, slots, the corners' buffers, the hash
+    ISOG_J_PASS,            // a pass of the corners (one, or the flood's rounds)
+    ISOG_J_FLOOD_READ,      // the bricks the next round adds
+    ISOG_J_NETS,            // count the cells, then read the vertex count
+    ISOG_J_NETS_READ,       // the vertex count: the vertices, then read the final counts
+    ISOG_J_COUNTS_READ,     // the final counts: the output, then read the buckets
+    ISOG_J_BUCKETS_READ,    // the buckets: the mesh's ranges
+    ISOG_J_MESH_READ,       // the mesh copied to the host (desc.read_back)
+    ISOG_J_DONE,
+    ISOG_J_FAILED,
+};
+
+#define ISOG_JOB_ALLOCS 64
+#define ISOG_JOB_FETCH  4
+
+struct md_gto_iso_gpu_job_t {
+    md_gpu_stream_t s;
+    const md_gto_iso_gpu_set_t* set;
+    md_gto_iso_gpu_desc_t desc;
+    md_gto_iso_gpu_mesh_t out;
+    int   stage;
+    float progress;
+    // device memory the job owns, freed at its end (recorded on the stream: the GPU may still use it)
+    md_gpu_addr_t alloc[ISOG_JOB_ALLOCS];
+    uint32_t num_alloc;
+    // the readback in flight: copies into one host-readable buffer, then to their destinations
+    bool          fetching, fetch_keep;
+    md_gpu_mem_t  fetch_mem;
+    md_gpu_sync_t fetch_sync;
+    uint32_t      num_fetch;
+    void*         fetch_dst[ISOG_JOB_FETCH];
+    size_t        fetch_off[ISOG_JOB_FETCH], fetch_bytes[ISOG_JOB_FETCH];
+    // the extraction, across its waits
+    md_tick_t t_start, ts;
+    uint32_t F, root_mask;
+    int L, Lt, l0, attempt;
+    double origin[3];
+    isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];
+    isog_args_t a;
+    bool cdform, odform, clist, flood, ordered;
+    uint32_t cap, nb, ctr[8], cn[12], level_step[10];
+    md_gpu_addr_t nodes[2], counts, bricks;
+    md_gpu_uint4* bl;
+    uint32_t* slot;
+    uint32_t nslots, nkept, hcap;
+    uint32_t pass, flood_rounds, flood_bricks, points_all, next;
+    uint32_t nv, nq, cap_v, cap_q;
+    uint32_t bk[128];
+};
+
+static md_gpu_addr_t isog_jalloc(md_gto_iso_gpu_job_t* j, size_t bytes) {
+    if (j->num_alloc >= ISOG_JOB_ALLOCS) return 0;
+    const md_gpu_mem_t m = md_gpu_malloc(j->s, MD_GPU_MEM_DEVICE, bytes ? bytes : 16);
+    if (m.gpu) j->alloc[j->num_alloc++] = m.gpu;
+    return m.gpu;
+}
+
+static void isog_jfree(md_gto_iso_gpu_job_t* j, md_gpu_addr_t p) {
+    for (uint32_t i = 0; i < j->num_alloc; ++i) {
+        if (j->alloc[i] == p) {
+            md_gpu_free(j->s, p);
+            j->alloc[i] = j->alloc[--j->num_alloc];
+            return;
+        }
     }
-    if (!isog_kernels_ready()) return false;
+}
+
+// A copy of [src, src + bytes) to dst, made with the next isog_jfetch
+static void isog_jfetch_add(md_gto_iso_gpu_job_t* j, void* dst, md_gpu_addr_t src, size_t bytes) {
+    if (j->num_fetch >= ISOG_JOB_FETCH || !bytes) return;
+    j->fetch_dst[j->num_fetch] = dst;
+    j->fetch_off[j->num_fetch] = (size_t)src;      // the source until isog_jfetch
+    j->fetch_bytes[j->num_fetch] = bytes;
+    j->num_fetch++;
+}
+
+// Copies what was added to host-readable memory and records the sync the host waits for
+static bool isog_jfetch(md_gto_iso_gpu_job_t* j) {
+    size_t total = 0;
+    for (uint32_t i = 0; i < j->num_fetch; ++i) total += (j->fetch_bytes[i] + 15) & ~(size_t)15;
+    j->fetch_mem = md_gpu_malloc(j->s, MD_GPU_MEM_HOST_READ, total ? total : 16);
+    if (!j->fetch_mem.gpu) { j->num_fetch = 0; return false; }
+    size_t off = 0;
+    for (uint32_t i = 0; i < j->num_fetch; ++i) {
+        md_gpu_copy(j->s, j->fetch_mem.gpu + off, (md_gpu_addr_t)j->fetch_off[i], j->fetch_bytes[i]);
+        j->fetch_off[i] = off;
+        off += (j->fetch_bytes[i] + 15) & ~(size_t)15;
+    }
+    j->fetch_sync = md_gpu_stream_record(j->s);
+    j->fetching = true;
+    return true;
+}
+
+// The readback has passed: its bytes to their destinations
+static void isog_jfetch_take(md_gto_iso_gpu_job_t* j) {
+    for (uint32_t i = 0; i < j->num_fetch; ++i) memcpy(j->fetch_dst[i], (const char*)j->fetch_mem.cpu + j->fetch_off[i], j->fetch_bytes[i]);
+    if (!j->fetch_keep) md_gpu_free(j->s, j->fetch_mem.gpu);
+    j->fetch_mem = (md_gpu_mem_t){0};
+    j->num_fetch = 0;
+    j->fetching = false;
+    j->fetch_keep = false;
+}
+
+static void isog_job_fail(md_gto_iso_gpu_job_t* j, const char* msg) {
+    if (msg) MD_LOG_ERROR("%s", msg);
+    md_gto_iso_gpu_mesh_free(j->s, &j->out);
+    j->stage = ISOG_J_FAILED;
+}
+
+// Runs the job from its stage until it waits for a readback, is done, or fails
+static void isog_job_step(md_gto_iso_gpu_job_t* j) {
+    md_gpu_stream_t s = j->s;
+    const md_gto_iso_gpu_set_t* set = j->set;
+    const md_gto_iso_gpu_desc_t* desc = &j->desc;
+    md_gto_iso_gpu_mesh_t* out = &j->out;
+    const uint32_t F = j->F;
+    const int L = j->L;
+    const double h = desc->cell_size;
+    isog_args_t* ap0 = &j->a;
+#define a (*ap0)
+    while (!j->fetching && j->stage != ISOG_J_DONE && j->stage != ISOG_J_FAILED) {
+        switch (j->stage) {
+        case ISOG_J_OCTREE: {
+            // ---- octree, one launch per level sized by the previous level's count; retried with more room
+            const uint32_t cap = j->cap;
+            j->nodes[0] = isog_jalloc(j, sizeof(md_gpu_uint4) * cap);
+            j->nodes[1] = isog_jalloc(j, sizeof(md_gpu_uint4) * cap);
+            j->counts = isog_jalloc(j, sizeof(uint32_t) * (L + 2));
+            if (!j->nodes[0] || !j->nodes[1] || !j->counts) { isog_job_fail(j, "md_gto_iso_gpu_extract: octree overflow or out of device memory"); break; }
+            md_gpu_memset(s, j->counts, 0, sizeof(uint32_t) * (L + 2));
+            md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 8);
+            // GTO_ISO_SKIP_BRICK_TEST=1 (the default) keeps every child of the last tested level as a brick
+            // (with its parent's sheet bits): the corners decide, which costs less than the bound. A superset
+            // of the bricks, so no cell is missed.
+            const int Lt = isog_skip_brick_test ? L - 1 : L;
+            // the first tested level l0, its nodes every node of the levels above (siblings together, as the
+            // kernels append them), with the root's sheet bits
+            const int l0 = Lt > 0 ? (isog_octree_start < Lt ? isog_octree_start : Lt) : 0;
+            j->Lt = Lt;
+            j->l0 = l0;
+            {
+                md_gpu_uint4 lv[512];
+                uint32_t nl = 1;
+                const uint32_t root_mask = j->root_mask;
+                lv[0] = (md_gpu_uint4){0, 0, 0, root_mask};
+                for (int l = 0; l < l0; ++l) {
+                    md_gpu_uint4 nx[512];
+                    for (uint32_t i = 0; i < nl; ++i)
+                        for (uint32_t c = 0; c < 8; ++c)
+                            nx[8 * i + c] = (md_gpu_uint4){lv[i].x * 2 + (c & 1), lv[i].y * 2 + ((c >> 1) & 1), lv[i].z * 2 + (c >> 2), root_mask};
+                    nl *= 8;
+                    memcpy(lv, nx, sizeof(md_gpu_uint4) * nl);
+                }
+                md_gpu_upload(s, j->nodes[l0 & 1], lv, sizeof(md_gpu_uint4) * nl);
+                md_gpu_upload(s, j->counts + sizeof(uint32_t) * l0, &nl, sizeof(nl));
+            }
+            isog_mark(s, "octree setup", 0, 0);
+            bool ok = true;
+            for (int l = l0; l <= Lt; ++l) {
+                isog_args_t o = a;
+                o.level = (uint32_t)l;
+                o.nodes_in  = j->nodes[l & 1];
+                o.nodes_out = j->nodes[(l + 1) & 1];
+                o.count_in  = j->counts + sizeof(uint32_t) * l;
+                o.count_out = j->counts + sizeof(uint32_t) * (l + 1);
+                o.cap = cap;
+                o.grid_mul = 1;
+                o.grid_div = 0;
+                o.mode = j->clist ? 1u : 0u;     // the bricks keep their sibling slots
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), o);
+                int ko = j->odform ? ISOG_K_ODFORM : (isog_octree_small && set->num_fn <= 4) ? ISOG_K_OCTREE_SMALL : ISOG_K_OCTREE;
+                if (ko == ISOG_K_OCTREE_SMALL && !isog_k[ko]) ko = ISOG_K_OCTREE;
+                if (ko == ISOG_K_ODFORM && l > 0 && isog_octree8 && isog_k[ISOG_K_ODFORM8]) {
+                    ko = ISOG_K_ODFORM8;    // a group per 8 siblings (below the root they come 8 at a time)
+                    o.grid_div = 8;
+                }
+                if (!isog_have(ko)) { ok = false; break; }
+                md_gpu_launch_indirect(s, isog_k[ko], a.grid_out, &o, sizeof(o));
+                isog_used(ko);
+                j->level_step[l] = isog_mark(s, "octree level", 0, 0);
+            }
+            if (!ok) { isog_job_fail(j, "md_gto_iso_gpu_extract: octree overflow or out of device memory"); break; }
+            if (isog_prof) {    // nodes per level: in, and kept (children appended, 8 per kept node above the bricks)
+                uint32_t cn[12] = {0};
+                isog_read(s, cn, j->counts, sizeof(uint32_t) * (L + 2));
+                for (int l = l0; l <= Lt; ++l) isog_mark_set(j->level_step[l], cn[l], l < L ? cn[l + 1] / 8 : cn[l + 1]);
+                isog_mark_skip(s);
+            }
+            j->bricks = j->nodes[(Lt + 1) & 1];
+            isog_jfetch_add(j, &j->nb, j->counts + sizeof(uint32_t) * (Lt + 1), sizeof(uint32_t));
+            isog_jfetch_add(j, j->ctr, a.counters, sizeof(j->ctr));
+            if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
+            j->stage = ISOG_J_OCTREE_READ;
+            j->progress = 0.05f;
+        } break;
+
+        case ISOG_J_OCTREE_READ: {
+            isog_mark(s, "readback: brick count", j->nb, 0);
+            if (j->ctr[3] || j->nb > j->cap) {
+                if (++j->attempt < 4) {     // more room, and again
+                    isog_jfree(j, j->nodes[0]);
+                    isog_jfree(j, j->nodes[1]);
+                    isog_jfree(j, j->counts);
+                    j->cap *= 4;
+                    j->nb = 0;
+                    j->stage = ISOG_J_OCTREE;
+                    break;
+                }
+                isog_job_fail(j, "md_gto_iso_gpu_extract: octree overflow or out of device memory");
+                break;
+            }
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_OCTREE, &j->ts);
+            // ---- the brick list on the host: one corner slot per (brick, field with a sheet bit)
+            const uint32_t nb = j->nb;
+            j->bl = (md_gpu_uint4*)malloc(sizeof(md_gpu_uint4) * (nb + 1));
+            j->slot = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
+            if (!j->bl || !j->slot) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of memory"); break; }
+            if (nb > 0) {
+                isog_jfetch_add(j, j->bl, j->bricks, sizeof(md_gpu_uint4) * nb);
+                if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
+            }
+            j->stage = ISOG_J_BRICKS_READ;
+            j->progress = 0.15f;
+        } break;
+
+        case ISOG_J_BRICKS_READ: {
+            const uint32_t nb = j->nb;
+            md_gpu_uint4* bl = j->bl;
+            uint32_t* slot = j->slot;
+            const double* origin = j->origin;
+            if (isog_ordered && nb > 1 && isog_sort_bricks(bl, nb)) md_gpu_upload(s, j->bricks, bl, sizeof(md_gpu_uint4) * nb);
+            uint32_t nslots = 0, nkept = 0;
+            for (uint32_t b = 0; b < nb; ++b) {
+                slot[b] = nslots;
+                const uint32_t m = bl[b].w;
+                nslots += popcnt32((m | (m >> 1)) & 0x55555555u);
+                nkept += m != 0;    // the bricks may keep their sibling slots: rejected ones have no sheet bits
+            }
+            j->nslots = nslots;
+            j->nkept = nkept;
+            out->num_bricks = nkept;
+            out->num_corner_slots = nslots;
+            isog_mark(s, "readback: bricks, slots", nb, nslots);
+            if (isog_prof) {    // BENCHMARK: the AOs that reach each brick (what the corner kernels list), not timed
+                uint64_t sum = 0, sq = 0;
+                uint32_t mx = 0;
+                const float he = (float)h;
+                for (uint32_t b = 0; b < nb; ++b) {
+                    if (bl[b].w == 0) continue;
+                    const float blo[3] = {(float)origin[0] + (float)(bl[b].x * 4u) * he, (float)origin[1] + (float)(bl[b].y * 4u) * he, (float)origin[2] + (float)(bl[b].z * 4u) * he};
+                    const float bhi[3] = {blo[0] + 4.0f * he, blo[1] + 4.0f * he, blo[2] + 4.0f * he};
+                    const uint32_t n = isog_prof_box_aos(set, blo, bhi);
+                    sum += n;
+                    sq += (uint64_t)n * n;
+                    mx = n > mx ? n : mx;
+                }
+                isog_prof->brick_ao_sum = sum;
+                isog_prof->brick_ao_sq = sq;
+                isog_prof->brick_ao_max = mx;
+                isog_prof->num_ao = set->num_ao;
+                isog_prof->num_fn = set->num_fn;
+                isog_prof->fn_stride = set->fn_stride;
+                isog_prof->orbitals_only = set->orbitals_only;
+                isog_mark_skip(s);
+            }
+            a.bricks = j->bricks;
+            a.count = nb;
+            a.brick_slot = isog_jalloc(j, sizeof(uint32_t) * (nb + 1));
+            if (a.brick_slot && nb) md_gpu_upload(s, a.brick_slot, slot, sizeof(uint32_t) * nb);
+            uint32_t hcap = 64;
+            while (hcap < 2 * nb) hcap <<= 1;
+            j->hcap = hcap;
+            a.hash_mask = hcap - 1;
+            a.hash_keys = isog_jalloc(j, sizeof(uint32_t) * hcap);
+            a.hash_vals = isog_jalloc(j, sizeof(uint32_t) * hcap);
+            a.corners   = isog_jalloc(j, sizeof(float) * 125 * ((size_t)nslots + 1));
+            a.cell_vert = isog_jalloc(j, sizeof(uint32_t) * 128 * ((size_t)nslots + 1));
+            a.plist = j->clist ? isog_jalloc(j, sizeof(uint32_t) * 125 * ((size_t)nb + 1)) : 0;
+            // per brick: counts, then offsets (ordered lists). Allocated either way: llvmpipe may load it in a
+            // branch not taken
+            a.scan  = isog_jalloc(j, sizeof(uint32_t) * ((size_t)nb + 1));
+            a.bstate = isog_jalloc(j, sizeof(uint32_t) * ((size_t)nb + 1));     // flood: per brick, its round
+            if (!a.scan || !a.bstate || !a.brick_slot || !a.hash_keys || !a.hash_vals || !a.corners || !a.cell_vert || (j->clist && !a.plist)) {
+                isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow");
+                break;
+            }
+            j->progress = 0.2f;
+            if (nb == 0) {
+                isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &j->ts);
+                j->stage = ISOG_J_NETS;
+                break;
+            }
+            md_gpu_memset(s, a.hash_keys, 0, sizeof(uint32_t) * hcap);
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_HASH], md_gpu_grid_for(isog_k[ISOG_K_HASH], nb, 1, 1), a);
+            isog_mark(s, "hash", nb, hcap);
+            if (j->clist) {
+                // the points to evaluate, listed brick by brick; then 256 of them per group. APPROXIMATE: seed
+                // and flood (GTO_ISO_FLOOD): pass 0 the bricks' corners, then the seeds (and the bricks holding
+                // an atom), then round by round the bricks across faces with a sign change; else one pass over
+                // every brick
+                j->pass = 0;
+                j->flood_rounds = j->flood_bricks = j->points_all = 0;
+                j->stage = ISOG_J_PASS;
+                break;
+            }
+            if (isog_corners_v2) {
+                // the function columns in registers: all of the set's, or tiles of 64
+                const uint32_t nfn = set->num_fn;
+                const int kc = (nfn == 1 && F == 1) ? ISOG_K_CORNERS_F1 : nfn <= 8 ? ISOG_K_CORNERS_F8 : nfn <= 16 ? ISOG_K_CORNERS_F16
+                             : nfn <= 32 ? ISOG_K_CORNERS_F32 : ISOG_K_CORNERS_F64;
+                isog_args_t ac = a;
+                ac.mode = isog_shared_corners ? 1u : 0u;
+                MD_GPU_LAUNCH(s, isog_k[kc], isog_groups(nb), ac);
+                isog_used(kc);
+                static const uint32_t kcols[] = {1, 8, 16, 32, 64};
+                if (isog_prof) isog_prof->corner_cols = kcols[kc - ISOG_K_CORNERS_F1] * ((nfn + kcols[kc - ISOG_K_CORNERS_F1] - 1) / kcols[kc - ISOG_K_CORNERS_F1]);
+                static const char* kname[] = {"corners (f1)", "corners (f8)", "corners (f16)", "corners (f32)", "corners (f64)"};
+                const uint32_t ck = isog_mark(s, kname[kc - ISOG_K_CORNERS_F1], nkept, nslots);
+                if (isog_prof) {    // aux: the lattice points evaluated (of 125 per brick)
+                    uint32_t c8[8];
+                    isog_read(s, c8, a.counters, sizeof(c8));
+                    isog_mark_set(ck, nkept, c8[5]);
+                    isog_prof->corner_points = c8[5];
+                    isog_mark_skip(s);
+                }
+                if (isog_shared_corners) {
+                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_CORNERS_FILL], isog_groups(nb), a);
+                    isog_mark(s, "corners: fill shared", nb, 0);
+                }
+            } else {
+                MD_GPU_LAUNCH(s, isog_k[set->orbitals_only ? ISOG_K_CORNERS1 : ISOG_K_CORNERS], isog_groups(nb), a);
+                isog_used(set->orbitals_only ? ISOG_K_CORNERS1 : ISOG_K_CORNERS);
+                if (isog_prof) isog_prof->corner_cols = set->orbitals_only ? set->num_fn : set->fn_stride;
+                isog_mark(s, set->orbitals_only ? "corners (orbital)" : "corners (gemm)", nb, nslots);
+            }
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &j->ts);
+            j->stage = ISOG_J_NETS;
+        } break;
+
+        case ISOG_J_PASS: {
+            const uint32_t nb = j->nb, pass = j->pass, nfn = set->num_fn;
+            const bool flood = j->flood, ordered = j->ordered, cdform = j->cdform;
+            const uint32_t nkept = j->nkept, nslots = j->nslots;
+            const double* origin = j->origin;
+            const md_gpu_uint4* bl = j->bl;
+            md_gpu_memset(s, a.counters + sizeof(uint32_t) * 5, 0, sizeof(uint32_t));
+            isog_args_t ap = a;
+            ap.mode = isog_shared_corners ? 1u : 0u;
+            if (flood) { ap.mode |= pass == 0 ? 16u : 8u; ap.level = pass; }
+            if (ordered) {
+                // in the order of the bricks: the counts, their prefix sum, then the points at the offsets
+                ap.mode |= 2u;
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_POINTS], isog_groups(nb), ap);
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_SCAN], md_gpu_grid(1, 1, 1), ap);
+                isog_used(ISOG_K_SCAN);
+                ap.mode = (ap.mode & ~2u) | 4u;
+            }
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_POINTS], isog_groups(nb), ap);
+            isog_mark(s, "corners: point list", nb, 0);
+            // one function: a point per thread (iso_corners_list_f1); more: the tiled GEMM, 128 points
+            // per group (iso_gcorners_f*), or the register form, 256 points per group
+            // densities as matrices: iso_dcorners, 128 points per group
+            const bool one = nfn == 1 && F == 1;
+            const bool gemm = (isog_gemm || cdform) && !one;
+            // canonical sets of more than 64 functions: the wide GEMM, 64 points per group
+            const int kw = nfn <= 128 ? ISOG_K_GCORN_W128 : nfn <= 192 ? ISOG_K_GCORN_W192 : ISOG_K_GCORN_W256;
+            const bool wide = gemm && !cdform && a.canon && isog_gemm_wide && nfn > (isog_gemm_wide == 2 ? 16u : 64u) && isog_k[kw];
+            static const int kdc[3] = {ISOG_K_DCORN, ISOG_K_DCORN2, ISOG_K_DCORN3};
+            int dk = isog_dform_kernel;
+            while (dk > 0 && !isog_k[kdc[dk]]) dk--;        // a D form kernel this device could make
+            const int kc = one ? ((isog_corners_v4 && isog_k[ISOG_K_CLIST_F1V4]) ? ISOG_K_CLIST_F1V4 : ISOG_K_CLIST_F1)
+                         : cdform ? kdc[dk]
+                         : wide ? isog_wide_form(kw)
+                         : gemm ? (nfn <= 16 ? ISOG_K_GCORN_F16 : (nfn <= 32 || isog_gemm_t32) ? ISOG_K_GCORN_F32
+                                   : isog_gemm_pipe == 1 ? ISOG_K_GCORN_F64_P1 : isog_gemm_pipe == 2 ? ISOG_K_GCORN_F64_P2 : ISOG_K_GCORN_F64)
+                         : (nfn <= 8 ? ISOG_K_CLIST_F8 : nfn <= 16 ? ISOG_K_CLIST_F16 : nfn <= 32 ? ISOG_K_CLIST_F32 : ISOG_K_CLIST_F64);
+            if (!isog_have(kc)) { isog_job_fail(j, "md_gto_iso_gpu_extract: a corner kernel is missing"); break; }
+            isog_args_t ac = a;
+            ac.count_in = a.counters + sizeof(uint32_t) * 5;
+            ac.cap = 0;
+            ac.grid_mul = 1;
+            ac.grid_div = wide ? 64 : gemm ? 128 : 256;
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), ac);
+            md_gpu_launch_indirect(s, isog_k[kc], a.grid_out, &ac, sizeof(ac));
+            isog_used(kc);
+            uint32_t fc = 0;
+            const char* kn = "";
+            switch (kc) {
+                case ISOG_K_CLIST_F1:  fc = 1;  kn = "corners (list f1)"; break;
+                case ISOG_K_CLIST_F1V4: fc = 1; kn = "corners (list f1 x4)"; break;
+                case ISOG_K_CLIST_F8:  fc = 8;  kn = "corners (list f8)"; break;
+                case ISOG_K_CLIST_F16: fc = 16; kn = "corners (list f16)"; break;
+                case ISOG_K_CLIST_F32: fc = 32; kn = "corners (list f32)"; break;
+                case ISOG_K_CLIST_F64: fc = 64; kn = "corners (list f64)"; break;
+                case ISOG_K_GCORN_F16: fc = 16; kn = "corners (gemm f16)"; break;
+                case ISOG_K_GCORN_F32: fc = 32; kn = "corners (gemm f32)"; break;
+                case ISOG_K_DCORN:     fc = 0;  kn = "corners (dform)"; break;
+                case ISOG_K_DCORN2:    fc = 0;  kn = "corners (dform2)"; break;
+                case ISOG_K_DCORN3:    fc = 0;  kn = "corners (dform3)"; break;
+                case ISOG_K_GCORN_F64_P1: fc = 64; kn = "corners (gemm f64 p1)"; break;
+                case ISOG_K_GCORN_F64_P2: fc = 64; kn = "corners (gemm f64 p2)"; break;
+                case ISOG_K_GCORN_W128: fc = 128; kn = "corners (gemm w128)"; break;
+                case ISOG_K_GCORN_W192: fc = 192; kn = "corners (gemm w192)"; break;
+                case ISOG_K_GCORN_W256: fc = 256; kn = "corners (gemm w256)"; break;
+                case ISOG_K_GCORN_X128: fc = 128; kn = "corners (gemm x128)"; break;
+                case ISOG_K_GCORN_X192: fc = 192; kn = "corners (gemm x192)"; break;
+                case ISOG_K_GCORN_X256: fc = 256; kn = "corners (gemm x256)"; break;
+                case ISOG_K_GCORN_Y128: fc = 128; kn = "corners (gemm y128)"; break;
+                case ISOG_K_GCORN_Y192: fc = 192; kn = "corners (gemm y192)"; break;
+                case ISOG_K_GCORN_Y256: fc = 256; kn = "corners (gemm y256)"; break;
+                default:               fc = 64; kn = "corners (gemm f64)"; break;
+            }
+            if (isog_prof) isog_prof->corner_cols = fc ? fc * ((nfn + fc - 1) / fc) : 0;
+            const uint32_t ck = isog_mark(s, kn, nkept, nslots);
+            if (isog_prof && flood) {   // aux: the lattice points evaluated, summed over the passes
+                uint32_t c8[8];
+                isog_read(s, c8, a.counters, sizeof(c8));
+                j->points_all += c8[5];
+                isog_mark_set(ck, nkept, c8[5]);
+                isog_prof->corner_points = j->points_all;
+                isog_mark_skip(s);
+            } else if (isog_prof) {    // aux: the lattice points evaluated
+                uint32_t c8[8];
+                isog_read(s, c8, a.counters, sizeof(c8));
+                isog_mark_set(ck, nkept, c8[5]);
+                isog_prof->corner_points = c8[5];
+                // the boxes of the groups the corner kernel takes (consecutive points of the list)
+                const uint32_t np = c8[5];
+                uint32_t* pl = (uint32_t*)malloc(sizeof(uint32_t) * (np + 1));
+                float* px = (float*)malloc(sizeof(float) * 3 * (np + 1));
+                if (pl && px && np > 0 && isog_read(s, pl, a.plist, sizeof(uint32_t) * np)) {
+                    for (uint32_t i = 0; i < np; ++i) {
+                        const uint32_t b = pl[i] >> 7, k = (pl[i] & 127u) < 124u ? (pl[i] & 127u) : 124u;
+                        const uint32_t g[3] = {bl[b].x * 4u + k % 5u, bl[b].y * 4u + (k / 5u) % 5u, bl[b].z * 4u + k / 25u};
+                        for (int ax = 0; ax < 3; ++ax) px[3 * i + ax] = (float)origin[ax] + (float)g[ax] * (float)h;
+                    }
+                    isog_prof->cgroup_size = wide ? 64u : gemm ? 128u : 256u;
+                    isog_prof_groups(set, px, 3, np, isog_prof->cgroup_size, &isog_prof->cgroup_ao_sum, &isog_prof->cgroup_count);
+                }
+                free(pl);
+                free(px);
+                isog_mark_skip(s);
+            }
+            if (isog_diag && !flood) md_gpu_memset(s, a.corners, 0, sizeof(float) * 125 * (size_t)nslots);   // DIAGNOSTIC: no surface
+            if (isog_shared_corners) {
+                isog_args_t af = a;
+                af.mode = flood ? (pass == 0 ? 16u : 8u) : 0u;
+                af.level = pass;
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_CORNERS_FILL], isog_groups(nb), af);
+                isog_mark(s, "corners: fill shared", nb, 0);
+            }
+            if (!flood) {
+                isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &j->ts);
+                j->stage = ISOG_J_NETS;
+                break;
+            }
+            // the next round: the seeds (pass 0), or the bricks across this round's faces with a sign change
+            md_gpu_memset(s, a.counters + sizeof(uint32_t) * 6, 0, sizeof(uint32_t));
+            isog_args_t ar = a;
+            ar.level = pass;
+            if (pass == 0) {
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_FSEED], md_gpu_grid((nb + 63) / 64, 1, 1), ar);
+                isog_used(ISOG_K_FSEED);
+                if (isog_flood_atoms) {
+                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_FATOMS], md_gpu_grid((set->num_shells + 63) / 64, 1, 1), ar);
+                    isog_used(ISOG_K_FATOMS);
+                }
+            } else {
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_FFACE], isog_groups(nb), ar);
+                isog_used(ISOG_K_FFACE);
+            }
+            j->next = 0;
+            isog_jfetch_add(j, &j->next, a.counters + sizeof(uint32_t) * 6, sizeof(uint32_t));
+            if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
+            j->stage = ISOG_J_FLOOD_READ;
+        } break;
+
+        case ISOG_J_FLOOD_READ: {
+            const uint32_t nb = j->nb;
+            isog_mark(s, j->pass == 0 ? "flood: seeds" : "flood: faces", nb, j->next);
+            j->flood_bricks += j->next;
+            if (j->next != 0 && j->pass < 64) {
+                j->flood_rounds++;
+                j->pass++;
+                j->progress = 0.2f + 0.45f * (1.0f - 1.0f / (float)(j->pass + 1));
+                j->stage = ISOG_J_PASS;
+                break;
+            }
+            // the bricks no round reached: no cells (and the host's list says so, for the profile)
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_FFINISH], md_gpu_grid((nb + 63) / 64, 1, 1), a);
+            isog_used(ISOG_K_FFINISH);
+            if (isog_prof || isog_debug) isog_read(s, j->bl, a.bricks, sizeof(md_gpu_uint4) * nb);   // the profile's and the tests' only
+            isog_mark(s, "flood: finish", j->flood_bricks, j->flood_rounds);
+            if (isog_diag) md_gpu_memset(s, a.corners, 0, sizeof(float) * 125 * (size_t)j->nslots);   // DIAGNOSTIC: no surface
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &j->ts);
+            j->stage = ISOG_J_NETS;
+        } break;
+
+        case ISOG_J_NETS: {
+            // ---- Surface Nets: count, then size the vertex buffers and emit
+            const uint32_t nb = j->nb;
+            j->nv = 0;
+            j->stage = ISOG_J_NETS_READ;
+            if (nb == 0) break;
+            a.mode = j->ordered ? 2u : 0u;     // bit 2: the brick's count into scan, for vertices in the order of the bricks
+            md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 7);     // [7] (dform overflow) kept
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_CELLS], isog_groups(nb), a);
+            if (j->ordered) {
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_SCAN], md_gpu_grid(1, 1, 1), a);
+                isog_used(ISOG_K_SCAN);
+            }
+            isog_mark(s, "cells: count", nb, 0);
+            isog_jfetch_add(j, &j->nv, a.counters, sizeof(uint32_t));
+            if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
+        } break;
+
+        case ISOG_J_NETS_READ: {
+            const uint32_t nb = j->nb, nslots = j->nslots, nv = j->nv;
+            const md_gpu_uint4* bl = j->bl;
+            const uint32_t* slot = j->slot;
+            const isog_field_t* fields = j->fields;
+            j->progress = 0.65f;
+            if (nb > 0) isog_mark(s, "readback: vertex count", nv, 0);
+            if (nb > 0 && isog_prof && j->ordered) {     // BENCHMARK: the bricks given corners, by their corners (not timed)
+                uint32_t* sc = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
+                float* cv = (float*)malloc(sizeof(float) * 125 * ((size_t)nslots + 1));
+                if (sc && cv && isog_read(s, sc, a.scan, sizeof(uint32_t) * (nb + 1)) &&
+                    isog_read(s, cv, a.corners, sizeof(float) * 125 * (size_t)nslots)) {
+                    for (uint32_t b = 0; b < nb; ++b) {
+                        const uint32_t m = bl[b].w;
+                        if (m == 0) continue;
+                        if (sc[b + 1] > sc[b]) { isog_prof->brick_surf++; continue; }
+                        bool in = false;
+                        for (uint32_t f = 0; f < F && !in; ++f) {
+                            const uint32_t fb = (m >> (2 * f)) & 3u;
+                            if (fb == 0) continue;
+                            const float* c = cv + (size_t)(slot[b] + popcnt32((m | (m >> 1)) & 0x55555555u & ((1u << (2 * f)) - 1u))) * 125;
+                            for (uint32_t sh = 0; sh < 2 && !in; ++sh) {
+                                if (!(fb & (1u << sh))) continue;
+                                const float sg = sh == 0 ? 1.0f : -1.0f;
+                                bool all = true;
+                                for (int k = 0; k < 125 && all; ++k) all = sg * c[k] > fields[f].iso;
+                                in = all;
+                            }
+                        }
+                        if (in) isog_prof->brick_in++; else isog_prof->brick_out++;
+                    }
+                }
+                free(sc);
+                free(cv);
+                isog_mark_skip(s);
+            }
+            if (isog_debug) {
+                isog_debug_t* dbg = isog_debug;
+                dbg->num_bricks = nb;
+                dbg->num_slots = nslots;
+                dbg->bricks  = (uint32_t*)malloc(sizeof(md_gpu_uint4) * (nb + 1));
+                dbg->slots   = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
+                dbg->corners = (float*)malloc(sizeof(float) * 125 * ((size_t)nslots + 1));
+                memcpy(dbg->bricks, bl, sizeof(md_gpu_uint4) * nb);
+                memcpy(dbg->slots, slot, sizeof(uint32_t) * nb);
+                isog_read(s, dbg->corners, a.corners, sizeof(float) * 125 * (size_t)nslots);
+                memcpy(dbg->origin, j->origin, sizeof(j->origin));
+                dbg->brick_level = L;
+                isog_mark_skip(s);
+            }
+            free(j->bl);
+            free(j->slot);
+            j->bl = NULL;
+            j->slot = NULL;
+
+            const uint32_t cap_v = nv + 1, cap_q = 3 * nv + 1;
+            j->cap_v = cap_v;
+            j->cap_q = cap_q;
+            a.vpos     = isog_jalloc(j, sizeof(md_gpu_float4) * cap_v);
+            a.vpos_out = isog_jalloc(j, sizeof(md_gpu_float4) * cap_v);
+            a.vnrm     = isog_jalloc(j, sizeof(md_gpu_float4) * cap_v);
+            a.vval     = isog_jalloc(j, sizeof(md_gpu_float4) * cap_v);
+            a.vinfo    = isog_jalloc(j, sizeof(md_gpu_uint4) * cap_v);
+            a.quads    = isog_jalloc(j, sizeof(md_gpu_uint4) * cap_q);
+            a.remap    = isog_jalloc(j, sizeof(uint32_t) * cap_v);
+            a.bucket   = isog_jalloc(j, sizeof(uint32_t) * 192);
+            a.vdone    = isog_jalloc(j, sizeof(uint32_t) * cap_v);
+            if (!a.vpos || !a.vpos_out || !a.vnrm || !a.vval || !a.vinfo || !a.quads || !a.remap || !a.bucket || !a.vdone) {
+                isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow");
+                break;
+            }
+            if (nv > 0) {
+                md_gpu_memset(s, a.cell_vert, 0xFF, sizeof(uint32_t) * 128 * (size_t)nslots);
+                md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 7);     // [7] (dform overflow) kept
+                a.mode = j->ordered ? 3u : 1u;
+                a.cap = cap_v;
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_CELLS], isog_groups(nb), a);
+                isog_mark(s, "cells: emit", nb, nv);
+                a.cap = cap_q;
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_QUADS], isog_groups(nb), a);
+                isog_mark(s, "quads", nb, 0);
+            }
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_NETS, &j->ts);
+
+            // ---- vertices: Newton projection, relaxation; the quad count is read with the final counts
+            if (nv > 0) {
+                isog_args_t v = a;
+                v.count = nv;
+                const md_gpu_grid_t g_vert = md_gpu_grid_for(isog_k[ISOG_K_NEWTON], nv, 1, 1);
+                int ke = set->orbitals_only ? ISOG_K_EVAL1 : ISOG_K_EVAL;
+                const bool geval = !set->orbitals_only && ((isog_eval_v2 && isog_gemm) || a.dform);
+                const uint32_t nfv = set->num_fn;
+                const int kwv = nfv <= 128 ? ISOG_K_GEVAL_W128 : nfv <= 192 ? ISOG_K_GEVAL_W192 : ISOG_K_GEVAL_W256;
+                if (a.dform) {
+                    static const int kde[3] = {ISOG_K_DEVAL, ISOG_K_DEVAL2, ISOG_K_DEVAL3};
+                    int dk = isog_dform_kernel;
+                    while (dk > 0 && !isog_k[kde[dk]]) dk--;
+                    ke = kde[dk];
+                } else if (geval && a.canon && isog_gemm_wide && nfv > (isog_gemm_wide == 2 ? 16u : 64u) && isog_k[kwv]) {
+                    ke = isog_wide_form(kwv);
+                } else if (geval) {
+                    const uint32_t nfn = set->num_fn;
+                    ke = nfn <= 16 ? ISOG_K_GEVAL_F16 : (nfn <= 32 || isog_gemm_t32) ? ISOG_K_GEVAL_F32
+                       : isog_gemm_pipe == 1 ? ISOG_K_GEVAL_F64_P1 : isog_gemm_pipe == 2 ? ISOG_K_GEVAL_F64_P2 : ISOG_K_GEVAL_F64;
+                } else if (!set->orbitals_only && isog_eval_v2) {
+                    const uint32_t nfn = set->num_fn;
+                    ke = nfn <= 8 ? ISOG_K_EVAL_F8 : nfn <= 16 ? ISOG_K_EVAL_F16 : nfn <= 32 ? ISOG_K_EVAL_F32 : ISOG_K_EVAL_F64;
+                }
+                const bool elist = set->orbitals_only && set->num_fn == 1 && set->num_fields == 1 && isog_eval_list;
+                if (elist) ke = ISOG_K_EVAL_LIST1;
+                const bool vwide = (ke >= ISOG_K_GEVAL_W128 && ke <= ISOG_K_GEVAL_W256) || (ke >= ISOG_K_GEVAL_X128 && ke <= ISOG_K_GEVAL_X256) ||
+                                   (ke >= ISOG_K_GEVAL_Y128 && ke <= ISOG_K_GEVAL_Y256);
+                if (!isog_have(ke)) { isog_job_fail(j, "md_gto_iso_gpu_extract: an evaluation kernel is missing"); break; }
+                md_gpu_kernel_t k_eval = isog_k[ke];
+                isog_used(ke);
+                if (isog_prof) {    // BENCHMARK: the boxes of the vertex groups (consecutive vertices), not timed
+                    const uint32_t vg = elist ? 128u : vwide ? 16u : geval ? 32u : set->orbitals_only ? 0u : 64u;
+                    md_gpu_float4* vp = vg ? (md_gpu_float4*)malloc(sizeof(md_gpu_float4) * nv) : NULL;
+                    if (vp && isog_read(s, vp, a.vpos, sizeof(md_gpu_float4) * nv)) {
+                        isog_prof->vgroup_size = vg;
+                        isog_prof_groups(set, &vp[0].x, 4, nv, vg, &isog_prof->vgroup_ao_sum, &isog_prof->vgroup_count);
+                    }
+                    free(vp);
+                    isog_mark_skip(s);
+                }
+                // groups of 32 vertices (the GEMM: 4 channels each, 128 rows), 64 (the register form), 128 (one
+                // orbital from lists) or a thread per vertex
+                const md_gpu_grid_t g_eval = elist ? isog_groups((nv + 127) / 128) : set->orbitals_only ? g_vert
+                                           : isog_groups(vwide ? (nv + 15) / 16 : geval ? (nv + 31) / 32 : (nv + 63) / 64);
+                // Newton steps; converged vertices are flagged and skipped (they no longer move, so their
+                // values stay valid for the final normals)
+                #define ISOG_PROJECT(iters) do {                                               \
+                    md_gpu_memset(s, v.vdone, 0, sizeof(uint32_t) * nv);                       \
+                    for (uint32_t it = 0; it <= (iters); ++it) {                               \
+                        uint32_t act_, grp_;                                                   \
+                        isog_prof_active(s, v.vdone, nv, &act_, &grp_);                        \
+                        MD_GPU_LAUNCH(s, k_eval, g_eval, v);                                   \
+                        isog_mark(s, "vertex eval", act_, grp_);                               \
+                        v.mode = it == (iters) ? 1u : (isog_newton_predict ? 2u : 0u);         \
+                        MD_GPU_LAUNCH(s, isog_k[ISOG_K_NEWTON], g_vert, v);                    \
+                        isog_mark(s, v.mode == 1u ? "vertex normals" : "vertex newton", act_, 0);\
+                    }                                                                          \
+                } while (0)
+                if (isog_relax_first) {
+                    // relaxed on the lattice's own (trilinear) surface, with its normals from iso_cells, then
+                    // projected once: no field evaluation before the projection
+                    for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
+                        MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
+                        isog_mark(s, "relax", nv, 0);
+                        md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
+                        isog_mark(s, "relax: copy", nv, 0);
+                    }
+                    isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &j->ts);
+                    ISOG_PROJECT(desc->project_iterations);
+                    for (int r = 1; r < isog_relax_first && desc->relax_iterations; ++r) {   // EXPERIMENT: polish with the true normals
+                        MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
+                        isog_mark(s, "relax", nv, 0);
+                        md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
+                        isog_mark(s, "relax: copy", nv, 0);
+                        ISOG_PROJECT(3u);
+                    }
+                    isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_PROJECT, &j->ts);
+                } else {
+                    ISOG_PROJECT(desc->project_iterations);
+                    isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_PROJECT, &j->ts);
+                    for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
+                        MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
+                        isog_mark(s, "relax", nv, 0);
+                        md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
+                        isog_mark(s, "relax: copy", nv, 0);
+                        ISOG_PROJECT(3u);
+                    }
+                    isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &j->ts);
+                }
+                #undef ISOG_PROJECT
+                // ---- the final counts: the quads, open edges, overflows
+                isog_jfetch_add(j, j->ctr, a.counters, sizeof(j->ctr));
+                if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
+            } else {
+                memset(j->ctr, 0, sizeof(j->ctr));
+            }
+            j->stage = ISOG_J_COUNTS_READ;
+        } break;
+
+        case ISOG_J_COUNTS_READ: {
+            // ---- regroup per (field, sheet) into the output buffers
+            const uint32_t nv = j->nv, cap_v = j->cap_v, cap_q = j->cap_q;
+            j->progress = 0.92f;
+            uint32_t nq = 0;
+            if (nv > 0) {
+                nq = j->ctr[1] < cap_q ? j->ctr[1] : cap_q;
+                out->open_edges = j->ctr[2];
+                if (j->ctr[7]) { isog_job_fail(j, "md_gto_iso_gpu_extract: more than 2048 shells (or 8192 AOs) reach a group of points (the D form)"); break; }
+                if (j->ctr[3]) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow"); break; }
+                isog_mark(s, "readback: counters", nv, nq);
+            }
+            j->nq = nq;
+            md_gpu_mem_t pos = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * cap_v);
+            md_gpu_mem_t nrm = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * cap_v);
+            md_gpu_mem_t idx = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 6 * ((size_t)nq + 1));
+            out->position = pos.gpu; out->normal = nrm.gpu; out->index = idx.gpu;
+            if (!pos.gpu || !nrm.gpu || !idx.gpu) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow"); break; }
+            if (nv == 0) {
+                isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_OUTPUT, &j->ts);
+                j->stage = ISOG_J_DONE;
+                break;
+            }
+            a.out_pos = out->position; a.out_nrm = out->normal; a.out_idx = out->index;
+            a.count = nv;
+            a.cap = nq;
+            isog_mark(s, "output alloc", nv, nq);
+            md_gpu_memset(s, a.bucket, 0, sizeof(uint32_t) * 192);
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_BCOUNT], md_gpu_grid_for(isog_k[ISOG_K_BCOUNT], nv > nq ? nv : nq, 1, 1), a);
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_BSCAN], md_gpu_grid(1, 1, 1), a);
+            isog_mark(s, "bucket: count, scan", nv, nq);
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_BVERTS], md_gpu_grid_for(isog_k[ISOG_K_BVERTS], nv, 1, 1), a);
+            isog_mark(s, "bucket: vertices", nv, 0);
+            if (nq) MD_GPU_LAUNCH(s, isog_k[ISOG_K_BTRIS], md_gpu_grid_for(isog_k[ISOG_K_BTRIS], nq, 1, 1), a);
+            isog_mark(s, "bucket: triangles", nq, 0);
+            isog_jfetch_add(j, j->bk, a.bucket, sizeof(j->bk));
+            if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
+            j->stage = ISOG_J_BUCKETS_READ;
+        } break;
+
+        case ISOG_J_BUCKETS_READ: {
+            const uint32_t* bk = j->bk;
+            isog_mark(s, "readback: buckets", 0, 0);
+            for (uint32_t k = 0; k < F; ++k) {
+                for (int sh = 0; sh < 2; ++sh) {
+                    const uint32_t i = 2 * k + (uint32_t)sh;
+                    out->vertex_offset[k][sh]   = bk[64 + i];
+                    out->vertex_count_of[k][sh] = bk[i];
+                    out->index_offset[k][sh]    = 6 * bk[96 + i];
+                    out->index_count_of[k][sh]  = 6 * bk[32 + i];
+                }
+            }
+            out->vertex_count = j->nv;
+            out->index_count = 6 * j->nq;
+            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_OUTPUT, &j->ts);
+            j->progress = 0.97f;
+            if (!desc->read_back || out->vertex_count == 0) { j->stage = ISOG_J_DONE; break; }
+            // the mesh to the host, as it is on the device: kept as the mesh's host copy
+            const size_t bv = sizeof(float) * 4 * out->vertex_count, bi = sizeof(uint32_t) * out->index_count;
+            isog_jfetch_add(j, NULL, out->position, bv);
+            isog_jfetch_add(j, NULL, out->normal, bv);
+            isog_jfetch_add(j, NULL, out->index, bi);
+            if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of host-readable memory"); break; }
+            j->fetch_keep = true;
+            j->stage = ISOG_J_MESH_READ;
+        } break;
+
+        case ISOG_J_MESH_READ:
+            j->stage = ISOG_J_DONE;     // isog_jfetch_take kept the buffer and set the host pointers
+            break;
+
+        default:
+            isog_job_fail(j, "md_gto_iso_gpu_extract: invalid job state");
+            break;
+        }
+    }
+#undef a
+    if (j->stage == ISOG_J_DONE) {
+        j->progress = 1.0f;
+        out->seconds_total = md_tick_to_seconds(md_tick_now() - j->t_start);
+    }
+}
+
+md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_desc_t* desc) {
+    const double h = desc ? iso_lattice_float(desc->cell_size) : 0.0;
+    if (!s || !set || !desc || !(h > 0.0)) {
+        MD_LOG_ERROR("md_gto_iso_gpu_extract: invalid arguments");
+        return NULL;
+    }
+    if (!isog_kernels_ready()) return NULL;
     {   // EXPERIMENT: the cutoff and the screening as switched
         const int screen = isog_coef_screen && set->orbitals_only && set->sh_cmax;
         if (set->eps_exp != isog_eval_eps_exp || set->screen != screen) isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, isog_eval_eps_exp, screen);
     }
-    memset(out, 0, sizeof(*out));
-    out->num_fields = set->num_fields;
-    isog_prof_begin(s);
-    const md_tick_t t_start = md_tick_now();
-    md_tick_t ts = t_start;
     const uint32_t F = set->num_fields;
-
     // root: the union of every field's surface box, as on the CPU (the same lattice for one field)
     double lo[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, hi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
     isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];
     memset(fields, 0, sizeof(fields));     // all 16 uploaded: unrolled loops may read past num_fields
     uint32_t root_mask = 0;
     for (uint32_t k = 0; k < F; ++k) {
-        if (!(desc->iso[k] > 0.0)) { MD_LOG_ERROR("md_gto_iso_gpu_extract: iso[%u] must be positive", k); return false; }
+        if (!(desc->iso[k] > 0.0)) { MD_LOG_ERROR("md_gto_iso_gpu_extract: iso[%u] must be positive", k); return NULL; }
         double bl[3], bh[3];
         iso_surface_box(&set->host[k], desc->iso[k], bl, bh);
         for (int a = 0; a < 3; ++a) { lo[a] = fmin(lo[a], bl[a]); hi[a] = fmax(hi[a], bh[a]); }
@@ -1225,50 +2007,61 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     }
     double origin[3];
     const int L = iso_root_box(lo, hi, 4.0 * h, origin);
-    if (L > 8) { MD_LOG_ERROR("md_gto_iso_gpu_extract: lattice too large for cell size %g", h); return false; }
+    if (L > 8) { MD_LOG_ERROR("md_gto_iso_gpu_extract: lattice too large for cell size %g", h); return NULL; }
+
+    md_gto_iso_gpu_job_t* j = (md_gto_iso_gpu_job_t*)calloc(1, sizeof(md_gto_iso_gpu_job_t));
+    if (!j) return NULL;
+    j->s = s;
+    j->set = set;
+    j->desc = *desc;
+    j->desc.cell_size = h;
+    j->F = F;
+    j->L = L;
+    memcpy(j->origin, origin, sizeof(origin));
+    memcpy(j->fields, fields, sizeof(fields));
+    j->out.num_fields = F;
+    isog_prof_begin(s);
+    j->t_start = j->ts = md_tick_now();
     isog_mark(s, "host: root box", F, (uint32_t)L);
+    memcpy(j->out.origin, origin, sizeof(origin));
+    j->out.cell_size = h;
+    j->out.cells_per_axis = 4u << L;
 
-    memcpy(out->origin, origin, sizeof(origin));
-    out->cell_size = h;
-    out->cells_per_axis = 4u << L;
-
-    md_gpu_temp_t scope = md_gpu_temp_begin(s);
-    bool ok = true;
-    isog_args_t a = {0};
-    a.origin_h   = (md_gpu_float4){(float)origin[0], (float)origin[1], (float)origin[2], (float)h};
-    a.num_shells = set->num_shells;
-    a.num_ao     = set->num_ao;
-    a.num_fn     = set->num_fn;
-    a.fn_stride  = set->fn_stride;
-    a.num_fields = F;
-    a.brick_level = (uint32_t)L;
-    a.step_max   = (float)(0.5 * h);
-    a.lambda     = 0.5f;
-    a.tol        = (float)(pow(10.0, -(double)isog_newton_tol_exp) * h);
-    a.shells = set->shells.gpu; a.prims = set->prims.gpu; a.crit = set->crit.gpu;
-    a.ao_nrm = set->ao_nrm.gpu; a.ao_ijk = set->ao_ijk.gpu; a.C = set->C.gpu; a.terms = set->terms.gpu;
-    a.fn_tail = set->fn_tail.gpu;
-    a.wts = set->wts.gpu;
-    a.canon = (set->canon && isog_canon_terms) ? 1u : 0u;
-    a.dmat = set->dmat.gpu;
-    a.fdmat = set->fdmat.gpu;
-    a.num_dmat = set->num_dmat;
-    a.dform = ((isog_dform || set->factorless) && set->num_dmat > 0) ? 1u : 0u;
+    isog_args_t* a = &j->a;
+    a->origin_h   = (md_gpu_float4){(float)origin[0], (float)origin[1], (float)origin[2], (float)h};
+    a->num_shells = set->num_shells;
+    a->num_ao     = set->num_ao;
+    a->num_fn     = set->num_fn;
+    a->fn_stride  = set->fn_stride;
+    a->num_fields = F;
+    a->brick_level = (uint32_t)L;
+    a->step_max   = (float)(0.5 * h);
+    a->lambda     = 0.5f;
+    a->tol        = (float)(pow(10.0, -(double)isog_newton_tol_exp) * h);
+    a->shells = set->shells.gpu; a->prims = set->prims.gpu; a->crit = set->crit.gpu;
+    a->ao_nrm = set->ao_nrm.gpu; a->ao_ijk = set->ao_ijk.gpu; a->C = set->C.gpu; a->terms = set->terms.gpu;
+    a->fn_tail = set->fn_tail.gpu;
+    a->wts = set->wts.gpu;
+    a->canon = (set->canon && isog_canon_terms) ? 1u : 0u;
+    a->dmat = set->dmat.gpu;
+    a->fdmat = set->fdmat.gpu;
+    a->num_dmat = set->num_dmat;
+    a->dform = ((isog_dform || set->factorless) && set->num_dmat > 0) ? 1u : 0u;
     // the corners in the D form: with the D-form evaluation, or alone (GTO_ISO_DFORM_CORNERS)
-    const bool cdform = a.dform || (isog_dform_corners && set->num_dmat > 0 && !set->orbitals_only);
-    a.diag = (uint32_t)isog_diag;
-    a.drs = set->drs.gpu;
-    a.dprop = set->dprop.gpu;
+    j->cdform = a->dform || (isog_dform_corners && set->num_dmat > 0 && !set->orbitals_only);
+    a->diag = (uint32_t)isog_diag;
+    a->drs = set->drs.gpu;
+    a->dprop = set->dprop.gpu;
     // the D form's octree bounds the matrix's density, within the factors' slack of what the factored
     // evaluation gives (the slack is in the bound): either evaluation goes with it
-    const bool odform = set->num_dmat > 0 && (isog_dform_octree || set->factorless);
+    j->odform = set->num_dmat > 0 && (isog_dform_octree || set->factorless);
     // APPROXIMATE: seed and flood (GTO_ISO_FLOOD), in the point-list form of the corners only: every field
     // (2), or sets of densities whose maxima are at the atoms (md_gto_iso_field_set_maxima_at_atoms) and
     // whose every weight is >= 0 (1): each piece of their surfaces holds an atom, whose brick is a seed
-    const bool clist = (isog_corners_v2 && isog_corners_list) || cdform;    // the D form's corners are in list form only
+    j->clist = (isog_corners_v2 && isog_corners_list) || j->cdform;    // the D form's corners are in list form only
     // (DIAGNOSTIC modes make no real corners, so they flood everything or nothing: off with them)
-    bool flood = clist && !isog_diag && isog_flood == 2;
-    if (clist && !isog_diag && isog_flood == 1) {
+    bool flood = j->clist && !isog_diag && isog_flood == 2;
+    if (j->clist && !isog_diag && isog_flood == 1) {
         flood = true;
         for (uint32_t k = 0; k < F && flood; ++k) {
             const md_gto_iso_field_t* fk = set->src[k];
@@ -1277,559 +2070,89 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
             for (int t = 0; t < dk->num_terms && flood; ++t) flood = dk->terms[t].a == dk->terms[t].b && dk->terms[t].w >= 0.0;
         }
     }
-    a.fields = isog_temp(s, sizeof(fields));
-    md_gpu_upload(s, a.fields, fields, sizeof(fields));
-    a.counters = isog_temp(s, sizeof(uint32_t) * 8);
-    a.grid_out = isog_temp(s, sizeof(uint32_t) * 4);
-    md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 8);
-
-    // ---- octree, one launch per level sized by the previous level's count; retried with more room
-    uint32_t cap = 1u << 18, nb = 0, ctr[8] = {0};
-    md_gpu_addr_t bricks = 0;
-    for (int attempt = 0; attempt < 4; ++attempt) {
-        md_gpu_addr_t nodes[2] = {isog_temp(s, sizeof(md_gpu_uint4) * cap), isog_temp(s, sizeof(md_gpu_uint4) * cap)};
-        md_gpu_addr_t counts = isog_temp(s, sizeof(uint32_t) * (L + 2));
-        if (!nodes[0] || !nodes[1] || !counts) { ok = false; break; }
-        md_gpu_memset(s, counts, 0, sizeof(uint32_t) * (L + 2));
-        md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 8);
-        // GTO_ISO_SKIP_BRICK_TEST=1 (the default) keeps every child of the last tested level as a brick
-        // (with its parent's sheet bits): the corners decide, which costs less than the bound. A superset
-        // of the bricks, so no cell is missed.
-        const int Lt = isog_skip_brick_test ? L - 1 : L;
-        // the first tested level l0, its nodes every node of the levels above (siblings together, as the
-        // kernels append them), with the root's sheet bits
-        const int l0 = Lt > 0 ? (isog_octree_start < Lt ? isog_octree_start : Lt) : 0;
-        {
-            md_gpu_uint4 lv[512];
-            uint32_t nl = 1;
-            lv[0] = (md_gpu_uint4){0, 0, 0, root_mask};
-            for (int l = 0; l < l0; ++l) {
-                md_gpu_uint4 nx[512];
-                for (uint32_t i = 0; i < nl; ++i)
-                    for (uint32_t c = 0; c < 8; ++c)
-                        nx[8 * i + c] = (md_gpu_uint4){lv[i].x * 2 + (c & 1), lv[i].y * 2 + ((c >> 1) & 1), lv[i].z * 2 + (c >> 2), root_mask};
-                nl *= 8;
-                memcpy(lv, nx, sizeof(md_gpu_uint4) * nl);
-            }
-            md_gpu_upload(s, nodes[l0 & 1], lv, sizeof(md_gpu_uint4) * nl);
-            md_gpu_upload(s, counts + sizeof(uint32_t) * l0, &nl, sizeof(nl));
-        }
-        isog_mark(s, "octree setup", 0, 0);
-        uint32_t level_step[10];
-        for (int l = l0; l <= Lt; ++l) {
-            isog_args_t o = a;
-            o.level = (uint32_t)l;
-            o.nodes_in  = nodes[l & 1];
-            o.nodes_out = nodes[(l + 1) & 1];
-            o.count_in  = counts + sizeof(uint32_t) * l;
-            o.count_out = counts + sizeof(uint32_t) * (l + 1);
-            o.cap = cap;
-            o.grid_mul = 1;
-            o.grid_div = 0;
-            o.mode = ((isog_corners_v2 && isog_corners_list) || cdform) ? 1u : 0u;     // the bricks keep their sibling slots
-            MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), o);
-            int ko = odform ? ISOG_K_ODFORM : (isog_octree_small && set->num_fn <= 4) ? ISOG_K_OCTREE_SMALL : ISOG_K_OCTREE;
-            if (ko == ISOG_K_OCTREE_SMALL && !isog_k[ko]) ko = ISOG_K_OCTREE;
-            if (ko == ISOG_K_ODFORM && l > 0 && isog_octree8 && isog_k[ISOG_K_ODFORM8]) {
-                ko = ISOG_K_ODFORM8;    // a group per 8 siblings (below the root they come 8 at a time)
-                o.grid_div = 8;
-            }
-            if (!isog_have(ko)) { ok = false; break; }
-            md_gpu_launch_indirect(s, isog_k[ko], a.grid_out, &o, sizeof(o));
-            isog_used(ko);
-            level_step[l] = isog_mark(s, "octree level", 0, 0);
-        }
-        if (isog_prof) {    // nodes per level: in, and kept (children appended, 8 per kept node above the bricks)
-            uint32_t cn[12] = {0};
-            isog_read(s, cn, counts, sizeof(uint32_t) * (L + 2));
-            for (int l = l0; l <= Lt; ++l) isog_mark_set(level_step[l], cn[l], l < L ? cn[l + 1] / 8 : cn[l + 1]);
-            isog_mark_skip(s);
-        }
-        bricks = nodes[(Lt + 1) & 1];
-        isog_read(s, &nb, counts + sizeof(uint32_t) * (Lt + 1), sizeof(nb));
-        isog_read(s, ctr, a.counters, sizeof(ctr));
-        isog_mark(s, "readback: brick count", nb, 0);
-        if (!ctr[3] && nb <= cap) break;
-        cap *= 4;
-        nb = 0;
+    j->flood = flood;
+    j->ordered = isog_ordered != 0;
+    a->fields = isog_jalloc(j, sizeof(fields));
+    a->counters = isog_jalloc(j, sizeof(uint32_t) * 8);
+    a->grid_out = isog_jalloc(j, sizeof(uint32_t) * 4);
+    if (!a->fields || !a->counters || !a->grid_out) {
+        md_gto_iso_gpu_job_end(j, NULL);
+        MD_LOG_ERROR("md_gto_iso_gpu_extract: out of device memory");
+        return NULL;
     }
-    if (!ok || ctr[3]) {
-        md_gpu_temp_end(s, scope);
-        MD_LOG_ERROR("md_gto_iso_gpu_extract: octree overflow or out of device memory");
+    md_gpu_upload(s, a->fields, fields, sizeof(fields));
+    md_gpu_memset(s, a->counters, 0, sizeof(uint32_t) * 8);
+    j->root_mask = root_mask;
+    j->cap = 1u << 18;
+    j->stage = ISOG_J_OCTREE;
+    isog_job_step(j);        // the GPU starts at once
+    return j;
+}
+
+md_gto_iso_gpu_job_status_t md_gto_iso_gpu_job_poll(md_gto_iso_gpu_job_t* j, double budget_ms) {
+    if (!j) return MD_GTO_ISO_GPU_JOB_FAILED;
+    const md_tick_t t0 = md_tick_now();
+    for (;;) {
+        if (j->stage == ISOG_J_DONE) return MD_GTO_ISO_GPU_JOB_DONE;
+        if (j->stage == ISOG_J_FAILED) return MD_GTO_ISO_GPU_JOB_FAILED;
+        if (j->fetching) {
+            if (!md_gpu_sync_is_complete(j->fetch_sync)) {
+                if (budget_ms < 0.0) {
+                    md_gpu_sync_wait(j->fetch_sync);
+                } else if (md_tick_to_seconds(md_tick_now() - t0) * 1e3 >= budget_ms) {
+                    return MD_GTO_ISO_GPU_JOB_RUNNING;
+                } else {
+                    continue;
+                }
+            }
+            if (j->fetch_keep) {    // the mesh's host copy
+                const size_t bv = sizeof(float) * 4 * j->out.vertex_count;
+                j->out.host_mem = j->fetch_mem.gpu;
+                j->out.host_position = (const float*)j->fetch_mem.cpu;
+                j->out.host_normal = (const float*)((const char*)j->fetch_mem.cpu + ((bv + 15) & ~(size_t)15));
+                j->out.host_index = (const uint32_t*)((const char*)j->fetch_mem.cpu + 2 * ((bv + 15) & ~(size_t)15));
+                j->num_fetch = 0;       // no destinations: the buffer is the mesh's now
+            }
+            isog_jfetch_take(j);
+        }
+        isog_job_step(j);
+    }
+}
+
+float md_gto_iso_gpu_job_progress(const md_gto_iso_gpu_job_t* j) {
+    return j ? j->progress : 0.0f;
+}
+
+bool md_gto_iso_gpu_job_end(md_gto_iso_gpu_job_t* j, md_gto_iso_gpu_mesh_t* out) {
+    if (!j) {
+        if (out) memset(out, 0, sizeof(*out));
         return false;
     }
-    isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_OCTREE, &ts);
+    const bool done = j->stage == ISOG_J_DONE;
+    if (done && out) {
+        *out = j->out;
+    } else {
+        md_gto_iso_gpu_mesh_free(j->s, &j->out);
+        if (out) memset(out, 0, sizeof(*out));
+    }
+    if (j->fetching && j->fetch_mem.gpu) md_gpu_free(j->s, j->fetch_mem.gpu);   // after the copy in flight
+    for (uint32_t i = 0; i < j->num_alloc; ++i) md_gpu_free(j->s, j->alloc[i]);
+    free(j->bl);
+    free(j->slot);
+    free(j);
+    return done && out;
+}
 
-    // ---- the brick list on the host: one corner slot per (brick, field with a sheet bit)
-    md_gpu_uint4* bl = (md_gpu_uint4*)malloc(sizeof(md_gpu_uint4) * (nb + 1));
-    uint32_t* slot = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
-    isog_read(s, bl, bricks, sizeof(md_gpu_uint4) * nb);
-    if (isog_ordered && nb > 1 && isog_sort_bricks(bl, nb)) md_gpu_upload(s, bricks, bl, sizeof(md_gpu_uint4) * nb);
-    uint32_t nslots = 0, nkept = 0;
-    for (uint32_t b = 0; b < nb; ++b) {
-        slot[b] = nslots;
-        const uint32_t m = bl[b].w;
-        nslots += popcnt32((m | (m >> 1)) & 0x55555555u);
-        nkept += m != 0;    // the bricks may keep their sibling slots: rejected ones have no sheet bits
+bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_desc_t* desc, md_gto_iso_gpu_mesh_t* out) {
+    if (!out) {
+        MD_LOG_ERROR("md_gto_iso_gpu_extract: invalid arguments");
+        return false;
     }
-    out->num_bricks = nkept;
-    out->num_corner_slots = nslots;
-    isog_mark(s, "readback: bricks, slots", nb, nslots);
-    if (isog_prof) {    // BENCHMARK: the AOs that reach each brick (what the corner kernels list), not timed
-        uint64_t sum = 0, sq = 0;
-        uint32_t mx = 0;
-        const float he = (float)h;
-        for (uint32_t b = 0; b < nb; ++b) {
-            if (bl[b].w == 0) continue;
-            const float blo[3] = {(float)origin[0] + (float)(bl[b].x * 4u) * he, (float)origin[1] + (float)(bl[b].y * 4u) * he, (float)origin[2] + (float)(bl[b].z * 4u) * he};
-            const float bhi[3] = {blo[0] + 4.0f * he, blo[1] + 4.0f * he, blo[2] + 4.0f * he};
-            const uint32_t n = isog_prof_box_aos(set, blo, bhi);
-            sum += n;
-            sq += (uint64_t)n * n;
-            mx = n > mx ? n : mx;
-        }
-        isog_prof->brick_ao_sum = sum;
-        isog_prof->brick_ao_sq = sq;
-        isog_prof->brick_ao_max = mx;
-        isog_prof->num_ao = set->num_ao;
-        isog_prof->num_fn = set->num_fn;
-        isog_prof->fn_stride = set->fn_stride;
-        isog_prof->orbitals_only = set->orbitals_only;
-        isog_mark_skip(s);
-    }
-    a.bricks = bricks;
-    a.count = nb;
-    a.brick_slot = isog_temp(s, sizeof(uint32_t) * (nb + 1));
-    md_gpu_upload(s, a.brick_slot, slot, sizeof(uint32_t) * nb);
-    uint32_t hcap = 64;
-    while (hcap < 2 * nb) hcap <<= 1;
-    a.hash_mask = hcap - 1;
-    a.hash_keys = isog_temp(s, sizeof(uint32_t) * hcap);
-    a.hash_vals = isog_temp(s, sizeof(uint32_t) * hcap);
-    a.corners   = isog_temp(s, sizeof(float) * 125 * ((size_t)nslots + 1));
-    a.cell_vert = isog_temp(s, sizeof(uint32_t) * 128 * ((size_t)nslots + 1));
-    a.plist = clist ? isog_temp(s, sizeof(uint32_t) * 125 * ((size_t)nb + 1)) : 0;
-    // per brick: counts, then offsets (ordered lists). Allocated either way: llvmpipe may load it in a
-    // branch not taken
-    a.scan  = isog_temp(s, sizeof(uint32_t) * ((size_t)nb + 1));
-    a.bstate = isog_temp(s, sizeof(uint32_t) * ((size_t)nb + 1));     // flood: per brick, its round
-    if (!a.scan || !a.bstate) ok = false;
-    const bool ordered = isog_ordered != 0;
-    if (!a.brick_slot || !a.hash_keys || !a.hash_vals || !a.corners || !a.cell_vert || (clist && !a.plist)) ok = false;
-    if (ok && nb > 0) {
-        md_gpu_memset(s, a.hash_keys, 0, sizeof(uint32_t) * hcap);
-        MD_GPU_LAUNCH(s, isog_k[ISOG_K_HASH], md_gpu_grid_for(isog_k[ISOG_K_HASH], nb, 1, 1), a);
-        isog_mark(s, "hash", nb, hcap);
-        if (clist) {
-            // the points to evaluate, listed brick by brick; then 256 of them per group
-            const uint32_t nfn = set->num_fn;
-            // APPROXIMATE: seed and flood (GTO_ISO_FLOOD): pass 0 the bricks' corners, then the seeds (and the
-            // bricks holding an atom), then round by round the bricks across faces with a sign change; else one
-            // pass over every brick
-            uint32_t flood_rounds = 0, flood_bricks = 0, points_all = 0;
-            for (uint32_t pass = 0; ok; ++pass) {
-                md_gpu_memset(s, a.counters + sizeof(uint32_t) * 5, 0, sizeof(uint32_t));
-                isog_args_t ap = a;
-                ap.mode = isog_shared_corners ? 1u : 0u;
-                if (flood) { ap.mode |= pass == 0 ? 16u : 8u; ap.level = pass; }
-                if (ordered) {
-                    // in the order of the bricks: the counts, their prefix sum, then the points at the offsets
-                    ap.mode |= 2u;
-                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_POINTS], isog_groups(nb), ap);
-                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_SCAN], md_gpu_grid(1, 1, 1), ap);
-                    isog_used(ISOG_K_SCAN);
-                    ap.mode = (ap.mode & ~2u) | 4u;
-                }
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_POINTS], isog_groups(nb), ap);
-                isog_mark(s, "corners: point list", nb, 0);
-                // one function: a point per thread (iso_corners_list_f1); more: the tiled GEMM, 128 points
-                // per group (iso_gcorners_f*), or the register form, 256 points per group
-                // densities as matrices: iso_dcorners, 128 points per group
-                const bool one = nfn == 1 && F == 1;
-                const bool gemm = (isog_gemm || cdform) && !one;
-                // canonical sets of more than 64 functions: the wide GEMM, 64 points per group
-                const int kw = nfn <= 128 ? ISOG_K_GCORN_W128 : nfn <= 192 ? ISOG_K_GCORN_W192 : ISOG_K_GCORN_W256;
-                const bool wide = gemm && !cdform && a.canon && isog_gemm_wide && nfn > (isog_gemm_wide == 2 ? 16u : 64u) && isog_k[kw];
-                static const int kdc[3] = {ISOG_K_DCORN, ISOG_K_DCORN2, ISOG_K_DCORN3};
-                int dk = isog_dform_kernel;
-                while (dk > 0 && !isog_k[kdc[dk]]) dk--;        // a D form kernel this device could make
-                const int kc = one ? ((isog_corners_v4 && isog_k[ISOG_K_CLIST_F1V4]) ? ISOG_K_CLIST_F1V4 : ISOG_K_CLIST_F1)
-                             : cdform ? kdc[dk]
-                             : wide ? isog_wide_form(kw)
-                             : gemm ? (nfn <= 16 ? ISOG_K_GCORN_F16 : (nfn <= 32 || isog_gemm_t32) ? ISOG_K_GCORN_F32
-                                       : isog_gemm_pipe == 1 ? ISOG_K_GCORN_F64_P1 : isog_gemm_pipe == 2 ? ISOG_K_GCORN_F64_P2 : ISOG_K_GCORN_F64)
-                             : (nfn <= 8 ? ISOG_K_CLIST_F8 : nfn <= 16 ? ISOG_K_CLIST_F16 : nfn <= 32 ? ISOG_K_CLIST_F32 : ISOG_K_CLIST_F64);
-                if (!isog_have(kc)) ok = false;
-                isog_args_t ac = a;
-                ac.count_in = a.counters + sizeof(uint32_t) * 5;
-                ac.cap = 0;
-                ac.grid_mul = 1;
-                ac.grid_div = wide ? 64 : gemm ? 128 : 256;
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), ac);
-                md_gpu_launch_indirect(s, isog_k[kc], a.grid_out, &ac, sizeof(ac));
-                isog_used(kc);
-                uint32_t fc = 0;
-                const char* kn = "";
-                switch (kc) {
-                    case ISOG_K_CLIST_F1:  fc = 1;  kn = "corners (list f1)"; break;
-                    case ISOG_K_CLIST_F1V4: fc = 1; kn = "corners (list f1 x4)"; break;
-                    case ISOG_K_CLIST_F8:  fc = 8;  kn = "corners (list f8)"; break;
-                    case ISOG_K_CLIST_F16: fc = 16; kn = "corners (list f16)"; break;
-                    case ISOG_K_CLIST_F32: fc = 32; kn = "corners (list f32)"; break;
-                    case ISOG_K_CLIST_F64: fc = 64; kn = "corners (list f64)"; break;
-                    case ISOG_K_GCORN_F16: fc = 16; kn = "corners (gemm f16)"; break;
-                    case ISOG_K_GCORN_F32: fc = 32; kn = "corners (gemm f32)"; break;
-                    case ISOG_K_DCORN:     fc = 0;  kn = "corners (dform)"; break;
-                    case ISOG_K_DCORN2:    fc = 0;  kn = "corners (dform2)"; break;
-                    case ISOG_K_DCORN3:    fc = 0;  kn = "corners (dform3)"; break;
-                    case ISOG_K_GCORN_F64_P1: fc = 64; kn = "corners (gemm f64 p1)"; break;
-                    case ISOG_K_GCORN_F64_P2: fc = 64; kn = "corners (gemm f64 p2)"; break;
-                    case ISOG_K_GCORN_W128: fc = 128; kn = "corners (gemm w128)"; break;
-                    case ISOG_K_GCORN_W192: fc = 192; kn = "corners (gemm w192)"; break;
-                    case ISOG_K_GCORN_W256: fc = 256; kn = "corners (gemm w256)"; break;
-                    case ISOG_K_GCORN_X128: fc = 128; kn = "corners (gemm x128)"; break;
-                    case ISOG_K_GCORN_X192: fc = 192; kn = "corners (gemm x192)"; break;
-                    case ISOG_K_GCORN_X256: fc = 256; kn = "corners (gemm x256)"; break;
-                    case ISOG_K_GCORN_Y128: fc = 128; kn = "corners (gemm y128)"; break;
-                    case ISOG_K_GCORN_Y192: fc = 192; kn = "corners (gemm y192)"; break;
-                    case ISOG_K_GCORN_Y256: fc = 256; kn = "corners (gemm y256)"; break;
-                    default:               fc = 64; kn = "corners (gemm f64)"; break;
-                }
-                if (isog_prof) isog_prof->corner_cols = fc ? fc * ((nfn + fc - 1) / fc) : 0;
-                const uint32_t ck = isog_mark(s, kn, nkept, nslots);
-                if (isog_prof && flood) {   // aux: the lattice points evaluated, summed over the passes
-                    uint32_t c8[8];
-                    isog_read(s, c8, a.counters, sizeof(c8));
-                    points_all += c8[5];
-                    isog_mark_set(ck, nkept, c8[5]);
-                    isog_prof->corner_points = points_all;
-                    isog_mark_skip(s);
-                } else if (isog_prof) {    // aux: the lattice points evaluated
-                    uint32_t c8[8];
-                    isog_read(s, c8, a.counters, sizeof(c8));
-                    isog_mark_set(ck, nkept, c8[5]);
-                    isog_prof->corner_points = c8[5];
-                    // the boxes of the groups the corner kernel takes (consecutive points of the list)
-                    const uint32_t np = c8[5];
-                    uint32_t* pl = (uint32_t*)malloc(sizeof(uint32_t) * (np + 1));
-                    float* px = (float*)malloc(sizeof(float) * 3 * (np + 1));
-                    if (pl && px && np > 0 && isog_read(s, pl, a.plist, sizeof(uint32_t) * np)) {
-                        for (uint32_t i = 0; i < np; ++i) {
-                            const uint32_t b = pl[i] >> 7, k = (pl[i] & 127u) < 124u ? (pl[i] & 127u) : 124u;
-                            const uint32_t g[3] = {bl[b].x * 4u + k % 5u, bl[b].y * 4u + (k / 5u) % 5u, bl[b].z * 4u + k / 25u};
-                            for (int ax = 0; ax < 3; ++ax) px[3 * i + ax] = (float)origin[ax] + (float)g[ax] * (float)h;
-                        }
-                        isog_prof->cgroup_size = wide ? 64u : gemm ? 128u : 256u;
-                        isog_prof_groups(set, px, 3, np, isog_prof->cgroup_size, &isog_prof->cgroup_ao_sum, &isog_prof->cgroup_count);
-                    }
-                    free(pl);
-                    free(px);
-                    isog_mark_skip(s);
-                }
-                if (isog_diag && !flood) md_gpu_memset(s, a.corners, 0, sizeof(float) * 125 * (size_t)nslots);   // DIAGNOSTIC: no surface
-                if (isog_shared_corners) {
-                    isog_args_t af = a;
-                    af.mode = flood ? (pass == 0 ? 16u : 8u) : 0u;
-                    af.level = pass;
-                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_CORNERS_FILL], isog_groups(nb), af);
-                    isog_mark(s, "corners: fill shared", nb, 0);
-                }
-                if (!flood) break;
-                // the next round: the seeds (pass 0), or the bricks across this round's faces with a sign change
-                md_gpu_memset(s, a.counters + sizeof(uint32_t) * 6, 0, sizeof(uint32_t));
-                isog_args_t ar = a;
-                ar.level = pass;
-                if (pass == 0) {
-                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_FSEED], md_gpu_grid((nb + 63) / 64, 1, 1), ar);
-                    isog_used(ISOG_K_FSEED);
-                    if (isog_flood_atoms) {
-                        MD_GPU_LAUNCH(s, isog_k[ISOG_K_FATOMS], md_gpu_grid((set->num_shells + 63) / 64, 1, 1), ar);
-                        isog_used(ISOG_K_FATOMS);
-                    }
-                } else {
-                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_FFACE], isog_groups(nb), ar);
-                    isog_used(ISOG_K_FFACE);
-                }
-                uint32_t next = 0;
-                isog_read(s, &next, a.counters + sizeof(uint32_t) * 6, sizeof(next));
-                isog_mark(s, pass == 0 ? "flood: seeds" : "flood: faces", nb, next);
-                flood_bricks += next;
-                if (next == 0 || pass >= 64) break;
-                flood_rounds++;
-            }
-            if (flood && ok) {
-                // the bricks no round reached: no cells (and the host's list says so, for the profile)
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_FFINISH], md_gpu_grid((nb + 63) / 64, 1, 1), a);
-                isog_used(ISOG_K_FFINISH);
-                if (isog_prof || isog_debug) isog_read(s, bl, a.bricks, sizeof(md_gpu_uint4) * nb);   // the profile's and the tests' only
-                isog_mark(s, "flood: finish", flood_bricks, flood_rounds);
-                if (isog_diag) md_gpu_memset(s, a.corners, 0, sizeof(float) * 125 * (size_t)nslots);   // DIAGNOSTIC: no surface
-            }
-        } else if (isog_corners_v2) {
-            // the function columns in registers: all of the set's, or tiles of 64
-            const uint32_t nfn = set->num_fn;
-            const int kc = (nfn == 1 && F == 1) ? ISOG_K_CORNERS_F1 : nfn <= 8 ? ISOG_K_CORNERS_F8 : nfn <= 16 ? ISOG_K_CORNERS_F16
-                         : nfn <= 32 ? ISOG_K_CORNERS_F32 : ISOG_K_CORNERS_F64;
-            isog_args_t ac = a;
-            ac.mode = isog_shared_corners ? 1u : 0u;
-            MD_GPU_LAUNCH(s, isog_k[kc], isog_groups(nb), ac);
-            isog_used(kc);
-            static const uint32_t kcols[] = {1, 8, 16, 32, 64};
-            if (isog_prof) isog_prof->corner_cols = kcols[kc - ISOG_K_CORNERS_F1] * ((nfn + kcols[kc - ISOG_K_CORNERS_F1] - 1) / kcols[kc - ISOG_K_CORNERS_F1]);
-            static const char* kname[] = {"corners (f1)", "corners (f8)", "corners (f16)", "corners (f32)", "corners (f64)"};
-            const uint32_t ck = isog_mark(s, kname[kc - ISOG_K_CORNERS_F1], nkept, nslots);
-            if (isog_prof) {    // aux: the lattice points evaluated (of 125 per brick)
-                uint32_t c8[8];
-                isog_read(s, c8, a.counters, sizeof(c8));
-                isog_mark_set(ck, nkept, c8[5]);
-                isog_prof->corner_points = c8[5];
-                isog_mark_skip(s);
-            }
-            if (isog_shared_corners) {
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_CORNERS_FILL], isog_groups(nb), a);
-                isog_mark(s, "corners: fill shared", nb, 0);
-            }
-        } else {
-            MD_GPU_LAUNCH(s, isog_k[set->orbitals_only ? ISOG_K_CORNERS1 : ISOG_K_CORNERS], isog_groups(nb), a);
-            isog_used(set->orbitals_only ? ISOG_K_CORNERS1 : ISOG_K_CORNERS);
-            if (isog_prof) isog_prof->corner_cols = set->orbitals_only ? set->num_fn : set->fn_stride;
-            isog_mark(s, set->orbitals_only ? "corners (orbital)" : "corners (gemm)", nb, nslots);
-        }
-    }
-    isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &ts);
-
-    // ---- Surface Nets: count, then size the vertex buffers and emit
-    uint32_t nv = 0, nq = 0;
-    if (ok && nb > 0) {
-        a.mode = ordered ? 2u : 0u;     // bit 2: the brick's count into scan, for vertices in the order of the bricks
-        md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 7);     // [7] (dform overflow) kept
-        MD_GPU_LAUNCH(s, isog_k[ISOG_K_CELLS], isog_groups(nb), a);
-        if (ordered) {
-            MD_GPU_LAUNCH(s, isog_k[ISOG_K_SCAN], md_gpu_grid(1, 1, 1), a);
-            isog_used(ISOG_K_SCAN);
-        }
-        isog_mark(s, "cells: count", nb, 0);
-        isog_read(s, &nv, a.counters, sizeof(nv));
-        isog_mark(s, "readback: vertex count", nv, 0);
-        if (isog_prof && ordered) {     // BENCHMARK: the bricks given corners, by their corners (not timed)
-            uint32_t* sc = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
-            float* cv = (float*)malloc(sizeof(float) * 125 * ((size_t)nslots + 1));
-            if (sc && cv && isog_read(s, sc, a.scan, sizeof(uint32_t) * (nb + 1)) &&
-                isog_read(s, cv, a.corners, sizeof(float) * 125 * (size_t)nslots)) {
-                for (uint32_t b = 0; b < nb; ++b) {
-                    const uint32_t m = bl[b].w;
-                    if (m == 0) continue;
-                    if (sc[b + 1] > sc[b]) { isog_prof->brick_surf++; continue; }
-                    bool in = false;
-                    for (uint32_t f = 0; f < F && !in; ++f) {
-                        const uint32_t fb = (m >> (2 * f)) & 3u;
-                        if (fb == 0) continue;
-                        const float* c = cv + (size_t)(slot[b] + popcnt32((m | (m >> 1)) & 0x55555555u & ((1u << (2 * f)) - 1u))) * 125;
-                        for (uint32_t sh = 0; sh < 2 && !in; ++sh) {
-                            if (!(fb & (1u << sh))) continue;
-                            const float sg = sh == 0 ? 1.0f : -1.0f;
-                            bool all = true;
-                            for (int k = 0; k < 125 && all; ++k) all = sg * c[k] > fields[f].iso;
-                            in = all;
-                        }
-                    }
-                    if (in) isog_prof->brick_in++; else isog_prof->brick_out++;
-                }
-            }
-            free(sc);
-            free(cv);
-            isog_mark_skip(s);
-        }
-    }
-    if (isog_debug) {
-        isog_debug_t* dbg = isog_debug;
-        dbg->num_bricks = nb;
-        dbg->num_slots = nslots;
-        dbg->bricks  = (uint32_t*)malloc(sizeof(md_gpu_uint4) * (nb + 1));
-        dbg->slots   = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
-        dbg->corners = (float*)malloc(sizeof(float) * 125 * ((size_t)nslots + 1));
-        memcpy(dbg->bricks, bl, sizeof(md_gpu_uint4) * nb);
-        memcpy(dbg->slots, slot, sizeof(uint32_t) * nb);
-        isog_read(s, dbg->corners, a.corners, sizeof(float) * 125 * (size_t)nslots);
-        memcpy(dbg->origin, origin, sizeof(origin));
-        dbg->brick_level = L;
-        isog_mark_skip(s);
-    }
-    free(bl);
-    free(slot);
-
-    const uint32_t cap_v = nv + 1, cap_q = 3 * nv + 1;
-    a.vpos     = isog_temp(s, sizeof(md_gpu_float4) * cap_v);
-    a.vpos_out = isog_temp(s, sizeof(md_gpu_float4) * cap_v);
-    a.vnrm     = isog_temp(s, sizeof(md_gpu_float4) * cap_v);
-    a.vval     = isog_temp(s, sizeof(md_gpu_float4) * cap_v);
-    a.vinfo    = isog_temp(s, sizeof(md_gpu_uint4) * cap_v);
-    a.quads    = isog_temp(s, sizeof(md_gpu_uint4) * cap_q);
-    a.remap    = isog_temp(s, sizeof(uint32_t) * cap_v);
-    a.bucket   = isog_temp(s, sizeof(uint32_t) * 192);
-    a.vdone    = isog_temp(s, sizeof(uint32_t) * cap_v);
-    if (!a.vpos || !a.vpos_out || !a.vnrm || !a.vval || !a.vinfo || !a.quads || !a.remap || !a.bucket || !a.vdone) ok = false;
-    if (ok && nv > 0) {
-        md_gpu_memset(s, a.cell_vert, 0xFF, sizeof(uint32_t) * 128 * (size_t)nslots);
-        md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 7);     // [7] (dform overflow) kept
-        a.mode = ordered ? 3u : 1u;
-        a.cap = cap_v;
-        MD_GPU_LAUNCH(s, isog_k[ISOG_K_CELLS], isog_groups(nb), a);
-        isog_mark(s, "cells: emit", nb, nv);
-        a.cap = cap_q;
-        MD_GPU_LAUNCH(s, isog_k[ISOG_K_QUADS], isog_groups(nb), a);
-        isog_mark(s, "quads", nb, 0);
-    }
-    isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_NETS, &ts);
-
-    // ---- vertices: Newton projection, relaxation; the quad count is read with the final counts
-    if (ok && nv > 0) {
-        isog_args_t v = a;
-        v.count = nv;
-        const md_gpu_grid_t g_vert = md_gpu_grid_for(isog_k[ISOG_K_NEWTON], nv, 1, 1);
-        int ke = set->orbitals_only ? ISOG_K_EVAL1 : ISOG_K_EVAL;
-        const bool geval = !set->orbitals_only && ((isog_eval_v2 && isog_gemm) || a.dform);
-        const uint32_t nfv = set->num_fn;
-        const int kwv = nfv <= 128 ? ISOG_K_GEVAL_W128 : nfv <= 192 ? ISOG_K_GEVAL_W192 : ISOG_K_GEVAL_W256;
-        if (a.dform) {
-            static const int kde[3] = {ISOG_K_DEVAL, ISOG_K_DEVAL2, ISOG_K_DEVAL3};
-            int dk = isog_dform_kernel;
-            while (dk > 0 && !isog_k[kde[dk]]) dk--;
-            ke = kde[dk];
-        } else if (geval && a.canon && isog_gemm_wide && nfv > (isog_gemm_wide == 2 ? 16u : 64u) && isog_k[kwv]) {
-            ke = isog_wide_form(kwv);
-        } else if (geval) {
-            const uint32_t nfn = set->num_fn;
-            ke = nfn <= 16 ? ISOG_K_GEVAL_F16 : (nfn <= 32 || isog_gemm_t32) ? ISOG_K_GEVAL_F32
-               : isog_gemm_pipe == 1 ? ISOG_K_GEVAL_F64_P1 : isog_gemm_pipe == 2 ? ISOG_K_GEVAL_F64_P2 : ISOG_K_GEVAL_F64;
-        } else if (!set->orbitals_only && isog_eval_v2) {
-            const uint32_t nfn = set->num_fn;
-            ke = nfn <= 8 ? ISOG_K_EVAL_F8 : nfn <= 16 ? ISOG_K_EVAL_F16 : nfn <= 32 ? ISOG_K_EVAL_F32 : ISOG_K_EVAL_F64;
-        }
-        const bool elist = set->orbitals_only && set->num_fn == 1 && set->num_fields == 1 && isog_eval_list;
-        if (elist) ke = ISOG_K_EVAL_LIST1;
-        const bool vwide = (ke >= ISOG_K_GEVAL_W128 && ke <= ISOG_K_GEVAL_W256) || (ke >= ISOG_K_GEVAL_X128 && ke <= ISOG_K_GEVAL_X256) ||
-                           (ke >= ISOG_K_GEVAL_Y128 && ke <= ISOG_K_GEVAL_Y256);
-        if (!isog_have(ke)) ok = false;
-        md_gpu_kernel_t k_eval = isog_k[ke];
-        isog_used(ke);
-        if (isog_prof) {    // BENCHMARK: the boxes of the vertex groups (consecutive vertices), not timed
-            const uint32_t vg = elist ? 128u : vwide ? 16u : geval ? 32u : set->orbitals_only ? 0u : 64u;
-            md_gpu_float4* vp = vg ? (md_gpu_float4*)malloc(sizeof(md_gpu_float4) * nv) : NULL;
-            if (vp && isog_read(s, vp, a.vpos, sizeof(md_gpu_float4) * nv)) {
-                isog_prof->vgroup_size = vg;
-                isog_prof_groups(set, &vp[0].x, 4, nv, vg, &isog_prof->vgroup_ao_sum, &isog_prof->vgroup_count);
-            }
-            free(vp);
-            isog_mark_skip(s);
-        }
-        // groups of 32 vertices (the GEMM: 4 channels each, 128 rows), 64 (the register form), 128 (one
-        // orbital from lists) or a thread per vertex
-        const md_gpu_grid_t g_eval = elist ? isog_groups((nv + 127) / 128) : set->orbitals_only ? g_vert
-                                   : isog_groups(vwide ? (nv + 15) / 16 : geval ? (nv + 31) / 32 : (nv + 63) / 64);
-        // Newton steps; converged vertices are flagged and skipped (they no longer move, so their
-        // values stay valid for the final normals)
-        #define ISOG_PROJECT(iters) do {                                               \
-            md_gpu_memset(s, v.vdone, 0, sizeof(uint32_t) * nv);                       \
-            for (uint32_t it = 0; it <= (iters); ++it) {                               \
-                uint32_t act_, grp_;                                                   \
-                isog_prof_active(s, v.vdone, nv, &act_, &grp_);                        \
-                MD_GPU_LAUNCH(s, k_eval, g_eval, v);                                   \
-                isog_mark(s, "vertex eval", act_, grp_);                               \
-                v.mode = it == (iters) ? 1u : (isog_newton_predict ? 2u : 0u);         \
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_NEWTON], g_vert, v);                    \
-                isog_mark(s, v.mode == 1u ? "vertex normals" : "vertex newton", act_, 0);\
-            }                                                                          \
-        } while (0)
-        if (isog_relax_first) {
-            // relaxed on the lattice's own (trilinear) surface, with its normals from iso_cells, then
-            // projected once: no field evaluation before the projection
-            for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
-                isog_mark(s, "relax", nv, 0);
-                md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
-                isog_mark(s, "relax: copy", nv, 0);
-            }
-            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &ts);
-            ISOG_PROJECT(desc->project_iterations);
-            for (int r = 1; r < isog_relax_first && desc->relax_iterations; ++r) {   // EXPERIMENT: polish with the true normals
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
-                isog_mark(s, "relax", nv, 0);
-                md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
-                isog_mark(s, "relax: copy", nv, 0);
-                ISOG_PROJECT(3u);
-            }
-            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_PROJECT, &ts);
-        } else {
-            ISOG_PROJECT(desc->project_iterations);
-            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_PROJECT, &ts);
-            for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
-                isog_mark(s, "relax", nv, 0);
-                md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
-                isog_mark(s, "relax: copy", nv, 0);
-                ISOG_PROJECT(3u);
-            }
-            isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &ts);
-        }
-        #undef ISOG_PROJECT
-    }
-
-    // ---- regroup per (field, sheet) into the output buffers
-    if (ok && nv > 0) {
-        isog_read(s, ctr, a.counters, sizeof(ctr));
-        nq = ctr[1] < cap_q ? ctr[1] : cap_q;
-        out->open_edges = ctr[2];
-        if (ctr[3]) ok = false;
-        if (ctr[7]) {
-            MD_LOG_ERROR("md_gto_iso_gpu_extract: more than 2048 shells (or 8192 AOs) reach a group of points (the D form)");
-            ok = false;
-        }
-        isog_mark(s, "readback: counters", nv, nq);
-    }
-    if (ok) {
-        md_gpu_mem_t pos = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * cap_v);
-        md_gpu_mem_t nrm = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * cap_v);
-        md_gpu_mem_t idx = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 6 * ((size_t)nq + 1));
-        out->position = pos.gpu; out->normal = nrm.gpu; out->index = idx.gpu;
-        if (!pos.gpu || !nrm.gpu || !idx.gpu) ok = false;
-    }
-    if (ok && nv > 0) {
-        a.out_pos = out->position; a.out_nrm = out->normal; a.out_idx = out->index;
-        a.count = nv;
-        a.cap = nq;
-        isog_mark(s, "output alloc", nv, nq);
-        md_gpu_memset(s, a.bucket, 0, sizeof(uint32_t) * 192);
-        MD_GPU_LAUNCH(s, isog_k[ISOG_K_BCOUNT], md_gpu_grid_for(isog_k[ISOG_K_BCOUNT], nv > nq ? nv : nq, 1, 1), a);
-        MD_GPU_LAUNCH(s, isog_k[ISOG_K_BSCAN], md_gpu_grid(1, 1, 1), a);
-        isog_mark(s, "bucket: count, scan", nv, nq);
-        MD_GPU_LAUNCH(s, isog_k[ISOG_K_BVERTS], md_gpu_grid_for(isog_k[ISOG_K_BVERTS], nv, 1, 1), a);
-        isog_mark(s, "bucket: vertices", nv, 0);
-        if (nq) MD_GPU_LAUNCH(s, isog_k[ISOG_K_BTRIS], md_gpu_grid_for(isog_k[ISOG_K_BTRIS], nq, 1, 1), a);
-        isog_mark(s, "bucket: triangles", nq, 0);
-        uint32_t bk[128];
-        isog_read(s, bk, a.bucket, sizeof(bk));
-        isog_mark(s, "readback: buckets", 0, 0);
-        for (uint32_t k = 0; k < F; ++k) {
-            for (int sh = 0; sh < 2; ++sh) {
-                const uint32_t i = 2 * k + (uint32_t)sh;
-                out->vertex_offset[k][sh]   = bk[64 + i];
-                out->vertex_count_of[k][sh] = bk[i];
-                out->index_offset[k][sh]    = 6 * bk[96 + i];
-                out->index_count_of[k][sh]  = 6 * bk[32 + i];
-            }
-        }
-        out->vertex_count = nv;
-        out->index_count = 6 * nq;
-    }
-    isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_OUTPUT, &ts);
-    md_gpu_temp_end(s, scope);
-    out->seconds_total = md_tick_to_seconds(md_tick_now() - t_start);
-    if (!ok) {
-        md_gto_iso_gpu_mesh_free(s, out);   // keeps nothing, not even the lattice
-        MD_LOG_ERROR("md_gto_iso_gpu_extract: out of device memory or buffer overflow");
-    }
-    return ok;
+    memset(out, 0, sizeof(*out));
+    md_gto_iso_gpu_job_t* j = md_gto_iso_gpu_job_begin(s, set, desc);
+    if (!j) return false;
+    md_gto_iso_gpu_job_poll(j, -1.0);
+    return md_gto_iso_gpu_job_end(j, out);
 }
 
 void md_gto_iso_gpu_mesh_free(md_gpu_stream_t stream, md_gto_iso_gpu_mesh_t* mesh) {
@@ -1837,6 +2160,7 @@ void md_gto_iso_gpu_mesh_free(md_gpu_stream_t stream, md_gto_iso_gpu_mesh_t* mes
     md_gpu_free(stream, mesh->position);
     md_gpu_free(stream, mesh->normal);
     md_gpu_free(stream, mesh->index);
+    if (mesh->host_mem) md_gpu_free(stream, mesh->host_mem);
     memset(mesh, 0, sizeof(*mesh));
 }
 
