@@ -291,6 +291,18 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
     case DOMAIN_RING_KIND:
         for (size_t i = 0; i < ARRAY_SIZE(ring_kinds); ++i) completion_add_value(&values, &seen, ring_kinds[i].name, alloc);
         break;
+    case DOMAIN_BOND_KIND: {
+        size_t count = 0;
+        const md_bond_kind_name_t* names = md_bond_kind_names(&count);
+        for (size_t i = 0; i < count; ++i) completion_add_value(&values, &seen, str_from_cstr(names[i].name), alloc);
+        break;
+    }
+    case DOMAIN_BOND_RESONANCE:
+        for (size_t i = 0; i < ARRAY_SIZE(bond_resonances); ++i) completion_add_value(&values, &seen, bond_resonances[i].name, alloc);
+        break;
+    case DOMAIN_BOND_ORIGIN:
+        for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED; ++o) completion_add_value(&values, &seen, str_from_cstr(md_bond_origin_name((md_bond_origin_t)o)), alloc);
+        break;
     case DOMAIN_ATTR_PATH:
         if (sys) {
             completion_attr_paths(&values, &seen, &sys->attributes, typed, alloc);
@@ -317,7 +329,7 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
 // floats in threes, which are marked as such with the bit of the coordinate (a float on its own is no position).
 static uint32_t completion_type_bits(type_info_t ti) {
     if (ti.base_type == TYPE_COORDINATE) {
-        return TYPE_BIT(TYPE_INT) | TYPE_BIT(TYPE_IRANGE) | TYPE_BIT(TYPE_BITFIELD) | TYPE_BIT(TYPE_COORDINATE);
+        return TYPE_BIT(TYPE_INT) | TYPE_BIT(TYPE_IRANGE) | TYPE_BIT(TYPE_ATOMSET) | TYPE_BIT(TYPE_COORDINATE);
     }
     if (ti.base_type == TYPE_FLOAT && is_type_position_compatible(ti)) {
         return TYPE_BIT(TYPE_FLOAT) | TYPE_BIT(TYPE_COORDINATE);
@@ -349,7 +361,14 @@ static uint32_t completion_param_types(str_t name, int param) {
 // What is expected at the cursor: what the parameter of the call it is in takes, looking through the brackets and the
 // array literals around it; at the top, a selection in a filter and nothing in particular in a script. 0 when not
 // known. at_top tells whether it is at the top, outside of every call.
-static uint32_t completion_expected(const completion_context_t* ctx, bool filter, bool* at_top) {
+// What is completed: a script, or a filter of atoms (md_filter) or of bonds (md_filter_bonds). Nonzero is a filter.
+typedef enum completion_mode_t {
+    COMPLETE_SCRIPT = 0,
+    FILTER_ATOMS    = 1,
+    FILTER_BONDS    = 2,
+} completion_mode_t;
+
+static uint32_t completion_expected(const completion_context_t* ctx, completion_mode_t filter, bool* at_top) {
     *at_top = false;
     if (ctx->depth > COMPLETION_MAX_DEPTH) return 0;
     for (int d = ctx->depth - 1; d >= 0; --d) {
@@ -358,7 +377,7 @@ static uint32_t completion_expected(const completion_context_t* ctx, bool filter
         if (frame->open == '[') return 0;
     }
     *at_top = true;
-    return filter ? TYPE_BIT(TYPE_BITFIELD) : 0;
+    return filter == FILTER_BONDS ? TYPE_BIT(TYPE_ATOMSET) | TYPE_BIT(TYPE_BONDSET) : filter ? TYPE_BIT(TYPE_ATOMSET) : 0;
 }
 
 // Whether what gives types can be written where expected is: as it is, or converted implicitly (an int where a float
@@ -369,7 +388,7 @@ static bool completion_fits(uint32_t types, uint32_t expected) {
     for (size_t i = 0; i < ARRAY_SIZE(casts); ++i) {
         const base_type_t from = casts[i].arg_type[0].base_type;
         const base_type_t to   = casts[i].return_type.base_type;
-        if (to != TYPE_BITFIELD && (types & TYPE_BIT(from)) && (expected & TYPE_BIT(to))) return true;
+        if (to != TYPE_ATOMSET && (types & TYPE_BIT(from)) && (expected & TYPE_BIT(to))) return true;
     }
     return false;
 }
@@ -382,7 +401,7 @@ static bool is_binary_keyword(str_t kw) {
 // What a keyword gives: the logic of selections (and of bools). 'in' and 'out' give what their operand does.
 static uint32_t completion_keyword_types(str_t kw) {
     if (str_eq_cstr(kw, "and") || str_eq_cstr(kw, "or") || str_eq_cstr(kw, "xor") || str_eq_cstr(kw, "not")) {
-        return TYPE_BIT(TYPE_BITFIELD) | TYPE_BIT(TYPE_BOOL);
+        return TYPE_BIT(TYPE_ATOMSET) | TYPE_BIT(TYPE_BONDSET) | TYPE_BIT(TYPE_BOOL);
     }
     return 0;
 }
@@ -428,9 +447,9 @@ static void completion_push_values(md_array(md_script_completion_t)* items, valu
     }
 }
 
-// A script (filter false), or a filter, an expression which picks atoms and whose names are those of ctx_ir, evaluated
-// within atoms (NULL for the whole system)
-static md_script_completions_t complete(str_t src, int cursor, const md_system_t* sys, const md_bitset_t* atoms, const md_script_ir_t* ctx_ir, bool filter, md_allocator_i* alloc) {
+// A script (COMPLETE_SCRIPT), or a filter, an expression which picks atoms (or bonds) and whose names are those of
+// ctx_ir, evaluated within atoms (NULL for the whole system)
+static md_script_completions_t complete(str_t src, int cursor, const md_system_t* sys, const md_bitset_t* atoms, const md_script_ir_t* ctx_ir, completion_mode_t filter, md_allocator_i* alloc) {
     ASSERT(alloc);
     md_script_completions_t result = {0};
     if (!src.ptr) src.len = 0;
@@ -590,9 +609,9 @@ static md_script_completions_t complete(str_t src, int cursor, const md_system_t
 }
 
 md_script_completions_t md_script_complete(str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc) {
-    return complete(src, cursor, sys, NULL, NULL, false, alloc);
+    return complete(src, cursor, sys, NULL, NULL, COMPLETE_SCRIPT, alloc);
 }
 
 md_script_completions_t md_filter_complete(str_t expr, int cursor, const md_filter_context_t* ctx, md_allocator_i* alloc) {
-    return complete(expr, cursor, ctx ? ctx->sys : NULL, ctx ? ctx->atoms : NULL, ctx ? ctx->ir : NULL, true, alloc);
+    return complete(expr, cursor, ctx ? ctx->sys : NULL, ctx ? ctx->atoms : NULL, ctx ? ctx->ir : NULL, ctx && ctx->bonds ? FILTER_BONDS : FILTER_ATOMS, alloc);
 }

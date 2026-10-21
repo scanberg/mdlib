@@ -189,7 +189,7 @@ typedef enum base_type_t {
     TYPE_BOOL,
     TYPE_FRANGE,
     TYPE_IRANGE,
-    TYPE_BITFIELD,      // Bitfield used to represent a selection of atoms
+    TYPE_ATOMSET,       // A set of atoms (md_bitset_t over the atom indices): what every selector gives
     TYPE_STRING,
     TYPE_COORDINATE,    // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a coordinate (INT, IRANGE, BITFIELD or float[3])
     TYPE_CONTACT,       // Opaque: a set of group pairs in contact (md_contact_set_t). Its arrays live in the evaluation's allocator.
@@ -197,6 +197,8 @@ typedef enum base_type_t {
                         // what normalizes it, is not part of the value: it sits beside it in data_t.weight.
     TYPE_PLANE,         // The plane fitted to a group of atoms (plane_t), read through centroid(), normal(), radius(), ...
     TYPE_PUCKER,        // The puckering of a ring (pucker_rec_t), read through amplitude(), phase(), theta(), pseudorotation()
+    TYPE_BONDSET,       // A set of bonds (bondset_t): what bond() gives
+    TYPE_BOND_DELTA,    // Opaque: the bonds formed and broken in a frame (bond_delta_value_t), read through formed(), broken(), bonds()
 } base_type_t;
 
 typedef enum flags_t {
@@ -207,7 +209,7 @@ typedef enum flags_t {
     FLAG_DYNAMIC_LENGTH             = 0x00008, // Return type has a varying length which is not constant over frames
     FLAG_QUERYABLE_LENGTH           = 0x00010, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
     FLAG_STATIC_VALIDATION          = 0x00020, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
-    FLAG_FLATTEN                    = 0x00040, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
+    FLAG_FLATTEN                    = 0x00040, // Hints that a procedure want flattened atomsets as input, e.g. within, this can be propagated to the arguments during static type checking
     FLAG_UNIT_OF_ARG                = 0x00080, // The result is in the unit of the first argument: a reduction over it (sum, min, max of an array)
     
     // Node flags
@@ -266,6 +268,25 @@ typedef struct plane_t {
 
 // The puckering of a ring (pucker()), as md_pucker_ring makes it
 typedef md_pucker_ring_t pucker_rec_t;
+
+// A set of bonds (TYPE_BONDSET), in two parts: the persistent bonds of the system by index (both ranges of
+// md_bond_data_t: the graph and the non-covalent bonds), and the bonds which are none of them (computed for a frame: the
+// bonds formed in it) by atom pair. A pair with a persistent bond is always in the first part, never in the second, so
+// sets compare and combine by their bonds whatever produced them. The indices are those of the topology the set was
+// made from. The payloads live in the allocator of the data holding the set (data_bitset_alloc), as those of an atomset.
+typedef struct bondset_t {
+    md_bitset_t            bonds;
+    uint32_t               num_extra;
+    const md_atom_pair_t*  extra_pair;      // [num_extra] the lower atom first, sorted
+    const md_bond_flags_t* extra_flags;     // [num_extra]
+} bondset_t;
+
+// The bonds formed and broken in a frame within a scope (TYPE_BOND_DELTA, bond_delta()), see md_util_bond_delta
+typedef struct bond_delta_value_t {
+    md_bitset_t touched;    // The persistent bonds with an atom in the scope
+    md_bitset_t broken;     // The bonds of the graph broken, of them
+    bondset_t   formed;     // The bonds formed, which the system does not have: extra pairs only
+} bond_delta_value_t;
 
 struct irange_t {
     int beg;
@@ -467,6 +488,9 @@ typedef enum value_domain_t {
     DOMAIN_MATCH_MODE,      // Which matches are reported: 'unique', 'all', ...
     DOMAIN_MATCH_LABEL,     // What the atoms of a reference are compared by: 'element', 'name'
     DOMAIN_RING_KIND,       // What a ring is: 'aromatic', 'sugar', ...
+    DOMAIN_BOND_KIND,       // What a bond is: 'covalent', 'hydrogen', ... (md_bond_kind_names)
+    DOMAIN_BOND_RESONANCE,  // 'aromatic', 'delocalized', 'localized'
+    DOMAIN_BOND_ORIGIN,     // Where a bond came from: 'file', 'user', ... (md_bond_origin_name)
 } value_domain_t;
 
 typedef struct param_domain_t {
@@ -942,12 +966,14 @@ static size_t base_type_element_byte_size(base_type_t type) {
     case TYPE_BOOL:     return sizeof(bool);        
     case TYPE_FRANGE:   return sizeof(frange_t);
     case TYPE_IRANGE:   return sizeof(irange_t);
-    case TYPE_BITFIELD: return sizeof(md_bitset_t);
+    case TYPE_ATOMSET: return sizeof(md_bitset_t);
     case TYPE_STRING:   return sizeof(str_t);
     case TYPE_CONTACT:  return sizeof(md_contact_set_t);
     case TYPE_DISTRIBUTION: return sizeof(float);
     case TYPE_PLANE:    return sizeof(plane_t);
     case TYPE_PUCKER:   return sizeof(pucker_rec_t);
+    case TYPE_BONDSET:  return sizeof(bondset_t);
+    case TYPE_BOND_DELTA: return sizeof(bond_delta_value_t);
     case TYPE_UNDEFINED:
     default:            return 0;
     }
@@ -993,7 +1019,7 @@ static bool is_type_position_compatible(type_info_t type) {
     switch(type.base_type) {
         case TYPE_INT: return true;
         case TYPE_IRANGE: return true;
-        case TYPE_BITFIELD: return true;
+        case TYPE_ATOMSET: return true;
         case TYPE_FLOAT: 
             return (type.dim[0] == 3 && type.dim[1] == 0) || (type.dim[1] == 3 && type.dim[2] == 0);
         default: return false;
@@ -1164,15 +1190,79 @@ static void copy_data_block(data_t* dst, size_t dst_offset, const data_t* src, s
     }
 }
 
+static bondset_t bondset_copy(bondset_t s, md_allocator_i* alloc) {
+    bondset_t r = { .bonds = md_bitset_copy(s.bonds, alloc), .num_extra = s.num_extra };
+    if (s.num_extra) {
+        md_atom_pair_t*  pair  = md_alloc(alloc, sizeof(md_atom_pair_t)  * s.num_extra);
+        md_bond_flags_t* flags = md_alloc(alloc, sizeof(md_bond_flags_t) * s.num_extra);
+        MEMCPY(pair,  s.extra_pair,  sizeof(md_atom_pair_t)  * s.num_extra);
+        MEMCPY(flags, s.extra_flags, sizeof(md_bond_flags_t) * s.num_extra);
+        r.extra_pair  = pair;
+        r.extra_flags = flags;
+    }
+    return r;
+}
+
+static void bondset_free(bondset_t* s, md_allocator_i* alloc) {
+    md_bitset_free(&s->bonds, alloc);
+    if (s->num_extra) {
+        md_free(alloc, (void*)s->extra_pair,  sizeof(md_atom_pair_t)  * s->num_extra);
+        md_free(alloc, (void*)s->extra_flags, sizeof(md_bond_flags_t) * s->num_extra);
+    }
+    MEMSET(s, 0, sizeof(bondset_t));
+}
+
+// Whether the values of a type carry a payload of their own (copy_values_deep)
+static inline bool base_type_has_payload(base_type_t type) {
+    return type == TYPE_ATOMSET || type == TYPE_BONDSET || type == TYPE_BOND_DELTA;
+}
+
+// Copies count values of a type whose values carry a payload of their own (sets of atoms and bonds, bond deltas), each
+// with its payload allocated with alloc: a value copied as bytes would point into the payload of its source, which
+// goes with whatever arena the source is in. False, and nothing copied, for a type of plain values.
+static bool copy_values_deep(void* dst, const void* src, base_type_t type, size_t count, md_allocator_i* alloc) {
+    switch (type) {
+    case TYPE_ATOMSET:
+        for (size_t i = 0; i < count; ++i) ((md_bitset_t*)dst)[i] = md_bitset_copy(((const md_bitset_t*)src)[i], alloc);
+        return true;
+    case TYPE_BONDSET:
+        for (size_t i = 0; i < count; ++i) ((bondset_t*)dst)[i] = bondset_copy(((const bondset_t*)src)[i], alloc);
+        return true;
+    case TYPE_BOND_DELTA:
+        for (size_t i = 0; i < count; ++i) {
+            const bond_delta_value_t* s = (const bond_delta_value_t*)src + i;
+            bond_delta_value_t* d = (bond_delta_value_t*)dst + i;
+            d->touched = md_bitset_copy(s->touched, alloc);
+            d->broken  = md_bitset_copy(s->broken,  alloc);
+            d->formed  = bondset_copy(s->formed, alloc);
+        }
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void free_data(data_t* data, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);    
     if (data->ptr && data->size) {
-        if (data->type.base_type == TYPE_BITFIELD) {
+        const int64_t num_elem = element_count(*data);
+        if (data->type.base_type == TYPE_ATOMSET) {
             md_bitset_t* bs = data->ptr;
-            const int64_t num_elem = element_count(*data);
             for (int64_t i = 0; i < num_elem; ++i) {
                 md_bitset_free(&bs[i], alloc);
+            }
+        } else if (data->type.base_type == TYPE_BONDSET) {
+            bondset_t* bs = data->ptr;
+            for (int64_t i = 0; i < num_elem; ++i) {
+                bondset_free(&bs[i], alloc);
+            }
+        } else if (data->type.base_type == TYPE_BOND_DELTA) {
+            bond_delta_value_t* d = data->ptr;
+            for (int64_t i = 0; i < num_elem; ++i) {
+                md_bitset_free(&d[i].touched, alloc);
+                md_bitset_free(&d[i].broken, alloc);
+                bondset_free(&d[i].formed, alloc);
             }
         }
         md_free(alloc, data->ptr, data->size);
@@ -1216,16 +1306,11 @@ static bool copy_data(data_t* dst, const data_t* src, const eval_context_t* ctx)
     }
     if (!INTERNAL_CHECK(ctx, ctx->op_token, src->ptr && dst->ptr)) return false;
 
-    if (dst->type.base_type == TYPE_BITFIELD) {
-        const uint64_t num_elem = MIN(element_count(*src), src->size / sizeof(md_bitset_t));
-
-        md_bitset_t* dst_bs = (md_bitset_t*)dst->ptr;
-        const md_bitset_t* src_bs = (const md_bitset_t*)src->ptr;
-        md_allocator_i* alloc = data_bitset_alloc(dst, ctx);
-        for (uint64_t i = 0; i < num_elem; ++i) {
-            dst_bs[i] = md_bitset_copy(src_bs[i], alloc);
-        }
-    } else {
+    // As many values as the bytes of src hold, whatever its type says: they are not read past
+    const base_type_t base_type = dst->type.base_type;
+    const size_t elem_size = base_type_element_byte_size(base_type);
+    const size_t num_elem = elem_size ? MIN((size_t)element_count(*src), src->size / elem_size) : 0;
+    if (!base_type_has_payload(base_type) || !copy_values_deep(dst->ptr, src->ptr, base_type, num_elem, data_bitset_alloc(dst, ctx))) {
         copy_data_block(dst, 0, src, 0, src->size);
     }
     return true;
@@ -1361,11 +1446,13 @@ static const char* get_value_type_str(base_type_t type) {
     case TYPE_IRANGE: return "irange";
     case TYPE_BOOL: return "boolean";
     case TYPE_STRING: return "string";
-    case TYPE_BITFIELD: return "bitfield";
+    case TYPE_ATOMSET: return "atomset";
     case TYPE_CONTACT: return "contact";
     case TYPE_DISTRIBUTION: return "distribution";
     case TYPE_PLANE: return "plane";
     case TYPE_PUCKER: return "pucker";
+    case TYPE_BONDSET: return "bondset";
+    case TYPE_BOND_DELTA: return "bond_delta";
     default: return "type out of range";
     }
 }
@@ -1596,7 +1683,7 @@ static inline int volume_count(type_info_t ti) {
 
 // Returns if the value type can be operated on using logical operators
 static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
-    return type == TYPE_BOOL || type == TYPE_BITFIELD;
+    return type == TYPE_BOOL || type == TYPE_ATOMSET || type == TYPE_BONDSET;
 }
 
 static inline bool is_identifier_static_procedure(str_t ident) {
@@ -2213,7 +2300,7 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
         while (data.type.dim[0] == 1 && data.type.dim[1] > 1) {
             dim_shift_left(data.type.dim);
         }
-        if (is_array(data.type) && data.type.base_type != TYPE_BITFIELD) {
+        if (is_array(data.type) && data.type.base_type != TYPE_ATOMSET) {
             int arr_len = data.type.dim[0];
             if (arr_len == 1) {
                 dim_shift_left(data.type.dim);
@@ -2236,7 +2323,7 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
             PRINT("}");
         } else {
             switch(data.type.base_type) {
-            case TYPE_BITFIELD:
+            case TYPE_ATOMSET:
                 //print_bitfield(file, (md_bitset_t*)data.ptr);
                 break;
             case TYPE_BOOL:
@@ -2306,6 +2393,18 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
                 PRINT("%zu pairs", set->count);
                 break;
             }
+            case TYPE_BONDSET:
+            {
+                const bondset_t* b = (const bondset_t*)data.ptr;
+                PRINT("%zu bonds", (size_t)md_bitset_count(b->bonds) + b->num_extra);
+                break;
+            }
+            case TYPE_BOND_DELTA:
+            {
+                const bond_delta_value_t* d = (const bond_delta_value_t*)data.ptr;
+                PRINT("%u formed, %zu broken", d->formed.num_extra, (size_t)md_bitset_count(d->broken));
+                break;
+            }
             case TYPE_PUCKER:
             {
                 const pucker_rec_t* p = (const pucker_rec_t*)data.ptr;
@@ -2364,7 +2463,7 @@ static void summarize_data(md_writer_i* w, data_t data, int subidx) {
     const size_t stride = type_info_element_byte_stride(data.type);
 
     switch (data.type.base_type) {
-    case TYPE_BITFIELD: {
+    case TYPE_ATOMSET: {
         const md_bitset_t* bf = (const md_bitset_t*)data.ptr;
         if (pick) {
             const size_t n = md_bitset_count(bf[subidx]);
@@ -2383,6 +2482,27 @@ static void summarize_data(md_writer_i* w, data_t data, int subidx) {
             if (empty) md_writef(w, " (%zu empty)", empty);
             md_bitmask_free(&all);
         }
+        return;
+    }
+    case TYPE_BONDSET: {
+        const bondset_t* bs = (const bondset_t*)data.ptr;
+        if (pick || len == 1) {
+            const bondset_t* b = &bs[pick ? subidx : 0];
+            const size_t n = (size_t)md_bitset_count(b->bonds) + b->num_extra;
+            if (pick) md_writef(w, "bond set %d of %d: ", subidx + 1, len);
+            md_writef(w, "%zu bond%s", n, n == 1 ? "" : "s");
+            if (b->num_extra) md_writef(w, " (%u computed for the frame)", b->num_extra);
+        } else {
+            size_t n = 0;
+            for (int i = 0; i < len; ++i) n += (size_t)md_bitset_count(bs[i].bonds) + bs[i].num_extra;
+            md_writef(w, "%d bond sets, %zu bonds", len, n);
+        }
+        return;
+    }
+    case TYPE_BOND_DELTA: {
+        const bond_delta_value_t* d = (const bond_delta_value_t*)data.ptr;
+        md_writef(w, "%u bond%s formed, %zu broken", d->formed.num_extra, d->formed.num_extra == 1 ? "" : "s", (size_t)md_bitset_count(d->broken));
+        md_writef(w, "\nof %zu bonds in the scope", (size_t)md_bitset_count(d->touched));
         return;
     }
     case TYPE_CONTACT: {
@@ -3404,14 +3524,14 @@ static bool proc_args_evaluate(proc_args_t* pa, const procedure_t* proc, ast_nod
         }
         // An empty array of bitfields ('water' of a system without any) has no data at all, while a procedure which
         // takes a bitfield reads one through the pointer: it reads an empty one. Its length is still 0.
-        if (pa->data[i].type.base_type == TYPE_BITFIELD && !pa->data[i].ptr) {
+        if (pa->data[i].type.base_type == TYPE_ATOMSET && !pa->data[i].ptr) {
             pa->data[i].ptr = &pa->empty[i];
         }
         // A parameter of a fixed size (a float, a vec3, a range) of which the argument holds less. An empty array is
         // typed as a scalar (all its dimensions are 0): 'sqrt(coord_z(flatten(water)))' is matched with sqrt(float),
         // and has no float to read.
         const type_info_t param = proc->arg_type[i];
-        if (param.base_type != TYPE_BITFIELD && param.base_type != TYPE_COORDINATE && !is_variable_length(param) &&
+        if (param.base_type != TYPE_ATOMSET && param.base_type != TYPE_COORDINATE && !is_variable_length(param) &&
             !is_absent_type(pa->data[i].type) && pa->data[i].size < type_info_total_byte_size(param)) {
             EVAL_LOG_ERROR(ctx, args[i]->token, "The argument has no value: it is empty");
             result = false;
@@ -3424,10 +3544,10 @@ static bool proc_args_evaluate(proc_args_t* pa, const procedure_t* proc, ast_nod
 }
 
 static void proc_args_free(proc_args_t* pa, eval_context_t* ctx) {
-    // @NOTE(Robin): We cannot simply reset the stack since bitfields are lazily allocated, meaning they allocate data on demand.
+    // @NOTE(Robin): We cannot simply reset the stack since atomsets are lazily allocated, meaning they allocate data on demand.
     // This means that they will most likely allocate data deeply nested within the calling scope of another procedure call with another reset point for its stack
-    // Thus, the data for the bitfields will be reset with that reset point and we will overwrite it later.
-    // To solve it I think we need another 'specific' allocator for just the bitfields which may outlive the other stack variables and can be reset separately.
+    // Thus, the data for the atomsets will be reset with that reset point and we will overwrite it later.
+    // To solve it I think we need another 'specific' allocator for just the atomsets which may outlive the other stack variables and can be reset separately.
     // Conceptually we could use the top end of the stack for this and have two different stack pointers.
     for (int64_t i = (int64_t)pa->count - 1; i >= 0; --i) {
         if (!(pa->nodes[i]->flags & FLAG_CONSTANT)) {
@@ -3583,7 +3703,7 @@ static bool evaluate_flatten(data_t* dst, const ast_node_t* node, eval_context_t
     const ast_node_t* arg = node->children[0];
 
     if (dst) {
-        if (node->data.type.base_type == TYPE_BITFIELD) {
+        if (node->data.type.base_type == TYPE_ATOMSET) {
             data_t data = {0};
             const md_bitset_t* src_arr = 0;
             size_t src_len = 0;
@@ -4026,13 +4146,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                 for (int i = src_rng[0].beg; i < src_rng[0].end; i += MAX(src_rng[0].step,1)) {
                     const size_t read_offset = (size_t)i * block_bytes;
                     if (!INTERNAL_CHECK(ctx, node->token, write_offset + block_bytes <= dst->size && read_offset + block_bytes <= arr_data.size)) return false;
-                    if (base_type == TYPE_BITFIELD) {
-                        md_bitset_t* dst_bs = (md_bitset_t*)((char*)dst->ptr + write_offset);
-                        const md_bitset_t* src_bs = (const md_bitset_t*)((char*)arr_data.ptr + read_offset);
-                        for (size_t k = 0; k < block_elems; ++k) {
-                            dst_bs[k] = md_bitset_copy(src_bs[k], dst_alloc);
-                        }
-                    } else {
+                    if (!copy_values_deep((char*)dst->ptr + write_offset, (const char*)arr_data.ptr + read_offset, base_type, block_elems, dst_alloc)) {
                         copy_data_block(dst, write_offset, &arr_data, read_offset, block_bytes);
                     }
                     write_offset += block_bytes;
@@ -4051,13 +4165,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                             const size_t lin = (size_t)i * (size_t)src_dim[1] + (size_t)j;
                             const size_t read_offset = lin * block_bytes;
                             if (!INTERNAL_CHECK(ctx, node->token, write_offset + block_bytes <= dst->size && read_offset + block_bytes <= arr_data.size)) return false;
-                            if (base_type == TYPE_BITFIELD) {
-                                md_bitset_t* dst_bs = (md_bitset_t*)((char*)dst->ptr + write_offset);
-                                const md_bitset_t* src_bs = (const md_bitset_t*)((char*)arr_data.ptr + read_offset);
-                                for (size_t k = 0; k < block_elems; ++k) {
-                                    dst_bs[k] = md_bitset_copy(src_bs[k], dst_alloc);
-                                }
-                            } else {
+                            if (!copy_values_deep((char*)dst->ptr + write_offset, (const char*)arr_data.ptr + read_offset, base_type, block_elems, dst_alloc)) {
                                 copy_data_block(dst, write_offset, &arr_data, read_offset, block_bytes);
                             }
                             write_offset += block_bytes;
@@ -4080,13 +4188,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                                 const size_t lin = ((size_t)k * (size_t)src_dim[1] + (size_t)j) * (size_t)src_dim[2] + (size_t)i;
                                 const size_t read_offset = lin * block_bytes;
                                 if (!INTERNAL_CHECK(ctx, node->token, write_offset + block_bytes <= dst->size && read_offset + block_bytes <= arr_data.size)) return false;
-                                if (base_type == TYPE_BITFIELD) {
-                                    md_bitset_t* dst_bs = (md_bitset_t*)((char*)dst->ptr + write_offset);
-                                    const md_bitset_t* src_bs = (const md_bitset_t*)((char*)arr_data.ptr + read_offset);
-                                    for (size_t m = 0; m < block_elems; ++m) {
-                                        dst_bs[m] = md_bitset_copy(src_bs[m], dst_alloc);
-                                    }
-                                } else {
+                                if (!copy_values_deep((char*)dst->ptr + write_offset, (const char*)arr_data.ptr + read_offset, base_type, block_elems, dst_alloc)) {
                                     copy_data_block(dst, write_offset, &arr_data, read_offset, block_bytes);
                                 }
                                 write_offset += block_bytes;
@@ -4111,13 +4213,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
                                     const size_t lin = (((size_t)l * (size_t)src_dim[1] + (size_t)k) * (size_t)src_dim[2] + (size_t)j) * (size_t)src_dim[3] + (size_t)i;
                                     const size_t read_offset = lin * block_bytes;
                                     if (!INTERNAL_CHECK(ctx, node->token, write_offset + block_bytes <= dst->size && read_offset + block_bytes <= arr_data.size)) return false;
-                                    if (base_type == TYPE_BITFIELD) {
-                                        md_bitset_t* dst_bs = (md_bitset_t*)((char*)dst->ptr + write_offset);
-                                        const md_bitset_t* src_bs = (const md_bitset_t*)((char*)arr_data.ptr + read_offset);
-                                        for (size_t n = 0; n < block_elems; ++n) {
-                                            dst_bs[n] = md_bitset_copy(src_bs[n], dst_alloc);
-                                        }
-                                    } else {
+                                    if (!copy_values_deep((char*)dst->ptr + write_offset, (const char*)arr_data.ptr + read_offset, base_type, block_elems, dst_alloc)) {
                                         copy_data_block(dst, write_offset, &arr_data, read_offset, block_bytes);
                                     }
                                     write_offset += block_bytes;
@@ -4165,7 +4261,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
 
     // No need to reevaluate CTX_NODE here since it has already been done during static type checking and its results should be stored in the data ptr
 
-    if (!INTERNAL_CHECK(ctx, ctx_node->token, ctx_node->data.type.base_type == TYPE_BITFIELD)) return false;
+    if (!INTERNAL_CHECK(ctx, ctx_node->token, ctx_node->data.type.base_type == TYPE_ATOMSET)) return false;
     data_t ctx_data = ctx_node->data;
     if (!ctx_data.ptr) {
         // A compilation stores what it computes in the AST. An evaluation does not write to the IR, so it
@@ -4357,7 +4453,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
             if (!INTERNAL_CHECK(ctx, node->token, to.dim[0] > -1)) return false;
 
             data_t new_data = {0};
-            if (node->type == AST_CONSTANT_VALUE && to.base_type != TYPE_BITFIELD) {
+            if (node->type == AST_CONSTANT_VALUE && to.base_type != TYPE_ATOMSET) {
                 new_data = node->data;
                 if (!INTERNAL_CHECK(ctx, node->token, is_scalar(to))) return false;
                 new_data.type = to;
@@ -4812,7 +4908,7 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
 
     // @NOTE: if we have a bitwise operator in the tree, we flag this
     // so that we can shortcut some ambigious operations such as 'protein' 'residue' etc.
-    // That they can be concatenated into a single bitfield instead of an array of bitfields.
+    // That they can be concatenated into a single atomset instead of an array of atomsets.
     uint32_t backup_flags = ctx->eval_flags;
     if (is_bitwise_operator(node->type)) {
         ctx->eval_flags |= EVAL_FLAG_FLATTEN;
@@ -5276,8 +5372,8 @@ static bool static_check_flatten(ast_node_t* node, eval_context_t* ctx) {
         node->data.type.dim[0] = dim_size(arg->data.type.dim);
     }
 
-    if (node->data.type.base_type == TYPE_BITFIELD) {
-        // If we are dealing with bitfields, we flatten even further by collapsing it into a single bitfield. That is not
+    if (node->data.type.base_type == TYPE_ATOMSET) {
+        // If we are dealing with atomsets, we flatten even further by collapsing it into a single atomset. That is not
         // a change of shape but their union (an atom in two of them is in the result once), which union() names.
         node->data.type.dim[0] = 1;
         EVAL_LOG_WARNING(ctx, node->token, "flatten() of selections is their union: use union(), flatten() is for the shape of arrays");
@@ -5643,7 +5739,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
             /*
             // Normalize the type and dimensions here for the length to be computed correctly
-            if (elem_type.base_type != TYPE_BITFIELD) {
+            if (elem_type.base_type != TYPE_ATOMSET) {
                 int ndim = dim_ndims(elem_type.dim);
                 if (ndim == 1 || (ndim > 1 && elem_type.dim[0] != 1)) {
                     dim_shift_right(elem_type.dim);
@@ -5652,8 +5748,8 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
                 elem_type.dim[0] = 1;
             }
             */
-            if (elem_type.base_type == TYPE_BITFIELD) {
-                // Bitfield
+            if (elem_type.base_type == TYPE_ATOMSET) {
+                // Atomset
                 dim_flatten(elem_type.dim);
             }
 
@@ -5664,9 +5760,9 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
                 array_type = elem_type;
             }
             else {
-                if (array_type.base_type == TYPE_BITFIELD) {
-                    // Bitfields are handled separately and concatenated
-                    if (elem_type.base_type != TYPE_BITFIELD) {
+                if (array_type.base_type == TYPE_ATOMSET) {
+                    // Atomsets are handled separately and concatenated
+                    if (elem_type.base_type != TYPE_ATOMSET) {
                         EVAL_LOG_ERROR(ctx, elem[i]->token, "Incompatible types wihin array construct");
                         return false;
                     }
@@ -6101,11 +6197,11 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     if (!INTERNAL_CHECK(ctx, node->token, md_array_size(node->children) == 2 && node->children[0] && node->children[1])) return false;
 
     // The rules are as follows:
-    // A context RHS must be a bitfield type.
+    // A context RHS must be an atomset type.
     //     
     // If the the basetype of LHS is (float, int, float[4], bool or whatever), then the result is of the same type but with an extra dimension with the same length as the RHS.
     // I.e.
-    // If RHS is bitfield with 8 matching structures:
+    // If RHS is atomset with 8 matching structures:
     // An LHS of float[4] would then result in a final type of float[4][8], one for each evaluated bitrange.
     
     // WE MUST BE ABLE TO EVALUATE RHS EXPRESSION DURING COMPILE TIME IN ORDER TO KNOW THE LENGTH
@@ -6120,7 +6216,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     bool result = static_check_node(rhs, ctx);
     ctx->eval_flags = backup_flags;
     
-    if (result && rhs->data.type.base_type == TYPE_BITFIELD) {
+    if (result && rhs->data.type.base_type == TYPE_ATOMSET) {
         if (!(rhs->flags & FLAG_DYNAMIC)) {
             const int ctx_len = type_info_array_len(rhs->data.type);
             if (ctx_len > 0) {
@@ -6143,9 +6239,9 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                 //allocate_data(&rhs->data, ctx->compile_ir->arena);
                 if (result) {
 
-                    // We differentiate here if the LHS is a bitfield or not
-                    // if LHS is a bitfield of length 1, the resulting bitfield length is the same as RHS (M)
-                    // if LHS is a bitfield of length N, the resulting bitfield length is (N*M), N may vary for each context.
+                    // We differentiate here if the LHS is an atomset or not
+                    // if LHS is an atomset of length 1, the resulting atomset length is the same as RHS (M)
+                    // if LHS is an atomset of length N, the resulting atomset length is (N*M), N may vary for each context.
 
                     const bool contexts_equivalent = are_bitfields_equivalent(contexts, num_contexts, ctx->sys); 
 
@@ -6177,7 +6273,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                         }
 
                         // Normalize the type and dimensions here for the length to be computed correctly
-                        if (local_type.base_type != TYPE_BITFIELD) {
+                        if (local_type.base_type != TYPE_ATOMSET) {
                             int ndim = dim_ndims(local_type.dim);
                             if (ndim == 1 || (ndim > 1 && local_type.dim[0] != 1)) {
                                 dim_shift_right(local_type.dim);
@@ -6199,7 +6295,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
 
                     node->flags |= lhs->flags & FLAG_AST_PROPAGATION_MASK;
                     node->data.type = node->lhs_context_types[0];
-                    if (node->data.type.base_type == TYPE_BITFIELD) {
+                    if (node->data.type.base_type == TYPE_ATOMSET) {
                         // This is a flattening of the dimensions
                         MEMSET(node->data.type.dim, 0, sizeof(node->data.type.dim));
                         node->data.type.dim[0] = (int)arr_len;
@@ -6232,7 +6328,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     } else {
         char buf[128];
         print_type_info(buf, ARRAY_SIZE(buf), rhs->data.type);
-        EVAL_LOG_ERROR(ctx, node->token, "Right hand side of keyword 'in' has an incompatible type: Expected bitfield, got '%s'.", buf);
+        EVAL_LOG_ERROR(ctx, node->token, "Right hand side of keyword 'in' has an incompatible type: Expected atomset, got '%s'.", buf);
         result = false;
     }
 
@@ -6352,7 +6448,7 @@ static uint64_t hash_node(const ast_node_t* node, uint64_t seed) {
     switch (node->type) {
     case AST_CONSTANT_VALUE:
         switch (node->data.type.base_type) {
-        case TYPE_BITFIELD:
+        case TYPE_ATOMSET:
         {
             const md_bitset_t* bs = (const md_bitset_t*)node->data.ptr;
             return md_bitset_hash64(*bs, seed);
@@ -7748,7 +7844,7 @@ bool md_script_ir_add_identifier_bitset(md_script_ir_t* ir, str_t name, md_bitse
     ast_node_t* node = create_node(ir, AST_CONSTANT_VALUE, (token_t){0});
     node->data.ptr = &node->value._bitset;
     node->data.size = sizeof(md_bitset_t);
-    node->data.type = (type_info_t)TI_BITFIELD;
+    node->data.type = (type_info_t)TI_ATOMSET;
     node->data.alloc = ir->arena;
     node->value._bitset = md_bitset_copy(set, ir->arena);
 
@@ -9173,7 +9269,7 @@ md_filter_result_t md_filter_sets(md_array(md_bitset_t)* dst, str_t expr, const 
     filter_eval_t f;
     if (filter_begin(&f, &res, expr, ctx, EVAL_FLAG_NO_STATIC_EVAL, temp_alloc)) {
         const char* msg = NULL;
-        if (f.node && f.node->data.type.base_type == TYPE_BITFIELD) {
+        if (f.node && f.node->data.type.base_type == TYPE_ATOMSET) {
             data_t data = {0};
             if (evaluate_node_alloc(&data, f.node, &f.ctx, temp_alloc)) {
                 const int64_t len = type_info_array_len(data.type);
@@ -9210,7 +9306,7 @@ md_filter_result_t md_filter(md_bitset_t* dst, str_t expr, const md_filter_conte
         const char* msg = NULL;
         ast_node_t* node = f.node;
         if (node) {
-            const bool is_bitfield = node->data.type.base_type == TYPE_BITFIELD;
+            const bool is_bitfield = node->data.type.base_type == TYPE_ATOMSET;
             const bool variable = is_bitfield && is_variable_length(node->data.type);
 
             // A variable length is known once evaluated
@@ -9258,6 +9354,66 @@ md_filter_result_t md_filter(md_bitset_t* dst, str_t expr, const md_filter_conte
     return res;
 }
 
+md_filter_result_t md_filter_bonds(md_array(md_atom_pair_t)* dst, str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
+    ASSERT(dst);
+    ASSERT(alloc);
+    md_filter_result_t res;
+
+    md_array_shrink(*dst, 0);
+
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
+
+    filter_eval_t f;
+    if (filter_begin(&f, &res, expr, ctx, EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL, temp_alloc)) {
+        const char* msg = NULL;
+        const base_type_t type = f.node ? f.node->data.type.base_type : TYPE_UNDEFINED;
+        if (type == TYPE_BONDSET || type == TYPE_ATOMSET) {
+            data_t data = {0};
+            if (evaluate_node_alloc(&data, f.node, &f.ctx, temp_alloc)) {
+                const size_t len = data.ptr ? (size_t)type_info_array_len(data.type) : 0;
+                if (type == TYPE_BONDSET) {
+                    md_atom_pair_t* pairs = NULL;
+                    const size_t n = len ? bondset_union_pairs(&pairs, (const bondset_t*)data.ptr, len, &f.ctx, temp_alloc) : 0;
+                    for (size_t i = 0; i < n; ++i) {
+                        // Within the context, which bond() keeps to but the bonds of bond_delta() need not: those of
+                        // its scope reach out of it
+                        if (ctx->atoms && !(md_bitset_test(*ctx->atoms, (uint32_t)pairs[i].idx[0]) && md_bitset_test(*ctx->atoms, (uint32_t)pairs[i].idx[1]))) continue;
+                        md_array_push(*dst, pairs[i], alloc);
+                    }
+                } else if (len) {
+                    // The persistent bonds among the atoms, of both ranges, but for the elastic bonds: springs of the
+                    // force field, which are shown when they are asked for (bond(kind='elastic'))
+                    const md_system_t* sys = ctx->sys;
+                    md_bitmask_t b = md_bitmask_create(0, (uint32_t)sys->atom.count, temp_alloc);
+                    const md_bitset_t* sets = (const md_bitset_t*)data.ptr;
+                    for (size_t i = 0; i < len; ++i) {
+                        md_bitmask_or(&b, sets[i]);
+                    }
+                    const md_bitset_t atoms = md_bitmask_extract(&b, temp_alloc);
+                    const size_t total = sys->bond.count + sys->bond.noncovalent_count;
+                    for (size_t i = 0; i < total; ++i) {
+                        const md_atom_pair_t p = sys->bond.pairs[i];
+                        if (sys->bond.flags && (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+                        if (md_bitset_test(atoms, (uint32_t)p.idx[0]) && md_bitset_test(atoms, (uint32_t)p.idx[1])) {
+                            md_array_push(*dst, p, alloc);
+                        }
+                    }
+                }
+                res.success = true;
+            }
+        } else if (f.node) {
+            msg = "The expression picks neither bonds nor atoms";
+        }
+        if (!res.success) {
+            filter_write_errors(&res, f.ir, &f.log, msg);
+        }
+    }
+
+    md_temp_end(temp_scope);
+    return res;
+}
+
 #define VIS_MAGIC 0xbc6169abd9628947
 
 static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
@@ -9281,7 +9437,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         break;
     }
 
-    if (node->data.type.base_type == TYPE_BITFIELD) {
+    if (node->data.type.base_type == TYPE_ATOMSET) {
         data_t data = {0};
 
         if (!evaluate_node_alloc(&data, node, ctx, ctx->temp_alloc)) {
@@ -9311,8 +9467,28 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
             }
             free_data(&data, ctx->temp_alloc);
         } else {
-            md_log(MD_LOG_TYPE_DEBUG,"Failed to allocate data for bitfield visualization");
+            md_log(MD_LOG_TYPE_DEBUG,"Failed to allocate data for atomset visualization");
         }
+    } else if (node->data.type.base_type == TYPE_BONDSET) {
+        // The atoms of the bonds, and a line along each
+        data_t data = {0};
+        if (!evaluate_node_alloc(&data, node, ctx, ctx->temp_alloc)) {
+            md_log(MD_LOG_TYPE_DEBUG, "Vis Eval: Failed to evaluate expression");
+            return;
+        }
+        const bondset_t* bs_arr = data.ptr;
+        const int count = (int)element_count(data);
+        for (int i = 0; bs_arr && i < count; ++i) {
+            if (ctx->subscript_ranges) {
+                bool picked = false;
+                for (size_t r = 0; r < md_array_size(ctx->subscript_ranges) && !picked; ++r) {
+                    picked = ctx->subscript_ranges[r].beg <= i && i < ctx->subscript_ranges[r].end;
+                }
+                if (!picked) continue;
+            }
+            visualize_bondset(&bs_arr[i], ctx);
+        }
+        free_data(&data, ctx->temp_alloc);
     } else if (node->flags & FLAG_COORDINATE) {
         data_t tmp_data = {0};
         const data_t* data = &node->data;

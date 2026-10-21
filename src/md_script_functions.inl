@@ -43,14 +43,18 @@
 #define TI_STRING       {TYPE_STRING, {1}}
 #define TI_STRING_ARR   {TYPE_STRING, {ANY_LENGTH}}
 
-#define TI_BITFIELD     {TYPE_BITFIELD, {1}}
-#define TI_BITFIELD_ARR {TYPE_BITFIELD, {ANY_LENGTH}}
+#define TI_ATOMSET     {TYPE_ATOMSET, {1}}
+#define TI_ATOMSET_ARR {TYPE_ATOMSET, {ANY_LENGTH}}
 
 #define TI_CONTACT        {TYPE_CONTACT, {1}}
 #define TI_PLANE          {TYPE_PLANE, {1}}
 #define TI_PLANE_ARR      {TYPE_PLANE, {ANY_LENGTH}}
 #define TI_PUCKER         {TYPE_PUCKER, {1}}
 #define TI_PUCKER_ARR     {TYPE_PUCKER, {ANY_LENGTH}}
+
+#define TI_BONDSET        {TYPE_BONDSET, {1}}
+#define TI_BONDSET_ARR    {TYPE_BONDSET, {ANY_LENGTH}}
+#define TI_BOND_DELTA     {TYPE_BOND_DELTA, {1}}
 
 #define TI_COORDINATE     {TYPE_COORDINATE, {1}}
 #define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}}
@@ -74,6 +78,7 @@
 #define as_string_arr(arg) ((str_t*)((arg).ptr))
 
 #define as_bitset(arg) ((md_bitset_t*)((arg).ptr))
+#define as_bondset(arg) ((bondset_t*)((arg).ptr))
 
 // Sets written as results are built in a mask in the temp arena (over the atoms of the system: it allocates only
 // the words it writes), then extracted into the allocator of the destination: their words live exactly as long as
@@ -503,10 +508,10 @@ static int _max_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> floa
 static int _sum_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
 
 // Logical operators for custom types
-static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _and  (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _or   (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _xor  (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _not  (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _and  (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _or   (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _xor  (data_t*, data_t[], eval_context_t*); // -> atomset
 
 // Boolean operators
 static int _cmp_lt  (data_t*, data_t[], eval_context_t*); // -> bool
@@ -522,61 +527,61 @@ static int _cmp_eq_f_f(data_t*, data_t[], eval_context_t*); // -> bool
 
 // Selectors
 // Atom level selectors
-static int _all             (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_x        (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_y        (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_z        (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_xyz      (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_expl_flt (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_expl_frng(data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_impl_flt (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_impl_frng(data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _name            (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _element_str     (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _element_irng    (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _atom_irng       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _atom_int        (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _all             (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _within_x        (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _within_y        (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _within_z        (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _within_xyz      (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _within_expl_flt (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _within_expl_frng(data_t*, data_t[], eval_context_t*); // -> atomset
+static int _within_impl_flt (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _within_impl_frng(data_t*, data_t[], eval_context_t*); // -> atomset
+static int _name            (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _element_str     (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _element_irng    (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _atom_irng       (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _atom_int        (data_t*, data_t[], eval_context_t*); // -> atomset
 
-static int _ion             (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _backbone        (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _side            (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _sidechain       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _nucleoside      (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _nucleobase      (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _head            (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _tail            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
+static int _ion             (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _backbone        (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _side            (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _sidechain       (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _nucleoside      (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _nucleobase      (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _head            (data_t*, data_t[], eval_context_t*); // -> atomset
+static int _tail            (data_t*, data_t[], eval_context_t*); // -> atomset[]
 
-static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
-static int _ring_irng       (data_t*, data_t[], eval_context_t*); // (irange[], ...) -> bitfield[]
+static int _ring            (data_t*, data_t[], eval_context_t*); // -> atomset[]
+static int _ring_irng       (data_t*, data_t[], eval_context_t*); // (irange[], ...) -> atomset[]
 
 // Structure matching, see md_match.h
-static int _smiles          (data_t*, data_t[], eval_context_t*); // (str, level: str, mode: str) -> bitfield[]
-static int _match           (data_t*, data_t[], eval_context_t*); // (bitfield, by: str, level: str, mode: str) -> bitfield[]
+static int _smiles          (data_t*, data_t[], eval_context_t*); // (str, level: str, mode: str) -> atomset[]
+static int _match           (data_t*, data_t[], eval_context_t*); // (atomset, by: str, level: str, mode: str) -> atomset[]
 
 // Residue level selectors
-static int _water       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _lipid       (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _protein     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _nucleic     (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _water       (data_t*, data_t[], eval_context_t*);   // -> atomset[]
+static int _lipid       (data_t*, data_t[], eval_context_t*);   // -> atomset[]
+static int _protein     (data_t*, data_t[], eval_context_t*);   // -> atomset[]
+static int _nucleic     (data_t*, data_t[], eval_context_t*);   // -> atomset[]
+static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> atomset[]
 
 // Regions of a QM calculation (MD_ATOM_FLAG_QM), one selection per component which has atoms in it
-static int _qm          (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _environment (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _comp_name   (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
-static int _comp_seq_id (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
-static int _comp        (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
+static int _qm          (data_t*, data_t[], eval_context_t*);   // -> atomset[]
+static int _environment (data_t*, data_t[], eval_context_t*);   // -> atomset[]
+static int _comp_name   (data_t*, data_t[], eval_context_t*);   // (str[])          -> atomset[]
+static int _comp_seq_id (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> atomset[]
+static int _comp        (data_t*, data_t[], eval_context_t*);   // (irange[])       -> atomset[]
 
-static int _fill_comp(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
-static int _fill_inst(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
+static int _fill_comp(data_t*, data_t[], eval_context_t*);   // (atomset[]) -> atomset
+static int _fill_inst(data_t*, data_t[], eval_context_t*);   // (atomset[]) -> atomset
 
 // Instance level selectors
-static int _inst_irng   (data_t*, data_t[], eval_context_t*);   // (irange[]) -> bitfield
-static int _inst_id     (data_t*, data_t[], eval_context_t*);   // (str[]) -> bitfield
-static int _inst_auth_id(data_t*, data_t[], eval_context_t*);   // (str[]) -> bitfield
-static int _chain_irng(data_t*, data_t[], eval_context_t*);     // (irange[]) -> bitfield
-static int _chain_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> bitfield
-static int _chain_auth_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> bitfield
+static int _inst_irng   (data_t*, data_t[], eval_context_t*);   // (irange[]) -> atomset
+static int _inst_id     (data_t*, data_t[], eval_context_t*);   // (str[]) -> atomset
+static int _inst_auth_id(data_t*, data_t[], eval_context_t*);   // (str[]) -> atomset
+static int _chain_irng(data_t*, data_t[], eval_context_t*);     // (irange[]) -> atomset
+static int _chain_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> atomset
+static int _chain_auth_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> atomset
 
 // Property Compute
 static int _distance        (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
@@ -587,7 +592,7 @@ static int _distance_pair   (data_t*, data_t[], eval_context_t*); // (position[N
 static int _angle   (data_t*, data_t[], eval_context_t*); // (position[], position[], position[]) -> float
 static int _dihedral(data_t*, data_t[], eval_context_t*); // (position[], position[], position[]), position[]) -> float
 
-static int _rmsd    (data_t*, data_t[], eval_context_t*); // (bitfield[N]) -> float[N]
+static int _rmsd    (data_t*, data_t[], eval_context_t*); // (atomset[N]) -> float[N]
 
 // Radial distribution function: The idea is that we use a fixed (high) amount of bins, then we let the user choose some kernel to smooth it.
 static int _rdf_flt (data_t*, data_t[], eval_context_t*); // (position[], position[], float)  -> float[1024] (Histogram).
@@ -602,27 +607,41 @@ static int _density_x(data_t*, data_t[], eval_context_t*);
 static int _density_y(data_t*, data_t[], eval_context_t*);
 static int _density_z(data_t*, data_t[], eval_context_t*);
 
-static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, float) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
+static int _sdf     (data_t*, data_t[], eval_context_t*); // (atomset, atomset, float) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
 
 // Misc
-static int _contact_count(data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield[], float) -> int
+static int _contact_count(data_t*, data_t[], eval_context_t*); // (atomset[], atomset[], float) -> int
 static int _contacts(data_t*, data_t[], eval_context_t*);        // (a, b, cutoff, exclude_bonds, min_separation, parent, exclude_within) -> contact
 static int _count_contact(data_t*, data_t[], eval_context_t*);   // (contact) -> float
 static int _count_contact_unit(data_t*, data_t[], eval_context_t*); // (contact, str) -> float
 static int _degree_contact(data_t*, data_t[], eval_context_t*);  // (contact) -> float[num_a]
-static int _chunks(data_t*, data_t[], eval_context_t*);          // (bitfield[], int) -> bitfield[]
-static int _porosity   (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> float
+static int _chunks(data_t*, data_t[], eval_context_t*);          // (atomset[], int) -> atomset[]
+static int _porosity   (data_t*, data_t[], eval_context_t*); // (atomset[]) -> float
+
+// Bonds, see ### BONDS ###
+static int _bond        (data_t*, data_t[], eval_context_t*); // (a, b, kind, order, resonance, origin) -> bondset[]
+static int _bond_atoms  (data_t*, data_t[], eval_context_t*); // (bondset[]) -> atomset[]
+static int _count_bonds (data_t*, data_t[], eval_context_t*); // (bondset[]) -> float
+static int _bond_length (data_t*, data_t[], eval_context_t*); // (bondset[]) -> float[]
+static int _bond_not    (data_t*, data_t[], eval_context_t*); // (bondset[]) -> bondset
+static int _bond_and    (data_t*, data_t[], eval_context_t*); // (bondset[], bondset[]) -> bondset
+static int _bond_or     (data_t*, data_t[], eval_context_t*); // (bondset[], bondset[]) -> bondset
+static int _bond_xor    (data_t*, data_t[], eval_context_t*); // (bondset[], bondset[]) -> bondset
+static int _bond_delta  (data_t*, data_t[], eval_context_t*); // (scope, tolerance, breakable) -> bond_delta
+static int _bond_delta_formed(data_t*, data_t[], eval_context_t*); // (bond_delta) -> bondset
+static int _bond_delta_broken(data_t*, data_t[], eval_context_t*); // (bond_delta) -> bondset
+static int _bond_delta_bonds (data_t*, data_t[], eval_context_t*); // (bond_delta) -> bondset
 
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
-static int _plane_groups    (data_t*, data_t[], eval_context_t*);  // (bitfield[]) -> plane[], one per group
+static int _plane_groups    (data_t*, data_t[], eval_context_t*);  // (atomset[]) -> plane[], one per group
 static int _plane_points    (data_t*, data_t[], eval_context_t*);  // (position[]) -> plane, one through the positions
 static int _plane_centroid  (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[][3]
 static int _plane_normal    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[][3]
 static int _plane_radius    (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[]
 static int _plane_deviation (data_t*, data_t[], eval_context_t*);  // (plane[]) -> float[]
 static int _plane_angle     (data_t*, data_t[], eval_context_t*);  // (plane[], plane[]) -> float[]
-static int _pucker_rings    (data_t*, data_t[], eval_context_t*);  // (bitfield[]) -> pucker[], one per ring
+static int _pucker_rings    (data_t*, data_t[], eval_context_t*);  // (atomset[]) -> pucker[], one per ring
 static int _pucker_atoms    (data_t*, data_t[], eval_context_t*);  // (int[]) -> pucker[1], the atoms in order
 static int _pucker_amplitude(data_t*, data_t[], eval_context_t*);  // (pucker[]) -> float[]
 static int _pucker_phase    (data_t*, data_t[], eval_context_t*);  // (pucker[]) -> float[]
@@ -654,10 +673,10 @@ static int _vec4 (data_t*, data_t[], eval_context_t*); // (float, float, float, 
 
 // Misc
 // Count the number of bits set (popcount)
-static int _count (data_t*, data_t[], eval_context_t*); // (bitfield) -> float
+static int _count (data_t*, data_t[], eval_context_t*); // (atomset) -> float
 
 // Specialized count function with supplied argument
-static int _count_with_arg(data_t* , data_t[], eval_context_t*); // (bitfield) -> float
+static int _count_with_arg(data_t* , data_t[], eval_context_t*); // (atomset) -> float
 
 static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
@@ -695,9 +714,9 @@ static procedure_t casts[] = {
     {STR_INIT("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("cast"),    TI_BITFIELD,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
-    {STR_INIT("cast"),    TI_BITFIELD,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
-    {STR_INIT("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _join_bf_arr},
+    {STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
+    {STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
+    {STR_INIT("cast"),    TI_ATOMSET,      1,  {TI_ATOMSET_ARR},  _join_bf_arr},
 
     //{STR_INIT("cast"),    TI_FLOAT3_ARR,    1,  {TI_COORDINATE_ARR},  _coordinate, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_DYNAMIC_LENGTH},
 };
@@ -718,10 +737,16 @@ static procedure_t operators[] = {
     {STR_INIT("and"),    TI_BOOL_ARR,       2,  {TI_BOOL_ARR, TI_BOOL_ARR},     _op_and_barr_barr,  FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // BITFIELD NOT
-    {STR_INIT("not"),    TI_BITFIELD,       1,  {TI_BITFIELD_ARR},                  _not,   FLAG_FLATTEN},
-    {STR_INIT("and"),    TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _and,   FLAG_FLATTEN},
-    {STR_INIT("or"),     TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _or,    FLAG_FLATTEN},
-    {STR_INIT("xor"),    TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _xor,   FLAG_FLATTEN},
+    {STR_INIT("not"),    TI_ATOMSET,       1,  {TI_ATOMSET_ARR},                  _not,   FLAG_FLATTEN},
+    {STR_INIT("and"),    TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _and,   FLAG_FLATTEN},
+    {STR_INIT("or"),     TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _or,    FLAG_FLATTEN},
+    {STR_INIT("xor"),    TI_ATOMSET,       2,  {TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _xor,   FLAG_FLATTEN},
+
+    // BONDSET LOGIC, on the union of each side
+    {STR_INIT("not"),    TI_BONDSET,       1,  {TI_BONDSET_ARR},                  _bond_not},
+    {STR_INIT("and"),    TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_and},
+    {STR_INIT("or"),     TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_or},
+    {STR_INIT("xor"),    TI_BONDSET,       2,  {TI_BONDSET_ARR, TI_BONDSET_ARR},  _bond_xor},
 
     // Comparison. The scalar overload comes first and the array/array overload last, so that a scalar operand is
     // matched against the broadcasting overloads before it is treated as a length-one array.
@@ -875,70 +900,70 @@ static procedure_t procedures[] = {
     // --- SELECTORS ---
 
     // Atom level
-    {STR_INIT("all"),           TI_BITFIELD, 0, {0},                _all},
-    {STR_INIT("ion"),           TI_BITFIELD, 0, {0},                _ion},
-    {STR_INIT("backbone"),      TI_BITFIELD, 0, {0},                _backbone},
-    {STR_INIT("side"),          TI_BITFIELD, 0, {0},                _side},
-    {STR_INIT("sidechain"),     TI_BITFIELD, 0, {0},                _sidechain},
-    {STR_INIT("nucleoside"),    TI_BITFIELD, 0, {0},                _nucleoside},
-    {STR_INIT("nucleobase"),    TI_BITFIELD, 0, {0},                _nucleobase},
+    {STR_INIT("all"),           TI_ATOMSET, 0, {0},                _all},
+    {STR_INIT("ion"),           TI_ATOMSET, 0, {0},                _ion},
+    {STR_INIT("backbone"),      TI_ATOMSET, 0, {0},                _backbone},
+    {STR_INIT("side"),          TI_ATOMSET, 0, {0},                _side},
+    {STR_INIT("sidechain"),     TI_ATOMSET, 0, {0},                _sidechain},
+    {STR_INIT("nucleoside"),    TI_ATOMSET, 0, {0},                _nucleoside},
+    {STR_INIT("nucleobase"),    TI_ATOMSET, 0, {0},                _nucleobase},
     // The parts of lipids (md_lipid_data_t): their heads, and one selection per tail
-    {STR_INIT("head"),          TI_BITFIELD, 0, {0},                _head},
-    {STR_INIT("tail"),          TI_BITFIELD_ARR, 0, {0},            _tail,          FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {STR_INIT("head"),          TI_ATOMSET, 0, {0},                _head},
+    {STR_INIT("tail"),          TI_ATOMSET_ARR, 0, {0},            _tail,          FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
-    {STR_INIT("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
-    {STR_INIT("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
-    {STR_INIT("label"),     TI_BITFIELD, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
-    {STR_INIT("element"),   TI_BITFIELD, 1, {TI_STRING_ARR},        _element_str,   FLAG_STATIC_VALIDATION},
-    {STR_INIT("element"),   TI_BITFIELD, 1, {TI_IRANGE_ARR},        _element_irng,  FLAG_STATIC_VALIDATION},
-    {STR_INIT("atom"),      TI_BITFIELD, 1, {TI_IRANGE_ARR},        _atom_irng,     FLAG_STATIC_VALIDATION},
-    {STR_INIT("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},           _atom_int,      FLAG_STATIC_VALIDATION},
+    {STR_INIT("type"),      TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {STR_INIT("name"),      TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {STR_INIT("label"),     TI_ATOMSET, 1, {TI_STRING_ARR},        _name,          FLAG_STATIC_VALIDATION},
+    {STR_INIT("element"),   TI_ATOMSET, 1, {TI_STRING_ARR},        _element_str,   FLAG_STATIC_VALIDATION},
+    {STR_INIT("element"),   TI_ATOMSET, 1, {TI_IRANGE_ARR},        _element_irng,  FLAG_STATIC_VALIDATION},
+    {STR_INIT("atom"),      TI_ATOMSET, 1, {TI_IRANGE_ARR},        _atom_irng,     FLAG_STATIC_VALIDATION},
+    {STR_INIT("atom"),      TI_ATOMSET, 1, {TI_INT_ARR},           _atom_int,      FLAG_STATIC_VALIDATION},
     
-    {STR_INIT("ring"),      TI_BITFIELD_ARR, 3, {TI_STRING_ARR, TI_STRING_ARR, TI_IRANGE}, _ring, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {STR_INIT("ring"),      TI_ATOMSET_ARR, 3, {TI_STRING_ARR, TI_STRING_ARR, TI_IRANGE}, _ring, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
     // By position: listed after the pattern, so that ring() (no pattern, an absent argument) stays the one above
-    {STR_INIT("ring"),      TI_BITFIELD_ARR, 3, {TI_IRANGE_ARR, TI_STRING_ARR, TI_IRANGE}, _ring_irng, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {STR_INIT("ring"),      TI_ATOMSET_ARR, 3, {TI_IRANGE_ARR, TI_STRING_ARR, TI_IRANGE}, _ring_irng, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // Structure matching: one selection per occurrence of a SMILES pattern, or of a reference structure
-    {STR_INIT("smiles"),    TI_BITFIELD_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("match"),     TI_BITFIELD_ARR, 4, {TI_BITFIELD, TI_STRING, TI_STRING, TI_STRING}, _match,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("smiles"),    TI_ATOMSET_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("match"),     TI_ATOMSET_ARR, 4, {TI_ATOMSET, TI_STRING, TI_STRING, TI_STRING}, _match,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Residue level
-    {STR_INIT("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("nucleotide"),TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("lipid"),     TI_BITFIELD_ARR, 0, {0},                _lipid,         FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("protein"),   TI_ATOMSET_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("nucleic"),   TI_ATOMSET_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("nucleotide"),TI_ATOMSET_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("water"),     TI_ATOMSET_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("lipid"),     TI_ATOMSET_ARR, 0, {0},                _lipid,         FLAG_QUERYABLE_LENGTH},
 
     // A compile error where the system has no such region: a QM region, and atoms which are not in it
-    {STR_INIT("qm"),          TI_BITFIELD_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("environment"), TI_BITFIELD_ARR, 0, {0},              _environment,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("resname"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("residue"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("component"), TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("resid"),     TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _comp_seq_id,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("residue"),   TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _comp,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("component"), TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _comp,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("qm"),          TI_ATOMSET_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("environment"), TI_ATOMSET_ARR, 0, {0},              _environment,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("resname"),   TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("residue"),   TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("component"), TI_ATOMSET_ARR, 1, {TI_STRING_ARR},    _comp_name,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("resid"),     TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _comp_seq_id,   FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("residue"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _comp,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("component"), TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _comp,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Instance level
-    {STR_INIT("instance"),     TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_id,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("instance"),     TI_BITFIELD_ARR,  1,  {TI_IRANGE_ARR},    _inst_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-	{STR_INIT("auth_id"),      TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _inst_auth_id,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-	{STR_INIT("chain_id"),     TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _chain_id,         FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("chain"),        TI_BITFIELD_ARR,  1,  {TI_STRING_ARR},    _chain_id,         FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("chain"),        TI_BITFIELD_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("instance"),     TI_ATOMSET_ARR,  1,  {TI_STRING_ARR},    _inst_id,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("instance"),     TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _inst_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+	{STR_INIT("auth_id"),      TI_ATOMSET_ARR,  1,  {TI_STRING_ARR},    _inst_auth_id,     FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+	{STR_INIT("chain_id"),     TI_ATOMSET_ARR,  1,  {TI_STRING_ARR},    _chain_id,         FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("chain"),        TI_ATOMSET_ARR,  1,  {TI_STRING_ARR},    _chain_id,         FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("chain"),        TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
-    // Also have variable result (well its a single bitfield, but the number of atoms within is not fixed)
-    {STR_INIT("within_x"),      TI_BITFIELD, 1, {TI_FRANGE},    _within_x,     FLAG_DYNAMIC},
-    {STR_INIT("within_y"),      TI_BITFIELD, 1, {TI_FRANGE},    _within_y,     FLAG_DYNAMIC},
-    {STR_INIT("within_z"),      TI_BITFIELD, 1, {TI_FRANGE},    _within_z,     FLAG_DYNAMIC},
-    {STR_INIT("within_xyz"),    TI_BITFIELD, 3, {TI_FRANGE, TI_FRANGE, TI_FRANGE}, _within_xyz,     FLAG_DYNAMIC},
+    // Also have variable result (well its a single atomset, but the number of atoms within is not fixed)
+    {STR_INIT("within_x"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_x,     FLAG_DYNAMIC},
+    {STR_INIT("within_y"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_y,     FLAG_DYNAMIC},
+    {STR_INIT("within_z"),      TI_ATOMSET, 1, {TI_FRANGE},    _within_z,     FLAG_DYNAMIC},
+    {STR_INIT("within_xyz"),    TI_ATOMSET, 3, {TI_FRANGE, TI_FRANGE, TI_FRANGE}, _within_xyz,     FLAG_DYNAMIC},
 
-    {STR_INIT("within"),    TI_BITFIELD, 2, {TI_FLOAT,  TI_COORDINATE_ARR}, _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
-    {STR_INIT("within"),    TI_BITFIELD, 2, {TI_FRANGE, TI_COORDINATE_ARR}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {STR_INIT("within"),    TI_ATOMSET, 2, {TI_FLOAT,  TI_COORDINATE_ARR}, _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {STR_INIT("within"),    TI_ATOMSET, 2, {TI_FRANGE, TI_COORDINATE_ARR}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
 
-    {STR_INIT("within"),    TI_BITFIELD, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
-    {STR_INIT("within"),    TI_BITFIELD, 1, {TI_FRANGE},                    _within_impl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {STR_INIT("within"),    TI_ATOMSET, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {STR_INIT("within"),    TI_ATOMSET, 1, {TI_FRANGE},                    _within_impl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
 
     // --- PROPERTY COMPUTE ---
     {STR_INIT("distance"),          TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN },
@@ -949,45 +974,45 @@ static procedure_t procedures[] = {
     {STR_INIT("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                      _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {STR_INIT("dihedral"),  TI_FLOAT,   4,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},   _dihedral,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
 
-    {STR_INIT("rmsd"),      TI_FLOAT_ARR, 1, {TI_BITFIELD_ARR}, _rmsd,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {STR_INIT("rmsd"),      TI_FLOAT_ARR, 1, {TI_ATOMSET_ARR}, _rmsd,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     {STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {STR_INIT("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
 
-    {STR_INIT("density"),   {TYPE_DISTRIBUTION, {3,MD_DIST_BINS}}, 1, {TI_BITFIELD_ARR}, _density,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
-    {STR_INIT("density_x"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_x,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
-    {STR_INIT("density_y"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_y,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
-    {STR_INIT("density_z"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_z,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {STR_INIT("density"),   {TYPE_DISTRIBUTION, {3,MD_DIST_BINS}}, 1, {TI_ATOMSET_ARR}, _density,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {STR_INIT("density_x"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_x,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {STR_INIT("density_y"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_y,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {STR_INIT("density_z"), TI_DISTRIBUTION, 1, {TI_ATOMSET_ARR}, _density_z,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
     {STR_INIT("pool"),      TI_DISTRIBUTION_ARR, 2, {TI_DISTRIBUTION_ARR, TI_DISTRIBUTION_ARR}, _dist_pool, FLAG_QUERYABLE_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
-    {STR_INIT("sdf"),       TI_VOLUME, 3,   {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE },
+    {STR_INIT("sdf"),       TI_VOLUME, 3,   {TI_ATOMSET_ARR, TI_ATOMSET, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE },
 
-    {STR_INIT("count"),     TI_FLOAT,  1,   {TI_BITFIELD_ARR},              _count},
-    {STR_INIT("count"),     TI_FLOAT,  2,   {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
+    {STR_INIT("count"),     TI_FLOAT,  1,   {TI_ATOMSET_ARR},              _count},
+    {STR_INIT("count"),     TI_FLOAT,  2,   {TI_ATOMSET_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
 
-    {STR_INIT("porosity"), TI_FLOAT,  1,   {TI_BITFIELD},   _porosity, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
+    {STR_INIT("porosity"), TI_FLOAT,  1,   {TI_ATOMSET},   _porosity, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
 
-    {STR_INIT("contact_count"), TI_FLOAT_ARR,  3,   {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {STR_INIT("contact_count"), TI_FLOAT_ARR,  3,   {TI_ATOMSET_ARR, TI_ATOMSET, TI_FLOAT}, _contact_count, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     // Contacts between groups, see md_contact.h
-    {STR_INIT("contacts"),  TI_CONTACT,    7,   {TI_BITFIELD_ARR, TI_BITFIELD_ARR, TI_FLOAT, TI_INT, TI_INT, TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _contacts, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {STR_INIT("contacts"),  TI_CONTACT,    7,   {TI_ATOMSET_ARR, TI_ATOMSET_ARR, TI_FLOAT, TI_INT, TI_INT, TI_ATOMSET_ARR, TI_ATOMSET_ARR}, _contacts, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
     {STR_INIT("count"),     TI_FLOAT,      1,   {TI_CONTACT},               _count_contact},
     {STR_INIT("count"),     TI_FLOAT,      2,   {TI_CONTACT, TI_STRING},    _count_contact_unit, FLAG_STATIC_VALIDATION},
     {STR_INIT("degree"),    TI_FLOAT_ARR,  1,   {TI_CONTACT},               _degree_contact, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("chunks"),    TI_BITFIELD_ARR, 2, {TI_BITFIELD_ARR, TI_INT},  _chunks, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("chunks"),    TI_ATOMSET_ARR, 2, {TI_ATOMSET_ARR, TI_INT},  _chunks, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // --- GEOMETRICAL OPERATIONS ---
     {STR_INIT("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    // One plane per group, or one through positions. The groups come first: a bitfield is a position as well, and the
+    // One plane per group, or one through positions. The groups come first: an atomset is a position as well, and the
     // first overload which takes the arguments as they are wins. One plane through all the groups is plane(union(...)).
-    {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_BITFIELD_ARR},    _plane_groups,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_ATOMSET_ARR},    _plane_groups,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
     {STR_INIT("plane"),         TI_PLANE_ARR,   1,  {TI_COORDINATE_ARR},  _plane_points,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
     {STR_INIT("centroid"),      TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_centroid,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("normal"),        TI_FLOAT3_ARR,  1,  {TI_PLANE_ARR},       _plane_normal,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("radius"),        TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_radius,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("deviation"),     TI_FLOAT_ARR,   1,  {TI_PLANE_ARR},       _plane_deviation, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("angle"),         TI_FLOAT_ARR,   2,  {TI_PLANE_ARR, TI_PLANE_ARR}, _plane_angle, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_BITFIELD_ARR},    _pucker_rings,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
+    {STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_ATOMSET_ARR},    _pucker_rings,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
     {STR_INIT("pucker"),        TI_PUCKER_ARR,  1,  {TI_INT_ARR},         _pucker_atoms,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
     {STR_INIT("amplitude"),     TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_amplitude, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("phase"),         TI_FLOAT_ARR,   1,  {TI_PUCKER_ARR},      _pucker_phase,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
@@ -1005,16 +1030,25 @@ static procedure_t procedures[] = {
     {STR_INIT("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
 
     // --- MISC ---
-    {STR_INIT("union"),     TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    {STR_INIT("union"),     TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_bf_arr,  FLAG_FLATTEN},
     // The old name of union: it compiles, with a warning (as flatten of selections does, see static_check_flatten)
-    {STR_INIT("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_deprecated, FLAG_FLATTEN | FLAG_STATIC_VALIDATION},
-    {STR_INIT("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},      _join_bf_arr,  FLAG_FLATTEN},
+    {STR_INIT("join"),      TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_deprecated, FLAG_FLATTEN | FLAG_STATIC_VALIDATION},
+    {STR_INIT("flatten"),   TI_ATOMSET,     1,  {TI_ATOMSET_ARR},      _join_bf_arr,  FLAG_FLATTEN},
 
-    {STR_INIT("split"),     TI_BITFIELD_ARR, 2,  {TI_BITFIELD, TI_INT},  _split_bf_int, FLAG_FLATTEN | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("split"),     TI_ATOMSET_ARR, 2,  {TI_ATOMSET, TI_INT},  _split_bf_int, FLAG_FLATTEN | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 
-    {STR_INIT("residue"),   TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_comp,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {STR_INIT("chain"),     TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_inst,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("residue"),   TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_comp,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("chain"),     TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_inst,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
+    // --- BONDS ---
+    {STR_INIT("bond"),       TI_BONDSET_ARR, 6, {TI_ATOMSET_ARR, TI_ATOMSET_ARR, TI_STRING_ARR, TI_IRANGE, TI_STRING_ARR, TI_STRING_ARR}, _bond, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {STR_INIT("atoms"),      TI_ATOMSET_ARR, 1, {TI_BONDSET_ARR},   _bond_atoms,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {STR_INIT("count"),      TI_FLOAT,       1, {TI_BONDSET_ARR},   _count_bonds},
+    {STR_INIT("length"),     TI_FLOAT_ARR,   1, {TI_BONDSET_ARR},   _bond_length,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("bond_delta"), TI_BOND_DELTA,  3, {TI_ATOMSET_ARR, TI_FLOAT, TI_STRING_ARR}, _bond_delta, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
+    {STR_INIT("formed"),     TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_formed},
+    {STR_INIT("broken"),     TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_broken},
+    {STR_INIT("bonds"),      TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_bonds},
 };
 
 // Parameter names, declared per procedure NAME and shared by all of its overloads (see NAMED ARGUMENTS in
@@ -1071,6 +1105,11 @@ static const proc_sig_t signatures[] = {
     // ring(pattern = none, *, kind = none, size = none), see _ring. The first is a pattern or, in the other overload, an
     // index (_ring_irng): 'pattern' names it in both.
     {STR_INIT("ring"),          3, {NUL("pattern"), KW_NUL("kind"), KW_NUL("size")}},
+
+    // bond(a = none, b = none, *, kind = none, order = none, resonance = none, origin = none), see _bond
+    {STR_INIT("bond"),          6, {NUL("a"), NUL("b"), KW_NUL("kind"), KW_NUL("order"), KW_NUL("resonance"), KW_NUL("origin")}},
+    // bond_delta(scope = none, *, tolerance = none, breakable = none), see _bond_delta
+    {STR_INIT("bond_delta"),    3, {NUL("scope"), KW_NUL("tolerance"), KW_NUL("breakable")}},
 };
 
 #undef REQ
@@ -1112,6 +1151,10 @@ static const param_domain_t param_domains[] = {
     {STR_INIT("match"),     3, DOMAIN_MATCH_MODE},
     {STR_INIT("ring"),      0, DOMAIN_SMILES},
     {STR_INIT("ring"),      1, DOMAIN_RING_KIND},
+    {STR_INIT("bond"),      2, DOMAIN_BOND_KIND},
+    {STR_INIT("bond"),      4, DOMAIN_BOND_RESONANCE},
+    {STR_INIT("bond"),      5, DOMAIN_BOND_ORIGIN},
+    {STR_INIT("bond_delta"), 2, DOMAIN_BOND_ORIGIN},
 };
 
 // The values of the string parameters of smiles() and match()
@@ -1595,7 +1638,7 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
         }
         return count;
     }
-    case TYPE_BITFIELD:
+    case TYPE_ATOMSET:
     {
         if (ctx->backchannel && ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
             ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
@@ -1686,7 +1729,7 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
             }
         }
         break;
-    case TYPE_BITFIELD:
+    case TYPE_ATOMSET:
         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
             md_bitset_t tmp_bf = {0};
             const md_bitset_t* in_bf = as_bitset(arg);
@@ -1694,7 +1737,7 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
 
 
             if (ctx->subscript_ranges) {
-                // For bitfields, we only care about the first subscript dimension [0]
+                // For atomsets, we only care about the first subscript dimension [0]
                 irange_t range = ctx->subscript_ranges[0];
                 for (int i = range.beg; i < range.end; ++i) {
                     if (i < (int)bf_len) {
@@ -1780,7 +1823,7 @@ static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
         }
         break;
     }
-    case TYPE_BITFIELD: {
+    case TYPE_ATOMSET: {
         md_bitset_t tmp_bf = { 0 };
 
         md_bitset_t* bf_arr = as_bitset(arg);
@@ -1886,7 +1929,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
         }
         break;
     }
-    case TYPE_BITFIELD: {
+    case TYPE_ATOMSET: {
         md_bitset_t tmp_bf = { 0 };
 
         md_bitset_t* bf_arr = as_bitset(arg);
@@ -1980,7 +2023,7 @@ static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx)
         }
         break;
     }
-    case TYPE_BITFIELD: {
+    case TYPE_ATOMSET: {
         const md_bitset_t* bf = as_bitset(arg);
         const size_t num_bf = element_count(arg);
 
@@ -1997,7 +2040,7 @@ static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx)
 
         }
         else {
-            // @NOTE(Robin): We want to be consistent with the coordinate_extract function which in the case of multiple bitfields returns the com of each bitfield
+            // @NOTE(Robin): We want to be consistent with the coordinate_extract function which in the case of multiple atomsets returns the com of each atomset
             // Therefore we do not want in this case to return some index as we cannot map the single position to a single atom
         }
 
@@ -2095,7 +2138,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         com = md_util_com_compute_vec4(xyzw_arr, 0, num_ranges, &ctx->cur_state->unitcell);
         break;
     }
-    case TYPE_BITFIELD: {
+    case TYPE_ATOMSET: {
         
         md_bitset_t tmp_bf = { 0 };
 
@@ -2114,7 +2157,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             com = md_util_com_compute(ctx->cur_state->xyz, ctx->atom_mass, indices, len, &ctx->cur_state->unitcell);
         }
         else {
-            // If we have multiple bitfields we compute the center of mass for each bitfield before computing a single com from the sub-coms
+            // If we have multiple atomsets we compute the center of mass for each atomset before computing a single com from the sub-coms
             md_array(int32_t) indices = 0;
             vec4_t* xyzw_arr = md_temp_alloc_array(temp, vec4_t, num_bf);
             for (size_t i = 0; i < num_bf; ++i) {
@@ -2219,8 +2262,8 @@ static int _sum_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         const md_bitset_t* bf_src = arg[0].ptr;
@@ -2242,9 +2285,9 @@ static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _and(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         const md_bitset_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
@@ -2264,9 +2307,9 @@ static int _and(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _or(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         const md_bitset_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
@@ -2287,9 +2330,9 @@ static int _or(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _xor(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         const md_bitset_t* bf_src[2] = { arg[0].ptr, arg[1].ptr };
@@ -2466,7 +2509,7 @@ static int _vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         (void)arg;
         const md_bitset_t all = md_bitset_range(0, (uint32_t)ctx->sys->atom.count);
         as_bitset(*dst)[0] = ctx->mol_ctx ? md_bitset_and(all, *ctx->mol_ctx, data_bitset_alloc(dst, ctx)) : all;
@@ -2483,7 +2526,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
 
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
@@ -2550,7 +2593,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         if (ctx_range.beg < ctx_range.end) md_bitmask_reserve(&b, (uint32_t)ctx_range.beg, (uint32_t)ctx_range.end);
 
@@ -2597,7 +2640,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst) {
         ASSERT(dst->ptr);
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitset_test(*ctx->mol_ctx, i)) continue;
@@ -2745,13 +2788,13 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t result = {0};
         md_bitmask_t* bf_dst = 0;
         
-        if (is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD)) {           
+        if (is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET)) {           
             bf_mask = as_bitset(arg[1]);
         }
 
         md_coord_stream_t stream = md_coord_stream_from_aos((const float*)in_pos, sizeof(vec3_t), NULL, num_pos);
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
             bf_dst = &result;
         } else {
@@ -2765,7 +2808,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
 
-        // Fill bitfield with indices
+        // Fill atomset with indices
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(sa, &stream, radius, within_float_cb, bf_dst, 0);
             
         if (bf_mask) {
@@ -2811,7 +2854,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_coord_stream_t stream = md_coord_stream_from_aos((const float*)ctx->cur_state->xyz, sizeof(vec3_t), idx, num_idx);
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
             bf_dst = &result;
         }
@@ -2878,12 +2921,12 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t result = {0};
         md_bitmask_t* bf_dst = 0;
             
-        if (is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD)) {           
+        if (is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET)) {           
             bf_mask = as_bitset(arg[1]);
         }
         
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
             bf_dst = &result;
         }
@@ -2945,7 +2988,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t* bf_dst = 0;
         
         if (dst) {
-            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+            ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
             result = result_mask(ctx);
             bf_dst = &result;
         }
@@ -3021,8 +3064,8 @@ void contact_count_vis_callback(const uint32_t* i_idx, const uint32_t* j_idx, co
 
 static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET_ARR));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
     const float cutoff = as_float(arg[2]);
 	int path_length = 4; // Default minimum path length
@@ -3072,12 +3115,12 @@ static int _contact_count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 		md_array(int32_t) a_indices = 0;
 
-        // We must maintain an exclusion bitfield to avoid counting atoms within the same set
+        // We must maintain an exclusion atomset to avoid counting atoms within the same set
         // Also we want to avoid counting contacts between bonded atoms
         // How to achieve this efficiently:
-        // 1. For each atom in set A, we create an exclusion bitfield that includes all atoms in set A
-        // 2. We then add all bonded atoms to the exclusion bitfield
-        // 3. When counting contacts from atom in set A to atoms in set B, we skip those in the exclusion bitfield
+        // 1. For each atom in set A, we create an exclusion atomset that includes all atoms in set A
+        // 2. We then add all bonded atoms to the exclusion atomset
+        // 3. When counting contacts from atom in set A to atoms in set B, we skip those in the exclusion atomset
 
 		// What if set A and set B overlap?
         // 
@@ -3140,7 +3183,7 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         // The common case, a single contiguous range, is a RUN: no payload at all
         if (num_ranges == 1 && ranges[0].step <= 1) {
             irange_t range = clamp_range(remap_range_to_context(ranges[0], ctx_range), ctx_range);
@@ -3189,7 +3232,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (size_t i = 0; i < num_indices; ++i) {
             const int32_t idx = remap_index_to_context(indices[i], ctx_range);
@@ -3310,7 +3353,7 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
 
     int result = 0;
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (dst->ptr && res.count > 0) {
             md_bitset_t* bf_arr = as_bitset(*dst);
             md_allocator_i* alloc = data_bitset_alloc(dst, ctx);
@@ -3371,7 +3414,7 @@ static int _smiles(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _match(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
 
     if (!dst && !ctx->vis && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
         EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "match: the reference cannot depend on the frame");
@@ -3600,7 +3643,7 @@ static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_conte
     const md_system_t* sys = ctx->sys;
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr) return 0;
         md_bitset_t* bf_arr = as_bitset(*dst);
         const int64_t cap = type_info_array_len(dst->type);
@@ -3687,7 +3730,7 @@ static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* c
     int result = 0;
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
 
         if (ctx->mol_ctx) {
@@ -3721,7 +3764,7 @@ static int _select_components_of_kind(data_t* dst, data_t arg[], eval_context_t*
 	size_t num_comp = md_array_size(comp_indices);
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         const int cap = type_info_array_len(dst->type);
         if (cap == 0) return 0;
 
@@ -3800,7 +3843,7 @@ static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int count = (int)md_array_size(sets);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, false);
         for (int i = 0; i < count; ++i) set_writer_push(&w, sets[i]);
@@ -3877,7 +3920,7 @@ static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool q
 
     int result = 0;
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         md_bitset_t* bf = as_bitset(*dst);
         const int cap = type_info_array_len(dst->type);
         if (cap > 0) {
@@ -3957,7 +4000,7 @@ static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     (void)arg;
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         const md_system_t* sys = ctx->sys;
         md_bitmask_t b = result_mask(ctx);
         for (size_t l = 0; l < sys->lipid.count; ++l) {
@@ -4001,7 +4044,7 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int count = (int)md_array_size(tails);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr) return 0;
         md_bitset_t* bf_arr = as_bitset(*dst);
         const int64_t cap = type_info_array_len(dst->type);
@@ -4062,7 +4105,7 @@ static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (count < 0) return count;
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, true);
         for (int i = 0; i < count; ++i) {
@@ -4076,7 +4119,7 @@ static int _comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _fill_comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
     const size_t num_bf = element_count(arg[0]);
     const md_bitset_t* src_bf = as_bitset(arg[0]);
 
@@ -4133,7 +4176,7 @@ static int _fill_comp(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _fill_inst(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     const int64_t num_bf = element_count(arg[0]);
     const md_bitset_t* src_bf = as_bitset(arg[0]);
@@ -4208,7 +4251,7 @@ static int _comp_name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const size_t res_count = md_array_size(res_indices);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (dst->ptr) {
             const int64_t cap = type_info_array_len(dst->type);
             if (cap == 0) return 0;
@@ -4277,7 +4320,7 @@ static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int32_t* res_indices = get_comp_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (dst->ptr) {
             const int64_t cap = type_info_array_len(dst->type);
             if (cap == 0) return 0;
@@ -4343,7 +4386,7 @@ static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (count < 0) return count;
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, true);
         for (int i = 0; i < count; ++i) {
@@ -4367,7 +4410,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (count < 0) return count;
 
     if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
         if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
         set_writer_t w = set_writer_begin(dst, ctx, true);
         for (int i = 0; i < count; ++i) {
@@ -4645,7 +4688,7 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
 
         data_t b = arg[1];
         md_bitset_t b_bf = {0};
-        if (b.type.base_type == TYPE_BITFIELD && element_count(b) > 1) {
+        if (b.type.base_type == TYPE_ATOMSET && element_count(b) > 1) {
             b_bf = _internal_flatten_bf(as_bitset(b), element_count(b), ctx->temp_alloc);
             b.ptr  = &b_bf;
             b.size = sizeof(md_bitset_t);
@@ -4815,7 +4858,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
                             if (a_idx) {
                                 visualize_atom_index(a_idx[a], ctx);
-                            } else if (arg[0].type.base_type == TYPE_BITFIELD && element_count(arg[0]) > 1) {
+                            } else if (arg[0].type.base_type == TYPE_ATOMSET && element_count(arg[0]) > 1) {
                                 if (a < (int)element_count(arg[0])) {
                                     const md_bitset_t* bf_arr = as_bitset(arg[0]);
                                     visualize_atom_mask(&bf_arr[a], ctx);
@@ -4824,7 +4867,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
                             if (b_idx) {
                                 visualize_atom_index(b_idx[b], ctx);
-                            } else if (arg[1].type.base_type == TYPE_BITFIELD && element_count(arg[1]) > 1) {
+                            } else if (arg[1].type.base_type == TYPE_ATOMSET && element_count(arg[1]) > 1) {
                                 if (b < (int)element_count(arg[1])) {
                                     const md_bitset_t* bf_arr = as_bitset(arg[1]);
                                     visualize_atom_mask(&bf_arr[b], ctx);
@@ -5095,10 +5138,10 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
     ASSERT(ctx);
 
-    // One value per bitfield of the argument: rmsd(residue(:)) gives the deviation of every residue on its
+    // One value per atomset of the argument: rmsd(residue(:)) gives the deviation of every residue on its
     // own, each fitted separately. rmsd(union(...)) pools them into a single fit and a single value.
     const size_t num_bf = element_count(arg[0]);
 
@@ -5164,12 +5207,12 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (ctx->vis) {
-        // The bitfield highlighting the atoms involved is all there is to show
+        // The atomset highlighting the atoms involved is all there is to show
         coordinate_visualize(arg[0], ctx);
         return 0;
     }
 
-    // Query / validation. Nothing to validate: an empty bitfield is a valid (zero) deviation, and has to be
+    // Query / validation. Nothing to validate: an empty atomset is a valid (zero) deviation, and has to be
     // for dynamic selections. The length follows the argument, including when that varies over frames.
     if (ctx->backchannel) {
         if (ctx->arg_flags && (ctx->arg_flags[0] & FLAG_DYNAMIC_LENGTH)) {
@@ -5286,7 +5329,7 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // The idea here is that if we have a context, we only make sure to add the indices which are represented within the context.
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
@@ -5321,7 +5364,7 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
     const irange_t ctx_range = get_atom_range_in_context(ctx->sys, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
         md_bitmask_t b = result_mask(ctx);
         for (size_t i = 0; i < num_ranges; ++i) {
             const irange_t range = clamp_range(remap_range_to_context(ranges[i], ctx_range), ctx_range);
@@ -5364,8 +5407,8 @@ static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     if (!dst) return 0;
 
-    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     const md_bitset_t* src_bf_arr = (md_bitset_t*)arg[0].ptr;
     const int64_t count = type_info_array_len(arg[0].type);
@@ -5388,12 +5431,12 @@ static int _join_deprecated(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _join_bf_arr(dst, arg, ctx);
 }
 
-// Split a bitfield into an array of bitfields given a criterion (residue, chain, structure or integer > 0)
+// Split an atomset into an array of atomsets given a criterion (residue, chain, structure or integer > 0)
 static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // Implement integer split for now
 	(void)ctx;
 
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_INT));
 
 	int in_N = as_int(arg[1]);
@@ -5407,7 +5450,7 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		const md_bitset_t* src_bf = (md_bitset_t*)arg[0].ptr;
 		md_allocator_i* dst_alloc = data_bitset_alloc(dst, ctx);
 
-		// Modify bitfield if we have a context
+		// Modify atomset if we have a context
 		md_bitset_t tmp_bf = { 0 };
 		if (ctx->mol_ctx) {
 			tmp_bf = md_bitset_and(*src_bf, *ctx->mol_ctx, ctx->temp_alloc);
@@ -5420,7 +5463,7 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		uint32_t src_end_bit = (uint32_t)src_bf->end;
 		uint32_t src_size = src_end_bit - src_beg_bit;
 
-		// Split bitfield into N bitfields
+		// Split atomset into N atomsets
         for (uint32_t i = 0; i < N; ++i) {
 			uint32_t range_beg = (src_size * i) / N;
 			uint32_t range_end = (i + 1 == N) ? src_size : (src_size * (i + 1)) / N;
@@ -5429,7 +5472,7 @@ static int _split_bf_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
 		}
         return 0;
     } else {
-        // Static check, return number of bitfields returned
+        // Static check, return number of atomsets returned
         if (in_N <= 0) {
             EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "Split count must be greater than zero");
             return STATIC_VALIDATION_ERROR;
@@ -5443,8 +5486,8 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     if (!dst) return 0;
 
-    ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING));    
 
     str_t str_arg = as_string(arg[1]);
@@ -5516,7 +5559,7 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_bitset_t* dst_bf_arr = as_bitset(*dst);
     const md_bitset_t* src_bf = (md_bitset_t*)arg[0].ptr;
 
-    // Modify bitfield if we have a context
+    // Modify atomset if we have a context
     if (ctx->mol_ctx) {
         tmp_bf = md_bitset_or(*src_bf, *ctx->mol_ctx, ctx->temp_alloc);
         src_bf = &tmp_bf;
@@ -5788,7 +5831,7 @@ static void plane_visualize(const plane_t* p, eval_context_t* ctx) {
 
 static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
     const md_bitset_t* groups = as_bitset(arg[0]);
     const size_t num = element_count(arg[0]);
 
@@ -6215,7 +6258,7 @@ static int _pucker_pseudorotation(data_t* dst, data_t arg[], eval_context_t* ctx
 }
 
 static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int axis) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         float* density[3];
@@ -6677,8 +6720,8 @@ static void compute_rdf(float bins[], float weights[], int num_bins, const data_
     md_array(int32_t) ref_idx = coordinate_extract_indices(arg[0], ctx);
     size_t ref_len  = 0;
 
-    // IF we have multiple bitfields supplied as reference, we calculate a RDF based on the COM of each bitfield and excluded *self* when counting.
-    const bool use_exclusion_masks = (arg[0].type.base_type == TYPE_BITFIELD) && (element_count(arg[0]) > 1);
+    // IF we have multiple atomsets supplied as reference, we calculate a RDF based on the COM of each atomset and excluded *self* when counting.
+    const bool use_exclusion_masks = (arg[0].type.base_type == TYPE_ATOMSET) && (element_count(arg[0]) > 1);
 
     md_coord_stream_t ref_stream = { 0 };
     md_spatial_acc_flags_t ref_flags = 0;
@@ -6996,7 +7039,7 @@ size_t internal_count(const md_bitset_t* bf_arr, size_t bf_len, count_type_t cou
 }
 
 static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
 
     if (dst) {
         ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -7010,7 +7053,7 @@ static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING));
 
     if (dst) {
@@ -7036,7 +7079,7 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 // This is quirky and wierd.
-// It should essentially check if all the supplied bitfields are 'equivalent'
+// It should essentially check if all the supplied atomsets are 'equivalent'
 // Equivalent in this case means that all of them represent the same type of structures within the system
 // We do this now by checking against the atom elements if available (which is not the case in CoarseGrained simulations)
 // In such case we revert to matching Atom labels
@@ -7162,8 +7205,8 @@ void sdf_cb(const uint32_t in_idx[], const float in_x[], const float in_y[], con
 
 static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
     const size_t num_ref_bitfields = element_count(arg[0]);
@@ -7173,9 +7216,9 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     const md_bitset_t* ref_bf = &ref_bf_arr[0];
 
-    // We currently only support bitfields which represent equivalent structures. 
-    // his each bitfield should contain the same number of atoms, and the n'th atom within the bitfield
-    // should match the n'th atom in all other bitfields.
+    // We currently only support atomsets which represent equivalent structures. 
+    // his each atomset should contain the same number of atoms, and the n'th atom within the atomset
+    // should match the n'th atom in all other atomsets.
     // This may be loosened in the future to allow aligning structures which are not strictly equivalent.
     int result = 0;
 
@@ -7257,7 +7300,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (size_t i = 0; i < num_ref_bitfields; ++i) {
             const md_bitset_t* bf = &ref_bf_arr[i];
 
-            // The bitfields are validated as equivalent during the static check, but a dynamic
+            // The atomsets are validated as equivalent during the static check, but a dynamic
             // expression can still hand us a differently sized one at evaluation time. The buffers
             // below are sized for ref_size, so a mismatch would be an overrun rather than a bad result.
             if (md_bitset_count(*bf) != ref_size) continue;
@@ -7321,25 +7364,25 @@ done:
     } else {
         // Validation
         if (num_ref_bitfields < 1) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Number of bitfields which serve as reference frame must be 1 or more");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "Number of atomsets which serve as reference frame must be 1 or more");
             return -1;
         }
 
         const size_t ref_bit_count = md_bitset_count(*ref_bf);
         if (ref_bit_count == 0) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The supplied reference bitfield(s) are empty");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The supplied reference atomset(s) are empty");
             return -1;
         }
 
         // Test for equivalence
         if (!are_bitfields_equivalent(ref_bf_arr, num_ref_bitfields, ctx->sys)) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The supplied reference bitfields are not identical: the number of atoms and their corresponding elements do not match between all supplied bitfields");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The supplied reference atomsets are not identical: the number of atoms and their corresponding elements do not match between all supplied atomsets");
             return -1;
         }
 
         const size_t target_bit_count = md_bitset_count(*trg_bf);
         if (target_bit_count == 0) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "The supplied target bitfield is empty");
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "The supplied target atomset is empty");
             return -1;
         }
 
@@ -7356,7 +7399,7 @@ done:
 // Construct a ratio of void space over total space within the bounding box of the selected atoms
 static int _porosity(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
 
     // Static/validation path
     if (!dst) {
@@ -7516,11 +7559,11 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         vec3_t* out_weights = as_vec3_arr(*dst);
         // Bounded by the destination: evaluated inside a context, an argument whose length varies over frames
-        // can hold more bitfields than the length the context fixed at compile time
+        // can hold more atomsets than the length the context fixed at compile time
         const size_t out_len = type_info_total_element_count(dst->type) / 3;
 
         md_array(vec4_t)  xyzw = 0;
-        if (arg[0].type.base_type == TYPE_BITFIELD) {
+        if (arg[0].type.base_type == TYPE_ATOMSET) {
             const size_t bf_len = MIN(element_count(arg[0]), out_len);
             const md_bitset_t* bf_arr = as_bitset(arg[0]);
             md_bitset_t tmp_bf = {0};
@@ -7560,7 +7603,7 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         coordinate_visualize(arg[0], ctx);
     } else {
         int count = 0;
-        if (arg[0].type.base_type == TYPE_BITFIELD) {
+        if (arg[0].type.base_type == TYPE_ATOMSET) {
             count = (int)element_count(arg[0]);
         } else {
             count = 1;
@@ -7648,8 +7691,8 @@ static int32_t greedy_align(const md_bitset_t* a, const md_bitset_t* b, const md
 }
 
 static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_ATOMSET));
 
     if (dst) {
         ASSERT(dst->ptr);
@@ -7960,5 +8003,609 @@ static int _chunks(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         return (int)count;
     }
+    return 0;
+}
+
+// ### BONDS ###
+// The bonds as values of their own (bondset_t): a set of bonds is not a set of atoms, which brings in every bond among
+// its atoms. bond() selects persistent bonds by their atoms and flags, bond_delta() the bonds formed and broken in a
+// frame, and the procedures below turn them into atoms and numbers.
+
+static const match_name_t bond_resonances[] = {
+    {STR_INIT("aromatic"),    MD_BOND_FLAG_AROMATIC},
+    {STR_INIT("delocalized"), MD_BOND_FLAG_DELOCALIZED},
+    {STR_INIT("localized"),   MD_BOND_FLAG_NONE},
+};
+
+// The persistent bonds of the system: the graph, then the non-covalent bonds (md_bond_data_t)
+static inline uint32_t bond_total(const md_system_t* sys) {
+    return (uint32_t)(sys->bond.count + sys->bond.noncovalent_count);
+}
+
+static inline uint64_t bond_pair_key(md_atom_pair_t p) {
+    return ((uint64_t)(uint32_t)MIN(p.idx[0], p.idx[1]) << 32) | (uint32_t)MAX(p.idx[0], p.idx[1]);
+}
+
+static inline md_atom_pair_t bond_key_pair(uint64_t key) {
+    const md_atom_pair_t p = {{ (md_atom_idx_t)(key >> 32), (md_atom_idx_t)(key & 0xFFFFFFFFu) }};
+    return p;
+}
+
+// Both atoms of a pair within the context, if there is one
+static inline bool bond_in_context(md_atom_pair_t p, const eval_context_t* ctx) {
+    return !ctx->mol_ctx || (md_bitset_test(*ctx->mol_ctx, (uint32_t)p.idx[0]) && md_bitset_test(*ctx->mol_ctx, (uint32_t)p.idx[1]));
+}
+
+// The extra pairs of a set being built, kept as keys with their flags
+typedef struct bond_extras_t {
+    md_array(uint64_t)        key;
+    md_array(md_bond_flags_t) flags;
+} bond_extras_t;
+
+static int compare_bond_key(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+typedef struct bond_keyed_t {
+    uint64_t key;       // First: compare_bond_key reads it
+    uint64_t idx;
+} bond_keyed_t;
+
+// The extras of a set, sorted and without duplicates (the first of equal keys keeps its flags)
+static void bond_extras_tidy(bond_extras_t* e, md_allocator_i* temp) {
+    const size_t n = md_array_size(e->key);
+    if (n < 2) return;
+    bond_keyed_t* k = md_alloc(temp, sizeof(bond_keyed_t) * n);
+    for (size_t i = 0; i < n; ++i) {
+        k[i].key = e->key[i];
+        k[i].idx = i;
+    }
+    qsort(k, n, sizeof(bond_keyed_t), compare_bond_key);
+    md_bond_flags_t* flags = md_alloc(temp, sizeof(md_bond_flags_t) * n);
+    MEMCPY(flags, e->flags, sizeof(md_bond_flags_t) * n);
+    size_t w = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (w > 0 && e->key[w - 1] == k[i].key) continue;
+        e->key[w]   = k[i].key;
+        e->flags[w] = flags[k[i].idx];
+        w += 1;
+    }
+    md_array_shrink(e->key, w);
+    md_array_shrink(e->flags, w);
+}
+
+static bondset_t bondset_make(const md_bitmask_t* bonds, const bond_extras_t* extras, md_allocator_i* alloc) {
+    bondset_t r = { .bonds = md_bitmask_extract(bonds, alloc) };
+    const size_t n = extras ? md_array_size(extras->key) : 0;
+    if (n) {
+        md_atom_pair_t*  pair  = md_alloc(alloc, sizeof(md_atom_pair_t)  * n);
+        md_bond_flags_t* flags = md_alloc(alloc, sizeof(md_bond_flags_t) * n);
+        for (size_t i = 0; i < n; ++i) {
+            pair[i]  = bond_key_pair(extras->key[i]);
+            flags[i] = extras->flags[i];
+        }
+        r.num_extra   = (uint32_t)n;
+        r.extra_pair  = pair;
+        r.extra_flags = flags;
+    }
+    return r;
+}
+
+static void bond_extras_push(bond_extras_t* e, md_atom_pair_t pair, md_bond_flags_t flags, md_allocator_i* temp) {
+    md_array_push(e->key, bond_pair_key(pair), temp);
+    md_array_push(e->flags, flags, temp);
+}
+
+// The union of the sets of an argument: its bonds into b, its extras into e
+static void bondset_union_into(md_bitmask_t* b, bond_extras_t* e, const bondset_t* sets, size_t count, md_allocator_i* temp) {
+    for (size_t i = 0; i < count; ++i) {
+        md_bitmask_or(b, sets[i].bonds);
+        for (uint32_t k = 0; k < sets[i].num_extra; ++k) {
+            bond_extras_push(e, sets[i].extra_pair[k], sets[i].extra_flags[k], temp);
+        }
+    }
+    bond_extras_tidy(e, temp);
+}
+
+// The bonds of a set within the context (both atoms in it)
+static void bondset_restrict_to_context(md_bitmask_t* b, bond_extras_t* e, const eval_context_t* ctx) {
+    if (!ctx->mol_ctx) return;
+    md_bitset_t set = md_bitmask_extract(b, ctx->temp_alloc);
+    md_bitset_iter_t it = md_bitset_iter(set);
+    while (md_bitset_iter_next(&it)) {
+        const md_atom_pair_t p = ctx->sys->bond.pairs[it.idx];
+        if (!bond_in_context(p, ctx)) md_bitmask_clear_bit(b, (uint32_t)it.idx);
+    }
+    size_t w = 0;
+    for (size_t k = 0; k < md_array_size(e->key); ++k) {
+        if (!bond_in_context(bond_key_pair(e->key[k]), ctx)) continue;
+        e->key[w] = e->key[k];
+        e->flags[w] = e->flags[k];
+        w += 1;
+    }
+    md_array_shrink(e->key, w);
+    md_array_shrink(e->flags, w);
+}
+
+static void visualize_bond(md_atom_pair_t p, bool atoms, bool lines, eval_context_t* ctx) {
+    if (atoms) {
+        md_bitmask_set_bit(ctx->vis_atom_mask, (uint32_t)p.idx[0]);
+        md_bitmask_set_bit(ctx->vis_atom_mask, (uint32_t)p.idx[1]);
+    }
+    if (lines) {
+        const vec3_t* xyz = ctx->cur_state->xyz;
+        push_line(vertex(xyz[p.idx[0]], COLOR_WHITE), vertex(xyz[p.idx[1]], COLOR_WHITE), ctx->vis);
+    }
+}
+
+// The atoms of the bonds of a set, and a line along each
+static void visualize_bondset(const bondset_t* b, eval_context_t* ctx) {
+    const md_system_t* sys = ctx->sys;
+    const bool atoms = ctx->vis_atom_mask && (ctx->vis_flags == MD_SCRIPT_VISUALIZE_DEFAULT || (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS));
+    const bool lines = ctx->vis && ctx->cur_state && ctx->cur_state->xyz && (ctx->vis_flags == MD_SCRIPT_VISUALIZE_DEFAULT || (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY));
+    const uint32_t total = bond_total(sys);
+    md_bitset_iter_t it = md_bitset_iter(b->bonds);
+    while (md_bitset_iter_next(&it)) {
+        if (it.idx >= total) break;
+        visualize_bond(sys->bond.pairs[it.idx], atoms, lines, ctx);
+    }
+    for (uint32_t k = 0; k < b->num_extra; ++k) {
+        visualize_bond(b->extra_pair[k], atoms, lines, ctx);
+    }
+}
+
+// The filters of bond() (kind, order, resonance, origin): which flags pass
+typedef struct bond_filter_t {
+    md_bond_kind_name_t kinds[16];
+    size_t   num_kinds;         // 0: any kind
+    bool     has_order;         // Bonds of the graph whose order is in [order_lo, order_hi]
+    int      order_lo, order_hi;
+    uint32_t resonance;         // Bits of bond_resonances, 0: any. Bonds of the graph only
+    uint32_t origin;            // Bits of 1 << md_bond_origin_t, 0: any
+} bond_filter_t;
+
+static bool bond_origin_lookup(int* out, str_t name) {
+    for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED; ++o) {
+        if (str_eq_cstr(name, md_bond_origin_name((md_bond_origin_t)o))) {
+            *out = o;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void bond_report_unknown_origin(eval_context_t* ctx, int arg, str_t name) {
+    match_name_t names[4];
+    for (int o = 0; o < 4; ++o) names[o] = (match_name_t){ str_from_cstr(md_bond_origin_name((md_bond_origin_t)o)), o };
+    match_report_unknown(ctx, arg, "bond origin", names, ARRAY_SIZE(names), name);
+}
+
+// The origins of a string argument as a mask, or false (reported when validating)
+static bool bond_origin_mask(uint32_t* out, data_t arg, int arg_idx, bool report, eval_context_t* ctx) {
+    *out = 0;
+    const str_t* names = as_string_arr(arg);
+    for (size_t i = 0; i < element_count(arg); ++i) {
+        int o = 0;
+        if (!bond_origin_lookup(&o, names[i])) {
+            if (report) bond_report_unknown_origin(ctx, arg_idx, names[i]);
+            return false;
+        }
+        *out |= 1u << o;
+    }
+    return true;
+}
+
+static bool bond_filter_parse(bond_filter_t* f, const data_t arg[], bool report, eval_context_t* ctx) {
+    MEMSET(f, 0, sizeof(bond_filter_t));
+    if (!is_absent_type(arg[2].type)) {
+        size_t count = 0;
+        const md_bond_kind_name_t* table = md_bond_kind_names(&count);
+        const str_t* names = as_string_arr(arg[2]);
+        for (size_t i = 0; i < element_count(arg[2]); ++i) {
+            size_t k = 0;
+            while (k < count && !str_eq_cstr(names[i], table[k].name)) ++k;
+            if (k == count) {
+                if (report) {
+                    match_name_t valid[16];
+                    for (size_t j = 0; j < count && j < ARRAY_SIZE(valid); ++j) valid[j] = (match_name_t){ str_from_cstr(table[j].name), (int)j };
+                    match_report_unknown(ctx, 2, "bond kind", valid, MIN(count, ARRAY_SIZE(valid)), names[i]);
+                }
+                return false;
+            }
+            if (f->num_kinds < ARRAY_SIZE(f->kinds)) f->kinds[f->num_kinds++] = table[k];
+        }
+    }
+    if (!is_absent_type(arg[3].type)) {
+        const irange_t r = as_irange(arg[3]);
+        if (r.end < r.beg || r.beg < 0) {
+            if (report) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[3], "bond: the order is a number from 0 (unknown) to %d, or a range of them", MD_BOND_ORDER_QUADRUPLE);
+            return false;
+        }
+        f->has_order = true;
+        f->order_lo = r.beg;
+        f->order_hi = r.end;
+    }
+    if (!is_absent_type(arg[4].type)) {
+        const str_t* names = as_string_arr(arg[4]);
+        for (size_t i = 0; i < element_count(arg[4]); ++i) {
+            size_t k = 0;
+            while (k < ARRAY_SIZE(bond_resonances) && !str_eq(names[i], bond_resonances[k].name)) ++k;
+            if (k == ARRAY_SIZE(bond_resonances)) {
+                if (report) match_report_unknown(ctx, 4, "bond resonance", bond_resonances, ARRAY_SIZE(bond_resonances), names[i]);
+                return false;
+            }
+            f->resonance |= 1u << k;
+        }
+    }
+    if (!is_absent_type(arg[5].type) && !bond_origin_mask(&f->origin, arg[5], 5, report, ctx)) return false;
+    return true;
+}
+
+static bool bond_filter_pass(const bond_filter_t* f, md_bond_flags_t fl) {
+    if (f->num_kinds) {
+        bool any = false;
+        for (size_t k = 0; k < f->num_kinds && !any; ++k) any = (fl & f->kinds[k].mask) == f->kinds[k].value;
+        if (!any) return false;
+    }
+    // Order and resonance are of the bonds of the graph: neither a non-covalent bond nor a spring (elastic) has them
+    const bool graph = !(fl & (MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_ELASTIC));
+    if (f->has_order) {
+        const int o = md_bond_order(fl);
+        if (!graph || o < f->order_lo || o > f->order_hi) return false;
+    }
+    if (f->resonance) {
+        if (!graph) return false;
+        const uint32_t r = fl & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED);
+        bool any = false;
+        for (size_t k = 0; k < ARRAY_SIZE(bond_resonances) && !any; ++k) any = (f->resonance & (1u << k)) && r == (uint32_t)bond_resonances[k].value;
+        if (!any) return false;
+    }
+    if (f->origin && !(f->origin & (1u << md_bond_origin(fl)))) return false;
+    return true;
+}
+
+// Adds the bonds of an atom which pass: the other atom in other (NULL: any), within the context
+static void bond_collect_atom(md_bitmask_t* b, uint32_t atom, const md_bitset_t* group, const md_bitset_t* other, const bond_filter_t* f, const eval_context_t* ctx) {
+    const md_system_t* sys = ctx->sys;
+    md_bond_iter_t it = md_bond_iter(&sys->bond, atom);
+    while (md_bond_iter_has_next(&it)) {
+        const uint32_t o = (uint32_t)md_bond_iter_atom_index(&it);
+        const uint32_t bi = (uint32_t)md_bond_iter_bond_index(&it);
+        const md_bond_flags_t fl = (md_bond_flags_t)md_bond_iter_bond_flags(&it);
+        md_bond_iter_next(&it);
+        if (other) {
+            if (!md_bitset_test(*other, o)) continue;
+        } else if (group && !md_bitset_test(*group, o)) {
+            continue;
+        }
+        const md_atom_pair_t p = {{ (md_atom_idx_t)atom, (md_atom_idx_t)o }};
+        if (!bond_in_context(p, ctx) || !bond_filter_pass(f, fl)) continue;
+        md_bitmask_set_bit(b, bi);
+    }
+}
+
+// bond(a = none, b = none, *, kind = none, order = none, resonance = none, origin = none): persistent bonds of the
+// system (both of its ranges, md_bond_data_t), within the context (both atoms in it), which all the filters let through.
+//   a, b       Without either: all bonds. With a: the bonds with both atoms in a, one set per element of a (bond(residue(:))
+//              is the bonds within each residue). With b as well: the bonds with one atom in the element of a and the other
+//              in b. With b alone: the bonds with an atom in b.
+//   kind       Any of md_bond_kind_names: 'covalent', 'coordinate', 'noncovalent', 'hydrogen', 'ionic', 'sigma_hole'.
+//   order      The order (an int or a range, 0 for unknown) of a bond of the graph: non-covalent bonds have none.
+//   resonance  Any of 'aromatic', 'delocalized', 'localized' (neither), of a bond of the graph.
+//   origin     Any of 'file', 'topology', 'user', 'inferred'.
+static int _bond(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    const bool report = !dst && !ctx->vis;
+    bond_filter_t filter;
+    if (!bond_filter_parse(&filter, arg, report, ctx)) return STATIC_VALIDATION_ERROR;
+
+    const bool has_a = !is_absent_type(arg[0].type);
+    const bool has_b = !is_absent_type(arg[1].type);
+    const int num_groups = has_a ? (int)element_count(arg[0]) : 1;
+    if (!dst) {
+        if (ctx->vis) return 0;
+        return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, num_groups) : num_groups;
+    }
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BONDSET_ARR));
+    const int64_t cap = type_info_array_len(dst->type);
+    if (cap <= 0 || !dst->ptr) return 0;
+
+    const md_system_t* sys = ctx->sys;
+    const uint32_t total = bond_total(sys);
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_allocator_i* alloc = data_bitset_alloc(dst, ctx);
+
+    // b as one set
+    md_bitset_t B = {0};
+    if (has_b) B = _internal_flatten_bf(as_bitset(arg[1]), element_count(arg[1]), temp_alloc);
+
+    for (int64_t slot = 0; slot < cap; ++slot) {
+        md_bitmask_t b = md_bitmask_create(0, total, temp_alloc);
+        // The groups of this slot: one each, or all of them when there is one slot for many (flattened)
+        const int g_beg = cap == 1 ? 0 : (int)slot;
+        const int g_end = cap == 1 ? num_groups : MIN((int)slot + 1, num_groups);
+        for (int g = g_beg; g < g_end; ++g) {
+            const md_bitset_t* A = has_a ? &as_bitset(arg[0])[g] : NULL;
+            if (A) {
+                md_bitset_iter_t it = md_bitset_iter(*A);
+                while (md_bitset_iter_next(&it)) {
+                    if (it.idx >= sys->atom.count) break;
+                    bond_collect_atom(&b, (uint32_t)it.idx, A, has_b ? &B : NULL, &filter, ctx);
+                }
+            } else if (has_b) {
+                md_bitset_iter_t it = md_bitset_iter(B);
+                while (md_bitset_iter_next(&it)) {
+                    if (it.idx >= sys->atom.count) break;
+                    bond_collect_atom(&b, (uint32_t)it.idx, NULL, NULL, &filter, ctx);
+                }
+            } else {
+                for (uint32_t i = 0; i < sys->bond.count; ++i) {
+                    if (bond_in_context(sys->bond.pairs[i], ctx) && bond_filter_pass(&filter, sys->bond.flags[i])) md_bitmask_set_bit(&b, i);
+                }
+            }
+            // The non-covalent bonds have no connectivity: they are few, and looked at one by one
+            for (uint32_t i = (uint32_t)sys->bond.count; i < total; ++i) {
+                const md_atom_pair_t p = sys->bond.pairs[i];
+                const uint32_t x = (uint32_t)p.idx[0], y = (uint32_t)p.idx[1];
+                bool in = true;
+                if (A && has_b)   in = (md_bitset_test(*A, x) && md_bitset_test(B, y)) || (md_bitset_test(*A, y) && md_bitset_test(B, x));
+                else if (A)       in = md_bitset_test(*A, x) && md_bitset_test(*A, y);
+                else if (has_b)   in = md_bitset_test(B, x) || md_bitset_test(B, y);
+                if (in && bond_in_context(p, ctx) && bond_filter_pass(&filter, sys->bond.flags[i])) md_bitmask_set_bit(&b, i);
+            }
+        }
+        as_bondset(*dst)[slot] = bondset_make(&b, NULL, alloc);
+    }
+    md_temp_end(temp);
+    return 0;
+}
+
+// atoms(b): the atoms of the bonds of each set
+static int _bond_atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return (int)element_count(arg[0]);
+    const md_system_t* sys = ctx->sys;
+    const bondset_t* src = as_bondset(arg[0]);
+    const int64_t len = MIN((int64_t)element_count(arg[0]), type_info_array_len(dst->type));
+    const uint32_t total = bond_total(sys);
+    for (int64_t i = 0; i < len; ++i) {
+        md_bitmask_t b = result_mask(ctx);
+        md_bitset_iter_t it = md_bitset_iter(src[i].bonds);
+        while (md_bitset_iter_next(&it)) {
+            if (it.idx >= total) break;
+            md_bitmask_set_bit(&b, (uint32_t)sys->bond.pairs[it.idx].idx[0]);
+            md_bitmask_set_bit(&b, (uint32_t)sys->bond.pairs[it.idx].idx[1]);
+        }
+        for (uint32_t k = 0; k < src[i].num_extra; ++k) {
+            md_bitmask_set_bit(&b, (uint32_t)src[i].extra_pair[k].idx[0]);
+            md_bitmask_set_bit(&b, (uint32_t)src[i].extra_pair[k].idx[1]);
+        }
+        finish_result(dst, (size_t)i, &b, ctx);
+    }
+    return 0;
+}
+
+// The bonds of the union of the sets of an argument, in their order: persistent by index, then the extras
+static size_t bondset_union_pairs(md_atom_pair_t** out, const bondset_t* sets, size_t count, const eval_context_t* ctx, md_allocator_i* temp) {
+    const md_system_t* sys = ctx->sys;
+    md_bitmask_t b = md_bitmask_create(0, bond_total(sys), temp);
+    bond_extras_t e = {0};
+    bondset_union_into(&b, &e, sets, count, temp);
+    const size_t num_bonds = (size_t)md_bitmask_count(&b);
+    const size_t n = num_bonds + md_array_size(e.key);
+    md_atom_pair_t* pairs = md_alloc(temp, sizeof(md_atom_pair_t) * MAX(n, 1));
+    size_t w = 0;
+    md_bitset_iter_t it = md_bitmask_iter(&b);
+    while (md_bitset_iter_next(&it) && w < num_bonds) pairs[w++] = sys->bond.pairs[it.idx];
+    for (size_t k = 0; k < md_array_size(e.key); ++k) pairs[w++] = bond_key_pair(e.key[k]);
+    *out = pairs;
+    return w;
+}
+
+// count(b): the number of bonds in the union of the sets
+static int _count_bonds(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return 0;
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
+    md_atom_pair_t* pairs = NULL;
+    as_float(*dst) = (float)bondset_union_pairs(&pairs, as_bondset(arg[0]), element_count(arg[0]), ctx, md_temp_allocator(temp));
+    md_temp_end(temp);
+    return 0;
+}
+
+// length(b): the length of each bond of the union of the sets in the frame (minimum image), in the order of the set
+static int _bond_length(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
+    md_atom_pair_t* pairs = NULL;
+    const size_t n = arg[0].ptr ? bondset_union_pairs(&pairs, as_bondset(arg[0]), element_count(arg[0]), ctx, md_temp_allocator(temp)) : 0;
+    int result = 0;
+    if (!dst) {
+        if (ctx->backchannel) {
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
+            if (ctx->arg_flags[0] & FLAG_DYNAMIC) ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+        }
+        result = ctx->vis ? 0 : (int)n;
+    } else if (ctx->cur_state && ctx->cur_state->xyz) {
+        float* out = as_float_arr(*dst);
+        const size_t len = MIN(n, (size_t)element_count(*dst));
+        for (size_t k = 0; k < len; ++k) {
+            vec3_t dx = vec3_sub(ctx->cur_state->xyz[pairs[k].idx[1]], ctx->cur_state->xyz[pairs[k].idx[0]]);
+            md_util_min_image_vec3(&dx, 1, &ctx->cur_state->unitcell);
+            out[k] = vec3_length(dx);
+        }
+    }
+    md_temp_end(temp);
+    return result;
+}
+
+// The logic of bond sets, on the union of each side and within the context. 'not' is the bonds of the system which are
+// not in the set: of the persistent bonds, as the bonds computed for a frame have no system to be the complement in.
+static int bond_logic(data_t* dst, data_t arg[], int num_args, char op, eval_context_t* ctx) {
+    if (!dst) return 0;
+    const md_system_t* sys = ctx->sys;
+    const uint32_t total = bond_total(sys);
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+
+    md_bitmask_t x = md_bitmask_create(0, total, temp_alloc);
+    bond_extras_t ex = {0};
+    bondset_union_into(&x, &ex, as_bondset(arg[0]), element_count(arg[0]), temp_alloc);
+
+    bond_extras_t out = {0};
+    if (op == '!') {
+        md_bitset_t set = md_bitmask_extract(&x, temp_alloc);
+        md_bitmask_clear(&x);
+        md_bitmask_invert_range(&x, 0, total);
+        md_bitmask_andnot(&x, set);
+    } else {
+        ASSERT(num_args == 2);
+        md_bitmask_t y = md_bitmask_create(0, total, temp_alloc);
+        bond_extras_t ey = {0};
+        bondset_union_into(&y, &ey, as_bondset(arg[1]), element_count(arg[1]), temp_alloc);
+        const md_bitset_t ys = md_bitmask_extract(&y, temp_alloc);
+        switch (op) {
+        case '&': md_bitmask_and(&x, ys); break;
+        case '|': md_bitmask_or(&x, ys); break;
+        case '^': {
+            const md_bitset_t xs = md_bitmask_extract(&x, temp_alloc);
+            md_bitmask_or(&x, ys);
+            md_bitmask_andnot(&x, md_bitset_and(xs, ys, temp_alloc));
+            break;
+        }
+        default: ASSERT(false); break;
+        }
+        // The extras: a merge of the two sorted lists
+        size_t i = 0, j = 0;
+        const size_t nx = md_array_size(ex.key), ny = md_array_size(ey.key);
+        while (i < nx || j < ny) {
+            const bool take_x = j >= ny || (i < nx && ex.key[i] < ey.key[j]);
+            const bool take_y = i >= nx || (j < ny && ey.key[j] < ex.key[i]);
+            if (take_x) {
+                if (op != '&') { md_array_push(out.key, ex.key[i], temp_alloc); md_array_push(out.flags, ex.flags[i], temp_alloc); }
+                i += 1;
+            } else if (take_y) {
+                if (op != '&') { md_array_push(out.key, ey.key[j], temp_alloc); md_array_push(out.flags, ey.flags[j], temp_alloc); }
+                j += 1;
+            } else {
+                // In both
+                if (op != '^') { md_array_push(out.key, ex.key[i], temp_alloc); md_array_push(out.flags, ex.flags[i], temp_alloc); }
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    bondset_restrict_to_context(&x, &out, ctx);
+    as_bondset(*dst)[0] = bondset_make(&x, &out, data_bitset_alloc(dst, ctx));
+    md_temp_end(temp);
+    return 0;
+}
+
+static int _bond_not(data_t* dst, data_t arg[], eval_context_t* ctx) { return bond_logic(dst, arg, 1, '!', ctx); }
+static int _bond_and(data_t* dst, data_t arg[], eval_context_t* ctx) { return bond_logic(dst, arg, 2, '&', ctx); }
+static int _bond_or (data_t* dst, data_t arg[], eval_context_t* ctx) { return bond_logic(dst, arg, 2, '|', ctx); }
+static int _bond_xor(data_t* dst, data_t arg[], eval_context_t* ctx) { return bond_logic(dst, arg, 2, '^', ctx); }
+
+// bond_delta(scope = none, *, tolerance = none, breakable = none): the bonds formed and broken in the frame against the
+// bond graph of the system, for the bonds with an atom in the scope (md_util_bond_delta). A value of its own, which
+// formed(), broken() and bonds() read.
+//   scope      The atoms whose bonds are looked at, all of them without it.
+//   tolerance  Half the width of the band around the cutoffs, a fraction of them in [0, 0.5): 0.1 without it.
+//   breakable  The origins whose bonds may break: 'file' and 'inferred' without it.
+static int _bond_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    const bool has_scope = !is_absent_type(arg[0].type);
+    const float tolerance = is_absent_type(arg[1].type) ? MD_BOND_DELTA_TOLERANCE : as_float(arg[1]);
+    uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
+
+    if (!dst && !ctx->vis) {
+        if (!(tolerance >= 0.0f && tolerance < 0.5f)) {
+            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[1], "bond_delta: the tolerance is a fraction of the cutoffs, from 0 up to (not including) 0.5");
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (!is_absent_type(arg[2].type) && !bond_origin_mask(&breakable, arg[2], 2, true, ctx)) return STATIC_VALIDATION_ERROR;
+        if (md_system_is_coarse_grained(ctx->sys)) {
+            EVAL_LOG_ERROR(ctx, ctx->op_token, "bond_delta: the bonds of a coarse grained system come from its templates, not from distances, so none form or break");
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (ctx->backchannel) ctx->backchannel->unit[1] = md_unit_none();
+        return 0;
+    }
+    if (!is_absent_type(arg[2].type)) bond_origin_mask(&breakable, arg[2], 2, false, ctx);
+    if (!dst) return 0;
+
+    const md_system_t* sys = ctx->sys;
+    const uint32_t total = bond_total(sys);
+    bond_delta_value_t* val = (bond_delta_value_t*)dst->ptr;
+    MEMSET(val, 0, sizeof(bond_delta_value_t));
+    // Asked about within the static check (the shape only): no search
+    if (ctx->backchannel) return 0;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_allocator_i* alloc = data_bitset_alloc(dst, ctx);
+
+    md_bitset_t scope = {0};
+    if (has_scope) scope = _internal_flatten_bf(as_bitset(arg[0]), element_count(arg[0]), temp_alloc);
+    // Within a context, the scope is what of it is in the context
+    if (ctx->mol_ctx) scope = has_scope ? md_bitset_and(scope, *ctx->mol_ctx, temp_alloc) : *ctx->mol_ctx;
+    const md_bitset_t* scope_ptr = (has_scope || ctx->mol_ctx) ? &scope : NULL;
+
+    // The persistent bonds touching the scope, but for the elastic bonds: springs, not bonds of the molecule
+    md_bitmask_t touched = md_bitmask_create(0, total, temp_alloc);
+    for (uint32_t i = 0; i < total; ++i) {
+        const md_atom_pair_t p = sys->bond.pairs[i];
+        if (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC) continue;
+        if (!scope_ptr || md_bitset_test(scope, (uint32_t)p.idx[0]) || md_bitset_test(scope, (uint32_t)p.idx[1])) md_bitmask_set_bit(&touched, i);
+    }
+    val->touched = md_bitmask_extract(&touched, alloc);
+
+    md_bond_delta_t d = {0};
+    const md_bond_delta_desc_t desc = { .scope = scope_ptr, .tolerance = tolerance, .breakable = breakable };
+    if (ctx->cur_state && md_util_bond_delta(&d, sys, ctx->cur_state, &desc, temp_alloc)) {
+        val->broken = md_bitset_copy(d.broken, alloc);
+        bond_extras_t e = {0};
+        for (size_t k = 0; k < d.num_formed; ++k) bond_extras_push(&e, d.formed_pair[k], d.formed_flags[k], temp_alloc);
+        md_bitmask_t none = md_bitmask_create(0, total, temp_alloc);
+        val->formed = bondset_make(&none, &e, alloc);
+    }
+    md_temp_end(temp);
+    return 0;
+}
+
+static inline const bond_delta_value_t* as_bond_delta(data_t arg) {
+    return (const bond_delta_value_t*)arg.ptr;
+}
+
+// formed(d): the bonds formed in the frame, which the system does not have
+static int _bond_delta_formed(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return 0;
+    const bond_delta_value_t* d = as_bond_delta(arg[0]);
+    as_bondset(*dst)[0] = d ? bondset_copy(d->formed, data_bitset_alloc(dst, ctx)) : (bondset_t){0};
+    return 0;
+}
+
+// broken(d): the bonds of the graph broken in the frame
+static int _bond_delta_broken(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return 0;
+    const bond_delta_value_t* d = as_bond_delta(arg[0]);
+    as_bondset(*dst)[0] = (bondset_t){ .bonds = d ? md_bitset_copy(d->broken, data_bitset_alloc(dst, ctx)) : md_bitset_empty_set() };
+    return 0;
+}
+
+// bonds(d): the bonds of the frame within the scope: the persistent bonds which touch it and are not broken, and those
+// formed
+static int _bond_delta_bonds(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    if (!dst) return 0;
+    const bond_delta_value_t* d = as_bond_delta(arg[0]);
+    md_allocator_i* alloc = data_bitset_alloc(dst, ctx);
+    if (!d) {
+        as_bondset(*dst)[0] = (bondset_t){0};
+        return 0;
+    }
+    bondset_t r = bondset_copy(d->formed, alloc);
+    md_bitset_free(&r.bonds, alloc);
+    r.bonds = md_bitset_andnot(d->touched, d->broken, alloc);
+    as_bondset(*dst)[0] = r;
     return 0;
 }

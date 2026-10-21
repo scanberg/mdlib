@@ -3026,6 +3026,53 @@ static int compare_bond_excess(const void* a, const void* b) {
     return (x->idx > y->idx) - (x->idx < y->idx);
 }
 
+// Factors on the sum of the covalent radii (Cordero et al. 2008, which covers metal-ligand distances too)
+static const float bond_k_min    = 0.65f;   // Shorter than this is a clash, not a bond
+static const float bond_k_cov    = 1.15f;   // Covalent bond between non-metals
+static const float bond_k_coord  = 1.30f;   // Upper end of the candidate search
+static const float bond_k_ligand = 1.25f;   // Metal to a donor (N, O, S, P, halogen): 1.0-1.1 in well resolved structures
+static const float bond_k_carbon = 1.15f;   // Transition metal to carbon (carbenes, carbonyls, cyclopentadienyl)
+static const float bond_k_metal  = 1.00f;   // Metal-metal
+
+// How two atoms are bonded from their distance: within factor times the sum of their covalent radii (0: never, whatever
+// the distance), and whether the bond is a coordination bond. same_comp: the atoms are of one component, where a bond
+// may be a little longer (large flexible ligands). water: one of them is of a water molecule.
+typedef struct bond_rule_t {
+    float factor;
+    bool  coordinate;
+} bond_rule_t;
+
+static bond_rule_t bond_rule(int ei, int ej, bool same_comp, bool water) {
+    const bond_rule_t none = {0};
+    const bool mi = is_metal(ei);
+    const bool mj = is_metal(ej);
+    if (!mi && !mj) {
+        const bond_rule_t r = { same_comp ? bond_k_cov * 1.05f : bond_k_cov, false };
+        return r;
+    }
+    if (mi != mj) {
+        const int metal_e = mi ? ei : ej;
+        const int non_metal_e = mi ? ej : ei;
+        // Alkali ions are free ions in solution: a coordination frozen from the reference frame would be
+        // wrong in every other. Water around metals is left out for the same reason.
+        if (is_alkali(metal_e) || water) return none;
+        if (is_metal_donor(non_metal_e)) {
+            const bond_rule_t r = { bond_k_ligand, true };
+            return r;
+        }
+        if (non_metal_e == C && is_transition_metal(metal_e)) {
+            const bond_rule_t r = { bond_k_carbon, true };
+            return r;
+        }
+        return none;
+    }
+    if (is_transition_metal(ei) && is_transition_metal(ej)) {
+        const bond_rule_t r = { bond_k_metal, false };
+        return r;
+    }
+    return none;
+}
+
 // ### MARTINI ###
 
 // The versions of Martini, which give beads of the same names different masses and sizes, and some residues different
@@ -3581,6 +3628,15 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         }
     }
 
+    // The non-covalent bonds are not inferred: they are kept as they are, after the graph (md_bond_data_t)
+    const size_t num_noncovalent = bond->noncovalent_count;
+    md_atom_pair_t*  noncovalent_pairs = md_temp_alloc_array(temp_scope, md_atom_pair_t,  MAX(num_noncovalent, 1));
+    md_bond_flags_t* noncovalent_flags = md_temp_alloc_array(temp_scope, md_bond_flags_t, MAX(num_noncovalent, 1));
+    if (num_noncovalent) {
+        MEMCPY(noncovalent_pairs, bond->pairs + bond->count, sizeof(md_atom_pair_t)  * num_noncovalent);
+        MEMCPY(noncovalent_flags, bond->flags + bond->count, sizeof(md_bond_flags_t) * num_noncovalent);
+    }
+
     md_bond_data_clear(bond);
     
     if (!state->xyz) {
@@ -3611,14 +3667,6 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             bond->count += 1;
         }
 	} else {
-        // Factors on the sum of the covalent radii (Cordero et al. 2008, which covers metal-ligand distances too)
-        static const float k_min   = 0.65f;     // Shorter than this is a clash, not a bond
-        static const float k_cov   = 1.15f;     // Covalent bond between non-metals
-        static const float k_coord = 1.30f;     // Upper end of the candidate search
-        static const float k_ligand = 1.25f;    // Metal to a donor (N, O, S, P, halogen): 1.0-1.1 in well resolved structures
-        static const float k_carbon = 1.15f;    // Transition metal to carbon (carbenes, carbonyls, cyclopentadienyl)
-        static const float k_metal = 1.00f;     // Metal-metal
-
         double max_atom_rad = 0.0;
 
         float* atom_radius = md_temp_alloc_array(temp_scope, float, num_atoms);
@@ -3653,14 +3701,14 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             // Find connections for all atoms
             cov_bond_callback_param_t param = {
                 .radius = atom_radius,
-                .k_min = k_min,
-                .k_max = k_coord,
+                .k_min = bond_k_min,
+                .k_max = bond_k_coord,
                 .candidates = &candidates,
                 .alloc      = temp_arena,
             };
 
             // Candidates within reach of the largest covalent radius of the set: about 2.7 Å for organic matter
-            const double cutoff = MAX(1.0, 2.0 * max_atom_rad * k_coord);
+            const double cutoff = MAX(1.0, 2.0 * max_atom_rad * bond_k_coord);
 
             // Build candidate list
             md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, state->num_atoms);
@@ -3683,50 +3731,14 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             // Virtual sites sit within bonding distance of their parent atom (the lone pairs of TIP5P at 0.7 Å)
             // but are not bonded to anything
             if (md_atom_particle_kind(&sys->atom, ai) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&sys->atom, aj) == MD_PARTICLE_VIRTUAL_SITE) continue;
-            float d = candidates[i].dist;
-            int ei = atomic_nr[ai];
-            int ej = atomic_nr[aj];
-            int mi = is_metal(ei);
-            int mj = is_metal(ej);
-            int ci = comp_id[ai];
-            int cj = comp_id[aj];
-            float sum_r = atom_radius[ai] + atom_radius[aj];
-
-            if (!mi && !mj) {
-                // Both non-metals, check against k_cov
-                float factor = k_cov;
-                if (ci == cj) {
-                    // Allow for slightly longer bonds within the same component (e.g. for large flexible ligands)
-                    factor *= 1.05f;
-                }
-                const float d_cov = factor * sum_r;
-                if (d < d_cov) {
-                    md_bond_insert(&temp_bond, ai, aj, inferred, temp_arena);
-                    md_array_push(temp_bond_dist, d, temp_arena);
-                }
-            } else if (mi ^ mj) { // XOR here (either is metal, but not both)
-                const int metal_e = mi ? ei : ej;
-                const int non_metal_e = mi ? ej : ei;
-                const bool is_water = (ci >= 0 && comp_water[ci]) || (cj >= 0 && comp_water[cj]);
-                // Alkali ions are free ions in solution: a coordination frozen from the reference frame would be
-                // wrong in every other. Water around metals is left out for the same reason.
-                if (is_alkali(metal_e) || is_water) continue;
-                float factor = 0.0f;
-                if (is_metal_donor(non_metal_e))                             factor = k_ligand;
-                else if (non_metal_e == C && is_transition_metal(metal_e))  factor = k_carbon;
-                if (factor > 0.0f && d < factor * sum_r) {
-                    md_bond_insert(&temp_bond, ai, aj, inferred | MD_BOND_FLAG_COORDINATE, temp_arena);
-                    md_array_push(temp_bond_dist, d, temp_arena);
-                }
-            } else {
-                // metal-metal
-                const float d_met = k_metal * sum_r;
-                if (is_transition_metal(ei) && is_transition_metal(ej)) {
-                    if (d < d_met) {
-                        md_bond_insert(&temp_bond, ai, aj, inferred, temp_arena);
-                        md_array_push(temp_bond_dist, d, temp_arena);
-                    }
-				}
+            const float d = candidates[i].dist;
+            const int ci = comp_id[ai];
+            const int cj = comp_id[aj];
+            const bool is_water = (ci >= 0 && comp_water[ci]) || (cj >= 0 && comp_water[cj]);
+            const bond_rule_t rule = bond_rule(atomic_nr[ai], atomic_nr[aj], ci == cj, is_water);
+            if (rule.factor > 0.0f && d < rule.factor * (atom_radius[ai] + atom_radius[aj])) {
+                md_bond_insert(&temp_bond, ai, aj, rule.coordinate ? inferred | MD_BOND_FLAG_COORDINATE : inferred, temp_arena);
+                md_array_push(temp_bond_dist, d, temp_arena);
             }
         }
 
@@ -3874,8 +3886,10 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
     // - an inferred bond naming a pair that is already kept is a duplicate, the kept one wins
     // - where a topology (md_itp) defines the connectivity it is authoritative, so inferred bonds between two
     //   atoms it covers are dropped, or re-inferring would add the distance guesses back on top of it
+    // - a pair with a non-covalent bond keeps it: an atom pair has one bond, and that one was given
     {
-        const size_t num_saved = md_array_size(bond_pairs);
+        const size_t num_kept  = md_array_size(bond_pairs);
+        const size_t num_saved = num_kept + num_noncovalent;
         if (num_saved > 0 && bond->count > 0) {
             const size_t num_atoms = state->num_atoms;
             uint64_t* covered = make_bitfield(num_atoms, temp_arena);
@@ -3885,11 +3899,12 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             md_atom_pair_t* saved_sorted = md_temp_alloc_array(temp_scope, md_atom_pair_t, num_saved);
             size_t num_sorted = 0;
             for (size_t i = 0; i < num_saved; ++i) {
-                if (bond_flags[i] & MD_BOND_FLAG_ELASTIC) continue;
-                md_atom_pair_t pair = bond_pairs[i];
+                const md_bond_flags_t f = i < num_kept ? bond_flags[i] : noncovalent_flags[i - num_kept];
+                if (f & MD_BOND_FLAG_ELASTIC) continue;
+                md_atom_pair_t pair = i < num_kept ? bond_pairs[i] : noncovalent_pairs[i - num_kept];
                 if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
                 saved_sorted[num_sorted++] = pair;
-                if (md_bond_origin(bond_flags[i]) == MD_BOND_ORIGIN_TOPOLOGY) {
+                if (i < num_kept && md_bond_origin(f) == MD_BOND_ORIGIN_TOPOLOGY) {
                     for (int k = 0; k < 2; ++k) {
                         if (pair.idx[k] >= 0 && (size_t)pair.idx[k] < num_atoms) bitfield_set_bit(covered, pair.idx[k]);
                     }
@@ -3923,6 +3938,11 @@ done:
         md_array_push(bond->flags, bond_flags[i], alloc);
         bond->count += 1;
     }
+    for (size_t i = 0; i < num_noncovalent; ++i) {
+        md_array_push(bond->pairs, noncovalent_pairs[i], alloc);
+        md_array_push(bond->flags, noncovalent_flags[i], alloc);
+    }
+    bond->noncovalent_count = num_noncovalent;
 
     md_temp_end(temp_scope);
 }
@@ -3942,10 +3962,16 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
             num_user += 1;
         }
     }
+    // The non-covalent bonds stay, right after the graph (md_bond_data_t)
+    const size_t num_noncovalent = sys->bond.noncovalent_count;
+    for (size_t i = 0; i < num_noncovalent; ++i) {
+        sys->bond.pairs[num_user + i] = sys->bond.pairs[sys->bond.count + i];
+        sys->bond.flags[num_user + i] = sys->bond.flags[sys->bond.count + i];
+    }
     md_bond_conn_clear(&sys->bond.conn);
     sys->bond.count = num_user;
-    md_array_shrink(sys->bond.pairs, num_user);
-    md_array_shrink(sys->bond.flags, num_user);
+    md_array_shrink(sys->bond.pairs, num_user + num_noncovalent);
+    md_array_shrink(sys->bond.flags, num_user + num_noncovalent);
     md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc);
     md_bond_build_connectivity(&sys->bond, state->num_atoms, sys->alloc);
 }
@@ -3960,13 +3986,366 @@ size_t md_util_system_infer_coordination(md_system_t* sys) {
         if (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC) continue;   // A spring, of no chemistry
         const bool metal_a = is_metal(md_atom_atomic_number(&sys->atom, p.idx[0]));
         const bool metal_b = is_metal(md_atom_atomic_number(&sys->atom, p.idx[1]));
-        if (metal_a != metal_b && !(sys->bond.flags[i] & MD_BOND_FLAG_COORDINATE)) {
+        // A kind which was given stays as it was given: a metal-ligand bond a user says is covalent
+        if (metal_a != metal_b && !(sys->bond.flags[i] & (MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_KIND_GIVEN))) {
             sys->bond.flags[i] |= MD_BOND_FLAG_COORDINATE;
             count += 1;
         }
     }
     if (count) md_system_topology_changed(sys);
     return count;
+}
+
+// ### BONDS FORMED AND BROKEN ###
+
+typedef struct delta_search_t {
+    const md_bitset_t* scope;   // NULL when every atom is looked at, and the pairs come once each
+    md_array(bond_pair_t) pairs;
+    md_allocator_i* alloc;
+} delta_search_t;
+
+static void delta_pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    delta_search_t* s = (delta_search_t*)user_param;
+    for (size_t k = 0; k < num_pairs; ++k) {
+        const uint32_t i = i_idx[k];
+        const uint32_t j = j_idx[k];
+        if (i == j) continue;
+        // i is of the scope: a pair with both atoms in it comes twice, and is taken as the one with the lower atom first
+        if (s->scope && j < i && md_bitset_test(*s->scope, j)) continue;
+        const bond_pair_t p = { (int)MIN(i, j), (int)MAX(i, j), sqrtf(ij_dist2[k]) };
+        md_array_push(s->pairs, p, s->alloc);
+    }
+}
+
+// What the delta needs to know of an atom, looked up as atoms come up rather than for every atom of the system
+typedef struct delta_atoms_t {
+    const md_system_t* sys;
+    int8_t* comp_water;         // [component count] -1 not looked at yet, 0, 1
+} delta_atoms_t;
+
+static inline int delta_comp(const delta_atoms_t* a, uint32_t atom) {
+    return a->sys->component.count ? (int)md_component_find_by_atom_idx(&a->sys->component, atom) : -1;
+}
+
+static inline bool delta_water(delta_atoms_t* a, int comp) {
+    if (comp < 0) return false;
+    if (a->comp_water[comp] < 0) {
+        a->comp_water[comp] = (int8_t)(md_component_kind(&a->sys->component, comp) == MD_COMPONENT_KIND_WATER || atoms_are_water(a->sys, md_component_atom_range(&a->sys->component, comp)));
+    }
+    return a->comp_water[comp] != 0;
+}
+
+// The cutoff of a pair (factor times the sum of the radii, 0 when it is never bonded) and whether it is coordination
+static inline bond_rule_t delta_rule(delta_atoms_t* a, uint32_t i, uint32_t j, float* out_sum_r) {
+    const md_atomic_number_t zi = md_atom_atomic_number(&a->sys->atom, i);
+    const md_atomic_number_t zj = md_atom_atomic_number(&a->sys->atom, j);
+    *out_sum_r = element_covalent_radius(zi) + element_covalent_radius(zj);
+    const bond_rule_t none = {0};
+    if (zi == 0 || zj == 0) return none;
+    if (md_atom_particle_kind(&a->sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&a->sys->atom, j) == MD_PARTICLE_VIRTUAL_SITE) return none;
+    const int ci = delta_comp(a, i);
+    const int cj = delta_comp(a, j);
+    return bond_rule(zi, zj, ci == cj, delta_water(a, ci) || delta_water(a, cj));
+}
+
+static inline float delta_distance(const md_system_state_t* state, uint32_t i, uint32_t j) {
+    vec3_t dx = vec3_sub(state->xyz[j], state->xyz[i]);
+    md_util_min_image_vec3(&dx, 1, &state->unitcell);
+    return vec3_length(dx);
+}
+
+static int compare_u64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+static inline uint64_t delta_pair_key(md_atom_pair_t p) {
+    return ((uint64_t)(uint32_t)MIN(p.idx[0], p.idx[1]) << 32) | (uint32_t)MAX(p.idx[0], p.idx[1]);
+}
+
+// The position of atom in the sorted atoms, which holds it
+static inline size_t delta_atom_slot(const uint32_t* atoms, size_t count, uint32_t atom) {
+    size_t lo = 0, hi = count;
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (atoms[mid] < atom) lo = mid + 1;
+        else hi = mid;
+    }
+    ASSERT(lo < count && atoms[lo] == atom);
+    return lo;
+}
+
+static int compare_u32(const void* a, const void* b) {
+    const uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return (x > y) - (x < y);
+}
+
+void md_bond_delta_free(md_bond_delta_t* delta, md_allocator_i* alloc) {
+    ASSERT(delta);
+    ASSERT(alloc);
+    md_bitset_free(&delta->broken, alloc);
+    if (delta->formed_pair)  md_free(alloc, delta->formed_pair,  sizeof(md_atom_pair_t)  * delta->num_formed);
+    if (delta->formed_flags) md_free(alloc, delta->formed_flags, sizeof(md_bond_flags_t) * delta->num_formed);
+    MEMSET(delta, 0, sizeof(md_bond_delta_t));
+}
+
+bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_system_state_t* state, const md_bond_delta_desc_t* desc, md_allocator_i* alloc) {
+    ASSERT(out);
+    ASSERT(sys);
+    ASSERT(state);
+    ASSERT(desc);
+    ASSERT(alloc);
+    MEMSET(out, 0, sizeof(md_bond_delta_t));
+
+    const size_t num_atoms = sys->atom.count;
+    if (!state->xyz || state->num_atoms != num_atoms || num_atoms == 0) return false;
+    if (md_system_is_coarse_grained(sys)) return false;
+    if (sys->bond.count > 0 && !sys->bond.conn.offset) {
+        MD_LOG_ERROR("The bonds of the system have no connectivity (md_bond_build_connectivity)");
+        return false;
+    }
+    const float tol = CLAMP(desc->tolerance, 0.0f, 0.49f);
+    const md_bitset_t* scope = desc->scope;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+
+    delta_atoms_t atoms = { .sys = sys };
+    atoms.comp_water = md_temp_alloc_array(temp, int8_t, MAX(sys->component.count, 1));
+    MEMSET(atoms.comp_water, -1, MAX(sys->component.count, 1));
+
+    // ## The bonds of the graph which touch the scope: broken beyond the band, and stretched beyond the cutoff
+    // (they no longer count against what their atoms can take)
+    const size_t num_bonds = sys->bond.count;
+    md_bitmask_t broken    = md_bitmask_create(0, (uint32_t)num_bonds, temp_alloc);
+    md_bitmask_t stretched = md_bitmask_create(0, (uint32_t)num_bonds, temp_alloc);
+    {
+        md_bitset_iter_t it = scope ? md_bitset_iter(*scope) : md_bitset_iter(md_bitset_range(0, (uint32_t)num_atoms));
+        while (md_bitset_iter_next(&it)) {
+            const uint32_t a = (uint32_t)it.idx;
+            if (a >= num_atoms) break;
+            md_bond_iter_t bit = md_bond_iter(&sys->bond, a);
+            while (md_bond_iter_has_next(&bit)) {
+                const uint32_t o = (uint32_t)md_bond_iter_atom_index(&bit);
+                const uint32_t b = (uint32_t)md_bond_iter_bond_index(&bit);
+                md_bond_iter_next(&bit);
+                // Each bond once: from its lower atom when both are in the scope
+                const bool o_in = scope ? md_bitset_test(*scope, o) : true;
+                if (o_in && o < a) continue;
+                float sum_r = 0.0f;
+                const bond_rule_t rule = delta_rule(&atoms, a, o, &sum_r);
+                if (sum_r <= 0.0f) continue;
+                const md_atomic_number_t za = md_atom_atomic_number(&sys->atom, a);
+                const md_atomic_number_t zo = md_atom_atomic_number(&sys->atom, o);
+                if (za == 0 || zo == 0) continue;
+                // A pair inference would not bond (an alkali ion and its ligand from a file, ...) breaks beyond the reach
+                // of the search for candidates
+                const float cutoff = (rule.factor > 0.0f ? rule.factor : bond_k_coord) * sum_r;
+                const float d = delta_distance(state, a, o);
+                if (d > cutoff) md_bitmask_set_bit(&stretched, b);
+                const uint32_t origin_bit = 1u << md_bond_origin(sys->bond.flags[b]);
+                if ((desc->breakable & origin_bit) && d > (1.0f + tol) * cutoff) {
+                    md_bitmask_set_bit(&broken, b);
+                }
+            }
+        }
+    }
+
+    // ## Candidates for the formed bonds: the pairs with an atom of the scope within reach
+    md_array(bond_pair_t) formed = 0;
+    {
+        // The reach of the largest rule, between the largest atoms of the scope and of the system
+        float max_rad_scope = 0.0f, max_rad_all = 0.0f;
+        for (size_t i = 0; i < num_atoms; ++i) {
+            const float r = element_covalent_radius(md_atom_atomic_number(&sys->atom, i));
+            max_rad_all = MAX(max_rad_all, r);
+            if (!scope || md_bitset_test(*scope, (uint32_t)i)) max_rad_scope = MAX(max_rad_scope, r);
+        }
+        const double cutoff = MAX(1.0, (double)(max_rad_scope + max_rad_all) * bond_k_coord);
+
+        delta_search_t search = { .scope = scope, .alloc = temp_alloc };
+        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, num_atoms);
+        md_spatial_acc_t acc = { .alloc = temp_alloc };
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
+        if (!scope) {
+            md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, delta_pair_callback, &search);
+        } else {
+            const size_t num_scope = md_bitset_count(*scope);
+            if (num_scope > 0) {
+                int* idx = md_temp_alloc_array(temp, int, num_scope);
+                size_t n = 0;
+                md_bitset_iter_t it = md_bitset_iter(*scope);
+                while (md_bitset_iter_next(&it) && n < num_scope) {
+                    if (it.idx < num_atoms) idx[n++] = (int)it.idx;
+                }
+                md_coord_stream_t ext = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), idx, n);
+                md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, cutoff, delta_pair_callback, &search, MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX);
+            }
+        }
+
+        // The non-covalent bonds of the system, whose pairs form nothing
+        const size_t num_nc = sys->bond.noncovalent_count;
+        uint64_t* nc_keys = md_temp_alloc_array(temp, uint64_t, MAX(num_nc, 1));
+        for (size_t k = 0; k < num_nc; ++k) nc_keys[k] = delta_pair_key(sys->bond.pairs[num_bonds + k]);
+        qsort(nc_keys, num_nc, sizeof(uint64_t), compare_u64);
+
+        for (size_t k = 0; k < md_array_size(search.pairs); ++k) {
+            const bond_pair_t p = search.pairs[k];
+            float sum_r = 0.0f;
+            const bond_rule_t rule = delta_rule(&atoms, (uint32_t)p.atom_i, (uint32_t)p.atom_j, &sum_r);
+            if (rule.factor <= 0.0f) continue;
+            if (p.dist <= bond_k_min * sum_r || p.dist >= (1.0f - tol) * rule.factor * sum_r) continue;
+            if (md_bond_find(&sys->bond, p.atom_i, p.atom_j) != -1) continue;
+            const md_atom_pair_t pair = {{ p.atom_i, p.atom_j }};
+            const uint64_t key = delta_pair_key(pair);
+            if (num_nc && bsearch(&key, nc_keys, num_nc, sizeof(uint64_t), compare_u64)) continue;
+            bond_pair_t f = p;
+            // The kind rides in the sign of the distance until the flags are written
+            if (rule.coordinate) f.dist = -f.dist;
+            md_array_push(formed, f, temp_alloc);
+        }
+    }
+
+    // ## What the atoms of the formed bonds can take. The bonds of the graph count unless broken or stretched, and
+    // only a formed bond is ever removed.
+    const size_t num_candidates = md_array_size(formed);
+    md_array(bool) keep = 0;
+    if (num_candidates) {
+        md_array_resize(keep, num_candidates, temp_alloc);
+        for (size_t k = 0; k < num_candidates; ++k) keep[k] = true;
+
+        uint32_t* ends = md_temp_alloc_array(temp, uint32_t, 2 * num_candidates);
+        for (size_t k = 0; k < num_candidates; ++k) {
+            ends[2 * k + 0] = (uint32_t)formed[k].atom_i;
+            ends[2 * k + 1] = (uint32_t)formed[k].atom_j;
+        }
+        qsort(ends, 2 * num_candidates, sizeof(uint32_t), compare_u32);
+        size_t num_ends = 0;
+        for (size_t k = 0; k < 2 * num_candidates; ++k) {
+            if (num_ends == 0 || ends[num_ends - 1] != ends[k]) ends[num_ends++] = ends[k];
+        }
+        int* num_cov   = md_temp_alloc_array(temp, int, num_ends);
+        int* num_coord = md_temp_alloc_array(temp, int, num_ends);
+        MEMSET(num_cov,   0, sizeof(int) * num_ends);
+        MEMSET(num_coord, 0, sizeof(int) * num_ends);
+
+        for (size_t e = 0; e < num_ends; ++e) {
+            const uint32_t a = ends[e];
+            md_bond_iter_t bit = md_bond_iter(&sys->bond, a);
+            while (md_bond_iter_has_next(&bit)) {
+                const uint32_t o = (uint32_t)md_bond_iter_atom_index(&bit);
+                const uint32_t b = (uint32_t)md_bond_iter_bond_index(&bit);
+                const md_bond_flags_t f = (md_bond_flags_t)md_bond_iter_bond_flags(&bit);
+                md_bond_iter_next(&bit);
+                if (md_bitmask_test_bit(&broken, b)) continue;
+                // A bond of an atom outside of the scope has not been measured
+                bool stretch = md_bitmask_test_bit(&stretched, b);
+                if (!stretch && scope && !md_bitset_test(*scope, a) && !md_bitset_test(*scope, o)) {
+                    float sum_r = 0.0f;
+                    const bond_rule_t rule = delta_rule(&atoms, a, o, &sum_r);
+                    stretch = sum_r > 0.0f && delta_distance(state, a, o) > (rule.factor > 0.0f ? rule.factor : bond_k_coord) * sum_r;
+                }
+                if (stretch) continue;
+                if (f & MD_BOND_FLAG_COORDINATE) num_coord[e] += 1;
+                else                             num_cov[e]   += 1;
+            }
+        }
+        for (size_t k = 0; k < num_candidates; ++k) {
+            const size_t ei = delta_atom_slot(ends, num_ends, (uint32_t)formed[k].atom_i);
+            const size_t ej = delta_atom_slot(ends, num_ends, (uint32_t)formed[k].atom_j);
+            int* n = formed[k].dist < 0.0f ? num_coord : num_cov;
+            n[ei] += 1;
+            n[ej] += 1;
+        }
+
+        // In the order of md_util_infer_covalent_bonds: bonds between components first, then the furthest from the radii
+        md_array(bond_excess_t) over = 0;
+        for (size_t k = 0; k < num_candidates; ++k) {
+            const uint32_t i = (uint32_t)formed[k].atom_i;
+            const uint32_t j = (uint32_t)formed[k].atom_j;
+            const size_t ei = delta_atom_slot(ends, num_ends, i);
+            const size_t ej = delta_atom_slot(ends, num_ends, j);
+            const md_atomic_number_t zi = md_atom_atomic_number(&sys->atom, i);
+            const md_atomic_number_t zj = md_atom_atomic_number(&sys->atom, j);
+            bool exceeds = false;
+            if (formed[k].dist < 0.0f) {
+                const size_t m = is_metal(zi) ? ei : ej;
+                exceeds = num_coord[m] > max_coordination(is_metal(zi) ? zi : zj);
+            } else {
+                const int mi = max_covalent_bonds(zi);
+                const int mj = max_covalent_bonds(zj);
+                exceeds = (mi && num_cov[ei] > mi) || (mj && num_cov[ej] > mj);
+            }
+            if (exceeds) {
+                const float sum_r = element_covalent_radius(zi) + element_covalent_radius(zj);
+                bond_excess_t x = {
+                    .inter = delta_comp(&atoms, i) != delta_comp(&atoms, j),
+                    .deviation = sum_r > 0 ? fabsf(fabsf(formed[k].dist) / sum_r - 1.0f) : 0.0f,
+                    .idx = (uint32_t)k,
+                };
+                md_array_push(over, x, temp_alloc);
+            }
+        }
+        const size_t num_over = md_array_size(over);
+        if (num_over) {
+            qsort(over, num_over, sizeof(bond_excess_t), compare_bond_excess);
+            for (size_t o = 0; o < num_over; ++o) {
+                const uint32_t k = over[o].idx;
+                const uint32_t i = (uint32_t)formed[k].atom_i;
+                const uint32_t j = (uint32_t)formed[k].atom_j;
+                const size_t ei = delta_atom_slot(ends, num_ends, i);
+                const size_t ej = delta_atom_slot(ends, num_ends, j);
+                const md_atomic_number_t zi = md_atom_atomic_number(&sys->atom, i);
+                const md_atomic_number_t zj = md_atom_atomic_number(&sys->atom, j);
+                if (formed[k].dist < 0.0f) {
+                    const size_t m = is_metal(zi) ? ei : ej;
+                    if (num_coord[m] <= max_coordination(is_metal(zi) ? zi : zj)) continue;
+                    num_coord[ei] -= 1;
+                    num_coord[ej] -= 1;
+                } else {
+                    const int mi = max_covalent_bonds(zi);
+                    const int mj = max_covalent_bonds(zj);
+                    if (!((mi && num_cov[ei] > mi) || (mj && num_cov[ej] > mj))) continue;
+                    num_cov[ei] -= 1;
+                    num_cov[ej] -= 1;
+                }
+                keep[k] = false;
+            }
+        }
+    }
+
+    // ## The delta, in the caller's allocator
+    out->broken = md_bitmask_extract(&broken, alloc);
+    size_t num_formed = 0;
+    for (size_t k = 0; k < num_candidates; ++k) num_formed += keep[k];
+    if (num_formed) {
+        // Sorted by pair: the candidates came in the order of the search
+        uint64_t* keys = md_temp_alloc_array(temp, uint64_t, num_formed);
+        size_t n = 0;
+        for (size_t k = 0; k < num_candidates; ++k) {
+            if (!keep[k]) continue;
+            const md_atom_pair_t pair = {{ formed[k].atom_i, formed[k].atom_j }};
+            keys[n++] = delta_pair_key(pair);
+        }
+        qsort(keys, num_formed, sizeof(uint64_t), compare_u64);
+        out->formed_pair  = md_alloc(alloc, sizeof(md_atom_pair_t)  * num_formed);
+        out->formed_flags = md_alloc(alloc, sizeof(md_bond_flags_t) * num_formed);
+        const md_bond_flags_t inferred = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED);
+        for (size_t k = 0; k < num_formed; ++k) {
+            const md_atom_pair_t pair = {{ (md_atom_idx_t)(keys[k] >> 32), (md_atom_idx_t)(keys[k] & 0xFFFFFFFFu) }};
+            out->formed_pair[k] = pair;
+            // A rule gives a coordination bond for a metal and a non-metal, and only for them
+            const md_atomic_number_t zi = md_atom_atomic_number(&sys->atom, pair.idx[0]);
+            const md_atomic_number_t zj = md_atom_atomic_number(&sys->atom, pair.idx[1]);
+            out->formed_flags[k] = (is_metal(zi) != is_metal(zj)) ? inferred | MD_BOND_FLAG_COORDINATE : inferred;
+        }
+        out->num_formed = num_formed;
+    }
+
+    md_bitmask_free(&broken);
+    md_bitmask_free(&stretched);
+    md_temp_end(temp);
+    return true;
 }
 
 #define MIN_RES_LEN 4

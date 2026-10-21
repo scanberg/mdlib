@@ -4,6 +4,7 @@
 
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
+#include <core/md_bitset.h>
 
 struct md_allocator_i;
 struct md_bitset_t;
@@ -174,11 +175,13 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_sy
 void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
 
 // Infers the covalent bonds of the system (md_util_infer_covalent_bonds) anew. The bonds a user added by hand and those
-// the file gives (MD_BOND_ORIGIN_FILE: the CONECT records of a PDB file) are kept, all other bonds are replaced.
+// the file gives (MD_BOND_ORIGIN_FILE: the CONECT records of a PDB file) are kept, and so are the non-covalent bonds:
+// all other bonds of the graph are replaced.
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
 
-// Marks every bond between a metal and a non-metal MD_BOND_FLAG_COORDINATE, whatever its origin, and returns how many
-// it marked. md_util_system_infer does it for each system; a bond added afterwards (by hand) wants it too.
+// Marks every bond between a metal and a non-metal MD_BOND_FLAG_COORDINATE, whatever its origin, unless its kind was
+// given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_util_system_infer does it for each system; a bond
+// added afterwards (by hand) wants it too.
 size_t md_util_system_infer_coordination(md_system_t* sys);
 
 // Marks the bonds of a coarse grained topology which hold a protein or nucleic acid in shape without being bonds of it
@@ -191,6 +194,49 @@ size_t md_util_system_infer_coordination(md_system_t* sys);
 // are left as they are. Needs the kinds of the components and the backbone beads (md_util_system_infer_comp_flags),
 // and rebuilds the connectivity when it marks any. The topology readers (md_tpr, md_itp) call it.
 size_t md_util_system_infer_elastic_bonds(md_system_t* sys);
+
+// ### BONDS FORMED AND BROKEN ###
+// The bonds of a state against the bond graph of the system, which is the reference topology: the bonds of the graph
+// broken in the state, and the bonds formed in it which the system does not have. What the bonds of the state are is
+// the graph without the broken bonds and with the formed ones; the system is not changed. Only the bonds of a scope are
+// looked at, those with an atom in it (so a bond to an atom just outside of it forms too): outside of it the bonds of
+// the state are those of the graph.
+//
+// The rules are those of md_util_infer_covalent_bonds, with a band around their cutoffs so that a bond does not flicker
+// from frame to frame as it vibrates near one: a bond of the graph breaks only beyond (1 + tolerance) times its cutoff,
+// and a pair forms a bond only within (1 - tolerance) times it. Measured against the graph rather than an earlier state,
+// so the bonds of a state are those of that state alone, whatever was evaluated before it.
+//   - Only the bonds of the breakable origins break. A bond a user added stays, and by default so does one of a force
+//     field topology, which holds throughout a classical simulation.
+//   - A formed bond is limited by what its atoms can take (md_util_infer_covalent_bonds prunes the same way). A bond of
+//     the graph counts against that while it is within its cutoff, but not once it is stretched beyond it on its way to
+//     breaking: a bond forming as another breaks (a proton moving, the transition state of a substitution) shows both
+//     for the frames it takes, while two atoms which clash in the reference do not bond in every frame.
+//   - A pair with a non-covalent bond in the system forms no bond: what was given of it stands.
+//   - A coarse grained system has no bonds formed or broken: its bonds come from templates, not distances.
+typedef struct md_bond_delta_t {
+    md_bitset_t      broken;        // Bonds of the graph broken in the state: indices into sys->bond, in [0, count)
+    size_t           num_formed;
+    md_atom_pair_t*  formed_pair;   // [num_formed] Pairs bonded in the state which have no bond in the system, each the
+                                    // lower atom first, sorted
+    md_bond_flags_t* formed_flags;  // [num_formed] Covalent or coordinate, of order unknown and origin inferred
+} md_bond_delta_t;
+
+#define MD_BOND_DELTA_TOLERANCE 0.1f
+#define MD_BOND_DELTA_BREAKABLE ((1u << MD_BOND_ORIGIN_FILE) | (1u << MD_BOND_ORIGIN_INFERRED))
+
+typedef struct md_bond_delta_desc_t {
+    const md_bitset_t* scope;       // The atoms whose bonds are looked at, NULL for all of them
+    float    tolerance;             // Half the width of the band around the cutoffs, as a fraction of them: [0, 0.5).
+                                    // MD_BOND_DELTA_TOLERANCE is what to use without a reason for another
+    uint32_t breakable;             // The origins whose bonds may break, a mask of 1 << md_bond_origin_t:
+                                    // MD_BOND_DELTA_BREAKABLE (a file's and those inferred) without a reason for another
+} md_bond_delta_desc_t;
+
+// The delta of a state, written to out and allocated with alloc. False, with an empty delta, when the state has no
+// coordinates (or not those of the system) or the system is coarse grained.
+bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_system_state_t* state, const md_bond_delta_desc_t* desc, struct md_allocator_i* alloc);
+void md_bond_delta_free(md_bond_delta_t* delta, struct md_allocator_i* alloc);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask

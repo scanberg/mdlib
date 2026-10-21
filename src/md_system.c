@@ -328,6 +328,21 @@ const char* md_bond_origin_name(md_bond_origin_t origin) {
     }
 }
 
+static const md_bond_kind_name_t bond_kind_names[] = {
+    {"covalent",    MD_BOND_FLAG_KIND_MASK,                             MD_BOND_FLAG_NONE},
+    {"coordinate",  MD_BOND_FLAG_KIND_MASK,                             MD_BOND_FLAG_COORDINATE},
+    {"elastic",     MD_BOND_FLAG_KIND_MASK,                             MD_BOND_FLAG_ELASTIC},
+    {"noncovalent", MD_BOND_FLAG_NONCOVALENT,                           MD_BOND_FLAG_NONCOVALENT},
+    {"hydrogen",    MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN,   MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN},
+    {"ionic",       MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_IONIC,      MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_IONIC},
+    {"sigma_hole",  MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_SIGMA_HOLE, MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_SIGMA_HOLE},
+};
+
+const md_bond_kind_name_t* md_bond_kind_names(size_t* count) {
+    if (count) *count = ARRAY_SIZE(bond_kind_names);
+    return bond_kind_names;
+}
+
 void md_system_free(md_system_t* sys) {
     ASSERT(sys);
     ASSERT(sys->alloc);

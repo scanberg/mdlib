@@ -15,7 +15,7 @@ in-application help and the wiki.
 - [Contexts: `in` and `out`](#contexts-in-and-out)
 - [What becomes a property](#what-becomes-a-property)
 - [Procedure index](#procedure-index)
-- Reference: [Selectors](#selectors), [Properties](#properties), [Geometry](#geometry),
+- Reference: [Selectors](#selectors), [Bond sets](#bond-sets), [Properties](#properties), [Geometry](#geometry),
   [Math](#math), [Linear algebra and constructors](#linear-algebra-and-constructors),
   [Combining and reshaping](#combining-and-reshaping), [Data from outside the structure](#data-from-outside-the-structure)
 - [Implicit conversions](#implicit-conversions)
@@ -149,7 +149,7 @@ Arithmetic (`+ - * /`) works on `int`, `float`, and their arrays, element-wise; 
 array. `volume` values can be added, subtracted, multiplied and divided with each other or with a scalar. A
 `distribution` can only be scaled by a number (`2.0 * g`, `g / 2.0`) and combined with another by
 [`pool`](#pool); see [Distributions](#distributions) for why. Comparisons work on `float`s and arrays of them (a scalar is compared with every element) and give a
-`bool` or an array of `bool`. `and`, `or`, `xor`, `not` combine **bitfields** (atom selections) and, separately,
+`bool` or an array of `bool`. `and`, `or`, `xor`, `not` combine **atomsets** (atom selections) and, separately,
 `bool`s and arrays of `bool` element by element. A `bool` value cannot be published as a property, so comparisons are
 building blocks for other expressions rather than results in their own right.
 
@@ -187,14 +187,16 @@ n = count(sel=protein(), unit="residue");
 | `int`, `float`, `bool` | Scalars. `int` converts implicitly to `float`. |
 | `string` | Text, used to match names. |
 | `irange`, `frange` | Integer / float ranges; `irange` converts to `frange`. |
-| `bitfield` | A set of atoms — the value of every selector. |
-| `T[n]` | An array of `n` elements of type `T`. `bitfield[n]` is *n* selections, typically *n* residues or chains. |
+| `atomset` | A set of atoms — the value of every selector. |
+| `T[n]` | An array of `n` elements of type `T`. `atomset[n]` is *n* selections, typically *n* residues or chains. |
 | `float[2]`, `float[3]`, `float[4]`, `float[4][4]` | Vectors and matrices (`vec2`, `vec3`, `vec4`, 4×4 matrix). |
-| `position` | Not a real type: the argument of a geometric procedure. It accepts atom indices or ranges (`1:3`), bitfields (their centre of mass is used), or `float[3]` vectors. See [Coordinate arguments](#coordinate-arguments). |
+| `position` | Not a real type: the argument of a geometric procedure. It accepts atom indices or ranges (`1:3`), atomsets (their centre of mass is used), or `float[3]` vectors. See [Coordinate arguments](#coordinate-arguments). |
 | `distribution` | A 1024-bin histogram (for example `rdf`, `density_x`), with a weight per bin; see [Distributions](#distributions). `distribution[n]` is *n* of them, e.g. `rdf(...) in residue(1:3)`. |
 | `volume` | `float[128][128][128]` grid (for example `sdf`). |
 | `contact` | The group pairs in contact in a frame, from [`contacts`](#contacts); read with [`count`](#count) and [`degree`](#degree). |
 | `plane` | The plane fitted to a group of atoms or to positions, from [`plane`](#plane): its centroid, oriented normal, radius and how far the atoms are from it; read with [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation) and [`angle`](#angle). `plane[n]` is *n* of them. |
+| `bondset` | A set of bonds, from [`bond`](#bond): the persistent bonds of the system it picks, and bonds computed for a frame (those [`formed`](#formed) in it). Not a set of atoms, which would bring in every bond among its atoms; [`atoms`](#atoms) gives the atoms of the bonds. `bondset[n]` is *n* sets, for example the bonds within each residue. |
+| `bond_delta` | The bonds formed and broken in a frame, from [`bond_delta`](#bond_delta); read with [`formed`](#formed), [`broken`](#broken) and [`bonds`](#bonds). |
 | `pucker` | How a ring of 5 to 7 atoms is puckered, from [`pucker`](#pucker): its Cremer-Pople coordinates and the name of its conformation; read with [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta) and [`pseudorotation`](#pseudorotation). |
 
 Units propagate through arithmetic: `distance(1,2) - distance(1,3)` is in Å, `distance(1,2) * distance(1,3)` in Å²,
@@ -211,25 +213,25 @@ Every procedure documented with `position` arguments (`distance`, `angle`, `dihe
 `rdf`, `within(radius, around)`, ...) accepts any of:
 
 - **atom indices** such as `1`, `1:3` or `{1, 5, 9}`. Inside a context these are relative to that context;
-- **a bitfield** such as `residue(1)` or `element("C")`;
+- **an atomset** such as `residue(1)` or `element("C")`;
 - **a `float[3]` vector**, e.g. `vec3(0, 0, 0)`, or the result of `com(...)`;
-- **an array of bitfields**, e.g. `residue(1:3)` or `ring()`.
+- **an array of atomsets**, e.g. `residue(1:3)` or `ring()`.
 
 How a selection is turned into positions depends on the procedure, but the rule of thumb is:
 
 | Argument | `distance`, `angle`, `dihedral`, `com` | `distance_pair`, `coord*` | `rdf`, `within`, `plane`, `shape_weights` |
 |---|---|---|---|
-| single bitfield / index range | one point: the mass-weighted centre of mass | every atom, individually | every atom, individually (see each entry) |
-| array of bitfields (`residue(1:3)`) | see below | one centre of mass **per element** | see each entry |
+| single atomset / index range | one point: the mass-weighted centre of mass | every atom, individually | every atom, individually (see each entry) |
+| array of atomsets (`residue(1:3)`) | see below | one centre of mass **per element** | see each entry |
 
-`distance`, `com` and `within` *merge* an array of bitfields into one selection first, so `com(residue(1:3))` is the
+`distance`, `com` and `within` *merge* an array of atomsets into one selection first, so `com(residue(1:3))` is the
 centre of mass of all three residues together and `distance(residue(1:3), vec3(0,0,0))` is a single value. To get
 one value per residue, use a [context](#contexts-in-and-out): `distance(1, vec3(0,0,0)) in residue(1:3)`, or use a
 procedure that keeps the elements apart such as `distance_pair(residue(1:3), vec3(0,0,0))` (three values) or
 `coord_x(residue(1:3))` (three values: the x coordinate of each residue's centre of mass).
 
 Procedures that describe a structure rather than reduce it to a point, [`plane`](#plane), [`rmsd`](#rmsd) and
-[`pucker`](#pucker), keep the bitfields of an array apart and give one result per bitfield. Take their
+[`pucker`](#pucker), keep the atomsets of an array apart and give one result per atomset. Take their
 [`union`](#union) for one result over all of them: `plane(union(residue(1:3)))`.
 
 `distance_min` and `distance_max` follow a rule of their own: they measure atoms, not centres of mass, and give one
@@ -279,7 +281,7 @@ Assignments compile to *values*. Only some of them are published as **properties
 - a `distribution` (`rdf`, `density_x/y/z`), accumulated over all frames, or an array of them,
 - a `volume` (`sdf`), accumulated over all frames.
 
-Constants, plain selections (a `bitfield`), strings and ranges are *not* properties; they exist to be used by other
+Constants, plain selections (an `atomset`), strings and ranges are *not* properties; they exist to be used by other
 statements. The engine publishes each property under the attribute `script/<name>`. A script with no property at
 all (`a = count(protein());`, which is constant) cannot be evaluated and reports "no properties".
 
@@ -311,6 +313,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 | [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation), [`pucker`](#pucker), [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta), [`pseudorotation`](#pseudorotation), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
 | [Math](#math) | [`sqrt`](#sqrt), [`cbrt`](#cbrt), [`abs`](#abs), [`floor`](#floor), [`ceil`](#ceil), [`sin`](#sin), [`cos`](#cos), [`asin`](#asin), [`acos`](#acos), [`atan`](#atan), [`atan2`](#atan2), [`log`](#log), [`log2`](#log2), [`log10`](#log10), [`exp`](#exp), [`exp2`](#exp2), [`pow`](#pow), [`min`](#min), [`max`](#max) |
 | [Linear algebra](#linear-algebra-and-constructors) | [`vec2`](#vec2), [`vec3`](#vec3), [`vec4`](#vec4), [`dot`](#dot), [`cross`](#cross), [`length`](#length), [`normalize`](#normalize), [`mul`](#mul) |
+| [Bond sets](#bond-sets) | [`bond`](#bond), [`atoms`](#atoms), [`bond_delta`](#bond_delta), [`formed`](#formed), [`broken`](#broken), [`bonds`](#bonds), and [`count`](#count), [`length`](#length) and `and` `or` `xor` `not` on bond sets |
 | [Combining](#combining-and-reshaping) | [`union`](#union), [`flatten`](#flatten), [`split`](#split), [`chunks`](#chunks), [`transpose`](#transpose), and the operators `and` `or` `xor` `not` on selections |
 | [External data](#data-from-outside-the-structure) | [`attr`](#attr) |
 
@@ -318,7 +321,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 
 ## Selectors
 
-A **selector** returns a `bitfield` (a set of atoms) or a `bitfield[]` (several sets — one per residue, chain, ring,
+A **selector** returns an `atomset` (a set of atoms) or a `atomset[]` (several sets — one per residue, chain, ring,
 ...). Selectors take no positions and do not change during a run, except the [spatial selectors](#selectors-spatial),
 which are re-evaluated for every frame.
 
@@ -336,14 +339,14 @@ polar      = element({"N", "O"}) or name("S*");
 
 ### Selectors: atom level
 
-These return a single `bitfield`.
+These return a single `atomset`.
 
 ### all
 
 <!-- proc name=all category=selector.atom -->
 
 ```text
-all() -> bitfield
+all() -> atomset
 ```
 
 Every atom in the system (or, inside a context, every atom of that context).
@@ -358,8 +361,8 @@ per_residue = count(all()) in residue(:);      # atoms per residue
 <!-- proc name=atom category=selector.atom -->
 
 ```text
-atom(indices: irange[]) -> bitfield
-atom(indices: int[])    -> bitfield
+atom(indices: irange[]) -> atomset
+atom(indices: int[])    -> atomset
 ```
 
 Select atoms by 1-based index. Indices are relative to the current context, so inside `in residue(:)` `atom(1)` is
@@ -377,8 +380,8 @@ n_terminal = atom(1:4) in residue(1);          # first four atoms of residue 1
 <!-- proc name=element category=selector.atom -->
 
 ```text
-element(symbol: string[]) -> bitfield
-element(z: irange[])      -> bitfield
+element(symbol: string[]) -> atomset
+element(z: irange[])      -> atomset
 ```
 
 Select by chemical element, either by symbol (`"C"`) or atomic number (`6`). Several values may be given as an
@@ -396,9 +399,9 @@ also_carbons = element(6);
 <a id="label"></a><a id="type"></a>
 
 ```text
-name(pattern: string[])  -> bitfield
-label(pattern: string[]) -> bitfield
-type(pattern: string[])  -> bitfield
+name(pattern: string[])  -> atomset
+label(pattern: string[]) -> atomset
+type(pattern: string[])  -> atomset
 ```
 
 Select atoms by atom name (for example `"CA"`, `"OW"`). `label` and `type` are aliases. Patterns may contain the
@@ -416,7 +419,7 @@ backbone_atoms = name({"N", "CA", "C", "O"});
 <!-- proc name=backbone category=selector.atom -->
 
 ```text
-backbone() -> bitfield
+backbone() -> atomset
 ```
 
 The atoms flagged as backbone in protein and nucleic-acid residues.
@@ -432,8 +435,8 @@ n_bb = count(backbone());
 <a id="sidechain"></a>
 
 ```text
-side()      -> bitfield
-sidechain() -> bitfield
+side()      -> atomset
+sidechain() -> atomset
 ```
 
 `sidechain()` selects the side-chain atoms of protein residues. `side()` selects the same plus the nucleoside
@@ -450,7 +453,7 @@ sc_of_first_residues = side() and residue(1:5);
 <!-- proc name=ion category=selector.atom -->
 
 ```text
-ion() -> bitfield
+ion() -> atomset
 ```
 
 Atoms of residues that were recognised as ions (for example Na⁺, Cl⁻).
@@ -465,7 +468,7 @@ solvent_and_ions = water() or ion();
 <!-- proc name=nucleoside category=selector.atom -->
 
 ```text
-nucleoside() -> bitfield
+nucleoside() -> atomset
 ```
 
 Atoms flagged as part of the nucleoside (sugar) portion of nucleic-acid residues.
@@ -479,7 +482,7 @@ sugars = nucleoside();
 <!-- proc name=nucleobase category=selector.atom -->
 
 ```text
-nucleobase() -> bitfield
+nucleobase() -> atomset
 ```
 
 Atoms flagged as part of the nucleobase of nucleic-acid residues.
@@ -493,7 +496,7 @@ bases = nucleobase();
 <!-- proc name=head category=selector.atom -->
 
 ```text
-head() -> bitfield
+head() -> atomset
 ```
 
 The atoms of the heads of the lipids: all of a lipid but its tails (see [`tail`](#tail)), hydrogens included. For a
@@ -511,7 +514,7 @@ p_z = coord_z(head() and element("P"));
 <!-- proc name=tail category=selector.atom -->
 
 ```text
-tail() -> bitfield[]
+tail() -> atomset[]
 ```
 
 One selection per tail of the lipids, with its branches and hydrogens: each acyl, alkyl or sphingoid chain, and the ring
@@ -532,8 +535,8 @@ n_tail_atoms = count(tail() and element("C"));
 <!-- proc name=ring category=selector.atom -->
 
 ```text
-ring(pattern: string[], kind: string[], size: irange) -> bitfield[]
-ring(index: irange[], kind: string[], size: irange)   -> bitfield[]      # by position
+ring(pattern: string[], kind: string[], size: irange) -> atomset[]
+ring(index: irange[], kind: string[], size: irange)   -> atomset[]      # by position
 ```
 
 **Parameters:** `pattern` or `index` (optional), `kind` and `size` (optional, given by name).
@@ -574,8 +577,8 @@ first_aromatic = ring(1, kind="aromatic") in residue(:); # the first aromatic ri
 
 ### Selectors: residue level
 
-These return a `bitfield[]` with one selection per matching residue. Use them as the right-hand side of `in`, or
-pass them where a bitfield is accepted (an array of bitfields is then merged into one selection; [`rmsd`](#rmsd),
+These return a `atomset[]` with one selection per matching residue. Use them as the right-hand side of `in`, or
+pass them where an atomset is accepted (an array of atomsets is then merged into one selection; [`rmsd`](#rmsd),
 [`plane`](#plane) and [`pucker`](#pucker) are the exceptions and give one value per selection).
 
 ### protein
@@ -583,7 +586,7 @@ pass them where a bitfield is accepted (an array of bitfields is then merged int
 <!-- proc name=protein category=selector.residue -->
 
 ```text
-protein() -> bitfield[]
+protein() -> atomset[]
 ```
 
 Every amino acid residue: those whose backbone was found and verified by its bonds, and those which are only named
@@ -600,8 +603,8 @@ d = distance(1, 2) in protein();                    # one value per protein resi
 <a id="nucleotide"></a>
 
 ```text
-nucleic()     -> bitfield[]
-nucleotide()  -> bitfield[]
+nucleic()     -> atomset[]
+nucleotide()  -> atomset[]
 ```
 
 Every nucleotide residue: those whose backbone was found and verified by its bonds, and those which are only named
@@ -618,7 +621,7 @@ n_dna_atoms = count(nucleic());
 <!-- proc name=water category=selector.residue -->
 
 ```text
-water() -> bitfield[]
+water() -> atomset[]
 ```
 
 Every water molecule.
@@ -633,7 +636,7 @@ n_waters = count(water(), "residue");
 <!-- proc name=lipid category=selector.residue -->
 
 ```text
-lipid() -> bitfield[]
+lipid() -> atomset[]
 ```
 
 Every lipid, sterols included: the lipids of the Martini lipidomes, coarse grained or atomistic by the same names
@@ -654,7 +657,7 @@ n_lipids = count(lipid(), "structure");               # lipid molecules
 <!-- proc name=qm category=selector.residue -->
 
 ```text
-qm() -> bitfield[]
+qm() -> atomset[]
 ```
 
 The QM region: the atoms of the quantum chemistry calculation the system was loaded from (VeloxChem, Molden,
@@ -675,7 +678,7 @@ near_qm = within(5, qm());
 <!-- proc name=environment category=selector.residue -->
 
 ```text
-environment() -> bitfield[]
+environment() -> atomset[]
 ```
 
 The environment of the QM region: every atom which is not in it - the sites of a polarizable embedding, the MM
@@ -692,9 +695,9 @@ n_fragments = count(environment(), "residue");
 <!-- proc name=resname aliases=residue,component category=selector.residue -->
 
 ```text
-resname(pattern: string[])   -> bitfield[]
-residue(pattern: string[])   -> bitfield[]
-component(pattern: string[]) -> bitfield[]
+resname(pattern: string[])   -> atomset[]
+residue(pattern: string[])   -> atomset[]
+component(pattern: string[]) -> atomset[]
 ```
 
 Select residues by name. `residue` and `component` are aliases (see [`residue`](#residue) for the other overloads).
@@ -711,7 +714,7 @@ any_l = resname("L*");
 <!-- proc name=resid category=selector.residue -->
 
 ```text
-resid(ids: irange[]) -> bitfield[]
+resid(ids: irange[]) -> atomset[]
 ```
 
 Select residues by their **sequence number** as stored in the file (the number printed in a PDB or GRO file).
@@ -727,9 +730,9 @@ loop = resid(10:20);
 <!-- proc name=residue category=selector.residue -->
 
 ```text
-residue(pattern: string[])   -> bitfield[]      # same as resname
-residue(index: irange[])     -> bitfield[]      # by position
-residue(sel: bitfield[])     -> bitfield[]      # grow to whole residues
+residue(pattern: string[])   -> atomset[]      # same as resname
+residue(index: irange[])     -> atomset[]      # by position
+residue(sel: atomset[])     -> atomset[]      # grow to whole residues
 ```
 
 - `residue("ALA")` — select residues by name.
@@ -754,8 +757,8 @@ near = residue(within(4.0, residue(1)));     # whole residues within 4 Å of res
 <!-- proc name=component category=selector.residue -->
 
 ```text
-component(pattern: string[]) -> bitfield[]
-component(index: irange[])   -> bitfield[]
+component(pattern: string[]) -> atomset[]
+component(index: irange[])   -> atomset[]
 ```
 
 Alias of [`residue`](#residue) for the `string` and `irange` overloads. Coarse-grained and non-protein systems
@@ -779,8 +782,8 @@ unique: the small molecules of one chain share it (all waters of chain A in an m
 <!-- proc name=instance category=selector.instance -->
 
 ```text
-instance(id: string[])     -> bitfield[]
-instance(index: irange[])  -> bitfield[]
+instance(id: string[])     -> atomset[]
+instance(index: irange[])  -> atomset[]
 ```
 
 Select instances by identifier or 1-based position, counted as [`residue`](#residue) counts its positions (inside a
@@ -796,9 +799,9 @@ by_id = instance("A");
 <!-- proc name=chain category=selector.instance -->
 
 ```text
-chain(id: string[])     -> bitfield[]
-chain(index: irange[])  -> bitfield[]
-chain(sel: bitfield[])  -> bitfield[]      # grow to whole chains
+chain(id: string[])     -> atomset[]
+chain(index: irange[])  -> atomset[]
+chain(sel: atomset[])  -> atomset[]      # grow to whole chains
 ```
 
 Select chains by identifier (`"A"`), by 1-based position (`chain(1:2)`, counted as [`residue`](#residue) counts its
@@ -815,7 +818,7 @@ its_chain = chain(atom(1));                    # the chain that contains atom 1
 <!-- proc name=chain_id category=selector.instance -->
 
 ```text
-chain_id(id: string[]) -> bitfield[]
+chain_id(id: string[]) -> atomset[]
 ```
 
 Select chains by their identifier (the label in the file). Equivalent to `chain("...")`.
@@ -829,7 +832,7 @@ a = chain_id("A");
 <!-- proc name=auth_id category=selector.instance -->
 
 ```text
-auth_id(id: string[]) -> bitfield[]
+auth_id(id: string[]) -> atomset[]
 ```
 
 Select instances by their author-assigned identifier (as found in mmCIF files), which can differ from the label
@@ -842,7 +845,7 @@ by_author = auth_id("A");
 ### Selectors: structure matching
 
 These find where a structure occurs in the bonds of the system, written as a SMILES pattern or given as a selection
-of the system to use as a reference. They return a `bitfield[]` with one selection per occurrence. The occurrences
+of the system to use as a reference. They return a `atomset[]` with one selection per occurrence. The occurrences
 depend on the bonds only, so they are found once, when the script is compiled. Inside a context only the atoms of
 the context are searched. The full semantics are in `src/md_match.h`.
 
@@ -871,7 +874,7 @@ belongs to the group, whichever of its atoms the charge was put on: `[O-]` finds
 <!-- proc name=smiles category=selector.structure -->
 
 ```text
-smiles(pattern: string, level: string, mode: string) -> bitfield[]
+smiles(pattern: string, level: string, mode: string) -> atomset[]
 ```
 
 **Parameters:** `pattern` (required), `level` (default `"structure"`) and `mode` (default `"unique"`), given by name.
@@ -905,7 +908,7 @@ d = distance_pair(smiles("c1ccccc1"), vec3(0, 0, 0));          # centre of each 
 <!-- proc name=match category=selector.structure -->
 
 ```text
-match(ref: bitfield, by: string, level: string, mode: string) -> bitfield[]
+match(ref: atomset, by: string, level: string, mode: string) -> atomset[]
 ```
 
 **Parameters:** `ref` (required), `by` (default `"element"`), `level` and `mode` as for [`smiles`](#smiles), given by
@@ -936,10 +939,10 @@ known up front.
 <!-- proc name=within category=selector.spatial -->
 
 ```text
-within(radius: float,  around: position[]) -> bitfield
-within(radius: frange, around: position[]) -> bitfield
-within(radius: float)                       -> bitfield      # centre from the context
-within(radius: frange)                      -> bitfield
+within(radius: float,  around: position[]) -> atomset
+within(radius: frange, around: position[]) -> atomset
+within(radius: float)                       -> atomset      # centre from the context
+within(radius: frange)                      -> atomset
 ```
 
 **Parameters:** `radius` (required), `around` (optional).
@@ -968,7 +971,7 @@ n_neighbours = count(within(3.0) in residue(1:5));
 <!-- proc name=within_x category=selector.spatial -->
 
 ```text
-within_x(range: frange) -> bitfield
+within_x(range: frange) -> atomset
 ```
 
 Atoms whose x coordinate lies in `range` (Å, in the coordinate system of the trajectory).
@@ -983,7 +986,7 @@ left_half = within_x(:30.0);
 <!-- proc name=within_y category=selector.spatial -->
 
 ```text
-within_y(range: frange) -> bitfield
+within_y(range: frange) -> atomset
 ```
 
 Atoms whose y coordinate lies in `range`.
@@ -997,7 +1000,7 @@ slab = within_y(10:15);
 <!-- proc name=within_z category=selector.spatial -->
 
 ```text
-within_z(range: frange) -> bitfield
+within_z(range: frange) -> atomset
 ```
 
 Atoms whose z coordinate lies in `range`.
@@ -1012,7 +1015,7 @@ n_in_slab = count(within_z(20:25));
 <!-- proc name=within_xyz category=selector.spatial -->
 
 ```text
-within_xyz(x: frange, y: frange, z: frange) -> bitfield
+within_xyz(x: frange, y: frange, z: frange) -> atomset
 ```
 
 **Parameters:** `x`, `y`, `z` (all required).
@@ -1022,6 +1025,158 @@ Atoms inside an axis-aligned box.
 ```mdscript
 box = within_xyz(20:25, 20:25, 20:25);
 n_in_box = count(within_xyz(20:25, 20:25, 20:25));
+```
+
+---
+
+## Bond sets
+
+Bonds are values of their own, a `bondset`: a set of atoms cannot say which bonds are meant, as the atoms of a bond
+bring in every other bond among them. A bond is one of the system's persistent bonds, which the bond graph holds
+(covalent and coordination bonds, from which the rings, structures and chemistry are derived) together with the
+non-covalent bonds a file gives or a user marks (hydrogen bonds, salt bridges), or a bond computed for a frame (one
+[`formed`](#formed) in it). Bond sets combine with `and`, `or`, `xor` and `not` like selections, and give atoms with
+[`atoms`](#atoms), numbers with [`count`](#count) and [`length`](#length).
+
+The kinds, and what they select:
+
+| Kind | Bonds |
+|---|---|
+| `"covalent"` | Of the bond graph, not coordination |
+| `"coordinate"` | Metal-ligand bonds |
+| `"elastic"` | Springs of the force field which hold a coarse grained molecule in shape (an elastic network), or restraints: kept with the bonds, but no bonds of the molecule |
+| `"noncovalent"` | Every non-covalent bond |
+| `"hydrogen"` | Hydrogen bonds |
+| `"ionic"` | Salt bridges, between ions of opposite charge |
+| `"sigma_hole"` | Halogen bonds and their kind: from the sigma-hole of a halogen, chalcogen or pnictogen |
+
+A charge-assisted hydrogen bond is both `"hydrogen"` and `"ionic"`.
+
+### bond
+
+<!-- proc name=bond category=bonds -->
+
+```text
+bond(a: atomset[], b: atomset[], kind: string[], order: irange, resonance: string[], origin: string[]) -> bondset[]
+```
+
+**Parameters:** `a` and `b` (optional), `kind`, `order`, `resonance` and `origin` (optional, by name).
+
+The persistent bonds of the system which every filter given lets through, within the context (both atoms in it).
+
+- Without `a` and `b`: every bond.
+- With `a`: the bonds with both atoms in `a`, one set per element of `a`, so `bond(residue(:))` is the bonds within
+  each residue.
+- With `a` and `b`: the bonds with one atom in the element of `a` and the other in `b`.
+- With `b` alone: the bonds with an atom in `b`.
+
+`kind` is any of the kinds above. `order` is the order of a bond of the graph, a number or a range: 1 single, 2 double,
+3 triple, 4 quadruple, 0 unknown; non-covalent bonds have none. `resonance` is any of `"aromatic"`, `"delocalized"`
+(carboxylate, guanidinium, nitro, ...) and `"localized"` (neither), of a bond of the graph. `origin` is any of `"file"`,
+`"topology"`, `"user"` and `"inferred"`. An unknown name is a compile error which lists the valid ones.
+
+```mdscript
+metal_sites = bond(kind="coordinate");
+disulfides  = bond(element("S"), element("S"), kind="covalent");
+adducts     = bond(protein(), not protein(), kind="covalent");   # covalent ligands, crosslinks
+drawn       = bond(kind="hydrogen", origin="user");               # the hydrogen bonds a user marked
+kekule      = bond(resonance="aromatic", order=2);
+n_per_res   = count(bond(residue(1:10)));
+```
+
+### atoms
+
+<!-- proc name=atoms category=bonds -->
+
+```text
+atoms(b: bondset[]) -> atomset[]
+```
+
+**Parameters:** `b` (required).
+
+The atoms of the bonds of each set.
+
+```mdscript
+metal_ligands = atoms(bond(kind="coordinate"));
+```
+
+### bond_delta
+
+<!-- proc name=bond_delta category=bonds -->
+
+```text
+bond_delta(scope: atomset[], tolerance: float, breakable: string[]) -> bond_delta
+```
+
+**Parameters:** `scope` (optional), `tolerance` (default 0.1) and `breakable` (default `{"file", "inferred"}`), by name.
+
+The bonds formed and broken in each frame, against the bond graph of the system, which is the reference: only the
+bonds with an atom in `scope` are looked at (all of them without it), so a bond to an atom just outside of it forms
+too. A bond of the graph breaks once it is longer than its cutoff by `tolerance`, and a pair forms a bond once it is
+shorter than its cutoff by `tolerance` (the cutoffs of the bond inference, from the covalent radii). The band keeps a
+bond which vibrates near its cutoff from flickering; it is measured against the graph rather than an earlier frame,
+so a frame gives the same bonds whatever was evaluated before it. Only the bonds of the `breakable` origins break: a
+bond a user added stays, and so by default does one of a force field topology, as in a classical simulation. A bond
+forming as another breaks (a proton moving, the transition state of a substitution) shows both for the frames it
+takes. A pair with a non-covalent bond in the system forms no bond. In a coarse grained system no bonds form or
+break: it is a compile error.
+
+The result is read with [`formed`](#formed), [`broken`](#broken) and [`bonds`](#bonds).
+
+```mdscript
+d = bond_delta(within(6.0, resname("LIG")));
+n_formed = count(formed(d));
+n_broken = count(broken(d));
+```
+
+### formed
+
+<!-- proc name=formed category=bonds -->
+
+```text
+formed(d: bond_delta) -> bondset
+```
+
+**Parameters:** `d` (required).
+
+The bonds formed in the frame, which the system does not have: computed bonds, of the inferred origin.
+
+```mdscript
+new_bonds = formed(bond_delta(resid(10:20)));
+```
+
+### broken
+
+<!-- proc name=broken category=bonds -->
+
+```text
+broken(d: bond_delta) -> bondset
+```
+
+**Parameters:** `d` (required).
+
+The bonds of the bond graph broken in the frame.
+
+```mdscript
+lost = count(broken(bond_delta()));
+```
+
+### bonds
+
+<!-- proc name=bonds category=bonds -->
+
+```text
+bonds(d: bond_delta) -> bondset
+```
+
+**Parameters:** `d` (required).
+
+The bonds of the frame within the scope: the persistent bonds with an atom in it which are not broken, and those
+formed.
+
+```mdscript
+d = bond_delta(resid(10:20));
+lengths = length(bonds(d));
 ```
 
 ---
@@ -1161,12 +1316,12 @@ side_chain_torsion = dihedral(2, 3, 6, 10) in resname("ALA");
 <!-- proc name=rmsd category=property -->
 
 ```text
-rmsd(sel: bitfield[]) -> float[] [Å]
+rmsd(sel: atomset[]) -> float[] [Å]
 ```
 
 The mass-weighted root-mean-square deviation of the selected atoms from the system's reference structure (the first
-frame), after removing translation and finding the optimal rotation. Each bitfield of the argument is a structure of
-its own, fitted and reported separately: the result has one value per bitfield. Unlike most procedures, which merge
+frame), after removing translation and finding the optimal rotation. Each atomset of the argument is a structure of
+its own, fitted and reported separately: the result has one value per atomset. Unlike most procedures, which merge
 an array of selections into one, `rmsd` keeps them apart; use [`union`](#union) to fit them together as one
 structure. A single selection (`backbone()`, `within(...)`, a combination with `and`/`or`) gives a single value.
 
@@ -1215,7 +1370,7 @@ g_res = rdf(com(all()) in residue(:), element("O"), 20.0);
 <!-- proc name=density_x category=property -->
 
 ```text
-density_x(sel: bitfield[]) -> distribution [kg/m³]
+density_x(sel: atomset[]) -> distribution [kg/m³]
 ```
 
 Mass density of the selection along the x axis of the simulation cell, as a 1024-bin histogram accumulated over
@@ -1230,7 +1385,7 @@ rho_x = density_x(protein());
 <!-- proc name=density_y category=property -->
 
 ```text
-density_y(sel: bitfield[]) -> distribution [kg/m³]
+density_y(sel: atomset[]) -> distribution [kg/m³]
 ```
 
 As [`density_x`](#density_x), along the y axis.
@@ -1244,7 +1399,7 @@ rho_y = density_y(water());
 <!-- proc name=density_z category=property -->
 
 ```text
-density_z(sel: bitfield[]) -> distribution [kg/m³]
+density_z(sel: atomset[]) -> distribution [kg/m³]
 ```
 
 As [`density_x`](#density_x), along the z axis. The classic use is the density profile across a membrane or slab.
@@ -1259,7 +1414,7 @@ rho_water = density_z(water());
 <!-- proc name=density category=property -->
 
 ```text
-density(sel: bitfield[]) -> distribution[3] [kg/m³]
+density(sel: atomset[]) -> distribution[3] [kg/m³]
 ```
 
 The three axis profiles (x, y, z) of the selection in a single value. It is published as an array of distributions,
@@ -1293,7 +1448,7 @@ g_ab = pool(rdf(element("C"), element("O"), 10.0), rdf(element("N"), element("O"
 <!-- proc name=sdf category=property -->
 
 ```text
-sdf(structures: bitfield[], target: bitfield, extent: float) -> volume [count/Å³]
+sdf(structures: atomset[], target: atomset, extent: float) -> volume [count/Å³]
 ```
 
 **Parameters:** `structures`, `target`, `extent` (all required).
@@ -1316,10 +1471,11 @@ sdf2 = sdf(chain(:), resname("PFT"), 30.0);
 <!-- proc name=count category=property -->
 
 ```text
-count(sel: bitfield[])                  -> float
-count(sel: bitfield[], unit: string)    -> float
+count(sel: atomset[])                  -> float
+count(sel: atomset[], unit: string)    -> float
 count(c: contact)                       -> float
 count(c: contact, unit: string)         -> float
+count(b: bondset[])                     -> float
 ```
 
 **Parameters:** `sel` or `c` (required), `unit` (optional).
@@ -1327,6 +1483,8 @@ count(c: contact, unit: string)         -> float
 The number of atoms in the selection (an array is merged first). With `unit` the number of larger structures the
 selection touches instead: `"atom"`, `"residue"`, `"chain"` or `"structure"`. An unknown unit is a compile error that
 lists the valid ones. A `count` of a dynamic selection changes over time and is a temporal property.
+
+Given a bond set from [`bond`](#bond), `count` is the number of bonds (an array is merged first).
 
 Given a contact set from [`contacts`](#contacts), `count` is the number of group pairs in contact. With `unit`
 `"group"` it is the same, and with `"atom"` the number of particle pairs behind them.
@@ -1342,7 +1500,7 @@ n_hydrated = count(within(3.5, protein()) and element("O"));
 <!-- proc name=contact_count category=property -->
 
 ```text
-contact_count(a: bitfield[], b: bitfield[], cutoff: float) -> float[N]
+contact_count(a: atomset[], b: atomset[], cutoff: float) -> float[N]
 ```
 
 **Parameters:** `a`, `b`, `cutoff` (all required).
@@ -1361,8 +1519,8 @@ contacts = contact_count(residue(1), residue(2:3), 4.0);
 <!-- proc name=contacts category=property -->
 
 ```text
-contacts(a: bitfield[], b: bitfield[], cutoff: float, exclude_bonds: int, min_separation: int,
-         parent: bitfield[], exclude_within: bitfield[]) -> contact
+contacts(a: atomset[], b: atomset[], cutoff: float, exclude_bonds: int, min_separation: int,
+         parent: atomset[], exclude_within: atomset[]) -> contact
 ```
 
 **Parameters:** `a` and `cutoff` (required), `b`, `exclude_bonds` (default 3), `min_separation` (default 0),
@@ -1419,7 +1577,7 @@ d = degree(c);                                          # contacts per residue, 
 <!-- proc name=porosity category=property -->
 
 ```text
-porosity(sel: bitfield) -> float
+porosity(sel: atomset) -> float
 ```
 
 The void ratio of the selection inside its bounding box: the fraction of the box not occupied by atoms, in `[0, 1]`.
@@ -1458,11 +1616,11 @@ centre_of_selection = com(within(4.0, atom(1)));
 <!-- proc name=plane category=geometry -->
 
 ```text
-plane(groups: bitfield[]) -> plane[]
+plane(groups: atomset[]) -> plane[]
 plane(points: position[]) -> plane
 ```
 
-The least squares plane of a group of atoms, not weighted by mass: one plane per bitfield of `groups`, or one through
+The least squares plane of a group of atoms, not weighted by mass: one plane per atomset of `groups`, or one through
 `points` (atom indices, or `float[3]` positions such as [`coord`](#coord) gives). Each needs at least three atoms
 or positions. A plane record holds what [`centroid`](#centroid), [`normal`](#normal),
 [`radius`](#radius), [`deviation`](#deviation) and [`angle`](#angle) read of it, and hovering it shows them.
@@ -1537,7 +1695,7 @@ ring.
 <!-- proc name=pucker category=geometry -->
 
 ```text
-pucker(rings: bitfield[]) -> pucker[]
+pucker(rings: atomset[]) -> pucker[]
 pucker(atoms: int[]) -> pucker
 ```
 
@@ -2121,10 +2279,13 @@ area = length(cross(vec3(1, 0, 0), vec3(0, 2, 0)));
 <!-- proc name=length category=linalg -->
 
 ```text
-length(v: float[]) -> float
+length(v: float[])   -> float
+length(b: bondset[]) -> float[] [Å]
 ```
 
-The Euclidean norm of a vector.
+The Euclidean norm of a vector. Given a bond set, the length of each of its bonds in the frame (the shortest across
+the periodic cell), in the order of the set: the persistent bonds by index, then the bonds computed for the frame. An
+array of sets is merged first.
 
 ```mdscript
 norm = length({3.0, 4.0});                     # 5
@@ -2171,7 +2332,7 @@ Matrix–matrix and matrix–vector product. There is no matrix constructor, so 
 <a id="join"></a>
 
 ```text
-union(sel: bitfield[]) -> bitfield
+union(sel: atomset[]) -> atomset
 ```
 
 The atoms of all of the selections, each once: one selection made of an array of them, `or` over all of its
@@ -2204,7 +2365,7 @@ per_res = flatten(distance(1, 2) in residue(:));
 <!-- proc name=split category=combine -->
 
 ```text
-split(sel: bitfield, parts: int) -> bitfield[]
+split(sel: atomset, parts: int) -> atomset[]
 ```
 
 **Parameters:** `sel`, `parts` (both required).
@@ -2221,7 +2382,7 @@ d = distance(1, 2) in split(chain(1), 4);              # measure each quarter of
 <!-- proc name=chunks category=combine -->
 
 ```text
-chunks(sel: bitfield[], size: int) -> bitfield[]
+chunks(sel: atomset[], size: int) -> atomset[]
 ```
 
 **Parameters:** `sel`, `size` (both required).
@@ -2257,10 +2418,10 @@ same = transpose(per_res);
 <a id="and"></a><a id="or"></a><a id="xor"></a><a id="not"></a>
 
 ```text
-a and b -> bitfield      # atoms in both
-a or b  -> bitfield      # atoms in either
-a xor b -> bitfield      # atoms in exactly one
-not a   -> bitfield      # every atom not in a
+a and b -> atomset      # atoms in both
+a or b  -> atomset      # atoms in either
+a xor b -> atomset      # atoms in exactly one
+not a   -> atomset      # every atom not in a
 a and b -> bool | bool[] # element-wise logic on bool values (for example comparisons)
 ```
 
@@ -2337,8 +2498,8 @@ The compiler inserts these conversions where an argument of another type is expe
 | `irange` | `frange` |
 | `int[]` | `float[]`, `irange[]` |
 | `irange[]` | `frange[]` |
-| `int[]`, `irange[]` | `bitfield` (atom indices) |
-| `bitfield[]` | `bitfield` (merged) |
+| `int[]`, `irange[]` | `atomset` (atom indices) |
+| `atomset[]` | `atomset` (merged) |
 
 That is why `atom(1:5)`, `within(2.0:4.0, ...)` and `count(protein())` work without any explicit conversion.
 

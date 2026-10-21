@@ -172,7 +172,7 @@ static bool eval_selection(md_bitset_t* out, str_t expr, md_system_t* mol, md_al
 
     data_t data = {0};
     if (eval_expression(&data, expr, mol, temp_arena)) {
-        if (data.type.base_type == TYPE_BITFIELD) {
+        if (data.type.base_type == TYPE_ATOMSET) {
             md_bitset_t* res = (md_bitset_t*)data.ptr;
             const int64_t len = type_info_array_len(data.type);
             md_bitmask_t b = md_bitmask_create(0, (uint32_t)mol->atom.count, temp_arena);
@@ -646,15 +646,15 @@ UTEST(script, array) {
         identifier_t* s  = get_identifier(ir, STR_LIT("s"));
 
         if (s1) {
-            EXPECT_EQ(s1->data->type.base_type, TYPE_BITFIELD);
+            EXPECT_EQ(s1->data->type.base_type, TYPE_ATOMSET);
             EXPECT_EQ(s1->data->type.dim[0], 2);
         }
         if (s2) {
-            EXPECT_EQ(s2->data->type.base_type, TYPE_BITFIELD);
+            EXPECT_EQ(s2->data->type.base_type, TYPE_ATOMSET);
             EXPECT_EQ(s2->data->type.dim[0], 3);
         }
         if (s) {
-            EXPECT_EQ(s->data->type.base_type, TYPE_BITFIELD);
+            EXPECT_EQ(s->data->type.base_type, TYPE_ATOMSET);
             EXPECT_EQ(s->data->type.dim[0], 5);
         }
     }
@@ -730,7 +730,7 @@ UTEST(script, array) {
         identifier_t* s = get_identifier(ir, STR_LIT("s"));
         EXPECT_TRUE(s);
         if (s) {
-            EXPECT_EQ(s->data->type.base_type, TYPE_BITFIELD);
+            EXPECT_EQ(s->data->type.base_type, TYPE_ATOMSET);
             EXPECT_EQ(s->data->type.dim[0], 2);
         }
     }
@@ -2075,7 +2075,7 @@ UTEST(script, named_args_signature_table) {
 
 static bool named_args_same_data(const data_t* x, const data_t* y, md_allocator_i* alloc) {
     if (!type_info_equal(x->type, y->type)) return false;
-    if (x->type.base_type == TYPE_BITFIELD) {
+    if (x->type.base_type == TYPE_ATOMSET) {
         const int64_t len = type_info_array_len(x->type);
         const md_bitset_t* bx = (const md_bitset_t*)x->ptr;
         const md_bitset_t* by = (const md_bitset_t*)y->ptr;
@@ -3520,7 +3520,7 @@ static bool mirror_eval(data_t* out, md_script_ir_t* ir, const char* name, md_sy
 }
 
 static bool mirror_same_groups(const data_t* d, const md_bitset_t* groups, size_t num, const char* name, md_allocator_i* alloc) {
-    if (d->type.base_type != TYPE_BITFIELD) {
+    if (d->type.base_type != TYPE_ATOMSET) {
         printf("  '%s' is not a selection\n", name);
         return false;
     }
@@ -4819,7 +4819,7 @@ static uint64_t ir_snapshot(const md_script_ir_t* ir) {
         SNAP_MIX((uintptr_t)node->data.ptr);
         SNAP_MIX(node->data.size);
         if (node->data.ptr && node->data.size) {
-            if (node->data.type.base_type == TYPE_BITFIELD) {
+            if (node->data.type.base_type == TYPE_ATOMSET) {
                 const md_bitset_t* bf = (const md_bitset_t*)node->data.ptr;
                 for (size_t k = 0; k < node->data.size / sizeof(md_bitset_t); ++k) {
                     SNAP_MIX(md_bitset_hash64(bf[k], 0));
@@ -6183,7 +6183,7 @@ UTEST(script, hover_text) {
     EXPECT_TRUE(str_begins_with(t->text, STR_LIT("contact")));
     t = hover_token(ir, src, "smiles('cc', level='residue')");
     ASSERT_TRUE(t != NULL);
-    EXPECT_TRUE(str_begins_with(t->text, STR_LIT("bitfield")));
+    EXPECT_TRUE(str_begins_with(t->text, STR_LIT("atomset")));
     t = hover_token(ir, src, "ring()");
     ASSERT_TRUE(t != NULL);
     EXPECT_TRUE(str_find_str(NULL, t->text, STR_LIT("2 selections, 9 atoms in all")));
@@ -6983,4 +6983,248 @@ UTEST_F(script, volume_arrays) {
 
     md_script_ir_free(ir);
     md_arena_allocator_destroy(alloc);
+}
+
+// ### BONDS ###
+
+// Acetate with Mg at 2.08 Å from one oxygen, a water, and two Cu 2.45 Å apart (as in test_bonds.c)
+static const char bonds_site_pdb[] =
+    "HETATM    1  C1  ACT A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    2  C2  ACT A   1       1.520   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    3  O1  ACT A   1       2.150   1.080   0.000  1.00  0.00           O\n"
+    "HETATM    4  O2  ACT A   1       2.150  -1.080   0.000  1.00  0.00           O\n"
+    "HETATM    5  MG  MG  A   2       3.198   2.877   0.000  1.00  0.00          MG\n"
+    "HETATM    6  O   HOH A   3       0.000   6.000   0.000  1.00  0.00           O\n"
+    "HETATM    7  H1  HOH A   3       0.760   6.590   0.000  1.00  0.00           H\n"
+    "HETATM    8  H2  HOH A   3      -0.760   6.590   0.000  1.00  0.00           H\n"
+    "HETATM    9  CU  CU  A   4      20.000   0.000   0.000  1.00  0.00          CU\n"
+    "HETATM   10  CU  CU  A   5      22.450   0.000   0.000  1.00  0.00          CU\n"
+    "END\n";
+
+// The number of bonds of a bond set identifier, -1 if it is not one
+static int bondset_count_of(md_script_ir_t* ir, const char* name, md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
+    data_t d = {0};
+    if (!mirror_eval(&d, ir, name, sys, state, alloc)) return -1;
+    if (d.type.base_type != TYPE_BONDSET) {
+        printf("  '%s' is not a bond set\n", name);
+        return -1;
+    }
+    int n = 0;
+    const bondset_t* b = d.ptr;
+    for (size_t i = 0; i < element_count(d); ++i) n += (int)md_bitset_count(b[i].bonds) + (int)b[i].num_extra;
+    return n;
+}
+
+static float float_of(md_script_ir_t* ir, const char* name, md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
+    data_t d = {0};
+    if (!mirror_eval(&d, ir, name, sys, state, alloc) || d.type.base_type != TYPE_FLOAT) return -1.0f;
+    return as_float(d);
+}
+
+UTEST(script, bondsets) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(bonds_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
+    ASSERT_EQ(7, (int)sys.bond.count);
+    // A hydrogen bond a user marks, from a water hydrogen to O2
+    md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER));
+    ASSERT_EQ(1, (int)sys.bond.noncovalent_count);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    const char* src =
+        "first_r = bond(residue(:))[1];"
+        "two_r   = bond(residue(:))[1:2];"
+        "pick    = {bond(element('Mg') or within(3, element('Mg')) or element('Cu')), bond()}[1];"
+        "all_b   = bond();"
+        "cov     = bond(kind='covalent');"
+        "coord_b = bond(kind='coordinate');"
+        "hb      = bond(kind='hydrogen');"
+        "nc      = bond(kind='noncovalent');"
+        "ionic_b = bond(kind='ionic');"
+        "graph   = bond(kind={'covalent', 'coordinate'});"
+        "user    = bond(origin='user');"
+        "ordered = bond(order=0:4);"
+        "water_b = bond(resname('HOH'));"
+        "c_o     = bond(element('C'), element('O'));"
+        "at_mg   = bond(b=element('Mg'));"
+        "per_res = bond(residue(:));"
+        "none_b  = cov and coord_b;"
+        "either  = cov or coord_b;"
+        "other   = not cov;"
+        "odd     = graph xor cov;"
+        "mg_side = atoms(coord_b);"
+        "n_all   = count(all_b);"
+        "l       = length(coord_b);"
+        "in_ctx  = bond() in resname('ACT');"
+        "n_first = count(first_r);";
+    const bool compiled = md_script_ir_compile_from_source(ir, str_from_cstr(src), &sys, NULL);
+    for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) printf("%.*s\n", STR_ARG(md_script_ir_errors(ir)[i].text));
+    ASSERT_TRUE(compiled);
+    ASSERT_TRUE(md_script_ir_valid(ir));
+
+    EXPECT_EQ(8, bondset_count_of(ir, "all_b", &sys, &st, alloc));
+    EXPECT_EQ(6, bondset_count_of(ir, "cov", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "coord_b", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "hb", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "nc", &sys, &st, alloc));
+    EXPECT_EQ(0, bondset_count_of(ir, "ionic_b", &sys, &st, alloc));
+    EXPECT_EQ(7, bondset_count_of(ir, "graph", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "user", &sys, &st, alloc));
+    // The order is of the bonds of the graph: the hydrogen bond has none
+    EXPECT_EQ(7, bondset_count_of(ir, "ordered", &sys, &st, alloc));
+    EXPECT_EQ(2, bondset_count_of(ir, "water_b", &sys, &st, alloc));
+    EXPECT_EQ(2, bondset_count_of(ir, "c_o", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "at_mg", &sys, &st, alloc));
+    // One set per residue: the bonds within each, so neither Mg-O1 nor the hydrogen bond (between residues) nor Cu-Cu
+    data_t per_res = {0};
+    ASSERT_TRUE(mirror_eval(&per_res, ir, "per_res", &sys, &st, alloc));
+    EXPECT_EQ((int)sys.component.count, (int)element_count(per_res));
+    EXPECT_EQ(5, bondset_count_of(ir, "per_res", &sys, &st, alloc));
+    EXPECT_EQ(0, bondset_count_of(ir, "none_b", &sys, &st, alloc));
+    EXPECT_EQ(7, bondset_count_of(ir, "either", &sys, &st, alloc));
+    EXPECT_EQ(2, bondset_count_of(ir, "other", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "odd", &sys, &st, alloc));
+    EXPECT_EQ(3, bondset_count_of(ir, "in_ctx", &sys, &st, alloc));
+    // A subscript is a set of its own, not a view into the array it was taken from: evaluated when the script is
+    // compiled, the array is gone by the time it is read
+    EXPECT_EQ(3, bondset_count_of(ir, "first_r", &sys, &st, alloc));
+    EXPECT_EQ(3, bondset_count_of(ir, "two_r", &sys, &st, alloc));
+    EXPECT_EQ(3.0f, float_of(ir, "n_first", &sys, &st, alloc));
+    {
+        // Evaluated with scratch memory of its own, which is written over once it is done: nothing of the result may
+        // be in it. Of the frame (within), so that it is evaluated here rather than when the script is compiled, and so is
+        // the set it is taken from.
+        md_allocator_i* scratch = md_vm_arena_create(GIGABYTES(1));
+        identifier_t* ident = get_identifier(ir, STR_LIT("pick"));
+        ASSERT_TRUE(ident && ident->node);
+        eval_context_t ctx = { .ir = ir, .sys = &sys, .temp_alloc = scratch, .alloc = alloc, .cur_state = &st, .ref_state = &sys.reference };
+        data_t d = {0};
+        ASSERT_TRUE(evaluate_node_alloc(&d, ident->node, &ctx, alloc));
+        md_vm_arena_reset(scratch);
+        MEMSET(md_vm_arena_push(scratch, MEGABYTES(4)), 0xFF, MEGABYTES(4));
+        ASSERT_EQ(TYPE_BONDSET, d.type.base_type);
+        ASSERT_EQ(1, (int)element_count(d));
+        // Two bonds apart from one another, Mg-O1 and Cu-Cu: words of their own
+        const bondset_t* b = (const bondset_t*)d.ptr;
+        EXPECT_EQ(2, (int)md_bitset_count(b->bonds));
+        EXPECT_TRUE(md_bitset_test(b->bonds, 3));
+        EXPECT_TRUE(md_bitset_test(b->bonds, 6));
+        EXPECT_EQ(0, (int)b->num_extra);
+        md_vm_arena_destroy(scratch);
+    }
+    {
+        // As a filter names it: the value the compilation stored
+        const md_filter_context_t fctx = { .sys = &sys, .state = &st, .ir = ir };
+        md_array(md_atom_pair_t) pairs = 0;
+        EXPECT_TRUE(md_filter_bonds(&pairs, STR_LIT("first_r"), &fctx, alloc).success);
+        EXPECT_EQ(3, (int)md_array_size(pairs));
+        for (size_t i = 0; i < md_array_size(pairs); ++i) {
+            EXPECT_TRUE(0 <= pairs[i].idx[0] && pairs[i].idx[0] < 4 && 0 <= pairs[i].idx[1] && pairs[i].idx[1] < 4);
+        }
+    }
+
+    data_t atoms = {0};
+    ASSERT_TRUE(mirror_eval(&atoms, ir, "mg_side", &sys, &st, alloc));
+    ASSERT_EQ(TYPE_ATOMSET, atoms.type.base_type);
+    EXPECT_EQ(2, (int)md_bitset_count(*as_bitset(atoms)));
+    EXPECT_TRUE(md_bitset_test(*as_bitset(atoms), 2));
+    EXPECT_TRUE(md_bitset_test(*as_bitset(atoms), 4));
+    EXPECT_EQ(8.0f, float_of(ir, "n_all", &sys, &st, alloc));
+    data_t len = {0};
+    ASSERT_TRUE(mirror_eval(&len, ir, "l", &sys, &st, alloc));
+    ASSERT_EQ(1, (int)element_count(len));
+    EXPECT_NEAR(2.08f, as_float_arr(len)[0], 0.01f);
+
+    // Shown as the atoms of its bonds and a line along each
+    md_script_vis_t vis = {0};
+    md_script_vis_init(&vis, alloc);
+    const md_script_vis_ctx_t vis_ctx = { .sys = &sys, .state = &st };
+    EXPECT_TRUE(md_script_vis_eval_string(&vis, STR_LIT("v = bond(kind='coordinate');"), &vis_ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    EXPECT_EQ(2, (int)md_bitset_count(vis.atom_mask));
+    EXPECT_EQ(2, (int)md_array_size(vis.lines));
+    md_script_vis_clear(&vis);
+    EXPECT_TRUE(md_script_vis_eval_string(&vis, STR_LIT("v = formed(bond_delta());"), &vis_ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+    md_script_vis_free(&vis);
+
+    // Hovering says what it is
+    char text[256];
+    data_t hv = {0};
+    ASSERT_TRUE(mirror_eval(&hv, ir, "all_b", &sys, &st, alloc));
+    md_str_writer_t sw = md_str_writer_create(alloc);
+    summarize_data(&sw.w, hv, -1);
+    snprintf(text, sizeof(text), "%.*s", STR_ARG(md_str_writer_to_str(&sw)));
+    EXPECT_STREQ("8 bonds", text);
+
+    // A bond set is no selection: it has to be made one
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "x = bond() and element('C');", "Could not find supporting operator"));
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "x = bond(kind='weak');", "Unknown bond kind 'weak'"));
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "x = bond(origin='hand');", "Unknown bond origin 'hand'"));
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "x = bond(resonance='aromatic_ish');", "Unknown bond resonance"));
+    md_vm_arena_destroy(alloc);
+}
+
+// Two waters, a hydrogen of the first pointing at the oxygen of the second (as in test_bonds.c)
+static const char bonds_water_pair_pdb[] =
+    "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\n"
+    "HETATM    2  H1  HOH A   1       0.960   0.000   0.000  1.00  0.00           H\n"
+    "HETATM    3  H2  HOH A   1      -0.240   0.930   0.000  1.00  0.00           H\n"
+    "HETATM    4  O   HOH A   2       2.800   0.000   0.000  1.00  0.00           O\n"
+    "HETATM    5  H1  HOH A   2       3.040   0.930   0.000  1.00  0.00           H\n"
+    "HETATM    6  H2  HOH A   2       3.040  -0.930   0.000  1.00  0.00           H\n"
+    "END\n";
+
+UTEST(script, bond_delta) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t ref = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, str_from_cstr(bonds_water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &ref, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(4, (int)sys.bond.count);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    const char* src =
+        "d       = bond_delta();"
+        "f       = formed(d);"
+        "b       = broken(d);"
+        "e       = bonds(d);"
+        "nf      = count(f);"
+        "nb      = count(b);"
+        "d2      = bond_delta(resid(2));"
+        "f2      = formed(d2);"
+        "e2      = bonds(d2);"
+        "pinned  = broken(bond_delta(breakable='user'));"
+        "narrow  = formed(bond_delta(tolerance=0.3));";
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(src), &sys, NULL));
+    ASSERT_TRUE(md_script_ir_valid(ir));
+    EXPECT_EQ(md_script_ir_property_flags(ir, STR_LIT("nf")), MD_SCRIPT_PROPERTY_FLAG_TEMPORAL);
+
+    // In the reference nothing changes
+    EXPECT_EQ(0, bondset_count_of(ir, "f", &sys, &ref, alloc));
+    EXPECT_EQ(0, bondset_count_of(ir, "b", &sys, &ref, alloc));
+    EXPECT_EQ(4, bondset_count_of(ir, "e", &sys, &ref, alloc));
+
+    // The proton moved to the second water
+    md_system_state_t st = ref;
+    st.xyz = md_alloc(alloc, sizeof(vec3_t) * ref.num_atoms);
+    MEMCPY(st.xyz, ref.xyz, sizeof(vec3_t) * ref.num_atoms);
+    st.xyz[1] = vec3_set(1.80f, 0.0f, 0.0f);
+    EXPECT_EQ(1, bondset_count_of(ir, "f", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "b", &sys, &st, alloc));
+    EXPECT_EQ(4, bondset_count_of(ir, "e", &sys, &st, alloc));
+    EXPECT_EQ(1.0f, float_of(ir, "nf", &sys, &st, alloc));
+    EXPECT_EQ(1.0f, float_of(ir, "nb", &sys, &st, alloc));
+    // The scope of the second water: its two bonds, and the one formed to it
+    EXPECT_EQ(1, bondset_count_of(ir, "f2", &sys, &st, alloc));
+    EXPECT_EQ(3, bondset_count_of(ir, "e2", &sys, &st, alloc));
+    // Inferred bonds do not break when only a user's may
+    EXPECT_EQ(0, bondset_count_of(ir, "pinned", &sys, &st, alloc));
+    // A wider band: the proton at 1.0 Å from O2 is not yet within 0.7 of its cutoff
+    EXPECT_EQ(0, bondset_count_of(ir, "narrow", &sys, &st, alloc));
+
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "d = bond_delta(tolerance=0.5);", "tolerance"));
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "d = bond_delta(breakable='hand');", "Unknown bond origin 'hand'"));
+    md_vm_arena_destroy(alloc);
 }

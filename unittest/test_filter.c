@@ -6,6 +6,7 @@
 #include <core/md_bitset.h>
 #include <md_system.h>
 #include <md_gro.h>
+#include <md_pdb.h>
 #include <md_util.h>
 
 #include <md_filter.h>
@@ -275,6 +276,128 @@ UTEST(filter, completion_within_context) {
     c = md_filter_complete(expr, cursor, &chain, alloc);
     EXPECT_FALSE(completes_with(c, "\"PFT\""));
     EXPECT_TRUE(completes_with(c, "\"ALA\""));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// An acetate with a magnesium on one of its oxygens, a water and a copper pair, and a hydrogen bond a user marks from
+// a water hydrogen to the other oxygen
+static const char filter_bonds_pdb[] =
+    "HETATM    1  C1  ACT A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    2  C2  ACT A   1       1.520   0.000   0.000  1.00  0.00           C\n"
+    "HETATM    3  O1  ACT A   1       2.150   1.080   0.000  1.00  0.00           O\n"
+    "HETATM    4  O2  ACT A   1       2.150  -1.080   0.000  1.00  0.00           O\n"
+    "HETATM    5  MG  MG  A   2       3.198   2.877   0.000  1.00  0.00          MG\n"
+    "HETATM    6  O   HOH A   3       0.000   6.000   0.000  1.00  0.00           O\n"
+    "HETATM    7  H1  HOH A   3       0.760   6.590   0.000  1.00  0.00           H\n"
+    "HETATM    8  H2  HOH A   3      -0.760   6.590   0.000  1.00  0.00           H\n"
+    "HETATM    9  CU  CU  A   4      20.000   0.000   0.000  1.00  0.00          CU\n"
+    "HETATM   10  CU  CU  A   5      22.450   0.000   0.000  1.00  0.00          CU\n"
+    "END\n";
+
+static bool has_pair(const md_atom_pair_t* pairs, int a, int b) {
+    for (size_t i = 0; i < md_array_size(pairs); ++i) {
+        if ((pairs[i].idx[0] == a && pairs[i].idx[1] == b) || (pairs[i].idx[0] == b && pairs[i].idx[1] == a)) return true;
+    }
+    return false;
+}
+
+static bool offers(md_script_completions_t c, const char* label) {
+    for (size_t i = 0; i < c.count; ++i) {
+        if (c.items[i].kind == MD_SCRIPT_COMPLETION_PROCEDURE && str_eq(c.items[i].label, str_from_cstr(label))) return true;
+    }
+    return false;
+}
+
+// A filter of bonds picks those of a bond set, or the persistent bonds among the atoms of a set of atoms
+UTEST(filter, bonds) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(filter_bonds_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
+    ASSERT_EQ(7, (int)sys.bond.count);
+    md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER));
+    ASSERT_EQ(1, (int)sys.bond.noncovalent_count);
+
+    const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
+    md_array(md_atom_pair_t) pairs = 0;
+    md_filter_result_t res;
+
+    // A bond set
+    res = md_filter_bonds(&pairs, STR_LIT("bond(kind='hydrogen')"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_FALSE(res.is_dynamic);
+    EXPECT_EQ(1, (int)md_array_size(pairs));
+    EXPECT_TRUE(has_pair(pairs, 6, 3));
+
+    res = md_filter_bonds(&pairs, STR_LIT("bond(kind='coordinate') or bond(kind='hydrogen')"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(2, (int)md_array_size(pairs));
+    EXPECT_TRUE(has_pair(pairs, 4, 2));
+
+    // A set of atoms: the bonds among them, of both ranges. Cleared first, not appended to.
+    res = md_filter_bonds(&pairs, STR_LIT("resname('HOH')"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(2, (int)md_array_size(pairs));
+    res = md_filter_bonds(&pairs, STR_LIT("resname('HOH') or resname('ACT')"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(6, (int)md_array_size(pairs));
+    EXPECT_TRUE(has_pair(pairs, 6, 3));
+    EXPECT_FALSE(has_pair(pairs, 4, 2));
+
+    // Nothing written is every atom, and so every persistent bond
+    res = md_filter_bonds(&pairs, STR_LIT(""), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(8, (int)md_array_size(pairs));
+
+    // Within a context, both atoms of every bond are in it
+    md_bitset_t water = {0};
+    ASSERT_TRUE(md_filter(&water, STR_LIT("resname('HOH')"), &fctx, alloc).success);
+    const md_filter_context_t in_water = {&sys, &state, NULL, &water};
+    res = md_filter_bonds(&pairs, STR_LIT("bond()"), &in_water, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(2, (int)md_array_size(pairs));
+    // also those of bond_delta(), whose scope (the context) takes in the bonds with one atom in it: the hydrogen bond
+    // from the water to the acetate is not within the water
+    res = md_filter_bonds(&pairs, STR_LIT("bonds(bond_delta())"), &in_water, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(2, (int)md_array_size(pairs));
+    EXPECT_FALSE(has_pair(pairs, 6, 3));
+
+    // What is neither fails, and says so
+    res = md_filter_bonds(&pairs, STR_LIT("distance(1, 2)"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_EQ(0, (int)md_array_size(pairs));
+    EXPECT_NE('\0', res.error[0]);
+
+    // A filter of atoms is not given a bond set where a selection goes, a filter of bonds is
+    md_script_completions_t c = md_filter_complete(STR_LIT("bon"), 3, &fctx, alloc);
+    EXPECT_FALSE(offers(c, "bond"));
+    md_filter_context_t bctx = fctx;
+    bctx.bonds = true;
+    c = md_filter_complete(STR_LIT("bon"), 3, &bctx, alloc);
+    EXPECT_TRUE(offers(c, "bond"));
+
+    // A spring of the force field (an elastic bond, here the Cu-Cu one) is kept with the bonds but is no bond of the
+    // molecule: picked when it is asked for, not among the bonds of a set of atoms
+    const md_bond_idx_t cu = md_system_bond_find(&sys, 8, 9);
+    ASSERT_GE(cu, 0);
+    sys.bond.flags[cu] |= MD_BOND_FLAG_ELASTIC;
+    md_system_bond_build_connectivity(&sys);
+    res = md_filter_bonds(&pairs, STR_LIT(""), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(7, (int)md_array_size(pairs));
+    EXPECT_FALSE(has_pair(pairs, 8, 9));
+    res = md_filter_bonds(&pairs, STR_LIT("bond(kind='elastic')"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(1, (int)md_array_size(pairs));
+    EXPECT_TRUE(has_pair(pairs, 8, 9));
+    res = md_filter_bonds(&pairs, STR_LIT("bond(kind='covalent') or bonds(bond_delta())"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_FALSE(has_pair(pairs, 8, 9));
 
     md_arena_allocator_destroy(alloc);
 }

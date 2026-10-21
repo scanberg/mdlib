@@ -832,9 +832,18 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             }
         }
 
+        // The non-covalent bonds are not the topology's: kept as they are, after the graph (md_bond_data_t)
+        const size_t num_noncovalent = sys->bond.noncovalent_count;
+        md_atom_pair_t*  nc_pairs = md_temp_alloc_array(temp, md_atom_pair_t,  num_noncovalent + 1);
+        md_bond_flags_t* nc_flags = md_temp_alloc_array(temp, md_bond_flags_t, num_noncovalent + 1);
+        if (num_noncovalent) {
+            MEMCPY(nc_pairs, sys->bond.pairs + old_count, sizeof(md_atom_pair_t)  * num_noncovalent);
+            MEMCPY(nc_flags, sys->bond.flags + old_count, sizeof(md_bond_flags_t) * num_noncovalent);
+        }
+
         md_bond_data_clear(&sys->bond);
-        md_array_resize(sys->bond.pairs, count + num_user, sys->alloc);
-        md_array_resize(sys->bond.flags, count + num_user, sys->alloc);
+        md_array_resize(sys->bond.pairs, count + num_user + num_noncovalent, sys->alloc);
+        md_array_resize(sys->bond.flags, count + num_user + num_noncovalent, sys->alloc);
         if (count) {
             MEMCPY(sys->bond.pairs, pairs, sizeof(md_atom_pair_t) * count);
             MEMCPY(sys->bond.flags, flags, sizeof(md_bond_flags_t) * count);
@@ -843,7 +852,12 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             MEMCPY(sys->bond.pairs + count, user_pairs, sizeof(md_atom_pair_t) * num_user);
             MEMCPY(sys->bond.flags + count, user_flags, sizeof(md_bond_flags_t) * num_user);
         }
+        if (num_noncovalent) {
+            MEMCPY(sys->bond.pairs + count + num_user, nc_pairs, sizeof(md_atom_pair_t)  * num_noncovalent);
+            MEMCPY(sys->bond.flags + count + num_user, nc_flags, sizeof(md_bond_flags_t) * num_noncovalent);
+        }
         sys->bond.count = count + num_user;
+        sys->bond.noncovalent_count = num_noncovalent;
         md_bond_build_connectivity(&sys->bond, atom_count, sys->alloc);
         md_util_system_infer_coordination(sys);
         // An elastic network written as plain bonds (bond type 1)

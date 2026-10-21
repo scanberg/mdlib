@@ -17,6 +17,9 @@
 //
 // Where something goes wrong, the result says what, and where in the expression, so that an input can point at it.
 // While a filter is typed, md_filter_complete says what can be written at the cursor.
+//
+// A filter of bonds (md_filter_bonds) is the same, and picks bonds: those of a bond set ("bond(kind='hydrogen')",
+// "bonds(bond_delta(resname('HEM')))"), or the persistent bonds among the atoms an expression picks ("resname('HOH')").
 
 #include <core/md_array.h>
 #include <core/md_str.h>
@@ -26,6 +29,7 @@
 #include <stdbool.h>
 
 struct md_allocator_i;
+struct md_atom_pair_t;
 struct md_bitset_t;
 struct md_system_t;
 struct md_system_state_t;
@@ -40,6 +44,8 @@ typedef struct md_filter_context_t {
     const struct md_system_state_t* state;  // The coordinates it is evaluated in. NULL for the system's reference state.
     const struct md_script_ir_t*    ir;     // A compiled script whose names the expression may use. May be NULL.
     const struct md_bitset_t*       atoms;  // The atoms it is evaluated within (see above). NULL for the whole system.
+    bool                            bonds;  // It picks bonds (md_filter_bonds): md_filter_complete offers bond sets
+                                            // too where a selection goes. Read by nothing else.
 } md_filter_context_t;
 
 typedef struct md_filter_result_t {
@@ -58,6 +64,12 @@ md_filter_result_t md_filter(struct md_bitset_t* dst, str_t expr, const md_filte
 // The same, one set for each structure the expression gives rather than all in one: 'residue(within(5, residue(1)))'
 // gives a set per residue. The sets are pushed to dst, the array and their payloads allocated with alloc.
 md_filter_result_t md_filter_sets(md_array(struct md_bitset_t)* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
+
+// The bonds that expr picks, all in one set, pushed to dst (cleared first, allocated with alloc): those of a bond set,
+// or the persistent bonds (of both ranges of md_bond_data_t) with both atoms among those of a set of atoms. The bonds
+// of the system come in its order, then those a bond set has for the frame (bonds formed), sorted. Both atoms of each
+// bond are within ctx->atoms when there is a context. Empty when it fails.
+md_filter_result_t md_filter_bonds(md_array(struct md_atom_pair_t)* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 // What can be written at the byte offset cursor of expr, while it is typed (see md_script_complete). The variables
 // are the names of ctx->ir. Outside of a call only what can be a selection is offered (and the keywords that combine

@@ -239,12 +239,24 @@ typedef struct md_bond_conn_data_t {
     uint32_t* offset;
 } md_bond_conn_data_t;
 
-// Bond centric representation: every bond, the elastic ones (MD_BOND_FLAG_ELASTIC) included
+// Bond centric representation, in two ranges of the same arrays:
+//   [0, count)                              the bond graph, covalent and coordinate bonds, and the elastic bonds
+//                                           (MD_BOND_FLAG_ELASTIC), springs of the force field which the connectivity
+//                                           leaves out
+//   [count, count + noncovalent_count)      the persistent non-covalent bonds (MD_BOND_FLAG_NONCOVALENT): hydrogen
+//                                           bonds and salt bridges a file gives or a user marks
+// Whatever walks the bonds as the graph (the connectivity, rings, structures, perception, matching, bonds formed and
+// broken over a run) reads the first range only, by count, and leaves the elastic bonds out. The arrays hold both
+// ranges, so they are uploaded as one. A bond index names a bond in either range: md_bond_insert, md_bond_remove,
+// md_bond_pair and md_system_bond_flags take both, and keep every bond in the range of its kind. md_bond_find finds a
+// bond of the graph, md_bond_find_noncovalent one of the second range. Bonds computed for a frame (bonds formed,
+// hydrogen bonds found) are never here: they are a bond set of their own (md_bond_delta_t, the script).
 typedef struct md_bond_data_t {
-    size_t count;
-    md_atom_pair_t*  pairs;
-    md_bond_flags_t* flags;
-    md_bond_conn_data_t  conn;   // Connectivity, without the elastic bonds
+    size_t count;                   // Bonds of the first range: the graph and the elastic bonds
+    size_t noncovalent_count;       // Non-covalent bonds, the second range
+    md_atom_pair_t*  pairs;         // [count + noncovalent_count]
+    md_bond_flags_t* flags;         // [count + noncovalent_count]
+    md_bond_conn_data_t  conn;      // Connectivity of the graph, without the elastic bonds
 } md_bond_data_t;
 
 typedef struct md_bond_iter_t {
@@ -410,7 +422,7 @@ typedef struct md_system_t {
     md_nucleic_backbone_data_t  nucleic_backbone;
     md_lipid_data_t             lipid;              // The heads and tails of the lipids, see md_lipid_data_t
     
-    md_bond_data_t              bond;               // Persistent covalent bonds
+    md_bond_data_t              bond;               // Persistent bonds: the bond graph, then the non-covalent bonds (md_bond_data_t)
     
     md_index_data_t             ring;               // Ring structures formed by persistent bonds, 3 to 7 atoms in order around the ring (sugars in canonical order, see MD_RING_FLAG_SUGAR)
     md_array(md_ring_flags_t)   ring_flags;         // [ring count] What each ring is (md_ring_flags_t), see md_system_ring_flags
@@ -1161,6 +1173,7 @@ static inline size_t md_system_instance_count(const md_system_t* sys) {
     return md_instance_count(&sys->instance);
 }
 
+// The bonds of the bond graph. The persistent non-covalent bonds come after them (md_bond_data_t).
 static inline size_t md_system_bond_count(const md_system_t* sys) {
     ASSERT(sys);
     return sys->bond.count;
@@ -1381,7 +1394,8 @@ static inline uint32_t md_bond_iter_bond_flags(const md_bond_iter_t* it) {
     return it->data->flags[it->data->conn.bond_idx[it->i]];
 }
 
-// The bond between two atoms in the connectivity, -1 when there is none: an elastic bond is not found
+// The bond of the graph between two atoms (covalent or coordinate), or -1: whether the two are bonded. Found through
+// the connectivity, so neither an elastic bond nor a bond inserted since it was last built is found.
 static inline md_bond_idx_t md_bond_find(const md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
     ASSERT(bond_data);
 	md_bond_iter_t it = md_bond_iter(bond_data, atom_idx_a);
@@ -1395,14 +1409,33 @@ static inline md_bond_idx_t md_bond_find(const md_bond_data_t* bond_data, md_ato
 	return -1;
 }
 
+// The non-covalent bond between two atoms (an index in the second range of md_bond_data_t), or -1. An atom pair has
+// one bond at most, of the graph (md_bond_find) or non-covalent.
+static inline md_bond_idx_t md_bond_find_noncovalent(const md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
+    ASSERT(bond_data);
+    // They are few and have no connectivity
+    const size_t end = bond_data->count + bond_data->noncovalent_count;
+    for (size_t i = bond_data->count; i < end; ++i) {
+        const md_atom_pair_t p = bond_data->pairs[i];
+        if ((p.idx[0] == atom_idx_a && p.idx[1] == atom_idx_b) || (p.idx[0] == atom_idx_b && p.idx[1] == atom_idx_a)) {
+            return (md_bond_idx_t)i;
+        }
+    }
+	return -1;
+}
+
+// Adds a bond between two atoms unless they have one, into the range of its kind: the bond graph, or the non-covalent
+// bonds (MD_BOND_FLAG_NONCOVALENT). A bond of the graph inserted where there are non-covalent bonds moves the first of
+// them to the end, which changes its index.
 static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags, md_allocator_i* alloc) {
     ASSERT(bond_data);
     ASSERT(alloc);
+    ASSERT(!(flags & MD_BOND_FLAG_NONCOVALENT) || !(flags & (MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_ELASTIC | MD_BOND_FLAG_ORDER_MASK | MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED)));
+    ASSERT((flags & MD_BOND_FLAG_NONCOVALENT) || !(flags & MD_BOND_FLAG_CHARACTER_MASK));
 
-    // Ensure that the bond does not exist. An elastic bond between the two atoms is not found, and does not stand in for
-    // a bond of the molecule.
-	md_bond_idx_t bond_idx = md_bond_find(bond_data, atom_idx_a, atom_idx_b);
-    if (bond_idx != -1) {
+    // An atom pair has one bond at most, but for an elastic bond: it is not found, and does not stand in for a bond of the
+    // molecule
+    if (md_bond_find(bond_data, atom_idx_a, atom_idx_b) != -1 || md_bond_find_noncovalent(bond_data, atom_idx_a, atom_idx_b) != -1) {
         return;
     }
 
@@ -1410,28 +1443,52 @@ static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_
     md_atom_pair_t pair = {atom_idx_a, atom_idx_b};
     md_array_push(bond_data->pairs, pair, alloc);
     md_array_push(bond_data->flags, flags, alloc);
+    if (flags & MD_BOND_FLAG_NONCOVALENT) {
+        bond_data->noncovalent_count++;
+        return;
+    }
+    if (bond_data->noncovalent_count) {
+        // Into the place of the first non-covalent bond, which goes to the end
+        const size_t first = bond_data->count;
+        const size_t last  = bond_data->count + bond_data->noncovalent_count;
+        bond_data->pairs[last] = bond_data->pairs[first];
+        bond_data->flags[last] = bond_data->flags[first];
+        bond_data->pairs[first] = pair;
+        bond_data->flags[first] = flags;
+    }
     bond_data->count++;
 }
 
-// This requires a rebuild of connectivity to be valid again
+// Removes a bond of either range. The last bond of its range takes its place, so that one changes its index (and so
+// does the last non-covalent bond, when a bond of the graph is removed). A bond of the graph removed requires a rebuild
+// of the connectivity to be valid again.
 static inline void md_bond_remove(md_bond_data_t* bond_data, md_bond_idx_t bond_idx) {
     ASSERT(bond_data);
-    ASSERT(bond_idx < (md_bond_idx_t)bond_data->count);
+    const size_t total = bond_data->count + bond_data->noncovalent_count;
+    ASSERT(bond_idx >= 0 && (size_t)bond_idx < total);
 
-    // Swap and pop
-    size_t last_idx = bond_data->count - 1;
-    if ((size_t)bond_idx != last_idx) {
-        bond_data->pairs[bond_idx] = bond_data->pairs[last_idx];
-        bond_data->flags[bond_idx] = bond_data->flags[last_idx];
+    if ((size_t)bond_idx < bond_data->count) {
+        // The last bond of the graph takes its place, and the last non-covalent bond that of the last of the graph
+        const size_t last = bond_data->count - 1;
+        bond_data->pairs[bond_idx] = bond_data->pairs[last];
+        bond_data->flags[bond_idx] = bond_data->flags[last];
+        if (bond_data->noncovalent_count) {
+            bond_data->pairs[last] = bond_data->pairs[total - 1];
+            bond_data->flags[last] = bond_data->flags[total - 1];
+        }
+        bond_data->count--;
+    } else {
+        bond_data->pairs[bond_idx] = bond_data->pairs[total - 1];
+        bond_data->flags[bond_idx] = bond_data->flags[total - 1];
+        bond_data->noncovalent_count--;
     }
-    bond_data->count--;
-    md_array_shrink(bond_data->pairs, bond_data->count);
-    md_array_shrink(bond_data->flags, bond_data->count);
+    md_array_shrink(bond_data->pairs, total - 1);
+    md_array_shrink(bond_data->flags, total - 1);
 }
 
 static inline md_atom_pair_t md_bond_pair(const md_bond_data_t* bond_data, md_bond_idx_t bond_idx) {
     ASSERT(bond_data);
-    if (bond_idx < (md_bond_idx_t)bond_data->count) {
+    if (bond_idx >= 0 && (size_t)bond_idx < bond_data->count + bond_data->noncovalent_count) {
         return bond_data->pairs[bond_idx];
     }
     md_atom_pair_t invalid_pair = { -1, -1 };
@@ -1466,7 +1523,7 @@ static inline md_ring_flags_t md_system_ring_flags(const md_system_t* sys, size_
 
 static inline md_bond_flags_t md_system_bond_flags(const md_system_t* sys, md_bond_idx_t bond_idx) {
     ASSERT(sys);
-    if (bond_idx < (md_bond_idx_t)sys->bond.count) {
+    if (bond_idx >= 0 && (size_t)bond_idx < sys->bond.count + sys->bond.noncovalent_count) {
         return sys->bond.flags[bond_idx];
     }
     return MD_BOND_FLAG_NONE;
@@ -1486,6 +1543,7 @@ static inline void md_bond_data_clear(md_bond_data_t* bond_data) {
     ASSERT(bond_data);
 
     bond_data->count = 0;
+    bond_data->noncovalent_count = 0;
     md_array_shrink(bond_data->pairs, 0);
     md_array_shrink(bond_data->flags, 0);
     

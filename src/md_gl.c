@@ -2065,11 +2065,13 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
         MD_LOG_ERROR("The system is missing");
         return;
     }
+    // The bonds of the graph come first in the molecule. Those after them (formed in a frame) are plain.
     const uint32_t bond_count = (uint32_t)sys->bond.count;
-    if (bond_count != mol->bond_count) {
+    if (bond_count > mol->bond_count) {
         MD_LOG_ERROR("The system has %u bonds and the molecule %u: set the bonds first (md_gl_mol_set_bonds)", bond_count, mol->bond_count);
         return;
     }
+    const uint32_t mol_bond_count = mol->bond_count;
     if (bond_count == 0 || !sys->bond.pairs || !sys->bond.flags) {
         return;
     }
@@ -2091,7 +2093,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     uint32_t* flags      = md_alloc(alloc, bond_count * sizeof(uint32_t));
     uint8_t*  hyb        = md_alloc(alloc, atom_count * sizeof(uint8_t));
     uint8_t*  hydrogen   = md_alloc(alloc, atom_count * sizeof(uint8_t));
-    uint32_t* order      = md_alloc(alloc, bond_count * sizeof(uint32_t));
+    uint32_t* order      = md_alloc(alloc, MAX(mol_bond_count, 1) * sizeof(uint32_t));
     uint32_t* ref        = md_alloc(alloc, 4 * bond_count * sizeof(uint32_t));
 
     MEMSET(adj_offset, 0, (atom_count + 1) * sizeof(uint32_t));
@@ -2167,11 +2169,13 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_ORDER_REF]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_PARTNER]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_AROMATIC_RING]);
-    mol->buffer[GL_BUFFER_BOND_ORDER]     = gl_buffer_create(bond_count * sizeof(uint32_t), order, GL_STATIC_DRAW);
+    // The bonds after those of the graph: plain (KIND_PLAIN, 0)
+    if (mol_bond_count > bond_count) MEMSET(order + bond_count, 0, (mol_bond_count - bond_count) * sizeof(uint32_t));
+    mol->buffer[GL_BUFFER_BOND_ORDER]     = gl_buffer_create(mol_bond_count * sizeof(uint32_t), order, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_BOND_ORDER_REF] = gl_buffer_create(MAX(entries, 1) * 4 * sizeof(uint32_t), ref, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_BOND_PARTNER]   = gl_buffer_create(MAX(partner_count, 1) * 4 * sizeof(uint32_t), partner, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_AROMATIC_RING]  = gl_buffer_create((uint32_t)ring_entry_bytes, ring_entry, GL_STATIC_DRAW);
-    mol->bond_order_count    = bond_count;
+    mol->bond_order_count    = mol_bond_count;
     mol->bond_partner_count  = partner_count;
     mol->aromatic_ring_count = ring_entry_count;
 
@@ -2202,7 +2206,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     md_free(alloc, flags,      bond_count * sizeof(uint32_t));
     md_free(alloc, hyb,        atom_count * sizeof(uint8_t));
     md_free(alloc, hydrogen,   atom_count * sizeof(uint8_t));
-    md_free(alloc, order,      bond_count * sizeof(uint32_t));
+    md_free(alloc, order,      MAX(mol_bond_count, 1) * sizeof(uint32_t));
     md_free(alloc, ref,        4 * bond_count * sizeof(uint32_t));
 }
 
