@@ -106,7 +106,7 @@ UTEST(bonds, metal_coordination) {
     EXPECT_TRUE(has_bond(&sys, 1, 3, NULL));
     // Mg to the carboxylate: a coordination bond
     ASSERT_TRUE(has_bond(&sys, 2, 4, &f));
-    EXPECT_TRUE(f & MD_BOND_FLAG_COORDINATE);
+    EXPECT_EQ(MD_BOND_KIND_COORDINATE, md_bond_kind(f));
     EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(f));
     // Na is a free ion: nothing
     EXPECT_EQ(0, (int)md_bond_conn_count(&sys.bond, 5));
@@ -114,7 +114,7 @@ UTEST(bonds, metal_coordination) {
     EXPECT_FALSE(has_bond(&sys, 4, 6, NULL));
     // Cu-Cu: a metal-metal bond, which is not coordination
     ASSERT_TRUE(has_bond(&sys, 9, 10, &f));
-    EXPECT_FALSE(f & MD_BOND_FLAG_COORDINATE);
+    EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind(f));
 
     // A bond between a metal and a non-metal is coordination whatever its origin: the Mg-O bond as a topology gives it
     for (size_t b = 0; b < sys.bond.count; ++b) {
@@ -122,12 +122,12 @@ UTEST(bonds, metal_coordination) {
     }
     EXPECT_EQ(1, (int)md_util_system_infer_coordination(&sys));
     ASSERT_TRUE(has_bond(&sys, 2, 4, &f));
-    EXPECT_TRUE(f & MD_BOND_FLAG_COORDINATE);
+    EXPECT_EQ(MD_BOND_KIND_COORDINATE, md_bond_kind(f));
     EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(f));
     ASSERT_TRUE(has_bond(&sys, 9, 10, &f));
-    EXPECT_FALSE(f & MD_BOND_FLAG_COORDINATE);
+    EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind(f));
     ASSERT_TRUE(has_bond(&sys, 1, 2, &f));
-    EXPECT_FALSE(f & MD_BOND_FLAG_COORDINATE);
+    EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind(f));
     EXPECT_EQ(0, (int)md_util_system_infer_coordination(&sys));
     md_vm_arena_destroy(alloc);
 }
@@ -147,7 +147,7 @@ UTEST(bonds, metal_sites_deposited) {
         int num_s = 0;
         md_bond_iter_t it = md_bond_iter(&sys.bond, i);
         while (md_bond_iter_has_next(&it)) {
-            if ((md_bond_iter_bond_flags(&it) & MD_BOND_FLAG_COORDINATE) && md_atom_atomic_number(&sys.atom, md_bond_iter_atom_index(&it)) == 16) num_s += 1;
+            if (md_bond_kind(md_bond_iter_bond_flags(&it)) == MD_BOND_KIND_COORDINATE && md_atom_atomic_number(&sys.atom, md_bond_iter_atom_index(&it)) == 16) num_s += 1;
             md_bond_iter_next(&it);
         }
         EXPECT_GE(num_s, 2);
@@ -199,19 +199,19 @@ UTEST(bonds, noncovalent_range) {
     EXPECT_EQ(0, (int)sys.bond.noncovalent_count);
 
     const md_bond_flags_t user = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
-    const md_bond_flags_t hbond = user | MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN;
-    const md_bond_flags_t ionic = user | MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_IONIC;
+    const md_bond_flags_t hbond = md_bond_flags_set_kind(user, MD_BOND_KIND_HYDROGEN);
+    const md_bond_flags_t inter = md_bond_flags_set_kind(user, MD_BOND_KIND_INTERACTION);
     ASSERT_FALSE(has_bond(&sys, 0, n - 1, NULL));
     ASSERT_FALSE(has_bond(&sys, 1, n - 2, NULL));
     md_system_bond_insert(&sys, 0, n - 1, hbond);
-    md_system_bond_insert(&sys, 1, n - 2, ionic);
+    md_system_bond_insert(&sys, 1, n - 2, inter);
     EXPECT_EQ(graph, sys.bond.count);
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
     EXPECT_EQ(graph + 2, md_array_size(sys.bond.pairs));
     EXPECT_EQ(graph + 2, md_array_size(sys.bond.flags));
 
     // An atom pair has one bond: neither range takes a second one
-    md_system_bond_insert(&sys, n - 1, 0, ionic);
+    md_system_bond_insert(&sys, n - 1, 0, inter);
     md_system_bond_insert(&sys, sys.bond.pairs[0].idx[0], sys.bond.pairs[0].idx[1], hbond);
     EXPECT_EQ(graph, sys.bond.count);
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
@@ -220,8 +220,8 @@ UTEST(bonds, noncovalent_range) {
     md_system_bond_insert(&sys, 2, n - 3, user);
     EXPECT_EQ(graph + 1, sys.bond.count);
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
-    for (size_t i = 0; i < sys.bond.count; ++i) EXPECT_FALSE(sys.bond.flags[i] & MD_BOND_FLAG_NONCOVALENT);
-    for (size_t i = sys.bond.count; i < sys.bond.count + sys.bond.noncovalent_count; ++i) EXPECT_TRUE(sys.bond.flags[i] & MD_BOND_FLAG_NONCOVALENT);
+    for (size_t i = 0; i < sys.bond.count; ++i) EXPECT_FALSE(md_bond_is_noncovalent(sys.bond.flags[i]));
+    for (size_t i = sys.bond.count; i < sys.bond.count + sys.bond.noncovalent_count; ++i) EXPECT_TRUE(md_bond_is_noncovalent(sys.bond.flags[i]));
     md_system_bond_build_connectivity(&sys);
 
     // The graph does not have them, the second range does
@@ -258,8 +258,8 @@ UTEST(bonds, noncovalent_range) {
     EXPECT_EQ(graph - 1, sys.bond.count);
     EXPECT_EQ(3, (int)sys.bond.noncovalent_count);
     EXPECT_EQ(graph + 2, md_array_size(sys.bond.pairs));
-    for (size_t i = 0; i < sys.bond.count; ++i) EXPECT_FALSE(sys.bond.flags[i] & MD_BOND_FLAG_NONCOVALENT);
-    for (size_t i = sys.bond.count; i < sys.bond.count + sys.bond.noncovalent_count; ++i) EXPECT_TRUE(sys.bond.flags[i] & MD_BOND_FLAG_NONCOVALENT);
+    for (size_t i = 0; i < sys.bond.count; ++i) EXPECT_FALSE(md_bond_is_noncovalent(sys.bond.flags[i]));
+    for (size_t i = sys.bond.count; i < sys.bond.count + sys.bond.noncovalent_count; ++i) EXPECT_TRUE(md_bond_is_noncovalent(sys.bond.flags[i]));
     md_system_bond_remove(&sys, md_bond_find_noncovalent(&sys.bond, 1, n - 2));
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
     EXPECT_EQ(-1, md_bond_find_noncovalent(&sys.bond, 1, n - 2));
@@ -278,11 +278,11 @@ UTEST(bonds, kind_given_stays) {
     ASSERT_GE(b, 0);
     sys.bond.flags[b] = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
     EXPECT_EQ(0, (int)md_util_system_infer_coordination(&sys));
-    EXPECT_FALSE(sys.bond.flags[b] & MD_BOND_FLAG_COORDINATE);
+    EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind(sys.bond.flags[b]));
     // Without it, the kind is perceived
     sys.bond.flags[b] = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER);
     EXPECT_EQ(1, (int)md_util_system_infer_coordination(&sys));
-    EXPECT_TRUE(sys.bond.flags[b] & MD_BOND_FLAG_COORDINATE);
+    EXPECT_EQ(MD_BOND_KIND_COORDINATE, md_bond_kind(sys.bond.flags[b]));
     md_vm_arena_destroy(alloc);
 }
 
@@ -290,17 +290,20 @@ UTEST(bonds, kind_given_stays) {
 UTEST(bonds, kind_names) {
     size_t count = 0;
     const md_bond_kind_name_t* names = md_bond_kind_names(&count);
-    ASSERT_EQ(7, (int)count);
+    ASSERT_EQ(6, (int)count);
+    const md_bond_flags_t given = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN | MD_BOND_FLAG_ORDER_PERCEIVED, MD_BOND_ORIGIN_INFERRED);
     const struct { md_bond_flags_t flags; const char* kinds; } cases[] = {
         { MD_BOND_FLAG_NONE,                                                    "covalent" },
         { MD_BOND_FLAG_AROMATIC | 2,                                            "covalent" },
-        { MD_BOND_FLAG_COORDINATE,                                              "coordinate" },
+        { (md_bond_flags_t)MD_BOND_KIND_COORDINATE,                             "coordinate" },
         // A spring is of no other kind
-        { MD_BOND_FLAG_ELASTIC,                                                 "elastic" },
-        { MD_BOND_FLAG_NONCOVALENT,                                             "noncovalent" },
-        { MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN,                     "noncovalent hydrogen" },
-        { MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN | MD_BOND_FLAG_IONIC, "noncovalent hydrogen ionic" },
-        { MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_SIGMA_HOLE,                   "noncovalent sigma_hole" },
+        { (md_bond_flags_t)MD_BOND_KIND_ELASTIC,                                "elastic" },
+        { (md_bond_flags_t)MD_BOND_KIND_INTERACTION,                            "noncovalent interaction" },
+        { (md_bond_flags_t)MD_BOND_KIND_HYDROGEN,                               "noncovalent hydrogen" },
+        // The fields around the kind take no part in it
+        { md_bond_flags_set_kind(given | MD_BOND_FLAG_DELOCALIZED | 4, MD_BOND_KIND_COVALENT), "covalent" },
+        { md_bond_flags_set_kind(given, MD_BOND_KIND_ELASTIC),                  "elastic" },
+        { md_bond_flags_set_kind(given, MD_BOND_KIND_HYDROGEN),                 "noncovalent hydrogen" },
     };
     for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
         char buf[128] = "";
@@ -311,6 +314,22 @@ UTEST(bonds, kind_names) {
             }
         }
         EXPECT_STREQ(cases[c].kinds, buf);
+    }
+}
+
+// The kind is one value of its own: setting it keeps every other field, and its bits say where the bond belongs
+UTEST(bonds, kind_code) {
+    const md_bond_kind_t kinds[] = { MD_BOND_KIND_COVALENT, MD_BOND_KIND_COORDINATE, MD_BOND_KIND_ELASTIC, MD_BOND_KIND_INTERACTION, MD_BOND_KIND_HYDROGEN };
+    const bool graph[]       = { true,  true,  false, false, false };
+    const bool noncovalent[] = { false, false, false, true,  true  };
+    const md_bond_flags_t rest = md_bond_flags_set_origin(md_bond_flags_set_order(MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_ORDER_PERCEIVED | MD_BOND_FLAG_KIND_GIVEN, 2), MD_BOND_ORIGIN_USER);
+    for (size_t i = 0; i < ARRAY_SIZE(kinds); ++i) {
+        // Over a bond of another kind, so every bit of the old one goes
+        const md_bond_flags_t f = md_bond_flags_set_kind(md_bond_flags_set_kind(rest, kinds[(i + 1) % ARRAY_SIZE(kinds)]), kinds[i]);
+        EXPECT_EQ(kinds[i], md_bond_kind(f));
+        EXPECT_EQ(rest, f & ~MD_BOND_FLAG_KIND_MASK);
+        EXPECT_EQ(graph[i], md_bond_is_graph(f));
+        EXPECT_EQ(noncovalent[i], md_bond_is_noncovalent(f));
     }
 }
 
@@ -388,7 +407,7 @@ UTEST(bonds, delta_proton_transfer) {
     ASSERT_EQ(1, (int)d.num_formed);
     EXPECT_TRUE(delta_has_formed(&d, 1, 3));
     EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(d.formed_flags[0]));
-    EXPECT_FALSE(d.formed_flags[0] & MD_BOND_FLAG_KIND_MASK);
+    EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind(d.formed_flags[0]));
 
     // Only within the scope: the second water alone still sees its bond form (an atom of it is in the scope), the
     // first oxygen alone sees its bond break, an atom far from both sees nothing
@@ -466,7 +485,7 @@ UTEST(bonds, delta_transition_shows_both) {
 UTEST(bonds, delta_keeps_noncovalent) {
     delta_fixture_t f = {0};
     ASSERT_TRUE(delta_fixture_init(&f));
-    md_system_bond_insert(&f.sys, 1, 3, md_bond_flags_set_origin(MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER));
+    md_system_bond_insert(&f.sys, 1, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
     f.st.xyz[1] = vec3_set(1.80f, 0.0f, 0.0f);
     md_bond_delta_t d = {0};
     ASSERT_TRUE(md_util_bond_delta(&d, &f.sys, &f.st, &delta_default, f.alloc));

@@ -22,8 +22,8 @@ struct md_system_state_t;
 // kept and the rest is fitted around them, and so are the nonzero formal charges the file gives: the
 // atom/formal_charge column of sys->attributes, which the loaders publish (mmCIF).
 // Atoms outside of organic chemistry take no part: metals, coarse grained beads and virtual sites; bonds to metals
-// and coordination bonds (MD_BOND_FLAG_COORDINATE) do not count towards valences, and elastic bonds
-// (MD_BOND_FLAG_ELASTIC) are no bonds here at all. Running it again gives the same result.
+// and coordination bonds (MD_BOND_KIND_COORDINATE) do not count towards valences, and elastic bonds
+// (MD_BOND_KIND_ELASTIC) are no bonds here at all. Running it again gives the same result.
 //
 // HYDROGENS. Each residue (or molecule, without residues) is handled by what it carries:
 //   - all hydrogens (some on carbon): every hydrogen is explicit, and orders and charges follow from the valences.

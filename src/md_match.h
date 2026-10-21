@@ -43,12 +43,12 @@ struct md_smiles_error_t;
 // ## THE GRAPH
 //
 // What is searched is the covalent bond graph of the system, which is not quite all of sys->bond:
-//   - A coordination bond (MD_BOND_FLAG_COORDINATE, between a metal and a non-metal) between different components
+//   - A coordination bond (MD_BOND_KIND_COORDINATE, between a metal and a non-metal) between different components
 //     is not part of either molecule: the Mg between the phosphates of an ATP, the Zn of a zinc finger. One within
 //     a residue is part of it (the Fe of a heme, an iron-sulfur cluster). In a system without components every
 //     coordination bond is left out.
 //   - Virtual sites (MD_PARTICLE_VIRTUAL_SITE: the M site of a TIP4P water) are not atoms of the graph.
-//   - Elastic bonds (MD_BOND_FLAG_ELASTIC: an elastic network, a restraint) are springs, not bonds of the graph.
+//   - Elastic bonds (MD_BOND_KIND_ELASTIC: an elastic network, a restraint) are springs, not bonds of the graph.
 // A MOLECULE is a connected part of this graph. Molecules are numbered in the order of their first atom, as
 // sys->structure numbers structures: in a system without coordination bonds and virtual sites, which is not coarse
 // grained, they are its structures, index for index. Otherwise a structure may hold several (an ATP and its Mg are two

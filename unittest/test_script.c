@@ -7030,7 +7030,7 @@ UTEST(script, bondsets) {
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
     // A hydrogen bond a user marks, from a water hydrogen to O2
-    md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER));
+    md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
     ASSERT_EQ(1, (int)sys.bond.noncovalent_count);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -7043,7 +7043,7 @@ UTEST(script, bondsets) {
         "coord_b = bond(kind='coordinate');"
         "hb      = bond(kind='hydrogen');"
         "nc      = bond(kind='noncovalent');"
-        "ionic_b = bond(kind='ionic');"
+        "inter_b = bond(kind='interaction');"
         "graph   = bond(kind={'covalent', 'coordinate'});"
         "user    = bond(origin='user');"
         "ordered = bond(order=0:4);"
@@ -7070,7 +7070,7 @@ UTEST(script, bondsets) {
     EXPECT_EQ(1, bondset_count_of(ir, "coord_b", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "hb", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "nc", &sys, &st, alloc));
-    EXPECT_EQ(0, bondset_count_of(ir, "ionic_b", &sys, &st, alloc));
+    EXPECT_EQ(0, bondset_count_of(ir, "inter_b", &sys, &st, alloc));
     EXPECT_EQ(7, bondset_count_of(ir, "graph", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "user", &sys, &st, alloc));
     // The order is of the bonds of the graph: the hydrogen bond has none

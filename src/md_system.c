@@ -329,13 +329,12 @@ const char* md_bond_origin_name(md_bond_origin_t origin) {
 }
 
 static const md_bond_kind_name_t bond_kind_names[] = {
-    {"covalent",    MD_BOND_FLAG_KIND_MASK,                             MD_BOND_FLAG_NONE},
-    {"coordinate",  MD_BOND_FLAG_KIND_MASK,                             MD_BOND_FLAG_COORDINATE},
-    {"elastic",     MD_BOND_FLAG_KIND_MASK,                             MD_BOND_FLAG_ELASTIC},
-    {"noncovalent", MD_BOND_FLAG_NONCOVALENT,                           MD_BOND_FLAG_NONCOVALENT},
-    {"hydrogen",    MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN,   MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN},
-    {"ionic",       MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_IONIC,      MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_IONIC},
-    {"sigma_hole",  MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_SIGMA_HOLE, MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_SIGMA_HOLE},
+    {"covalent",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COVALENT},
+    {"coordinate",  MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COORDINATE},
+    {"elastic",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_ELASTIC},
+    {"noncovalent", (md_bond_flags_t)0xC0,      (md_bond_flags_t)0xC0},     // md_bond_is_noncovalent
+    {"interaction", MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_INTERACTION},
+    {"hydrogen",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_HYDROGEN},
 };
 
 const md_bond_kind_name_t* md_bond_kind_names(size_t* count) {
@@ -552,10 +551,10 @@ void md_system_reset(md_system_t* sys) {
     md_system_topology_changed(sys);
 }
 
-// The connectivity is the graph of the molecules: every bond but the elastic ones (MD_BOND_FLAG_ELASTIC), springs of the
-// force field which connect nothing. bond_flags NULL: no bond is elastic.
+// The connectivity is the graph of the molecules: every bond of the first range but the elastic ones
+// (MD_BOND_KIND_ELASTIC), springs of the force field which connect nothing. bond_flags NULL: every bond is covalent.
 static inline bool conn_has_bond(const md_bond_flags_t* bond_flags, size_t i) {
-    return !bond_flags || !(bond_flags[i] & MD_BOND_FLAG_ELASTIC);
+    return !bond_flags || md_bond_is_graph(bond_flags[i]);
 }
 
 static void build_connectivity(md_bond_conn_data_t* conn, const md_atom_pair_t* bond_pairs, const md_bond_flags_t* bond_flags, size_t bond_pair_count, size_t atom_count, md_allocator_i* alloc) {

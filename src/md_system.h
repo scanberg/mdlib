@@ -227,7 +227,7 @@ typedef struct md_assembly_gen_t {
 } md_assembly_gen_t;
 
 // Atom centric representation of bonds: the graph of the molecules, every bond but the elastic ones
-// (MD_BOND_FLAG_ELASTIC), which are springs of the force field and connect nothing. Whatever follows bonds through it
+// (MD_BOND_KIND_ELASTIC), which are springs of the force field and connect nothing. Whatever follows bonds through it
 // (md_bond_iter, md_bond_find, the structures, rings and chemistry) leaves them out.
 typedef struct md_bond_conn_data_t {
     size_t count;
@@ -241,10 +241,10 @@ typedef struct md_bond_conn_data_t {
 
 // Bond centric representation, in two ranges of the same arrays:
 //   [0, count)                              the bond graph, covalent and coordinate bonds, and the elastic bonds
-//                                           (MD_BOND_FLAG_ELASTIC), springs of the force field which the connectivity
+//                                           (MD_BOND_KIND_ELASTIC), springs of the force field which the connectivity
 //                                           leaves out
-//   [count, count + noncovalent_count)      the persistent non-covalent bonds (MD_BOND_FLAG_NONCOVALENT): hydrogen
-//                                           bonds and salt bridges a file gives or a user marks
+//   [count, count + noncovalent_count)      the persistent non-covalent bonds (md_bond_is_noncovalent): hydrogen
+//                                           bonds and interactions a file gives or a user marks
 // Whatever walks the bonds as the graph (the connectivity, rings, structures, perception, matching, bonds formed and
 // broken over a run) reads the first range only, by count, and leaves the elastic bonds out. The arrays hold both
 // ranges, so they are uploaded as one. A bond index names a bond in either range: md_bond_insert, md_bond_remove,
@@ -1350,7 +1350,7 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
     return it;
 }
 
-// This is not something which should be done frequently. The elastic bonds (MD_BOND_FLAG_ELASTIC) are left out.
+// This is not something which should be done frequently. The elastic bonds (MD_BOND_KIND_ELASTIC) are left out.
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc);
 void md_system_bond_build_connectivity(md_system_t* sys);
 
@@ -1425,13 +1425,13 @@ static inline md_bond_idx_t md_bond_find_noncovalent(const md_bond_data_t* bond_
 }
 
 // Adds a bond between two atoms unless they have one, into the range of its kind: the bond graph, or the non-covalent
-// bonds (MD_BOND_FLAG_NONCOVALENT). A bond of the graph inserted where there are non-covalent bonds moves the first of
+// bonds (md_bond_is_noncovalent). A bond of the graph inserted where there are non-covalent bonds moves the first of
 // them to the end, which changes its index.
 static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags, md_allocator_i* alloc) {
     ASSERT(bond_data);
     ASSERT(alloc);
-    ASSERT(!(flags & MD_BOND_FLAG_NONCOVALENT) || !(flags & (MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_ELASTIC | MD_BOND_FLAG_ORDER_MASK | MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED)));
-    ASSERT((flags & MD_BOND_FLAG_NONCOVALENT) || !(flags & MD_BOND_FLAG_CHARACTER_MASK));
+    // A bond outside of the graph has neither an order nor resonance
+    ASSERT(md_bond_is_graph(flags) || !(flags & (MD_BOND_FLAG_ORDER_MASK | MD_BOND_FLAG_RESONANCE_MASK)));
 
     // An atom pair has one bond at most, but for an elastic bond: it is not found, and does not stand in for a bond of the
     // molecule
@@ -1443,7 +1443,7 @@ static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_
     md_atom_pair_t pair = {atom_idx_a, atom_idx_b};
     md_array_push(bond_data->pairs, pair, alloc);
     md_array_push(bond_data->flags, flags, alloc);
-    if (flags & MD_BOND_FLAG_NONCOVALENT) {
+    if (md_bond_is_noncovalent(flags)) {
         bond_data->noncovalent_count++;
         return;
     }

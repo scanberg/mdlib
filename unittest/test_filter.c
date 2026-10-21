@@ -319,7 +319,7 @@ UTEST(filter, bonds) {
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
-    md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER));
+    md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
     ASSERT_EQ(1, (int)sys.bond.noncovalent_count);
 
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
@@ -385,7 +385,7 @@ UTEST(filter, bonds) {
     // molecule: picked when it is asked for, not among the bonds of a set of atoms
     const md_bond_idx_t cu = md_system_bond_find(&sys, 8, 9);
     ASSERT_GE(cu, 0);
-    sys.bond.flags[cu] |= MD_BOND_FLAG_ELASTIC;
+    sys.bond.flags[cu] = md_bond_flags_set_kind(sys.bond.flags[cu], MD_BOND_KIND_ELASTIC);
     md_system_bond_build_connectivity(&sys);
     res = md_filter_bonds(&pairs, STR_LIT(""), &fctx, alloc);
     EXPECT_TRUE(res.success);

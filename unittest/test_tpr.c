@@ -579,7 +579,7 @@ UTEST(tpr, nonbonded_parameters_and_exclusions) {
 
 static size_t count_elastic(const md_system_t* sys) {
     size_t n = 0;
-    for (size_t i = 0; i < sys->bond.count; ++i) n += (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC) != 0;
+    for (size_t i = 0; i < sys->bond.count; ++i) n += md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_ELASTIC;
     return n;
 }
 
@@ -672,12 +672,12 @@ UTEST(tpr, elastic_bonds) {
     EXPECT_EQ(-1, md_bond_find(&sys.bond, (md_atom_idx_t)(off_bpti + b2), (md_atom_idx_t)(off_bpti + b8)));
     const md_bond_idx_t closure = md_bond_find(&sys.bond, (md_atom_idx_t)(off_chig + c0), (md_atom_idx_t)(off_chig + c9));
     ASSERT_TRUE(closure >= 0);
-    EXPECT_FALSE(sys.bond.flags[closure] & MD_BOND_FLAG_ELASTIC);
+    EXPECT_NE(MD_BOND_KIND_ELASTIC, md_bond_kind(sys.bond.flags[closure]));
     EXPECT_EQ(sys.bond.conn.count, 2 * (sys.bond.count - 2));
 
     // The links of the chains and the disulfide stay bonds of the molecules
     for (size_t i = 0; i < sys.bond.count; ++i) {
-        if (!(sys.bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+        if (md_bond_kind(sys.bond.flags[i]) != MD_BOND_KIND_ELASTIC) continue;
         const md_atom_pair_t p = sys.bond.pairs[i];
         EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, p.idx[0]), "BB") && str_eq_cstr(md_atom_name(&sys.atom, p.idx[1]), "BB"));
     }

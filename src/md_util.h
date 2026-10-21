@@ -179,13 +179,13 @@ void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_stat
 // all other bonds of the graph are replaced.
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
 
-// Marks every bond between a metal and a non-metal MD_BOND_FLAG_COORDINATE, whatever its origin, unless its kind was
+// Marks every bond between a metal and a non-metal MD_BOND_KIND_COORDINATE, whatever its origin, unless its kind was
 // given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_util_system_infer does it for each system; a bond
 // added afterwards (by hand) wants it too.
 size_t md_util_system_infer_coordination(md_system_t* sys);
 
 // Marks the bonds of a coarse grained topology which hold a protein or nucleic acid in shape without being bonds of it
-// MD_BOND_FLAG_ELASTIC, and returns how many it marked: an elastic network (ElNeDyn, the rubber bands of martinize) and
+// MD_BOND_KIND_ELASTIC, and returns how many it marked: an elastic network (ElNeDyn, the rubber bands of martinize) and
 // the restraints of secondary structure, when they are written as plain bonds (bond type 1), as they are as often as
 // not. Between two residues of a chain (amino acids or nucleotides, beads) a Martini topology has the link from the last
 // backbone bead of one to the first of the next (BB to BB, BB3 to BB1, and BB2 to BB1 as well in Martini 3 RNA), a

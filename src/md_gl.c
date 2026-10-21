@@ -1789,7 +1789,7 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 //
 // BEGIN BOND ORDER DERIVATION (plain arrays in, the contents of the buffers out; tested on its own)
 
-// Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert). An elastic bond (MD_BOND_FLAG_ELASTIC) is drawn as a plain one
+// Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert). An elastic bond (MD_BOND_KIND_ELASTIC) is drawn as a plain one
 // where the representation shows the elastic bonds, and not at all elsewhere.
 enum {
     BOND_KIND_PLAIN   = 0,
@@ -1834,7 +1834,7 @@ static uint32_t bo_find_bond(const bond_order_input_t* in, uint32_t a, uint32_t 
 static bool bo_valid_bond(const bond_order_input_t* in, uint32_t i) {
     const uint32_t a = in->pairs[2 * i + 0];
     const uint32_t b = in->pairs[2 * i + 1];
-    return a < in->atom_count && b < in->atom_count && a != b && !(in->flags[i] & (MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_ELASTIC));
+    return a < in->atom_count && b < in->atom_count && a != b && md_bond_kind(in->flags[i]) == MD_BOND_KIND_COVALENT;
 }
 
 // c is off the axis e - o by more than 10 degrees in the reference coordinates (or there are none)
@@ -1874,7 +1874,7 @@ static void bo_plane_refs(const bond_order_input_t* in, uint32_t e, uint32_t o, 
         for (uint32_t j = in->adj_offset[e]; j < in->adj_offset[e + 1] && n < 2; ++j) {
             const uint32_t c = in->adj_atom[j];
             const uint32_t f = in->flags[in->adj_bond[j]];
-            if (c == o || (f & MD_BOND_FLAG_COORDINATE) || !bo_off_axis(in, e, o, c)) continue;
+            if (c == o || md_bond_kind(f) == MD_BOND_KIND_COORDINATE || !bo_off_axis(in, e, o, c)) continue;
             const int r = (hyb != MD_HYBRIDIZATION_SP2 && bo_is_multiple(f)) ? 0 : (in->hydrogen && in->hydrogen[c]) ? 2 : 1;
             if (r == rank) out[n++] = c;
         }
@@ -1940,7 +1940,7 @@ static uint32_t bo_aromatic_ref(const bond_order_input_t* in, uint32_t e, uint32
     for (uint32_t j = in->adj_offset[e]; j < in->adj_offset[e + 1]; ++j) {
         const uint32_t c = in->adj_atom[j];
         const uint32_t f = in->flags[in->adj_bond[j]];
-        if (c != o && (f & MD_BOND_FLAG_AROMATIC) && !(f & MD_BOND_FLAG_COORDINATE) && bo_off_axis(in, e, o, c)) return c;
+        if (c != o && (f & MD_BOND_FLAG_AROMATIC) && md_bond_kind(f) != MD_BOND_KIND_COORDINATE && bo_off_axis(in, e, o, c)) return c;
     }
     return bo_plane_ref(in, e, o);
 }
@@ -1998,7 +1998,7 @@ static uint32_t compute_bond_orders(uint32_t* out_order, uint32_t* out_ref, cons
     uint32_t entries = 0;
     for (uint32_t i = 0; i < in->bond_count; ++i) {
         const uint32_t f = in->flags[i];
-        out_order[i] = (f & MD_BOND_FLAG_ELASTIC) ? BOND_KIND_ELASTIC : BOND_KIND_PLAIN;
+        out_order[i] = md_bond_kind(f) == MD_BOND_KIND_ELASTIC ? BOND_KIND_ELASTIC : BOND_KIND_PLAIN;
         if (!bo_valid_bond(in, i) || (f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED))) continue;
         const uint32_t a = in->pairs[2 * i + 0];
         const uint32_t b = in->pairs[2 * i + 1];
@@ -2101,7 +2101,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
         const uint32_t a = pairs[2 * i + 0];
         const uint32_t b = pairs[2 * i + 1];
         flags[i] = (uint32_t)sys->bond.flags[i];
-        if (a < atom_count && b < atom_count && !(flags[i] & MD_BOND_FLAG_ELASTIC)) {
+        if (a < atom_count && b < atom_count && md_bond_is_graph(flags[i])) {
             adj_offset[a + 1] += 1;
             adj_offset[b + 1] += 1;
         }
@@ -2114,7 +2114,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     for (uint32_t i = 0; i < bond_count; ++i) {
         const uint32_t a = pairs[2 * i + 0];
         const uint32_t b = pairs[2 * i + 1];
-        if (a < atom_count && b < atom_count && !(flags[i] & MD_BOND_FLAG_ELASTIC)) {
+        if (a < atom_count && b < atom_count && md_bond_is_graph(flags[i])) {
             adj_atom[cursor[a]] = b;
             adj_bond[cursor[a]++] = i;
             adj_atom[cursor[b]] = a;

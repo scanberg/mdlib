@@ -9394,7 +9394,7 @@ md_filter_result_t md_filter_bonds(md_array(md_atom_pair_t)* dst, str_t expr, co
                     const size_t total = sys->bond.count + sys->bond.noncovalent_count;
                     for (size_t i = 0; i < total; ++i) {
                         const md_atom_pair_t p = sys->bond.pairs[i];
-                        if (sys->bond.flags && (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+                        if (sys->bond.flags && md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_ELASTIC) continue;
                         if (md_bitset_test(atoms, (uint32_t)p.idx[0]) && md_bitset_test(atoms, (uint32_t)p.idx[1])) {
                             md_array_push(*dst, p, alloc);
                         }

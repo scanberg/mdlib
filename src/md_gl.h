@@ -235,7 +235,7 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 //   - delocalized bond (carboxylate, nitro, guanidinium, phosphate, ...): the stick and a thin dashed line towards
 //     the next bond of the group. So is an aromatic bond in no circle (in a ring larger than MD_RING_MAX_SIZE).
 // A bond whose order is unknown is drawn as a single bond.
-// It also tells the elastic bonds (MD_BOND_FLAG_ELASTIC), springs of the force field, which the licorice and ball and
+// It also tells the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field, which the licorice and ball and
 // stick representations leave out unless their elastic_bonds is set, and then draw as single bonds. Until it is set
 // for the bonds of the molecule every bond is drawn.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
@@ -380,7 +380,7 @@ typedef struct md_gl_draw_op_t {
 			uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
             bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
-            bool elastic_bonds;     // Show the elastic bonds (MD_BOND_FLAG_ELASTIC), which are left out otherwise
+            bool elastic_bonds;     // Show the elastic bonds (MD_BOND_KIND_ELASTIC), which are left out otherwise
         } licorice;
 
         struct {
@@ -391,7 +391,7 @@ typedef struct md_gl_draw_op_t {
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
             bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
-            bool elastic_bonds;     // Show the elastic bonds (MD_BOND_FLAG_ELASTIC), which are left out otherwise
+            bool elastic_bonds;     // Show the elastic bonds (MD_BOND_KIND_ELASTIC), which are left out otherwise
         } ball_and_stick;
 
         struct {

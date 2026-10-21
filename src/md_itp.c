@@ -813,7 +813,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             for (size_t b = 0; b < md_array_size(mol->elastic_bonds); ++b) {
                 pairs[count].idx[0] = off + mol->elastic_bonds[b].idx[0];
                 pairs[count].idx[1] = off + mol->elastic_bonds[b].idx[1];
-                flags[count] = md_bond_flags_set_origin(MD_BOND_FLAG_ELASTIC, MD_BOND_ORIGIN_TOPOLOGY);
+                flags[count] = md_bond_flags_set_origin((md_bond_flags_t)MD_BOND_KIND_ELASTIC, MD_BOND_ORIGIN_TOPOLOGY);
                 count += 1;
             }
         }

@@ -648,7 +648,7 @@ bool md_contact_unit_adjacency_from_bonds(uint32_t** out_off, uint32_t** out_adj
     // Both directions of every bond joining two units
     md_array(uint64_t) edge = 0;
     for (size_t b = 0; b < sys->bond.count && sys->bond.pairs; ++b) {
-        if (sys->bond.flags && (sys->bond.flags[b] & MD_BOND_FLAG_ELASTIC)) continue;  // A spring, which joins nothing
+        if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[b])) continue;  // A spring, which joins nothing
         const int64_t x = sys->bond.pairs[b].idx[0];
         const int64_t y = sys->bond.pairs[b].idx[1];
         if (x < 0 || y < 0 || (size_t)x >= N || (size_t)y >= N) continue;

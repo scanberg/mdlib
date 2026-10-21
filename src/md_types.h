@@ -260,76 +260,70 @@ static inline md_entity_flags_t md_entity_flags_set_kind(md_entity_flags_t flags
 }
 
 
-// Bond flags, on three axes: the low byte describes the bond chemically, the bits above it where the bond and its
-// chemistry came from, and the character bits what a non-covalent bond is. Only the low byte is part of a bond's
-// identity when comparing structures (non-covalent bonds take no part in that: they are not in the bond graph). Each
-// field is either one bit or one value, so every combination describes a case (two of them aside: AROMATIC with
-// DELOCALIZED, and two kinds at once, which never occur together).
+// Bond flags: what a bond is (the CHEMISTRY in the low byte: order, resonance and kind) and where it and its chemistry
+// came from (the PROVENANCE above it). Each field is one value or one bit, so every combination describes a case (bar
+// the unused values of a field). Only the low byte is part of a bond's identity when comparing structures.
+//
+//   bit   11         10               9-8     7-5    4-3        2-0
+//         KIND_GIVEN ORDER_PERCEIVED  ORIGIN  KIND   RESONANCE  ORDER
 //
 // CHEMISTRY
-//   ORDER        A value in bits 0-2, not a set of bits: read it with md_bond_order and write it with
-//                md_bond_flags_set_order. 0 is unknown (not perceived, and not given by the file), which is not the
-//                same as single. Always 0 for a non-covalent bond.
-//   AROMATIC     In an aromatic ring.
-//   DELOCALIZED  Resonance outside of rings: carboxylate, guanidinium, nitro, phosphate, ... AROMATIC and DELOCALIZED
-//                come on top of an order which holds one Kekule structure: a benzene bond is AROMATIC with order 1 or
-//                2, the two C-O of a carboxylate are DELOCALIZED with orders 2 and 1.
-//   KIND         COORDINATE, ELASTIC, NONCOVALENT or none of them (covalent), at most one:
-//     covalent     None of the bits. Metallic between two metals: whether a bond involves a metal is a question for
-//                  the elements of its atoms.
-//     COORDINATE   A metal-ligand bond, which counts towards the valence of neither atom: every bond between a metal
-//                  and a non-metal unless its kind was given (md_util_system_infer_coordination), and any other bond a
-//                  file says is one. Whether the ligand is then an anion (the thiolate of a zinc finger cysteine) is
-//                  for the perception of its atom to say (md_chem_perceive), not for the bond.
-//     ELASTIC      Not a bond of the molecule but a spring of its force field which holds two particles at a distance:
-//                  the elastic network of a coarse grained protein or nucleic acid (the rubber bands of martinize,
-//                  ElNeDyn), the restraints of its secondary structure, a restraint between two atoms. GROMACS writes
-//                  them as bonds which make no connection (bond types 6, 9 and 10, constraints of type 2), or as plain
-//                  bonds (md_util_system_infer_elastic_bonds). They are kept, as information, in the first range of
-//                  md_bond_data_t, and left out of everything which follows the bonds of a molecule: the connectivity
-//                  (md_bond_conn_data_t, so md_bond_iter and md_bond_find), the structures, rings, chemistry and
-//                  matching. Nothing else of the CHEMISTRY applies to them, and the representations do not draw them
-//                  unless asked to.
-//     NONCOVALENT  A bond which holds nothing together: a hydrogen bond, a salt bridge, an interaction a user marks.
-//                  Never part of the bond graph (md_bond_data_t keeps these bonds in a range of their own), so never
-//                  of an order, aromatic or delocalized. What it is, is said by the character bits.
-//   COVALENT and COORDINATE bonds make up the bond graph, from which the connectivity, the rings, the structures
-//   and the perceived chemistry are derived.
-//
-// CHARACTER (non-covalent bonds only, any combination of them; none is an interaction of no particular character)
-//   HYDROGEN     A hydrogen bond, D-H...A. Stored with the hydrogen (or the donor without one) as the first atom.
-//   IONIC        Between ions of opposite charge: a salt bridge. A charge-assisted hydrogen bond is both.
-//   SIGMA_HOLE   From the sigma-hole of a halogen, chalcogen or pnictogen (the first atom) to an acceptor: a halogen
-//                bond is one whose first atom is a halogen.
+//   ORDER      A value in bits 0-2: read it with md_bond_order and write it with md_bond_flags_set_order. 0 is unknown
+//              (not perceived, and not given by the file), which is not the same as single. Always 0 for a bond outside
+//              of the bond graph.
+//   RESONANCE  A value in bits 3-4, at most one of:
+//     AROMATIC     In an aromatic ring.
+//     DELOCALIZED  Resonance outside of rings: carboxylate, guanidinium, nitro, phosphate, ...
+//              Either comes on top of an order which holds one Kekule structure: a benzene bond is AROMATIC with order 1
+//              or 2, the two C-O of a carboxylate are DELOCALIZED with orders 2 and 1. Neither is localized. Always
+//              localized for a bond outside of the bond graph.
+//   KIND       A value in bits 5-7 (md_bond_kind_t): read it with md_bond_kind and write it with md_bond_flags_set_kind.
+//              Bit 7 set: outside of the bond graph (md_bond_is_graph). Bits 7 and 6 set: non-covalent, of the second
+//              range of md_bond_data_t (md_bond_is_noncovalent).
+//     COVALENT     0x00  A bond of the molecule. Metallic between two metals: whether a bond involves a metal is a
+//                        question for the elements of its atoms.
+//     COORDINATE   0x20  A metal-ligand bond, which counts towards the valence of neither atom: every bond between a
+//                        metal and a non-metal unless its kind was given (md_util_system_infer_coordination), and any
+//                        other bond a file says is one. Whether the ligand is then an anion (the thiolate of a zinc
+//                        finger cysteine) is for the perception of its atom to say (md_chem_perceive), not the bond.
+//     ELASTIC      0x80  Not a bond of the molecule but a spring of its force field which holds two particles at a
+//                        distance: the elastic network of a coarse grained protein or nucleic acid (the rubber bands of
+//                        martinize, ElNeDyn), the restraints of its secondary structure, a restraint between two atoms.
+//                        GROMACS writes them as bonds which make no connection (bond types 6, 9 and 10, constraints of
+//                        type 2), or as plain bonds (md_util_system_infer_elastic_bonds). They are kept, as
+//                        information, in the first range of md_bond_data_t, and left out of everything which follows
+//                        the bonds of a molecule: the connectivity (md_bond_conn_data_t, so md_bond_iter and
+//                        md_bond_find), the structures, rings, chemistry and matching. The representations do not draw
+//                        them unless asked to.
+//     INTERACTION  0xC0  A non-covalent bond of no particular kind: one a user marks between two atoms, a salt bridge,
+//                        the contact of a halogen with its acceptor.
+//     HYDROGEN     0xE0  A hydrogen bond, D-H...A. Stored with the hydrogen (or the donor without one) as the first
+//                        atom.
+//              COVALENT and COORDINATE bonds make up the bond graph, from which the connectivity, the rings, the
+//              structures and the perceived chemistry are derived. INTERACTION and HYDROGEN are the non-covalent bonds,
+//              which md_bond_data_t keeps in a range of their own. 0x40 and 0xA0 are unused.
 //
 // PROVENANCE
 //   ORIGIN           A value in bits 8-9 (md_bond_origin_t): read it with md_bond_origin and write it with
 //                    md_bond_flags_set_origin.
-//   ORDER_PERCEIVED  The order, AROMATIC and DELOCALIZED were perceived (md_chem_perceive), not given. A known order
-//                    without it was given, by the file or by hand, and stays as it is when the chemistry is perceived
-//                    again; one with it is perceived anew.
-//   KIND_GIVEN       The kind (and the character) was given, by the file or by hand, and stays as it is when bonds are
-//                    perceived again: a bond between a metal and a non-metal a user says is covalent stays covalent. The
-//                    other way around from ORDER_PERCEIVED, as a kind has no 'unknown' to tell a given one by: a bond
-//                    without it has the kind perception gives it.
+//   ORDER_PERCEIVED  The order and the resonance were perceived (md_chem_perceive), not given. A known order without
+//                    it was given, by the file or by hand, and stays as it is when the chemistry is perceived again;
+//                    one with it is perceived anew. A bond without an order is perceived whether or not it is set, so
+//                    a loader which gives orders gets them kept without saying so.
+//   KIND_GIVEN       The kind was given, by the file or by hand, and stays as it is when bonds are perceived again: a
+//                    bond between a metal and a non-metal a user says is covalent stays covalent. The other way around
+//                    from ORDER_PERCEIVED, as a kind has no 'unknown' to tell a given one by: a bond without it has the
+//                    kind perception gives it.
 typedef enum {
     MD_BOND_FLAG_NONE            = 0,
     MD_BOND_FLAG_ORDER_MASK      = 0x7,     // See md_bond_order
-    MD_BOND_FLAG_AROMATIC        = 0x8,     // In an aromatic ring
-    MD_BOND_FLAG_DELOCALIZED     = 0x10,    // Resonance outside of rings
-    MD_BOND_FLAG_COORDINATE      = 0x20,    // Metal-ligand
-    MD_BOND_FLAG_ELASTIC         = 0x40,    // A spring of the force field, not a bond of the molecule
-    MD_BOND_FLAG_NONCOVALENT     = 0x80,    // Not in the bond graph, see the character bits
-    MD_BOND_FLAG_KIND_MASK       = 0xE0,    // COORDINATE | ELASTIC | NONCOVALENT, none of them is covalent
-
+    MD_BOND_FLAG_AROMATIC        = 0x8,     // Resonance: in an aromatic ring
+    MD_BOND_FLAG_DELOCALIZED     = 0x10,    // Resonance: outside of rings
+    MD_BOND_FLAG_RESONANCE_MASK  = 0x18,
+    MD_BOND_FLAG_KIND_MASK       = 0xE0,    // See md_bond_kind
     MD_BOND_FLAG_ORIGIN_MASK     = 0x300,   // See md_bond_origin
-    MD_BOND_FLAG_ORDER_PERCEIVED = 0x400,   // The order (and AROMATIC, DELOCALIZED) was perceived, not given
-    MD_BOND_FLAG_KIND_GIVEN      = 0x800,   // The kind (and the character) was given, not perceived
-
-    MD_BOND_FLAG_HYDROGEN        = 0x1000,  // Non-covalent: a hydrogen bond
-    MD_BOND_FLAG_IONIC           = 0x2000,  // Non-covalent: between ions of opposite charge
-    MD_BOND_FLAG_SIGMA_HOLE      = 0x4000,  // Non-covalent: from the sigma-hole of its first atom
-    MD_BOND_FLAG_CHARACTER_MASK  = 0x7000,
+    MD_BOND_FLAG_ORDER_PERCEIVED = 0x400,   // The order and the resonance were perceived, not given
+    MD_BOND_FLAG_KIND_GIVEN      = 0x800,   // The kind was given, not perceived
 } md_bond_flags_t;
 
 ENUM_FLAGS(md_bond_flags_t)
@@ -401,6 +395,34 @@ static inline md_bond_origin_t md_bond_origin(md_bond_flags_t flags) {
 static inline md_bond_flags_t md_bond_flags_set_origin(md_bond_flags_t flags, md_bond_origin_t origin) {
     const unsigned int value = ((unsigned int)origin << MD_BOND_ORIGIN_SHIFT) & (unsigned int)MD_BOND_FLAG_ORIGIN_MASK;
     return (md_bond_flags_t)(((unsigned int)flags & ~(unsigned int)MD_BOND_FLAG_ORIGIN_MASK) | value);
+}
+
+// What a bond is, the KIND of md_bond_flags_t, in place (not shifted down): see there.
+typedef enum md_bond_kind_t {
+    MD_BOND_KIND_COVALENT    = 0x00,
+    MD_BOND_KIND_COORDINATE  = 0x20,
+    MD_BOND_KIND_ELASTIC     = 0x80,
+    MD_BOND_KIND_INTERACTION = 0xC0,
+    MD_BOND_KIND_HYDROGEN    = 0xE0,
+} md_bond_kind_t;
+
+static inline md_bond_kind_t md_bond_kind(md_bond_flags_t flags) {
+    return (md_bond_kind_t)((unsigned int)flags & (unsigned int)MD_BOND_FLAG_KIND_MASK);
+}
+
+static inline md_bond_flags_t md_bond_flags_set_kind(md_bond_flags_t flags, md_bond_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_BOND_FLAG_KIND_MASK;
+    return (md_bond_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+}
+
+// A bond of the bond graph: covalent or coordinate. Elastic and non-covalent bonds are not.
+static inline bool md_bond_is_graph(md_bond_flags_t flags) {
+    return ((unsigned int)flags & 0x80u) == 0;
+}
+
+// A non-covalent bond, of the second range of md_bond_data_t: an interaction or a hydrogen bond.
+static inline bool md_bond_is_noncovalent(md_bond_flags_t flags) {
+    return ((unsigned int)flags & 0xC0u) == 0xC0u;
 }
 
 // Atomic number constants for all elements (Z values)
@@ -635,9 +657,8 @@ const char* md_hybridization_name(md_hybridization_t hyb);
 const char* md_bond_origin_name(md_bond_origin_t origin);
 
 // The kinds of bonds by name, as the script selects them and a workspace stores them: a bond is of a kind when
-// (flags & mask) == value. 'covalent', 'coordinate', 'elastic' and 'noncovalent' are the kinds proper, 'hydrogen',
-// 'ionic' and 'sigma_hole' the characters of a non-covalent bond, so a charge-assisted hydrogen bond is of
-// 'noncovalent', 'hydrogen' and 'ionic' at once.
+// (flags & mask) == value. Each kind of md_bond_kind_t has a name ('covalent', 'coordinate', 'elastic', 'interaction',
+// 'hydrogen'), and 'noncovalent' is that of the two non-covalent kinds together.
 typedef struct md_bond_kind_name_t {
     const char*     name;
     md_bond_flags_t mask;

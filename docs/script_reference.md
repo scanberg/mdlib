@@ -1034,7 +1034,7 @@ n_in_box = count(within_xyz(20:25, 20:25, 20:25));
 Bonds are values of their own, a `bondset`: a set of atoms cannot say which bonds are meant, as the atoms of a bond
 bring in every other bond among them. A bond is one of the system's persistent bonds, which the bond graph holds
 (covalent and coordination bonds, from which the rings, structures and chemistry are derived) together with the
-non-covalent bonds a file gives or a user marks (hydrogen bonds, salt bridges), or a bond computed for a frame (one
+non-covalent bonds a file gives or a user marks (hydrogen bonds, interactions), or a bond computed for a frame (one
 [`formed`](#formed) in it). Bond sets combine with `and`, `or`, `xor` and `not` like selections, and give atoms with
 [`atoms`](#atoms), numbers with [`count`](#count) and [`length`](#length).
 
@@ -1045,12 +1045,11 @@ The kinds, and what they select:
 | `"covalent"` | Of the bond graph, not coordination |
 | `"coordinate"` | Metal-ligand bonds |
 | `"elastic"` | Springs of the force field which hold a coarse grained molecule in shape (an elastic network), or restraints: kept with the bonds, but no bonds of the molecule |
-| `"noncovalent"` | Every non-covalent bond |
+| `"noncovalent"` | Every non-covalent bond: `"interaction"` and `"hydrogen"` |
+| `"interaction"` | Non-covalent bonds of no particular kind: one a user marks between two atoms, a salt bridge, a halogen bond |
 | `"hydrogen"` | Hydrogen bonds |
-| `"ionic"` | Salt bridges, between ions of opposite charge |
-| `"sigma_hole"` | Halogen bonds and their kind: from the sigma-hole of a halogen, chalcogen or pnictogen |
 
-A charge-assisted hydrogen bond is both `"hydrogen"` and `"ionic"`.
+A bond is of one kind, so a charge-assisted hydrogen bond is a `"hydrogen"` bond.
 
 ### bond
 

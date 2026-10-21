@@ -3737,7 +3737,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             const bool is_water = (ci >= 0 && comp_water[ci]) || (cj >= 0 && comp_water[cj]);
             const bond_rule_t rule = bond_rule(atomic_nr[ai], atomic_nr[aj], ci == cj, is_water);
             if (rule.factor > 0.0f && d < rule.factor * (atom_radius[ai] + atom_radius[aj])) {
-                md_bond_insert(&temp_bond, ai, aj, rule.coordinate ? inferred | MD_BOND_FLAG_COORDINATE : inferred, temp_arena);
+                md_bond_insert(&temp_bond, ai, aj, rule.coordinate ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred, temp_arena);
                 md_array_push(temp_bond_dist, d, temp_arena);
             }
         }
@@ -3762,12 +3762,12 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             for (size_t b = 0; b < num_temp; ++b) {
                 const int x = temp_bond.pairs[b].idx[0];
                 const int y = temp_bond.pairs[b].idx[1];
-                int* n = (temp_bond.flags[b] & MD_BOND_FLAG_COORDINATE) ? num_coord : num_cov;
+                int* n = md_bond_kind(temp_bond.flags[b]) == MD_BOND_KIND_COORDINATE ? num_coord : num_cov;
                 n[x] += 1;
                 n[y] += 1;
                 // A third bond on an oxygen only within its own molecule (oxonium); one reaching into another
                 // molecule is a clash
-                if (!(temp_bond.flags[b] & MD_BOND_FLAG_COORDINATE) && comp_id[x] != comp_id[y]) {
+                if (md_bond_kind(temp_bond.flags[b]) != MD_BOND_KIND_COORDINATE && comp_id[x] != comp_id[y]) {
                     if (atomic_nr[x] == O) max_cov[x] = 2;
                     if (atomic_nr[y] == O) max_cov[y] = 2;
                 }
@@ -3781,7 +3781,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 const int x = temp_bond.pairs[b].idx[0];
                 const int y = temp_bond.pairs[b].idx[1];
                 bool exceeds = false;
-                if (temp_bond.flags[b] & MD_BOND_FLAG_COORDINATE) {
+                if (md_bond_kind(temp_bond.flags[b]) == MD_BOND_KIND_COORDINATE) {
                     const int metal = is_metal(atomic_nr[x]) ? x : y;
                     exceeds = num_coord[metal] > max_coordination(atomic_nr[metal]);
                 } else {
@@ -3807,7 +3807,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                     const uint32_t b = over[k].idx;
                     const int x = temp_bond.pairs[b].idx[0];
                     const int y = temp_bond.pairs[b].idx[1];
-                    if (temp_bond.flags[b] & MD_BOND_FLAG_COORDINATE) {
+                    if (md_bond_kind(temp_bond.flags[b]) == MD_BOND_KIND_COORDINATE) {
                         const int metal = is_metal(atomic_nr[x]) ? x : y;
                         if (num_coord[metal] <= max_coordination(atomic_nr[metal])) continue;
                         num_coord[x] -= 1;
@@ -3900,7 +3900,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             size_t num_sorted = 0;
             for (size_t i = 0; i < num_saved; ++i) {
                 const md_bond_flags_t f = i < num_kept ? bond_flags[i] : noncovalent_flags[i - num_kept];
-                if (f & MD_BOND_FLAG_ELASTIC) continue;
+                if (md_bond_kind(f) == MD_BOND_KIND_ELASTIC) continue;
                 md_atom_pair_t pair = i < num_kept ? bond_pairs[i] : noncovalent_pairs[i - num_kept];
                 if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
                 saved_sorted[num_sorted++] = pair;
@@ -3956,7 +3956,7 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
     size_t num_user = 0;
     for (size_t i = 0; i < sys->bond.count; ++i) {
         const md_bond_origin_t origin = md_bond_origin(sys->bond.flags[i]);
-        if (origin == MD_BOND_ORIGIN_USER || origin == MD_BOND_ORIGIN_FILE || (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) {
+        if (origin == MD_BOND_ORIGIN_USER || origin == MD_BOND_ORIGIN_FILE || md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_ELASTIC) {
             sys->bond.pairs[num_user] = sys->bond.pairs[i];
             sys->bond.flags[num_user] = sys->bond.flags[i];
             num_user += 1;
@@ -3983,12 +3983,13 @@ size_t md_util_system_infer_coordination(md_system_t* sys) {
     for (size_t i = 0; i < sys->bond.count; ++i) {
         const md_atom_pair_t p = sys->bond.pairs[i];
         if (p.idx[0] < 0 || p.idx[1] < 0 || (size_t)p.idx[0] >= sys->atom.count || (size_t)p.idx[1] >= sys->atom.count) continue;
-        if (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC) continue;   // A spring, of no chemistry
+        if (!md_bond_is_graph(sys->bond.flags[i])) continue;   // A spring, of no chemistry
         const bool metal_a = is_metal(md_atom_atomic_number(&sys->atom, p.idx[0]));
         const bool metal_b = is_metal(md_atom_atomic_number(&sys->atom, p.idx[1]));
         // A kind which was given stays as it was given: a metal-ligand bond a user says is covalent
-        if (metal_a != metal_b && !(sys->bond.flags[i] & (MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_KIND_GIVEN))) {
-            sys->bond.flags[i] |= MD_BOND_FLAG_COORDINATE;
+        const md_bond_flags_t f = sys->bond.flags[i];
+        if (metal_a != metal_b && md_bond_kind(f) == MD_BOND_KIND_COVALENT && !(f & MD_BOND_FLAG_KIND_GIVEN)) {
+            sys->bond.flags[i] = md_bond_flags_set_kind(f, MD_BOND_KIND_COORDINATE);
             count += 1;
         }
     }
@@ -4246,7 +4247,7 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
                     stretch = sum_r > 0.0f && delta_distance(state, a, o) > (rule.factor > 0.0f ? rule.factor : bond_k_coord) * sum_r;
                 }
                 if (stretch) continue;
-                if (f & MD_BOND_FLAG_COORDINATE) num_coord[e] += 1;
+                if (md_bond_kind(f) == MD_BOND_KIND_COORDINATE) num_coord[e] += 1;
                 else                             num_cov[e]   += 1;
             }
         }
@@ -4337,7 +4338,7 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
             // A rule gives a coordination bond for a metal and a non-metal, and only for them
             const md_atomic_number_t zi = md_atom_atomic_number(&sys->atom, pair.idx[0]);
             const md_atomic_number_t zj = md_atom_atomic_number(&sys->atom, pair.idx[1]);
-            out->formed_flags[k] = (is_metal(zi) != is_metal(zj)) ? inferred | MD_BOND_FLAG_COORDINATE : inferred;
+            out->formed_flags[k] = (is_metal(zi) != is_metal(zj)) ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred;
         }
         out->num_formed = num_formed;
     }
@@ -4961,7 +4962,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             }
         }
         for (size_t i = 0; i < sys->bond.count; ++i) {
-            if (sys->bond.flags && (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+            if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[i])) continue;
             const md_atom_pair_t pair = sys->bond.pairs[i];
             const md_component_idx_t a = atom_comp_idx[pair.idx[0]];
             const md_component_idx_t b = atom_comp_idx[pair.idx[1]];
@@ -5725,7 +5726,7 @@ size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
     md_array(uint32_t) candidates = 0;
 
     for (size_t b = 0; b < sys->bond.count; ++b) {
-        if (sys->bond.flags[b] & MD_BOND_FLAG_ELASTIC) continue;
+        if (!md_bond_is_graph(sys->bond.flags[b])) continue;
         int32_t x = sys->bond.pairs[b].idx[0];
         int32_t y = sys->bond.pairs[b].idx[1];
         if (x < 0 || y < 0 || (size_t)x >= N || (size_t)y >= N) continue;
@@ -5762,7 +5763,8 @@ size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
         // The bond which closes a cyclic chain: from the first bead of the backbone at its start to the last at its end
         const bool closure = cb > ca + 1 && x == first_bb[ca] && y == last_bb[cb] && !has_prev[ca] && !has_next[cb] && uf_find(chain, ca) == uf_find(chain, cb);
         if (closure) continue;
-        sys->bond.flags[b] |= MD_BOND_FLAG_ELASTIC;
+        // A spring has neither an order nor resonance
+        sys->bond.flags[b] = md_bond_flags_set_kind(sys->bond.flags[b] & ~(MD_BOND_FLAG_ORDER_MASK | MD_BOND_FLAG_RESONANCE_MASK), MD_BOND_KIND_ELASTIC);
         count += 1;
     }
 
@@ -5805,7 +5807,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
     for (size_t i = 0; i < atom_count; ++i) set[i] = (int32_t)i;
 
     for (size_t i = 0; i < sys->bond.count; ++i) {
-        if (sys->bond.flags && (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+        if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[i])) continue;
         const md_atom_pair_t pair = sys->bond.pairs[i];
         if ((size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count) {
             uf_union(set, pair.idx[0], pair.idx[1]);

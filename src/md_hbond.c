@@ -114,7 +114,7 @@ static inline bool is_halogen(md_atomic_number_t z) {
 // the M site of TIP4P), not to metals and not coordination bonds, which do not take a hydrogen's place.
 static inline bool counts_as_neighbour(const md_system_t* sys, md_bond_iter_t* it) {
     const md_bond_flags_t f = (md_bond_flags_t)md_bond_iter_bond_flags(it);
-    if (f & MD_BOND_FLAG_COORDINATE) return false;
+    if (md_bond_kind(f) == MD_BOND_KIND_COORDINATE) return false;
     const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, md_bond_iter_atom_index(it));
     return z != 0 && !is_metal(z);
 }

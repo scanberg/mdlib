@@ -331,7 +331,7 @@ void main() {
 #endif
 
 #if !WEAK_BONDS && !BOND_PARTNERS && !CHAIN_GAPS
-    // ELASTIC BONDS (MD_BOND_FLAG_ELASTIC): springs of the force field, not bonds of the molecule, drawn only where the
+    // ELASTIC BONDS (MD_BOND_KIND_ELASTIC): springs of the force field, not bonds of the molecule, drawn only where the
     // representation shows them
     uint order = u_bond_kinds != 0u ? texelFetch(u_buf_bond_order, int(bond)).x : KIND_PLAIN;
     if ((order & 7u) == KIND_ELASTIC && u_elastic_bonds == 0u) {

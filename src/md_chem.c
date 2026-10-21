@@ -212,7 +212,7 @@ static void build_graph(chem_t* c) {
     for (size_t b = 0; b < c->num_bonds; ++b) {
         const md_atom_pair_t p = sys->bond.pairs[b];
         if (p.idx[0] < 0 || p.idx[1] < 0 || (size_t)p.idx[0] >= N || (size_t)p.idx[1] >= N) continue;
-        if (sys->bond.flags && (sys->bond.flags[b] & MD_BOND_FLAG_ELASTIC)) continue;   // A spring, which binds nothing
+        if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[b])) continue;   // A spring, which binds nothing
         const bool m0 = !c->part[p.idx[0]] && c->z[p.idx[0]] > 2;
         const bool m1 = !c->part[p.idx[1]] && c->z[p.idx[1]] > 2;
         if (m0 && c->part[p.idx[1]]) c->metal_bound[p.idx[1]] = 1;
@@ -225,7 +225,7 @@ static void build_graph(chem_t* c) {
         const md_atom_pair_t p = sys->bond.pairs[b];
         const md_bond_flags_t f = sys->bond.flags[b];
         const bool ok = p.idx[0] >= 0 && p.idx[1] >= 0 && (size_t)p.idx[0] < N && (size_t)p.idx[1] < N && p.idx[0] != p.idx[1] &&
-                        c->part[p.idx[0]] && c->part[p.idx[1]] && !(f & (MD_BOND_FLAG_COORDINATE | MD_BOND_FLAG_ELASTIC));
+                        c->part[p.idx[0]] && c->part[p.idx[1]] && md_bond_kind(f) == MD_BOND_KIND_COVALENT;
         c->bond_part[b] = ok;
         if (ok) {
             deg[p.idx[0]] += 1;

@@ -263,7 +263,7 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 
 // Builds a system from the tpr: atoms, residues, bonds (of origin MD_BOND_ORIGIN_TOPOLOGY), coordinates
 // and box. The elastic bonds of the topology (md_tpr_moltype_t::elastic_bonds) are bonds of the system with
-// MD_BOND_FLAG_ELASTIC, and so are the bonds of an elastic network written as plain bonds
+// MD_BOND_KIND_ELASTIC, and so are the bonds of an elastic network written as plain bonds
 // (md_util_system_infer_elastic_bonds). Residues are numbered the way gmx numbers them when it writes the system out (single
 // residue molecules such as water and ions are renumbered consecutively), so the numbers agree with
 // a .gro written from the same tpr.

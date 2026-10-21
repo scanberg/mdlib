@@ -8249,7 +8249,7 @@ static bool bond_filter_pass(const bond_filter_t* f, md_bond_flags_t fl) {
         if (!any) return false;
     }
     // Order and resonance are of the bonds of the graph: neither a non-covalent bond nor a spring (elastic) has them
-    const bool graph = !(fl & (MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_ELASTIC));
+    const bool graph = md_bond_is_graph(fl);
     if (f->has_order) {
         const int o = md_bond_order(fl);
         if (!graph || o < f->order_lo || o > f->order_hi) return false;
@@ -8290,7 +8290,7 @@ static void bond_collect_atom(md_bitmask_t* b, uint32_t atom, const md_bitset_t*
 //   a, b       Without either: all bonds. With a: the bonds with both atoms in a, one set per element of a (bond(residue(:))
 //              is the bonds within each residue). With b as well: the bonds with one atom in the element of a and the other
 //              in b. With b alone: the bonds with an atom in b.
-//   kind       Any of md_bond_kind_names: 'covalent', 'coordinate', 'noncovalent', 'hydrogen', 'ionic', 'sigma_hole'.
+//   kind       Any of md_bond_kind_names: 'covalent', 'coordinate', 'elastic', 'noncovalent', 'interaction', 'hydrogen'.
 //   order      The order (an int or a range, 0 for unknown) of a bond of the graph: non-covalent bonds have none.
 //   resonance  Any of 'aromatic', 'delocalized', 'localized' (neither), of a bond of the graph.
 //   origin     Any of 'file', 'topology', 'user', 'inferred'.
@@ -8555,7 +8555,7 @@ static int _bond_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_bitmask_t touched = md_bitmask_create(0, total, temp_alloc);
     for (uint32_t i = 0; i < total; ++i) {
         const md_atom_pair_t p = sys->bond.pairs[i];
-        if (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC) continue;
+        if (md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_ELASTIC) continue;
         if (!scope_ptr || md_bitset_test(scope, (uint32_t)p.idx[0]) || md_bitset_test(scope, (uint32_t)p.idx[1])) md_bitmask_set_bit(&touched, i);
     }
     val->touched = md_bitmask_extract(&touched, alloc);

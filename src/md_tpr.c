@@ -1708,7 +1708,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_array_resize(sys->bond.flags, count, alloc);
 
         const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
-        const md_bond_flags_t elastic_flags = flags | MD_BOND_FLAG_ELASTIC;
+        const md_bond_flags_t elastic_flags = md_bond_flags_set_kind(flags, MD_BOND_KIND_ELASTIC);
         size_t bi = 0;
         md_atom_idx_t offset = 0;
         for (size_t b = 0; b < data->num_molblocks; ++b) {

@@ -394,7 +394,7 @@ UTEST(itp, elastic_bonds) {
     EXPECT_EQ(15u, sys.bond.count);
     size_t elastic = 0;
     for (size_t i = 0; i < sys.bond.count; ++i) {
-        if (!(sys.bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+        if (md_bond_kind(sys.bond.flags[i]) != MD_BOND_KIND_ELASTIC) continue;
         elastic += 1;
         EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(sys.bond.flags[i]));
     }

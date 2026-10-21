@@ -225,7 +225,7 @@ static inline bool resolution_h(const resolution_t* res, md_atomic_number_t z) {
 
 // A coordination bond (a metal to a non-metal) between residues, or any in a system without residues
 static bool is_coordination(const md_system_t* sys, md_bond_flags_t f, int32_t a, int32_t b) {
-    if (!(f & MD_BOND_FLAG_COORDINATE)) return false;
+    if (md_bond_kind(f) != MD_BOND_KIND_COORDINATE) return false;
     if (!(sys->component.count > 0 && sys->component.atom_offset)) return true;
     return range_find(sys->component.atom_offset, sys->component.count, (uint32_t)a) != range_find(sys->component.atom_offset, sys->component.count, (uint32_t)b);
 }
@@ -338,7 +338,7 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
             for (size_t b = 0; b < sys->bond.count; ++b) {
                 if (drop && drop[b]) continue;
                 // An elastic bond holds no molecule together (nor is it in the connectivity above)
-                if (sys->bond.flags && (sys->bond.flags[b] & MD_BOND_FLAG_ELASTIC)) continue;
+                if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[b])) continue;
                 uf_union(root, sys->bond.pairs[b].idx[0], sys->bond.pairs[b].idx[1]);
             }
         }
