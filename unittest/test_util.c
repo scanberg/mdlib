@@ -997,36 +997,39 @@ UTEST(util, martini_masses_by_version) {
     md_vm_arena_destroy(alloc);
 }
 
-// Martini 2 DNA (Uusitalo et al. 2015), mapped from four nucleotides of a strand of the nucleosome in nucl-dna.gro (TGCA,
-// -60 to -57): the phosphate BB1 and sugar BB2, BB3 are the backbone, the rest the base. The bonds are those of the
-// topology (polyply's DNA_M2), BB3 to the next BB1 included.
+// Martini 2 DNA (Uusitalo et al. 2015), mapped from four nucleotides of a strand of the nucleosome in nucl-dna.gro
+// (TGCA, -60 to -57): the phosphate BB1 and sugar BB2, BB3 are the backbone, the rest the base. Each bead is the centre
+// of its atoms: BB1 P OP1 OP2 O5', BB2 C5' O4' C4', BB3 C3' C2' C1'; SC1 N9 C4, SC2 C2 N3 (and N2 of G), SC3 C6 N1 and
+// N6 (O6 of G), SC4 C8 N7 C5 of a purine; SC1 N1 C6, SC2 N3 C2 O2, SC3 C5 C4 and N4 (O4 C7 of T) of a pyrimidine.
+// Within a residue their distances are the bond and constraint lengths of the topology within 0.03 nm. The bonds are
+// those of the topology (polyply's DNA_M2), BB3 to the next BB1 included.
 static const char martini2_dna_pdb[] =
-    "ATOM      1 BB1  DT  A -60      -3.210 101.160  22.216  1.00  0.00\n"
+    "ATOM      1 BB1  DT  A -60      -3.350 101.668  23.203  1.00  0.00\n"
     "ATOM      2 BB2  DT  A -60      -2.020 101.387  20.003  1.00  0.00\n"
     "ATOM      3 BB3  DT  A -60      -1.460  99.483  19.917  1.00  0.00\n"
     "ATOM      4 SC1  DT  A -60       0.850  99.875  21.345  1.00  0.00\n"
     "ATOM      5 SC2  DT  A -60       2.520  99.690  19.910  1.00  0.00\n"
     "ATOM      6 SC3  DT  A -60       2.758  99.835  23.080  1.00  0.00\n"
-    "ATOM      7 BB1  DG  A -59      -3.014  97.266  16.898  1.00  0.00\n"
+    "ATOM      7 BB1  DG  A -59      -3.655  97.578  17.750  1.00  0.00\n"
     "ATOM      8 BB2  DG  A -59      -1.057  97.917  15.617  1.00  0.00\n"
     "ATOM      9 BB3  DG  A -59      -0.357  96.060  15.630  1.00  0.00\n"
     "ATOM     10 SC1  DG  A -59       1.545  96.355  18.015  1.00  0.00\n"
-    "ATOM     11 SC2  DG  A -59       0.887  96.270  19.463  1.00  0.00\n"
+    "ATOM     11 SC2  DG  A -59       4.450  96.427  17.973  1.00  0.00\n"
     "ATOM     12 SC3  DG  A -59       3.530  96.343  20.680  1.00  0.00\n"
-    "ATOM     13 SC4  DG  A -59       4.450  96.427  17.973  1.00  0.00\n"
-    "ATOM     14 BB1  DC  A -58       0.198  93.750  12.596  1.00  0.00\n"
+    "ATOM     13 SC4  DG  A -59       0.887  96.270  19.463  1.00  0.00\n"
+    "ATOM     14 BB1  DC  A -58      -0.695  94.367  12.558  1.00  0.00\n"
     "ATOM     15 BB2  DC  A -58       2.600  93.820  13.640  1.00  0.00\n"
     "ATOM     16 BB3  DC  A -58       2.597  91.947  14.360  1.00  0.00\n"
     "ATOM     17 SC1  DC  A -58       2.015  92.455  17.020  1.00  0.00\n"
     "ATOM     18 SC2  DC  A -58       3.943  92.957  18.023  1.00  0.00\n"
     "ATOM     19 SC3  DC  A -58       1.660  92.757  19.563  1.00  0.00\n"
-    "ATOM     20 BB1  DA  A -57       5.052  90.502  11.028  1.00  0.00\n"
+    "ATOM     20 BB1  DA  A -57       3.948  90.553  10.992  1.00  0.00\n"
     "ATOM     21 BB2  DA  A -57       6.963  91.600  12.027  1.00  0.00\n"
     "ATOM     22 BB3  DA  A -57       7.717  89.830  12.417  1.00  0.00\n"
     "ATOM     23 SC1  DA  A -57       6.215  89.725  15.085  1.00  0.00\n"
-    "ATOM     24 SC2  DA  A -57       4.760  89.077  14.940  1.00  0.00\n"
+    "ATOM     24 SC2  DA  A -57       6.710  90.325  17.270  1.00  0.00\n"
     "ATOM     25 SC3  DA  A -57       4.267  89.427  17.783  1.00  0.00\n"
-    "ATOM     26 SC4  DA  A -57       6.710  90.325  17.270  1.00  0.00\n"
+    "ATOM     26 SC4  DA  A -57       4.760  89.077  14.940  1.00  0.00\n"
     "END\n";
 
 UTEST(util, martini2_dna) {
@@ -1196,6 +1199,132 @@ UTEST(util, martini_reference_systems) {
         EXPECT_EQ_MSG((size_t)0, extra, names[n]);
         EXPECT_GT(top.bond.count, (size_t)0);
     }
+    md_vm_arena_destroy(alloc);
+}
+
+// The nucleic acids of Martini (test_data/martini): each strand a coarse grained nucleic backbone of all its
+// nucleotides, read from the frame alone or with its topology. A segment holds the phosphate bead BB1 in p (none at the
+// 5' end, which starts a strand) and the sugar beads BB2 and BB3 in c4 and c1, the C4' and C1' they hold; no breaks.
+UTEST(util, martini_nucleic_backbones) {
+    static const struct {
+        const char* name;
+        size_t      strand;     // Nucleotides of each of its two strands
+        md_entity_kind_t kind;
+    } systems[] = {
+        { "martini2_dna", 12, MD_ENTITY_KIND_DNA },
+        { "martini2_rna", 14, MD_ENTITY_KIND_RNA },
+        { "martini3_rna", 22, MD_ENTITY_KIND_RNA },
+    };
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    for (size_t n = 0; n < ARRAY_SIZE(systems); ++n) {
+        for (int with_tpr = 0; with_tpr < 2; ++with_tpr) {
+            char path[256];
+            snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.%s", systems[n].name, with_tpr ? "tpr" : "gro");
+            md_system_t sys = { .alloc = alloc };
+            md_system_state_t state = { .alloc = alloc };
+            ASSERT_TRUE(with_tpr ? md_tpr_system_init_from_file(&sys, &state, str_from_cstr(path)) : md_gro_system_init_from_file(&sys, &state, str_from_cstr(path)));
+            ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+
+            const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
+            ASSERT_EQ_MSG((size_t)2, bb->range.count, path);
+            ASSERT_EQ_MSG(2 * systems[n].strand, bb->segment.count, path);
+            for (size_t r = 0; r < bb->range.count; ++r) {
+                EXPECT_TRUE(md_nucleic_backbone_range_is_coarse_grained(bb, r));
+                EXPECT_EQ(systems[n].strand, (size_t)(bb->range.offset[r + 1] - bb->range.offset[r]));
+                EXPECT_TRUE(md_entity_kind_is_nucleic_acid(md_system_instance_entity_kind(&sys, bb->range.inst_idx[r])));
+                EXPECT_EQ((int)systems[n].kind, (int)md_system_instance_entity_kind(&sys, bb->range.inst_idx[r]));
+                for (uint32_t s = bb->range.offset[r]; s < bb->range.offset[r + 1]; ++s) {
+                    const md_nucleic_acid_atoms_t a = bb->segment.atoms[s];
+                    const md_component_idx_t comp = bb->segment.comp_idx[s];
+                    EXPECT_EQ(-1, a.o5);
+                    EXPECT_EQ(-1, a.o3);
+                    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.c4), STR_LIT("BB2")));
+                    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.c1), STR_LIT("BB3")));
+                    EXPECT_EQ(comp, (md_component_idx_t)md_system_component_find_by_atom_idx(&sys, (size_t)a.c4));
+                    if (s == bb->range.offset[r]) {
+                        EXPECT_EQ(-1, a.p);
+                    } else {
+                        ASSERT_GE(a.p, 0);
+                        EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.p), STR_LIT("BB1")));
+                    }
+                    EXPECT_EQ(0, (int)(md_component_flags(&sys.component, (size_t)comp) & (MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER)));
+                }
+            }
+        }
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// A strand of Martini 2 DNA (one chain, the first seven nucleotides of martini/martini2_dna but the fourth) is broken
+// where the fourth is missing: no bead of the third is bonded to the BB1 of the fifth, 8.8 A away. Two ranges, the
+// residues on either side of the break marked as such, and the link over it from the BB3 to the BB1. A nucleotide with
+// its BB1 does not start a strand.
+static const char martini2_dna_gap_pdb[] =
+    "ATOM      1 BB2   DC A   1      33.620  44.890  45.110  1.00  0.00\n"
+    "ATOM      2 BB3   DC A   1      33.350  43.570  43.660  1.00  0.00\n"
+    "ATOM      3 SC1   DC A   1      31.610  41.910  45.080  1.00  0.00\n"
+    "ATOM      4 SC2   DC A   1      32.610  40.180  45.990  1.00  0.00\n"
+    "ATOM      5 SC3   DC A   1      29.800  40.440  46.390  1.00  0.00\n"
+    "ATOM      6 BB1   DG A   2      36.200  43.640  41.430  1.00  0.00\n"
+    "ATOM      7 BB2   DG A   2      36.750  40.590  42.920  1.00  0.00\n"
+    "ATOM      8 BB3   DG A   2      36.400  39.240  41.580  1.00  0.00\n"
+    "ATOM      9 SC1   DG A   2      33.990  38.330  42.990  1.00  0.00\n"
+    "ATOM     10 SC2   DG A   2      33.420  35.860  44.500  1.00  0.00\n"
+    "ATOM     11 SC3   DG A   2      30.930  37.410  44.160  1.00  0.00\n"
+    "ATOM     12 SC4   DG A   2      32.640  39.140  42.680  1.00  0.00\n"
+    "ATOM     13 BB1   DC A   3      39.410  37.770  40.920  1.00  0.00\n"
+    "ATOM     14 BB2   DC A   3      37.700  34.940  42.220  1.00  0.00\n"
+    "ATOM     15 BB3   DC A   3      36.840  33.840  40.970  1.00  0.00\n"
+    "ATOM     16 SC1   DC A   3      34.700  35.320  40.920  1.00  0.00\n"
+    "ATOM     17 SC2   DC A   3      33.060  34.200  41.880  1.00  0.00\n"
+    "ATOM     18 SC3   DC A   3      32.370  36.510  40.360  1.00  0.00\n"
+    "ATOM     19 BB1   DA A   5      35.490  25.450  38.650  1.00  0.00\n"
+    "ATOM     20 BB2   DA A   5      32.050  25.760  39.770  1.00  0.00\n"
+    "ATOM     21 BB3   DA A   5      30.960  25.540  38.160  1.00  0.00\n"
+    "ATOM     22 SC1   DA A   5      30.910  28.390  37.490  1.00  0.00\n"
+    "ATOM     23 SC2   DA A   5      29.070  29.740  37.340  1.00  0.00\n"
+    "ATOM     24 SC3   DA A   5      30.630  31.410  35.990  1.00  0.00\n"
+    "ATOM     25 SC4   DA A   5      32.100  29.000  36.570  1.00  0.00\n"
+    "ATOM     26 BB1   DA A   6      29.490  22.800  38.560  1.00  0.00\n"
+    "ATOM     27 BB2   DA A   6      26.770  24.910  38.020  1.00  0.00\n"
+    "ATOM     28 BB3   DA A   6      26.250  24.770  36.130  1.00  0.00\n"
+    "ATOM     29 SC1   DA A   6      27.410  27.350  35.400  1.00  0.00\n"
+    "ATOM     30 SC2   DA A   6      26.480  29.330  34.710  1.00  0.00\n"
+    "ATOM     31 SC3   DA A   6      28.770  29.740  33.420  1.00  0.00\n"
+    "ATOM     32 SC4   DA A   6      28.780  27.100  34.580  1.00  0.00\n"
+    "ATOM     33 BB1   DT A   7      23.110  23.480  35.870  1.00  0.00\n"
+    "ATOM     34 BB2   DT A   7      22.770  26.750  34.350  1.00  0.00\n"
+    "ATOM     35 BB3   DT A   7      22.660  26.780  32.400  1.00  0.00\n"
+    "ATOM     36 SC1   DT A   7      25.320  26.770  32.060  1.00  0.00\n"
+    "ATOM     37 SC2   DT A   7      25.960  28.690  31.290  1.00  0.00\n"
+    "ATOM     38 SC3   DT A   7      27.780  26.040  31.410  1.00  0.00\n"
+    "END\n";
+
+UTEST(util, martini_nucleic_break) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_gap_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ((size_t)6, md_system_component_count(&sys));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 14, 18));    // BB3 of 3 and BB1 of 5
+    EXPECT_NE(-1, md_bond_find(&sys.bond, 7, 12));     // BB3 of 2 and BB1 of 3
+
+    const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
+    ASSERT_EQ((size_t)2, bb->range.count);
+    EXPECT_EQ((size_t)6, bb->segment.count);
+    EXPECT_TRUE(md_nucleic_backbone_range_is_coarse_grained(bb, 0));
+    EXPECT_TRUE(md_nucleic_backbone_range_is_coarse_grained(bb, 1));
+    EXPECT_EQ(3u, bb->range.offset[1]);
+    EXPECT_EQ(-1, bb->segment.atoms[0].p);
+    EXPECT_EQ(18, bb->segment.atoms[3].p);
+    EXPECT_TRUE(md_component_flags(&sys.component, 2) & MD_COMPONENT_FLAG_BREAK_AFTER);
+    EXPECT_TRUE(md_component_flags(&sys.component, 3) & MD_COMPONENT_FLAG_BREAK_BEFORE);
+    md_atom_idx_t link[2];
+    ASSERT_TRUE(md_util_chain_break_atoms(link, &sys, 2));
+    EXPECT_EQ(14, link[0]);
+    EXPECT_EQ(18, link[1]);
+    EXPECT_FALSE(md_util_chain_break_atoms(link, &sys, 1));
     md_vm_arena_destroy(alloc);
 }
 
@@ -2114,6 +2243,31 @@ UTEST(util, rings_ciprofloxacin) {
     md_temp_end(temp_scope);
 }
 
+// Beads make no rings. Their cycles are the rigid triangles Martini closes where the atoms had a ring (the side chains
+// of PHE, TYR, TRP, HIS, the small molecules) and, in a protein, those its secondary structure bonds and elastic
+// network close: thousands for an elastic network, all of which the ring search and the aromaticity of
+// md_chem_perceive went through.
+UTEST(util, rings_coarse_grained) {
+    static const char* files[] = { "martini3_small_molecules.tpr", "martini2_membrane_protein.tpr", "martini3_peptides.tpr" };
+    for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
+        md_temp_scope_t temp_scope = md_temp_begin();
+        md_allocator_i* alloc = md_temp_allocator(temp_scope);
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t sys_state = { .alloc = alloc };
+        char path[512];
+        snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s", files[f]);
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, str_from_cstr(path)));
+        ASSERT_TRUE(md_system_is_coarse_grained(&sys));
+        // The bonds of the topology close cycles: more bonds than a forest of the molecules has
+        EXPECT_GT(sys.bond.count + sys.instance.count, sys.atom.count);
+
+        md_infer_flags_t flags = MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT;
+        EXPECT_TRUE(md_util_system_infer(&sys, &sys_state, flags));
+        EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
+        md_temp_end(temp_scope);
+    }
+}
+
 // splitmix64: the same keys on every platform (unlike rand), with all 64 bits random
 static uint64_t radix_test_rand(uint64_t* state) {
     uint64_t z = (*state += 0x9e3779b97f4a7c15ULL);
@@ -2612,6 +2766,128 @@ UTEST(util, entity_instance_mmcif) {
         EXPECT_EQ(sys.nucleic_backbone.range.count, 2);
     }
 
+    md_vm_arena_destroy(alloc);
+}
+
+// A hypermodified nucleotide of a tRNA: wybutosine (YYG) at 37 of the anticodon loop, between A36 and A38, its heavy
+// atoms only (39 of them, more than any standard nucleotide has with its hydrogens). Its name is no standard one, but it
+// is linked into the chain by its phosphodiester bonds: a nucleotide, on the backbone with its neighbours, its base the
+// base. From the tRNA of rendering_all_atom.gro, a membrane complex of a deposited structure.
+UTEST(util, hypermodified_nucleotide) {
+    const char* text =
+        "tRNA A36 YYG37 A38\n"
+        "   83\n"
+        "   36A        P 4250  15.017  13.816   1.786\n"
+        "   36A      OP1 4251  14.910  13.913   1.824\n"
+        "   36A      OP2 4252  15.149  13.867   1.738\n"
+        "   36A      O5' 4253  15.043  13.715   1.907\n"
+        "   36A      C5' 4254  14.936  13.633   1.952\n"
+        "   36A      C4' 4255  14.986  13.521   2.041\n"
+        "   36A      O4' 4256  15.062  13.421   1.969\n"
+        "   36A      C3' 4257  15.077  13.551   2.159\n"
+        "   36A      O3' 4258  15.009  13.616   2.268\n"
+        "   36A      C2' 4259  15.122  13.410   2.199\n"
+        "   36A      O2' 4260  15.033  13.344   2.287\n"
+        "   36A      C1' 4261  15.120  13.334   2.065\n"
+        "   36A       N9 4262  15.254  13.293   2.026\n"
+        "   36A       C8 4263  15.349  13.351   1.945\n"
+        "   36A       N7 4264  15.464  13.287   1.944\n"
+        "   36A       C5 4265  15.442  13.178   2.028\n"
+        "   36A       C6 4266  15.525  13.070   2.070\n"
+        "   36A       N6 4267  15.652  13.053   2.030\n"
+        "   36A       N1 4268  15.471  12.979   2.155\n"
+        "   36A       C2 4269  15.344  12.994   2.192\n"
+        "   36A       N3 4270  15.257  13.089   2.159\n"
+        "   36A       C4 4271  15.313  13.179   2.076\n"
+        "   37YYG      P 4272  15.093  13.697   2.379\n"
+        "   37YYG    OP1 4273  14.999  13.793   2.445\n"
+        "   37YYG    OP2 4274  15.218  13.749   2.316\n"
+        "   37YYG    O5' 4275  15.137  13.584   2.483\n"
+        "   37YYG    C5' 4276  15.038  13.502   2.550\n"
+        "   37YYG    C4' 4277  15.103  13.379   2.608\n"
+        "   37YYG    O4' 4278  15.148  13.291   2.502\n"
+        "   37YYG    C3' 4279  15.229  13.406   2.688\n"
+        "   37YYG    O3' 4280  15.207  13.449   2.822\n"
+        "   37YYG    C2' 4281  15.304  13.273   2.681\n"
+        "   37YYG    O2' 4282  15.260  13.178   2.775\n"
+        "   37YYG    C1' 4283  15.270  13.227   2.539\n"
+        "   37YYG     N9 4284  15.375  13.266   2.444\n"
+        "   37YYG     C8 4285  15.370  13.366   2.351\n"
+        "   37YYG     N7 4286  15.479  13.380   2.282\n"
+        "   37YYG     C5 4287  15.563  13.281   2.332\n"
+        "   37YYG     C6 4288  15.697  13.247   2.295\n"
+        "   37YYG     O6 4289  15.767  13.299   2.207\n"
+        "   37YYG     N1 4290  15.746  13.142   2.373\n"
+        "   37YYG     C2 4291  15.678  13.080   2.473\n"
+        "   37YYG     N2 4292  15.750  12.987   2.538\n"
+        "   37YYG     N3 4293  15.553  13.107   2.506\n"
+        "   37YYG     C3 4294  15.481  13.032   2.611\n"
+        "   37YYG     C4 4295  15.501  13.209   2.432\n"
+        "   37YYG    C10 4296  15.995  12.939   2.545\n"
+        "   37YYG    C11 4297  15.877  13.004   2.490\n"
+        "   37YYG    C12 4298  15.876  13.098   2.377\n"
+        "   37YYG    C13 4299  15.995  13.119   2.280\n"
+        "   37YYG    C14 4300  15.988  13.001   2.179\n"
+        "   37YYG    C15 4301  16.023  13.027   2.031\n"
+        "   37YYG    C16 4302  16.005  12.889   1.971\n"
+        "   37YYG    O17 4303  15.889  12.843   1.960\n"
+        "   37YYG    O18 4304  16.103  12.820   1.932\n"
+        "   37YYG    C19 4305  16.182  12.868   1.821\n"
+        "   37YYG    N20 4306  15.929  13.130   1.971\n"
+        "   37YYG    C21 4307  15.923  13.166   1.837\n"
+        "   37YYG    O22 4308  15.817  13.160   1.771\n"
+        "   37YYG    O23 4309  16.028  13.206   1.781\n"
+        "   37YYG    C24 4310  16.092  13.322   1.834\n"
+        "   38A        P 4311  15.313  13.550   2.889\n"
+        "   38A      OP1 4312  15.266  13.584   3.026\n"
+        "   38A      OP2 4313  15.340  13.658   2.792\n"
+        "   38A      O5' 4314  15.445  13.462   2.903\n"
+        "   38A      C5' 4315  15.447  13.344   2.984\n"
+        "   38A      C4' 4316  15.584  13.282   2.978\n"
+        "   38A      O4' 4317  15.607  13.230   2.845\n"
+        "   38A      C3' 4318  15.693  13.385   2.998\n"
+        "   38A      O3' 4319  15.716  13.413   3.135\n"
+        "   38A      C2' 4320  15.810  13.328   2.919\n"
+        "   38A      O2' 4321  15.885  13.229   2.988\n"
+        "   38A      C1' 4322  15.736  13.269   2.799\n"
+        "   38A       N9 4323  15.716  13.370   2.695\n"
+        "   38A       C8 4324  15.597  13.432   2.664\n"
+        "   38A       N7 4325  15.606  13.519   2.566\n"
+        "   38A       C5 4326  15.740  13.513   2.529\n"
+        "   38A       C6 4327  15.814  13.580   2.429\n"
+        "   38A       N6 4328  15.759  13.669   2.345\n"
+        "   38A       N1 4329  15.946  13.553   2.419\n"
+        "   38A       C2 4330  15.999  13.462   2.503\n"
+        "   38A       N3 4331  15.940  13.391   2.600\n"
+        "   38A       C4 4332  15.809  13.422   2.608\n"
+        "122.00000 52.00000 36.00000\n"
+        ;
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ((size_t)3, md_system_component_count(&sys));
+    EXPECT_TRUE(str_eq(md_component_name(&sys.component, 1), STR_LIT("YYG")));
+    for (size_t c = 0; c < 3; ++c) {
+        EXPECT_EQ(MD_COMPONENT_KIND_NUCLEOTIDE, md_component_kind(&sys.component, c));
+        EXPECT_TRUE(md_component_flags(&sys.component, c) & MD_COMPONENT_FLAG_RESOLVED);
+    }
+    ASSERT_EQ((size_t)1, md_system_instance_count(&sys));
+    EXPECT_EQ(MD_ENTITY_KIND_RNA, md_system_entity_kind(&sys, md_system_instance_entity_idx(&sys, 0)));
+    ASSERT_EQ((size_t)1, sys.nucleic_backbone.range.count);
+    EXPECT_EQ((size_t)3, sys.nucleic_backbone.segment.count);
+
+    // The backbone of the YYG is its P O5' C5' C4' C3' O3', its base all of it but the phosphate and the sugar: the
+    // tricyclic base and its side chain
+    const md_urange_t range = md_component_atom_range(&sys.component, 1);
+    size_t base = 0, backbone = 0;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        base     += (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_NUCLEOBASE) != 0;
+        backbone += (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_BACKBONE) != 0;
+    }
+    EXPECT_EQ((size_t)27, base);
+    EXPECT_EQ((size_t)6, backbone);
     md_vm_arena_destroy(alloc);
 }
 
@@ -3391,4 +3667,23 @@ UTEST(util, ramachandran_classify) {
     EXPECT_EQ(0xAB, buf[0]);
     for (int i = 0; i < 4; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
     EXPECT_EQ(0xAB, buf[5]);
+}
+
+UTEST(util, index_data_cleared) {
+    // A cleared index data keeps its arrays, emptied: no ranges, as one never pushed to, and none in range
+    md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(1));
+    md_index_data_t data = { .alloc = alloc };
+    EXPECT_EQ(0u, md_index_data_num_ranges(&data));
+    const int32_t a[] = { 1, 2, 3 };
+    md_index_data_push_arr(&data, a, 3);
+    md_index_data_push_arr(&data, a, 2);
+    EXPECT_EQ(2u, md_index_data_num_ranges(&data));
+    md_index_data_clear(&data);
+    EXPECT_EQ(0u, md_index_data_num_ranges(&data));
+    EXPECT_TRUE(md_index_range_beg(&data, 0) == NULL);
+    EXPECT_EQ(0u, md_index_range_size(&data, 0));
+    md_index_data_push_arr(&data, a, 1);
+    EXPECT_EQ(1u, md_index_data_num_ranges(&data));
+    EXPECT_EQ(1u, md_index_range_size(&data, 0));
+    md_vm_arena_destroy(alloc);
 }

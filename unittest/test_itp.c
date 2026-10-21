@@ -343,3 +343,114 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
 
     md_vm_arena_destroy(alloc);
 }
+
+// A Martini 3 hexa-alanine (BB and SC1 per residue) with an elastic network the way topologies write one: bonds of type 6
+// and constraints of type 2, which make no connection, and plain bonds and constraints (type 1) between residues other
+// than the links of the chain. The elastic bonds are kept, apart from the bonds of the molecule. A type 6 bond doubling
+// a bond is no elastic bond of its own.
+UTEST(itp, elastic_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    md_str_writer_t gro = md_str_writer_create(alloc);
+    md_str_writer_fmt(&gro, "Hexa-alanine\n12\n");
+    for (int r = 0; r < 6; ++r) {
+        md_str_writer_fmt(&gro, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", r + 1, "ALA", "BB",  2 * r + 1, 1.0f + 0.35f * r, 1.0f, 1.0f);
+        md_str_writer_fmt(&gro, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", r + 1, "ALA", "SC1", 2 * r + 2, 1.0f + 0.35f * r, 1.25f, 1.0f);
+    }
+    md_str_writer_fmt(&gro, "%10.5f%10.5f%10.5f\n", 5.0f, 5.0f, 5.0f);
+
+    // BB of residue r (1 based) is atom 2r - 1, its SC1 atom 2r
+    md_str_writer_t itp = md_str_writer_create(alloc);
+    md_str_writer_fmt(&itp, "[ moleculetype ]\nPEP 1\n\n[ atoms ]\n");
+    for (int r = 1; r <= 6; ++r) {
+        md_str_writer_fmt(&itp, "%3d P2  %d ALA BB  %3d 0.0\n", 2 * r - 1, r, 2 * r - 1);
+        md_str_writer_fmt(&itp, "%3d TC3 %d ALA SC1 %3d 0.0\n", 2 * r,     r, 2 * r);
+    }
+    md_str_writer_fmt(&itp, "\n[ bonds ]\n; Backbone bonds\n");
+    for (int r = 1; r < 6; ++r) md_str_writer_fmt(&itp, "%3d %3d 1 0.350 4000\n", 2 * r - 1, 2 * r + 1);
+    md_str_writer_fmt(&itp, "; Side chain bonds\n");
+    for (int r = 1; r <= 6; ++r) md_str_writer_fmt(&itp, "%3d %3d 1 0.270 100000\n", 2 * r - 1, 2 * r);
+    md_str_writer_fmt(&itp, "; Rubber bands\n  1   7 1 0.700 500\n  3  11 6 0.800 500\n  1   3 6 0.350 500\n");
+    md_str_writer_fmt(&itp, "\n[ constraints ]\n  5   9 2 0.700\n  2   4 1 0.500\n");
+
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&gro)));
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
+
+    md_itp_data_t data = {0};
+    ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&itp), STR_LIT(""), alloc));
+    ASSERT_EQ(1u, md_array_size(data.moleculetypes));
+    const md_itp_moleculetype_t* mol = &data.moleculetypes[0];
+    // 5 backbone, 6 side chain, the plain rubber band and the constraint of type 1; 3-11 and 5-9 apart, 1-3 doubles a bond
+    EXPECT_EQ(13u, md_array_size(mol->bonds));
+    ASSERT_EQ(2u, md_array_size(mol->elastic_bonds));
+    EXPECT_EQ(2, mol->elastic_bonds[0].idx[0]);
+    EXPECT_EQ(10, mol->elastic_bonds[0].idx[1]);
+    EXPECT_EQ(4, mol->elastic_bonds[1].idx[0]);
+    EXPECT_EQ(8, mol->elastic_bonds[1].idx[1]);
+
+    ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+    EXPECT_EQ(15u, sys.bond.count);
+    size_t elastic = 0;
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        if (!(sys.bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
+        elastic += 1;
+        EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(sys.bond.flags[i]));
+    }
+    EXPECT_EQ(4u, elastic);
+    // Out of the connectivity: 3-11 and 5-9 by their types, 1-7 (residues 1 and 4) and 2-4 (the side chains of residues 1
+    // and 2) as plain bonds between residues which are no link of the chain
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 0, 6));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 2, 10));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 4, 8));
+    EXPECT_EQ(-1, md_bond_find(&sys.bond, 1, 3));
+    for (int r = 0; r < 5; ++r) EXPECT_TRUE(md_bond_find(&sys.bond, 2 * r, 2 * r + 2) >= 0);
+    EXPECT_EQ(1u, md_structure_count(&sys.structure));
+
+    md_vm_arena_destroy(alloc);
+}
+
+UTEST(itp, supplement_beads_by_mass) {
+    // Particles a GRO file leaves for elements by their names are beads when the topology's masses are those of beads
+    // (C1 72 Da, not a carbon's 12) and stay atoms when they are atoms: the CH2 and CH3 of a united atom topology are 14
+    // and 15 Da, a carbon of 12 by its name; a heavy hydrogen of hydrogen mass repartitioning is 3 Da.
+    static const struct { const char* res; const char* names[4]; float mass[4]; md_particle_kind_t kind; } cases[] = {
+        { "OCT", { "C1", "C2", "C3", "C4" }, { 72.0f, 72.0f, 72.0f, 72.0f }, MD_PARTICLE_BEAD },
+        { "BUT", { "C1", "C2", "C3", "C4" }, { 15.035f, 14.027f, 14.027f, 15.035f }, MD_PARTICLE_ATOM },
+        { "MET", { "C",  "H1", "H2", "H3" }, { 5.96f, 3.024f, 3.024f, 3.024f }, MD_PARTICLE_ATOM },
+    };
+    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        char gro[1024];
+        int len = snprintf(gro, sizeof(gro), "t\n    4\n");
+        for (int i = 0; i < 4; ++i) {
+            len += snprintf(gro + len, sizeof(gro) - (size_t)len, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", 1, cases[c].res, cases[c].names[i], i + 1, 1.0 + 0.15 * i, 1.0, 1.0);
+        }
+        len += snprintf(gro + len, sizeof(gro) - (size_t)len, "   5.00000   5.00000   5.00000\n");
+        char itp[1024];
+        int il = snprintf(itp, sizeof(itp), "[ moleculetype ]\n%s 1\n[ atoms ]\n", cases[c].res);
+        for (int i = 0; i < 4; ++i) {
+            il += snprintf(itp + il, sizeof(itp) - (size_t)il, "%d X 1 %s %s %d 0 %.3f\n", i + 1, cases[c].res, cases[c].names[i], i + 1, cases[c].mass[i]);
+        }
+        il += snprintf(itp + il, sizeof(itp) - (size_t)il, "[ bonds ]\n1 2 1\n2 3 1\n3 4 1\n");
+
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (str_t){gro, (size_t)len}));
+        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL);
+        md_itp_data_t data = {0};
+        ASSERT_TRUE(md_itp_data_parse_str(&data, (str_t){itp, (size_t)il}, STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+        for (size_t i = 0; i < 4; ++i) {
+            EXPECT_EQ(cases[c].kind, md_atom_particle_kind(&sys.atom, i));
+        }
+        if (cases[c].kind == MD_PARTICLE_BEAD) {
+            EXPECT_EQ(0, (int)md_atom_atomic_number(&sys.atom, 0));
+            EXPECT_NEAR(72.0f, md_atom_mass(&sys.atom, 0), 1e-3f);
+        } else {
+            EXPECT_NE(0, (int)md_atom_atomic_number(&sys.atom, 0));
+        }
+        md_vm_arena_destroy(alloc);
+    }
+}

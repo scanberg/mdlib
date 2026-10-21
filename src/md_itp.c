@@ -27,7 +27,8 @@ typedef enum {
     SECTION_ATOMTYPES,
     SECTION_MOLECULETYPE,
     SECTION_ATOMS,
-    SECTION_BONDS,          // [ bonds ], [ constraints ]: ai aj ...
+    SECTION_BONDS,          // [ bonds ]: ai aj funct ... (funct 6, 9, 10: elastic)
+    SECTION_CONSTRAINTS,    // [ constraints ]: ai aj funct ... (funct 2: elastic)
     SECTION_SETTLES,        // ow funct doh dhh -> ow-(ow+1), ow-(ow+2)
     SECTION_VSITE,          // site ai ... -> site-ai
     SECTION_VSITEN,         // site funct ai ... -> site-ai
@@ -73,7 +74,7 @@ static section_t section_from_name(str_t name) {
         {"moleculetype",    SECTION_MOLECULETYPE},
         {"atoms",           SECTION_ATOMS},
         {"bonds",           SECTION_BONDS},
-        {"constraints",     SECTION_BONDS},
+        {"constraints",     SECTION_CONSTRAINTS},
         {"settles",         SECTION_SETTLES},
         {"virtual_sites1",  SECTION_VSITE},
         {"virtual_sites2",  SECTION_VSITE},
@@ -98,7 +99,7 @@ static md_itp_moleculetype_t* current_mol(itp_parser_t* p) {
     return &p->data->moleculetypes[p->mol];
 }
 
-static void add_local_bond(itp_parser_t* p, int64_t a1, int64_t b1) {
+static void add_local_pair(itp_parser_t* p, int64_t a1, int64_t b1, bool elastic) {
     md_itp_moleculetype_t* mol = current_mol(p);
     if (!mol) return;
     const int64_t n = (int64_t)md_array_size(mol->atoms);
@@ -107,7 +108,23 @@ static void add_local_bond(itp_parser_t* p, int64_t a1, int64_t b1) {
         return;
     }
     md_atom_pair_t pair = {{ (md_atom_idx_t)(MIN(a1, b1) - 1), (md_atom_idx_t)(MAX(a1, b1) - 1) }};
-    md_array_push(mol->bonds, pair, p->alloc);
+    if (elastic) {
+        md_array_push(mol->elastic_bonds, pair, p->alloc);
+    } else {
+        md_array_push(mol->bonds, pair, p->alloc);
+    }
+}
+
+static void add_local_bond(itp_parser_t* p, int64_t a1, int64_t b1) {
+    add_local_pair(p, a1, b1, false);
+}
+
+// The function types which make no connection, which GROMACS does not count as chemical bonds: harmonic potentials
+// (bond type 6), tabulated bonds without exclusions (9), restraint potentials (10), constraints without a connection
+// (constraint type 2). An elastic network is written as harmonic potentials as often as not.
+static bool itp_elastic_funct(section_t section, int64_t funct) {
+    if (section == SECTION_CONSTRAINTS) return funct == 2;
+    return funct == 6 || funct == 9 || funct == 10;
 }
 
 static bool parse_i64(int64_t* out, str_t tok) {
@@ -197,10 +214,12 @@ static void parse_data_line(itp_parser_t* p, str_t line) {
         md_array_push(mol->atoms, atom, p->alloc);
         break;
     }
-    case SECTION_BONDS: {
-        int64_t a, b;
+    case SECTION_BONDS:
+    case SECTION_CONSTRAINTS: {
+        int64_t a, b, funct = 1;
         if (num_tok >= 2 && parse_i64(&a, tok[0]) && parse_i64(&b, tok[1])) {
-            add_local_bond(p, a, b);
+            if (num_tok >= 3 && !parse_i64(&funct, tok[2])) funct = 1;
+            add_local_pair(p, a, b, itp_elastic_funct(p->section, funct));
         }
         break;
     }
@@ -278,6 +297,9 @@ static void parse_include(itp_parser_t* p, str_t arg, str_t folder) {
             md_str_writer_push_str(&sb, file);
             str_t cand = md_str_writer_to_str(&sb);
             if (md_path_is_valid(cand)) resolved = cand;
+        } else if (md_path_is_valid(file)) {
+            // A topology named without a folder (topol.top): the included file is beside it, in the working directory
+            resolved = file;
         }
         const char* gmxlib = getenv("GMXLIB");
         if (str_empty(resolved) && gmxlib) {
@@ -438,6 +460,16 @@ static int compare_pair(const void* a, const void* b) {
     return 0;
 }
 
+static size_t sort_unique_pairs(md_atom_pair_t* pairs, size_t count) {
+    if (count < 2) return count;
+    qsort(pairs, count, sizeof(md_atom_pair_t), compare_pair);
+    size_t w = 1;
+    for (size_t r = 1; r < count; ++r) {
+        if (compare_pair(&pairs[r], &pairs[w - 1]) != 0) pairs[w++] = pairs[r];
+    }
+    return w;
+}
+
 bool md_itp_data_parse_str(md_itp_data_t* data, str_t str, str_t base_folder, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
@@ -456,20 +488,19 @@ bool md_itp_data_parse_str(md_itp_data_t* data, str_t str, str_t base_folder, md
         ok = false;
     }
 
-    // Bonds, constraints and settles may name the same pair more than once
+    // Bonds, constraints and settles may name the same pair more than once, and an elastic bond may double a bond
     for (size_t i = 0; i < md_array_size(data->moleculetypes); ++i) {
         md_itp_moleculetype_t* mol = &data->moleculetypes[i];
-        size_t n = md_array_size(mol->bonds);
-        if (n > 1) {
-            qsort(mol->bonds, n, sizeof(md_atom_pair_t), compare_pair);
-            size_t w = 1;
-            for (size_t r = 1; r < n; ++r) {
-                if (compare_pair(&mol->bonds[r], &mol->bonds[w - 1]) != 0) {
-                    mol->bonds[w++] = mol->bonds[r];
-                }
-            }
-            md_array_shrink(mol->bonds, w);
+        md_array_shrink(mol->bonds, sort_unique_pairs(mol->bonds, md_array_size(mol->bonds)));
+        size_t n = sort_unique_pairs(mol->elastic_bonds, md_array_size(mol->elastic_bonds));
+        const size_t num_bonds = md_array_size(mol->bonds);
+        size_t w = 0;
+        for (size_t r = 0, j = 0; r < n; ++r) {
+            while (j < num_bonds && compare_pair(&mol->bonds[j], &mol->elastic_bonds[r]) < 0) ++j;
+            if (j < num_bonds && compare_pair(&mol->bonds[j], &mol->elastic_bonds[r]) == 0) continue;
+            mol->elastic_bonds[w++] = mol->elastic_bonds[r];
         }
+        md_array_shrink(mol->elastic_bonds, w);
     }
 
     md_temp_end(temp);
@@ -510,6 +541,7 @@ void md_itp_data_free(md_itp_data_t* data, md_allocator_i* alloc) {
         str_free(mol->name, alloc);
         md_array_free(mol->atoms, alloc);
         md_array_free(mol->bonds, alloc);
+        md_array_free(mol->elastic_bonds, alloc);
     }
     for (size_t i = 0; i < md_array_size(data->molecules); ++i) {
         str_free(data->molecules[i].name, alloc);
@@ -742,7 +774,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             mass[off + i]    = type_mass[t][i];
         }
         num_covered += n;
-        num_topology_bonds += md_array_size(mol->bonds);
+        num_topology_bonds += md_array_size(mol->bonds) + md_array_size(mol->elastic_bonds);
     }
 
     // ## Bonds
@@ -778,6 +810,12 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
                 flags[count] = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
                 count += 1;
             }
+            for (size_t b = 0; b < md_array_size(mol->elastic_bonds); ++b) {
+                pairs[count].idx[0] = off + mol->elastic_bonds[b].idx[0];
+                pairs[count].idx[1] = off + mol->elastic_bonds[b].idx[1];
+                flags[count] = md_bond_flags_set_origin(MD_BOND_FLAG_ELASTIC, MD_BOND_ORIGIN_TOPOLOGY);
+                count += 1;
+            }
         }
 
         size_t num_user = 0;
@@ -808,6 +846,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         sys->bond.count = count + num_user;
         md_bond_build_connectivity(&sys->bond, atom_count, sys->alloc);
         md_util_system_infer_coordination(sys);
+        // An elastic network written as plain bonds (bond type 1)
+        md_util_system_infer_elastic_bonds(sys);
         md_system_topology_changed(sys);
     }
 
@@ -815,6 +855,62 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     if (sys->attributes.alloc) {
         md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, atom_count);
         md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/mass"),   md_unit_dalton(),            1, mass,   atom_count);
+    }
+
+    // ## Beads
+    // A structure file does not say what its particles are, and a coarse grained molecule the force field database
+    // does not know (a lipopolysaccharide, a ganglioside of a topology of its own) has its beads taken for elements by
+    // their names: the C1A of a tail for a carbon, the PO1 of a phosphate for a phosphorus, the AM1 of an amide for
+    // americium. The masses of the topology tell: a bead stands for several atoms. An atom is like a bead when its mass
+    // is at least BEAD_MIN_MASS and off that of its element by a factor of two or more, or it has none: a united atom
+    // CH3 is 15 Da, a hydrogen of hydrogen mass repartitioning 3, a carbon which gave it some 10, a Martini bead 36 to 72.
+    // The atom types of a molecule whose atoms are almost all like beads are beads, unless an atom of another molecule
+    // shares the type.
+    if (sys->atom.type_idx && sys->atom.type.count > 0 && sys->atom.type.z) {
+        const float BEAD_MIN_MASS = 20.0f;
+        const size_t num_atom_types = sys->atom.type.count;
+        uint8_t* bead = md_temp_alloc_array(temp, uint8_t, num_atom_types);    // 0 unseen, 1 of beads, 2 of atoms
+        MEMSET(bead, 0, num_atom_types);
+        for (size_t k = 0; k < num_instances; ++k) {
+            const md_itp_moleculetype_t* mol = &data->moleculetypes[instances[k].type];
+            const size_t off = instances[k].atom_offset;
+            const size_t n = md_array_size(mol->atoms);
+            size_t like = 0;
+            for (size_t i = 0; i < n; ++i) {
+                const size_t t = sys->atom.type_idx[off + i];
+                if (t >= num_atom_types) continue;
+                const float m = mass[off + i];
+                const md_atomic_number_t z = sys->atom.type.z[t];
+                const float element_mass = z ? md_atomic_number_mass(z) : 0.0f;
+                like += (m >= BEAD_MIN_MASS && (z == 0 || m >= 2.0f * element_mass || 2.0f * m <= element_mass)) ? 1 : 0;
+            }
+            const uint8_t mark = (n > 0 && 10 * like >= 9 * n) ? 1 : 2;
+            for (size_t i = 0; i < n; ++i) {
+                const size_t t = sys->atom.type_idx[off + i];
+                if (t < num_atom_types && bead[t] != 2) bead[t] = mark;
+            }
+        }
+        for (size_t i = 0; i < atom_count; ++i) {
+            const size_t t = sys->atom.type_idx[i];
+            if (!covered[i] && t < num_atom_types) bead[t] = 2;
+        }
+        if (md_array_size(sys->atom.type.flags) < num_atom_types) {
+            const size_t size = md_array_size(sys->atom.type.flags);
+            md_array_resize(sys->atom.type.flags, num_atom_types, sys->alloc);
+            MEMSET(sys->atom.type.flags + size, 0, (num_atom_types - size) * sizeof(md_atom_type_flags_t));
+        }
+        size_t num_bead_types = 0;
+        for (size_t t = 1; t < num_atom_types; ++t) {
+            if (bead[t] != 1 || md_atom_type_flags_particle_kind(sys->atom.type.flags[t]) != MD_PARTICLE_ATOM) continue;
+            sys->atom.type.flags[t] = md_atom_type_flags_set_particle_kind(sys->atom.type.flags[t], MD_PARTICLE_BEAD);
+            sys->atom.type.z[t] = 0;
+            // The mass of its element was a guess: the topology's, below, where the beads of the type agree on one
+            if (sys->atom.type.mass) sys->atom.type.mass[t] = 0.0f;
+            num_bead_types += 1;
+        }
+        if (num_bead_types) {
+            MD_LOG_INFO("Topology: %zu atom types are coarse grained beads by their masses", num_bead_types);
+        }
     }
 
     // ## Blank type masses
@@ -850,6 +946,9 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     if (sys->bond.count) {
         md_util_system_infer_rings(sys);
     }
+    // The lipids follow from the bonds, and the kinds of the components from the lipids
+    md_util_system_infer_lipids(sys);
+    md_util_system_infer_component_types(sys);
 
     MD_LOG_INFO("Topology applied: %zu molecules covering %zu of %zu atoms, %zu bonds, %zu structures",
         num_instances, num_covered, atom_count, num_topology_bonds, md_structure_count(&sys->structure));

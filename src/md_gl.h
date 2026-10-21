@@ -164,7 +164,9 @@ void md_gl_mol_compute_derived(md_gl_mol_t mol, const struct md_unitcell_t* cell
 // The profile is a stadium (a 2D capsule, as the cartoon's): a segment of half length flat widened by radius, two half
 // circles joined by flat sides, a circle for a flat of 0. Both follow the control points smoothly along the tube
 // (Ångström, at most 8 each). The flat sides face the particle face of a control point, where it has one: the backbone
-// of a nucleic acid faces its bases. Otherwise the profile turns with the curve as the cartoon of a protein does.
+// of a nucleic acid faces its bases. Or they lie towards the particle side, the long axis of the profile pointing at it:
+// the ring system of a sterol is flat in the plane of its rings, which a particle off its axis in that plane gives where
+// no particle lies off the plane. Otherwise the profile turns with the curve as the cartoon of a protein does.
 // The ends are round: the Minkowski sum of the segment and a half sphere of the radius there, which also closes a tube
 // next to a part of it that is hidden. A tube of fewer than two control points is not drawn.
 // A part of a tube belongs to its control point: it picks as it (md_gl_picking_offset_t), takes its colour from the
@@ -177,6 +179,7 @@ typedef struct md_gl_tubes_t {
     const float*    radius;     // The radius of the profile, half its thickness
     const float*    flat;       // (optional) Half the length of the flat sides of the profile, NULL for 0: round tubes
     const uint32_t* face;       // (optional) The particle the flat sides face, UINT32_MAX for none
+    const uint32_t* side;       // (optional) The particle the long axis of the profile points at, UINT32_MAX for none (a face wins)
     const uint8_t*  through;    // (optional) [count] Per tube: it passes (nearly) through its control points rather than near them
 } md_gl_tubes_t;
 
@@ -229,6 +232,9 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 //   - delocalized bond (carboxylate, nitro, guanidinium, phosphate, ...): the stick and a thin dashed line towards
 //     the next bond of the group. So is an aromatic bond in no circle (in a ring larger than MD_RING_MAX_SIZE).
 // A bond whose order is unknown is drawn as a single bond.
+// It also tells the elastic bonds (MD_BOND_FLAG_ELASTIC), springs of the force field, which the licorice and ball and
+// stick representations leave out unless their elastic_bonds is set, and then draw as single bonds. Until it is set
+// for the bonds of the molecule every bond is drawn.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
 
 // The gaps of the chains, from the chain breaks of the system (MD_COMPONENT_FLAG_BREAK_AFTER, CHAIN BREAKS in md_util.h):
@@ -278,6 +284,46 @@ void        md_gl_rep_set_atom_colors(md_gl_rep_t rep, uint32_t offset, uint32_t
 void        md_gl_rep_set_weak_bonds(md_gl_rep_t rep, uint32_t count, const uint32_t* atom_a, const uint32_t* atom_b, const float* weight);
 
 /*
+ *  SUBSETS
+ *  A part of a molecule which a draw op shows (md_gl_draw_op_t subset), given by its atoms: any set of them, such as the
+ *  instances a part of an assembly copies (drawn with the operators of the part as copies, md_gl_copies_t), or what a
+ *  filter picks within a structure
+ *
+ *  What of the representation holds only atoms of the subset: an atom of it, a bond, ring, slab or gap of a chain all of
+ *  whose atoms are in it, the dashed partner of a delocalized bond whose atoms are, a backbone segment whose control
+ *  point is (closed with a cap where the next is not), and of the weak bonds those with both atoms in it. A draw of a
+ *  subset costs about as much as the subset, not as the molecule:
+ *  - What it holds is found on the CPU from its atoms, once after they or what the molecule draws changed (its bonds,
+ *    bond orders, gaps, slabs, backbone), through which primitives each atom is in. The atoms of the primitives are read
+ *    back from the GPU when a subset first needs them: a molecule drawn without subsets keeps no copy of them.
+ *  - It is kept with the subset in a buffer of its own on the GPU, uploaded when it changes: a draw of a subset which did
+ *    not change uploads nothing, and names exactly what it holds.
+ *  - The copies of an op of a subset are culled with the box of the subset, kept where positions are set (or derived),
+ *    and otherwise found from the positions on the GPU once.
+ *  So one molecule can be drawn as many disjoint or overlapping parts, each with its own transforms (md_gl_copies_t)
+ *  and colours (md_gl_rep_t), without a copy of the molecule or of its colours per part.
+ *
+ *  A subset is of the molecule it was created for, and is drawn only with representations of it. The atom mask of a
+ *  draw (md_gl_draw_args_t atom_mask) still applies within it, as does the alpha of the colours.
+ */
+
+typedef struct {
+    uint32_t id;
+} md_gl_subset_t;
+
+md_gl_subset_t md_gl_subset_create(md_gl_mol_t mol);
+void           md_gl_subset_destroy(md_gl_subset_t subset);
+
+// The atoms of the subset, in any order: duplicates and atoms outside of the molecule are left out. Replaces the
+// previous set; count 0 leaves it empty, which draws nothing.
+void           md_gl_subset_set_atoms(md_gl_subset_t subset, const uint32_t* atoms, uint32_t count);
+
+// Of a molecule of particles derived from another (md_gl_mol_set_derived, such as the cartoon of the lipids and nucleic
+// acids), the subset which a subset of that other one makes: the particles whose reference atom is in source. Set it
+// again after either changes.
+void           md_gl_subset_set_derived(md_gl_subset_t subset, md_gl_subset_t source);
+
+/*
  *  DRAW
  *  Interface for defining representations of molecules
  *
@@ -301,20 +347,20 @@ typedef enum {
     MD_GL_BOND_MODE_UNIFORM,
 } md_gl_bond_mode_t;
 
-// INSTANCES. The copies of the molecule a draw op shows (the periodic images of a cell, the copies of an assembly),
-// drawn by instancing: each draw of the op covers all of them, whatever their number. Instance i is the molecule moved
-// by transforms[i]. A transform is rigid: a rotation, or a rotation and a reflection (a mirror image, determinant -1),
-// and a translation. It is not scaled: a scale is not applied to the radii and thicknesses of the representations.
-// Each instance is culled against the view on the CPU with the box of the positions of the molecule (as set on it, or
-// derived): an instance out of view costs nothing on the GPU. Of the backbone representations, each chain of each
-// instance is culled and gets its level of detail.
-// What an instance draws picks as the same elements (md_gl_picking_offset_t) as the molecule itself would.
-typedef struct md_gl_instances_t {
+// COPIES. The copies of the molecule a draw op shows (the periodic images of a cell, the copies of an assembly), drawn
+// by instancing: each draw of the op covers all of them, whatever their number. Copy i is the molecule moved by
+// transforms[i]. A transform is rigid: a rotation, or a rotation and a reflection (a mirror image, determinant -1), and
+// a translation. It is not scaled: a scale is not applied to the radii and thicknesses of the representations.
+// Each copy is culled against the view on the CPU with the box of the positions of what the op shows (of the molecule,
+// or of its subset, as set on it or derived): a copy out of view costs nothing on the GPU. Of the backbone
+// representations, each chain of each copy is culled and gets its level of detail.
+// What a copy draws picks as the same elements (md_gl_picking_offset_t) as the molecule itself would.
+typedef struct md_gl_copies_t {
     const float* transforms;        // [count] Column major float[4][4]
-    const float* prev_transforms;   // [count] (optional) As of the previous frame, for the velocities: an instance which
+    const float* prev_transforms;   // [count] (optional) As of the previous frame, for the velocities: a copy which
                                     // moved shows as moving. NULL: each as in transforms, standing still
     uint32_t     count;             // 0: once, as it is (transforms are then not read)
-} md_gl_instances_t;
+} md_gl_copies_t;
 
 typedef struct md_gl_draw_op_t {
     md_gl_rep_type_t type;
@@ -331,6 +377,7 @@ typedef struct md_gl_draw_op_t {
 			uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
             bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
+            bool elastic_bonds;     // Show the elastic bonds (MD_BOND_FLAG_ELASTIC), which are left out otherwise
         } licorice;
 
         struct {
@@ -341,6 +388,7 @@ typedef struct md_gl_draw_op_t {
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
             bool bond_orders;       // Show the orders of the bonds (md_gl_mol_set_bond_orders)
             bool chain_gaps;        // Show the gaps of the chains (md_gl_mol_set_chain_gaps)
+            bool elastic_bonds;     // Show the elastic bonds (MD_BOND_FLAG_ELASTIC), which are left out otherwise
         } ball_and_stick;
 
         struct {
@@ -383,7 +431,8 @@ typedef struct md_gl_draw_op_t {
     } args;
 
     md_gl_rep_t rep;
-    md_gl_instances_t instances;            // Zero: drawn once, as it is. Must outlive md_gl_draw
+    md_gl_subset_t subset;                  // Zero: all of the molecule. Of the molecule of rep (SUBSETS)
+    md_gl_copies_t copies;                  // Zero: drawn once, as it is. Must outlive md_gl_draw
 } md_gl_draw_op_t;
 
 // Picking offsets: each renderable element writes base + its own index to the picking target, so the caller

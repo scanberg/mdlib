@@ -258,6 +258,11 @@ void main() {
     uint inst = uint(gl_InstanceID) / u_run_length;
     uint k_cp = uint(gl_InstanceID) - inst * u_run_length;
     uint c = u_cp_list >= 0 ? texelFetch(u_buf_list, u_cp_list + int(k_cp)).x : u_cp_offset + k_cp;
+    // A control point of a list may say that its neighbours are not drawn (of a subset, SUBSETS in md_gl.c): bit 31 the
+    // previous, bit 30 the next. The run of the list ends there, and is closed as next to a hidden residue.
+    bool prev_out = (c & 0x80000000u) != 0u;
+    bool next_out = (c & 0x40000000u) != 0u;
+    c &= 0x3FFFFFFFu;
     instance_load(inst);
     uint atom_idx = load_atom_idx(c);
 
@@ -289,7 +294,7 @@ void main() {
         cap_vertex = cv - cap * cap_size;
         j = cap == 0u ? 0u : S;
         // A cap closes the tube at the end of a chain or next to a hidden residue
-        bool open = cap == 0u ? (chain_beg || !atom_visible(load_atom_idx(nb.x))) : (chain_end || !atom_visible(load_atom_idx(nb.y)));
+        bool open = cap == 0u ? (chain_beg || prev_out || !atom_visible(load_atom_idx(nb.x))) : (chain_end || next_out || !atom_visible(load_atom_idx(nb.y)));
         if (!open) {
             emit_hidden();
             return;

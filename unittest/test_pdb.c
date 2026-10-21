@@ -89,6 +89,77 @@ UTEST(pdb, parse_trajectory) {
     md_arena_allocator_destroy(alloc);
 }
 
+// REMARK 350 of 1k4r: biomolecule 1 is its three chains by 60 transforms, the shell of the virion
+UTEST(pdb, assemblies) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE));
+    const md_assembly_data_t* a = &sys.assembly;
+    ASSERT_EQ(1, a->count);
+    EXPECT_STREQ("1", str_ptr(md_assembly_id(a, 0)));
+    ASSERT_EQ(1, a->part_count);
+    EXPECT_EQ(60, a->oper_count);
+    const md_urange_t ir = md_assembly_part_inst_range(a, 0);
+    EXPECT_EQ(3, ir.end - ir.beg);
+    EXPECT_EQ(60, md_assembly_copy_count(a, 0));
+    const mat4_t I = mat4_ident();
+    EXPECT_EQ(0, MEMCMP(&I, &a->oper_transform[a->oper[0]], sizeof(mat4_t)));
+    md_vm_arena_destroy(alloc);
+}
+
+// Two groups of chains in one biomolecule, each with transforms of its own: a chain is copied by the transforms of its
+// group only, and the identity both have is one copy
+UTEST(pdb, assembly_groups) {
+    static const char pdb[] =
+        "REMARK 350 BIOMOLECULE: 1\n"
+        "REMARK 350 APPLY THE FOLLOWING TO CHAINS: A\n"
+        "REMARK 350   BIOMT1   1  1.000000  0.000000  0.000000        0.00000\n"
+        "REMARK 350   BIOMT2   1  0.000000  1.000000  0.000000        0.00000\n"
+        "REMARK 350   BIOMT3   1  0.000000  0.000000  1.000000        0.00000\n"
+        "REMARK 350   BIOMT1   2  0.000000 -1.000000  0.000000       10.00000\n"
+        "REMARK 350   BIOMT2   2  1.000000  0.000000  0.000000        0.00000\n"
+        "REMARK 350   BIOMT3   2  0.000000  0.000000  1.000000        0.00000\n"
+        "REMARK 350 APPLY THE FOLLOWING TO CHAINS: B,\n"
+        "REMARK 350                    AND CHAINS: C\n"
+        "REMARK 350   BIOMT1   1  1.000000  0.000000  0.000000        0.00000\n"
+        "REMARK 350   BIOMT2   1  0.000000  1.000000  0.000000        0.00000\n"
+        "REMARK 350   BIOMT3   1  0.000000  0.000000  1.000000        0.00000\n"
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  N   ALA B   1       0.000  20.000   0.000  1.00  0.00           N\n"
+        "ATOM      4  CA  ALA B   1       1.458  20.000   0.000  1.00  0.00           C\n"
+        "ATOM      5  N   ALA C   1       0.000  40.000   0.000  1.00  0.00           N\n"
+        "ATOM      6  CA  ALA C   1       1.458  40.000   0.000  1.00  0.00           C\n"
+        "END\n";
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){pdb, sizeof(pdb) - 1}, MD_PDB_OPTION_NONE));
+    ASSERT_EQ(3, sys.instance.count);
+    const md_assembly_data_t* a = &sys.assembly;
+    ASSERT_EQ(1, a->count);
+    // The identity copies A, B and C; the other only A
+    ASSERT_EQ(2, a->oper_count);
+    ASSERT_EQ(2, a->part_count);
+    md_urange_t ir = md_assembly_part_inst_range(a, 0);
+    md_urange_t orr = md_assembly_part_oper_range(a, 0);
+    EXPECT_EQ(3, ir.end - ir.beg);
+    EXPECT_EQ(1, orr.end - orr.beg);
+    EXPECT_EQ(0, a->oper[orr.beg]);
+    ir = md_assembly_part_inst_range(a, 1);
+    orr = md_assembly_part_oper_range(a, 1);
+    EXPECT_EQ(1, ir.end - ir.beg);
+    EXPECT_EQ(1, orr.end - orr.beg);
+    EXPECT_EQ(1, a->oper[orr.beg]);
+    // A quarter turn about z, by rows as the records give it: x' = -y + 10, y' = x
+    const vec4_t q = mat4_mul_vec4(a->oper_transform[1], (vec4_t){1, 2, 3, 1});
+    EXPECT_NEAR(8.0f, q.x, 1e-6f);
+    EXPECT_NEAR(1.0f, q.y, 1e-6f);
+    EXPECT_NEAR(3.0f, q.z, 1e-6f);
+    md_vm_arena_destroy(alloc);
+}
+
 UTEST(pdb, create_system) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb");

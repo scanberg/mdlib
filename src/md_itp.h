@@ -51,9 +51,14 @@ typedef struct md_itp_moleculetype_t {
     int32_t nrexcl;
     md_itp_atom_t*  atoms;    // md_array
     // Connectivity in local, zero based atom indices, i < j, sorted and unique. The union of [ bonds ]
-    // (every function type), [ constraints ], [ settles ] and virtual sites to their first constructing
-    // atom: everything that says two atoms belong together, which is what structures need.
+    // and [ constraints ] of the function types which connect, [ settles ] and virtual sites to their first
+    // constructing atom: everything that says two atoms belong together, which is what structures need.
     md_atom_pair_t* bonds;    // md_array
+    // Elastic bonds, the same way: the [ bonds ] of function types 6 (harmonic potential), 9 (tabulated, no
+    // exclusions) and 10 (restraint potential) and the [ constraints ] of type 2 (no connection), which make no
+    // connection: the elastic network of a coarse grained protein or nucleic acid, a restraint. A pair which is also
+    // in bonds is not repeated here.
+    md_atom_pair_t* elastic_bonds;    // md_array
 } md_itp_moleculetype_t;
 
 typedef struct md_itp_molecules_t {
@@ -94,6 +99,8 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 // - bonds: inside matched molecules the topology is authoritative, so inferred bonds between two matched
 //   atoms are replaced by the topology's, of origin MD_BOND_ORIGIN_TOPOLOGY. Bonds touching unmatched atoms
 //   and user defined bonds are kept. Bonds between a metal and a non-metal are coordination (see md_types.h).
+//   The elastic bonds of the topology are bonds with MD_BOND_FLAG_ELASTIC, and so are those of an elastic
+//   network written as plain bonds (md_util_system_infer_elastic_bonds).
 // - 'atom/charge' (e) and 'atom/mass' (Da) are published for the matched atoms, taken from [ atoms ] and
 //   falling back to [ atomtypes ]; unmatched atoms are left as gaps.
 // - atom types with no mass (zero) get the topology's mass when all matched atoms of that type agree.

@@ -337,6 +337,8 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
         if (has_bonds) {
             for (size_t b = 0; b < sys->bond.count; ++b) {
                 if (drop && drop[b]) continue;
+                // An elastic bond holds no molecule together (nor is it in the connectivity above)
+                if (sys->bond.flags && (sys->bond.flags[b] & MD_BOND_FLAG_ELASTIC)) continue;
                 uf_union(root, sys->bond.pairs[b].idx[0], sys->bond.pairs[b].idx[1]);
             }
         }

@@ -1416,11 +1416,23 @@ static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, c
     return (bits & backbone_bits) == backbone_bits;
 }
 
-// There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3)
-static bool cmp_nuc_atom(str_t id, const char* base, size_t len) {
-    if (!str_eq_cstr_n(id, base, len)) return false;
-    char next = str_ptr(id)[len];
-    return next == 0 || next == '\'' || next == '*';
+// There are several conventions to label Nucleic backbone atoms (e.g. C3', C3* or just C3). How the name matches: 0 not
+// at all, 1 the bare name (C3), 2 the primed name (C3' or C3*).
+static int cmp_nuc_atom(str_t id, const char* base, size_t len) {
+    if (id.len < len || !str_eq_cstr_n(id, base, len)) return 0;
+    if (id.len == len) return 1;
+    const char next = str_ptr(id)[len];
+    return (id.len == len + 1 && (next == '\'' || next == '*')) ? 2 : 0;
+}
+
+// Whether the atom whose name matches (cmp_nuc_atom) takes the slot (bit) of the sugar or backbone: a free slot takes any
+// match, and a primed name takes the slot from a bare one. A residue which primes the atoms of its sugar has base atoms
+// of the bare names (C2, C4, C5, O4 of a pyrimidine), and some list the base first: OMU and PSU of the PDB (3G71).
+static inline bool nuc_atom_take_slot(uint32_t* bits, uint32_t* primed, uint32_t bit, int match) {
+    if (!match || (*primed & bit) || (match == 1 && (*bits & bit))) return false;
+    *bits |= bit;
+    if (match == 2) *primed |= bit;
+    return true;
 }
 
 static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
@@ -1431,6 +1443,7 @@ static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atom
     static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256;
 
     uint32_t bits = 0;
+    uint32_t primed = 0; // The slots taken by a primed name, which no other atom takes back
     md_nucleic_acid_atoms_t na;
 	MEMSET(&na, -1, sizeof(md_nucleic_acid_atoms_t));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
@@ -1438,20 +1451,19 @@ static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atom
         if (str_empty(id)) continue;
 
         if (!(bits & 1)  && cmp(id, "P",   1))               { na.p  = i; bits |= 1;  continue; }
-        if (!(bits & 2)  && cmp_nuc_atom(id, "O5", 2))       { na.o5 = i; bits |= 2;  continue; }
-        if (!(bits & 4)  && cmp_nuc_atom(id, "C5", 2))       { na.c5 = i; bits |= 4;  continue; }
-        if (!(bits & 8)  && cmp_nuc_atom(id, "C4", 2))       { na.c4 = i; bits |= 8;  continue; }
-        if (!(bits & 16) && cmp_nuc_atom(id, "C3", 2))       { na.c3 = i; bits |= 16; continue; }
-        if (!(bits & 32) && (cmp_nuc_atom(id, "O3", 2) || cmp(id, "O3P", 3))) {
-            na.o3 = i; bits |= 32; continue;
-        }
+        if (nuc_atom_take_slot(&bits, &primed, 2,  cmp_nuc_atom(id, "O5", 2))) { na.o5 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 4,  cmp_nuc_atom(id, "C5", 2))) { na.c5 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 8,  cmp_nuc_atom(id, "C4", 2))) { na.c4 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 16, cmp_nuc_atom(id, "C3", 2))) { na.c3 = i; continue; }
+        // O3P (exact) counts as a bare O3
+        if (nuc_atom_take_slot(&bits, &primed, 32, cmp(id, "O3P", 3) ? 1 : cmp_nuc_atom(id, "O3", 2))) { na.o3 = i; continue; }
 
-        if (!(bits & 64)  && cmp_nuc_atom(id, "C1", 2))      { na.c1 = i; bits |= 64;  continue; }
-        if (!(bits & 128) && cmp_nuc_atom(id, "C2", 2))      { na.c2 = i; bits |= 128; continue; }
-        if (!(bits & 256) && cmp_nuc_atom(id, "O4", 2))      { na.o4 = i; bits |= 256; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 64,  cmp_nuc_atom(id, "C1", 2))) { na.c1 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 128, cmp_nuc_atom(id, "C2", 2))) { na.c2 = i; continue; }
+        if (nuc_atom_take_slot(&bits, &primed, 256, cmp_nuc_atom(id, "O4", 2))) { na.o4 = i; continue; }
 
-        // Check if done
-        if (bits == all_bits) break;
+        // Done when the P is found and every other slot holds a primed name: a bare name could still be taken back
+        if ((bits & 1) && primed == (all_bits & ~1u)) break;
     }
 
     static const uint32_t req_bits = 2 | 4 | 8 | 16 | 32; // No phosphor in first terminal component (starts with O5)
@@ -3086,6 +3098,30 @@ static const martini_db_residue_t* martini_db_match_molecule(uint32_t version, s
     return other;
 }
 
+// The molecule (not an amino acid or a nucleotide) whose beads the labels are, whatever its name: a residue renamed, as the
+// three letters of a PDB file make CHOL CHL, PSM SPM and PCER CER. Of the version where there is one of it, and with the
+// masses (optional) of its beads. NULL for a single bead, which says too little, and where molecules of different kinds
+// have those beads. The names of a molecule of the Martini force fields are those of its chemistry, so molecules of the
+// same beads are the same molecule as far as anything here goes (its kind, its bonds, its anatomy as a lipid).
+static const martini_db_residue_t* martini_db_match_beads(uint32_t version, const str_t labels[], const float masses[], size_t num_labels, uint8_t map[]) {
+    if (num_labels < 2 || num_labels > 255) return NULL;
+    const martini_db_residue_t* match = NULL;   // Of the version
+    const martini_db_residue_t* other = NULL;   // Of any
+    for (size_t r = 0; r < ARRAY_SIZE(martini_db_residues); ++r) {
+        const martini_db_residue_t* res = &martini_db_residues[r];
+        if (res->num_beads != num_labels || martini_db_biopolymer(res) || !martini_db_match(res, labels, num_labels, map)) continue;
+        bool same = true;
+        for (size_t i = 0; i < num_labels && masses && same; ++i) same = masses[i] == martini_db_bead(res, map[i])->mass;
+        if (!same) continue;
+        if (other && other->kind != res->kind) return NULL;
+        if (!other) other = res;
+        if (!match && (res->versions & version)) match = res;
+    }
+    const martini_db_residue_t* res = match ? match : other;
+    if (res) martini_db_match(res, labels, num_labels, map);
+    return res;
+}
+
 // Whether the residue is a monomer of a polymer: a link names it
 static bool martini_db_linked(str_t name) {
     for (size_t k = 0; k < ARRAY_SIZE(martini_db_links); ++k) {
@@ -3260,8 +3296,15 @@ static const martini_db_residue_t* martini_db_match_component(const md_system_t*
         if (res->versions & version) return res;
         if (!other) other = res;
     }
-    if (other) martini_db_match(other, labels, n, map);
-    return other;
+    if (other) {
+        martini_db_match(other, labels, n, map);
+        return other;
+    }
+    // A molecule renamed: by its beads and their masses
+    if (biopolymer) return NULL;
+    float masses[256];
+    for (size_t i = 0; i < n; ++i) masses[i] = md_atom_mass(&sys->atom, range.beg + i);
+    return martini_db_match_beads(version, labels, masses, n, map);
 }
 
 // The bonds of a residue of a polymer (polyply) to the one before it, by the links of the force field, up to 6 A apart
@@ -3784,18 +3827,22 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             const size_t num_atoms = state->num_atoms;
             uint64_t* covered = make_bitfield(num_atoms, temp_arena);
 
+            // An elastic bond is no bond of the molecule: it neither stands in for an inferred bond nor says that a
+            // topology covers its atoms
             md_atom_pair_t* saved_sorted = md_temp_alloc_array(temp_scope, md_atom_pair_t, num_saved);
+            size_t num_sorted = 0;
             for (size_t i = 0; i < num_saved; ++i) {
+                if (bond_flags[i] & MD_BOND_FLAG_ELASTIC) continue;
                 md_atom_pair_t pair = bond_pairs[i];
                 if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
-                saved_sorted[i] = pair;
+                saved_sorted[num_sorted++] = pair;
                 if (md_bond_origin(bond_flags[i]) == MD_BOND_ORIGIN_TOPOLOGY) {
                     for (int k = 0; k < 2; ++k) {
                         if (pair.idx[k] >= 0 && (size_t)pair.idx[k] < num_atoms) bitfield_set_bit(covered, pair.idx[k]);
                     }
                 }
             }
-            qsort(saved_sorted, num_saved, sizeof(md_atom_pair_t), compare_atom_pair);
+            qsort(saved_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair);
 
             size_t w = 0;
             for (size_t i = 0; i < bond->count; ++i) {
@@ -3803,7 +3850,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 if (bitfield_test_bit(covered, pair.idx[0]) && bitfield_test_bit(covered, pair.idx[1])) continue;
                 md_atom_pair_t key = pair;
                 if (key.idx[0] > key.idx[1]) { md_atom_idx_t t = key.idx[0]; key.idx[0] = key.idx[1]; key.idx[1] = t; }
-                if (bsearch(&key, saved_sorted, num_saved, sizeof(md_atom_pair_t), compare_atom_pair)) continue;
+                if (num_sorted && bsearch(&key, saved_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair)) continue;
                 bond->pairs[w] = pair;
                 bond->flags[w] = bond->flags[i];
                 w += 1;
@@ -3831,11 +3878,12 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
     md_system_topology_changed(sys);
     // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate, except the bonds a user
     // added by hand and those the file gives (CONECT records), which md_util_infer_covalent_bonds keeps and reconciles
-    // with the inferred ones: an inferred bond never stands in for one of them.
+    // with the inferred ones: an inferred bond never stands in for one of them. The elastic bonds are kept as well,
+    // whatever their origin: they are no bonds of the molecule, which is what is inferred, and nothing infers them.
     size_t num_user = 0;
     for (size_t i = 0; i < sys->bond.count; ++i) {
         const md_bond_origin_t origin = md_bond_origin(sys->bond.flags[i]);
-        if (origin == MD_BOND_ORIGIN_USER || origin == MD_BOND_ORIGIN_FILE) {
+        if (origin == MD_BOND_ORIGIN_USER || origin == MD_BOND_ORIGIN_FILE || (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) {
             sys->bond.pairs[num_user] = sys->bond.pairs[i];
             sys->bond.flags[num_user] = sys->bond.flags[i];
             num_user += 1;
@@ -3856,6 +3904,7 @@ size_t md_util_system_infer_coordination(md_system_t* sys) {
     for (size_t i = 0; i < sys->bond.count; ++i) {
         const md_atom_pair_t p = sys->bond.pairs[i];
         if (p.idx[0] < 0 || p.idx[1] < 0 || (size_t)p.idx[0] >= sys->atom.count || (size_t)p.idx[1] >= sys->atom.count) continue;
+        if (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC) continue;   // A spring, of no chemistry
         const bool metal_a = is_metal(md_atom_atomic_number(&sys->atom, p.idx[0]));
         const bool metal_b = is_metal(md_atom_atomic_number(&sys->atom, p.idx[1]));
         if (metal_a != metal_b && !(sys->bond.flags[i] & MD_BOND_FLAG_COORDINATE)) {
@@ -3870,8 +3919,10 @@ size_t md_util_system_infer_coordination(md_system_t* sys) {
 #define MIN_RES_LEN 4
 #define MAX_RES_LEN 25
 
+// No upper bound for a nucleotide: a hypermodified one is larger than any standard one (wybutosine, 39 heavy atoms), as
+// is a modified one with its hydrogens, and classify_nucleotide tells nucleotide ligands (NAD, FAD, CoA, ...) by their
+// bonds rather than their size. The nucleic backbone (MD_UTIL_INFER_BACKBONE_BIT) takes any size, and the two agree.
 #define MIN_NUC_LEN 6
-#define MAX_NUC_LEN 35
 
 #define MIN_POLYMER_COMP_LEN 2
 
@@ -4189,6 +4240,10 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
             uint8_t map[256];
             for (size_t i = 0; i < len; ++i) labels[i] = md_atom_name(&sys->atom, comp_range.beg + i);
             const martini_db_residue_t* mol = martini_db_match_molecule(MARTINI_ANY, comp_name, labels, len, map);
+            // Renamed (CHL for CHOL): by its beads, unless it is named as a residue of a chain
+            if (!mol && !md_util_resname_amino_acid(comp_name) && !md_util_resname_nucleotide(comp_name)) {
+                mol = martini_db_match_beads(MARTINI_ANY, labels, NULL, len, map);
+            }
             if (mol) {
                 set_component_kind(sys, comp_idx, mol->kind);
                 continue;
@@ -4211,7 +4266,7 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         }
 
         md_nucleic_acid_atoms_t nucl_atoms = {0};
-        if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_acid_atoms_extract(&nucl_atoms, &sys->atom, comp_range)) {
+        if (MIN_NUC_LEN <= len && md_util_nucleic_acid_atoms_extract(&nucl_atoms, &sys->atom, comp_range)) {
             classify_nucleotide(sys, comp_idx, &nucl_atoms);
             continue;
         }
@@ -4474,6 +4529,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             }
         }
         for (size_t i = 0; i < sys->bond.count; ++i) {
+            if (sys->bond.flags && (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
             const md_atom_pair_t pair = sys->bond.pairs[i];
             const md_component_idx_t a = atom_comp_idx[pair.idx[0]];
             const md_component_idx_t b = atom_comp_idx[pair.idx[1]];
@@ -4848,7 +4904,11 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     color_t current_color = 1;
     mark_t  current_mark  = 1;
 
-    // Water and ions have no rings
+    // Water and ions have no rings, and neither do coarse grained beads or virtual sites: a ring is made of atoms.
+    // Martini closes a few beads into a rigid triangle where the atoms had a ring (one bead per two or three ring
+    // atoms, fused rings a triangulated patch), and the elastic network and secondary structure bonds of a coarse
+    // grained protein close thousands of cycles which are no rings at all. Skipped atoms are neither roots nor
+    // passed through, so a ring of atoms in a molecule which also holds beads is still found.
     uint64_t* skip = make_bitfield(num_atoms, temp_arena);
     for (size_t ci = 0; ci < sys->component.count; ++ci) {
         const md_component_kind_t kind = md_component_kind(&sys->component, ci);
@@ -4856,6 +4916,9 @@ bool md_util_system_infer_rings(md_system_t* sys) {
             const md_urange_t range = md_component_atom_range(&sys->component, ci);
             for (uint32_t i = range.beg; i < range.end && i < num_atoms; ++i) bitfield_set_bit(skip, i);
         }
+    }
+    for (size_t i = 0; i < num_atoms; ++i) {
+        if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
     }
 
     for (int atom_idx = 0; atom_idx < (int)num_atoms; ++atom_idx) {
@@ -4881,6 +4944,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
 
                 //if (next > idx) continue;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
+                if (bitfield_test_bit(skip, next)) continue;
 
                 if (mark[next] == current_mark && depth[idx] >= MIN_RING_SIZE) {
                     // We found a junction point where the graph connects
@@ -5171,6 +5235,113 @@ static bool uf_union(int32_t* parent, int32_t a, int32_t b) {
     return true;
 }
 
+// ### ELASTIC BONDS ###
+//
+// The chemistry of a coarse grained chain is that of infer_coarse_grained_bonds: between two of its residues there is the
+// link from the last backbone bead of one to the first of the next, and a disulfide between the SC1 of two cysteines. A
+// chain goes on while the residues are of one kind and their numbering does not start over.
+static inline bool cg_chain_restarts(md_sequence_id_t prev_seq, md_sequence_id_t seq) {
+    return seq < prev_seq && !(seq <= 1 && prev_seq >= 9999);  // GRO and PDB wrap at 99999 and 9999
+}
+
+static inline bool cg_cysteine_sc1(const md_system_t* sys, int32_t comp_idx, int32_t atom_idx) {
+    const str_t comp_name = md_component_name(&sys->component, comp_idx);
+    return (str_eq_cstr(comp_name, "CYS") || str_eq_cstr(comp_name, "CYX")) && str_eq_cstr(md_atom_name(&sys->atom, atom_idx), "SC1");
+}
+
+size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
+    ASSERT(sys);
+    const size_t N = sys->atom.count;
+    const size_t C = sys->component.count;
+    if (sys->bond.count == 0 || !sys->bond.flags || N == 0 || C == 0 || !sys->component.atom_offset) return 0;
+    if (!md_system_is_coarse_grained(sys)) return 0;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_allocator_i* arena = md_temp_allocator(temp);
+
+    int32_t* comp_of = md_alloc(arena, sizeof(int32_t) * N);
+    for (size_t i = 0; i < N; ++i) comp_of[i] = -1;
+    // The beads a residue of a chain links by: the first and the last bead of its backbone, and in a nucleotide of
+    // Martini 3 its BB2, which is linked to the next residue as well
+    int32_t* first_bb = md_alloc(arena, sizeof(int32_t) * C);
+    int32_t* last_bb  = md_alloc(arena, sizeof(int32_t) * C);
+    int32_t* also_bb  = md_alloc(arena, sizeof(int32_t) * C);
+    const uint32_t version = martini_system(sys, label_of_atom, &sys->atom).version;
+    const bool m3 = (version & (MARTINI_2 | MARTINI_2P)) == 0;
+    for (size_t ci = 0; ci < C; ++ci) {
+        first_bb[ci] = last_bb[ci] = also_bb[ci] = -1;
+        const md_urange_t range = md_component_atom_range(&sys->component, ci);
+        const md_component_kind_t kind = md_component_kind(&sys->component, ci);
+        const bool biopolymer = kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+        for (uint32_t i = range.beg; i < range.end && i < N; ++i) {
+            comp_of[i] = (int32_t)ci;
+            if (!biopolymer || md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_BEAD) continue;
+            if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE)) continue;
+            if (first_bb[ci] == -1) first_bb[ci] = (int32_t)i;
+            last_bb[ci] = (int32_t)i;
+            if (m3 && kind == MD_COMPONENT_KIND_NUCLEOTIDE && str_eq_cstr(md_atom_name(&sys->atom, i), "BB2")) also_bb[ci] = (int32_t)i;
+        }
+    }
+
+    // The links of the chains first: they say where a chain begins and ends, which the bond closing a cyclic one needs
+    uint8_t* has_prev = md_alloc(arena, C);
+    uint8_t* has_next = md_alloc(arena, C);
+    MEMSET(has_prev, 0, C);
+    MEMSET(has_next, 0, C);
+    int32_t* chain = md_alloc(arena, sizeof(int32_t) * C);
+    for (size_t ci = 0; ci < C; ++ci) chain[ci] = (int32_t)ci;
+    md_array(uint32_t) candidates = 0;
+
+    for (size_t b = 0; b < sys->bond.count; ++b) {
+        if (sys->bond.flags[b] & MD_BOND_FLAG_ELASTIC) continue;
+        int32_t x = sys->bond.pairs[b].idx[0];
+        int32_t y = sys->bond.pairs[b].idx[1];
+        if (x < 0 || y < 0 || (size_t)x >= N || (size_t)y >= N) continue;
+        if (comp_of[x] > comp_of[y]) { const int32_t t = x; x = y; y = t; }
+        const int32_t ca = comp_of[x];
+        const int32_t cb = comp_of[y];
+        if (ca < 0 || ca == cb) continue;  // Within a residue
+        if (md_atom_particle_kind(&sys->atom, x) != MD_PARTICLE_BEAD || md_atom_particle_kind(&sys->atom, y) != MD_PARTICLE_BEAD) continue;
+        const md_component_kind_t ka = md_component_kind(&sys->component, ca);
+        const md_component_kind_t kb = md_component_kind(&sys->component, cb);
+        if (!(ka == MD_COMPONENT_KIND_AMINO_ACID || ka == MD_COMPONENT_KIND_NUCLEOTIDE) || ka != kb) continue;
+
+        const bool link = cb == ca + 1 && (x == last_bb[ca] || x == also_bb[ca]) && y == first_bb[cb] &&
+                          !cg_chain_restarts(md_component_seq_id(&sys->component, ca), md_component_seq_id(&sys->component, cb));
+        if (link) {
+            has_next[ca] = 1;
+            has_prev[cb] = 1;
+            uf_union(chain, ca, cb);
+        } else if (ka == MD_COMPONENT_KIND_AMINO_ACID && cg_cysteine_sc1(sys, ca, x) && cg_cysteine_sc1(sys, cb, y)) {
+            // A disulfide
+        } else {
+            md_array_push(candidates, (uint32_t)b, arena);
+        }
+    }
+
+    size_t count = 0;
+    for (size_t k = 0; k < md_array_size(candidates); ++k) {
+        const uint32_t b = candidates[k];
+        int32_t x = sys->bond.pairs[b].idx[0];
+        int32_t y = sys->bond.pairs[b].idx[1];
+        if (comp_of[x] > comp_of[y]) { const int32_t t = x; x = y; y = t; }
+        const int32_t ca = comp_of[x];
+        const int32_t cb = comp_of[y];
+        // The bond which closes a cyclic chain: from the first bead of the backbone at its start to the last at its end
+        const bool closure = cb > ca + 1 && x == first_bb[ca] && y == last_bb[cb] && !has_prev[ca] && !has_next[cb] && uf_find(chain, ca) == uf_find(chain, cb);
+        if (closure) continue;
+        sys->bond.flags[b] |= MD_BOND_FLAG_ELASTIC;
+        count += 1;
+    }
+
+    md_temp_end(temp);
+    if (count) {
+        md_bond_build_connectivity(&sys->bond, N, sys->alloc);
+        md_system_topology_changed(sys);
+    }
+    return count;
+}
+
 // Hierarchy links for coarse grained systems, used where bonds leave the topology disconnected.
 //
 // md_structure_data_t is a spanning forest and unwrap only needs each atom's parent to stay within half a cell
@@ -5202,6 +5373,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
     for (size_t i = 0; i < atom_count; ++i) set[i] = (int32_t)i;
 
     for (size_t i = 0; i < sys->bond.count; ++i) {
+        if (sys->bond.flags && (sys->bond.flags[i] & MD_BOND_FLAG_ELASTIC)) continue;
         const md_atom_pair_t pair = sys->bond.pairs[i];
         if ((size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count) {
             uf_union(set, pair.idx[0], pair.idx[1]);
@@ -5348,8 +5520,12 @@ bool md_util_system_infer_structures(md_system_t* sys) {
         if (num_links > 0) {
             link_graph.count = sys->bond.count + num_links;
             md_array_resize(link_graph.pairs, link_graph.count, temp_arena);
+            md_array_resize(link_graph.flags, link_graph.count, temp_arena);
+            MEMSET(link_graph.flags, 0, sizeof(md_bond_flags_t) * link_graph.count);
             if (sys->bond.count) {
                 MEMCPY(link_graph.pairs, sys->bond.pairs, sizeof(md_atom_pair_t) * sys->bond.count);
+                // With the flags, so that its connectivity leaves the elastic bonds out as that of the system does
+                if (sys->bond.flags) MEMCPY(link_graph.flags, sys->bond.flags, sizeof(md_bond_flags_t) * sys->bond.count);
             }
             MEMCPY(link_graph.pairs + sys->bond.count, links, sizeof(md_atom_pair_t) * num_links);
             md_bond_build_connectivity(&link_graph, atom_count, temp_arena);
@@ -5683,6 +5859,11 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
             uint8_t map[256];
             const martini_db_residue_t* mol = martini_db_match_molecule(martini.version, comp_name, atom_labels + comp_range.beg, comp_size, map);
             if (mol && comp_size == 1 && !martini.martini && mol->kind != MD_COMPONENT_KIND_WATER) mol = NULL;
+            // A molecule renamed (CHL for CHOL, the three letters of a PDB file) is told by its beads, in a Martini system
+            // only: atomistic residues are named as their atoms, which may be the names of beads
+            if (!mol && martini.martini && !md_util_resname_amino_acid(comp_name) && !md_util_resname_nucleotide(comp_name)) {
+                mol = martini_db_match_beads(martini.version, atom_labels + comp_range.beg, NULL, comp_size, map);
+            }
             if (mol) {
                 for (size_t i = comp_range.beg; i < comp_range.end; ++i) {
                     if (sys->atom.type_idx[i] != 0) continue;
@@ -10167,6 +10348,31 @@ static md_atom_idx_t amino_acid_backbone_bead(const md_system_t* sys, size_t com
     return bead;
 }
 
+// The backbone beads of a nucleotide of a coarse grained model, in the fields of the atoms they hold (Martini 2 DNA and
+// RNA, Uusitalo et al. 2015, 2017; Martini 3 RNA of reForge): the phosphate bead BB1 in p, the sugar bead BB2 which
+// holds the C4' in c4 and the sugar bead BB3 which holds the C1' in c1, the other fields -1. A 5' end has no BB1. False
+// for a component which is no nucleotide, or lacks BB2 or BB3. Their o5 is -1, which that of atoms never is
+// (md_util_nucleic_acid_atoms_extract requires it): that tells beads from atoms (nucleic_atoms_are_beads).
+static bool nucleotide_backbone_beads(md_nucleic_acid_atoms_t* out, const md_system_t* sys, size_t comp_idx) {
+    if (md_component_kind(&sys->component, comp_idx) != MD_COMPONENT_KIND_NUCLEOTIDE) return false;
+    md_nucleic_acid_atoms_t na;
+    MEMSET(&na, -1, sizeof(na));
+    const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) || md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_BEAD) continue;
+        const str_t name = md_atom_name(&sys->atom, i);
+        if      (str_eq_cstr(name, "BB1")) na.p  = (md_atom_idx_t)i;
+        else if (str_eq_cstr(name, "BB2")) na.c4 = (md_atom_idx_t)i;
+        else if (str_eq_cstr(name, "BB3")) na.c1 = (md_atom_idx_t)i;
+    }
+    if (out) *out = na;
+    return na.c4 >= 0 && na.c1 >= 0;
+}
+
+static inline bool nucleic_atoms_are_beads(const md_nucleic_acid_atoms_t* na) {
+    return na->o5 < 0;
+}
+
 // ### CHAIN BREAKS ### (see md_util.h)
 
 // Ångström within which the atoms of a link are linked when they have no bonds: a peptide bond (C-N) is 1.33 long, a
@@ -10203,9 +10409,15 @@ static bool protein_backbone_linked(const md_system_t* sys, const md_system_stat
     return chain_atoms_linked(sys, state, prev->c, next->n, CHAIN_LINK_MAX_DIST, seq_next);
 }
 
-// Whether the consecutive residues of a nucleic acid chain with the backbone atoms prev and next are linked: by a
-// phosphodiester bond from the O3' of prev to the P of next. Without its P (a 5' end) next is linked to nothing.
+// Whether the consecutive residues of a nucleic acid chain with the backbone atoms prev and next, both atomistic or
+// both beads, are linked: by a phosphodiester bond from the O3' of prev to the P of next, or for beads by a bond from a
+// sugar bead of prev to the phosphate bead of next (BB3 to BB1 in Martini 2, BB2 and BB3 to BB1 in Martini 3), by
+// consecutive sequence numbers alone without bonds. Without its P or phosphate bead (a 5' end) next is linked to
+// nothing.
 static bool nucleic_backbone_linked(const md_system_t* sys, const md_system_state_t* state, const md_nucleic_acid_atoms_t* prev, const md_nucleic_acid_atoms_t* next, bool seq_next) {
+    if (nucleic_atoms_are_beads(prev)) {
+        return chain_atoms_linked(sys, state, prev->c1, next->p, 0.0f, seq_next) || chain_atoms_linked(sys, state, prev->c4, next->p, 0.0f, seq_next);
+    }
     return chain_atoms_linked(sys, state, prev->o3, next->p, CHAIN_LINK_MAX_DIST, seq_next);
 }
 
@@ -10253,8 +10465,9 @@ static bool protein_chain_ends_between(const md_system_t* sys, size_t a, size_t 
 
 // Whether the chain ends between the consecutive residues of a nucleic acid chain whose backbones are not linked: b
 // has no P (a 5' end, which a crystal structure gives the first residue of a strand), or a hydrogen on the O3' of a or
-// the O5' of b makes a free 3' or 5' hydroxyl
+// the O5' of b makes a free 3' or 5' hydroxyl. Beads tell only the first: a b without its phosphate bead.
 static bool nucleic_chain_ends_between(const md_system_t* sys, const md_nucleic_acid_atoms_t* atoms_a, const md_nucleic_acid_atoms_t* atoms_b) {
+    if (nucleic_atoms_are_beads(atoms_a)) return atoms_b->p < 0;
     if (atoms_a->o3 < 0 || atoms_b->p < 0) return true;
     bool has_bonds;
     return bonded_count_of_element(sys, atoms_a->o3, MD_Z_H, &has_bonds) > 0 || bonded_count_of_element(sys, atoms_b->o5, MD_Z_H, &has_bonds) > 0;
@@ -10288,7 +10501,7 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
     if (!(md_component_flags(&sys->component, comp_idx) & MD_COMPONENT_FLAG_BREAK_AFTER)) return false;
 
     // The atoms the backbone was found by (md_util_system_infer): an amino acid by its atom names, else by its backbone
-    // bead, a nucleotide by its atom names
+    // bead, a nucleotide by its atom names, else by its backbone beads
     const size_t next = comp_idx + 1;
     const md_urange_t range_a = md_component_atom_range(&sys->component, comp_idx);
     const md_urange_t range_b = md_component_atom_range(&sys->component, next);
@@ -10304,6 +10517,9 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
         b = amino_acid_backbone_bead(sys, next);
     } else if (md_util_nucleic_acid_atoms_extract(&na_a, &sys->atom, range_a) && md_util_nucleic_acid_atoms_extract(&na_b, &sys->atom, range_b)) {
         a = na_a.o3;
+        b = na_b.p;
+    } else if (nucleotide_backbone_beads(&na_a, sys, comp_idx) && nucleotide_backbone_beads(&na_b, sys, next)) {
+        a = na_a.c1;
         b = na_b.p;
     }
     if (a < 0 || b < 0) return false;
@@ -10376,42 +10592,61 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
 
 // ### LIPIDS ###
 //
-// md_util_system_infer_lipids: the heads and tails of the lipids (md_lipid_data_t). A molecule is a run of consecutive
-// components which are not amino acids, nucleotides, water or ions, each bonded to the ones before it. Its apolar atoms
+// md_util_system_infer_lipids: the heads and tails of the lipids (md_lipid_data_t). A molecule is a set of components
+// which are not amino acids, nucleotides, water or ions, bonded to each other, wherever they are in the system. Its apolar atoms
 // are the carbons bonded to carbons (and hydrogens) only, or, for coarse grained beads, the beads named as the beads of
-// the tails of the Martini lipidomes (lipid_bead_apolar). Each connected part of them which hangs off the rest of the
+// the tails of the Martini lipidomes (lipid_bead_kind). Each connected part of them which hangs off the rest of the
 // molecule at one atom (its anchor) is a tail: a chain, or the skeleton of a sterol when it holds fused rings (or the
 // ring beads of a coarse grained sterol). A chain which hangs between two anchors spans them (a bolalipid). The rest of the molecule, in connected parts, is its heads.
 //
 // A molecule whose components are lipids by name is a lipid with the tails found. One of no lipid is a lipid by its
 // structure: a polar head (an atom other than carbon outside of the tails) and a chain without rings of at least
-// LIPID_MIN_CHAIN_UNNAMED carbons, or the skeleton of a sterol. Coarse grained molecules are lipids by name only.
+// LIPID_MIN_CHAIN_UNNAMED carbons, or the skeleton of a sterol. Coarse grained molecules are lipids by the force field
+// only: by their names, by their beads where the name is not Martini's (md_util_system_infer_comp_flags), or by beads
+// named as those of the tails of the Martini lipidomes where the molecule is none of the force field's.
+//
+// The lipid of a molecule of several components is the part of it which holds the tails, with what is bonded to that
+// part (lipid_extent): a sugar chain or a polymer attached to a lipid, each sugar or monomer a residue of its own, is no
+// part of the lipid.
 
 #define LIPID_MIN_CHAIN_NAMED       4   // Carbons on the spine of a chain of a lipid by name (hexanoyl: 5)
 #define LIPID_MIN_CHAIN_UNNAMED     8   // Of a molecule which is a lipid by its structure alone (octanoyl: 7, decanoyl: 9)
-#define LIPID_MIN_CHAIN_BEADS       2   // Beads on the spine of a chain of a coarse grained lipid
+#define LIPID_MIN_CHAIN_BEADS       1   // Beads on the spine of a chain of a coarse grained lipid (the C1B of a lyso PC)
+#define LIPID_MIN_CHAIN_LETTERLESS  2   // Of a chain of beads named without the letter of their tail (COO C1 C2 C3 C4)
 #define LIPID_MIN_SKELETON_ATOMS    15  // Carbons of the skeleton of a sterol (cholesterol: 26 besides C3)
 #define LIPID_MIN_SKELETON_BEADS    4   // Beads of it (Martini cholesterol: 7 and 8)
 #define LIPID_MAX_ATOMS             16384   // Larger molecules (polymers) are no lipids
 
-// The beads of the tails of the Martini lipidomes: C (saturated), D (unsaturated) or T (trans), the number of the bead
-// and the letter of its tail, with the number of the acyl chain after it in cardiolipins (C1A, D2A, C4B, T1A, C1A1);
-// the ring skeleton of a sterol R and a number (R1 .. R6), and its side chain C and a number (C1, C2). A C and a number
-// alone is the side chain of a sterol only: the inositol of a phosphatidylinositol (C1 .. C4) and the sugars of
-// glycolipids and detergents are named so too. The beads of the heads (NC3, NH3, CNO, PO4, GL1, GL2, AM1, ROH, ...) are
-// none of these.
-static bool lipid_bead_apolar(str_t name, bool sterol) {
-    if (name.len < 2) return false;
+// What a bead of a lipid of the Martini lipidomes is to its tails, by its name:
+//   CHAIN       A bead of a tail: C (saturated), D (unsaturated) or T (trans), the number of the bead and the letter of
+//               its tail, with the number of the acyl chain after it in cardiolipins (C1A, D2A, C4B, T1A, C1A1); the ring
+//               skeleton of a sterol R and a number (R1 .. R6), and in a sterol its side chain C and a number (C1, C2).
+//   LETTERLESS  C, D or T and a number alone elsewhere: the chain of a fatty acid or a detergent of Martini 2 (COO C1 C2
+//               C3 C4, SO3 C1 C2 C4, the B1 B2 B3 C1 C2 of an octyl glucoside), but also the inositol of a
+//               phosphatidylinositol (C1 .. C4) and the sugars of glycolipids. Such beads are a tail only where they
+//               make a chain: an unbranched run of two beads or more, without rings, which the inositol and sugars are.
+//   POLAR       Any other: the beads of the heads (NC3, NH3, CNO, PO4, GL1, GL2, AM1, ROH, COO, ...).
+typedef enum {
+    LIPID_BEAD_POLAR = 0,
+    LIPID_BEAD_CHAIN,
+    LIPID_BEAD_LETTERLESS,
+} lipid_bead_t;
+
+static lipid_bead_t lipid_bead_kind(str_t name, bool sterol) {
+    if (name.len < 2) return LIPID_BEAD_POLAR;
     const char c = name.ptr[0];
-    if (c != 'C' && c != 'D' && c != 'T' && c != 'R') return false;
+    if (c != 'C' && c != 'D' && c != 'T' && c != 'R') return LIPID_BEAD_POLAR;
     size_t i = 1;
-    if (!is_digit(name.ptr[i])) return false;
+    if (!is_digit(name.ptr[i])) return LIPID_BEAD_POLAR;
     while (i < name.len && is_digit(name.ptr[i])) ++i;
-    if (i == name.len) return c == 'R' || (c == 'C' && sterol);
-    if (name.ptr[i] < 'A' || name.ptr[i] > 'H') return false;
+    if (i == name.len) {
+        if (c == 'R' || (c == 'C' && sterol)) return LIPID_BEAD_CHAIN;
+        return LIPID_BEAD_LETTERLESS;
+    }
+    if (name.ptr[i] < 'A' || name.ptr[i] > 'H') return LIPID_BEAD_POLAR;
     ++i;
     while (i < name.len && is_digit(name.ptr[i])) ++i;
-    return i == name.len;
+    return i == name.len ? LIPID_BEAD_CHAIN : LIPID_BEAD_POLAR;
 }
 
 static inline bool lipid_atom_is_bead(const md_system_t* sys, size_t i) {
@@ -10428,18 +10663,19 @@ static inline bool lipid_bead_sterol_ring(str_t name) {
     return name.len >= 2 && name.ptr[0] == 'R' && is_digit(name.ptr[1]);
 }
 
-static bool lipid_atom_is_apolar(const md_system_t* sys, size_t i, bool sterol) {
+// What an atom is to the tails: a bead by its name, an atom a CHAIN when it is a carbon bonded to carbons and hydrogens only
+static lipid_bead_t lipid_atom_kind(const md_system_t* sys, size_t i, bool sterol) {
     if (lipid_atom_is_bead(sys, i)) {
-        return lipid_bead_apolar(md_atom_name(&sys->atom, i), sterol);
+        return lipid_bead_kind(md_atom_name(&sys->atom, i), sterol);
     }
-    if (md_atom_atomic_number(&sys->atom, i) != MD_Z_C) return false;
+    if (md_atom_atomic_number(&sys->atom, i) != MD_Z_C) return LIPID_BEAD_POLAR;
     md_bond_iter_t it = md_bond_iter(&sys->bond, i);
     while (md_bond_iter_has_next(&it)) {
         const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, md_bond_iter_atom_index(&it));
-        if (z != MD_Z_C && z != MD_Z_H) return false;
+        if (z != MD_Z_C && z != MD_Z_H) return LIPID_BEAD_POLAR;
         md_bond_iter_next(&it);
     }
-    return true;
+    return LIPID_BEAD_CHAIN;
 }
 
 static inline bool lipid_candidate_comp(const md_system_t* sys, size_t comp_idx) {
@@ -10447,18 +10683,53 @@ static inline bool lipid_candidate_comp(const md_system_t* sys, size_t comp_idx)
     return kind == MD_COMPONENT_KIND_OTHER || kind == MD_COMPONENT_KIND_LIPID;
 }
 
-// Whether an atom of the component is bonded to an atom of [beg, end)
-static bool lipid_comp_bonded_to(const md_system_t* sys, size_t comp_idx, uint32_t beg, uint32_t end) {
-    const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
-    for (uint32_t i = range.beg; i < range.end; ++i) {
-        md_bond_iter_t it = md_bond_iter(&sys->bond, i);
-        while (md_bond_iter_has_next(&it)) {
-            const uint32_t j = (uint32_t)md_bond_iter_atom_index(&it);
-            if (beg <= j && j < end) return true;
-            md_bond_iter_next(&it);
-        }
+// A bead named as one of a tail with the letter of its tail (C1A, D2B, T1A, C1A1), as only the lipids of the Martini
+// lipidomes have them
+static inline bool lipid_bead_lettered(str_t name) {
+    return name.len >= 3 && name.ptr[0] != 'R' && lipid_bead_kind(name, false) == LIPID_BEAD_CHAIN;
+}
+
+// The components of the molecules are joined by the bonds between them (union-find, each set rooted at its first
+// component)
+static int32_t lipid_find(int32_t* root, int32_t c) {
+    while (root[c] != c) {
+        root[c] = root[root[c]];
+        c = root[c];
     }
-    return false;
+    return c;
+}
+
+static void lipid_union(int32_t* root, int32_t a, int32_t b) {
+    a = lipid_find(root, a);
+    b = lipid_find(root, b);
+    if (a < b) root[b] = a;
+    else if (b < a) root[a] = b;
+}
+
+// A molecule: components bonded to each other, ascending, and their atoms. Its components need not be consecutive (the
+// lipid A of a PDB entry, whose acyl chains are ligands of their own listed after its sugars).
+typedef struct {
+    const int32_t* comps;   // [num_comps] ascending
+    int32_t  num_comps;
+    int32_t* atoms;         // [n] ascending: the atoms of its components one after the other
+    int32_t* member;        // [n] the component (index into comps) of each atom
+    int32_t  n;
+    bool     contiguous;    // atoms[k] == atoms[0] + k
+} lipid_mol_t;
+
+// The index within the molecule of an atom, -1 for one not of it
+static inline int32_t lipid_mol_local(const lipid_mol_t* mol, int32_t atom) {
+    if (mol->contiguous) {
+        const int32_t k = atom - mol->atoms[0];
+        return (0 <= k && k < mol->n) ? k : -1;
+    }
+    int32_t lo = 0, hi = mol->n;
+    while (lo < hi) {
+        const int32_t mid = (lo + hi) / 2;
+        if (mol->atoms[mid] < atom) lo = mid + 1;
+        else hi = mid;
+    }
+    return (lo < mol->n && mol->atoms[lo] == atom) ? lo : -1;
 }
 
 typedef struct {
@@ -10467,6 +10738,9 @@ typedef struct {
     int32_t  num_anchors;   // distinct anchors, more than 2 counts as 3
     bool     outside;       // hangs off an atom outside of the molecule
     bool     skeleton;      // holds an atom of a fused ring, or a ring bead of a sterol (R1 .. R6)
+    bool     letterless;    // all of its beads are named without the letter of a tail (LIPID_BEAD_LETTERLESS)
+    bool     lettered;      // all of its atoms are beads named with the letter of a tail (lipid_bead_lettered)
+    bool     branched;      // an atom of it is bonded to more than two others of it
     int32_t  bonds;         // bonds within it, each counted from both ends
 } lipid_part_t;
 
@@ -10475,60 +10749,155 @@ static int lipid_cmp_i32(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
-// Records the molecule of the components [comp_beg, comp_end) as a lipid, with the heads and tails pushed for it since
-// the last one (none when its anatomy is not known), and its components as lipids
-static void record_lipid(md_system_t* sys, size_t comp_beg, size_t comp_end) {
+static int lipid_cmp_u64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+// Records a lipid of the components comps (ascending), with the heads and tails pushed for it since the last one (none
+// when its anatomy is not known), and its components as lipids
+static void record_lipid(md_system_t* sys, const int32_t* comps, size_t num_comps) {
     md_lipid_data_t* lipid = &sys->lipid;
     md_allocator_i* alloc = sys->alloc;
-    const md_urange_t comp_range = { (uint32_t)comp_beg, (uint32_t)comp_end };
-    md_array_push(lipid->comp_range, comp_range, alloc);
+    md_index_data_push_arr(&lipid->comps, comps, num_comps);
     md_array_push(lipid->head_offset, (uint32_t)lipid->head.count, alloc);
     md_array_push(lipid->tail_offset, (uint32_t)lipid->tail.count, alloc);
     lipid->count += 1;
-    for (size_t c = comp_beg; c < comp_end; ++c) {
-        set_component_kind(sys, c, MD_COMPONENT_KIND_LIPID);
+    for (size_t i = 0; i < num_comps; ++i) {
+        set_component_kind(sys, (size_t)comps[i], MD_COMPONENT_KIND_LIPID);
     }
 }
 
-// The lipid of the components [comp_beg, comp_end), if it is one
-static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_end, const uint8_t* in_fused_ring, md_allocator_i* temp_arena) {
+// The lipid of a molecule of several components: the components which hold its tails and those between them (the core),
+// and the components bonded to the core: a head group which is a residue of its own (the PC of a lyso PC of the AMBER
+// lipids), the first sugar of a glycolipid, the first Kdo of a lipid A. What hangs off that (the further sugars of a
+// glycolipid, the core and O antigen of a lipopolysaccharide, the polymer of a PEG lipid of several residues) is attached
+// to the lipid but not of it. The core is what is left of the components when those without tails are taken off the ends
+// one after the other. in_lipid[c] for each component of the molecule.
+static void lipid_extent(uint8_t* in_lipid, const md_system_t* sys, const lipid_mol_t* mol, const uint8_t* has_tail, md_allocator_i* temp_arena) {
+    const int32_t nc = mol->num_comps;
+    MEMSET(in_lipid, 1, (size_t)nc);
+    if (nc < 2) return;
+
+    // The bonds between the components, each pair once
+    md_array(uint64_t) edges = 0;
+    for (int32_t k = 0; k < mol->n; ++k) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, mol->atoms[k]);
+        while (md_bond_iter_has_next(&it)) {
+            const int32_t l = lipid_mol_local(mol, md_bond_iter_atom_index(&it));
+            md_bond_iter_next(&it);
+            if (l < 0) continue;
+            const uint32_t a = (uint32_t)mol->member[k], b = (uint32_t)mol->member[l];
+            if (a < b) md_array_push(edges, ((uint64_t)a << 32) | b, temp_arena);
+        }
+    }
+    size_t num_edges = md_array_size(edges);
+    if (num_edges == 0) return;
+    qsort(edges, num_edges, sizeof(uint64_t), lipid_cmp_u64);
+    size_t u = 0;
+    for (size_t e = 0; e < num_edges; ++e) {
+        if (u == 0 || edges[e] != edges[u - 1]) edges[u++] = edges[e];
+    }
+    num_edges = u;
+
+    int32_t* deg = md_alloc(temp_arena, (size_t)nc * sizeof(int32_t));
+    int32_t* off = md_alloc(temp_arena, ((size_t)nc + 1) * sizeof(int32_t));
+    int32_t* adj = md_alloc(temp_arena, 2 * num_edges * sizeof(int32_t));
+    int32_t* queue = md_alloc(temp_arena, (size_t)nc * sizeof(int32_t));
+    uint8_t* alive = md_alloc(temp_arena, (size_t)nc);
+    MEMSET(deg, 0, (size_t)nc * sizeof(int32_t));
+    for (size_t e = 0; e < num_edges; ++e) {
+        deg[edges[e] >> 32] += 1;
+        deg[edges[e] & 0xFFFFFFFF] += 1;
+    }
+    off[0] = 0;
+    for (int32_t c = 0; c < nc; ++c) off[c + 1] = off[c] + deg[c];
+    MEMSET(deg, 0, (size_t)nc * sizeof(int32_t));
+    for (size_t e = 0; e < num_edges; ++e) {
+        const int32_t a = (int32_t)(edges[e] >> 32), b = (int32_t)(edges[e] & 0xFFFFFFFF);
+        adj[off[a] + deg[a]++] = b;
+        adj[off[b] + deg[b]++] = a;
+    }
+
+    // The core: the ends without tails taken off until none is left
+    int32_t qe = 0;
+    for (int32_t c = 0; c < nc; ++c) {
+        alive[c] = 1;
+        if (!has_tail[c] && deg[c] <= 1) {
+            alive[c] = 0;
+            queue[qe++] = c;
+        }
+    }
+    for (int32_t qb = 0; qb < qe; ++qb) {
+        const int32_t c = queue[qb];
+        for (int32_t e = off[c]; e < off[c + 1]; ++e) {
+            const int32_t d = adj[e];
+            if (!alive[d]) continue;
+            deg[d] -= 1;
+            if (!has_tail[d] && deg[d] <= 1) {
+                alive[d] = 0;
+                queue[qe++] = d;
+            }
+        }
+    }
+
+    // And what is bonded to it
+    for (int32_t c = 0; c < nc; ++c) {
+        bool in = alive[c];
+        for (int32_t e = off[c]; e < off[c + 1] && !in; ++e) in = alive[adj[e]];
+        in_lipid[c] = (uint8_t)in;
+    }
+}
+
+// The lipid of a molecule, if it is or holds one
+static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const uint8_t* in_fused_ring, md_allocator_i* temp_arena) {
     md_lipid_data_t* lipid = &sys->lipid;
     md_allocator_i* alloc = sys->alloc;
 
-    const uint32_t a0 = md_component_atom_range(&sys->component, comp_beg).beg;
-    const uint32_t a1 = md_component_atom_range(&sys->component, comp_end - 1).end;
-    const int32_t n = (int32_t)(a1 - a0);
+    const int32_t n = mol->n;
+    const int32_t* atoms = mol->atoms;
+    const int32_t nc = mol->num_comps;
     if (n <= 0) return;
 
-    // Lipids by name. Those which are lipids by their structure alone are classified anew, so that inferring again gives
-    // what inferring once did.
-    bool named = false;
-    for (size_t c = comp_beg; c < comp_end; ++c) {
-        if (md_util_resname_lipid(md_component_name(&sys->component, c))) {
-            named = true;
-        } else if (md_component_kind(&sys->component, c) == MD_COMPONENT_KIND_LIPID) {
-            set_component_kind(sys, c, MD_COMPONENT_KIND_OTHER);
-        }
-    }
+    // Coarse grained when it holds a bead (a molecule too large to look into: when the first atom of a component is one)
     bool cg = false;
     bool sterol_beads = false;
-    for (uint32_t i = a0; i < a1; ++i) {
-        if (lipid_atom_is_bead(sys, i)) {
-            cg = true;
-            sterol_beads |= lipid_bead_sterol_ring(md_atom_name(&sys->atom, i));
+    if (atoms) {
+        for (int32_t k = 0; k < n; ++k) {
+            if (lipid_atom_is_bead(sys, atoms[k])) {
+                cg = true;
+                sterol_beads |= lipid_bead_sterol_ring(md_atom_name(&sys->atom, atoms[k]));
+            }
+        }
+    } else {
+        for (int32_t c = 0; c < nc && !cg; ++c) {
+            const md_urange_t r = md_component_atom_range(&sys->component, (size_t)mol->comps[c]);
+            cg = r.beg < r.end && lipid_atom_is_bead(sys, r.beg);
         }
     }
-    // Coarse grained molecules are told apart by the force field (martini_db), not by their structure. A lipid by name
-    // too small or too large to look into is one without heads and tails.
-    if (cg && !named) return;
-    if (n <= 1 || n > LIPID_MAX_ATOMS) {
-        if (named) record_lipid(sys, comp_beg, comp_end);
+    // Lipids by name. Those which are lipids by their structure alone are classified anew, so that inferring again gives
+    // what inferring once did. A coarse grained lipid is one of the force field, by its name or, where that is not
+    // Martini's, by its beads (the kind md_util_system_infer_comp_flags gave it), or one whose beads are named as those
+    // of the lipids of the force field (below): never by its structure alone.
+    bool named = false;
+    for (int32_t c = 0; c < nc; ++c) {
+        const size_t comp = (size_t)mol->comps[c];
+        if (md_util_resname_lipid(md_component_name(&sys->component, comp)) || (cg && md_component_kind(&sys->component, comp) == MD_COMPONENT_KIND_LIPID)) {
+            named = true;
+        } else if (md_component_kind(&sys->component, comp) == MD_COMPONENT_KIND_LIPID) {
+            set_component_kind(sys, comp, MD_COMPONENT_KIND_OTHER);
+        }
+    }
+    // A lipid by name too small or too large to look into is one without heads and tails
+    if (n <= 1 || n > LIPID_MAX_ATOMS || !atoms) {
+        if (named) record_lipid(sys, mol->comps, (size_t)nc);
         return;
     }
 
     const size_t pos = md_vm_arena_get_pos(temp_arena);
 
     uint8_t* apolar     = md_alloc(temp_arena, n);
+    uint8_t* letterless = md_alloc(temp_arena, n);                      // apolar, if it makes a chain (LIPID_BEAD_LETTERLESS)
     int32_t* part       = md_alloc(temp_arena, n * sizeof(int32_t));   // the apolar part of an atom, -1
     int32_t* part_atoms = md_alloc(temp_arena, n * sizeof(int32_t));   // the atoms of each part, contiguous
     int32_t* dist       = md_alloc(temp_arena, n * sizeof(int32_t));
@@ -10536,14 +10905,20 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     int32_t* queue      = md_alloc(temp_arena, n * sizeof(int32_t));
     int32_t* head       = md_alloc(temp_arena, n * sizeof(int32_t));   // the head of a heavy atom outside of the tails, -1
     uint8_t* tail       = md_alloc(temp_arena, n);                      // in a tail
+    uint8_t* has_tail   = md_alloc(temp_arena, nc);                     // a component holds an atom of a tail
+    uint8_t* in_lipid   = md_alloc(temp_arena, nc);                     // a component is of the lipid (lipid_extent)
+    int32_t* lipid_comps = md_alloc(temp_arena, nc * sizeof(int32_t));
     md_array(lipid_part_t) parts = 0;
 
     for (int32_t k = 0; k < n; ++k) {
-        apolar[k] = (uint8_t)(lipid_atom_is_heavy(sys, a0 + k) && lipid_atom_is_apolar(sys, a0 + k, sterol_beads));
+        const lipid_bead_t kind = lipid_atom_is_heavy(sys, atoms[k]) ? lipid_atom_kind(sys, atoms[k], sterol_beads) : LIPID_BEAD_POLAR;
+        apolar[k] = (uint8_t)(kind != LIPID_BEAD_POLAR);
+        letterless[k] = (uint8_t)(kind == LIPID_BEAD_LETTERLESS);
         part[k] = -1;
         head[k] = -1;
         tail[k] = 0;
     }
+    MEMSET(has_tail, 0, nc);
 
     // The connected apolar parts and what they hang off. The atoms of a part are part_atoms[beg, end), in the order
     // they were reached.
@@ -10551,27 +10926,32 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     for (int32_t s = 0; s < n; ++s) {
         if (!apolar[s] || part[s] != -1) continue;
         const int32_t id = (int32_t)md_array_size(parts);
-        lipid_part_t p = { .beg = num_part_atoms, .anchor = {-1, -1} };
+        lipid_part_t p = { .beg = num_part_atoms, .anchor = {-1, -1}, .letterless = true, .lettered = true };
         int32_t qb = num_part_atoms;
         part_atoms[num_part_atoms++] = s;
         part[s] = id;
         while (qb < num_part_atoms) {
             const int32_t k = part_atoms[qb++];
-            if (in_fused_ring && in_fused_ring[a0 + k]) p.skeleton = true;
+            int32_t degree = 0;
+            p.letterless &= letterless[k] != 0;
+            const bool bead = lipid_atom_is_bead(sys, atoms[k]);
+            p.lettered &= bead && lipid_bead_lettered(md_atom_name(&sys->atom, atoms[k]));
+            if (in_fused_ring && in_fused_ring[atoms[k]]) p.skeleton = true;
             // The ring beads of a sterol, whose bonds (a star of virtual sites in Martini 3) need not form rings
-            if (lipid_atom_is_bead(sys, a0 + k) && lipid_bead_sterol_ring(md_atom_name(&sys->atom, a0 + k))) p.skeleton = true;
-            md_bond_iter_t it = md_bond_iter(&sys->bond, a0 + k);
+            if (bead && lipid_bead_sterol_ring(md_atom_name(&sys->atom, atoms[k]))) p.skeleton = true;
+            md_bond_iter_t it = md_bond_iter(&sys->bond, atoms[k]);
             while (md_bond_iter_has_next(&it)) {
                 const int32_t j = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
                 if (!lipid_atom_is_heavy(sys, j)) continue;
-                if (j < (int32_t)a0 || j >= (int32_t)a1) {
+                const int32_t l = lipid_mol_local(mol, j);
+                if (l < 0) {
                     p.outside = true;
                     continue;
                 }
-                const int32_t l = j - (int32_t)a0;
                 if (apolar[l]) {
                     p.bonds += 1;
+                    degree += 1;
                     if (part[l] == -1) {
                         part[l] = id;
                         part_atoms[num_part_atoms++] = l;
@@ -10581,9 +10961,29 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
                     p.num_anchors = MIN(p.num_anchors + 1, 3);
                 }
             }
+            p.branched |= degree > 2;
         }
         p.end = num_part_atoms;
         md_array_push(parts, p, temp_arena);
+    }
+
+    // A coarse grained molecule the force field does not know, from a topology of its own (a ganglioside, a sphingomyelin
+    // named otherwise): a lipid when a chain of beads named as those of the tails of the Martini lipidomes (C1A C2A C3A,
+    // the letter of the tail after the number) hangs off the rest of the molecule, which has a bead of its own. Then it is
+    // looked into as a lipid by name, so that inferring again (the kind lipid now its name) gives the same.
+    if (cg && !named) {
+        bool lettered_tail = false;
+        const size_t num_parts = md_array_size(parts);
+        for (size_t pi = 0; pi < num_parts && !lettered_tail; ++pi) {
+            const lipid_part_t* p = &parts[pi];
+            const int32_t size = p->end - p->beg;
+            lettered_tail = p->lettered && !p->skeleton && !p->outside && !p->branched && p->num_anchors >= 1 && p->num_anchors <= 2 &&
+                            size >= 2 && p->bonds / 2 == size - 1;
+        }
+        bool polar = false;
+        for (int32_t k = 0; k < n && !polar; ++k) polar = !apolar[k] && lipid_atom_is_heavy(sys, atoms[k]);
+        if (!lettered_tail || !polar) goto done;
+        named = true;
     }
 
     // The tails among the parts, and their spines. The spine is found by a breadth first search within the part: from
@@ -10606,6 +11006,10 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         if (skeleton) {
             // The skeleton of a sterol hangs off its hydroxyl (or ester) alone
             if (p->num_anchors != 1 || size < (cg ? LIPID_MIN_SKELETON_BEADS : LIPID_MIN_SKELETON_ATOMS)) continue;
+        } else if (p->letterless && (p->bonds / 2 != size - 1 || p->branched || size < LIPID_MIN_CHAIN_LETTERLESS)) {
+            // Beads named without the letter of a tail are one only as a chain: the inositol of a phosphatidylinositol and
+            // the sugars of a glycolipid, named so too, are rings
+            continue;
         } else if (!named && p->bonds / 2 != size - 1) {
             // The chains of a lipid of no name hold no rings: a ring with alkyl groups (a drug, a dye) is no tail. Those of
             // lipids by name may (the cyclopropane of a fatty acid, the cyclopentanes of the chains of archaeal lipids).
@@ -10624,7 +11028,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
             const int32_t k = part_atoms[m];
             prev[k] = -1;
             dist[k] = -1;
-            if (md_bond_find(&sys->bond, a0 + k, anchor_beg) >= 0) {
+            if (md_bond_find(&sys->bond, atoms[k], anchor_beg) >= 0) {
                 dist[k] = 0;
                 queue[qe++] = k;
             }
@@ -10633,7 +11037,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         while (qb < qe) {
             const int32_t k = queue[qb++];
             if (anchor_end != -1) {
-                if (md_bond_find(&sys->bond, a0 + k, anchor_end) >= 0) {
+                if (md_bond_find(&sys->bond, atoms[k], anchor_end) >= 0) {
                     tip = k;
                     break;
                 }
@@ -10641,13 +11045,11 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
                 // The farthest atom, the last of them on a tie (the end of the side chain of a Martini cholesterol)
                 tip = k;
             }
-            md_bond_iter_t it = md_bond_iter(&sys->bond, a0 + k);
+            md_bond_iter_t it = md_bond_iter(&sys->bond, atoms[k]);
             while (md_bond_iter_has_next(&it)) {
-                const int32_t j = md_bond_iter_atom_index(&it);
+                const int32_t l = lipid_mol_local(mol, md_bond_iter_atom_index(&it));
                 md_bond_iter_next(&it);
-                if (j < (int32_t)a0 || j >= (int32_t)a1) continue;
-                const int32_t l = j - (int32_t)a0;
-                if (part[l] == (int32_t)pi && dist[l] == -1) {
+                if (l >= 0 && part[l] == (int32_t)pi && dist[l] == -1) {
                     dist[l] = dist[k] + 1;
                     prev[l] = k;
                     queue[qe++] = l;
@@ -10657,7 +11059,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         if (tip == -1) continue;
 
         const int32_t len = dist[tip] + 1;
-        const int32_t min_len = skeleton ? 1 : (cg ? LIPID_MIN_CHAIN_BEADS : (named ? LIPID_MIN_CHAIN_NAMED : LIPID_MIN_CHAIN_UNNAMED));
+        const int32_t min_len = skeleton ? 1 : (cg ? (p->letterless ? LIPID_MIN_CHAIN_LETTERLESS : LIPID_MIN_CHAIN_BEADS) : (named ? LIPID_MIN_CHAIN_NAMED : LIPID_MIN_CHAIN_UNNAMED));
         if (len < min_len) continue;
 
         const int32_t base = (int32_t)md_array_size(spines);
@@ -10665,7 +11067,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         md_array_resize(spines, (size_t)r.end, temp_arena);
         int32_t at = r.end - 1;
         for (int32_t k = tip; k != -1; k = prev[k]) {
-            spines[at--] = (int32_t)a0 + k;
+            spines[at--] = atoms[k];
         }
         ASSERT(at == base - 1);
         md_array_push(spine_ranges, r, temp_arena);
@@ -10675,6 +11077,7 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         md_array_push(tail_anchor_end, anchor_end, temp_arena);
         for (int32_t m = p->beg; m < p->end; ++m) {
             tail[part_atoms[m]] = 1;
+            has_tail[mol->member[part_atoms[m]]] = 1;
         }
     }
 
@@ -10682,9 +11085,12 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     // tails: it is a lipid molecule still
     const size_t num_tails = md_array_size(spine_ranges);
     if (num_tails == 0) {
-        if (named) record_lipid(sys, comp_beg, comp_end);
+        if (named) record_lipid(sys, mol->comps, (size_t)nc);
         goto done;
     }
+
+    // The components of the lipid, and of what is attached to it
+    lipid_extent(in_lipid, sys, mol, has_tail, temp_arena);
 
     // A molecule of no lipid needs a polar head: an atom other than carbon outside of its tails. Its head is of the
     // elements of lipids (C, N, O, P, S) and is not aromatic: a porphyrin with a phytyl or farnesyl tail (chlorophyll,
@@ -10692,39 +11098,39 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
     if (!named) {
         bool polar = false;
         for (int32_t k = 0; k < n; ++k) {
-            if (tail[k]) continue;
-            const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, a0 + k);
+            if (tail[k] || !in_lipid[mol->member[k]]) continue;
+            const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, atoms[k]);
             if (z <= MD_Z_H) continue;
             if (z != MD_Z_C && z != MD_Z_N && z != MD_Z_O && z != MD_Z_P && z != MD_Z_S) goto done;
-            if (md_atom_flags(&sys->atom, a0 + k) & MD_ATOM_FLAG_AROMATIC) goto done;
+            if (md_atom_flags(&sys->atom, atoms[k]) & MD_ATOM_FLAG_AROMATIC) goto done;
             polar |= z != MD_Z_C;
         }
         if (!polar) goto done;
     }
 
-    // The heads: the connected parts of the heavy atoms outside of the tails, each in ascending order
+    // The heads: the connected parts of the heavy atoms of the lipid outside of the tails, each in ascending order
     const uint32_t head_base = (uint32_t)lipid->head.count;
     uint32_t num_heads = 0;
     for (int32_t s = 0; s < n; ++s) {
-        if (tail[s] || head[s] != -1 || !lipid_atom_is_heavy(sys, a0 + s)) continue;
+        if (tail[s] || head[s] != -1 || !in_lipid[mol->member[s]] || !lipid_atom_is_heavy(sys, atoms[s])) continue;
         int32_t qb = 0, qe = 0;
         queue[qe++] = s;
         head[s] = (int32_t)num_heads;
         while (qb < qe) {
             const int32_t k = queue[qb++];
-            md_bond_iter_t it = md_bond_iter(&sys->bond, a0 + k);
+            md_bond_iter_t it = md_bond_iter(&sys->bond, atoms[k]);
             while (md_bond_iter_has_next(&it)) {
                 const int32_t j = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
-                if (j < (int32_t)a0 || j >= (int32_t)a1) continue;
-                const int32_t l = j - (int32_t)a0;
-                if (!tail[l] && head[l] == -1 && lipid_atom_is_heavy(sys, j)) {
+                const int32_t l = lipid_mol_local(mol, j);
+                if (l < 0) continue;
+                if (!tail[l] && head[l] == -1 && in_lipid[mol->member[l]] && lipid_atom_is_heavy(sys, j)) {
                     head[l] = (int32_t)num_heads;
                     queue[qe++] = l;
                 }
             }
         }
-        for (int32_t m = 0; m < qe; ++m) queue[m] += (int32_t)a0;
+        for (int32_t m = 0; m < qe; ++m) queue[m] = atoms[queue[m]];
         qsort(queue, (size_t)qe, sizeof(int32_t), lipid_cmp_i32);
         md_index_data_push_arr(&lipid->head.atoms, queue, (size_t)qe);
         num_heads += 1;
@@ -10738,13 +11144,13 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
         const lipid_part_t* p = &parts[tail_part[t]];
         int32_t m = 0;
         for (int32_t q = p->beg; q < p->end; ++q) {
-            const uint32_t i = a0 + (uint32_t)part_atoms[q];
-            queue[m++] = (int32_t)i;
+            const int32_t i = atoms[part_atoms[q]];
+            queue[m++] = i;
             md_bond_iter_t it = md_bond_iter(&sys->bond, i);
             while (md_bond_iter_has_next(&it)) {
                 const int32_t j = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
-                if (a0 <= (uint32_t)j && (uint32_t)j < a1 && md_atom_atomic_number(&sys->atom, j) == MD_Z_H && m < n) {
+                if (lipid_mol_local(mol, j) >= 0 && md_atom_atomic_number(&sys->atom, j) == MD_Z_H && m < n) {
                     queue[m++] = j;
                 }
             }
@@ -10765,8 +11171,8 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
 
         const int32_t ab = tail_anchor_beg[t];
         const int32_t ae = tail_anchor_end[t];
-        const uint32_t hb = head_base + (uint32_t)head[ab - (int32_t)a0];
-        const uint32_t he = ae != -1 ? head_base + (uint32_t)head[ae - (int32_t)a0] : UINT32_MAX;
+        const uint32_t hb = head_base + (uint32_t)head[lipid_mol_local(mol, ab)];
+        const uint32_t he = ae != -1 ? head_base + (uint32_t)head[lipid_mol_local(mol, ae)] : UINT32_MAX;
         md_array_push(lipid->tail.anchor_beg, ab, alloc);
         md_array_push(lipid->tail.anchor_end, ae, alloc);
         md_array_push(lipid->tail.head_beg, hb, alloc);
@@ -10776,7 +11182,19 @@ static void infer_lipid_molecule(md_system_t* sys, size_t comp_beg, size_t comp_
 
     lipid->head.count += num_heads;
     lipid->tail.count += num_tails;
-    record_lipid(sys, comp_beg, comp_end);
+
+    {
+        // What is attached to the lipid is no lipid, whatever its name
+        int32_t num_lipid_comps = 0;
+        for (int32_t c = 0; c < nc; ++c) {
+            if (in_lipid[c]) {
+                lipid_comps[num_lipid_comps++] = mol->comps[c];
+            } else if (md_component_kind(&sys->component, (size_t)mol->comps[c]) == MD_COMPONENT_KIND_LIPID) {
+                set_component_kind(sys, (size_t)mol->comps[c], MD_COMPONENT_KIND_OTHER);
+            }
+        }
+        record_lipid(sys, lipid_comps, (size_t)num_lipid_comps);
+    }
 
 done:
     md_vm_arena_set_pos_back(temp_arena, pos);
@@ -10794,6 +11212,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
     // Derived from scratch
     md_lipid_data_free(&sys->lipid, alloc);
     md_lipid_data_t* lipid = &sys->lipid;
+    lipid->comps.alloc = alloc;
     lipid->head.atoms.alloc = alloc;
     lipid->tail.spine.alloc = alloc;
     lipid->tail.atoms.alloc = alloc;
@@ -10833,20 +11252,81 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
         for (const int32_t* it = beg; it < end; ++it) in_fused_ring[*it] = 1;
     }
 
-    size_t comp = 0;
-    while (comp < sys->component.count) {
-        if (!lipid_candidate_comp(sys, comp)) {
-            comp += 1;
-            continue;
+    // The molecules: the components which may be of a lipid (not amino acids, nucleotides, water or ions), joined by the
+    // bonds between them, wherever they are in the system
+    const size_t num_comps = sys->component.count;
+    int32_t* root = md_alloc(temp_arena, num_comps * sizeof(int32_t));
+    for (size_t c = 0; c < num_comps; ++c) {
+        root[c] = lipid_candidate_comp(sys, c) ? (int32_t)c : -1;
+    }
+    for (size_t c = 0; c < num_comps; ++c) {
+        if (root[c] < 0) continue;
+        const md_urange_t range = md_component_atom_range(&sys->component, c);
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+            while (md_bond_iter_has_next(&it)) {
+                const uint32_t j = (uint32_t)md_bond_iter_atom_index(&it);
+                md_bond_iter_next(&it);
+                if (range.beg <= j && j < range.end) continue;
+                const md_component_idx_t d = md_system_component_find_by_atom_idx(sys, j);
+                if (d < 0 || root[d] < 0) continue;
+                lipid_union(root, (int32_t)c, (int32_t)d);
+            }
         }
-        const uint32_t beg = md_component_atom_range(&sys->component, comp).beg;
-        size_t end = comp + 1;
-        while (end < sys->component.count && lipid_candidate_comp(sys, end) &&
-               lipid_comp_bonded_to(sys, end, beg, md_component_atom_range(&sys->component, end - 1).end)) {
-            end += 1;
+    }
+
+    // The components of each molecule, ascending, after one another
+    int32_t* count = md_alloc(temp_arena, num_comps * sizeof(int32_t));
+    int32_t* start = md_alloc(temp_arena, num_comps * sizeof(int32_t));
+    MEMSET(count, 0, num_comps * sizeof(int32_t));
+    size_t num_members = 0;
+    for (size_t c = 0; c < num_comps; ++c) {
+        if (root[c] < 0) continue;
+        root[c] = lipid_find(root, (int32_t)c);
+        count[root[c]] += 1;
+        num_members += 1;
+    }
+    int32_t* members = md_alloc(temp_arena, MAX(num_members, 1) * sizeof(int32_t));
+    int32_t pos = 0;
+    for (size_t c = 0; c < num_comps; ++c) {
+        start[c] = pos;
+        if (root[c] == (int32_t)c) pos += count[c];
+    }
+    MEMSET(count, 0, num_comps * sizeof(int32_t));
+    for (size_t c = 0; c < num_comps; ++c) {
+        if (root[c] < 0) continue;
+        const int32_t r = root[c];
+        members[start[r] + count[r]++] = (int32_t)c;
+    }
+
+    for (size_t c = 0; c < num_comps; ++c) {
+        if (root[c] != (int32_t)c) continue;
+        const int32_t* comps = members + start[c];
+        const int32_t nc = count[c];
+
+        size_t n = 0;
+        for (int32_t m = 0; m < nc; ++m) {
+            const md_urange_t r = md_component_atom_range(&sys->component, (size_t)comps[m]);
+            n += r.end - r.beg;
         }
-        infer_lipid_molecule(sys, comp, end, in_fused_ring, temp_arena);
-        comp = end;
+        lipid_mol_t mol = { .comps = comps, .num_comps = nc, .n = (int32_t)MIN(n, (size_t)INT32_MAX) };
+        const size_t mark = md_vm_arena_get_pos(temp_arena);
+        if (n <= LIPID_MAX_ATOMS) {
+            mol.atoms  = md_alloc(temp_arena, MAX(n, 1) * sizeof(int32_t));
+            mol.member = md_alloc(temp_arena, MAX(n, 1) * sizeof(int32_t));
+            int32_t k = 0;
+            for (int32_t m = 0; m < nc; ++m) {
+                const md_urange_t r = md_component_atom_range(&sys->component, (size_t)comps[m]);
+                for (uint32_t i = r.beg; i < r.end; ++i) {
+                    mol.atoms[k] = (int32_t)i;
+                    mol.member[k] = m;
+                    k += 1;
+                }
+            }
+            mol.contiguous = n > 0 && mol.atoms[n - 1] - mol.atoms[0] == (int32_t)n - 1;
+        }
+        infer_lipid_molecule(sys, &mol, in_fused_ring, temp_arena);
+        md_vm_arena_set_pos_back(temp_arena, mark);
     }
 
     md_temp_end(temp);
@@ -11147,16 +11627,23 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                         md_nucleic_acid_atoms_t atoms;
                         md_urange_t atom_range = md_component_atom_range(&sys->component, comp_idx);
                         bool has_backbone_atoms = md_util_nucleic_acid_atoms_extract(&atoms, &sys->atom, atom_range);
+                        if (!has_backbone_atoms) {
+                            // A coarse grained nucleotide: its backbone beads
+                            has_backbone_atoms = nucleotide_backbone_beads(&atoms, sys, (size_t)comp_idx);
+                        }
 
                         if (has_backbone_atoms) {
                             md_sequence_id_t seq_id = md_system_component_seq_id(sys, comp_idx);
                             size_t backbone_length = md_array_size(backbone_atoms);
 
                             if (backbone_length > 0) {
-                                // The residue before it in the chain: a range ends where the chain breaks (CHAIN BREAKS
-                                // in md_util.h), and a residue without its P, which is linked to nothing before it, begins one
+                                // The residue before it in the chain: a range is of atoms or of beads throughout, and
+                                // ends where the chain breaks (CHAIN BREAKS in md_util.h); a residue without its P (or
+                                // phosphate bead), which is linked to nothing before it, begins one
                                 const md_nucleic_acid_atoms_t prev = *md_array_last(backbone_atoms);
-                                if (!nucleic_backbone_linked(sys, state, &prev, &atoms, seq_id == prev_seq_id + 1)) {
+                                if (nucleic_atoms_are_beads(&atoms) != nucleic_atoms_are_beads(&prev)) {
+                                    flush_nucleic_backbone_segment(backbone_atoms, &comp_base, inst_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                                } else if (!nucleic_backbone_linked(sys, state, &prev, &atoms, seq_id == prev_seq_id + 1)) {
                                     if (!nucleic_chain_ends_between(sys, &prev, &atoms)) {
                                         mark_chain_break(sys, (size_t)comp_idx - 1, (size_t)comp_idx);
                                     }

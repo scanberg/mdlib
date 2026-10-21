@@ -140,12 +140,14 @@ typedef struct md_pdb_cryst1_t {
     int32_t z;
 } md_pdb_cryst1_t;
 
-// This structure represents the Biomolecule Assembly information found in REMARK 350
-// In order to fully reconstruct the molecular structure, atoms within certain chains should be duplicated and transformed
+// The biomolecules (assemblies) of REMARK 350, a group of chains of one at a time: a biomolecule copies the chains of
+// each group ("APPLY THE FOLLOWING TO CHAINS:" and the "AND CHAINS:" lines after it) by each of the BIOMT transforms
+// which follow the group. The chains of the group are assembly_chains[chain_offset, chain_offset + chain_count) (their
+// ids, a character each), its transforms transforms[transform_offset, transform_offset + transform_count).
 typedef struct md_pdb_assembly_t {
-    int32_t id;
-    char    apply_to_chains[32];
-    // These offset and count refer into the separate transform array
+    int32_t  id;                // The number of the biomolecule, which its groups share
+    uint32_t chain_offset;
+    uint32_t chain_count;
     uint32_t transform_offset;
     uint32_t transform_count;
 } md_pdb_assembly_t;
@@ -164,7 +166,9 @@ typedef struct md_pdb_data_t {
     size_t num_connections;
     md_pdb_connect_t* connections;
     size_t num_assemblies;
-    md_pdb_assembly_t* assemblies;
+    md_pdb_assembly_t* assemblies;      // A group of chains of a biomolecule each
+    size_t num_assembly_chains;
+    char* assembly_chains;
     size_t num_transforms;
     struct mat4_t* transforms;
 } md_pdb_data_t;

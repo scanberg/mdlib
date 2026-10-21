@@ -121,6 +121,10 @@ typedef struct md_protein_backbone_data_t {
     } segment;
 } md_protein_backbone_data_t;
 
+// A nucleic range is ATOMISTIC, each segment the backbone and sugar atoms of its nucleotide, or COARSE GRAINED: the
+// backbone beads of a Martini nucleotide in the fields of the atoms they hold, the phosphate bead (BB1) in p, the sugar
+// beads with the C4' (BB2) and the C1' (BB3) in c4 and c1, the other fields -1 (p too at a 5' end). A range is one or
+// the other throughout (md_nucleic_backbone_range_is_coarse_grained).
 typedef struct md_nucleic_backbone_data_t {
     // This holds the consecutive ranges which form the backbones
     struct {
@@ -150,13 +154,18 @@ typedef struct md_nucleic_backbone_data_t {
 // tip (or, for a spanning chain, on to where it joins its other head). Methyl branches and the atoms of the rings off the
 // shortest way through a skeleton are not on it. The spine is what a spline of the tail follows.
 //
-// A lipid is a molecule: a run of consecutive components bonded to each other (a lipid split into head and tails, as the
-// AMBER lipids are, is one), all of them MD_COMPONENT_KIND_LIPID. Every lipid molecule of the system is here, also one
-// whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of the
-// tails are MD_ATOM_FLAG_LIPID_TAIL.
+// A lipid is a molecule, components bonded to each other wherever they are in the system (a lipid split into head and
+// tails, as the AMBER lipids are, is one; so is a lipid A whose acyl chains are ligands of their own), all of them
+// MD_COMPONENT_KIND_LIPID. Of a molecule of several components which holds a lipid and more (a glycolipid or a
+// lipopolysaccharide whose sugars are residues of their own, a PEG lipid whose monomers are), the lipid is the
+// components which hold the tails and those between them, and the components bonded to these: the head group of a
+// residue of its own, the first sugar of a glycolipid, the first Kdo of a lipid A. The rest of the molecule is attached
+// to the lipid but no part of it, nor of its heads, and keeps its kind. Every lipid molecule of the system is here, also
+// one whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of
+// the tails are MD_ATOM_FLAG_LIPID_TAIL.
 typedef struct md_lipid_data_t {
     size_t count;                       // Lipid molecules
-    md_urange_t* comp_range;            // [count] The components of each lipid
+    md_index_data_t comps;              // The components of each lipid, ascending (not necessarily consecutive)
     uint32_t* head_offset;              // [count + 1] The heads of lipid i are head_offset[i] .. head_offset[i + 1]
     uint32_t* tail_offset;              // [count + 1] Its tails, tail_offset[i] .. tail_offset[i + 1]
 
@@ -177,16 +186,46 @@ typedef struct md_lipid_data_t {
     } tail;
 } md_lipid_data_t;
 
-// This represents symmetries which are instanced, commonly found
-// in PDB and mmcif data. It is up to the renderer to properly render this instanced data.
+// ASSEMBLIES. The biological assemblies of a deposited structure (mmCIF pdbx_struct_assembly, PDB REMARK 350): an
+// assembly is made of parts, and a part is a set of instances of the system copied by each of a set of operators,
+// rigid transforms of the coordinates of the system. The atoms are not copied: an assembly is a way of showing those of
+// the system, with the copies of its instances where the operators take them. The coordinates of the system are an
+// assembly only where one says so: one which keeps them as they are has the identity among its operators, and of the
+// instances only those it names.
+//
+// The form is canonical: within an assembly every operator is in one part only (the rows of a file which share an
+// operator are merged, md_system_assemblies_init), so that the operator names one copy, and what is bonded across
+// instances of a copy (a glycan, a ligand, a disulfide between chains) is in the same part. The operators are the
+// system's, shared by its assemblies; a product of operators (mmCIF "(1-60)(61-88)") is an operator of its own.
 typedef struct md_assembly_data_t {
-    size_t count;
-    md_urange_t* atom_range;
-    md_label_t* label;
-    mat4_t* transform;
+    size_t              count;              // Assemblies
+    md_label_t*         id;                 // [count] As the file names them ("1", "2", "PAU")
+    uint32_t*           part_offset;        // [count + 1] The parts of assembly i: [part_offset[i], part_offset[i + 1])
+
+    size_t              part_count;
+    uint32_t*           part_inst_offset;   // [part_count + 1] The instances of each part in inst
+    md_instance_idx_t*  inst;               // In increasing order within a part
+    uint32_t*           part_oper_offset;   // [part_count + 1] The operators of each part in oper
+    uint32_t*           oper;               // Operator indices, in the order the file gives them
+
+    size_t              oper_count;
+    md_label_t*         oper_id;            // [oper_count] As the file names it ("1", "X0"); a product its factors ("1x61")
+    mat4_t*             oper_transform;     // [oper_count] Rigid: a rotation (possibly improper) and a translation
 } md_assembly_data_t;
 
-// Atom centric representation of bonds
+// One row of the description of an assembly, as the files give them: the instances which each of the operators copies
+// (mmCIF pdbx_struct_assembly_gen, a group of chains of REMARK 350 with its BIOMT)
+typedef struct md_assembly_gen_t {
+    md_label_t                  assembly_id;
+    const md_instance_idx_t*    inst;
+    size_t                      inst_count;
+    const uint32_t*             oper;       // Indices of operators
+    size_t                      oper_count;
+} md_assembly_gen_t;
+
+// Atom centric representation of bonds: the graph of the molecules, every bond but the elastic ones
+// (MD_BOND_FLAG_ELASTIC), which are springs of the force field and connect nothing. Whatever follows bonds through it
+// (md_bond_iter, md_bond_find, the structures, rings and chemistry) leaves them out.
 typedef struct md_bond_conn_data_t {
     size_t count;
     md_atom_idx_t* atom_idx; // Indices to the 'other' atoms
@@ -197,12 +236,12 @@ typedef struct md_bond_conn_data_t {
     uint32_t* offset;
 } md_bond_conn_data_t;
 
-// Bond centric representation
+// Bond centric representation: every bond, the elastic ones (MD_BOND_FLAG_ELASTIC) included
 typedef struct md_bond_data_t {
     size_t count;
     md_atom_pair_t*  pairs;
     md_bond_flags_t* flags;
-    md_bond_conn_data_t  conn;   // Connectivity
+    md_bond_conn_data_t  conn;   // Connectivity, without the elastic bonds
 } md_bond_data_t;
 
 typedef struct md_bond_iter_t {
@@ -374,7 +413,7 @@ typedef struct md_system_t {
     md_array(md_ring_flags_t)   ring_flags;         // [ring count] What each ring is (md_ring_flags_t), see md_system_ring_flags
     md_structure_data_t         structure;          // Isolated structures connected by persistent bonds (plus hierarchy links for coarse grained systems)
 
-    md_assembly_data_t          assembly;           // Assemblies of  (duplications of ranges with new transforms)
+    md_assembly_data_t          assembly;           // The biological assemblies of a deposited structure, see md_assembly_data_t
     
     // ONE table, holding everything this system carries that is not one of the fields above.
     //
@@ -401,6 +440,74 @@ extern "C" {
 
 // Records that the topology of the system changed: gives it a new topology_version, which it returns
 uint64_t md_system_topology_changed(md_system_t* sys);
+
+// ASSEMBLIES (md_assembly_data_t). Sets the assemblies of the system from the rows of a file and its operators: the
+// rows of an assembly id are merged into its parts in canonical form, the instances of each operator the union of those
+// of the rows which name it, and the operators with the same instances one part. The assemblies are in the order their
+// ids first appear, an assembly's parts in the order of their first operator, and the operators of a part in the order
+// they first appear. Instances out of range are left out; a row without instances or operators adds nothing.
+// An operator which is not rigid is logged, and kept. Replaces the previous assemblies; false (and none) on bad input.
+bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const mat4_t* oper_transform, const md_label_t* oper_id, size_t oper_count);
+void md_system_assemblies_free(md_system_t* sys);
+
+static inline size_t md_assembly_count(const md_assembly_data_t* a) {
+    ASSERT(a);
+    return a->count;
+}
+
+// The parts of an assembly
+static inline md_urange_t md_assembly_part_range(const md_assembly_data_t* a, size_t asm_idx) {
+    ASSERT(a);
+    md_urange_t r = {0};
+    if (a->part_offset && asm_idx < a->count) {
+        r.beg = a->part_offset[asm_idx];
+        r.end = a->part_offset[asm_idx + 1];
+    }
+    return r;
+}
+
+// The instances of a part: inst[beg, end)
+static inline md_urange_t md_assembly_part_inst_range(const md_assembly_data_t* a, size_t part_idx) {
+    ASSERT(a);
+    md_urange_t r = {0};
+    if (a->part_inst_offset && part_idx < a->part_count) {
+        r.beg = a->part_inst_offset[part_idx];
+        r.end = a->part_inst_offset[part_idx + 1];
+    }
+    return r;
+}
+
+// The operators of a part: oper[beg, end)
+static inline md_urange_t md_assembly_part_oper_range(const md_assembly_data_t* a, size_t part_idx) {
+    ASSERT(a);
+    md_urange_t r = {0};
+    if (a->part_oper_offset && part_idx < a->part_count) {
+        r.beg = a->part_oper_offset[part_idx];
+        r.end = a->part_oper_offset[part_idx + 1];
+    }
+    return r;
+}
+
+static inline str_t md_assembly_id(const md_assembly_data_t* a, size_t asm_idx) {
+    ASSERT(a);
+    str_t id = STR_INIT("");
+    if (a->id && asm_idx < a->count) {
+        id = LBL_TO_STR(a->id[asm_idx]);
+    }
+    return id;
+}
+
+// The copies an assembly is made of: the operators of all of its parts
+static inline size_t md_assembly_copy_count(const md_assembly_data_t* a, size_t asm_idx) {
+    ASSERT(a);
+    size_t n = 0;
+    const md_urange_t parts = md_assembly_part_range(a, asm_idx);
+    for (uint32_t p = parts.beg; p < parts.end; ++p) {
+        const md_urange_t ops = md_assembly_part_oper_range(a, p);
+        n += ops.end - ops.beg;
+    }
+    return n;
+}
 
 // Atom type table helper functions
 static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
@@ -1064,6 +1171,13 @@ static inline bool md_protein_backbone_range_is_trace(const md_protein_backbone_
     return backbone->segment.atoms && backbone->segment.atoms[backbone->range.offset[range_idx]].n < 0;
 }
 
+// Whether a nucleic backbone range is of coarse grained beads rather than atoms (see md_nucleic_backbone_data_t)
+static inline bool md_nucleic_backbone_range_is_coarse_grained(const md_nucleic_backbone_data_t* backbone, size_t range_idx) {
+    ASSERT(backbone);
+    ASSERT(range_idx < backbone->range.count);
+    return backbone->segment.atoms && backbone->segment.atoms[backbone->range.offset[range_idx]].o5 < 0;
+}
+
 static inline size_t md_system_entity_count(const md_system_t* sys) {
     ASSERT(sys);
     return sys->entity.count;
@@ -1220,7 +1334,7 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
     return it;
 }
 
-// This is not something which should be done frequently
+// This is not something which should be done frequently. The elastic bonds (MD_BOND_FLAG_ELASTIC) are left out.
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc);
 void md_system_bond_build_connectivity(md_system_t* sys);
 
@@ -1264,6 +1378,7 @@ static inline uint32_t md_bond_iter_bond_flags(const md_bond_iter_t* it) {
     return it->data->flags[it->data->conn.bond_idx[it->i]];
 }
 
+// The bond between two atoms in the connectivity, -1 when there is none: an elastic bond is not found
 static inline md_bond_idx_t md_bond_find(const md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
     ASSERT(bond_data);
 	md_bond_iter_t it = md_bond_iter(bond_data, atom_idx_a);
@@ -1281,7 +1396,8 @@ static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_
     ASSERT(bond_data);
     ASSERT(alloc);
 
-    // Ensure that the bond does not exist
+    // Ensure that the bond does not exist. An elastic bond between the two atoms is not found, and does not stand in for
+    // a bond of the molecule.
 	md_bond_idx_t bond_idx = md_bond_find(bond_data, atom_idx_a, atom_idx_b);
     if (bond_idx != -1) {
         return;

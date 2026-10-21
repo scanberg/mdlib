@@ -23,7 +23,9 @@
 //
 // A control point with FLAG_FIXED_FACE (the tubes of md_gl_mol_set_tubes with a particle to face, the backbone of a
 // nucleic acid facing its bases) takes no orientation from the curve: the flat faces of its profile face the direction
-// extracted for it, so the support (the long axis of the profile) is perpendicular to that and to the tangent.
+// extracted for it, so the support (the long axis of the profile) is perpendicular to that and to the tangent. One with
+// FLAG_FIXED_SIDE (a tube with a particle for its side: the ring system of a sterol) has the support along the direction
+// extracted for it, perpendicular to the tangent.
 
 //
 // A control point with FLAG_THROUGH is moved so that the B-spline passes (nearly) through it rather than near it: the
@@ -34,6 +36,7 @@
 #define FLAG_FLIP_NEXT  16u
 #define FLAG_FIXED_FACE 32u
 #define FLAG_THROUGH    64u
+#define FLAG_FIXED_SIDE 128u
 
 uniform usamplerBuffer u_buf_control_point_words;       // Extracted control points (gl_control_point_t as uint32 words)
 uniform usamplerBuffer u_buf_prev_control_point_words;  // Oriented control points of the previous computation
@@ -127,6 +130,13 @@ void frame_at(uint j, out vec3 tangent, out vec3 support) {
 
     if ((load_flags(j) & FLAG_FIXED_FACE) != 0u) {
         vec3 s = cross(load_carbonyl(j), tangent);
+        float s2 = dot(s, s);
+        support = s2 > 1.0e-6 ? s * inversesqrt(s2) : any_perpendicular(tangent);
+        return;
+    }
+    if ((load_flags(j) & FLAG_FIXED_SIDE) != 0u) {
+        vec3 s = load_carbonyl(j);
+        s -= tangent * dot(s, tangent);
         float s2 = dot(s, s);
         support = s2 > 1.0e-6 ? s * inversesqrt(s2) : any_perpendicular(tangent);
         return;
