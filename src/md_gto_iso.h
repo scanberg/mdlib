@@ -340,7 +340,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     bool corners_v2;        // corners in registers (iso_corners_f*), else iso_corners / iso_corners_orbital
     bool eval_v2;           // density vertices in registers (iso_eval_f*), else iso_eval
     bool newton_predict;    // Newton ends on a predicted error
-    bool skip_brick_test;   // the octree's last level not bounded
+    bool skip_brick_test;   // the octree's last level not bounded, the corners deciding (default)
     bool shared_corners;    // high-face corners taken from the neighbour (with corners_v2)
     int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12)
     bool corners_list;      // corners from a point list, 256 points per group (with corners_v2)
@@ -365,7 +365,6 @@ typedef struct md_gto_iso_gpu_switches_t {
     int  octree_start;      // the first level the octree tests (0..3), the levels above keeping every node
     bool dform_corners;     // sets of densities: the corners in the D form, the vertices as without it
     int  flood;             // APPROXIMATE corners from seeds and a flood: 0 off, 1 densities with weights >= 0, 2 every field
-    bool flood_brick_test;  // the octree's last level bounded with the flood as well (else the brick corners decide)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
