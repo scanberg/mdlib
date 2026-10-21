@@ -100,6 +100,16 @@
 #define CHAIN_GAP_GAP_LENGTH      4.0f
 
 #define UBO_SIZE (1 << 10)
+
+// The uniform buffers of the draws (ubo_write): a ring of buffer objects, each write of the uniforms to the next one.
+// One buffer written before every draw (glBufferSubData) is a buffer that the draws queued before it still read, and a
+// GL that does not copy the data waits for them to finish (Apple documents this of its GL): the CPU then waits for the
+// GPU at every md_gl_draw and every op in it, and work drawn in several passes over the same geometry (transparency) runs
+// in lockstep, the CPU time of each pass the GPU time of the one before (as an M4 Pro profiled). A buffer of the ring is
+// written again UBO_RING writes later, when what read it is long done (a frame writes some tens), and respecified whole
+// (glBufferData), which lets a driver give it new storage should it still be read. The instances and the lists of a
+// draw are respecified whole already (glBufferData), not written into.
+#define UBO_RING 256
 #define SHADER_BUF_SIZE KILOBYTES(14)
 
 
@@ -557,7 +567,9 @@ typedef struct {
     // Shared resources
     GLuint vao;
     GLuint fbo;
-    gl_buffer_t ubo;
+    GLuint ubo[UBO_RING];           // The ring of uniform buffers (ubo_write)
+    uint32_t ubo_next;              // The one written next
+    uint8_t ubo_data[UBO_SIZE];     // What the draws read: the shared part (gl_ubo_base_t), a draw's parameters after it
     gl_buffer_t instance_buf;       // INSTANCES of the draw, RGBA32F
     gl_buffer_t list_buf;           // Lists of the draw (MARKS), u32: atoms (indices of the spheres), control points, blocks
     gl_texture_t texture[GL_TEXTURE_COUNT];
@@ -662,6 +674,18 @@ static inline bool validate_context(void) {
         return false;
     }
     return true;
+}
+
+// The uniforms of the draws from offset on (the shared part at 0, a draw's parameters after it), with the rest as last
+// written, into the next buffer of the ring (UBO_RING), which is then the one bound
+static void ubo_write(uint32_t offset, uint32_t size, const void* data) {
+    ASSERT(offset + size <= UBO_SIZE);
+    MEMCPY(ctx.ubo_data + offset, data, size);
+    const GLuint buf = ctx.ubo[ctx.ubo_next];
+    ctx.ubo_next = (ctx.ubo_next + 1) % UBO_RING;
+    glBindBuffer(GL_UNIFORM_BUFFER, buf);
+    glBufferData(GL_UNIFORM_BUFFER, UBO_SIZE, ctx.ubo_data, GL_STREAM_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, buf);
 }
 
 
@@ -1517,7 +1541,13 @@ void md_gl_initialize(void) {
     }
 
     glGenFramebuffers(1, &ctx.fbo);
-    ctx.ubo = gl_buffer_create(UBO_SIZE, NULL, GL_DYNAMIC_DRAW);
+    glGenBuffers(UBO_RING, ctx.ubo);
+    for (uint32_t i = 0; i < UBO_RING; ++i) {
+        glBindBuffer(GL_UNIFORM_BUFFER, ctx.ubo[i]);
+        glBufferData(GL_UNIFORM_BUFFER, UBO_SIZE, NULL, GL_STREAM_DRAW);
+    }
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    ctx.ubo_next = 0;
 
     for (uint32_t i = 0; i < GL_TEXTURE_COUNT; ++i) {
         glGenTextures(1, &ctx.texture[i].id);
@@ -1668,7 +1698,8 @@ void md_gl_initialize(void) {
 void md_gl_shutdown(void) {
     if (ctx.vao) glDeleteVertexArrays(1, &ctx.vao);
     if (ctx.fbo) glDeleteFramebuffers(1, &ctx.fbo);
-    if (ctx.ubo.id) glDeleteBuffers(1, &ctx.ubo.id);
+    if (ctx.ubo[0]) glDeleteBuffers(UBO_RING, ctx.ubo);
+    MEMSET(ctx.ubo, 0, sizeof(ctx.ubo));
     for (uint32_t i = 0; i < GL_TEXTURE_COUNT; ++i) {
         if (ctx.texture[i].id) glDeleteTextures(1, &ctx.texture[i].id);
     }
@@ -4210,8 +4241,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     gl_ubo_base_t ubo_data = {0};
     init_ubo_base_data(&ubo_data, args);
 
-    gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(ubo_data), &ubo_data);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo.id);
+    ubo_write(0, sizeof(ubo_data), &ubo_data);
 
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
@@ -4531,7 +4561,7 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
         return false;
     }
 
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(scale), &scale);
+    ubo_write(sizeof(gl_ubo_base_t), sizeof(scale), &scale);
 
     glBindVertexArray(ctx.vao);
 
@@ -4598,7 +4628,7 @@ static bool draw_bonds(gl_program_t program, const molecule_t* mol, gl_buffer_t 
     p.bond_orders = (p.bond_orders && bonds.order.id && bonds.order_ref.id) ? 1 : 0;
     p.bond_kinds  = (p.bond_kinds && bonds.order.id) ? 1 : 0;
     p.elastic_bonds = p.elastic_bonds ? 1 : 0;
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(bond_params_t), &p);
+    ubo_write(sizeof(gl_ubo_base_t), sizeof(bond_params_t), &p);
 
     glBindVertexArray(ctx.vao);
 
@@ -4700,7 +4730,7 @@ static bool draw_chain_gaps(gl_program_t program, const molecule_t* mol, gl_buff
         return false;
     }
 
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(bond_params_t), params);
+    ubo_write(sizeof(gl_ubo_base_t), sizeof(bond_params_t), params);
 
     glBindVertexArray(ctx.vao);
 
@@ -4773,7 +4803,7 @@ static bool draw_aromatic_rings(gl_program_t program, const molecule_t* mol, gl_
         .spread          = bond_params->spread,
         .ring_index_base = ring_index_base,
     };
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(ring_params_t), &params);
+    ubo_write(sizeof(gl_ubo_base_t), sizeof(ring_params_t), &params);
 
     glBindVertexArray(ctx.vao);
 
@@ -4831,7 +4861,7 @@ static bool draw_slabs(gl_program_t program, const molecule_t* mol, gl_buffer_t 
         float    max_d2;
         uint32_t slab_index_base;
     } params = { radius, plate, max_length * max_length, slab_index_base };
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(params), &params);
+    ubo_write(sizeof(gl_ubo_base_t), sizeof(params), &params);
 
     glBindVertexArray(ctx.vao);
 
@@ -4984,7 +5014,7 @@ static bool draw_backbone(gl_program_t program, const molecule_t* mol, gl_buffer
                         {segments, mesh->profile_count, mesh->outline_count, profile == BACKBONE_PROFILE_BOX ? mesh->face_subdivisions : mesh->dome_rings},
                         {MD_GL_BACKBONE_SEGMENT_COUNT, MD_GL_BACKBONE_SEGMENT_COUNT / segments, 0, 0},
                     };
-                    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(params), &params);
+                    ubo_write(sizeof(gl_ubo_base_t), sizeof(params), &params);
                     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh->index_buffer.id);
                     bound = true;
                 }
