@@ -2930,6 +2930,80 @@ static iso_tri9_t* iso_canon_tris(const float* pos4, const uint32_t* idx, uint32
     return t;
 }
 
+// EXPERIMENT (r33): the vertices' radial parts once per vertex and shell (iso_geval_*_sr) give the meshes the
+// per-channel kernels give: the same triangles (the same arithmetic per value, only made by other threads)
+UTEST(gto_iso_gpu_lib, vshare_matches) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    md_gto_iso_gpu_switches_t sw0;
+    md_gto_iso_gpu_switches(&sw0);
+    // densities through the tiled GEMM (up to 64 functions) and the wide ones (canonical sets of more: 128, 192 and
+    // 256 columns), the latter as the SCF density plus virtual orbitals at weight 0.01 up to nfn functions
+    typedef struct { const char* file; double h; uint32_t nfn; } vs_case_t;
+    static const vs_case_t files[] = {{"amide.h5", 0.2, 0}, {"mol.h5", 0.3, 0}, {"amide.h5", 0.3, 100}, {"mol.h5", 0.4, 170},
+                                      {"mol.h5", 0.4, 220}};
+    for (int fi = 0; fi < (int)(sizeof(files) / sizeof(files[0])); ++fi) {
+        iso_dens_src_t s;
+        if (!iso_dens_src_load(&s, files[fi].file)) { printf("  %s: not loaded\n", files[fi].file); continue; }
+        iso_dens_prod_t p;
+        iso_dens_products(&p, &s, ISO_D_SCF);
+        for (size_t mo = 0; mo < s.num_mo && p.count < files[fi].nfn; ++mo) {
+            if (s.occ[mo] != 0.0) continue;
+            memcpy(p.left + p.count * s.num_ao, s.C + mo * s.num_ao, sizeof(double) * s.num_ao);
+            p.w[p.count++] = 0.01;
+        }
+        if (p.count < files[fi].nfn) printf("  %s: %zu orbitals only\n", files[fi].file, p.count);
+        md_gto_iso_field_t* field = iso_dens_field(&s, &p, false);
+        ASSERT_TRUE(field != NULL);
+        md_gto_iso_field_set_maxima_at_atoms(field, true);
+        const md_gto_iso_field_t* fl[1] = {field};
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        md_gto_iso_gpu_desc_t gd = {.cell_size = files[fi].h, .project_iterations = 8, .relax_iterations = 3};
+        gd.iso[0] = 0.02;
+        md_gto_iso_gpu_mesh_t m[2];
+        float* pos[2] = {NULL, NULL};
+        uint32_t* idx[2] = {NULL, NULL};
+        for (int v = 0; v < 2; ++v) {
+            md_gto_iso_gpu_switches_t sw = sw0;
+            sw.vshare = v == 1;
+            md_gto_iso_gpu_switches_set(&sw);
+            ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &m[v]));
+            pos[v] = (float*)malloc(sizeof(float) * 4 * (m[v].vertex_count + 1));
+            idx[v] = (uint32_t*)malloc(sizeof(uint32_t) * (m[v].index_count + 1));
+            ASSERT_TRUE(md_gto_iso_gpu_mesh_read_all(g.s, &m[v], pos[v], NULL, idx[v]));
+        }
+        md_gto_iso_gpu_switches_set(&sw0);
+        printf("  %-9s %4zu functions: %6u vertices (per channel) %6u (shared)\n", files[fi].file, p.count,
+               m[0].vertex_count, m[1].vertex_count);
+        EXPECT_EQ(m[1].vertex_count, m[0].vertex_count);
+        EXPECT_EQ(m[1].index_count, m[0].index_count);
+        if (m[1].index_count == m[0].index_count && m[0].index_count > 0) {
+            const uint32_t nt = m[0].index_count / 3;
+            iso_tri9_t* ta = iso_canon_tris(pos[0], idx[0], m[0].index_count);
+            iso_tri9_t* tb = iso_canon_tris(pos[1], idx[1], m[1].index_count);
+            uint32_t same = 0;
+            float dmax = 0.0f;
+            for (uint32_t i = 0; i < nt; ++i) {
+                if (memcmp(&ta[i], &tb[i], sizeof(iso_tri9_t)) == 0) { same++; continue; }
+                for (int k = 0; k < 9; ++k) dmax = fmaxf(dmax, fabsf(ta[i].v[k] - tb[i].v[k]));
+            }
+            printf("            triangles identical: %u of %u (max difference otherwise %.3g bohr)\n", same, nt, dmax);
+            EXPECT_TRUE(dmax < 1.0e-4f * (float)gd.cell_size);
+            free(ta);
+            free(tb);
+        }
+        for (int v = 0; v < 2; ++v) { md_gto_iso_gpu_mesh_free(g.s, &m[v]); free(pos[v]); free(idx[v]); }
+        md_gto_iso_gpu_set_destroy(g.s, set);
+        md_gto_iso_field_destroy(field);
+        iso_dens_prod_free(&p);
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
 // The extraction as a job (md_gto_iso_gpu_job_*): polled without waiting, with other work on the stream
 // between the polls (a temp scope, a fill), it gives the mesh md_gto_iso_gpu_extract gives, to the bit;
 // its host copy (desc.read_back) is that mesh; a job ended before it is done keeps no device memory.

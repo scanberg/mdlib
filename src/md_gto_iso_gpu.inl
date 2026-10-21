@@ -12,7 +12,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r32"
+#define ISOG_REVISION "r33"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -61,6 +61,7 @@ enum {
     ISOG_K_GCORN_F16, ISOG_K_GCORN_F32, ISOG_K_GCORN_F64, ISOG_K_GEVAL_F16, ISOG_K_GEVAL_F32, ISOG_K_GEVAL_F64,
     // the wide GEMM for canonical sets of more than 64 functions, by width: 128, 192, 256 columns
     ISOG_K_GCORN_W128, ISOG_K_GCORN_W192, ISOG_K_GCORN_Y256, ISOG_K_GEVAL_W128, ISOG_K_GEVAL_W192, ISOG_K_GEVAL_Y256,
+    ISOG_K_GEVAL_F16_SR, ISOG_K_GEVAL_F32_SR, ISOG_K_GEVAL_F64_SR, ISOG_K_GEVAL_W128_SR, ISOG_K_GEVAL_W192_SR, ISOG_K_GEVAL_Y256_SR,
     ISOG_K_DCORN, ISOG_K_DEVAL,
     ISOG_K_FSEED, ISOG_K_FFACE, ISOG_K_FFINISH, ISOG_K_FATOMS,
     ISOG_K_CELLS, ISOG_K_QUADS, ISOG_K_RELAX, ISOG_K_NEWTON, ISOG_K_EVAL1, ISOG_K_PROJ1,
@@ -115,6 +116,10 @@ static int isog_flood_atoms = 1;
 //   GTO_ISO_CHUNKS=n          TEST: the corner and vertex launches in n chunks, each followed by a progress marker
 //                             (default 0: as many as the octree's time suggests, 1 when it was quick)
 static int isog_chunks = 0;
+//   GTO_ISO_VSHARE=0|1        EXPERIMENT (r33): the vertices' value and gradient with each shell's radial part (its
+//                             exponentials) made once per vertex, one thread making the vertex's four channels
+//                             (iso_geval_*_sr); 0: once per channel, by each of the vertex's four threads (default 1)
+static int isog_vshare = 1;
 
 #define ISOG_NEWTON_TOL_EXP 2       // converged within 1e-2 h: the facets' own deviation is about 3e-2 h rms
 #define ISOG_OCTREE_START   2       // the first level the octree tests
@@ -135,6 +140,8 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_flood_atoms = atoi(e);
     e = getenv("GTO_ISO_CHUNKS");
     if (e && e[0]) isog_chunks = atoi(e);
+    e = getenv("GTO_ISO_VSHARE");
+    if (e && e[0]) isog_vshare = atoi(e);
 }
 
 // Every kernel is made at once. One a device cannot make (more groupshared memory than it allows, say)
@@ -183,6 +190,12 @@ static bool isog_kernels_ready(void) {
         md_shader_gto_iso_gpu_iso_geval_w128_kernel(),
         md_shader_gto_iso_gpu_iso_geval_w192_kernel(),
         md_shader_gto_iso_gpu_iso_geval_y256_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_f16_sr_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_f32_sr_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_f64_sr_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_w128_sr_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_w192_sr_kernel(),
+        md_shader_gto_iso_gpu_iso_geval_y256_sr_kernel(),
         md_shader_gto_iso_gpu_iso_dcorners_kernel(),
         md_shader_gto_iso_gpu_iso_deval_kernel(),
         md_shader_gto_iso_gpu_iso_flood_seed_kernel(),
@@ -708,6 +721,7 @@ void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     out->eval_eps_exp = isog_eval_eps_exp;
     out->dform = isog_dform != 0;
     out->flood = isog_flood;
+    out->vshare = isog_vshare != 0;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
@@ -715,11 +729,12 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     if (in->eval_eps_exp >= 4 && in->eval_eps_exp <= 12) isog_eval_eps_exp = in->eval_eps_exp;
     isog_dform = in->dform;
     if (in->flood >= 0 && in->flood <= 2) isog_flood = in->flood;
+    isog_vshare = in->vshare;
 }
 
 const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[128];
-    snprintf(buf, sizeof(buf), "%s | eval_eps 1e-%d dform %d flood %d", ISOG_REVISION, isog_eval_eps_exp, isog_dform, isog_flood);
+    snprintf(buf, sizeof(buf), "%s | eval_eps 1e-%d dform %d flood %d vshare %d", ISOG_REVISION, isog_eval_eps_exp, isog_dform, isog_flood, isog_vshare);
     return buf;
 }
 
@@ -1563,8 +1578,21 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 const uint32_t nfv = set->num_fn;
                 const int kwv = nfv <= 128 ? ISOG_K_GEVAL_W128 : nfv <= 192 ? ISOG_K_GEVAL_W192 : ISOG_K_GEVAL_Y256;
                 const bool vwide = !set->orbitals_only && !a.dform && a.canon && nfv > 64u && isog_k[kwv];
-                const int ke = one ? ISOG_K_PROJ1 : set->orbitals_only ? ISOG_K_EVAL1 : a.dform ? ISOG_K_DEVAL : vwide ? kwv
-                             : nfv <= 16 ? ISOG_K_GEVAL_F16 : nfv <= 32 ? ISOG_K_GEVAL_F32 : ISOG_K_GEVAL_F64;
+                int ke = one ? ISOG_K_PROJ1 : set->orbitals_only ? ISOG_K_EVAL1 : a.dform ? ISOG_K_DEVAL : vwide ? kwv
+                       : nfv <= 16 ? ISOG_K_GEVAL_F16 : nfv <= 32 ? ISOG_K_GEVAL_F32 : ISOG_K_GEVAL_F64;
+                if (isog_vshare) {      // EXPERIMENT (r33): the radial parts once per vertex and shell (where the device made it)
+                    int sr = -1;
+                    switch (ke) {
+                        case ISOG_K_GEVAL_F16:  sr = ISOG_K_GEVAL_F16_SR;  break;
+                        case ISOG_K_GEVAL_F32:  sr = ISOG_K_GEVAL_F32_SR;  break;
+                        case ISOG_K_GEVAL_F64:  sr = ISOG_K_GEVAL_F64_SR;  break;
+                        case ISOG_K_GEVAL_W128: sr = ISOG_K_GEVAL_W128_SR; break;
+                        case ISOG_K_GEVAL_W192: sr = ISOG_K_GEVAL_W192_SR; break;
+                        case ISOG_K_GEVAL_Y256: sr = ISOG_K_GEVAL_Y256_SR; break;
+                        default: break;
+                    }
+                    if (sr >= 0 && isog_k[sr]) ke = sr;
+                }
                 if (!isog_have(ke)) { isog_job_fail(j, "md_gto_iso_gpu_extract: an evaluation kernel is missing"); break; }
                 md_gpu_kernel_t k_eval = isog_k[ke];
                 isog_used(ke);

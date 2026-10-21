@@ -381,6 +381,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12, default 6)
     bool dform;             // sets of densities: corners and vertices as phi^T D phi (default off; on regardless past 1024 functions)
     int  flood;             // APPROXIMATE corners from seeds and a flood: 0 off, 1 densities whose maxima are at the atoms (default), 2 every field
+    bool vshare;            // EXPERIMENT (r33): the vertices' radial parts once per vertex and shell, not per channel (default on)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
