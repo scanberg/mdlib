@@ -109,10 +109,10 @@ size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass
 // Where the chemistry says so unambiguously the chain ends there instead: a free carboxyl group (O and OXT) before it,
 // a free amino group (two or three hydrogens on the N) after it, a free amino acid after it (a lone residue with a free
 // carboxyl group of its own, which a PDB file can number on after the chain, as 1LAF does its bound arginine), a
-// nucleotide without its P after it (a 5' end), or a free hydroxyl (with its hydrogen) on either side. A crystal
-// structure rarely has the hydrogens and often leaves out the OXT, so the ends of the pieces of a broken chain look like
-// termini to the classification of the components: the residues on either side of a break lose the terminal flags it
-// gave them (MD_COMPONENT_FLAG_TERMINAL_BEG, _END, and those of their atoms).
+// nucleotide without its P (or phosphate bead) after it (a 5' end), or a free hydroxyl (with its hydrogen) on either
+// side. A crystal structure rarely has the hydrogens and often leaves out the OXT, so the ends of the pieces of a
+// broken chain look like termini to the classification of the components: the residues on either side of a break lose
+// the terminal flags it gave them (MD_COMPONENT_FLAG_TERMINAL_BEG, _END, and those of their atoms).
 // The bonds decide, not the sequence numbers: an insertion code (52, 52A) or numbering that skips (antibodies, the
 // chymotrypsin numbering of proteases) does not break a chain whose backbone is bonded, and numbering that runs on
 // does not join one whose backbone is not. Atoms without bonds (a structure file read without inferring them) are

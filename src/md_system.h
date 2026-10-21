@@ -121,6 +121,10 @@ typedef struct md_protein_backbone_data_t {
     } segment;
 } md_protein_backbone_data_t;
 
+// A nucleic range is ATOMISTIC, each segment the backbone and sugar atoms of its nucleotide, or COARSE GRAINED: the
+// backbone beads of a Martini nucleotide in the fields of the atoms they hold, the phosphate bead (BB1) in p, the sugar
+// beads with the C4' (BB2) and the C1' (BB3) in c4 and c1, the other fields -1 (p too at a 5' end). A range is one or
+// the other throughout (md_nucleic_backbone_range_is_coarse_grained).
 typedef struct md_nucleic_backbone_data_t {
     // This holds the consecutive ranges which form the backbones
     struct {
@@ -1165,6 +1169,13 @@ static inline bool md_protein_backbone_range_is_trace(const md_protein_backbone_
     ASSERT(backbone);
     ASSERT(range_idx < backbone->range.count);
     return backbone->segment.atoms && backbone->segment.atoms[backbone->range.offset[range_idx]].n < 0;
+}
+
+// Whether a nucleic backbone range is of coarse grained beads rather than atoms (see md_nucleic_backbone_data_t)
+static inline bool md_nucleic_backbone_range_is_coarse_grained(const md_nucleic_backbone_data_t* backbone, size_t range_idx) {
+    ASSERT(backbone);
+    ASSERT(range_idx < backbone->range.count);
+    return backbone->segment.atoms && backbone->segment.atoms[backbone->range.offset[range_idx]].o5 < 0;
 }
 
 static inline size_t md_system_entity_count(const md_system_t* sys) {
