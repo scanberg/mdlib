@@ -97,7 +97,8 @@ struct IsoArgs {
     float4*   vval;           // iso_eval: gradient xyz, value w
     uint4*    vinfo;          // brick, cell, field, sheet
     uint4*    quads;
-    uint*     counters;       // 0 vertices, 1 quads, 2 open edges, 3 overflow, 4 -, 5 corner points evaluated, 6 -, 7 dform list overflow
+    uint*     counters;       // 0 vertices, 1 quads, 2 open edges, 3 overflow, 4 corner slots, 5 corner points evaluated,
+                              // 6 flood: bricks of the next round, 7 dform list overflow, 8 bricks with a sheet bit
     uint*     bucket;         // [0, 32) vertex counts, [32, 64) quad counts, [64, 96) vertex offsets,
                               // [96, 128) quad offsets, [128, 160) vertex cursors, [160, 192) quad cursors
     uint*     remap;          // old vertex -> bucketed vertex
@@ -387,33 +388,65 @@ void octree_finish(uint4 node, uint ni, uint tid) {
     octree_emit(node, ni, tid);
 }
 
-// A node with sheet bits 'mask': its children (or itself as a brick). One thread.
+// A node with sheet bits 'mask': its children (or itself as a brick). One thread. In the order of the
+// nodes: the node keeps its sheet bits and the count of what it emits (8 children, or itself at the
+// brick level) in scan, whose prefix sum (iso_scan) places them (iso_octree_emit). The nodes of the
+// first level come in Morton order, and a node's children in Morton order, so every level, the bricks
+// too, is in Morton order: a parent's eight children together, and bricks close in the list close in
+// space (what the point list of the corners relies on to keep its groups compact).
 void octree_emit_one(uint4 node, uint ni, uint mask) {
     IsoArgs a = MD_ARGS;
     if (a.level == a.brick_level && a.mode == 1u) {
         // the bricks keep their slots, a rejected one with no sheet bits: siblings stay together
-        // (what the point list of the corners relies on to keep its groups compact)
         a.nodes_out[ni] = uint4(node.xyz, mask);
         if (ni == 0u) a.count_out[0] = min(a.count_in[0], a.cap);
         return;
     }
-    if (mask == 0u) return;
+    a.nodes_in[ni].w = mask;
+    a.scan[ni] = mask == 0u ? 0u : a.level < a.brick_level ? 8u : 1u;
+}
+
+// Thread per node of the level: its children (or itself as a brick) at its offset in scan (iso_scan of
+// the counts octree_emit_one left); past cap, an overflow (counters[3]: the octree is made again with
+// more room)
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_octree_emit(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint ni = node_index(gid) * 64u + tid;
+    uint n = min(a.count_in[0], a.cap);
+    if (ni >= n) return;
+    ni = min(ni, n - 1u);                                  // llvmpipe loads for inactive lanes too
+    uint4 node = a.nodes_in[ni];
+    if (node.w == 0u) return;
+    uint idx = a.scan[ni];
     if (a.level < a.brick_level) {
-        uint idx;
-        InterlockedAdd(a.count_out[0], 8u, idx);
         if (idx + 8u <= a.cap) {
             for (uint c = 0u; c < 8u; ++c) {
-                a.nodes_out[idx + c] = uint4(node.xyz * 2u + uint3(c & 1u, (c >> 1) & 1u, (c >> 2) & 1u), mask);
+                a.nodes_out[idx + c] = uint4(node.xyz * 2u + uint3(c & 1u, (c >> 1) & 1u, (c >> 2) & 1u), node.w);
             }
         } else {
             InterlockedAdd(a.counters[3], 1u);
         }
     } else {
-        uint idx;
-        InterlockedAdd(a.count_out[0], 1u, idx);
-        if (idx < a.cap) a.nodes_out[idx] = uint4(node.xyz, mask);
+        if (idx < a.cap) a.nodes_out[idx] = node;
         else InterlockedAdd(a.counters[3], 1u);
     }
+}
+
+// Thread per brick: its corner slots (one per field with a sheet bit) into scan, for their prefix sum
+// (iso_scan: brick_slot); the bricks with any sheet bit counted in counters[8]
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_brick_slots(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint b = node_index(gid) * 64u + tid;
+    uint n = min(a.count_in[0], a.cap);
+    if (b >= n) return;
+    b = min(b, n - 1u);                                    // llvmpipe loads for inactive lanes too
+    uint m = a.bricks[b].w;
+    a.scan[b] = countbits((m | (m >> 1)) & 0x55555555u);
+    if (m != 0u) InterlockedAdd(a.counters[8], 1u);
 }
 
 // The node's sheet bits in o_mask: its children (or itself as a brick)
@@ -1454,6 +1487,7 @@ void iso_flood_atoms(uint3 tid3 : SV_DispatchThreadID) {
     IsoArgs a = MD_ARGS;
     uint s = tid3.x;
     if (s >= a.num_shells) return;
+    s = min(s, a.num_shells - 1u);                         // llvmpipe loads for inactive lanes too
     float3 q = (a.shells[s].c.xyz - a.origin_h.xyz) / (4.0 * a.origin_h.w);
     if (any(q < float3(0.0)) || any(q >= float3(1024.0))) return;
     uint nb = brick_lookup(int3(floor(q)));
@@ -1576,7 +1610,9 @@ void iso_points(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 [numthreads(SC_GROUP, 1, 1)]
 void iso_scan(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     IsoArgs a = MD_ARGS;
+    // count ~0: as many as the device says (count_in, at most cap), the sum also to count_out
     uint n = a.count;
+    if (n == 0xFFFFFFFFu) n = min(a.count_in[0], a.cap);
     uint run = 0u;
     for (uint base = 0u; base < n; base += uint(SC_GROUP * SC_PER)) {
         uint i0 = base + tid * uint(SC_PER);
@@ -1595,7 +1631,10 @@ void iso_scan(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         }
         run += tot;
     }
-    if (tid == 0u) a.scan[n] = run;
+    if (tid == 0u) {
+        a.scan[n] = run;
+        if (a.count == 0xFFFFFFFFu) a.count_out[0] = run;
+    }
 }
 
 #define L_GROUP 256
@@ -4194,8 +4233,9 @@ uint vertex_bucket(uint v) { uint4 vi = MD_ARGS.vinfo[v]; return vi.z * 2u + vi.
 void iso_bucket_count(uint3 tid : SV_DispatchThreadID) {
     IsoArgs a = MD_ARGS;
     uint i = tid.x;
+    uint nq = min(a.counters[1], a.cap);     // the quads made (cap: their room)
     if (i < a.count) InterlockedAdd(a.bucket[vertex_bucket(i)], 1u);
-    if (i < a.cap)   InterlockedAdd(a.bucket[32u + vertex_bucket(a.quads[i].x)], 1u);
+    if (i < nq)      InterlockedAdd(a.bucket[32u + vertex_bucket(a.quads[i].x)], 1u);
 }
 
 [shader("compute")]
@@ -4228,7 +4268,7 @@ void iso_bucket_vertices(uint3 tid : SV_DispatchThreadID) {
 void iso_bucket_triangles(uint3 tid : SV_DispatchThreadID) {
     IsoArgs a = MD_ARGS;
     uint i = tid.x;
-    if (i >= a.cap) return;
+    if (i >= min(a.counters[1], a.cap)) return;
     uint4 q = a.quads[i];
     uint nq;
     InterlockedAdd(a.bucket[160u + vertex_bucket(q.x)], 1u, nq);

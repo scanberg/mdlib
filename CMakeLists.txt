@@ -661,6 +661,7 @@ if (MD_ENABLE_GPU)
               iso_gcorners_x128 iso_gcorners_x192 iso_gcorners_x256 iso_geval_x128 iso_geval_x192 iso_geval_x256
               iso_gcorners_y128 iso_gcorners_y192 iso_gcorners_y256 iso_geval_y128 iso_geval_y192 iso_geval_y256
               iso_flood_seed iso_flood_face iso_flood_finish iso_flood_atoms
+              iso_octree_emit iso_brick_slots
   )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl

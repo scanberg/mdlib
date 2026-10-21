@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r28"
+#define ISOG_REVISION "r29"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -67,6 +67,7 @@ enum {
     ISOG_K_GCORN_X128, ISOG_K_GCORN_X192, ISOG_K_GCORN_X256, ISOG_K_GEVAL_X128, ISOG_K_GEVAL_X192, ISOG_K_GEVAL_X256,
     ISOG_K_GCORN_Y128, ISOG_K_GCORN_Y192, ISOG_K_GCORN_Y256, ISOG_K_GEVAL_Y128, ISOG_K_GEVAL_Y192, ISOG_K_GEVAL_Y256,
     ISOG_K_FSEED, ISOG_K_FFACE, ISOG_K_FFINISH, ISOG_K_FATOMS,
+    ISOG_K_OEMIT, ISOG_K_BSLOTS,
     ISOG_K_COUNT
 };
 
@@ -299,7 +300,7 @@ static bool isog_ready;
 static bool isog_kernel_core(int i) {
     return i == ISOG_K_GRID || i == ISOG_K_HASH || i == ISOG_K_CELLS || i == ISOG_K_QUADS || i == ISOG_K_NEWTON ||
            i == ISOG_K_RELAX || i == ISOG_K_BCOUNT || i == ISOG_K_BSCAN || i == ISOG_K_BVERTS || i == ISOG_K_BTRIS ||
-           i == ISOG_K_POINTS || i == ISOG_K_CORNERS_FILL || i == ISOG_K_SCAN;
+           i == ISOG_K_POINTS || i == ISOG_K_CORNERS_FILL || i == ISOG_K_SCAN || i == ISOG_K_OEMIT || i == ISOG_K_BSLOTS;
 }
 
 // Kernel k, or false (with a message) when this device could not make it
@@ -389,6 +390,8 @@ static bool isog_kernels_ready(void) {
         md_shader_gto_iso_gpu_iso_flood_face_kernel(),
         md_shader_gto_iso_gpu_iso_flood_finish_kernel(),
         md_shader_gto_iso_gpu_iso_flood_atoms_kernel(),
+        md_shader_gto_iso_gpu_iso_octree_emit_kernel(),
+        md_shader_gto_iso_gpu_iso_brick_slots_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -871,55 +874,6 @@ static void isog_prof_groups(const md_gto_iso_gpu_set_t* set, const float* xyz, 
     }
 }
 
-// Every third bit of v (21 bits): one axis of a Morton code
-static uint64_t isog_morton_spread(uint32_t v) {
-    uint64_t x = v & 0x1FFFFFu;
-    x = (x | x << 32) & 0x1F00000000FFFFull;
-    x = (x | x << 16) & 0x1F0000FF0000FFull;
-    x = (x | x << 8)  & 0x100F00F00F00F00Full;
-    x = (x | x << 4)  & 0x10C30C30C30C30C3ull;
-    x = (x | x << 2)  & 0x1249249249249249ull;
-    return x;
-}
-
-// The bricks in Morton order (a stable radix sort): a parent's eight children stay together, and
-// bricks close in the list are close in space
-static bool isog_sort_bricks(md_gpu_uint4* bl, uint32_t nb) {
-    if (nb < 2) return true;
-    uint64_t* key = (uint64_t*)malloc(sizeof(uint64_t) * 2 * nb);
-    uint32_t* idx = (uint32_t*)malloc(sizeof(uint32_t) * 2 * nb);
-    md_gpu_uint4* tmp = (md_gpu_uint4*)malloc(sizeof(md_gpu_uint4) * nb);
-    bool ok = key && idx && tmp;
-    if (ok) {
-        uint64_t kmax = 0;
-        for (uint32_t i = 0; i < nb; ++i) {
-            key[i] = isog_morton_spread(bl[i].x) | (isog_morton_spread(bl[i].y) << 1) | (isog_morton_spread(bl[i].z) << 2);
-            idx[i] = i;
-            kmax |= key[i];
-        }
-        uint64_t* k0 = key; uint64_t* k1 = key + nb;
-        uint32_t* i0 = idx; uint32_t* i1 = idx + nb;
-        for (int sh = 0; sh < 64 && (kmax >> sh) != 0; sh += 8) {
-            uint32_t cnt[257] = {0};
-            for (uint32_t i = 0; i < nb; ++i) cnt[((k0[i] >> sh) & 255u) + 1]++;
-            for (int d = 0; d < 256; ++d) cnt[d + 1] += cnt[d];
-            for (uint32_t i = 0; i < nb; ++i) {
-                const uint32_t at = cnt[(k0[i] >> sh) & 255u]++;
-                k1[at] = k0[i];
-                i1[at] = i0[i];
-            }
-            uint64_t* kt = k0; k0 = k1; k1 = kt;
-            uint32_t* it = i0; i0 = i1; i1 = it;
-        }
-        for (uint32_t i = 0; i < nb; ++i) tmp[i] = bl[i0[i]];
-        memcpy(bl, tmp, sizeof(md_gpu_uint4) * nb);
-    }
-    free(key);
-    free(idx);
-    free(tmp);
-    return ok;
-}
-
 static md_gpu_grid_t isog_groups(uint32_t n) {     // one group per item, split over y
     if (n == 0) return md_gpu_grid(0, 0, 0);
     return md_gpu_grid(n < 65535u ? n : 65535u, (n + 65534u) / 65535u, 1);
@@ -1193,22 +1147,21 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
 // ---------------------------------------------------------------------------------------------
 
 enum {
-    ISOG_J_OCTREE,          // issue the octree (an attempt), then read the brick count
-    ISOG_J_OCTREE_READ,     // the brick count: retry with more room, or read the bricks
-    ISOG_J_BRICKS_READ,     // the bricks: order, slots, the corners' buffers, the hash
+    ISOG_J_OCTREE,          // issue the octree (an attempt) and the bricks' slots, then read their counts
+    ISOG_J_OCTREE_READ,     // the brick and slot counts: retry with more room, or on
+    ISOG_J_BRICKS,          // the corners' buffers, the hash
     ISOG_J_PASS,            // a pass of the corners (one, or the flood's rounds)
     ISOG_J_FLOOD_READ,      // the bricks the next round adds
     ISOG_J_NETS,            // count the cells, then read the vertex count
-    ISOG_J_NETS_READ,       // the vertex count: the vertices, then read the final counts
-    ISOG_J_COUNTS_READ,     // the final counts: the output, then read the buckets
-    ISOG_J_BUCKETS_READ,    // the buckets: the mesh's ranges
-    ISOG_J_MESH_READ,       // the mesh copied to the host (desc.read_back)
+    ISOG_J_NETS_READ,       // the vertex count: the vertices and the output, then read the final counts (and the mesh)
+    ISOG_J_FINAL_READ,      // the final counts, the buckets: the mesh's ranges
+    ISOG_J_MESH_READ,       // the rest of the mesh's host copy, when more quads came than the first copy held
     ISOG_J_DONE,
     ISOG_J_FAILED,
 };
 
 #define ISOG_JOB_ALLOCS 64
-#define ISOG_JOB_FETCH  4
+#define ISOG_JOB_FETCH  8
 
 struct md_gto_iso_gpu_job_t {
     md_gpu_stream_t s;
@@ -1222,7 +1175,9 @@ struct md_gto_iso_gpu_job_t {
     uint32_t num_alloc;
     // the readback in flight: copies into one host-readable buffer, then to their destinations
     bool          fetching, fetch_keep;
-    md_gpu_mem_t  fetch_mem;
+    md_gpu_mem_t  fetch_mem, kept;     // kept: a readback kept as the mesh's host copy
+    size_t        mesh_off[3];         // in it: the positions, normals and indices
+    uint32_t      idx_copied;          // indices it holds
     md_gpu_sync_t fetch_sync;
     uint32_t      num_fetch;
     void*         fetch_dst[ISOG_JOB_FETCH];
@@ -1235,8 +1190,8 @@ struct md_gto_iso_gpu_job_t {
     isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];
     isog_args_t a;
     bool cdform, odform, clist, flood, ordered;
-    uint32_t cap, nb, ctr[8], cn[12], level_step[10];
-    md_gpu_addr_t nodes[2], counts, bricks;
+    uint32_t cap, nb, ctr[12], cn[12], level_step[10];
+    md_gpu_addr_t nodes[2], counts, bricks, oscan, bslot;
     md_gpu_uint4* bl;
     uint32_t* slot;
     uint32_t nslots, nkept, hcap;
@@ -1290,8 +1245,11 @@ static bool isog_jfetch(md_gto_iso_gpu_job_t* j) {
 
 // The readback has passed: its bytes to their destinations
 static void isog_jfetch_take(md_gto_iso_gpu_job_t* j) {
-    for (uint32_t i = 0; i < j->num_fetch; ++i) memcpy(j->fetch_dst[i], (const char*)j->fetch_mem.cpu + j->fetch_off[i], j->fetch_bytes[i]);
-    if (!j->fetch_keep) md_gpu_free(j->s, j->fetch_mem.gpu);
+    for (uint32_t i = 0; i < j->num_fetch; ++i) {
+        if (j->fetch_dst[i]) memcpy(j->fetch_dst[i], (const char*)j->fetch_mem.cpu + j->fetch_off[i], j->fetch_bytes[i]);
+    }
+    if (j->fetch_keep) j->kept = j->fetch_mem;
+    else md_gpu_free(j->s, j->fetch_mem.gpu);
     j->fetch_mem = (md_gpu_mem_t){0};
     j->num_fetch = 0;
     j->fetching = false;
@@ -1323,9 +1281,11 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             j->nodes[0] = isog_jalloc(j, sizeof(md_gpu_uint4) * cap);
             j->nodes[1] = isog_jalloc(j, sizeof(md_gpu_uint4) * cap);
             j->counts = isog_jalloc(j, sizeof(uint32_t) * (L + 2));
-            if (!j->nodes[0] || !j->nodes[1] || !j->counts) { isog_job_fail(j, "md_gto_iso_gpu_extract: octree overflow or out of device memory"); break; }
+            j->oscan = isog_jalloc(j, sizeof(uint32_t) * ((size_t)cap + 1));     // a level's counts, then offsets
+            j->bslot = isog_jalloc(j, sizeof(uint32_t) * ((size_t)cap + 1));     // the bricks' first slots
+            if (!j->nodes[0] || !j->nodes[1] || !j->counts || !j->oscan || !j->bslot) { isog_job_fail(j, "md_gto_iso_gpu_extract: octree overflow or out of device memory"); break; }
             md_gpu_memset(s, j->counts, 0, sizeof(uint32_t) * (L + 2));
-            md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 8);
+            md_gpu_memset(s, a.counters, 0, sizeof(uint32_t) * 12);
             // GTO_ISO_SKIP_BRICK_TEST=1 (the default) keeps every child of the last tested level as a brick
             // (with its parent's sheet bits): the corners decide, which costs less than the bound. A superset
             // of the bricks, so no cell is missed.
@@ -1364,6 +1324,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 o.grid_mul = 1;
                 o.grid_div = 0;
                 o.mode = j->clist ? 1u : 0u;     // the bricks keep their sibling slots
+                o.scan = j->oscan;
                 MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), o);
                 int ko = j->odform ? ISOG_K_ODFORM : (isog_octree_small && set->num_fn <= 4) ? ISOG_K_OCTREE_SMALL : ISOG_K_OCTREE;
                 if (ko == ISOG_K_OCTREE_SMALL && !isog_k[ko]) ko = ISOG_K_OCTREE;
@@ -1374,6 +1335,16 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 if (!isog_have(ko)) { ok = false; break; }
                 md_gpu_launch_indirect(s, isog_k[ko], a.grid_out, &o, sizeof(o));
                 isog_used(ko);
+                if (!(l == L && o.mode == 1u)) {
+                    // in order: the offsets of what the nodes emit (their prefix sum), then the emission. At the
+                    // brick level in list form the bricks keep their places (iso_octree*: octree_emit_one).
+                    isog_args_t e = o;
+                    e.count = 0xFFFFFFFFu;     // as many as count_in says; the sum to count_out
+                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_SCAN], md_gpu_grid(1, 1, 1), e);
+                    e.grid_div = 64;
+                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), e);
+                    md_gpu_launch_indirect(s, isog_k[ISOG_K_OEMIT], a.grid_out, &e, sizeof(e));
+                }
                 j->level_step[l] = isog_mark(s, "octree level", 0, 0);
             }
             if (!ok) { isog_job_fail(j, "md_gto_iso_gpu_extract: octree overflow or out of device memory"); break; }
@@ -1384,6 +1355,21 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 isog_mark_skip(s);
             }
             j->bricks = j->nodes[(Lt + 1) & 1];
+            {   // ---- the bricks' corner slots: one per (brick, field with a sheet bit), their prefix sum
+                isog_args_t b = a;
+                b.bricks = j->bricks;
+                b.count_in = j->counts + sizeof(uint32_t) * (Lt + 1);
+                b.count_out = a.counters + sizeof(uint32_t) * 4;      // the slots
+                b.cap = cap;
+                b.scan = j->bslot;
+                b.grid_mul = 1;
+                b.grid_div = 64;
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), b);
+                md_gpu_launch_indirect(s, isog_k[ISOG_K_BSLOTS], a.grid_out, &b, sizeof(b));
+                b.count = 0xFFFFFFFFu;
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_SCAN], md_gpu_grid(1, 1, 1), b);
+                isog_mark(s, "brick slots", 0, 0);
+            }
             isog_jfetch_add(j, &j->nb, j->counts + sizeof(uint32_t) * (Lt + 1), sizeof(uint32_t));
             isog_jfetch_add(j, j->ctr, a.counters, sizeof(j->ctr));
             if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
@@ -1398,6 +1384,8 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     isog_jfree(j, j->nodes[0]);
                     isog_jfree(j, j->nodes[1]);
                     isog_jfree(j, j->counts);
+                    isog_jfree(j, j->oscan);
+                    isog_jfree(j, j->bslot);
                     j->cap *= 4;
                     j->nb = 0;
                     j->stage = ISOG_J_OCTREE;
@@ -1407,38 +1395,29 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 break;
             }
             isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_OCTREE, &j->ts);
-            // ---- the brick list on the host: one corner slot per (brick, field with a sheet bit)
-            const uint32_t nb = j->nb;
-            j->bl = (md_gpu_uint4*)malloc(sizeof(md_gpu_uint4) * (nb + 1));
-            j->slot = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
-            if (!j->bl || !j->slot) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of memory"); break; }
-            if (nb > 0) {
-                isog_jfetch_add(j, j->bl, j->bricks, sizeof(md_gpu_uint4) * nb);
-                if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
-            }
-            j->stage = ISOG_J_BRICKS_READ;
+            // the bricks in Morton order and their slots, all on the device; the counts sized what follows
+            j->nslots = j->ctr[4];
+            j->nkept = j->ctr[8];     // the bricks may keep their sibling slots: rejected ones have no sheet bits
+            out->num_bricks = j->nkept;
+            out->num_corner_slots = j->nslots;
+            j->stage = ISOG_J_BRICKS;
             j->progress = 0.15f;
         } break;
 
-        case ISOG_J_BRICKS_READ: {
-            const uint32_t nb = j->nb;
-            md_gpu_uint4* bl = j->bl;
-            uint32_t* slot = j->slot;
+        case ISOG_J_BRICKS: {
+            const uint32_t nb = j->nb, nslots = j->nslots, nkept = j->nkept;
             const double* origin = j->origin;
-            if (isog_ordered && nb > 1 && isog_sort_bricks(bl, nb)) md_gpu_upload(s, j->bricks, bl, sizeof(md_gpu_uint4) * nb);
-            uint32_t nslots = 0, nkept = 0;
-            for (uint32_t b = 0; b < nb; ++b) {
-                slot[b] = nslots;
-                const uint32_t m = bl[b].w;
-                nslots += popcnt32((m | (m >> 1)) & 0x55555555u);
-                nkept += m != 0;    // the bricks may keep their sibling slots: rejected ones have no sheet bits
+            if (isog_prof || isog_debug) {    // the bricks and their slots on the host: the profile's and the tests' only
+                j->bl = (md_gpu_uint4*)malloc(sizeof(md_gpu_uint4) * (nb + 1));
+                j->slot = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
+                if (j->bl && j->slot && nb) {
+                    isog_read(s, j->bl, j->bricks, sizeof(md_gpu_uint4) * nb);
+                    isog_read(s, j->slot, j->bslot, sizeof(uint32_t) * nb);
+                }
+                isog_mark_skip(s);
             }
-            j->nslots = nslots;
-            j->nkept = nkept;
-            out->num_bricks = nkept;
-            out->num_corner_slots = nslots;
-            isog_mark(s, "readback: bricks, slots", nb, nslots);
-            if (isog_prof) {    // BENCHMARK: the AOs that reach each brick (what the corner kernels list), not timed
+            const md_gpu_uint4* bl = j->bl;
+            if (isog_prof && bl) {    // BENCHMARK: the AOs that reach each brick (what the corner kernels list), not timed
                 uint64_t sum = 0, sq = 0;
                 uint32_t mx = 0;
                 const float he = (float)h;
@@ -1462,8 +1441,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             }
             a.bricks = j->bricks;
             a.count = nb;
-            a.brick_slot = isog_jalloc(j, sizeof(uint32_t) * (nb + 1));
-            if (a.brick_slot && nb) md_gpu_upload(s, a.brick_slot, slot, sizeof(uint32_t) * nb);
+            a.brick_slot = j->bslot;
             uint32_t hcap = 64;
             while (hcap < 2 * nb) hcap <<= 1;
             j->hcap = hcap;
@@ -1886,31 +1864,12 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &j->ts);
                 }
                 #undef ISOG_PROJECT
-                // ---- the final counts: the quads, open edges, overflows
-                isog_jfetch_add(j, j->ctr, a.counters, sizeof(j->ctr));
-                if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
-            } else {
-                memset(j->ctr, 0, sizeof(j->ctr));
             }
-            j->stage = ISOG_J_COUNTS_READ;
-        } break;
-
-        case ISOG_J_COUNTS_READ: {
-            // ---- regroup per (field, sheet) into the output buffers
-            const uint32_t nv = j->nv, cap_v = j->cap_v, cap_q = j->cap_q;
-            j->progress = 0.92f;
-            uint32_t nq = 0;
-            if (nv > 0) {
-                nq = j->ctr[1] < cap_q ? j->ctr[1] : cap_q;
-                out->open_edges = j->ctr[2];
-                if (j->ctr[7]) { isog_job_fail(j, "md_gto_iso_gpu_extract: more than 2048 shells (or 8192 AOs) reach a group of points (the D form)"); break; }
-                if (j->ctr[3]) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow"); break; }
-                isog_mark(s, "readback: counters", nv, nq);
-            }
-            j->nq = nq;
+            // ---- regroup per (field, sheet) into the output buffers: sized by the vertices, the quads (on the
+            // device: no count is read for them) at most cap_q
             md_gpu_mem_t pos = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * cap_v);
             md_gpu_mem_t nrm = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * cap_v);
-            md_gpu_mem_t idx = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 6 * ((size_t)nq + 1));
+            md_gpu_mem_t idx = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 6 * (size_t)cap_q);
             out->position = pos.gpu; out->normal = nrm.gpu; out->index = idx.gpu;
             if (!pos.gpu || !nrm.gpu || !idx.gpu) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow"); break; }
             if (nv == 0) {
@@ -1920,24 +1879,54 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             }
             a.out_pos = out->position; a.out_nrm = out->normal; a.out_idx = out->index;
             a.count = nv;
-            a.cap = nq;
-            isog_mark(s, "output alloc", nv, nq);
+            a.cap = cap_q;      // the kernels take the quad count from counters[1]
+            isog_mark(s, "output alloc", nv, cap_q);
             md_gpu_memset(s, a.bucket, 0, sizeof(uint32_t) * 192);
-            MD_GPU_LAUNCH(s, isog_k[ISOG_K_BCOUNT], md_gpu_grid_for(isog_k[ISOG_K_BCOUNT], nv > nq ? nv : nq, 1, 1), a);
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_BCOUNT], md_gpu_grid_for(isog_k[ISOG_K_BCOUNT], cap_q, 1, 1), a);
             MD_GPU_LAUNCH(s, isog_k[ISOG_K_BSCAN], md_gpu_grid(1, 1, 1), a);
-            isog_mark(s, "bucket: count, scan", nv, nq);
+            isog_mark(s, "bucket: count, scan", nv, cap_q);
             MD_GPU_LAUNCH(s, isog_k[ISOG_K_BVERTS], md_gpu_grid_for(isog_k[ISOG_K_BVERTS], nv, 1, 1), a);
             isog_mark(s, "bucket: vertices", nv, 0);
-            if (nq) MD_GPU_LAUNCH(s, isog_k[ISOG_K_BTRIS], md_gpu_grid_for(isog_k[ISOG_K_BTRIS], nq, 1, 1), a);
-            isog_mark(s, "bucket: triangles", nq, 0);
+            MD_GPU_LAUNCH(s, isog_k[ISOG_K_BTRIS], md_gpu_grid_for(isog_k[ISOG_K_BTRIS], cap_q, 1, 1), a);
+            isog_mark(s, "bucket: triangles", cap_q, 0);
+            // the final counts and the buckets; with read_back the mesh too, its triangles up to twice the
+            // vertices (a closed surface has about as many quads as vertices; more are read after)
             isog_jfetch_add(j, j->bk, a.bucket, sizeof(j->bk));
-            if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
-            j->stage = ISOG_J_BUCKETS_READ;
+            isog_jfetch_add(j, j->ctr, a.counters, sizeof(j->ctr));
+            j->idx_copied = 0;
+            if (desc->read_back) {
+                static int test_short = -1;     // TEST: GTO_ISO_READBACK_SHORT=1 copies no triangles first (the second readback)
+                if (test_short < 0) test_short = getenv("GTO_ISO_READBACK_SHORT") != NULL;
+                const uint32_t qc = test_short ? 0u : cap_q < 2 * nv + 64 ? cap_q : 2 * nv + 64;
+                j->idx_copied = 6 * qc;
+                isog_jfetch_add(j, NULL, out->position, sizeof(md_gpu_float4) * nv);
+                isog_jfetch_add(j, NULL, out->normal, sizeof(md_gpu_float4) * nv);
+                isog_jfetch_add(j, NULL, out->index, sizeof(uint32_t) * j->idx_copied);
+            }
+            if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of host-readable memory"); break; }
+            if (desc->read_back) {
+                j->fetch_keep = true;
+                for (int k = 0; k < 3; ++k) j->mesh_off[k] = j->fetch_off[2 + k];
+            }
+            j->stage = ISOG_J_FINAL_READ;
         } break;
 
-        case ISOG_J_BUCKETS_READ: {
+        case ISOG_J_FINAL_READ: {
             const uint32_t* bk = j->bk;
-            isog_mark(s, "readback: buckets", 0, 0);
+            const uint32_t nv = j->nv;
+            j->progress = 0.95f;
+            if (j->kept.gpu) {      // the mesh's host copy: the mesh's from here (freed with it)
+                out->host_mem = j->kept.gpu;
+                out->host_position = (const float*)((const char*)j->kept.cpu + j->mesh_off[0]);
+                out->host_normal = (const float*)((const char*)j->kept.cpu + j->mesh_off[1]);
+                out->host_index = (const uint32_t*)((const char*)j->kept.cpu + j->mesh_off[2]);
+                j->kept = (md_gpu_mem_t){0};
+            }
+            isog_mark(s, "readback: counts, buckets", nv, j->ctr[1]);
+            if (j->ctr[7]) { isog_job_fail(j, "md_gto_iso_gpu_extract: more than 2048 shells (or 8192 AOs) reach a group of points (the D form)"); break; }
+            if (j->ctr[3]) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow"); break; }
+            j->nq = j->ctr[1] < j->cap_q ? j->ctr[1] : j->cap_q;
+            out->open_edges = j->ctr[2];
             for (uint32_t k = 0; k < F; ++k) {
                 for (int sh = 0; sh < 2; ++sh) {
                     const uint32_t i = 2 * k + (uint32_t)sh;
@@ -1947,23 +1936,29 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     out->index_count_of[k][sh]  = 6 * bk[32 + i];
                 }
             }
-            out->vertex_count = j->nv;
+            out->vertex_count = nv;
             out->index_count = 6 * j->nq;
             isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_OUTPUT, &j->ts);
-            j->progress = 0.97f;
-            if (!desc->read_back || out->vertex_count == 0) { j->stage = ISOG_J_DONE; break; }
-            // the mesh to the host, as it is on the device: kept as the mesh's host copy
-            const size_t bv = sizeof(float) * 4 * out->vertex_count, bi = sizeof(uint32_t) * out->index_count;
+            if (!desc->read_back || out->index_count <= j->idx_copied) { j->stage = ISOG_J_DONE; break; }
+            // more triangles than the first copy held: the whole mesh again
+            const size_t bv = sizeof(float) * 4 * nv, bi = sizeof(uint32_t) * out->index_count;
             isog_jfetch_add(j, NULL, out->position, bv);
             isog_jfetch_add(j, NULL, out->normal, bv);
             isog_jfetch_add(j, NULL, out->index, bi);
             if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of host-readable memory"); break; }
             j->fetch_keep = true;
+            for (int k = 0; k < 3; ++k) j->mesh_off[k] = j->fetch_off[k];
             j->stage = ISOG_J_MESH_READ;
         } break;
 
         case ISOG_J_MESH_READ:
-            j->stage = ISOG_J_DONE;     // isog_jfetch_take kept the buffer and set the host pointers
+            md_gpu_free(s, out->host_mem);      // the first copy
+            out->host_mem = j->kept.gpu;
+            out->host_position = (const float*)((const char*)j->kept.cpu + j->mesh_off[0]);
+            out->host_normal = (const float*)((const char*)j->kept.cpu + j->mesh_off[1]);
+            out->host_index = (const uint32_t*)((const char*)j->kept.cpu + j->mesh_off[2]);
+            j->kept = (md_gpu_mem_t){0};
+            j->stage = ISOG_J_DONE;
             break;
 
         default:
@@ -2073,7 +2068,7 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
     j->flood = flood;
     j->ordered = isog_ordered != 0;
     a->fields = isog_jalloc(j, sizeof(fields));
-    a->counters = isog_jalloc(j, sizeof(uint32_t) * 8);
+    a->counters = isog_jalloc(j, sizeof(uint32_t) * 12);
     a->grid_out = isog_jalloc(j, sizeof(uint32_t) * 4);
     if (!a->fields || !a->counters || !a->grid_out) {
         md_gto_iso_gpu_job_end(j, NULL);
@@ -2081,7 +2076,9 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
         return NULL;
     }
     md_gpu_upload(s, a->fields, fields, sizeof(fields));
-    md_gpu_memset(s, a->counters, 0, sizeof(uint32_t) * 8);
+    md_gpu_memset(s, a->counters, 0, sizeof(uint32_t) * 12);
+    // count_in valid wherever a kernel may read it (llvmpipe loads both sides of a select)
+    a->count_in = a->counters;
     j->root_mask = root_mask;
     j->cap = 1u << 18;
     j->stage = ISOG_J_OCTREE;
@@ -2104,14 +2101,6 @@ md_gto_iso_gpu_job_status_t md_gto_iso_gpu_job_poll(md_gto_iso_gpu_job_t* j, dou
                 } else {
                     continue;
                 }
-            }
-            if (j->fetch_keep) {    // the mesh's host copy
-                const size_t bv = sizeof(float) * 4 * j->out.vertex_count;
-                j->out.host_mem = j->fetch_mem.gpu;
-                j->out.host_position = (const float*)j->fetch_mem.cpu;
-                j->out.host_normal = (const float*)((const char*)j->fetch_mem.cpu + ((bv + 15) & ~(size_t)15));
-                j->out.host_index = (const uint32_t*)((const char*)j->fetch_mem.cpu + 2 * ((bv + 15) & ~(size_t)15));
-                j->num_fetch = 0;       // no destinations: the buffer is the mesh's now
             }
             isog_jfetch_take(j);
         }
@@ -2136,6 +2125,7 @@ bool md_gto_iso_gpu_job_end(md_gto_iso_gpu_job_t* j, md_gto_iso_gpu_mesh_t* out)
         if (out) memset(out, 0, sizeof(*out));
     }
     if (j->fetching && j->fetch_mem.gpu) md_gpu_free(j->s, j->fetch_mem.gpu);   // after the copy in flight
+    if (j->kept.gpu) md_gpu_free(j->s, j->kept.gpu);
     for (uint32_t i = 0; i < j->num_alloc; ++i) md_gpu_free(j->s, j->alloc[i]);
     free(j->bl);
     free(j->slot);
