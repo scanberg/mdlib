@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r30"
+#define ISOG_REVISION "r31"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -50,6 +50,7 @@ typedef struct isog_args_t {         // mirrors IsoArgs
     md_gpu_addr_t dmat, fdmat, drs, dprop;
     md_gpu_addr_t scan;
     md_gpu_addr_t bstate;
+    uint32_t group_base, grid_max;
 } isog_args_t;
 
 enum {
@@ -205,6 +206,9 @@ static int isog_flood_atoms = 1;
 //                             has converged) instead of an evaluation and a step launched per iteration over
 //                             every vertex (default 1)
 static int isog_fused_project = 1;
+//   GTO_ISO_CHUNKS=n          TEST: the corner and vertex launches in n chunks, each followed by a progress marker
+//                             (default 0: as many as the octree's time suggests, 1 when it was quick)
+static int isog_chunks = 0;
 //   GTO_ISO_WIDE_KERNEL=0|1|2 the wide GEMM's kernels: 0 those of r16 (iso_gcorners_w*, iso_geval_w*); 1 the
 //                             group's shells listed once (all, in rounds of 256) and staged as they are listed,
 //                             chunks of 16 consecutive AOs of the list, so a chunk stages only its rows of C
@@ -297,6 +301,8 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_flood_atoms = atoi(e);
     e = getenv("GTO_ISO_FUSED_PROJECT");
     if (e && e[0]) isog_fused_project = atoi(e);
+    e = getenv("GTO_ISO_CHUNKS");
+    if (e && e[0]) isog_chunks = atoi(e);
 }
 
 // Every kernel is made at once. One a device cannot make (more groupshared memory than it allows, say)
@@ -1172,6 +1178,7 @@ enum {
 
 #define ISOG_JOB_ALLOCS 64
 #define ISOG_JOB_FETCH  8
+#define ISOG_JOB_MARKS  128
 
 struct md_gto_iso_gpu_job_t {
     md_gpu_stream_t s;
@@ -1208,6 +1215,12 @@ struct md_gto_iso_gpu_job_t {
     uint32_t pass, flood_rounds, flood_bricks, points_all, next;
     uint32_t nv, nq, cap_v, cap_q;
     uint32_t bk[128];
+    // progress: markers recorded after chunks of the long launches, each the progress once it has passed
+    md_gpu_sync_t mark_sync[ISOG_JOB_MARKS];
+    float         mark_val[ISOG_JOB_MARKS];
+    uint32_t      mark_head, mark_tail;
+    uint32_t      chunks;          // the corner and vertex launches in this many chunks (1: whole)
+    bool          blocking;        // md_gto_iso_gpu_extract's: nobody watches the progress, no chunks
 };
 
 static md_gpu_addr_t isog_jalloc(md_gto_iso_gpu_job_t* j, size_t bytes) {
@@ -1270,6 +1283,70 @@ static void isog_job_fail(md_gto_iso_gpu_job_t* j, const char* msg) {
     if (msg) MD_LOG_ERROR("%s", msg);
     md_gto_iso_gpu_mesh_free(j->s, &j->out);
     j->stage = ISOG_J_FAILED;
+}
+
+// The progress, never back
+static void isog_jprog(md_gto_iso_gpu_job_t* j, float v) {
+    if (v > j->progress) j->progress = v;
+}
+
+// A progress marker: the work issued so far is at 'value' once this sync has passed
+static void isog_jmark(md_gto_iso_gpu_job_t* j, float value) {
+    if (j->mark_tail - j->mark_head >= ISOG_JOB_MARKS) return;
+    const uint32_t i = j->mark_tail++ % ISOG_JOB_MARKS;
+    j->mark_sync[i] = md_gpu_stream_record(j->s);
+    j->mark_val[i] = value;
+}
+
+// The markers passed: their progress
+static void isog_jmarks_take(md_gto_iso_gpu_job_t* j) {
+    while (j->mark_head != j->mark_tail) {
+        const uint32_t i = j->mark_head % ISOG_JOB_MARKS;
+        if (!md_gpu_sync_is_complete(j->mark_sync[i])) break;
+        if (j->mark_val[i] > j->progress) j->progress = j->mark_val[i];
+        j->mark_head++;
+    }
+}
+
+// A launch of 'groups' groups in the job's chunks (direct grid), each followed by a marker, the progress
+// going from p0 to p1 over them; whole when the job is not chunked. node_index adds group_base.
+static void isog_jlaunch(md_gto_iso_gpu_job_t* j, md_gpu_kernel_t k, isog_args_t args, uint32_t groups, float p0, float p1) {
+    const uint32_t n = j->chunks > 1 ? j->chunks : 1;
+    uint32_t per = (groups + n - 1) / n;
+    if (per > 65535u) per = 65535u;     // one row of groups a chunk: the grid's y adds no groups past it
+    if (n == 1 || per == 0) {
+        MD_GPU_LAUNCH(j->s, k, isog_groups(groups), args);
+        return;
+    }
+    const uint32_t m = (groups + per - 1) / per;
+    for (uint32_t c = 0; c < m; ++c) {
+        args.group_base = c * per;
+        const uint32_t g = groups - c * per < per ? groups - c * per : per;
+        MD_GPU_LAUNCH(j->s, k, md_gpu_grid(g, 1, 1), args);
+        isog_jmark(j, p0 + (p1 - p0) * (float)(c + 1) / (float)m);
+    }
+}
+
+// The same for a launch whose groups the device counts (grid from count_in by iso_grid): 'expect' groups
+// expected, the last chunk taking whatever is left
+static void isog_jlaunch_indirect(md_gto_iso_gpu_job_t* j, md_gpu_kernel_t k, isog_args_t args, uint32_t expect, float p0, float p1) {
+    md_gpu_stream_t s = j->s;
+    const uint32_t n = j->chunks > 1 ? j->chunks : 1;
+    uint32_t per = (expect + n - 1) / n;
+    if (per > 65535u) per = 65535u;
+    if (n == 1 || per == 0) {
+        MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), args);
+        md_gpu_launch_indirect(s, k, args.grid_out, &args, sizeof(args));
+        return;
+    }
+    const uint32_t m = (expect + per - 1) / per;
+    for (uint32_t c = 0; c < m; ++c) {
+        args.group_base = c * per;
+        args.grid_max = c + 1 < m ? per : 0xFFFFFFFFu;     // the last: the rest, however many
+        MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), args);
+        md_gpu_launch_indirect(s, k, args.grid_out, &args, sizeof(args));
+        isog_jmark(j, p0 + (p1 - p0) * (float)(c + 1) / (float)m);
+    }
 }
 
 // Runs the job from its stage until it waits for a readback, is done, or fails
@@ -1384,7 +1461,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             isog_jfetch_add(j, j->ctr, a.counters, sizeof(j->ctr));
             if (!isog_jfetch(j)) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory"); break; }
             j->stage = ISOG_J_OCTREE_READ;
-            j->progress = 0.05f;
+            isog_jprog(j, 0.05f);
         } break;
 
         case ISOG_J_OCTREE_READ: {
@@ -1405,13 +1482,24 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 break;
             }
             isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_OCTREE, &j->ts);
+            // A long octree means a long extraction: its corner and vertex launches then go in chunks, each
+            // followed by a progress marker (and a point where other work, the rendering, can get the GPU).
+            // The octree is a tenth to a quarter of an extraction: a chunk every 2 ms of it, about 10-20 ms of
+            // work each. A quick one (under 4 ms) is not split: the markers would cost more than they tell.
+            {
+                const double oms = md_tick_to_seconds(md_tick_now() - j->t_start) * 1e3;
+                uint32_t n = (oms < 4.0 || j->blocking || isog_prof) ? 1u : (uint32_t)(oms / 2.0);
+                if (n > 32) n = 32;
+                if (isog_chunks > 0) n = (uint32_t)isog_chunks;
+                j->chunks = n;
+            }
             // the bricks in Morton order and their slots, all on the device; the counts sized what follows
             j->nslots = j->ctr[4];
             j->nkept = j->ctr[8];     // the bricks may keep their sibling slots: rejected ones have no sheet bits
             out->num_bricks = j->nkept;
             out->num_corner_slots = j->nslots;
             j->stage = ISOG_J_BRICKS;
-            j->progress = 0.15f;
+            isog_jprog(j, 0.15f);
         } break;
 
         case ISOG_J_BRICKS: {
@@ -1469,7 +1557,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow");
                 break;
             }
-            j->progress = 0.2f;
+            isog_jprog(j, 0.2f);
             if (nb == 0) {
                 isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &j->ts);
                 j->stage = ISOG_J_NETS;
@@ -1565,8 +1653,15 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             ac.cap = 0;
             ac.grid_mul = 1;
             ac.grid_div = wide ? 64 : gemm ? 128 : 256;
-            MD_GPU_LAUNCH(s, isog_k[ISOG_K_GRID], md_gpu_grid(1, 1, 1), ac);
-            md_gpu_launch_indirect(s, isog_k[kc], a.grid_out, &ac, sizeof(ac));
+            {   // in chunks when the job is long: the points expected (about 70 a brick evaluated in full, as the
+                // profile counts them; a brick's corners in the flood's first pass), the progress spread over them
+                const uint32_t nbp = !flood ? nkept : pass == 0 ? nb : pass == 1 ? j->next : j->next;
+                const uint64_t pts = (uint64_t)nbp * (flood && pass == 0 ? 8u : 70u);
+                const uint32_t expect = (uint32_t)((pts + ac.grid_div - 1) / ac.grid_div);
+                const float p0 = j->progress < 0.15f ? 0.15f : j->progress;
+                const float p1 = !flood ? 0.6f : pass == 0 ? 0.2f : pass == 1 ? 0.55f : p0 + 0.5f * (0.6f - p0);
+                isog_jlaunch_indirect(j, isog_k[kc], ac, (flood && pass == 0) ? 0u : expect, p0, p1);
+            }
             isog_used(kc);
             uint32_t fc = 0;
             const char* kn = "";
@@ -1665,9 +1760,11 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             isog_mark(s, j->pass == 0 ? "flood: seeds" : "flood: faces", nb, j->next);
             j->flood_bricks += j->next;
             if (j->next != 0 && j->pass < 64) {
+                // the pass done: the end of its share (the first its brick corners, the second the most, the
+                // others less and less)
+                isog_jprog(j, j->pass == 0 ? 0.2f : j->pass == 1 ? 0.55f : j->progress + 0.5f * (0.6f - j->progress));
                 j->flood_rounds++;
                 j->pass++;
-                j->progress = 0.2f + 0.45f * (1.0f - 1.0f / (float)(j->pass + 1));
                 j->stage = ISOG_J_PASS;
                 break;
             }
@@ -1704,7 +1801,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             const md_gpu_uint4* bl = j->bl;
             const uint32_t* slot = j->slot;
             const isog_field_t* fields = j->fields;
-            j->progress = 0.65f;
+            isog_jprog(j, 0.65f);
             if (nb > 0) isog_mark(s, "readback: vertex count", nv, 0);
             if (nb > 0 && isog_prof && j->ordered) {     // BENCHMARK: the bricks given corners, by their corners (not timed)
                 uint32_t* sc = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
@@ -1828,6 +1925,9 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 // orbital from lists) or a thread per vertex
                 const md_gpu_grid_t g_eval = elist ? isog_groups((nv + 127) / 128) : set->orbitals_only ? g_vert
                                            : isog_groups(vwide ? (nv + 15) / 16 : geval ? (nv + 31) / 32 : (nv + 63) / 64);
+                // the evaluation's groups, for a launch in chunks (0: a thread per vertex, not in chunks)
+                const uint32_t n_eval_groups = elist ? (nv + 127) / 128 : set->orbitals_only ? 0u
+                                             : vwide ? (nv + 15) / 16 : geval ? (nv + 31) / 32 : (nv + 63) / 64;
                 // Newton steps; converged vertices are flagged and skipped (they no longer move, so their
                 // values stay valid for the final normals)
                 const bool fused = elist && isog_fused_project && isog_k[ISOG_K_PROJ1];
@@ -1838,7 +1938,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     if (fused) {     /* one launch: every iteration of every group */          \
                         v.level = (iters);                                                     \
                         v.mode = isog_newton_predict ? 2u : 0u;                                \
-                        MD_GPU_LAUNCH(s, isog_k[ISOG_K_PROJ1], g_eval, v);                     \
+                        isog_jlaunch(j, isog_k[ISOG_K_PROJ1], v, n_eval_groups, 0.65f, 0.92f); \
                         isog_mark(s, "vertex project (fused)", nv, 0);                         \
                         break;                                                                 \
                     }                                                                          \
@@ -1846,7 +1946,8 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     for (uint32_t it = 0; it <= (iters); ++it) {                               \
                         uint32_t act_, grp_;                                                   \
                         isog_prof_active(s, v.vdone, nv, &act_, &grp_);                        \
-                        MD_GPU_LAUNCH(s, k_eval, g_eval, v);                                   \
+                        if (it == 0 && n_eval_groups) isog_jlaunch(j, k_eval, v, n_eval_groups, 0.65f, 0.9f); \
+                        else MD_GPU_LAUNCH(s, k_eval, g_eval, v);                              \
                         isog_mark(s, "vertex eval", act_, grp_);                               \
                         v.mode = it == (iters) ? 1u : (isog_newton_predict ? 2u : 0u);         \
                         MD_GPU_LAUNCH(s, isog_k[ISOG_K_NEWTON], g_vert, v);                    \
@@ -1935,7 +2036,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
         case ISOG_J_FINAL_READ: {
             const uint32_t* bk = j->bk;
             const uint32_t nv = j->nv;
-            j->progress = 0.95f;
+            isog_jprog(j, 0.95f);
             if (j->kept.gpu) {      // the mesh's host copy: the mesh's from here (freed with it)
                 out->host_mem = j->kept.gpu;
                 out->host_position = (const float*)((const char*)j->kept.cpu + j->mesh_off[0]);
@@ -1989,7 +2090,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
     }
 #undef a
     if (j->stage == ISOG_J_DONE) {
-        j->progress = 1.0f;
+        isog_jprog(j, 1.0f);
         out->seconds_total = md_tick_to_seconds(md_tick_now() - j->t_start);
     }
 }
@@ -2111,6 +2212,7 @@ md_gto_iso_gpu_job_status_t md_gto_iso_gpu_job_poll(md_gto_iso_gpu_job_t* j, dou
     if (!j) return MD_GTO_ISO_GPU_JOB_FAILED;
     const md_tick_t t0 = md_tick_now();
     for (;;) {
+        isog_jmarks_take(j);
         if (j->stage == ISOG_J_DONE) return MD_GTO_ISO_GPU_JOB_DONE;
         if (j->stage == ISOG_J_FAILED) return MD_GTO_ISO_GPU_JOB_FAILED;
         if (j->fetching) {
@@ -2162,6 +2264,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     memset(out, 0, sizeof(*out));
     md_gto_iso_gpu_job_t* j = md_gto_iso_gpu_job_begin(s, set, desc);
     if (!j) return false;
+    j->blocking = true;
     md_gto_iso_gpu_job_poll(j, -1.0);
     return md_gto_iso_gpu_job_end(j, out);
 }

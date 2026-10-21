@@ -3019,6 +3019,39 @@ UTEST(gto_iso_gpu_lib, job_matches_extract) {
         }
         md_gto_iso_gpu_mesh_free(g.s, &jm);
 
+        // in chunks (a long job's launches, each chunk followed by a progress marker): the same triangles, the
+        // progress in more steps
+        {
+            const int saved = isog_chunks;
+            isog_chunks = 6;
+            md_gto_iso_gpu_job_t* jc = md_gto_iso_gpu_job_begin(g.s, set, &jd);
+            ASSERT_TRUE(jc != NULL);
+            float seen[256];
+            uint32_t nseen = 0;
+            while (md_gto_iso_gpu_job_poll(jc, 0.0) == MD_GTO_ISO_GPU_JOB_RUNNING) {
+                const float pr = md_gto_iso_gpu_job_progress(jc);
+                if ((nseen == 0 || pr != seen[nseen - 1]) && nseen < 256) seen[nseen++] = pr;
+            }
+            isog_chunks = saved;
+            md_gto_iso_gpu_mesh_t cm;
+            ASSERT_TRUE(md_gto_iso_gpu_job_end(jc, &cm));
+            printf("    in 6 chunks: %u progress values seen:", nseen);
+            for (uint32_t i = 0; i < nseen; ++i) printf(" %.2f", seen[i]);
+            printf("\n");
+            EXPECT_TRUE(nseen >= 8);
+            ASSERT_EQ(cm.vertex_count, nv);
+            ASSERT_EQ(cm.index_count, ni);
+            if (nv > 0) {
+                iso_tri9_t* ta = iso_canon_tris(rp, ri, ni);
+                iso_tri9_t* tb = iso_canon_tris(cm.host_position, cm.host_index, ni);
+                uint32_t diff = 0;
+                for (uint32_t i = 0; i < ni / 3; ++i) diff += iso_tri9_cmp(&ta[i], &tb[i]) != 0;
+                EXPECT_EQ(diff, 0u);
+                free(ta); free(tb);
+            }
+            md_gto_iso_gpu_mesh_free(g.s, &cm);
+        }
+
         // ended early, at each of its first few waits: nothing kept
         for (int stop = 0; stop < 4; ++stop) {
             md_gto_iso_gpu_job_t* jb = md_gto_iso_gpu_job_begin(g.s, set, &jd);

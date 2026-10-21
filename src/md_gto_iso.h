@@ -308,7 +308,9 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t stream, const md_
 // < 0: as long as it takes, which blocks until the job is done)
 md_gto_iso_gpu_job_status_t md_gto_iso_gpu_job_poll(md_gto_iso_gpu_job_t* job, double budget_ms);
 
-// How far the job is, 0 to 1, by the counts the host has taken (coarse: a few steps per extraction)
+// How far the job is, 0 to 1, as of the last poll: by the counts the host has taken (a few steps), and in
+// a long job (its octree took 4 ms or more) by the chunks of its corner and vertex launches that have
+// passed: those go in chunks of about 10-20 ms of work, each followed by a marker
 float md_gto_iso_gpu_job_progress(const md_gto_iso_gpu_job_t* job);
 
 // Ends the job. Done: the mesh goes to 'out' (free it with md_gto_iso_gpu_mesh_free) and true is

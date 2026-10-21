@@ -115,6 +115,8 @@ struct IsoArgs {
     float4*   dprop;          // dform: per matrix: (2 eps)^2 sum |D raw|, 4 eps, positive semidefinite (1), slack
     uint*     scan;           // ordered lists: per brick, its count (iso_points, iso_cells), then its offset (iso_scan)
     uint*     bstate;         // flood: per brick, the round it was evaluated in (1, 2, ...), FLOOD_NONE not (yet)
+    uint      group_base;     // a launch in chunks: the first group of this one (node_index adds it)
+    uint      grid_max;       // iso_grid: at most this many groups from group_base on (0: no chunks)
 };
 MD_SHADER_ARGS(IsoArgs);
 
@@ -122,7 +124,7 @@ static const uint  INVALID = 0xFFFFFFFFu;
 static const float U = 1.0 / 4194304.0;     // 2^-22: four float ulps, generous for fast-math backends
 static const float EXP_REL = 4.0e-6;        // relative error allowed for exp() on any backend
 
-uint  node_index(uint3 gid) { return gid.y * 65535u + gid.x; }
+uint  node_index(uint3 gid) { IsoArgs a = MD_ARGS; return gid.y * 65535u + gid.x + a.group_base; }
 uint  field_bits(uint mask) { return (mask | (mask >> 1)) & 0x55555555u; }     // bit 2f: field f active
 uint  field_slot(uint mask, uint f) { return countbits(field_bits(mask) & ((1u << (2u * f)) - 1u)); }
 
@@ -225,6 +227,7 @@ void iso_grid(uint3 tid : SV_DispatchThreadID) {
     uint n = a.count_in[0];
     if (a.cap != 0u) n = min(n, a.cap);
     uint groups = a.grid_div > 1u ? (n + a.grid_div - 1u) / a.grid_div : n * a.grid_mul;
+    if (a.grid_max != 0u) groups = groups > a.group_base ? min(groups - a.group_base, a.grid_max) : 0u;   // a chunk
     a.grid_out[0] = min(groups, 65535u);
     a.grid_out[1] = (groups + 65534u) / 65535u;
     a.grid_out[2] = 1u;
@@ -1764,10 +1767,14 @@ void iso_corners_list_f1v4(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     float3 glo = l_lohi[0].xyz, ghi = l_lohi[1].xyz;
     float acc[L4_VPT];
     [ForceUnroll] for (int v = 0; v < L4_VPT; ++v) acc[v] = 0.0;
+    // DIAGNOSTIC (a.diag): 1 no AO values (no exponentials, no monomials), 2 no multiply-adds (the radial
+    // part only: no monomials, no coefficients), 3 the lists only, 4 no rows of C (zeros staged), 5 no
+    // shells staged and no AO values
+    bool no_ao = a.diag == 1u || a.diag == 5u;
     for (uint s0 = 0u; s0 < a.num_shells; s0 += uint(L4_GROUP)) {
         GroupMemoryBarrierWithGroupSync();                 // the previous block's lists consumed
         k_list(s0, glo, ghi, tid, L4_GROUP, K_CK);
-        uint nchunk = k_nchunk;
+        uint nchunk = a.diag == 3u ? 0u : k_nchunk;
         for (uint c = 0u; c < nchunk; ++c) {
             k_load_chunk<1, KBuf1>(c, 0u, tid, L4_GROUP);
             uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
@@ -1786,9 +1793,13 @@ void iso_corners_list_f1v4(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                     any = any || r2[v] <= cs.w;
                 }
                 if (!any) continue;                         // none of the thread's points in reach
-                for (uint q = 0u; q < np; ++q) {
-                    float2 pr = k_pr[po + q];
-                    [ForceUnroll] for (int v = 0; v < L4_VPT; ++v) R[v] += pr.y * exp(-pr.x * r2[v]);
+                if (no_ao) {
+                    [ForceUnroll] for (int v = 0; v < L4_VPT; ++v) R[v] = 1.0e-3 * float(np);
+                } else {
+                    for (uint q = 0u; q < np; ++q) {
+                        float2 pr = k_pr[po + q];
+                        [ForceUnroll] for (int v = 0; v < L4_VPT; ++v) R[v] += pr.y * exp(-pr.x * r2[v]);
+                    }
                 }
                 // the coefficients once (rows of KBuf1), the polynomial per point
                 float cf[15];
@@ -1796,6 +1807,13 @@ void iso_corners_list_f1v4(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                 [ForceUnroll] for (int n = 0; n < 15; ++n) cf[n] = uint(n) < nc ? KBuf1::ld(row0 + uint(n)) : 0.0;
                 [ForceUnroll] for (int v = 0; v < L4_VPT; ++v) {
                     if (r2[v] > cs.w) continue;             // beyond the cutoff: dropped, as for one point a thread
+                    if (no_ao) {
+                        float P0 = 0.0;
+                        [ForceUnroll] for (int n = 0; n < 15; ++n) P0 += cf[n];
+                        acc[v] += P0 * R[v];
+                        continue;
+                    }
+                    if (a.diag == 2u) { acc[v] += R[v]; continue; }     // the radial part only
                     float m[15];
                     cart_monomials(l, d[v], m);
                     float P = 0.0;
