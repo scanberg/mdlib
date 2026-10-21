@@ -60,10 +60,11 @@
 // compute_spline_subdivide.vert and backbone.vert
 #define TUBE_RADIUS_MAX 8.0f
 
-// Bonds, rings, slabs and gaps are drawn as one quad each (bond.vert, ring.vert, slab.vert), in blocks of this many
-// quads: an instance of the draw is one block of one copy of the molecule, from a static index buffer of one block
-// (QUADS in instance_shader_src). A partial block at the end culls the quads past the count in the vertex shader. A draw
-// with an atom mask draws a list of blocks, those which hold marked atoms (MARKS).
+// Spheres, bonds, rings, slabs and gaps are drawn as one quad each (spacefill.vert, bond.vert, ring.vert, slab.vert), in
+// blocks of this many quads: an instance of the draw is one block of one copy of the molecule, from a static index
+// buffer of one block (QUADS in instance_shader_src). A partial block at the end culls the quads past the count in the
+// vertex shader. A draw with an atom mask draws a list of blocks, those which hold marked atoms (MARKS); of spheres the
+// list of the marked atoms themselves.
 #define QUAD_BLOCK 128
 
 // INSTANCES (md_gl_copies_t). Each draw of md_gl_draw uploads the copies of its ops which are in view to a buffer read
@@ -1317,11 +1318,11 @@ void md_gl_mol_zero_velocity(md_gl_mol_t handle) {
     mol->spline_dirty = true;
 }
 
-// geom_src is optional. defines is injected after the version line of every stage.
-bool create_permuted_program(str_t identifier, gl_program_t* program_permutations, str_t vert_src, str_t geom_src, str_t frag_src, str_t frag_output_src, str_t defines) {
-    const bool has_geom = !str_empty(geom_src);
+// A vertex and a fragment shader: no geometry shaders, which cost more than they save, the more so where they are
+// emulated (Apple's GL over Metal). Primitives are made in the vertex shader instead (QUADS). defines is injected after
+// the version line of both stages.
+static bool create_permuted_program(str_t identifier, gl_program_t* program_permutations, str_t vert_src, str_t frag_src, str_t frag_output_src, str_t defines) {
     GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
-    GLuint geom_shader = has_geom ? glCreateShader(GL_GEOMETRY_SHADER) : 0;
     GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
     const str_t perm_str[] = {
@@ -1340,18 +1341,14 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
             return false;
         }
 
-        if (has_geom && !md_gl_shader_compile(geom_shader, geom_src, injections, 2)) {
-            MD_LOG_ERROR("Error occured when compiling geometry shader for: '%.*s'", STR_ARG(identifier));
-            return false;
-        }
         if (!str_empty(frag_src) && !md_gl_shader_compile(frag_shader, frag_src, injections, 4)) {
             MD_LOG_ERROR("Error occured when compiling fragment shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
 
         program_permutations[perm].id = glCreateProgram();
-        const GLuint shaders[] = {vert_shader, frag_shader, geom_shader};
-        if (!md_gl_program_attach_and_link(program_permutations[perm].id, shaders, has_geom ? 3 : 2)) return false;
+        const GLuint shaders[] = {vert_shader, frag_shader};
+        if (!md_gl_program_attach_and_link(program_permutations[perm].id, shaders, 2)) return false;
 
         // The textures of the caller's that the output snippet samples: their units are set once, here, as no draw sets them.
         // So are those of the instances and the lists of a draw, which every draw binds to the same units.
@@ -1372,7 +1369,6 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
     }
 
     glDeleteShader(vert_shader);
-    if (geom_shader) glDeleteShader(geom_shader);
     glDeleteShader(frag_shader);
 
     return true;
@@ -1709,16 +1705,16 @@ md_gl_shaders_t md_gl_shaders_create(str_t str) {
     const str_t bond_frag_src = {(const char*)bond_frag, bond_frag_size};
     const str_t ring_vert_src = {(const char*)ring_vert, ring_vert_size};
     const str_t ring_frag_src = {(const char*)ring_frag, ring_frag_size};
-    if (!create_permuted_program(STR_LIT("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_geom, spacefill_geom_size},   (str_t){(const char*)spacefill_frag, spacefill_frag_size},    str, (str_t){0})) return handle;
-    if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 0"))) return handle;
-    if (!create_permuted_program(STR_LIT("WeakBonds"), shaders->weak_bonds, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("BondPartners"), shaders->bond_partners, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define BOND_PARTNERS 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("ChainGaps"), shaders->chain_gaps, bond_vert_src, (str_t){0}, bond_frag_src, str, STR_LIT("#define CHAIN_GAPS 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("AromaticRings"), shaders->aromatic_rings, ring_vert_src, (str_t){0}, ring_frag_src, str, (str_t){0})) return handle;
-    if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 0"))) return handle;
-    if (!create_permuted_program(STR_LIT("Tubes"),     shaders->tubes,      backbone_vert_src, (str_t){0}, backbone_frag_src, str, STR_LIT("#define REP_TUBES 1"))) return handle;
-    if (!create_permuted_program(STR_LIT("Slabs"),     shaders->slabs,      (str_t){(const char*)slab_vert, slab_vert_size}, (str_t){0}, (str_t){(const char*)slab_frag, slab_frag_size}, str, (str_t){0})) return handle;
+    if (!create_permuted_program(STR_LIT("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_frag, spacefill_frag_size}, str, (str_t){0})) return handle;
+    if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   bond_vert_src, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 0"))) return handle;
+    if (!create_permuted_program(STR_LIT("WeakBonds"), shaders->weak_bonds, bond_vert_src, bond_frag_src, str, STR_LIT("#define WEAK_BONDS 1"))) return handle;
+    if (!create_permuted_program(STR_LIT("BondPartners"), shaders->bond_partners, bond_vert_src, bond_frag_src, str, STR_LIT("#define BOND_PARTNERS 1"))) return handle;
+    if (!create_permuted_program(STR_LIT("ChainGaps"), shaders->chain_gaps, bond_vert_src, bond_frag_src, str, STR_LIT("#define CHAIN_GAPS 1"))) return handle;
+    if (!create_permuted_program(STR_LIT("AromaticRings"), shaders->aromatic_rings, ring_vert_src, ring_frag_src, str, (str_t){0})) return handle;
+    if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    backbone_vert_src, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 1"))) return handle;
+    if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    backbone_vert_src, backbone_frag_src, str, STR_LIT("#define REP_RIBBONS 0"))) return handle;
+    if (!create_permuted_program(STR_LIT("Tubes"),     shaders->tubes,      backbone_vert_src, backbone_frag_src, str, STR_LIT("#define REP_TUBES 1"))) return handle;
+    if (!create_permuted_program(STR_LIT("Slabs"),     shaders->slabs,      (str_t){(const char*)slab_vert, slab_vert_size}, (str_t){(const char*)slab_frag, slab_frag_size}, str, (str_t){0})) return handle;
 
     handle.id = id;
     return handle;
@@ -4519,6 +4515,8 @@ static void issue_quads(GLuint program, uint32_t offset, uint32_t count, const d
     }
 }
 
+// Spheres by vertex pulling (spacefill.vert): one quad per atom, the atoms read from texture buffers, in blocks (QUADS).
+// With an atom mask or a subset the list of the range is of the atoms themselves, drawn as the primitives of a subset.
 static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_color, float scale, const draw_range_t* range) {
     ASSERT(mol);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_POSITION].id);
@@ -4527,7 +4525,7 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
     ASSERT(mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     ASSERT(atom_color.id);
 
-    if (range->inst_count == 0 || (range->masked && range->list.count == 0)) {
+    if (!ctx.quad_index.id || range->inst_count == 0 || (range->masked && range->list.count == 0)) {
         return false;
     }
 
@@ -4535,46 +4533,42 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
 
     glBindVertexArray(ctx.vao);
 
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_0].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
 
-    glEnableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_1].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
 
-    glEnableVertexAttribArray(2);
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_RADIUS].id);
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 0, 0);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_2].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
 
-    glEnableVertexAttribArray(3);
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
-    glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, 0, 0);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_3].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, atom_color.id);
 
-    glEnableVertexAttribArray(4);
-    glBindBuffer(GL_ARRAY_BUFFER, atom_color.id);
-    glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, 0);
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_4].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, mol->buffer[GL_BUFFER_ATOM_RADIUS].id);
 
     glUseProgram(program.id);
-    glUniform1i(glGetUniformLocation(program.id, "u_instance_base"), (GLint)range->inst_base);
-    if (range->masked) {
-        // The marked atoms, or those of a subset: the index of a vertex is its atom (gl_VertexID, and the attributes)
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, range->buf ? range->buf : ctx.list_buf.id);
-        glDrawElementsInstanced(GL_POINTS, (GLsizei)range->list.count, GL_UNSIGNED_INT, (const void*)((uintptr_t)range->list.offset * sizeof(uint32_t)), (GLsizei)range->inst_count);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    } else {
-        glDrawArraysInstanced(GL_POINTS, 0, mol->atom_count, (GLsizei)range->inst_count);
-    }
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_pos"),   0);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_vel"),   1);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_flags"), 2);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_color"), 3);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_rad"),   4);
+
+    // The list of a masked range holds the atoms, as a subset's holds its primitives
+    draw_range_t atoms = *range;
+    atoms.exact = range->masked;
+    issue_quads(program.id, 0, mol->atom_count, &atoms);
+
     glUseProgram(0);
 
-    glDisableVertexAttribArray(0);
-    glDisableVertexAttribArray(1);
-    glDisableVertexAttribArray(2);
-    glDisableVertexAttribArray(3);
-    glDisableVertexAttribArray(4);
-
+    glActiveTexture(GL_TEXTURE0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 
     return true;

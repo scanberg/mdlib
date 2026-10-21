@@ -214,8 +214,6 @@ set(GL_SHADER_FILES
   src/shaders/compute_spline_extract.vert
   src/shaders/compute_spline_orient.vert
   src/shaders/compute_spline_subdivide.vert
-  src/shaders/compute_spline.vert
-  src/shaders/compute_spline.geom
   src/shaders/compute_velocity.vert
   src/shaders/compute_derived.vert
   src/shaders/backbone.vert
@@ -227,7 +225,6 @@ set(GL_SHADER_FILES
   src/shaders/slab.vert
   src/shaders/slab.frag
   src/shaders/spacefill.vert
-  src/shaders/spacefill.geom
   src/shaders/spacefill.frag
 )
 

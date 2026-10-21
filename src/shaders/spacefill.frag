@@ -5,7 +5,7 @@
 #define ORTHO 0
 #endif
 
-in GS_FS {
+in VS_FS {
     smooth vec3 view_coord;
     flat vec4 view_sphere;
     flat vec3 view_velocity;
@@ -33,7 +33,7 @@ layout (std140) uniform ubo {
     float u_radius_scale;
 };
 
-// The quad of spacefill.geom is in front of the sphere, so the depth only increases: the depth test can run before the
+// The quad of spacefill.vert is in front of the sphere, so the depth only increases: the depth test can run before the
 // shader. GL_ARB_conservative_depth, which the extension enabled above defines (GL_EXT_ is the name of OpenGL ES)
 #ifdef GL_ARB_conservative_depth
 layout (depth_greater) out float gl_FragDepth;
