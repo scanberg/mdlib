@@ -3919,8 +3919,10 @@ size_t md_util_system_infer_coordination(md_system_t* sys) {
 #define MIN_RES_LEN 4
 #define MAX_RES_LEN 25
 
+// No upper bound for a nucleotide: a hypermodified one is larger than any standard one (wybutosine, 39 heavy atoms), as
+// is a modified one with its hydrogens, and classify_nucleotide tells nucleotide ligands (NAD, FAD, CoA, ...) by their
+// bonds rather than their size. The nucleic backbone (MD_UTIL_INFER_BACKBONE_BIT) takes any size, and the two agree.
 #define MIN_NUC_LEN 6
-#define MAX_NUC_LEN 35
 
 #define MIN_POLYMER_COMP_LEN 2
 
@@ -4264,7 +4266,7 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         }
 
         md_nucleic_acid_atoms_t nucl_atoms = {0};
-        if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && md_util_nucleic_acid_atoms_extract(&nucl_atoms, &sys->atom, comp_range)) {
+        if (MIN_NUC_LEN <= len && md_util_nucleic_acid_atoms_extract(&nucl_atoms, &sys->atom, comp_range)) {
             classify_nucleotide(sys, comp_idx, &nucl_atoms);
             continue;
         }
