@@ -651,7 +651,6 @@ if (MD_ENABLE_GPU)
               iso_points iso_corners_fill iso_corners_list_f1v4
               iso_gcorners_f16 iso_gcorners_f32 iso_gcorners_f64 iso_geval_f16 iso_geval_f32 iso_geval_f64
               iso_gcorners_w128 iso_gcorners_w192 iso_gcorners_y256 iso_geval_w128 iso_geval_w192 iso_geval_y256
-              iso_geval_f16_sr iso_geval_f32_sr iso_geval_f64_sr iso_geval_w128_sr iso_geval_w192_sr iso_geval_y256_sr
               iso_dcorners iso_deval
               iso_flood_seed iso_flood_face iso_flood_finish iso_flood_atoms
               iso_cells iso_quads iso_relax iso_newton iso_eval_orbital iso_project_list_f1

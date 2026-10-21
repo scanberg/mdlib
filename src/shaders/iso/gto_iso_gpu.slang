@@ -1247,26 +1247,6 @@ void cart_monomials_d(uint l, float3 d, uint ax, out float g[15]) {
     }
 }
 
-// EXPERIMENT (r33, VERT 2): a vertex's four channels of shell (d, l, nc, R, R1) made by one thread, so the
-// radial part (the exponentials) is made once per vertex and shell; VERT 1 makes it once per channel, the
-// four threads of a vertex each making it. ST(row n of the shell, channel, value) stores.
-#define VERT_CHANNELS(ST)                                                                   \
-    {                                                                                      \
-        float m_[15];                                                                      \
-        cart_monomials(l, d, m_);                                                          \
-        [ForceUnroll] for (int n_ = 0; n_ < 15; ++n_) {                                     \
-            if (uint(n_) < nc) { ST(n_, 0u, m_[n_] * R); }                                  \
-        }                                                                                  \
-        [ForceUnroll] for (int ax_ = 0; ax_ < 3; ++ax_) {                                   \
-            float g_[15];                                                                  \
-            cart_monomials_d(l, d, uint(ax_), g_);                                         \
-            float A_ = 2.0 * d[ax_] * R1;                                                  \
-            [ForceUnroll] for (int n_ = 0; n_ < 15; ++n_) {                                 \
-                if (uint(n_) < nc) { ST(n_, uint(ax_) + 1u, m_[n_] * A_ + g_[n_] * R); }    \
-            }                                                                              \
-        }                                                                                  \
-    }
-
 // ------------------------------------------------------------------------------------------
 // Corners and vertices as a tiled GEMM: 128 evaluation rows per group (corners: 128 consecutive
 // points of the list; vertices: 32 vertices x 4 channels, value and gradient), F function columns
@@ -1393,19 +1373,7 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
                 k_load_chunk<F, B>(c, f0, tid, G_GROUP);
                 uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
                 // this row's AO values of the chunk's shells (zero beyond a shell's cutoff)
-                if (VERT == 2) {
-                    // the vertex's four channels by one thread, of every fourth shell
-                    for (uint i = i0 + cg; i < i1; i += 4u) {
-                        float3 d;
-                        float R, R1;
-                        uint l, nc;
-                        k_shell_d(i - i0, p, d, R, R1, l, nc);
-                        uint rb = k_row[i] * 32u + pg;
-#define ST_G(N, C, V) gp_st(rb + uint(N) * 32u, C, V)
-                        VERT_CHANNELS(ST_G)
-#undef ST_G
-                    }
-                } else for (uint i = i0; i < i1; ++i) {
+                for (uint i = i0; i < i1; ++i) {
                     float3 d;
                     float R, R1 = 0.0;
                     uint l, nc;
@@ -1549,11 +1517,8 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_gcorners_f32(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<32, GBuf32, 0>(gid, tid); }
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_gcorners_f64(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<64, GBuf64, 0>(gid, tid); }
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_f16(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<16, GBuf16, 1>(gid, tid); }
-[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_f16_sr(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<16, GBuf16, 2>(gid, tid); }
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_f32(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<32, GBuf32, 1>(gid, tid); }
-[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_f32_sr(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<32, GBuf32, 2>(gid, tid); }
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_f64(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<64, GBuf64, 1>(gid, tid); }
-[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_f64_sr(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<64, GBuf64, 2>(gid, tid); }
 
 // ------------------------------------------------------------------------------------------
 // The wide GEMM (canonical terms only): 64 rows per group of 256 threads and F = 128, 192 or 256
@@ -1649,19 +1614,7 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
             for (uint c = 0u; c < nchunk; ++c) {
                 k_load_chunk<F, B>(c, f0, tid, W_GROUP);
                 uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
-                if (VERT == 2) {
-                    // the vertex's four channels by one thread, of every 16th shell
-                    for (uint i = i0 + cg; i < i1; i += 16u) {
-                        uint rb = k_row[i] * 16u + pg;
-                        float3 d;
-                        float R, R1;
-                        uint l, nc;
-                        k_shell_d(i - i0, p, d, R, R1, l, nc);
-#define ST_W(N, C, V) wp_st(rb + uint(N) * 16u, C, V)
-                        VERT_CHANNELS(ST_W)
-#undef ST_W
-                    }
-                } else for (uint i = i0 + js; i < i1; i += 4u) {
+                for (uint i = i0 + js; i < i1; i += 4u) {
                     uint rb = k_row[i] * 16u + pg;
                     float3 d;
                     float R, R1 = 0.0;
@@ -1767,9 +1720,7 @@ void gemm_wide<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
 [shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_w128(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<128, WBuf128, 0>(gid, tid); }
 [shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_w192(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<192, WBuf192, 0>(gid, tid); }
 [shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_w128(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<128, WBuf128, 1>(gid, tid); }
-[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_w128_sr(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<128, WBuf128, 2>(gid, tid); }
 [shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_w192(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<192, WBuf192, 1>(gid, tid); }
-[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_w192_sr(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide<192, WBuf192, 2>(gid, tid); }
 
 // ------------------------------------------------------------------------------------------
 // gemm_wide2: gemm_wide with the group's shells listed once, all of them in rounds of the group's
@@ -1952,19 +1903,7 @@ void gemm_wide2<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
                 uint sn = kw_cf[c + 1u];
                 uint i0 = kw_cf[c], i1 = (sn < nsh && kw_la[min(sn, uint(KW_LIST))] < la0 + 16u) ? sn + 1u : sn;
 
-                if (VERT == 2) {
-                    // the vertex's four channels by one thread, of every 16th shell
-                    for (uint i = i0 + cg; i < i1; i += 16u) {
-                        int rb = int(kw_la[i]) - int(la0);
-                        float3 d;
-                        float R, R1;
-                        uint l, nc;
-                        kw_shell<VERT>(i, p, d, R, R1, l, nc);
-#define ST_W2(N, C, V) { int r_ = rb + int(N); if (r_ >= 0 && r_ < 16) wp_st(uint(r_) * 16u + pg, C, V); }
-                        VERT_CHANNELS(ST_W2)
-#undef ST_W2
-                    }
-                } else for (uint i = i0 + js; i < i1; i += 4u) {
+                for (uint i = i0 + js; i < i1; i += 4u) {
                     int rb = int(kw_la[i]) - int(la0);    // the shell's first row in the chunk (negative: it began before)
                     float3 d;
                     float R, R1;
@@ -2066,7 +2005,6 @@ void gemm_wide2<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
 
 [shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_y256(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide2<256, WBuf256, 0>(gid, tid); }
 [shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_y256(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide2<256, WBuf256, 1>(gid, tid); }
-[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_y256_sr(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide2<256, WBuf256, 2>(gid, tid); }
 
 // ------------------------------------------------------------------------------------------
 // Densities as phi^T D phi (dform): the local list, the shells that reach a box in shell order with
