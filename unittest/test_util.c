@@ -997,36 +997,39 @@ UTEST(util, martini_masses_by_version) {
     md_vm_arena_destroy(alloc);
 }
 
-// Martini 2 DNA (Uusitalo et al. 2015), mapped from four nucleotides of a strand of the nucleosome in nucl-dna.gro (TGCA,
-// -60 to -57): the phosphate BB1 and sugar BB2, BB3 are the backbone, the rest the base. The bonds are those of the
-// topology (polyply's DNA_M2), BB3 to the next BB1 included.
+// Martini 2 DNA (Uusitalo et al. 2015), mapped from four nucleotides of a strand of the nucleosome in nucl-dna.gro
+// (TGCA, -60 to -57): the phosphate BB1 and sugar BB2, BB3 are the backbone, the rest the base. Each bead is the centre
+// of its atoms: BB1 P OP1 OP2 O5', BB2 C5' O4' C4', BB3 C3' C2' C1'; SC1 N9 C4, SC2 C2 N3 (and N2 of G), SC3 C6 N1 and
+// N6 (O6 of G), SC4 C8 N7 C5 of a purine; SC1 N1 C6, SC2 N3 C2 O2, SC3 C5 C4 and N4 (O4 C7 of T) of a pyrimidine.
+// Within a residue their distances are the bond and constraint lengths of the topology within 0.03 nm. The bonds are
+// those of the topology (polyply's DNA_M2), BB3 to the next BB1 included.
 static const char martini2_dna_pdb[] =
-    "ATOM      1 BB1  DT  A -60      -3.210 101.160  22.216  1.00  0.00\n"
+    "ATOM      1 BB1  DT  A -60      -3.350 101.668  23.203  1.00  0.00\n"
     "ATOM      2 BB2  DT  A -60      -2.020 101.387  20.003  1.00  0.00\n"
     "ATOM      3 BB3  DT  A -60      -1.460  99.483  19.917  1.00  0.00\n"
     "ATOM      4 SC1  DT  A -60       0.850  99.875  21.345  1.00  0.00\n"
     "ATOM      5 SC2  DT  A -60       2.520  99.690  19.910  1.00  0.00\n"
     "ATOM      6 SC3  DT  A -60       2.758  99.835  23.080  1.00  0.00\n"
-    "ATOM      7 BB1  DG  A -59      -3.014  97.266  16.898  1.00  0.00\n"
+    "ATOM      7 BB1  DG  A -59      -3.655  97.578  17.750  1.00  0.00\n"
     "ATOM      8 BB2  DG  A -59      -1.057  97.917  15.617  1.00  0.00\n"
     "ATOM      9 BB3  DG  A -59      -0.357  96.060  15.630  1.00  0.00\n"
     "ATOM     10 SC1  DG  A -59       1.545  96.355  18.015  1.00  0.00\n"
-    "ATOM     11 SC2  DG  A -59       0.887  96.270  19.463  1.00  0.00\n"
+    "ATOM     11 SC2  DG  A -59       4.450  96.427  17.973  1.00  0.00\n"
     "ATOM     12 SC3  DG  A -59       3.530  96.343  20.680  1.00  0.00\n"
-    "ATOM     13 SC4  DG  A -59       4.450  96.427  17.973  1.00  0.00\n"
-    "ATOM     14 BB1  DC  A -58       0.198  93.750  12.596  1.00  0.00\n"
+    "ATOM     13 SC4  DG  A -59       0.887  96.270  19.463  1.00  0.00\n"
+    "ATOM     14 BB1  DC  A -58      -0.695  94.367  12.558  1.00  0.00\n"
     "ATOM     15 BB2  DC  A -58       2.600  93.820  13.640  1.00  0.00\n"
     "ATOM     16 BB3  DC  A -58       2.597  91.947  14.360  1.00  0.00\n"
     "ATOM     17 SC1  DC  A -58       2.015  92.455  17.020  1.00  0.00\n"
     "ATOM     18 SC2  DC  A -58       3.943  92.957  18.023  1.00  0.00\n"
     "ATOM     19 SC3  DC  A -58       1.660  92.757  19.563  1.00  0.00\n"
-    "ATOM     20 BB1  DA  A -57       5.052  90.502  11.028  1.00  0.00\n"
+    "ATOM     20 BB1  DA  A -57       3.948  90.553  10.992  1.00  0.00\n"
     "ATOM     21 BB2  DA  A -57       6.963  91.600  12.027  1.00  0.00\n"
     "ATOM     22 BB3  DA  A -57       7.717  89.830  12.417  1.00  0.00\n"
     "ATOM     23 SC1  DA  A -57       6.215  89.725  15.085  1.00  0.00\n"
-    "ATOM     24 SC2  DA  A -57       4.760  89.077  14.940  1.00  0.00\n"
+    "ATOM     24 SC2  DA  A -57       6.710  90.325  17.270  1.00  0.00\n"
     "ATOM     25 SC3  DA  A -57       4.267  89.427  17.783  1.00  0.00\n"
-    "ATOM     26 SC4  DA  A -57       6.710  90.325  17.270  1.00  0.00\n"
+    "ATOM     26 SC4  DA  A -57       4.760  89.077  14.940  1.00  0.00\n"
     "END\n";
 
 UTEST(util, martini2_dna) {
