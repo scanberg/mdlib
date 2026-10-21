@@ -113,6 +113,7 @@ struct IsoArgs {
     float*    drs;            // dform: per matrix and AO mu, sum over nu of |D_mu nu| / |nrm_nu| (the octree's tails)
     float4*   dprop;          // dform: per matrix: (2 eps)^2 sum |D raw|, 4 eps, positive semidefinite (1), slack
     uint*     scan;           // ordered lists: per brick, its count (iso_points, iso_cells), then its offset (iso_scan)
+    uint*     bstate;         // flood: per brick, the round it was evaluated in (1, 2, ...), 0 not (yet)
 };
 MD_SHADER_ARGS(IsoArgs);
 
@@ -628,7 +629,10 @@ float corner_value(uint slot, int3 lc) {   // lc in [0, 4]^3
 // of the neighbour across it. When that neighbour is present with every field of this brick, the
 // value is taken from it (iso_corners_fill) instead of evaluated twice. Returns the neighbour, or
 // INVALID when the point is the brick's own to evaluate; *owner_p: the point's index there.
-uint corner_owner(uint4 brick, uint p, out uint owner_p) {
+uint corner_owner(uint4 brick, uint p, out uint owner_p) { return corner_owner_upto(brick, p, owner_p, 0u); }
+
+// The same, the neighbour only if the flood evaluated it by round 'upto' (0: any)
+uint corner_owner_upto(uint4 brick, uint p, out uint owner_p, uint upto) {
     IsoArgs a = MD_ARGS;
     uint k = min(p, 124u);
     uint3 lc = uint3(k % 5u, (k / 5u) % 5u, k / 25u);
@@ -639,7 +643,9 @@ uint corner_owner(uint4 brick, uint p, out uint owner_p) {
     uint nb = brick_lookup(int3(brick.xyz + dd));
     uint nmask = a.bricks[nb == INVALID ? 0u : nb].w;      // brick 0 when absent: llvmpipe loads anyway
     uint need = field_bits(brick.w);
-    return (nb != INVALID && (field_bits(nmask) & need) == need) ? nb : INVALID;
+    bool done = true;
+    if (upto != 0u) { uint st = a.bstate[nb == INVALID ? 0u : nb]; done = st != 0u && st <= upto; }
+    return (nb != INVALID && (field_bits(nmask) & need) == need && done) ? nb : INVALID;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1355,9 +1361,14 @@ void iso_corners_fill(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     IsoArgs a = MD_ARGS;
     uint b = node_index(gid);
     if (b >= a.count || tid >= 125u) return;
+    // flood (mode bit 8): only the round's bricks, from neighbours evaluated by then; coarse (bit 16): the
+    // brick corners only
+    uint upto = 0u;
+    if ((a.mode & 8u) != 0u) { if (a.bstate[b] != a.level) return; upto = a.level; }
+    if ((a.mode & 16u) != 0u && !iso_brick_corner(tid)) return;
     uint4 brick = a.bricks[b];
     uint op;
-    uint nb = corner_owner(brick, tid, op);
+    uint nb = corner_owner_upto(brick, tid, op, upto);
     if (nb == INVALID) return;
     uint nmask = a.bricks[nb].w;
     uint slot = a.brick_slot[b], nslot0 = a.brick_slot[nb];
@@ -1375,6 +1386,117 @@ void iso_corners_fill(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 // shell shared by 256 points instead of one brick's
 // ------------------------------------------------------------------------------------------
 
+// Point p of a brick (0 .. 124) is one of its 8 corners
+bool iso_brick_corner(uint p) {
+    uint k = min(p, 124u);
+    uint3 lc = uint3(k % 5u, (k / 5u) % 5u, k / 25u);
+    return all(lc == uint3(0u) || lc == uint3(4u));
+}
+
+// ------------------------------------------------------------------------------------------
+// Seed and flood (approximate: a surface piece no seed reaches is missed). The candidate bricks'
+// corners are evaluated first; a brick whose corners straddle an iso value is a seed (round 1). Each
+// round's bricks are evaluated in full, and a candidate across a face of one whose 25 face points
+// hold a sign change on a face edge joins the next round. A flooded brick has surface cells.
+// ------------------------------------------------------------------------------------------
+
+// Sign of the brick's point (x, y, z) for field f, sheet s against the iso value: above
+bool flood_above(uint slot, uint x, uint y, uint z, float sg, float iso) {
+    IsoArgs a = MD_ARGS;
+    return sg * a.corners[slot * 125u + x + 5u * y + 25u * z] - iso > 0.0;
+}
+
+// Thread per brick: the seeds (counted in counters[6])
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_flood_seed(uint3 tid3 : SV_DispatchThreadID) {
+    IsoArgs a = MD_ARGS;
+    uint b = tid3.x;
+    if (b >= a.count) return;
+    uint4 brick = a.bricks[b];
+    uint seed = 0u;
+    uint slot = a.brick_slot[b];
+    for (uint f = 0u; f < a.num_fields; ++f) {
+        uint fb = (brick.w >> (2u * f)) & 3u;
+        if (fb == 0u) continue;
+        float iso = a.fields[f].iso;
+        for (uint sh = 0u; sh < 2u; ++sh) {
+            if ((fb & (1u << sh)) == 0u) continue;
+            float sg = sh == 0u ? 1.0 : -1.0;
+            uint pos = 0u;
+            for (uint k = 0u; k < 8u; ++k) pos += flood_above(slot, (k & 1u) * 4u, ((k >> 1) & 1u) * 4u, (k >> 2) * 4u, sg, iso) ? 1u : 0u;
+            if (pos != 0u && pos != 8u) seed = 1u;
+        }
+        slot++;
+    }
+    a.bstate[b] = seed;
+    if (seed != 0u) InterlockedAdd(a.counters[6], 1u);
+}
+
+groupshared uint fl_face;
+
+// Group per brick of round a.level: its faces with a sign change on a face edge; the candidates across
+// them not yet flooded join round a.level + 1 (counted in counters[6])
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_flood_face(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint b = node_index(gid);
+    if (b >= a.count) return;                              // uniform per group
+    if (a.bstate[b] != a.level) return;                    // uniform per group
+    uint4 brick = a.bricks[b];
+    if (tid == 0u) fl_face = 0u;
+    GroupMemoryBarrierWithGroupSync();
+    // thread: face tid / 10 (6 faces), its rows of 25 points
+    uint face = tid / 10u, part = tid % 10u;
+    if (face < 6u) {
+        uint ax = face >> 1, side = face & 1u;
+        uint u = (ax + 1u) % 3u, v = (ax + 2u) % 3u;
+        bool change = false;
+        uint slot = a.brick_slot[b];
+        for (uint f = 0u; f < a.num_fields; ++f) {
+            uint fb = (brick.w >> (2u * f)) & 3u;
+            if (fb == 0u) continue;
+            float iso = a.fields[f].iso;
+            for (uint sh = 0u; sh < 2u; ++sh) {
+                if ((fb & (1u << sh)) == 0u) continue;
+                float sg = sh == 0u ? 1.0 : -1.0;
+                for (uint e = part; e < 25u; e += 10u) {
+                    uint i = e % 5u, j = e / 5u;
+                    uint3 p = uint3(0u); p[ax] = side * 4u; p[u] = i; p[v] = j;
+                    bool s0 = flood_above(slot, p.x, p.y, p.z, sg, iso);
+                    if (i < 4u) { uint3 q = p; q[u] += 1u; change = change || flood_above(slot, q.x, q.y, q.z, sg, iso) != s0; }
+                    if (j < 4u) { uint3 q = p; q[v] += 1u; change = change || flood_above(slot, q.x, q.y, q.z, sg, iso) != s0; }
+                }
+            }
+            slot++;
+        }
+        if (change) InterlockedOr(fl_face, 1u << face);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (tid < 6u && ((fl_face >> tid) & 1u) != 0u) {
+        uint ax = tid >> 1, side = tid & 1u;
+        int3 nbc = int3(brick.xyz);
+        nbc[ax] += side != 0u ? 1 : -1;
+        uint nb = brick_lookup(nbc);
+        if (nb != INVALID && a.bricks[nb].w != 0u) {
+            uint orig;
+            InterlockedCompareExchange(a.bstate[nb], 0u, a.level + 1u, orig);
+            if (orig == 0u) InterlockedAdd(a.counters[6], 1u);
+        }
+    }
+}
+
+// Thread per brick: the bricks the flood never reached lose their sheet bits (no cells)
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_flood_finish(uint3 tid3 : SV_DispatchThreadID) {
+    IsoArgs a = MD_ARGS;
+    uint b = tid3.x;
+    if (b >= a.count) return;
+    if (a.bstate[b] == 0u) a.bricks[b].w = 0u;
+}
+
 groupshared uint p_base;
 
 // One group per brick: appends its points to plist, a brick's points contiguous. The count is
@@ -1389,9 +1511,14 @@ void iso_points(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     if (b >= a.count) return;                              // uniform per group
     uint4 brick = a.bricks[b];
     bool mine = tid < 125u && brick.w != 0u;
+    // flood (mode bit 8): the round's bricks, sharing with neighbours evaluated by then; coarse (bit 16):
+    // the brick corners of every brick
+    uint upto = 0u;
+    if ((a.mode & 8u) != 0u) { mine = mine && a.bstate[b] == a.level; upto = a.level; }
+    if ((a.mode & 16u) != 0u) mine = mine && iso_brick_corner(tid);
     if ((a.mode & 1u) != 0u && mine) {
         uint op;
-        mine = corner_owner(brick, tid, op) == INVALID;
+        mine = corner_owner_upto(brick, tid, op, upto) == INVALID;
     }
     uint n;
     uint at = iso_group_prefix(mine, tid, 128u, n);

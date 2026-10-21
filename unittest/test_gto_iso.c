@@ -3315,3 +3315,465 @@ UTEST(gto_iso_gpu_lib, schedule_experiment) {
     iso_gpu_free(&g);
 }
 #endif
+
+// ---------------------------------------------------------------------------------------------
+// EXPERIMENT (GTO_ISO_TM=1): a Taylor model of rho per brick, as TOPO_ANALYTIC builds per cube
+// (md_topo.c, cpg_box_eval / cpg_shell_rem): each AO expanded to order K-1 at the brick centre with a
+// rigorous separable remainder E_K over the brick, rho's polynomial sum D T T exact (D multiplies exact
+// centre data only), the remainder 2 sum |(D T)_mu| E_mu + sum |D| E E. Per lattice point of the brick
+// the enclosure P(d) +- R; a brick whose 125 points all lie on one side of the iso value has no
+// surface cell. Counts, over the bricks the GPU gave corners, which the model would drop, by what
+// their corners show (surface: must never be dropped), in double on the CPU.
+// ---------------------------------------------------------------------------------------------
+
+#define TM_LMAX  4
+#define TM_SEPA  7                     // 1D derivative orders 0..6
+#define TM_EXTRA 2                     // exact 1D terms beyond the remainder's order
+
+typedef struct tm_ctx_t {
+    double kap[TM_LMAX + 1][TM_SEPA][TM_LMAX + TM_SEPA];   // d^a [x^i E] = sum_m kap[i][a][m] alpha^((m-i+a)/2) x^m E
+    int    nmi;                                             // multi-indices of order <= K-1
+    int    mi[20][3];
+    double mi_fact[20];
+} tm_ctx_t;
+
+static void tm_init(tm_ctx_t* t, int K) {
+    memset(t, 0, sizeof(*t));
+    for (int i = 0; i <= TM_LMAX; ++i) {
+        t->kap[i][0][i] = 1.0;
+        for (int a = 0; a + 1 < TM_SEPA; ++a) {
+            for (int m = 0; m <= i + a + 1 && m < TM_LMAX + TM_SEPA; ++m) {
+                double v = (m + 1 <= i + a && m + 1 < TM_LMAX + TM_SEPA) ? (m + 1) * t->kap[i][a][m + 1] : 0.0;
+                if (m >= 1) v -= 2.0 * t->kap[i][a][m - 1];
+                t->kap[i][a + 1][m] = v;
+            }
+        }
+    }
+    static const double fact[4] = {1, 1, 2, 6};
+    int n = 0;
+    for (int o = 0; o < K; ++o)
+        for (int i = o; i >= 0; --i)
+            for (int j = o - i; j >= 0; --j) {
+                const int k = o - i - j;
+                t->mi[n][0] = i; t->mi[n][1] = j; t->mi[n][2] = k;
+                t->mi_fact[n] = fact[i] * fact[j] * fact[k];
+                n++;
+            }
+    t->nmi = n;
+}
+
+// 1D: centre derivatives val[i][a] (a <= TM_SEPA - 2) of x^i exp(-alpha x^2) at xc, and sups sup[i][a]
+// over [xc - h, xc + h] for a >= 3 (as cpg_sep_1d)
+static void tm_sep_1d(const tm_ctx_t* t, int l, double alpha, double xc, double h, double val[TM_LMAX + 1][TM_SEPA], double sup[TM_LMAX + 1][TM_SEPA]) {
+    double g[TM_LMAX + TM_SEPA][TM_SEPA];
+    const int imax = l + TM_SEPA - 2;
+    const double E = exp(-alpha * xc * xc);
+    double xp = 1.0;
+    for (int i = 0; i <= imax; ++i) { g[i][0] = xp * E; xp *= xc; }
+    for (int a = 0; a < TM_SEPA - 2; ++a)
+        for (int i = 0; i < imax - a; ++i) {
+            double v = -2.0 * alpha * g[i + 1][a];
+            if (i >= 1) v += i * g[i - 1][a];
+            g[i][a + 1] = v;
+        }
+    for (int i = 0; i <= l; ++i) for (int a = 0; a < TM_SEPA - 1; ++a) val[i][a] = g[i][a];
+    const double x0 = xc - h, x1 = xc + h, ax0 = fabs(x0), ax1 = fabs(x1);
+    const double tlo = (x0 <= 0.0 && x1 >= 0.0) ? 0.0 : fmin(ax0, ax1);
+    const double thi = fmax(ax0, ax1);
+    const double elo = exp(-alpha * tlo * tlo), ehi = exp(-alpha * thi * thi);
+    const int mmax = l + TM_SEPA - 1;
+    double Sm[TM_LMAX + TM_SEPA + 1], plo = 1.0, phi = 1.0;
+    for (int m = 0; m <= mmax; ++m) {
+        const double t2 = m / (2.0 * alpha);
+        if (t2 <= tlo * tlo)      Sm[m] = plo * elo;
+        else if (t2 >= thi * thi) Sm[m] = phi * ehi;
+        else                      Sm[m] = pow(t2, 0.5 * m) * exp(-0.5 * m);
+        plo *= tlo;
+        phi *= thi;
+    }
+    for (int i = 0; i <= l; ++i)
+        for (int a = 3; a < TM_SEPA; ++a) {
+            double acc = 0.0;
+            for (int m = (i + a) & 1; m <= i + a; m += 2) {
+                const double k = t->kap[i][a][m];
+                if (k != 0.0) acc += fabs(k) * pow(alpha, (m - i + a) / 2) * Sm[m];
+            }
+            sup[i][a] = acc;
+        }
+}
+
+// The shell's AOs at the centre c: Taylor coefficients V[ci][mi] (derivatives of order <= K - 1) and the
+// remainder bound E[ci] of |phi - T_{K-1} phi| over the cube c +- h (separable, as cpg_shell_rem)
+static void tm_shell(const tm_ctx_t* t, const iso_ao_shell_t* s, const double c[3], double h, int K, double* V, double* E) {
+    const int P = K - 1 + TM_EXTRA;
+    static const double inv_fact[TM_SEPA] = {1.0, 1.0, 1.0 / 2, 1.0 / 6, 1.0 / 24, 1.0 / 120, 1.0 / 720};
+    for (int ci = 0; ci < s->ncart; ++ci) { E[ci] = 0.0; for (int m = 0; m < t->nmi; ++m) V[ci * 20 + m] = 0.0; }
+    double val[3][TM_LMAX + 1][TM_SEPA], sup[3][TM_LMAX + 1][TM_SEPA];
+    for (int q = 0; q < s->nprim; ++q) {
+        const double al = s->alpha[q], cf = s->coef[q];
+        for (int k = 0; k < 3; ++k) tm_sep_1d(t, s->l, al, c[k] - s->c[k], h, val[k], sup[k]);
+        for (int ci = 0; ci < s->ncart; ++ci) {
+            const int ii[3] = {s->ijk[ci][0], s->ijk[ci][1], s->ijk[ci][2]};
+            const double w = cf * s->nrm[ci];
+            for (int m = 0; m < t->nmi; ++m)
+                V[ci * 20 + m] += w * val[0][ii[0]][t->mi[m][0]] * val[1][ii[1]][t->mi[m][1]] * val[2][ii[2]][t->mi[m][2]];
+            // u_k[m]: |degree-m term| of axis k, the remainder at degree P + 1; sum over m0 + m1 + m2 >= K
+            double u[3][TM_SEPA + 1];
+            for (int k = 0; k < 3; ++k) {
+                for (int m = 0; m <= P; ++m) u[k][m] = fabs(val[k][ii[k]][m]) * pow(h, m) * inv_fact[m];
+                u[k][P + 1] = sup[k][ii[k]][P + 1] * pow(h, P + 1) * inv_fact[P + 1];
+            }
+            double b = 0.0;
+            for (int m0 = 0; m0 <= P + 1; ++m0) for (int m1 = 0; m1 <= P + 1; ++m1) for (int m2 = 0; m2 <= P + 1; ++m2)
+                if (m0 + m1 + m2 >= K) b += u[0][m0] * u[1][m1] * u[2][m2];
+            E[ci] += fabs(w) * b;
+        }
+    }
+}
+
+UTEST(gto_iso_gpu_lib, taylor_brick_experiment) {
+    if (!getenv("GTO_ISO_TM")) UTEST_SKIP("set GTO_ISO_TM=1 (EXPERIMENT)");
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    const char* files[] = {"amide.h5", "mol.h5", "tq.scf.results.h5"};
+    const double h = getenv("GTO_ISO_TM_H") ? atof(getenv("GTO_ISO_TM_H")) : 0.2;
+    const double iso = getenv("GTO_ISO_TM_ISO") ? atof(getenv("GTO_ISO_TM_ISO")) : 0.0025;
+    for (int fi = 0; fi < 3; ++fi) {
+        iso_dens_src_t s;
+        if (!iso_dens_src_load(&s, files[fi])) { printf("  %s: not loaded\n", files[fi]); continue; }
+        iso_dens_prod_t p;
+        md_gto_iso_field_t* field = iso_gl_field(&s, ISO_D_SCF, &p);
+        ASSERT_TRUE(field != NULL);
+        const iso_density_t* d = field->f.dens;
+        const int nao = d->num_ao;
+        // D without the AO normalizations (the AO values below carry them)
+        double* D = (double*)calloc((size_t)nao * nao, sizeof(double));
+        for (int tt = 0; tt < d->num_terms; ++tt) {
+            const iso_term_t* tm = &d->terms[tt];
+            if (tm->b < 0) continue;
+            const double w = tm->a == tm->b ? tm->w : 0.5 * tm->w;
+            for (int i = 0; i < nao; ++i) {
+                const double ca = d->C[(size_t)i * d->num_fn + tm->a], cb = d->C[(size_t)i * d->num_fn + tm->b];
+                for (int j = 0; j < nao; ++j) {
+                    const double da = d->C[(size_t)j * d->num_fn + tm->a], db = d->C[(size_t)j * d->num_fn + tm->b];
+                    D[(size_t)i * nao + j] += tm->a == tm->b ? w * ca * da : w * (ca * db + cb * da);
+                }
+            }
+        }
+        // the GPU's bricks and corners
+        const md_gto_iso_field_t* fl[1] = {field};
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        md_gto_iso_gpu_desc_t gd = {.cell_size = h, .project_iterations = 8, .relax_iterations = 3};
+        gd.iso[0] = iso;
+        isog_debug_t dbg = {0};
+        isog_debug = &dbg;
+        md_gto_iso_gpu_mesh_t gm;
+        ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &gm));
+        isog_debug = NULL;
+        md_gto_iso_gpu_mesh_free(g.s, &gm);
+
+        for (int K = 3; K <= 4; ++K) {
+            tm_ctx_t t;
+            tm_init(&t, K);
+            const int nm = t.nmi;
+            double* V = (double*)malloc(sizeof(double) * (size_t)nao * 20);
+            double* E = (double*)malloc(sizeof(double) * (size_t)nao);
+            double* Dv = (double*)malloc(sizeof(double) * (size_t)nao * 20);
+            long cnt[3][2] = {{0}};          // [surface, inside, outside][kept, dropped by the model (box W)]
+            long cntp[3] = {0};              // dropped with the remainder per point
+            long bad = 0, outside_enc = 0;
+            double rel_w = 0.0; long nrel = 0;
+            for (uint32_t b = 0; b < dbg.num_bricks; ++b) {
+                const uint32_t m = dbg.bricks[4 * b + 3];
+                if (!(m & 1u)) continue;     // the + sheet of field 0
+                const float* cv = dbg.corners + 125 * (size_t)dbg.slots[b];
+                bool above = false, below = false;
+                for (int k = 0; k < 125; ++k) { if (cv[k] - iso > 0.0) above = true; else below = true; }
+                // surface: a cell with a sign change (corners straddle: some cell crosses)
+                const int cls = (above && below) ? 0 : above ? 1 : 2;
+                const double c[3] = {dbg.origin[0] + (dbg.bricks[4 * b] * 4.0 + 2.0) * h, dbg.origin[1] + (dbg.bricks[4 * b + 1] * 4.0 + 2.0) * h, dbg.origin[2] + (dbg.bricks[4 * b + 2] * 4.0 + 2.0) * h};
+                const double hb = 2.0 * h;
+                for (int sh = 0; sh < d->num_ao_shells; ++sh) tm_shell(&t, &d->ao_shells[sh], c, hb, K, V + (size_t)d->ao_shells[sh].ao * 20, E + d->ao_shells[sh].ao);
+                // Dv = D V; DOT = V^T D V
+                double DOT[20][20] = {{0}};
+                for (int i = 0; i < nao; ++i) {
+                    double acc[20] = {0};
+                    const double* row = D + (size_t)i * nao;
+                    for (int j = 0; j < nao; ++j) { const double dd = row[j]; if (dd == 0.0) continue; for (int a = 0; a < nm; ++a) acc[a] += dd * V[(size_t)j * 20 + a]; }
+                    for (int a = 0; a < nm; ++a) Dv[(size_t)i * 20 + a] = acc[a];
+                    for (int a = 0; a < nm; ++a) for (int bb = 0; bb < nm; ++bb) DOT[a][bb] += V[(size_t)i * 20 + a] * acc[bb];
+                }
+                double REE = 0.0, RW = 0.0;  // sum |D| E E; box: 2 sum E_mu W_mu
+                for (int i = 0; i < nao; ++i) {
+                    const double* row = D + (size_t)i * nao;
+                    double s1 = 0.0;
+                    for (int j = 0; j < nao; ++j) s1 += fabs(row[j]) * E[j];
+                    REE += E[i] * s1;
+                    double W = 0.0;
+                    for (int a = 0; a < nm; ++a) {
+                        const int o = t.mi[a][0] + t.mi[a][1] + t.mi[a][2];
+                        W += fabs(Dv[(size_t)i * 20 + a]) * pow(hb, o) / t.mi_fact[a];
+                    }
+                    RW += 2.0 * E[i] * W;
+                }
+                bool drop_box = true, drop_pt = true;
+                int side_box = 0, side_pt = 0;
+                for (int k = 0; k < 125; ++k) {
+                    const double dd[3] = {((k % 5) - 2) * h, (((k / 5) % 5) - 2) * h, ((k / 25) - 2) * h};
+                    double mo[20];
+                    for (int a = 0; a < nm; ++a) mo[a] = pow(dd[0], t.mi[a][0]) * pow(dd[1], t.mi[a][1]) * pow(dd[2], t.mi[a][2]) / t.mi_fact[a];
+                    double P = 0.0;
+                    for (int a = 0; a < nm; ++a) { double r = 0.0; for (int bb = 0; bb < nm; ++bb) r += DOT[a][bb] * mo[bb]; P += mo[a] * r; }
+                    double Rp = REE;
+                    for (int i = 0; i < nao; ++i) {
+                        if (E[i] == 0.0) continue;
+                        double w = 0.0;
+                        for (int a = 0; a < nm; ++a) w += Dv[(size_t)i * 20 + a] * mo[a];
+                        Rp += 2.0 * E[i] * fabs(w);
+                    }
+                    const double Rb = RW + REE;
+                    // rigour: the corner (float) inside the enclosure
+                    if (cv[k] < P - Rp - 1e-5 * fabs(P) - 1e-9 || cv[k] > P + Rp + 1e-5 * fabs(P) + 1e-9) outside_enc++;
+                    const int sb = P - Rb > iso ? 1 : P + Rb < iso ? -1 : 0;
+                    const int sp = P - Rp > iso ? 1 : P + Rp < iso ? -1 : 0;
+                    if (sb == 0 || (side_box != 0 && sb != side_box)) drop_box = false;
+                    if (sp == 0 || (side_pt != 0 && sp != side_pt)) drop_pt = false;
+                    side_box = sb; side_pt = sp;
+                    if (k == 62) { rel_w += Rb / fmax(fabs(P), 1e-30); nrel++; }
+                }
+                cnt[cls][drop_box ? 1 : 0]++;
+                cntp[cls] += drop_pt;
+                // inside bricks: the remainder by the shells' smallest exponent, against rho at the centre
+                if (cls == 1 && getenv("GTO_ISO_TM_V") && K == 4 && DOT[0][0] < 6.0 * iso) {
+                    static double part[6];
+                    static long nb = 0;
+                    static double sumP = 0, sumR = 0, sumPmin = 0;
+                    double Pc = DOT[0][0];
+                    for (int sh = 0; sh < d->num_ao_shells; ++sh) {
+                        const iso_ao_shell_t* a = &d->ao_shells[sh];
+                        double amin = 1e30; for (int q = 0; q < a->nprim; ++q) amin = fmin(amin, a->alpha[q]);
+                        const int bin = amin < 0.2 ? 0 : amin < 0.5 ? 1 : amin < 1.0 ? 2 : amin < 3.0 ? 3 : amin < 10.0 ? 4 : 5;
+                        for (int ci = 0; ci < a->ncart; ++ci) {
+                            const int i = a->ao + ci;
+                            double W = 0.0;
+                            for (int aa = 0; aa < nm; ++aa) { const int o = t.mi[aa][0] + t.mi[aa][1] + t.mi[aa][2]; W += fabs(Dv[(size_t)i * 20 + aa]) * pow(hb, o) / t.mi_fact[aa]; }
+                            part[bin] += 2.0 * E[i] * W / iso;
+                        }
+                    }
+                    nb++; sumP += Pc / iso; sumR += (RW + REE) / iso;
+                    if (nb % 100 == 0) printf("    inside bricks %ld: mean rho_c/iso %.2f, R/iso %.2f; R/iso by smallest exponent <0.2 %.2f <0.5 %.2f <1 %.2f <3 %.2f <10 %.2f >=10 %.2f\n",
+                        nb, sumP / nb, sumR / nb, part[0] / nb, part[1] / nb, part[2] / nb, part[3] / nb, part[4] / nb, part[5] / nb);
+                    (void)sumPmin;
+                }
+                if (cls == 0 && (drop_box || drop_pt)) bad++;
+            }
+            printf("  %-20s h %.2f iso %.4f K %d: bricks surface %ld, inside %ld (dropped %ld box, %ld per point), outside %ld (dropped %ld, %ld) | surface dropped %ld (must be 0), corners outside the enclosure %ld | mean R/|P| at the centre %.3f\n",
+                files[fi], h, iso, K, cnt[0][0] + cnt[0][1], cnt[1][0] + cnt[1][1], cnt[1][1], cntp[1], cnt[2][0] + cnt[2][1], cnt[2][1], cntp[2], bad, outside_enc, nrel ? rel_w / nrel : 0.0);
+            free(V); free(E); free(Dv);
+        }
+        md_gto_iso_gpu_set_destroy(g.s, set);
+        free(dbg.bricks); free(dbg.slots); free(dbg.corners);
+        free(D);
+        md_gto_iso_field_destroy(field);
+        iso_dens_prod_free(&p);
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
+// ---------------------------------------------------------------------------------------------
+// EXPERIMENT (GTO_ISO_FLOOD=1): corners from seeds and a flood instead of every candidate brick. The
+// candidates (bricks the octree keeps) are sampled on a coarse lattice (stride 4: the brick corners;
+// stride 2: 27 points a brick); a candidate whose samples straddle the iso value is a seed and is
+// evaluated in full; then, round by round, a candidate across a face of an evaluated brick whose 25
+// face points hold a sign change on a face edge is evaluated too, until none is added. Surface bricks
+// never evaluated are missed (their cells would be missing from the mesh). Simulated on the GPU's own
+// candidates and corner values, per sheet.
+// ---------------------------------------------------------------------------------------------
+
+typedef struct flood_stats_t {
+    long cand, surface, seeds, evaluated, missed, missed_cells, rounds, coarse_points, eval_points, cand_points;
+} flood_stats_t;
+
+// The bricks' face neighbour index (or -1) through a hash of the coordinates
+static void flood_sim(const isog_debug_t* dbg, double iso, int sheet, int stride, flood_stats_t* st) {
+    memset(st, 0, sizeof(*st));
+    const uint32_t nb = dbg->num_bricks;
+    iso_map_t map;
+    iso_map_init(&map, nb + 1);
+    int32_t* idx = (int32_t*)malloc(sizeof(int32_t) * (nb + 1));
+    uint32_t nc = 0;
+    for (uint32_t b = 0; b < nb; ++b) {
+        idx[b] = -1;
+        if (!((dbg->bricks[4 * b + 3] >> sheet) & 1u)) continue;
+        iso_map_put(&map, iso_key3((int)dbg->bricks[4 * b], (int)dbg->bricks[4 * b + 1], (int)dbg->bricks[4 * b + 2]), b);
+        idx[b] = (int32_t)nc++;
+    }
+    const double sg = sheet == 0 ? 1.0 : -1.0;
+#define FL_V(b, x, y, z) (sg * dbg->corners[125 * (size_t)dbg->slots[b] + (x) + 5 * (y) + 25 * (z)] - iso > 0.0)
+    uint8_t* state = (uint8_t*)calloc(nb + 1, 1);     // 1 evaluated
+    uint32_t* queue = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
+    uint32_t qn = 0;
+    for (uint32_t b = 0; b < nb; ++b) {
+        if (idx[b] < 0) continue;
+        st->cand++;
+        // a surface brick: a cell with a sign change
+        long cells = 0;
+        for (int c = 0; c < 64; ++c) {
+            const int x = c & 3, y = (c >> 2) & 3, z = c >> 4;
+            int pos = 0;
+            for (int k = 0; k < 8; ++k) pos += FL_V(b, x + (k & 1), y + ((k >> 1) & 1), z + ((k >> 2) & 1));
+            cells += pos != 0 && pos != 8;
+        }
+        if (cells) st->surface++;
+        // seed: the coarse samples straddle
+        int pos = 0, n = 0;
+        for (int z = 0; z <= 4; z += stride) for (int y = 0; y <= 4; y += stride) for (int x = 0; x <= 4; x += stride) { pos += FL_V(b, x, y, z); n++; }
+        if (pos != 0 && pos != n) { state[b] = 1; queue[qn++] = b; st->seeds++; }
+    }
+    // flood by rounds
+    uint32_t head = 0;
+    while (head < qn) {
+        const uint32_t end = qn;
+        st->rounds++;
+        for (; head < end; ++head) {
+            const uint32_t b = queue[head];
+            const int bx = (int)dbg->bricks[4 * b], by = (int)dbg->bricks[4 * b + 1], bz = (int)dbg->bricks[4 * b + 2];
+            for (int f = 0; f < 6; ++f) {
+                const int ax = f >> 1, side = f & 1;      // the face at coordinate 0 or 4 along axis ax
+                const int u = (ax + 1) % 3, v = (ax + 2) % 3;
+                bool change = false;
+                for (int i = 0; i <= 4 && !change; ++i) for (int j = 0; j <= 4 && !change; ++j) {
+                    int p[3]; p[ax] = side ? 4 : 0; p[u] = i; p[v] = j;
+                    const bool s0 = FL_V(b, p[0], p[1], p[2]);
+                    if (i < 4) { int q[3] = {p[0], p[1], p[2]}; q[u]++; if (FL_V(b, q[0], q[1], q[2]) != s0) change = true; }
+                    if (j < 4) { int q[3] = {p[0], p[1], p[2]}; q[v]++; if (FL_V(b, q[0], q[1], q[2]) != s0) change = true; }
+                }
+                if (!change) continue;
+                int nbc[3] = {bx, by, bz};
+                nbc[ax] += side ? 1 : -1;
+                uint32_t nbi;
+                if (nbc[0] < 0 || nbc[1] < 0 || nbc[2] < 0) continue;
+                if (!iso_map_get(&map, iso_key3(nbc[0], nbc[1], nbc[2]), &nbi) || idx[nbi] < 0 || state[nbi]) continue;
+                state[nbi] = 1;
+                queue[qn++] = nbi;
+            }
+        }
+    }
+    st->evaluated = qn;
+    // lattice points: every candidate's (today) against the evaluated bricks' plus the coarse samples
+    {
+        iso_map_t pm;
+        iso_map_init(&pm, 64 * (size_t)(nc + 1));
+        long all = 0, ev = 0, co = 0;
+        for (int pass = 0; pass < 3; ++pass) {
+            iso_map_free(&pm);
+            iso_map_init(&pm, 64 * (size_t)(nc + 1));
+            long n = 0;
+            for (uint32_t b = 0; b < nb; ++b) {
+                if (idx[b] < 0 || (pass == 1 && !state[b])) continue;
+                const int st_ = pass == 2 ? stride : 1;
+                for (int z = 0; z <= 4; z += st_) for (int y = 0; y <= 4; y += st_) for (int x = 0; x <= 4; x += st_) {
+                    const int gx = (int)dbg->bricks[4 * b] * 4 + x, gy = (int)dbg->bricks[4 * b + 1] * 4 + y, gz = (int)dbg->bricks[4 * b + 2] * 4 + z;
+                    uint32_t v;
+                    const uint64_t key = iso_key3(gx, gy, gz);
+                    if (!iso_map_get(&pm, key, &v)) { iso_map_put(&pm, key, 1); n++; }
+                }
+            }
+            if (pass == 0) all = n; else if (pass == 1) ev = n; else co = n;
+        }
+        iso_map_free(&pm);
+        st->coarse_points = co;
+        st->eval_points = ev;
+        st->cand_points = all;
+    }
+    for (uint32_t b = 0; b < nb; ++b) {
+        if (idx[b] < 0 || state[b]) continue;
+        long cells = 0;
+        for (int c = 0; c < 64; ++c) {
+            const int x = c & 3, y = (c >> 2) & 3, z = c >> 4;
+            int pos = 0;
+            for (int k = 0; k < 8; ++k) pos += FL_V(b, x + (k & 1), y + ((k >> 1) & 1), z + ((k >> 2) & 1));
+            cells += pos != 0 && pos != 8;
+        }
+        if (cells) { st->missed++; st->missed_cells += cells; }
+    }
+#undef FL_V
+    free(state); free(queue); free(idx);
+    iso_map_free(&map);
+}
+
+UTEST(gto_iso_gpu_lib, flood_experiment) {
+    if (!getenv("GTO_ISO_FLOOD")) UTEST_SKIP("set GTO_ISO_FLOOD=1 (EXPERIMENT)");
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    typedef struct { const char* file; bool nto; } fl_file_t;
+    static const fl_file_t files[] = {{"amide.h5", true}, {"mol.h5", true}, {"h2o.h5", true}, {"tq.scf.results.h5", false},
+                                      {"acro-xps.h5", false}, {"meth.scf.results.h5", false}, {"myjob.scf.h5", false}};
+    typedef struct { int kind; const char* name; double iso; } fl_case_t;
+    static const fl_case_t cases[] = {
+        {ISO_D_SCF, "density", 0.0025}, {ISO_D_SCF, "density", 0.02}, {ISO_D_SCF, "density", 0.1},
+        {-1, "HOMO", 0.05}, {-1, "HOMO", 0.02}, {-2, "LUMO", 0.05}, {-2, "LUMO", 0.02},
+        {ISO_D_DIFF, "difference", 0.004}, {ISO_D_DIFF, "difference", 0.001}, {ISO_D_TRANS, "transition", 0.004}, {ISO_D_TRANS, "transition", 0.001},
+    };
+    const char* hs = getenv("GTO_ISO_FLOOD_H");
+    double hl[8]; int nh = iso_parse_list(hs ? hs : "0.2,0.12", hl, 8);
+    long tot_missed[2] = {0}, tot_cases = 0;
+    for (size_t fi = 0; fi < sizeof(files) / sizeof(files[0]); ++fi) {
+        iso_dens_src_t s;
+        if (!iso_dens_src_load_ex(&s, files[fi].file, files[fi].nto)) { printf("  %s: not loaded\n", files[fi].file); continue; }
+        printf("  %s: %zu atoms, %zu AOs\n", files[fi].file, s.num_atoms, s.num_ao);
+        for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
+            const fl_case_t* fc = &cases[ci];
+            if ((fc->kind == ISO_D_DIFF || fc->kind == ISO_D_TRANS) && !files[fi].nto) continue;
+            iso_dens_prod_t p;
+            md_gto_iso_field_t* field = NULL;
+            if (fc->kind == -2) {
+                memset(&p, 0, sizeof(p));
+                const size_t lumo = vlx_test_lumo_idx((vlx_test_t*)&s.t, STR_LIT("orbital/alpha/occupation"));
+                field = md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + lumo * s.num_ao, md_get_heap_allocator());
+            } else {
+                field = iso_gl_field(&s, fc->kind, &p);
+            }
+            if (!field) continue;
+            const md_gto_iso_field_t* fl[1] = {field};
+            md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
+            for (int hi = 0; hi < nh && set; ++hi) {
+                md_gto_iso_gpu_desc_t gd = {.cell_size = hl[hi], .project_iterations = 8, .relax_iterations = 3};
+                gd.iso[0] = fc->iso;
+                isog_debug_t dbg = {0};
+                isog_debug = &dbg;
+                md_gto_iso_gpu_mesh_t gm;
+                const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd, &gm);
+                isog_debug = NULL;
+                if (ok) md_gto_iso_gpu_mesh_free(g.s, &gm);
+                for (int sheet = 0; sheet < 2 && ok; ++sheet) {
+                    for (int stride = 4; stride >= 2; stride -= 2) {
+                        flood_stats_t st;
+                        flood_sim(&dbg, fc->iso, sheet, stride, &st);
+                        if (st.surface == 0 && st.cand == 0) continue;
+                        printf("    %-10s iso %c%-6g h %.2f stride %d: candidates %5ld, surface %5ld | seeds %5ld, evaluated %5ld (%4.1f%%) in %ld rounds | points %4.1f%% (coarse %4.1f%%) | MISSED %ld bricks, %ld cells\n",
+                               fc->name, sheet ? '-' : '+', fc->iso, hl[hi], stride, st.cand, st.surface, st.seeds, st.evaluated,
+                               st.cand ? 100.0 * st.evaluated / st.cand : 0.0, st.rounds,
+                               st.cand_points ? 100.0 * (st.eval_points + st.coarse_points) / st.cand_points : 0.0,
+                               st.cand_points ? 100.0 * st.coarse_points / st.cand_points : 0.0, st.missed, st.missed_cells);
+                        tot_missed[stride == 2] += st.missed;
+                    }
+                }
+                tot_cases++;
+                free(dbg.bricks); free(dbg.slots); free(dbg.corners);
+            }
+            if (set) md_gto_iso_gpu_set_destroy(g.s, set);
+            md_gto_iso_field_destroy(field);
+            iso_dens_prod_free(&p);
+        }
+        iso_dens_src_free(&s);
+    }
+    printf("  missed surface bricks over all cases: stride 4 %ld, stride 2 %ld (%ld extractions)\n", tot_missed[0], tot_missed[1], tot_cases);
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
