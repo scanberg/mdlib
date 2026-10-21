@@ -373,41 +373,14 @@ void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile);
 // to cap). Returns the length written.
 size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* profile, char* buf, size_t cap);
 
-// Which experimental forms the extraction runs, as one line
+// The revision and the switches the extraction runs with, as one line
 const char* md_gto_iso_gpu_profile_variant(void);
 
-// The experimental forms (also read from GTO_ISO_* in the environment at initialization)
+// The switches (also read from GTO_ISO_* in the environment at initialization)
 typedef struct md_gto_iso_gpu_switches_t {
-    bool relax_first;       // relax on the lattice surface, then project (else project, 3 x (relax, project))
-    bool corners_v2;        // corners in registers (iso_corners_f*), else iso_corners / iso_corners_orbital
-    bool eval_v2;           // density vertices in registers (iso_eval_f*), else iso_eval
-    bool newton_predict;    // Newton ends on a predicted error
-    bool skip_brick_test;   // the octree's last level not bounded, the corners deciding (default)
-    bool shared_corners;    // high-face corners taken from the neighbour (with corners_v2)
-    int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12)
-    bool corners_list;      // corners from a point list, 256 points per group (with corners_v2)
-    bool canon_terms;       // the register-form epilogues take the terms as per-column weights where they can
-    bool gemm;              // corners (point list) and density vertices as a tiled GEMM (iso_gcorners_f*, iso_geval_f*)
-    bool octree_small;      // sets of at most 4 functions: the octree with a thread per shell (iso_octree_small)
-    bool dform;             // sets of densities: corners (point list) and vertices as phi^T D phi (iso_dcorners, iso_deval)
-    bool dform_octree;      // sets of densities: the octree bounds phi^T D phi (iso_octree_dform), either evaluation
-    bool coef_screen;       // sets of orbitals: shells screened by their largest coefficient times their AOs
-    bool eval_list;         // one orbital: vertex values from per-group shell lists (iso_eval_list_f1)
-    bool gemm_t32;          // the GEMM kernels in tiles of 32 functions for larger sets
-    int  gemm_pipe;         // the F = 64 GEMM kernels' loop over a chunk's rows: 0 the compiler's, 1 not unrolled, 2 unrolled
-    bool corners_v4;        // one function: four corner points per thread (iso_corners_list_f1v4)
-    int  newton_tol_exp;    // vertices converge within 1e-N h of the surface (1..6)
-    int  dform_kernel;      // the D form's kernels: 0 those of r9, 1 triangular by chunks, tiles of 64, 2 tiles of 128
-    bool ordered;           // bricks in Morton order, the point list and the vertices in that order
-    int  diag;              // DIAGNOSTIC (corner GEMM kernels): 1 no AO values made, 2 no multiply-adds, 3 lists only,
-                            // 4 no rows of C staged, 5 no shells staged and no AO values (no surface)
-    bool gemm_wide;         // canonical sets of more than 64 functions: the GEMM in passes of up to 256 columns
-    bool octree8;           // the D form's octree below the root: a node's 8 children in one group
-    int  wide_kernel;       // the wide GEMM's kernels: 0 r16, 1 shells listed once, 2 and rows of C a chunk ahead, 3 auto (0 to 192 columns, 2 at 256)
-    int  octree_start;      // the first level the octree tests (0..3), the levels above keeping every node
-    bool dform_corners;     // sets of densities: the corners in the D form, the vertices as without it
-    int  flood;             // APPROXIMATE corners from seeds and a flood: 0 off, 1 densities with weights >= 0, 2 every field
-    bool fused_project;     // one orbital: the Newton projection in one launch (iso_project_list_f1)
+    int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12, default 6)
+    bool dform;             // sets of densities: corners and vertices as phi^T D phi (default off; on regardless past 1024 functions)
+    int  flood;             // APPROXIMATE corners from seeds and a flood: 0 off, 1 densities whose maxima are at the atoms (default), 2 every field
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);

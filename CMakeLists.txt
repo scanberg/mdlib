@@ -647,21 +647,14 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/iso/gto_iso_gpu.slang
-    ENTRIES   iso_grid iso_octree iso_hash iso_corners iso_eval iso_cells iso_quads iso_newton iso_relax
-              iso_bucket_count iso_bucket_scan iso_bucket_vertices iso_bucket_triangles iso_eval_orbital
-              iso_corners_orbital iso_corners_f1 iso_corners_f8 iso_corners_f16 iso_corners_f32 iso_corners_f64
-              iso_eval_f8 iso_eval_f16 iso_eval_f32 iso_eval_f64 iso_corners_fill
-              iso_points iso_corners_list_f1 iso_corners_list_f8 iso_corners_list_f16 iso_corners_list_f32 iso_corners_list_f64
-              iso_octree_small iso_gcorners_f16 iso_gcorners_f32 iso_gcorners_f64 iso_geval_f16 iso_geval_f32 iso_geval_f64
-              iso_dcorners iso_deval iso_octree_dform iso_eval_list_f1
-              iso_gcorners_f64_p1 iso_gcorners_f64_p2 iso_geval_f64_p1 iso_geval_f64_p2 iso_corners_list_f1v4
-              iso_dcorners2 iso_deval2 iso_dcorners3 iso_deval3 iso_scan
-              iso_gcorners_w128 iso_gcorners_w192 iso_gcorners_w256 iso_geval_w128 iso_geval_w192 iso_geval_w256
-              iso_octree_dform8
-              iso_gcorners_x128 iso_gcorners_x192 iso_gcorners_x256 iso_geval_x128 iso_geval_x192 iso_geval_x256
-              iso_gcorners_y128 iso_gcorners_y192 iso_gcorners_y256 iso_geval_y128 iso_geval_y192 iso_geval_y256
+    ENTRIES   iso_grid iso_scan iso_octree iso_octree_small iso_octree_dform iso_octree_emit iso_brick_slots iso_hash
+              iso_points iso_corners_fill iso_corners_list_f1v4
+              iso_gcorners_f16 iso_gcorners_f32 iso_gcorners_f64 iso_geval_f16 iso_geval_f32 iso_geval_f64
+              iso_gcorners_w128 iso_gcorners_w192 iso_gcorners_y256 iso_geval_w128 iso_geval_w192 iso_geval_y256
+              iso_dcorners iso_deval
               iso_flood_seed iso_flood_face iso_flood_finish iso_flood_atoms
-              iso_octree_emit iso_brick_slots iso_project_list_f1
+              iso_cells iso_quads iso_relax iso_newton iso_eval_orbital iso_project_list_f1
+              iso_bucket_count iso_bucket_scan iso_bucket_vertices iso_bucket_triangles
   )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl

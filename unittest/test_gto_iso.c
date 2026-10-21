@@ -2708,8 +2708,6 @@ static double iso_gl_seconds(md_tick_t t0) { return iso_seconds_since(t0); }
 UTEST(gto_iso_gpu_lib, matches_cpu_reference) {
     iso_gpu_t g;
     if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
-    if (getenv("GTO_ISO_RELAX_FIRST")) isog_relax_first = atoi(getenv("GTO_ISO_RELAX_FIRST"));   // EXPERIMENT
-    if (getenv("GTO_ISO_CORNERS_V2")) isog_corners_v2 = atoi(getenv("GTO_ISO_CORNERS_V2"));
     md_gto_iso_gpu_initialize(g.dev);
     iso_dens_src_t s;
     // TEST: GTO_ISO_REF_FILE=mol.h5 compares another system (the cases keep their amide labels)
@@ -3084,67 +3082,6 @@ UTEST(gto_iso_gpu_lib, job_matches_extract) {
     iso_gpu_free(&g);
 }
 
-// One orbital's Newton projection in one launch (iso_project_list_f1, the default) and launched pass by
-// pass (iso_eval_list_f1 + iso_newton): the same mesh (the same arithmetic; at most rounding in the order
-// the compiler fuses it)
-UTEST(gto_iso_gpu_lib, fused_projection_matches) {
-    iso_gpu_t g;
-    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
-    md_gto_iso_gpu_initialize(g.dev);
-    md_gto_iso_gpu_switches_t sw0;
-    md_gto_iso_gpu_switches(&sw0);
-    const char* files[] = {"amide.h5", "mol.h5"};
-    for (int fi = 0; fi < 2; ++fi) {
-        iso_dens_src_t s;
-        ASSERT_TRUE(iso_dens_src_load(&s, files[fi]));
-        for (int which = -1; which >= -2; --which) {    // HOMO, LUMO
-            iso_dens_prod_t p;
-            md_gto_iso_field_t* field = iso_gl_field(&s, which, &p);
-            ASSERT_TRUE(field != NULL);
-            const md_gto_iso_field_t* fl[1] = {field};
-            md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
-            ASSERT_TRUE(set != NULL);
-            md_gto_iso_gpu_desc_t gd = {.cell_size = 0.2, .project_iterations = 8, .relax_iterations = 3};
-            gd.iso[0] = 0.05;
-            md_gto_iso_gpu_mesh_t m[2];
-            float* pos[2];
-            uint32_t* idx[2];
-            for (int k = 0; k < 2; ++k) {
-                md_gto_iso_gpu_switches_t sw = sw0;
-                sw.fused_project = k == 0;
-                md_gto_iso_gpu_switches_set(&sw);
-                ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &m[k]));
-                pos[k] = (float*)malloc(sizeof(float) * 4 * (m[k].vertex_count + 1));
-                idx[k] = (uint32_t*)malloc(sizeof(uint32_t) * (m[k].index_count + 1));
-                ASSERT_TRUE(md_gto_iso_gpu_mesh_read_all(g.s, &m[k], pos[k], NULL, idx[k]));
-            }
-            md_gto_iso_gpu_switches_set(&sw0);
-            ASSERT_EQ(m[0].vertex_count, m[1].vertex_count);
-            ASSERT_EQ(m[0].index_count, m[1].index_count);
-            // the triangles by their corners, sorted; the largest difference of a corner
-            iso_tri9_t* ta = iso_canon_tris(pos[0], idx[0], m[0].index_count);
-            iso_tri9_t* tb = iso_canon_tris(pos[1], idx[1], m[1].index_count);
-            uint32_t same = 0;
-            double dmax = 0.0;
-            for (uint32_t i = 0; i < m[0].index_count / 3; ++i) {
-                same += iso_tri9_cmp(&ta[i], &tb[i]) == 0;
-                for (int c = 0; c < 9; ++c) dmax = fmax(dmax, fabs((double)ta[i].v[c] - (double)tb[i].v[c]));
-            }
-            printf("  %-10s %s: %u vertices, %u of %u triangles identical, largest corner difference %.3g bohr (h 0.2)\n", files[fi],
-                   which == -1 ? "HOMO" : "LUMO", m[0].vertex_count, same, m[0].index_count / 3, dmax);
-            EXPECT_TRUE(dmax < 1.0e-3);     // rounding, not a different projection (the tolerance is 1e-2 h = 2e-3)
-            free(ta); free(tb);
-            for (int k = 0; k < 2; ++k) { free(pos[k]); free(idx[k]); md_gto_iso_gpu_mesh_free(g.s, &m[k]); }
-            md_gto_iso_gpu_set_destroy(g.s, set);
-            md_gto_iso_field_destroy(field);
-            iso_dens_prod_free(&p);
-        }
-        iso_dens_src_free(&s);
-    }
-    md_gto_iso_gpu_shutdown();
-    iso_gpu_free(&g);
-}
-
 // One field given twice at two iso values (a density at two thresholds): the copies share their functions
 // and each gives what it gives in a set of its own on the same lattice
 UTEST(gto_iso_gpu_lib, repeated_field_shares_functions) {
@@ -3326,9 +3263,6 @@ UTEST(gto_iso_gpu_lib, benchmark) {
     const char* only = getenv("GTO_ISO_BENCH_ONLY");
     static md_gto_iso_gpu_profile_t prof;
     static char prof_text[32768];
-    // EXPERIMENT toggles (temporary): GTO_ISO_RELAX_FIRST=0 the old vertex schedule, GTO_ISO_CORNERS_V2=0 the old corner kernels
-    if (getenv("GTO_ISO_RELAX_FIRST")) isog_relax_first = atoi(getenv("GTO_ISO_RELAX_FIRST"));
-    if (getenv("GTO_ISO_CORNERS_V2")) isog_corners_v2 = atoi(getenv("GTO_ISO_CORNERS_V2"));
 
     static const iso_bench_field_t cases[] = {
         {"amide.h5", "amide homo",   -1,          0.05},
@@ -3449,114 +3383,6 @@ UTEST(gto_iso_gpu_lib, benchmark) {
     md_gto_gpu_shutdown();
     iso_gpu_free(&g);
 }
-
-#endif // MD_ENABLE_GPU
-
-#if MD_ENABLE_GPU
-// EXPERIMENT (temporary, branch gto-iso-gpu-opt): vertex schedules side by side
-//   0  project, then 3 x (relax with the field normals, project)
-//   1  relax on the lattice surface (trilinear normals), then project once
-//   2  as 1, then one relax with the field normals and a projection
-// GTO_ISO_EXPERIMENT=1 ./md_unittest --filter='gto_iso_gpu_lib.schedule_experiment'
-UTEST(gto_iso_gpu_lib, schedule_experiment) {
-    const char* on = getenv("GTO_ISO_EXPERIMENT");
-    if (!on || on[0] != '1') UTEST_SKIP("set GTO_ISO_EXPERIMENT=1");
-    iso_gpu_t g;
-    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
-    md_gto_iso_gpu_initialize(g.dev);
-    static const struct { const char* file; const char* name; int kind; double iso; } cases[] = {
-        {"amide.h5", "amide homo",  -1,          0.05},
-        {"amide.h5", "amide scf",   ISO_D_SCF,   0.002},
-        {"amide.h5", "amide diff",  ISO_D_DIFF,  0.002},
-        {"amide.h5", "amide trans", ISO_D_TRANS, 0.002},
-        {"mol.h5",   "mol homo",    -1,          0.05},
-        {"mol.h5",   "mol lumo",    -2,          0.05},
-        {"mol.h5",   "mol scf",     ISO_D_SCF,   0.002},
-    };
-    double hs[8];
-    int nh = iso_parse_list(getenv("GTO_ISO_BENCH_H"), hs, 8);
-    if (nh == 0) { hs[0] = 0.2; hs[1] = 0.12; nh = 2; }
-    const char* only = getenv("GTO_ISO_BENCH_ONLY");
-    static md_gto_iso_gpu_profile_t prof;
-    printf("\n  %-12s %5s %4s | %6s %7s %7s %6s | %5s %5s %5s %6s | %7s %7s %8s\n", "field", "h", "mode", "verts", "evals", "per v", "groups",
-           "min", "p1", "mean", "<20deg", "dev max", "dev rms", "res max");
-    for (int ci = 0; ci < (int)(sizeof(cases) / sizeof(cases[0])); ++ci) {
-        if (only && !strstr(cases[ci].name, only)) continue;
-        iso_dens_src_t s;
-        if (!iso_dens_src_load(&s, cases[ci].file)) continue;
-        iso_dens_prod_t p;
-        md_gto_iso_field_t* field = iso_gl_field(&s, cases[ci].kind, &p);
-        const md_gto_iso_field_t* fl[1] = {field};
-        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
-        for (int hi = 0; hi < nh; ++hi) {
-            for (int mode = 0; mode <= 2; ++mode) {
-                isog_relax_first = mode;
-                md_gto_iso_gpu_desc_t gd = {.cell_size = hs[hi], .project_iterations = 8, .relax_iterations = 3};
-                gd.iso[0] = cases[ci].iso;
-                md_gto_iso_gpu_mesh_t gm;
-                md_gto_iso_gpu_profile_set(&prof);
-                const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd, &gm);
-                md_gto_iso_gpu_profile_set(NULL);
-                if (!ok) continue;
-                uint64_t evals = 0, groups = 0;
-                for (uint32_t i = 0; i < prof.num_steps; ++i) {
-                    if (strcmp(prof.step[i].name, "vertex eval") == 0) { evals += prof.step[i].items; groups += prof.step[i].aux; }
-                }
-                md_gto_iso_mesh_t hm;
-                md_gto_iso_gpu_mesh_read(g.s, &gm, 0, &hm, md_get_heap_allocator());
-                iso_metrics_t acc = {0};
-                acc.min_angle = 180.0;
-                int nsh = 0;
-                double p1 = 0, mean = 0, below = 0, rms2 = 0;
-                for (int sh = 0; sh < 2; ++sh) {
-                    if (!hm.sheet_vertex_count[sh]) continue;
-                    iso_mesh_t mg;
-                    iso_api_sheet(&mg, &hm, sh, cases[ci].iso, hs[hi]);
-                    iso_metrics_t e;
-                    iso_mesh_metrics(&e, &mg, &field->f);
-                    acc.min_angle = fmin(acc.min_angle, e.min_angle);
-                    acc.dev_max = fmax(acc.dev_max, e.dev_max);
-                    acc.vert_res_max = fmax(acc.vert_res_max, e.vert_res_max);
-                    p1 += e.p1_angle * e.nt; mean += e.mean_min_angle * e.nt; below += e.frac_below_20 * e.nt; rms2 += e.dev_rms * e.dev_rms * e.nt;
-                    acc.nt += e.nt;
-                    nsh++;
-                    iso_mesh_free(&mg);
-                }
-                // the vertices' distance from the surface, |f - iso| / |grad f| in the double field, units of h
-                double vres_max = 0.0;
-                {
-                    const uint32_t nvh = hm.vertex_count;
-                    double* fv = (double*)malloc(sizeof(double) * (nvh + 1));
-                    double* gv = (double*)malloc(sizeof(double) * 3 * (nvh + 1));
-                    md_gto_iso_field_evaluate(field, hm.position, nvh, 0, fv, gv);
-                    for (int sh = 0; sh < 2; ++sh) {
-                        const double sg = sh == 0 ? 1.0 : -1.0;
-                        for (uint32_t i = hm.sheet_vertex_offset[sh]; i < hm.sheet_vertex_offset[sh] + hm.sheet_vertex_count[sh]; ++i) {
-                            const double gl = sqrt(gv[3 * i] * gv[3 * i] + gv[3 * i + 1] * gv[3 * i + 1] + gv[3 * i + 2] * gv[3 * i + 2]);
-                            if (gl > 0.0) vres_max = fmax(vres_max, fabs(sg * fv[i] - cases[ci].iso) / gl / hs[hi]);
-                        }
-                    }
-                    free(fv); free(gv);
-                }
-                acc.vert_res_max = vres_max;
-                const double nt = acc.nt > 0 ? acc.nt : 1;
-                printf("  %-12s %5.3f %4d | %6u %7llu %7.2f %6llu | %5.1f %5.1f %5.1f %5.2f%% | %7.4f %7.5f %8.1e\n", cases[ci].name, hs[hi], mode,
-                       gm.vertex_count, (unsigned long long)evals, (double)evals / fmax(1.0, gm.vertex_count), (unsigned long long)groups,
-                       acc.min_angle, p1 / nt, mean / nt, 100.0 * below / nt, acc.dev_max, sqrt(rms2 / nt), acc.vert_res_max);
-                md_gto_iso_mesh_free(&hm);
-                md_gto_iso_gpu_mesh_free(g.s, &gm);
-            }
-        }
-        isog_relax_first = 1;
-        md_gto_iso_gpu_set_destroy(g.s, set);
-        md_gto_iso_field_destroy(field);
-        iso_dens_prod_free(&p);
-        iso_dens_src_free(&s);
-    }
-    md_gto_iso_gpu_shutdown();
-    iso_gpu_free(&g);
-}
-#endif
 
 // ---------------------------------------------------------------------------------------------
 // EXPERIMENT (GTO_ISO_TM=1): a Taylor model of rho per brick, as TOPO_ANALYTIC builds per cube
@@ -4163,7 +3989,7 @@ static void flood_sim(const isog_debug_t* dbg, double iso, int sheet, int stride
 }
 
 UTEST(gto_iso_gpu_lib, flood_experiment) {
-    if (!getenv("GTO_ISO_FLOOD")) UTEST_SKIP("set GTO_ISO_FLOOD=1 (EXPERIMENT)");
+    if (!getenv("GTO_ISO_FLOOD_SURVEY")) UTEST_SKIP("set GTO_ISO_FLOOD_SURVEY=1 (what a flood would miss, simulated on the host)");
     iso_gpu_t g;
     if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
     md_gto_iso_gpu_initialize(g.dev);
@@ -4233,3 +4059,5 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
     md_gto_iso_gpu_shutdown();
     iso_gpu_free(&g);
 }
+
+#endif // MD_ENABLE_GPU
