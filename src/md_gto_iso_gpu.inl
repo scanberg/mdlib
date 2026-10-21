@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r26"
+#define ISOG_REVISION "r26b"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -1270,8 +1270,9 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     // (2), or sets of densities whose maxima are at the atoms (md_gto_iso_field_set_maxima_at_atoms) and
     // whose every weight is >= 0 (1): each piece of their surfaces holds an atom, whose brick is a seed
     const bool clist = (isog_corners_v2 && isog_corners_list) || cdform;    // the D form's corners are in list form only
-    bool flood = clist && isog_flood == 2;
-    if (clist && isog_flood == 1) {
+    // (DIAGNOSTIC modes make no real corners, so they flood everything or nothing: off with them)
+    bool flood = clist && !isog_diag && isog_flood == 2;
+    if (clist && !isog_diag && isog_flood == 1) {
         flood = true;
         for (uint32_t k = 0; k < F && flood; ++k) {
             const md_gto_iso_field_t* fk = set->src[k];
