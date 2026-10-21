@@ -3932,6 +3932,134 @@ void iso_eval_list_f1(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     }
 }
 
+// One orbital: the whole Newton projection of 128 consecutive vertices per group in one launch, instead of
+// an evaluation (iso_eval_list_f1) and a step (iso_newton) per iteration, each a launch over every vertex
+// and a barrier however few vertices still move. Per iteration the group lists and stages the shells that
+// reach its vertices' box and evaluates every vertex (as iso_eval_list_f1), then the vertices still moving
+// take their step (as iso_newton: mode 2 predicts, 0 checks); after a.level steps, or once all of the
+// group's vertices have converged, the normals (iso_newton, mode 1). The same arithmetic in the same order:
+// the same vertices.
+groupshared uint ep_any;
+
+[shader("compute")]
+[numthreads(EL_GROUP, 1, 1)]
+void iso_project_list_f1(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint v0 = node_index(gid) * uint(EL_GROUP);
+    if (v0 >= a.count) return;                             // uniform per group
+    bool active = v0 + tid < a.count;
+    uint vi = min(v0 + tid, a.count - 1u);
+    float4 pv = a.vpos[vi];
+    float3 p = pv.xyz;
+    float sg = pv.w;
+    float iso = a.fields[a.vinfo[vi].z].iso;
+    IsoTerm tm = a.terms[a.fields[0].term_off];
+    uint done = active ? 0u : 1u;
+    float4 gv = float4(0.0);
+    uint iters = a.level;
+    bool predict = a.mode == 2u;
+    for (uint it = 0u; it <= iters; ++it) {
+        // any of the group's vertices still moving? (uniform)
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) ep_any = 0u;
+        GroupMemoryBarrierWithGroupSync();
+        if (done == 0u) ep_any = 1u;
+        GroupMemoryBarrierWithGroupSync();
+        if (ep_any == 0u) break;
+        // the evaluation: the vertices' box, its shells listed and staged by blocks
+        {
+            uint lanes = WaveGetLaneCount();
+            uint w = min(iso_wave_index(tid, lanes), 31u);
+            float3 lo = WaveActiveMin(active ? p : float3(3.0e38));
+            float3 hi = WaveActiveMax(active ? p : float3(-3.0e38));
+            if (WaveIsFirstLane()) { el_lohi[2u * w] = float4(lo, 0.0); el_lohi[2u * w + 1u] = float4(hi, 0.0); }
+            GroupMemoryBarrierWithGroupSync();
+            if (tid == 0u) {
+                uint nw = min(iso_num_waves(EL_GROUP, lanes), 32u);
+                float3 glo = el_lohi[0].xyz, ghi = el_lohi[1].xyz;
+                for (uint k = 1u; k < nw; ++k) { glo = min(glo, el_lohi[2u * k].xyz); ghi = max(ghi, el_lohi[2u * k + 1u].xyz); }
+                el_lohi[0] = float4(glo, 0.0);
+                el_lohi[1] = float4(ghi, 0.0);
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+        float3 glo = el_lohi[0].xyz, ghi = el_lohi[1].xyz;
+        float val = 0.0;
+        float3 grad = float3(0.0);
+        for (uint s0 = 0u; s0 < a.num_shells; s0 += uint(K_LIST)) {
+            GroupMemoryBarrierWithGroupSync();             // the previous block's lists (and the box) consumed
+            k_list(s0, glo, ghi, tid, EL_GROUP, K_CK);
+            uint nchunk = k_nchunk;
+            for (uint c = 0u; c < nchunk; ++c) {
+                k_load_chunk<1, KBuf1>(c, 0u, tid, EL_GROUP);
+                uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
+                for (uint i = i0; i < i1; ++i) {           // uniform
+                    float3 d;
+                    float R, R1;
+                    uint l, nc;
+                    if (!k_shell_d(i - i0, p, d, R, R1, l, nc)) continue;
+                    float m[15], gx[15], gy[15], gz[15];
+                    cart_monomials(l, d, m);
+                    cart_monomials_d(l, d, 0u, gx);
+                    cart_monomials_d(l, d, 1u, gy);
+                    cart_monomials_d(l, d, 2u, gz);
+                    uint row0 = k_row[i];
+                    float P = 0.0;
+                    float3 Pg = float3(0.0);
+                    [ForceUnroll] for (int n = 0; n < 15; ++n) {
+                        if (uint(n) < nc) {                 // uniform
+                            float cv = KBuf1::ld(row0 + uint(n));
+                            P += cv * m[n];
+                            Pg += cv * float3(gx[n], gy[n], gz[n]);
+                        }
+                    }
+                    val += P * R;
+                    grad += Pg * R + (2.0 * P * R1) * d;
+                }
+                GroupMemoryBarrierWithGroupSync();         // the chunk's rows consumed
+            }
+        }
+        if (active) gv = tm.w * float4(grad, val);
+        if (it == iters) break;                            // uniform: the last evaluation, for the normals
+        // the step of a vertex still moving (iso_newton)
+        if (done == 0u) {
+            float f = sg * gv.w - iso;
+            float3 g = sg * gv.xyz;
+            float g2 = dot(g, g);
+            if (g2 > 1.0e-30) {
+                float gl = sqrt(g2);
+                float sd = abs(f) / gl;
+                if (sd < a.tol) {
+                    done = 1u;                             // converged: stays put, its values stay valid
+                } else {
+                    float step = f / g2;
+                    float len = abs(step) * gl;
+                    if (len > a.step_max) step *= a.step_max / len;
+                    p = p - step * g;
+                    if (predict && len <= a.step_max) {
+                        float K = gl / max(abs(sg * gv.w), 1.0e-30);
+                        if (0.5 * K * sd * sd < 0.1 * a.tol) done = 2u;
+                    }
+                }
+            }
+        }
+    }
+    if (!active) return;
+    // the normals from the last evaluation (iso_newton, mode 1)
+    float f = sg * gv.w - iso;
+    float3 g = sg * gv.xyz;
+    float g2 = dot(g, g);
+    float4 nrm = float4(0.0, 0.0, 0.0, 1.0e30);
+    if (g2 > 1.0e-30) {
+        float gl = sqrt(g2);
+        nrm = float4(-g / gl, abs(f) / gl);                // f > 0 inside: outward is -grad f
+    }
+    a.vpos[vi] = float4(p, sg);
+    a.vval[vi] = gv;
+    a.vnrm[vi] = nrm;
+    a.vdone[vi] = done;
+}
+
 // Sets of single-function fields (orbitals): one thread per vertex, its field's one column of C.
 // The tiled GEMM above would compute every field's function at every vertex.
 [shader("compute")]

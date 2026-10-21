@@ -3051,6 +3051,67 @@ UTEST(gto_iso_gpu_lib, job_matches_extract) {
     iso_gpu_free(&g);
 }
 
+// One orbital's Newton projection in one launch (iso_project_list_f1, the default) and launched pass by
+// pass (iso_eval_list_f1 + iso_newton): the same mesh (the same arithmetic; at most rounding in the order
+// the compiler fuses it)
+UTEST(gto_iso_gpu_lib, fused_projection_matches) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    md_gto_iso_gpu_switches_t sw0;
+    md_gto_iso_gpu_switches(&sw0);
+    const char* files[] = {"amide.h5", "mol.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load(&s, files[fi]));
+        for (int which = -1; which >= -2; --which) {    // HOMO, LUMO
+            iso_dens_prod_t p;
+            md_gto_iso_field_t* field = iso_gl_field(&s, which, &p);
+            ASSERT_TRUE(field != NULL);
+            const md_gto_iso_field_t* fl[1] = {field};
+            md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
+            ASSERT_TRUE(set != NULL);
+            md_gto_iso_gpu_desc_t gd = {.cell_size = 0.2, .project_iterations = 8, .relax_iterations = 3};
+            gd.iso[0] = 0.05;
+            md_gto_iso_gpu_mesh_t m[2];
+            float* pos[2];
+            uint32_t* idx[2];
+            for (int k = 0; k < 2; ++k) {
+                md_gto_iso_gpu_switches_t sw = sw0;
+                sw.fused_project = k == 0;
+                md_gto_iso_gpu_switches_set(&sw);
+                ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &m[k]));
+                pos[k] = (float*)malloc(sizeof(float) * 4 * (m[k].vertex_count + 1));
+                idx[k] = (uint32_t*)malloc(sizeof(uint32_t) * (m[k].index_count + 1));
+                ASSERT_TRUE(md_gto_iso_gpu_mesh_read_all(g.s, &m[k], pos[k], NULL, idx[k]));
+            }
+            md_gto_iso_gpu_switches_set(&sw0);
+            ASSERT_EQ(m[0].vertex_count, m[1].vertex_count);
+            ASSERT_EQ(m[0].index_count, m[1].index_count);
+            // the triangles by their corners, sorted; the largest difference of a corner
+            iso_tri9_t* ta = iso_canon_tris(pos[0], idx[0], m[0].index_count);
+            iso_tri9_t* tb = iso_canon_tris(pos[1], idx[1], m[1].index_count);
+            uint32_t same = 0;
+            double dmax = 0.0;
+            for (uint32_t i = 0; i < m[0].index_count / 3; ++i) {
+                same += iso_tri9_cmp(&ta[i], &tb[i]) == 0;
+                for (int c = 0; c < 9; ++c) dmax = fmax(dmax, fabs((double)ta[i].v[c] - (double)tb[i].v[c]));
+            }
+            printf("  %-10s %s: %u vertices, %u of %u triangles identical, largest corner difference %.3g bohr (h 0.2)\n", files[fi],
+                   which == -1 ? "HOMO" : "LUMO", m[0].vertex_count, same, m[0].index_count / 3, dmax);
+            EXPECT_TRUE(dmax < 1.0e-3);     // rounding, not a different projection (the tolerance is 1e-2 h = 2e-3)
+            free(ta); free(tb);
+            for (int k = 0; k < 2; ++k) { free(pos[k]); free(idx[k]); md_gto_iso_gpu_mesh_free(g.s, &m[k]); }
+            md_gto_iso_gpu_set_destroy(g.s, set);
+            md_gto_iso_field_destroy(field);
+            iso_dens_prod_free(&p);
+        }
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
 // One field given twice at two iso values (a density at two thresholds): the copies share their functions
 // and each gives what it gives in a set of its own on the same lattice
 UTEST(gto_iso_gpu_lib, repeated_field_shares_functions) {

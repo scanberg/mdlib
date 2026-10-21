@@ -405,6 +405,7 @@ typedef struct md_gto_iso_gpu_switches_t {
     int  octree_start;      // the first level the octree tests (0..3), the levels above keeping every node
     bool dform_corners;     // sets of densities: the corners in the D form, the vertices as without it
     int  flood;             // APPROXIMATE corners from seeds and a flood: 0 off, 1 densities with weights >= 0, 2 every field
+    bool fused_project;     // one orbital: the Newton projection in one launch (iso_project_list_f1)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);

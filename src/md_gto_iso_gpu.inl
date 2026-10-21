@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r29"
+#define ISOG_REVISION "r30"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -67,7 +67,7 @@ enum {
     ISOG_K_GCORN_X128, ISOG_K_GCORN_X192, ISOG_K_GCORN_X256, ISOG_K_GEVAL_X128, ISOG_K_GEVAL_X192, ISOG_K_GEVAL_X256,
     ISOG_K_GCORN_Y128, ISOG_K_GCORN_Y192, ISOG_K_GCORN_Y256, ISOG_K_GEVAL_Y128, ISOG_K_GEVAL_Y192, ISOG_K_GEVAL_Y256,
     ISOG_K_FSEED, ISOG_K_FFACE, ISOG_K_FFINISH, ISOG_K_FATOMS,
-    ISOG_K_OEMIT, ISOG_K_BSLOTS,
+    ISOG_K_OEMIT, ISOG_K_BSLOTS, ISOG_K_PROJ1,
     ISOG_K_COUNT
 };
 
@@ -200,6 +200,11 @@ static int isog_dform_corners = 0;
 static int isog_flood = 1;
 //   GTO_ISO_FLOOD_ATOMS=0     EXPERIMENT: the flood without the atoms' bricks as seeds (default 1)
 static int isog_flood_atoms = 1;
+//   GTO_ISO_FUSED_PROJECT=0|1 one orbital: the Newton projection in one launch (iso_project_list_f1: every
+//                             iteration's evaluation and step per group of 128 vertices, ending when the group
+//                             has converged) instead of an evaluation and a step launched per iteration over
+//                             every vertex (default 1)
+static int isog_fused_project = 1;
 //   GTO_ISO_WIDE_KERNEL=0|1|2 the wide GEMM's kernels: 0 those of r16 (iso_gcorners_w*, iso_geval_w*); 1 the
 //                             group's shells listed once (all, in rounds of 256) and staged as they are listed,
 //                             chunks of 16 consecutive AOs of the list, so a chunk stages only its rows of C
@@ -290,6 +295,8 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (isog_flood < 0 || isog_flood > 2) isog_flood = 1;
     e = getenv("GTO_ISO_FLOOD_ATOMS");
     if (e && e[0]) isog_flood_atoms = atoi(e);
+    e = getenv("GTO_ISO_FUSED_PROJECT");
+    if (e && e[0]) isog_fused_project = atoi(e);
 }
 
 // Every kernel is made at once. One a device cannot make (more groupshared memory than it allows, say)
@@ -392,6 +399,7 @@ static bool isog_kernels_ready(void) {
         md_shader_gto_iso_gpu_iso_flood_atoms_kernel(),
         md_shader_gto_iso_gpu_iso_octree_emit_kernel(),
         md_shader_gto_iso_gpu_iso_brick_slots_kernel(),
+        md_shader_gto_iso_gpu_iso_project_list_f1_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -926,6 +934,7 @@ void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     out->octree_start = isog_octree_start;
     out->dform_corners = isog_dform_corners != 0;
     out->flood = isog_flood;
+    out->fused_project = isog_fused_project != 0;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
@@ -952,6 +961,7 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     if (in->dform_kernel >= 0 && in->dform_kernel <= 2) isog_dform_kernel = in->dform_kernel;
     isog_dform_corners = in->dform_corners;
     if (in->flood >= 0 && in->flood <= 2) isog_flood = in->flood;
+    isog_fused_project = in->fused_project;
     isog_ordered = in->ordered;
     isog_diag = (in->diag >= 0 && in->diag <= 5) ? in->diag : 0;
     isog_gemm_wide = in->gemm_wide ? (isog_gemm_wide ? isog_gemm_wide : 1) : 0;
@@ -962,9 +972,9 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
 
 const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[512];
-    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d wide_kernel %d octree8 %d octree_start %d dform_corners %d flood %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
+    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d wide_kernel %d octree8 %d octree_start %d dform_corners %d flood %d fused_project %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
              ISOG_REVISION, isog_relax_first, isog_corners_v2, isog_corners_list, isog_shared_corners, isog_eval_v2, isog_canon_terms,
-             isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_wide_kernel, isog_octree8, isog_octree_start, isog_dform_corners, isog_flood, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
+             isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_wide_kernel, isog_octree8, isog_octree_start, isog_dform_corners, isog_flood, isog_fused_project, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
              isog_diag == 1 ? " DIAG: no AO values" : isog_diag == 2 ? " DIAG: no multiply-adds" : isog_diag == 3 ? " DIAG: lists only"
              : isog_diag == 4 ? " DIAG: no C rows staged" : isog_diag == 5 ? " DIAG: no shells staged, no AO values" : "");
     return buf;
@@ -1820,7 +1830,18 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                                            : isog_groups(vwide ? (nv + 15) / 16 : geval ? (nv + 31) / 32 : (nv + 63) / 64);
                 // Newton steps; converged vertices are flagged and skipped (they no longer move, so their
                 // values stay valid for the final normals)
+                const bool fused = elist && isog_fused_project && isog_k[ISOG_K_PROJ1];
+                if (fused) isog_used(ISOG_K_PROJ1);
+                // relaxation reads vpos and writes vpos_out: the two swap roles after every pass (no copy)
+                #define ISOG_SWAP_POS() do { const md_gpu_addr_t t_ = v.vpos; v.vpos = v.vpos_out; v.vpos_out = t_; } while (0)
                 #define ISOG_PROJECT(iters) do {                                               \
+                    if (fused) {     /* one launch: every iteration of every group */          \
+                        v.level = (iters);                                                     \
+                        v.mode = isog_newton_predict ? 2u : 0u;                                \
+                        MD_GPU_LAUNCH(s, isog_k[ISOG_K_PROJ1], g_eval, v);                     \
+                        isog_mark(s, "vertex project (fused)", nv, 0);                         \
+                        break;                                                                 \
+                    }                                                                          \
                     md_gpu_memset(s, v.vdone, 0, sizeof(uint32_t) * nv);                       \
                     for (uint32_t it = 0; it <= (iters); ++it) {                               \
                         uint32_t act_, grp_;                                                   \
@@ -1838,16 +1859,14 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
                         MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
                         isog_mark(s, "relax", nv, 0);
-                        md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
-                        isog_mark(s, "relax: copy", nv, 0);
+                        ISOG_SWAP_POS();
                     }
                     isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &j->ts);
                     ISOG_PROJECT(desc->project_iterations);
                     for (int r = 1; r < isog_relax_first && desc->relax_iterations; ++r) {   // EXPERIMENT: polish with the true normals
                         MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
                         isog_mark(s, "relax", nv, 0);
-                        md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
-                        isog_mark(s, "relax: copy", nv, 0);
+                        ISOG_SWAP_POS();
                         ISOG_PROJECT(3u);
                     }
                     isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_PROJECT, &j->ts);
@@ -1857,13 +1876,15 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     for (uint32_t r = 0; r < desc->relax_iterations; ++r) {
                         MD_GPU_LAUNCH(s, isog_k[ISOG_K_RELAX], g_vert, v);
                         isog_mark(s, "relax", nv, 0);
-                        md_gpu_copy(s, v.vpos, v.vpos_out, sizeof(md_gpu_float4) * nv);
-                        isog_mark(s, "relax: copy", nv, 0);
+                        ISOG_SWAP_POS();
                         ISOG_PROJECT(3u);
                     }
                     isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_RELAX, &j->ts);
                 }
                 #undef ISOG_PROJECT
+                #undef ISOG_SWAP_POS
+                a.vpos = v.vpos;            // where the vertices ended up
+                a.vpos_out = v.vpos_out;
             }
             // ---- regroup per (field, sheet) into the output buffers: sized by the vertices, the quads (on the
             // device: no count is read for them) at most cap_q
