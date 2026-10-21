@@ -2286,6 +2286,7 @@ struct md_gto_iso_field_t {
     size_t                 num_coeff;
     float*                 dmat;       // a density matrix's symmetric part [num_ao][num_ao] (the GPU path's phi^T D phi)
     size_t                 dmat_dim;
+    bool                   maxima_at_atoms;   // md_gto_iso_field_set_maxima_at_atoms
 };
 
 static float* iso_pack_atoms(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, size_t* out_num_atoms) {
@@ -2433,6 +2434,10 @@ void md_gto_iso_field_destroy(md_gto_iso_field_t* field) {
     if (field->dmat) md_free(field->alloc, field->dmat, sizeof(float) * (field->dmat_dim * field->dmat_dim + 1));
     iso_field_free(&field->f);
     md_free(field->alloc, field, sizeof(*field));
+}
+
+void md_gto_iso_field_set_maxima_at_atoms(md_gto_iso_field_t* field, bool maxima_at_atoms) {
+    if (field) field->maxima_at_atoms = maxima_at_atoms;
 }
 
 void md_gto_iso_field_info(md_gto_iso_field_info_t* out, const md_gto_iso_field_t* field) {

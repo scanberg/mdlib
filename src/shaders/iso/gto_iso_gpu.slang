@@ -113,7 +113,7 @@ struct IsoArgs {
     float*    drs;            // dform: per matrix and AO mu, sum over nu of |D_mu nu| / |nrm_nu| (the octree's tails)
     float4*   dprop;          // dform: per matrix: (2 eps)^2 sum |D raw|, 4 eps, positive semidefinite (1), slack
     uint*     scan;           // ordered lists: per brick, its count (iso_points, iso_cells), then its offset (iso_scan)
-    uint*     bstate;         // flood: per brick, the round it was evaluated in (1, 2, ...), 0 not (yet)
+    uint*     bstate;         // flood: per brick, the round it was evaluated in (1, 2, ...), FLOOD_NONE not (yet)
 };
 MD_SHADER_ARGS(IsoArgs);
 
@@ -586,7 +586,15 @@ void iso_hash(uint3 tid : SV_DispatchThreadID) {
     uint slot = hash_u32(key) & a.hash_mask;
     for (uint probe = 0u; probe <= a.hash_mask; ++probe) {
         uint prev;
-        InterlockedCompareExchange(a.hash_keys[slot], 0u, key, prev);
+        for (uint attempt = 0u; attempt < 64u; ++attempt) {
+            InterlockedCompareExchange(a.hash_keys[slot], 0u, key, prev);
+            if (prev != 0u) break;
+            // Metal's compare-exchange is the weak form and may fail spuriously: the key is in only if
+            // the slot holds it now
+            uint now;
+            InterlockedOr(a.hash_keys[slot], 0u, now);
+            if (now != 0u) { prev = now == key ? 0u : now; break; }
+        }
         if (prev == 0u || prev == key) { a.hash_vals[slot] = tid.x; return; }
         slot = (slot + 1u) & a.hash_mask;
     }
@@ -644,7 +652,7 @@ uint corner_owner_upto(uint4 brick, uint p, out uint owner_p, uint upto) {
     uint nmask = a.bricks[nb == INVALID ? 0u : nb].w;      // brick 0 when absent: llvmpipe loads anyway
     uint need = field_bits(brick.w);
     bool done = true;
-    if (upto != 0u) { uint st = a.bstate[nb == INVALID ? 0u : nb]; done = st != 0u && st <= upto; }
+    if (upto != 0u) { uint st = a.bstate[nb == INVALID ? 0u : nb]; done = st <= upto; }   // FLOOD_NONE is above any round
     return (nb != INVALID && (field_bits(nmask) & need) == need && done) ? nb : INVALID;
 }
 
@@ -1400,6 +1408,10 @@ bool iso_brick_corner(uint p) {
 // hold a sign change on a face edge joins the next round. A flooded brick has surface cells.
 // ------------------------------------------------------------------------------------------
 
+// A brick's state before a round reaches it. The rounds claim bricks with InterlockedMin (the state only
+// falls), not a compare-exchange: Metal's is the weak form, which may fail spuriously.
+#define FLOOD_NONE 0xFFFFFFFFu
+
 // Sign of the brick's point (x, y, z) for field f, sheet s against the iso value: above
 bool flood_above(uint slot, uint x, uint y, uint z, float sg, float iso) {
     IsoArgs a = MD_ARGS;
@@ -1429,8 +1441,26 @@ void iso_flood_seed(uint3 tid3 : SV_DispatchThreadID) {
         }
         slot++;
     }
-    a.bstate[b] = seed;
+    a.bstate[b] = seed != 0u ? 1u : FLOOD_NONE;
     if (seed != 0u) InterlockedAdd(a.counters[6], 1u);
+}
+
+// Thread per shell: the candidate brick holding the shell's centre (an atom) is a seed too (after
+// iso_flood_seed; counted in counters[6]). A total density's pieces hold an atom each (its maxima are
+// at the nuclei), so a piece too small for the brick corners to straddle is still reached.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_flood_atoms(uint3 tid3 : SV_DispatchThreadID) {
+    IsoArgs a = MD_ARGS;
+    uint s = tid3.x;
+    if (s >= a.num_shells) return;
+    float3 q = (a.shells[s].c.xyz - a.origin_h.xyz) / (4.0 * a.origin_h.w);
+    if (any(q < float3(0.0)) || any(q >= float3(1024.0))) return;
+    uint nb = brick_lookup(int3(floor(q)));
+    if (nb == INVALID || a.bricks[nb].w == 0u) return;
+    uint orig;
+    InterlockedMin(a.bstate[nb], 1u, orig);
+    if (orig == FLOOD_NONE) InterlockedAdd(a.counters[6], 1u);
 }
 
 groupshared uint fl_face;
@@ -1481,8 +1511,8 @@ void iso_flood_face(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         uint nb = brick_lookup(nbc);
         if (nb != INVALID && a.bricks[nb].w != 0u) {
             uint orig;
-            InterlockedCompareExchange(a.bstate[nb], 0u, a.level + 1u, orig);
-            if (orig == 0u) InterlockedAdd(a.counters[6], 1u);
+            InterlockedMin(a.bstate[nb], a.level + 1u, orig);   // a brick already reached keeps its round
+            if (orig == FLOOD_NONE) InterlockedAdd(a.counters[6], 1u);
         }
     }
 }
@@ -1494,7 +1524,7 @@ void iso_flood_finish(uint3 tid3 : SV_DispatchThreadID) {
     IsoArgs a = MD_ARGS;
     uint b = tid3.x;
     if (b >= a.count) return;
-    if (a.bstate[b] == 0u) a.bricks[b].w = 0u;
+    if (a.bstate[b] == FLOOD_NONE) a.bricks[b].w = 0u;
 }
 
 groupshared uint p_base;

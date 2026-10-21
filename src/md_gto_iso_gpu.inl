@@ -10,7 +10,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r25"
+#define ISOG_REVISION "r26"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -66,7 +66,7 @@ enum {
     ISOG_K_ODFORM8,
     ISOG_K_GCORN_X128, ISOG_K_GCORN_X192, ISOG_K_GCORN_X256, ISOG_K_GEVAL_X128, ISOG_K_GEVAL_X192, ISOG_K_GEVAL_X256,
     ISOG_K_GCORN_Y128, ISOG_K_GCORN_Y192, ISOG_K_GCORN_Y256, ISOG_K_GEVAL_Y128, ISOG_K_GEVAL_Y192, ISOG_K_GEVAL_Y256,
-    ISOG_K_FSEED, ISOG_K_FFACE, ISOG_K_FFINISH,
+    ISOG_K_FSEED, ISOG_K_FFACE, ISOG_K_FFINISH, ISOG_K_FATOMS,
     ISOG_K_COUNT
 };
 
@@ -185,21 +185,38 @@ static int isog_dform_corners = 0;
 //                             value is a seed, evaluated in full; then, round by round, a brick across a face of
 //                             an evaluated one with a sign change on that face. Only bricks with surface cells
 //                             are evaluated, but a surface piece no seed reaches (smaller than about 4 cells, or
-//                             between the brick corners) is missed. 1: densities with every weight >= 0 (total,
-//                             alpha, beta); 2: every field (to see what it misses); 0 off (default 0)
-static int isog_flood = 0;
+//                             between the brick corners) is missed. The bricks holding an atom are seeds too, so
+//                             a total density's pieces (each holds a nucleus, its maxima are there) are reached
+//                             however small. 1: densities whose maxima are at the atoms (SCF densities, total or
+//                             of one spin: md_gto_iso_field_set_maxima_at_atoms) with every weight >= 0, exact on
+//                             every case measured (iso 0.0025 to 3); 2: every field (to see what it misses:
+//                             orbitals' small lobes, attachment and detachment densities' pieces between the
+//                             atoms at high iso values); 0 off (default 1)
+static int isog_flood = 1;
+//   GTO_ISO_FLOOD_BRICK_TEST=1 the octree's last level (the bricks) bounded with the flood as well; by default
+//                             a flood skips it (as GTO_ISO_SKIP_BRICK_TEST): the brick corners reject the
+//                             empty bricks for less than the bound costs (default 0)
+static int isog_flood_brick_test = 0;
+//   GTO_ISO_FLOOD_ATOMS=0     EXPERIMENT: the flood without the atoms' bricks as seeds (default 1)
+static int isog_flood_atoms = 1;
 //   GTO_ISO_WIDE_KERNEL=0|1|2 the wide GEMM's kernels: 0 those of r16 (iso_gcorners_w*, iso_geval_w*); 1 the
 //                             group's shells listed once (all, in rounds of 256) and staged as they are listed,
 //                             chunks of 16 consecutive AOs of the list, so a chunk stages only its rows of C
 //                             (iso_gcorners_x*, iso_geval_x*); 2 the same with the next chunk's rows of C loaded
 //                             into registers during this chunk's AO values and products (iso_gcorners_y*,
-//                             iso_geval_y*: F / 16 more registers) (default 1)
-static int isog_wide_kernel = 1;
+//                             iso_geval_y*: F / 16 more registers); 3 r16's to 192 columns, the C-ahead ones at 256
+//                             (default 3). On the RTX 3080 occupancy decides: w192 fits in 127 registers, two groups
+//                             of 256 to an SM where x192 and y192 (139, 144) fit one (mm density: corners 6.8 ms, 9.7
+//                             x, 7.2 y); at 256 columns all three fit one, and y's rows of C ahead hide the latency
+//                             (tq density: 10.3 ms, 13.3 x, 15.8 w). On the M4 Pro w192 3% ahead of x192.
+static int isog_wide_kernel = 3;
 
 // The wide kernel k (one of the six ISOG_K_GCORN_W* / ISOG_K_GEVAL_W*) in the form chosen, where the
 // device could make it
 static int isog_wide_form(int k) {
-    const int base = isog_wide_kernel == 2 ? ISOG_K_GCORN_Y128 : isog_wide_kernel == 1 ? ISOG_K_GCORN_X128 : -1;
+    const int wide256 = (k - ISOG_K_GCORN_W128) % 3 == 2;
+    const int form = isog_wide_kernel == 3 ? (wide256 ? 2 : 0) : isog_wide_kernel;
+    const int base = form == 2 ? ISOG_K_GCORN_Y128 : form == 1 ? ISOG_K_GCORN_X128 : -1;
     if (base < 0) return k;
     const int alt = base + (k - ISOG_K_GCORN_W128);
     return isog_k[alt] ? alt : k;
@@ -261,7 +278,7 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (isog_octree_start < 0 || isog_octree_start > 3) isog_octree_start = 2;
     e = getenv("GTO_ISO_WIDE_KERNEL");
     if (e && e[0]) isog_wide_kernel = atoi(e);
-    if (isog_wide_kernel < 0 || isog_wide_kernel > 2) isog_wide_kernel = 1;
+    if (isog_wide_kernel < 0 || isog_wide_kernel > 3) isog_wide_kernel = 3;
     e = getenv("GTO_ISO_DFORM_KERNEL");
     if (e && e[0]) isog_dform_kernel = atoi(e);
     if (isog_dform_kernel < 0 || isog_dform_kernel > 2) isog_dform_kernel = 2;
@@ -269,7 +286,11 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_dform_corners = atoi(e);
     e = getenv("GTO_ISO_FLOOD");
     if (e && e[0]) isog_flood = atoi(e);
-    if (isog_flood < 0 || isog_flood > 2) isog_flood = 0;
+    if (isog_flood < 0 || isog_flood > 2) isog_flood = 1;
+    e = getenv("GTO_ISO_FLOOD_BRICK_TEST");
+    if (e && e[0]) isog_flood_brick_test = atoi(e);
+    e = getenv("GTO_ISO_FLOOD_ATOMS");
+    if (e && e[0]) isog_flood_atoms = atoi(e);
 }
 
 // Every kernel is made at once. One a device cannot make (more groupshared memory than it allows, say)
@@ -369,6 +390,7 @@ static bool isog_kernels_ready(void) {
         md_shader_gto_iso_gpu_iso_flood_seed_kernel(),
         md_shader_gto_iso_gpu_iso_flood_face_kernel(),
         md_shader_gto_iso_gpu_iso_flood_finish_kernel(),
+        md_shader_gto_iso_gpu_iso_flood_atoms_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -956,6 +978,7 @@ void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     out->octree_start = isog_octree_start;
     out->dform_corners = isog_dform_corners != 0;
     out->flood = isog_flood;
+    out->flood_brick_test = isog_flood_brick_test != 0;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
@@ -982,19 +1005,20 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     if (in->dform_kernel >= 0 && in->dform_kernel <= 2) isog_dform_kernel = in->dform_kernel;
     isog_dform_corners = in->dform_corners;
     if (in->flood >= 0 && in->flood <= 2) isog_flood = in->flood;
+    isog_flood_brick_test = in->flood_brick_test;
     isog_ordered = in->ordered;
     isog_diag = (in->diag >= 0 && in->diag <= 5) ? in->diag : 0;
     isog_gemm_wide = in->gemm_wide ? (isog_gemm_wide ? isog_gemm_wide : 1) : 0;
     isog_octree8 = in->octree8;
-    if (in->wide_kernel >= 0 && in->wide_kernel <= 2) isog_wide_kernel = in->wide_kernel;
+    if (in->wide_kernel >= 0 && in->wide_kernel <= 3) isog_wide_kernel = in->wide_kernel;
     if (in->octree_start >= 0 && in->octree_start <= 3) isog_octree_start = in->octree_start;
 }
 
 const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[512];
-    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d wide_kernel %d octree8 %d octree_start %d dform_corners %d flood %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
+    snprintf(buf, sizeof(buf), "%s | relax_first %d corners_v2 %d corners_list %d shared_corners %d eval_v2 %d canon_terms %d gemm %d octree_small %d dform %d dform_kernel %d ordered %d gemm_wide %d wide_kernel %d octree8 %d octree_start %d dform_corners %d flood %d flood_brick_test %d dform_octree %d coef_screen %d eval_list %d gemm_t32 %d gemm_pipe %d corners_v4 %d newton_predict %d newton_tol 1e-%d h skip_brick_test %d eval_eps 1e-%d%s",
              ISOG_REVISION, isog_relax_first, isog_corners_v2, isog_corners_list, isog_shared_corners, isog_eval_v2, isog_canon_terms,
-             isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_wide_kernel, isog_octree8, isog_octree_start, isog_dform_corners, isog_flood, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
+             isog_gemm, isog_octree_small, isog_dform, isog_dform_kernel, isog_ordered, isog_gemm_wide, isog_wide_kernel, isog_octree8, isog_octree_start, isog_dform_corners, isog_flood, isog_flood_brick_test, isog_dform_octree, isog_coef_screen, isog_eval_list, isog_gemm_t32, isog_gemm_pipe, isog_corners_v4, isog_newton_predict, isog_newton_tol_exp, isog_skip_brick_test, isog_eval_eps_exp,
              isog_diag == 1 ? " DIAG: no AO values" : isog_diag == 2 ? " DIAG: no multiply-adds" : isog_diag == 3 ? " DIAG: lists only"
              : isog_diag == 4 ? " DIAG: no C rows staged" : isog_diag == 5 ? " DIAG: no shells staged, no AO values" : "");
     return buf;
@@ -1242,6 +1266,20 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     // the D form's octree bounds the matrix's density, within the factors' slack of what the factored
     // evaluation gives (the slack is in the bound): either evaluation goes with it
     const bool odform = set->num_dmat > 0 && (isog_dform_octree || set->factorless);
+    // APPROXIMATE: seed and flood (GTO_ISO_FLOOD), in the point-list form of the corners only: every field
+    // (2), or sets of densities whose maxima are at the atoms (md_gto_iso_field_set_maxima_at_atoms) and
+    // whose every weight is >= 0 (1): each piece of their surfaces holds an atom, whose brick is a seed
+    const bool clist = (isog_corners_v2 && isog_corners_list) || cdform;    // the D form's corners are in list form only
+    bool flood = clist && isog_flood == 2;
+    if (clist && isog_flood == 1) {
+        flood = true;
+        for (uint32_t k = 0; k < F && flood; ++k) {
+            const md_gto_iso_field_t* fk = set->src[k];
+            const iso_density_t* dk = fk ? fk->f.dens : NULL;
+            if (!dk || !fk->maxima_at_atoms) { flood = false; break; }
+            for (int t = 0; t < dk->num_terms && flood; ++t) flood = dk->terms[t].a == dk->terms[t].b && dk->terms[t].w >= 0.0;
+        }
+    }
     a.fields = isog_temp(s, sizeof(fields));
     md_gpu_upload(s, a.fields, fields, sizeof(fields));
     a.counters = isog_temp(s, sizeof(uint32_t) * 8);
@@ -1260,7 +1298,8 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         // EXPERIMENT: GTO_ISO_SKIP_BRICK_TEST=1 keeps every child of the last tested level as a brick
         // (with its parent's sheet bits): the corners decide, which costs less than the bound when most
         // candidates are kept anyway. A superset of the bricks, so no cell is missed.
-        const int Lt = isog_skip_brick_test ? L - 1 : L;
+        // A flood skips it too (unless GTO_ISO_FLOOD_BRICK_TEST): its brick corners reject the empty bricks.
+        const int Lt = (isog_skip_brick_test || (flood && !isog_flood_brick_test)) ? L - 1 : L;
         // the first tested level l0, its nodes every node of the levels above (siblings together, as the
         // kernels append them), with the root's sheet bits
         const int l0 = Lt > 0 ? (isog_octree_start < Lt ? isog_octree_start : Lt) : 0;
@@ -1373,7 +1412,6 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
     a.hash_vals = isog_temp(s, sizeof(uint32_t) * hcap);
     a.corners   = isog_temp(s, sizeof(float) * 125 * ((size_t)nslots + 1));
     a.cell_vert = isog_temp(s, sizeof(uint32_t) * 128 * ((size_t)nslots + 1));
-    const bool clist = (isog_corners_v2 && isog_corners_list) || cdform;    // the D form's corners are in list form only
     a.plist = clist ? isog_temp(s, sizeof(uint32_t) * 125 * ((size_t)nb + 1)) : 0;
     // per brick: counts, then offsets (ordered lists). Allocated either way: llvmpipe may load it in a
     // branch not taken
@@ -1389,17 +1427,9 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
         if (clist) {
             // the points to evaluate, listed brick by brick; then 256 of them per group
             const uint32_t nfn = set->num_fn;
-            // APPROXIMATE: seed and flood (GTO_ISO_FLOOD): pass 0 the bricks' corners, then the seeds, then
-            // round by round the bricks across faces with a sign change; else one pass over every brick
-            bool flood = isog_flood == 2;
-            if (isog_flood == 1) {
-                flood = true;
-                for (uint32_t k = 0; k < F && flood; ++k) {
-                    const iso_density_t* dk = set->src[k] ? set->src[k]->f.dens : NULL;
-                    if (!dk) { flood = false; break; }
-                    for (int t = 0; t < dk->num_terms && flood; ++t) flood = dk->terms[t].a == dk->terms[t].b && dk->terms[t].w >= 0.0;
-                }
-            }
+            // APPROXIMATE: seed and flood (GTO_ISO_FLOOD): pass 0 the bricks' corners, then the seeds (and the
+            // bricks holding an atom), then round by round the bricks across faces with a sign change; else one
+            // pass over every brick
             uint32_t flood_rounds = 0, flood_bricks = 0, points_all = 0;
             for (uint32_t pass = 0; ok; ++pass) {
                 md_gpu_memset(s, a.counters + sizeof(uint32_t) * 5, 0, sizeof(uint32_t));
@@ -1516,6 +1546,10 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
                 if (pass == 0) {
                     MD_GPU_LAUNCH(s, isog_k[ISOG_K_FSEED], md_gpu_grid((nb + 63) / 64, 1, 1), ar);
                     isog_used(ISOG_K_FSEED);
+                    if (isog_flood_atoms) {
+                        MD_GPU_LAUNCH(s, isog_k[ISOG_K_FATOMS], md_gpu_grid((set->num_shells + 63) / 64, 1, 1), ar);
+                        isog_used(ISOG_K_FATOMS);
+                    }
                 } else {
                     MD_GPU_LAUNCH(s, isog_k[ISOG_K_FFACE], isog_groups(nb), ar);
                     isog_used(ISOG_K_FFACE);
@@ -1531,7 +1565,7 @@ bool md_gto_iso_gpu_extract(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, 
                 // the bricks no round reached: no cells (and the host's list says so, for the profile)
                 MD_GPU_LAUNCH(s, isog_k[ISOG_K_FFINISH], md_gpu_grid((nb + 63) / 64, 1, 1), a);
                 isog_used(ISOG_K_FFINISH);
-                isog_read(s, bl, a.bricks, sizeof(md_gpu_uint4) * nb);
+                if (isog_prof || isog_debug) isog_read(s, bl, a.bricks, sizeof(md_gpu_uint4) * nb);   // the profile's and the tests' only
                 isog_mark(s, "flood: finish", flood_bricks, flood_rounds);
                 if (isog_diag) md_gpu_memset(s, a.corners, 0, sizeof(float) * 125 * (size_t)nslots);   // DIAGNOSTIC: no surface
             }

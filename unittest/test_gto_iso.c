@@ -3585,6 +3585,220 @@ UTEST(gto_iso_gpu_lib, taylor_brick_experiment) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// EXPERIMENT (GTO_ISO_TM_MO=1): the same Taylor model for an orbital, psi = sum c_mu phi_mu: the
+// polynomial sum c T exact, the remainder sum |c| E (one number per brick). A brick whose 125 points
+// all lie in one band (above +iso, between, below -iso) has no surface cell of either sheet. Over the
+// bricks the GPU's octree kept (they passed its bound), how many the model would drop besides.
+// GTO_ISO_TM_FILES=a.h5,b.h5 picks the systems, GTO_ISO_TM_ISO the iso value (0.05).
+// ---------------------------------------------------------------------------------------------
+
+UTEST(gto_iso_gpu_lib, taylor_brick_mo_experiment) {
+    if (!getenv("GTO_ISO_TM_MO")) UTEST_SKIP("set GTO_ISO_TM_MO=1 (EXPERIMENT)");
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    char flist[512];
+    snprintf(flist, sizeof(flist), "%s", getenv("GTO_ISO_TM_FILES") ? getenv("GTO_ISO_TM_FILES") : "amide.h5,mol.h5,tq.scf.results.h5");
+    const double h = getenv("GTO_ISO_TM_H") ? atof(getenv("GTO_ISO_TM_H")) : 0.2;
+    const double iso = getenv("GTO_ISO_TM_ISO") ? atof(getenv("GTO_ISO_TM_ISO")) : 0.05;
+    for (char* fname = strtok(flist, ","); fname; fname = strtok(NULL, ",")) {
+        iso_dens_src_t s;
+        if (!iso_dens_src_load(&s, fname)) { printf("  %s: not loaded\n", fname); continue; }
+        for (int which = -1; which >= -2; --which) {
+            iso_dens_prod_t p;
+            md_gto_iso_field_t* field = iso_gl_field(&s, which, &p);
+            ASSERT_TRUE(field != NULL);
+            const size_t lumo = vlx_test_lumo_idx(&s.t, STR_LIT("orbital/alpha/occupation"));
+            const double* cmo = s.C + (which == -1 ? lumo - 1 : lumo) * s.num_ao;
+            // the orbital as a one-term product field: its AO shells and coefficients in the density's
+            // convention (the Taylor coefficients below carry the normalizations)
+            const double one = 1.0;
+            md_gto_iso_field_t* aux = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, cmo, NULL, &one, 1, md_get_heap_allocator());
+            ASSERT_TRUE(aux != NULL);
+            const iso_density_t* d = aux->f.dens;
+            const int nao = d->num_ao;
+            const md_gto_iso_field_t* fl[1] = {field};
+            md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
+            ASSERT_TRUE(set != NULL);
+            md_gto_iso_gpu_desc_t gd = {.cell_size = h, .project_iterations = 8, .relax_iterations = 3};
+            gd.iso[0] = iso;
+            isog_debug_t dbg = {0};
+            isog_debug = &dbg;
+            md_gto_iso_gpu_mesh_t gm;
+            ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &gm));
+            isog_debug = NULL;
+            md_gto_iso_gpu_mesh_free(g.s, &gm);
+
+            const bool hybrid = getenv("GTO_ISO_TM_HYBRID") != NULL;
+            for (int K = 2; K <= 4; ++K) {
+                tm_ctx_t t, tk[5];
+                tm_init(&t, K);
+                for (int k = 1; k <= K; ++k) tm_init(&tk[k], k);
+                const int nm = t.nmi;
+                double* V = (double*)malloc(sizeof(double) * (size_t)nao * 20);
+                double* E = (double*)malloc(sizeof(double) * (size_t)nao);
+                double* Vk = (double*)malloc(sizeof(double) * (size_t)nao * 20);
+                double* Ek = (double*)malloc(sizeof(double) * (size_t)nao);
+                long n_surf = 0, n_empty = 0, drop = 0, bad = 0, outside_enc = 0, reach = 0;
+                long keep_hist[6] = {0};     // undropped empty bricks by max |psi| / iso over their corners
+                double* rr = (double*)malloc(sizeof(double) * (dbg.num_bricks + 1));
+                long nrr = 0;
+                double rsum = 0.0;
+                for (uint32_t b = 0; b < dbg.num_bricks; ++b) {
+                    const uint32_t m = dbg.bricks[4 * b + 3];
+                    if (!(m & 3u)) continue;
+                    const float* cv = dbg.corners + 125 * (size_t)dbg.slots[b];
+                    int band0 = 2, surf = 0;
+                    for (int k = 0; k < 125; ++k) {
+                        const int bd = cv[k] > iso ? 1 : cv[k] < -iso ? -1 : 0;
+                        if (band0 == 2) band0 = bd; else if (bd != band0) surf = 1;
+                    }
+                    const double c[3] = {dbg.origin[0] + (dbg.bricks[4 * b] * 4.0 + 2.0) * h, dbg.origin[1] + (dbg.bricks[4 * b + 1] * 4.0 + 2.0) * h, dbg.origin[2] + (dbg.bricks[4 * b + 2] * 4.0 + 2.0) * h};
+                    const double hb = 2.0 * h;
+                    double T[20] = {0}, R = 0.0;
+                    for (int sh = 0; sh < d->num_ao_shells; ++sh) {
+                        const iso_ao_shell_t* a = &d->ao_shells[sh];
+                        double dx = 0.0;     // the box's distance from the shell
+                        for (int k = 0; k < 3; ++k) { const double e = fabs(c[k] - a->c[k]) - hb; if (e > 0.0) dx += e * e; }
+                        if (dx > a->r2_cut) continue;
+                        tm_shell(&t, a, c, hb, K, V + (size_t)a->ao * 20, E + a->ao);
+                        if (hybrid) {
+                            // per AO the order whose remainder is smallest (lower orders: the higher
+                            // coefficients dropped, their terms inside the remainder)
+                            for (int k = 1; k < K; ++k) {
+                                tm_shell(&tk[k], a, c, hb, k, Vk + (size_t)a->ao * 20, Ek + a->ao);
+                                for (int ci = 0; ci < a->ncart; ++ci) {
+                                    const int i = a->ao + ci;
+                                    if (Ek[i] < E[i]) {
+                                        E[i] = Ek[i];
+                                        for (int q = 0; q < nm; ++q) V[(size_t)i * 20 + q] = q < tk[k].nmi ? Vk[(size_t)i * 20 + q] : 0.0;
+                                    }
+                                }
+                            }
+                        }
+                        for (int ci = 0; ci < a->ncart; ++ci) {
+                            const double cc = d->C[(size_t)(a->ao + ci) * d->num_fn];
+                            if (cc == 0.0) continue;
+                            reach++;
+                            for (int q = 0; q < nm; ++q) T[q] += cc * V[(size_t)(a->ao + ci) * 20 + q];
+                            R += fabs(cc) * E[a->ao + ci];
+                        }
+                    }
+                    rsum += R / iso;
+                    bool dr = true;
+                    int band = 2;
+                    for (int k = 0; k < 125; ++k) {
+                        const double dd[3] = {((k % 5) - 2) * h, (((k / 5) % 5) - 2) * h, ((k / 25) - 2) * h};
+                        double P = 0.0;
+                        for (int q = 0; q < nm; ++q) P += T[q] * pow(dd[0], t.mi[q][0]) * pow(dd[1], t.mi[q][1]) * pow(dd[2], t.mi[q][2]) / t.mi_fact[q];
+                        if (cv[k] < P - R - 1e-5 * fabs(P) - 1e-9 || cv[k] > P + R + 1e-5 * fabs(P) + 1e-9) outside_enc++;
+                        const int bd = P - R > iso ? 1 : (P + R < iso && P - R > -iso) ? 0 : P + R < -iso ? -1 : 2;
+                        if (bd == 2 || (band != 2 && bd != band)) dr = false;
+                        band = bd;
+                    }
+                    if (surf) { n_surf++; if (dr) bad++; }
+                    else {
+                        n_empty++;
+                        if (dr) drop++;
+                        else {
+                            double mx = 0.0;
+                            for (int k = 0; k < 125; ++k) mx = fmax(mx, fabs(cv[k]));
+                            const double r = mx / iso;
+                            keep_hist[r < 0.25 ? 0 : r < 0.5 ? 1 : r < 0.75 ? 2 : r < 1.0 ? 3 : r < 2.0 ? 4 : 5]++;
+                        }
+                    }
+                    if (!surf) rr[nrr++] = R / iso;
+                }
+                // median R/iso over the empty bricks
+                for (long i = 1; i < nrr; ++i) { double v = rr[i]; long j = i; while (j > 0 && rr[j - 1] > v) { rr[j] = rr[j - 1]; --j; } rr[j] = v; }
+                const long nb = n_surf + n_empty;
+                printf("  %-20s %s h %.2f iso %.3f K %d%s: bricks %ld, surface %ld, empty %ld, dropped %ld (%.0f%% of empty) | surface dropped %ld (must be 0), outside the enclosure %ld | AOs/brick %.0f, R/iso median %.3f\n",
+                    fname, which == -1 ? "HOMO" : "LUMO", h, iso, K, hybrid ? " hybrid" : "", nb, n_surf, n_empty, drop, n_empty ? 100.0 * drop / n_empty : 0.0, bad, outside_enc, nb ? (double)reach / nb : 0.0, nrr ? rr[nrr / 2] : 0.0);
+                printf("      kept empty bricks by max|psi|/iso: <0.25 %ld, <0.5 %ld, <0.75 %ld, <1 %ld, <2 %ld, >=2 %ld\n", keep_hist[0], keep_hist[1], keep_hist[2], keep_hist[3], keep_hist[4], keep_hist[5]);
+                (void)rsum;
+                free(V); free(E); free(Vk); free(Ek); free(rr);
+            }
+            md_gto_iso_gpu_set_destroy(g.s, set);
+            free(dbg.bricks); free(dbg.slots); free(dbg.corners);
+            md_gto_iso_field_destroy(aux);
+            md_gto_iso_field_destroy(field);
+            iso_dens_prod_free(&p);
+        }
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
+// ---------------------------------------------------------------------------------------------
+// TEST: the flood against the exact corners, over iso values up to where the
+// pieces are atoms' small blobs: the meshes' vertex and triangle counts. The default (flood 1: SCF
+// densities, marked as having their maxima at the atoms) must match exactly; the flood forced on the
+// attachment and detachment densities (flood 2), and without the atoms' bricks as seeds, for what they
+// miss. Amide by default; GTO_ISO_FLOOD_SWEEP_FILES=h2o.h5,amide.h5,mol.h5 for more systems.
+// ---------------------------------------------------------------------------------------------
+
+UTEST(gto_iso_gpu_lib, flood_sweep) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    md_gto_iso_gpu_switches_t sw0;
+    md_gto_iso_gpu_switches(&sw0);
+    char flist[512];
+    snprintf(flist, sizeof(flist), "%s", getenv("GTO_ISO_FLOOD_SWEEP_FILES") ? getenv("GTO_ISO_FLOOD_SWEEP_FILES") : "amide.h5");
+    const double isos[] = {0.0025, 0.02, 0.1, 0.3, 1.0, 3.0};
+    const int kinds[] = {ISO_D_SCF, ISO_D_ATTACH, ISO_D_DETACH};
+    const char* kname[] = {"scf", "attach", "detach"};
+    long worse_atoms = 0, worse_forced = 0, worse_plain = 0;
+    for (char* fname = strtok(flist, ","); fname; fname = strtok(NULL, ",")) {
+        iso_dens_src_t s;
+        if (!iso_dens_src_load(&s, fname)) { printf("  %s: not loaded\n", fname); continue; }
+        for (int ki = 0; ki < 3; ++ki) {
+            if (kinds[ki] != ISO_D_SCF && s.num_nto == 0) continue;
+            iso_dens_prod_t p;
+            md_gto_iso_field_t* field = iso_gl_field(&s, kinds[ki], &p);
+            ASSERT_TRUE(field != NULL);
+            md_gto_iso_field_set_maxima_at_atoms(field, kinds[ki] == ISO_D_SCF);
+            const md_gto_iso_field_t* fl[1] = {field};
+            md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
+            ASSERT_TRUE(set != NULL);
+            for (int ii = 0; ii < (int)(sizeof(isos) / sizeof(isos[0])); ++ii) {
+                uint32_t nv[4] = {0}, nt[4] = {0};
+                for (int mode = 0; mode < 4; ++mode) {      // exact, the default, flood forced, forced without the atoms
+                    md_gto_iso_gpu_switches_t sw = sw0;
+                    sw.flood = mode == 0 ? 0 : mode == 1 ? 1 : 2;
+                    md_gto_iso_gpu_switches_set(&sw);
+                    isog_flood_atoms = mode == 3 ? 0 : 1;
+                    md_gto_iso_gpu_desc_t gd = {.cell_size = 0.2, .project_iterations = 8, .relax_iterations = 3};
+                    gd.iso[0] = isos[ii];
+                    md_gto_iso_gpu_mesh_t gm;
+                    ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &gm));
+                    nv[mode] = gm.vertex_count;
+                    nt[mode] = gm.index_count / 3;
+                    md_gto_iso_gpu_mesh_free(g.s, &gm);
+                }
+                isog_flood_atoms = 1;
+                const bool ok1 = nv[1] == nv[0] && nt[1] == nt[0], ok2 = nv[2] == nv[0] && nt[2] == nt[0], ok3 = nv[3] == nv[0] && nt[3] == nt[0];
+                worse_atoms += !ok1;
+                worse_forced += !ok2;
+                worse_plain += !ok3;
+                printf("  %-14s %-6s iso %-7g exact %6u v %6u t | default %6u v%s | forced %6u v%s | forced, no atom seeds %6u v%s\n", fname, kname[ki], isos[ii],
+                       nv[0], nt[0], nv[1], ok1 ? "" : " DIFFERS", nv[2], ok2 ? "" : " MISSED", nv[3], ok3 ? "" : " MISSED");
+            }
+            md_gto_iso_gpu_set_destroy(g.s, set);
+            md_gto_iso_field_destroy(field);
+            iso_dens_prod_free(&p);
+        }
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_switches_set(&sw0);
+    printf("  cases where the default differs from the exact mesh: %ld; the flood forced: %ld, and without the atom seeds: %ld\n", worse_atoms, worse_forced, worse_plain);
+    EXPECT_EQ(worse_atoms, 0);
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
+// ---------------------------------------------------------------------------------------------
 // EXPERIMENT (GTO_ISO_FLOOD=1): corners from seeds and a flood instead of every candidate brick. The
 // candidates (bricks the octree keeps) are sampled on a coarse lattice (stride 4: the brick corners;
 // stride 2: 27 points a brick); a candidate whose samples straddle the iso value is a seed and is

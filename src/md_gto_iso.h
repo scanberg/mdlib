@@ -88,6 +88,13 @@ md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis,
 
 void md_gto_iso_field_destroy(md_gto_iso_field_t* field);
 
+// A hint: every local maximum of the field is at an atom, as for an SCF electron density (total, or of
+// one spin). The GPU extraction's flood (md_gto_iso_gpu_switches_t.flood = 1, the default) relies on it:
+// it evaluates a density's lattice only around the surface, finding each piece from a seed, and a piece
+// with an atom in it always has one. Attachment, detachment and other densities whose maxima lie
+// between the atoms leave it off (their small pieces could be missed), and are extracted exactly.
+void md_gto_iso_field_set_maxima_at_atoms(md_gto_iso_field_t* field, bool maxima_at_atoms);
+
 enum {
     MD_GTO_ISO_FIELD_ORBITAL = 0,
     MD_GTO_ISO_FIELD_DENSITY = 1,
@@ -354,10 +361,11 @@ typedef struct md_gto_iso_gpu_switches_t {
                             // 4 no rows of C staged, 5 no shells staged and no AO values (no surface)
     bool gemm_wide;         // canonical sets of more than 64 functions: the GEMM in passes of up to 256 columns
     bool octree8;           // the D form's octree below the root: a node's 8 children in one group
-    int  wide_kernel;       // the wide GEMM's kernels: 0 r16, 1 shells listed once, 2 and rows of C a chunk ahead
+    int  wide_kernel;       // the wide GEMM's kernels: 0 r16, 1 shells listed once, 2 and rows of C a chunk ahead, 3 auto (0 to 192 columns, 2 at 256)
     int  octree_start;      // the first level the octree tests (0..3), the levels above keeping every node
     bool dform_corners;     // sets of densities: the corners in the D form, the vertices as without it
     int  flood;             // APPROXIMATE corners from seeds and a flood: 0 off, 1 densities with weights >= 0, 2 every field
+    bool flood_brick_test;  // the octree's last level bounded with the flood as well (else the brick corners decide)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
