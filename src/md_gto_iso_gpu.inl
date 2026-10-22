@@ -315,6 +315,54 @@ static void isog_set_eps(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int 
 static inline float isog_f32_dn(double x) { float f = (float)x; return (double)f > x ? nextafterf(f, -INFINITY) : f; }
 static inline float isog_f32_up(double x) { float f = (float)x; return (double)f < x ? nextafterf(f,  INFINITY) : f; }
 
+// A density's matrix from its terms, D = sum_t w_t sym(a_t b_t^T), into Dd (num_ao^2): every term as
+// squares (a square as it is, a product as (w/4) ((a + b)^2 - (a - b)^2)) through the blocked product
+// md_gto_density_from_orbitals. An SCF density from its orbitals is num_occ squares, which a plain loop
+// over the terms would take num_occ passes over the whole matrix for. False when out of memory.
+static bool isog_dmat_from_terms(double* Dd, const iso_density_t* d) {
+    const size_t na = (size_t)d->num_ao, nf = (size_t)d->num_fn;
+    bool squares = true;
+    for (int t = 0; t < d->num_terms && squares; ++t) squares = d->terms[t].a == d->terms[t].b;
+    if (squares) {
+        // per function the sum of its terms' weights: the functions are the columns of d->C
+        double* w = (double*)calloc(nf + 1, sizeof(double));
+        if (!w) return false;
+        for (int t = 0; t < d->num_terms; ++t) w[d->terms[t].a] += d->terms[t].w;
+        const bool ok = md_gto_density_from_orbitals(Dd, d->C, 1, nf, w, nf, na);
+        free(w);
+        return ok;
+    }
+    size_t nr = 0;
+    for (int t = 0; t < d->num_terms; ++t) nr += d->terms[t].a == d->terms[t].b ? 1 : 2;
+    double* rows = (double*)malloc(sizeof(double) * (nr * na + 1));
+    double* w = (double*)malloc(sizeof(double) * (nr + 1));
+    bool ok = rows && w;
+    if (ok) {
+        size_t r = 0;
+        for (int t = 0; t < d->num_terms; ++t) {
+            const iso_term_t* tm = &d->terms[t];
+            double* p = rows + r * na;
+            if (tm->a == tm->b) {
+                for (size_t i = 0; i < na; ++i) p[i] = d->C[i * nf + (size_t)tm->a];
+                w[r++] = tm->w;
+            } else {
+                double* q = p + na;
+                for (size_t i = 0; i < na; ++i) {
+                    const double ca = d->C[i * nf + (size_t)tm->a], cb = d->C[i * nf + (size_t)tm->b];
+                    p[i] = ca + cb;
+                    q[i] = ca - cb;
+                }
+                w[r++] = 0.25 * tm->w;
+                w[r++] = -0.25 * tm->w;
+            }
+        }
+        ok = md_gto_density_from_orbitals(Dd, rows, na, 1, w, nr, na);
+    }
+    free(w);
+    free(rows);
+    return ok;
+}
+
 md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                                                 const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc) {
     if (!stream || !basis || !atom_xyz || !fields || !alloc || num_fields == 0 || num_fields > MD_GTO_ISO_GPU_MAX_FIELDS) {
@@ -488,24 +536,8 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
             if (fk->dmat && fk->dmat_dim == nao) {
                 // the matrix the field was made from
                 for (size_t e = 0; e < (size_t)nao * nao; ++e) Dd[e] = fk->dmat[e];
-            } else {
-                // the terms' symmetrized products
-                memset(Dd, 0, sizeof(double) * (size_t)nao * nao);
-                for (int t = 0; t < d->num_terms; ++t) {
-                    const iso_term_t* tm = &d->terms[t];
-                    const double w = tm->a == tm->b ? tm->w : 0.5 * tm->w;
-                    for (uint32_t i = 0; i < nao; ++i) {
-                        const double ca = d->C[(size_t)i * d->num_fn + tm->a], cb = d->C[(size_t)i * d->num_fn + tm->b];
-                        if (ca == 0.0 && cb == 0.0) continue;
-                        double* row = Dd + (size_t)i * nao;
-                        if (tm->a == tm->b) {
-                            const double wa = w * ca;
-                            for (uint32_t j = 0; j < nao; ++j) row[j] += wa * d->C[(size_t)j * d->num_fn + tm->a];
-                        } else {
-                            for (uint32_t j = 0; j < nao; ++j) row[j] += w * (ca * d->C[(size_t)j * d->num_fn + tm->b] + cb * d->C[(size_t)j * d->num_fn + tm->a]);
-                        }
-                    }
-                }
+            } else if (!isog_dmat_from_terms(Dd, d)) {
+                break;      // out of memory: u stays short of num_dmat
             }
             // with the AO normalizations (the kernels' AO values leave them out); the octree's tails:
             // per AO the sum of |D| over the other AOs (each below eps over a box that drops it), and
@@ -531,7 +563,7 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
             fdm[k] = u++;
         }
         free(Dd);
-        if (!Dm || !Rs) dform = false;
+        if (!Dm || !Rs || u < num_dmat) dform = false;
     }
     if (!dform) num_dmat = 0;
     set->factorless = factorless;
@@ -1672,7 +1704,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 j->kept = (md_gpu_mem_t){0};
             }
             isog_mark(s, "readback: counts, buckets", nv, j->ctr[1]);
-            if (j->ctr[7]) { isog_job_fail(j, "md_gto_iso_gpu_extract: more than 2048 shells (or 8192 AOs) reach a group of points (the D form)"); break; }
+            if (j->ctr[7]) { isog_job_fail(j, "md_gto_iso_gpu_extract: more than 2048 shells (or 8192 AOs) reach a single point (the D form)"); break; }
             if (j->ctr[3]) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow"); break; }
             j->nq = j->ctr[1] < j->cap_q ? j->ctr[1] : j->cap_q;
             out->open_edges = j->ctr[2];
