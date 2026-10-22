@@ -223,6 +223,15 @@ size_t md_gto_sph_to_cart_vector(double* out_cart, const double* in_sph, const m
 // Returns the dimension written, 0 on failure.
 size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const md_gto_basis_t* basis);
 
+// The density matrix of weighted orbitals, D_ij = sum_k w_k C_ki C_kj: an SCF density with the
+// occupations as weights, or any sum of squares of orbitals. D: num_ao x num_ao, row major, exactly
+// symmetric. Element (orbital k, AO i) of C is C[k * mo_stride + i * ao_stride]: mo_stride num_ao and
+// ao_stride 1 for orbitals as rows, the reverse for orbitals as columns. Orbitals of weight 0 are
+// skipped. Blocked and vectorized, over all cores when it is large: about num_mo num_ao^2 / 2
+// multiply-adds. Returns false only when out of memory.
+bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, size_t ao_stride,
+                                  const double* weight, size_t num_mo, size_t num_ao);
+
 // Returns the upper bound on the number of Cartesian GTOs produced when
 // fully expanding all shells in the basis (before any cutoff filtering).
 // Use this to pre-allocate the output buffer for md_gto_expand_with_mo().

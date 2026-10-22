@@ -10,6 +10,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
+#include <core/md_intrinsics.h>
 #include <md_system.h>
 
 #include <stdbool.h>
@@ -378,6 +379,176 @@ size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const m
 
     md_temp_end(temp);
     return n_cart;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The density matrix of weighted orbitals, D = C^T W C
+// ---------------------------------------------------------------------------------------------
+// D in tiles of GTO_DM_NB x GTO_DM_NB, the upper triangle of them computed and mirrored on writing,
+// each tile over panels of GTO_DM_KC orbitals: per panel the tile's rows (times the weights) and
+// columns are packed into micro panels, and GTO_DM_MR x GTO_DM_NR blocks are summed in registers.
+// The threads take tiles from a shared counter.
+#define GTO_DM_MR 6
+#define GTO_DM_NR 8
+#define GTO_DM_NB 96            // a multiple of MR and NR
+#define GTO_DM_KC 256
+#define GTO_DM_MAX_THREADS 64
+
+typedef struct gto_dm_ctx_t {
+    double*         D;
+    const double*   C;
+    size_t          mo_stride, ao_stride;
+    const uint32_t* mo;         // the orbitals of nonzero weight
+    const double*   w;          // and their weights
+    size_t          num_mo, num_ao;
+    const uint32_t* tiles;      // (I, J) per tile, I <= J
+    uint64_t        num_tiles;
+    volatile uint64_t next;
+    volatile uint64_t failed;
+} gto_dm_ctx_t;
+
+// Rows r0 .. r0 + nr - 1 (AOs) of panel k0 .. k0 + kc - 1 (orbitals), R at a time: P[(b kc + k) R + m]
+// is AO r0 + b R + m of orbital k (times its weight), zero past nr.
+static void gto_dm_pack(double* P, const gto_dm_ctx_t* c, size_t k0, size_t kc, size_t r0, size_t nr, size_t R, bool weighted) {
+    const size_t nb = (nr + R - 1) / R;
+    for (size_t b = 0; b < nb; ++b) {
+        double* p = P + b * kc * R;
+        const size_t m1 = MIN(R, nr - b * R);
+        for (size_t k = 0; k < kc; ++k) {
+            const double  s   = weighted ? c->w[k0 + k] : 1.0;
+            const double* src = c->C + (size_t)c->mo[k0 + k] * c->mo_stride + (r0 + b * R) * c->ao_stride;
+            size_t m = 0;
+            for (; m < m1; ++m) p[k * R + m] = s * src[m * c->ao_stride];
+            for (; m < R; ++m)  p[k * R + m] = 0.0;
+        }
+    }
+}
+
+// T[m][q] += sum_k a[k][m] b[k][q] for a 6 x 8 block (rows ldt apart)
+static void gto_dm_micro(size_t kc, const double* a, const double* b, double* t, size_t ldt) {
+    md_256d c00 = md_mm256_setzero_pd(), c01 = md_mm256_setzero_pd();
+    md_256d c10 = md_mm256_setzero_pd(), c11 = md_mm256_setzero_pd();
+    md_256d c20 = md_mm256_setzero_pd(), c21 = md_mm256_setzero_pd();
+    md_256d c30 = md_mm256_setzero_pd(), c31 = md_mm256_setzero_pd();
+    md_256d c40 = md_mm256_setzero_pd(), c41 = md_mm256_setzero_pd();
+    md_256d c50 = md_mm256_setzero_pd(), c51 = md_mm256_setzero_pd();
+    for (size_t k = 0; k < kc; ++k) {
+        const md_256d b0 = md_mm256_loadu_pd(b);
+        const md_256d b1 = md_mm256_loadu_pd(b + 4);
+        md_256d x;
+        x = md_mm256_set1_pd(a[0]); c00 = md_mm256_fmadd_pd(x, b0, c00); c01 = md_mm256_fmadd_pd(x, b1, c01);
+        x = md_mm256_set1_pd(a[1]); c10 = md_mm256_fmadd_pd(x, b0, c10); c11 = md_mm256_fmadd_pd(x, b1, c11);
+        x = md_mm256_set1_pd(a[2]); c20 = md_mm256_fmadd_pd(x, b0, c20); c21 = md_mm256_fmadd_pd(x, b1, c21);
+        x = md_mm256_set1_pd(a[3]); c30 = md_mm256_fmadd_pd(x, b0, c30); c31 = md_mm256_fmadd_pd(x, b1, c31);
+        x = md_mm256_set1_pd(a[4]); c40 = md_mm256_fmadd_pd(x, b0, c40); c41 = md_mm256_fmadd_pd(x, b1, c41);
+        x = md_mm256_set1_pd(a[5]); c50 = md_mm256_fmadd_pd(x, b0, c50); c51 = md_mm256_fmadd_pd(x, b1, c51);
+        a += GTO_DM_MR;
+        b += GTO_DM_NR;
+    }
+#define GTO_DM_ADD(row, lo, hi) \
+    md_mm256_storeu_pd(t + (row) * ldt,     md_mm256_add_pd(md_mm256_loadu_pd(t + (row) * ldt),     lo)); \
+    md_mm256_storeu_pd(t + (row) * ldt + 4, md_mm256_add_pd(md_mm256_loadu_pd(t + (row) * ldt + 4), hi))
+    GTO_DM_ADD(0, c00, c01);
+    GTO_DM_ADD(1, c10, c11);
+    GTO_DM_ADD(2, c20, c21);
+    GTO_DM_ADD(3, c30, c31);
+    GTO_DM_ADD(4, c40, c41);
+    GTO_DM_ADD(5, c50, c51);
+#undef GTO_DM_ADD
+}
+
+static void gto_dm_work(void* user) {
+    gto_dm_ctx_t* c = (gto_dm_ctx_t*)user;
+    const size_t NB = GTO_DM_NB, KC = GTO_DM_KC, n = c->num_ao;
+    double* A = (double*)malloc(sizeof(double) * KC * NB);
+    double* B = (double*)malloc(sizeof(double) * KC * NB);
+    double* T = (double*)malloc(sizeof(double) * NB * NB);
+    if (!A || !B || !T) {
+        md_atomic_fetch_add64(&c->failed, 1);
+    } else for (;;) {
+        const uint64_t t = md_atomic_fetch_add64(&c->next, 1);
+        if (t >= c->num_tiles) break;
+        const size_t i0 = (size_t)c->tiles[2 * t] * NB, j0 = (size_t)c->tiles[2 * t + 1] * NB;
+        const size_t ni = MIN(NB, n - i0), nj = MIN(NB, n - j0);
+        MEMSET(T, 0, sizeof(double) * NB * NB);
+        for (size_t k0 = 0; k0 < c->num_mo; k0 += KC) {
+            const size_t kc = MIN(KC, c->num_mo - k0);
+            gto_dm_pack(A, c, k0, kc, i0, ni, GTO_DM_MR, true);
+            gto_dm_pack(B, c, k0, kc, j0, nj, GTO_DM_NR, false);
+            for (size_t ib = 0; ib * GTO_DM_MR < ni; ++ib) {
+                for (size_t jb = 0; jb * GTO_DM_NR < nj; ++jb) {
+                    gto_dm_micro(kc, A + ib * kc * GTO_DM_MR, B + jb * kc * GTO_DM_NR, T + ib * GTO_DM_MR * NB + jb * GTO_DM_NR, NB);
+                }
+            }
+        }
+        // the upper triangle, mirrored (a diagonal tile's lower half is not taken from T, so that D
+        // is exactly symmetric)
+        for (size_t a = 0; a < ni; ++a) {
+            for (size_t b = (i0 == j0 ? a : 0); b < nj; ++b) {
+                const double v = T[a * NB + b];
+                c->D[(i0 + a) * n + j0 + b] = v;
+                c->D[(j0 + b) * n + i0 + a] = v;
+            }
+        }
+    }
+    free(T);
+    free(B);
+    free(A);
+}
+
+bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, size_t ao_stride, const double* weight, size_t num_mo, size_t num_ao) {
+    if (!D || !C || !weight || num_ao == 0) return false;
+    uint32_t* mo = (uint32_t*)malloc(sizeof(uint32_t) * (num_mo + 1));
+    double*   w  = (double*)malloc(sizeof(double) * (num_mo + 1));
+    const size_t nt = (num_ao + GTO_DM_NB - 1) / GTO_DM_NB;
+    const uint64_t num_tiles = (uint64_t)nt * (nt + 1) / 2;
+    uint32_t* tiles = (uint32_t*)malloc(sizeof(uint32_t) * 2 * num_tiles);
+    if (!mo || !w || !tiles) {
+        free(tiles); free(w); free(mo);
+        MD_LOG_ERROR("md_gto_density_from_orbitals: out of memory");
+        return false;
+    }
+    size_t nk = 0;
+    for (size_t k = 0; k < num_mo; ++k) {
+        if (weight[k] == 0.0) continue;
+        mo[nk] = (uint32_t)k;
+        w[nk++] = weight[k];
+    }
+    uint64_t t = 0;
+    for (size_t J = 0; J < nt; ++J) {
+        for (size_t I = 0; I <= J; ++I) {
+            tiles[2 * t] = (uint32_t)I;
+            tiles[2 * t + 1] = (uint32_t)J;
+            ++t;
+        }
+    }
+
+    bool ok = true;
+    if (nk == 0) {
+        MEMSET(D, 0, sizeof(double) * num_ao * num_ao);
+    } else {
+        gto_dm_ctx_t ctx = {
+            .D = D, .C = C, .mo_stride = mo_stride, .ao_stride = ao_stride, .mo = mo, .w = w,
+            .num_mo = nk, .num_ao = num_ao, .tiles = tiles, .num_tiles = num_tiles,
+        };
+        // one thread per core, the calling thread one of them; small products on the calling thread alone
+        int num_threads = 1;
+        md_os_sys_info_t info;
+        if ((double)nk * (double)num_ao * (double)num_ao > 4.0e8 && md_os_sys_info_query(&info)) {
+            num_threads = info.num_physical_cores > 0 ? info.num_physical_cores : info.num_virtual_cores;
+        }
+        num_threads = (int)CLAMP((uint64_t)num_threads, (uint64_t)1, MIN((uint64_t)GTO_DM_MAX_THREADS, num_tiles));
+        md_thread_t* threads[GTO_DM_MAX_THREADS] = {0};
+        for (int i = 1; i < num_threads; ++i) threads[i] = md_thread_create(gto_dm_work, &ctx);
+        gto_dm_work(&ctx);
+        for (int i = 1; i < num_threads; ++i) if (threads[i]) md_thread_join(threads[i]);
+        ok = md_atomic_load64(&ctx.failed) == 0 || md_atomic_load64(&ctx.next) >= num_tiles;
+        if (!ok) MD_LOG_ERROR("md_gto_density_from_orbitals: out of memory");
+    }
+    free(tiles);
+    free(w);
+    free(mo);
+    return ok;
 }
 
 // Count the number of CGTOs and PGTOs that will result from expanding a basis.

@@ -229,6 +229,55 @@ UTEST(gto, sph_to_cart_matrix_matches_dense) {
     md_temp_end(temp);
 }
 
+// md_gto_density_from_orbitals against the definition, D_ij = sum_k w_k C_ki C_kj: both layouts of C,
+// zero and negative weights, dimensions that are not multiples of the tiles, and one large enough
+// to run on several threads.
+UTEST(gto, density_from_orbitals_matches_definition) {
+    const size_t cases[][2] = { {1, 1}, {7, 5}, {37, 203}, {300, 97}, {2100, 500} };   // {orbitals, AOs}
+    uint64_t seed = 0x9E3779B97F4A7C15ull;
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c) {
+        const size_t nm = cases[c][0], na = cases[c][1];
+        double* C   = (double*)malloc(sizeof(double) * nm * na);
+        double* Ct  = (double*)malloc(sizeof(double) * nm * na);
+        double* w   = (double*)malloc(sizeof(double) * nm);
+        double* D   = (double*)malloc(sizeof(double) * na * na);
+        double* ref = (double*)calloc(na * na, sizeof(double));
+        ASSERT_TRUE(C && Ct && w && D && ref);
+        for (size_t i = 0; i < nm * na; ++i) {
+            seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+            C[i] = ((double)(seed >> 11) * (1.0 / 9007199254740992.0)) * 2.0 - 1.0;
+        }
+        for (size_t k = 0; k < nm; ++k) {
+            w[k] = (k % 5 == 3) ? 0.0 : (k % 7 == 2) ? -0.5 : 1.0 + 0.25 * (double)(k % 3);
+            for (size_t i = 0; i < na; ++i) Ct[i * nm + k] = C[k * na + i];
+        }
+        for (size_t k = 0; k < nm; ++k) {
+            for (size_t i = 0; i < na; ++i) {
+                const double wi = w[k] * C[k * na + i];
+                for (size_t j = 0; j < na; ++j) ref[i * na + j] += wi * C[k * na + j];
+            }
+        }
+        for (int layout = 0; layout < 2; ++layout) {
+            for (size_t i = 0; i < na * na; ++i) D[i] = NAN;
+            const bool ok = layout == 0 ? md_gto_density_from_orbitals(D, C, na, 1, w, nm, na)
+                                        : md_gto_density_from_orbitals(D, Ct, 1, nm, w, nm, na);
+            ASSERT_TRUE(ok);
+            double err = 0.0, asym = 0.0, mag = 0.0;
+            for (size_t i = 0; i < na; ++i) {
+                for (size_t j = 0; j < na; ++j) {
+                    const double d = D[i * na + j];
+                    err  = (d == d) ? MAX(err, fabs(d - ref[i * na + j])) : INFINITY;
+                    asym = MAX(asym, fabs(d - D[j * na + i]));
+                    mag  = MAX(mag, fabs(ref[i * na + j]));
+                }
+            }
+            EXPECT_LE(err, 1.0e-13 * (double)nm * MAX(mag, 1.0));
+            EXPECT_EQ(0.0, asym);   // exactly symmetric
+        }
+        free(ref); free(D); free(w); free(Ct); free(C);
+    }
+}
+
 UTEST(gto, evaluate_grid) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_arena = md_temp_allocator(temp);
