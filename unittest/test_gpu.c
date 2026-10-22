@@ -545,6 +545,49 @@ UTEST(gpu, upload_larger_than_one_arena_page) {
     gpu_close(&f);
 }
 
+/* Uploads past the size that gets a staging page of its own (16 MB on Vulkan): through md_gpu_upload
+   and through upload_begin/end, several in one submission and then again once those retired, so the
+   pages that were freed and the ones made after them are both read back. */
+UTEST(gpu, large_uploads_stage_through_their_own_pages) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 5 * 1024 * 1024 + 123 };   /* 20 MB of uint32 */
+    const size_t bytes = N * sizeof(uint32_t);
+    uint32_t* src  = (uint32_t*)malloc(bytes);
+    uint32_t* host = (uint32_t*)malloc(bytes);
+    ASSERT_TRUE(src && host);
+    md_gpu_addr_t d[3];
+    for (int i = 0; i < 3; ++i) {
+        d[i] = gpu_alloc(&f, f.compute, bytes);
+        ASSERT_TRUE(d[i] != 0);
+    }
+    for (int round = 0; round < 2; ++round) {
+        for (int i = 0; i < 2; ++i) {
+            for (int k = 0; k < N; ++k) src[k] = (uint32_t)k * 2654435761u + (uint32_t)(round * 7 + i);
+            ASSERT_TRUE(md_gpu_upload(f.compute, d[i], src, bytes));
+        }
+        uint32_t* p = (uint32_t*)md_gpu_upload_begin(f.compute, d[2], bytes);
+        ASSERT_TRUE(p != NULL);
+        for (int k = 0; k < N; ++k) p[k] = (uint32_t)k ^ (uint32_t)(0x5A5A5A5Au + round);
+        ASSERT_TRUE(md_gpu_upload_end(f.compute));
+        md_gpu_stream_sync(f.compute);
+        for (int i = 0; i < 3; ++i) {
+            ASSERT_TRUE(gpu_read(&f, f.compute, host, d[i], bytes));
+            bool same = true;
+            for (int k = 0; k < N && same; ++k) {
+                const uint32_t e = i < 2 ? (uint32_t)k * 2654435761u + (uint32_t)(round * 7 + i) : (uint32_t)k ^ (uint32_t)(0x5A5A5A5Au + round);
+                same = host[k] == e;
+            }
+            EXPECT_TRUE(same);
+        }
+    }
+    for (int i = 0; i < 3; ++i) md_gpu_free(f.compute, d[i]);
+    free(host);
+    free(src);
+    gpu_close(&f);
+}
+
 /* =========================================================================
    Pools
    ========================================================================= */

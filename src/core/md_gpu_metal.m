@@ -105,6 +105,10 @@ destruction.
    ========================================================================= */
 
 #define MD_MTL_ARENA_PAGE_SIZE (256u * 1024u)
+/* A transient allocation larger than this (an upload's staging, mostly) gets a page of its own, of its
+   exact size, freed once the submission that reads it completes, rather than a shared page doubled up
+   to it and kept for the stream's lifetime (as md_gpu_vulkan.c). */
+#define MD_MTL_ARENA_DEDICATED (16ull * 1024u * 1024u)
 #define MD_MTL_ARG_ALIGN          64u
 #define MD_MTL_HEAP_ALIGN        256u
 #define MD_MTL_HEAP_CHUNK_MIN    (4ull << 20)
@@ -283,6 +287,7 @@ typedef struct md_mtl_page_t {
     uint64_t capacity;
     uint64_t cursor;
     uint64_t retire_value;
+    bool     dedicated;    /* one large allocation's own page: destroyed once retired, never refilled */
 } md_mtl_page_t;
 
 typedef struct md_mtl_arena_t {
@@ -655,28 +660,43 @@ static bool md_mtl_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t align, u
     if (align < MD_MTL_ARG_ALIGN) align = MD_MTL_ARG_ALIGN;
     const uint64_t need = md_mtl_align_up(size, MD_MTL_ARG_ALIGN);
 
+    const bool dedicated = need > MD_MTL_ARENA_DEDICATED;
     md_mtl_page_t* chosen = NULL;
-    if (a->pages.count > 0) {
+    if (!dedicated && a->current < a->pages.count) {
         md_mtl_page_t* p = MD_MTL_VEC_AT(a->pages, md_mtl_page_t*, a->current);
-        if (md_mtl_page_fits(p, need, align)) chosen = p;
+        if (!p->dedicated && md_mtl_page_fits(p, need, align)) chosen = p;
     }
     if (!chosen) {
         uint64_t done = md_mtl_stream_completed(s);
-        for (size_t i = 0; i < a->pages.count && !chosen; ++i) {
+        for (size_t i = 0; i < a->pages.count && !chosen;) {
             md_mtl_page_t* p = MD_MTL_VEC_AT(a->pages, md_mtl_page_t*, i);
-            if (p->retire_value != 0 && p->retire_value <= done) { p->cursor = 0; p->retire_value = 0; }
-            if (p->retire_value == 0 && md_mtl_page_fits(p, need, align)) { a->current = i; chosen = p; }
+            const bool retired = p->retire_value != 0 && p->retire_value <= done;
+            if (p->dedicated) {
+                if (retired) {
+                    md_mtl_page_destroy(dev, p);
+                    md_mtl_vec_remove(&a->pages, i);
+                    if (a->current > i || a->current >= a->pages.count) a->current = a->current > 0 ? a->current - 1 : 0;
+                } else {
+                    ++i;
+                }
+                continue;
+            }
+            if (retired) { p->cursor = 0; p->retire_value = 0; }
+            if (!dedicated && p->retire_value == 0 && md_mtl_page_fits(p, need, align)) { a->current = i; chosen = p; }
+            ++i;
         }
     }
     if (!chosen) {
         uint64_t page_size = MD_MTL_ARENA_PAGE_SIZE;
-        while (page_size < need) page_size *= 2;
+        if (dedicated) page_size = md_mtl_align_up(need, 65536);
+        else while (page_size < need) page_size *= 2;
         chosen = md_mtl_page_create(dev, page_size);
         if (!chosen) return md_mtl_fail("failed to allocate a transient page");
+        chosen->dedicated = dedicated;
         md_mtl_page_t** slot = (md_mtl_page_t**)md_mtl_vec_push(&a->pages, dev->alloc);
         if (!slot) { md_mtl_page_destroy(dev, chosen); return md_mtl_fail("out of memory"); }
         *slot = chosen;
-        a->current = a->pages.count - 1;
+        if (!dedicated) a->current = a->pages.count - 1;
     }
     md_mtl_page_take(chosen, need, align, out_addr, out_host, out_buf, out_off);
     return true;
