@@ -3073,6 +3073,172 @@ static bond_rule_t bond_rule(int ei, int ej, bool same_comp, bool water) {
     return none;
 }
 
+// A halogen bonded to a non-metal (an organohalogen, is_halogen) is no ligand of a metal: its contact with one, a
+// halogen lying on a metal surface, is no coordination bond. A halide is.
+
+// ### METALLIC PHASES ###
+//
+// A metal in bulk, at a surface or in a particle is not bonded as a molecule is: each atom has as many neighbours as its
+// lattice gives it, and a cutoff on the sum of covalent radii falls within their shell (2.72 Å for gold, against a
+// first shell of 2.6-3.1 Å), which bonds a part of it that looks random and changes from frame to frame. The atoms of
+// a metallic phase (MD_ATOM_FLAG_METALLIC) are instead bonded to every metal atom of their first coordination shell,
+// by METALLIC bonds, which are not bonds of the graph (md_types.h), and to nothing else: what touches a surface moves
+// across it, so its contacts are those of a frame (md_util_bond_delta) rather than of the topology.
+//
+// THE FIRST SHELL ends at the first minimum of the distances between the metal atoms, each over the sum of the
+// covalent radii of its atoms: the gap between two shells of a crystal, or the first minimum of the radial distribution
+// of a liquid or a strained lattice. It is the lowest point of their histogram beyond its first peak and up to 1.5
+// times it, which holds the gap after the first shell in the lattices of the metals: their second shell is at 1.41 times
+// the first in a close packed lattice (fcc, hcp), and at 1.15 in a body centred cubic one, whose two shells (8 and 6
+// neighbours) merge into one when warm. Told from the system rather than given per element, as the covalent radii put
+// the first shell of the metals at 0.94 (Fe) to 1.18 (Al) times their sum, and strain and temperature move and widen it.
+// METALLIC_SHELL without enough pairs to tell.
+//
+// A METALLIC ATOM is a metal with at least METALLIC_MIN_NEIGHBORS metal atoms in its first shell, and at least three
+// times as many as the non-metals within reach of a bond to it (a donor, N, O, S, P or a halogen, within bond_k_ligand;
+// carbon within bond_k_carbon; whether the pair would be bonded or not, as an alkali to its anion is not): a cation of
+// an ionic crystal or an oxide is not (NaCl and MgO: 12 metal neighbours to 6 anions, CaF2: 12 to 8, TiO2: 10 to 6),
+// nor a metal of a molecule or a cluster (Fe4S4, FeMoco, Mn4CaO5: 3 or 4 metal neighbours at most), whereas an atom at
+// the surface of a metal has 7 to 9 metal neighbours and an adsorbate or two. Then so is a metal atom in the first
+// shell of a metallic atom with at least METALLIC_MIN_EDGE_NEIGHBORS metal neighbours, again at least three times its
+// non-metals: the edges and corners of a slab or a particle, an adatom in a hollow site.
+#define METALLIC_MIN_NEIGHBORS      6
+#define METALLIC_MIN_EDGE_NEIGHBORS 3
+#define METALLIC_SHELL              1.25f       // On the sum of the covalent radii, without enough pairs to tell
+#define METALLIC_SHELL_MIN          1.10f
+#define METALLIC_SHELL_MAX          1.60f
+#define METALLIC_MIN_PAIRS          64          // Pairs within the shell for its end to be told from them
+#define METALLIC_HIST_LO            0.80f       // The histogram of the pairs, on the sum of the radii
+#define METALLIC_HIST_HI            1.90f
+#define METALLIC_HIST_BIN           0.02f
+#define METALLIC_HIST_BINS          55          // (HI - LO) / BIN
+
+typedef struct metal_pair_search_t {
+    const float* radius;
+    float        q_max;                         // On the sum of the radii
+    uint32_t*    hist;                          // [METALLIC_HIST_BINS], or NULL
+    md_array(bond_pair_t)* pairs;               // Within q_max, or NULL
+    md_allocator_i* alloc;
+} metal_pair_search_t;
+
+static void metal_pair_callback(const uint32_t* i_idx, const uint32_t* j_idx, const float* ij_dist2, size_t num_pairs, void* user_param) {
+    metal_pair_search_t* s = (metal_pair_search_t*)user_param;
+    for (size_t k = 0; k < num_pairs; ++k) {
+        const uint32_t i = i_idx[k];
+        const uint32_t j = j_idx[k];
+        const float sum_r = s->radius[i] + s->radius[j];
+        if (i == j || sum_r <= 0.0f) continue;
+        const float d = sqrtf(ij_dist2[k]);
+        const float q = d / sum_r;
+        if (s->hist && q >= METALLIC_HIST_LO && q < METALLIC_HIST_HI) {
+            s->hist[(int)((q - METALLIC_HIST_LO) / METALLIC_HIST_BIN)] += 1;
+        }
+        if (s->pairs && q > bond_k_min && q <= s->q_max) {
+            const bond_pair_t p = { (int)MIN(i, j), (int)MAX(i, j), d };
+            md_array_push(*s->pairs, p, s->alloc);
+        }
+    }
+}
+
+// The end of the first shell, on the sum of the radii, from the histogram of the metal-metal pairs (THE FIRST SHELL)
+static float metallic_shell(const uint32_t hist[METALLIC_HIST_BINS]) {
+    float smooth[METALLIC_HIST_BINS];
+    for (int b = 0; b < METALLIC_HIST_BINS; ++b) {
+        const uint32_t l = b > 0 ? hist[b - 1] : 0;
+        const uint32_t r = b + 1 < METALLIC_HIST_BINS ? hist[b + 1] : 0;
+        smooth[b] = (float)(l + 2 * hist[b] + r) * 0.25f;
+    }
+    const float q_peak_max = 1.35f;
+    int peak = 0;
+    for (int b = 1; b < METALLIC_HIST_BINS && METALLIC_HIST_LO + (b + 0.5f) * METALLIC_HIST_BIN < q_peak_max; ++b) {
+        if (smooth[b] > smooth[peak]) peak = b;
+    }
+    uint32_t in_shell = 0;
+    for (int b = 0; b <= peak; ++b) in_shell += hist[b];
+    if (smooth[peak] <= 0.0f || in_shell < METALLIC_MIN_PAIRS) return METALLIC_SHELL;
+
+    // The lowest point beyond the peak up to 1.5 times it, the middle of the run of bins as low as it
+    const float q_peak = METALLIC_HIST_LO + (peak + 0.5f) * METALLIC_HIST_BIN;
+    const int last = MIN(METALLIC_HIST_BINS - 1, (int)((1.5f * q_peak - METALLIC_HIST_LO) / METALLIC_HIST_BIN));
+    int lo = -1;
+    for (int b = peak + 1; b <= last; ++b) {
+        if (lo < 0 || smooth[b] < smooth[lo]) lo = b;
+    }
+    if (lo < 0) return METALLIC_SHELL;
+    int hi = lo;
+    while (hi + 1 <= last && smooth[hi + 1] == smooth[lo]) hi += 1;
+    const float q = METALLIC_HIST_LO + (0.5f * (lo + hi) + 0.5f) * METALLIC_HIST_BIN;
+    return CLAMP(q, METALLIC_SHELL_MIN, METALLIC_SHELL_MAX);
+}
+
+// The metallic atoms (out_metallic, one per atom) and the pairs of them within the first shell (out_pairs), see
+// METALLIC PHASES. contacts: the number of non-metals within reach of each metal atom.
+static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* out_pairs, const md_system_state_t* state, const md_system_t* sys,
+                                  const md_atomic_number_t* atomic_nr, const float* radius, const uint32_t* contacts, md_allocator_i* temp_arena) {
+    const size_t num_atoms = state->num_atoms;
+    MEMSET(out_metallic, 0, num_atoms);
+
+    md_array(int) metals = 0;
+    float max_rad = 0.0f;
+    for (size_t i = 0; i < num_atoms; ++i) {
+        if (!is_metal(atomic_nr[i]) || md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE) continue;
+        md_array_push(metals, (int)i, temp_arena);
+        max_rad = MAX(max_rad, radius[i]);
+    }
+    const size_t num_metals = md_array_size(metals);
+    if (num_metals < METALLIC_MIN_NEIGHBORS + 1 || max_rad <= 0.0f) return;
+
+    // The histogram of the pairs, then the pairs within the first shell
+    uint32_t hist[METALLIC_HIST_BINS] = {0};
+    md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), metals, num_metals);
+    {
+        const double cutoff = 2.0 * max_rad * METALLIC_HIST_HI;
+        md_spatial_acc_t acc = { .alloc = temp_arena };
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
+        metal_pair_search_t search = { .radius = radius, .hist = hist };
+        md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, metal_pair_callback, &search);
+    }
+    const float shell = metallic_shell(hist);
+
+    md_array(bond_pair_t) pairs = 0;
+    {
+        const double cutoff = 2.0 * max_rad * shell;
+        md_spatial_acc_t acc = { .alloc = temp_arena };
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell, .flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX });
+        metal_pair_search_t search = { .radius = radius, .q_max = shell, .pairs = &pairs, .alloc = temp_arena };
+        md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, metal_pair_callback, &search);
+    }
+    const size_t num_pairs = md_array_size(pairs);
+
+    uint32_t* neighbors = md_alloc(temp_arena, sizeof(uint32_t) * num_atoms);
+    MEMSET(neighbors, 0, sizeof(uint32_t) * num_atoms);
+    for (size_t k = 0; k < num_pairs; ++k) {
+        neighbors[pairs[k].atom_i] += 1;
+        neighbors[pairs[k].atom_j] += 1;
+    }
+    for (size_t m = 0; m < num_metals; ++m) {
+        const int i = metals[m];
+        out_metallic[i] = neighbors[i] >= METALLIC_MIN_NEIGHBORS && neighbors[i] >= 3 * contacts[i];
+    }
+    // The edges, corners and adatoms: in the shell of a metallic atom of the core
+    uint8_t* edge = md_alloc(temp_arena, num_atoms);
+    MEMSET(edge, 0, num_atoms);
+    for (size_t k = 0; k < num_pairs; ++k) {
+        const int i = pairs[k].atom_i;
+        const int j = pairs[k].atom_j;
+        if (out_metallic[i] && !out_metallic[j]) edge[j] = 1;
+        if (out_metallic[j] && !out_metallic[i]) edge[i] = 1;
+    }
+    for (size_t m = 0; m < num_metals; ++m) {
+        const int i = metals[m];
+        if (edge[i] && neighbors[i] >= METALLIC_MIN_EDGE_NEIGHBORS && neighbors[i] >= 3 * contacts[i]) out_metallic[i] = 1;
+    }
+
+    for (size_t k = 0; k < num_pairs; ++k) {
+        if (out_metallic[pairs[k].atom_i] && out_metallic[pairs[k].atom_j]) md_array_push(*out_pairs, pairs[k], temp_arena);
+    }
+}
+
 // ### MARTINI ###
 
 // The versions of Martini, which give beads of the same names different masses and sizes, and some residues different
@@ -3721,24 +3887,68 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
 
         //MD_LOG_DEBUG("Found %zu candidates", num_candidates);
 
+        // The rule of each candidate, 0 for a pair which is not bonded: virtual sites sit within bonding distance of
+        // their parent atom (the lone pairs of TIP5P at 0.7 Å) but are not bonded to anything
+        bond_rule_t* rules = md_temp_alloc_zero_array(temp_scope, bond_rule_t, MAX(num_candidates, 1));
+        uint8_t* organohalogen = md_temp_alloc_zero_array(temp_scope, uint8_t, num_atoms);
+        for (size_t i = 0; i < num_candidates; ++i) {
+            const int ai = candidates[i].atom_i;
+            const int aj = candidates[i].atom_j;
+            if (md_atom_particle_kind(&sys->atom, ai) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&sys->atom, aj) == MD_PARTICLE_VIRTUAL_SITE) continue;
+            const int ci = comp_id[ai];
+            const int cj = comp_id[aj];
+            const bool is_water = (ci >= 0 && comp_water[ci]) || (cj >= 0 && comp_water[cj]);
+            const bond_rule_t rule = bond_rule(atomic_nr[ai], atomic_nr[aj], ci == cj, is_water);
+            if (rule.factor <= 0.0f || candidates[i].dist >= rule.factor * (atom_radius[ai] + atom_radius[aj])) continue;
+            rules[i] = rule;
+            if (!rule.coordinate && !is_metal(atomic_nr[ai]) && !is_metal(atomic_nr[aj])) {
+                if (is_halogen(atomic_nr[ai])) organohalogen[ai] = 1;
+                if (is_halogen(atomic_nr[aj])) organohalogen[aj] = 1;
+            }
+        }
+        // An organohalogen coordinates nothing
+        for (size_t i = 0; i < num_candidates; ++i) {
+            if (rules[i].coordinate && (organohalogen[candidates[i].atom_i] || organohalogen[candidates[i].atom_j])) {
+                rules[i].factor = 0.0f;
+            }
+        }
+
+        // The metallic phases, from the metal atoms and the non-metals within reach of each (METALLIC PHASES)
+        uint32_t* contacts = md_temp_alloc_zero_array(temp_scope, uint32_t, num_atoms);
+        for (size_t i = 0; i < num_candidates; ++i) {
+            const int ai = candidates[i].atom_i;
+            const int aj = candidates[i].atom_j;
+            if (is_metal(atomic_nr[ai]) == is_metal(atomic_nr[aj])) continue;
+            const int metal = is_metal(atomic_nr[ai]) ? ai : aj;
+            const int other = metal == ai ? aj : ai;
+            if (md_atom_particle_kind(&sys->atom, other) == MD_PARTICLE_VIRTUAL_SITE) continue;
+            const int z = atomic_nr[other];
+            const float factor = z == C ? bond_k_carbon : is_metal_donor(z) ? bond_k_ligand : 0.0f;
+            if (candidates[i].dist < factor * (atom_radius[ai] + atom_radius[aj])) contacts[metal] += 1;
+        }
+        uint8_t* metallic = md_temp_alloc_array(temp_scope, uint8_t, num_atoms);
+        md_array(bond_pair_t) metallic_pairs = 0;
+        infer_metallic_phases(metallic, &metallic_pairs, state, sys, atomic_nr, atom_radius, contacts, temp_arena);
+
         md_bond_data_t temp_bond = { 0 };
         // We are lazy and propagate the correct periodic distance for each bond, so we can do more informed pruning later (e.g. for coordination bonds)
         md_array(float) temp_bond_dist = 0;
 
         for (size_t i = 0; i < num_candidates; ++i) {
-            int ai = candidates[i].atom_i;
-            int aj = candidates[i].atom_j;
-            // Virtual sites sit within bonding distance of their parent atom (the lone pairs of TIP5P at 0.7 Å)
-            // but are not bonded to anything
-            if (md_atom_particle_kind(&sys->atom, ai) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&sys->atom, aj) == MD_PARTICLE_VIRTUAL_SITE) continue;
-            const float d = candidates[i].dist;
-            const int ci = comp_id[ai];
-            const int cj = comp_id[aj];
-            const bool is_water = (ci >= 0 && comp_water[ci]) || (cj >= 0 && comp_water[cj]);
-            const bond_rule_t rule = bond_rule(atomic_nr[ai], atomic_nr[aj], ci == cj, is_water);
-            if (rule.factor > 0.0f && d < rule.factor * (atom_radius[ai] + atom_radius[aj])) {
-                md_bond_insert(&temp_bond, ai, aj, rule.coordinate ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred, temp_arena);
-                md_array_push(temp_bond_dist, d, temp_arena);
+            if (rules[i].factor <= 0.0f) continue;
+            const int ai = candidates[i].atom_i;
+            const int aj = candidates[i].atom_j;
+            // An atom of a metallic phase has its metallic bonds, below, and no other: what touches a metal moves
+            // across it, and has its contacts in a frame (md_util_bond_delta)
+            if (metallic[ai] || metallic[aj]) continue;
+            md_bond_insert(&temp_bond, ai, aj, rules[i].coordinate ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred, temp_arena);
+            md_array_push(temp_bond_dist, candidates[i].dist, temp_arena);
+        }
+        {
+            const md_bond_flags_t flags = md_bond_flags_set_kind(inferred, MD_BOND_KIND_METALLIC);
+            for (size_t k = 0; k < md_array_size(metallic_pairs); ++k) {
+                md_bond_insert(&temp_bond, metallic_pairs[k].atom_i, metallic_pairs[k].atom_j, flags, temp_arena);
+                md_array_push(temp_bond_dist, metallic_pairs[k].dist, temp_arena);
             }
         }
 
@@ -3760,6 +3970,8 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             int* num_coord = md_temp_alloc_zero_array(temp_scope, int, num_atoms);
             int* max_cov   = md_temp_alloc_zero_array(temp_scope, int, num_atoms);
             for (size_t b = 0; b < num_temp; ++b) {
+                // A metallic bond counts towards nothing: its atoms have as many as their lattice gives them
+                if (md_bond_kind(temp_bond.flags[b]) == MD_BOND_KIND_METALLIC) continue;
                 const int x = temp_bond.pairs[b].idx[0];
                 const int y = temp_bond.pairs[b].idx[1];
                 int* n = md_bond_kind(temp_bond.flags[b]) == MD_BOND_KIND_COORDINATE ? num_coord : num_cov;
@@ -3778,6 +3990,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
 
             md_array(bond_excess_t) over = 0;
             for (size_t b = 0; b < num_temp; ++b) {
+                if (md_bond_kind(temp_bond.flags[b]) == MD_BOND_KIND_METALLIC) continue;
                 const int x = temp_bond.pairs[b].idx[0];
                 const int y = temp_bond.pairs[b].idx[1];
                 bool exceeds = false;
@@ -3974,6 +4187,23 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
     md_array_shrink(sys->bond.flags, num_user + num_noncovalent);
     md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc);
     md_bond_build_connectivity(&sys->bond, state->num_atoms, sys->alloc);
+
+    // The atoms of the metallic phases are those of the metallic bonds (METALLIC PHASES)
+    if (md_array_size(sys->atom.flags) < sys->atom.count) {
+        const size_t size = md_array_size(sys->atom.flags);
+        md_array_resize(sys->atom.flags, sys->atom.count, sys->alloc);
+        MEMSET(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
+    }
+    for (size_t i = 0; i < sys->atom.count; ++i) {
+        sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~(uint32_t)MD_ATOM_FLAG_METALLIC);
+    }
+    for (size_t i = 0; i < sys->bond.count; ++i) {
+        if (md_bond_kind(sys->bond.flags[i]) != MD_BOND_KIND_METALLIC) continue;
+        for (int k = 0; k < 2; ++k) {
+            const md_atom_idx_t a = sys->bond.pairs[i].idx[k];
+            if (a >= 0 && (size_t)a < sys->atom.count) sys->atom.flags[a] |= MD_ATOM_FLAG_METALLIC;
+        }
+    }
 }
 
 size_t md_util_system_infer_coordination(md_system_t* sys) {
@@ -4044,6 +4274,8 @@ static inline bond_rule_t delta_rule(delta_atoms_t* a, uint32_t i, uint32_t j, f
     const bond_rule_t none = {0};
     if (zi == 0 || zj == 0) return none;
     if (md_atom_particle_kind(&a->sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&a->sys->atom, j) == MD_PARTICLE_VIRTUAL_SITE) return none;
+    // The bonds within a metallic phase are its metallic bonds, which do not change (METALLIC PHASES)
+    if ((md_atom_flags(&a->sys->atom, i) & MD_ATOM_FLAG_METALLIC) && (md_atom_flags(&a->sys->atom, j) & MD_ATOM_FLAG_METALLIC)) return none;
     const int ci = delta_comp(a, i);
     const int cj = delta_comp(a, j);
     return bond_rule(zi, zj, ci == cj, delta_water(a, ci) || delta_water(a, cj));
@@ -4205,6 +4437,45 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
             if (rule.coordinate) f.dist = -f.dist;
             md_array_push(formed, f, temp_alloc);
         }
+    }
+
+    // ## An organohalogen coordinates nothing: a halogen bonded to a non-metal in the state, by a bond of the graph which
+    // is not broken in it or by one formed in it (is_halogen)
+    if (md_array_size(formed)) {
+        md_array(uint32_t) halogens = 0;    // With a covalent bond formed
+        for (size_t k = 0; k < md_array_size(formed); ++k) {
+            if (formed[k].dist < 0.0f) continue;
+            const uint32_t i = (uint32_t)formed[k].atom_i;
+            const uint32_t j = (uint32_t)formed[k].atom_j;
+            const md_atomic_number_t zi = md_atom_atomic_number(&sys->atom, i);
+            const md_atomic_number_t zj = md_atom_atomic_number(&sys->atom, j);
+            if (is_halogen(zi) && !is_metal(zj)) md_array_push(halogens, i, temp_alloc);
+            if (is_halogen(zj) && !is_metal(zi)) md_array_push(halogens, j, temp_alloc);
+        }
+        const size_t num_halogens = md_array_size(halogens);
+        if (num_halogens) qsort(halogens, num_halogens, sizeof(uint32_t), compare_u32);
+
+        size_t w = 0;
+        for (size_t k = 0; k < md_array_size(formed); ++k) {
+            if (formed[k].dist < 0.0f) {
+                const uint32_t i = (uint32_t)formed[k].atom_i;
+                const uint32_t j = (uint32_t)formed[k].atom_j;
+                const uint32_t h = is_halogen(md_atom_atomic_number(&sys->atom, i)) ? i : j;
+                if (is_halogen(md_atom_atomic_number(&sys->atom, h))) {
+                    bool organo = num_halogens && bsearch(&h, halogens, num_halogens, sizeof(uint32_t), compare_u32);
+                    md_bond_iter_t it = md_bond_iter(&sys->bond, h);
+                    for (; md_bond_iter_has_next(&it) && !organo; md_bond_iter_next(&it)) {
+                        const uint32_t o = (uint32_t)md_bond_iter_atom_index(&it);
+                        const uint32_t b = (uint32_t)md_bond_iter_bond_index(&it);
+                        organo = md_bond_kind((md_bond_flags_t)md_bond_iter_bond_flags(&it)) == MD_BOND_KIND_COVALENT &&
+                                 !is_metal(md_atom_atomic_number(&sys->atom, o)) && !md_bitmask_test_bit(&broken, b);
+                    }
+                    if (organo) continue;
+                }
+            }
+            formed[w++] = formed[k];
+        }
+        md_array_shrink(formed, w);
     }
 
     // ## What the atoms of the formed bonds can take. The bonds of the graph count unless broken or stretched, and

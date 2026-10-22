@@ -9,14 +9,18 @@
 #include <md_tpr.h>
 #include <md_lammps.h>
 #include <md_util.h>
+#include <md_xyz.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
+#include <core/md_os.h>
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <math.h>
 
 static inline uint64_t pair_key(md_atom_pair_t p) {
     const uint32_t a = (uint32_t)MIN(p.idx[0], p.idx[1]);
@@ -290,7 +294,7 @@ UTEST(bonds, kind_given_stays) {
 UTEST(bonds, kind_names) {
     size_t count = 0;
     const md_bond_kind_name_t* names = md_bond_kind_names(&count);
-    ASSERT_EQ(6, (int)count);
+    ASSERT_EQ(7, (int)count);
     const md_bond_flags_t given = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN | MD_BOND_FLAG_ORDER_PERCEIVED, MD_BOND_ORIGIN_INFERRED);
     const struct { md_bond_flags_t flags; const char* kinds; } cases[] = {
         { MD_BOND_FLAG_NONE,                                                    "covalent" },
@@ -298,6 +302,7 @@ UTEST(bonds, kind_names) {
         { (md_bond_flags_t)MD_BOND_KIND_COORDINATE,                             "coordinate" },
         // A spring is of no other kind
         { (md_bond_flags_t)MD_BOND_KIND_ELASTIC,                                "elastic" },
+        { (md_bond_flags_t)MD_BOND_KIND_METALLIC,                               "metallic" },
         { (md_bond_flags_t)MD_BOND_KIND_INTERACTION,                            "noncovalent interaction" },
         { (md_bond_flags_t)MD_BOND_KIND_HYDROGEN,                               "noncovalent hydrogen" },
         // The fields around the kind take no part in it
@@ -319,9 +324,9 @@ UTEST(bonds, kind_names) {
 
 // The kind is one value of its own: setting it keeps every other field, and its bits say where the bond belongs
 UTEST(bonds, kind_code) {
-    const md_bond_kind_t kinds[] = { MD_BOND_KIND_COVALENT, MD_BOND_KIND_COORDINATE, MD_BOND_KIND_ELASTIC, MD_BOND_KIND_INTERACTION, MD_BOND_KIND_HYDROGEN };
-    const bool graph[]       = { true,  true,  false, false, false };
-    const bool noncovalent[] = { false, false, false, true,  true  };
+    const md_bond_kind_t kinds[] = { MD_BOND_KIND_COVALENT, MD_BOND_KIND_COORDINATE, MD_BOND_KIND_ELASTIC, MD_BOND_KIND_METALLIC, MD_BOND_KIND_INTERACTION, MD_BOND_KIND_HYDROGEN };
+    const bool graph[]       = { true,  true,  false, false, false, false };
+    const bool noncovalent[] = { false, false, false, false, true,  true  };
     const md_bond_flags_t rest = md_bond_flags_set_origin(md_bond_flags_set_order(MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_ORDER_PERCEIVED | MD_BOND_FLAG_KIND_GIVEN, 2), MD_BOND_ORIGIN_USER);
     for (size_t i = 0; i < ARRAY_SIZE(kinds); ++i) {
         // Over a bond of another kind, so every bit of the old one goes
@@ -492,4 +497,310 @@ UTEST(bonds, delta_keeps_noncovalent) {
     EXPECT_EQ(1, (int)md_bitset_count(d.broken));
     EXPECT_EQ(0, (int)d.num_formed);
     md_vm_arena_destroy(f.alloc);
+}
+
+// ### METALLIC PHASES ###
+
+// A crystal of n x n x n cubic cells of side a as XYZ text: the atoms of a cell (in fractions of it) with their elements,
+// periodic (a Lattice of the crystal) or not
+typedef struct crystal_site_t {
+    const char* element;
+    float x, y, z;
+} crystal_site_t;
+
+static str_t crystal_xyz(const crystal_site_t* sites, int num_sites, int n, float a, bool periodic, md_allocator_i* alloc) {
+    const int num = num_sites * n * n * n;
+    char* buf = md_alloc(alloc, 160 + 64 * (size_t)num);
+    int len = 0;
+    if (periodic) {
+        len += sprintf(buf + len, "%d\nLattice=\"%.4f 0 0 0 %.4f 0 0 0 %.4f\" Properties=species:S:1:pos:R:3 pbc=\"T T T\"\n", num, n * a, n * a, n * a);
+    } else {
+        len += sprintf(buf + len, "%d\ncrystal\n", num);
+    }
+    for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) for (int k = 0; k < n; ++k) {
+        for (int s = 0; s < num_sites; ++s) {
+            len += sprintf(buf + len, "%s %.4f %.4f %.4f\n", sites[s].element, (i + sites[s].x) * a, (j + sites[s].y) * a, (k + sites[s].z) * a);
+        }
+    }
+    return (str_t){ buf, (size_t)len };
+}
+
+static const crystal_site_t fcc_cu[] = { {"Cu", 0, 0, 0}, {"Cu", 0.5f, 0.5f, 0}, {"Cu", 0.5f, 0, 0.5f}, {"Cu", 0, 0.5f, 0.5f} };
+
+static size_t count_kind(const md_system_t* sys, md_bond_kind_t kind) {
+    size_t n = 0;
+    for (size_t i = 0; i < sys->bond.count; ++i) n += md_bond_kind(sys->bond.flags[i]) == kind;
+    return n;
+}
+
+static size_t count_flag(const md_system_t* sys, md_atom_flags_t flag) {
+    size_t n = 0;
+    for (size_t i = 0; i < sys->atom.count; ++i) n += (md_atom_flags(&sys->atom, i) & flag) != 0;
+    return n;
+}
+
+// A copper crystal: every atom is metallic, bonded to its 12 nearest neighbours (fewer at the faces, edges and corners
+// of a crystal which is not periodic: a corner has 3) and to nothing else, and its bonds are of no ring nor structure
+UTEST(bonds, metallic_crystal) {
+    for (int periodic = 0; periodic < 2; ++periodic) {
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        const int n = 4;
+        const float a = 3.615f;
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, crystal_xyz(fcc_cu, 4, n, a, periodic, alloc), MD_XYZ_OPTION_NONE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+        const size_t num = sys.atom.count;
+        EXPECT_EQ(num, count_flag(&sys, MD_ATOM_FLAG_METALLIC));
+        EXPECT_EQ(0, (int)count_kind(&sys, MD_BOND_KIND_COVALENT));
+
+        // The nearest neighbour pairs, a / sqrt(2) apart
+        const float nn = a / sqrtf(2.0f);
+        size_t expected = 0;
+        for (size_t i = 0; i < num; ++i) {
+            for (size_t j = i + 1; j < num; ++j) {
+                vec3_t d = vec3_sub(st.xyz[j], st.xyz[i]);
+                md_util_min_image_vec3(&d, 1, &st.unitcell);
+                expected += vec3_length(d) < 1.1f * nn;
+            }
+        }
+        EXPECT_EQ(periodic ? num * 12 / 2 : expected, count_kind(&sys, MD_BOND_KIND_METALLIC));
+        EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
+        md_vm_arena_destroy(alloc);
+    }
+}
+
+// Ionic crystals are no metal, though each cation has 12 cations as close as the atoms of a metal are: NaCl and MgO
+// (rock salt), with 6 anions to each cation
+UTEST(bonds, metallic_not_ionic) {
+    const struct { const char* cation; const char* anion; float a; } salts[] = { {"Na", "Cl", 5.640f}, {"Mg", "O", 4.212f} };
+    for (size_t s = 0; s < ARRAY_SIZE(salts); ++s) {
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        const crystal_site_t rock_salt[] = {
+            {salts[s].cation, 0, 0, 0}, {salts[s].cation, 0.5f, 0.5f, 0}, {salts[s].cation, 0.5f, 0, 0.5f}, {salts[s].cation, 0, 0.5f, 0.5f},
+            {salts[s].anion, 0.5f, 0, 0}, {salts[s].anion, 0, 0.5f, 0}, {salts[s].anion, 0, 0, 0.5f}, {salts[s].anion, 0.5f, 0.5f, 0.5f},
+        };
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, crystal_xyz(rock_salt, 8, 3, salts[s].a, true, alloc), MD_XYZ_OPTION_NONE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+        EXPECT_EQ(0, (int)count_flag(&sys, MD_ATOM_FLAG_METALLIC));
+        EXPECT_EQ(0, (int)count_kind(&sys, MD_BOND_KIND_METALLIC));
+        md_vm_arena_destroy(alloc);
+    }
+}
+
+// Deterministic normal deviates (Box-Muller over a 64-bit LCG)
+static float gauss(uint64_t* state) {
+    float u[2];
+    for (int k = 0; k < 2; ++k) {
+        *state = *state * 6364136223846793005ULL + 1442695040888963407ULL;
+        u[k] = ((float)(*state >> 40) + 0.5f) / (float)(1 << 24);
+    }
+    return sqrtf(-2.0f * logf(u[0])) * cosf(6.2831853f * u[1]);
+}
+
+// A slab of two (111) layers of gold, periodic in the plane, its atoms displaced as by heat (0.1 Å in each direction):
+// the distances of the first shell spread across the cutoff of the covalent radii (2.72 Å). Over it a 4-bromophenyl,
+// its free carbon 2.0 Å over a gold atom, and a bromomethane, its bromine 2.7 Å over another: within reach of a
+// coordination each. The gold is metallic and has its 9 neighbours as metallic bonds, the molecules keep their bonds
+// and have none to the gold; per frame the carbon forms its coordination, the bromine (of an organohalide) none.
+UTEST(bonds, metallic_slab) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const int nx = 8, ny = 5;
+    const float d = 2.884f;
+    const float h = d * 0.8660254f;
+    const float lz = 40.0f;
+    const float z0 = 10.0f;
+    const float dz = d * 0.8164966f;
+    const int num_au = 2 * 2 * nx * ny;
+    const int num = num_au + 11 + 5;
+    char* buf = md_alloc(alloc, 256 + 64 * (size_t)num);
+    int len = sprintf(buf, "%d\nLattice=\"%.4f 0 0 0 %.4f 0 0 0 %.4f\" Properties=species:S:1:pos:R:3 pbc=\"T T T\"\n", num, nx * d, ny * 2 * h, lz);
+
+    uint64_t rng = 12345;
+    vec3_t au[2 * 2 * 8 * 5];
+    int n = 0;
+    for (int layer = 0; layer < 2; ++layer) {
+        for (int i = 0; i < nx; ++i) for (int j = 0; j < ny; ++j) for (int b = 0; b < 2; ++b) {
+            const float x = i * d + b * 0.5f * d + layer * 0.5f * d;
+            const float y = j * 2 * h + b * h + layer * h / 3.0f;
+            au[n++] = vec3_set(x + 0.1f * gauss(&rng), y + 0.1f * gauss(&rng), z0 + layer * dz + 0.1f * gauss(&rng));
+        }
+    }
+    for (int i = 0; i < num_au; ++i) len += sprintf(buf + len, "Au %.4f %.4f %.4f\n", au[i].x, au[i].y, au[i].z);
+
+    // 4-bromophenyl upright in the xz-plane, C1 (the free carbon) 2.0 Å over the gold atom au_c of the top layer
+    const int au_c = num_au / 2 + 2 * (1 * ny + 1);
+    const vec3_t c1 = vec3_add(au[au_c], vec3_set(0, 0, 2.0f));
+    const float r = 1.39f;
+    const vec3_t ring[6] = {
+        c1,
+        vec3_add(c1, vec3_set( r * 0.8660254f, 0, 0.5f * r)), vec3_add(c1, vec3_set( r * 0.8660254f, 0, 1.5f * r)),
+        vec3_add(c1, vec3_set(0, 0, 2 * r)),
+        vec3_add(c1, vec3_set(-r * 0.8660254f, 0, 1.5f * r)), vec3_add(c1, vec3_set(-r * 0.8660254f, 0, 0.5f * r)),
+    };
+    const vec3_t center = vec3_add(c1, vec3_set(0, 0, r));
+    for (int k = 0; k < 6; ++k) len += sprintf(buf + len, "C %.4f %.4f %.4f\n", ring[k].x, ring[k].y, ring[k].z);
+    for (int k = 1; k < 6; ++k) {
+        const vec3_t out = vec3_normalize(vec3_sub(ring[k], center));
+        const vec3_t p = vec3_add(ring[k], vec3_mul1(out, k == 3 ? 1.90f : 1.08f));
+        len += sprintf(buf + len, "%s %.4f %.4f %.4f\n", k == 3 ? "Br" : "H", p.x, p.y, p.z);
+    }
+
+    // Bromomethane, its bromine 2.7 Å over the gold atom au_br (far from au_c) and its carbon above
+    const int au_br = num_au / 2 + 2 * (5 * ny + 3);
+    const vec3_t br = vec3_add(au[au_br], vec3_set(0, 0, 2.7f));
+    const vec3_t c = vec3_add(br, vec3_set(0, 0, 1.94f));
+    len += sprintf(buf + len, "Br %.4f %.4f %.4f\nC %.4f %.4f %.4f\n", br.x, br.y, br.z, c.x, c.y, c.z);
+    for (int k = 0; k < 3; ++k) {
+        const float phi = k * 2.0943951f;
+        const vec3_t p = vec3_add(c, vec3_mul1(vec3_set(0.943f * cosf(phi), 0.943f * sinf(phi), 0.333f), 1.09f));
+        len += sprintf(buf + len, "H %.4f %.4f %.4f\n", p.x, p.y, p.z);
+    }
+
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, (str_t){ buf, (size_t)len }, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(num, (int)sys.atom.count);
+
+    for (int i = 0; i < num; ++i) {
+        EXPECT_EQ(i < num_au, (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_METALLIC) != 0);
+    }
+
+    // The metallic bonds are the pairs of the first shell, 9 to each atom; the rest are the bonds of the molecules
+    size_t shell = 0;
+    for (int i = 0; i < num_au; ++i) {
+        for (int j = i + 1; j < num_au; ++j) {
+            vec3_t v = vec3_sub(st.xyz[j], st.xyz[i]);
+            md_util_min_image_vec3(&v, 1, &st.unitcell);
+            shell += vec3_length(v) < 3.5f;
+        }
+    }
+    EXPECT_EQ((size_t)num_au * 9 / 2, shell);
+    EXPECT_EQ(shell, count_kind(&sys, MD_BOND_KIND_METALLIC));
+    EXPECT_EQ(15, (int)(sys.bond.count - count_kind(&sys, MD_BOND_KIND_METALLIC)));
+    size_t c_br = 0;
+    for (size_t b = 0; b < sys.bond.count; ++b) {
+        if (md_bond_kind(sys.bond.flags[b]) == MD_BOND_KIND_METALLIC) continue;
+        const int za = md_atom_atomic_number(&sys.atom, sys.bond.pairs[b].idx[0]);
+        const int zb = md_atom_atomic_number(&sys.atom, sys.bond.pairs[b].idx[1]);
+        EXPECT_TRUE(za != 79 && zb != 79);
+        c_br += (za == 6 && zb == 35) || (za == 35 && zb == 6);
+    }
+    EXPECT_EQ(2, (int)c_br);
+    EXPECT_EQ(1, (int)md_index_data_num_ranges(&sys.ring));
+
+    // The frame's own contacts: the free carbon on its gold atom, nothing else
+    const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
+    md_bond_delta_t delta = {0};
+    ASSERT_TRUE(md_util_bond_delta(&delta, &sys, &st, &desc, alloc));
+    EXPECT_TRUE(md_bitset_empty(delta.broken));
+    ASSERT_EQ(1, (int)delta.num_formed);
+    const int fa = (int)delta.formed_pair[0].idx[0];
+    const int fb = (int)delta.formed_pair[0].idx[1];
+    EXPECT_TRUE((fa == au_c && fb == num_au) || (fb == au_c && fa == num_au));
+    EXPECT_EQ(MD_BOND_KIND_COORDINATE, md_bond_kind(delta.formed_flags[0]));
+    md_bond_delta_free(&delta, alloc);
+    md_vm_arena_destroy(alloc);
+}
+
+// Two DBBA molecules (C28H16Br2) moving over a slab of two layers of gold (448 atoms), whose first shell (2.3-3.3 Å) a
+// cutoff on the covalent radii (2.72 Å) would cut through: every gold atom is metallic, bonded to the gold atoms of
+// its shell alone, the same in every frame, and the molecules have no bonds to the gold but those formed in a frame.
+// Their bromine stays on its carbon throughout, so it coordinates no gold. The trajectory is not of the test data
+// repository: the test runs where it has been put there.
+UTEST(bonds, metallic_slab_trajectory) {
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+    if (!md_path_is_valid(path)) UTEST_SKIP("40-40-2-ddba-dyna.xmol not in the test data");
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_xyz_data_t data = {0};
+    ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_xyz_system_init_from_data(&sys, &st, &data, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    const size_t num = sys.atom.count;
+    ASSERT_EQ(540, (int)num);
+
+    size_t num_gold = 0;
+    for (size_t i = 0; i < num; ++i) {
+        const bool gold = md_atom_atomic_number(&sys.atom, i) == 79;
+        num_gold += gold;
+        EXPECT_EQ(gold, (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_METALLIC) != 0);
+    }
+    ASSERT_EQ(448, (int)num_gold);
+
+    // No bond of the graph touches the gold; the molecules have theirs, the C-Br among them
+    size_t c_br = 0;
+    for (size_t b = 0; b < sys.bond.count; ++b) {
+        const int za = md_atom_atomic_number(&sys.atom, sys.bond.pairs[b].idx[0]);
+        const int zb = md_atom_atomic_number(&sys.atom, sys.bond.pairs[b].idx[1]);
+        if (md_bond_kind(sys.bond.flags[b]) == MD_BOND_KIND_METALLIC) {
+            EXPECT_TRUE(za == 79 && zb == 79);
+            continue;
+        }
+        EXPECT_TRUE(za != 79 && zb != 79);
+        c_br += (za == 6 && zb == 35) || (za == 35 && zb == 6);
+    }
+    EXPECT_EQ(4, (int)c_br);
+    EXPECT_EQ(102, (int)(sys.bond.count - count_kind(&sys, MD_BOND_KIND_METALLIC)));
+
+    // The metallic bonds are the pairs of the first shell: all of them within 3.25 Å, none beyond the gap at 3.3-3.4 Å
+    size_t within = 0;
+    for (size_t i = 0; i < num; ++i) {
+        for (size_t j = i + 1; j < num; ++j) {
+            if (md_atom_atomic_number(&sys.atom, i) != 79 || md_atom_atomic_number(&sys.atom, j) != 79) continue;
+            within += vec3_distance(st.xyz[i], st.xyz[j]) < 3.25f;
+        }
+    }
+    const size_t num_metallic = count_kind(&sys, MD_BOND_KIND_METALLIC);
+    EXPECT_GE(num_metallic, within);
+    for (size_t b = 0; b < sys.bond.count; ++b) {
+        if (md_bond_kind(sys.bond.flags[b]) != MD_BOND_KIND_METALLIC) continue;
+        EXPECT_LT(vec3_distance(st.xyz[sys.bond.pairs[b].idx[0]], st.xyz[sys.bond.pairs[b].idx[1]]), 3.45f);
+    }
+
+    // No ring of gold, and the molecules are two structures of their own
+    for (size_t r = 0; r < md_index_data_num_ranges(&sys.ring); ++r) {
+        EXPECT_NE(79, (int)md_atom_atomic_number(&sys.atom, md_index_range_beg(&sys.ring, r)[0]));
+    }
+
+    // In every frame: the same metallic bonds inferred (within a percent), and the bonds formed to the gold are the
+    // contacts of the molecules with it, never a bond between two gold atoms nor the bromine on the gold
+    size_t frames_with_contacts = 0;
+    for (size_t f = 0; f < data.num_models; ++f) {
+        md_system_state_t fs = { .alloc = alloc };
+        md_system_state_init(&fs, num);
+        for (size_t i = 0; i < num; ++i) {
+            const md_xyz_coordinate_t c = data.coordinates[data.models[f].beg_coord_index + i];
+            fs.xyz[i] = vec3_set(c.x, c.y, c.z);
+        }
+        md_bond_data_t bonds = {0};
+        md_util_infer_covalent_bonds(&bonds, &fs, &sys, alloc);
+        size_t metallic = 0;
+        for (size_t b = 0; b < bonds.count; ++b) metallic += md_bond_kind(bonds.flags[b]) == MD_BOND_KIND_METALLIC;
+        EXPECT_LT(fabs((double)metallic - (double)num_metallic), 0.01 * (double)num_metallic);
+
+        const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
+        md_bond_delta_t d = {0};
+        ASSERT_TRUE(md_util_bond_delta(&d, &sys, &fs, &desc, alloc));
+        EXPECT_TRUE(md_bitset_empty(d.broken));
+        size_t contacts = 0;
+        for (size_t k = 0; k < d.num_formed; ++k) {
+            const int za = md_atom_atomic_number(&sys.atom, d.formed_pair[k].idx[0]);
+            const int zb = md_atom_atomic_number(&sys.atom, d.formed_pair[k].idx[1]);
+            EXPECT_FALSE(za == 79 && zb == 79);
+            EXPECT_FALSE(za == 35 || zb == 35);
+            if (za == 79 || zb == 79) {
+                EXPECT_EQ(MD_BOND_KIND_COORDINATE, md_bond_kind(d.formed_flags[k]));
+                contacts += 1;
+            }
+        }
+        frames_with_contacts += contacts > 0;
+        md_bond_delta_free(&d, alloc);
+    }
+    EXPECT_GT(frames_with_contacts, 0);
+    md_vm_arena_destroy(alloc);
 }

@@ -8250,7 +8250,8 @@ static bool bond_filter_pass(const bond_filter_t* f, md_bond_flags_t fl) {
         for (size_t k = 0; k < f->num_kinds && !any; ++k) any = (fl & f->kinds[k].mask) == f->kinds[k].value;
         if (!any) return false;
     }
-    // Order and resonance are of the bonds of the graph: neither a non-covalent bond nor a spring (elastic) has them
+    // Order and resonance are of the bonds of the graph: neither a non-covalent bond, a spring (elastic) nor the bond of
+    // a metal (metallic) has them
     const bool graph = md_bond_is_graph(fl);
     if (f->has_order) {
         const int o = md_bond_order(fl);
@@ -8292,7 +8293,8 @@ static void bond_collect_atom(md_bitmask_t* b, uint32_t atom, const md_bitset_t*
 //   a, b       Without either: all bonds. With a: the bonds with both atoms in a, one set per element of a (bond(residue(:))
 //              is the bonds within each residue). With b as well: the bonds with one atom in the element of a and the other
 //              in b. With b alone: the bonds with an atom in b.
-//   kind       Any of md_bond_kind_names: 'covalent', 'coordinate', 'elastic', 'noncovalent', 'interaction', 'hydrogen'.
+//   kind       Any of md_bond_kind_names: 'covalent', 'coordinate', 'elastic', 'metallic', 'noncovalent', 'interaction',
+//              'hydrogen'.
 //   order      The order (an int or a range, 0 for unknown) of a bond of the graph: non-covalent bonds have none.
 //   resonance  Any of 'aromatic', 'delocalized', 'localized' (neither), of a bond of the graph.
 //   origin     Any of 'file', 'topology', 'user', 'inferred'.
@@ -8558,11 +8560,12 @@ static int _bond_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->mol_ctx) scope = has_scope ? md_bitset_and(scope, *ctx->mol_ctx, temp_alloc) : *ctx->mol_ctx;
     const md_bitset_t* scope_ptr = (has_scope || ctx->mol_ctx) ? &scope : NULL;
 
-    // The persistent bonds touching the scope, but for the elastic bonds: springs, not bonds of the molecule
+    // The persistent bonds touching the scope, but for the elastic and the metallic bonds: springs and the shells of a
+    // metal, not bonds of a molecule, which neither break nor form
     md_bitmask_t touched = md_bitmask_create(0, total, temp_alloc);
     for (uint32_t i = 0; i < total; ++i) {
         const md_atom_pair_t p = sys->bond.pairs[i];
-        if (md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_ELASTIC) continue;
+        if (md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_ELASTIC || md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_METALLIC) continue;
         if (!scope_ptr || md_bitset_test(scope, (uint32_t)p.idx[0]) || md_bitset_test(scope, (uint32_t)p.idx[1])) md_bitmask_set_bit(&touched, i);
     }
     val->touched = md_bitmask_extract(&touched, alloc);

@@ -168,15 +168,19 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_sy
 
 // Bonds of origin MD_BOND_ORIGIN_INFERRED, replacing those of an earlier inference and keeping every other: an inferred
 // bond never duplicates one of another origin. Atoms are bonded by their covalent radii (derived from the element).
-// Coarse grained systems (md_system_is_coarse_grained) are bonded as their Martini topologies are: a residue whose beads
-// are those of a residue of the Martini force fields has the bonds of its topology, any other amino acid or nucleotide
-// a minimum spanning tree of its beads with its rings. The backbone bead of each residue is bonded to that of the next
-// unless the numbering starts over, and cysteines are bridged (see infer_coarse_grained_bonds in md_util.c).
+// The atoms of a metallic phase (a metal in bulk, at a surface or in a particle) are bonded to the metal atoms of their
+// first coordination shell by metallic bonds and to nothing else, and a halogen bonded to a non-metal coordinates no
+// metal (METALLIC PHASES in md_util.c). Coarse grained systems (md_system_is_coarse_grained) are bonded as their
+// Martini topologies are: a residue whose beads are those of a residue of the Martini force fields has the bonds of its
+// topology, any other amino acid or nucleotide a minimum spanning tree of its beads with its rings. The backbone bead of
+// each residue is bonded to that of the next unless the numbering starts over, and cysteines are bridged (see
+// infer_coarse_grained_bonds in md_util.c).
 void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
 
 // Infers the covalent bonds of the system (md_util_infer_covalent_bonds) anew. The bonds a user added by hand and those
 // the file gives (MD_BOND_ORIGIN_FILE: the CONECT records of a PDB file) are kept, and so are the non-covalent bonds:
-// all other bonds of the graph are replaced.
+// all other bonds of the graph are replaced, as are the metallic bonds. The atoms of the metallic bonds are marked
+// MD_ATOM_FLAG_METALLIC, and only they.
 void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
 
 // Marks every bond between a metal and a non-metal MD_BOND_KIND_COORDINATE, whatever its origin, unless its kind was
@@ -213,6 +217,11 @@ size_t md_util_system_infer_elastic_bonds(md_system_t* sys);
 //     breaking: a bond forming as another breaks (a proton moving, the transition state of a substitution) shows both
 //     for the frames it takes, while two atoms which clash in the reference do not bond in every frame.
 //   - A pair with a non-covalent bond in the system forms no bond: what was given of it stands.
+//   - The metallic bonds neither break nor form: two atoms of a metallic phase (MD_ATOM_FLAG_METALLIC) are left out.
+//     What touches the phase has its bonds to it here only, formed in the frames where it is close enough, as it
+//     moves across a surface.
+//   - A halogen bonded to a non-metal in the state, by a bond of the graph which is not broken or by one formed,
+//     forms no coordination bond.
 //   - A coarse grained system has no bonds formed or broken: its bonds come from templates, not distances.
 typedef struct md_bond_delta_t {
     md_bitset_t      broken;        // Bonds of the graph broken in the state: indices into sys->bond, in [0, count)

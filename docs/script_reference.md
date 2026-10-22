@@ -1053,6 +1053,7 @@ The kinds, and what they select:
 | `"covalent"` | Of the bond graph, not coordination |
 | `"coordinate"` | Metal-ligand bonds |
 | `"elastic"` | Springs of the force field which hold a coarse grained molecule in shape (an elastic network), or restraints: kept with the bonds, but no bonds of the molecule |
+| `"metallic"` | Between the atoms of a metal in bulk, at a surface or in a particle, to every neighbour of the first coordination shell: kept with the bonds, but no bonds of a molecule. What touches the metal has no bonds to it but those formed in a frame (`bond_delta`) |
 | `"noncovalent"` | Every non-covalent bond: `"interaction"` and `"hydrogen"` |
 | `"interaction"` | Non-covalent bonds of no particular kind: one a user marks between two atoms, a salt bridge, a halogen bond |
 | `"hydrogen"` | Hydrogen bonds |

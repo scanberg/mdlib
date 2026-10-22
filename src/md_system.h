@@ -240,19 +240,19 @@ typedef struct md_bond_conn_data_t {
 } md_bond_conn_data_t;
 
 // Bond centric representation, in two ranges of the same arrays:
-//   [0, count)                              the bond graph, covalent and coordinate bonds, and the elastic bonds
-//                                           (MD_BOND_KIND_ELASTIC), springs of the force field which the connectivity
-//                                           leaves out
+//   [0, count)                              the bond graph, covalent and coordinate bonds, and the bonds outside of it
+//                                           which the connectivity leaves out: the elastic bonds (MD_BOND_KIND_ELASTIC),
+//                                           springs of the force field, and the metallic bonds (MD_BOND_KIND_METALLIC)
 //   [count, count + noncovalent_count)      the persistent non-covalent bonds (md_bond_is_noncovalent): hydrogen
 //                                           bonds and interactions a file gives or a user marks
 // Whatever walks the bonds as the graph (the connectivity, rings, structures, perception, matching, bonds formed and
-// broken over a run) reads the first range only, by count, and leaves the elastic bonds out. The arrays hold both
-// ranges, so they are uploaded as one. A bond index names a bond in either range: md_bond_insert, md_bond_remove,
-// md_bond_pair and md_system_bond_flags take both, and keep every bond in the range of its kind. md_bond_find finds a
-// bond of the graph, md_bond_find_noncovalent one of the second range. Bonds computed for a frame (bonds formed,
-// hydrogen bonds found) are never here: they are a bond set of their own (md_bond_delta_t, the script).
+// broken over a run) reads the first range only, by count, and leaves the elastic and metallic bonds out. The arrays
+// hold both ranges, so they are uploaded as one. A bond index names a bond in either range: md_bond_insert,
+// md_bond_remove, md_bond_pair and md_system_bond_flags take both, and keep every bond in the range of its kind.
+// md_bond_find finds a bond of the graph, md_bond_find_noncovalent one of the second range. Bonds computed for a frame
+// (bonds formed, hydrogen bonds found) are never here: they are a bond set of their own (md_bond_delta_t, the script).
 typedef struct md_bond_data_t {
-    size_t count;                   // Bonds of the first range: the graph and the elastic bonds
+    size_t count;                   // Bonds of the first range: the graph, the elastic and the metallic bonds
     size_t noncovalent_count;       // Non-covalent bonds, the second range
     md_atom_pair_t*  pairs;         // [count + noncovalent_count]
     md_bond_flags_t* flags;         // [count + noncovalent_count]
@@ -1350,7 +1350,7 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_
     return it;
 }
 
-// This is not something which should be done frequently. The elastic bonds (MD_BOND_KIND_ELASTIC) are left out.
+// This is not something which should be done frequently. The elastic and metallic bonds (md_bond_is_graph) are left out.
 void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, md_allocator_i* alloc);
 void md_system_bond_build_connectivity(md_system_t* sys);
 

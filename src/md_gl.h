@@ -236,8 +236,9 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 //     the next bond of the group. So is an aromatic bond in no circle (in a ring larger than MD_RING_MAX_SIZE).
 // A bond whose order is unknown is drawn as a single bond.
 // It also tells the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field, which the licorice and ball and
-// stick representations leave out unless their elastic_bonds is set, and then draw as single bonds. Until it is set
-// for the bonds of the molecule every bond is drawn.
+// stick representations leave out unless their elastic_bonds is set, and then draw as single bonds, and the metallic
+// bonds (MD_BOND_KIND_METALLIC), which they never draw (a Bonds representation does). Until it is set for the bonds of
+// the molecule every bond is drawn.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
 
 // The gaps of the chains, from the chain breaks of the system (MD_COMPONENT_FLAG_BREAK_AFTER, CHAIN BREAKS in md_util.h):

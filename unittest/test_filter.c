@@ -377,30 +377,36 @@ UTEST(filter, bonds) {
     md_script_completions_t c = md_filter_complete(STR_LIT("bon"), 3, &fctx, alloc);
     EXPECT_TRUE(offers(c, "bond"));
 
-    // A spring of the force field (an elastic bond, here the Cu-Cu one) is kept with the bonds but is no bond of the
-    // molecule. Every atom is still every bond, as bond() is: nothing written leaves none out
+    // A spring of the force field (an elastic bond) and the bond of a metal (a metallic bond), here the Cu-Cu one, are
+    // kept with the bonds but are no bonds of a molecule. Every atom is still every bond, as bond() is: nothing written
+    // leaves none out. A bond_delta() leaves them out: they neither break nor form.
     const md_bond_idx_t cu = md_system_bond_find(&sys, 8, 9);
     ASSERT_GE(cu, 0);
-    sys.bond.flags[cu] = md_bond_flags_set_kind(sys.bond.flags[cu], MD_BOND_KIND_ELASTIC);
-    md_system_bond_build_connectivity(&sys);
-    res = md_filter_bonds(&pairs, STR_LIT(""), &fctx, alloc);
-    EXPECT_TRUE(res.success);
-    EXPECT_EQ(8, (int)md_array_size(pairs));
-    EXPECT_TRUE(has_pair(pairs, 8, 9));
-    res = md_filter_bonds(&pairs, STR_LIT("bond()"), &fctx, alloc);
-    EXPECT_TRUE(res.success);
-    EXPECT_EQ(8, (int)md_array_size(pairs));
-    res = md_filter_bonds(&pairs, STR_LIT("resname('CU')"), &fctx, alloc);
-    EXPECT_TRUE(res.success);
-    EXPECT_EQ(1, (int)md_array_size(pairs));
-    EXPECT_TRUE(has_pair(pairs, 8, 9));
-    res = md_filter_bonds(&pairs, STR_LIT("bond(kind='elastic')"), &fctx, alloc);
-    EXPECT_TRUE(res.success);
-    EXPECT_EQ(1, (int)md_array_size(pairs));
-    EXPECT_TRUE(has_pair(pairs, 8, 9));
-    res = md_filter_bonds(&pairs, STR_LIT("bond(kind='covalent') or bond(bond_delta())"), &fctx, alloc);
-    EXPECT_TRUE(res.success);
-    EXPECT_FALSE(has_pair(pairs, 8, 9));
+    const struct { md_bond_kind_t kind; const char* expr; } outside[] = {
+        { MD_BOND_KIND_ELASTIC, "bond(kind='elastic')" }, { MD_BOND_KIND_METALLIC, "bond(kind='metallic')" },
+    };
+    for (size_t k = 0; k < ARRAY_SIZE(outside); ++k) {
+        sys.bond.flags[cu] = md_bond_flags_set_kind(sys.bond.flags[cu], outside[k].kind);
+        md_system_bond_build_connectivity(&sys);
+        res = md_filter_bonds(&pairs, STR_LIT(""), &fctx, alloc);
+        EXPECT_TRUE(res.success);
+        EXPECT_EQ(8, (int)md_array_size(pairs));
+        EXPECT_TRUE(has_pair(pairs, 8, 9));
+        res = md_filter_bonds(&pairs, STR_LIT("bond()"), &fctx, alloc);
+        EXPECT_TRUE(res.success);
+        EXPECT_EQ(8, (int)md_array_size(pairs));
+        res = md_filter_bonds(&pairs, STR_LIT("resname('CU')"), &fctx, alloc);
+        EXPECT_TRUE(res.success);
+        EXPECT_EQ(1, (int)md_array_size(pairs));
+        EXPECT_TRUE(has_pair(pairs, 8, 9));
+        res = md_filter_bonds(&pairs, str_from_cstr(outside[k].expr), &fctx, alloc);
+        EXPECT_TRUE(res.success);
+        EXPECT_EQ(1, (int)md_array_size(pairs));
+        EXPECT_TRUE(has_pair(pairs, 8, 9));
+        res = md_filter_bonds(&pairs, STR_LIT("bond(kind='covalent') or bond(bond_delta())"), &fctx, alloc);
+        EXPECT_TRUE(res.success);
+        EXPECT_FALSE(has_pair(pairs, 8, 9));
+    }
 
     md_arena_allocator_destroy(alloc);
 }

@@ -1790,12 +1790,14 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 // BEGIN BOND ORDER DERIVATION (plain arrays in, the contents of the buffers out; tested on its own)
 
 // Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert). An elastic bond (MD_BOND_KIND_ELASTIC) is drawn as a plain one
-// where the representation shows the elastic bonds, and not at all elsewhere.
+// where the representation shows the elastic bonds, and not at all elsewhere. A metallic bond (MD_BOND_KIND_METALLIC)
+// is never drawn by licorice and ball and stick: a Bonds representation draws it.
 enum {
-    BOND_KIND_PLAIN   = 0,
-    BOND_KIND_DOUBLE  = 1,
-    BOND_KIND_TRIPLE  = 2,
-    BOND_KIND_ELASTIC = 3,
+    BOND_KIND_PLAIN    = 0,
+    BOND_KIND_DOUBLE   = 1,
+    BOND_KIND_TRIPLE   = 2,
+    BOND_KIND_ELASTIC  = 3,
+    BOND_KIND_METALLIC = 4,
 };
 #define BOND_REF_NONE 0xFFFFFFFFu
 
@@ -1998,7 +2000,8 @@ static uint32_t compute_bond_orders(uint32_t* out_order, uint32_t* out_ref, cons
     uint32_t entries = 0;
     for (uint32_t i = 0; i < in->bond_count; ++i) {
         const uint32_t f = in->flags[i];
-        out_order[i] = md_bond_kind(f) == MD_BOND_KIND_ELASTIC ? BOND_KIND_ELASTIC : BOND_KIND_PLAIN;
+        const md_bond_kind_t kind = md_bond_kind(f);
+        out_order[i] = kind == MD_BOND_KIND_ELASTIC ? BOND_KIND_ELASTIC : kind == MD_BOND_KIND_METALLIC ? BOND_KIND_METALLIC : BOND_KIND_PLAIN;
         if (!bo_valid_bond(in, i) || (f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED))) continue;
         const uint32_t a = in->pairs[2 * i + 0];
         const uint32_t b = in->pairs[2 * i + 1];

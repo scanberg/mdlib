@@ -81,6 +81,7 @@
 #define KIND_DOUBLE     1u
 #define KIND_TRIPLE     2u
 #define KIND_ELASTIC    3u
+#define KIND_METALLIC   4u      // Never drawn here: a Bonds representation draws them
 
 // Relative to the radius of the stick (r) and to the envelope of the thinner sticks (u_spread * r)
 #define DOUBLE_RADIUS   0.42    // * envelope
@@ -334,7 +335,7 @@ void main() {
     // ELASTIC BONDS (MD_BOND_KIND_ELASTIC): springs of the force field, not bonds of the molecule, drawn only where the
     // representation shows them
     uint order = u_bond_kinds != 0u ? texelFetch(u_buf_bond_order, int(bond)).x : KIND_PLAIN;
-    if ((order & 7u) == KIND_ELASTIC && u_elastic_bonds == 0u) {
+    if (((order & 7u) == KIND_ELASTIC && u_elastic_bonds == 0u) || (order & 7u) == KIND_METALLIC) {
         cull();
         return;
     }

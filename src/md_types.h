@@ -99,6 +99,12 @@ typedef enum {
     // sterol, with its branches and hydrogens. The other atoms of a lipid are its head(s).
     MD_ATOM_FLAG_LIPID_TAIL             = 0x40,
 
+    // Of a metallic phase: a metal in bulk, at a surface or in a particle, bonded to the metal atoms of its first
+    // coordination shell by MD_BOND_KIND_METALLIC bonds, and to nothing else in the topology (what touches a surface
+    // moves across it: its contacts are those of a frame, md_util_bond_delta). Set with the bonds
+    // (md_util_system_infer_covalent_bonds, METALLIC PHASES in md_util.c).
+    MD_ATOM_FLAG_METALLIC               = 0x80,
+
     // Chemistry, see md_chem.h (md_chem_perceive)
     MD_ATOM_FLAG_HYBRIDIZATION_MASK     = 0x300,    // md_hybridization_t, see md_atom_flags_hybridization
     MD_ATOM_FLAG_AROMATIC               = 0x400,    // In an aromatic ring
@@ -280,8 +286,9 @@ static inline md_entity_flags_t md_entity_flags_set_kind(md_entity_flags_t flags
 //   KIND       A value in bits 5-7 (md_bond_kind_t): read it with md_bond_kind and write it with md_bond_flags_set_kind.
 //              Bit 7 set: outside of the bond graph (md_bond_is_graph). Bits 7 and 6 set: non-covalent, of the second
 //              range of md_bond_data_t (md_bond_is_noncovalent).
-//     COVALENT     0x00  A bond of the molecule. Metallic between two metals: whether a bond involves a metal is a
-//                        question for the elements of its atoms.
+//     COVALENT     0x00  A bond of the molecule, also between two metals of a molecule (the Mn-Mn of Mn2(CO)10, the
+//                        Mo-Mo of a paddlewheel): whether a bond involves a metal is a question for the elements of its
+//                        atoms. Two metal atoms of a metallic phase have a METALLIC bond instead.
 //     COORDINATE   0x20  A metal-ligand bond, which counts towards the valence of neither atom: every bond between a
 //                        metal and a non-metal unless its kind was given (md_util_system_infer_coordination), and any
 //                        other bond a file says is one. Whether the ligand is then an anion (the thiolate of a zinc
@@ -295,13 +302,20 @@ static inline md_entity_flags_t md_entity_flags_set_kind(md_entity_flags_t flags
 //                        the bonds of a molecule: the connectivity (md_bond_conn_data_t, so md_bond_iter and
 //                        md_bond_find), the structures, rings, chemistry and matching. The representations do not draw
 //                        them unless asked to.
+//     METALLIC     0xA0  Between two atoms of a metallic phase (MD_ATOM_FLAG_METALLIC: a metal in bulk, at a surface,
+//                        in a particle), neighbours within its first coordination shell. The bonding of a metal is not
+//                        that of a molecule, so like the elastic bonds they are kept in the first range of
+//                        md_bond_data_t and left out of everything which follows the bonds of a molecule (the
+//                        connectivity, structures, rings, chemistry, matching, the bonds formed and broken over a run).
+//                        Licorice and ball and stick do not draw them; a Bonds representation does (bond(kind=
+//                        "metallic")). Inferred only (METALLIC PHASES in md_util.c).
 //     INTERACTION  0xC0  A non-covalent bond of no particular kind: one a user marks between two atoms, a salt bridge,
 //                        the contact of a halogen with its acceptor.
 //     HYDROGEN     0xE0  A hydrogen bond, D-H...A. Stored with the hydrogen (or the donor without one) as the first
 //                        atom.
 //              COVALENT and COORDINATE bonds make up the bond graph, from which the connectivity, the rings, the
 //              structures and the perceived chemistry are derived. INTERACTION and HYDROGEN are the non-covalent bonds,
-//              which md_bond_data_t keeps in a range of their own. 0x40 and 0xA0 are unused.
+//              which md_bond_data_t keeps in a range of their own. 0x40 and 0x60 are unused.
 //
 // PROVENANCE
 //   ORIGIN           A value in bits 8-9 (md_bond_origin_t): read it with md_bond_origin and write it with
@@ -402,6 +416,7 @@ typedef enum md_bond_kind_t {
     MD_BOND_KIND_COVALENT    = 0x00,
     MD_BOND_KIND_COORDINATE  = 0x20,
     MD_BOND_KIND_ELASTIC     = 0x80,
+    MD_BOND_KIND_METALLIC    = 0xA0,
     MD_BOND_KIND_INTERACTION = 0xC0,
     MD_BOND_KIND_HYDROGEN    = 0xE0,
 } md_bond_kind_t;
@@ -415,7 +430,7 @@ static inline md_bond_flags_t md_bond_flags_set_kind(md_bond_flags_t flags, md_b
     return (md_bond_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
 }
 
-// A bond of the bond graph: covalent or coordinate. Elastic and non-covalent bonds are not.
+// A bond of the bond graph: covalent or coordinate. Elastic, metallic and non-covalent bonds are not.
 static inline bool md_bond_is_graph(md_bond_flags_t flags) {
     return ((unsigned int)flags & 0x80u) == 0;
 }
