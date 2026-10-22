@@ -88,8 +88,8 @@ typedef struct md_pdb_sheet_t {
     char    end_res_name[4];
     char    cur_res_name[4];
     char    prev_res_name[4];
-    char    cur_atom_name[4];
-    char    prev_atom_name[4];
+    char    cur_atom_name[5];   // Four characters (columns 42 to 45) and the null
+    char    prev_atom_name[5];  // Four characters (columns 57 to 60) and the null
     
     int32_t init_res_seq;
     int32_t end_res_seq;
@@ -109,7 +109,7 @@ typedef struct md_pdb_sheet_t {
 
 typedef struct md_pdb_coordinate_t {
     int32_t atom_serial;
-    char atom_name[4];
+    char atom_name[5];      // Four characters (columns 13 to 16) and the null
     char res_name[5];
     char alt_loc;
     char chain_id;
