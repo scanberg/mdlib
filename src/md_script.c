@@ -4852,6 +4852,34 @@ static attr_readable_t attr_readable(const md_attributes_t* attributes, const md
     return ATTR_READABLE;
 }
 
+// The path attr() reads attr by in its shortest form: relative to its run where that names it alone, in full where it
+// does not. The path as given is looked for first and then in every run (static_check_attribute), so the relative one
+// must name nothing else, neither outside the runs nor in another one.
+static str_t attr_short_path(const md_attributes_t* attributes, const md_attribute_t* attr, str_t run) {
+    const str_t relative = str_substr(attr->path, run.len + 1, SIZE_MAX);
+    if (md_attributes_find(attributes, relative)) {
+        return attr->path;
+    }
+    for (md_attribute_iter_t it = md_attributes_iter_children(attributes, STR_LIT("run")); md_attributes_next(&it);) {
+        const md_attribute_t* other = md_attributes_find_in(attributes, it.child_path, relative);
+        if (other && other != attr) {
+            return attr->path;
+        }
+    }
+    return relative;
+}
+
+str_t md_script_attr_path(const md_attributes_t* attributes, const md_attribute_t* attr) {
+    if (!attributes || !attr) {
+        return (str_t){0};
+    }
+    attr_read_info_t info;
+    if (attr_readable(attributes, attr, &info) != ATTR_READABLE) {
+        return (str_t){0};
+    }
+    return attr_short_path(attributes, attr, info.run);
+}
+
 // attr("<path>") names a temporal attribute of the system. The path is either absolute
 // ("run/a/edr/potential") or relative to a run ("edr/potential"), in which case it has to exist in
 // exactly one run: with a single trajectory that is always the case, and when it is not the error

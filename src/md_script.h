@@ -9,6 +9,7 @@
 #include <core/md_bitset.h>
 #include <core/md_array.h>
 
+struct md_attribute_t;
 struct md_attributes_t;
 struct md_system_t;
 struct md_allocator_i;
@@ -443,6 +444,15 @@ const str_t* md_script_keywords(void);
 // Writes up to cap names to out and returns how many there are, so md_script_builtin_identifiers(NULL, 0) gives the
 // size of the buffer to pass.
 size_t md_script_builtin_identifiers(str_t* out, size_t cap);
+
+// ### ATTRIBUTES ###
+
+// The path that attr() reads an attribute of the system's table by (attributes, the table attr is in), in the form
+// completion offers it: relative to its run ("edr/potential") where that names it alone, in full
+// ("run/a/edr/potential") where it does not. A view into attr->path. Empty if attr() cannot read the attribute: it
+// does not vary over the frames of a run, does not hold numbers, or has more dimensions per frame than a script value
+// holds (attr() given its path says which).
+str_t md_script_attr_path(const struct md_attributes_t* attributes, const struct md_attribute_t* attr);
 
 // ### COMPLETION ###
 

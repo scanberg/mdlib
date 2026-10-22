@@ -4451,6 +4451,23 @@ UTEST(script, completion_attribute_paths) {
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/t/obs/value"));
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "obs/value"));
 
+    // md_script_attr_path gives the form completion offers, and nothing for what attr() cannot read
+    EXPECT_TRUE(str_eq(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/obs/value"))), STR_LIT("obs/value")));
+    EXPECT_TRUE(str_eq(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/time"))), STR_LIT("time")));
+    EXPECT_TRUE(str_empty(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/static")))));
+    EXPECT_TRUE(str_empty(md_script_attr_path(t, NULL)));
+
+    // In full where the relative path names something outside the runs, which attr() would find first
+    ASSERT_NE(publish_f64(t, "run/t/obs/shadowed", series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), values), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "obs/shadowed",       series_fmt(3, 1), MD_ATTRIBUTE_FLAG_NONE,     md_unit_none(), values), MD_ATTRIBUTE_INVALID);
+    {
+        const str_t path = md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/obs/shadowed")));
+        EXPECT_TRUE(str_eq(path, STR_LIT("run/t/obs/shadowed")));
+        snprintf(src, sizeof(src), "x = attr(\"" STR_FMT "\");", STR_ARG(path));
+        EXPECT_TRUE(compiles(ir, src, &sys));
+        EXPECT_FALSE(compiles(ir, "x = attr(\"obs/shadowed\");", &sys));
+    }
+
     // A second run with the same path makes the short form ambiguous: both are offered in full, and still compile
     ASSERT_NE(publish_f64(t, "run/u/time",      series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, run_time->unit, frame_times), MD_ATTRIBUTE_INVALID);
     ASSERT_NE(publish_f64(t, "run/u/obs/value", series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), values), MD_ATTRIBUTE_INVALID);
@@ -4458,6 +4475,8 @@ UTEST(script, completion_attribute_paths) {
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "obs/value"));
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/t/obs/value"));
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/u/obs/value"));
+    EXPECT_TRUE(str_eq(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/obs/value"))), STR_LIT("run/t/obs/value")));
+    EXPECT_TRUE(str_eq(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/u/obs/value"))), STR_LIT("run/u/obs/value")));
     for (size_t i = 0; i < c.count; ++i) {
         snprintf(src, sizeof(src), "x = attr(\"" STR_FMT "\");", STR_ARG(c.items[i].text));
         snprintf(msg, sizeof(msg), "offered '%.*s'", STR_ARG(c.items[i].label));
