@@ -2893,6 +2893,103 @@ UTEST(util, hypermodified_nucleotide) {
 }
 
 // Topologies: each molecule type is an entity, each molecule an instance, and the kinds are classified from the residues
+// The chains are the chain ids the data gives (the author's), whatever carries them, and the polymers without one
+static size_t chain_atoms(const md_system_t* sys, size_t c) {
+    return md_system_chain_atom_count(sys, c);
+}
+
+UTEST(util, chains) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    {
+        // One chain of a polymer and its 106 waters: the waters carry its id, they are of it
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
+        ASSERT_EQ(1, (int)md_system_chain_count(&sys));
+        EXPECT_TRUE(str_eq(md_system_chain_id(&sys, 0), STR_LIT("E")));
+        EXPECT_FALSE(md_system_chain_inferred(&sys, 0));
+        EXPECT_EQ(md_system_atom_count(&sys), chain_atoms(&sys, 0));
+        EXPECT_EQ(1 + 106, (int)(md_system_chain_inst_end(&sys, 0) - md_system_chain_inst_beg(&sys, 0)));
+        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) EXPECT_EQ(0, md_system_chain_find_by_inst_idx(&sys, i));
+        EXPECT_EQ(0, md_system_chain_find_by_atom_idx(&sys, md_system_atom_count(&sys) - 1));
+    }
+
+    {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb")));
+        ASSERT_EQ(3, (int)md_system_chain_count(&sys));
+        static const char* ids[] = {"A", "B", "C"};
+        size_t total = 0;
+        for (size_t c = 0; c < 3; ++c) {
+            EXPECT_TRUE(str_eq(md_system_chain_id(&sys, c), str_from_cstr(ids[c])));
+            total += chain_atoms(&sys, c);
+        }
+        EXPECT_EQ(md_system_atom_count(&sys), total);
+    }
+
+    {
+        // mmCIF: the chains are the author's ids, not the asyms. Asyms E, F, G, K and L hold ligands, ions and waters
+        // the author filed under the chains A and B.
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_EQ(2, (int)md_system_chain_count(&sys));
+        EXPECT_TRUE(str_eq(md_system_chain_id(&sys, 0), STR_LIT("A")));
+        EXPECT_TRUE(str_eq(md_system_chain_id(&sys, 1), STR_LIT("B")));
+        EXPECT_EQ(md_system_atom_count(&sys), chain_atoms(&sys, 0) + chain_atoms(&sys, 1));
+        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
+            const md_chain_idx_t c = md_system_chain_find_by_inst_idx(&sys, i);
+            ASSERT_GE(c, 0);
+            EXPECT_TRUE(str_eq(md_system_chain_id(&sys, (size_t)c), md_system_instance_auth_id(&sys, i)));
+        }
+    }
+
+    {
+        // No ids in the data: each polymer is a chain of its own, without one, and nothing else is in a chain
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL));
+        size_t polymers = 0;
+        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
+            const bool polymer = md_entity_kind_is_polymer(md_system_instance_entity_kind(&sys, i));
+            polymers += polymer;
+            EXPECT_EQ(polymer, md_system_chain_find_by_inst_idx(&sys, i) >= 0);
+        }
+        ASSERT_GT(polymers, 0);
+        ASSERT_EQ(polymers, md_system_chain_count(&sys));
+        for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
+            EXPECT_TRUE(md_system_chain_inferred(&sys, c));
+            EXPECT_TRUE(str_empty(md_system_chain_id(&sys, c)));
+        }
+    }
+
+    {
+        // A PDB file without chain ids (as simulations write them) is the same
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb")));
+        ASSERT_EQ(1, (int)md_system_chain_count(&sys));
+        EXPECT_TRUE(md_system_chain_inferred(&sys, 0));
+    }
+
+    {
+        // A topology names no chains either: the peptide is one, the waters and ions are in none
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
+        ASSERT_EQ(1, (int)md_system_chain_count(&sys));
+        EXPECT_TRUE(md_system_chain_inferred(&sys, 0));
+        EXPECT_EQ(0, md_system_chain_find_by_inst_idx(&sys, 0));
+        EXPECT_EQ(-1, md_system_chain_find_by_inst_idx(&sys, 1));
+    }
+
+    md_vm_arena_destroy(alloc);
+}
+
 UTEST(util, entity_instance_topology) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 

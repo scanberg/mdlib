@@ -4439,14 +4439,14 @@ UTEST(script, completion_values_in_strings) {
 
     // A parameter that is not the first, given by position and by name
     c = complete_at("x = count(all, \"|\")", &test_mol, alloc);
-    EXPECT_EQ(4, (int)c.count);
+    EXPECT_EQ(5, (int)c.count);
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "residue"));
     c = complete_at("x = count(all, unit=\"|\")", &test_mol, alloc);
-    EXPECT_EQ(4, (int)c.count);
+    EXPECT_EQ(5, (int)c.count);
 
     // Values that are not from the system are there without one, the others are not
     c = complete_at("x = count(all, \"|\")", NULL, alloc);
-    EXPECT_EQ(4, (int)c.count);
+    EXPECT_EQ(5, (int)c.count);
     c = complete_at("x = resname(\"|\")", NULL, alloc);
     EXPECT_EQ(0, (int)c.count);
 
@@ -4525,7 +4525,7 @@ UTEST(script, completion_arguments) {
     c = complete_at("x = count(all, u|", &test_mol, alloc);
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "sel="));
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "unit="));
-    EXPECT_EQ(4, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+    EXPECT_EQ(5, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
     c = complete_at("x = contacts(a, cutoff=3, |", &test_mol, alloc);
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "a="));
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "cutoff="));

@@ -5092,7 +5092,78 @@ static inline md_label_t md_util_next_inst_id(str_t last) {
     }
 }
 
+static void clear_chains(md_system_t* sys, md_allocator_i* alloc) {
+    md_array_free(sys->chain.id, alloc);
+    md_array_free(sys->chain.inst_chain, alloc);
+    md_index_data_free(&sys->chain.inst);
+    MEMSET(&sys->chain, 0, sizeof(sys->chain));
+    (void)alloc;
+}
+
+bool md_util_system_infer_chains(md_system_t* sys) {
+    if (!sys) {
+        MD_LOG_ERROR("Missing system");
+        return false;
+    }
+    ASSERT(sys->alloc);
+    md_allocator_i* alloc = sys->alloc;
+    clear_chains(sys, alloc);
+    md_system_topology_changed(sys);
+
+    const size_t num_inst = sys->instance.count;
+    if (num_inst == 0) return true;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+    // The chain of each id, by the hash of the id
+    md_hashmap32_t chain_of_id = { .allocator = temp_arena };
+    md_array_resize(sys->chain.inst_chain, num_inst, alloc);
+
+    for (size_t i = 0; i < num_inst; ++i) {
+        const str_t id = str_trim(md_instance_auth_id(&sys->instance, i));
+        md_chain_idx_t chain = -1;
+        if (!str_empty(id)) {
+            const uint64_t key = md_hash64_str(id, 0);
+            const uint32_t* found = md_hashmap_get(&chain_of_id, key);
+            if (found) {
+                chain = (md_chain_idx_t)*found;
+            } else {
+                chain = (md_chain_idx_t)sys->chain.count++;
+                md_array_push(sys->chain.id, make_label(id), alloc);
+                md_hashmap_add(&chain_of_id, key, (uint32_t)chain);
+            }
+        } else if (md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, i))) {
+            // No id in the data: a polymer is a chain of its own, which is not given one
+            chain = (md_chain_idx_t)sys->chain.count++;
+            md_array_push(sys->chain.id, (md_label_t){0}, alloc);
+        }
+        sys->chain.inst_chain[i] = chain;
+    }
+
+    // The instances of each chain, in the order of the chains
+    sys->chain.inst.alloc = alloc;
+    if (sys->chain.count) {
+        uint32_t* count = md_temp_alloc_zero_array(temp, uint32_t, sys->chain.count + 1);
+        for (size_t i = 0; i < num_inst; ++i) {
+            if (sys->chain.inst_chain[i] >= 0) count[sys->chain.inst_chain[i] + 1] += 1;
+        }
+        for (size_t c = 0; c < sys->chain.count; ++c) count[c + 1] += count[c];
+        md_array_resize(sys->chain.inst.offsets, sys->chain.count + 1, alloc);
+        MEMCPY(sys->chain.inst.offsets, count, (sys->chain.count + 1) * sizeof(uint32_t));
+        md_array_resize(sys->chain.inst.indices, count[sys->chain.count], alloc);
+        for (size_t i = 0; i < num_inst; ++i) {
+            const md_chain_idx_t c = sys->chain.inst_chain[i];
+            if (c >= 0) sys->chain.inst.indices[count[c]++] = (int32_t)i;
+        }
+    }
+
+    md_temp_end(temp);
+    return true;
+}
+
 static void clear_entities_and_instances(md_system_t* sys, md_allocator_i* alloc) {
+    clear_chains(sys, alloc);
     md_array_free(sys->instance.id, alloc);
     md_array_free(sys->instance.auth_id, alloc);
     md_array_free(sys->instance.comp_offset, alloc);
@@ -5344,7 +5415,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
     md_array_push(sys->instance.comp_offset, (uint32_t)num_comp, alloc);
 
     md_temp_end(temp);
-    return true;
+    return md_util_system_infer_chains(sys);
 }
 
 static inline bool compare_ring(const int* ring_a, int ring_a_size, const int* ring_b, int ring_b_size) {
@@ -12522,6 +12593,8 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         }
         // Entities a loader named without saying what they are (the molecule types of a topology)
         md_util_system_infer_entity_kinds(sys);
+        // From the author ids of the instances, whoever made them, and from what is a polymer
+        md_util_system_infer_chains(sys);
     }
 
     if (flags & MD_UTIL_INFER_BACKBONE_BIT) {

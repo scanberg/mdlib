@@ -77,7 +77,9 @@ typedef struct md_component_data_t {
 // id is the instance's label (mmCIF label_asym_id) and auth_id the author's chain id (auth_asym_id, the chain id of a
 // PDB file), "" when there is none. The id is unique for polymer chains but SHARED by the small molecules of one
 // asym: mmCIF puts all the waters of a chain in one asym, and inference gives a run of molecules of the same
-// non-polymer entity one id in the same way. Look up instances by index, not by id.
+// non-polymer entity one id in the same way. Look up instances by index, not by id. The id is the file's only in an
+// mmCIF file; elsewhere it is made up (md_util_instance_id_from_index), and it is not what a chain is called: that is
+// the auth_id, which the chains are made from (md_chain_data_t).
 typedef struct md_instance_data_t {
     size_t count;
     md_label_t* id;
@@ -85,6 +87,21 @@ typedef struct md_instance_data_t {
     uint32_t* comp_offset;          // [count + 1]
     md_entity_idx_t* entity_idx;
 } md_instance_data_t;
+
+// Chain: the atoms which the data files under one chain identifier, the author's: the chain id of a PDB file, the
+// auth_asym_id of an mmCIF file. Whatever carries the id is of the chain, a polymer and the ligands and waters filed
+// with it alike, and an id is one chain however its atoms are spread: chain("A") of a script is one set.
+//   - Where the data gives no id, a polymer is a chain of its own, inferred: it has no id and is found by its position
+//     among the chains (chain(2)). Ids are never made up.
+//   - A molecule which is not a polymer and which the data gives no id is in no chain.
+// The chains are in the order of their first instance. They are derived from the instances (md_util_system_infer_chains),
+// whose author ids hold the identifiers.
+typedef struct md_chain_data_t {
+    size_t count;
+    md_label_t* id;                 // [count] The author's identifier, empty for an inferred chain
+    md_index_data_t inst;           // [count] The instances of each chain, ascending
+    md_chain_idx_t* inst_chain;     // [instance count] The chain of each instance, -1 for an instance in none
+} md_chain_data_t;
 
 // Entity: a molecule type, or a polymer sequence, of which the system holds one or more instances.
 // What it is lives in its flags (md_entity_kind_t), which its instances share.
@@ -416,6 +433,7 @@ typedef struct md_system_t {
     md_atom_data_t              atom;
     md_component_data_t         component;
     md_instance_data_t          instance;
+    md_chain_data_t             chain;              // The instances by the chain id the data gives them, see md_chain_data_t
     md_entity_data_t            entity;
 
     md_protein_backbone_data_t  protein_backbone;
@@ -1299,6 +1317,62 @@ static inline md_instance_idx_t md_system_instance_find_by_atom_idx(const md_sys
         inst_idx = md_instance_find_by_comp_idx(&sys->instance, comp_idx);
     }
     return inst_idx;
+}
+
+static inline size_t md_system_chain_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return sys->chain.count;
+}
+
+// The author's identifier of the chain, empty for an inferred chain (a polymer the data gives no id)
+static inline str_t md_system_chain_id(const md_system_t* sys, size_t chain_idx) {
+    ASSERT(sys);
+    str_t id = STR_INIT("");
+    if (sys->chain.id && chain_idx < sys->chain.count) {
+        id = LBL_TO_STR(sys->chain.id[chain_idx]);
+    }
+    return id;
+}
+
+static inline bool md_system_chain_inferred(const md_system_t* sys, size_t chain_idx) {
+    ASSERT(sys);
+    return chain_idx < sys->chain.count && str_empty(md_system_chain_id(sys, chain_idx));
+}
+
+// The instances of the chain, ascending: [beg, end)
+static inline const md_instance_idx_t* md_system_chain_inst_beg(const md_system_t* sys, size_t chain_idx) {
+    ASSERT(sys);
+    return chain_idx < sys->chain.count ? md_index_range_beg(&sys->chain.inst, chain_idx) : NULL;
+}
+
+static inline const md_instance_idx_t* md_system_chain_inst_end(const md_system_t* sys, size_t chain_idx) {
+    ASSERT(sys);
+    return chain_idx < sys->chain.count ? md_index_range_end(&sys->chain.inst, chain_idx) : NULL;
+}
+
+// The chain of the instance, -1 for an instance in none
+static inline md_chain_idx_t md_system_chain_find_by_inst_idx(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    return (sys->chain.inst_chain && inst_idx < sys->instance.count) ? sys->chain.inst_chain[inst_idx] : -1;
+}
+
+// The chain of the atom, -1 for an atom in none
+static inline md_chain_idx_t md_system_chain_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
+    ASSERT(sys);
+    const md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(sys, atom_idx);
+    return inst_idx >= 0 ? md_system_chain_find_by_inst_idx(sys, (size_t)inst_idx) : -1;
+}
+
+// The atoms of the chain: the atom ranges of its instances. Mostly one, as a chain is mostly one instance, but the
+// ligands and waters a file files under a chain id come after all of the polymers, and they are of the chain too.
+static inline size_t md_system_chain_atom_count(const md_system_t* sys, size_t chain_idx) {
+    ASSERT(sys);
+    size_t n = 0;
+    const md_instance_idx_t* end = md_system_chain_inst_end(sys, chain_idx);
+    for (const md_instance_idx_t* it = md_system_chain_inst_beg(sys, chain_idx); it && it < end; ++it) {
+        n += md_system_instance_atom_count(sys, (size_t)*it);
+    }
+    return n;
 }
 
 // The kind of the component which holds the atom, MD_COMPONENT_KIND_OTHER when it is in none.

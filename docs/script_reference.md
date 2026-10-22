@@ -306,7 +306,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 |---|---|
 | [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`head`](#head), [`tail`](#tail), [`ring`](#ring) |
 | [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`lipid`](#lipid), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
-| [Selectors: instances](#selectors-instance-level) | [`instance`](#instance), [`chain`](#chain), [`chain_id`](#chain_id), [`auth_id`](#auth_id) |
+| [Selectors: chains and instances](#selectors-chains-and-instances) | [`chain`](#chain) (`chain_id`, `auth_id`), [`instance`](#instance) |
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
 | [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`pool`](#pool), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
@@ -777,13 +777,51 @@ first_component = component(1);
 named = component("PFT");
 ```
 
-### Selectors: instance level
+### Selectors: chains and instances
 
-An instance is one polymer chain or one molecule: each protein or nucleic-acid chain, and each ligand, lipid, ion
+A **chain** is what the data files under one chain identifier: the chain id of a PDB file, the author's chain id
+(`auth_asym_id`) of an mmCIF file. Whatever carries the id is of the chain, a protein and the ligands, ions and waters
+filed with it alike, and `chain("A")` is all of them, as **one** selection however the atoms are spread through the file.
+A chain id is a label, as an atom name is.
+
+Where the data gives no chain ids (a GRO file, a topology, a PDB file written by a simulation), none are made up: each
+polymer is a chain of its own and has none, and is found by its position, `chain(1)`. A molecule which is not a polymer
+and is given no id is in no chain.
+
+An **instance** is one polymer chain or one molecule: each protein or nucleic-acid chain, and each ligand, lipid, ion
 and water molecule on its own. Instances come from the file where it has them (the asyms of an mmCIF file, the
-molecules of a GROMACS topology) and are otherwise inferred from the bonds and the chain ids. The identifier is not
-unique: the small molecules of one chain share it (all waters of chain A in an mmCIF file have one label), so
-`instance("W")` gives one selection per molecule. A **chain** is an instance of a polymer.
+molecules of a GROMACS topology) and are otherwise inferred from the bonds and the chain ids. Their identifier is the
+mmCIF `label_asym_id`, and elsewhere one made up; it is not unique: the small molecules of one chain share it (all
+waters of chain A in an mmCIF file have one label), so `instance("W")` gives one selection per molecule.
+
+### chain
+
+<!-- proc name=chain aliases=chain_id,auth_id category=selector.instance -->
+<a id="chain_id"></a><a id="auth_id"></a>
+
+```text
+chain(id: string[])     -> atomset
+chain(index: irange[])  -> atomset[]
+chain(sel: atomset[])   -> atomset[]     # grow to whole chains
+chain_id(id: string[])  -> atomset
+auth_id(id: string[])   -> atomset
+```
+
+- `chain("A")` — every atom of the chain id, as one selection. Several ids, or a pattern (`"*"` as in
+  [`name`](#name)), select all of their atoms together. An id no chain has is a compile error which lists the ids
+  there are, and so is any id in a system whose data gives none. Inside a context, the atoms of the context which carry
+  the id. `chain_id` and `auth_id` are other names of it.
+- `chain(1:2)` — chains by their 1-based position, one selection per chain, counted as [`residue`](#residue) counts
+  its positions. The chains are in the order of their first atoms.
+- `chain(sel)` — every chain that the selection touches, whole, one selection per chain. Atoms in no chain add none.
+
+```mdscript
+chain_a = chain("A");                          # the protein of chain A, and its ligands and waters
+protein_a = protein() and chain("A");          # the protein alone
+first_two = chain(1:2);                        # two selections
+its_chain = chain(atom(1));                    # the chain that contains atom 1
+d = distance(com(chain("A")), com(chain("B")));
+```
 
 ### instance
 
@@ -799,55 +837,7 @@ context among the instances with an atom in it).
 
 ```mdscript
 first_instance = instance(1);
-by_id = instance("A");
-```
-
-### chain
-
-<!-- proc name=chain category=selector.instance -->
-
-```text
-chain(id: string[])     -> atomset[]
-chain(index: irange[])  -> atomset[]
-chain(sel: atomset[])  -> atomset[]      # grow to whole chains
-```
-
-Select chains by identifier (`"A"`), by 1-based position (`chain(1:2)`, counted as [`residue`](#residue) counts its
-positions), or expand a selection to every chain it touches.
-
-```mdscript
-chain_a = chain("A");
-first_two = chain(1:2);
-its_chain = chain(atom(1));                    # the chain that contains atom 1
-```
-
-### chain_id
-
-<!-- proc name=chain_id category=selector.instance -->
-
-```text
-chain_id(id: string[]) -> atomset[]
-```
-
-Select chains by their identifier (the label in the file). Equivalent to `chain("...")`.
-
-```mdscript
-a = chain_id("A");
-```
-
-### auth_id
-
-<!-- proc name=auth_id category=selector.instance -->
-
-```text
-auth_id(id: string[]) -> atomset[]
-```
-
-Select instances by their author-assigned identifier (as found in mmCIF files), which can differ from the label
-identifier used by `instance` and `chain_id`. A string that matches no instance is a compile error.
-
-```mdscript
-by_author = auth_id("A");
+by_label = instance("E");                      # the asym E of an mmCIF file
 ```
 
 ### Selectors: structure matching
@@ -1467,7 +1457,7 @@ count(b: bondset[])                     -> float
 **Parameters:** `sel` or `c` (required), `unit` (optional).
 
 The number of atoms in the selection (an array is merged first). With `unit` the number of larger structures the
-selection touches instead: `"atom"`, `"residue"`, `"chain"` or `"structure"`. An unknown unit is a compile error that
+selection touches instead: `"atom"`, `"residue"`, `"chain"`, `"instance"` or `"structure"`. An unknown unit is a compile error that
 lists the valid ones. A `count` of a dynamic selection changes over time and is a temporal property.
 
 Given a bond set from [`bond`](#bond), `count` is the number of bonds (an array is merged first).

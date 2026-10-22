@@ -7,6 +7,7 @@
 #include <md_system.h>
 #include <md_gro.h>
 #include <md_pdb.h>
+#include <md_mmcif.h>
 #include <md_util.h>
 
 #include <md_filter.h>
@@ -473,6 +474,104 @@ UTEST(filter, bonds_as_atoms) {
     EXPECT_TRUE(strstr(res.error, "atom(b)") != NULL);
     res = md_filter(&atoms, STR_LIT("within(3.0, atom(bond(kind='hydrogen')))"), &fctx, alloc);
     EXPECT_TRUE(res.success);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// chain("A") is every atom which carries the author's chain id A, as one set: the polymer and the ligands, ions and
+// waters filed under it, wherever they are in the file. chain(i) is the i-th chain, one set per chain.
+UTEST(filter, chains_by_author_id) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
+
+    // The atoms whose instance the author filed under A
+    md_bitmask_t want = md_bitmask_create(0, (uint32_t)sys.atom.count, alloc);
+    for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
+        if (str_eq(md_system_instance_auth_id(&sys, i), STR_LIT("A"))) {
+            const md_urange_t r = md_system_instance_atom_range(&sys, i);
+            md_bitmask_set_range(&want, r.beg, r.end);
+        }
+    }
+    ASSERT_GT(md_bitmask_count(&want), md_system_instance_atom_count(&sys, 0));   // More than the polymer
+
+    md_array(md_bitset_t) sets = 0;
+    for (size_t k = 0; k < 3; ++k) {
+        static const char* exprs[] = {"chain('A')", "chain_id('A')", "auth_id('A')"};
+        md_array_shrink(sets, 0);
+        ASSERT_TRUE(md_filter_sets(&sets, str_from_cstr(exprs[k]), &fctx, alloc).success);
+        ASSERT_EQ(1, (int)md_array_size(sets));
+        EXPECT_TRUE(md_bitset_equal(sets[0], md_bitmask_view(&want)));
+    }
+    // The same atoms as the first chain by position, which is one set per chain
+    md_array_shrink(sets, 0);
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("chain(1:2)"), &fctx, alloc).success);
+    ASSERT_EQ(2, (int)md_array_size(sets));
+    EXPECT_TRUE(md_bitset_equal(sets[0], md_bitmask_view(&want)));
+    EXPECT_EQ(sys.atom.count, md_bitset_count(sets[0]) + md_bitset_count(sets[1]));
+
+    // Several ids, or a pattern, are their atoms together
+    md_bitset_t bf = {0};
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("chain({'A', 'B'})"), &fctx, alloc).success);
+    EXPECT_EQ(sys.atom.count, md_bitset_count(bf));
+    md_array_shrink(sets, 0);
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("chain('*')"), &fctx, alloc).success);
+    EXPECT_EQ(1, (int)md_array_size(sets));
+
+    // The chains a selection touches, whole: a water of chain A gives all of chain A
+    md_array_shrink(sets, 0);
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("chain(water())"), &fctx, alloc).success);
+    ASSERT_EQ(2, (int)md_array_size(sets));
+    EXPECT_TRUE(md_bitset_equal(sets[0], md_bitmask_view(&want)));
+
+    // Within a context, what of it carries the id. Every water is not of chain A, and 'chain('A') in water()' is an
+    // error as 'name("CB") in residue(:)' is where a residue has none: the waters are taken as one here.
+    md_bitset_t waters = {0};
+    ASSERT_TRUE(md_filter(&waters, STR_LIT("water()"), &fctx, alloc).success);
+    const md_filter_context_t in_water = {&sys, &state, NULL, &waters};
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("chain('A')"), &in_water, alloc).success);
+    md_bitset_t water_a = {0};
+    ASSERT_TRUE(md_filter(&water_a, STR_LIT("water() and chain('A')"), &fctx, alloc).success);
+    EXPECT_GT(md_bitset_count(water_a), 0);
+    EXPECT_TRUE(md_bitset_equal(bf, water_a));
+
+    // An id there is not: the ids there are
+    md_filter_result_t res = md_filter(&bf, STR_LIT("chain('C')"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_TRUE(strstr(res.error, "'A', 'B'") != NULL);
+
+    // The asyms are instances
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("instance('E')"), &fctx, alloc).success);
+    EXPECT_EQ(md_system_instance_atom_count(&sys, 2), md_bitset_count(bf));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// Where the data gives no chain ids none are made up: the polymers are chains found by position
+UTEST(filter, chains_without_ids) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
+    ASSERT_GT(md_system_chain_count(&sys), 1);
+
+    md_bitset_t bf = {0};
+    md_filter_result_t res = md_filter(&bf, STR_LIT("chain('A')"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_TRUE(strstr(res.error, "no chain ids") != NULL);
+
+    md_array(md_bitset_t) sets = 0;
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("chain(:)"), &fctx, alloc).success);
+    EXPECT_EQ(md_system_chain_count(&sys), md_array_size(sets));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("chain(2)"), &fctx, alloc).success);
+    EXPECT_EQ(md_system_chain_atom_count(&sys, 1), md_bitset_count(bf));
 
     md_arena_allocator_destroy(alloc);
 }

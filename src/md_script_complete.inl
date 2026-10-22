@@ -263,14 +263,19 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
         }
         break;
     case DOMAIN_CHAIN_ID:
+        if (sys) {
+            for (size_t c = 0; c < md_system_chain_count(sys); ++c) {
+                const str_t id = md_system_chain_id(sys, c);
+                if (str_empty(id) || !chain_in_context(sys, c, atoms)) continue;
+                completion_add_value(&values, &seen, id, alloc);
+            }
+        }
+        break;
     case DOMAIN_INST_ID:
-    case DOMAIN_INST_AUTH_ID:
         if (sys) {
             for (size_t i = 0; i < md_system_instance_count(sys); ++i) {
-                if (domain == DOMAIN_CHAIN_ID && !is_instance_chain(sys, i)) continue;
                 if (!completion_in_context(atoms, md_system_instance_atom_range(sys, i))) continue;
-                const str_t id = domain == DOMAIN_INST_AUTH_ID ? md_system_instance_auth_id(sys, i) : md_system_instance_id(sys, i);
-                completion_add_value(&values, &seen, id, alloc);
+                completion_add_value(&values, &seen, md_system_instance_id(sys, i), alloc);
             }
         }
         break;

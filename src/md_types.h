@@ -567,6 +567,7 @@ enum {
 typedef int32_t     md_atom_idx_t;
 typedef int32_t     md_component_idx_t;
 typedef int32_t     md_instance_idx_t;
+typedef int32_t     md_chain_idx_t;
 typedef int32_t     md_entity_idx_t;
 typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_sequence_id_t;

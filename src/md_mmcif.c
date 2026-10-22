@@ -1244,6 +1244,11 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             str_t entity_id = str_from_cstrn(atom_entries[i].label_entity_id, sizeof(atom_entries[i].label_entity_id));
             str_t auth_asym_id = str_from_cstrn(atom_entries[i].auth_asym_id, sizeof(atom_entries[i].auth_asym_id));
             str_t label_asym_id = str_from_cstrn(atom_entries[i].label_asym_id, sizeof(atom_entries[i].label_asym_id));
+            // The chain id is the author's (md_chain_data_t). A file which does not give it calls its chains by their
+            // labels only, and those are then its chain ids.
+            if (str_empty(auth_asym_id) || str_eq(auth_asym_id, STR_LIT("?")) || str_eq(auth_asym_id, STR_LIT("."))) {
+                auth_asym_id = label_asym_id;
+            }
 
             md_entity_idx_t entity_idx = md_entity_find_by_id(&sys->entity, entity_id);
 
@@ -1352,6 +1357,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
     }
     // A polymer entity without _entity_poly does not say which polymer it is
     md_util_system_infer_entity_kinds(sys);
+    md_util_system_infer_chains(sys);
 
     // The assemblies name the instances by their asym ids
     mmcif_assemblies(sys, assembly_gen, opers, temp_arena);
