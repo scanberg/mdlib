@@ -1228,6 +1228,19 @@ UTEST_F(script, compile_script) {
     md_arena_allocator_destroy(alloc);
 }
 
+// sum() of a constant array is folded at compile time, ints converted to floats
+UTEST_F(script, sum) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    data_t data = {0};
+    ASSERT_TRUE(eval_expression(&data, STR_LIT("sum({1.0, 2.0, 3.5})"), &test_mol, alloc));
+    EXPECT_EQ(6.5f, as_float(data));
+    ASSERT_TRUE(eval_expression(&data, STR_LIT("sum({1, 2})"), &test_mol, alloc));
+    EXPECT_EQ(3.0f, as_float(data));
+    ASSERT_TRUE(eval_expression(&data, STR_LIT("sum({-1.0, 1.0}) + sum({2.0})"), &test_mol, alloc));
+    EXPECT_EQ(2.0f, as_float(data));
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST_F(script, implicit_conversion) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_system_t* mol = &utest_fixture->amy;
@@ -2598,6 +2611,24 @@ UTEST(script, attr_patterns) {
         EXPECT_EQ(-(float)(3 * 2), ((const float*)z->data)[2 * 3 + 2]);
         md_script_eval_free(eval);
     }
+
+    // Summed per frame, in the unit of the members; min and max keep it too
+    ASSERT_TRUE(compiles(ir, "s = sum(attr(\"edr/coul_sr_*\"));", &sys));
+    EXPECT_TRUE(md_unit_equal(ir->property_nodes[0]->data.unit[1], energy));
+    {
+        md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &sys, STR_LIT("run/t"), 0, F));
+        const md_attribute_t* sum = md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/s"));
+        ASSERT_TRUE(sum != NULL);
+        EXPECT_TRUE(md_unit_equal(sum->unit, energy));
+        for (uint32_t f = 0; f < F; ++f) {
+            EXPECT_EQ((float)(6 * f), ((const float*)sum->data)[f]);   // 1 + 2 + 3 times the frame
+        }
+        EXPECT_TRUE(md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/s/labels")) == NULL);
+        md_script_eval_free(eval);
+    }
+    ASSERT_TRUE(compiles(ir, "m = max(attr(\"edr/coul_sr_*\"));", &sys));
+    EXPECT_TRUE(md_unit_equal(ir->property_nodes[0]->data.unit[1], energy));
 
     // One match is an array of one, vectors an array of vectors
     ASSERT_TRUE(compiles(ir, "o = attr(\"edr/coul_sr_c*\");", &sys));

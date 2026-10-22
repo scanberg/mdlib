@@ -1998,7 +1998,7 @@ min(a: volume, b: float)  -> volume
 min(a: volume, b: volume) -> volume
 ```
 
-The smaller of two numbers, or the smallest element of an array (with one argument).
+The smaller of two numbers, or the smallest element of an array (with one argument), in the unit of the array.
 
 ```mdscript
 closest = min(distance(1, 2), distance(1, 3));
@@ -2017,13 +2017,29 @@ max(a: volume, b: float)  -> volume
 max(a: volume, b: volume) -> volume
 ```
 
-The larger of two numbers, or the largest element of an array (with one argument). The volume overloads are
+The larger of two numbers, or the largest element of an array (with one argument), in the unit of the array. The volume overloads are
 useful to clamp an `sdf`.
 
 ```mdscript
 farthest = max(distance(1, 2), distance(1, 3));
 largest = max(distance(1, 2) in residue(:));
 floor_at_zero = max(dihedral(1, 2, 3, 4), 0.0);
+```
+
+### sum
+
+<!-- proc name=sum category=math -->
+
+```text
+sum(x: float[]) -> float
+```
+
+The sum of the elements of an array, 0 for an empty one, in the unit of the array. With an `attr` pattern it adds
+up every attribute the pattern matches, at every frame.
+
+```mdscript
+total = sum(distance(1, 2) in residue(:));
+# coulomb = sum(attr("edr/coul_sr_*"));    # requires the terms in the loaded system
 ```
 
 ---

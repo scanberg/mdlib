@@ -208,6 +208,7 @@ typedef enum flags_t {
     FLAG_QUERYABLE_LENGTH           = 0x00010, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
     FLAG_STATIC_VALIDATION          = 0x00020, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
     FLAG_FLATTEN                    = 0x00040, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
+    FLAG_UNIT_OF_ARG                = 0x00080, // The result is in the unit of the first argument: a reduction over it (sum, min, max of an array)
     
     // Node flags
     FLAG_CONSTANT                   = 0x00100, // Marks the node as constant and should not be modified. It should also have data in its ptr
@@ -5557,6 +5558,11 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
         // Finalize the procedure call and its type
         result = result && finalize_proc_call(node, ctx);
+
+        if (result && (node->proc->flags & FLAG_UNIT_OF_ARG) && md_array_size(node->children) > 0) {
+            node->data.unit[0] = node->children[0]->data.unit[0];
+            node->data.unit[1] = node->children[0]->data.unit[1];
+        }
 
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
