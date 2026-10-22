@@ -6173,7 +6173,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
         }
     }
 
-    // Instance of each component, -1 when instances are unknown (they are normally inferred after structures)
+    // Instance of each component, -1 when instances are unknown (md_util_system_infer infers them before structures)
     int32_t* comp_inst = md_alloc(alloc, sizeof(int32_t) * comp_count);
     for (size_t i = 0; i < comp_count; ++i) comp_inst[i] = -1;
     for (size_t inst = 0; inst < sys->instance.count; ++inst) {
@@ -6230,11 +6230,9 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
     return links;
 }
 
-// Virtual sites (the M site of TIP4P, the lone pairs of TIP5P) have no bonds, but unwrapping must keep them with their
-// molecule. Each unbonded virtual site hangs off its component's first heavy atom (else first real atom). Like the
-// hierarchy links above these shape the structure forest only; they are not bonds.
 // The atoms which join two residues of a polymer chain over a gap: the C and N of a peptide bond, the O3' and P of a
-// phosphodiester bond, else the last atom of the first and the first of the second
+// phosphodiester bond (the O5' where the second has no phosphate: the 5' end of a strand, a phosphate not modelled),
+// else the last atom of the first and the first of the second. Never an atom the residues do not have.
 static md_atom_pair_t chain_gap_link(const md_system_t* sys, size_t comp_idx) {
     const md_urange_t range_a = md_component_atom_range(&sys->component, comp_idx);
     const md_urange_t range_b = md_component_atom_range(&sys->component, comp_idx + 1);
@@ -6242,11 +6240,12 @@ static md_atom_pair_t chain_gap_link(const md_system_t* sys, size_t comp_idx) {
     md_amino_acid_atoms_t aa_a, aa_b;
     md_nucleic_acid_atoms_t na_a, na_b;
     if (md_util_amino_acid_atoms_extract(&aa_a, &sys->atom, range_a) && md_util_amino_acid_atoms_extract(&aa_b, &sys->atom, range_b)) {
-        pair.idx[0] = aa_a.c;
-        pair.idx[1] = aa_b.n;
+        if (aa_a.c >= 0) pair.idx[0] = aa_a.c;
+        if (aa_b.n >= 0) pair.idx[1] = aa_b.n;
     } else if (md_util_nucleic_acid_atoms_extract(&na_a, &sys->atom, range_a) && md_util_nucleic_acid_atoms_extract(&na_b, &sys->atom, range_b)) {
-        pair.idx[0] = na_a.o3;
-        pair.idx[1] = na_b.p;
+        if (na_a.o3 >= 0) pair.idx[0] = na_a.o3;
+        if (na_b.p >= 0) pair.idx[1] = na_b.p;
+        else if (na_b.o5 >= 0) pair.idx[1] = na_b.o5;
     }
     return pair;
 }
@@ -6297,6 +6296,7 @@ static md_array(md_atom_pair_t) synthesize_molecule_links(const md_system_t* sys
             if (ra.beg >= ra.end || rb.beg >= rb.end || rb.end > atom_count) continue;
             if (uf_find(set, (int32_t)ra.beg) == uf_find(set, (int32_t)rb.beg)) continue;
             const md_atom_pair_t pair = chain_gap_link(sys, ci);
+            ASSERT(pair.idx[0] >= 0 && pair.idx[1] >= 0);
             uf_union(set, pair.idx[0], pair.idx[1]);
             md_array_push(links, pair, alloc);
         }
@@ -12626,9 +12626,12 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     }
 
     if (flags & MD_UTIL_INFER_STRUCTURE_BIT) {
-        // Coarse grained systems get a hierarchy even without bonds, see synthesize_hierarchy_links
-        if (sys->bond.count || cg) {
+        // Coarse grained systems get a hierarchy even without bonds (synthesize_hierarchy_links), and a residue is a
+        // molecule whatever its bonds (synthesize_molecule_links): ions and waters given without bonds are molecules
+        if (sys->bond.count || cg || sys->component.count) {
             md_util_system_infer_structures(sys);
+        }
+        if (sys->bond.count) {
             md_util_system_infer_rings(sys);
         }
     }

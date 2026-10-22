@@ -717,6 +717,30 @@ UTEST(match, molecules) {
     }
     md_match_result_free(&res);
     md_match_query_free(&q);
+
+    // With the coordination bonds left out the molecules are still closed as the structures are: a polymer chain is one
+    // molecule over the residues missing from it
+    const md_system_t* tub = get_sys(SYS_TUBULIN);
+    md_match_query_t aa = {0};
+    ASSERT_TRUE(md_match_query_init_smiles(&aa, STR_LIT("NCC=O"), alloc, NULL));
+    md_match_desc_t aa_desc = {.query = &aa, .level = MD_MATCH_LEVEL_STRUCTURE};
+    md_match_result_t aa_res = {0};
+    ASSERT_TRUE(md_match_find(&aa_res, &aa_desc, tub, alloc));
+    ASSERT_LT(0, (int)aa_res.count);
+    int64_t* inst_unit = md_alloc(alloc, sizeof(int64_t) * MAX(1, tub->instance.count));
+    for (size_t i = 0; i < tub->instance.count; ++i) inst_unit[i] = -1;
+    size_t checked = 0;
+    for (size_t i = 0; i < aa_res.count; ++i) {
+        const md_instance_idx_t inst = md_system_instance_find_by_atom_idx(tub, (size_t)aa_res.atom_idx[i * aa_res.width]);
+        if (inst < 0 || !md_entity_kind_is_polymer(md_system_instance_entity_kind(tub, (size_t)inst))) continue;
+        if (inst_unit[inst] < 0) inst_unit[inst] = aa_res.unit[i];
+        EXPECT_EQ(inst_unit[inst], (int64_t)aa_res.unit[i]);
+        checked += 1;
+    }
+    EXPECT_LT(0, (int)checked);
+    md_free(alloc, inst_unit, sizeof(int64_t) * MAX(1, tub->instance.count));
+    md_match_result_free(&aa_res);
+    md_match_query_free(&aa);
 }
 
 UTEST(match, virtual_sites) {

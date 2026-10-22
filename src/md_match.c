@@ -319,9 +319,9 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
 
     tg->skip = skip;
 
-    // Molecules. The structures of the system are its bond graph, cut into connected parts, with links of their own
-    // where atoms have no bonds to hold them (coarse grained beads, virtual sites): without those, and without
-    // coordination bonds to leave out, they are the molecules.
+    // Molecules. The structures of the system are the parts of its bond graph closed over residues and polymer chains,
+    // with links of their own for coarse grained beads: without those, and without coordination bonds and virtual
+    // sites to leave out, they are the molecules.
     const bool coarse_grained = md_system_is_coarse_grained(sys);
     const md_structure_data_t* st = &sys->structure;
     if (!drop && !skip && !coarse_grained && st->count > 0 && st->offset && st->atom_idx && st->atom_slot && st->offset[st->count] == N) {
@@ -340,6 +340,32 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
                 // An elastic bond holds no molecule together (nor is it in the connectivity above)
                 if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[b])) continue;
                 uf_union(root, sys->bond.pairs[b].idx[0], sys->bond.pairs[b].idx[1]);
+            }
+        }
+        // As sys->structure has them (md_structure_data_t): the atoms of a residue are of one molecule, and so are the
+        // residues of a polymer chain, over a gap as well. Virtual sites aside.
+        for (size_t c = 0; c < sys->component.count && sys->component.atom_offset; ++c) {
+            const md_urange_t r = md_component_atom_range(&sys->component, c);
+            int32_t anchor = -1;
+            for (uint32_t i = r.beg; i < r.end && i < N; ++i) {
+                if (skip && skip[i]) continue;
+                if (anchor < 0) anchor = (int32_t)i;
+                else uf_union(root, anchor, (int32_t)i);
+            }
+        }
+        for (size_t inst = 0; inst < sys->instance.count; ++inst) {
+            if (!md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst))) continue;
+            const md_urange_t comps = md_instance_component_range(&sys->instance, inst);
+            int32_t prev = -1;
+            for (uint32_t c = comps.beg; c < comps.end && c < sys->component.count; ++c) {
+                const md_urange_t r = md_component_atom_range(&sys->component, c);
+                int32_t anchor = -1;
+                for (uint32_t i = r.beg; i < r.end && i < N && anchor < 0; ++i) {
+                    if (!(skip && skip[i])) anchor = (int32_t)i;
+                }
+                if (anchor < 0) continue;
+                if (prev >= 0) uf_union(root, prev, anchor);
+                prev = anchor;
             }
         }
         size_t num_mol = 0;

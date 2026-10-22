@@ -88,8 +88,10 @@ bool md_util_system_infer_lipids(md_system_t* sys);
 bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_comp_auth_asym_id[]);
 
 // The chains of the system (sys->chain, see md_chain_data_t) from its instances: one per author id the instances carry,
-// and one for each polymer instance without one. Done by md_util_system_infer (MD_UTIL_INFER_INSTANCE_BIT) and by
-// md_util_system_infer_entity_and_instance; whatever changes the instances by other means calls it after.
+// and one for each polymer instance without one, which takes the kinds of the entities to be known. Done by
+// md_util_system_infer (MD_UTIL_INFER_INSTANCE_BIT) and md_util_system_infer_entity_and_instance, and by the mmCIF
+// loader, whose file gives the kinds. A loader whose topology gives instances of entities it does not classify (TPR,
+// LAMMPS) leaves it to md_util_system_infer; whatever changes the instances after calls it again.
 bool md_util_system_infer_chains(md_system_t* sys);
 
 // The id of the instance with the given index when a loader generates them: A..Z, AA..ZZ, AAA.. (0 is A)

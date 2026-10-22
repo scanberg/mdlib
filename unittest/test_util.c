@@ -616,6 +616,74 @@ UTEST(util, molecules_hold_residues_and_chains) {
         check_structure_invariants(utest_result, &sys);
     }
 
+    {
+        // Two DNA strands under one chain id, numbered on: the 5' end of the second has no phosphate, so the strands
+        // are joined over the gap by its O5'. Every slot is an atom of the system.
+        static const char pdb[] =
+            "ATOM      1  O5'  DA A   1      24.130 139.750  27.200  1.00  0.00           O\n"
+            "ATOM      2  C5'  DA A   1      23.020 138.940  27.630  1.00  0.00           C\n"
+            "ATOM      3  C4'  DA A   1      21.700 139.500  27.160  1.00  0.00           C\n"
+            "ATOM      4  O4'  DA A   1      21.830 139.890  25.780  1.00  0.00           O\n"
+            "ATOM      5  C1'  DA A   1      21.020 139.070  24.950  1.00  0.00           C\n"
+            "ATOM      6  C3'  DA A   1      20.540 138.510  27.210  1.00  0.00           C\n"
+            "ATOM      7  C2'  DA A   1      20.540 137.920  25.820  1.00  0.00           C\n"
+            "ATOM      8  O3'  DA A   1      19.300 139.190  27.440  1.00  0.00           O\n"
+            "ATOM      9  P    DT A   2      17.930 138.350  27.500  1.00  0.00           P\n"
+            "ATOM     10  O5'  DT A   2      17.220 138.660  26.110  1.00  0.00           O\n"
+            "ATOM     11  C5'  DT A   2      16.740 139.970  25.830  1.00  0.00           C\n"
+            "ATOM     12  C4'  DT A   2      15.860 139.970  24.600  1.00  0.00           C\n"
+            "ATOM     13  O4'  DT A   2      16.660 139.700  23.420  1.00  0.00           O\n"
+            "ATOM     14  C1'  DT A   2      16.150 138.560  22.730  1.00  0.00           C\n"
+            "ATOM     15  C3'  DT A   2      14.730 138.940  24.610  1.00  0.00           C\n"
+            "ATOM     16  C2'  DT A   2      15.240 137.830  23.710  1.00  0.00           C\n"
+            "ATOM     17  O3'  DT A   2      13.540 139.550  24.110  1.00  0.00           O\n"
+            "ATOM     18  O5'  DA A   3      76.380 128.690 -24.150  1.00  0.00           O\n"
+            "ATOM     19  C5'  DA A   3      76.750 129.990 -24.620  1.00  0.00           C\n"
+            "ATOM     20  C4'  DA A   3      78.030 130.440 -23.960  1.00  0.00           C\n"
+            "ATOM     21  O4'  DA A   3      77.720 131.090 -22.700  1.00  0.00           O\n"
+            "ATOM     22  C1'  DA A   3      78.420 130.480 -21.630  1.00  0.00           C\n"
+            "ATOM     23  C3'  DA A   3      78.960 129.270 -23.630  1.00  0.00           C\n"
+            "ATOM     24  C2'  DA A   3      78.820 129.100 -22.130  1.00  0.00           C\n"
+            "ATOM     25  O3'  DA A   3      80.320 129.520 -23.980  1.00  0.00           O\n"
+            "ATOM     26  P    DT A   4      81.440 128.440 -23.560  1.00  0.00           P\n"
+            "ATOM     27  O5'  DT A   4      81.940 128.990 -22.150  1.00  0.00           O\n"
+            "ATOM     28  C5'  DT A   4      82.550 130.270 -22.050  1.00  0.00           C\n"
+            "ATOM     29  C4'  DT A   4      83.510 130.280 -20.890  1.00  0.00           C\n"
+            "ATOM     30  O4'  DT A   4      82.760 130.310 -19.650  1.00  0.00           O\n"
+            "ATOM     31  C1'  DT A   4      83.000 129.130 -18.890  1.00  0.00           C\n"
+            "ATOM     32  C3'  DT A   4      84.360 129.010 -20.840  1.00  0.00           C\n"
+            "ATOM     33  C2'  DT A   4      83.640 128.130 -19.840  1.00  0.00           C\n"
+            "ATOM     34  O3'  DT A   4      85.690 129.290 -20.420  1.00  0.00           O\n"
+            "END\n";
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        ASSERT_EQ(sys.atom.count, 34u);
+        EXPECT_EQ(md_structure_count(&sys.structure), 1u);
+        EXPECT_EQ(sys.structure.offset[sys.structure.count], 34u);
+        for (size_t s = 0; s < md_array_size(sys.structure.atom_idx); ++s) {
+            EXPECT_TRUE(0 <= sys.structure.atom_idx[s] && sys.structure.atom_idx[s] < 34);
+        }
+        check_structure_invariants(utest_result, &sys);
+    }
+
+    {
+        // Ions and a water given without any bonds: a molecule each, as their residues are
+        static const char pdb[] =
+            "HETATM    1 NA    NA A   1       0.000   0.000   0.000  1.00  0.00          NA\n"
+            "HETATM    2 CL    CL A   2       5.000   0.000   0.000  1.00  0.00          CL\n"
+            "HETATM    3  O   HOH A   3      10.000   0.000   0.000  1.00  0.00           O\n"
+            "END\n";
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        EXPECT_EQ(md_system_bond_count(&sys), 0u);
+        EXPECT_EQ(md_structure_count(&sys.structure), 3u);
+        check_structure_invariants(utest_result, &sys);
+    }
+
     #undef MOLECULE_OF
     md_vm_arena_destroy(alloc);
 }

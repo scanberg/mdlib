@@ -875,8 +875,8 @@ the context are searched. The full semantics are in `src/md_match.h`.
 Both take two named arguments:
 
 - `level`: where an occurrence lies. `"molecule"` (the default, `"structure"` its old name): within one
-  [molecule](#molecule), the atoms joined by covalent bonds; a metal bound to another residue (the Mg of an ATP, the
-  Zn of a zinc finger) is a molecule of its own. `"residue"` (or `"component"`): within one residue, whose bonds to its
+  [molecule](#molecule), except that a metal coordinated to another residue (the Mg of an ATP, the Zn of a zinc
+  finger) is a molecule of its own here, as patterns follow covalent bonds only. `"residue"` (or `"component"`): within one residue, whose bonds to its
   neighbours are not part of the graph, so a residue pattern ends at the peptide bond. `"instance"` (or `"chain"`, its
   old name): within one instance, a polymer chain or a molecule.
 - `mode`: which occurrences there are. `"unique"` (the default): one per set of atoms; a symmetric pattern fits the
