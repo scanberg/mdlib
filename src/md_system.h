@@ -101,6 +101,9 @@ typedef struct md_entity_data_t {
 // with one entry per segment (md_util_backbone_angles_compute, md_dssp_compute,
 // md_util_backbone_ramachandran_classify).
 //
+// A system without components (an XYZ file) has its backbones found from the bonds alone (BACKBONES FROM THE BONDS in
+// md_util.c): its segments have no component (comp_idx -1) and its ranges no instance (inst_idx -1).
+//
 // A protein range is ATOMISTIC, each segment the N, CA, C and O of its residue (and HN, CB where they are), or a TRACE:
 // one bead per residue of a coarse grained model (the BB bead of Martini), held in ca, with n, c, o, hn and cb -1. A
 // range is one or the other throughout (md_protein_backbone_range_is_trace). The secondary structure of a trace is
@@ -110,14 +113,14 @@ typedef struct md_protein_backbone_data_t {
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the segments
-        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located
+        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located, -1 for none
     } range;
 
     // These fields share the same length 'count'
     struct {
         size_t count;
         md_amino_acid_atoms_t* atoms;
-        md_component_idx_t* comp_idx;                  // Index to the component which contains the backbone
+        md_component_idx_t* comp_idx;                  // Index to the component which contains the backbone, -1 for none
     } segment;
 } md_protein_backbone_data_t;
 
@@ -130,14 +133,14 @@ typedef struct md_nucleic_backbone_data_t {
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the backbone fields stored bellow
-        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located
+        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located, -1 for none
     } range;
 
     // These fields share the same length 'count'
     struct {
         size_t count;
         md_nucleic_acid_atoms_t* atoms;
-        md_component_idx_t* comp_idx;                  // Index to the component which contains the backbone segment
+        md_component_idx_t* comp_idx;                  // Index to the component which contains the backbone segment, -1 for none
     } segment;
 } md_nucleic_backbone_data_t;
 

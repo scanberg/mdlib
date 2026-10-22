@@ -134,7 +134,7 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
-// sys->protein_backbone. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
+// sys->protein_backbone, or for segments without a component (comp_idx -1) from their bonds. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
 // segments of traces, which have no phi and psi.
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
@@ -233,7 +233,8 @@ void md_util_system_augment_atom_types(md_system_t* sys);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 // Infers the derivable parts of a system (covalent bonds, rings, structures, backbones, hydrogen
-// bond roles) from the supplied state, and records that state as sys->reference.
+// bond roles) from the supplied state, and records that state as sys->reference. A system without components has its
+// backbones found from the covalent bonds alone (md_protein_backbone_data_t).
 //
 // The state is an explicit parameter rather than read off the system so that the recorded
 // reference is by construction the input which produced the topology. Requires coordinates for

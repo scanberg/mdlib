@@ -1,5 +1,6 @@
 ﻿#include "utest.h"
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
 #include <float.h>
 
@@ -3667,6 +3668,201 @@ UTEST(util, ramachandran_classify) {
     EXPECT_EQ(0xAB, buf[0]);
     for (int i = 0; i < 4; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
     EXPECT_EQ(0xAB, buf[5]);
+}
+
+// BACKBONES FROM THE BONDS (md_util.c). A file read with its residue and atom names, and the same file as an XYZ file
+// would give it, the element and the position of each atom and nothing else, have the same backbones: the same atoms
+// in each segment, consecutive along the same chains, and so the same secondary structure and ramachandran types.
+
+// The XYZ text of a system, its atoms in their order, or by element (as VASP and ase.build.sort write them). Atom k of
+// the text is atom xyz_to_sys[k] of the system; atoms without an element are left out. Returns the number of atoms.
+static size_t xyz_text_of(str_t* out, int32_t* xyz_to_sys, const md_system_t* sys, const md_system_state_t* state, bool by_element, md_allocator_i* alloc) {
+    size_t num = 0;
+    for (int z = 1; z < 256; ++z) {
+        for (size_t i = 0; i < sys->atom.count; ++i) {
+            const md_atomic_number_t zi = md_atom_atomic_number(&sys->atom, i);
+            if (zi != 0 && (!by_element || zi == z)) xyz_to_sys[num++] = (int32_t)i;
+        }
+        if (!by_element) break;
+    }
+    char* buf = md_alloc(alloc, 64 * (num + 1));
+    size_t len = (size_t)snprintf(buf, 64, "%zu\nxyz\n", num);
+    for (size_t k = 0; k < num; ++k) {
+        const str_t sym = md_atomic_number_symbol(md_atom_atomic_number(&sys->atom, (size_t)xyz_to_sys[k]));
+        const vec3_t p = md_state_coord(state, (size_t)xyz_to_sys[k]);
+        len += (size_t)snprintf(buf + len, 64, "%.*s %.4f %.4f %.4f\n", (int)sym.len, sym.ptr, p.x, p.y, p.z);
+    }
+    *out = (str_t){ buf, len };
+    return num;
+}
+
+// The segment of each atom which is the CA (C4') of one, -1 for none
+static int32_t* segment_of_atom(size_t num_atoms, md_allocator_i* alloc) {
+    int32_t* seg = md_alloc(alloc, sizeof(int32_t) * num_atoms);
+    MEMSET(seg, -1, sizeof(int32_t) * num_atoms);
+    return seg;
+}
+
+static void expect_backbones_from_bonds(int* utest_result, const char* path, bool by_element, bool compare_secondary_structure) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t ref = { .alloc = alloc };
+    md_system_state_t ref_state = { .alloc = alloc };
+    const str_t file = str_from_cstr(path);
+    bool loaded = false;
+    if (str_ends_with(file, STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE);
+    if (str_ends_with(file, STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&ref, &ref_state, file);
+    if (str_ends_with(file, STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&ref, &ref_state, file);
+    ASSERT_TRUE(loaded);
+    ASSERT_TRUE(md_util_system_infer(&ref, &ref_state, MD_UTIL_INFER_ALL));
+
+    int32_t* xyz_to_ref = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
+    str_t text;
+    const size_t num_xyz = xyz_text_of(&text, xyz_to_ref, &ref, &ref_state, by_element, alloc);
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, MD_XYZ_OPTION_NONE));
+    ASSERT_EQ(num_xyz, sys.atom.count);
+    ASSERT_EQ(0, sys.component.count);
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+
+    // An atom of the reference as an atom of the XYZ
+    int32_t* to_xyz = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
+    MEMSET(to_xyz, -1, sizeof(int32_t) * ref.atom.count);
+    for (size_t k = 0; k < num_xyz; ++k) to_xyz[xyz_to_ref[k]] = (int32_t)k;
+#define X(a) ((a) < 0 ? -1 : to_xyz[a])
+#define SEG(a) (X(a) < 0 ? -1 : seg[X(a)])
+
+    {
+        const md_protein_backbone_data_t* rb = &ref.protein_backbone;
+        const md_protein_backbone_data_t* bb = &sys.protein_backbone;
+        EXPECT_EQ(rb->range.count, bb->range.count);
+        EXPECT_EQ(rb->segment.count, bb->segment.count);
+        for (size_t s = 0; s < bb->segment.count; ++s) EXPECT_EQ(-1, bb->segment.comp_idx[s]);
+        for (size_t r = 0; r < bb->range.count; ++r) EXPECT_EQ(-1, bb->range.inst_idx[r]);
+
+        int32_t* seg = segment_of_atom(sys.atom.count, alloc);
+        for (size_t s = 0; s < bb->segment.count; ++s) seg[bb->segment.atoms[s].ca] = (int32_t)s;
+        size_t same = 0;
+        for (size_t r = 0; r < rb->range.count; ++r) {
+            for (uint32_t j = rb->range.offset[r]; j < rb->range.offset[r + 1]; ++j) {
+                const md_amino_acid_atoms_t a = rb->segment.atoms[j];
+                const int32_t s = SEG(a.ca);
+                if (s < 0) continue;
+                const md_amino_acid_atoms_t b = bb->segment.atoms[s];
+                // Either oxygen of a C terminal carboxylate
+                const bool o = b.o == X(a.o) || (X(a.o) >= 0 && md_bond_find(&sys.bond, b.c, b.o) >= 0 && md_atom_atomic_number(&sys.atom, (size_t)b.o) == MD_Z_O);
+                // Consecutive along the chain
+                const bool chain = j == rb->range.offset[r] || (s > 0 && SEG(rb->segment.atoms[j - 1].ca) == s - 1);
+                same += b.n == X(a.n) && b.c == X(a.c) && o && b.cb == X(a.cb) && chain;
+            }
+        }
+        EXPECT_EQ(rb->segment.count, same);
+
+        if (rb->segment.count && rb->segment.count == bb->segment.count) {
+            md_ramachandran_type_t* rama_ref = md_alloc(alloc, sizeof(md_ramachandran_type_t) * rb->segment.count);
+            md_ramachandran_type_t* rama = md_alloc(alloc, sizeof(md_ramachandran_type_t) * bb->segment.count);
+            EXPECT_TRUE(md_util_backbone_ramachandran_classify(rama_ref, rb->segment.count, &ref));
+            EXPECT_TRUE(md_util_backbone_ramachandran_classify(rama, bb->segment.count, &sys));
+            md_secondary_structure_t* ss_ref = md_alloc(alloc, sizeof(md_secondary_structure_t) * rb->segment.count);
+            md_secondary_structure_t* ss = md_alloc(alloc, sizeof(md_secondary_structure_t) * bb->segment.count);
+            if (compare_secondary_structure) {
+                EXPECT_TRUE(md_dssp_compute(ss_ref, rb->segment.count, ref_state.xyz, &ref_state.unitcell, rb));
+                EXPECT_TRUE(md_dssp_compute(ss, bb->segment.count, state.xyz, &state.unitcell, bb));
+            }
+            size_t same_rama = 0, same_ss = 0;
+            for (size_t j = 0; j < rb->segment.count; ++j) {
+                const int32_t s = SEG(rb->segment.atoms[j].ca);
+                if (s < 0) continue;
+                // A residue whose side chain the crystal did not resolve, not even its CB, is a glycine by its bonds
+                // (LYS 156 of 9gfu)
+                const bool truncated = rb->segment.atoms[j].cb < 0 && rama_ref[j] != MD_RAMACHANDRAN_TYPE_GLYCINE;
+                same_rama += rama[s] == rama_ref[j] || (truncated && rama[s] == MD_RAMACHANDRAN_TYPE_GLYCINE);
+                same_ss += !compare_secondary_structure || MEMCMP(&ss[s], &ss_ref[j], sizeof(md_secondary_structure_t)) == 0;
+            }
+            EXPECT_EQ(rb->segment.count, same_rama);
+            EXPECT_EQ(rb->segment.count, same_ss);
+        }
+    }
+
+    {
+        const md_nucleic_backbone_data_t* rb = &ref.nucleic_backbone;
+        const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
+        EXPECT_EQ(rb->range.count, bb->range.count);
+        EXPECT_EQ(rb->segment.count, bb->segment.count);
+        for (size_t s = 0; s < bb->segment.count; ++s) EXPECT_EQ(-1, bb->segment.comp_idx[s]);
+
+        int32_t* seg = segment_of_atom(sys.atom.count, alloc);
+        for (size_t s = 0; s < bb->segment.count; ++s) seg[bb->segment.atoms[s].c4] = (int32_t)s;
+        size_t same = 0;
+        for (size_t r = 0; r < rb->range.count; ++r) {
+            for (uint32_t j = rb->range.offset[r]; j < rb->range.offset[r + 1]; ++j) {
+                const md_nucleic_acid_atoms_t a = rb->segment.atoms[j];
+                const int32_t s = SEG(a.c4);
+                if (s < 0) continue;
+                const md_nucleic_acid_atoms_t b = bb->segment.atoms[s];
+                const bool chain = j == rb->range.offset[r] || (s > 0 && SEG(rb->segment.atoms[j - 1].c4) == s - 1);
+                // The P on the O5' of a 5' triphosphate, which the names do not tell (PA of the GTP which begins a
+                // chain of 8g7u)
+                const bool p = b.p == X(a.p) || (a.p < 0 && b.p >= 0 && md_bond_find(&sys.bond, b.o5, b.p) >= 0);
+                same += p && b.o5 == X(a.o5) && b.c5 == X(a.c5) && b.c3 == X(a.c3) && b.o3 == X(a.o3) &&
+                        b.c1 == X(a.c1) && b.c2 == X(a.c2) && b.o4 == X(a.o4) && chain;
+            }
+        }
+        EXPECT_EQ(rb->segment.count, same);
+    }
+#undef SEG
+#undef X
+
+    md_vm_arena_destroy(alloc);
+}
+
+// Crystal structures, without hydrogens. In 1k4r the backbone O of HIS 86 of chain C is 1.4 Å from the ND1 of HIS 86 of
+// chain A, close enough to be taken for a bond: the residue is still found, and its chain not broken there.
+UTEST(util, backbones_from_bonds_protein) {
+    const char* files[] = {
+        MD_UNITTEST_DATA_DIR "/1k4r.pdb",
+        MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb",
+        MD_UNITTEST_DATA_DIR "/1fez.cif",
+        MD_UNITTEST_DATA_DIR "/2or2.cif",
+        MD_UNITTEST_DATA_DIR "/9gfu.cif",
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+        expect_backbones_from_bonds(utest_result, files[i], false, true);
+    }
+}
+
+// Proteins with DNA (a nucleosome, with hydrogens) and with RNA. With hydrogens the HN of a residue is its hydrogen
+// rather than the one the names leave out, which changes the secondary structure DSSP finds now and then.
+UTEST(util, backbones_from_bonds_nucleic) {
+    expect_backbones_from_bonds(utest_result, MD_UNITTEST_DATA_DIR "/nucl-dna.gro", false, false);
+    expect_backbones_from_bonds(utest_result, MD_UNITTEST_DATA_DIR "/8g7u.cif", false, true);
+    expect_backbones_from_bonds(utest_result, MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb", false, false);
+}
+
+// The order of the atoms in the file plays no part
+UTEST(util, backbones_from_bonds_by_element) {
+    expect_backbones_from_bonds(utest_result, MD_UNITTEST_DATA_DIR "/nucl-dna.gro", true, false);
+    expect_backbones_from_bonds(utest_result, MD_UNITTEST_DATA_DIR "/1k4r.pdb", true, true);
+}
+
+// Nothing which is no polymer: fullerenes, and a tryptophan alone (one residue is no chain)
+UTEST(util, backbones_from_bonds_none) {
+    const char* files[] = {
+        MD_UNITTEST_DATA_DIR "/c720.xyz",
+        MD_UNITTEST_DATA_DIR "/tryptophan.xyz",
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, str_from_cstr(files[i]), MD_XYZ_OPTION_NONE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        EXPECT_TRUE(sys.bond.count > 0);
+        EXPECT_EQ(0, sys.protein_backbone.range.count);
+        EXPECT_EQ(0, sys.protein_backbone.segment.count);
+        EXPECT_EQ(0, sys.nucleic_backbone.range.count);
+        md_vm_arena_destroy(alloc);
+    }
 }
 
 UTEST(util, index_data_cleared) {

@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_chem.h>
 #include <md_dssp.h>
+#include <md_match.h>
 
 #include <core/md_coord_stream.h>
 #include <core/md_compiler.h>
@@ -1822,18 +1823,43 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const md_system_t*
     return ok_angle && ok_ss;
 }
 
+// Of segment i of an atomistic backbone: 'G' a glycine, 'P' a proline, 0 any other residue. By the name of its
+// component, or for a segment without one (BACKBONES FROM THE BONDS) by its atoms: a glycine has no CB, and the N of a
+// proline closes the ring N-CA-CB-CG-CD: it is bonded to a CD (besides its CA and the C of the segment before it, if
+// it has_prev) which is bonded to a CG which is bonded to the CB. The carbonyl of a cap (ACE) on an N terminus closes
+// none.
+static char ramachandran_residue(const md_system_t* sys, const md_protein_backbone_data_t* backbone, size_t i, bool has_prev) {
+    const md_component_idx_t comp_idx = backbone->segment.comp_idx[i];
+    if (comp_idx >= 0) {
+        const str_t name = md_component_name(&sys->component, comp_idx);
+        return str_eq(name, STR_LIT("GLY")) ? 'G' : str_eq(name, STR_LIT("PRO")) ? 'P' : 0;
+    }
+    const md_amino_acid_atoms_t* atoms = &backbone->segment.atoms[i];
+    const md_atom_idx_t prev_c = has_prev ? backbone->segment.atoms[i - 1].c : -1;
+    if (atoms->cb < 0) return 'G';
+    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)atoms->n);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const md_atom_idx_t cd = md_bond_iter_atom_index(&it);
+        if (cd == atoms->ca || cd == prev_c || md_atom_atomic_number(&sys->atom, (size_t)cd) != MD_Z_C) continue;
+        md_bond_iter_t it_cd = md_bond_iter(&sys->bond, (size_t)cd);
+        for (; md_bond_iter_has_next(&it_cd); md_bond_iter_next(&it_cd)) {
+            const md_atom_idx_t cg = md_bond_iter_atom_index(&it_cd);
+            if (cg != atoms->n && md_bond_find(&sys->bond, cg, atoms->cb) >= 0) return 'P';
+        }
+    }
+    return 0;
+}
+
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const md_system_t* sys) {
     ASSERT(ramachandran_types);
     MEMSET(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
 
     if (capacity == 0) return false;
-    if (sys->component.count == 0) return false;
 
     const md_protein_backbone_data_t* backbone = &sys->protein_backbone;
     if (backbone->segment.count == 0) return false;
     if (backbone->range.count == 0 || !backbone->range.offset) return false;
 
-    ASSERT(sys->component.name);
     ASSERT(backbone->segment.comp_idx);
 
     // The types are MolProbity's (mmtbx.validation.ramalyze), decided in its order: glycine, proline, then pre-proline
@@ -1851,12 +1877,12 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
         const size_t end = MIN(range_end, capacity);
 
         for (size_t i = range_beg; i < end; ++i) {
-            const str_t name = md_component_name(&sys->component, backbone->segment.comp_idx[i]);
-            if (str_eq(name, STR_LIT("GLY"))) {
+            const char res = ramachandran_residue(sys, backbone, i, i > range_beg);
+            if (res == 'G') {
                 ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GLYCINE;
-            } else if (str_eq(name, STR_LIT("PRO"))) {
+            } else if (res == 'P') {
                 ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_PROLINE;
-            } else if (i + 1 < range_end && str_eq(md_component_name(&sys->component, backbone->segment.comp_idx[i + 1]), STR_LIT("PRO"))) {
+            } else if (i + 1 < range_end && ramachandran_residue(sys, backbone, i + 1, true) == 'P') {
                 ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_PREPROL;
             } else {
                 ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GENERAL;
@@ -10321,14 +10347,16 @@ bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_
     return true;
 }
 
-static inline void commit_protein_backbone(md_amino_acid_atoms_t* bb_atoms, size_t bb_length, size_t comp_base_idx, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc) {
+// The segments of one range, of consecutive components from comp_base, or of none (comp_base -1, BACKBONES FROM THE
+// BONDS)
+static inline void commit_protein_backbone(md_amino_acid_atoms_t* bb_atoms, size_t bb_length, md_component_idx_t comp_base, md_instance_idx_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc) {
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(bb_data->range.offset, offset, alloc);
-    md_array_push(bb_data->range.inst_idx, (md_instance_idx_t)inst_idx, alloc);
+    md_array_push(bb_data->range.inst_idx, inst_idx, alloc);
 
     for (size_t i = 0; i < bb_length; ++i) {
-        int32_t comp_idx = (int32_t)(comp_base_idx + i);
+        const md_component_idx_t comp_idx = comp_base < 0 ? -1 : comp_base + (md_component_idx_t)i;
         md_array_push(bb_data->segment.comp_idx, comp_idx, alloc);
     }
 }
@@ -10531,20 +10559,21 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
 static inline void flush_protein_backbone_segment(md_amino_acid_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_protein_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
     size_t backbone_length = md_array_size(backbone_atoms);
     if (backbone_length >= min_backbone_length && *comp_base != -1) {
-        commit_protein_backbone(backbone_atoms, backbone_length, *comp_base, inst_idx, bb_data, alloc);
+        commit_protein_backbone(backbone_atoms, backbone_length, *comp_base, (md_instance_idx_t)inst_idx, bb_data, alloc);
     }
     md_array_shrink(backbone_atoms, 0);
     *comp_base = -1;
 }
 
-static inline void commit_nucleic_backbone(md_nucleic_acid_atoms_t* bb_atoms, size_t bb_length, size_t comp_base_idx, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc) {
+// As commit_protein_backbone
+static inline void commit_nucleic_backbone(md_nucleic_acid_atoms_t* bb_atoms, size_t bb_length, md_component_idx_t comp_base, md_instance_idx_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc) {
     uint32_t offset = (uint32_t)md_array_size(bb_data->segment.atoms);
     md_array_push_array(bb_data->segment.atoms, bb_atoms, bb_length, alloc);
     md_array_push(bb_data->range.offset, offset, alloc);
-    md_array_push(bb_data->range.inst_idx, (md_instance_idx_t)inst_idx, alloc);
+    md_array_push(bb_data->range.inst_idx, inst_idx, alloc);
 
     for (size_t i = 0; i < bb_length; ++i) {
-        int32_t comp_idx = (int32_t)(comp_base_idx + i);
+        const md_component_idx_t comp_idx = comp_base < 0 ? -1 : comp_base + (md_component_idx_t)i;
         md_array_push(bb_data->segment.comp_idx, comp_idx, alloc);
     }
 }
@@ -10552,10 +10581,263 @@ static inline void commit_nucleic_backbone(md_nucleic_acid_atoms_t* bb_atoms, si
 static inline void flush_nucleic_backbone_segment(md_nucleic_acid_atoms_t* backbone_atoms, md_component_idx_t* comp_base, size_t inst_idx, md_nucleic_backbone_data_t* bb_data, md_allocator_i* alloc, size_t min_backbone_length) {
     size_t backbone_length = md_array_size(backbone_atoms);
     if (backbone_length >= min_backbone_length && *comp_base != -1) {
-        commit_nucleic_backbone(backbone_atoms, backbone_length, *comp_base, inst_idx, bb_data, alloc);
+        commit_nucleic_backbone(backbone_atoms, backbone_length, *comp_base, (md_instance_idx_t)inst_idx, bb_data, alloc);
     }
     md_array_shrink(backbone_atoms, 0);
     *comp_base = -1;
+}
+
+// ### BACKBONES FROM THE BONDS ###
+//
+// A system without components (an XYZ file, the geometry of a QM calculation) has no residues whose atoms could be found
+// by their names. Its backbones are found from the covalent bonds alone (md_match within each structure), which gives
+// what a cartoon and the secondary structure need: the atoms of each segment, in order along each chain.
+//
+//   AMINO ACIDS  N-CA-C-O, the bond orders not tested: they are md_chem's perception of bonds which were themselves
+//                inferred from distances, and one wrong bond (a clash between two chains taken for a bond) moves the
+//                double bond of a carbonyl onto its C-N and loses the residue. Without orders N-CA-CB-OG of a serine or a
+//                threonine matches too, as does N-CD-CG-OD1 of a hydroxyproline. The matches are taken best first, each
+//                where its N, CA and C are not taken yet: one whose C is bonded to the N of another match (a peptide
+//                bond), then one whose C has two oxygens (the carboxylate of a C terminus), then one whose C-O is as short
+//                as a double bond (which tells the carbonyl of a C terminus without its OXT from a hydroxyl). CB is the
+//                heavy atom on CA besides N and C (none for a glycine), HN the hydrogen of an N which has one.
+//   NUCLEOTIDES  The sugar with its backbone, O5'-C5'-C4'(-O4'-C1'-C2'-C3'-)C3'-O3', and the P bonded to the O5'. A
+//                sugar matches in one way only.
+//   CHAINS       A residue follows the one whose C (O3') is bonded to its N (P). A chain runs from a residue which follows
+//                none; what is left are rings (a cyclic peptide), cut before their first residue. A chain shorter than
+//                min_length is no backbone: that leaves out the free amino acids and nucleotides (ATP, GTP) and the
+//                groups which match without being residues (N7-C5-C6=O6 of a guanine, the ethanolamine of a lipid).
+//
+// The segments have no component (comp_idx -1) and the ranges no instance (inst_idx -1). The chains come in the order
+// of their first residue, the residues by their CA (C4').
+
+// Ångström below which a bond from C to O is double: C=O is 1.23 long, C-O 1.43
+#define CARBONYL_MAX_DIST 1.33f
+
+static inline bool atoms_closer_than(const md_system_state_t* state, md_atom_idx_t a, md_atom_idx_t b, float max_dist) {
+    if (!md_system_state_has_coords(state) || (size_t)a >= state->num_atoms || (size_t)b >= state->num_atoms) return false;
+    vec3_t d = vec3_sub(md_state_coord(state, (size_t)b), md_state_coord(state, (size_t)a));
+    md_util_min_image_vec3(&d, 1, &state->unitcell);
+    return vec3_dot(d, d) < max_dist * max_dist;
+}
+
+// The first neighbour of atom a of element z, which is neither x nor y (z 0: any element but hydrogen)
+static md_atom_idx_t bonded_atom_other(const md_system_t* sys, md_atom_idx_t a, md_atomic_number_t z, md_atom_idx_t x, md_atom_idx_t y) {
+    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)a);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+        if (b == x || b == y) continue;
+        const md_atomic_number_t zb = md_atom_atomic_number(&sys->atom, (size_t)b);
+        if (z ? zb == z : zb != MD_Z_H) return b;
+    }
+    return -1;
+}
+
+// The matches of a query of the backbone atoms in the system, at the structure level, bonds of any order
+static bool backbone_matches(md_match_result_t* out, str_t smiles, const md_system_t* sys, md_allocator_i* alloc) {
+    md_match_query_t query = {0};
+    if (!md_match_query_init_smiles(&query, smiles, alloc, NULL)) return false;
+    const md_match_desc_t desc = {
+        .query       = &query,
+        .level       = MD_MATCH_LEVEL_STRUCTURE,
+        .mode        = MD_MATCH_MODE_UNIQUE,
+        .hydrogens   = MD_MATCH_RESOLVE_NEVER,
+        .bond_orders = MD_MATCH_RESOLVE_NEVER,
+        .charges     = MD_MATCH_RESOLVE_NEVER,
+    };
+    return md_match_find(out, &desc, sys, alloc) && out->count > 0;
+}
+
+static int cmp_u64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a;
+    const uint64_t y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+// The order of the chains of num residues, from the residue each follows (prev, -1 for none) and is followed by (next):
+// out_order lists the residues chain by chain, a chain beginning at each residue of out_begin (num + 1 entries each).
+// Returns the number of chains.
+static size_t backbone_chains(uint32_t* out_order, uint32_t* out_begin, const int32_t* prev, const int32_t* next, size_t num, md_temp_scope_t temp) {
+    uint8_t* done = md_temp_alloc_zero_array(temp, uint8_t, num);
+    size_t num_order = 0;
+    size_t num_chains = 0;
+    // Open chains from their first residue, then the rings that are left
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t u = 0; u < num; ++u) {
+            if (done[u] || (pass == 0 && prev[u] >= 0)) continue;
+            out_begin[num_chains++] = (uint32_t)num_order;
+            for (int32_t v = (int32_t)u; v >= 0 && !done[v]; v = next[v]) {
+                done[v] = 1;
+                out_order[num_order++] = (uint32_t)v;
+            }
+        }
+    }
+    out_begin[num_chains] = (uint32_t)num_order;
+    return num_chains;
+}
+
+static void protein_backbones_from_bonds(md_system_t* sys, const md_system_state_t* state, size_t min_length, md_temp_scope_t temp) {
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_match_result_t res = {0};
+    // Columns: N CA C O
+    if (!backbone_matches(&res, STR_LIT("NCCO"), sys, temp_alloc)) return;
+    ASSERT(res.width == 4);
+
+    const size_t num_atoms = sys->atom.count;
+    const size_t num_matches = res.count;
+
+    // The score of each match, its key: score descending, then the order found
+    uint8_t* is_n = md_temp_alloc_zero_array(temp, uint8_t, num_atoms);
+    for (size_t i = 0; i < num_matches; ++i) {
+        is_n[res.atom_idx[i * 4 + 0]] = 1;
+    }
+    uint64_t* key = md_temp_alloc_array(temp, uint64_t, num_matches);
+    for (size_t i = 0; i < num_matches; ++i) {
+        const int32_t* m = res.atom_idx + i * 4;
+        uint32_t score = 0;
+        uint32_t num_o = 0;
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)m[2]);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+            const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, (size_t)b);
+            if (z == MD_Z_N && b != m[0] && is_n[b]) score |= 4;
+            if (z == MD_Z_O) num_o += 1;
+        }
+        if (num_o >= 2) score |= 2;
+        if (atoms_closer_than(state, m[2], m[3], CARBONYL_MAX_DIST)) score |= 1;
+        key[i] = (uint64_t)(7 - score) << 32 | i;
+    }
+    qsort(key, num_matches, sizeof(uint64_t), cmp_u64);
+
+    // Taken best first where N, CA and C are free; the residue whose N, CA or C an atom is, -1 for none
+    int32_t* residue_of = md_temp_alloc_array(temp, int32_t, num_atoms);
+    MEMSET(residue_of, -1, sizeof(int32_t) * num_atoms);
+    uint64_t* by_ca = md_temp_alloc_array(temp, uint64_t, num_matches);
+    size_t num = 0;
+    for (size_t k = 0; k < num_matches; ++k) {
+        const uint32_t i = (uint32_t)key[k];
+        const int32_t* m = res.atom_idx + i * 4;
+        if (residue_of[m[0]] >= 0 || residue_of[m[1]] >= 0 || residue_of[m[2]] >= 0) continue;
+        residue_of[m[0]] = residue_of[m[1]] = residue_of[m[2]] = 0;
+        by_ca[num++] = (uint64_t)m[1] << 32 | i;
+    }
+    qsort(by_ca, num, sizeof(uint64_t), cmp_u64);
+
+    md_amino_acid_atoms_t* res_atoms = md_temp_alloc_array(temp, md_amino_acid_atoms_t, num);
+    for (size_t u = 0; u < num; ++u) {
+        const int32_t* m = res.atom_idx + (uint32_t)by_ca[u] * 4;
+        md_amino_acid_atoms_t* a = &res_atoms[u];
+        a->n  = m[0];
+        a->ca = m[1];
+        a->c  = m[2];
+        a->o  = m[3];
+        a->cb = bonded_atom_other(sys, a->ca, 0, a->n, a->c);
+        a->hn = bonded_atom_other(sys, a->n, MD_Z_H, -1, -1);
+        if (a->hn >= 0 && bonded_atom_other(sys, a->n, MD_Z_H, a->hn, -1) >= 0) a->hn = -1;
+        residue_of[a->n] = residue_of[a->ca] = residue_of[a->c] = (int32_t)u;
+    }
+
+    // Residue v follows u when the C of u is bonded to the N of v
+    int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
+    int32_t* next = md_temp_alloc_array(temp, int32_t, num);
+    MEMSET(prev, -1, sizeof(int32_t) * num);
+    MEMSET(next, -1, sizeof(int32_t) * num);
+    for (size_t u = 0; u < num; ++u) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)res_atoms[u].c);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+            const int32_t v = residue_of[b];
+            if (v >= 0 && v != (int32_t)u && res_atoms[v].n == b && prev[v] < 0) {
+                next[u] = v;
+                prev[v] = (int32_t)u;
+                break;
+            }
+        }
+    }
+
+    uint32_t* order = md_temp_alloc_array(temp, uint32_t, num);
+    uint32_t* begin = md_temp_alloc_array(temp, uint32_t, num + 1);
+    const size_t num_chains = backbone_chains(order, begin, prev, next, num, temp);
+
+    md_amino_acid_atoms_t* chain = md_temp_alloc_array(temp, md_amino_acid_atoms_t, num);
+    for (size_t c = 0; c < num_chains; ++c) {
+        const size_t len = begin[c + 1] - begin[c];
+        if (len < min_length) continue;
+        for (size_t j = 0; j < len; ++j) {
+            chain[j] = res_atoms[order[begin[c] + j]];
+        }
+        commit_protein_backbone(chain, len, -1, -1, &sys->protein_backbone, sys->alloc);
+    }
+}
+
+static void nucleic_backbones_from_bonds(md_system_t* sys, size_t min_length, md_temp_scope_t temp) {
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_match_result_t res = {0};
+    // Columns: O5' C5' C4' O4' C1' C2' C3' O3'
+    if (!backbone_matches(&res, STR_LIT("OCC1OCCC1O"), sys, temp_alloc)) return;
+    ASSERT(res.width == 8);
+
+    const size_t num_atoms = sys->atom.count;
+
+    // A sugar matches in one way only; the sugars by their C4'
+    uint64_t* by_c4 = md_temp_alloc_array(temp, uint64_t, res.count);
+    for (size_t i = 0; i < res.count; ++i) {
+        by_c4[i] = (uint64_t)res.atom_idx[i * 8 + 2] << 32 | i;
+    }
+    qsort(by_c4, res.count, sizeof(uint64_t), cmp_u64);
+
+    // The residue whose P an atom is, -1 for none
+    int32_t* residue_of_p = md_temp_alloc_array(temp, int32_t, num_atoms);
+    MEMSET(residue_of_p, -1, sizeof(int32_t) * num_atoms);
+    md_nucleic_acid_atoms_t* res_atoms = md_temp_alloc_array(temp, md_nucleic_acid_atoms_t, res.count);
+    size_t num = 0;
+    for (size_t k = 0; k < res.count; ++k) {
+        if (k > 0 && by_c4[k] >> 32 == by_c4[k - 1] >> 32) continue;
+        const int32_t* m = res.atom_idx + (uint32_t)by_c4[k] * 8;
+        md_nucleic_acid_atoms_t* a = &res_atoms[num];
+        a->o5 = m[0];
+        a->c5 = m[1];
+        a->c4 = m[2];
+        a->o4 = m[3];
+        a->c1 = m[4];
+        a->c2 = m[5];
+        a->c3 = m[6];
+        a->o3 = m[7];
+        a->p  = bonded_atom_other(sys, a->o5, MD_Z_P, -1, -1);
+        if (a->p >= 0 && residue_of_p[a->p] < 0) residue_of_p[a->p] = (int32_t)num;
+        num += 1;
+    }
+
+    // Residue v follows u when the O3' of u is bonded to the P of v
+    int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
+    int32_t* next = md_temp_alloc_array(temp, int32_t, num);
+    MEMSET(prev, -1, sizeof(int32_t) * num);
+    MEMSET(next, -1, sizeof(int32_t) * num);
+    for (size_t u = 0; u < num; ++u) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)res_atoms[u].o3);
+        for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int32_t v = residue_of_p[md_bond_iter_atom_index(&it)];
+            if (v >= 0 && v != (int32_t)u && prev[v] < 0) {
+                next[u] = v;
+                prev[v] = (int32_t)u;
+                break;
+            }
+        }
+    }
+
+    uint32_t* order = md_temp_alloc_array(temp, uint32_t, num);
+    uint32_t* begin = md_temp_alloc_array(temp, uint32_t, num + 1);
+    const size_t num_chains = backbone_chains(order, begin, prev, next, num, temp);
+
+    md_nucleic_acid_atoms_t* chain = md_temp_alloc_array(temp, md_nucleic_acid_atoms_t, num);
+    for (size_t c = 0; c < num_chains; ++c) {
+        const size_t len = begin[c + 1] - begin[c];
+        if (len < min_length) continue;
+        for (size_t j = 0; j < len; ++j) {
+            chain[j] = res_atoms[order[begin[c] + j]];
+        }
+        commit_nucleic_backbone(chain, len, -1, -1, &sys->nucleic_backbone, sys->alloc);
+    }
 }
 
 static inline vec3_t hcl_to_rgb(float h, float c, float l) {
@@ -11504,29 +11786,30 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     }
 
     if (flags & MD_UTIL_INFER_BACKBONE_BIT) {
+        static const size_t MIN_BACKBONE_LENGTH = 3;
+
+        // Derived from scratch: a repeated inference must not append to the backbones of the last one
+        md_array_shrink(sys->protein_backbone.range.offset, 0);
+        md_array_shrink(sys->protein_backbone.range.inst_idx, 0);
+        md_array_shrink(sys->protein_backbone.segment.atoms, 0);
+        md_array_shrink(sys->protein_backbone.segment.comp_idx, 0);
+        sys->protein_backbone.range.count = 0;
+        sys->protein_backbone.segment.count = 0;
+        md_array_shrink(sys->nucleic_backbone.range.offset, 0);
+        md_array_shrink(sys->nucleic_backbone.range.inst_idx, 0);
+        md_array_shrink(sys->nucleic_backbone.segment.atoms, 0);
+        md_array_shrink(sys->nucleic_backbone.segment.comp_idx, 0);
+        sys->nucleic_backbone.range.count = 0;
+        sys->nucleic_backbone.segment.count = 0;
+
         if (sys->instance.count && sys->atom.type_idx) {
             // Compute backbone data
-            // 
+            //
             // @NOTE: We should only attempt to compute backbone data for valid components (e.g. amino acids / dna / rna)
             // Backbones are not directly tied to instances, but a polymer instance has the potential to have a backbone.
             // We look within these instances and see if we can find consecutive ranges which form backbones.
 
-            static const size_t MIN_BACKBONE_LENGTH = 3;
             static const size_t MAX_BACKBONE_LENGTH = 1 << 15;
-
-            // Derived from scratch: a repeated inference must not append to the backbones of the last one
-            md_array_shrink(sys->protein_backbone.range.offset, 0);
-            md_array_shrink(sys->protein_backbone.range.inst_idx, 0);
-            md_array_shrink(sys->protein_backbone.segment.atoms, 0);
-            md_array_shrink(sys->protein_backbone.segment.comp_idx, 0);
-            sys->protein_backbone.range.count = 0;
-            sys->protein_backbone.segment.count = 0;
-            md_array_shrink(sys->nucleic_backbone.range.offset, 0);
-            md_array_shrink(sys->nucleic_backbone.range.inst_idx, 0);
-            md_array_shrink(sys->nucleic_backbone.segment.atoms, 0);
-            md_array_shrink(sys->nucleic_backbone.segment.comp_idx, 0);
-            sys->nucleic_backbone.range.count = 0;
-            sys->nucleic_backbone.segment.count = 0;
 
             // The chain breaks too (mark_chain_break), found anew with the backbones
             if (md_array_size(sys->component.flags) < sys->component.count) {
@@ -11675,6 +11958,24 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                 sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
             }
             md_vm_arena_set_pos_back(temp_arena, temp_pos);
+        } else if (sys->component.count == 0 && sys->bond.count && sys->atom.type_idx) {
+            // No residues to find them by: from the bonds alone (BACKBONES FROM THE BONDS)
+            const size_t temp_pos = md_vm_arena_get_pos(temp_arena);
+            protein_backbones_from_bonds(sys, state, MIN_BACKBONE_LENGTH, temp_scope);
+            nucleic_backbones_from_bonds(sys, MIN_BACKBONE_LENGTH, temp_scope);
+            md_vm_arena_set_pos_back(temp_arena, temp_pos);
+
+            sys->protein_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
+            if (sys->protein_backbone.range.count) {
+                md_array_push(sys->protein_backbone.range.offset, (uint32_t)md_array_size(sys->protein_backbone.segment.atoms), alloc);
+            }
+            sys->protein_backbone.segment.count = md_array_size(sys->protein_backbone.segment.atoms);
+
+            sys->nucleic_backbone.range.count = md_array_size(sys->nucleic_backbone.range.offset);
+            if (sys->nucleic_backbone.range.count) {
+                md_array_push(sys->nucleic_backbone.range.offset, (uint32_t)md_array_size(sys->nucleic_backbone.segment.atoms), alloc);
+            }
+            sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
         }
     }
 
