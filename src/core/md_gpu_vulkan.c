@@ -100,6 +100,12 @@ written on one and read on another needs no queue-family ownership transfer.
 #define MD_VK_MAX_TEXTURE_SLOTS   4096u   /* sampled + storage views share it */
 #define MD_VK_MAX_SAMPLERS         256u
 #define MD_VK_ARENA_PAGE_SIZE   (256u * 1024u)
+/* A transient allocation larger than this (an upload's staging, mostly) gets a page of its own, of its
+   exact size, in host memory rather than in the host visible device local heap, and the page is freed
+   once the submission that reads it completes. Doubling the shared pages up to it instead would take a
+   512 MB page for a 300 MB upload, from a heap that is 256 MB on a discrete GPU without resizable BAR,
+   and keep it for the stream's lifetime. */
+#define MD_VK_ARENA_DEDICATED   (16ull * 1024u * 1024u)
 #define MD_VK_ARG_ALIGN            64u
 #define MD_VK_HEAP_ALIGN          256u              /* every md_gpu_malloc / temp allocation */
 #define MD_VK_HEAP_CHUNK_MIN     (4ull << 20)       /* first heap chunk of a kind            */
@@ -302,6 +308,7 @@ typedef struct md_vk_page_t {
     uint64_t       capacity;
     uint64_t       cursor;
     uint64_t       retire_value;   /* stream timeline value that frees it */
+    bool           dedicated;      /* one large allocation's own page: destroyed once retired, never refilled */
 } md_vk_page_t;
 
 typedef struct md_vk_arena_t {
@@ -710,6 +717,28 @@ static uint32_t md_vk_find_memory_type(md_gpu_device_t dev, uint32_t type_bits, 
     return best;
 }
 
+/* The memory types to allocate from, in the order to try them: those with every preferred flag and
+   none of the avoided ones, then those with every preferred flag, then the rest with the required
+   flags. Each is tried in turn when allocating from the one before fails - a heap can be full (the
+   host visible device local one of a discrete GPU without resizable BAR is 256 MB, shared with the
+   driver) while another one serves. Returns the count. */
+static uint32_t md_vk_memory_types(md_gpu_device_t dev, uint32_t type_bits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred,
+                                   VkMemoryPropertyFlags avoid, uint32_t out[VK_MAX_MEMORY_TYPES]) {
+    uint32_t n = 0, taken = 0;
+    for (int pass = 0; pass < 3; ++pass) {
+        for (uint32_t i = 0; i < dev->mem_props.memoryTypeCount; ++i) {
+            if (!(type_bits & (1u << i)) || (taken & (1u << i))) continue;
+            const VkMemoryPropertyFlags f = dev->mem_props.memoryTypes[i].propertyFlags;
+            if ((f & required) != required) continue;
+            if (pass < 2 && (f & preferred) != preferred) continue;
+            if (pass < 1 && (f & avoid)) continue;
+            out[n++] = i;
+            taken |= 1u << i;
+        }
+    }
+    return n;
+}
+
 static void md_vk_set_sharing(md_gpu_device_t dev, VkSharingMode* mode, uint32_t* count, const uint32_t** families) {
     if (dev->share_family_count > 1) {
         *mode     = VK_SHARING_MODE_CONCURRENT;
@@ -722,8 +751,9 @@ static void md_vk_set_sharing(md_gpu_device_t dev, VkSharingMode* mode, uint32_t
     }
 }
 
-static bool md_vk_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind,
-                                    VkBuffer* out_buf, VkDeviceMemory* out_mem, uint64_t* out_addr, void** out_host) {
+/* staging: host memory, not device local, preferred for a host visible kind (what a copy reads once) */
+static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind, bool staging,
+                                       VkBuffer* out_buf, VkDeviceMemory* out_mem, uint64_t* out_addr, void** out_host) {
     VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bci.size  = size;
     bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
@@ -742,21 +772,23 @@ static bool md_vk_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_m
     vkGetBufferMemoryRequirements(dev->device, buf, &req);
 
     const bool host_visible = kind != MD_GPU_MEM_DEVICE;
-    VkMemoryPropertyFlags required = 0, preferred = 0;
+    VkMemoryPropertyFlags required = 0, preferred = 0, avoid = 0;
     if (host_visible) {
         required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         if (kind == MD_GPU_MEM_HOST_READ) preferred = required | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        else if (staging)                 { preferred = required; avoid = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT; }
         else                              preferred = required | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     } else {
         required = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     }
 
-    uint32_t type = md_vk_find_memory_type(dev, req.memoryTypeBits, required, preferred);
-    if (type == UINT32_MAX && !host_visible) {
+    uint32_t types[VK_MAX_MEMORY_TYPES];
+    uint32_t num_types = md_vk_memory_types(dev, req.memoryTypeBits, required, preferred, avoid, types);
+    if (num_types == 0 && !host_visible) {
         /* UMA parts may expose no purely device-local type. */
-        type = md_vk_find_memory_type(dev, req.memoryTypeBits, 0, 0);
+        num_types = md_vk_memory_types(dev, req.memoryTypeBits, 0, 0, 0, types);
     }
-    if (type == UINT32_MAX) {
+    if (num_types == 0) {
         vkDestroyBuffer(dev->device, buf, NULL);
         return md_vk_fail("no suitable memory type for %llu bytes (kind %d)", (unsigned long long)size, (int)kind);
     }
@@ -767,12 +799,20 @@ static bool md_vk_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_m
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.pNext           = &fi;
     mai.allocationSize  = req.size;
-    mai.memoryTypeIndex = type;
 
+    /* the first type whose heap has room */
     VkDeviceMemory mem = VK_NULL_HANDLE;
-    if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, &mem), "vkAllocateMemory")) {
+    VkResult res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    for (uint32_t t = 0; t < num_types && mem == VK_NULL_HANDLE; ++t) {
+        mai.memoryTypeIndex = types[t];
+        res = vkAllocateMemory(dev->device, &mai, NULL, &mem);
+        if (res != VK_SUCCESS) mem = VK_NULL_HANDLE;
+        if (res != VK_SUCCESS && res != VK_ERROR_OUT_OF_DEVICE_MEMORY && res != VK_ERROR_OUT_OF_HOST_MEMORY) break;
+    }
+    if (mem == VK_NULL_HANDLE) {
         vkDestroyBuffer(dev->device, buf, NULL);
-        return false;
+        md_vk_check(res, "vkAllocateMemory");
+        return md_vk_fail("could not allocate %llu bytes (kind %d) from any of %u memory types", (unsigned long long)size, (int)kind, num_types);
     }
     if (!md_vk_check(vkBindBufferMemory(dev->device, buf, mem, 0), "vkBindBufferMemory")) {
         vkFreeMemory(dev->device, mem, NULL);
@@ -797,17 +837,23 @@ static bool md_vk_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_m
     return true;
 }
 
+static bool md_vk_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind,
+                                    VkBuffer* out_buf, VkDeviceMemory* out_mem, uint64_t* out_addr, void** out_host) {
+    return md_vk_create_raw_buffer_ex(dev, size, kind, false, out_buf, out_mem, out_addr, out_host);
+}
+
 static void md_vk_destroy_raw_buffer(md_gpu_device_t dev, VkBuffer buf, VkDeviceMemory mem) {
     if (buf) vkDestroyBuffer(dev->device, buf, NULL);
     if (mem) vkFreeMemory(dev->device, mem, NULL);
 }
 
-static md_vk_page_t* md_vk_page_create(md_gpu_device_t dev, uint64_t size) {
+static md_vk_page_t* md_vk_page_create(md_gpu_device_t dev, uint64_t size, bool dedicated) {
     md_vk_page_t* p = (md_vk_page_t*)md_alloc(dev->alloc, sizeof(md_vk_page_t));
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
+    p->dedicated = dedicated;
     void* host = NULL;
-    if (!md_vk_create_raw_buffer(dev, size, MD_GPU_MEM_HOST_WRITE, &p->buffer, &p->memory, &p->address, &host)) {
+    if (!md_vk_create_raw_buffer_ex(dev, size, MD_GPU_MEM_HOST_WRITE, dedicated, &p->buffer, &p->memory, &p->address, &host)) {
         md_free(dev->alloc, p, sizeof(md_vk_page_t));
         return NULL;
     }
@@ -846,38 +892,52 @@ static bool md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr
     uint64_t need = md_vk_align_up(size, MD_VK_ARG_ALIGN);
 
     /* Try the current page. */
-    if (a->pages.count > 0) {
+    if (a->current < a->pages.count) {
         md_vk_page_t* p = MD_VK_VEC_AT(a->pages, md_vk_page_t*, a->current);
-        if (p->cursor + need <= p->capacity) {
+        if (!p->dedicated && p->cursor + need <= p->capacity) {
             md_vk_page_take(p, need, out_addr, out_host, out_buffer, out_offset);
             return true;
         }
     }
 
-    /* Look for a retired page with room. */
+    /* Look for a retired page with room; a retired dedicated page is freed. */
     uint64_t done = md_vk_stream_completed(s);
-    for (size_t i = 0; i < a->pages.count; ++i) {
+    for (size_t i = 0; i < a->pages.count;) {
         md_vk_page_t* p = MD_VK_VEC_AT(a->pages, md_vk_page_t*, i);
-        if (p->retire_value != 0 && p->retire_value <= done) {
+        const bool retired = p->retire_value != 0 && p->retire_value <= done;
+        if (p->dedicated) {
+            if (retired) {
+                md_vk_page_destroy(dev, p);
+                md_vk_vec_remove(&a->pages, i);
+                if (a->current > i || a->current >= a->pages.count) a->current = a->current > 0 ? a->current - 1 : 0;
+            } else {
+                ++i;
+            }
+            continue;
+        }
+        if (retired) {
             p->cursor = 0;
             p->retire_value = 0;
         }
-        if (p->retire_value == 0 && p->cursor + need <= p->capacity) {
+        if (p->retire_value == 0 && p->cursor + need <= p->capacity && need <= MD_VK_ARENA_DEDICATED) {
             a->current = i;
             md_vk_page_take(p, need, out_addr, out_host, out_buffer, out_offset);
             return true;
         }
+        ++i;
     }
 
-    /* Allocate a new page. */
+    /* Allocate a new page: shared, or the allocation's own. */
+    const bool dedicated = need > MD_VK_ARENA_DEDICATED;
     uint64_t page_size = MD_VK_ARENA_PAGE_SIZE;
-    while (page_size < need) page_size *= 2;
-    md_vk_page_t* p = md_vk_page_create(dev, page_size);
+    if (dedicated) page_size = md_vk_align_up(need, 65536);
+    else while (page_size < need) page_size *= 2;
+    md_vk_page_t* p = md_vk_page_create(dev, page_size, dedicated);
     if (!p) return md_vk_fail("failed to allocate a %llu byte transient page", (unsigned long long)page_size);
     md_vk_page_t** slot = (md_vk_page_t**)md_vk_vec_push(&a->pages, dev->alloc);
     if (!slot) { md_vk_page_destroy(dev, p); return md_vk_fail("out of memory"); }
     *slot = p;
-    a->current = a->pages.count - 1;
+    if (!dedicated) a->current = a->pages.count - 1;
     md_vk_page_take(p, need, out_addr, out_host, out_buffer, out_offset);
     return true;
 }
