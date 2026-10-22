@@ -3122,6 +3122,33 @@ static const martini_db_residue_t* martini_db_match_beads(uint32_t version, cons
     return res;
 }
 
+// A molecule of the force field (not an amino acid or a nucleotide) of the name whose beads are those of none of its
+// topologies, as most of the labels (more than half) are beads of the name: a variant of the molecule whose topology is
+// not in the database, or a residue edited. NULL for a name of no such molecule, for a single bead (which says too
+// little), and where most labels are not beads of it (atoms named as an atomistic force field names them, of which C1 and
+// C2 are beads of a Martini cholesterol too). Of several molecules of the name, the first.
+static const martini_db_residue_t* martini_db_unknown_variant(str_t comp_name, const str_t labels[], size_t num_labels) {
+    if (num_labels < 2) return NULL;
+    size_t beg, end;
+    martini_db_find(comp_name, &beg, &end);
+    const martini_db_residue_t* first = NULL;
+    for (size_t k = beg; k < end && !first; ++k) {
+        if (!martini_db_biopolymer(&martini_db_residues[k])) first = &martini_db_residues[k];
+    }
+    if (!first) return NULL;
+    size_t known = 0;
+    for (size_t i = 0; i < num_labels; ++i) {
+        bool found = false;
+        for (size_t k = beg; k < end && !found; ++k) {
+            const martini_db_residue_t* res = &martini_db_residues[k];
+            if (martini_db_biopolymer(res)) continue;
+            for (size_t b = 0; b < res->num_beads && !found; ++b) found = str_eq_cstr(labels[i], martini_db_bead(res, b)->name);
+        }
+        known += found;
+    }
+    return 2 * known > num_labels ? first : NULL;
+}
+
 // Whether the residue is a monomer of a polymer: a link names it
 static bool martini_db_linked(str_t name) {
     for (size_t k = 0; k < ARRAY_SIZE(martini_db_links); ++k) {
@@ -5848,6 +5875,9 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
     if (sys->component.count > 0) {
         // The masses and sizes of Martini beads depend on the version of Martini
         const martini_system_t martini = martini_system(sys, label_of_array, atom_labels);
+        // The molecules of the force field of beads of none of its topologies, by name and size: the first and how many
+        typedef struct { str_t name; size_t size; size_t first; size_t count; } unknown_variant_t;
+        md_array(unknown_variant_t) unknown_variants = 0;
         for (size_t comp_idx = 0; comp_idx < sys->component.count; ++comp_idx) {
             str_t comp_name        = md_component_name(&sys->component, comp_idx);
             md_urange_t comp_range = md_component_atom_range(&sys->component, comp_idx);
@@ -5873,6 +5903,30 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                 }
                 apply_predefined_comp_kind(sys, comp_idx, mol->kind);
                 continue;
+            }
+            // A molecule of the force field whose beads are those of none of its topologies (a variant of it, a residue
+            // edited), in a Martini system: beads still, rather than the elements their names would read as (the dummy V1
+            // of a sterol vanadium, its C1 carbon). Regular beads, as nothing tells their masses and sizes, of the kind of
+            // the molecule, and without a topology of it no bonds. Not of a polymer, whose residues are bonded by name.
+            if (martini.martini && !md_util_resname_amino_acid(comp_name) && !md_util_resname_nucleotide(comp_name) && !martini_db_linked(comp_name)) {
+                const martini_db_residue_t* like = martini_db_unknown_variant(comp_name, atom_labels + comp_range.beg, comp_size);
+                if (like) {
+                    const md_atom_type_flags_t flags = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, MD_PARTICLE_BEAD);
+                    for (size_t i = comp_range.beg; i < comp_range.end; ++i) {
+                        if (sys->atom.type_idx[i] != 0) continue;
+                        sys->atom.type_idx[i] = find_or_add_atom_type(&sys->atom.type, atom_labels[i], 0, 72.0f, MARTINI_R, 0, flags, alloc);
+                    }
+                    apply_predefined_comp_kind(sys, comp_idx, like->kind);
+                    // Told once per name and size
+                    size_t u = 0;
+                    while (u < md_array_size(unknown_variants) && !(str_eq(unknown_variants[u].name, comp_name) && unknown_variants[u].size == comp_size)) ++u;
+                    if (u == md_array_size(unknown_variants)) {
+                        unknown_variant_t v = { comp_name, comp_size, comp_idx, 0 };
+                        md_array_push(unknown_variants, v, temp_alloc);
+                    }
+                    unknown_variants[u].count += 1;
+                    continue;
+                }
             }
 
             // The labels of the component are part of the key, as which of them a name stands for can depend on the others
@@ -5934,6 +5988,18 @@ void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]
                 }
             }
             apply_predefined_comp_kind(sys, comp_idx, comp_kind);
+        }
+        for (size_t u = 0; u < md_array_size(unknown_variants); ++u) {
+            const unknown_variant_t* v = &unknown_variants[u];
+            const md_urange_t range = md_component_atom_range(&sys->component, v->first);
+            char beads[256];
+            size_t len = 0;
+            beads[0] = '\0';
+            for (uint32_t i = range.beg; i < range.end && len + 8 < sizeof(beads); ++i) {
+                len += (size_t)snprintf(beads + len, sizeof(beads) - len, "%s" STR_FMT, len ? " " : "", STR_ARG(atom_labels[i]));
+            }
+            MD_LOG_INFO(STR_FMT " of %zu beads (%s), %zu of them: no Martini topology of the name has these beads; shown as regular beads, without bonds",
+                STR_ARG(v->name), v->size, beads, v->count);
         }
     } else {
         for (size_t i = 0; i < sys->atom.count; ++i) {

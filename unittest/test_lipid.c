@@ -696,6 +696,41 @@ UTEST(lipid, martini2_cholesterol_optlincs) {
     md_vm_arena_destroy(alloc);
 }
 
+// A molecule of the force field whose beads are those of none of its topologies (here a cholesterol of a bead unknown),
+// in a Martini system: beads of the kind of the molecule, not the elements of their names (V1 vanadium, C1 carbon), and
+// without a topology no bonds, a lipid by name without heads and tails. Atoms named as an atomistic force field names them
+// (a cholesterol of CHARMM, whose C1 and C2 are beads of the Martini one too) stay atoms.
+UTEST(lipid, martini_unknown_variant_is_beads) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    static const martini_residue_t res[] = {
+        {"DPPC", "NC3 PO4 GL1 GL2 C1A C2A C3A C4A C1B C2B C3B C4B"},
+        {"CHOL", "VXH V2 V3 V1 ROH R1 R2 R3 R4 R5 C1 C2"},
+        {"CHOL", "C1 C2 C3 O3 C4 C5 C6 C7 C8 C9 C10 C11 C12 C13 C14 C15 C16 C17 C18 C19 C20 C21 C22 C23 C24 C25 C26 C27"},
+    };
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    EXPECT_TRUE(lipid_invariants_hold(&sys));
+
+    const md_urange_t r = md_component_atom_range(&sys.component, 1);
+    for (uint32_t i = r.beg; i < r.end; ++i) {
+        EXPECT_EQ(0, (int)md_atom_atomic_number(&sys.atom, i));
+        EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, i));
+        EXPECT_NEAR(72.0f, md_atom_mass(&sys.atom, i), 1e-3f);
+    }
+    EXPECT_EQ(MD_COMPONENT_KIND_LIPID, md_component_kind(&sys.component, 1));
+    EXPECT_EQ(0u, comp_num_bonds(&sys, 1));
+    const int l = lipid_of_comp(&sys, 1);
+    ASSERT_TRUE(l >= 0);
+    EXPECT_EQ(0u, lipid_num_heads(&sys, l));
+    EXPECT_EQ(0u, lipid_num_tails(&sys, l));
+
+    const md_urange_t a = md_component_atom_range(&sys.component, 2);
+    EXPECT_EQ(MD_Z_C, md_atom_atomic_number(&sys.atom, a.beg));
+    EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, a.beg + 3));
+    md_vm_arena_destroy(alloc);
+}
+
 // Martini 2 molecules whose chains are named without the letter of a tail: fatty acids, detergents, the lyso PC whose
 // tail is one bead. The inositol of a phosphatidylinositol is named so too (C1 C2 C3) and stays in its head: a ring.
 UTEST(lipid, martini2_letterless_chains) {
