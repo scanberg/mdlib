@@ -378,15 +378,22 @@ UTEST(filter, bonds) {
     EXPECT_TRUE(offers(c, "bond"));
 
     // A spring of the force field (an elastic bond, here the Cu-Cu one) is kept with the bonds but is no bond of the
-    // molecule: picked when it is asked for, not among the bonds of a set of atoms
+    // molecule. Every atom is still every bond, as bond() is: nothing written leaves none out
     const md_bond_idx_t cu = md_system_bond_find(&sys, 8, 9);
     ASSERT_GE(cu, 0);
     sys.bond.flags[cu] = md_bond_flags_set_kind(sys.bond.flags[cu], MD_BOND_KIND_ELASTIC);
     md_system_bond_build_connectivity(&sys);
     res = md_filter_bonds(&pairs, STR_LIT(""), &fctx, alloc);
     EXPECT_TRUE(res.success);
-    EXPECT_EQ(7, (int)md_array_size(pairs));
-    EXPECT_FALSE(has_pair(pairs, 8, 9));
+    EXPECT_EQ(8, (int)md_array_size(pairs));
+    EXPECT_TRUE(has_pair(pairs, 8, 9));
+    res = md_filter_bonds(&pairs, STR_LIT("bond()"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(8, (int)md_array_size(pairs));
+    res = md_filter_bonds(&pairs, STR_LIT("resname('CU')"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(1, (int)md_array_size(pairs));
+    EXPECT_TRUE(has_pair(pairs, 8, 9));
     res = md_filter_bonds(&pairs, STR_LIT("bond(kind='elastic')"), &fctx, alloc);
     EXPECT_TRUE(res.success);
     EXPECT_EQ(1, (int)md_array_size(pairs));

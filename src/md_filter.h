@@ -66,7 +66,8 @@ md_filter_result_t md_filter(struct md_bitset_t* dst, str_t expr, const md_filte
 md_filter_result_t md_filter_sets(md_array(struct md_bitset_t)* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 // The bonds that expr picks, all in one set, pushed to dst (cleared first, allocated with alloc): those of a bond set,
-// or the persistent bonds (of both ranges of md_bond_data_t) with both atoms among those of a set of atoms. The bonds
+// or the persistent bonds (of both ranges of md_bond_data_t, of every kind) with both atoms among those of a set of
+// atoms, so that every atom ("all", nothing written) is every bond, as bond() is. The bonds
 // of the system come in its order, then those a bond set has for the frame (bonds formed), sorted. Both atoms of each
 // bond are within ctx->atoms when there is a context. Empty when it fails.
 md_filter_result_t md_filter_bonds(md_array(struct md_atom_pair_t)* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);

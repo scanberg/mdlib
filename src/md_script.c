@@ -9421,8 +9421,9 @@ md_filter_result_t md_filter_bonds(md_array(md_atom_pair_t)* dst, str_t expr, co
                         md_array_push(*dst, pairs[i], alloc);
                     }
                 } else if (len) {
-                    // The persistent bonds among the atoms, of both ranges, but for the elastic bonds: springs of the
-                    // force field, which are shown when they are asked for (bond(kind='elastic'))
+                    // The persistent bonds among the atoms, of both ranges and of every kind, as bond() gives them: every
+                    // atom ('all', nothing written) is every bond. The elastic bonds too, which licorice and ball and
+                    // stick leave out unless asked to: a representation of bonds shows what its filter picks.
                     const md_system_t* sys = ctx->sys;
                     md_bitmask_t b = md_bitmask_create(0, (uint32_t)sys->atom.count, temp_alloc);
                     const md_bitset_t* sets = (const md_bitset_t*)data.ptr;
@@ -9433,7 +9434,6 @@ md_filter_result_t md_filter_bonds(md_array(md_atom_pair_t)* dst, str_t expr, co
                     const size_t total = sys->bond.count + sys->bond.noncovalent_count;
                     for (size_t i = 0; i < total; ++i) {
                         const md_atom_pair_t p = sys->bond.pairs[i];
-                        if (sys->bond.flags && md_bond_kind(sys->bond.flags[i]) == MD_BOND_KIND_ELASTIC) continue;
                         if (md_bitset_test(atoms, (uint32_t)p.idx[0]) && md_bitset_test(atoms, (uint32_t)p.idx[1])) {
                             md_array_push(*dst, p, alloc);
                         }
