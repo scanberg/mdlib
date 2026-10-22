@@ -10620,7 +10620,10 @@ static inline vec3_t hcl_to_rgb(float h, float c, float l) {
 // What a bead of a lipid of the Martini lipidomes is to its tails, by its name:
 //   CHAIN       A bead of a tail: C (saturated), D (unsaturated) or T (trans), the number of the bead and the letter of
 //               its tail, with the number of the acyl chain after it in cardiolipins (C1A, D2A, C4B, T1A, C1A1); the ring
-//               skeleton of a sterol R and a number (R1 .. R6), and in a sterol its side chain C and a number (C1, C2).
+//               skeleton of a sterol R and a number (R1 .. R6), and in a sterol its side chain C and a number (C1, C2)
+//               and its dummies V (VOH V1 V2 V3): the optimal LINCS cholesterol of Martini 2 carries the mass of its
+//               rings on dummies which do not interact, its ring beads virtual sites of them, so its skeleton holds
+//               together through them, and its head is the hydroxyl bead ROH alone, as that of the cholesterol of 8 beads.
 //   LETTERLESS  C, D or T and a number alone elsewhere: the chain of a fatty acid or a detergent of Martini 2 (COO C1 C2
 //               C3 C4, SO3 C1 C2 C4, the B1 B2 B3 C1 C2 of an octyl glucoside), but also the inositol of a
 //               phosphatidylinositol (C1 .. C4) and the sugars of glycolipids. Such beads are a tail only where they
@@ -10635,6 +10638,7 @@ typedef enum {
 static lipid_bead_t lipid_bead_kind(str_t name, bool sterol) {
     if (name.len < 2) return LIPID_BEAD_POLAR;
     const char c = name.ptr[0];
+    if (c == 'V' && sterol) return LIPID_BEAD_CHAIN;
     if (c != 'C' && c != 'D' && c != 'T' && c != 'R') return LIPID_BEAD_POLAR;
     size_t i = 1;
     if (!is_digit(name.ptr[i])) return LIPID_BEAD_POLAR;

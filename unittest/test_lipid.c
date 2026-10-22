@@ -634,6 +634,68 @@ UTEST(lipid, martini_renamed_tpr) {
     md_arena_allocator_destroy(alloc);
 }
 
+// The beads of component comp bonded to each other
+static size_t comp_num_bonds(const md_system_t* sys, size_t comp) {
+    const md_urange_t r = md_component_atom_range(&sys->component, comp);
+    size_t n = 0;
+    for (uint32_t i = r.beg; i < r.end; ++i) {
+        md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+        while (md_bond_iter_has_next(&it)) {
+            const md_atom_idx_t j = md_bond_iter_atom_index(&it);
+            n += (uint32_t)j > i && (uint32_t)j < r.end;
+            md_bond_iter_next(&it);
+        }
+    }
+    return n;
+}
+
+// The optimal LINCS cholesterol of Martini 2 (martini_v2.0_CHOL_02-optLINCS.itp): the mass of its rings on four dummies
+// which do not interact (VOH V2 V3 V1), its ring beads virtual sites of them, so that they hold together through the
+// dummies alone. Beads of the masses and bonds of its topology, the hydroxyl bead for a head and a skeleton of the
+// dummies and ring beads out to the end of the side chain, as the cholesterol of 8 beads beside it has.
+UTEST(lipid, martini2_cholesterol_optlincs) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    static const martini_residue_t res[] = {
+        {"DPPC", "NC3 PO4 GL1 GL2 C1A C2A C3A C4A C1B C2B C3B C4B"},
+        {"CHOL", "VOH V2 V3 V1 ROH R1 R2 R3 R4 R5 C1 C2"},
+        {"CHOL", "ROH R1 R2 R3 R4 R5 C1 C2"},
+    };
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_EQ(3u, sys.lipid.count);
+    EXPECT_TRUE(lipid_invariants_hold(&sys));
+
+    const md_urange_t r = md_component_atom_range(&sys.component, 1);
+    ASSERT_EQ(12u, r.end - r.beg);
+    for (uint32_t i = r.beg; i < r.end; ++i) {
+        EXPECT_EQ(0, (int)md_atom_atomic_number(&sys.atom, i));
+        EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, i));
+    }
+    EXPECT_NEAR(125.98f, md_atom_mass(&sys.atom, r.beg + 0), 1e-3f);    // VOH
+    EXPECT_NEAR(98.82f,  md_atom_mass(&sys.atom, r.beg + 3), 1e-3f);    // V1
+    EXPECT_NEAR(0.0f,    md_atom_mass(&sys.atom, r.beg + 4), 1e-3f);    // ROH, a virtual site
+    EXPECT_NEAR(72.0f,   md_atom_mass(&sys.atom, r.beg + 11), 1e-3f);   // C2
+    // The constraints of the dummies (5), each virtual site to the first particle it is built from (7), C1-C2
+    EXPECT_EQ(13u, comp_num_bonds(&sys, 1));
+    EXPECT_EQ(9u, comp_num_bonds(&sys, 2));
+
+    char head[256];
+    for (size_t c = 1; c <= 2; ++c) {
+        const int l = lipid_of_comp(&sys, c);
+        ASSERT_TRUE(l >= 0);
+        ASSERT_EQ(1u, lipid_num_tails(&sys, l));
+        const uint32_t t = sys.lipid.tail_offset[l];
+        EXPECT_EQ(MD_LIPID_TAIL_SKELETON, sys.lipid.tail.kind[t]);
+        lipid_head_names(head, sizeof(head), &sys, l);
+        EXPECT_STREQ("ROH", head);
+        EXPECT_EQ(c == 1 ? 11u : 7u, md_index_range_size(&sys.lipid.tail.atoms, t));
+        const int32_t* spine = md_index_range_beg(&sys.lipid.tail.spine, t);
+        EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine[tail_spine_len(&sys, t) - 1]), "C2"));
+    }
+    md_vm_arena_destroy(alloc);
+}
+
 // Martini 2 molecules whose chains are named without the letter of a tail: fatty acids, detergents, the lyso PC whose
 // tail is one bead. The inositol of a phosphatidylinositol is named so too (C1 C2 C3) and stays in its head: a ring.
 UTEST(lipid, martini2_letterless_chains) {
