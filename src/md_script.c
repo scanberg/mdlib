@@ -1480,6 +1480,33 @@ static void internal_error(const eval_context_t* ctx, token_t tok, const char* w
     EVAL_LOG_ERROR(ctx, tok, "Internal error: %s (%s:%d). This is a bug, please report it", what, file, line);
 }
 
+// Whether str matches pattern, in which '*' stands for any run of characters (the empty one too) and every other
+// character for itself, case and all. Several '*' anywhere: "C*", "*A", "*A*", "C*A", "C*1*". What a '*' takes is
+// tried shortest first and widened when the rest does not match, which backtracks to the last '*' only: an earlier
+// one never needs more, since the later one can take whatever it would have.
+static bool glob_match(str_t pattern, str_t str) {
+    size_t p = 0, s = 0;
+    size_t star = SIZE_MAX;     // the last '*' seen in the pattern
+    size_t star_s = 0;          // where in str what it takes ends, so far
+    while (s < str.len) {
+        if (p < pattern.len && pattern.ptr[p] == '*') {
+            star = p++;
+            star_s = s;
+        } else if (p < pattern.len && pattern.ptr[p] == str.ptr[s]) {
+            ++p;
+            ++s;
+        } else if (star != SIZE_MAX) {
+            // The last '*' takes one more character
+            p = star + 1;
+            s = ++star_s;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.len && pattern.ptr[p] == '*') ++p;
+    return p == pattern.len;
+}
+
 // Include all procedures, operators and defines
 #ifdef MD_SCRIPT_TEST_HOOKS
 // Lets the unittests count how often a procedure is evaluated, i.e. called with a destination

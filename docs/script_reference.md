@@ -402,7 +402,8 @@ type(pattern: string[])  -> bitfield
 ```
 
 Select atoms by atom name (for example `"CA"`, `"OW"`). `label` and `type` are aliases. Patterns may contain the
-wildcard `*` at the beginning, the end, or both ends (`"C*"`, `"*1"`, `"*H*"`); at most two `*` are allowed.
+wildcard `*`, which stands for any run of characters, anywhere and as often as needed: `"C*"` begins with C, `"*1"`
+ends with 1, `"*H*"` contains H, `"C*A"` begins with C and ends with A. Names are matched case and all.
 
 ```mdscript
 alpha_carbons = name("CA");
@@ -2414,4 +2415,4 @@ Reports of anything that behaves differently from this reference are very welcom
 - Distributions have 1024 bins; volumes are 128 × 128 × 128.
 - A script can define as many identifiers as it likes, but each identifier must be defined before it is used, and
   defining the same identifier twice is an error.
-- Wildcards (`*`) in name queries are limited to one leading and/or one trailing `*`.
+- A wildcard `*` in a name pattern stands for any run of characters.

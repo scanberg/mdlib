@@ -2459,6 +2459,76 @@ UTEST(script, attr_reads_a_temporal_attribute_at_the_frame) {
     md_vm_arena_destroy(arena);
 }
 
+// '*' stands for any run of characters, anywhere and as many times as it is written
+UTEST(script, glob_match) {
+    EXPECT_TRUE (glob_match(STR_LIT("CA"),    STR_LIT("CA")));
+    EXPECT_FALSE(glob_match(STR_LIT("CA"),    STR_LIT("CAX")));
+    EXPECT_TRUE (glob_match(STR_LIT("C*"),    STR_LIT("C")));
+    EXPECT_TRUE (glob_match(STR_LIT("C*"),    STR_LIT("CA")));
+    EXPECT_FALSE(glob_match(STR_LIT("C*"),    STR_LIT("AC")));
+    EXPECT_TRUE (glob_match(STR_LIT("*A"),    STR_LIT("CA")));
+    EXPECT_FALSE(glob_match(STR_LIT("*A"),    STR_LIT("AC")));
+    // Used to match anything at all
+    EXPECT_TRUE (glob_match(STR_LIT("*H*"),   STR_LIT("OHO")));
+    EXPECT_TRUE (glob_match(STR_LIT("*H*"),   STR_LIT("H")));
+    EXPECT_FALSE(glob_match(STR_LIT("*H*"),   STR_LIT("OC")));
+    // Used to let the parts before and after the '*' overlap
+    EXPECT_FALSE(glob_match(STR_LIT("AB*BC"), STR_LIT("ABC")));
+    EXPECT_TRUE (glob_match(STR_LIT("AB*BC"), STR_LIT("ABBC")));
+    EXPECT_TRUE (glob_match(STR_LIT("AB*BC"), STR_LIT("ABxyBC")));
+    // Used to be refused: '*' in the middle, and more than two
+    EXPECT_TRUE (glob_match(STR_LIT("C*1*"),  STR_LIT("C21x")));
+    EXPECT_FALSE(glob_match(STR_LIT("C*1*"),  STR_LIT("C2")));
+    EXPECT_TRUE (glob_match(STR_LIT("A*B*C"), STR_LIT("AxxBxxC")));
+    EXPECT_FALSE(glob_match(STR_LIT("A*B*C"), STR_LIT("AxxCxxB")));
+    EXPECT_TRUE (glob_match(STR_LIT("**A"),   STR_LIT("A")));
+    EXPECT_TRUE (glob_match(STR_LIT("*"),     STR_LIT("anything")));
+    // What a '*' takes has to grow past a false start
+    EXPECT_TRUE (glob_match(STR_LIT("*AB"),   STR_LIT("AAB")));
+    EXPECT_TRUE (glob_match(STR_LIT("*ABC*ABD"), STR_LIT("ABCABCABD")));
+    EXPECT_FALSE(glob_match(STR_LIT("*ABC*ABD"), STR_LIT("ABCABCABE")));
+    // Case is part of the name
+    EXPECT_FALSE(glob_match(STR_LIT("c*"),    STR_LIT("CA")));
+    // The selectors: nothing matches an empty name, and an empty pattern is no pattern
+    EXPECT_FALSE(match_query(STR_LIT("*"), STR_LIT("")));
+    EXPECT_FALSE(match_query(STR_LIT(""),  STR_LIT("CA")));
+    EXPECT_FALSE(validate_query(STR_LIT("")));
+    EXPECT_TRUE (validate_query(STR_LIT("*A*B*")));
+}
+
+// name(), resname() and instance() select by the same patterns
+UTEST(script, name_patterns) {
+    md_allocator_i* arena = md_vm_arena_create(MEGABYTES(64));
+    const struct { const char* pattern; int kind; char a; char b; } cases[] = {
+        {"*A*", 0, 'A', 0},     // contains A
+        {"*E",  1, 'E', 0},     // ends with E
+        {"H*",  2, 'H', 0},     // begins with H
+        {"C*A", 3, 'C', 'A'},   // begins with C, ends with A
+        {"*",   4, 0, 0},       // anything
+    };
+    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+        char src[64];
+        snprintf(src, sizeof(src), "name(\"%s\")", cases[c].pattern);
+        md_bitset_t sel = {0};
+        ASSERT_TRUE(eval_selection(&sel, str_from_cstr(src), &test_mol, arena));
+        for (size_t i = 0; i < test_mol.atom.count; ++i) {
+            const str_t n = md_atom_name(&test_mol.atom, i);
+            bool expected = false;
+            switch (cases[c].kind) {
+            case 0: expected = str_find_char(NULL, n, cases[c].a); break;
+            case 1: expected = n.len && n.ptr[n.len - 1] == cases[c].a; break;
+            case 2: expected = n.len && n.ptr[0] == cases[c].a; break;
+            case 3: expected = n.len >= 2 && n.ptr[0] == cases[c].a && n.ptr[n.len - 1] == cases[c].b; break;
+            case 4: expected = n.len > 0; break;
+            }
+            char msg[96];
+            snprintf(msg, sizeof(msg), "%s, atom %zu '" STR_FMT "'", cases[c].pattern, i, STR_ARG(n));
+            EXPECT_TRUE_MSG(expected == md_bitset_test(sel, (uint32_t)i), msg);
+        }
+    }
+    md_vm_arena_destroy(arena);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Regressions
 // ---------------------------------------------------------------------------------------------------------------
