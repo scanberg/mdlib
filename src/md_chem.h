@@ -1,11 +1,15 @@
 #pragma once
 
+#include <md_types.h>
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
 struct md_system_t;
 struct md_system_state_t;
+struct md_bond_delta_t;
+struct md_allocator_i;
 
 // ### CHEMISTRY PERCEPTION ###
 //
@@ -66,6 +70,52 @@ extern "C" {
 // reference is optional but needed for anything without hydrogens: the geometry tells sp2 from sp3 and single from
 // double bonds. The rings of the system are used (md_util_system_infer_rings) and inferred if missing.
 bool md_chem_perceive(struct md_system_t* sys, const struct md_system_state_t* reference, uint32_t flags);
+
+// ### A FRAME WITH OTHER BONDS ###
+//
+// A state whose bonds are not those of the system (bonds formed and broken in it: md_bond_delta_t, md_util_bond_delta)
+// has a chemistry of its own where they changed. md_chem_perceive_delta works it out for the REGION the changes
+// reach, as md_chem_perceive would for the bonds of the state, and leaves the system as it is: what lies outside of
+// the region keeps what md_chem_perceive gave it, as nothing there can change.
+//
+// THE REGION. The orders come from a matching of each conjugated network on its own, and a bond formed or broken
+// changes the sigma bonds of its two atoms alone. So the region is the atoms of the bonds that changed, grown in the
+// bonds of the state through every atom which can take part in a network: an atom with a pi bond, a charge or a
+// valence it does not fill in the system, and those a leftover can be resolved on (an N with three sigma bonds, an O
+// or S in a ring: N-oxides, guanidinium, pyridinium). Then by every atom of the rings of 4 to 7 atoms it reaches,
+// whose aromaticity it decides, and so on until it grows no more. The atoms bonded to it are its edge: they keep
+// their state in the system and want no pi bond, which they did not want there either. Each atom keeps the hydrogen
+// mode of its residue (or molecule) in the system (HYDROGENS), as that is how the file was written. An atom without
+// any bond in the state (a bromide leaving) is a monatomic ion.
+// A region of more than MD_CHEM_DELTA_MAX_ATOMS atoms (a reaction on a graphene sheet) is not perceived.
+//
+// The state's coordinates are the geometry (implicit hydrogens and the evidence of the bond lengths, as for
+// md_chem_perceive). A state between two shapes (a transition, while a bond formed and the one it replaces are both
+// there) can give an atom more sigma bonds than any valence: such an atom has no pi bond, and is charged only where
+// its valence says so (N+ with four, O+ with three).
+
+#define MD_CHEM_DELTA_MAX_ATOMS 4096
+
+typedef struct md_chem_delta_t {
+    size_t           num_atoms;
+    int32_t*         atom_idx;          // [num_atoms] The atoms of the region, ascending
+    md_atom_flags_t* atom_flags;        // [num_atoms] Their flags in the system with the hybridization and MD_ATOM_FLAG_AROMATIC of the state
+    int8_t*          formal_charge;     // [num_atoms]
+    uint8_t*         hydrogen_count;    // [num_atoms] Explicit and implicit
+    size_t           num_bonds;
+    uint32_t*        bond_idx;          // [num_bonds] The covalent bonds with an atom in the region, ascending: one of the system by its index,
+                                        // one formed by sys->bond.count + its index in the delta
+    md_bond_flags_t* bond_flags;        // [num_bonds] Their flags with the order, aromaticity and delocalization of the state
+    md_index_data_t  ring;              // The rings with an atom in the region, in the state (md_util_infer_rings)
+    md_ring_flags_t* ring_flags;        // [ring count] AROMATIC, HETERO, FUSED and FUSED_AROMATIC; never SUGAR
+} md_chem_delta_t;
+
+// The chemistry of state (the coordinates of sys's atoms) where its bonds are those of sys changed by delta, see A
+// FRAME WITH OTHER BONDS, with the flags sys was perceived with (md_chem_flags_t). out is freed and filled, allocated
+// with alloc; empty when nothing changed. Returns false when it is not perceived: the region is too large, or sys has
+// no perceived chemistry (md_chem_perceive).
+bool md_chem_perceive_delta(md_chem_delta_t* out, const struct md_system_t* sys, const struct md_system_state_t* state, const struct md_bond_delta_t* delta, uint32_t flags, struct md_allocator_i* alloc);
+void md_chem_delta_free(md_chem_delta_t* chem, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

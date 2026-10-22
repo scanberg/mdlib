@@ -19,6 +19,8 @@
 // Forward declarations
 struct md_system_t;
 struct md_unitcell_t;
+struct md_bond_delta_t;
+struct md_chem_delta_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -222,8 +224,9 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // The orders of the bonds, for the licorice and ball and stick representations with bond_orders set, from the topology
 // of the system: the order and the aromatic and delocalized flags of its bonds (md_chem_perceive), its rings and their
 // flags and the hybridization of its atoms. The bonds of the bond graph of the system must be the first bonds of the
-// molecule (md_gl_mol_set_bonds), in the same order; those after them (bonds formed in a frame) are drawn single. A bond
-// of the graph whose pair is set to one atom twice is not drawn (broken in a frame). md_gl_mol_create sets them.
+// molecule (md_gl_mol_set_bonds), in the same order; those after them are the bonds formed in a frame (see delta and
+// chem below). A bond of the graph whose pair is set to one atom twice is not drawn (broken in a frame).
+// md_gl_mol_create sets them.
 //   - double bond: two thinner sticks in the plane of its sp2 centers (the plane of their substituents), as planar as
 //     they are in the frame shown: an end that is pyramidal there gives no plane, and where neither end gives one the
 //     sticks turn towards lying perpendicular to the view
@@ -239,7 +242,13 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // stick representations leave out unless their elastic_bonds is set, and then draw as single bonds, and the metallic
 // bonds (MD_BOND_KIND_METALLIC), which they never draw (a Bonds representation does). Until it is set for the bonds of
 // the molecule every bond is drawn.
-void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys);
+// The bonds of a frame which has other bonds than the system (md_gl_mol_set_bonds given those of the system, then the
+// bonds formed): delta, its bonds broken and formed, and chem, the chemistry of the region they reach
+// (md_chem_perceive_delta), which gives the orders, aromaticity and rings there. The rings of the system keep their
+// indices, those of the region (none drawn of the system's where they have an atom) follow them: their circles pick as
+// md_index_data_num_ranges(&sys->ring) + their index in chem->ring. Either may be NULL: without chem the bonds formed
+// are plain, without delta those of the system are drawn as they are.
+void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys, const struct md_bond_delta_t* delta, const struct md_chem_delta_t* chem);
 
 // The gaps of the chains, from the chain breaks of the system (MD_COMPONENT_FLAG_BREAK_AFTER, CHAIN BREAKS in md_util.h):
 // for the representations with chain_gaps set, a straight dashed line over each break, from the residue before it to

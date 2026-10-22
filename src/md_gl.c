@@ -1,5 +1,6 @@
 ﻿#include <md_gl.h>
 #include <md_util.h>
+#include <md_chem.h>
 
 #include <core/md_common.h>
 #include <core/md_compiler.h>
@@ -11,6 +12,7 @@
 #include <core/md_handle.h>
 #include <core/md_gl_util.h>
 #include <core/md_intrinsics.h>
+#include <core/md_bitset.h>
 
 #include <md_system.h>
 
@@ -2055,7 +2057,7 @@ static uint32_t compute_bond_partners(uint32_t* out_partner, const uint8_t* cove
 
 // END BOND ORDER DERIVATION
 
-void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
+void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const md_bond_delta_t* delta, const md_chem_delta_t* chem) {
     molecule_t* mol = mol_lookup(handle.id);
     if (!mol) {
         MD_LOG_ERROR("Invalid molecule");
@@ -2068,16 +2070,18 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
         MD_LOG_ERROR("The system is missing");
         return;
     }
-    // The bonds of the graph come first in the molecule. Those after them (formed in a frame) are plain.
-    const uint32_t bond_count = (uint32_t)sys->bond.count;
-    if (bond_count > mol->bond_count) {
-        MD_LOG_ERROR("The system has %u bonds and the molecule %u: set the bonds first (md_gl_mol_set_bonds)", bond_count, mol->bond_count);
+    // The bonds of the graph come first in the molecule, then those formed in a frame (delta), as many as it has
+    const uint32_t sys_bond_count = (uint32_t)sys->bond.count;
+    if (sys_bond_count > mol->bond_count) {
+        MD_LOG_ERROR("The system has %u bonds and the molecule %u: set the bonds first (md_gl_mol_set_bonds)", sys_bond_count, mol->bond_count);
         return;
     }
     const uint32_t mol_bond_count = mol->bond_count;
-    if (bond_count == 0 || !sys->bond.pairs || !sys->bond.flags) {
+    if (sys_bond_count == 0 || !sys->bond.pairs || !sys->bond.flags) {
         return;
     }
+    const uint32_t num_formed = delta ? (uint32_t)MIN(delta->num_formed, (size_t)(mol_bond_count - sys_bond_count)) : 0;
+    const uint32_t bond_count = sys_bond_count + num_formed;
     if (bond_count >= (1u << 29)) {
         MD_LOG_ERROR("Too many bonds for bond orders");
         return;
@@ -2087,24 +2091,57 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     md_allocator_i* alloc = md_get_heap_allocator();
     const uint32_t atom_count = mol->atom_count;
 
+    // The bonds as the frame has them: a broken one is set to one atom twice (no bond), the formed ones follow, and the
+    // region of the frame's chemistry has its own flags
+    uint32_t* pairs = md_alloc(alloc, 2 * MAX(bond_count, 1) * sizeof(uint32_t));
+    uint32_t* flags = md_alloc(alloc, MAX(bond_count, 1) * sizeof(uint32_t));
+    MEMCPY(pairs, sys->bond.pairs, 2 * sys_bond_count * sizeof(uint32_t));
+    for (uint32_t i = 0; i < sys_bond_count; ++i) flags[i] = (uint32_t)sys->bond.flags[i];
+    if (delta) {
+        md_bitset_iter_t it = md_bitset_iter(delta->broken);
+        while (md_bitset_iter_next(&it)) {
+            if (it.idx < sys_bond_count) pairs[2 * it.idx + 1] = pairs[2 * it.idx + 0];
+        }
+        for (uint32_t j = 0; j < num_formed; ++j) {
+            pairs[2 * (sys_bond_count + j) + 0] = (uint32_t)delta->formed_pair[j].idx[0];
+            pairs[2 * (sys_bond_count + j) + 1] = (uint32_t)delta->formed_pair[j].idx[1];
+            flags[sys_bond_count + j] = (uint32_t)delta->formed_flags[j];
+        }
+    }
+    uint8_t* hyb      = md_alloc(alloc, MAX(atom_count, 1) * sizeof(uint8_t));
+    uint8_t* hydrogen = md_alloc(alloc, MAX(atom_count, 1) * sizeof(uint8_t));
+    for (uint32_t i = 0; i < atom_count; ++i) {
+        hyb[i]      = (uint8_t)md_atom_hybridization(&sys->atom, i);
+        hydrogen[i] = md_atom_atomic_number(&sys->atom, i) == 1 ? 1 : 0;
+    }
+    uint8_t* region = NULL;     // [atom_count] Atoms of the region of the frame's chemistry
+    if (chem && chem->num_atoms) {
+        region = md_alloc(alloc, MAX(atom_count, 1));
+        MEMSET(region, 0, MAX(atom_count, 1));
+        for (size_t k = 0; k < chem->num_atoms; ++k) {
+            const int32_t a = chem->atom_idx[k];
+            if (a < 0 || (uint32_t)a >= atom_count) continue;
+            region[a] = 1;
+            hyb[a] = (uint8_t)md_atom_flags_hybridization(chem->atom_flags[k]);
+        }
+        for (size_t k = 0; k < chem->num_bonds; ++k) {
+            if (chem->bond_idx[k] < bond_count) flags[chem->bond_idx[k]] = (uint32_t)chem->bond_flags[k];
+        }
+    }
+
     // Connectivity from the pairs, which are what the molecule draws. The elastic bonds are no part of it: they give
     // no plane to a double bond and close no ring.
-    const uint32_t* pairs = (const uint32_t*)sys->bond.pairs;
     uint32_t* adj_offset = md_alloc(alloc, (atom_count + 1) * sizeof(uint32_t));
-    uint32_t* adj_atom   = md_alloc(alloc, 2 * bond_count * sizeof(uint32_t));
-    uint32_t* adj_bond   = md_alloc(alloc, 2 * bond_count * sizeof(uint32_t));
-    uint32_t* flags      = md_alloc(alloc, bond_count * sizeof(uint32_t));
-    uint8_t*  hyb        = md_alloc(alloc, atom_count * sizeof(uint8_t));
-    uint8_t*  hydrogen   = md_alloc(alloc, atom_count * sizeof(uint8_t));
+    uint32_t* adj_atom   = md_alloc(alloc, 2 * MAX(bond_count, 1) * sizeof(uint32_t));
+    uint32_t* adj_bond   = md_alloc(alloc, 2 * MAX(bond_count, 1) * sizeof(uint32_t));
     uint32_t* order      = md_alloc(alloc, MAX(mol_bond_count, 1) * sizeof(uint32_t));
-    uint32_t* ref        = md_alloc(alloc, 4 * bond_count * sizeof(uint32_t));
+    uint32_t* ref        = md_alloc(alloc, 4 * MAX(bond_count, 1) * sizeof(uint32_t));
 
     MEMSET(adj_offset, 0, (atom_count + 1) * sizeof(uint32_t));
     for (uint32_t i = 0; i < bond_count; ++i) {
         const uint32_t a = pairs[2 * i + 0];
         const uint32_t b = pairs[2 * i + 1];
-        flags[i] = (uint32_t)sys->bond.flags[i];
-        if (a < atom_count && b < atom_count && md_bond_is_graph(flags[i])) {
+        if (a < atom_count && b < atom_count && a != b && md_bond_is_graph(flags[i])) {
             adj_offset[a + 1] += 1;
             adj_offset[b + 1] += 1;
         }
@@ -2112,29 +2149,65 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     for (uint32_t i = 0; i < atom_count; ++i) {
         adj_offset[i + 1] += adj_offset[i];
     }
-    uint32_t* cursor = md_alloc(alloc, atom_count * sizeof(uint32_t));
+    uint32_t* cursor = md_alloc(alloc, MAX(atom_count, 1) * sizeof(uint32_t));
     MEMCPY(cursor, adj_offset, atom_count * sizeof(uint32_t));
     for (uint32_t i = 0; i < bond_count; ++i) {
         const uint32_t a = pairs[2 * i + 0];
         const uint32_t b = pairs[2 * i + 1];
-        if (a < atom_count && b < atom_count && md_bond_is_graph(flags[i])) {
+        if (a < atom_count && b < atom_count && a != b && md_bond_is_graph(flags[i])) {
             adj_atom[cursor[a]] = b;
             adj_bond[cursor[a]++] = i;
             adj_atom[cursor[b]] = a;
             adj_bond[cursor[b]++] = i;
         }
     }
-    md_free(alloc, cursor, atom_count * sizeof(uint32_t));
+    md_free(alloc, cursor, MAX(atom_count, 1) * sizeof(uint32_t));
 
-    for (uint32_t i = 0; i < atom_count; ++i) {
-        hyb[i]      = (uint8_t)md_atom_hybridization(&sys->atom, i);
-        hydrogen[i] = md_atom_atomic_number(&sys->atom, i) == 1 ? 1 : 0;
-    }
-
+    // The rings of the system keep their indices, those with an atom in the region drawn no more; the rings of the
+    // region follow them. Without flags for every ring there are no circles, and the aromatic bonds get dashed partners.
     const bool has_xyz = md_system_state_has_coords(&sys->reference) && sys->reference.num_atoms >= atom_count;
-    const uint32_t ring_count = (uint32_t)md_index_data_num_ranges(&sys->ring);
-    // Without flags for every ring there are no circles, and the aromatic bonds get dashed partners
-    const bool has_ring_flags = ring_count && sys->ring_flags && md_array_size(sys->ring_flags) == ring_count;
+    const uint32_t sys_ring_count = (uint32_t)md_index_data_num_ranges(&sys->ring);
+    const bool has_ring_flags = sys_ring_count && sys->ring_flags && md_array_size(sys->ring_flags) == sys_ring_count;
+    const uint32_t chem_ring_count = region ? (uint32_t)md_index_data_num_ranges(&chem->ring) : 0;
+    const uint32_t ring_count = sys_ring_count + chem_ring_count;
+    const uint32_t* ring_offset = ring_count ? sys->ring.offsets : NULL;
+    const int32_t*  ring_atom   = ring_count ? sys->ring.indices : NULL;
+    const md_ring_flags_t* ring_flags = has_ring_flags ? sys->ring_flags : NULL;
+    uint32_t* own_offset = NULL;
+    int32_t*  own_atom = NULL;
+    md_ring_flags_t* own_flags = NULL;
+    size_t own_atom_count = 0;
+    if (chem_ring_count) {
+        const uint32_t sys_ring_atoms = sys_ring_count ? sys->ring.offsets[sys_ring_count] : 0;
+        own_atom_count = sys_ring_atoms + md_array_size(chem->ring.indices);
+        own_offset = md_alloc(alloc, (ring_count + 1) * sizeof(uint32_t));
+        own_atom   = md_alloc(alloc, MAX(own_atom_count, 1) * sizeof(int32_t));
+        own_flags  = md_alloc(alloc, ring_count * sizeof(md_ring_flags_t));
+        if (sys_ring_count) {
+            MEMCPY(own_offset, sys->ring.offsets, (sys_ring_count + 1) * sizeof(uint32_t));
+            MEMCPY(own_atom, sys->ring.indices, sys_ring_atoms * sizeof(int32_t));
+        } else {
+            own_offset[0] = 0;
+        }
+        for (uint32_t r = 0; r < sys_ring_count; ++r) {
+            md_ring_flags_t f = has_ring_flags ? sys->ring_flags[r] : MD_RING_FLAG_NONE;
+            for (uint32_t k = own_offset[r]; k < own_offset[r + 1]; ++k) {
+                if (own_atom[k] >= 0 && (uint32_t)own_atom[k] < atom_count && region[own_atom[k]]) f = MD_RING_FLAG_NONE;
+            }
+            own_flags[r] = f;
+        }
+        for (uint32_t q = 0; q < chem_ring_count; ++q) {
+            const int32_t* rq = md_index_range_beg(&chem->ring, q);
+            const uint32_t n = (uint32_t)md_index_range_size(&chem->ring, q);
+            const uint32_t at = own_offset[sys_ring_count + q];
+            MEMCPY(own_atom + at, rq, n * sizeof(int32_t));
+            own_offset[sys_ring_count + q + 1] = at + n;
+            own_flags[sys_ring_count + q] = chem->ring_flags[q];
+        }
+        ring_offset = own_offset;
+        ring_atom   = own_atom;
+        ring_flags  = own_flags;
+    }
 
     const bond_order_input_t in = {
         .bond_count    = bond_count,
@@ -2148,15 +2221,15 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
         .hydrogen      = hydrogen,
         .xyz           = has_xyz ? (const float*)sys->reference.xyz : NULL,
         .ring_count    = ring_count,
-        .ring_offset   = ring_count ? sys->ring.offsets : NULL,
-        .ring_atom     = ring_count ? sys->ring.indices : NULL,
-        .ring_flags    = has_ring_flags ? sys->ring_flags : NULL,
+        .ring_offset   = ring_offset,
+        .ring_atom     = ring_atom,
+        .ring_flags    = ring_flags,
     };
     const uint32_t entries = compute_bond_orders(order, ref, &in);
 
     // The circles first: the bonds they cover need no dashed partner
-    uint8_t* covered = md_alloc(alloc, bond_count * sizeof(uint8_t));
-    MEMSET(covered, 0, bond_count * sizeof(uint8_t));
+    uint8_t* covered = md_alloc(alloc, MAX(bond_count, 1) * sizeof(uint8_t));
+    MEMSET(covered, 0, MAX(bond_count, 1) * sizeof(uint8_t));
     const uint32_t ring_entry_count = compute_aromatic_rings(NULL, NULL, &in);
     const size_t   ring_entry_bytes = MAX(ring_entry_count, 1) * RING_ENTRY_U32 * sizeof(uint32_t);
     uint32_t* ring_entry = md_alloc(alloc, ring_entry_bytes);
@@ -2172,7 +2245,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_ORDER_REF]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_PARTNER]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_AROMATIC_RING]);
-    // The bonds after those of the graph: plain (KIND_PLAIN, 0)
+    // The bonds past those given: plain (KIND_PLAIN, 0)
     if (mol_bond_count > bond_count) MEMSET(order + bond_count, 0, (mol_bond_count - bond_count) * sizeof(uint32_t));
     mol->buffer[GL_BUFFER_BOND_ORDER]     = gl_buffer_create(mol_bond_count * sizeof(uint32_t), order, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_BOND_ORDER_REF] = gl_buffer_create(MAX(entries, 1) * 4 * sizeof(uint32_t), ref, GL_STATIC_DRAW);
@@ -2201,16 +2274,23 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     }
     md_free(alloc, partner, MAX(partner_count, 1) * 4 * sizeof(uint32_t));
     md_free(alloc, ring_entry, ring_entry_bytes);
-    md_free(alloc, covered, bond_count * sizeof(uint8_t));
+    md_free(alloc, covered, MAX(bond_count, 1) * sizeof(uint8_t));
+    if (own_offset) {
+        md_free(alloc, own_offset, (ring_count + 1) * sizeof(uint32_t));
+        md_free(alloc, own_atom, MAX(own_atom_count, 1) * sizeof(int32_t));
+        md_free(alloc, own_flags, ring_count * sizeof(md_ring_flags_t));
+    }
+    if (region) md_free(alloc, region, MAX(atom_count, 1));
 
     md_free(alloc, adj_offset, (atom_count + 1) * sizeof(uint32_t));
-    md_free(alloc, adj_atom,   2 * bond_count * sizeof(uint32_t));
-    md_free(alloc, adj_bond,   2 * bond_count * sizeof(uint32_t));
-    md_free(alloc, flags,      bond_count * sizeof(uint32_t));
-    md_free(alloc, hyb,        atom_count * sizeof(uint8_t));
-    md_free(alloc, hydrogen,   atom_count * sizeof(uint8_t));
+    md_free(alloc, adj_atom,   2 * MAX(bond_count, 1) * sizeof(uint32_t));
+    md_free(alloc, adj_bond,   2 * MAX(bond_count, 1) * sizeof(uint32_t));
+    md_free(alloc, pairs,      2 * MAX(bond_count, 1) * sizeof(uint32_t));
+    md_free(alloc, flags,      MAX(bond_count, 1) * sizeof(uint32_t));
+    md_free(alloc, hyb,        MAX(atom_count, 1) * sizeof(uint8_t));
+    md_free(alloc, hydrogen,   MAX(atom_count, 1) * sizeof(uint8_t));
     md_free(alloc, order,      MAX(mol_bond_count, 1) * sizeof(uint32_t));
-    md_free(alloc, ref,        4 * bond_count * sizeof(uint32_t));
+    md_free(alloc, ref,        4 * MAX(bond_count, 1) * sizeof(uint32_t));
 }
 
 // ### CHAIN GAPS ###
@@ -2540,7 +2620,7 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
 
         if (sys->bond.pairs) {
             md_gl_mol_set_bonds(handle, 0, gl_mol->bond_count, sys->bond.pairs, sizeof(md_atom_pair_t));
-            md_gl_mol_set_bond_orders(handle, sys);
+            md_gl_mol_set_bond_orders(handle, sys, NULL, NULL);
         }
         md_gl_mol_set_chain_gaps(handle, sys);
     }

@@ -5451,17 +5451,16 @@ static void sort_ring(int* arr, int n) {
 #define ENVELOPE_MAX_CAND 64
 #define ENVELOPE_MAX_BONDS ((ENVELOPE_MAX_CAND + 1) * MAX_RING_SIZE)
 #define ENVELOPE_WORDS ((ENVELOPE_MAX_BONDS + 63) / 64)
-static void remove_envelope_rings(md_system_t* sys, md_allocator_i* temp_arena) {
-    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
-    const size_t num_atoms = md_system_atom_count(sys);
+static void remove_envelope_rings(md_index_data_t* rings, const md_bond_data_t* bond, size_t num_atoms, md_allocator_i* temp_arena) {
+    const size_t num_rings = md_index_data_num_ranges(rings);
     if (num_rings < 2) return;
 
     // The rings of each atom
     uint32_t* off = md_alloc(temp_arena, (num_atoms + 1) * sizeof(uint32_t));
     MEMSET(off, 0, (num_atoms + 1) * sizeof(uint32_t));
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+        const int32_t* ring = md_index_range_beg(rings, r);
+        const size_t n = md_index_range_size(rings, r);
         for (size_t k = 0; k < n; ++k) off[ring[k] + 1] += 1;
     }
     for (size_t i = 0; i < num_atoms; ++i) off[i + 1] += off[i];
@@ -5469,8 +5468,8 @@ static void remove_envelope_rings(md_system_t* sys, md_allocator_i* temp_arena) 
     uint32_t* fill = md_alloc(temp_arena, num_atoms * sizeof(uint32_t));
     MEMCPY(fill, off, num_atoms * sizeof(uint32_t));
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+        const int32_t* ring = md_index_range_beg(rings, r);
+        const size_t n = md_index_range_size(rings, r);
         for (size_t k = 0; k < n; ++k) idx[fill[ring[k]]++] = (uint32_t)r;
     }
 
@@ -5479,8 +5478,8 @@ static void remove_envelope_rings(md_system_t* sys, md_allocator_i* temp_arena) 
     size_t removed_count = 0;
 
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const int n = (int)md_index_range_size(&sys->ring, r);
+        const int32_t* ring = md_index_range_beg(rings, r);
+        const int n = (int)md_index_range_size(rings, r);
         if (n < 4) continue;    // Two rings of 3 make one of 4 at the least
 
         // Smaller rings which share an atom with this one
@@ -5489,7 +5488,7 @@ static void remove_envelope_rings(md_system_t* sys, md_allocator_i* temp_arena) 
         for (int k = 0; k < n; ++k) {
             for (uint32_t t = off[ring[k]]; t < off[ring[k] + 1]; ++t) {
                 const uint32_t s = idx[t];
-                if (s == r || (int)md_index_range_size(&sys->ring, s) >= n) continue;
+                if (s == r || (int)md_index_range_size(rings, s) >= n) continue;
                 bool dup = false;
                 for (int c = 0; c < num_cand; ++c) dup |= cand[c] == s;
                 if (!dup && num_cand < ENVELOPE_MAX_CAND) cand[num_cand++] = s;
@@ -5509,11 +5508,11 @@ static void remove_envelope_rings(md_system_t* sys, md_allocator_i* temp_arena) 
         for (int c = 0; c <= num_cand && valid; ++c) {
             const bool self = c == num_cand;
             const uint32_t s = self ? (uint32_t)r : cand[c];
-            const int32_t* rs = md_index_range_beg(&sys->ring, s);
-            const int ns = (int)md_index_range_size(&sys->ring, s);
+            const int32_t* rs = md_index_range_beg(rings, s);
+            const int ns = (int)md_index_range_size(rings, s);
             uint64_t v[ENVELOPE_WORDS] = {0};
             for (int k = 0; k < ns; ++k) {
-                const md_bond_idx_t b = md_bond_find(&sys->bond, rs[k], rs[(k + 1) % ns]);
+                const md_bond_idx_t b = md_bond_find(bond, rs[k], rs[(k + 1) % ns]);
                 if (b < 0) { valid = false; break; }
                 int j = 0;
                 while (j < num_bonds && bonds[j] != b) ++j;
@@ -5546,12 +5545,12 @@ static void remove_envelope_rings(md_system_t* sys, md_allocator_i* temp_arena) 
     if (!removed_count) return;
 
     md_index_data_t kept = {0};
-    kept.alloc = sys->ring.alloc;
+    kept.alloc = rings->alloc;
     for (size_t r = 0; r < num_rings; ++r) {
-        if (!removed[r]) md_index_data_push_arr(&kept, md_index_range_beg(&sys->ring, r), md_index_range_size(&sys->ring, r));
+        if (!removed[r]) md_index_data_push_arr(&kept, md_index_range_beg(rings, r), md_index_range_size(rings, r));
     }
-    md_index_data_free(&sys->ring);
-    sys->ring = kept;
+    md_index_data_free(rings);
+    *rings = kept;
 }
 #undef ENVELOPE_MAX_CAND
 #undef ENVELOPE_MAX_BONDS
@@ -5562,30 +5561,9 @@ static void remove_envelope_rings(md_system_t* sys, md_allocator_i* temp_arena) 
 // Copyright (c) 2018 mol* contributors, licensed under MIT, See LICENSE file for more info.
 // @author David Sehnal <david.sehnal@gmail.com>
 
-bool md_util_system_infer_rings(md_system_t* sys) {
-    ASSERT(sys);
-    ASSERT(sys->alloc);
-    md_allocator_i* alloc = sys->alloc;
-
-    size_t num_atoms = md_system_atom_count(sys);
-    size_t num_bonds = md_system_bond_count(sys);
-
-    if (num_atoms == 0) {
-        return false;
-    }
-    if (num_bonds == 0) {
-        return false;
-    }
-    md_system_topology_changed(sys);
-
-    if (sys->ring.alloc && sys->ring.alloc != alloc) {
-        md_index_data_free(&sys->ring);
-    }
-    sys->ring.alloc = alloc;
-    md_index_data_clear(&sys->ring);
-    md_array_shrink(sys->ring_flags, 0);
-
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+// The rings of the bond graph (bond, with its connectivity), pushed to out: see md_util_system_infer_rings. The atoms
+// set in skip (optional) are neither roots nor passed through.
+static void find_rings(md_index_data_t* out, const md_bond_data_t* bond, size_t num_atoms, const uint64_t* skip, md_temp_scope_t temp) {
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     // Some typedefs to enable laboration of types
@@ -5608,25 +5586,8 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     color_t current_color = 1;
     mark_t  current_mark  = 1;
 
-    // Water and ions have no rings, and neither do coarse grained beads or virtual sites: a ring is made of atoms.
-    // Martini closes a few beads into a rigid triangle where the atoms had a ring (one bead per two or three ring
-    // atoms, fused rings a triangulated patch), and the elastic network and secondary structure bonds of a coarse
-    // grained protein close thousands of cycles which are no rings at all. Skipped atoms are neither roots nor
-    // passed through, so a ring of atoms in a molecule which also holds beads is still found.
-    uint64_t* skip = make_bitfield(num_atoms, temp_arena);
-    for (size_t ci = 0; ci < sys->component.count; ++ci) {
-        const md_component_kind_t kind = md_component_kind(&sys->component, ci);
-        if (kind == MD_COMPONENT_KIND_WATER || kind == MD_COMPONENT_KIND_ION) {
-            const md_urange_t range = md_component_atom_range(&sys->component, ci);
-            for (uint32_t i = range.beg; i < range.end && i < num_atoms; ++i) bitfield_set_bit(skip, i);
-        }
-    }
-    for (size_t i = 0; i < num_atoms; ++i) {
-        if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
-    }
-
     for (int atom_idx = 0; atom_idx < (int)num_atoms; ++atom_idx) {
-        if (bitfield_test_bit(skip, atom_idx)) continue;
+        if (skip && bitfield_test_bit(skip, atom_idx)) continue;
 
         // Skip any atom that has already been colored in the previous search
         if (color[atom_idx] == current_color) continue;
@@ -5641,14 +5602,14 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         while (!md_fifo_empty(&queue)) {
             int idx = md_fifo_pop(&queue);
 
-            md_bond_iter_t it = md_bond_iter(&sys->bond, idx);
+            md_bond_iter_t it = md_bond_iter(bond, idx);
             while (md_bond_iter_has_next(&it)) {
                 int next = md_bond_iter_atom_index(&it);
                 md_bond_iter_next(&it);
 
                 //if (next > idx) continue;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
-                if (bitfield_test_bit(skip, next)) continue;
+                if (skip && bitfield_test_bit(skip, next)) continue;
 
                 if (mark[next] == current_mark && depth[idx] >= MIN_RING_SIZE) {
                     // We found a junction point where the graph connects
@@ -5718,7 +5679,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
                         uint64_t key = md_hash64(ring, len * sizeof(*ring), 0);
                         if (!md_hashset_get(&ring_set, key)) {
                             md_hashset_add(&ring_set, key);
-                            md_index_data_push_arr(&sys->ring, ring, len);
+                            md_index_data_push_arr(out, ring, len);
                         }
                     }
                 } else {
@@ -5736,8 +5697,64 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         }
     }
 
-    remove_envelope_rings(sys, temp_arena);
-    
+    remove_envelope_rings(out, bond, num_atoms, temp_arena);
+}
+
+void md_util_infer_rings(md_index_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms) {
+    ASSERT(out_rings && out_rings->alloc);
+    ASSERT(bond);
+    md_index_data_clear(out_rings);
+    if (num_atoms == 0 || bond->count == 0 || !bond->conn.offset) return;
+    md_temp_scope_t temp = md_temp_begin_avoid(out_rings->alloc);
+    find_rings(out_rings, bond, num_atoms, NULL, temp);
+    md_temp_end(temp);
+}
+
+bool md_util_system_infer_rings(md_system_t* sys) {
+    ASSERT(sys);
+    ASSERT(sys->alloc);
+    md_allocator_i* alloc = sys->alloc;
+
+    size_t num_atoms = md_system_atom_count(sys);
+    size_t num_bonds = md_system_bond_count(sys);
+
+    if (num_atoms == 0) {
+        return false;
+    }
+    if (num_bonds == 0) {
+        return false;
+    }
+    md_system_topology_changed(sys);
+
+    if (sys->ring.alloc && sys->ring.alloc != alloc) {
+        md_index_data_free(&sys->ring);
+    }
+    sys->ring.alloc = alloc;
+    md_index_data_clear(&sys->ring);
+    md_array_shrink(sys->ring_flags, 0);
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+    // Water and ions have no rings, and neither do coarse grained beads or virtual sites: a ring is made of atoms.
+    // Martini closes a few beads into a rigid triangle where the atoms had a ring (one bead per two or three ring
+    // atoms, fused rings a triangulated patch), and the elastic network and secondary structure bonds of a coarse
+    // grained protein close thousands of cycles which are no rings at all. Skipped atoms are neither roots nor
+    // passed through, so a ring of atoms in a molecule which also holds beads is still found.
+    uint64_t* skip = make_bitfield(num_atoms, temp_arena);
+    for (size_t ci = 0; ci < sys->component.count; ++ci) {
+        const md_component_kind_t kind = md_component_kind(&sys->component, ci);
+        if (kind == MD_COMPONENT_KIND_WATER || kind == MD_COMPONENT_KIND_ION) {
+            const md_urange_t range = md_component_atom_range(&sys->component, ci);
+            for (uint32_t i = range.beg; i < range.end && i < num_atoms; ++i) bitfield_set_bit(skip, i);
+        }
+    }
+    for (size_t i = 0; i < num_atoms; ++i) {
+        if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
+    }
+
+    find_rings(&sys->ring, &sys->bond, num_atoms, skip, temp);
+
     md_temp_end(temp);
 
     md_util_system_infer_ring_flags(sys);
