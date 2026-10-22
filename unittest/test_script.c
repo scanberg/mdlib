@@ -7059,7 +7059,11 @@ UTEST(script, bondsets) {
         "n_all   = count(all_b);"
         "l       = length(coord_b);"
         "in_ctx  = bond() in resname('ACT');"
-        "n_first = count(first_r);";
+        "n_first = count(first_r);"
+        "by_atom = bond(atom(2), atom(3));"
+        "by_idx  = bond(2, 3);"
+        "by_rev  = bond(3, 2);"
+        "by_arr  = bond(2, {3, 4});";
     const bool compiled = md_script_ir_compile_from_source(ir, str_from_cstr(src), &sys, NULL);
     for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) printf("%.*s\n", STR_ARG(md_script_ir_errors(ir)[i].text));
     ASSERT_TRUE(compiled);
@@ -7077,6 +7081,11 @@ UTEST(script, bondsets) {
     EXPECT_EQ(7, bondset_count_of(ir, "ordered", &sys, &st, alloc));
     EXPECT_EQ(2, bondset_count_of(ir, "water_b", &sys, &st, alloc));
     EXPECT_EQ(2, bondset_count_of(ir, "c_o", &sys, &st, alloc));
+    // A bond by the indices of its atoms, as the context menu writes it: in either order, the ints taken as atoms
+    EXPECT_EQ(1, bondset_count_of(ir, "by_atom", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "by_idx", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "by_rev", &sys, &st, alloc));
+    EXPECT_EQ(2, bondset_count_of(ir, "by_arr", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "at_mg", &sys, &st, alloc));
     // One set per residue: the bonds within each, so neither Mg-O1 nor the hydrogen bond (between residues) nor Cu-Cu
     data_t per_res = {0};

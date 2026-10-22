@@ -1069,6 +1069,9 @@ The persistent bonds of the system which every filter given lets through, within
 - With `a` and `b`: the bonds with one atom in the element of `a` and the other in `b`.
 - With `b` alone: the bonds with an atom in `b`.
 
+An atom index stands for that atom, as for [`distance`](#distance): `bond(1, 4)` is the bond between the first and the
+fourth atom, if they have one.
+
 `kind` is any of the kinds above. `order` is the order of a bond of the graph, a number or a range: 1 single, 2 double,
 3 triple, 4 quadruple, 0 unknown; non-covalent bonds have none. `resonance` is any of `"aromatic"`, `"delocalized"`
 (carboxylate, guanidinium, nitro, ...) and `"localized"` (neither), of a bond of the graph. `origin` is any of `"file"`,
@@ -1081,6 +1084,7 @@ adducts     = bond(protein(), not protein(), kind="covalent");   # covalent liga
 drawn       = bond(kind="hydrogen", origin="user");               # the hydrogen bonds a user marked
 kekule      = bond(resonance="aromatic", order=2);
 n_per_res   = count(bond(residue(1:10)));
+one         = bond(1, 4);                                         # the bond between atoms 1 and 4
 ```
 
 ### atoms
