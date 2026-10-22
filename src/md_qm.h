@@ -32,6 +32,7 @@
 // inventing a thirteenth spelling of "publish a series of doubles".
 
 struct md_gto_basis_t;
+struct md_allocator_i;
 
 #ifdef __cplusplus
 extern "C" {
@@ -217,6 +218,23 @@ size_t md_qm_compute_overlap(double* out, const struct md_gto_basis_t* basis, co
 // occupations beside it: a resident copy would be a second {A,A} matrix with nothing keeping it in
 // step. See the provider notes in md_system.h; 'sys' is borrowed and must outlive the table.
 bool md_qm_publish_orbital_densities(struct md_system_t* sys);
+
+// The orbitals an SCF density is a sum of squares of: D = sum_k w_k c_k c_k^T, for 'density_path' one of
+// orbital/{alpha,beta,total,difference}/density, from orbital/{alpha,beta}/{coefficient,occupation}.
+// What md_gto_iso_field_create_products takes (left = rows, weight = weights): exact, where a matrix
+// would have to be factorized again. Orbitals of zero weight are left out, and an orbital both spins
+// share appears once with its weights summed (a restricted total: twice the alpha occupation; a
+// restricted difference: nothing). rows: count x num_ao, weights: count, both allocated from 'alloc'
+// (free with sizeof(double) * count * num_ao and sizeof(double) * count). Returns count; 0 for another
+// path, missing orbitals, or a density that is zero.
+size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, const struct md_system_t* sys,
+                              str_t density_path, struct md_allocator_i* alloc);
+
+// orbital/{total,difference}/density (alpha + beta, alpha - beta) as virtual attributes over whatever
+// orbital/{alpha,beta}/density are: for a producer that publishes those two itself (read from a file
+// that stores them, say). Where beta is an alias of alpha, alpha is read once for the total and not
+// at all for the difference. md_qm_publish_orbital_densities ends with this.
+bool md_qm_publish_orbital_density_combinations(struct md_system_t* sys);
 
 #ifdef __cplusplus
 }
