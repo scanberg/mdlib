@@ -8,6 +8,8 @@ Every value is read from the force field files themselves:
 - the radius of a bead from the sigma of the Lennard-Jones interaction of its type with itself, as md_tpr gives it:
   half the distance of the minimum of the potential, 2^(1/6) sigma / 2
 - a virtual site is a bead without mass; one without Lennard-Jones is a charge site (MD_PARTICLE_VIRTUAL_SITE)
+- a particle of a type the main itp does not define, which a topology brings along as a non-interacting mass carrier
+  (DUM: the dummies of the optimal LINCS cholesterol), has the mass of its [ atoms ] and no Lennard-Jones
 - bonds are the chemical ones, as GROMACS flags them (IF_CHEMBOND): [ bonds ] of type 1, 2, 3, 4, 5, 7, 8 and
   [ constraints ] of type 1, and a virtual site to the first atom it is constructed from, as md_tpr bonds it.
   Harmonic potentials (type 6: elastic networks) and restraints are not bonds.
@@ -21,7 +23,9 @@ Sources (the directory of each is an argument, see --help):
               (martini3001); RNA from github.com/DanYev/reForge (the itp its martinize_rna.py writes, --nucleic);
               polymers from polyply (data/martini3)
   Martini 2   martini_v2.2.itp, martini_v2.2P.itp, martini_v2.0_ions, solvents and sugars and the lipidome from
-              cgmartini.nl; proteins from vermouth (martini22, elnedyn22, martini22p); DNA and RNA from the
+              cgmartini.nl; of its Martini 2 "others" the optimal LINCS cholesterol (martini_v2.0_CHOL_02-optLINCS.itp,
+              Fabian, Thallmair and Hummer, JCTC 2023: CHOL of 12 particles, the ring beads virtual sites of four
+              dummies, VOH V1 V2 V3); proteins from vermouth (martini22, elnedyn22, martini22p); DNA and RNA from the
               topologies martinize-dna.py and martinize-nucleotide.py (cgmartini.nl) write (--nucleic); polymers
               from polyply (data/martini2)
 
@@ -37,7 +41,8 @@ KINDS = {'OTHER': 'MD_COMPONENT_KIND_OTHER', 'AMINO_ACID': 'MD_COMPONENT_KIND_AM
          'WATER': 'MD_COMPONENT_KIND_WATER', 'ION': 'MD_COMPONENT_KIND_ION', 'LIPID': 'MD_COMPONENT_KIND_LIPID'}
 WATER_NAMES = {'W', 'PW', 'WF', 'SW', 'TW', 'BMW'}
 CHEM_BONDS = {1, 2, 3, 4, 5, 7, 8}
-K = 0.5 * 2 ** (1 / 6) * 10.0   # sigma (nm) to the radius (A)
+NONINTERACTING = {'DUM'}    # Types of mass carriers which topologies use without the main itp defining them
+K =0.5 * 2 ** (1 / 6) * 10.0   # sigma (nm) to the radius (A)
 
 
 def strip(line):
@@ -117,7 +122,7 @@ class ForceField:
         return v if w > 0 else 0.0
 
     def bead(self, t, mass, vsite):
-        if t not in self.mass:
+        if t not in self.mass and not (t in NONINTERACTING and mass is not None):
             raise KeyError(t)
         m = self.mass[t] if mass is None else mass
         s = self.sigma(t)
@@ -406,6 +411,7 @@ def main():
     ap.add_argument('--m3-rna', required=True, help='reforge/martini of reForge')
     ap.add_argument('--m2', required=True, help='directory of martini_v2.2.itp, martini_v2.2P.itp, martini_v2.0_{ions,solvents,sugars}.itp')
     ap.add_argument('--m2-lipids', required=True, help='the Martini 2 lipidome, an itp per lipid in any subdirectory')
+    ap.add_argument('--m2-others', required=True, nargs='+', help='itps of the Martini 2 "others" of cgmartini.nl, read as lipids: martini_v2.0_CHOL_02-optLINCS.itp')
     ap.add_argument('--polyply', required=True, help='polyply/data of polyply 1.8 (its martini3 and martini2 polymer libraries)')
     ap.add_argument('--nucleic', nargs='*', default=[], help='version:itp of nucleic acids, e.g. M2:dna.itp M3:rna.itp')
     ap.add_argument('-o', '--output', required=True)
@@ -443,6 +449,9 @@ def main():
     sources.append((M2, ff2, 'SOLVENT', os.path.join(args.m2, 'martini_v2.2.itp')))      # W and WF
     sources.append((M2P, ff2p, 'SOLVENT', os.path.join(args.m2, 'martini_v2.2P.itp')))   # PW
     for p in sorted(glob.glob(os.path.join(args.m2_lipids, '**', '*.itp'), recursive=True)):
+        sources.append((M2 | M2P, ff2, 'LIPID', p))
+    # After the lipidome: the optimal LINCS cholesterol is a CHOL of other beads than the lipidome's, an entry of its own
+    for p in args.m2_others:
         sources.append((M2 | M2P, ff2, 'LIPID', p))
 
     residues = []   # (versions, Residue, source)
