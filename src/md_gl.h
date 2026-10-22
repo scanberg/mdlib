@@ -223,7 +223,9 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // of the system: the order and the aromatic and delocalized flags of its bonds (md_chem_perceive), its rings and their
 // flags and the hybridization of its atoms. The bonds of the system must be those of the molecule
 // (md_gl_mol_set_bonds), in the same order. md_gl_mol_create sets them.
-//   - double bond: two thinner sticks in the plane of its sp2 centers (the plane of their substituents)
+//   - double bond: two thinner sticks in the plane of its sp2 centers (the plane of their substituents), as planar as
+//     they are in the frame shown: an end that is pyramidal there gives no plane, and where neither end gives one the
+//     sticks turn towards lying perpendicular to the view
 //   - triple bond: three thinner sticks, perpendicular to the view
 //   - aromatic ring (MD_RING_FLAG_AROMATIC): the sticks of its bonds and a thin circle inside it, in its plane, one in
 //     each of two fused rings. Solid where the ring holds a sextet of its own (benzene, the benzene ring of tetralin),

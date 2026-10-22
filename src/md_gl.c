@@ -208,7 +208,7 @@ enum {
     GL_BUFFER_ATOM_FLAGS,                      // u8
     GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
     GL_BUFFER_BOND_ORDER,                      // u32 per bond: kind (plain, double, triple, elastic) | index into GL_BUFFER_BOND_ORDER_REF << 3 (md_gl_mol_set_bond_orders)
-    GL_BUFFER_BOND_ORDER_REF,                  // u32[2] per double or triple bond: atoms bonded to its first and its second atom
+    GL_BUFFER_BOND_ORDER_REF,                  // u32[4] per double or triple bond: two atoms bonded to its first atom, two to its second
     GL_BUFFER_BOND_PARTNER,                    // u32[4] per dashed partner of a delocalized bond, or of an aromatic bond in no circle: bond, atoms bonded to its first and its second atom, 0
     GL_BUFFER_AROMATIC_RING,                   // u32[8] per aromatic ring drawn as a circle: ring index | dashed << 28 | atom count << 29, its atoms in order around it (RING_ATOM_NONE past the count)
     GL_BUFFER_BACKBONE_DATA,                   // u32: residue index, u32: residue atom offset, u8: CA index, C index and O Index, u8: flags
@@ -1773,10 +1773,11 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 
 // ### BOND ORDERS ###
 //
-// What bond.vert needs to show the order of a bond: the plane of the bond, given by its surroundings, an atom bonded to
-// either end which lies in it. The plane is that of the sp2 centers: the substituents of a double bond, the ring of an
+// What bond.vert needs to show the order of a bond: the plane of the bond, given by its surroundings, atoms bonded to
+// either end which lie in it. The plane is that of the sp2 centers: the substituents of a double bond, the ring of an
 // aromatic bond, the group of a delocalized one.
-//   - Double and triple bonds have a kind per bond, which replaces the stick, and their surroundings.
+//   - Double and triple bonds have a kind per bond, which replaces the stick, and their surroundings: up to two atoms
+//     per end, so that bond.vert can tell how planar the end is in the frame shown (bo_plane_refs).
 //   - Aromatic rings are a circle inside the ring (ring.vert), an entry per ring: its index and its atoms. Their bonds
 //     keep the stick. Two fused rings have a circle each. The circle is solid where the ring holds a sextet of its
 //     own (benzene, the benzene ring of tetralin), dashed in the rings of a fused aromatic system, which share their
@@ -1815,6 +1816,7 @@ typedef struct {
     const uint32_t* adj_atom;       // The other atom
     const uint32_t* adj_bond;       // The bond
     const uint8_t*  hybridization;  // [atom_count] md_hybridization_t (optional)
+    const uint8_t*  hydrogen;       // [atom_count] 1 for a hydrogen (optional): the last choice of surroundings
     const float*    xyz;            // [atom_count * 3] Reference coordinates (optional)
     uint32_t        ring_count;
     const uint32_t* ring_offset;    // [ring_count + 1]
@@ -1854,21 +1856,37 @@ static bool bo_is_multiple(uint32_t flags) {
     return md_bond_order((md_bond_flags_t)flags) >= 2 || (flags & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED));
 }
 
-// An atom bonded to end e of the bond to o which gives the plane of the bond: off the axis, through a bond that is not
-// a coordination bond. An end which is not sp2 (the S of a sulfone, the P of a phosphine oxide) prefers one through a
-// multiple bond, so the bond lies in the plane they share (O=S=O). A linear end (sp) gives none.
-static uint32_t bo_plane_ref(const bond_order_input_t* in, uint32_t e, uint32_t o) {
+// The atoms bonded to end e of the bond to o which give the plane of the bond, up to two (out, BOND_REF_NONE past those
+// found): off the axis, through bonds that are not coordination bonds, heavy atoms before hydrogens (whose motion out of
+// the plane is the largest). An end which is not sp2 (the S of a sulfone, the P of a phosphine oxide) takes those
+// through a multiple bond when it has any, so the bond lies in the plane they share (O=S=O). A linear end (sp) gives
+// none. bond.vert weighs an end of two by how planar it is in the frame shown: the hybridization is of the bonds, the
+// plane of the coordinates, and an end that is pyramidal there gives no plane, whatever its order says.
+static void bo_plane_refs(const bond_order_input_t* in, uint32_t e, uint32_t o, uint32_t out[2]) {
+    out[0] = BOND_REF_NONE;
+    out[1] = BOND_REF_NONE;
     const uint8_t hyb = in->hybridization ? in->hybridization[e] : (uint8_t)MD_HYBRIDIZATION_UNKNOWN;
-    if (hyb == MD_HYBRIDIZATION_SP) return BOND_REF_NONE;
-    uint32_t ref = BOND_REF_NONE;
-    for (uint32_t j = in->adj_offset[e]; j < in->adj_offset[e + 1]; ++j) {
-        const uint32_t c = in->adj_atom[j];
-        const uint32_t f = in->flags[in->adj_bond[j]];
-        if (c == o || (f & MD_BOND_FLAG_COORDINATE) || !bo_off_axis(in, e, o, c)) continue;
-        if (hyb != MD_HYBRIDIZATION_SP2 && bo_is_multiple(f)) return c;
-        if (ref == BOND_REF_NONE) ref = c;
+    if (hyb == MD_HYBRIDIZATION_SP) return;
+    // In order of preference: 0 through a multiple bond (an end which is not sp2, and then only those), 1 a heavy atom,
+    // 2 a hydrogen
+    uint32_t n = 0;
+    for (int rank = 0; rank < 3 && n < 2; ++rank) {
+        for (uint32_t j = in->adj_offset[e]; j < in->adj_offset[e + 1] && n < 2; ++j) {
+            const uint32_t c = in->adj_atom[j];
+            const uint32_t f = in->flags[in->adj_bond[j]];
+            if (c == o || (f & MD_BOND_FLAG_COORDINATE) || !bo_off_axis(in, e, o, c)) continue;
+            const int r = (hyb != MD_HYBRIDIZATION_SP2 && bo_is_multiple(f)) ? 0 : (in->hydrogen && in->hydrogen[c]) ? 2 : 1;
+            if (r == rank) out[n++] = c;
+        }
+        if (rank == 0 && n > 0) return;
     }
-    return ref;
+}
+
+// The first of bo_plane_refs, for the side of a dashed partner
+static uint32_t bo_plane_ref(const bond_order_input_t* in, uint32_t e, uint32_t o) {
+    uint32_t ref[2];
+    bo_plane_refs(in, e, o, ref);
+    return ref[0];
 }
 
 // A delocalized bond has its partner within the group. The center of the group is the end with more delocalized bonds
@@ -1973,9 +1991,9 @@ static uint32_t compute_aromatic_rings(uint32_t* out_ring, uint8_t* out_covered,
 }
 
 // Double and triple bonds. out_order [bond_count]: kind | entry << 3, where entry indexes out_ref for double and triple
-// bonds. out_ref [2 * bond_count]: the atoms bonded to the first and to the second atom of each such bond, or
-// BOND_REF_NONE. Returns the number of entries of out_ref. Aromatic and delocalized bonds are plain here: they keep their
-// stick (compute_bond_partners).
+// bonds. out_ref [4 * bond_count]: per such bond the atoms bonded to its first atom which give its plane, then those
+// bonded to its second atom, two each (bo_plane_refs), BOND_REF_NONE where there are fewer. Returns the number of
+// entries of out_ref. Aromatic and delocalized bonds are plain here: they keep their stick (compute_bond_partners).
 static uint32_t compute_bond_orders(uint32_t* out_order, uint32_t* out_ref, const bond_order_input_t* in) {
     uint32_t entries = 0;
     for (uint32_t i = 0; i < in->bond_count; ++i) {
@@ -1985,15 +2003,15 @@ static uint32_t compute_bond_orders(uint32_t* out_order, uint32_t* out_ref, cons
         const uint32_t a = in->pairs[2 * i + 0];
         const uint32_t b = in->pairs[2 * i + 1];
         const int order = md_bond_order((md_bond_flags_t)f);
+        uint32_t* ref = out_ref + 4 * entries;
         if (order == 2) {
-            out_ref[2 * entries + 0] = bo_plane_ref(in, a, b);
-            out_ref[2 * entries + 1] = bo_plane_ref(in, b, a);
+            bo_plane_refs(in, a, b, ref + 0);
+            bo_plane_refs(in, b, a, ref + 2);
             out_order[i] = BOND_KIND_DOUBLE | (entries << 3);
             ++entries;
         } else if (order >= 3) {
             // No plane, perpendicular to the view
-            out_ref[2 * entries + 0] = BOND_REF_NONE;
-            out_ref[2 * entries + 1] = BOND_REF_NONE;
+            ref[0] = ref[1] = ref[2] = ref[3] = BOND_REF_NONE;
             out_order[i] = BOND_KIND_TRIPLE | (entries << 3);
             ++entries;
         }
@@ -2072,8 +2090,9 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     uint32_t* adj_bond   = md_alloc(alloc, 2 * bond_count * sizeof(uint32_t));
     uint32_t* flags      = md_alloc(alloc, bond_count * sizeof(uint32_t));
     uint8_t*  hyb        = md_alloc(alloc, atom_count * sizeof(uint8_t));
+    uint8_t*  hydrogen   = md_alloc(alloc, atom_count * sizeof(uint8_t));
     uint32_t* order      = md_alloc(alloc, bond_count * sizeof(uint32_t));
-    uint32_t* ref        = md_alloc(alloc, 2 * bond_count * sizeof(uint32_t));
+    uint32_t* ref        = md_alloc(alloc, 4 * bond_count * sizeof(uint32_t));
 
     MEMSET(adj_offset, 0, (atom_count + 1) * sizeof(uint32_t));
     for (uint32_t i = 0; i < bond_count; ++i) {
@@ -2103,7 +2122,8 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     md_free(alloc, cursor, atom_count * sizeof(uint32_t));
 
     for (uint32_t i = 0; i < atom_count; ++i) {
-        hyb[i] = (uint8_t)md_atom_hybridization(&sys->atom, i);
+        hyb[i]      = (uint8_t)md_atom_hybridization(&sys->atom, i);
+        hydrogen[i] = md_atom_atomic_number(&sys->atom, i) == 1 ? 1 : 0;
     }
 
     const bool has_xyz = md_system_state_has_coords(&sys->reference) && sys->reference.num_atoms >= atom_count;
@@ -2120,6 +2140,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
         .adj_atom      = adj_atom,
         .adj_bond      = adj_bond,
         .hybridization = hyb,
+        .hydrogen      = hydrogen,
         .xyz           = has_xyz ? (const float*)sys->reference.xyz : NULL,
         .ring_count    = ring_count,
         .ring_offset   = ring_count ? sys->ring.offsets : NULL,
@@ -2147,7 +2168,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_PARTNER]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_AROMATIC_RING]);
     mol->buffer[GL_BUFFER_BOND_ORDER]     = gl_buffer_create(bond_count * sizeof(uint32_t), order, GL_STATIC_DRAW);
-    mol->buffer[GL_BUFFER_BOND_ORDER_REF] = gl_buffer_create(MAX(entries, 1) * 2 * sizeof(uint32_t), ref, GL_STATIC_DRAW);
+    mol->buffer[GL_BUFFER_BOND_ORDER_REF] = gl_buffer_create(MAX(entries, 1) * 4 * sizeof(uint32_t), ref, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_BOND_PARTNER]   = gl_buffer_create(MAX(partner_count, 1) * 4 * sizeof(uint32_t), partner, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_AROMATIC_RING]  = gl_buffer_create((uint32_t)ring_entry_bytes, ring_entry, GL_STATIC_DRAW);
     mol->bond_order_count    = bond_count;
@@ -2180,8 +2201,9 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys) {
     md_free(alloc, adj_bond,   2 * bond_count * sizeof(uint32_t));
     md_free(alloc, flags,      bond_count * sizeof(uint32_t));
     md_free(alloc, hyb,        atom_count * sizeof(uint8_t));
+    md_free(alloc, hydrogen,   atom_count * sizeof(uint8_t));
     md_free(alloc, order,      bond_count * sizeof(uint32_t));
-    md_free(alloc, ref,        2 * bond_count * sizeof(uint32_t));
+    md_free(alloc, ref,        4 * bond_count * sizeof(uint32_t));
 }
 
 // ### CHAIN GAPS ###
@@ -3527,7 +3549,7 @@ typedef struct {
     gl_buffer_t atoms;      // u32[2] per bond
     gl_buffer_t weight;     // f32 per bond, weak bonds only
     gl_buffer_t order;      // u32 per bond, covalent bonds with bond orders only (GL_BUFFER_BOND_ORDER)
-    gl_buffer_t order_ref;  // u32[2] per entry (GL_BUFFER_BOND_ORDER_REF)
+    gl_buffer_t order_ref;  // u32[4] per entry (GL_BUFFER_BOND_ORDER_REF)
     gl_buffer_t partner;    // u32[4] per dashed partner (GL_BUFFER_BOND_PARTNER): the primitives are its entries
     uint32_t    count;      // Primitives: bonds, or the entries of partner
 } bond_set_t;
@@ -4666,7 +4688,7 @@ static bool draw_bonds(gl_program_t program, const molecule_t* mol, gl_buffer_t 
     if (p.bond_orders) {
         glActiveTexture(GL_TEXTURE7);
         glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_7].id);
-        glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32UI, bonds.order_ref.id);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32UI, bonds.order_ref.id);
     }
 
     glUseProgram(program.id);
