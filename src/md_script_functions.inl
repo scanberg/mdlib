@@ -500,6 +500,7 @@ static int _split_bf_int                (data_t*, data_t[], eval_context_t*);
 // Basic operations
 static int _min_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
 static int _max_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
+static int _sum_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
 
 // Logical operators for custom types
 static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -847,8 +848,9 @@ static procedure_t procedures[] = {
     {STR_INIT("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
-    {STR_INIT("min"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _min_farr},
-    {STR_INIT("max"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _max_farr},
+    {STR_INIT("min"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _min_farr, FLAG_UNIT_OF_ARG},
+    {STR_INIT("max"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _max_farr, FLAG_UNIT_OF_ARG},
+    {STR_INIT("sum"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _sum_farr, FLAG_UNIT_OF_ARG},
 
     // VECTORIZED VERSIONS FOR ARRAYS OF BIGGER DATA
     {STR_INIT("abs"),    TI_VOLUME, 1,  {TI_VOLUME}, _op_simd_abs_farr},
@@ -2194,6 +2196,24 @@ static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         as_float(*dst) = max_val;
+    }
+    return 0;
+}
+
+// The sum of the elements, 0 for none. Accumulated in double: a float sum of many terms of mixed sign (energies)
+// loses digits that the result keeps.
+static int _sum_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(!dst || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    (void)ctx;
+
+    if (dst) {
+        const float* src = as_float_arr(arg[0]);
+        double sum = 0;
+        for (size_t i = 0; i < element_count(arg[0]); ++i) {
+            sum += src[i];
+        }
+        as_float(*dst) = (float)sum;
     }
     return 0;
 }
