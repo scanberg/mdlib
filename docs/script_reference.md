@@ -2274,6 +2274,15 @@ quantities, and anything loaded next to it from outside. `path` must be a consta
 Attributes that do not vary with time or do not hold numbers are refused. A tensor per frame comes back as
 `float[3][3]`; wrap it in `flatten` to get a flat array.
 
+A path with a `*` in it is a *pattern*, and reads every attribute it matches as one array, in the order of their
+paths: `attr("edr/coul_sr_*")` is `float[n]` for n energy terms, also when n is 1. A `*` stands for any run of
+characters within one segment of the path, so `"edr/*"` is what `edr` holds and not what the groups below it hold.
+What it matches has to be in one run, agree on what one value is (all scalars, or all vectors) and on its unit; a frame
+axis (`time`) is never one of the matches. The members keep their names: a property that holds the array, or
+arithmetic on it that keeps its members (`e * 2`, `e - e0`), is shown member by member under the names their file
+gives them (`Coul-SR:Protein-SOL`), or else under the part of the path the `*` stood in. Hovering the pattern in the
+editor lists what it matched. Loading another file that matches changes the array, and with it every index into it.
+
 An attribute sampled at other times than the frames - energies written every step, velocities written every fifth
 frame - is read at the row whose time matches the frame being evaluated.
 
@@ -2294,6 +2303,8 @@ Names are folded to lower case letters, digits and `_`. Units in parentheses in 
 # potential = attr("edr/potential");
 # stress = flatten(attr("run/a/edr/pressure_tensor"));
 # coulomb = attr("xvg/energy/coul_sr_protein_sol");
+# coulomb_terms = attr("edr/coul_sr_*");     # one per energy group pair
+# coulomb_lowest = min(attr("edr/coul_sr_*"));
 ```
 
 `import()` has been removed: the files it read are loaded as above and read with `attr`.
@@ -2415,4 +2426,5 @@ Reports of anything that behaves differently from this reference are very welcom
 - Distributions have 1024 bins; volumes are 128 × 128 × 128.
 - A script can define as many identifiers as it likes, but each identifier must be defined before it is used, and
   defining the same identifier twice is an error.
-- A wildcard `*` in a name pattern stands for any run of characters.
+- A wildcard `*` stands for any run of characters, in name patterns and in `attr` patterns, where it stays within one
+  path segment.
