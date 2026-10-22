@@ -246,6 +246,25 @@ UTEST(pdb, conect_continued_and_hybrid36) {
     md_vm_arena_destroy(alloc);
 }
 
+// An atom name of four characters fills columns 13 to 16 and is kept whole: HN4' and HN4A are two atoms, not two HN4
+UTEST(pdb, four_character_atom_names) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    const str_t text = STR_LIT(
+        "HETATM    1  N4' TD6 B   1      43.654  64.837  38.628  1.00  0.00           N\n"
+        "HETATM    2 HN4' TD6 B   1      44.050  64.155  39.051  1.00  0.00           H\n"
+        "HETATM    3 HN4A TD6 B   1      44.059  65.650  38.601  1.00  0.00           H\n"
+        "HETATM    4  CA  TD6 B   1      45.000  65.000  38.000  1.00  0.00           C\n");
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE));
+    ASSERT_EQ((size_t)4, sys.atom.count);
+    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 0), STR_LIT("N4'")));
+    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 1), STR_LIT("HN4'")));
+    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 2), STR_LIT("HN4A")));
+    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 3), STR_LIT("CA")));
+    md_vm_arena_destroy(alloc);
+}
+
 UTEST(pdb, parse_nonexistent_file) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/nonexistent.pdb");
