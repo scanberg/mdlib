@@ -4060,4 +4060,98 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
     iso_gpu_free(&g);
 }
 
+
+// A large system's total density, as viamd extracts its mesh: the density matrix from the published virtual
+// attribute, the field from it, the GPU set and the extraction, each timed. GTO_ISO_LARGE=<file in test_data/vlx>
+// (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025).
+#include <md_qm.h>
+UTEST(gto_iso_gpu_lib, large_density) {
+    const char* file = getenv("GTO_ISO_LARGE");
+    if (!file || !file[0]) UTEST_SKIP("set GTO_ISO_LARGE=<file in test_data/vlx>");
+    const double h = getenv("GTO_ISO_LARGE_H") ? atof(getenv("GTO_ISO_LARGE_H")) : 0.4;
+    const double iso = getenv("GTO_ISO_LARGE_ISO") ? atof(getenv("GTO_ISO_LARGE_ISO")) : 0.0025;
+    char path[512];
+    snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
+    md_tick_t t0 = md_tick_now();
+    vlx_test_t t;
+    ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MEGABYTES(1024)));
+    const size_t num_atoms = t.sys.atom.count;
+    float* xyz = (float*)malloc(sizeof(float) * 3 * num_atoms);
+    md_gto_basis_t basis;
+    ASSERT_EQ(vlx_test_atom_xyz_bohr(xyz, 3 * num_atoms, &t), num_atoms);
+    ASSERT_TRUE(qm_test_basis(&basis, &t));
+    const size_t nao = md_gto_basis_num_ao(&basis);
+    printf("  %s: %zu atoms, %zu AOs; loaded in %.2f s\n", file, num_atoms, nao, md_tick_to_seconds(md_tick_now() - t0));
+
+    // what viamd does: the field from the occupied orbitals (md_qm_density_orbitals), or with
+    // GTO_ISO_LARGE_MATRIX=1 from the matrix (factorized again)
+    const bool from_matrix = getenv("GTO_ISO_LARGE_MATRIX") && atoi(getenv("GTO_ISO_LARGE_MATRIX")) != 0;
+    t0 = md_tick_now();
+    const md_attribute_t* da = qm_test_attr(&t, STR_LIT("orbital/total/density"));
+    ASSERT_TRUE(da != NULL);
+    double* D = (double*)malloc(sizeof(double) * nao * nao);
+    ASSERT_EQ(md_qm_extract_symmetric_f64(D, nao * nao, da, md_attribute_slice_all()), nao);
+    double tr = 0.0;
+    for (size_t i = 0; i < nao; ++i) tr += D[i * nao + i];
+    printf("  density matrix (orbital/total/density): %.2f s (trace %.6g)\n", md_tick_to_seconds(md_tick_now() - t0), tr);
+
+    md_gto_iso_field_t* field = NULL;
+    t0 = md_tick_now();
+    if (from_matrix) {
+        field = md_gto_iso_field_create_density(&basis, xyz, 3 * sizeof(float), D, md_get_heap_allocator());
+    } else {
+        double *rows = NULL, *w = NULL;
+        size_t na = 0;
+        const size_t count = md_qm_density_orbitals(&rows, &w, &na, &t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        ASSERT_TRUE(count > 0);
+        ASSERT_EQ(na, nao);
+        printf("  orbitals: %zu, %.2f s\n", count, md_tick_to_seconds(md_tick_now() - t0));
+        field = md_gto_iso_field_create_products(&basis, xyz, 3 * sizeof(float), rows, NULL, w, count, md_get_heap_allocator());
+        md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
+        md_free(md_get_heap_allocator(), w, sizeof(double) * count);
+    }
+    ASSERT_TRUE(field != NULL);
+    md_gto_iso_field_set_maxima_at_atoms(field, true);
+    md_gto_iso_field_info_t fi;
+    md_gto_iso_field_info(&fi, field);
+    printf("  field (%s): %.2f s, %u functions, split %d, residual %g\n", from_matrix ? "matrix" : "orbitals", md_tick_to_seconds(md_tick_now() - t0), fi.num_functions, (int)fi.split, fi.residual);
+    free(D);
+
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    t0 = md_tick_now();
+    const md_gto_iso_field_t* fl[1] = {field};
+    md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &basis, xyz, 3 * sizeof(float), fl, 1, md_get_heap_allocator());
+    md_gpu_stream_sync(g.s);
+    printf("  GPU set: %.2f s%s\n", md_tick_to_seconds(md_tick_now() - t0), set ? "" : " FAILED");
+    md_gpu_memory_stats_t ms;
+    md_gpu_memory_stats(g.dev, MD_GPU_MEM_DEVICE, &ms);
+    printf("  device memory: %.1f MB in use, %.1f MB peak, %.1f MB temp\n", ms.bytes_in_use / 1e6, ms.bytes_peak_in_use / 1e6, ms.bytes_temp / 1e6);
+    if (set) {
+        md_gto_iso_gpu_desc_t gd = {.cell_size = h, .project_iterations = 8, .relax_iterations = 3};
+        gd.iso[0] = iso;
+        static md_gto_iso_gpu_profile_t prof;
+        static char text[1 << 16];
+        md_gto_iso_gpu_profile_set(getenv("GTO_ISO_LARGE_PROFILE") ? &prof : NULL);
+        t0 = md_tick_now();
+        md_gto_iso_gpu_mesh_t m;
+        const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd, &m);
+        printf("  extract (h %.2f, iso %g): %.2f s, %s: %u vertices, %u triangles\n", h, iso, md_tick_to_seconds(md_tick_now() - t0),
+               ok ? "ok" : "FAILED", ok ? m.vertex_count : 0, ok ? m.index_count / 3 : 0);
+        md_gto_iso_gpu_profile_set(NULL);
+        if (getenv("GTO_ISO_LARGE_PROFILE")) { md_gto_iso_gpu_profile_print(&prof, text, sizeof(text)); printf("%s", text); }
+        md_gpu_memory_stats(g.dev, MD_GPU_MEM_DEVICE, &ms);
+        printf("  device memory: %.1f MB in use, %.1f MB peak, %.1f MB temp\n", ms.bytes_in_use / 1e6, ms.bytes_peak_in_use / 1e6, ms.bytes_temp / 1e6);
+        EXPECT_TRUE(ok);
+        if (ok) md_gto_iso_gpu_mesh_free(g.s, &m);
+        md_gto_iso_gpu_set_destroy(g.s, set);
+    }
+    md_gto_iso_field_destroy(field);
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+    free(xyz);
+    qm_test_free(&t);
+}
+
 #endif // MD_ENABLE_GPU
