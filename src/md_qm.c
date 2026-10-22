@@ -680,21 +680,10 @@ bool md_qm_publish_overlap(md_system_t* sys) {
 }
 
 // D_ij = sum_mo occ[mo] * C[mo][i] * C[mo][j]. Exact, not an approximation: an SCF density IS that
-// sum, fractional occupations included, so nothing is gained by storing it separately.
-static void qm_build_density(double* out, const double* coeff, const double* occ, size_t num_mo, size_t num_ao) {
-    MEMSET(out, 0, sizeof(double) * num_ao * num_ao);
-    for (size_t mo = 0; mo < num_mo; ++mo) {
-        const double w = occ[mo];
-        if (w == 0.0) continue;
-        const double* c = coeff + mo * num_ao;
-        for (size_t i = 0; i < num_ao; ++i) {
-            const double wci = w * c[i];
-            if (wci == 0.0) continue;
-            for (size_t j = 0; j < num_ao; ++j) {
-                out[i * num_ao + j] += wci * c[j];
-            }
-        }
-    }
+// sum, fractional occupations included, so nothing is gained by storing it separately. Blocked and
+// over the cores (md_gto_density_from_orbitals): a large basis is ~num_occ num_ao^2 / 2 multiply-adds.
+static bool qm_build_density(double* out, const double* coeff, const double* occ, size_t num_mo, size_t num_ao) {
+    return md_gto_density_from_orbitals(out, coeff, num_ao, 1, occ, num_mo, num_ao);
 }
 
 static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, bool beta) {
@@ -735,7 +724,7 @@ static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* at
         ok = md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao
           && md_attribute_extract_f64(occ_data, num_mo, occ, md_attribute_slice_all(), md_unit_none()) == num_mo;
         if (ok) {
-            qm_build_density((double*)dst, coeff_data, occ_data, num_mo, num_ao);
+            ok = qm_build_density((double*)dst, coeff_data, occ_data, num_mo, num_ao);
         }
     }
 
@@ -755,8 +744,8 @@ static size_t qm_beta_density_provider(void* dst, size_t cap, const md_attribute
 
 // alpha +/- beta. Both halves are themselves virtual, so this is a derivation over derivations,
 // legal because the dependency graph stays acyclic. A restricted calculation gets it for free:
-// beta is an ALIAS of alpha there, so the total is twice alpha and the difference is zero with no
-// special case anywhere.
+// beta is an ALIAS of alpha there, so the total is twice alpha and the difference is zero, and alpha
+// is read once (or, for the difference, not at all) rather than once per name.
 static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, double beta_scale) {
     md_system_t* sys = (md_system_t*)user_data;
 
@@ -767,6 +756,23 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
         return 0;
     }
 
+    double* out = (double*)dst;
+    if (md_attribute_same_data(alpha, beta)) {
+        const double scale = 1.0 + beta_scale;
+        if (scale == 0.0) {
+            MEMSET(out, 0, sizeof(double) * cap);
+            return cap;
+        }
+        if (md_attribute_extract_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none()) != cap) {
+            MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(alpha->path));
+            return 0;
+        }
+        if (scale != 1.0) {
+            for (size_t i = 0; i < cap; ++i) out[i] *= scale;
+        }
+        return cap;
+    }
+
     md_temp_scope_t temp = md_temp_begin();
     double* beta_data = md_temp_alloc_array(temp, double, cap);
 
@@ -774,7 +780,7 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
     if (!ok) {
         MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), cap);
     }
-    if (ok && md_attribute_extract_f64((double*)dst, cap, alpha, md_attribute_slice_all(), md_unit_none()) != cap) {
+    if (ok && md_attribute_extract_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none()) != cap) {
         MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(alpha->path));
         ok = false;
     }
@@ -783,7 +789,6 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
         ok = false;
     }
     if (ok) {
-        double* out = (double*)dst;
         for (size_t i = 0; i < cap; ++i) {
             out[i] += beta_scale * beta_data[i];
         }
@@ -856,10 +861,113 @@ bool md_qm_publish_orbital_densities(md_system_t* sys) {
         md_qm_publish_virtual(sys, STR_LIT("orbital/beta/density"), STR_LIT("Beta Density"), md_unit_none(), format, &beta_virt);
     }
 
+    return md_qm_publish_orbital_density_combinations(sys);
+}
+
+// One spin's orbitals and occupations: C {M,A} and occ {M} into 'alloc'. False when absent or inconsistent.
+static bool qm_spin_orbitals(double** C, double** occ, size_t* num_mo, size_t* num_ao, const md_attribute_t** coeff_attr, const md_attribute_t** occ_attr,
+                             const md_system_t* sys, bool beta, md_allocator_i* alloc) {
+    const md_attribute_t* ca = md_attributes_find(&sys->attributes, beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* oa = md_attributes_find(&sys->attributes, beta ? STR_LIT("orbital/beta/occupation")  : STR_LIT("orbital/alpha/occupation"));
+    if (!ca || !oa || ca->format.rank != 2) return false;
+    const size_t nm = ca->format.shape[0], na = ca->format.shape[1];
+    if (md_attribute_element_count(&oa->format) != nm || nm == 0 || na == 0) return false;
+    *C   = (double*)md_alloc(alloc, sizeof(double) * nm * na);
+    *occ = (double*)md_alloc(alloc, sizeof(double) * nm);
+    if (!*C || !*occ ||
+        md_attribute_extract_f64(*C, nm * na, ca, md_attribute_slice_all(), md_unit_none()) != nm * na ||
+        md_attribute_extract_f64(*occ, nm, oa, md_attribute_slice_all(), md_unit_none()) != nm) {
+        return false;
+    }
+    *num_mo = nm;
+    *num_ao = na;
+    *coeff_attr = ca;
+    *occ_attr = oa;
+    return true;
+}
+
+size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, const md_system_t* sys,
+                              str_t density_path, md_allocator_i* alloc) {
+    if (!out_rows || !out_weights || !out_num_ao || !sys || !alloc) return 0;
+    *out_rows = NULL;
+    *out_weights = NULL;
+    *out_num_ao = 0;
+    // the weights of alpha's and beta's occupations in the density asked for
+    double sa = 0.0, sb = 0.0;
+    if      (str_eq(density_path, STR_LIT("orbital/alpha/density")))      { sa = 1.0; }
+    else if (str_eq(density_path, STR_LIT("orbital/beta/density")))       { sb = 1.0; }
+    else if (str_eq(density_path, STR_LIT("orbital/total/density")))      { sa = 1.0; sb = 1.0; }
+    else if (str_eq(density_path, STR_LIT("orbital/difference/density"))) { sa = 1.0; sb = -1.0; }
+    else return 0;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* talloc = md_temp_allocator(temp);
+    double *Ca = NULL, *oa = NULL, *Cb = NULL, *ob = NULL;
+    size_t nma = 0, nmb = 0, naa = 0, nab = 0;
+    const md_attribute_t *caa = NULL, *oaa = NULL, *cab = NULL, *oab = NULL;
+    size_t count = 0;
+    bool ok = true;
+    if (sa != 0.0) ok = qm_spin_orbitals(&Ca, &oa, &nma, &naa, &caa, &oaa, sys, false, talloc);
+    if (ok && sb != 0.0) {
+        ok = qm_spin_orbitals(&Cb, &ob, &nmb, &nab, &cab, &oab, sys, true, talloc);
+        if (!ok && sa == 0.0) {
+            // no beta channel: a closed shell's beta density is its alpha density
+            ok = qm_spin_orbitals(&Cb, &ob, &nmb, &nab, &cab, &oab, sys, false, talloc);
+        }
+    }
+    if (ok && Ca && Cb && naa != nab) ok = false;
+    // one set of orbitals for both spins (restricted, restricted open shell): each orbital once,
+    // with its two weights summed
+    const bool shared = ok && Ca && Cb && nma == nmb && md_attribute_same_data(caa, cab);
+    if (ok) {
+        const size_t na = Ca ? naa : nab;
+        // the weights first, then exactly as many rows as there are nonzero ones
+        for (size_t k = 0; Ca && k < nma; ++k) count += (sa * oa[k] + (shared ? sb * ob[k] : 0.0)) != 0.0;
+        for (size_t k = 0; Cb && !shared && k < nmb; ++k) count += (sb * ob[k]) != 0.0;
+        double* rows = count ? (double*)md_alloc(alloc, sizeof(double) * count * na) : NULL;
+        double* w    = count ? (double*)md_alloc(alloc, sizeof(double) * count) : NULL;
+        if (rows && w) {
+            size_t n = 0;
+            for (size_t k = 0; Ca && k < nma; ++k) {
+                const double wk = sa * oa[k] + (shared ? sb * ob[k] : 0.0);
+                if (wk == 0.0) continue;
+                MEMCPY(rows + n * na, Ca + k * na, sizeof(double) * na);
+                w[n++] = wk;
+            }
+            for (size_t k = 0; Cb && !shared && k < nmb; ++k) {
+                const double wk = sb * ob[k];
+                if (wk == 0.0) continue;
+                MEMCPY(rows + n * na, Cb + k * na, sizeof(double) * na);
+                w[n++] = wk;
+            }
+            *out_rows = rows;
+            *out_weights = w;
+            *out_num_ao = na;
+        } else {
+            if (rows) md_free(alloc, rows, sizeof(double) * count * na);
+            if (w)    md_free(alloc, w, sizeof(double) * count);
+            count = 0;
+        }
+    }
+    md_temp_end(temp);
+    return count;
+}
+
+bool md_qm_publish_orbital_density_combinations(md_system_t* sys) {
+    ASSERT(sys);
+    const md_attribute_t* alpha = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/density"));
+    const md_attribute_t* beta  = md_attributes_find(&sys->attributes, STR_LIT("orbital/beta/density"));
+    if (!alpha || !beta || alpha->format.rank != 2 || alpha->format.shape[0] != alpha->format.shape[1]) {
+        return false;
+    }
+    // read as values: publishing moves the table
+    const uint32_t num_ao = alpha->format.shape[0];
+    md_attribute_format_t format = {
+        .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { num_ao, num_ao },
+    };
     md_attribute_virtual_t total_virt = { .provider = qm_total_density_provider,      .user_data = sys };
     md_attribute_virtual_t diff_virt  = { .provider = qm_difference_density_provider, .user_data = sys };
     md_qm_publish_virtual(sys, STR_LIT("orbital/total/density"),      STR_LIT("Total Density"),           md_unit_none(), format, &total_virt);
     md_qm_publish_virtual(sys, STR_LIT("orbital/difference/density"), STR_LIT("Spin Difference Density"), md_unit_none(), format, &diff_virt);
-
     return true;
 }
