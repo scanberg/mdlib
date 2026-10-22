@@ -282,9 +282,14 @@ typedef struct md_bond_iter_t {
     uint32_t end_idx;
 } md_bond_iter_t;
 
-// Structure represents one connected component within the system
-// And contains the iteration order of atoms and parent-child relationships for traversing the structure as a tree
-// This is used for unwrapping for example.
+// Structure: one MOLECULE of the system, the word a user is given for it. A connected component of the graph of the
+// persistent bonds, closed over what holds a molecule together where the bonds do not say so: the atoms of a residue
+// (an atom no bond reaches, a virtual site) and the residues of a polymer chain (over a gap, residues missing from a
+// crystal structure). So a residue and a polymer chain are always within one molecule; a molecule may hold several
+// chains (joined by a disulfide), and a ligand bonded to a protein is of its molecule. Coarse grained systems are held
+// together by their hierarchy instead (md_util_system_infer_structures).
+// It also holds the iteration order of atoms and parent-child relationships for traversing the structure as a tree,
+// which is what unwrapping uses.
 typedef struct md_structure_t {
     const int32_t* atom_idx;
     const int32_t* parent_idx;
@@ -444,7 +449,7 @@ typedef struct md_system_t {
     
     md_index_data_t             ring;               // Ring structures formed by persistent bonds, 3 to 7 atoms in order around the ring (sugars in canonical order, see MD_RING_FLAG_SUGAR)
     md_array(md_ring_flags_t)   ring_flags;         // [ring count] What each ring is (md_ring_flags_t), see md_system_ring_flags
-    md_structure_data_t         structure;          // Isolated structures connected by persistent bonds (plus hierarchy links for coarse grained systems)
+    md_structure_data_t         structure;          // The molecules: connected by persistent bonds, within residues and along polymer chains (md_structure_t)
 
     md_assembly_data_t          assembly;           // The biological assemblies of a deposited structure, see md_assembly_data_t
     

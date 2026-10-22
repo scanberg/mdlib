@@ -1312,7 +1312,9 @@ UTEST(match, script_smiles) {
     EXPECT_EQ(31, (int)md_bitset_count(bf));
 
     EXPECT_TRUE(filter_fails_with("smiles('C1CC')", "Ring bond 1 is never closed", SYS_ALA));
-    EXPECT_TRUE(filter_fails_with("smiles('CC', level='molecule')", "Unknown level", SYS_ALA));
+    EXPECT_TRUE(filter_fails_with("smiles('CC', level='protein')", "Unknown level", SYS_ALA));
+    // A molecule is the level's name, a structure its old one
+    EXPECT_EQ((int)filter_count(&arr, "smiles('C=O', level='molecule')", SYS_ALA, alloc), (int)filter_count(&arr, "smiles('C=O', level='structure')", SYS_ALA, alloc));
     EXPECT_TRUE(filter_fails_with("smiles('CC', mode='first')", "Unknown mode", SYS_ALA));
     EXPECT_TRUE(filter_fails_with("smiles('CC', 'residue')", "by name", SYS_ALA));
 

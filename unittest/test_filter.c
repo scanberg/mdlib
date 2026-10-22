@@ -11,6 +11,7 @@
 #include <md_util.h>
 
 #include <md_filter.h>
+#include <md_script.h>
 
 #include <string.h>
 
@@ -572,6 +573,47 @@ UTEST(filter, chains_without_ids) {
     EXPECT_EQ(md_system_chain_count(&sys), md_array_size(sets));
     ASSERT_TRUE(md_filter(&bf, STR_LIT("chain(2)"), &fctx, alloc).success);
     EXPECT_EQ(md_system_chain_atom_count(&sys, 1), md_bitset_count(bf));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// A molecule is atoms joined by bonds, closed over its residues and its polymer chains: molecule(i) by position, one set
+// each, molecule(sel) grown to whole molecules
+UTEST(filter, molecules) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
+    const size_t num = md_structure_count(&sys.structure);
+    ASSERT_GT(num, 1);
+
+    md_array(md_bitset_t) sets = 0;
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("molecule(:)"), &fctx, alloc).success);
+    ASSERT_EQ(num, md_array_size(sets));
+    size_t total = 0;
+    for (size_t i = 0; i < num; ++i) total += md_bitset_count(sets[i]);
+    EXPECT_EQ(sys.atom.count, total);
+
+    // The first chain is a molecule of its own: growing an atom of it gives all of it
+    md_bitset_t chain = {0};
+    ASSERT_TRUE(md_filter(&chain, STR_LIT("chain(1)"), &fctx, alloc).success);
+    md_array_shrink(sets, 0);
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("molecule(atom(1))"), &fctx, alloc).success);
+    ASSERT_EQ(1, (int)md_array_size(sets));
+    EXPECT_TRUE(md_bitset_equal(sets[0], chain));
+
+    // Counted in molecules, by the old name too
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("a = count(all(), 'molecule'); b = count(all(), 'structure');"), &sys, NULL));
+    md_script_ir_free(ir);
+
+    md_bitset_t bf = {0};
+    md_filter_result_t res = md_filter(&bf, str_from_cstr("molecule(100000)"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_TRUE(strstr(res.error, "past the last molecule") != NULL);
 
     md_arena_allocator_destroy(alloc);
 }

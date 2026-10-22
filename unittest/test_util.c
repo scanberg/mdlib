@@ -526,7 +526,7 @@ UTEST(util, structure_hierarchy_coarse_grained_without_bonds) {
 }
 
 // Where bonds exist they are used, and links only fill in what they leave disconnected. A system that is
-// not coarse grained gets no links at all.
+// not coarse grained gets no hierarchy: only what makes a molecule of a residue (synthesize_molecule_links).
 UTEST(util, structure_hierarchy_coarse_grained_partial_bonds) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
@@ -565,10 +565,58 @@ UTEST(util, structure_hierarchy_coarse_grained_partial_bonds) {
             sys.atom.type.flags[i] = md_atom_type_flags_set_particle_kind(sys.atom.type.flags[i], MD_PARTICLE_ATOM);
         }
 
+        // Atoms without bonds: each residue a molecule, its atoms joined to its first. Without instances there are no
+        // chains to join the residues.
         ASSERT_TRUE(md_util_system_infer_structures(&sys));
-        EXPECT_EQ(md_structure_count(&sys.structure), 6u);
+        EXPECT_EQ(md_structure_count(&sys.structure), 2u);
+        check_structure_invariants(utest_result, &sys);
     }
 
+    md_vm_arena_destroy(alloc);
+}
+
+// The index of the structure which holds the atom
+static size_t molecule_of_atom(const md_structure_data_t* st, int32_t atom) {
+    const uint32_t slot = (uint32_t)md_structure_atom_slot(st, atom);
+    size_t lo = 0, hi = st->count;
+    while (lo + 1 < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (st->offset[mid] <= slot) lo = mid; else hi = mid;
+    }
+    return lo;
+}
+
+// A molecule holds its residues and its polymer chains whole, whatever its bonds say: a chain with residues missing
+// from a crystal structure is one molecule, and the waters of a TIP4P model are one each with their virtual sites
+UTEST(util, molecules_hold_residues_and_chains) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    // The molecule of an atom, by the slots of the structures
+    #define MOLECULE_OF(sys, atom) molecule_of_atom(&(sys).structure, (int32_t)(atom))
+
+    {
+        // 8g7u: chains with residues missing, each one molecule over its gaps
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        size_t breaks = 0;
+        for (size_t i = 0; i < sys.component.count; ++i) breaks += (md_component_flags(&sys.component, i) & MD_COMPONENT_FLAG_BREAK_AFTER) != 0;
+        EXPECT_GT(breaks, 0u);
+        size_t polymers = 0;
+        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
+            if (!md_entity_kind_is_polymer(md_system_instance_entity_kind(&sys, i))) continue;
+            polymers += 1;
+            const md_urange_t r = md_system_instance_atom_range(&sys, i);
+            const size_t mol = MOLECULE_OF(sys, r.beg);
+            for (uint32_t a = r.beg; a < r.end; ++a) EXPECT_EQ(mol, MOLECULE_OF(sys, a));
+        }
+        EXPECT_GT(polymers, 1u);
+        EXPECT_LE(md_structure_count(&sys.structure), md_system_instance_count(&sys));
+        check_structure_invariants(utest_result, &sys);
+    }
+
+    #undef MOLECULE_OF
     md_vm_arena_destroy(alloc);
 }
 

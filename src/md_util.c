@@ -6233,31 +6233,72 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
 // Virtual sites (the M site of TIP4P, the lone pairs of TIP5P) have no bonds, but unwrapping must keep them with their
 // molecule. Each unbonded virtual site hangs off its component's first heavy atom (else first real atom). Like the
 // hierarchy links above these shape the structure forest only; they are not bonds.
-static md_array(md_atom_pair_t) synthesize_virtual_site_links(const md_system_t* sys, md_allocator_i* alloc) {
+// The atoms which join two residues of a polymer chain over a gap: the C and N of a peptide bond, the O3' and P of a
+// phosphodiester bond, else the last atom of the first and the first of the second
+static md_atom_pair_t chain_gap_link(const md_system_t* sys, size_t comp_idx) {
+    const md_urange_t range_a = md_component_atom_range(&sys->component, comp_idx);
+    const md_urange_t range_b = md_component_atom_range(&sys->component, comp_idx + 1);
+    md_atom_pair_t pair = {{ (int32_t)range_a.end - 1, (int32_t)range_b.beg }};
+    md_amino_acid_atoms_t aa_a, aa_b;
+    md_nucleic_acid_atoms_t na_a, na_b;
+    if (md_util_amino_acid_atoms_extract(&aa_a, &sys->atom, range_a) && md_util_amino_acid_atoms_extract(&aa_b, &sys->atom, range_b)) {
+        pair.idx[0] = aa_a.c;
+        pair.idx[1] = aa_b.n;
+    } else if (md_util_nucleic_acid_atoms_extract(&na_a, &sys->atom, range_a) && md_util_nucleic_acid_atoms_extract(&na_b, &sys->atom, range_b)) {
+        pair.idx[0] = na_a.o3;
+        pair.idx[1] = na_b.p;
+    }
+    return pair;
+}
+
+// The links which make a molecule whole where its bonds leave it in pieces (see md_structure_data_t). The atoms of a
+// residue are of one molecule: an atom which no bond reaches (the virtual site of a TIP4P water, an ion a file names
+// with the residue it sits in) is linked to the first heavy atom of its residue. The residues of a polymer chain are of
+// one molecule: over a gap (residues missing from a crystal structure, a chain of a topology whose bonds are not
+// given) its two ends are linked. Between the pieces only: a residue or a chain its bonds join gets no link.
+static md_array(md_atom_pair_t) synthesize_molecule_links(const md_system_t* sys, md_allocator_i* alloc) {
     md_array(md_atom_pair_t) links = 0;
     const size_t atom_count = md_system_atom_count(sys);
+    if (atom_count == 0 || sys->component.count == 0) return links;
+
+    int32_t* set = md_alloc(alloc, sizeof(int32_t) * atom_count);
+    for (size_t i = 0; i < atom_count; ++i) set[i] = (int32_t)i;
+    for (size_t i = 0; i < sys->bond.count; ++i) {
+        if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[i])) continue;
+        const md_atom_pair_t pair = sys->bond.pairs[i];
+        if ((size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count) {
+            uf_union(set, pair.idx[0], pair.idx[1]);
+        }
+    }
+
     for (size_t ci = 0; ci < sys->component.count; ++ci) {
         md_urange_t range = md_component_atom_range(&sys->component, ci);
         if (range.end > atom_count) range.end = (uint32_t)atom_count;
-        int32_t anchor = -1, first_real = -1;
-        bool has_site = false;
-        for (uint32_t i = range.beg; i < range.end; ++i) {
-            if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE) {
-                has_site = true;
-                continue;
-            }
-            if (first_real < 0) first_real = (int32_t)i;
-            if (anchor < 0 && md_atom_atomic_number(&sys->atom, i) > MD_Z_H) anchor = (int32_t)i;
+        if (range.beg >= range.end) continue;
+        int32_t anchor = -1;
+        for (uint32_t i = range.beg; i < range.end && anchor < 0; ++i) {
+            if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_VIRTUAL_SITE && md_atom_atomic_number(&sys->atom, i) > MD_Z_H) anchor = (int32_t)i;
         }
-        if (!has_site) continue;
-        if (anchor < 0) anchor = first_real;
-        if (anchor < 0) continue;
+        if (anchor < 0) anchor = (int32_t)range.beg;
         for (uint32_t i = range.beg; i < range.end; ++i) {
-            const bool bonded = sys->bond.conn.offset && md_bond_conn_count(&sys->bond, i) > 0;
-            if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_VIRTUAL_SITE && !bonded) {
+            if (uf_union(set, anchor, (int32_t)i)) {
                 md_atom_pair_t pair = {{ anchor, (int32_t)i }};
                 md_array_push(links, pair, alloc);
             }
+        }
+    }
+
+    for (size_t inst = 0; inst < sys->instance.count; ++inst) {
+        if (!md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst))) continue;
+        const md_urange_t comps = md_instance_component_range(&sys->instance, inst);
+        for (uint32_t ci = comps.beg; ci + 1 < comps.end; ++ci) {
+            const md_urange_t ra = md_component_atom_range(&sys->component, ci);
+            const md_urange_t rb = md_component_atom_range(&sys->component, ci + 1);
+            if (ra.beg >= ra.end || rb.beg >= rb.end || rb.end > atom_count) continue;
+            if (uf_find(set, (int32_t)ra.beg) == uf_find(set, (int32_t)rb.beg)) continue;
+            const md_atom_pair_t pair = chain_gap_link(sys, ci);
+            uf_union(set, pair.idx[0], pair.idx[1]);
+            md_array_push(links, pair, alloc);
         }
     }
     return links;
@@ -6303,12 +6344,13 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     md_fifo_t parent_queue = md_fifo_create(1024, temp_arena);
 
     // The traversal runs over bonds, plus hierarchy links for coarse grained systems where bonds leave beads
-    // disconnected (see synthesize_hierarchy_links), and links for virtual sites which have no bonds (see
-    // synthesize_virtual_site_links). The links only shape the forest; sys->bond is untouched.
+    // disconnected (see synthesize_hierarchy_links), and otherwise the links which keep a residue and a polymer chain
+    // in one molecule where no bond does (see synthesize_molecule_links). The links only shape the forest; sys->bond is
+    // untouched.
     const md_bond_data_t* graph = &sys->bond;
     md_bond_data_t link_graph = {0};
     {
-        md_array(md_atom_pair_t) links = md_system_is_coarse_grained(sys) ? synthesize_hierarchy_links(sys, temp_arena) : synthesize_virtual_site_links(sys, temp_arena);
+        md_array(md_atom_pair_t) links = md_system_is_coarse_grained(sys) ? synthesize_hierarchy_links(sys, temp_arena) : synthesize_molecule_links(sys, temp_arena);
         const size_t num_links = md_array_size(links);
         if (num_links > 0) {
             link_graph.count = sys->bond.count + num_links;
@@ -12567,6 +12609,22 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     // coordination. Cheap, and every reader of the flags relies on it, so not behind a bit.
     md_util_system_infer_coordination(sys);
 
+    // The instances before the structures: a molecule holds its polymer chains whole (synthesize_molecule_links). They
+    // are found from the bonds and the classified components, which the structures do not change.
+    if (flags & MD_UTIL_INFER_INSTANCE_BIT) {
+        // NOT unconditional, unlike the other bits. A loader that had auth_asym_ids in scope
+        // derived better entities than this call can: md_util_system_infer_entity_and_instance(sys,
+        // NULL) has no labels to work from and would replace real chain identity with a guess.
+        // Overwriting here destroys information that cannot be recovered from the system alone.
+        if (sys->instance.count == 0 || sys->entity.count == 0) {
+            md_util_system_infer_entity_and_instance(sys, NULL);
+        }
+        // Entities a loader named without saying what they are (the molecule types of a topology)
+        md_util_system_infer_entity_kinds(sys);
+        // From the author ids of the instances, whoever made them, and from what is a polymer
+        md_util_system_infer_chains(sys);
+    }
+
     if (flags & MD_UTIL_INFER_STRUCTURE_BIT) {
         // Coarse grained systems get a hierarchy even without bonds, see synthesize_hierarchy_links
         if (sys->bond.count || cg) {
@@ -12581,20 +12639,6 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         if (sys->bond.count) {
             md_chem_perceive(sys, state, MD_CHEM_FLAG_PROTONATE_PH7);
         }
-    }
-
-    if (flags & MD_UTIL_INFER_INSTANCE_BIT) {
-        // NOT unconditional, unlike the other bits. A loader that had auth_asym_ids in scope
-        // derived better entities than this call can: md_util_system_infer_entity_and_instance(sys,
-        // NULL) has no labels to work from and would replace real chain identity with a guess.
-        // Overwriting here destroys information that cannot be recovered from the system alone.
-        if (sys->instance.count == 0 || sys->entity.count == 0) {
-            md_util_system_infer_entity_and_instance(sys, NULL);
-        }
-        // Entities a loader named without saying what they are (the molecule types of a topology)
-        md_util_system_infer_entity_kinds(sys);
-        // From the author ids of the instances, whoever made them, and from what is a polymer
-        md_util_system_infer_chains(sys);
     }
 
     if (flags & MD_UTIL_INFER_BACKBONE_BIT) {

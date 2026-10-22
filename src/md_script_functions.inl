@@ -580,6 +580,8 @@ static int _inst_irng   (data_t*, data_t[], eval_context_t*);   // (irange[]) ->
 static int _inst_id     (data_t*, data_t[], eval_context_t*);   // (str[]) -> atomset
 static int _chain_irng(data_t*, data_t[], eval_context_t*);     // (irange[]) -> atomset[]
 static int _chain_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> atomset
+static int _molecule_irng(data_t*, data_t[], eval_context_t*);  // (irange[]) -> atomset[]
+static int _fill_molecule(data_t*, data_t[], eval_context_t*);  // (atomset[]) -> atomset[]
 
 // Property Compute
 static int _distance        (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
@@ -951,6 +953,8 @@ static procedure_t procedures[] = {
     {STR_INIT("chain_id"),     TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
     {STR_INIT("auth_id"),      TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
     {STR_INIT("chain"),        TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    // Molecules (md_structure_data_t): by position, one set each
+    {STR_INIT("molecule"),     TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _molecule_irng,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
     // Also have variable result (well its a single atomset, but the number of atoms within is not fixed)
@@ -1039,6 +1043,7 @@ static procedure_t procedures[] = {
 
     {STR_INIT("residue"),   TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_comp,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("chain"),     TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_chain, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("molecule"),  TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_molecule, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
     // --- BONDS ---
     // The atoms overload first: bond() without arguments is that one
@@ -1099,9 +1104,9 @@ static const proc_sig_t signatures[] = {
     {STR_INIT("degree"),        1, {REQ("c")}},
     {STR_INIT("chunks"),        2, {REQ("sel"), REQ("size")}},
 
-    // smiles(pattern, *, level = "structure", mode = "unique"), match(ref, *, by = "element", level = "structure", mode = "unique")
-    {STR_INIT("smiles"),        3, {REQ("pattern"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
-    {STR_INIT("match"),         4, {REQ("ref"), KW_STR("by", "element"), KW_STR("level", "structure"), KW_STR("mode", "unique")}},
+    // smiles(pattern, *, level = "molecule", mode = "unique"), match(ref, *, by = "element", level = "molecule", mode = "unique")
+    {STR_INIT("smiles"),        3, {REQ("pattern"), KW_STR("level", "molecule"), KW_STR("mode", "unique")}},
+    {STR_INIT("match"),         4, {REQ("ref"), KW_STR("by", "element"), KW_STR("level", "molecule"), KW_STR("mode", "unique")}},
 
     // ring(pattern = none, *, kind = none, size = none), see _ring. The first is a pattern or, in the other overload, an
     // index (_ring_irng): 'pattern' names it in both.
@@ -1166,7 +1171,8 @@ typedef struct match_name_t {
 } match_name_t;
 
 static const match_name_t match_levels[] = {
-    {STR_INIT("structure"), MD_MATCH_LEVEL_STRUCTURE},
+    {STR_INIT("molecule"),  MD_MATCH_LEVEL_STRUCTURE},
+    {STR_INIT("structure"), MD_MATCH_LEVEL_STRUCTURE},  // The old name of a molecule
     {STR_INIT("residue"),   MD_MATCH_LEVEL_COMPONENT},
     {STR_INIT("component"), MD_MATCH_LEVEL_COMPONENT},
     {STR_INIT("chain"),     MD_MATCH_LEVEL_INSTANCE},
@@ -4563,6 +4569,116 @@ static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+// ### MOLECULES ###
+// The molecules of the system (md_structure_data_t): its atoms joined by bonds, within residues and along polymer
+// chains. In the order of their first atoms; their atoms need not be one range.
+
+static inline void molecule_set_bits(md_bitmask_t* b, const md_system_t* sys, size_t mol_idx) {
+    md_structure_t st = {0};
+    if (!md_structure_extract(&st, &sys->structure, mol_idx)) return;
+    for (size_t k = 0; k < st.count; ++k) md_bitmask_set_bit(b, (uint32_t)st.atom_idx[k]);
+}
+
+static inline bool molecule_in_context(const md_system_t* sys, size_t mol_idx, const md_bitset_t* bitfield) {
+    if (!bitfield) return true;
+    md_structure_t st = {0};
+    if (!md_structure_extract(&st, &sys->structure, mol_idx)) return false;
+    for (size_t k = 0; k < st.count; ++k) {
+        if (md_bitset_test(*bitfield, (uint32_t)st.atom_idx[k])) return true;
+    }
+    return false;
+}
+
+static md_array(int32_t) get_molecule_indices_in_context(const md_system_t* sys, const md_bitset_t* bitfield, md_allocator_i* alloc) {
+    md_array(int32_t) arr = 0;
+    const size_t num = md_structure_count(&sys->structure);
+    for (size_t m = 0; m < num; ++m) {
+        if (molecule_in_context(sys, m, bitfield)) md_array_push(arr, (int32_t)m, alloc);
+    }
+    return arr;
+}
+
+// molecule(i): the molecules by their 1-based position, inside a context among those with an atom in it, each cut to it
+static int _molecule_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+
+    md_array(int32_t) indices = get_molecule_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), (int64_t)md_array_size(indices), "molecule", !dst, ctx);
+    if (count < 0) return count;
+
+    if (dst) {
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            md_bitmask_t b = result_mask(ctx);
+            molecule_set_bits(&b, ctx->sys, (size_t)indices[pos[i]]);
+            set_writer_push(&w, md_bitmask_view(&b));
+            md_bitmask_free(&b);
+        }
+        set_writer_end(&w);
+        return 0;
+    }
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+}
+
+// molecule(sel): the molecules the selection has an atom of, whole, one set each
+static int _fill_molecule(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    ASSERT(ctx && ctx->sys);
+    const md_system_t* sys = ctx->sys;
+
+    const int64_t num_bf = element_count(arg[0]);
+    const md_bitset_t* src_bf = as_bitset(arg[0]);
+    md_bitset_t tmp_bf = {0};
+    if (num_bf != 1) {
+        tmp_bf = _internal_flatten_bf(src_bf, (size_t)num_bf, ctx->temp_alloc);
+        src_bf = &tmp_bf;
+    }
+
+    // The molecule of each selected atom, by its slot: the structures are in the order of their slots
+    md_array(int32_t) mols = 0;
+    const size_t num_mols = md_structure_count(&sys->structure);
+    if (num_mols && sys->structure.atom_slot) {
+        uint8_t* taken = (uint8_t*)md_alloc(ctx->temp_alloc, num_mols);
+        MEMSET(taken, 0, num_mols);
+        md_bitset_iter_t it = md_bitset_iter(*src_bf);
+        while (md_bitset_iter_next(&it)) {
+            if (it.idx >= sys->atom.count) break;
+            const uint32_t slot = (uint32_t)sys->structure.atom_slot[it.idx];
+            size_t lo = 0, hi = num_mols;
+            while (lo + 1 < hi) {
+                const size_t mid = (lo + hi) / 2;
+                if (sys->structure.offset[mid] <= slot) lo = mid; else hi = mid;
+            }
+            taken[lo] = 1;
+        }
+        for (size_t m = 0; m < num_mols; ++m) {
+            if (taken[m]) md_array_push(mols, (int32_t)m, ctx->temp_alloc);
+        }
+    }
+    const int count = (int)md_array_size(mols);
+
+    if (dst) {
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, false);
+        for (int i = 0; i < count; ++i) {
+            md_bitmask_t b = result_mask(ctx);
+            molecule_set_bits(&b, sys, (size_t)mols[i]);
+            set_writer_push(&w, md_bitmask_view(&b));
+            md_bitmask_free(&b);
+        }
+        set_writer_end(&w);
+        return 0;
+    }
+
+    if (ctx->backchannel && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
+        ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+    }
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+}
+
 // Property Compute
 
 static inline void draw_distance_text(const vec3_t c_a, const vec3_t c_b, const float value, md_script_vis_t* vis) {
@@ -6932,7 +7048,7 @@ typedef enum {
     COUNT_TYPE_RESIDUE = 2,
     COUNT_TYPE_CHAIN = 3,
     COUNT_TYPE_INSTANCE = 4,
-    COUNT_TYPE_STRUCTURE = 5,
+    COUNT_TYPE_MOLECULE = 5,
     COUNT_TYPE_COUNT
 } count_type_t;
 
@@ -6942,7 +7058,7 @@ static const str_t count_type_str[] = {
     STR_INIT("residue"),
     STR_INIT("chain"),
     STR_INIT("instance"),
-    STR_INIT("structure"),
+    STR_INIT("molecule"),
 };
 
 count_type_t count_type_from_str(str_t str) {
@@ -6951,6 +7067,8 @@ count_type_t count_type_from_str(str_t str) {
             return (count_type_t)i;
         }
     }
+    // The old name of a molecule
+    if (str_eq(str, STR_LIT("structure"))) return COUNT_TYPE_MOLECULE;
     return COUNT_TYPE_UNKNOWN;
 }
 
@@ -6995,7 +7113,7 @@ size_t internal_count(const md_bitset_t* bf_arr, size_t bf_len, count_type_t cou
             }
             break;
         }
-        case COUNT_TYPE_STRUCTURE: {
+        case COUNT_TYPE_MOLECULE: {
             size_t num_structures = md_structure_count(&ctx->sys->structure);
             for (size_t i = 0; i < num_structures; ++i) {
                 md_structure_t structure = {0};
