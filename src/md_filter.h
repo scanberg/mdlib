@@ -19,7 +19,9 @@
 // While a filter is typed, md_filter_complete says what can be written at the cursor.
 //
 // A filter of bonds (md_filter_bonds) is the same, and picks bonds: those of a bond set ("bond(kind='hydrogen')",
-// "bonds(bond_delta(resname('HEM')))"), or the persistent bonds among the atoms an expression picks ("resname('HOH')").
+// "bond(bond_delta(resname('HEM')))"), or the persistent bonds among the atoms an expression picks ("resname('HOH')").
+// The other way around, a filter of atoms which gives a bond set picks the atoms of its bonds ("bond(origin='user')").
+// Those are the only conversions: within an expression bonds and atoms do not mix, atom(b) gives the atoms of bonds.
 
 #include <core/md_array.h>
 #include <core/md_str.h>
@@ -44,8 +46,6 @@ typedef struct md_filter_context_t {
     const struct md_system_state_t* state;  // The coordinates it is evaluated in. NULL for the system's reference state.
     const struct md_script_ir_t*    ir;     // A compiled script whose names the expression may use. May be NULL.
     const struct md_bitset_t*       atoms;  // The atoms it is evaluated within (see above). NULL for the whole system.
-    bool                            bonds;  // It picks bonds (md_filter_bonds): md_filter_complete offers bond sets
-                                            // too where a selection goes. Read by nothing else.
 } md_filter_context_t;
 
 typedef struct md_filter_result_t {
@@ -57,12 +57,12 @@ typedef struct md_filter_result_t {
     char error[256];                        // Why it failed, one line per error. Empty on success.
 } md_filter_result_t;
 
-// The atoms that expr picks, all in one set, written to dst. Its previous payload is released with alloc, so it must
+// The atoms that expr picks, or those of the bonds it picks, all in one set, written to dst. Its previous payload is released with alloc, so it must
 // have been produced with alloc (or be empty), and the new one is allocated with it. Empty when it fails.
 md_filter_result_t md_filter(struct md_bitset_t* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 // The same, one set for each structure the expression gives rather than all in one: 'residue(within(5, residue(1)))'
-// gives a set per residue. The sets are pushed to dst, the array and their payloads allocated with alloc.
+// gives a set per residue, 'bond(residue(:))' the atoms of the bonds within each residue. The sets are pushed to dst, the array and their payloads allocated with alloc.
 md_filter_result_t md_filter_sets(md_array(struct md_bitset_t)* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 // The bonds that expr picks, all in one set, pushed to dst (cleared first, allocated with alloc): those of a bond set,
@@ -72,7 +72,7 @@ md_filter_result_t md_filter_sets(md_array(struct md_bitset_t)* dst, str_t expr,
 md_filter_result_t md_filter_bonds(md_array(struct md_atom_pair_t)* dst, str_t expr, const md_filter_context_t* ctx, struct md_allocator_i* alloc);
 
 // What can be written at the byte offset cursor of expr, while it is typed (see md_script_complete). The variables
-// are the names of ctx->ir. Outside of a call only what can be a selection is offered (and the keywords that combine
+// are the names of ctx->ir. Outside of a call only what can be a selection or a bond set is offered (and the keywords that combine
 // them); in the argument of a call everything is, and what has the type of the parameter is marked (fits). The
 // system gives the values that selectors take, such as the residue names in resname('|'), those within ctx->atoms
 // when there is a context: a name that is not there would not match. ctx->state is not read.

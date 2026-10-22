@@ -620,7 +620,7 @@ static int _porosity   (data_t*, data_t[], eval_context_t*); // (atomset[]) -> f
 
 // Bonds, see ### BONDS ###
 static int _bond        (data_t*, data_t[], eval_context_t*); // (a, b, kind, order, resonance, origin) -> bondset[]
-static int _bond_atoms  (data_t*, data_t[], eval_context_t*); // (bondset[]) -> atomset[]
+static int _bond_atoms  (data_t*, data_t[], eval_context_t*); // atom(bondset[]) -> atomset[]
 static int _count_bonds (data_t*, data_t[], eval_context_t*); // (bondset[]) -> float
 static int _bond_length (data_t*, data_t[], eval_context_t*); // (bondset[]) -> float[]
 static int _bond_not    (data_t*, data_t[], eval_context_t*); // (bondset[]) -> bondset
@@ -630,7 +630,7 @@ static int _bond_xor    (data_t*, data_t[], eval_context_t*); // (bondset[], bon
 static int _bond_delta  (data_t*, data_t[], eval_context_t*); // (scope, tolerance, breakable) -> bond_delta
 static int _bond_delta_formed(data_t*, data_t[], eval_context_t*); // (bond_delta) -> bondset
 static int _bond_delta_broken(data_t*, data_t[], eval_context_t*); // (bond_delta) -> bondset
-static int _bond_delta_bonds (data_t*, data_t[], eval_context_t*); // (bond_delta) -> bondset
+static int _bond_of_delta    (data_t*, data_t[], eval_context_t*); // bond(bond_delta, b, kind, order, resonance, origin) -> bondset
 
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
@@ -1041,14 +1041,15 @@ static procedure_t procedures[] = {
     {STR_INIT("chain"),     TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_inst,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
     // --- BONDS ---
+    // The atoms overload first: bond() without arguments is that one
     {STR_INIT("bond"),       TI_BONDSET_ARR, 6, {TI_ATOMSET_ARR, TI_ATOMSET_ARR, TI_STRING_ARR, TI_IRANGE, TI_STRING_ARR, TI_STRING_ARR}, _bond, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("atoms"),      TI_ATOMSET_ARR, 1, {TI_BONDSET_ARR},   _bond_atoms,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {STR_INIT("bond"),       TI_BONDSET,     6, {TI_BOND_DELTA,  TI_ATOMSET_ARR, TI_STRING_ARR, TI_IRANGE, TI_STRING_ARR, TI_STRING_ARR}, _bond_of_delta, FLAG_STATIC_VALIDATION},
+    {STR_INIT("atom"),       TI_ATOMSET_ARR, 1, {TI_BONDSET_ARR},   _bond_atoms,    FLAG_DEDUCE_LENGTH_FROM_ARG},
     {STR_INIT("count"),      TI_FLOAT,       1, {TI_BONDSET_ARR},   _count_bonds},
     {STR_INIT("length"),     TI_FLOAT_ARR,   1, {TI_BONDSET_ARR},   _bond_length,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
     {STR_INIT("bond_delta"), TI_BOND_DELTA,  3, {TI_ATOMSET_ARR, TI_FLOAT, TI_STRING_ARR}, _bond_delta, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION},
     {STR_INIT("formed"),     TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_formed},
     {STR_INIT("broken"),     TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_broken},
-    {STR_INIT("bonds"),      TI_BONDSET,     1, {TI_BOND_DELTA},    _bond_delta_bonds},
 };
 
 // Parameter names, declared per procedure NAME and shared by all of its overloads (see NAMED ARGUMENTS in
@@ -1106,7 +1107,8 @@ static const proc_sig_t signatures[] = {
     // index (_ring_irng): 'pattern' names it in both.
     {STR_INIT("ring"),          3, {NUL("pattern"), KW_NUL("kind"), KW_NUL("size")}},
 
-    // bond(a = none, b = none, *, kind = none, order = none, resonance = none, origin = none), see _bond
+    // bond(a = none, b = none, *, kind = none, order = none, resonance = none, origin = none), see _bond, and bond(d, ...),
+    // whose 'a' is a bond_delta (_bond_of_delta)
     {STR_INIT("bond"),          6, {NUL("a"), NUL("b"), KW_NUL("kind"), KW_NUL("order"), KW_NUL("resonance"), KW_NUL("origin")}},
     // bond_delta(scope = none, *, tolerance = none, breakable = none), see _bond_delta
     {STR_INIT("bond_delta"),    3, {NUL("scope"), KW_NUL("tolerance"), KW_NUL("breakable")}},
@@ -8294,6 +8296,7 @@ static void bond_collect_atom(md_bitmask_t* b, uint32_t atom, const md_bitset_t*
 //   order      The order (an int or a range, 0 for unknown) of a bond of the graph: non-covalent bonds have none.
 //   resonance  Any of 'aromatic', 'delocalized', 'localized' (neither), of a bond of the graph.
 //   origin     Any of 'file', 'topology', 'user', 'inferred'.
+// bond(d, ...) with a bond_delta in place of a is _bond_of_delta.
 static int _bond(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     const bool report = !dst && !ctx->vis;
@@ -8362,25 +8365,29 @@ static int _bond(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-// atoms(b): the atoms of the bonds of each set
+// The atoms of the bonds of a set, both of each, into b
+static void bondset_atoms_into(md_bitmask_t* b, const bondset_t* set, const md_system_t* sys) {
+    const uint32_t total = bond_total(sys);
+    md_bitset_iter_t it = md_bitset_iter(set->bonds);
+    while (md_bitset_iter_next(&it)) {
+        if (it.idx >= total) break;
+        md_bitmask_set_bit(b, (uint32_t)sys->bond.pairs[it.idx].idx[0]);
+        md_bitmask_set_bit(b, (uint32_t)sys->bond.pairs[it.idx].idx[1]);
+    }
+    for (uint32_t k = 0; k < set->num_extra; ++k) {
+        md_bitmask_set_bit(b, (uint32_t)set->extra_pair[k].idx[0]);
+        md_bitmask_set_bit(b, (uint32_t)set->extra_pair[k].idx[1]);
+    }
+}
+
+// atom(b): the atoms of the bonds of each set, as residue(sel) grows a selection to its residues
 static int _bond_atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (!dst) return (int)element_count(arg[0]);
-    const md_system_t* sys = ctx->sys;
     const bondset_t* src = as_bondset(arg[0]);
     const int64_t len = MIN((int64_t)element_count(arg[0]), type_info_array_len(dst->type));
-    const uint32_t total = bond_total(sys);
     for (int64_t i = 0; i < len; ++i) {
         md_bitmask_t b = result_mask(ctx);
-        md_bitset_iter_t it = md_bitset_iter(src[i].bonds);
-        while (md_bitset_iter_next(&it)) {
-            if (it.idx >= total) break;
-            md_bitmask_set_bit(&b, (uint32_t)sys->bond.pairs[it.idx].idx[0]);
-            md_bitmask_set_bit(&b, (uint32_t)sys->bond.pairs[it.idx].idx[1]);
-        }
-        for (uint32_t k = 0; k < src[i].num_extra; ++k) {
-            md_bitmask_set_bit(&b, (uint32_t)src[i].extra_pair[k].idx[0]);
-            md_bitmask_set_bit(&b, (uint32_t)src[i].extra_pair[k].idx[1]);
-        }
+        bondset_atoms_into(&b, &src[i], ctx->sys);
         finish_result(dst, (size_t)i, &b, ctx);
     }
     return 0;
@@ -8508,7 +8515,7 @@ static int _bond_xor(data_t* dst, data_t arg[], eval_context_t* ctx) { return bo
 
 // bond_delta(scope = none, *, tolerance = none, breakable = none): the bonds formed and broken in the frame against the
 // bond graph of the system, for the bonds with an atom in the scope (md_util_bond_delta). A value of its own, which
-// formed(), broken() and bonds() read.
+// formed(), broken() and bond(d) read.
 //   scope      The atoms whose bonds are looked at, all of them without it.
 //   tolerance  Half the width of the band around the cutoffs, a fraction of them in [0, 0.5): 0.1 without it.
 //   breakable  The origins whose bonds may break: 'file' and 'inferred' without it.
@@ -8593,19 +8600,46 @@ static int _bond_delta_broken(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-// bonds(d): the bonds of the frame within the scope: the persistent bonds which touch it and are not broken, and those
-// formed
-static int _bond_delta_bonds(data_t* dst, data_t arg[], eval_context_t* ctx) {
+// bond(d, b = none, *, kind = none, order = none, resonance = none, origin = none): the bonds of the frame within the
+// scope of d: the persistent bonds which touch it and are not broken, and those formed, within the context (both atoms
+// in it) as bond() is, which b (an atom in it) and the filters let through. The filters read the flags of the system
+// for a persistent bond, and those md_util_bond_delta gives a bond formed (inferred; covalent or coordinate, of no
+// known order).
+static int _bond_of_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    const bool report = !dst && !ctx->vis;
+    bond_filter_t filter;
+    if (!bond_filter_parse(&filter, arg, report, ctx)) return STATIC_VALIDATION_ERROR;
     if (!dst) return 0;
+
     const bond_delta_value_t* d = as_bond_delta(arg[0]);
-    md_allocator_i* alloc = data_bitset_alloc(dst, ctx);
     if (!d) {
         as_bondset(*dst)[0] = (bondset_t){0};
         return 0;
     }
-    bondset_t r = bondset_copy(d->formed, alloc);
-    md_bitset_free(&r.bonds, alloc);
-    r.bonds = md_bitset_andnot(d->touched, d->broken, alloc);
-    as_bondset(*dst)[0] = r;
+    const md_system_t* sys = ctx->sys;
+    md_temp_scope_t temp = md_temp_begin_avoid(ctx->temp_alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+
+    const bool has_b = !is_absent_type(arg[1].type);
+    md_bitset_t B = {0};
+    if (has_b) B = _internal_flatten_bf(as_bitset(arg[1]), element_count(arg[1]), temp_alloc);
+
+    md_bitmask_t b = md_bitmask_create(0, bond_total(sys), temp_alloc);
+    md_bitset_iter_t it = md_bitset_iter(md_bitset_andnot(d->touched, d->broken, temp_alloc));
+    while (md_bitset_iter_next(&it)) {
+        if (it.idx >= bond_total(sys)) break;
+        const md_atom_pair_t p = sys->bond.pairs[it.idx];
+        if (has_b && !md_bitset_test(B, (uint32_t)p.idx[0]) && !md_bitset_test(B, (uint32_t)p.idx[1])) continue;
+        if (bond_in_context(p, ctx) && bond_filter_pass(&filter, sys->bond.flags[it.idx])) md_bitmask_set_bit(&b, (uint32_t)it.idx);
+    }
+    bond_extras_t e = {0};
+    for (uint32_t k = 0; k < d->formed.num_extra; ++k) {
+        const md_atom_pair_t p = d->formed.extra_pair[k];
+        if (has_b && !md_bitset_test(B, (uint32_t)p.idx[0]) && !md_bitset_test(B, (uint32_t)p.idx[1])) continue;
+        if (bond_in_context(p, ctx) && bond_filter_pass(&filter, d->formed.extra_flags[k])) bond_extras_push(&e, p, d->formed.extra_flags[k], temp_alloc);
+    }
+    as_bondset(*dst)[0] = bondset_make(&b, &e, data_bitset_alloc(dst, ctx));
+    md_temp_end(temp);
     return 0;
 }

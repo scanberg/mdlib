@@ -7055,7 +7055,8 @@ UTEST(script, bondsets) {
         "either  = cov or coord_b;"
         "other   = not cov;"
         "odd     = graph xor cov;"
-        "mg_side = atoms(coord_b);"
+        "mg_side = atom(coord_b);"
+        "ends_r  = atom(bond(residue(:)));"
         "n_all   = count(all_b);"
         "l       = length(coord_b);"
         "in_ctx  = bond() in resname('ACT');"
@@ -7141,6 +7142,19 @@ UTEST(script, bondsets) {
     EXPECT_EQ(2, (int)md_bitset_count(*as_bitset(atoms)));
     EXPECT_TRUE(md_bitset_test(*as_bitset(atoms), 2));
     EXPECT_TRUE(md_bitset_test(*as_bitset(atoms), 4));
+    // atom(b) of several sets: one set of atoms each, the atoms of the bonds within each residue
+    data_t ends = {0};
+    ASSERT_TRUE(mirror_eval(&ends, ir, "ends_r", &sys, &st, alloc));
+    ASSERT_EQ(TYPE_ATOMSET, ends.type.base_type);
+    ASSERT_EQ((int)sys.component.count, (int)element_count(ends));
+    EXPECT_EQ(4, (int)md_bitset_count(as_bitset(ends)[0]));
+    EXPECT_EQ(0, (int)md_bitset_count(as_bitset(ends)[1]));
+    EXPECT_EQ(3, (int)md_bitset_count(as_bitset(ends)[2]));
+
+    // Bonds and atoms do not mix within an expression; the error says how to write it
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "x = resname('HOH') and bond();", "atom(b)"));
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "x = within(3.0, bond());", "atom(b)"));
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "x = resname('HOH') in bond();", "atom(b)"));
     EXPECT_EQ(8.0f, float_of(ir, "n_all", &sys, &st, alloc));
     data_t len = {0};
     ASSERT_TRUE(mirror_eval(&len, ir, "l", &sys, &st, alloc));
@@ -7198,12 +7212,15 @@ UTEST(script, bond_delta) {
         "d       = bond_delta();"
         "f       = formed(d);"
         "b       = broken(d);"
-        "e       = bonds(d);"
+        "e       = bond(d);"
+        "eb      = bond(d, b=resid(1));"
+        "eo      = bond(d, order=1);"
+        "ek      = bond(d, kind='covalent', origin='inferred');"
         "nf      = count(f);"
         "nb      = count(b);"
         "d2      = bond_delta(resid(2));"
         "f2      = formed(d2);"
-        "e2      = bonds(d2);"
+        "e2      = bond(d2);"
         "pinned  = broken(bond_delta(breakable='user'));"
         "narrow  = formed(bond_delta(tolerance=0.3));";
     ASSERT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(src), &sys, NULL));
@@ -7214,6 +7231,9 @@ UTEST(script, bond_delta) {
     EXPECT_EQ(0, bondset_count_of(ir, "f", &sys, &ref, alloc));
     EXPECT_EQ(0, bondset_count_of(ir, "b", &sys, &ref, alloc));
     EXPECT_EQ(4, bondset_count_of(ir, "e", &sys, &ref, alloc));
+    EXPECT_EQ(2, bondset_count_of(ir, "eb", &sys, &ref, alloc));
+    EXPECT_EQ(4, bondset_count_of(ir, "eo", &sys, &ref, alloc));
+    EXPECT_EQ(4, bondset_count_of(ir, "ek", &sys, &ref, alloc));
 
     // The proton moved to the second water
     md_system_state_t st = ref;
@@ -7223,6 +7243,12 @@ UTEST(script, bond_delta) {
     EXPECT_EQ(1, bondset_count_of(ir, "f", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "b", &sys, &st, alloc));
     EXPECT_EQ(4, bondset_count_of(ir, "e", &sys, &st, alloc));
+    // With an atom of the first water: its O-H2, and the bond its H1 formed to the second
+    EXPECT_EQ(2, bondset_count_of(ir, "eb", &sys, &st, alloc));
+    // The bond formed is of no known order, the others single
+    EXPECT_EQ(3, bondset_count_of(ir, "eo", &sys, &st, alloc));
+    // Inferred and covalent, as the bonds of the waters
+    EXPECT_EQ(4, bondset_count_of(ir, "ek", &sys, &st, alloc));
     EXPECT_EQ(1.0f, float_of(ir, "nf", &sys, &st, alloc));
     EXPECT_EQ(1.0f, float_of(ir, "nb", &sys, &st, alloc));
     // The scope of the second water: its two bonds, and the one formed to it
@@ -7235,5 +7261,6 @@ UTEST(script, bond_delta) {
 
     EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "d = bond_delta(tolerance=0.5);", "tolerance"));
     EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "d = bond_delta(breakable='hand');", "Unknown bond origin 'hand'"));
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "e = bond(bond_delta(), kind='ionic');", "Unknown bond kind 'ionic'"));
     md_vm_arena_destroy(alloc);
 }

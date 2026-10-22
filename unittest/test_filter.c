@@ -134,10 +134,10 @@ UTEST(filter, errors_say_where) {
     res = md_filter(&bf, STR_LIT("all(<2)"), &fctx, alloc);
     EXPECT_FALSE(res.success);
 
-    // Something that does not pick atoms
+    // Something that picks neither atoms nor bonds
     res = md_filter(&bf, STR_LIT("distance(1, 2)"), &fctx, alloc);
     EXPECT_FALSE(res.success);
-    EXPECT_TRUE(strstr(res.error, "does not pick atoms") != NULL);
+    EXPECT_TRUE(strstr(res.error, "picks neither atoms nor bonds") != NULL);
 
     // Nothing at all picks every atom, as one set
     res = md_filter(&bf, STR_LIT("   "), &fctx, alloc);
@@ -360,9 +360,9 @@ UTEST(filter, bonds) {
     res = md_filter_bonds(&pairs, STR_LIT("bond()"), &in_water, alloc);
     EXPECT_TRUE(res.success);
     EXPECT_EQ(2, (int)md_array_size(pairs));
-    // also those of bond_delta(), whose scope (the context) takes in the bonds with one atom in it: the hydrogen bond
+    // also those of a bond_delta(), whose scope (the context) takes in the bonds with one atom in it: the hydrogen bond
     // from the water to the acetate is not within the water
-    res = md_filter_bonds(&pairs, STR_LIT("bonds(bond_delta())"), &in_water, alloc);
+    res = md_filter_bonds(&pairs, STR_LIT("bond(bond_delta())"), &in_water, alloc);
     EXPECT_TRUE(res.success);
     EXPECT_EQ(2, (int)md_array_size(pairs));
     EXPECT_FALSE(has_pair(pairs, 6, 3));
@@ -373,12 +373,8 @@ UTEST(filter, bonds) {
     EXPECT_EQ(0, (int)md_array_size(pairs));
     EXPECT_NE('\0', res.error[0]);
 
-    // A filter of atoms is not given a bond set where a selection goes, a filter of bonds is
+    // Both filters are offered a bond set where a selection goes: a filter of atoms takes the atoms of the bonds
     md_script_completions_t c = md_filter_complete(STR_LIT("bon"), 3, &fctx, alloc);
-    EXPECT_FALSE(offers(c, "bond"));
-    md_filter_context_t bctx = fctx;
-    bctx.bonds = true;
-    c = md_filter_complete(STR_LIT("bon"), 3, &bctx, alloc);
     EXPECT_TRUE(offers(c, "bond"));
 
     // A spring of the force field (an elastic bond, here the Cu-Cu one) is kept with the bonds but is no bond of the
@@ -395,9 +391,75 @@ UTEST(filter, bonds) {
     EXPECT_TRUE(res.success);
     EXPECT_EQ(1, (int)md_array_size(pairs));
     EXPECT_TRUE(has_pair(pairs, 8, 9));
-    res = md_filter_bonds(&pairs, STR_LIT("bond(kind='covalent') or bonds(bond_delta())"), &fctx, alloc);
+    res = md_filter_bonds(&pairs, STR_LIT("bond(kind='covalent') or bond(bond_delta())"), &fctx, alloc);
     EXPECT_TRUE(res.success);
     EXPECT_FALSE(has_pair(pairs, 8, 9));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+// A filter of atoms which picks bonds picks the atoms of those bonds; within an expression, bonds and atoms do not mix
+UTEST(filter, bonds_as_atoms) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(filter_bonds_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
+
+    const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
+    md_bitset_t atoms = {0};
+    md_filter_result_t res;
+
+    // The hydrogen bond a user marked: H1 of the water and O2 of the acetate, nothing else of their residues
+    res = md_filter(&atoms, STR_LIT("bond(origin='user')"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(2, (int)md_bitset_count(atoms));
+    EXPECT_TRUE(md_bitset_test(atoms, 6));
+    EXPECT_TRUE(md_bitset_test(atoms, 3));
+
+    // The complement of the atoms of the hydrogen bonds is not that of the bonds: every other bond has those atoms too
+    res = md_filter(&atoms, STR_LIT("not atom(bond(kind='hydrogen'))"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(8, (int)md_bitset_count(atoms));
+    EXPECT_FALSE(md_bitset_test(atoms, 6));
+    // here every atom: each has a bond which is not a hydrogen bond
+    res = md_filter(&atoms, STR_LIT("not bond(kind='hydrogen')"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(10, (int)md_bitset_count(atoms));
+
+    // One set of atoms per set of bonds: the bonds within each residue, which the Mg and the Cu have none of
+    md_array(md_bitset_t) sets = 0;
+    res = md_filter_sets(&sets, STR_LIT("bond(residue(:))"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
+    ASSERT_EQ(sys.component.count, md_array_size(sets));
+    EXPECT_EQ(4, (int)md_bitset_count(sets[0]));
+    EXPECT_EQ(0, (int)md_bitset_count(sets[1]));
+    EXPECT_EQ(3, (int)md_bitset_count(sets[2]));
+    EXPECT_EQ(0, (int)md_bitset_count(sets[3]));
+
+    // Within a context: of a set of bonds made without it (a variable of a script), only the atoms in the context. Of
+    // the Mg-O1 bond, O1 is in the acetate and the Mg is not.
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("coord_b = bond(kind='coordinate');"), &sys, NULL));
+    md_bitset_t acetate = {0};
+    ASSERT_TRUE(md_filter(&acetate, STR_LIT("resname('ACT')"), &fctx, alloc).success);
+    const md_filter_context_t in_acetate = {&sys, &state, ir, &acetate};
+    res = md_filter(&atoms, STR_LIT("coord_b"), &in_acetate, alloc);
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(1, (int)md_bitset_count(atoms));
+    EXPECT_TRUE(md_bitset_test(atoms, 2));
+
+    // Within an expression they do not mix, and the error says how to write it
+    res = md_filter(&atoms, STR_LIT("resname('HOH') and bond()"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_TRUE(strstr(res.error, "atom(b)") != NULL);
+    res = md_filter(&atoms, STR_LIT("within(3.0, bond(kind='hydrogen'))"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_TRUE(strstr(res.error, "atom(b)") != NULL);
+    res = md_filter(&atoms, STR_LIT("within(3.0, atom(bond(kind='hydrogen')))"), &fctx, alloc);
+    EXPECT_TRUE(res.success);
 
     md_arena_allocator_destroy(alloc);
 }

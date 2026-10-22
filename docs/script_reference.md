@@ -195,8 +195,8 @@ n = count(sel=protein(), unit="residue");
 | `volume` | `float[128][128][128]` grid (for example `sdf`). |
 | `contact` | The group pairs in contact in a frame, from [`contacts`](#contacts); read with [`count`](#count) and [`degree`](#degree). |
 | `plane` | The plane fitted to a group of atoms or to positions, from [`plane`](#plane): its centroid, oriented normal, radius and how far the atoms are from it; read with [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation) and [`angle`](#angle). `plane[n]` is *n* of them. |
-| `bondset` | A set of bonds, from [`bond`](#bond): the persistent bonds of the system it picks, and bonds computed for a frame (those [`formed`](#formed) in it). Not a set of atoms, which would bring in every bond among its atoms; [`atoms`](#atoms) gives the atoms of the bonds. `bondset[n]` is *n* sets, for example the bonds within each residue. |
-| `bond_delta` | The bonds formed and broken in a frame, from [`bond_delta`](#bond_delta); read with [`formed`](#formed), [`broken`](#broken) and [`bonds`](#bonds). |
+| `bondset` | A set of bonds, from [`bond`](#bond): the persistent bonds of the system it picks, and bonds computed for a frame (those [`formed`](#formed) in it). Not a set of atoms, which would bring in every bond among its atoms; [`atom`](#atom) gives the atoms of the bonds, and a filter of atoms (a representation, a selection) which picks bonds picks their atoms. Within an expression the two do not mix: `protein() and bond()` is an error. `bondset[n]` is *n* sets, for example the bonds within each residue. |
+| `bond_delta` | The bonds formed and broken in a frame, from [`bond_delta`](#bond_delta); read with [`formed`](#formed), [`broken`](#broken) and [`bond`](#bond). |
 | `pucker` | How a ring of 5 to 7 atoms is puckered, from [`pucker`](#pucker): its Cremer-Pople coordinates and the name of its conformation; read with [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta) and [`pseudorotation`](#pseudorotation). |
 
 Units propagate through arithmetic: `distance(1,2) - distance(1,3)` is in Å, `distance(1,2) * distance(1,3)` in Å²,
@@ -313,7 +313,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 | [Geometry](#geometry) | [`com`](#com), [`plane`](#plane), [`centroid`](#centroid), [`normal`](#normal), [`radius`](#radius), [`deviation`](#deviation), [`pucker`](#pucker), [`amplitude`](#amplitude), [`phase`](#phase), [`theta`](#theta), [`pseudorotation`](#pseudorotation), [`shape_weights`](#shape_weights), [`coord`](#coord), [`coord_x`](#coord_x) / [`coord_y`](#coord_y) / [`coord_z`](#coord_z), [`coord_xy`](#coord_xy) / [`coord_xz`](#coord_xz) / [`coord_yz`](#coord_yz) |
 | [Math](#math) | [`sqrt`](#sqrt), [`cbrt`](#cbrt), [`abs`](#abs), [`floor`](#floor), [`ceil`](#ceil), [`sin`](#sin), [`cos`](#cos), [`asin`](#asin), [`acos`](#acos), [`atan`](#atan), [`atan2`](#atan2), [`log`](#log), [`log2`](#log2), [`log10`](#log10), [`exp`](#exp), [`exp2`](#exp2), [`pow`](#pow), [`min`](#min), [`max`](#max) |
 | [Linear algebra](#linear-algebra-and-constructors) | [`vec2`](#vec2), [`vec3`](#vec3), [`vec4`](#vec4), [`dot`](#dot), [`cross`](#cross), [`length`](#length), [`normalize`](#normalize), [`mul`](#mul) |
-| [Bond sets](#bond-sets) | [`bond`](#bond), [`atoms`](#atoms), [`bond_delta`](#bond_delta), [`formed`](#formed), [`broken`](#broken), [`bonds`](#bonds), and [`count`](#count), [`length`](#length) and `and` `or` `xor` `not` on bond sets |
+| [Bond sets](#bond-sets) | [`bond`](#bond), [`atom`](#atom), [`bond_delta`](#bond_delta), [`formed`](#formed), [`broken`](#broken), and [`count`](#count), [`length`](#length) and `and` `or` `xor` `not` on bond sets |
 | [Combining](#combining-and-reshaping) | [`union`](#union), [`flatten`](#flatten), [`split`](#split), [`chunks`](#chunks), [`transpose`](#transpose), and the operators `and` `or` `xor` `not` on selections |
 | [External data](#data-from-outside-the-structure) | [`attr`](#attr) |
 
@@ -363,16 +363,24 @@ per_residue = count(all()) in residue(:);      # atoms per residue
 ```text
 atom(indices: irange[]) -> atomset
 atom(indices: int[])    -> atomset
+atom(b: bondset[])      -> atomset[]      # the atoms of bonds
 ```
 
 Select atoms by 1-based index. Indices are relative to the current context, so inside `in residue(:)` `atom(1)` is
 the first atom of each residue. An index outside the valid range is a compile error. Note that `atom` takes one
 argument: for several atoms write an array, `atom({1, 5, 9})`, or a range, `atom(1:9)`.
 
+Given [bond sets](#bond-sets), the atoms of their bonds, one set of atoms per set of bonds, as
+[`residue`](#residue) grows a selection to its residues. This is how bonds become atoms within an expression: a set of
+bonds and a set of atoms do not combine as they are. The complement of a bond set is the other bonds, so
+`not atom(bond(kind="hydrogen"))` is every atom outside of a hydrogen bond, while `atom(not bond(kind="hydrogen"))` is
+the atoms of every other bond, which a hydrogen bond's atoms have too.
+
 ```mdscript
 first_ten = atom(1:10);
 every_other = atom(1:2:20);                    # 1,3,5,...,19
 n_terminal = atom(1:4) in residue(1);          # first four atoms of residue 1
+metal_ligands = atom(bond(kind="coordinate")); # the metals and their ligand atoms
 ```
 
 ### element
@@ -1036,7 +1044,7 @@ bring in every other bond among them. A bond is one of the system's persistent b
 (covalent and coordination bonds, from which the rings, structures and chemistry are derived) together with the
 non-covalent bonds a file gives or a user marks (hydrogen bonds, interactions), or a bond computed for a frame (one
 [`formed`](#formed) in it). Bond sets combine with `and`, `or`, `xor` and `not` like selections, and give atoms with
-[`atoms`](#atoms), numbers with [`count`](#count) and [`length`](#length).
+[`atom`](#atom), numbers with [`count`](#count) and [`length`](#length).
 
 The kinds, and what they select:
 
@@ -1056,10 +1064,11 @@ A bond is of one kind, so a charge-assisted hydrogen bond is a `"hydrogen"` bond
 <!-- proc name=bond category=bonds -->
 
 ```text
-bond(a: atomset[], b: atomset[], kind: string[], order: irange, resonance: string[], origin: string[]) -> bondset[]
+bond(a: atomset[],   b: atomset[], kind: string[], order: irange, resonance: string[], origin: string[]) -> bondset[]
+bond(d: bond_delta,  b: atomset[], kind: string[], order: irange, resonance: string[], origin: string[]) -> bondset
 ```
 
-**Parameters:** `a` and `b` (optional), `kind`, `order`, `resonance` and `origin` (optional, by name).
+**Parameters:** `a` or `d`, and `b` (optional), `kind`, `order`, `resonance` and `origin` (optional, by name).
 
 The persistent bonds of the system which every filter given lets through, within the context (both atoms in it).
 
@@ -1071,6 +1080,10 @@ The persistent bonds of the system which every filter given lets through, within
 
 An atom index stands for that atom, as for [`distance`](#distance): `bond(1, 4)` is the bond between the first and the
 fourth atom, if they have one.
+
+With a [`bond_delta`](#bond_delta) `d` in place of `a`: the bonds of the frame within its scope, the persistent bonds
+with an atom in it which are not broken and those formed, with an atom in `b` when it is given. A bond formed is of the
+`"inferred"` origin, covalent or coordinate, and of no known order.
 
 `kind` is any of the kinds above. `order` is the order of a bond of the graph, a number or a range: 1 single, 2 double,
 3 triple, 4 quadruple, 0 unknown; non-covalent bonds have none. `resonance` is any of `"aromatic"`, `"delocalized"`
@@ -1085,22 +1098,9 @@ drawn       = bond(kind="hydrogen", origin="user");               # the hydrogen
 kekule      = bond(resonance="aromatic", order=2);
 n_per_res   = count(bond(residue(1:10)));
 one         = bond(1, 4);                                         # the bond between atoms 1 and 4
-```
-
-### atoms
-
-<!-- proc name=atoms category=bonds -->
-
-```text
-atoms(b: bondset[]) -> atomset[]
-```
-
-**Parameters:** `b` (required).
-
-The atoms of the bonds of each set.
-
-```mdscript
-metal_ligands = atoms(bond(kind="coordinate"));
+d           = bond_delta(resid(10:20));
+lengths     = length(bond(d));                                    # the bonds of each frame, within resid 10 to 20
+metal_now   = bond(d, kind="coordinate");                         # those to a metal, formed ones included
 ```
 
 ### bond_delta
@@ -1124,7 +1124,7 @@ forming as another breaks (a proton moving, the transition state of a substituti
 takes. A pair with a non-covalent bond in the system forms no bond. In a coarse grained system no bonds form or
 break: it is a compile error.
 
-The result is read with [`formed`](#formed), [`broken`](#broken) and [`bonds`](#bonds).
+The result is read with [`formed`](#formed), [`broken`](#broken) and [`bond`](#bond).
 
 ```mdscript
 d = bond_delta(within(6.0, resname("LIG")));
@@ -1162,24 +1162,6 @@ The bonds of the bond graph broken in the frame.
 
 ```mdscript
 lost = count(broken(bond_delta()));
-```
-
-### bonds
-
-<!-- proc name=bonds category=bonds -->
-
-```text
-bonds(d: bond_delta) -> bondset
-```
-
-**Parameters:** `d` (required).
-
-The bonds of the frame within the scope: the persistent bonds with an atom in it which are not broken, and those
-formed.
-
-```mdscript
-d = bond_delta(resid(10:20));
-lengths = length(bonds(d));
 ```
 
 ---

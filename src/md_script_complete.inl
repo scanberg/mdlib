@@ -361,11 +361,10 @@ static uint32_t completion_param_types(str_t name, int param) {
 // What is expected at the cursor: what the parameter of the call it is in takes, looking through the brackets and the
 // array literals around it; at the top, a selection in a filter and nothing in particular in a script. 0 when not
 // known. at_top tells whether it is at the top, outside of every call.
-// What is completed: a script, or a filter of atoms (md_filter) or of bonds (md_filter_bonds). Nonzero is a filter.
+// What is completed: a script, or a filter (md_filter, md_filter_bonds), which takes atoms or bonds at its top.
 typedef enum completion_mode_t {
     COMPLETE_SCRIPT = 0,
-    FILTER_ATOMS    = 1,
-    FILTER_BONDS    = 2,
+    COMPLETE_FILTER = 1,
 } completion_mode_t;
 
 static uint32_t completion_expected(const completion_context_t* ctx, completion_mode_t filter, bool* at_top) {
@@ -377,7 +376,7 @@ static uint32_t completion_expected(const completion_context_t* ctx, completion_
         if (frame->open == '[') return 0;
     }
     *at_top = true;
-    return filter == FILTER_BONDS ? TYPE_BIT(TYPE_ATOMSET) | TYPE_BIT(TYPE_BONDSET) : filter ? TYPE_BIT(TYPE_ATOMSET) : 0;
+    return filter == COMPLETE_FILTER ? TYPE_BIT(TYPE_ATOMSET) | TYPE_BIT(TYPE_BONDSET) : 0;
 }
 
 // Whether what gives types can be written where expected is: as it is, or converted implicitly (an int where a float
@@ -613,5 +612,5 @@ md_script_completions_t md_script_complete(str_t src, int cursor, const md_syste
 }
 
 md_script_completions_t md_filter_complete(str_t expr, int cursor, const md_filter_context_t* ctx, md_allocator_i* alloc) {
-    return complete(expr, cursor, ctx ? ctx->sys : NULL, ctx ? ctx->atoms : NULL, ctx ? ctx->ir : NULL, ctx && ctx->bonds ? FILTER_BONDS : FILTER_ATOMS, alloc);
+    return complete(expr, cursor, ctx ? ctx->sys : NULL, ctx ? ctx->atoms : NULL, ctx ? ctx->ir : NULL, COMPLETE_FILTER, alloc);
 }

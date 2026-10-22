@@ -198,8 +198,12 @@ typedef enum base_type_t {
     TYPE_PLANE,         // The plane fitted to a group of atoms (plane_t), read through centroid(), normal(), radius(), ...
     TYPE_PUCKER,        // The puckering of a ring (pucker_rec_t), read through amplitude(), phase(), theta(), pseudorotation()
     TYPE_BONDSET,       // A set of bonds (bondset_t): what bond() gives
-    TYPE_BOND_DELTA,    // Opaque: the bonds formed and broken in a frame (bond_delta_value_t), read through formed(), broken(), bonds()
+    TYPE_BOND_DELTA,    // Opaque: the bonds formed and broken in a frame (bond_delta_value_t), read through formed(), broken(), bond(d)
 } base_type_t;
+
+// Appended to an error where a bond set is given for something which takes atoms: within an expression the two do not
+// convert into each other (a filter of atoms alone takes the atoms of the bonds it gives, md_filter)
+#define BONDS_DO_NOT_MIX_HINT ". Bonds are not atoms: atom(b) gives the atoms of the bonds b"
 
 typedef enum flags_t {
     // Procedure Flags
@@ -4953,12 +4957,14 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
             result = finalize_proc_call(node, ctx);
         } else {
             char arg_type_str[2][64] = {"empty", "empty"};
+            bool bonds = false;
             for (size_t i = 0; i < num_args; ++i) {
-                if (arg[i]) print_type_info(arg_type_str[i], ARRAY_SIZE(arg_type_str[i]), arg[i]->data.type);                
+                if (arg[i]) print_type_info(arg_type_str[i], ARRAY_SIZE(arg_type_str[i]), arg[i]->data.type);
+                bonds |= arg[i] && arg[i]->data.type.base_type == TYPE_BONDSET;
             }
             EVAL_LOG_ERROR(ctx, node->token,
-                "Could not find supporting operator '%s' with left hand side type (%s) and right hand side type (%s)",
-                get_token_type_str(node->token.type), arg_type_str[0], arg_type_str[1]);
+                "Could not find supporting operator '%s' with left hand side type (%s) and right hand side type (%s)%s",
+                get_token_type_str(node->token.type), arg_type_str[0], arg_type_str[1], bonds ? BONDS_DO_NOT_MIX_HINT : "");
         }
     }
 
@@ -5618,10 +5624,12 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 } else {
                     char buf[512];
                     print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
+                    bool bonds = false;
+                    for (size_t i = 0; i < num_args; ++i) bonds |= arg_type[i].base_type == TYPE_BONDSET;
 
                     EVAL_LOG_ERROR(ctx, node->token,
-                        "Could not find matching procedure '"STR_FMT"' which takes the following argument(s): %s",
-                        STR_ARG(proc_name), buf);
+                        "Could not find matching procedure '"STR_FMT"' which takes the following argument(s): %s%s",
+                        STR_ARG(proc_name), buf, bonds ? BONDS_DO_NOT_MIX_HINT : "");
                 }
             }
         }
@@ -6328,7 +6336,8 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     } else {
         char buf[128];
         print_type_info(buf, ARRAY_SIZE(buf), rhs->data.type);
-        EVAL_LOG_ERROR(ctx, node->token, "Right hand side of keyword 'in' has an incompatible type: Expected atomset, got '%s'.", buf);
+        EVAL_LOG_ERROR(ctx, node->token, "Right hand side of keyword 'in' has an incompatible type: Expected atomset, got '%s'%s.", buf,
+                       rhs->data.type.base_type == TYPE_BONDSET ? BONDS_DO_NOT_MIX_HINT : "");
         result = false;
     }
 
@@ -9258,6 +9267,17 @@ static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, str_t expr, 
     return true;
 }
 
+// A filter of atoms which gives bonds picks the atoms of those bonds, as atom(b) does, within the context. The one place
+// where a bond set becomes atoms without being asked to: within an expression, bonds and atoms do not mix.
+static md_bitset_t filter_bond_atoms(const bondset_t* sets, size_t count, const md_filter_context_t* ctx, md_allocator_i* alloc, md_allocator_i* temp) {
+    md_bitmask_t b = md_bitmask_create(0, (uint32_t)ctx->sys->atom.count, temp);
+    for (size_t i = 0; i < count; ++i) {
+        bondset_atoms_into(&b, &sets[i], ctx->sys);
+    }
+    if (ctx->atoms) md_bitmask_and(&b, *ctx->atoms);
+    return md_bitmask_extract(&b, alloc);
+}
+
 md_filter_result_t md_filter_sets(md_array(md_bitset_t)* dst, str_t expr, const md_filter_context_t* ctx, md_allocator_i* alloc) {
     ASSERT(dst);
     ASSERT(alloc);
@@ -9269,7 +9289,18 @@ md_filter_result_t md_filter_sets(md_array(md_bitset_t)* dst, str_t expr, const 
     filter_eval_t f;
     if (filter_begin(&f, &res, expr, ctx, EVAL_FLAG_NO_STATIC_EVAL, temp_alloc)) {
         const char* msg = NULL;
-        if (f.node && f.node->data.type.base_type == TYPE_ATOMSET) {
+        if (f.node && f.node->data.type.base_type == TYPE_BONDSET) {
+            // The atoms of each set of bonds
+            data_t data = {0};
+            if (evaluate_node_alloc(&data, f.node, &f.ctx, temp_alloc)) {
+                const int64_t len = data.ptr ? type_info_array_len(data.type) : 0;
+                const bondset_t* sets = data.ptr;
+                for (int64_t i = 0; i < len; ++i) {
+                    md_array_push(*dst, filter_bond_atoms(&sets[i], 1, ctx, alloc, temp_alloc), alloc);
+                }
+                res.success = true;
+            }
+        } else if (f.node && f.node->data.type.base_type == TYPE_ATOMSET) {
             data_t data = {0};
             if (evaluate_node_alloc(&data, f.node, &f.ctx, temp_alloc)) {
                 const int64_t len = type_info_array_len(data.type);
@@ -9280,7 +9311,7 @@ md_filter_result_t md_filter_sets(md_array(md_bitset_t)* dst, str_t expr, const 
                 res.success = true;
             }
         } else if (f.node) {
-            msg = "The expression does not pick atoms";
+            msg = "The expression picks neither atoms nor bonds";
         }
         if (!res.success) {
             filter_write_errors(&res, f.ir, &f.log, msg);
@@ -9305,7 +9336,15 @@ md_filter_result_t md_filter(md_bitset_t* dst, str_t expr, const md_filter_conte
     if (filter_begin(&f, &res, expr, ctx, EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL, temp_alloc)) {
         const char* msg = NULL;
         ast_node_t* node = f.node;
-        if (node) {
+        if (node && node->data.type.base_type == TYPE_BONDSET) {
+            // The atoms of the bonds
+            data_t data = {0};
+            if (evaluate_node_alloc(&data, node, &f.ctx, temp_alloc)) {
+                const size_t len = data.ptr ? (size_t)type_info_array_len(data.type) : 0;
+                *dst = filter_bond_atoms((const bondset_t*)data.ptr, len, ctx, alloc, temp_alloc);
+                res.success = true;
+            }
+        } else if (node) {
             const bool is_bitfield = node->data.type.base_type == TYPE_ATOMSET;
             const bool variable = is_bitfield && is_variable_length(node->data.type);
 
@@ -9342,7 +9381,7 @@ md_filter_result_t md_filter(md_bitset_t* dst, str_t expr, const md_filter_conte
                     *dst = md_bitmask_extract(&b, alloc);
                 }
             } else {
-                msg = is_bitfield ? "The expression does not pick a valid set of atoms" : "The expression does not pick atoms";
+                msg = is_bitfield ? "The expression does not pick a valid set of atoms" : "The expression picks neither atoms nor bonds";
             }
         }
         if (!res.success) {
