@@ -204,6 +204,10 @@ typedef struct vlx_scf_t {
 
 	vlx_2d_data_t S;
 
+	// Where D_alpha and D_beta are in the file (dataset and dim set when found), so that the ground
+	// state densities are read from it on demand rather than computed from the orbitals.
+	vlx_density_property_t density_src[2];
+
 	// Whether the file carried ground_state_dipole_moment. Not every version writes it, and a zero
 	// dipole is a value: publishing one for a file that never said so would be a claim about the molecule.
 	bool has_ground_state_dipole_moment;
@@ -2293,6 +2297,30 @@ static bool validate_scf_canonical_layout(const vlx_t* vlx) {
 
 
 // Data extraction procedures
+static vlx_raw_t vlx_h5_raw_location(int64_t* out_offset, hid_t dset);
+
+// Where an SCF density dataset is in the file: its full path in it, and its values' place when they
+// are one run of bytes. Left empty when it is not a [dim x dim] dataset.
+static void vlx_scf_density_locate(vlx_density_property_t* out, vlx_t* vlx, hid_t group, const char* name, size_t dim) {
+	MEMSET(out, 0, sizeof(*out));
+	out->offset = -1;
+	hid_t dset = h5_link_exists(group, name) ? H5Dopen(group, name, H5P_DEFAULT) : H5I_INVALID_HID;
+	if (dset == H5I_INVALID_HID) {
+		return;
+	}
+	char path[512];
+	const ssize_t len = H5Iget_name(dset, path, sizeof(path));
+	if (len > 0 && (size_t)len < sizeof(path)) {
+		int64_t offset = -1;
+		out->raw     = vlx_h5_raw_location(&offset, dset);
+		out->offset  = offset;
+		out->dataset = str_copy(str_from_cstr(path), vlx->arena);
+		out->name    = str_copy(str_from_cstr(name), vlx->arena);
+		out->dim     = dim;
+	}
+	H5Dclose(dset);
+}
+
 static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	md_system_t* sys = vlx->sys;
 	char scf_type[64] = {0};
@@ -2365,6 +2393,7 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
     if (!h5_read_dataset_data(vlx->scf.alpha.density.data, md_array_size(vlx->scf.alpha.density.data), handle, H5T_NATIVE_DOUBLE, "D_alpha")) {
         return false;
     }
+	vlx_scf_density_locate(&vlx->scf.density_src[0], vlx, handle, "D_alpha", num_ao);
 
 	if (vlx->scf.type == VLX_SCF_UNRESTRICTED) {
 		size_t beta_dim[2];
@@ -2409,6 +2438,7 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
         if (!h5_read_dataset_data(vlx->scf.beta.density.data, md_array_size(vlx->scf.beta.density.data), handle, H5T_NATIVE_DOUBLE, "D_beta")) {
             return false;
         }
+		vlx_scf_density_locate(&vlx->scf.density_src[1], vlx, handle, "D_beta", num_ao);
 	} else {
 		// Shallow copy fields from Alpha
 		MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(vlx_orbital_t));
@@ -5168,31 +5198,17 @@ static bool vlx_density_source_read_hdf5(double* out, vlx_density_source_t* src)
 	return ok;
 }
 
-// Reads one density property from its file into the packed upper triangle of its Cartesian matrix:
-// read, symmetrize, permute into shell order, convert to Cartesian, pack. Read whole only - an element
-// of a packed triangle is not worth reading the file for.
-static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
-	vlx_density_source_t* src = (vlx_density_source_t*)user_data;
-	if (!src || !dst) {
-		return 0;
-	}
-	if (slice && slice->num_idx > 0) {
-		MD_LOG_ERROR("'" STR_FMT "' is read whole, not by element", STR_ARG(attr->path));
-		return 0;
-	}
+// Reads one density from its file into its Cartesian matrix 'cart' ([num_cart x num_cart], double):
+// read, symmetrize, permute into shell order, convert to Cartesian. Read whole only.
+static bool vlx_density_source_read_cart(double* cart, vlx_density_source_t* src, const md_attribute_t* attr, md_attribute_io_t* io) {
 	const size_t n_sph  = src->num_sph;
 	const size_t n_cart = src->num_cart;
-	const size_t len    = n_cart * (n_cart + 1) / 2;
-	if (cap != len) {
-		MD_LOG_ERROR("'" STR_FMT "': asked for %zu values, the packed matrix has %zu", STR_ARG(attr->path), cap, len);
-		return 0;
-	}
 	const char* path = vlx_density_source_path(src);
 
 	md_file_info_t info = {0};
 	if (!md_file_info_extract_from_path(str_from_cstr(path), &info)) {
 		MD_LOG_ERROR("VeloxChem: '%s', which '" STR_FMT "' is read from, can no longer be found; reload it", path, STR_ARG(attr->path));
-		return 0;
+		return false;
 	}
 
 	// The offset and its encoding are shared by every thread reading this attribute, and a rebuild
@@ -5203,15 +5219,14 @@ static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attri
 	const vlx_raw_t raw    = (vlx_raw_t)src->raw;
 	md_hdf5_unlock(lock);
 	if (!current) {
-		return 0;
+		return false;
 	}
 
-	// Two matrices of scratch, never three: the permutation goes through the Cartesian buffer, which is
-	// the larger, before the conversion writes into it.
+	// One matrix of scratch besides 'cart': the permutation goes through 'cart', which is the larger,
+	// before the conversion writes into it.
 	md_temp_scope_t temp = md_temp_begin();
-	double* sph  = md_temp_alloc_array(temp, double, n_sph * n_sph);
-	double* cart = md_temp_alloc_array(temp, double, n_cart * n_cart);
-	bool ok = sph && cart;
+	double* sph = md_temp_alloc_array(temp, double, n_sph * n_sph);
+	bool ok = sph != NULL;
 	if (ok) {
 		ok = (raw != VLX_RAW_NONE && offset >= 0) ? vlx_density_source_read_raw(sph, n_sph * n_sph, path, offset, raw, io) : vlx_density_source_read_hdf5(sph, src);
 		if (!ok) {
@@ -5227,7 +5242,7 @@ static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attri
 			src->asymmetry_reported = 1;
 			md_hdf5_unlock(lock);
 			if (report) {
-				MD_LOG_INFO("Density property '" STR_FMT "' is not symmetric (max deviation %g, largest element %g). "
+				MD_LOG_INFO("Density '" STR_FMT "' is not symmetric (max deviation %g, largest element %g). "
 							"Symmetrizing: the density evaluation path only reads the upper triangle.", STR_ARG(attr->path), max_asym, max_abs);
 			}
 		}
@@ -5249,7 +5264,31 @@ static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attri
 			MD_LOG_ERROR("'" STR_FMT "': the published basis does not span the %zu spherical AOs it was read in", STR_ARG(attr->path), n_sph);
 		}
 	}
+	md_temp_end(temp);
+	return ok;
+}
 
+// Reads one density property from its file into the packed upper triangle of its Cartesian matrix.
+// Read whole only - an element of a packed triangle is not worth reading the file for.
+static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	vlx_density_source_t* src = (vlx_density_source_t*)user_data;
+	if (!src || !dst) {
+		return 0;
+	}
+	if (slice && slice->num_idx > 0) {
+		MD_LOG_ERROR("'" STR_FMT "' is read whole, not by element", STR_ARG(attr->path));
+		return 0;
+	}
+	const size_t n_cart = src->num_cart;
+	const size_t len    = n_cart * (n_cart + 1) / 2;
+	if (cap != len) {
+		MD_LOG_ERROR("'" STR_FMT "': asked for %zu values, the packed matrix has %zu", STR_ARG(attr->path), cap, len);
+		return 0;
+	}
+
+	md_temp_scope_t temp = md_temp_begin();
+	double* cart = md_temp_alloc_array(temp, double, n_cart * n_cart);
+	const bool ok = cart && vlx_density_source_read_cart(cart, src, attr, io);
 	if (ok) {
 		float* out = (float*)dst;
 		size_t k = 0;
@@ -5261,6 +5300,109 @@ static size_t vlx_density_property_provide(void* dst, size_t cap, const md_attri
 	}
 	md_temp_end(temp);
 	return ok ? cap : 0;
+}
+
+// An SCF density (D_alpha, D_beta) read from its file: the whole Cartesian matrix as double, {A,A},
+// straight into dst. What orbital/{alpha,beta}/density are for a file that holds them: reading the
+// matrix the calculation wrote costs one read of it, where computing it from the orbitals costs
+// num_occ * A^2 / 2 multiply-adds.
+static size_t vlx_scf_density_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	vlx_density_source_t* src = (vlx_density_source_t*)user_data;
+	if (!src || !dst) {
+		return 0;
+	}
+	if (slice && slice->num_idx > 0) {
+		MD_LOG_ERROR("'" STR_FMT "' is read whole, not by element", STR_ARG(attr->path));
+		return 0;
+	}
+	const size_t n_cart = src->num_cart;
+	if (cap != n_cart * n_cart) {
+		MD_LOG_ERROR("'" STR_FMT "': asked for %zu values, the matrix has %zu", STR_ARG(attr->path), cap, n_cart * n_cart);
+		return 0;
+	}
+	return vlx_density_source_read_cart((double*)dst, src, attr, io) ? cap : 0;
+}
+
+// A provider's state for the density at 'loc' in the file 'vlx' was read from; NULL when there is no
+// such dataset, or the file cannot be read again (bytes: its size, for md_free).
+static vlx_density_source_t* vlx_density_source_create(size_t* out_bytes, md_system_t* sys, const vlx_t* vlx, const vlx_density_property_t* loc) {
+	const size_t n_sph  = vlx->num_sph_ao;
+	const size_t n_cart = vlx_basis_num_cart_ao(vlx);
+	if (!loc || str_empty(loc->dataset) || loc->dim != n_sph || n_sph == 0 || n_cart == 0 || !vlx->ao_remap || str_empty(vlx->filename)) {
+		return NULL;
+	}
+	const size_t bytes = vlx_density_source_bytes(n_sph, vlx->filename.len, loc->dataset.len);
+	vlx_density_source_t* src = (vlx_density_source_t*)md_attributes_alloc_user_data(&sys->attributes, bytes);
+	if (!src) {
+		return NULL;
+	}
+	*src = (vlx_density_source_t){
+		.sys         = sys,
+		.identity    = vlx->identity,
+		.mtime       = vlx->file_info.modified_time,
+		.size        = (int64_t)vlx->file_info.size,
+		.offset      = loc->offset,
+		.raw         = (uint32_t)loc->raw,
+		.num_sph     = (uint32_t)n_sph,
+		.num_cart    = (uint32_t)n_cart,
+		.path_len    = (uint32_t)vlx->filename.len,
+		.dataset_len = (uint32_t)loc->dataset.len,
+	};
+	MEMCPY(vlx_density_source_remap(src), vlx->ao_remap, sizeof(int) * n_sph);
+	char* src_path = vlx_density_source_path(src);
+	MEMCPY(src_path, vlx->filename.ptr, vlx->filename.len);
+	src_path[vlx->filename.len] = '\0';
+	char* src_dataset = vlx_density_source_dataset(src);
+	MEMCPY(src_dataset, loc->dataset.ptr, loc->dataset.len);
+	src_dataset[loc->dataset.len] = '\0';
+	*out_bytes = bytes;
+	return src;
+}
+
+// orbital/{alpha,beta}/density read from D_alpha and D_beta (beta a second name for alpha in a
+// restricted calculation), and orbital/{total,difference}/density from those. False, with nothing
+// published, when the file does not hold them in a form that can be read again: the caller then
+// computes them from the orbitals. A restricted open shell calculation is left to that as well.
+static bool vlx_publish_scf_densities(md_system_t* sys, const vlx_t* vlx) {
+	const bool restricted   = vlx->scf.type == VLX_SCF_RESTRICTED;
+	const bool unrestricted = vlx->scf.type == VLX_SCF_UNRESTRICTED;
+	if (!restricted && !unrestricted) {
+		return false;
+	}
+	size_t alpha_bytes = 0, beta_bytes = 0;
+	vlx_density_source_t* alpha = vlx_density_source_create(&alpha_bytes, sys, vlx, &vlx->scf.density_src[0]);
+	vlx_density_source_t* beta  = unrestricted ? vlx_density_source_create(&beta_bytes, sys, vlx, &vlx->scf.density_src[1]) : NULL;
+	if (!alpha || (unrestricted && !beta)) {
+		if (alpha) md_free(sys->attributes.alloc, alpha, alpha_bytes);
+		if (beta)  md_free(sys->attributes.alloc, beta, beta_bytes);
+		return false;
+	}
+
+	const uint32_t n_cart = alpha->num_cart;
+	const md_attribute_format_t format = {
+		.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { n_cart, n_cart },
+	};
+	const md_attribute_virtual_t alpha_virt = { .provider = vlx_scf_density_provide, .user_data = alpha, .user_data_size = alpha_bytes };
+	const md_attribute_id_t alpha_id = md_qm_publish_virtual(sys, STR_LIT("orbital/alpha/density"), STR_LIT("Alpha Density"), md_unit_none(), format, &alpha_virt);
+	if (alpha_id == MD_ATTRIBUTE_INVALID) {
+		// only a published attribute releases its user_data
+		md_free(sys->attributes.alloc, alpha, alpha_bytes);
+		if (beta) md_free(sys->attributes.alloc, beta, beta_bytes);
+		return false;
+	}
+	if (restricted) {
+		md_qm_alias(sys, alpha_id, STR_LIT("orbital/beta/density"));
+	} else {
+		const md_attribute_virtual_t beta_virt = { .provider = vlx_scf_density_provide, .user_data = beta, .user_data_size = beta_bytes };
+		if (md_qm_publish_virtual(sys, STR_LIT("orbital/beta/density"), STR_LIT("Beta Density"), md_unit_none(), format, &beta_virt) == MD_ATTRIBUTE_INVALID) {
+			md_free(sys->attributes.alloc, beta, beta_bytes);
+			md_attributes_remove(&sys->attributes, alpha_id);
+			return false;
+		}
+	}
+	md_qm_publish_orbital_density_combinations(sys);
+	MD_LOG_DEBUG("VeloxChem: the ground state densities are read from '%s' on demand", vlx_density_source_path(alpha));
+	return true;
 }
 
 void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
@@ -5396,7 +5538,9 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 					// channels appear, and whether beta is a second name for alpha, is decided there from
 					// what is in the TABLE - and it arrives at the same answer this used to reach by
 					// comparing the vlx object's own pointers, restricted open shell included.
-					md_qm_publish_orbital_densities(sys);
+					if (!vlx_publish_scf_densities(sys, vlx)) {
+						md_qm_publish_orbital_densities(sys);
+					}
 				}
 			}
 		}
@@ -5440,30 +5584,11 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 			// the same word there is nothing for the label to add, and an absent one is a valid state.
 			str_t label = str_eq(prop->label, name) ? (str_t){0} : prop->label;
 
-			const size_t bytes = vlx_density_source_bytes(n_sph, vlx->filename.len, prop->dataset.len);
-			vlx_density_source_t* src = (vlx_density_source_t*)md_attributes_alloc_user_data(&sys->attributes, bytes);
+			size_t bytes = 0;
+			vlx_density_source_t* src = vlx_density_source_create(&bytes, sys, vlx, prop);
 			if (!src) {
 				continue;
 			}
-			*src = (vlx_density_source_t){
-				.sys         = sys,
-				.identity    = vlx->identity,
-				.mtime       = vlx->file_info.modified_time,
-				.size        = (int64_t)vlx->file_info.size,
-				.offset      = prop->offset,
-				.raw         = (uint32_t)prop->raw,
-				.num_sph     = (uint32_t)n_sph,
-				.num_cart    = (uint32_t)n_cart,
-				.path_len    = (uint32_t)vlx->filename.len,
-				.dataset_len = (uint32_t)prop->dataset.len,
-			};
-			MEMCPY(vlx_density_source_remap(src), vlx->ao_remap, sizeof(int) * n_sph);
-			char* src_path = vlx_density_source_path(src);
-			MEMCPY(src_path, vlx->filename.ptr, vlx->filename.len);
-			src_path[vlx->filename.len] = '\0';
-			char* src_dataset = vlx_density_source_dataset(src);
-			MEMCPY(src_dataset, prop->dataset.ptr, prop->dataset.len);
-			src_dataset[prop->dataset.len] = '\0';
 
 			const md_attribute_virtual_t virt = { .provider = vlx_density_property_provide, .user_data = src, .user_data_size = bytes };
 			const md_attribute_id_t id = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
