@@ -285,10 +285,10 @@ UTEST(vlx, acro_xps) {
 	qm_test_free(&t);
 }
 
-// 'orbital/alpha/density' is never stored: it is reconstructed on demand from the coefficient and
-// occupation attributes published beside it. This is the check that the reconstruction is the matrix
-// those two describe - recomputed here from the same published attributes, independently of the
-// provider - and not merely a plausible one.
+// 'orbital/alpha/density' is never held: it is read on demand from the file's D_alpha (computed from
+// the coefficients and occupations for a file that has none). This is the check that it is the matrix
+// the coefficient and occupation attributes published beside it describe - recomputed here from them,
+// independently of the provider - and not merely a plausible one.
 //
 // NOT checked by tr(D S) against the electron count, which is the obvious test and a wrong one here:
 // 'basis/overlap' is the Cartesian embedding of a spherical overlap (25 Cartesian AOs for 24
