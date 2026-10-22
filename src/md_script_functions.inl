@@ -2141,54 +2141,16 @@ done:
     return com;
 }
 
-// This should ideally be some light weight regular expression matching.
-// For now we just use joker characters '*'
-// "*AD" matches anything that ends with AD
-// "AD*" matches anything that begins with AD
-// @TODO: "*AD*" matches anything that contains AD
-// @TODO: "AD*DA" matches anything that begins with AD and ends with DA
-
+// The names that name(), resname() and instance() are given match what they select by glob_match: '*' stands for any
+// run of characters, "C*" (begins with C), "*A" (ends with A), "*A*" (contains A), "C*A". Nothing matches an empty name.
 static bool match_query(str_t query, str_t str) {
     if (query.len == 0 || str.len == 0) return false;
-
-    int joker_count = 0;
-    for (size_t i = 0; i < query.len; ++i) {
-        if (query.ptr[i] == '*') joker_count += 1;
-    }
-
-    if (joker_count == 0) return str_eq(query, str);
-
-    size_t loc;
-    str_t beg_match =  str_find_char(&loc, query, '*') ? str_substr(query, 0, loc) : (str_t){0};
-    str_t end_match = str_rfind_char(&loc, query, '*') ? str_substr(query, loc + 1, SIZE_MAX) : (str_t){0};
-
-    if (!str_empty(beg_match)) {
-        if (!str_eq_n(beg_match, str, beg_match.len)) return false;
-    }
-
-    if (!str_empty(end_match)) {
-        str = str_substr(str, str.len - end_match.len, end_match.len);
-        if (!str_eq(end_match, str)) return false;
-    }
-
-    return true;
+    return glob_match(query, str);
 }
 
+// Any pattern is one, except the empty one, which matches nothing
 static bool validate_query(str_t query) {
-    if (query.len == 0) return false;
-    int joker_count = 0;
-    for (size_t i = 0; i < query.len; ++i) {
-        if (query.ptr[i] == '*') {
-            joker_count += 1;
-        }
-    }
-    if (joker_count > 2) return false;
-
-    if (joker_count == 2) {
-        return query.ptr[0] == '*' && query.ptr[query.len-1] == '*';
-    }
-
-    return true;
+    return query.len > 0;
 }
 
 // IMPLEMENTATIONS

@@ -474,6 +474,15 @@ typedef struct param_domain_t {
     value_domain_t  domain;
 } param_domain_t;
 
+// One attribute that attr() reads. Ids rather than pointers: an attribute pointer dies with the next
+// create or remove on the table, an id is stable for as long as the path exists.
+typedef struct attr_member_t {
+    str_t             path;     // absolute
+    str_t             label;    // what it is called as a member of a pattern's array (attr_member_labels), empty otherwise
+    md_attribute_id_t id;       // what is read
+    md_attribute_id_t axis_id;  // its frame axis
+} attr_member_t;
+
 // An argument of a procedure call as written in the source
 typedef struct named_arg_t {
     str_t   name;   // Empty for a positional argument
@@ -505,13 +514,13 @@ struct ast_node_t {
     size_t              subscript_dim;
 
     // ATTRIBUTE
-    // Resolved by the static check. Ids rather than pointers: an attribute pointer dies with the next
-    // create or remove on the table, an id is stable for as long as the path exists.
-    str_t               attr_path;      // the resolved, absolute path
-    md_attribute_id_t   attr_id;        // what is read
-    md_attribute_id_t   attr_axis_id;   // its frame axis
+    // Resolved by the static check. A path reads one attribute, a pattern ('*' in it) every one it
+    // matches, in path order, as an array over them (also when that is one): its members.
+    str_t               attr_path;      // the resolved, absolute path, or the pattern as it was given
+    attr_member_t*      attr_members;   // md_array: what is read
+    bool                attr_pattern;
     md_attribute_id_t   run_axis_id;    // the frame axis of the run being evaluated
-    uint64_t            attr_version;   // the three versions combined, so a reload changes the fingerprint
+    uint64_t            attr_version;   // the versions of all of it combined, so a reload changes the fingerprint
 
     // CONTEXT
     size_t              num_contexts;   // Number of arguments for procedure calls
@@ -1478,6 +1487,78 @@ static void internal_error(const eval_context_t* ctx, token_t tok, const char* w
     }
     MD_LOG_ERROR("Script: internal error, %s (%s:%d)", what, file, line);
     EVAL_LOG_ERROR(ctx, tok, "Internal error: %s (%s:%d). This is a bug, please report it", what, file, line);
+}
+
+// Whether str matches pattern, in which '*' stands for any run of characters (the empty one too) and every other
+// character for itself, case and all. Several '*' anywhere: "C*", "*A", "*A*", "C*A", "C*1*". What a '*' takes is
+// tried shortest first and widened when the rest does not match, which backtracks to the last '*' only: an earlier
+// one never needs more, since the later one can take whatever it would have.
+static bool glob_match(str_t pattern, str_t str) {
+    size_t p = 0, s = 0;
+    size_t star = SIZE_MAX;     // the last '*' seen in the pattern
+    size_t star_s = 0;          // where in str what it takes ends, so far
+    while (s < str.len) {
+        if (p < pattern.len && pattern.ptr[p] == '*') {
+            star = p++;
+            star_s = s;
+        } else if (p < pattern.len && pattern.ptr[p] == str.ptr[s]) {
+            ++p;
+            ++s;
+        } else if (star != SIZE_MAX) {
+            // The last '*' takes one more character
+            p = star + 1;
+            s = ++star_s;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.len && pattern.ptr[p] == '*') ++p;
+    return p == pattern.len;
+}
+
+static inline bool str_has_glob(str_t str) {
+    return str_find_char(NULL, str, '*');
+}
+
+// Whether path matches pattern segment by segment: as many segments, each matching its own. A '*' does not reach
+// across a '/', so 'edr/*' is what the group edr holds and not what the groups below it hold.
+static bool glob_match_path(str_t pattern, str_t path) {
+    for (;;) {
+        size_t pl = 0, sl = 0;
+        const bool p_more = str_find_char(&pl, pattern, '/');
+        const bool s_more = str_find_char(&sl, path, '/');
+        if (p_more != s_more) return false;
+        if (!p_more) return glob_match(pattern, path);
+        if (!glob_match(str_substr(pattern, 0, pl), str_substr(path, 0, sl))) return false;
+        pattern = str_substr(pattern, pl + 1, SIZE_MAX);
+        path    = str_substr(path, sl + 1, SIZE_MAX);
+    }
+}
+
+// The segments of path that a '*' of pattern (which it matches, glob_match_path) stood in, joined by '/': the part of
+// what a pattern matches that differs from one match to the next. "coul_sr_sol" of "edr/coul_sr_*".
+static str_t glob_varying_segments(str_t pattern, str_t path, md_allocator_i* alloc) {
+    md_str_writer_t w = md_str_writer_create(alloc);
+    for (;;) {
+        size_t pl = 0, sl = 0;
+        const bool more = str_find_char(&pl, pattern, '/') && str_find_char(&sl, path, '/');
+        const str_t p_seg = more ? str_substr(pattern, 0, pl) : pattern;
+        const str_t s_seg = more ? str_substr(path, 0, sl) : path;
+        if (str_has_glob(p_seg)) {
+            if (md_str_writer_len(&w)) md_str_writer_push_char(&w, '/');
+            md_str_writer_push_str(&w, s_seg);
+        }
+        if (!more) break;
+        pattern = str_substr(pattern, pl + 1, SIZE_MAX);
+        path    = str_substr(path, sl + 1, SIZE_MAX);
+    }
+    return md_str_writer_to_str(&w);
+}
+
+// The last segment of a path
+static str_t path_leaf(str_t path) {
+    size_t loc;
+    return str_rfind_char(&loc, path, '/') ? str_substr(path, loc + 1, SIZE_MAX) : path;
 }
 
 // Include all procedures, operators and defines
@@ -3456,30 +3537,43 @@ static bool evaluate_attribute(data_t* dst, const ast_node_t* node, eval_context
     }
 
     const md_attributes_t* attributes = &ctx->sys->attributes;
-    const md_attribute_t* attr     = md_attributes_get(attributes, node->attr_id);
-    const md_attribute_t* attr_ax  = md_attributes_get(attributes, node->attr_axis_id);
     // The frame is a frame of the run being evaluated, which need not be the run the attribute
     // was found in: another member of an ensemble is matched to it by time.
-    const md_attribute_t* run_ax   = md_attributes_get(attributes, ctx->run_axis_id ? ctx->run_axis_id : node->run_axis_id);
-    if (!attr || !attr_ax || !run_ax) {
-        MD_LOG_ERROR("attr: '"STR_FMT"' is no longer in the system", STR_ARG(node->attr_path));
-        return false;
-    }
-
+    const md_attribute_t* run_ax = md_attributes_get(attributes, ctx->run_axis_id ? ctx->run_axis_id : node->run_axis_id);
     const size_t frame = (size_t)md_state_frame_nearest(ctx->cur_state);
-    size_t row;
-    if (!md_attribute_axis_map(&row, run_ax, frame, attr_ax)) {
-        MD_LOG_ERROR("attr: '"STR_FMT"' has no value at frame %zu", STR_ARG(node->attr_path), frame);
-        return false;
-    }
 
-    const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)row);
-    const size_t count = md_attribute_slice_count(attr, slice);
-    if (count * sizeof(float) > dst->size) {
-        MD_LOG_ERROR("attr: '"STR_FMT"' changed shape since the script was compiled", STR_ARG(node->attr_path));
-        return false;
+    // The members one after the other, each found on its own frame axis
+    float* out = (float*)dst->ptr;
+    size_t cap = dst->size / sizeof(float);
+    const size_t num_members = md_array_size(node->attr_members);
+    for (size_t m = 0; m < num_members; ++m) {
+        const attr_member_t* member = &node->attr_members[m];
+        const md_attribute_t* attr    = md_attributes_get(attributes, member->id);
+        const md_attribute_t* attr_ax = md_attributes_get(attributes, member->axis_id);
+        if (!attr || !attr_ax || !run_ax) {
+            MD_LOG_ERROR("attr: '"STR_FMT"' is no longer in the system", STR_ARG(member->path));
+            return false;
+        }
+
+        size_t row;
+        if (!md_attribute_axis_map(&row, run_ax, frame, attr_ax)) {
+            MD_LOG_ERROR("attr: '"STR_FMT"' has no value at frame %zu", STR_ARG(member->path), frame);
+            return false;
+        }
+
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)row);
+        const size_t count = md_attribute_slice_count(attr, slice);
+        if (count > cap) {
+            MD_LOG_ERROR("attr: '"STR_FMT"' changed shape since the script was compiled", STR_ARG(member->path));
+            return false;
+        }
+        if (md_attribute_extract_f32(out, count, attr, slice, md_unit_none()) != count) {
+            return false;
+        }
+        out += count;
+        cap -= count;
     }
-    return md_attribute_extract_f32((float*)dst->ptr, count, attr, slice, md_unit_none()) == count;
+    return true;
 }
 
 static bool evaluate_flatten(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
@@ -4852,10 +4946,199 @@ static attr_readable_t attr_readable(const md_attributes_t* attributes, const md
     return ATTR_READABLE;
 }
 
+// The path attr() reads attr by in its shortest form: relative to its run where that names it alone, in full where it
+// does not. The path as given is looked for first and then in every run (static_check_attribute), so the relative one
+// must name nothing else, neither outside the runs nor in another one.
+static str_t attr_short_path(const md_attributes_t* attributes, const md_attribute_t* attr, str_t run) {
+    const str_t relative = str_substr(attr->path, run.len + 1, SIZE_MAX);
+    if (md_attributes_find(attributes, relative)) {
+        return attr->path;
+    }
+    for (md_attribute_iter_t it = md_attributes_iter_children(attributes, STR_LIT("run")); md_attributes_next(&it);) {
+        const md_attribute_t* other = md_attributes_find_in(attributes, it.child_path, relative);
+        if (other && other != attr) {
+            return attr->path;
+        }
+    }
+    return relative;
+}
+
+str_t md_script_attr_path(const md_attributes_t* attributes, const md_attribute_t* attr) {
+    if (!attributes || !attr) {
+        return (str_t){0};
+    }
+    attr_read_info_t info;
+    if (attr_readable(attributes, attr, &info) != ATTR_READABLE) {
+        return (str_t){0};
+    }
+    return attr_short_path(attributes, attr, info.run);
+}
+
+// What one value of attr at a frame is: the index axes left after the frame axis, then the components of a value, from
+// dimension d on. A 3x3 tensor is float[3][3], a vector float[3], a scalar float (nothing). Returns the dimension after.
+static uint32_t attr_value_dims(int dim[MAX_NUM_DIMS], uint32_t d, const md_attribute_t* attr) {
+    for (uint32_t i = 1; i < attr->format.rank && d < MAX_NUM_DIMS; ++i) {
+        dim[d++] = (int)attr->format.shape[i];
+    }
+    if (attr->format.components > 1 && d < MAX_NUM_DIMS) {
+        dim[d++] = (int)attr->format.components;
+    }
+    return d;
+}
+
+// Mixes what a value read from attr depends on into h: which attribute it is, its version and its frame axis's
+static uint64_t attr_member_version(uint64_t h, const md_attribute_t* attr, const md_attribute_t* axis) {
+    const uint64_t v[3] = { attr->id, attr->version, axis->version };
+    return md_hash64(v, sizeof(v), h);
+}
+
+// What the members of a pattern's array are called: their labels (the names their file gives them, "Coul-SR:Protein-SOL")
+// when every one has one and no two the same, otherwise the segments of their paths that the pattern's '*' stood in
+// ("coul_sr_protein_sol" of "edr/coul_sr_*"), the part of them that differs. subjects are the paths the pattern was
+// matched against (relative to the run where the pattern is).
+static void attr_member_labels(attr_member_t* members, const str_t* subjects, size_t count, str_t pattern, const md_attributes_t* attributes, md_allocator_i* alloc) {
+    bool own = true;
+    for (size_t i = 0; i < count && own; ++i) {
+        const md_attribute_t* a = md_attributes_get(attributes, members[i].id);
+        own = a && !str_empty(a->label);
+        for (size_t j = 0; j < i && own; ++j) {
+            own = !str_eq(members[j].label, a->label);
+        }
+        if (own) members[i].label = str_copy(a->label, alloc);
+    }
+    if (!own) {
+        for (size_t i = 0; i < count; ++i) {
+            members[i].label = glob_varying_segments(pattern, subjects[i], alloc);
+        }
+    }
+}
+
+// attr("edr/coul_sr_*"): every attribute the pattern matches that attr() reads, one array over them in path order, of
+// float[n] for n scalars, float[n][3] for n vectors. Absolute or relative to a run like a path, and all of the matches
+// from one run. A frame axis is never one: it is the time the others are sampled at, not one of them. The matches have
+// to agree on what one value is and on its unit to make one array, and each is read on its own frame axis.
+static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, str_t pattern, eval_context_t* ctx) {
+    const md_attributes_t* attributes = &ctx->sys->attributes;
+    md_allocator_i* arena = ctx->compile_ir->arena;
+    const bool absolute = str_begins_with(pattern, STR_LIT("run/"));
+
+    md_array(attr_member_t) members = 0;
+    md_array(str_t) subjects = 0;           // what the pattern matched in each: the path, or the part below the run
+    md_array(str_t) runs = 0;               // the runs they are from, each once
+    const md_attribute_t* run_axis = NULL;  // of the first
+    size_t num_unreadable = 0;
+    size_t num_axes = 0;
+
+    for (md_attribute_iter_t it = md_attributes_iter(attributes, STR_LIT("run")); md_attributes_next(&it);) {
+        const md_attribute_t* a = it.attr;
+        if (!str_begins_with(a->path, STR_LIT("run/"))) continue;
+        str_t subject = a->path;
+        if (!absolute) {
+            size_t loc;
+            const str_t below = str_substr(a->path, 4, SIZE_MAX);
+            if (!str_find_char(&loc, below, '/')) continue;
+            subject = str_substr(below, loc + 1, SIZE_MAX);
+        }
+        if (!glob_match_path(pattern, subject)) continue;
+
+        attr_read_info_t info;
+        if (attr_readable(attributes, a, &info) != ATTR_READABLE) {
+            num_unreadable += 1;
+            continue;
+        }
+        if (md_attributes_axis(attributes, a) == a) {
+            num_axes += 1;
+            continue;
+        }
+
+        if (!md_array_size(runs) || !str_eq(runs[md_array_size(runs) - 1], info.run)) {
+            md_array_push(runs, info.run, ctx->temp_alloc);
+        }
+        if (!run_axis) run_axis = info.run_axis;
+        attr_member_t m = { .path = str_copy(a->path, arena), .id = a->id, .axis_id = info.attr_axis->id };
+        md_array_push(members, m, arena);
+        md_array_push(subjects, subject, ctx->temp_alloc);
+    }
+
+    const size_t num = md_array_size(members);
+    if (num == 0) {
+        if (num_axes && !num_unreadable) {
+            EVAL_LOG_ERROR(ctx, tok, "attr: '"STR_FMT"' matches only frame axes, the times the others are sampled at, which a pattern leaves out", STR_ARG(pattern));
+        } else if (num_unreadable) {
+            EVAL_LOG_ERROR(ctx, tok, "attr: '"STR_FMT"' matches %zu %s, but none that attr() reads: numbers that vary over the frames of a run",
+                STR_ARG(pattern), num_unreadable, num_unreadable == 1 ? "attribute" : "attributes");
+        } else {
+            EVAL_LOG_ERROR(ctx, tok, "attr: nothing in any run matches '"STR_FMT"'", STR_ARG(pattern));
+        }
+        return false;
+    }
+    if (md_array_size(runs) > 1) {
+        // The pattern below the run, which each run is suggested with
+        str_t below = pattern;
+        size_t loc;
+        if (absolute && str_find_char(&loc, str_substr(pattern, 4, SIZE_MAX), '/')) {
+            below = str_substr(pattern, 4 + loc + 1, SIZE_MAX);
+        }
+        md_str_writer_t w = md_str_writer_create(ctx->temp_alloc);
+        for (size_t i = 0; i < md_array_size(runs); ++i) {
+            md_str_writer_fmt(&w, "  '"STR_FMT"/"STR_FMT"'\n", STR_ARG(runs[i]), STR_ARG(below));
+        }
+        EVAL_LOG_ERROR(ctx, tok, "attr: '"STR_FMT"' matches in more than one run, name the run:\n"STR_FMT,
+            STR_ARG(pattern), STR_ARG(md_str_writer_to_str(&w)));
+        return false;
+    }
+
+    // One value of the array: the members' axis, then what one value of a member is, the same for all of them
+    const md_attribute_t* first = md_attributes_get(attributes, members[0].id);
+    const uint32_t member_dims = (first->format.rank - 1) + (first->format.components > 1 ? 1 : 0);
+    if (1 + member_dims > MAX_NUM_DIMS) {
+        EVAL_LOG_ERROR(ctx, tok, "attr: an array of what '"STR_FMT"' matches has more dimensions than a script value can hold (%d)", STR_ARG(pattern), MAX_NUM_DIMS);
+        return false;
+    }
+    type_info_t type = { .base_type = TYPE_FLOAT, .dim = { (int)num } };
+    attr_value_dims(type.dim, 1, first);
+    uint64_t version = attr_member_version(0, first, md_attributes_get(attributes, members[0].axis_id));
+    for (size_t i = 1; i < num; ++i) {
+        const md_attribute_t* a = md_attributes_get(attributes, members[i].id);
+        type_info_t t = { .base_type = TYPE_FLOAT, .dim = { (int)num } };
+        attr_value_dims(t.dim, 1, a);
+        if (MEMCMP(t.dim, type.dim, sizeof(type.dim)) != 0 || !md_unit_equal(a->unit, first->unit)) {
+            char ta[64], tb[64], ua[32], ub[32];
+            type_info_t one_a = type, one_b = t;
+            // What one member is: a scalar prints as float
+            dim_shift_left(one_a.dim);
+            dim_shift_left(one_b.dim);
+            print_type_info(ta, sizeof(ta), one_a);
+            print_type_info(tb, sizeof(tb), one_b);
+            md_unit_print(ua, sizeof(ua), first->unit);
+            md_unit_print(ub, sizeof(ub), a->unit);
+            EVAL_LOG_ERROR(ctx, tok, "attr: what '"STR_FMT"' matches does not make one array: '"STR_FMT"' is %s (%s), '"STR_FMT"' is %s (%s)",
+                STR_ARG(pattern), STR_ARG(members[0].path), ta, ua[0] ? ua : "no unit", STR_ARG(members[i].path), tb, ub[0] ? ub : "no unit");
+            return false;
+        }
+        version = attr_member_version(version, a, md_attributes_get(attributes, members[i].axis_id));
+    }
+    attr_member_labels(members, subjects, num, pattern, attributes, arena);
+
+    node->attr_path    = str_copy(pattern, arena);
+    node->attr_members = members;
+    node->attr_pattern = true;
+    node->run_axis_id  = run_axis->id;
+    node->attr_version = md_hash64(&run_axis->version, sizeof(run_axis->version), version);
+
+    node->data.type    = type;
+    node->data.unit[0] = md_unit_none();
+    node->data.unit[1] = first->unit;
+    node->flags       |= FLAG_DYNAMIC;  // a different value at every frame
+
+    return true;
+}
+
 // attr("<path>") names a temporal attribute of the system. The path is either absolute
 // ("run/a/edr/potential") or relative to a run ("edr/potential"), in which case it has to exist in
 // exactly one run: with a single trajectory that is always the case, and when it is not the error
-// says which runs to choose between rather than picking one.
+// says which runs to choose between rather than picking one. A path with a '*' in it is a pattern
+// (static_check_attribute_pattern), which reads every attribute it matches.
 static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_ATTRIBUTE);
     ASSERT(ctx);
@@ -4879,6 +5162,14 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
     if (str_empty(path)) {
         EVAL_LOG_ERROR(ctx, args[0]->token, "attr: empty path");
         return false;
+    }
+
+    // Resolved anew: what was read before is no longer what is read
+    node->attr_members = NULL;
+    node->attr_pattern = false;
+
+    if (str_has_glob(path)) {
+        return static_check_attribute_pattern(node, args[0]->token, path, ctx);
     }
 
     const md_attribute_t* attr = md_attributes_find(attributes, path);
@@ -4932,22 +5223,15 @@ static bool static_check_attribute(ast_node_t* node, eval_context_t* ctx) {
     const md_attribute_t* run_axis  = info.run_axis;
     const md_attribute_t* attr_axis = info.attr_axis;
 
-    // One value per frame: the index axes left after the frame axis, then the components of a
-    // value. A 3x3 tensor is float[3][3], a vector float[3], a scalar float.
+    // One value per frame. A scalar is float.
     type_info_t type = { .base_type = TYPE_FLOAT, .dim = {1} };
-    uint32_t d = 0;
-    for (uint32_t i = 1; i < attr->format.rank; ++i) {
-        type.dim[d++] = (int)attr->format.shape[i];
-    }
-    if (attr->format.components > 1) {
-        type.dim[d++] = (int)attr->format.components;
-    }
+    attr_value_dims(type.dim, 0, attr);
 
-    node->attr_path    = str_copy(full, ctx->compile_ir->arena);
-    node->attr_id      = attr->id;
-    node->attr_axis_id = attr_axis->id;
+    attr_member_t member = { .path = str_copy(full, ctx->compile_ir->arena), .id = attr->id, .axis_id = attr_axis->id };
+    md_array_push(node->attr_members, member, ctx->compile_ir->arena);
+    node->attr_path    = member.path;
     node->run_axis_id  = run_axis->id;
-    node->attr_version = attr->version ^ (attr_axis->version << 21) ^ (run_axis->version << 42);
+    node->attr_version = md_hash64(&run_axis->version, sizeof(run_axis->version), attr_member_version(0, attr, attr_axis));
 
     node->data.type    = type;
     node->data.unit[0] = md_unit_none();
@@ -6405,6 +6689,8 @@ static bool static_evaluation(md_script_ir_t* ir, const md_system_t* sys) {
 //                 script/<ident>/mean     {num_frames}               only when a population exists
 //                 script/<ident>/variance {num_frames}
 //                 script/<ident>/extent   {num_frames}, 2 components (min, max)
+//                 script/<ident>/labels   {population}, str: the names of the members, when they are what an
+//                                         attr() pattern matched ('e = attr("edr/coul_sr_*")')
 //   distribution  script/<ident>          {num_bins}
 //                 script/<ident>/weight   {num_bins}
 //                 script/<ident>/range    rank 0, 2 components (min, max) of the bin axis
@@ -6490,6 +6776,86 @@ static size_t script_bin_coord_provide(void* dst, size_t cap, const md_attribute
         out[i] = (float)(x_min + ((double)(beg + i) + 0.5) * x_scl);
     }
     return count;
+}
+
+// Whether two patterns name their members alike
+static bool same_member_labels(const ast_node_t* a, const ast_node_t* b) {
+    const size_t n = md_array_size(a->attr_members);
+    if (n != md_array_size(b->attr_members)) return false;
+    for (size_t i = 0; i < n; ++i) {
+        if (!str_eq(a->attr_members[i].label, b->attr_members[i].label)) return false;
+    }
+    return true;
+}
+
+// The attr() pattern whose members the outermost axis of what node evaluates to holds, if any: the pattern itself, a
+// name it is assigned to, and arithmetic on it that keeps that axis ('e * 2', 'e - e0', '-e', 'e + f' where f names its
+// members alike). NULL for anything else, which leaves the axis unnamed: an element of it, a sum over it, and arithmetic
+// with an array as long that names its members otherwise or not at all.
+static const ast_node_t* labelled_pattern(const ast_node_t* node, int depth) {
+    if (!node || depth > 64) return NULL;
+    const size_t num_children = md_array_size(node->children);
+    const ast_node_t* src = NULL;
+    switch (node->type) {
+    case AST_ATTRIBUTE:
+        src = node->attr_pattern ? node : NULL;
+        break;
+    case AST_ASSIGNMENT:
+        // To one name; one of several ('{a, b} = ...') is an element of what is assigned
+        if (num_children == 2 && node->children[0]->type == AST_IDENTIFIER) {
+            src = labelled_pattern(node->children[1], depth + 1);
+        }
+        break;
+    case AST_IDENTIFIER:
+        // A reference is linked to its definition by the static check
+        if (num_children == 1) {
+            src = labelled_pattern(node->children[0], depth + 1);
+        }
+        break;
+    case AST_PROC_CALL:
+        // An arithmetic operator, which the static check made a call of the operator's procedure
+        if (node->proc && num_children >= 1 && num_children <= 2 &&
+            (str_eq(node->proc->name, STR_LIT("+")) || str_eq(node->proc->name, STR_LIT("-")) ||
+             str_eq(node->proc->name, STR_LIT("*")) || str_eq(node->proc->name, STR_LIT("/")))) {
+            for (size_t i = 0; i < num_children; ++i) {
+                const ast_node_t* l = labelled_pattern(node->children[i], depth + 1);
+                if (!l) {
+                    // An array as long without names of its own, whose members these are as much as the other's
+                    if (node->children[i]->data.type.dim[0] > 1 && node->children[i]->data.type.dim[0] == node->data.type.dim[0]) return NULL;
+                    continue;
+                }
+                if (src && src != l && !same_member_labels(src, l)) return NULL;
+                src = l;
+            }
+        }
+        break;
+    default:
+        break;
+    }
+    // Only while the outermost axis is still the members'
+    if (src && node->data.type.dim[0] != (int)md_array_size(src->attr_members)) return NULL;
+    return src;
+}
+
+// script/<ident>/labels: the names of the members of a temporal property that holds what an attr() pattern matched,
+// one value per member per frame (float[n]), in the order of its population.
+static void publish_property_labels(md_attributes_t* attributes, str_t ident, const ast_node_t* node, md_allocator_i* temp_alloc) {
+    const ast_node_t* src = labelled_pattern(node, 0);
+    if (!src || dim_ndims(node->data.type.dim) != 1) return;
+    const size_t n = md_array_size(src->attr_members);
+    str_t* labels = md_alloc(temp_alloc, n * sizeof(str_t));
+    for (size_t i = 0; i < n; ++i) {
+        labels[i] = src->attr_members[i].label;
+    }
+    char buf[512];
+    md_attribute_desc_t desc = {
+        .path        = script_attr_path(buf, sizeof(buf), ident, "/labels"),
+        .format      = { .type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = { (uint32_t)n } },
+        .description = STR_INIT("The names of the members, of what attr() matched"),
+        .data        = labels,
+        .byte_size   = n * sizeof(str_t),
+    };
+    md_attributes_replace(attributes, &desc);
 }
 
 // Publishes the attributes of one property and points prop at them.
@@ -7150,7 +7516,24 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     }
 
     if (node->type == AST_ATTRIBUTE) {
-        md_str_writer_fmt(&sb, "\n"STR_FMT, STR_ARG(node->attr_path));
+        if (node->attr_pattern) {
+            // What the pattern matched, in the order of the array
+            const size_t num = md_array_size(node->attr_members);
+            const size_t shown = MIN(num, 16);
+            md_str_writer_fmt(&sb, "\n"STR_FMT": %zu %s", STR_ARG(node->attr_path), num, num == 1 ? "match" : "matches");
+            for (size_t i = 0; i < shown; ++i) {
+                const attr_member_t* m = &node->attr_members[i];
+                md_str_writer_fmt(&sb, "\n  [%zu] "STR_FMT, i + 1, STR_ARG(m->path));
+                if (!str_eq(m->label, path_leaf(m->path))) {
+                    md_str_writer_fmt(&sb, "  "STR_FMT, STR_ARG(m->label));
+                }
+            }
+            if (shown < num) {
+                md_str_writer_fmt(&sb, "\n  ... and %zu more", num - shown);
+            }
+        } else {
+            md_str_writer_fmt(&sb, "\n"STR_FMT, STR_ARG(node->attr_path));
+        }
     } else if (!(node->flags & FLAG_DYNAMIC)) {
         // A name, or what is assigned to it, holds the value of its expression
         const ast_node_t* vnode = node;
@@ -7974,6 +8357,9 @@ static md_script_eval_t* eval_create(const md_script_ir_t* ir, const md_script_e
         eval_property_t* prop = &eval->props[i];
         const ast_node_t* node = ir->property_nodes[i];
         init_property(prop, attributes, ir->property_names[i], ir->property_flags[i], node->data.type, node->data.unit, num_frames, eval->arena);
+        if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+            publish_property_labels(attributes, ir->property_names[i], node, eval->arena);
+        }
         prop->fingerprint = i < md_array_size(ir->property_fingerprints) ? ir->property_fingerprints[i] : 0;
         // Reserved up front, so marking a frame never moves the words while another thread reads them
         md_bitmask_init(&prop->done, 0, (uint32_t)num_frames, eval->arena);

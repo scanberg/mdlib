@@ -2459,6 +2459,277 @@ UTEST(script, attr_reads_a_temporal_attribute_at_the_frame) {
     md_vm_arena_destroy(arena);
 }
 
+// A temporal f64 series along the run, under a label of its own when one is given
+static md_attribute_id_t publish_series(md_attributes_t* t, const char* path, const char* label, uint32_t n, uint32_t components, md_unit_t unit, const double* data) {
+    return md_attributes_create(t, &(md_attribute_desc_t){
+        .path = str_from_cstr(path), .label = label ? str_from_cstr(label) : (str_t){0},
+        .format = series_fmt(n, components), .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = unit,
+        .data = data, .byte_size = (size_t)n * components * sizeof(double)});
+}
+
+// Whether src fails to compile with an error that says what because says
+static bool fails_because(md_script_ir_t* ir, const char* src, const md_system_t* sys, const char* because) {
+    if (compiles(ir, src, sys)) return false;
+    for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+        if (str_find_str(NULL, md_script_ir_errors(ir)[i].text, str_from_cstr(because))) return true;
+    }
+    for (size_t i = 0; i < md_script_ir_num_errors(ir); ++i) {
+        printf("  %s: " STR_FMT "\n", src, STR_ARG(md_script_ir_errors(ir)[i].text));
+    }
+    return false;
+}
+
+static str_t eval_label(const md_script_eval_t* eval, const char* path, size_t i) {
+    const md_attributes_t* table = md_script_eval_attributes(eval);
+    const md_attribute_t* attr = md_attributes_find(table, str_from_cstr(path));
+    if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR || i >= attr->format.shape[0]) return (str_t){0};
+    return md_attribute_str(table, attr, i);
+}
+
+// attr("edr/coul_sr_*"): every attribute the pattern matches, an array over them in path order, whose members are named
+// in the evaluation's table (script/<ident>/labels) wherever what a property holds is still that array.
+UTEST(script, attr_patterns) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t state = {.alloc = arena};
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+
+    md_attributes_t* t = &sys.attributes;
+    const md_attribute_t* run_time = md_attributes_find(t, STR_LIT("run/t/time"));
+    ASSERT_TRUE(run_time != NULL);
+    const uint32_t F = run_time->format.shape[0];
+    const double* frame_times = (const double*)run_time->data;
+    const md_unit_t energy = md_unit_kelvin();  // any unit will do, as long as the members agree on it
+
+    // Member k is k + 1 times the frame number. Published out of order: the array is in path order.
+    double* val[4];
+    for (int k = 0; k < 4; ++k) {
+        val[k] = md_alloc(arena, F * sizeof(double));
+        for (uint32_t f = 0; f < F; ++f) val[k][f] = (double)(k + 1) * f;
+    }
+    double* vec = md_alloc(arena, F * 3 * sizeof(double));
+    for (uint32_t i = 0; i < F * 3; ++i) vec[i] = i;
+    ASSERT_NE(publish_series(t, "run/t/edr/coul_sr_c", "Coul-SR:C", F, 1, energy, val[2]), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/coul_sr_a", "Coul-SR:A", F, 1, energy, val[0]), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/coul_sr_b", "Coul-SR:B", F, 1, energy, val[1]), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/lj_sr_a",   NULL, F, 1, energy, val[0]), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/lj_sr_b",   NULL, F, 1, energy, val[1]), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/unit_a",    NULL, F, 1, energy, val[0]), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/unit_b",    NULL, F, 1, md_unit_none(), val[1]), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/shape_a",   NULL, F, 1, energy, val[0]), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/shape_b",   NULL, F, 3, energy, vec), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/box_a",     NULL, F, 3, energy, vec), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/box_b",     NULL, F, 3, energy, vec), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/t/edr/deeper/coul_sr_z", NULL, F, 1, energy, val[3]), MD_ATTRIBUTE_INVALID);
+    const double constant[3] = {1, 2, 3};
+    ASSERT_NE(publish_f64(t, "run/t/edr/const_a", series_fmt(3, 1), MD_ATTRIBUTE_FLAG_NONE, energy, constant), MD_ATTRIBUTE_INVALID);
+
+    md_script_ir_t* ir = md_script_ir_create(arena);
+
+    // In path order, a '*' within one segment (not edr/deeper/coul_sr_z), named by their labels
+    ASSERT_TRUE(compiles(ir, "e = attr(\"edr/coul_sr_*\");", &sys));
+    {
+        const ast_node_t* node = labelled_pattern(ir->property_nodes[0], 0);
+        ASSERT_TRUE(node != NULL);
+        ASSERT_EQ(3u, (uint32_t)md_array_size(node->attr_members));
+        EXPECT_EQ(3, node->data.type.dim[0]);
+        EXPECT_EQ(0, node->data.type.dim[1]);
+        md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &sys, STR_LIT("run/t"), 0, F));
+        const md_attribute_t* e = md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/e"));
+        ASSERT_TRUE(e != NULL);
+        EXPECT_EQ(3u, e->format.shape[1]);
+        EXPECT_TRUE(md_unit_equal(e->unit, energy));
+        for (uint32_t f = 0; f < F; ++f) {
+            for (int k = 0; k < 3; ++k) {
+                EXPECT_EQ((float)((k + 1) * f), ((const float*)e->data)[f * 3 + k]);
+            }
+        }
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/e/labels", 0), STR_LIT("Coul-SR:A")));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/e/labels", 1), STR_LIT("Coul-SR:B")));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/e/labels", 2), STR_LIT("Coul-SR:C")));
+        md_script_eval_free(eval);
+    }
+
+    // Without labels of their own, by the segment the '*' stood in. Absolute, and '*' in more than one place.
+    ASSERT_TRUE(compiles(ir, "l = attr(\"run/t/edr/lj_*_*\");", &sys));
+    {
+        md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &sys, STR_LIT("run/t"), 0, F));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/l/labels", 0), STR_LIT("lj_sr_a")));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/l/labels", 1), STR_LIT("lj_sr_b")));
+        md_script_eval_free(eval);
+    }
+    ASSERT_TRUE(compiles(ir, "l = attr(\"*/lj_sr_*\");", &sys));
+    {
+        md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &sys, STR_LIT("run/t"), 0, F));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/l/labels", 0), STR_LIT("edr/lj_sr_a")));
+        md_script_eval_free(eval);
+    }
+
+    // Through names and arithmetic that keeps the members' axis, and not past what takes it apart
+    ASSERT_TRUE(compiles(ir,
+        "x = attr(\"edr/coul_sr_*\");\n"
+        "y = x * 2 - x;\n"
+        "z = -y;\n"
+        "w = x + attr(\"edr/lj_sr_*\")[1];\n"
+        "s = x[1] + x[2];\n"
+        "u = x + attr(\"edr/coul_sr_*\");\n"
+        "v = x[1:2];\n"
+        "m = x[1:2] + attr(\"edr/lj_sr_*\");\n"
+        "k = attr(\"edr/lj_sr_*\") + attr(\"edr/coul_sr_*\")[2:3];\n", &sys));
+    {
+        md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &sys, STR_LIT("run/t"), 0, F));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/y/labels", 2), STR_LIT("Coul-SR:C")));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/z/labels", 0), STR_LIT("Coul-SR:A")));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/w/labels", 1), STR_LIT("Coul-SR:B")));
+        EXPECT_TRUE(str_eq(eval_label(eval, "script/u/labels", 1), STR_LIT("Coul-SR:B")));
+        EXPECT_TRUE(md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/s/labels")) == NULL);
+        EXPECT_TRUE(md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/v/labels")) == NULL);
+        // Each of these is as much one array's members as the other's
+        EXPECT_TRUE(md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/m/labels")) == NULL);
+        EXPECT_TRUE(md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/k/labels")) == NULL);
+        const md_attribute_t* z = md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/z"));
+        ASSERT_TRUE(z != NULL);
+        EXPECT_EQ(-(float)(3 * 2), ((const float*)z->data)[2 * 3 + 2]);
+        md_script_eval_free(eval);
+    }
+
+    // One match is an array of one, vectors an array of vectors
+    ASSERT_TRUE(compiles(ir, "o = attr(\"edr/coul_sr_c*\");", &sys));
+    EXPECT_EQ(1, ir->property_nodes[0]->data.type.dim[0]);
+    ASSERT_TRUE(compiles(ir, "b = attr(\"edr/box_*\");", &sys));
+    ASSERT_EQ(1u, (uint32_t)md_array_size(ir->type_checked_expressions));
+    EXPECT_EQ(2, ir->type_checked_expressions[0]->data.type.dim[0]);
+    EXPECT_EQ(3, ir->type_checked_expressions[0]->data.type.dim[1]);
+    ASSERT_TRUE(compiles(ir, "b = flatten(attr(\"edr/box_*\"));", &sys));
+    {
+        md_script_eval_t* eval = md_script_eval_create(F, ir, arena);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &sys, STR_LIT("run/t"), 0, F));
+        const md_attribute_t* b = md_attributes_find(md_script_eval_attributes(eval), STR_LIT("script/b"));
+        ASSERT_TRUE(b != NULL);
+        ASSERT_EQ(6u, b->format.shape[1]);
+        // Frame 1 of each: the second vector of the series, box_a then box_b
+        for (int k = 0; k < 6; ++k) EXPECT_EQ((float)(3 + k % 3), ((const float*)b->data)[6 + k]);
+        md_script_eval_free(eval);
+    }
+
+    // Refused: nothing matches, only what attr() does not read, a frame axis, members that disagree on what a
+    // value is or on its unit
+    EXPECT_TRUE(fails_because(ir, "x = attr(\"edr/none_*\");", &sys, "nothing in any run matches"));
+    EXPECT_TRUE(fails_because(ir, "x = attr(\"edr/const_*\");", &sys, "none that attr() reads"));
+    EXPECT_TRUE(fails_because(ir, "x = attr(\"tim*\");", &sys, "only frame axes"));
+    EXPECT_TRUE(fails_because(ir, "x = attr(\"edr/unit_*\");", &sys, "does not make one array"));
+    EXPECT_TRUE(fails_because(ir, "x = attr(\"edr/shape_*\");", &sys, "does not make one array"));
+
+    // What it matched is part of what a property is computed from: one more match is another property
+    ASSERT_TRUE(compiles(ir, "e = attr(\"edr/coul_sr_*\");", &sys));
+    const uint64_t before = md_script_ir_property_fingerprint(ir, STR_LIT("e"));
+    ASSERT_NE(publish_series(t, "run/t/edr/coul_sr_d", "Coul-SR:D", F, 1, energy, val[3]), MD_ATTRIBUTE_INVALID);
+    ASSERT_TRUE(compiles(ir, "e = attr(\"edr/coul_sr_*\");", &sys));
+    EXPECT_NE(before, md_script_ir_property_fingerprint(ir, STR_LIT("e")));
+    EXPECT_EQ(4, ir->property_nodes[0]->data.type.dim[0]);
+
+    // Matches in two runs: the run has to be named, as for a path
+    ASSERT_NE(publish_f64(t, "run/u/time", series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, run_time->unit, frame_times), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_series(t, "run/u/edr/coul_sr_a", "Coul-SR:A", F, 1, energy, val[0]), MD_ATTRIBUTE_INVALID);
+    EXPECT_TRUE(fails_because(ir, "e = attr(\"edr/coul_sr_*\");", &sys, "'run/u/edr/coul_sr_*'"));
+    EXPECT_TRUE(fails_because(ir, "e = attr(\"run/*/edr/coul_sr_a\");", &sys, "'run/t/edr/coul_sr_a'"));
+    EXPECT_TRUE(compiles(ir, "e = attr(\"run/t/edr/coul_sr_*\");", &sys));
+    EXPECT_TRUE(compiles(ir, "e = attr(\"run/u/edr/coul_sr_*\");", &sys));
+
+    md_script_ir_free(ir);
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
+}
+
+// '*' stands for any run of characters, anywhere and as many times as it is written
+UTEST(script, glob_match) {
+    EXPECT_TRUE (glob_match(STR_LIT("CA"),    STR_LIT("CA")));
+    EXPECT_FALSE(glob_match(STR_LIT("CA"),    STR_LIT("CAX")));
+    EXPECT_TRUE (glob_match(STR_LIT("C*"),    STR_LIT("C")));
+    EXPECT_TRUE (glob_match(STR_LIT("C*"),    STR_LIT("CA")));
+    EXPECT_FALSE(glob_match(STR_LIT("C*"),    STR_LIT("AC")));
+    EXPECT_TRUE (glob_match(STR_LIT("*A"),    STR_LIT("CA")));
+    EXPECT_FALSE(glob_match(STR_LIT("*A"),    STR_LIT("AC")));
+    // Used to match anything at all
+    EXPECT_TRUE (glob_match(STR_LIT("*H*"),   STR_LIT("OHO")));
+    EXPECT_TRUE (glob_match(STR_LIT("*H*"),   STR_LIT("H")));
+    EXPECT_FALSE(glob_match(STR_LIT("*H*"),   STR_LIT("OC")));
+    // Used to let the parts before and after the '*' overlap
+    EXPECT_FALSE(glob_match(STR_LIT("AB*BC"), STR_LIT("ABC")));
+    EXPECT_TRUE (glob_match(STR_LIT("AB*BC"), STR_LIT("ABBC")));
+    EXPECT_TRUE (glob_match(STR_LIT("AB*BC"), STR_LIT("ABxyBC")));
+    // Used to be refused: '*' in the middle, and more than two
+    EXPECT_TRUE (glob_match(STR_LIT("C*1*"),  STR_LIT("C21x")));
+    EXPECT_FALSE(glob_match(STR_LIT("C*1*"),  STR_LIT("C2")));
+    EXPECT_TRUE (glob_match(STR_LIT("A*B*C"), STR_LIT("AxxBxxC")));
+    EXPECT_FALSE(glob_match(STR_LIT("A*B*C"), STR_LIT("AxxCxxB")));
+    EXPECT_TRUE (glob_match(STR_LIT("**A"),   STR_LIT("A")));
+    EXPECT_TRUE (glob_match(STR_LIT("*"),     STR_LIT("anything")));
+    // What a '*' takes has to grow past a false start
+    EXPECT_TRUE (glob_match(STR_LIT("*AB"),   STR_LIT("AAB")));
+    EXPECT_TRUE (glob_match(STR_LIT("*ABC*ABD"), STR_LIT("ABCABCABD")));
+    EXPECT_FALSE(glob_match(STR_LIT("*ABC*ABD"), STR_LIT("ABCABCABE")));
+    // Case is part of the name
+    EXPECT_FALSE(glob_match(STR_LIT("c*"),    STR_LIT("CA")));
+    // The selectors: nothing matches an empty name, and an empty pattern is no pattern
+    EXPECT_FALSE(match_query(STR_LIT("*"), STR_LIT("")));
+    EXPECT_FALSE(match_query(STR_LIT(""),  STR_LIT("CA")));
+    EXPECT_FALSE(validate_query(STR_LIT("")));
+    EXPECT_TRUE (validate_query(STR_LIT("*A*B*")));
+
+    // In paths, a '*' does not reach across a '/'
+    EXPECT_TRUE (glob_match_path(STR_LIT("edr/*"),        STR_LIT("edr/potential")));
+    EXPECT_FALSE(glob_match_path(STR_LIT("edr/*"),        STR_LIT("edr/sub/potential")));
+    EXPECT_FALSE(glob_match_path(STR_LIT("edr*"),         STR_LIT("edr/potential")));
+    EXPECT_TRUE (glob_match_path(STR_LIT("*/potential"),  STR_LIT("edr/potential")));
+    EXPECT_TRUE (glob_match_path(STR_LIT("xvg/*/coul_*"), STR_LIT("xvg/energy/coul_sr")));
+    EXPECT_FALSE(glob_match_path(STR_LIT("xvg/*/coul_*"), STR_LIT("xvg/energy/lj_sr")));
+
+    md_allocator_i* arena = md_vm_arena_create(MEGABYTES(1));
+    EXPECT_TRUE(str_eq(glob_varying_segments(STR_LIT("edr/coul_*"),   STR_LIT("edr/coul_sol"),   arena), STR_LIT("coul_sol")));
+    EXPECT_TRUE(str_eq(glob_varying_segments(STR_LIT("xvg/*/coul_*"), STR_LIT("xvg/e/coul_x"),   arena), STR_LIT("e/coul_x")));
+    md_vm_arena_destroy(arena);
+}
+
+// name(), resname() and instance() select by the same patterns
+UTEST(script, name_patterns) {
+    md_allocator_i* arena = md_vm_arena_create(MEGABYTES(64));
+    const struct { const char* pattern; int kind; char a; char b; } cases[] = {
+        {"*A*", 0, 'A', 0},     // contains A
+        {"*E",  1, 'E', 0},     // ends with E
+        {"H*",  2, 'H', 0},     // begins with H
+        {"C*A", 3, 'C', 'A'},   // begins with C, ends with A
+        {"*",   4, 0, 0},       // anything
+    };
+    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
+        char src[64];
+        snprintf(src, sizeof(src), "name(\"%s\")", cases[c].pattern);
+        md_bitset_t sel = {0};
+        ASSERT_TRUE(eval_selection(&sel, str_from_cstr(src), &test_mol, arena));
+        for (size_t i = 0; i < test_mol.atom.count; ++i) {
+            const str_t n = md_atom_name(&test_mol.atom, i);
+            bool expected = false;
+            switch (cases[c].kind) {
+            case 0: expected = str_find_char(NULL, n, cases[c].a); break;
+            case 1: expected = n.len && n.ptr[n.len - 1] == cases[c].a; break;
+            case 2: expected = n.len && n.ptr[0] == cases[c].a; break;
+            case 3: expected = n.len >= 2 && n.ptr[0] == cases[c].a && n.ptr[n.len - 1] == cases[c].b; break;
+            case 4: expected = n.len > 0; break;
+            }
+            char msg[96];
+            snprintf(msg, sizeof(msg), "%s, atom %zu '" STR_FMT "'", cases[c].pattern, i, STR_ARG(n));
+            EXPECT_TRUE_MSG(expected == md_bitset_test(sel, (uint32_t)i), msg);
+        }
+    }
+    md_vm_arena_destroy(arena);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Regressions
 // ---------------------------------------------------------------------------------------------------------------
@@ -4451,6 +4722,23 @@ UTEST(script, completion_attribute_paths) {
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/t/obs/value"));
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "obs/value"));
 
+    // md_script_attr_path gives the form completion offers, and nothing for what attr() cannot read
+    EXPECT_TRUE(str_eq(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/obs/value"))), STR_LIT("obs/value")));
+    EXPECT_TRUE(str_eq(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/time"))), STR_LIT("time")));
+    EXPECT_TRUE(str_empty(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/static")))));
+    EXPECT_TRUE(str_empty(md_script_attr_path(t, NULL)));
+
+    // In full where the relative path names something outside the runs, which attr() would find first
+    ASSERT_NE(publish_f64(t, "run/t/obs/shadowed", series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), values), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(publish_f64(t, "obs/shadowed",       series_fmt(3, 1), MD_ATTRIBUTE_FLAG_NONE,     md_unit_none(), values), MD_ATTRIBUTE_INVALID);
+    {
+        const str_t path = md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/obs/shadowed")));
+        EXPECT_TRUE(str_eq(path, STR_LIT("run/t/obs/shadowed")));
+        snprintf(src, sizeof(src), "x = attr(\"" STR_FMT "\");", STR_ARG(path));
+        EXPECT_TRUE(compiles(ir, src, &sys));
+        EXPECT_FALSE(compiles(ir, "x = attr(\"obs/shadowed\");", &sys));
+    }
+
     // A second run with the same path makes the short form ambiguous: both are offered in full, and still compile
     ASSERT_NE(publish_f64(t, "run/u/time",      series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, run_time->unit, frame_times), MD_ATTRIBUTE_INVALID);
     ASSERT_NE(publish_f64(t, "run/u/obs/value", series_fmt(F, 1), MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), values), MD_ATTRIBUTE_INVALID);
@@ -4458,6 +4746,8 @@ UTEST(script, completion_attribute_paths) {
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "obs/value"));
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/t/obs/value"));
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "run/u/obs/value"));
+    EXPECT_TRUE(str_eq(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/t/obs/value"))), STR_LIT("run/t/obs/value")));
+    EXPECT_TRUE(str_eq(md_script_attr_path(t, md_attributes_find(t, STR_LIT("run/u/obs/value"))), STR_LIT("run/u/obs/value")));
     for (size_t i = 0; i < c.count; ++i) {
         snprintf(src, sizeof(src), "x = attr(\"" STR_FMT "\");", STR_ARG(c.items[i].text));
         snprintf(msg, sizeof(msg), "offered '%.*s'", STR_ARG(c.items[i].label));

@@ -191,24 +191,16 @@ static int completion_cmp_str(const void* a, const void* b) {
     return str_cmp_lex(*(const str_t*)a, *(const str_t*)b);
 }
 
-// The paths of the attributes that attr() can read, in the form it resolves them (see static_check_attribute):
-// relative to their run where that names exactly one attribute, in full otherwise. In full also when what has been
-// typed starts with 'run', which is how a full path starts.
+// The paths of the attributes that attr() can read, in the form md_script_attr_path gives them: relative to their run
+// where that names exactly one attribute, in full otherwise. In full also when what has been typed starts with 'run',
+// which is how a full path starts.
 static void completion_attr_paths(md_array(str_t)* values, md_hashmap32_t* seen, const md_attributes_t* attributes, str_t typed, md_allocator_i* alloc) {
     const bool full_form = str_begins_with(typed, STR_LIT("run"));
 
     for (md_attribute_iter_t it = md_attributes_iter(attributes, STR_LIT("run")); md_attributes_next(&it);) {
-        const md_attribute_t* attr = it.attr;
-        attr_read_info_t info;
-        if (attr_readable(attributes, attr, &info) != ATTR_READABLE) continue;
-
-        const str_t relative = str_substr(attr->path, info.run.len + 1, SIZE_MAX);
-        bool unique = !full_form && !md_attributes_find(attributes, relative);  // A full path is looked for first
-        for (md_attribute_iter_t run = md_attributes_iter_children(attributes, STR_LIT("run")); unique && md_attributes_next(&run);) {
-            const md_attribute_t* other = md_attributes_find_in(attributes, run.child_path, relative);
-            if (other && other != attr) unique = false;
-        }
-        completion_add_value(values, seen, unique ? relative : attr->path, alloc);
+        const str_t path = md_script_attr_path(attributes, it.attr);
+        if (str_empty(path)) continue;
+        completion_add_value(values, seen, full_form ? it.attr->path : path, alloc);
     }
 }
 
