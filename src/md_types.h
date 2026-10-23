@@ -2,6 +2,7 @@
 
 #include <core/md_str.h>
 #include <core/md_array.h>
+#include <core/md_intrinsics.h>
 
 #include <stdint.h>
 
@@ -636,19 +637,24 @@ typedef struct md_nucleic_acid_atoms_t {
     md_atom_idx_t o4;
 } md_nucleic_acid_atoms_t;
 
-// Miniature string buffer with explicit length
-// It can store up to 6 characters + null terminator which makes it compatible as a C-string
-// This is to store the atom symbol and other short strings common in molecular data
-// The motiviation is that it saves an indirection
+// A short name or identifier kept in place rather than behind a pointer: an atom or residue name, a chain id. Up to 8
+// characters, the bytes after them zero. With all 8 used there is no terminator, so a label is read by its length
+// (md_label_len, md_label_str) and never as a C string. Its length is where its first zero byte is, found in one 64-bit
+// word, and two labels are equal when their bytes are: a label is a 64-bit key (md_label_key).
 typedef struct md_label_t {
-    char    buf[7];
-    uint8_t len;
-
+    char buf[8];
 #ifdef __cplusplus
-    constexpr operator str_t() { return {buf, len}; }
-    constexpr operator const char*() { return buf; }
+    inline operator str_t() const;
 #endif
 } md_label_t;
+
+// The same for the longer names of a force field's types ('opls_135', 'CG2R61', 'SQ4p'): up to 16 characters
+typedef struct md_label16_t {
+    char buf[16];
+#ifdef __cplusplus
+    inline operator str_t() const;
+#endif
+} md_label16_t;
 
 // Container structure for ranges of indices.
 // It stores a set of indices for every stored entity. (Think of it as an Array of Arrays of integers)
@@ -734,34 +740,77 @@ md_monomer_t md_monomer_from_comp_name(str_t comp_name, md_component_kind_t kind
 #endif
 
 // macro concatenate trick to assert that the input is a valid compile time C-string
-#define MAKE_LABEL(cstr) {cstr"", sizeof(cstr)-1}
+#define MAKE_LABEL(cstr) {cstr""}
 
-#ifdef __cplusplus
-#define LBL_TO_STR(lbl) {lbl.buf, lbl.len}
-inline bool operator==(const md_label_t& a, const md_label_t& b) {
-    return MEMCMP(&a, &b, sizeof(md_label_t)) == 0;
+// The index of the first zero byte of a little endian word, 8 when it has none. The borrow of a subtraction only runs
+// upwards from a zero byte, so the lowest flagged byte is the first zero byte.
+static inline size_t md_word_zero_byte(uint64_t v) {
+    const uint64_t z = (v - 0x0101010101010101ull) & ~v & 0x8080808080808080ull;
+    return z ? (size_t)(ctz64(z) >> 3) : 8;
 }
-inline bool operator!=(const md_label_t& a, const md_label_t& b) {
-    return MEMCMP(&a, &b, sizeof(md_label_t)) != 0;
+
+static inline uint64_t md_label_key(md_label_t lbl) {
+    uint64_t v;
+    MEMCPY(&v, lbl.buf, sizeof(v));
+    return v;
 }
-#else
-#define LBL_TO_STR(lbl) (str_t){lbl.buf, lbl.len}
-#endif // __cplusplus
+
+static inline size_t md_label_len(const md_label_t* lbl) {
+    return md_word_zero_byte(md_label_key(*lbl));
+}
+
+static inline size_t md_label16_len(const md_label16_t* lbl) {
+    uint64_t v[2];
+    MEMCPY(v, lbl->buf, sizeof(v));
+    const size_t n = md_word_zero_byte(v[0]);
+    return n < 8 ? n : 8 + md_word_zero_byte(v[1]);
+}
+
+// A view of the label: valid while the label is where it is
+static inline str_t md_label_str(const md_label_t* lbl) {
+    str_t s = {lbl->buf, md_label_len(lbl)};
+    return s;
+}
+
+static inline str_t md_label16_str(const md_label16_t* lbl) {
+    str_t s = {lbl->buf, md_label16_len(lbl)};
+    return s;
+}
+
+#define LBL_TO_STR(lbl) md_label_str(&(lbl))
+
+static inline bool md_label_eq(md_label_t a, md_label_t b) {
+    return md_label_key(a) == md_label_key(b);
+}
 
 static inline bool label_empty(md_label_t lbl) {
-    uint64_t ref = 0;
-    return MEMCMP(&lbl, &ref, sizeof(md_label_t)) == 0;
+    return md_label_key(lbl) == 0;
 }
 
+// The first 8 characters of str
 static inline md_label_t make_label(str_t str) {
     md_label_t lbl = {0};
     if (str.ptr) {
-        const size_t len = MIN(str.len, sizeof(lbl.buf) - 1);
-        MEMCPY(lbl.buf, str.ptr, len);
-        lbl.len = (uint8_t)len;
+        MEMCPY(lbl.buf, str.ptr, MIN(str.len, sizeof(lbl.buf)));
     }
     return lbl;
 }
+
+// The first 16 characters of str
+static inline md_label16_t make_label16(str_t str) {
+    md_label16_t lbl = {0};
+    if (str.ptr) {
+        MEMCPY(lbl.buf, str.ptr, MIN(str.len, sizeof(lbl.buf)));
+    }
+    return lbl;
+}
+
+#ifdef __cplusplus
+inline md_label_t::operator str_t() const { return md_label_str(this); }
+inline md_label16_t::operator str_t() const { return md_label16_str(this); }
+inline bool operator==(const md_label_t& a, const md_label_t& b) { return md_label_eq(a, b); }
+inline bool operator!=(const md_label_t& a, const md_label_t& b) { return !md_label_eq(a, b); }
+#endif
 
 // Access to substructure data
 static inline void md_index_data_free (md_index_data_t* data) {

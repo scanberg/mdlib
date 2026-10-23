@@ -602,6 +602,8 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
     const size_t num_atoms = end_coord_index - beg_coord_index;
     const size_t reserve_size = ALIGN_TO(num_atoms, 16);
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_hashmap32_t type_map = { .allocator = md_temp_allocator(temp) };
 
     md_array_ensure(state->xyz, reserve_size, state->alloc);
     md_array_ensure(sys->atom.type_idx, reserve_size, sys->alloc);
@@ -619,10 +621,7 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         while (symbol_len < sizeof(data->coordinates[i].element_symbol) && symbol_buf[symbol_len]) ++symbol_len;
         str_t atom_symbol = {symbol_buf, symbol_len};
         md_atomic_number_t atomic_number = (md_atomic_number_t)data->coordinates[i].atomic_number;
-        float mass = md_atomic_number_mass(atomic_number);
-        float radius = md_atomic_number_vdw_radius(atomic_number);
-        uint32_t color = md_atomic_number_cpk_color(atomic_number);
-        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, color, 0, sys->alloc);
+        md_atom_type_idx_t atom_type_idx = md_util_atom_type_find_or_add(sys, &type_map, atom_symbol, atomic_number);
 
         sys->atom.count += 1;
         md_array_push(state->xyz, vec3_set(x, y, z), state->alloc);
@@ -635,6 +634,7 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     ASSERT(md_array_size(state->xyz) == sys->atom.count);
     state->num_atoms = sys->atom.count;
 
+    md_temp_end(temp);
     return true;
 }
 

@@ -50,10 +50,6 @@ static uint64_t* bits_create(size_t num_bits, md_allocator_i* alloc) {
     return bits;
 }
 
-static inline bool label_eq(md_label_t a, md_label_t b) {
-    return a.len == b.len && MEMCMP(a.buf, b.buf, a.len) == 0;
-}
-
 static int cmp_u64(const void* a, const void* b) {
     const uint64_t x = *(const uint64_t*)a;
     const uint64_t y = *(const uint64_t*)b;
@@ -854,8 +850,7 @@ static void sym_key_atom(md_array(uint8_t)* key, const pos_atom_t* a, md_allocat
     b[8] = a->h_stated;
     b[9] = (uint8_t)a->charge;
     MEMCPY(b + 10, &a->degree, 2);
-    MEMCPY(b + 12, a->name.buf, 7);
-    b[19] = a->name.len;
+    MEMCPY(b + 12, a->name.buf, 8);
     md_array_push_array(*key, b, 20, arena);
 }
 
@@ -1584,7 +1579,7 @@ static inline bool atom_props_ok(const search_t* s, const pos_atom_t* pa, int32_
     const md_atomic_number_t z = target_z(s->tg, t);
     if (pa->is_h != (z == MD_Z_H)) return false;
     if ((pa->flags & MD_MATCH_ATOM_ELEMENT) && pa->z != z) return false;
-    if ((pa->flags & MD_MATCH_ATOM_NAME) && !label_eq(pa->name, target_name(s->tg, t))) return false;
+    if ((pa->flags & MD_MATCH_ATOM_NAME) && !md_label_eq(pa->name, target_name(s->tg, t))) return false;
     if ((pa->flags & (MD_MATCH_ATOM_AROMATIC | MD_MATCH_ATOM_ALIPHATIC)) && s->bond_orders != MD_MATCH_RESOLVE_NEVER) {
         const int aromatic = target_aromatic(s->tg, t);
         if (pa->flags & MD_MATCH_ATOM_AROMATIC) {

@@ -17,9 +17,9 @@ typedef struct md_atom_type_data_t {
     md_label_t*     name;
     // The force field's own name for the type ('opls_135', 'CT', or a Martini bead type such as
     // 'Q5'), when the source has one; empty otherwise. It is what separates two types with the same
-    // name that are different particles - a Martini SC1 is a different bead in every residue - and
-    // it is too long for a label, so these are owned strings.
-    str_t*          ff_type;
+    // name that are different particles - a Martini SC1 is a different bead in every residue. Up to 16
+    // characters (md_label16_t), which every naming scheme of a force field fits.
+    md_label16_t*   ff_type;
     md_atomic_number_t* z;
     float*          mass;
     float*          radius;
@@ -579,15 +579,14 @@ static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
 
 static inline md_atom_type_idx_t md_atom_type_find(const md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z) {
     ASSERT(atom_type);
-	md_atom_type_idx_t type_idx = 0; // Zero is sentinel for "not found"
-    for (size_t i = 0; i < atom_type->count; ++i) {
-        str_t atom_type_name = LBL_TO_STR(atom_type->name[i]);
-        if (str_eq(atom_type_name, name) && atom_type->z[i] == z) {
-            type_idx = (md_atom_type_idx_t)i;
-            break;
+    // The name as a type keeps it, its first 8 characters, compared as one word
+    const uint64_t key = md_label_key(make_label(name));
+    for (size_t i = 1; i < atom_type->count; ++i) {
+        if (md_label_key(atom_type->name[i]) == key && atom_type->z[i] == z) {
+            return (md_atom_type_idx_t)i;
         }
     }
-    return type_idx;
+    return 0; // Zero is sentinel for "not found"
 }
 
 // Adds a type unconditionally, for a loader that decides itself which particles share a type.
@@ -597,11 +596,7 @@ static inline md_atom_type_idx_t md_atom_type_add(md_atom_type_data_t* atom_type
     ASSERT(alloc);
 
     md_array_push(atom_type->name, make_label(name), alloc);
-    str_t ff_copy = {0};
-    if (!str_empty(ff_type)) {
-        ff_copy = str_copy(ff_type, alloc);
-    }
-    md_array_push(atom_type->ff_type, ff_copy, alloc);
+    md_array_push(atom_type->ff_type, make_label16(ff_type), alloc);
     md_array_push(atom_type->z, z, alloc);
     md_array_push(atom_type->mass, mass, alloc);
     md_array_push(atom_type->radius, radius, alloc);
@@ -682,7 +677,7 @@ static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size
 static inline str_t md_atom_type_ff_type(const md_atom_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
     if (type_data->ff_type && type_idx < type_data->count) {
-        return type_data->ff_type[type_idx];
+        return md_label16_str(&type_data->ff_type[type_idx]);
     }
     return STR_LIT("");
 }

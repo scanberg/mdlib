@@ -5220,6 +5220,19 @@ bool md_util_system_infer_chains(md_system_t* sys) {
     return true;
 }
 
+md_atom_type_idx_t md_util_atom_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, str_t name, md_atomic_number_t z) {
+    ASSERT(sys && map);
+    // The name as the type keeps it, its first 8 characters
+    const uint64_t kv[2] = { md_label_key(make_label(name)), (uint64_t)z };
+    const uint64_t key = md_hash64(kv, sizeof(kv), 0);
+    const uint32_t* found = md_hashmap_get(map, key);
+    if (found) return (md_atom_type_idx_t)*found;
+    const md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, name, z, md_atomic_number_mass(z), md_atomic_number_vdw_radius(z),
+        md_atomic_number_cpk_color(z), 0, sys->alloc);
+    md_hashmap_add(map, key, (uint32_t)type);
+    return type;
+}
+
 static inline bool component_kind_is_monomer(md_component_kind_t kind) {
     return kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
 }
@@ -5537,7 +5550,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
         if (entity_idx == -1) {
             entity_idx = (md_entity_idx_t)sys->entity.count;
             md_label_t entity_id = {0};
-            entity_id.len = (uint8_t)md_snprintf(entity_id.buf, sizeof(entity_id.buf), "%i", entity_idx + 1);
+            md_snprintf(entity_id.buf, sizeof(entity_id.buf), "%i", entity_idx + 1);
 
             // That the entity was inferred is carried by its flags, the description only says what it is: the kind of
             // a polymer, the component names of anything else

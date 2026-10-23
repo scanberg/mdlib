@@ -896,7 +896,7 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 			md_hashmap_add(&entity_map, key, (uint32_t)entity_idx);
 
 			md_label_t id = {0};
-			id.len = (uint8_t)md_snprintf(id.buf, sizeof(id.buf), "%i", entity_idx + 1);
+			md_snprintf(id.buf, sizeof(id.buf), "%i", entity_idx + 1);
 			char buf[64];
 			str_t desc = lammps_formula(buf, sizeof(buf), sys, range);
 			if (str_empty(desc)) {

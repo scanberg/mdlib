@@ -49,10 +49,6 @@ void md_system_assemblies_free(md_system_t* sys) {
     MEMSET(a, 0, sizeof(md_assembly_data_t));
 }
 
-static inline bool label_equal(md_label_t a, md_label_t b) {
-    return a.len == b.len && MEMCMP(a.buf, b.buf, a.len) == 0;
-}
-
 static int compare_u64(const void* a, const void* b) {
     const uint64_t x = *(const uint64_t*)a;
     const uint64_t y = *(const uint64_t*)b;
@@ -138,7 +134,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         md_array(uint64_t) pairs = 0;
         md_array(uint32_t) opers = 0;
         for (size_t g = g0; g < gen_count; ++g) {
-            if (row_done[g] || !label_equal(gen[g].assembly_id, asm_id)) continue;
+            if (row_done[g] || !md_label_eq(gen[g].assembly_id, asm_id)) continue;
             row_done[g] = true;
             for (size_t k = 0; k < gen[g].oper_count; ++k) {
                 const uint32_t o = gen[g].oper[k];
@@ -362,9 +358,6 @@ void md_system_free(md_system_t* sys) {
 
     // ATOM TYPE
     md_array_free(sys->atom.type.name, alloc);
-    for (size_t i = 0; i < md_array_size(sys->atom.type.ff_type); ++i) {
-        if (sys->atom.type.ff_type[i].ptr) str_free(sys->atom.type.ff_type[i], alloc);
-    }
     md_array_free(sys->atom.type.ff_type, alloc);
     md_array_free(sys->atom.type.z, alloc);
     md_array_free(sys->atom.type.mass, alloc);

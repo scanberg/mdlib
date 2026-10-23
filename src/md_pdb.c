@@ -514,6 +514,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
 	// Add default unknown atom type at index 0
     md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_hashmap32_t type_map = { .allocator = temp_arena };
 
 	uint64_t prev_comp_key = 0;
     size_t num_unassigned_atom_types = 0;
@@ -542,10 +543,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             // If the element is available, use that to lookup the element
             str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
             atomic_number = md_atomic_number_from_symbol(sym, true);
-            float mass   = md_atomic_number_mass(atomic_number);
-            float radius = md_atomic_number_vdw_radius(atomic_number);
-            uint32_t color = md_atomic_number_cpk_color(atomic_number);
-            atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, color, 0, sys->alloc);
+            atom_type_idx = md_util_atom_type_find_or_add(sys, &type_map, atom_id, atomic_number);
         } else {
             num_unassigned_atom_types += 1;
         }

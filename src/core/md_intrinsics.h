@@ -23,7 +23,7 @@ static inline uint32_t clz32(uint32_t x) {
 
 // count leading zeros 64-bit
 static inline uint64_t clz64(uint64_t x) {
-    return x ? __builtin_clzll(x) : 32;
+    return x ? __builtin_clzll(x) : 64;
 }
 
 static inline uint32_t bsr32(uint32_t x) {

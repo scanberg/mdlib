@@ -5,6 +5,7 @@
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 #include <core/md_bitset.h>
+#include <core/md_hash.h>
 
 struct md_allocator_i;
 struct md_bitset_t;
@@ -286,6 +287,11 @@ void md_util_system_infer_ring_flags(md_system_t* sys);
 // joined through the component hierarchy instead: each bead to its component's backbone (or first) bead, and those
 // anchors along consecutive polymer components. No coordinates are consulted and sys->bond is not modified.
 bool md_util_system_infer_structures(md_system_t* sys);
+
+// The type of an atom of the name and element, added when the system has none, with the mass, size and color of the
+// element. map, which the caller keeps for a load (zeroed, with an allocator), finds a type it has given before in one
+// lookup rather than a search of the types.
+md_atom_type_idx_t md_util_atom_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, str_t name, md_atomic_number_t z);
 
 // Identify atom types within the system from the atom labels and the names of their components. Coarse grained beads
 // come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any

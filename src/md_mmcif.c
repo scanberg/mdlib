@@ -1222,6 +1222,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         md_array_ensure(sys->atom.flags, reserve_size, alloc);
 
         md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);  // Ensure that index 0 is always unknown
+        md_hashmap32_t type_map = { .allocator = temp_arena };
 
         // Gathered alongside the coordinates rather than from atom_entries afterwards, because the
         // loop SKIPS alternate locations - so entry i and atom i are not the same index, and a
@@ -1259,10 +1260,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             uint64_t comp_key = md_hash64_str(comp_id, (uint64_t)seq_id ^ inst_key);
 
             md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
-            float mass = md_atomic_number_mass(atomic_number);
-            float radius = md_atomic_number_vdw_radius(atomic_number);
-            uint32_t color = md_atomic_number_cpk_color(atomic_number);
-            md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, color, 0, alloc);
+            md_atom_type_idx_t atom_type_idx = md_util_atom_type_find_or_add(sys, &type_map, atom_id, atomic_number);
 
             if (comp_key != prev_comp_key) {
                 // --- New residue boundary ---

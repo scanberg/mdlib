@@ -1560,6 +1560,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
 
     md_hashmap32_t type_map = { .allocator = md_temp_allocator(temp) };
+    bool names_cut = false;     // A name past the 8 characters of a label, or a type past the 16 of its label
     md_atom_type_idx_t** moltype_type = md_temp_alloc_array(temp, md_atom_type_idx_t*, data->num_moltypes + 1);
     for (size_t t = 0; t < data->num_moltypes; ++t) {
         const md_tpr_moltype_t* mt = &data->moltypes[t];
@@ -1602,10 +1603,14 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const md_atom_type_flags_t flags = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, kind);
 
             const md_atom_type_idx_t type = md_atom_type_add(&sys->atom.type, atom->name, atom->type, z, atom->mass, radius, color, flags, alloc);
+            names_cut |= atom->name.len > sizeof(md_label_t) || atom->type.len > sizeof(md_label16_t);
 
             md_hashmap_add(&type_map, key, (uint32_t)type);
             moltype_type[t][i] = type;
         }
+    }
+    if (names_cut) {
+        MD_LOG_INFO("TPR: atom names longer than 8 characters, or force field types longer than 16, are shown cut short; the types stay apart");
     }
 
     // ## Atoms, residues, and the molecules as instances of their molecule types (the entities). Which kind of
@@ -1624,7 +1629,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
         if (moltype_entity[mb->moltype] == -1) {
             md_label_t id = {0};
-            id.len = (uint8_t)md_snprintf(id.buf, sizeof(id.buf), "%i", (int)sys->entity.count + 1);
+            md_snprintf(id.buf, sizeof(id.buf), "%i", (int)sys->entity.count + 1);
             moltype_entity[mb->moltype] = (md_entity_idx_t)sys->entity.count;
             md_array_push(sys->entity.id, id, alloc);
             md_array_push(sys->entity.flags, MD_ENTITY_FLAG_TOPOLOGY, alloc);
