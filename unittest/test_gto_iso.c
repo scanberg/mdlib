@@ -2049,6 +2049,7 @@ static bool iso_gpu_init(iso_gpu_t* g) {
     g->dev = md_gpu_device_create(&dd);
     if (!g->dev) return false;
     g->s = md_gpu_stream_default(g->dev, MD_GPU_STREAM_COMPUTE);
+    md_gto_gpu_initialize(g->dev);     // the D form's matrices in tiles are md_gto's (md_gto_gpu_dmat)
     const md_gpu_kernel_desc_t d[ISO_K_COUNT] = {
         md_shader_gto_iso_iso_grid_kernel(),
         md_shader_gto_iso_iso_octree_level_kernel(),
@@ -2068,6 +2069,7 @@ static bool iso_gpu_init(iso_gpu_t* g) {
 }
 
 static void iso_gpu_free(iso_gpu_t* g) {
+    if (g->dev) md_gto_gpu_shutdown();
     if (g->dev) md_gpu_device_destroy(g->dev);
     memset(g, 0, sizeof(*g));
 }

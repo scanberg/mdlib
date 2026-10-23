@@ -430,6 +430,10 @@ bool md_gto_gpu_dmat_pattern_valid(md_gto_gpu_dmat_t dmat, const float* atom_xyz
 // uploaded, and the tiles built on the device in float (stream-ordered). Returns false when out of memory.
 bool md_gto_gpu_dmat_build(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* coeff, const double* weight, size_t num_mo);
 
+// The same from orbitals given as columns: coeff is [num_ao][ld], orbital k's coefficient of AO i at
+// coeff[i * ld + k] (an md_gto_iso field's functions), weight num_mo weights.
+bool md_gto_gpu_dmat_build_columns(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* coeff, size_t ld, const double* weight, size_t num_mo);
+
 // The kept tiles of a matrix on the host (num_ao x num_ao, row major; its symmetric part), gathered and
 // uploaded: for a density that is at hand as a matrix.
 bool md_gto_gpu_dmat_set_matrix(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* matrix);
@@ -443,6 +447,17 @@ typedef struct md_gto_gpu_dmat_info_t {
 } md_gto_gpu_dmat_info_t;
 
 void md_gto_gpu_dmat_info(md_gto_gpu_dmat_info_t* out, md_gto_gpu_dmat_t dmat);
+
+// Where a dmat is on the device, for the kernels of other modules that read it (as gto_dmat_common.slang's
+// gto_dmat_at does): AO i at tiled index tao[i]; the tile pair (I, J), I <= J, of 16 x 16 floats at
+// tiles + 256 * map[I * nt + J] (0xFFFFFFFF where it is not kept). The values are D, without normalizations.
+typedef struct md_gto_gpu_dmat_view_t {
+    uint32_t      num_ao, nt;
+    uint64_t      num_tiles;
+    md_gpu_addr_t tao, map, tiles;
+} md_gto_gpu_dmat_view_t;
+
+void md_gto_gpu_dmat_view(md_gto_gpu_dmat_view_t* out, md_gto_gpu_dmat_t dmat);
 
 // Density evaluation algorithm.
 typedef enum md_gto_gpu_density_algo_t {

@@ -226,7 +226,11 @@ typedef struct md_gto_iso_gpu_set_t md_gto_iso_gpu_set_t;
 // functions, so they cost nothing beyond the extra sheets.
 // The fields must have been created from this basis and these atom positions, and must outlive the
 // set (each extraction derives the root box from their tails). Uploads on 'stream'. Returns NULL on
-// failure (too many fields, more than 1024 functions in all).
+// failure (too many fields, more than 1024 functions in all, and not all densities).
+// A set of densities keeps each as its matrix too (phi^T D phi: the octree's bound, and with more than 1024
+// functions in all the corners and vertices). With md_gto_gpu_initialize called on the device, the matrices
+// are in tiles of the AO pairs that meet (md_gto_gpu_dmat), built on the device from the densities'
+// functions, and the call waits for that; otherwise dense, num_ao^2 floats each, made on the host.
 md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                                                 const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc);
 void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set);
