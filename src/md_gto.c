@@ -382,6 +382,170 @@ size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const m
 }
 
 // ---------------------------------------------------------------------------------------------
+// Orbitals, spherical -> Cartesian, in blocks of orbitals
+// ---------------------------------------------------------------------------------------------
+// It is a transposition as much as a conversion (an AO major file has to become rows of orbitals), so
+// it is blocked on both sides. A block is GTO_S2C_NB orbitals; per block the shells are taken a tile
+// at a time, a tile being the shells that fit in GTO_S2C_CW Cartesian AOs. Per shell its spherical
+// coefficients of the block are read - a run of GTO_S2C_NB values each when the input is contiguous
+// along the orbitals - transformed into its Cartesian ones and put into the tile; the full tile then
+// goes out as one run per orbital, with non-temporal stores, since nothing reads the output soon. So
+// both sides move in runs of a KB or two rather than a value per row, and the output is not read for
+// ownership first. Every input value is read once and every output value written once. The threads
+// take blocks from a counter.
+//
+// The 9072 x 9072 coefficients of the protein test case (s, p and d shells), on a 2 core VM: about
+// 0.3 s. Writing each shell's values straight into the rows of 64 orbitals instead of through a tile
+// took twice that; the separate permutation and transposition this replaced took 2.0 s, and the
+// conversion after them 1.5 s.
+#define GTO_S2C_NB          256
+#define GTO_S2C_CW          128
+#define GTO_S2C_MAX_THREADS 64
+
+typedef struct gto_s2c_entries_t {
+    int     num;
+    uint8_t idx[GTO_MAX_FACTORS];
+    double  w  [GTO_MAX_FACTORS];
+} gto_s2c_entries_t;
+
+typedef struct gto_s2c_ctx_t {
+    double*                  out;
+    const double*            in;
+    size_t                   mo_stride, ao_stride;
+    const int*               perm;
+    size_t                   num_mo, n_cart;
+    const md_gto_shell_t*    shells;
+    uint32_t                 num_shells;
+    const uint32_t*          sph_off;
+    const uint32_t*          cart_off;  // [num_shells + 1]
+    const gto_s2c_entries_t* ent;       // [l][isph], GTO_MAX_SPH_PER_SHELL per l
+    volatile uint64_t        next;
+    volatile uint64_t        failed;
+} gto_s2c_ctx_t;
+
+// n values from src to dst, which is written and not read: non-temporal where it is 16 byte aligned
+static inline void gto_s2c_stream(double* dst, const double* src, size_t n) {
+    size_t i = 0;
+    for (; i < n && ((uintptr_t)(dst + i) & 15u); ++i) dst[i] = src[i];
+    for (; i + 2 <= n; i += 2) md_mm_stream_pd(dst + i, md_mm_loadu_pd(src + i));
+    for (; i < n; ++i) dst[i] = src[i];
+}
+
+static void gto_s2c_work(void* user) {
+    gto_s2c_ctx_t* c = (gto_s2c_ctx_t*)user;
+    const uint64_t num_blocks = (c->num_mo + GTO_S2C_NB - 1) / GTO_S2C_NB;
+    double* acc  = (double*)malloc(sizeof(double) * GTO_MAX_CART_PER_SHELL * GTO_S2C_NB);
+    double* x    = (double*)malloc(sizeof(double) * GTO_S2C_NB);
+    double* tile = (double*)malloc(sizeof(double) * GTO_S2C_NB * GTO_S2C_CW);
+    if (!acc || !x || !tile) {
+        md_atomic_fetch_add64(&c->failed, 1);
+    } else for (;;) {
+        const uint64_t b = md_atomic_fetch_add64(&c->next, 1);
+        if (b >= num_blocks) break;
+        const size_t m0 = (size_t)b * GTO_S2C_NB;
+        const size_t nb = MIN((size_t)GTO_S2C_NB, c->num_mo - m0);
+        for (uint32_t s0 = 0; s0 < c->num_shells; ) {
+            // the shells of this tile: at least one (no shell has more than GTO_S2C_CW Cartesian AOs)
+            const uint32_t c0 = c->cart_off[s0];
+            uint32_t s1 = s0 + 1;
+            while (s1 < c->num_shells && c->cart_off[s1 + 1] - c0 <= GTO_S2C_CW) ++s1;
+            for (uint32_t si = s0; si < s1; ++si) {
+                const uint32_t l    = c->shells[si].l;
+                const int      nsph = (int)md_gto_num_sph_ao(l);
+                const int      ncrt = (int)md_gto_num_cart_ao(l);
+                MEMSET(acc, 0, sizeof(double) * (size_t)ncrt * GTO_S2C_NB);
+                for (int s = 0; s < nsph; ++s) {
+                    const size_t  a   = (size_t)c->sph_off[si] + (size_t)s;
+                    const double* src = c->in + (size_t)(c->perm ? c->perm[a] : (int)a) * c->ao_stride + m0 * c->mo_stride;
+                    const double* xs  = src;
+                    if (c->mo_stride != 1) {
+                        for (size_t j = 0; j < nb; ++j) x[j] = src[j * c->mo_stride];
+                        xs = x;
+                    }
+                    const gto_s2c_entries_t* e = c->ent + l * GTO_MAX_SPH_PER_SHELL + (uint32_t)s;
+                    for (int t = 0; t < e->num; ++t) {
+                        const double w   = e->w[t];
+                        double*      row = acc + (size_t)e->idx[t] * GTO_S2C_NB;
+                        for (size_t j = 0; j < nb; ++j) row[j] += w * xs[j];
+                    }
+                }
+                double* tl = tile + (c->cart_off[si] - c0);
+                for (size_t j = 0; j < nb; ++j) {
+                    for (int q = 0; q < ncrt; ++q) tl[j * GTO_S2C_CW + (size_t)q] = acc[(size_t)q * GTO_S2C_NB + j];
+                }
+            }
+            const size_t cw = c->cart_off[s1] - c0;
+            for (size_t j = 0; j < nb; ++j) gto_s2c_stream(c->out + (m0 + j) * c->n_cart + c0, tile + j * GTO_S2C_CW, cw);
+            s0 = s1;
+        }
+    }
+    md_mm_sfence();
+    free(tile);
+    free(x);
+    free(acc);
+}
+
+size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_t mo_stride, size_t ao_stride, const int* ao_perm, size_t num_mo, const md_gto_basis_t* basis) {
+    if (!out_cart || !in_sph || !basis || num_mo == 0) return 0;
+    const size_t n_sph  = md_gto_basis_num_sph_ao(basis);
+    const size_t n_cart = md_gto_basis_num_ao(basis);
+    if (n_sph == 0 || n_cart == 0) return 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) {
+        if (basis->shells[si].l > MD_GTO_MAX_ANGULAR_MOMENTUM) return 0;
+    }
+
+    gto_s2c_entries_t ent[(MD_GTO_MAX_ANGULAR_MOMENTUM + 1) * GTO_MAX_SPH_PER_SHELL];
+    MEMSET(ent, 0, sizeof(ent));
+    for (int l = 0; l <= MD_GTO_MAX_ANGULAR_MOMENTUM; ++l) {
+        for (int s = 0; s < (int)md_gto_num_sph_ao((uint32_t)l); ++s) {
+            gto_s2c_entries_t* e = ent + l * GTO_MAX_SPH_PER_SHELL + s;
+            e->num = gto_sph_cart_entries(e->idx, e->w, l, s);
+        }
+    }
+
+    uint32_t* off = (uint32_t*)malloc(sizeof(uint32_t) * (2 * (size_t)basis->num_shells + 1));
+    if (!off) {
+        MD_LOG_ERROR("md_gto_sph_to_cart_orbitals: out of memory");
+        return 0;
+    }
+    uint32_t* sph_off  = off;
+    uint32_t* cart_off = off + basis->num_shells;
+    {
+        uint32_t so = 0, co = 0;
+        for (uint32_t si = 0; si < basis->num_shells; si++) {
+            sph_off[si]  = so;
+            cart_off[si] = co;
+            so += md_gto_num_sph_ao(basis->shells[si].l);
+            co += md_gto_num_cart_ao(basis->shells[si].l);
+        }
+        cart_off[basis->num_shells] = co;
+    }
+
+    gto_s2c_ctx_t ctx = {
+        .out = out_cart, .in = in_sph, .mo_stride = mo_stride, .ao_stride = ao_stride, .perm = ao_perm,
+        .num_mo = num_mo, .n_cart = n_cart, .shells = basis->shells, .num_shells = basis->num_shells,
+        .sph_off = sph_off, .cart_off = cart_off, .ent = ent,
+    };
+    // one thread per core, the calling thread one of them, for anything worth it
+    const uint64_t num_blocks = (num_mo + GTO_S2C_NB - 1) / GTO_S2C_NB;
+    int num_threads = 1;
+    md_os_sys_info_t info;
+    if ((double)num_mo * (double)n_cart > 4.0e6 && md_os_sys_info_query(&info)) {
+        num_threads = info.num_physical_cores > 0 ? info.num_physical_cores : info.num_virtual_cores;
+    }
+    num_threads = (int)CLAMP((uint64_t)num_threads, (uint64_t)1, MIN((uint64_t)GTO_S2C_MAX_THREADS, num_blocks));
+    md_thread_t* threads[GTO_S2C_MAX_THREADS] = {0};
+    for (int i = 1; i < num_threads; ++i) threads[i] = md_thread_create(gto_s2c_work, &ctx);
+    gto_s2c_work(&ctx);
+    for (int i = 1; i < num_threads; ++i) if (threads[i]) md_thread_join(threads[i]);
+    const bool ok = md_atomic_load64(&ctx.failed) == 0 || md_atomic_load64(&ctx.next) >= num_blocks;
+    if (!ok) MD_LOG_ERROR("md_gto_sph_to_cart_orbitals: out of memory");
+
+    free(off);
+    return ok ? num_mo : 0;
+}
+
+// ---------------------------------------------------------------------------------------------
 // The density matrix of weighted orbitals, D = C^T W C
 // ---------------------------------------------------------------------------------------------
 // D in tiles of GTO_DM_NB x GTO_DM_NB, the upper triangle of them computed and mirrored on writing,
