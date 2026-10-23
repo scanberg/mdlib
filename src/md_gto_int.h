@@ -281,9 +281,17 @@ typedef struct md_gto_int_gpu_potential_desc_t {
     // a large system on a slow GPU cannot trip a driver watchdog (2 s on Windows by default).
     // 0 = default, 2^31: a few milliseconds on a discrete GPU, well under a second on anything.
     uint64_t         work_per_dispatch;
+
+    // Optional, host memory, one byte per voxel of the grid (x fastest): nonzero where the potential
+    // is wanted. With a far field the grid is evaluated in bricks of 4x4x4 voxels, and only the
+    // bricks holding a wanted voxel are (all of their voxels); out_tex is left as it was elsewhere.
+    // Without a far field it is ignored and every voxel is evaluated. NULL: every voxel.
+    const uint8_t*   voxel_mask;
 } md_gto_int_gpu_potential_desc_t;
 
 // Issue a potential evaluation over the grid into `stream`. Asynchronous: no readbacks, no waits.
+// With a far field (md_gto_int_charges_desc_t::far_field_theta) the device walks the same tree with
+// the same criterion as the CPU path, for a group of 64 voxels at a time.
 // Returns false, logged, when nothing was issued - invalid input, a kernel that could not be made,
 // no memory for the accumulator - and out_tex is then left as it was: a caller about to read the
 // texture back must not take its contents for the potential.
@@ -309,7 +317,9 @@ typedef struct md_gto_int_gpu_potential_xyz_desc_t {
 
 // Issue the evaluation into `stream`. Asynchronous: no readbacks, no waits. Returns false, logged, when
 // nothing was issued (invalid input, a kernel that could not be made, no memory for the accumulator).
-// Precision and summation as md_gto_int_gpu_potential_launch.
+// Precision and summation as md_gto_int_gpu_potential_launch. With a far field, 64 consecutive points
+// share one walk of the tree, against their bounding sphere: points that are near one another in
+// the order they come in (a mesh's vertices are) make it cheap, scattered ones make it exact and slow.
 bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc);
 
 #endif
