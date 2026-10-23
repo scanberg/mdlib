@@ -175,6 +175,12 @@ static inline md_pdb_connect_t extract_connect(str_t line) {
     return c;
 }
 
+// The record of the cell: CRYST1, and CRYST with a blank where the 1 is, as some tools write it (the Conformational
+// Analysis Tools of CHARMM-GUI's trajectories, with all angles 0)
+static inline bool is_cryst1_record(str_t line) {
+    return str_eq_cstr_n(line, "CRYST", 5) && (line.len == 5 || line.ptr[5] == '1' || line.ptr[5] == ' ');
+}
+
 static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
     line = str_trim(line);
     md_pdb_cryst1_t c = {
@@ -188,6 +194,10 @@ static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
         .z = extract_int(line, 67, 70),
     };
     copy_str_field(c.space_group, ARRAY_SIZE(c.space_group), line, 56, 66);
+    // No angles at all is a rectangular box whose angles were left out, not a degenerate cell
+    if (c.alpha == 0 && c.beta == 0 && c.gamma == 0) {
+        c.alpha = c.beta = c.gamma = 90;
+    }
     return c;
 }
 
@@ -265,7 +275,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
                 model->end_atom_index = num_coords;
             }
         }
-        else if (str_eq_cstr_n(line, "CRYST1", 6)) {
+        else if (is_cryst1_record(line)) {
             md_pdb_cryst1_t cryst1 = extract_cryst1(line);
             md_array_push(data->cryst1, cryst1, alloc);
         }

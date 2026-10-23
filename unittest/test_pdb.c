@@ -195,6 +195,33 @@ static size_t count_bonds_of_origin(const md_system_t* sys, md_bond_origin_t ori
 
 // The CONECT records are bonds of origin MD_BOND_ORIGIN_FILE, each once though both its atoms list it. Inference adds the
 // bonds they leave out, never one of theirs again, and keeps them when it runs again. 1k4r lists its 18 disulfides.
+// The cell as some tools write it: CRYST with a blank for the 1 and all angles 0 (the Conformational Analysis Tools of
+// CHARMM-GUI). A rectangular box: the bonds of a residue which lies across its boundary are found through it.
+UTEST(pdb, cryst_record_without_its_1) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    static const char pdb[] =
+        "CRYST   246.108  246.108  398.534   0.00   0.00   0.00\n"
+        "ATOM      1  N   ALA A   1     245.000  10.000  10.000  0.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       0.300  10.300  10.000  0.00  0.00           C\n"
+        "ATOM      3  C   ALA A   1       1.500  11.200  10.000  0.00  0.00           C\n"
+        "ATOM      4  O   ALA A   1       1.500  12.400  10.000  0.00  0.00           O\n"
+        "ATOM      5  CB  ALA A   1       0.300   9.000  11.000  0.00  0.00           C\n"
+        "END\n";
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    EXPECT_NEAR(246.108, state.unitcell.x, 1e-3);
+    EXPECT_NEAR(246.108, state.unitcell.y, 1e-3);
+    EXPECT_NEAR(398.534, state.unitcell.z, 1e-3);
+    EXPECT_NEAR(0.0, state.unitcell.xy, 1e-9);
+    EXPECT_NEAR(0.0, state.unitcell.xz, 1e-9);
+    EXPECT_NEAR(0.0, state.unitcell.yz, 1e-9);
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    EXPECT_GE(md_bond_find(&sys.bond, 0, 1), 0);    // N-CA, across the boundary in x
+    EXPECT_EQ((int)MD_COMPONENT_KIND_AMINO_ACID, (int)md_component_kind(&sys.component, 0));
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(pdb, conect_bonds) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
