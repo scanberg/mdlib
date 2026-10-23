@@ -186,7 +186,6 @@ typedef struct vlx_2d_data_t {
 
 typedef struct vlx_orbital_t {
 	vlx_2d_data_t coefficients;
-    vlx_2d_data_t density;
 	vlx_1d_data_t energy;
 	vlx_1d_data_t occupancy;
 } vlx_orbital_t;
@@ -202,10 +201,10 @@ typedef struct vlx_scf_t {
 	vlx_orbital_t alpha;
 	vlx_orbital_t beta;
 
-	vlx_2d_data_t S;
-
-	// Where D_alpha and D_beta are in the file (dataset and dim set when found), so that the ground
-	// state densities are read from it on demand rather than computed from the orbitals.
+	// D_alpha, D_beta and S are not read when the file is loaded: nothing is made from them then. The
+	// densities are read from the file on demand (vlx_scf_density_provide), where these say they are;
+	// the overlap a consumer reads is integrated from the basis (md_qm_publish_overlap). Only their
+	// dimensions are checked against the basis set.
 	vlx_density_property_t density_src[2];
 
 	// Whether the file carried ground_state_dipole_moment. Not every version writes it, and a zero
@@ -1963,26 +1962,6 @@ done:
 }
 
 
-// Permute both rows and columns of a square AO×AO matrix (num_ao × num_ao, row-major).
-static void ao_permute_square(double* mat, size_t num_ao, const int* remap) {
-	md_temp_scope_t temp = md_temp_begin();
-	double* tmp = md_temp_alloc_array(temp, double, num_ao * num_ao);
-    if (!tmp) {
-        MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
-		goto done;
-    }
-	MEMCPY(tmp, mat, sizeof(double) * num_ao * num_ao);
-	for (size_t i = 0; i < num_ao; i++) {
-		size_t si = (size_t)remap[i];
-		for (size_t j = 0; j < num_ao; j++) {
-			size_t sj = (size_t)remap[j];
-			mat[i * num_ao + j] = tmp[si * num_ao + sj];
-		}
-	}
-done:
-	md_temp_end(temp);
-}
-
 // Permute columns of a [num_mo x num_ao] matrix according to remap.
 static void ao_permute_cols(double* mat, size_t num_mo, size_t num_ao, const int* remap) {
 	md_temp_scope_t temp = md_temp_begin();
@@ -1999,22 +1978,6 @@ static void ao_permute_cols(double* mat, size_t num_mo, size_t num_ao, const int
 	}
 done:
 	md_temp_end(temp);
-}
-
-// Permute a square AO matrix in place from VeloxChem's AO order into shell order. Absent is fine. A
-// matrix of any other dimension than the basis set's is not, and is reported rather than skipped:
-// left unpermuted it would be read in the wrong AO order with nothing downstream able to tell.
-static bool vlx_ao_permute_square_checked(vlx_2d_data_t* mat, size_t num_ao, const int* remap, const char* label) {
-	ASSERT(mat);
-	if (!mat->data) {
-		return true;
-	}
-	if (mat->size[0] != num_ao || mat->size[1] != num_ao) {
-		MD_LOG_ERROR("%s matrix is [%zu x %zu], but the basis set spans %zu atomic orbitals", label, mat->size[0], mat->size[1], num_ao);
-		return false;
-	}
-	ao_permute_square(mat->data, num_ao, remap);
-	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2058,35 +2021,6 @@ static bool vlx_cart_convert_coeff(vlx_2d_data_t* mat, const md_gto_basis_t* bas
 	return true;
 }
 
-// [n_sph][n_sph] -> [n_cart][n_cart], reallocated from 'arena'.
-static bool vlx_cart_convert_square(vlx_2d_data_t* mat, const md_gto_basis_t* basis,
-	size_t n_sph, size_t n_cart, md_allocator_i* arena, const char* label)
-{
-	if (!mat->data) return true;
-
-	if (mat->size[0] != n_sph || mat->size[1] != n_sph) {
-		MD_LOG_ERROR("%s: expected [%zu x %zu] spherical AO matrix, got [%zu x %zu]",
-			label, n_sph, n_sph, mat->size[0], mat->size[1]);
-		return false;
-	}
-
-	double* dst = (double*)md_alloc(arena, sizeof(double) * n_cart * n_cart);
-	if (!dst) {
-		MD_LOG_ERROR("%s: failed to allocate Cartesian matrix", label);
-		return false;
-	}
-
-	if (md_gto_sph_to_cart_matrix(dst, mat->data, basis) != n_cart) {
-		MD_LOG_ERROR("%s: spherical to Cartesian matrix conversion failed", label);
-		return false;
-	}
-
-	mat->data    = dst;
-	mat->size[0] = n_cart;
-	mat->size[1] = n_cart;
-	return true;
-}
-
 static bool vlx_convert_ao_data_to_cartesian(vlx_t* vlx) {
 	md_temp_scope_t temp = md_temp_begin();
 	md_allocator_i* temp_alloc = md_temp_allocator(temp);
@@ -2120,23 +2054,15 @@ static bool vlx_convert_ao_data_to_cartesian(vlx_t* vlx) {
 		 vlx->scf.beta.coefficients.data == vlx->scf.alpha.coefficients.data);
 
 	if (!vlx_cart_convert_coeff(&vlx->scf.alpha.coefficients, &basis, n_sph, n_cart, vlx->arena, "Alpha orbital coefficients")) goto done;
-	if (!vlx_cart_convert_square(&vlx->scf.alpha.density,     &basis, n_sph, n_cart, vlx->arena, "Alpha density")) goto done;
 
 	if (beta_aliases_alpha) {
 		MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(vlx_2d_data_t));
-		MEMCPY(&vlx->scf.beta.density,      &vlx->scf.alpha.density,      sizeof(vlx_2d_data_t));
 	} else {
 		if (!vlx_cart_convert_coeff(&vlx->scf.beta.coefficients, &basis, n_sph, n_cart, vlx->arena, "Beta orbital coefficients")) goto done;
-		if (!vlx_cart_convert_square(&vlx->scf.beta.density,     &basis, n_sph, n_cart, vlx->arena, "Beta density")) goto done;
 	}
 
-	// S is converted for DIMENSIONAL consistency only - validate_scf_canonical_layout compares it
-	// against the density, which is Cartesian by now - and the result is not published. The
-	// Cartesian overlap a consumer reads is integrated from the basis instead; see the note at the
-	// basis/overlap publish, and md_qm_publish_overlap for why T^T S T is not that matrix.
-	if (!vlx_cart_convert_square(&vlx->scf.S, &basis, n_sph, n_cart, vlx->arena, "SCF overlap")) goto done;
-
-	// Density properties are not converted here: they are not held at all, and their provider does
+	// The SCF densities and the overlap are not held (see vlx_scf_t), so there is nothing else to
+	// convert. Density properties are not converted here: they are not held at all, and their provider does
 	// the same permutation and conversion each time one is read from the file.
 
 
@@ -2206,16 +2132,6 @@ static bool validate_orbital_canonical_layout(const vlx_orbital_t* orb, size_t n
 		}
 	}
 
-	if (orb->density.data) {
-		if (!validate_square_matrix_dims(&orb->density, label)) {
-			return false;
-		}
-		if (orb->density.size[0] != num_ao) {
-			MD_LOG_ERROR("%s density matrix dimension mismatch, expected %zu, got %zu", label, num_ao, orb->density.size[0]);
-			return false;
-		}
-	}
-
 	return true;
 }
 
@@ -2256,42 +2172,19 @@ static bool normalize_orbital_coefficients(vlx_orbital_t* orb, size_t num_ao, co
 	return false;
 }
 
+// The orbitals in canonical [MO x AO] layout over the Cartesian AOs of the basis set
 static bool validate_scf_canonical_layout(const vlx_t* vlx) {
 	ASSERT(vlx);
-
-	if (vlx->scf.S.data) {
-		if (!validate_square_matrix_dims(&vlx->scf.S, "SCF overlap")) {
-			return false;
-		}
+	const size_t num_ao = vlx_basis_num_cart_ao(vlx);
+	if (num_ao == 0) {
+		return true;
 	}
-
-	if (vlx->scf.alpha.density.data) {
-		if (!validate_square_matrix_dims(&vlx->scf.alpha.density, "Alpha density")) {
-			return false;
-		}
-		if (!validate_orbital_canonical_layout(&vlx->scf.alpha, vlx->scf.alpha.density.size[0], "Alpha orbital")) {
-			return false;
-		}
-	}
-
-	if (vlx->scf.beta.density.data) {
-		if (!validate_square_matrix_dims(&vlx->scf.beta.density, "Beta density")) {
-			return false;
-		}
-		if (!validate_orbital_canonical_layout(&vlx->scf.beta, vlx->scf.beta.density.size[0], "Beta orbital")) {
-			return false;
-		}
-	}
-
-	if (vlx->scf.alpha.density.data && vlx->scf.S.data && vlx->scf.alpha.density.size[0] != vlx->scf.S.size[0]) {
-		MD_LOG_ERROR("SCF overlap/AO dimension mismatch, alpha density is %zu and overlap is %zu", vlx->scf.alpha.density.size[0], vlx->scf.S.size[0]);
+	if (!validate_orbital_canonical_layout(&vlx->scf.alpha, num_ao, "Alpha orbital")) {
 		return false;
 	}
-	if (vlx->scf.alpha.density.data && vlx->scf.beta.density.data && vlx->scf.alpha.density.size[0] != vlx->scf.beta.density.size[0]) {
-		MD_LOG_ERROR("SCF alpha/beta AO dimension mismatch, alpha density is %zu and beta density is %zu", vlx->scf.alpha.density.size[0], vlx->scf.beta.density.size[0]);
+	if (vlx->scf.beta.coefficients.data != vlx->scf.alpha.coefficients.data && !validate_orbital_canonical_layout(&vlx->scf.beta, num_ao, "Beta orbital")) {
 		return false;
 	}
-
 	return true;
 }
 
@@ -2377,9 +2270,6 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	md_array_resize(vlx->scf.alpha.occupancy.data, num_mo, vlx->arena);
 	vlx->scf.alpha.occupancy.size = num_mo;
 
-	md_array_resize(vlx->scf.alpha.density.data, den_dim[0] * den_dim[1], vlx->arena);
-    MEMCPY(vlx->scf.alpha.density.size, den_dim, sizeof(den_dim));
-
 	// Extract alpha data
 	if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, md_array_size(vlx->scf.alpha.coefficients.data), handle, H5T_NATIVE_DOUBLE, "C_alpha")) {
 		return false;
@@ -2390,9 +2280,6 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	if (!h5_read_dataset_data(vlx->scf.alpha.occupancy.data, md_array_size(vlx->scf.alpha.occupancy.data), handle, H5T_NATIVE_DOUBLE, "occ_alpha")) {
 		return false;
 	}
-    if (!h5_read_dataset_data(vlx->scf.alpha.density.data, md_array_size(vlx->scf.alpha.density.data), handle, H5T_NATIVE_DOUBLE, "D_alpha")) {
-        return false;
-    }
 	vlx_scf_density_locate(&vlx->scf.density_src[0], vlx, handle, "D_alpha", num_ao);
 
 	if (vlx->scf.type == VLX_SCF_UNRESTRICTED) {
@@ -2422,9 +2309,6 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		md_array_resize(vlx->scf.beta.occupancy.data, beta_num_mo, vlx->arena);
 		vlx->scf.beta.occupancy.size = beta_num_mo;
 
-		md_array_resize(vlx->scf.beta.density.data, beta_den_dim[0] * beta_den_dim[1], vlx->arena);
-			MEMCPY(vlx->scf.beta.density.size, beta_den_dim, sizeof(beta_den_dim));
-
 		// Extract beta data
 		if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, md_array_size(vlx->scf.beta.coefficients.data), handle, H5T_NATIVE_DOUBLE, "C_beta")) {
 			return false;
@@ -2435,9 +2319,6 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, md_array_size(vlx->scf.beta.occupancy.data), handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
 			return false;
 		}
-        if (!h5_read_dataset_data(vlx->scf.beta.density.data, md_array_size(vlx->scf.beta.density.data), handle, H5T_NATIVE_DOUBLE, "D_beta")) {
-            return false;
-        }
 		vlx_scf_density_locate(&vlx->scf.density_src[1], vlx, handle, "D_beta", num_ao);
 	} else {
 		// Shallow copy fields from Alpha
@@ -2451,12 +2332,14 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		}
 	}
 
-	// S matrix is overlap (notice dimension is the same as D)
-	md_array_resize(vlx->scf.S.data, den_dim[0] * den_dim[1], vlx->arena);
-    MEMCPY(vlx->scf.S.size, den_dim, sizeof(den_dim));
-
-	if (!h5_read_dataset_data(vlx->scf.S.data, md_array_size(vlx->scf.S.data), handle, H5T_NATIVE_DOUBLE, "S")) {
-		return false;
+	// The overlap is not read (see vlx_scf_t); where the file has one, it has to span the same AOs
+	if (h5_link_exists(handle, "S")) {
+		size_t s_dim[2] = {0};
+		h5_read_dataset_dims(s_dim, 2, handle, "S");
+		if (s_dim[0] != num_ao || s_dim[1] != num_ao) {
+			MD_LOG_ERROR("SCF overlap/AO dimension mismatch, the density is [%zu x %zu] and the overlap [%zu x %zu]", num_ao, num_ao, s_dim[0], s_dim[1]);
+			return false;
+		}
 	}
 
 	// The ground state dipole moment is not present in all versions
@@ -4711,24 +4594,14 @@ static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state)
 		if (!normalize_orbital_coefficients(&vlx->scf.alpha, num_ao, remap, "Alpha orbital")) {
 			goto done;
 		}
-		if (!vlx_ao_permute_square_checked(&vlx->scf.alpha.density, num_ao, remap, "Alpha density")) {
-			goto done;
-		}
 		if (vlx->scf.type == VLX_SCF_UNRESTRICTED) {
 			if (!normalize_orbital_coefficients(&vlx->scf.beta, num_ao, remap, "Beta orbital")) {
-				goto done;
-			}
-			if (!vlx_ao_permute_square_checked(&vlx->scf.beta.density, num_ao, remap, "Beta density")) {
 				goto done;
 			}
 		}
 		else {
 			// memcpy again from alpha into beta as dims may have changed.
 			MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(vlx_2d_data_t));
-			MEMCPY(&vlx->scf.beta.density, &vlx->scf.alpha.density, sizeof(vlx_2d_data_t));
-		}
-		if (!vlx_ao_permute_square_checked(&vlx->scf.S, num_ao, remap, "SCF overlap")) {
-			goto done;
 		}
 
 
