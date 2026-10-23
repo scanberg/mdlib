@@ -6,6 +6,7 @@
 #include <core/md_common.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
+#include <core/md_os.h>
 
 #include <math.h>
 #include <string.h>
@@ -1405,15 +1406,15 @@ static gto_int_pacer_t gto_int_pacer(md_gpu_stream_t stream, uint64_t budget) {
     return (gto_int_pacer_t){ .stream = stream, .limit = budget * GTO_INT_SUBMIT_DISPATCHES };
 }
 
-// A dispatch of about 'work' has been issued
-static void gto_int_pace(gto_int_pacer_t* p, uint64_t work) {
+// A dispatch of about 'work' has been issued. True when what is pending makes a submission: the
+// caller submits it.
+static bool gto_int_pace(gto_int_pacer_t* p, uint64_t work) {
     p->dispatches += 1;
     p->pending += work;
-    if (p->pending >= p->limit) {
-        md_gpu_stream_flush(p->stream);
-        p->pending = 0;
-        p->submissions += 1;
-    }
+    if (p->pending < p->limit) return false;
+    p->pending = 0;
+    p->submissions += 1;
+    return true;
 }
 
 /* Mirrors RootArgs in eval_gto_int_potential.slang. */
@@ -1882,20 +1883,244 @@ static void gto_int_index_to_world(md_gpu_float4x4* out, const md_grid_t* grid, 
 #define GTO_INT_FAR_MIN_DISPATCH  256u
 #define GTO_INT_FAR_MAX_DISPATCH  65535u
 
-static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, gto_int_potential_far_args_t* a,
-                                int pts, uint32_t num_groups, uint64_t budget, gto_int_pacer_t* pacer) {
-    md_gpu_kernel_t k_far = gto_int_far_kernel(pts, g->far_order);
-    md_gpu_kernel_t k_res = gto_int_far_resolve_kernel(pts);
-    md_gpu_kernel_t k_lst = gto_int_far_lists_kernel(pts);
-    if (!k_far || !k_res || !k_lst) {
+// A far field evaluation as a sequence of PIECES: dispatches up to a submission's worth of work
+// (gto_int_pace), each ended by a submission and a sync that marks its work done once it passes. A
+// launch issues every piece at once; a job keeps a few in flight and issues the next as the GPU
+// finishes one. Without a far field the whole evaluation is one piece, issued when the job begins.
+#define GTO_INT_JOB_IN_FLIGHT 4
+#define GTO_INT_JOB_MARKS     8
+STATIC_ASSERT(GTO_INT_JOB_MARKS >= GTO_INT_JOB_IN_FLIGHT, "a mark per piece in flight");
+
+// The points' sort (ORDER in eval_gto_int_potential_far.slang): each kernel loops over what it has
+// with a stride of the threads it was given
+#define GTO_INT_SORT_MAX_GROUPS 4096u
+
+enum { GTO_INT_JOB_SORT, GTO_INT_JOB_RUN, GTO_INT_JOB_ISSUED, GTO_INT_JOB_DONE, GTO_INT_JOB_FAILED };
+
+struct md_gto_int_gpu_job_t {
+    md_gpu_stream_t stream;
+    const md_gto_int_gpu_charges* g;
+    gto_int_potential_far_args_t a;
+    int      pts;            // points (1) or the grid (0)
+    int      stage;
+    uint32_t num_groups;
+    uint32_t batch;
+    uint32_t per_dispatch;
+    uint64_t per_group;      // a pass's work per group, from the distribution's estimate per point
+    // Where the issuing is: the batch at b0, its pass (-2 the lists, -1 the far nodes, 0.. the near
+    // gaussians of that order, max_order + 1 the resolve), and the first group of its next dispatch
+    uint32_t b0;
+    int      pass;
+    uint32_t g0;
+    // The sort's: 0 the bounds, 1 the keys, 2 the bitonic stages (k, j)
+    int      sort_step;
+    uint64_t sort_k, sort_j;
+    gto_int_pacer_t pacer;
+    uint64_t work_total, work_issued, work_done;
+    md_gpu_sync_t marks[GTO_INT_JOB_MARKS];
+    uint64_t mark_work[GTO_INT_JOB_MARKS];
+    uint32_t mark_head, mark_tail;
+    md_gpu_addr_t alloc[8];  // the job's device memory, freed in stream order when it ends
+    uint32_t num_alloc;
+    md_tick_t t0;
+};
+
+static md_gto_int_gpu_job_t* gto_int_job_create(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, int pts, uint64_t budget) {
+    md_gto_int_gpu_job_t* j = (md_gto_int_gpu_job_t*)calloc(1, sizeof(md_gto_int_gpu_job_t));
+    if (!j) {
+        MD_LOG_ERROR("md_gto_int: out of memory");
+        return NULL;
+    }
+    j->stream = stream;
+    j->g      = g;
+    j->pts    = pts;
+    j->stage  = GTO_INT_JOB_RUN;
+    j->pacer  = gto_int_pacer(stream, budget);
+    j->t0     = md_tick_now();
+    return j;
+}
+
+static md_gpu_addr_t gto_int_job_alloc(md_gto_int_gpu_job_t* j, size_t bytes) {
+    if (j->num_alloc == ARRAY_SIZE(j->alloc)) return 0;
+    const md_gpu_addr_t addr = md_gpu_malloc(j->stream, MD_GPU_MEM_DEVICE, bytes).gpu;
+    if (addr) j->alloc[j->num_alloc++] = addr;
+    return addr;
+}
+
+// The work issued so far is done once this submission has passed
+static void gto_int_job_mark(md_gto_int_gpu_job_t* j) {
+    const md_gpu_sync_t sync = md_gpu_stream_record(j->stream);
+    uint32_t i;
+    if (j->mark_tail - j->mark_head < GTO_INT_JOB_MARKS) {
+        i = j->mark_tail++ % GTO_INT_JOB_MARKS;
+    } else {
+        i = (j->mark_tail - 1) % GTO_INT_JOB_MARKS;   // a later mark covers the newest one's work too
+    }
+    j->marks[i] = sync;
+    j->mark_work[i] = j->work_issued;
+}
+
+static void gto_int_job_take_marks(md_gto_int_gpu_job_t* j) {
+    while (j->mark_head != j->mark_tail) {
+        const uint32_t i = j->mark_head % GTO_INT_JOB_MARKS;
+        if (!md_gpu_sync_is_complete(j->marks[i])) break;
+        j->work_done = j->mark_work[i];
+        j->mark_head++;
+    }
+}
+
+// One step of the sort: true unless a launch failed; *full when the piece should end
+static bool gto_int_job_sort_step(md_gto_int_gpu_job_t* j, bool* full) {
+    gto_int_potential_far_args_t* a = &j->a;
+    const uint32_t n = a->num_sorted;
+    bool ok = true;
+    uint32_t groups;
+    switch (j->sort_step) {
+    case 0: {
+        md_gpu_kernel_t k = gto_int_kernel(&gto_int_k_sort[0], md_shader_eval_gto_int_potential_far_xyz_bounds_kernel());
+        // min at the largest key, max at the smallest
+        ok = k && md_gpu_memset(j->stream, a->bounds, 0xFF, sizeof(uint32_t) * 3);
+        ok = ok && md_gpu_memset(j->stream, a->bounds + sizeof(uint32_t) * 3, 0x00, sizeof(uint32_t) * 3);
+        groups = MIN(DIV_UP(DIV_UP(a->num_xyz, GTO_INT_FAR_GROUP), GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+        a->sort_stride = groups * GTO_INT_FAR_GROUP;
+        ok = ok && md_gpu_launch(j->stream, k, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
+        j->sort_step = 1;
+        break;
+    }
+    case 1: {
+        md_gpu_kernel_t k = gto_int_kernel(&gto_int_k_sort[1], md_shader_eval_gto_int_potential_far_xyz_keys_kernel());
+        groups = MIN(DIV_UP(n, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+        a->sort_stride = groups * GTO_INT_FAR_GROUP;
+        ok = k && md_gpu_launch(j->stream, k, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
+        j->sort_step = 2;
+        j->sort_k = 2;
+        j->sort_j = 1;
+        break;
+    }
+    default: {
+        md_gpu_kernel_t k = gto_int_kernel(&gto_int_k_sort[2], md_shader_eval_gto_int_potential_far_xyz_bitonic_kernel());
+        groups = MIN(DIV_UP(n / 2, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+        a->sort_stride = groups * GTO_INT_FAR_GROUP;
+        a->sort_j = (uint32_t)j->sort_j;
+        a->sort_k = (uint32_t)j->sort_k;
+        ok = k && md_gpu_launch(j->stream, k, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
+        // a stage moves 16 bytes a place: counted as 64 steps
+        *full = gto_int_pace(&j->pacer, (uint64_t)n * 64);
+        j->sort_j >>= 1;
+        if (j->sort_j == 0) {
+            j->sort_k <<= 1;
+            j->sort_j = j->sort_k >> 1;
+            if (j->sort_k > n) j->stage = GTO_INT_JOB_RUN;
+        }
+        break;
+    }
+    }
+    return ok;
+}
+
+// One step of the evaluation, as the sort's
+static bool gto_int_job_run_step(md_gto_int_gpu_job_t* j, bool* full) {
+    const md_gto_int_gpu_charges* g = j->g;
+    gto_int_potential_far_args_t* a = &j->a;
+    md_gpu_stream_t stream = j->stream;
+    const uint32_t nb = MIN(j->batch, j->num_groups - j->b0);
+    bool ok = true;
+    if (j->pass == -2) {
+        // a batch begins: its accumulators cleared, its lists made
+        a->accum_first = j->b0;
+        a->group_first = j->b0;
+        a->group_end   = j->b0 + nb;
+        ok = md_gpu_memset(stream, a->accum, 0, sizeof(uint32_t) * 2 * GTO_INT_FAR_GROUP * (size_t)nb);
+        ok = ok && md_gpu_launch(stream, gto_int_far_lists_kernel(j->pts), md_gpu_grid(DIV_UP(nb, GTO_INT_FAR_GROUP), 1, 1), a, sizeof(*a));
+        *full = gto_int_pace(&j->pacer, 0);
+        j->pass = -1;
+        j->g0 = 0;
+        return ok;
+    }
+    if (j->pass <= (int)g->max_order) {
+        md_gpu_kernel_t k;
+        if (j->pass < 0) {
+            k = gto_int_far_kernel(j->pts, g->far_order);
+        } else {
+            const uint32_t L = (uint32_t)j->pass;
+            if (g->order_offset[L + 1] == g->order_offset[L]) {
+                j->pass++;
+                return true;
+            }
+            k = gto_int_near_kernel(j->pts, L);
+            // gaussian d of order L has its coefficients at coeff_first[L] + (d - order_offset[L]) nh.
+            // Not as one offset coeff_first[L] - order_offset[L] nh plus d nh: that is negative,
+            // and a pointer's index is signed (SPIR-V), so it only works where the compiler
+            // happens to add in 32 bits first - llvmpipe did not, on the protein.
+            a->coeff_first = g->coeff_first[L];
+            a->order_first = g->order_offset[L];
+        }
+        const uint32_t n = MIN(j->per_dispatch, nb - j->g0);
+        a->group_first = j->b0 + j->g0;
+        ok = md_gpu_launch(stream, k, md_gpu_grid(n, 1, 1), a, sizeof(*a));
+        j->work_issued += (uint64_t)n * j->per_group;
+        *full = gto_int_pace(&j->pacer, (uint64_t)n * j->per_group);   // the whole estimate each pass: generous
+        j->g0 += n;
+        if (j->g0 >= nb) {
+            j->pass++;
+            j->g0 = 0;
+        }
+        return ok;
+    }
+    // the resolve, and the next batch
+    const uint32_t n = MIN(GTO_INT_FAR_MAX_DISPATCH, nb - j->g0);
+    a->group_first = j->b0 + j->g0;
+    ok = md_gpu_launch(stream, gto_int_far_resolve_kernel(j->pts), md_gpu_grid(n, 1, 1), a, sizeof(*a));
+    *full = gto_int_pace(&j->pacer, 0);
+    j->g0 += n;
+    if (j->g0 >= nb) {
+        j->b0 += nb;
+        j->pass = -2;
+        j->g0 = 0;
+        if (j->b0 >= j->num_groups) j->stage = GTO_INT_JOB_ISSUED;
+    }
+    return ok;
+}
+
+// Issues one piece: steps until it is full or everything is issued, then submits and marks it
+static void gto_int_job_piece(md_gto_int_gpu_job_t* j) {
+    md_gpu_stream_t stream = j->stream;
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
+    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);   // every step reads what the one before wrote
+    bool ok = true, full = false;
+    while (ok && !full && (j->stage == GTO_INT_JOB_SORT || j->stage == GTO_INT_JOB_RUN)) {
+        ok = j->stage == GTO_INT_JOB_SORT ? gto_int_job_sort_step(j, &full) : gto_int_job_run_step(j, &full);
+    }
+    gto_int_job_mark(j);
+    md_gpu_stream_set_ordering(stream, prev_ordering);
+    if (!ok) {
+        MD_LOG_ERROR("md_gto_int: a far field launch failed: %s", md_gpu_last_error() ? md_gpu_last_error() : "(no reason given)");
+        j->stage = GTO_INT_JOB_FAILED;
+    }
+}
+
+static void gto_int_job_log(const md_gto_int_gpu_job_t* j, const char* what) {
+    if (j->num_groups == 0) return;
+    MD_LOG_DEBUG("md_gto_int: far field over %u groups of %u %s in %u batches: %u dispatches in %u submissions, %s in %.1f ms", j->num_groups,
+                 GTO_INT_FAR_GROUP, j->pts ? "points" : "voxels", DIV_UP(j->num_groups, MAX(j->batch, 1)), j->pacer.dispatches,
+                 j->pacer.submissions, what, md_tick_to_milliseconds(md_tick_now() - j->t0));
+}
+
+// The device memory and the state of a far field job over num_groups groups; the caller has set
+// what is particular to the grid or the points in j->a
+static bool gto_int_job_far_setup(md_gto_int_gpu_job_t* j, uint32_t num_groups, uint64_t budget) {
+    const md_gto_int_gpu_charges* g = j->g;
+    if (!gto_int_far_kernel(j->pts, g->far_order) || !gto_int_far_resolve_kernel(j->pts) || !gto_int_far_lists_kernel(j->pts)) {
         MD_LOG_ERROR("md_gto_int: far field kernels unavailable (md_gto_int_gpu_initialize not called?)");
         return false;
     }
+    uint32_t num_passes = 1;
     for (uint32_t L = 0; L <= g->max_order; ++L) {
-        if (g->order_offset[L + 1] > g->order_offset[L] && !gto_int_near_kernel(pts, L)) return false;
+        if (g->order_offset[L + 1] == g->order_offset[L]) continue;
+        if (!gto_int_near_kernel(j->pts, L)) return false;
+        num_passes += 1;
     }
-    if (num_groups == 0) return true;
-
+    gto_int_potential_far_args_t* a = &j->a;
     a->gaussians  = g->buffer + g->off_gaussians;
     a->coeffs     = g->buffer + g->off_coeffs;
     a->boys       = g->buffer + g->off_boys;
@@ -1908,120 +2133,70 @@ static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_cha
     a->num_ranges = g->num_ranges;
     a->far_nh     = md_gto_int_num_hermite(g->far_order);
 
-    // A pass's work per group, from the distribution's estimate per point; the far and the near
-    // passes each do a part of it, so this is generous for both
-    const uint64_t per_group = MAX(1, g->work_per_point) * GTO_INT_FAR_GROUP;
-    const uint32_t per_dispatch = (uint32_t)CLAMP(budget / per_group, GTO_INT_FAR_MIN_DISPATCH, GTO_INT_FAR_MAX_DISPATCH);
-
-    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
-    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
-    md_gpu_temp_t scope = md_gpu_temp_begin(stream);
-    const uint32_t batch = MIN(num_groups, GTO_INT_FAR_BATCH_GROUPS);
-    const size_t accum_bytes = sizeof(uint32_t) * 2 * GTO_INT_FAR_GROUP * batch;
-    const size_t list_bytes  = sizeof(uint32_t) * GTO_INT_FAR_LIST * batch;
-    a->accum  = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
-    a->lists  = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, list_bytes).gpu;
-    a->counts = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * batch).gpu;
-    bool ok = a->accum && a->lists && a->counts;
-    if (!ok) MD_LOG_ERROR("md_gto_int: failed to allocate %zu bytes of accumulators and lists", accum_bytes + list_bytes);
-
-    for (uint32_t b0 = 0; ok && b0 < num_groups; b0 += batch) {
-        const uint32_t nb = MIN(batch, num_groups - b0);
-        a->accum_first = b0;
-        md_gpu_memset(stream, a->accum, 0, sizeof(uint32_t) * 2 * GTO_INT_FAR_GROUP * (size_t)nb);
-        a->group_first = b0;
-        a->group_end   = b0 + nb;
-        ok = ok && md_gpu_launch(stream, k_lst, md_gpu_grid((nb + GTO_INT_FAR_GROUP - 1) / GTO_INT_FAR_GROUP, 1, 1), a, sizeof(*a));
-        gto_int_pace(pacer, 0);
-        for (int pass = -1; pass <= (int)g->max_order; ++pass) {
-            md_gpu_kernel_t k = k_far;
-            if (pass >= 0) {
-                const uint32_t L = (uint32_t)pass;
-                if (g->order_offset[L + 1] == g->order_offset[L]) continue;
-                k = gto_int_near_kernel(pts, L);
-                // gaussian d of order L has its coefficients at coeff_first[L] + (d - order_offset[L]) nh.
-                // Not as one offset coeff_first[L] - order_offset[L] nh plus d nh: that is negative,
-                // and a pointer's index is signed (SPIR-V), so it only works where the compiler
-                // happens to add in 32 bits first - llvmpipe did not, on the protein.
-                a->coeff_first = g->coeff_first[L];
-                a->order_first = g->order_offset[L];
-            }
-            for (uint32_t g0 = 0; g0 < nb; g0 += per_dispatch) {
-                const uint32_t n = MIN(per_dispatch, nb - g0);
-                a->group_first = b0 + g0;
-                ok = ok && md_gpu_launch(stream, k, md_gpu_grid(n, 1, 1), a, sizeof(*a));
-                gto_int_pace(pacer, (uint64_t)n * per_group);   // the whole estimate each pass: generous
-            }
-        }
-        for (uint32_t g0 = 0; g0 < nb; g0 += GTO_INT_FAR_MAX_DISPATCH) {
-            const uint32_t n = MIN(GTO_INT_FAR_MAX_DISPATCH, nb - g0);
-            a->group_first = b0 + g0;
-            ok = ok && md_gpu_launch(stream, k_res, md_gpu_grid(n, 1, 1), a, sizeof(*a));
-            gto_int_pace(pacer, 0);
-        }
+    j->num_groups   = num_groups;
+    j->per_group    = MAX(1, g->work_per_point) * GTO_INT_FAR_GROUP;
+    j->per_dispatch = (uint32_t)CLAMP(budget / j->per_group, GTO_INT_FAR_MIN_DISPATCH, GTO_INT_FAR_MAX_DISPATCH);
+    j->batch        = MAX(1, MIN(num_groups, GTO_INT_FAR_BATCH_GROUPS));
+    j->work_total   = (uint64_t)num_groups * j->per_group * num_passes;
+    j->pass         = -2;
+    if (num_groups == 0) {
+        j->stage = GTO_INT_JOB_ISSUED;
+        return true;
     }
-    md_gpu_stream_flush(stream);
-    pacer->submissions += 1;
-    MD_LOG_DEBUG("md_gto_int: far field over %u groups of %u %s in %u batches: %u dispatches in %u submissions", num_groups, GTO_INT_FAR_GROUP,
-                 pts ? "points" : "voxels", DIV_UP(num_groups, batch), pacer->dispatches, pacer->submissions);
-    md_gpu_temp_end(stream, scope);
-    md_gpu_stream_set_ordering(stream, prev_ordering);
-    return ok;
-}
-
-// The points in Morton order, into a->sorted (ORDER in eval_gto_int_potential_far.slang). Temp
-// memory: the caller's scope must last as long as the work that reads it.
-#define GTO_INT_SORT_MAX_GROUPS 4096u
-
-static bool gto_int_gpu_sort_points(md_gpu_stream_t stream, gto_int_potential_far_args_t* a, gto_int_pacer_t* pacer) {
-    md_gpu_kernel_t k_bounds  = gto_int_kernel(&gto_int_k_sort[0], md_shader_eval_gto_int_potential_far_xyz_bounds_kernel());
-    md_gpu_kernel_t k_keys    = gto_int_kernel(&gto_int_k_sort[1], md_shader_eval_gto_int_potential_far_xyz_keys_kernel());
-    md_gpu_kernel_t k_bitonic = gto_int_kernel(&gto_int_k_sort[2], md_shader_eval_gto_int_potential_far_xyz_bitonic_kernel());
-    if (!k_bounds || !k_keys || !k_bitonic) return false;
-    if (a->num_xyz > (1u << 30)) {
-        MD_LOG_ERROR("md_gto_int: %u points, more than the far field's sort takes (2^30)", a->num_xyz);
+    const size_t accum_bytes = sizeof(uint32_t) * 2 * GTO_INT_FAR_GROUP * j->batch;
+    const size_t list_bytes  = sizeof(uint32_t) * GTO_INT_FAR_LIST * j->batch;
+    a->accum  = gto_int_job_alloc(j, accum_bytes);
+    a->lists  = gto_int_job_alloc(j, list_bytes);
+    a->counts = gto_int_job_alloc(j, sizeof(uint32_t) * j->batch);
+    if (!a->accum || !a->lists || !a->counts) {
+        MD_LOG_ERROR("md_gto_int: failed to allocate %zu bytes of accumulators and lists", accum_bytes + list_bytes);
         return false;
     }
-    uint32_t n = 2;
-    while (n < a->num_xyz) n <<= 1;
-    a->num_sorted = n;
-    a->sorted = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 2 * (size_t)n).gpu;
-    a->bounds = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 8).gpu;
-    if (!a->sorted || !a->bounds) {
-        MD_LOG_ERROR("md_gto_int: failed to allocate %zu bytes to sort the points", sizeof(uint32_t) * 2 * (size_t)n);
-        return false;
-    }
-    // min at the largest key, max at the smallest
-    bool ok = md_gpu_memset(stream, a->bounds, 0xFF, sizeof(uint32_t) * 3);
-    ok = ok && md_gpu_memset(stream, a->bounds + sizeof(uint32_t) * 3, 0x00, sizeof(uint32_t) * 3);
-
-    // Each kernel loops over what it has with a stride of the threads it was given
-    uint32_t groups = MIN(DIV_UP(DIV_UP(a->num_xyz, GTO_INT_FAR_GROUP), GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
-    a->sort_stride = groups * GTO_INT_FAR_GROUP;
-    ok = ok && md_gpu_launch(stream, k_bounds, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
-
-    groups = MIN(DIV_UP(n, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
-    a->sort_stride = groups * GTO_INT_FAR_GROUP;
-    ok = ok && md_gpu_launch(stream, k_keys, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
-
-    groups = MIN(DIV_UP(n / 2, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
-    a->sort_stride = groups * GTO_INT_FAR_GROUP;
-    for (uint64_t k = 2; ok && k <= n; k <<= 1) {
-        for (uint64_t j = k >> 1; ok && j > 0; j >>= 1) {
-            a->sort_j = (uint32_t)j;
-            a->sort_k = (uint32_t)k;
-            ok = md_gpu_launch(stream, k_bitonic, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
-            gto_int_pace(pacer, 0);
+    if (j->pts) {
+        // the sort first
+        if (a->num_xyz > (1u << 30)) {
+            MD_LOG_ERROR("md_gto_int: %u points, more than the far field's sort takes (2^30)", a->num_xyz);
+            return false;
         }
+        uint32_t n = 2;
+        while (n < a->num_xyz) n <<= 1;
+        a->num_sorted = n;
+        a->sorted = gto_int_job_alloc(j, sizeof(uint32_t) * 2 * (size_t)n);
+        a->bounds = gto_int_job_alloc(j, sizeof(uint32_t) * 8);
+        if (!a->sorted || !a->bounds) {
+            MD_LOG_ERROR("md_gto_int: failed to allocate %zu bytes to sort the points", sizeof(uint32_t) * 2 * (size_t)n);
+            return false;
+        }
+        if (!gto_int_kernel(&gto_int_k_sort[0], md_shader_eval_gto_int_potential_far_xyz_bounds_kernel()) ||
+            !gto_int_kernel(&gto_int_k_sort[1], md_shader_eval_gto_int_potential_far_xyz_keys_kernel()) ||
+            !gto_int_kernel(&gto_int_k_sort[2], md_shader_eval_gto_int_potential_far_xyz_bitonic_kernel())) {
+            return false;
+        }
+        j->stage = GTO_INT_JOB_SORT;
     }
-    md_gpu_stream_flush(stream);
-    pacer->submissions += 1;
-    return ok;
+    return true;
 }
 
-static bool gto_int_gpu_far_grid(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, const md_gto_int_gpu_potential_desc_t* desc,
-                                 md_gpu_storage_tex_t out) {
+static void gto_int_job_destroy(md_gto_int_gpu_job_t* j) {
+    if (!j) return;
+    for (uint32_t i = 0; i < j->num_alloc; ++i) md_gpu_free(j->stream, j->alloc[i]);   // after what is in flight
+    free(j);
+}
+
+// A launch: every piece, now
+static bool gto_int_job_issue_all(md_gto_int_gpu_job_t* j) {
+    while (j->stage == GTO_INT_JOB_SORT || j->stage == GTO_INT_JOB_RUN) gto_int_job_piece(j);
+    if (j->stage != GTO_INT_JOB_FAILED) gto_int_job_log(j, "issued");
+    return j->stage != GTO_INT_JOB_FAILED;
+}
+
+// A job over the bricks of the grid that desc wants; NULL, logged, on failure
+static md_gto_int_gpu_job_t* gto_int_far_grid_job(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, const md_gto_int_gpu_potential_desc_t* desc,
+                                                  md_gpu_storage_tex_t out) {
     const md_grid_t* grid = desc->grid;
+    const uint64_t budget = desc->work_per_dispatch ? desc->work_per_dispatch : GTO_INT_DEFAULT_WORK;
+    md_gto_int_gpu_job_t* j = gto_int_job_create(stream, g, 0, budget);
+    if (!j) return NULL;
     gto_int_potential_far_args_t a = {0};
     gto_int_index_to_world(&a.index_to_world, grid, desc->sample_offset, g->ref);
     const uint32_t dx = (uint32_t)grid->dim[0], dy = (uint32_t)grid->dim[1], dz = (uint32_t)grid->dim[2];
@@ -2049,8 +2224,9 @@ static bool gto_int_gpu_far_grid(md_gpu_stream_t stream, const md_gto_int_gpu_ch
     uint8_t* want = desc->voxel_mask ? md_temp_alloc_zero(temp, num_bricks) : NULL;
     if (desc->voxel_mask && !want) {
         md_temp_end(temp);
+        gto_int_job_destroy(j);
         MD_LOG_ERROR("md_gto_int_gpu_potential_launch: out of memory");
-        return false;
+        return NULL;
     }
     uint32_t num_groups = (uint32_t)num_bricks;
     if (want) {
@@ -2062,50 +2238,180 @@ static bool gto_int_gpu_far_grid(md_gpu_stream_t stream, const md_gto_int_gpu_ch
         num_groups = 0;
         for (size_t i = 0; i < num_bricks; ++i) num_groups += want[i] != 0;
     }
-    md_gpu_mem_t list = {0};
     if (num_groups > 0) {
-        list = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * num_groups);
-        uint32_t* dst = list.gpu ? (uint32_t*)md_gpu_upload_begin(stream, list.gpu, sizeof(uint32_t) * num_groups) : NULL;
+        a.bricks = gto_int_job_alloc(j, sizeof(uint32_t) * num_groups);
+        uint32_t* dst = a.bricks ? (uint32_t*)md_gpu_upload_begin(stream, a.bricks, sizeof(uint32_t) * num_groups) : NULL;
         if (!dst) {
-            if (list.gpu) md_gpu_free(stream, list.gpu);
             md_temp_end(temp);
+            gto_int_job_destroy(j);
             MD_LOG_ERROR("md_gto_int_gpu_potential_launch: failed to upload the brick list");
-            return false;
+            return NULL;
         }
         uint32_t k = 0;
         for (size_t i = 0; i < num_bricks; ++i) if (!want || want[i]) dst[k++] = (uint32_t)i;
         md_gpu_upload_end(stream);
-        a.bricks = list.gpu;
     }
     md_temp_end(temp);
 
-    const uint64_t budget = desc->work_per_dispatch ? desc->work_per_dispatch : GTO_INT_DEFAULT_WORK;
-    gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
-    const bool ok = gto_int_gpu_far_run(stream, g, &a, 0, num_groups, budget, &pacer);
-    if (list.gpu) md_gpu_free(stream, list.gpu);
-    return ok;
+    j->a = a;
+    if (!gto_int_job_far_setup(j, num_groups, budget)) {
+        gto_int_job_destroy(j);
+        return NULL;
+    }
+    return j;
 }
 
-bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc) {
+// The points' far field job; NULL, logged, on failure
+static md_gto_int_gpu_job_t* gto_int_far_xyz_job(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, const md_gto_int_gpu_potential_xyz_desc_t* desc) {
+    const uint64_t budget = desc->work_per_dispatch ? desc->work_per_dispatch : GTO_INT_DEFAULT_WORK;
+    md_gto_int_gpu_job_t* j = gto_int_job_create(stream, g, 1, budget);
+    if (!j) return NULL;
+    for (int k = 0; k < 3; ++k) j->a.ref[k] = (float)g->ref[k];
+    j->a.num_xyz    = desc->num_xyz;
+    j->a.xyz_stride = (desc->xyz_stride ? desc->xyz_stride : 12u) / 4u;
+    j->a.xyz        = desc->xyz;
+    j->a.out        = desc->out_potential;
+    if (!gto_int_job_far_setup(j, DIV_UP(desc->num_xyz, GTO_INT_FAR_GROUP), budget)) {
+        gto_int_job_destroy(j);
+        return NULL;
+    }
+    return j;
+}
+
+static bool gto_int_grid_desc_check(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc, const char* who, md_gpu_storage_tex_t* out) {
     if (!stream || !desc || !desc->charges || !desc->out_tex || !desc->grid) {
-        MD_LOG_ERROR("md_gto_int_gpu_potential_launch: invalid input");
+        MD_LOG_ERROR("%s: invalid input", who);
         return false;
     }
-    const md_gto_int_gpu_charges* g = desc->charges;
     const md_grid_t* grid = desc->grid;
     if (grid->dim[0] <= 0 || grid->dim[1] <= 0 || grid->dim[2] <= 0) {
-        MD_LOG_ERROR("md_gto_int_gpu_potential_launch: empty grid");
+        MD_LOG_ERROR("%s: empty grid", who);
         return false;
     }
+    *out = md_gpu_texture_storage(desc->out_tex, 0);
+    if (!out->handle) {
+        MD_LOG_ERROR("%s: out_tex needs MD_GPU_TEX_STORAGE usage", who);
+        return false;
+    }
+    return true;
+}
 
-    const md_gpu_storage_tex_t out = md_gpu_texture_storage(desc->out_tex, 0);
-    if (!out.handle) {
-        MD_LOG_ERROR("md_gto_int_gpu_potential_launch: out_tex needs MD_GPU_TEX_STORAGE usage");
+static bool gto_int_xyz_desc_check(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc, const char* who) {
+    if (!stream || !desc || !desc->charges || (desc->num_xyz && (!desc->xyz || !desc->out_potential)) || (desc->xyz_stride & 3u)) {
+        MD_LOG_ERROR("%s: invalid input", who);
         return false;
     }
+    return true;
+}
+
+static bool gto_int_exact_grid(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, const md_gto_int_gpu_potential_desc_t* desc, md_gpu_storage_tex_t out);
+static bool gto_int_exact_xyz(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, const md_gto_int_gpu_potential_xyz_desc_t* desc);
+
+bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc) {
+    md_gpu_storage_tex_t out;
+    if (!gto_int_grid_desc_check(stream, desc, "md_gto_int_gpu_potential_launch", &out)) return false;
+    const md_gto_int_gpu_charges* g = desc->charges;
     if (g->num_nodes) {
-        return gto_int_gpu_far_grid(stream, g, desc, out);
+        md_gto_int_gpu_job_t* j = gto_int_far_grid_job(stream, g, desc, out);
+        if (!j) return false;
+        const bool ok = gto_int_job_issue_all(j);
+        gto_int_job_destroy(j);
+        return ok;
     }
+    return gto_int_exact_grid(stream, g, desc, out);
+}
+
+bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc) {
+    if (!gto_int_xyz_desc_check(stream, desc, "md_gto_int_gpu_potential_xyz_launch")) return false;
+    if (desc->num_xyz == 0) return true;
+    const md_gto_int_gpu_charges* g = desc->charges;
+    if (g->num_nodes) {
+        md_gto_int_gpu_job_t* j = gto_int_far_xyz_job(stream, g, desc);
+        if (!j) return false;
+        const bool ok = gto_int_job_issue_all(j);
+        gto_int_job_destroy(j);
+        return ok;
+    }
+    return gto_int_exact_xyz(stream, g, desc);
+}
+
+// ---------------------------------------------------------------------------
+// Jobs (md_gto_int.h)
+// ---------------------------------------------------------------------------
+// Without a far field: the exact evaluation, issued whole, and one mark
+static md_gto_int_gpu_job_t* gto_int_exact_job(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, bool ok_issued) {
+    if (!ok_issued) return NULL;
+    md_gto_int_gpu_job_t* j = gto_int_job_create(stream, g, 0, GTO_INT_DEFAULT_WORK);
+    if (!j) {
+        md_gpu_stream_sync(stream);   // nothing to follow it by: the work issued must not outlive its caller unseen
+        return NULL;
+    }
+    j->work_total = j->work_issued = 1;
+    gto_int_job_mark(j);
+    j->stage = GTO_INT_JOB_ISSUED;
+    return j;
+}
+
+md_gto_int_gpu_job_t* md_gto_int_gpu_potential_job_begin(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc) {
+    md_gpu_storage_tex_t out;
+    if (!gto_int_grid_desc_check(stream, desc, "md_gto_int_gpu_potential_job_begin", &out)) return NULL;
+    const md_gto_int_gpu_charges* g = desc->charges;
+    if (!g->num_nodes) return gto_int_exact_job(stream, g, gto_int_exact_grid(stream, g, desc, out));
+    md_gto_int_gpu_job_t* j = gto_int_far_grid_job(stream, g, desc, out);
+    if (j) md_gto_int_gpu_job_poll(j, 0.0);   // the GPU starts at once
+    return j;
+}
+
+md_gto_int_gpu_job_t* md_gto_int_gpu_potential_xyz_job_begin(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc) {
+    if (!gto_int_xyz_desc_check(stream, desc, "md_gto_int_gpu_potential_xyz_job_begin")) return NULL;
+    const md_gto_int_gpu_charges* g = desc->charges;
+    if (!g->num_nodes || desc->num_xyz == 0) return gto_int_exact_job(stream, g, gto_int_exact_xyz(stream, g, desc));
+    md_gto_int_gpu_job_t* j = gto_int_far_xyz_job(stream, g, desc);
+    if (j) md_gto_int_gpu_job_poll(j, 0.0);
+    return j;
+}
+
+md_gto_int_gpu_job_status_t md_gto_int_gpu_job_poll(md_gto_int_gpu_job_t* j, double budget_ms) {
+    if (!j) return MD_GTO_INT_GPU_JOB_FAILED;
+    const md_tick_t t0 = md_tick_now();
+    for (;;) {
+        gto_int_job_take_marks(j);
+        if (j->stage == GTO_INT_JOB_FAILED) return MD_GTO_INT_GPU_JOB_FAILED;
+        if (j->stage == GTO_INT_JOB_ISSUED && j->mark_head == j->mark_tail) {
+            j->stage = GTO_INT_JOB_DONE;
+            j->work_done = j->work_total;
+            gto_int_job_log(j, "done");
+        }
+        if (j->stage == GTO_INT_JOB_DONE) return MD_GTO_INT_GPU_JOB_DONE;
+        const bool more = j->stage == GTO_INT_JOB_SORT || j->stage == GTO_INT_JOB_RUN;
+        if (more && (budget_ms < 0.0 || j->mark_tail - j->mark_head < GTO_INT_JOB_IN_FLIGHT)) {
+            gto_int_job_piece(j);
+            continue;
+        }
+        if (budget_ms < 0.0) {
+            md_gpu_sync_wait(j->marks[j->mark_head % GTO_INT_JOB_MARKS]);
+            continue;
+        }
+        if (md_tick_to_seconds(md_tick_now() - t0) * 1.0e3 >= budget_ms) return MD_GTO_INT_GPU_JOB_RUNNING;
+    }
+}
+
+float md_gto_int_gpu_job_progress(const md_gto_int_gpu_job_t* j) {
+    if (!j) return 0.0f;
+    if (j->stage == GTO_INT_JOB_DONE) return 1.0f;
+    return j->work_total ? (float)((double)j->work_done / (double)j->work_total) : 0.0f;
+}
+
+bool md_gto_int_gpu_job_end(md_gto_int_gpu_job_t* j) {
+    if (!j) return false;
+    const bool done = j->stage == GTO_INT_JOB_DONE;
+    if (!done && j->stage != GTO_INT_JOB_FAILED) gto_int_job_log(j, "cancelled");
+    gto_int_job_destroy(j);
+    return done;
+}
+
+static bool gto_int_exact_grid(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, const md_gto_int_gpu_potential_desc_t* desc, md_gpu_storage_tex_t out) {
+    const md_grid_t* grid = desc->grid;
     md_gpu_kernel_t k_resolve = gto_int_kernel(&gto_int_k_resolve, md_shader_eval_gto_int_potential_resolve_kernel());
     if (!k_resolve) {
         MD_LOG_ERROR("md_gto_int_gpu_potential_launch: kernels unavailable (md_gto_int_gpu_initialize not called?)");
@@ -2166,7 +2472,7 @@ bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gp
                     a.count       = (uint32_t)MIN(per, (uint64_t)(end - first));
                     a.coeff_first = g->coeff_first[L] + (first - begin) * nh;
                     md_gpu_launch(stream, k, grid_groups, &a, sizeof(a));
-                    gto_int_pace(&pacer, nvox * a.count * gto_int_cost(L));
+                    if (gto_int_pace(&pacer, nvox * a.count * gto_int_cost(L))) md_gpu_stream_flush(stream);
                 }
             }
 
@@ -2179,33 +2485,8 @@ bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gp
     return a.accum != 0;
 }
 
-bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc) {
-    if (!stream || !desc || !desc->charges || (desc->num_xyz && (!desc->xyz || !desc->out_potential)) || (desc->xyz_stride & 3u)) {
-        MD_LOG_ERROR("md_gto_int_gpu_potential_xyz_launch: invalid input");
-        return false;
-    }
+static bool gto_int_exact_xyz(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, const md_gto_int_gpu_potential_xyz_desc_t* desc) {
     if (desc->num_xyz == 0) return true;
-    const md_gto_int_gpu_charges* g = desc->charges;
-
-    if (g->num_nodes) {
-        gto_int_potential_far_args_t a = {0};
-        for (int k = 0; k < 3; ++k) a.ref[k] = (float)g->ref[k];
-        a.num_xyz    = desc->num_xyz;
-        a.xyz_stride = (desc->xyz_stride ? desc->xyz_stride : 12u) / 4u;
-        a.xyz        = desc->xyz;
-        a.out        = desc->out_potential;
-        const uint64_t budget = desc->work_per_dispatch ? desc->work_per_dispatch : GTO_INT_DEFAULT_WORK;
-        const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
-        md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
-        md_gpu_temp_t scope = md_gpu_temp_begin(stream);
-        gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
-        const bool ok = gto_int_gpu_sort_points(stream, &a, &pacer) &&
-                        gto_int_gpu_far_run(stream, g, &a, 1, DIV_UP(desc->num_xyz, GTO_INT_FAR_GROUP), budget, &pacer);
-        md_gpu_temp_end(stream, scope);
-        md_gpu_stream_set_ordering(stream, prev_ordering);
-        return ok;
-    }
-
     md_gpu_kernel_t k_resolve = gto_int_kernel(&gto_int_k_xyz_resolve, md_shader_eval_gto_int_potential_xyz_resolve_kernel());
     if (!k_resolve) {
         MD_LOG_ERROR("md_gto_int_gpu_potential_xyz_launch: kernels unavailable (md_gto_int_gpu_initialize not called?)");
@@ -2260,7 +2541,7 @@ bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_in
                     a.count       = (uint32_t)MIN(per, (uint64_t)(end - first));
                     a.coeff_first = g->coeff_first[L] + (first - begin) * nh;
                     md_gpu_launch(stream, k, groups, &a, sizeof(a));
-                    gto_int_pace(&pacer, (uint64_t)np * a.count * gto_int_cost(L));
+                    if (gto_int_pace(&pacer, (uint64_t)np * a.count * gto_int_cost(L))) md_gpu_stream_flush(stream);
                 }
             }
             md_gpu_launch(stream, k_resolve, md_gpu_grid_for(k_resolve, np, 1, 1), &a, sizeof(a));
