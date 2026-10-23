@@ -2,6 +2,7 @@
 #include "eval_gto_density_shaders.inl"
 #include "eval_gto_mo_shaders.inl"
 #include "eval_gto_density_gemm_shaders.inl"
+#include "gto_dmat_shaders.inl"
 #include "eval_gto_density_gemm2_128x32_shaders.inl"
 #include "eval_gto_density_gemm2_128x64_shaders.inl"
 #include "eval_gto_mo_shell_v4_m1_shaders.inl"

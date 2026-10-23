@@ -75,6 +75,8 @@ uint gto_tri_index(uint i, uint j, uint N) {
     return row * (2u * N - row + 1u) / 2u + (col - row);
 }
 
+#include "gto_dmat_common.slang"
+
 float gto_apply_op(float value, float prev, uint operation) {
     if ((operation & OP_ABS) != 0u) value = abs(value);
     switch (operation & OP_ACCUM_MASK) {

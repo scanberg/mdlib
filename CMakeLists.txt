@@ -544,6 +544,7 @@ endif()
 
 set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${TOPO_SLANG_FILES} ${GTO_SLANG_FILES}
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
+    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
@@ -595,6 +596,7 @@ if (MD_ENABLE_GPU)
   # Sources #included by the GTO kernels; slangc does not report includes.
   set(GTO_SLANG_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat_common.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_args.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm2.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
@@ -617,6 +619,13 @@ if (MD_ENABLE_GPU)
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
     ENTRIES   count_main phi_main dgather_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
+  )
+  # md_gto_gpu_dmat: a density matrix in tiles, built from orbitals
+  compile_gpu_shaders(gto_dmat_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat.slang
+    ENTRIES   dmat_tiles
   )
   # md_gto_int: the potential of a Hermite charge distribution. One entry point per Hermite order,
   # so each kernel is sized for its own unrolled recursion, and the resolve pass.

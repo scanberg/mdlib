@@ -4,6 +4,7 @@
 
 
 #include "../md_gpu.slang"
+#include "gto_dmat_common.slang"
 
 #define OP_SET 0
 #define OP_ADD 1
@@ -26,8 +27,8 @@ struct RootArgs {
     uint4    grid_dim;
     uint     num_cgtos;
     uint     operation;
-    uint     _pad1;
-    uint     _pad2;
+    uint     dm_tiled;      // D_matrix is the tile pool of a md_gto_gpu_dmat (dm_tao, dm_map)
+    uint     dm_nt;
 
     uint*   cgto_atom_idx;
     float*  cgto_r;
@@ -35,6 +36,8 @@ struct RootArgs {
     PGTO*   pgto;
     float4* atom_xyz;
     float*  D_matrix;
+    uint*   dm_tao;
+    uint*   dm_map;
     DescriptorHandle<RWTexture3D<float>> out_tex;
 };
 
@@ -109,7 +112,8 @@ void fill_D_tile(uint tile_i, uint tile_j, uint num_cgtos, uint tid) {
             // addresses (llvmpipe evaluates their loads).
             uint gi = min(screened_cgtos[slot_i], args.num_cgtos - 1u);
             uint gj = min(screened_cgtos[slot_j], args.num_cgtos - 1u);
-            value = args.D_matrix[get_index(gi, gj, args.num_cgtos)];
+            value = args.dm_tiled != 0u ? gto_dmat_at(args.dm_tao, args.dm_map, args.D_matrix, args.dm_nt, gi, gj)
+                                        : args.D_matrix[get_index(gi, gj, args.num_cgtos)];
         }
         D_tile[row][col] = value;
     }
