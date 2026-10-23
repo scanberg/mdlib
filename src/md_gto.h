@@ -374,6 +374,61 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
 // GPU dispatch
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Density matrix in tiles (md_gto_gpu_dmat_t)
+// ---------------------------------------------------------------------------
+// A density matrix on the device holding only the AO pairs an evaluation reads: the pairs whose shells
+// both reach some point, with the shell radii of the md_gto_gpu_basis it is evaluated with (the same
+// cutoff). No point has both AOs of any other pair above the cutoff, so leaving those out changes
+// nothing the cutoff does not already. Stored as 16 x 16 tiles in an order of the AOs that keeps the
+// tiles full: shells by radius class (2 bohr), then by atom (the input order, along a chain).
+//
+// Protein of 1152 atoms (9636 Cartesian AOs) at 1e-6: 18.6% of the triangle in tiles, 35 MB against
+// 186 MB packed, and built from its 2147 occupied orbitals with 5.4x fewer multiply-adds than the whole
+// matrix. A small molecule keeps nearly every tile.
+//
+// The pattern depends on where the atoms are. margin (bohr) also keeps the pairs up to that much further
+// apart, so that it holds while no atom has moved more than margin / 2 from where it was made
+// (md_gto_gpu_dmat_pattern_valid): a trajectory makes a new one only when that fails, and refills the
+// matrix (md_gto_gpu_dmat_build, md_gto_gpu_dmat_set_matrix) per frame.
+
+typedef struct md_gto_gpu_dmat* md_gto_gpu_dmat_t;
+
+typedef struct md_gto_gpu_dmat_desc_t {
+    const md_gto_basis_t* basis;      // required
+    const float*          atom_xyz;   // bohr, as for the evaluation
+    size_t                atom_xyz_stride;  // bytes between positions; 0 for tightly packed (12 bytes)
+    double                cutoff;     // the cutoff of the md_gto_gpu_basis it is evaluated with (> 0)
+    double                margin;     // bohr, >= 0
+} md_gto_gpu_dmat_desc_t;
+
+md_gto_gpu_dmat_t md_gto_gpu_dmat_create(md_gpu_stream_t stream, const md_gto_gpu_dmat_desc_t* desc);
+
+// Stream-ordered: the memory is freed at this point in `stream`.
+void md_gto_gpu_dmat_destroy(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat);
+
+// Whether the pattern holds for these positions: the same number of atoms, none further than margin / 2
+// from where the pattern was made.
+bool md_gto_gpu_dmat_pattern_valid(md_gto_gpu_dmat_t dmat, const float* atom_xyz, size_t atom_xyz_stride);
+
+// D = sum_k w_k c_k c_k^T over num_mo orbitals: coeff holds num_mo rows of num_ao coefficients (the basis's
+// AO order), weight num_mo weights (0 skips the orbital). The orbitals are packed to float on the host,
+// uploaded, and the tiles built on the device in float (stream-ordered). Returns false when out of memory.
+bool md_gto_gpu_dmat_build(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* coeff, const double* weight, size_t num_mo);
+
+// The kept tiles of a matrix on the host (num_ao x num_ao, row major; its symmetric part), gathered and
+// uploaded: for a density that is at hand as a matrix.
+bool md_gto_gpu_dmat_set_matrix(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* matrix);
+
+typedef struct md_gto_gpu_dmat_info_t {
+    size_t num_ao;
+    size_t num_tiles;        // tile pairs kept
+    size_t num_tiles_total;  // tile pairs in the triangle
+    size_t bytes;            // device memory: tiles, map and tables (not the orbital scratch)
+} md_gto_gpu_dmat_info_t;
+
+void md_gto_gpu_dmat_info(md_gto_gpu_dmat_info_t* out, md_gto_gpu_dmat_t dmat);
+
 // Density evaluation algorithm.
 typedef enum md_gto_gpu_density_algo_t {
     // The recommended algorithm, currently MD_GTO_GPU_DENSITY_ALGO_GEMM, which
@@ -399,7 +454,8 @@ typedef enum md_gto_gpu_density_algo_t {
 typedef struct md_gto_gpu_density_desc_t {
 	md_gto_gpu_basis_t basis;
     md_gpu_addr_t    atom_xyz;
-    md_gpu_addr_t    coeff;
+    md_gpu_addr_t    coeff;       // packed upper-triangular D, or 0 with dmat
+    md_gto_gpu_dmat_t dmat;       // D in tiles instead of coeff (made with the cutoff of basis)
     md_gpu_texture_t out_tex;     // needs MD_GPU_TEX_STORAGE; mip 0 is written
 
     const md_grid_t* grid;
@@ -419,7 +475,7 @@ typedef struct md_gto_gpu_density_desc_t {
 // Issue an electron density evaluation into `stream`.
 // atom_xyz must contain packed float4 atom positions (xyz in Bohr).
 // coeff must contain packed upper-triangular float coefficients
-// (md_gto_gpu_coeff_pack_density into md_gpu_upload_begin's pointer).
+// (md_gto_gpu_coeff_pack_density into md_gpu_upload_begin's pointer), or dmat be set.
 // Uploads issued earlier into the same stream are visible by program order.
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 

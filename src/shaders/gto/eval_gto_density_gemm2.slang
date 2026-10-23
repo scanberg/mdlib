@@ -92,7 +92,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
                 if (nu < n && mu < n && nu >= mu) {                                                 \
                     float w = (nu == mu) ? 1.0f : 2.0f;                                             \
                     if (args.d_mode != 0u) v = w * args.D_blocks[db_off + nu * n + mu];             \
-                    else v = w * args.D_matrix[gto_tri_index(args.ao_list[ao_off + nu], args.ao_list[ao_off + mu], args.num_aos)]; \
+                    else v = w * gto_d(args.ao_list[ao_off + nu], args.ao_list[ao_off + mu]);    \
                 }                                                                                   \
                 pf_d[r] = v;                                                                        \
             }                                                                                       \

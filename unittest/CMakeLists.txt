@@ -102,14 +102,6 @@ if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQU
       ENTRIES   iso_grid iso_octree_level iso_brick_hash iso_corners iso_cells iso_quads iso_project iso_relax iso_triangulate
       DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/../src/shaders/md_gpu.slang
     )
-    # EXPERIMENT: the block-sparse density matrix from the orbitals (test_gto_dmat.c)
-    compile_gpu_shaders(gto_dmat_shaders.inl
-      TARGET    md_unittest
-      NAMESPACE md_shader
-      SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gto_dmat.slang
-      ENTRIES   dmat_tiles
-      DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/../src/shaders/md_gpu.slang
-    )
   endif()
   compile_gpu_shaders(gpu_imgui_test_shaders.inl
     TARGET    md_unittest

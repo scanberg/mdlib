@@ -27,13 +27,17 @@ struct RootArgs {
     uint     num_mos;           // orbital GEMM: number of MO rows in D_matrix (the coefficients)
     uint     mo_mode;           // orbital GEMM: 0 = psi, 1 = psi^2
     uint     has_weights;       // orbital GEMM: mo_weights is valid
+    uint     dm_tiled;          // density: D_matrix is the tile pool of a md_gto_gpu_dmat (dm_tao, dm_map)
+    uint     dm_nt;             // its tiles per edge
+    uint     _dm_pad0;
+    uint     _dm_pad1;
 
     uint*    shell_atom_idx;
     float*   shell_r;
     uint4*   shell_info;        // (prim_offset, num_prims, l, ao_offset)
     float2*  shell_prim;        // (coeff, alpha * log2(e))
     float4*  atom_xyz;
-    float*   D_matrix;          // density: packed upper triangular D; orbitals: MO coefficients [num_mos][num_aos]
+    float*   D_matrix;          // density: packed upper triangular D, or the tile pool (dm_tiled); orbitals: MO coefficients [num_mos][num_aos]
 
     uint2*   block_counts;      // count_main output, per grid block: (num shells, num AOs)
     uint4*   block_table;       // 2 per block in batch: (bx, by, bz, n_ao), (phi_offset, ao_offset, D_b offset, -)
@@ -41,6 +45,8 @@ struct RootArgs {
     float*   phi;               // batch scratch
     float*   D_blocks;          // batch scratch (d_mode 1): D_b, n_ao x n_ao per block, lower triangle filled
     float*   mo_weights;        // orbital GEMM: per-MO weight applied after psi / psi^2 (if has_weights)
+    uint*    dm_tao;            // dm_tiled: AO -> tiled index
+    uint*    dm_map;            // dm_tiled: tile pair -> pool entry
     DescriptorHandle<RWTexture3D<float>> out_tex;
 };
 
@@ -49,5 +55,11 @@ struct MdGpuRoot { RootArgs* args_ptr; };
 ConstantBuffer<MdGpuRoot> md_root;
 
 #define args (*md_root.args_ptr)
+
+// D[i][j] of the density, packed or in tiles
+float gto_d(uint i, uint j) {
+    return args.dm_tiled != 0u ? gto_dmat_at(args.dm_tao, args.dm_map, args.D_matrix, args.dm_nt, i, j)
+                               : args.D_matrix[gto_tri_index(i, j, args.num_aos)];
+}
 
 #endif

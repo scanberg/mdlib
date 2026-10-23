@@ -173,7 +173,7 @@ void dgather_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     for (uint i = 0u; i < n; ++i) {             // uniform loop over rows
         const uint gi = args.ao_list[ao_off + i];
         for (uint j = tid; j <= i; j += 256u) {
-            args.D_blocks[db_off + i * n + j] = args.D_matrix[gto_tri_index(gi, args.ao_list[ao_off + j], args.num_aos)];
+            args.D_blocks[db_off + i * n + j] = gto_d(gi, args.ao_list[ao_off + j]);
         }
     }
 }
