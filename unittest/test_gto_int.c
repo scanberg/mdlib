@@ -1010,4 +1010,117 @@ UTEST(gto_int, all_orders_gpu_match_cpu) {
     md_gpu_device_destroy(device);
 }
 
+// The far field on the device against the exact sum on the CPU, on a cluster of 3^3 waters: a grid
+// through and around it, whole; then again into the same texture with md_gto_op ADD for a mask
+// (only the bricks holding a masked voxel change); and at points scattered over the same box, the
+// worst case for a group's walk.
+UTEST(gto_int, far_field_gpu_matches_exact) {
+    md_gpu_device_t device = md_gpu_device_create(NULL);
+    if (!device) {
+        UTEST_SKIP(int_test_no_device_reason());
+    }
+    md_gpu_stream_t stream = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
+    md_gto_int_gpu_initialize(device);
+
+    qm_test_t t = {0};
+    qm_test_init(&t, MEGABYTES(128));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    int_test_qm_t m;
+    ASSERT_TRUE(int_test_extract(&m, &t));
+    int_test_cluster_t c;
+    int_test_cluster(&c, &m, 3, 5.6f, t.alloc);
+    md_gto_int_charges_desc_t cd = {
+        .basis = &c.basis, .atom_xyz = c.atom_xyz, .density_matrix = c.D, .density_scale = -1.0,
+        .point_xyz = c.atom_xyz, .point_charge = c.atom_z, .num_points = c.num_atoms, .threshold = 1e-8,
+    };
+    md_gto_int_charges_t exact = {0}, far = {0};
+    ASSERT_TRUE(md_gto_int_charges_init(&exact, &cd, t.alloc));
+    cd.far_field_theta = MD_GTO_INT_FAR_FIELD_THETA;
+    ASSERT_TRUE(md_gto_int_charges_init(&far, &cd, t.alloc));
+
+    md_grid_t grid = {
+        .orientation = mat3_ident(),
+        .origin  = vec3_set(-4.0f, -3.7f, -3.9f),
+        .spacing = vec3_set(0.71f, 0.69f, 0.73f),
+        .dim     = { 22, 21, 23 },   // not a multiple of the 4x4x4 brick on any axis
+    };
+    const float so[3] = { 0.5f, 0.5f, 0.5f };
+    const size_t nv = md_grid_num_points(&grid);
+    float* ref = (float*)md_alloc(t.alloc, sizeof(float) * nv);
+    float* gpu = (float*)md_alloc(t.alloc, sizeof(float) * nv);
+    md_gto_int_potential_grid(ref, &grid, so, &exact);
+
+    md_gpu_texture_t tex = md_gpu_texture_create(stream, &(md_gpu_texture_desc_t){
+        .type = MD_GPU_TEX_3D, .format = MD_GPU_FORMAT_R32_FLOAT, .usage = MD_GPU_TEX_STORAGE,
+        .width = (uint32_t)grid.dim[0], .height = (uint32_t)grid.dim[1], .depth_or_layers = (uint32_t)grid.dim[2],
+    });
+    md_gpu_mem_t rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * nv);
+    md_gto_int_gpu_charges_t gq = md_gto_int_gpu_charges_create(stream, &far);
+    ASSERT_TRUE(tex && rb.cpu && gq);
+
+    md_gto_int_gpu_potential_desc_t desc = {
+        .charges = gq, .out_tex = tex, .grid = &grid, .sample_offset = { so[0], so[1], so[2] }, .op = MD_GTO_OP_SET,
+    };
+    ASSERT_TRUE(md_gto_int_gpu_potential_launch(stream, &desc));
+    md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
+    md_gpu_stream_sync(stream);
+    MEMCPY(gpu, rb.cpu, sizeof(float) * nv);
+    // relative to max(1, |V|), as the other GPU tests: next to a nucleus the potential is tens of au,
+    // and float is what limits it there
+    const double worst = int_test_compare(gpu, ref, nv);
+    printf("27 waters, far field on the GPU vs exact: grid max |dV| / max(1, |V|) %.2e\n", worst);
+    EXPECT_LT(worst, 2e-4);
+
+    // A mask of every other brick's one voxel: those bricks gain the potential once more, whole
+    uint8_t* mask = (uint8_t*)md_alloc(t.alloc, nv);
+    MEMSET(mask, 0, nv);
+    for (int z = 0; z < grid.dim[2]; ++z) for (int y = 0; y < grid.dim[1]; ++y) for (int x = 0; x < grid.dim[0]; ++x) {
+        if (((x / 4 + y / 4 + z / 4) & 1) == 0 && x % 4 == 1 && y % 4 == 2 && z % 4 == 3) mask[((size_t)z * grid.dim[1] + y) * grid.dim[0] + x] = 1;
+    }
+    desc.op = MD_GTO_OP_ADD;
+    desc.voxel_mask = mask;
+    ASSERT_TRUE(md_gto_int_gpu_potential_launch(stream, &desc));
+    md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
+    md_gpu_stream_sync(stream);
+    double worst_in = 0.0, worst_out = 0.0;
+    for (int z = 0; z < grid.dim[2]; ++z) for (int y = 0; y < grid.dim[1]; ++y) for (int x = 0; x < grid.dim[0]; ++x) {
+        const size_t i = ((size_t)z * grid.dim[1] + y) * grid.dim[0] + x;
+        // a brick has its masked voxel unless the grid ends before it
+        const int bx = x / 4, by = y / 4, bz = z / 4;
+        const bool brick_masked = ((bx + by + bz) & 1) == 0 && bx * 4 + 1 < grid.dim[0] && by * 4 + 2 < grid.dim[1] && bz * 4 + 3 < grid.dim[2];
+        const float v = ((const float*)rb.cpu)[i];
+        if (brick_masked) worst_in = MAX(worst_in, fabs((double)v - 2.0 * (double)gpu[i]));
+        else              worst_out = MAX(worst_out, fabs((double)v - (double)gpu[i]));
+    }
+    EXPECT_LT(worst_in, 1e-5);
+    EXPECT_EQ(0.0, worst_out);
+
+    // Scattered points
+    enum { NP = 300 };
+    float pts[NP][3];
+    uint32_t seed = 4242;
+    for (int i = 0; i < NP; ++i) for (int k = 0; k < 3; ++k) {
+        seed = seed * 1664525u + 1013904223u;
+        pts[i][k] = -4.0f + 19.0f * (float)(seed >> 8) / (float)(1u << 24);
+    }
+    double Ve[NP];
+    float  Vg[NP];
+    md_gto_int_potential_xyz(Ve, NULL, &pts[0][0], NP, 0, &exact);
+    ASSERT_TRUE(int_test_gpu_xyz(Vg, stream, &far, &pts[0][0], NP, 0, 0));
+    double worst_p = 0.0;
+    for (int i = 0; i < NP; ++i) worst_p = MAX(worst_p, fabs((double)Vg[i] - Ve[i]) / MAX(1.0, fabs(Ve[i])));
+    printf("27 waters, far field on the GPU vs exact: points max |dV| / max(1, |V|) %.2e\n", worst_p);
+    EXPECT_LT(worst_p, 2e-4);
+
+    md_gto_int_gpu_charges_destroy(stream, gq);
+    md_gpu_free(stream, rb.gpu);
+    md_gpu_texture_destroy(tex);
+    md_gpu_stream_sync(stream);
+    md_gto_int_charges_free(&exact, t.alloc);
+    md_gto_int_charges_free(&far, t.alloc);
+    qm_test_free(&t);
+    md_gto_int_gpu_shutdown();
+    md_gpu_device_destroy(device);
+}
+
 #endif

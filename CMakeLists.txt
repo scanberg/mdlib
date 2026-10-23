@@ -548,7 +548,8 @@ set(SHADER_FILES ${GL_SHADER_FILES} ${GTO_SHADER_FILES} ${TOPO_SHADER_FILES} ${T
     src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
-    src/shaders/gto/eval_gto_int_potential_xyz.slang src/shaders/gto/gto_int_potential_common.slang)
+    src/shaders/gto/eval_gto_int_potential_xyz.slang src/shaders/gto/gto_int_potential_common.slang
+    src/shaders/gto/eval_gto_int_potential_far.slang)
 
 source_group("src"      FILES ${SRC_FILES}) 
 source_group("src/core" FILES ${CORE_FILES})
@@ -644,6 +645,19 @@ if (MD_ENABLE_GPU)
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential_xyz.slang
     ENTRIES   l0 l1 l2 l3 l4 l5 l6 l7 l8 resolve
+    DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_hermite.slang
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_potential_common.slang
+  )
+  # Both, for a distribution with a far field: a group of 64 points walks the tree together
+  compile_gpu_shaders(eval_gto_int_potential_far_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential_far.slang
+    ENTRIES   grid_far6 grid_far7 grid_far8 grid_near0 grid_near1 grid_near2 grid_near3 grid_near4 grid_near5 grid_near6
+              grid_near7 grid_near8 grid_resolve
+              xyz_far6 xyz_far7 xyz_far8 xyz_near0 xyz_near1 xyz_near2 xyz_near3 xyz_near4 xyz_near5 xyz_near6
+              xyz_near7 xyz_near8 xyz_resolve
     DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
               ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_hermite.slang
               ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_int_potential_common.slang
