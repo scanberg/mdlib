@@ -222,6 +222,30 @@ UTEST(pdb, cryst_record_without_its_1) {
     md_arena_allocator_destroy(alloc);
 }
 
+// Past 99999 atoms VMD writes the serials in hexadecimal (186a0 for 100000), and '*****' past FFFFF: not hybrid-36,
+// which begins a number past 99999 with a letter. They are not numbers of the format: 0, counted once rather than
+// reported line by line (millions of lines in a large system), and the atoms are read in their order.
+UTEST(pdb, serials_which_are_not_numbers) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    static const char pdb[] =
+        "ATOM  99999  OW  SOL X3333       0.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM  186a0  OW  SOL X3334       3.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM  18700  OW  SOL X3335       6.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM  *****  OW  SOL X3336       9.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM  A0000  OW  SOL X3337      12.000   0.000   0.000  1.00  0.00           O\n"
+        "END\n";
+    md_pdb_data_t data = {0};
+    ASSERT_TRUE(md_pdb_data_parse_str(&data, str_from_cstr(pdb), alloc));
+    ASSERT_EQ(5, (int)data.num_atom_coordinates);
+    EXPECT_EQ(99999,  data.atom_coordinates[0].atom_serial);
+    EXPECT_EQ(0,      data.atom_coordinates[1].atom_serial);    // hexadecimal: not a number of the format
+    EXPECT_EQ(18700,  data.atom_coordinates[2].atom_serial);    // hexadecimal without a letter is decimal
+    EXPECT_EQ(0,      data.atom_coordinates[3].atom_serial);
+    EXPECT_EQ(100000, data.atom_coordinates[4].atom_serial);    // hybrid-36
+    EXPECT_NEAR(9.0f, data.atom_coordinates[3].x, 1e-6f);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(pdb, conect_bonds) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };

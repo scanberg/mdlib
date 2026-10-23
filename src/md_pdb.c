@@ -57,29 +57,33 @@ static inline char extract_char(str_t line, size_t idx) {
     return line.ptr[idx - 1];
 }
 
-// Parse atom serial or residue sequence number, which can be "*****" for missing values
-static inline int32_t parse_id(str_t line, size_t beg, size_t end) {
+// An atom serial or a residue sequence number: a decimal number, past the width of its field hybrid-36 (A0000, then
+// a0000: a letter first). 0 where the field holds neither, counted in num_bad: "*****" past the width, which many
+// writers put there, or the hexadecimal VMD writes past 99999 ("186a0" for 100000), which is not hybrid-36 (a number
+// which begins with a digit is decimal) and cannot be told from decimal where it has no letter (18700, 100096). Such a
+// file is read by the order of its atoms; only CONECT records refer to atoms by their serials.
+static inline int32_t parse_id(str_t line, size_t beg, size_t end, uint32_t* num_bad) {
 	uint32_t len = (uint32_t)(end - beg) + 1;
     int32_t  res = 0;
-    const char* errmsg = hy36decode(len, line.ptr + beg - 1, len, &res);
-    if (errmsg) {
-        MD_LOG_DEBUG("Failed to decode id from string '%.*s', error: %s", (int)len, line.ptr + beg - 1, errmsg);
+    if (hy36decode(len, line.ptr + beg - 1, len, &res)) {
+        if (num_bad) *num_bad += 1;
+        return 0;
     }
     return res;
 }
 
-static inline md_pdb_coordinate_t extract_coord(str_t line) {
+static inline md_pdb_coordinate_t extract_coord(str_t line, uint32_t* num_bad_ids) {
     char chain_id = extract_char(line, 22);
     if (!is_alpha(chain_id)) {
 		chain_id = ' ';
 	}
     md_pdb_coordinate_t coord = {
-        .atom_serial = parse_id(line, 7, 11),
+        .atom_serial = parse_id(line, 7, 11, num_bad_ids),
         .atom_name = {0},
         .alt_loc = extract_char(line, 17),
         .res_name = {0},
         .chain_id = chain_id,
-        .res_seq = parse_id(line, 23, 26),
+        .res_seq = parse_id(line, 23, 26, num_bad_ids),
         .icode = extract_char(line, 27),
         .x = extract_fixed_float(line, 31, 38, 3),
         .y = extract_fixed_float(line, 39, 46, 3),
@@ -158,7 +162,7 @@ static inline md_pdb_sheet_t extract_sheet(str_t line) {
 static inline int32_t extract_connect_serial(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0;
     if (str_empty(str_trim(str_substr(line, beg - 1, end - beg + 1)))) return 0;
-    return parse_id(line, beg, end);
+    return parse_id(line, beg, end, NULL);
 }
 
 static inline md_pdb_connect_t extract_connect(str_t line) {
@@ -219,10 +223,11 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
 
     str_t line;
     int32_t biomolecule = 0;    // REMARK 350: the one whose groups of chains follow
+    uint32_t num_bad_ids = 0;   // Serials and residue numbers which are not numbers of the format (parse_id)
     while (md_buffered_reader_extract_line(&line, reader)) {
         if (line.len < 6) continue;
         if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-            md_pdb_coordinate_t coord = extract_coord(line);
+            md_pdb_coordinate_t coord = extract_coord(line, &num_bad_ids);
             coord.flags |= line.ptr[0] == 'H' ? MD_PDB_COORD_FLAG_HETATM : 0;
             md_array_push(data->atom_coordinates, coord, alloc);
         }
@@ -344,6 +349,10 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
     data->num_assemblies        = md_array_size(data->assemblies);
     data->num_assembly_chains   = md_array_size(data->assembly_chains);
     data->num_transforms        = md_array_size(data->transforms);
+    if (num_bad_ids > 0) {
+        MD_LOG_DEBUG("%u atom serials or residue numbers are not numbers of the PDB format ('*****' past the width of the field, "
+            "or hexadecimal as VMD writes past 99999): the atoms are taken in their order", num_bad_ids);
+    }
 
     return true;
 }
@@ -610,7 +619,8 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const char alt_loc = data->atom_coordinates[i].alt_loc;
             if (alt_loc != ' ' && alt_loc != 'A') continue;
             const uint64_t key = (uint64_t)(uint32_t)data->atom_coordinates[i].atom_serial;
-            if (!md_hashmap_get(&serial_to_atom, key)) md_hashmap_add(&serial_to_atom, key, (uint32_t)atom_idx);
+            // 0: a serial which is not a number of the format (parse_id), which no record can refer to
+            if (key && !md_hashmap_get(&serial_to_atom, key)) md_hashmap_add(&serial_to_atom, key, (uint32_t)atom_idx);
             atom_idx += 1;
         }
         ASSERT(atom_idx == sys->atom.count);
@@ -621,6 +631,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
         for (size_t i = 0; i < data->num_connections; ++i) {
             const int32_t* serial = data->connections[i].atom_serial;
+            if (!serial[0]) continue;
             const uint32_t* a = md_hashmap_get(&serial_to_atom, (uint64_t)(uint32_t)serial[0]);
             if (!a) continue;
             for (size_t k = 1; k < ARRAY_SIZE(data->connections[i].atom_serial) && serial[k]; ++k) {
