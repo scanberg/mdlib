@@ -617,8 +617,8 @@ UTEST(util, molecules_hold_residues_and_chains) {
     }
 
     {
-        // Two DNA strands under one chain id, numbered on: the 5' end of the second has no phosphate, so the strands
-        // are joined over the gap by its O5'. Every slot is an atom of the system.
+        // Two DNA strands under one chain id, numbered on: the 5' end of the second has no phosphate, so the chain ends
+        // there rather than going on over a gap. Two molecules, one chain.
         static const char pdb[] =
             "ATOM      1  O5'  DA A   1      24.130 139.750  27.200  1.00  0.00           O\n"
             "ATOM      2  C5'  DA A   1      23.020 138.940  27.630  1.00  0.00           C\n"
@@ -660,7 +660,11 @@ UTEST(util, molecules_hold_residues_and_chains) {
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         ASSERT_EQ(sys.atom.count, 34u);
-        EXPECT_EQ(md_structure_count(&sys.structure), 1u);
+        EXPECT_EQ(md_system_instance_count(&sys), 2u);
+        EXPECT_EQ(md_system_chain_count(&sys), 1u);
+        EXPECT_EQ(md_system_chain_atom_count(&sys, 0), 34u);
+        EXPECT_EQ(md_structure_count(&sys.structure), 2u);
+        EXPECT_NE(MOLECULE_OF(sys, 0), MOLECULE_OF(sys, 17));
         EXPECT_EQ(sys.structure.offset[sys.structure.count], 34u);
         for (size_t s = 0; s < md_array_size(sys.structure.atom_idx); ++s) {
             EXPECT_TRUE(0 <= sys.structure.atom_idx[s] && sys.structure.atom_idx[s] < 34);
@@ -1262,6 +1266,60 @@ UTEST(util, martini2_dna) {
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ(1u, md_system_instance_count(&sys));
     EXPECT_EQ(MD_ENTITY_KIND_DNA, md_system_entity_kind(&sys, md_system_instance_entity_idx(&sys, 0)));
+    md_vm_arena_destroy(alloc);
+}
+
+// Martini 2 DNA likewise: a second strand under the chain id of the first, numbered on, begins without its phosphate
+// bead. The chain ends there: two molecules of one chain, each strand whole.
+static const char martini2_dna_second_strand_pdb[] =
+    "ATOM     27 BB2  DT  A -56      37.980 101.387  20.003  1.00  0.00\n"
+    "ATOM     28 BB3  DT  A -56      38.540  99.483  19.917  1.00  0.00\n"
+    "ATOM     29 SC1  DT  A -56      40.850  99.875  21.345  1.00  0.00\n"
+    "ATOM     30 SC2  DT  A -56      42.520  99.690  19.910  1.00  0.00\n"
+    "ATOM     31 SC3  DT  A -56      42.758  99.835  23.080  1.00  0.00\n"
+    "ATOM     32 BB1  DG  A -55      36.345  97.578  17.750  1.00  0.00\n"
+    "ATOM     33 BB2  DG  A -55      38.943  97.917  15.617  1.00  0.00\n"
+    "ATOM     34 BB3  DG  A -55      39.643  96.060  15.630  1.00  0.00\n"
+    "ATOM     35 SC1  DG  A -55      41.545  96.355  18.015  1.00  0.00\n"
+    "ATOM     36 SC2  DG  A -55      44.450  96.427  17.973  1.00  0.00\n"
+    "ATOM     37 SC3  DG  A -55      43.530  96.343  20.680  1.00  0.00\n"
+    "ATOM     38 SC4  DG  A -55      40.887  96.270  19.463  1.00  0.00\n"
+    "ATOM     39 BB1  DC  A -54      39.305  94.367  12.558  1.00  0.00\n"
+    "ATOM     40 BB2  DC  A -54      42.600  93.820  13.640  1.00  0.00\n"
+    "ATOM     41 BB3  DC  A -54      42.597  91.947  14.360  1.00  0.00\n"
+    "ATOM     42 SC1  DC  A -54      42.015  92.455  17.020  1.00  0.00\n"
+    "ATOM     43 SC2  DC  A -54      43.943  92.957  18.023  1.00  0.00\n"
+    "ATOM     44 SC3  DC  A -54      41.660  92.757  19.563  1.00  0.00\n"
+    "ATOM     45 BB1  DA  A -53      43.948  90.553  10.992  1.00  0.00\n"
+    "ATOM     46 BB2  DA  A -53      46.963  91.600  12.027  1.00  0.00\n"
+    "ATOM     47 BB3  DA  A -53      47.717  89.830  12.417  1.00  0.00\n"
+    "ATOM     48 SC1  DA  A -53      46.215  89.725  15.085  1.00  0.00\n"
+    "ATOM     49 SC2  DA  A -53      46.710  90.325  17.270  1.00  0.00\n"
+    "ATOM     50 SC3  DA  A -53      44.267  89.427  17.783  1.00  0.00\n"
+    "ATOM     51 SC4  DA  A -53      44.760  89.077  14.940  1.00  0.00\n"
+    "END\n";
+
+UTEST(util, martini2_dna_strands_under_one_chain_id) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    char text[sizeof(martini2_dna_pdb) + sizeof(martini2_dna_second_strand_pdb)];
+    const size_t first_len = sizeof(martini2_dna_pdb) - 1 - 4;     // without its END line
+    memcpy(text, martini2_dna_pdb, first_len);
+    memcpy(text + first_len, martini2_dna_second_strand_pdb, sizeof(martini2_dna_second_strand_pdb));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(text), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(8u, md_system_component_count(&sys));
+    ASSERT_EQ(51u, (unsigned)sys.atom.count);
+    EXPECT_TRUE(md_system_is_coarse_grained(&sys));
+    EXPECT_EQ(2u, md_system_instance_count(&sys));
+    EXPECT_EQ(1u, md_system_chain_count(&sys));
+    EXPECT_EQ(51u, md_system_chain_atom_count(&sys, 0));
+    EXPECT_EQ(2u, md_structure_count(&sys.structure));
+    for (size_t i = 0; i < md_array_size(sys.structure.atom_idx); ++i) {
+        EXPECT_TRUE(0 <= sys.structure.atom_idx[i] && sys.structure.atom_idx[i] < 51);
+    }
+    check_structure_invariants(utest_result, &sys);
     md_vm_arena_destroy(alloc);
 }
 
@@ -2766,23 +2824,28 @@ UTEST(util, entity_instance) {
     }
 
     {
-        // One chain and its 106 waters, each water an instance of its own which shares the id of the others
+        // One chain, the arginine bound to it and its 106 waters, each water an instance of its own which shares the
+        // id of the others. The arginine is numbered on after the chain under its id, but is a free amino acid with a
+        // carboxyl group of its own: the chain ends before it (CHAIN BREAKS in md_util.h)
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
-        ASSERT_EQ(md_system_entity_count(&sys), 2);
+        ASSERT_EQ(md_system_entity_count(&sys), 3);
         EXPECT_EQ(md_system_entity_flags(&sys, 0), inferred_kind(MD_ENTITY_KIND_PEPTIDE));
-        EXPECT_EQ(md_system_entity_flags(&sys, 1), inferred_kind(MD_ENTITY_KIND_WATER));
+        EXPECT_EQ(md_system_entity_flags(&sys, 2), inferred_kind(MD_ENTITY_KIND_WATER));
+        EXPECT_TRUE(str_eq(md_entity_description(&sys.entity, 1), STR_LIT("ARG")));
 
-        ASSERT_EQ(md_system_instance_count(&sys), 1 + 106);
+        ASSERT_EQ(md_system_instance_count(&sys), 1 + 1 + 106);
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
         EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 0), STR_LIT("E")));
-        EXPECT_EQ(md_system_instance_comp_count(&sys, 0), 239);
-        for (size_t i = 1; i < md_system_instance_count(&sys); ++i) {
-            EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i), STR_LIT("B")));
+        EXPECT_EQ(md_system_instance_comp_count(&sys, 0), 238);
+        EXPECT_EQ(md_system_instance_comp_count(&sys, 1), 1);
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 1), STR_LIT("E")));
+        for (size_t i = 2; i < md_system_instance_count(&sys); ++i) {
+            EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i), STR_LIT("C")));
             EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), STR_LIT("E")));
-            EXPECT_EQ(md_system_instance_entity_idx(&sys, i), 1);
+            EXPECT_EQ(md_system_instance_entity_idx(&sys, i), 2);
             EXPECT_EQ(md_system_instance_comp_count(&sys, i), 1);
         }
     }
@@ -3093,7 +3156,7 @@ UTEST(util, chains) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
     {
-        // One chain of a polymer and its 106 waters: the waters carry its id, they are of it
+        // One chain of a polymer, its arginine and its 106 waters: they carry its id, they are of it
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
@@ -3101,7 +3164,7 @@ UTEST(util, chains) {
         EXPECT_TRUE(str_eq(md_system_chain_id(&sys, 0), STR_LIT("E")));
         EXPECT_FALSE(md_system_chain_inferred(&sys, 0));
         EXPECT_EQ(md_system_atom_count(&sys), chain_atoms(&sys, 0));
-        EXPECT_EQ(1 + 106, (int)(md_system_chain_inst_end(&sys, 0) - md_system_chain_inst_beg(&sys, 0)));
+        EXPECT_EQ(1 + 1 + 106, (int)(md_system_chain_inst_end(&sys, 0) - md_system_chain_inst_beg(&sys, 0)));
         for (size_t i = 0; i < md_system_instance_count(&sys); ++i) EXPECT_EQ(0, md_system_chain_find_by_inst_idx(&sys, i));
         EXPECT_EQ(0, md_system_chain_find_by_atom_idx(&sys, md_system_atom_count(&sys) - 1));
     }

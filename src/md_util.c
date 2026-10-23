@@ -5270,6 +5270,8 @@ static md_label_t next_unique_inst_id(str_t last, md_hashset_t* used) {
     return id;
 }
 
+static bool polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b);
+
 bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp_auth_asym_id[]) {
     if (!sys) {
         MD_LOG_ERROR("Missing system or components");
@@ -5324,7 +5326,9 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
     // Instances: one per polymer chain or molecule. A run of components is one instance while each component is
     // bonded to the one before it. A polymer chain also continues over a gap (residues missing in a crystal structure)
     // while the chain id stays the same and the sequence goes on, and in a system without bonds while the sequence ids
-    // are consecutive. Water and ions are never part of a larger instance, and a chain id change always ends one.
+    // are consecutive, unless the chain ends there: the next strand of a nucleic acid begins without its phosphate (or
+    // phosphate bead), and is numbered on under the same chain id by many a simulation (polymer_chain_ends_between).
+    // Water and ions are never part of a larger instance, and a chain id change always ends one.
     md_entity_idx_t prev_entity  = -1;
     md_label_t      prev_id      = {0};
     str_t           prev_auth_id = {0};
@@ -5346,8 +5350,8 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             const md_sequence_id_t seq_prev = md_component_seq_id(&sys->component, j - 1);
             const md_sequence_id_t seq_j    = md_component_seq_id(&sys->component, j);
             const bool same_monomer = component_kind_is_monomer(kind_j) && kind_j == kind_prev;
-            if (same_monomer && has_auth_id && seq_j > seq_prev) continue;
-            if (same_monomer && sys->bond.count == 0 && seq_j == seq_prev + 1) continue;
+            const bool goes_on = (has_auth_id && seq_j > seq_prev) || (sys->bond.count == 0 && seq_j == seq_prev + 1);
+            if (same_monomer && goes_on && !polymer_chain_ends_between(sys, j - 1, j)) continue;
             break;
         }
 
@@ -11351,6 +11355,26 @@ static bool nucleic_chain_ends_between(const md_system_t* sys, const md_nucleic_
     if (atoms_a->o3 < 0 || atoms_b->p < 0) return true;
     bool has_bonds;
     return bonded_count_of_element(sys, atoms_a->o3, MD_Z_H, &has_bonds) > 0 || bonded_count_of_element(sys, atoms_b->o5, MD_Z_H, &has_bonds) > 0;
+}
+
+// Whether a polymer chain ends between the consecutive residues a and b = a + 1, rather than going on over a break, by
+// what their atoms or beads tell (CHAIN BREAKS in md_util.h): the amino acids by protein_chain_ends_between, the
+// nucleotides of atoms or of beads by nucleic_chain_ends_between. Whether their backbones are linked is not asked.
+static bool polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b) {
+    const md_urange_t range_a = md_component_atom_range(&sys->component, a);
+    const md_urange_t range_b = md_component_atom_range(&sys->component, b);
+    md_amino_acid_atoms_t aa_a, aa_b;
+    md_nucleic_acid_atoms_t na_a, na_b;
+    if (md_util_amino_acid_atoms_extract(&aa_a, &sys->atom, range_a) && md_util_amino_acid_atoms_extract(&aa_b, &sys->atom, range_b)) {
+        return protein_chain_ends_between(sys, a, b, &aa_a, &aa_b);
+    }
+    if (md_util_nucleic_acid_atoms_extract(&na_a, &sys->atom, range_a) && md_util_nucleic_acid_atoms_extract(&na_b, &sys->atom, range_b)) {
+        return nucleic_chain_ends_between(sys, &na_a, &na_b);
+    }
+    if (nucleotide_backbone_beads(&na_a, sys, a) && nucleotide_backbone_beads(&na_b, sys, b)) {
+        return nucleic_chain_ends_between(sys, &na_a, &na_b);
+    }
+    return false;
 }
 
 // Marks the break between the consecutive residues a and b = a + 1 of a chain. The chain goes on past the break, so
