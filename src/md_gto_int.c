@@ -1435,18 +1435,22 @@ typedef struct {
     md_gpu_uint4    grid_dim;
     md_gpu_uint4    brick_dim;
     float           ref[4];
-    uint32_t        _pad_mode;
+    uint32_t        list_cap;
     uint32_t        group_first;
+    uint32_t        group_end;
     uint32_t        accum_first;
-    uint32_t        num_groups;
     uint32_t        num_xyz;
     uint32_t        xyz_stride;
     uint32_t        num_ranges;
     uint32_t        operation;
     float           brick_radius;
     uint32_t        far_nh;
-    uint32_t        coeff_base;
-    uint32_t        _pad1;
+    uint32_t        coeff_first;
+    uint32_t        order_first;
+    uint32_t        sort_j;
+    uint32_t        sort_k;
+    uint32_t        num_sorted;
+    uint32_t        sort_stride;
     md_gpu_addr_t   gaussians;
     md_gpu_addr_t   coeffs;
     md_gpu_addr_t   boys;
@@ -1459,10 +1463,14 @@ typedef struct {
     md_gpu_addr_t   xyz;
     md_gpu_addr_t   accum;
     md_gpu_addr_t   out;
+    md_gpu_addr_t   lists;
+    md_gpu_addr_t   counts;
+    md_gpu_addr_t   sorted;
+    md_gpu_addr_t   bounds;
     md_gpu_storage_tex_t out_tex;
     uint32_t        _pad_end[2];
 } gto_int_potential_far_args_t;
-STATIC_ASSERT(sizeof(gto_int_potential_far_args_t) == 272, "gto_int_potential_far_args_t must match RootArgs in eval_gto_int_potential_far.slang");
+STATIC_ASSERT(sizeof(gto_int_potential_far_args_t) == 320, "gto_int_potential_far_args_t must match RootArgs in eval_gto_int_potential_far.slang");
 
 static md_gpu_device_t gto_int_gpu_device = NULL;
 static md_gpu_kernel_t gto_int_k_order[MD_GTO_INT_MAX_ORDER + 1] = {0};
@@ -1473,6 +1481,8 @@ static md_gpu_kernel_t gto_int_k_xyz_resolve = NULL;
 static md_gpu_kernel_t gto_int_k_far[2][3] = {0};                         // multipole order 6, 7, 8
 static md_gpu_kernel_t gto_int_k_near[2][MD_GTO_INT_MAX_ORDER + 1] = {0};
 static md_gpu_kernel_t gto_int_k_far_resolve[2] = {0};
+static md_gpu_kernel_t gto_int_k_far_lists[2] = {0};
+static md_gpu_kernel_t gto_int_k_sort[3] = {0};                           // the points': bounds, keys, bitonic
 
 void md_gto_int_gpu_initialize(md_gpu_device_t device) {
     gto_int_gpu_device = device;
@@ -1495,6 +1505,10 @@ void md_gto_int_gpu_shutdown(void) {
             if (gto_int_k_near[m][L]) { md_gpu_kernel_destroy(gto_int_k_near[m][L]); gto_int_k_near[m][L] = NULL; }
         }
         if (gto_int_k_far_resolve[m]) { md_gpu_kernel_destroy(gto_int_k_far_resolve[m]); gto_int_k_far_resolve[m] = NULL; }
+        if (gto_int_k_far_lists[m])   { md_gpu_kernel_destroy(gto_int_k_far_lists[m]);   gto_int_k_far_lists[m] = NULL; }
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (gto_int_k_sort[i]) { md_gpu_kernel_destroy(gto_int_k_sort[i]); gto_int_k_sort[i] = NULL; }
     }
     gto_int_gpu_device = NULL;
 }
@@ -1564,6 +1578,10 @@ static md_gpu_kernel_t gto_int_near_kernel(int pts, uint32_t L) {
     case 8: return gto_int_kernel(slot, pts ? md_shader_eval_gto_int_potential_far_xyz_near8_kernel() : md_shader_eval_gto_int_potential_far_grid_near8_kernel());
     default: return NULL;
     }
+}
+
+static md_gpu_kernel_t gto_int_far_lists_kernel(int pts) {
+    return gto_int_kernel(&gto_int_k_far_lists[pts], pts ? md_shader_eval_gto_int_potential_far_xyz_lists_kernel() : md_shader_eval_gto_int_potential_far_grid_lists_kernel());
 }
 
 static md_gpu_kernel_t gto_int_far_resolve_kernel(int pts) {
@@ -1821,18 +1839,21 @@ static void gto_int_index_to_world(md_gpu_float4x4* out, const md_grid_t* grid, 
 // ---------------------------------------------------------------------------
 // The far field on the device (eval_gto_int_potential_far.slang)
 // ---------------------------------------------------------------------------
-// Groups of 64 points in batches: a batch has its accumulators (8 bytes a point), cleared, then the
-// far pass and the near pass of every order present over it, each split into dispatches of at most
-// the work budget by the distribution's estimate per point, then the resolve.
+// Groups of 64 points in batches: a batch has its accumulators (8 bytes a point), cleared, and its
+// lists (GTO_INT_FAR_LIST entries a group), made by the lists pass; then the far pass and the near
+// pass of every order present over it, each split into dispatches of at most the work budget by the
+// distribution's estimate per point, then the resolve.
 #define GTO_INT_FAR_GROUP         64u
-#define GTO_INT_FAR_BATCH_GROUPS  (1u << 14)   // 1M points, 8 MB of accumulators
+#define GTO_INT_FAR_LIST          4096u        // entries of a group's list: ~1700 near a 1152 atom protein
+#define GTO_INT_FAR_BATCH_GROUPS  2048u        // 32 MB of lists, 1 MB of accumulators
 #define GTO_INT_FAR_MAX_DISPATCH  65535u
 
 static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, gto_int_potential_far_args_t* a,
                                 int pts, uint32_t num_groups, uint64_t budget) {
     md_gpu_kernel_t k_far = gto_int_far_kernel(pts, g->far_order);
     md_gpu_kernel_t k_res = gto_int_far_resolve_kernel(pts);
-    if (!k_far || !k_res) {
+    md_gpu_kernel_t k_lst = gto_int_far_lists_kernel(pts);
+    if (!k_far || !k_res || !k_lst) {
         MD_LOG_ERROR("md_gto_int: far field kernels unavailable (md_gto_int_gpu_initialize not called?)");
         return false;
     }
@@ -1849,7 +1870,7 @@ static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_cha
     a->node_link  = g->buffer + g->off_node_link;
     a->node_range = g->buffer + g->off_node_range;
     a->multipoles = g->buffer + g->off_multipoles;
-    a->num_groups = num_groups;
+    a->list_cap   = GTO_INT_FAR_LIST;
     a->num_ranges = g->num_ranges;
     a->far_nh     = md_gto_int_num_hermite(g->far_order);
 
@@ -1863,23 +1884,32 @@ static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_cha
     md_gpu_temp_t scope = md_gpu_temp_begin(stream);
     const uint32_t batch = MIN(num_groups, GTO_INT_FAR_BATCH_GROUPS);
     const size_t accum_bytes = sizeof(uint32_t) * 2 * GTO_INT_FAR_GROUP * batch;
-    a->accum = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
-    bool ok = a->accum != 0;
-    if (!ok) MD_LOG_ERROR("md_gto_int: failed to allocate %zu bytes of accumulator", accum_bytes);
+    const size_t list_bytes  = sizeof(uint32_t) * GTO_INT_FAR_LIST * batch;
+    a->accum  = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
+    a->lists  = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, list_bytes).gpu;
+    a->counts = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * batch).gpu;
+    bool ok = a->accum && a->lists && a->counts;
+    if (!ok) MD_LOG_ERROR("md_gto_int: failed to allocate %zu bytes of accumulators and lists", accum_bytes + list_bytes);
 
     for (uint32_t b0 = 0; ok && b0 < num_groups; b0 += batch) {
         const uint32_t nb = MIN(batch, num_groups - b0);
         a->accum_first = b0;
         md_gpu_memset(stream, a->accum, 0, sizeof(uint32_t) * 2 * GTO_INT_FAR_GROUP * (size_t)nb);
+        a->group_first = b0;
+        a->group_end   = b0 + nb;
+        ok = ok && md_gpu_launch(stream, k_lst, md_gpu_grid((nb + GTO_INT_FAR_GROUP - 1) / GTO_INT_FAR_GROUP, 1, 1), a, sizeof(*a));
         for (int pass = -1; pass <= (int)g->max_order; ++pass) {
             md_gpu_kernel_t k = k_far;
             if (pass >= 0) {
                 const uint32_t L = (uint32_t)pass;
                 if (g->order_offset[L + 1] == g->order_offset[L]) continue;
                 k = gto_int_near_kernel(pts, L);
-                // gaussian d of order L has its coefficients at coeff_first[L] + (d - order_offset[L]) nh
-                const uint32_t nh = md_gto_int_num_hermite(L);
-                a->coeff_base = g->coeff_first[L] - g->order_offset[L] * nh;
+                // gaussian d of order L has its coefficients at coeff_first[L] + (d - order_offset[L]) nh.
+                // Not as one offset coeff_first[L] - order_offset[L] nh plus d nh: that is negative,
+                // and a pointer's index is signed (SPIR-V), so it only works where the compiler
+                // happens to add in 32 bits first - llvmpipe did not, on the protein.
+                a->coeff_first = g->coeff_first[L];
+                a->order_first = g->order_offset[L];
             }
             for (uint32_t g0 = 0; g0 < nb; g0 += per_dispatch) {
                 const uint32_t n = MIN(per_dispatch, nb - g0);
@@ -1895,6 +1925,53 @@ static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_cha
     }
     md_gpu_temp_end(stream, scope);
     md_gpu_stream_set_ordering(stream, prev_ordering);
+    return ok;
+}
+
+// The points in Morton order, into a->sorted (ORDER in eval_gto_int_potential_far.slang). Temp
+// memory: the caller's scope must last as long as the work that reads it.
+#define GTO_INT_SORT_MAX_GROUPS 4096u
+
+static bool gto_int_gpu_sort_points(md_gpu_stream_t stream, gto_int_potential_far_args_t* a) {
+    md_gpu_kernel_t k_bounds  = gto_int_kernel(&gto_int_k_sort[0], md_shader_eval_gto_int_potential_far_xyz_bounds_kernel());
+    md_gpu_kernel_t k_keys    = gto_int_kernel(&gto_int_k_sort[1], md_shader_eval_gto_int_potential_far_xyz_keys_kernel());
+    md_gpu_kernel_t k_bitonic = gto_int_kernel(&gto_int_k_sort[2], md_shader_eval_gto_int_potential_far_xyz_bitonic_kernel());
+    if (!k_bounds || !k_keys || !k_bitonic) return false;
+    if (a->num_xyz > (1u << 30)) {
+        MD_LOG_ERROR("md_gto_int: %u points, more than the far field's sort takes (2^30)", a->num_xyz);
+        return false;
+    }
+    uint32_t n = 2;
+    while (n < a->num_xyz) n <<= 1;
+    a->num_sorted = n;
+    a->sorted = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 2 * (size_t)n).gpu;
+    a->bounds = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 8).gpu;
+    if (!a->sorted || !a->bounds) {
+        MD_LOG_ERROR("md_gto_int: failed to allocate %zu bytes to sort the points", sizeof(uint32_t) * 2 * (size_t)n);
+        return false;
+    }
+    // min at the largest key, max at the smallest
+    bool ok = md_gpu_memset(stream, a->bounds, 0xFF, sizeof(uint32_t) * 3);
+    ok = ok && md_gpu_memset(stream, a->bounds + sizeof(uint32_t) * 3, 0x00, sizeof(uint32_t) * 3);
+
+    // Each kernel loops over what it has with a stride of the threads it was given
+    uint32_t groups = MIN(DIV_UP(DIV_UP(a->num_xyz, GTO_INT_FAR_GROUP), GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+    a->sort_stride = groups * GTO_INT_FAR_GROUP;
+    ok = ok && md_gpu_launch(stream, k_bounds, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
+
+    groups = MIN(DIV_UP(n, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+    a->sort_stride = groups * GTO_INT_FAR_GROUP;
+    ok = ok && md_gpu_launch(stream, k_keys, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
+
+    groups = MIN(DIV_UP(n / 2, GTO_INT_FAR_GROUP), GTO_INT_SORT_MAX_GROUPS);
+    a->sort_stride = groups * GTO_INT_FAR_GROUP;
+    for (uint64_t k = 2; ok && k <= n; k <<= 1) {
+        for (uint64_t j = k >> 1; ok && j > 0; j >>= 1) {
+            a->sort_j = (uint32_t)j;
+            a->sort_k = (uint32_t)k;
+            ok = md_gpu_launch(stream, k_bitonic, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
+        }
+    }
     return ok;
 }
 
@@ -2070,7 +2147,14 @@ bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_in
         a.xyz        = desc->xyz;
         a.out        = desc->out_potential;
         const uint64_t budget = desc->work_per_dispatch ? desc->work_per_dispatch : GTO_INT_DEFAULT_WORK;
-        return gto_int_gpu_far_run(stream, g, &a, 1, (desc->num_xyz + GTO_INT_FAR_GROUP - 1) / GTO_INT_FAR_GROUP, budget);
+        const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
+        md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
+        md_gpu_temp_t scope = md_gpu_temp_begin(stream);
+        const bool ok = gto_int_gpu_sort_points(stream, &a) &&
+                        gto_int_gpu_far_run(stream, g, &a, 1, DIV_UP(desc->num_xyz, GTO_INT_FAR_GROUP), budget);
+        md_gpu_temp_end(stream, scope);
+        md_gpu_stream_set_ordering(stream, prev_ordering);
+        return ok;
     }
 
     md_gpu_kernel_t k_resolve = gto_int_kernel(&gto_int_k_xyz_resolve, md_shader_eval_gto_int_potential_xyz_resolve_kernel());

@@ -654,7 +654,8 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_int_potential_far.slang
-    ENTRIES   grid_far6 grid_far7 grid_far8 grid_near0 grid_near1 grid_near2 grid_near3 grid_near4 grid_near5 grid_near6
+    ENTRIES   xyz_bounds xyz_keys xyz_bitonic grid_lists xyz_lists
+              grid_far6 grid_far7 grid_far8 grid_near0 grid_near1 grid_near2 grid_near3 grid_near4 grid_near5 grid_near6
               grid_near7 grid_near8 grid_resolve
               xyz_far6 xyz_far7 xyz_far8 xyz_near0 xyz_near1 xyz_near2 xyz_near3 xyz_near4 xyz_near5 xyz_near6
               xyz_near7 xyz_near8 xyz_resolve

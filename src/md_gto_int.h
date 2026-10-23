@@ -78,6 +78,10 @@ static inline uint32_t md_gto_int_num_hermite(uint32_t L) { return ((L + 1) * (L
 // md_gto_int_charges_desc_t::far_field_theta.
 #define MD_GTO_INT_FAR_FIELD_THETA 0.4
 
+// Which far field this is, for benchmarks to print: bumped with every change to how it is built
+// or evaluated.
+#define MD_GTO_INT_FAR_FIELD_REVISION "r2 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: a list per group of 64, points in Morton order)"
+
 // A node of the far field's octree (md_gto_int_charges_desc_t::far_field_theta). Its members are
 // item[item_begin, item_end): the gaussians and points inside its box. Its multipoles are about
 // 'center', and they stand for the members wherever the distance d from the centre satisfies
@@ -317,9 +321,10 @@ typedef struct md_gto_int_gpu_potential_xyz_desc_t {
 
 // Issue the evaluation into `stream`. Asynchronous: no readbacks, no waits. Returns false, logged, when
 // nothing was issued (invalid input, a kernel that could not be made, no memory for the accumulator).
-// Precision and summation as md_gto_int_gpu_potential_launch. With a far field, 64 consecutive points
-// share one walk of the tree, against their bounding sphere: points that are near one another in
-// the order they come in (a mesh's vertices are) make it cheap, scattered ones make it exact and slow.
+// Precision and summation as md_gto_int_gpu_potential_launch. With a far field the points are first
+// sorted along a Morton curve through their box (on the device, 8 bytes of temp memory a point, to the
+// next power of two), and 64 consecutive ones then share one walk of the tree against their bounding
+// sphere: the order they come in does not matter, to the time or to the result.
 bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc);
 
 #endif
