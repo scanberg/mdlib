@@ -125,8 +125,28 @@ struct IsoArgs {
     uint*     bstate;         // flood: per brick, the round it was evaluated in (1, 2, ...), FLOOD_NONE not (yet)
     uint      group_base;     // a launch in chunks: the first group of this one (node_index adds it)
     uint      grid_max;       // iso_grid: at most this many groups from group_base on (0: no chunks)
+    // dform: the matrices in tiles (md_gto_gpu_dmat) rather than dense: dmat holds num_dmat pools of dm_pool
+    // floats, one pattern for all (dm_tao, dm_map, tiles of 16 per edge, dm_nt per edge), without the AO
+    // normalizations (dform_at applies them)
+    uint      dsparse;
+    uint      dm_nt;
+    uint      dm_pool;
+    uint      _pad2;
+    uint*     dm_tao;         // per AO: its tiled index
+    uint*     dm_map;         // [dm_nt][dm_nt], I <= J: the tile pair's pool entry, INVALID where not kept
+    float*    dm_rows;        // iso_dmat_rows: per matrix and AO, sum over nu of |D_mu nu|
 };
 MD_SHADER_ARGS(IsoArgs);
+
+// Element (i, j) of a D-form matrix, with the AO normalizations: D the matrix's own (dense: [n][n]; in tiles:
+// its pool), as IsoArgs describes it
+float dform_at(float* D, uint sparse, uint* tao, uint* map, uint nt, float* nrm, uint n, uint i, uint j) {
+    if (sparse == 0u) return D[i * n + j];
+    uint ti = tao[i], tj = tao[j];
+    uint lo = min(ti, tj), hi = max(ti, tj);
+    uint e = map[(lo >> 4) * nt + (hi >> 4)];
+    return e == 0xFFFFFFFFu ? 0.0 : D[e * 256u + (lo & 15u) * 16u + (hi & 15u)] * nrm[i] * nrm[j];
+}
 
 static const uint  INVALID = 0xFFFFFFFFu;
 static const float U = 1.0 / 4194304.0;     // 2^-22: four float ulps, generous for fast-math backends
@@ -2365,7 +2385,7 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
             if (need) d_any = 1u;
             GroupMemoryBarrierWithGroupSync();
             if (d_any == 0u) continue;
-            float* D = a.dmat + u * n * n;
+            float* D = a.dmat + u * (a.dsparse != 0u ? a.dm_pool : n * n);
             float part[4] = {0.0, 0.0, 0.0, 0.0};          // rows 4 pg + v: Phi . T over this wave's column chunks
 
             dq_stage(0u, nq, 0u, tid);
@@ -2388,7 +2408,7 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
                     [ForceUnroll] for (int i = 0; i < 8; ++i) {
                         uint ra = dq_rao[buf * uint(D_CH) + tid / TC + 2u * uint(i)];
                         bool ok = fac != 0.0 && ra != INVALID && ca != INVALID;
-                        float v = D[ok ? ra * n + ca : 0u];
+                        float v = ok ? dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, ra, ca) : 0.0;
                         dv[i] = ok ? fac * v : 0.0;
                     }
                     // the next step's chunk (and columns, at a tile's end) into the other buffers
@@ -2508,7 +2528,7 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         if (!any) continue;                                // uniform
         float sm[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // rho_c, sum |pc| ga, sum |g| dev, sum dev ga, sum dev h, m^T |D| m, sum m rs
         if (!ovf) {
-            float* D = a.dmat + u * n * n;
+            float* D = a.dmat + u * (a.dsparse != 0u ? a.dm_pool : n * n);
             for (uint pb = 0u; pb < nb; ++pb) {
                 uint la0 = pb * uint(OD_BLK) + tid, la1 = la0 + uint(G_GROUP);
                 float4 m0 = la0 < A ? od_ao(la0, lo, hi, cen) : float4(0.0);
@@ -2536,9 +2556,9 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                         float d0[4], d1[4];
                         [ForceUnroll] for (int j = 0; j < 4; ++j) {
                             q[j] = od_q[v + uint(j)];
-                            float* row = D + asuint(q[j].w) * n;
-                            d0[j] = row[a0];
-                            d1[j] = row[a1];
+                            uint qa = asuint(q[j].w);
+                            d0[j] = dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, qa, a0);
+                            d1[j] = dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, qa, a1);
                         }
                         [ForceUnroll] for (int j = 0; j < 4; ++j) {
                             float apc = abs(q[j].x), e0 = abs(d0[j]), e1 = abs(d1[j]);
@@ -2548,11 +2568,11 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                     }
                     for (; v < qn; ++v) {
                         float4 q = od_q[v];
-                        float* row = D + asuint(q.w) * n;
+                        uint qa = asuint(q.w);
                         float apc = abs(q.x);
-                        float d = row[a0], e = abs(d);
+                        float d = dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, qa, a0), e = abs(d);
                         g0 += d * q.x; ga0 += e * apc; h0 += e * q.y; k0 += e * q.z;
-                        d = row[a1]; e = abs(d);
+                        d = dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, qa, a1); e = abs(d);
                         g1 += d * q.x; ga1 += e * apc; h1 += e * q.y; k1 += e * q.z;
                     }
                 }
@@ -3084,4 +3104,35 @@ void iso_bucket_triangles(uint3 tid : SV_DispatchThreadID) {
         a.out_idx[o + 0] = r.x; a.out_idx[o + 1] = r.y; a.out_idx[o + 2] = r.w;
         a.out_idx[o + 3] = r.y; a.out_idx[o + 4] = r.z; a.out_idx[o + 5] = r.w;
     }
+}
+
+// The D form's matrices in tiles: per matrix (gid.y) and AO mu, sum over nu of |D_mu nu| (dm_rows), and the octree's
+// tails drs = |nrm_mu| times that (as the dense form's: sum over nu of |D_mu nu nrm_mu nrm_nu| / |nrm_nu|), raised
+// by 1e-3 for the float sum's rounding. A tile pair (I, J), I <= J, holds rows of I, columns of J; a diagonal one
+// its upper triangle.
+[shader("compute")] [numthreads(64, 1, 1)]
+void iso_dmat_rows(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint i = gid.x * 64u + tid;
+    uint u = gid.y;
+    if (i >= a.num_ao) return;
+    uint nt = a.dm_nt;
+    uint ti = a.dm_tao[i];
+    uint I = ti >> 4, r = ti & 15u;
+    float* T = a.dmat + u * a.dm_pool;
+    float sum = 0.0;
+    for (uint J = 0u; J < nt; ++J) {
+        uint e = a.dm_map[min(I, J) * nt + max(I, J)];
+        if (e == INVALID) continue;
+        float* t = T + e * 256u;
+        if (J > I) {
+            for (uint c = 0u; c < 16u; ++c) sum += abs(t[r * 16u + c]);
+        } else if (J < I) {
+            for (uint c = 0u; c < 16u; ++c) sum += abs(t[c * 16u + r]);
+        } else {
+            for (uint c = 0u; c < 16u; ++c) sum += abs(c >= r ? t[r * 16u + c] : t[c * 16u + r]);
+        }
+    }
+    a.dm_rows[u * a.num_ao + i] = sum;
+    a.drs[u * a.num_ao + i] = abs(a.ao_nrm[i]) * sum * 1.001;
 }
