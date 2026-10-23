@@ -1386,6 +1386,36 @@ void md_gto_int_potential_grid(float* out_values, const md_grid_t* grid, const f
 #define GTO_INT_MAX_SLAB_VOXELS (1u << 21)
 #define GTO_INT_DEFAULT_WORK    ((uint64_t)1 << 31)
 
+// Short dispatches are not enough. On a GTX 1060 under Windows, the far field over a protein's surface
+// band lost the device (VK_ERROR_DEVICE_LOST) about 2 s into a single submission of ~2000 dispatches,
+// each well within the work budget: the watchdog (TDR) times what it is handed, and that was the
+// submission. So the launches also submit what they have issued each time it adds up to this many
+// dispatch budgets, as many short submissions that the OS can schedule the display's work between.
+#define GTO_INT_SUBMIT_DISPATCHES 4
+
+typedef struct {
+    md_gpu_stream_t stream;
+    uint64_t pending;       // work issued since the last submission
+    uint64_t limit;
+    uint32_t dispatches;
+    uint32_t submissions;
+} gto_int_pacer_t;
+
+static gto_int_pacer_t gto_int_pacer(md_gpu_stream_t stream, uint64_t budget) {
+    return (gto_int_pacer_t){ .stream = stream, .limit = budget * GTO_INT_SUBMIT_DISPATCHES };
+}
+
+// A dispatch of about 'work' has been issued
+static void gto_int_pace(gto_int_pacer_t* p, uint64_t work) {
+    p->dispatches += 1;
+    p->pending += work;
+    if (p->pending >= p->limit) {
+        md_gpu_stream_flush(p->stream);
+        p->pending = 0;
+        p->submissions += 1;
+    }
+}
+
 /* Mirrors RootArgs in eval_gto_int_potential.slang. */
 typedef struct {
     md_gpu_float4x4 index_to_world;
@@ -1849,7 +1879,7 @@ static void gto_int_index_to_world(md_gpu_float4x4* out, const md_grid_t* grid, 
 #define GTO_INT_FAR_MAX_DISPATCH  65535u
 
 static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, gto_int_potential_far_args_t* a,
-                                int pts, uint32_t num_groups, uint64_t budget) {
+                                int pts, uint32_t num_groups, uint64_t budget, gto_int_pacer_t* pacer) {
     md_gpu_kernel_t k_far = gto_int_far_kernel(pts, g->far_order);
     md_gpu_kernel_t k_res = gto_int_far_resolve_kernel(pts);
     md_gpu_kernel_t k_lst = gto_int_far_lists_kernel(pts);
@@ -1898,6 +1928,7 @@ static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_cha
         a->group_first = b0;
         a->group_end   = b0 + nb;
         ok = ok && md_gpu_launch(stream, k_lst, md_gpu_grid((nb + GTO_INT_FAR_GROUP - 1) / GTO_INT_FAR_GROUP, 1, 1), a, sizeof(*a));
+        gto_int_pace(pacer, 0);
         for (int pass = -1; pass <= (int)g->max_order; ++pass) {
             md_gpu_kernel_t k = k_far;
             if (pass >= 0) {
@@ -1915,14 +1946,20 @@ static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_cha
                 const uint32_t n = MIN(per_dispatch, nb - g0);
                 a->group_first = b0 + g0;
                 ok = ok && md_gpu_launch(stream, k, md_gpu_grid(n, 1, 1), a, sizeof(*a));
+                gto_int_pace(pacer, (uint64_t)n * per_group);   // the whole estimate each pass: generous
             }
         }
         for (uint32_t g0 = 0; g0 < nb; g0 += GTO_INT_FAR_MAX_DISPATCH) {
             const uint32_t n = MIN(GTO_INT_FAR_MAX_DISPATCH, nb - g0);
             a->group_first = b0 + g0;
             ok = ok && md_gpu_launch(stream, k_res, md_gpu_grid(n, 1, 1), a, sizeof(*a));
+            gto_int_pace(pacer, 0);
         }
     }
+    md_gpu_stream_flush(stream);
+    pacer->submissions += 1;
+    MD_LOG_DEBUG("md_gto_int: far field over %u groups of %u %s in %u batches: %u dispatches in %u submissions", num_groups, GTO_INT_FAR_GROUP,
+                 pts ? "points" : "voxels", DIV_UP(num_groups, batch), pacer->dispatches, pacer->submissions);
     md_gpu_temp_end(stream, scope);
     md_gpu_stream_set_ordering(stream, prev_ordering);
     return ok;
@@ -1932,7 +1969,7 @@ static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_cha
 // memory: the caller's scope must last as long as the work that reads it.
 #define GTO_INT_SORT_MAX_GROUPS 4096u
 
-static bool gto_int_gpu_sort_points(md_gpu_stream_t stream, gto_int_potential_far_args_t* a) {
+static bool gto_int_gpu_sort_points(md_gpu_stream_t stream, gto_int_potential_far_args_t* a, gto_int_pacer_t* pacer) {
     md_gpu_kernel_t k_bounds  = gto_int_kernel(&gto_int_k_sort[0], md_shader_eval_gto_int_potential_far_xyz_bounds_kernel());
     md_gpu_kernel_t k_keys    = gto_int_kernel(&gto_int_k_sort[1], md_shader_eval_gto_int_potential_far_xyz_keys_kernel());
     md_gpu_kernel_t k_bitonic = gto_int_kernel(&gto_int_k_sort[2], md_shader_eval_gto_int_potential_far_xyz_bitonic_kernel());
@@ -1970,8 +2007,11 @@ static bool gto_int_gpu_sort_points(md_gpu_stream_t stream, gto_int_potential_fa
             a->sort_j = (uint32_t)j;
             a->sort_k = (uint32_t)k;
             ok = md_gpu_launch(stream, k_bitonic, md_gpu_grid(groups, 1, 1), a, sizeof(*a));
+            gto_int_pace(pacer, 0);
         }
     }
+    md_gpu_stream_flush(stream);
+    pacer->submissions += 1;
     return ok;
 }
 
@@ -2036,7 +2076,8 @@ static bool gto_int_gpu_far_grid(md_gpu_stream_t stream, const md_gto_int_gpu_ch
     md_temp_end(temp);
 
     const uint64_t budget = desc->work_per_dispatch ? desc->work_per_dispatch : GTO_INT_DEFAULT_WORK;
-    const bool ok = gto_int_gpu_far_run(stream, g, &a, 0, num_groups, budget);
+    gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
+    const bool ok = gto_int_gpu_far_run(stream, g, &a, 0, num_groups, budget, &pacer);
     if (list.gpu) md_gpu_free(stream, list.gpu);
     return ok;
 }
@@ -2094,6 +2135,7 @@ bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gp
     const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
     md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
 
+    gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
     md_gpu_temp_t scope = md_gpu_temp_begin(stream);
     const size_t accum_bytes = sizeof(uint32_t) * 2 * plane * slab_z;
     a.accum = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
@@ -2120,11 +2162,13 @@ bool md_gto_int_gpu_potential_launch(md_gpu_stream_t stream, const md_gto_int_gp
                     a.count       = (uint32_t)MIN(per, (uint64_t)(end - first));
                     a.coeff_first = g->coeff_first[L] + (first - begin) * nh;
                     md_gpu_launch(stream, k, grid_groups, &a, sizeof(a));
+                    gto_int_pace(&pacer, nvox * a.count * gto_int_cost(L));
                 }
             }
 
             md_gpu_launch(stream, k_resolve, md_gpu_grid_for(k_resolve, dx, dy, nz), &a, sizeof(a));
         }
+        md_gpu_stream_flush(stream);
     }
     md_gpu_temp_end(stream, scope);
     md_gpu_stream_set_ordering(stream, prev_ordering);
@@ -2150,8 +2194,9 @@ bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_in
         const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
         md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
         md_gpu_temp_t scope = md_gpu_temp_begin(stream);
-        const bool ok = gto_int_gpu_sort_points(stream, &a) &&
-                        gto_int_gpu_far_run(stream, g, &a, 1, DIV_UP(desc->num_xyz, GTO_INT_FAR_GROUP), budget);
+        gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
+        const bool ok = gto_int_gpu_sort_points(stream, &a, &pacer) &&
+                        gto_int_gpu_far_run(stream, g, &a, 1, DIV_UP(desc->num_xyz, GTO_INT_FAR_GROUP), budget, &pacer);
         md_gpu_temp_end(stream, scope);
         md_gpu_stream_set_ordering(stream, prev_ordering);
         return ok;
@@ -2186,6 +2231,7 @@ bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_in
     const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
     md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
 
+    gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
     md_gpu_temp_t scope = md_gpu_temp_begin(stream);
     const size_t accum_bytes = sizeof(uint32_t) * 2 * (size_t)batch;
     a.accum = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
@@ -2210,10 +2256,12 @@ bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_in
                     a.count       = (uint32_t)MIN(per, (uint64_t)(end - first));
                     a.coeff_first = g->coeff_first[L] + (first - begin) * nh;
                     md_gpu_launch(stream, k, groups, &a, sizeof(a));
+                    gto_int_pace(&pacer, (uint64_t)np * a.count * gto_int_cost(L));
                 }
             }
             md_gpu_launch(stream, k_resolve, md_gpu_grid_for(k_resolve, np, 1, 1), &a, sizeof(a));
         }
+        md_gpu_stream_flush(stream);
     }
     md_gpu_temp_end(stream, scope);
     md_gpu_stream_set_ordering(stream, prev_ordering);

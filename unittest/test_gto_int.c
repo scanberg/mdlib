@@ -1144,6 +1144,17 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
 }
 
 #ifdef MD_HDF5
+// Whether the device has not been lost (a lost device makes every later call return at once, and a
+// timing of nothing)
+static bool int_test_gpu_alive(void) {
+    const char* e = md_gpu_last_error();
+    if (e && strstr(e, "DEVICE_LOST")) {
+        printf("  the device was lost: %s\n", e);
+        return false;
+    }
+    return true;
+}
+
 // The electrostatic potential of a large calculation as viamd evaluates it, timed: the distribution
 // with a far field, the band of a surface on the GPU (voxels 2.5 - 4.5 bohr from the nearest atom,
 // in 0.4 bohr voxels, as the bricks holding them), the same voxels as points, and both against the
@@ -1234,15 +1245,38 @@ UTEST(gto_int, benchmark) {
     ASSERT_TRUE(gq != NULL);
     printf("  on the device in %.2f s\n", md_tick_to_seconds(md_tick_now() - t0));
 
+    // First a sixteenth of the band (every 16th layer of bricks): it makes the kernels, and gives a
+    // rate even when the whole band does not go through
+    uint8_t* part = (uint8_t*)malloc(nv);
+    size_t num_part = 0;
+    for (size_t i = 0; i < nv; ++i) {
+        const size_t z = i / ((size_t)grid.dim[0] * grid.dim[1]);
+        part[i] = mask[i] && (z / 4) % 16 == 0;
+        num_part += part[i];
+    }
     md_gto_int_gpu_potential_desc_t pd = {
-        .charges = gq, .out_tex = tex, .grid = &grid, .sample_offset = { 0.5f, 0.5f, 0.5f }, .op = MD_GTO_OP_SET, .voxel_mask = mask,
+        .charges = gq, .out_tex = tex, .grid = &grid, .sample_offset = { 0.5f, 0.5f, 0.5f }, .op = MD_GTO_OP_SET, .voxel_mask = part,
     };
+    for (int r = 0; r < 2; ++r) {
+        t0 = md_tick_now();
+        ASSERT_TRUE(md_gto_int_gpu_potential_launch(stream, &pd));
+        md_gpu_stream_sync(stream);
+        const double ts = md_tick_to_seconds(md_tick_now() - t0);
+        ASSERT_TRUE(int_test_gpu_alive());
+        printf("  a sixteenth of the band on the GPU (%zu voxels): %.2f s (%.1f us per voxel)%s\n", num_part, ts, ts * 1e6 / (double)MAX(num_part, 1),
+               r == 0 ? ", with the kernels made" : "");
+        if (ts > 10.0) break;
+    }
+    free(part);
+
+    pd.voxel_mask = mask;
     double best = 1e30;
-    for (int r = 0; r < 2; ++r) {   // the first one creates the kernels; a second only where it is quick
+    for (int r = 0; r < 2; ++r) {   // a second only where it is quick
         t0 = md_tick_now();
         ASSERT_TRUE(md_gto_int_gpu_potential_launch(stream, &pd));
         md_gpu_stream_sync(stream);
         best = MIN(best, md_tick_to_seconds(md_tick_now() - t0));
+        ASSERT_TRUE(int_test_gpu_alive());
         if (best > 10.0) break;
     }
     md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
@@ -1270,6 +1304,7 @@ UTEST(gto_int, benchmark) {
     float* Vp = (float*)malloc(sizeof(float) * np);
     t0 = md_tick_now();
     ASSERT_TRUE(int_test_gpu_xyz(Vp, stream, &far, pts, np, 0, 0));
+    ASSERT_TRUE(int_test_gpu_alive());
     printf("  the same voxels as points, shuffled, on the GPU: %.2f s (with the upload and the distribution again)\n", md_tick_to_seconds(md_tick_now() - t0));
 
     // against the exact sum at some of them

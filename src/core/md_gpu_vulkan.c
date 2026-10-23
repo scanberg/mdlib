@@ -2412,7 +2412,7 @@ void md_gpu_stream_sync(md_gpu_stream_t s) {
         wi.semaphoreCount = 1;
         wi.pSemaphores    = &s->timeline;
         wi.pValues        = &s->submitted_value;
-        vkWaitSemaphores(s->device->device, &wi, UINT64_MAX);
+        md_vk_check(vkWaitSemaphores(s->device->device, &wi, UINT64_MAX), "vkWaitSemaphores");   /* a lost device shows here */
     }
 }
 
@@ -2427,7 +2427,7 @@ void md_gpu_sync_wait(md_gpu_sync_t sync) {
     wi.semaphoreCount = 1;
     wi.pSemaphores    = &sync.stream->timeline;
     wi.pValues        = &sync.value;
-    vkWaitSemaphores(sync.stream->device->device, &wi, UINT64_MAX);
+    md_vk_check(vkWaitSemaphores(sync.stream->device->device, &wi, UINT64_MAX), "vkWaitSemaphores");
 }
 
 /* Free a stream's own objects. The stream must be idle. */
