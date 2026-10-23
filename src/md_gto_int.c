@@ -1413,7 +1413,6 @@ static bool gto_int_pace(gto_int_pacer_t* p, uint64_t work) {
     p->pending += work;
     if (p->pending < p->limit) return false;
     p->pending = 0;
-    p->submissions += 1;
     return true;
 }
 
@@ -1950,6 +1949,7 @@ static md_gpu_addr_t gto_int_job_alloc(md_gto_int_gpu_job_t* j, size_t bytes) {
 // The work issued so far is done once this submission has passed
 static void gto_int_job_mark(md_gto_int_gpu_job_t* j) {
     const md_gpu_sync_t sync = md_gpu_stream_record(j->stream);
+    j->pacer.submissions += 1;
     uint32_t i;
     if (j->mark_tail - j->mark_head < GTO_INT_JOB_MARKS) {
         i = j->mark_tail++ % GTO_INT_JOB_MARKS;
