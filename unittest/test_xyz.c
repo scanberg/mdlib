@@ -52,6 +52,28 @@ UTEST(xyz, c60) {
     md_xyz_data_free(&data, md_get_heap_allocator());
 }
 
+// The names of the atoms are the symbols as the file writes them, without the zeros which pad them in the parsed data
+UTEST(xyz, atom_names) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* files[] = { MD_UNITTEST_DATA_DIR "/C60-Ih.xyz", MD_UNITTEST_DATA_DIR "/tryptophan.xyz", MD_UNITTEST_DATA_DIR "/extended.xyz", MD_UNITTEST_DATA_DIR "/h2o.arc" };
+    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, str_from_cstr(files[f]), MD_XYZ_OPTION_NONE));
+        ASSERT_GT(sys.atom.count, 0u);
+        for (size_t i = 0; i < sys.atom.count; ++i) {
+            const str_t name = md_atom_name(&sys.atom, i);
+            EXPECT_GT(name.len, 0u);
+            for (size_t k = 0; k < name.len; ++k) EXPECT_NE(0, (int)name.ptr[k]);
+        }
+    }
+    md_system_t c60 = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_xyz_system_init_from_file(&c60, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz"), MD_XYZ_OPTION_NONE));
+    EXPECT_TRUE(str_eq(md_atom_name(&c60.atom, 0), STR_LIT("C")));
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(xyz, xyz_xmol) {
     str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     md_xyz_data_t data = {0};

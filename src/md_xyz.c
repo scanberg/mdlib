@@ -613,7 +613,11 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         float x = data->coordinates[i].x;
         float y = data->coordinates[i].y;
         float z = data->coordinates[i].z;
-        str_t atom_symbol = {data->coordinates[i].element_symbol, sizeof(data->coordinates[i].element_symbol)};
+        // The symbol as written, not the whole buffer: the rest of it is zeros, which a name would carry along
+        const char* symbol_buf = data->coordinates[i].element_symbol;
+        size_t symbol_len = 0;
+        while (symbol_len < sizeof(data->coordinates[i].element_symbol) && symbol_buf[symbol_len]) ++symbol_len;
+        str_t atom_symbol = {symbol_buf, symbol_len};
         md_atomic_number_t atomic_number = (md_atomic_number_t)data->coordinates[i].atomic_number;
         float mass = md_atomic_number_mass(atomic_number);
         float radius = md_atomic_number_vdw_radius(atomic_number);
