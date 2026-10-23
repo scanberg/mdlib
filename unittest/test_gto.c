@@ -229,6 +229,70 @@ UTEST(gto, sph_to_cart_matrix_matches_dense) {
     md_temp_end(temp);
 }
 
+// md_gto_sph_to_cart_orbitals against md_gto_sph_to_cart_vector, orbital by orbital: an AO major input
+// with its AOs permuted (as a VeloxChem file is) and one large enough to run on several threads; a
+// [MO][AO] input in shell order; orbital counts that are not multiples of the block, and every l up to
+// MD_GTO_MAX_ANGULAR_MOMENTUM, so that tiles end on shells of every size.
+UTEST(gto, sph_to_cart_orbitals_matches_vector) {
+    enum { NUM_ATOMS = 40 };
+    md_gto_shell_t shells[(MD_GTO_MAX_ANGULAR_MOMENTUM + 1) * NUM_ATOMS];
+    float alpha[1] = {1.0f}, coeff[1] = {1.0f};
+    uint32_t ns = 0;
+    // atom by atom, so that the shells of each l are interleaved with the others
+    for (uint32_t a = 0; a < NUM_ATOMS; ++a) {
+        for (uint32_t l = 0; l <= MD_GTO_MAX_ANGULAR_MOMENTUM; ++l) {
+            shells[ns++] = (md_gto_shell_t){ .atom_idx = a, .primitive_offset = 0, .num_primitives = 1, .l = l };
+        }
+    }
+    md_gto_basis_t basis = { .num_shells = ns, .num_primitives = 1, .shells = shells, .alpha = alpha, .coeff = coeff };
+    const size_t n_sph  = md_gto_basis_num_sph_ao(&basis);
+    const size_t n_cart = md_gto_basis_num_ao(&basis);
+
+    int* perm = (int*)malloc(sizeof(int) * n_sph);
+    for (size_t a = 0; a < n_sph; ++a) perm[a] = (int)a;
+    uint64_t seed = 0x2545F4914F6CDD1Dull;
+    for (size_t a = n_sph - 1; a > 0; --a) {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        const size_t b = (size_t)(seed >> 33) % (a + 1);
+        const int t = perm[a]; perm[a] = perm[b]; perm[b] = t;
+    }
+
+    const size_t mos[] = { 1, 37, 3100 };    // 3100 x n_cart is past the threading threshold
+    for (size_t c = 0; c < sizeof(mos) / sizeof(mos[0]); ++c) {
+        const size_t nm = mos[c];
+        double* in  = (double*)malloc(sizeof(double) * nm * n_sph);
+        double* out = (double*)malloc(sizeof(double) * nm * n_cart);
+        double* sph = (double*)malloc(sizeof(double) * n_sph);
+        double* ref = (double*)malloc(sizeof(double) * n_cart);
+        ASSERT_TRUE(in && out && sph && ref);
+        for (size_t i = 0; i < nm * n_sph; ++i) {
+            seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+            in[i] = (double)(seed >> 11) / (double)(1ull << 53) - 0.5;
+        }
+        for (int layout = 0; layout < 2; ++layout) {
+            // 0: [AO][MO] through perm; 1: [MO][AO] in shell order
+            const size_t mo_stride = layout == 0 ? 1 : n_sph;
+            const size_t ao_stride = layout == 0 ? nm : 1;
+            const int*   p         = layout == 0 ? perm : NULL;
+            for (size_t i = 0; i < nm * n_cart; ++i) out[i] = NAN;
+            ASSERT_EQ(nm, md_gto_sph_to_cart_orbitals(out, in, mo_stride, ao_stride, p, nm, &basis));
+            double max_diff = 0.0, peak = 0.0;
+            for (size_t k = 0; k < nm; ++k) {
+                for (size_t a = 0; a < n_sph; ++a) sph[a] = in[k * mo_stride + (size_t)(p ? p[a] : (int)a) * ao_stride];
+                ASSERT_EQ(n_cart, md_gto_sph_to_cart_vector(ref, sph, &basis));
+                for (size_t q = 0; q < n_cart; ++q) {
+                    const double d = fabs(out[k * n_cart + q] - ref[q]);
+                    max_diff = (d > max_diff || d != d) ? d : max_diff;
+                    peak = fmax(peak, fabs(ref[q]));
+                }
+            }
+            EXPECT_LT(max_diff / peak, 1.0e-14);
+        }
+        free(ref); free(sph); free(out); free(in);
+    }
+    free(perm);
+}
+
 // md_gto_density_from_orbitals against the definition, D_ij = sum_k w_k C_ki C_kj: both layouts of C,
 // zero and negative weights, dimensions that are not multiples of the tiles, and one large enough
 // to run on several threads.

@@ -208,6 +208,11 @@ static const uint64_t avx_compress_lut[256] = {
 #define md_mm256_store_ps simde_mm256_store_ps
 #define md_mm256_store_pd simde_mm256_store_pd
 
+// Non-temporal: for output written once and not read soon. Weakly ordered on x86, so a writer ends
+// with md_mm_sfence before the values are handed to another thread.
+#define md_mm_stream_pd simde_mm_stream_pd
+#define md_mm_sfence simde_mm_sfence
+
 #define md_mm_maskstore_ps simde_mm_maskstore_ps
 #define md_mm_maskstore_pd simde_mm_maskstore_pd
 #define md_mm256_maskstore_ps simde_mm256_maskstore_ps

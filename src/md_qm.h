@@ -143,7 +143,7 @@ double md_qm_shell_norm_factor(uint32_t l, const double alpha[], const double co
 // s or p shell, which is why a reader that forgets it still looks correct until the first d.
 double md_qm_cart_coeff_factor(uint32_t l, uint32_t cart_idx);
 
-// Converts a whole [num_mo][n_sph] coefficient matrix into [num_mo][n_cart], row by row, where
+// Converts a whole [num_mo][n_sph] coefficient matrix into [num_mo][n_cart] (md_gto_sph_to_cart_orbitals), where
 // n_sph is md_gto_basis_num_sph_ao(basis) and n_cart is md_gto_basis_num_ao(basis). 'src' must
 // already be in the basis's own shell order and in md_gto's m-ascending order within each shell;
 // getting a file's order onto that is the reader's job and the one part of this that cannot be

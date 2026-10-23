@@ -287,8 +287,8 @@ typedef struct vlx_t {
 	int* local_to_global_atom_idx; // Maps local atom indices to global system indices for subsystems. NULL if not a subsystem.
 	// ao_remap[shell_ao_idx] = vlx_ao_idx
 	// Maps from shell order (angl→atom→func→isph) to VeloxChem matrix row order (angl→isph→atom→func).
-	// Built by vlx_resolve_basis_set() straight after the core block; used to permute every AO matrix
-	// the file carries - C, D, S and the density properties - into shell order.
+	// Built by vlx_resolve_basis_set() straight after the core block; used to read every AO matrix the
+	// file carries - C, D and the density properties - in shell order.
 	int* ao_remap;
 
 	// The number of atomic orbitals the basis set spans over this molecule, in VeloxChem's spherical
@@ -297,14 +297,14 @@ typedef struct vlx_t {
 	// names, so it is known before any block is read and whether or not there is an SCF block at all.
 	// AO-indexed data is checked against this, never the other way round. 0 when no basis is named.
 	//
-	// Not the dimension after vlx_convert_ao_data_to_cartesian(); that is md_gto_basis_num_ao().
+	// Not the dimension of the orbitals as they are held and published (Cartesian); that is md_gto_basis_num_ao().
 	size_t num_sph_ao;
 
 
 	// The system every block is read INTO. A reader's destination is the attribute table, not this
 	// struct: what stays here is only what a later step still has to look at - the atom list the
-	// basis is built over, and the AO matrices which are permuted and converted before they can be
-	// published. Everything else goes straight into 'sys' as it is read.
+	// basis is built over, and the orbitals (which point at the table's own copy, see
+	// vlx_read_orbitals). Everything else goes straight into 'sys' as it is read.
 	struct md_system_t* sys;
 
 	struct md_allocator_i* arena;
@@ -520,7 +520,7 @@ static size_t vlx_basis_num_sph_ao(const vlx_t* vlx) {
 	return vlx_basis_num_ao(vlx, false);
 }
 
-// The Cartesian count: the dimension of every AO matrix after vlx_convert_ao_data_to_cartesian.
+// The Cartesian count: the AO dimension of the orbitals as they are held and published (vlx_read_orbitals).
 static size_t vlx_basis_num_cart_ao(const vlx_t* vlx) {
 	return vlx_basis_num_ao(vlx, true);
 }
@@ -1935,141 +1935,85 @@ static bool h5_read_density_properties(vlx_t* vlx, hid_t group_handle) {
 }
 
 // ---------------------------------------------------------------------------
-// AO permutation helpers
-// Reorder AO-indexed matrices from VeloxChem order into shell order in-place.
+// The MO coefficients: read, reordered, converted and published in one pass
 // ---------------------------------------------------------------------------
-
-// Permute rows of an AO×MO matrix (num_ao rows, num_mo columns, row-major).
-// remap[shell_ao] = vlx_ao  =>  dst_row[shell_ao] = src_row[vlx_ao]
-// Permute rows of a [num_ao x num_mo] matrix according to remap and transpose to [num_mo x num_ao].
-// On entry  mat is [num_ao][num_mo] in VeloxChem AO order.
-// On return mat is [num_mo][num_ao] in shell order — each MO is a contiguous row.
-static void ao_permute(double* mat, size_t num_ao, size_t num_mo, const int* remap) {
-	md_temp_scope_t temp = md_temp_begin();
-	double* tmp = md_temp_alloc_array(temp, double, num_ao * num_mo);
-    if (!tmp) {
-        MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
-		goto done;
-    }
-	MEMCPY(tmp, mat, sizeof(double) * num_ao * num_mo);
-	for (size_t mo = 0; mo < num_mo; mo++) {
-		for (size_t ao = 0; ao < num_ao; ao++) {
-			mat[mo * num_ao + ao] = tmp[(size_t)remap[ao] * num_mo + mo];
-		}
-	}
-done:
-	md_temp_end(temp);
-}
-
-
-// Permute columns of a [num_mo x num_ao] matrix according to remap.
-static void ao_permute_cols(double* mat, size_t num_mo, size_t num_ao, const int* remap) {
-	md_temp_scope_t temp = md_temp_begin();
-	double* tmp = md_temp_alloc_array(temp, double, num_mo * num_ao);
-	if (!tmp) {
-		MD_LOG_ERROR("Failed to allocate temporary buffer for AO permutation");
-		goto done;
-	}
-	MEMCPY(tmp, mat, sizeof(double) * num_mo * num_ao);
-	for (size_t mo = 0; mo < num_mo; ++mo) {
-		for (size_t ao = 0; ao < num_ao; ++ao) {
-			mat[mo * num_ao + ao] = tmp[mo * num_ao + (size_t)remap[ao]];
-		}
-	}
-done:
-	md_temp_end(temp);
-}
-
-// ---------------------------------------------------------------------------
-// Pure/spherical -> Cartesian AO conversion
-// ---------------------------------------------------------------------------
-// VeloxChem stores AO data in the pure (2l+1) basis. md_gto_basis_t consumes the
-// Cartesian ((l+1)(l+2)/2) basis -- see the AO CONVENTION block in md_gto.h.
-// Everything AO-indexed is converted once, here, at the end of parsing.
+// VeloxChem stores an orbital set [AO][MO] (older files [MO][AO]) over its spherical AOs, in its own
+// AO order (angl -> isph -> atom -> func). Everything downstream wants [MO][AO] over the Cartesian
+// AOs that md_gto_basis_t is in, in shell order (angl -> atom -> func -> isph) - see the AO
+// CONVENTION block in md_gto.h. md_gto_sph_to_cart_orbitals does all of it at once: it reads the
+// file's layout through ao_remap and writes Cartesian rows, so there is no permuted, transposed or
+// spherical copy in between, and it writes them straight into the attribute the orbitals are
+// published as. The values as read live in a buffer freed on return; the table's copy is the only one.
 //
-// ORDER MATTERS. This must run *after* ao_permute*() has put the matrices in
-// shell order, and after every piece of format-internal math that touches the
-// AO basis. The Cartesian embedding is rank deficient (the s-type contaminant of
-// a d shell is unoccupied), so a converted overlap matrix is singular: anything
-// that inverts or Lowdin-orthogonalizes S must have run already.
+// The orbitals are linear in the AOs, so converting them as they are read is exact for everything
+// later done with them here (the NTOs and transition densities are built from them, and are linear
+// in them as well). A matrix of AO PAIRS is a different matter; see md_gto_sph_to_cart_matrix.
+//
+// 'out' is pointed at the table's storage, which outlives the vlx object. Without a basis set nothing
+// AO-indexed can be interpreted: the values are kept as read, in the arena, and are not published.
+static bool vlx_read_orbitals(vlx_2d_data_t* out, md_attribute_id_t* out_id, vlx_t* vlx, hid_t handle, const char* dataset,
+							  const size_t dim[2], size_t num_ao, size_t num_mo, str_t path, str_t label) {
+	ASSERT(out && out_id && vlx && dataset);
+	*out_id = MD_ATTRIBUTE_INVALID;
+	const size_t count = dim[0] * dim[1];
 
-// [num_mo][n_sph] -> [num_mo][n_cart], reallocated from 'arena'.
-static bool vlx_cart_convert_coeff(vlx_2d_data_t* mat, const md_gto_basis_t* basis,
-	size_t n_sph, size_t n_cart, md_allocator_i* arena, const char* label)
-{
-	if (!mat->data) return true;
-
-	if (mat->size[1] != n_sph) {
-		MD_LOG_ERROR("%s: expected %zu spherical AO columns, got %zu", label, n_sph, mat->size[1]);
-		return false;
+	if (!vlx->ao_remap) {
+		out->data = NULL;
+		md_array_resize(out->data, count, vlx->arena);
+		MEMCPY(out->size, dim, sizeof(out->size));
+		return h5_read_dataset_data(out->data, count, handle, H5T_NATIVE_DOUBLE, dataset);
 	}
 
-	const size_t num_mo = mat->size[0];
-	double* dst = (double*)md_alloc(arena, sizeof(double) * num_mo * n_cart);
-	if (!dst) {
-		MD_LOG_ERROR("%s: failed to allocate Cartesian coefficient matrix", label);
-		return false;
-	}
-
-	if (md_qm_sph_to_cart_coefficients(dst, mat->data, num_mo, basis) != num_mo) {
-		MD_LOG_ERROR("%s: spherical to Cartesian conversion failed", label);
-		return false;
-	}
-
-	mat->data    = dst;
-	mat->size[1] = n_cart;
-	return true;
-}
-
-static bool vlx_convert_ao_data_to_cartesian(vlx_t* vlx) {
 	md_temp_scope_t temp = md_temp_begin();
-	md_allocator_i* temp_alloc = md_temp_allocator(temp);
+	md_allocator_i* heap = md_get_heap_allocator();
+	double* raw = NULL;
 	bool result = false;
 
 	md_gto_basis_t basis = {0};
-	if (!vlx_gto_basis_extract(&basis, vlx, temp_alloc)) {
-		MD_LOG_ERROR("Failed to extract GTO basis for Cartesian AO conversion");
+	if (!vlx_gto_basis_extract(&basis, vlx, md_temp_allocator(temp)) || md_gto_basis_num_sph_ao(&basis) != num_ao) {
+		MD_LOG_ERROR("%s: the basis set does not span the %zu atomic orbitals the orbitals are over", dataset, num_ao);
 		goto done;
 	}
-
-	const size_t n_sph  = md_gto_basis_num_sph_ao(&basis);
 	const size_t n_cart = md_gto_basis_num_ao(&basis);
-	if (n_sph == 0 || n_cart == 0) {
-		MD_LOG_ERROR("Cartesian AO conversion: empty basis (n_sph=%zu n_cart=%zu)", n_sph, n_cart);
+
+	raw = (double*)md_alloc(heap, sizeof(double) * count);
+	if (!raw) {
+		MD_LOG_ERROR("%s: failed to allocate %zu bytes to read the orbitals into", dataset, sizeof(double) * count);
 		goto done;
 	}
-	// Two enumerations of one basis set - this one through md_gto_basis_t, vlx->num_sph_ao directly -
-	// and every AO matrix was checked against the latter. They have to agree.
-	if (n_sph != vlx->num_sph_ao) {
-		MD_LOG_ERROR("Cartesian AO conversion: the GTO basis spans %zu spherical AOs, the basis set %zu", n_sph, vlx->num_sph_ao);
+	if (!h5_read_dataset_data(raw, count, handle, H5T_NATIVE_DOUBLE, dataset)) {
 		goto done;
 	}
 
-
-	// In the restricted case the beta orbital shares alpha's buffers (see the
-	// struct memcpy in the parse path). Detect that so we convert once and
-	// re-alias rather than converting the same memory twice.
-	const bool beta_aliases_alpha =
-		(vlx->scf.beta.coefficients.data != NULL &&
-		 vlx->scf.beta.coefficients.data == vlx->scf.alpha.coefficients.data);
-
-	if (!vlx_cart_convert_coeff(&vlx->scf.alpha.coefficients, &basis, n_sph, n_cart, vlx->arena, "Alpha orbital coefficients")) goto done;
-
-	if (beta_aliases_alpha) {
-		MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(vlx_2d_data_t));
-	} else {
-		if (!vlx_cart_convert_coeff(&vlx->scf.beta.coefficients, &basis, n_sph, n_cart, vlx->arena, "Beta orbital coefficients")) goto done;
+	// f64 and not f32: md_gto takes AO coefficients as double to keep the QM code's precision at the
+	// boundary, and there is no point publishing them already narrowed.
+	const md_attribute_format_t format = {
+		.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { (uint32_t)num_mo, (uint32_t)n_cart },
+	};
+	const md_attribute_id_t id = md_qm_publish(vlx->sys, path, label, md_unit_none(), format, NULL, 0);
+	double* dst = id != MD_ATTRIBUTE_INVALID ? (double*)md_attributes_data(&vlx->sys->attributes, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
+	if (!dst) {
+		MD_LOG_ERROR("%s: failed to publish the orbitals as '" STR_FMT "'", dataset, STR_ARG(path));
+		goto done;
 	}
 
-	// The SCF densities and the overlap are not held (see vlx_scf_t), so there is nothing else to
-	// convert. Density properties are not converted here: they are not held at all, and their provider does
-	// the same permutation and conversion each time one is read from the file.
+	// [AO][MO] when the first dimension is the AO one - also for a square matrix, as VeloxChem writes it
+	const bool ao_major = dim[0] == num_ao;
+	const size_t mo_stride = ao_major ? 1 : num_ao;
+	const size_t ao_stride = ao_major ? num_mo : 1;
+	if (md_gto_sph_to_cart_orbitals(dst, raw, mo_stride, ao_stride, vlx->ao_remap, num_mo, &basis) != num_mo) {
+		MD_LOG_ERROR("%s: spherical to Cartesian conversion failed", dataset);
+		md_attributes_remove(&vlx->sys->attributes, id);
+		goto done;
+	}
 
-
-	// Derive the AO -> atom map from the shell list, so it cannot drift out of
-	// step with the AO ordering the evaluator walks.
+	out->data    = dst;
+	out->size[0] = num_mo;
+	out->size[1] = n_cart;
+	*out_id = id;
 	result = true;
 done:
+	if (raw) md_free(heap, raw, sizeof(double) * count);
 	md_temp_end(temp);
 	return result;
 }
@@ -2133,43 +2077,6 @@ static bool validate_orbital_canonical_layout(const vlx_orbital_t* orb, size_t n
 	}
 
 	return true;
-}
-
-static bool normalize_orbital_coefficients(vlx_orbital_t* orb, size_t num_ao, const int* remap, const char* label) {
-	ASSERT(orb);
-	ASSERT(label);
-
-	if (!orb->coefficients.data) {
-		return true;
-	}
-
-	const size_t rows = orb->coefficients.size[0];
-	const size_t cols = orb->coefficients.size[1];
-	if (rows == 0 || cols == 0) {
-		MD_LOG_ERROR("%s coefficient matrix has invalid dimensions [%zu x %zu]", label, rows, cols);
-		return false;
-	}
-
-	if (rows == num_ao) {
-		const size_t num_mo = cols;
-		if (remap) {
-			ao_permute(orb->coefficients.data, num_ao, num_mo, remap);
-		}
-		orb->coefficients.size[0] = num_mo;
-		orb->coefficients.size[1] = num_ao;
-		return true;
-	}
-
-	if (cols == num_ao) {
-		const size_t num_mo = rows;
-		if (remap) {
-			ao_permute_cols(orb->coefficients.data, num_mo, num_ao, remap);
-		}
-		return true;
-	}
-
-	MD_LOG_ERROR("%s coefficient matrix [%zu x %zu] does not contain AO dimension %zu", label, rows, cols, num_ao);
-	return false;
 }
 
 // The orbitals in canonical [MO x AO] layout over the Cartesian AOs of the basis set
@@ -2261,9 +2168,6 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
-	MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
-
 	md_array_resize(vlx->scf.alpha.energy.data, num_mo, vlx->arena);
 	vlx->scf.alpha.energy.size = num_mo;
 
@@ -2271,7 +2175,9 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	vlx->scf.alpha.occupancy.size = num_mo;
 
 	// Extract alpha data
-	if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, md_array_size(vlx->scf.alpha.coefficients.data), handle, H5T_NATIVE_DOUBLE, "C_alpha")) {
+	md_attribute_id_t alpha_coeff_id = MD_ATTRIBUTE_INVALID;
+	if (!vlx_read_orbitals(&vlx->scf.alpha.coefficients, &alpha_coeff_id, vlx, handle, "C_alpha", dim, num_ao, num_mo,
+						   STR_LIT("orbital/alpha/coefficient"), STR_LIT("Alpha Coefficient"))) {
 		return false;
 	}
 	if (!h5_read_dataset_data(vlx->scf.alpha.energy.data, md_array_size(vlx->scf.alpha.energy.data), handle, H5T_NATIVE_DOUBLE, "E_alpha")) {
@@ -2300,9 +2206,6 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 			return false;
 		}
 
-		md_array_resize(vlx->scf.beta.coefficients.data, beta_dim[0] * beta_dim[1], vlx->arena);
-		MEMCPY(vlx->scf.beta.coefficients.size, beta_dim, sizeof(beta_dim));
-
 		md_array_resize(vlx->scf.beta.energy.data, beta_num_mo, vlx->arena);
 		vlx->scf.beta.energy.size = beta_num_mo;
 
@@ -2310,7 +2213,9 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		vlx->scf.beta.occupancy.size = beta_num_mo;
 
 		// Extract beta data
-		if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, md_array_size(vlx->scf.beta.coefficients.data), handle, H5T_NATIVE_DOUBLE, "C_beta")) {
+		md_attribute_id_t beta_coeff_id = MD_ATTRIBUTE_INVALID;
+		if (!vlx_read_orbitals(&vlx->scf.beta.coefficients, &beta_coeff_id, vlx, handle, "C_beta", beta_dim, num_ao, beta_num_mo,
+							   STR_LIT("orbital/beta/coefficient"), STR_LIT("Beta Coefficient"))) {
 			return false;
 		}
 		if (!h5_read_dataset_data(vlx->scf.beta.energy.data, md_array_size(vlx->scf.beta.energy.data), handle, H5T_NATIVE_DOUBLE, "E_beta")) {
@@ -2321,8 +2226,12 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 		}
 		vlx_scf_density_locate(&vlx->scf.density_src[1], vlx, handle, "D_beta", num_ao);
 	} else {
-		// Shallow copy fields from Alpha
+		// Shallow copy fields from Alpha. One set of orbitals: beta's coefficients are a second name
+		// for alpha's, so a restricted calculation has an orbital/beta/coefficient for anyone to read.
 		MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(vlx_orbital_t));
+		if (alpha_coeff_id != MD_ATTRIBUTE_INVALID) {
+			md_qm_alias(sys, alpha_coeff_id, STR_LIT("orbital/beta/coefficient"));
+		}
 		if (vlx->scf.type == VLX_SCF_RESTRICTED_OPENSHELL) {
 			vlx->scf.beta.occupancy.data = 0;
 			md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
@@ -4582,39 +4491,9 @@ static bool vlx_parse_file(vlx_t* vlx, str_t filename, md_system_state_t* state)
 		goto done;
 	}
 
-	// Every AO matrix the file carried, from VeloxChem's AO order into shell order, and then out of the
-	// spherical basis into the Cartesian one. The dimension and the permutation both come from the
-	// basis set (vlx_resolve_basis_set), so this runs whenever there is a basis - with or without an
-	// SCF block. Density properties need it exactly as much as orbitals do.
-	if (vlx->ao_remap) {
-		const size_t num_ao = vlx->num_sph_ao;
-		const int*   remap  = vlx->ao_remap;
-
-		// Normalize SCF coefficients to canonical [num_mo x num_ao] in shell order.
-		if (!normalize_orbital_coefficients(&vlx->scf.alpha, num_ao, remap, "Alpha orbital")) {
-			goto done;
-		}
-		if (vlx->scf.type == VLX_SCF_UNRESTRICTED) {
-			if (!normalize_orbital_coefficients(&vlx->scf.beta, num_ao, remap, "Beta orbital")) {
-				goto done;
-			}
-		}
-		else {
-			// memcpy again from alpha into beta as dims may have changed.
-			MEMCPY(&vlx->scf.beta.coefficients, &vlx->scf.alpha.coefficients, sizeof(vlx_2d_data_t));
-		}
-
-
-
-		// Everything is now in shell order and no further AO-basis math is
-		// performed, so this is the point to leave VeloxChem's pure/spherical
-		// basis for the Cartesian one that md_gto_basis_t requires.
-		if (!vlx_convert_ao_data_to_cartesian(vlx)) {
-			MD_LOG_ERROR("Failed to convert AO data to the Cartesian basis");
-			goto done;
-		}
-	}
-
+	// The orbitals were put into shell order and the Cartesian basis as they were read
+	// (vlx_read_orbitals), and the density properties are read in them on demand. What is checked here
+	// is that the result is what everything downstream assumes.
 	if (!validate_scf_canonical_layout(vlx)) {
 		goto done;
 	}
@@ -5365,49 +5244,18 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 			md_qm_publish_overlap(sys);
 
 
-			// The MO matrix is stored [M][A] contiguously and is already Cartesian - the spherical
-			// to Cartesian conversion happens once at parse time - so this is a straight copy into
-			// a rank 2 attribute, and a consumer takes one orbital with a slice extract.
-			//
-			// f64 and not f32: md_gto takes AO coefficients as double to keep the QM code's
-			// precision at the boundary, and there is no point publishing them already narrowed.
-			// The AO axis is the basis just extracted. The coefficients were checked against the same
-			// basis set at load, so disagreeing here is a bug in this file rather than in the data.
+			// The MO coefficients, [M][A] over this basis, were published as they were read
+			// (vlx_read_orbitals): the conversion wrote them straight into the table, so there is no
+			// second copy to publish here. The coefficients were checked against the same basis set
+			// then, so disagreeing here is a bug in this file rather than in the data.
 			const size_t num_ao       = md_gto_basis_num_ao(&basis);
 			const size_t coeff_num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
 			if (num_ao > 0 && num_mos > 0) {
 				if (coeff_num_ao != num_ao) {
-					MD_LOG_ERROR("MO coefficients span %zu AOs but the basis has %zu; not publishing them", coeff_num_ao, num_ao);
+					MD_LOG_ERROR("MO coefficients span %zu AOs but the basis has %zu", coeff_num_ao, num_ao);
 				} else {
-					md_attribute_format_t format = {
-						.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
-						.shape = { (uint32_t)num_mos, (uint32_t)num_ao },
-					};
-					const size_t byte_size = num_mos * num_ao * sizeof(double);
-
-					// Row zero is the base of the whole matrix.
-					const double* alpha_coeff = vlx_scf_mo_coefficients(vlx, 0, VLX_SPIN_ALPHA);
-					const double* beta_coeff  = vlx_scf_mo_coefficients(vlx, 0, VLX_SPIN_BETA);
-
-					md_attribute_id_t alpha_coeff_id = MD_ATTRIBUTE_INVALID;
-					if (alpha_coeff) {
-						alpha_coeff_id = md_qm_publish(sys, STR_LIT("orbital/alpha/coefficient"),	STR_LIT("Alpha Coefficient"),	md_unit_none(), format, alpha_coeff, byte_size);
-					}
-					// Beta previously went unpublished whenever it shared alpha's buffer, so a
-					// restricted calculation simply had no orbital/beta/coefficient for anyone to
-					// read. A second name costs nothing and makes it present and correct.
-					if (beta_coeff) {
-						if (beta_coeff == alpha_coeff) {
-							md_qm_alias(sys, alpha_coeff_id, STR_LIT("orbital/beta/coefficient"));
-						} else {
-							md_qm_publish(sys, STR_LIT("orbital/beta/coefficient"),	STR_LIT("Beta Coefficient"),	md_unit_none(), format, beta_coeff, byte_size);
-						}
-					}
-
-
-
 					// Ground state densities: computed on demand from the coefficients and occupations
-					// just published above rather than kept as a second resident [A][A] copy. Which spin
+					// published with them rather than kept as a second resident [A][A] copy. Which spin
 					// channels appear, and whether beta is a second name for alpha, is decided there from
 					// what is in the TABLE - and it arrives at the same answer this used to reach by
 					// comparing the vlx object's own pointers, restricted open shell included.

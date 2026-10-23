@@ -216,6 +216,17 @@ bool md_gto_cart_ijk(int* out_i, int* out_j, int* out_k, uint32_t l, uint32_t ca
 // Returns the number of Cartesian coefficients written, 0 on failure.
 size_t md_gto_sph_to_cart_vector(double* out_cart, const double* in_sph, const md_gto_basis_t* basis);
 
+// Convert a set of AO coefficient vectors (orbitals) at once, from any layout and with the spherical
+// AOs in any order, into rows of Cartesian ones:
+// in_sph:   orbital k's spherical AO a (a in shell order, as basis enumerates them) at
+//           in_sph[k * mo_stride + ao_perm[a] * ao_stride], or at a * ao_stride with ao_perm NULL.
+//           [num_mo][n_sph] row major is mo_stride n_sph, ao_stride 1; AO major [n_sph][num_mo] is
+//           mo_stride 1, ao_stride num_mo.
+// out_cart: [num_mo][md_gto_basis_num_ao(basis)] row major; must not overlap in_sph.
+// Per orbital, the values of md_gto_sph_to_cart_vector (to rounding). In one pass over the input,
+// threaded for large sets. Returns num_mo, 0 on failure.
+size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_t mo_stride, size_t ao_stride, const int* ao_perm, size_t num_mo, const md_gto_basis_t* basis);
+
 // Convert a square AO-basis matrix (density, overlap, transition density):
 //   M_cart = T^T * M_sph * T
 // in_sph:   [n_sph][n_sph]   row-major

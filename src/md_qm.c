@@ -272,11 +272,9 @@ size_t md_qm_sph_to_cart_coefficients(double* dst, const double* src, size_t num
     if (n_sph == 0 || n_cart == 0) {
         return 0;
     }
-    for (size_t mo = 0; mo < num_mo; ++mo) {
-        if (md_gto_sph_to_cart_vector(dst + mo * n_cart, src + mo * n_sph, basis) != n_cart) {
-            MD_LOG_ERROR("Spherical to Cartesian conversion failed for orbital %zu", mo);
-            return 0;
-        }
+    if (md_gto_sph_to_cart_orbitals(dst, src, n_sph, 1, NULL, num_mo, basis) != num_mo) {
+        MD_LOG_ERROR("Spherical to Cartesian conversion of %zu orbitals failed", num_mo);
+        return 0;
     }
     return num_mo;
 }
