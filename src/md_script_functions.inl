@@ -580,6 +580,9 @@ static int _chain_irng(data_t*, data_t[], eval_context_t*);     // (irange[]) ->
 static int _chain_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> atomset
 static int _molecule_irng(data_t*, data_t[], eval_context_t*);  // (irange[]) -> atomset[]
 static int _fill_molecule(data_t*, data_t[], eval_context_t*);  // (atomset[]) -> atomset[]
+static int _part_irng(data_t*, data_t[], eval_context_t*);      // (irange[]) -> atomset[]
+static int _fill_part(data_t*, data_t[], eval_context_t*);      // (atomset[]) -> atomset[]
+static int _glycan(data_t*, data_t[], eval_context_t*);         // -> atomset[]
 
 // Property Compute
 static int _distance        (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
@@ -931,6 +934,7 @@ static procedure_t procedures[] = {
     {STR_INIT("nucleotide"),TI_ATOMSET_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {STR_INIT("water"),     TI_ATOMSET_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
     {STR_INIT("lipid"),     TI_ATOMSET_ARR, 0, {0},                _lipid,         FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("glycan"),    TI_ATOMSET_ARR, 0, {0},                _glycan,        FLAG_QUERYABLE_LENGTH},
 
     // A compile error where the system has no such region: a QM region, and atoms which are not in it
     {STR_INIT("qm"),          TI_ATOMSET_ARR, 0, {0},              _qm,            FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -951,6 +955,8 @@ static procedure_t procedures[] = {
     {STR_INIT("chain"),        TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _chain_irng,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     // Molecules (md_structure_data_t): by position, one set each
     {STR_INIT("molecule"),     TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _molecule_irng,    FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    // Parts (md_part_data_t): a strand, a glycan tree, a ligand, an ion, a water; by position, one set each
+    {STR_INIT("part"),         TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _part_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
     // Also have variable result (well its a single atomset, but the number of atoms within is not fixed)
@@ -1040,6 +1046,7 @@ static procedure_t procedures[] = {
     {STR_INIT("residue"),   TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_comp,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("chain"),     TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_chain, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {STR_INIT("molecule"),  TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_molecule, FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {STR_INIT("part"),      TI_ATOMSET_ARR, 1,  {TI_ATOMSET_ARR},  _fill_part,     FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
     // --- BONDS ---
     // The atoms overload first: bond() without arguments is that one
@@ -4561,6 +4568,126 @@ static int _fill_molecule(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
 }
 
+// ### PARTS ###
+// The parts of the system (md_part_data_t): a polymer strand, a glycan tree, a ligand, an ion, a water. Each is a run of
+// consecutive residues, so one range of atoms.
+
+// The parts with an atom in the context (all of them without one), in their order
+static md_array(int32_t) get_part_indices_in_context(const md_system_t* sys, const md_bitset_t* bitfield, md_allocator_i* alloc) {
+    md_array(int32_t) arr = 0;
+    for (size_t p = 0; p < md_system_part_count(sys); ++p) {
+        const md_urange_t r = md_system_part_atom_range(sys, p);
+        if (!bitfield || md_bitset_count_range(*bitfield, r.beg, r.end)) md_array_push(arr, (int32_t)p, alloc);
+    }
+    return arr;
+}
+
+// part(i): the parts by their 1-based position, inside a context among those with an atom in it, each cut to it
+static int _part_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->sys);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+
+    md_array(int32_t) indices = get_part_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), (int64_t)md_array_size(indices), "part", !dst, ctx);
+    if (count < 0) return count;
+
+    if (dst) {
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t r = md_system_part_atom_range(ctx->sys, (size_t)indices[pos[i]]);
+            set_writer_push_range(&w, r.beg, r.end);
+        }
+        set_writer_end(&w);
+        return 0;
+    }
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+}
+
+// part(sel): the parts the selection has an atom of, whole, one set each
+static int _fill_part(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
+    ASSERT(ctx && ctx->sys);
+    const md_system_t* sys = ctx->sys;
+
+    const int64_t num_bf = element_count(arg[0]);
+    const md_bitset_t* src_bf = as_bitset(arg[0]);
+    md_bitset_t tmp_bf = {0};
+    if (num_bf != 1) {
+        tmp_bf = _internal_flatten_bf(src_bf, (size_t)num_bf, ctx->temp_alloc);
+        src_bf = &tmp_bf;
+    }
+    md_array(int32_t) parts = get_part_indices_in_context(sys, src_bf, ctx->temp_alloc);
+    const int count = (int)md_array_size(parts);
+
+    if (dst) {
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, false);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t r = md_system_part_atom_range(sys, (size_t)parts[i]);
+            set_writer_push_range(&w, r.beg, r.end);
+        }
+        set_writer_end(&w);
+        return 0;
+    }
+
+    if (ctx->backchannel && (ctx->arg_flags[0] & FLAG_DYNAMIC)) {
+        ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+    }
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+}
+
+// glycan(): one selection per glycan, a part of saccharides only: each of its residues has the ring of a monosaccharide
+// (MD_RING_FLAG_SUGAR) and is of no polymer. A glycan tree attached to a protein, an oligosaccharide on its own, a
+// single sugar. Within a context the glycans with an atom in it, whole, as lipid() takes them.
+static int _glycan(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)arg;
+    ASSERT(ctx && ctx->sys);
+    const md_system_t* sys = ctx->sys;
+    const size_t num_comp = sys->component.count;
+
+    md_array(int32_t) glycans = 0;
+    if (num_comp && md_system_part_count(sys)) {
+        // The residues with a sugar ring
+        uint8_t* sugar = (uint8_t*)md_alloc(ctx->temp_alloc, num_comp);
+        MEMSET(sugar, 0, num_comp);
+        const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+        for (size_t r = 0; r < num_rings; ++r) {
+            if (!(md_system_ring_flags(sys, r) & MD_RING_FLAG_SUGAR)) continue;
+            const int32_t* atoms = md_index_range_beg(&sys->ring, r);
+            const md_component_idx_t c = md_component_find_by_atom_idx(&sys->component, (size_t)atoms[0]);
+            if (c >= 0) sugar[c] = 1;
+        }
+        for (size_t p = 0; p < md_system_part_count(sys); ++p) {
+            const md_urange_t comps = md_system_part_comp_range(sys, p);
+            bool all = comps.beg < comps.end;
+            for (uint32_t c = comps.beg; c < comps.end && all; ++c) {
+                const md_component_kind_t kind = md_component_kind(&sys->component, c);
+                all = sugar[c] && kind != MD_COMPONENT_KIND_AMINO_ACID && kind != MD_COMPONENT_KIND_NUCLEOTIDE;
+            }
+            if (!all) continue;
+            const md_urange_t r = md_system_part_atom_range(sys, p);
+            if (ctx->mol_ctx && !md_bitset_count_range(*ctx->mol_ctx, r.beg, r.end)) continue;
+            md_array_push(glycans, (int32_t)p, ctx->temp_alloc);
+        }
+    }
+    const int count = (int)md_array_size(glycans);
+
+    if (dst) {
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, false);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t r = md_system_part_atom_range(sys, (size_t)glycans[i]);
+            set_writer_push_range(&w, r.beg, r.end);
+        }
+        set_writer_end(&w);
+        return 0;
+    }
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+}
+
 // Property Compute
 
 static inline void draw_distance_text(const vec3_t c_a, const vec3_t c_b, const float value, md_script_vis_t* vis) {
@@ -6928,8 +7055,9 @@ typedef enum {
     COUNT_TYPE_UNKNOWN = 0,
     COUNT_TYPE_ATOM = 1,
     COUNT_TYPE_RESIDUE = 2,
-    COUNT_TYPE_CHAIN = 3,
-    COUNT_TYPE_MOLECULE = 4,
+    COUNT_TYPE_PART = 3,
+    COUNT_TYPE_CHAIN = 4,
+    COUNT_TYPE_MOLECULE = 5,
     COUNT_TYPE_COUNT
 } count_type_t;
 
@@ -6937,6 +7065,7 @@ static const str_t count_type_str[] = {
     STR_INIT(""),
     STR_INIT("atom"),
     STR_INIT("residue"),
+    STR_INIT("part"),
     STR_INIT("chain"),
     STR_INIT("molecule"),
 };
@@ -6976,6 +7105,13 @@ size_t internal_count(const md_bitset_t* bf_arr, size_t bf_len, count_type_t cou
                 }
             }
             break;
+        case COUNT_TYPE_PART: {
+            for (size_t p = 0; p < md_system_part_count(ctx->sys); ++p) {
+                const md_urange_t range = md_system_part_atom_range(ctx->sys, p);
+                count += md_bitset_count_range(bf, range.beg, range.end) > 0;
+            }
+            break;
+        }
         case COUNT_TYPE_CHAIN: {
             for (size_t c = 0; c < md_system_chain_count(ctx->sys); ++c) {
                 count += chain_in_context(ctx->sys, c, &bf) ? 1 : 0;

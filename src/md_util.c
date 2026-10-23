@@ -5220,8 +5220,111 @@ bool md_util_system_infer_chains(md_system_t* sys) {
     return true;
 }
 
+static inline bool component_kind_is_monomer(md_component_kind_t kind) {
+    return kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+}
+
+bool md_util_system_infer_parts(md_system_t* sys) {
+    if (!sys) {
+        MD_LOG_ERROR("Missing system");
+        return false;
+    }
+    ASSERT(sys->alloc);
+    md_allocator_i* alloc = sys->alloc;
+    md_array_free(sys->part.comp_offset, alloc);
+    MEMSET(&sys->part, 0, sizeof(sys->part));
+
+    const size_t num_comp = sys->component.count;
+    const size_t num_inst = sys->instance.count;
+    if (num_comp == 0 || num_inst == 0) return true;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+    // The bonds between residues, but those of a metal coordinated by residues: the component bonded to the one before
+    // it (by an atom of a backbone: a cap, a modified residue in a strand, rather than a glycan on a side chain), and
+    // the last component before each which it is bonded to
+    uint64_t* bonded_to_prev = make_bitfield(num_comp, temp_arena);
+    uint64_t* backbone_to_prev = make_bitfield(num_comp, temp_arena);
+    int32_t* last_bonded_before = md_temp_alloc_array(temp, int32_t, num_comp);
+    for (size_t c = 0; c < num_comp; ++c) last_bonded_before[c] = -1;
+    if (sys->bond.count > 0) {
+        md_component_idx_t* atom_comp = md_temp_alloc_array(temp, md_component_idx_t, MAX(1, sys->atom.count));
+        MEMSET(atom_comp, -1, sizeof(md_component_idx_t) * sys->atom.count);
+        for (size_t c = 0; c < num_comp; ++c) {
+            const md_urange_t r = md_component_atom_range(&sys->component, c);
+            for (uint32_t a = r.beg; a < r.end && a < sys->atom.count; ++a) atom_comp[a] = (md_component_idx_t)c;
+        }
+        for (size_t b = 0; b < sys->bond.count; ++b) {
+            if (sys->bond.flags && (!md_bond_is_graph(sys->bond.flags[b]) || md_bond_kind(sys->bond.flags[b]) == MD_BOND_KIND_COORDINATE)) continue;
+            const md_atom_pair_t pair = sys->bond.pairs[b];
+            if ((size_t)pair.idx[0] >= sys->atom.count || (size_t)pair.idx[1] >= sys->atom.count) continue;
+            const md_component_idx_t x = atom_comp[pair.idx[0]];
+            const md_component_idx_t y = atom_comp[pair.idx[1]];
+            if (x < 0 || y < 0 || x == y) continue;
+            const md_component_idx_t lo = MIN(x, y), hi = MAX(x, y);
+            if (hi - lo == 1) {
+                bitfield_set_bit(bonded_to_prev, hi);
+                if ((md_atom_flags(&sys->atom, pair.idx[0]) | md_atom_flags(&sys->atom, pair.idx[1])) & MD_ATOM_FLAG_BACKBONE) {
+                    bitfield_set_bit(backbone_to_prev, hi);
+                }
+            }
+            last_bonded_before[hi] = MAX(last_bonded_before[hi], lo);
+        }
+    }
+
+    md_array_push(sys->part.comp_offset, 0, alloc);
+    for (size_t i = 0; i < num_inst; ++i) {
+        const md_urange_t comps = md_instance_component_range(&sys->instance, i);
+        if (comps.beg >= comps.end || comps.end > num_comp) continue;
+        // An instance need not begin where the last ended (a system with residues in no instance): those are parts of one residue each
+        uint32_t last = sys->part.comp_offset[md_array_size(sys->part.comp_offset) - 1];
+        for (uint32_t c = last; c < comps.beg; ++c) md_array_push(sys->part.comp_offset, c + 1, alloc);
+
+        uint32_t beg = comps.beg;
+        bool run_polymer = component_kind_is_monomer(md_component_kind(&sys->component, beg));
+        for (uint32_t j = comps.beg + 1; j <= comps.end; ++j) {
+            bool goes_on = false;
+            if (j < comps.end) {
+                const md_component_kind_t kj = md_component_kind(&sys->component, j);
+                const md_component_kind_t kp = md_component_kind(&sys->component, j - 1);
+                const bool bonded = bitfield_test_bit(bonded_to_prev, j);
+                if (kj == MD_COMPONENT_KIND_WATER || kj == MD_COMPONENT_KIND_ION || kp == MD_COMPONENT_KIND_WATER || kp == MD_COMPONENT_KIND_ION) {
+                    goes_on = false;
+                } else if (component_kind_is_monomer(kj) && kj == kp) {
+                    // A strand, over a gap unless the chain ends there
+                    goes_on = bonded || !polymer_chain_ends_between(sys, j - 1, j);
+                } else if (!component_kind_is_monomer(kj) && !run_polymer) {
+                    // Of no polymer: on while bonded to a residue of the run (the branches of a glycan)
+                    goes_on = bonded || last_bonded_before[j] >= (int32_t)beg;
+                } else {
+                    // A cap or a modified residue bonded into a strand by its backbone, not a glycan on a side chain
+                    goes_on = bitfield_test_bit(backbone_to_prev, j);
+                }
+            }
+            if (goes_on) {
+                run_polymer |= component_kind_is_monomer(md_component_kind(&sys->component, j));
+                continue;
+            }
+            md_array_push(sys->part.comp_offset, j, alloc);
+            beg = j;
+            if (j < comps.end) run_polymer = component_kind_is_monomer(md_component_kind(&sys->component, j));
+        }
+    }
+    // Residues after the last instance
+    for (uint32_t c = sys->part.comp_offset[md_array_size(sys->part.comp_offset) - 1]; c < num_comp; ++c) {
+        md_array_push(sys->part.comp_offset, c + 1, alloc);
+    }
+    sys->part.count = md_array_size(sys->part.comp_offset) - 1;
+
+    md_temp_end(temp);
+    return true;
+}
+
 static void clear_entities_and_instances(md_system_t* sys, md_allocator_i* alloc) {
     clear_chains(sys, alloc);
+    md_array_free(sys->part.comp_offset, alloc);
+    MEMSET(&sys->part, 0, sizeof(sys->part));
     md_array_free(sys->instance.id, alloc);
     md_array_free(sys->instance.auth_id, alloc);
     md_array_free(sys->instance.comp_offset, alloc);
@@ -5239,9 +5342,6 @@ static void clear_entities_and_instances(md_system_t* sys, md_allocator_i* alloc
     sys->entity.count = 0;
 }
 
-static inline bool component_kind_is_monomer(md_component_kind_t kind) {
-    return kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE;
-}
 
 // Whether a nucleotide is DNA (1) or RNA (2), 0 when it cannot be told. The name decides when it is one of the
 // standard names (DA, DC, ... and A, C, ...). Otherwise (ADE, CYT, ... of CHARMM, which are both) the sugar does: a
@@ -5485,7 +5585,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
     md_array_push(sys->instance.comp_offset, (uint32_t)num_comp, alloc);
 
     md_temp_end(temp);
-    return md_util_system_infer_chains(sys);
+    return md_util_system_infer_chains(sys) && md_util_system_infer_parts(sys);
 }
 
 static inline bool compare_ring(const int* ring_a, int ring_a_size, const int* ring_b, int ring_b_size) {
@@ -12754,6 +12854,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         md_util_system_infer_entity_kinds(sys);
         // From the author ids of the instances, whoever made them, and from what is a polymer
         md_util_system_infer_chains(sys);
+        md_util_system_infer_parts(sys);
     }
 
     if (flags & MD_UTIL_INFER_STRUCTURE_BIT) {

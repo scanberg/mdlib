@@ -107,6 +107,21 @@ typedef struct md_chain_data_t {
     md_chain_idx_t* comp_chain;     // [component count] The chain of each component, -1 for one in none
 } md_chain_data_t;
 
+// Part: one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water: the parts the molecules are
+// built of, each a run of consecutive residues (components) of one instance. A molecule may hold several (a
+// glycoprotein, a strand and its glycans; the two strands of a duplex a topology gives as one molecule type), a
+// chain likewise (a strand and the ligands and waters filed under its id).
+//   - A polymer strand goes on over a gap (residues missing from a crystal structure) and ends where the chemistry says
+//     the chain does (CHAIN BREAKS in md_util.h). A residue of no polymer bonded to it in the run (a cap, a modified
+//     residue) is of it. A bond from a side chain (a disulfide, a glycosylation) joins no parts.
+//   - Residues of no polymer are one part while each is bonded to one of it: a glycan tree, a lipid of several residues.
+//     A coordination bond between residues joins none: a metal is a part of its own, as each ion and water is.
+// They are derived from the instances, the bonds and the kinds of the residues (md_util_system_infer_parts).
+typedef struct md_part_data_t {
+    size_t count;
+    uint32_t* comp_offset;          // [count + 1]
+} md_part_data_t;
+
 // Entity: a molecule type, or a polymer sequence, of which the system holds one or more instances.
 // What it is lives in its flags (md_entity_kind_t), which its instances share.
 typedef struct md_entity_data_t {
@@ -447,6 +462,7 @@ typedef struct md_system_t {
     md_component_data_t         component;
     md_instance_data_t          instance;
     md_chain_data_t             chain;              // The instances by the chain id the data gives them, see md_chain_data_t
+    md_part_data_t              part;               // Strands, glycan trees, ligands, ions, waters, see md_part_data_t
     md_entity_data_t            entity;
 
     md_protein_backbone_data_t  protein_backbone;
@@ -1398,6 +1414,54 @@ static inline size_t md_system_chain_atom_count(const md_system_t* sys, size_t c
         n += r.end - r.beg;
     }
     return n;
+}
+
+static inline size_t md_system_part_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return sys->part.count;
+}
+
+// The components of the part
+static inline md_urange_t md_system_part_comp_range(const md_system_t* sys, size_t part_idx) {
+    ASSERT(sys);
+    md_urange_t r = {0, 0};
+    if (sys->part.comp_offset && part_idx < sys->part.count) {
+        r.beg = sys->part.comp_offset[part_idx];
+        r.end = sys->part.comp_offset[part_idx + 1];
+    }
+    return r;
+}
+
+// The atoms of the part: one range, as its components are consecutive
+static inline md_urange_t md_system_part_atom_range(const md_system_t* sys, size_t part_idx) {
+    ASSERT(sys);
+    const md_urange_t comps = md_system_part_comp_range(sys, part_idx);
+    md_urange_t r = {0, 0};
+    if (comps.beg < comps.end && sys->component.atom_offset && comps.end <= sys->component.count) {
+        r.beg = sys->component.atom_offset[comps.beg];
+        r.end = sys->component.atom_offset[comps.end];
+    }
+    return r;
+}
+
+// The part of the component, -1 for none (a system whose parts were not inferred)
+static inline int32_t md_system_part_find_by_comp_idx(const md_system_t* sys, size_t comp_idx) {
+    ASSERT(sys);
+    const md_part_data_t* p = &sys->part;
+    if (!p->comp_offset || p->count == 0 || comp_idx >= p->comp_offset[p->count]) return -1;
+    size_t lo = 0, hi = p->count;
+    while (lo + 1 < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (p->comp_offset[mid] <= comp_idx) lo = mid; else hi = mid;
+    }
+    return comp_idx >= p->comp_offset[lo] ? (int32_t)lo : -1;
+}
+
+// The part of the atom, -1 for an atom in none
+static inline int32_t md_system_part_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
+    ASSERT(sys);
+    const md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(sys, atom_idx);
+    return comp_idx >= 0 ? md_system_part_find_by_comp_idx(sys, (size_t)comp_idx) : -1;
 }
 
 // The kind of the component which holds the atom, MD_COMPONENT_KIND_OTHER when it is in none.

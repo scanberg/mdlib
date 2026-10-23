@@ -397,6 +397,9 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->chain.run, alloc);
     md_array_free(sys->chain.comp_chain, alloc);
 
+    // PART
+    md_array_free(sys->part.comp_offset, alloc);
+
     // ENTITY
     md_array_free(sys->entity.id, alloc);
     md_array_free(sys->entity.flags, alloc);

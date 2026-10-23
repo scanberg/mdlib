@@ -305,8 +305,8 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 | Category | Procedures |
 |---|---|
 | [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`head`](#head), [`tail`](#tail), [`ring`](#ring) |
-| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`lipid`](#lipid), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
-| [Selectors: chains and molecules](#selectors-chains-and-molecules) | [`chain`](#chain) (`chain_id`, `auth_id`), [`molecule`](#molecule) |
+| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`lipid`](#lipid), [`glycan`](#glycan), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
+| [Selectors: chains, molecules and parts](#selectors-chains-molecules-and-parts) | [`chain`](#chain) (`chain_id`, `auth_id`), [`molecule`](#molecule), [`part`](#part) |
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
 | [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`pool`](#pool), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
@@ -660,6 +660,25 @@ membrane = lipid();
 n_lipids = count(lipid(), "molecule");                # lipid molecules
 ```
 
+### glycan
+
+<!-- proc name=glycan category=selector.residue -->
+
+```text
+glycan() -> atomset[]
+```
+
+Every glycan, one selection per glycan [part](#part): a tree of saccharides attached to a protein (N- or O-linked), an
+oligosaccharide on its own, a single sugar. Its residues are those with the ring of a monosaccharide, a furanose or a
+pyranose, whatever they are named (NAG, BGLCNA, MAN, ...). A glycan of a glycoprotein is of the protein's molecule,
+so `glycan()` is how it is selected alone. Within a context, the glycans with an atom in it, whole.
+
+```mdscript
+glycans = glycan();                                   # one selection per glycan tree
+glycans_a = glycan() in chain("A");                   # the glycans of chain A
+n = count(glycan(), "part");
+```
+
 ### qm
 
 <!-- proc name=qm category=selector.residue -->
@@ -777,7 +796,7 @@ first_component = component(1);
 named = component("PFT");
 ```
 
-### Selectors: chains and molecules
+### Selectors: chains, molecules and parts
 
 A **chain** is what the data files under one chain identifier: the chain id of a PDB file, the author's chain id
 (`auth_asym_id`) of an mmCIF file. Whatever carries the id is of the chain, a protein and the ligands, ions and waters
@@ -797,6 +816,12 @@ of its own, as are the waters around it, unless a topology bonds it into a molec
 its own. Where the system comes with a topology (a GROMACS `.tpr`), its molecules are the molecules of the topology, as
 GROMACS has them: the two strands of a DNA duplex which martinize-dna writes as one molecule type are one molecule of
 two chains.
+
+A **part** is one polymer strand, one glycan tree, one ligand, one ion or one water: the parts the molecules are built
+of. A glycoprotein is one molecule of many parts, its strand and each of its glycans; a chain holds its strand and the
+ligands and waters filed under its id, each a part. A strand goes on over a gap and ends where the chemistry says the
+chain does; residues of no polymer are one part while each is bonded to one of it (the branches of a glycan). A bond
+from a side chain (a glycosylation, a disulfide) and a coordination bond join no parts.
 
 ### chain
 
@@ -845,6 +870,26 @@ molecule(sel: atomset[])   -> atomset[]     # grow to whole molecules
 its_molecule = molecule(atom(1));             # the molecule that contains atom 1
 near = molecule(within(4.0, resname("LIG"))); # the molecules within 4 Å of the ligand, whole
 n = count(water(), "molecule");
+```
+
+### part
+
+<!-- proc name=part category=selector.chain -->
+
+```text
+part(index: irange[])  -> atomset[]
+part(sel: atomset[])   -> atomset[]     # grow to whole parts
+```
+
+- `part(1:3)` — parts by their 1-based position, one selection per part, counted as [`residue`](#residue) counts its
+  positions. The parts are in the order of their residues.
+- `part(sel)` — every part that the selection touches, whole, one selection per part: the glycan an atom is of,
+  without the protein it is attached to.
+
+```mdscript
+its_glycan = part(atom(19818));                # the glycan tree that atom 19818 is of
+strands = part(nucleic());                     # each strand of a duplex
+n = count(all(), "part");
 ```
 
 ### Selectors: structure matching
@@ -1466,7 +1511,7 @@ count(b: bondset[])                     -> float
 **Parameters:** `sel` or `c` (required), `unit` (optional).
 
 The number of atoms in the selection (an array is merged first). With `unit` the number of larger structures the
-selection touches instead: `"atom"`, `"residue"`, `"chain"` or `"molecule"`. An unknown unit is a compile error that
+selection touches instead: `"atom"`, `"residue"`, `"part"`, `"chain"` or `"molecule"`. An unknown unit is a compile error that
 lists the valid ones. A `count` of a dynamic selection changes over time and is a temporal property.
 
 Given a bond set from [`bond`](#bond), `count` is the number of bonds (an array is merged first).

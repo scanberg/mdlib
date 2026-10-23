@@ -1204,6 +1204,44 @@ UTEST(util, branched_molecule_is_one_instance) {
     md_vm_arena_destroy(alloc);
 }
 
+// The caps of a peptide (ACE, NME) are of its strand: bonded into it by its backbone. The alanine dipeptide of tleap.
+UTEST(util, caps_are_of_their_strand) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    static const char pdb[] =
+        "ATOM      1 HH31 ACE     1       2.000   1.000  -0.000  1.00  0.00\n"
+        "ATOM      2  CH3 ACE     1       2.000   2.090   0.000  1.00  0.00\n"
+        "ATOM      3 HH32 ACE     1       1.486   2.454   0.890  1.00  0.00\n"
+        "ATOM      4 HH33 ACE     1       1.486   2.454  -0.890  1.00  0.00\n"
+        "ATOM      5  C   ACE     1       3.427   2.641  -0.000  1.00  0.00\n"
+        "ATOM      6  O   ACE     1       4.391   1.877  -0.000  1.00  0.00\n"
+        "ATOM      7  N   ALA     2       3.555   3.970  -0.000  1.00  0.00\n"
+        "ATOM      8  H   ALA     2       2.733   4.556  -0.000  1.00  0.00\n"
+        "ATOM      9  CA  ALA     2       4.853   4.614  -0.000  1.00  0.00\n"
+        "ATOM     10  HA  ALA     2       5.408   4.316   0.890  1.00  0.00\n"
+        "ATOM     11  CB  ALA     2       5.661   4.221  -1.232  1.00  0.00\n"
+        "ATOM     12  HB1 ALA     2       5.123   4.521  -2.131  1.00  0.00\n"
+        "ATOM     13  HB2 ALA     2       6.630   4.719  -1.206  1.00  0.00\n"
+        "ATOM     14  HB3 ALA     2       5.809   3.141  -1.241  1.00  0.00\n"
+        "ATOM     15  C   ALA     2       4.713   6.129   0.000  1.00  0.00\n"
+        "ATOM     16  O   ALA     2       3.601   6.653   0.000  1.00  0.00\n"
+        "ATOM     17  N   NME     3       5.846   6.835   0.000  1.00  0.00\n"
+        "ATOM     18  H   NME     3       6.737   6.359  -0.000  1.00  0.00\n"
+        "ATOM     19  CH3 NME     3       5.846   8.284   0.000  1.00  0.00\n"
+        "ATOM     20 HH31 NME     3       4.819   8.648   0.000  1.00  0.00\n"
+        "ATOM     21 HH32 NME     3       6.360   8.648   0.890  1.00  0.00\n"
+        "ATOM     22 HH33 NME     3       6.360   8.648  -0.890  1.00  0.00\n"
+        "END\n";
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(3u, md_system_component_count(&sys));
+    EXPECT_EQ((int)MD_COMPONENT_KIND_AMINO_ACID, (int)md_component_kind(&sys.component, 1));
+    EXPECT_EQ(1u, md_system_part_count(&sys));
+    EXPECT_EQ(1u, md_structure_count(&sys.structure));
+    md_vm_arena_destroy(alloc);
+}
+
 // A modified residue larger than any standard one: the palmitoylated cysteine of a CHARMM-GUI spike protein (6VSB),
 // named CYS, 58 atoms with its hydrogens. Its backbone is found by its atom names whatever its size, as a nucleotide's is.
 static const char palmitoyl_cys_pdb[] =

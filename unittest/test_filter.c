@@ -622,3 +622,92 @@ UTEST(filter, molecules) {
 
     md_arena_allocator_destroy(alloc);
 }
+
+// A part is a strand, a glycan tree, a ligand: an O-linked glycan of the spike protein (6vsb_2_2_2, CHARMM-GUI, its heavy
+// atoms) bonded to its threonine is one molecule of two parts, the threonine and the glycan, which glycan() selects
+UTEST(filter, parts_and_glycans) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    static const char pdb[] =
+        "CRYST1  246.108  246.108  398.534  90.00  90.00  90.00 P 1           1\n"
+        "ATOM   5111  N   THR A 323     220.790 133.490 398.290  0.00  0.00           N\n"
+        "ATOM   5113  CA  THR A 323     221.130 133.610   1.180  0.00  0.00           C\n"
+        "ATOM   5115  CB  THR A 323     221.340 132.260   1.860  0.00  0.00           C\n"
+        "ATOM   5117  OG1 THR A 323     221.250 132.440   3.290  0.00  0.00           O\n"
+        "ATOM   5118  CG2 THR A 323     222.640 131.430   1.500  0.00  0.00           C\n"
+        "ATOM   5122  C   THR A 323     222.370 134.490   1.350  0.00  0.00           C\n"
+        "ATOM   5123  O   THR A 323     222.780 134.850   2.480  0.00  0.00           O\n"
+        "HETATM24340  C1  AGA A   1     219.860 132.350   3.670  0.00  0.00           C\n"
+        "HETATM24342  C5  AGA A   1     220.490 130.470   4.970  0.00  0.00           C\n"
+        "HETATM24344  O5  AGA A   1     219.510 131.000   4.050  0.00  0.00           O\n"
+        "HETATM24345  C2  AGA A   1     219.580 133.160   4.900  0.00  0.00           C\n"
+        "HETATM24347  N   AGA A   1     219.810 134.540   4.650  0.00  0.00           N\n"
+        "HETATM24349  C   AGA A   1     218.940 135.570   4.510  0.00  0.00           C\n"
+        "HETATM24350  O   AGA A   1     217.740 135.420   4.650  0.00  0.00           O\n"
+        "HETATM24351  CT  AGA A   1     219.560 136.840   4.100  0.00  0.00           C\n"
+        "HETATM24355  C3  AGA A   1     220.440 132.730   6.060  0.00  0.00           C\n"
+        "HETATM24357  O3  AGA A   1     220.000 133.320   7.220  0.00  0.00           O\n"
+        "HETATM24358  C4  AGA A   1     220.340 131.260   6.290  0.00  0.00           C\n"
+        "HETATM24360  O4  AGA A   1     219.110 130.940   6.950  0.00  0.00           O\n"
+        "HETATM24362  C6  AGA A   1     220.330 128.940   5.010  0.00  0.00           C\n"
+        "HETATM24365  O6  AGA A   1     221.420 128.290   5.660  0.00  0.00           O\n"
+        "HETATM24367  C1  BGA A   2     220.980 133.950   8.020  0.00  0.00           C\n"
+        "HETATM24369  C5  BGA A   2     222.980 133.600   9.080  0.00  0.00           C\n"
+        "HETATM24371  O5  BGA A   2     221.830 132.920   8.590  0.00  0.00           O\n"
+        "HETATM24372  C2  BGA A   2     220.370 134.620   9.240  0.00  0.00           C\n"
+        "HETATM24374  O2  BGA A   2     219.390 135.570   8.770  0.00  0.00           O\n"
+        "HETATM24376  C3  BGA A   2     221.470 135.380  10.000  0.00  0.00           C\n"
+        "HETATM24378  O3  BGA A   2     221.020 136.160  11.110  0.00  0.00           O\n"
+        "HETATM24379  C4  BGA A   2     222.510 134.290  10.390  0.00  0.00           C\n"
+        "HETATM24381  O4  BGA A   2     222.050 133.420  11.410  0.00  0.00           O\n"
+        "HETATM24383  C6  BGA A   2     223.980 132.600   9.440  0.00  0.00           C\n"
+        "HETATM24386  O6  BGA A   2     225.130 133.260   9.940  0.00  0.00           O\n"
+        "HETATM24388  C1  ANE A   3     222.110 138.250  10.680  0.00  0.00           C\n"
+        "HETATM24389  O11 ANE A   3     222.280 138.780   9.530  0.00  0.00           O\n"
+        "HETATM24390  O12 ANE A   3     223.000 138.210  11.610  0.00  0.00           O\n"
+        "HETATM24391  C2  ANE A   3     220.760 137.540  10.890  0.00  0.00           C\n"
+        "HETATM24392  C6  ANE A   3     219.270 139.080   9.760  0.00  0.00           C\n"
+        "HETATM24394  O6  ANE A   3     219.800 137.770   9.830  0.00  0.00           O\n"
+        "HETATM24395  C3  ANE A   3     219.980 137.800  12.220  0.00  0.00           C\n"
+        "HETATM24398  C4  ANE A   3     219.190 139.110  12.230  0.00  0.00           C\n"
+        "HETATM24400  O4  ANE A   3     218.530 139.270  13.500  0.00  0.00           O\n"
+        "HETATM24402  C5  ANE A   3     218.340 139.370  10.980  0.00  0.00           C\n"
+        "HETATM24404  N   ANE A   3     217.770 140.720  10.910  0.00  0.00           N\n"
+        "HETATM24406  C   ANE A   3     216.590 141.100  11.400  0.00  0.00           C\n"
+        "HETATM24407  O   ANE A   3     215.770 140.350  11.840  0.00  0.00           O\n"
+        "HETATM24408  CT  ANE A   3     216.270 142.580  11.320  0.00  0.00           C\n"
+        "HETATM24412  C7  ANE A   3     218.670 139.400   8.410  0.00  0.00           C\n"
+        "HETATM24414  O7  ANE A   3     217.770 138.390   8.060  0.00  0.00           O\n"
+        "HETATM24416  C8  ANE A   3     219.730 139.520   7.270  0.00  0.00           C\n"
+        "HETATM24418  O8  ANE A   3     220.710 138.450   7.350  0.00  0.00           O\n"
+        "HETATM24420  C9  ANE A   3     220.360 140.880   7.030  0.00  0.00           C\n"
+        "HETATM24423  O9  ANE A   3     221.100 141.240   8.210  0.00  0.00           O\n"
+        "END\n";
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(4u, md_system_component_count(&sys));
+    EXPECT_EQ(1u, md_structure_count(&sys.structure));
+    ASSERT_EQ(2u, md_system_part_count(&sys));
+    EXPECT_EQ(1u, md_system_part_comp_range(&sys, 0).end - md_system_part_comp_range(&sys, 0).beg);
+    EXPECT_EQ(3u, md_system_part_comp_range(&sys, 1).end - md_system_part_comp_range(&sys, 1).beg);
+
+    md_filter_context_t fctx = {.sys = &sys, .state = &state};
+    md_array(md_bitset_t) sets = 0;
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("glycan()"), &fctx, alloc).success);
+    ASSERT_EQ(1, (int)md_array_size(sets));
+    EXPECT_EQ(45, (int)md_bitset_count(sets[0]));
+    md_array_shrink(sets, 0);
+    // The part of an atom of the glycan is the glycan; its molecule holds the threonine as well
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("part(atom(8))"), &fctx, alloc).success);
+    ASSERT_EQ(1, (int)md_array_size(sets));
+    EXPECT_EQ(45, (int)md_bitset_count(sets[0]));
+    md_array_shrink(sets, 0);
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("molecule(atom(8))"), &fctx, alloc).success);
+    EXPECT_EQ(52, (int)md_bitset_count(sets[0]));
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("n = count(all(), \"part\");"), &sys, NULL));
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}

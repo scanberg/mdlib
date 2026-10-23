@@ -94,6 +94,11 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_
 // LAMMPS) leaves it to md_util_system_infer; whatever changes the instances after calls it again.
 bool md_util_system_infer_chains(md_system_t* sys);
 
+// The parts of the system (sys->part, see md_part_data_t) from its instances, its bonds and the kinds of its residues.
+// Done by md_util_system_infer (MD_UTIL_INFER_INSTANCE_BIT, after the bonds) and by
+// md_util_system_infer_entity_and_instance; whatever changes the instances, the bonds or the kinds calls it after.
+bool md_util_system_infer_parts(md_system_t* sys);
+
 // The id of the instance with the given index when a loader generates them: A..Z, AA..ZZ, AAA.. (0 is A)
 md_label_t md_util_instance_id_from_index(size_t idx);
 
