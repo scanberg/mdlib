@@ -80,7 +80,7 @@ static inline uint32_t md_gto_int_num_hermite(uint32_t L) { return ((L + 1) * (L
 
 // Which far field this is, for benchmarks to print: bumped with every change to how it is built
 // or evaluated.
-#define MD_GTO_INT_FAR_FIELD_REVISION "r6 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: lists of up to 8192 per group of 64, points in Morton order as 4 spheres, dispatches of >= 256 groups, submitted every 4 dispatch budgets; jobs of 8 in flight)"
+#define MD_GTO_INT_FAR_FIELD_REVISION "r7 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: lists of up to 8192 per group of 64, points in Morton order as 4 spheres, dispatches of >= 256 groups, submitted every 4 dispatch budgets; jobs keep 8+ in flight, doubled when the GPU runs dry; Metal: 4096 command buffers a queue)"
 
 // A node of the far field's octree (md_gto_int_charges_desc_t::far_field_theta). Its members are
 // item[item_begin, item_end): the gaussians and points inside its box. Its multipoles are about
@@ -335,10 +335,10 @@ bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_in
 // while they run. Begin takes what it needs from the desc (the voxel mask included, which may go
 // once it returns) and issues the first pieces of the work; each poll takes what the GPU has
 // finished, issues more while few pieces are in flight (a piece is a submission, see
-// work_per_dispatch) and returns; end releases the job, done or not. A job ended before it is done
-// is cancelled: the GPU finishes the pieces in flight and nothing more is issued, so a grid job
-// leaves some bricks of out_tex written and others as they were. Done, the result is what the
-// launch would have made, to the bit.
+// work_per_dispatch; how many grows whenever a poll finds the GPU ran out of them) and returns;
+// end releases the job, done or not. A job ended before it is done is cancelled: the GPU finishes
+// the pieces in flight and nothing more is issued, so a grid job leaves some bricks of out_tex
+// written and others as they were. Done, the result is what the launch would have made, to the bit.
 //
 //   md_gto_int_gpu_job_t* job = md_gto_int_gpu_potential_job_begin(stream, &desc);
 //   ... once a frame: if (md_gto_int_gpu_job_poll(job, 2.0) != MD_GTO_INT_GPU_JOB_RUNNING) {
