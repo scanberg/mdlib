@@ -80,7 +80,7 @@ static inline uint32_t md_gto_int_num_hermite(uint32_t L) { return ((L + 1) * (L
 
 // Which far field this is, for benchmarks to print: bumped with every change to how it is built
 // or evaluated.
-#define MD_GTO_INT_FAR_FIELD_REVISION "r2 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: a list per group of 64, points in Morton order)"
+#define MD_GTO_INT_FAR_FIELD_REVISION "r3 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: a list per group of 64, points in Morton order, submitted every 4 dispatch budgets)"
 
 // A node of the far field's octree (md_gto_int_charges_desc_t::far_field_theta). Its members are
 // item[item_begin, item_end): the gaussians and points inside its box. Its multipoles are about
@@ -281,8 +281,9 @@ typedef struct md_gto_int_gpu_potential_desc_t {
     md_gto_op_t      op;
 
     // Upper bound on the work of one dispatch, in units of one Hermite recursion step at one
-    // voxel. The evaluation is split over as many dispatches as needed to stay under it, so that
-    // a large system on a slow GPU cannot trip a driver watchdog (2 s on Windows by default).
+    // voxel. The evaluation is split over as many dispatches as needed to stay under it, and
+    // submitted every few dispatches' worth, so that a large system on a slow GPU cannot trip a
+    // driver watchdog (2 s on Windows by default, which times a submission, not a dispatch).
     // 0 = default, 2^31: a few milliseconds on a discrete GPU, well under a second on anything.
     uint64_t         work_per_dispatch;
 
@@ -293,7 +294,8 @@ typedef struct md_gto_int_gpu_potential_desc_t {
     const uint8_t*   voxel_mask;
 } md_gto_int_gpu_potential_desc_t;
 
-// Issue a potential evaluation over the grid into `stream`. Asynchronous: no readbacks, no waits.
+// Issue a potential evaluation over the grid into `stream`. Asynchronous: no readbacks, no waits; the
+// work is submitted as it is issued, in pieces of a few dispatches (see work_per_dispatch).
 // With a far field (md_gto_int_charges_desc_t::far_field_theta) the device walks the same tree with
 // the same criterion as the CPU path, for a group of 64 voxels at a time.
 // Returns false, logged, when nothing was issued - invalid input, a kernel that could not be made,
