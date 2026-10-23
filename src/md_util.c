@@ -4687,9 +4687,12 @@ static inline bool get_branch_atom_indices(md_array(int)* out_indices, const md_
     return true;
 }
 
-static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exclude_atom, md_atom_flags_t flag) {
-	md_temp_scope_t temp = md_temp_begin();
-	md_allocator_i* alloc = md_temp_allocator(temp);
+// Gives the flag to start_atom and to what its bonds reach from it within the residue (range): not past exclude_atom,
+// nor into an atom with any of stop_flags (the backbone, for a side chain). A bond leaving the residue is not followed:
+// the peptide bond (which a proline side chain reaches through its N), a disulfide, a metal coordinated to it.
+static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exclude_atom, md_atom_flags_t flag, md_urange_t range, md_atom_flags_t stop_flags) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
     md_array(int) stack = 0;
     md_array_push(stack, start_atom, alloc);
     while (md_array_size(stack) > 0) {
@@ -4700,9 +4703,10 @@ static inline void topo_floodfill_flag(md_system_t* sys, int start_atom, int exc
             md_bond_iter_t iter = md_bond_iter(&sys->bond, atom_idx);
             while (md_bond_iter_has_next(&iter)) {
                 int nbr = md_bond_iter_atom_index(&iter);
-                if (nbr != exclude_atom && (sys->atom.flags[nbr] & flag) == 0) {
-                     md_array_push(stack, nbr, alloc);
-				}
+                if (nbr != exclude_atom && range.beg <= (uint32_t)nbr && (uint32_t)nbr < range.end &&
+                    (sys->atom.flags[nbr] & flag) == 0 && (sys->atom.flags[nbr] & stop_flags) == 0) {
+                    md_array_push(stack, nbr, alloc);
+                }
                 md_bond_iter_next(&iter);
             }
         }
@@ -4775,16 +4779,16 @@ static bool classify_amino_acid(md_system_t* sys, size_t comp_idx, const md_amin
 
     if (aa->cb != -1) {
         // Flood fill sidechain from CB, this will mark all connected atoms as sidechain
-        topo_floodfill_flag(sys, aa->cb, aa->ca, MD_ATOM_FLAG_SIDE_CHAIN);
+        topo_floodfill_flag(sys, aa->cb, aa->ca, MD_ATOM_FLAG_SIDE_CHAIN, range, MD_ATOM_FLAG_BACKBONE);
     }
 
     // A free amino group (only hydrogens besides CA) begins the chain, a free carboxyl group (only oxygens besides CA) ends it
     if (atom_is_chain_end(sys, aa->n, aa->ca, MD_Z_H)) {
-        topo_floodfill_flag(sys, aa->n, aa->ca, MD_ATOM_FLAG_TERMINAL_BEG);
+        topo_floodfill_flag(sys, aa->n, aa->ca, MD_ATOM_FLAG_TERMINAL_BEG, range, MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN);
         sys->component.flags[comp_idx] |= MD_COMPONENT_FLAG_TERMINAL_BEG;
     }
     if (atom_is_chain_end(sys, aa->c, aa->ca, MD_Z_O)) {
-        topo_floodfill_flag(sys, aa->c, aa->ca, MD_ATOM_FLAG_TERMINAL_END);
+        topo_floodfill_flag(sys, aa->c, aa->ca, MD_ATOM_FLAG_TERMINAL_END, range, MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN);
         sys->component.flags[comp_idx] |= MD_COMPONENT_FLAG_TERMINAL_END;
     }
     return true;
@@ -4832,23 +4836,23 @@ static bool classify_nucleotide(md_system_t* sys, size_t comp_idx, const md_nucl
         md_bond_iter_t it = md_bond_iter(&sys->bond, na->c1);
         while (md_bond_iter_has_next(&it)) {
             int n = md_bond_iter_atom_index(&it);
-            if (n != na->c2 && n != na->o4) {
+            if (n != na->c2 && n != na->o4 && md_atom_atomic_number(&sys->atom, n) != MD_Z_H) {
                 base_start_atom = n;
                 break;
             }
             md_bond_iter_next(&it);
         }
         if (base_start_atom != -1) {
-            topo_floodfill_flag(sys, base_start_atom, na->c1, MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_NUCLEOSIDE);
+            topo_floodfill_flag(sys, base_start_atom, na->c1, MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_NUCLEOSIDE, range, MD_ATOM_FLAG_BACKBONE);
         }
 
         // A free 3' hydroxyl ends the chain, a free 5' hydroxyl begins it
         if (atom_is_chain_end(sys, na->o3, na->c3, MD_Z_H)) {
-            topo_floodfill_flag(sys, na->o3, na->c3, MD_ATOM_FLAG_TERMINAL_END);
+            topo_floodfill_flag(sys, na->o3, na->c3, MD_ATOM_FLAG_TERMINAL_END, range, 0);
             sys->component.flags[comp_idx] |= MD_COMPONENT_FLAG_TERMINAL_END;
         }
         if (atom_is_chain_end(sys, na->o5, na->c5, MD_Z_H)) {
-            topo_floodfill_flag(sys, na->o5, na->c5, MD_ATOM_FLAG_TERMINAL_BEG);
+            topo_floodfill_flag(sys, na->o5, na->c5, MD_ATOM_FLAG_TERMINAL_BEG, range, 0);
             sys->component.flags[comp_idx] |= MD_COMPONENT_FLAG_TERMINAL_BEG;
         }
     }

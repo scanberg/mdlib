@@ -1114,6 +1114,81 @@ UTEST(util, martini_masses_by_version) {
     md_vm_arena_destroy(alloc);
 }
 
+// The roles of the atoms of a residue stay within it: a side chain does not run on through the N of a proline into the
+// backbone before it, nor through a coordination bond into a metal, and a base is found from C1' whatever atom is
+// listed first among its bonds.
+UTEST(util, atom_roles_stay_in_their_residue) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        size_t num_pro = 0, num_with_side_chain = 0, num_aa = 0;
+        for (size_t c = 0; c < sys.component.count; ++c) {
+            if (md_component_kind(&sys.component, c) != MD_COMPONENT_KIND_AMINO_ACID) continue;
+            num_aa += 1;
+            const str_t resname = md_component_name(&sys.component, c);
+            const bool pro = str_eq_cstr(resname, "PRO");
+            num_pro += pro;
+            size_t side = 0;
+            const md_urange_t r = md_component_atom_range(&sys.component, c);
+            for (uint32_t i = r.beg; i < r.end; ++i) {
+                const md_atom_flags_t f = md_atom_flags(&sys.atom, i);
+                EXPECT_FALSE((f & MD_ATOM_FLAG_SIDE_CHAIN) && (f & MD_ATOM_FLAG_BACKBONE));
+                if (!(f & MD_ATOM_FLAG_SIDE_CHAIN)) continue;
+                side += 1;
+                const str_t name = md_atom_name(&sys.atom, i);
+                if (pro) EXPECT_TRUE(name.len >= 2 && (name.ptr[0] == 'C' || name.ptr[0] == 'H') && strchr("BGD", name.ptr[1]));
+            }
+            num_with_side_chain += side > 0;
+        }
+        EXPECT_GT(num_pro, 0u);
+        EXPECT_GT(num_with_side_chain, num_aa / 2);
+    }
+    {
+        // The Mg of 1fez is coordinated by an aspartate
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        size_t num_mg = 0;
+        for (size_t i = 0; i < sys.atom.count; ++i) {
+            if (md_atom_atomic_number(&sys.atom, i) != MD_Z_Mg) continue;
+            num_mg += 1;
+            EXPECT_EQ(0, (int)(md_atom_flags(&sys.atom, i) & (MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_BACKBONE)));
+        }
+        EXPECT_EQ(2u, num_mg);
+    }
+    {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        size_t num_nuc = 0, num_with_base = 0;
+        for (size_t c = 0; c < sys.component.count; ++c) {
+            if (md_component_kind(&sys.component, c) != MD_COMPONENT_KIND_NUCLEOTIDE) continue;
+            num_nuc += 1;
+            size_t base = 0;
+            const md_urange_t r = md_component_atom_range(&sys.component, c);
+            for (uint32_t i = r.beg; i < r.end; ++i) {
+                const md_atom_flags_t f = md_atom_flags(&sys.atom, i);
+                EXPECT_FALSE((f & MD_ATOM_FLAG_NUCLEOBASE) && (f & MD_ATOM_FLAG_BACKBONE));
+                base += (f & MD_ATOM_FLAG_NUCLEOBASE) != 0;
+            }
+            num_with_base += base > 0;
+        }
+        EXPECT_GT(num_nuc, 0u);
+        EXPECT_EQ(num_nuc, num_with_base);
+        // Nor does a base reach another residue
+        for (size_t i = 0; i < sys.atom.count; ++i) {
+            const md_component_idx_t c = md_component_find_by_atom_idx(&sys.component, i);
+            if (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_NUCLEOBASE) EXPECT_EQ((int)MD_COMPONENT_KIND_NUCLEOTIDE, (int)md_component_kind(&sys.component, c));
+        }
+    }
+    md_vm_arena_destroy(alloc);
+}
+
 // Martini 2 DNA (Uusitalo et al. 2015), mapped from four nucleotides of a strand of the nucleosome in nucl-dna.gro
 // (TGCA, -60 to -57): the phosphate BB1 and sugar BB2, BB3 are the backbone, the rest the base. Each bead is the centre
 // of its atoms: BB1 P OP1 OP2 O5', BB2 C5' O4' C4', BB3 C3' C2' C1'; SC1 N9 C4, SC2 C2 N3 (and N2 of G), SC3 C6 N1 and
