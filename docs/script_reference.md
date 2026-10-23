@@ -306,7 +306,7 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 |---|---|
 | [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`head`](#head), [`tail`](#tail), [`ring`](#ring) |
 | [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`lipid`](#lipid), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
-| [Selectors: chains, molecules and instances](#selectors-chains-molecules-and-instances) | [`chain`](#chain) (`chain_id`, `auth_id`), [`molecule`](#molecule), [`instance`](#instance) |
+| [Selectors: chains and molecules](#selectors-chains-and-molecules) | [`chain`](#chain) (`chain_id`, `auth_id`), [`molecule`](#molecule) |
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
 | [Properties](#properties) | [`distance`](#distance), [`distance_min`](#distance_min), [`distance_max`](#distance_max), [`distance_pair`](#distance_pair), [`angle`](#angle), [`dihedral`](#dihedral), [`rmsd`](#rmsd), [`rdf`](#rdf), [`density_x`](#density_x) / [`density_y`](#density_y) / [`density_z`](#density_z), [`density`](#density), [`pool`](#pool), [`sdf`](#sdf), [`count`](#count), [`contact_count`](#contact_count), [`contacts`](#contacts), [`degree`](#degree), [`porosity`](#porosity) |
@@ -651,7 +651,7 @@ Every lipid, sterols included: the lipids of the Martini lipidomes, coarse grain
 (POPC, DPPC, CHOL, ...), the cholesterol of CHARMM (CHL1), and the molecules which are lipids by their structure
 whatever they are named: a polar head with a hydrocarbon chain of at least 8 carbons (a fatty acid, a phospholipid
 whose residue is named DPP in a PDB file), or a sterol. One selection per lipid MOLECULE, as for
-[`instance`](#instance): a lipid split into several residues (head and tails, as the AMBER lipids are) is one selection
+[`molecule`](#molecule): a lipid split into several residues (head and tails, as the AMBER lipids are) is one selection
 of all of them. Within a context, the lipids with an atom in it, whole. See [`head`](#head) and [`tail`](#tail) for its
 parts.
 
@@ -747,7 +747,7 @@ residue(sel: atomset[])     -> atomset[]      # grow to whole residues
 - `residue(1:5)` — select residues by their **1-based position** in the system, `residue(:)` selects all. Inside a
   context the positions count the residues with an atom in the context, each cut to it: `residue(2) in chain(1)` is
   the second residue of the chain. A position past the last is a compile error without a context, and selects nothing
-  within one (a chain need not have a tenth residue). [`instance`](#instance), [`chain`](#chain) and
+  within one (a chain need not have a tenth residue). [`chain`](#chain), [`molecule`](#molecule) and
   [`ring`](#ring) count their positions the same way.
 - `residue(sel)` — every residue that the selection touches, expanded to its whole residue.
 
@@ -777,7 +777,7 @@ first_component = component(1);
 named = component("PFT");
 ```
 
-### Selectors: chains, molecules and instances
+### Selectors: chains and molecules
 
 A **chain** is what the data files under one chain identifier: the chain id of a PDB file, the author's chain id
 (`auth_asym_id`) of an mmCIF file. Whatever carries the id is of the chain, a protein and the ligands, ions and waters
@@ -791,17 +791,11 @@ and is given no id is in no chain.
 A **molecule** is atoms joined by bonds, and what holds together where the bonds do not say so: the atoms of a residue,
 and the residues of a polymer chain over a gap (residues missing from a crystal structure). A residue and a polymer
 chain are always within one molecule; a molecule may hold several chains (joined by a disulfide), and a ligand bonded
-to a protein is of its molecule.
-
-An **instance** is one polymer chain or one molecule: each protein or nucleic-acid chain, and each ligand, lipid, ion
-and water molecule on its own. Instances come from the file where it has them (the asyms of an mmCIF file, the
-molecules of a GROMACS topology) and are otherwise inferred from the bonds and the chain ids. Their identifier is the
-mmCIF `label_asym_id`, and elsewhere one made up; it is not unique: the small molecules of one chain share it (all
-waters of chain A in an mmCIF file have one label), so `instance("W")` gives one selection per molecule.
+to a protein is of its molecule, as is a metal coordinated to it. An ion or a water is a molecule of its own.
 
 ### chain
 
-<!-- proc name=chain aliases=chain_id,auth_id category=selector.instance -->
+<!-- proc name=chain aliases=chain_id,auth_id category=selector.chain -->
 <a id="chain_id"></a><a id="auth_id"></a>
 
 ```text
@@ -830,7 +824,7 @@ d = distance(com(chain("A")), com(chain("B")));
 
 ### molecule
 
-<!-- proc name=molecule category=selector.instance -->
+<!-- proc name=molecule category=selector.chain -->
 
 ```text
 molecule(index: irange[])  -> atomset[]
@@ -848,23 +842,6 @@ near = molecule(within(4.0, resname("LIG"))); # the molecules within 4 Å of the
 n = count(water(), "molecule");
 ```
 
-### instance
-
-<!-- proc name=instance category=selector.instance -->
-
-```text
-instance(id: string[])     -> atomset[]
-instance(index: irange[])  -> atomset[]
-```
-
-Select instances by identifier or 1-based position, counted as [`residue`](#residue) counts its positions (inside a
-context among the instances with an atom in it).
-
-```mdscript
-first_instance = instance(1);
-by_label = instance("E");                      # the asym E of an mmCIF file
-```
-
 ### Selectors: structure matching
 
 These find where a structure occurs in the bonds of the system, written as a SMILES pattern or given as a selection
@@ -874,11 +851,12 @@ the context are searched. The full semantics are in `src/md_match.h`.
 
 Both take two named arguments:
 
-- `level`: where an occurrence lies. `"molecule"` (the default, `"structure"` its old name): within one
-  [molecule](#molecule), except that a metal coordinated to another residue (the Mg of an ATP, the Zn of a zinc
-  finger) is a molecule of its own here, as patterns follow covalent bonds only. `"residue"` (or `"component"`): within one residue, whose bonds to its
-  neighbours are not part of the graph, so a residue pattern ends at the peptide bond. `"instance"` (or `"chain"`, its
-  old name): within one instance, a polymer chain or a molecule.
+- `level`: where an occurrence lies. `"molecule"` (the default): within one [molecule](#molecule), except that a
+  metal coordinated to another residue (the Mg of an ATP, the Zn of a zinc finger) is a molecule of its own here, as
+  patterns follow covalent bonds only. `"residue"` (or `"component"`): within one residue, whose bonds to its
+  neighbours are not part of the graph, so a residue pattern ends at the peptide bond. `"chain"`: within one
+  [chain](#chain), all that the data gives its id, the bonds leaving it (a disulfide to another chain) not followed;
+  atoms the data puts in no chain are not searched.
 - `mode`: which occurrences there are. `"unique"` (the default): one per set of atoms; a symmetric pattern fits the
   same atoms in several ways (a benzene ring in 12) and counts once. `"all"`: every way it fits. `"one_per_unit"`: the
   first in each unit of `level`. `"disjoint"`: occurrences which share no atoms, the first found winning.
@@ -1483,7 +1461,7 @@ count(b: bondset[])                     -> float
 **Parameters:** `sel` or `c` (required), `unit` (optional).
 
 The number of atoms in the selection (an array is merged first). With `unit` the number of larger structures the
-selection touches instead: `"atom"`, `"residue"`, `"chain"`, `"instance"` or `"molecule"` (`"structure"` is its old name). An unknown unit is a compile error that
+selection touches instead: `"atom"`, `"residue"`, `"chain"` or `"molecule"`. An unknown unit is a compile error that
 lists the valid ones. A `count` of a dynamic selection changes over time and is a temporal property.
 
 Given a bond set from [`bond`](#bond), `count` is the number of bonds (an array is merged first).

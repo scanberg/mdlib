@@ -1201,8 +1201,6 @@ UTEST(script, stride_procedures_selectors) {
     // Stride over residues (components) equals explicit union of picks
     EXPECT_TRUE(compare_selection("residue(1:2:4)", "residue(1) or residue(3)"));
 
-    // Stride over instances equals explicit union
-    EXPECT_TRUE(compare_selection("instance(1:2:4)", "instance(1) or instance(3)"));
 
     // Note: test dataset has a single chain; skip chain stride validation here.
 
@@ -2224,7 +2222,8 @@ UTEST(script, index_selectors_in_context) {
     EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = residue(0);",  "before the first residue"));
     // test_mol maps no instance to its entity, so none of them is a chain
     EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = chain(1);",    "past the last chain, there are none"));
-    EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = instance(9);", "past the last instance (4)"));
+    // Instances are not a word of the script
+    EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = instance(1);", "instance"));
     md_script_ir_free(ir);
     md_arena_allocator_destroy(alloc);
 }
@@ -4430,8 +4429,6 @@ UTEST(script, completion_values_in_strings) {
     c = complete_at("x = name('|", &test_mol, alloc);
     EXPECT_EQ(5, (int)c.count);
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "CA'"));
-    c = complete_at("x = instance(\"|\")", &test_mol, alloc);
-    EXPECT_EQ(4, (int)c.count);
 
     // An element of an array literal
     c = complete_at("x = resname({\"SOL\", \"|", &test_mol, alloc);
@@ -4439,14 +4436,15 @@ UTEST(script, completion_values_in_strings) {
 
     // A parameter that is not the first, given by position and by name
     c = complete_at("x = count(all, \"|\")", &test_mol, alloc);
-    EXPECT_EQ(5, (int)c.count);
+    EXPECT_EQ(4, (int)c.count);
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "residue"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_VALUE, "instance"));
     c = complete_at("x = count(all, unit=\"|\")", &test_mol, alloc);
-    EXPECT_EQ(5, (int)c.count);
+    EXPECT_EQ(4, (int)c.count);
 
     // Values that are not from the system are there without one, the others are not
     c = complete_at("x = count(all, \"|\")", NULL, alloc);
-    EXPECT_EQ(5, (int)c.count);
+    EXPECT_EQ(4, (int)c.count);
     c = complete_at("x = resname(\"|\")", NULL, alloc);
     EXPECT_EQ(0, (int)c.count);
 
@@ -4489,7 +4487,8 @@ UTEST(script, completion_identifiers) {
 
     // A keyword being typed is an identifier being typed
     c = complete_at("x = resname(\"ALA\") in|", &test_mol, alloc);
-    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "instance"));
+    EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "molecule"));
+    EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PROCEDURE, "instance"));
 
     // Where a variable is named, only the names that are taken
     c = complete_at("d1 = distance(1,2);\nd|", &test_mol, alloc);
@@ -4525,7 +4524,7 @@ UTEST(script, completion_arguments) {
     c = complete_at("x = count(all, u|", &test_mol, alloc);
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "sel="));
     EXPECT_TRUE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "unit="));
-    EXPECT_EQ(5, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
+    EXPECT_EQ(4, count_kind(c, MD_SCRIPT_COMPLETION_VALUE));
     c = complete_at("x = contacts(a, cutoff=3, |", &test_mol, alloc);
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "a="));
     EXPECT_FALSE(has_item(c, MD_SCRIPT_COMPLETION_PARAMETER, "cutoff="));

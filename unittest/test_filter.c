@@ -545,9 +545,13 @@ UTEST(filter, chains_by_author_id) {
     EXPECT_FALSE(res.success);
     EXPECT_TRUE(strstr(res.error, "'A', 'B'") != NULL);
 
-    // The asyms are instances
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("instance('E')"), &fctx, alloc).success);
-    EXPECT_EQ(md_system_instance_atom_count(&sys, 2), md_bitset_count(bf));
+    // Instances are not a word of the script
+    EXPECT_FALSE(md_filter(&bf, STR_LIT("instance('E')"), &fctx, alloc).success);
+
+    // Structure matching within a chain: the first amino acid of each of the two
+    md_array(md_bitset_t) per_chain = 0;
+    ASSERT_TRUE(md_filter_sets(&per_chain, STR_LIT("smiles('NCC=O', level='chain', mode='one_per_unit')"), &fctx, alloc).success);
+    EXPECT_EQ(2, (int)md_array_size(per_chain));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -605,9 +609,10 @@ UTEST(filter, molecules) {
     ASSERT_EQ(1, (int)md_array_size(sets));
     EXPECT_TRUE(md_bitset_equal(sets[0], chain));
 
-    // Counted in molecules, by the old name too
+    // Counted in molecules, not in instances
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("a = count(all(), 'molecule'); b = count(all(), 'structure');"), &sys, NULL));
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("a = count(all(), 'molecule');"), &sys, NULL));
+    EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("b = count(all(), 'instance');"), &sys, NULL));
     md_script_ir_free(ir);
 
     md_bitset_t bf = {0};

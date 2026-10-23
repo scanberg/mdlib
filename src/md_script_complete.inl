@@ -271,14 +271,6 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
             }
         }
         break;
-    case DOMAIN_INST_ID:
-        if (sys) {
-            for (size_t i = 0; i < md_system_instance_count(sys); ++i) {
-                if (!completion_in_context(atoms, md_system_instance_atom_range(sys, i))) continue;
-                completion_add_value(&values, &seen, md_system_instance_id(sys, i), alloc);
-            }
-        }
-        break;
     case DOMAIN_COUNT_UNIT:
         for (size_t i = COUNT_TYPE_UNKNOWN + 1; i < COUNT_TYPE_COUNT; ++i) {
             completion_add_value(&values, &seen, count_type_str[i], alloc);

@@ -576,8 +576,6 @@ static int _fill_comp(data_t*, data_t[], eval_context_t*);   // (atomset[]) -> a
 static int _fill_chain(data_t*, data_t[], eval_context_t*);  // (atomset[]) -> atomset[]
 
 // Instance level selectors
-static int _inst_irng   (data_t*, data_t[], eval_context_t*);   // (irange[]) -> atomset
-static int _inst_id     (data_t*, data_t[], eval_context_t*);   // (str[]) -> atomset
 static int _chain_irng(data_t*, data_t[], eval_context_t*);     // (irange[]) -> atomset[]
 static int _chain_id(data_t*, data_t[], eval_context_t*);       // (str[]) -> atomset
 static int _molecule_irng(data_t*, data_t[], eval_context_t*);  // (irange[]) -> atomset[]
@@ -945,8 +943,6 @@ static procedure_t procedures[] = {
     {STR_INIT("component"), TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _comp,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Instance level
-    {STR_INIT("instance"),     TI_ATOMSET_ARR,  1,  {TI_STRING_ARR},    _inst_id,          FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
-    {STR_INIT("instance"),     TI_ATOMSET_ARR,  1,  {TI_IRANGE_ARR},    _inst_irng,        FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     // A chain id is a label: every atom which carries it, as one set (see md_chain_data_t). chain_id() and auth_id()
     // are other names of it. The position of a chain is that of a structure, one set per chain, as residue(i) is.
     {STR_INIT("chain"),        TI_ATOMSET,      1,  {TI_STRING_ARR},    _chain_id,         FLAG_STATIC_VALIDATION},
@@ -1144,7 +1140,6 @@ static const param_domain_t param_domains[] = {
     {STR_INIT("component"), 0, DOMAIN_COMP_NAME},
     {STR_INIT("chain"),     0, DOMAIN_CHAIN_ID},
     {STR_INIT("chain_id"),  0, DOMAIN_CHAIN_ID},
-    {STR_INIT("instance"),  0, DOMAIN_INST_ID},
     {STR_INIT("auth_id"),   0, DOMAIN_CHAIN_ID},
     // count(contacts, unit) takes 'atom' or 'group' instead, which cannot be told apart without knowing the type of
     // the first argument. Counting selections is the common case.
@@ -1170,13 +1165,13 @@ typedef struct match_name_t {
     int   value;
 } match_name_t;
 
+// "chain": within one chain (md_chain_data_t), the chains given to md_match as its units
+#define MATCH_LEVEL_CHAIN -1
 static const match_name_t match_levels[] = {
     {STR_INIT("molecule"),  MD_MATCH_LEVEL_STRUCTURE},
-    {STR_INIT("structure"), MD_MATCH_LEVEL_STRUCTURE},  // The old name of a molecule
     {STR_INIT("residue"),   MD_MATCH_LEVEL_COMPONENT},
     {STR_INIT("component"), MD_MATCH_LEVEL_COMPONENT},
-    {STR_INIT("chain"),     MD_MATCH_LEVEL_INSTANCE},
-    {STR_INIT("instance"),  MD_MATCH_LEVEL_INSTANCE},
+    {STR_INIT("chain"),     MATCH_LEVEL_CHAIN},
 };
 
 // 'whole' is UNIQUE with MD_MATCH_FLAG_WHOLE: a match which is all of its unit is the only one of the unit, so the
@@ -1482,30 +1477,6 @@ static md_array(md_component_idx_t) get_comp_indices_in_context(const md_system_
     return arr;
 }
 
-static md_array(int32_t) get_inst_indices_in_context(const md_system_t* sys, const md_bitset_t* bitfield, md_allocator_i* alloc) {
-    ASSERT(sys);
-    ASSERT(alloc);
-
-    md_array(int32_t) arr = 0;
-    if (sys->instance.count) {
-        if (bitfield) {
-            for (size_t i = 0; i < sys->instance.count; ++i) {
-                md_urange_t range = md_system_instance_atom_range(sys, i);
-                if (md_bitset_count_range(*bitfield, range.beg, range.end)) {
-                    md_array_push(arr, (int32_t)i, alloc);
-                }
-            }
-        }
-        else {
-            for (size_t i = 0; i < sys->instance.count; ++i) {
-                md_array_push(arr, (int32_t)i, alloc);
-            }
-        }
-    }
-
-    return arr;
-}
-
 // The chains with an atom in the context (all of them without one), in their order: what chain(index) counts
 static md_array(int32_t) get_chain_indices_in_context(const md_system_t* sys, const md_bitset_t* bitfield, md_allocator_i* alloc) {
     ASSERT(sys);
@@ -1528,7 +1499,7 @@ static inline irange_t get_atom_range_in_context(const md_system_t* sys, const m
     return range;
 }
 
-// The positions given to an index selector (residue(1:5), ring(3), chain(2), instance(1:2:7)): 1-based and inclusive,
+// The positions given to an index selector (residue(1:5), ring(3), chain(2), molecule(1:2:7)): 1-based and inclusive,
 // an open end runs to the first or the last, a step takes every step-th. out (optional) receives them 0-based, in the
 // order given, into the num things the selector counts; returns how many, or STATIC_VALIDATION_ERROR (reported when
 // report is set). A position before the first is an error. One past the last is an error without a context, and
@@ -2192,7 +2163,7 @@ done:
     return com;
 }
 
-// The names that name(), resname() and instance() are given match what they select by glob_match: '*' stands for any
+// The names that name(), resname() and chain() are given match what they select by glob_match: '*' stands for any
 // run of characters, "C*" (begins with C), "*A" (ends with A), "*A*" (contains A), "C*A". Nothing matches an empty name.
 static bool match_query(str_t query, str_t str) {
     if (query.len == 0 || str.len == 0) return false;
@@ -3324,14 +3295,29 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
         if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[level_arg], "The system has no residues to match within");
         return STATIC_VALIDATION_ERROR;
     }
-    if (level == MD_MATCH_LEVEL_INSTANCE && ctx->sys->instance.count == 0) {
-        if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[level_arg], "The system has no chains to match within");
-        return STATIC_VALIDATION_ERROR;
+    // Within a chain: its atoms are the unit, the bonds leaving it (a disulfide to another chain) not searched. The
+    // atoms of no chain (a molecule the data gives no chain id) are in no unit.
+    md_bitset_t* chain_units = NULL;
+    size_t num_chain_units = 0;
+    if (level == MATCH_LEVEL_CHAIN) {
+        num_chain_units = md_system_chain_count(ctx->sys);
+        if (num_chain_units == 0) {
+            if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[level_arg], "The system has no chains to match within");
+            return STATIC_VALIDATION_ERROR;
+        }
+        chain_units = md_alloc(ctx->temp_alloc, sizeof(md_bitset_t) * num_chain_units);
+        for (size_t c = 0; c < num_chain_units; ++c) {
+            md_bitmask_t b = md_bitmask_create(0, (uint32_t)ctx->sys->atom.count, ctx->temp_alloc);
+            chain_set_bits(&b, ctx->sys, c);
+            chain_units[c] = md_bitmask_view(&b);
+        }
     }
 
     const md_match_desc_t desc = {
         .query = query,
-        .level = (md_match_level_t)level,
+        .level = level == MATCH_LEVEL_CHAIN ? MD_MATCH_LEVEL_STRUCTURE : (md_match_level_t)level,
+        .units = chain_units,
+        .num_units = num_chain_units,
         .mode  = mode == MATCH_MODE_WHOLE ? MD_MATCH_MODE_UNIQUE : (md_match_mode_t)mode,
         .flags = mode == MATCH_MODE_WHOLE ? MD_MATCH_FLAG_WHOLE : MD_MATCH_FLAG_NONE,
         .mask  = ctx->mol_ctx,
@@ -3345,7 +3331,7 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
     if (res.incomplete) {
         // Reported by the evaluation as well: the search depends on the frame through the context
         const size_t num_parts = match_query_parts(query, ctx->temp_alloc);
-        const char* unit = level == MD_MATCH_LEVEL_COMPONENT ? "residue" : level == MD_MATCH_LEVEL_INSTANCE ? "chain" : "molecule";
+        const char* unit = level == MD_MATCH_LEVEL_COMPONENT ? "residue" : level == MATCH_LEVEL_CHAIN ? "chain" : "molecule";
         if (num_parts > 1) {
             EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: the search was given up, the %s is in %zu parts which are not bonded to each other. "
                 "Each is placed anywhere in the %s, and together they fit in too many ways: give a %s whose atoms are bonded "
@@ -4366,30 +4352,6 @@ static int _comp_seq_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _inst_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-
-    // Those with an atom in the context, or all of the system
-    md_array(int32_t) indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
-    md_array(int32_t) pos = 0;
-    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), (int64_t)md_array_size(indices), "instance", !dst, ctx);
-    if (count < 0) return count;
-
-    if (dst) {
-        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
-        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
-        set_writer_t w = set_writer_begin(dst, ctx, true);
-        for (int i = 0; i < count; ++i) {
-            const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, indices[pos[i]]);
-            set_writer_push_range(&w, atom_range.beg, atom_range.end);
-        }
-        set_writer_end(&w);
-        return 0;
-    }
-    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
-}
-
 static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
@@ -4414,86 +4376,6 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return 0;
     }
     return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
-}
-
-typedef struct {
-    int32_t idx;
-    str_t   str;
-} idx_str_pair_t;
-
-// Without a destination to write to: counts the matches (static check)
-static int inst_id(data_t* dst, const idx_str_pair_t* inst, size_t num_inst, const str_t* str, size_t num_str, eval_context_t* ctx) {
-    if (dst && dst->ptr) {
-        if (type_info_array_len(dst->type) <= 0) return 0;
-
-        set_writer_t w = set_writer_begin(dst, ctx, true);
-        for (size_t i = 0; i < num_inst; ++i) {
-            md_instance_idx_t inst_idx = inst[i].idx;
-            str_t inst_id = inst[i].str;
-            for (size_t j = 0; j < num_str; ++j) {
-                if (match_query(str[j], inst_id)) {
-                    const md_urange_t atom_range = md_system_instance_atom_range(ctx->sys, inst_idx);
-                    set_writer_push_range(&w, atom_range.beg, atom_range.end);
-                    break;
-                }
-            }
-        }
-        set_writer_end(&w);
-        return 0;
-    }
-    else {
-        int count = 0;
-        for (size_t j = 0; j < num_str; ++j) {
-            if (!validate_query(str[j])) {
-                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" STR_FMT "' is not a valid query", STR_ARG(str[j]));
-                return -1;
-            }
-            int pre_count = count;
-            for (size_t i = 0; i < num_inst; ++i) {
-                str_t inst_id = inst[i].str;
-                if (match_query(str[j], inst_id)) {
-                    count += 1;
-                }
-            }
-            if (pre_count == count) {
-                EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The string '" STR_FMT "' did not match any instance within the structure", STR_ARG(str[j]));
-                return -1;
-            }
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        return count;
-    }
-}
-
-static int _inst_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->sys);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-
-    if (ctx->sys->instance.count == 0 || !ctx->sys->instance.id) {
-        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The molecule does not contain any instances");
-        return -1;
-    }
-
-    int32_t* inst_indices = get_inst_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
-    md_array(idx_str_pair_t) inst = md_array_create(idx_str_pair_t, md_array_size(inst_indices), ctx->temp_alloc);
-    for (size_t i = 0; i < md_array_size(inst_indices); ++i) {
-        md_instance_idx_t inst_idx = inst_indices[i];
-        str_t inst_id = md_system_instance_id(ctx->sys, inst_idx);
-        idx_str_pair_t pair = {inst_idx, inst_id};
-        inst[i] = pair;
-    }
-
-    size_t num_str = element_count(arg[0]);
-    const str_t* str = arg[0].ptr;
-
-    int result = inst_id(dst, inst, md_array_size(inst), str, num_str, ctx);
-
-    md_array_free(inst_indices, ctx->temp_alloc);
-    md_array_free(inst, ctx->temp_alloc);
-
-    return result;
 }
 
 // chain("A"): every atom which carries the chain id, as one set (see md_chain_data_t): a chain id is a label of the
@@ -7047,8 +6929,7 @@ typedef enum {
     COUNT_TYPE_ATOM = 1,
     COUNT_TYPE_RESIDUE = 2,
     COUNT_TYPE_CHAIN = 3,
-    COUNT_TYPE_INSTANCE = 4,
-    COUNT_TYPE_MOLECULE = 5,
+    COUNT_TYPE_MOLECULE = 4,
     COUNT_TYPE_COUNT
 } count_type_t;
 
@@ -7057,7 +6938,6 @@ static const str_t count_type_str[] = {
     STR_INIT("atom"),
     STR_INIT("residue"),
     STR_INIT("chain"),
-    STR_INIT("instance"),
     STR_INIT("molecule"),
 };
 
@@ -7067,8 +6947,6 @@ count_type_t count_type_from_str(str_t str) {
             return (count_type_t)i;
         }
     }
-    // The old name of a molecule
-    if (str_eq(str, STR_LIT("structure"))) return COUNT_TYPE_MOLECULE;
     return COUNT_TYPE_UNKNOWN;
 }
 
@@ -7101,15 +6979,6 @@ size_t internal_count(const md_bitset_t* bf_arr, size_t bf_len, count_type_t cou
         case COUNT_TYPE_CHAIN: {
             for (size_t c = 0; c < md_system_chain_count(ctx->sys); ++c) {
                 count += chain_in_context(ctx->sys, c, &bf) ? 1 : 0;
-            }
-            break;
-        }
-        case COUNT_TYPE_INSTANCE: {
-            for (size_t i = 0; i < ctx->sys->instance.count; ++i) {
-                md_urange_t range = md_system_instance_atom_range(ctx->sys, i);
-                if (md_bitset_count_range(bf, range.beg, range.end) > 0) {
-                    count += 1;
-                }
             }
             break;
         }

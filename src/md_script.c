@@ -483,7 +483,6 @@ typedef enum value_domain_t {
     DOMAIN_ELEMENT,         // Element symbols of the atoms: element()
     DOMAIN_COMP_NAME,       // Component (residue) names: resname(), residue(), component()
     DOMAIN_CHAIN_ID,        // The chain ids the data gives (md_chain_data_t): chain(), chain_id(), auth_id()
-    DOMAIN_INST_ID,         // Ids of all instances: instance()
     DOMAIN_COUNT_UNIT,      // What count() counts in: 'atom', 'residue', ...
     DOMAIN_ATTR_PATH,       // Paths of the attributes that attr() can read
     DOMAIN_SMILES,          // A SMILES pattern: smiles(). Free text, nothing to offer
