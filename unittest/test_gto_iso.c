@@ -381,13 +381,13 @@ UTEST(gto_iso, radial_ranges_contain_samples) {
         iso_field_t f;
         ASSERT_TRUE(iso_load(&f, tc->file, tc->which, tc->name));
         iso_rng_t rng = {99};
-        int violations = 0, num_crit = 0, num_comp = 0;
+        int violations = 0, num_crit = 0, num_res = 0;
         double worst = 0.0;
         for (int si = 0; si < f.num_shells; ++si) {
             const iso_shell_t* s = &f.shells[si];
             for (int n = 0; n < s->ncart; ++n) {
                 if (!s->live[n]) continue;
-                num_comp++;
+                num_res++;
                 for (int m = 0; m < ISO_NUM_CRIT; ++m) num_crit += s->crit_num[n][m];
                 for (int trial = 0; trial < 60; ++trial) {
                     // log-uniform so the tight core region is sampled as well as the tail
@@ -411,7 +411,7 @@ UTEST(gto_iso, radial_ranges_contain_samples) {
             }
         }
         printf("  %-14s input shells %d -> (atom,l) groups %d, radial components %d, critical intervals %d, violations %d (worst rel %.2e)\n",
-            tc->name, f.num_input_shells, f.num_shells, num_comp, num_crit, violations, worst);
+            tc->name, f.num_input_shells, f.num_shells, num_res, num_crit, violations, worst);
         EXPECT_EQ(violations, 0);
         iso_field_free(&f);
     }
@@ -2025,7 +2025,7 @@ typedef struct iso_gpu_args_t {        // mirrors IsoArgs
     uint32_t      num_groups, level, brick_level, cap;
     float         iso, rel_eps, step_max, lambda;
     uint32_t      hash_mask, newton_iters, grid_mul, _pad0;
-    md_gpu_addr_t groups, alpha, weights, comps, crit;
+    md_gpu_addr_t groups, alpha, weights, residues, crit;
     md_gpu_addr_t nodes_in, nodes_out, count_in, count_out, grid_out;
     md_gpu_addr_t hash_keys, hash_vals, corners, cell_vert;
     md_gpu_addr_t vpos, vpos_out, vnrm, vcell, quads, tris, counters;
@@ -2110,13 +2110,13 @@ static double iso_shell_radius(const iso_shell_t* s, double eps) {
 }
 
 typedef struct iso_gpu_field_t {
-    md_gpu_addr_t groups, alpha, weights, comps, crit;
+    md_gpu_addr_t groups, alpha, weights, residues, crit;
     uint32_t      num_groups;
 } iso_gpu_field_t;
 
 static void iso_gpu_field_upload(iso_gpu_t* g, iso_gpu_field_t* out, const iso_field_t* f, double iso) {
     iso_gpu_group_t* groups = (iso_gpu_group_t*)calloc(f->num_shells + 1, sizeof(iso_gpu_group_t));
-    float* alpha = NULL; float* w = NULL; md_gpu_uint4* comps = NULL; md_gpu_float4* crit = NULL;
+    float* alpha = NULL; float* w = NULL; md_gpu_uint4* residues = NULL; md_gpu_float4* crit = NULL;
     md_allocator_i* heap = md_get_heap_allocator();
     // Total slack from groups dropped by distance stays below 1e-3 iso.
     const double eps_drop = 1.0e-3 * iso / fmax(1, f->num_shells);
@@ -2129,7 +2129,7 @@ static void iso_gpu_field_upload(iso_gpu_t* g, iso_gpu_field_t* out, const iso_f
         // the drop test uses the box's nearest rho, so round the radius down and the epsilon up
         G->cut = (md_gpu_float4){iso_f32_down(r_drop * r_drop * (1.0 - 1e-6)), iso_f32_up(eps_drop), 0, 0};
         G->info  = (md_gpu_uint4){(uint32_t)s->l, (uint32_t)s->ncart, (uint32_t)s->nprim, (uint32_t)md_array_size(alpha)};
-        G->info2 = (md_gpu_uint4){(uint32_t)md_array_size(w), (uint32_t)md_array_size(comps), 0, 0};
+        G->info2 = (md_gpu_uint4){(uint32_t)md_array_size(w), (uint32_t)md_array_size(residues), 0, 0};
         for (int q = 0; q < s->nprim; ++q) { float a = (float)s->alpha[q]; md_array_push(alpha, a, heap); }
         for (int n = 0; n < s->ncart; ++n) {
             for (int q = 0; q < s->nprim; ++q) { float x = (float)s->w[n][q]; md_array_push(w, x, heap); }
@@ -2139,17 +2139,17 @@ static void iso_gpu_field_upload(iso_gpu_t* g, iso_gpu_field_t* out, const iso_f
                 md_gpu_float4 cf = {iso_f32_down(c->lo), iso_f32_up(c->hi), iso_f32_down(c->g.lo - 1e-7 * fabs(c->g.lo)), iso_f32_up(c->g.hi + 1e-7 * fabs(c->g.hi))};
                 md_array_push(crit, cf, heap);
             }
-            md_array_push(comps, cp, heap);
+            md_array_push(residues, cp, heap);
         }
     }
     out->num_groups = (uint32_t)f->num_shells;
     out->groups  = iso_gpu_upload(g, groups, sizeof(iso_gpu_group_t) * f->num_shells);
     out->alpha   = iso_gpu_upload(g, alpha, sizeof(float) * md_array_size(alpha));
     out->weights = iso_gpu_upload(g, w, sizeof(float) * md_array_size(w));
-    out->comps   = iso_gpu_upload(g, comps, sizeof(md_gpu_uint4) * md_array_size(comps));
+    out->residues = iso_gpu_upload(g, residues, sizeof(md_gpu_uint4) * md_array_size(residues));
     out->crit    = iso_gpu_upload(g, crit, sizeof(md_gpu_float4) * md_array_size(crit));
     free(groups);
-    md_array_free(alpha, heap); md_array_free(w, heap); md_array_free(comps, heap); md_array_free(crit, heap);
+    md_array_free(alpha, heap); md_array_free(w, heap); md_array_free(residues, heap); md_array_free(crit, heap);
 }
 
 typedef struct iso_gpu_mesh_t {
@@ -2215,7 +2215,7 @@ static bool iso_gpu_extract_ex(iso_gpu_t* g, const iso_field_t* f, double iso, d
     a.rel_eps    = 1.0e-4f;
     a.step_max   = (float)(0.5 * h);
     a.lambda     = 0.5f;
-    a.groups = fld.groups; a.alpha = fld.alpha; a.weights = fld.weights; a.comps = fld.comps; a.crit = fld.crit;
+    a.groups = fld.groups; a.alpha = fld.alpha; a.weights = fld.weights; a.residues = fld.residues; a.crit = fld.crit;
     iso_gpu_stage(g, opt, ISO_GPU_STAGE_SETUP, &ts);
 
     // ---- octree, one launch per level, sized by the previous level's device-side count

@@ -4119,14 +4119,14 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 	md_system_t* sys = vlx->sys;
 	const md_pot_t* pot = &vlx->mm.pot;
 	const double to_angstrom = md_pot_unit_to_angstrom(pot->unit);
-	const md_atom_type_flags_t vsite = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, MD_PARTICLE_VIRTUAL_SITE);
+	const md_particle_type_flags_t vsite = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, MD_PARTICLE_VIRTUAL_SITE);
 
-	ASSERT(sys->component.count == 0);
-	md_array_push(sys->component.atom_offset, 0u, sys->alloc);
-	md_array_push(sys->component.name,   make_label(STR_LIT("QM")), sys->alloc);
-	md_array_push(sys->component.seq_id, (md_sequence_id_t)0, sys->alloc);
-	md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
-	sys->component.count += 1;
+	ASSERT(sys->residue.count == 0);
+	md_array_push(sys->residue.atom_offset, 0u, sys->alloc);
+	md_array_push(sys->residue.name,     make_label(STR_LIT("QM")), sys->alloc);
+	md_array_push(sys->residue.seq_id, (md_sequence_id_t)0, sys->alloc);
+	md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
+	sys->residue.count += 1;
 
 	for (size_t k = 0; k < pot->num_sites; ++k) {
 		const md_pot_site_t* site = &pot->sites[vlx->mm.order[k]];
@@ -4136,9 +4136,9 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 		const str_t name = str_empty(site->atom_name) ? sym : site->atom_name;
 		const md_atomic_number_t z = md_atomic_number_from_symbol(sym, true);
 
-		md_atom_type_idx_t type_idx = z ?
-			md_atom_type_find_or_add(&sys->atom.type, name, z, md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, sys->alloc) :
-			md_atom_type_find_or_add(&sys->atom.type, name, 0, 0.0f, 0.0f, 0, vsite, sys->alloc);
+		md_particle_type_idx_t type_idx = z ?
+			md_particle_type_find_or_add(&sys->atom.type, name, z, md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, sys->alloc) :
+			md_particle_type_find_or_add(&sys->atom.type, name, 0, 0.0f, 0.0f, 0, vsite, sys->alloc);
 		sys->atom.type_idx[atom_idx] = type_idx;
 
 		state->xyz[atom_idx] = vec3_set((float)(site->coord[0] * to_angstrom), (float)(site->coord[1] * to_angstrom), (float)(site->coord[2] * to_angstrom));
@@ -4146,14 +4146,14 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 		// Every site has a fragment number, vlx_mm_resolve_parameters made sure of it, and a fragment's
 		// sites are adjacent in this order however the file scattered them
 		if (k == 0 || site->fragment_id != pot->sites[vlx->mm.order[k - 1]].fragment_id) {
-			md_array_push(sys->component.atom_offset, (uint32_t)atom_idx, sys->alloc);
-			md_array_push(sys->component.name,   make_label(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
-			md_array_push(sys->component.seq_id, (md_sequence_id_t)site->fragment_id, sys->alloc);
-			md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
-			sys->component.count += 1;
+			md_array_push(sys->residue.atom_offset, (uint32_t)atom_idx, sys->alloc);
+			md_array_push(sys->residue.name,     make_label(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
+			md_array_push(sys->residue.seq_id, (md_sequence_id_t)site->fragment_id, sys->alloc);
+			md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
+			sys->residue.count += 1;
 		}
 	}
-	md_array_push(sys->component.atom_offset, (uint32_t)(offset + pot->num_sites), sys->alloc);	// Sentinel
+	md_array_push(sys->residue.atom_offset, (uint32_t)(offset + pot->num_sites), sys->alloc);	// Sentinel
 
 	vlx->mm.in_system = true;
 }
@@ -5741,7 +5741,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 	MEMSET(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
     MEMSET(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
 
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
 		state->xyz[i] = vec3_set((float)vlx->atom_coordinates[i].x, (float)vlx->atom_coordinates[i].y, (float)vlx->atom_coordinates[i].z);
@@ -5752,7 +5752,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 		float radius = md_atomic_number_vdw_radius(z);
 		uint32_t color = md_atomic_number_cpk_color(z);
 
-		md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, sys->alloc);
+		md_particle_type_idx_t type_idx = md_particle_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, sys->alloc);
 		sys->atom.type_idx[i] = type_idx;
 		// The calculation's own atoms; the sites of an embedding, appended after them, are its environment
 		sys->atom.flags[i] |= MD_ATOM_FLAG_QM;
@@ -5769,7 +5769,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 		// The fragments are residues, and what kind of residue (water, above all) is read from their
 		// atoms and bonds - the same two calls a structure file's loader ends with.
 		md_util_system_infer_covalent_bonds(sys, state);
-		md_util_system_infer_comp_flags(sys);
+		md_util_system_infer_residue_flags(sys);
 	}
 
 	if (!vlx_publish_core(vlx)) {

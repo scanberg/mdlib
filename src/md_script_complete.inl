@@ -250,13 +250,13 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
             }
         }
         break;
-    case DOMAIN_COMP_NAME:
-        if (sys && sys->component.name) {
+    case DOMAIN_RES_NAME:
+        if (sys && sys->residue.name) {
             str_t prev = {0};
-            for (size_t i = 0; i < sys->component.count; ++i) {
-                if (!completion_in_context(atoms, md_component_atom_range(&sys->component, i))) continue;
-                const str_t name = LBL_TO_STR(sys->component.name[i]);
-                if (str_eq(name, prev)) continue;   // Runs of the same component (water) are common
+            for (size_t i = 0; i < sys->residue.count; ++i) {
+                if (!completion_in_context(atoms, md_residue_atom_range(&sys->residue, i))) continue;
+                const str_t name = LBL_TO_STR(sys->residue.name[i]);
+                if (str_eq(name, prev)) continue;   // Runs of the same residue (water) are common
                 completion_add_value(&values, &seen, name, alloc);
                 prev = name;
             }

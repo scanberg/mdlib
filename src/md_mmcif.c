@@ -204,7 +204,7 @@ static md_entity_kind_t mmcif_entity_kind(const mmcif_entity_t* entity) {
         case ENTITY_POLY_TYPE_OTHER:
             return MD_ENTITY_KIND_POLYMER;
         default:
-            // Classified from its components once they are (md_util_system_infer_entity_kinds)
+            // Classified from its residues once they are (md_util_system_infer_entity_kinds)
             return MD_ENTITY_KIND_UNKNOWN;
         }
     case ENTITY_TYPE_BRANCHED:
@@ -1196,7 +1196,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
     }
 
     if (entity_parsed) {
-        // Add entities first so that we can reference them when adding components
+        // Add entities first so that we can reference them when adding residues
         size_t num_entities = md_array_size(entities);
         md_array_ensure(sys->entity.id, num_entities, alloc);
         md_array_ensure(sys->entity.flags, num_entities, alloc);
@@ -1210,7 +1210,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         }
     }
     
-    md_array(str_t) comp_auth_asym_ids = NULL;
+    md_array(str_t) res_auth_asym_ids = NULL;
 
     // Populate molecule from parsed data
     if (atom_site_parsed) {
@@ -1221,7 +1221,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
         md_array_ensure(sys->atom.flags, reserve_size, alloc);
 
-        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);  // Ensure that index 0 is always unknown
+        md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc); // Ensure that index 0 is always unknown
         md_hashmap32_t type_map = { .allocator = temp_arena };
 
         // Gathered alongside the coordinates rather than from atom_entries afterwards, because the
@@ -1231,7 +1231,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         float* b_iso          = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
         float* formal_charge  = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
 
-        uint64_t prev_comp_key = 0; // Key of active componenent
+        uint64_t prev_res_key = 0; // Key of active componenent
         uint64_t prev_inst_key = 0; // Key of active instance
 
 
@@ -1257,47 +1257,47 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
 
             str_t comp_id = str_from_cstrn(atom_entries[i].label_comp_id, ARRAY_SIZE(atom_entries[i].label_comp_id));
             int seq_id = atom_entries[i].label_seq_id != INT32_MIN ? atom_entries[i].label_seq_id : atom_entries[i].auth_seq_id;
-            uint64_t comp_key = md_hash64_str(comp_id, (uint64_t)seq_id ^ inst_key);
+            uint64_t res_key = md_hash64_str(comp_id, (uint64_t)seq_id ^ inst_key);
 
             md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
-            md_atom_type_idx_t atom_type_idx = md_util_atom_type_find_or_add(sys, &type_map, atom_id, atomic_number);
+            md_particle_type_idx_t particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
 
-            if (comp_key != prev_comp_key) {
+            if (res_key != prev_res_key) {
                 // --- New residue boundary ---
                 // Start residue (store atom offset before adding any residue atoms)
-                md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
-                md_array_push(sys->component.name, make_label(comp_id), alloc);
-                md_array_push(sys->component.seq_id, seq_id, alloc);
-                md_array_push(sys->component.flags, MD_COMPONENT_FLAG_NONE, alloc);
+                md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
+                md_array_push(sys->residue.name, make_label(comp_id), alloc);
+                md_array_push(sys->residue.seq_id, seq_id, alloc);
+                md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
 
-                md_array_push(comp_auth_asym_ids, auth_asym_id, temp_arena);
+                md_array_push(res_auth_asym_ids, auth_asym_id, temp_arena);
 
                 // Instance handling. An instance is one polymer chain or one molecule, and an asym of a polymer or a
                 // branched entity is one. The asym of a non-polymer entity may hold many molecules (the waters of a
                 // chain): each is an instance of its own, sharing the asym id.
                 if (entity_idx != -1) {
                     const md_entity_kind_t entity_kind = md_entity_kind(&sys->entity, entity_idx);
-                    const bool one_per_component = entity_kind == MD_ENTITY_KIND_WATER || entity_kind == MD_ENTITY_KIND_NON_POLYMER;
-                    if (inst_key != prev_inst_key || one_per_component) {
+                    const bool one_per_residue = entity_kind == MD_ENTITY_KIND_WATER || entity_kind == MD_ENTITY_KIND_NON_POLYMER;
+                    if (inst_key != prev_inst_key || one_per_residue) {
                         // Start a new instance
                         md_label_t inst_id = make_label(label_asym_id);
                         md_label_t inst_auth_id = make_label(auth_asym_id);
 
                         md_array_push(sys->instance.id, inst_id, alloc);
                         md_array_push(sys->instance.auth_id, inst_auth_id, alloc);
-                        md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);
+                        md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);
                         md_array_push(sys->instance.entity_idx, entity_idx, alloc);
                         sys->instance.count += 1;
                     }
                 }
-                sys->component.count += 1;
+                sys->residue.count += 1;
             }
  
             prev_inst_key = inst_key;
-            prev_comp_key = comp_key;
+            prev_res_key = res_key;
  
             md_array_push_no_grow(out_state->xyz, vec3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
-            md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
+            md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
             md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
             if (occupancy && b_iso && formal_charge) {
                 occupancy[sys->atom.count]     = atom_entries[i].occupancy;
@@ -1332,11 +1332,11 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
             }
         }
 
-        if (sys->component.atom_offset) {
-            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);  // Final sentinel
+        if (sys->residue.atom_offset) {
+            md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);    // Final sentinel
         }
-        if (sys->instance.comp_offset) {
-            md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);  // Final sentinel
+        if (sys->instance.res_offset) {
+            md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);     // Final sentinel
         }
     }
 
@@ -1345,13 +1345,13 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         out_state->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-    // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move
-    // out into md_util_system_infer without moving comp_flags with it.
+    // NOTE: infer_res_flags below consumes bond connectivity, so this cannot simply move
+    // out into md_util_system_infer without moving res_flags with it.
     md_util_system_infer_covalent_bonds(sys, out_state);
-    md_util_system_infer_comp_flags(sys);
-    if (sys->entity.count == 0 && comp_auth_asym_ids) {
+    md_util_system_infer_residue_flags(sys);
+    if (sys->entity.count == 0 && res_auth_asym_ids) {
         // Fallback path if no entities are defined within the cif
-		md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
+		md_util_system_infer_entity_and_instance(sys, res_auth_asym_ids);
     }
     // A polymer entity without _entity_poly does not say which polymer it is
     md_util_system_infer_entity_kinds(sys);

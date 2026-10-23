@@ -37,8 +37,8 @@ the first wins and the other is reported.
 import argparse, collections, glob, math, os, re, sys
 
 M2, M2P, M3 = 1, 2, 4
-KINDS = {'OTHER': 'MD_COMPONENT_KIND_OTHER', 'AMINO_ACID': 'MD_COMPONENT_KIND_AMINO_ACID', 'NUCLEOTIDE': 'MD_COMPONENT_KIND_NUCLEOTIDE',
-         'WATER': 'MD_COMPONENT_KIND_WATER', 'ION': 'MD_COMPONENT_KIND_ION', 'LIPID': 'MD_COMPONENT_KIND_LIPID'}
+KINDS = {'OTHER': 'MD_RESIDUE_KIND_OTHER', 'AMINO_ACID': 'MD_RESIDUE_KIND_AMINO_ACID', 'NUCLEOTIDE': 'MD_RESIDUE_KIND_NUCLEOTIDE',
+         'WATER': 'MD_RESIDUE_KIND_WATER', 'ION': 'MD_RESIDUE_KIND_ION', 'LIPID': 'MD_RESIDUE_KIND_LIPID'}
 WATER_NAMES = {'W', 'PW', 'WF', 'SW', 'TW', 'BMW'}
 CHEM_BONDS = {1, 2, 3, 4, 5, 7, 8}
 NONINTERACTING = {'DUM'}    # Types of mass carriers which topologies use without the main itp defining them

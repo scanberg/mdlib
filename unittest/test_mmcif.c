@@ -516,7 +516,7 @@ UTEST(mmcif, parse_2or2_comprehensive) {
     
     // Check basic structure properties
     EXPECT_GT(sys.atom.count, 0);
-    EXPECT_GT(sys.component.count, 0);
+    EXPECT_GT(sys.residue.count, 0);
     EXPECT_GT(sys.instance.count, 0);
     
     // Check that coordinates are reasonable (not all zeros or infinities)
@@ -663,15 +663,15 @@ UTEST(mmcif, chain_breaks) {
         {"A", 39, 42}, {"A", 66, 73}, {"A", 258, 261}, {"B", 61, 72},
     };
     size_t found = 0;
-    for (size_t i = 0; i + 1 < sys.component.count; ++i) {
-        if (!(md_component_flags(&sys.component, i) & MD_COMPONENT_FLAG_BREAK_AFTER)) continue;
+    for (size_t i = 0; i + 1 < sys.residue.count; ++i) {
+        if (!(md_residue_flags(&sys.residue, i) & MD_RESIDUE_FLAG_BREAK_AFTER)) continue;
         if (found < ARRAY_SIZE(expected)) {
-            const md_instance_idx_t inst = md_instance_find_by_comp_idx(&sys.instance, i);
+            const md_instance_idx_t inst = md_instance_find_by_residue_idx(&sys.instance, i);
             EXPECT_TRUE(str_eq_cstr(md_system_instance_id(&sys, (size_t)inst), expected[found].chain));
-            EXPECT_EQ(expected[found].before, md_component_seq_id(&sys.component, i));
-            EXPECT_EQ(expected[found].after,  md_component_seq_id(&sys.component, i + 1));
-            EXPECT_TRUE(md_component_flags(&sys.component, i + 1) & MD_COMPONENT_FLAG_BREAK_BEFORE);
-            EXPECT_EQ(inst, md_instance_find_by_comp_idx(&sys.instance, i + 1));
+            EXPECT_EQ(expected[found].before, md_residue_seq_id(&sys.residue, i));
+            EXPECT_EQ(expected[found].after,  md_residue_seq_id(&sys.residue, i + 1));
+            EXPECT_TRUE(md_residue_flags(&sys.residue, i + 1) & MD_RESIDUE_FLAG_BREAK_BEFORE);
+            EXPECT_EQ(inst, md_instance_find_by_residue_idx(&sys.instance, i + 1));
             md_atom_idx_t atoms[2];
             EXPECT_TRUE(md_util_chain_break_atoms(atoms, &sys, i));
         }

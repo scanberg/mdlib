@@ -4,7 +4,7 @@
 #include <core/md_str.h>
 
 // The predefined table of standard monomers (md_monomer_t), and the names residues of these go by in files.
-// What md_util_element_* is to the atom types, this is to the component types.
+// What md_util_element_* is to the particle types, this is to the residue types.
 
 #define MONOMER_RGB(r,g,b) ((0xFFu << 24) | (((uint32_t)(b) & 255) << 16) | (((uint32_t)(g) & 255) << 8) | ((uint32_t)(r) & 255))
 
@@ -12,12 +12,12 @@ typedef struct monomer_info_t {
     str_t id;
     str_t name;
     char  letter;
-    md_component_kind_t kind;
+    md_residue_kind_t kind;
     uint32_t color;
 } monomer_info_t;
 
-#define AA MD_COMPONENT_KIND_AMINO_ACID
-#define NT MD_COMPONENT_KIND_NUCLEOTIDE
+#define AA MD_RESIDUE_KIND_AMINO_ACID
+#define NT MD_RESIDUE_KIND_NUCLEOTIDE
 
 // Default colors:
 //  - Amino acids: a palette made for viamd in OKLCH. The hue tells the physicochemical family (acidic red, basic blue,
@@ -31,7 +31,7 @@ typedef struct monomer_info_t {
 //  - Nucleotides: the colors the sequence view of viamd used, one hue per base, the same for DNA and RNA. Shapely
 //    colors G and U nearly alike (FF7070, FF8080). Inosine takes the shapely color, N the neutral grey of UNK.
 static const monomer_info_t monomer_table[MD_MONOMER_COUNT] = {
-    [MD_MONOMER_NONE] = { STR_INIT(""),    STR_INIT(""),                      0,   MD_COMPONENT_KIND_OTHER, 0 },
+    [MD_MONOMER_NONE] = { STR_INIT(""),    STR_INIT(""),                      0,   MD_RESIDUE_KIND_OTHER, 0 },
 
     [MD_MONOMER_ALA] = { STR_INIT("ALA"), STR_INIT("Alanine"),               'A', AA, MONOMER_RGB(186, 231, 165) },
     [MD_MONOMER_ARG] = { STR_INIT("ARG"), STR_INIT("Arginine"),              'R', AA, MONOMER_RGB( 46,  82, 136) },
@@ -141,8 +141,8 @@ char md_monomer_letter(md_monomer_t monomer) {
     return valid_monomer(monomer) ? monomer_table[monomer].letter : 0;
 }
 
-md_component_kind_t md_monomer_kind(md_monomer_t monomer) {
-    return valid_monomer(monomer) ? monomer_table[monomer].kind : MD_COMPONENT_KIND_OTHER;
+md_residue_kind_t md_monomer_kind(md_monomer_t monomer) {
+    return valid_monomer(monomer) ? monomer_table[monomer].kind : MD_RESIDUE_KIND_OTHER;
 }
 
 uint32_t md_monomer_color(md_monomer_t monomer) {
@@ -159,13 +159,13 @@ md_monomer_t md_monomer_from_id(str_t id) {
 }
 
 // The monomer of the given kind whose id or alias the name is
-static md_monomer_t match_name(str_t name, md_component_kind_t kind) {
+static md_monomer_t match_name(str_t name, md_residue_kind_t kind) {
     if (str_empty(name)) return MD_MONOMER_NONE;
     for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) {
         if (monomer_table[m].kind == kind && str_eq_ignore_case(name, monomer_table[m].id)) return (md_monomer_t)m;
     }
-    const monomer_alias_t* aliases = kind == MD_COMPONENT_KIND_AMINO_ACID ? amino_acid_aliases : nucleotide_aliases;
-    const size_t num_aliases = kind == MD_COMPONENT_KIND_AMINO_ACID ? ARRAY_SIZE(amino_acid_aliases) : ARRAY_SIZE(nucleotide_aliases);
+    const monomer_alias_t* aliases = kind == MD_RESIDUE_KIND_AMINO_ACID ? amino_acid_aliases : nucleotide_aliases;
+    const size_t num_aliases = kind == MD_RESIDUE_KIND_AMINO_ACID ? ARRAY_SIZE(amino_acid_aliases) : ARRAY_SIZE(nucleotide_aliases);
     for (size_t i = 0; i < num_aliases; ++i) {
         if (str_eq_cstr_ignore_case(name, aliases[i].name)) return aliases[i].monomer;
     }
@@ -180,41 +180,41 @@ static inline bool is_peptide_cap(str_t name) {
 }
 
 static md_monomer_t match_amino_acid(str_t name) {
-    md_monomer_t m = match_name(name, MD_COMPONENT_KIND_AMINO_ACID);
+    md_monomer_t m = match_name(name, MD_RESIDUE_KIND_AMINO_ACID);
     // The N- and C-terminal residues of Amber: NALA, CALA, NHIE, ...
     if (!m && name.len == 4) {
         const int c = to_upper(name.ptr[0]);
         if (c == 'N' || c == 'C') {
-            m = match_name(str_substr(name, 1, SIZE_MAX), MD_COMPONENT_KIND_AMINO_ACID);
+            m = match_name(str_substr(name, 1, SIZE_MAX), MD_RESIDUE_KIND_AMINO_ACID);
         }
     }
     return m;
 }
 
 static md_monomer_t match_nucleotide(str_t name) {
-    md_monomer_t m = match_name(name, MD_COMPONENT_KIND_NUCLEOTIDE);
+    md_monomer_t m = match_name(name, MD_RESIDUE_KIND_NUCLEOTIDE);
     // The 5' and 3' terminal residues and the free nucleosides of Amber: DA5, DA3, DAN, RA5, A3, ...
     if (!m && name.len >= 2) {
         const int c = to_upper(name.ptr[name.len - 1]);
         if (c == '5' || c == '3' || c == 'N') {
-            m = match_name(str_substr(name, 0, name.len - 1), MD_COMPONENT_KIND_NUCLEOTIDE);
+            m = match_name(str_substr(name, 0, name.len - 1), MD_RESIDUE_KIND_NUCLEOTIDE);
         }
     }
     return m;
 }
 
-md_monomer_t md_monomer_from_comp_name(str_t comp_name, md_component_kind_t kind) {
-    const str_t name = str_trim(comp_name);
+md_monomer_t md_monomer_from_residue_name(str_t res_name, md_residue_kind_t kind) {
+    const str_t name = str_trim(res_name);
     switch (kind) {
-    case MD_COMPONENT_KIND_AMINO_ACID: {
+    case MD_RESIDUE_KIND_AMINO_ACID: {
         const md_monomer_t m = match_amino_acid(name);
         return m ? m : MD_MONOMER_UNK;
     }
-    case MD_COMPONENT_KIND_NUCLEOTIDE: {
+    case MD_RESIDUE_KIND_NUCLEOTIDE: {
         const md_monomer_t m = match_nucleotide(name);
         return m ? m : MD_MONOMER_N;
     }
-    case MD_COMPONENT_KIND_OTHER:
+    case MD_RESIDUE_KIND_OTHER:
         return is_peptide_cap(name) ? MD_MONOMER_UNK : MD_MONOMER_NONE;
     default:
         return MD_MONOMER_NONE;

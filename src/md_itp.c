@@ -563,7 +563,7 @@ static inline bool names_match(str_t sys_name, str_t top_name) {
 
 typedef struct {
     const md_system_t* sys;
-    int32_t* atom_comp;     // [atom] -> component, NULL when the system has no components
+    int32_t* atom_res;      // [atom] -> residue, NULL when the system has no residues
 } match_ctx_t;
 
 // Atom names alone are ambiguous for repeating polymers: two consecutive 50-mers carry exactly the names
@@ -578,8 +578,8 @@ static bool moleculetype_matches_at(const match_ctx_t* ctx, const md_itp_molecul
         if (!names_match(md_atom_name(&sys->atom, offset + i), mol->atoms[i].name)) return false;
     }
 
-    if (ctx->atom_comp) {
-        const int32_t* ac = ctx->atom_comp;
+    if (ctx->atom_res) {
+        const int32_t* ac = ctx->atom_res;
         if (offset > 0 && ac[offset - 1] == ac[offset]) return false;
         if (offset + n < sys->atom.count && ac[offset + n - 1] == ac[offset + n]) return false;
         for (size_t i = 0; i < n; ++i) {
@@ -587,7 +587,7 @@ static bool moleculetype_matches_at(const match_ctx_t* ctx, const md_itp_molecul
             const bool sys_new = i > 0 && ac[offset + i] != ac[offset + i - 1];
             if (top_new != sys_new) return false;
             if (i == 0 || sys_new) {
-                if (!names_match(md_component_name(&sys->component, (size_t)ac[offset + i]), mol->atoms[i].res_name)) return false;
+                if (!names_match(md_residue_name(&sys->residue, (size_t)ac[offset + i]), mol->atoms[i].res_name)) return false;
             }
         }
     }
@@ -660,10 +660,10 @@ static void match_scan(md_itp_instance_t** out, const match_ctx_t* ctx, const md
                 break;
             }
         }
-        if (step == 1 && ctx->atom_comp) {
+        if (step == 1 && ctx->atom_res) {
             // Nothing starts here: a molecule can only start on a residue boundary, so skip the rest of this residue
-            const int32_t c = ctx->atom_comp[offset];
-            while (offset + step < sys->atom.count && ctx->atom_comp[offset + step] == c) ++step;
+            const int32_t c = ctx->atom_res[offset];
+            while (offset + step < sys->atom.count && ctx->atom_res[offset + step] == c) ++step;
         }
         offset += step;
     }
@@ -679,12 +679,12 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     match_ctx_t ctx = { .sys = sys };
-    if (sys->component.count > 0 && sys->component.atom_offset) {
-        ctx.atom_comp = md_temp_alloc_array(temp, int32_t, sys->atom.count);
-        for (size_t i = 0; i < sys->atom.count; ++i) ctx.atom_comp[i] = -1;
-        for (size_t c = 0; c < sys->component.count; ++c) {
-            md_urange_t range = md_component_atom_range(&sys->component, c);
-            for (uint32_t i = range.beg; i < range.end && i < sys->atom.count; ++i) ctx.atom_comp[i] = (int32_t)c;
+    if (sys->residue.count > 0 && sys->residue.atom_offset) {
+        ctx.atom_res = md_temp_alloc_array(temp, int32_t, sys->atom.count);
+        for (size_t i = 0; i < sys->atom.count; ++i) ctx.atom_res[i] = -1;
+        for (size_t c = 0; c < sys->residue.count; ++c) {
+            md_urange_t range = md_residue_atom_range(&sys->residue, c);
+            for (uint32_t i = range.beg; i < range.end && i < sys->atom.count; ++i) ctx.atom_res[i] = (int32_t)c;
         }
     }
 
@@ -878,13 +878,13 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     // americium. The masses of the topology tell: a bead stands for several atoms. An atom is like a bead when its mass
     // is at least BEAD_MIN_MASS and off that of its element by a factor of two or more, or it has none: a united atom
     // CH3 is 15 Da, a hydrogen of hydrogen mass repartitioning 3, a carbon which gave it some 10, a Martini bead 36 to 72.
-    // The atom types of a molecule whose atoms are almost all like beads are beads, unless an atom of another molecule
+    // The particle types of a molecule whose atoms are almost all like beads are beads, unless an atom of another molecule
     // shares the type.
     if (sys->atom.type_idx && sys->atom.type.count > 0 && sys->atom.type.z) {
         const float BEAD_MIN_MASS = 20.0f;
-        const size_t num_atom_types = sys->atom.type.count;
-        uint8_t* bead = md_temp_alloc_array(temp, uint8_t, num_atom_types);    // 0 unseen, 1 of beads, 2 of atoms
-        MEMSET(bead, 0, num_atom_types);
+        const size_t num_particle_types = sys->atom.type.count;
+        uint8_t* bead = md_temp_alloc_array(temp, uint8_t, num_particle_types); // 0 unseen, 1 of beads, 2 of atoms
+        MEMSET(bead, 0, num_particle_types);
         for (size_t k = 0; k < num_instances; ++k) {
             const md_itp_moleculetype_t* mol = &data->moleculetypes[instances[k].type];
             const size_t off = instances[k].atom_offset;
@@ -892,7 +892,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             size_t like = 0;
             for (size_t i = 0; i < n; ++i) {
                 const size_t t = sys->atom.type_idx[off + i];
-                if (t >= num_atom_types) continue;
+                if (t >= num_particle_types) continue;
                 const float m = mass[off + i];
                 const md_atomic_number_t z = sys->atom.type.z[t];
                 const float element_mass = z ? md_atomic_number_mass(z) : 0.0f;
@@ -901,22 +901,22 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             const uint8_t mark = (n > 0 && 10 * like >= 9 * n) ? 1 : 2;
             for (size_t i = 0; i < n; ++i) {
                 const size_t t = sys->atom.type_idx[off + i];
-                if (t < num_atom_types && bead[t] != 2) bead[t] = mark;
+                if (t < num_particle_types && bead[t] != 2) bead[t] = mark;
             }
         }
         for (size_t i = 0; i < atom_count; ++i) {
             const size_t t = sys->atom.type_idx[i];
-            if (!covered[i] && t < num_atom_types) bead[t] = 2;
+            if (!covered[i] && t < num_particle_types) bead[t] = 2;
         }
-        if (md_array_size(sys->atom.type.flags) < num_atom_types) {
+        if (md_array_size(sys->atom.type.flags) < num_particle_types) {
             const size_t size = md_array_size(sys->atom.type.flags);
-            md_array_resize(sys->atom.type.flags, num_atom_types, sys->alloc);
-            MEMSET(sys->atom.type.flags + size, 0, (num_atom_types - size) * sizeof(md_atom_type_flags_t));
+            md_array_resize(sys->atom.type.flags, num_particle_types, sys->alloc);
+            MEMSET(sys->atom.type.flags + size, 0, (num_particle_types - size) * sizeof(md_particle_type_flags_t));
         }
         size_t num_bead_types = 0;
-        for (size_t t = 1; t < num_atom_types; ++t) {
-            if (bead[t] != 1 || md_atom_type_flags_particle_kind(sys->atom.type.flags[t]) != MD_PARTICLE_ATOM) continue;
-            sys->atom.type.flags[t] = md_atom_type_flags_set_particle_kind(sys->atom.type.flags[t], MD_PARTICLE_BEAD);
+        for (size_t t = 1; t < num_particle_types; ++t) {
+            if (bead[t] != 1 || md_particle_type_flags_particle_kind(sys->atom.type.flags[t]) != MD_PARTICLE_ATOM) continue;
+            sys->atom.type.flags[t] = md_particle_type_flags_set_particle_kind(sys->atom.type.flags[t], MD_PARTICLE_BEAD);
             sys->atom.type.z[t] = 0;
             // The mass of its element was a guess: the topology's, below, where the beads of the type agree on one
             if (sys->atom.type.mass) sys->atom.type.mass[t] = 0.0f;
@@ -932,14 +932,14 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     // by atoms the topology may give different masses (the end beads of a chain), and picking one of them
     // would be a guess dressed up as data. 'atom/mass' carries the per atom truth either way.
     if (sys->atom.type_idx && sys->atom.type.count > 0 && sys->atom.type.mass) {
-        const size_t num_atom_types = sys->atom.type.count;
-        float*   fill  = md_temp_alloc_array(temp, float,   num_atom_types);
-        uint8_t* state = md_temp_alloc_array(temp, uint8_t, num_atom_types);  // 0 unseen, 1 agreeing, 2 conflicting
-        MEMSET(state, 0, num_atom_types);
+        const size_t num_particle_types = sys->atom.type.count;
+        float*   fill  = md_temp_alloc_array(temp, float,   num_particle_types);
+        uint8_t* state = md_temp_alloc_array(temp, uint8_t, num_particle_types); // 0 unseen, 1 agreeing, 2 conflicting
+        MEMSET(state, 0, num_particle_types);
         for (size_t i = 0; i < atom_count; ++i) {
             if (!covered[i]) continue;
             const size_t t = sys->atom.type_idx[i];
-            if (t >= num_atom_types || sys->atom.type.mass[t] != 0.0f) continue;
+            if (t >= num_particle_types || sys->atom.type.mass[t] != 0.0f) continue;
             const float m = mass[i];
             if (!(m > 0.0f)) {
                 state[t] = 2;
@@ -950,22 +950,22 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
                 state[t] = 2;
             }
         }
-        for (size_t t = 0; t < num_atom_types; ++t) {
+        for (size_t t = 0; t < num_particle_types; ++t) {
             if (state[t] == 1) sys->atom.type.mass[t] = fill[t];
         }
     }
 
     // ## Derived topology
-    md_util_system_infer_structures(sys);
+    md_util_system_infer_molecules(sys);
     if (sys->bond.count) {
         md_util_system_infer_rings(sys);
     }
-    // The lipids follow from the bonds, and the kinds of the components from the lipids
+    // The lipids follow from the bonds, and the kinds of the residues from the lipids
     md_util_system_infer_lipids(sys);
-    md_util_system_infer_component_types(sys);
+    md_util_system_infer_residue_types(sys);
 
     MD_LOG_INFO("Topology applied: %zu molecules covering %zu of %zu atoms, %zu bonds, %zu structures",
-        num_instances, num_covered, atom_count, num_topology_bonds, md_structure_count(&sys->structure));
+        num_instances, num_covered, atom_count, num_topology_bonds, md_molecule_count(&sys->molecule));
     result = true;
 
 done:

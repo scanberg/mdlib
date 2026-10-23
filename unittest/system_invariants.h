@@ -25,24 +25,24 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
         *utest_result = UTEST_TEST_FAILURE; \
     } while (0)
 
-    if (sys->component.count) {
-        if (!sys->component.atom_offset) {
-            FAIL("component.atom_offset is NULL with component.count = %zu", sys->component.count);
+    if (sys->residue.count) {
+        if (!sys->residue.atom_offset) {
+            FAIL("component.atom_offset is NULL with component.count = %zu", sys->residue.count);
         } else {
-            if (md_array_size(sys->component.atom_offset) != sys->component.count + 1) {
+            if (md_array_size(sys->residue.atom_offset) != sys->residue.count + 1) {
                 FAIL("component.atom_offset holds %zu entries, expected count+1 = %zu (missing sentinel?)",
-                     md_array_size(sys->component.atom_offset), sys->component.count + 1);
+                     md_array_size(sys->residue.atom_offset), sys->residue.count + 1);
             }
-            if (sys->component.atom_offset[0] != 0) {
-                FAIL("component.atom_offset[0] = %u, expected 0", sys->component.atom_offset[0]);
+            if (sys->residue.atom_offset[0] != 0) {
+                FAIL("component.atom_offset[0] = %u, expected 0", sys->residue.atom_offset[0]);
             }
-            if (sys->component.atom_offset[sys->component.count] != sys->atom.count) {
+            if (sys->residue.atom_offset[sys->residue.count] != sys->atom.count) {
                 FAIL("component sentinel = %u, expected atom.count = %zu",
-                     sys->component.atom_offset[sys->component.count], sys->atom.count);
+                     sys->residue.atom_offset[sys->residue.count], sys->atom.count);
             }
-            for (size_t i = 0; i < sys->component.count; ++i) {
-                uint32_t beg = sys->component.atom_offset[i];
-                uint32_t end = sys->component.atom_offset[i + 1];
+            for (size_t i = 0; i < sys->residue.count; ++i) {
+                uint32_t beg = sys->residue.atom_offset[i];
+                uint32_t end = sys->residue.atom_offset[i + 1];
                 if (beg > end) {
                     FAIL("component[%zu] range is inverted: [%u, %u)", i, beg, end);
                     break;
@@ -57,24 +57,24 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
 
     // The component types, once inferred: a type for every component, of its name and kind
     {
-        const md_component_type_data_t* type = &sys->component.type;
+        const md_residue_type_data_t* type = &sys->residue.type;
         if (md_array_size(type->name) != type->count || md_array_size(type->kind) != type->count ||
             md_array_size(type->monomer) != type->count || md_array_size(type->color) != type->count) {
             FAIL("component.type arrays do not hold count = %zu entries", type->count);
         }
-        if (sys->component.type_idx) {
-            if (md_array_size(sys->component.type_idx) != sys->component.count) {
+        if (sys->residue.type_idx) {
+            if (md_array_size(sys->residue.type_idx) != sys->residue.count) {
                 FAIL("component.type_idx holds %zu entries, expected component.count = %zu",
-                     md_array_size(sys->component.type_idx), sys->component.count);
+                     md_array_size(sys->residue.type_idx), sys->residue.count);
             } else {
-                for (size_t i = 0; i < sys->component.count; ++i) {
-                    const md_component_type_idx_t t = sys->component.type_idx[i];
+                for (size_t i = 0; i < sys->residue.count; ++i) {
+                    const md_residue_type_idx_t t = sys->residue.type_idx[i];
                     if (t < 0 || (size_t)t >= type->count) {
                         FAIL("component[%zu] has type %d, out of [0, %zu)", i, t, type->count);
                         break;
                     }
-                    if (type->kind[t] != md_component_kind(&sys->component, i) ||
-                        !str_eq(LBL_TO_STR(type->name[t]), md_component_name(&sys->component, i))) {
+                    if (type->kind[t] != md_residue_kind(&sys->residue, i) ||
+                        !str_eq(LBL_TO_STR(type->name[t]), md_residue_name(&sys->residue, i))) {
                         FAIL("component[%zu] is not of the name and kind of its type %d", i, t);
                         break;
                     }
@@ -84,21 +84,21 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
     }
 
     if (sys->instance.count) {
-        if (!sys->instance.comp_offset) {
+        if (!sys->instance.res_offset) {
             FAIL("instance.comp_offset is NULL with instance.count = %zu", sys->instance.count);
         } else {
-            if (md_array_size(sys->instance.comp_offset) != sys->instance.count + 1) {
+            if (md_array_size(sys->instance.res_offset) != sys->instance.count + 1) {
                 FAIL("instance.comp_offset holds %zu entries, expected count+1 = %zu (missing sentinel?)",
-                     md_array_size(sys->instance.comp_offset), sys->instance.count + 1);
+                     md_array_size(sys->instance.res_offset), sys->instance.count + 1);
             }
-            if (sys->instance.comp_offset[sys->instance.count] != sys->component.count) {
+            if (sys->instance.res_offset[sys->instance.count] != sys->residue.count) {
                 FAIL("instance sentinel = %u, expected component.count = %zu",
-                     sys->instance.comp_offset[sys->instance.count], sys->component.count);
+                     sys->instance.res_offset[sys->instance.count], sys->residue.count);
             }
             for (size_t i = 0; i < sys->instance.count; ++i) {
-                if (sys->instance.comp_offset[i] > sys->instance.comp_offset[i + 1]) {
+                if (sys->instance.res_offset[i] > sys->instance.res_offset[i + 1]) {
                     FAIL("instance[%zu] range is inverted: [%u, %u)", i,
-                         sys->instance.comp_offset[i], sys->instance.comp_offset[i + 1]);
+                         sys->instance.res_offset[i], sys->instance.res_offset[i + 1]);
                     break;
                 }
             }
@@ -133,13 +133,13 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
         }
     }
 
-    if (sys->structure.count) {
-        if (md_array_size(sys->structure.offset) != sys->structure.count + 1) {
+    if (sys->molecule.count) {
+        if (md_array_size(sys->molecule.offset) != sys->molecule.count + 1) {
             FAIL("structure.offset holds %zu entries, expected count+1 = %zu",
-                 md_array_size(sys->structure.offset), sys->structure.count + 1);
-        } else if (sys->structure.offset[sys->structure.count] != md_array_size(sys->structure.atom_idx)) {
+                 md_array_size(sys->molecule.offset), sys->molecule.count + 1);
+        } else if (sys->molecule.offset[sys->molecule.count] != md_array_size(sys->molecule.atom_idx)) {
             FAIL("structure sentinel = %u, expected atom_idx length = %zu",
-                 sys->structure.offset[sys->structure.count], md_array_size(sys->structure.atom_idx));
+                 sys->molecule.offset[sys->molecule.count], md_array_size(sys->molecule.atom_idx));
         }
     }
 

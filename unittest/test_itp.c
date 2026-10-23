@@ -211,7 +211,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     EXPECT_EQ(count_origin(&sys, MD_BOND_ORIGIN_TOPOLOGY), MOLS * bonds_per_mol);
     EXPECT_EQ(sys.bond.count, MOLS * bonds_per_mol);
     // Three fibrils and the two water beads the topology says nothing about
-    EXPECT_EQ(md_structure_count(&sys.structure), (size_t)(MOLS + 2));
+    EXPECT_EQ(md_molecule_count(&sys.molecule), (size_t)(MOLS + 2));
 
     // Per atom mass is published, and it varies (first slice heavier)
     const md_attribute_t* mass_attr = md_attributes_find(&sys.attributes, STR_LIT("atom/mass"));
@@ -264,7 +264,7 @@ UTEST(itp, residue_boundaries_disambiguate_polymers) {
     EXPECT_EQ(inst[1].atom_offset, 35u);
 
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
-    EXPECT_EQ(md_structure_count(&sys.structure), 2u);
+    EXPECT_EQ(md_molecule_count(&sys.molecule), 2u);
 
     md_vm_arena_destroy(alloc);
 }
@@ -406,7 +406,7 @@ UTEST(itp, elastic_bonds) {
     EXPECT_EQ(-1, md_bond_find(&sys.bond, 4, 8));
     EXPECT_EQ(-1, md_bond_find(&sys.bond, 1, 3));
     for (int r = 0; r < 5; ++r) EXPECT_TRUE(md_bond_find(&sys.bond, 2 * r, 2 * r + 2) >= 0);
-    EXPECT_EQ(1u, md_structure_count(&sys.structure));
+    EXPECT_EQ(1u, md_molecule_count(&sys.molecule));
 
     md_vm_arena_destroy(alloc);
 }

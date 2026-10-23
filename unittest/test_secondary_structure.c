@@ -220,7 +220,7 @@ UTEST(secondary_structure, martini_trace_backbone) {
     EXPECT_TRUE(md_protein_backbone_range_is_trace(bb, 0));
     for (size_t i = 0; i < bb->segment.count; ++i) {
         const md_amino_acid_atoms_t a = bb->segment.atoms[i];
-        EXPECT_EQ((md_component_idx_t)i, bb->segment.comp_idx[i]);
+        EXPECT_EQ((md_residue_idx_t)i, bb->segment.res_idx[i]);
         EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.ca), STR_LIT("BB")));
         EXPECT_EQ(-1, a.n);
         EXPECT_EQ(-1, a.c);

@@ -990,9 +990,9 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     const size_t capacity = ROUND_UP(N, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_atom_type_idx_t));
+    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
     MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     // Particles of one species are identical (the specification says so), so a type is a species
     // and the element is decided once per species
@@ -1001,16 +1001,16 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
         const float m = has_mass ? mass[i] : 0.0f;
         const uint64_t key = md_hash64_str(names[i], md_hash64(&m, sizeof(m), 0)) & ~(3ULL << 62);
         const uint32_t* cached = md_hashmap_get(&type_map, key);
-        md_atom_type_idx_t type;
+        md_particle_type_idx_t type;
         if (cached) {
-            type = (md_atom_type_idx_t)*cached;
+            type = (md_particle_type_idx_t)*cached;
         } else {
             md_atomic_number_t z = from_label ? md_atomic_number_infer_from_label(names[i], STR_LIT(""), 0) : 0;
             if (!z && m > 0.0f) {
                 z = md_atomic_number_infer_from_mass(m);
             }
             const float type_mass = has_mass ? m : md_atomic_number_mass(z);
-            type = md_atom_type_add(&sys->atom.type, names[i], STR_LIT(""), z, type_mass, md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, alloc);
+            type = md_particle_type_add(&sys->atom.type, names[i], STR_LIT(""), z, type_mass, md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, alloc);
             md_hashmap_add(&type_map, key, (uint32_t)type);
         }
         sys->atom.type_idx[i] = type;

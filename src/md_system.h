@@ -11,7 +11,7 @@
 
 #include <md_attributes.h>
 
-typedef struct md_atom_type_data_t {
+typedef struct md_particle_type_data_t {
     size_t count;
 
     md_label_t*     name;
@@ -24,53 +24,53 @@ typedef struct md_atom_type_data_t {
     float*          mass;
     float*          radius;
     uint32_t*       color;
-    md_atom_type_flags_t* flags;    // The particle kind, see md_types.h
-} md_atom_type_data_t;
+    md_particle_type_flags_t* flags; // The particle kind, see md_types.h
+} md_particle_type_data_t;
 
 typedef struct md_atom_data_t {
     size_t count;
 
     // Coordinates live in md_system_state_t, not here. A system is time invariant; where the atoms
     // are is not.
-    md_atom_type_idx_t* type_idx;
-    md_atom_flags_t* flags;     // Role in the component and chemistry, see md_types.h
+    md_particle_type_idx_t* type_idx;
+    md_atom_flags_t* flags;     // Role in the residue and chemistry, see md_types.h
 
     // Chemistry of each atom, as given by the file or perceived by md_chem_perceive. NULL when unknown. Per atom
-    // and not per type, as atom types are shared by name (the OD1 of Asp and of Asn).
+    // and not per type, as particle types are shared by name (the OD1 of Asp and of Asn).
     int8_t*  formal_charge;     // [count]
     uint8_t* hydrogen_count;    // [count] Hydrogens attached, explicit (bonded H atoms) and implicit
 
-    md_atom_type_data_t type;
+    md_particle_type_data_t type;
 } md_atom_data_t;
 
-// Component type: the components of the system of one name and kind. The ALA of every chain is one type, the HIE and
-// the HID of a protein are two, which are both forms of the standard monomer HIS. Inferred from the components
-// (md_util_system_infer_component_types), as the components are classified late (a lipid is found by its structure
-// after the components are classified). Like the atom types they carry what the components look like, their color.
-typedef struct md_component_type_data_t {
+// Residue type: the residues of the system of one name and kind. The ALA of every chain is one type, the HIE and
+// the HID of a protein are two, which are both forms of the standard monomer HIS. Inferred from the residues
+// (md_util_system_infer_residue_types), as the residues are classified late (a lipid is found by its structure
+// after the residues are classified). Like the particle types they carry what the residues look like, their color.
+typedef struct md_residue_type_data_t {
     size_t count;
     md_label_t*          name;
-    md_component_kind_t* kind;
-    md_monomer_t*        monomer;   // The standard monomer it is a form of, MD_MONOMER_NONE if none (md_monomer_from_comp_name)
+    md_residue_kind_t* kind;
+    md_monomer_t*        monomer;   // The standard monomer it is a form of, MD_MONOMER_NONE if none (md_monomer_from_residue_name)
     uint32_t*            color;
-} md_component_type_data_t;
+} md_residue_type_data_t;
 
-// Component (Residue): a contiguous range of atoms
-typedef struct md_component_data_t {
+// Residue: a contiguous range of atoms
+typedef struct md_residue_data_t {
     size_t count;
     md_label_t* name;
     md_sequence_id_t* seq_id;
     uint32_t* atom_offset;          // [count + 1]
-    md_component_flags_t* flags;    // Kind (amino acid, nucleotide, water, ion) and place in the chain, see md_types.h
+    md_residue_flags_t* flags;      // Kind (amino acid, nucleotide, water, ion) and place in the chain, see md_types.h
 
-    md_component_type_idx_t* type_idx;  // [count] Once inferred (md_util_system_infer_component_types), NULL before
-    md_component_type_data_t type;
-} md_component_data_t;
+    md_residue_type_idx_t* type_idx;    // [count] Once inferred (md_util_system_infer_residue_types), NULL before
+    md_residue_type_data_t type;
+} md_residue_data_t;
 
-// Instance: ONE molecule, or ONE polymer chain, as a contiguous range of components.
+// Instance: ONE molecule, or ONE polymer chain, as a contiguous range of residues.
 //   - A polymer chain is one instance, also when it is broken (residues missing in a crystal structure).
 //   - Every other molecule is an instance of its own: each water, each ion, each ligand, each lipid.
-//   - A molecule of several components is one instance when they are bonded (a lipid split into head and tails).
+//   - A molecule of several residues is one instance when they are bonded (a lipid split into head and tails).
 // Instances are what a loader gives (mmCIF asyms, the molecules of a GROMACS topology), else they are inferred
 // (md_util_system_infer_entity_and_instance).
 //
@@ -84,7 +84,7 @@ typedef struct md_instance_data_t {
     size_t count;
     md_label_t* id;
     md_label_t* auth_id;
-    uint32_t* comp_offset;          // [count + 1]
+    uint32_t* res_offset;           // [count + 1]
     md_entity_idx_t* entity_idx;
 } md_instance_data_t;
 
@@ -96,19 +96,19 @@ typedef struct md_instance_data_t {
 //     chain does (CHAIN BREAKS in md_util.h), also within one molecule of a topology: the two strands of a DNA duplex
 //     which martinize-dna writes as one molecule type are two chains of one molecule.
 //   - A molecule which is not a polymer and which the data gives no id is in no chain.
-// A chain is runs of residues (components): a strand, and the ligands and waters filed after all of the polymers under
+// A chain is runs of residues (residues): a strand, and the ligands and waters filed after all of the polymers under
 // its id. The chains are in the order of their first residue. They are derived from the instances
 // (md_util_system_infer_chains), whose author ids hold the identifiers.
 typedef struct md_chain_data_t {
     size_t count;
     md_label_t* id;                 // [count] The author's identifier, empty for an inferred chain
     uint32_t* run_offset;           // [count + 1] The runs of chain c: run[run_offset[c], run_offset[c + 1])
-    md_urange_t* run;               // Runs of consecutive components, ascending within each chain
-    md_chain_idx_t* comp_chain;     // [component count] The chain of each component, -1 for one in none
+    md_urange_t* run;               // Runs of consecutive residues, ascending within each chain
+    md_chain_idx_t* res_chain;      // [residue count] The chain of each residue, -1 for one in none
 } md_chain_data_t;
 
 // Part: one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water: the parts the molecules are
-// built of, each a run of consecutive residues (components) of one instance. A molecule may hold several (a
+// built of, each a run of consecutive residues (residues) of one instance. A molecule may hold several (a
 // glycoprotein, a strand and its glycans; the two strands of a duplex a topology gives as one molecule type), a
 // chain likewise (a strand and the ligands and waters filed under its id).
 //   - A polymer strand goes on over a gap (residues missing from a crystal structure) and ends where the chemistry says
@@ -119,7 +119,7 @@ typedef struct md_chain_data_t {
 // They are derived from the instances, the bonds and the kinds of the residues (md_util_system_infer_parts).
 typedef struct md_part_data_t {
     size_t count;
-    uint32_t* comp_offset;          // [count + 1]
+    uint32_t* res_offset;           // [count + 1]
 } md_part_data_t;
 
 // Entity: a molecule type, or a polymer sequence, of which the system holds one or more instances.
@@ -131,14 +131,14 @@ typedef struct md_entity_data_t {
     str_t* description;
 } md_entity_data_t;
 
-// The backbones hold only what is static with regard to the topology: which atoms of which components form them, in
+// The backbones hold only what is static with regard to the topology: which atoms of which residues form them, in
 // consecutive ranges along a chain. What depends on a frame (the backbone angles, the secondary structure) or serves a
 // single consumer (the ramachandran classification) is computed from them by whoever needs it, into arrays of its own
 // with one entry per segment (md_util_backbone_angles_compute, md_dssp_compute,
 // md_util_backbone_ramachandran_classify).
 //
-// A system without components (an XYZ file) has its backbones found from the bonds alone (BACKBONES FROM THE BONDS in
-// md_util.c): its segments have no component (comp_idx -1) and its ranges no instance (inst_idx -1).
+// A system without residues (an XYZ file) has its backbones found from the bonds alone (BACKBONES FROM THE BONDS in
+// md_util.c): its segments have no residue (res_idx -1) and its ranges no instance (inst_idx -1).
 //
 // A protein range is ATOMISTIC, each segment the N, CA, C and O of its residue (and HN, CB where they are), or a TRACE:
 // one bead per residue of a coarse grained model (the BB bead of Martini), held in ca, with n, c, o, hn and cb -1. A
@@ -156,7 +156,7 @@ typedef struct md_protein_backbone_data_t {
     struct {
         size_t count;
         md_amino_acid_atoms_t* atoms;
-        md_component_idx_t* comp_idx;                  // Index to the component which contains the backbone, -1 for none
+        md_residue_idx_t* res_idx;                     // Index to the residue which contains the backbone, -1 for none
     } segment;
 } md_protein_backbone_data_t;
 
@@ -176,7 +176,7 @@ typedef struct md_nucleic_backbone_data_t {
     struct {
         size_t count;
         md_nucleic_acid_atoms_t* atoms;
-        md_component_idx_t* comp_idx;                  // Index to the component which contains the backbone segment, -1 for none
+        md_residue_idx_t* res_idx;                     // Index to the residue which contains the backbone segment, -1 for none
     } segment;
 } md_nucleic_backbone_data_t;
 
@@ -193,18 +193,18 @@ typedef struct md_nucleic_backbone_data_t {
 // tip (or, for a spanning chain, on to where it joins its other head). Methyl branches and the atoms of the rings off the
 // shortest way through a skeleton are not on it. The spine is what a spline of the tail follows.
 //
-// A lipid is a molecule, components bonded to each other wherever they are in the system (a lipid split into head and
+// A lipid is a molecule, residues bonded to each other wherever they are in the system (a lipid split into head and
 // tails, as the AMBER lipids are, is one; so is a lipid A whose acyl chains are ligands of their own), all of them
-// MD_COMPONENT_KIND_LIPID. Of a molecule of several components which holds a lipid and more (a glycolipid or a
+// MD_RESIDUE_KIND_LIPID. Of a molecule of several residues which holds a lipid and more (a glycolipid or a
 // lipopolysaccharide whose sugars are residues of their own, a PEG lipid whose monomers are), the lipid is the
-// components which hold the tails and those between them, and the components bonded to these: the head group of a
+// residues which hold the tails and those between them, and the residues bonded to these: the head group of a
 // residue of its own, the first sugar of a glycolipid, the first Kdo of a lipid A. The rest of the molecule is attached
 // to the lipid but no part of it, nor of its heads, and keeps its kind. Every lipid molecule of the system is here, also
 // one whose heads and tails could not be found (a lipid by name in a system without bonds): it has none. The atoms of
 // the tails are MD_ATOM_FLAG_LIPID_TAIL.
 typedef struct md_lipid_data_t {
     size_t count;                       // Lipid molecules
-    md_index_data_t comps;              // The components of each lipid, ascending (not necessarily consecutive)
+    md_index_data_t residues;           // The residues of each lipid, ascending (not necessarily consecutive)
     uint32_t* head_offset;              // [count + 1] The heads of lipid i are head_offset[i] .. head_offset[i + 1]
     uint32_t* tail_offset;              // [count + 1] Its tails, tail_offset[i] .. tail_offset[i + 1]
 
@@ -310,17 +310,17 @@ typedef struct md_bond_iter_t {
 // unless a topology gives them (a bond within one of its molecules, as GROMACS has it). A molecule of a topology is
 // one molecule whatever its bonds (MD_ENTITY_FLAG_TOPOLOGY): the two strands of a DNA duplex which martinize-dna writes
 // as one molecule type, held together by an elastic network. Coarse grained systems are held together by their
-// hierarchy instead (md_util_system_infer_structures).
+// hierarchy instead (md_util_system_infer_molecules).
 // It also holds the iteration order of atoms and parent-child relationships for traversing the structure as a tree,
 // which is what unwrapping uses.
-typedef struct md_structure_t {
+typedef struct md_molecule_t {
     const int32_t* atom_idx;
     const int32_t* parent_idx;
     size_t   count;
-} md_structure_t;
+} md_molecule_t;
 
 // This is the contiguous storage of all structures, the offsets field is used to index into the atom_idx and parent_idx arrays for each structure
-// From this individual structures (md_structure_t) can be extracted
+// From this individual structures (md_molecule_t) can be extracted
 //
 // The index into atom_idx / parent_idx is referred to as a SLOT. Both arrays are indexed by slot
 // and both hold GLOBAL atom indices:
@@ -333,7 +333,7 @@ typedef struct md_structure_t {
 //   atom_slot[atom] -> the slot which holds that atom
 // It turns "what is the parent of this atom" into an O(1) lookup, which is what lets a caller walk
 // the hierarchy upwards from an arbitrary subset of atoms rather than only downwards from a root
-// (see md_util_unwrap_structure).
+// (see md_util_unwrap_molecule).
 //
 // ROOT SELECTION:
 //   The root is the most topologically central atom of the structure - the atom whose greatest edge
@@ -348,20 +348,20 @@ typedef struct md_structure_t {
 //   acyclic structures and a close approximation in the presence of rings, which are local and
 //   small in practice.
 //
-// INVARIANT - load bearing, md_util_unwrap_structure depends on it:
+// INVARIANT - load bearing, md_util_unwrap_molecule depends on it:
 //   Within a structure, atoms are stored in BFS order from the root, so every atom appears after
 //   the one it was reached from: slot(parent) < slot(child). A single forward pass therefore always
 //   sees a placed parent, and sorting an arbitrary set of slots ascending yields a valid
 //   topological order.
 //   Do not reorder atom_idx (for locality or otherwise) without reordering parent_idx and updating
 //   atom_slot to match.
-typedef struct md_structure_data_t {
+typedef struct md_molecule_data_t {
     size_t count;
     uint32_t* offset;    // Offsets into the structure fields stored bellow, includes sentinel at the end (so length is count + 1)
     int32_t* atom_idx;   // [slot] -> global atom index
     int32_t* parent_idx; // [slot] -> global atom index of the atom it was reached from (a root is its own parent)
     int32_t* atom_slot;  // [global atom index] -> slot. Length is the system atom count
-} md_structure_data_t;
+} md_molecule_data_t;
 
 // A snapshot of the geometric state of a system: where the atoms are and what box they are in.
 //
@@ -429,14 +429,14 @@ typedef struct md_system_state_t {
     md_allocator_i* alloc;
 } md_system_state_t;
 
-// This represents the persistent portion (topology) of a system which does not change over time, such as the atom types, bonds, components, etc.
+// This represents the persistent portion (topology) of a system which does not change over time, such as the particle types, bonds, residues, etc.
 // It may of course be modified through some special operations, though it is not expected to change frequently.
 typedef struct md_system_t {
     md_allocator_i*             alloc;
 
     // TOPOLOGY VERSION. Changes whenever the topology does: the atoms, their types (what the particles are), their
-    // flags, the components, instances and entities, the bonds, and what is derived from them (rings, structures,
-    // backbones, the perceived chemistry). The properties of the atom types (mass, radius, color) are not topology.
+    // flags, the residues, instances and entities, the bonds, and what is derived from them (rings, structures,
+    // backbones, the perceived chemistry). The properties of the particle types (mass, radius, color) are not topology.
     //
     // A consumer which keeps something derived from the topology (a query, a lookup, a classification) stores the
     // version it was built from and rebuilds when it differs. Versions come from one counter shared by every system and
@@ -459,7 +459,7 @@ typedef struct md_system_t {
     md_system_state_t           reference;
 
     md_atom_data_t              atom;
-    md_component_data_t         component;
+    md_residue_data_t           residue;
     md_instance_data_t          instance;
     md_chain_data_t             chain;              // The instances by the chain id the data gives them, see md_chain_data_t
     md_part_data_t              part;               // Strands, glycan trees, ligands, ions, waters, see md_part_data_t
@@ -473,7 +473,7 @@ typedef struct md_system_t {
     
     md_index_data_t             ring;               // Ring structures formed by persistent bonds, 3 to 7 atoms in order around the ring (sugars in canonical order, see MD_RING_FLAG_SUGAR)
     md_array(md_ring_flags_t)   ring_flags;         // [ring count] What each ring is (md_ring_flags_t), see md_system_ring_flags
-    md_structure_data_t         structure;          // The molecules: connected by persistent bonds, within residues and along polymer chains (md_structure_t)
+    md_molecule_data_t          molecule;           // The molecules: connected by persistent bonds, within residues and along polymer chains (md_molecule_t)
 
     md_assembly_data_t          assembly;           // The biological assemblies of a deposited structure, see md_assembly_data_t
     
@@ -571,19 +571,19 @@ static inline size_t md_assembly_copy_count(const md_assembly_data_t* a, size_t 
     return n;
 }
 
-// Atom type table helper functions
-static inline size_t md_atom_type_count(const md_atom_type_data_t* atom_type) {
-    ASSERT(atom_type);
-    return atom_type->count;
+// Particle type table helper functions
+static inline size_t md_particle_type_count(const md_particle_type_data_t* particle_type) {
+    ASSERT(particle_type);
+    return particle_type->count;
 }
 
-static inline md_atom_type_idx_t md_atom_type_find(const md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z) {
-    ASSERT(atom_type);
+static inline md_particle_type_idx_t md_particle_type_find(const md_particle_type_data_t* particle_type, str_t name, md_atomic_number_t z) {
+    ASSERT(particle_type);
     // The name as a type keeps it, its first 8 characters, compared as one word
     const uint64_t key = md_label_key(make_label(name));
-    for (size_t i = 1; i < atom_type->count; ++i) {
-        if (md_label_key(atom_type->name[i]) == key && atom_type->z[i] == z) {
-            return (md_atom_type_idx_t)i;
+    for (size_t i = 1; i < particle_type->count; ++i) {
+        if (md_label_key(particle_type->name[i]) == key && particle_type->z[i] == z) {
+            return (md_particle_type_idx_t)i;
         }
     }
     return 0; // Zero is sentinel for "not found"
@@ -591,37 +591,37 @@ static inline md_atom_type_idx_t md_atom_type_find(const md_atom_type_data_t* at
 
 // Adds a type unconditionally, for a loader that decides itself which particles share a type.
 // ff_type may be empty.
-static inline md_atom_type_idx_t md_atom_type_add(md_atom_type_data_t* atom_type, str_t name, str_t ff_type, md_atomic_number_t z, float mass, float radius, uint32_t color, md_atom_type_flags_t flags, struct md_allocator_i* alloc) {
-    ASSERT(atom_type);
+static inline md_particle_type_idx_t md_particle_type_add(md_particle_type_data_t* particle_type, str_t name, str_t ff_type, md_atomic_number_t z, float mass, float radius, uint32_t color, md_particle_type_flags_t flags, struct md_allocator_i* alloc) {
+    ASSERT(particle_type);
     ASSERT(alloc);
 
-    md_array_push(atom_type->name, make_label(name), alloc);
-    md_array_push(atom_type->ff_type, make_label16(ff_type), alloc);
-    md_array_push(atom_type->z, z, alloc);
-    md_array_push(atom_type->mass, mass, alloc);
-    md_array_push(atom_type->radius, radius, alloc);
-    md_array_push(atom_type->color, color, alloc);
-    md_array_push(atom_type->flags, flags, alloc);
-    atom_type->count++;
+    md_array_push(particle_type->name, make_label(name), alloc);
+    md_array_push(particle_type->ff_type, make_label16(ff_type), alloc);
+    md_array_push(particle_type->z, z, alloc);
+    md_array_push(particle_type->mass, mass, alloc);
+    md_array_push(particle_type->radius, radius, alloc);
+    md_array_push(particle_type->color, color, alloc);
+    md_array_push(particle_type->flags, flags, alloc);
+    particle_type->count++;
 
-    return (md_atom_type_idx_t)(atom_type->count - 1);
+    return (md_particle_type_idx_t)(particle_type->count - 1);
 }
 
-static inline md_atom_type_idx_t md_atom_type_find_or_add(md_atom_type_data_t* atom_type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_atom_type_flags_t flags, struct md_allocator_i* alloc) {
-    ASSERT(atom_type);
+static inline md_particle_type_idx_t md_particle_type_find_or_add(md_particle_type_data_t* particle_type, str_t name, md_atomic_number_t z, float mass, float radius, uint32_t color, md_particle_type_flags_t flags, struct md_allocator_i* alloc) {
+    ASSERT(particle_type);
     ASSERT(alloc);
     
-    // First try to find existing atom type
-    md_atom_type_idx_t type_idx = md_atom_type_find(atom_type, name, z);
+    // First try to find existing particle type
+    md_particle_type_idx_t type_idx = md_particle_type_find(particle_type, name, z);
     if (type_idx != 0) {
         return type_idx;
     }
     
     const str_t no_ff_type = {0};
-    return md_atom_type_add(atom_type, name, no_ff_type, z, mass, radius, color, flags, alloc);
+    return md_particle_type_add(particle_type, name, no_ff_type, z, mass, radius, color, flags, alloc);
 }
 
-static inline md_atomic_number_t md_atom_type_atomic_number(const md_atom_type_data_t* type_data, size_t type_idx) {
+static inline md_atomic_number_t md_particle_type_atomic_number(const md_particle_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
     if (type_idx < type_data->count) {
         return type_data->z[type_idx];
@@ -629,7 +629,7 @@ static inline md_atomic_number_t md_atom_type_atomic_number(const md_atom_type_d
     return 0;
 }
 
-static inline float md_atom_type_mass(const md_atom_type_data_t* type_data, size_t type_idx) {
+static inline float md_particle_type_mass(const md_particle_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
     if (type_idx < type_data->count) {
         return type_data->mass[type_idx];
@@ -637,19 +637,19 @@ static inline float md_atom_type_mass(const md_atom_type_data_t* type_data, size
     return 0;
 }
 
-static inline md_atom_type_flags_t md_atom_type_flags(const md_atom_type_data_t* type_data, size_t type_idx) {
+static inline md_particle_type_flags_t md_particle_type_flags(const md_particle_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
     if (type_idx < type_data->count && type_data->flags) {
         return type_data->flags[type_idx];
     }
-    return MD_ATOM_TYPE_FLAG_NONE;
+    return MD_PARTICLE_TYPE_FLAG_NONE;
 }
 
-static inline md_particle_kind_t md_atom_type_particle_kind(const md_atom_type_data_t* type_data, size_t type_idx) {
-    return md_atom_type_flags_particle_kind(md_atom_type_flags(type_data, type_idx));
+static inline md_particle_kind_t md_particle_type_particle_kind(const md_particle_type_data_t* type_data, size_t type_idx) {
+    return md_particle_type_flags_particle_kind(md_particle_type_flags(type_data, type_idx));
 }
 
-static inline float md_atom_type_radius(const md_atom_type_data_t* type_data, size_t type_idx) {
+static inline float md_particle_type_radius(const md_particle_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
     if (type_idx < type_data->count) {
         return type_data->radius[type_idx];
@@ -657,7 +657,7 @@ static inline float md_atom_type_radius(const md_atom_type_data_t* type_data, si
     return 0;
 }
 
-static inline uint32_t md_atom_type_color(const md_atom_type_data_t* type_data, size_t type_idx) {
+static inline uint32_t md_particle_type_color(const md_particle_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
     if (type_idx < type_data->count) {
         return type_data->color[type_idx];
@@ -665,7 +665,7 @@ static inline uint32_t md_atom_type_color(const md_atom_type_data_t* type_data, 
     return 0;
 }
 
-static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size_t type_idx) {
+static inline str_t md_particle_type_name(const md_particle_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
     if (type_idx < type_data->count) {
         return LBL_TO_STR(type_data->name[type_idx]);
@@ -674,7 +674,7 @@ static inline str_t md_atom_type_name(const md_atom_type_data_t* type_data, size
 }
 
 // Empty when the source had no force field type for it
-static inline str_t md_atom_type_ff_type(const md_atom_type_data_t* type_data, size_t type_idx) {
+static inline str_t md_particle_type_ff_type(const md_particle_type_data_t* type_data, size_t type_idx) {
     ASSERT(type_data);
     if (type_data->ff_type && type_idx < type_data->count) {
         return md_label16_str(&type_data->ff_type[type_idx]);
@@ -724,7 +724,7 @@ static inline double md_state_frame_frac(const md_system_state_t* state) {
 
 // Atom helpers
 
-static inline md_atom_type_idx_t md_atom_type_idx(const md_atom_data_t* atom, size_t atom_idx) {
+static inline md_particle_type_idx_t md_atom_particle_type_idx(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
     if (atom->type_idx && atom_idx < atom->count) {
         return atom->type_idx[atom_idx];
@@ -735,7 +735,7 @@ static inline md_atom_type_idx_t md_atom_type_idx(const md_atom_data_t* atom, si
 static inline md_atomic_number_t md_atom_atomic_number(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
     
-    // Try atom type table first if type_idx is available
+    // Try particle type table first if type_idx is available
     if (atom->type_idx && (size_t)atom->type_idx[atom_idx] < atom->type.count) {
         return atom->type.z[atom->type_idx[atom_idx]];
     }
@@ -760,7 +760,7 @@ static inline float md_atom_mass(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
     
     if (atom_idx < atom->count) {
-		return md_atom_type_mass(&atom->type, atom->type_idx[atom_idx]);
+		return md_particle_type_mass(&atom->type, atom->type_idx[atom_idx]);
     }
     
     return 0.0f;
@@ -770,7 +770,7 @@ static inline float md_atom_radius(const md_atom_data_t* atom, size_t atom_idx) 
     ASSERT(atom);
     
     if (atom_idx < atom->count) {
-        return md_atom_type_radius(&atom->type, atom->type_idx[atom_idx]);
+        return md_particle_type_radius(&atom->type, atom->type_idx[atom_idx]);
     }
     return 0.0f;
 }
@@ -778,7 +778,7 @@ static inline float md_atom_radius(const md_atom_data_t* atom, size_t atom_idx) 
 static inline str_t md_atom_name(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
     if (atom_idx < atom->count) {
-        return md_atom_type_name(&atom->type, atom->type_idx[atom_idx]);
+        return md_particle_type_name(&atom->type, atom->type_idx[atom_idx]);
     }
     return STR_LIT("");
 }
@@ -811,57 +811,57 @@ static inline md_hybridization_t md_atom_hybridization(const md_atom_data_t* ato
 static inline md_particle_kind_t md_atom_particle_kind(const md_atom_data_t* atom, size_t atom_idx) {
     ASSERT(atom);
     if (atom->type_idx && atom_idx < atom->count) {
-        return md_atom_type_particle_kind(&atom->type, atom->type_idx[atom_idx]);
+        return md_particle_type_particle_kind(&atom->type, atom->type_idx[atom_idx]);
     }
     return MD_PARTICLE_ATOM;
 }
 
-// Component
+// Residue
 
-static inline size_t md_component_count(const md_component_data_t* comp) {
-    ASSERT(comp);
-    return comp->count;
+static inline size_t md_residue_count(const md_residue_data_t* res) {
+    ASSERT(res);
+    return res->count;
 }
 
-static inline str_t md_component_name(const md_component_data_t* comp, size_t comp_idx) {
-    ASSERT(comp);
+static inline str_t md_residue_name(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
     str_t name = STR_INIT("");
-    if (comp->name && comp_idx < comp->count) {
-        name = LBL_TO_STR(comp->name[comp_idx]);
+    if (res->name && res_idx < res->count) {
+        name = LBL_TO_STR(res->name[res_idx]);
     }
     return name;
 }
 
-static inline md_sequence_id_t md_component_seq_id(const md_component_data_t* comp, size_t comp_idx) {
-    ASSERT(comp);
+static inline md_sequence_id_t md_residue_seq_id(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
     md_sequence_id_t id = 0;
-    if (comp->seq_id && comp_idx < comp->count) {
-        id = comp->seq_id[comp_idx];
+    if (res->seq_id && res_idx < res->count) {
+        id = res->seq_id[res_idx];
     }
     return id;
 }
 
-static inline md_urange_t md_component_atom_range(const md_component_data_t* comp, size_t comp_idx) {
-    ASSERT(comp);
+static inline md_urange_t md_residue_atom_range(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
 	md_urange_t range = {0};
-	if (comp->atom_offset && comp_idx < comp->count) {
-		range.beg = comp->atom_offset[comp_idx];
-		range.end = comp->atom_offset[comp_idx + 1];
+	if (res->atom_offset && res_idx < res->count) {
+		range.beg = res->atom_offset[res_idx];
+		range.end = res->atom_offset[res_idx + 1];
 	}
 	return range;
 }
 
-static inline md_component_flags_t md_component_flags(const md_component_data_t* comp, size_t comp_idx) {
-    ASSERT(comp);
-    md_component_flags_t flags = MD_COMPONENT_FLAG_NONE;
-    if (comp->flags && comp_idx < comp->count) {
-        flags = comp->flags[comp_idx];
+static inline md_residue_flags_t md_residue_flags(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
+    md_residue_flags_t flags = MD_RESIDUE_FLAG_NONE;
+    if (res->flags && res_idx < res->count) {
+        flags = res->flags[res_idx];
     }
     return flags;
 }
 
-static inline md_component_kind_t md_component_kind(const md_component_data_t* comp, size_t comp_idx) {
-    return md_component_flags_kind(md_component_flags(comp, comp_idx));
+static inline md_residue_kind_t md_residue_kind(const md_residue_data_t* res, size_t res_idx) {
+    return md_residue_flags_kind(md_residue_flags(res, res_idx));
 }
 
 // The index i of the range [offset[i], offset[i + 1]) which holds value, -1 when there is none.
@@ -877,49 +877,49 @@ static inline int32_t md_offset_range_find(const uint32_t* offset, size_t count,
     return (int32_t)lo;
 }
 
-static inline md_component_idx_t md_component_find_by_atom_idx(const md_component_data_t* comp, size_t atom_idx) {
-    ASSERT(comp);
-    return (md_component_idx_t)md_offset_range_find(comp->atom_offset, comp->count, atom_idx);
+static inline md_residue_idx_t md_residue_find_by_atom_idx(const md_residue_data_t* res, size_t atom_idx) {
+    ASSERT(res);
+    return (md_residue_idx_t)md_offset_range_find(res->atom_offset, res->count, atom_idx);
 }
 
-static inline size_t md_component_atom_count(const md_component_data_t* comp, size_t comp_idx) {
-    ASSERT(comp);
+static inline size_t md_residue_atom_count(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
     size_t count = 0;
 
-    if (comp->atom_offset && comp_idx < comp->count) {
-        count = comp->atom_offset[comp_idx + 1] - comp->atom_offset[comp_idx];
+    if (res->atom_offset && res_idx < res->count) {
+        count = res->atom_offset[res_idx + 1] - res->atom_offset[res_idx];
     }
     return count;
 }
 
-// The type of the component, -1 when the types have not been inferred
-static inline md_component_type_idx_t md_component_type_idx(const md_component_data_t* comp, size_t comp_idx) {
-    ASSERT(comp);
-    if (comp->type_idx && comp_idx < comp->count) {
-        return comp->type_idx[comp_idx];
+// The type of the residue, -1 when the types have not been inferred
+static inline md_residue_type_idx_t md_residue_type_idx(const md_residue_data_t* res, size_t res_idx) {
+    ASSERT(res);
+    if (res->type_idx && res_idx < res->count) {
+        return res->type_idx[res_idx];
     }
     return -1;
 }
 
-// Component type
+// Residue type
 
-static inline size_t md_component_type_count(const md_component_type_data_t* type) {
+static inline size_t md_residue_type_count(const md_residue_type_data_t* type) {
     ASSERT(type);
     return type->count;
 }
 
 // The type of the given name and kind, -1 when there is none
-static inline md_component_type_idx_t md_component_type_find(const md_component_type_data_t* type, str_t name, md_component_kind_t kind) {
+static inline md_residue_type_idx_t md_residue_type_find(const md_residue_type_data_t* type, str_t name, md_residue_kind_t kind) {
     ASSERT(type);
     for (size_t i = 0; i < type->count; ++i) {
         if (type->kind[i] == kind && str_eq(LBL_TO_STR(type->name[i]), name)) {
-            return (md_component_type_idx_t)i;
+            return (md_residue_type_idx_t)i;
         }
     }
     return -1;
 }
 
-static inline md_component_type_idx_t md_component_type_add(md_component_type_data_t* type, str_t name, md_component_kind_t kind, md_monomer_t monomer, uint32_t color, struct md_allocator_i* alloc) {
+static inline md_residue_type_idx_t md_residue_type_add(md_residue_type_data_t* type, str_t name, md_residue_kind_t kind, md_monomer_t monomer, uint32_t color, struct md_allocator_i* alloc) {
     ASSERT(type);
     ASSERT(alloc);
     md_array_push(type->name, make_label(name), alloc);
@@ -927,10 +927,10 @@ static inline md_component_type_idx_t md_component_type_add(md_component_type_da
     md_array_push(type->monomer, monomer, alloc);
     md_array_push(type->color, color, alloc);
     type->count++;
-    return (md_component_type_idx_t)(type->count - 1);
+    return (md_residue_type_idx_t)(type->count - 1);
 }
 
-static inline str_t md_component_type_name(const md_component_type_data_t* type, size_t type_idx) {
+static inline str_t md_residue_type_name(const md_residue_type_data_t* type, size_t type_idx) {
     ASSERT(type);
     if (type_idx < type->count) {
         return LBL_TO_STR(type->name[type_idx]);
@@ -938,15 +938,15 @@ static inline str_t md_component_type_name(const md_component_type_data_t* type,
     return STR_LIT("");
 }
 
-static inline md_component_kind_t md_component_type_kind(const md_component_type_data_t* type, size_t type_idx) {
+static inline md_residue_kind_t md_residue_type_kind(const md_residue_type_data_t* type, size_t type_idx) {
     ASSERT(type);
     if (type_idx < type->count) {
         return type->kind[type_idx];
     }
-    return MD_COMPONENT_KIND_OTHER;
+    return MD_RESIDUE_KIND_OTHER;
 }
 
-static inline md_monomer_t md_component_type_monomer(const md_component_type_data_t* type, size_t type_idx) {
+static inline md_monomer_t md_residue_type_monomer(const md_residue_type_data_t* type, size_t type_idx) {
     ASSERT(type);
     if (type_idx < type->count) {
         return type->monomer[type_idx];
@@ -954,7 +954,7 @@ static inline md_monomer_t md_component_type_monomer(const md_component_type_dat
     return MD_MONOMER_NONE;
 }
 
-static inline uint32_t md_component_type_color(const md_component_type_data_t* type, size_t type_idx) {
+static inline uint32_t md_residue_type_color(const md_residue_type_data_t* type, size_t type_idx) {
     ASSERT(type);
     if (type_idx < type->count) {
         return type->color[type_idx];
@@ -969,28 +969,28 @@ static inline size_t md_instance_count(const md_instance_data_t* inst) {
     return inst->count;
 }
 
-static inline md_urange_t md_instance_component_range(const md_instance_data_t* inst, size_t inst_idx) {
+static inline md_urange_t md_instance_residue_range(const md_instance_data_t* inst, size_t inst_idx) {
     ASSERT(inst);
 
     md_urange_t range = {0};
-    if (inst->comp_offset && inst_idx < inst->count) {
-        range.beg = inst->comp_offset[inst_idx];
-        range.end = inst->comp_offset[inst_idx + 1];
+    if (inst->res_offset && inst_idx < inst->count) {
+        range.beg = inst->res_offset[inst_idx];
+        range.end = inst->res_offset[inst_idx + 1];
     }
     return range;
 }
 
-static inline md_instance_idx_t md_instance_find_by_comp_idx(const md_instance_data_t* inst, size_t comp_idx) {
+static inline md_instance_idx_t md_instance_find_by_residue_idx(const md_instance_data_t* inst, size_t res_idx) {
     ASSERT(inst);
-    return (md_instance_idx_t)md_offset_range_find(inst->comp_offset, inst->count, comp_idx);
+    return (md_instance_idx_t)md_offset_range_find(inst->res_offset, inst->count, res_idx);
 }
 
-static inline size_t md_instance_comp_count(const md_instance_data_t* inst, size_t inst_idx) {
+static inline size_t md_instance_residue_count(const md_instance_data_t* inst, size_t inst_idx) {
     ASSERT(inst);
 
     size_t count = 0;
-    if (inst->comp_offset && inst_idx < inst->count) {
-        count = inst->comp_offset[inst_idx + 1] - inst->comp_offset[inst_idx];
+    if (inst->res_offset && inst_idx < inst->count) {
+        count = inst->res_offset[inst_idx + 1] - inst->res_offset[inst_idx];
     }
     return count;
 }
@@ -1073,12 +1073,12 @@ static inline md_entity_kind_t md_entity_kind(const md_entity_data_t* entity, si
     return md_entity_flags_kind(md_entity_flags(entity, entity_idx));
 }
 
-static inline size_t md_structure_count(const md_structure_data_t* structure) {
+static inline size_t md_molecule_count(const md_molecule_data_t* structure) {
     ASSERT(structure);
     return structure->count;
 }
 
-static inline bool md_structure_extract(md_structure_t* out_structure, const md_structure_data_t* structure_data, size_t struct_idx) {
+static inline bool md_molecule_extract(md_molecule_t* out_structure, const md_molecule_data_t* structure_data, size_t struct_idx) {
     ASSERT(out_structure);
     ASSERT(structure_data);
     if (struct_idx < structure_data->count) {
@@ -1093,8 +1093,8 @@ static inline bool md_structure_extract(md_structure_t* out_structure, const md_
 }
 
 // Slot of an atom within the flat structure arrays.
-// Requires md_util_system_infer_structures to have been run.
-static inline int32_t md_structure_atom_slot(const md_structure_data_t* structure_data, int32_t atom_idx) {
+// Requires md_util_system_infer_molecules to have been run.
+static inline int32_t md_molecule_atom_slot(const md_molecule_data_t* structure_data, int32_t atom_idx) {
     ASSERT(structure_data);
     ASSERT(structure_data->atom_slot);
     return structure_data->atom_slot[atom_idx];
@@ -1102,8 +1102,8 @@ static inline int32_t md_structure_atom_slot(const md_structure_data_t* structur
 
 // Global index of the atom the supplied atom was reached from during the traversal.
 // A root atom is its own parent, so parent == atom_idx identifies a root.
-// Requires md_util_system_infer_structures to have been run.
-static inline int32_t md_structure_atom_parent(const md_structure_data_t* structure_data, int32_t atom_idx) {
+// Requires md_util_system_infer_molecules to have been run.
+static inline int32_t md_molecule_atom_parent(const md_molecule_data_t* structure_data, int32_t atom_idx) {
     ASSERT(structure_data);
     ASSERT(structure_data->atom_slot);
     return structure_data->parent_idx[structure_data->atom_slot[atom_idx]];
@@ -1127,38 +1127,38 @@ static inline md_particle_kind_t md_system_atom_particle_kind(const md_system_t*
     return md_atom_particle_kind(&sys->atom, atom_idx);
 }
 
-static inline size_t md_system_atom_type_count(const md_system_t* sys) {
+static inline size_t md_system_particle_type_count(const md_system_t* sys) {
     ASSERT(sys);
-    return md_atom_type_count(&sys->atom.type);
+    return md_particle_type_count(&sys->atom.type);
 }
 
-static inline md_atom_type_flags_t md_system_atom_type_flags(const md_system_t* sys, size_t type_idx) {
+static inline md_particle_type_flags_t md_system_particle_type_flags(const md_system_t* sys, size_t type_idx) {
     ASSERT(sys);
-    return md_atom_type_flags(&sys->atom.type, type_idx);
+    return md_particle_type_flags(&sys->atom.type, type_idx);
 }
 
 // A system is coarse grained when any of its particles is a bead
 static inline bool md_system_is_coarse_grained(const md_system_t* sys) {
     ASSERT(sys);
     for (size_t i = 0; i < sys->atom.type.count; ++i) {
-        if (md_atom_type_particle_kind(&sys->atom.type, i) == MD_PARTICLE_BEAD) return true;
+        if (md_particle_type_particle_kind(&sys->atom.type, i) == MD_PARTICLE_BEAD) return true;
     }
     return false;
 }
 
-static inline size_t md_system_component_count(const md_system_t* sys) {
+static inline size_t md_system_residue_count(const md_system_t* sys) {
     ASSERT(sys);
-    return md_component_count(&sys->component);
+    return md_residue_count(&sys->residue);
 }
 
-static inline md_component_flags_t md_system_component_flags(const md_system_t* sys, size_t comp_idx) {
+static inline md_residue_flags_t md_system_residue_flags(const md_system_t* sys, size_t res_idx) {
     ASSERT(sys);
-    return md_component_flags(&sys->component, comp_idx);
+    return md_residue_flags(&sys->residue, res_idx);
 }
 
-static inline md_component_kind_t md_system_component_kind(const md_system_t* sys, size_t comp_idx) {
+static inline md_residue_kind_t md_system_residue_kind(const md_system_t* sys, size_t res_idx) {
     ASSERT(sys);
-    return md_component_kind(&sys->component, comp_idx);
+    return md_residue_kind(&sys->residue, res_idx);
 }
 
 static inline size_t md_system_instance_count(const md_system_t* sys) {
@@ -1230,24 +1230,24 @@ static inline str_t md_system_instance_auth_id(const md_system_t* sys, size_t in
     return id;
 }
 
-static inline size_t md_system_instance_comp_count(const md_system_t* sys, size_t inst_idx) {
+static inline size_t md_system_instance_residue_count(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
-    return md_instance_comp_count(&sys->instance, inst_idx);
+    return md_instance_residue_count(&sys->instance, inst_idx);
 }
 
-static inline md_urange_t md_system_instance_comp_range(const md_system_t* sys, size_t inst_idx) {
+static inline md_urange_t md_system_instance_residue_range(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
-    return md_instance_component_range(&sys->instance, inst_idx);
+    return md_instance_residue_range(&sys->instance, inst_idx);
 }
 
 static inline md_urange_t md_system_instance_atom_range(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
     md_urange_t range = {0};
     if (inst_idx < sys->instance.count) {
-        md_urange_t comp_range = md_instance_component_range(&sys->instance, inst_idx);
-        if (comp_range.beg != comp_range.end) {
-            range.beg = md_component_atom_range(&sys->component, comp_range.beg).beg;
-            range.end = md_component_atom_range(&sys->component, comp_range.end - 1).end;
+        md_urange_t res_range = md_instance_residue_range(&sys->instance, inst_idx);
+        if (res_range.beg != res_range.end) {
+            range.beg = md_residue_atom_range(&sys->residue, res_range.beg).beg;
+            range.end = md_residue_atom_range(&sys->residue, res_range.end - 1).end;
         }
     }
     return range;
@@ -1265,32 +1265,32 @@ static inline md_entity_idx_t md_system_instance_entity_idx(const md_system_t* s
     return md_instance_entity_idx(&sys->instance, inst_idx);
 }
 
-static inline md_sequence_id_t md_system_component_seq_id(const md_system_t* sys, size_t comp_idx) {
+static inline md_sequence_id_t md_system_residue_seq_id(const md_system_t* sys, size_t res_idx) {
     ASSERT(sys);
-    return md_component_seq_id(&sys->component, comp_idx);
+    return md_residue_seq_id(&sys->residue, res_idx);
 }
 
-static inline md_urange_t md_system_component_atom_range(const md_system_t* sys, size_t comp_idx) {
+static inline md_urange_t md_system_residue_atom_range(const md_system_t* sys, size_t res_idx) {
     ASSERT(sys);
-    return md_component_atom_range(&sys->component, comp_idx);
+    return md_residue_atom_range(&sys->residue, res_idx);
 }
 
-static inline size_t md_system_component_atom_count(const md_system_t* sys, size_t comp_idx) {
+static inline size_t md_system_residue_atom_count(const md_system_t* sys, size_t res_idx) {
     ASSERT(sys);
-    return md_component_atom_count(&sys->component, comp_idx);
+    return md_residue_atom_count(&sys->residue, res_idx);
 }
 
-static inline md_component_idx_t md_system_component_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
+static inline md_residue_idx_t md_system_residue_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     ASSERT(sys);
-    return md_component_find_by_atom_idx(&sys->component, atom_idx);
+    return md_residue_find_by_atom_idx(&sys->residue, atom_idx);
 }
 
 static inline md_instance_idx_t md_system_instance_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     ASSERT(sys);
     md_instance_idx_t inst_idx = -1;
-    md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(sys, atom_idx);
-    if (comp_idx >= 0) {
-        inst_idx = md_instance_find_by_comp_idx(&sys->instance, comp_idx);
+    md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(sys, atom_idx);
+    if (res_idx >= 0) {
+        inst_idx = md_instance_find_by_residue_idx(&sys->instance, res_idx);
     }
     return inst_idx;
 }
@@ -1315,7 +1315,7 @@ static inline bool md_system_chain_inferred(const md_system_t* sys, size_t chain
     return chain_idx < sys->chain.count && str_empty(md_system_chain_id(sys, chain_idx));
 }
 
-// The runs of consecutive components of the chain, ascending: [beg, end)
+// The runs of consecutive residues of the chain, ascending: [beg, end)
 static inline const md_urange_t* md_system_chain_run_beg(const md_system_t* sys, size_t chain_idx) {
     ASSERT(sys);
     return (sys->chain.run && chain_idx < sys->chain.count) ? sys->chain.run + sys->chain.run_offset[chain_idx] : NULL;
@@ -1326,28 +1326,28 @@ static inline const md_urange_t* md_system_chain_run_end(const md_system_t* sys,
     return (sys->chain.run && chain_idx < sys->chain.count) ? sys->chain.run + sys->chain.run_offset[chain_idx + 1] : NULL;
 }
 
-// The atoms of a run of components
+// The atoms of a run of residues
 static inline md_urange_t md_system_chain_run_atom_range(const md_system_t* sys, md_urange_t run) {
     ASSERT(sys);
     md_urange_t r = {0, 0};
-    if (sys->component.atom_offset && run.beg < run.end && run.end <= sys->component.count) {
-        r.beg = sys->component.atom_offset[run.beg];
-        r.end = sys->component.atom_offset[run.end];
+    if (sys->residue.atom_offset && run.beg < run.end && run.end <= sys->residue.count) {
+        r.beg = sys->residue.atom_offset[run.beg];
+        r.end = sys->residue.atom_offset[run.end];
     }
     return r;
 }
 
-// The chain of the component, -1 for a component in none
-static inline md_chain_idx_t md_system_chain_find_by_comp_idx(const md_system_t* sys, size_t comp_idx) {
+// The chain of the residue, -1 for a residue in none
+static inline md_chain_idx_t md_system_chain_find_by_residue_idx(const md_system_t* sys, size_t res_idx) {
     ASSERT(sys);
-    return (sys->chain.comp_chain && comp_idx < sys->component.count) ? sys->chain.comp_chain[comp_idx] : -1;
+    return (sys->chain.res_chain && res_idx < sys->residue.count) ? sys->chain.res_chain[res_idx] : -1;
 }
 
 // The chain of the atom, -1 for an atom in none
 static inline md_chain_idx_t md_system_chain_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     ASSERT(sys);
-    const md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(sys, atom_idx);
-    return comp_idx >= 0 ? md_system_chain_find_by_comp_idx(sys, (size_t)comp_idx) : -1;
+    const md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(sys, atom_idx);
+    return res_idx >= 0 ? md_system_chain_find_by_residue_idx(sys, (size_t)res_idx) : -1;
 }
 
 // The atoms of the chain: the atom ranges of its runs. Mostly one, as a chain is mostly one strand, but the ligands and
@@ -1368,68 +1368,68 @@ static inline size_t md_system_part_count(const md_system_t* sys) {
     return sys->part.count;
 }
 
-// The components of the part
-static inline md_urange_t md_system_part_comp_range(const md_system_t* sys, size_t part_idx) {
+// The residues of the part
+static inline md_urange_t md_system_part_residue_range(const md_system_t* sys, size_t part_idx) {
     ASSERT(sys);
     md_urange_t r = {0, 0};
-    if (sys->part.comp_offset && part_idx < sys->part.count) {
-        r.beg = sys->part.comp_offset[part_idx];
-        r.end = sys->part.comp_offset[part_idx + 1];
+    if (sys->part.res_offset && part_idx < sys->part.count) {
+        r.beg = sys->part.res_offset[part_idx];
+        r.end = sys->part.res_offset[part_idx + 1];
     }
     return r;
 }
 
-// The atoms of the part: one range, as its components are consecutive
+// The atoms of the part: one range, as its residues are consecutive
 static inline md_urange_t md_system_part_atom_range(const md_system_t* sys, size_t part_idx) {
     ASSERT(sys);
-    const md_urange_t comps = md_system_part_comp_range(sys, part_idx);
+    const md_urange_t residues = md_system_part_residue_range(sys, part_idx);
     md_urange_t r = {0, 0};
-    if (comps.beg < comps.end && sys->component.atom_offset && comps.end <= sys->component.count) {
-        r.beg = sys->component.atom_offset[comps.beg];
-        r.end = sys->component.atom_offset[comps.end];
+    if (residues.beg < residues.end && sys->residue.atom_offset && residues.end <= sys->residue.count) {
+        r.beg = sys->residue.atom_offset[residues.beg];
+        r.end = sys->residue.atom_offset[residues.end];
     }
     return r;
 }
 
-// The part of the component, -1 for none (a system whose parts were not inferred)
-static inline md_part_idx_t md_system_part_find_by_comp_idx(const md_system_t* sys, size_t comp_idx) {
+// The part of the residue, -1 for none (a system whose parts were not inferred)
+static inline md_part_idx_t md_system_part_find_by_residue_idx(const md_system_t* sys, size_t res_idx) {
     ASSERT(sys);
-    return (md_part_idx_t)md_offset_range_find(sys->part.comp_offset, sys->part.count, comp_idx);
+    return (md_part_idx_t)md_offset_range_find(sys->part.res_offset, sys->part.count, res_idx);
 }
 
 // The part of the atom, -1 for an atom in none
 static inline md_part_idx_t md_system_part_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     ASSERT(sys);
-    const md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(sys, atom_idx);
-    return comp_idx >= 0 ? md_system_part_find_by_comp_idx(sys, (size_t)comp_idx) : -1;
+    const md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(sys, atom_idx);
+    return res_idx >= 0 ? md_system_part_find_by_residue_idx(sys, (size_t)res_idx) : -1;
 }
 
 static inline size_t md_system_molecule_count(const md_system_t* sys) {
     ASSERT(sys);
-    return sys->structure.count;
+    return sys->molecule.count;
 }
 
-// The molecule of the atom, -1 when the molecules have not been inferred (md_util_system_infer_structures). The atoms
-// of a molecule need not be consecutive: it is found by the atom's slot (md_structure_data_t).
+// The molecule of the atom, -1 when the molecules have not been inferred (md_util_system_infer_molecules). The atoms
+// of a molecule need not be consecutive: it is found by the atom's slot (md_molecule_data_t).
 static inline md_molecule_idx_t md_system_molecule_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     ASSERT(sys);
-    const md_structure_data_t* st = &sys->structure;
+    const md_molecule_data_t* st = &sys->molecule;
     if (!st->atom_slot || !st->offset || atom_idx >= sys->atom.count) return -1;
     return (md_molecule_idx_t)md_offset_range_find(st->offset, st->count, (size_t)st->atom_slot[atom_idx]);
 }
 
 static inline size_t md_system_molecule_atom_count(const md_system_t* sys, size_t mol_idx) {
     ASSERT(sys);
-    const md_structure_data_t* st = &sys->structure;
+    const md_molecule_data_t* st = &sys->molecule;
     return (st->offset && mol_idx < st->count) ? st->offset[mol_idx + 1] - st->offset[mol_idx] : 0;
 }
 
-// The kind of the component which holds the atom, MD_COMPONENT_KIND_OTHER when it is in none.
-// A binary search: a loop over all atoms is better served walking the components.
-static inline md_component_kind_t md_system_atom_component_kind(const md_system_t* sys, size_t atom_idx) {
+// The kind of the residue which holds the atom, MD_RESIDUE_KIND_OTHER when it is in none.
+// A binary search: a loop over all atoms is better served walking the residues.
+static inline md_residue_kind_t md_system_atom_residue_kind(const md_system_t* sys, size_t atom_idx) {
     ASSERT(sys);
-    const md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(sys, atom_idx);
-    return comp_idx >= 0 ? md_component_kind(&sys->component, (size_t)comp_idx) : MD_COMPONENT_KIND_OTHER;
+    const md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(sys, atom_idx);
+    return res_idx >= 0 ? md_residue_kind(&sys->residue, (size_t)res_idx) : MD_RESIDUE_KIND_OTHER;
 }
 
 // Convenience functions to extract atom properties into arrays

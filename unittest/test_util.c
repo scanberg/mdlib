@@ -166,13 +166,13 @@ UTEST_F(util, backbone) {
 }
 
 UTEST_F(util, structure) {
-    size_t num_structures_pftaa = md_structure_count(&utest_fixture->mol_pftaa.structure);
+    size_t num_structures_pftaa = md_molecule_count(&utest_fixture->mol_pftaa.molecule);
     EXPECT_EQ(1, num_structures_pftaa);
-    size_t num_structures_nucleotides = md_structure_count(&utest_fixture->mol_nucleotides.structure);
+    size_t num_structures_nucleotides = md_molecule_count(&utest_fixture->mol_nucleotides.molecule);
     EXPECT_EQ(2, num_structures_nucleotides);
-    size_t num_structures_ala = md_structure_count(&utest_fixture->mol_ala.structure);
+    size_t num_structures_ala = md_molecule_count(&utest_fixture->mol_ala.molecule);
 	EXPECT_EQ(1, num_structures_ala);
-	size_t num_structures_centered = md_structure_count(&utest_fixture->mol_centered.structure);
+	size_t num_structures_centered = md_molecule_count(&utest_fixture->mol_centered.molecule);
 	EXPECT_EQ(253+61, num_structures_centered);
 }
 
@@ -334,16 +334,16 @@ UTEST(util, com) {
 UTEST_F(util, structures) {
     size_t num_structures = 0;
 
-    num_structures = md_structure_count(&utest_fixture->mol_nucleotides.structure);
+    num_structures = md_molecule_count(&utest_fixture->mol_nucleotides.molecule);
     EXPECT_EQ(num_structures, 2);
 
-    num_structures = md_structure_count(&utest_fixture->mol_ala.structure);
+    num_structures = md_molecule_count(&utest_fixture->mol_ala.molecule);
 	EXPECT_EQ(num_structures, 1);
 
-	num_structures = md_structure_count(&utest_fixture->mol_pftaa.structure);
+	num_structures = md_molecule_count(&utest_fixture->mol_pftaa.molecule);
 	EXPECT_EQ(num_structures, 1);
 
-	num_structures = md_structure_count(&utest_fixture->mol_centered.structure);
+	num_structures = md_molecule_count(&utest_fixture->mol_centered.molecule);
     EXPECT_EQ(num_structures, 253 + 61); // Chains + PFTAA
 }
 
@@ -364,7 +364,7 @@ static void make_chain_system(md_system_t* sys, md_allocator_i* alloc, int num_c
 }
 
 // The structure hierarchy must be rooted at the graph center and every atom must appear after the
-// atom it was reached from. md_util_unwrap_structure depends on
+// atom it was reached from. md_util_unwrap_molecule depends on
 // that ordering, and atom_slot must be a consistent inverse of atom_idx.
 UTEST(util, structure_hierarchy) {
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -373,20 +373,20 @@ UTEST(util, structure_hierarchy) {
         // A chain of nine has a single center, the middle atom
         md_system_t sys = {0};
         make_chain_system(&sys, alloc, 1, 9);
-        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
 
-        ASSERT_EQ(md_structure_count(&sys.structure), 1);
-        EXPECT_EQ(sys.structure.atom_idx[0], 4);
-        EXPECT_EQ(sys.structure.parent_idx[0], sys.structure.atom_idx[0]); // the root is its own parent
+        ASSERT_EQ(md_molecule_count(&sys.molecule), 1);
+        EXPECT_EQ(sys.molecule.atom_idx[0], 4);
+        EXPECT_EQ(sys.molecule.parent_idx[0], sys.molecule.atom_idx[0]); // the root is its own parent
 
         for (size_t slot = 0; slot < 9; ++slot) {
-            const int32_t atom   = sys.structure.atom_idx[slot];
-            const int32_t parent = sys.structure.parent_idx[slot];
-            EXPECT_EQ(md_structure_atom_slot(&sys.structure, atom), (int32_t)slot);
-            EXPECT_EQ(md_structure_atom_parent(&sys.structure, atom), parent);
+            const int32_t atom   = sys.molecule.atom_idx[slot];
+            const int32_t parent = sys.molecule.parent_idx[slot];
+            EXPECT_EQ(md_molecule_atom_slot(&sys.molecule, atom), (int32_t)slot);
+            EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, atom), parent);
             if (parent != atom) {
                 // slot(parent) < slot(child), the invariant a single forward pass relies on
-                EXPECT_LT(md_structure_atom_slot(&sys.structure, parent), (int32_t)slot);
+                EXPECT_LT(md_molecule_atom_slot(&sys.molecule, parent), (int32_t)slot);
             }
         }
 
@@ -394,17 +394,17 @@ UTEST(util, structure_hierarchy) {
     }
 
     {
-        // Separate components are rooted independently and stored back to back
+        // Separate residues are rooted independently and stored back to back
         md_system_t sys = {0};
         make_chain_system(&sys, alloc, 2, 5);
-        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
 
-        ASSERT_EQ(md_structure_count(&sys.structure), 2);
-        EXPECT_EQ(sys.structure.offset[0], 0u);
-        EXPECT_EQ(sys.structure.offset[1], 5u);
-        EXPECT_EQ(sys.structure.offset[2], 10u);
-        EXPECT_EQ(sys.structure.atom_idx[0], 2);
-        EXPECT_EQ(sys.structure.atom_idx[5], 7);
+        ASSERT_EQ(md_molecule_count(&sys.molecule), 2);
+        EXPECT_EQ(sys.molecule.offset[0], 0u);
+        EXPECT_EQ(sys.molecule.offset[1], 5u);
+        EXPECT_EQ(sys.molecule.offset[2], 10u);
+        EXPECT_EQ(sys.molecule.atom_idx[0], 2);
+        EXPECT_EQ(sys.molecule.atom_idx[5], 7);
 
         md_system_free(&sys);
     }
@@ -418,55 +418,55 @@ UTEST(util, structure_hierarchy) {
         md_array_push(sys.bond.pairs, pair, alloc);
         sys.bond.count = 1;
         md_bond_build_connectivity(&sys.bond, 3, alloc);
-        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
 
-        ASSERT_EQ(md_structure_count(&sys.structure), 2);
+        ASSERT_EQ(md_molecule_count(&sys.molecule), 2);
         for (size_t slot = 0; slot < 3; ++slot) {
-            EXPECT_EQ(md_structure_atom_slot(&sys.structure, sys.structure.atom_idx[slot]), (int32_t)slot);
+            EXPECT_EQ(md_molecule_atom_slot(&sys.molecule, sys.molecule.atom_idx[slot]), (int32_t)slot);
         }
 
         md_system_free(&sys);
     }
 }
 
-// Appends a component of coarse grained beads. The BB bead of an amino acid component is its backbone.
-static void cg_add_component(md_system_t* sys, const char* comp_name, int seq_id, md_component_kind_t comp_kind, const char* atom_names[], size_t num_atoms, md_allocator_i* alloc) {
+// Appends a residue of coarse grained beads. The BB bead of an amino acid residue is its backbone.
+static void cg_add_residue(md_system_t* sys, const char* res_name, int seq_id, md_residue_kind_t res_kind, const char* atom_names[], size_t num_atoms, md_allocator_i* alloc) {
     if (sys->atom.type.count == 0) {
         // Type 0 is the "not found" sentinel
-        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("?"), 0, 0, 0, 0, 0, alloc);
+        md_particle_type_find_or_add(&sys->atom.type, STR_LIT("?"), 0, 0, 0, 0, 0, alloc);
     }
-    if (sys->component.count == 0) {
-        md_array_push(sys->component.atom_offset, 0, alloc);
+    if (sys->residue.count == 0) {
+        md_array_push(sys->residue.atom_offset, 0, alloc);
     }
     for (size_t i = 0; i < num_atoms; ++i) {
-        const md_atom_type_flags_t type_flags = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, MD_PARTICLE_BEAD);
-        const md_atom_flags_t flags = (comp_kind == MD_COMPONENT_KIND_AMINO_ACID && strcmp(atom_names[i], "BB") == 0) ? MD_ATOM_FLAG_BACKBONE : MD_ATOM_FLAG_NONE;
-        md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, str_from_cstr(atom_names[i]), 0, 50.0f, 2.35f, 0xFFFFFFFF, type_flags, alloc);
+        const md_particle_type_flags_t type_flags = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, MD_PARTICLE_BEAD);
+        const md_atom_flags_t flags = (res_kind == MD_RESIDUE_KIND_AMINO_ACID && strcmp(atom_names[i], "BB") == 0) ? MD_ATOM_FLAG_BACKBONE : MD_ATOM_FLAG_NONE;
+        md_particle_type_idx_t type = md_particle_type_find_or_add(&sys->atom.type, str_from_cstr(atom_names[i]), 0, 50.0f, 2.35f, 0xFFFFFFFF, type_flags, alloc);
         md_array_push(sys->atom.type_idx, type, alloc);
         md_array_push(sys->atom.flags, flags, alloc);
         sys->atom.count += 1;
     }
-    md_array_push(sys->component.name, make_label(str_from_cstr(comp_name)), alloc);
-    md_array_push(sys->component.seq_id, seq_id, alloc);
-    md_array_push(sys->component.flags, md_component_flags_set_kind(MD_COMPONENT_FLAG_NONE, comp_kind), alloc);
-    md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, alloc);
-    sys->component.count += 1;
+    md_array_push(sys->residue.name, make_label(str_from_cstr(res_name)), alloc);
+    md_array_push(sys->residue.seq_id, seq_id, alloc);
+    md_array_push(sys->residue.flags, md_residue_flags_set_kind(MD_RESIDUE_FLAG_NONE, res_kind), alloc);
+    md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
+    sys->residue.count += 1;
 }
 
-static void check_structure_invariants(int* utest_result, const md_system_t* sys) {
+static void check_molecule_invariants(int* utest_result, const md_system_t* sys) {
     size_t total = 0;
-    for (size_t s = 0; s < md_structure_count(&sys->structure); ++s) {
-        md_structure_t structure = {0};
-        md_structure_extract(&structure, &sys->structure, s);
+    for (size_t s = 0; s < md_molecule_count(&sys->molecule); ++s) {
+        md_molecule_t structure = {0};
+        md_molecule_extract(&structure, &sys->molecule, s);
         total += structure.count;
         EXPECT_EQ(structure.parent_idx[0], structure.atom_idx[0]);
         for (size_t k = 0; k < structure.count; ++k) {
             const int32_t atom   = structure.atom_idx[k];
             const int32_t parent = structure.parent_idx[k];
-            EXPECT_EQ(md_structure_atom_slot(&sys->structure, atom), (int32_t)(sys->structure.offset[s] + k));
+            EXPECT_EQ(md_molecule_atom_slot(&sys->molecule, atom), (int32_t)(sys->molecule.offset[s] + k));
             if (k > 0) {
                 EXPECT_NE(parent, atom);
-                EXPECT_LT(md_structure_atom_slot(&sys->structure, parent), md_structure_atom_slot(&sys->structure, atom));
+                EXPECT_LT(md_molecule_atom_slot(&sys->molecule, parent), md_molecule_atom_slot(&sys->molecule, atom));
             }
         }
     }
@@ -474,8 +474,8 @@ static void check_structure_invariants(int* utest_result, const md_system_t* sys
 }
 
 // Coarse grained systems frequently carry no bonds. The structure hierarchy must then come from the
-// component hierarchy: beads hang off their component's anchor, consecutive polymer components are
-// chained, non polymer components stay separate, and nothing is written to sys->bond.
+// residue hierarchy: beads hang off their residue's anchor, consecutive polymer residues are
+// chained, non polymer residues stay separate, and nothing is written to sys->bond.
 UTEST(util, structure_hierarchy_coarse_grained_without_bonds) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
@@ -488,39 +488,39 @@ UTEST(util, structure_hierarchy_coarse_grained_without_bonds) {
     const char* popc[] = {"NC3", "PO4", "GL1", "GL2", "C1A", "C1B"};
     const char* w[] = {"W"};
 
-    cg_add_component(&sys, "LYS", 1, MD_COMPONENT_KIND_AMINO_ACID, lys, 3, alloc); // atoms 0-2
-    cg_add_component(&sys, "ALA", 2, MD_COMPONENT_KIND_AMINO_ACID, ala, 1, alloc); // atom  3
-    cg_add_component(&sys, "PHE", 3, MD_COMPONENT_KIND_AMINO_ACID, phe, 4, alloc); // atoms 4-7
-    cg_add_component(&sys, "ALA", 7, MD_COMPONENT_KIND_AMINO_ACID, ala, 1, alloc); // atom  8, sequence gap: new chain
-    cg_add_component(&sys, "ALA", 8, MD_COMPONENT_KIND_AMINO_ACID, ala, 1, alloc); // atom  9
-    cg_add_component(&sys, "POPC", 9, 0, popc, 6, alloc);                // atoms 10-15
-    cg_add_component(&sys, "POPC", 10, 0, popc, 6, alloc);               // atoms 16-21, must not join the previous lipid
-    cg_add_component(&sys, "W", 11, MD_COMPONENT_KIND_WATER, w, 1, alloc);         // atom  22
+    cg_add_residue(&sys, "LYS", 1, MD_RESIDUE_KIND_AMINO_ACID, lys, 3, alloc); // atoms 0-2
+    cg_add_residue(&sys, "ALA", 2, MD_RESIDUE_KIND_AMINO_ACID, ala, 1, alloc); // atom      3
+    cg_add_residue(&sys, "PHE", 3, MD_RESIDUE_KIND_AMINO_ACID, phe, 4, alloc); // atoms 4-7
+    cg_add_residue(&sys, "ALA", 7, MD_RESIDUE_KIND_AMINO_ACID, ala, 1, alloc); // atom      8, sequence gap: new chain
+    cg_add_residue(&sys, "ALA", 8, MD_RESIDUE_KIND_AMINO_ACID, ala, 1, alloc); // atom      9
+    cg_add_residue(&sys, "POPC", 9, 0, popc, 6, alloc);                  // atoms 10-15
+    cg_add_residue(&sys, "POPC", 10, 0, popc, 6, alloc);                 // atoms 16-21, must not join the previous lipid
+    cg_add_residue(&sys, "W", 11, MD_RESIDUE_KIND_WATER, w, 1, alloc);             // atom  22
 
-    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
     EXPECT_EQ(sys.bond.count, 0u);
 
-    ASSERT_EQ(md_structure_count(&sys.structure), 5u);
-    check_structure_invariants(utest_result, &sys);
+    ASSERT_EQ(md_molecule_count(&sys.molecule), 5u);
+    check_molecule_invariants(utest_result, &sys);
 
     // The first chain is a path of three anchors, so the middle one is the root
-    EXPECT_EQ(sys.structure.offset[1] - sys.structure.offset[0], 8u);
-    EXPECT_EQ(sys.structure.atom_idx[0], 3);
-    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 0), 3);
-    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 1), 0);
-    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 2), 0);
-    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 4), 3);
-    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 7), 4);
+    EXPECT_EQ(sys.molecule.offset[1] - sys.molecule.offset[0], 8u);
+    EXPECT_EQ(sys.molecule.atom_idx[0], 3);
+    EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 0), 3);
+    EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 1), 0);
+    EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 2), 0);
+    EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 4), 3);
+    EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 7), 4);
 
     // Second chain, broken off by the sequence gap
-    EXPECT_EQ(sys.structure.offset[2] - sys.structure.offset[1], 2u);
+    EXPECT_EQ(sys.molecule.offset[2] - sys.molecule.offset[1], 2u);
 
     // Each lipid on its own, rooted at its first bead, and the water bead alone
-    EXPECT_EQ(sys.structure.offset[3] - sys.structure.offset[2], 6u);
-    EXPECT_EQ(sys.structure.offset[4] - sys.structure.offset[3], 6u);
-    EXPECT_EQ(sys.structure.offset[5] - sys.structure.offset[4], 1u);
-    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 15), 10);
-    EXPECT_EQ(md_structure_atom_parent(&sys.structure, 21), 16);
+    EXPECT_EQ(sys.molecule.offset[3] - sys.molecule.offset[2], 6u);
+    EXPECT_EQ(sys.molecule.offset[4] - sys.molecule.offset[3], 6u);
+    EXPECT_EQ(sys.molecule.offset[5] - sys.molecule.offset[4], 1u);
+    EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 15), 10);
+    EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 21), 16);
 
     md_vm_arena_destroy(alloc);
 }
@@ -534,8 +534,8 @@ UTEST(util, structure_hierarchy_coarse_grained_partial_bonds) {
         md_system_t sys = {0};
         sys.alloc = alloc;
         const char* lys[] = {"BB", "SC1", "SC2"};
-        cg_add_component(&sys, "LYS", 1, MD_COMPONENT_KIND_AMINO_ACID, lys, 3, alloc);
-        cg_add_component(&sys, "LYS", 2, MD_COMPONENT_KIND_AMINO_ACID, lys, 3, alloc);
+        cg_add_residue(&sys, "LYS", 1, MD_RESIDUE_KIND_AMINO_ACID, lys, 3, alloc);
+        cg_add_residue(&sys, "LYS", 2, MD_RESIDUE_KIND_AMINO_ACID, lys, 3, alloc);
 
         // SC1-SC2 bonded within each residue, nothing else
         md_atom_pair_t p0 = {{1, 2}};
@@ -545,31 +545,31 @@ UTEST(util, structure_hierarchy_coarse_grained_partial_bonds) {
         sys.bond.count = 2;
         md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
 
-        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
         EXPECT_EQ(sys.bond.count, 2u);
-        ASSERT_EQ(md_structure_count(&sys.structure), 1u);
-        check_structure_invariants(utest_result, &sys);
+        ASSERT_EQ(md_molecule_count(&sys.molecule), 1u);
+        check_molecule_invariants(utest_result, &sys);
 
         // SC2 is reached through its bond to SC1, not through a redundant link to BB
-        EXPECT_EQ(md_structure_atom_parent(&sys.structure, 2), 1);
-        EXPECT_EQ(md_structure_atom_parent(&sys.structure, 5), 4);
+        EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 2), 1);
+        EXPECT_EQ(md_molecule_atom_parent(&sys.molecule, 5), 4);
     }
 
     {
         md_system_t sys = {0};
         sys.alloc = alloc;
         const char* lys[] = {"BB", "SC1", "SC2"};
-        cg_add_component(&sys, "LYS", 1, MD_COMPONENT_KIND_AMINO_ACID, lys, 3, alloc);
-        cg_add_component(&sys, "LYS", 2, MD_COMPONENT_KIND_AMINO_ACID, lys, 3, alloc);
+        cg_add_residue(&sys, "LYS", 1, MD_RESIDUE_KIND_AMINO_ACID, lys, 3, alloc);
+        cg_add_residue(&sys, "LYS", 2, MD_RESIDUE_KIND_AMINO_ACID, lys, 3, alloc);
         for (size_t i = 0; i < sys.atom.type.count; ++i) {
-            sys.atom.type.flags[i] = md_atom_type_flags_set_particle_kind(sys.atom.type.flags[i], MD_PARTICLE_ATOM);
+            sys.atom.type.flags[i] = md_particle_type_flags_set_particle_kind(sys.atom.type.flags[i], MD_PARTICLE_ATOM);
         }
 
         // Atoms without bonds: each residue a molecule, its atoms joined to its first. Without instances there are no
         // chains to join the residues.
-        ASSERT_TRUE(md_util_system_infer_structures(&sys));
-        EXPECT_EQ(md_structure_count(&sys.structure), 2u);
-        check_structure_invariants(utest_result, &sys);
+        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+        EXPECT_EQ(md_molecule_count(&sys.molecule), 2u);
+        check_molecule_invariants(utest_result, &sys);
     }
 
     md_vm_arena_destroy(alloc);
@@ -577,7 +577,7 @@ UTEST(util, structure_hierarchy_coarse_grained_partial_bonds) {
 
 // A metal coordinated by residues is a molecule of its own, and so are the waters of its shell: the coordination bonds
 // between residues hold no molecule together. Unless a topology gives them, as bonds within one of its molecules.
-static size_t structure_size_of_atom(const md_system_t* sys, int32_t atom);
+static size_t molecule_size_of_atom(const md_system_t* sys, int32_t atom);
 
 UTEST(util, coordinated_metals_are_molecules_of_their_own) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
@@ -591,15 +591,15 @@ UTEST(util, coordinated_metals_are_molecules_of_their_own) {
         for (size_t i = 0; i < sys.atom.count; ++i) {
             if (md_atom_atomic_number(&sys.atom, i) != MD_Z_Mg) continue;
             num_mg += 1;
-            EXPECT_EQ(1u, structure_size_of_atom(&sys, (int32_t)i));
+            EXPECT_EQ(1u, molecule_size_of_atom(&sys, (int32_t)i));
         }
         EXPECT_GT(num_mg, 0u);
-        for (size_t c = 0; c < sys.component.count; ++c) {
-            if (md_component_kind(&sys.component, c) != MD_COMPONENT_KIND_WATER) continue;
-            const md_urange_t r = md_component_atom_range(&sys.component, c);
-            EXPECT_EQ((size_t)(r.end - r.beg), structure_size_of_atom(&sys, (int32_t)r.beg));
+        for (size_t c = 0; c < sys.residue.count; ++c) {
+            if (md_residue_kind(&sys.residue, c) != MD_RESIDUE_KIND_WATER) continue;
+            const md_urange_t r = md_residue_atom_range(&sys.residue, c);
+            EXPECT_EQ((size_t)(r.end - r.beg), molecule_size_of_atom(&sys, (int32_t)r.beg));
         }
-        check_structure_invariants(utest_result, &sys);
+        check_molecule_invariants(utest_result, &sys);
     }
     {
         // The Mg of 1fez, coordinated by its protein; and then the same bonds as a topology would give them
@@ -610,7 +610,7 @@ UTEST(util, coordinated_metals_are_molecules_of_their_own) {
         int32_t mg = -1;
         for (size_t i = 0; i < sys.atom.count && mg < 0; ++i) if (md_atom_atomic_number(&sys.atom, i) == MD_Z_Mg) mg = (int32_t)i;
         ASSERT_GE(mg, 0);
-        EXPECT_EQ(1u, structure_size_of_atom(&sys, mg));
+        EXPECT_EQ(1u, molecule_size_of_atom(&sys, mg));
         size_t num_coord = 0;
         for (size_t b = 0; b < sys.bond.count; ++b) {
             if (md_bond_kind(sys.bond.flags[b]) != MD_BOND_KIND_COORDINATE) continue;
@@ -618,14 +618,14 @@ UTEST(util, coordinated_metals_are_molecules_of_their_own) {
             num_coord += 1;
         }
         EXPECT_GT(num_coord, 0u);
-        ASSERT_TRUE(md_util_system_infer_structures(&sys));
-        EXPECT_LT(1000u, structure_size_of_atom(&sys, mg));
-        check_structure_invariants(utest_result, &sys);
+        ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+        EXPECT_LT(1000u, molecule_size_of_atom(&sys, mg));
+        check_molecule_invariants(utest_result, &sys);
     }
     md_vm_arena_destroy(alloc);
 }
 
-static size_t structure_size_of_atom(const md_system_t* sys, int32_t atom) {
+static size_t molecule_size_of_atom(const md_system_t* sys, int32_t atom) {
     return md_system_molecule_atom_count(sys, (size_t)md_system_molecule_find_by_atom_idx(sys, (size_t)atom));
 }
 
@@ -644,7 +644,7 @@ UTEST(util, molecules_hold_residues_and_chains) {
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         size_t breaks = 0;
-        for (size_t i = 0; i < sys.component.count; ++i) breaks += (md_component_flags(&sys.component, i) & MD_COMPONENT_FLAG_BREAK_AFTER) != 0;
+        for (size_t i = 0; i < sys.residue.count; ++i) breaks += (md_residue_flags(&sys.residue, i) & MD_RESIDUE_FLAG_BREAK_AFTER) != 0;
         EXPECT_GT(breaks, 0u);
         size_t polymers = 0;
         for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
@@ -655,8 +655,8 @@ UTEST(util, molecules_hold_residues_and_chains) {
             for (uint32_t a = r.beg; a < r.end; ++a) EXPECT_EQ(mol, MOLECULE_OF(sys, a));
         }
         EXPECT_GT(polymers, 1u);
-        EXPECT_LE(md_structure_count(&sys.structure), md_system_instance_count(&sys));
-        check_structure_invariants(utest_result, &sys);
+        EXPECT_LE(md_molecule_count(&sys.molecule), md_system_instance_count(&sys));
+        check_molecule_invariants(utest_result, &sys);
     }
 
     {
@@ -706,13 +706,13 @@ UTEST(util, molecules_hold_residues_and_chains) {
         EXPECT_EQ(md_system_instance_count(&sys), 2u);
         EXPECT_EQ(md_system_chain_count(&sys), 1u);
         EXPECT_EQ(md_system_chain_atom_count(&sys, 0), 34u);
-        EXPECT_EQ(md_structure_count(&sys.structure), 2u);
+        EXPECT_EQ(md_molecule_count(&sys.molecule), 2u);
         EXPECT_NE(MOLECULE_OF(sys, 0), MOLECULE_OF(sys, 17));
-        EXPECT_EQ(sys.structure.offset[sys.structure.count], 34u);
-        for (size_t s = 0; s < md_array_size(sys.structure.atom_idx); ++s) {
-            EXPECT_TRUE(0 <= sys.structure.atom_idx[s] && sys.structure.atom_idx[s] < 34);
+        EXPECT_EQ(sys.molecule.offset[sys.molecule.count], 34u);
+        for (size_t s = 0; s < md_array_size(sys.molecule.atom_idx); ++s) {
+            EXPECT_TRUE(0 <= sys.molecule.atom_idx[s] && sys.molecule.atom_idx[s] < 34);
         }
-        check_structure_invariants(utest_result, &sys);
+        check_molecule_invariants(utest_result, &sys);
     }
 
     {
@@ -727,8 +727,8 @@ UTEST(util, molecules_hold_residues_and_chains) {
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         EXPECT_EQ(md_system_bond_count(&sys), 0u);
-        EXPECT_EQ(md_structure_count(&sys.structure), 3u);
-        check_structure_invariants(utest_result, &sys);
+        EXPECT_EQ(md_molecule_count(&sys.molecule), 3u);
+        check_molecule_invariants(utest_result, &sys);
     }
 
     #undef MOLECULE_OF
@@ -745,10 +745,10 @@ UTEST(util, unwrap_structure_coarse_grained_without_bonds) {
     const char* res[] = {"BB", "SC1"};
     enum { N = 7 };
     for (int i = 0; i < N; ++i) {
-        cg_add_component(&sys, "LEU", i + 1, MD_COMPONENT_KIND_AMINO_ACID, res, 2, alloc);
+        cg_add_residue(&sys, "LEU", i + 1, MD_RESIDUE_KIND_AMINO_ACID, res, 2, alloc);
     }
-    ASSERT_TRUE(md_util_system_infer_structures(&sys));
-    ASSERT_EQ(md_structure_count(&sys.structure), 1u);
+    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    ASSERT_EQ(md_molecule_count(&sys.molecule), 1u);
 
     float x[2 * N], y[2 * N], z[2 * N];
     for (int i = 0; i < N; ++i) {
@@ -776,7 +776,7 @@ UTEST(util, unwrap_structure_coarse_grained_without_bonds) {
     md_vm_arena_destroy(alloc);
 }
 
-// The coarse grained branch of covalent bond inference used to skip the first component, test every bead
+// The coarse grained branch of covalent bond inference used to skip the first residue, test every bead
 // against itself (always under the cutoff, so a self bond) and emit every other pair twice.
 UTEST(util, infer_bonds_coarse_grained) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
@@ -784,8 +784,8 @@ UTEST(util, infer_bonds_coarse_grained) {
     md_system_t sys = {0};
     sys.alloc = alloc;
     const char* lys[] = {"BB", "SC1", "SC2"};
-    cg_add_component(&sys, "LYS", 1, MD_COMPONENT_KIND_AMINO_ACID, lys, 3, alloc);
-    cg_add_component(&sys, "LYS", 2, MD_COMPONENT_KIND_AMINO_ACID, lys, 3, alloc);
+    cg_add_residue(&sys, "LYS", 1, MD_RESIDUE_KIND_AMINO_ACID, lys, 3, alloc);
+    cg_add_residue(&sys, "LYS", 2, MD_RESIDUE_KIND_AMINO_ACID, lys, 3, alloc);
 
     // BB beads 3.8A apart, side chain beads 3A above their BB and 3A from each other
     float x[] = {0, 0, 0,   3.8f, 3.8f, 3.8f};
@@ -885,12 +885,12 @@ static const char martini3_peptide_pdb[] =
 static void check_martini_peptide(int* utest_result, md_system_t* sys, md_system_state_t* state, size_t num_residues) {
     for (size_t t = 1; t < sys->atom.type.count; ++t) {
         EXPECT_EQ(0, sys->atom.type.z[t]);
-        EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_type_particle_kind(&sys->atom.type, t));
+        EXPECT_EQ(MD_PARTICLE_BEAD, md_particle_type_particle_kind(&sys->atom.type, t));
     }
-    ASSERT_EQ(num_residues, md_system_component_count(sys));
+    ASSERT_EQ(num_residues, md_system_residue_count(sys));
     for (size_t c = 0; c < num_residues; ++c) {
-        EXPECT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_component_kind(&sys->component, c));
-        const md_urange_t range = md_component_atom_range(&sys->component, c);
+        EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_residue_kind(&sys->residue, c));
+        const md_urange_t range = md_residue_atom_range(&sys->residue, c);
         size_t num_backbone = 0;
         for (uint32_t i = range.beg; i < range.end; ++i) {
             const md_atom_flags_t flags = md_atom_flags(&sys->atom, i);
@@ -904,7 +904,7 @@ static void check_martini_peptide(int* utest_result, md_system_t* sys, md_system
 
     ASSERT_TRUE(md_util_system_infer(sys, state, MD_UTIL_INFER_ALL));
     ASSERT_EQ((size_t)1, md_system_instance_count(sys));
-    EXPECT_EQ(num_residues, md_system_instance_comp_count(sys, 0));
+    EXPECT_EQ(num_residues, md_system_instance_residue_count(sys, 0));
     EXPECT_EQ(MD_ENTITY_KIND_PEPTIDE, md_system_entity_kind(sys, md_system_instance_entity_idx(sys, 0)));
 }
 
@@ -990,7 +990,7 @@ UTEST(util, martini_residue_names) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}));
-    ASSERT_EQ((size_t)n, md_system_component_count(&sys));
+    ASSERT_EQ((size_t)n, md_system_residue_count(&sys));
     check_martini_peptide(utest_result, &sys, &state, (size_t)n);
     md_vm_arena_destroy(alloc);
 }
@@ -1181,14 +1181,14 @@ UTEST(util, branched_molecule_is_one_instance) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ(5u, md_system_component_count(&sys));
+    ASSERT_EQ(5u, md_system_residue_count(&sys));
     // The branch: the third bonded to the first
     EXPECT_TRUE(md_bond_find(&sys.bond, 0, 4) >= 0 || md_bond_find(&sys.bond, 1, 4) >= 0);
     EXPECT_LT(md_bond_find(&sys.bond, 2, 4), 0);
     ASSERT_EQ(2u, md_system_instance_count(&sys));
-    EXPECT_EQ(3u, md_system_instance_comp_count(&sys, 0));
-    EXPECT_EQ(2u, md_system_instance_comp_count(&sys, 1));
-    EXPECT_EQ(2u, md_structure_count(&sys.structure));
+    EXPECT_EQ(3u, md_system_instance_residue_count(&sys, 0));
+    EXPECT_EQ(2u, md_system_instance_residue_count(&sys, 1));
+    EXPECT_EQ(2u, md_molecule_count(&sys.molecule));
     md_vm_arena_destroy(alloc);
 }
 
@@ -1223,10 +1223,10 @@ UTEST(util, caps_are_of_their_strand) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ(3u, md_system_component_count(&sys));
-    EXPECT_EQ((int)MD_COMPONENT_KIND_AMINO_ACID, (int)md_component_kind(&sys.component, 1));
+    ASSERT_EQ(3u, md_system_residue_count(&sys));
+    EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_residue_kind(&sys.residue, 1));
     EXPECT_EQ(1u, md_system_part_count(&sys));
-    EXPECT_EQ(1u, md_structure_count(&sys.structure));
+    EXPECT_EQ(1u, md_molecule_count(&sys.molecule));
     md_vm_arena_destroy(alloc);
 }
 
@@ -1299,9 +1299,9 @@ UTEST(util, amino_acid_of_any_size) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(palmitoyl_cys_pdb), MD_PDB_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ(1u, md_system_component_count(&sys));
+    ASSERT_EQ(1u, md_system_residue_count(&sys));
     ASSERT_EQ(58u, (unsigned)sys.atom.count);
-    EXPECT_EQ((int)MD_COMPONENT_KIND_AMINO_ACID, (int)md_component_kind(&sys.component, 0));
+    EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_residue_kind(&sys.residue, 0));
     size_t backbone = 0, side = 0;
     for (size_t i = 0; i < sys.atom.count; ++i) {
         const md_atom_flags_t f = md_atom_flags(&sys.atom, i);
@@ -1325,14 +1325,14 @@ UTEST(util, atom_roles_stay_in_their_residue) {
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         size_t num_pro = 0, num_with_side_chain = 0, num_aa = 0;
-        for (size_t c = 0; c < sys.component.count; ++c) {
-            if (md_component_kind(&sys.component, c) != MD_COMPONENT_KIND_AMINO_ACID) continue;
+        for (size_t c = 0; c < sys.residue.count; ++c) {
+            if (md_residue_kind(&sys.residue, c) != MD_RESIDUE_KIND_AMINO_ACID) continue;
             num_aa += 1;
-            const str_t resname = md_component_name(&sys.component, c);
+            const str_t resname = md_residue_name(&sys.residue, c);
             const bool pro = str_eq_cstr(resname, "PRO");
             num_pro += pro;
             size_t side = 0;
-            const md_urange_t r = md_component_atom_range(&sys.component, c);
+            const md_urange_t r = md_residue_atom_range(&sys.residue, c);
             for (uint32_t i = r.beg; i < r.end; ++i) {
                 const md_atom_flags_t f = md_atom_flags(&sys.atom, i);
                 EXPECT_FALSE((f & MD_ATOM_FLAG_SIDE_CHAIN) && (f & MD_ATOM_FLAG_BACKBONE));
@@ -1366,11 +1366,11 @@ UTEST(util, atom_roles_stay_in_their_residue) {
         ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         size_t num_nuc = 0, num_with_base = 0;
-        for (size_t c = 0; c < sys.component.count; ++c) {
-            if (md_component_kind(&sys.component, c) != MD_COMPONENT_KIND_NUCLEOTIDE) continue;
+        for (size_t c = 0; c < sys.residue.count; ++c) {
+            if (md_residue_kind(&sys.residue, c) != MD_RESIDUE_KIND_NUCLEOTIDE) continue;
             num_nuc += 1;
             size_t base = 0;
-            const md_urange_t r = md_component_atom_range(&sys.component, c);
+            const md_urange_t r = md_residue_atom_range(&sys.residue, c);
             for (uint32_t i = r.beg; i < r.end; ++i) {
                 const md_atom_flags_t f = md_atom_flags(&sys.atom, i);
                 EXPECT_FALSE((f & MD_ATOM_FLAG_NUCLEOBASE) && (f & MD_ATOM_FLAG_BACKBONE));
@@ -1382,8 +1382,8 @@ UTEST(util, atom_roles_stay_in_their_residue) {
         EXPECT_EQ(num_nuc, num_with_base);
         // Nor does a base reach another residue
         for (size_t i = 0; i < sys.atom.count; ++i) {
-            const md_component_idx_t c = md_component_find_by_atom_idx(&sys.component, i);
-            if (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_NUCLEOBASE) EXPECT_EQ((int)MD_COMPONENT_KIND_NUCLEOTIDE, (int)md_component_kind(&sys.component, c));
+            const md_residue_idx_t c = md_residue_find_by_atom_idx(&sys.residue, i);
+            if (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_NUCLEOBASE) EXPECT_EQ((int)MD_RESIDUE_KIND_NUCLEOTIDE, (int)md_residue_kind(&sys.residue, c));
         }
     }
     md_vm_arena_destroy(alloc);
@@ -1429,11 +1429,11 @@ UTEST(util, martini2_dna) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_pdb), MD_PDB_OPTION_NONE));
-    ASSERT_EQ(4u, md_system_component_count(&sys));
+    ASSERT_EQ(4u, md_system_residue_count(&sys));
 
     for (size_t c = 0; c < 4; ++c) {
-        EXPECT_EQ(MD_COMPONENT_KIND_NUCLEOTIDE, md_component_kind(&sys.component, c));
-        const md_urange_t range = md_component_atom_range(&sys.component, c);
+        EXPECT_EQ(MD_RESIDUE_KIND_NUCLEOTIDE, md_residue_kind(&sys.residue, c));
+        const md_urange_t range = md_residue_atom_range(&sys.residue, c);
         for (uint32_t i = range.beg; i < range.end; ++i) {
             const str_t name = md_atom_name(&sys.atom, i);
             const md_atom_flags_t flags = md_atom_flags(&sys.atom, i);
@@ -1505,17 +1505,17 @@ UTEST(util, martini2_dna_strands_under_one_chain_id) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(text), MD_PDB_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ(8u, md_system_component_count(&sys));
+    ASSERT_EQ(8u, md_system_residue_count(&sys));
     ASSERT_EQ(51u, (unsigned)sys.atom.count);
     EXPECT_TRUE(md_system_is_coarse_grained(&sys));
     EXPECT_EQ(2u, md_system_instance_count(&sys));
     EXPECT_EQ(1u, md_system_chain_count(&sys));
     EXPECT_EQ(51u, md_system_chain_atom_count(&sys, 0));
-    EXPECT_EQ(2u, md_structure_count(&sys.structure));
-    for (size_t i = 0; i < md_array_size(sys.structure.atom_idx); ++i) {
-        EXPECT_TRUE(0 <= sys.structure.atom_idx[i] && sys.structure.atom_idx[i] < 51);
+    EXPECT_EQ(2u, md_molecule_count(&sys.molecule));
+    for (size_t i = 0; i < md_array_size(sys.molecule.atom_idx); ++i) {
+        EXPECT_TRUE(0 <= sys.molecule.atom_idx[i] && sys.molecule.atom_idx[i] < 51);
     }
-    check_structure_invariants(utest_result, &sys);
+    check_molecule_invariants(utest_result, &sys);
     md_vm_arena_destroy(alloc);
 }
 
@@ -1615,7 +1615,7 @@ UTEST(util, martini_reference_systems) {
         ASSERT_TRUE(md_tpr_system_init_from_file(&top, &top_state, str_from_cstr(tpr_path)));
         ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, str_from_cstr(gro_path)));
         ASSERT_EQ(top.atom.count, gro.atom.count);
-        ASSERT_EQ(top.component.count, gro.component.count);
+        ASSERT_EQ(top.residue.count, gro.residue.count);
 
         size_t bad_atoms = 0;
         for (size_t i = 0; i < top.atom.count; ++i) {
@@ -1628,11 +1628,11 @@ UTEST(util, martini_reference_systems) {
         }
         EXPECT_EQ_MSG((size_t)0, bad_atoms, names[n]);
 
-        size_t bad_comps = 0;
-        for (size_t c = 0; c < top.component.count; ++c) {
-            bad_comps += md_component_kind(&top.component, c) != md_component_kind(&gro.component, c);
+        size_t bad_residues = 0;
+        for (size_t c = 0; c < top.residue.count; ++c) {
+            bad_residues += md_residue_kind(&top.residue, c) != md_residue_kind(&gro.residue, c);
         }
-        EXPECT_EQ_MSG((size_t)0, bad_comps, names[n]);
+        EXPECT_EQ_MSG((size_t)0, bad_residues, names[n]);
 
         size_t missing = 0, extra = 0;
         for (size_t b = 0; b < top.bond.count; ++b) {
@@ -1681,19 +1681,19 @@ UTEST(util, martini_nucleic_backbones) {
                 EXPECT_EQ((int)systems[n].kind, (int)md_system_instance_entity_kind(&sys, bb->range.inst_idx[r]));
                 for (uint32_t s = bb->range.offset[r]; s < bb->range.offset[r + 1]; ++s) {
                     const md_nucleic_acid_atoms_t a = bb->segment.atoms[s];
-                    const md_component_idx_t comp = bb->segment.comp_idx[s];
+                    const md_residue_idx_t res = bb->segment.res_idx[s];
                     EXPECT_EQ(-1, a.o5);
                     EXPECT_EQ(-1, a.o3);
                     EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.c4), STR_LIT("BB2")));
                     EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.c1), STR_LIT("BB3")));
-                    EXPECT_EQ(comp, (md_component_idx_t)md_system_component_find_by_atom_idx(&sys, (size_t)a.c4));
+                    EXPECT_EQ(res, (md_residue_idx_t)md_system_residue_find_by_atom_idx(&sys, (size_t)a.c4));
                     if (s == bb->range.offset[r]) {
                         EXPECT_EQ(-1, a.p);
                     } else {
                         ASSERT_GE(a.p, 0);
                         EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, a.p), STR_LIT("BB1")));
                     }
-                    EXPECT_EQ(0, (int)(md_component_flags(&sys.component, (size_t)comp) & (MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER)));
+                    EXPECT_EQ(0, (int)(md_residue_flags(&sys.residue, (size_t)res) & (MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER)));
                 }
             }
         }
@@ -1752,7 +1752,7 @@ UTEST(util, martini_nucleic_break) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_gap_pdb), MD_PDB_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ((size_t)6, md_system_component_count(&sys));
+    ASSERT_EQ((size_t)6, md_system_residue_count(&sys));
     EXPECT_EQ(-1, md_bond_find(&sys.bond, 14, 18));    // BB3 of 3 and BB1 of 5
     EXPECT_NE(-1, md_bond_find(&sys.bond, 7, 12));     // BB3 of 2 and BB1 of 3
 
@@ -1764,8 +1764,8 @@ UTEST(util, martini_nucleic_break) {
     EXPECT_EQ(3u, bb->range.offset[1]);
     EXPECT_EQ(-1, bb->segment.atoms[0].p);
     EXPECT_EQ(18, bb->segment.atoms[3].p);
-    EXPECT_TRUE(md_component_flags(&sys.component, 2) & MD_COMPONENT_FLAG_BREAK_AFTER);
-    EXPECT_TRUE(md_component_flags(&sys.component, 3) & MD_COMPONENT_FLAG_BREAK_BEFORE);
+    EXPECT_TRUE(md_residue_flags(&sys.residue, 2) & MD_RESIDUE_FLAG_BREAK_AFTER);
+    EXPECT_TRUE(md_residue_flags(&sys.residue, 3) & MD_RESIDUE_FLAG_BREAK_BEFORE);
     md_atom_idx_t link[2];
     ASSERT_TRUE(md_util_chain_break_atoms(link, &sys, 2));
     EXPECT_EQ(14, link[0]);
@@ -1782,8 +1782,8 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
 
     // Four carbons 1.5A apart along x: inference finds 0-1, 1-2, 2-3
     md_system_t sys = { .alloc = alloc };
-    md_atom_type_find_or_add(&sys.atom.type, STR_LIT("?"), 0, 0, 0, 0, 0, alloc);
-    md_atom_type_idx_t c = md_atom_type_find_or_add(&sys.atom.type, STR_LIT("C"), 6, 12.011f, 0.76f, 0, 0, alloc);
+    md_particle_type_find_or_add(&sys.atom.type, STR_LIT("?"), 0, 0, 0, 0, 0, alloc);
+    md_particle_type_idx_t c = md_particle_type_find_or_add(&sys.atom.type, STR_LIT("C"), 6, 12.011f, 0.76f, 0, 0, alloc);
     for (int i = 0; i < 5; ++i) {
         md_array_push(sys.atom.type_idx, c, alloc);
         md_array_push(sys.atom.flags, MD_ATOM_FLAG_NONE, alloc);
@@ -1846,7 +1846,7 @@ UTEST(util, infer_bonds_replaces_only_inferred) {
 }
 
 // A chain of nine atoms spaced 2A along x inside a 10A box, so the wrapped input folds back on
-// itself twice. md_util_unwrap_structure must recover a straight line.
+// itself twice. md_util_unwrap_molecule must recover a straight line.
 //
 // @NOTE: this is the regression test for two bugs that were live together here. min_image_ortho was
 // being fed a half extent where it wants a reciprocal one, and the result was written as x + dx
@@ -1857,7 +1857,7 @@ UTEST(util, unwrap_structure_ortho) {
 
     md_system_t sys = {0};
     make_chain_system(&sys, alloc, 1, 9);
-    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
 
     float x[9], y[9] = {0}, z[9] = {0};
     for (int i = 0; i < 9; ++i) {
@@ -1866,9 +1866,9 @@ UTEST(util, unwrap_structure_ortho) {
     vec3_t xyz[9];
     md_system_state_t state = { .num_atoms = 9, .xyz = pack_xyz(xyz, x, y, z, 9), .unitcell = md_unitcell_from_extent(10, 10, 10) };
 
-    md_structure_t structure = {0};
-    ASSERT_TRUE(md_structure_extract(&structure, &sys.structure, 0));
-    md_util_unwrap_structure(&state, &structure);
+    md_molecule_t structure = {0};
+    ASSERT_TRUE(md_molecule_extract(&structure, &sys.molecule, 0));
+    md_util_unwrap_molecule(&state, &structure);
     unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     for (int i = 0; i < 8; ++i) {
@@ -1887,7 +1887,7 @@ UTEST(util, unwrap_structure_triclinic) {
 
     md_system_t sys = {0};
     make_chain_system(&sys, alloc, 1, 9);
-    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
 
     md_unitcell_t cell = md_unitcell_from_basis_parameters(10, 10, 10, 2, 1, 3);
     float A[3][3] = {0};
@@ -1910,9 +1910,9 @@ UTEST(util, unwrap_structure_triclinic) {
     vec3_t xyz[9];
     md_system_state_t state = { .num_atoms = 9, .xyz = pack_xyz(xyz, x, y, z, 9), .unitcell = cell };
 
-    md_structure_t structure = {0};
-    ASSERT_TRUE(md_structure_extract(&structure, &sys.structure, 0));
-    md_util_unwrap_structure(&state, &structure);
+    md_molecule_t structure = {0};
+    ASSERT_TRUE(md_molecule_extract(&structure, &sys.molecule, 0));
+    md_util_unwrap_molecule(&state, &structure);
     unpack_xyz(x, y, z, xyz, state.num_atoms);
 
     const float ox = x[0] - tx[0];
@@ -1929,7 +1929,7 @@ UTEST(util, unwrap_structure_triclinic) {
 }
 
 // md_util_min_image_vec3 / _vec4 reduce a separation vector to its shortest periodic image, so no
-// component may exceed half the box and the result must differ from the input by whole box lengths.
+// residue may exceed half the box and the result must differ from the input by whole box lengths.
 UTEST(util, min_image) {
     const float e = 10.0f;
     md_unitcell_t cell = md_unitcell_from_extent(e, e, e);
@@ -2580,7 +2580,7 @@ UTEST(util, rings_c60) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 32);
 
-    const size_t num_structures = md_structure_count(&sys.structure);
+    const size_t num_structures = md_molecule_count(&sys.molecule);
     EXPECT_EQ(num_structures, 1);
 
     md_temp_end(temp_scope);
@@ -2600,7 +2600,7 @@ UTEST(util, rings_c720) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 362);
 
-    const size_t num_structures = md_structure_count(&sys.structure);
+    const size_t num_structures = md_molecule_count(&sys.molecule);
     EXPECT_EQ(num_structures, 1);
 
     md_temp_end(temp_scope);
@@ -2631,7 +2631,7 @@ UTEST(util, rings_trytophan_pdb) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 2);
 
-    const size_t num_structures = md_structure_count(&sys.structure);
+    const size_t num_structures = md_molecule_count(&sys.molecule);
     EXPECT_EQ(num_structures, 1);
 
     md_temp_end(temp_scope);
@@ -2648,7 +2648,7 @@ UTEST(util, rings_trytophan_xyz) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 2);
 
-    const size_t num_structures = md_structure_count(&sys.structure);
+    const size_t num_structures = md_molecule_count(&sys.molecule);
     EXPECT_EQ(num_structures, 1);
 
     md_temp_end(temp_scope);
@@ -2665,7 +2665,7 @@ UTEST(util, rings_full) {
     const size_t num_rings = md_index_data_num_ranges(&sys.ring);
     EXPECT_EQ(num_rings, 195);
 
-    const size_t num_structures = md_structure_count(&sys.structure);
+    const size_t num_structures = md_molecule_count(&sys.molecule);
     EXPECT_EQ(num_structures, 1);
 
     md_temp_end(temp_scope);
@@ -3035,14 +3035,14 @@ UTEST(util, entity_instance) {
         ASSERT_EQ(md_system_instance_count(&sys), 1 + 1 + 106);
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
         EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 0), STR_LIT("E")));
-        EXPECT_EQ(md_system_instance_comp_count(&sys, 0), 238);
-        EXPECT_EQ(md_system_instance_comp_count(&sys, 1), 1);
+        EXPECT_EQ(md_system_instance_residue_count(&sys, 0), 238);
+        EXPECT_EQ(md_system_instance_residue_count(&sys, 1), 1);
         EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 1), STR_LIT("E")));
         for (size_t i = 2; i < md_system_instance_count(&sys); ++i) {
             EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i), STR_LIT("C")));
             EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), STR_LIT("E")));
             EXPECT_EQ(md_system_instance_entity_idx(&sys, i), 2);
-            EXPECT_EQ(md_system_instance_comp_count(&sys, i), 1);
+            EXPECT_EQ(md_system_instance_residue_count(&sys, i), 1);
         }
     }
 
@@ -3054,8 +3054,8 @@ UTEST(util, entity_instance) {
 
         // GTP and GDP are named like nucleotides atom by atom, but are not linked into a chain: ligands
         size_t num_nucleotides = 0;
-        for (size_t i = 0; i < md_system_component_count(&sys); ++i) {
-            num_nucleotides += md_system_component_kind(&sys, i) == MD_COMPONENT_KIND_NUCLEOTIDE;
+        for (size_t i = 0; i < md_system_residue_count(&sys); ++i) {
+            num_nucleotides += md_system_residue_kind(&sys, i) == MD_RESIDUE_KIND_NUCLEOTIDE;
         }
         EXPECT_EQ(num_nucleotides, 0);
 
@@ -3097,7 +3097,7 @@ UTEST(util, entity_instance) {
         EXPECT_EQ(md_system_entity_flags(&sys, 1), inferred_kind(MD_ENTITY_KIND_WATER));
         EXPECT_TRUE(str_eq(md_entity_description(&sys.entity, 0), STR_LIT("DPP")));
 
-        ASSERT_EQ(md_system_instance_count(&sys), md_system_component_count(&sys));
+        ASSERT_EQ(md_system_instance_count(&sys), md_system_residue_count(&sys));
         for (size_t i = 0; i < 64; ++i) {
             EXPECT_EQ(md_system_instance_entity_idx(&sys, i), 0);
         }
@@ -3188,10 +3188,10 @@ UTEST(util, entity_instance_mmcif) {
             EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i),      str_from_cstr(instances[i].id)));
             EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), str_from_cstr(instances[i].auth)));
             EXPECT_EQ(md_system_instance_entity_idx(&sys, i),       instances[i].entity);
-            if (i >= 2) EXPECT_EQ(md_system_instance_comp_count(&sys, i), 1);
+            if (i >= 2) EXPECT_EQ(md_system_instance_residue_count(&sys, i), 1);
         }
-        // MG is an ion as a component, whatever its entity is
-        EXPECT_EQ(md_system_component_kind(&sys, md_system_instance_comp_range(&sys, 2).beg), MD_COMPONENT_KIND_ION);
+        // MG is an ion as a residue, whatever its entity is
+        EXPECT_EQ(md_system_residue_kind(&sys, md_system_instance_residue_range(&sys, 2).beg), MD_RESIDUE_KIND_ION);
     }
 
     {
@@ -3206,11 +3206,11 @@ UTEST(util, entity_instance_mmcif) {
         size_t resolved = 0;
         for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
             if (!md_entity_kind_is_nucleic_acid(md_system_instance_entity_kind(&sys, i))) continue;
-            const md_urange_t range = md_system_instance_comp_range(&sys, i);
-            EXPECT_TRUE(str_eq(md_component_name(&sys.component, range.beg), STR_LIT("GTP")) || str_eq(md_component_name(&sys.component, range.beg), STR_LIT("UTP")));
+            const md_urange_t range = md_system_instance_residue_range(&sys, i);
+            EXPECT_TRUE(str_eq(md_residue_name(&sys.residue, range.beg), STR_LIT("GTP")) || str_eq(md_residue_name(&sys.residue, range.beg), STR_LIT("UTP")));
             for (uint32_t c = range.beg; c < range.end; ++c) {
-                EXPECT_EQ(md_system_component_kind(&sys, c), MD_COMPONENT_KIND_NUCLEOTIDE);
-                resolved += (md_system_component_flags(&sys, c) & MD_COMPONENT_FLAG_RESOLVED) != 0;
+                EXPECT_EQ(md_system_residue_kind(&sys, c), MD_RESIDUE_KIND_NUCLEOTIDE);
+                resolved += (md_system_residue_flags(&sys, c) & MD_RESIDUE_FLAG_RESOLVED) != 0;
             }
         }
         EXPECT_EQ(resolved, 48);
@@ -3318,11 +3318,11 @@ UTEST(util, hypermodified_nucleotide) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ((size_t)3, md_system_component_count(&sys));
-    EXPECT_TRUE(str_eq(md_component_name(&sys.component, 1), STR_LIT("YYG")));
+    ASSERT_EQ((size_t)3, md_system_residue_count(&sys));
+    EXPECT_TRUE(str_eq(md_residue_name(&sys.residue, 1), STR_LIT("YYG")));
     for (size_t c = 0; c < 3; ++c) {
-        EXPECT_EQ(MD_COMPONENT_KIND_NUCLEOTIDE, md_component_kind(&sys.component, c));
-        EXPECT_TRUE(md_component_flags(&sys.component, c) & MD_COMPONENT_FLAG_RESOLVED);
+        EXPECT_EQ(MD_RESIDUE_KIND_NUCLEOTIDE, md_residue_kind(&sys.residue, c));
+        EXPECT_TRUE(md_residue_flags(&sys.residue, c) & MD_RESIDUE_FLAG_RESOLVED);
     }
     ASSERT_EQ((size_t)1, md_system_instance_count(&sys));
     EXPECT_EQ(MD_ENTITY_KIND_RNA, md_system_entity_kind(&sys, md_system_instance_entity_idx(&sys, 0)));
@@ -3331,7 +3331,7 @@ UTEST(util, hypermodified_nucleotide) {
 
     // The backbone of the YYG is its P O5' C5' C4' C3' O3', its base all of it but the phosphate and the sugar: the
     // tricyclic base and its side chain
-    const md_urange_t range = md_component_atom_range(&sys.component, 1);
+    const md_urange_t range = md_residue_atom_range(&sys.residue, 1);
     size_t base = 0, backbone = 0;
     for (uint32_t i = range.beg; i < range.end; ++i) {
         base     += (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_NUCLEOBASE) != 0;
@@ -3362,7 +3362,7 @@ UTEST(util, chains) {
         EXPECT_EQ(md_system_atom_count(&sys), chain_atoms(&sys, 0));
         // The protein, the arginine and the waters are consecutive residues: one run
         EXPECT_EQ(1, (int)(md_system_chain_run_end(&sys, 0) - md_system_chain_run_beg(&sys, 0)));
-        for (size_t c = 0; c < md_system_component_count(&sys); ++c) EXPECT_EQ(0, md_system_chain_find_by_comp_idx(&sys, c));
+        for (size_t c = 0; c < md_system_residue_count(&sys); ++c) EXPECT_EQ(0, md_system_chain_find_by_residue_idx(&sys, c));
         EXPECT_EQ(0, md_system_chain_find_by_atom_idx(&sys, md_system_atom_count(&sys) - 1));
     }
 
@@ -3391,9 +3391,9 @@ UTEST(util, chains) {
         EXPECT_TRUE(str_eq(md_system_chain_id(&sys, 1), STR_LIT("B")));
         EXPECT_EQ(md_system_atom_count(&sys), chain_atoms(&sys, 0) + chain_atoms(&sys, 1));
         for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
-            const md_urange_t comps = md_system_instance_comp_range(&sys, i);
-            for (uint32_t k = comps.beg; k < comps.end; ++k) {
-                const md_chain_idx_t c = md_system_chain_find_by_comp_idx(&sys, k);
+            const md_urange_t residues = md_system_instance_residue_range(&sys, i);
+            for (uint32_t k = residues.beg; k < residues.end; ++k) {
+                const md_chain_idx_t c = md_system_chain_find_by_residue_idx(&sys, k);
                 ASSERT_GE(c, 0);
                 EXPECT_TRUE(str_eq(md_system_chain_id(&sys, (size_t)c), md_system_instance_auth_id(&sys, i)));
             }
@@ -3412,8 +3412,8 @@ UTEST(util, chains) {
         for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
             const bool polymer = md_entity_kind_is_polymer(md_system_instance_entity_kind(&sys, i));
             polymers += polymer;
-            const md_urange_t comps = md_system_instance_comp_range(&sys, i);
-            EXPECT_EQ(polymer, md_system_chain_find_by_comp_idx(&sys, comps.beg) >= 0);
+            const md_urange_t residues = md_system_instance_residue_range(&sys, i);
+            EXPECT_EQ(polymer, md_system_chain_find_by_residue_idx(&sys, residues.beg) >= 0);
         }
         ASSERT_GT(polymers, 0);
         ASSERT_EQ(polymers, md_system_chain_count(&sys));
@@ -3440,8 +3440,8 @@ UTEST(util, chains) {
         ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
         ASSERT_EQ(1, (int)md_system_chain_count(&sys));
         EXPECT_TRUE(md_system_chain_inferred(&sys, 0));
-        EXPECT_EQ(0, md_system_chain_find_by_comp_idx(&sys, md_system_instance_comp_range(&sys, 0).beg));
-        EXPECT_EQ(-1, md_system_chain_find_by_comp_idx(&sys, md_system_instance_comp_range(&sys, 1).beg));
+        EXPECT_EQ(0, md_system_chain_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 0).beg));
+        EXPECT_EQ(-1, md_system_chain_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 1).beg));
     }
 
     {
@@ -3452,16 +3452,16 @@ UTEST(util, chains) {
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.tpr")));
         ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
         ASSERT_EQ(2, (int)md_system_chain_count(&sys));
-        const md_urange_t duplex = md_system_instance_comp_range(&sys, 0);
+        const md_urange_t duplex = md_system_instance_residue_range(&sys, 0);
         EXPECT_EQ(24u, duplex.end - duplex.beg);
-        EXPECT_EQ(0, md_system_chain_find_by_comp_idx(&sys, duplex.beg));
-        EXPECT_EQ(1, md_system_chain_find_by_comp_idx(&sys, duplex.end - 1));
+        EXPECT_EQ(0, md_system_chain_find_by_residue_idx(&sys, duplex.beg));
+        EXPECT_EQ(1, md_system_chain_find_by_residue_idx(&sys, duplex.end - 1));
         EXPECT_EQ(12u, md_system_chain_run_beg(&sys, 0)->end - md_system_chain_run_beg(&sys, 0)->beg);
         const md_urange_t atoms = md_system_instance_atom_range(&sys, 0);
-        const uint32_t slot = (uint32_t)sys.structure.atom_slot[atoms.beg];
+        const uint32_t slot = (uint32_t)sys.molecule.atom_slot[atoms.beg];
         size_t mol = 0;
-        while (mol + 1 < sys.structure.count && sys.structure.offset[mol + 1] <= slot) ++mol;
-        EXPECT_EQ(atoms.end - atoms.beg, sys.structure.offset[mol + 1] - sys.structure.offset[mol]);
+        while (mol + 1 < sys.molecule.count && sys.molecule.offset[mol + 1] <= slot) ++mol;
+        EXPECT_EQ(atoms.end - atoms.beg, sys.molecule.offset[mol + 1] - sys.molecule.offset[mol]);
 
         md_system_t gro = {.alloc = alloc};
         md_system_state_t gro_state = { .alloc = alloc };
@@ -3483,27 +3483,27 @@ UTEST(util, topology_molecules_are_whole) {
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr")));
     ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
     const size_t num_inst = md_system_instance_count(&sys);
-    EXPECT_EQ(num_inst, md_structure_count(&sys.structure));
+    EXPECT_EQ(num_inst, md_molecule_count(&sys.molecule));
     const md_entity_idx_t water = md_system_instance_entity_idx(&sys, 1);
     ASSERT_EQ(water, md_system_instance_entity_idx(&sys, 2));
     EXPECT_TRUE((md_system_entity_flags(&sys, (size_t)water) & MD_ENTITY_FLAG_TOPOLOGY) != 0);
 
     // Instances 1 and 2 as one molecule of the topology
     for (size_t i = 2; i < num_inst; ++i) {
-        sys.instance.comp_offset[i] = sys.instance.comp_offset[i + 1];
+        sys.instance.res_offset[i] = sys.instance.res_offset[i + 1];
         sys.instance.id[i] = sys.instance.id[i + 1 < num_inst ? i + 1 : i];
         sys.instance.auth_id[i] = sys.instance.auth_id[i + 1 < num_inst ? i + 1 : i];
         sys.instance.entity_idx[i] = sys.instance.entity_idx[i + 1 < num_inst ? i + 1 : i];
     }
     sys.instance.count -= 1;
-    ASSERT_TRUE(md_util_system_infer_structures(&sys));
-    EXPECT_EQ(num_inst - 1, md_structure_count(&sys.structure));
-    check_structure_invariants(utest_result, &sys);
+    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    EXPECT_EQ(num_inst - 1, md_molecule_count(&sys.molecule));
+    check_molecule_invariants(utest_result, &sys);
 
     // Not a topology's: two molecules
     sys.entity.flags[water] = (md_entity_flags_t)(sys.entity.flags[water] & ~MD_ENTITY_FLAG_TOPOLOGY);
-    ASSERT_TRUE(md_util_system_infer_structures(&sys));
-    EXPECT_EQ(num_inst, md_structure_count(&sys.structure));
+    ASSERT_TRUE(md_util_system_infer_molecules(&sys));
+    EXPECT_EQ(num_inst, md_molecule_count(&sys.molecule));
     md_vm_arena_destroy(alloc);
 }
 
@@ -3528,7 +3528,7 @@ UTEST(util, entity_instance_topology) {
             }
         }
         ASSERT_EQ(md_system_instance_count(&sys), inst);
-        EXPECT_EQ(md_system_instance_comp_count(&sys, 0), 2);
+        EXPECT_EQ(md_system_instance_residue_count(&sys, 0), 2);
         // Single residue molecules share the id of their block
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0),   STR_LIT("A")));
         EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 1),   STR_LIT("B")));
@@ -3555,7 +3555,7 @@ UTEST(util, entity_instance_topology) {
     }
 
     {
-        // LAMMPS knows its molecules but not what they are: an entity per sequence of atom types, described by its
+        // LAMMPS knows its molecules but not what they are: an entity per sequence of particle types, described by its
         // formula, and water told by its atoms
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
@@ -3566,7 +3566,7 @@ UTEST(util, entity_instance_topology) {
         EXPECT_TRUE(str_eq(md_entity_description(&sys.entity, 1), STR_LIT("H2O")));
         EXPECT_EQ(md_system_entity_kind(&sys, 0), MD_ENTITY_KIND_NON_POLYMER);
         EXPECT_EQ(md_system_entity_kind(&sys, 1), MD_ENTITY_KIND_WATER);
-        ASSERT_EQ(md_system_instance_count(&sys), md_system_component_count(&sys));
+        ASSERT_EQ(md_system_instance_count(&sys), md_system_residue_count(&sys));
         EXPECT_EQ(md_system_instance_entity_idx(&sys, 0), 0);
         EXPECT_EQ(md_system_instance_entity_idx(&sys, md_system_instance_count(&sys) - 1), 1);
     }
@@ -3682,7 +3682,7 @@ UTEST(util, state_backbone) {
     md_vm_arena_destroy(alloc);
 }
 
-// The binary searches from an atom to its component and from a component to its instance
+// The binary searches from an atom to its residue and from a residue to its instance
 UTEST(util, find_by_index) {
     const uint32_t offset[] = {0, 3, 3, 7, 10};   // [0,3) [3,3) [3,7) [7,10)
     EXPECT_EQ(md_offset_range_find(offset, 4, 0), 0);
@@ -3700,17 +3700,17 @@ UTEST(util, find_by_index) {
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
-    for (size_t c = 0; c < sys.component.count; ++c) {
-        const md_urange_t range = md_system_component_atom_range(&sys, c);
-        EXPECT_EQ(md_system_component_find_by_atom_idx(&sys, range.beg), (int)c);
-        EXPECT_EQ(md_system_component_find_by_atom_idx(&sys, range.end - 1), (int)c);
+    for (size_t c = 0; c < sys.residue.count; ++c) {
+        const md_urange_t range = md_system_residue_atom_range(&sys, c);
+        EXPECT_EQ(md_system_residue_find_by_atom_idx(&sys, range.beg), (int)c);
+        EXPECT_EQ(md_system_residue_find_by_atom_idx(&sys, range.end - 1), (int)c);
     }
     for (size_t i = 0; i < sys.instance.count; ++i) {
         const md_urange_t range = md_system_instance_atom_range(&sys, i);
         EXPECT_EQ(md_system_instance_find_by_atom_idx(&sys, range.beg), (int)i);
         EXPECT_EQ(md_system_instance_find_by_atom_idx(&sys, range.end - 1), (int)i);
     }
-    EXPECT_EQ(md_system_component_find_by_atom_idx(&sys, sys.atom.count), -1);
+    EXPECT_EQ(md_system_residue_find_by_atom_idx(&sys, sys.atom.count), -1);
     md_vm_arena_destroy(alloc);
 }
 
@@ -4243,20 +4243,20 @@ UTEST(util, ramachandran_classify) {
     //   chain 1: PRO ALA
     const char* names[9] = { "PRO", "GLY", "PRO", "ALA", "PRO", "PRO", "SER", "PRO", "ALA" };
     md_label_t labels[9];
-    md_component_idx_t comp_idx[9];
+    md_residue_idx_t res_idx[9];
     for (int i = 0; i < 9; ++i) {
         labels[i]   = make_label(str_from_cstr(names[i]));
-        comp_idx[i] = i;
+        res_idx[i] = i;
     }
     uint32_t range_offset[3] = { 0, 7, 9 };
 
     md_system_t sys = {0};
-    sys.component.count = 9;
-    sys.component.name  = labels;
+    sys.residue.count = 9;
+    sys.residue.name    = labels;
     sys.protein_backbone.range.count      = 2;
     sys.protein_backbone.range.offset     = range_offset;
     sys.protein_backbone.segment.count    = 9;
-    sys.protein_backbone.segment.comp_idx = comp_idx;
+    sys.protein_backbone.segment.res_idx = res_idx;
 
     // MolProbity's types: a glycine or a proline before a proline keeps its own type, and the last residue of a chain
     // is not pre-proline because of the first residue of the next
@@ -4336,7 +4336,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, MD_XYZ_OPTION_NONE));
     ASSERT_EQ(num_xyz, sys.atom.count);
-    ASSERT_EQ(0, sys.component.count);
+    ASSERT_EQ(0, sys.residue.count);
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
 
     // An atom of the reference as an atom of the XYZ
@@ -4351,7 +4351,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
         const md_protein_backbone_data_t* bb = &sys.protein_backbone;
         EXPECT_EQ(rb->range.count, bb->range.count);
         EXPECT_EQ(rb->segment.count, bb->segment.count);
-        for (size_t s = 0; s < bb->segment.count; ++s) EXPECT_EQ(-1, bb->segment.comp_idx[s]);
+        for (size_t s = 0; s < bb->segment.count; ++s) EXPECT_EQ(-1, bb->segment.res_idx[s]);
         for (size_t r = 0; r < bb->range.count; ++r) EXPECT_EQ(-1, bb->range.inst_idx[r]);
 
         int32_t* seg = segment_of_atom(sys.atom.count, alloc);
@@ -4403,7 +4403,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
         const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
         EXPECT_EQ(rb->range.count, bb->range.count);
         EXPECT_EQ(rb->segment.count, bb->segment.count);
-        for (size_t s = 0; s < bb->segment.count; ++s) EXPECT_EQ(-1, bb->segment.comp_idx[s]);
+        for (size_t s = 0; s < bb->segment.count; ++s) EXPECT_EQ(-1, bb->segment.res_idx[s]);
 
         int32_t* seg = segment_of_atom(sys.atom.count, alloc);
         for (size_t s = 0; s < bb->segment.count; ++s) seg[bb->segment.atoms[s].c4] = (int32_t)s;

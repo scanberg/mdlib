@@ -75,7 +75,7 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     for (int i = 0; i < na; ++i) map[i] = (strip_h && c->atom[i].z == 1) ? -1 : n++;
 
     sys->atom.count = n;
-    md_atom_type_add(&sys->atom.type, STR_LIT(""), (str_t){0}, 0, 0, 0, 0, 0, alloc);
+    md_particle_type_add(&sys->atom.type, STR_LIT(""), (str_t){0}, 0, 0, 0, 0, 0, alloc);
     md_array_resize(sys->atom.type_idx, (size_t)n, alloc);
     md_array_resize(sys->atom.flags, (size_t)n, alloc);
     MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
@@ -83,16 +83,16 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     for (int i = 0; i < na; ++i) {
         if (map[i] < 0) continue;
         const ref_atom_t* a = &c->atom[i];
-        sys->atom.type_idx[map[i]] = md_atom_type_find_or_add(&sys->atom.type, str_from_cstr(a->name), (md_atomic_number_t)a->z, md_util_element_atomic_mass(a->z), md_util_element_vdw_radius(a->z), 0, 0, alloc);
+        sys->atom.type_idx[map[i]] = md_particle_type_find_or_add(&sys->atom.type, str_from_cstr(a->name), (md_atomic_number_t)a->z, md_util_element_atomic_mass(a->z), md_util_element_vdw_radius(a->z), 0, 0, alloc);
         st->xyz[map[i]] = a->x;
     }
     st->num_atoms = n;
-    sys->component.count = 1;
-    md_array_push(sys->component.name, make_label(str_from_cstr(c->id)), alloc);
-    md_array_push(sys->component.seq_id, 1, alloc);
-    md_array_push(sys->component.flags, 0, alloc);
-    md_array_push(sys->component.atom_offset, 0, alloc);
-    md_array_push(sys->component.atom_offset, (uint32_t)n, alloc);
+    sys->residue.count = 1;
+    md_array_push(sys->residue.name, make_label(str_from_cstr(c->id)), alloc);
+    md_array_push(sys->residue.seq_id, 1, alloc);
+    md_array_push(sys->residue.flags, 0, alloc);
+    md_array_push(sys->residue.atom_offset, 0, alloc);
+    md_array_push(sys->residue.atom_offset, (uint32_t)n, alloc);
 
     if (infer) {
         md_util_infer_covalent_bonds(&sys->bond, st, sys, alloc);

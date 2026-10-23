@@ -113,7 +113,7 @@ UTEST(xyz, xyz_tinker) {
     EXPECT_NEAR(18.673994f, data.coordinates[0].x, 1.0e-5f);
     EXPECT_NEAR(1.292906f,  data.coordinates[0].y, 1.0e-5f);
     EXPECT_NEAR(0.733642f,  data.coordinates[0].z, 1.0e-5f);
-    EXPECT_EQ(2,            data.coordinates[0].atom_type);
+    EXPECT_EQ(2,            data.coordinates[0].particle_type);
     EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
     EXPECT_EQ(20,           data.coordinates[0].connectivity[1]);
     EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
@@ -144,7 +144,7 @@ UTEST(xyz, xyz_tinker_arc) {
     EXPECT_NEAR(17.935708f, data.coordinates[0].x, 1.0e-5f);
     EXPECT_NEAR(1.368677f,  data.coordinates[0].y, 1.0e-5f);
     EXPECT_NEAR(0.600876f,  data.coordinates[0].z, 1.0e-5f);
-    EXPECT_EQ(2,            data.coordinates[0].atom_type);
+    EXPECT_EQ(2,            data.coordinates[0].particle_type);
     EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
     EXPECT_EQ(20,           data.coordinates[0].connectivity[1]);
     EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
@@ -174,7 +174,7 @@ UTEST(xyz, o2_arc) {
     EXPECT_NEAR(-1.977261f, data.coordinates[0].x, 1.0e-5f);
     EXPECT_NEAR(-1.149547f, data.coordinates[0].y, 1.0e-5f);
     EXPECT_NEAR(-0.000606f, data.coordinates[0].z, 1.0e-5f);
-    EXPECT_EQ(7,            data.coordinates[0].atom_type);
+    EXPECT_EQ(7,            data.coordinates[0].particle_type);
     EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
 
     md_file_t file = {0};

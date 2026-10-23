@@ -28,7 +28,7 @@ UTEST(lammps, water_ethane_cubic) {
 
     ASSERT_TRUE(result);
     EXPECT_EQ(data.num_atoms, 7800);
-    EXPECT_EQ(data.num_atom_types, 4);
+    EXPECT_EQ(data.num_particle_types, 4);
     EXPECT_EQ(data.num_bonds, 6200);
     EXPECT_EQ(data.num_bond_types, 3);
     EXPECT_EQ(data.num_angles, 8200);
@@ -65,17 +65,17 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_NEAR(ref_atoms[i].z,         data.atoms[i].z,        1.0e-5f);
     }
 
-    const md_lammps_atom_type_t ref_atom_types[] = {
+    const md_lammps_atom_type_t ref_particle_types[] = {
         {1, 1.008f,    1.1f},
         {2, 12.011f,   1.7f},
         {3, 15.9994f,  1.52f},
         {4, 1.008f,    1.1f},
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(ref_atom_types); ++i) {
-        EXPECT_EQ(ref_atom_types[i].id,     data.atom_types[i].id);
-        EXPECT_NEAR(ref_atom_types[i].mass, data.atom_types[i].mass,   1.0e-5f);
-        EXPECT_NEAR(ref_atom_types[i].radius, data.atom_types[i].radius, 1.0e-5f);
+    for (size_t i = 0; i < ARRAY_SIZE(ref_particle_types); ++i) {
+        EXPECT_EQ(ref_particle_types[i].id, data.particle_types[i].id);
+        EXPECT_NEAR(ref_particle_types[i].mass, data.particle_types[i].mass, 1.0e-5f);
+        EXPECT_NEAR(ref_particle_types[i].radius, data.particle_types[i].radius, 1.0e-5f);
     }
 
     const md_lammps_bond_t ref_bonds[] = {
@@ -136,21 +136,21 @@ UTEST(lammps, water_ethane_cubic) {
         EXPECT_EQ(sys_state.xyz[i].z, data.atoms[i].z);
     }
 
-    // Skip first atom type == Unknown
+    // Skip first particle type == Unknown
     for (size_t i = 1; i < sys.atom.type.count; ++i) {
-        str_t type_id = md_atom_type_name(&sys.atom.type, i);
-        float mass    = md_atom_type_mass(&sys.atom.type, i);
-        float radius  = md_atom_type_radius(&sys.atom.type, i);
-        md_atomic_number_t z = md_atom_type_atomic_number(&sys.atom.type, i);
+        str_t type_id = md_particle_type_name(&sys.atom.type, i);
+        float mass    = md_particle_type_mass(&sys.atom.type, i);
+        float radius  = md_particle_type_radius(&sys.atom.type, i);
+        md_atomic_number_t z = md_particle_type_atomic_number(&sys.atom.type, i);
 
         bool found = false;
-        for (size_t j = 0; j < data.num_atom_types; ++j) {
+        for (size_t j = 0; j < data.num_particle_types; ++j) {
             char buf[8];
-            int len = snprintf(buf, sizeof(buf), "type_%i", data.atom_types[j].id);
+            int len = snprintf(buf, sizeof(buf), "type_%i", data.particle_types[j].id);
             str_t ref_type_id = {buf, len};
             if (str_eq(type_id, ref_type_id)) {
-                float ref_mass = data.atom_types[j].mass;
-                float ref_radius = data.atom_types[j].radius;
+                float ref_mass = data.particle_types[j].mass;
+                float ref_radius = data.particle_types[j].radius;
                 md_atomic_number_t ref_z = md_atomic_number_infer_from_mass(ref_mass);
 
                 found = true;
@@ -185,7 +185,7 @@ UTEST(lammps, water_ethane_triclinic) {
 
     ASSERT_TRUE(result);
     EXPECT_EQ(data.num_atoms, 7722);
-    EXPECT_EQ(data.num_atom_types, 4);
+    EXPECT_EQ(data.num_particle_types, 4);
     EXPECT_EQ(data.num_bonds, 6138);
     EXPECT_EQ(data.num_bond_types, 3);
     EXPECT_EQ(data.num_angles, 8118);

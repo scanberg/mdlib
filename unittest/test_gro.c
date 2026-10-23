@@ -31,7 +31,7 @@ UTEST(gro, parse_small) {
     // A format without force field types still keeps the column aligned, with empty entries
     EXPECT_EQ(sys.atom.type.count, md_array_size(sys.atom.type.ff_type));
     for (size_t t = 0; t < sys.atom.type.count; ++t) {
-        EXPECT_TRUE(str_empty(md_atom_type_ff_type(&sys.atom.type, t)));
+        EXPECT_TRUE(str_empty(md_particle_type_ff_type(&sys.atom.type, t)));
     }
     for (int64_t i = 0; i < sys.atom.count; ++i) {
         EXPECT_EQ(sys_state.xyz[i].x, gro_data.atom_data[i].x * NM_TO_ANGSTROM);

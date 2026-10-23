@@ -152,10 +152,10 @@ UTEST_F(ring, any_bond) {
 
     // Alanine with all of its hydrogens: a carboxylic acid, its C=O and its C-OH
     const md_system_t* ala = &utest_fixture->ala.sys;
-    EXPECT_EQ(1, (int)ring_count_matches("C=O", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(1, (int)ring_count_matches("C-O", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(1, (int)ring_count_matches("CO",  MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(2, (int)ring_count_matches("C~O", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(1, (int)ring_count_matches("C=O", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(1, (int)ring_count_matches("C-O", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(1, (int)ring_count_matches("CO",  MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(2, (int)ring_count_matches("C~O", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
 }
 
 // ### The rings as units ###
@@ -168,13 +168,13 @@ UTEST_F(ring, match_level) {
     // molecule it is one bond.
     EXPECT_EQ(2, (int)ring_count_in_rings("cc", MD_MATCH_MODE_ONE_PER_UNIT, trp));
     EXPECT_EQ(9, (int)ring_count_in_rings("cc", MD_MATCH_MODE_UNIQUE, trp));
-    EXPECT_EQ(8, (int)ring_count_matches("cc", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, trp));
+    EXPECT_EQ(8, (int)ring_count_matches("cc", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, trp));
     // Three C-C without a shared atom in the benzene ring and two in the pyrrole ring: DISJOINT is per ring as well,
     // the shared bond being free in each
     EXPECT_EQ(5, (int)ring_count_in_rings("cc", MD_MATCH_MODE_DISJOINT, trp));
 
     // Along the ring, not into what is bonded to it: the CB of the side chain is not in a ring
-    EXPECT_EQ(1, (int)ring_count_matches("Cc", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, trp));
+    EXPECT_EQ(1, (int)ring_count_matches("Cc", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, trp));
     EXPECT_EQ(0, (int)ring_count_in_rings("Cc", MD_MATCH_MODE_UNIQUE, trp));
 
     // A closed chain is the whole ring

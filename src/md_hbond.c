@@ -289,12 +289,12 @@ static uint8_t perceive_atom_role(uint8_t* out_cap, const md_system_t* sys, cons
             }
             // deg >= 4: ammonium, no lone pair
             if (acc && !naive) {
-                const md_component_idx_t comp = md_component_find_by_atom_idx(&sys->component, i);
-                if (comp >= 0) {
-                    const str_t res = md_component_name(&sys->component, comp);
-                    const md_component_kind_t ck = md_component_kind(&sys->component, comp);
-                    const bool aa  = ck == MD_COMPONENT_KIND_AMINO_ACID || md_util_resname_amino_acid(res);
-                    const bool nuc = ck == MD_COMPONENT_KIND_NUCLEOTIDE || md_util_resname_nucleotide(res);
+                const md_residue_idx_t residue = md_residue_find_by_atom_idx(&sys->residue, i);
+                if (residue >= 0) {
+                    const str_t res = md_residue_name(&sys->residue, residue);
+                    const md_residue_kind_t ck = md_residue_kind(&sys->residue, residue);
+                    const bool aa  = ck == MD_RESIDUE_KIND_AMINO_ACID || md_util_resname_amino_acid(res);
+                    const bool nuc = ck == MD_RESIDUE_KIND_NUCLEOTIDE || md_util_resname_nucleotide(res);
                     if ((aa || nuc) && standard_n_without_lone_pair(res, md_atom_name(&sys->atom, i), aa, nuc)) {
                         acc = false;
                     }

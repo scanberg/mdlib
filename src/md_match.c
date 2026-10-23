@@ -80,7 +80,7 @@ typedef struct target_t {
     const md_system_t* sys;
     size_t num_atoms;
 
-    const md_atom_type_idx_t* type_idx;
+    const md_particle_type_idx_t* type_idx;
     const md_atomic_number_t* type_z;
     const md_label_t*         type_name;
     size_t                    num_types;
@@ -125,14 +125,14 @@ enum {
 
 static inline md_atomic_number_t target_z(const target_t* tg, int32_t a) {
     if (!tg->type_idx || !tg->type_z) return 0;
-    const md_atom_type_idx_t t = tg->type_idx[a];
+    const md_particle_type_idx_t t = tg->type_idx[a];
     return t < tg->num_types ? tg->type_z[t] : 0;
 }
 
 static inline md_label_t target_name(const target_t* tg, int32_t a) {
     md_label_t lbl = {0};
     if (tg->type_idx && tg->type_name) {
-        const md_atom_type_idx_t t = tg->type_idx[a];
+        const md_particle_type_idx_t t = tg->type_idx[a];
         if (t < tg->num_types) lbl = tg->type_name[t];
     }
     return lbl;
@@ -222,8 +222,8 @@ static inline bool resolution_h(const resolution_t* res, md_atomic_number_t z) {
 // A coordination bond (a metal to a non-metal) between residues, or any in a system without residues
 static bool is_coordination(const md_system_t* sys, md_bond_flags_t f, int32_t a, int32_t b) {
     if (md_bond_kind(f) != MD_BOND_KIND_COORDINATE) return false;
-    if (!(sys->component.count > 0 && sys->component.atom_offset)) return true;
-    return range_find(sys->component.atom_offset, sys->component.count, (uint32_t)a) != range_find(sys->component.atom_offset, sys->component.count, (uint32_t)b);
+    if (!(sys->residue.count > 0 && sys->residue.atom_offset)) return true;
+    return range_find(sys->residue.atom_offset, sys->residue.count, (uint32_t)a) != range_find(sys->residue.atom_offset, sys->residue.count, (uint32_t)b);
 }
 
 static int32_t uf_find(int32_t* parent, int32_t x) {
@@ -319,7 +319,7 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
     // with links of their own for coarse grained beads: without those, and without coordination bonds and virtual
     // sites to leave out, they are the molecules.
     const bool coarse_grained = md_system_is_coarse_grained(sys);
-    const md_structure_data_t* st = &sys->structure;
+    const md_molecule_data_t* st = &sys->molecule;
     if (!drop && !skip && !coarse_grained && st->count > 0 && st->offset && st->atom_idx && st->atom_slot && st->offset[st->count] == N) {
         tg->num_mol  = st->count;
         tg->mol_off  = st->offset;
@@ -338,10 +338,10 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
                 uf_union(root, sys->bond.pairs[b].idx[0], sys->bond.pairs[b].idx[1]);
             }
         }
-        // As sys->structure has them (md_structure_data_t): the atoms of a residue are of one molecule, and so are the
+        // As sys->molecule has them (md_molecule_data_t): the atoms of a residue are of one molecule, and so are the
         // residues of a polymer chain, over a gap as well. Virtual sites aside.
-        for (size_t c = 0; c < sys->component.count && sys->component.atom_offset; ++c) {
-            const md_urange_t r = md_component_atom_range(&sys->component, c);
+        for (size_t c = 0; c < sys->residue.count && sys->residue.atom_offset; ++c) {
+            const md_urange_t r = md_residue_atom_range(&sys->residue, c);
             int32_t anchor = -1;
             for (uint32_t i = r.beg; i < r.end && i < N; ++i) {
                 if (skip && skip[i]) continue;
@@ -351,10 +351,10 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
         }
         for (size_t inst = 0; inst < sys->instance.count; ++inst) {
             if (!md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst))) continue;
-            const md_urange_t comps = md_instance_component_range(&sys->instance, inst);
+            const md_urange_t residues = md_instance_residue_range(&sys->instance, inst);
             int32_t prev = -1;
-            for (uint32_t c = comps.beg; c < comps.end && c < sys->component.count; ++c) {
-                const md_urange_t r = md_component_atom_range(&sys->component, c);
+            for (uint32_t c = residues.beg; c < residues.end && c < sys->residue.count; ++c) {
+                const md_urange_t r = md_residue_atom_range(&sys->residue, c);
                 int32_t anchor = -1;
                 for (uint32_t i = r.beg; i < r.end && i < N && anchor < 0; ++i) {
                     if (!(skip && skip[i])) anchor = (int32_t)i;
@@ -364,7 +364,7 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
                 prev = anchor;
             }
         }
-        // A molecule of a topology is whole, as sys->structure has it (MD_ENTITY_FLAG_TOPOLOGY)
+        // A molecule of a topology is whole, as sys->molecule has it (MD_ENTITY_FLAG_TOPOLOGY)
         for (size_t inst = 0; inst < sys->instance.count && sys->entity.flags && sys->instance.entity_idx; ++inst) {
             const md_entity_idx_t e = sys->instance.entity_idx[inst];
             if (e < 0 || (size_t)e >= sys->entity.count || !(sys->entity.flags[e] & MD_ENTITY_FLAG_TOPOLOGY)) continue;
@@ -2081,8 +2081,8 @@ static void search_from_root(search_t* s) {
 
 static size_t level_num_units(const target_t* tg, md_match_level_t level) {
     switch (level) {
-    case MD_MATCH_LEVEL_STRUCTURE: return tg->num_mol;
-    case MD_MATCH_LEVEL_COMPONENT: return tg->sys->component.count;
+    case MD_MATCH_LEVEL_MOLECULE: return tg->num_mol;
+    case MD_MATCH_LEVEL_RESIDUE: return tg->sys->residue.count;
     case MD_MATCH_LEVEL_INSTANCE:  return tg->sys->instance.count;
     default: return 0;
     }
@@ -2111,17 +2111,17 @@ static void unit_begin(search_t* s, int64_t unit) {
     s->unit_atoms = NULL;
     uint32_t beg = 0, end = 0;
     switch (s->level) {
-    case MD_MATCH_LEVEL_STRUCTURE:
+    case MD_MATCH_LEVEL_MOLECULE:
         s->unit_atoms = tg->mol_atom + tg->mol_off[unit];
         s->unit_count = tg->mol_off[unit + 1] - tg->mol_off[unit];
         return;
-    case MD_MATCH_LEVEL_COMPONENT:
-        beg = sys->component.atom_offset[unit];
-        end = sys->component.atom_offset[unit + 1];
+    case MD_MATCH_LEVEL_RESIDUE:
+        beg = sys->residue.atom_offset[unit];
+        end = sys->residue.atom_offset[unit + 1];
         break;
     case MD_MATCH_LEVEL_INSTANCE:
-        beg = sys->component.atom_offset[sys->instance.comp_offset[unit]];
-        end = sys->component.atom_offset[sys->instance.comp_offset[unit + 1]];
+        beg = sys->residue.atom_offset[sys->instance.res_offset[unit]];
+        end = sys->residue.atom_offset[sys->instance.res_offset[unit + 1]];
         break;
     default:
         ASSERT(false);
@@ -2195,7 +2195,7 @@ static void search_init(search_t* s, const target_t* tg, md_match_level_t level,
     s->hydrogens   = hydrogens;
     s->bond_orders = bond_orders;
     s->charges     = charges;
-    s->ranged      = !units && (level == MD_MATCH_LEVEL_COMPONENT || level == MD_MATCH_LEVEL_INSTANCE);
+    s->ranged      = !units && (level == MD_MATCH_LEVEL_RESIDUE || level == MD_MATCH_LEVEL_INSTANCE);
     s->units       = units;
     s->num_units   = units ? num_units : 0;
     s->arena       = arena;
@@ -2257,11 +2257,11 @@ static bool level_valid(md_match_level_t level, const md_system_t* sys) {
         MD_LOG_ERROR("md_match: unknown level");
         return false;
     }
-    if (level == MD_MATCH_LEVEL_COMPONENT && !(sys->component.count > 0 && sys->component.atom_offset)) {
+    if (level == MD_MATCH_LEVEL_RESIDUE && !(sys->residue.count > 0 && sys->residue.atom_offset)) {
         MD_LOG_ERROR("md_match: matching within components, but the system has none");
         return false;
     }
-    if (level == MD_MATCH_LEVEL_INSTANCE && !(sys->instance.count > 0 && sys->instance.comp_offset && sys->component.atom_offset)) {
+    if (level == MD_MATCH_LEVEL_INSTANCE && !(sys->instance.count > 0 && sys->instance.res_offset && sys->residue.atom_offset)) {
         MD_LOG_ERROR("md_match: matching within instances, but the system has none");
         return false;
     }
@@ -2333,11 +2333,11 @@ static bool elements_suffice(const md_match_query_t* q, const md_system_t* sys) 
     md_temp_end(temp);
 
     uint32_t have[256] = {0};
-    const md_atom_type_idx_t* type_idx = sys->atom.type_idx;
+    const md_particle_type_idx_t* type_idx = sys->atom.type_idx;
     const md_atomic_number_t* type_z   = sys->atom.type.z;
     if (type_idx && type_z) {
         for (size_t i = 0; i < sys->atom.count; ++i) {
-            const md_atom_type_idx_t t = type_idx[i];
+            const md_particle_type_idx_t t = type_idx[i];
             have[t < sys->atom.type.count ? type_z[t] : 0]++;
         }
     } else {

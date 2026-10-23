@@ -396,10 +396,10 @@ bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* stat
 
         md_array_ensure(sys->atom.type_idx, N, sys->alloc);
         md_array_ensure(sys->atom.flags,    N, sys->alloc);
-        md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+        md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
         for (size_t i = 0; i < N; ++i) {
             const md_atomic_number_t z = idx.numbers[i];
-            const md_atom_type_idx_t type = md_atom_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
+            const md_particle_type_idx_t type = md_particle_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
                 md_atomic_number_mass(z), md_atomic_number_vdw_radius(z), md_atomic_number_cpk_color(z), 0, sys->alloc);
             md_array_push(sys->atom.type_idx, type, sys->alloc);
             md_array_push(sys->atom.flags, 0, sys->alloc);

@@ -377,14 +377,14 @@ UTEST(match, modes) {
     EXPECT_EQ(2 * num_cc, count_smiles_ex("CC", &desc, sys));
 
     // A thiophene has two automorphisms (the mirror through S)
-    EXPECT_EQ(5,  count_smiles("c1cccs1", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE,       sys));
-    EXPECT_EQ(10, count_smiles("c1cccs1", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_ALL,          sys));
-    EXPECT_EQ(5,  count_smiles("c1cccs1", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_DISJOINT,     sys));
-    EXPECT_EQ(1,  count_smiles("c1cccs1", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_ONE_PER_UNIT, sys));
+    EXPECT_EQ(5,  count_smiles("c1cccs1", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE,        sys));
+    EXPECT_EQ(10, count_smiles("c1cccs1", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_ALL,           sys));
+    EXPECT_EQ(5,  count_smiles("c1cccs1", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_DISJOINT,      sys));
+    EXPECT_EQ(1,  count_smiles("c1cccs1", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_ONE_PER_UNIT, sys));
 
     // Four thiophenes in a row fit two ways along the five, and the two overlap
-    EXPECT_EQ(2, count_smiles("c1ccc(s1)-c1ccc(s1)-c1ccc(s1)-c1cccs1", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, sys));
-    EXPECT_EQ(1, count_smiles("c1ccc(s1)-c1ccc(s1)-c1ccc(s1)-c1cccs1", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_DISJOINT, sys));
+    EXPECT_EQ(2, count_smiles("c1ccc(s1)-c1ccc(s1)-c1ccc(s1)-c1cccs1", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, sys));
+    EXPECT_EQ(1, count_smiles("c1ccc(s1)-c1ccc(s1)-c1ccc(s1)-c1cccs1", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_DISJOINT, sys));
 
     // Each mapping of ALL is reported once
     md_match_query_t q = {0};
@@ -412,22 +412,22 @@ UTEST(match, modes) {
 UTEST(match, symmetry) {
     // A symmetric query matches the same atoms in several ways: UNIQUE reports them once, ALL every way
     const md_system_t* sys = get_sys(SYS_CENTERED);
-    const size_t num_rings = count_smiles("c1ccccc1", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, sys);
+    const size_t num_rings = count_smiles("c1ccccc1", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, sys);
     EXPECT_LT(0, (int)num_rings);
-    EXPECT_EQ(12 * num_rings, count_smiles("c1ccccc1", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_ALL, sys));
+    EXPECT_EQ(12 * num_rings, count_smiles("c1ccccc1", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_ALL, sys));
     // Atoms which hang from one atom alike are one set: the two oxygens of the C terminal carboxylate
     const md_system_t* ala = get_sys(SYS_ALA);
-    EXPECT_EQ(1, count_smiles("CC(=O)O", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(2, count_smiles("CC(=O)O", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_ALL,    ala));
+    EXPECT_EQ(1, count_smiles("CC(=O)O", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(2, count_smiles("CC(=O)O", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_ALL,     ala));
 
     // 160 residues of a chain as a reference by element: each ring which can flip over, carboxylate, guanidinium and
     // pair of methyls doubles the ways it fits its own atoms (2^40 and more), and it is found once
     const md_system_t* tub = get_sys(SYS_TUBULIN);
     md_allocator_i* alloc = md_get_heap_allocator();
-    const uint32_t comp_beg = tub->instance.comp_offset[0];
-    ASSERT_LE(comp_beg + 160, tub->instance.comp_offset[1]);
-    const uint32_t beg = tub->component.atom_offset[comp_beg];
-    const uint32_t end = tub->component.atom_offset[comp_beg + 160];
+    const uint32_t res_beg = tub->instance.res_offset[0];
+    ASSERT_LE(res_beg + 160, tub->instance.res_offset[1]);
+    const uint32_t beg = tub->residue.atom_offset[res_beg];
+    const uint32_t end = tub->residue.atom_offset[res_beg + 160];
     md_array(int32_t) ref = 0;
     for (uint32_t i = beg; i < end; ++i) md_array_push(ref, (int32_t)i, alloc);
     md_match_query_t q = {0};
@@ -517,26 +517,26 @@ UTEST(match, hydrogens) {
     const md_system_t* crystal = get_sys(SYS_1K4R);
 
     // Counted hydrogens, explicit and implicit
-    EXPECT_EQ(15, count_smiles("[CH3]", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(15, count_smiles("[CH]",  MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(0,  count_smiles("[CH2]", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(1,  count_smiles("[NH3+]", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(15, count_smiles("[CH3]", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(15, count_smiles("[CH]",  MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(0,  count_smiles("[CH2]", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(1,  count_smiles("[NH3+]", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
 
     // Without counts the bonded hydrogens answer, where some atom of the element has one
     const md_system_t ala_bare = without_chemistry(ala);
-    EXPECT_EQ(15, count_smiles("[CH3]", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, &ala_bare));
-    EXPECT_EQ(1,  count_smiles("[NH3+]", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, &ala_bare));
+    EXPECT_EQ(15, count_smiles("[CH3]", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, &ala_bare));
+    EXPECT_EQ(1,  count_smiles("[NH3+]", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, &ala_bare));
 
     // A structure without hydrogens: counted, they are implicit and still tell methyls apart. Without counts nothing
     // can be said, every carbon is a candidate, unless asked to test regardless.
     size_t num_c = 0;
     for (size_t i = 0; i < crystal->atom.count; ++i) num_c += md_atom_atomic_number(&crystal->atom, i) == MD_Z_C;
-    const size_t num_ch3 = count_smiles("[CH3]", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, crystal);
+    const size_t num_ch3 = count_smiles("[CH3]", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, crystal);
     EXPECT_LT(0, (int)num_ch3);
     EXPECT_LT(num_ch3, num_c);
 
     const md_system_t crystal_bare = without_chemistry(crystal);
-    EXPECT_EQ(num_c, count_smiles("[CH3]", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, &crystal_bare));
+    EXPECT_EQ(num_c, count_smiles("[CH3]", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, &crystal_bare));
     md_match_desc_t always = {.hydrogens = MD_MATCH_RESOLVE_ALWAYS};
     EXPECT_EQ(0, count_smiles_ex("[CH3]", &always, &crystal_bare));
 
@@ -589,7 +589,7 @@ UTEST(match, hydrogens) {
 
 UTEST(match, bracket_hydrogens) {
     const md_system_t* ala = get_sys(SYS_ALA);
-    md_match_desc_t desc = {.level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
+    md_match_desc_t desc = {.level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
 
     // The CA of every residue, with its hydrogen written either way
     EXPECT_EQ(15, count_smiles_ex("N[C@@H](C)C=O",     &desc, ala));
@@ -602,12 +602,12 @@ UTEST(match, bracket_hydrogens) {
 UTEST(match, aliphatic) {
     const md_system_t* sys = get_sys(SYS_DNA);
     size_t num_his = 0;
-    for (size_t i = 0; i < sys->component.count; ++i) num_his += str_eq_cstr(LBL_TO_STR(sys->component.name[i]), "HIS");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_his += str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "HIS");
     ASSERT_LT(0, (int)num_his);
 
     // The imidazole of a histidine with the carbon it hangs from. A purine has an imidazole too, but the carbon next
     // to it is in the other ring, and aromatic.
-    md_match_desc_t desc = {.level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
+    md_match_desc_t desc = {.level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
     EXPECT_EQ(num_his, count_smiles_ex("Cc1cncn1", &desc, sys));
     // Written Kekule, nothing says the carbon is not aromatic: the purines are found as well
     EXPECT_LT(num_his, count_smiles_ex("CC1=CN=CN1", &desc, sys));
@@ -618,13 +618,13 @@ UTEST(match, protonation) {
     // carboxylates or not, and not the esters or carbonyls, whose oxygens have other bonds.
     const md_system_t* sys = get_sys(SYS_TUBULIN);
     size_t num_acid = 0;
-    for (size_t i = 0; i < sys->component.count; ++i) {
-        const str_t name = LBL_TO_STR(sys->component.name[i]);
+    for (size_t i = 0; i < sys->residue.count; ++i) {
+        const str_t name = LBL_TO_STR(sys->residue.name[i]);
         num_acid += str_eq_cstr(name, "ASP") || str_eq_cstr(name, "GLU");
     }
     ASSERT_LT(0, (int)num_acid);
 
-    md_match_desc_t desc = {.level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
+    md_match_desc_t desc = {.level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
     EXPECT_EQ(num_acid, count_smiles_ex("C(=O)[OH]", &desc, sys));
     EXPECT_EQ(num_acid, count_smiles_ex("C(=O)[O-]", &desc, sys));
     // Held to the protonation md_chem gave them (pH 7), they are carboxylates
@@ -643,24 +643,24 @@ UTEST(match, protonation) {
 UTEST(match, resonance) {
     // The C terminal carboxylate has its charge on one oxygen and shares it with the other
     const md_system_t* ala = get_sys(SYS_ALA);
-    EXPECT_EQ(2, count_smiles("[O-]",    MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(1, count_smiles("[O-]C=O", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(2, count_smiles("[O-]",    MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(1, count_smiles("[O-]C=O", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
     // But it is one charge, not two, and stated for the whole group it has to be all of it
-    EXPECT_EQ(0, count_smiles("[O-]C=[O-]",    MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(1, count_smiles("[O-][C](=[O])C", MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
-    EXPECT_EQ(0, count_smiles("[O][C](=[O])C",  MD_MATCH_LEVEL_STRUCTURE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(0, count_smiles("[O-]C=[O-]",    MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(1, count_smiles("[O-][C](=[O])C", MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
+    EXPECT_EQ(0, count_smiles("[O][C](=[O])C",  MD_MATCH_LEVEL_MOLECULE, MD_MATCH_MODE_UNIQUE, ala));
 
     // Every arginine is a guanidinium, whichever of its N carries the charge and the double bond
     const md_system_t* sys = get_sys(SYS_TUBULIN);
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t q = {0};
     ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("NC(=[NH2+])N"), alloc, NULL));
-    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
+    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
     size_t num_arg = 0, num_found = 0;
-    for (size_t i = 0; i < sys->component.count; ++i) num_arg += str_eq_cstr(LBL_TO_STR(sys->component.name[i]), "ARG");
-    for (size_t i = 0; i < res.count; ++i) num_found += str_eq_cstr(LBL_TO_STR(sys->component.name[res.unit[i]]), "ARG");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_arg += str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "ARG");
+    for (size_t i = 0; i < res.count; ++i) num_found += str_eq_cstr(LBL_TO_STR(sys->residue.name[res.unit[i]]), "ARG");
     EXPECT_LT(0, (int)num_arg);
     EXPECT_EQ(num_arg, num_found);
     md_match_result_free(&res);
@@ -677,7 +677,7 @@ UTEST(match, coordination) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t q = {0};
     ASSERT_TRUE(md_match_query_init_smiles(&q, str_from_cstr(gtp), alloc, NULL));
-    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_STRUCTURE, .flags = MD_MATCH_FLAG_WHOLE};
+    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_MOLECULE, .flags = MD_MATCH_FLAG_WHOLE};
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
     ASSERT_EQ(1, (int)res.count);
@@ -700,7 +700,7 @@ UTEST(match, molecules) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_match_query_t q = {0};
     ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("O"), alloc, NULL));
-    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_STRUCTURE};
+    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_MOLECULE};
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
     ASSERT_LT(0, (int)res.count);
@@ -717,7 +717,7 @@ UTEST(match, molecules) {
     const md_system_t* tub = get_sys(SYS_TUBULIN);
     md_match_query_t aa = {0};
     ASSERT_TRUE(md_match_query_init_smiles(&aa, STR_LIT("NCC=O"), alloc, NULL));
-    md_match_desc_t aa_desc = {.query = &aa, .level = MD_MATCH_LEVEL_STRUCTURE};
+    md_match_desc_t aa_desc = {.query = &aa, .level = MD_MATCH_LEVEL_MOLECULE};
     md_match_result_t aa_res = {0};
     ASSERT_TRUE(md_match_find(&aa_res, &aa_desc, tub, alloc));
     ASSERT_LT(0, (int)aa_res.count);
@@ -742,12 +742,12 @@ UTEST(match, virtual_sites) {
     // residues
     const md_system_t* sys = get_sys(SYS_TIP4P);
     size_t num_sol = 0;
-    for (size_t i = 0; i < sys->component.count; ++i) num_sol += str_eq_cstr(LBL_TO_STR(sys->component.name[i]), "SOL");
+    for (size_t i = 0; i < sys->residue.count; ++i) num_sol += str_eq_cstr(LBL_TO_STR(sys->residue.name[i]), "SOL");
     ASSERT_LT(0, (int)num_sol);
     md_match_desc_t desc = {.flags = MD_MATCH_FLAG_WHOLE};
-    desc.level = MD_MATCH_LEVEL_STRUCTURE;
+    desc.level = MD_MATCH_LEVEL_MOLECULE;
     EXPECT_EQ(num_sol, count_smiles_ex("[OH2]", &desc, sys));
-    desc.level = MD_MATCH_LEVEL_COMPONENT;
+    desc.level = MD_MATCH_LEVEL_RESIDUE;
     EXPECT_EQ(num_sol, count_smiles_ex("[OH2]", &desc, sys));
     // Nor are they any atom
     desc.flags = MD_MATCH_FLAG_NONE;
@@ -763,20 +763,20 @@ UTEST(match, whole) {
 
     // Glycine is part of every amino acid
     size_t num_aa = 0, num_gly = 0;
-    for (size_t i = 0; i < sys->component.count; ++i) {
-        const str_t name = LBL_TO_STR(sys->component.name[i]);
+    for (size_t i = 0; i < sys->residue.count; ++i) {
+        const str_t name = LBL_TO_STR(sys->residue.name[i]);
         if (md_util_resname_amino_acid(name)) num_aa++;
         if (str_eq_cstr(name, "GLY")) {
             // Without its C terminal oxygen
             size_t heavy = 0;
-            const md_urange_t range = md_component_atom_range(&sys->component, i);
+            const md_urange_t range = md_residue_atom_range(&sys->residue, i);
             for (uint32_t a = range.beg; a < range.end; ++a) heavy += md_atom_atomic_number(&sys->atom, a) != MD_Z_H;
             num_gly += heavy == 4;
         }
     }
     ASSERT_LT(0, (int)num_gly);
 
-    md_match_desc_t desc = {.level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
+    md_match_desc_t desc = {.level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
     EXPECT_EQ(num_aa, count_smiles_ex("NCC=O", &desc, sys));
     desc.flags = MD_MATCH_FLAG_WHOLE;
     EXPECT_EQ(num_gly, count_smiles_ex("NCC=O", &desc, sys));
@@ -792,11 +792,11 @@ UTEST(match, mask) {
     // Phenyl rings: in PHE and TYR
     size_t num_rings = 0, num_rings_chain0 = 0;
     const md_urange_t chain0 = md_system_instance_atom_range(sys, 0);
-    for (size_t i = 0; i < sys->component.count; ++i) {
-        const str_t name = LBL_TO_STR(sys->component.name[i]);
+    for (size_t i = 0; i < sys->residue.count; ++i) {
+        const str_t name = LBL_TO_STR(sys->residue.name[i]);
         if (str_eq_cstr(name, "PHE") || str_eq_cstr(name, "TYR")) {
             num_rings++;
-            num_rings_chain0 += md_component_atom_range(&sys->component, i).beg >= chain0.beg && md_component_atom_range(&sys->component, i).end <= chain0.end;
+            num_rings_chain0 += md_residue_atom_range(&sys->residue, i).beg >= chain0.beg && md_residue_atom_range(&sys->residue, i).end <= chain0.end;
         }
     }
 
@@ -824,8 +824,8 @@ UTEST(match, reference_chain) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
     // The heavy atoms of the first chain, found in every chain
-    md_structure_t structure = {0};
-    md_structure_extract(&structure, &sys->structure, 0);
+    md_molecule_t structure = {0};
+    md_molecule_extract(&structure, &sys->molecule, 0);
     md_array(int32_t) ref = 0;
     for (size_t i = 0; i < structure.count; ++i) {
         if (md_atom_atomic_number(&sys->atom, structure.atom_idx[i]) != MD_Z_H) md_array_push(ref, structure.atom_idx[i], alloc);
@@ -858,11 +858,11 @@ UTEST(match, reference_molecule) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
     // A whole PFTAA, hydrogens included, found in every PFTAA
-    md_structure_t structure = {0};
-    md_structure_extract(&structure, &sys->structure, 253);
+    md_molecule_t structure = {0};
+    md_molecule_extract(&structure, &sys->molecule, 253);
     md_match_query_t q = {0};
     ASSERT_TRUE(md_match_query_init_atoms(&q, structure.atom_idx, structure.count, MD_MATCH_LABEL_ELEMENT, sys, alloc));
-    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
+    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
 
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
@@ -891,16 +891,16 @@ UTEST(match, reference_identity) {
     const struct { sys_id_t id; const char* name; } cases[] = {{SYS_CENTERED, "TYR"}, {SYS_CENTERED, "PHE"}, {SYS_CENTERED, "ASP"}, {SYS_CENTERED, "ARG"}, {SYS_PFTAA, "PFT"}};
     for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
         const md_system_t* sys = get_sys(cases[c].id);
-        for (size_t ci = 0; ci < sys->component.count; ++ci) {
-            if (!str_eq_cstr(LBL_TO_STR(sys->component.name[ci]), cases[c].name)) continue;
-            const md_urange_t range = md_component_atom_range(&sys->component, ci);
+        for (size_t ci = 0; ci < sys->residue.count; ++ci) {
+            if (!str_eq_cstr(LBL_TO_STR(sys->residue.name[ci]), cases[c].name)) continue;
+            const md_urange_t range = md_residue_atom_range(&sys->residue, ci);
             md_array(int32_t) ref = 0;
             for (uint32_t i = range.beg; i < range.end; ++i) md_array_push(ref, (int32_t)i, alloc);
             for (int label = 0; label < 2; ++label) {
                 md_match_query_t q = {0};
                 ASSERT_TRUE(md_match_query_init_atoms(&q, ref, md_array_size(ref), (md_match_label_t)label, sys, alloc));
                 const md_bitset_t mask = md_bitset_range(range.beg, range.end);
-                md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_UNIQUE, .flags = MD_MATCH_FLAG_WHOLE, .mask = &mask};
+                md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_UNIQUE, .flags = MD_MATCH_FLAG_WHOLE, .mask = &mask};
                 md_match_result_t res = {0};
                 ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
                 EXPECT_EQ(1, (int)res.count);
@@ -944,12 +944,12 @@ UTEST(match, reference_hydrogens) {
 
     // The fifth residue, hydrogens included, which pins the protonation of its atoms: not the N terminal residue,
     // whose N carries three hydrogens. The C terminal one has an uncharged oxygen for the carbonyl.
-    const md_urange_t range = md_component_atom_range(&sys->component, 4);
+    const md_urange_t range = md_residue_atom_range(&sys->residue, 4);
     md_array(int32_t) ref = 0;
     for (uint32_t i = range.beg; i < range.end; ++i) md_array_push(ref, (int32_t)i, alloc);
 
     md_match_query_t q = {0};
-    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_COMPONENT, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
+    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
     ASSERT_TRUE(md_match_query_init_atoms(&q, ref, md_array_size(ref), MD_MATCH_LABEL_ELEMENT, sys, alloc));
     EXPECT_EQ(14, (int)count_matches(&desc, sys, NULL, NULL));
     md_match_query_free(&q);
@@ -971,7 +971,7 @@ UTEST(match, reference_names) {
 
     // A CB: by element every carbon, by name the CBs
     int32_t cb = -1;
-    const md_urange_t range = md_component_atom_range(&sys->component, 4);
+    const md_urange_t range = md_residue_atom_range(&sys->residue, 4);
     for (uint32_t i = range.beg; i < range.end; ++i) {
         if (str_eq_cstr(md_atom_name(&sys->atom, i), "CB")) cb = (int32_t)i;
     }
@@ -998,7 +998,7 @@ UTEST(match, reference_names) {
 }
 
 // ### RESIDUES ###
-// Every residue told apart by its heavy atoms alone: a SMILES per residue, matched at the component level with
+// Every residue told apart by its heavy atoms alone: a SMILES per residue, matched at the residue level with
 // MD_MATCH_FLAG_WHOLE. Bond orders are left out, so the test holds the topology and the elements and not the
 // perception of the orders. The C terminal variants carry the second oxygen.
 
@@ -1048,12 +1048,12 @@ static bool residue_kind(str_t name, const char* kind) {
 static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
     const md_system_t* sys = get_sys(id);
     md_allocator_i* alloc = md_get_heap_allocator();
-    const size_t num_comp = sys->component.count;
+    const size_t num_res = sys->residue.count;
     const size_t num_pat  = ARRAY_SIZE(residue_patterns);
 
-    // Which pattern matched each component, -1 for none, -2 for several
-    int* matched = md_alloc(alloc, sizeof(int) * num_comp);
-    for (size_t i = 0; i < num_comp; ++i) matched[i] = -1;
+    // Which pattern matched each residue, -1 for none, -2 for several
+    int* matched = md_alloc(alloc, sizeof(int) * num_res);
+    for (size_t i = 0; i < num_res; ++i) matched[i] = -1;
 
     for (size_t p = 0; p < num_pat; ++p) {
         for (size_t v = 0; v < ARRAY_SIZE(residue_patterns[p].smiles) && residue_patterns[p].smiles[v]; ++v) {
@@ -1066,7 +1066,7 @@ static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
             }
             md_match_desc_t desc = {
                 .query = &q,
-                .level = MD_MATCH_LEVEL_COMPONENT,
+                .level = MD_MATCH_LEVEL_RESIDUE,
                 .mode  = MD_MATCH_MODE_ONE_PER_UNIT,
                 .flags = MD_MATCH_FLAG_WHOLE,
                 .bond_orders = MD_MATCH_RESOLVE_NEVER,
@@ -1083,8 +1083,8 @@ static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
     }
 
     size_t num_missed = 0, num_wrong = 0, num_known = 0;
-    for (size_t i = 0; i < num_comp; ++i) {
-        const str_t name = LBL_TO_STR(sys->component.name[i]);
+    for (size_t i = 0; i < num_res; ++i) {
+        const str_t name = LBL_TO_STR(sys->residue.name[i]);
         int expected = -1;
         for (size_t p = 0; p < num_pat; ++p) {
             if (residue_kind(name, residue_patterns[p].name)) expected = (int)p;
@@ -1105,7 +1105,7 @@ static void identify_residues(int* utest_result, sys_id_t id, bool complete) {
     // Nothing is ever taken for something else. Residues with atoms missing (crystal structures) are not identified.
     if (num_wrong) *utest_result = UTEST_TEST_FAILURE;
     if (complete && num_missed) *utest_result = UTEST_TEST_FAILURE;
-    md_free(alloc, matched, sizeof(int) * num_comp);
+    md_free(alloc, matched, sizeof(int) * num_res);
 }
 
 UTEST(match, residues_md) {
@@ -1160,7 +1160,7 @@ static void identify_by_search(int32_t* first, size_t num_units, const md_match_
 static void check_identify(int* utest_result, sys_id_t id, const md_match_identify_desc_t* desc, bool names) {
     const md_system_t* sys = get_sys(id);
     md_allocator_i* alloc = md_get_heap_allocator();
-    const size_t num_units = sys->component.count;
+    const size_t num_units = sys->residue.count;
 
     const md_tick_t t0 = md_tick_now();
     md_match_identify_result_t res = {0};
@@ -1185,12 +1185,12 @@ static void check_identify(int* utest_result, sys_id_t id, const md_match_identi
         char kind[16];
         const str_t entry_name = md_match_library_name(desc->library, e);
         snprintf(kind, sizeof(kind), "%.*s", (int)entry_name.len, entry_name.ptr);
-        if (names) EXPECT_TRUE(residue_kind(LBL_TO_STR(sys->component.name[u]), kind));
+        if (names) EXPECT_TRUE(residue_kind(LBL_TO_STR(sys->residue.name[u]), kind));
 
         const md_match_query_t* q = md_match_library_query(desc->library, e);
         ASSERT_EQ(q->num_atoms, (size_t)(res.offset[i + 1] - res.offset[i]));
         const int32_t* row = res.atom_idx + res.offset[i];
-        const md_urange_t range = md_component_atom_range(&sys->component, u);
+        const md_urange_t range = md_residue_atom_range(&sys->residue, u);
         for (size_t j = 0; j < q->num_atoms; ++j) {
             EXPECT_TRUE(row[j] >= (int32_t)range.beg && row[j] < (int32_t)range.end);
             EXPECT_EQ(q->atoms[j].z, md_atom_atomic_number(&sys->atom, row[j]));
@@ -1210,7 +1210,7 @@ UTEST(match, identify) {
 
     md_match_identify_desc_t desc = {
         .library = lib,
-        .level   = MD_MATCH_LEVEL_COMPONENT,
+        .level   = MD_MATCH_LEVEL_RESIDUE,
         .flags   = MD_MATCH_FLAG_WHOLE,
         .bond_orders = MD_MATCH_RESOLVE_NEVER,
     };
@@ -1246,7 +1246,7 @@ UTEST(match, identify_order) {
     EXPECT_EQ(2, (int)md_match_library_count(lib));
     EXPECT_TRUE(str_eq_cstr(md_match_library_name(lib, 1), "ala"));
 
-    md_match_identify_desc_t desc = {.library = lib, .level = MD_MATCH_LEVEL_COMPONENT};
+    md_match_identify_desc_t desc = {.library = lib, .level = MD_MATCH_LEVEL_RESIDUE};
     ASSERT_TRUE(md_match_identify(&res, &desc, sys, alloc));
     EXPECT_EQ(15, (int)res.count);
     for (size_t i = 0; i < res.count; ++i) EXPECT_EQ(0, (int)res.entry[i]);

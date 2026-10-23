@@ -35,25 +35,25 @@ enum {
 //
 // What a part of a system is, is stored at the level of the hierarchy it describes, and only there:
 //
-//   atom type  md_atom_type_flags_t  what the particle is: an atom, a coarse grained bead or a virtual site
-//   atom       md_atom_flags_t       the atom's role in its component (backbone, side chain, ...) and its chemistry
-//   component  md_component_flags_t  what the component is (amino acid, nucleotide, water, ion), and where in its chain
+//   particle type md_particle_type_flags_t what the particle is: an atom, a coarse grained bead or a virtual site
+//   atom       md_atom_flags_t       the atom's role in its residue (backbone, side chain, ...) and its chemistry
+//   residue    md_residue_flags_t    what the residue is (amino acid, nucleotide, water, ion), and where in its chain
 //   entity     md_entity_flags_t     what the molecule is (peptide, DNA, water, ...)
 //
-// Components of the same name and kind share a component type (md_component_type_data_t), as atoms share an atom
-// type. What an atom type is a form of is its element, what a component type is a form of is its standard monomer
+// Residues of the same name and kind share a residue type (md_residue_type_data_t), as atoms share an atom
+// type. What a particle type is a form of is its element, what a residue type is a form of is its standard monomer
 // (md_monomer_t): HIE, HSD and MSE are forms of HIS, HIS and MET. Both are where the defaults of the type come from.
 //
 // Instances have no flags of their own: an instance is one occurrence of its entity (md_system_instance_entity_kind).
-// Nothing is copied from one level to another. A property of an atom's type or of its component is read through the
-// type or the component (md_atom_particle_kind, md_system_atom_component_kind), so there is one copy and it cannot go
-// stale when the type or the component is reclassified.
+// Nothing is copied from one level to another. A property of an atom's type or of its residue is read through the
+// type or the residue (md_atom_particle_kind, md_system_atom_residue_kind), so there is one copy and it cannot go
+// stale when the type or the residue is reclassified.
 //
 // Options which exclude each other are a VALUE, packed into a few bits and read and written through the accessors
-// below (md_component_flags_kind, md_component_flags_set_kind, ...). Independent properties are single bits. No
+// below (md_residue_flags_kind, md_residue_flags_set_kind, ...). Independent properties are single bits. No
 // meaning is carried by a combination of bits.
 
-// ### ATOM TYPE ###
+// ### PARTICLE TYPE ###
 
 // What a particle is. A property of its type: every particle of a type is the same kind of particle.
 typedef enum md_particle_kind_t {
@@ -67,11 +67,11 @@ typedef enum md_particle_kind_t {
 } md_particle_kind_t;
 
 typedef enum {
-    MD_ATOM_TYPE_FLAG_NONE                  = 0,
-    MD_ATOM_TYPE_FLAG_PARTICLE_KIND_MASK    = 0x3,      // md_particle_kind_t, see md_atom_type_flags_particle_kind
-} md_atom_type_flags_t;
+    MD_PARTICLE_TYPE_FLAG_NONE              = 0,
+    MD_PARTICLE_TYPE_FLAG_PARTICLE_KIND_MASK = 0x3,     // md_particle_kind_t, see md_particle_type_flags_particle_kind
+} md_particle_type_flags_t;
 
-ENUM_FLAGS(md_atom_type_flags_t)
+ENUM_FLAGS(md_particle_type_flags_t)
 
 // ### ATOM ###
 
@@ -87,9 +87,9 @@ typedef enum md_hybridization_t {
 typedef enum {
     MD_ATOM_FLAG_NONE                   = 0,
 
-    // The atom's role in its component, set when the component is classified (md_util_system_infer_comp_flags) and
-    // for the beads of the predefined coarse grained types. Only the components whose backbone was verified
-    // (MD_COMPONENT_FLAG_RESOLVED) have their atoms given a role.
+    // The atom's role in its residue, set when the residue is classified (md_util_system_infer_residue_flags) and
+    // for the beads of the predefined coarse grained types. Only the residues whose backbone was verified
+    // (MD_RESIDUE_FLAG_RESOLVED) have their atoms given a role.
     MD_ATOM_FLAG_BACKBONE               = 0x1,      // N, CA, C of an amino acid; P, O5', C5', C4', C3', O3' of a nucleotide
     MD_ATOM_FLAG_SIDE_CHAIN             = 0x2,      // Amino acid side chain, from CB outwards
     MD_ATOM_FLAG_NUCLEOSIDE             = 0x4,      // Sugar and base of a nucleotide
@@ -122,43 +122,43 @@ typedef enum {
 
 ENUM_FLAGS(md_atom_flags_t)
 
-// ### COMPONENT ###
+// ### RESIDUE ###
 
-// What a component (residue) is, see md_util_system_infer_comp_flags.
-typedef enum md_component_kind_t {
-    MD_COMPONENT_KIND_OTHER         = 0,    // Unclassified, or none of the below: a ligand, a sugar, ...
-    MD_COMPONENT_KIND_AMINO_ACID    = 1,
-    MD_COMPONENT_KIND_NUCLEOTIDE    = 2,
-    MD_COMPONENT_KIND_WATER         = 3,
-    MD_COMPONENT_KIND_ION           = 4,    // A monatomic ion
-    MD_COMPONENT_KIND_LIPID         = 5,    // A lipid, sterols included: by name (md_util_resname_lipid), or by its structure
+// What a residue is, see md_util_system_infer_residue_flags.
+typedef enum md_residue_kind_t {
+    MD_RESIDUE_KIND_OTHER           = 0,    // Unclassified, or none of the below: a ligand, a sugar, ...
+    MD_RESIDUE_KIND_AMINO_ACID      = 1,
+    MD_RESIDUE_KIND_NUCLEOTIDE      = 2,
+    MD_RESIDUE_KIND_WATER           = 3,
+    MD_RESIDUE_KIND_ION             = 4,    // A monatomic ion
+    MD_RESIDUE_KIND_LIPID           = 5,    // A lipid, sterols included: by name (md_util_resname_lipid), or by its structure
                                             // (a polar head with hydrocarbon tails, see md_util_system_infer_lipids)
-} md_component_kind_t;
+} md_residue_kind_t;
 
 typedef enum {
-    MD_COMPONENT_FLAG_NONE              = 0,
-    MD_COMPONENT_FLAG_KIND_MASK         = 0x7,      // md_component_kind_t, see md_component_flags_kind
+    MD_RESIDUE_FLAG_NONE                = 0,
+    MD_RESIDUE_FLAG_KIND_MASK           = 0x7,      // md_residue_kind_t, see md_residue_flags_kind
 
     // The backbone of the amino acid or nucleotide was found by atom names and verified by its bonds, and its atoms
-    // were given their roles (MD_ATOM_FLAG_BACKBONE, ...). Without it the component is one by name only: an unusual
+    // were given their roles (MD_ATOM_FLAG_BACKBONE, ...). Without it the residue is one by name only: an unusual
     // naming scheme, missing atoms, or a coarse grained model.
-    MD_COMPONENT_FLAG_RESOLVED          = 0x10,
-    MD_COMPONENT_FLAG_TERMINAL_BEG      = 0x20,     // Begins its chain: a free amino group (N-terminus), a free 5' end
-    MD_COMPONENT_FLAG_TERMINAL_END      = 0x40,     // Ends its chain: a free carboxyl group (C-terminus), a free 3' end
+    MD_RESIDUE_FLAG_RESOLVED            = 0x10,
+    MD_RESIDUE_FLAG_TERMINAL_BEG        = 0x20,     // Begins its chain: a free amino group (N-terminus), a free 5' end
+    MD_RESIDUE_FLAG_TERMINAL_END        = 0x40,     // Ends its chain: a free carboxyl group (C-terminus), a free 3' end
 
     // The chain is broken next to it: its backbone is not linked to that of the residue before (after) it in its chain,
     // which carries BREAK_AFTER (BREAK_BEFORE) in turn. Residues missing in a crystal structure leave such a break. See
     // CHAIN BREAKS in md_util.h.
-    MD_COMPONENT_FLAG_BREAK_BEFORE      = 0x80,
-    MD_COMPONENT_FLAG_BREAK_AFTER       = 0x100,
-} md_component_flags_t;
+    MD_RESIDUE_FLAG_BREAK_BEFORE        = 0x80,
+    MD_RESIDUE_FLAG_BREAK_AFTER         = 0x100,
+} md_residue_flags_t;
 
-ENUM_FLAGS(md_component_flags_t)
+ENUM_FLAGS(md_residue_flags_t)
 
 // ### MONOMER ###
 
-// The standard monomers of proteins and nucleic acids, the predefined table component types are matched against
-// (md_monomer_from_comp_name), as atom types are matched against the elements. A monomer has its id in the Chemical
+// The standard monomers of proteins and nucleic acids, the predefined table residue types are matched against
+// (md_monomer_from_residue_name), as particle types are matched against the elements. A monomer has its id in the Chemical
 // Component Dictionary of the PDB, a one letter code, a kind and a default color (md_monomer_*). The values are not
 // stable across versions: store a monomer by its id (md_monomer_id, md_monomer_from_id), not by its value.
 typedef enum md_monomer_t {
@@ -189,7 +189,7 @@ typedef enum md_monomer_t {
 // polymer chain of that type.
 typedef enum md_entity_kind_t {
     MD_ENTITY_KIND_UNKNOWN      = 0,    // Not classified yet: a topology names its molecule types but does not say what
-                                        // they are. md_util_system_infer classifies these from their components.
+                                        // they are. md_util_system_infer classifies these from their residues.
     MD_ENTITY_KIND_NON_POLYMER  = 1,    // A small molecule: a ligand, an ion, a lipid, a single residue
     MD_ENTITY_KIND_WATER        = 2,
     MD_ENTITY_KIND_BRANCHED     = 3,    // A branched oligosaccharide (mmCIF 'branched')
@@ -209,7 +209,7 @@ typedef enum {
     MD_ENTITY_FLAG_INFERRED     = 0x10,
 
     // A molecule type of a topology (a GROMACS molecule type, the molecules of a LAMMPS data file): each of its
-    // instances is one molecule, whatever its bonds (md_structure_data_t), as GROMACS has it
+    // instances is one molecule, whatever its bonds (md_molecule_data_t), as GROMACS has it
     MD_ENTITY_FLAG_TOPOLOGY     = 0x20,
 } md_entity_flags_t;
 
@@ -232,13 +232,13 @@ static inline bool md_entity_kind_is_nucleic_acid(md_entity_kind_t kind) {
 
 // ### ACCESSORS for the packed values ###
 
-static inline md_particle_kind_t md_atom_type_flags_particle_kind(md_atom_type_flags_t flags) {
-    return (md_particle_kind_t)((unsigned int)flags & (unsigned int)MD_ATOM_TYPE_FLAG_PARTICLE_KIND_MASK);
+static inline md_particle_kind_t md_particle_type_flags_particle_kind(md_particle_type_flags_t flags) {
+    return (md_particle_kind_t)((unsigned int)flags & (unsigned int)MD_PARTICLE_TYPE_FLAG_PARTICLE_KIND_MASK);
 }
 
-static inline md_atom_type_flags_t md_atom_type_flags_set_particle_kind(md_atom_type_flags_t flags, md_particle_kind_t kind) {
-    const unsigned int mask = (unsigned int)MD_ATOM_TYPE_FLAG_PARTICLE_KIND_MASK;
-    return (md_atom_type_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+static inline md_particle_type_flags_t md_particle_type_flags_set_particle_kind(md_particle_type_flags_t flags, md_particle_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_PARTICLE_TYPE_FLAG_PARTICLE_KIND_MASK;
+    return (md_particle_type_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
 }
 
 #define MD_ATOM_HYBRIDIZATION_SHIFT 8
@@ -252,13 +252,13 @@ static inline md_atom_flags_t md_atom_flags_set_hybridization(md_atom_flags_t fl
     return (md_atom_flags_t)(((unsigned int)flags & ~mask) | (((unsigned int)hyb << MD_ATOM_HYBRIDIZATION_SHIFT) & mask));
 }
 
-static inline md_component_kind_t md_component_flags_kind(md_component_flags_t flags) {
-    return (md_component_kind_t)((unsigned int)flags & (unsigned int)MD_COMPONENT_FLAG_KIND_MASK);
+static inline md_residue_kind_t md_residue_flags_kind(md_residue_flags_t flags) {
+    return (md_residue_kind_t)((unsigned int)flags & (unsigned int)MD_RESIDUE_FLAG_KIND_MASK);
 }
 
-static inline md_component_flags_t md_component_flags_set_kind(md_component_flags_t flags, md_component_kind_t kind) {
-    const unsigned int mask = (unsigned int)MD_COMPONENT_FLAG_KIND_MASK;
-    return (md_component_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+static inline md_residue_flags_t md_residue_flags_set_kind(md_residue_flags_t flags, md_residue_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_RESIDUE_FLAG_KIND_MASK;
+    return (md_residue_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
 }
 
 static inline md_entity_kind_t md_entity_flags_kind(md_entity_flags_t flags) {
@@ -389,7 +389,7 @@ ENUM_FLAGS(md_ring_flags_t)
 
 // Where a bond came from. FILE is 0, so a bond added without saying where it came from counts as given.
 typedef enum md_bond_origin_t {
-    MD_BOND_ORIGIN_FILE     = 0,    // Given by the file, for some of its atoms (CONECT records, a component's bonds)
+    MD_BOND_ORIGIN_FILE     = 0,    // Given by the file, for some of its atoms (CONECT records, a residue's bonds)
     MD_BOND_ORIGIN_TOPOLOGY = 1,    // A force field topology: all of the bonds of the atoms it covers
     MD_BOND_ORIGIN_USER     = 2,    // Added by hand
     MD_BOND_ORIGIN_INFERRED = 3,    // Inferred from the geometry, and replaced when inferred again
@@ -570,7 +570,7 @@ enum {
 };
 
 typedef int32_t     md_atom_idx_t;
-typedef int32_t     md_component_idx_t;
+typedef int32_t     md_residue_idx_t;
 typedef int32_t     md_instance_idx_t;
 typedef int32_t     md_chain_idx_t;
 typedef int32_t     md_entity_idx_t;
@@ -579,8 +579,8 @@ typedef int32_t     md_molecule_idx_t;
 typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_sequence_id_t;
 typedef int32_t     md_bond_idx_t;
-typedef uint16_t    md_atom_type_idx_t;
-typedef int32_t     md_component_type_idx_t;
+typedef uint16_t    md_particle_type_idx_t;
+typedef int32_t     md_residue_type_idx_t;
 typedef uint8_t     md_atomic_number_t;
 typedef uint8_t     md_ramachandran_type_t;
 typedef uint8_t     md_order_t;
@@ -678,7 +678,7 @@ extern "C" {
 
 // Names of the kinds for printing ("atom", "amino acid", "peptide", ...), "" for a value out of range
 const char* md_particle_kind_name(md_particle_kind_t kind);
-const char* md_component_kind_name(md_component_kind_t kind);
+const char* md_residue_kind_name(md_residue_kind_t kind);
 const char* md_entity_kind_name(md_entity_kind_t kind);
 const char* md_secondary_structure_name(md_secondary_structure_t ss);
 const char* md_hybridization_name(md_hybridization_t hyb);
@@ -710,8 +710,8 @@ md_atomic_number_t md_atomic_number_from_symbol(str_t sym, bool ignore_case);
 
 // Infer atomic number from other properties, this is a heuristic and may fail. 0 is returned on failure
 // Per-atom inference from labels (atom name + residue)
-// res_name is the name of the component of the atom [optional]
-// res_size is the size of the component of the atom [optional]
+// res_name is the name of the residue of the atom [optional]
+// res_size is the size of the residue of the atom [optional]
 md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_name, size_t res_size);
 md_atomic_number_t md_atomic_number_infer_from_mass(float mass);
 
@@ -724,18 +724,18 @@ size_t md_atomic_number_infer_from_mass_batch(md_atomic_number_t out_z[], const 
 str_t    md_monomer_id(md_monomer_t monomer);          // Id in the Chemical Component Dictionary: "ALA", "DA", "A"
 str_t    md_monomer_name(md_monomer_t monomer);        // "Alanine", "Deoxyadenosine", "Adenosine"
 char     md_monomer_letter(md_monomer_t monomer);      // One letter code: 'A' for ALA, DA and A
-md_component_kind_t md_monomer_kind(md_monomer_t monomer);  // MD_COMPONENT_KIND_AMINO_ACID or _NUCLEOTIDE
+md_residue_kind_t md_monomer_kind(md_monomer_t monomer);    // MD_RESIDUE_KIND_AMINO_ACID or _NUCLEOTIDE
 uint32_t md_monomer_color(md_monomer_t monomer);       // Default color (RGBA, R in the lowest byte, as the CPK colors)
 
 // The monomer of the given id ("HIS"), exactly and ignoring case. MD_MONOMER_NONE if there is none.
 md_monomer_t md_monomer_from_id(str_t id);
 
-// The standard monomer a component of the given name and kind is a form of. Only amino acids and nucleotides are forms
+// The standard monomer a residue of the given name and kind is a form of. Only amino acids and nucleotides are forms
 // of one: the variants of the force fields (HID, HIE, HSP, HISH, CYX, ASH, LYN, the Martini ARG0, ...), the termini of
 // Amber (NALA, CALA, DA5, RA3), the names of CHARMM (ADE, CYT, ...) and the common modified residues (MSE, SEP, PSU,
 // 5MC, ...). An amino acid or nucleotide which is not known is MD_MONOMER_UNK or MD_MONOMER_N, any other kind
 // MD_MONOMER_NONE, except the caps of a peptide chain (ACE, NME, ...) which are MD_MONOMER_UNK.
-md_monomer_t md_monomer_from_comp_name(str_t comp_name, md_component_kind_t kind);
+md_monomer_t md_monomer_from_residue_name(str_t res_name, md_residue_kind_t kind);
 
 #ifdef __cplusplus
 }

@@ -103,7 +103,7 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 //   network written as plain bonds (md_util_system_infer_elastic_bonds).
 // - 'atom/charge' (e) and 'atom/mass' (Da) are published for the matched atoms, taken from [ atoms ] and
 //   falling back to [ atomtypes ]; unmatched atoms are left as gaps.
-// - atom types with no mass (zero) get the topology's mass when all matched atoms of that type agree.
+// - particle types with no mass (zero) get the topology's mass when all matched atoms of that type agree.
 // - structures and rings are re-inferred from the new bonds.
 // Returns false if nothing in the topology matched the system.
 bool md_itp_system_supplement(struct md_system_t* sys, const md_itp_data_t* data);

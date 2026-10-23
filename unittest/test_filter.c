@@ -55,8 +55,8 @@ UTEST(filter, variable_length) {
     // Expected: every residue with an atom within the distance, in full
     md_bitmask_t expected_b = md_bitmask_create(0, (uint32_t)sys.atom.count, alloc);
     size_t num_residues = 0;
-    for (size_t i = 0; i < sys.component.count; ++i) {
-        const md_urange_t range = md_component_atom_range(&sys.component, i);
+    for (size_t i = 0; i < sys.residue.count; ++i) {
+        const md_urange_t range = md_residue_atom_range(&sys.residue, i);
         if (md_bitset_count_range(near, range.beg, range.end) > 0) {
             md_bitmask_set_range(&expected_b, range.beg, range.end);
             num_residues += 1;
@@ -448,7 +448,7 @@ UTEST(filter, bonds_as_atoms) {
     md_array(md_bitset_t) sets = 0;
     res = md_filter_sets(&sets, STR_LIT("bond(residue(:))"), &fctx, alloc);
     EXPECT_TRUE(res.success);
-    ASSERT_EQ(sys.component.count, md_array_size(sets));
+    ASSERT_EQ(sys.residue.count, md_array_size(sets));
     EXPECT_EQ(4, (int)md_bitset_count(sets[0]));
     EXPECT_EQ(0, (int)md_bitset_count(sets[1]));
     EXPECT_EQ(3, (int)md_bitset_count(sets[2]));
@@ -591,7 +591,7 @@ UTEST(filter, molecules) {
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
-    const size_t num = md_structure_count(&sys.structure);
+    const size_t num = md_molecule_count(&sys.molecule);
     ASSERT_GT(num, 1);
 
     md_array(md_bitset_t) sets = 0;
@@ -686,11 +686,11 @@ UTEST(filter, parts_and_glycans) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ(4u, md_system_component_count(&sys));
-    EXPECT_EQ(1u, md_structure_count(&sys.structure));
+    ASSERT_EQ(4u, md_system_residue_count(&sys));
+    EXPECT_EQ(1u, md_molecule_count(&sys.molecule));
     ASSERT_EQ(2u, md_system_part_count(&sys));
-    EXPECT_EQ(1u, md_system_part_comp_range(&sys, 0).end - md_system_part_comp_range(&sys, 0).beg);
-    EXPECT_EQ(3u, md_system_part_comp_range(&sys, 1).end - md_system_part_comp_range(&sys, 1).beg);
+    EXPECT_EQ(1u, md_system_part_residue_range(&sys, 0).end - md_system_part_residue_range(&sys, 0).beg);
+    EXPECT_EQ(3u, md_system_part_residue_range(&sys, 1).end - md_system_part_residue_range(&sys, 1).beg);
 
     md_filter_context_t fctx = {.sys = &sys, .state = &state};
     md_array(md_bitset_t) sets = 0;

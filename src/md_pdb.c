@@ -505,19 +505,19 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     md_array(float) atom_b_factor  = 0;
     md_array_ensure(atom_occupancy, capacity, temp_arena);
     md_array_ensure(atom_b_factor,  capacity, temp_arena);
-    // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
-    md_array(str_t) comp_auth_asym_ids = 0;
+    // Keep track of the asymmetric unit id for each residue, this serves as a basis for determining entities and instances
+    md_array(str_t) res_auth_asym_ids = 0;
 
     md_array_ensure(state->xyz,           capacity, state->alloc);
     md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
     md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
-	// Add default unknown atom type at index 0
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+	// Add default unknown particle type at index 0
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
     md_hashmap32_t type_map = { .allocator = temp_arena };
 
-	uint64_t prev_comp_key = 0;
-    size_t num_unassigned_atom_types = 0;
+	uint64_t prev_res_key = 0;
+    size_t num_unassigned_particle_types = 0;
 
     bool terminator = false;
     for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
@@ -533,38 +533,38 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_sequence_id_t seq_id = data->atom_coordinates[i].res_seq;
         if (seq_id == INT_MAX) {
 			// Missing residue sequence id, assign one based on previous residue
-			seq_id = sys->component.seq_id ? sys->component.seq_id[sys->component.count - 1] + 1 : 1;
+			seq_id = sys->residue.seq_id ? sys->residue.seq_id[sys->residue.count - 1] + 1 : 1;
 		}
         char chain_id = data->atom_coordinates[i].chain_id;
         md_atomic_number_t atomic_number = 0;
-        md_atom_type_idx_t atom_type_idx = 0;
+        md_particle_type_idx_t particle_type_idx = 0;
 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, use that to lookup the element
             str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
             atomic_number = md_atomic_number_from_symbol(sym, true);
-            atom_type_idx = md_util_atom_type_find_or_add(sys, &type_map, atom_id, atomic_number);
+            particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
         } else {
-            num_unassigned_atom_types += 1;
+            num_unassigned_particle_types += 1;
         }
 
         // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B are three
         // residues of the same number (the insertions of Kabat numbered antibodies), also when they share a name
         const char icode = data->atom_coordinates[i].icode;
-        uint64_t comp_key = md_hash64_str(res_name, md_hash64(&icode, sizeof(icode), md_hash64(&seq_id, sizeof(seq_id), chain_id)));
+        uint64_t res_key = md_hash64_str(res_name, md_hash64(&icode, sizeof(icode), md_hash64(&seq_id, sizeof(seq_id), chain_id)));
 
-        if (comp_key != prev_comp_key || terminator) {
+        if (res_key != prev_res_key || terminator) {
             // New residue. A TER record ends the residue before it, whatever the residue after it is called. Whether it
             // also ends a chain is left to the chain ids and the bonds: TER is written inconsistently, and a chain
             // continues over gaps anyway (see md_util_system_infer_entity_and_instance).
-            sys->component.count += 1;
-            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
-            md_array_push(sys->component.name,   make_label(res_name), sys->alloc);
-            md_array_push(sys->component.seq_id, seq_id, sys->alloc);
-            md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
+            sys->residue.count += 1;
+            md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
+            md_array_push(sys->residue.name,     make_label(res_name), sys->alloc);
+            md_array_push(sys->residue.seq_id, seq_id, sys->alloc);
+            md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
 
             str_t asym_id = str_trim(str_from_cstrn(&data->atom_coordinates[i].chain_id, 1));
-            md_array_push(comp_auth_asym_ids, asym_id, temp_arena);
+            md_array_push(res_auth_asym_ids, asym_id, temp_arena);
         }
 
         sys->atom.count += 1;
@@ -572,15 +572,15 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_array_push_no_grow(atom_name, atom_id);
         md_array_push_no_grow(state->xyz, vec3_set(x, y, z));
         md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
-        md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
+        md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
         md_array_push_no_grow(atom_occupancy, data->atom_coordinates[i].occupancy);
         md_array_push_no_grow(atom_b_factor,  data->atom_coordinates[i].temp_factor);
 
-		prev_comp_key = comp_key;
+		prev_res_key = res_key;
 
         terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
     }
-    md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
+    md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);    // Final sentinel
 
     ASSERT(md_array_size(state->xyz) == sys->atom.count);
     state->num_atoms = sys->atom.count;
@@ -602,8 +602,8 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
     };
     
-    if (num_unassigned_atom_types > 0) {
-        md_util_system_infer_atom_types(sys, atom_name);
+    if (num_unassigned_particle_types > 0) {
+        md_util_system_infer_particle_types(sys, atom_name);
     }
 
     // The bonds of the CONECT records, of origin MD_BOND_ORIGIN_FILE: inference keeps them and adds the bonds they leave
@@ -647,11 +647,11 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
     }
 
-    // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move
-    // out into md_util_system_infer without moving comp_flags with it.
+    // NOTE: infer_res_flags below consumes bond connectivity, so this cannot simply move
+    // out into md_util_system_infer without moving res_flags with it.
     md_util_system_infer_covalent_bonds(sys, state);
-    md_util_system_infer_comp_flags(sys);
-    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
+    md_util_system_infer_residue_flags(sys);
+    md_util_system_infer_entity_and_instance(sys, res_auth_asym_ids);
 
     // The assemblies name the chains by the ids they have in the file, which are those of the instances
     pdb_assemblies(sys, data, temp_arena);
@@ -959,11 +959,11 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
 		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
         
         // Get residue name
-		md_component_idx_t res_idx = md_component_find_by_atom_idx(&sys->component, idx);
+		md_residue_idx_t res_idx = md_residue_find_by_atom_idx(&sys->residue, idx);
 		char resname[5] = "";
-		str_copy_to_char_buf(resname, sizeof(resname), md_component_name(&sys->component, res_idx));
+		str_copy_to_char_buf(resname, sizeof(resname), md_residue_name(&sys->residue, res_idx));
 
-		md_sequence_id_t res_seq = md_component_seq_id(&sys->component, res_idx);
+		md_sequence_id_t res_seq = md_residue_seq_id(&sys->residue, res_idx);
         
         // Get chain ID from instance
         char chain_id[4] = " ";

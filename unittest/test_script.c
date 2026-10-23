@@ -36,25 +36,25 @@ static vec3_t mol_xyz[] = {
     {1,4,3}, {2,3,2}, {3,2,1}, {4,1,4}, {5,4,3}, {6,3,2}, {7,2,1}, {8,1,2},
     {1,1,2}, {2,1,2}, {3,1,2}, {4,1,2}, {5,1,2}, {6,1,2}, {7,1,2}, {8,1,2},
 };
-static md_atom_type_idx_t mol_ti[] = {0, 4, 0, 1, 2, 4, 2, 4, 0, 4, 0, 1, 2, 3, 2, 4};
+static md_particle_type_idx_t mol_ti[] = {0, 4, 0, 1, 2, 4, 2, 4, 0, 4, 0, 1, 2, 3, 2, 4};
 
-#define ATOM_TYPE_COUNT 5
-static md_atomic_number_t atom_type_z[] = {1, 2, 6, 7, 8};
-static md_label_t atom_type_id[] = {
+#define PARTICLE_TYPE_COUNT 5
+static md_atomic_number_t particle_type_z[] = {1, 2, 6, 7, 8};
+static md_label_t particle_type_id[] = {
     MAKE_LABEL("H1"),
     MAKE_LABEL("HE"),
     MAKE_LABEL("CA"),
     MAKE_LABEL("N"),
     MAKE_LABEL("O")
 };
-static float atom_type_mass[] = {
+static float particle_type_mass[] = {
     1.008f,
     4.002602f,
     12.011f,
     14.007f,
     15.999f
 };
-static float atom_type_radius[] = {
+static float particle_type_radius[] = {
     1.2f,
     1.4f,
     1.7f,
@@ -62,7 +62,7 @@ static float atom_type_radius[] = {
     1.52f
 };
 
-#define COMP_COUNT 4
+#define RES_COUNT 4
 static md_label_t r_name[] = {MAKE_LABEL("SOL"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT"), MAKE_LABEL("PFT")};
 static md_sequence_id_t  r_id[] = {1, 2, 3, 4};
 static uint32_t    r_off[] = {0, 3, 8, 12, 16};
@@ -89,15 +89,15 @@ md_system_t test_mol = {
         .count = ATOM_COUNT,
         .type_idx = mol_ti,
         .type = {
-            .count = ATOM_TYPE_COUNT,
-            .name = atom_type_id,
-            .z = atom_type_z,
-            .mass = atom_type_mass,
-            .radius = atom_type_radius,
+            .count = PARTICLE_TYPE_COUNT,
+            .name = particle_type_id,
+            .z = particle_type_z,
+            .mass = particle_type_mass,
+            .radius = particle_type_radius,
         },
     },
-    .component = {
-        .count = COMP_COUNT,
+    .residue = {
+        .count = RES_COUNT,
         .name = r_name,
         .seq_id = r_id,
         .atom_offset = r_off
@@ -105,7 +105,7 @@ md_system_t test_mol = {
     .instance = {
         .count = INST_COUNT,
         .id = i_id,
-        .comp_offset = i_off,
+        .res_offset = i_off,
     },
     .entity = {
         .count = ENT_COUNT,
@@ -1198,7 +1198,7 @@ UTEST(script, selection) {
 }
 
 UTEST(script, stride_procedures_selectors) {
-    // Stride over residues (components) equals explicit union of picks
+    // Stride over residues (residues) equals explicit union of picks
     EXPECT_TRUE(compare_selection("residue(1:2:4)", "residue(1) or residue(3)"));
 
 
@@ -1979,7 +1979,7 @@ UTEST_F(script, visualize) {
         
         md_script_vis_clear(&vis);
         EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, sx->node), -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
-        size_t res_atom_count = md_component_atom_count(&mol->component, 4);
+        size_t res_atom_count = md_residue_atom_count(&mol->residue, 4);
         size_t pop_count = md_bitset_count(vis.atom_mask);
         EXPECT_EQ(res_atom_count, pop_count);
     }
@@ -3271,12 +3271,12 @@ UTEST_F(script, contacts_compile) {
 
 // The same groups for md_contact, built without the script: one per residue
 static md_bitset_t* contacts_residue_groups(size_t* out_num, const md_system_t* sys, md_allocator_i* alloc) {
-    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * sys->component.count);
-    for (size_t c = 0; c < sys->component.count; ++c) {
-        const md_urange_t range = md_system_component_atom_range(sys, c);
+    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * sys->residue.count);
+    for (size_t c = 0; c < sys->residue.count; ++c) {
+        const md_urange_t range = md_system_residue_atom_range(sys, c);
         groups[c] = md_bitset_range(range.beg, range.end);
     }
-    *out_num = sys->component.count;
+    *out_num = sys->residue.count;
     return groups;
 }
 
@@ -3358,8 +3358,8 @@ UTEST_F(script, chunks) {
     const size_t num_chunks = element_count(data);
 
     size_t expected = 0;
-    for (size_t c = 0; c < sys->component.count; ++c) {
-        const md_urange_t range = md_system_component_atom_range(sys, c);
+    for (size_t c = 0; c < sys->residue.count; ++c) {
+        const md_urange_t range = md_system_residue_atom_range(sys, c);
         for (uint32_t beg = range.beg; beg < range.end; beg += 7) {
             const uint32_t end = MIN(beg + 7, range.end);
             ASSERT_LT(expected, num_chunks);
@@ -3386,7 +3386,7 @@ UTEST_F(script, contacts_parent_and_exclude_within) {
     md_array(uint32_t) parent = 0;
     uint32_t* label = md_alloc(alloc, sizeof(uint32_t) * sys->atom.count);
     for (size_t c = 0; c < num_res; ++c) {
-        const md_urange_t range = md_system_component_atom_range(sys, c);
+        const md_urange_t range = md_system_residue_atom_range(sys, c);
         for (uint32_t k = range.beg; k < range.end; ++k) label[k] = (uint32_t)c;
         for (uint32_t beg = range.beg; beg < range.end; beg += 5) {
             md_bitset_t bf = md_bitset_range(beg, MIN(beg + 5, range.end));
@@ -3490,11 +3490,11 @@ UTEST_F(script, contacts_no_search_outside_evaluation) {
 
 // One group per component of the kind (or every component for ANY_KIND), as test_contact.c
 static md_bitset_t* mirror_residue_groups(size_t* out_count, const md_system_t* sys, int kind, md_allocator_i* alloc) {
-    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * MAX(sys->component.count, 1));
+    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * MAX(sys->residue.count, 1));
     size_t n = 0;
-    for (size_t c = 0; c < sys->component.count; ++c) {
-        if (kind != ANY_KIND && (int)md_system_component_kind(sys, c) != kind) continue;
-        const md_urange_t range = md_system_component_atom_range(sys, c);
+    for (size_t c = 0; c < sys->residue.count; ++c) {
+        if (kind != ANY_KIND && (int)md_system_residue_kind(sys, c) != kind) continue;
+        const md_urange_t range = md_system_residue_atom_range(sys, c);
         groups[n] = md_bitset_range(range.beg, range.end);
         ++n;
     }
@@ -3601,10 +3601,10 @@ static bool mirror_check(md_system_t* sys, const char* src, const md_contact_des
     return ok;
 }
 
-// "atom(b:e)" of the particles of components [beg, end), one based and inclusive
+// "atom(b:e)" of the particles of residues [beg, end), one based and inclusive
 static int mirror_atom_range(char* buf, size_t cap, const md_system_t* sys, size_t beg, size_t end) {
-    const uint32_t a = md_system_component_atom_range(sys, beg).beg;
-    const uint32_t b = md_system_component_atom_range(sys, end - 1).end;
+    const uint32_t a = md_system_residue_atom_range(sys, beg).beg;
+    const uint32_t b = md_system_residue_atom_range(sys, end - 1).end;
     return snprintf(buf, cap, "atom(%u:%u)", a + 1, b);
 }
 
@@ -3639,7 +3639,7 @@ UTEST_F(script, contacts_mirror_between_sets) {
 
     // Protein against everything
     size_t num_prot = 0;
-    md_bitset_t* prot = mirror_residue_groups(&num_prot, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* prot = mirror_residue_groups(&num_prot, sys, MD_RESIDUE_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num_prot, (size_t)0);
     desc = (md_contact_desc_t){ .group_a = prot, .num_a = num_prot, .group_b = res, .num_b = num, .cutoff = 3.0 };
     EXPECT_TRUE(mirror_check(sys, "ga = residue(protein); gb = residue(:); c = contacts(ga, gb, cutoff=3.0, exclude_bonds=0);", &desc, true, NULL, alloc));
@@ -3651,7 +3651,7 @@ UTEST_F(script, contacts_mirror_bond_exclusion_and_separation) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitset_t* prot = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* prot = mirror_residue_groups(&num, sys, MD_RESIDUE_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)3);
 
     // Three bonds is the default of the script
@@ -3713,10 +3713,10 @@ UTEST_F(script, contacts_mirror_overlapping_groups) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitset_t* res = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* res = mirror_residue_groups(&num, sys, MD_RESIDUE_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)6);
-    // The amino acids are the leading components, so their indices are those of the components
-    for (size_t k = 0; k < num; ++k) ASSERT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_system_component_kind(sys, k));
+    // The amino acids are the leading residues, so their indices are those of the residues
+    for (size_t k = 0; k < num; ++k) ASSERT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_system_residue_kind(sys, k));
 
     // Windows of three consecutive residues, each overlapping the next by two. In the script: an array of selections
     const size_t num_win = num - 2;
@@ -3748,9 +3748,9 @@ UTEST_F(script, contacts_mirror_min_separation_parent) {
     md_allocator_i* alloc = md_temp_allocator(temp);
     md_system_t* sys = &utest_fixture->ala;
     size_t num = 0;
-    md_bitset_t* res = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* res = mirror_residue_groups(&num, sys, MD_RESIDUE_KIND_AMINO_ACID, alloc);
     ASSERT_GT(num, (size_t)8);
-    for (size_t k = 0; k < num; ++k) ASSERT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_system_component_kind(sys, k));
+    for (size_t k = 0; k < num; ++k) ASSERT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_system_residue_kind(sys, k));
 
     // Two 'chains': residues [0, 7) and [7, num). In the script the parents are selections
     uint32_t* parent = md_alloc(alloc, sizeof(uint32_t) * num);
@@ -3854,7 +3854,7 @@ UTEST_F(script, contacts_mirror_query_over_trajectory) {
     ASSERT_GT(num_frames, (size_t)3);
 
     size_t num = 0;
-    md_bitset_t* prot = mirror_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, alloc);
+    md_bitset_t* prot = mirror_residue_groups(&num, sys, MD_RESIDUE_KIND_AMINO_ACID, alloc);
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3, .min_separation = 3 };
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -4332,8 +4332,8 @@ UTEST_F(script, distance_min_max_per_element_of_the_first_argument) {
     md_bitset_t near = {0};
     ASSERT_TRUE(eval_selection(&near, STR_LIT("within(3.0, residue(6)) and not residue(6)"), sys, alloc));
     size_t num_near = 0;
-    for (size_t i = 0; i < sys->component.count; ++i) {
-        md_urange_t range = md_component_atom_range(&sys->component, i);
+    for (size_t i = 0; i < sys->residue.count; ++i) {
+        md_urange_t range = md_residue_atom_range(&sys->residue, i);
         num_near += md_bitset_test_any_range(near, range.beg, range.end);
     }
     EXPECT_GT(num_near, (size_t)0);
@@ -5886,8 +5886,8 @@ typedef struct plane_sys_t {
 
 static bool plane_sys_init(plane_sys_t* p, const char* id) {
     p->alloc = md_vm_arena_create(GIGABYTES(1));
-    md_array(ref_comp_t) comps = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), p->alloc);
-    const ref_comp_t* c = find_component(comps, id);
+    md_array(ref_comp_t) residues = read_components(STR_LIT(MD_UNITTEST_SOURCE_DIR "/ccd_chem.txt"), p->alloc);
+    const ref_comp_t* c = find_component(residues, id);
     if (!c) return false;
     p->sys = (md_system_t){ .alloc = p->alloc };
     p->st  = (md_system_state_t){ .alloc = p->alloc };
@@ -6963,7 +6963,7 @@ UTEST_F(script, volume_arrays) {
             md_script_vis_init(&vis, alloc);
             EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, ident->node), m, &vctx, MD_SCRIPT_VISUALIZE_SDF));
             ASSERT_EQ((size_t)1, md_array_size(vis.sdf.structures));
-            const md_urange_t res = md_component_atom_range(&mol->component, (size_t)m);
+            const md_urange_t res = md_residue_atom_range(&mol->residue, (size_t)m);
             EXPECT_EQ((size_t)(res.end - res.beg), md_bitset_count(vis.sdf.structures[0]));
             EXPECT_TRUE(md_bitset_test(vis.sdf.structures[0], res.beg));
             md_script_vis_free(&vis);
@@ -7090,7 +7090,7 @@ UTEST(script, bondsets) {
     // One set per residue: the bonds within each, so neither Mg-O1 nor the hydrogen bond (between residues) nor Cu-Cu
     data_t per_res = {0};
     ASSERT_TRUE(mirror_eval(&per_res, ir, "per_res", &sys, &st, alloc));
-    EXPECT_EQ((int)sys.component.count, (int)element_count(per_res));
+    EXPECT_EQ((int)sys.residue.count, (int)element_count(per_res));
     EXPECT_EQ(5, bondset_count_of(ir, "per_res", &sys, &st, alloc));
     EXPECT_EQ(0, bondset_count_of(ir, "none_b", &sys, &st, alloc));
     EXPECT_EQ(7, bondset_count_of(ir, "either", &sys, &st, alloc));
@@ -7145,7 +7145,7 @@ UTEST(script, bondsets) {
     data_t ends = {0};
     ASSERT_TRUE(mirror_eval(&ends, ir, "ends_r", &sys, &st, alloc));
     ASSERT_EQ(TYPE_ATOMSET, ends.type.base_type);
-    ASSERT_EQ((int)sys.component.count, (int)element_count(ends));
+    ASSERT_EQ((int)sys.residue.count, (int)element_count(ends));
     EXPECT_EQ(4, (int)md_bitset_count(as_bitset(ends)[0]));
     EXPECT_EQ(0, (int)md_bitset_count(as_bitset(ends)[1]));
     EXPECT_EQ(3, (int)md_bitset_count(as_bitset(ends)[2]));
