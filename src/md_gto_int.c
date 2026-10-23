@@ -1874,8 +1874,12 @@ static void gto_int_index_to_world(md_gpu_float4x4* out, const md_grid_t* grid, 
 // pass of every order present over it, each split into dispatches of at most the work budget by the
 // distribution's estimate per point, then the resolve.
 #define GTO_INT_FAR_GROUP         64u
-#define GTO_INT_FAR_LIST          4096u        // entries of a group's list: ~1700 near a 1152 atom protein
-#define GTO_INT_FAR_BATCH_GROUPS  2048u        // 32 MB of lists, 1 MB of accumulators
+#define GTO_INT_FAR_LIST          8192u        // entries of a group's list: on a 1152 atom protein's ESP band up to
+                                               // 3800 for a brick, 6700 for 64 points
+#define GTO_INT_FAR_BATCH_GROUPS  1024u        // 32 MB of lists, 0.5 MB of accumulators
+// Dispatches of at least this many groups: by the work estimate alone a protein's would be ~60, which
+// leaves most of a GPU idle and waits for the slowest group of the few at every barrier
+#define GTO_INT_FAR_MIN_DISPATCH  256u
 #define GTO_INT_FAR_MAX_DISPATCH  65535u
 
 static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_charges* g, gto_int_potential_far_args_t* a,
@@ -1907,7 +1911,7 @@ static bool gto_int_gpu_far_run(md_gpu_stream_t stream, const md_gto_int_gpu_cha
     // A pass's work per group, from the distribution's estimate per point; the far and the near
     // passes each do a part of it, so this is generous for both
     const uint64_t per_group = MAX(1, g->work_per_point) * GTO_INT_FAR_GROUP;
-    const uint32_t per_dispatch = (uint32_t)CLAMP(budget / per_group, 1, GTO_INT_FAR_MAX_DISPATCH);
+    const uint32_t per_dispatch = (uint32_t)CLAMP(budget / per_group, GTO_INT_FAR_MIN_DISPATCH, GTO_INT_FAR_MAX_DISPATCH);
 
     const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
     md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);

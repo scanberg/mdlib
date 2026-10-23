@@ -80,7 +80,7 @@ static inline uint32_t md_gto_int_num_hermite(uint32_t L) { return ((L + 1) * (L
 
 // Which far field this is, for benchmarks to print: bumped with every change to how it is built
 // or evaluated.
-#define MD_GTO_INT_FAR_FIELD_REVISION "r3 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: a list per group of 64, points in Morton order, submitted every 4 dispatch budgets)"
+#define MD_GTO_INT_FAR_FIELD_REVISION "r4 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: lists of up to 8192 per group of 64, points in Morton order as 4 spheres, dispatches of >= 256 groups, submitted every 4 dispatch budgets)"
 
 // A node of the far field's octree (md_gto_int_charges_desc_t::far_field_theta). Its members are
 // item[item_begin, item_end): the gaussians and points inside its box. Its multipoles are about
@@ -285,6 +285,8 @@ typedef struct md_gto_int_gpu_potential_desc_t {
     // submitted every few dispatches' worth, so that a large system on a slow GPU cannot trip a
     // driver watchdog (2 s on Windows by default, which times a submission, not a dispatch).
     // 0 = default, 2^31: a few milliseconds on a discrete GPU, well under a second on anything.
+    // With a far field a dispatch holds at least 256 groups of 64 voxels or points whatever this
+    // says: fewer leave most of a GPU idle.
     uint64_t         work_per_dispatch;
 
     // Optional, host memory, one byte per voxel of the grid (x fastest): nonzero where the potential
