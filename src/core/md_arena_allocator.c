@@ -351,6 +351,15 @@ size_t md_vm_arena_get_pos(struct md_allocator_i* alloc) {
     return arena->pos;
 }
 
+void md_vm_arena_trim(struct md_allocator_i* alloc) {
+    VALIDATE_AND_EXTRACT_VM_ARENA(alloc)
+    const size_t keep = ALIGN_TO(arena->pos, VM_COMMIT_SIZE);
+    if (arena->commit_pos > keep) {
+        md_vm_decommit((char*)arena->base + keep, arena->commit_pos - keep);
+        arena->commit_pos = keep;
+    }
+}
+
 md_vm_arena_temp_t md_vm_arena_temp_begin(struct md_allocator_i* alloc) {
     VALIDATE_AND_EXTRACT_VM_ARENA(alloc)
     return (md_vm_arena_temp_t) {alloc, arena->pos};

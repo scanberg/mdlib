@@ -1042,18 +1042,74 @@ static bool iso_field_init_density(iso_field_t* f, const md_gto_basis_t* basis, 
 
 // Bound of |rho| at distance >= r from every atom (r past every radial maximum): every AO is at
 // most nrm r^l sum_q |c_q| exp(-a_q r^2) there, and each function at most sum_i |C_i| times that.
-static double iso_density_tail(const iso_field_t* f, double r, double* fn_tail) {
-    const iso_density_t* d = f->dens;
-    const int nf = d->num_fn;
-    for (int fi = 0; fi < nf; ++fi) fn_tail[fi] = 0.0;
-    for (int si = 0; si < d->num_ao_shells; ++si) {
+//
+// Asked at a few dozen r for one surface box, over every AO and function each time that is the AOs x
+// functions of |C| read a few dozen times: for a protein's density (2147 orbitals over 9636 AOs) a
+// third of a second, before every extraction. The shells' radial functions are those of the basis'
+// few elements, though: the sum over each one's AOs of |nrm| |C| is taken once (iso_tail_init), and an
+// r costs the distinct radial functions times the functions.
+typedef struct iso_tail_t {
+    int     nf, num;            // functions, distinct radial functions
+    int*    radial;             // [num]: a shell of each (an index into radial.shells)
+    double* G;                  // [num][nf]: sum over the shells of the function of sum over their AOs of |nrm| |C|
+    double* fn_tail;            // [nf] scratch
+} iso_tail_t;
+
+static bool iso_radial_same(const iso_shell_t* a, const iso_shell_t* b) {
+    if (a->l != b->l || a->ncart != b->ncart || a->nprim != b->nprim) return false;
+    for (int q = 0; q < a->nprim; ++q) {
+        if (a->alpha[q] != b->alpha[q]) return false;
+        for (int n = 0; n < a->ncart; ++n) if (a->w[n][q] != b->w[n][q]) return false;
+    }
+    return true;
+}
+
+static bool iso_tail_init(iso_tail_t* t, const iso_density_t* d) {
+    memset(t, 0, sizeof(*t));
+    const int nf = d->num_fn, ns = d->num_ao_shells;
+    t->nf = nf;
+    int* group = (int*)malloc(sizeof(int) * (ns + 1));
+    t->radial = (int*)malloc(sizeof(int) * (ns + 1));
+    if (!group || !t->radial) { free(group); free(t->radial); t->radial = NULL; return false; }
+    for (int si = 0; si < ns; ++si) {
+        const iso_shell_t* r = &d->radial.shells[si];
+        int u = 0;
+        while (u < t->num && !iso_radial_same(&d->radial.shells[t->radial[u]], r)) ++u;
+        if (u == t->num) t->radial[t->num++] = si;
+        group[si] = u;
+    }
+    t->G = (double*)calloc((size_t)t->num * nf + 1, sizeof(double));
+    t->fn_tail = (double*)malloc(sizeof(double) * (nf + 1));
+    if (!t->G || !t->fn_tail) { free(group); free(t->radial); free(t->G); free(t->fn_tail); memset(t, 0, sizeof(*t)); return false; }
+    for (int si = 0; si < ns; ++si) {
         const iso_ao_shell_t* a = &d->ao_shells[si];
-        const double t = iso_shell_tail(&d->radial.shells[si], r);
+        double* g = t->G + (size_t)group[si] * nf;
         for (int n = 0; n < a->ncart; ++n) {
             const double* ca = d->Cabs + (size_t)(a->ao + n) * nf;
-            const double tn = fabs(a->nrm[n]) * t;
-            for (int fi = 0; fi < nf; ++fi) fn_tail[fi] += ca[fi] * tn;
+            const double an = fabs(a->nrm[n]);
+            for (int fi = 0; fi < nf; ++fi) g[fi] += ca[fi] * an;
         }
+    }
+    free(group);
+    return true;
+}
+
+static void iso_tail_free(iso_tail_t* t) {
+    free(t->radial);
+    free(t->G);
+    free(t->fn_tail);
+    memset(t, 0, sizeof(*t));
+}
+
+static double iso_density_tail(const iso_field_t* f, double r, iso_tail_t* tl) {
+    const iso_density_t* d = f->dens;
+    const int nf = tl->nf;
+    double* fn_tail = tl->fn_tail;
+    for (int fi = 0; fi < nf; ++fi) fn_tail[fi] = 0.0;
+    for (int u = 0; u < tl->num; ++u) {
+        const double tu = iso_shell_tail(&d->radial.shells[tl->radial[u]], r);
+        const double* g = tl->G + (size_t)u * nf;
+        for (int fi = 0; fi < nf; ++fi) fn_tail[fi] += g[fi] * tu;
     }
     double t = d->slack;
     for (int k = 0; k < d->num_terms; ++k) t += fabs(d->terms[k].w) * fn_tail[d->terms[k].a] * (d->terms[k].b < 0 ? 1.0 : fn_tail[d->terms[k].b]);
@@ -1633,9 +1689,9 @@ static void iso_octree_visit_density(iso_octree_t* o, int level, int ix, int iy,
     }
 }
 
-// The sum of all group tails at distance r (fn_tail: num_fn scratch for a density)
-static double iso_surface_tail(const iso_field_t* f, double r, double* fn_tail) {
-    if (f->dens) return iso_density_tail(f, r, fn_tail);
+// The sum of all group tails at distance r (tl: a density's, iso_tail_init)
+static double iso_surface_tail(const iso_field_t* f, double r, iso_tail_t* tl) {
+    if (f->dens) return iso_density_tail(f, r, tl);
     double t = 0.0;
     for (int i = 0; i < f->num_shells; ++i) t += iso_shell_tail(&f->shells[i], r);
     return t;
@@ -1648,8 +1704,14 @@ static void iso_surface_box(const iso_field_t* f, double iso, double lo[3], doub
     if (f->dens) for (int i = 0; i < f->dens->radial.num_shells; ++i) r0 = fmax(r0, iso_shell_tail_r0(&f->dens->radial.shells[i]));
     // the first pad = r0 + 0.05 k (k >= 0) with the tails below iso/2. Beyond r0 every tail decreases
     // (r^l exp(-a r^2) does for r^2 >= l / 2a), so k is found by doubling and bisection.
-    double* fn_tail = f->dens ? (double*)malloc(sizeof(double) * (f->dens->num_fn + 1)) : NULL;
-#define ISO_TAIL_AT(k_) iso_surface_tail(f, r0 + 0.05 * (double)(k_), fn_tail)
+    iso_tail_t tl = {0};
+    if (f->dens && !iso_tail_init(&tl, f->dens)) {
+        // no memory for it: padded by what no Gaussian tail of a basis reaches past (exp(-0.05 * 20^2) = 2e-9)
+        MD_LOG_ERROR("md_gto_iso: out of memory for the surface box");
+        for (int a = 0; a < 3; ++a) { lo[a] = f->atom_min[a] - (r0 + 20.0); hi[a] = f->atom_max[a] + (r0 + 20.0); }
+        return;
+    }
+#define ISO_TAIL_AT(k_) iso_surface_tail(f, r0 + 0.05 * (double)(k_), &tl)
     int k_hi = 0;
     while (ISO_TAIL_AT(k_hi) >= 0.5 * iso && r0 + 0.05 * k_hi <= 1.0e3) k_hi = k_hi ? 2 * k_hi : 1;
     int k_lo = k_hi / 2;    // tail(k_lo) >= iso/2 unless k_hi == 0
@@ -1661,7 +1723,7 @@ static void iso_surface_box(const iso_field_t* f, double iso, double lo[3], doub
     }
 #undef ISO_TAIL_AT
     const double pad = r0 + 0.05 * (double)k_hi;
-    free(fn_tail);
+    iso_tail_free(&tl);
     for (int a = 0; a < 3; ++a) { lo[a] = f->atom_min[a] - pad; hi[a] = f->atom_max[a] + pad; }
 }
 

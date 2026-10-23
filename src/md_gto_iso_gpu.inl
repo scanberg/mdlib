@@ -12,7 +12,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r34"
+#define ISOG_REVISION "r35 (kernels made with the first set, on its thread; the surface box from the tails per radial function)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -73,6 +73,10 @@ static const char*     isog_kname[ISOG_K_COUNT];   // their labels
 
 static md_gpu_device_t isog_device;
 static bool             isog_failed;
+// Held while the kernels are made: a set is made on whatever thread its caller likes (md_gto_iso_gpu_set_create
+// makes them, so that the first extraction's thread need not), and two may be made at once
+static md_mutex_t       isog_kernel_mutex;
+static bool             isog_kernel_mutex_ok;
 
 // The choices, from the measurements of branch gto-iso-gpu-opt (r1 to r31; the reports in its
 // history), fixed where one form won everywhere it was measured:
@@ -119,10 +123,11 @@ static int isog_chunks = 0;
 #define ISOG_NEWTON_TOL_EXP 2       // converged within 1e-2 h: the facets' own deviation is about 3e-2 h rms
 #define ISOG_OCTREE_START   2       // the first level the octree tests
 
-// The kernels are made on first use, so initializing costs nothing until a mesh is extracted
+// The kernels are made on first use, so initializing costs nothing until a set is made
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     isog_device = device;
     isog_failed = false;
+    if (!isog_kernel_mutex_ok) isog_kernel_mutex_ok = md_mutex_init(&isog_kernel_mutex);
     const char* e = getenv("GTO_ISO_EVAL_EPS");
     if (e && e[0]) isog_eval_eps_exp = atoi(e);
     if (isog_eval_eps_exp < 4 || isog_eval_eps_exp > 12) isog_eval_eps_exp = 6;
@@ -155,7 +160,16 @@ static bool isog_have(int k) {
     return false;
 }
 
+static bool isog_kernels_make(void);
+
 static bool isog_kernels_ready(void) {
+    if (isog_kernel_mutex_ok) md_mutex_lock(&isog_kernel_mutex);
+    const bool ok = isog_kernels_make();
+    if (isog_kernel_mutex_ok) md_mutex_unlock(&isog_kernel_mutex);
+    return ok;
+}
+
+static bool isog_kernels_make(void) {
     if (isog_ready) return true;
     if (isog_failed) return false;
     if (!isog_device) { MD_LOG_ERROR("md_gto_iso_gpu_extract: md_gto_iso_gpu_initialize not called"); return false; }
@@ -220,6 +234,8 @@ void md_gto_iso_gpu_shutdown(void) {
     isog_device = NULL;
     isog_failed = false;
     isog_ready = false;
+    if (isog_kernel_mutex_ok) md_mutex_destroy(&isog_kernel_mutex);
+    isog_kernel_mutex_ok = false;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -369,6 +385,9 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         MD_LOG_ERROR("md_gto_iso_gpu_set_create: invalid arguments (1 to %d fields)", MD_GTO_ISO_GPU_MAX_FIELDS);
         return NULL;
     }
+    // The kernels with the set, on its thread: the first extraction then costs its own thread nothing for them
+    // (seconds on a CPU device, a fraction of one on most GPUs)
+    if (!isog_kernels_ready()) return NULL;
     size_t num_atoms;
     float* xyz = iso_pack_atoms(basis, atom_xyz, atom_xyz_stride, &num_atoms);
     iso_density_t B = {0};      // the basis as contracted shells, and their radial functions
@@ -750,7 +769,7 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
 }
 
 const char* md_gto_iso_gpu_profile_variant(void) {
-    static char buf[128];
+    static char buf[256];
     snprintf(buf, sizeof(buf), "%s | eval_eps 1e-%d dform %d flood %d", ISOG_REVISION, isog_eval_eps_exp, isog_dform, isog_flood);
     return buf;
 }

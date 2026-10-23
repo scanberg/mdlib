@@ -254,6 +254,14 @@ void md_temp_end(md_temp_scope_t temp) {
     md_vm_arena_set_pos_back(temp.arena, temp.pos);
 }
 
+void md_temp_trim(void) {
+    thread_local_data_t* thread_data = _thread_local_data;
+    if (!thread_data) return;
+    for (size_t i = 0; i < MD_TEMP_ALLOCATOR_COUNT; ++i) {
+        if (thread_data->allocator[i]) md_vm_arena_trim(thread_data->allocator[i]);
+    }
+}
+
 md_allocator_i* md_temp_allocator(md_temp_scope_t temp) {
     ASSERT(temp.arena);
     return temp.arena;

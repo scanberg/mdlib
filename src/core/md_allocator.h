@@ -53,6 +53,11 @@ md_temp_scope_t md_temp_begin_in(struct md_allocator_i* arena);
 // End a temporary allocation scope and rewind the arena.
 void md_temp_end(md_temp_scope_t temp);
 
+// Gives back to the OS what the calling thread's temp arenas hold committed above what is in use. An arena
+// keeps what it once grew to (ending a scope frees nothing), so a thread that ran something large once - a
+// pool worker given a protein's orbitals - holds that much until it exits. For such a thread after such work.
+void md_temp_trim(void);
+
 // Access the underlying allocator associated with the scope.
 struct md_allocator_i* md_temp_allocator(md_temp_scope_t temp);
 

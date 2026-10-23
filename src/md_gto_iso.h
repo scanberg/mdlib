@@ -214,7 +214,9 @@ void md_gto_iso_mesh_free(md_gto_iso_mesh_t* mesh);
 
 #define MD_GTO_ISO_GPU_MAX_FIELDS 16
 
-// Kernels are created on the first extraction, so this costs nothing until then.
+// Kernels are created with the first set (md_gto_iso_gpu_set_create, on its thread), so this costs nothing until
+// then. A set may be made on any thread, on a stream of that thread's (md_gpu's streams are each one thread's):
+// the GPU work of a set made on another stream is waited for (md_gpu_stream_wait) before it is extracted.
 void md_gto_iso_gpu_initialize(md_gpu_device_t device);
 void md_gto_iso_gpu_shutdown(void);
 

@@ -863,24 +863,20 @@ bool md_qm_publish_orbital_densities(md_system_t* sys) {
 }
 
 // One spin's orbitals and occupations: C {M,A} and occ {M} into 'alloc'. False when absent or inconsistent.
-static bool qm_spin_orbitals(double** C, double** occ, size_t* num_mo, size_t* num_ao, const md_attribute_t** coeff_attr, const md_attribute_t** occ_attr,
-                             const md_system_t* sys, bool beta, md_allocator_i* alloc) {
+// One spin's orbitals: their coefficient and occupation attributes and their shape. Nothing is read: the
+// coefficients are {M,A} over every orbital, of which a density keeps the occupied (a fifth of a protein's
+// 9636 in DEF2-SV(P)), and reading them all would be the whole matrix, 742 MB there, to keep 165.
+static bool qm_spin_orbital_attrs(const md_attribute_t** coeff_attr, const md_attribute_t** occ_attr, size_t* num_mo, size_t* num_ao,
+                                  const md_system_t* sys, bool beta) {
     const md_attribute_t* ca = md_attributes_find(&sys->attributes, beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient"));
     const md_attribute_t* oa = md_attributes_find(&sys->attributes, beta ? STR_LIT("orbital/beta/occupation")  : STR_LIT("orbital/alpha/occupation"));
     if (!ca || !oa || ca->format.rank != 2) return false;
     const size_t nm = ca->format.shape[0], na = ca->format.shape[1];
     if (md_attribute_element_count(&oa->format) != nm || nm == 0 || na == 0) return false;
-    *C   = (double*)md_alloc(alloc, sizeof(double) * nm * na);
-    *occ = (double*)md_alloc(alloc, sizeof(double) * nm);
-    if (!*C || !*occ ||
-        md_attribute_extract_f64(*C, nm * na, ca, md_attribute_slice_all(), md_unit_none()) != nm * na ||
-        md_attribute_extract_f64(*occ, nm, oa, md_attribute_slice_all(), md_unit_none()) != nm) {
-        return false;
-    }
-    *num_mo = nm;
-    *num_ao = na;
     *coeff_attr = ca;
     *occ_attr = oa;
+    *num_mo = nm;
+    *num_ao = na;
     return true;
 }
 
@@ -898,56 +894,62 @@ size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* o
     else if (str_eq(density_path, STR_LIT("orbital/difference/density"))) { sa = 1.0; sb = -1.0; }
     else return 0;
 
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    md_allocator_i* talloc = md_temp_allocator(temp);
-    double *Ca = NULL, *oa = NULL, *Cb = NULL, *ob = NULL;
-    size_t nma = 0, nmb = 0, naa = 0, nab = 0;
     const md_attribute_t *caa = NULL, *oaa = NULL, *cab = NULL, *oab = NULL;
-    size_t count = 0;
+    size_t nma = 0, nmb = 0, naa = 0, nab = 0;
+    bool have_a = false, have_b = false;
     bool ok = true;
-    if (sa != 0.0) ok = qm_spin_orbitals(&Ca, &oa, &nma, &naa, &caa, &oaa, sys, false, talloc);
+    if (sa != 0.0) ok = have_a = qm_spin_orbital_attrs(&caa, &oaa, &nma, &naa, sys, false);
     if (ok && sb != 0.0) {
-        ok = qm_spin_orbitals(&Cb, &ob, &nmb, &nab, &cab, &oab, sys, true, talloc);
+        ok = have_b = qm_spin_orbital_attrs(&cab, &oab, &nmb, &nab, sys, true);
         if (!ok && sa == 0.0) {
             // no beta channel: a closed shell's beta density is its alpha density
-            ok = qm_spin_orbitals(&Cb, &ob, &nmb, &nab, &cab, &oab, sys, false, talloc);
+            ok = have_b = qm_spin_orbital_attrs(&cab, &oab, &nmb, &nab, sys, false);
         }
     }
-    if (ok && Ca && Cb && naa != nab) ok = false;
-    // one set of orbitals for both spins (restricted, restricted open shell): each orbital once,
-    // with its two weights summed
-    const bool shared = ok && Ca && Cb && nma == nmb && md_attribute_same_data(caa, cab);
-    if (ok) {
-        const size_t na = Ca ? naa : nab;
-        // the weights first, then exactly as many rows as there are nonzero ones
-        for (size_t k = 0; Ca && k < nma; ++k) count += (sa * oa[k] + (shared ? sb * ob[k] : 0.0)) != 0.0;
-        for (size_t k = 0; Cb && !shared && k < nmb; ++k) count += (sb * ob[k]) != 0.0;
-        double* rows = count ? (double*)md_alloc(alloc, sizeof(double) * count * na) : NULL;
-        double* w    = count ? (double*)md_alloc(alloc, sizeof(double) * count) : NULL;
-        if (rows && w) {
-            size_t n = 0;
-            for (size_t k = 0; Ca && k < nma; ++k) {
-                const double wk = sa * oa[k] + (shared ? sb * ob[k] : 0.0);
-                if (wk == 0.0) continue;
-                MEMCPY(rows + n * na, Ca + k * na, sizeof(double) * na);
-                w[n++] = wk;
-            }
-            for (size_t k = 0; Cb && !shared && k < nmb; ++k) {
-                const double wk = sb * ob[k];
-                if (wk == 0.0) continue;
-                MEMCPY(rows + n * na, Cb + k * na, sizeof(double) * na);
-                w[n++] = wk;
-            }
-            *out_rows = rows;
-            *out_weights = w;
-            *out_num_ao = na;
-        } else {
-            if (rows) md_free(alloc, rows, sizeof(double) * count * na);
-            if (w)    md_free(alloc, w, sizeof(double) * count);
-            count = 0;
-        }
+    if (ok && have_a && have_b && naa != nab) ok = false;
+    if (!ok) return 0;
+    // one set of orbitals for both spins (restricted, restricted open shell): each orbital once, with its two
+    // weights summed
+    const bool shared = have_a && have_b && nma == nmb && md_attribute_same_data(caa, cab);
+    const size_t na = have_a ? naa : nab;
+
+    // the occupations (small), then the rows of exactly the orbitals of nonzero weight, read one by one
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    double* oa = have_a ? (double*)md_temp_alloc(temp, sizeof(double) * nma) : NULL;
+    double* ob = have_b ? (double*)md_temp_alloc(temp, sizeof(double) * nmb) : NULL;
+    if ((have_a && (!oa || md_attribute_extract_f64(oa, nma, oaa, md_attribute_slice_all(), md_unit_none()) != nma)) ||
+        (have_b && (!ob || md_attribute_extract_f64(ob, nmb, oab, md_attribute_slice_all(), md_unit_none()) != nmb))) {
+        md_temp_end(temp);
+        return 0;
+    }
+    size_t count = 0;
+    for (size_t k = 0; have_a && k < nma; ++k) count += (sa * oa[k] + (shared ? sb * ob[k] : 0.0)) != 0.0;
+    for (size_t k = 0; have_b && !shared && k < nmb; ++k) count += (sb * ob[k]) != 0.0;
+    double* rows = count ? (double*)md_alloc(alloc, sizeof(double) * count * na) : NULL;
+    double* w    = count ? (double*)md_alloc(alloc, sizeof(double) * count) : NULL;
+    ok = rows && w;
+    size_t n = 0;
+    for (size_t k = 0; ok && have_a && k < nma; ++k) {
+        const double wk = sa * oa[k] + (shared ? sb * ob[k] : 0.0);
+        if (wk == 0.0) continue;
+        ok = md_attribute_extract_f64(rows + n * na, na, caa, md_attribute_slice_1((uint32_t)k), md_unit_none()) == na;
+        w[n++] = wk;
+    }
+    for (size_t k = 0; ok && have_b && !shared && k < nmb; ++k) {
+        const double wk = sb * ob[k];
+        if (wk == 0.0) continue;
+        ok = md_attribute_extract_f64(rows + n * na, na, cab, md_attribute_slice_1((uint32_t)k), md_unit_none()) == na;
+        w[n++] = wk;
     }
     md_temp_end(temp);
+    if (!ok) {
+        if (rows) md_free(alloc, rows, sizeof(double) * count * na);
+        if (w)    md_free(alloc, w, sizeof(double) * count);
+        return 0;
+    }
+    *out_rows = rows;
+    *out_weights = w;
+    *out_num_ao = na;
     return count;
 }
 

@@ -52,6 +52,10 @@ void  md_vm_arena_reset(struct md_allocator_i* vm_arena);
 void   md_vm_arena_set_pos_back(struct md_allocator_i* vm_arena, size_t pos);
 size_t md_vm_arena_get_pos(struct md_allocator_i* vm_arena);
 
+// Gives the memory above the current position back to the OS. Popping keeps it committed (the next push of
+// as much costs nothing), which an arena that once held a lot and is not about to again pays for in memory.
+void   md_vm_arena_trim(struct md_allocator_i* vm_arena);
+
 // Convenience functions for storing the position upon begin and resetting to that position upon end
 md_vm_arena_temp_t md_vm_arena_temp_begin(struct md_allocator_i* vm_arena);
 void md_vm_arena_temp_end(md_vm_arena_temp_t temp);
