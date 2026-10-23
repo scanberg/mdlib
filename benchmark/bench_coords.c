@@ -225,8 +225,8 @@ static void bench_hbonds(struct ubench_run_state_s* ubench_run_state, md_hbond_p
         md_hbond_params_t params = md_hbond_params_preset(preset);
         // Selection: the bonds within the first 40 residues, a small part of the system
         md_bitmask_t few_mask = md_bitmask_create(0, (uint32_t)sys.atom.count, arena);
-        for (size_t c = 0; c < MIN(sys.component.count, 40); ++c) {
-            const md_urange_t r = md_system_component_atom_range(&sys, c);
+        for (size_t c = 0; c < MIN(sys.residue.count, 40); ++c) {
+            const md_urange_t r = md_system_residue_atom_range(&sys, c);
             md_bitmask_set_range(&few_mask, r.beg, r.end);
         }
         const md_bitset_t few = md_bitmask_view(&few_mask);

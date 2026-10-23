@@ -57,29 +57,33 @@ static inline char extract_char(str_t line, size_t idx) {
     return line.ptr[idx - 1];
 }
 
-// Parse atom serial or residue sequence number, which can be "*****" for missing values
-static inline int32_t parse_id(str_t line, size_t beg, size_t end) {
+// An atom serial or a residue sequence number: a decimal number, past the width of its field hybrid-36 (A0000, then
+// a0000: a letter first). 0 where the field holds neither, counted in num_bad: "*****" past the width, which many
+// writers put there, or the hexadecimal VMD writes past 99999 ("186a0" for 100000), which is not hybrid-36 (a number
+// which begins with a digit is decimal) and cannot be told from decimal where it has no letter (18700, 100096). Such a
+// file is read by the order of its atoms; only CONECT records refer to atoms by their serials.
+static inline int32_t parse_id(str_t line, size_t beg, size_t end, uint32_t* num_bad) {
 	uint32_t len = (uint32_t)(end - beg) + 1;
     int32_t  res = 0;
-    const char* errmsg = hy36decode(len, line.ptr + beg - 1, len, &res);
-    if (errmsg) {
-        MD_LOG_DEBUG("Failed to decode id from string '%.*s', error: %s", (int)len, line.ptr + beg - 1, errmsg);
+    if (hy36decode(len, line.ptr + beg - 1, len, &res)) {
+        if (num_bad) *num_bad += 1;
+        return 0;
     }
     return res;
 }
 
-static inline md_pdb_coordinate_t extract_coord(str_t line) {
+static inline md_pdb_coordinate_t extract_coord(str_t line, uint32_t* num_bad_ids) {
     char chain_id = extract_char(line, 22);
     if (!is_alpha(chain_id)) {
 		chain_id = ' ';
 	}
     md_pdb_coordinate_t coord = {
-        .atom_serial = parse_id(line, 7, 11),
+        .atom_serial = parse_id(line, 7, 11, num_bad_ids),
         .atom_name = {0},
         .alt_loc = extract_char(line, 17),
         .res_name = {0},
         .chain_id = chain_id,
-        .res_seq = parse_id(line, 23, 26),
+        .res_seq = parse_id(line, 23, 26, num_bad_ids),
         .icode = extract_char(line, 27),
         .x = extract_fixed_float(line, 31, 38, 3),
         .y = extract_fixed_float(line, 39, 46, 3),
@@ -158,7 +162,7 @@ static inline md_pdb_sheet_t extract_sheet(str_t line) {
 static inline int32_t extract_connect_serial(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0;
     if (str_empty(str_trim(str_substr(line, beg - 1, end - beg + 1)))) return 0;
-    return parse_id(line, beg, end);
+    return parse_id(line, beg, end, NULL);
 }
 
 static inline md_pdb_connect_t extract_connect(str_t line) {
@@ -175,6 +179,12 @@ static inline md_pdb_connect_t extract_connect(str_t line) {
     return c;
 }
 
+// The record of the cell: CRYST1, and CRYST with a blank where the 1 is, as some tools write it (the Conformational
+// Analysis Tools of CHARMM-GUI's trajectories, with all angles 0)
+static inline bool is_cryst1_record(str_t line) {
+    return str_eq_cstr_n(line, "CRYST", 5) && (line.len == 5 || line.ptr[5] == '1' || line.ptr[5] == ' ');
+}
+
 static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
     line = str_trim(line);
     md_pdb_cryst1_t c = {
@@ -188,6 +198,10 @@ static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
         .z = extract_int(line, 67, 70),
     };
     copy_str_field(c.space_group, ARRAY_SIZE(c.space_group), line, 56, 66);
+    // No angles at all is a rectangular box whose angles were left out, not a degenerate cell
+    if (c.alpha == 0 && c.beta == 0 && c.gamma == 0) {
+        c.alpha = c.beta = c.gamma = 90;
+    }
     return c;
 }
 
@@ -209,10 +223,11 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
 
     str_t line;
     int32_t biomolecule = 0;    // REMARK 350: the one whose groups of chains follow
+    uint32_t num_bad_ids = 0;   // Serials and residue numbers which are not numbers of the format (parse_id)
     while (md_buffered_reader_extract_line(&line, reader)) {
         if (line.len < 6) continue;
         if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-            md_pdb_coordinate_t coord = extract_coord(line);
+            md_pdb_coordinate_t coord = extract_coord(line, &num_bad_ids);
             coord.flags |= line.ptr[0] == 'H' ? MD_PDB_COORD_FLAG_HETATM : 0;
             md_array_push(data->atom_coordinates, coord, alloc);
         }
@@ -265,7 +280,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
                 model->end_atom_index = num_coords;
             }
         }
-        else if (str_eq_cstr_n(line, "CRYST1", 6)) {
+        else if (is_cryst1_record(line)) {
             md_pdb_cryst1_t cryst1 = extract_cryst1(line);
             md_array_push(data->cryst1, cryst1, alloc);
         }
@@ -334,6 +349,10 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
     data->num_assemblies        = md_array_size(data->assemblies);
     data->num_assembly_chains   = md_array_size(data->assembly_chains);
     data->num_transforms        = md_array_size(data->transforms);
+    if (num_bad_ids > 0) {
+        MD_LOG_DEBUG("%u atom serials or residue numbers are not numbers of the PDB format ('*****' past the width of the field, "
+            "or hexadecimal as VMD writes past 99999): the atoms are taken in their order", num_bad_ids);
+    }
 
     return true;
 }
@@ -399,7 +418,7 @@ static void pdb_assemblies(md_system_t* sys, const md_pdb_data_t* data, md_alloc
             const char chain = data->assembly_chains[group->chain_offset + c];
             bool found = false;
             for (size_t i = 0; i < sys->instance.count; ++i) {
-                const str_t auth = md_instance_auth_id(&sys->instance, i);
+                const str_t auth = md_system_instance_auth_id(sys, i);
                 if (auth.len == 1 && auth.ptr[0] == chain) {
                     md_array_push(inst, (md_instance_idx_t)i, temp_alloc);
                     found = true;
@@ -486,18 +505,19 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     md_array(float) atom_b_factor  = 0;
     md_array_ensure(atom_occupancy, capacity, temp_arena);
     md_array_ensure(atom_b_factor,  capacity, temp_arena);
-    // Keep track of the asymmetric unit id for each component, this serves as a basis for determining entities and instances
-    md_array(str_t) comp_auth_asym_ids = 0;
+    // Keep track of the asymmetric unit id for each residue, this serves as a basis for determining entities and instances
+    md_array(str_t) res_auth_asym_ids = 0;
 
     md_array_ensure(state->xyz,           capacity, state->alloc);
     md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
     md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
 
-	// Add default unknown atom type at index 0
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+	// Add default unknown particle type at index 0
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_hashmap32_t type_map = { .allocator = temp_arena };
 
-	uint64_t prev_comp_key = 0;
-    size_t num_unassigned_atom_types = 0;
+	uint64_t prev_res_key = 0;
+    size_t num_unassigned_particle_types = 0;
 
     bool terminator = false;
     for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
@@ -513,41 +533,38 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_sequence_id_t seq_id = data->atom_coordinates[i].res_seq;
         if (seq_id == INT_MAX) {
 			// Missing residue sequence id, assign one based on previous residue
-			seq_id = sys->component.seq_id ? sys->component.seq_id[sys->component.count - 1] + 1 : 1;
+			seq_id = sys->residue.seq_id ? sys->residue.seq_id[sys->residue.count - 1] + 1 : 1;
 		}
         char chain_id = data->atom_coordinates[i].chain_id;
         md_atomic_number_t atomic_number = 0;
-        md_atom_type_idx_t atom_type_idx = 0;
+        md_particle_type_idx_t particle_type_idx = 0;
 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, use that to lookup the element
             str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
             atomic_number = md_atomic_number_from_symbol(sym, true);
-            float mass   = md_atomic_number_mass(atomic_number);
-            float radius = md_atomic_number_vdw_radius(atomic_number);
-            uint32_t color = md_atomic_number_cpk_color(atomic_number);
-            atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_id, atomic_number, mass, radius, color, 0, sys->alloc);
+            particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
         } else {
-            num_unassigned_atom_types += 1;
+            num_unassigned_particle_types += 1;
         }
 
         // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B are three
         // residues of the same number (the insertions of Kabat numbered antibodies), also when they share a name
         const char icode = data->atom_coordinates[i].icode;
-        uint64_t comp_key = md_hash64_str(res_name, md_hash64(&icode, sizeof(icode), md_hash64(&seq_id, sizeof(seq_id), chain_id)));
+        uint64_t res_key = md_hash64_str(res_name, md_hash64(&icode, sizeof(icode), md_hash64(&seq_id, sizeof(seq_id), chain_id)));
 
-        if (comp_key != prev_comp_key || terminator) {
+        if (res_key != prev_res_key || terminator) {
             // New residue. A TER record ends the residue before it, whatever the residue after it is called. Whether it
             // also ends a chain is left to the chain ids and the bonds: TER is written inconsistently, and a chain
             // continues over gaps anyway (see md_util_system_infer_entity_and_instance).
-            sys->component.count += 1;
-            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
-            md_array_push(sys->component.name,   make_label(res_name), sys->alloc);
-            md_array_push(sys->component.seq_id, seq_id, sys->alloc);
-            md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
+            sys->residue.count += 1;
+            md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
+            md_array_push(sys->residue.name,     make_label(res_name), sys->alloc);
+            md_array_push(sys->residue.seq_id, seq_id, sys->alloc);
+            md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
 
             str_t asym_id = str_trim(str_from_cstrn(&data->atom_coordinates[i].chain_id, 1));
-            md_array_push(comp_auth_asym_ids, asym_id, temp_arena);
+            md_array_push(res_auth_asym_ids, asym_id, temp_arena);
         }
 
         sys->atom.count += 1;
@@ -555,15 +572,15 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_array_push_no_grow(atom_name, atom_id);
         md_array_push_no_grow(state->xyz, vec3_set(x, y, z));
         md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
-        md_array_push_no_grow(sys->atom.type_idx, atom_type_idx);
+        md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
         md_array_push_no_grow(atom_occupancy, data->atom_coordinates[i].occupancy);
         md_array_push_no_grow(atom_b_factor,  data->atom_coordinates[i].temp_factor);
 
-		prev_comp_key = comp_key;
+		prev_res_key = res_key;
 
         terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
     }
-    md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
+    md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);    // Final sentinel
 
     ASSERT(md_array_size(state->xyz) == sys->atom.count);
     state->num_atoms = sys->atom.count;
@@ -585,8 +602,8 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
     };
     
-    if (num_unassigned_atom_types > 0) {
-        md_util_system_infer_atom_types(sys, atom_name);
+    if (num_unassigned_particle_types > 0) {
+        md_util_system_infer_particle_types(sys, atom_name);
     }
 
     // The bonds of the CONECT records, of origin MD_BOND_ORIGIN_FILE: inference keeps them and adds the bonds they leave
@@ -600,7 +617,8 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const char alt_loc = data->atom_coordinates[i].alt_loc;
             if (alt_loc != ' ' && alt_loc != 'A') continue;
             const uint64_t key = (uint64_t)(uint32_t)data->atom_coordinates[i].atom_serial;
-            if (!md_hashmap_get(&serial_to_atom, key)) md_hashmap_add(&serial_to_atom, key, (uint32_t)atom_idx);
+            // 0: a serial which is not a number of the format (parse_id), which no record can refer to
+            if (key && !md_hashmap_get(&serial_to_atom, key)) md_hashmap_add(&serial_to_atom, key, (uint32_t)atom_idx);
             atom_idx += 1;
         }
         ASSERT(atom_idx == sys->atom.count);
@@ -611,6 +629,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
         for (size_t i = 0; i < data->num_connections; ++i) {
             const int32_t* serial = data->connections[i].atom_serial;
+            if (!serial[0]) continue;
             const uint32_t* a = md_hashmap_get(&serial_to_atom, (uint64_t)(uint32_t)serial[0]);
             if (!a) continue;
             for (size_t k = 1; k < ARRAY_SIZE(data->connections[i].atom_serial) && serial[k]; ++k) {
@@ -628,11 +647,11 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
     }
 
-    // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move
-    // out into md_util_system_infer without moving comp_flags with it.
+    // NOTE: infer_res_flags below consumes bond connectivity, so this cannot simply move
+    // out into md_util_system_infer without moving res_flags with it.
     md_util_system_infer_covalent_bonds(sys, state);
-    md_util_system_infer_comp_flags(sys);
-    md_util_system_infer_entity_and_instance(sys, comp_auth_asym_ids);
+    md_util_system_infer_residue_flags(sys);
+    md_util_system_infer_entity_and_instance(sys, res_auth_asym_ids);
 
     // The assemblies name the chains by the ids they have in the file, which are those of the instances
     pdb_assemblies(sys, data, temp_arena);
@@ -940,16 +959,16 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
 		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
         
         // Get residue name
-		md_component_idx_t res_idx = md_component_find_by_atom_idx(&sys->component, idx);
+		md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(sys, idx);
 		char resname[5] = "";
-		str_copy_to_char_buf(resname, sizeof(resname), md_component_name(&sys->component, res_idx));
+		str_copy_to_char_buf(resname, sizeof(resname), md_system_residue_name(sys, res_idx));
 
-		md_sequence_id_t res_seq = md_component_seq_id(&sys->component, res_idx);
+		md_sequence_id_t res_seq = md_system_residue_seq_id(sys, res_idx);
         
         // Get chain ID from instance
         char chain_id[4] = " ";
         md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(sys, idx);
-        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_instance_auth_id(&sys->instance, inst_idx));
+        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_system_instance_auth_id(sys, inst_idx));
 
         char res_seq_str[5] = "";
         {

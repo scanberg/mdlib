@@ -49,10 +49,6 @@ void md_system_assemblies_free(md_system_t* sys) {
     MEMSET(a, 0, sizeof(md_assembly_data_t));
 }
 
-static inline bool label_equal(md_label_t a, md_label_t b) {
-    return a.len == b.len && MEMCMP(a.buf, b.buf, a.len) == 0;
-}
-
 static int compare_u64(const void* a, const void* b) {
     const uint64_t x = *(const uint64_t*)a;
     const uint64_t y = *(const uint64_t*)b;
@@ -138,7 +134,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         md_array(uint64_t) pairs = 0;
         md_array(uint32_t) opers = 0;
         for (size_t g = g0; g < gen_count; ++g) {
-            if (row_done[g] || !label_equal(gen[g].assembly_id, asm_id)) continue;
+            if (row_done[g] || !md_label_eq(gen[g].assembly_id, asm_id)) continue;
             row_done[g] = true;
             for (size_t k = 0; k < gen[g].oper_count; ++k) {
                 const uint32_t o = gen[g].oper[k];
@@ -266,14 +262,14 @@ const char* md_particle_kind_name(md_particle_kind_t kind) {
     }
 }
 
-const char* md_component_kind_name(md_component_kind_t kind) {
+const char* md_residue_kind_name(md_residue_kind_t kind) {
     switch (kind) {
-    case MD_COMPONENT_KIND_OTHER:       return "other";
-    case MD_COMPONENT_KIND_AMINO_ACID:  return "amino acid";
-    case MD_COMPONENT_KIND_NUCLEOTIDE:  return "nucleotide";
-    case MD_COMPONENT_KIND_WATER:       return "water";
-    case MD_COMPONENT_KIND_ION:         return "ion";
-    case MD_COMPONENT_KIND_LIPID:       return "lipid";
+    case MD_RESIDUE_KIND_OTHER:         return "other";
+    case MD_RESIDUE_KIND_AMINO_ACID:    return "amino acid";
+    case MD_RESIDUE_KIND_NUCLEOTIDE:    return "nucleotide";
+    case MD_RESIDUE_KIND_WATER:         return "water";
+    case MD_RESIDUE_KIND_ION:           return "ion";
+    case MD_RESIDUE_KIND_LIPID:         return "lipid";
     default:                            return "";
     }
 }
@@ -360,11 +356,8 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->atom.formal_charge, alloc);
     md_array_free(sys->atom.hydrogen_count, alloc);
 
-    // ATOM TYPE
+    // PARTICLE TYPE
     md_array_free(sys->atom.type.name, alloc);
-    for (size_t i = 0; i < md_array_size(sys->atom.type.ff_type); ++i) {
-        if (sys->atom.type.ff_type[i].ptr) str_free(sys->atom.type.ff_type[i], alloc);
-    }
     md_array_free(sys->atom.type.ff_type, alloc);
     md_array_free(sys->atom.type.z, alloc);
     md_array_free(sys->atom.type.mass, alloc);
@@ -372,24 +365,33 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->atom.type.color, alloc);
     md_array_free(sys->atom.type.flags, alloc);
 
-    // COMPONENT
-    md_array_free(sys->component.name, alloc);
-    md_array_free(sys->component.seq_id, alloc);
-    md_array_free(sys->component.atom_offset, alloc);
-    md_array_free(sys->component.flags, alloc);
-    md_array_free(sys->component.type_idx, alloc);
+    // RESIDUE
+    md_array_free(sys->residue.name, alloc);
+    md_array_free(sys->residue.seq_id, alloc);
+    md_array_free(sys->residue.atom_offset, alloc);
+    md_array_free(sys->residue.flags, alloc);
+    md_array_free(sys->residue.type_idx, alloc);
 
-    // COMPONENT TYPE
-    md_array_free(sys->component.type.name, alloc);
-    md_array_free(sys->component.type.kind, alloc);
-    md_array_free(sys->component.type.monomer, alloc);
-    md_array_free(sys->component.type.color, alloc);
+    // RESIDUE TYPE
+    md_array_free(sys->residue.type.name, alloc);
+    md_array_free(sys->residue.type.kind, alloc);
+    md_array_free(sys->residue.type.monomer, alloc);
+    md_array_free(sys->residue.type.color, alloc);
 
     // INSTANCE
     md_array_free(sys->instance.id, alloc);
     md_array_free(sys->instance.auth_id, alloc);
-    md_array_free(sys->instance.comp_offset, alloc);
+    md_array_free(sys->instance.res_offset, alloc);
     md_array_free(sys->instance.entity_idx, alloc);
+
+    // CHAIN
+    md_array_free(sys->chain.id, alloc);
+    md_array_free(sys->chain.run_offset, alloc);
+    md_array_free(sys->chain.run, alloc);
+    md_array_free(sys->chain.res_chain, alloc);
+
+    // PART
+    md_array_free(sys->part.res_offset, alloc);
 
     // ENTITY
     md_array_free(sys->entity.id, alloc);
@@ -405,13 +407,13 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->protein_backbone.range.offset, alloc);
     md_array_free(sys->protein_backbone.range.inst_idx, alloc);
     md_array_free(sys->protein_backbone.segment.atoms, alloc);
-    md_array_free(sys->protein_backbone.segment.comp_idx, alloc);
+    md_array_free(sys->protein_backbone.segment.res_idx, alloc);
 
     // NUCLEIC BACKBONE
     md_array_free(sys->nucleic_backbone.range.offset, alloc);
     md_array_free(sys->nucleic_backbone.range.inst_idx, alloc);
     md_array_free(sys->nucleic_backbone.segment.atoms, alloc);
-    md_array_free(sys->nucleic_backbone.segment.comp_idx, alloc);
+    md_array_free(sys->nucleic_backbone.segment.res_idx, alloc);
 
     // LIPIDS
     md_lipid_data_free(&sys->lipid, alloc);
@@ -426,10 +428,10 @@ void md_system_free(md_system_t* sys) {
     md_index_data_free(&sys->ring);
     md_array_free(sys->ring_flags, alloc);
 
-    md_array_free(sys->structure.offset, alloc);
-    md_array_free(sys->structure.atom_idx, alloc);
-    md_array_free(sys->structure.parent_idx, alloc);
-    md_array_free(sys->structure.atom_slot, alloc);
+    md_array_free(sys->molecule.offset, alloc);
+    md_array_free(sys->molecule.atom_idx, alloc);
+    md_array_free(sys->molecule.parent_idx, alloc);
+    md_array_free(sys->molecule.atom_slot, alloc);
 
     // ASSEMBLY
     md_system_assemblies_free(sys);
@@ -526,7 +528,7 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
 
 void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
     ASSERT(lipid);
-    if (lipid->comps.alloc)       md_index_data_free(&lipid->comps);
+    if (lipid->residues.alloc)    md_index_data_free(&lipid->residues);
     md_array_free(lipid->head_offset, alloc);
     md_array_free(lipid->tail_offset, alloc);
     if (lipid->head.atoms.alloc)  md_index_data_free(&lipid->head.atoms);

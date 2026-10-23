@@ -171,7 +171,7 @@ UTEST(pdb, create_system) {
     EXPECT_TRUE(md_pdb_system_init_from_data(&sys, &sys_state, &pdb_data, MD_PDB_OPTION_NONE));
     ASSERT_EQ(sys.atom.count, pdb_data.num_atom_coordinates);
 
-    EXPECT_EQ(1185, sys.component.count);
+    EXPECT_EQ(1185, sys.residue.count);
     EXPECT_EQ(3, sys.instance.count);
     EXPECT_EQ(1, sys.entity.count);
 
@@ -195,6 +195,57 @@ static size_t count_bonds_of_origin(const md_system_t* sys, md_bond_origin_t ori
 
 // The CONECT records are bonds of origin MD_BOND_ORIGIN_FILE, each once though both its atoms list it. Inference adds the
 // bonds they leave out, never one of theirs again, and keeps them when it runs again. 1k4r lists its 18 disulfides.
+// The cell as some tools write it: CRYST with a blank for the 1 and all angles 0 (the Conformational Analysis Tools of
+// CHARMM-GUI). A rectangular box: the bonds of a residue which lies across its boundary are found through it.
+UTEST(pdb, cryst_record_without_its_1) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    static const char pdb[] =
+        "CRYST   246.108  246.108  398.534   0.00   0.00   0.00\n"
+        "ATOM      1  N   ALA A   1     245.000  10.000  10.000  0.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       0.300  10.300  10.000  0.00  0.00           C\n"
+        "ATOM      3  C   ALA A   1       1.500  11.200  10.000  0.00  0.00           C\n"
+        "ATOM      4  O   ALA A   1       1.500  12.400  10.000  0.00  0.00           O\n"
+        "ATOM      5  CB  ALA A   1       0.300   9.000  11.000  0.00  0.00           C\n"
+        "END\n";
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    EXPECT_NEAR(246.108, state.unitcell.x, 1e-3);
+    EXPECT_NEAR(246.108, state.unitcell.y, 1e-3);
+    EXPECT_NEAR(398.534, state.unitcell.z, 1e-3);
+    EXPECT_NEAR(0.0, state.unitcell.xy, 1e-9);
+    EXPECT_NEAR(0.0, state.unitcell.xz, 1e-9);
+    EXPECT_NEAR(0.0, state.unitcell.yz, 1e-9);
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    EXPECT_GE(md_bond_find(&sys.bond, 0, 1), 0);    // N-CA, across the boundary in x
+    EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_system_residue_kind(&sys, 0));
+    md_arena_allocator_destroy(alloc);
+}
+
+// Past 99999 atoms VMD writes the serials in hexadecimal (186a0 for 100000), and '*****' past FFFFF: not hybrid-36,
+// which begins a number past 99999 with a letter. They are not numbers of the format: 0, counted once rather than
+// reported line by line (millions of lines in a large system), and the atoms are read in their order.
+UTEST(pdb, serials_which_are_not_numbers) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    static const char pdb[] =
+        "ATOM  99999  OW  SOL X3333       0.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM  186a0  OW  SOL X3334       3.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM  18700  OW  SOL X3335       6.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM  *****  OW  SOL X3336       9.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM  A0000  OW  SOL X3337      12.000   0.000   0.000  1.00  0.00           O\n"
+        "END\n";
+    md_pdb_data_t data = {0};
+    ASSERT_TRUE(md_pdb_data_parse_str(&data, str_from_cstr(pdb), alloc));
+    ASSERT_EQ(5, (int)data.num_atom_coordinates);
+    EXPECT_EQ(99999,  data.atom_coordinates[0].atom_serial);
+    EXPECT_EQ(0,      data.atom_coordinates[1].atom_serial);    // hexadecimal: not a number of the format
+    EXPECT_EQ(18700,  data.atom_coordinates[2].atom_serial);    // hexadecimal without a letter is decimal
+    EXPECT_EQ(0,      data.atom_coordinates[3].atom_serial);
+    EXPECT_EQ(100000, data.atom_coordinates[4].atom_serial);    // hybrid-36
+    EXPECT_NEAR(9.0f, data.atom_coordinates[3].x, 1e-6f);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(pdb, conect_bonds) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
@@ -431,9 +482,9 @@ static bool load_peptide(md_system_t* sys, md_system_state_t* state, const pepti
     return md_util_system_infer(sys, state, MD_UTIL_INFER_ALL);
 }
 
-static size_t count_components_with(const md_system_t* sys, md_component_flags_t flag) {
+static size_t count_residues_with(const md_system_t* sys, md_residue_flags_t flag) {
     size_t count = 0;
-    for (size_t i = 0; i < sys->component.count; ++i) count += (md_component_flags(&sys->component, i) & flag) != 0;
+    for (size_t i = 0; i < sys->residue.count; ++i) count += (md_system_residue_flags(sys, i) & flag) != 0;
     return count;
 }
 
@@ -448,13 +499,13 @@ UTEST(pdb, insertion_codes) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
 
-    ASSERT_EQ((size_t)6, sys.component.count);
-    for (size_t i = 0; i < sys.component.count; ++i) {
-        EXPECT_EQ(pick[i].seq, md_component_seq_id(&sys.component, i));
-        EXPECT_EQ((size_t)4, md_component_atom_count(&sys.component, i));
+    ASSERT_EQ((size_t)6, sys.residue.count);
+    for (size_t i = 0; i < sys.residue.count; ++i) {
+        EXPECT_EQ(pick[i].seq, md_system_residue_seq_id(&sys, i));
+        EXPECT_EQ((size_t)4, md_system_residue_atom_count(&sys, i));
     }
     EXPECT_EQ((size_t)1, sys.instance.count);
-    EXPECT_EQ((size_t)0, count_components_with(&sys, MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER));
+    EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
     ASSERT_EQ((size_t)1, sys.protein_backbone.range.count);
     EXPECT_EQ((size_t)6, sys.protein_backbone.segment.count);
 
@@ -471,13 +522,13 @@ UTEST(pdb, numbering_jump_is_no_break) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(load_peptide(&sys, &state, pick, ARRAY_SIZE(pick), alloc));
 
-    ASSERT_EQ((size_t)6, sys.component.count);
-    EXPECT_EQ((size_t)0, count_components_with(&sys, MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER));
+    ASSERT_EQ((size_t)6, sys.residue.count);
+    EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
     ASSERT_EQ((size_t)1, sys.protein_backbone.range.count);
     EXPECT_EQ((size_t)6, sys.protein_backbone.segment.count);
 
     md_atom_idx_t atoms[2];
-    for (size_t i = 0; i < sys.component.count; ++i) {
+    for (size_t i = 0; i < sys.residue.count; ++i) {
         EXPECT_FALSE(md_util_chain_break_atoms(atoms, &sys, i));
         EXPECT_EQ(-1, atoms[0]);
         EXPECT_EQ(-1, atoms[1]);
@@ -489,15 +540,15 @@ UTEST(pdb, numbering_jump_is_no_break) {
 // Two residues cut out of the chain: a break after the fourth residue, whether the numbering skips them or runs on. The
 // chain is one instance with two backbone ranges, and neither side of the break is a terminus.
 static void expect_break_after_fourth(int* utest_result, const md_system_t* sys) {
-    ASSERT_EQ((size_t)8, sys->component.count);
+    ASSERT_EQ((size_t)8, sys->residue.count);
     EXPECT_EQ((size_t)1, sys->instance.count);
-    for (size_t i = 0; i < sys->component.count; ++i) {
-        const md_component_flags_t flags = md_component_flags(&sys->component, i);
-        EXPECT_EQ(i == 3, (flags & MD_COMPONENT_FLAG_BREAK_AFTER)  != 0);
-        EXPECT_EQ(i == 4, (flags & MD_COMPONENT_FLAG_BREAK_BEFORE) != 0);
+    for (size_t i = 0; i < sys->residue.count; ++i) {
+        const md_residue_flags_t flags = md_system_residue_flags(sys, i);
+        EXPECT_EQ(i == 3, (flags & MD_RESIDUE_FLAG_BREAK_AFTER)    != 0);
+        EXPECT_EQ(i == 4, (flags & MD_RESIDUE_FLAG_BREAK_BEFORE) != 0);
     }
-    EXPECT_FALSE(md_component_flags(&sys->component, 3) & MD_COMPONENT_FLAG_TERMINAL_END);
-    EXPECT_FALSE(md_component_flags(&sys->component, 4) & MD_COMPONENT_FLAG_TERMINAL_BEG);
+    EXPECT_FALSE(md_system_residue_flags(sys, 3) & MD_RESIDUE_FLAG_TERMINAL_END);
+    EXPECT_FALSE(md_system_residue_flags(sys, 4) & MD_RESIDUE_FLAG_TERMINAL_BEG);
 
     ASSERT_EQ((size_t)2, sys->protein_backbone.range.count);
     EXPECT_EQ(0u, sys->protein_backbone.range.offset[0]);
@@ -560,14 +611,14 @@ UTEST(pdb, chain_breaks_of_files) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-        EXPECT_EQ((size_t)0, count_components_with(&sys, MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER));
+        EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
         size_t asp = SIZE_MAX;
-        for (size_t i = 0; i + 1 < sys.component.count; ++i) {
-            if (md_component_seq_id(&sys.component, i) == 238 && md_component_seq_id(&sys.component, i + 1) == 240) asp = i;
+        for (size_t i = 0; i + 1 < sys.residue.count; ++i) {
+            if (md_system_residue_seq_id(&sys, i) == 238 && md_system_residue_seq_id(&sys, i + 1) == 240) asp = i;
         }
         ASSERT_NE(SIZE_MAX, asp);
-        EXPECT_TRUE(str_eq(md_component_name(&sys.component, asp), STR_LIT("ASP")));
-        EXPECT_TRUE(md_component_flags(&sys.component, asp) & MD_COMPONENT_FLAG_TERMINAL_END);
+        EXPECT_TRUE(str_eq(md_system_residue_name(&sys, asp), STR_LIT("ASP")));
+        EXPECT_TRUE(md_system_residue_flags(&sys, asp) & MD_RESIDUE_FLAG_TERMINAL_END);
     }
     const str_t whole[] = {STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb")};
     for (size_t f = 0; f < ARRAY_SIZE(whole); ++f) {
@@ -575,7 +626,7 @@ UTEST(pdb, chain_breaks_of_files) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, whole[f], MD_PDB_OPTION_NONE));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-        EXPECT_EQ((size_t)0, count_components_with(&sys, MD_COMPONENT_FLAG_BREAK_BEFORE | MD_COMPONENT_FLAG_BREAK_AFTER));
+        EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
     }
     md_vm_arena_destroy(alloc);
 }

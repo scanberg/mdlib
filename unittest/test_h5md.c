@@ -99,12 +99,12 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     // The molecules are the topology's, the same as the tpr's
     ASSERT_EQ(tpr.entity.count, h.sys.entity.count);
     for (size_t e = 0; e < tpr.entity.count; ++e) {
-        EXPECT_EQ(md_entity_kind(&tpr.entity, e), md_entity_kind(&h.sys.entity, e));
+        EXPECT_EQ(md_system_entity_kind(&tpr, e), md_system_entity_kind(&h.sys, e));
     }
     ASSERT_EQ(tpr.instance.count, h.sys.instance.count);
     for (size_t k = 0; k < tpr.instance.count; ++k) {
-        EXPECT_EQ(md_instance_entity_idx(&tpr.instance, k), md_instance_entity_idx(&h.sys.instance, k));
-        EXPECT_EQ(md_instance_component_range(&tpr.instance, k).beg, md_instance_component_range(&h.sys.instance, k).beg);
+        EXPECT_EQ(md_system_instance_entity_idx(&tpr, k), md_system_instance_entity_idx(&h.sys, k));
+        EXPECT_EQ(md_system_instance_residue_range(&tpr, k).beg, md_system_instance_residue_range(&h.sys, k).beg);
     }
     if (vsites) {
         EXPECT_LT(0u, num_sites);
@@ -112,15 +112,15 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
         EXPECT_EQ(0u, num_sites);
     }
 
-    ASSERT_EQ(tpr.component.count, h.sys.component.count);
-    for (size_t c = 0; c < tpr.component.count; ++c) {
-        EXPECT_TRUE(str_eq(md_component_name(&tpr.component, c), md_component_name(&h.sys.component, c)));
-        EXPECT_EQ(md_component_seq_id(&tpr.component, c), md_component_seq_id(&h.sys.component, c));
-        EXPECT_EQ(md_component_atom_range(&tpr.component, c).beg, md_component_atom_range(&h.sys.component, c).beg);
+    ASSERT_EQ(tpr.residue.count, h.sys.residue.count);
+    for (size_t c = 0; c < tpr.residue.count; ++c) {
+        EXPECT_TRUE(str_eq(md_system_residue_name(&tpr, c), md_system_residue_name(&h.sys, c)));
+        EXPECT_EQ(md_system_residue_seq_id(&tpr, c), md_system_residue_seq_id(&h.sys, c));
+        EXPECT_EQ(md_system_residue_atom_range(&tpr, c).beg, md_system_residue_atom_range(&h.sys, c).beg);
     }
     // The dipeptide keeps the numbers it had in the PDB it was built from
-    EXPECT_EQ(221, md_component_seq_id(&h.sys.component, 0));
-    EXPECT_EQ(222, md_component_seq_id(&h.sys.component, 1));
+    EXPECT_EQ(221, md_system_residue_seq_id(&h.sys, 0));
+    EXPECT_EQ(222, md_system_residue_seq_id(&h.sys, 1));
 
     const md_attribute_t* qa = attr(&tpr, "atom/charge");
     const md_attribute_t* qb = attr(&h.sys, "atom/charge");
@@ -271,7 +271,7 @@ UTEST(h5md, spec_system) {
         EXPECT_EQ(z[i], md_atom_atomic_number(&t.sys.atom, i));
         EXPECT_NEAR(mass[i], md_atom_mass(&t.sys.atom, i), 1.0e-5);
     }
-    EXPECT_EQ(md_atom_type_idx(&t.sys.atom, 2), md_atom_type_idx(&t.sys.atom, 3));
+    EXPECT_EQ(md_atom_particle_type_idx(&t.sys.atom, 2), md_atom_particle_type_idx(&t.sys.atom, 3));
 
     // Pairs name particles by id. The fill value, a pair naming no particle, pairs of the other
     // group and triples are not bonds

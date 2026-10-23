@@ -142,7 +142,7 @@ typedef struct md_tpr_nonbonded_t {
 
 typedef struct md_tpr_atom_t {
     str_t    name;
-    str_t    type;           // Force field atom type (e.g. 'opls_135')
+    str_t    type;           // Force field particle type (e.g. 'opls_135')
     float    mass;
     float    charge;
     int32_t  residue;        // Index into the molecule type's residues
@@ -268,17 +268,17 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // residue molecules such as water and ions are renumbered consecutively), so the numbers agree with
 // a .gro written from the same tpr.
 //
-// Atom types are the particle types of the topology: atoms with the same name, element, force field
+// Particle types are the particle types of the topology: atoms with the same name, element, force field
 // type, mass and particle type share one. The type's mass is therefore exact for every atom of it,
-// and the force field type is kept on it (md_atom_type_ff_type) to tell same named types apart.
+// and the force field type is kept on it (md_particle_type_ff_type) to tell same named types apart.
 // Atoms with an atomic number get their element's radius. Atoms without one are coarse grained
 // beads (MD_PARTICLE_BEAD) with the radius md_tpr_lj_vdw_radius gives for their non-bonded type;
 // the predefined bead tables then add what they know about them (see
-// md_util_system_augment_atom_types). A virtual site without Lennard-Jones parameters, such as the
+// md_util_system_augment_particle_types). A virtual site without Lennard-Jones parameters, such as the
 // M site of TIP4P, has no element and is not a bead (MD_PARTICLE_VIRTUAL_SITE).
 //
 // Each molecule type is an entity (described by its name) and each molecule an instance of it.
-// The residues are classified (md_util_system_infer_comp_flags) and from them the kinds of the
+// The residues are classified (md_util_system_infer_residue_flags) and from them the kinds of the
 // entities (md_util_system_infer_entity_kinds). Molecules of a single residue share the instance id
 // of their molecule block; larger ones have ids of their own.
 //

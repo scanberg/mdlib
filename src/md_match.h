@@ -43,16 +43,18 @@ struct md_smiles_error_t;
 // ## THE GRAPH
 //
 // What is searched is the covalent bond graph of the system, which is not quite all of sys->bond:
-//   - A coordination bond (MD_BOND_KIND_COORDINATE, between a metal and a non-metal) between different components
+//   - A coordination bond (MD_BOND_KIND_COORDINATE, between a metal and a non-metal) between different residues
 //     is not part of either molecule: the Mg between the phosphates of an ATP, the Zn of a zinc finger. One within
-//     a residue is part of it (the Fe of a heme, an iron-sulfur cluster). In a system without components every
+//     a residue is part of it (the Fe of a heme, an iron-sulfur cluster). In a system without residues every
 //     coordination bond is left out.
 //   - Virtual sites (MD_PARTICLE_VIRTUAL_SITE: the M site of a TIP4P water) are not atoms of the graph.
 //   - Elastic bonds (MD_BOND_KIND_ELASTIC: an elastic network, a restraint) are springs, not bonds of the graph.
-// A MOLECULE is a connected part of this graph. Molecules are numbered in the order of their first atom, as
-// sys->structure numbers structures: in a system without coordination bonds and virtual sites, which is not coarse
-// grained, they are its structures, index for index. Otherwise a structure may hold several (an ATP and its Mg are two
-// molecules).
+// A MOLECULE is a connected part of this graph, closed as a molecule of the system is (md_molecule_data_t): the
+// atoms of a residue are of one molecule, and so are the residues of a polymer chain, over a gap in it as well, and
+// the atoms of a molecule of a topology (MD_ENTITY_FLAG_TOPOLOGY).
+// Molecules are numbered in the order of their first atom, as sys->molecule numbers its own: in a system without
+// coordination bonds between residues and virtual sites, which is not coarse grained, they are the molecules of the
+// system, index for index. Otherwise one of the system may hold several (an ATP and its Mg are two molecules).
 //
 // ## WHAT THE SYSTEM CAN TELL
 //
@@ -112,12 +114,12 @@ struct md_smiles_error_t;
 //
 // ## LEVELS (md_match_level_t)
 //
-// Every match lies within one unit: a molecule (see THE GRAPH), a component (residue) or an instance (a polymer chain
-// or a molecule, see md_instance_data_t), or one of the sets of atoms given as the units (UNITS). At the component and
+// Every match lies within one unit: a molecule (see THE GRAPH), a residue or an instance (a polymer chain
+// or a molecule, see md_instance_data_t), or one of the sets of atoms given as the units (UNITS). At the residue and
 // instance levels, and in units given, the bonds leaving the unit are not part of the graph that is searched: a
 // residue pattern ends at the peptide bonds, and MD_MATCH_FLAG_WHOLE holds a residue against its own atoms only. A
 // query made of disconnected parts (SMILES '.') has all of its parts matched within the same unit.
-// The unit of a match (md_match_result_t.unit) is the index of its molecule, component, instance or given unit.
+// The unit of a match (md_match_result_t.unit) is the index of its molecule, residue, instance or given unit.
 //
 // UNITS (md_match_desc_t.units): any sets of atoms, in place of those of a level. The graph of a unit is its atoms and
 // the bonds between them. Units may overlap (the rings of a fused system, selections of a script), so UNIQUE and
@@ -128,7 +130,7 @@ struct md_smiles_error_t;
 // the atoms of a ring having two neighbors in it.
 //
 // MD_MATCH_FLAG_WHOLE: the match covers every atom of its unit, hydrogens aside, and the unit has no bonds between
-// those atoms beyond those of the query. "Which residues are glycine" is NCC=O at the component level with this flag;
+// those atoms beyond those of the query. "Which residues are glycine" is NCC=O at the residue level with this flag;
 // without it every amino acid contains glycine.
 // Hydrogens are left out of the count because whether a unit has hydrogen atoms is what the system may not tell (see
 // above); a query which states hydrogen counts still has them tested. With a mask, a unit is its atoms within the mask.
@@ -140,7 +142,7 @@ struct md_smiles_error_t;
 //   ALL           Every mapping, the symmetric ones included. Each mapping is reported once.
 //   ONE_PER_UNIT  The first match found in each unit. "Is it in there", one row per residue, molecule or chain.
 //   DISJOINT      Matches share no atoms; of overlapping ones, the one found first is kept. Counting repeat units of a
-//                 polymer (glucose rings along a cellulose chain at the structure level) is this mode.
+//                 polymer (glucose rings along a cellulose chain at the molecule level) is this mode.
 //
 // Matches are reported unit by unit, in the order found, which is fixed for a given system and query. Only the
 // searched atoms count towards distinct and overlapping, not the hydrogens mapped onto them.
@@ -293,8 +295,8 @@ typedef enum md_match_label_t {
 // ### SEARCH ###
 
 typedef enum md_match_level_t {
-    MD_MATCH_LEVEL_STRUCTURE = 0,       // Within one molecule (see THE GRAPH)
-    MD_MATCH_LEVEL_COMPONENT = 1,       // Within one component (residue)
+    MD_MATCH_LEVEL_MOLECULE = 0,        // Within one molecule (see THE GRAPH)
+    MD_MATCH_LEVEL_RESIDUE = 1,         // Within one residue
     MD_MATCH_LEVEL_INSTANCE  = 2,       // Within one instance (polymer chain or molecule)
 } md_match_level_t;
 
@@ -353,7 +355,7 @@ typedef struct md_match_result_t {
     size_t    width;                    // Atoms per match: the number of atoms of the query
     int32_t*  atom_idx;                 // [count * width]: the atom matched to query atom j in match i is
                                         // atom_idx[i * width + j]; -1 for a query hydrogen the system does not resolve
-    uint32_t* unit;                     // [count]: index of the molecule, component or instance of each match
+    uint32_t* unit;                     // [count]: index of the molecule, residue or instance of each match
     struct md_allocator_i* alloc;
 } md_match_result_t;
 

@@ -955,11 +955,11 @@ UTEST(gpu_render, kernel_feeds_draw_and_reads_the_result) {
 UTEST(gpu_render, compute_stream_reads_a_rendered_texture) {
     rfix_t f;
     if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
-    md_gpu_stream_t comp = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "reader");
+    md_gpu_stream_t res = md_gpu_stream_create(f.dev, MD_GPU_STREAM_COMPUTE, "reader");
     md_gpu_kernel_desc_t kd = md_shader_gpu_render_test_read_tex_kernel();
     md_gpu_kernel_t read = md_gpu_kernel_create(f.dev, &kd);
     md_gpu_texture_t c = r_target(&f, MD_GPU_FORMAT_RGBA32_FLOAT, W, H, MD_GPU_TEX_SAMPLED);
-    ASSERT_TRUE(comp && read && c);
+    ASSERT_TRUE(res && read && c);
 
     md_gpu_render_desc_t rd = {0};
     rd.color_count = 1;
@@ -968,25 +968,25 @@ UTEST(gpu_render, compute_stream_reads_a_rendered_texture) {
     rd.color[0].clear.f32[0] = 3.0f; rd.color[0].clear.f32[3] = 7.0f;
     ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
     ASSERT_TRUE(md_gpu_render_end(f.gfx));
-    md_gpu_stream_wait(comp, md_gpu_stream_record(f.gfx));
+    md_gpu_stream_wait(res, md_gpu_stream_record(f.gfx));
 
-    md_gpu_addr_t out = md_gpu_malloc(comp, MD_GPU_MEM_DEVICE, W * H * sizeof(md_gpu_float4)).gpu;
+    md_gpu_addr_t out = md_gpu_malloc(res, MD_GPU_MEM_DEVICE, W * H * sizeof(md_gpu_float4)).gpu;
     rargs_t r = {0};
     r.tex = md_gpu_texture_sampled(c);
     r.colors = out;
     r.width = W; r.height = H;
-    EXPECT_TRUE(md_gpu_launch(comp, read, md_gpu_grid(W / 8, H / 8, 1), &r, sizeof(r)));
-    md_gpu_mem_t rb = md_gpu_malloc(comp, MD_GPU_MEM_HOST_READ, W * H * sizeof(md_gpu_float4));
-    md_gpu_copy(comp, rb.gpu, out, W * H * sizeof(md_gpu_float4));
-    md_gpu_stream_sync(comp);
+    EXPECT_TRUE(md_gpu_launch(res, read, md_gpu_grid(W / 8, H / 8, 1), &r, sizeof(r)));
+    md_gpu_mem_t rb = md_gpu_malloc(res, MD_GPU_MEM_HOST_READ, W * H * sizeof(md_gpu_float4));
+    md_gpu_copy(res, rb.gpu, out, W * H * sizeof(md_gpu_float4));
+    md_gpu_stream_sync(res);
     const md_gpu_float4* host = (const md_gpu_float4*)rb.cpu;
     EXPECT_EQ(3.0f, host[5].x);
     EXPECT_EQ(7.0f, host[W * H - 1].w);
 
-    md_gpu_free(comp, out); md_gpu_free(comp, rb.gpu);
+    md_gpu_free(res, out); md_gpu_free(res, rb.gpu);
     md_gpu_kernel_destroy(read);
     md_gpu_texture_destroy(c);
-    md_gpu_stream_destroy(comp);
+    md_gpu_stream_destroy(res);
     r_close(&f);
 }
 
@@ -1059,7 +1059,7 @@ UTEST(gpu_render, inside_a_pass_only_draws_and_state_are_allowed) {
                                       MD_GPU_TOPOLOGY_TRIANGLES, &(md_gpu_format_t){MD_GPU_FORMAT_RGBA8_UNORM}, 1, MD_GPU_FORMAT_D32_FLOAT);
     md_gpu_addr_t vb = r_buffer(&f, full_tri, sizeof(full_tri));
     md_gpu_addr_t buf = r_buffer(&f, NULL, 256);
-    md_gpu_stream_t comp = md_gpu_stream_default(f.dev, MD_GPU_STREAM_COMPUTE);
+    md_gpu_stream_t res = md_gpu_stream_default(f.dev, MD_GPU_STREAM_COMPUTE);
     ASSERT_TRUE(c && p && p16 && pd && vb && buf);
 
     rargs_t a = {0};
@@ -1078,7 +1078,7 @@ UTEST(gpu_render, inside_a_pass_only_draws_and_state_are_allowed) {
     td.type = MD_GPU_TEX_2D; td.format = MD_GPU_FORMAT_R32_FLOAT; td.usage = MD_GPU_TEX_SAMPLED; td.width = td.height = 4;
     EXPECT_TRUE(md_gpu_texture_create(f.gfx, &td) == NULL);
     EXPECT_FALSE(md_gpu_sync_is_valid(md_gpu_stream_record(f.gfx)));
-    md_gpu_stream_wait(f.gfx, md_gpu_stream_record(comp));
+    md_gpu_stream_wait(f.gfx, md_gpu_stream_record(res));
     int fired = 0;
     EXPECT_FALSE(md_gpu_launch_host_fn(f.gfx, r_count_fn, &fired));
     /* Memory and temp scopes record nothing and stay legal. */
@@ -1109,7 +1109,7 @@ UTEST(gpu_render, inside_a_pass_only_draws_and_state_are_allowed) {
     md_gpu_render_desc_t rd = {0};
     rd.color_count = 1;
     rd.color[0].texture = c;
-    EXPECT_FALSE(md_gpu_render_begin(comp, &rd));
+    EXPECT_FALSE(md_gpu_render_begin(res, &rd));
 
     md_gpu_free(f.gfx, vb);
     md_gpu_free(f.gfx, buf);

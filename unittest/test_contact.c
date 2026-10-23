@@ -39,11 +39,11 @@ static bool check_against_reference(const md_contact_desc_t* desc, const md_syst
 
 // One group per component of the kind (or every component for ANY_KIND), at most max_count
 static md_bitset_t* make_residue_groups(size_t* out_count, const md_system_t* sys, int kind, size_t max_count, md_allocator_i* alloc) {
-    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * sys->component.count);
+    md_bitset_t* groups = md_alloc(alloc, sizeof(md_bitset_t) * sys->residue.count);
     size_t n = 0;
-    for (size_t c = 0; c < sys->component.count && n < max_count; ++c) {
-        if (kind != ANY_KIND && (int)md_system_component_kind(sys, c) != kind) continue;
-        const md_urange_t range = md_system_component_atom_range(sys, c);
+    for (size_t c = 0; c < sys->residue.count && n < max_count; ++c) {
+        if (kind != ANY_KIND && (int)md_system_residue_kind(sys, c) != kind) continue;
+        const md_urange_t range = md_system_residue_atom_range(sys, c);
         groups[n] = md_bitset_range(range.beg, range.end);
         ++n;
     }
@@ -97,7 +97,7 @@ UTEST_F(contact, between_sets) {
 
     // Protein against everything
     size_t num_prot = 0;
-    md_bitset_t* prot = make_residue_groups(&num_prot, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* prot = make_residue_groups(&num_prot, &utest_fixture->ala, MD_RESIDUE_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num_prot, (size_t)0);
     desc = (md_contact_desc_t){ .group_a = prot, .num_a = num_prot, .group_b = res, .num_b = num, .cutoff = 3.0 };
     EXPECT_TRUE(check_against_reference(&desc, &utest_fixture->ala, &utest_fixture->ala_state, utest_fixture->alloc));
@@ -105,7 +105,7 @@ UTEST_F(contact, between_sets) {
 
 UTEST_F(contact, bond_exclusion_and_separation) {
     size_t num = 0;
-    md_bitset_t* prot = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* prot = make_residue_groups(&num, &utest_fixture->ala, MD_RESIDUE_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)3);
 
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3 };
@@ -168,7 +168,7 @@ UTEST_F(contact, triclinic) {
 // Groups sharing atoms, and atoms belonging to no group
 UTEST_F(contact, overlapping_groups) {
     size_t num = 0;
-    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_RESIDUE_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)6);
 
     // Windows of three consecutive residues, each overlapping the next by two
@@ -193,7 +193,7 @@ UTEST_F(contact, query_over_trajectory) {
     ASSERT_GT(num_frames, (size_t)1);
 
     size_t num = 0;
-    md_bitset_t* prot = make_residue_groups(&num, sys, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* prot = make_residue_groups(&num, sys, MD_RESIDUE_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     md_contact_desc_t desc = { .group_a = prot, .num_a = num, .cutoff = 4.5, .exclude_bonds = 3, .min_separation = 3 };
 
     md_contact_query_t query;
@@ -407,7 +407,7 @@ UTEST_F(contact, pairs_triclinic) {
 // With a parent per group, only groups of the same parent are neighbours
 UTEST_F(contact, min_separation_parent) {
     size_t num = 0;
-    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_COMPONENT_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
+    md_bitset_t* res = make_residue_groups(&num, &utest_fixture->ala, MD_RESIDUE_KIND_AMINO_ACID, SIZE_MAX, utest_fixture->alloc);
     ASSERT_GT(num, (size_t)8);
 
     // Two 'chains': residues [0, 7) and [7, num)
@@ -438,8 +438,8 @@ UTEST_F(contact, pairs_label) {
     md_bitset_t all = md_bitset_range(0, (uint32_t)sys->atom.count);
 
     uint32_t* label = md_alloc(utest_fixture->alloc, sizeof(uint32_t) * sys->atom.count);
-    for (size_t c = 0; c < sys->component.count; ++c) {
-        const md_urange_t range = md_system_component_atom_range(sys, c);
+    for (size_t c = 0; c < sys->residue.count; ++c) {
+        const md_urange_t range = md_system_residue_atom_range(sys, c);
         for (uint32_t k = range.beg; k < range.end; ++k) label[k] = (uint32_t)c;
     }
 

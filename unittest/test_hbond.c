@@ -50,10 +50,10 @@ static bool set_is_sorted_by_key(const md_hbond_set_t* s) {
 static md_bitset_t residue_set(const md_system_t* sys, const char* resname, size_t max_count, md_allocator_i* alloc) {
     md_bitmask_t bf = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
     size_t n = 0;
-    for (size_t c = 0; c < sys->component.count && n < max_count; ++c) {
-        str_t name = str_trim(md_component_name(&sys->component, c));
+    for (size_t c = 0; c < sys->residue.count && n < max_count; ++c) {
+        str_t name = str_trim(md_system_residue_name(sys, c));
         if (resname && !str_eq_cstr(name, resname)) continue;
-        md_urange_t r = md_system_component_atom_range(sys, c);
+        md_urange_t r = md_system_residue_atom_range(sys, c);
         md_bitmask_set_range(&bf, r.beg, r.end);
         n += 1;
     }
@@ -400,7 +400,7 @@ UTEST(hbond, no_hydrogens) {
     // Without hydrogens the standard residues still get their acceptors right: no backbone N
     for (size_t k = 0; k < q.num_acceptors; ++k) {
         const uint32_t a = q.acceptor[k];
-        if (md_system_atom_component_kind(&sys, a) == MD_COMPONENT_KIND_AMINO_ACID) {
+        if (md_system_atom_residue_kind(&sys, a) == MD_RESIDUE_KIND_AMINO_ACID) {
             EXPECT_FALSE(str_eq_cstr(str_trim(md_atom_name(&sys.atom, a)), "N"));
         }
     }
@@ -436,13 +436,13 @@ UTEST_F(hbond, roles_protein) {
     ASSERT_TRUE(md_hbond_perceive_roles(role, cap, sys, &utest_fixture->centered_state, MD_HBOND_ROLES_DEFAULT));
 
     size_t his_free_n = 0, his_acc = 0, lys_nz_donor = 0, bb_o = 0, bb_o_acc = 0;
-    for (size_t c = 0; c < sys->component.count; ++c) {
-        const str_t res = str_trim(md_component_name(&sys->component, c));
-        const md_urange_t r = md_system_component_atom_range(sys, c);
+    for (size_t c = 0; c < sys->residue.count; ++c) {
+        const str_t res = str_trim(md_system_residue_name(sys, c));
+        const md_urange_t r = md_system_residue_atom_range(sys, c);
         for (uint32_t i = r.beg; i < r.end; ++i) {
             const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
             const str_t name = str_trim(md_atom_name(&sys->atom, i));
-            const bool amino = md_component_kind(&sys->component, c) == MD_COMPONENT_KIND_AMINO_ACID;
+            const bool amino = md_system_residue_kind(sys, c) == MD_RESIDUE_KIND_AMINO_ACID;
             if (amino && z == MD_Z_N) {
                 int nh = 0;
                 md_bond_iter_t it = md_bond_iter(&sys->bond, i);
@@ -477,9 +477,9 @@ UTEST_F(hbond, roles_water) {
     uint8_t* cap  = md_alloc(utest_fixture->alloc, N);
     ASSERT_TRUE(md_hbond_perceive_roles(role, cap, sys, &utest_fixture->npt_state, MD_HBOND_ROLES_DEFAULT));
     size_t water_o = 0;
-    for (size_t c = 0; c < sys->component.count; ++c) {
-        if (!str_eq_cstr(str_trim(md_component_name(&sys->component, c)), "SOL")) continue;
-        const md_urange_t r = md_system_component_atom_range(sys, c);
+    for (size_t c = 0; c < sys->residue.count; ++c) {
+        if (!str_eq_cstr(str_trim(md_system_residue_name(sys, c)), "SOL")) continue;
+        const md_urange_t r = md_system_residue_atom_range(sys, c);
         for (uint32_t i = r.beg; i < r.end; ++i) {
             if (md_atom_atomic_number(&sys->atom, i) != MD_Z_O) continue;
             EXPECT_EQ(MD_HBOND_ROLE_DONOR | MD_HBOND_ROLE_ACCEPTOR, (int)role[i]);
@@ -502,11 +502,11 @@ UTEST(hbond, roles_nucleic) {
 
     // The N acceptors of each base and nothing else: A N1 N3 N7, G N3 N7, C N3, T none
     size_t checked = 0;
-    for (size_t c = 0; c < sys.component.count; ++c) {
-        const str_t res = str_trim(md_component_name(&sys.component, c));
+    for (size_t c = 0; c < sys.residue.count; ++c) {
+        const str_t res = str_trim(md_system_residue_name(&sys, c));
         if (res.len < 2 || res.ptr[0] != 'D') continue;
         const char base = res.ptr[1];
-        const md_urange_t r = md_system_component_atom_range(&sys, c);
+        const md_urange_t r = md_system_residue_atom_range(&sys, c);
         for (uint32_t i = r.beg; i < r.end; ++i) {
             if (md_atom_atomic_number(&sys.atom, i) != MD_Z_N) continue;
             const str_t name = str_trim(md_atom_name(&sys.atom, i));
@@ -832,10 +832,10 @@ UTEST_F(hbond, selection_heavy_competition) {
     for (int round = 0; round < 8; ++round) {
         // About 5% of the residues
         md_bitmask_t sel_mask = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
-        for (size_t c = 0; c < sys->component.count; ++c) {
+        for (size_t c = 0; c < sys->residue.count; ++c) {
             seed = seed * 1664525u + 1013904223u;
             if ((seed >> 24) < 13) {
-                const md_urange_t r = md_system_component_atom_range(sys, c);
+                const md_urange_t r = md_system_residue_atom_range(sys, c);
                 md_bitmask_set_range(&sel_mask, r.beg, r.end);
             }
         }

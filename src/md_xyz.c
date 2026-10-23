@@ -123,7 +123,7 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
     {
         // Determine coordinate structure
         // Traditional XYZ only holds 4 fields (atomic number or element symbol and coordinates)
-        // Tinker holds additional fields (atom index, atom type and connectivity) at least 6 fields
+        // Tinker holds additional fields (atom index, particle type and connectivity) at least 6 fields
         str_t token[8];
         str_t line = lines[2];
         int64_t num_tokens = extract_tokens(token, ARRAY_SIZE(token), &line);
@@ -339,9 +339,9 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     coord->z = (float)parse_float(tokens[tok_idx++]);
     
     if (!(flags & XYZ_EXTENDED) && tok_idx < (int)num_tokens) {
-        coord->atom_type = (int)parse_int(tokens[tok_idx++]);
+        coord->particle_type = (int)parse_int(tokens[tok_idx++]);
 
-        // Connectivity follows atom_type
+        // Connectivity follows particle_type
         for (int i = tok_idx; i < (int)num_tokens; ++i) {
             if (!is_digit(tokens[i].ptr[0])) {
                 MD_LOG_ERROR("Invalid connectivity information in XYZ file when parsing line: '%.*s', token: '%.*s', number of tokens: %i", (int)original.len, original.ptr, (int)tokens[i].len, tokens[i].ptr, (int)num_tokens);
@@ -602,28 +602,31 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
     const size_t num_atoms = end_coord_index - beg_coord_index;
     const size_t reserve_size = ALIGN_TO(num_atoms, 16);
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_hashmap32_t type_map = { .allocator = md_temp_allocator(temp) };
 
     md_array_ensure(state->xyz, reserve_size, state->alloc);
     md_array_ensure(sys->atom.type_idx, reserve_size, sys->alloc);
 
-    // Setup atom types including unknown type
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    // Setup particle types including unknown type
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = beg_coord_index; i < end_coord_index; ++i) {
         float x = data->coordinates[i].x;
         float y = data->coordinates[i].y;
         float z = data->coordinates[i].z;
-        str_t atom_symbol = {data->coordinates[i].element_symbol, sizeof(data->coordinates[i].element_symbol)};
+        // The symbol as written, not the whole buffer: the rest of it is zeros, which a name would carry along
+        const char* symbol_buf = data->coordinates[i].element_symbol;
+        size_t symbol_len = 0;
+        while (symbol_len < sizeof(data->coordinates[i].element_symbol) && symbol_buf[symbol_len]) ++symbol_len;
+        str_t atom_symbol = {symbol_buf, symbol_len};
         md_atomic_number_t atomic_number = (md_atomic_number_t)data->coordinates[i].atomic_number;
-        float mass = md_atomic_number_mass(atomic_number);
-        float radius = md_atomic_number_vdw_radius(atomic_number);
-        uint32_t color = md_atomic_number_cpk_color(atomic_number);
-        md_atom_type_idx_t atom_type_idx = md_atom_type_find_or_add(&sys->atom.type, atom_symbol, atomic_number, mass, radius, color, 0, sys->alloc);
+        md_particle_type_idx_t particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_symbol, atomic_number);
 
         sys->atom.count += 1;
         md_array_push(state->xyz, vec3_set(x, y, z), state->alloc);
         md_array_push(sys->atom.flags, 0, sys->alloc);
-        md_array_push(sys->atom.type_idx, atom_type_idx, sys->alloc);
+        md_array_push(sys->atom.type_idx, particle_type_idx, sys->alloc);
     }
 
     state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(data->models[0].cell));
@@ -631,6 +634,7 @@ bool md_xyz_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     ASSERT(md_array_size(state->xyz) == sys->atom.count);
     state->num_atoms = sys->atom.count;
 
+    md_temp_end(temp);
     return true;
 }
 

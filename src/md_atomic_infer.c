@@ -181,7 +181,7 @@ md_atomic_number_t md_atomic_number_infer_from_label(str_t atom_name, str_t res_
         }
     }
 
-    // User has provided a component size and its likely not an ion
+    // User has provided a residue size and its likely not an ion
     if (res_size > 2) {
         str_t two_letter_str = str_substr(atom_name, 0, 2);
         md_atomic_number_t two_z = md_atomic_number_from_symbol(two_letter_str, false);

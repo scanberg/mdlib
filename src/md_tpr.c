@@ -490,7 +490,7 @@ static int vsite_num_atoms(int ftype) {
     }
 }
 
-// The two atom types GROMACS flags as chemical bonds (IF_CHEMBOND). SETTLE is the third kind.
+// The two particle types GROMACS flags as chemical bonds (IF_CHEMBOND). SETTLE is the third kind.
 static bool is_chemical_bond(int ftype) {
     switch (ftype) {
     case F_BONDS:
@@ -901,7 +901,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, str_t version_string, 
 
     // ## Everything after this is skipped, but has to be read through to get to the coordinates
 
-    // Atom types (removed in tpx 128)
+    // Particle types (removed in tpx 128)
     if (r->version < tpxv_RemoveAtomtypes) {
         const size_t count = rd_count(r);
         if (r->version < tpxv_RemoveImplicitSolvation) {
@@ -1467,7 +1467,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
     next_renum += 1;
 
-    // ## Atom types, resolved once per molecule type atom
+    // ## Particle types, resolved once per molecule type atom
     // A type is everything the topology says about a particle that is not per atom: its name, element,
     // force field type, mass and particle type. Atoms sharing all of those share a type, so the type
     // carries the mass exactly and no per atom copy of it is needed.
@@ -1479,11 +1479,11 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     const size_t capacity = ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_atom_type_idx_t));
+    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
     MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
     sys->atom.type.count = 0;
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     // ### Elements
     // An atom without an atomic number is either a coarse grained bead or an atom whose type was
@@ -1560,10 +1560,11 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
 
     md_hashmap32_t type_map = { .allocator = md_temp_allocator(temp) };
-    md_atom_type_idx_t** moltype_type = md_temp_alloc_array(temp, md_atom_type_idx_t*, data->num_moltypes + 1);
+    bool names_cut = false;     // A name past the 8 characters of a label, or a type past the 16 of its label
+    md_particle_type_idx_t** moltype_type = md_temp_alloc_array(temp, md_particle_type_idx_t*, data->num_moltypes + 1);
     for (size_t t = 0; t < data->num_moltypes; ++t) {
         const md_tpr_moltype_t* mt = &data->moltypes[t];
-        moltype_type[t] = md_temp_alloc_array(temp, md_atom_type_idx_t, mt->num_atoms + 1);
+        moltype_type[t] = md_temp_alloc_array(temp, md_particle_type_idx_t, mt->num_atoms + 1);
         for (size_t i = 0; i < mt->num_atoms; ++i) {
             const md_tpr_atom_t* atom = &mt->atoms[i];
             const md_atomic_number_t z = moltype_z[t][i];
@@ -1578,7 +1579,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
             const uint32_t* cached = md_hashmap_get(&type_map, key);
             if (cached) {
-                moltype_type[t][i] = (md_atom_type_idx_t)*cached;
+                moltype_type[t][i] = (md_particle_type_idx_t)*cached;
                 continue;
             }
 
@@ -1599,13 +1600,17 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     radius = 0.0f;
                 }
             }
-            const md_atom_type_flags_t flags = md_atom_type_flags_set_particle_kind(MD_ATOM_TYPE_FLAG_NONE, kind);
+            const md_particle_type_flags_t flags = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, kind);
 
-            const md_atom_type_idx_t type = md_atom_type_add(&sys->atom.type, atom->name, atom->type, z, atom->mass, radius, color, flags, alloc);
+            const md_particle_type_idx_t type = md_particle_type_add(&sys->atom.type, atom->name, atom->type, z, atom->mass, radius, color, flags, alloc);
+            names_cut |= atom->name.len > sizeof(md_label_t) || atom->type.len > sizeof(md_label16_t);
 
             md_hashmap_add(&type_map, key, (uint32_t)type);
             moltype_type[t][i] = type;
         }
+    }
+    if (names_cut) {
+        MD_LOG_INFO("TPR: atom names longer than 8 characters, or force field types longer than 16, are shown cut short; the types stay apart");
     }
 
     // ## Atoms, residues, and the molecules as instances of their molecule types (the entities). Which kind of
@@ -1624,10 +1629,10 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
         if (moltype_entity[mb->moltype] == -1) {
             md_label_t id = {0};
-            id.len = (uint8_t)md_snprintf(id.buf, sizeof(id.buf), "%i", (int)sys->entity.count + 1);
+            md_snprintf(id.buf, sizeof(id.buf), "%i", (int)sys->entity.count + 1);
             moltype_entity[mb->moltype] = (md_entity_idx_t)sys->entity.count;
             md_array_push(sys->entity.id, id, alloc);
-            md_array_push(sys->entity.flags, MD_ENTITY_FLAG_NONE, alloc);
+            md_array_push(sys->entity.flags, MD_ENTITY_FLAG_TOPOLOGY, alloc);
             md_array_push(sys->entity.description, str_copy(mt->name, alloc), alloc);
             sys->entity.count += 1;
         }
@@ -1642,7 +1647,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             if (!shared_id) inst_id = md_util_instance_id_from_index(num_inst_ids++);
             md_array_push(sys->instance.id, inst_id, alloc);
             md_array_push(sys->instance.auth_id, (md_label_t){0}, alloc);
-            md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);
+            md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);
             md_array_push(sys->instance.entity_idx, moltype_entity[mb->moltype], alloc);
             sys->instance.count += 1;
 
@@ -1652,11 +1657,11 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                 if (atom->residue != prev_res) {
                     const md_tpr_residue_t* res = &mt->residues[atom->residue];
                     const md_sequence_id_t seq_id = renumber ? next_renum + m * (int32_t)mt->num_residues + atom->residue : res->nr;
-                    md_array_push(sys->component.atom_offset, (uint32_t)ai, alloc);
-                    md_array_push(sys->component.name, make_label(res->name), alloc);
-                    md_array_push(sys->component.seq_id, seq_id, alloc);
-                    md_array_push(sys->component.flags, MD_COMPONENT_FLAG_NONE, alloc);
-                    sys->component.count += 1;
+                    md_array_push(sys->residue.atom_offset, (uint32_t)ai, alloc);
+                    md_array_push(sys->residue.name, make_label(res->name), alloc);
+                    md_array_push(sys->residue.seq_id, seq_id, alloc);
+                    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
+                    sys->residue.count += 1;
                     prev_res = atom->residue;
                 }
 
@@ -1669,13 +1674,13 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
     }
     ASSERT(ai == num_atoms);
-    md_array_push(sys->component.atom_offset, (uint32_t)num_atoms, alloc);  // Final sentinel
+    md_array_push(sys->residue.atom_offset, (uint32_t)num_atoms, alloc);    // Final sentinel
     if (sys->instance.count) {
-        md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, alloc);  // Final sentinel
+        md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);     // Final sentinel
     }
     sys->atom.count = num_atoms;
 
-    md_util_system_augment_atom_types(sys);
+    md_util_system_augment_particle_types(sys);
 
     // ## Coordinates, nm -> Ångström
     if (data->x) {
@@ -1738,7 +1743,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         ASSERT(bi == count);
 
         // A charge site is tied to the atom it is built from by its construction, not by a bond: no bond, the
-        // same as when the system is read from coordinates. md_util_system_infer_structures keeps it with its
+        // same as when the system is read from coordinates. md_util_system_infer_molecules keeps it with its
         // molecule. Sites that interact (coarse grained beads) keep theirs.
         size_t kept = 0;
         for (size_t k = 0; k < count; ++k) {
@@ -1755,7 +1760,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_bond_build_connectivity(&sys->bond, num_atoms, alloc);
     }
 
-    md_util_system_infer_comp_flags(sys);
+    md_util_system_infer_residue_flags(sys);
     md_util_system_infer_entity_kinds(sys);
 
     // An elastic network written as plain bonds, which most Martini proteins have: elastic too, now that the residues

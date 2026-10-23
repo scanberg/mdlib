@@ -429,11 +429,11 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedra
 	return true;
 }
 
-static size_t parse_masses(md_lammps_atom_type_t types[], size_t num_atom_types, md_buffered_reader_t* reader) {
+static size_t parse_masses(md_lammps_atom_type_t types[], size_t num_particle_types, md_buffered_reader_t* reader) {
 	str_t tok[4];
 	str_t line;
 	size_t count = 0;
-	for (size_t i = 0; i < num_atom_types; ++i) {
+	for (size_t i = 0; i < num_particle_types; ++i) {
 		if (!md_buffered_reader_extract_line(&line, reader)) {
 			MD_LOG_ERROR("Failed to extract mass line");
 			goto done;
@@ -520,7 +520,7 @@ static double estimate_radius(str_t style, const double* params, int nparams) {
 	return 0.0; // unknown / unsupported
 }
 
-static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_atom_types, md_buffered_reader_t* reader, str_t hint) {
+static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_particle_types, md_buffered_reader_t* reader, str_t hint) {
 	str_t tok[8];
 	double params[8];
 
@@ -534,7 +534,7 @@ static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_atom_typ
 		}
 
 		str_t line;
-		for (size_t i = 0; i < num_atom_types; ++i) {
+		for (size_t i = 0; i < num_particle_types; ++i) {
 			if (md_buffered_reader_extract_line(&line, reader)) {
 				size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 
@@ -692,30 +692,30 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Masses"))) {
-			if (!data->num_atom_types) {
+			if (!data->num_particle_types) {
 				MD_LOG_ERROR("Encountered Mass entries, but number of atom types was not set or zero");
 				return false;
 			}
 
-			if (!data->atom_types) {
-				md_array_resize(data->atom_types, data->num_atom_types, alloc);
-				MEMSET(data->atom_types, 0, md_array_bytes(data->atom_types));
+			if (!data->particle_types) {
+				md_array_resize(data->particle_types, data->num_particle_types, alloc);
+				MEMSET(data->particle_types, 0, md_array_bytes(data->particle_types));
 			}
 			
 			md_buffered_reader_skip_line(reader);
-			if (parse_masses(data->atom_types, data->num_atom_types, reader) != data->num_atom_types) {
+			if (parse_masses(data->particle_types, data->num_particle_types, reader) != data->num_particle_types) {
 				MD_LOG_ERROR("Number of entries in Masses section did not match the number of atom types");
 				return false;
 			}
 		} else if (num_tok > 1 && str_eq(tok[0], STR_LIT("Pair")) && str_eq(tok[1], STR_LIT("Coeffs"))) {
-			if (!data->num_atom_types) {
+			if (!data->num_particle_types) {
 				MD_LOG_ERROR("Encountered Pair Coeff entries, but number of atom types was not set or zero");
 				return false;
 			}
 
-			if (!data->atom_types) {
-				md_array_resize(data->atom_types, data->num_atom_types, alloc);
-				MEMSET(data->atom_types, 0, md_array_bytes(data->atom_types));
+			if (!data->particle_types) {
+				md_array_resize(data->particle_types, data->num_particle_types, alloc);
+				MEMSET(data->particle_types, 0, md_array_bytes(data->particle_types));
 			}
 
 			char buf[128];
@@ -730,7 +730,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			}
 
 			md_buffered_reader_skip_line(reader);
-			if (!parse_pair_coeffs(data->atom_types, data->num_atom_types, reader, hint)) {
+			if (!parse_pair_coeffs(data->particle_types, data->num_particle_types, reader, hint)) {
 				return false;
 			}
 		} else if (num_tok == 2 && is_int(tok[0])) {
@@ -747,7 +747,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			}
 		} else if (num_tok == 3 && str_eq(tok[2], STR_LIT("types")) && is_int(tok[0])) {
 			if (str_eq(tok[1], STR_LIT("atom"))) {
-				data->num_atom_types = (int32_t)parse_int(tok[0]);
+				data->num_particle_types = (int32_t)parse_int(tok[0]);
 			} else if (str_eq(tok[1], STR_LIT("bond"))) {
 				data->num_bond_types = (int32_t)parse_int(tok[0]);
 			} else if (str_eq(tok[1], STR_LIT("angle"))) {
@@ -832,7 +832,7 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	if (data->angles) md_array_free(data->angles, alloc);
 	if (data->dihedrals) md_array_free(data->dihedrals, alloc);
 	if (data->impropers) md_array_free(data->impropers, alloc);
-	if (data->atom_types) md_array_free(data->atom_types, alloc);
+	if (data->particle_types) md_array_free(data->particle_types, alloc);
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 }
 
@@ -873,8 +873,8 @@ static str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_ur
 	return (str_t){ buf, (size_t)len };
 }
 
-// The molecules of a LAMMPS data file are its components. Each is an instance, of an entity per distinct sequence of
-// atom types. What kind of molecule an entity is, LAMMPS does not say (md_util_system_infer_entity_kinds).
+// The molecules of a LAMMPS data file are its residues. Each is an instance, of an entity per distinct sequence of
+// particle types. What kind of molecule an entity is, LAMMPS does not say (md_util_system_infer_entity_kinds).
 // Consecutive molecules of one entity share their instance id, as single residue molecules do elsewhere.
 static void lammps_molecules_as_instances(md_system_t* sys) {
 	md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
@@ -883,9 +883,9 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 	size_t num_ids = 0;
 	md_entity_idx_t prev_entity = -1;
 	md_label_t inst_id = {0};
-	for (size_t c = 0; c < sys->component.count; ++c) {
-		const md_urange_t range = md_component_atom_range(&sys->component, c);
-		const uint64_t key = md_hash64(sys->atom.type_idx + range.beg, (range.end - range.beg) * sizeof(md_atom_type_idx_t), range.end - range.beg);
+	for (size_t c = 0; c < sys->residue.count; ++c) {
+		const md_urange_t range = md_system_residue_atom_range(sys, c);
+		const uint64_t key = md_hash64(sys->atom.type_idx + range.beg, (range.end - range.beg) * sizeof(md_particle_type_idx_t), range.end - range.beg);
 
 		md_entity_idx_t entity_idx = -1;
 		const uint32_t* found = md_hashmap_get(&entity_map, key);
@@ -896,7 +896,7 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 			md_hashmap_add(&entity_map, key, (uint32_t)entity_idx);
 
 			md_label_t id = {0};
-			id.len = (uint8_t)md_snprintf(id.buf, sizeof(id.buf), "%i", entity_idx + 1);
+			md_snprintf(id.buf, sizeof(id.buf), "%i", entity_idx + 1);
 			char buf[64];
 			str_t desc = lammps_formula(buf, sizeof(buf), sys, range);
 			if (str_empty(desc)) {
@@ -904,7 +904,7 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 				desc = (str_t){ buf, (size_t)len };
 			}
 			md_array_push(sys->entity.id, id, sys->alloc);
-			md_array_push(sys->entity.flags, MD_ENTITY_FLAG_NONE, sys->alloc);
+			md_array_push(sys->entity.flags, MD_ENTITY_FLAG_TOPOLOGY, sys->alloc);
 			md_array_push(sys->entity.description, str_copy(desc, sys->alloc), sys->alloc);
 			sys->entity.count += 1;
 		}
@@ -914,13 +914,13 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 		}
 		md_array_push(sys->instance.id, inst_id, sys->alloc);
 		md_array_push(sys->instance.auth_id, (md_label_t){0}, sys->alloc);
-		md_array_push(sys->instance.comp_offset, (uint32_t)c, sys->alloc);
+		md_array_push(sys->instance.res_offset, (uint32_t)c, sys->alloc);
 		md_array_push(sys->instance.entity_idx, entity_idx, sys->alloc);
 		sys->instance.count += 1;
 		prev_entity = entity_idx;
 	}
 	if (sys->instance.count) {
-		md_array_push(sys->instance.comp_offset, (uint32_t)sys->component.count, sys->alloc);
+		md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, sys->alloc);
 	}
 	md_temp_end(temp);
 }
@@ -955,38 +955,38 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 	// Reset atom data and initialize to default value
 	sys->atom.type.count = 0;
-	md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, sys->alloc);
+	md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0, 0, 0, 0, sys->alloc);
 
-	float* type_masses			= md_temp_alloc_array(temp_scope, float, data->num_atom_types);
-	md_atomic_number_t* type_z	= md_temp_alloc_array(temp_scope, md_atomic_number_t, data->num_atom_types);
-	int* type_map				= md_temp_alloc_array(temp_scope, int, data->num_atom_types);
-	for (size_t i = 0; i < data->num_atom_types; ++i) {
-		type_masses[i] = data->atom_types[i].mass;
+	float* type_masses			= md_temp_alloc_array(temp_scope, float, data->num_particle_types);
+	md_atomic_number_t* type_z	= md_temp_alloc_array(temp_scope, md_atomic_number_t, data->num_particle_types);
+	int* type_map				= md_temp_alloc_array(temp_scope, int, data->num_particle_types);
+	for (size_t i = 0; i < data->num_particle_types; ++i) {
+		type_masses[i] = data->particle_types[i].mass;
     }
 	
-	size_t num_successfully_mapped_types = md_util_element_from_mass(type_z, type_masses, data->num_atom_types);
+	size_t num_successfully_mapped_types = md_util_element_from_mass(type_z, type_masses, data->num_particle_types);
 
 	// @TODO: Do something with the variable above to propagate information of possible Coarse-grained system
 	(void)num_successfully_mapped_types;
 	
-	for (size_t i = 0; i < data->num_atom_types; ++i) {
+	for (size_t i = 0; i < data->num_particle_types; ++i) {
 		char buf[8];
-		int len = md_snprintf(buf, sizeof(buf), "type_%i", data->atom_types[i].id);
+		int len = md_snprintf(buf, sizeof(buf), "type_%i", data->particle_types[i].id);
 		
 		str_t type_id = {buf, len};
-		float mass   = data->atom_types[i].mass;
-		float radius = data->atom_types[i].radius;
+		float mass   = data->particle_types[i].mass;
+		float radius = data->particle_types[i].radius;
 		uint32_t color = type_z[i] != MD_Z_X ? md_atomic_number_cpk_color(type_z[i]) : 0xFF808080; // Gray for unknown elements
 		
-		type_map[i] = md_atom_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, color, 0, sys->alloc);
+		type_map[i] = md_particle_type_find_or_add(&sys->atom.type, type_id, type_z[i], mass, radius, color, 0, sys->alloc);
 	}
 
 	int prev_resid = -1;
 	for (size_t i = 0; i < data->num_atoms; ++i) {
-		md_atom_type_idx_t type_idx = 0;
-		for (size_t j = 0; j < data->num_atom_types; ++j) {
-			if (data->atoms[i].type == data->atom_types[j].id) {
-				type_idx = (md_atom_type_idx_t)type_map[j];
+		md_particle_type_idx_t type_idx = 0;
+		for (size_t j = 0; j < data->num_particle_types; ++j) {
+			if (data->atoms[i].type == data->particle_types[j].id) {
+				type_idx = (md_particle_type_idx_t)type_map[j];
 			}
 		}
 
@@ -996,11 +996,11 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 				char buf[8];
 				int len = md_snprintf(buf, sizeof(buf), "comp_%i", resid);
 				str_t name = {buf, len};
-				md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
-				md_array_push(sys->component.seq_id, resid, sys->alloc);
-				md_array_push(sys->component.name, make_label(name), sys->alloc);
-				md_array_push(sys->component.flags, 0, sys->alloc);
-				sys->component.count += 1;
+				md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
+				md_array_push(sys->residue.seq_id, resid, sys->alloc);
+				md_array_push(sys->residue.name, make_label(name), sys->alloc);
+				md_array_push(sys->residue.flags, 0, sys->alloc);
+				sys->residue.count += 1;
 			}
 		}
 
@@ -1013,7 +1013,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	}
 
 	if (has_resid) {
-		md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc); // Final sentinel
+		md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc); // Final sentinel
 		lammps_molecules_as_instances(sys);
 	}
 
@@ -1067,7 +1067,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
     }
 
 	// The atoms have no names to classify the molecules by, but water and monatomic ions are told by their atoms
-	md_util_system_infer_comp_flags(sys);
+	md_util_system_infer_residue_flags(sys);
 	md_util_system_infer_entity_kinds(sys);
 
 	md_temp_end(temp_scope);

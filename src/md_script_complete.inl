@@ -250,26 +250,23 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
             }
         }
         break;
-    case DOMAIN_COMP_NAME:
-        if (sys && sys->component.name) {
+    case DOMAIN_RES_NAME:
+        if (sys && sys->residue.name) {
             str_t prev = {0};
-            for (size_t i = 0; i < sys->component.count; ++i) {
-                if (!completion_in_context(atoms, md_component_atom_range(&sys->component, i))) continue;
-                const str_t name = LBL_TO_STR(sys->component.name[i]);
-                if (str_eq(name, prev)) continue;   // Runs of the same component (water) are common
+            for (size_t i = 0; i < sys->residue.count; ++i) {
+                if (!completion_in_context(atoms, md_system_residue_atom_range(sys, i))) continue;
+                const str_t name = LBL_TO_STR(sys->residue.name[i]);
+                if (str_eq(name, prev)) continue;   // Runs of the same residue (water) are common
                 completion_add_value(&values, &seen, name, alloc);
                 prev = name;
             }
         }
         break;
     case DOMAIN_CHAIN_ID:
-    case DOMAIN_INST_ID:
-    case DOMAIN_INST_AUTH_ID:
         if (sys) {
-            for (size_t i = 0; i < md_system_instance_count(sys); ++i) {
-                if (domain == DOMAIN_CHAIN_ID && !is_instance_chain(sys, i)) continue;
-                if (!completion_in_context(atoms, md_system_instance_atom_range(sys, i))) continue;
-                const str_t id = domain == DOMAIN_INST_AUTH_ID ? md_system_instance_auth_id(sys, i) : md_system_instance_id(sys, i);
+            for (size_t c = 0; c < md_system_chain_count(sys); ++c) {
+                const str_t id = md_system_chain_id(sys, c);
+                if (str_empty(id) || !chain_in_context(sys, c, atoms)) continue;
                 completion_add_value(&values, &seen, id, alloc);
             }
         }

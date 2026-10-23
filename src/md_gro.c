@@ -151,7 +151,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
                 atom->z = (float)parse_float(tokens[2]);
 
                 // Velocities are all three or none: a line carrying only part of them is malformed, and
-                // guessing which component was meant is worse than reading none.
+                // guessing which residue was meant is worse than reading none.
                 if (num_tokens >= 6) {
                     atom->vx = (float)parse_float(tokens[3]);
                     atom->vy = (float)parse_float(tokens[4]);
@@ -258,9 +258,9 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
     md_array_resize(sys->atom.flags, capacity, sys->alloc);
 
     sys->atom.type.count = 0;
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
-	uint64_t prev_comp_key = 0;
+	uint64_t prev_res_key = 0;
     for (size_t i = 0; i < data->num_atoms; ++i) {
         const float x = data->atom_data[i].x * NM_TO_ANGSTROM;
         const float y = data->atom_data[i].y * NM_TO_ANGSTROM;
@@ -269,14 +269,14 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
         str_t res_name  = str_from_cstrn(data->atom_data[i].res_name,  sizeof(data->atom_data[i].res_name));
         md_sequence_id_t res_id = data->atom_data[i].res_id;
 
-		uint64_t comp_key = md_hash64_str(res_name, (uint64_t)res_id);
-        if (comp_key != prev_comp_key) {
+		uint64_t res_key = md_hash64_str(res_name, (uint64_t)res_id);
+        if (res_key != prev_res_key) {
             // New residue
-            sys->component.count += 1;
-            md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
-            md_array_push(sys->component.name,  make_label(res_name), sys->alloc);
-            md_array_push(sys->component.seq_id,    res_id, sys->alloc);
-            md_array_push(sys->component.flags,  MD_COMPONENT_FLAG_NONE, sys->alloc);
+            sys->residue.count += 1;
+            md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
+            md_array_push(sys->residue.name,    make_label(res_name), sys->alloc);
+            md_array_push(sys->residue.seq_id,      res_id, sys->alloc);
+            md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
 		}
 
         sys->atom.count += 1;
@@ -285,9 +285,9 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
         sys->atom.type_idx[i] = 0;
         sys->atom.flags[i] = 0;
 
-		prev_comp_key = comp_key;
+		prev_res_key = res_key;
     }
-	md_array_push(sys->component.atom_offset, (uint32_t)sys->atom.count, sys->alloc);  // Final sentinel
+	md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);    // Final sentinel
 
     // The optional velocity columns. Stored in the file's own nm/ps rather than converted the way
     // the coordinates are, because a velocity has a unit and the attribute carries it - a consumer
@@ -316,11 +316,11 @@ bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* st
 
     state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(box));
 
-    md_util_system_infer_atom_types(sys, atom_names);
-    // NOTE: infer_comp_flags below consumes bond connectivity, so this cannot simply move
-    // out into md_util_system_infer without moving comp_flags with it.
+    md_util_system_infer_particle_types(sys, atom_names);
+    // NOTE: infer_res_flags below consumes bond connectivity, so this cannot simply move
+    // out into md_util_system_infer without moving res_flags with it.
     md_util_system_infer_covalent_bonds(sys, state);
-    md_util_system_infer_comp_flags(sys);
+    md_util_system_infer_residue_flags(sys);
 
     md_temp_end(temp);
     state->num_atoms = sys->atom.count;

@@ -62,13 +62,13 @@ static void compare_with_gro(int* utest_result, const md_system_t* sys, const md
     ASSERT_TRUE(md_gro_data_parse_file(&gro, gro_path, alloc));
     ASSERT_EQ(gro.num_atoms, sys->atom.count);
 
-    size_t comp = 0;
+    size_t res = 0;
     size_t res_mismatch = 0, coord_mismatch = 0;
     for (size_t i = 0; i < sys->atom.count; ++i) {
-        while (comp + 1 < sys->component.count && sys->component.atom_offset[comp + 1] <= i) comp++;
+        while (res + 1 < sys->residue.count && sys->residue.atom_offset[res + 1] <= i) res++;
         const md_gro_atom_t* a = &gro.atom_data[i];
         str_t res_name = str_from_cstrn(a->res_name, sizeof(a->res_name));
-        if (!str_eq(md_component_name(&sys->component, comp), res_name) || sys->component.seq_id[comp] != a->res_id) {
+        if (!str_eq(md_system_residue_name(sys, res), res_name) || sys->residue.seq_id[res] != a->res_id) {
             res_mismatch += 1;
         }
         // A .gro has three decimals in nm
@@ -142,7 +142,7 @@ UTEST(tpr, system_tip3p) {
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, STR_LIT(TPR_DIR "peptide_tip3p.tpr")));
     EXPECT_EQ(1577u, sys.atom.count);
     EXPECT_EQ(1577u, state.num_atoms);
-    EXPECT_EQ(2u + 509u + 4u, sys.component.count);
+    EXPECT_EQ(2u + 509u + 4u, sys.residue.count);
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
     for (size_t i = 0; i < sys.bond.count; ++i) {
         EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(sys.bond.flags[i]));
@@ -151,7 +151,7 @@ UTEST(tpr, system_tip3p) {
     // Every atom has its element from the topology
     size_t unknown = 0;
     for (size_t i = 0; i < sys.atom.count; ++i) {
-        if (md_atom_type_atomic_number(&sys.atom.type, sys.atom.type_idx[i]) == 0) unknown += 1;
+        if (md_particle_type_atomic_number(&sys.atom.type, sys.atom.type_idx[i]) == 0) unknown += 1;
     }
     EXPECT_EQ(0u, unknown);
 
@@ -163,8 +163,8 @@ UTEST(tpr, system_tip3p) {
     EXPECT_NEAR(16.0f, md_atom_mass(&sys.atom, PEPTIDE_ATOMS), 1e-4f);     // OW
     // The force field type travels with the type; the sentinel type has none
     EXPECT_EQ(sys.atom.type.count, md_array_size(sys.atom.type.ff_type));
-    EXPECT_TRUE(str_eq(md_atom_type_ff_type(&sys.atom.type, sys.atom.type_idx[0]), STR_LIT("N3")));
-    EXPECT_TRUE(str_empty(md_atom_type_ff_type(&sys.atom.type, 0)));
+    EXPECT_TRUE(str_eq(md_particle_type_ff_type(&sys.atom.type, sys.atom.type_idx[0]), STR_LIT("N3")));
+    EXPECT_TRUE(str_empty(md_particle_type_ff_type(&sys.atom.type, 0)));
 
     // No coarse grained types in an all-atom system
     EXPECT_FALSE(md_system_is_coarse_grained(&sys));
@@ -175,7 +175,7 @@ UTEST(tpr, system_tip3p) {
     // What a caller does next: everything but the bonds is derived. One structure per molecule.
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
-    EXPECT_EQ(1u + 509u + 4u, md_structure_count(&sys.structure));
+    EXPECT_EQ(1u + 509u + 4u, md_system_molecule_count(&sys));
 
     md_arena_allocator_destroy(arena);
 }
@@ -213,8 +213,8 @@ UTEST(tpr, virtual_sites) {
 
     // The first water: OW HW1 HW2 MW, the virtual site with no element, no radius and no bond
     const size_t ow = PEPTIDE_ATOMS;
-    EXPECT_EQ(8, md_atom_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow]));
-    EXPECT_EQ(0, md_atom_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow + 3]));
+    EXPECT_EQ(8, md_particle_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow]));
+    EXPECT_EQ(0, md_particle_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow + 3]));
     EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&sys.atom, ow + 3));
     EXPECT_EQ(0.0f, md_atom_radius(&sys.atom, ow + 3));
     for (size_t i = 0; i < sys.bond.count; ++i) {
@@ -224,13 +224,13 @@ UTEST(tpr, virtual_sites) {
 
     // The site still belongs to its water's structure: one per molecule
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
-    EXPECT_EQ(1u + 506u + 4u, md_structure_count(&sys.structure));
+    EXPECT_EQ(1u + 506u + 4u, md_system_molecule_count(&sys));
 
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "peptide_tip4p.gro"));
     md_arena_allocator_destroy(arena);
 }
 
-// A topology may leave out the atomic number of some or all of its atom types ([atomtypes] without the
+// A topology may leave out the atomic number of some or all of its particle types ([atomtypes] without the
 // at.num column, as hand written ligand parameters often are). The elements are then inferred from the
 // names and masses, and the atoms are not taken for coarse grained beads.
 static void expect_elements_as(int* utest_result, const md_system_t* ref, const md_tpr_data_t* data, md_allocator_i* arena) {
@@ -360,20 +360,20 @@ UTEST(tpr, martini) {
     // chlorine's name and mass, but in a system of beads that is not taken for chlorine.
     for (size_t t = 1; t < sys.atom.type.count; ++t) {
         EXPECT_EQ(0, sys.atom.type.z[t]);
-        EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_type_particle_kind(&sys.atom.type, t));
+        EXPECT_EQ(MD_PARTICLE_BEAD, md_particle_type_particle_kind(&sys.atom.type, t));
         EXPECT_GT(sys.atom.type.radius[t], 1.8f);    // Tiny beads: sigma 0.34 nm
         EXPECT_LT(sys.atom.type.radius[t], 3.0f);
     }
 
     // BB is the same particle (Q5, 72) in both residues and shares a type. SC1 is a TC4 bead of 36 in
     // Trp and an SC2 bead of 54 in Ile: same name, different particles, different types.
-    const md_atom_type_idx_t trp_bb = sys.atom.type_idx[0], trp_sc1 = sys.atom.type_idx[1];
-    const md_atom_type_idx_t ile_bb = sys.atom.type_idx[6], ile_sc1 = sys.atom.type_idx[7];
+    const md_particle_type_idx_t trp_bb = sys.atom.type_idx[0], trp_sc1 = sys.atom.type_idx[1];
+    const md_particle_type_idx_t ile_bb = sys.atom.type_idx[6], ile_sc1 = sys.atom.type_idx[7];
     EXPECT_EQ(trp_bb, ile_bb);
     EXPECT_NE(trp_sc1, ile_sc1);
-    EXPECT_TRUE(str_eq(md_atom_type_ff_type(&sys.atom.type, trp_sc1), STR_LIT("TC4")));
-    EXPECT_TRUE(str_eq(md_atom_type_ff_type(&sys.atom.type, ile_sc1), STR_LIT("SC2")));
-    EXPECT_TRUE(str_eq(md_atom_type_ff_type(&sys.atom.type, trp_bb),  STR_LIT("Q5")));
+    EXPECT_TRUE(str_eq(md_particle_type_ff_type(&sys.atom.type, trp_sc1), STR_LIT("TC4")));
+    EXPECT_TRUE(str_eq(md_particle_type_ff_type(&sys.atom.type, ile_sc1), STR_LIT("SC2")));
+    EXPECT_TRUE(str_eq(md_particle_type_ff_type(&sys.atom.type, trp_bb), STR_LIT("Q5")));
     EXPECT_NEAR(36.0f, sys.atom.type.mass[trp_sc1], 1e-4f);
     EXPECT_NEAR(54.0f, sys.atom.type.mass[ile_sc1], 1e-4f);
     EXPECT_NEAR(72.0f, md_atom_mass(&sys.atom, 618), 1e-4f);    // The last water
@@ -387,8 +387,8 @@ UTEST(tpr, martini) {
     EXPECT_TRUE(md_atom_flags(&sys.atom, 0) & MD_ATOM_FLAG_BACKBONE);
     EXPECT_FALSE(md_atom_flags(&sys.atom, 1) & MD_ATOM_FLAG_BACKBONE);
     for (size_t c = 0; c < 2; ++c) {
-        EXPECT_EQ(MD_COMPONENT_KIND_AMINO_ACID, md_component_kind(&sys.component, c));
-        const md_urange_t range = md_component_atom_range(&sys.component, c);
+        EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_system_residue_kind(&sys, c));
+        const md_urange_t range = md_system_residue_atom_range(&sys, c);
         size_t num_backbone = 0;
         for (uint32_t i = range.beg; i < range.end; ++i) {
             const md_atom_flags_t flags = md_atom_flags(&sys.atom, i);
@@ -419,7 +419,7 @@ UTEST(tpr, martini) {
 
     // One structure per molecule: the peptide, two lipids, four ions, 583 waters
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
-    EXPECT_EQ(1u + 2u + 4u + 583u, md_structure_count(&sys.structure));
+    EXPECT_EQ(1u + 2u + 4u + 583u, md_system_molecule_count(&sys));
 
     md_arena_allocator_destroy(arena);
 }
@@ -685,7 +685,7 @@ UTEST(tpr, elastic_bonds) {
     // Structures, rings and chemistry go by the molecules alone
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     md_util_system_infer(&base, &base_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
-    EXPECT_EQ(md_structure_count(&base.structure), md_structure_count(&sys.structure));
+    EXPECT_EQ(md_system_molecule_count(&base), md_system_molecule_count(&sys));
     EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
     EXPECT_EQ(2u, count_elastic(&sys));
 

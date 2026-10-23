@@ -5,6 +5,7 @@
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 #include <core/md_bitset.h>
+#include <core/md_hash.h>
 
 struct md_allocator_i;
 struct md_bitset_t;
@@ -20,9 +21,9 @@ typedef enum {
     MD_UTIL_INFER_BOND_BIT            = 1u << 2,
     MD_UTIL_INFER_INSTANCE_BIT        = 1u << 3,
     MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
-    MD_UTIL_INFER_STRUCTURE_BIT       = 1u << 5,
+    MD_UTIL_INFER_MOLECULE_BIT        = 1u << 5,
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
-	MD_UTIL_INFER_UNWRAP_STRUCTURE_BIT = 1u << 7,
+	MD_UTIL_INFER_UNWRAP_MOLECULE_BIT = 1u << 7,
     MD_UTIL_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
     MD_UTIL_INFER_LIPID_BIT           = 1u << 9,     // The heads and tails of the lipids (md_util_system_infer_lipids)
 
@@ -59,47 +60,59 @@ bool md_util_resname_nucleotide(str_t str);
 
 void md_util_system_extract_xyzw_from_mask(vec4_t* out_xyzw, const struct md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state);
 
-// Classifies the components (md_component_kind_t: amino acid, nucleotide, water, ion, lipid) from their names, atoms
-// and bonds. A component of coarse grained beads which is a molecule of the Martini force fields by its name and all
+// Classifies the residues (md_residue_kind_t: amino acid, nucleotide, water, ion, lipid) from their names, atoms
+// and bonds. A residue of coarse grained beads which is a molecule of the Martini force fields by its name and all
 // its bead names (a lipid, water, an ion, a sugar, ...) is of the kind of that molecule. An amino acid or nucleotide whose backbone atoms are found by name and verified by their bonds, and which
 // is either a standard residue by name or linked into a chain (a peptide or phosphodiester bond to another
-// component), is MD_COMPONENT_FLAG_RESOLVED: its atoms are given their roles (MD_ATOM_FLAG_BACKBONE, _SIDE_CHAIN,
+// residue), is MD_RESIDUE_FLAG_RESOLVED: its atoms are given their roles (MD_ATOM_FLAG_BACKBONE, _SIDE_CHAIN,
 // ...) and its terminal groups are marked. The link keeps out the ligands which name their atoms like a residue
-// (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A component which is only named like an
-// amino acid or nucleotide gets the kind alone. Components a predefined coarse grained type already classified as
+// (GTP, ATP, NAD) while modified residues in a chain (MSE, PSU) come in. A residue which is only named like an
+// amino acid or nucleotide gets the kind alone. Residues a predefined coarse grained type already classified as
 // water, ion or lipid are left alone. Requires the bonds.
-bool md_util_system_infer_comp_flags(md_system_t* sys);
+bool md_util_system_infer_residue_flags(md_system_t* sys);
 
 // The lipids of the system (sys->lipid, see md_lipid_data_t): every lipid molecule, its heads and tails, and the atoms
-// of the tails (MD_ATOM_FLAG_LIPID_TAIL). A molecule (a run of consecutive components bonded to each other, none of them an amino
-// acid, a nucleotide, water or an ion) whose components are lipids by name gets the tails found in it. One whose
-// components are not is a lipid by its structure when it has a polar head and a hydrocarbon chain of at least 8 carbons
-// or the skeleton of a sterol (atomistic molecules only), and its components become MD_COMPONENT_KIND_LIPID: lipids of
+// of the tails (MD_ATOM_FLAG_LIPID_TAIL). A molecule (a run of consecutive residues bonded to each other, none of them an amino
+// acid, a nucleotide, water or an ion) whose residues are lipids by name gets the tails found in it. One whose
+// residues are not is a lipid by its structure when it has a polar head and a hydrocarbon chain of at least 8 carbons
+// or the skeleton of a sterol (atomistic molecules only), and its residues become MD_RESIDUE_KIND_LIPID: lipids of
 // names nothing knows (the 3 letter names of PDB files, the codes of the PDB, lipids split into several residues).
 // Tails are found from the bonds alone for atoms, and from the names of the beads (the conventions of the Martini
-// lipidomes) for coarse grained lipids. Requires the classified components, the bonds for the heads and tails and for
-// the molecules of several components (without them a lipid is its residue), and for sterols the rings.
+// lipidomes) for coarse grained lipids. Requires the classified residues, the bonds for the heads and tails and for
+// the molecules of several residues (without them a lipid is its residue), and for sterols the rings.
 bool md_util_system_infer_lipids(md_system_t* sys);
 
 // Replaces the entities and instances of the system with inferred ones (MD_ENTITY_FLAG_INFERRED), from the
-// classified components and the bonds (see md_instance_data_t for what an instance is). opt_comp_auth_asym_id is
-// the author chain id of each component, when the format has one (a PDB file): it is kept as the instances'
+// classified residues and the bonds (see md_instance_data_t for what an instance is). opt_res_auth_asym_id is
+// the author chain id of each residue, when the format has one (a PDB file): it is kept as the instances'
 // auth_id, a change of it always ends an instance, and a polymer chain continues over gaps while it stays the same.
-bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_comp_auth_asym_id[]);
+bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_res_auth_asym_id[]);
+
+// The chains of the system (sys->chain, see md_chain_data_t) from its instances: one per author id the instances carry,
+// and one for each polymer instance without one, which takes the kinds of the entities to be known. Done by
+// md_util_system_infer (MD_UTIL_INFER_INSTANCE_BIT) and md_util_system_infer_entity_and_instance, and by the mmCIF
+// loader, whose file gives the kinds. A loader whose topology gives instances of entities it does not classify (TPR,
+// LAMMPS) leaves it to md_util_system_infer; whatever changes the instances after calls it again.
+bool md_util_system_infer_chains(md_system_t* sys);
+
+// The parts of the system (sys->part, see md_part_data_t) from its instances, its bonds and the kinds of its residues.
+// Done by md_util_system_infer (MD_UTIL_INFER_INSTANCE_BIT, after the bonds) and by
+// md_util_system_infer_entity_and_instance; whatever changes the instances, the bonds or the kinds calls it after.
+bool md_util_system_infer_parts(md_system_t* sys);
 
 // The id of the instance with the given index when a loader generates them: A..Z, AA..ZZ, AAA.. (0 is A)
 md_label_t md_util_instance_id_from_index(size_t idx);
 
 // Classifies the entities of kind MD_ENTITY_KIND_UNKNOWN (which a topology names without saying what they are)
-// from the components of their first instance. Requires the components to be classified.
+// from the residues of their first instance. Requires the residues to be classified.
 void md_util_system_infer_entity_kinds(md_system_t* sys);
 
-// The component types of the system (sys->component.type, see md_component_type_data_t): one per name and kind of
-// component, with the standard monomer it is a form of (md_monomer_from_comp_name) and a default color: that of the
+// The residue types of the system (sys->residue.type, see md_residue_type_data_t): one per name and kind of
+// residue, with the standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the
 // monomer, that of the element of a monatomic ion, else one made from its name. The types the system has already are
-// kept (with the colors they were given), the components which match none get new ones. Requires the classified
-// components, lipids included; md_util_system_infer calls it last.
-bool md_util_system_infer_component_types(md_system_t* sys);
+// kept (with the colors they were given), the residues which match none get new ones. Requires the classified
+// residues, lipids included; md_util_system_infer calls it last.
+bool md_util_system_infer_residue_types(md_system_t* sys);
 
 size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
@@ -112,20 +125,20 @@ size_t md_util_element_from_mass(md_element_t out_element[], const float in_mass
 // carboxyl group of its own, which a PDB file can number on after the chain, as 1LAF does its bound arginine), a
 // nucleotide without its P (or phosphate bead) after it (a 5' end), or a free hydroxyl (with its hydrogen) on either
 // side. A crystal structure rarely has the hydrogens and often leaves out the OXT, so the ends of the pieces of a
-// broken chain look like termini to the classification of the components: the residues on either side of a break lose
-// the terminal flags it gave them (MD_COMPONENT_FLAG_TERMINAL_BEG, _END, and those of their atoms).
+// broken chain look like termini to the classification of the residues: the residues on either side of a break lose
+// the terminal flags it gave them (MD_RESIDUE_FLAG_TERMINAL_BEG, _END, and those of their atoms).
 // The bonds decide, not the sequence numbers: an insertion code (52, 52A) or numbering that skips (antibodies, the
 // chymotrypsin numbering of proteases) does not break a chain whose backbone is bonded, and numbering that runs on
 // does not join one whose backbone is not. Atoms without bonds (a structure file read without inferring them) are
 // linked by their distance, the shortest way round a periodic cell, and without coordinates by consecutive sequence
 // numbers. md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT) marks the residues on either side of each break,
-// MD_COMPONENT_FLAG_BREAK_AFTER the one before it and MD_COMPONENT_FLAG_BREAK_BEFORE the one after it, and ends the
+// MD_RESIDUE_FLAG_BREAK_AFTER the one before it and MD_RESIDUE_FLAG_BREAK_BEFORE the one after it, and ends the
 // backbone ranges there (md_protein_backbone_data_t, md_nucleic_backbone_data_t).
 
-// The atoms a link over the break after the component comp_idx (MD_COMPONENT_FLAG_BREAK_AFTER) would join: the C and
+// The atoms a link over the break after the residue res_idx (MD_RESIDUE_FLAG_BREAK_AFTER) would join: the C and
 // the N of a peptide bond, the O3' and the P of a phosphodiester bond, the backbone beads of coarse grained residues.
 // False, and out_atoms -1, when there is no break after it.
-bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sys, size_t comp_idx);
+bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sys, size_t res_idx);
 
 // The per segment quantities of a protein backbone (see md_protein_backbone_data_t), computed into the caller's arrays
 // of one entry per segment (capacity at least backbone->segment.count). They do not allocate. The secondary structure
@@ -135,7 +148,7 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const vec3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
 // Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
-// sys->protein_backbone, or for segments without a component (comp_idx -1) from their bonds. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
+// sys->protein_backbone, or for segments without a residue (res_idx -1) from their bonds. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
 // segments of traces, which have no phi and psi.
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_system_t* sys);
 
@@ -195,7 +208,7 @@ size_t md_util_system_infer_coordination(md_system_t* sys);
 // backbone bead of one to the first of the next (BB to BB, BB3 to BB1, and BB2 to BB1 as well in Martini 3 RNA), a
 // disulfide (the SC1 of two cysteines), and the bond which closes a cyclic chain; every other bond between beads of
 // two residues of a chain is elastic. Bonds within a residue, and to anything other than amino acids and nucleotides,
-// are left as they are. Needs the kinds of the components and the backbone beads (md_util_system_infer_comp_flags),
+// are left as they are. Needs the kinds of the residues and the backbone beads (md_util_system_infer_residue_flags),
 // and rebuilds the connectivity when it marks any. The topology readers (md_tpr, md_itp) call it.
 size_t md_util_system_infer_elastic_bonds(md_system_t* sys);
 
@@ -269,30 +282,35 @@ void md_util_infer_rings(md_index_data_t* out_rings, const md_bond_data_t* bond,
 // (md_chem_perceive does).
 void md_util_system_infer_ring_flags(md_system_t* sys);
 
-// Identify isolated structures by covalent bonds.
+// The molecules of the system (md_molecule_data_t), see there for what holds one together.
 // For coarse grained systems (any particle a bead, md_system_is_coarse_grained), beads the bonds leave disconnected are
-// joined through the component hierarchy instead: each bead to its component's backbone (or first) bead, and those
-// anchors along consecutive polymer components. No coordinates are consulted and sys->bond is not modified.
-bool md_util_system_infer_structures(md_system_t* sys);
+// joined through the residue hierarchy instead: each bead to its residue's backbone (or first) bead, and those
+// anchors along consecutive polymer residues. No coordinates are consulted and sys->bond is not modified.
+bool md_util_system_infer_molecules(md_system_t* sys);
 
-// Identify atom types within the system from the atom labels and the names of their components. Coarse grained beads
+// The type of an atom of the name and element, added when the system has none, with the mass, size and color of the
+// element. map, which the caller keeps for a load (zeroed, with an allocator), finds a type it has given before in one
+// lookup rather than a search of the types.
+md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_hashmap32_t* map, str_t name, md_atomic_number_t z);
+
+// Identify particle types within the system from the atom labels and the names of their residues. Coarse grained beads
 // come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any
-// component named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
+// residue named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
 // the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
 // one label with a different element, mass, size or particle kind are of different types.
-void md_util_system_infer_atom_types(md_system_t* sys, const str_t atom_labels[]);
+void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[]);
 
-// Applies the predefined atom type tables (coarse grained beads) to atoms that already have a type,
+// Applies the predefined particle type tables (coarse grained beads) to atoms that already have a type,
 // for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
 // parameters of every bead). Only types without an element (z == 0) are considered. The table gives
-// the atoms their role (backbone, side chain), the components their kind (amino acid, water) where
+// the atoms their role (backbone, side chain), the residues their kind (amino acid, water) where
 // they have none, and the types their particle kind where the loader did not say. Mass and radius
 // are left alone: they are the loader's.
-void md_util_system_augment_atom_types(md_system_t* sys);
+void md_util_system_augment_particle_types(md_system_t* sys);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-// Infers the derivable parts of a system (covalent bonds, rings, structures, backbones, hydrogen
-// bond roles) from the supplied state, and records that state as sys->reference. A system without components has its
+// Infers the derivable parts of a system (covalent bonds, rings, molecules, backbones, hydrogen
+// bond roles) from the supplied state, and records that state as sys->reference. A system without residues has its
 // backbones found from the covalent bonds alone (md_protein_backbone_data_t).
 //
 // The state is an explicit parameter rather than read off the system so that the recorded
@@ -337,11 +355,11 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 // Applies periodic boundary conditions to all coordinates in a systems state (convenience function)
 bool md_util_system_pbc(md_system_state_t* state);
 
-// Unwraps a single structure by walking the parent hierarchy md_util_system_infer_structures
+// Unwraps a single molecule by walking the parent hierarchy md_util_system_infer_molecules
 // already computed. Linear, allocation free, and does not consult bond connectivity.
-void md_util_unwrap_structure(md_system_state_t* state, const md_structure_t* structure);
+void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol);
 
-// Unwraps all structures in a system
+// Unwraps all molecules in a system
 void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys);
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference

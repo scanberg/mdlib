@@ -293,14 +293,14 @@ static void assign_modes(chem_t* c, const md_system_t* sys) {
     c->mode = md_alloc(c->alloc, N);
     uint32_t* group = md_alloc(c->alloc, sizeof(uint32_t) * MAX(N, 1));
 
-    if (sys->component.count && sys->component.atom_offset) {
+    if (sys->residue.count && sys->residue.atom_offset) {
         for (size_t i = 0; i < N; ++i) group[i] = UINT32_MAX;
-        for (size_t ci = 0; ci < sys->component.count; ++ci) {
-            const md_urange_t r = md_component_atom_range(&sys->component, ci);
+        for (size_t ci = 0; ci < sys->residue.count; ++ci) {
+            const md_urange_t r = md_system_residue_atom_range(sys, ci);
             for (uint32_t i = r.beg; i < r.end && i < N; ++i) group[i] = (uint32_t)ci;
         }
         // Atoms outside of every residue form their own groups by molecule
-        for (size_t i = 0; i < N; ++i) if (group[i] == UINT32_MAX) group[i] = (uint32_t)(sys->component.count + i);
+        for (size_t i = 0; i < N; ++i) if (group[i] == UINT32_MAX) group[i] = (uint32_t)(sys->residue.count + i);
     } else {
         for (size_t i = 0; i < N; ++i) group[i] = (uint32_t)i;
         for (size_t i = 0; i < N; ++i) {
@@ -314,7 +314,7 @@ static void assign_modes(chem_t* c, const md_system_t* sys) {
     }
 
     // Per group: any hydrogen, any hydrogen on a carbon
-    const size_t num_groups = sys->component.count + N;
+    const size_t num_groups = sys->residue.count + N;
     uint8_t* has = md_alloc(c->alloc, MAX(num_groups, 1));
     MEMSET(has, 0, num_groups);
     for (size_t i = 0; i < N; ++i) {
@@ -1483,8 +1483,8 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     uint8_t* atom_aromatic = perceive(&c, q_given);
 
     // Monatomic ions
-    for (size_t ci = 0; ci < sys->component.count && sys->component.atom_offset; ++ci) {
-        const md_urange_t r = md_component_atom_range(&sys->component, ci);
+    for (size_t ci = 0; ci < sys->residue.count && sys->residue.atom_offset; ++ci) {
+        const md_urange_t r = md_system_residue_atom_range(sys, ci);
         if (r.end - r.beg != 1 || r.beg >= N) continue;
         const uint32_t a = r.beg;
         if (c.charge_fixed[a] || (sys->bond.conn.offset && md_bond_conn_count(&sys->bond, a))) continue;
@@ -1578,10 +1578,10 @@ static inline bool delta_takes_part(const md_system_t* sys, uint32_t a) {
 // Rings are made of atoms, and none of water or of an ion (md_util_system_infer_rings)
 static inline bool delta_ring_skip(const md_system_t* sys, uint32_t a) {
     if (md_atom_particle_kind(&sys->atom, a) != MD_PARTICLE_ATOM) return true;
-    const md_component_idx_t ci = md_system_component_find_by_atom_idx(sys, a);
+    const md_residue_idx_t ci = md_system_residue_find_by_atom_idx(sys, a);
     if (ci < 0) return false;
-    const md_component_kind_t kind = md_component_kind(&sys->component, (size_t)ci);
-    return kind == MD_COMPONENT_KIND_WATER || kind == MD_COMPONENT_KIND_ION;
+    const md_residue_kind_t kind = md_system_residue_kind(sys, (size_t)ci);
+    return kind == MD_RESIDUE_KIND_WATER || kind == MD_RESIDUE_KIND_ION;
 }
 
 // Whether an atom whose bonds did not change can take part in a conjugated network of the state, from what it is in the
@@ -1612,11 +1612,11 @@ static bool delta_conjugable(const md_system_t* sys, const uint8_t* state, uint3
 static uint8_t delta_mode(const md_system_t* sys, uint8_t* state, uint8_t* mode, uint32_t a, md_allocator_i* temp) {
     if (state[a] & DELTA_MODE) return mode[a];
     md_array(uint32_t) group = 0;
-    if (sys->component.count && sys->component.atom_offset) {
+    if (sys->residue.count && sys->residue.atom_offset) {
         // Its residue; an atom outside of every residue is a group of its own
-        const md_component_idx_t ci = md_system_component_find_by_atom_idx(sys, a);
+        const md_residue_idx_t ci = md_system_residue_find_by_atom_idx(sys, a);
         if (ci >= 0) {
-            const md_urange_t r = md_component_atom_range(&sys->component, (size_t)ci);
+            const md_urange_t r = md_system_residue_atom_range(sys, (size_t)ci);
             for (uint32_t i = r.beg; i < r.end; ++i) md_array_push(group, i, temp);
         } else {
             md_array_push(group, a, temp);

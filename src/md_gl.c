@@ -226,7 +226,7 @@ enum {
     GL_BUFFER_DERIVED_WEIGHT,                  // f32 Their weights
     GL_BUFFER_SLAB,                            // u32[8] per slab (md_gl_mol_set_slabs): its corner count, then up to SLAB_MAX_CORNERS particles in order around it
     GL_BUFFER_CHAIN_GAP,                       // u32[4] per gap of a chain (md_gl_mol_set_chain_gaps): atom a, its neighbour, atom b, its neighbour
-    GL_BUFFER_CHAIN_GAP_COMP,                  // u32 per gap of a chain: the component before its break, what it picks as
+    GL_BUFFER_CHAIN_GAP_RES,                   // u32 per gap of a chain: the residue before its break, what it picks as
     GL_BUFFER_COUNT
 };
 
@@ -301,7 +301,7 @@ typedef struct {
     uint32_t atom_idx;
     float velocity[3];
     float radius;                       // @NOTE: Of a tube at the control point (MD_GL_REP_TUBES), Ångström: TUBE_RADIUS_MAX times the w of its secondary structure, 0 for a protein backbone
-    uint8_t secondary_structure[3];     // @NOTE: Secondary structure as fractions within the components (0 = coil, 1 = helix, 2 = sheet) so we later can smoothly blend between them when subdividing.
+    uint8_t secondary_structure[3];     // @NOTE: Secondary structure as fractions within the residues (0 = coil, 1 = helix, 2 = sheet) so we later can smoothly blend between them when subdividing.
     uint8_t flags;                      // @NOTE: Bitfield for setting flags, bits: [0] beg_chain, [1] end_chain, [2] beg_secondary_structure, [3] end_secondary_structure, [4] flip_next (support of the next control point is used flipped, set by the orient pass)
     int16_t support_vector[3];
     int16_t tangent_vector[3];
@@ -411,7 +411,7 @@ typedef struct {
     uint32_t flags;
 
     uint32_t atom_count;
-    uint32_t comp_count;
+    uint32_t res_count;
     uint32_t bond_count;
     uint32_t bond_order_count;      // Bonds GL_BUFFER_BOND_ORDER was computed for, 0 when the bonds changed since
     uint32_t bond_partner_count;    // Entries of GL_BUFFER_BOND_PARTNER
@@ -2296,7 +2296,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
 // ### CHAIN GAPS ###
 //
 // One entry per break (md_gl_mol_set_chain_gaps), u32[4] in GL_BUFFER_CHAIN_GAP: the atoms of its two ends and a
-// neighbour of each, (a, neighbour of a, b, neighbour of b), and in GL_BUFFER_CHAIN_GAP_COMP the component before the
+// neighbour of each, (a, neighbour of a, b, neighbour of b), and in GL_BUFFER_CHAIN_GAP_RES the residue before the
 // break, which it picks as. bond.vert (CHAIN_GAPS) draws the gap from 5/6 of the way from the neighbour of a to a, to
 // the same point at b: where the uniform cubic B-spline of the cartoon ends at the control point which ends a chain,
 // with its neighbours clamped to the chain (compute_spline_subdivide.vert), so that the line starts at the end of the
@@ -2312,33 +2312,33 @@ void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
         return;
     }
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_CHAIN_GAP]);
-    gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_CHAIN_GAP_COMP]);
+    gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_CHAIN_GAP_RES]);
     mol->gap_trace_count = 0;
     mol->gap_link_count  = 0;
     blocks_free(&mol->gap_trace_blocks);
     blocks_free(&mol->gap_link_blocks);
-    if (!sys || !sys->component.flags || sys->component.count < 2) return;
+    if (!sys || !sys->residue.flags || sys->residue.count < 2) return;
     if (sys->atom.count != mol->atom_count) {
         MD_LOG_ERROR("The system is not the one of the molecule: it has %zu atoms, the molecule %u", sys->atom.count, mol->atom_count);
         return;
     }
 
-    const size_t comp_count = MIN(sys->component.count, md_array_size(sys->component.flags));
+    const size_t res_count = MIN(sys->residue.count, md_array_size(sys->residue.flags));
     uint32_t break_count = 0;
-    for (size_t i = 0; i + 1 < comp_count; ++i) {
-        if (sys->component.flags[i] & MD_COMPONENT_FLAG_BREAK_AFTER) ++break_count;
+    for (size_t i = 0; i + 1 < res_count; ++i) {
+        if (sys->residue.flags[i] & MD_RESIDUE_FLAG_BREAK_AFTER) ++break_count;
     }
     if (break_count == 0) return;
 
     md_temp_scope_t temp = md_temp_begin();
 
-    // The segment of each component in the protein backbone (-1 for none) and the range of each segment
+    // The segment of each residue in the protein backbone (-1 for none) and the range of each segment
     const md_protein_backbone_data_t* bb = &sys->protein_backbone;
-    int32_t* comp_seg = md_temp_alloc(temp, comp_count * sizeof(int32_t));
-    MEMSET(comp_seg, -1, comp_count * sizeof(int32_t));
+    int32_t* res_seg = md_temp_alloc(temp, res_count * sizeof(int32_t));
+    MEMSET(res_seg, -1, res_count * sizeof(int32_t));
     uint32_t* seg_beg = NULL;
     uint32_t* seg_end = NULL;
-    if (bb->range.count > 0 && bb->range.offset && bb->segment.count > 0 && bb->segment.atoms && bb->segment.comp_idx) {
+    if (bb->range.count > 0 && bb->range.offset && bb->segment.count > 0 && bb->segment.atoms && bb->segment.res_idx) {
         seg_beg = md_temp_alloc(temp, bb->segment.count * sizeof(uint32_t));
         seg_end = md_temp_alloc(temp, bb->segment.count * sizeof(uint32_t));
         for (size_t r = 0; r < bb->range.count; ++r) {
@@ -2347,21 +2347,21 @@ void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
             for (uint32_t j = beg; j < end; ++j) {
                 seg_beg[j] = beg;
                 seg_end[j] = end;
-                const int32_t c = bb->segment.comp_idx[j];
-                if (0 <= c && (size_t)c < comp_count) comp_seg[c] = (int32_t)j;
+                const int32_t c = bb->segment.res_idx[j];
+                if (0 <= c && (size_t)c < res_count) res_seg[c] = (int32_t)j;
             }
         }
     }
 
     uint32_t* trace      = md_temp_alloc(temp, 2 * (size_t)break_count * 4 * sizeof(uint32_t));
-    uint32_t* trace_comp = md_temp_alloc(temp, 2 * (size_t)break_count * sizeof(uint32_t));
+    uint32_t* trace_res = md_temp_alloc(temp, 2 * (size_t)break_count * sizeof(uint32_t));
     uint32_t* link       = md_temp_alloc(temp, (size_t)break_count * 4 * sizeof(uint32_t));
-    uint32_t* link_comp  = md_temp_alloc(temp, (size_t)break_count * sizeof(uint32_t));
+    uint32_t* link_res   = md_temp_alloc(temp, (size_t)break_count * sizeof(uint32_t));
     uint32_t trace_count = 0;
     uint32_t link_count  = 0;
 
-    for (size_t i = 0; i + 1 < comp_count; ++i) {
-        if (!(sys->component.flags[i] & MD_COMPONENT_FLAG_BREAK_AFTER)) continue;
+    for (size_t i = 0; i + 1 < res_count; ++i) {
+        if (!(sys->residue.flags[i] & MD_RESIDUE_FLAG_BREAK_AFTER)) continue;
         md_atom_idx_t atoms[2];
         if (!md_util_chain_break_atoms(atoms, sys, i)) continue;
         const uint32_t la = (uint32_t)atoms[0];
@@ -2373,11 +2373,11 @@ void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
         e[1] = la;
         e[2] = lb;
         e[3] = lb;
-        link_comp[link_count++] = (uint32_t)i;
+        link_res[link_count++] = (uint32_t)i;
 
         // The cartoon: a protein chain with a cartoon on at least one side
-        const int32_t sa = comp_seg[i];
-        const int32_t sb = comp_seg[i + 1];
+        const int32_t sa = res_seg[i];
+        const int32_t sb = res_seg[i + 1];
         if (sa < 0 && sb < 0) continue;
         uint32_t a  = la;
         uint32_t na = la;
@@ -2399,16 +2399,16 @@ void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
         e[1] = na;
         e[2] = b;
         e[3] = nb;
-        trace_comp[trace_count++] = (uint32_t)i;
+        trace_res[trace_count++] = (uint32_t)i;
     }
 
     const uint32_t total = trace_count + link_count;
     if (total > 0) {
         // The links after the traces
         MEMCPY(trace + 4 * trace_count, link, link_count * 4 * sizeof(uint32_t));
-        MEMCPY(trace_comp + trace_count, link_comp, link_count * sizeof(uint32_t));
+        MEMCPY(trace_res + trace_count, link_res, link_count * sizeof(uint32_t));
         mol->buffer[GL_BUFFER_CHAIN_GAP]      = gl_buffer_create(total * 4 * sizeof(uint32_t), trace, GL_STATIC_DRAW);
-        mol->buffer[GL_BUFFER_CHAIN_GAP_COMP] = gl_buffer_create(total * sizeof(uint32_t), trace_comp, GL_STATIC_DRAW);
+        mol->buffer[GL_BUFFER_CHAIN_GAP_RES] = gl_buffer_create(total * sizeof(uint32_t), trace_res, GL_STATIC_DRAW);
         mol->gap_trace_count = trace_count;
         mol->gap_link_count  = link_count;
 
@@ -2568,13 +2568,13 @@ md_gl_mol_t md_gl_mol_create(const md_system_t* sys) {
         md_gl_mol_set_atom_radius(handle, 0, gl_mol->atom_count, radii, 0);
         //if (mol->atom.flags)  md_gl_molecule_set_atom_flags(ext_mol,  0, gl_mol->atom_count, mol->atom.flags, 0);
 
-        gl_mol->comp_count = (uint32_t)sys->component.count;
-        //gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->comp_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
-        //gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->comp_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
-        //gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->comp_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
+        gl_mol->res_count = (uint32_t)sys->residue.count;
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->res_count * sizeof(md_range_t),    NULL, GL_STATIC_DRAW);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->res_count * sizeof(float) * 6,     NULL, GL_DYNAMIC_COPY);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->res_count * sizeof(int),           NULL, GL_DYNAMIC_COPY);
 
-        //if (sys->comp.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->comp_count * sizeof(uint32_t) * 2, sys->comp.atom_range);
-        //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, sys->comp_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
+        //if (sys->comp.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->res_count * sizeof(uint32_t) * 2, sys->comp.atom_range);
+        //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, sys->res_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
         if (sys->protein_backbone.range.count > 0 && sys->protein_backbone.range.offset && sys->protein_backbone.segment.atoms) {
             const uint32_t chain_count = (uint32_t)sys->protein_backbone.range.count;
@@ -4829,7 +4829,7 @@ static bool draw_chain_gaps(gl_program_t program, const molecule_t* mol, gl_buff
 
     const uint32_t offset = trace ? 0 : mol->gap_trace_count;
     const uint32_t count  = trace ? mol->gap_trace_count : mol->gap_link_count;
-    if (count == 0 || !mol->buffer[GL_BUFFER_CHAIN_GAP].id || !mol->buffer[GL_BUFFER_CHAIN_GAP_COMP].id || !ctx.quad_index.id || range->inst_count == 0 || (range->masked && range->list.count == 0)) {
+    if (count == 0 || !mol->buffer[GL_BUFFER_CHAIN_GAP].id || !mol->buffer[GL_BUFFER_CHAIN_GAP_RES].id || !ctx.quad_index.id || range->inst_count == 0 || (range->masked && range->list.count == 0)) {
         return false;
     }
 
@@ -4855,7 +4855,7 @@ static bool draw_chain_gaps(gl_program_t program, const molecule_t* mol, gl_buff
 
     glActiveTexture(GL_TEXTURE6);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_6].id);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, mol->buffer[GL_BUFFER_CHAIN_GAP_COMP].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, mol->buffer[GL_BUFFER_CHAIN_GAP_RES].id);
 
     glActiveTexture(GL_TEXTURE8);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_8].id);

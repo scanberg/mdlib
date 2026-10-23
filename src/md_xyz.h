@@ -30,7 +30,7 @@ typedef struct md_xyz_coordinate_t {
 	float x;
 	float y;
 	float z;
-	int atom_type;			// Tinker only
+	int particle_type;			// Tinker only
 	int connectivity[9];	// Tinker only
 } md_xyz_coordinate_t;
 

@@ -44,7 +44,7 @@ typedef enum {
 	MD_LAMMPS_ATOM_FORMAT_COUNT
 } md_lammps_atom_format_t;
 
-// Representing atom type data
+// Representing particle type data
 typedef struct md_lammps_atom_type_t {
 	int32_t id;
 	float mass;
@@ -96,7 +96,7 @@ typedef struct md_lammps_data_t {
 	size_t num_dihedrals;
 	size_t num_impropers;
 
-	size_t num_atom_types;
+	size_t num_particle_types;
 	size_t num_bond_types;
 	size_t num_angle_types;
 	size_t num_dihedral_types;
@@ -104,7 +104,7 @@ typedef struct md_lammps_data_t {
 
 	md_lammps_cell_t cell;
 
-	md_lammps_atom_type_t* atom_types;
+	md_lammps_atom_type_t* particle_types;
 	md_lammps_atom_t* atoms;
 	md_lammps_bond_t* bonds;
 	md_lammps_angle_t* angles;

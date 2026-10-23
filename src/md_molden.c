@@ -886,13 +886,13 @@ static bool molden_system_begin(md_system_t* sys, md_system_state_t* state, cons
     MEMSET(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
     MEMSET(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
 
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
     for (size_t i = 0; i < num_atoms; ++i) {
         state->xyz[i] = vec3_set((float)molden->coord[i].x, (float)molden->coord[i].y, (float)molden->coord[i].z);
 
         const md_atomic_number_t z = molden->atomic_number[i];
-        sys->atom.type_idx[i] = md_atom_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
+        sys->atom.type_idx[i] = md_particle_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
                                                          md_atomic_number_mass(z), md_atomic_number_vdw_radius(z),
                                                          md_atomic_number_cpk_color(z), 0, sys->alloc);
         // A QM calculation alone: every atom is in it (MD_ATOM_FLAG_QM)
