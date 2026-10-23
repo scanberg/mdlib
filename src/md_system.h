@@ -985,28 +985,6 @@ static inline md_instance_idx_t md_instance_find_by_comp_idx(const md_instance_d
     return (md_instance_idx_t)md_offset_range_find(inst->comp_offset, inst->count, comp_idx);
 }
 
-/*
-static inline md_instance_idx_t md_inst_find_by_atom_idx(const md_instance_data_t* inst, size_t atom_idx) {
-    ASSERT(inst);
-
-    md_instance_idx_t inst_idx = -1;
-    if (inst->atom_range) {
-        int ai = (int)atom_idx;
-        for (size_t i = 0; i < inst->count; ++i) {
-            md_range_t range = inst->atom_range[i];
-            if (range.beg <= ai && ai < range.end) {
-                inst_idx = (md_instance_idx_t)i;
-                break;
-            }
-            if (range.beg > ai) {
-                break;
-            }
-        }
-    }
-    return inst_idx;
-}
-*/
-
 static inline size_t md_instance_comp_count(const md_instance_data_t* inst, size_t inst_idx) {
     ASSERT(inst);
 
@@ -1016,33 +994,6 @@ static inline size_t md_instance_comp_count(const md_instance_data_t* inst, size
     }
     return count;
 }
-
-/*
-static inline md_urange_t md_inst_atom_range(const md_instance_data_t* inst, size_t inst_idx) {
-	ASSERT(inst);
-
-    md_range_t range = {0};
-    if (inst->comp_range && inst_idx < inst->count) {
-        uint32_t cbeg = inst->comp_range[inst_idx].beg;
-        uint32_t cend = inst->comp_range[inst_idx].end;
-        if (inst->atom_range && cbeg < cend) {
-            range.beg = inst->atom_range[cbeg].beg;
-            range.end = inst->atom_range[cend - 1].end;
-        }
-        range = inst->atom_range[inst_idx];
-    }
-    return range;
-}
-
-static inline size_t md_inst_atom_count(const md_instance_data_t* inst, size_t inst_idx) {
-    size_t count = 0;
-    if (inst->atom_range && inst_idx < inst->count) {
-        md_range_t range = inst->atom_range[inst_idx];
-        count = range.end - range.beg;
-    }
-    return count;
-}
-*/
 
 static inline str_t md_instance_id(const md_instance_data_t* inst, size_t inst_idx) {
     ASSERT(inst);
@@ -1273,7 +1224,7 @@ static inline str_t md_system_instance_id(const md_system_t* sys, size_t inst_id
 static inline str_t md_system_instance_auth_id(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
     str_t id = STR_INIT("");
-    if (sys->instance.id && inst_idx < sys->instance.count) {
+    if (sys->instance.auth_id && inst_idx < sys->instance.count) {
         id = md_instance_auth_id(&sys->instance, inst_idx);
     }
     return id;
@@ -1308,7 +1259,8 @@ static inline size_t md_system_instance_atom_count(const md_system_t* sys, size_
     return atom_range.end - atom_range.beg;
 }
 
-static inline size_t md_system_instance_entity_idx(const md_system_t* sys, size_t inst_idx) {
+// The entity of the instance, -1 for none
+static inline md_entity_idx_t md_system_instance_entity_idx(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
     return md_instance_entity_idx(&sys->instance, inst_idx);
 }
@@ -1440,23 +1392,36 @@ static inline md_urange_t md_system_part_atom_range(const md_system_t* sys, size
 }
 
 // The part of the component, -1 for none (a system whose parts were not inferred)
-static inline int32_t md_system_part_find_by_comp_idx(const md_system_t* sys, size_t comp_idx) {
+static inline md_part_idx_t md_system_part_find_by_comp_idx(const md_system_t* sys, size_t comp_idx) {
     ASSERT(sys);
-    const md_part_data_t* p = &sys->part;
-    if (!p->comp_offset || p->count == 0 || comp_idx >= p->comp_offset[p->count]) return -1;
-    size_t lo = 0, hi = p->count;
-    while (lo + 1 < hi) {
-        const size_t mid = (lo + hi) / 2;
-        if (p->comp_offset[mid] <= comp_idx) lo = mid; else hi = mid;
-    }
-    return comp_idx >= p->comp_offset[lo] ? (int32_t)lo : -1;
+    return (md_part_idx_t)md_offset_range_find(sys->part.comp_offset, sys->part.count, comp_idx);
 }
 
 // The part of the atom, -1 for an atom in none
-static inline int32_t md_system_part_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
+static inline md_part_idx_t md_system_part_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     ASSERT(sys);
     const md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(sys, atom_idx);
     return comp_idx >= 0 ? md_system_part_find_by_comp_idx(sys, (size_t)comp_idx) : -1;
+}
+
+static inline size_t md_system_molecule_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return sys->structure.count;
+}
+
+// The molecule of the atom, -1 when the molecules have not been inferred (md_util_system_infer_structures). The atoms
+// of a molecule need not be consecutive: it is found by the atom's slot (md_structure_data_t).
+static inline md_molecule_idx_t md_system_molecule_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
+    ASSERT(sys);
+    const md_structure_data_t* st = &sys->structure;
+    if (!st->atom_slot || !st->offset || atom_idx >= sys->atom.count) return -1;
+    return (md_molecule_idx_t)md_offset_range_find(st->offset, st->count, (size_t)st->atom_slot[atom_idx]);
+}
+
+static inline size_t md_system_molecule_atom_count(const md_system_t* sys, size_t mol_idx) {
+    ASSERT(sys);
+    const md_structure_data_t* st = &sys->structure;
+    return (st->offset && mol_idx < st->count) ? st->offset[mol_idx + 1] - st->offset[mol_idx] : 0;
 }
 
 // The kind of the component which holds the atom, MD_COMPONENT_KIND_OTHER when it is in none.

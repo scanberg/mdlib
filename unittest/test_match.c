@@ -684,13 +684,7 @@ UTEST(match, coordination) {
 
     // Its structure holds more than the GTP, the Mg at least
     const int32_t a = res.atom_idx[0];
-    const uint32_t slot = (uint32_t)sys->structure.atom_slot[a];
-    size_t structure_size = 0;
-    for (size_t s = 0; s < sys->structure.count; ++s) {
-        if (sys->structure.offset[s] <= slot && slot < sys->structure.offset[s + 1]) {
-            structure_size = sys->structure.offset[s + 1] - sys->structure.offset[s];
-        }
-    }
+    const size_t structure_size = md_system_molecule_atom_count(sys, (size_t)md_system_molecule_find_by_atom_idx(sys, (size_t)a));
     // Its structure is the GTP alone: the Mg is coordinated by it, which holds no molecule together
     EXPECT_EQ(q.num_atoms, structure_size);
     md_match_result_free(&res);
@@ -711,10 +705,9 @@ UTEST(match, molecules) {
     ASSERT_TRUE(md_match_find(&res, &desc, sys, alloc));
     ASSERT_LT(0, (int)res.count);
     for (size_t i = 0; i < res.count; ++i) {
-        const uint32_t slot = (uint32_t)sys->structure.atom_slot[res.atom_idx[i]];
         const uint32_t u = res.unit[i];
-        ASSERT_LT(u, (uint32_t)sys->structure.count);
-        EXPECT_TRUE(sys->structure.offset[u] <= slot && slot < sys->structure.offset[u + 1]);
+        ASSERT_LT(u, (uint32_t)md_system_molecule_count(sys));
+        EXPECT_EQ((int)u, md_system_molecule_find_by_atom_idx(sys, (size_t)res.atom_idx[i]));
     }
     md_match_result_free(&res);
     md_match_query_free(&q);

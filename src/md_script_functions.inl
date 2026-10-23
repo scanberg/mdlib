@@ -4535,13 +4535,8 @@ static int _fill_molecule(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitset_iter_t it = md_bitset_iter(*src_bf);
         while (md_bitset_iter_next(&it)) {
             if (it.idx >= sys->atom.count) break;
-            const uint32_t slot = (uint32_t)sys->structure.atom_slot[it.idx];
-            size_t lo = 0, hi = num_mols;
-            while (lo + 1 < hi) {
-                const size_t mid = (lo + hi) / 2;
-                if (sys->structure.offset[mid] <= slot) lo = mid; else hi = mid;
-            }
-            taken[lo] = 1;
+            const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(sys, it.idx);
+            if (mol >= 0) taken[mol] = 1;
         }
         for (size_t m = 0; m < num_mols; ++m) {
             if (taken[m]) md_array_push(mols, (int32_t)m, ctx->temp_alloc);
