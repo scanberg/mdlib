@@ -218,7 +218,7 @@ UTEST(pdb, cryst_record_without_its_1) {
     EXPECT_NEAR(0.0, state.unitcell.yz, 1e-9);
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     EXPECT_GE(md_bond_find(&sys.bond, 0, 1), 0);    // N-CA, across the boundary in x
-    EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_residue_kind(&sys.residue, 0));
+    EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_system_residue_kind(&sys, 0));
     md_arena_allocator_destroy(alloc);
 }
 
@@ -484,7 +484,7 @@ static bool load_peptide(md_system_t* sys, md_system_state_t* state, const pepti
 
 static size_t count_residues_with(const md_system_t* sys, md_residue_flags_t flag) {
     size_t count = 0;
-    for (size_t i = 0; i < sys->residue.count; ++i) count += (md_residue_flags(&sys->residue, i) & flag) != 0;
+    for (size_t i = 0; i < sys->residue.count; ++i) count += (md_system_residue_flags(sys, i) & flag) != 0;
     return count;
 }
 
@@ -501,8 +501,8 @@ UTEST(pdb, insertion_codes) {
 
     ASSERT_EQ((size_t)6, sys.residue.count);
     for (size_t i = 0; i < sys.residue.count; ++i) {
-        EXPECT_EQ(pick[i].seq, md_residue_seq_id(&sys.residue, i));
-        EXPECT_EQ((size_t)4, md_residue_atom_count(&sys.residue, i));
+        EXPECT_EQ(pick[i].seq, md_system_residue_seq_id(&sys, i));
+        EXPECT_EQ((size_t)4, md_system_residue_atom_count(&sys, i));
     }
     EXPECT_EQ((size_t)1, sys.instance.count);
     EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
@@ -543,12 +543,12 @@ static void expect_break_after_fourth(int* utest_result, const md_system_t* sys)
     ASSERT_EQ((size_t)8, sys->residue.count);
     EXPECT_EQ((size_t)1, sys->instance.count);
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        const md_residue_flags_t flags = md_residue_flags(&sys->residue, i);
+        const md_residue_flags_t flags = md_system_residue_flags(sys, i);
         EXPECT_EQ(i == 3, (flags & MD_RESIDUE_FLAG_BREAK_AFTER)    != 0);
         EXPECT_EQ(i == 4, (flags & MD_RESIDUE_FLAG_BREAK_BEFORE) != 0);
     }
-    EXPECT_FALSE(md_residue_flags(&sys->residue, 3) & MD_RESIDUE_FLAG_TERMINAL_END);
-    EXPECT_FALSE(md_residue_flags(&sys->residue, 4) & MD_RESIDUE_FLAG_TERMINAL_BEG);
+    EXPECT_FALSE(md_system_residue_flags(sys, 3) & MD_RESIDUE_FLAG_TERMINAL_END);
+    EXPECT_FALSE(md_system_residue_flags(sys, 4) & MD_RESIDUE_FLAG_TERMINAL_BEG);
 
     ASSERT_EQ((size_t)2, sys->protein_backbone.range.count);
     EXPECT_EQ(0u, sys->protein_backbone.range.offset[0]);
@@ -614,11 +614,11 @@ UTEST(pdb, chain_breaks_of_files) {
         EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
         size_t asp = SIZE_MAX;
         for (size_t i = 0; i + 1 < sys.residue.count; ++i) {
-            if (md_residue_seq_id(&sys.residue, i) == 238 && md_residue_seq_id(&sys.residue, i + 1) == 240) asp = i;
+            if (md_system_residue_seq_id(&sys, i) == 238 && md_system_residue_seq_id(&sys, i + 1) == 240) asp = i;
         }
         ASSERT_NE(SIZE_MAX, asp);
-        EXPECT_TRUE(str_eq(md_residue_name(&sys.residue, asp), STR_LIT("ASP")));
-        EXPECT_TRUE(md_residue_flags(&sys.residue, asp) & MD_RESIDUE_FLAG_TERMINAL_END);
+        EXPECT_TRUE(str_eq(md_system_residue_name(&sys, asp), STR_LIT("ASP")));
+        EXPECT_TRUE(md_system_residue_flags(&sys, asp) & MD_RESIDUE_FLAG_TERMINAL_END);
     }
     const str_t whole[] = {STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb")};
     for (size_t f = 0; f < ARRAY_SIZE(whole); ++f) {

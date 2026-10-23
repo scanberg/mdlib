@@ -418,7 +418,7 @@ static void pdb_assemblies(md_system_t* sys, const md_pdb_data_t* data, md_alloc
             const char chain = data->assembly_chains[group->chain_offset + c];
             bool found = false;
             for (size_t i = 0; i < sys->instance.count; ++i) {
-                const str_t auth = md_instance_auth_id(&sys->instance, i);
+                const str_t auth = md_system_instance_auth_id(sys, i);
                 if (auth.len == 1 && auth.ptr[0] == chain) {
                     md_array_push(inst, (md_instance_idx_t)i, temp_alloc);
                     found = true;
@@ -959,16 +959,16 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
 		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
         
         // Get residue name
-		md_residue_idx_t res_idx = md_residue_find_by_atom_idx(&sys->residue, idx);
+		md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(sys, idx);
 		char resname[5] = "";
-		str_copy_to_char_buf(resname, sizeof(resname), md_residue_name(&sys->residue, res_idx));
+		str_copy_to_char_buf(resname, sizeof(resname), md_system_residue_name(sys, res_idx));
 
-		md_sequence_id_t res_seq = md_residue_seq_id(&sys->residue, res_idx);
+		md_sequence_id_t res_seq = md_system_residue_seq_id(sys, res_idx);
         
         // Get chain ID from instance
         char chain_id[4] = " ";
         md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(sys, idx);
-        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_instance_auth_id(&sys->instance, inst_idx));
+        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_system_instance_auth_id(sys, inst_idx));
 
         char res_seq_str[5] = "";
         {

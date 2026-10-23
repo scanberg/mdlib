@@ -884,7 +884,7 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 	md_entity_idx_t prev_entity = -1;
 	md_label_t inst_id = {0};
 	for (size_t c = 0; c < sys->residue.count; ++c) {
-		const md_urange_t range = md_residue_atom_range(&sys->residue, c);
+		const md_urange_t range = md_system_residue_atom_range(sys, c);
 		const uint64_t key = md_hash64(sys->atom.type_idx + range.beg, (range.end - range.beg) * sizeof(md_particle_type_idx_t), range.end - range.beg);
 
 		md_entity_idx_t entity_idx = -1;

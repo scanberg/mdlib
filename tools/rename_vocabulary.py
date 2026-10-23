@@ -353,6 +353,7 @@ def rewrite(path, text, prose, report):
             seg = MEMBER.sub(member_sub, seg)
             seg = DESIGNATED.sub(lambda m: m.group(1) + MEMBER_NEW[m.group(2)] + m.group(3), seg)
             seg = SYSTEM_MEMBER_DECL.sub(lambda m: m.group(1) + MEMBER_NEW[m.group(2)] + m.group(3), seg)
+            seg = collapse(seg)
         else:
             # Comments: identifiers which are of the API (md_..., MD_..., the explicit renames), and the words
             def comment_ident(m):
@@ -384,6 +385,33 @@ def rewrite(path, text, prose, report):
         else:
             report.append(f'{path}: {tok} collides with a name where it is, left as it is')
     return ''.join(out)
+
+
+# The accessors of the levels of a system read through the system, after the rename: md_residue_name(&sys->residue, i)
+# -> md_system_residue_name(sys, i). The data level accessors of the residues, instances, entities and molecules are
+# gone; the tables of types (md_particle_type_*, md_residue_type_*) are read through the table as before.
+COLLAPSE_FUNCS = {
+    'residue': {'count', 'name', 'seq_id', 'atom_range', 'atom_count', 'flags', 'kind', 'find_by_atom_idx', 'type_idx'},
+    'instance': {'count', 'residue_range', 'residue_count', 'id', 'auth_id', 'entity_idx', 'find_by_residue_idx'},
+    'entity': {'count', 'find_by_id', 'id', 'description', 'flags', 'kind'},
+    'molecule': {'count', 'atom_slot', 'atom_parent'},
+}
+COLLAPSE = re.compile(r'\bmd_(residue_type|residue|instance|entity|molecule)_([a-z_]+)\(\s*&\s*'
+                      r'([A-Za-z_]\w*(?:(?:\.|->)[A-Za-z_]\w*|\[[^\]]*\])*?)(\.|->)(residue\.type|residue|instance|entity|molecule)\s*([,)])')
+
+
+def collapse(code):
+    def sub(m):
+        kind, fn, recv, sep, member, end = m.groups()
+        # The type of a residue is of the residues: md_residue_type_idx(&sys->residue, i)
+        if kind == 'residue_type' and fn == 'idx' and member == 'residue':
+            kind, fn = 'residue', 'type_idx'
+        want = 'residue.type' if kind == 'residue_type' else kind
+        if member != want or fn not in COLLAPSE_FUNCS.get(want, ()):
+            return m.group(0)
+        sys_expr = recv if sep == '->' else '&' + recv
+        return f'md_system_{kind}_{fn}({sys_expr}{end}'
+    return COLLAPSE.sub(sub, code)
 
 
 GAP = re.compile(r'(?<=\S)( {2,})(?=\S)')

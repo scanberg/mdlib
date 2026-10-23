@@ -51,7 +51,7 @@ static md_bitset_t residue_set(const md_system_t* sys, const char* resname, size
     md_bitmask_t bf = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
     size_t n = 0;
     for (size_t c = 0; c < sys->residue.count && n < max_count; ++c) {
-        str_t name = str_trim(md_residue_name(&sys->residue, c));
+        str_t name = str_trim(md_system_residue_name(sys, c));
         if (resname && !str_eq_cstr(name, resname)) continue;
         md_urange_t r = md_system_residue_atom_range(sys, c);
         md_bitmask_set_range(&bf, r.beg, r.end);
@@ -437,12 +437,12 @@ UTEST_F(hbond, roles_protein) {
 
     size_t his_free_n = 0, his_acc = 0, lys_nz_donor = 0, bb_o = 0, bb_o_acc = 0;
     for (size_t c = 0; c < sys->residue.count; ++c) {
-        const str_t res = str_trim(md_residue_name(&sys->residue, c));
+        const str_t res = str_trim(md_system_residue_name(sys, c));
         const md_urange_t r = md_system_residue_atom_range(sys, c);
         for (uint32_t i = r.beg; i < r.end; ++i) {
             const md_atomic_number_t z = md_atom_atomic_number(&sys->atom, i);
             const str_t name = str_trim(md_atom_name(&sys->atom, i));
-            const bool amino = md_residue_kind(&sys->residue, c) == MD_RESIDUE_KIND_AMINO_ACID;
+            const bool amino = md_system_residue_kind(sys, c) == MD_RESIDUE_KIND_AMINO_ACID;
             if (amino && z == MD_Z_N) {
                 int nh = 0;
                 md_bond_iter_t it = md_bond_iter(&sys->bond, i);
@@ -478,7 +478,7 @@ UTEST_F(hbond, roles_water) {
     ASSERT_TRUE(md_hbond_perceive_roles(role, cap, sys, &utest_fixture->npt_state, MD_HBOND_ROLES_DEFAULT));
     size_t water_o = 0;
     for (size_t c = 0; c < sys->residue.count; ++c) {
-        if (!str_eq_cstr(str_trim(md_residue_name(&sys->residue, c)), "SOL")) continue;
+        if (!str_eq_cstr(str_trim(md_system_residue_name(sys, c)), "SOL")) continue;
         const md_urange_t r = md_system_residue_atom_range(sys, c);
         for (uint32_t i = r.beg; i < r.end; ++i) {
             if (md_atom_atomic_number(&sys->atom, i) != MD_Z_O) continue;
@@ -503,7 +503,7 @@ UTEST(hbond, roles_nucleic) {
     // The N acceptors of each base and nothing else: A N1 N3 N7, G N3 N7, C N3, T none
     size_t checked = 0;
     for (size_t c = 0; c < sys.residue.count; ++c) {
-        const str_t res = str_trim(md_residue_name(&sys.residue, c));
+        const str_t res = str_trim(md_system_residue_name(&sys, c));
         if (res.len < 2 || res.ptr[0] != 'D') continue;
         const char base = res.ptr[1];
         const md_urange_t r = md_system_residue_atom_range(&sys, c);

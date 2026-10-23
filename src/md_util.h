@@ -282,7 +282,7 @@ void md_util_infer_rings(md_index_data_t* out_rings, const md_bond_data_t* bond,
 // (md_chem_perceive does).
 void md_util_system_infer_ring_flags(md_system_t* sys);
 
-// Identify isolated structures by covalent bonds.
+// The molecules of the system (md_molecule_data_t), see there for what holds one together.
 // For coarse grained systems (any particle a bead, md_system_is_coarse_grained), beads the bonds leave disconnected are
 // joined through the residue hierarchy instead: each bead to its residue's backbone (or first) bead, and those
 // anchors along consecutive polymer residues. No coordinates are consulted and sys->bond is not modified.
@@ -309,7 +309,7 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
 void md_util_system_augment_particle_types(md_system_t* sys);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-// Infers the derivable parts of a system (covalent bonds, rings, structures, backbones, hydrogen
+// Infers the derivable parts of a system (covalent bonds, rings, molecules, backbones, hydrogen
 // bond roles) from the supplied state, and records that state as sys->reference. A system without residues has its
 // backbones found from the covalent bonds alone (md_protein_backbone_data_t).
 //
@@ -355,11 +355,11 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* ce
 // Applies periodic boundary conditions to all coordinates in a systems state (convenience function)
 bool md_util_system_pbc(md_system_state_t* state);
 
-// Unwraps a single structure by walking the parent hierarchy md_util_system_infer_molecules
+// Unwraps a single molecule by walking the parent hierarchy md_util_system_infer_molecules
 // already computed. Linear, allocation free, and does not consult bond connectivity.
-void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* structure);
+void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol);
 
-// Unwraps all structures in a system
+// Unwraps all molecules in a system
 void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys);
 
 // Batch deperiodize a set of coordinates (vec4) with respect to a given reference

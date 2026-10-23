@@ -52,9 +52,9 @@ struct md_smiles_error_t;
 // A MOLECULE is a connected part of this graph, closed as a molecule of the system is (md_molecule_data_t): the
 // atoms of a residue are of one molecule, and so are the residues of a polymer chain, over a gap in it as well, and
 // the atoms of a molecule of a topology (MD_ENTITY_FLAG_TOPOLOGY).
-// Molecules are numbered in the order of their first atom, as sys->molecule numbers structures: in a system without
-// coordination bonds between residues and virtual sites, which is not coarse grained, they are its structures, index
-// for index. Otherwise a structure may hold several (an ATP and its Mg are two molecules).
+// Molecules are numbered in the order of their first atom, as sys->molecule numbers its own: in a system without
+// coordination bonds between residues and virtual sites, which is not coarse grained, they are the molecules of the
+// system, index for index. Otherwise one of the system may hold several (an ATP and its Mg are two molecules).
 //
 // ## WHAT THE SYSTEM CAN TELL
 //
@@ -142,7 +142,7 @@ struct md_smiles_error_t;
 //   ALL           Every mapping, the symmetric ones included. Each mapping is reported once.
 //   ONE_PER_UNIT  The first match found in each unit. "Is it in there", one row per residue, molecule or chain.
 //   DISJOINT      Matches share no atoms; of overlapping ones, the one found first is kept. Counting repeat units of a
-//                 polymer (glucose rings along a cellulose chain at the structure level) is this mode.
+//                 polymer (glucose rings along a cellulose chain at the molecule level) is this mode.
 //
 // Matches are reported unit by unit, in the order found, which is fixed for a given system and query. Only the
 // searched atoms count towards distinct and overlapping, not the hydrogens mapped onto them.

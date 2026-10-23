@@ -68,7 +68,7 @@ static void compare_with_gro(int* utest_result, const md_system_t* sys, const md
         while (res + 1 < sys->residue.count && sys->residue.atom_offset[res + 1] <= i) res++;
         const md_gro_atom_t* a = &gro.atom_data[i];
         str_t res_name = str_from_cstrn(a->res_name, sizeof(a->res_name));
-        if (!str_eq(md_residue_name(&sys->residue, res), res_name) || sys->residue.seq_id[res] != a->res_id) {
+        if (!str_eq(md_system_residue_name(sys, res), res_name) || sys->residue.seq_id[res] != a->res_id) {
             res_mismatch += 1;
         }
         // A .gro has three decimals in nm
@@ -175,7 +175,7 @@ UTEST(tpr, system_tip3p) {
     // What a caller does next: everything but the bonds is derived. One structure per molecule.
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
-    EXPECT_EQ(1u + 509u + 4u, md_molecule_count(&sys.molecule));
+    EXPECT_EQ(1u + 509u + 4u, md_system_molecule_count(&sys));
 
     md_arena_allocator_destroy(arena);
 }
@@ -224,7 +224,7 @@ UTEST(tpr, virtual_sites) {
 
     // The site still belongs to its water's structure: one per molecule
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
-    EXPECT_EQ(1u + 506u + 4u, md_molecule_count(&sys.molecule));
+    EXPECT_EQ(1u + 506u + 4u, md_system_molecule_count(&sys));
 
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "peptide_tip4p.gro"));
     md_arena_allocator_destroy(arena);
@@ -387,8 +387,8 @@ UTEST(tpr, martini) {
     EXPECT_TRUE(md_atom_flags(&sys.atom, 0) & MD_ATOM_FLAG_BACKBONE);
     EXPECT_FALSE(md_atom_flags(&sys.atom, 1) & MD_ATOM_FLAG_BACKBONE);
     for (size_t c = 0; c < 2; ++c) {
-        EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_residue_kind(&sys.residue, c));
-        const md_urange_t range = md_residue_atom_range(&sys.residue, c);
+        EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_system_residue_kind(&sys, c));
+        const md_urange_t range = md_system_residue_atom_range(&sys, c);
         size_t num_backbone = 0;
         for (uint32_t i = range.beg; i < range.end; ++i) {
             const md_atom_flags_t flags = md_atom_flags(&sys.atom, i);
@@ -419,7 +419,7 @@ UTEST(tpr, martini) {
 
     // One structure per molecule: the peptide, two lipids, four ions, 583 waters
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
-    EXPECT_EQ(1u + 2u + 4u + 583u, md_molecule_count(&sys.molecule));
+    EXPECT_EQ(1u + 2u + 4u + 583u, md_system_molecule_count(&sys));
 
     md_arena_allocator_destroy(arena);
 }
@@ -685,7 +685,7 @@ UTEST(tpr, elastic_bonds) {
     // Structures, rings and chemistry go by the molecules alone
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     md_util_system_infer(&base, &base_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
-    EXPECT_EQ(md_molecule_count(&base.molecule), md_molecule_count(&sys.molecule));
+    EXPECT_EQ(md_system_molecule_count(&base), md_system_molecule_count(&sys));
     EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
     EXPECT_EQ(2u, count_elastic(&sys));
 

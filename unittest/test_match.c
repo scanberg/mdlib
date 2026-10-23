@@ -769,7 +769,7 @@ UTEST(match, whole) {
         if (str_eq_cstr(name, "GLY")) {
             // Without its C terminal oxygen
             size_t heavy = 0;
-            const md_urange_t range = md_residue_atom_range(&sys->residue, i);
+            const md_urange_t range = md_system_residue_atom_range(sys, i);
             for (uint32_t a = range.beg; a < range.end; ++a) heavy += md_atom_atomic_number(&sys->atom, a) != MD_Z_H;
             num_gly += heavy == 4;
         }
@@ -796,7 +796,7 @@ UTEST(match, mask) {
         const str_t name = LBL_TO_STR(sys->residue.name[i]);
         if (str_eq_cstr(name, "PHE") || str_eq_cstr(name, "TYR")) {
             num_rings++;
-            num_rings_chain0 += md_residue_atom_range(&sys->residue, i).beg >= chain0.beg && md_residue_atom_range(&sys->residue, i).end <= chain0.end;
+            num_rings_chain0 += md_system_residue_atom_range(sys, i).beg >= chain0.beg && md_system_residue_atom_range(sys, i).end <= chain0.end;
         }
     }
 
@@ -824,11 +824,10 @@ UTEST(match, reference_chain) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
     // The heavy atoms of the first chain, found in every chain
-    md_molecule_t structure = {0};
-    md_molecule_extract(&structure, &sys->molecule, 0);
+    const md_molecule_t mol = md_system_molecule(sys, 0);
     md_array(int32_t) ref = 0;
-    for (size_t i = 0; i < structure.count; ++i) {
-        if (md_atom_atomic_number(&sys->atom, structure.atom_idx[i]) != MD_Z_H) md_array_push(ref, structure.atom_idx[i], alloc);
+    for (size_t i = 0; i < mol.count; ++i) {
+        if (md_atom_atomic_number(&sys->atom, mol.atom_idx[i]) != MD_Z_H) md_array_push(ref, mol.atom_idx[i], alloc);
     }
 
     md_match_query_t q = {0};
@@ -858,10 +857,9 @@ UTEST(match, reference_molecule) {
     md_allocator_i* alloc = md_get_heap_allocator();
 
     // A whole PFTAA, hydrogens included, found in every PFTAA
-    md_molecule_t structure = {0};
-    md_molecule_extract(&structure, &sys->molecule, 253);
+    const md_molecule_t mol = md_system_molecule(sys, 253);
     md_match_query_t q = {0};
-    ASSERT_TRUE(md_match_query_init_atoms(&q, structure.atom_idx, structure.count, MD_MATCH_LABEL_ELEMENT, sys, alloc));
+    ASSERT_TRUE(md_match_query_init_atoms(&q, mol.atom_idx, mol.count, MD_MATCH_LABEL_ELEMENT, sys, alloc));
     md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_RESIDUE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
 
     md_match_result_t res = {0};
@@ -873,7 +871,7 @@ UTEST(match, reference_molecule) {
         const int32_t* row = res.atom_idx + i * res.width;
         for (size_t j = 0; j < res.width; ++j) {
             ASSERT_LE(0, row[j]);
-            EXPECT_EQ(md_atom_atomic_number(&sys->atom, structure.atom_idx[j]), md_atom_atomic_number(&sys->atom, row[j]));
+            EXPECT_EQ(md_atom_atomic_number(&sys->atom, mol.atom_idx[j]), md_atom_atomic_number(&sys->atom, row[j]));
             for (size_t k = j + 1; k < res.width; ++k) EXPECT_NE(row[j], row[k]);
         }
         for (size_t b = 0; b < q.num_bonds; ++b) {
@@ -893,7 +891,7 @@ UTEST(match, reference_identity) {
         const md_system_t* sys = get_sys(cases[c].id);
         for (size_t ci = 0; ci < sys->residue.count; ++ci) {
             if (!str_eq_cstr(LBL_TO_STR(sys->residue.name[ci]), cases[c].name)) continue;
-            const md_urange_t range = md_residue_atom_range(&sys->residue, ci);
+            const md_urange_t range = md_system_residue_atom_range(sys, ci);
             md_array(int32_t) ref = 0;
             for (uint32_t i = range.beg; i < range.end; ++i) md_array_push(ref, (int32_t)i, alloc);
             for (int label = 0; label < 2; ++label) {
@@ -944,7 +942,7 @@ UTEST(match, reference_hydrogens) {
 
     // The fifth residue, hydrogens included, which pins the protonation of its atoms: not the N terminal residue,
     // whose N carries three hydrogens. The C terminal one has an uncharged oxygen for the carbonyl.
-    const md_urange_t range = md_residue_atom_range(&sys->residue, 4);
+    const md_urange_t range = md_system_residue_atom_range(sys, 4);
     md_array(int32_t) ref = 0;
     for (uint32_t i = range.beg; i < range.end; ++i) md_array_push(ref, (int32_t)i, alloc);
 
@@ -971,7 +969,7 @@ UTEST(match, reference_names) {
 
     // A CB: by element every carbon, by name the CBs
     int32_t cb = -1;
-    const md_urange_t range = md_residue_atom_range(&sys->residue, 4);
+    const md_urange_t range = md_system_residue_atom_range(sys, 4);
     for (uint32_t i = range.beg; i < range.end; ++i) {
         if (str_eq_cstr(md_atom_name(&sys->atom, i), "CB")) cb = (int32_t)i;
     }
@@ -1190,7 +1188,7 @@ static void check_identify(int* utest_result, sys_id_t id, const md_match_identi
         const md_match_query_t* q = md_match_library_query(desc->library, e);
         ASSERT_EQ(q->num_atoms, (size_t)(res.offset[i + 1] - res.offset[i]));
         const int32_t* row = res.atom_idx + res.offset[i];
-        const md_urange_t range = md_residue_atom_range(&sys->residue, u);
+        const md_urange_t range = md_system_residue_atom_range(sys, u);
         for (size_t j = 0; j < q->num_atoms; ++j) {
             EXPECT_TRUE(row[j] >= (int32_t)range.beg && row[j] < (int32_t)range.end);
             EXPECT_EQ(q->atoms[j].z, md_atom_atomic_number(&sys->atom, row[j]));

@@ -735,20 +735,20 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 	// one for the QM region - components cover every atom or none.
 	ASSERT_EQ(1u + 50u, t.sys.residue.count);
 	EXPECT_VALID_SYSTEM(&t.sys);
-	EXPECT_TRUE(str_eq(md_residue_name(&t.sys.residue, 0), STR_LIT("QM")));
+	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 0), STR_LIT("QM")));
 	EXPECT_EQ(0, md_system_residue_find_by_atom_idx(&t.sys, 0));
 	EXPECT_EQ(1, md_system_residue_find_by_atom_idx(&t.sys, num_qm));
 	md_urange_t first = md_system_residue_atom_range(&t.sys, 1);
 	EXPECT_EQ(num_qm, first.beg);
 	EXPECT_EQ(num_qm + 3, first.end);
-	EXPECT_TRUE(str_eq(md_residue_name(&t.sys.residue, 1), STR_LIT("HOH")));
-	EXPECT_EQ(1, md_residue_seq_id(&t.sys.residue, 1));
+	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 1), STR_LIT("HOH")));
+	EXPECT_EQ(1, md_system_residue_seq_id(&t.sys, 1));
 	const md_residue_idx_t npe = md_system_residue_find_by_atom_idx(&t.sys, num_qm + 21);
 	ASSERT_TRUE(npe >= 0);
-	EXPECT_TRUE(str_eq(md_residue_name(&t.sys.residue, npe), STR_LIT("HOH")));
-	EXPECT_EQ(8, md_residue_seq_id(&t.sys.residue, npe));
+	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, npe), STR_LIT("HOH")));
+	EXPECT_EQ(8, md_system_residue_seq_id(&t.sys, npe));
 	for (size_t c = 1; c < t.sys.residue.count; ++c) {
-		EXPECT_EQ((int)c, md_residue_seq_id(&t.sys.residue, c));
+		EXPECT_EQ((int)c, md_system_residue_seq_id(&t.sys, c));
 		EXPECT_EQ(MD_RESIDUE_KIND_WATER, md_system_residue_kind(&t.sys, c));
 	}
 
@@ -851,10 +851,10 @@ UTEST(vlx, pe_environment_by_file_name_in_atomic_units) {
 
 	ASSERT_EQ(3u, t.sys.residue.count);
 	EXPECT_VALID_SYSTEM(&t.sys);
-	EXPECT_TRUE(str_eq(md_residue_name(&t.sys.residue, 1), STR_LIT("NA")));
-	EXPECT_EQ(4, md_residue_seq_id(&t.sys.residue, 1));
+	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 1), STR_LIT("NA")));
+	EXPECT_EQ(4, md_system_residue_seq_id(&t.sys, 1));
 	EXPECT_EQ(MD_RESIDUE_KIND_ION, md_system_residue_kind(&t.sys, 1));
-	EXPECT_TRUE(str_eq(md_residue_name(&t.sys.residue, 2), STR_LIT("HOH")));
+	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 2), STR_LIT("HOH")));
 
 	double q[8], a[8];
 	ASSERT_EQ(8u, qm_test_series(q, 8, &t, STR_LIT("atom/charge")));
@@ -1024,11 +1024,11 @@ UTEST(vlx, pe_fragments_follow_their_numbers) {
 	const int seq[5] = {0, 10, 11, 12, 997};
 	const uint32_t beg[5] = {0, 3, 7, 11, 15};
 	for (size_t c = 0; c < 5; ++c) {
-		EXPECT_EQ(seq[c], md_residue_seq_id(&t.sys.residue, c));
+		EXPECT_EQ(seq[c], md_system_residue_seq_id(&t.sys, c));
 		EXPECT_EQ(beg[c], md_system_residue_atom_range(&t.sys, c).beg);
 	}
-	EXPECT_TRUE(str_eq(md_residue_name(&t.sys.residue, 2), STR_LIT("GLY")));
-	EXPECT_TRUE(str_eq(md_residue_name(&t.sys.residue, 4), STR_LIT("HOH")));
+	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 2), STR_LIT("GLY")));
+	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 4), STR_LIT("HOH")));
 
 	// A fragment's sites keep the order the file gives them in
 	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, 3), STR_LIT("N")));
@@ -1058,10 +1058,10 @@ UTEST(vlx, pe_fragments_follow_their_numbers) {
 	// What viamd infers from it: the three residues one peptide, with one backbone through them all
 	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
 	EXPECT_VALID_SYSTEM(&t.sys);
-	const md_instance_idx_t inst = md_instance_find_by_residue_idx(&t.sys.instance, 1);
+	const md_instance_idx_t inst = md_system_instance_find_by_residue_idx(&t.sys, 1);
 	ASSERT_TRUE(inst >= 0);
 	EXPECT_EQ(MD_ENTITY_KIND_PEPTIDE, md_system_instance_entity_kind(&t.sys, inst));
-	EXPECT_EQ(3u, md_instance_residue_range(&t.sys.instance, inst).end - md_instance_residue_range(&t.sys.instance, inst).beg);
+	EXPECT_EQ(3u, md_system_instance_residue_range(&t.sys, inst).end - md_system_instance_residue_range(&t.sys, inst).beg);
 	ASSERT_EQ(1u, t.sys.protein_backbone.range.count);
 	ASSERT_EQ(3u, t.sys.protein_backbone.segment.count);
 	for (size_t s = 0; s < 3; ++s) {

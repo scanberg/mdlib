@@ -148,7 +148,7 @@ UTEST(water, virtual_sites) {
         ASSERT_EQ(2, (int)sys.residue.count);
         EXPECT_EQ(2 * (3 + c->num_sites), (int)sys.atom.count);
         for (size_t ci = 0; ci < sys.residue.count; ++ci) {
-            EXPECT_EQ(MD_RESIDUE_KIND_WATER, md_residue_kind(&sys.residue, ci));
+            EXPECT_EQ(MD_RESIDUE_KIND_WATER, md_system_residue_kind(&sys, ci));
         }
         EXPECT_FALSE(md_system_is_coarse_grained(&sys));
         // Each water molecule is an instance of its own, of one water entity
@@ -189,8 +189,8 @@ UTEST(water, virtual_sites) {
         md_hbond_set_t hb;
         ASSERT_TRUE(md_hbond_compute(&hb, NULL, &sys, &st, alloc));
         ASSERT_EQ(1, (int)hb.count);
-        const md_urange_t r0 = md_residue_atom_range(&sys.residue, 0);
-        const md_urange_t r1 = md_residue_atom_range(&sys.residue, 1);
+        const md_urange_t r0 = md_system_residue_atom_range(&sys, 0);
+        const md_urange_t r1 = md_system_residue_atom_range(&sys, 1);
         EXPECT_TRUE(hb.donor[0] >= r0.beg && hb.donor[0] < r0.end && md_atom_atomic_number(&sys.atom, hb.donor[0]) == MD_Z_O);
         EXPECT_TRUE(hb.acceptor[0] >= r1.beg && hb.acceptor[0] < r1.end && md_atom_atomic_number(&sys.atom, hb.acceptor[0]) == MD_Z_O);
 
@@ -235,7 +235,7 @@ UTEST(water, tip4p_gro_and_tpr) {
         ASSERT_TRUE(ok);
         ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
         size_t water = 0, sites = 0, bonded_sites = 0, cg = 0;
-        for (size_t ci = 0; ci < sys.residue.count; ++ci) water += md_residue_kind(&sys.residue, ci) == MD_RESIDUE_KIND_WATER;
+        for (size_t ci = 0; ci < sys.residue.count; ++ci) water += md_system_residue_kind(&sys, ci) == MD_RESIDUE_KIND_WATER;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             if (particle(&sys, i) == MD_PARTICLE_VIRTUAL_SITE) {
                 sites += 1;
@@ -269,6 +269,6 @@ UTEST(water, martini_bead_unchanged) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(text)));
     EXPECT_EQ(MD_PARTICLE_BEAD, particle(&sys, 0));
-    EXPECT_EQ(MD_RESIDUE_KIND_WATER, md_residue_kind(&sys.residue, 0));
+    EXPECT_EQ(MD_RESIDUE_KIND_WATER, md_system_residue_kind(&sys, 0));
     md_vm_arena_destroy(alloc);
 }

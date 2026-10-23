@@ -240,7 +240,7 @@ UTEST(chem, ions) {
 
     int q[8] = { 0 };
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
-        const md_urange_t r = md_residue_atom_range(&sys.residue, ci);
+        const md_urange_t r = md_system_residue_atom_range(&sys, ci);
         for (uint32_t i = r.beg; i < r.end; ++i) q[ci] += md_atom_formal_charge(&sys.atom, i);
     }
     EXPECT_EQ(-1, q[0]);    // NO3-
@@ -346,8 +346,8 @@ UTEST(chem, deposited_structure) {
 
     int thiolate = 0, thiol = 0, lys = 0, lys_charged = 0, arg = 0, arg_charged = 0;
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
-        const str_t name = md_residue_name(&sys.residue, ci);
-        const md_urange_t r = md_residue_atom_range(&sys.residue, ci);
+        const str_t name = md_system_residue_name(&sys, ci);
+        const md_urange_t r = md_system_residue_atom_range(&sys, ci);
         int q = 0;
         for (uint32_t i = r.beg; i < r.end; ++i) {
             q += md_atom_formal_charge(&sys.atom, i);
@@ -392,8 +392,8 @@ UTEST(chem, simulation_with_hydrogens) {
 
     int n_res = 0, unexpected = 0;
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
-        const str_t name = md_residue_name(&sys.residue, ci);
-        const md_urange_t r = md_residue_atom_range(&sys.residue, ci);
+        const str_t name = md_system_residue_name(&sys, ci);
+        const md_urange_t r = md_system_residue_atom_range(&sys, ci);
         int q = 0;
         bool n_term = false, c_term = false;
         for (uint32_t i = r.beg; i < r.end; ++i) {

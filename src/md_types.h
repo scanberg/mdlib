@@ -40,12 +40,12 @@ enum {
 //   residue    md_residue_flags_t    what the residue is (amino acid, nucleotide, water, ion), and where in its chain
 //   entity     md_entity_flags_t     what the molecule is (peptide, DNA, water, ...)
 //
-// Residues of the same name and kind share a residue type (md_residue_type_data_t), as atoms share an atom
+// Residues of the same name and kind share a residue type (md_residue_type_data_t), as atoms share a particle
 // type. What a particle type is a form of is its element, what a residue type is a form of is its standard monomer
 // (md_monomer_t): HIE, HSD and MSE are forms of HIS, HIS and MET. Both are where the defaults of the type come from.
 //
 // Instances have no flags of their own: an instance is one occurrence of its entity (md_system_instance_entity_kind).
-// Nothing is copied from one level to another. A property of an atom's type or of its residue is read through the
+// Nothing is copied from one level to another. A property of an atom's particle type or of its residue is read through the
 // type or the residue (md_atom_particle_kind, md_system_atom_residue_kind), so there is one copy and it cannot go
 // stale when the type or the residue is reclassified.
 //
@@ -305,13 +305,13 @@ static inline md_entity_flags_t md_entity_flags_set_kind(md_entity_flags_t flags
 //                        type 2), or as plain bonds (md_util_system_infer_elastic_bonds). They are kept, as
 //                        information, in the first range of md_bond_data_t, and left out of everything which follows
 //                        the bonds of a molecule: the connectivity (md_bond_conn_data_t, so md_bond_iter and
-//                        md_bond_find), the structures, rings, chemistry and matching. The representations do not draw
+//                        md_bond_find), the molecules, rings, chemistry and matching. The representations do not draw
 //                        them unless asked to.
 //     METALLIC     0xA0  Between two atoms of a metallic phase (MD_ATOM_FLAG_METALLIC: a metal in bulk, at a surface,
 //                        in a particle), neighbours within its first coordination shell. The bonding of a metal is not
 //                        that of a molecule, so like the elastic bonds they are kept in the first range of
 //                        md_bond_data_t and left out of everything which follows the bonds of a molecule (the
-//                        connectivity, structures, rings, chemistry, matching, the bonds formed and broken over a run).
+//                        connectivity, molecules, rings, chemistry, matching, the bonds formed and broken over a run).
 //                        Licorice and ball and stick do not draw them; a Bonds representation does (bond(kind=
 //                        "metallic")). Inferred only (METALLIC PHASES in md_util.c).
 //     INTERACTION  0xC0  A non-covalent bond of no particular kind: one a user marks between two atoms, a salt bridge,
@@ -319,7 +319,7 @@ static inline md_entity_flags_t md_entity_flags_set_kind(md_entity_flags_t flags
 //     HYDROGEN     0xE0  A hydrogen bond, D-H...A. Stored with the hydrogen (or the donor without one) as the first
 //                        atom.
 //              COVALENT and COORDINATE bonds make up the bond graph, from which the connectivity, the rings, the
-//              structures and the perceived chemistry are derived. INTERACTION and HYDROGEN are the non-covalent bonds,
+//              molecules and the perceived chemistry are derived. INTERACTION and HYDROGEN are the non-covalent bonds,
 //              which md_bond_data_t keeps in a range of their own. 0x40 and 0x60 are unused.
 //
 // PROVENANCE

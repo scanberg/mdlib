@@ -1831,7 +1831,7 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const md_system_t*
 static char ramachandran_residue(const md_system_t* sys, const md_protein_backbone_data_t* backbone, size_t i, bool has_prev) {
     const md_residue_idx_t res_idx = backbone->segment.res_idx[i];
     if (res_idx >= 0) {
-        const str_t name = md_residue_name(&sys->residue, res_idx);
+        const str_t name = md_system_residue_name(sys, res_idx);
         return str_eq(name, STR_LIT("GLY")) ? 'G' : str_eq(name, STR_LIT("PRO")) ? 'P' : 0;
     }
     const md_amino_acid_atoms_t* atoms = &backbone->segment.atoms[i];
@@ -3438,11 +3438,11 @@ static martini_system_t martini_system(const md_system_t* sys, str_t (*label)(co
     str_t labels[256];
     uint8_t map[256];
     for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
-        const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
+        const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         const size_t n = range.end - range.beg;
         if (n == 0 || n > 255) continue;
         size_t beg, end;
-        martini_db_find(md_residue_name(&sys->residue, res_idx), &beg, &end);
+        martini_db_find(md_system_residue_name(sys, res_idx), &beg, &end);
         if (beg == end) continue;
         for (size_t i = 0; i < n; ++i) labels[i] = label(data, range.beg + i);
         uint32_t versions = 0;
@@ -3544,14 +3544,14 @@ static inline bool martini_charge_dummy(str_t atom_name) {
 // The residue of the database a residue is: the one of its name whose beads are its beads, each with the mass of its
 // atom (its type was given by it), and of the version where there are several. map[i] is then the bead of atom i.
 static const martini_db_residue_t* martini_db_match_residue(const md_system_t* sys, size_t res_idx, uint32_t version, str_t labels[], uint8_t map[]) {
-    const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
+    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
     const size_t n = range.end - range.beg;
     if (n == 0 || n > 255) return NULL;
-    const md_residue_kind_t kind = md_residue_kind(&sys->residue, res_idx);
+    const md_residue_kind_t kind = md_system_residue_kind(sys, res_idx);
     const bool biopolymer = kind == MD_RESIDUE_KIND_AMINO_ACID || kind == MD_RESIDUE_KIND_NUCLEOTIDE;
     for (size_t i = 0; i < n; ++i) labels[i] = md_atom_name(&sys->atom, range.beg + i);
     size_t beg, end;
-    martini_db_find(md_residue_name(&sys->residue, res_idx), &beg, &end);
+    martini_db_find(md_system_residue_name(sys, res_idx), &beg, &end);
     const martini_db_residue_t* other = NULL;
     for (size_t r = beg; r < end; ++r) {
         const martini_db_residue_t* res = &martini_db_residues[r];
@@ -3577,13 +3577,13 @@ static const martini_db_residue_t* martini_db_match_residue(const md_system_t* s
 // (the longest are 4.7 A), unless the numbering starts over: a new chain
 static void cg_polymer_links(md_array(bond_pair_t)* candidates, const md_system_t* sys, const md_system_state_t* state, size_t ci, md_allocator_i* alloc) {
     const float polymer_cap = 6.0f;
-    const str_t prev_name = md_residue_name(&sys->residue, ci - 1);
-    const str_t name      = md_residue_name(&sys->residue, ci);
-    const md_sequence_id_t prev_seq = md_residue_seq_id(&sys->residue, ci - 1);
-    const md_sequence_id_t seq      = md_residue_seq_id(&sys->residue, ci);
+    const str_t prev_name = md_system_residue_name(sys, ci - 1);
+    const str_t name      = md_system_residue_name(sys, ci);
+    const md_sequence_id_t prev_seq = md_system_residue_seq_id(sys, ci - 1);
+    const md_sequence_id_t seq      = md_system_residue_seq_id(sys, ci);
     if (seq < prev_seq && !(seq <= 1 && prev_seq >= 9999)) return;
-    const md_urange_t prev = md_residue_atom_range(&sys->residue, ci - 1);
-    const md_urange_t cur  = md_residue_atom_range(&sys->residue, ci);
+    const md_urange_t prev = md_system_residue_atom_range(sys, ci - 1);
+    const md_urange_t cur  = md_system_residue_atom_range(sys, ci);
     for (size_t k = 0; k < ARRAY_SIZE(martini_db_links); ++k) {
         const martini_db_link_t* link = &martini_db_links[k];
         if (!str_eq_cstr(prev_name, link->name) || !str_eq_cstr(name, link->next_name)) continue;
@@ -3604,7 +3604,7 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
 
     size_t max_len = 0;
     for (size_t ci = 0; ci < sys->residue.count; ++ci) {
-        const md_urange_t r = md_residue_atom_range(&sys->residue, ci);
+        const md_urange_t r = md_system_residue_atom_range(sys, ci);
         max_len = MAX(max_len, (size_t)(r.end - r.beg));
     }
     int*   tree   = md_alloc(alloc, sizeof(int)   * (max_len + 1));
@@ -3622,9 +3622,9 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
     const uint32_t version = martini_system(sys, label_of_atom, &sys->atom).version;
 
     for (size_t ci = 0; ci < sys->residue.count; ++ci) {
-        const md_residue_kind_t kind = md_residue_kind(&sys->residue, ci);
+        const md_residue_kind_t kind = md_system_residue_kind(sys, ci);
         const bool biopolymer = kind == MD_RESIDUE_KIND_AMINO_ACID || kind == MD_RESIDUE_KIND_NUCLEOTIDE;
-        const md_urange_t range = md_residue_atom_range(&sys->residue, ci);
+        const md_urange_t range = md_system_residue_atom_range(sys, ci);
 
         if (ci > 0) cg_polymer_links(candidates, sys, state, ci, alloc);
 
@@ -3733,8 +3733,8 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
         // To the previous residue of the chain. The next number allows for the stretch of a bond in a simulation
         // (Martini 2's backbone bonds, the softest, pass 4.3 A in one of 200 frames and 5.5 A in one of 10^5).
         if (prev_last_bb != -1 && first_bb != -1 && prev_ci + 1 == ci && prev_kind == kind) {
-            const md_sequence_id_t prev_seq = md_residue_seq_id(&sys->residue, prev_ci);
-            const md_sequence_id_t seq      = md_residue_seq_id(&sys->residue, ci);
+            const md_sequence_id_t prev_seq = md_system_residue_seq_id(sys, prev_ci);
+            const md_sequence_id_t seq      = md_system_residue_seq_id(sys, ci);
             const bool restart = seq < prev_seq && !(seq <= 1 && prev_seq >= 9999);  // GRO and PDB wrap at 99999 and 9999
             const bool next    = seq == prev_seq + 1 || (seq <= 1 && prev_seq >= 9999);
             if (!restart) {
@@ -3754,7 +3754,7 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
         prev_ci = ci;
         prev_kind = kind;
 
-        const str_t res_name = md_residue_name(&sys->residue, ci);
+        const str_t res_name = md_system_residue_name(sys, ci);
         if (amino_acid && (str_eq_cstr(res_name, "CYS") || str_eq_cstr(res_name, "CYX"))) {
             for (uint32_t i = range.beg; i < range.end; ++i) {
                 if (str_eq_cstr(md_atom_name(&sys->atom, i), "SC1")) md_array_push(cys_sc1, (int)i, alloc);
@@ -3860,7 +3860,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         // molecule is told here from its atoms. Bond perception needs it around metals.
         bool* res_water = md_temp_alloc_array(temp_scope, bool, num_res);
         for (size_t i = 0; i < num_res; ++i) {
-            res_water[i] = md_residue_kind(&sys->residue, i) == MD_RESIDUE_KIND_WATER || atoms_are_water(sys, md_residue_atom_range(&sys->residue, i));
+            res_water[i] = md_system_residue_kind(sys, i) == MD_RESIDUE_KIND_WATER || atoms_are_water(sys, md_system_residue_atom_range(sys, i));
         }
 
         {
@@ -4255,13 +4255,13 @@ typedef struct delta_atoms_t {
 } delta_atoms_t;
 
 static inline int delta_res(const delta_atoms_t* a, uint32_t atom) {
-    return a->sys->residue.count ? (int)md_residue_find_by_atom_idx(&a->sys->residue, atom) : -1;
+    return a->sys->residue.count ? (int)md_system_residue_find_by_atom_idx(a->sys, atom) : -1;
 }
 
 static inline bool delta_water(delta_atoms_t* a, int res) {
     if (res < 0) return false;
     if (a->res_water[res] < 0) {
-        a->res_water[res] = (int8_t)(md_residue_kind(&a->sys->residue, res) == MD_RESIDUE_KIND_WATER || atoms_are_water(a->sys, md_residue_atom_range(&a->sys->residue, res)));
+        a->res_water[res] = (int8_t)(md_system_residue_kind(a->sys, res) == MD_RESIDUE_KIND_WATER || atoms_are_water(a->sys, md_system_residue_atom_range(a->sys, res)));
     }
     return a->res_water[res] != 0;
 }
@@ -4764,8 +4764,8 @@ static bool classify_amino_acid(md_system_t* sys, size_t res_idx, const md_amino
         md_bond_find(&sys->bond, aa->c,  aa->o)  == -1) {
         return false;
     }
-    const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
-    if (!md_util_resname_amino_acid(md_residue_name(&sys->residue, res_idx)) &&
+    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
+    if (!md_util_resname_amino_acid(md_system_residue_name(sys, res_idx)) &&
         !atom_bonded_outside(sys, aa->n, range, MD_Z_C) && !atom_bonded_outside(sys, aa->c, range, MD_Z_N)) {
         return false;
     }
@@ -4807,8 +4807,8 @@ static bool classify_nucleotide(md_system_t* sys, size_t res_idx, const md_nucle
         (na->p != -1 && md_bond_find(&sys->bond, na->o5, na->p) == -1)) {
         return false;
     }
-    const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
-    if (!md_util_resname_nucleotide(md_residue_name(&sys->residue, res_idx)) &&
+    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
+    if (!md_util_resname_nucleotide(md_system_residue_name(sys, res_idx)) &&
         !(na->p != -1 && atom_bonded_outside(sys, na->p, range, MD_Z_O)) && !atom_bonded_outside(sys, na->o3, range, MD_Z_P)) {
         return false;
     }
@@ -4867,13 +4867,13 @@ static bool classify_nucleotide(md_system_t* sys, size_t res_idx, const md_nucle
 static void infer_coarse_grained_chain_ends(md_system_t* sys) {
     if (!md_system_is_coarse_grained(sys) || !sys->residue.flags || sys->bond.conn.offset == NULL) return;
     for (size_t ci = 0; ci < sys->residue.count; ++ci) {
-        const md_residue_kind_t kind = md_residue_kind(&sys->residue, ci);
+        const md_residue_kind_t kind = md_system_residue_kind(sys, ci);
         if (kind != MD_RESIDUE_KIND_AMINO_ACID && kind != MD_RESIDUE_KIND_NUCLEOTIDE) continue;
         if (sys->residue.flags[ci] & MD_RESIDUE_FLAG_RESOLVED) continue;
-        const md_urange_t range = md_residue_atom_range(&sys->residue, ci);
+        const md_urange_t range = md_system_residue_atom_range(sys, ci);
         if (range.beg >= range.end || md_atom_particle_kind(&sys->atom, range.beg) != MD_PARTICLE_BEAD) continue;
-        const md_urange_t prev = ci > 0 ? md_residue_atom_range(&sys->residue, ci - 1) : (md_urange_t){0, 0};
-        const md_urange_t next = ci + 1 < sys->residue.count ? md_residue_atom_range(&sys->residue, ci + 1) : (md_urange_t){0, 0};
+        const md_urange_t prev = ci > 0 ? md_system_residue_atom_range(sys, ci - 1) : (md_urange_t){0, 0};
+        const md_urange_t next = ci + 1 < sys->residue.count ? md_system_residue_atom_range(sys, ci + 1) : (md_urange_t){0, 0};
 
         bool to_prev = false, to_next = false;
         for (uint32_t i = range.beg; i < range.end; ++i) {
@@ -4932,11 +4932,11 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
     md_array(int) ambigous_nucleotide_indices = 0;
 
     for (size_t residue_idx = 0; residue_idx < sys->residue.count; ++residue_idx) {
-        str_t res_name = md_residue_name(&sys->residue, residue_idx);
-        md_urange_t res_range = md_residue_atom_range(&sys->residue, residue_idx);
+        str_t res_name = md_system_residue_name(sys, residue_idx);
+        md_urange_t res_range = md_system_residue_atom_range(sys, residue_idx);
         size_t len = (size_t)(res_range.end - res_range.beg);
 
-        const md_residue_kind_t kind = md_residue_kind(&sys->residue, residue_idx);
+        const md_residue_kind_t kind = md_system_residue_kind(sys, residue_idx);
         if (kind == MD_RESIDUE_KIND_WATER || kind == MD_RESIDUE_KIND_ION || kind == MD_RESIDUE_KIND_LIPID) {
             // Already classified (by a predefined coarse grained type)
             continue;
@@ -5008,7 +5008,7 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
         MD_LOG_DEBUG("Structure contains %zu amino acid residue names, but their backbone cannot be mapped from atom labels:", num_ambigous_amino_acids);
         for (size_t i = 0; i < MIN(num_ambigous_amino_acids, max_warnings); ++i) {
             int res_idx = ambigous_amino_acid_indices[i];
-            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_residue_name(&sys->residue, res_idx)), md_residue_seq_id(&sys->residue, res_idx));
+            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_system_residue_name(sys, res_idx)), md_system_residue_seq_id(sys, res_idx));
         }
         if (num_ambigous_amino_acids > max_warnings) {
             MD_LOG_DEBUG(" - And %zu more...", num_ambigous_amino_acids - max_warnings);
@@ -5020,7 +5020,7 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
         MD_LOG_DEBUG("Structure contains %zu nucleotide residue names, but their backbone cannot be mapped from atom labels:", num_ambigous_nucleotides);
         for (size_t i = 0; i < MIN(num_ambigous_nucleotides, max_warnings); ++i) {
             int res_idx = ambigous_nucleotide_indices[i];
-            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_residue_name(&sys->residue, res_idx)), md_residue_seq_id(&sys->residue, res_idx));
+            MD_LOG_DEBUG(" - [%d] " STR_FMT " (%d)", res_idx + 1, STR_ARG(md_system_residue_name(sys, res_idx)), md_system_residue_seq_id(sys, res_idx));
         }
         if (num_ambigous_nucleotides > max_warnings) {
             MD_LOG_DEBUG(" - And %zu more...", num_ambigous_nucleotides - max_warnings);
@@ -5115,7 +5115,7 @@ static uint64_t* residues_bonded_to_prev(const md_system_t* sys, md_allocator_i*
     md_residue_idx_t* atom_res = md_alloc(alloc, sizeof(md_residue_idx_t) * MAX(1, sys->atom.count));
     MEMSET(atom_res, -1, sizeof(md_residue_idx_t) * sys->atom.count);
     for (size_t c = 0; c < num_res; ++c) {
-        const md_urange_t r = md_residue_atom_range(&sys->residue, c);
+        const md_urange_t r = md_system_residue_atom_range(sys, c);
         for (uint32_t a = r.beg; a < r.end && a < sys->atom.count; ++a) atom_res[a] = (md_residue_idx_t)c;
     }
     for (size_t b = 0; b < sys->bond.count; ++b) {
@@ -5157,8 +5157,8 @@ bool md_util_system_infer_chains(md_system_t* sys) {
     uint64_t* bonded_to_prev = NULL;
 
     for (size_t i = 0; i < num_inst; ++i) {
-        const str_t id = str_trim(md_instance_auth_id(&sys->instance, i));
-        const md_urange_t residues = md_instance_residue_range(&sys->instance, i);
+        const str_t id = str_trim(md_system_instance_auth_id(sys, i));
+        const md_urange_t residues = md_system_instance_residue_range(sys, i);
         if (residues.beg >= residues.end || residues.end > num_res) continue;
         if (!str_empty(id)) {
             const uint64_t key = md_hash64_str(id, 0);
@@ -5265,7 +5265,7 @@ bool md_util_system_infer_parts(md_system_t* sys) {
         md_residue_idx_t* atom_res = md_temp_alloc_array(temp, md_residue_idx_t, MAX(1, sys->atom.count));
         MEMSET(atom_res, -1, sizeof(md_residue_idx_t) * sys->atom.count);
         for (size_t c = 0; c < num_res; ++c) {
-            const md_urange_t r = md_residue_atom_range(&sys->residue, c);
+            const md_urange_t r = md_system_residue_atom_range(sys, c);
             for (uint32_t a = r.beg; a < r.end && a < sys->atom.count; ++a) atom_res[a] = (md_residue_idx_t)c;
         }
         for (size_t b = 0; b < sys->bond.count; ++b) {
@@ -5288,19 +5288,19 @@ bool md_util_system_infer_parts(md_system_t* sys) {
 
     md_array_push(sys->part.res_offset, 0, alloc);
     for (size_t i = 0; i < num_inst; ++i) {
-        const md_urange_t residues = md_instance_residue_range(&sys->instance, i);
+        const md_urange_t residues = md_system_instance_residue_range(sys, i);
         if (residues.beg >= residues.end || residues.end > num_res) continue;
         // An instance need not begin where the last ended (a system with residues in no instance): those are parts of one residue each
         uint32_t last = sys->part.res_offset[md_array_size(sys->part.res_offset) - 1];
         for (uint32_t c = last; c < residues.beg; ++c) md_array_push(sys->part.res_offset, c + 1, alloc);
 
         uint32_t beg = residues.beg;
-        bool run_polymer = residue_kind_is_monomer(md_residue_kind(&sys->residue, beg));
+        bool run_polymer = residue_kind_is_monomer(md_system_residue_kind(sys, beg));
         for (uint32_t j = residues.beg + 1; j <= residues.end; ++j) {
             bool goes_on = false;
             if (j < residues.end) {
-                const md_residue_kind_t kj = md_residue_kind(&sys->residue, j);
-                const md_residue_kind_t kp = md_residue_kind(&sys->residue, j - 1);
+                const md_residue_kind_t kj = md_system_residue_kind(sys, j);
+                const md_residue_kind_t kp = md_system_residue_kind(sys, j - 1);
                 const bool bonded = bitfield_test_bit(bonded_to_prev, j);
                 if (kj == MD_RESIDUE_KIND_WATER || kj == MD_RESIDUE_KIND_ION || kp == MD_RESIDUE_KIND_WATER || kp == MD_RESIDUE_KIND_ION) {
                     goes_on = false;
@@ -5316,12 +5316,12 @@ bool md_util_system_infer_parts(md_system_t* sys) {
                 }
             }
             if (goes_on) {
-                run_polymer |= residue_kind_is_monomer(md_residue_kind(&sys->residue, j));
+                run_polymer |= residue_kind_is_monomer(md_system_residue_kind(sys, j));
                 continue;
             }
             md_array_push(sys->part.res_offset, j, alloc);
             beg = j;
-            if (j < residues.end) run_polymer = residue_kind_is_monomer(md_residue_kind(&sys->residue, j));
+            if (j < residues.end) run_polymer = residue_kind_is_monomer(md_system_residue_kind(sys, j));
         }
     }
     // Residues after the last instance
@@ -5360,11 +5360,11 @@ static void clear_entities_and_instances(md_system_t* sys, md_allocator_i* alloc
 // standard names (DA, DC, ... and A, C, ...). Otherwise (ADE, CYT, ... of CHARMM, which are both) the sugar does: a
 // resolved nucleotide with a 2' oxygen is RNA, one without DNA.
 static int nucleotide_type(const md_system_t* sys, size_t res_idx) {
-    const str_t name = md_residue_name(&sys->residue, res_idx);
+    const str_t name = md_system_residue_name(sys, res_idx);
     if (md_util_resname_dna(name)) return 1;
     if (md_util_resname_rna(name)) return 2;
-    if (md_residue_flags(&sys->residue, res_idx) & MD_RESIDUE_FLAG_RESOLVED) {
-        const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
+    if (md_system_residue_flags(sys, res_idx) & MD_RESIDUE_FLAG_RESOLVED) {
+        const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         for (uint32_t i = range.beg; i < range.end; ++i) {
             const str_t atom = md_atom_name(&sys->atom, i);
             if (str_eq(atom, STR_LIT("O2'")) || str_eq(atom, STR_LIT("O2*"))) return 2;
@@ -5381,12 +5381,12 @@ static md_entity_kind_t classify_molecule(const md_system_t* sys, md_urange_t re
     const size_t n = res_range.end - res_range.beg;
     if (n == 0) return MD_ENTITY_KIND_UNKNOWN;
     if (n == 1) {
-        return md_residue_kind(&sys->residue, res_range.beg) == MD_RESIDUE_KIND_WATER ? MD_ENTITY_KIND_WATER : MD_ENTITY_KIND_NON_POLYMER;
+        return md_system_residue_kind(sys, res_range.beg) == MD_RESIDUE_KIND_WATER ? MD_ENTITY_KIND_WATER : MD_ENTITY_KIND_NON_POLYMER;
     }
 
     size_t num_amino = 0, num_nucl = 0, num_dna = 0, num_rna = 0;
     for (uint32_t c = res_range.beg; c < res_range.end; ++c) {
-        const md_residue_kind_t kind = md_residue_kind(&sys->residue, c);
+        const md_residue_kind_t kind = md_system_residue_kind(sys, c);
         if (kind == MD_RESIDUE_KIND_AMINO_ACID) {
             num_amino += 1;
         } else if (kind == MD_RESIDUE_KIND_NUCLEOTIDE) {
@@ -5413,10 +5413,10 @@ void md_util_system_infer_entity_kinds(md_system_t* sys) {
     if (sys->entity.count == 0 || !sys->entity.flags) return;
 
     for (size_t e = 0; e < sys->entity.count; ++e) {
-        if (md_entity_kind(&sys->entity, e) != MD_ENTITY_KIND_UNKNOWN) continue;
+        if (md_system_entity_kind(sys, e) != MD_ENTITY_KIND_UNKNOWN) continue;
         for (size_t i = 0; i < sys->instance.count; ++i) {
-            if (md_instance_entity_idx(&sys->instance, i) == (md_entity_idx_t)e) {
-                const md_entity_kind_t kind = classify_molecule(sys, md_instance_residue_range(&sys->instance, i));
+            if (md_system_instance_entity_idx(sys, i) == (md_entity_idx_t)e) {
+                const md_entity_kind_t kind = classify_molecule(sys, md_system_instance_residue_range(sys, i));
                 sys->entity.flags[e] = md_entity_flags_set_kind(sys->entity.flags[e], kind);
                 md_system_topology_changed(sys);
                 break;
@@ -5472,7 +5472,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t res_
         md_residue_idx_t* atom_res_idx = md_temp_alloc_array(temp, md_residue_idx_t, sys->atom.count);
         MEMSET(atom_res_idx, -1, sizeof(md_residue_idx_t) * sys->atom.count);
         for (size_t i = 0; i < num_res; ++i) {
-            md_urange_t atom_range = md_residue_atom_range(&sys->residue, i);
+            md_urange_t atom_range = md_system_residue_atom_range(sys, i);
             for (uint32_t j = atom_range.beg; j < atom_range.end && j < sys->atom.count; ++j) {
                 atom_res_idx[j] = (md_residue_idx_t)i;
             }
@@ -5511,19 +5511,19 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t res_
 
         size_t j = i + 1;
         for (; j < num_res; ++j) {
-            const md_residue_kind_t kind_prev = md_residue_kind(&sys->residue, j - 1);
-            const md_residue_kind_t kind_j      = md_residue_kind(&sys->residue, j);
+            const md_residue_kind_t kind_prev = md_system_residue_kind(sys, j - 1);
+            const md_residue_kind_t kind_j      = md_system_residue_kind(sys, j);
             if (res_auth_asym_id && !str_eq(auth_id, str_trim(res_auth_asym_id[j]))) break;
             if (kind_prev == MD_RESIDUE_KIND_WATER || kind_prev == MD_RESIDUE_KIND_ION) break;
             if (kind_j    == MD_RESIDUE_KIND_WATER || kind_j      == MD_RESIDUE_KIND_ION) break;
             if (bitfield_test_bit(bonded_to_prev, j)) continue;
             // A branched molecule of no polymer goes on while each residue is bonded to one of it: a glycan tree is one
             // instance however its branches are ordered, and the next one, bonded to the protein only, begins its own
-            const md_residue_kind_t kind_i = md_residue_kind(&sys->residue, i);
+            const md_residue_kind_t kind_i = md_system_residue_kind(sys, i);
             if (!residue_kind_is_monomer(kind_j) && !residue_kind_is_monomer(kind_i) && last_bonded_before[j] >= (int32_t)i) continue;
 
-            const md_sequence_id_t seq_prev = md_residue_seq_id(&sys->residue, j - 1);
-            const md_sequence_id_t seq_j    = md_residue_seq_id(&sys->residue, j);
+            const md_sequence_id_t seq_prev = md_system_residue_seq_id(sys, j - 1);
+            const md_sequence_id_t seq_j    = md_system_residue_seq_id(sys, j);
             const bool same_monomer = residue_kind_is_monomer(kind_j) && kind_j == kind_prev;
             const bool goes_on = (has_auth_id && seq_j > seq_prev) || (sys->bond.count == 0 && seq_j == seq_prev + 1);
             if (same_monomer && goes_on && !polymer_chain_ends_between(sys, j - 1, j)) continue;
@@ -5537,7 +5537,7 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t res_
         // An entity is a kind and a sequence of residue names
         uint64_t entity_key = md_hash64(&kind, sizeof(kind), 0);
         for (size_t c = i; c < j; ++c) {
-            entity_key = md_hash64_str(md_residue_name(&sys->residue, c), entity_key);
+            entity_key = md_hash64_str(md_system_residue_name(sys, c), entity_key);
         }
 
         md_entity_idx_t entity_idx = -1;
@@ -5561,13 +5561,13 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t res_
             } else if (j - i <= 4) {
                 int len = 0;
                 for (size_t c = i; c < j; ++c) {
-                    const str_t name = md_residue_name(&sys->residue, c);
+                    const str_t name = md_system_residue_name(sys, c);
                     len += md_snprintf(buf + len, sizeof(buf) - len, "%s" STR_FMT, c > i ? "-" : "", STR_ARG(name));
                     len = MIN(len, (int)sizeof(buf) - 1);
                 }
                 desc = (str_t){ buf, (size_t)len };
             } else {
-                desc = md_residue_name(&sys->residue, i);
+                desc = md_system_residue_name(sys, i);
             }
 
             md_array_push(sys->entity.id, entity_id, alloc);
@@ -5997,9 +5997,9 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     // passed through, so a ring of atoms in a molecule which also holds beads is still found.
     uint64_t* skip = make_bitfield(num_atoms, temp_arena);
     for (size_t ci = 0; ci < sys->residue.count; ++ci) {
-        const md_residue_kind_t kind = md_residue_kind(&sys->residue, ci);
+        const md_residue_kind_t kind = md_system_residue_kind(sys, ci);
         if (kind == MD_RESIDUE_KIND_WATER || kind == MD_RESIDUE_KIND_ION) {
-            const md_urange_t range = md_residue_atom_range(&sys->residue, ci);
+            const md_urange_t range = md_system_residue_atom_range(sys, ci);
             for (uint32_t i = range.beg; i < range.end && i < num_atoms; ++i) bitfield_set_bit(skip, i);
         }
     }
@@ -6150,7 +6150,8 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
 #undef MAX_RING_SIZE
 #undef MAX_DEPTH
 
-// Identifies isolated 'structures' defined by covalent bonds. Any set of atoms connected by covalent bonds are considered a structure
+// The molecules (md_molecule_data_t) are the connected components of the bond graph, joined where the bonds do not
+// hold a molecule together (see there).
 // Breadth first traversal of the connected component containing 'seed'.
 //
 // Marks every atom it reaches in 'visited' and never clears it; the caller supplies a bitfield which
@@ -6220,7 +6221,7 @@ static inline bool cg_chain_restarts(md_sequence_id_t prev_seq, md_sequence_id_t
 }
 
 static inline bool cg_cysteine_sc1(const md_system_t* sys, int32_t res_idx, int32_t atom_idx) {
-    const str_t res_name = md_residue_name(&sys->residue, res_idx);
+    const str_t res_name = md_system_residue_name(sys, res_idx);
     return (str_eq_cstr(res_name, "CYS") || str_eq_cstr(res_name, "CYX")) && str_eq_cstr(md_atom_name(&sys->atom, atom_idx), "SC1");
 }
 
@@ -6245,8 +6246,8 @@ size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
     const bool m3 = (version & (MARTINI_2 | MARTINI_2P)) == 0;
     for (size_t ci = 0; ci < C; ++ci) {
         first_bb[ci] = last_bb[ci] = also_bb[ci] = -1;
-        const md_urange_t range = md_residue_atom_range(&sys->residue, ci);
-        const md_residue_kind_t kind = md_residue_kind(&sys->residue, ci);
+        const md_urange_t range = md_system_residue_atom_range(sys, ci);
+        const md_residue_kind_t kind = md_system_residue_kind(sys, ci);
         const bool biopolymer = kind == MD_RESIDUE_KIND_AMINO_ACID || kind == MD_RESIDUE_KIND_NUCLEOTIDE;
         for (uint32_t i = range.beg; i < range.end && i < N; ++i) {
             res_of[i] = (int32_t)ci;
@@ -6277,12 +6278,12 @@ size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
         const int32_t cb = res_of[y];
         if (ca < 0 || ca == cb) continue;  // Within a residue
         if (md_atom_particle_kind(&sys->atom, x) != MD_PARTICLE_BEAD || md_atom_particle_kind(&sys->atom, y) != MD_PARTICLE_BEAD) continue;
-        const md_residue_kind_t ka = md_residue_kind(&sys->residue, ca);
-        const md_residue_kind_t kb = md_residue_kind(&sys->residue, cb);
+        const md_residue_kind_t ka = md_system_residue_kind(sys, ca);
+        const md_residue_kind_t kb = md_system_residue_kind(sys, cb);
         if (!(ka == MD_RESIDUE_KIND_AMINO_ACID || ka == MD_RESIDUE_KIND_NUCLEOTIDE) || ka != kb) continue;
 
         const bool link = cb == ca + 1 && (x == last_bb[ca] || x == also_bb[ca]) && y == first_bb[cb] &&
-                          !cg_chain_restarts(md_residue_seq_id(&sys->residue, ca), md_residue_seq_id(&sys->residue, cb));
+                          !cg_chain_restarts(md_system_residue_seq_id(sys, ca), md_system_residue_seq_id(sys, cb));
         if (link) {
             has_next[ca] = 1;
             has_prev[cb] = 1;
@@ -6329,7 +6330,7 @@ static bool bond_holds_molecule(const md_system_t* sys, size_t b) {
     if (md_bond_kind(flags) != MD_BOND_KIND_COORDINATE || md_bond_origin(flags) == MD_BOND_ORIGIN_TOPOLOGY) return true;
     if (!sys->residue.count || !sys->residue.atom_offset) return false;
     const md_atom_pair_t pair = sys->bond.pairs[b];
-    return md_residue_find_by_atom_idx(&sys->residue, (size_t)pair.idx[0]) == md_residue_find_by_atom_idx(&sys->residue, (size_t)pair.idx[1]);
+    return md_system_residue_find_by_atom_idx(sys, (size_t)pair.idx[0]) == md_system_residue_find_by_atom_idx(sys, (size_t)pair.idx[1]);
 }
 
 // The molecules of a topology are whole (MD_ENTITY_FLAG_TOPOLOGY): the atoms of each of its instances, joined to the
@@ -6390,11 +6391,11 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
         }
     }
 
-    // Instance of each residue, -1 when instances are unknown (md_util_system_infer infers them before structures)
+    // Instance of each residue, -1 when instances are unknown (md_util_system_infer infers them before the molecules)
     int32_t* res_inst = md_alloc(alloc, sizeof(int32_t) * res_count);
     for (size_t i = 0; i < res_count; ++i) res_inst[i] = -1;
     for (size_t inst = 0; inst < sys->instance.count; ++inst) {
-        md_urange_t range = md_instance_residue_range(&sys->instance, inst);
+        md_urange_t range = md_system_instance_residue_range(sys, inst);
         for (uint32_t ci = range.beg; ci < range.end && ci < res_count; ++ci) {
             res_inst[ci] = (int32_t)inst;
         }
@@ -6405,7 +6406,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
     md_residue_kind_t prev_kind     = MD_RESIDUE_KIND_OTHER;
 
     for (size_t ci = 0; ci < res_count; ++ci) {
-        md_urange_t range = md_residue_atom_range(&sys->residue, ci);
+        md_urange_t range = md_system_residue_atom_range(sys, ci);
         if (range.end > atom_count) range.end = (uint32_t)atom_count;
         if (range.beg >= range.end) {
             prev_anchor = -1;
@@ -6427,11 +6428,11 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
             }
         }
 
-        const md_residue_kind_t ck = md_residue_kind(&sys->residue, ci);
+        const md_residue_kind_t ck = md_system_residue_kind(sys, ci);
         const md_residue_kind_t kind = residue_kind_is_monomer(ck) ? ck : MD_RESIDUE_KIND_OTHER;
         if (kind && prev_anchor >= 0 && prev_res + 1 == ci && prev_kind == kind &&
             res_inst[prev_res] == res_inst[ci] &&
-            (!sys->residue.seq_id || md_residue_seq_id(&sys->residue, ci) == md_residue_seq_id(&sys->residue, prev_res) + 1))
+            (!sys->residue.seq_id || md_system_residue_seq_id(sys, ci) == md_system_residue_seq_id(sys, prev_res) + 1))
         {
             if (uf_union(set, prev_anchor, anchor)) {
                 md_atom_pair_t pair = {{ prev_anchor, anchor }};
@@ -6452,8 +6453,8 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
 // phosphodiester bond (the O5' where the second has no phosphate: the 5' end of a strand, a phosphate not modelled),
 // else the last atom of the first and the first of the second. Never an atom the residues do not have.
 static md_atom_pair_t chain_gap_link(const md_system_t* sys, size_t res_idx) {
-    const md_urange_t range_a = md_residue_atom_range(&sys->residue, res_idx);
-    const md_urange_t range_b = md_residue_atom_range(&sys->residue, res_idx + 1);
+    const md_urange_t range_a = md_system_residue_atom_range(sys, res_idx);
+    const md_urange_t range_b = md_system_residue_atom_range(sys, res_idx + 1);
     md_atom_pair_t pair = {{ (int32_t)range_a.end - 1, (int32_t)range_b.beg }};
     md_amino_acid_atoms_t aa_a, aa_b;
     md_nucleic_acid_atoms_t na_a, na_b;
@@ -6489,7 +6490,7 @@ static md_array(md_atom_pair_t) synthesize_molecule_links(const md_system_t* sys
     }
 
     for (size_t ci = 0; ci < sys->residue.count; ++ci) {
-        md_urange_t range = md_residue_atom_range(&sys->residue, ci);
+        md_urange_t range = md_system_residue_atom_range(sys, ci);
         if (range.end > atom_count) range.end = (uint32_t)atom_count;
         if (range.beg >= range.end) continue;
         int32_t anchor = -1;
@@ -6507,10 +6508,10 @@ static md_array(md_atom_pair_t) synthesize_molecule_links(const md_system_t* sys
 
     for (size_t inst = 0; inst < sys->instance.count; ++inst) {
         if (!md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst))) continue;
-        const md_urange_t residues = md_instance_residue_range(&sys->instance, inst);
+        const md_urange_t residues = md_system_instance_residue_range(sys, inst);
         for (uint32_t ci = residues.beg; ci + 1 < residues.end; ++ci) {
-            const md_urange_t ra = md_residue_atom_range(&sys->residue, ci);
-            const md_urange_t rb = md_residue_atom_range(&sys->residue, ci + 1);
+            const md_urange_t ra = md_system_residue_atom_range(sys, ci);
+            const md_urange_t rb = md_system_residue_atom_range(sys, ci + 1);
             if (ra.beg >= ra.end || rb.beg >= rb.end || rb.end > atom_count) continue;
             if (uf_find(set, (int32_t)ra.beg) == uf_find(set, (int32_t)rb.beg)) continue;
             const md_atom_pair_t pair = chain_gap_link(sys, ci);
@@ -6544,7 +6545,7 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
     // Reverse map from atom to slot, one entry per atom in the system
     md_array_resize(sys->molecule.atom_slot, atom_count, alloc);
 
-    // Which atoms have been assigned to a structure. Persists across components.
+    // Which atoms have been assigned to a molecule. Persists across components.
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
 
     // Reused by the sweeps below. Cleared over the atoms of the current component only, so the cost
@@ -6873,7 +6874,7 @@ static particle_type_t* find_predefined_particle_type(str_t res_name, str_t atom
 
 // The residue kind a predefined type tells, applied when the residue has none yet
 static inline void apply_predefined_res_kind(md_system_t* sys, size_t res_idx, md_residue_kind_t kind) {
-    if (kind != MD_RESIDUE_KIND_OTHER && sys->residue.flags && md_residue_kind(&sys->residue, res_idx) == MD_RESIDUE_KIND_OTHER) {
+    if (kind != MD_RESIDUE_KIND_OTHER && sys->residue.flags && md_system_residue_kind(sys, res_idx) == MD_RESIDUE_KIND_OTHER) {
         sys->residue.flags[res_idx] = md_residue_flags_set_kind(sys->residue.flags[res_idx], kind);
     }
 }
@@ -6911,8 +6912,8 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
         typedef struct { str_t name; size_t size; size_t first; size_t count; } unknown_variant_t;
         md_array(unknown_variant_t) unknown_variants = 0;
         for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
-            str_t res_name         = md_residue_name(&sys->residue, res_idx);
-            md_urange_t res_range = md_residue_atom_range(&sys->residue, res_idx);
+            str_t res_name         = md_system_residue_name(sys, res_idx);
+            md_urange_t res_range = md_system_residue_atom_range(sys, res_idx);
             size_t res_size        = res_range.end - res_range.beg;
 
             // A Martini molecule (a lipid, water, an ion, ...): its residue name and all its bead names tell it, and give
@@ -7023,7 +7024,7 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
         }
         for (size_t u = 0; u < md_array_size(unknown_variants); ++u) {
             const unknown_variant_t* v = &unknown_variants[u];
-            const md_urange_t range = md_residue_atom_range(&sys->residue, v->first);
+            const md_urange_t range = md_system_residue_atom_range(sys, v->first);
             char beads[256];
             size_t len = 0;
             beads[0] = '\0';
@@ -7064,8 +7065,8 @@ void md_util_system_augment_particle_types(md_system_t* sys) {
 
     const size_t num_types = sys->atom.type.count;
     for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
-        const str_t res_name = md_residue_name(&sys->residue, res_idx);
-        const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
+        const str_t res_name = md_system_residue_name(sys, res_idx);
+        const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         md_residue_kind_t res_kind = MD_RESIDUE_KIND_OTHER;
         for (uint32_t i = range.beg; i < range.end; ++i) {
             const md_particle_type_idx_t t = sys->atom.type_idx[i];
@@ -10702,11 +10703,11 @@ bool md_util_system_pbc(md_system_state_t* state) {
     return true;
 }
 
-void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* structure) {
+void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* mol) {
     ASSERT(state);
-    ASSERT(structure);
+    ASSERT(mol);
 
-    if (structure->count == 0) {
+    if (mol->count == 0) {
         return;
     }
 
@@ -10732,13 +10733,13 @@ void md_util_unwrap_molecule(md_system_state_t* state, const md_molecule_t* stru
 		half_ext[2] = 0.5f * vec3_length((vec3_t) { box[0][2], box[1][2], box[2][2] });
     }
 
-    // md_molecule_data_t stores each structure in BFS order, so a single forward pass places every
+    // md_molecule_data_t stores each molecule in BFS order, so a single forward pass places every
     // atom after the one it was reached from. No queue, no visited set and no bond lookups: the
     // traversal was already computed by md_util_system_infer_molecules.
     // The seed is its own parent, so it deperiodizes against itself and stays put - no branch.
-    for (size_t i = 0; i < structure->count; ++i) {
-        const int32_t a = structure->atom_idx[i];
-        const int32_t p = structure->parent_idx[i];
+    for (size_t i = 0; i < mol->count; ++i) {
+        const int32_t a = mol->atom_idx[i];
+        const int32_t p = mol->parent_idx[i];
 
         const vec3_t x = state->xyz[a];
         const vec3_t r = state->xyz[p];
@@ -10762,10 +10763,8 @@ void md_util_unwrap_system(md_system_state_t* state, const md_system_t* sys) {
     ASSERT(sys);
 
     for (size_t i = 0; i < sys->molecule.count; ++i) {
-        md_molecule_t structure = {0};
-        if (md_molecule_extract(&structure, &sys->molecule, i)) {
-            md_util_unwrap_molecule(state, &structure);
-        }
+        const md_molecule_t mol = md_system_molecule(sys, i);
+        md_util_unwrap_molecule(state, &mol);
     }
 }
 
@@ -11436,8 +11435,8 @@ static inline void commit_protein_backbone(md_amino_acid_atoms_t* bb_atoms, size
 // The bead which stands for the backbone of an amino acid of a coarse grained model (the BB bead of Martini): its one
 // bead with the backbone role. -1 for a residue which is no amino acid, or has none or several.
 static md_atom_idx_t amino_acid_backbone_bead(const md_system_t* sys, size_t res_idx) {
-    if (md_residue_kind(&sys->residue, res_idx) != MD_RESIDUE_KIND_AMINO_ACID) return -1;
-    const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
+    if (md_system_residue_kind(sys, res_idx) != MD_RESIDUE_KIND_AMINO_ACID) return -1;
+    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
     md_atom_idx_t bead = -1;
     for (uint32_t i = range.beg; i < range.end; ++i) {
         if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) && md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_BEAD) {
@@ -11454,10 +11453,10 @@ static md_atom_idx_t amino_acid_backbone_bead(const md_system_t* sys, size_t res
 // for a residue which is no nucleotide, or lacks BB2 or BB3. Their o5 is -1, which that of atoms never is
 // (md_util_nucleic_acid_atoms_extract requires it): that tells beads from atoms (nucleic_atoms_are_beads).
 static bool nucleotide_backbone_beads(md_nucleic_acid_atoms_t* out, const md_system_t* sys, size_t res_idx) {
-    if (md_residue_kind(&sys->residue, res_idx) != MD_RESIDUE_KIND_NUCLEOTIDE) return false;
+    if (md_system_residue_kind(sys, res_idx) != MD_RESIDUE_KIND_NUCLEOTIDE) return false;
     md_nucleic_acid_atoms_t na;
     MEMSET(&na, -1, sizeof(na));
-    const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
+    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
     for (uint32_t i = range.beg; i < range.end; ++i) {
         if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) || md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_BEAD) continue;
         const str_t name = md_atom_name(&sys->atom, i);
@@ -11541,7 +11540,7 @@ static bool amino_acid_carboxyl_free(const md_system_t* sys, size_t res_idx, md_
     bool has_bonds;
     const size_t num_o = bonded_count_of_element(sys, c, MD_Z_O, &has_bonds);
     if (has_bonds) return num_o >= 2;
-    const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
+    const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
     for (uint32_t i = range.beg; i < range.end; ++i) {
         const str_t name = md_atom_name(&sys->atom, i);
         if (str_eq_cstr(name, "OXT") || str_eq_cstr(name, "OT2") || str_eq_cstr(name, "OC2") || str_eq_cstr(name, "O2")) return true;
@@ -11577,8 +11576,8 @@ static bool nucleic_chain_ends_between(const md_system_t* sys, const md_nucleic_
 // what their atoms or beads tell (CHAIN BREAKS in md_util.h): the amino acids by protein_chain_ends_between, the
 // nucleotides of atoms or of beads by nucleic_chain_ends_between. Whether their backbones are linked is not asked.
 static bool polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b) {
-    const md_urange_t range_a = md_residue_atom_range(&sys->residue, a);
-    const md_urange_t range_b = md_residue_atom_range(&sys->residue, b);
+    const md_urange_t range_a = md_system_residue_atom_range(sys, a);
+    const md_urange_t range_b = md_system_residue_atom_range(sys, b);
     md_amino_acid_atoms_t aa_a, aa_b;
     md_nucleic_acid_atoms_t na_a, na_b;
     if (md_util_amino_acid_atoms_extract(&aa_a, &sys->atom, range_a) && md_util_amino_acid_atoms_extract(&aa_b, &sys->atom, range_b)) {
@@ -11602,8 +11601,8 @@ static void mark_chain_break(md_system_t* sys, size_t a, size_t b) {
     sys->residue.flags[a] = (md_residue_flags_t)(((uint32_t)sys->residue.flags[a] | MD_RESIDUE_FLAG_BREAK_AFTER)          & ~(uint32_t)MD_RESIDUE_FLAG_TERMINAL_END);
     sys->residue.flags[b] = (md_residue_flags_t)(((uint32_t)sys->residue.flags[b] | MD_RESIDUE_FLAG_BREAK_BEFORE) & ~(uint32_t)MD_RESIDUE_FLAG_TERMINAL_BEG);
     if (sys->atom.flags) {
-        const md_urange_t range_a = md_residue_atom_range(&sys->residue, a);
-        const md_urange_t range_b = md_residue_atom_range(&sys->residue, b);
+        const md_urange_t range_a = md_system_residue_atom_range(sys, a);
+        const md_urange_t range_b = md_system_residue_atom_range(sys, b);
         for (uint32_t i = range_a.beg; i < range_a.end; ++i) {
             sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~(uint32_t)MD_ATOM_FLAG_TERMINAL_END);
         }
@@ -11618,13 +11617,13 @@ bool md_util_chain_break_atoms(md_atom_idx_t out_atoms[2], const md_system_t* sy
     out_atoms[0] = -1;
     out_atoms[1] = -1;
     if (!sys || res_idx + 1 >= sys->residue.count) return false;
-    if (!(md_residue_flags(&sys->residue, res_idx) & MD_RESIDUE_FLAG_BREAK_AFTER)) return false;
+    if (!(md_system_residue_flags(sys, res_idx) & MD_RESIDUE_FLAG_BREAK_AFTER)) return false;
 
     // The atoms the backbone was found by (md_util_system_infer): an amino acid by its atom names, else by its backbone
     // bead, a nucleotide by its atom names, else by its backbone beads
     const size_t next = res_idx + 1;
-    const md_urange_t range_a = md_residue_atom_range(&sys->residue, res_idx);
-    const md_urange_t range_b = md_residue_atom_range(&sys->residue, next);
+    const md_urange_t range_a = md_system_residue_atom_range(sys, res_idx);
+    const md_urange_t range_b = md_system_residue_atom_range(sys, next);
     md_atom_idx_t a = -1;
     md_atom_idx_t b = -1;
     md_amino_acid_atoms_t aa_a, aa_b;
@@ -12057,7 +12056,7 @@ static lipid_bead_t lipid_atom_kind(const md_system_t* sys, size_t i, bool stero
 }
 
 static inline bool lipid_candidate_res(const md_system_t* sys, size_t res_idx) {
-    const md_residue_kind_t kind = md_residue_kind(&sys->residue, res_idx);
+    const md_residue_kind_t kind = md_system_residue_kind(sys, res_idx);
     return kind == MD_RESIDUE_KIND_OTHER || kind == MD_RESIDUE_KIND_LIPID;
 }
 
@@ -12249,7 +12248,7 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
         }
     } else {
         for (int32_t c = 0; c < nc && !cg; ++c) {
-            const md_urange_t r = md_residue_atom_range(&sys->residue, (size_t)mol->residues[c]);
+            const md_urange_t r = md_system_residue_atom_range(sys, (size_t)mol->residues[c]);
             cg = r.beg < r.end && lipid_atom_is_bead(sys, r.beg);
         }
     }
@@ -12260,9 +12259,9 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
     bool named = false;
     for (int32_t c = 0; c < nc; ++c) {
         const size_t res = (size_t)mol->residues[c];
-        if (md_util_resname_lipid(md_residue_name(&sys->residue, res)) || (cg && md_residue_kind(&sys->residue, res) == MD_RESIDUE_KIND_LIPID)) {
+        if (md_util_resname_lipid(md_system_residue_name(sys, res)) || (cg && md_system_residue_kind(sys, res) == MD_RESIDUE_KIND_LIPID)) {
             named = true;
-        } else if (md_residue_kind(&sys->residue, res) == MD_RESIDUE_KIND_LIPID) {
+        } else if (md_system_residue_kind(sys, res) == MD_RESIDUE_KIND_LIPID) {
             set_residue_kind(sys, res, MD_RESIDUE_KIND_OTHER);
         }
     }
@@ -12567,7 +12566,7 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
         for (int32_t c = 0; c < nc; ++c) {
             if (in_lipid[c]) {
                 lipid_residues[num_lipid_residues++] = mol->residues[c];
-            } else if (md_residue_kind(&sys->residue, (size_t)mol->residues[c]) == MD_RESIDUE_KIND_LIPID) {
+            } else if (md_system_residue_kind(sys, (size_t)mol->residues[c]) == MD_RESIDUE_KIND_LIPID) {
                 set_residue_kind(sys, (size_t)mol->residues[c], MD_RESIDUE_KIND_OTHER);
             }
         }
@@ -12639,7 +12638,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
     }
     for (size_t c = 0; c < num_residues; ++c) {
         if (root[c] < 0) continue;
-        const md_urange_t range = md_residue_atom_range(&sys->residue, c);
+        const md_urange_t range = md_system_residue_atom_range(sys, c);
         for (uint32_t i = range.beg; i < range.end; ++i) {
             md_bond_iter_t it = md_bond_iter(&sys->bond, i);
             while (md_bond_iter_has_next(&it)) {
@@ -12684,7 +12683,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
 
         size_t n = 0;
         for (int32_t m = 0; m < nc; ++m) {
-            const md_urange_t r = md_residue_atom_range(&sys->residue, (size_t)residues[m]);
+            const md_urange_t r = md_system_residue_atom_range(sys, (size_t)residues[m]);
             n += r.end - r.beg;
         }
         lipid_mol_t mol = { .residues = residues, .num_residues = nc, .n = (int32_t)MIN(n, (size_t)INT32_MAX) };
@@ -12694,7 +12693,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
             mol.member = md_alloc(temp_arena, MAX(n, 1) * sizeof(int32_t));
             int32_t k = 0;
             for (int32_t m = 0; m < nc; ++m) {
-                const md_urange_t r = md_residue_atom_range(&sys->residue, (size_t)residues[m]);
+                const md_urange_t r = md_system_residue_atom_range(sys, (size_t)residues[m]);
                 for (uint32_t i = r.beg; i < r.end; ++i) {
                     mol.atoms[k] = (int32_t)i;
                     mol.member[k] = m;
@@ -12720,7 +12719,7 @@ static uint32_t residue_type_default_color(const md_system_t* sys, size_t res_id
         return md_monomer_color(monomer);
     }
     if (kind == MD_RESIDUE_KIND_ION) {
-        const md_urange_t range = md_residue_atom_range(&sys->residue, res_idx);
+        const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         const md_atomic_number_t z = range.end > range.beg ? md_atom_atomic_number(&sys->atom, range.beg) : 0;
         if (z) return md_atomic_number_cpk_color(z);
     }
@@ -12760,8 +12759,8 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
 
     md_array_resize(res->type_idx, res->count, alloc);
     for (size_t c = 0; c < res->count; ++c) {
-        const str_t name = md_residue_name(res, c);
-        const md_residue_kind_t kind = md_residue_kind(res, c);
+        const str_t name = md_system_residue_name(sys, c);
+        const md_residue_kind_t kind = md_system_residue_kind(sys, c);
         const uint64_t key = residue_type_key(name, kind);
 
         md_residue_type_idx_t type_idx = -1;
@@ -12769,12 +12768,12 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
         if (found && res->type.kind[*found] == kind && str_eq(LBL_TO_STR(res->type.name[*found]), name)) {
             type_idx = (md_residue_type_idx_t)*found;
         } else if (found) {
-            type_idx = md_residue_type_find(&res->type, name, kind);       // Two keys which collide
+            type_idx = md_residue_type_find(&sys->residue.type, name, kind);       // Two keys which collide
         }
         if (type_idx < 0) {
             const md_monomer_t monomer = md_monomer_from_residue_name(name, kind);
             const uint32_t color = residue_type_default_color(sys, c, name, kind, monomer);
-            type_idx = md_residue_type_add(&res->type, name, kind, monomer, color, alloc);
+            type_idx = md_residue_type_add(&sys->residue.type, name, kind, monomer, color, alloc);
             if (!found) md_hashmap_add(&lookup, key, (uint32_t)type_idx);
         }
         res->type_idx[c] = type_idx;
@@ -12938,10 +12937,10 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                         continue;
                     }
 
-                    md_urange_t range = md_instance_residue_range(&sys->instance, inst_idx);
+                    md_urange_t range = md_system_instance_residue_range(sys, inst_idx);
                     for (size_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
                         md_amino_acid_atoms_t atoms;
-                        md_urange_t atom_range = md_residue_atom_range(&sys->residue, res_idx);
+                        md_urange_t atom_range = md_system_residue_atom_range(sys, res_idx);
                         bool has_backbone_atoms = md_util_amino_acid_atoms_extract(&atoms, &sys->atom, atom_range);
                         if (!has_backbone_atoms) {
                             // A coarse grained residue: its backbone bead, a segment of a trace
@@ -13009,10 +13008,10 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                         continue;
                     }
 
-                    md_urange_t range = md_instance_residue_range(&sys->instance, inst_idx);
+                    md_urange_t range = md_system_instance_residue_range(sys, inst_idx);
                     for (md_residue_idx_t res_idx = (int)range.beg; res_idx < (int)range.end; ++res_idx) {
                         md_nucleic_acid_atoms_t atoms;
-                        md_urange_t atom_range = md_residue_atom_range(&sys->residue, res_idx);
+                        md_urange_t atom_range = md_system_residue_atom_range(sys, res_idx);
                         bool has_backbone_atoms = md_util_nucleic_acid_atoms_extract(&atoms, &sys->atom, atom_range);
                         if (!has_backbone_atoms) {
                             // A coarse grained nucleotide: its backbone beads
@@ -13094,7 +13093,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
 
 #if 0
     if ((flags & MD_UTIL_INFER_UNWRAP_MOLECULE_BIT) && 
-        (state->unitcell.flags != 0) && md_molecule_count(&sys->molecule) > 0)
+        (state->unitcell.flags != 0) && md_system_molecule_count(sys) > 0)
     {
         md_util_system_unwrap(sys);
     }

@@ -1198,7 +1198,7 @@ UTEST(script, selection) {
 }
 
 UTEST(script, stride_procedures_selectors) {
-    // Stride over residues (residues) equals explicit union of picks
+    // Stride over residues equals explicit union of picks
     EXPECT_TRUE(compare_selection("residue(1:2:4)", "residue(1) or residue(3)"));
 
 
@@ -1979,7 +1979,7 @@ UTEST_F(script, visualize) {
         
         md_script_vis_clear(&vis);
         EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, sx->node), -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
-        size_t res_atom_count = md_residue_atom_count(&mol->residue, 4);
+        size_t res_atom_count = md_system_residue_atom_count(mol, 4);
         size_t pop_count = md_bitset_count(vis.atom_mask);
         EXPECT_EQ(res_atom_count, pop_count);
     }
@@ -4333,7 +4333,7 @@ UTEST_F(script, distance_min_max_per_element_of_the_first_argument) {
     ASSERT_TRUE(eval_selection(&near, STR_LIT("within(3.0, residue(6)) and not residue(6)"), sys, alloc));
     size_t num_near = 0;
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        md_urange_t range = md_residue_atom_range(&sys->residue, i);
+        md_urange_t range = md_system_residue_atom_range(sys, i);
         num_near += md_bitset_test_any_range(near, range.beg, range.end);
     }
     EXPECT_GT(num_near, (size_t)0);
@@ -6963,7 +6963,7 @@ UTEST_F(script, volume_arrays) {
             md_script_vis_init(&vis, alloc);
             EXPECT_TRUE(md_script_vis_eval_ref(&vis, make_vis_ref(ir, ident->node), m, &vctx, MD_SCRIPT_VISUALIZE_SDF));
             ASSERT_EQ((size_t)1, md_array_size(vis.sdf.structures));
-            const md_urange_t res = md_residue_atom_range(&mol->residue, (size_t)m);
+            const md_urange_t res = md_system_residue_atom_range(mol, (size_t)m);
             EXPECT_EQ((size_t)(res.end - res.beg), md_bitset_count(vis.sdf.structures[0]));
             EXPECT_TRUE(md_bitset_test(vis.sdf.structures[0], res.beg));
             md_script_vis_free(&vis);

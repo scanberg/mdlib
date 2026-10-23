@@ -587,7 +587,7 @@ static bool moleculetype_matches_at(const match_ctx_t* ctx, const md_itp_molecul
             const bool sys_new = i > 0 && ac[offset + i] != ac[offset + i - 1];
             if (top_new != sys_new) return false;
             if (i == 0 || sys_new) {
-                if (!names_match(md_residue_name(&sys->residue, (size_t)ac[offset + i]), mol->atoms[i].res_name)) return false;
+                if (!names_match(md_system_residue_name(sys, (size_t)ac[offset + i]), mol->atoms[i].res_name)) return false;
             }
         }
     }
@@ -683,7 +683,7 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
         ctx.atom_res = md_temp_alloc_array(temp, int32_t, sys->atom.count);
         for (size_t i = 0; i < sys->atom.count; ++i) ctx.atom_res[i] = -1;
         for (size_t c = 0; c < sys->residue.count; ++c) {
-            md_urange_t range = md_residue_atom_range(&sys->residue, c);
+            md_urange_t range = md_system_residue_atom_range(sys, c);
             for (uint32_t i = range.beg; i < range.end && i < sys->atom.count; ++i) ctx.atom_res[i] = (int32_t)c;
         }
     }
@@ -965,7 +965,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     md_util_system_infer_residue_types(sys);
 
     MD_LOG_INFO("Topology applied: %zu molecules covering %zu of %zu atoms, %zu bonds, %zu structures",
-        num_instances, num_covered, atom_count, num_topology_bonds, md_molecule_count(&sys->molecule));
+        num_instances, num_covered, atom_count, num_topology_bonds, md_system_molecule_count(sys));
     result = true;
 
 done:

@@ -254,7 +254,7 @@ static md_array(str_t) completion_domain_values(value_domain_t domain, const md_
         if (sys && sys->residue.name) {
             str_t prev = {0};
             for (size_t i = 0; i < sys->residue.count; ++i) {
-                if (!completion_in_context(atoms, md_residue_atom_range(&sys->residue, i))) continue;
+                if (!completion_in_context(atoms, md_system_residue_atom_range(sys, i))) continue;
                 const str_t name = LBL_TO_STR(sys->residue.name[i]);
                 if (str_eq(name, prev)) continue;   // Runs of the same residue (water) are common
                 completion_add_value(&values, &seen, name, alloc);

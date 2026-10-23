@@ -103,8 +103,8 @@ UTEST(monomer, from_res_name) {
 static md_residue_type_idx_t type_of_name(const md_system_t* sys, const char* name) {
     md_residue_type_idx_t t = -1;
     for (size_t i = 0; i < sys->residue.count; ++i) {
-        if (!str_eq_cstr(md_residue_name(&sys->residue, i), name)) continue;
-        const md_residue_type_idx_t ti = md_residue_type_idx(&sys->residue, i);
+        if (!str_eq_cstr(md_system_residue_name(sys, i), name)) continue;
+        const md_residue_type_idx_t ti = md_system_residue_type_idx(sys, i);
         if (t >= 0 && ti != t) return -1;
         t = ti;
     }

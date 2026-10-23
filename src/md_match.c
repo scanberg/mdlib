@@ -341,7 +341,7 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
         // As sys->molecule has them (md_molecule_data_t): the atoms of a residue are of one molecule, and so are the
         // residues of a polymer chain, over a gap as well. Virtual sites aside.
         for (size_t c = 0; c < sys->residue.count && sys->residue.atom_offset; ++c) {
-            const md_urange_t r = md_residue_atom_range(&sys->residue, c);
+            const md_urange_t r = md_system_residue_atom_range(sys, c);
             int32_t anchor = -1;
             for (uint32_t i = r.beg; i < r.end && i < N; ++i) {
                 if (skip && skip[i]) continue;
@@ -351,10 +351,10 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
         }
         for (size_t inst = 0; inst < sys->instance.count; ++inst) {
             if (!md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst))) continue;
-            const md_urange_t residues = md_instance_residue_range(&sys->instance, inst);
+            const md_urange_t residues = md_system_instance_residue_range(sys, inst);
             int32_t prev = -1;
             for (uint32_t c = residues.beg; c < residues.end && c < sys->residue.count; ++c) {
-                const md_urange_t r = md_residue_atom_range(&sys->residue, c);
+                const md_urange_t r = md_system_residue_atom_range(sys, c);
                 int32_t anchor = -1;
                 for (uint32_t i = r.beg; i < r.end && i < N && anchor < 0; ++i) {
                     if (!(skip && skip[i])) anchor = (int32_t)i;

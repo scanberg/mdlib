@@ -895,7 +895,7 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
             if (str_empty(asym)) continue;
             bool found = false;
             for (size_t i = 0; i < sys->instance.count; ++i) {
-                if (str_eq(md_instance_id(&sys->instance, i), asym)) {
+                if (str_eq(md_system_instance_id(sys, i), asym)) {
                     md_array_push(inst, (md_instance_idx_t)i, temp_alloc);
                     found = true;
                 }
@@ -1251,7 +1251,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
                 auth_asym_id = label_asym_id;
             }
 
-            md_entity_idx_t entity_idx = md_entity_find_by_id(&sys->entity, entity_id);
+            md_entity_idx_t entity_idx = md_system_entity_find_by_id(sys, entity_id);
 
 		    uint64_t inst_key = md_hash64_str(label_asym_id, 0);
 
@@ -1276,7 +1276,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
                 // branched entity is one. The asym of a non-polymer entity may hold many molecules (the waters of a
                 // chain): each is an instance of its own, sharing the asym id.
                 if (entity_idx != -1) {
-                    const md_entity_kind_t entity_kind = md_entity_kind(&sys->entity, entity_idx);
+                    const md_entity_kind_t entity_kind = md_system_entity_kind(sys, entity_idx);
                     const bool one_per_residue = entity_kind == MD_ENTITY_KIND_WATER || entity_kind == MD_ENTITY_KIND_NON_POLYMER;
                     if (inst_key != prev_inst_key || one_per_residue) {
                         // Start a new instance
