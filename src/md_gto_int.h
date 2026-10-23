@@ -74,6 +74,24 @@ extern "C" {
 // Number of Hermite coefficients of a gaussian of order L: all (t,u,v) with t+u+v <= L.
 static inline uint32_t md_gto_int_num_hermite(uint32_t L) { return ((L + 1) * (L + 2) * (L + 3)) / 6; }
 
+// The far field's opening criterion for anything bigger than a few dozen atoms: see
+// md_gto_int_charges_desc_t::far_field_theta.
+#define MD_GTO_INT_FAR_FIELD_THETA 0.4
+
+// A node of the far field's octree (md_gto_int_charges_desc_t::far_field_theta). Its members are
+// item[item_begin, item_end): the gaussians and points inside its box. Its multipoles are about
+// 'center', and they stand for the members wherever the distance d from the centre satisfies
+// d >= radius / theta and d >= reach.
+typedef struct md_gto_int_node_t {
+    double   center[3];         // bohr: the centre of the members' bounding box
+    double   radius;            // bohr: max |x - center| over the members' centres
+    double   reach;             // bohr: max |x - center| + the extent of the member, see md_gto_int.c
+    uint32_t first_child;       // the children are contiguous
+    uint32_t num_children;      // 0 for a leaf
+    uint32_t item_begin;
+    uint32_t item_end;
+} md_gto_int_node_t;
+
 // ---------------------------------------------------------------------------
 // CHARGE DISTRIBUTION
 // ---------------------------------------------------------------------------
@@ -114,6 +132,15 @@ typedef struct md_gto_int_charges_t {
     // gaussians. NULL is valid - a distribution assembled any other way, or deserialised, is
     // evaluated with the series instead, to the same values, about three times more slowly.
     double*   boys_table;
+
+    // FAR FIELD (md_gto_int_charges_desc_t::far_field_theta). num_nodes 0 when there is none, and
+    // every evaluator then sums every gaussian and point at every point.
+    double              far_field_theta;
+    uint32_t            far_field_order;   // of the multipoles; at least max_order
+    uint32_t            num_nodes;
+    md_gto_int_node_t*  node;              // [num_nodes], node 0 the root
+    double*             node_multipole;    // [num_nodes * num_hermite(far_field_order)], see md_gto_int.c
+    uint32_t*           item;              // [num_gaussians + num_points]: a gaussian, or num_gaussians + a point
 } md_gto_int_charges_t;
 
 typedef struct md_gto_int_charges_desc_t {
@@ -144,6 +171,20 @@ typedef struct md_gto_int_charges_desc_t {
     // 0 keeps everything. 1e-8 removes a third or more of the gaussians of anything bigger than a
     // few atoms, for an error below 1e-6 au even on C60; at 1e-6 the error reaches ~1e-4 au there.
     double        threshold;
+
+    // FAR FIELD. Far enough from its centre, a gaussian's potential is that of a point multipole
+    // (erf(sqrt(p) r) = 1 to 4e-7 at p r^2 = 12), and so is that of a group of them, expanded about
+    // a common centre. With far_field_theta > 0 the gaussians and points go into an octree whose
+    // nodes carry the multipoles of their members, to order max(6, max_order), and an evaluator takes
+    // a node whole at a point at distance d from its centre once d >= radius / far_field_theta and
+    // every member is a multipole there; it evaluates the members of the nodes it cannot take that
+    // way exactly. The expansion converges as far_field_theta^(order + 1).
+    //
+    // 0 (the default) builds nothing, and every gaussian is evaluated at every point: the reference,
+    // and the right choice for a molecule of a few dozen atoms. MD_GTO_INT_FAR_FIELD_THETA (0.4), on
+    // a 1152 atom protein in def2-SV(P) a few bohr outside it: ~25 times less work per point, within
+    // 5e-5 au of the exact sum (the potential there spans ~0.1 au).
+    double        far_field_theta;
 } md_gto_int_charges_desc_t;
 
 // Builds the distribution. Allocates from alloc; release with md_gto_int_charges_free.

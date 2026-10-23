@@ -426,6 +426,134 @@ UTEST(gto_int, field_is_minus_gradient) {
     qm_test_free(&t);
 }
 
+// A cluster of copies of one molecule: n^3 of them on a lattice of the given spacing (bohr), each
+// turned a little differently, with a block diagonal density. Big enough for a far field to matter.
+typedef struct {
+    md_gto_basis_t basis;
+    float*  atom_xyz;
+    double* atom_z;
+    size_t  num_atoms;
+    double* D;
+    size_t  num_ao;
+} int_test_cluster_t;
+
+static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int n, float spacing, md_allocator_i* alloc) {
+    const size_t copies = (size_t)n * n * n;
+    MEMSET(c, 0, sizeof(*c));
+    c->num_atoms = m->num_atoms * copies;
+    c->num_ao    = m->num_ao * copies;
+    c->atom_xyz  = (float*)md_alloc(alloc, sizeof(float) * 3 * c->num_atoms);
+    c->atom_z    = (double*)md_alloc(alloc, sizeof(double) * c->num_atoms);
+    c->D         = (double*)md_alloc(alloc, sizeof(double) * c->num_ao * c->num_ao);
+    MEMSET(c->D, 0, sizeof(double) * c->num_ao * c->num_ao);
+    c->basis.num_shells     = (uint32_t)(m->basis.num_shells * copies);
+    c->basis.num_primitives = m->basis.num_primitives;
+    c->basis.alpha          = m->basis.alpha;
+    c->basis.coeff          = m->basis.coeff;
+    c->basis.shells         = (md_gto_shell_t*)md_alloc(alloc, sizeof(md_gto_shell_t) * c->basis.num_shells);
+
+    // the molecule about its first atom, so that a turn keeps it in its cell
+    const float* o = m->atom_xyz;
+    size_t ci = 0;
+    for (int z = 0; z < n; ++z) for (int y = 0; y < n; ++y) for (int x = 0; x < n; ++x, ++ci) {
+        const float a = 0.7f * (float)ci, ca = cosf(a), sa = sinf(a);
+        for (size_t i = 0; i < m->num_atoms; ++i) {
+            const float d[3] = { m->atom_xyz[3 * i] - o[0], m->atom_xyz[3 * i + 1] - o[1], m->atom_xyz[3 * i + 2] - o[2] };
+            float* dst = c->atom_xyz + 3 * (ci * m->num_atoms + i);
+            dst[0] = spacing * x + ca * d[0] - sa * d[1];
+            dst[1] = spacing * y + sa * d[0] + ca * d[1];
+            dst[2] = spacing * z + d[2];
+            c->atom_z[ci * m->num_atoms + i] = m->atom_z[i];
+        }
+        for (uint32_t s = 0; s < m->basis.num_shells; ++s) {
+            md_gto_shell_t sh = m->basis.shells[s];
+            sh.atom_idx += (uint32_t)(ci * m->num_atoms);
+            c->basis.shells[ci * m->basis.num_shells + s] = sh;
+        }
+        // A turn about z mixes the x and y AOs of each shell, so the copy's density is not the
+        // original's in its AOs: the far field is exercised on a cluster of molecules with
+        // densities that are not quite theirs. Harmless here - every check is against the exact
+        // sum over the same distribution.
+        const size_t a0 = ci * m->num_ao;
+        for (size_t i = 0; i < m->num_ao; ++i) {
+            MEMCPY(c->D + (a0 + i) * c->num_ao + a0, m->D + i * m->num_ao, sizeof(double) * m->num_ao);
+        }
+    }
+}
+
+// The far field against the exact sum on a cluster of 4^3 waters, at points among and around
+// them: the potential and the field to the accuracy md_gto_int_charges_desc_t states, and exactly
+// the same distribution otherwise (moments, gaussians).
+UTEST(gto_int, far_field_matches_exact) {
+    qm_test_t t = {0};
+    qm_test_init(&t, MEGABYTES(256));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
+    int_test_qm_t m;
+    ASSERT_TRUE(int_test_extract(&m, &t));
+    int_test_cluster_t c;
+    int_test_cluster(&c, &m, 4, 5.6f, t.alloc);
+
+    md_gto_int_charges_desc_t desc = {
+        .basis = &c.basis, .atom_xyz = c.atom_xyz, .density_matrix = c.D, .density_scale = -1.0,
+        .point_xyz = c.atom_xyz, .point_charge = c.atom_z, .num_points = c.num_atoms, .threshold = 1e-8,
+    };
+    md_gto_int_charges_t exact = {0}, far = {0};
+    ASSERT_TRUE(md_gto_int_charges_init(&exact, &desc, t.alloc));
+    desc.far_field_theta = MD_GTO_INT_FAR_FIELD_THETA;
+    ASSERT_TRUE(md_gto_int_charges_init(&far, &desc, t.alloc));
+    EXPECT_EQ(0u, exact.num_nodes);
+    EXPECT_GT(far.num_nodes, 1u);
+    EXPECT_EQ(exact.num_gaussians, far.num_gaussians);
+    EXPECT_GE(far.far_field_order, far.max_order);
+
+    // every member of the root, once
+    {
+        const uint32_t n = far.num_gaussians + far.num_points;
+        uint8_t* seen = (uint8_t*)md_alloc(t.alloc, n);
+        MEMSET(seen, 0, n);
+        for (uint32_t i = 0; i < n; ++i) { ASSERT_LT(far.item[i], n); seen[far.item[i]]++; }
+        for (uint32_t i = 0; i < n; ++i) EXPECT_EQ(1, seen[i]);
+        EXPECT_EQ(0u, far.node[0].item_begin);
+        EXPECT_EQ(n, far.node[0].item_end);
+    }
+
+    // Among the molecules (a lattice offset by half a cell), next to them, and far out
+    enum { NP = 120 };
+    float pts[NP][3];
+    uint32_t seed = 99;
+    for (int i = 0; i < NP; ++i) {
+        for (int k = 0; k < 3; ++k) {
+            seed = seed * 1664525u + 1013904223u;
+            const float u = (float)(seed >> 8) / (float)(1u << 24);
+            pts[i][k] = i < 80 ? -2.0f + u * 4.0f * 5.6f + 2.0f : (i < 100 ? -6.0f - u * 4.0f : 40.0f + 30.0f * u);
+        }
+    }
+    double Ve[NP], Vf[NP], Ee[NP * 3], Ef[NP * 3];
+    md_gto_int_potential_xyz(Ve, Ee, &pts[0][0], NP, 0, &exact);
+    md_gto_int_potential_xyz(Vf, Ef, &pts[0][0], NP, 0, &far);
+    double ev = 0.0, ee = 0.0;
+    for (int i = 0; i < NP; ++i) {
+        ev = MAX(ev, fabs(Ve[i] - Vf[i]));
+        for (int k = 0; k < 3; ++k) ee = MAX(ee, fabs(Ee[3 * i + k] - Ef[3 * i + k]));
+    }
+    // and the potential alone, through the written out low orders
+    double Vp[NP];
+    md_gto_int_potential_xyz(Vp, NULL, &pts[0][0], NP, 0, &far);
+    double ep = 0.0;
+    for (int i = 0; i < NP; ++i) ep = MAX(ep, fabs(Vp[i] - Vf[i]));
+    printf("64 waters, %u gaussians, %u nodes: far field max |dV| %.2e au, max |dE| %.2e au; work per point %llu of %llu\n",
+           far.num_gaussians, far.num_nodes, ev, ee,
+           (unsigned long long)md_gto_int_charges_work_per_point(&far), (unsigned long long)md_gto_int_charges_work_per_point(&exact));
+    EXPECT_LT(ev, 1e-4);
+    EXPECT_LT(ee, 1e-4);
+    EXPECT_LT(ep, 1e-12);
+    EXPECT_LT(md_gto_int_charges_work_per_point(&far), md_gto_int_charges_work_per_point(&exact));
+
+    md_gto_int_charges_free(&exact, t.alloc);
+    md_gto_int_charges_free(&far, t.alloc);
+    qm_test_free(&t);
+}
+
 // The grid evaluator places its points exactly where the documentation says.
 UTEST(gto_int, grid_matches_points) {
     qm_test_t t = {0};
