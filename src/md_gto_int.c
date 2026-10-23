@@ -185,23 +185,17 @@ static inline void gto_int_boys_eval(double* F, int nmax, double T, const double
 //     R^n_{t+1,u,v} = t R^{n+1}_{t-1,u,v} + X_x R^{n+1}_{t,u,v}     (likewise for u, v)
 // run from the top auxiliary index down, so every level only reads the one above it.
 // boys_tab: the distribution's table, NULL for the series.
-static void gto_int_hermite_R(double* R, int L, double p, double x, double y, double z, const double* boys_tab) {
-    double F[GTO_INT_MAX_R_ORDER + 1] = {0};
-    gto_int_boys_eval(F, L, p * (x * x + y * y + z * z), boys_tab);
-
+// The recursion itself, from base[n] = R^n_000 for n = 0..L: shared with the far field, whose
+// R^n_000 are those of 1/|X| (gto_int_coulomb_T).
+static void gto_int_hermite_recurse(double* R, int L, const double* base, double x, double y, double z) {
     double buf[2][GTO_INT_MAX_R];
     double* cur = buf[0];
     double* nxt = buf[1];
 
-    const double m2p = -2.0 * p;
-    double s = 1.0;
-    for (int n = 0; n < L; ++n) s *= m2p;
-    nxt[0] = s * F[L];
+    nxt[0] = base[L];
 
     for (int lvl = L - 1; lvl >= 0; --lvl) {
-        s = 1.0;
-        for (int n = 0; n < lvl; ++n) s *= m2p;
-        cur[0] = s * F[lvl];
+        cur[0] = base[lvl];
         const int top = L - lvl;
         uint32_t i = 1;
         for (int deg = 1; deg <= top; ++deg) {
@@ -226,6 +220,19 @@ static void gto_int_hermite_R(double* R, int L, double p, double x, double y, do
         double* tmp = cur; cur = nxt; nxt = tmp;
     }
     MEMCPY(R, nxt, sizeof(double) * md_gto_int_num_hermite((uint32_t)L));
+}
+
+static void gto_int_hermite_R(double* R, int L, double p, double x, double y, double z, const double* boys_tab) {
+    double F[GTO_INT_MAX_R_ORDER + 1] = {0};
+    gto_int_boys_eval(F, L, p * (x * x + y * y + z * z), boys_tab);
+    double base[GTO_INT_MAX_R_ORDER + 1] = {0};
+    const double m2p = -2.0 * p;
+    double s = 1.0;
+    for (int n = 0; n <= L; ++n) {
+        base[n] = s * F[n];
+        s *= m2p;
+    }
+    gto_int_hermite_recurse(R, L, base, x, y, z);
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +265,249 @@ static void gto_int_hermite_E(gto_int_E_t E, int la, int lb, double p, double PA
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Far field
+// ---------------------------------------------------------------------------
+// R_000(p, X) = F_0(p |X|^2) tends to 1/2 sqrt(pi/p) / |X|, and with it every R_tuv to 1/2 sqrt(pi/p)
+// times d^tuv (1/|X|): beyond a few multiples of 1/sqrt(p) a gaussian IS a point multipole, with
+// moments c_tuv = 1/2 sqrt(pi/p) h'_tuv in derivative form,
+//     V_g(C) = sum_tuv c_tuv T_tuv(P - C),     T_tuv(Y) = d^tuv/dY^tuv 1/|Y|.
+// The relative error is erfc(sqrt(p r^2)) and polynomial multiples of exp(-p r^2); GTO_INT_FAR_T is
+// the p r^2 from where it is negligible. The point charges, dipoles and quadrupoles are multipoles
+// in the same form (M_000 = q; M_e = mu; M_ea+eb = Q_ab for a != b and Q_aa / 2).
+//
+// Moments are moved to another centre by the Taylor expansion of T: with Y = O + d - C,
+//     T_j(Y) = sum_m d^m / m! T_{j+m}(O - C)   =>   M^O_{j+m} += M_j d^m / m!   (d = from O to the old centre)
+// truncated at the order of the node. Its error at distance D from O goes as (|d| / D)^(order+1),
+// which is what the opening criterion bounds.
+//
+// The tree: an octree over the gaussians' centres and the points, split at the centre of the
+// bounding box until a node holds GTO_INT_FAR_LEAF members (or cannot be split: all at one place,
+// as the products of two primitives of one atom are). Breadth first, so that siblings are
+// contiguous and a parent comes before its children; the items are partitioned in place, so that
+// a node's members are one run of item[]. Leaves' multipoles are summed from their members and
+// the others' from their children's.
+#define GTO_INT_FAR_T          12.0
+#define GTO_INT_FAR_MIN_ORDER  6
+#define GTO_INT_FAR_LEAF       32
+#define GTO_INT_FAR_MAX_DEPTH  32
+#define GTO_INT_FAR_STACK      (GTO_INT_FAR_MAX_DEPTH * 8 + 8)
+
+STATIC_ASSERT(GTO_INT_FAR_MIN_ORDER + 1 <= GTO_INT_MAX_R_ORDER, "the far field's field needs T one order up");
+
+// T_tuv(Y) = d^tuv (1/|Y|) for t+u+v <= K, in herm_idx order: the Hermite recursion with
+// R^n_000 = (-1)^n (2n-1)!! / |Y|^(2n+1), the limit of (-2p)^n F_n(p |Y|^2) without the 1/2 sqrt(pi/p).
+static void gto_int_coulomb_T(double* T, int K, double x, double y, double z) {
+    const double ir2 = 1.0 / (x * x + y * y + z * z);
+    double base[GTO_INT_MAX_R_ORDER + 1];
+    base[0] = sqrt(ir2);
+    for (int n = 0; n < K; ++n) base[n + 1] = -(double)(2 * n + 1) * base[n] * ir2;
+    gto_int_hermite_recurse(T, K, base, x, y, z);
+}
+
+// M[j + m] += Min[j] d^m / m! for |j| <= Lin and |j + m| <= K
+static void gto_int_translate_add(double* M, int K, const double* Min, int Lin, const double d[3]) {
+    double px[MD_GTO_INT_MAX_ORDER + 1], py[MD_GTO_INT_MAX_ORDER + 1], pz[MD_GTO_INT_MAX_ORDER + 1];
+    px[0] = py[0] = pz[0] = 1.0;
+    for (int n = 1; n <= K; ++n) {
+        px[n] = px[n - 1] * d[0] / n;
+        py[n] = py[n - 1] * d[1] / n;
+        pz[n] = pz[n - 1] * d[2] / n;
+    }
+    for (int dj = 0; dj <= Lin; ++dj) {
+        for (int t = dj; t >= 0; --t) {
+            for (int u = dj - t; u >= 0; --u) {
+                const int v = dj - t - u;
+                const double c = Min[herm_idx(t, u, v)];
+                if (c == 0.0) continue;
+                for (int dm = 0; dj + dm <= K; ++dm) {
+                    for (int a = dm; a >= 0; --a) {
+                        for (int b = dm - a; b >= 0; --b) {
+                            const int e = dm - a - b;
+                            M[herm_idx(t + a, u + b, v + e)] += c * px[a] * py[b] * pz[e];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+static inline uint32_t gto_int_order_of_gaussian(const md_gto_int_charges_t* q, uint32_t g) {
+    uint32_t L = 0;
+    while (g >= q->order_offset[L + 1]) ++L;
+    return L;
+}
+
+static inline const double* gto_int_item_xyz(const md_gto_int_charges_t* q, uint32_t it) {
+    return it < q->num_gaussians ? q->center + it * 3 : q->point_xyz + (it - q->num_gaussians) * 3;
+}
+
+// The moments of one item about its own position, and their order
+static int gto_int_item_moments(double* c, const md_gto_int_charges_t* q, uint32_t it) {
+    if (it < q->num_gaussians) {
+        const uint32_t L = gto_int_order_of_gaussian(q, it);
+        const double s = 0.5 * sqrt(GTO_INT_PI / q->exponent[it]);
+        const double* h = q->coeff + q->coeff_offset[it];
+        for (uint32_t i = 0; i < md_gto_int_num_hermite(L); ++i) c[i] = s * h[i];
+        return (int)L;
+    }
+    const uint32_t k = it - q->num_gaussians;
+    MEMSET(c, 0, sizeof(double) * 10);
+    c[0] = q->point_charge[k];
+    int L = 0;
+    if (q->point_dipole) {
+        for (int a = 0; a < 3; ++a) c[1 + a] = q->point_dipole[k * 3 + a];
+        L = 1;
+    }
+    if (q->point_quadrupole) {
+        const double* Q = q->point_quadrupole + k * 6;   // xx xy xz yy yz zz
+        c[herm_idx(2, 0, 0)] = 0.5 * Q[0];
+        c[herm_idx(1, 1, 0)] = Q[1];
+        c[herm_idx(1, 0, 1)] = Q[2];
+        c[herm_idx(0, 2, 0)] = 0.5 * Q[3];
+        c[herm_idx(0, 1, 1)] = Q[4];
+        c[herm_idx(0, 0, 2)] = 0.5 * Q[5];
+        L = 2;
+    }
+    return L;
+}
+
+// Beyond this from its position an item is its multipole
+static inline double gto_int_item_extent(const md_gto_int_charges_t* q, uint32_t it) {
+    return it < q->num_gaussians ? sqrt(GTO_INT_FAR_T / q->exponent[it]) : 0.0;
+}
+
+static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_allocator_i* alloc) {
+    const uint32_t n = q->num_gaussians + q->num_points;
+    if (n == 0) return true;
+    const uint32_t K  = MAX((uint32_t)GTO_INT_FAR_MIN_ORDER, q->max_order);
+    const uint32_t nh = md_gto_int_num_hermite(K);
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    bool result = false;
+
+    uint32_t* item = md_alloc(alloc, sizeof(uint32_t) * n);
+    uint32_t* scratch = md_temp_alloc_array(temp, uint32_t, n);
+    md_array(md_gto_int_node_t) nodes = NULL;
+    md_array(uint8_t) depth = NULL;
+    if (!item || !scratch) goto done;
+    for (uint32_t i = 0; i < n; ++i) item[i] = i;
+
+    md_array_push(nodes, ((md_gto_int_node_t){ .item_begin = 0, .item_end = n }), temp_alloc);
+    md_array_push(depth, 0, temp_alloc);
+    for (size_t ni = 0; ni < md_array_size(nodes); ++ni) {
+        const uint32_t beg = nodes[ni].item_begin, end = nodes[ni].item_end;
+        double lo[3] = { HUGE_VAL, HUGE_VAL, HUGE_VAL }, hi[3] = { -HUGE_VAL, -HUGE_VAL, -HUGE_VAL };
+        for (uint32_t i = beg; i < end; ++i) {
+            const double* x = gto_int_item_xyz(q, item[i]);
+            for (int k = 0; k < 3; ++k) { lo[k] = MIN(lo[k], x[k]); hi[k] = MAX(hi[k], x[k]); }
+        }
+        const double O[3] = { 0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]) };
+        MEMCPY(nodes[ni].center, O, sizeof(O));
+
+        const bool splittable = (hi[0] > lo[0] || hi[1] > lo[1] || hi[2] > lo[2]);
+        if (end - beg <= GTO_INT_FAR_LEAF || !splittable || depth[ni] >= GTO_INT_FAR_MAX_DEPTH) continue;
+
+        // Partition into the octants about O (a stable counting sort), one child per non-empty one
+        uint32_t count[8] = {0};
+        for (uint32_t i = beg; i < end; ++i) {
+            const double* x = gto_int_item_xyz(q, item[i]);
+            count[(x[0] > O[0]) | ((x[1] > O[1]) << 1) | ((x[2] > O[2]) << 2)]++;
+        }
+        uint32_t off[8], run = beg;
+        for (int o = 0; o < 8; ++o) { off[o] = run; run += count[o]; }
+        uint32_t w[8];
+        MEMCPY(w, off, sizeof(w));
+        for (uint32_t i = beg; i < end; ++i) {
+            const double* x = gto_int_item_xyz(q, item[i]);
+            scratch[w[(x[0] > O[0]) | ((x[1] > O[1]) << 1) | ((x[2] > O[2]) << 2)]++] = item[i];
+        }
+        MEMCPY(item + beg, scratch + beg, sizeof(uint32_t) * (end - beg));
+
+        const uint32_t first = (uint32_t)md_array_size(nodes);
+        uint32_t num = 0;
+        const uint8_t d = depth[ni] + 1;
+        for (int o = 0; o < 8; ++o) {
+            if (!count[o]) continue;
+            md_array_push(nodes, ((md_gto_int_node_t){ .item_begin = off[o], .item_end = off[o] + count[o] }), temp_alloc);
+            md_array_push(depth, d, temp_alloc);
+            num++;
+        }
+        nodes[ni].first_child  = first;
+        nodes[ni].num_children = num;
+    }
+    const uint32_t num_nodes = (uint32_t)md_array_size(nodes);
+
+    // Radius and reach over the members; a leaf's members in index order, which for the gaussians is
+    // order of order, and the points after them
+    for (uint32_t ni = 0; ni < num_nodes; ++ni) {
+        md_gto_int_node_t* nd = nodes + ni;
+        double rad = 0.0, reach = 0.0;
+        for (uint32_t i = nd->item_begin; i < nd->item_end; ++i) {
+            const double* x = gto_int_item_xyz(q, item[i]);
+            const double r = sqrt((x[0] - nd->center[0]) * (x[0] - nd->center[0]) + (x[1] - nd->center[1]) * (x[1] - nd->center[1]) + (x[2] - nd->center[2]) * (x[2] - nd->center[2]));
+            rad   = MAX(rad, r);
+            reach = MAX(reach, r + gto_int_item_extent(q, item[i]));
+        }
+        nd->radius = rad;
+        nd->reach  = reach;
+        if (nd->num_children == 0) {
+            // insertion sort: leaves are small
+            for (uint32_t i = nd->item_begin + 1; i < nd->item_end; ++i) {
+                const uint32_t v = item[i];
+                uint32_t j = i;
+                for (; j > nd->item_begin && item[j - 1] > v; --j) item[j] = item[j - 1];
+                item[j] = v;
+            }
+        }
+    }
+
+    double* M = md_alloc(alloc, sizeof(double) * nh * num_nodes);
+    md_gto_int_node_t* node = md_alloc(alloc, sizeof(md_gto_int_node_t) * num_nodes);
+    if (!M || !node) {
+        if (M) md_free(alloc, M, sizeof(double) * nh * num_nodes);
+        if (node) md_free(alloc, node, sizeof(md_gto_int_node_t) * num_nodes);
+        goto done;
+    }
+    MEMSET(M, 0, sizeof(double) * nh * num_nodes);
+    MEMCPY(node, nodes, sizeof(md_gto_int_node_t) * num_nodes);
+
+    // Children come after their parent, so in reverse every child is complete before its parent
+    for (uint32_t ni = num_nodes; ni-- > 0; ) {
+        const md_gto_int_node_t* nd = node + ni;
+        double* Mn = M + (size_t)ni * nh;
+        if (nd->num_children == 0) {
+            double c[GTO_INT_MAX_H];
+            for (uint32_t i = nd->item_begin; i < nd->item_end; ++i) {
+                const int L = gto_int_item_moments(c, q, item[i]);
+                const double* x = gto_int_item_xyz(q, item[i]);
+                const double d[3] = { x[0] - nd->center[0], x[1] - nd->center[1], x[2] - nd->center[2] };
+                gto_int_translate_add(Mn, (int)K, c, L, d);
+            }
+        } else {
+            for (uint32_t c = nd->first_child; c < nd->first_child + nd->num_children; ++c) {
+                const double d[3] = { node[c].center[0] - nd->center[0], node[c].center[1] - nd->center[1], node[c].center[2] - nd->center[2] };
+                gto_int_translate_add(Mn, (int)K, M + (size_t)c * nh, (int)K, d);
+            }
+        }
+    }
+
+    q->far_field_theta = theta;
+    q->far_field_order = K;
+    q->num_nodes       = num_nodes;
+    q->node            = node;
+    q->node_multipole  = M;
+    q->item            = item;
+    item = NULL;
+    result = true;
+done:
+    if (item) md_free(alloc, item, sizeof(uint32_t) * n);
+    md_temp_end(temp);
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +609,45 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
         }
     }
 
+    // A shell pair whose every primitive pair the prescreen below would drop is dropped before its
+    // block of D is read: by the same bound, taken over the pair's primitives at once (the smallest
+    // exponents make the slowest decay, the largest coefficients and the whole matrix's largest
+    // element the largest prefactor). On anything bigger than a few dozen atoms most shell pairs
+    // are far apart, and reading their blocks - half of them a column of D each - was most of the
+    // build: 9 s of the 1152 atom protein's 9.4. Nothing changes but the time: a pair dropped here
+    // contributes nothing either way.
+    double* sh_amin = md_temp_alloc_array(temp, double, basis->num_shells);
+    double* sh_amax = md_temp_alloc_array(temp, double, basis->num_shells);
+    double* sh_cmax = md_temp_alloc_array(temp, double, basis->num_shells);
+    if (!sh_amin || !sh_amax || !sh_cmax) goto done;
+    for (uint32_t sa = 0; sa < basis->num_shells; ++sa) {
+        const md_gto_shell_t* A = &basis->shells[sa];
+        double amin = HUGE_VAL, amax = 0.0, cmax = 0.0;
+        for (uint32_t k = 0; k < A->num_primitives; ++k) {
+            amin = MIN(amin, (double)basis->alpha[A->primitive_offset + k]);
+            amax = MAX(amax, (double)basis->alpha[A->primitive_offset + k]);
+            cmax = MAX(cmax, fabs((double)basis->coeff[A->primitive_offset + k]));
+        }
+        sh_amin[sa] = amin;
+        sh_amax[sa] = amax;
+        sh_cmax[sa] = cmax;
+    }
+    // The powers and the norm factor of every Cartesian AO of a shell, looked up in the inner loop
+    int    cart_ijk[MD_GTO_MAX_ANGULAR_MOMENTUM + 1][GTO_INT_MAX_CART][3];
+    double cart_norm[MD_GTO_MAX_ANGULAR_MOMENTUM + 1][GTO_INT_MAX_CART];
+    for (uint32_t l = 0; l <= MD_GTO_MAX_ANGULAR_MOMENTUM; ++l) {
+        for (uint32_t c = 0; c < md_gto_num_cart_ao(l); ++c) {
+            md_gto_cart_ijk(&cart_ijk[l][c][0], &cart_ijk[l][c][1], &cart_ijk[l][c][2], l, c);
+            cart_norm[l][c] = md_gto_cart_norm_factor(cart_ijk[l][c][0], cart_ijk[l][c][1], cart_ijk[l][c][2]);
+        }
+    }
+
+    double dmax2 = 0.0;   // bounds |D_mu,nu + D_nu,mu|
+    if (threshold > 0.0) {
+        for (size_t i = 0; i < N * N; ++i) dmax2 = MAX(dmax2, fabs(D[i]));
+        dmax2 *= 2.0;
+    }
+
     // Largest |D_mu,nu + D_nu,mu| of every shell pair's block, the density part of the prescreen.
     // Pass 1 finds the gaussians and their order, pass 2 accumulates their coefficients. Both visit
     // the same primitive pairs in the same order, so the prescreen decides identically in both.
@@ -392,6 +681,17 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                 const int lb = (int)B->l;
                 const uint32_t nb = md_gto_num_cart_ao(B->l);
                 const bool same = (sa == sb);
+
+                if (threshold > 0.0) {
+                    const double dx = Ar[0] - Br[0], dy = Ar[1] - Br[1], dz = Ar[2] - Br[2];
+                    const double R2 = dx * dx + dy * dy + dz * dz, R = sqrt(R2);
+                    const double mu_min = sh_amin[sa] * sh_amin[sb] / (sh_amin[sa] + sh_amin[sb]);
+                    const double cc = fabs(scale) * sh_cmax[sa] * sh_cmax[sb] * dmax2 * exp(-mu_min * R2);
+                    double poly = (double)(na * nb);
+                    const double grow = (1.0 + R) * (1.0 + sqrt(sh_amax[sa] + sh_amax[sb]));
+                    for (int k = 0; k < la + lb; ++k) poly *= grow;
+                    if (cc * poly * (2.0 * GTO_INT_PI / (sh_amin[sa] + sh_amin[sb])) * gto_int_rmax[0] * 100.0 < 1.0e-6 * threshold) continue;
+                }
 
                 // The weight of every AO pair of the block. A diagonal block is summed over its
                 // full square, an off-diagonal one over (mu,nu) with both orders folded in.
@@ -464,15 +764,13 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
 
                         const double pref = scale * ca * cb * 2.0 * GTO_INT_PI / p;
                         for (uint32_t ia_c = 0; ia_c < na; ++ia_c) {
-                            int ia, ja, ka;
-                            md_gto_cart_ijk(&ia, &ja, &ka, A->l, ia_c);
-                            const double fa = md_gto_cart_norm_factor(ia, ja, ka);
+                            const int ia = cart_ijk[A->l][ia_c][0], ja = cart_ijk[A->l][ia_c][1], ka = cart_ijk[A->l][ia_c][2];
+                            const double fa = cart_norm[A->l][ia_c];
                             for (uint32_t ib_c = 0; ib_c < nb; ++ib_c) {
                                 const double wab = w[ia_c][ib_c];
                                 if (wab == 0.0) continue;
-                                int ib, jb, kb;
-                                md_gto_cart_ijk(&ib, &jb, &kb, B->l, ib_c);
-                                const double fb = md_gto_cart_norm_factor(ib, jb, kb);
+                                const int ib = cart_ijk[B->l][ib_c][0], jb = cart_ijk[B->l][ib_c][1], kb = cart_ijk[B->l][ib_c][2];
+                                const double fb = cart_norm[B->l][ib_c];
                                 const double wt = pref * wab * fa * fb;
                                 for (int t = 0; t <= ia + ib; ++t) {
                                     const double wx = wt * Ex[ia][ib][t];
@@ -647,6 +945,12 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
         md_gto_int_charges_free(out, alloc);
         return false;
     }
+
+    if (desc->far_field_theta > 0.0 && !gto_int_far_field_build(out, desc->far_field_theta, alloc)) {
+        MD_LOG_ERROR("md_gto_int_charges_init: failed to build the far field");
+        md_gto_int_charges_free(out, alloc);
+        return false;
+    }
     return true;
 }
 
@@ -663,6 +967,9 @@ void md_gto_int_charges_free(md_gto_int_charges_t* q, md_allocator_i* alloc) {
     if (q->point_dipole)     md_free(alloc, q->point_dipole,     sizeof(double) * 3 * q->num_points);
     if (q->point_quadrupole) md_free(alloc, q->point_quadrupole, sizeof(double) * 6 * q->num_points);
     if (q->boys_table)       md_free(alloc, q->boys_table,       sizeof(double) * GTO_INT_BOYS_TAB_SIZE);
+    if (q->node)             md_free(alloc, q->node,             sizeof(md_gto_int_node_t) * q->num_nodes);
+    if (q->node_multipole)   md_free(alloc, q->node_multipole,   sizeof(double) * md_gto_int_num_hermite(q->far_field_order) * q->num_nodes);
+    if (q->item)             md_free(alloc, q->item,             sizeof(uint32_t) * ((size_t)q->num_gaussians + q->num_points));
     MEMSET(q, 0, sizeof(*q));
 }
 
@@ -672,8 +979,48 @@ static uint64_t gto_int_cost(uint32_t L) {
     return (uint64_t)((L + 1) * (L + 2) * (L + 3) * (L + 4) / 24) + md_gto_int_num_hermite(L) + 16;
 }
 
+// The far field's work at C in the same unit: the members of the leaves it opens, and a far node at
+// the cost of a gaussian of the far field's order.
+static uint64_t gto_int_far_work_at(const double C[3], const md_gto_int_charges_t* q) {
+    const double inv_theta = 1.0 / q->far_field_theta;
+    const uint64_t far_cost = gto_int_cost(q->far_field_order);
+    uint64_t w = 0;
+    uint32_t stack[GTO_INT_FAR_STACK];
+    int sp = 0;
+    stack[sp++] = 0;
+    while (sp > 0) {
+        const md_gto_int_node_t* nd = q->node + stack[--sp];
+        const double Y[3] = { nd->center[0] - C[0], nd->center[1] - C[1], nd->center[2] - C[2] };
+        const double d = sqrt(Y[0] * Y[0] + Y[1] * Y[1] + Y[2] * Y[2]);
+        if (d > 0.0 && d >= nd->radius * inv_theta && d >= nd->reach) {
+            w += far_cost;
+        } else if (nd->num_children == 0) {
+            for (uint32_t i = nd->item_begin; i < nd->item_end; ++i) {
+                const uint32_t it = q->item[i];
+                w += it < q->num_gaussians ? gto_int_cost(gto_int_order_of_gaussian(q, it)) : 1;
+            }
+        } else {
+            for (uint32_t c = 0; c < nd->num_children; ++c) stack[sp++] = nd->first_child + c;
+        }
+    }
+    return w;
+}
+
 uint64_t md_gto_int_charges_work_per_point(const md_gto_int_charges_t* q) {
     if (!q) return 0;
+    if (q->num_nodes) {
+        // Not one number any more: it depends on where the point is. Sampled 3 bohr off members spread
+        // over the whole distribution, which is about where a molecular surface is and the dear end.
+        const uint32_t n = q->num_gaussians + q->num_points;
+        const uint32_t num_samples = MIN(n, 64u);
+        uint64_t w = 0;
+        for (uint32_t s = 0; s < num_samples; ++s) {
+            const double* x = gto_int_item_xyz(q, q->item[(uint64_t)s * n / num_samples]);
+            const double C[3] = { x[0] + 3.0, x[1], x[2] };
+            w += gto_int_far_work_at(C, q);
+        }
+        return w / MAX(num_samples, 1u);
+    }
     // A point charge is a step; a dipole about as much again, a quadrupole about twice that
     uint64_t w = (uint64_t)q->num_points * (1 + (q->point_dipole ? 1 : 0) + (q->point_quadrupole ? 2 : 0));
     for (uint32_t L = 0; L <= MD_GTO_INT_MAX_ORDER; ++L) {
@@ -804,10 +1151,158 @@ static inline double gto_int_potential_low_order(uint32_t L, uint32_t beg, uint3
     return V;
 }
 
-static double gto_int_eval_point(double field[3], const double C[3], const md_gto_int_charges_t* q) {
+// One gaussian by the general recursion: the potential, and the field when E is given
+static inline void gto_int_eval_gaussian(double* V, double* E, uint32_t g, uint32_t L, const double C[3], const md_gto_int_charges_t* q) {
+    double R[GTO_INT_MAX_R];
+    const double* P = q->center + g * 3;
+    const double* h = q->coeff + q->coeff_offset[g];
+    gto_int_hermite_R(R, (int)L + (E ? 1 : 0), q->exponent[g], P[0] - C[0], P[1] - C[1], P[2] - C[2], q->boys_table);
+
+    uint32_t i = 0;
+    double s = 0.0, ex = 0.0, ey = 0.0, ez = 0.0;
+    for (int deg = 0; deg <= (int)L; ++deg) {
+        for (int t = deg; t >= 0; --t) {
+            for (int u = deg - t; u >= 0; --u, ++i) {
+                const int v = deg - t - u;
+                s += h[i] * R[i];
+                if (E) {
+                    // E = -grad_C V, and d/dC R_tuv(P - C) = -R_{t+1,u,v} etc.
+                    ex += h[i] * R[herm_idx(t + 1, u, v)];
+                    ey += h[i] * R[herm_idx(t, u + 1, v)];
+                    ez += h[i] * R[herm_idx(t, u, v + 1)];
+                }
+            }
+        }
+    }
+    *V += s;
+    if (E) { E[0] += ex; E[1] += ey; E[2] += ez; }
+}
+
+// One point: its charge, and its dipole and quadrupole where the distribution has them
+static inline void gto_int_eval_point_item(double* V, double* E, uint32_t k, const double C[3], const md_gto_int_charges_t* q) {
+    const double d[3] = { C[0] - q->point_xyz[k * 3 + 0], C[1] - q->point_xyz[k * 3 + 1], C[2] - q->point_xyz[k * 3 + 2] };
+    const double r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if (r2 < 1.0e-20) return;
+    const double inv_r = 1.0 / sqrt(r2);
+    const double qr = q->point_charge[k] * inv_r;
+    *V += qr;
+    if (E) {
+        const double qr3 = qr * inv_r * inv_r;
+        E[0] += qr3 * d[0]; E[1] += qr3 * d[1]; E[2] += qr3 * d[2];
+    }
+    if (q->point_dipole || q->point_quadrupole) {
+        const double inv_r2 = inv_r * inv_r;
+        const double inv_r3 = inv_r2 * inv_r;
+        const double inv_r5 = inv_r3 * inv_r2;
+        if (q->point_dipole) {
+            // V = mu.d / r^3,  E = 3 (mu.d) d / r^5 - mu / r^3
+            const double* mu = q->point_dipole + k * 3;
+            const double md = mu[0] * d[0] + mu[1] * d[1] + mu[2] * d[2];
+            *V += md * inv_r3;
+            if (E) {
+                const double a = 3.0 * md * inv_r5;
+                E[0] += a * d[0] - mu[0] * inv_r3;
+                E[1] += a * d[1] - mu[1] * inv_r3;
+                E[2] += a * d[2] - mu[2] * inv_r3;
+            }
+        }
+        if (q->point_quadrupole) {
+            // V = (3 d.Q.d - r^2 tr Q) / (2 r^5),
+            // E = 15/2 (d.Q.d) d / r^7 - 3 Q.d / r^5 - 3/2 tr(Q) d / r^5
+            const double* Q = q->point_quadrupole + k * 6;   // xx xy xz yy yz zz
+            const double Qd[3] = {
+                Q[0] * d[0] + Q[1] * d[1] + Q[2] * d[2],
+                Q[1] * d[0] + Q[3] * d[1] + Q[4] * d[2],
+                Q[2] * d[0] + Q[4] * d[1] + Q[5] * d[2],
+            };
+            const double dQd = d[0] * Qd[0] + d[1] * Qd[1] + d[2] * Qd[2];
+            const double tr  = Q[0] + Q[3] + Q[5];
+            *V += 0.5 * (3.0 * dQd - r2 * tr) * inv_r5;
+            if (E) {
+                const double a = 7.5 * dQd * inv_r5 * inv_r2 - 1.5 * tr * inv_r5;
+                E[0] += a * d[0] - 3.0 * Qd[0] * inv_r5;
+                E[1] += a * d[1] - 3.0 * Qd[1] * inv_r5;
+                E[2] += a * d[2] - 3.0 * Qd[2] * inv_r5;
+            }
+        }
+    }
+}
+
+// Through the far field: from the root down, a node is taken whole by its multipoles where the
+// criterion of md_gto_int_charges_desc_t::far_field_theta holds at C, and a leaf where it does not
+// is evaluated member by member.
+static double gto_int_eval_point_far(double field[3], const double C[3], const md_gto_int_charges_t* q) {
+    const uint32_t K  = q->far_field_order;
+    const uint32_t nh = md_gto_int_num_hermite(K);
+    const double inv_theta = 1.0 / q->far_field_theta;
     double V = 0.0;
     double E[3] = {0, 0, 0};
-    double R[GTO_INT_MAX_R];
+    double* Ep = field ? E : NULL;
+    double T[GTO_INT_MAX_R];
+
+    uint32_t stack[GTO_INT_FAR_STACK];
+    int sp = 0;
+    stack[sp++] = 0;
+    while (sp > 0) {
+        const uint32_t ni = stack[--sp];
+        const md_gto_int_node_t* nd = q->node + ni;
+        const double Y[3] = { nd->center[0] - C[0], nd->center[1] - C[1], nd->center[2] - C[2] };
+        const double d = sqrt(Y[0] * Y[0] + Y[1] * Y[1] + Y[2] * Y[2]);
+        if (d > 0.0 && d >= nd->radius * inv_theta && d >= nd->reach) {
+            const double* M = q->node_multipole + (size_t)ni * nh;
+            gto_int_coulomb_T(T, (int)K + (field ? 1 : 0), Y[0], Y[1], Y[2]);
+            double s = 0.0, ex = 0.0, ey = 0.0, ez = 0.0;
+            uint32_t i = 0;
+            for (int deg = 0; deg <= (int)K; ++deg) {
+                for (int t = deg; t >= 0; --t) {
+                    for (int u = deg - t; u >= 0; --u, ++i) {
+                        s += M[i] * T[i];
+                        if (field) {
+                            // V = sum M_k T_k(O - C): E = -grad_C V = sum M_k T_{k+e}
+                            const int v = deg - t - u;
+                            ex += M[i] * T[herm_idx(t + 1, u, v)];
+                            ey += M[i] * T[herm_idx(t, u + 1, v)];
+                            ez += M[i] * T[herm_idx(t, u, v + 1)];
+                        }
+                    }
+                }
+            }
+            V += s;
+            E[0] += ex; E[1] += ey; E[2] += ez;
+        } else if (nd->num_children == 0) {
+            for (uint32_t i = nd->item_begin; i < nd->item_end; ++i) {
+                const uint32_t it = q->item[i];
+                if (it < q->num_gaussians) {
+                    const uint32_t L = gto_int_order_of_gaussian(q, it);
+                    if (!field && L <= 2) {
+                        // the written out orders, as in gto_int_eval_point
+                        V += L == 0 ? gto_int_potential_low_order(0, it, it + 1, C, q)
+                           : L == 1 ? gto_int_potential_low_order(1, it, it + 1, C, q)
+                           :          gto_int_potential_low_order(2, it, it + 1, C, q);
+                    } else {
+                        gto_int_eval_gaussian(&V, Ep, it, L, C, q);
+                    }
+                } else {
+                    gto_int_eval_point_item(&V, Ep, it - q->num_gaussians, C, q);
+                }
+            }
+        } else {
+            ASSERT(sp + (int)nd->num_children <= GTO_INT_FAR_STACK);
+            for (uint32_t c = 0; c < nd->num_children; ++c) stack[sp++] = nd->first_child + c;
+        }
+    }
+
+    if (field) { field[0] = E[0]; field[1] = E[1]; field[2] = E[2]; }
+    return V;
+}
+
+static double gto_int_eval_point(double field[3], const double C[3], const md_gto_int_charges_t* q) {
+    if (q->num_nodes) {
+        return gto_int_eval_point_far(field, C, q);
+    }
+    double V = 0.0;
+    double E[3] = {0, 0, 0};
+    double* Ep = field ? E : NULL;
 
     // The potential alone of orders 0..2 written out, everything else by the general recursion
     uint32_t g_first = 0;
@@ -821,78 +1316,10 @@ static double gto_int_eval_point(double field[3], const double C[3], const md_gt
     uint32_t L = 0;
     for (uint32_t g = g_first; g < q->num_gaussians; ++g) {
         gto_int_order_of(q, g, &L);
-        const double* P = q->center + g * 3;
-        const double* h = q->coeff + q->coeff_offset[g];
-        const int Lr = (int)L + (field ? 1 : 0);
-        gto_int_hermite_R(R, Lr, q->exponent[g], P[0] - C[0], P[1] - C[1], P[2] - C[2], q->boys_table);
-
-        uint32_t i = 0;
-        double s = 0.0, ex = 0.0, ey = 0.0, ez = 0.0;
-        for (int deg = 0; deg <= (int)L; ++deg) {
-            for (int t = deg; t >= 0; --t) {
-                for (int u = deg - t; u >= 0; --u, ++i) {
-                    const int v = deg - t - u;
-                    s += h[i] * R[i];
-                    if (field) {
-                        // E = -grad_C V, and d/dC R_tuv(P - C) = -R_{t+1,u,v} etc.
-                        ex += h[i] * R[herm_idx(t + 1, u, v)];
-                        ey += h[i] * R[herm_idx(t, u + 1, v)];
-                        ez += h[i] * R[herm_idx(t, u, v + 1)];
-                    }
-                }
-            }
-        }
-        V += s;
-        E[0] += ex; E[1] += ey; E[2] += ez;
+        gto_int_eval_gaussian(&V, Ep, g, L, C, q);
     }
-
     for (uint32_t k = 0; k < q->num_points; ++k) {
-        const double d[3] = { C[0] - q->point_xyz[k * 3 + 0], C[1] - q->point_xyz[k * 3 + 1], C[2] - q->point_xyz[k * 3 + 2] };
-        const double r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        if (r2 < 1.0e-20) continue;
-        const double inv_r = 1.0 / sqrt(r2);
-        const double qr = q->point_charge[k] * inv_r;
-        V += qr;
-        if (field) {
-            const double qr3 = qr * inv_r * inv_r;
-            E[0] += qr3 * d[0]; E[1] += qr3 * d[1]; E[2] += qr3 * d[2];
-        }
-        if (q->point_dipole || q->point_quadrupole) {
-            const double inv_r2 = inv_r * inv_r;
-            const double inv_r3 = inv_r2 * inv_r;
-            const double inv_r5 = inv_r3 * inv_r2;
-            if (q->point_dipole) {
-                // V = mu.d / r^3,  E = 3 (mu.d) d / r^5 - mu / r^3
-                const double* mu = q->point_dipole + k * 3;
-                const double md = mu[0] * d[0] + mu[1] * d[1] + mu[2] * d[2];
-                V += md * inv_r3;
-                if (field) {
-                    const double a = 3.0 * md * inv_r5;
-                    E[0] += a * d[0] - mu[0] * inv_r3;
-                    E[1] += a * d[1] - mu[1] * inv_r3;
-                    E[2] += a * d[2] - mu[2] * inv_r3;
-                }
-            }
-            if (q->point_quadrupole) {
-                // V = (3 d.Q.d - r^2 tr Q) / (2 r^5),
-                // E = 15/2 (d.Q.d) d / r^7 - 3 Q.d / r^5 - 3/2 tr(Q) d / r^5
-                const double* Q = q->point_quadrupole + k * 6;   // xx xy xz yy yz zz
-                const double Qd[3] = {
-                    Q[0] * d[0] + Q[1] * d[1] + Q[2] * d[2],
-                    Q[1] * d[0] + Q[3] * d[1] + Q[4] * d[2],
-                    Q[2] * d[0] + Q[4] * d[1] + Q[5] * d[2],
-                };
-                const double dQd = d[0] * Qd[0] + d[1] * Qd[1] + d[2] * Qd[2];
-                const double tr  = Q[0] + Q[3] + Q[5];
-                V += 0.5 * (3.0 * dQd - r2 * tr) * inv_r5;
-                if (field) {
-                    const double a = 7.5 * dQd * inv_r5 * inv_r2 - 1.5 * tr * inv_r5;
-                    E[0] += a * d[0] - 3.0 * Qd[0] * inv_r5;
-                    E[1] += a * d[1] - 3.0 * Qd[1] * inv_r5;
-                    E[2] += a * d[2] - 3.0 * Qd[2] * inv_r5;
-                }
-            }
-        }
+        gto_int_eval_point_item(&V, Ep, k, C, q);
     }
 
     if (field) { field[0] = E[0]; field[1] = E[1]; field[2] = E[2]; }
