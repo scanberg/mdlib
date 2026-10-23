@@ -7,10 +7,14 @@
 //
 // GROUPS. The points are taken 64 at a time: a brick of 4x4x4 voxels of the grid, or 64 points
 // consecutive along a Morton curve through their box. A group shares one walk of the tree, against
-// its bounding sphere: a node is taken whole by its multipoles when
-//     |centre - group centre| - group radius >= the node's far distance
+// its bounding spheres: a node is taken whole by its multipoles when, for every sphere,
+//     |centre - sphere centre| - sphere radius >= the node's far distance
 // (max(radius / theta, reach), see md_gto_int.c), a leaf that is not is evaluated exactly, and
-// anything else is opened.
+// anything else is opened. A brick is one sphere. 64 points are four: split where the three largest
+// steps between consecutive points are. Points that fill space only in part (a surface, a band) leave
+// a Morton curve for empty space and come back elsewhere, and one sphere around both ends of such a
+// jump holds everything between them: on a protein's ESP band a few groups so made had over 20 times
+// the median work, and a dispatch waits for its slowest group.
 //
 // ORDER (points only). The points come in any order: a mesh's vertices are close to one another in
 // the order a mesher makes them, but one that hands out its output slots by atomics interleaves the
@@ -231,30 +235,73 @@ void xyz_bitonic(uint3 tid : SV_DispatchThreadID) {
 // ---------------------------------------------------------------------------
 // lists: a thread per group
 // ---------------------------------------------------------------------------
-float4 group_sphere<let M : int>(uint group) {
-    if (M == GRID) {
-        return float4(mul(args.index_to_world, float4(float3(group_brick(group) * 4u) + 1.5f, 1.0f)).xyz, args.brick_radius);
-    }
-    // the centre of the points' box and the largest distance from it, with a little slack for the
-    // rounding of both (the points are float, and so is the centre)
-    const uint first = group * GROUP;
-    const uint last  = min(first + GROUP, args.num_xyz);
-    float3 lo = sorted_xyz(first), hi = lo;
-    for (uint i = first + 1u; i < last; ++i) {
+#define GROUP_SPHERES 4
+
+// The sorted points [b, e): the centre of their box and the largest distance from it, with a little
+// slack for the rounding of both (the points are float, and so is the centre)
+float4 segment_sphere(uint b, uint e) {
+    float3 lo = sorted_xyz(b), hi = lo;
+    for (uint i = b + 1u; i < e; ++i) {
         const float3 x = sorted_xyz(i);
         lo = min(lo, x);
         hi = max(hi, x);
     }
     const float3 c = 0.5f * (lo + hi);
     float r = 0.0f;
-    for (uint i = first; i < last; ++i) r = max(r, length(sorted_xyz(i) - c));
+    for (uint i = b; i < e; ++i) r = max(r, length(sorted_xyz(i) - c));
     return float4(c, r * 1.0001f + 1.0e-5f);
+}
+
+// A group's spheres: the brick's, or the points' split at the three largest steps between them.
+// Unused ones repeat the first.
+void group_spheres<let M : int>(uint group, out float4 s[GROUP_SPHERES]) {
+    if (M == GRID) {
+        s[0] = float4(mul(args.index_to_world, float4(float3(group_brick(group) * 4u) + 1.5f, 1.0f)).xyz, args.brick_radius);
+        [ForceUnroll] for (int k = 1; k < GROUP_SPHERES; ++k) s[k] = s[0];
+        return;
+    }
+    const uint first = group * GROUP;
+    const uint last  = min(first + GROUP, args.num_xyz);
+    // the three largest steps, as the point after each: c0 >= c1 >= c2 by step
+    const uint NONE = 0xFFFFFFFFu;
+    uint  c0 = NONE, c1 = NONE, c2 = NONE;
+    float v0 = -1.0f, v1 = -1.0f, v2 = -1.0f;
+    float3 prev = sorted_xyz(first);
+    for (uint i = first + 1u; i < last; ++i) {
+        const float3 x = sorted_xyz(i);
+        const float3 dx = x - prev;
+        const float  v = dot(dx, dx);
+        prev = x;
+        if (v > v0)      { v2 = v1; c2 = c1; v1 = v0; c1 = c0; v0 = v; c0 = i; }
+        else if (v > v1) { v2 = v1; c2 = c1; v1 = v; c1 = i; }
+        else if (v > v2) { v2 = v; c2 = i; }
+    }
+    // in order along the points (NONE last)
+    uint t;
+    if (c0 > c1) { t = c0; c0 = c1; c1 = t; }
+    if (c1 > c2) { t = c1; c1 = c2; c2 = t; }
+    if (c0 > c1) { t = c0; c0 = c1; c1 = t; }
+    const uint e0 = min(c0, last), e1 = min(c1, last), e2 = min(c2, last);
+    s[0] = segment_sphere(first, e0);
+    s[1] = e1 > e0 ? segment_sphere(e0, e1) : s[0];
+    s[2] = e2 > e1 ? segment_sphere(e1, e2) : s[0];
+    s[3] = last > e2 ? segment_sphere(e2, last) : s[0];
+}
+
+// How far a node's centre is outside the group's spheres: the least over them
+float group_distance<let M : int>(float3 c, float4 s[GROUP_SPHERES]) {
+    float d = length(c - s[0].xyz) - s[0].w;
+    if (M != GRID) {
+        [ForceUnroll] for (int k = 1; k < GROUP_SPHERES; ++k) d = min(d, length(c - s[k].xyz) - s[k].w);
+    }
+    return d;
 }
 
 void lists_pass<let M : int>(uint tid) {
     const uint group = args.group_first + tid;
     if (group >= args.group_end) return;
-    const float4 sphere = group_sphere<M>(group);
+    float4 spheres[GROUP_SPHERES];
+    group_spheres<M>(group, spheres);
     const uint   cap    = args.list_cap;
     const uint   base   = (group - args.accum_first) * cap;
 
@@ -266,7 +313,7 @@ void lists_pass<let M : int>(uint tid) {
     while (sp > 0u) {
         const uint node = stack[--sp];
         const float4 g = args.node_geom[node];
-        const float  d = length(g.xyz - sphere.xyz) - sphere.w;
+        const float  d = group_distance<M>(g.xyz, spheres);
         if (d > 0.0f && d >= g.w) {
             args.lists[base + count++] = node | FAR_BIT;
             continue;
