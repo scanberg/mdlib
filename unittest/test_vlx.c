@@ -1065,7 +1065,7 @@ UTEST(vlx, pe_fragments_follow_their_numbers) {
 	ASSERT_EQ(1u, t.sys.protein_backbone.range.count);
 	ASSERT_EQ(3u, t.sys.protein_backbone.segment.count);
 	for (size_t s = 0; s < 3; ++s) {
-		EXPECT_EQ((int)(1 + s), t.sys.protein_backbone.segment.comp_idx[s]);
+		EXPECT_EQ((int)(1 + s), t.sys.protein_backbone.segment.res_idx[s]);
 	}
 
 	qm_test_free(&t);
