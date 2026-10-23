@@ -80,7 +80,7 @@ static inline uint32_t md_gto_int_num_hermite(uint32_t L) { return ((L + 1) * (L
 
 // Which far field this is, for benchmarks to print: bumped with every change to how it is built
 // or evaluated.
-#define MD_GTO_INT_FAR_FIELD_REVISION "r5 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: lists of up to 8192 per group of 64, points in Morton order as 4 spheres, dispatches of >= 256 groups, submitted every 4 dispatch budgets; jobs)"
+#define MD_GTO_INT_FAR_FIELD_REVISION "r6 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: lists of up to 8192 per group of 64, points in Morton order as 4 spheres, dispatches of >= 256 groups, submitted every 4 dispatch budgets; jobs of 8 in flight)"
 
 // A node of the far field's octree (md_gto_int_charges_desc_t::far_field_theta). Its members are
 // item[item_begin, item_end): the gaussians and points inside its box. Its multipoles are about
