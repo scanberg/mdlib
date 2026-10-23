@@ -1173,6 +1173,37 @@ UTEST(util, martini_masses_by_version) {
     md_vm_arena_destroy(alloc);
 }
 
+// A branched molecule of no polymer (a glycan) is one instance: its third residue is bonded to the first, not to the
+// second before it. A second one, bonded to nothing of the first, is an instance of its own.
+UTEST(util, branched_molecule_is_one_instance) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    static const char pdb[] =
+        "HETATM    1  C1  SGR A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  O1  SGR A   1       1.400   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    3  C1  SGR A   2       2.800   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    4  O2  SGR A   2       4.200   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    5  C1  SGR A   3       0.700   1.212   0.000  1.00  0.00           C\n"
+        "HETATM    6  O3  SGR A   3       0.700   2.612   0.000  1.00  0.00           O\n"
+        "HETATM    7  C1  SGR A   4      20.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    8  O1  SGR A   4      21.400   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    9  C1  SGR A   5      22.800   0.000   0.000  1.00  0.00           C\n"
+        "HETATM   10  O2  SGR A   5      24.200   0.000   0.000  1.00  0.00           O\n"
+        "END\n";
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(5u, md_system_component_count(&sys));
+    // The branch: the third bonded to the first
+    EXPECT_TRUE(md_bond_find(&sys.bond, 0, 4) >= 0 || md_bond_find(&sys.bond, 1, 4) >= 0);
+    EXPECT_LT(md_bond_find(&sys.bond, 2, 4), 0);
+    ASSERT_EQ(2u, md_system_instance_count(&sys));
+    EXPECT_EQ(3u, md_system_instance_comp_count(&sys, 0));
+    EXPECT_EQ(2u, md_system_instance_comp_count(&sys, 1));
+    EXPECT_EQ(2u, md_structure_count(&sys.structure));
+    md_vm_arena_destroy(alloc);
+}
+
 // A modified residue larger than any standard one: the palmitoylated cysteine of a CHARMM-GUI spike protein (6VSB),
 // named CYS, 58 atoms with its hydrogens. Its backbone is found by its atom names whatever its size, as a nucleotide's is.
 static const char palmitoyl_cys_pdb[] =

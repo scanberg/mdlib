@@ -5350,8 +5350,11 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
 
     const size_t num_comp = sys->component.count;
 
-    // Components with a bond to the one before them
+    // Components with a bond to the one before them, and the last component before each which it is bonded to: the
+    // residues of a branched molecule (a glycan) are bonded to one before them, which need not be the one just before
     uint64_t* bonded_to_prev = make_bitfield(num_comp, temp_arena);
+    int32_t* last_bonded_before = md_temp_alloc_array(temp, int32_t, MAX(1, num_comp));
+    for (size_t c = 0; c < num_comp; ++c) last_bonded_before[c] = -1;
     if (sys->bond.count > 0) {
         md_component_idx_t* atom_comp_idx = md_temp_alloc_array(temp, md_component_idx_t, sys->atom.count);
         MEMSET(atom_comp_idx, -1, sizeof(md_component_idx_t) * sys->atom.count);
@@ -5368,6 +5371,9 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             const md_component_idx_t b = atom_comp_idx[pair.idx[1]];
             if (a >= 0 && b >= 0 && abs(a - b) == 1) {
                 bitfield_set_bit(bonded_to_prev, MAX(a, b));
+            }
+            if (a >= 0 && b >= 0 && a != b) {
+                last_bonded_before[MAX(a, b)] = MAX(last_bonded_before[MAX(a, b)], MIN(a, b));
             }
         }
     }
@@ -5398,6 +5404,10 @@ bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp
             if (kind_prev == MD_COMPONENT_KIND_WATER || kind_prev == MD_COMPONENT_KIND_ION) break;
             if (kind_j    == MD_COMPONENT_KIND_WATER || kind_j    == MD_COMPONENT_KIND_ION) break;
             if (bitfield_test_bit(bonded_to_prev, j)) continue;
+            // A branched molecule of no polymer goes on while each residue is bonded to one of it: a glycan tree is one
+            // instance however its branches are ordered, and the next one, bonded to the protein only, begins its own
+            const md_component_kind_t kind_i = md_component_kind(&sys->component, i);
+            if (!component_kind_is_monomer(kind_j) && !component_kind_is_monomer(kind_i) && last_bonded_before[j] >= (int32_t)i) continue;
 
             const md_sequence_id_t seq_prev = md_component_seq_id(&sys->component, j - 1);
             const md_sequence_id_t seq_j    = md_component_seq_id(&sys->component, j);
