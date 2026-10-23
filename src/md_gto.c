@@ -2390,36 +2390,80 @@ static void gto_gemm_args_init(gto_density_gemm_args_t* a, const md_grid_t* grid
 // The two-pass path: count, plan batches (blocks the calling thread for the counts),
 // then per batch the Phi pass, optionally the D_b gather, and the consumer kernel(s)
 // in cfg. `a` must be initialised (gto_gemm_args_init) with the consumer's fields set.
-static void gto_gemm_execute(md_gpu_stream_t stream, gto_density_gemm_args_t* ap, size_t scratch_bytes, bool pregather_D, const gto_gemm_cfg_t* cfgp) {
+/* The GEMM path in two halves: the counting pass, whose per-block counts come back to the host, and the
+   batches planned from them. md_gto_gpu_density_launch waits for the counts between the two on the calling
+   thread; a job (md_gto_gpu_density_job_begin) issues the second half when they are there. */
+typedef struct gto_gemm_pending_t {
+    md_gpu_stream_t         stream;
+    gto_density_gemm_args_t a;
+    gto_gemm_cfg_t          cfg;
+    size_t                  scratch_bytes;
+    bool                    pregather_D;
+    uint32_t                num_blocks;
+    md_gpu_addr_t           counts;
+    md_gpu_mem_t            counts_rb;
+    md_gpu_sync_t           sync;       /* the counts on the host */
+    md_tick_t               t_count0;
+    double                  waited_ms;  /* the calling thread's wait for them, the launch's */
+} gto_gemm_pending_t;
+
+/* Pass 0: per-block counts, copied to the host to plan the batches. False when there is nothing to do or it
+   could not be issued (logged). */
+static bool gto_gemm_count(gto_gemm_pending_t* p, md_gpu_stream_t stream, const gto_density_gemm_args_t* ap, size_t scratch_bytes, bool pregather_D, const gto_gemm_cfg_t* cfgp) {
+    MEMSET(p, 0, sizeof(*p));
     if (!gto_density_gemm_kernels()) {
         MD_LOG_ERROR("md_gto: GEMM-path kernels not available (md_gto_gpu_initialize not called?)");
-        return;
+        return false;
     }
-    gto_density_gemm_args_t a = *ap;
-    const gto_gemm_cfg_t cfg = *cfgp;
-    a.d_mode = pregather_D ? 1 : 0;
+    p->stream = stream;
+    p->a = *ap;
+    p->cfg = *cfgp;
+    p->scratch_bytes = scratch_bytes;
+    p->pregather_D = pregather_D;
+    p->a.d_mode = pregather_D ? 1 : 0;
 
-    const uint32_t num_blocks = a.block_dim.x * a.block_dim.y * a.block_dim.z;
-    if (num_blocks == 0) return;
+    const uint32_t num_blocks = p->a.block_dim.x * p->a.block_dim.y * p->a.block_dim.z;
+    if (num_blocks == 0) return false;
+    p->num_blocks = num_blocks;
 
-    /* Pass 0: per-block counts, read back to plan the batches. This is the one
-       place the GEMM path blocks the calling thread. */
     const size_t counts_size = sizeof(uint32_t) * 2 * num_blocks;
-    md_gpu_addr_t counts = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, counts_size).gpu;
-    md_gpu_mem_t  counts_rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, counts_size);
-    if (!counts || !counts_rb.cpu) {
+    p->counts = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, counts_size).gpu;
+    p->counts_rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, counts_size);
+    if (!p->counts || !p->counts_rb.cpu) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: failed to allocate block counts");
-        md_gpu_free(stream, counts);
-        md_gpu_free(stream, counts_rb.gpu);
-        return;
+        md_gpu_free(stream, p->counts);
+        md_gpu_free(stream, p->counts_rb.gpu);
+        return false;
     }
+    p->t_count0 = md_tick_now();
+    p->a.block_counts = p->counts;
+    p->a.num_blocks   = num_blocks;
+    md_gpu_launch(stream, gto_k_density_gemm_count, md_gpu_grid(p->a.block_dim.x, p->a.block_dim.y, p->a.block_dim.z), &p->a, sizeof(p->a));
+    md_gpu_copy(stream, p->counts_rb.gpu, p->counts, counts_size);
+    p->sync = md_gpu_stream_record(stream);
+    return true;
+}
+
+/* What the counting pass left, dropped without the rest (stream-ordered) */
+static void gto_gemm_drop(gto_gemm_pending_t* p) {
+    md_gpu_free(p->stream, p->counts);
+    md_gpu_free(p->stream, p->counts_rb.gpu);
+    p->counts = 0;
+    p->counts_rb = (md_gpu_mem_t){0};
+}
+
+/* The batches, planned from the counts (which must be on the host: p->sync complete) */
+static void gto_gemm_issue(gto_gemm_pending_t* p) {
+    md_gpu_stream_t stream = p->stream;
+    gto_density_gemm_args_t a = p->a;
+    const gto_gemm_cfg_t cfg = p->cfg;
+    const bool pregather_D = p->pregather_D;
+    const size_t scratch_bytes = p->scratch_bytes;
+    const uint32_t num_blocks = p->num_blocks;
+    const md_gpu_mem_t counts_rb = p->counts_rb;
     const md_tick_t t_count0 = md_tick_now();
-    a.block_counts = counts;
-    a.num_blocks   = num_blocks;
-    md_gpu_launch(stream, gto_k_density_gemm_count, md_gpu_grid(a.block_dim.x, a.block_dim.y, a.block_dim.z), &a, sizeof(a));
-    md_gpu_copy(stream, counts_rb.gpu, counts, counts_size);
-    md_gpu_stream_sync(stream);
-    md_gpu_free(stream, counts);
+    md_gpu_free(stream, p->counts);
+    p->counts = 0;
 
     /* Plan: non-empty blocks in linear order, batched so that each batch's Phi (and
        D_b) fits in the scratch budget. Within a batch the blocks for the small-tile
@@ -2509,7 +2553,7 @@ static void gto_gemm_execute(md_gpu_stream_t stream, gto_density_gemm_args_t* ap
         goto done;
     }
     md_gpu_upload(stream, table_buf, table, table_size);
-    t_count = md_tick_to_milliseconds(md_tick_now() - t_count0);
+    t_count = p->waited_ms + md_tick_to_milliseconds(md_tick_now() - t_count0);
 
     a.ao_list    = ao_buf;
     a.phi        = phi_buf;
@@ -2557,7 +2601,7 @@ static void gto_gemm_execute(md_gpu_stream_t stream, gto_density_gemm_args_t* ap
                     (double)total_ao / MAX(1, nonempty), 100.0 * (double)total_small / MAX(1, nonempty));
     }
 
-    MD_LOG_DEBUG("GTO %s (GEMM): %u blocks, %u non-empty, %u batches, max %.1f MB Phi per batch; the calling thread waited %.1f ms for the counts (and what the stream held before them) and the plan",
+    MD_LOG_DEBUG("GTO %s (GEMM): %u blocks, %u non-empty, %u batches, max %.1f MB Phi per batch; the calling thread spent %.1f ms on the counts (waiting for them, and what the stream held before them, unless a job) and the plan",
                  a.num_mos ? "orbitals" : "density", num_blocks, num_entries - batches[num_batches].count, num_batches,
                  (double)(sizeof(float) * GTO_GEMM_BLOCK_VOXELS * max_ao) / (1024.0 * 1024.0), t_count);
 done:
@@ -2566,59 +2610,122 @@ done:
     md_gpu_free(stream, phi_buf);
     md_gpu_free(stream, table_buf);
     md_temp_end(temp);
+    p->counts_rb = (md_gpu_mem_t){0};
+}
+
+static void gto_gemm_execute(md_gpu_stream_t stream, gto_density_gemm_args_t* ap, size_t scratch_bytes, bool pregather_D, const gto_gemm_cfg_t* cfgp) {
+    gto_gemm_pending_t p;
+    if (!gto_gemm_count(&p, stream, ap, scratch_bytes, pregather_D, cfgp)) return;
+    /* This is the one place the GEMM path blocks the calling thread */
+    md_gpu_sync_wait(p.sync);
+    p.waited_ms = md_tick_to_milliseconds(md_tick_now() - p.t_count0);
+    gto_gemm_issue(&p);
+}
+
+static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
+    if (!gto_density_gemm_kernels()) {
+        MD_LOG_ERROR("md_gto_gpu_density_launch: GEMM kernels not available (md_gto_gpu_initialize not called?)");
+        return false;
+    }
+    if (!gto_gemm_config(cfg, desc)) return false;
+    gto_gemm_args_init(a, desc->grid, desc->sample_offset, desc->basis, desc->atom_xyz, desc->op, out);
+    a->D_matrix = desc->dmat ? desc->dmat->tiles : desc->coeff;
+    if (desc->dmat) {
+        a->dm_tiled = 1;
+        a->dm_nt    = desc->dmat->nt;
+        a->dm_tao   = desc->dmat->tao;
+        a->dm_map   = desc->dmat->map;
+    }
+    return true;
 }
 
 static void gto_density_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
-    if (!gto_density_gemm_kernels()) {
-        MD_LOG_ERROR("md_gto_gpu_density_launch: GEMM kernels not available (md_gto_gpu_initialize not called?)");
-        return;
-    }
     gto_gemm_cfg_t cfg;
-    if (!gto_gemm_config(&cfg, desc)) return;
     gto_density_gemm_args_t a;
-    gto_gemm_args_init(&a, desc->grid, desc->sample_offset, desc->basis, desc->atom_xyz, desc->op, out);
-    a.D_matrix = desc->dmat ? desc->dmat->tiles : desc->coeff;
-    if (desc->dmat) {
-        a.dm_tiled = 1;
-        a.dm_nt    = desc->dmat->nt;
-        a.dm_tao   = desc->dmat->tao;
-        a.dm_map   = desc->dmat->map;
-    }
+    if (!gto_density_gemm_setup(&a, &cfg, desc, out)) return;
     /* D_b is gathered once per block before the GEMM pass (d_mode 1), so the GEMM
        streams it with coalesced loads instead of gathering from the packed triangle. */
     gto_gemm_execute(stream, &a, desc->scratch_bytes, true, &cfg);
 }
 
-void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
+/* The storage the evaluation writes and its algorithm, or false (logged) */
+static bool gto_density_check(md_gpu_storage_tex_t* out, md_gto_gpu_density_algo_t* algo, md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
     if (!stream || !desc || !desc->basis || !desc->atom_xyz || !(desc->coeff || desc->dmat) || !desc->out_tex || !desc->grid) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: invalid input");
-        return;
+        return false;
     }
     if (desc->dmat && desc->dmat->num_ao != desc->basis->layout.num_cgtos) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: the dmat spans %u AOs, the basis %u", desc->dmat->num_ao, desc->basis->layout.num_cgtos);
-        return;
+        return false;
     }
-    const md_gpu_storage_tex_t out = md_gpu_texture_storage(desc->out_tex, 0);
-    if (!out.handle) {
+    *out = md_gpu_texture_storage(desc->out_tex, 0);
+    if (!out->handle) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: out_tex needs MD_GPU_TEX_STORAGE usage");
-        return;
+        return false;
     }
+    *algo = desc->algorithm;
+    if (*algo == MD_GTO_GPU_DENSITY_ALGO_DEFAULT) {
+        *algo = MD_GTO_GPU_DENSITY_ALGO_GEMM;   // 1.8-2.6x faster than the reference on large systems
+    }
+    if (*algo != MD_GTO_GPU_DENSITY_ALGO_REFERENCE && *algo != MD_GTO_GPU_DENSITY_ALGO_GEMM) {
+        MD_LOG_ERROR("md_gto_gpu_density_launch: unknown algorithm %d", (int)*algo);
+        return false;
+    }
+    return true;
+}
 
-    md_gto_gpu_density_algo_t algo = desc->algorithm;
-    if (algo == MD_GTO_GPU_DENSITY_ALGO_DEFAULT) {
-        algo = MD_GTO_GPU_DENSITY_ALGO_GEMM;   // 1.8-2.6x faster than the reference on large systems
-    }
-    switch (algo) {
-    case MD_GTO_GPU_DENSITY_ALGO_REFERENCE:
+void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
+    md_gpu_storage_tex_t out;
+    md_gto_gpu_density_algo_t algo;
+    if (!gto_density_check(&out, &algo, stream, desc)) return;
+    if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
         gto_density_launch_reference(stream, desc, out);
-        break;
-    case MD_GTO_GPU_DENSITY_ALGO_GEMM:
+    } else {
         gto_density_launch_gemm(stream, desc, out);
-        break;
-    default:
-        MD_LOG_ERROR("md_gto_gpu_density_launch: unknown algorithm %d", (int)algo);
-        break;
     }
+}
+
+struct md_gto_gpu_job_t {
+    gto_gemm_pending_t p;
+    bool issued;        // all of it on the stream
+};
+
+md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
+    md_gpu_storage_tex_t out;
+    md_gto_gpu_density_algo_t algo;
+    if (!gto_density_check(&out, &algo, stream, desc)) return NULL;
+    md_gto_gpu_job_t* job = (md_gto_gpu_job_t*)calloc(1, sizeof(md_gto_gpu_job_t));
+    if (!job) return NULL;
+    if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
+        gto_density_launch_reference(stream, desc, out);
+        job->issued = true;
+        return job;
+    }
+    gto_gemm_cfg_t cfg;
+    gto_density_gemm_args_t a;
+    // nothing to evaluate, or what could not be issued (logged): done, as the launch would be
+    job->issued = !gto_density_gemm_setup(&a, &cfg, desc, out) || !gto_gemm_count(&job->p, stream, &a, desc->scratch_bytes, true, &cfg);
+    return job;
+}
+
+bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait) {
+    if (!job) return true;
+    if (job->issued) return true;
+    if (!md_gpu_sync_is_complete(job->p.sync)) {
+        if (!wait) return false;
+        const md_tick_t t0 = md_tick_now();
+        md_gpu_sync_wait(job->p.sync);
+        job->p.waited_ms = md_tick_to_milliseconds(md_tick_now() - t0);
+    }
+    gto_gemm_issue(&job->p);
+    job->issued = true;
+    return true;
+}
+
+void md_gto_gpu_job_end(md_gto_gpu_job_t* job) {
+    if (!job) return;
+    if (!job->issued) gto_gemm_drop(&job->p);
+    free(job);
 }
 
 /* Mirrors RootArgs in eval_gto_mo_shell.slang. */
