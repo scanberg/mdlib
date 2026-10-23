@@ -671,7 +671,7 @@ UTEST(match, resonance) {
 
 UTEST(match, coordination) {
     // The Mg between the phosphates of the GTP is bonded to them, as a metal. That is coordination: the GTP is a
-    // molecule of its own, and the whole of it.
+    // molecule of its own, and the whole of it, here and in the structures of the system.
     const md_system_t* sys = get_sys(SYS_TUBULIN);
     const char* gtp = "NC1=NC2=C(N=CN2C2OC(COP(=O)(O)OP(=O)(O)OP(=O)(O)O)C(O)C2O)C(=O)N1";
     md_allocator_i* alloc = md_get_heap_allocator();
@@ -691,7 +691,8 @@ UTEST(match, coordination) {
             structure_size = sys->structure.offset[s + 1] - sys->structure.offset[s];
         }
     }
-    EXPECT_LT(q.num_atoms, structure_size);
+    // Its structure is the GTP alone: the Mg is coordinated by it, which holds no molecule together
+    EXPECT_EQ(q.num_atoms, structure_size);
     md_match_result_free(&res);
     md_match_query_free(&q);
 

@@ -286,7 +286,9 @@ typedef struct md_bond_iter_t {
 // persistent bonds, closed over what holds a molecule together where the bonds do not say so: the atoms of a residue
 // (an atom no bond reaches, a virtual site) and the residues of a polymer chain (over a gap, residues missing from a
 // crystal structure). So a residue and a polymer chain are always within one molecule; a molecule may hold several
-// chains (joined by a disulfide), and a ligand bonded to a protein is of its molecule. Coarse grained systems are held
+// chains (joined by a disulfide), and a ligand bonded to a protein is of its molecule. A metal coordinated by other
+// residues is not, nor are the waters of its shell: the coordination bonds between residues hold no molecule together,
+// unless a topology gives them (a bond within one of its molecules, as GROMACS has it). Coarse grained systems are held
 // together by their hierarchy instead (md_util_system_infer_structures).
 // It also holds the iteration order of atoms and parent-child relationships for traversing the structure as a tree,
 // which is what unwrapping uses.

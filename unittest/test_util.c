@@ -575,6 +575,56 @@ UTEST(util, structure_hierarchy_coarse_grained_partial_bonds) {
     md_vm_arena_destroy(alloc);
 }
 
+// A metal coordinated by residues is a molecule of its own, and so are the waters of its shell: the coordination bonds
+// between residues hold no molecule together. Unless a topology gives them, as bonds within one of its molecules.
+static size_t structure_size_of_atom(const md_structure_data_t* st, int32_t atom);
+
+UTEST(util, coordinated_metals_are_molecules_of_their_own) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    {
+        // The Mg of tubulin, between the phosphates of its GTP and four waters
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        size_t num_mg = 0;
+        for (size_t i = 0; i < sys.atom.count; ++i) {
+            if (md_atom_atomic_number(&sys.atom, i) != MD_Z_Mg) continue;
+            num_mg += 1;
+            EXPECT_EQ(1u, structure_size_of_atom(&sys.structure, (int32_t)i));
+        }
+        EXPECT_GT(num_mg, 0u);
+        for (size_t c = 0; c < sys.component.count; ++c) {
+            if (md_component_kind(&sys.component, c) != MD_COMPONENT_KIND_WATER) continue;
+            const md_urange_t r = md_component_atom_range(&sys.component, c);
+            EXPECT_EQ((size_t)(r.end - r.beg), structure_size_of_atom(&sys.structure, (int32_t)r.beg));
+        }
+        check_structure_invariants(utest_result, &sys);
+    }
+    {
+        // The Mg of 1fez, coordinated by its protein; and then the same bonds as a topology would give them
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = {.alloc = alloc};
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        int32_t mg = -1;
+        for (size_t i = 0; i < sys.atom.count && mg < 0; ++i) if (md_atom_atomic_number(&sys.atom, i) == MD_Z_Mg) mg = (int32_t)i;
+        ASSERT_GE(mg, 0);
+        EXPECT_EQ(1u, structure_size_of_atom(&sys.structure, mg));
+        size_t num_coord = 0;
+        for (size_t b = 0; b < sys.bond.count; ++b) {
+            if (md_bond_kind(sys.bond.flags[b]) != MD_BOND_KIND_COORDINATE) continue;
+            sys.bond.flags[b] = md_bond_flags_set_origin(sys.bond.flags[b], MD_BOND_ORIGIN_TOPOLOGY);
+            num_coord += 1;
+        }
+        EXPECT_GT(num_coord, 0u);
+        ASSERT_TRUE(md_util_system_infer_structures(&sys));
+        EXPECT_LT(1000u, structure_size_of_atom(&sys.structure, mg));
+        check_structure_invariants(utest_result, &sys);
+    }
+    md_vm_arena_destroy(alloc);
+}
+
 // The index of the structure which holds the atom
 static size_t molecule_of_atom(const md_structure_data_t* st, int32_t atom) {
     const uint32_t slot = (uint32_t)md_structure_atom_slot(st, atom);
@@ -584,6 +634,11 @@ static size_t molecule_of_atom(const md_structure_data_t* st, int32_t atom) {
         if (st->offset[mid] <= slot) lo = mid; else hi = mid;
     }
     return lo;
+}
+
+static size_t structure_size_of_atom(const md_structure_data_t* st, int32_t atom) {
+    const size_t m = molecule_of_atom(st, atom);
+    return st->offset[m + 1] - st->offset[m];
 }
 
 // A molecule holds its residues and its polymer chains whole, whatever its bonds say: a chain with residues missing

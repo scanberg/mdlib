@@ -791,7 +791,9 @@ and is given no id is in no chain.
 A **molecule** is atoms joined by bonds, and what holds together where the bonds do not say so: the atoms of a residue,
 and the residues of a polymer chain over a gap (residues missing from a crystal structure). A residue and a polymer
 chain are always within one molecule; a molecule may hold several chains (joined by a disulfide), and a ligand bonded
-to a protein is of its molecule, as is a metal coordinated to it. An ion or a water is a molecule of its own.
+to a protein is of its molecule. A metal coordinated by residues (the Mg of a GTP, the Zn of a zinc finger) is a molecule
+of its own, as are the waters around it, unless a topology bonds it into a molecule. An ion or a water is a molecule of
+its own.
 
 ### chain
 
@@ -851,9 +853,9 @@ the context are searched. The full semantics are in `src/md_match.h`.
 
 Both take two named arguments:
 
-- `level`: where an occurrence lies. `"molecule"` (the default): within one [molecule](#molecule), except that a
-  metal coordinated to another residue (the Mg of an ATP, the Zn of a zinc finger) is a molecule of its own here, as
-  patterns follow covalent bonds only. `"residue"` (or `"component"`): within one residue, whose bonds to its
+- `level`: where an occurrence lies. `"molecule"` (the default): within one [molecule](#molecule). Patterns follow
+  covalent bonds only: a metal coordinated by another residue is a molecule of its own here even where a topology
+  bonds it into one. `"residue"` (or `"component"`): within one residue, whose bonds to its
   neighbours are not part of the graph, so a residue pattern ends at the peptide bond. `"chain"`: within one
   [chain](#chain), all that the data gives its id, the bonds leaving it (a disulfide to another chain) not followed;
   atoms the data puts in no chain are not searched.

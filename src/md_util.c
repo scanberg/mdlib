@@ -6143,6 +6143,20 @@ size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
     return count;
 }
 
+// Whether a bond holds a molecule together (md_structure_data_t): a bond of the graph, but not a coordination bond
+// between two residues, a metal and what surrounds it (the Mg of a GTP with its phosphates and the waters of its shell,
+// the Zn of a zinc finger with its cysteines), which are molecules of their own. Unless a topology gives it: a bond
+// within one of its molecules, as GROMACS has it. A coordination bond within a residue (the Fe of a heme) holds it.
+static bool bond_holds_molecule(const md_system_t* sys, size_t b) {
+    if (!sys->bond.flags) return true;
+    const md_bond_flags_t flags = sys->bond.flags[b];
+    if (!md_bond_is_graph(flags)) return false;
+    if (md_bond_kind(flags) != MD_BOND_KIND_COORDINATE || md_bond_origin(flags) == MD_BOND_ORIGIN_TOPOLOGY) return true;
+    if (!sys->component.count || !sys->component.atom_offset) return false;
+    const md_atom_pair_t pair = sys->bond.pairs[b];
+    return md_component_find_by_atom_idx(&sys->component, (size_t)pair.idx[0]) == md_component_find_by_atom_idx(&sys->component, (size_t)pair.idx[1]);
+}
+
 // Hierarchy links for coarse grained systems, used where bonds leave the topology disconnected.
 //
 // md_structure_data_t is a spanning forest and unwrap only needs each atom's parent to stay within half a cell
@@ -6174,7 +6188,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
     for (size_t i = 0; i < atom_count; ++i) set[i] = (int32_t)i;
 
     for (size_t i = 0; i < sys->bond.count; ++i) {
-        if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[i])) continue;
+        if (!bond_holds_molecule(sys, i)) continue;
         const md_atom_pair_t pair = sys->bond.pairs[i];
         if ((size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count) {
             uf_union(set, pair.idx[0], pair.idx[1]);
@@ -6271,7 +6285,7 @@ static md_array(md_atom_pair_t) synthesize_molecule_links(const md_system_t* sys
     int32_t* set = md_alloc(alloc, sizeof(int32_t) * atom_count);
     for (size_t i = 0; i < atom_count; ++i) set[i] = (int32_t)i;
     for (size_t i = 0; i < sys->bond.count; ++i) {
-        if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[i])) continue;
+        if (!bond_holds_molecule(sys, i)) continue;
         const md_atom_pair_t pair = sys->bond.pairs[i];
         if ((size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count) {
             uf_union(set, pair.idx[0], pair.idx[1]);
@@ -6351,26 +6365,31 @@ bool md_util_system_infer_structures(md_system_t* sys) {
     md_fifo_t atom_queue   = md_fifo_create(1024, temp_arena);
     md_fifo_t parent_queue = md_fifo_create(1024, temp_arena);
 
-    // The traversal runs over bonds, plus hierarchy links for coarse grained systems where bonds leave beads
-    // disconnected (see synthesize_hierarchy_links), and otherwise the links which keep a residue and a polymer chain
-    // in one molecule where no bond does (see synthesize_molecule_links). The links only shape the forest; sys->bond is
-    // untouched.
+    // The traversal runs over the bonds which hold molecules together (bond_holds_molecule: not the coordination of a
+    // metal by other residues), plus hierarchy links for coarse grained systems where bonds leave beads disconnected
+    // (see synthesize_hierarchy_links), and otherwise the links which keep a residue and a polymer chain in one molecule
+    // where no bond does (see synthesize_molecule_links). The links only shape the forest; sys->bond is untouched.
     const md_bond_data_t* graph = &sys->bond;
     md_bond_data_t link_graph = {0};
     {
         md_array(md_atom_pair_t) links = md_system_is_coarse_grained(sys) ? synthesize_hierarchy_links(sys, temp_arena) : synthesize_molecule_links(sys, temp_arena);
         const size_t num_links = md_array_size(links);
-        if (num_links > 0) {
-            link_graph.count = sys->bond.count + num_links;
+        // The bonds which hold molecules together (bond_holds_molecule): the coordination bonds between residues left out
+        size_t num_held = 0;
+        for (size_t b = 0; b < sys->bond.count; ++b) num_held += bond_holds_molecule(sys, b);
+        if (num_links > 0 || num_held < sys->bond.count) {
+            link_graph.count = num_held + num_links;
             md_array_resize(link_graph.pairs, link_graph.count, temp_arena);
             md_array_resize(link_graph.flags, link_graph.count, temp_arena);
             MEMSET(link_graph.flags, 0, sizeof(md_bond_flags_t) * link_graph.count);
-            if (sys->bond.count) {
-                MEMCPY(link_graph.pairs, sys->bond.pairs, sizeof(md_atom_pair_t) * sys->bond.count);
-                // With the flags, so that its connectivity leaves the elastic bonds out as that of the system does
-                if (sys->bond.flags) MEMCPY(link_graph.flags, sys->bond.flags, sizeof(md_bond_flags_t) * sys->bond.count);
+            size_t n = 0;
+            for (size_t b = 0; b < sys->bond.count; ++b) {
+                if (!bond_holds_molecule(sys, b)) continue;
+                link_graph.pairs[n] = sys->bond.pairs[b];
+                if (sys->bond.flags) link_graph.flags[n] = sys->bond.flags[b];
+                n += 1;
             }
-            MEMCPY(link_graph.pairs + sys->bond.count, links, sizeof(md_atom_pair_t) * num_links);
+            if (num_links) MEMCPY(link_graph.pairs + n, links, sizeof(md_atom_pair_t) * num_links);
             md_bond_build_connectivity(&link_graph, atom_count, temp_arena);
             graph = &link_graph;
         }
