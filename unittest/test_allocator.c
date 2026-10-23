@@ -146,6 +146,47 @@ UTEST(allocator, vm_arena) {
     md_vm_arena_destroy(arena);
 }
 
+// Trimmed, what was above the position is given back (and comes back zeroed) but for the commit granule (1 MB) the
+// position is in; what is below stays as it was
+UTEST(allocator, vm_arena_trim) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    ASSERT_TRUE(arena);
+    uint8_t* keep = (uint8_t*)md_vm_arena_push(arena, 1000);
+    MEMSET(keep, 0x5a, 1000);
+    const size_t big = MEGABYTES(8) + 12345;
+    uint8_t* mem = (uint8_t*)md_vm_arena_push(arena, big);
+    MEMSET(mem, 0xab, big);
+    md_vm_arena_pop(arena, big);
+    md_vm_arena_trim(arena);
+    md_vm_arena_trim(arena);    // nothing more to give back
+    for (size_t i = 0; i < 1000; ++i) ASSERT_EQ(keep[i], 0x5a);
+    uint8_t* again = (uint8_t*)md_vm_arena_push(arena, big);
+    ASSERT_EQ(again, mem);
+    size_t nonzero = 0;
+    for (size_t i = MEGABYTES(1); i < big; ++i) nonzero += again[i] != 0;
+    EXPECT_EQ(nonzero, (size_t)0);
+    MEMSET(again, 0xcd, big);   // writable again
+    md_vm_arena_destroy(arena);
+}
+
+UTEST(allocator, temp_trim) {
+    md_temp_scope_t outer = md_temp_begin();
+    uint32_t* kept = md_temp_alloc_array(outer, uint32_t, 16);
+    for (uint32_t i = 0; i < 16; ++i) kept[i] = i;
+    {
+        md_temp_scope_t inner = md_temp_begin();
+        uint8_t* big = (uint8_t*)md_temp_alloc(inner, MEGABYTES(16));
+        MEMSET(big, 0xff, MEGABYTES(16));
+        md_temp_end(inner);
+    }
+    md_temp_trim();     // within a scope: what the scope holds stays
+    for (uint32_t i = 0; i < 16; ++i) ASSERT_EQ(kept[i], i);
+    uint8_t* big = (uint8_t*)md_temp_alloc(outer, MEGABYTES(16));
+    MEMSET(big, 0, MEGABYTES(16));
+    md_temp_end(outer);
+    md_temp_trim();
+}
+
 UTEST(allocator, vm_arena_generic) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
     ASSERT_TRUE(alloc);

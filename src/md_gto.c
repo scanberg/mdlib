@@ -1603,11 +1603,18 @@ static md_gpu_kernel_t gto_k_density_gemm2[2] = {0};   // [32, 64 AO tile], 128 
 static md_gpu_kernel_t gto_k_mo_shell[2]      = {0};   // [1, 8 orbitals per pass], 4 voxels per thread
 static md_gpu_kernel_t gto_k_mo_gemm          = NULL;  // 32 orbitals per tile
 static md_gpu_kernel_t gto_k_dmat_tiles       = NULL;  // md_gto_gpu_dmat_build
+// Held while a kernel is made: the evaluations and the dmat may be driven from different threads, each on a
+// stream of its own, and both make kernels on first use
+static md_mutex_t      gto_kernel_mutex;
+static bool            gto_kernel_mutex_ok = false;
 
 static void ensure_kernel(md_gpu_device_t device, md_gpu_kernel_t* slot, md_gpu_kernel_desc_t desc) {
-    if (*slot) return;
-    *slot = md_gpu_kernel_create(device, &desc);
-    if (!*slot) MD_LOG_ERROR("md_gto: failed to create kernel '%s': %s", desc.label, md_gpu_last_error());
+    if (gto_kernel_mutex_ok) md_mutex_lock(&gto_kernel_mutex);
+    if (!*slot) {
+        *slot = md_gpu_kernel_create(device, &desc);
+        if (!*slot) MD_LOG_ERROR("md_gto: failed to create kernel '%s': %s", desc.label, md_gpu_last_error());
+    }
+    if (gto_kernel_mutex_ok) md_mutex_unlock(&gto_kernel_mutex);
 }
 
 static void destroy_kernel(md_gpu_kernel_t* slot) {
@@ -1617,6 +1624,7 @@ static void destroy_kernel(md_gpu_kernel_t* slot) {
 void md_gto_gpu_initialize(md_gpu_device_t device) {
     if (!device) return;
     gto_gpu_device = device;
+    if (!gto_kernel_mutex_ok) gto_kernel_mutex_ok = md_mutex_init(&gto_kernel_mutex);
     md_gpu_device_info_t info;
     gto_gpu_vendor = md_gpu_device_info(device, &info) ? info.vendor_id : 0;
     ensure_kernel(device, &gto_k_density, md_shader_eval_gto_density_main_kernel());
@@ -2549,9 +2557,9 @@ static void gto_gemm_execute(md_gpu_stream_t stream, gto_density_gemm_args_t* ap
                     (double)total_ao / MAX(1, nonempty), 100.0 * (double)total_small / MAX(1, nonempty));
     }
 
-    MD_LOG_DEBUG("GTO %s (GEMM): %u blocks, %u non-empty, %u batches, max %.1f MB Phi per batch",
+    MD_LOG_DEBUG("GTO %s (GEMM): %u blocks, %u non-empty, %u batches, max %.1f MB Phi per batch; the calling thread waited %.1f ms for the counts (and what the stream held before them) and the plan",
                  a.num_mos ? "orbitals" : "density", num_blocks, num_entries - batches[num_batches].count, num_batches,
-                 (double)(sizeof(float) * GTO_GEMM_BLOCK_VOXELS * max_ao) / (1024.0 * 1024.0));
+                 (double)(sizeof(float) * GTO_GEMM_BLOCK_VOXELS * max_ao) / (1024.0 * 1024.0), t_count);
 done:
     md_gpu_free(stream, db_buf);
     md_gpu_free(stream, ao_buf);

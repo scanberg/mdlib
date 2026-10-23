@@ -402,6 +402,9 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
 // apart, so that it holds while no atom has moved more than margin / 2 from where it was made
 // (md_gto_gpu_dmat_pattern_valid): a trajectory makes a new one only when that fails, and refills the
 // matrix (md_gto_gpu_dmat_build, md_gto_gpu_dmat_set_matrix) per frame.
+//
+// A dmat may be made and built on any thread, on a stream of that thread's, while others evaluate on theirs:
+// an evaluation on another stream waits for its build first (md_gpu_stream_wait).
 
 typedef struct md_gto_gpu_dmat* md_gto_gpu_dmat_t;
 
