@@ -104,6 +104,7 @@ destruction.
    1. Configuration, error handling, utilities
    ========================================================================= */
 
+#define MD_MTL_MAX_COMMAND_BUFFERS 4096
 #define MD_MTL_ARENA_PAGE_SIZE (256u * 1024u)
 /* A transient allocation larger than this (an upload's staging, mostly) gets a page of its own, of its
    exact size, freed once the submission that reads it completes, rather than a shared page doubled up
@@ -999,8 +1000,14 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
     md_mtl_vec_init(&s->waits, sizeof(md_mtl_wait_t));
 
     @autoreleasepool {
-        /* Its own hardware queue, so two streams can genuinely run at once. */
-        id<MTLCommandQueue> q = [dev->device newCommandQueue];
+        /* Its own hardware queue, so two streams can genuinely run at once.
+           Room for many command buffers in flight: a queue made with plain
+           newCommandQueue allows 64, and -commandBuffer then BLOCKS until one
+           completes. md_gto_int submits a large evaluation as hundreds of short
+           command buffers (to stay clear of GPU watchdogs and to let other
+           work in between): on an M4 Pro issuing 511 of them took 0.8 s of an
+           evaluation of 0.85 s, the caller waiting for the GPU from the 65th. */
+        id<MTLCommandQueue> q = [dev->device newCommandQueueWithMaxCommandBufferCount:MD_MTL_MAX_COMMAND_BUFFERS];
         if (!q) { md_free(dev->alloc, s, sizeof(*s)); md_mtl_fail("newCommandQueue failed"); return NULL; }
         MD_MTL_OWN(q);
         q.label = [NSString stringWithUTF8String:s->label];

@@ -1886,11 +1886,16 @@ static void gto_int_index_to_world(md_gpu_float4x4* out, const md_grid_t* grid, 
 // (gto_int_pace), each ended by a submission and a sync that marks its work done once it passes. A
 // launch issues every piece at once; a job keeps a few in flight and issues the next as the GPU
 // finishes one. Without a far field the whole evaluation is one piece, issued when the job begins.
-// Pieces in flight: enough that the GPU does not run dry between polls a frame apart. With 4 (~19 ms
-// of work on a GTX 1060) a job polled 2 ms a 16 ms frame took 14% longer than the launch.
-#define GTO_INT_JOB_IN_FLIGHT 8
-#define GTO_INT_JOB_MARKS     16
-STATIC_ASSERT(GTO_INT_JOB_MARKS >= GTO_INT_JOB_IN_FLIGHT, "a mark per piece in flight");
+// Pieces in flight: enough that the GPU does not run dry between polls, which no fixed count does
+// across devices and frame rates. Polled 2 ms of each 16 ms frame, the protein's ESP band as a job
+// with 4 in flight took 14% longer than the launch on a GTX 1060 (a piece ~4.7 ms) and 2.4 times as
+// long on an M4 Pro (~1.7 ms). So a job starts with 8, and doubles that whenever a poll finds every
+// piece done and more to issue: the GPU had nothing to do. (Timing the pieces would not tell: what a
+// poll sees includes the time the GPU sat idle since the last one.)
+#define GTO_INT_JOB_IN_FLIGHT_0   8
+#define GTO_INT_JOB_IN_FLIGHT_MAX 48
+#define GTO_INT_JOB_MARKS         64
+STATIC_ASSERT(GTO_INT_JOB_MARKS >= GTO_INT_JOB_IN_FLIGHT_MAX, "a mark per piece in flight");
 
 // The points' sort (ORDER in eval_gto_int_potential_far.slang): each kernel loops over what it has
 // with a stride of the threads it was given
@@ -1921,6 +1926,7 @@ struct md_gto_int_gpu_job_t {
     md_gpu_sync_t marks[GTO_INT_JOB_MARKS];
     uint64_t mark_work[GTO_INT_JOB_MARKS];
     uint32_t mark_head, mark_tail;
+    uint32_t in_flight;      // pieces kept in flight, see GTO_INT_JOB_IN_FLIGHT_0
     md_gpu_addr_t alloc[8];  // the job's device memory, freed in stream order when it ends
     uint32_t num_alloc;
     md_tick_t t0;
@@ -1938,6 +1944,7 @@ static md_gto_int_gpu_job_t* gto_int_job_create(md_gpu_stream_t stream, const md
     j->stage  = GTO_INT_JOB_RUN;
     j->pacer  = gto_int_pacer(stream, budget);
     j->t0     = md_tick_now();
+    j->in_flight = GTO_INT_JOB_IN_FLIGHT_0;
     return j;
 }
 
@@ -1963,12 +1970,16 @@ static void gto_int_job_mark(md_gto_int_gpu_job_t* j) {
 }
 
 static void gto_int_job_take_marks(md_gto_int_gpu_job_t* j) {
+    const bool any = j->mark_head != j->mark_tail;
     while (j->mark_head != j->mark_tail) {
         const uint32_t i = j->mark_head % GTO_INT_JOB_MARKS;
         if (!md_gpu_sync_is_complete(j->marks[i])) break;
         j->work_done = j->mark_work[i];
         j->mark_head++;
     }
+    // every piece done with more to come: the GPU ran dry
+    const bool more = j->stage == GTO_INT_JOB_SORT || j->stage == GTO_INT_JOB_RUN;
+    if (any && j->mark_head == j->mark_tail && more) j->in_flight = MIN(2 * j->in_flight, (uint32_t)GTO_INT_JOB_IN_FLIGHT_MAX);
 }
 
 // One step of the sort: true unless a launch failed; *full when the piece should end
@@ -2103,9 +2114,9 @@ static void gto_int_job_piece(md_gto_int_gpu_job_t* j) {
 
 static void gto_int_job_log(const md_gto_int_gpu_job_t* j, const char* what) {
     if (j->num_groups == 0) return;
-    MD_LOG_DEBUG("md_gto_int: far field over %u groups of %u %s in %u batches: %u dispatches in %u submissions, %s in %.1f ms", j->num_groups,
+    MD_LOG_DEBUG("md_gto_int: far field over %u groups of %u %s in %u batches: %u dispatches in %u submissions, %s in %.1f ms (%u in flight)", j->num_groups,
                  GTO_INT_FAR_GROUP, j->pts ? "points" : "voxels", DIV_UP(j->num_groups, MAX(j->batch, 1)), j->pacer.dispatches,
-                 j->pacer.submissions, what, md_tick_to_milliseconds(md_tick_now() - j->t0));
+                 j->pacer.submissions, what, md_tick_to_milliseconds(md_tick_now() - j->t0), j->in_flight);
 }
 
 // The device memory and the state of a far field job over num_groups groups; the caller has set
@@ -2386,7 +2397,7 @@ md_gto_int_gpu_job_status_t md_gto_int_gpu_job_poll(md_gto_int_gpu_job_t* j, dou
         }
         if (j->stage == GTO_INT_JOB_DONE) return MD_GTO_INT_GPU_JOB_DONE;
         const bool more = j->stage == GTO_INT_JOB_SORT || j->stage == GTO_INT_JOB_RUN;
-        if (more && (budget_ms < 0.0 || j->mark_tail - j->mark_head < GTO_INT_JOB_IN_FLIGHT)) {
+        if (more && (budget_ms < 0.0 || j->mark_tail - j->mark_head < j->in_flight)) {
             gto_int_job_piece(j);
             continue;
         }
