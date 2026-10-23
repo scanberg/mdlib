@@ -4,6 +4,9 @@
 //   gto_dmat.density_matches_packed   h2o and mol: the volume through a dmat (from the orbitals, and from
 //                                     the matrix) against the packed matrix, every algorithm
 //   gto_dmat.pattern_follows_motion   the pattern holds within margin / 2 and not beyond
+//   gto_dmat.density_job_matches_launch  mol: md_gto_gpu_density_job_begin, polled, bitwise the launch (the dmat
+//                                     and the packed matrix, every algorithm); a job ended before it is
+//                                     issued writes nothing
 //   gto_dmat.benchmark                GTO_DMAT_FILE=<file in test_data/vlx> (protein.h5): the pattern, the
 //                                     build per frame (packing, upload, kernel), and a sub-volume through
 //                                     the dmat against the packed matrix; GTO_DMAT_REPS (5),
@@ -185,6 +188,66 @@ UTEST(gto_dmat, density_matches_packed) {
         dm_gpu_free(&g);
         dm_free(&s);
     }
+}
+
+UTEST(gto_dmat, density_job_matches_launch) {
+    dm_src_t s;
+    ASSERT_TRUE(dm_load(&s, "mol.h5"));
+    const md_grid_t grid = dm_grid(&s, 37, 0.3f);
+    dm_gpu_t g;
+    if (!dm_gpu_init(&g, &s, &grid)) { dm_gpu_free(&g); dm_free(&s); UTEST_SKIP("no GPU device"); }
+    md_gto_gpu_dmat_t dm = md_gto_gpu_dmat_create(g.s, &(md_gto_gpu_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6 });
+    ASSERT_TRUE(dm != NULL);
+    ASSERT_TRUE(md_gto_gpu_dmat_build(g.s, dm, s.rows, s.w, s.num_mo));
+    float* ref = (float*)malloc(sizeof(float) * g.num_vox);
+    float* out = (float*)malloc(sizeof(float) * g.num_vox);
+    for (int algo = MD_GTO_GPU_DENSITY_ALGO_REFERENCE; algo < MD_GTO_GPU_DENSITY_ALGO_COUNT; ++algo) {
+        for (int with_dmat = 0; with_dmat < 2; ++with_dmat) {
+            dm_eval(&g, with_dmat ? dm : NULL, (md_gto_gpu_density_algo_t)algo, ref);
+            // the volume cleared (so that a job that wrote nothing would show), then the job, polled without
+            // waiting until it is issued
+            md_gpu_addr_t zero = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, sizeof(float) * g.num_vox).gpu;
+            ASSERT_TRUE(zero != 0);
+            md_gpu_memset(g.s, zero, 0, sizeof(float) * g.num_vox);
+            ASSERT_TRUE(md_gpu_copy_to_texture(g.s, g.tex, NULL, zero));
+            md_gpu_free(g.s, zero);
+            md_gto_gpu_density_desc_t desc = {
+                .basis = g.basis, .atom_xyz = g.atoms, .coeff = with_dmat ? 0 : g.coeff, .dmat = with_dmat ? dm : NULL, .out_tex = g.tex,
+                .grid = &g.grid, .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = (md_gto_gpu_density_algo_t)algo,
+            };
+            md_gto_gpu_job_t* job = md_gto_gpu_density_job_begin(g.s, &desc);
+            ASSERT_TRUE(job != NULL);
+            int polls = 0;
+            while (!md_gto_gpu_job_poll(job, false)) { ++polls; md_thread_sleep(1); }
+            md_gto_gpu_job_end(job);
+            md_gpu_copy_from_texture(g.s, g.rb.gpu, g.tex, NULL);
+            md_gpu_stream_sync(g.s);
+            memcpy(out, g.rb.cpu, sizeof(float) * g.num_vox);
+            size_t differ = 0;
+            for (size_t i = 0; i < g.num_vox; ++i) differ += memcmp(&out[i], &ref[i], sizeof(float)) != 0;
+            printf("  algorithm %d, %s: issued after %d polls, %zu of %zu voxels differ from the launch\n", algo, with_dmat ? "dmat  " : "packed", polls, differ, g.num_vox);
+            EXPECT_EQ(differ, (size_t)0);
+        }
+    }
+    // ended before it is issued: the volume keeps what it held (the last evaluation above)
+    {
+        md_gto_gpu_density_desc_t desc = {
+            .basis = g.basis, .atom_xyz = g.atoms, .dmat = dm, .out_tex = g.tex, .grid = &g.grid,
+            .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_ADD, .algorithm = MD_GTO_GPU_DENSITY_ALGO_GEMM,
+        };
+        md_gto_gpu_job_t* job = md_gto_gpu_density_job_begin(g.s, &desc);
+        ASSERT_TRUE(job != NULL);
+        md_gto_gpu_job_end(job);
+        md_gpu_copy_from_texture(g.s, g.rb.gpu, g.tex, NULL);
+        md_gpu_stream_sync(g.s);
+        size_t differ = 0;
+        for (size_t i = 0; i < g.num_vox; ++i) differ += memcmp(&((const float*)g.rb.cpu)[i], &out[i], sizeof(float)) != 0;
+        EXPECT_EQ(differ, (size_t)0);
+    }
+    free(out); free(ref);
+    md_gto_gpu_dmat_destroy(g.s, dm);
+    dm_gpu_free(&g);
+    dm_free(&s);
 }
 
 UTEST(gto_dmat, pattern_follows_motion) {

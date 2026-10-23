@@ -494,6 +494,20 @@ typedef struct md_gto_gpu_density_desc_t {
 // Uploads issued earlier into the same stream are visible by program order.
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 
+// The same as a job, for a thread that is not to wait: the GEMM algorithm's counting pass is issued and the call
+// returns, and md_gto_gpu_job_poll issues the rest once the counts are on the host (the launch waits for them,
+// and for whatever the stream held before them). Until then the evaluation writes nothing to out_tex, and what
+// the descriptor names (the basis, the atom positions, the coefficients or the dmat) must stay as they are. The
+// reference algorithm is issued at once. NULL for invalid input (logged).
+typedef struct md_gto_gpu_job_t md_gto_gpu_job_t;
+md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
+
+// True once all of it is issued: it is then on the stream as a launch would be. wait: waits for the counts.
+bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait);
+
+// Frees the job. One not yet issued is dropped: out_tex is not written.
+void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
+
 // Orbital evaluation algorithm.
 typedef enum md_gto_gpu_orbital_algo_t {
     // SHELL for up to 8 orbitals, GEMM for more.
