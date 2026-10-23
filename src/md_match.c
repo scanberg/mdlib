@@ -368,6 +368,18 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
                 prev = anchor;
             }
         }
+        // A molecule of a topology is whole, as sys->structure has it (MD_ENTITY_FLAG_TOPOLOGY)
+        for (size_t inst = 0; inst < sys->instance.count && sys->entity.flags && sys->instance.entity_idx; ++inst) {
+            const md_entity_idx_t e = sys->instance.entity_idx[inst];
+            if (e < 0 || (size_t)e >= sys->entity.count || !(sys->entity.flags[e] & MD_ENTITY_FLAG_TOPOLOGY)) continue;
+            const md_urange_t r = md_system_instance_atom_range(sys, inst);
+            int32_t anchor = -1;
+            for (uint32_t i = r.beg; i < r.end && i < N; ++i) {
+                if (skip && skip[i]) continue;
+                if (anchor < 0) anchor = (int32_t)i;
+                else uf_union(root, anchor, (int32_t)i);
+            }
+        }
         size_t num_mol = 0;
         for (size_t i = 0; i < N; ++i) {
             if (skip && skip[i]) {

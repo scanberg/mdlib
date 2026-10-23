@@ -904,7 +904,7 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 				desc = (str_t){ buf, (size_t)len };
 			}
 			md_array_push(sys->entity.id, id, sys->alloc);
-			md_array_push(sys->entity.flags, MD_ENTITY_FLAG_NONE, sys->alloc);
+			md_array_push(sys->entity.flags, MD_ENTITY_FLAG_TOPOLOGY, sys->alloc);
 			md_array_push(sys->entity.description, str_copy(desc, sys->alloc), sys->alloc);
 			sys->entity.count += 1;
 		}

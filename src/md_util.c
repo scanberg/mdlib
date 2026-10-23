@@ -5098,10 +5098,34 @@ static inline md_label_t md_util_next_inst_id(str_t last) {
 
 static void clear_chains(md_system_t* sys, md_allocator_i* alloc) {
     md_array_free(sys->chain.id, alloc);
-    md_array_free(sys->chain.inst_chain, alloc);
-    md_index_data_free(&sys->chain.inst);
+    md_array_free(sys->chain.run_offset, alloc);
+    md_array_free(sys->chain.run, alloc);
+    md_array_free(sys->chain.comp_chain, alloc);
     MEMSET(&sys->chain, 0, sizeof(sys->chain));
-    (void)alloc;
+}
+
+static bool polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b);
+
+// The components bonded to the one before them by a bond of the graph
+static uint64_t* components_bonded_to_prev(const md_system_t* sys, md_allocator_i* alloc) {
+    const size_t num_comp = sys->component.count;
+    uint64_t* bonded = make_bitfield(num_comp, alloc);
+    if (sys->bond.count == 0 || num_comp == 0) return bonded;
+    md_component_idx_t* atom_comp = md_alloc(alloc, sizeof(md_component_idx_t) * MAX(1, sys->atom.count));
+    MEMSET(atom_comp, -1, sizeof(md_component_idx_t) * sys->atom.count);
+    for (size_t c = 0; c < num_comp; ++c) {
+        const md_urange_t r = md_component_atom_range(&sys->component, c);
+        for (uint32_t a = r.beg; a < r.end && a < sys->atom.count; ++a) atom_comp[a] = (md_component_idx_t)c;
+    }
+    for (size_t b = 0; b < sys->bond.count; ++b) {
+        if (sys->bond.flags && !md_bond_is_graph(sys->bond.flags[b])) continue;
+        const md_atom_pair_t pair = sys->bond.pairs[b];
+        if ((size_t)pair.idx[0] >= sys->atom.count || (size_t)pair.idx[1] >= sys->atom.count) continue;
+        const md_component_idx_t x = atom_comp[pair.idx[0]];
+        const md_component_idx_t y = atom_comp[pair.idx[1]];
+        if (x >= 0 && y >= 0 && abs(x - y) == 1) bitfield_set_bit(bonded, MAX(x, y));
+    }
+    return bonded;
 }
 
 bool md_util_system_infer_chains(md_system_t* sys) {
@@ -5115,21 +5139,30 @@ bool md_util_system_infer_chains(md_system_t* sys) {
     md_system_topology_changed(sys);
 
     const size_t num_inst = sys->instance.count;
-    if (num_inst == 0) return true;
+    const size_t num_comp = sys->component.count;
+    if (num_inst == 0 || num_comp == 0) return true;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     // The chain of each id, by the hash of the id
     md_hashmap32_t chain_of_id = { .allocator = temp_arena };
-    md_array_resize(sys->chain.inst_chain, num_inst, alloc);
+    md_array_resize(sys->chain.comp_chain, num_comp, alloc);
+    for (size_t c = 0; c < num_comp; ++c) sys->chain.comp_chain[c] = -1;
+
+    // The runs, in the order they are found, each with its chain
+    md_array(md_urange_t) runs = 0;
+    md_array(md_chain_idx_t) run_chain = 0;
+    uint64_t* bonded_to_prev = NULL;
 
     for (size_t i = 0; i < num_inst; ++i) {
         const str_t id = str_trim(md_instance_auth_id(&sys->instance, i));
-        md_chain_idx_t chain = -1;
+        const md_urange_t comps = md_instance_component_range(&sys->instance, i);
+        if (comps.beg >= comps.end || comps.end > num_comp) continue;
         if (!str_empty(id)) {
             const uint64_t key = md_hash64_str(id, 0);
             const uint32_t* found = md_hashmap_get(&chain_of_id, key);
+            md_chain_idx_t chain;
             if (found) {
                 chain = (md_chain_idx_t)*found;
             } else {
@@ -5137,28 +5170,48 @@ bool md_util_system_infer_chains(md_system_t* sys) {
                 md_array_push(sys->chain.id, make_label(id), alloc);
                 md_hashmap_add(&chain_of_id, key, (uint32_t)chain);
             }
+            md_array_push(runs, comps, temp_arena);
+            md_array_push(run_chain, chain, temp_arena);
         } else if (md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, i))) {
-            // No id in the data: a polymer is a chain of its own, which is not given one
-            chain = (md_chain_idx_t)sys->chain.count++;
-            md_array_push(sys->chain.id, (md_label_t){0}, alloc);
+            // No id in the data: each strand of a polymer is a chain of its own, which is not given one. A strand ends
+            // where the backbone is not bonded on and the chemistry says the chain ends (a 5' end without its phosphate)
+            if (!bonded_to_prev) bonded_to_prev = components_bonded_to_prev(sys, temp_arena);
+            uint32_t beg = comps.beg;
+            for (uint32_t c = comps.beg + 1; c <= comps.end; ++c) {
+                if (c < comps.end && (bitfield_test_bit(bonded_to_prev, c) || !polymer_chain_ends_between(sys, c - 1, c))) continue;
+                md_array_push(runs, ((md_urange_t){beg, c}), temp_arena);
+                md_array_push(run_chain, (md_chain_idx_t)sys->chain.count++, temp_arena);
+                md_array_push(sys->chain.id, (md_label_t){0}, alloc);
+                beg = c;
+            }
         }
-        sys->chain.inst_chain[i] = chain;
     }
 
-    // The instances of each chain, in the order of the chains
-    sys->chain.inst.alloc = alloc;
+    // The runs of each chain, in the order of the chains, the consecutive ones of a chain joined
     if (sys->chain.count) {
+        const size_t num_runs = md_array_size(runs);
         uint32_t* count = md_temp_alloc_zero_array(temp, uint32_t, sys->chain.count + 1);
-        for (size_t i = 0; i < num_inst; ++i) {
-            if (sys->chain.inst_chain[i] >= 0) count[sys->chain.inst_chain[i] + 1] += 1;
-        }
+        for (size_t r = 0; r < num_runs; ++r) count[run_chain[r] + 1] += 1;
         for (size_t c = 0; c < sys->chain.count; ++c) count[c + 1] += count[c];
-        md_array_resize(sys->chain.inst.offsets, sys->chain.count + 1, alloc);
-        MEMCPY(sys->chain.inst.offsets, count, (sys->chain.count + 1) * sizeof(uint32_t));
-        md_array_resize(sys->chain.inst.indices, count[sys->chain.count], alloc);
-        for (size_t i = 0; i < num_inst; ++i) {
-            const md_chain_idx_t c = sys->chain.inst_chain[i];
-            if (c >= 0) sys->chain.inst.indices[count[c]++] = (int32_t)i;
+        md_urange_t* sorted = md_temp_alloc_array(temp, md_urange_t, MAX(1, num_runs));
+        uint32_t* fill = md_temp_alloc_array(temp, uint32_t, sys->chain.count);
+        MEMCPY(fill, count, sizeof(uint32_t) * sys->chain.count);
+        for (size_t r = 0; r < num_runs; ++r) sorted[fill[run_chain[r]]++] = runs[r];
+
+        md_array_resize(sys->chain.run_offset, sys->chain.count + 1, alloc);
+        sys->chain.run_offset[0] = 0;
+        for (size_t c = 0; c < sys->chain.count; ++c) {
+            for (uint32_t r = count[c]; r < count[c + 1]; ++r) {
+                const md_urange_t run = sorted[r];
+                const size_t n = md_array_size(sys->chain.run);
+                if (r > count[c] && sys->chain.run[n - 1].end == run.beg) {
+                    sys->chain.run[n - 1].end = run.end;
+                } else {
+                    md_array_push(sys->chain.run, run, alloc);
+                }
+                for (uint32_t k = run.beg; k < run.end; ++k) sys->chain.comp_chain[k] = (md_chain_idx_t)c;
+            }
+            sys->chain.run_offset[c + 1] = (uint32_t)md_array_size(sys->chain.run);
         }
     }
 
@@ -5269,8 +5322,6 @@ static md_label_t next_unique_inst_id(str_t last, md_hashset_t* used) {
     md_hashset_add(used, key);
     return id;
 }
-
-static bool polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b);
 
 bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t comp_auth_asym_id[]) {
     if (!sys) {
@@ -6157,6 +6208,26 @@ static bool bond_holds_molecule(const md_system_t* sys, size_t b) {
     return md_component_find_by_atom_idx(&sys->component, (size_t)pair.idx[0]) == md_component_find_by_atom_idx(&sys->component, (size_t)pair.idx[1]);
 }
 
+// The molecules of a topology are whole (MD_ENTITY_FLAG_TOPOLOGY): the atoms of each of its instances, joined to the
+// first where nothing else joins them (the two strands of a duplex which martinize-dna writes as one molecule type,
+// held together by an elastic network which is no bond of the graph)
+static void link_topology_molecules(const md_system_t* sys, int32_t* set, md_array(md_atom_pair_t)* links, md_allocator_i* alloc) {
+    if (!sys->entity.flags || !sys->instance.entity_idx) return;
+    const size_t atom_count = md_system_atom_count(sys);
+    for (size_t inst = 0; inst < sys->instance.count; ++inst) {
+        const md_entity_idx_t e = sys->instance.entity_idx[inst];
+        if (e < 0 || (size_t)e >= sys->entity.count || !(sys->entity.flags[e] & MD_ENTITY_FLAG_TOPOLOGY)) continue;
+        md_urange_t r = md_system_instance_atom_range(sys, inst);
+        if (r.end > atom_count) r.end = (uint32_t)atom_count;
+        for (uint32_t a = r.beg + 1; a < r.end; ++a) {
+            if (uf_union(set, (int32_t)r.beg, (int32_t)a)) {
+                md_atom_pair_t pair = {{ (int32_t)r.beg, (int32_t)a }};
+                md_array_push(*links, pair, alloc);
+            }
+        }
+    }
+}
+
 // Hierarchy links for coarse grained systems, used where bonds leave the topology disconnected.
 //
 // md_structure_data_t is a spanning forest and unwrap only needs each atom's parent to stay within half a cell
@@ -6249,6 +6320,7 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
         prev_kind   = kind;
     }
 
+    link_topology_molecules(sys, set, &links, alloc);
     return links;
 }
 
@@ -6323,6 +6395,7 @@ static md_array(md_atom_pair_t) synthesize_molecule_links(const md_system_t* sys
             md_array_push(links, pair, alloc);
         }
     }
+    link_topology_molecules(sys, set, &links, alloc);
     return links;
 }
 

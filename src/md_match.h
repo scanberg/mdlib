@@ -50,7 +50,8 @@ struct md_smiles_error_t;
 //   - Virtual sites (MD_PARTICLE_VIRTUAL_SITE: the M site of a TIP4P water) are not atoms of the graph.
 //   - Elastic bonds (MD_BOND_KIND_ELASTIC: an elastic network, a restraint) are springs, not bonds of the graph.
 // A MOLECULE is a connected part of this graph, closed as a molecule of the system is (md_structure_data_t): the
-// atoms of a residue are of one molecule, and so are the residues of a polymer chain, over a gap in it as well.
+// atoms of a residue are of one molecule, and so are the residues of a polymer chain, over a gap in it as well, and
+// the atoms of a molecule of a topology (MD_ENTITY_FLAG_TOPOLOGY).
 // Molecules are numbered in the order of their first atom, as sys->structure numbers structures: in a system without
 // coordination bonds between components and virtual sites, which is not coarse grained, they are its structures, index
 // for index. Otherwise a structure may hold several (an ATP and its Mg are two molecules).

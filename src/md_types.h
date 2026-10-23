@@ -206,6 +206,10 @@ typedef enum {
 
     // Not given by the source: the entity was inferred together with its instances (md_util_system_infer_entity_and_instance)
     MD_ENTITY_FLAG_INFERRED     = 0x10,
+
+    // A molecule type of a topology (a GROMACS molecule type, the molecules of a LAMMPS data file): each of its
+    // instances is one molecule, whatever its bonds (md_structure_data_t), as GROMACS has it
+    MD_ENTITY_FLAG_TOPOLOGY     = 0x20,
 } md_entity_flags_t;
 
 ENUM_FLAGS(md_entity_flags_t)

@@ -3219,8 +3219,9 @@ UTEST(util, chains) {
         EXPECT_TRUE(str_eq(md_system_chain_id(&sys, 0), STR_LIT("E")));
         EXPECT_FALSE(md_system_chain_inferred(&sys, 0));
         EXPECT_EQ(md_system_atom_count(&sys), chain_atoms(&sys, 0));
-        EXPECT_EQ(1 + 1 + 106, (int)(md_system_chain_inst_end(&sys, 0) - md_system_chain_inst_beg(&sys, 0)));
-        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) EXPECT_EQ(0, md_system_chain_find_by_inst_idx(&sys, i));
+        // The protein, the arginine and the waters are consecutive residues: one run
+        EXPECT_EQ(1, (int)(md_system_chain_run_end(&sys, 0) - md_system_chain_run_beg(&sys, 0)));
+        for (size_t c = 0; c < md_system_component_count(&sys); ++c) EXPECT_EQ(0, md_system_chain_find_by_comp_idx(&sys, c));
         EXPECT_EQ(0, md_system_chain_find_by_atom_idx(&sys, md_system_atom_count(&sys) - 1));
     }
 
@@ -3249,10 +3250,15 @@ UTEST(util, chains) {
         EXPECT_TRUE(str_eq(md_system_chain_id(&sys, 1), STR_LIT("B")));
         EXPECT_EQ(md_system_atom_count(&sys), chain_atoms(&sys, 0) + chain_atoms(&sys, 1));
         for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
-            const md_chain_idx_t c = md_system_chain_find_by_inst_idx(&sys, i);
-            ASSERT_GE(c, 0);
-            EXPECT_TRUE(str_eq(md_system_chain_id(&sys, (size_t)c), md_system_instance_auth_id(&sys, i)));
+            const md_urange_t comps = md_system_instance_comp_range(&sys, i);
+            for (uint32_t k = comps.beg; k < comps.end; ++k) {
+                const md_chain_idx_t c = md_system_chain_find_by_comp_idx(&sys, k);
+                ASSERT_GE(c, 0);
+                EXPECT_TRUE(str_eq(md_system_chain_id(&sys, (size_t)c), md_system_instance_auth_id(&sys, i)));
+            }
         }
+        // Chain A is its protein; after the protein of B, its Mg; after the WO4 and Mg of B, its waters: three runs
+        EXPECT_EQ(3, (int)(md_system_chain_run_end(&sys, 0) - md_system_chain_run_beg(&sys, 0)));
     }
 
     {
@@ -3265,7 +3271,8 @@ UTEST(util, chains) {
         for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
             const bool polymer = md_entity_kind_is_polymer(md_system_instance_entity_kind(&sys, i));
             polymers += polymer;
-            EXPECT_EQ(polymer, md_system_chain_find_by_inst_idx(&sys, i) >= 0);
+            const md_urange_t comps = md_system_instance_comp_range(&sys, i);
+            EXPECT_EQ(polymer, md_system_chain_find_by_comp_idx(&sys, comps.beg) >= 0);
         }
         ASSERT_GT(polymers, 0);
         ASSERT_EQ(polymers, md_system_chain_count(&sys));
@@ -3292,10 +3299,70 @@ UTEST(util, chains) {
         ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
         ASSERT_EQ(1, (int)md_system_chain_count(&sys));
         EXPECT_TRUE(md_system_chain_inferred(&sys, 0));
-        EXPECT_EQ(0, md_system_chain_find_by_inst_idx(&sys, 0));
-        EXPECT_EQ(-1, md_system_chain_find_by_inst_idx(&sys, 1));
+        EXPECT_EQ(0, md_system_chain_find_by_comp_idx(&sys, md_system_instance_comp_range(&sys, 0).beg));
+        EXPECT_EQ(-1, md_system_chain_find_by_comp_idx(&sys, md_system_instance_comp_range(&sys, 1).beg));
     }
 
+    {
+        // martinize-dna writes the two strands of a duplex as one molecule type: one molecule, as GROMACS has it, of
+        // two chains, a strand each, as the .gro of the same system gives them
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t sys_state = { .alloc = alloc };
+        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.tpr")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
+        ASSERT_EQ(2, (int)md_system_chain_count(&sys));
+        const md_urange_t duplex = md_system_instance_comp_range(&sys, 0);
+        EXPECT_EQ(24u, duplex.end - duplex.beg);
+        EXPECT_EQ(0, md_system_chain_find_by_comp_idx(&sys, duplex.beg));
+        EXPECT_EQ(1, md_system_chain_find_by_comp_idx(&sys, duplex.end - 1));
+        EXPECT_EQ(12u, md_system_chain_run_beg(&sys, 0)->end - md_system_chain_run_beg(&sys, 0)->beg);
+        const md_urange_t atoms = md_system_instance_atom_range(&sys, 0);
+        const uint32_t slot = (uint32_t)sys.structure.atom_slot[atoms.beg];
+        size_t mol = 0;
+        while (mol + 1 < sys.structure.count && sys.structure.offset[mol + 1] <= slot) ++mol;
+        EXPECT_EQ(atoms.end - atoms.beg, sys.structure.offset[mol + 1] - sys.structure.offset[mol]);
+
+        md_system_t gro = {.alloc = alloc};
+        md_system_state_t gro_state = { .alloc = alloc };
+        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.gro")));
+        ASSERT_TRUE(md_util_system_infer(&gro, &gro_state, MD_UTIL_INFER_ALL));
+        ASSERT_EQ(2, (int)md_system_chain_count(&gro));
+        for (size_t c = 0; c < 2; ++c) EXPECT_EQ(md_system_chain_atom_count(&sys, c), md_system_chain_atom_count(&gro, c));
+    }
+
+    md_vm_arena_destroy(alloc);
+}
+
+// A molecule of a topology is one molecule whatever its bonds, as GROMACS has it: here two waters made one molecule of
+// the topology by hand, which nothing else would join
+UTEST(util, topology_molecules_are_whole) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t sys_state = { .alloc = alloc };
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr")));
+    ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
+    const size_t num_inst = md_system_instance_count(&sys);
+    EXPECT_EQ(num_inst, md_structure_count(&sys.structure));
+    const md_entity_idx_t water = md_system_instance_entity_idx(&sys, 1);
+    ASSERT_EQ(water, md_system_instance_entity_idx(&sys, 2));
+    EXPECT_TRUE((md_system_entity_flags(&sys, (size_t)water) & MD_ENTITY_FLAG_TOPOLOGY) != 0);
+
+    // Instances 1 and 2 as one molecule of the topology
+    for (size_t i = 2; i < num_inst; ++i) {
+        sys.instance.comp_offset[i] = sys.instance.comp_offset[i + 1];
+        sys.instance.id[i] = sys.instance.id[i + 1 < num_inst ? i + 1 : i];
+        sys.instance.auth_id[i] = sys.instance.auth_id[i + 1 < num_inst ? i + 1 : i];
+        sys.instance.entity_idx[i] = sys.instance.entity_idx[i + 1 < num_inst ? i + 1 : i];
+    }
+    sys.instance.count -= 1;
+    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+    EXPECT_EQ(num_inst - 1, md_structure_count(&sys.structure));
+    check_structure_invariants(utest_result, &sys);
+
+    // Not a topology's: two molecules
+    sys.entity.flags[water] = (md_entity_flags_t)(sys.entity.flags[water] & ~MD_ENTITY_FLAG_TOPOLOGY);
+    ASSERT_TRUE(md_util_system_infer_structures(&sys));
+    EXPECT_EQ(num_inst, md_structure_count(&sys.structure));
     md_vm_arena_destroy(alloc);
 }
 
@@ -3313,7 +3380,7 @@ UTEST(util, entity_instance_topology) {
         ASSERT_EQ(md_system_entity_count(&sys), ARRAY_SIZE(entities));
         size_t inst = 0;
         for (size_t e = 0; e < ARRAY_SIZE(entities); ++e) {
-            EXPECT_EQ(md_system_entity_flags(&sys, e), md_entity_flags_set_kind(MD_ENTITY_FLAG_NONE, entities[e].kind));
+            EXPECT_EQ(md_system_entity_flags(&sys, e), md_entity_flags_set_kind(MD_ENTITY_FLAG_TOPOLOGY, entities[e].kind));
             EXPECT_TRUE(str_eq(md_entity_description(&sys.entity, e), str_from_cstr(entities[e].desc)));
             for (size_t k = 0; k < entities[e].count; ++k, ++inst) {
                 EXPECT_EQ(md_system_instance_entity_idx(&sys, inst), (int)e);

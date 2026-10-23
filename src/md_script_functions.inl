@@ -1423,20 +1423,20 @@ static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
     return -1;
 }
 
-// The atoms of a chain: the ranges of its instances (see md_chain_data_t), into b
+// The atoms of a chain: the atom ranges of its runs of residues (see md_chain_data_t), into b
 static inline void chain_set_bits(md_bitmask_t* b, const md_system_t* sys, size_t chain_idx) {
-    const md_instance_idx_t* end = md_system_chain_inst_end(sys, chain_idx);
-    for (const md_instance_idx_t* it = md_system_chain_inst_beg(sys, chain_idx); it && it < end; ++it) {
-        const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*it);
+    const md_urange_t* end = md_system_chain_run_end(sys, chain_idx);
+    for (const md_urange_t* it = md_system_chain_run_beg(sys, chain_idx); it && it < end; ++it) {
+        const md_urange_t r = md_system_chain_run_atom_range(sys, *it);
         if (r.beg < r.end) md_bitmask_set_range(b, r.beg, r.end);
     }
 }
 
 static inline bool chain_in_context(const md_system_t* sys, size_t chain_idx, const md_bitset_t* bitfield) {
     if (!bitfield) return true;
-    const md_instance_idx_t* end = md_system_chain_inst_end(sys, chain_idx);
-    for (const md_instance_idx_t* it = md_system_chain_inst_beg(sys, chain_idx); it && it < end; ++it) {
-        const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*it);
+    const md_urange_t* end = md_system_chain_run_end(sys, chain_idx);
+    for (const md_urange_t* it = md_system_chain_run_beg(sys, chain_idx); it && it < end; ++it) {
+        const md_urange_t r = md_system_chain_run_atom_range(sys, *it);
         if (md_bitset_count_range(*bitfield, r.beg, r.end)) return true;
     }
     return false;

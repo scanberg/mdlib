@@ -1627,7 +1627,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             id.len = (uint8_t)md_snprintf(id.buf, sizeof(id.buf), "%i", (int)sys->entity.count + 1);
             moltype_entity[mb->moltype] = (md_entity_idx_t)sys->entity.count;
             md_array_push(sys->entity.id, id, alloc);
-            md_array_push(sys->entity.flags, MD_ENTITY_FLAG_NONE, alloc);
+            md_array_push(sys->entity.flags, MD_ENTITY_FLAG_TOPOLOGY, alloc);
             md_array_push(sys->entity.description, str_copy(mt->name, alloc), alloc);
             sys->entity.count += 1;
         }

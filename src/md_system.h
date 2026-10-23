@@ -91,16 +91,20 @@ typedef struct md_instance_data_t {
 // Chain: the atoms which the data files under one chain identifier, the author's: the chain id of a PDB file, the
 // auth_asym_id of an mmCIF file. Whatever carries the id is of the chain, a polymer and the ligands and waters filed
 // with it alike, and an id is one chain however its atoms are spread: chain("A") of a script is one set.
-//   - Where the data gives no id, a polymer is a chain of its own, inferred: it has no id and is found by its position
-//     among the chains (chain(2)). Ids are never made up.
+//   - Where the data gives no id, each strand of a polymer is a chain of its own, inferred: it has no id and is found by
+//     its position among the chains (chain(2)). Ids are never made up. A strand ends where the chemistry says the
+//     chain does (CHAIN BREAKS in md_util.h), also within one molecule of a topology: the two strands of a DNA duplex
+//     which martinize-dna writes as one molecule type are two chains of one molecule.
 //   - A molecule which is not a polymer and which the data gives no id is in no chain.
-// The chains are in the order of their first instance. They are derived from the instances (md_util_system_infer_chains),
-// whose author ids hold the identifiers.
+// A chain is runs of residues (components): a strand, and the ligands and waters filed after all of the polymers under
+// its id. The chains are in the order of their first residue. They are derived from the instances
+// (md_util_system_infer_chains), whose author ids hold the identifiers.
 typedef struct md_chain_data_t {
     size_t count;
     md_label_t* id;                 // [count] The author's identifier, empty for an inferred chain
-    md_index_data_t inst;           // [count] The instances of each chain, ascending
-    md_chain_idx_t* inst_chain;     // [instance count] The chain of each instance, -1 for an instance in none
+    uint32_t* run_offset;           // [count + 1] The runs of chain c: run[run_offset[c], run_offset[c + 1])
+    md_urange_t* run;               // Runs of consecutive components, ascending within each chain
+    md_chain_idx_t* comp_chain;     // [component count] The chain of each component, -1 for one in none
 } md_chain_data_t;
 
 // Entity: a molecule type, or a polymer sequence, of which the system holds one or more instances.
@@ -288,8 +292,10 @@ typedef struct md_bond_iter_t {
 // crystal structure). So a residue and a polymer chain are always within one molecule; a molecule may hold several
 // chains (joined by a disulfide), and a ligand bonded to a protein is of its molecule. A metal coordinated by other
 // residues is not, nor are the waters of its shell: the coordination bonds between residues hold no molecule together,
-// unless a topology gives them (a bond within one of its molecules, as GROMACS has it). Coarse grained systems are held
-// together by their hierarchy instead (md_util_system_infer_structures).
+// unless a topology gives them (a bond within one of its molecules, as GROMACS has it). A molecule of a topology is
+// one molecule whatever its bonds (MD_ENTITY_FLAG_TOPOLOGY): the two strands of a DNA duplex which martinize-dna writes
+// as one molecule type, held together by an elastic network. Coarse grained systems are held together by their
+// hierarchy instead (md_util_system_infer_structures).
 // It also holds the iteration order of atoms and parent-child relationships for traversing the structure as a tree,
 // which is what unwrapping uses.
 typedef struct md_structure_t {
@@ -1346,38 +1352,50 @@ static inline bool md_system_chain_inferred(const md_system_t* sys, size_t chain
     return chain_idx < sys->chain.count && str_empty(md_system_chain_id(sys, chain_idx));
 }
 
-// The instances of the chain, ascending: [beg, end)
-static inline const md_instance_idx_t* md_system_chain_inst_beg(const md_system_t* sys, size_t chain_idx) {
+// The runs of consecutive components of the chain, ascending: [beg, end)
+static inline const md_urange_t* md_system_chain_run_beg(const md_system_t* sys, size_t chain_idx) {
     ASSERT(sys);
-    return chain_idx < sys->chain.count ? md_index_range_beg(&sys->chain.inst, chain_idx) : NULL;
+    return (sys->chain.run && chain_idx < sys->chain.count) ? sys->chain.run + sys->chain.run_offset[chain_idx] : NULL;
 }
 
-static inline const md_instance_idx_t* md_system_chain_inst_end(const md_system_t* sys, size_t chain_idx) {
+static inline const md_urange_t* md_system_chain_run_end(const md_system_t* sys, size_t chain_idx) {
     ASSERT(sys);
-    return chain_idx < sys->chain.count ? md_index_range_end(&sys->chain.inst, chain_idx) : NULL;
+    return (sys->chain.run && chain_idx < sys->chain.count) ? sys->chain.run + sys->chain.run_offset[chain_idx + 1] : NULL;
 }
 
-// The chain of the instance, -1 for an instance in none
-static inline md_chain_idx_t md_system_chain_find_by_inst_idx(const md_system_t* sys, size_t inst_idx) {
+// The atoms of a run of components
+static inline md_urange_t md_system_chain_run_atom_range(const md_system_t* sys, md_urange_t run) {
     ASSERT(sys);
-    return (sys->chain.inst_chain && inst_idx < sys->instance.count) ? sys->chain.inst_chain[inst_idx] : -1;
+    md_urange_t r = {0, 0};
+    if (sys->component.atom_offset && run.beg < run.end && run.end <= sys->component.count) {
+        r.beg = sys->component.atom_offset[run.beg];
+        r.end = sys->component.atom_offset[run.end];
+    }
+    return r;
+}
+
+// The chain of the component, -1 for a component in none
+static inline md_chain_idx_t md_system_chain_find_by_comp_idx(const md_system_t* sys, size_t comp_idx) {
+    ASSERT(sys);
+    return (sys->chain.comp_chain && comp_idx < sys->component.count) ? sys->chain.comp_chain[comp_idx] : -1;
 }
 
 // The chain of the atom, -1 for an atom in none
 static inline md_chain_idx_t md_system_chain_find_by_atom_idx(const md_system_t* sys, size_t atom_idx) {
     ASSERT(sys);
-    const md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(sys, atom_idx);
-    return inst_idx >= 0 ? md_system_chain_find_by_inst_idx(sys, (size_t)inst_idx) : -1;
+    const md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(sys, atom_idx);
+    return comp_idx >= 0 ? md_system_chain_find_by_comp_idx(sys, (size_t)comp_idx) : -1;
 }
 
-// The atoms of the chain: the atom ranges of its instances. Mostly one, as a chain is mostly one instance, but the
-// ligands and waters a file files under a chain id come after all of the polymers, and they are of the chain too.
+// The atoms of the chain: the atom ranges of its runs. Mostly one, as a chain is mostly one strand, but the ligands and
+// waters a file files under a chain id come after all of the polymers, and they are of the chain too.
 static inline size_t md_system_chain_atom_count(const md_system_t* sys, size_t chain_idx) {
     ASSERT(sys);
     size_t n = 0;
-    const md_instance_idx_t* end = md_system_chain_inst_end(sys, chain_idx);
-    for (const md_instance_idx_t* it = md_system_chain_inst_beg(sys, chain_idx); it && it < end; ++it) {
-        n += md_system_instance_atom_count(sys, (size_t)*it);
+    const md_urange_t* end = md_system_chain_run_end(sys, chain_idx);
+    for (const md_urange_t* it = md_system_chain_run_beg(sys, chain_idx); it && it < end; ++it) {
+        const md_urange_t r = md_system_chain_run_atom_range(sys, *it);
+        n += r.end - r.beg;
     }
     return n;
 }

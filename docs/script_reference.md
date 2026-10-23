@@ -785,7 +785,8 @@ filed with it alike, and `chain("A")` is all of them, as **one** selection howev
 A chain id is a label, as an atom name is.
 
 Where the data gives no chain ids (a GRO file, a topology, a PDB file written by a simulation), none are made up: each
-polymer is a chain of its own and has none, and is found by its position, `chain(1)`. A molecule which is not a polymer
+strand of a polymer is a chain of its own and has none, and is found by its position, `chain(1)`. A strand ends where
+the chemistry says the chain does: a nucleic acid strand begins without its phosphate. A molecule which is not a polymer
 and is given no id is in no chain.
 
 A **molecule** is atoms joined by bonds, and what holds together where the bonds do not say so: the atoms of a residue,
@@ -793,7 +794,9 @@ and the residues of a polymer chain over a gap (residues missing from a crystal 
 chain are always within one molecule; a molecule may hold several chains (joined by a disulfide), and a ligand bonded
 to a protein is of its molecule. A metal coordinated by residues (the Mg of a GTP, the Zn of a zinc finger) is a molecule
 of its own, as are the waters around it, unless a topology bonds it into a molecule. An ion or a water is a molecule of
-its own.
+its own. Where the system comes with a topology (a GROMACS `.tpr`), its molecules are the molecules of the topology, as
+GROMACS has them: the two strands of a DNA duplex which martinize-dna writes as one molecule type are one molecule of
+two chains.
 
 ### chain
 
