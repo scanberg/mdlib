@@ -1173,6 +1173,90 @@ UTEST(util, martini_masses_by_version) {
     md_vm_arena_destroy(alloc);
 }
 
+// A modified residue larger than any standard one: the palmitoylated cysteine of a CHARMM-GUI spike protein (6VSB),
+// named CYS, 58 atoms with its hydrogens. Its backbone is found by its atom names whatever its size, as a nucleotide's is.
+static const char palmitoyl_cys_pdb[] =
+    "ATOM  19115  N   CYS A1236     120.160 136.980 189.740  0.00  0.00           N\n"
+    "ATOM  19116  HN  CYS A1236     120.310 136.990 190.720  0.00  0.00           H\n"
+    "ATOM  19117  CA  CYS A1236     121.240 136.510 188.940  0.00  0.00           C\n"
+    "ATOM  19118  HA  CYS A1236     121.650 137.310 188.340  0.00  0.00           H\n"
+    "ATOM  19119  C   CYS A1236     120.710 135.530 187.950  0.00  0.00           C\n"
+    "ATOM  19120  O   CYS A1236     120.880 135.590 186.730  0.00  0.00           O\n"
+    "ATOM  19121  CB  CYS A1236     122.260 135.850 189.880  0.00  0.00           C\n"
+    "ATOM  19122  HB1 CYS A1236     121.720 135.070 190.470  0.00  0.00           H\n"
+    "ATOM  19123  HB2 CYS A1236     123.050 135.500 189.190  0.00  0.00           H\n"
+    "ATOM  19124  SG  CYS A1236     123.200 136.950 191.060  0.00  0.00           S\n"
+    "ATOM  19125  C1  CYS A1236     124.530 135.950 191.790  0.00  0.00           C\n"
+    "ATOM  19126  O1  CYS A1236     124.750 134.930 191.150  0.00  0.00           O\n"
+    "ATOM  19127  C2  CYS A1236     125.130 136.410 193.130  0.00  0.00           C\n"
+    "ATOM  19128  H2A CYS A1236     124.670 137.340 193.530  0.00  0.00           H\n"
+    "ATOM  19129  H2B CYS A1236     126.240 136.490 193.130  0.00  0.00           H\n"
+    "ATOM  19130  C3  CYS A1236     124.810 135.380 194.180  0.00  0.00           C\n"
+    "ATOM  19131  H3A CYS A1236     125.220 134.400 193.880  0.00  0.00           H\n"
+    "ATOM  19132  H3B CYS A1236     123.720 135.180 194.310  0.00  0.00           H\n"
+    "ATOM  19133  C4  CYS A1236     125.540 135.780 195.480  0.00  0.00           C\n"
+    "ATOM  19134  H4A CYS A1236     125.330 136.760 195.940  0.00  0.00           H\n"
+    "ATOM  19135  H4B CYS A1236     126.620 135.670 195.230  0.00  0.00           H\n"
+    "ATOM  19136  C5  CYS A1236     125.150 134.810 196.570  0.00  0.00           C\n"
+    "ATOM  19137  H5A CYS A1236     125.320 133.760 196.230  0.00  0.00           H\n"
+    "ATOM  19138  H5B CYS A1236     124.110 134.990 196.910  0.00  0.00           H\n"
+    "ATOM  19139  C6  CYS A1236     126.030 135.050 197.800  0.00  0.00           C\n"
+    "ATOM  19140  H6A CYS A1236     125.820 136.010 198.320  0.00  0.00           H\n"
+    "ATOM  19141  H6B CYS A1236     127.100 134.980 197.490  0.00  0.00           H\n"
+    "ATOM  19142  C7  CYS A1236     125.820 133.990 198.900  0.00  0.00           C\n"
+    "ATOM  19143  H7A CYS A1236     126.090 132.980 198.520  0.00  0.00           H\n"
+    "ATOM  19144  H7B CYS A1236     124.760 133.900 199.240  0.00  0.00           H\n"
+    "ATOM  19145  C8  CYS A1236     126.660 134.290 200.100  0.00  0.00           C\n"
+    "ATOM  19146  H8A CYS A1236     126.210 135.060 200.780  0.00  0.00           H\n"
+    "ATOM  19147  H8B CYS A1236     127.610 134.760 199.770  0.00  0.00           H\n"
+    "ATOM  19148  C9  CYS A1236     127.010 133.060 200.990  0.00  0.00           C\n"
+    "ATOM  19149  H9A CYS A1236     127.370 132.230 200.350  0.00  0.00           H\n"
+    "ATOM  19150  H9B CYS A1236     125.990 132.790 201.330  0.00  0.00           H\n"
+    "ATOM  19151  C10 CYS A1236     128.130 133.330 202.020  0.00  0.00           C\n"
+    "ATOM  19152 H10A CYS A1236     128.000 134.290 202.560  0.00  0.00           H\n"
+    "ATOM  19153 H10B CYS A1236     129.160 133.250 201.630  0.00  0.00           H\n"
+    "ATOM  19154  C11 CYS A1236     127.990 132.280 203.120  0.00  0.00           C\n"
+    "ATOM  19155 H11A CYS A1236     128.250 131.250 202.800  0.00  0.00           H\n"
+    "ATOM  19156 H11B CYS A1236     126.970 132.430 203.520  0.00  0.00           H\n"
+    "ATOM  19157  C12 CYS A1236     129.020 132.650 204.310  0.00  0.00           C\n"
+    "ATOM  19158 H12A CYS A1236     128.830 133.620 204.800  0.00  0.00           H\n"
+    "ATOM  19159 H12B CYS A1236     129.970 132.610 203.740  0.00  0.00           H\n"
+    "ATOM  19160  C13 CYS A1236     128.870 131.530 205.400  0.00  0.00           C\n"
+    "ATOM  19161 H13A CYS A1236     128.760 130.550 204.900  0.00  0.00           H\n"
+    "ATOM  19162 H13B CYS A1236     127.910 131.720 205.930  0.00  0.00           H\n"
+    "ATOM  19163  C14 CYS A1236     130.040 131.660 206.440  0.00  0.00           C\n"
+    "ATOM  19164 H14A CYS A1236     131.060 131.450 206.040  0.00  0.00           H\n"
+    "ATOM  19165 H14B CYS A1236     129.820 130.980 207.280  0.00  0.00           H\n"
+    "ATOM  19166  C15 CYS A1236     130.200 133.070 207.240  0.00  0.00           C\n"
+    "ATOM  19167 H15A CYS A1236     129.130 133.390 207.220  0.00  0.00           H\n"
+    "ATOM  19168 H15B CYS A1236     130.700 133.870 206.650  0.00  0.00           H\n"
+    "ATOM  19169  C16 CYS A1236     130.740 133.110 208.620  0.00  0.00           C\n"
+    "ATOM  19170 H16A CYS A1236     130.110 132.440 209.250  0.00  0.00           H\n"
+    "ATOM  19171 H16B CYS A1236     131.740 132.620 208.620  0.00  0.00           H\n"
+    "ATOM  19172 H16C CYS A1236     130.750 134.090 209.140  0.00  0.00           H\n"
+    "END\n";
+
+UTEST(util, amino_acid_of_any_size) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(palmitoyl_cys_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(1u, md_system_component_count(&sys));
+    ASSERT_EQ(58u, (unsigned)sys.atom.count);
+    EXPECT_EQ((int)MD_COMPONENT_KIND_AMINO_ACID, (int)md_component_kind(&sys.component, 0));
+    size_t backbone = 0, side = 0;
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        const md_atom_flags_t f = md_atom_flags(&sys.atom, i);
+        backbone += (f & MD_ATOM_FLAG_BACKBONE) != 0;
+        side += (f & MD_ATOM_FLAG_SIDE_CHAIN) != 0;
+        if (str_eq_cstr(md_atom_name(&sys.atom, i), "C16")) EXPECT_TRUE((f & MD_ATOM_FLAG_SIDE_CHAIN) != 0);
+    }
+    EXPECT_EQ(3u, backbone);        // N, CA, C
+    EXPECT_GT(side, 40u);           // CB, SG and the palmitoyl, with their hydrogens
+    md_vm_arena_destroy(alloc);
+}
+
 // The roles of the atoms of a residue stay within it: a side chain does not run on through the N of a proline into the
 // backbone before it, nor through a coordination bond into a metal, and a base is found from C1' whatever atom is
 // listed first among its bonds.

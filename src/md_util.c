@@ -4620,10 +4620,11 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
     return true;
 }
 
+// No upper bound for an amino acid either: a modified one is larger than any standard one (a palmitoylated cysteine is
+// 58 atoms with its hydrogens), and classify_amino_acid tells ligands named like amino acids by their bonds
 #define MIN_RES_LEN 4
-#define MAX_RES_LEN 25
 
-// No upper bound for a nucleotide: a hypermodified one is larger than any standard one (wybutosine, 39 heavy atoms), as
+// Nor for a nucleotide: a hypermodified one is larger than any standard one (wybutosine, 39 heavy atoms), as
 // is a modified one with its hydrogens, and classify_nucleotide tells nucleotide ligands (NAD, FAD, CoA, ...) by their
 // bonds rather than their size. The nucleic backbone (MD_UTIL_INFER_BACKBONE_BIT) takes any size, and the two agree.
 #define MIN_NUC_LEN 6
@@ -4961,7 +4962,7 @@ bool md_util_system_infer_comp_flags(md_system_t* sys) {
         // Amino acids and nucleotides are classified whatever their kind, as a predefined coarse grained type may
         // have given the kind but the atoms of an atomistic one still want their roles
         md_amino_acid_atoms_t prot_atoms = {0};
-        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && md_util_amino_acid_atoms_extract(&prot_atoms, &sys->atom, comp_range)) {
+        if (MIN_RES_LEN <= len && md_util_amino_acid_atoms_extract(&prot_atoms, &sys->atom, comp_range)) {
             // Atoms named like an amino acid's backbone but not bonded like one, or a ligand which is neither a standard
             // residue nor linked into a chain: not an amino acid
             classify_amino_acid(sys, comp_idx, &prot_atoms);
