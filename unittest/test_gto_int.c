@@ -1112,6 +1112,26 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     printf("27 waters, far field on the GPU vs exact: points max |dV| / max(1, |V|) %.2e\n", worst_p);
     EXPECT_LT(worst_p, 2e-4);
 
+    // The same points shuffled, in a float4 layout: the device sorts them, so each gets the same value
+    // to the bit, whatever the order they came in
+    uint32_t perm[NP];
+    for (int i = 0; i < NP; ++i) perm[i] = (uint32_t)i;
+    for (int i = NP - 1; i > 0; --i) {
+        seed = seed * 1664525u + 1013904223u;
+        const int j = (int)((seed >> 8) % (uint32_t)(i + 1));
+        const uint32_t tmp = perm[i]; perm[i] = perm[j]; perm[j] = tmp;
+    }
+    float shuffled[NP][4];
+    for (int i = 0; i < NP; ++i) {
+        for (int k = 0; k < 3; ++k) shuffled[i][k] = pts[perm[i]][k];
+        shuffled[i][3] = 1.0f;
+    }
+    float Vs[NP];
+    ASSERT_TRUE(int_test_gpu_xyz(Vs, stream, &far, &shuffled[0][0], NP, 16, 0));
+    int differ = 0;
+    for (int i = 0; i < NP; ++i) differ += Vs[i] != Vg[perm[i]];
+    EXPECT_EQ(0, differ);
+
     md_gto_int_gpu_charges_destroy(stream, gq);
     md_gpu_free(stream, rb.gpu);
     md_gpu_texture_destroy(tex);
@@ -1122,5 +1142,178 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     md_gto_int_gpu_shutdown();
     md_gpu_device_destroy(device);
 }
+
+#ifdef MD_HDF5
+// The electrostatic potential of a large calculation as viamd evaluates it, timed: the distribution
+// with a far field, the band of a surface on the GPU (voxels 2.5 - 4.5 bohr from the nearest atom,
+// in 0.4 bohr voxels, as the bricks holding them), the same voxels as points, and both against the
+// exact sum at some of them. GTO_INT_FILE=<file in test_data/vlx>, e.g. protein.h5.
+UTEST(gto_int, benchmark) {
+    const char* file = getenv("GTO_INT_FILE");
+    if (!file || !file[0]) UTEST_SKIP("set GTO_INT_FILE=<file in test_data/vlx>");
+    md_gpu_device_t device = md_gpu_device_create(NULL);
+    if (!device) UTEST_SKIP(int_test_no_device_reason());
+    md_gpu_stream_t stream = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
+    md_gto_int_gpu_initialize(device);
+    md_gpu_device_info_t dinfo;
+    md_gpu_device_info(device, &dinfo);
+
+    char path[512];
+    snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/vlx/%s", file);
+    vlx_test_t t = {0};
+    md_tick_t t0 = md_tick_now();
+    ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(path), MEGABYTES(1024)));
+    md_gto_basis_t basis = {0};
+    ASSERT_TRUE(qm_test_basis(&basis, &t));
+    const size_t na = t.sys.atom.count;
+    float* xyz = (float*)malloc(sizeof(float) * 3 * na);
+    double* Z = (double*)malloc(sizeof(double) * na);
+    ASSERT_EQ(na, vlx_test_atom_xyz_bohr(xyz, 3 * na, &t));
+    ASSERT_EQ(na, qm_test_series(Z, na, &t, STR_LIT("qm/atom/nuclear_charge")));
+    double* rows = NULL; double* w = NULL; size_t num_ao = 0;
+    const size_t num_mo = md_qm_density_orbitals(&rows, &w, &num_ao, &t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+    ASSERT_TRUE(num_mo > 0 && num_ao == md_gto_basis_num_ao(&basis));
+    double* D = (double*)malloc(sizeof(double) * num_ao * num_ao);
+    ASSERT_TRUE(md_gto_density_from_orbitals(D, rows, num_ao, 1, w, num_mo, num_ao));
+    printf("\n  md_gto_int far field %s\n  device: %s | %s: %zu atoms, %zu AOs (loaded, and D, in %.1f s)\n",
+           MD_GTO_INT_FAR_FIELD_REVISION, dinfo.name, file, na, num_ao, md_tick_to_seconds(md_tick_now() - t0));
+
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_gto_int_charges_desc_t cd = {
+        .basis = &basis, .atom_xyz = xyz, .density_matrix = D, .density_scale = -1.0,
+        .point_xyz = xyz, .point_charge = Z, .num_points = na, .threshold = 1e-6,
+    };
+    md_gto_int_charges_t exact = {0}, far = {0};
+    t0 = md_tick_now();
+    ASSERT_TRUE(md_gto_int_charges_init(&exact, &cd, heap));
+    const double t_exact = md_tick_to_seconds(md_tick_now() - t0);
+    cd.far_field_theta = MD_GTO_INT_FAR_FIELD_THETA;
+    t0 = md_tick_now();
+    ASSERT_TRUE(md_gto_int_charges_init(&far, &cd, heap));
+    const double t_far = md_tick_to_seconds(md_tick_now() - t0);
+    printf("  distribution: %u gaussians, built in %.2f s; with the far field (%u nodes) in %.2f s; work per point %llu, exactly %llu\n",
+           far.num_gaussians, t_exact, far.num_nodes, t_far,
+           (unsigned long long)md_gto_int_charges_work_per_point(&far), (unsigned long long)md_gto_int_charges_work_per_point(&exact));
+
+    // the grid: the atoms' box and 6 bohr, 0.4 bohr voxels; the band: 2.5 - 4.5 bohr from the nearest atom
+    float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+    for (size_t i = 0; i < na; ++i) for (int k = 0; k < 3; ++k) { lo[k] = MIN(lo[k], xyz[3 * i + k]); hi[k] = MAX(hi[k], xyz[3 * i + k]); }
+    const float h = 0.4f;
+    md_grid_t grid = { .orientation = mat3_ident(), .origin = vec3_set(lo[0] - 6.0f, lo[1] - 6.0f, lo[2] - 6.0f), .spacing = vec3_set(h, h, h) };
+    for (int k = 0; k < 3; ++k) grid.dim[k] = (int)ceilf((hi[k] - lo[k] + 12.0f) / h);
+    const size_t nv = md_grid_num_points(&grid);
+    float* dmin = (float*)malloc(sizeof(float) * nv);
+    uint8_t* mask = (uint8_t*)malloc(nv);
+    for (size_t i = 0; i < nv; ++i) dmin[i] = 1e30f;
+    const int rr = (int)ceilf(4.5f / h) + 1;
+    for (size_t a = 0; a < na; ++a) {
+        int c[3];
+        for (int k = 0; k < 3; ++k) c[k] = (int)((xyz[3 * a + k] - grid.origin.elem[k]) / h - 0.5f);
+        for (int z = MAX(0, c[2] - rr); z <= MIN(grid.dim[2] - 1, c[2] + rr); ++z)
+        for (int y = MAX(0, c[1] - rr); y <= MIN(grid.dim[1] - 1, c[1] + rr); ++y)
+        for (int x = MAX(0, c[0] - rr); x <= MIN(grid.dim[0] - 1, c[0] + rr); ++x) {
+            const float p[3] = { grid.origin.x + (x + 0.5f) * h, grid.origin.y + (y + 0.5f) * h, grid.origin.z + (z + 0.5f) * h };
+            const float d2 = (p[0] - xyz[3 * a]) * (p[0] - xyz[3 * a]) + (p[1] - xyz[3 * a + 1]) * (p[1] - xyz[3 * a + 1]) + (p[2] - xyz[3 * a + 2]) * (p[2] - xyz[3 * a + 2]);
+            float* dm = dmin + ((size_t)z * grid.dim[1] + y) * grid.dim[0] + x;
+            *dm = MIN(*dm, d2);
+        }
+    }
+    size_t num_band = 0;
+    for (size_t i = 0; i < nv; ++i) { mask[i] = (dmin[i] >= 2.5f * 2.5f && dmin[i] <= 4.5f * 4.5f) ? 1 : 0; num_band += mask[i]; }
+    printf("  grid %d x %d x %d (%zu voxels), band %zu voxels\n", grid.dim[0], grid.dim[1], grid.dim[2], nv, num_band);
+
+    md_gpu_texture_t tex = md_gpu_texture_create(stream, &(md_gpu_texture_desc_t){
+        .type = MD_GPU_TEX_3D, .format = MD_GPU_FORMAT_R32_FLOAT, .usage = MD_GPU_TEX_STORAGE,
+        .width = (uint32_t)grid.dim[0], .height = (uint32_t)grid.dim[1], .depth_or_layers = (uint32_t)grid.dim[2],
+    });
+    md_gpu_mem_t rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * nv);
+    ASSERT_TRUE(tex && rb.cpu);
+    t0 = md_tick_now();
+    md_gto_int_gpu_charges_t gq = md_gto_int_gpu_charges_create(stream, &far);
+    md_gpu_stream_sync(stream);
+    ASSERT_TRUE(gq != NULL);
+    printf("  on the device in %.2f s\n", md_tick_to_seconds(md_tick_now() - t0));
+
+    md_gto_int_gpu_potential_desc_t pd = {
+        .charges = gq, .out_tex = tex, .grid = &grid, .sample_offset = { 0.5f, 0.5f, 0.5f }, .op = MD_GTO_OP_SET, .voxel_mask = mask,
+    };
+    double best = 1e30;
+    for (int r = 0; r < 2; ++r) {   // the first one creates the kernels; a second only where it is quick
+        t0 = md_tick_now();
+        ASSERT_TRUE(md_gto_int_gpu_potential_launch(stream, &pd));
+        md_gpu_stream_sync(stream);
+        best = MIN(best, md_tick_to_seconds(md_tick_now() - t0));
+        if (best > 10.0) break;
+    }
+    md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
+    md_gpu_stream_sync(stream);
+    printf("  band on the GPU: %.2f s (%.1f us per band voxel)\n", best, best * 1e6 / (double)MAX(num_band, 1));
+
+    // the band's voxels as points, shuffled: the device sorts them, so this is the time of any order
+    size_t* idx = (size_t*)malloc(sizeof(size_t) * num_band);
+    size_t np = 0;
+    for (size_t i = 0; i < nv; ++i) if (mask[i]) idx[np++] = i;
+    uint64_t seed = 0x9E3779B97F4A7C15ull;
+    for (size_t i = np; i > 1; --i) {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        const size_t j = (size_t)((seed >> 33) % i);
+        const size_t tmp = idx[i - 1]; idx[i - 1] = idx[j]; idx[j] = tmp;
+    }
+    float* pts = (float*)malloc(sizeof(float) * 3 * np);
+    for (size_t p = 0; p < np; ++p) {
+        const size_t i = idx[p];
+        const size_t x = i % grid.dim[0], y = (i / grid.dim[0]) % grid.dim[1], z = i / ((size_t)grid.dim[0] * grid.dim[1]);
+        pts[3 * p + 0] = grid.origin.x + (x + 0.5f) * h;
+        pts[3 * p + 1] = grid.origin.y + (y + 0.5f) * h;
+        pts[3 * p + 2] = grid.origin.z + (z + 0.5f) * h;
+    }
+    float* Vp = (float*)malloc(sizeof(float) * np);
+    t0 = md_tick_now();
+    ASSERT_TRUE(int_test_gpu_xyz(Vp, stream, &far, pts, np, 0, 0));
+    printf("  the same voxels as points, shuffled, on the GPU: %.2f s (with the upload and the distribution again)\n", md_tick_to_seconds(md_tick_now() - t0));
+
+    // against the exact sum at some of them
+    enum { NS = 200 };
+    float  sp[NS][3];
+    double Ve[NS], Vc[NS];
+    size_t pick[NS];
+    for (int i = 0; i < NS; ++i) {
+        pick[i] = (size_t)((uint64_t)i * np / NS);
+        for (int k = 0; k < 3; ++k) sp[i][k] = pts[3 * pick[i] + k];
+    }
+    t0 = md_tick_now();
+    md_gto_int_potential_xyz(Ve, NULL, &sp[0][0], NS, 0, &exact);
+    const double t_ce = md_tick_to_seconds(md_tick_now() - t0) / NS;
+    t0 = md_tick_now();
+    md_gto_int_potential_xyz(Vc, NULL, &sp[0][0], NS, 0, &far);
+    const double t_cf = md_tick_to_seconds(md_tick_now() - t0) / NS;
+    double eg = 0.0, ep = 0.0, ec = 0.0, span_lo = 1e30, span_hi = -1e30;
+    for (int i = 0; i < NS; ++i) {
+        eg = MAX(eg, fabs((double)((const float*)rb.cpu)[idx[pick[i]]] - Ve[i]));
+        ep = MAX(ep, fabs((double)Vp[pick[i]] - Ve[i]));
+        ec = MAX(ec, fabs(Vc[i] - Ve[i]));
+        span_lo = MIN(span_lo, Ve[i]); span_hi = MAX(span_hi, Ve[i]);
+    }
+    printf("  against the exact sum at %d band voxels (V from %.3f to %.3f au): grid %.2e, points %.2e, CPU far field %.2e au\n",
+           NS, span_lo, span_hi, eg, ep, ec);
+    printf("  CPU per point: exact %.2f ms, far field %.2f ms\n", t_ce * 1e3, t_cf * 1e3);
+    EXPECT_LT(eg, 5e-4);
+    EXPECT_LT(ep, 5e-4);
+
+    free(Vp); free(idx); free(pts); free(mask); free(dmin);
+    md_gto_int_gpu_charges_destroy(stream, gq);
+    md_gpu_free(stream, rb.gpu);
+    md_gpu_texture_destroy(tex);
+    md_gpu_stream_sync(stream);
+    md_gto_int_charges_free(&exact, heap);
+    md_gto_int_charges_free(&far, heap);
+    md_free(heap, rows, sizeof(double) * num_mo * num_ao);
+    md_free(heap, w, sizeof(double) * num_mo);
+    free(D); free(Z); free(xyz);
+    qm_test_free(&t);
+    md_gto_int_gpu_shutdown();
+    md_gpu_device_destroy(device);
+}
+#endif
 
 #endif
