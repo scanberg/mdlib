@@ -1132,6 +1132,65 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     for (int i = 0; i < NP; ++i) differ += Vs[i] != Vg[perm[i]];
     EXPECT_EQ(0, differ);
 
+    // As jobs, in small pieces polled without waiting: the same, to the bit
+    {
+        md_gto_int_gpu_potential_desc_t jd = {
+            .charges = gq, .out_tex = tex, .grid = &grid, .sample_offset = { so[0], so[1], so[2] }, .op = MD_GTO_OP_SET,
+            .work_per_dispatch = 1u << 20,
+        };
+        md_gto_int_gpu_job_t* job = md_gto_int_gpu_potential_job_begin(stream, &jd);
+        ASSERT_TRUE(job != NULL);
+        int polls = 0;
+        float last = 0.0f;
+        bool monotone = true;
+        md_gto_int_gpu_job_status_t st;
+        while ((st = md_gto_int_gpu_job_poll(job, 0.0)) == MD_GTO_INT_GPU_JOB_RUNNING) {
+            const float p = md_gto_int_gpu_job_progress(job);
+            monotone = monotone && p >= last && p <= 1.0f;
+            last = p;
+            polls++;
+        }
+        EXPECT_EQ(MD_GTO_INT_GPU_JOB_DONE, st);
+        EXPECT_EQ(1.0f, md_gto_int_gpu_job_progress(job));
+        EXPECT_TRUE(md_gto_int_gpu_job_end(job));
+        EXPECT_TRUE(monotone);
+        md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
+        md_gpu_stream_sync(stream);
+        int diff = 0;
+        for (size_t i = 0; i < nv; ++i) diff += ((const float*)rb.cpu)[i] != gpu[i];
+        EXPECT_EQ(0, diff);
+        printf("27 waters, the grid as a job: %d polls while it ran, %d voxels differ from the launch\n", polls, diff);
+
+        // ended at once: cancelled
+        job = md_gto_int_gpu_potential_job_begin(stream, &jd);
+        ASSERT_TRUE(job != NULL);
+        EXPECT_FALSE(md_gto_int_gpu_job_end(job));
+        md_gpu_stream_sync(stream);
+
+        // the points
+        md_gpu_mem_t pbuf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(pts));
+        md_gpu_mem_t vbuf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * NP);
+        md_gpu_mem_t vrb  = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * NP);
+        ASSERT_TRUE(pbuf.gpu && vbuf.gpu && vrb.cpu);
+        MEMCPY(md_gpu_upload_begin(stream, pbuf.gpu, sizeof(pts)), pts, sizeof(pts));
+        md_gpu_upload_end(stream);
+        md_gto_int_gpu_potential_xyz_desc_t xd = {
+            .charges = gq, .xyz = pbuf.gpu, .num_xyz = NP, .out_potential = vbuf.gpu, .work_per_dispatch = 1u << 20,
+        };
+        job = md_gto_int_gpu_potential_xyz_job_begin(stream, &xd);
+        ASSERT_TRUE(job != NULL);
+        EXPECT_EQ(MD_GTO_INT_GPU_JOB_DONE, md_gto_int_gpu_job_poll(job, -1.0));
+        EXPECT_TRUE(md_gto_int_gpu_job_end(job));
+        md_gpu_copy(stream, vrb.gpu, vbuf.gpu, sizeof(float) * NP);
+        md_gpu_stream_sync(stream);
+        diff = 0;
+        for (int i = 0; i < NP; ++i) diff += ((const float*)vrb.cpu)[i] != Vg[i];
+        EXPECT_EQ(0, diff);
+        md_gpu_free(stream, pbuf.gpu);
+        md_gpu_free(stream, vbuf.gpu);
+        md_gpu_free(stream, vrb.gpu);
+    }
+
     md_gto_int_gpu_charges_destroy(stream, gq);
     md_gpu_free(stream, rb.gpu);
     md_gpu_texture_destroy(tex);
@@ -1283,6 +1342,30 @@ UTEST(gto_int, benchmark) {
     md_gpu_stream_sync(stream);
     printf("  band on the GPU: %.2f s (%.1f us per band voxel)\n", best, best * 1e6 / (double)MAX(num_band, 1));
 
+    // The band as a job, as viamd runs it: polled for 2 ms of every 16 ms frame
+    if (best < 10.0) {
+        t0 = md_tick_now();
+        md_gto_int_gpu_job_t* job = md_gto_int_gpu_potential_job_begin(stream, &pd);
+        ASSERT_TRUE(job != NULL);
+        int frames = 0;
+        double longest_ms = 0.0;
+        md_gto_int_gpu_job_status_t st;
+        for (;;) {
+            const md_tick_t f0 = md_tick_now();
+            st = md_gto_int_gpu_job_poll(job, 2.0);
+            const double ms = md_tick_to_milliseconds(md_tick_now() - f0);
+            longest_ms = MAX(longest_ms, ms);
+            frames++;
+            if (st != MD_GTO_INT_GPU_JOB_RUNNING) break;
+            if (ms < 16.0) md_thread_sleep((size_t)(16.0 - ms));
+        }
+        EXPECT_EQ(MD_GTO_INT_GPU_JOB_DONE, st);
+        md_gto_int_gpu_job_end(job);
+        ASSERT_TRUE(int_test_gpu_alive());
+        printf("  band as a job, polled 2 ms a 16 ms frame: %.2f s over %d frames, the longest poll %.1f ms\n",
+               md_tick_to_seconds(md_tick_now() - t0), frames, longest_ms);
+    }
+
     // the band's voxels as points, shuffled: the device sorts them, so this is the time of any order
     size_t* idx = (size_t*)malloc(sizeof(size_t) * num_band);
     size_t np = 0;
@@ -1302,6 +1385,10 @@ UTEST(gto_int, benchmark) {
         pts[3 * p + 2] = grid.origin.z + (z + 0.5f) * h;
     }
     float* Vp = (float*)malloc(sizeof(float) * np);
+    // a sixteenth of them first, which makes the kernels
+    t0 = md_tick_now();
+    ASSERT_TRUE(int_test_gpu_xyz(Vp, stream, &far, pts, np / 16, 0, 0));
+    printf("  a sixteenth of them as points, with the kernels made: %.2f s\n", md_tick_to_seconds(md_tick_now() - t0));
     t0 = md_tick_now();
     ASSERT_TRUE(int_test_gpu_xyz(Vp, stream, &far, pts, np, 0, 0));
     ASSERT_TRUE(int_test_gpu_alive());

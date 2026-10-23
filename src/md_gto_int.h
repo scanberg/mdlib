@@ -80,7 +80,7 @@ static inline uint32_t md_gto_int_num_hermite(uint32_t L) { return ((L + 1) * (L
 
 // Which far field this is, for benchmarks to print: bumped with every change to how it is built
 // or evaluated.
-#define MD_GTO_INT_FAR_FIELD_REVISION "r4 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: lists of up to 8192 per group of 64, points in Morton order as 4 spheres, dispatches of >= 256 groups, submitted every 4 dispatch budgets)"
+#define MD_GTO_INT_FAR_FIELD_REVISION "r5 (order max(6, L), p r^2 >= 12, leaves of 32; GPU: lists of up to 8192 per group of 64, points in Morton order as 4 spheres, dispatches of >= 256 groups, submitted every 4 dispatch budgets; jobs)"
 
 // A node of the far field's octree (md_gto_int_charges_desc_t::far_field_theta). Its members are
 // item[item_begin, item_end): the gaussians and points inside its box. Its multipoles are about
@@ -330,6 +330,45 @@ typedef struct md_gto_int_gpu_potential_xyz_desc_t {
 // next power of two), and 64 consecutive ones then share one walk of the tree against their bounding
 // sphere: the order they come in does not matter, to the time or to the result.
 bool md_gto_int_gpu_potential_xyz_launch(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc);
+
+// JOBS: the evaluations above without handing the GPU everything at once, for a caller that renders
+// while they run. Begin takes what it needs from the desc (the voxel mask included, which may go
+// once it returns) and issues the first pieces of the work; each poll takes what the GPU has
+// finished, issues more while few pieces are in flight (a piece is a submission, see
+// work_per_dispatch) and returns; end releases the job, done or not. A job ended before it is done
+// is cancelled: the GPU finishes the pieces in flight and nothing more is issued, so a grid job
+// leaves some bricks of out_tex written and others as they were. Done, the result is what the
+// launch would have made, to the bit.
+//
+//   md_gto_int_gpu_job_t* job = md_gto_int_gpu_potential_job_begin(stream, &desc);
+//   ... once a frame: if (md_gto_int_gpu_job_poll(job, 2.0) != MD_GTO_INT_GPU_JOB_RUNNING) {
+//           const bool done = md_gto_int_gpu_job_end(job); ... }
+//
+// The charges, out_tex, the points and out_potential must outlive the job. One thread at a time,
+// the stream's (md_gpu.h); the stream's ordering mode is left as it was between calls. Without a far
+// field the whole evaluation is issued by begin, and the progress stays 0 until it is done.
+typedef struct md_gto_int_gpu_job_t md_gto_int_gpu_job_t;
+
+typedef enum md_gto_int_gpu_job_status_t {
+    MD_GTO_INT_GPU_JOB_RUNNING,
+    MD_GTO_INT_GPU_JOB_DONE,
+    MD_GTO_INT_GPU_JOB_FAILED,
+} md_gto_int_gpu_job_status_t;
+
+// NULL, logged, on invalid input or when nothing could be issued
+md_gto_int_gpu_job_t* md_gto_int_gpu_potential_job_begin(md_gpu_stream_t stream, const md_gto_int_gpu_potential_desc_t* desc);
+md_gto_int_gpu_job_t* md_gto_int_gpu_potential_xyz_job_begin(md_gpu_stream_t stream, const md_gto_int_gpu_potential_xyz_desc_t* desc);
+
+// Advances the job as far as the GPU allows, waiting for it at most budget_ms in all (0: not at all;
+// < 0: until it is done)
+md_gto_int_gpu_job_status_t md_gto_int_gpu_job_poll(md_gto_int_gpu_job_t* job, double budget_ms);
+
+// How far the job is, 0 to 1, as of the last poll: the distribution's work estimate of the pieces
+// the GPU has finished
+float md_gto_int_gpu_job_progress(const md_gto_int_gpu_job_t* job);
+
+// Releases the job; true when it was done
+bool md_gto_int_gpu_job_end(md_gto_int_gpu_job_t* job);
 
 #endif
 
