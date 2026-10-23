@@ -1756,6 +1756,9 @@ size_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t gb) {
 
 #define GTO_DMAT_T    16u
 #define GTO_DMAT_NONE 0xFFFFFFFFu
+// The build's revision, reported by md_gto_gpu_dmat_info (the benchmark prints it, so a measurement says
+// which kernel it is of). Bump with every change to gto_dmat.slang or to how it is launched.
+#define GTO_DMAT_REVISION "r2 (64 threads per 16 x 128 block, 4 x 8 per thread, KC 16, next chunk in registers)"
 
 struct md_gto_gpu_dmat {
     uint32_t      num_ao, num_atoms, nt;    // nt: tiles per edge
@@ -2028,6 +2031,7 @@ void md_gto_gpu_dmat_info(md_gto_gpu_dmat_info_t* out, md_gto_gpu_dmat_t dm) {
     out->num_ao = dm->num_ao;
     out->num_tiles = (size_t)dm->num_tiles;
     out->num_tiles_total = (size_t)dm->nt * (dm->nt + 1) / 2;
+    out->revision = GTO_DMAT_REVISION;
     out->bytes = sizeof(float) * 256 * (size_t)dm->num_tiles + sizeof(uint32_t) * ((size_t)dm->nt * dm->nt + dm->num_ao + 4 * (size_t)dm->num_items + (size_t)dm->num_tiles);
 }
 

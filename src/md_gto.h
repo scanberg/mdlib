@@ -425,6 +425,7 @@ typedef struct md_gto_gpu_dmat_info_t {
     size_t num_tiles;        // tile pairs kept
     size_t num_tiles_total;  // tile pairs in the triangle
     size_t bytes;            // device memory: tiles, map and tables (not the orbital scratch)
+    const char* revision;    // of the build (gto_dmat.slang), for measurements: bumped with every change to it
 } md_gto_gpu_dmat_info_t;
 
 void md_gto_gpu_dmat_info(md_gto_gpu_dmat_info_t* out, md_gto_gpu_dmat_t dmat);

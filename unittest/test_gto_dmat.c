@@ -236,6 +236,7 @@ UTEST(gto_dmat, benchmark) {
     ASSERT_TRUE(dm != NULL);
     md_gto_gpu_dmat_info_t info;
     md_gto_gpu_dmat_info(&info, dm);
+    printf("  md_gto_gpu_dmat %s\n", info.revision);
     printf("  pattern: %zu of %zu tile pairs (%.1f%%), %.1f MB on the device (the packed triangle: %.1f MB); made in %.3f s\n",
            info.num_tiles, info.num_tiles_total, 100.0 * (double)info.num_tiles / (double)info.num_tiles_total, (double)info.bytes / 1e6,
            (double)md_gto_gpu_coeff_size_density(s.num_ao) / 1e6, t_create);
