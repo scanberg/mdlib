@@ -1886,8 +1886,10 @@ static void gto_int_index_to_world(md_gpu_float4x4* out, const md_grid_t* grid, 
 // (gto_int_pace), each ended by a submission and a sync that marks its work done once it passes. A
 // launch issues every piece at once; a job keeps a few in flight and issues the next as the GPU
 // finishes one. Without a far field the whole evaluation is one piece, issued when the job begins.
-#define GTO_INT_JOB_IN_FLIGHT 4
-#define GTO_INT_JOB_MARKS     8
+// Pieces in flight: enough that the GPU does not run dry between polls a frame apart. With 4 (~19 ms
+// of work on a GTX 1060) a job polled 2 ms a 16 ms frame took 14% longer than the launch.
+#define GTO_INT_JOB_IN_FLIGHT 8
+#define GTO_INT_JOB_MARKS     16
 STATIC_ASSERT(GTO_INT_JOB_MARKS >= GTO_INT_JOB_IN_FLIGHT, "a mark per piece in flight");
 
 // The points' sort (ORDER in eval_gto_int_potential_far.slang): each kernel loops over what it has
