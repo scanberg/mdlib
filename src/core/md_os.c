@@ -1772,10 +1772,18 @@ void md_vm_decommit(void* ptr, size_t size) {
 #elif MD_PLATFORM_UNIX
     int result;
     size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+#if defined(__APPLE__)
+    // MADV_DONTNEED does not free the pages on macOS (they stay resident with their contents).
+    // Remapping the range as fresh anonymous memory is what actually returns them to the system.
+    void* mapped = mmap(ptr, page_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+    result = (mapped == MAP_FAILED) ? -1 : 0;
+    ASSERT(result == 0);
+#else
     result = mprotect(ptr, page_snapped_size, PROT_NONE);
     ASSERT(result == 0);
     result = madvise(ptr, page_snapped_size, MADV_DONTNEED);
     ASSERT(result == 0);
+#endif
     (void)result;
 #else
     ASSERT(false);

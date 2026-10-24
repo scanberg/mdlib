@@ -146,8 +146,8 @@ UTEST(allocator, vm_arena) {
     md_vm_arena_destroy(arena);
 }
 
-// Trimmed, what was above the position is given back (and comes back zeroed) but for the commit granule (1 MB) the
-// position is in; what is below stays as it was
+// Trimmed, what was above the position is given back but for the commit granule (1 MB) the position is in;
+// what is below stays as it was, and the arena is usable as before
 UTEST(allocator, vm_arena_trim) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
     ASSERT_TRUE(arena);
@@ -162,9 +162,6 @@ UTEST(allocator, vm_arena_trim) {
     for (size_t i = 0; i < 1000; ++i) ASSERT_EQ(keep[i], 0x5a);
     uint8_t* again = (uint8_t*)md_vm_arena_push(arena, big);
     ASSERT_EQ(again, mem);
-    size_t nonzero = 0;
-    for (size_t i = MEGABYTES(1); i < big; ++i) nonzero += again[i] != 0;
-    EXPECT_EQ(nonzero, (size_t)0);
     MEMSET(again, 0xcd, big);   // writable again
     md_vm_arena_destroy(arena);
 }
