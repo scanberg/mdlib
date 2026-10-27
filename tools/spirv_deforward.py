@@ -20,6 +20,9 @@ unrelated declarations keep their relative order), so a pointer type is
 defined before the struct that holds it. A forward declaration is kept only
 for a pointer that closes a genuine cycle (a recursive struct). OpLine and
 OpNoLine inside that section are dropped; nothing else in the module changes.
+Module-scope OpExtInst (the NonSemantic.Shader.DebugInfo.100 declarations a
+shader compiled with debug information carries, slangc -g) are ordered with
+the rest: every operand of those is an id.
 
     spirv_deforward.py in.spv out.spv      (in and out may be the same file)
 """
@@ -30,7 +33,7 @@ import sys
 TYPE_RESULT_FIRST = {19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
                      35, 36, 37, 38, 322, 327, 4456, 5341, 5358}
 # Everything that may appear in the type/constant/global-variable section.
-SECTION = TYPE_RESULT_FIRST | {1, 39, 41, 42, 43, 44, 46, 48, 49, 50, 51, 52, 59, 8, 317}
+SECTION = TYPE_RESULT_FIRST | {1, 39, 41, 42, 43, 44, 46, 48, 49, 50, 51, 52, 59, 8, 317, 12, 4433}
 OP_LINE, OP_NOLINE, OP_FUNCTION, OP_TYPE_POINTER, OP_TYPE_FORWARD_POINTER = 8, 317, 54, 32, 39
 
 
@@ -47,6 +50,8 @@ def id_operands(op, a):
     if op in (44, 51): return [a[0]] + a[2:]             # (Spec)ConstantComposite
     if op == 52: return [a[0]] + a[3:]                   # SpecConstantOp
     if op == 59: return [a[0]] + a[3:4]                  # Variable (+ initializer)
+    if op == 12: return [a[0]] + a[4:]                   # ExtInst: type, (set), (number), operands
+    if op == 4433: return [a[0]]                         # ExtInstWithForwardRefsKHR: may refer ahead
     raise ValueError("spirv_deforward: unhandled opcode %d in the type section" % op)
 
 
