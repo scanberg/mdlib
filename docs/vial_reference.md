@@ -911,6 +911,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0101 | Unexpected token | unexpected `)` |  |
 | E0102 | Unclosed bracket or string | `(` opened on line 3 is never closed |  |
 | E0103 | Inconsistent indentation | this line is indented by 3 spaces; the block uses 4 |  |
+| E0104 | Nesting too deep: more than 100 levels of brackets, blocks and prefix operators, or an expression more than 1000 operations deep | this nests more than 100 levels deep |  |
 | E0201 | Unknown name | `centre` is not defined | `com` |
 | W0201 | A name that shadows a built-in | `residues` now names a variable | another name |
 | E0202 | A keyword the function does not take | chains have no name; they take `id` | `chains(id='A')` |

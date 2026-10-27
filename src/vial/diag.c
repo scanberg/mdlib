@@ -9,6 +9,9 @@ void vial_diags_init(vial_diags_t* d, str_t src, md_allocator_i* alloc) {
     memset(d, 0, sizeof(*d));
     d->src = src;
     d->alloc = alloc;
+    const size_t words = src.len / 64 + 1;
+    d->at = md_alloc(alloc, words * sizeof(uint64_t));
+    memset(d->at, 0, words * sizeof(uint64_t));
     md_array_push(d->line_beg, 0, alloc);
     for (size_t i = 0; i < src.len; ++i) {
         if (src.ptr[i] == '\n') md_array_push(d->line_beg, (uint32_t)(i + 1), alloc);
@@ -39,6 +42,7 @@ void vial_diag(vial_diags_t* d, const char code[6], md_vial_span_t span, const c
     diag.severity = code[0] == 'W' ? MD_VIAL_SEVERITY_WARNING :
                     code[0] == 'R' ? MD_VIAL_SEVERITY_RUNTIME : MD_VIAL_SEVERITY_ERROR;
     diag.span = span;
+    if (span.beg <= d->src.len) d->at[span.beg / 64] |= 1ull << (span.beg % 64);
     diag.message = str_copy_cstrn(buf, (size_t)len, d->alloc);
     md_array_push(d->items, diag, d->alloc);
 }
@@ -55,14 +59,28 @@ void vial_diag_set_fix(vial_diags_t* d, size_t index, str_t fix) {
     if (index < md_array_size(d->items)) d->items[index].fix = str_copy(fix, d->alloc);
 }
 
+bool vial_diag_at(const vial_diags_t* d, uint32_t offset) {
+    return offset <= d->src.len && (d->at[offset / 64] >> (offset % 64)) & 1;
+}
+
 void vial_diags_sort(vial_diags_t* d) {
-    // Insertion sort, stable, by where each diagnostic starts: the lexer's and the parser's interleave by position
+    // A bottom-up merge sort, stable, by where each diagnostic starts: the lexer's and the parser's interleave by
+    // position, and the lexer reports an unclosed bracket at the end, where it learns of it
+    const size_t n = md_array_size(d->items);
+    if (n < 2) return;
     md_vial_diagnostic_t* a = d->items;
-    const size_t n = md_array_size(a);
-    for (size_t i = 1; i < n; ++i) {
-        const md_vial_diagnostic_t x = a[i];
-        size_t j = i;
-        while (j > 0 && a[j - 1].span.beg > x.span.beg) { a[j] = a[j - 1]; --j; }
-        a[j] = x;
+    md_vial_diagnostic_t* b = md_alloc(d->alloc, n * sizeof(md_vial_diagnostic_t));
+    for (size_t w = 1; w < n; w *= 2) {
+        for (size_t lo = 0; lo < n; lo += 2 * w) {
+            const size_t mid = lo + w < n ? lo + w : n;
+            const size_t hi = lo + 2 * w < n ? lo + 2 * w : n;
+            size_t i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) b[k++] = a[j].span.beg < a[i].span.beg ? a[j++] : a[i++];
+            while (i < mid) b[k++] = a[i++];
+            while (j < hi) b[k++] = a[j++];
+        }
+        md_vial_diagnostic_t* t = a; a = b; b = t;
     }
+    if (a != d->items) memcpy(d->items, a, n * sizeof(md_vial_diagnostic_t));
+    md_free(d->alloc, a == d->items ? b : a, n * sizeof(md_vial_diagnostic_t));
 }

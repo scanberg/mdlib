@@ -17,6 +17,7 @@ typedef struct vial_diags_t {
     md_vial_diagnostic_t* items;    // md_array
     str_t                 src;      // the source the spans point into
     uint32_t*             line_beg; // md_array: byte offset of each line's start, for line numbers in messages
+    uint64_t*             at;       // a bit per byte of src: does a diagnostic start there
     md_allocator_i*       alloc;
 } vial_diags_t;
 
@@ -25,6 +26,7 @@ void     vial_diag(vial_diags_t* d, const char code[6], md_vial_span_t span, con
 uint32_t vial_line_of(const vial_diags_t* d, uint32_t offset);   // 1-based
 size_t   vial_diag_count(const vial_diags_t* d, const char code[6]);
 void     vial_diags_sort(vial_diags_t* d);   // into source order, stable
+bool     vial_diag_at(const vial_diags_t* d, uint32_t offset);   // does a diagnostic start at offset
 void     vial_diag_set_fix(vial_diags_t* d, size_t index, str_t fix);   // copies fix
 
 // ### TOKENS ###
