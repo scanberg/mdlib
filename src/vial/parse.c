@@ -4,7 +4,8 @@
 // be reported where it is written and skipped cleanly, so no script misreads as something else. Errors never stop
 // it. A statement that fails gives one diagnostic, the parser skips to the end of the statement, and the next one
 // parses as if nothing happened; an error the lexer already reported (an unclosed bracket, a character that is not
-// VIAL) is not reported again.
+// VIAL) is not reported again. Nesting is bounded (E0104), so no input runs the parser, or a later stage walking the
+// tree, out of stack.
 //
 // Precedence, loosest first, as Python's with `..` added between the comparisons and `|`:
 //
@@ -30,7 +31,16 @@ typedef struct parser_t {
     vial_tree_t     tree;
     vial_node_id*   stack;      // children of the nodes being built
     bool            panic;      // this statement has reported an error; report no more until it ends
+    uint32_t        nesting;    // brackets, blocks and prefix operators open around the current token
+    uint16_t*       depth;      // md_array, by node id: the height of the node's subtree
 } parser_t;
+
+// How deep a script may nest. The parser recurses once per level of brackets, blocks and prefix operators, so
+// nesting is bounded by what a small thread stack allows; every later stage walks the tree recursively, so its
+// height is bounded too. A long chain such as a + b + c + ... is built in a loop but is as high as it is long.
+// Both are far beyond what a script needs, and reported as E0104.
+#define VIAL_MAX_NESTING 100
+#define VIAL_MAX_HEIGHT  1000
 
 // ### TOKENS ###
 
@@ -85,10 +95,7 @@ static void describe(char* buf, size_t cap, const parser_t* p, const vial_token_
 
 // Has a diagnostic been given at this position already? The lexer's, for a bracket it closed, or a token it refused.
 static bool reported_at(const parser_t* p, uint32_t beg) {
-    for (size_t i = 0; i < md_array_size(p->diags->items); ++i) {
-        if (p->diags->items[i].span.beg == beg) return true;
-    }
-    return false;
+    return vial_diag_at(p->diags, beg);
 }
 
 static void error(parser_t* p, const char code[6], md_vial_span_t span, const char* fmt, ...) {
@@ -183,12 +190,35 @@ static inline void push(parser_t* p, vial_node_id id) { md_array_push(p->stack, 
 static vial_node_id make(parser_t* p, vial_node_kind_t kind, uint16_t sub, uint32_t beg, uint32_t end, uint32_t m) {
     vial_node_t n = {.kind = (uint8_t)kind, .sub = sub, .span = {beg, end < beg ? beg : end}};
     const uint32_t count = mark(p) - m;
+    // A node covers its children, also where recovery left one beyond the tokens the node consumed (an ERROR node
+    // sits where the missing part was wanted, at the next token)
+    uint16_t height = 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        const vial_node_id c = p->stack[m + i];
+        if (!c) continue;
+        const md_vial_span_t s = p->tree.nodes[c].span;
+        if (s.beg < n.span.beg) n.span.beg = s.beg;
+        if (s.end > n.span.end) n.span.end = s.end;
+        if (p->depth[c] >= height) height = p->depth[c] + 1;
+    }
+    if (height > VIAL_MAX_HEIGHT) {
+        // Reported where the height is crossed, once; the panic stops the loop that is building the chain. Above
+        // that the height is held at the limit, so the nodes around it are not reported again.
+        bool crossed = true;
+        for (uint32_t i = 0; i < count; ++i) if (p->stack[m + i] && p->depth[p->stack[m + i]] > VIAL_MAX_HEIGHT) crossed = false;
+        if (crossed && !p->panic) {
+            vial_diag(p->diags, "E0104", n.span, "this expression is more than %d operations deep", VIAL_MAX_HEIGHT);
+            p->panic = true;
+        }
+        height = VIAL_MAX_HEIGHT + 1;
+    }
     n.child_beg = (uint32_t)md_array_size(p->tree.children);
     n.child_count = count;
     if (count) md_array_push_array(p->tree.children, p->stack + m, count, p->alloc);
     md_array_shrink(p->stack, m);
     const vial_node_id id = (vial_node_id)md_array_size(p->tree.nodes);
     md_array_push(p->tree.nodes, n, p->alloc);
+    md_array_push(p->depth, height, p->alloc);
     return id;
 }
 
@@ -205,9 +235,22 @@ static vial_node_id error_node(parser_t* p) {
     return make(p, VIAL_N_ERROR, 0, t->span.beg, t->span.beg, mark(p));
 }
 
+// Entering one more level of nesting; false, after reporting, when that is one too many
+static bool enter(parser_t* p) {
+    if (p->nesting >= VIAL_MAX_NESTING) {
+        error(p, "E0104", tok_span(cur(p)), "this nests more than %d levels deep", VIAL_MAX_NESTING);
+        p->panic = true;
+        return false;
+    }
+    p->nesting += 1;
+    return true;
+}
+static inline void leave(parser_t* p) { p->nesting -= 1; }
+
 // ### EXPRESSIONS ###
 
 static vial_node_id parse_test(parser_t* p);
+static vial_node_id parse_test_nested(parser_t* p);
 static vial_node_id parse_or(parser_t* p);
 static vial_node_id parse_bitor(parser_t* p);
 static vial_node_id parse_factor(parser_t* p);
@@ -354,7 +397,17 @@ static vial_node_id parse_brace(parser_t* p) {
     return make(p, VIAL_N_UNSUPPORTED, (uint16_t)u, beg, p->last_end, mark(p));
 }
 
+static vial_node_id parse_atom_(parser_t* p);
+
+// Every bracket, and every prefix that VIAL refuses, recurses through here: one level of nesting each
 static vial_node_id parse_atom(parser_t* p) {
+    if (!enter(p)) return error_node(p);
+    const vial_node_id e = parse_atom_(p);
+    leave(p);
+    return e;
+}
+
+static vial_node_id parse_atom_(parser_t* p) {
     const vial_token_t* t = cur(p);
     switch (t->kind) {
     case MD_VIAL_TOKEN_NAME:   advance(p); return leaf(p, VIAL_N_NAME, 0, t);
@@ -529,6 +582,7 @@ static void report_v1_call(parser_t* p, vial_node_id call) {
 static vial_node_id parse_primary(parser_t* p) {
     vial_node_id e = parse_atom(p);
     for (;;) {
+        if (p->panic) return e;   // an atom that failed takes no call, subscript or attribute
         const vial_token_t* t = cur(p);
         if (tok_is_op(t, VIAL_OP_LPAREN)) {
             const uint32_t m = mark(p);
@@ -580,7 +634,12 @@ static vial_node_id parse_power(parser_t* p) {
         advance(p);
         const uint32_t m = mark(p);
         push(p, base);
-        push(p, parse_factor(p));   // right-associative, and binds tighter than a unary minus on its left
+        if (!enter(p)) {
+            push(p, error_node(p));
+        } else {
+            push(p, parse_factor(p));   // right-associative, and binds tighter than a unary minus on its left
+            leave(p);
+        }
         return make(p, VIAL_N_BINARY, VIAL_OP_POW, node_beg(p, base), p->last_end, m);
     }
     return base;
@@ -590,8 +649,10 @@ static vial_node_id parse_factor(parser_t* p) {
     const vial_token_t* t = cur(p);
     if (tok_is_op(t, VIAL_OP_PLUS) || tok_is_op(t, VIAL_OP_MINUS) || tok_is_op(t, VIAL_OP_TILDE)) {
         advance(p);
+        if (!enter(p)) return error_node(p);
         const uint32_t m = mark(p);
         push(p, parse_factor(p));
+        leave(p);
         return make(p, VIAL_N_UNARY, t->sub, t->span.beg, p->last_end, m);
     }
     return parse_power(p);
@@ -698,8 +759,10 @@ static vial_node_id parse_not(parser_t* p) {
     const vial_token_t* t = cur(p);
     if (tok_is_kw(t, VIAL_KW_NOT)) {
         advance(p);
+        if (!enter(p)) return error_node(p);
         const uint32_t m = mark(p);
         push(p, parse_not(p));
+        leave(p);
         return make(p, VIAL_N_NOT, 0, t->span.beg, p->last_end, m);
     }
     return parse_comparison(p);
@@ -723,8 +786,16 @@ static vial_node_id parse_lambda(parser_t* p) {
     advance(p);
     while (!is_op(p, VIAL_OP_COLON) && !at_line_end(p)) advance(p);   // the parameters
     const uint32_t m = mark(p);
-    if (accept_op(p, VIAL_OP_COLON)) push(p, parse_test(p));
+    if (accept_op(p, VIAL_OP_COLON)) push(p, parse_test_nested(p));
     return make(p, VIAL_N_UNSUPPORTED, VIAL_UNSUP_LAMBDA, t->span.beg, p->last_end, m);
+}
+
+// parse_test, one level of nesting deeper: for the parts that recurse on the right without passing an atom
+static vial_node_id parse_test_nested(parser_t* p) {
+    if (!enter(p)) return error_node(p);
+    const vial_node_id e = parse_test(p);
+    leave(p);
+    return e;
 }
 
 static vial_node_id parse_test(parser_t* p) {
@@ -735,7 +806,7 @@ static vial_node_id parse_test(parser_t* p) {
         const uint32_t m = mark(p);
         push(p, e);
         push(p, parse_or(p));
-        if (accept_kw(p, VIAL_KW_ELSE)) push(p, parse_test(p));
+        if (accept_kw(p, VIAL_KW_ELSE)) push(p, parse_test_nested(p));
         else { unexpected(p, "`else`"); push(p, error_node(p)); }
         return make(p, VIAL_N_TERNARY, 0, node_beg(p, e), p->last_end, m);
     }
@@ -744,7 +815,7 @@ static vial_node_id parse_test(parser_t* p) {
         advance(p);
         const uint32_t m = mark(p);
         push(p, e);
-        push(p, parse_test(p));
+        push(p, parse_test_nested(p));
         return make(p, VIAL_N_UNSUPPORTED, VIAL_UNSUP_WALRUS, node_beg(p, e), p->last_end, m);
     }
     return e;
@@ -781,7 +852,27 @@ static void synchronize(parser_t* p) {
 }
 
 // Statements until the end of a block (a DEDENT, consumed) or of the text
+static void parse_stmts_(parser_t* p, bool until_dedent);
+
+// A block nested one too many: skip to its end, nested blocks included
+static void skip_block(parser_t* p) {
+    int level = 1;
+    while (!is_kind(p, MD_VIAL_TOKEN_EOF)) {
+        if (is_kind(p, MD_VIAL_TOKEN_INDENT)) level += 1;
+        if (is_kind(p, MD_VIAL_TOKEN_DEDENT) && --level == 0) { advance(p); return; }
+        advance(p);
+    }
+}
+
 static void parse_stmts(parser_t* p, bool until_dedent) {
+    if (!until_dedent) { parse_stmts_(p, false); return; }
+    p->panic = false;
+    if (!enter(p)) { skip_block(p); p->panic = false; return; }
+    parse_stmts_(p, true);
+    leave(p);
+}
+
+static void parse_stmts_(parser_t* p, bool until_dedent) {
     for (;;) {
         if (is_kind(p, MD_VIAL_TOKEN_EOF)) return;
         if (is_kind(p, MD_VIAL_TOKEN_DEDENT)) {
@@ -833,7 +924,13 @@ static vial_node_id parse_suite(parser_t* p, const vial_token_t* header) {
     }
     // One line: if a: pass
     const uint32_t m = mark(p);
-    parse_stmt(p);
+    if (enter(p)) {
+        parse_stmt(p);
+        leave(p);
+    } else {
+        push(p, error_node(p));
+        while (!at_line_end(p)) advance(p);   // the rest of the line, or each level above would try it again
+    }
     return make(p, VIAL_N_BLOCK, 0, beg, p->last_end, m);
 }
 
@@ -1121,6 +1218,7 @@ vial_tree_t vial_parse(const vial_token_t* tokens, str_t src, vial_diags_t* diag
 
     vial_node_t none = {0};
     md_array_push(p.tree.nodes, none, alloc);
+    md_array_push(p.depth, 0, alloc);
 
     const uint32_t m = mark(&p);
     parse_stmts(&p, false);
@@ -1129,6 +1227,7 @@ vial_tree_t vial_parse(const vial_token_t* tokens, str_t src, vial_diags_t* diag
 
     md_array_free(p.toks, alloc);
     md_array_free(p.stack, alloc);
+    md_array_free(p.depth, alloc);
     return p.tree;
 }
 

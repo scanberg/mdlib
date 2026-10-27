@@ -1,5 +1,5 @@
 module 0..103
-  assign 0..3
+  assign 0..4
     name a 0..1
     error 4..4
   assign 8..13
@@ -22,7 +22,7 @@ module 0..103
   if 42..61
     name x 45..46
     block 54..61
-      assign 54..57
+      assign 54..58
         name g 54..55
         error 58..58
     -

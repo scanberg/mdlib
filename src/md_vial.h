@@ -74,7 +74,9 @@ typedef struct md_vial_compile_desc_t {
 
 // Compiles a script. Phase 1 stops after the parser: the program holds the tokens, the syntax tree and the
 // diagnostics of the front end. Never fails on broken text, which gives diagnostics; NULL only when out of memory.
-// desc may be NULL. The program keeps its own copy of src.
+// desc may be NULL. The program keeps its own copy of src. Any text is safe to compile: deep nesting is reported
+// (E0104) rather than followed, so compiling needs less than 256 KB of stack, and time and memory grow linearly with
+// the length of src.
 md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc, struct md_allocator_i* alloc);
 void               md_vial_program_free(md_vial_program_t* prog);
 

@@ -33,6 +33,7 @@ option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
+option(MD_VIAL_FUZZ "Build fuzz_vial, the libFuzzer target of the VIAL front end, with ASan and UBSan (clang)" OFF)
 # The readers of the HDF5 based formats come as one: they share the one dependency, and a build that
 # has HDF5 has no reason to leave any of them out. Compiled in, they define MD_HDF5.
 option(MD_ENABLE_HDF5 "Enable the HDF5 based readers: VeloxChem, TREXIO and H5MD (requires HDF5)" OFF)
@@ -525,6 +526,25 @@ endif()
 
 if (MD_BENCHMARK)
   add_subdirectory(benchmark)
+endif()
+
+# The libFuzzer target of the VIAL front end (unittest/fuzz_vial.c). It builds the front end and the few core files it
+# uses on their own, so only VIAL is instrumented, and needs no other part of mdlib.
+if (MD_VIAL_FUZZ)
+  if (NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "MD_VIAL_FUZZ needs clang, for -fsanitize=fuzzer")
+  endif()
+  find_package(Threads REQUIRED)
+  add_executable(fuzz_vial
+    unittest/fuzz_vial.c
+    src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/api.c
+    src/core/md_str.c src/core/md_allocator.c src/core/md_arena_allocator.c src/core/md_common.c
+    src/core/md_os.c src/core/md_log.c src/core/md_parse.c
+  )
+  target_include_directories(fuzz_vial PRIVATE src unittest ext)
+  target_compile_options(fuzz_vial PRIVATE -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
+  target_link_options(fuzz_vial PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_link_libraries(fuzz_vial PRIVATE m Threads::Threads)
 endif()
 
 # The basis sets have to sit beside the executables, because MD_VLX_BASIS_FOLDER is resolved
