@@ -214,6 +214,28 @@ typedef struct md_topo_gto_info_t {
 
 bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info, const md_topo_gto_desc_t* desc);
 
+#if MD_ENABLE_GPU
+// The same search with the octree sweep on the GPU, in fp32 with rigorous rounding margins (every bound
+// the tests use carries the rounding error of its own computation), so the guarantee is unchanged. The
+// CPU keeps what needs double precision or is inherently few: Newton polish of the certified roots, the
+// cubes fp32 cannot decide (with their subtree, see num_escalated_boxes), and clusters.
+// The separatrices (edges) are traced on the GPU in fp32, a numerical integration outside the certificate
+// in either precision: an edge can differ from the CPU search's where a path runs close to the boundary
+// between two basins (none did on the test inputs, nor on a 9636-AO protein). The critical points are the
+// same as the CPU search's, bit for bit.
+// Blocking: works through 'stream' in chunks, two in flight. If the GPU cannot be used the whole sweep
+// runs on the CPU (info.used_gpu false). Same inputs; deterministic on a given device.
+bool md_topo_compute_extremum_graph_gto_gpu(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info,
+                                            const md_topo_gto_desc_t* desc, md_gpu_stream_t stream);
+
+// The search's GPU kernels as the driver compiled them, for profiling: the entry point's name and its
+// md_gpu_kernel_info (stats: registers, shared memory, ... as far as the backend reports them, "" where
+// it reports nothing), which decide how many groups an SM holds. Creates the kernels for 'device' if
+// they are not yet. i < md_topo_gto_gpu_kernel_count().
+uint32_t md_topo_gto_gpu_kernel_count(void);
+bool     md_topo_gto_gpu_kernel_info(md_gpu_device_t device, uint32_t i, const char** out_name, md_gpu_kernel_info_t* out_info);
+#endif
+
 // Free an extremum graph structure
 void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph);
 
