@@ -201,11 +201,20 @@ n = count(sel=protein(), unit="residue");
 
 Units propagate through arithmetic: `distance(1,2) - distance(1,3)` is in Å, `distance(1,2) * distance(1,3)` in Å²,
 `distance(1,2) / distance(1,3)` is dimensionless, and scaling by a plain number (`2.0 * distance(1,2)`) keeps the
-unit. Other operations produce a plain number without a unit tag: adding a bare number to a quantity
-(`distance(1,2) + 1.0`), unary minus, and the math functions (`abs`, `sqrt`, `min`, ...). Reported units: `distance`
+unit, and so does unary minus. Other operations produce a plain number without a unit tag: adding a bare number to a
+quantity (`distance(1,2) + 1.0`) and the math functions (`abs`, `sqrt`, `min`, ...). Reported units: `distance`
 in Å, `angle` and `dihedral` in rad, `density_*` in kg/m³, `sdf` in count/Å³; `PI` and `TAU` carry the unit rad.
 `count`, `rdf` and `porosity` are dimensionless. Treat a missing unit tag as "unknown", not as a guarantee that the
 value is dimensionless.
+
+Periodic values propagate the same way. A value is periodic when it is the same as itself plus a whole period, as an
+angle about an axis is: `dihedral` (in `[-π, π)`), `phase` and `pseudorotation` (in `[0, 2π)`) and `atan2`. Moved
+along or scaled by a constant (`dihedral(1,2,3,4) * 180 / PI` has a period of 360), negated, added to or subtracted
+from another of the same period (`dihedral(1,2,3,4) - dihedral(2,3,4,5)`), gathered into an array, indexed, or the
+`min`, `max` or `sum` of an array of them, it stays periodic. What no longer lies on a circle (`abs`, `cos`, a
+product of two angles) does not. A periodic property is plotted cut where its values are least likely to be: a
+dihedral at 0, where torsions are eclipsed, a pseudorotation at 270 degrees (O4'-exo). Its mean, spread and extent
+over a population are circular: the mean of 179 and -179 degrees is 180, not 0.
 
 ### Coordinate arguments
 
