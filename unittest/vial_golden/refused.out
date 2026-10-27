@@ -1,0 +1,91 @@
+module 0..251
+  unsupported import 0..18
+  unsupported class 19..38
+    block 34..38
+      pass 34..38
+  assign 39..61
+    name f 39..40
+    unsupported lambda 43..61
+      binary + 56..61
+        name s 56..57
+        name v 60..61
+  assign 62..75
+    name s 62..63
+    unsupported set 66..75
+  assign 76..88
+    name d 76..77
+    unsupported dict 80..88
+  assign 89..107
+    name g 89..90
+    unsupported generator 93..107
+      listcomp 93..107
+        name a 94..95
+        compfor 96..106
+          name a 100..101
+          name b 105..106
+  assign 108..118
+    name t 108..109
+    string f'{x}' 112..118
+  def 119..167
+    name h 123..124
+    params 124..141
+    -
+    block 147..167
+      unsupported global 147..155
+      expr 160..167
+        unsupported generator 160..167
+          int 1 166..167
+  while 168..198
+    compare 174..181
+      name x 174..175
+      cmpop > 176..177
+      float 1.0 178..181
+    block 187..198
+      assign 187..198
+        name x 187..188
+        binary / 191..198
+          name x 191..192
+          float 2.0 195..198
+  assign 199..207
+    subscript 199..203
+      name a 199..200
+      int 0 201..202
+    int 1 206..207
+  assign 208..224
+    name r 208..209
+    call 212..224
+      name residue 212..219
+      unsupported v1-range 220..223
+        int 1 220..221
+        int 4 222..223
+  assign 225..237
+    name c 225..226
+    call 229..237
+      name chain 229..234
+      unsupported v1-range 235..236
+        -
+        -
+  assign 238..250
+    name k 238..239
+    call 242..250
+      name atom 242..246
+      unsupported v1-range 247..249
+        int 2 247..248
+        -
+--- diagnostics
+E0803 1:1 `import` is not part of VIAL; every function is built in or written in the script
+E0803 2:1 classes are not part of VIAL
+E0803 4:5 `lambda` is not part of VIAL; a nested def does what it would
+E0803 5:5 set literals are not part of VIAL; sets of particles come from selectors
+E0803 6:5 dicts are not part of VIAL
+E0803 7:5 generators are not part of VIAL; a list comprehension builds the array
+E0803 8:5 f-strings are not part of VIAL
+E0803 9:7 `*args` and `**kwargs` are not part of VIAL
+E0803 9:14 `*args` and `**kwargs` are not part of VIAL
+E0803 10:5 `global` and `nonlocal` are not part of VIAL
+E0803 11:5 generators are not part of VIAL; a list comprehension builds the array
+E0801 12:1 `while` is not supported yet
+E0801 14:1 item assignment is not supported yet
+E0701 15:5 `residue(1:4)` is v1; positions are subscripts | fix: residues[0:4]
+E0701 16:5 `chain(:)` is v1; positions are subscripts | fix: chains
+E0701 17:5 `atom(2:)` is v1; positions are subscripts | fix: particles[1:]

@@ -1,0 +1,130 @@
+module 0..424
+  assign 68..87
+    name a 68..69
+    binary + 72..87
+      name b 72..73
+      binary * 76..87
+        name c 76..77
+        binary ** 80..87
+          name d 80..81
+          unary - 85..87
+            name e 86..87
+  assign 88..100
+    name r 88..89
+    range 92..100
+      int 1 92..93
+      binary + 95..100
+        name n 95..96
+        int 1 99..100
+  assign 101..131
+    name m 101..102
+    boolop or 105..131
+      boolop and 105..126
+        compare 105..116
+          name x 105..106
+          cmpop in 107..109
+          range 110..116
+            int 10 110..112
+            int 20 114..116
+        not 121..126
+          name y 125..126
+      name z 130..131
+  assign 132..153
+    name c 132..133
+    compare 136..153
+      int 2 136..137
+      cmpop < 138..139
+      name n 140..141
+      cmpop <= 142..144
+      int 500 145..148
+      cmpop != 149..151
+      name k 152..153
+  assign 154..183
+    name t 154..155
+    ternary 158..183
+      name a 158..159
+      compare 163..176
+        name b 163..164
+        cmpop is not 165..171
+        const None 172..176
+      name c 182..183
+  assign 184..197
+    name p 184..185
+    binary + 188..197
+      binary @ 188..193
+        name u 188..189
+        name v 192..193
+      name w 196..197
+  assign 198..220
+    name s 198..199
+    binary | 202..220
+      binary & 202..207
+        name a 202..203
+        name b 206..207
+      binary ^ 210..220
+        name c 210..211
+        binary << 214..220
+          name d 214..215
+          int 2 219..220
+  assign 234..288
+    name d 234..235
+    call 238..288
+      name distance 238..246
+      subscript 247..261
+        name res_a 247..252
+        tuple 253..260
+          slice 253..254
+            -
+            -
+            -
+          const None 256..260
+      name res_a 263..268
+      kwarg 270..287
+        name between 270..277
+        string 'closest' 278..287
+  assign 289..308
+    name z 289..290
+    binary + 293..308
+      subscript 293..302
+        name c 293..294
+        tuple 295..301
+          ellipsis 295..298
+          int 0 300..301
+      attr 305..308
+        name c 305..306
+        name x 307..308
+  assign 309..349
+    name l 309..310
+    listcomp 313..349
+      attr 314..319
+        name r 314..315
+        name com 316..319
+      compfor 320..348
+        name r 324..325
+        call 329..343
+          name residues 329..337
+          range 338..342
+            int 1 338..339
+            int 4 341..342
+        name r 347..348
+  assign 350..381
+    name n 350..351
+    listcomp 354..381
+      listcomp 355..369
+        name a 356..357
+        compfor 358..368
+          name a 362..363
+          name r 367..368
+      compfor 370..380
+        name r 374..375
+        name s 379..380
+  assign 382..423
+    name q 382..383
+    tuple 386..423
+      string 'a' "b" 387..394
+      int 1 396..397
+      float 2.5e-3 399..405
+      const True 407..411
+      const None 413..417
+      ellipsis 419..422
+--- diagnostics
