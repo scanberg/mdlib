@@ -65,6 +65,24 @@ typedef struct md_vial_token_t {
     md_vial_span_t       span;
 } md_vial_token_t;
 
+typedef struct md_vial_program_t md_vial_program_t;
+
+typedef struct md_vial_compile_desc_t {
+    uint32_t flags;     // none yet; the system, stored selections and loaded runs arrive with the checker
+} md_vial_compile_desc_t;
+
+// Compiles a script. Phase 1 stops after the parser: the program holds the tokens, the syntax tree and the
+// diagnostics of the front end. Never fails on broken text, which gives diagnostics; NULL only when out of memory.
+// desc may be NULL. The program keeps its own copy of src.
+md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc, struct md_allocator_i* alloc);
+void               md_vial_program_free(md_vial_program_t* prog);
+
+// Every diagnostic, in the order found
+size_t md_vial_diagnostics(const md_vial_program_t* prog, const md_vial_diagnostic_t** out);
+
+// Every token, comments included, in source order, for highlighting
+size_t md_vial_tokens(const md_vial_program_t* prog, const md_vial_token_t** out);
+
 #ifdef __cplusplus
 }
 #endif

@@ -62,6 +62,7 @@ enum {
     VIAL_STR_FORMAT = 1 << 2,   // an f-string, which VIAL does not have
     VIAL_STR_TRIPLE = 1 << 3,
     VIAL_STR_UNCLOSED = 1 << 4,
+    VIAL_TOK_REPORTED = 1 << 15,  // the lexer reported this token already (a closer that matched no opener)
 };
 
 typedef struct vial_token_t {
