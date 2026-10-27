@@ -185,6 +185,9 @@ set(SRC_FILES
   src/md_script_complete.inl
   src/md_vial.h
   src/vial/prelude.vial
+  src/vial/vial_internal.h
+  src/vial/diag.c
+  src/vial/lex.c
   src/md_smiles.c
   src/md_smiles.h
   src/md_topo.c

@@ -134,3 +134,50 @@ UTEST(vial_spec, grammar) {
     e = (vial_expect_t){0};
     EXPECT_FALSE(vial_spec__parse_expect(&e, STR_LIT("error E0301 -> float")));
 }
+
+// ### PHASE 1 ###
+
+#include <vial/vial_internal.h>
+
+// Whether a code is one the front end reports
+static bool vial_spec__is_syntax_code(const char* code) {
+    static const char* codes[] = {"E0101", "E0102", "E0103", "E0701", "E0801", "E0803"};
+    for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
+    return false;
+}
+
+static const vial_expect_t* vial_spec__expect_at(const vial_block_t* b, int line_in_block) {
+    for (size_t i = 0; i < md_array_size(b->expects); ++i) {
+        if (b->expects[i].line_in_block == line_in_block) return &b->expects[i];
+    }
+    return NULL;
+}
+
+static bool vial_spec__expects_code(const vial_expect_t* e, const char* code) {
+    if (!e) return false;
+    for (int k = 0; k < e->num_codes; ++k) if (strncmp(e->codes[k], code, 5) == 0) return true;
+    return false;
+}
+
+// Every block lexes, and the lexer reports only what a line expects
+UTEST_F(vial_spec, lexes) {
+    const vial_spec_t* spec = &utest_fixture->spec;
+    size_t num_tokens = 0;
+    for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
+        const vial_block_t* b = &spec->blocks[i];
+        vial_diags_t diags;
+        vial_diags_init(&diags, b->src, utest_fixture->alloc);
+        vial_token_t* tokens = vial_lex(b->src, &diags, utest_fixture->alloc);
+        num_tokens += md_array_size(tokens);
+        for (size_t j = 0; j < md_array_size(diags.items); ++j) {
+            const md_vial_diagnostic_t* d = &diags.items[j];
+            const int line = (int)vial_line_of(&diags, d->span.beg);
+            const bool expected = vial_spec__expects_code(vial_spec__expect_at(b, line), d->code);
+            if (!expected) {
+                printf("reference line %d: unexpected %s %.*s\n", b->line + line - 1, d->code, (int)d->message.len, d->message.ptr);
+            }
+            EXPECT_TRUE(expected);
+        }
+    }
+    printf("vial reference: %zu tokens\n", num_tokens);
+}
