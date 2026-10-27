@@ -188,6 +188,9 @@ set(SRC_FILES
   src/vial/vial_internal.h
   src/vial/diag.c
   src/vial/lex.c
+  src/vial/ast.h
+  src/vial/parse.c
+  src/vial/api.c
   src/md_smiles.c
   src/md_smiles.h
   src/md_topo.c

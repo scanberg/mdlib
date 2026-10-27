@@ -381,12 +381,13 @@ static void lex_op(lexer_t* l) {
                     const open_t inner = l->open[n - 1];
                     vial_diag(l->diags, "E0101", span(beg, beg + 1), "`%c` does not close `%c` opened on line %u",
                         c, inner.c, vial_line_of(l->diags, inner.pos));
-                    if (k == 0) {
-                        l->pos += 1;
-                        emit(l, MD_VIAL_TOKEN_ERROR, beg, l->pos, e->op, 0);
-                        return;
-                    }
-                    md_array_shrink(l->open, k - 1);
+                    // It closes the nearest opener it matches; when none does, it was most likely meant to close
+                    // the innermost one. Either way it stands as a closer, marked as reported, so the parser takes
+                    // it without a second diagnostic.
+                    md_array_shrink(l->open, k > 0 ? k - 1 : n - 1);
+                    l->pos += 1;
+                    emit(l, MD_VIAL_TOKEN_PUNCT, beg, l->pos, (uint16_t)e->op, VIAL_TOK_REPORTED);
+                    return;
                 } else {
                     md_array_pop(l->open);
                 }

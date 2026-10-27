@@ -181,3 +181,59 @@ UTEST_F(vial_spec, lexes) {
     }
     printf("vial reference: %zu tokens\n", num_tokens);
 }
+
+#include <vial/ast.h>
+
+// The phase 1 gate: every block parses, each line gives exactly the syntax codes it expects, and the prelude parses
+UTEST_F(vial_spec, parses) {
+    const vial_spec_t* spec = &utest_fixture->spec;
+    size_t num_checked = 0, num_nodes = 0;
+    for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
+        const vial_block_t* b = &spec->blocks[i];
+        vial_diags_t diags;
+        vial_diags_init(&diags, b->src, utest_fixture->alloc);
+        vial_token_t* tokens = vial_lex(b->src, &diags, utest_fixture->alloc);
+        vial_tree_t tree = vial_parse(tokens, b->src, &diags, utest_fixture->alloc);
+        num_nodes += md_array_size(tree.nodes);
+
+        // Every diagnostic is one its line expects
+        for (size_t j = 0; j < md_array_size(diags.items); ++j) {
+            const md_vial_diagnostic_t* d = &diags.items[j];
+            const int line = (int)vial_line_of(&diags, d->span.beg);
+            const bool expected = vial_spec__expects_code(vial_spec__expect_at(b, line), d->code);
+            if (!expected) {
+                printf("reference line %d: unexpected %s %.*s\n", b->line + line - 1, d->code, (int)d->message.len, d->message.ptr);
+            }
+            EXPECT_TRUE(expected);
+        }
+        // Every syntax code a line expects is given on it
+        for (size_t j = 0; j < md_array_size(b->expects); ++j) {
+            const vial_expect_t* e = &b->expects[j];
+            for (int k = 0; k < e->num_codes; ++k) {
+                if (!vial_spec__is_syntax_code(e->codes[k])) continue;
+                bool found = false;
+                for (size_t q = 0; q < md_array_size(diags.items); ++q) {
+                    const md_vial_diagnostic_t* d = &diags.items[q];
+                    if ((int)vial_line_of(&diags, d->span.beg) == e->line_in_block && strncmp(d->code, e->codes[k], 5) == 0) found = true;
+                }
+                if (!found) printf("reference line %d: expected %s, not given\n", e->line, e->codes[k]);
+                EXPECT_TRUE(found);
+                num_checked += 1;
+            }
+        }
+    }
+
+    // The prelude, as the compiler will read it
+    str_t prelude = load_textfile(STR_LIT(VIAL_PRELUDE_PATH), utest_fixture->alloc);
+    vial_diags_t diags;
+    vial_diags_init(&diags, prelude, utest_fixture->alloc);
+    vial_token_t* tokens = vial_lex(prelude, &diags, utest_fixture->alloc);
+    vial_parse(tokens, prelude, &diags, utest_fixture->alloc);
+    for (size_t j = 0; j < md_array_size(diags.items); ++j) {
+        printf("prelude.vial line %u: %s %.*s\n", vial_line_of(&diags, diags.items[j].span.beg), diags.items[j].code,
+            (int)diags.items[j].message.len, diags.items[j].message.ptr);
+    }
+    EXPECT_EQ(0, md_array_size(diags.items));
+
+    printf("vial reference: every block parses into %zu nodes; %zu expected syntax codes given\n", num_nodes, num_checked);
+}
