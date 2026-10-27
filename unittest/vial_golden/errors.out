@@ -1,0 +1,57 @@
+module 0..103
+  assign 0..3
+    name a 0..1
+    error 4..4
+  assign 8..13
+    name b 8..9
+    int 2 12..13
+  assign 14..24
+    name c 14..15
+    call 18..24
+      name f 18..19
+      int 1 20..21
+      int 2 23..24
+  assign 25..30
+    name d 25..26
+    int 4 29..30
+  assign 31..41
+    name e 31..32
+    tuple 35..41
+      int 1 36..37
+      int 2 39..40
+  if 42..61
+    name x 45..46
+    block 54..61
+      assign 54..57
+        name g 54..55
+        error 58..58
+    -
+  assign 62..67
+    name h 62..63
+    int 5 66..67
+  assign 70..75
+    name i 70..71
+    int 6 74..75
+  if 76..81
+    name z 79..80
+    block 81..81
+    -
+  assign 82..87
+    name j 82..83
+    int 7 86..87
+  assign 88..93
+    name k 88..89
+    error 92..93
+  assign 94..102
+    name l 94..95
+    error 98..102
+--- diagnostics
+E0101 1:5 unexpected `=`; expected an expression
+E0102 3:6 `(` opened on line 3 is never closed
+E0101 5:10 `]` does not close `(` opened on line 5
+E0101 6:6 unexpected `y`; expected `:`
+E0101 7:9 unexpected `=`; expected an expression
+E0103 9:3 unexpected indent; no block starts on the line before
+E0103 11:1 expected an indented block after `if`
+E0101 12:5 unexpected `$`
+E0101 13:5 `1abc` is not a number
