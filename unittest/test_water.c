@@ -151,11 +151,14 @@ UTEST(water, virtual_sites) {
             EXPECT_EQ(MD_RESIDUE_KIND_WATER, md_system_residue_kind(&sys, ci));
         }
         EXPECT_FALSE(md_system_is_coarse_grained(&sys));
-        // Each water molecule is an instance of its own, of one water entity
-        ASSERT_EQ(2, (int)sys.instance.count);
-        ASSERT_EQ(1, (int)sys.entity.count);
-        EXPECT_EQ(MD_ENTITY_KIND_WATER, md_system_instance_entity_kind(&sys, 0));
-        EXPECT_EQ(MD_ENTITY_KIND_WATER, md_system_instance_entity_kind(&sys, 1));
+        // Each water molecule is a part and a molecule of its own, of one water part type and one molecule type
+        ASSERT_EQ(2, (int)sys.part.count);
+        ASSERT_EQ(1, (int)md_system_part_type_count(&sys));
+        EXPECT_EQ(MD_PART_KIND_WATER, md_system_part_kind(&sys, 0));
+        EXPECT_EQ(MD_PART_KIND_WATER, md_system_part_kind(&sys, 1));
+        ASSERT_EQ(2, (int)sys.molecule.count);
+        EXPECT_EQ(1, (int)md_system_molecule_type_count(&sys));
+        EXPECT_EQ(md_system_molecule_type_idx(&sys, 0), md_system_molecule_type_idx(&sys, 1));
         EXPECT_EQ(4, (int)sys.bond.count);
 
         int num_o = 0, num_h = 0, num_sites = 0;

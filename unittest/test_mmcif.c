@@ -165,8 +165,8 @@ static const char assembly_cif[] =
 "#\n";
 
 static bool part_is(const md_assembly_data_t* a, uint32_t part, const md_instance_idx_t* inst, size_t inst_count, const uint32_t* oper, size_t oper_count) {
-    const md_urange_t ir = md_assembly_part_inst_range(a, part);
-    const md_urange_t orr = md_assembly_part_oper_range(a, part);
+    const md_urange_t ir = md_assembly_group_inst_range(a, part);
+    const md_urange_t orr = md_assembly_group_oper_range(a, part);
     if (ir.end - ir.beg != inst_count || orr.end - orr.beg != oper_count) return false;
     for (size_t i = 0; i < inst_count; ++i) if (a->inst[ir.beg + i] != inst[i]) return false;
     for (size_t i = 0; i < oper_count; ++i) if (a->oper[orr.beg + i] != oper[i]) return false;
@@ -193,7 +193,7 @@ UTEST(mmcif, assemblies) {
 
     // 1: A and the waters by the identity, B by the other
     {
-        const md_urange_t parts = md_assembly_part_range(a, 0);
+        const md_urange_t parts = md_assembly_group_range(a, 0);
         ASSERT_EQ(2, parts.end - parts.beg);
         const md_instance_idx_t i0[] = {0, 2, 3};
         const uint32_t o0[] = {0};
@@ -206,7 +206,7 @@ UTEST(mmcif, assemblies) {
     // 2: A by the products, the factor of the last group applied first: 2 (half a turn about z and 10 along x) after 3
     // (a quarter turn about z and 5 along z), the matrices of the file by rows
     {
-        const md_urange_t parts = md_assembly_part_range(a, 1);
+        const md_urange_t parts = md_assembly_group_range(a, 1);
         ASSERT_EQ(1, parts.end - parts.beg);
         const md_instance_idx_t i0[] = {0};
         const uint32_t o0[] = {3, 4};
@@ -219,7 +219,7 @@ UTEST(mmcif, assemblies) {
     }
     // 3: two rows of the same operator are one part
     {
-        const md_urange_t parts = md_assembly_part_range(a, 2);
+        const md_urange_t parts = md_assembly_group_range(a, 2);
         ASSERT_EQ(1, parts.end - parts.beg);
         const md_instance_idx_t i0[] = {0, 2, 3};
         const uint32_t o0[] = {0};
@@ -227,7 +227,7 @@ UTEST(mmcif, assemblies) {
     }
     // 4: a range of operators
     {
-        const md_urange_t parts = md_assembly_part_range(a, 3);
+        const md_urange_t parts = md_assembly_group_range(a, 3);
         ASSERT_EQ(1, parts.end - parts.beg);
         const md_instance_idx_t i0[] = {1};
         const uint32_t o0[] = {0, 1};
@@ -245,9 +245,9 @@ UTEST(mmcif, assembly_key_value) {
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
     const md_assembly_data_t* a = &sys.assembly;
     ASSERT_EQ(1, a->count);
-    ASSERT_EQ(1, a->part_count);
+    ASSERT_EQ(1, a->group_count);
     ASSERT_EQ(1, a->oper_count);
-    const md_urange_t ir = md_assembly_part_inst_range(a, 0);
+    const md_urange_t ir = md_assembly_group_inst_range(a, 0);
     EXPECT_EQ(sys.instance.count, ir.end - ir.beg);
     const mat4_t I = mat4_ident();
     EXPECT_EQ(0, MEMCMP(&I, &a->oper_transform[0], sizeof(mat4_t)));

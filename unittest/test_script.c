@@ -70,13 +70,13 @@ static uint32_t    r_off[] = {0, 3, 8, 12, 16};
 #define ENT_COUNT 3
 static md_label_t    e_id[] = {MAKE_LABEL("WAT"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT")};
 // The kind is the low bits of the entity flags
-static md_entity_flags_t e_flags[] = {(md_entity_flags_t)MD_ENTITY_KIND_WATER, (md_entity_flags_t)MD_ENTITY_KIND_PEPTIDE, (md_entity_flags_t)MD_ENTITY_KIND_NON_POLYMER};
+static md_part_type_flags_t e_flags[] = {(md_part_type_flags_t)MD_PART_KIND_WATER, (md_part_type_flags_t)MD_PART_KIND_PEPTIDE, (md_part_type_flags_t)MD_PART_KIND_NON_POLYMER};
 static str_t       e_desc[] = {MAKE_LABEL("water"), MAKE_LABEL("polypeptide"), MAKE_LABEL("non-polymer")};
 
 #define INST_COUNT 4
 static md_label_t        i_id[] = {MAKE_LABEL("A"), MAKE_LABEL("B"), MAKE_LABEL("C"), MAKE_LABEL("D")};
 static uint32_t         i_off[] = {0, 3, 8, 12, 16};
-static md_entity_idx_t i_eidx[] = {0, 1, 2, 2};
+static md_part_type_idx_t i_eidx[] = {0, 1, 2, 2};
 
 md_system_t test_mol = {
     // A hand built system still needs a reference state: it is what evaluation reads coordinates
@@ -107,10 +107,12 @@ md_system_t test_mol = {
         .id = i_id,
         .res_offset = i_off,
     },
-    .entity = {
-        .count = ENT_COUNT,
-        .id = e_id,
-        .flags = e_flags
+    .part = {
+        .type = {
+            .count = ENT_COUNT,
+            .id = e_id,
+            .flags = e_flags
+        },
     },
 };
 
@@ -1215,6 +1217,20 @@ UTEST(script, stride_procedures_selectors) {
 UTEST_F(script, compile_script) {
     md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     str_t script_src = load_textfile(STR_LIT(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
+    // The script was written when the strands of a system without chain ids were chains found by position; they are
+    // polymers now (chain() is the data's ids only). Read it as such until the file says polymer().
+    {
+        md_str_writer_t w = md_str_writer_create(alloc);
+        str_t rest = script_src;
+        size_t pos = 0;
+        while (str_find_str(&pos, rest, STR_LIT("chain("))) {
+            md_str_writer_push_str(&w, str_substr(rest, 0, pos));
+            md_str_writer_push_str(&w, STR_LIT("polymer("));
+            rest = str_substr(rest, pos + 6, SIZE_MAX);
+        }
+        md_str_writer_push_str(&w, rest);
+        script_src = md_str_writer_to_str(&w);
+    }
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     bool success = md_script_ir_compile_from_source(ir, script_src, &utest_fixture->amy, NULL);
@@ -1247,7 +1263,7 @@ UTEST_F(script, implicit_conversion) {
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sel = residue({1,2,3,4});"), mol, NULL));
 
     md_script_ir_clear(ir);
-    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("v = sdf(chain(:), resname(\"PFT\"), 50);"), mol, NULL));
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("v = sdf(polymer(:), resname(\"PFT\"), 50);"), mol, NULL));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -1291,7 +1307,7 @@ UTEST_F(script, selection_big) {
     md_system_t* mol = &utest_fixture->amy;
 
     md_bitset_t bf = {0};
-    EXPECT_TRUE(eval_selection(&bf, STR_LIT("atom(1:20) and element('O') in chain(:)"), mol, alloc));
+    EXPECT_TRUE(eval_selection(&bf, STR_LIT("atom(1:20) and element('O') in polymer(:)"), mol, alloc));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -2220,8 +2236,8 @@ UTEST(script, index_selectors_in_context) {
     md_script_ir_t* ir = md_script_ir_create(alloc);
     EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = residue(5);",  "past the last residue (4)"));
     EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = residue(0);",  "before the first residue"));
-    // test_mol maps no instance to its entity, so none of them is a chain
-    EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = chain(1);",    "past the last chain, there are none"));
+    // test_mol gives no chain ids, so it has no chains
+    EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = chain(1);",    "no chain ids"));
     // Instances are not a word of the script
     EXPECT_TRUE(named_args_compile_fails_with(ir, &test_mol, "x = instance(1);", "instance"));
     md_script_ir_free(ir);
@@ -3251,7 +3267,7 @@ UTEST_F(script, contacts_compile) {
         "d = degree(c);"
         "c2 = contacts(residue(1:5), residue(6:15), cutoff=4.0, exclude_bonds=0);"
         "n2 = count(c2);"
-        "c3 = contacts(chunks(residue(:), 5), cutoff=5, min_separation=3, parent=residue(:), exclude_within=chain(:));"
+        "c3 = contacts(chunks(residue(:), 5), cutoff=5, min_separation=3, parent=residue(:), exclude_within=polymer(:));"
         "d3 = degree(c3);"), sys, NULL));
 
     // d is a temporal property with one value per residue
@@ -6775,7 +6791,7 @@ UTEST_F(script, evaluate_edge_cases) {
 
     const char* srcs[] = {
         // The center of mass of a range, within a context
-        "c = com(1:3) in chain(:); d = distance(com(1:3), 1) in residue(1:2);",
+        "c = com(1:3) in polymer(:); d = distance(com(1:3), 1) in residue(1:2);",
         // Element wise operations on arrays which can be empty: the dims of an empty array made for one element
         "s = within(3.0, residue(1:)); m = max(coord_x(s) + coord_y(s));",
         // The residues of nothing

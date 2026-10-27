@@ -39,10 +39,10 @@ void md_system_assemblies_free(md_system_t* sys) {
     md_allocator_i* alloc = sys->alloc;
     md_assembly_data_t* a = &sys->assembly;
     md_array_free(a->id, alloc);
-    md_array_free(a->part_offset, alloc);
-    md_array_free(a->part_inst_offset, alloc);
+    md_array_free(a->group_offset, alloc);
+    md_array_free(a->group_inst_offset, alloc);
     md_array_free(a->inst, alloc);
-    md_array_free(a->part_oper_offset, alloc);
+    md_array_free(a->group_oper_offset, alloc);
     md_array_free(a->oper, alloc);
     md_array_free(a->oper_id, alloc);
     md_array_free(a->oper_transform, alloc);
@@ -61,7 +61,7 @@ static int compare_i32(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
-// The operators of an assembly with the same instances: a part
+// The operators of an assembly named by the same rows; those with the same instances are then merged into one group
 typedef struct {
     md_array(uint32_t)          rows;   // The rows which name the operators (those of the first, while grouping by rows)
     md_array(uint32_t)          oper;   // In the order they first appear
@@ -115,9 +115,9 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
     }
     A->oper_count = oper_count;
 
-    md_array_push(A->part_offset, 0, alloc);
-    md_array_push(A->part_inst_offset, 0, alloc);
-    md_array_push(A->part_oper_offset, 0, alloc);
+    md_array_push(A->group_offset, 0, alloc);
+    md_array_push(A->group_inst_offset, 0, alloc);
+    md_array_push(A->group_oper_offset, 0, alloc);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* ta = md_temp_allocator(temp);
@@ -206,8 +206,8 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
             md_array_shrink(grp->inst, u);
         }
 
-        // Groups of the same instances are one part (rows that differ only in what else they name)
-        const uint32_t first_part = (uint32_t)A->part_count;
+        // Those of the same instances are one group (rows that differ only in what else they name)
+        const uint32_t first_group = (uint32_t)A->group_count;
         for (size_t g = 0; g < md_array_size(groups); ++g) {
             const assembly_group_t* grp = groups + g;
             const size_t n = md_array_size(grp->inst);
@@ -227,7 +227,7 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
         for (size_t g = 0; g < md_array_size(groups); ++g) {
             assembly_group_t* grp = groups + g;
             if (md_array_size(grp->inst) == 0) continue;
-            // The operators of a merged part in the order they first appear
+            // The operators of a merged group in the order they first appear
             const size_t n = md_array_size(grp->oper);
             uint64_t* key = md_temp_alloc(temp, n * sizeof(uint64_t));
             for (size_t k = 0; k < n; ++k) key[k] = ((uint64_t)rank[grp->oper[k]] << 32) | grp->oper[k];
@@ -236,16 +236,16 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
 
             md_array_push_array(A->inst, grp->inst, md_array_size(grp->inst), alloc);
             md_array_push_array(A->oper, grp->oper, md_array_size(grp->oper), alloc);
-            md_array_push(A->part_inst_offset, (uint32_t)md_array_size(A->inst), alloc);
-            md_array_push(A->part_oper_offset, (uint32_t)md_array_size(A->oper), alloc);
-            A->part_count += 1;
+            md_array_push(A->group_inst_offset, (uint32_t)md_array_size(A->inst), alloc);
+            md_array_push(A->group_oper_offset, (uint32_t)md_array_size(A->oper), alloc);
+            A->group_count += 1;
         }
-        if (A->part_count == first_part) {
+        if (A->group_count == first_group) {
             MD_LOG_INFO("Assemblies: assembly '" STR_FMT "' holds none of the instances of the system and was left out", STR_ARG(LBL_TO_STR(asm_id)));
             continue;
         }
         md_array_push(A->id, asm_id, alloc);
-        md_array_push(A->part_offset, (uint32_t)A->part_count, alloc);
+        md_array_push(A->group_offset, (uint32_t)A->group_count, alloc);
         A->count += 1;
     }
 
@@ -274,17 +274,82 @@ const char* md_residue_kind_name(md_residue_kind_t kind) {
     }
 }
 
-const char* md_entity_kind_name(md_entity_kind_t kind) {
+void md_part_type_data_free(md_part_type_data_t* type, md_allocator_i* alloc) {
+    ASSERT(type);
+    for (size_t i = 0; i < md_array_size(type->description); ++i) {
+        if (!str_empty(type->description[i])) str_free(type->description[i], alloc);
+    }
+    md_array_free(type->id, alloc);
+    md_array_free(type->flags, alloc);
+    md_array_free(type->description, alloc);
+    MEMSET(type, 0, sizeof(*type));
+}
+
+void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_allocator_i* alloc) {
+    ASSERT(type);
+    if (count >= type->count) return;
+    for (size_t i = count; i < md_array_size(type->description); ++i) {
+        if (!str_empty(type->description[i])) str_free(type->description[i], alloc);
+    }
+    md_array_shrink(type->id, count);
+    md_array_shrink(type->flags, count);
+    md_array_shrink(type->description, count);
+    type->count = count;
+}
+
+md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, str_t id, md_part_type_flags_t flags, str_t description, md_allocator_i* alloc) {
+    ASSERT(type);
+    md_label_t lbl = make_label(id);
+    if (str_empty(id)) {
+        char buf[16];
+        const int len = snprintf(buf, sizeof(buf), "%zu", type->count + 1);
+        lbl = make_label((str_t){buf, (size_t)MAX(len, 0)});
+    }
+    md_array_push(type->id, lbl, alloc);
+    md_array_push(type->flags, flags, alloc);
+    md_array_push(type->description, str_copy(description, alloc), alloc);
+    return (md_part_type_idx_t)(type->count++);
+}
+
+void md_molecule_type_data_free(md_molecule_type_data_t* type, md_allocator_i* alloc) {
+    ASSERT(type);
+    for (size_t i = 0; i < md_array_size(type->name); ++i) {
+        if (!str_empty(type->name[i])) str_free(type->name[i], alloc);
+    }
+    md_array_free(type->name, alloc);
+    md_array_free(type->flags, alloc);
+    MEMSET(type, 0, sizeof(*type));
+}
+
+void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, md_allocator_i* alloc) {
+    ASSERT(type);
+    if (count >= type->count) return;
+    for (size_t i = count; i < md_array_size(type->name); ++i) {
+        if (!str_empty(type->name[i])) str_free(type->name[i], alloc);
+    }
+    md_array_shrink(type->name, count);
+    md_array_shrink(type->flags, count);
+    type->count = count;
+}
+
+md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc) {
+    ASSERT(type);
+    md_array_push(type->name, str_copy(name, alloc), alloc);
+    md_array_push(type->flags, flags, alloc);
+    return (md_molecule_type_idx_t)(type->count++);
+}
+
+const char* md_part_kind_name(md_part_kind_t kind) {
     switch (kind) {
-    case MD_ENTITY_KIND_UNKNOWN:        return "unknown";
-    case MD_ENTITY_KIND_NON_POLYMER:    return "non-polymer";
-    case MD_ENTITY_KIND_WATER:          return "water";
-    case MD_ENTITY_KIND_BRANCHED:       return "branched";
-    case MD_ENTITY_KIND_PEPTIDE:        return "peptide";
-    case MD_ENTITY_KIND_DNA:            return "DNA";
-    case MD_ENTITY_KIND_RNA:            return "RNA";
-    case MD_ENTITY_KIND_NUCLEIC:        return "nucleic acid";
-    case MD_ENTITY_KIND_POLYMER:        return "polymer";
+    case MD_PART_KIND_UNKNOWN:        return "unknown";
+    case MD_PART_KIND_NON_POLYMER:    return "non-polymer";
+    case MD_PART_KIND_WATER:          return "water";
+    case MD_PART_KIND_BRANCHED:       return "branched";
+    case MD_PART_KIND_PEPTIDE:        return "peptide";
+    case MD_PART_KIND_DNA:            return "DNA";
+    case MD_PART_KIND_RNA:            return "RNA";
+    case MD_PART_KIND_NUCLEIC:        return "nucleic acid";
+    case MD_PART_KIND_POLYMER:        return "polymer";
     default:                            return "";
     }
 }
@@ -382,7 +447,8 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->instance.id, alloc);
     md_array_free(sys->instance.auth_id, alloc);
     md_array_free(sys->instance.res_offset, alloc);
-    md_array_free(sys->instance.entity_idx, alloc);
+    md_array_free(sys->instance.part_type_idx, alloc);
+    md_array_free(sys->instance.mol_type_idx, alloc);
 
     // CHAIN
     md_array_free(sys->chain.id, alloc);
@@ -392,26 +458,18 @@ void md_system_free(md_system_t* sys) {
 
     // PART
     md_array_free(sys->part.res_offset, alloc);
-
-    // ENTITY
-    md_array_free(sys->entity.id, alloc);
-    md_array_free(sys->entity.flags, alloc);
-    for (size_t i = 0; i < sys->entity.count; ++i) {
-        if (!str_empty(sys->entity.description[i])) {
-            str_free(sys->entity.description[i], alloc);
-        }
-    }
-    md_array_free(sys->entity.description, alloc);
+    md_array_free(sys->part.type_idx, alloc);
+    md_part_type_data_free(&sys->part.type, alloc);
 
     // PROTEIN BACKBONE
     md_array_free(sys->protein_backbone.range.offset, alloc);
-    md_array_free(sys->protein_backbone.range.inst_idx, alloc);
+    md_array_free(sys->protein_backbone.range.part_idx, alloc);
     md_array_free(sys->protein_backbone.segment.atoms, alloc);
     md_array_free(sys->protein_backbone.segment.res_idx, alloc);
 
     // NUCLEIC BACKBONE
     md_array_free(sys->nucleic_backbone.range.offset, alloc);
-    md_array_free(sys->nucleic_backbone.range.inst_idx, alloc);
+    md_array_free(sys->nucleic_backbone.range.part_idx, alloc);
     md_array_free(sys->nucleic_backbone.segment.atoms, alloc);
     md_array_free(sys->nucleic_backbone.segment.res_idx, alloc);
 
@@ -431,6 +489,8 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->molecule.atom_idx, alloc);
     md_array_free(sys->molecule.parent_idx, alloc);
     md_array_free(sys->molecule.atom_slot, alloc);
+    md_array_free(sys->molecule.type_idx, alloc);
+    md_molecule_type_data_free(&sys->molecule.type, alloc);
 
     // ASSEMBLY
     md_system_assemblies_free(sys);

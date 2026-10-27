@@ -1613,12 +1613,11 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         MD_LOG_INFO("TPR: atom names longer than 8 characters, or force field types longer than 16, are shown cut short; the types stay apart");
     }
 
-    // ## Atoms, residues, and the molecules as instances of their molecule types (the entities). Which kind of
-    // molecule a type is the topology does not say: it is classified from the residues below, once they are.
+    // ## Atoms, residues, and the molecules as instances of their molecule types. What the molecules are made of (their
+    // parts and the kinds of these) is inferred from the residues once they are classified.
     float* charge = md_temp_alloc_array(temp, float, num_atoms);
-    md_entity_idx_t* moltype_entity = md_temp_alloc_array(temp, md_entity_idx_t, data->num_moltypes + 1);
-    for (size_t t = 0; t < data->num_moltypes; ++t) moltype_entity[t] = -1;
-    size_t num_inst_ids = 0;
+    md_molecule_type_idx_t* moltype_mol_type = md_temp_alloc_array(temp, md_molecule_type_idx_t, data->num_moltypes + 1);
+    for (size_t t = 0; t < data->num_moltypes; ++t) moltype_mol_type[t] = -1;
 
     size_t ai = 0;
     for (size_t b = 0; b < data->num_molblocks; ++b) {
@@ -1627,28 +1626,16 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         const bool renumber = (int64_t)mt->num_residues <= max_renum;
         if (mb->nmol <= 0 || mt->num_atoms == 0) continue;
 
-        if (moltype_entity[mb->moltype] == -1) {
-            md_label_t id = {0};
-            md_snprintf(id.buf, sizeof(id.buf), "%i", (int)sys->entity.count + 1);
-            moltype_entity[mb->moltype] = (md_entity_idx_t)sys->entity.count;
-            md_array_push(sys->entity.id, id, alloc);
-            md_array_push(sys->entity.flags, MD_ENTITY_FLAG_TOPOLOGY, alloc);
-            md_array_push(sys->entity.description, str_copy(mt->name, alloc), alloc);
-            sys->entity.count += 1;
+        if (moltype_mol_type[mb->moltype] == -1) {
+            moltype_mol_type[mb->moltype] = md_molecule_type_data_push(&sys->molecule.type, mt->name, MD_MOLECULE_TYPE_FLAG_NONE, alloc);
         }
 
-        // Molecules of a single residue (water, ions, lipids) share the id of their block, as the waters of a chain
-        // share their asym in an mmCIF file. Larger molecules (chains) have ids of their own.
-        const bool shared_id = mt->num_residues <= 1;
-        md_label_t inst_id = md_util_instance_id_from_index(num_inst_ids);
-        if (shared_id) num_inst_ids += 1;
-
         for (int32_t m = 0; m < mb->nmol; ++m) {
-            if (!shared_id) inst_id = md_util_instance_id_from_index(num_inst_ids++);
-            md_array_push(sys->instance.id, inst_id, alloc);
+            md_array_push(sys->instance.id, (md_label_t){0}, alloc);
             md_array_push(sys->instance.auth_id, (md_label_t){0}, alloc);
             md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);
-            md_array_push(sys->instance.entity_idx, moltype_entity[mb->moltype], alloc);
+            md_array_push(sys->instance.part_type_idx, -1, alloc);
+            md_array_push(sys->instance.mol_type_idx, moltype_mol_type[mb->moltype], alloc);
             sys->instance.count += 1;
 
             int32_t prev_res = -1;
@@ -1761,7 +1748,6 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     }
 
     md_util_system_infer_residue_flags(sys);
-    md_util_system_infer_entity_kinds(sys);
 
     // An elastic network written as plain bonds, which most Martini proteins have: elastic too, now that the residues
     // know what they are

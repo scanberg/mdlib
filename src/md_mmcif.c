@@ -186,36 +186,36 @@ typedef struct {
     str_t description;
 } mmcif_entity_t;
 
-static md_entity_kind_t mmcif_entity_kind(const mmcif_entity_t* entity) {
+static md_part_kind_t mmcif_entity_kind(const mmcif_entity_t* entity) {
     switch (entity->type) {
     case ENTITY_TYPE_POLYMER:
         switch (entity->poly_type) {
         case ENTITY_POLY_TYPE_POLYPEPTIDE_L:
         case ENTITY_POLY_TYPE_POLYPEPTIDE_D:
         case ENTITY_POLY_TYPE_CYCLIC_PSEUDO_PEPTIDE:
-            return MD_ENTITY_KIND_PEPTIDE;
+            return MD_PART_KIND_PEPTIDE;
         case ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE:
-            return MD_ENTITY_KIND_DNA;
+            return MD_PART_KIND_DNA;
         case ENTITY_POLY_TYPE_POLYRIBONUCLEOTIDE:
-            return MD_ENTITY_KIND_RNA;
+            return MD_PART_KIND_RNA;
         case ENTITY_POLY_TYPE_POLYDEOXYRIBONUCLEOTIDE_POLYRIBONUCLEOTIDE_HYBRID:
-            return MD_ENTITY_KIND_NUCLEIC;
+            return MD_PART_KIND_NUCLEIC;
         case ENTITY_POLY_TYPE_PEPTIDE_NUCLEIC_ACID:
         case ENTITY_POLY_TYPE_OTHER:
-            return MD_ENTITY_KIND_POLYMER;
+            return MD_PART_KIND_POLYMER;
         default:
-            // Classified from its residues once they are (md_util_system_infer_entity_kinds)
-            return MD_ENTITY_KIND_UNKNOWN;
+            // Classified from its residues once they are (md_util_system_infer_parts)
+            return MD_PART_KIND_UNKNOWN;
         }
     case ENTITY_TYPE_BRANCHED:
-        return MD_ENTITY_KIND_BRANCHED;
+        return MD_PART_KIND_BRANCHED;
     case ENTITY_TYPE_WATER:
-        return MD_ENTITY_KIND_WATER;
+        return MD_PART_KIND_WATER;
     case ENTITY_TYPE_NON_POLYMER:
     case ENTITY_TYPE_MACROLIDE:
-        return MD_ENTITY_KIND_NON_POLYMER;
+        return MD_PART_KIND_NON_POLYMER;
     default:
-        return MD_ENTITY_KIND_UNKNOWN;
+        return MD_PART_KIND_UNKNOWN;
     }
 }
 
@@ -1196,22 +1196,13 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
     }
 
     if (entity_parsed) {
-        // Add entities first so that we can reference them when adding residues
+        // The entities are the part types the file gives, added first so that the instances can name them
         size_t num_entities = md_array_size(entities);
-        md_array_ensure(sys->entity.id, num_entities, alloc);
-        md_array_ensure(sys->entity.flags, num_entities, alloc);
-        md_array_ensure(sys->entity.description, num_entities, alloc);
-        sys->entity.count = num_entities;
-
         for (size_t i = 0; i < num_entities; ++i) {
-            md_array_push_no_grow(sys->entity.id, make_label(entities[i].id));
-            md_array_push_no_grow(sys->entity.flags, md_entity_flags_set_kind(MD_ENTITY_FLAG_NONE, mmcif_entity_kind(&entities[i])));
-            md_array_push_no_grow(sys->entity.description, str_copy(entities[i].description, alloc));
+            md_part_type_data_push(&sys->part.type, entities[i].id, md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_NONE, mmcif_entity_kind(&entities[i])), entities[i].description, alloc);
         }
     }
     
-    md_array(str_t) res_auth_asym_ids = NULL;
-
     // Populate molecule from parsed data
     if (atom_site_parsed) {
         size_t num_atoms = md_array_size(atom_entries);
@@ -1251,7 +1242,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
                 auth_asym_id = label_asym_id;
             }
 
-            md_entity_idx_t entity_idx = md_system_entity_find_by_id(sys, entity_id);
+            md_part_type_idx_t entity_idx = md_system_part_type_find_by_id(sys, entity_id);
 
 		    uint64_t inst_key = md_hash64_str(label_asym_id, 0);
 
@@ -1270,25 +1261,18 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
                 md_array_push(sys->residue.seq_id, seq_id, alloc);
                 md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
 
-                md_array_push(res_auth_asym_ids, auth_asym_id, temp_arena);
-
-                // Instance handling. An instance is one polymer chain or one molecule, and an asym of a polymer or a
-                // branched entity is one. The asym of a non-polymer entity may hold many molecules (the waters of a
-                // chain): each is an instance of its own, sharing the asym id.
-                if (entity_idx != -1) {
-                    const md_entity_kind_t entity_kind = md_system_entity_kind(sys, entity_idx);
-                    const bool one_per_residue = entity_kind == MD_ENTITY_KIND_WATER || entity_kind == MD_ENTITY_KIND_NON_POLYMER;
-                    if (inst_key != prev_inst_key || one_per_residue) {
-                        // Start a new instance
-                        md_label_t inst_id = make_label(label_asym_id);
-                        md_label_t inst_auth_id = make_label(auth_asym_id);
-
-                        md_array_push(sys->instance.id, inst_id, alloc);
-                        md_array_push(sys->instance.auth_id, inst_auth_id, alloc);
-                        md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);
-                        md_array_push(sys->instance.entity_idx, entity_idx, alloc);
-                        sys->instance.count += 1;
-                    }
+                // Instance handling. An instance is what the file gives: an asym, a polymer chain or a branched
+                // glycan. The asym of a non-polymer entity may hold many molecules (the waters of a chain): each is an
+                // instance of its own, sharing the asym id.
+                const md_part_kind_t entity_kind = entity_idx != -1 ? md_system_part_type_kind(sys, entity_idx) : MD_PART_KIND_UNKNOWN;
+                const bool one_per_residue = entity_kind == MD_PART_KIND_WATER || entity_kind == MD_PART_KIND_NON_POLYMER;
+                if (sys->instance.count == 0 || inst_key != prev_inst_key || one_per_residue) {
+                    md_array_push(sys->instance.id, make_label(label_asym_id), alloc);
+                    md_array_push(sys->instance.auth_id, make_label(auth_asym_id), alloc);
+                    md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);
+                    md_array_push(sys->instance.part_type_idx, entity_idx, alloc);
+                    md_array_push(sys->instance.mol_type_idx, -1, alloc);
+                    sys->instance.count += 1;
                 }
                 sys->residue.count += 1;
             }
@@ -1349,12 +1333,6 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
     // out into md_util_system_infer without moving res_flags with it.
     md_util_system_infer_covalent_bonds(sys, out_state);
     md_util_system_infer_residue_flags(sys);
-    if (sys->entity.count == 0 && res_auth_asym_ids) {
-        // Fallback path if no entities are defined within the cif
-		md_util_system_infer_entity_and_instance(sys, res_auth_asym_ids);
-    }
-    // A polymer entity without _entity_poly does not say which polymer it is
-    md_util_system_infer_entity_kinds(sys);
     md_util_system_infer_chains(sys);
 
     // The assemblies name the instances by their asym ids

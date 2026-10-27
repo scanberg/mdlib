@@ -19,7 +19,7 @@ typedef enum {
     MD_UTIL_INFER_NONE                = 0,
     MD_UTIL_INFER_COLOR_BIT           = 1u << 1,
     MD_UTIL_INFER_BOND_BIT            = 1u << 2,
-    MD_UTIL_INFER_INSTANCE_BIT        = 1u << 3,
+    MD_UTIL_INFER_PART_BIT            = 1u << 3,     // The chains and the parts with their types (md_util_system_infer_chains, _parts)
     MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
     MD_UTIL_INFER_MOLECULE_BIT        = 1u << 5,
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
@@ -82,30 +82,26 @@ bool md_util_system_infer_residue_flags(md_system_t* sys);
 // the molecules of several residues (without them a lipid is its residue), and for sterols the rings.
 bool md_util_system_infer_lipids(md_system_t* sys);
 
-// Replaces the entities and instances of the system with inferred ones (MD_ENTITY_FLAG_INFERRED), from the
-// classified residues and the bonds (see md_instance_data_t for what an instance is). opt_res_auth_asym_id is
-// the author chain id of each residue, when the format has one (a PDB file): it is kept as the instances'
-// auth_id, a change of it always ends an instance, and a polymer chain continues over gaps while it stays the same.
-bool md_util_system_infer_entity_and_instance(md_system_t* sys, const str_t opt_res_auth_asym_id[]);
+// Instances from the chain ids of the residues, for a format which gives a chain id per residue and no units of its
+// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id. Residues without
+// an id are in no instance. Replaces the instances of the system. The instances are what the data gives
+// (md_instance_data_t): where it gives no chain ids the system has none.
+bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[]);
 
-// The chains of the system (sys->chain, see md_chain_data_t) from its instances: one per author id the instances carry,
-// and one for each polymer instance without one, which takes the kinds of the entities to be known. Done by
-// md_util_system_infer (MD_UTIL_INFER_INSTANCE_BIT) and md_util_system_infer_entity_and_instance, and by the mmCIF
-// loader, whose file gives the kinds. A loader whose topology gives instances of entities it does not classify (TPR,
-// LAMMPS) leaves it to md_util_system_infer; whatever changes the instances after calls it again.
+// The chains of the system (sys->chain, see md_chain_data_t) from the author ids of its instances: one per id. A system
+// without ids has no chains. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT) and by the loaders which give the
+// ids; whatever changes the instances after calls it again.
 bool md_util_system_infer_chains(md_system_t* sys);
 
-// The parts of the system (sys->part, see md_part_data_t) from its instances, its bonds and the kinds of its residues.
-// Done by md_util_system_infer (MD_UTIL_INFER_INSTANCE_BIT, after the bonds) and by
-// md_util_system_infer_entity_and_instance; whatever changes the instances, the bonds or the kinds calls it after.
+// The parts of the system (sys->part, see md_part_data_t) and their types from its instances, its bonds and the kinds
+// of its residues. A part never reaches over an instance; a system without instances is one span to divide. A strand
+// goes on over a gap (two consecutive residues of it not bonded) within one instance while the sequence ids increase,
+// and in a system without bonds while they are consecutive, unless the chain ends there (CHAIN BREAKS). A part which is
+// all of an instance with a given part type is of that type; the others are of inferred types
+// (MD_PART_TYPE_FLAG_INFERRED), one per kind and sequence of residue names, which replace those of the last inference.
+// A given type of unknown kind is classified from its first part. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT,
+// after the bonds); whatever changes the instances, the bonds or the kinds calls it after.
 bool md_util_system_infer_parts(md_system_t* sys);
-
-// The id of the instance with the given index when a loader generates them: A..Z, AA..ZZ, AAA.. (0 is A)
-md_label_t md_util_instance_id_from_index(size_t idx);
-
-// Classifies the entities of kind MD_ENTITY_KIND_UNKNOWN (which a topology names without saying what they are)
-// from the residues of their first instance. Requires the residues to be classified.
-void md_util_system_infer_entity_kinds(md_system_t* sys);
 
 // The residue types of the system (sys->residue.type, see md_residue_type_data_t): one per name and kind of
 // residue, with the standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the
@@ -287,6 +283,8 @@ void md_util_system_infer_ring_flags(md_system_t* sys);
 // For coarse grained systems (any particle a bead, md_system_is_coarse_grained), beads the bonds leave disconnected are
 // joined through the residue hierarchy instead: each bead to its residue's backbone (or first) bead, and those
 // anchors along consecutive polymer residues. No coordinates are consulted and sys->bond is not modified.
+// The molecules get their types too (md_molecule_type_data_t): the given type of the instance a molecule is all of (a
+// molecule of a topology), else an inferred one, which replace those of the last inference. Requires the parts.
 bool md_util_system_infer_molecules(md_system_t* sys);
 
 // The type of an atom of the name and element, added when the system has none, with the mass, size and color of the

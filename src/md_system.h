@@ -67,69 +67,89 @@ typedef struct md_residue_data_t {
     md_residue_type_data_t type;
 } md_residue_data_t;
 
-// Instance: ONE molecule, or ONE polymer chain, as a contiguous range of residues.
-//   - A polymer chain is one instance, also when it is broken (residues missing in a crystal structure).
-//   - Every other molecule is an instance of its own: each water, each ion, each ligand, each lipid.
-//   - A molecule of several residues is one instance when they are bonded (a lipid split into head and tails).
-// Instances are what a loader gives (mmCIF asyms, the molecules of a GROMACS topology), else they are inferred
-// (md_util_system_infer_entity_and_instance).
+// THE HIERARCHY. A system is built of atoms, residues, parts and molecules, each nested in the next and each of a type:
+//
+//     atom       particle type      (md_atom_data_t)
+//     residue    residue type       (md_residue_data_t)
+//     part       part type          (md_part_data_t)       a strand, a glycan tree, a ligand, an ion, a water
+//     molecule   molecule type      (md_molecule_data_t)   what the bonds hold together
+//
+// A chain is no level of it: it is a label, the author's chain id, which the data files atoms of any level under
+// (md_chain_data_t). The instances below are no level either: they are what the data gives, the input the parts, the
+// molecules and the chains are inferred from.
+
+// Instance: a unit of the system AS THE DATA GIVES IT, a contiguous range of residues: an asym of an mmCIF file (a
+// polymer chain, or one of the molecules of a non-polymer asym), a run of residues of one chain id of a PDB file
+// (md_util_system_instances_from_chain_ids), a molecule of a topology (a GROMACS molecule, a molecule of a LAMMPS data
+// file). Instances are never inferred: where the data gives no units (a GRO file, an XYZ file) the system has none. The
+// instances are back to back, so a run of residues the data names nothing (the residues without a chain id between two
+// chains of a PDB file) is an instance of no id.
+//
+// THE INSTANCES ARE INPUT. What they are differs with the data (an asym is a part of a molecule, a molecule of a topology
+// a whole one), so nothing but what is inferred from them reads them: the parts (which never reach over an instance), the
+// molecules (an instance of a molecule type is one molecule whatever its bonds), the chains (from their author ids), and
+// the assemblies, which name the asyms of a file by index, as these stay put when the parts are inferred anew. Anything
+// else uses the parts and the molecules.
 //
 // id is the instance's label (mmCIF label_asym_id) and auth_id the author's chain id (auth_asym_id, the chain id of a
-// PDB file), "" when there is none. The id is unique for polymer chains but SHARED by the small molecules of one
-// asym: mmCIF puts all the waters of a chain in one asym, and inference gives a run of molecules of the same
-// non-polymer entity one id in the same way. Look up instances by index, not by id. The id is the file's only in an
-// mmCIF file; elsewhere it is made up (md_util_instance_id_from_index), and it is not what a chain is called: that is
-// the auth_id, which the chains are made from (md_chain_data_t).
+// PDB file), "" when there is none: labels are the data's, never made up. The id is unique for polymer chains but
+// SHARED by the small molecules of one asym: mmCIF puts all the waters of a chain in one asym. Look up instances by
+// index, not by id. The id is not what a chain is called: that is the auth_id, which the chains are made from
+// (md_chain_data_t).
 typedef struct md_instance_data_t {
     size_t count;
     md_label_t* id;
     md_label_t* auth_id;
-    uint32_t* res_offset;           // [count + 1]
-    md_entity_idx_t* entity_idx;
+    uint32_t* res_offset;                   // [count + 1]
+    md_part_type_idx_t* part_type_idx;      // [count] The part type the data gives it (an mmCIF entity), -1 for none
+    md_molecule_type_idx_t* mol_type_idx;   // [count] The molecule type the data gives it (a molecule type of a topology),
+                                            // -1 for none. Such an instance is one molecule, whatever its bonds.
 } md_instance_data_t;
 
 // Chain: the atoms which the data files under one chain identifier, the author's: the chain id of a PDB file, the
 // auth_asym_id of an mmCIF file. Whatever carries the id is of the chain, a polymer and the ligands and waters filed
 // with it alike, and an id is one chain however its atoms are spread: chain("A") of a script is one set.
-//   - Where the data gives no id, each strand of a polymer is a chain of its own, inferred: it has no id and is found by
-//     its position among the chains (chain(2)). Ids are never made up. A strand ends where the chemistry says the
-//     chain does (CHAIN BREAKS in md_util.h), also within one molecule of a topology: the two strands of a DNA duplex
-//     which martinize-dna writes as one molecule type are two chains of one molecule.
-//   - A molecule which is not a polymer and which the data gives no id is in no chain.
+//   - A chain is a label, never inferred: where the data gives no ids the system has no chains, and a strand of a
+//     polymer is found as a part (polymer() of a script).
 // A chain is runs of residues: a strand, and the ligands and waters filed after all of the polymers under
 // its id. The chains are in the order of their first residue. They are derived from the instances
 // (md_util_system_infer_chains), whose author ids hold the identifiers.
 typedef struct md_chain_data_t {
     size_t count;
-    md_label_t* id;                 // [count] The author's identifier, empty for an inferred chain
+    md_label_t* id;                 // [count] The author's identifier
     uint32_t* run_offset;           // [count + 1] The runs of chain c: run[run_offset[c], run_offset[c + 1])
     md_urange_t* run;               // Runs of consecutive residues, ascending within each chain
     md_chain_idx_t* res_chain;      // [residue count] The chain of each residue, -1 for one in none
 } md_chain_data_t;
 
+// Part type: the parts of the system of one kind and one sequence of residues. Given by the data (an mmCIF entity:
+// a polymer sequence, a chemical component, a branched glycan), else inferred with the parts
+// (MD_PART_TYPE_FLAG_INFERRED), which gives a kind and a sequence of residue names one type. What a part is lives in the
+// flags of its type (md_part_kind_t). The given types come first, the inferred after them.
+typedef struct md_part_type_data_t {
+    size_t count;
+    md_label_t* id;                     // [count] The data's id (an mmCIF entity id), else its position
+    md_part_type_flags_t* flags;        // [count] Kind (peptide, DNA, water, ...) and whether it was inferred, see md_types.h
+    str_t* description;                 // [count]
+} md_part_type_data_t;
+
 // Part: one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water: the parts the molecules are
 // built of, each a run of consecutive residues of one instance. A molecule may hold several (a
 // glycoprotein, a strand and its glycans; the two strands of a duplex a topology gives as one molecule type), a
-// chain likewise (a strand and the ligands and waters filed under its id).
+// chain likewise (a strand and the ligands and waters filed under its id). Every part is within one molecule.
 //   - A polymer strand goes on over a gap (residues missing from a crystal structure) and ends where the chemistry says
 //     the chain does (CHAIN BREAKS in md_util.h). A residue of no polymer bonded to it in the run (a cap, a modified
 //     residue) is of it. A bond from a side chain (a disulfide, a glycosylation) joins no parts.
 //   - Residues of no polymer are one part while each is bonded to one of it: a glycan tree, a lipid of several residues.
 //     A coordination bond between residues joins none: a metal is a part of its own, as each ion and water is.
-// They are derived from the instances, the bonds and the kinds of the residues (md_util_system_infer_parts).
+// They are derived from the instances, the bonds and the kinds of the residues (md_util_system_infer_parts). A part
+// which is all of its instance is of the instance's part type; any other is of an inferred one.
 typedef struct md_part_data_t {
     size_t count;
-    uint32_t* res_offset;           // [count + 1]
+    uint32_t* res_offset;               // [count + 1]
+    md_part_type_idx_t* type_idx;       // [count]
+    md_part_type_data_t type;
 } md_part_data_t;
-
-// Entity: a molecule type, or a polymer sequence, of which the system holds one or more instances.
-// What it is lives in its flags (md_entity_kind_t), which its instances share.
-typedef struct md_entity_data_t {
-    size_t count;
-    md_label_t* id;
-    md_entity_flags_t* flags;       // Kind (peptide, DNA, water, ...) and whether it was inferred, see md_types.h
-    str_t* description;
-} md_entity_data_t;
 
 // The backbones hold only what is static with regard to the topology: which atoms of which residues form them, in
 // consecutive ranges along a chain. What depends on a frame (the backbone angles, the secondary structure) or serves a
@@ -138,7 +158,7 @@ typedef struct md_entity_data_t {
 // md_util_backbone_ramachandran_classify).
 //
 // A system without residues (an XYZ file) has its backbones found from the bonds alone (BACKBONES FROM THE BONDS in
-// md_util.c): its segments have no residue (res_idx -1) and its ranges no instance (inst_idx -1).
+// md_util.c): its segments have no residue (res_idx -1) and its ranges no part (part_idx -1).
 //
 // A protein range is ATOMISTIC, each segment the N, CA, C and O of its residue (and HN, CB where they are), or a TRACE:
 // one bead per residue of a coarse grained model (the BB bead of Martini), held in ca, with n, c, o, hn and cb -1. A
@@ -149,7 +169,7 @@ typedef struct md_protein_backbone_data_t {
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the segments
-        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located, -1 for none
+        md_part_idx_t* part_idx; // The part (a strand of a polymer) the range is of, -1 for none
     } range;
 
     // These fields share the same length 'count'
@@ -169,7 +189,7 @@ typedef struct md_nucleic_backbone_data_t {
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the backbone fields stored bellow
-        md_instance_idx_t* inst_idx; // Reference to the instance in which the backbone is located, -1 for none
+        md_part_idx_t* part_idx; // The part (a strand of a polymer) the range is of, -1 for none
     } range;
 
     // These fields share the same length 'count'
@@ -230,25 +250,26 @@ typedef struct md_lipid_data_t {
 } md_lipid_data_t;
 
 // ASSEMBLIES. The biological assemblies of a deposited structure (mmCIF pdbx_struct_assembly, PDB REMARK 350): an
-// assembly is made of parts, and a part is a set of instances of the system copied by each of a set of operators,
+// assembly is made of groups, and a group is a set of instances of the system copied by each of a set of operators,
 // rigid transforms of the coordinates of the system. The atoms are not copied: an assembly is a way of showing those of
 // the system, with the copies of its instances where the operators take them. The coordinates of the system are an
 // assembly only where one says so: one which keeps them as they are has the identity among its operators, and of the
-// instances only those it names.
+// instances only those it names. The assemblies name instances (the asyms and chains of the file), which inference
+// leaves as they are, rather than parts, which it may make anew (md_instance_data_t).
 //
-// The form is canonical: within an assembly every operator is in one part only (the rows of a file which share an
+// The form is canonical: within an assembly every operator is in one group only (the rows of a file which share an
 // operator are merged, md_system_assemblies_init), so that the operator names one copy, and what is bonded across
-// instances of a copy (a glycan, a ligand, a disulfide between chains) is in the same part. The operators are the
+// instances of a copy (a glycan, a ligand, a disulfide between chains) is in the same group. The operators are the
 // system's, shared by its assemblies; a product of operators (mmCIF "(1-60)(61-88)") is an operator of its own.
 typedef struct md_assembly_data_t {
     size_t              count;              // Assemblies
     md_label_t*         id;                 // [count] As the file names them ("1", "2", "PAU")
-    uint32_t*           part_offset;        // [count + 1] The parts of assembly i: [part_offset[i], part_offset[i + 1])
+    uint32_t*           group_offset;       // [count + 1] The groups of assembly i: [group_offset[i], group_offset[i + 1])
 
-    size_t              part_count;
-    uint32_t*           part_inst_offset;   // [part_count + 1] The instances of each part in inst
-    md_instance_idx_t*  inst;               // In increasing order within a part
-    uint32_t*           part_oper_offset;   // [part_count + 1] The operators of each part in oper
+    size_t              group_count;
+    uint32_t*           group_inst_offset;  // [group_count + 1] The instances of each group in inst
+    md_instance_idx_t*  inst;               // In increasing order within a group
+    uint32_t*           group_oper_offset;  // [group_count + 1] The operators of each group in oper
     uint32_t*           oper;               // Operator indices, in the order the file gives them
 
     size_t              oper_count;
@@ -312,8 +333,8 @@ typedef struct md_bond_iter_t {
 // chains (joined by a disulfide), and a ligand bonded to a protein is of its molecule. A metal coordinated by other
 // residues is not, nor are the waters of its shell: the coordination bonds between residues hold no molecule together,
 // unless a topology gives them (a bond within one of its molecules, as GROMACS has it). A molecule of a topology is
-// one molecule whatever its bonds (MD_ENTITY_FLAG_TOPOLOGY): the two strands of a DNA duplex which martinize-dna writes
-// as one molecule type, held together by an elastic network. Coarse grained systems are held together by their
+// one molecule whatever its bonds (md_instance_data_t::mol_type_idx): the two strands of a DNA duplex which martinize-dna
+// writes as one molecule type, held together by an elastic network. A molecule is whole parts. Coarse grained systems are held together by their
 // hierarchy instead (md_util_system_infer_molecules).
 // It also holds the iteration order of atoms and parent-child relationships for traversing the molecule as a tree,
 // which is what unwrapping uses (md_system_molecule).
@@ -359,12 +380,26 @@ typedef struct md_molecule_t {
 //   topological order.
 //   Do not reorder atom_idx (for locality or otherwise) without reordering parent_idx and updating
 //   atom_slot to match.
+//
+// MOLECULE TYPES. The molecule of a topology is of the molecule type the topology gives it (a GROMACS molecule type, by
+// its name). Any other molecule is of an inferred type (MD_MOLECULE_TYPE_FLAG_INFERRED), shared by the molecules made
+// alike: of the same part types in the same order, the same particle types and the same bonds between them. The given
+// types come first, the inferred after them, and are inferred anew with the molecules.
+typedef struct md_molecule_type_data_t {
+    size_t count;
+    str_t* name;                        // [count] The topology's name of it, else what its parts are
+    md_molecule_type_flags_t* flags;    // [count]
+} md_molecule_type_data_t;
+
 typedef struct md_molecule_data_t {
     size_t count;
     uint32_t* offset;    // [count + 1] The slots of molecule m: [offset[m], offset[m + 1])
     int32_t* atom_idx;   // [slot] -> global atom index
     int32_t* parent_idx; // [slot] -> global atom index of the atom it was reached from (a root is its own parent)
     int32_t* atom_slot;  // [global atom index] -> slot. Length is the system atom count
+
+    md_molecule_type_idx_t* type_idx;   // [count]
+    md_molecule_type_data_t type;
 } md_molecule_data_t;
 
 // A snapshot of the geometric state of a system: where the atoms are and what box they are in.
@@ -439,8 +474,8 @@ typedef struct md_system_t {
     md_allocator_i*             alloc;
 
     // TOPOLOGY VERSION. Changes whenever the topology does: the atoms, their types (what the particles are), their
-    // flags, the residues, instances and entities, the bonds, and what is derived from them (rings, molecules,
-    // backbones, the perceived chemistry). The properties of the particle types (mass, radius, color) are not topology.
+    // flags, the residues, the instances, the parts and their types, the bonds, and what is derived from them (rings,
+    // molecules and their types, backbones, the perceived chemistry). The properties of the particle types (mass, radius, color) are not topology.
     //
     // A consumer which keeps something derived from the topology (a query, a lookup, a classification) stores the
     // version it was built from and rebuilds when it differs. Versions come from one counter shared by every system and
@@ -464,10 +499,9 @@ typedef struct md_system_t {
 
     md_atom_data_t              atom;
     md_residue_data_t           residue;
-    md_instance_data_t          instance;
+    md_instance_data_t          instance;           // What the data gives, the input of inference, see md_instance_data_t
     md_chain_data_t             chain;              // The instances by the chain id the data gives them, see md_chain_data_t
     md_part_data_t              part;               // Strands, glycan trees, ligands, ions, waters, see md_part_data_t
-    md_entity_data_t            entity;
 
     md_protein_backbone_data_t  protein_backbone;
     md_nucleic_backbone_data_t  nucleic_backbone;
@@ -507,9 +541,9 @@ extern "C" {
 uint64_t md_system_topology_changed(md_system_t* sys);
 
 // ASSEMBLIES (md_assembly_data_t). Sets the assemblies of the system from the rows of a file and its operators: the
-// rows of an assembly id are merged into its parts in canonical form, the instances of each operator the union of those
-// of the rows which name it, and the operators with the same instances one part. The assemblies are in the order their
-// ids first appear, an assembly's parts in the order of their first operator, and the operators of a part in the order
+// rows of an assembly id are merged into its groups in canonical form, the instances of each operator the union of those
+// of the rows which name it, and the operators with the same instances one group. The assemblies are in the order their
+// ids first appear, an assembly's groups in the order of their first operator, and the operators of a group in the order
 // they first appear. Instances out of range are left out; a row without instances or operators adds nothing.
 // An operator which is not rigid is logged, and kept. Replaces the previous assemblies; false (and none) on bad input.
 bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, size_t gen_count, const mat4_t* oper_transform, const md_label_t* oper_id, size_t oper_count);
@@ -520,35 +554,35 @@ static inline size_t md_assembly_count(const md_assembly_data_t* a) {
     return a->count;
 }
 
-// The parts of an assembly
-static inline md_urange_t md_assembly_part_range(const md_assembly_data_t* a, size_t asm_idx) {
+// The groups of an assembly
+static inline md_urange_t md_assembly_group_range(const md_assembly_data_t* a, size_t asm_idx) {
     ASSERT(a);
     md_urange_t r = {0};
-    if (a->part_offset && asm_idx < a->count) {
-        r.beg = a->part_offset[asm_idx];
-        r.end = a->part_offset[asm_idx + 1];
+    if (a->group_offset && asm_idx < a->count) {
+        r.beg = a->group_offset[asm_idx];
+        r.end = a->group_offset[asm_idx + 1];
     }
     return r;
 }
 
-// The instances of a part: inst[beg, end)
-static inline md_urange_t md_assembly_part_inst_range(const md_assembly_data_t* a, size_t part_idx) {
+// The instances of a group: inst[beg, end)
+static inline md_urange_t md_assembly_group_inst_range(const md_assembly_data_t* a, size_t group_idx) {
     ASSERT(a);
     md_urange_t r = {0};
-    if (a->part_inst_offset && part_idx < a->part_count) {
-        r.beg = a->part_inst_offset[part_idx];
-        r.end = a->part_inst_offset[part_idx + 1];
+    if (a->group_inst_offset && group_idx < a->group_count) {
+        r.beg = a->group_inst_offset[group_idx];
+        r.end = a->group_inst_offset[group_idx + 1];
     }
     return r;
 }
 
-// The operators of a part: oper[beg, end)
-static inline md_urange_t md_assembly_part_oper_range(const md_assembly_data_t* a, size_t part_idx) {
+// The operators of a group: oper[beg, end)
+static inline md_urange_t md_assembly_group_oper_range(const md_assembly_data_t* a, size_t group_idx) {
     ASSERT(a);
     md_urange_t r = {0};
-    if (a->part_oper_offset && part_idx < a->part_count) {
-        r.beg = a->part_oper_offset[part_idx];
-        r.end = a->part_oper_offset[part_idx + 1];
+    if (a->group_oper_offset && group_idx < a->group_count) {
+        r.beg = a->group_oper_offset[group_idx];
+        r.end = a->group_oper_offset[group_idx + 1];
     }
     return r;
 }
@@ -562,13 +596,13 @@ static inline str_t md_assembly_id(const md_assembly_data_t* a, size_t asm_idx) 
     return id;
 }
 
-// The copies an assembly is made of: the operators of all of its parts
+// The copies an assembly is made of: the operators of all of its groups
 static inline size_t md_assembly_copy_count(const md_assembly_data_t* a, size_t asm_idx) {
     ASSERT(a);
     size_t n = 0;
-    const md_urange_t parts = md_assembly_part_range(a, asm_idx);
-    for (uint32_t p = parts.beg; p < parts.end; ++p) {
-        const md_urange_t ops = md_assembly_part_oper_range(a, p);
+    const md_urange_t groups = md_assembly_group_range(a, asm_idx);
+    for (uint32_t p = groups.beg; p < groups.end; ++p) {
+        const md_urange_t ops = md_assembly_group_oper_range(a, p);
         n += ops.end - ops.beg;
     }
     return n;
@@ -937,43 +971,43 @@ static inline uint32_t md_residue_type_color(const md_residue_type_data_t* type,
     return type_idx < type->count ? type->color[type_idx] : 0;
 }
 
-// ENTITIES (md_entity_data_t)
+// PART TYPES (md_part_type_data_t)
 
-static inline size_t md_system_entity_count(const md_system_t* sys) {
+static inline size_t md_system_part_type_count(const md_system_t* sys) {
     ASSERT(sys);
-    return sys->entity.count;
+    return sys->part.type.count;
 }
 
-// The entity of the id, -1 for none
-static inline md_entity_idx_t md_system_entity_find_by_id(const md_system_t* sys, str_t id) {
+// The part type of the id, -1 for none
+static inline md_part_type_idx_t md_system_part_type_find_by_id(const md_system_t* sys, str_t id) {
     ASSERT(sys);
-    if (sys->entity.id) {
-        for (size_t i = 0; i < sys->entity.count; ++i) {
-            if (str_eq(LBL_TO_STR(sys->entity.id[i]), id)) return (md_entity_idx_t)i;
+    if (sys->part.type.id) {
+        for (size_t i = 0; i < sys->part.type.count; ++i) {
+            if (str_eq(LBL_TO_STR(sys->part.type.id[i]), id)) return (md_part_type_idx_t)i;
         }
     }
     return -1;
 }
 
-static inline str_t md_system_entity_id(const md_system_t* sys, size_t ent_idx) {
+static inline str_t md_system_part_type_id(const md_system_t* sys, size_t type_idx) {
     ASSERT(sys);
-    if (sys->entity.id && ent_idx < sys->entity.count) return LBL_TO_STR(sys->entity.id[ent_idx]);
+    if (sys->part.type.id && type_idx < sys->part.type.count) return LBL_TO_STR(sys->part.type.id[type_idx]);
     return STR_LIT("");
 }
 
-static inline str_t md_system_entity_description(const md_system_t* sys, size_t ent_idx) {
+static inline str_t md_system_part_type_description(const md_system_t* sys, size_t type_idx) {
     ASSERT(sys);
-    if (sys->entity.description && ent_idx < sys->entity.count) return sys->entity.description[ent_idx];
+    if (sys->part.type.description && type_idx < sys->part.type.count) return sys->part.type.description[type_idx];
     return STR_LIT("");
 }
 
-static inline md_entity_flags_t md_system_entity_flags(const md_system_t* sys, size_t ent_idx) {
+static inline md_part_type_flags_t md_system_part_type_flags(const md_system_t* sys, size_t type_idx) {
     ASSERT(sys);
-    return (sys->entity.flags && ent_idx < sys->entity.count) ? sys->entity.flags[ent_idx] : MD_ENTITY_FLAG_NONE;
+    return (sys->part.type.flags && type_idx < sys->part.type.count) ? sys->part.type.flags[type_idx] : MD_PART_TYPE_FLAG_NONE;
 }
 
-static inline md_entity_kind_t md_system_entity_kind(const md_system_t* sys, size_t ent_idx) {
-    return md_entity_flags_kind(md_system_entity_flags(sys, ent_idx));
+static inline md_part_kind_t md_system_part_type_kind(const md_system_t* sys, size_t type_idx) {
+    return md_part_type_flags_kind(md_system_part_type_flags(sys, type_idx));
 }
 
 // INSTANCES (md_instance_data_t)
@@ -1026,16 +1060,16 @@ static inline str_t md_system_instance_auth_id(const md_system_t* sys, size_t in
     return STR_LIT("");
 }
 
-// The entity of the instance, -1 for none
-static inline md_entity_idx_t md_system_instance_entity_idx(const md_system_t* sys, size_t inst_idx) {
+// The part type the data gives the instance (an mmCIF entity), -1 for none
+static inline md_part_type_idx_t md_system_instance_part_type_idx(const md_system_t* sys, size_t inst_idx) {
     ASSERT(sys);
-    return (sys->instance.entity_idx && inst_idx < sys->instance.count) ? sys->instance.entity_idx[inst_idx] : -1;
+    return (sys->instance.part_type_idx && inst_idx < sys->instance.count) ? sys->instance.part_type_idx[inst_idx] : -1;
 }
 
-// The kind of the instance's entity, MD_ENTITY_KIND_UNKNOWN when it has none
-static inline md_entity_kind_t md_system_instance_entity_kind(const md_system_t* sys, size_t inst_idx) {
-    const md_entity_idx_t ent_idx = md_system_instance_entity_idx(sys, inst_idx);
-    return ent_idx >= 0 ? md_system_entity_kind(sys, (size_t)ent_idx) : MD_ENTITY_KIND_UNKNOWN;
+// The molecule type the data gives the instance (a molecule type of a topology), -1 for none
+static inline md_molecule_type_idx_t md_system_instance_molecule_type_idx(const md_system_t* sys, size_t inst_idx) {
+    ASSERT(sys);
+    return (sys->instance.mol_type_idx && inst_idx < sys->instance.count) ? sys->instance.mol_type_idx[inst_idx] : -1;
 }
 
 // The instance of the residue, -1 for none
@@ -1113,7 +1147,7 @@ static inline size_t md_system_chain_count(const md_system_t* sys) {
     return sys->chain.count;
 }
 
-// The author's identifier of the chain, empty for an inferred chain (a polymer the data gives no id)
+// The author's identifier of the chain
 static inline str_t md_system_chain_id(const md_system_t* sys, size_t chain_idx) {
     ASSERT(sys);
     str_t id = STR_INIT("");
@@ -1121,11 +1155,6 @@ static inline str_t md_system_chain_id(const md_system_t* sys, size_t chain_idx)
         id = LBL_TO_STR(sys->chain.id[chain_idx]);
     }
     return id;
-}
-
-static inline bool md_system_chain_inferred(const md_system_t* sys, size_t chain_idx) {
-    ASSERT(sys);
-    return chain_idx < sys->chain.count && str_empty(md_system_chain_id(sys, chain_idx));
 }
 
 // The runs of consecutive residues of the chain, ascending: [beg, end)
@@ -1217,6 +1246,18 @@ static inline md_part_idx_t md_system_part_find_by_atom_idx(const md_system_t* s
     return res_idx >= 0 ? md_system_part_find_by_residue_idx(sys, (size_t)res_idx) : -1;
 }
 
+// The type of the part, -1 for none
+static inline md_part_type_idx_t md_system_part_type_idx(const md_system_t* sys, size_t part_idx) {
+    ASSERT(sys);
+    return (sys->part.type_idx && part_idx < sys->part.count) ? sys->part.type_idx[part_idx] : -1;
+}
+
+// What the part is, the kind of its type: MD_PART_KIND_UNKNOWN when it has none
+static inline md_part_kind_t md_system_part_kind(const md_system_t* sys, size_t part_idx) {
+    const md_part_type_idx_t type_idx = md_system_part_type_idx(sys, part_idx);
+    return type_idx >= 0 ? md_system_part_type_kind(sys, (size_t)type_idx) : MD_PART_KIND_UNKNOWN;
+}
+
 static inline size_t md_system_molecule_count(const md_system_t* sys) {
     ASSERT(sys);
     return sys->molecule.count;
@@ -1235,6 +1276,28 @@ static inline size_t md_system_molecule_atom_count(const md_system_t* sys, size_
     ASSERT(sys);
     const md_molecule_data_t* st = &sys->molecule;
     return (st->offset && mol_idx < st->count) ? st->offset[mol_idx + 1] - st->offset[mol_idx] : 0;
+}
+
+// The type of the molecule, -1 for none
+static inline md_molecule_type_idx_t md_system_molecule_type_idx(const md_system_t* sys, size_t mol_idx) {
+    ASSERT(sys);
+    return (sys->molecule.type_idx && mol_idx < sys->molecule.count) ? sys->molecule.type_idx[mol_idx] : -1;
+}
+
+static inline size_t md_system_molecule_type_count(const md_system_t* sys) {
+    ASSERT(sys);
+    return sys->molecule.type.count;
+}
+
+static inline str_t md_system_molecule_type_name(const md_system_t* sys, size_t type_idx) {
+    ASSERT(sys);
+    if (sys->molecule.type.name && type_idx < sys->molecule.type.count) return sys->molecule.type.name[type_idx];
+    return STR_LIT("");
+}
+
+static inline md_molecule_type_flags_t md_system_molecule_type_flags(const md_system_t* sys, size_t type_idx) {
+    ASSERT(sys);
+    return (sys->molecule.type.flags && type_idx < sys->molecule.type.count) ? sys->molecule.type.flags[type_idx] : MD_MOLECULE_TYPE_FLAG_NONE;
 }
 
 // The atoms of the molecule in the order of its tree, with the atom each was reached from (md_molecule_t). Of no atoms
@@ -1549,6 +1612,18 @@ void md_system_free(md_system_t* sys); // Free all memory associated with the sy
 
 // Frees the lipids of a system (allocated from alloc, the system's) and leaves them empty
 void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc);
+
+// The type tables of the parts and of the molecules (md_part_type_data_t, md_molecule_type_data_t), allocated from alloc,
+// the system's. A push copies the strings and returns the index of the new type; an empty id of a part type is made its
+// position ("1", "2", ...). A shrink drops the types from count on, which is how inference drops the inferred types it
+// is about to infer anew (they come after the given ones).
+void md_part_type_data_free(md_part_type_data_t* type, md_allocator_i* alloc);
+void md_part_type_data_shrink(md_part_type_data_t* type, size_t count, md_allocator_i* alloc);
+md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, str_t id, md_part_type_flags_t flags, str_t description, md_allocator_i* alloc);
+
+void md_molecule_type_data_free(md_molecule_type_data_t* type, md_allocator_i* alloc);
+void md_molecule_type_data_shrink(md_molecule_type_data_t* type, size_t count, md_allocator_i* alloc);
+md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type, str_t name, md_molecule_type_flags_t flags, md_allocator_i* alloc);
 
 // The ranges of a lipid: NULL and 0 when the index is out of range
 static inline const int32_t* md_lipid_residues(const md_lipid_data_t* lipid, size_t lipid_idx) {

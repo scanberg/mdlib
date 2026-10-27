@@ -98,9 +98,9 @@ UTEST(pdb, assemblies) {
     const md_assembly_data_t* a = &sys.assembly;
     ASSERT_EQ(1, a->count);
     EXPECT_STREQ("1", str_ptr(md_assembly_id(a, 0)));
-    ASSERT_EQ(1, a->part_count);
+    ASSERT_EQ(1, a->group_count);
     EXPECT_EQ(60, a->oper_count);
-    const md_urange_t ir = md_assembly_part_inst_range(a, 0);
+    const md_urange_t ir = md_assembly_group_inst_range(a, 0);
     EXPECT_EQ(3, ir.end - ir.beg);
     EXPECT_EQ(60, md_assembly_copy_count(a, 0));
     const mat4_t I = mat4_ident();
@@ -141,14 +141,14 @@ UTEST(pdb, assembly_groups) {
     ASSERT_EQ(1, a->count);
     // The identity copies A, B and C; the other only A
     ASSERT_EQ(2, a->oper_count);
-    ASSERT_EQ(2, a->part_count);
-    md_urange_t ir = md_assembly_part_inst_range(a, 0);
-    md_urange_t orr = md_assembly_part_oper_range(a, 0);
+    ASSERT_EQ(2, a->group_count);
+    md_urange_t ir = md_assembly_group_inst_range(a, 0);
+    md_urange_t orr = md_assembly_group_oper_range(a, 0);
     EXPECT_EQ(3, ir.end - ir.beg);
     EXPECT_EQ(1, orr.end - orr.beg);
     EXPECT_EQ(0, a->oper[orr.beg]);
-    ir = md_assembly_part_inst_range(a, 1);
-    orr = md_assembly_part_oper_range(a, 1);
+    ir = md_assembly_group_inst_range(a, 1);
+    orr = md_assembly_group_oper_range(a, 1);
     EXPECT_EQ(1, ir.end - ir.beg);
     EXPECT_EQ(1, orr.end - orr.beg);
     EXPECT_EQ(1, a->oper[orr.beg]);
@@ -172,8 +172,11 @@ UTEST(pdb, create_system) {
     ASSERT_EQ(sys.atom.count, pdb_data.num_atom_coordinates);
 
     EXPECT_EQ(1185, sys.residue.count);
+    // The chains of the file are its units, and their strands its parts: three of one sequence
     EXPECT_EQ(3, sys.instance.count);
-    EXPECT_EQ(1, sys.entity.count);
+    ASSERT_TRUE(md_util_system_infer_parts(&sys));
+    EXPECT_EQ(3, sys.part.count);
+    EXPECT_EQ(1, md_system_part_type_count(&sys));
 
     for (size_t i = 0; i < sys.atom.count; ++i) {
         EXPECT_EQ(sys_state.xyz[i].x, pdb_data.atom_coordinates[i].x);

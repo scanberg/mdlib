@@ -105,6 +105,74 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
         }
     }
 
+    // THE HIERARCHY: every part of a type, the given types before the inferred, and every part within one molecule
+    if (sys->part.count) {
+        const md_part_type_data_t* type = &sys->part.type;
+        if (md_array_size(sys->part.res_offset) != sys->part.count + 1 || md_array_size(sys->part.type_idx) != sys->part.count) {
+            FAIL("part arrays do not hold count = %zu entries", sys->part.count);
+        } else if (sys->part.res_offset[sys->part.count] != sys->residue.count) {
+            FAIL("part sentinel = %u, expected residue.count = %zu", sys->part.res_offset[sys->part.count], sys->residue.count);
+        } else {
+            for (size_t p = 0; p < sys->part.count; ++p) {
+                const md_part_type_idx_t t = sys->part.type_idx[p];
+                if (t < 0 || (size_t)t >= type->count) {
+                    FAIL("part[%zu] has type %d, out of [0, %zu)", p, t, type->count);
+                    break;
+                }
+            }
+        }
+        if (md_array_size(type->id) != type->count || md_array_size(type->flags) != type->count || md_array_size(type->description) != type->count) {
+            FAIL("part.type arrays do not hold count = %zu entries", type->count);
+        } else {
+            bool inferred = false;
+            for (size_t t = 0; t < type->count; ++t) {
+                const bool f = (type->flags[t] & MD_PART_TYPE_FLAG_INFERRED) != 0;
+                if (inferred && !f) {
+                    FAIL("part type %zu is given but comes after an inferred one", t);
+                    break;
+                }
+                inferred |= f;
+            }
+        }
+        if (sys->molecule.count && sys->molecule.atom_slot) {
+            for (size_t p = 0; p < sys->part.count; ++p) {
+                const md_urange_t r = md_system_part_atom_range(sys, p);
+                if (r.beg >= r.end) continue;
+                const md_molecule_idx_t m = md_system_molecule_find_by_atom_idx(sys, r.beg);
+                bool whole = true;
+                for (uint32_t a = r.beg + 1; a < r.end && whole; ++a) whole = md_system_molecule_find_by_atom_idx(sys, a) == m;
+                if (!whole) {
+                    FAIL("part[%zu] is not within one molecule", p);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (sys->molecule.count && sys->molecule.type_idx) {
+        const md_molecule_type_data_t* type = &sys->molecule.type;
+        if (md_array_size(sys->molecule.type_idx) != sys->molecule.count) {
+            FAIL("molecule.type_idx holds %zu entries, expected molecule.count = %zu", md_array_size(sys->molecule.type_idx), sys->molecule.count);
+        } else {
+            for (size_t m = 0; m < sys->molecule.count; ++m) {
+                const md_molecule_type_idx_t t = sys->molecule.type_idx[m];
+                if (t < 0 || (size_t)t >= type->count) {
+                    FAIL("molecule[%zu] has type %d, out of [0, %zu)", m, t, type->count);
+                    break;
+                }
+            }
+        }
+        bool inferred = false;
+        for (size_t t = 0; t < type->count; ++t) {
+            const bool f = (type->flags[t] & MD_MOLECULE_TYPE_FLAG_INFERRED) != 0;
+            if (inferred && !f) {
+                FAIL("molecule type %zu is given but comes after an inferred one", t);
+                break;
+            }
+            inferred |= f;
+        }
+    }
+
     if (sys->protein_backbone.range.count) {
         if (md_array_size(sys->protein_backbone.range.offset) != sys->protein_backbone.range.count + 1) {
             FAIL("protein_backbone.range.offset holds %zu entries, expected count+1 = %zu",
@@ -113,9 +181,9 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
             FAIL("protein_backbone sentinel = %u, expected segment.count = %zu",
                  sys->protein_backbone.range.offset[sys->protein_backbone.range.count], sys->protein_backbone.segment.count);
         }
-        if (md_array_size(sys->protein_backbone.range.inst_idx) != sys->protein_backbone.range.count) {
-            FAIL("protein_backbone.range.inst_idx holds %zu entries, expected count = %zu",
-                 md_array_size(sys->protein_backbone.range.inst_idx), sys->protein_backbone.range.count);
+        if (md_array_size(sys->protein_backbone.range.part_idx) != sys->protein_backbone.range.count) {
+            FAIL("protein_backbone.range.part_idx holds %zu entries, expected count = %zu",
+                 md_array_size(sys->protein_backbone.range.part_idx), sys->protein_backbone.range.count);
         }
     }
 
@@ -127,9 +195,9 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
             FAIL("nucleic_backbone sentinel = %u, expected segment.count = %zu",
                  sys->nucleic_backbone.range.offset[sys->nucleic_backbone.range.count], sys->nucleic_backbone.segment.count);
         }
-        if (md_array_size(sys->nucleic_backbone.range.inst_idx) != sys->nucleic_backbone.range.count) {
-            FAIL("nucleic_backbone.range.inst_idx holds %zu entries, expected count = %zu",
-                 md_array_size(sys->nucleic_backbone.range.inst_idx), sys->nucleic_backbone.range.count);
+        if (md_array_size(sys->nucleic_backbone.range.part_idx) != sys->nucleic_backbone.range.count) {
+            FAIL("nucleic_backbone.range.part_idx holds %zu entries, expected count = %zu",
+                 md_array_size(sys->nucleic_backbone.range.part_idx), sys->nucleic_backbone.range.count);
         }
     }
 

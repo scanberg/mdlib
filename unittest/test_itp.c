@@ -212,6 +212,20 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     EXPECT_EQ(sys.bond.count, MOLS * bonds_per_mol);
     // Three fibrils and the two water beads the topology says nothing about
     EXPECT_EQ(md_system_molecule_count(&sys), (size_t)(MOLS + 2));
+    // The fibrils are the units of the system now, each of the molecule type of the topology, as GROMACS has them. The
+    // water beads are a unit of no type after them, and molecules of a type inferred.
+    ASSERT_EQ(md_system_instance_count(&sys), (size_t)(MOLS + 1));
+    ASSERT_GE(md_system_molecule_type_count(&sys), 2u);
+    EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, 0), STR_LIT("MSC")));
+    EXPECT_EQ(md_system_molecule_type_flags(&sys, 0), MD_MOLECULE_TYPE_FLAG_NONE);
+    for (int m = 0; m < MOLS; ++m) {
+        EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, (size_t)m), 0);
+        const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, (size_t)(m * SLICES * 7));
+        EXPECT_EQ(md_system_molecule_type_idx(&sys, (size_t)mol), 0);
+    }
+    EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, MOLS), -1);
+    const md_molecule_idx_t water = md_system_molecule_find_by_atom_idx(&sys, (size_t)(MOLS * SLICES * 7));
+    EXPECT_TRUE(md_system_molecule_type_flags(&sys, (size_t)md_system_molecule_type_idx(&sys, (size_t)water)) & MD_MOLECULE_TYPE_FLAG_INFERRED);
 
     // Per atom mass is published, and it varies (first slice heavier)
     const md_attribute_t* mass_attr = md_attributes_find(&sys.attributes, STR_LIT("atom/mass"));
@@ -265,6 +279,11 @@ UTEST(itp, residue_boundaries_disambiguate_polymers) {
 
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
     EXPECT_EQ(md_system_molecule_count(&sys), 2u);
+    // Two molecules of the one molecule type matched, the only molecule type of the system
+    ASSERT_EQ(md_system_molecule_type_count(&sys), 1u);
+    EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, 0), STR_LIT("MSC5")));
+    EXPECT_EQ(md_system_molecule_type_idx(&sys, 0), 0);
+    EXPECT_EQ(md_system_molecule_type_idx(&sys, 1), 0);
 
     md_vm_arena_destroy(alloc);
 }

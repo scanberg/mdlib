@@ -505,7 +505,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     md_array(float) atom_b_factor  = 0;
     md_array_ensure(atom_occupancy, capacity, temp_arena);
     md_array_ensure(atom_b_factor,  capacity, temp_arena);
-    // Keep track of the asymmetric unit id for each residue, this serves as a basis for determining entities and instances
+    // The chain id of each residue: the runs of one id are the units of the file (md_util_system_instances_from_chain_ids)
     md_array(str_t) res_auth_asym_ids = 0;
 
     md_array_ensure(state->xyz,           capacity, state->alloc);
@@ -556,7 +556,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         if (res_key != prev_res_key || terminator) {
             // New residue. A TER record ends the residue before it, whatever the residue after it is called. Whether it
             // also ends a chain is left to the chain ids and the bonds: TER is written inconsistently, and a chain
-            // continues over gaps anyway (see md_util_system_infer_entity_and_instance).
+            // continues over gaps anyway (see md_util_system_infer_parts).
             sys->residue.count += 1;
             md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
             md_array_push(sys->residue.name,     make_label(res_name), sys->alloc);
@@ -651,7 +651,9 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // out into md_util_system_infer without moving res_flags with it.
     md_util_system_infer_covalent_bonds(sys, state);
     md_util_system_infer_residue_flags(sys);
-    md_util_system_infer_entity_and_instance(sys, res_auth_asym_ids);
+    // The units of the file are its chains: the runs of residues of one chain id
+    md_util_system_instances_from_chain_ids(sys, res_auth_asym_ids);
+    md_util_system_infer_chains(sys);
 
     // The assemblies name the chains by the ids they have in the file, which are those of the instances
     pdb_assemblies(sys, data, temp_arena);
@@ -936,7 +938,7 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
         md_file_printf(file, "MODEL     %4d\n", model_num);
     }
 
-	md_instance_idx_t prev_inst_idx = INT_MIN;
+	md_part_idx_t prev_part_idx = INT_MIN;
     for (size_t i = 0; i < num_atoms; ++i) {
         int idx = atom_indices ? atom_indices[i] : (int)i;
 
@@ -965,10 +967,11 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
 
 		md_sequence_id_t res_seq = md_system_residue_seq_id(sys, res_idx);
         
-        // Get chain ID from instance
+        // The chain id, the label the atom is filed under (blank for one in no chain)
         char chain_id[4] = " ";
-        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(sys, idx);
-        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_system_instance_auth_id(sys, inst_idx));
+        const md_chain_idx_t chain_idx = md_system_chain_find_by_atom_idx(sys, idx);
+        if (chain_idx >= 0) str_copy_to_char_buf(chain_id, sizeof(chain_id), md_system_chain_id(sys, (size_t)chain_idx));
+        const md_part_idx_t part_idx = md_system_part_find_by_atom_idx(sys, idx);
 
         char res_seq_str[5] = "";
         {
@@ -1002,10 +1005,10 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
             ""                  // charge
         );
 
-		if (prev_inst_idx != INT_MIN && inst_idx != prev_inst_idx) {
+		if (prev_part_idx != INT_MIN && part_idx != prev_part_idx) {
 			md_file_printf(file, "TER\n");
 		}
-        prev_inst_idx = inst_idx;
+        prev_part_idx = part_idx;
     }
     
     if (model_num > 0) {

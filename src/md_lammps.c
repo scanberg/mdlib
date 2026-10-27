@@ -873,51 +873,38 @@ static str_t lammps_formula(char* buf, size_t cap, const md_system_t* sys, md_ur
 	return (str_t){ buf, (size_t)len };
 }
 
-// The molecules of a LAMMPS data file are its residues. Each is an instance, of an entity per distinct sequence of
-// particle types. What kind of molecule an entity is, LAMMPS does not say (md_util_system_infer_entity_kinds).
-// Consecutive molecules of one entity share their instance id, as single residue molecules do elsewhere.
+// The molecules of a LAMMPS data file are its residues. Each is an instance, of a molecule type per distinct sequence of
+// particle types, which the file implies without naming: the type is named by its formula. Each instance is one
+// molecule whatever its bonds, as the file has it. What its parts are is inferred (md_util_system_infer_parts).
 static void lammps_molecules_as_instances(md_system_t* sys) {
 	md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-	md_hashmap32_t entity_map = { .allocator = md_temp_allocator(temp) };
+	md_hashmap32_t type_map = { .allocator = md_temp_allocator(temp) };
 
-	size_t num_ids = 0;
-	md_entity_idx_t prev_entity = -1;
-	md_label_t inst_id = {0};
 	for (size_t c = 0; c < sys->residue.count; ++c) {
 		const md_urange_t range = md_system_residue_atom_range(sys, c);
 		const uint64_t key = md_hash64(sys->atom.type_idx + range.beg, (range.end - range.beg) * sizeof(md_particle_type_idx_t), range.end - range.beg);
 
-		md_entity_idx_t entity_idx = -1;
-		const uint32_t* found = md_hashmap_get(&entity_map, key);
+		md_molecule_type_idx_t type_idx = -1;
+		const uint32_t* found = md_hashmap_get(&type_map, key);
 		if (found) {
-			entity_idx = (md_entity_idx_t)*found;
+			type_idx = (md_molecule_type_idx_t)*found;
 		} else {
-			entity_idx = (md_entity_idx_t)sys->entity.count;
-			md_hashmap_add(&entity_map, key, (uint32_t)entity_idx);
-
-			md_label_t id = {0};
-			md_snprintf(id.buf, sizeof(id.buf), "%i", entity_idx + 1);
 			char buf[64];
-			str_t desc = lammps_formula(buf, sizeof(buf), sys, range);
-			if (str_empty(desc)) {
-				const int len = md_snprintf(buf, sizeof(buf), "molecule type %i", entity_idx + 1);
-				desc = (str_t){ buf, (size_t)len };
+			str_t name = lammps_formula(buf, sizeof(buf), sys, range);
+			if (str_empty(name)) {
+				const int len = md_snprintf(buf, sizeof(buf), "molecule type %zu", sys->molecule.type.count + 1);
+				name = (str_t){ buf, (size_t)len };
 			}
-			md_array_push(sys->entity.id, id, sys->alloc);
-			md_array_push(sys->entity.flags, MD_ENTITY_FLAG_TOPOLOGY, sys->alloc);
-			md_array_push(sys->entity.description, str_copy(desc, sys->alloc), sys->alloc);
-			sys->entity.count += 1;
+			type_idx = md_molecule_type_data_push(&sys->molecule.type, name, MD_MOLECULE_TYPE_FLAG_NONE, sys->alloc);
+			md_hashmap_add(&type_map, key, (uint32_t)type_idx);
 		}
 
-		if (entity_idx != prev_entity) {
-			inst_id = md_util_instance_id_from_index(num_ids++);
-		}
-		md_array_push(sys->instance.id, inst_id, sys->alloc);
+		md_array_push(sys->instance.id, (md_label_t){0}, sys->alloc);
 		md_array_push(sys->instance.auth_id, (md_label_t){0}, sys->alloc);
 		md_array_push(sys->instance.res_offset, (uint32_t)c, sys->alloc);
-		md_array_push(sys->instance.entity_idx, entity_idx, sys->alloc);
+		md_array_push(sys->instance.part_type_idx, -1, sys->alloc);
+		md_array_push(sys->instance.mol_type_idx, type_idx, sys->alloc);
 		sys->instance.count += 1;
-		prev_entity = entity_idx;
 	}
 	if (sys->instance.count) {
 		md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, sys->alloc);
@@ -1068,7 +1055,6 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 	// The atoms have no names to classify the molecules by, but water and monatomic ions are told by their atoms
 	md_util_system_infer_residue_flags(sys);
-	md_util_system_infer_entity_kinds(sys);
 
 	md_temp_end(temp_scope);
 

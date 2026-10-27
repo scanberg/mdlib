@@ -38,13 +38,13 @@ enum {
 //   particle type md_particle_type_flags_t what the particle is: an atom, a coarse grained bead or a virtual site
 //   atom       md_atom_flags_t       the atom's role in its residue (backbone, side chain, ...) and its chemistry
 //   residue    md_residue_flags_t    what the residue is (amino acid, nucleotide, water, ion), and where in its chain
-//   entity     md_entity_flags_t     what the molecule is (peptide, DNA, water, ...)
+//   part type  md_part_type_flags_t  what the part is (peptide, DNA, water, ...)
 //
 // Residues of the same name and kind share a residue type (md_residue_type_data_t), as atoms share a particle
 // type. What a particle type is a form of is its element, what a residue type is a form of is its standard monomer
 // (md_monomer_t): HIE, HSD and MSE are forms of HIS, HIS and MET. Both are where the defaults of the type come from.
 //
-// Instances have no flags of their own: an instance is one occurrence of its entity (md_system_instance_entity_kind).
+// A part has no flags of its own: what it is is the kind of its type (md_system_part_kind).
 // Nothing is copied from one level to another. A property of an atom's particle type or of its residue is read through the
 // type or the residue (md_atom_particle_kind, md_system_atom_residue_kind), so there is one copy and it cannot go
 // stale when the type or the residue is reclassified.
@@ -183,37 +183,46 @@ typedef enum md_monomer_t {
     MD_MONOMER_COUNT
 } md_monomer_t;
 
-// ### ENTITY ###
+// ### PART TYPE, MOLECULE TYPE ###
 
-// What a molecule is. An entity is a molecule type (or a polymer sequence), each of its instances one molecule or one
-// polymer chain of that type.
-typedef enum md_entity_kind_t {
-    MD_ENTITY_KIND_UNKNOWN      = 0,    // Not classified yet: a topology names its molecule types but does not say what
-                                        // they are. md_util_system_infer classifies these from their residues.
-    MD_ENTITY_KIND_NON_POLYMER  = 1,    // A small molecule: a ligand, an ion, a lipid, a single residue
-    MD_ENTITY_KIND_WATER        = 2,
-    MD_ENTITY_KIND_BRANCHED     = 3,    // A branched oligosaccharide (mmCIF 'branched')
-    // Polymers from here on, see md_entity_kind_is_polymer
-    MD_ENTITY_KIND_PEPTIDE      = 4,    // A polypeptide chain (protein)
-    MD_ENTITY_KIND_DNA          = 5,
-    MD_ENTITY_KIND_RNA          = 6,
-    MD_ENTITY_KIND_NUCLEIC      = 7,    // A nucleic acid which is both (a DNA/RNA hybrid), or which could not be told apart
-    MD_ENTITY_KIND_POLYMER      = 8,    // Any other polymer
-} md_entity_kind_t;
+// What a part is (md_part_data_t): the kind of its type. A part is one polymer strand, one glycan tree, one small
+// molecule (a ligand, an ion, a lipid) or one water.
+typedef enum md_part_kind_t {
+    MD_PART_KIND_UNKNOWN      = 0,    // Not classified yet: a type the data names without saying what it is.
+                                      // md_util_system_infer_parts classifies these from their residues.
+    MD_PART_KIND_NON_POLYMER  = 1,    // A small molecule: a ligand, an ion, a lipid, a single residue
+    MD_PART_KIND_WATER        = 2,
+    MD_PART_KIND_BRANCHED     = 3,    // A branched oligosaccharide (mmCIF 'branched')
+    // Polymers from here on, see md_part_kind_is_polymer
+    MD_PART_KIND_PEPTIDE      = 4,    // A polypeptide chain (protein)
+    MD_PART_KIND_DNA          = 5,
+    MD_PART_KIND_RNA          = 6,
+    MD_PART_KIND_NUCLEIC      = 7,    // A nucleic acid which is both (a DNA/RNA hybrid), or which could not be told apart
+    MD_PART_KIND_POLYMER      = 8,    // Any other polymer
+} md_part_kind_t;
 
 typedef enum {
-    MD_ENTITY_FLAG_NONE         = 0,
-    MD_ENTITY_FLAG_KIND_MASK    = 0xF,      // md_entity_kind_t, see md_entity_flags_kind
+    MD_PART_TYPE_FLAG_NONE         = 0,
+    MD_PART_TYPE_FLAG_KIND_MASK    = 0xF,      // md_part_kind_t, see md_part_type_flags_kind
 
-    // Not given by the source: the entity was inferred together with its instances (md_util_system_infer_entity_and_instance)
-    MD_ENTITY_FLAG_INFERRED     = 0x10,
+    // Not given by the data (an mmCIF entity is): the type was inferred with the parts (md_util_system_infer_parts),
+    // and is inferred anew with them
+    MD_PART_TYPE_FLAG_INFERRED     = 0x10,
+} md_part_type_flags_t;
 
-    // A molecule type of a topology (a GROMACS molecule type, the molecules of a LAMMPS data file): each of its
-    // instances is one molecule, whatever its bonds (md_molecule_data_t), as GROMACS has it
-    MD_ENTITY_FLAG_TOPOLOGY     = 0x20,
-} md_entity_flags_t;
+ENUM_FLAGS(md_part_type_flags_t)
 
-ENUM_FLAGS(md_entity_flags_t)
+typedef enum {
+    MD_MOLECULE_TYPE_FLAG_NONE     = 0,
+
+    // Not given by the data (a molecule type of a topology is): the type was inferred with the molecules
+    // (md_util_system_infer_molecules), and is inferred anew with them
+    MD_MOLECULE_TYPE_FLAG_INFERRED = 0x1,
+} md_molecule_type_flags_t;
+
+ENUM_FLAGS(md_molecule_type_flags_t)
+
+ENUM_FLAGS(md_part_type_flags_t)
 
 // What a tail of a lipid is (md_lipid_data_t)
 typedef enum md_lipid_tail_kind_t {
@@ -222,12 +231,12 @@ typedef enum md_lipid_tail_kind_t {
     MD_LIPID_TAIL_SKELETON  = 1,    // The fused ring system of a sterol, with its side chain
 } md_lipid_tail_kind_t;
 
-static inline bool md_entity_kind_is_polymer(md_entity_kind_t kind) {
-    return kind >= MD_ENTITY_KIND_PEPTIDE;
+static inline bool md_part_kind_is_polymer(md_part_kind_t kind) {
+    return kind >= MD_PART_KIND_PEPTIDE;
 }
 
-static inline bool md_entity_kind_is_nucleic_acid(md_entity_kind_t kind) {
-    return kind == MD_ENTITY_KIND_DNA || kind == MD_ENTITY_KIND_RNA || kind == MD_ENTITY_KIND_NUCLEIC;
+static inline bool md_part_kind_is_nucleic_acid(md_part_kind_t kind) {
+    return kind == MD_PART_KIND_DNA || kind == MD_PART_KIND_RNA || kind == MD_PART_KIND_NUCLEIC;
 }
 
 // ### ACCESSORS for the packed values ###
@@ -261,13 +270,13 @@ static inline md_residue_flags_t md_residue_flags_set_kind(md_residue_flags_t fl
     return (md_residue_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
 }
 
-static inline md_entity_kind_t md_entity_flags_kind(md_entity_flags_t flags) {
-    return (md_entity_kind_t)((unsigned int)flags & (unsigned int)MD_ENTITY_FLAG_KIND_MASK);
+static inline md_part_kind_t md_part_type_flags_kind(md_part_type_flags_t flags) {
+    return (md_part_kind_t)((unsigned int)flags & (unsigned int)MD_PART_TYPE_FLAG_KIND_MASK);
 }
 
-static inline md_entity_flags_t md_entity_flags_set_kind(md_entity_flags_t flags, md_entity_kind_t kind) {
-    const unsigned int mask = (unsigned int)MD_ENTITY_FLAG_KIND_MASK;
-    return (md_entity_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
+static inline md_part_type_flags_t md_part_type_flags_set_kind(md_part_type_flags_t flags, md_part_kind_t kind) {
+    const unsigned int mask = (unsigned int)MD_PART_TYPE_FLAG_KIND_MASK;
+    return (md_part_type_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
 }
 
 
@@ -573,9 +582,10 @@ typedef int32_t     md_atom_idx_t;
 typedef int32_t     md_residue_idx_t;
 typedef int32_t     md_instance_idx_t;
 typedef int32_t     md_chain_idx_t;
-typedef int32_t     md_entity_idx_t;
 typedef int32_t     md_part_idx_t;
+typedef int32_t     md_part_type_idx_t;
 typedef int32_t     md_molecule_idx_t;
+typedef int32_t     md_molecule_type_idx_t;
 typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_sequence_id_t;
 typedef int32_t     md_bond_idx_t;
@@ -692,7 +702,7 @@ extern "C" {
 // Names of the kinds for printing ("atom", "amino acid", "peptide", ...), "" for a value out of range
 const char* md_particle_kind_name(md_particle_kind_t kind);
 const char* md_residue_kind_name(md_residue_kind_t kind);
-const char* md_entity_kind_name(md_entity_kind_t kind);
+const char* md_part_kind_name(md_part_kind_t kind);
 const char* md_secondary_structure_name(md_secondary_structure_t ss);
 const char* md_hybridization_name(md_hybridization_t hyb);
 const char* md_bond_origin_name(md_bond_origin_t origin);

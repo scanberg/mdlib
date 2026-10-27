@@ -305,7 +305,8 @@ pools: `(a + b)` or `(a - b)` per frame, then summed over the frames, is not `a 
 | Category | Procedures |
 |---|---|
 | [Selectors: atoms](#selectors-atom-level) | [`all`](#all), [`atom`](#atom), [`element`](#element), [`name`](#name) (`label`, `type`), [`backbone`](#backbone), [`side`](#side) (`sidechain`), [`ion`](#ion), [`nucleoside`](#nucleoside), [`nucleobase`](#nucleobase), [`head`](#head), [`tail`](#tail), [`ring`](#ring) |
-| [Selectors: residues](#selectors-residue-level) | [`protein`](#protein), [`nucleic`](#nucleic) (`nucleotide`), [`water`](#water), [`lipid`](#lipid), [`glycan`](#glycan), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
+| [Selectors: by kind](#selectors-by-kind) | [`polymer`](#polymer), [`protein`](#protein), [`nucleic`](#nucleic), [`water`](#water), [`lipid`](#lipid), [`glycan`](#glycan) |
+| [Selectors: residues](#selectors-residue-level) | [`nucleotide`](#nucleotide), [`qm`](#qm), [`environment`](#environment), [`resname`](#resname) (`residue`, `component`), [`resid`](#resid), [`residue`](#residue), [`component`](#component) |
 | [Selectors: chains, molecules and parts](#selectors-chains-molecules-and-parts) | [`chain`](#chain) (`chain_id`, `auth_id`), [`molecule`](#molecule), [`part`](#part) |
 | [Selectors: structure matching](#selectors-structure-matching) | [`smiles`](#smiles), [`match`](#match) |
 | [Selectors: spatial](#selectors-spatial) | [`within`](#within), [`within_x`](#within_x), [`within_y`](#within_y), [`within_z`](#within_z), [`within_xyz`](#within_xyz) |
@@ -583,56 +584,82 @@ third = ring(3);                                        # the third ring of the 
 first_aromatic = ring(1, kind="aromatic") in residue(:); # the first aromatic ring of each residue that has one
 ```
 
-### Selectors: residue level
+### Selectors: by kind
 
-These return a `atomset[]` with one selection per matching residue. Use them as the right-hand side of `in`, or
-pass them where an atomset is accepted (an array of atomsets is then merged into one selection; [`rmsd`](#rmsd),
-[`plane`](#plane) and [`pucker`](#pucker) are the exceptions and give one value per selection).
+These return a `atomset[]` with one selection per [part](#part) of the kind: a strand of a polymer (with its caps and
+the modified residues bonded into it), a water. [`lipid`](#lipid) is one per lipid molecule, [`glycan`](#glycan) one per
+glycan tree. Within a context, the parts with an atom in it, whole. By position (`protein(2)`) the parts of the kind are
+counted as [`part`](#part) counts them, within a context those with an atom in it, each cut to it. Use them as the
+right-hand side of `in`, or pass them where an atomset is accepted (an array of atomsets is then merged into one
+selection; [`rmsd`](#rmsd), [`plane`](#plane) and [`pucker`](#pucker) are the exceptions and give one value per
+selection). One selection per residue is [`residue`](#residue) of them: `residue(protein())`.
+
+### polymer
+
+<!-- proc name=polymer category=selector.kind -->
+
+```text
+polymer()                 -> atomset[]
+polymer(index: irange[])  -> atomset[]
+```
+
+Every strand of a polymer: a peptide, a nucleic acid or any other polymer, one selection per strand. A strand goes on
+over a gap (residues missing from a crystal structure) and ends where the chemistry says the chain does. This is how a
+strand is selected where the data gives no chain ids (a GRO file, a topology, a PDB file written by a simulation): its
+position among the strands, `polymer(2)`. Where it does, `polymer() in chain("A")` is the strand of chain A without the
+ligands and waters filed under it.
+
+```mdscript
+strands = polymer();                                # one selection per strand
+second = polymer(2);                                # the second strand of the system
+strand_a = polymer() in chain("A");                 # the strand of chain A alone
+```
 
 ### protein
 
-<!-- proc name=protein category=selector.residue -->
+<!-- proc name=protein category=selector.kind -->
 
 ```text
-protein() -> atomset[]
+protein()                 -> atomset[]
+protein(index: irange[])  -> atomset[]
 ```
 
-Every amino acid residue: those whose backbone was found and verified by its bonds, and those which are only named
-like an amino acid (missing atoms, a coarse grained model).
+Every peptide strand, one selection per strand: its amino acids (those whose backbone was found and verified by its
+bonds, and those only named like an amino acid: missing atoms, a coarse grained model), with the caps (ACE, NME) and
+the modified residues bonded into it. A free amino acid (a single residue bound as a ligand) is no strand.
 
 ```mdscript
-n_protein_atoms = count(protein());                 # the residues are merged into one selection
-d = distance(1, 2) in protein();                    # one value per protein residue
+n_protein_atoms = count(protein());                 # the strands are merged into one selection
+first = protein(1);                                 # the first peptide strand
+d = distance(1, 2) in residue(protein());           # one value per protein residue
 ```
 
 ### nucleic
 
-<!-- proc name=nucleic aliases=nucleotide category=selector.residue -->
-<a id="nucleotide"></a>
+<!-- proc name=nucleic category=selector.kind -->
 
 ```text
-nucleic()     -> atomset[]
-nucleotide()  -> atomset[]
+nucleic()                 -> atomset[]
+nucleic(index: irange[])  -> atomset[]
 ```
 
-Every nucleotide residue: those whose backbone was found and verified by its bonds, and those which are only named
-like a nucleotide. A free nucleotide ligand (GTP, ATP) is not one unless it is named like a residue of a nucleic acid.
-`nucleotide` is an alias.
+Every strand of a nucleic acid (DNA, RNA or a hybrid), one selection per strand. A free nucleotide ligand (GTP, ATP)
+is no strand. For the nucleotides one by one, see [`nucleotide`](#nucleotide).
 
 ```mdscript
 dna = nucleic();
-n_dna_atoms = count(nucleic());
+strands = count(nucleic(), "part");                 # the strands of a duplex
 ```
 
 ### water
 
-<!-- proc name=water category=selector.residue -->
+<!-- proc name=water category=selector.kind -->
 
 ```text
 water() -> atomset[]
 ```
 
-Every water molecule.
+Every water molecule, one selection each.
 
 ```mdscript
 solvent = water();
@@ -641,7 +668,7 @@ n_waters = count(water(), "residue");
 
 ### lipid
 
-<!-- proc name=lipid category=selector.residue -->
+<!-- proc name=lipid category=selector.kind -->
 
 ```text
 lipid() -> atomset[]
@@ -662,7 +689,7 @@ n_lipids = count(lipid(), "molecule");                # lipid molecules
 
 ### glycan
 
-<!-- proc name=glycan category=selector.residue -->
+<!-- proc name=glycan category=selector.kind -->
 
 ```text
 glycan() -> atomset[]
@@ -677,6 +704,26 @@ so `glycan()` is how it is selected alone. Within a context, the glycans with an
 glycans = glycan();                                   # one selection per glycan tree
 glycans_a = glycan() in chain("A");                   # the glycans of chain A
 n = count(glycan(), "part");
+```
+
+### Selectors: residue level
+
+These return a `atomset[]` with one selection per matching residue.
+
+### nucleotide
+
+<!-- proc name=nucleotide category=selector.residue -->
+
+```text
+nucleotide()  -> atomset[]
+```
+
+Every nucleotide residue: those whose backbone was found and verified by its bonds, and those which are only named
+like a nucleotide. A free nucleotide ligand (GTP, ATP) is not one unless it is named like a residue of a nucleic acid.
+
+```mdscript
+bases = nucleotide();
+n = count(nucleotide());                              # the nucleotides, merged into one selection
 ```
 
 ### qm
@@ -803,19 +850,18 @@ A **chain** is what the data files under one chain identifier: the chain id of a
 filed with it alike, and `chain("A")` is all of them, as **one** selection however the atoms are spread through the file.
 A chain id is a label, as an atom name is.
 
-Where the data gives no chain ids (a GRO file, a topology, a PDB file written by a simulation), none are made up: each
-strand of a polymer is a chain of its own and has none, and is found by its position, `chain(1)`. A strand ends where
-the chemistry says the chain does: a nucleic acid strand begins without its phosphate. A molecule which is not a polymer
-and is given no id is in no chain.
+Where the data gives no chain ids (a GRO file, a topology, a PDB file written by a simulation), none are made up: the
+system has no chains, and `chain(...)` is a compile error. A strand of a polymer is then found as what it is, a part of
+a polymer: [`polymer`](#polymer), `polymer(1)` by its position.
 
 A **molecule** is atoms joined by bonds, and what holds together where the bonds do not say so: the atoms of a residue,
 and the residues of a polymer chain over a gap (residues missing from a crystal structure). A residue and a polymer
 chain are always within one molecule; a molecule may hold several chains (joined by a disulfide), and a ligand bonded
 to a protein is of its molecule. A metal coordinated by residues (the Mg of a GTP, the Zn of a zinc finger) is a molecule
 of its own, as are the waters around it, unless a topology bonds it into a molecule. An ion or a water is a molecule of
-its own. Where the system comes with a topology (a GROMACS `.tpr`), its molecules are the molecules of the topology, as
-GROMACS has them: the two strands of a DNA duplex which martinize-dna writes as one molecule type are one molecule of
-two chains.
+its own. Where the system comes with a topology (a GROMACS `.tpr`, or a `.top` beside a `.gro`), its molecules are the
+molecules of the topology, as GROMACS has them, each of its molecule type: the two strands of a DNA duplex which
+martinize-dna writes as one molecule type are one molecule of two strands.
 
 A **part** is one polymer strand, one glycan tree, one ligand, one ion or one water: the parts the molecules are built
 of. A glycoprotein is one molecule of many parts, its strand and each of its glycans; a chain holds its strand and the
@@ -838,15 +884,15 @@ auth_id(id: string[])   -> atomset
 
 - `chain("A")` — every atom of the chain id, as one selection. Several ids, or a pattern (`"*"` as in
   [`name`](#name)), select all of their atoms together. An id no chain has is a compile error which lists the ids
-  there are, and so is any id in a system whose data gives none. Inside a context, the atoms of the context which carry
-  the id. `chain_id` and `auth_id` are other names of it.
+  there are, and so is any id in a system whose data gives none (see [`polymer`](#polymer)). Inside a context, the atoms
+  of the context which carry the id. `chain_id` and `auth_id` are other names of it.
 - `chain(1:2)` — chains by their 1-based position, one selection per chain, counted as [`residue`](#residue) counts
   its positions. The chains are in the order of their first atoms.
 - `chain(sel)` — every chain that the selection touches, whole, one selection per chain. Atoms in no chain add none.
 
 ```mdscript
 chain_a = chain("A");                          # the protein of chain A, and its ligands and waters
-protein_a = protein() and chain("A");          # the protein alone
+protein_a = protein() in chain("A");           # the protein alone
 first_two = chain(1:2);                        # two selections
 its_chain = chain(atom(1));                    # the chain that contains atom 1
 d = distance(com(chain("A")), com(chain("B")));

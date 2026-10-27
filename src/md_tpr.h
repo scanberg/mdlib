@@ -277,10 +277,10 @@ bool md_tpr_atoms_excluded(const md_tpr_data_t* data, size_t atom_a, size_t atom
 // md_util_system_augment_particle_types). A virtual site without Lennard-Jones parameters, such as the
 // M site of TIP4P, has no element and is not a bead (MD_PARTICLE_VIRTUAL_SITE).
 //
-// Each molecule type is an entity (described by its name) and each molecule an instance of it.
-// The residues are classified (md_util_system_infer_residue_flags) and from them the kinds of the
-// entities (md_util_system_infer_entity_kinds). Molecules of a single residue share the instance id
-// of their molecule block; larger ones have ids of their own.
+// Each molecule type is a molecule type of the system (md_molecule_type_data_t, by its name) and each molecule an
+// instance of it (md_instance_data_t), one molecule whatever its bonds. The residues are classified
+// (md_util_system_infer_residue_flags); what the parts of the molecules are is inferred from them
+// (md_util_system_infer_parts). A topology names no chains: the instances have no ids.
 //
 // Published attributes: 'atom/charge' (e) and, when present, 'atom/velocity' (nm/ps).
 // The non-bonded force field is kept as sys->nonbonded (md_nonbonded.h) when its interactions can be evaluated pair

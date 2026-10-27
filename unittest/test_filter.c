@@ -181,14 +181,14 @@ UTEST(filter, in_context) {
 
     static const char* cases[][2] = {
         // context              expression
-        {"chain(2)",            "residue(1)"},      // relative to the context: the first residue of the chain
-        {"chain(2)",            "residue(1:3)"},
-        {"chain(2)",            "all"},
-        {"chain(2)",            "element('C')"},
+        {"polymer(2)",          "residue(1)"},      // relative to the context: the first residue of the strand
+        {"polymer(2)",          "residue(1:3)"},
+        {"polymer(2)",          "all"},
+        {"polymer(2)",          "element('C')"},
         {"protein",             "residue(1)"},      // one context, however many structures it is made of
         {"resname('PFT')",      "residue(1)"},
-        {"chain(1:2)",          "chain(2)"},
-        {"chain(1)",            "out resname('PFT')"},
+        {"polymer(1:2)",        "polymer(2)"},
+        {"polymer(1)",          "out resname('PFT')"},
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
@@ -213,7 +213,7 @@ UTEST(filter, in_context) {
     md_filter_result_t res;
 
     // The context is what the expression sees of the system, its validation included
-    ASSERT_TRUE(md_filter(&context, STR_LIT("chain(1)"), &whole, alloc).success);
+    ASSERT_TRUE(md_filter(&context, STR_LIT("polymer(1)"), &whole, alloc).success);
     const md_filter_context_t chain = {&sys, &state, NULL, &context};
     EXPECT_TRUE(md_filter(&bf, STR_LIT("all"), &chain, alloc).success);
     EXPECT_TRUE(md_bitset_equal(context, bf));
@@ -265,7 +265,7 @@ UTEST(filter, completion_within_context) {
 
     const md_filter_context_t whole = {&sys, &state, NULL, NULL};
     md_bitset_t context = {0};
-    ASSERT_TRUE(md_filter(&context, STR_LIT("chain(1)"), &whole, alloc).success);
+    ASSERT_TRUE(md_filter(&context, STR_LIT("polymer(1)"), &whole, alloc).success);
     const md_filter_context_t chain = {&sys, &state, NULL, &context};
 
     const str_t expr = STR_LIT("resname()");
@@ -508,6 +508,22 @@ UTEST(filter, chains_by_author_id) {
         ASSERT_EQ(1, (int)md_array_size(sets));
         EXPECT_TRUE(md_bitset_equal(sets[0], md_bitmask_view(&want)));
     }
+    // The strand of chain A alone, without what else is filed under it: the polymer within the chain
+    {
+        md_array_shrink(sets, 0);
+        ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("polymer() in chain('A')"), &fctx, alloc).success);
+        ASSERT_EQ(1, (int)md_array_size(sets));
+        const md_urange_t strand = md_system_instance_atom_range(&sys, 0);
+        EXPECT_EQ(strand.end - strand.beg, md_bitset_count(sets[0]));
+        EXPECT_TRUE(md_bitset_test(sets[0], strand.beg));
+        md_array_shrink(sets, 0);
+        ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("protein()"), &fctx, alloc).success);
+        EXPECT_EQ(2, (int)md_array_size(sets));     // A strand each of the two chains
+        md_array_shrink(sets, 0);
+        ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("residue(protein())"), &fctx, alloc).success);
+        EXPECT_EQ((int)(md_system_instance_residue_count(&sys, 0) + md_system_instance_residue_count(&sys, 1)), (int)md_array_size(sets));
+    }
+
     // The same atoms as the first chain by position, which is one set per chain
     md_array_shrink(sets, 0);
     ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("chain(1:2)"), &fctx, alloc).success);
@@ -556,7 +572,8 @@ UTEST(filter, chains_by_author_id) {
     md_arena_allocator_destroy(alloc);
 }
 
-// Where the data gives no chain ids none are made up: the polymers are chains found by position
+// Where the data gives no chain ids none are made up: the system has no chains, and the strands of its polymers are
+// found as parts by their kind, polymer(i) by position
 UTEST(filter, chains_without_ids) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
@@ -565,18 +582,40 @@ UTEST(filter, chains_without_ids) {
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
-    ASSERT_GT(md_system_chain_count(&sys), 1);
+    ASSERT_EQ(md_system_chain_count(&sys), 0);
 
     md_bitset_t bf = {0};
     md_filter_result_t res = md_filter(&bf, STR_LIT("chain('A')"), &fctx, alloc);
     EXPECT_FALSE(res.success);
     EXPECT_TRUE(strstr(res.error, "no chain ids") != NULL);
+    res = md_filter(&bf, STR_LIT("chain(1)"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
+    EXPECT_TRUE(strstr(res.error, "polymer(i)") != NULL);
+
+    size_t num_polymers = 0;
+    md_part_idx_t second = -1;
+    for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+        if (!md_part_kind_is_polymer(md_system_part_kind(&sys, p))) continue;
+        if (++num_polymers == 2) second = (md_part_idx_t)p;
+    }
+    ASSERT_GT(num_polymers, 1);
 
     md_array(md_bitset_t) sets = 0;
-    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("chain(:)"), &fctx, alloc).success);
-    EXPECT_EQ(md_system_chain_count(&sys), md_array_size(sets));
-    ASSERT_TRUE(md_filter(&bf, STR_LIT("chain(2)"), &fctx, alloc).success);
-    EXPECT_EQ(md_system_chain_atom_count(&sys, 1), md_bitset_count(bf));
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("polymer(:)"), &fctx, alloc).success);
+    EXPECT_EQ(num_polymers, md_array_size(sets));
+    md_array_shrink(sets, 0);
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("polymer()"), &fctx, alloc).success);
+    EXPECT_EQ(num_polymers, md_array_size(sets));
+    md_array_shrink(sets, 0);
+    ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("protein()"), &fctx, alloc).success);
+    EXPECT_EQ(num_polymers, md_array_size(sets));     // The strands are all peptides
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("polymer(2)"), &fctx, alloc).success);
+    const md_urange_t r = md_system_part_atom_range(&sys, (size_t)second);
+    EXPECT_EQ(r.end - r.beg, md_bitset_count(bf));
+    ASSERT_TRUE(md_filter(&bf, STR_LIT("protein(2)"), &fctx, alloc).success);
+    EXPECT_EQ(r.end - r.beg, md_bitset_count(bf));
+    res = md_filter(&bf, STR_LIT("nucleic(1)"), &fctx, alloc);
+    EXPECT_FALSE(res.success);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -601,9 +640,9 @@ UTEST(filter, molecules) {
     for (size_t i = 0; i < num; ++i) total += md_bitset_count(sets[i]);
     EXPECT_EQ(sys.atom.count, total);
 
-    // The first chain is a molecule of its own: growing an atom of it gives all of it
+    // The first strand is a molecule of its own: growing an atom of it gives all of it
     md_bitset_t chain = {0};
-    ASSERT_TRUE(md_filter(&chain, STR_LIT("chain(1)"), &fctx, alloc).success);
+    ASSERT_TRUE(md_filter(&chain, STR_LIT("polymer(1)"), &fctx, alloc).success);
     md_array_shrink(sets, 0);
     ASSERT_TRUE(md_filter_sets(&sets, STR_LIT("molecule(atom(1))"), &fctx, alloc).success);
     ASSERT_EQ(1, (int)md_array_size(sets));

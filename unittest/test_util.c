@@ -21,6 +21,7 @@
 #include <core/md_hash.h>
 
 #include "rmsd.h"
+#include "system_invariants.h"
 
 // The tests below lay out coordinates per axis, which reads well; a state holds them packed.
 static vec3_t* pack_xyz(vec3_t* dst, const float* x, const float* y, const float* z, size_t n) {
@@ -140,20 +141,23 @@ UTEST_F(util, bonds) {
     EXPECT_EQ(163504,   utest_fixture->mol_centered.bond.count);
 }
 
-UTEST_F(util, inst) {
-    EXPECT_EQ(1,        utest_fixture->mol_ala.instance.count);
-	EXPECT_EQ(1,        utest_fixture->mol_pftaa.instance.count);
-	EXPECT_EQ(2,        utest_fixture->mol_nucleotides.instance.count);
-	EXPECT_EQ(253 + 61, utest_fixture->mol_centered.instance.count);
+UTEST_F(util, part) {
+    EXPECT_EQ(1,        utest_fixture->mol_ala.part.count);
+	EXPECT_EQ(1,        utest_fixture->mol_pftaa.part.count);
+	EXPECT_EQ(2,        utest_fixture->mol_nucleotides.part.count);
+	EXPECT_EQ(253 + 61, utest_fixture->mol_centered.part.count);
 
     const md_system_t* sys = &utest_fixture->mol_centered;
-    ASSERT(sys->instance.count > 253);
+    ASSERT(sys->part.count > 253);
 
-    size_t ref_size = md_system_instance_atom_count(sys, 0);
+    const md_urange_t ref = md_system_part_atom_range(sys, 0);
     for (size_t i = 1; i < 253; ++i) {
-        size_t size = md_system_instance_atom_count(sys, i);
-        EXPECT_EQ(ref_size, size);
+        const md_urange_t r = md_system_part_atom_range(sys, i);
+        EXPECT_EQ(ref.end - ref.beg, r.end - r.beg);
+        EXPECT_EQ(md_system_part_type_idx(sys, 0), md_system_part_type_idx(sys, i));
     }
+    // The 253 chains are made alike: one molecule type
+    EXPECT_EQ(md_system_molecule_type_idx(sys, 0), md_system_molecule_type_idx(sys, 252));
 }
 
 UTEST_F(util, backbone) {
@@ -646,15 +650,15 @@ UTEST(util, molecules_hold_residues_and_chains) {
         for (size_t i = 0; i < sys.residue.count; ++i) breaks += (md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER) != 0;
         EXPECT_GT(breaks, 0u);
         size_t polymers = 0;
-        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
-            if (!md_entity_kind_is_polymer(md_system_instance_entity_kind(&sys, i))) continue;
+        for (size_t i = 0; i < md_system_part_count(&sys); ++i) {
+            if (!md_part_kind_is_polymer(md_system_part_kind(&sys, i))) continue;
             polymers += 1;
-            const md_urange_t r = md_system_instance_atom_range(&sys, i);
+            const md_urange_t r = md_system_part_atom_range(&sys, i);
             const size_t mol = MOLECULE_OF(sys, r.beg);
             for (uint32_t a = r.beg; a < r.end; ++a) EXPECT_EQ(mol, MOLECULE_OF(sys, a));
         }
         EXPECT_GT(polymers, 1u);
-        EXPECT_LE(md_system_molecule_count(&sys), md_system_instance_count(&sys));
+        EXPECT_LE(md_system_molecule_count(&sys), md_system_part_count(&sys));
         check_molecule_invariants(utest_result, &sys);
     }
 
@@ -702,7 +706,8 @@ UTEST(util, molecules_hold_residues_and_chains) {
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         ASSERT_EQ(sys.atom.count, 34u);
-        EXPECT_EQ(md_system_instance_count(&sys), 2u);
+        EXPECT_EQ(md_system_instance_count(&sys), 1u);
+        EXPECT_EQ(md_system_part_count(&sys), 2u);
         EXPECT_EQ(md_system_chain_count(&sys), 1u);
         EXPECT_EQ(md_system_chain_atom_count(&sys, 0), 34u);
         EXPECT_EQ(md_system_molecule_count(&sys), 2u);
@@ -902,9 +907,9 @@ static void check_martini_peptide(int* utest_result, md_system_t* sys, md_system
     }
 
     ASSERT_TRUE(md_util_system_infer(sys, state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ((size_t)1, md_system_instance_count(sys));
-    EXPECT_EQ(num_residues, md_system_instance_residue_count(sys, 0));
-    EXPECT_EQ(MD_ENTITY_KIND_PEPTIDE, md_system_entity_kind(sys, md_system_instance_entity_idx(sys, 0)));
+    ASSERT_EQ((size_t)1, md_system_part_count(sys));
+    EXPECT_EQ(num_residues, md_system_part_residue_range(sys, 0).end - md_system_part_residue_range(sys, 0).beg);
+    EXPECT_EQ(MD_PART_KIND_PEPTIDE, md_system_part_kind(sys, 0));
 }
 
 UTEST(util, martini3_peptide_gro) {
@@ -1184,9 +1189,9 @@ UTEST(util, branched_molecule_is_one_instance) {
     // The branch: the third bonded to the first
     EXPECT_TRUE(md_bond_find(&sys.bond, 0, 4) >= 0 || md_bond_find(&sys.bond, 1, 4) >= 0);
     EXPECT_LT(md_bond_find(&sys.bond, 2, 4), 0);
-    ASSERT_EQ(2u, md_system_instance_count(&sys));
-    EXPECT_EQ(3u, md_system_instance_residue_count(&sys, 0));
-    EXPECT_EQ(2u, md_system_instance_residue_count(&sys, 1));
+    ASSERT_EQ(2u, md_system_part_count(&sys));
+    EXPECT_EQ(3u, md_system_part_residue_range(&sys, 0).end - md_system_part_residue_range(&sys, 0).beg);
+    EXPECT_EQ(2u, md_system_part_residue_range(&sys, 1).end - md_system_part_residue_range(&sys, 1).beg);
     EXPECT_EQ(2u, md_system_molecule_count(&sys));
     md_vm_arena_destroy(alloc);
 }
@@ -1459,8 +1464,8 @@ UTEST(util, martini2_dna) {
     check_bonds_against_topology(utest_result, &sys, topology, ARRAY_SIZE(topology), NULL, 0);
 
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
-    ASSERT_EQ(1u, md_system_instance_count(&sys));
-    EXPECT_EQ(MD_ENTITY_KIND_DNA, md_system_entity_kind(&sys, md_system_instance_entity_idx(&sys, 0)));
+    ASSERT_EQ(1u, md_system_part_count(&sys));
+    EXPECT_EQ(MD_PART_KIND_DNA, md_system_part_kind(&sys, 0));
     md_vm_arena_destroy(alloc);
 }
 
@@ -1507,7 +1512,7 @@ UTEST(util, martini2_dna_strands_under_one_chain_id) {
     ASSERT_EQ(8u, md_system_residue_count(&sys));
     ASSERT_EQ(51u, (unsigned)sys.atom.count);
     EXPECT_TRUE(md_system_is_coarse_grained(&sys));
-    EXPECT_EQ(2u, md_system_instance_count(&sys));
+    EXPECT_EQ(2u, md_system_part_count(&sys));
     EXPECT_EQ(1u, md_system_chain_count(&sys));
     EXPECT_EQ(51u, md_system_chain_atom_count(&sys, 0));
     EXPECT_EQ(2u, md_system_molecule_count(&sys));
@@ -1654,11 +1659,11 @@ UTEST(util, martini_nucleic_backbones) {
     static const struct {
         const char* name;
         size_t      strand;     // Nucleotides of each of its two strands
-        md_entity_kind_t kind;
+        md_part_kind_t kind;
     } systems[] = {
-        { "martini2_dna", 12, MD_ENTITY_KIND_DNA },
-        { "martini2_rna", 14, MD_ENTITY_KIND_RNA },
-        { "martini3_rna", 22, MD_ENTITY_KIND_RNA },
+        { "martini2_dna", 12, MD_PART_KIND_DNA },
+        { "martini2_rna", 14, MD_PART_KIND_RNA },
+        { "martini3_rna", 22, MD_PART_KIND_RNA },
     };
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     for (size_t n = 0; n < ARRAY_SIZE(systems); ++n) {
@@ -1676,8 +1681,8 @@ UTEST(util, martini_nucleic_backbones) {
             for (size_t r = 0; r < bb->range.count; ++r) {
                 EXPECT_TRUE(md_nucleic_backbone_range_is_coarse_grained(bb, r));
                 EXPECT_EQ(systems[n].strand, (size_t)(bb->range.offset[r + 1] - bb->range.offset[r]));
-                EXPECT_TRUE(md_entity_kind_is_nucleic_acid(md_system_instance_entity_kind(&sys, bb->range.inst_idx[r])));
-                EXPECT_EQ((int)systems[n].kind, (int)md_system_instance_entity_kind(&sys, bb->range.inst_idx[r]));
+                EXPECT_TRUE(md_part_kind_is_nucleic_acid(md_system_part_kind(&sys, bb->range.part_idx[r])));
+                EXPECT_EQ((int)systems[n].kind, (int)md_system_part_kind(&sys, bb->range.part_idx[r]));
                 for (uint32_t s = bb->range.offset[r]; s < bb->range.offset[r + 1]; ++s) {
                     const md_nucleic_acid_atoms_t a = bb->segment.atoms[s];
                     const md_residue_idx_t res = bb->segment.res_idx[s];
@@ -2976,27 +2981,36 @@ static inline bool init_system(md_system_t* sys, md_system_state_t* sys_state, s
     return false;
 }
 
-static md_entity_flags_t inferred_kind(md_entity_kind_t kind) {
-    return md_entity_flags_set_kind(MD_ENTITY_FLAG_INFERRED, kind);
+static md_part_type_flags_t inferred_kind(md_part_kind_t kind) {
+    return md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_INFERRED, kind);
 }
 
-UTEST(util, entity_instance) {
+// The chain of the first residue of a part, "" for one in no chain
+static str_t part_chain_id(const md_system_t* sys, size_t part_idx) {
+    const md_chain_idx_t c = md_system_chain_find_by_residue_idx(sys, md_system_part_residue_range(sys, part_idx).beg);
+    return c >= 0 ? md_system_chain_id(sys, (size_t)c) : STR_LIT("");
+}
+
+// Units only where the data gives them (the chains of a PDB file), parts and part types always inferred from them
+UTEST(util, part_and_part_type) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     ASSERT(alloc);
 
     {
+        // No chain ids: no units, and the parts are found over the whole system
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
-        ASSERT_EQ(md_system_entity_count(&sys), 1);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), inferred_kind(MD_ENTITY_KIND_PEPTIDE));
-        EXPECT_TRUE(str_eq(md_system_entity_description(&sys, 0), STR_LIT("peptide")));
-
-        ASSERT_EQ(md_system_instance_count(&sys), 1);
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
-        EXPECT_TRUE(str_empty(md_system_instance_auth_id(&sys, 0)));
+        EXPECT_EQ(md_system_instance_count(&sys), 0);
+        EXPECT_EQ(md_system_chain_count(&sys), 0);
+        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_EQ(md_system_part_type_count(&sys), 1);
+        EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_PEPTIDE));
+        EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, 0), STR_LIT("peptide")));
+        ASSERT_EQ(md_system_part_count(&sys), 1);
+        EXPECT_EQ(md_system_part_type_idx(&sys, 0), 0);
     }
 
     {
@@ -3004,44 +3018,46 @@ UTEST(util, entity_instance) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
-        ASSERT_EQ(md_system_entity_count(&sys), 1);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), inferred_kind(MD_ENTITY_KIND_PEPTIDE));
 
+        // The units are the chains of the file, named by them and by no made up label
         ASSERT_EQ(md_system_instance_count(&sys), 3);
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
-        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 0), STR_LIT("A")));
-
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 1), STR_LIT("B")));
-        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 1), STR_LIT("B")));
-
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 2), STR_LIT("C")));
-        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 2), STR_LIT("C")));
+        static const char* ids[] = {"A", "B", "C"};
+        for (size_t i = 0; i < 3; ++i) {
+            EXPECT_TRUE(str_empty(md_system_instance_id(&sys, i)));
+            EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), str_from_cstr(ids[i])));
+        }
+        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_EQ(md_system_part_type_count(&sys), 1);
+        EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_PEPTIDE));
+        ASSERT_EQ(md_system_part_count(&sys), 3);
+        for (size_t p = 0; p < 3; ++p) {
+            EXPECT_EQ(md_system_part_type_idx(&sys, p), 0);
+            EXPECT_TRUE(str_eq(part_chain_id(&sys, p), str_from_cstr(ids[p])));
+        }
     }
 
     {
-        // One chain, the arginine bound to it and its 106 waters, each water an instance of its own which shares the
-        // id of the others. The arginine is numbered on after the chain under its id, but is a free amino acid with a
-        // carboxyl group of its own: the chain ends before it (CHAIN BREAKS in md_util.h)
+        // One chain, the arginine bound to it and its 106 waters, each water a part of its own. The arginine is numbered
+        // on after the chain under its id, but is a free amino acid with a carboxyl group of its own: the chain ends
+        // before it (CHAIN BREAKS in md_util.h)
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
-        ASSERT_EQ(md_system_entity_count(&sys), 3);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), inferred_kind(MD_ENTITY_KIND_PEPTIDE));
-        EXPECT_EQ(md_system_entity_flags(&sys, 2), inferred_kind(MD_ENTITY_KIND_WATER));
-        EXPECT_TRUE(str_eq(md_system_entity_description(&sys, 1), STR_LIT("ARG")));
+        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_EQ(md_system_part_type_count(&sys), 3);
+        EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_PEPTIDE));
+        EXPECT_EQ(md_system_part_type_flags(&sys, 2), inferred_kind(MD_PART_KIND_WATER));
+        EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, 1), STR_LIT("ARG")));
 
-        ASSERT_EQ(md_system_instance_count(&sys), 1 + 1 + 106);
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0), STR_LIT("A")));
-        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 0), STR_LIT("E")));
-        EXPECT_EQ(md_system_instance_residue_count(&sys, 0), 238);
-        EXPECT_EQ(md_system_instance_residue_count(&sys, 1), 1);
-        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 1), STR_LIT("E")));
-        for (size_t i = 2; i < md_system_instance_count(&sys); ++i) {
-            EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i), STR_LIT("C")));
-            EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), STR_LIT("E")));
-            EXPECT_EQ(md_system_instance_entity_idx(&sys, i), 2);
-            EXPECT_EQ(md_system_instance_residue_count(&sys, i), 1);
+        ASSERT_EQ(md_system_part_count(&sys), 1 + 1 + 106);
+        EXPECT_EQ(md_system_part_residue_range(&sys, 0).end - md_system_part_residue_range(&sys, 0).beg, 238);
+        EXPECT_EQ(md_system_part_residue_range(&sys, 1).end - md_system_part_residue_range(&sys, 1).beg, 1);
+        for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+            EXPECT_TRUE(str_eq(part_chain_id(&sys, p), STR_LIT("E")));
+            if (p < 2) continue;
+            EXPECT_EQ(md_system_part_type_idx(&sys, p), 2);
+            EXPECT_EQ(md_system_part_residue_range(&sys, p).end - md_system_part_residue_range(&sys, p).beg, 1);
         }
     }
 
@@ -3058,88 +3074,87 @@ UTEST(util, entity_instance) {
         }
         EXPECT_EQ(num_nucleotides, 0);
 
-        static const struct { md_entity_kind_t kind; const char* desc; } entities[] = {
-            {MD_ENTITY_KIND_PEPTIDE, "peptide"}, {MD_ENTITY_KIND_PEPTIDE, "peptide"}, {MD_ENTITY_KIND_NON_POLYMER, "GTP"}, {MD_ENTITY_KIND_NON_POLYMER, "MG"},
-            {MD_ENTITY_KIND_NON_POLYMER, "SO4"}, {MD_ENTITY_KIND_WATER, "water"}, {MD_ENTITY_KIND_NON_POLYMER, "GDP"}, {MD_ENTITY_KIND_NON_POLYMER, "VLB"},
+        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        static const struct { md_part_kind_t kind; const char* desc; } types[] = {
+            {MD_PART_KIND_PEPTIDE, "peptide"}, {MD_PART_KIND_PEPTIDE, "peptide"}, {MD_PART_KIND_NON_POLYMER, "GTP"}, {MD_PART_KIND_NON_POLYMER, "MG"},
+            {MD_PART_KIND_NON_POLYMER, "SO4"}, {MD_PART_KIND_WATER, "water"}, {MD_PART_KIND_NON_POLYMER, "GDP"}, {MD_PART_KIND_NON_POLYMER, "VLB"},
         };
-        ASSERT_EQ(md_system_entity_count(&sys), ARRAY_SIZE(entities));
-        for (size_t i = 0; i < ARRAY_SIZE(entities); ++i) {
-            EXPECT_EQ(md_system_entity_flags(&sys, i), inferred_kind(entities[i].kind));
-            EXPECT_TRUE(str_eq(md_system_entity_description(&sys, i), str_from_cstr(entities[i].desc)));
+        ASSERT_EQ(md_system_part_type_count(&sys), ARRAY_SIZE(types));
+        for (size_t i = 0; i < ARRAY_SIZE(types); ++i) {
+            EXPECT_EQ(md_system_part_type_flags(&sys, i), inferred_kind(types[i].kind));
+            EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, i), str_from_cstr(types[i].desc)));
         }
 
-        // Chains, then the molecules of chain A, of chain B and of chain C. The two SO4 and the five waters of chain A
-        // are instances of their own, sharing an id within the chain.
-        static const struct { const char* id; const char* auth; int entity; } instances[] = {
-            {"A", "A", 0}, {"B", "B", 1},
-            {"C", "A", 2}, {"D", "A", 3}, {"E", "A", 4}, {"E", "A", 4}, {"F", "A", 5}, {"F", "A", 5}, {"F", "A", 5}, {"F", "A", 5}, {"F", "A", 5},
-            {"G", "B", 6}, {"H", "B", 4}, {"I", "B", 5}, {"I", "B", 5}, {"I", "B", 5},
-            {"J", "C", 7},
+        // The strands, then the parts of chain A, of chain B and of chain C: the two SO4 and the five waters of chain A
+        // are parts of their own
+        static const struct { const char* chain; int type; } parts[] = {
+            {"A", 0}, {"B", 1},
+            {"A", 2}, {"A", 3}, {"A", 4}, {"A", 4}, {"A", 5}, {"A", 5}, {"A", 5}, {"A", 5}, {"A", 5},
+            {"B", 6}, {"B", 4}, {"B", 5}, {"B", 5}, {"B", 5},
+            {"C", 7},
         };
-        ASSERT_EQ(md_system_instance_count(&sys), ARRAY_SIZE(instances));
-        for (size_t i = 0; i < ARRAY_SIZE(instances); ++i) {
-            EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i),      str_from_cstr(instances[i].id)));
-            EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), str_from_cstr(instances[i].auth)));
-            EXPECT_EQ(md_system_instance_entity_idx(&sys, i),       instances[i].entity);
+        ASSERT_EQ(md_system_part_count(&sys), ARRAY_SIZE(parts));
+        for (size_t i = 0; i < ARRAY_SIZE(parts); ++i) {
+            EXPECT_TRUE(str_eq(part_chain_id(&sys, i), str_from_cstr(parts[i].chain)));
+            EXPECT_EQ(md_system_part_type_idx(&sys, i), parts[i].type);
         }
     }
 
     {
-        // 64 lipids, the first 26 with chain ids of their own, and the waters
+        // 64 lipids, the first 26 with chain ids of their own, and the waters: a unit for each id, and one for the rest,
+        // which the file names nothing
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb")));
         EXPECT_GT(md_system_atom_count(&sys),   0);
+        EXPECT_EQ(md_system_instance_count(&sys), 27);
+        EXPECT_EQ(md_system_chain_count(&sys), 26);
+        EXPECT_TRUE(str_empty(md_system_instance_auth_id(&sys, 26)));
 
-        ASSERT_EQ(md_system_entity_count(&sys), 2);
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), inferred_kind(MD_ENTITY_KIND_NON_POLYMER));
-        EXPECT_EQ(md_system_entity_flags(&sys, 1), inferred_kind(MD_ENTITY_KIND_WATER));
-        EXPECT_TRUE(str_eq(md_system_entity_description(&sys, 0), STR_LIT("DPP")));
+        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        ASSERT_EQ(md_system_part_type_count(&sys), 2);
+        EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_NON_POLYMER));
+        EXPECT_EQ(md_system_part_type_flags(&sys, 1), inferred_kind(MD_PART_KIND_WATER));
+        EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, 0), STR_LIT("DPP")));
 
-        ASSERT_EQ(md_system_instance_count(&sys), md_system_residue_count(&sys));
-        for (size_t i = 0; i < 64; ++i) {
-            EXPECT_EQ(md_system_instance_entity_idx(&sys, i), 0);
-        }
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 25), STR_LIT("Z")));
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 26), STR_LIT("AA")));
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 63), STR_LIT("AA")));
-        for (size_t i = 64; i < md_system_instance_count(&sys); ++i) {
-            EXPECT_EQ(md_system_instance_entity_idx(&sys, i), 1);
-            EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i), STR_LIT("AB")));
+        ASSERT_EQ(md_system_part_count(&sys), md_system_residue_count(&sys));
+        for (size_t i = 0; i < md_system_part_count(&sys); ++i) {
+            EXPECT_EQ(md_system_part_type_idx(&sys, i), i < 64 ? 0 : 1);
         }
     }
 
     md_temp_end(temp_scope);
 }
 
-// Entities the file does not define are inferred on load and flagged as such, file defined ones are not
-UTEST(util, entity_derived) {
+// Part types the file does not define are inferred and flagged as such, file defined ones are not
+UTEST(util, part_type_derived) {
     md_temp_scope_t temp_scope = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
 
     {
-        // Nucleosome: two DNA strands and eight histones, a .gro carries no entities
+        // Nucleosome: two DNA strands and eight histones, a .gro carries no units and no types
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
         md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
+        EXPECT_EQ(md_system_instance_count(&sys), 0);
 
-        ASSERT_EQ(md_system_entity_count(&sys), 6);
+        ASSERT_EQ(md_system_part_type_count(&sys), 6);
         // The DNA strands are DNA (by their residue names), which the nucleic backbone extraction relies upon
-        EXPECT_EQ(md_system_entity_flags(&sys, 0), inferred_kind(MD_ENTITY_KIND_DNA));
-        EXPECT_EQ(md_system_entity_flags(&sys, 1), inferred_kind(MD_ENTITY_KIND_DNA));
-        EXPECT_TRUE(str_eq(md_system_entity_description(&sys, 0), STR_LIT("DNA")));
+        EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_DNA));
+        EXPECT_EQ(md_system_part_type_flags(&sys, 1), inferred_kind(MD_PART_KIND_DNA));
+        EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, 0), STR_LIT("DNA")));
         for (size_t i = 2; i < 6; ++i) {
-            EXPECT_EQ(md_system_entity_flags(&sys, i), inferred_kind(MD_ENTITY_KIND_PEPTIDE));
+            EXPECT_EQ(md_system_part_type_flags(&sys, i), inferred_kind(MD_PART_KIND_PEPTIDE));
         }
-        EXPECT_EQ(md_system_instance_count(&sys), 10);
+        EXPECT_EQ(md_system_part_count(&sys), 10);
         EXPECT_EQ(sys.nucleic_backbone.range.count, 2);
         EXPECT_EQ(sys.protein_backbone.range.count, 8);
 
         // Deriving again starts over rather than appending
-        ASSERT_TRUE(md_util_system_infer_entity_and_instance(&sys, NULL));
-        EXPECT_EQ(md_system_entity_count(&sys), 6);
-        EXPECT_EQ(md_system_instance_count(&sys), 10);
+        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        EXPECT_EQ(md_system_part_type_count(&sys), 6);
+        EXPECT_EQ(md_system_part_count(&sys), 10);
     }
 
     {
@@ -3148,18 +3163,23 @@ UTEST(util, entity_derived) {
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
         md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
-        ASSERT_GT(md_system_entity_count(&sys), 0);
-        for (size_t i = 0; i < md_system_entity_count(&sys); ++i) {
-            EXPECT_FALSE(md_system_entity_flags(&sys, i) & MD_ENTITY_FLAG_INFERRED);
+        // Each asym is one part, of the entity of the file
+        ASSERT_GT(md_system_part_type_count(&sys), 0);
+        for (size_t i = 0; i < md_system_part_type_count(&sys); ++i) {
+            EXPECT_FALSE(md_system_part_type_flags(&sys, i) & MD_PART_TYPE_FLAG_INFERRED);
+        }
+        ASSERT_EQ(md_system_part_count(&sys), md_system_instance_count(&sys));
+        for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+            EXPECT_EQ(md_system_part_type_idx(&sys, p), md_system_instance_part_type_idx(&sys, p));
         }
     }
 
     md_temp_end(temp_scope);
 }
 
-// mmCIF: the entity kinds are the file's, and the molecules of a non-polymer asym (the waters of a chain) are
+// mmCIF: the part types are the file's entities, and the molecules of a non-polymer asym (the waters of a chain) are
 // instances of their own which share the asym's id
-UTEST(util, entity_instance_mmcif) {
+UTEST(util, part_type_instance_mmcif) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
     {
@@ -3167,17 +3187,17 @@ UTEST(util, entity_instance_mmcif) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
 
-        static const struct { md_entity_kind_t kind; const char* desc; } entities[] = {
-            {MD_ENTITY_KIND_PEPTIDE, "PHOSPHONOACETALDEHYDE HYDROLASE"}, {MD_ENTITY_KIND_NON_POLYMER, "MAGNESIUM ION"},
-            {MD_ENTITY_KIND_NON_POLYMER, "TUNGSTATE(VI)ION"}, {MD_ENTITY_KIND_WATER, "water"},
+        static const struct { md_part_kind_t kind; const char* desc; } types[] = {
+            {MD_PART_KIND_PEPTIDE, "PHOSPHONOACETALDEHYDE HYDROLASE"}, {MD_PART_KIND_NON_POLYMER, "MAGNESIUM ION"},
+            {MD_PART_KIND_NON_POLYMER, "TUNGSTATE(VI)ION"}, {MD_PART_KIND_WATER, "water"},
         };
-        ASSERT_EQ(md_system_entity_count(&sys), ARRAY_SIZE(entities));
-        for (size_t i = 0; i < ARRAY_SIZE(entities); ++i) {
-            EXPECT_EQ(md_system_entity_kind(&sys, i), entities[i].kind);
-            EXPECT_TRUE(str_eq(md_system_entity_description(&sys, i), str_from_cstr(entities[i].desc)));
+        ASSERT_EQ(md_system_part_type_count(&sys), ARRAY_SIZE(types));
+        for (size_t i = 0; i < ARRAY_SIZE(types); ++i) {
+            EXPECT_EQ(md_system_part_type_kind(&sys, i), types[i].kind);
+            EXPECT_TRUE(str_eq(md_system_part_type_description(&sys, i), str_from_cstr(types[i].desc)));
         }
 
-        static const struct { const char* id; const char* auth; int entity; } instances[] = {
+        static const struct { const char* id; const char* auth; int type; } instances[] = {
             {"A", "A", 0}, {"B", "B", 0}, {"E", "A", 1}, {"F", "B", 2}, {"G", "B", 1},
             {"K", "A", 3}, {"K", "A", 3}, {"K", "A", 3}, {"K", "A", 3},
             {"L", "B", 3}, {"L", "B", 3}, {"L", "B", 3}, {"L", "B", 3},
@@ -3186,7 +3206,7 @@ UTEST(util, entity_instance_mmcif) {
         for (size_t i = 0; i < ARRAY_SIZE(instances); ++i) {
             EXPECT_TRUE(str_eq(md_system_instance_id(&sys, i),      str_from_cstr(instances[i].id)));
             EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), str_from_cstr(instances[i].auth)));
-            EXPECT_EQ(md_system_instance_entity_idx(&sys, i),       instances[i].entity);
+            EXPECT_EQ(md_system_instance_part_type_idx(&sys, i),    instances[i].type);
             if (i >= 2) EXPECT_EQ(md_system_instance_residue_count(&sys, i), 1);
         }
         // MG is an ion as a residue, whatever its entity is
@@ -3199,13 +3219,13 @@ UTEST(util, entity_instance_mmcif) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
         md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
-        ASSERT_EQ(md_system_entity_count(&sys), 5);
-        EXPECT_EQ(md_system_entity_kind(&sys, 2), MD_ENTITY_KIND_RNA);
-        EXPECT_EQ(md_system_entity_kind(&sys, 3), MD_ENTITY_KIND_RNA);
+        ASSERT_GE(md_system_part_type_count(&sys), 5);
+        EXPECT_EQ(md_system_part_type_kind(&sys, 2), MD_PART_KIND_RNA);
+        EXPECT_EQ(md_system_part_type_kind(&sys, 3), MD_PART_KIND_RNA);
         size_t resolved = 0;
-        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
-            if (!md_entity_kind_is_nucleic_acid(md_system_instance_entity_kind(&sys, i))) continue;
-            const md_urange_t range = md_system_instance_residue_range(&sys, i);
+        for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+            if (!md_part_kind_is_nucleic_acid(md_system_part_kind(&sys, p))) continue;
+            const md_urange_t range = md_system_part_residue_range(&sys, p);
             EXPECT_TRUE(str_eq(md_system_residue_name(&sys, range.beg), STR_LIT("GTP")) || str_eq(md_system_residue_name(&sys, range.beg), STR_LIT("UTP")));
             for (uint32_t c = range.beg; c < range.end; ++c) {
                 EXPECT_EQ(md_system_residue_kind(&sys, c), MD_RESIDUE_KIND_NUCLEOTIDE);
@@ -3323,8 +3343,8 @@ UTEST(util, hypermodified_nucleotide) {
         EXPECT_EQ(MD_RESIDUE_KIND_NUCLEOTIDE, md_system_residue_kind(&sys, c));
         EXPECT_TRUE(md_system_residue_flags(&sys, c) & MD_RESIDUE_FLAG_RESOLVED);
     }
-    ASSERT_EQ((size_t)1, md_system_instance_count(&sys));
-    EXPECT_EQ(MD_ENTITY_KIND_RNA, md_system_entity_kind(&sys, md_system_instance_entity_idx(&sys, 0)));
+    ASSERT_EQ((size_t)1, md_system_part_count(&sys));
+    EXPECT_EQ(MD_PART_KIND_RNA, md_system_part_kind(&sys, 0));
     ASSERT_EQ((size_t)1, sys.nucleic_backbone.range.count);
     EXPECT_EQ((size_t)3, sys.nucleic_backbone.segment.count);
 
@@ -3341,8 +3361,7 @@ UTEST(util, hypermodified_nucleotide) {
     md_vm_arena_destroy(alloc);
 }
 
-// Topologies: each molecule type is an entity, each molecule an instance, and the kinds are classified from the residues
-// The chains are the chain ids the data gives (the author's), whatever carries them, and the polymers without one
+// The chains are the chain ids the data gives (the author's), whatever carries them, and nothing where it gives none
 static size_t chain_atoms(const md_system_t* sys, size_t c) {
     return md_system_chain_atom_count(sys, c);
 }
@@ -3357,7 +3376,6 @@ UTEST(util, chains) {
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb")));
         ASSERT_EQ(1, (int)md_system_chain_count(&sys));
         EXPECT_TRUE(str_eq(md_system_chain_id(&sys, 0), STR_LIT("E")));
-        EXPECT_FALSE(md_system_chain_inferred(&sys, 0));
         EXPECT_EQ(md_system_atom_count(&sys), chain_atoms(&sys, 0));
         // The protein, the arginine and the waters are consecutive residues: one run
         EXPECT_EQ(1, (int)(md_system_chain_run_end(&sys, 0) - md_system_chain_run_beg(&sys, 0)));
@@ -3402,24 +3420,18 @@ UTEST(util, chains) {
     }
 
     {
-        // No ids in the data: each polymer is a chain of its own, without one, and nothing else is in a chain
+        // No ids in the data: no chains, and the strands of the polymers are parts
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
         ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL));
+        EXPECT_EQ(0, (int)md_system_chain_count(&sys));
         size_t polymers = 0;
-        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
-            const bool polymer = md_entity_kind_is_polymer(md_system_instance_entity_kind(&sys, i));
-            polymers += polymer;
-            const md_urange_t residues = md_system_instance_residue_range(&sys, i);
-            EXPECT_EQ(polymer, md_system_chain_find_by_residue_idx(&sys, residues.beg) >= 0);
+        for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+            polymers += md_part_kind_is_polymer(md_system_part_kind(&sys, p));
+            EXPECT_EQ(-1, md_system_chain_find_by_residue_idx(&sys, md_system_part_residue_range(&sys, p).beg));
         }
-        ASSERT_GT(polymers, 0);
-        ASSERT_EQ(polymers, md_system_chain_count(&sys));
-        for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
-            EXPECT_TRUE(md_system_chain_inferred(&sys, c));
-            EXPECT_TRUE(str_empty(md_system_chain_id(&sys, c)));
-        }
+        EXPECT_EQ(253, (int)polymers);
     }
 
     {
@@ -3427,47 +3439,47 @@ UTEST(util, chains) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb")));
-        ASSERT_EQ(1, (int)md_system_chain_count(&sys));
-        EXPECT_TRUE(md_system_chain_inferred(&sys, 0));
+        EXPECT_EQ(0, (int)md_system_chain_count(&sys));
     }
 
     {
-        // A topology names no chains either: the peptide is one, the waters and ions are in none
+        // A topology names no chains either: the peptide is a polymer part, the waters and ions parts of their own
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr")));
         ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
-        ASSERT_EQ(1, (int)md_system_chain_count(&sys));
-        EXPECT_TRUE(md_system_chain_inferred(&sys, 0));
-        EXPECT_EQ(0, md_system_chain_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 0).beg));
-        EXPECT_EQ(-1, md_system_chain_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 1).beg));
+        EXPECT_EQ(0, (int)md_system_chain_count(&sys));
+        EXPECT_EQ(MD_PART_KIND_PEPTIDE, md_system_part_kind(&sys, 0));
+        EXPECT_EQ(MD_PART_KIND_WATER, md_system_part_kind(&sys, 1));
     }
 
     {
         // martinize-dna writes the two strands of a duplex as one molecule type: one molecule, as GROMACS has it, of
-        // two chains, a strand each, as the .gro of the same system gives them
+        // two parts, a strand each, as the .gro of the same system gives them
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.tpr")));
         ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
-        ASSERT_EQ(2, (int)md_system_chain_count(&sys));
+        EXPECT_EQ(0, (int)md_system_chain_count(&sys));
         const md_urange_t duplex = md_system_instance_residue_range(&sys, 0);
         EXPECT_EQ(24u, duplex.end - duplex.beg);
-        EXPECT_EQ(0, md_system_chain_find_by_residue_idx(&sys, duplex.beg));
-        EXPECT_EQ(1, md_system_chain_find_by_residue_idx(&sys, duplex.end - 1));
-        EXPECT_EQ(12u, md_system_chain_run_beg(&sys, 0)->end - md_system_chain_run_beg(&sys, 0)->beg);
+        EXPECT_EQ(0, md_system_part_find_by_residue_idx(&sys, duplex.beg));
+        EXPECT_EQ(1, md_system_part_find_by_residue_idx(&sys, duplex.end - 1));
+        EXPECT_EQ(12u, md_system_part_residue_range(&sys, 0).end - md_system_part_residue_range(&sys, 0).beg);
         const md_urange_t atoms = md_system_instance_atom_range(&sys, 0);
-        const uint32_t slot = (uint32_t)sys.molecule.atom_slot[atoms.beg];
-        size_t mol = 0;
-        while (mol + 1 < sys.molecule.count && sys.molecule.offset[mol + 1] <= slot) ++mol;
-        EXPECT_EQ(atoms.end - atoms.beg, sys.molecule.offset[mol + 1] - sys.molecule.offset[mol]);
+        const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, atoms.beg);
+        EXPECT_EQ(atoms.end - atoms.beg, md_system_molecule_atom_count(&sys, (size_t)mol));
+        EXPECT_EQ(mol, md_system_molecule_find_by_atom_idx(&sys, atoms.end - 1));
 
         md_system_t gro = {.alloc = alloc};
         md_system_state_t gro_state = { .alloc = alloc };
         ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.gro")));
         ASSERT_TRUE(md_util_system_infer(&gro, &gro_state, MD_UTIL_INFER_ALL));
-        ASSERT_EQ(2, (int)md_system_chain_count(&gro));
-        for (size_t c = 0; c < 2; ++c) EXPECT_EQ(md_system_chain_atom_count(&sys, c), md_system_chain_atom_count(&gro, c));
+        for (size_t p = 0; p < 2; ++p) {
+            const md_urange_t a = md_system_part_atom_range(&sys, p), b = md_system_part_atom_range(&gro, p);
+            EXPECT_EQ(a.end - a.beg, b.end - b.beg);
+            EXPECT_TRUE(md_part_kind_is_nucleic_acid(md_system_part_kind(&gro, p)));
+        }
     }
 
     md_vm_arena_destroy(alloc);
@@ -3483,16 +3495,17 @@ UTEST(util, topology_molecules_are_whole) {
     ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
     const size_t num_inst = md_system_instance_count(&sys);
     EXPECT_EQ(num_inst, md_system_molecule_count(&sys));
-    const md_entity_idx_t water = md_system_instance_entity_idx(&sys, 1);
-    ASSERT_EQ(water, md_system_instance_entity_idx(&sys, 2));
-    EXPECT_TRUE((md_system_entity_flags(&sys, (size_t)water) & MD_ENTITY_FLAG_TOPOLOGY) != 0);
+    const md_molecule_type_idx_t water = md_system_instance_molecule_type_idx(&sys, 1);
+    ASSERT_GE(water, 0);
+    ASSERT_EQ(water, md_system_instance_molecule_type_idx(&sys, 2));
 
     // Instances 1 and 2 as one molecule of the topology
     for (size_t i = 2; i < num_inst; ++i) {
         sys.instance.res_offset[i] = sys.instance.res_offset[i + 1];
         sys.instance.id[i] = sys.instance.id[i + 1 < num_inst ? i + 1 : i];
         sys.instance.auth_id[i] = sys.instance.auth_id[i + 1 < num_inst ? i + 1 : i];
-        sys.instance.entity_idx[i] = sys.instance.entity_idx[i + 1 < num_inst ? i + 1 : i];
+        sys.instance.part_type_idx[i] = sys.instance.part_type_idx[i + 1 < num_inst ? i + 1 : i];
+        sys.instance.mol_type_idx[i] = sys.instance.mol_type_idx[i + 1 < num_inst ? i + 1 : i];
     }
     sys.instance.count -= 1;
     ASSERT_TRUE(md_util_system_infer_molecules(&sys));
@@ -3500,13 +3513,15 @@ UTEST(util, topology_molecules_are_whole) {
     check_molecule_invariants(utest_result, &sys);
 
     // Not a topology's: two molecules
-    sys.entity.flags[water] = (md_entity_flags_t)(sys.entity.flags[water] & ~MD_ENTITY_FLAG_TOPOLOGY);
+    sys.instance.mol_type_idx[1] = -1;
     ASSERT_TRUE(md_util_system_infer_molecules(&sys));
     EXPECT_EQ(num_inst, md_system_molecule_count(&sys));
     md_vm_arena_destroy(alloc);
 }
 
-UTEST(util, entity_instance_topology) {
+// Topologies: each molecule type is a molecule type of the system, each molecule an instance of it, and what the parts
+// of the molecules are is inferred from the residues
+UTEST(util, molecule_type_topology) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
     {
@@ -3514,31 +3529,37 @@ UTEST(util, entity_instance_topology) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr")));
 
-        static const struct { md_entity_kind_t kind; const char* desc; size_t count; } entities[] = {
-            {MD_ENTITY_KIND_PEPTIDE, "Protein_chain_U", 1}, {MD_ENTITY_KIND_WATER, "SOL", 506}, {MD_ENTITY_KIND_NON_POLYMER, "NA", 2}, {MD_ENTITY_KIND_NON_POLYMER, "CL", 2},
+        static const struct { md_part_kind_t kind; const char* name; size_t count; } types[] = {
+            {MD_PART_KIND_PEPTIDE, "Protein_chain_U", 1}, {MD_PART_KIND_WATER, "SOL", 506}, {MD_PART_KIND_NON_POLYMER, "NA", 2}, {MD_PART_KIND_NON_POLYMER, "CL", 2},
         };
-        ASSERT_EQ(md_system_entity_count(&sys), ARRAY_SIZE(entities));
+        ASSERT_EQ(md_system_molecule_type_count(&sys), ARRAY_SIZE(types));
         size_t inst = 0;
-        for (size_t e = 0; e < ARRAY_SIZE(entities); ++e) {
-            EXPECT_EQ(md_system_entity_flags(&sys, e), md_entity_flags_set_kind(MD_ENTITY_FLAG_TOPOLOGY, entities[e].kind));
-            EXPECT_TRUE(str_eq(md_system_entity_description(&sys, e), str_from_cstr(entities[e].desc)));
-            for (size_t k = 0; k < entities[e].count; ++k, ++inst) {
-                EXPECT_EQ(md_system_instance_entity_idx(&sys, inst), (int)e);
+        for (size_t t = 0; t < ARRAY_SIZE(types); ++t) {
+            EXPECT_EQ(md_system_molecule_type_flags(&sys, t), MD_MOLECULE_TYPE_FLAG_NONE);
+            EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, t), str_from_cstr(types[t].name)));
+            for (size_t k = 0; k < types[t].count; ++k, ++inst) {
+                EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, inst), (int)t);
+                EXPECT_TRUE(str_empty(md_system_instance_id(&sys, inst)));
             }
         }
         ASSERT_EQ(md_system_instance_count(&sys), inst);
         EXPECT_EQ(md_system_instance_residue_count(&sys, 0), 2);
-        // Single residue molecules share the id of their block
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 0),   STR_LIT("A")));
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 1),   STR_LIT("B")));
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 506), STR_LIT("B")));
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 507), STR_LIT("C")));
-        EXPECT_TRUE(str_eq(md_system_instance_id(&sys, 510), STR_LIT("D")));
 
-        // Inference leaves the topology's own alone
+        // Inference leaves the topology's own alone: every molecule is of its type, and the parts are classified
         ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
-        EXPECT_EQ(md_system_entity_count(&sys), ARRAY_SIZE(entities));
+        EXPECT_EQ(md_system_molecule_type_count(&sys), ARRAY_SIZE(types));
         EXPECT_EQ(md_system_instance_count(&sys), inst);
+        ASSERT_EQ(md_system_molecule_count(&sys), inst);
+        inst = 0;
+        for (size_t t = 0; t < ARRAY_SIZE(types); ++t) {
+            for (size_t k = 0; k < types[t].count; ++k, ++inst) {
+                const md_urange_t atoms = md_system_instance_atom_range(&sys, inst);
+                const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, atoms.beg);
+                EXPECT_EQ(md_system_molecule_type_idx(&sys, (size_t)mol), (int)t);
+                const md_part_idx_t part = md_system_part_find_by_atom_idx(&sys, atoms.beg);
+                EXPECT_EQ(md_system_part_kind(&sys, (size_t)part), types[t].kind);
+            }
+        }
     }
 
     {
@@ -3546,28 +3567,74 @@ UTEST(util, entity_instance_topology) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/martini3.tpr")));
         // The peptide, two lipids, four ions and 583 waters, as the structures are
-        ASSERT_EQ(md_system_entity_count(&sys), 5);
-        EXPECT_EQ(md_system_entity_kind(&sys, 0), MD_ENTITY_KIND_PEPTIDE);
-        EXPECT_EQ(md_system_entity_kind(&sys, 1), MD_ENTITY_KIND_NON_POLYMER);
-        EXPECT_EQ(md_system_entity_kind(&sys, 4), MD_ENTITY_KIND_WATER);
+        ASSERT_EQ(md_system_molecule_type_count(&sys), 5);
         EXPECT_EQ(md_system_instance_count(&sys), 1 + 2 + 4 + 583);
+        ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
+        EXPECT_EQ(md_system_part_kind(&sys, (size_t)md_system_part_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 0).beg)), MD_PART_KIND_PEPTIDE);
+        EXPECT_EQ(md_system_part_kind(&sys, (size_t)md_system_part_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 1).beg)), MD_PART_KIND_NON_POLYMER);
+        EXPECT_EQ(md_system_part_kind(&sys, md_system_part_count(&sys) - 1), MD_PART_KIND_WATER);
+        EXPECT_EQ(md_system_molecule_type_count(&sys), 5);
     }
 
     {
-        // LAMMPS knows its molecules but not what they are: an entity per sequence of particle types, described by its
-        // formula, and water told by its atoms
+        // LAMMPS knows its molecules but not what they are: a molecule type per sequence of particle types, named by
+        // its formula, and water told by its atoms
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
         ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"), atom_format));
-        ASSERT_EQ(md_system_entity_count(&sys), 2);
-        EXPECT_TRUE(str_eq(md_system_entity_description(&sys, 0), STR_LIT("C2H6")));
-        EXPECT_TRUE(str_eq(md_system_entity_description(&sys, 1), STR_LIT("H2O")));
-        EXPECT_EQ(md_system_entity_kind(&sys, 0), MD_ENTITY_KIND_NON_POLYMER);
-        EXPECT_EQ(md_system_entity_kind(&sys, 1), MD_ENTITY_KIND_WATER);
+        ASSERT_EQ(md_system_molecule_type_count(&sys), 2);
+        EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, 0), STR_LIT("C2H6")));
+        EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, 1), STR_LIT("H2O")));
         ASSERT_EQ(md_system_instance_count(&sys), md_system_residue_count(&sys));
-        EXPECT_EQ(md_system_instance_entity_idx(&sys, 0), 0);
-        EXPECT_EQ(md_system_instance_entity_idx(&sys, md_system_instance_count(&sys) - 1), 1);
+        EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, 0), 0);
+        EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, md_system_instance_count(&sys) - 1), 1);
+        ASSERT_TRUE(md_util_system_infer_parts(&sys));
+        EXPECT_EQ(md_system_part_kind(&sys, 0), MD_PART_KIND_NON_POLYMER);
+        EXPECT_EQ(md_system_part_kind(&sys, md_system_part_count(&sys) - 1), MD_PART_KIND_WATER);
+    }
+
+    md_vm_arena_destroy(alloc);
+}
+
+// The molecules of the same make share a type, inferred where no topology gives one: named by their parts, or by their
+// formula where they have none. Inferring them again gives the same types, not more of them.
+UTEST(util, molecule_type_inferred) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+
+    {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        EXPECT_VALID_SYSTEM(&sys);
+        // The two chains of the hydrolase, the Mg, the WO4 and the waters
+        const size_t num_types = md_system_molecule_type_count(&sys);
+        ASSERT_EQ(num_types, 4u);
+        for (size_t t = 0; t < num_types; ++t) {
+            EXPECT_TRUE(md_system_molecule_type_flags(&sys, t) & MD_MOLECULE_TYPE_FLAG_INFERRED);
+        }
+        const md_molecule_type_idx_t a = md_system_molecule_type_idx(&sys, (size_t)md_system_molecule_find_by_atom_idx(&sys, md_system_instance_atom_range(&sys, 0).beg));
+        const md_molecule_type_idx_t b = md_system_molecule_type_idx(&sys, (size_t)md_system_molecule_find_by_atom_idx(&sys, md_system_instance_atom_range(&sys, 1).beg));
+        EXPECT_EQ(a, b);
+        EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, (size_t)a), STR_LIT("PHOSPHONOACETALDEHYDE HYDROLASE")));
+        const md_molecule_type_idx_t w = md_system_molecule_type_idx(&sys, md_system_molecule_count(&sys) - 1);
+        EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, (size_t)w), STR_LIT("water")));
+
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        EXPECT_EQ(md_system_molecule_type_count(&sys), num_types);
+        EXPECT_VALID_SYSTEM(&sys);
+    }
+
+    {
+        // No residues, no parts: the type is named by the formula
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t state = { .alloc = alloc };
+        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz"), MD_XYZ_OPTION_NONE));
+        ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+        ASSERT_EQ(md_system_molecule_count(&sys), 1u);
+        ASSERT_EQ(md_system_molecule_type_count(&sys), 1u);
+        EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, 0), STR_LIT("C60")));
     }
 
     md_vm_arena_destroy(alloc);
@@ -4351,7 +4418,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
         EXPECT_EQ(rb->range.count, bb->range.count);
         EXPECT_EQ(rb->segment.count, bb->segment.count);
         for (size_t s = 0; s < bb->segment.count; ++s) EXPECT_EQ(-1, bb->segment.res_idx[s]);
-        for (size_t r = 0; r < bb->range.count; ++r) EXPECT_EQ(-1, bb->range.inst_idx[r]);
+        for (size_t r = 0; r < bb->range.count; ++r) EXPECT_EQ(-1, bb->range.part_idx[r]);
 
         int32_t* seg = segment_of_atom(sys.atom.count, alloc);
         for (size_t s = 0; s < bb->segment.count; ++s) seg[bb->segment.atoms[s].ca] = (int32_t)s;

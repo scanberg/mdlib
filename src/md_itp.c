@@ -955,7 +955,73 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         }
     }
 
+    // ## Molecules
+    // The matched molecules are the units of the system, each of its molecule type (md_instance_data_t), where the
+    // structure gave none: a GRO file has no units of its own, and the molecule types of its topology are what GROMACS
+    // makes molecules of. A structure which gave units (the chains of a PDB file) keeps them. The residues between
+    // the matched molecules are units of their own, of no type.
+    if (sys->instance.count == 0 && sys->residue.count > 0) {
+        // Without units every molecule type there is was inferred, and the given come first
+        md_molecule_type_data_free(&sys->molecule.type, sys->alloc);
+        md_molecule_type_idx_t* mol_type = md_temp_alloc_array(temp, md_molecule_type_idx_t, num_types + 1);
+        for (size_t t = 0; t < num_types; ++t) mol_type[t] = -1;
+        const size_t num_res = sys->residue.count;
+        uint32_t covered_res = 0;
+        bool ok = true;
+        for (size_t k = 0; k < num_instances && ok; ++k) {
+            const uint32_t t = instances[k].type;
+            const size_t off = instances[k].atom_offset;
+            const size_t n = md_array_size(data->moleculetypes[t].atoms);
+            const md_residue_idx_t res_beg = md_system_residue_find_by_atom_idx(sys, off);
+            const md_residue_idx_t res_last = n ? md_system_residue_find_by_atom_idx(sys, off + n - 1) : -1;
+            if (res_beg < 0 || res_last < res_beg || (uint32_t)res_beg < covered_res ||
+                md_system_residue_atom_range(sys, (size_t)res_beg).beg != off ||
+                md_system_residue_atom_range(sys, (size_t)res_last).end != off + n) {
+                ok = false;     // Not on residue boundaries: the molecules cannot be told by their residues
+                break;
+            }
+            if (covered_res < (uint32_t)res_beg) {
+                md_array_push(sys->instance.id, (md_label_t){0}, sys->alloc);
+                md_array_push(sys->instance.auth_id, (md_label_t){0}, sys->alloc);
+                md_array_push(sys->instance.res_offset, covered_res, sys->alloc);
+                md_array_push(sys->instance.part_type_idx, -1, sys->alloc);
+                md_array_push(sys->instance.mol_type_idx, -1, sys->alloc);
+                sys->instance.count += 1;
+            }
+            if (mol_type[t] < 0) {
+                mol_type[t] = md_molecule_type_data_push(&sys->molecule.type, data->moleculetypes[t].name, MD_MOLECULE_TYPE_FLAG_NONE, sys->alloc);
+            }
+            md_array_push(sys->instance.id, (md_label_t){0}, sys->alloc);
+            md_array_push(sys->instance.auth_id, (md_label_t){0}, sys->alloc);
+            md_array_push(sys->instance.res_offset, (uint32_t)res_beg, sys->alloc);
+            md_array_push(sys->instance.part_type_idx, -1, sys->alloc);
+            md_array_push(sys->instance.mol_type_idx, mol_type[t], sys->alloc);
+            sys->instance.count += 1;
+            covered_res = (uint32_t)res_last + 1;
+        }
+        if (ok && sys->instance.count) {
+            if (covered_res < num_res) {
+                md_array_push(sys->instance.id, (md_label_t){0}, sys->alloc);
+                md_array_push(sys->instance.auth_id, (md_label_t){0}, sys->alloc);
+                md_array_push(sys->instance.res_offset, covered_res, sys->alloc);
+                md_array_push(sys->instance.part_type_idx, -1, sys->alloc);
+                md_array_push(sys->instance.mol_type_idx, -1, sys->alloc);
+                sys->instance.count += 1;
+            }
+            md_array_push(sys->instance.res_offset, (uint32_t)num_res, sys->alloc);
+        } else {
+            md_array_free(sys->instance.id, sys->alloc);
+            md_array_free(sys->instance.auth_id, sys->alloc);
+            md_array_free(sys->instance.res_offset, sys->alloc);
+            md_array_free(sys->instance.part_type_idx, sys->alloc);
+            md_array_free(sys->instance.mol_type_idx, sys->alloc);
+            MEMSET(&sys->instance, 0, sizeof(sys->instance));
+            md_molecule_type_data_free(&sys->molecule.type, sys->alloc);
+        }
+    }
+
     // ## Derived topology
+    md_util_system_infer_parts(sys);
     md_util_system_infer_molecules(sys);
     if (sys->bond.count) {
         md_util_system_infer_rings(sys);

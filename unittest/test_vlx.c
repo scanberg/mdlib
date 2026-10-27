@@ -1058,10 +1058,10 @@ UTEST(vlx, pe_fragments_follow_their_numbers) {
 	// What viamd infers from it: the three residues one peptide, with one backbone through them all
 	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
 	EXPECT_VALID_SYSTEM(&t.sys);
-	const md_instance_idx_t inst = md_system_instance_find_by_residue_idx(&t.sys, 1);
-	ASSERT_TRUE(inst >= 0);
-	EXPECT_EQ(MD_ENTITY_KIND_PEPTIDE, md_system_instance_entity_kind(&t.sys, inst));
-	EXPECT_EQ(3u, md_system_instance_residue_range(&t.sys, inst).end - md_system_instance_residue_range(&t.sys, inst).beg);
+	const md_part_idx_t part = md_system_part_find_by_residue_idx(&t.sys, 1);
+	ASSERT_TRUE(part >= 0);
+	EXPECT_EQ(MD_PART_KIND_PEPTIDE, md_system_part_kind(&t.sys, part));
+	EXPECT_EQ(3u, md_system_part_residue_range(&t.sys, part).end - md_system_part_residue_range(&t.sys, part).beg);
 	ASSERT_EQ(1u, t.sys.protein_backbone.range.count);
 	ASSERT_EQ(3u, t.sys.protein_backbone.segment.count);
 	for (size_t s = 0; s < 3; ++s) {

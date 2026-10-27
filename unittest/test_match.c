@@ -424,15 +424,15 @@ UTEST(match, symmetry) {
     // pair of methyls doubles the ways it fits its own atoms (2^40 and more), and it is found once
     const md_system_t* tub = get_sys(SYS_TUBULIN);
     md_allocator_i* alloc = md_get_heap_allocator();
-    const uint32_t res_beg = tub->instance.res_offset[0];
-    ASSERT_LE(res_beg + 160, tub->instance.res_offset[1]);
+    const uint32_t res_beg = tub->part.res_offset[0];
+    ASSERT_LE(res_beg + 160, tub->part.res_offset[1]);
     const uint32_t beg = tub->residue.atom_offset[res_beg];
     const uint32_t end = tub->residue.atom_offset[res_beg + 160];
     md_array(int32_t) ref = 0;
     for (uint32_t i = beg; i < end; ++i) md_array_push(ref, (int32_t)i, alloc);
     md_match_query_t q = {0};
     ASSERT_TRUE(md_match_query_init_atoms(&q, ref, md_array_size(ref), MD_MATCH_LABEL_ELEMENT, tub, alloc));
-    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_INSTANCE};
+    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_PART};
     const md_tick_t t0 = md_tick_now();
     EXPECT_EQ(1, (int)count_matches(&desc, tub, NULL, NULL));
     printf("Reference of 160 residues (%zu atoms), found in its chain: %.2f ms\n", md_array_size(ref), md_tick_to_milliseconds(md_tick_now() - t0));
@@ -721,18 +721,18 @@ UTEST(match, molecules) {
     md_match_result_t aa_res = {0};
     ASSERT_TRUE(md_match_find(&aa_res, &aa_desc, tub, alloc));
     ASSERT_LT(0, (int)aa_res.count);
-    int64_t* inst_unit = md_alloc(alloc, sizeof(int64_t) * MAX(1, tub->instance.count));
-    for (size_t i = 0; i < tub->instance.count; ++i) inst_unit[i] = -1;
+    int64_t* part_unit = md_alloc(alloc, sizeof(int64_t) * MAX(1, tub->part.count));
+    for (size_t i = 0; i < tub->part.count; ++i) part_unit[i] = -1;
     size_t checked = 0;
     for (size_t i = 0; i < aa_res.count; ++i) {
-        const md_instance_idx_t inst = md_system_instance_find_by_atom_idx(tub, (size_t)aa_res.atom_idx[i * aa_res.width]);
-        if (inst < 0 || !md_entity_kind_is_polymer(md_system_instance_entity_kind(tub, (size_t)inst))) continue;
-        if (inst_unit[inst] < 0) inst_unit[inst] = aa_res.unit[i];
-        EXPECT_EQ(inst_unit[inst], (int64_t)aa_res.unit[i]);
+        const md_part_idx_t part = md_system_part_find_by_atom_idx(tub, (size_t)aa_res.atom_idx[i * aa_res.width]);
+        if (part < 0 || !md_part_kind_is_polymer(md_system_part_kind(tub, (size_t)part))) continue;
+        if (part_unit[part] < 0) part_unit[part] = aa_res.unit[i];
+        EXPECT_EQ(part_unit[part], (int64_t)aa_res.unit[i]);
         checked += 1;
     }
     EXPECT_LT(0, (int)checked);
-    md_free(alloc, inst_unit, sizeof(int64_t) * MAX(1, tub->instance.count));
+    md_free(alloc, part_unit, sizeof(int64_t) * MAX(1, tub->part.count));
     md_match_result_free(&aa_res);
     md_match_query_free(&aa);
 }
@@ -832,7 +832,7 @@ UTEST(match, reference_chain) {
 
     md_match_query_t q = {0};
     ASSERT_TRUE(md_match_query_init_atoms(&q, ref, md_array_size(ref), MD_MATCH_LABEL_ELEMENT, sys, alloc));
-    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_INSTANCE, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
+    md_match_desc_t desc = {.query = &q, .level = MD_MATCH_LEVEL_PART, .mode = MD_MATCH_MODE_ONE_PER_UNIT};
     const md_tick_t t0 = md_tick_now();
     const size_t count = count_matches(&desc, sys, NULL, NULL);
     const md_tick_t t1 = md_tick_now();

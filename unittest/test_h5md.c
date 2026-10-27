@@ -97,13 +97,13 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     }
 
     // The molecules are the topology's, the same as the tpr's
-    ASSERT_EQ(tpr.entity.count, h.sys.entity.count);
-    for (size_t e = 0; e < tpr.entity.count; ++e) {
-        EXPECT_EQ(md_system_entity_kind(&tpr, e), md_system_entity_kind(&h.sys, e));
+    ASSERT_EQ(md_system_molecule_type_count(&tpr), md_system_molecule_type_count(&h.sys));
+    for (size_t t = 0; t < md_system_molecule_type_count(&tpr); ++t) {
+        EXPECT_TRUE(str_eq(md_system_molecule_type_name(&tpr, t), md_system_molecule_type_name(&h.sys, t)));
     }
     ASSERT_EQ(tpr.instance.count, h.sys.instance.count);
     for (size_t k = 0; k < tpr.instance.count; ++k) {
-        EXPECT_EQ(md_system_instance_entity_idx(&tpr, k), md_system_instance_entity_idx(&h.sys, k));
+        EXPECT_EQ(md_system_instance_molecule_type_idx(&tpr, k), md_system_instance_molecule_type_idx(&h.sys, k));
         EXPECT_EQ(md_system_instance_residue_range(&tpr, k).beg, md_system_instance_residue_range(&h.sys, k).beg);
     }
     if (vsites) {

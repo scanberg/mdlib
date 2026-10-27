@@ -104,7 +104,10 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 // - 'atom/charge' (e) and 'atom/mass' (Da) are published for the matched atoms, taken from [ atoms ] and
 //   falling back to [ atomtypes ]; unmatched atoms are left as gaps.
 // - particle types with no mass (zero) get the topology's mass when all matched atoms of that type agree.
-// - structures and rings are re-inferred from the new bonds.
+// - molecules: where the structure gave no units of its own (a GRO file), the matched molecules become its instances,
+//   each of its molecule type (md_instance_data_t, md_molecule_type_data_t), and the residues between them units of
+//   no type. The molecules of the system are then those of the topology, as GROMACS has them.
+// - parts, molecules and rings are re-inferred from the new bonds.
 // Returns false if nothing in the topology matched the system.
 bool md_itp_system_supplement(struct md_system_t* sys, const md_itp_data_t* data);
 bool md_itp_system_supplement_from_file(struct md_system_t* sys, str_t filename);

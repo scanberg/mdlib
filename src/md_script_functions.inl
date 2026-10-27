@@ -563,6 +563,10 @@ static int _water       (data_t*, data_t[], eval_context_t*);   // -> atomset[]
 static int _lipid       (data_t*, data_t[], eval_context_t*);   // -> atomset[]
 static int _protein     (data_t*, data_t[], eval_context_t*);   // -> atomset[]
 static int _nucleic     (data_t*, data_t[], eval_context_t*);   // -> atomset[]
+static int _polymer     (data_t*, data_t[], eval_context_t*);   // -> atomset[]
+static int _protein_irng(data_t*, data_t[], eval_context_t*);   // (irange[]) -> atomset[]
+static int _nucleic_irng(data_t*, data_t[], eval_context_t*);   // (irange[]) -> atomset[]
+static int _polymer_irng(data_t*, data_t[], eval_context_t*);   // (irange[]) -> atomset[]
 static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> atomset[]
 
 // Regions of a QM calculation (MD_ATOM_FLAG_QM), one selection per residue which has atoms in it
@@ -928,11 +932,17 @@ static procedure_t procedures[] = {
     {STR_INIT("smiles"),    TI_ATOMSET_ARR, 3, {TI_STRING, TI_STRING, TI_STRING},              _smiles, FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("match"),     TI_ATOMSET_ARR, 4, {TI_ATOMSET, TI_STRING, TI_STRING, TI_STRING}, _match,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
-    // Residue level
+    // Parts by their kind (md_part_kind_t), one set per part: the strands of a polymer, the waters
+    {STR_INIT("polymer"),   TI_ATOMSET_ARR, 0, {0},                _polymer,       FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("polymer"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _polymer_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("protein"),   TI_ATOMSET_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("protein"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _protein_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("nucleic"),   TI_ATOMSET_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
-    {STR_INIT("nucleotide"),TI_ATOMSET_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
+    {STR_INIT("nucleic"),   TI_ATOMSET_ARR, 1, {TI_IRANGE_ARR},    _nucleic_irng,  FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {STR_INIT("water"),     TI_ATOMSET_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
+
+    // Residue level
+    {STR_INIT("nucleotide"),TI_ATOMSET_ARR, 0, {0},                _nucleotide,    FLAG_QUERYABLE_LENGTH},
     {STR_INIT("lipid"),     TI_ATOMSET_ARR, 0, {0},                _lipid,         FLAG_QUERYABLE_LENGTH},
     {STR_INIT("glycan"),    TI_ATOMSET_ARR, 0, {0},                _glycan,        FLAG_QUERYABLE_LENGTH},
 
@@ -1178,6 +1188,7 @@ static const match_name_t match_levels[] = {
     {STR_INIT("molecule"),  MD_MATCH_LEVEL_MOLECULE},
     {STR_INIT("residue"),   MD_MATCH_LEVEL_RESIDUE},
     {STR_INIT("component"), MD_MATCH_LEVEL_RESIDUE},
+    {STR_INIT("part"),      MD_MATCH_LEVEL_PART},
     {STR_INIT("chain"),     MATCH_LEVEL_CHAIN},
 };
 
@@ -3801,12 +3812,109 @@ static int _select_residues_of_kind(data_t* dst, data_t arg[], eval_context_t* c
     return result;
 }
 
+// ### PARTS BY KIND ###
+// polymer(), protein(), nucleic(), water(): one set per part of the kind (md_part_kind_t), a strand of a polymer with its
+// caps and modified residues, a water. Within a context the parts with an atom in it, whole, as glycan() takes them; by
+// position (protein(2)) the parts of the kind in the context, each cut to it, as part(2) counts them. A system whose parts
+// were not inferred has a set per residue of the kind instead, as lipid() has without its lipids.
+
+typedef bool (*part_kind_pred_t)(md_part_kind_t kind);
+static bool part_kind_polymer(md_part_kind_t kind) { return md_part_kind_is_polymer(kind); }
+static bool part_kind_peptide(md_part_kind_t kind) { return kind == MD_PART_KIND_PEPTIDE; }
+static bool part_kind_nucleic(md_part_kind_t kind) { return md_part_kind_is_nucleic_acid(kind); }
+static bool part_kind_water  (md_part_kind_t kind) { return kind == MD_PART_KIND_WATER; }
+
+// The parts of the kind with an atom in the context (all of them without one), in their order
+static md_array(int32_t) get_parts_of_kind(const md_system_t* sys, part_kind_pred_t pred, const md_bitset_t* bitfield, md_allocator_i* alloc) {
+    md_array(int32_t) arr = 0;
+    for (size_t p = 0; p < md_system_part_count(sys); ++p) {
+        if (!pred(md_system_part_kind(sys, p))) continue;
+        const md_urange_t r = md_system_part_atom_range(sys, p);
+        if (!bitfield || md_bitset_count_range(*bitfield, r.beg, r.end)) md_array_push(arr, (int32_t)p, alloc);
+    }
+    return arr;
+}
+
+static int select_parts_of_kind(data_t* dst, data_t arg[], eval_context_t* ctx, part_kind_pred_t pred, md_residue_kind_t res_kind) {
+    ASSERT(ctx && ctx->sys);
+    const md_system_t* sys = ctx->sys;
+    if (md_system_part_count(sys) == 0) {
+        if (res_kind == MD_RESIDUE_KIND_OTHER) {
+            // polymer(): no residue kind stands for it
+            if (!dst && sys->residue.count == 0) {
+                EVAL_LOG_ERROR(ctx, ctx->op_token, "The system does not contain any components");
+                return -1;
+            }
+            return 0;
+        }
+        return _select_residues_of_kind(dst, arg, ctx, res_kind);
+    }
+
+    md_array(int32_t) parts = get_parts_of_kind(sys, pred, ctx->mol_ctx, ctx->temp_alloc);
+    const int count = (int)md_array_size(parts);
+    if (dst) {
+        ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_ATOMSET_ARR));
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, false);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t r = md_system_part_atom_range(sys, (size_t)parts[i]);
+            set_writer_push_range(&w, r.beg, r.end);
+        }
+        set_writer_end(&w);
+        return 0;
+    }
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+}
+
+static int select_parts_of_kind_irng(data_t* dst, data_t arg[], eval_context_t* ctx, part_kind_pred_t pred, const char* unit) {
+    ASSERT(ctx && ctx->sys);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    const md_system_t* sys = ctx->sys;
+    if (md_system_part_count(sys) == 0) {
+        if (!dst) EVAL_LOG_ERROR(ctx, ctx->op_token, "The system has no parts to count the %ss of", unit);
+        return -1;
+    }
+
+    md_array(int32_t) parts = get_parts_of_kind(sys, pred, ctx->mol_ctx, ctx->temp_alloc);
+    md_array(int32_t) pos = 0;
+    const int count = select_positions(dst ? &pos : NULL, as_irange_arr(arg[0]), element_count(arg[0]), (int64_t)md_array_size(parts), unit, !dst, ctx);
+    if (count < 0) return count;
+
+    if (dst) {
+        if (!dst->ptr || type_info_array_len(dst->type) == 0) return 0;
+        set_writer_t w = set_writer_begin(dst, ctx, true);
+        for (int i = 0; i < count; ++i) {
+            const md_urange_t r = md_system_part_atom_range(sys, (size_t)parts[pos[i]]);
+            set_writer_push_range(&w, r.beg, r.end);
+        }
+        set_writer_end(&w);
+        return 0;
+    }
+    return (ctx->eval_flags & EVAL_FLAG_FLATTEN) ? MIN(1, count) : count;
+}
+
+static int _polymer(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return select_parts_of_kind(dst, arg, ctx, part_kind_polymer, MD_RESIDUE_KIND_OTHER);
+}
+
 static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    return _select_residues_of_kind(dst, arg, ctx, MD_RESIDUE_KIND_WATER);
+    return select_parts_of_kind(dst, arg, ctx, part_kind_water, MD_RESIDUE_KIND_WATER);
+}
+
+static int _polymer_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return select_parts_of_kind_irng(dst, arg, ctx, part_kind_polymer, "polymer");
+}
+
+static int _protein_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return select_parts_of_kind_irng(dst, arg, ctx, part_kind_peptide, "protein");
+}
+
+static int _nucleic_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return select_parts_of_kind_irng(dst, arg, ctx, part_kind_nucleic, "nucleic acid");
 }
 
 // lipid(): one selection per lipid molecule (md_lipid_data_t), all of its residues: a lipid split into several residues
-// (the AMBER lipids) is one, as an instance is. What is attached to a lipid (the further sugars of a glycolipid, the core
+// (the AMBER lipids) is one, as a part is. What is attached to a lipid (the further sugars of a glycolipid, the core
 // and O antigen of a lipopolysaccharide) is not of it. Within a context the lipids with an atom in it, whole, as
 // protein() takes its residues. A system whose lipids were not inferred has a lipid per residue of the kind.
 static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -3854,11 +3962,11 @@ static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
-	return _select_residues_of_kind(dst, arg, ctx, MD_RESIDUE_KIND_AMINO_ACID);
+	return select_parts_of_kind(dst, arg, ctx, part_kind_peptide, MD_RESIDUE_KIND_AMINO_ACID);
 }
 
 static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
-	return _select_residues_of_kind(dst, arg, ctx, MD_RESIDUE_KIND_NUCLEOTIDE);
+	return select_parts_of_kind(dst, arg, ctx, part_kind_nucleic, MD_RESIDUE_KIND_NUCLEOTIDE);
 }
 
 static int _nucleotide(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -4363,6 +4471,11 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
+    if (md_system_chain_count(ctx->sys) == 0) {
+        if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The data gives no chain ids, so the system has no chains: a strand of a polymer is polymer(i)");
+        return -1;
+    }
+
     // Those with an atom in the context, or all of the system
     md_array(int32_t) indices = get_chain_indices_in_context(ctx->sys, ctx->mol_ctx, ctx->temp_alloc);
     md_array(int32_t) pos = 0;
@@ -4388,7 +4501,8 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // chain("A"): every atom which carries the chain id, as one set (see md_chain_data_t): a chain id is a label of the
 // data, as an atom name is, rather than a structure counted one by one. Several ids, or a pattern matching several, are
 // all of their atoms together. Within a context, its atoms which carry the id. An id which no chain in the context has
-// is a compile error, and so is any id where the data gives none: its chains are inferred, and found by position.
+// is a compile error, and so is any id where the data gives none: the system then has no chains, and a strand of a
+// polymer is found as one (polymer(i)).
 static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->sys);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
@@ -4416,14 +4530,8 @@ static int _chain_id(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return 0;
     }
 
-    bool any_id = false;
-    for (size_t c = 0; c < md_system_chain_count(sys) && !any_id; ++c) any_id = !md_system_chain_inferred(sys, c);
-    if (!any_id) {
-        if (md_system_chain_count(sys)) {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The data gives no chain ids: its %zu chains are inferred, chain(1) is the first", md_system_chain_count(sys));
-        } else {
-            EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The system has no chains");
-        }
+    if (md_system_chain_count(sys) == 0) {
+        EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The data gives no chain ids, so the system has no chains: a strand of a polymer is polymer(i)");
         return -1;
     }
     for (size_t j = 0; j < num_str; ++j) {

@@ -349,9 +349,9 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
                 else uf_union(root, anchor, (int32_t)i);
             }
         }
-        for (size_t inst = 0; inst < sys->instance.count; ++inst) {
-            if (!md_entity_kind_is_polymer(md_system_instance_entity_kind(sys, inst))) continue;
-            const md_urange_t residues = md_system_instance_residue_range(sys, inst);
+        for (size_t p = 0; p < sys->part.count; ++p) {
+            if (!md_part_kind_is_polymer(md_system_part_kind(sys, p))) continue;
+            const md_urange_t residues = md_system_part_residue_range(sys, p);
             int32_t prev = -1;
             for (uint32_t c = residues.beg; c < residues.end && c < sys->residue.count; ++c) {
                 const md_urange_t r = md_system_residue_atom_range(sys, c);
@@ -364,10 +364,9 @@ static void target_build(target_t* tg, const md_system_t* sys, uint32_t what, md
                 prev = anchor;
             }
         }
-        // A molecule of a topology is whole, as sys->molecule has it (MD_ENTITY_FLAG_TOPOLOGY)
-        for (size_t inst = 0; inst < sys->instance.count && sys->entity.flags && sys->instance.entity_idx; ++inst) {
-            const md_entity_idx_t e = sys->instance.entity_idx[inst];
-            if (e < 0 || (size_t)e >= sys->entity.count || !(sys->entity.flags[e] & MD_ENTITY_FLAG_TOPOLOGY)) continue;
+        // A molecule of a topology is whole, as sys->molecule has it (md_instance_data_t::mol_type_idx)
+        for (size_t inst = 0; inst < sys->instance.count; ++inst) {
+            if (md_system_instance_molecule_type_idx(sys, inst) < 0) continue;
             const md_urange_t r = md_system_instance_atom_range(sys, inst);
             int32_t anchor = -1;
             for (uint32_t i = r.beg; i < r.end && i < N; ++i) {
@@ -2083,7 +2082,7 @@ static size_t level_num_units(const target_t* tg, md_match_level_t level) {
     switch (level) {
     case MD_MATCH_LEVEL_MOLECULE: return tg->num_mol;
     case MD_MATCH_LEVEL_RESIDUE: return tg->sys->residue.count;
-    case MD_MATCH_LEVEL_INSTANCE:  return tg->sys->instance.count;
+    case MD_MATCH_LEVEL_PART:     return tg->sys->part.count;
     default: return 0;
     }
 }
@@ -2119,9 +2118,9 @@ static void unit_begin(search_t* s, int64_t unit) {
         beg = sys->residue.atom_offset[unit];
         end = sys->residue.atom_offset[unit + 1];
         break;
-    case MD_MATCH_LEVEL_INSTANCE:
-        beg = sys->residue.atom_offset[sys->instance.res_offset[unit]];
-        end = sys->residue.atom_offset[sys->instance.res_offset[unit + 1]];
+    case MD_MATCH_LEVEL_PART:
+        beg = sys->residue.atom_offset[sys->part.res_offset[unit]];
+        end = sys->residue.atom_offset[sys->part.res_offset[unit + 1]];
         break;
     default:
         ASSERT(false);
@@ -2195,7 +2194,7 @@ static void search_init(search_t* s, const target_t* tg, md_match_level_t level,
     s->hydrogens   = hydrogens;
     s->bond_orders = bond_orders;
     s->charges     = charges;
-    s->ranged      = !units && (level == MD_MATCH_LEVEL_RESIDUE || level == MD_MATCH_LEVEL_INSTANCE);
+    s->ranged      = !units && (level == MD_MATCH_LEVEL_RESIDUE || level == MD_MATCH_LEVEL_PART);
     s->units       = units;
     s->num_units   = units ? num_units : 0;
     s->arena       = arena;
@@ -2253,7 +2252,7 @@ static bool resolve_valid(md_match_resolve_t r) {
 }
 
 static bool level_valid(md_match_level_t level, const md_system_t* sys) {
-    if ((uint32_t)level > MD_MATCH_LEVEL_INSTANCE) {
+    if ((uint32_t)level > MD_MATCH_LEVEL_PART) {
         MD_LOG_ERROR("md_match: unknown level");
         return false;
     }
@@ -2261,8 +2260,8 @@ static bool level_valid(md_match_level_t level, const md_system_t* sys) {
         MD_LOG_ERROR("md_match: matching within components, but the system has none");
         return false;
     }
-    if (level == MD_MATCH_LEVEL_INSTANCE && !(sys->instance.count > 0 && sys->instance.res_offset && sys->residue.atom_offset)) {
-        MD_LOG_ERROR("md_match: matching within instances, but the system has none");
+    if (level == MD_MATCH_LEVEL_PART && !(sys->part.count > 0 && sys->part.res_offset && sys->residue.atom_offset)) {
+        MD_LOG_ERROR("md_match: matching within parts, but the system has none");
         return false;
     }
     return true;
