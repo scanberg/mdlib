@@ -50,3 +50,19 @@ size_t vial_diag_count(const vial_diags_t* d, const char code[6]) {
     }
     return n;
 }
+
+void vial_diag_set_fix(vial_diags_t* d, size_t index, str_t fix) {
+    if (index < md_array_size(d->items)) d->items[index].fix = str_copy(fix, d->alloc);
+}
+
+void vial_diags_sort(vial_diags_t* d) {
+    // Insertion sort, stable, by where each diagnostic starts: the lexer's and the parser's interleave by position
+    md_vial_diagnostic_t* a = d->items;
+    const size_t n = md_array_size(a);
+    for (size_t i = 1; i < n; ++i) {
+        const md_vial_diagnostic_t x = a[i];
+        size_t j = i;
+        while (j > 0 && a[j - 1].span.beg > x.span.beg) { a[j] = a[j - 1]; --j; }
+        a[j] = x;
+    }
+}

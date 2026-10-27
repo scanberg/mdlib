@@ -424,3 +424,59 @@ UTEST_F(vial_parse, spans_nest) {
         }
     }
 }
+
+// ### GOLDEN DUMPS ###
+// unittest/vial_golden/<name>.vial is parsed and its tree and diagnostics compared with <name>.out. A change to
+// either is a reviewed diff. Run with VIAL_UPDATE_GOLDEN=1 to write the .out files anew.
+
+#include <stdlib.h>
+
+#define VIAL_GOLDEN_DIR MD_UNITTEST_SOURCE_DIR "/vial_golden/"
+
+static str_t golden_output(str_t src, md_allocator_i* alloc) {
+    vial_diags_t diags;
+    vial_diags_init(&diags, src, alloc);
+    vial_token_t* tokens = vial_lex(src, &diags, alloc);
+    vial_tree_t tree = vial_parse(tokens, src, &diags, alloc);
+    str_t dump = vial_tree_dump(&tree, src, alloc);
+
+    char* buf = NULL;
+    md_array_push_array(buf, dump.ptr, dump.len, alloc);
+    const char* sep = "--- diagnostics\n";
+    md_array_push_array(buf, sep, strlen(sep), alloc);
+    for (size_t i = 0; i < md_array_size(diags.items); ++i) {
+        const md_vial_diagnostic_t* d = &diags.items[i];
+        const uint32_t line = vial_line_of(&diags, d->span.beg);
+        const uint32_t col = d->span.beg - diags.line_beg[line - 1] + 1;
+        char tmp[640];
+        int n = snprintf(tmp, sizeof(tmp), "%s %u:%u %.*s%s%.*s\n", d->code, line, col, (int)d->message.len, d->message.ptr,
+            d->fix.len ? " | fix: " : "", (int)d->fix.len, d->fix.ptr);
+        if (n > 0) md_array_push_array(buf, tmp, (size_t)(n < (int)sizeof(tmp) ? n : (int)sizeof(tmp) - 1), alloc);
+    }
+    return (str_t){buf, md_array_size(buf)};
+}
+
+UTEST_F(vial_parse, golden) {
+    md_allocator_i* alloc = utest_fixture->alloc;
+    static const char* names[] = {"expressions", "statements", "refused", "errors"};
+    const bool update = getenv("VIAL_UPDATE_GOLDEN") != NULL;
+    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+        char in_path[512], out_path[512];
+        snprintf(in_path, sizeof(in_path), VIAL_GOLDEN_DIR "%s.vial", names[i]);
+        snprintf(out_path, sizeof(out_path), VIAL_GOLDEN_DIR "%s.out", names[i]);
+        str_t src = load_textfile(str_from_cstr(in_path), alloc);
+        ASSERT_FALSE(str_empty(src));
+        str_t got = golden_output(src, alloc);
+        if (update) {
+            FILE* f = fopen(out_path, "wb");
+            ASSERT_TRUE(f != NULL);
+            fwrite(got.ptr, 1, got.len, f);
+            fclose(f);
+            continue;
+        }
+        str_t want = load_textfile(str_from_cstr(out_path), alloc);
+        const bool same = str_eq(got, want);
+        if (!same) printf("%s differs from its golden dump; run with VIAL_UPDATE_GOLDEN=1 and review the diff\n", out_path);
+        EXPECT_TRUE(same);
+    }
+}

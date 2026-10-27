@@ -1,0 +1,17 @@
+import numpy as np
+class Foo:
+    pass
+f = lambda s, v: s + v
+s = {1, 5, 9}
+d = {'a': 1}
+g = (a for a in b)
+t = f'{x}'
+def h(*args, **kwargs):
+    global n
+    yield 1
+while x > 1.0:
+    x = x / 2.0
+a[0] = 1
+r = residue(1:4)
+c = chain(:)
+k = atom(2:)

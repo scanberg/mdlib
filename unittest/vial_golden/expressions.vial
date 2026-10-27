@@ -1,0 +1,15 @@
+# Precedence, as Python's with `..` between the comparisons and `|`
+a = b + c * d ** -e
+r = 1..n + 1
+m = x in 10..20 and not y or z
+c = 2 < n <= 500 != k
+t = a if b is not None else c
+p = u @ v + w
+s = a & b | c ^ d << 2
+
+# Primaries
+d = distance(res_a[:, None], res_a, between='closest')
+z = c[..., 0] + c.x
+l = [r.com for r in residues(1..4) if r]
+n = [[a for a in r] for r in s]
+q = ('a' "b", 1, 2.5e-3, True, None, ...)

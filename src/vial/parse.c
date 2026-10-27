@@ -475,6 +475,57 @@ static vial_node_id parse_subscript(parser_t* p) {
     return make(p, VIAL_N_SLICE, 0, beg, p->last_end, m);
 }
 
+// v1's selectors by 1-based inclusive position, and what VIAL writes for them
+static const char* v1_plural(str_t name) {
+    static const char* map[][2] = {
+        {"residue", "residues"}, {"chain", "chains"}, {"atom", "particles"}, {"molecule", "molecules"},
+        {"part", "parts"}, {"polymer", "parts"}, {"protein", "parts"}, {"nucleic", "parts"},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(map); ++i) if (str_eq_cstr(name, map[i][0])) return map[i][1];
+    return NULL;
+}
+
+static bool int_literal(const parser_t* p, vial_node_id id, int64_t* out) {
+    if (!id || node_kind(p, id) != VIAL_N_INT) return false;
+    str_t s = {p->src.ptr + node_beg(p, id), node_end(p, id) - node_beg(p, id)};
+    int64_t v = 0;
+    for (size_t i = 0; i < s.len; ++i) {
+        if (s.ptr[i] == '_') continue;
+        if (!is_digit(s.ptr[i]) || v > 1000000000) return false;
+        v = v * 10 + (s.ptr[i] - '0');
+    }
+    *out = v;
+    return true;
+}
+
+// E0701 on a v1 call such as residue(1:4), with the VIAL spelling as the fix where it is clear: residues[0:4]
+static void report_v1_call(parser_t* p, vial_node_id call) {
+    const md_vial_span_t s = p->tree.nodes[call].span;
+    const uint32_t len = s.end - s.beg;
+    const size_t before = md_array_size(p->diags->items);
+    refuse(p, "E0701", s, "`%.*s%s` is v1; positions are subscripts", (int)(len > 40 ? 40 : len), p->src.ptr + s.beg,
+        len > 40 ? "…" : "");
+    if (md_array_size(p->diags->items) == before) return;
+
+    // The fix: one argument, a v1 range of int literals or open ends, on a selector v1 had
+    const vial_node_t* n = &p->tree.nodes[call];
+    const vial_node_id callee = vial_child(&p->tree, call, 0);
+    if (n->child_count != 2 || node_kind(p, callee) != VIAL_N_NAME) return;
+    const vial_node_id arg = vial_child(&p->tree, call, 1);
+    if (node_kind(p, arg) != VIAL_N_UNSUPPORTED || p->tree.nodes[arg].sub != VIAL_UNSUP_V1_RANGE) return;
+    const char* plural = v1_plural((str_t){p->src.ptr + node_beg(p, callee), node_end(p, callee) - node_beg(p, callee)});
+    if (!plural) return;
+    const vial_node_id lo = vial_child(&p->tree, arg, 0), hi = vial_child(&p->tree, arg, 1);
+    int64_t a = 0, b = 0;
+    if ((lo && !int_literal(p, lo, &a)) || (hi && !int_literal(p, hi, &b)) || (lo && a < 1)) return;
+    char fix[96];
+    if (!lo && !hi)    snprintf(fix, sizeof(fix), "%s", plural);
+    else if (!hi)      snprintf(fix, sizeof(fix), "%s[%lld:]", plural, (long long)(a - 1));
+    else if (!lo)      snprintf(fix, sizeof(fix), "%s[:%lld]", plural, (long long)b);
+    else               snprintf(fix, sizeof(fix), "%s[%lld:%lld]", plural, (long long)(a - 1), (long long)b);
+    vial_diag_set_fix(p->diags, before, str_from_cstr(fix));
+}
+
 static vial_node_id parse_primary(parser_t* p) {
     vial_node_id e = parse_atom(p);
     for (;;) {
@@ -485,12 +536,7 @@ static vial_node_id parse_primary(parser_t* p) {
             advance(p);
             const bool v1 = parse_call_args(p, t);
             e = make(p, VIAL_N_CALL, 0, node_beg(p, e), p->last_end, m);
-            if (v1) {
-                const md_vial_span_t s = p->tree.nodes[e].span;
-                const uint32_t len = s.end - s.beg;
-                refuse(p, "E0701", s, "`%.*s%s` is v1; positions are subscripts, as in residues[0:4]",
-                    (int)(len > 40 ? 40 : len), p->src.ptr + s.beg, len > 40 ? "…" : "");
-            }
+            if (v1) report_v1_call(p, e);
         } else if (tok_is_op(t, VIAL_OP_LBRACKET)) {
             const uint32_t m = mark(p);
             push(p, e);
@@ -1079,6 +1125,7 @@ vial_tree_t vial_parse(const vial_token_t* tokens, str_t src, vial_diags_t* diag
     const uint32_t m = mark(&p);
     parse_stmts(&p, false);
     p.tree.root = make(&p, VIAL_N_MODULE, 0, 0, (uint32_t)src.len, m);
+    vial_diags_sort(diags);
 
     md_array_free(p.toks, alloc);
     md_array_free(p.stack, alloc);
