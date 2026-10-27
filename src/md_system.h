@@ -87,8 +87,8 @@ typedef struct md_residue_data_t {
 //
 // THE INSTANCES ARE INPUT. What they are differs with the data (an asym is a part of a molecule, a molecule of a topology
 // a whole one), so nothing but what is inferred from them reads them: the parts (which never reach over an instance), the
-// molecules (an instance of a molecule type is one molecule whatever its bonds), the chains (from their author ids), and
-// the assemblies, which name the asyms of a file by index, as these stay put when the parts are inferred anew. Anything
+// molecules (an instance of a molecule type is one molecule whatever its bonds, and md_match closes its molecules the
+// same way), the chains (from their author ids), and the assemblies, which name the asyms of a file by index, as these stay put when the parts are inferred anew. Anything
 // else uses the parts and the molecules.
 //
 // id is the instance's label (mmCIF label_asym_id) and auth_id the author's chain id (auth_asym_id, the chain id of a
@@ -134,7 +134,7 @@ typedef struct md_part_type_data_t {
 } md_part_type_data_t;
 
 // Part: one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water: the parts the molecules are
-// built of, each a run of consecutive residues of one instance. A molecule may hold several (a
+// built of, each a run of consecutive residues, within one instance where the system has instances. A molecule may hold several (a
 // glycoprotein, a strand and its glycans; the two strands of a duplex a topology gives as one molecule type), a
 // chain likewise (a strand and the ligands and waters filed under its id). Every part is within one molecule.
 //   - A polymer strand goes on over a gap (residues missing from a crystal structure) and ends where the chemistry says
@@ -383,7 +383,8 @@ typedef struct md_molecule_t {
 //
 // MOLECULE TYPES. The molecule of a topology is of the molecule type the topology gives it (a GROMACS molecule type, by
 // its name). Any other molecule is of an inferred type (MD_MOLECULE_TYPE_FLAG_INFERRED), shared by the molecules made
-// alike: of the same part types in the same order, the same particle types and the same bonds between them. The given
+// alike: of the same part types in the same order, as many atoms of each particle type and as many bonds between each
+// pair of particle types (counted, not placed: two molecules of these which are bonded differently share a type). The given
 // types come first, the inferred after them, and are inferred anew with the molecules.
 typedef struct md_molecule_type_data_t {
     size_t count;

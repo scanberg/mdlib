@@ -2,6 +2,8 @@
 #include <string.h>
 
 #include <md_pdb.h>
+#include <md_gro.h>
+#include <stdio.h>
 #include <md_system.h>
 #include <md_util.h>
 #include <core/md_arena_allocator.h>
@@ -631,5 +633,40 @@ UTEST(pdb, chain_breaks_of_files) {
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
     }
+    md_vm_arena_destroy(alloc);
+}
+
+// The writer ends each part with a TER before the next part begins, never within a residue: two waters of a GRO file,
+// which has no chains, read back as two residues of three atoms
+UTEST(pdb, write_ter_between_parts) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const char* gro =
+        "two waters\n6\n"
+        "    1SOL     OW    1   0.000   0.000   0.000\n"
+        "    1SOL    HW1    2   0.096   0.000   0.000\n"
+        "    1SOL    HW2    3  -0.024   0.093   0.000\n"
+        "    2SOL     OW    4   0.500   0.500   0.500\n"
+        "    2SOL    HW1    5   0.596   0.500   0.500\n"
+        "    2SOL    HW2    6   0.476   0.593   0.500\n"
+        "   2.00000   2.00000   2.00000\n";
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro)));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(2u, md_system_part_count(&sys));
+
+    const str_t path = STR_LIT("md_unittest_write_ter.pdb");
+    md_file_t f = {0};
+    ASSERT_TRUE(md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
+    ASSERT_TRUE(md_pdb_system_write_state_to_file(f, &sys, &st, NULL, sys.atom.count, 0));
+    md_file_close(&f);
+
+    md_system_t back = {.alloc = alloc};
+    md_system_state_t back_st = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&back, &back_st, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    remove(path.ptr);
+    ASSERT_EQ(2u, back.residue.count);
+    EXPECT_EQ(3u, md_system_residue_atom_range(&back, 0).end - md_system_residue_atom_range(&back, 0).beg);
+    EXPECT_EQ(3u, md_system_residue_atom_range(&back, 1).end - md_system_residue_atom_range(&back, 1).beg);
     md_vm_arena_destroy(alloc);
 }

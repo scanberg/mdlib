@@ -222,8 +222,6 @@ typedef enum {
 
 ENUM_FLAGS(md_molecule_type_flags_t)
 
-ENUM_FLAGS(md_part_type_flags_t)
-
 // What a tail of a lipid is (md_lipid_data_t)
 typedef enum md_lipid_tail_kind_t {
     MD_LIPID_TAIL_CHAIN     = 0,    // A hydrocarbon chain: acyl, alkyl, alkenyl or sphingoid, branched or not (phytanyl).

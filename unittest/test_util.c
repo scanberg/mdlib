@@ -13,6 +13,8 @@
 #include <md_system.h>
 #include <md_util.h>
 #include <md_dssp.h>
+#include <md_itp.h>
+#include <core/md_writer.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -3637,6 +3639,76 @@ UTEST(util, molecule_type_inferred) {
         EXPECT_TRUE(str_eq(md_system_molecule_type_name(&sys, 0), STR_LIT("C60")));
     }
 
+    md_vm_arena_destroy(alloc);
+}
+
+// A coarse grained strand numbered over a gap, without bonds, in a chain the file names: one part, and so one molecule
+// (the hierarchy links follow the part, not the numbering), as every part is within one molecule
+UTEST(util, coarse_grained_strand_over_a_gap) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_str_writer_t sb = md_str_writer_create(alloc);
+    static const int resids[] = {1, 2, 3, 4, 5, 10, 11, 12, 13, 14};
+    for (int i = 0; i < 10; ++i) {
+        const float x = 3.8f * i + (i >= 5 ? 20.0f : 0.0f);
+        md_str_writer_fmt(&sb, "ATOM  %5d  BB  ALA A%4d    %8.3f%8.3f%8.3f  1.00  0.00            \n", i + 1, resids[i], x, 0.0, 0.0);
+    }
+    md_str_writer_push_cstr(&sb, "END\n");
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    EXPECT_TRUE(md_system_is_coarse_grained(&sys));
+    EXPECT_VALID_SYSTEM(&sys);
+    ASSERT_EQ(1u, md_system_part_count(&sys));
+    EXPECT_EQ(MD_PART_KIND_PEPTIDE, md_system_part_kind(&sys, 0));
+    EXPECT_EQ(1u, md_system_molecule_count(&sys));
+    md_vm_arena_destroy(alloc);
+}
+
+// A topology supplementing a coarse grained GRO splits what the numbering ran together into its molecules: the parts and
+// the backbones follow, each backbone range of one part
+UTEST(util, topology_supplement_reinfers_backbones) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_str_writer_t sb = md_str_writer_create(alloc);
+    md_str_writer_push_cstr(&sb, "cg\n12\n");
+    for (int i = 0; i < 12; ++i) {
+        const float x = 0.70f * (i % 6) + (i >= 6 ? 3.0f : 0.0f);
+        const float y = i >= 6 ? 3.0f : 0.0f;
+        md_str_writer_fmt(&sb, "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", i + 1, "ALA", "BB", i + 1, x + 1.0f, y + 1.0f, 1.0f);
+    }
+    md_str_writer_push_cstr(&sb, "   8.00000   8.00000   8.00000\n");
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb)));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    EXPECT_EQ(1u, md_system_part_count(&sys));
+
+    md_str_writer_t top = md_str_writer_create(alloc);
+    md_str_writer_push_cstr(&top, "[ defaults ]\n1 1\n[ atomtypes ]\nP5 72.0 0.0 A 0.47 5.0\n[ moleculetype ]\nPROT 1\n[ atoms ]\n");
+    for (int i = 0; i < 6; ++i) md_str_writer_fmt(&top, "%d P5 %d ALA BB %d 0.0 72.0\n", i + 1, i + 1, i + 1);
+    md_str_writer_push_cstr(&top, "[ bonds ]\n");
+    for (int i = 0; i < 5; ++i) md_str_writer_fmt(&top, "%d %d 1 0.35 1250\n", i + 1, i + 2);
+    md_str_writer_push_cstr(&top, "[ system ]\nx\n[ molecules ]\nPROT 2\n");
+    md_itp_data_t data = {0};
+    ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&top), STR_LIT(""), alloc));
+    ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+
+    EXPECT_VALID_SYSTEM(&sys);
+    ASSERT_EQ(2u, md_system_instance_count(&sys));
+    EXPECT_EQ(2u, md_system_part_count(&sys));
+    EXPECT_EQ(2u, md_system_molecule_count(&sys));
+    EXPECT_EQ(1u, md_system_molecule_type_count(&sys));
+    const md_protein_backbone_data_t* bb = &sys.protein_backbone;
+    ASSERT_EQ(2u, bb->range.count);
+    for (size_t r = 0; r < bb->range.count; ++r) {
+        const md_part_idx_t part = bb->range.part_idx[r];
+        ASSERT_GE(part, 0);
+        const md_urange_t residues = md_system_part_residue_range(&sys, (size_t)part);
+        for (uint32_t k = bb->range.offset[r]; k < bb->range.offset[r + 1]; ++k) {
+            const md_residue_idx_t res = bb->segment.res_idx[k];
+            EXPECT_TRUE(residues.beg <= (uint32_t)res && (uint32_t)res < residues.end);
+        }
+    }
     md_vm_arena_destroy(alloc);
 }
 

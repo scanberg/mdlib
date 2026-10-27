@@ -981,6 +981,12 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
             }
         }
 
+        // A TER ends each part (a strand, a ligand, a water) before the next one begins
+        if (prev_part_idx != INT_MIN && part_idx != prev_part_idx) {
+            md_file_printf(file, "TER\n");
+        }
+        prev_part_idx = part_idx;
+
         // PDB format:
         // ATOM serial name altLoc resName chainID resSeq iCode x y z occupancy tempFactor element charge
         md_file_printf(file,
@@ -1005,10 +1011,7 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
             ""                  // charge
         );
 
-		if (prev_part_idx != INT_MIN && part_idx != prev_part_idx) {
-			md_file_printf(file, "TER\n");
-		}
-        prev_part_idx = part_idx;
+
     }
     
     if (model_num > 0) {

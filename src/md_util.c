@@ -6178,7 +6178,7 @@ static void link_topology_molecules(const md_system_t* sys, int32_t* set, md_arr
 // synthesized from the residue hierarchy instead, WITHOUT looking at coordinates:
 //   - within a residue, every bead hangs off the residue's anchor (its backbone bead, else its first bead)
 //   - the anchors of consecutive polymer residues (amino acid or nucleotide, same kind, consecutive sequence
-//     ids, same part when the parts are known) are linked along the chain
+//     ids, or of one part whatever their ids when the parts are known) are linked along the chain
 // A link is only emitted between atoms that are not already connected, by bonds or by an earlier link, so a
 // fully bonded system gets none and the result stays a forest over bonds + links.
 //
@@ -6247,9 +6247,12 @@ static md_array(md_atom_pair_t) synthesize_hierarchy_links(const md_system_t* sy
 
         const md_residue_kind_t ck = md_system_residue_kind(sys, ci);
         const md_residue_kind_t kind = residue_kind_is_monomer(ck) ? ck : MD_RESIDUE_KIND_OTHER;
+        // Within a part the residues are of one strand whatever their numbering (a strand goes on over a gap,
+        // md_util_system_infer_parts), as a molecule holds its parts whole; without parts by consecutive numbers
+        const bool same_part = res_part[prev_res] >= 0 && res_part[prev_res] == res_part[ci];
+        const bool consecutive = !sys->residue.seq_id || md_system_residue_seq_id(sys, ci) == md_system_residue_seq_id(sys, prev_res) + 1;
         if (kind && prev_anchor >= 0 && prev_res + 1 == ci && prev_kind == kind &&
-            res_part[prev_res] == res_part[ci] &&
-            (!sys->residue.seq_id || md_system_residue_seq_id(sys, ci) == md_system_residue_seq_id(sys, prev_res) + 1))
+            res_part[prev_res] == res_part[ci] && (same_part || consecutive))
         {
             if (uf_union(set, prev_anchor, anchor)) {
                 md_atom_pair_t pair = {{ prev_anchor, anchor }};

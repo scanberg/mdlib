@@ -91,6 +91,10 @@ static void expect_valid_system(int* utest_result, const char* file, int line, c
                 FAIL("instance.comp_offset holds %zu entries, expected count+1 = %zu (missing sentinel?)",
                      md_array_size(sys->instance.res_offset), sys->instance.count + 1);
             }
+            if (md_array_size(sys->instance.id) != sys->instance.count || md_array_size(sys->instance.auth_id) != sys->instance.count ||
+                md_array_size(sys->instance.part_type_idx) != sys->instance.count || md_array_size(sys->instance.mol_type_idx) != sys->instance.count) {
+                FAIL("instance arrays do not hold count = %zu entries", sys->instance.count);
+            }
             if (sys->instance.res_offset[sys->instance.count] != sys->residue.count) {
                 FAIL("instance sentinel = %u, expected component.count = %zu",
                      sys->instance.res_offset[sys->instance.count], sys->residue.count);

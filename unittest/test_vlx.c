@@ -789,11 +789,12 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 	EXPECT_TRUE(vlx_test_absent(z[num_qm]));
 	EXPECT_TRUE(vlx_test_absent(z[num_atoms - 1]));
 
-	// And what an application infers from that once it is loaded: every water an instance of its own,
-	// the QM region one more
+	// And what an application infers from that once it is loaded: every water a part of its own, the QM region one
+	// more. The file gives no units: no instances.
 	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
 	EXPECT_VALID_SYSTEM(&t.sys);
-	EXPECT_EQ(1u + 50u, t.sys.instance.count);
+	EXPECT_EQ(0u, t.sys.instance.count);
+	EXPECT_EQ(1u + 50u, t.sys.part.count);
 	EXPECT_EQ(1u + 50u, t.sys.molecule.count);
 
 	qm_test_free(&t);

@@ -301,9 +301,15 @@ md_part_type_idx_t md_part_type_data_push(md_part_type_data_t* type, str_t id, m
     ASSERT(type);
     md_label_t lbl = make_label(id);
     if (str_empty(id)) {
-        char buf[16];
-        const int len = snprintf(buf, sizeof(buf), "%zu", type->count + 1);
-        lbl = make_label((str_t){buf, (size_t)MAX(len, 0)});
+        // Its position, or the first number after it which no type has for an id (the ids of a file need not be 1..n)
+        for (size_t n = type->count + 1;; ++n) {
+            char buf[16];
+            const int len = snprintf(buf, sizeof(buf), "%zu", n);
+            lbl = make_label((str_t){buf, (size_t)MAX(len, 0)});
+            bool taken = false;
+            for (size_t i = 0; i < md_array_size(type->id) && !taken; ++i) taken = md_label_eq(type->id[i], lbl);
+            if (!taken) break;
+        }
     }
     md_array_push(type->id, lbl, alloc);
     md_array_push(type->flags, flags, alloc);

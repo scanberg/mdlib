@@ -851,7 +851,7 @@ filed with it alike, and `chain("A")` is all of them, as **one** selection howev
 A chain id is a label, as an atom name is.
 
 Where the data gives no chain ids (a GRO file, a topology, a PDB file written by a simulation), none are made up: the
-system has no chains, and `chain(...)` is a compile error. A strand of a polymer is then found as what it is, a part of
+system has no chains, and `chain(...)` is a compile error, in each of its forms. A strand of a polymer is then found as what it is, a part of
 a polymer: [`polymer`](#polymer), `polymer(1)` by its position.
 
 A **molecule** is atoms joined by bonds, and what holds together where the bonds do not say so: the atoms of a residue,
@@ -950,9 +950,11 @@ Both take two named arguments:
 - `level`: where an occurrence lies. `"molecule"` (the default): within one [molecule](#molecule). Patterns follow
   covalent bonds only: a metal coordinated by another residue is a molecule of its own here even where a topology
   bonds it into one. `"residue"` (or `"component"`): within one residue, whose bonds to its
-  neighbours are not part of the graph, so a residue pattern ends at the peptide bond. `"chain"`: within one
-  [chain](#chain), all that the data gives its id, the bonds leaving it (a disulfide to another chain) not followed;
-  atoms the data puts in no chain are not searched.
+  neighbours are not part of the graph, so a residue pattern ends at the peptide bond. `"part"`: within one
+  [part](#part) (a strand of a polymer, a glycan tree, a ligand), the bonds leaving it (a glycosylation, a disulfide)
+  not followed. `"chain"`: within one [chain](#chain), all that the data gives its id, the bonds leaving it (a disulfide
+  to another chain) not followed; atoms the data puts in no chain are not searched, and a system whose data gives no
+  chain ids is a compile error.
 - `mode`: which occurrences there are. `"unique"` (the default): one per set of atoms; a symmetric pattern fits the
   same atoms in several ways (a benzene ring in 12) and counts once. `"all"`: every way it fits. `"one_per_unit"`: the
   first in each unit of `level`. `"disjoint"`: occurrences which share no atoms, the first found winning.

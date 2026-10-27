@@ -83,9 +83,9 @@ bool md_util_system_infer_residue_flags(md_system_t* sys);
 bool md_util_system_infer_lipids(md_system_t* sys);
 
 // Instances from the chain ids of the residues, for a format which gives a chain id per residue and no units of its
-// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id. Residues without
-// an id are in no instance. Replaces the instances of the system. The instances are what the data gives
-// (md_instance_data_t): where it gives no chain ids the system has none.
+// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id. A run without an
+// id is an instance of no id (the instances are back to back). Replaces the instances of the system. The instances are
+// what the data gives (md_instance_data_t): where it gives no chain ids at all the system has none.
 bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[]);
 
 // The chains of the system (sys->chain, see md_chain_data_t) from the author ids of its instances: one per id. A system
@@ -95,8 +95,9 @@ bool md_util_system_infer_chains(md_system_t* sys);
 
 // The parts of the system (sys->part, see md_part_data_t) and their types from its instances, its bonds and the kinds
 // of its residues. A part never reaches over an instance; a system without instances is one span to divide. A strand
-// goes on over a gap (two consecutive residues of it not bonded) within one instance while the sequence ids increase,
-// and in a system without bonds while they are consecutive, unless the chain ends there (CHAIN BREAKS). A part which is
+// goes on over a gap (two consecutive residues of it not bonded) within one instance the data names (an id or an author
+// id: an asym, a chain of a PDB file; not a molecule of a topology) while the sequence ids increase, and elsewhere in
+// a system without bonds while they are consecutive, unless the chain ends there (CHAIN BREAKS). A part which is
 // all of an instance with a given part type is of that type; the others are of inferred types
 // (MD_PART_TYPE_FLAG_INFERRED), one per kind and sequence of residue names, which replace those of the last inference.
 // A given type of unknown kind is classified from its first part. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT,

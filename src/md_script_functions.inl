@@ -3313,6 +3313,14 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
         if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[level_arg], "The system has no residues to match within");
         return STATIC_VALIDATION_ERROR;
     }
+    if (level == MD_MATCH_LEVEL_PART && md_system_part_count(ctx->sys) == 0) {
+        if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[level_arg], "The system has no parts to match within");
+        return STATIC_VALIDATION_ERROR;
+    }
+    if (level == MATCH_LEVEL_CHAIN && md_system_chain_count(ctx->sys) == 0) {
+        if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[level_arg], "The data gives no chain ids, so the system has no chains to match within: level='part' matches within each strand");
+        return STATIC_VALIDATION_ERROR;
+    }
     // Within a chain: its atoms are the unit, the bonds leaving it (a disulfide to another chain) not searched. The
     // atoms of no chain (a molecule the data gives no chain id) are in no unit.
     md_bitset_t* chain_units = NULL;
@@ -3349,7 +3357,7 @@ static int match_eval(data_t* dst, const md_match_query_t* query, data_t arg[], 
     if (res.incomplete) {
         // Reported by the evaluation as well: the search depends on the frame through the context
         const size_t num_parts = match_query_parts(query, ctx->temp_alloc);
-        const char* unit = level == MD_MATCH_LEVEL_RESIDUE ? "residue" : level == MATCH_LEVEL_CHAIN ? "chain" : "molecule";
+        const char* unit = level == MD_MATCH_LEVEL_RESIDUE ? "residue" : level == MD_MATCH_LEVEL_PART ? "part" : level == MATCH_LEVEL_CHAIN ? "chain" : "molecule";
         if (num_parts > 1) {
             EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "%s: the search was given up, the %s is in %zu parts which are not bonded to each other. "
                 "Each is placed anywhere in the %s, and together they fit in too many ways: give a %s whose atoms are bonded "
@@ -4288,6 +4296,11 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_ATOMSET_ARR));
     ASSERT(ctx && ctx->sys);
     const md_system_t* sys = ctx->sys;
+
+    if (md_system_chain_count(sys) == 0) {
+        if (!dst) EVAL_LOG_ERROR(ctx, ctx->arg_tokens[0], "The data gives no chain ids, so the system has no chains: a strand of a polymer is polymer(i), or part(sel)");
+        return -1;
+    }
 
     const int64_t num_bf = element_count(arg[0]);
     const md_bitset_t* src_bf = as_bitset(arg[0]);
