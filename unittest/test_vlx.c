@@ -1156,10 +1156,10 @@ UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 // ---------------------------------------------------------------------------
 // INDUCED DIPOLES
 //
-// An embedding run of VeloxChem's experimental embedding branch keeps the induced dipoles it
-// converged to, scf/embedding_induced_dipoles [P][3] in e bohr: one per POLARIZABLE site of the
-// environment, in the order the sites become atoms in - the fragments by number, a fragment's sites
-// in file order. Over the system's atoms a non-polarizable site has a zero dipole.
+// A fika embedding run of VeloxChem keeps the induced dipoles it converged to,
+// scf/embedding_induced_dipoles [P][3] in e bohr: one per POLARIZABLE site of the environment, in
+// the order of the .pot's rows - not the order the sites become atoms in, which follows the fragment
+// numbers. Over the system's atoms a non-polarizable site has a zero dipole.
 // ---------------------------------------------------------------------------
 
 // A copy of h2o.h5 naming 'potfile', with scf/embedding_induced_dipoles [rows][cols] beside it
@@ -1183,7 +1183,9 @@ static bool vlx_test_write_induced_dipoles_h5(str_t dst, const char* potfile, co
 }
 
 // Three waters, listed out of their numbers the way VeloxChem writes them (polarizable first): 3, 2,
-// then the non-polarizable 1. PyFraME's order, and the system's, is 1, 2, 3.
+// then 1. The atoms follow the numbers, 1, 2, 3; the dipoles follow the file, 3, 2. Water 1 is _npe
+// and so not polarizable, though its type has polarizabilities, and the second hydrogen of a _pe
+// water has none: the polarizable sites are the oxygen and the first hydrogen of waters 3 and 2.
 static const char vlx_test_induced_pot[] =
 	"@environment\n"
 	"units: angstrom\n"
@@ -1209,21 +1211,24 @@ static const char vlx_test_induced_pot[] =
 	"@polarizabilities\n"
 	"O   6.0 0.0 0.0 6.0 0.0 6.0  HOH_pe\n"
 	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
-	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"H   0.0 0.0 0.0 0.0 0.0 0.0  HOH_pe\n"
+	"O   5.0 0.0 0.0 5.0 0.0 5.0  HOH_npe\n"
+	"H   1.0 0.0 0.0 1.0 0.0 1.0  HOH_npe\n"
+	"H   1.0 0.0 0.0 1.0 0.0 1.0  HOH_npe\n"
 	"@end\n";
 
-// The dipoles of the polarizable sites in atom order, each naming its site: (fragment number, index in
-// the fragment, 0.5). Water 1 is not polarizable and has none.
-static const double vlx_test_induced_mu[6][3] = {
-	{2, 0, 0.5},   {2, 1, 0.5},   {2, 2, 0.5},
-	{3, 0, 0.5},   {3, 1, 0.5},   {3, 2, 0.5},
+// The dipoles of the polarizable sites in file order, each naming its site: (fragment number, index in
+// the fragment, 0.5)
+static const double vlx_test_induced_mu[4][3] = {
+	{3, 0, 0.5},   {3, 1, 0.5},
+	{2, 0, 0.5},   {2, 1, 0.5},
 };
 
 UTEST(vlx, pe_induced_dipoles_land_on_their_sites) {
 	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_induced.h5");
 	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_induced.pot");
 	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_induced_pot, sizeof(vlx_test_induced_pot) - 1));
-	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5, "unittest_pe_induced.pot", &vlx_test_induced_mu[0][0], 6, 3));
+	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5, "unittest_pe_induced.pot", &vlx_test_induced_mu[0][0], 4, 3));
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
 	remove(h5.ptr);
@@ -1238,7 +1243,7 @@ UTEST(vlx, pe_induced_dipoles_land_on_their_sites) {
 	ASSERT_TRUE(raw != NULL);
 	EXPECT_EQ(3u, raw->format.components);
 	EXPECT_EQ(1u, raw->format.rank);
-	EXPECT_EQ(6u, md_attribute_value_count(&raw->format));
+	EXPECT_EQ(4u, md_attribute_value_count(&raw->format));
 	EXPECT_TRUE(md_unit_equal(raw->unit, md_unit_elementary_charge_bohr()));
 
 	// Over the system's atoms: each atom's dipole is the one its own site was given
@@ -1259,7 +1264,7 @@ UTEST(vlx, pe_induced_dipoles_land_on_their_sites) {
 		ASSERT_TRUE(res >= 0);
 		const int    frag  = md_system_residue_seq_id(&t.sys, res);
 		const size_t local = i - md_system_residue_atom_range(&t.sys, res).beg;
-		if (frag == 1) {
+		if (frag == 1 || local == 2) {
 			EXPECT_EQ(0.0, mu[3 * i + 0]);
 			EXPECT_EQ(0.0, mu[3 * i + 1]);
 			EXPECT_EQ(0.0, mu[3 * i + 2]);
@@ -1284,7 +1289,7 @@ UTEST(vlx, pe_induced_dipoles_must_match_the_potential) {
 	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_induced_pot, sizeof(vlx_test_induced_pot) - 1));
 	static const double per_site[9][3] = {0};	// One per site, the non-polarizable ones included
 	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5_count, "unittest_pe_induced_count.pot", &per_site[0][0], 9, 3));
-	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5_shape, "unittest_pe_induced_count.pot", &vlx_test_induced_mu[0][0], 6, 2));
+	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5_shape, "unittest_pe_induced_count.pot", &vlx_test_induced_mu[0][0], 6, 2));	// 12 values, as [4][3] holds
 
 	vlx_test_t count = {0}, shape = {0};
 	const bool loaded_count = vlx_test_load(&count, h5_count, MEGABYTES(64));

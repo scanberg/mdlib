@@ -46,9 +46,9 @@ struct md_system_state_t;
 //                                                            polarizable site, NAN for the QM atoms
 //   vlx/scf/embedding/induced_dipole                         {P} x 3, e bohr: the same as the file
 //                                                            holds them, over the POLARIZABLE sites
-//                                                            only (by fragment number, then file row
-//                                                            of the .pot) - published whether or not
-//                                                            the environment could be added
+//                                                            only, in the .pot's row order (fika's)
+//                                                            - published whether or not the
+//                                                            environment could be added
 //
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}

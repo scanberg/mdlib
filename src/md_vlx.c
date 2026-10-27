@@ -245,7 +245,7 @@ typedef struct vlx_mm_t {
 	size_t    count;			// Sites, == pot.num_sites
 	double*   charge;			// [count] e, by file row
 	double*   polarizability;	// [count] isotropic, bohr^3 - one third of the trace of the site's tensor, by file row
-	bool*     polarizable;		// [count] the site's fragment type has polarizabilities, by file row
+	bool*     polarizable;		// [count] a site the embedding induces a dipole on (vlx_mm_site_polarizable), by file row
 	size_t    num_polarizable;	// Sites for which 'polarizable' holds
 	uint32_t* order;			// [count] the file row of the k-th site as an atom of the system
 	bool      in_system;		// The sites were appended to the system's atoms, after the QM atoms
@@ -3678,12 +3678,14 @@ static size_t vlx_rsp_extract_nto(double* out_coefficients, double* out_lambdas,
 // ---------------------------------------------------------------------------
 
 // The induced dipoles the embedding converged to, scf/embedding_induced_dipoles: [P][3], atomic units
-// (e bohr), written by VeloxChem's experimental embedding branch. P runs over the POLARIZABLE sites
-// of the classical environment only - those whose fragment type has polarizabilities, the _pe
-// fragments - in the order the sites become atoms (vlx_mm_order_sites): the fragments by number, a
-// fragment's sites in file order, which is the order write_pe_jsonfile hands them to PyFraME in. A
-// reference run (pe_frame_000000.pot: 769 sites, fragments 6, 8 and 9 polarizable, 48 sites) has 48
-// dipoles, and their sizes follow the polarizabilities site by site in that order.
+// (e bohr), written by VeloxChem's fika embedding (SCFDriver, FikaEmbeddingSCF.get_induced_dipoles).
+// P runs over the POLARIZABLE sites only (vlx_mm_site_polarizable), in fika's order: its potfile
+// reader adds the fragments in the order the file first lists them, fika::polarizable_sites walks
+// the polarizable ones in that order and a fragment's sites in file order. That is FILE ROW order -
+// fika refuses a fragment whose rows are split - and NOT the order the sites become atoms in, which
+// follows the fragment numbers (vlx_mm_order_sites). A reference run (pe_frame_000000.pot: 769
+// sites, fragments 6, 8 and 9 polarizable, 48 sites) has 48 dipoles, whose sizes follow the
+// polarizabilities site by site in that order.
 #define VLX_H5_INDUCED_DIPOLES "embedding_induced_dipoles"
 
 // How many the file holds; 0 when it holds none, or nothing shaped [P][3] (which the reader logs)
@@ -3748,6 +3750,21 @@ static vlx_mm_frag_type_t* vlx_mm_frag_type(md_array(vlx_mm_frag_type_t)* types,
 	md_array_push(*types, type, alloc);
 	md_hashmap_add(map, key, (uint32_t)(md_array_size(*types) - 1));
 	return md_array_last(*types);
+}
+
+// Whether the embedding induces a dipole on a site, by fika's rule (FikaPotfileReader and
+// fika::polarizable_sites): a fragment named '_npe' is not polarizable and one named '_pe' is,
+// whatever the @polarizabilities section says; a name with neither tag is polarizable when its
+// type has polarizabilities. Within a polarizable fragment a site of zero (isotropic) polarizability
+// is no polarizable site either. Not what atom/polarizability says, which is the file's parameter.
+static bool vlx_mm_site_polarizable(str_t fragment_name, bool type_has_polarizabilities, double isotropic) {
+	bool polarizable = type_has_polarizabilities;
+	if (str_ends_with(fragment_name, STR_LIT("_npe"))) {
+		polarizable = false;
+	} else if (str_ends_with(fragment_name, STR_LIT("_pe"))) {
+		polarizable = true;
+	}
+	return polarizable && isotropic != 0.0;
 }
 
 // Expands the per fragment TYPE rows of @charges and @polarizabilities into one value per site, by
@@ -3835,15 +3852,15 @@ static bool vlx_mm_resolve_parameters(vlx_mm_t* mm, md_allocator_i* alloc) {
 		mm->charge[i] = md_array_size(type->charge_rows) ? pot->charges[type->charge_rows[k]].charge : 0.0;
 
 		double iso = 0.0;
-		mm->polarizable[i] = md_array_size(type->polarizability_rows) > 0;
-		mm->num_polarizable += mm->polarizable[i];
-		if (mm->polarizable[i]) {
+		if (md_array_size(type->polarizability_rows)) {
 			// The trace alone, which does not depend on how the off diagonal is packed - see the
 			// warning on MD_POT_ALPHA_*
 			const double* a = pot->polarizabilities[type->polarizability_rows[k]].alpha;
 			iso = (a[MD_POT_ALPHA_XX] + a[MD_POT_ALPHA_YY] + a[MD_POT_ALPHA_ZZ]) / 3.0;
 		}
 		mm->polarizability[i] = iso;
+		mm->polarizable[i] = vlx_mm_site_polarizable(pot->sites[first[i]].fragment_name, md_array_size(type->polarizability_rows) > 0, iso);
+		mm->num_polarizable += mm->polarizable[i];
 	}
 	result = true;
 
@@ -4059,7 +4076,7 @@ static void vlx_publish_mm(const vlx_t* vlx) {
 // environment (vlx/scf/embedding/induced_dipole {P}), which needs nothing but the .h5 - and, when the
 // sites are atoms of the system, over the SYSTEM's atoms (atom/induced_dipole {N}), where a consumer
 // that knows nothing of embedding finds a per atom vector. The k-th dipole is the k-th polarizable
-// site in atom order (see VLX_H5_INDUCED_DIPOLES). A non-polarizable site is a site in which nothing
+// site in FILE order (see VLX_H5_INDUCED_DIPOLES), which is not atom order. A non-polarizable site is a site in which nothing
 // is induced, zero - as its polarizability is - while the QM atoms, which are no sites, carry NAN.
 // vlx_read_mm_environment has already refused a potential whose polarizable sites do not count the
 // dipoles, so the sites are in the system only when the counts agree.
@@ -4094,12 +4111,18 @@ static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle) {
 		for (size_t i = 0; i < num_qm; ++i) {
 			per_atom[i] = (dvec3_t){NAN, NAN, NAN};
 		}
-		// The sites are atoms in fragment order and so are the dipoles; the parameters are by file row
+		// The dipoles follow the file rows and the atoms the fragment numbers: the file row's dipole
+		// first, then each atom takes its row's
+		uint32_t* dipole_of_row = md_temp_alloc_array(temp, uint32_t, vlx->mm.count);
 		size_t next = 0;
-		for (size_t k = 0; k < vlx->mm.count; ++k) {
-			per_atom[num_qm + k] = vlx->mm.polarizable[vlx->mm.order[k]] ? mu[next++] : (dvec3_t){0, 0, 0};
+		for (size_t row = 0; row < vlx->mm.count; ++row) {
+			dipole_of_row[row] = vlx->mm.polarizable[row] ? (uint32_t)next++ : UINT32_MAX;
 		}
 		ASSERT(next == num_sites);
+		for (size_t k = 0; k < vlx->mm.count; ++k) {
+			const uint32_t d = dipole_of_row[vlx->mm.order[k]];
+			per_atom[num_qm + k] = d != UINT32_MAX ? mu[d] : (dvec3_t){0, 0, 0};
+		}
 		md_qm_publish_vec3_series(sys, STR_LIT("atom/induced_dipole"), STR_LIT("Induced Dipole"), e_bohr, per_atom, num_atoms);
 	}
 
