@@ -437,6 +437,8 @@ int main(int argc, char** argv) {
     }
 #else
     (void)device_sel;
+    (void)profile;
+    (void)kernel_stats_printed;
     if (list_devices) { printf("no GPU support in this build (MD_ENABLE_GPU=OFF)\n"); return 0; }
     snprintf(gpu_name, sizeof(gpu_name), "none (MD_ENABLE_GPU=OFF)");
 #endif
