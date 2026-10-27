@@ -1,0 +1,50 @@
+def distance(a, b, between=None):
+    if between is None:
+        return norm(displacement(a, b))
+    return _between(a, b, between)
+
+def _between(a: group, b: group, op):
+    assert op in ('closest', 'farthest'), "between= takes 'closest' or 'farthest'"
+    d = norm(displacement(positions(a)[:, None], positions(b)))   # one group each; maps over arrays of groups
+    return min(d) if op == 'closest' else max(d)
+
+def centroid(s):
+    return com(s, weights=None)
+
+def gyration(p: points, weights='mass'):
+    assert weights in ('mass', None), "weights= takes 'mass' or None"
+    w = mass(particles(p)) if weights == 'mass' else ones(shape(p)[0])
+    r = norm(displacement(com(p, weights), p))   # minimum image from a periodic-aware centre
+    return sqrt(sum(w * r**2) / sum(w))
+
+def normal(p: points):
+    d = displacement(com(p, weights=None), p)    # float[n][3]
+    w, v = eigh(d.T @ d)                         # eigenvalues ascending
+    return v[:, 0]                               # the direction of least spread
+
+def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
+    assert weights in ('mass', None), "weights= takes 'mass' or None"
+    q = fit(p, ref, on=on, weights=weights) if superpose else p
+    w = mass(particles(q)) if weights == 'mass' else ones(shape(q)[0])
+    return sqrt(sum(w * norm(q - ref)**2) / sum(w))
+
+def previous(x, n=1):
+    def step(s, v):
+        return concatenate((s[1:], v[None]))
+    h = fold(step, x, init=[x for _ in range(n + 1)], skip=False)
+    return missing_where(frame() < n, h[0])
+
+def cumulative(x, op='sum'):
+    assert op in ('sum', 'min', 'max'), "op= takes 'sum', 'min' or 'max'"
+    def step(s, v):
+        if op == 'max':
+            return max(s, v)
+        if op == 'min':
+            return min(s, v)
+        return s + v
+    return fold(step, x, init=zeros_like(x) if op == 'sum' else x)
+
+def ema(x, alpha):
+    def step(s, v):
+        return s + alpha * (v - s)
+    return fold(step, x, init=x)

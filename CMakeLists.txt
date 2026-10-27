@@ -183,6 +183,8 @@ set(SRC_FILES
   src/md_script.h
   src/md_script_functions.inl
   src/md_script_complete.inl
+  src/md_vial.h
+  src/vial/prelude.vial
   src/md_smiles.c
   src/md_smiles.h
   src/md_topo.c
