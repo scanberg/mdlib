@@ -8,8 +8,8 @@ Examples run on two structures from mdlib's test data, and each example line end
 
 | Name | File | What it holds |
 | --- | --- | --- |
-| T | `test_data/tubulin-A-B.pdb` (PDB 4EB6) | Tubulin with vinblastine, X-ray, no hydrogens. Chain A: 433 amino acids numbered 1–440 with 39–45 missing; GTP 501, MG 502, SO4 503 and 504, waters 601–605. Chain B: 432 amino acids numbered 1–442 with 45–46 and 361–368 missing; GDP 501, SO4 502, waters 601–603. Chain C: vinblastine, VLB 503. Some residues have alternate locations |
-| P | `test_data/1ALA-560ns.pdb` | A 15-residue alanine peptide with hydrogens: 153 particles, 38 frames. The file gives no chain id, so it has one inferred chain |
+| T | `test_data/tubulin-A-B.pdb` (PDB 4EB6) | Tubulin with vinblastine, X-ray, no hydrogens. Chain A: 433 amino acids numbered 1–440 with 39–45 missing; GTP 501, MG 502, SO4 503 and 504, waters 601–605. Chain B: 432 amino acids numbered 1–442 with 45–46 and 361–368 missing; GDP 501, SO4 502, waters 601–603. Chain C: vinblastine, VLB 503. Some residues have alternate locations. 17 parts: two peptide strands, six ligands, one ion and eight waters, each part its own molecule |
+| P | `test_data/1ALA-560ns.pdb` | A 15-residue alanine peptide with hydrogens: 153 particles, 38 frames. The file gives no chain ids, so P has no chains; its strand is one part and one molecule |
 
 A comment above each example names its structure: `# on T` or `# on P`.
 
@@ -226,16 +226,18 @@ _d     = distance(near.com, ca[0])                     # -> float[?] Å, frame
 
 ## Selectors, keywords and scope
 
+A system is built of particles, residues, parts and molecules, each nested in the next. A part is one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water; a strand goes on over a gap and ends where the chemistry says it does. A molecule is what the bonds hold together, and with a topology it is the topology's molecule, so a glycoprotein is one molecule of several parts. A chain is not a level of it: it is the author's chain id, a label that the data files particles of any level under, and it is never inferred. Where the data gives no chain ids, as in a GRO file or a PDB file written by a simulation, the system has no chains, and a strand is found as a part.
+
 `particles()` returns one set; the grouping selectors return one set per unit. A selector written without parentheses means all its units, and every selector searches its scope.
 
 | Selector | Returns | One unit is |
 | --- | --- | --- |
 | `particles(...)` | `set` | an atom, a bead or a virtual site; given sets or arrays of sets, it merges them |
 | `atoms(...)`, `beads(...)` | `set` | `particles(kind='atom')`, `particles(kind='bead')` |
-| `residues(...)` | `set[n]`, one per residue | a component |
-| `parts(...)` | `set[n]`, one per part | a strand, glycan tree, ligand, lipid, ion or water |
-| `molecules(...)` | `set[n]`, one per molecule | one molecule, or one polymer chain |
-| `chains(...)` | `set[n]`, one per chain | everything filed under one author chain id |
+| `residues(...)` | `set[n]`, one per residue | a residue |
+| `parts(...)` | `set[n]`, one per part | a polymer strand, glycan tree, ligand, lipid, ion or water |
+| `molecules(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
+| `chains(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
 
 ### Keywords
 
@@ -252,15 +254,16 @@ _d     = distance(near.com, ca[0])                     # -> float[?] Å, frame
 |  | `name` | the residue name | string with `*` and `?`, or a list |
 |  | `kind` | amino\_acid, nucleotide, water, ion, lipid, other | string or list |
 |  | `chain` | the author id of its chain | string or list |
-| `parts` | `kind` | strand, glycan, ligand, lipid, ion, water | string or list |
+| `parts` | `kind` | polymer, peptide, nucleic, dna, rna, glycan, ligand, lipid, ion, water; see below | string or list |
 |  | `chain` | the author id of its chain | string or list |
-| `molecules` | `name` | the molecule type | string with `*` and `?`, or a list |
-|  | `kind` | peptide, dna, rna, polymer, branched, non\_polymer, water | string or list |
+| `molecules` | `name` | the name of its molecule type: the topology's, else what its parts are, such as peptide, GTP or water | string with `*` and `?`, or a list |
 |  | `chain` | the author id of its chain | string or list |
 | `chains` | `id` | the author chain id | string or list |
 | all of them | `scope` | the set to search instead of the default scope | a set, or `system` |
 
 A list means any of its values, and separate keywords must all hold.
+
+The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecules(parts(kind='peptide'))` gives the molecules they are in.
 
 ### Positional arguments
 
@@ -272,7 +275,7 @@ A list means any of its values, and separate keywords must all hold.
 
 ### Predefined names
 
-`protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone` and `sidechain` are sets. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
+`protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone` and `sidechain` are sets: `protein` is the particles of the peptide parts, with their caps and the modified residues bonded into them, `nucleic` those of the nucleic acid parts, and `water`, `ion` and `lipid` those of the parts of that kind. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
 
 ### Scope
 
@@ -292,8 +295,11 @@ both   = residues(501)                                 # -> set[2]: GTP in A, GD
 p501   = particles(resid=501)                          # warning W0602: the merge would hide two chains
 wat    = residues(kind='water')                        # -> set[8]
 so4    = residues('SO4')                               # -> set[3]
-str_   = parts(kind='strand')                          # -> set[2]: a strand goes on over a gap
-pep    = molecules(kind='peptide')                     # -> set[2]
+n_part = len(parts)                                    # -> 17: two strands, six ligands, one ion, eight waters
+str_   = parts(kind='polymer')                         # -> set[2]: chain B's strand goes on over its gap
+lig    = parts(kind='ligand')                          # -> set[6]: GTP, three SO4, GDP and VLB
+mol    = molecules(parts(kind='peptide'))              # -> set[2]: the molecules the strands are in
+n_mol  = len(molecules)                                # -> 17
 first5 = residues[0:5]                                 # -> set[5]
 firstb = residues(scope=particles(chain='B'))[0]       # -> set: the first residue of chain B
 miss   = particles(name='CA', resid=39, chain='A')     # warning W0601: matches nothing
@@ -301,6 +307,13 @@ bad    = chains(name='A')                              # error E0202: chains hav
 two    = residues(45, 'LYS')                           # error E0203
 num    = chains(0)                                     # error E0205: chains take an id string; positions are subscripts
 _nearv = residues(within(5.0, particles(resname='VLB')))   # -> set[?], frame
+```
+
+```python
+# on P
+strand = parts(kind='peptide')                         # -> set[1]: no chain ids, but the strand is a part
+n_mol  = len(molecules)                                # -> 1
+c      = chains('A')                                   # error E0207: P gives no chain ids; parts finds its strand
 ```
 
 ```python
@@ -776,10 +789,10 @@ none = count(particles(chain='C') and protein)         # -> 0
 
 | Function | Result |
 | --- | --- |
-| `smiles(pattern, scope=None, level='structure', mode='unique')` | `set[k]`: one set per match |
+| `smiles(pattern, scope=None, level='molecule', mode='unique')` | `set[k]`: one set per match |
 | `smiles_atoms(pattern, ...)` | `set[k][w]`: one particle per pattern atom, in pattern order; only the atoms tagged with a class such as `[C:1]` when the pattern has classes, in class order |
 
-`level` is `'structure'`, `'component'` or `'instance'`. `mode` is `'unique'`, one match per distinct set of atoms, or of tagged atoms when the pattern has classes; `'all'`, every mapping; `'one_per_unit'`; or `'disjoint'`, which keeps the first of overlapping matches. Matches may overlap, and the compiler knows where. A hydrogen in a pattern is mapped onto one hydrogen of its atom, never searched.
+`level` is where a match may lie: within a `'molecule'`, a `'residue'` or a `'part'`. `mode` is `'unique'`, one match per distinct set of atoms, or of tagged atoms when the pattern has classes; `'all'`, every mapping; `'one_per_unit'`; or `'disjoint'`, which keeps the first of overlapping matches. Matches may overlap, and the compiler knows where. A hydrogen in a pattern is mapped onto one hydrogen of its atom, never searched.
 
 Hydrogens and charges follow md\_match, with one exception. An organic-subset atom such as `C` leaves its hydrogen count and charge open, and a bracket atom such as `[CH2]` fixes them. A bracket atom that only adds a class, such as `[C:1]`, leaves them open too, so tagging an atom never changes what it matches; `[CH1:1]` fixes the count. md\_match needs this exception added. Where the file has no bond orders, md\_chem perceives them and the pattern's orders are tested on those, as md\_match does, so a carboxylate's two oxygens both match =O.
 
@@ -905,6 +918,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0204 | Wrong number of arguments | `angle` takes 3 points; it got 2 |  |
 | E0205 | A positional value the selector does not take | `chains` takes an id string, not a position | `chains[0]` |
 | E0206 | A keyword value the selector does not know | 'amino' is not a residue kind | kind='amino\_acid' |
+| E0207 | A chain where the data gives no chain ids | P gives no chain ids; chains are labels of the data and never inferred | `parts(kind='polymer')` |
 | E0301 | Shapes that do not broadcast | `float[433]` and `float[433][3]` do not broadcast | `d[:, None]` |
 | E0302 | Not a point: an int, or a set that may hold several particles | `distance` needs a point; `residues(1..4)` holds 4 sets of several particles | `.com` or `between='closest'`; `particles(serial=12)` for an int |
 | E0303 | A condition on an array | `if` needs one bool; this is `bool[442]` | `where(...)` |
