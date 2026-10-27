@@ -134,6 +134,9 @@ typedef struct md_topo_gto_desc_t {
     bool          trace_separatrices;    // trace separatrices to produce the graph edges
     uint32_t      num_threads;           // worker threads including the caller (0 -> all logical cores)
     volatile int32_t* cancel;            // optional: set non-zero from another thread to stop early
+    volatile float*   progress;          // optional: how far the search is, 0 to 1, for a progress display. An
+                                         // estimate (the sweep's work is known only as it unfolds) that never
+                                         // goes back; 1 once the search has completed
     bool          profile_gpu_kernels;   // GPU sweep only: wait for each kernel and time it (ms_gpu_*); slower, for benchmarks
 } md_topo_gto_desc_t;
 

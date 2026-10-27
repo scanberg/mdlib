@@ -2229,12 +2229,57 @@ typedef struct cpg_polish_t {
     cpg_cp_t cp;
 } cpg_polish_t;
 
+// desc->progress. Written by the calling thread only (worker 0 runs on it), so it never goes back. The
+// run gives each part of the search (setup, sweep, polish, separatrices) a span of [0, 1] ending where
+// the next part begins; a part maps its own fraction onto what is left of its span.
+typedef struct cpg_progress_t {
+    volatile float* out;
+    float  last;                        // the value last written
+    double lo, hi;
+} cpg_progress_t;
+
+#define CPG_PROGRESS_SETUP   0.02
+#define CPG_PROGRESS_GPU     0.82       // the GPU sweep; its polish to 0.83, the cubes it escalates to 0.85
+#define CPG_PROGRESS_POLISH  0.83
+#define CPG_PROGRESS_SWEEP   0.85
+#define CPG_PROGRESS_SEPARATRICES 0.99  // on a protein 10-20% of the time, on a small molecule next to none
+
+static void cpg_progress_begin(cpg_progress_t* p, double hi) {
+    p->lo = p->last;
+    p->hi = MAX(hi, p->lo);
+}
+
+static void cpg_progress_set(cpg_progress_t* p, double f) {
+    if (!p || !p->out) return;
+    f = f > 0.0 ? MIN(f, 1.0) : 0.0;
+    const float v = (float)(p->lo + (p->hi - p->lo) * f);
+    if (v > p->last) {
+        p->last = v;
+        *p->out = v;
+    }
+}
+
+// The mean number of cubes the sweep evaluates for a cube of half-width 2^-k Bohr, itself included (its
+// subtree), k = 0..9: measured with the CPU sweep on four molecules of 3 to 26 atoms at rho_min 1e-3 to
+// 1e-5. It varies by up to a factor 2 between them at k <= 3 and by 10-20% below, where the refinement
+// is that around the nuclei, much the same for every atom; a cube twice as large stands for about 3.5
+// times as many. Only the progress estimate uses it: a sweep's fraction is the cubes evaluated over
+// those plus the subtrees of the cubes yet to come, the cube count standing for time (on the CPU within
+// 25% per cube from level to level).
+static double cpg_subtree_size(double h) {
+    static const double s[10] = { 80.0, 23.0, 4.6, 2.7, 2.9, 1.37, 1.65, 1.08, 1.15, 1.0 };
+    const long k = lround(-log2(h));
+    return k < 0 ? s[0] * pow(3.5, (double)-k) : k > 9 ? 1.0 : s[k];
+}
+
 typedef struct cpg_worker_t {
     const cpg_ctx_t* ctx;
     cpg_scratch_t sc;
     int tid, nthreads;
     int job;                            // 0: cube sweep, 1: separatrices, 2: polish
     volatile int32_t* cancel;
+    cpg_progress_t* prog;               // worker 0 only: reports (prog_base + its position) / prog_total
+    double prog_base, prog_total;
     cpg_queue_t* queue;                 // jobs 1, 2 and 3
     // sweep
     const cpg_box_t* boxes;
@@ -2361,10 +2406,13 @@ static void cpg_worker_entry(void* data) {
                 w->kind[bi] = (uint32_t)k;
                 if (CPG_KIND(k) == CPG_ROOT) { rec.box = bi; md_array_push(w->roots, rec, heap); }
             }
+            // the workers take the chunks in turn, so worker 0's position is about everyone's
+            cpg_progress_set(w->prog, (w->prog_base + (double)end) / w->prog_total);
         }
     } else if (w->job == 1) {
         for (int t; (t = cpg_queue_pop(w->queue)) >= 0; ) {
             if (w->cancel && *w->cancel) return;
+            cpg_progress_set(w->prog, (w->prog_base + (double)t) / w->prog_total);
             const int i = w->traces[t] / 2, e = w->traces[t] % 2;
             const cpg_cp_t* cp = &w->cps[w->saddles[i]];
             const bool bcp = cp->type == MD_TOPO_SPLIT_SADDLE;
@@ -2385,6 +2433,7 @@ static void cpg_worker_entry(void* data) {
     } else {
         for (int t; (t = cpg_queue_pop(w->queue)) >= 0; ) {
             if (w->cancel && *w->cancel) return;
+            cpg_progress_set(w->prog, (w->prog_base + (double)t) / w->prog_total);
             w->pres[t].r = cpg_polish_root(w->ctx, &w->sc, &w->pboxes[t], &w->pres[t].cp);
         }
     }
@@ -2457,6 +2506,7 @@ typedef struct cpg_run_t {
     uint64_t*                 tile_need;    // ntiles x tile_words: bit J of row I, both orders (cpg_run_init)
     int                       ntiles, tile_words;
     void*                     gpu;          // GPU sweep: its tables and D, kept for the separatrices (cpg_gpu_keep_t)
+    cpg_progress_t            prog;
     md_topo_gto_info_t        info;
 } cpg_run_t;
 
@@ -2509,6 +2559,9 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     MEMSET(R, 0, sizeof(*R));
     R->desc = desc;
     R->heap = md_get_heap_allocator();
+    R->prog.out = desc->progress;
+    if (desc->progress) *desc->progress = 0.0f;
+    cpg_progress_begin(&R->prog, CPG_PROGRESS_SETUP);
     md_allocator_i* heap = R->heap;
     const md_gto_basis_t* basis = desc->basis;
 
@@ -2575,6 +2628,7 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
         R->workers[t].tid = t;
         R->workers[t].nthreads = nthreads;
         R->workers[t].cancel = desc->cancel;
+        R->workers[t].prog = t == 0 ? &R->prog : NULL;
         R->workers[t].h_min = R->h_min;
         cpg_scratch_alloc(&R->workers[t].sc, N, NS, heap);
     }
@@ -2850,6 +2904,7 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
         cpg_box_t b = { { (i0[0] + x + 0.5) * w, (i0[1] + y + 0.5) * w, (i0[2] + z + 0.5) * w }, h_root };
         md_array_push(R->cur, b, heap);
     }
+    cpg_progress_set(&R->prog, 1.0);
 }
 
 // Level-synchronous sweep of R->cur on the CPU: cubes in parallel, results merged in cube order.
@@ -2859,12 +2914,21 @@ static void cpg_run_sweep_cpu(cpg_run_t* R) {
     cpg_worker_t* workers = R->workers;
     const int nthreads = R->nthreads;
     const md_tick_t t_start = md_tick_now();
+    cpg_progress_begin(&R->prog, CPG_PROGRESS_SWEEP);
+    double done = 0.0;                  // cubes evaluated by this loop
     while (md_array_size(R->cur) > 0) {
         if (cpg_run_cancelled(R)) break;
         const size_t nb = md_array_size(R->cur);
         md_array_resize(R->kind, nb, heap);
         R->info.num_levels++;
         R->info.num_box_evals += nb;
+        double ahead = 0.0, h_prev = -1.0, s = 0.0;   // the cubes to come: these and their subtrees
+        for (size_t bi = 0; bi < nb; ++bi) {
+            if (R->cur[bi].h != h_prev) { h_prev = R->cur[bi].h; s = cpg_subtree_size(h_prev); }
+            ahead += s;
+        }
+        workers[0].prog_base = done;
+        workers[0].prog_total = done + MAX(ahead, (double)nb);
         for (int t = 0; t < nthreads; ++t) {
             workers[t].job = 0;
             workers[t].boxes = R->cur;
@@ -2874,6 +2938,8 @@ static void cpg_run_sweep_cpu(cpg_run_t* R) {
         }
         cpg_run_workers(workers, nthreads);
         if (cpg_run_cancelled(R)) break;
+        done += (double)nb;
+        cpg_progress_set(&R->prog, done / workers[0].prog_total);
 
         // roots, in cube order, deduplicated against everything accepted so far
         md_array_shrink(R->roots, 0);
@@ -2904,6 +2970,7 @@ static void cpg_run_sweep_cpu(cpg_run_t* R) {
         }
         cpg_box_t* t = R->cur; R->cur = R->nxt; R->nxt = t;
     }
+    if (!R->info.cancelled) cpg_progress_set(&R->prog, 1.0);
     const double ms = md_tick_to_milliseconds(md_tick_now() - t_start);
     R->info.ms_sweep_cpu += ms;
     R->info.ms_sweep += ms;
@@ -2936,6 +3003,7 @@ static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md
     // --- separatrices -> edges (from saddle to extremum), traced in parallel
     md_array(md_topo_edge_t) edges = 0;
     md_tick_t t_phase = md_tick_now();
+    cpg_progress_begin(&R->prog, CPG_PROGRESS_SEPARATRICES);   // the fraction of the paths taken up
     if (desc->trace_separatrices && !info->cancelled) {
         md_array(int) saddles = 0;
         for (int i = 0; i < ncp; ++i) {
@@ -2991,6 +3059,8 @@ static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md
                 workers[t].traces = cpu_traces;
                 workers[t].ends = ends;
             }
+            workers[0].prog_base = (double)(md_array_size(traces) - md_array_size(cpu_traces));   // the GPU's are done
+            workers[0].prog_total = (double)md_array_size(traces);
             for (int t = 0; t < nthreads; ++t) {
                 workers[t].sep_evals = workers[t].sep_aos = workers[t].sep_block_aos = 0;
                 workers[t].sep_max_evals = workers[t].sep_open = 0;
@@ -3090,6 +3160,10 @@ static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md
     }
     info->complete = (nu == 0) && !info->cancelled;
     md_array_free(edges, heap);
+    if (!info->cancelled) {
+        cpg_progress_begin(&R->prog, 1.0);
+        cpg_progress_set(&R->prog, 1.0);
+    }
     if (out_info) *out_info = *info;
     return !info->cancelled;
 }
@@ -3559,6 +3633,9 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
     md_array(uint64_t)        hkey = 0;       // (UINT32_MAX - local AOs) << 32 | batch
     md_array(uint32_t)        hord = 0;       // ao_main's batch order
     md_array(int8_t)          rung = 0;       // cpg_gpu_batch_screen's scratch
+    // progress: the cubes decided over those plus the subtrees of the cubes in q not yet decided
+    double                    pg_done = 0.0, pg_ahead = 0.0;
+    cpg_progress_begin(&R->prog, CPG_PROGRESS_GPU);
 
     // --- root lattice -> batches of 8, children in the lattice's 2x2x2 groups; candidates: every shell
     for (int s = 0; s < NS; ++s) md_array_push(pool, (uint32_t)s, heap);
@@ -3594,6 +3671,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
             }
             cpg_gpu_batch_screen(ctx, &hbt, &pool, pool_base, 0, (uint32_t)NS, &rung, heap);
             md_array_push(q, hbt, heap);
+            pg_ahead += popcnt32(hbt.mask) * cpg_subtree_size(hbt.hc);
             i = j;
         }
         md_free(heap, keys, sizeof(cpg_rootkey_t) * MAX(nr, 1));
@@ -3791,6 +3869,8 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         for (size_t bi = c.q0; bi < c.q1; ++bi) {
             const cpg_hbatch_t bt = q[bi];      // a copy: the children made below grow q
             num_levels = MAX(num_levels, bt.level + 1);
+            pg_done += popcnt32(bt.mask);
+            pg_ahead -= popcnt32(bt.mask) * cpg_subtree_size(bt.hc);
             if (bt.nao == UINT32_MAX) {
                 for (int s = 0; s < 8; ++s) if (bt.mask & (1u << s)) md_array_push(esc, cpg_child_box(&bt, s), heap);
                 continue;
@@ -3818,6 +3898,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                         cpg_hbatch_t child = { .P = { box.c[0], box.c[1], box.c[2] }, .hc = 0.5 * box.h, .mask = cm, .level = bt.level + 1 };
                         cpg_gpu_batch_screen(ctx, &child, &pool, pool_base, bt.lsh_off, bt.lsh_cnt + bt.nsh_cnt, &rung, heap);
                         md_array_push(q, child, heap);
+                        pg_ahead += popcnt32(cm) * cpg_subtree_size(child.hc);
                     }
                     break;
                 }
@@ -3829,6 +3910,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
             gi++;
         }
         R->info.ms_sweep_host_outcomes += md_tick_to_milliseconds(md_tick_now() - t_out);
+        cpg_progress_set(&R->prog, pg_done / (pg_done + MAX(pg_ahead, 0.0)));
         qd = c.q1;
         fl[0] = fl[1];
         nfl--;
@@ -3863,6 +3945,9 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         for (size_t i = 0; i < npr; ++i) pres[i].r = -1;   // left so if cancelled: the CPU takes the cube
         cpg_queue_t queue = { .next = 0, .count = (int)npr };
         md_mutex_init(&queue.mutex);
+        cpg_progress_begin(&R->prog, CPG_PROGRESS_POLISH);
+        R->workers[0].prog_base = 0.0;
+        R->workers[0].prog_total = (double)npr;
         for (int t = 0; t < R->nthreads; ++t) {
             R->workers[t].job = 2;
             R->workers[t].queue = &queue;
@@ -4030,6 +4115,7 @@ static bool cpg_trace_gpu(cpg_run_t* R, const cpg_cp_t* cps, int ncp, const int*
         steps_issued += steps;
         const double ms = md_tick_to_milliseconds(md_tick_now() - t0);
         done = ((const volatile uint32_t*)hq.cpu)[1];
+        cpg_progress_set(&R->prog, (double)done / (double)ntr);
         while (nfrac < 3 && (double)done >= frac[nfrac] * ntr)
             R->info.ms_separatrix_gpu_ended[nfrac++] = md_tick_to_milliseconds(md_tick_now() - t_start);
         if (done >= (uint32_t)ntr) break;

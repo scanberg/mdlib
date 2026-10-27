@@ -87,11 +87,38 @@ typedef struct input_t {
     size_t            num_ao;
 } input_t;
 
+#define NUM_PROGRESS_MARKS 5
+static const double progress_marks[NUM_PROGRESS_MARKS] = { 0.1, 0.25, 0.5, 0.75, 0.9 };
+
 typedef struct run_t {
     double ms_total;
     md_topo_gto_info_t info;
     md_topo_extremum_graph_t graph;
+    float progress[NUM_PROGRESS_MARKS];  // desc.progress as reported at progress_marks of the wall time
 } run_t;
+
+// Samples desc.progress every few milliseconds while a run goes on, on a thread of its own.
+#define PROGRESS_SAMPLES (1 << 17)
+typedef struct progress_watch_t {
+    volatile float* value;
+    volatile int    stop;
+    md_tick_t       t0;
+    float*          t;                  // ms
+    float*          v;
+    int             n;
+} progress_watch_t;
+
+static void progress_watch(void* data) {
+    progress_watch_t* w = (progress_watch_t*)data;
+    while (!w->stop) {
+        if (w->n < PROGRESS_SAMPLES) {
+            w->t[w->n] = (float)md_tick_to_milliseconds(md_tick_now() - w->t0);
+            w->v[w->n] = *w->value;
+            w->n++;
+        }
+        md_thread_sleep(5);
+    }
+}
 
 static bool ends_with(const char* s, const char* suffix) {
     const size_t n = strlen(s), m = strlen(suffix);
@@ -163,18 +190,33 @@ static void input_free(input_t* in) {
 }
 
 // One run; the graph is kept for the comparisons.
-static bool run_once(run_t* r, const md_topo_gto_desc_t* desc, void* stream) {
+static bool run_once(run_t* r, const md_topo_gto_desc_t* desc_in, void* stream) {
     memset(r, 0, sizeof(*r));
     r->graph.alloc = md_get_heap_allocator();
+    volatile float progress = 0.0f;
+    md_topo_gto_desc_t desc = *desc_in;
+    desc.progress = &progress;
+    progress_watch_t w = { .value = &progress, .t = (float*)malloc(sizeof(float) * PROGRESS_SAMPLES),
+                           .v = (float*)malloc(sizeof(float) * PROGRESS_SAMPLES) };
     const md_tick_t t0 = md_tick_now();
+    w.t0 = t0;
+    md_thread_t* th = md_thread_create(progress_watch, &w);
     bool ok;
 #if MD_ENABLE_GPU
-    if (stream) ok = md_topo_compute_extremum_graph_gto_gpu(&r->graph, &r->info, desc, (md_gpu_stream_t)stream);
+    if (stream) ok = md_topo_compute_extremum_graph_gto_gpu(&r->graph, &r->info, &desc, (md_gpu_stream_t)stream);
     else
 #endif
-    ok = md_topo_compute_extremum_graph_gto(&r->graph, &r->info, desc);
+    ok = md_topo_compute_extremum_graph_gto(&r->graph, &r->info, &desc);
     (void)stream;
     r->ms_total = md_tick_to_milliseconds(md_tick_now() - t0);
+    w.stop = 1;
+    if (th) md_thread_join(th);
+    for (int m = 0, i = 0; m < NUM_PROGRESS_MARKS; ++m) {
+        while (i + 1 < w.n && w.t[i + 1] <= progress_marks[m] * r->ms_total) i++;
+        r->progress[m] = w.n ? w.v[i] : -1.0f;
+    }
+    free(w.t);
+    free(w.v);
     return ok;
 }
 
@@ -573,6 +615,11 @@ int main(int argc, char** argv) {
                         printf(", %.0f local AOs per evaluation (block %.0f)\n", i0->separatrix_mean_local_aos, i0->separatrix_mean_block_aos);
                     }
                 }
+                printf("       progress reported (desc.progress, an estimate) at");
+                for (int m = 0; m < NUM_PROGRESS_MARKS; ++m) printf("%s %.0f%%", m ? "," : "", 100.0 * progress_marks[m]);
+                printf(" of the wall time:");
+                for (int m = 0; m < NUM_PROGRESS_MARKS; ++m) printf(" %.0f%%", 100.0 * runs[0].progress[m]);
+                printf("\n");
             }
             if (gpu) res.gpu_ms = MED(ms_total); else res.cpu_ms = MED(ms_total);
             if (!gpu) {

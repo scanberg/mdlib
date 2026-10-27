@@ -57,7 +57,9 @@ static double topo_gto_dist(const md_topo_vert_t* v, const float* p) {
 UTEST(topo_gto, water_topology_is_certified) {
     topo_gto_input_t in;
     ASSERT_TRUE(topo_gto_load_water(&in));
-    const md_topo_gto_desc_t desc = topo_gto_desc(&in);
+    md_topo_gto_desc_t desc = topo_gto_desc(&in);
+    volatile float progress = -1.0f;
+    desc.progress = &progress;
 
     md_topo_extremum_graph_t graph = { .alloc = in.t.alloc };
     md_topo_gto_info_t info;
@@ -65,6 +67,7 @@ UTEST(topo_gto, water_topology_is_certified) {
 
     // Every cube was decided: nothing near-degenerate here, so the result is proven complete.
     EXPECT_TRUE(info.complete);
+    EXPECT_EQ(1.0f, progress);
     EXPECT_EQ(0u, info.num_unresolved_boxes);
     EXPECT_EQ(1, info.poincare_hopf);
     EXPECT_GT(info.domain_pad, 3.0);
@@ -168,19 +171,23 @@ UTEST(topo_gto, rho_min_is_respected) {
 }
 
 // A cancel flag that is already raised stops the search before any cube is decided: the call reports
-// failure, says it was cancelled, and never claims completeness.
+// failure, says it was cancelled, and never claims completeness, nor reports the progress of one.
 UTEST(topo_gto, cancel) {
     topo_gto_input_t in;
     ASSERT_TRUE(topo_gto_load_water(&in));
     md_topo_gto_desc_t desc = topo_gto_desc(&in);
     volatile int32_t cancel = 1;
+    volatile float progress = -1.0f;
     desc.cancel = &cancel;
+    desc.progress = &progress;
 
     md_topo_extremum_graph_t graph = { .alloc = in.t.alloc };
     md_topo_gto_info_t info;
     EXPECT_FALSE(md_topo_compute_extremum_graph_gto(&graph, &info, &desc));
     EXPECT_TRUE(info.cancelled);
     EXPECT_FALSE(info.complete);
+    EXPECT_GE(progress, 0.0f);
+    EXPECT_LT(progress, 0.1f);
 
     md_topo_extremum_graph_free(&graph);
     qm_test_free(&in.t);
@@ -309,11 +316,14 @@ UTEST(topo_gto, gpu_matches_cpu) {
     ASSERT_TRUE(topo_gto_load_water(&in));
     md_topo_gto_desc_t desc = topo_gto_desc(&in);
     desc.rho_min = 1.0e-3;      // the same 5 CPs in a smaller domain: quick on software Vulkan too
+    volatile float progress = -1.0f;
+    desc.progress = &progress;
 
     md_topo_extremum_graph_t cpu = { .alloc = in.t.alloc }, gpu = { .alloc = in.t.alloc }, gpu2 = { .alloc = in.t.alloc };
     md_topo_gto_info_t ic, ig, ig2;
     ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&cpu, &ic, &desc));
     ASSERT_TRUE(md_topo_compute_extremum_graph_gto_gpu(&gpu, &ig, &desc, stream));
+    EXPECT_EQ(1.0f, progress);
     EXPECT_TRUE(ig.used_gpu);
     EXPECT_TRUE(ig.complete);
     EXPECT_GT(ig.num_gpu_box_evals, 0u);
