@@ -24,6 +24,8 @@ void     vial_diags_init(vial_diags_t* d, str_t src, md_allocator_i* alloc);
 void     vial_diag(vial_diags_t* d, const char code[6], md_vial_span_t span, const char* fmt, ...);
 uint32_t vial_line_of(const vial_diags_t* d, uint32_t offset);   // 1-based
 size_t   vial_diag_count(const vial_diags_t* d, const char code[6]);
+void     vial_diags_sort(vial_diags_t* d);   // into source order, stable
+void     vial_diag_set_fix(vial_diags_t* d, size_t index, str_t fix);   // copies fix
 
 // ### TOKENS ###
 
