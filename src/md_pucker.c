@@ -355,9 +355,9 @@ size_t md_pucker_ring_order(int32_t* out, bool* out_anchored, const md_system_t*
     ASSERT(out);
     ASSERT(sys);
     if (out_anchored) *out_anchored = false;
-    if (ring_idx >= md_index_data_num_ranges(&sys->ring)) return 0;
-    const int32_t* ring = md_index_range_beg(&sys->ring, ring_idx);
-    const size_t n = md_index_range_size(&sys->ring, ring_idx);
+    if (ring_idx >= md_ring_data_count(&sys->ring)) return 0;
+    const int32_t* ring = md_ring_atoms(&sys->ring, ring_idx);
+    const size_t n = md_ring_size(&sys->ring, ring_idx);
     if (n == 0 || n > MD_RING_MAX_SIZE) return 0;
 
     if (md_system_ring_flags(sys, ring_idx) & MD_RING_FLAG_SUGAR) {
@@ -522,8 +522,8 @@ static bool compute_ring(md_pucker_ring_t* r, const md_system_t* sys, const md_s
 bool md_pucker_ring(md_pucker_ring_t* out, const md_system_t* sys, const md_system_state_t* state, size_t ring_idx) {
     ASSERT(out);
     MEMSET(out, 0, sizeof(md_pucker_ring_t));
-    if (!sys || !state || !state->xyz || ring_idx >= md_index_data_num_ranges(&sys->ring)) return false;
-    const size_t n = md_index_range_size(&sys->ring, ring_idx);
+    if (!sys || !state || !state->xyz || ring_idx >= md_ring_data_count(&sys->ring)) return false;
+    const size_t n = md_ring_size(&sys->ring, ring_idx);
     if (n < 5 || n > 7) return false;
     bool anchored = false;
     md_pucker_ring_order(out->atoms, &anchored, sys, ring_idx);

@@ -87,10 +87,10 @@ static size_t ring_count_matches(const char* smiles, md_match_level_t level, md_
 // Matches with the rings of the system as the units
 static size_t ring_count_in_rings(const char* smiles, md_match_mode_t mode, const md_system_t* sys) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+    const size_t num_rings = md_ring_data_count(&sys->ring);
     md_bitset_t* units = md_alloc(alloc, sizeof(md_bitset_t) * (num_rings + 1));
     for (size_t r = 0; r < num_rings; ++r) {
-        units[r] = md_bitset_from_indices((const uint32_t*)md_index_range_beg(&sys->ring, r), md_index_range_size(&sys->ring, r), alloc);
+        units[r] = md_bitset_from_indices((const uint32_t*)md_ring_atoms(&sys->ring, r), md_ring_size(&sys->ring, r), alloc);
     }
     md_match_query_t query = {0};
     size_t count = SIZE_MAX;
@@ -162,7 +162,7 @@ UTEST_F(ring, any_bond) {
 
 UTEST_F(ring, match_level) {
     const md_system_t* trp = &utest_fixture->trp.sys;
-    ASSERT_EQ(2, (int)md_index_data_num_ranges(&trp->ring));
+    ASSERT_EQ(2, (int)md_ring_data_count(&trp->ring));
 
     // The C-C bonds: 6 in the benzene ring and 3 in the pyrrole ring, the bond they share in both. Within the
     // molecule it is one bond.
@@ -192,7 +192,7 @@ UTEST_F(ring, match_level) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_bitset_t units[3];
     for (size_t r = 0; r < 2; ++r) {
-        units[r] = md_bitset_from_indices((const uint32_t*)md_index_range_beg(&trp->ring, r), md_index_range_size(&trp->ring, r), alloc);
+        units[r] = md_bitset_from_indices((const uint32_t*)md_ring_atoms(&trp->ring, r), md_ring_size(&trp->ring, r), alloc);
     }
     md_match_query_t query = {0};
     ASSERT_TRUE(md_match_query_init_smiles(&query, STR_LIT("[nH]"), alloc, NULL));
@@ -200,7 +200,7 @@ UTEST_F(ring, match_level) {
     md_match_result_t res = {0};
     ASSERT_TRUE(md_match_find(&res, &desc, trp, md_get_heap_allocator()));
     ASSERT_EQ(1, (int)res.count);
-    EXPECT_EQ(5, (int)md_index_range_size(&trp->ring, res.unit[0]));
+    EXPECT_EQ(5, (int)md_ring_size(&trp->ring, res.unit[0]));
     md_match_result_free(&res);
 
     // Any sets of atoms: the whole molecule as a third unit, overlapping both rings, finds the N-H again
@@ -292,9 +292,9 @@ static int ring_filter_indices(int* out, int cap, const char* expr, const ring_s
         result = (int)md_array_size(arr);
         for (int i = 0; i < result && i < cap; ++i) {
             out[i] = -1;
-            for (size_t k = 0; k < md_index_data_num_ranges(&r->sys.ring); ++k) {
-                const int32_t* ring = md_index_range_beg(&r->sys.ring, k);
-                const size_t n = md_index_range_size(&r->sys.ring, k);
+            for (size_t k = 0; k < md_ring_data_count(&r->sys.ring); ++k) {
+                const int32_t* ring = md_ring_atoms(&r->sys.ring, k);
+                const size_t n = md_ring_size(&r->sys.ring, k);
                 bool same = md_bitset_count(arr[i]) == n;
                 for (size_t j = 0; j < n && same; ++j) same = md_bitset_test(arr[i], (uint32_t)ring[j]);
                 if (same) { out[i] = (int)k; break; }
@@ -312,8 +312,8 @@ static int ring_filter_indices(int* out, int cap, const char* expr, const ring_s
 UTEST_F(ring, script_ring_index) {
     const ring_sys_t* trp = &utest_fixture->trp;
     const ring_sys_t* ade = &utest_fixture->ade;
-    ASSERT_EQ(2, (int)md_index_data_num_ranges(&trp->sys.ring));
-    ASSERT_EQ(3, (int)md_index_data_num_ranges(&ade->sys.ring));
+    ASSERT_EQ(2, (int)md_ring_data_count(&trp->sys.ring));
+    ASSERT_EQ(3, (int)md_ring_data_count(&ade->sys.ring));
     int idx[8];
 
     // The rings of the system, in its order
@@ -334,7 +334,7 @@ UTEST_F(ring, script_ring_index) {
     EXPECT_EQ(0, idx[1]);
 
     // Among the rings the filters let through: the 6 membered ring of indole is ring(1, size=6) whatever its index
-    const int six = md_index_range_size(&trp->sys.ring, 0) == 6 ? 0 : 1;
+    const int six = md_ring_size(&trp->sys.ring, 0) == 6 ? 0 : 1;
     EXPECT_EQ(1, ring_filter_indices(idx, 8, "ring(1, size=6)", trp));
     EXPECT_EQ(six, idx[0]);
     EXPECT_EQ(1, ring_filter_indices(idx, 8, "ring(1, kind='heteroaromatic')", trp));

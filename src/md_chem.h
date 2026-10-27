@@ -106,8 +106,7 @@ typedef struct md_chem_delta_t {
     uint32_t*        bond_idx;          // [num_bonds] The covalent bonds with an atom in the region, ascending: one of the system by its index,
                                         // one formed by sys->bond.count + its index in the delta
     md_bond_flags_t* bond_flags;        // [num_bonds] Their flags with the order, aromaticity and delocalization of the state
-    md_index_data_t  ring;              // The rings with an atom in the region, in the state (md_util_infer_rings)
-    md_ring_flags_t* ring_flags;        // [ring count] AROMATIC, HETERO, FUSED and FUSED_AROMATIC; never SUGAR
+    md_ring_data_t   ring;              // The rings with an atom in the region, in the state (md_util_infer_rings)
 } md_chem_delta_t;
 
 // The chemistry of state (the coordinates of sys's atoms) where its bonds are those of sys changed by delta, see A

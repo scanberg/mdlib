@@ -565,7 +565,7 @@ UTEST(bonds, metallic_crystal) {
             }
         }
         EXPECT_EQ(periodic ? num * 12 / 2 : expected, count_kind(&sys, MD_BOND_KIND_METALLIC));
-        EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
+        EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));
         md_vm_arena_destroy(alloc);
     }
 }
@@ -690,7 +690,7 @@ UTEST(bonds, metallic_slab) {
         c_br += (za == 6 && zb == 35) || (za == 35 && zb == 6);
     }
     EXPECT_EQ(2, (int)c_br);
-    EXPECT_EQ(1, (int)md_index_data_num_ranges(&sys.ring));
+    EXPECT_EQ(1, (int)md_ring_data_count(&sys.ring));
 
     // The frame's own contacts: the free carbon on its gold atom, nothing else
     const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
@@ -763,8 +763,8 @@ UTEST(bonds, metallic_slab_trajectory) {
     }
 
     // No ring of gold, and the molecules are two structures of their own
-    for (size_t r = 0; r < md_index_data_num_ranges(&sys.ring); ++r) {
-        EXPECT_NE(79, (int)md_atom_atomic_number(&sys.atom, md_index_range_beg(&sys.ring, r)[0]));
+    for (size_t r = 0; r < md_ring_data_count(&sys.ring); ++r) {
+        EXPECT_NE(79, (int)md_atom_atomic_number(&sys.atom, md_ring_atoms(&sys.ring, r)[0]));
     }
 
     // In every frame: the same metallic bonds inferred (within a percent), and the bonds formed to the gold are the

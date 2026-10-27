@@ -76,7 +76,7 @@ typedef struct chem_t {
 
     const md_atom_pair_t*  pairs;   // [num_bonds]
     const md_bond_flags_t* bflags;  // [num_bonds]
-    const md_index_data_t* rings;   // Rings with an atom out of range are left out
+    const md_ring_data_t* rings;   // Rings with an atom out of range are left out
 
     // The edge of a region: atoms whose state is given, which take part with that charge, those implicit hydrogens
     // and that hybridization, want no pi bond and are never charged nor protonated (NULL: none)
@@ -340,11 +340,11 @@ static void mark_rings(chem_t* c) {
     MEMSET(c->in_ring, 0, c->N);
     c->ring_bond = md_alloc(c->alloc, MAX(c->num_bonds, 1));
     MEMSET(c->ring_bond, 0, MAX(c->num_bonds, 1));
-    const md_index_data_t* rings = c->rings;
-    const size_t num = rings ? md_index_data_num_ranges(rings) : 0;
+    const md_ring_data_t* rings = c->rings;
+    const size_t num = rings ? md_ring_data_count(rings) : 0;
     for (size_t r = 0; r < num; ++r) {
-        const int32_t* ring = md_index_range_beg(rings, r);
-        const size_t n = md_index_range_size(rings, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         bool valid = true;
         for (size_t k = 0; k < n; ++k) valid &= ring[k] >= 0 && (size_t)ring[k] < c->N;
         if (!valid) continue;
@@ -1059,8 +1059,8 @@ static void mark_aromatic_ring(chem_t* c, const int32_t* ring, size_t n, uint8_t
 }
 
 static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
-    const md_index_data_t* rings = c->rings;
-    const size_t num = rings ? md_index_data_num_ranges(rings) : 0;
+    const md_ring_data_t* rings = c->rings;
+    const size_t num = rings ? md_ring_data_count(rings) : 0;
     if (!num) return;
     uint8_t* member = md_alloc(c->alloc, c->N);
     MEMSET(member, 0, c->N);
@@ -1071,8 +1071,8 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
     // others anyway, but the search for fused pairs below would still visit every ring sharing an atom with them.
     uint8_t* candidate = md_alloc(c->alloc, num);
     for (size_t r = 0; r < num; ++r) {
-        const int32_t* ring = md_index_range_beg(rings, r);
-        const size_t n = md_index_range_size(rings, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         bool ok = n >= 4;
         for (size_t k = 0; k < n && ok; ++k) ok = ring[k] >= 0 && (size_t)ring[k] < c->N && c->part[ring[k]];
         candidate[r] = ok;
@@ -1080,8 +1080,8 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
 
     for (size_t r = 0; r < num; ++r) {
         if (!candidate[r]) continue;
-        const int32_t* ring = md_index_range_beg(rings, r);
-        const size_t n = md_index_range_size(rings, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         if (huckel(c, ring, n, member)) aromatic_ring[r] = 1;
     }
     // Fused pairs: rings that are not aromatic alone but are as a system with a neighbour sharing a bond. The
@@ -1089,8 +1089,8 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
     uint32_t* ring_off = md_alloc(c->alloc, sizeof(uint32_t) * (c->N + 1));
     MEMSET(ring_off, 0, sizeof(uint32_t) * (c->N + 1));
     for (size_t r = 0; r < num; ++r) {
-        const int32_t* ring = md_index_range_beg(rings, r);
-        const size_t n = md_index_range_size(rings, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         for (size_t k = 0; k < n; ++k) if (ring[k] >= 0 && (size_t)ring[k] < c->N) ring_off[ring[k] + 1] += 1;
     }
     for (size_t i = 0; i < c->N; ++i) ring_off[i + 1] += ring_off[i];
@@ -1098,24 +1098,24 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
     uint32_t* fill = md_alloc(c->alloc, sizeof(uint32_t) * MAX(c->N, 1));
     MEMCPY(fill, ring_off, sizeof(uint32_t) * c->N);
     for (size_t r = 0; r < num; ++r) {
-        const int32_t* ring = md_index_range_beg(rings, r);
-        const size_t n = md_index_range_size(rings, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         for (size_t k = 0; k < n; ++k) if (ring[k] >= 0 && (size_t)ring[k] < c->N) ring_idx[fill[ring[k]]++] = (uint32_t)r;
     }
 
     int32_t buf[64];
     for (size_t r = 0; r < num; ++r) {
         if (aromatic_ring[r] || !candidate[r]) continue;
-        const int32_t* ra = md_index_range_beg(rings, r);
-        const size_t na = md_index_range_size(rings, r);
+        const int32_t* ra = md_ring_atoms(rings, r);
+        const size_t na = md_ring_size(rings, r);
         for (size_t i = 0; i < na && !aromatic_ring[r]; ++i) {
             if (ra[i] < 0 || (size_t)ra[i] >= c->N) continue;
             for (uint32_t t = ring_off[ra[i]]; t < ring_off[ra[i] + 1]; ++t) {
                 const size_t s = ring_idx[t];
                 // Each pair once from the ring of lower index; skip pairs met through an earlier shared atom
                 if (s == r || !candidate[s]) continue;
-                const int32_t* rb = md_index_range_beg(rings, s);
-                const size_t nb = md_index_range_size(rings, s);
+                const int32_t* rb = md_ring_atoms(rings, s);
+                const size_t nb = md_ring_size(rings, s);
                 if (na + nb > ARRAY_SIZE(buf)) continue;
                 bool earlier = false;
                 for (size_t j = 0; j < i && !earlier; ++j) for (size_t l = 0; l < nb; ++l) earlier |= ra[j] == rb[l];
@@ -1139,7 +1139,7 @@ static void perceive_aromaticity(chem_t* c, uint8_t* atom_aromatic) {
         }
     }
     for (size_t r = 0; r < num; ++r) {
-        if (aromatic_ring[r]) mark_aromatic_ring(c, md_index_range_beg(rings, r), md_index_range_size(rings, r), atom_aromatic);
+        if (aromatic_ring[r]) mark_aromatic_ring(c, md_ring_atoms(rings, r), md_ring_size(rings, r), atom_aromatic);
     }
 }
 
@@ -1449,7 +1449,7 @@ bool md_chem_perceive(md_system_t* sys, const md_system_state_t* reference, uint
     }
     md_system_topology_changed(sys);
 
-    if (sys->bond.count && md_index_data_num_ranges(&sys->ring) == 0) {
+    if (sys->bond.count && md_ring_data_count(&sys->ring) == 0) {
         if (!sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, N, sys->alloc);
         md_util_system_infer_rings(sys);
     }
@@ -1688,9 +1688,9 @@ static inline size_t find_pair_key(const uint64_t* keys, size_t n, uint32_t x, u
 
 // The rings of the state within DELTA_RING_REACH bonds of the atoms of the region, in the indices of the system,
 // pushed to out (cleared first): those md_util_system_infer_rings would find there in the bonds of the state
-static void delta_rings(md_index_data_t* out, const delta_graph_t* g, const uint32_t* region, size_t num_region, uint8_t* state, md_allocator_i* temp) {
+static void delta_rings(md_ring_data_t* out, const delta_graph_t* g, const uint32_t* region, size_t num_region, uint8_t* state, md_allocator_i* temp) {
     const md_system_t* sys = g->sys;
-    md_index_data_clear(out);
+    md_ring_data_clear(out);
     md_array(uint32_t) ball = 0;
     md_array(delta_nbr_t) nbr = 0;
     for (size_t k = 0; k < num_region; ++k) {
@@ -1732,15 +1732,15 @@ static void delta_rings(md_index_data_t* out, const delta_graph_t* g, const uint
     for (size_t k = 0; k < n; ++k) state[ball[k]] &= ~DELTA_BALL;
     if (!bonds.count) return;
     md_bond_build_connectivity(&bonds, n, temp);
-    md_index_data_t local = { .alloc = temp };
-    md_util_infer_rings(&local, &bonds, n);
+    md_ring_data_t local = {0};
+    md_util_infer_rings(&local, &bonds, n, temp);
     int32_t ring[MD_RING_MAX_SIZE];
-    for (size_t r = 0; r < md_index_data_num_ranges(&local); ++r) {
-        const int32_t* lr = md_index_range_beg(&local, r);
-        const size_t m = md_index_range_size(&local, r);
+    for (size_t r = 0; r < md_ring_data_count(&local); ++r) {
+        const int32_t* lr = md_ring_atoms(&local, r);
+        const size_t m = md_ring_size(&local, r);
         if (m > MD_RING_MAX_SIZE) continue;
         for (size_t k = 0; k < m; ++k) ring[k] = (int32_t)ball[lr[k]];
-        md_index_data_push_arr(out, ring, m);
+        md_ring_data_push(out, ring, m, MD_RING_FLAG_NONE, temp);
     }
 }
 
@@ -1752,8 +1752,7 @@ void md_chem_delta_free(md_chem_delta_t* chem, md_allocator_i* alloc) {
     if (chem->hydrogen_count) md_array_free(chem->hydrogen_count, alloc);
     if (chem->bond_idx)       md_array_free(chem->bond_idx, alloc);
     if (chem->bond_flags)     md_array_free(chem->bond_flags, alloc);
-    if (chem->ring_flags)     md_array_free(chem->ring_flags, alloc);
-    if (chem->ring.alloc)     md_index_data_free(&chem->ring);
+    md_ring_data_free(&chem->ring, alloc);
     MEMSET(chem, 0, sizeof(md_chem_delta_t));
 }
 
@@ -1786,9 +1785,9 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     uint8_t* st = md_alloc(temp, N);
     MEMSET(st, 0, N);
     uint8_t* mode = md_alloc(temp, N);
-    for (size_t r = 0; r < md_index_data_num_ranges(&sys->ring); ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+    for (size_t r = 0; r < md_ring_data_count(&sys->ring); ++r) {
+        const int32_t* ring = md_ring_atoms(&sys->ring, r);
+        const size_t n = md_ring_size(&sys->ring, r);
         for (size_t k = 0; k < n; ++k) if (ring[k] >= 0 && (size_t)ring[k] < N) st[ring[k]] |= DELTA_RING;
     }
 
@@ -1812,7 +1811,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     #undef DELTA_SEED_ATOM
 
     md_array(delta_nbr_t) nbr = 0;
-    md_index_data_t rings = { .alloc = temp };
+    md_ring_data_t rings = {0};
     size_t head = 0;
     for (;;) {
         // Through every atom which can take part in a network
@@ -1832,9 +1831,9 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
         // Then every atom of the rings it is in which can be aromatic
         delta_rings(&rings, &g, region, md_array_size(region), st, temp);
         bool grew = false;
-        for (size_t r = 0; r < md_index_data_num_ranges(&rings); ++r) {
-            const int32_t* ring = md_index_range_beg(&rings, r);
-            const size_t n = md_index_range_size(&rings, r);
+        for (size_t r = 0; r < md_ring_data_count(&rings); ++r) {
+            const int32_t* ring = md_ring_atoms(&rings, r);
+            const size_t n = md_ring_size(&rings, r);
             if (n < 4) continue;
             bool touches = false, part = true;
             for (size_t k = 0; k < n; ++k) {
@@ -1950,16 +1949,16 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     build_graph(&c);
 
     // The rings: those within the atoms perceived for their aromaticity, all of them for the atoms and bonds in rings
-    md_index_data_t local_rings = { .alloc = temp };
+    md_ring_data_t local_rings = {0};
     c.in_ring   = md_alloc(temp, NL);
     c.ring_bond = md_alloc(temp, MAX(c.num_bonds, 1));
     MEMSET(c.in_ring, 0, NL);
     MEMSET(c.ring_bond, 0, MAX(c.num_bonds, 1));
     {
         int32_t lr[MD_RING_MAX_SIZE];
-        for (size_t r = 0; r < md_index_data_num_ranges(&rings); ++r) {
-            const int32_t* ring = md_index_range_beg(&rings, r);
-            const size_t n = md_index_range_size(&rings, r);
+        for (size_t r = 0; r < md_ring_data_count(&rings); ++r) {
+            const int32_t* ring = md_ring_atoms(&rings, r);
+            const size_t n = md_ring_size(&rings, r);
             bool all = true;
             for (size_t k = 0; k < n; ++k) {
                 const int64_t m = find_u32(atoms, NL, (uint32_t)ring[k]);
@@ -1973,7 +1972,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
                 const int b = find_bond(&c, (uint32_t)x, (uint32_t)y);
                 if (b >= 0) c.ring_bond[b] = 1;
             }
-            if (all) md_index_data_push_arr(&local_rings, lr, n);
+            if (all) md_ring_data_push(&local_rings, lr, n, MD_RING_FLAG_NONE, temp);
         }
     }
     c.rings = &local_rings;
@@ -2022,13 +2021,13 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
     // The rings with an atom in the region, and their flags as md_util_system_infer_ring_flags gives them, from all
     // the rings around (a ring outside of the region shares its bonds and its aromaticity with those within)
     {
-        const size_t num_rings = md_index_data_num_ranges(&rings);
+        const size_t num_rings = md_ring_data_count(&rings);
         // The bonds of the rings, each once: (lower atom << 32 | higher atom), with the rings they are in and the
         // aromatic rings they are in
         md_array(uint64_t) ring_bonds = 0;
         for (size_t r = 0; r < num_rings; ++r) {
-            const int32_t* ring = md_index_range_beg(&rings, r);
-            const size_t n = md_index_range_size(&rings, r);
+            const int32_t* ring = md_ring_atoms(&rings, r);
+            const size_t n = md_ring_size(&rings, r);
             for (size_t k = 0; k < n; ++k) {
                 const uint32_t x = (uint32_t)ring[k], y = (uint32_t)ring[(k + 1) % n];
                 md_array_push(ring_bonds, (uint64_t)MIN(x, y) << 32 | MAX(x, y), temp);
@@ -2044,8 +2043,8 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
         // Whether the bond between two atoms of a ring is aromatic in the state
         uint8_t* ring_aromatic = md_alloc(temp, MAX(num_rings, 1));
         for (size_t r = 0; r < num_rings; ++r) {
-            const int32_t* ring = md_index_range_beg(&rings, r);
-            const size_t n = md_index_range_size(&rings, r);
+            const int32_t* ring = md_ring_atoms(&rings, r);
+            const size_t n = md_ring_size(&rings, r);
             bool aromatic = n > 0;
             for (size_t k = 0; k < n; ++k) {
                 const uint32_t x = (uint32_t)ring[k], y = (uint32_t)ring[(k + 1) % n];
@@ -2071,10 +2070,9 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
             }
         }
 
-        out->ring.alloc = alloc;
         for (size_t r = 0; r < num_rings; ++r) {
-            const int32_t* ring = md_index_range_beg(&rings, r);
-            const size_t n = md_index_range_size(&rings, r);
+            const int32_t* ring = md_ring_atoms(&rings, r);
+            const size_t n = md_ring_size(&rings, r);
             bool touches = false;
             for (size_t k = 0; k < n; ++k) touches |= (st[ring[k]] & DELTA_REGION) != 0;
             if (!touches) continue;
@@ -2085,8 +2083,7 @@ bool md_chem_perceive_delta(md_chem_delta_t* out, const md_system_t* sys, const 
                 if (i < num_rb && rb_count[i] > 1) rf |= MD_RING_FLAG_FUSED;
                 if (i < num_rb && rb_aromatic[i] > (ring_aromatic[r] ? 1 : 0)) rf |= MD_RING_FLAG_FUSED_AROMATIC;
             }
-            md_index_data_push_arr(&out->ring, ring, n);
-            md_array_push(out->ring_flags, rf, alloc);
+            md_ring_data_push(&out->ring, ring, n, rf, alloc);
         }
     }
     result = true;

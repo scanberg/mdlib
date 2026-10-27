@@ -22,9 +22,9 @@
 
 static size_t lipid_num_heads(const md_system_t* sys, size_t i) { return sys->lipid.head_offset[i + 1] - sys->lipid.head_offset[i]; }
 static size_t lipid_num_tails(const md_system_t* sys, size_t i) { return sys->lipid.tail_offset[i + 1] - sys->lipid.tail_offset[i]; }
-static size_t tail_spine_len(const md_system_t* sys, size_t t) { return md_index_range_size(&sys->lipid.tail.spine, t); }
-static size_t lipid_num_residues(const md_system_t* sys, size_t i) { return md_index_range_size(&sys->lipid.residues, i); }
-static int32_t lipid_res(const md_system_t* sys, size_t i, size_t k) { return md_index_range_beg(&sys->lipid.residues, i)[k]; }
+static size_t tail_spine_len(const md_system_t* sys, size_t t) { return md_lipid_tail_spine_size(&sys->lipid, t); }
+static size_t lipid_num_residues(const md_system_t* sys, size_t i) { return md_lipid_residue_count(&sys->lipid, i); }
+static int32_t lipid_res(const md_system_t* sys, size_t i, size_t k) { return md_lipid_residues(&sys->lipid, i)[k]; }
 
 // What holds for every lipid of every system: the heads and tails partition the heavy atoms of the lipid, the spine is a
 // path of bonds which begins at an atom bonded to its anchor, the tail atoms carry the flag and nothing else does, and
@@ -32,9 +32,10 @@ static int32_t lipid_res(const md_system_t* sys, size_t i, size_t k) { return md
 static bool lipid_invariants_hold(const md_system_t* sys) {
     const md_lipid_data_t* L = &sys->lipid;
     if (md_array_size(L->head_offset) != L->count + 1 || md_array_size(L->tail_offset) != L->count + 1) return false;
-    if (md_index_data_num_ranges(&L->head.atoms) != L->head.count) return false;
-    if (md_index_data_num_ranges(&L->tail.spine) != L->tail.count) return false;
-    if (md_index_data_num_ranges(&L->tail.atoms) != L->tail.count) return false;
+    if (md_array_size(L->residue_offset) != L->count + 1) return false;
+    if (md_array_size(L->head.offset) != L->head.count + 1) return false;
+    if (md_array_size(L->tail.spine_offset) != L->tail.count + 1) return false;
+    if (md_array_size(L->tail.atom_offset) != L->tail.count + 1) return false;
 
     size_t num_flagged = 0;
     for (size_t i = 0; i < sys->atom.count; ++i) num_flagged += (md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_LIPID_TAIL) != 0;
@@ -51,8 +52,8 @@ static bool lipid_invariants_hold(const md_system_t* sys) {
         }
         // The heads and tails are of its residues
         for (uint32_t h = L->head_offset[l]; h < L->head_offset[l + 1]; ++h) {
-            const int32_t* atoms = md_index_range_beg(&L->head.atoms, h);
-            for (size_t k = 0; k < md_index_range_size(&L->head.atoms, h); ++k) {
+            const int32_t* atoms = md_lipid_head_atoms(L, h);
+            for (size_t k = 0; k < md_lipid_head_atom_count(L, h); ++k) {
                 const md_residue_idx_t c = md_system_residue_find_by_atom_idx(sys, (size_t)atoms[k]);
                 bool of_it = false;
                 for (size_t q = 0; q < num_residues; ++q) of_it |= lipid_res(sys, l, q) == c;
@@ -60,8 +61,8 @@ static bool lipid_invariants_hold(const md_system_t* sys) {
             }
         }
         for (uint32_t t = L->tail_offset[l]; t < L->tail_offset[l + 1]; ++t) {
-            const int32_t* spine = md_index_range_beg(&L->tail.spine, t);
-            const size_t len = md_index_range_size(&L->tail.spine, t);
+            const int32_t* spine = md_lipid_tail_spine(L, t);
+            const size_t len = md_lipid_tail_spine_size(L, t);
             if (len == 0) return false;
             if (md_bond_find(&sys->bond, spine[0], L->tail.anchor_beg[t]) < 0) return false;
             for (size_t k = 1; k < len; ++k) {
@@ -69,8 +70,8 @@ static bool lipid_invariants_hold(const md_system_t* sys) {
             }
             if (L->tail.anchor_end[t] != -1 && md_bond_find(&sys->bond, spine[len - 1], L->tail.anchor_end[t]) < 0) return false;
             if (L->tail.head_beg[t] < L->head_offset[l] || L->tail.head_beg[t] >= L->head_offset[l + 1]) return false;
-            const int32_t* atoms = md_index_range_beg(&L->tail.atoms, t);
-            const size_t num_atoms = md_index_range_size(&L->tail.atoms, t);
+            const int32_t* atoms = md_lipid_tail_atoms(L, t);
+            const size_t num_atoms = md_lipid_tail_atom_count(L, t);
             for (size_t k = 0; k < num_atoms; ++k) {
                 if (!(md_atom_flags(&sys->atom, atoms[k]) & MD_ATOM_FLAG_LIPID_TAIL)) return false;
                 if (k > 0 && atoms[k] <= atoms[k - 1]) return false;
@@ -78,8 +79,8 @@ static bool lipid_invariants_hold(const md_system_t* sys) {
             num_tail_atoms += num_atoms;
         }
         for (uint32_t h = L->head_offset[l]; h < L->head_offset[l + 1]; ++h) {
-            const int32_t* atoms = md_index_range_beg(&L->head.atoms, h);
-            const size_t num_atoms = md_index_range_size(&L->head.atoms, h);
+            const int32_t* atoms = md_lipid_head_atoms(L, h);
+            const size_t num_atoms = md_lipid_head_atom_count(L, h);
             if (num_atoms == 0) return false;
             for (size_t k = 0; k < num_atoms; ++k) {
                 if (md_atom_flags(&sys->atom, atoms[k]) & MD_ATOM_FLAG_LIPID_TAIL) return false;
@@ -105,7 +106,7 @@ UTEST(lipid, dppc_united_atom_pdb) {
         EXPECT_EQ(1, (int)lipid_num_heads(&sys, l));
         ASSERT_EQ(2, (int)lipid_num_tails(&sys, l));
         // Choline, phosphate, glycerol and the two ester groups
-        EXPECT_EQ(20, (int)md_index_range_size(&sys.lipid.head.atoms, sys.lipid.head_offset[l]));
+        EXPECT_EQ(20, (int)md_lipid_head_atom_count(&sys.lipid, sys.lipid.head_offset[l]));
         for (uint32_t t = sys.lipid.tail_offset[l]; t < sys.lipid.tail_offset[l + 1]; ++t) {
             EXPECT_EQ(MD_LIPID_TAIL_CHAIN, sys.lipid.tail.kind[t]);
             EXPECT_EQ(-1, sys.lipid.tail.anchor_end[t]);
@@ -115,11 +116,11 @@ UTEST(lipid, dppc_united_atom_pdb) {
         }
     }
     // The first lipid: tails C17 .. C31 off C15 and C36 .. C50 off C34
-    const int32_t* spine0 = md_index_range_beg(&sys.lipid.tail.spine, 0);
+    const int32_t* spine0 = md_lipid_tail_spine(&sys.lipid, 0);
     EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine0[0]), "C17"));
     EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine0[14]), "C31"));
     EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, sys.lipid.tail.anchor_beg[0]), "C15"));
-    const int32_t* spine1 = md_index_range_beg(&sys.lipid.tail.spine, 1);
+    const int32_t* spine1 = md_lipid_tail_spine(&sys.lipid, 1);
     EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine1[0]), "C36"));
     EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine1[14]), "C50"));
 
@@ -158,10 +159,10 @@ static bool martini_membrane_ok(const md_system_t* sys, int num_two_tailed, int 
         }
         if (str_eq_cstr(name, "CHOL")) {
             const uint32_t t = sys->lipid.tail_offset[l];
-            const int32_t* head = md_index_range_beg(&sys->lipid.head.atoms, sys->lipid.head_offset[l]);
+            const int32_t* head = md_lipid_head_atoms(&sys->lipid, sys->lipid.head_offset[l]);
             if (lipid_num_tails(sys, l) != 1 || sys->lipid.tail.kind[t] != MD_LIPID_TAIL_SKELETON ||
-                md_index_range_size(&sys->lipid.head.atoms, sys->lipid.head_offset[l]) != 1 || !str_eq_cstr(md_atom_name(&sys->atom, head[0]), "ROH")) {
-                printf("lipid %zu (CHOL): %zu tails, kind %d, head of %zu beads\n", l, lipid_num_tails(sys, l), (int)sys->lipid.tail.kind[t], md_index_range_size(&sys->lipid.head.atoms, sys->lipid.head_offset[l]));
+                md_lipid_head_atom_count(&sys->lipid, sys->lipid.head_offset[l]) != 1 || !str_eq_cstr(md_atom_name(&sys->atom, head[0]), "ROH")) {
+                printf("lipid %zu (CHOL): %zu tails, kind %d, head of %zu beads\n", l, lipid_num_tails(sys, l), (int)sys->lipid.tail.kind[t], md_lipid_head_atom_count(&sys->lipid, sys->lipid.head_offset[l]));
                 return false;
             }
             sterols += 1;
@@ -304,13 +305,13 @@ UTEST(lipid, cholesterol) {
         EXPECT_EQ(MD_LIPID_TAIL_SKELETON, sys.lipid.tail.kind[0]);
         // The head is the hydroxyl, the anchor the C3 it is on
         ASSERT_EQ(1, (int)sys.lipid.head.count);
-        const int32_t* head = md_index_range_beg(&sys.lipid.head.atoms, 0);
-        EXPECT_EQ(2, (int)md_index_range_size(&sys.lipid.head.atoms, 0));
+        const int32_t* head = md_lipid_head_atoms(&sys.lipid, 0);
+        EXPECT_EQ(2, (int)md_lipid_head_atom_count(&sys.lipid, 0));
         EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, head[1]));
         // The skeleton is the 26 carbons but C3, and its spine runs the shortest way through the rings from C4 (or C2)
         // out to the end of the side chain: C4 C5 C6 C7 C8 C14 C13 C17 C20 C22 C23 C24 C25 C26
-        EXPECT_EQ(26, (int)md_index_range_size(&sys.lipid.tail.atoms, 0));
-        const int32_t* spine = md_index_range_beg(&sys.lipid.tail.spine, 0);
+        EXPECT_EQ(26, (int)md_lipid_tail_atom_count(&sys.lipid, 0));
+        const int32_t* spine = md_lipid_tail_spine(&sys.lipid, 0);
         const size_t len = tail_spine_len(&sys, 0);
         EXPECT_EQ(14, (int)len);
         const size_t tip_degree = md_bond_conn_count(&sys.bond, spine[len - 1]);
@@ -343,7 +344,7 @@ UTEST(lipid, fatty_acid_by_structure) {
     ASSERT_EQ(1, (int)sys.lipid.tail.count);
     EXPECT_EQ(15, (int)tail_spine_len(&sys, 0));
     // The head is the carboxyl group
-    EXPECT_EQ(3, (int)md_index_range_size(&sys.lipid.head.atoms, 0));
+    EXPECT_EQ(3, (int)md_lipid_head_atom_count(&sys.lipid, 0));
     md_arena_allocator_destroy(alloc);
 }
 
@@ -388,7 +389,7 @@ UTEST(lipid, bolalipid) {
         // The 32 carbons of the main chain of biphytanyl but the two bonded to the ether oxygens; the 8 methyl branches
         // are in the tail, off the spine
         EXPECT_EQ(30, (int)tail_spine_len(&sys, t));
-        EXPECT_EQ(38, (int)md_index_range_size(&sys.lipid.tail.atoms, t));
+        EXPECT_EQ(38, (int)md_lipid_tail_atom_count(&sys.lipid, t));
     }
     md_arena_allocator_destroy(alloc);
 }
@@ -548,8 +549,8 @@ static void lipid_head_names(char* buf, size_t cap, const md_system_t* sys, int 
     buf[0] = '\0';
     size_t len = 0;
     for (uint32_t h = sys->lipid.head_offset[l]; h < sys->lipid.head_offset[l + 1]; ++h) {
-        const int32_t* atoms = md_index_range_beg(&sys->lipid.head.atoms, h);
-        for (size_t k = 0; k < md_index_range_size(&sys->lipid.head.atoms, h); ++k) {
+        const int32_t* atoms = md_lipid_head_atoms(&sys->lipid, h);
+        for (size_t k = 0; k < md_lipid_head_atom_count(&sys->lipid, h); ++k) {
             const str_t s = md_atom_name(&sys->atom, atoms[k]);
             len += snprintf(buf + len, cap - len, "%s" STR_FMT, len ? " " : "", STR_ARG(s));
         }
@@ -689,8 +690,8 @@ UTEST(lipid, martini2_cholesterol_optlincs) {
         EXPECT_EQ(MD_LIPID_TAIL_SKELETON, sys.lipid.tail.kind[t]);
         lipid_head_names(head, sizeof(head), &sys, l);
         EXPECT_STREQ("ROH", head);
-        EXPECT_EQ(c == 1 ? 11u : 7u, md_index_range_size(&sys.lipid.tail.atoms, t));
-        const int32_t* spine = md_index_range_beg(&sys.lipid.tail.spine, t);
+        EXPECT_EQ(c == 1 ? 11u : 7u, md_lipid_tail_atom_count(&sys.lipid, t));
+        const int32_t* spine = md_lipid_tail_spine(&sys.lipid, t);
         EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, spine[tail_spine_len(&sys, t) - 1]), "C2"));
     }
     md_vm_arena_destroy(alloc);
@@ -807,7 +808,7 @@ UTEST(lipid, glycolipid_of_several_residues) {
     // (C1 O1 C2 N C3 O3, the carbonyl and its oxygen) and the glucose, 11 of its atoms.
     EXPECT_EQ(2, (int)lipid_num_tails(&sys, 0));
     ASSERT_EQ(1, (int)lipid_num_heads(&sys, 0));
-    EXPECT_EQ(8 + 11, (int)md_index_range_size(&sys.lipid.head.atoms, 0));
+    EXPECT_EQ(8 + 11, (int)md_lipid_head_atom_count(&sys.lipid, 0));
     int num_sets = 0;
     EXPECT_EQ(38u + 11u, lipid_selection_atoms(&sys, alloc, &num_sets));
     EXPECT_EQ(1, num_sets);
@@ -839,7 +840,7 @@ UTEST(lipid, molecule_of_residues_apart) {
     EXPECT_EQ(15, (int)tail_spine_len(&sys, 0));
     ASSERT_EQ(1, (int)lipid_num_heads(&sys, 0));
     // The glycerol and the carbonyl
-    EXPECT_EQ(6 + 2, (int)md_index_range_size(&sys.lipid.head.atoms, 0));
+    EXPECT_EQ(6 + 2, (int)md_lipid_head_atom_count(&sys.lipid, 0));
     int num_sets = 0;
     EXPECT_EQ(6u + 17u, lipid_selection_atoms(&sys, alloc, &num_sets));
     EXPECT_EQ(1, num_sets);

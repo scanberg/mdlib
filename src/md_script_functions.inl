@@ -3539,7 +3539,7 @@ static bool ring_pattern_query(md_match_query_t* query, str_t pattern, bool repo
 // STATIC_VALIDATION_ERROR (reported when validating, dst == NULL). out_ring (optional) receives their indices.
 static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, eval_context_t* ctx) {
     const md_system_t* sys = ctx->sys;
-    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+    const size_t num_rings = md_ring_data_count(&sys->ring);
 
     // Kinds
     uint32_t kind_mask = 0;
@@ -3581,7 +3581,7 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
         // The rings as the units to match within
         md_bitset_t* units = md_alloc(ctx->temp_alloc, sizeof(md_bitset_t) * MAX(num_rings, 1));
         for (size_t r = 0; r < num_rings; ++r) {
-            units[r] = md_bitset_from_indices((const uint32_t*)md_index_range_beg(&sys->ring, r), md_index_range_size(&sys->ring, r), ctx->temp_alloc);
+            units[r] = md_bitset_from_indices((const uint32_t*)md_ring_atoms(&sys->ring, r), md_ring_size(&sys->ring, r), ctx->temp_alloc);
         }
         for (size_t p = 0; p < num_patterns; ++p) {
             md_match_query_t query = {0};
@@ -3612,7 +3612,7 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
 
     int count = 0;
     for (size_t r = 0; r < num_rings; ++r) {
-        const int n = (int)md_index_range_size(&sys->ring, r);
+        const int n = (int)md_ring_size(&sys->ring, r);
         if (n < size_lo || n > size_hi) continue;
         if (has_pattern && !has_pattern[r]) continue;
         if (kind_mask) {
@@ -3625,7 +3625,7 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
         }
         // Only a ring fully within the context
         if (ctx->mol_ctx) {
-            const int32_t* ring = md_index_range_beg(&sys->ring, r);
+            const int32_t* ring = md_ring_atoms(&sys->ring, r);
             bool inside = true;
             for (int k = 0; k < n && inside; ++k) inside = md_bitset_test(*ctx->mol_ctx, (uint32_t)ring[k]);
             if (!inside) continue;
@@ -3658,8 +3658,8 @@ static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_conte
                 md_bitmask_clear(&b);
                 slot = s;
             }
-            const int32_t* ring = md_index_range_beg(&sys->ring, rings[i]);
-            const size_t n = md_index_range_size(&sys->ring, rings[i]);
+            const int32_t* ring = md_ring_atoms(&sys->ring, rings[i]);
+            const size_t n = md_ring_size(&sys->ring, rings[i]);
             for (size_t k = 0; k < n; ++k) md_bitmask_set_bit(&b, (uint32_t)ring[k]);
         }
         if (count > 0) bf_arr[slot] = md_bitmask_extract(&b, alloc);
@@ -3669,8 +3669,8 @@ static int ring_result(data_t* dst, const uint32_t* rings, int count, eval_conte
 
     if (ctx->vis) {
         for (int i = 0; i < count; ++i) {
-            const int32_t* ring = md_index_range_beg(&sys->ring, rings[i]);
-            const size_t n = md_index_range_size(&sys->ring, rings[i]);
+            const int32_t* ring = md_ring_atoms(&sys->ring, rings[i]);
+            const size_t n = md_ring_size(&sys->ring, rings[i]);
             if (n == 0) continue;
             const vec3_t* xyz = ctx->cur_state->xyz;
             md_script_vis_vertex_t vbeg = vertex(vec3_set(xyz[ring[0]].x, xyz[ring[0]].y, xyz[ring[0]].z), COLOR_WHITE);
@@ -3820,8 +3820,8 @@ static int _lipid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // The atoms of each lipid: a run when its residues are consecutive, as they mostly are
     md_array(md_bitset_t) sets = 0;
     for (size_t l = 0; l < lipid->count; ++l) {
-        const int32_t* residues = md_index_range_beg(&lipid->residues, l);
-        const size_t num_residues = md_index_range_size(&lipid->residues, l);
+        const int32_t* residues = md_lipid_residues(lipid, l);
+        const size_t num_residues = md_lipid_residue_count(lipid, l);
         if (num_residues == 0) continue;
         md_bitset_t set = md_bitset_empty_set();
         bool in_ctx = !ctx->mol_ctx;
@@ -4004,8 +4004,8 @@ static int _head(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitmask_t b = result_mask(ctx);
         for (size_t l = 0; l < sys->lipid.count; ++l) {
             if (sys->lipid.head_offset[l + 1] == sys->lipid.head_offset[l]) continue;
-            const int32_t* residues = md_index_range_beg(&sys->lipid.residues, l);
-            const size_t num_residues = md_index_range_size(&sys->lipid.residues, l);
+            const int32_t* residues = md_lipid_residues(&sys->lipid, l);
+            const size_t num_residues = md_lipid_residue_count(&sys->lipid, l);
             for (size_t c = 0; c < num_residues; ++c) {
                 const md_urange_t r = md_system_residue_atom_range(sys, (size_t)residues[c]);
                 for (uint32_t i = r.beg; i < r.end; ++i) {
@@ -4032,8 +4032,8 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_array(uint32_t) tails = 0;
     for (size_t t = 0; t < lipid->tail.count; ++t) {
         if (ctx->mol_ctx) {
-            const int32_t* atoms = md_index_range_beg(&lipid->tail.atoms, t);
-            const size_t n = md_index_range_size(&lipid->tail.atoms, t);
+            const int32_t* atoms = md_lipid_tail_atoms(lipid, t);
+            const size_t n = md_lipid_tail_atom_count(lipid, t);
             bool inside = true;
             for (size_t k = 0; k < n && inside; ++k) inside = md_bitset_test(*ctx->mol_ctx, (uint32_t)atoms[k]);
             if (!inside) continue;
@@ -4059,8 +4059,8 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 md_bitmask_clear(&b);
                 slot = s;
             }
-            const int32_t* atoms = md_index_range_beg(&lipid->tail.atoms, tails[i]);
-            const size_t n = md_index_range_size(&lipid->tail.atoms, tails[i]);
+            const int32_t* atoms = md_lipid_tail_atoms(lipid, tails[i]);
+            const size_t n = md_lipid_tail_atom_count(lipid, tails[i]);
             for (size_t k = 0; k < n; ++k) md_bitmask_set_bit(&b, (uint32_t)atoms[k]);
         }
         if (count > 0) bf_arr[slot] = md_bitmask_extract(&b, alloc);
@@ -4071,8 +4071,8 @@ static int _tail(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->vis) {
         const vec3_t* xyz = ctx->cur_state->xyz;
         for (int i = 0; i < count; ++i) {
-            const int32_t* spine = md_index_range_beg(&lipid->tail.spine, tails[i]);
-            const size_t n = md_index_range_size(&lipid->tail.spine, tails[i]);
+            const int32_t* spine = md_lipid_tail_spine(lipid, tails[i]);
+            const size_t n = md_lipid_tail_spine_size(lipid, tails[i]);
             for (size_t k = 1; k < n; ++k) {
                 const vec3_t a = xyz[spine[k - 1]];
                 const vec3_t c = xyz[spine[k]];
@@ -4645,10 +4645,10 @@ static int _glycan(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // The residues with a sugar ring
         uint8_t* sugar = (uint8_t*)md_alloc(ctx->temp_alloc, num_res);
         MEMSET(sugar, 0, num_res);
-        const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+        const size_t num_rings = md_ring_data_count(&sys->ring);
         for (size_t r = 0; r < num_rings; ++r) {
             if (!(md_system_ring_flags(sys, r) & MD_RING_FLAG_SUGAR)) continue;
-            const int32_t* atoms = md_index_range_beg(&sys->ring, r);
+            const int32_t* atoms = md_ring_atoms(&sys->ring, r);
             const md_residue_idx_t c = md_system_residue_find_by_atom_idx(sys, (size_t)atoms[0]);
             if (c >= 0) sugar[c] = 1;
         }
@@ -5623,14 +5623,14 @@ typedef struct plane_rings_t {
 
 static plane_rings_t plane_rings_build(const md_system_t* sys, md_allocator_i* alloc) {
     plane_rings_t pr = {0};
-    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+    const size_t num_rings = md_ring_data_count(&sys->ring);
     const size_t N = sys->atom.count;
     if (num_rings == 0 || N == 0) return pr;
     pr.off = md_alloc(alloc, sizeof(uint32_t) * (N + 1));
     MEMSET(pr.off, 0, sizeof(uint32_t) * (N + 1));
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+        const int32_t* ring = md_ring_atoms(&sys->ring, r);
+        const size_t n = md_ring_size(&sys->ring, r);
         for (size_t k = 0; k < n; ++k) if ((size_t)ring[k] < N) pr.off[ring[k] + 1] += 1;
     }
     for (size_t i = 0; i < N; ++i) pr.off[i + 1] += pr.off[i];
@@ -5638,8 +5638,8 @@ static plane_rings_t plane_rings_build(const md_system_t* sys, md_allocator_i* a
     uint32_t* fill = md_alloc(alloc, sizeof(uint32_t) * N);
     MEMCPY(fill, pr.off, sizeof(uint32_t) * N);
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+        const int32_t* ring = md_ring_atoms(&sys->ring, r);
+        const size_t n = md_ring_size(&sys->ring, r);
         for (size_t k = 0; k < n; ++k) if ((size_t)ring[k] < N) pr.ring[fill[ring[k]]++] = (uint32_t)r;
     }
     return pr;
@@ -5650,8 +5650,8 @@ static int64_t plane_rings_find(const plane_rings_t* pr, const md_system_t* sys,
     const int32_t first = idx[0];
     for (uint32_t t = pr->off[first]; t < pr->off[first + 1]; ++t) {
         const uint32_t r = pr->ring[t];
-        if (md_index_range_size(&sys->ring, r) != count) continue;
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
+        if (md_ring_size(&sys->ring, r) != count) continue;
+        const int32_t* ring = md_ring_atoms(&sys->ring, r);
         bool same = true;
         for (size_t k = 0; k < count && same; ++k) {
             bool found = false;
@@ -5740,8 +5740,8 @@ static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ri
     vec3_t ref = {0};
     if (ring >= 0) {
         // Around the ring, in its order
-        const int32_t* ring_idx = md_index_range_beg(&sys->ring, (size_t)ring);
-        const size_t n_ring = md_index_range_size(&sys->ring, (size_t)ring);
+        const int32_t* ring_idx = md_ring_atoms(&sys->ring, (size_t)ring);
+        const size_t n_ring = md_ring_size(&sys->ring, (size_t)ring);
         for (size_t k = 0; k < n_ring; ++k) {
             size_t a = 0, b = 0;
             for (size_t j = 0; j < count; ++j) {

@@ -425,8 +425,7 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->bond.conn.bond_idx, alloc);
     md_array_free(sys->bond.conn.offset, alloc);
 
-    md_index_data_free(&sys->ring);
-    md_array_free(sys->ring_flags, alloc);
+    md_ring_data_free(&sys->ring, sys->alloc);
 
     md_array_free(sys->molecule.offset, alloc);
     md_array_free(sys->molecule.atom_idx, alloc);
@@ -528,12 +527,16 @@ bool md_system_state_copy(md_system_state_t* dst, const md_system_state_t* src) 
 
 void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
     ASSERT(lipid);
-    if (lipid->residues.alloc)    md_index_data_free(&lipid->residues);
+    md_array_free(lipid->residue_offset, alloc);
+    md_array_free(lipid->residue_idx, alloc);
     md_array_free(lipid->head_offset, alloc);
     md_array_free(lipid->tail_offset, alloc);
-    if (lipid->head.atoms.alloc)  md_index_data_free(&lipid->head.atoms);
-    if (lipid->tail.spine.alloc)  md_index_data_free(&lipid->tail.spine);
-    if (lipid->tail.atoms.alloc)  md_index_data_free(&lipid->tail.atoms);
+    md_array_free(lipid->head.offset, alloc);
+    md_array_free(lipid->head.atom_idx, alloc);
+    md_array_free(lipid->tail.spine_offset, alloc);
+    md_array_free(lipid->tail.spine_idx, alloc);
+    md_array_free(lipid->tail.atom_offset, alloc);
+    md_array_free(lipid->tail.atom_idx, alloc);
     md_array_free(lipid->tail.anchor_beg, alloc);
     md_array_free(lipid->tail.anchor_end, alloc);
     md_array_free(lipid->tail.head_beg, alloc);

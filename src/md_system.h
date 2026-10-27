@@ -204,19 +204,23 @@ typedef struct md_nucleic_backbone_data_t {
 // the tails are MD_ATOM_FLAG_LIPID_TAIL.
 typedef struct md_lipid_data_t {
     size_t count;                       // Lipid molecules
-    md_index_data_t residues;           // The residues of each lipid, ascending (not necessarily consecutive)
+    uint32_t* residue_offset;           // [count + 1] The residues of lipid i are residue_idx[residue_offset[i] .. residue_offset[i + 1]]
+    int32_t*  residue_idx;              // Ascending within a lipid (not necessarily consecutive)
     uint32_t* head_offset;              // [count + 1] The heads of lipid i are head_offset[i] .. head_offset[i + 1]
     uint32_t* tail_offset;              // [count + 1] Its tails, tail_offset[i] .. tail_offset[i + 1]
 
     struct {
         size_t count;
-        md_index_data_t atoms;          // The heavy atoms (beads) of each head, ascending
+        uint32_t* offset;               // [count + 1] The atoms of head h are atom_idx[offset[h] .. offset[h + 1]]
+        md_atom_idx_t* atom_idx;        // The heavy atoms (beads) of each head, ascending
     } head;
 
     struct {
         size_t count;
-        md_index_data_t spine;          // The spine of each tail, in order from its head
-        md_index_data_t atoms;          // All atoms of each tail (branches and hydrogens too), ascending
+        uint32_t* spine_offset;         // [count + 1] The spine of tail t is spine_idx[spine_offset[t] .. spine_offset[t + 1]]
+        md_atom_idx_t* spine_idx;       // The spine of each tail, in order from its head
+        uint32_t* atom_offset;          // [count + 1] The atoms of tail t are atom_idx[atom_offset[t] .. atom_offset[t + 1]]
+        md_atom_idx_t* atom_idx;        // All atoms of each tail (branches and hydrogens too), ascending
         md_atom_idx_t* anchor_beg;      // [count] The atom of the head the tail hangs off (the carbonyl C of an ester, a GL bead)
         md_atom_idx_t* anchor_end;      // [count] The atom of the other head a spanning chain joins, -1 for a free tip
         uint32_t* head_beg;             // [count] The head (index into head) the tail hangs off
@@ -471,8 +475,7 @@ typedef struct md_system_t {
     
     md_bond_data_t              bond;               // Persistent bonds: the bond graph, then the non-covalent bonds (md_bond_data_t)
     
-    md_index_data_t             ring;               // Ring structures formed by persistent bonds, 3 to 7 atoms in order around the ring (sugars in canonical order, see MD_RING_FLAG_SUGAR)
-    md_array(md_ring_flags_t)   ring_flags;         // [ring count] What each ring is (md_ring_flags_t), see md_system_ring_flags
+    md_ring_data_t              ring;               // Rings formed by persistent bonds: 3 to 7 ordered atoms and their flags
     md_molecule_data_t          molecule;           // The molecules: connected by persistent bonds, within residues and along polymer chains (md_molecule_t)
 
     md_assembly_data_t          assembly;           // The biological assemblies of a deposited structure, see md_assembly_data_t
@@ -1479,10 +1482,7 @@ static inline void md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_id
 // Flags of ring ring_idx of sys->ring, NONE when they have not been inferred
 static inline md_ring_flags_t md_system_ring_flags(const md_system_t* sys, size_t ring_idx) {
     ASSERT(sys);
-    if (sys->ring_flags && ring_idx < md_array_size(sys->ring_flags)) {
-        return sys->ring_flags[ring_idx];
-    }
-    return MD_RING_FLAG_NONE;
+    return md_ring_flags(&sys->ring, ring_idx);
 }
 
 static inline md_bond_flags_t md_system_bond_flags(const md_system_t* sys, md_bond_idx_t bond_idx) {
@@ -1549,6 +1549,47 @@ void md_system_free(md_system_t* sys); // Free all memory associated with the sy
 
 // Frees the lipids of a system (allocated from alloc, the system's) and leaves them empty
 void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc);
+
+// The ranges of a lipid: NULL and 0 when the index is out of range
+static inline const int32_t* md_lipid_residues(const md_lipid_data_t* lipid, size_t lipid_idx) {
+    ASSERT(lipid);
+    return lipid_idx < lipid->count ? lipid->residue_idx + lipid->residue_offset[lipid_idx] : NULL;
+}
+
+static inline size_t md_lipid_residue_count(const md_lipid_data_t* lipid, size_t lipid_idx) {
+    ASSERT(lipid);
+    return lipid_idx < lipid->count ? lipid->residue_offset[lipid_idx + 1] - lipid->residue_offset[lipid_idx] : 0;
+}
+
+static inline const md_atom_idx_t* md_lipid_head_atoms(const md_lipid_data_t* lipid, size_t head_idx) {
+    ASSERT(lipid);
+    return head_idx < lipid->head.count ? lipid->head.atom_idx + lipid->head.offset[head_idx] : NULL;
+}
+
+static inline size_t md_lipid_head_atom_count(const md_lipid_data_t* lipid, size_t head_idx) {
+    ASSERT(lipid);
+    return head_idx < lipid->head.count ? lipid->head.offset[head_idx + 1] - lipid->head.offset[head_idx] : 0;
+}
+
+static inline const md_atom_idx_t* md_lipid_tail_spine(const md_lipid_data_t* lipid, size_t tail_idx) {
+    ASSERT(lipid);
+    return tail_idx < lipid->tail.count ? lipid->tail.spine_idx + lipid->tail.spine_offset[tail_idx] : NULL;
+}
+
+static inline size_t md_lipid_tail_spine_size(const md_lipid_data_t* lipid, size_t tail_idx) {
+    ASSERT(lipid);
+    return tail_idx < lipid->tail.count ? lipid->tail.spine_offset[tail_idx + 1] - lipid->tail.spine_offset[tail_idx] : 0;
+}
+
+static inline const md_atom_idx_t* md_lipid_tail_atoms(const md_lipid_data_t* lipid, size_t tail_idx) {
+    ASSERT(lipid);
+    return tail_idx < lipid->tail.count ? lipid->tail.atom_idx + lipid->tail.atom_offset[tail_idx] : NULL;
+}
+
+static inline size_t md_lipid_tail_atom_count(const md_lipid_data_t* lipid, size_t tail_idx) {
+    ASSERT(lipid);
+    return tail_idx < lipid->tail.count ? lipid->tail.atom_offset[tail_idx + 1] - lipid->tail.atom_offset[tail_idx] : 0;
+}
 
 // STATE
 // A state owns its coordinate arrays and must be freed with the same allocator it was created with.

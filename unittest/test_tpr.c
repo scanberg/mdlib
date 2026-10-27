@@ -686,7 +686,7 @@ UTEST(tpr, elastic_bonds) {
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     md_util_system_infer(&base, &base_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     EXPECT_EQ(md_system_molecule_count(&base), md_system_molecule_count(&sys));
-    EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
+    EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));
     EXPECT_EQ(2u, count_elastic(&sys));
 
     // Inferring the bonds anew keeps the elastic bonds: nothing infers them

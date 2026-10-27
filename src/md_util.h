@@ -269,15 +269,16 @@ void md_util_mask_grow_by_bonds(struct md_bitmask_t* mask, const struct md_syste
 void md_util_mask_grow_by_radius(struct md_bitmask_t* mask, const md_system_state_t* state, double radius, const struct md_bitset_t* viable_mask);
 
 // Infer rings formed by covalent bonds: the rings of 3 to 7 atoms which are not sums of smaller rings (sys->ring: the
-// smallest set of smallest rings, made symmetric), and their flags (md_util_system_infer_ring_flags). Only atoms
+// smallest set of smallest rings, made symmetric), and their flags (md_ring_t::flags)
+// (md_util_system_infer_ring_flags). Only atoms
 // (MD_PARTICLE_ATOM) make rings: the cycles of coarse grained beads and virtual sites are not searched.
 bool md_util_system_infer_rings(md_system_t* sys);
 
 // The rings of a bond graph as md_util_system_infer_rings finds them, of every atom: bond, with its connectivity
-// (md_bond_build_connectivity), over num_atoms atoms. Pushed to out_rings, cleared first and allocated with its allocator.
-void md_util_infer_rings(md_index_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms);
+// (md_bond_build_connectivity), over num_atoms atoms. Pushed to out_rings, cleared first and allocated with alloc.
+void md_util_infer_rings(md_ring_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms, struct md_allocator_i* alloc);
 
-// The flags of the rings (sys->ring_flags, md_ring_flags_t) from the rings, the bonds and their flags, and the atoms of
+// The flags of the rings (md_ring_t::flags, md_ring_flags_t) from the rings, the bonds and their flags, and the atoms of
 // sugar rings in canonical order (MD_RING_FLAG_SUGAR). Call it again when the bond orders or aromaticity change
 // (md_chem_perceive does).
 void md_util_system_infer_ring_flags(md_system_t* sys);

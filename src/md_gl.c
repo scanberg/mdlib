@@ -1823,9 +1823,7 @@ typedef struct {
     const uint8_t*  hydrogen;       // [atom_count] 1 for a hydrogen (optional): the last choice of surroundings
     const float*    xyz;            // [atom_count * 3] Reference coordinates (optional)
     uint32_t        ring_count;
-    const uint32_t* ring_offset;    // [ring_count + 1]
-    const int32_t*  ring_atom;      // Atoms of each ring, in order around it
-    const md_ring_flags_t* ring_flags;  // [ring_count] (optional, no circles without)
+    const md_ring_t* rings;         // [ring_count], atoms in order around each ring (no circles without aromatic flags)
 } bond_order_input_t;
 
 static uint32_t bo_find_bond(const bond_order_input_t* in, uint32_t a, uint32_t b) {
@@ -1952,11 +1950,10 @@ static uint32_t bo_aromatic_ref(const bond_order_input_t* in, uint32_t e, uint32
 // The ring r is drawn as a circle: aromatic (MD_RING_FLAG_AROMATIC, which says that every bond of it is), of at most
 // RING_ENTRY_U32 - 1 atoms, each bonded to the next by a bond the molecule draws, and its index fits in its entry
 static bool bo_circle_ring(const bond_order_input_t* in, uint32_t r) {
-    if (!in->ring_flags || !(in->ring_flags[r] & MD_RING_FLAG_AROMATIC) || r >= (1u << RING_DASHED_SHIFT)) return false;
-    const uint32_t beg = in->ring_offset[r];
-    const uint32_t n   = in->ring_offset[r + 1] - beg;
+    if (!in->rings || !(in->rings[r].flags & MD_RING_FLAG_AROMATIC) || r >= (1u << RING_DASHED_SHIFT)) return false;
+    const uint32_t n   = in->rings[r].count;
     if (n < 3 || n > RING_ENTRY_U32 - 1) return false;
-    const int32_t* ring = in->ring_atom + beg;
+    const int32_t* ring = in->rings[r].atoms;
     for (uint32_t k = 0; k < n; ++k) {
         const uint32_t a = (uint32_t)ring[k];
         const uint32_t b = (uint32_t)ring[(k + 1) % n];
@@ -1973,11 +1970,10 @@ static uint32_t compute_aromatic_rings(uint32_t* out_ring, uint8_t* out_covered,
     uint32_t count = 0;
     for (uint32_t r = 0; r < in->ring_count; ++r) {
         if (!bo_circle_ring(in, r)) continue;
-        const uint32_t beg = in->ring_offset[r];
-        const uint32_t n   = in->ring_offset[r + 1] - beg;
-        const int32_t* ring = in->ring_atom + beg;
+        const uint32_t n   = in->rings[r].count;
+        const int32_t* ring = in->rings[r].atoms;
         if (out_ring) {
-            const uint32_t dashed = (in->ring_flags[r] & MD_RING_FLAG_FUSED_AROMATIC) ? 1u : 0u;
+            const uint32_t dashed = (in->rings[r].flags & MD_RING_FLAG_FUSED_AROMATIC) ? 1u : 0u;
             uint32_t* e = out_ring + RING_ENTRY_U32 * count;
             e[0] = r | (dashed << RING_DASHED_SHIFT) | (n << RING_COUNT_SHIFT);
             for (uint32_t k = 0; k < RING_ENTRY_U32 - 1; ++k) {
@@ -2166,47 +2162,23 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
     // The rings of the system keep their indices, those with an atom in the region drawn no more; the rings of the
     // region follow them. Without flags for every ring there are no circles, and the aromatic bonds get dashed partners.
     const bool has_xyz = md_system_state_has_coords(&sys->reference) && sys->reference.num_atoms >= atom_count;
-    const uint32_t sys_ring_count = (uint32_t)md_index_data_num_ranges(&sys->ring);
-    const bool has_ring_flags = sys_ring_count && sys->ring_flags && md_array_size(sys->ring_flags) == sys_ring_count;
-    const uint32_t chem_ring_count = region ? (uint32_t)md_index_data_num_ranges(&chem->ring) : 0;
+    const uint32_t sys_ring_count = (uint32_t)md_ring_data_count(&sys->ring);
+    const uint32_t chem_ring_count = region ? (uint32_t)md_ring_data_count(&chem->ring) : 0;
     const uint32_t ring_count = sys_ring_count + chem_ring_count;
-    const uint32_t* ring_offset = ring_count ? sys->ring.offsets : NULL;
-    const int32_t*  ring_atom   = ring_count ? sys->ring.indices : NULL;
-    const md_ring_flags_t* ring_flags = has_ring_flags ? sys->ring_flags : NULL;
-    uint32_t* own_offset = NULL;
-    int32_t*  own_atom = NULL;
-    md_ring_flags_t* own_flags = NULL;
-    size_t own_atom_count = 0;
+    const md_ring_t* rings = ring_count ? sys->ring.rings : NULL;
+    md_ring_t* own_rings = NULL;
     if (chem_ring_count) {
-        const uint32_t sys_ring_atoms = sys_ring_count ? sys->ring.offsets[sys_ring_count] : 0;
-        own_atom_count = sys_ring_atoms + md_array_size(chem->ring.indices);
-        own_offset = md_alloc(alloc, (ring_count + 1) * sizeof(uint32_t));
-        own_atom   = md_alloc(alloc, MAX(own_atom_count, 1) * sizeof(int32_t));
-        own_flags  = md_alloc(alloc, ring_count * sizeof(md_ring_flags_t));
-        if (sys_ring_count) {
-            MEMCPY(own_offset, sys->ring.offsets, (sys_ring_count + 1) * sizeof(uint32_t));
-            MEMCPY(own_atom, sys->ring.indices, sys_ring_atoms * sizeof(int32_t));
-        } else {
-            own_offset[0] = 0;
-        }
+        own_rings = md_alloc(alloc, ring_count * sizeof(md_ring_t));
+        if (sys_ring_count) MEMCPY(own_rings, sys->ring.rings, sys_ring_count * sizeof(md_ring_t));
         for (uint32_t r = 0; r < sys_ring_count; ++r) {
-            md_ring_flags_t f = has_ring_flags ? sys->ring_flags[r] : MD_RING_FLAG_NONE;
-            for (uint32_t k = own_offset[r]; k < own_offset[r + 1]; ++k) {
-                if (own_atom[k] >= 0 && (uint32_t)own_atom[k] < atom_count && region[own_atom[k]]) f = MD_RING_FLAG_NONE;
+            md_ring_t* ring = &own_rings[r];
+            for (uint32_t k = 0; k < ring->count; ++k) {
+                const int32_t a = ring->atoms[k];
+                if (a >= 0 && (uint32_t)a < atom_count && region[a]) ring->flags = MD_RING_FLAG_NONE;
             }
-            own_flags[r] = f;
         }
-        for (uint32_t q = 0; q < chem_ring_count; ++q) {
-            const int32_t* rq = md_index_range_beg(&chem->ring, q);
-            const uint32_t n = (uint32_t)md_index_range_size(&chem->ring, q);
-            const uint32_t at = own_offset[sys_ring_count + q];
-            MEMCPY(own_atom + at, rq, n * sizeof(int32_t));
-            own_offset[sys_ring_count + q + 1] = at + n;
-            own_flags[sys_ring_count + q] = chem->ring_flags[q];
-        }
-        ring_offset = own_offset;
-        ring_atom   = own_atom;
-        ring_flags  = own_flags;
+        MEMCPY(own_rings + sys_ring_count, chem->ring.rings, chem_ring_count * sizeof(md_ring_t));
+        rings = own_rings;
     }
 
     const bond_order_input_t in = {
@@ -2221,9 +2193,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
         .hydrogen      = hydrogen,
         .xyz           = has_xyz ? (const float*)sys->reference.xyz : NULL,
         .ring_count    = ring_count,
-        .ring_offset   = ring_offset,
-        .ring_atom     = ring_atom,
-        .ring_flags    = ring_flags,
+        .rings         = rings,
     };
     const uint32_t entries = compute_bond_orders(order, ref, &in);
 
@@ -2275,10 +2245,8 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
     md_free(alloc, partner, MAX(partner_count, 1) * 4 * sizeof(uint32_t));
     md_free(alloc, ring_entry, ring_entry_bytes);
     md_free(alloc, covered, MAX(bond_count, 1) * sizeof(uint8_t));
-    if (own_offset) {
-        md_free(alloc, own_offset, (ring_count + 1) * sizeof(uint32_t));
-        md_free(alloc, own_atom, MAX(own_atom_count, 1) * sizeof(int32_t));
-        md_free(alloc, own_flags, ring_count * sizeof(md_ring_flags_t));
+    if (own_rings) {
+        md_free(alloc, own_rings, ring_count * sizeof(md_ring_t));
     }
     if (region) md_free(alloc, region, MAX(atom_count, 1));
 

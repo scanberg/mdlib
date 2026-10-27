@@ -5613,11 +5613,11 @@ static inline bool compare_ring(const int* ring_a, int ring_a_size, const int* r
     return true;
 }
 
-static inline bool has_ring(const md_index_data_t* ring_data, const int* ring, int ring_size) {
-    const int64_t num_rings = md_index_data_num_ranges(ring_data);
+static inline bool has_ring(const md_ring_data_t* ring_data, const int* ring, int ring_size) {
+    const int64_t num_rings = md_ring_data_count(ring_data);
     for (int64_t i = 0; i < num_rings; ++i) {
-        const int* ring_i     = md_index_range_beg(ring_data, i);
-        const int ring_i_size = (int)md_index_range_size(ring_data, i);
+        const int* ring_i     = md_ring_atoms(ring_data, i);
+        const int ring_i_size = (int)md_ring_size(ring_data, i);
         if (compare_ring(ring_i, ring_i_size, ring, ring_size)) return true;
     }
     return false;
@@ -5705,16 +5705,16 @@ static void sort_ring(int* arr, int n) {
 #define ENVELOPE_MAX_CAND 64
 #define ENVELOPE_MAX_BONDS ((ENVELOPE_MAX_CAND + 1) * MAX_RING_SIZE)
 #define ENVELOPE_WORDS ((ENVELOPE_MAX_BONDS + 63) / 64)
-static void remove_envelope_rings(md_index_data_t* rings, const md_bond_data_t* bond, size_t num_atoms, md_allocator_i* temp_arena) {
-    const size_t num_rings = md_index_data_num_ranges(rings);
+static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* bond, size_t num_atoms, md_allocator_i* temp_arena) {
+    const size_t num_rings = md_ring_data_count(rings);
     if (num_rings < 2) return;
 
     // The rings of each atom
     uint32_t* off = md_alloc(temp_arena, (num_atoms + 1) * sizeof(uint32_t));
     MEMSET(off, 0, (num_atoms + 1) * sizeof(uint32_t));
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(rings, r);
-        const size_t n = md_index_range_size(rings, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         for (size_t k = 0; k < n; ++k) off[ring[k] + 1] += 1;
     }
     for (size_t i = 0; i < num_atoms; ++i) off[i + 1] += off[i];
@@ -5722,8 +5722,8 @@ static void remove_envelope_rings(md_index_data_t* rings, const md_bond_data_t* 
     uint32_t* fill = md_alloc(temp_arena, num_atoms * sizeof(uint32_t));
     MEMCPY(fill, off, num_atoms * sizeof(uint32_t));
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(rings, r);
-        const size_t n = md_index_range_size(rings, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const size_t n = md_ring_size(rings, r);
         for (size_t k = 0; k < n; ++k) idx[fill[ring[k]]++] = (uint32_t)r;
     }
 
@@ -5732,8 +5732,8 @@ static void remove_envelope_rings(md_index_data_t* rings, const md_bond_data_t* 
     size_t removed_count = 0;
 
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(rings, r);
-        const int n = (int)md_index_range_size(rings, r);
+        const int32_t* ring = md_ring_atoms(rings, r);
+        const int n = (int)md_ring_size(rings, r);
         if (n < 4) continue;    // Two rings of 3 make one of 4 at the least
 
         // Smaller rings which share an atom with this one
@@ -5742,7 +5742,7 @@ static void remove_envelope_rings(md_index_data_t* rings, const md_bond_data_t* 
         for (int k = 0; k < n; ++k) {
             for (uint32_t t = off[ring[k]]; t < off[ring[k] + 1]; ++t) {
                 const uint32_t s = idx[t];
-                if (s == r || (int)md_index_range_size(rings, s) >= n) continue;
+                if (s == r || (int)md_ring_size(rings, s) >= n) continue;
                 bool dup = false;
                 for (int c = 0; c < num_cand; ++c) dup |= cand[c] == s;
                 if (!dup && num_cand < ENVELOPE_MAX_CAND) cand[num_cand++] = s;
@@ -5762,8 +5762,8 @@ static void remove_envelope_rings(md_index_data_t* rings, const md_bond_data_t* 
         for (int c = 0; c <= num_cand && valid; ++c) {
             const bool self = c == num_cand;
             const uint32_t s = self ? (uint32_t)r : cand[c];
-            const int32_t* rs = md_index_range_beg(rings, s);
-            const int ns = (int)md_index_range_size(rings, s);
+            const int32_t* rs = md_ring_atoms(rings, s);
+            const int ns = (int)md_ring_size(rings, s);
             uint64_t v[ENVELOPE_WORDS] = {0};
             for (int k = 0; k < ns; ++k) {
                 const md_bond_idx_t b = md_bond_find(bond, rs[k], rs[(k + 1) % ns]);
@@ -5798,13 +5798,11 @@ static void remove_envelope_rings(md_index_data_t* rings, const md_bond_data_t* 
     }
     if (!removed_count) return;
 
-    md_index_data_t kept = {0};
-    kept.alloc = rings->alloc;
+    size_t kept = 0;
     for (size_t r = 0; r < num_rings; ++r) {
-        if (!removed[r]) md_index_data_push_arr(&kept, md_index_range_beg(rings, r), md_index_range_size(rings, r));
+        if (!removed[r]) rings->rings[kept++] = rings->rings[r];
     }
-    md_index_data_free(rings);
-    *rings = kept;
+    md_array_shrink(rings->rings, kept);
 }
 #undef ENVELOPE_MAX_CAND
 #undef ENVELOPE_MAX_BONDS
@@ -5817,7 +5815,7 @@ static void remove_envelope_rings(md_index_data_t* rings, const md_bond_data_t* 
 
 // The rings of the bond graph (bond, with its connectivity), pushed to out: see md_util_system_infer_rings. The atoms
 // set in skip (optional) are neither roots nor passed through.
-static void find_rings(md_index_data_t* out, const md_bond_data_t* bond, size_t num_atoms, const uint64_t* skip, md_temp_scope_t temp) {
+static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t num_atoms, const uint64_t* skip, md_allocator_i* alloc, md_temp_scope_t temp) {
     md_allocator_i* temp_arena = md_temp_allocator(temp);
 
     // Some typedefs to enable laboration of types
@@ -5933,7 +5931,7 @@ static void find_rings(md_index_data_t* out, const md_bond_data_t* bond, size_t 
                         uint64_t key = md_hash64(ring, len * sizeof(*ring), 0);
                         if (!md_hashset_get(&ring_set, key)) {
                             md_hashset_add(&ring_set, key);
-                            md_index_data_push_arr(out, ring, len);
+                            md_ring_data_push(out, ring, len, MD_RING_FLAG_NONE, alloc);
                         }
                     }
                 } else {
@@ -5954,13 +5952,13 @@ static void find_rings(md_index_data_t* out, const md_bond_data_t* bond, size_t 
     remove_envelope_rings(out, bond, num_atoms, temp_arena);
 }
 
-void md_util_infer_rings(md_index_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms) {
-    ASSERT(out_rings && out_rings->alloc);
+void md_util_infer_rings(md_ring_data_t* out_rings, const md_bond_data_t* bond, size_t num_atoms, md_allocator_i* alloc) {
+    ASSERT(out_rings && alloc);
     ASSERT(bond);
-    md_index_data_clear(out_rings);
+    md_ring_data_clear(out_rings);
     if (num_atoms == 0 || bond->count == 0 || !bond->conn.offset) return;
-    md_temp_scope_t temp = md_temp_begin_avoid(out_rings->alloc);
-    find_rings(out_rings, bond, num_atoms, NULL, temp);
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    find_rings(out_rings, bond, num_atoms, NULL, alloc, temp);
     md_temp_end(temp);
 }
 
@@ -5980,12 +5978,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
     }
     md_system_topology_changed(sys);
 
-    if (sys->ring.alloc && sys->ring.alloc != alloc) {
-        md_index_data_free(&sys->ring);
-    }
-    sys->ring.alloc = alloc;
-    md_index_data_clear(&sys->ring);
-    md_array_shrink(sys->ring_flags, 0);
+    md_ring_data_clear(&sys->ring);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp);
@@ -6007,7 +6000,7 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
     }
 
-    find_rings(&sys->ring, &sys->bond, num_atoms, skip, temp);
+    find_rings(&sys->ring, &sys->bond, num_atoms, skip, alloc, temp);
 
     md_temp_end(temp);
 
@@ -6072,10 +6065,9 @@ static void sugar_canonical_order(int32_t* ring, int n, int ring_o, int anomeric
 
 void md_util_system_infer_ring_flags(md_system_t* sys) {
     ASSERT(sys);
-    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
-    md_array_resize(sys->ring_flags, num_rings, sys->alloc);
+    const size_t num_rings = md_ring_data_count(&sys->ring);
     if (num_rings == 0) return;
-    MEMSET(sys->ring_flags, 0, num_rings * sizeof(md_ring_flags_t));
+    for (size_t r = 0; r < num_rings; ++r) sys->ring.rings[r].flags = 0;
     if (!sys->bond.conn.offset || !sys->bond.flags) return;
 
     // Bonds in more than one ring make those rings fused
@@ -6083,8 +6075,8 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
     uint8_t* bond_rings = md_temp_alloc(temp, MAX(sys->bond.count, 1));
     MEMSET(bond_rings, 0, MAX(sys->bond.count, 1));
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+        const int32_t* ring = md_ring_atoms(&sys->ring, r);
+        const size_t n = md_ring_size(&sys->ring, r);
         for (size_t k = 0; k < n; ++k) {
             const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
             if (b >= 0 && bond_rings[b] < 255) bond_rings[b] += 1;
@@ -6092,8 +6084,8 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
     }
 
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+        const int32_t* ring = md_ring_atoms(&sys->ring, r);
+        const size_t n = md_ring_size(&sys->ring, r);
         md_ring_flags_t flags = MD_RING_FLAG_NONE;
         bool aromatic = n > 0;
         for (size_t k = 0; k < n; ++k) {
@@ -6111,9 +6103,9 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
         const int anomeric = sugar_anomeric(sys, ring, (int)n, &ring_o);
         if (anomeric >= 0) {
             flags |= MD_RING_FLAG_SUGAR;
-            sugar_canonical_order(md_index_range_ptr(&sys->ring, r), (int)n, ring_o, anomeric);
+            sugar_canonical_order(md_ring_atoms_mut(&sys->ring, r), (int)n, ring_o, anomeric);
         }
-        sys->ring_flags[r] = flags;
+        sys->ring.rings[r].flags = (uint16_t)flags;
     }
 
     // Bonds of aromatic rings fuse the other rings they are in to an aromatic ring: an aromatic ring which shares a
@@ -6122,23 +6114,23 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
     uint8_t* bond_aromatic = md_temp_alloc(temp, MAX(sys->bond.count, 1));
     MEMSET(bond_aromatic, 0, MAX(sys->bond.count, 1));
     for (size_t r = 0; r < num_rings; ++r) {
-        if (!(sys->ring_flags[r] & MD_RING_FLAG_AROMATIC)) continue;
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+        if (!(md_ring_flags(&sys->ring, r) & MD_RING_FLAG_AROMATIC)) continue;
+        const int32_t* ring = md_ring_atoms(&sys->ring, r);
+        const size_t n = md_ring_size(&sys->ring, r);
         for (size_t k = 0; k < n; ++k) {
             const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
             if (b >= 0 && bond_aromatic[b] < 255) bond_aromatic[b] += 1;
         }
     }
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* ring = md_index_range_beg(&sys->ring, r);
-        const size_t n = md_index_range_size(&sys->ring, r);
+        const int32_t* ring = md_ring_atoms(&sys->ring, r);
+        const size_t n = md_ring_size(&sys->ring, r);
         // Aromatic rings other than this one
-        const uint8_t self = (sys->ring_flags[r] & MD_RING_FLAG_AROMATIC) ? 1 : 0;
+        const uint8_t self = (md_ring_flags(&sys->ring, r) & MD_RING_FLAG_AROMATIC) ? 1 : 0;
         for (size_t k = 0; k < n; ++k) {
             const md_bond_idx_t b = md_bond_find(&sys->bond, ring[k], ring[(k + 1) % n]);
             if (b >= 0 && bond_aromatic[b] > self) {
-                sys->ring_flags[r] |= MD_RING_FLAG_FUSED_AROMATIC;
+                sys->ring.rings[r].flags |= MD_RING_FLAG_FUSED_AROMATIC;
                 break;
             }
         }
@@ -12131,12 +12123,29 @@ static int lipid_cmp_u64(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
+// Appends a range of indices to a ragged array of offsets (the first of them 0) and indices
+static void push_index_range(uint32_t** offset, int32_t** idx, const int32_t* src, size_t n, md_allocator_i* alloc) {
+    if (md_array_size(*offset) == 0) md_array_push(*offset, 0, alloc);
+    if (n > 0) md_array_push_array(*idx, src, n, alloc);
+    md_array_push(*offset, (uint32_t)md_array_size(*idx), alloc);
+}
+
+// The empty lipid data, whose offsets start at 0
+static void init_lipid_data(md_lipid_data_t* lipid, md_allocator_i* alloc) {
+    md_array_push(lipid->residue_offset, 0, alloc);
+    md_array_push(lipid->head_offset, 0, alloc);
+    md_array_push(lipid->tail_offset, 0, alloc);
+    md_array_push(lipid->head.offset, 0, alloc);
+    md_array_push(lipid->tail.spine_offset, 0, alloc);
+    md_array_push(lipid->tail.atom_offset, 0, alloc);
+}
+
 // Records a lipid of the residues residues (ascending), with the heads and tails pushed for it since the last one (none
 // when its anatomy is not known), and its residues as lipids
 static void record_lipid(md_system_t* sys, const int32_t* residues, size_t num_residues) {
     md_lipid_data_t* lipid = &sys->lipid;
     md_allocator_i* alloc = sys->alloc;
-    md_index_data_push_arr(&lipid->residues, residues, num_residues);
+    push_index_range(&lipid->residue_offset, &lipid->residue_idx, residues, num_residues, alloc);
     md_array_push(lipid->head_offset, (uint32_t)lipid->head.count, alloc);
     md_array_push(lipid->tail_offset, (uint32_t)lipid->tail.count, alloc);
     lipid->count += 1;
@@ -12509,13 +12518,13 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
         }
         for (int32_t m = 0; m < qe; ++m) queue[m] = atoms[queue[m]];
         qsort(queue, (size_t)qe, sizeof(int32_t), lipid_cmp_i32);
-        md_index_data_push_arr(&lipid->head.atoms, queue, (size_t)qe);
+        push_index_range(&lipid->head.offset, &lipid->head.atom_idx, queue, (size_t)qe, alloc);
         num_heads += 1;
     }
 
     for (size_t t = 0; t < num_tails; ++t) {
         const spine_range_t r = spine_ranges[t];
-        md_index_data_push_arr(&lipid->tail.spine, spines + r.beg, (size_t)(r.end - r.beg));
+        push_index_range(&lipid->tail.spine_offset, &lipid->tail.spine_idx, spines + r.beg, (size_t)(r.end - r.beg), alloc);
 
         // Its atoms and their hydrogens, ascending
         const lipid_part_t* p = &parts[tail_part[t]];
@@ -12541,7 +12550,7 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
             }
             m = u;
         }
-        md_index_data_push_arr(&lipid->tail.atoms, queue, (size_t)m);
+        push_index_range(&lipid->tail.atom_offset, &lipid->tail.atom_idx, queue, (size_t)m, alloc);
         for (int32_t q = 0; q < m; ++q) {
             sys->atom.flags[queue[q]] |= MD_ATOM_FLAG_LIPID_TAIL;
         }
@@ -12589,12 +12598,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
     // Derived from scratch
     md_lipid_data_free(&sys->lipid, alloc);
     md_lipid_data_t* lipid = &sys->lipid;
-    lipid->residues.alloc = alloc;
-    lipid->head.atoms.alloc = alloc;
-    lipid->tail.spine.alloc = alloc;
-    lipid->tail.atoms.alloc = alloc;
-    md_array_push(lipid->head_offset, 0, alloc);
-    md_array_push(lipid->tail_offset, 0, alloc);
+    init_lipid_data(lipid, alloc);
 
     if (md_array_size(sys->atom.flags) < sys->atom.count) {
         const size_t size = md_array_size(sys->atom.flags);
@@ -12617,16 +12621,16 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
 
     // The atoms of fused rings: a skeleton (a sterol) rather than a chain
     uint8_t* in_fused_ring = NULL;
-    const size_t num_rings = md_index_data_num_ranges(&sys->ring);
+    const size_t num_rings = md_ring_data_count(&sys->ring);
     for (size_t r = 0; r < num_rings; ++r) {
         if (!(md_system_ring_flags(sys, r) & MD_RING_FLAG_FUSED)) continue;
         if (!in_fused_ring) {
             in_fused_ring = md_alloc(temp_arena, sys->atom.count);
             MEMSET(in_fused_ring, 0, sys->atom.count);
         }
-        const int32_t* beg = md_index_range_beg(&sys->ring, r);
-        const int32_t* end = md_index_range_end(&sys->ring, r);
-        for (const int32_t* it = beg; it < end; ++it) in_fused_ring[*it] = 1;
+        const int32_t* atoms = md_ring_atoms(&sys->ring, r);
+        const size_t n = md_ring_size(&sys->ring, r);
+        for (size_t k = 0; k < n; ++k) in_fused_ring[atoms[k]] = 1;
     }
 
     // The molecules: the residues which may be of a lipid (not amino acids, nucleotides, water or ions), joined by the

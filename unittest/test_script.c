@@ -5933,7 +5933,7 @@ UTEST(script, plane) {
     plane_sys_t trp = {0};
     ASSERT_TRUE(plane_sys_init(&trp, "TRP"));
     md_system_t* sys = &trp.sys;
-    ASSERT_EQ(2, (int)md_index_data_num_ranges(&sys->ring));
+    ASSERT_EQ(2, (int)md_ring_data_count(&sys->ring));
 
     md_script_ir_t* ir = md_script_ir_create(trp.alloc);
     ASSERT_TRUE(plane_compile(ir, "p = plane(ring()); c = centroid(p); n = normal(p); r = radius(p); dv = deviation(p); a = angle(p[1], p[2]); s = plane(residue(1));", &trp));
@@ -5954,8 +5954,8 @@ UTEST(script, plane) {
     for (int i = 0; i < 2; ++i) {
         // The plane of ring i: the references from its atoms, in the order of the ring
         const plane_t* pl = &((const plane_t*)p.ptr)[i];
-        const int32_t* ring = md_index_range_beg(&sys->ring, i);
-        const int nr = (int)md_index_range_size(&sys->ring, i);
+        const int32_t* ring = md_ring_atoms(&sys->ring, i);
+        const int nr = (int)md_ring_size(&sys->ring, i);
         EXPECT_EQ(nr, pl->count);
         vec3_t mean = {0};
         for (int k = 0; k < nr; ++k) mean = vec3_add(mean, trp.st.xyz[ring[k]]);
@@ -6127,11 +6127,11 @@ UTEST(script, plane_sugar) {
     const plane_t* pl = (const plane_t*)p.ptr;
     // The ring: O4', C1', C2', C3', C4'
     int64_t r = -1;
-    for (size_t i = 0; i < md_index_data_num_ranges(&ade.sys.ring); ++i) {
+    for (size_t i = 0; i < md_ring_data_count(&ade.sys.ring); ++i) {
         if (md_system_ring_flags(&ade.sys, i) & MD_RING_FLAG_SUGAR) r = (int64_t)i;
     }
     ASSERT_GE(r, 0);
-    const int32_t* ring = md_index_range_beg(&ade.sys.ring, (size_t)r);
+    const int32_t* ring = md_ring_atoms(&ade.sys.ring, (size_t)r);
     EXPECT_TRUE(str_eq(md_atom_name(&ade.sys.atom, ring[0]), STR_LIT("O4'")));
     vec3_t newell = {0};
     for (int k = 0; k < 5; ++k) {
@@ -6238,8 +6238,8 @@ UTEST(script, pucker_pyranose) {
     // The atoms given the other way around: the same ring seen from the other side, theta goes to 180 - theta
     // O5 C1 C2 C3 C4 C5 by their indices, then reversed
     const int32_t* ring = NULL;
-    for (size_t i = 0; i < md_index_data_num_ranges(&nag.sys.ring); ++i) {
-        if (md_system_ring_flags(&nag.sys, i) & MD_RING_FLAG_SUGAR) ring = md_index_range_beg(&nag.sys.ring, i);
+    for (size_t i = 0; i < md_ring_data_count(&nag.sys.ring); ++i) {
+        if (md_system_ring_flags(&nag.sys, i) & MD_RING_FLAG_SUGAR) ring = md_ring_atoms(&nag.sys.ring, i);
     }
     ASSERT_TRUE(ring != NULL);
     char src[256];

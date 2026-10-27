@@ -478,13 +478,13 @@ UTEST_F(chem, ring_flags) {
             build_component(&sys, &st, map, c, sets[s].strip_h, false);
             ASSERT_TRUE(md_chem_perceive(&sys, &st, sets[s].strip_h ? MD_CHEM_FLAG_PROTONATE_PH7 : MD_CHEM_FLAG_NONE));
 
-            const int n = (int)md_index_data_num_ranges(&sys.ring);
+            const int n = (int)md_ring_data_count(&sys.ring);
             EXPECT_EQ_MSG(ex->count, n, ex->id);
-            EXPECT_EQ_MSG((size_t)n, md_array_size(sys.ring_flags), ex->id);
+            EXPECT_EQ_MSG((size_t)n, md_ring_data_count(&sys.ring), ex->id);
             if (n == ex->count) {
                 int got[6][2], want[6][2];
                 for (int r = 0; r < n; ++r) {
-                    got[r][0]  = (int)md_index_range_size(&sys.ring, r);
+                    got[r][0]  = (int)md_ring_size(&sys.ring, r);
                     got[r][1]  = (int)md_system_ring_flags(&sys, r);
                     want[r][0] = ex->ring[r].size;
                     want[r][1] = (int)ex->ring[r].flags;
@@ -524,12 +524,12 @@ UTEST_F(chem, sugar_ring_order) {
             ASSERT_TRUE(md_chem_perceive(&sys, &st, strip_h ? MD_CHEM_FLAG_PROTONATE_PH7 : MD_CHEM_FLAG_NONE));
 
             bool found = false;
-            for (size_t r = 0; r < md_index_data_num_ranges(&sys.ring) && !found; ++r) {
+            for (size_t r = 0; r < md_ring_data_count(&sys.ring) && !found; ++r) {
                 if (!(md_system_ring_flags(&sys, r) & MD_RING_FLAG_SUGAR)) continue;
                 char buf[64] = {0};
                 int len = 0;
-                const int32_t* ring = md_index_range_beg(&sys.ring, r);
-                for (size_t k = 0; k < md_index_range_size(&sys.ring, r); ++k) {
+                const int32_t* ring = md_ring_atoms(&sys.ring, r);
+                for (size_t k = 0; k < md_ring_size(&sys.ring, r); ++k) {
                     const str_t name = md_atom_name(&sys.atom, ring[k]);
                     len += snprintf(buf + len, sizeof(buf) - len, "%s%.*s", k ? " " : "", (int)name.len, name.ptr);
                 }
@@ -1018,30 +1018,30 @@ static void delta_expect_equivalent(int* utest_result, const delta_fixture_chem_
 
     // The rings of the region are those of the products there, with their flags
     size_t touching = 0;
-    for (size_t r = 0; r < md_index_data_num_ranges(&after->ring); ++r) {
-        const int32_t* ring = md_index_range_beg(&after->ring, r);
-        const size_t m = md_index_range_size(&after->ring, r);
+    for (size_t r = 0; r < md_ring_data_count(&after->ring); ++r) {
+        const int32_t* ring = md_ring_atoms(&after->ring, r);
+        const size_t m = md_ring_size(&after->ring, r);
         bool in = false;
         for (size_t k = 0; k < m; ++k) in |= delta_region_index(&f->chem, ring[k]) >= 0;
         if (!in) continue;
         touching += 1;
         bool found = false;
-        for (size_t q = 0; q < md_index_data_num_ranges(&f->chem.ring) && !found; ++q) {
-            const int32_t* rq = md_index_range_beg(&f->chem.ring, q);
-            if (md_index_range_size(&f->chem.ring, q) != m) continue;
+        for (size_t q = 0; q < md_ring_data_count(&f->chem.ring) && !found; ++q) {
+            const int32_t* rq = md_ring_atoms(&f->chem.ring, q);
+            if (md_ring_size(&f->chem.ring, q) != m) continue;
             bool same = true;
             for (size_t k = 0; k < m; ++k) same &= rq[k] == ring[k];
             if (!same) continue;
             found = true;
             const uint32_t mask = MD_RING_FLAG_AROMATIC | MD_RING_FLAG_HETERO | MD_RING_FLAG_FUSED | MD_RING_FLAG_FUSED_AROMATIC;
             snprintf(msg, sizeof(msg), "%s: ring %zu flags", name, r);
-            EXPECT_EQ_MSG((int)(after->ring_flags[r] & mask), (int)(f->chem.ring_flags[q] & mask), msg);
+            EXPECT_EQ_MSG((int)(md_system_ring_flags(after, r) & mask), (int)(md_ring_flags(&f->chem.ring, q) & mask), msg);
         }
         snprintf(msg, sizeof(msg), "%s: ring %zu of the products", name, r);
         EXPECT_TRUE_MSG(found, msg);
     }
     snprintf(msg, sizeof(msg), "%s: rings", name);
-    EXPECT_EQ_MSG(touching, md_index_data_num_ranges(&f->chem.ring), msg);
+    EXPECT_EQ_MSG(touching, md_ring_data_count(&f->chem.ring), msg);
 }
 
 UTEST(chem, delta_acid_base) {
@@ -1068,7 +1068,7 @@ UTEST(chem, delta_diels_alder) {
     EXPECT_EQ(1, delta_order(&f, 3, 4));
     EXPECT_EQ(1, delta_order(&f, 5, 6));
     EXPECT_EQ(1, delta_order(&f, 4, 5));
-    EXPECT_EQ(1, (int)md_index_data_num_ranges(&f.chem.ring));
+    EXPECT_EQ(1, (int)md_ring_data_count(&f.chem.ring));
     md_vm_arena_destroy(f.alloc);
 }
 
@@ -1094,7 +1094,7 @@ UTEST(chem, delta_ring_opening) {
     EXPECT_EQ(2, delta_order(&f, 1, 4));
     EXPECT_EQ(2, delta_order(&f, 2, 3));
     EXPECT_EQ(1, delta_order(&f, 1, 2));
-    EXPECT_EQ(0, (int)md_index_data_num_ranges(&f.chem.ring));
+    EXPECT_EQ(0, (int)md_ring_data_count(&f.chem.ring));
     md_vm_arena_destroy(f.alloc);
 }
 
@@ -1107,8 +1107,8 @@ UTEST(chem, delta_pyridinium) {
     EXPECT_EQ(1, delta_charge(&f, 1));
     EXPECT_EQ(-1, delta_charge(&f, 12));
     EXPECT_TRUE(delta_bond_flags(&f, 1, 2) & MD_BOND_FLAG_AROMATIC);
-    ASSERT_EQ(1, (int)md_index_data_num_ranges(&f.chem.ring));
-    EXPECT_TRUE(f.chem.ring_flags[0] & MD_RING_FLAG_AROMATIC);
+    ASSERT_EQ(1, (int)md_ring_data_count(&f.chem.ring));
+    EXPECT_TRUE(md_ring_flags(&f.chem.ring, 0) & MD_RING_FLAG_AROMATIC);
     md_vm_arena_destroy(f.alloc);
 }
 
@@ -1134,7 +1134,7 @@ UTEST(chem, delta_biphenyl) {
     delta_expect_equivalent(utest_result, &f, "biphenyl");
     // Two aromatic rings joined by a single bond, and two bromides
     EXPECT_EQ(1, delta_order(&f, 2, 14));
-    EXPECT_EQ(2, (int)md_index_data_num_ranges(&f.chem.ring));
+    EXPECT_EQ(2, (int)md_ring_data_count(&f.chem.ring));
     EXPECT_EQ(-1, delta_charge(&f, 1));
     EXPECT_EQ(-1, delta_charge(&f, 13));
     md_vm_arena_destroy(f.alloc);

@@ -246,7 +246,7 @@ void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const
 // bonds formed): delta, its bonds broken and formed, and chem, the chemistry of the region they reach
 // (md_chem_perceive_delta), which gives the orders, aromaticity and rings there. The rings of the system keep their
 // indices, those of the region (none drawn of the system's where they have an atom) follow them: their circles pick as
-// md_index_data_num_ranges(&sys->ring) + their index in chem->ring. Either may be NULL: without chem the bonds formed
+// md_ring_data_count(&sys->ring) + their index in chem->ring. Either may be NULL: without chem the bonds formed
 // are plain, without delta those of the system are drawn as they are.
 void md_gl_mol_set_bond_orders(md_gl_mol_t mol, const struct md_system_t* sys, const struct md_bond_delta_t* delta, const struct md_chem_delta_t* chem);
 
@@ -455,7 +455,7 @@ typedef struct md_gl_draw_op_t {
 // from, never an atom of it. A tube writes the index of its control point among those of all tubes (md_gl_mol_set_tubes)
 // as a backbone, a slab its index (md_gl_mol_set_slabs) as a ring. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
 // The circle of an aromatic ring writes the index of the ring in md_system_t::ring (all of its rings, so the range
-// is md_index_data_num_ranges(&sys->ring) long, of which only the aromatic ones are drawn). The gap of a chain
+// is md_ring_data_count(&sys->ring) long, of which only the aromatic ones are drawn). The gap of a chain
 // (md_gl_mol_set_chain_gaps) writes the index of the residue before its break (a range of the system's residue
 // count, of which only those with MD_RESIDUE_FLAG_BREAK_AFTER are drawn).
 typedef struct md_gl_picking_offset_t {

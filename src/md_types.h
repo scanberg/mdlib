@@ -359,7 +359,7 @@ enum {
 #define MD_RING_MIN_SIZE 3
 #define MD_RING_MAX_SIZE 7
 
-// Ring flags (md_system_t::ring_flags), what a ring of the system is. md_util_system_infer_ring_flags derives them
+// Ring flags (md_ring_t::flags), what a ring of the system is. md_util_system_infer_ring_flags derives them
 // from the rings, the bonds and their flags; md_util_system_infer_rings and md_chem_perceive call it.
 //   AROMATIC  Every bond of the ring is aromatic (md_chem_perceive, or the bonds a file gives): an aromatic ring, alone
 //             or fused with a neighbor.
@@ -669,6 +669,19 @@ typedef struct md_index_data_t {
     md_array(int32_t)  indices;
 } md_index_data_t;
 
+// A ring: MD_RING_MIN_SIZE to MD_RING_MAX_SIZE atoms in order around the ring, and its classification flags.
+typedef struct md_ring_t {
+    int32_t  atoms[MD_RING_MAX_SIZE];   // Only the first count are valid
+    uint16_t count;
+    uint16_t flags;                     // md_ring_flags_t bits
+} md_ring_t;
+
+STATIC_ASSERT(sizeof(md_ring_t) == 32, "md_ring_t should be 32 bytes");
+
+// The rings of a system.
+typedef struct md_ring_data_t {
+    md_array(md_ring_t) rings;
+} md_ring_data_t;
 
 // OPERATIONS ON THE TYPES
 
@@ -924,4 +937,60 @@ static inline void md_index_data_merge(md_index_data_t* dest, const md_index_dat
         }
         dest_num_indices += range_size;
     }
+}
+
+static inline void md_ring_data_free(md_ring_data_t* data, struct md_allocator_i* alloc) {
+    ASSERT(data);
+    if (data->rings) {
+        ASSERT(alloc);
+        md_array_free(data->rings, alloc);
+    }
+#if DEBUG
+    MEMSET(data, 0, sizeof(md_ring_data_t));
+#endif
+}
+
+static inline void md_ring_data_clear(md_ring_data_t* data) {
+    ASSERT(data);
+    md_array_shrink(data->rings, 0);
+}
+
+static inline size_t md_ring_data_count(const md_ring_data_t* data) {
+    ASSERT(data);
+    return md_array_size(data->rings);
+}
+
+// Pushes a ring of count atoms (MD_RING_MIN_SIZE to MD_RING_MAX_SIZE) and returns its index
+static inline size_t md_ring_data_push(md_ring_data_t* data, const int32_t* atoms, size_t count, md_ring_flags_t flags, struct md_allocator_i* alloc) {
+    ASSERT(data);
+    ASSERT(alloc);
+    ASSERT(atoms);
+    ASSERT(MD_RING_MIN_SIZE <= count && count <= MD_RING_MAX_SIZE);
+    md_ring_t ring = {0};
+    MEMCPY(ring.atoms, atoms, count * sizeof(int32_t));
+    ring.count = (uint16_t)count;
+    ring.flags = (uint16_t)flags;
+    md_array_push(data->rings, ring, alloc);
+    return md_array_size(data->rings) - 1;
+}
+
+// The atoms of a ring in order, NULL if the ring does not exist
+static inline const int32_t* md_ring_atoms(const md_ring_data_t* data, size_t ring_idx) {
+    ASSERT(data);
+    return ring_idx < md_array_size(data->rings) ? data->rings[ring_idx].atoms : NULL;
+}
+
+static inline int32_t* md_ring_atoms_mut(md_ring_data_t* data, size_t ring_idx) {
+    ASSERT(data);
+    return ring_idx < md_array_size(data->rings) ? data->rings[ring_idx].atoms : NULL;
+}
+
+static inline size_t md_ring_size(const md_ring_data_t* data, size_t ring_idx) {
+    ASSERT(data);
+    return ring_idx < md_array_size(data->rings) ? data->rings[ring_idx].count : 0;
+}
+
+static inline md_ring_flags_t md_ring_flags(const md_ring_data_t* data, size_t ring_idx) {
+    ASSERT(data);
+    return ring_idx < md_array_size(data->rings) ? (md_ring_flags_t)data->rings[ring_idx].flags : MD_RING_FLAG_NONE;
 }

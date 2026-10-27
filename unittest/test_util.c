@@ -2552,16 +2552,16 @@ UTEST(util, pbc_optimal_rotation_degenerate) {
 UTEST_F(util, rings_common) {
     int64_t num_rings = 0;
 
-    num_rings = md_index_data_num_ranges(&utest_fixture->mol_nucleotides.ring);
+    num_rings = md_ring_data_count(&utest_fixture->mol_nucleotides.ring);
     EXPECT_EQ(num_rings, 4);
     
-    num_rings = md_index_data_num_ranges(&utest_fixture->mol_ala.ring);
+    num_rings = md_ring_data_count(&utest_fixture->mol_ala.ring);
     EXPECT_EQ(num_rings, 0);
    
-    num_rings = md_index_data_num_ranges(&utest_fixture->mol_pftaa.ring);
+    num_rings = md_ring_data_count(&utest_fixture->mol_pftaa.ring);
     EXPECT_EQ(num_rings, 5);
 
-    num_rings = md_index_data_num_ranges(&utest_fixture->mol_centered.ring);
+    num_rings = md_ring_data_count(&utest_fixture->mol_centered.ring);
     EXPECT_EQ(num_rings, 2076);
 }
 
@@ -2576,7 +2576,7 @@ UTEST(util, rings_c60) {
 	EXPECT_EQ(sys.atom.count, 60);
 	EXPECT_EQ(sys.bond.count, 90);
 
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 32);
 
     const size_t num_molecules = md_system_molecule_count(&sys);
@@ -2596,7 +2596,7 @@ UTEST(util, rings_c720) {
     EXPECT_EQ(sys.atom.count, 720);
     EXPECT_EQ(sys.bond.count, 1080);
 
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 362);
 
     const size_t num_molecules = md_system_molecule_count(&sys);
@@ -2613,7 +2613,7 @@ UTEST(util, rings_14kr) {
     md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 207);
 
     md_temp_end(temp_scope);
@@ -2627,7 +2627,7 @@ UTEST(util, rings_trytophan_pdb) {
     md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_NONE);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 2);
 
     const size_t num_molecules = md_system_molecule_count(&sys);
@@ -2644,7 +2644,7 @@ UTEST(util, rings_trytophan_xyz) {
     md_xyz_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), MD_XYZ_OPTION_NONE);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 2);
 
     const size_t num_molecules = md_system_molecule_count(&sys);
@@ -2661,7 +2661,7 @@ UTEST(util, rings_full) {
     md_xyz_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), MD_XYZ_OPTION_NONE);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 195);
 
     const size_t num_molecules = md_system_molecule_count(&sys);
@@ -2678,12 +2678,12 @@ UTEST(util, rings_ciprofloxacin) {
     md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), MD_PDB_OPTION_NONE);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
-    const int64_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const int64_t num_rings = md_ring_data_count(&sys.ring);
     ASSERT_EQ(num_rings, 4);
-    EXPECT_EQ(md_index_range_size(&sys.ring, 0), 3);
-    EXPECT_EQ(md_index_range_size(&sys.ring, 1), 6);
-    EXPECT_EQ(md_index_range_size(&sys.ring, 2), 6);
-    EXPECT_EQ(md_index_range_size(&sys.ring, 3), 6);
+    EXPECT_EQ(md_ring_size(&sys.ring, 0), 3);
+    EXPECT_EQ(md_ring_size(&sys.ring, 1), 6);
+    EXPECT_EQ(md_ring_size(&sys.ring, 2), 6);
+    EXPECT_EQ(md_ring_size(&sys.ring, 3), 6);
 
     md_temp_end(temp_scope);
 }
@@ -2708,7 +2708,7 @@ UTEST(util, rings_coarse_grained) {
 
         md_infer_flags_t flags = MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT;
         EXPECT_TRUE(md_util_system_infer(&sys, &sys_state, flags));
-        EXPECT_EQ(0, (int)md_index_data_num_ranges(&sys.ring));
+        EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));
         md_temp_end(temp_scope);
     }
 }
