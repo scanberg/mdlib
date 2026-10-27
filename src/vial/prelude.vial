@@ -1,12 +1,15 @@
 def distance(a, b, between=None):
     if between is None:
-        return norm(displacement(a, b))
+        r = norm(displacement(a, b))
+        return shown(r, line(a, b, label=r))
     return _between(a, b, between)
 
 def _between(a: group, b: group, op):
     assert op in ('closest', 'farthest'), "between= takes 'closest' or 'farthest'"
-    d = norm(displacement(positions(a)[:, None], positions(b)))   # one group each; maps over arrays of groups
-    return min(d) if op == 'closest' else max(d)
+    pa = positions(a)                            # one group each; maps over arrays of groups
+    pb = positions(b)
+    d, i, j = closest_pair(pa, pb) if op == 'closest' else farthest_pair(pa, pb)   # i and j only when drawn
+    return shown(d, line(pa[i], pb[j], label=d))
 
 def centroid(s):
     return com(s, weights=None)
@@ -14,13 +17,17 @@ def centroid(s):
 def gyration(p: points, weights='mass'):
     assert weights in ('mass', None), "weights= takes 'mass' or None"
     w = mass(particles(p)) if weights == 'mass' else ones(shape(p)[0])
-    r = norm(displacement(com(p, weights), p))   # minimum image from a periodic-aware centre
-    return sqrt(sum(w * r**2) / sum(w))
+    c = com(p, weights)
+    r = norm(displacement(c, p))                 # minimum image from a periodic-aware centre
+    rg = sqrt(sum(w * r**2) / sum(w))
+    return shown(rg, sphere(c, rg))
 
 def normal(p: points):
-    d = displacement(com(p, weights=None), p)    # float[n][3]
+    c = com(p, weights=None)
+    d = displacement(c, p)                       # float[n][3]
     w, v = eigh(d.T @ d)                         # eigenvalues ascending
-    return v[:, 0]                               # the direction of least spread
+    n = v[:, 0]                                  # the direction of least spread
+    return shown(n, arrow(c, direction=n, length=5.0))
 
 def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
     assert weights in ('mass', None), "weights= takes 'mass' or None"

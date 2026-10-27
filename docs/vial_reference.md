@@ -129,6 +129,7 @@ A type is a dtype, a shape and a unit, printed C-style: `float[433][3] Å`. Shap
 | `str` | names and labels; never published |
 | `set` | a set of particles |
 | `range` | an inclusive range of values |
+| `drawing` | lines, shapes and labels for hover; never published |
 
 `int` with `float` gives `float`. A number literal takes the dtype of the array it meets when both are integers or both are floats, as NumPy 2 does, so `0.5 * a` keeps a float array's dtype, and 0.5 times an int array is float. Reductions, including those over frames, accumulate in 64 bits internally and round once at the end, and an integer result that does not fit in 32 bits is R0102. `time()` is the one 64-bit value, since a 32-bit float resolves a 10 µs run to about 1 ps; what is computed from it alone stays 64-bit and rounds to 32 bits where it meets other data.
 
@@ -422,13 +423,16 @@ Functions marked *prelude* in the tables below are written in VIAL and compiled 
 ```python
 def distance(a, b, between=None):
     if between is None:
-        return norm(displacement(a, b))
+        r = norm(displacement(a, b))
+        return shown(r, line(a, b, label=r))
     return _between(a, b, between)
 
 def _between(a: group, b: group, op):
     assert op in ('closest', 'farthest'), "between= takes 'closest' or 'farthest'"
-    d = norm(displacement(positions(a)[:, None], positions(b)))   # one group each; maps over arrays of groups
-    return min(d) if op == 'closest' else max(d)
+    pa = positions(a)                            # one group each; maps over arrays of groups
+    pb = positions(b)
+    d, i, j = closest_pair(pa, pb) if op == 'closest' else farthest_pair(pa, pb)   # i and j only when drawn
+    return shown(d, line(pa[i], pb[j], label=d))
 
 def centroid(s):
     return com(s, weights=None)
@@ -436,13 +440,17 @@ def centroid(s):
 def gyration(p: points, weights='mass'):
     assert weights in ('mass', None), "weights= takes 'mass' or None"
     w = mass(particles(p)) if weights == 'mass' else ones(shape(p)[0])
-    r = norm(displacement(com(p, weights), p))   # minimum image from a periodic-aware centre
-    return sqrt(sum(w * r**2) / sum(w))
+    c = com(p, weights)
+    r = norm(displacement(c, p))                 # minimum image from a periodic-aware centre
+    rg = sqrt(sum(w * r**2) / sum(w))
+    return shown(rg, sphere(c, rg))
 
 def normal(p: points):
-    d = displacement(com(p, weights=None), p)    # float[n][3]
+    c = com(p, weights=None)
+    d = displacement(c, p)                       # float[n][3]
     w, v = eigh(d.T @ d)                         # eigenvalues ascending
-    return v[:, 0]                               # the direction of least spread
+    n = v[:, 0]                                  # the direction of least spread
+    return shown(n, arrow(c, direction=n, length=5.0))
 
 def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
     assert weights in ('mass', None), "weights= takes 'mass' or None"
@@ -472,7 +480,7 @@ def ema(x, alpha):
     return fold(step, x, init=x)
 ```
 
-The prelude uses nothing a script cannot. `_between`, `gyration`, `normal` and `rmsd` annotate their parameters with kinds, so they map over arrays of sets: `_between` only ever sees one group per argument. `_between` calls `norm(displacement())` rather than `distance`, since a cycle of calls is recursion (E0802). `gyration` and `normal` measure from a periodic-aware centre under the minimum image, so they are right for any group smaller than half the box, whether or not the trajectory was made whole; positions themselves are as the trajectory gives them. A fold's step is a nested `def`, which may read the names of the function around it, as `cumulative`'s reads `op` and `ema`'s reads `alpha`; there is no `lambda`. `atoms()` and `beads()` are built-in shorthands for `particles(kind=...)`, since forwarding keywords would need `**kwargs`.
+The prelude uses nothing a script cannot, drawing included: `shown` attaches what hover draws, as any def may (see Drawing). `_between` is VIAL; only the search for the closest or farthest pair, `closest_pair` and `farthest_pair`, is built in, since a spatial search is not an equation over arrays. `_between`, `gyration`, `normal` and `rmsd` annotate their parameters with kinds, so they map over arrays of sets: `_between` only ever sees one group per argument. `_between` calls `norm(displacement())` rather than `distance`, since a cycle of calls is recursion (E0802). `gyration` and `normal` measure from a periodic-aware centre under the minimum image, so they are right for any group smaller than half the box, whether or not the trajectory was made whole; positions themselves are as the trajectory gives them. A fold's step is a nested `def`, which may read the names of the function around it, as `cumulative`'s reads `op` and `ema`'s reads `alpha`; there is no `lambda`. `atoms()` and `beads()` are built-in shorthands for `particles(kind=...)`, since forwarding keywords would need `**kwargs`.
 
 ## Built-in functions: geometry and structure
 
@@ -497,20 +505,22 @@ Geometry takes points, and a parameter declared `point` or `points` is the only 
 | `particles(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particles(fit(positions(s), ref)))` works after a fit; an array with no such dimension is E0311 |
 | `com(s, weights='mass')` | `float[3]` Å | periodic-aware; takes a set or points, and maps over arrays of sets; also written `s.com` |
 | `centroid(s)` | `float[3]` Å | prelude: `com(s, weights=None)` |
-| `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast |
-| `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(positions(a)[:, None], positions(b)))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The n×m matrix is fused away, never stored |
+| `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Drawn as a line labelled with the value |
+| `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(positions(a)[:, None], positions(b)))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a spatial search, so no n×m matrix is computed or stored. Drawn as a line between the pair |
 | `displacement(a: point, b: point)` | `float[3]` Å | b minus a, minimum image |
+| `closest_pair(p: points, q: points)` | `(float Å, int, int)` | the shortest distance from a point of p to a point of q under the minimum image, and the two points' indices; built in, with a spatial search, so its time grows with n + m for compact groups. The indices are computed only where they are used, as when hover draws the pair. Missing, with W0601, when p or q is empty |
+| `farthest_pair(p: points, q: points)` | `(float Å, int, int)` | the longest distance, and its two indices |
 | `angle(a, b, c: point)` | `float` ° | also takes one `float[3][3]`, three points as rows; the one-argument form maps over leading dimensions, such as `set[k][3]` from `smiles_atoms` |
 | `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` |
-| `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))` |
-| `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)` |
+| `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`. Drawn as a sphere of that radius at the centre |
+| `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)`. Drawn as an arrow from the centre |
 | `within(r, x: points)` | `set`, frame | the scope's particles within r of any particle or point of x |
 
 A matrix of distances needs no special function; broadcasting gives it: `distance(c[:, None], c[None, :])`.
 
 ### Every form of distance
 
-`distance` is a prelude function with two forms. `distance(a, b)` is `norm(displacement(a, b))` between points. `distance(a, b, between='closest')` calls `_between`, whose parameters are `group`s: one call takes one set, or one point on its own, and computes `min(distance(positions(a)[:, None], positions(b)))`; `'farthest'` is `max`. An array of groups maps, adding its dimensions, so residues of different sizes never meet in one array, and the matrix inside is fused away. Everything else follows from the point rule, the kinds and broadcasting: each argument's kind decides what it becomes and which dimension it adds, and the dimensions broadcast as for any function. Every form gives Å under the minimum image and is frame stage because positions are.
+`distance` is a prelude function with two forms. `distance(a, b)` is `norm(displacement(a, b))` between points. `distance(a, b, between='closest')` calls `_between`, whose parameters are `group`s: one call takes one set, or one point on its own, and computes what `min(distance(positions(a)[:, None], positions(b)))` would, through `closest_pair`; `'farthest'` is `max`, through `farthest_pair`. An array of groups maps, adding its dimensions, so residues of different sizes never meet in one array, and no matrix of every pair is ever made. Everything else follows from the point rule, the kinds and broadcasting: each argument's kind decides what it becomes and which dimension it adds, and the dimensions broadcast as for any function. Every form gives Å under the minimum image and is frame stage because positions are.
 
 The examples use these names:
 
@@ -884,7 +894,7 @@ Every top-level name bound to a number or a set is published under `script/<name
 | Histogram or autocorrelation | a curve | bin edges, or lags |
 | `set`, static or frame, and a frame-stage array of sets, `set[?]` | a selection under its name; a frame-stage one is a recipe, evaluated for the frame being shown |  |
 | Static array of sets | one selection under its name, holding the array: filters use the name for the union, or name\[i\] | labels |
-| Three dimensions or more, `str`, `range`, tuples | not published; shown in hover |  |
+| Three dimensions or more, `str`, `range`, tuples, drawings | not published; shown in hover |  |
 
 - A published frame value must have the same shape in every frame (E0401), since it is stored as a series. Selections are the exception: a set or array of sets whose length changes per frame, such as `residues(within(5.0, particles(resname='GTP')))`, is published as a recipe. It holds no values; representations and filters evaluate it for the frame they show. Other values whose length changes are kept private, or reduced with `len` or another reduction.
 - A published per-frame value that would take more than 64 MB over the whole run, 16 million values, gives W0404 with its size. It is usually an intermediate missing its `_`.
@@ -900,6 +910,73 @@ ends  = distance(ca[0], ca[14])                        # published: a series of 
 h     = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))   # published: a curve with its bin edges
 _c    = positions(ca)
 dm    = distance(_c[:, None], _c[None, :])             # -> float[15][15] Å, frame: a matrix per frame
+```
+
+## Drawing: what hover shows
+
+Hovering an expression in the editor draws its value in the 3D view, at the frame being shown. A value is drawn by its type, unless a built-in or a `def` attached a drawing with `shown`.
+
+| Value | Drawn as |
+| --- | --- |
+| `set` | its particles highlighted |
+| An array of sets | each set highlighted, the hovered element emphasized |
+| A point, or points: `float[3]` Å or `float[n][3]` Å | dots |
+| A number per particle or per residue | the particles or residues coloured by value |
+| `bonds(...)` | the bonds |
+| `angle`, `dihedral` | an arc at the vertex; for a dihedral also the two planes |
+| `within(r, x)` | a sphere of radius r around each point of x, and the particles inside highlighted |
+| anything else | nothing; hover shows the value as text |
+
+`shown(x, d)` is `x`, with `d` drawn when it is hovered. Its type, unit, stage and pass are `x`'s, and published values are computed exactly as without it: `d` is evaluated only for hover, at the frame being shown, so a drawing costs evaluation nothing. A name bound to `shown(...)`, and a call of a `def` that returns it, are drawn with `d`; passing the value through names and returns keeps its drawing, and any operation on it gives a new value, drawn by its type. Hover draws the hovered expression's own drawing only; its inputs show theirs when their spans are hovered.
+
+| Primitive | Draws |
+| --- | --- |
+| `dot(p: point)` | a point |
+| `line(a: point, b: point, label=None)` | a segment, labelled at its middle when `label=` is given |
+| `arrow(a: point, b: point)`, `arrow(a: point, direction=v, length=r)` | a segment with a head; the second form starts at a and runs r along v |
+| `sphere(c: point, r)` | a sphere of radius r |
+| `arc(c: point, a: point, b: point, label=None)` | the angle at c from a to b |
+| `disk(c: point, n, r)` | a disk of radius r through c, with normal n: a plane |
+| `label(p: point, x)` | text at p: a number with its unit, which viamd formats as it formats values, or a `str` |
+| `highlight(s: set)` | a set's particles |
+
+- A primitive's value is a `drawing`. Primitives broadcast like elementwise functions, so an array of points gives an array of drawings, `drawing[433]`, and `+` combines drawings elementwise. A `def` with kinds maps, so `distance(res_a, vlb, between='closest')` draws 433 lines.
+- Lengths are in Å: a bare number for `r` or `length=` is read as Å, as a radius is for `within`. A segment from a to b runs to b's nearest image, as `displacement` does, so no line spans the box.
+- A drawing has the stage of its inputs and may be later than the value it is attached to; it is drawn for the frame being shown.
+- Drawings carry no colours or styles: viamd draws them in its own, and emphasizes the hovered element of an array.
+- Hover draws at most 10,000 primitives. Above that it draws the hovered element only, and says how many were left out.
+- A drawing is never published; a top-level name bound to one is shown in hover only.
+
+```python
+# on T
+gtp   = particles(resname='GTP')                                 # -> set
+vlb   = particles(resname='VLB')                                 # -> set
+mg    = particles(resname='MG')                                  # -> set
+res_a = residues(chain='A', kind='amino_acid')                   # -> set[433]
+d     = distance(gtp.com, vlb.com)                               # -> float Å, frame: drawn as a labelled line
+dc, i, j = closest_pair(positions(gtp), positions(vlb))          # -> float Å and int and int
+l     = line(gtp.com, vlb.com, label=d)                          # -> drawing, frame
+both  = l + sphere(mg, 3.0)                                      # -> drawing, frame: 3.0 is read as Å
+dd    = shown(d, both)                                           # -> float Å, frame: hover draws the line and the sphere
+spokes = line(res_a.com, vlb.com)                                # -> drawing[433], frame: one line per residue
+tag   = label(vlb.com, 'VLB')                                    # -> drawing, frame
+nv    = normal(vlb)                                              # -> float[3]: hover draws an arrow from VLB's centre
+bad   = arrow(gtp, vlb.com)                                      # error E0302: GTP has 32 particles; write .com
+```
+
+A script draws exactly as the prelude does:
+
+```python
+# on P
+def end_to_end(s: set):
+    """The distance from the first to the last particle, drawn with both ends marked."""
+    a = s[0]
+    b = s[-1]
+    r = distance(a, b)
+    return shown(r, line(a, b, label=r) + dot(a) + dot(b))
+
+ca = particles(name='CA')                                        # -> set
+e  = end_to_end(ca)                                              # -> float Å, frame: published as a series; hover draws it
 ```
 
 ## Diagnostics: every code, its message and its fix
