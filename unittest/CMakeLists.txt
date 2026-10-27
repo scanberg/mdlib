@@ -50,6 +50,7 @@ set (SRC_FILES
     test_script.c
     test_filter.c
     test_vial_spec.c
+    test_vial_parse.c
     test_spatial_hash.c
     test_writer.c
     test_csv.c
