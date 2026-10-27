@@ -245,6 +245,8 @@ typedef struct vlx_mm_t {
 	size_t    count;			// Sites, == pot.num_sites
 	double*   charge;			// [count] e, by file row
 	double*   polarizability;	// [count] isotropic, bohr^3 - one third of the trace of the site's tensor, by file row
+	bool*     polarizable;		// [count] the site's fragment type has polarizabilities, by file row
+	size_t    num_polarizable;	// Sites for which 'polarizable' holds
 	uint32_t* order;			// [count] the file row of the k-th site as an atom of the system
 	bool      in_system;		// The sites were appended to the system's atoms, after the QM atoms
 } vlx_mm_t;
@@ -2121,6 +2123,9 @@ static void vlx_scf_density_locate(vlx_density_property_t* out, vlx_t* vlx, hid_
 	H5Dclose(dset);
 }
 
+// Defined with the embedding environment, whose sites it maps onto
+static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle);
+
 static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	md_system_t* sys = vlx->sys;
 	char scf_type[64] = {0};
@@ -2256,6 +2261,10 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	if (!vlx->scf.has_ground_state_dipole_moment) {
 		vlx->scf.ground_state_dipole_moment = (dvec3_t){0};
 	}
+
+	// The embedding's induced dipoles, when the run kept them. The system exists by now, and with it
+	// the environment's sites as atoms, when they were added.
+	vlx_publish_induced_dipoles(vlx, handle);
 
 	// NOTE: H5Lexists returns htri_t -- negative on error, which is truthy. Test
 	// explicitly, or a failed lookup is taken as "present" and the read proceeds.
@@ -3668,6 +3677,25 @@ static size_t vlx_rsp_extract_nto(double* out_coefficients, double* out_lambdas,
 // its context - the environment is left out and the load goes on.
 // ---------------------------------------------------------------------------
 
+// The induced dipoles the embedding converged to, scf/embedding_induced_dipoles: [P][3], atomic units
+// (e bohr), written by VeloxChem's experimental embedding branch. P runs over the POLARIZABLE sites
+// of the classical environment only - those whose fragment type has polarizabilities, the _pe
+// fragments - in the order the sites become atoms (vlx_mm_order_sites): the fragments by number, a
+// fragment's sites in file order, which is the order write_pe_jsonfile hands them to PyFraME in. A
+// reference run (pe_frame_000000.pot: 769 sites, fragments 6, 8 and 9 polarizable, 48 sites) has 48
+// dipoles, and their sizes follow the polarizabilities site by site in that order.
+#define VLX_H5_INDUCED_DIPOLES "embedding_induced_dipoles"
+
+// How many the file holds; 0 when it holds none, or nothing shaped [P][3] (which the reader logs)
+static size_t h5_induced_dipole_count(hid_t scf_handle) {
+	if (!h5_link_exists(scf_handle, VLX_H5_INDUCED_DIPOLES)) {
+		return 0;
+	}
+	size_t dim[2] = {0};
+	const int rank = h5_read_dataset_dims(dim, 2, scf_handle, VLX_H5_INDUCED_DIPOLES);
+	return (rank == 2 && dim[1] == 3) ? dim[0] : 0;
+}
+
 // The candidates, in order: the reference resolved against the .h5's folder (a run directory copied
 // as a whole), the reference's file name in that folder (the .pot copied next to the .h5 - also
 // VeloxChem's own fallback in pe_sanity_check), and an absolute reference as written (a local run).
@@ -3799,13 +3827,17 @@ static bool vlx_mm_resolve_parameters(vlx_mm_t* mm, md_allocator_i* alloc) {
 
 	mm->charge         = md_alloc(alloc, sizeof(double) * num_sites);
 	mm->polarizability = md_alloc(alloc, sizeof(double) * num_sites);
+	mm->polarizable    = md_alloc(alloc, sizeof(bool)   * num_sites);
+	mm->num_polarizable = 0;
 	for (size_t i = 0; i < num_sites; ++i) {
 		const vlx_mm_frag_type_t* type = vlx_mm_frag_type(&types, &type_map, pot->sites[first[i]].fragment_name, temp_alloc);
 		const uint32_t k = local_idx[i];
 		mm->charge[i] = md_array_size(type->charge_rows) ? pot->charges[type->charge_rows[k]].charge : 0.0;
 
 		double iso = 0.0;
-		if (md_array_size(type->polarizability_rows)) {
+		mm->polarizable[i] = md_array_size(type->polarizability_rows) > 0;
+		mm->num_polarizable += mm->polarizable[i];
+		if (mm->polarizable[i]) {
 			// The trace alone, which does not depend on how the off diagonal is packed - see the
 			// warning on MD_POT_ALPHA_*
 			const double* a = pot->polarizabilities[type->polarizability_rows[k]].alpha;
@@ -3905,6 +3937,17 @@ static void vlx_read_mm_environment(vlx_t* vlx, hid_t scf_handle, str_t filename
 
 	if (!vlx_mm_resolve_parameters(&vlx->mm, vlx->arena)) {
 		MD_LOG_ERROR("VeloxChem: '%s' is not the potential this calculation ran with; the environment is not added", path);
+		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
+		return;
+	}
+
+	// A run that kept its induced dipoles kept one per polarizable site of the potential it ran with
+	// (see VLX_H5_INDUCED_DIPOLES), so the count is a check of this file against that run which
+	// nothing else in the .h5 offers.
+	const size_t num_induced = h5_induced_dipole_count(scf_handle);
+	if (num_induced > 0 && num_induced != vlx->mm.num_polarizable) {
+		MD_LOG_ERROR("VeloxChem: the calculation has %zu induced dipoles, but '%s' has %zu polarizable sites; it is not the potential this calculation ran with, and the environment is not added",
+			num_induced, path, vlx->mm.num_polarizable);
 		MEMSET(&vlx->mm, 0, sizeof(vlx->mm));
 		return;
 	}
@@ -4009,6 +4052,58 @@ static void vlx_publish_mm(const vlx_t* vlx) {
 	md_qm_publish_series(sys, STR_LIT("atom/charge"),         STR_LIT("Embedding Charge"),         md_unit_elementary_charge(),               charge, num_atoms);
 	md_qm_publish_series(sys, STR_LIT("atom/polarizability"), STR_LIT("Embedding Polarizability"), md_unit_pow(md_unit_bohr_radius(), 3),     polar,  num_atoms);
 
+	md_temp_end(temp);
+}
+
+// The induced dipoles twice over: as the file holds them, over the polarizable sites of the
+// environment (vlx/scf/embedding/induced_dipole {P}), which needs nothing but the .h5 - and, when the
+// sites are atoms of the system, over the SYSTEM's atoms (atom/induced_dipole {N}), where a consumer
+// that knows nothing of embedding finds a per atom vector. The k-th dipole is the k-th polarizable
+// site in atom order (see VLX_H5_INDUCED_DIPOLES). A non-polarizable site is a site in which nothing
+// is induced, zero - as its polarizability is - while the QM atoms, which are no sites, carry NAN.
+// vlx_read_mm_environment has already refused a potential whose polarizable sites do not count the
+// dipoles, so the sites are in the system only when the counts agree.
+//
+// Never fails the load: a dataset of the wrong shape is logged and left out.
+static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle) {
+	if (!h5_link_exists(scf_handle, VLX_H5_INDUCED_DIPOLES)) {
+		return;
+	}
+	const size_t num_sites = h5_induced_dipole_count(scf_handle);
+	if (num_sites == 0) {
+		MD_LOG_ERROR("VeloxChem: scf/" VLX_H5_INDUCED_DIPOLES " is not one 3-vector per polarizable site; it is not read");
+		return;
+	}
+
+	md_system_t* sys = vlx->sys;
+	const md_unit_t e_bohr = md_unit_elementary_charge_bohr();
+
+	md_temp_scope_t temp = md_temp_begin_avoid(vlx->arena);
+	dvec3_t* mu = md_temp_alloc_array(temp, dvec3_t, num_sites);
+	if (!h5_read_dataset_data(mu, num_sites * 3, scf_handle, H5T_NATIVE_DOUBLE, VLX_H5_INDUCED_DIPOLES)) {
+		MD_LOG_ERROR("VeloxChem: failed to read scf/" VLX_H5_INDUCED_DIPOLES);
+		goto done;
+	}
+
+	md_qm_publish_vec3_series(sys, STR_LIT("vlx/scf/embedding/induced_dipole"), STR_LIT("Induced Dipole"), e_bohr, mu, num_sites);
+
+	if (vlx->mm.in_system && vlx->mm.num_polarizable == num_sites) {
+		const size_t num_qm    = vlx->number_of_atoms;
+		const size_t num_atoms = num_qm + vlx->mm.count;
+		dvec3_t* per_atom = md_temp_alloc_array(temp, dvec3_t, num_atoms);
+		for (size_t i = 0; i < num_qm; ++i) {
+			per_atom[i] = (dvec3_t){NAN, NAN, NAN};
+		}
+		// The sites are atoms in fragment order and so are the dipoles; the parameters are by file row
+		size_t next = 0;
+		for (size_t k = 0; k < vlx->mm.count; ++k) {
+			per_atom[num_qm + k] = vlx->mm.polarizable[vlx->mm.order[k]] ? mu[next++] : (dvec3_t){0, 0, 0};
+		}
+		ASSERT(next == num_sites);
+		md_qm_publish_vec3_series(sys, STR_LIT("atom/induced_dipole"), STR_LIT("Induced Dipole"), e_bohr, per_atom, num_atoms);
+	}
+
+done:
 	md_temp_end(temp);
 }
 

@@ -1154,6 +1154,223 @@ UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 }
 
 // ---------------------------------------------------------------------------
+// INDUCED DIPOLES
+//
+// An embedding run of VeloxChem's experimental embedding branch keeps the induced dipoles it
+// converged to, scf/embedding_induced_dipoles [P][3] in e bohr: one per POLARIZABLE site of the
+// environment, in the order the sites become atoms in - the fragments by number, a fragment's sites
+// in file order. Over the system's atoms a non-polarizable site has a zero dipole.
+// ---------------------------------------------------------------------------
+
+// A copy of h2o.h5 naming 'potfile', with scf/embedding_induced_dipoles [rows][cols] beside it
+static bool vlx_test_write_induced_dipoles_h5(str_t dst, const char* potfile, const double* mu, size_t rows, size_t cols) {
+	if (!vlx_test_write_pe_h5(dst, potfile)) return false;
+
+	char path[1024];
+	str_copy_to_char_buf(path, sizeof(path), dst);
+	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
+	if (file < 0) return false;
+	hid_t scf = H5Gopen(file, "scf", H5P_DEFAULT);
+	const hsize_t dims[2] = { rows, cols };
+	hid_t space = H5Screate_simple(2, dims, NULL);
+	hid_t dset  = scf >= 0 ? H5Dcreate2(scf, "embedding_induced_dipoles", H5T_IEEE_F64LE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT) : -1;
+	const bool ok = dset >= 0 && H5Dwrite(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, mu) >= 0;
+	if (dset >= 0) H5Dclose(dset);
+	H5Sclose(space);
+	if (scf >= 0) H5Gclose(scf);
+	H5Fclose(file);
+	return ok;
+}
+
+// Three waters, listed out of their numbers the way VeloxChem writes them (polarizable first): 3, 2,
+// then the non-polarizable 1. PyFraME's order, and the system's, is 1, 2, 3.
+static const char vlx_test_induced_pot[] =
+	"@environment\n"
+	"units: angstrom\n"
+	"xyz:\n"
+	"O   3.000  0.000  0.000  HOH_pe 3 OW\n"
+	"H   3.957  0.000  0.000  HOH_pe 3 H1\n"
+	"H   2.760  0.927  0.000  HOH_pe 3 H2\n"
+	"O   6.000  0.000  0.000  HOH_pe 2 OW\n"
+	"H   6.957  0.000  0.000  HOH_pe 2 H1\n"
+	"H   5.760  0.927  0.000  HOH_pe 2 H2\n"
+	"O   9.000  0.000  0.000  HOH_npe 1 OW\n"
+	"H   9.957  0.000  0.000  HOH_npe 1 H1\n"
+	"H   8.760  0.927  0.000  HOH_npe 1 H2\n"
+	"@end\n"
+	"@charges\n"
+	"O  -0.80  HOH_pe\n"
+	"H   0.40  HOH_pe\n"
+	"H   0.40  HOH_pe\n"
+	"O  -0.83  HOH_npe\n"
+	"H   0.415 HOH_npe\n"
+	"H   0.415 HOH_npe\n"
+	"@end\n"
+	"@polarizabilities\n"
+	"O   6.0 0.0 0.0 6.0 0.0 6.0  HOH_pe\n"
+	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"H   2.0 0.0 0.0 2.0 0.0 2.0  HOH_pe\n"
+	"@end\n";
+
+// The dipoles of the polarizable sites in atom order, each naming its site: (fragment number, index in
+// the fragment, 0.5). Water 1 is not polarizable and has none.
+static const double vlx_test_induced_mu[6][3] = {
+	{2, 0, 0.5},   {2, 1, 0.5},   {2, 2, 0.5},
+	{3, 0, 0.5},   {3, 1, 0.5},   {3, 2, 0.5},
+};
+
+UTEST(vlx, pe_induced_dipoles_land_on_their_sites) {
+	const str_t h5  = STR_LIT(VLX_PE_DIR "unittest_pe_induced.h5");
+	const str_t pot = STR_LIT(VLX_PE_DIR "unittest_pe_induced.pot");
+	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_induced_pot, sizeof(vlx_test_induced_pot) - 1));
+	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5, "unittest_pe_induced.pot", &vlx_test_induced_mu[0][0], 6, 3));
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, h5, MEGABYTES(64));
+	remove(h5.ptr);
+	remove(pot.ptr);
+	ASSERT_TRUE(loaded);
+
+	const size_t num_qm = 3, num_atoms = num_qm + 9;
+	ASSERT_EQ(num_atoms, t.sys.atom.count);
+
+	// As the file holds them, over the polarizable sites
+	const md_attribute_t* raw = qm_test_attr(&t, STR_LIT("vlx/scf/embedding/induced_dipole"));
+	ASSERT_TRUE(raw != NULL);
+	EXPECT_EQ(3u, raw->format.components);
+	EXPECT_EQ(1u, raw->format.rank);
+	EXPECT_EQ(6u, md_attribute_value_count(&raw->format));
+	EXPECT_TRUE(md_unit_equal(raw->unit, md_unit_elementary_charge_bohr()));
+
+	// Over the system's atoms: each atom's dipole is the one its own site was given
+	const md_attribute_t* attr = qm_test_attr(&t, STR_LIT("atom/induced_dipole"));
+	ASSERT_TRUE(attr != NULL);
+	EXPECT_EQ(3u, attr->format.components);
+	EXPECT_EQ(1u, attr->format.rank);
+	ASSERT_EQ(num_atoms, md_attribute_value_count(&attr->format));
+	EXPECT_TRUE(md_unit_equal(attr->unit, md_unit_elementary_charge_bohr()));
+
+	double mu[3 * 12];
+	ASSERT_EQ(3 * num_atoms, qm_test_series(mu, ARRAY_SIZE(mu), &t, STR_LIT("atom/induced_dipole")));
+	for (size_t i = 0; i < 3 * num_qm; ++i) {
+		EXPECT_TRUE(vlx_test_absent(mu[i]));	// The QM atoms are no sites
+	}
+	for (size_t i = num_qm; i < num_atoms; ++i) {
+		const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&t.sys, i);
+		ASSERT_TRUE(res >= 0);
+		const int    frag  = md_system_residue_seq_id(&t.sys, res);
+		const size_t local = i - md_system_residue_atom_range(&t.sys, res).beg;
+		if (frag == 1) {
+			EXPECT_EQ(0.0, mu[3 * i + 0]);
+			EXPECT_EQ(0.0, mu[3 * i + 1]);
+			EXPECT_EQ(0.0, mu[3 * i + 2]);
+		} else {
+			EXPECT_EQ((double)frag,  mu[3 * i + 0]);
+			EXPECT_EQ((double)local, mu[3 * i + 1]);
+			EXPECT_EQ(0.5,           mu[3 * i + 2]);
+		}
+	}
+
+	qm_test_free(&t);
+}
+
+// The run's induced dipoles count the polarizable sites of the potential it ran with. A potential
+// beside the .h5 with another number of them is not that one - one per SITE is not that either - and its environment is left out - while the dipoles,
+// which are the file's own, are still published over its sites. A dataset that is not a 3-vector per
+// site is not read at all. Neither is a failed load.
+UTEST(vlx, pe_induced_dipoles_must_match_the_potential) {
+	const str_t pot      = STR_LIT(VLX_PE_DIR "unittest_pe_induced_count.pot");
+	const str_t h5_count = STR_LIT(VLX_PE_DIR "unittest_pe_induced_count.h5");
+	const str_t h5_shape = STR_LIT(VLX_PE_DIR "unittest_pe_induced_shape.h5");
+	ASSERT_TRUE(vlx_test_write_file(pot, vlx_test_induced_pot, sizeof(vlx_test_induced_pot) - 1));
+	static const double per_site[9][3] = {0};	// One per site, the non-polarizable ones included
+	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5_count, "unittest_pe_induced_count.pot", &per_site[0][0], 9, 3));
+	ASSERT_TRUE(vlx_test_write_induced_dipoles_h5(h5_shape, "unittest_pe_induced_count.pot", &vlx_test_induced_mu[0][0], 6, 2));
+
+	vlx_test_t count = {0}, shape = {0};
+	const bool loaded_count = vlx_test_load(&count, h5_count, MEGABYTES(64));
+	const bool loaded_shape = vlx_test_load(&shape, h5_shape, MEGABYTES(64));
+	remove(h5_count.ptr);
+	remove(h5_shape.ptr);
+	remove(pot.ptr);
+
+	EXPECT_TRUE(loaded_count);
+	EXPECT_EQ(3u, count.sys.atom.count);
+	EXPECT_EQ(0u, count.sys.residue.count);
+	EXPECT_FALSE(qm_test_has(&count, STR_LIT("atom/charge")));
+	EXPECT_FALSE(qm_test_has(&count, STR_LIT("atom/induced_dipole")));
+	const md_attribute_t* raw = qm_test_attr(&count, STR_LIT("vlx/scf/embedding/induced_dipole"));
+	ASSERT_TRUE(raw != NULL);
+	EXPECT_EQ(9u, md_attribute_value_count(&raw->format));
+
+	// Without a usable count there is nothing to check the potential against: it is added on its own merits
+	EXPECT_TRUE(loaded_shape);
+	EXPECT_EQ(3u + 9u, shape.sys.atom.count);
+	EXPECT_TRUE(qm_test_has(&shape, STR_LIT("atom/charge")));
+	EXPECT_FALSE(qm_test_has(&shape, STR_LIT("atom/induced_dipole")));
+	EXPECT_FALSE(qm_test_has(&shape, STR_LIT("vlx/scf/embedding/induced_dipole")));
+
+	qm_test_free(&count);
+	qm_test_free(&shape);
+}
+
+// A run of the experimental embedding branch (CAM-B3LYP/def2-SVP, 10 QM atoms, FIKA embedding) with
+// its potential where the run named it, pot_frames/pe_frame_000000.pot beside the .h5: 769 sites, of
+// which the 48 of fragments 6 (LYS), 8 (ILE) and 9 (GLY) are polarizable - one per induced dipole.
+UTEST(vlx, pe_induced_dipoles_from_file) {
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5"), MEGABYTES(64)));
+
+	const size_t num_qm = 10, num_atoms = num_qm + 769;
+	ASSERT_EQ(num_atoms, t.sys.atom.count);
+
+	// As written
+	const md_attribute_t* raw = qm_test_attr(&t, STR_LIT("vlx/scf/embedding/induced_dipole"));
+	ASSERT_TRUE(raw != NULL);
+	EXPECT_EQ(3u, raw->format.components);
+	ASSERT_EQ(48u, md_attribute_value_count(&raw->format));
+	EXPECT_TRUE(md_unit_equal(raw->unit, md_unit_elementary_charge_bohr()));
+
+	double mu[3 * 48];
+	ASSERT_EQ(ARRAY_SIZE(mu), qm_test_series(mu, ARRAY_SIZE(mu), &t, STR_LIT("vlx/scf/embedding/induced_dipole")));
+	EXPECT_NEAR( 0.0558321,  mu[0], 1e-7);
+	EXPECT_NEAR( 0.00781969, mu[1], 1e-8);
+	EXPECT_NEAR( 0.05448396, mu[2], 1e-8);
+	EXPECT_NEAR( 0.00200192, mu[3 * 47 + 0], 1e-8);
+	EXPECT_NEAR(-0.1647142,  mu[3 * 47 + 1], 1e-7);
+	EXPECT_NEAR( 0.02673146, mu[3 * 47 + 2], 1e-8);
+
+	// Over the system: the dipoles in order over the atoms of fragments 6, 8 and 9, zero on every
+	// other site, nothing on the QM atoms
+	double* atom_mu = (double*)md_alloc(t.alloc, sizeof(double) * 3 * num_atoms);
+	double* polar   = (double*)md_alloc(t.alloc, sizeof(double) * num_atoms);
+	ASSERT_EQ(3 * num_atoms, qm_test_series(atom_mu, 3 * num_atoms, &t, STR_LIT("atom/induced_dipole")));
+	ASSERT_EQ(num_atoms, qm_test_series(polar, num_atoms, &t, STR_LIT("atom/polarizability")));
+	size_t next = 0;
+	for (size_t i = 0; i < num_atoms; ++i) {
+		if (i < num_qm) {
+			EXPECT_TRUE(vlx_test_absent(atom_mu[3 * i]));
+			continue;
+		}
+		const int frag = md_system_residue_seq_id(&t.sys, md_system_residue_find_by_atom_idx(&t.sys, i));
+		const bool polarizable = frag == 6 || frag == 8 || frag == 9;
+		EXPECT_EQ(polarizable, polar[i] > 0.0);
+		for (int c = 0; c < 3; ++c) {
+			EXPECT_EQ(polarizable ? mu[3 * next + c] : 0.0, atom_mu[3 * i + c]);
+		}
+		next += polarizable;
+	}
+	EXPECT_EQ(48u, next);
+
+	// LYS 6 opens the polarizable dipoles with its backbone N
+	const md_residue_idx_t lys = md_system_residue_find_by_atom_idx(&t.sys, num_qm + 109);
+	EXPECT_EQ(6, md_system_residue_seq_id(&t.sys, lys));
+	EXPECT_TRUE(str_eq(md_atom_name(&t.sys.atom, num_qm + 109), STR_LIT("N")));
+	EXPECT_EQ(mu[0], atom_mu[3 * (num_qm + 109)]);
+
+	qm_test_free(&t);
+}
+
+// ---------------------------------------------------------------------------
 // DENSITY PROPERTIES
 //
 // What gives an AO matrix its meaning is the basis set, and the ROOT of the file names it along with
