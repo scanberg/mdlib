@@ -141,6 +141,93 @@ UTEST(gto_int, s_shell_closed_form) {
     md_gto_int_charges_free(&q, md_get_heap_allocator());
 }
 
+// Spherical gaussian charges, q (p/pi)^(3/2) exp(-p r^2): each a smeared point charge with the
+// potential q erf(sqrt(p) r) / r, 2 q sqrt(p/pi) at its centre and q / r far out. Alone, and merged
+// into a distribution that already has order 0 and higher gaussians from a density and point
+// charges, where the potential has to be the sum of the parts - the merge shifts every gaussian
+// and coefficient after the order 0 run.
+UTEST(gto_int, gaussian_charges_closed_form) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    const double gxyz[3][3] = { {0.0, 0.0, 0.0}, {1.2, -0.4, 0.3}, {-0.8, 2.0, -1.1} };
+    const double gexp[3]    = { 86.9, 27.1, 3.0 };
+    const double gq[3]      = { -1.2e-3, 4.9e-3, 0.7 };
+
+    md_gto_int_charges_t alone = {0};
+    ASSERT_TRUE(md_gto_int_charges_init(&alone, &(md_gto_int_charges_desc_t){
+        .gaussian_xyz = &gxyz[0][0], .gaussian_exponent = gexp, .gaussian_charge = gq, .num_gaussian_charges = 3 }, heap));
+    EXPECT_EQ(3u, alone.num_gaussians);
+    EXPECT_EQ(0u, alone.max_order);
+
+    const float pts[5][3] = { {0, 0, 0}, {1.2f, -0.4f, 0.3f}, {0.05f, 0.02f, -0.03f}, {3.0f, 1.0f, -2.0f}, {40.0f, -30.0f, 20.0f} };
+    double V[5], E[15];
+    md_gto_int_potential_xyz(V, E, &pts[0][0], 5, 0, &alone);
+    for (int i = 0; i < 5; ++i) {
+        double ref = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            const double dx = pts[i][0] - gxyz[k][0], dy = pts[i][1] - gxyz[k][1], dz = pts[i][2] - gxyz[k][2];
+            const double r = sqrt(dx * dx + dy * dy + dz * dz);
+            ref += gq[k] * (r < 1e-7 ? 2.0 * sqrt(gexp[k] / INT_TEST_PI) : erf(sqrt(gexp[k]) * r) / r);
+        }
+        EXPECT_NEAR(ref, V[i], 1e-11 * fmax(1.0, fabs(ref)));
+    }
+    const md_gto_int_moments_t m = md_gto_int_charges_moments(&alone, NULL);
+    EXPECT_NEAR(gq[0] + gq[1] + gq[2], m.charge, 1e-14);
+
+    // Merged with an s and a p shell's density and two point charges
+    float alpha[2] = { 1.3f, 0.35f };
+    float coeff[2] = { 0.6f, 0.5f };
+    md_gto_shell_t shells[2] = {
+        { .atom_idx = 0, .primitive_offset = 0, .num_primitives = 2, .l = 0 },
+        { .atom_idx = 1, .primitive_offset = 0, .num_primitives = 2, .l = 1 },
+    };
+    md_gto_basis_t basis = { .num_shells = 2, .num_primitives = 2, .shells = shells, .alpha = alpha, .coeff = coeff };
+    const float atoms[2][3] = { {0.25f, -0.5f, 1.0f}, {-1.0f, 0.5f, 0.0f} };
+    double D[16] = {0};
+    for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) D[i * 4 + j] = (i == j) ? 1.0 : 0.1 * (i + j);
+    const double z[2] = { 1.0, 2.0 };
+    const md_gto_int_charges_desc_t base = { .basis = &basis, .atom_xyz = &atoms[0][0], .density_matrix = D,
+                                             .point_xyz = &atoms[0][0], .point_charge = z, .num_points = 2 };
+    md_gto_int_charges_desc_t both = base;
+    both.gaussian_xyz = &gxyz[0][0];
+    both.gaussian_exponent = gexp;
+    both.gaussian_charge = gq;
+    both.num_gaussian_charges = 3;
+
+    md_gto_int_charges_t q_base = {0}, q_both = {0};
+    ASSERT_TRUE(md_gto_int_charges_init(&q_base, &base, heap));
+    ASSERT_TRUE(md_gto_int_charges_init(&q_both, &both, heap));
+    EXPECT_EQ(q_base.num_gaussians + 3, q_both.num_gaussians);
+    EXPECT_EQ(q_base.max_order, q_both.max_order);
+    EXPECT_TRUE(q_base.max_order >= 1);   // the merge has gaussians after the order 0 run to move
+
+    double Vb[5], Eb[15], Vt[5], Et[15];
+    md_gto_int_potential_xyz(Vb, Eb, &pts[0][0], 5, 0, &q_base);
+    md_gto_int_potential_xyz(Vt, Et, &pts[0][0], 5, 0, &q_both);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_NEAR(Vb[i] + V[i], Vt[i], 1e-11 * fmax(1.0, fabs(Vt[i])));
+        for (int c = 0; c < 3; ++c) EXPECT_NEAR(Eb[3 * i + c] + E[3 * i + c], Et[3 * i + c], 1e-10 * fmax(1.0, fabs(Et[3 * i + c])));
+    }
+
+    // And through the far field, which builds its tree over all the gaussians
+    both.far_field_theta = MD_GTO_INT_FAR_FIELD_THETA;
+    md_gto_int_charges_t q_far = {0};
+    ASSERT_TRUE(md_gto_int_charges_init(&q_far, &both, heap));
+    double Vf[5];
+    md_gto_int_potential_xyz(Vf, NULL, &pts[0][0], 5, 0, &q_far);
+    for (int i = 0; i < 5; ++i) EXPECT_NEAR(Vt[i], Vf[i], 1e-4 * fmax(1.0, fabs(Vt[i])));
+
+    // A non-positive exponent is no gaussian
+    const double bad_exp[1] = { 0.0 };
+    md_gto_int_charges_t q_bad = {0};
+    EXPECT_FALSE(md_gto_int_charges_init(&q_bad, &(md_gto_int_charges_desc_t){
+        .gaussian_xyz = &gxyz[0][0], .gaussian_exponent = bad_exp, .gaussian_charge = gq, .num_gaussian_charges = 1 }, heap));
+
+    md_gto_int_charges_free(&alone, heap);
+    md_gto_int_charges_free(&q_base, heap);
+    md_gto_int_charges_free(&q_both, heap);
+    md_gto_int_charges_free(&q_far, heap);
+}
+
 // Point charges only: Coulomb's law, and the field of each.
 UTEST(gto_int, point_charges) {
     const float  xyz[2][3] = { {0, 0, 0}, {1.5f, 0, 0} };

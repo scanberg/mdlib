@@ -7,7 +7,8 @@
 //
 //     V(C) = sum_k q_k / |C - A_k|  +  s * sum_{mu,nu} D_{mu nu} (mu| 1/|r - C| |nu)
 //
-// with s the charge carried by one unit of density (-1 for electrons). The points can carry a
+// with s the charge carried by one unit of density (-1 for electrons), plus any spherical gaussian
+// charges q_k (p_k/pi)^(3/2) exp(-p_k |r - s_k|^2), whose potential is q_k erf(sqrt(p_k) r) / r. The points can carry a
 // dipole and a quadrupole besides their charge - the permanent multipoles of a polarizable
 // embedding's sites - which add, with d = C - A_k and r = |d|,
 //
@@ -170,6 +171,16 @@ typedef struct md_gto_int_charges_desc_t {
     // convention). NULL for none; a point without one has zeros.
     const double* point_dipole;      // [num_points * 3] e bohr
     const double* point_quadrupole;  // [num_points * 6] e bohr^2, xx xy xz yy yz zz, not traceless
+
+    // SPHERICAL GAUSSIAN CHARGES: sum_k gaussian_charge[k] (p_k / pi)^(3/2) exp(-p_k |r - s_k|^2),
+    // s_k = gaussian_xyz[k] and p_k = gaussian_exponent[k]. Each integrates to its charge - a point
+    // charge smeared out - and has the potential q erf(sqrt(p) r) / r, which is finite at its centre.
+    // The surface charges of a continuum solvation model (CPCM) take this form. They are order 0
+    // gaussians like any other, screened the same way, and every evaluator takes them as they are.
+    const double* gaussian_xyz;      // [num_gaussian_charges * 3] bohr
+    const double* gaussian_exponent; // [num_gaussian_charges] bohr^-2, > 0
+    const double* gaussian_charge;   // [num_gaussian_charges] e
+    size_t        num_gaussian_charges;
 
     // Screening: a gaussian whose potential cannot exceed this anywhere (hartree/e) is dropped.
     // 0 keeps everything. 1e-8 removes a third or more of the gaussians of anything bigger than a

@@ -866,6 +866,102 @@ done:
     return result;
 }
 
+// Appends the spherical gaussian charges as order 0 gaussians, after those of order 0 the density
+// gave: a charge q of exponent p is rho = q (p/pi)^(3/2) exp(-p r^2), i.e. h_000 = q (p/pi)^(3/2),
+// and the coefficient carries the 2 pi / p every coefficient does. Screened by the same bound.
+static bool gto_int_append_gaussian_charges(md_gto_int_charges_t* out, const md_gto_int_charges_desc_t* desc, md_allocator_i* alloc) {
+    const size_t m_in = desc->num_gaussian_charges;
+    const double threshold = MAX(desc->threshold, 0.0);
+    for (size_t k = 0; k < m_in; ++k) {
+        if (!(desc->gaussian_exponent[k] > 0.0)) {
+            MD_LOG_ERROR("md_gto_int_charges_init: gaussian charge %zu has exponent %g, which is not a gaussian", k, desc->gaussian_exponent[k]);
+            return false;
+        }
+    }
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    bool result = false;
+    double*   h    = md_temp_alloc_array(temp, double,   MAX(m_in, 1));
+    uint32_t* keep = md_temp_alloc_array(temp, uint32_t, MAX(m_in, 1));
+    size_t m = 0;
+    for (size_t k = 0; k < m_in; ++k) {
+        const double p = desc->gaussian_exponent[k];
+        const double c = desc->gaussian_charge[k] * pow(p / GTO_INT_PI, 1.5) * 2.0 * GTO_INT_PI / p;
+        const double bound = fabs(c) * gto_int_rmax[0];
+        if (bound > 0.0 && bound >= threshold) {
+            h[m] = c;
+            keep[m++] = (uint32_t)k;
+        }
+    }
+    if (m == 0) {
+        result = true;
+        goto done;
+    }
+
+    {
+        const uint32_t n_old = out->num_gaussians;
+        const uint32_t n_new = n_old + (uint32_t)m;
+        const size_t   c_new = out->num_coeffs + m;
+        const uint32_t at    = out->order_offset[1];        // the end of the order 0 run
+        const size_t   c_at  = at;                          // order 0 gaussians have one coefficient each, first in coeff
+
+        double*   center = md_alloc(alloc, sizeof(double) * 3 * n_new);
+        double*   expo   = md_alloc(alloc, sizeof(double) * n_new);
+        double*   bound  = md_alloc(alloc, sizeof(double) * n_new);
+        uint32_t* coff   = md_alloc(alloc, sizeof(uint32_t) * n_new);
+        double*   coeff  = md_alloc(alloc, sizeof(double) * c_new);
+        if (!center || !expo || !bound || !coff || !coeff) {
+            if (center) md_free(alloc, center, sizeof(double) * 3 * n_new);
+            if (expo)   md_free(alloc, expo,   sizeof(double) * n_new);
+            if (bound)  md_free(alloc, bound,  sizeof(double) * n_new);
+            if (coff)   md_free(alloc, coff,   sizeof(uint32_t) * n_new);
+            if (coeff)  md_free(alloc, coeff,  sizeof(double) * c_new);
+            goto done;
+        }
+
+        // [0, at) as they were, then the new ones, then [at, n_old) one slot and m coefficients on
+        for (uint32_t g = 0; g < n_new; ++g) {
+            if (g >= at && g < at + m) {
+                const size_t k = keep[g - at];
+                center[g * 3 + 0] = desc->gaussian_xyz[k * 3 + 0];
+                center[g * 3 + 1] = desc->gaussian_xyz[k * 3 + 1];
+                center[g * 3 + 2] = desc->gaussian_xyz[k * 3 + 2];
+                expo[g]  = desc->gaussian_exponent[k];
+                bound[g] = fabs(h[g - at]) * gto_int_rmax[0];
+                coff[g]  = (uint32_t)(c_at + (g - at));
+                coeff[c_at + (g - at)] = h[g - at];
+                continue;
+            }
+            const uint32_t src = g < at ? g : g - (uint32_t)m;
+            MEMCPY(center + g * 3, out->center + src * 3, sizeof(double) * 3);
+            expo[g]  = out->exponent[src];
+            bound[g] = out->bound[src];
+            coff[g]  = out->coeff_offset[src] + (g < at ? 0u : (uint32_t)m);
+        }
+        if (c_at) MEMCPY(coeff, out->coeff, sizeof(double) * c_at);
+        if (out->num_coeffs > c_at) MEMCPY(coeff + c_at + m, out->coeff + c_at, sizeof(double) * (out->num_coeffs - c_at));
+
+        if (out->center)       md_free(alloc, out->center,       sizeof(double) * 3 * n_old);
+        if (out->exponent)     md_free(alloc, out->exponent,     sizeof(double) * n_old);
+        if (out->bound)        md_free(alloc, out->bound,        sizeof(double) * n_old);
+        if (out->coeff_offset) md_free(alloc, out->coeff_offset, sizeof(uint32_t) * n_old);
+        if (out->coeff)        md_free(alloc, out->coeff,        sizeof(double) * out->num_coeffs);
+        out->center = center;
+        out->exponent = expo;
+        out->bound = bound;
+        out->coeff_offset = coff;
+        out->coeff = coeff;
+        out->num_gaussians = n_new;
+        out->num_coeffs = c_new;
+        for (uint32_t L = 1; L <= MD_GTO_INT_MAX_ORDER + 1; ++L) out->order_offset[L] += (uint32_t)m;
+    }
+    result = true;
+
+done:
+    md_temp_end(temp);
+    return result;
+}
+
 static bool gto_int_any_nonzero(const double* v, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         if (v[i] != 0.0) return true;
@@ -891,14 +987,25 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
             md_gto_int_charges_free(out, alloc);
             return false;
         }
-        if (out->num_gaussians > 0) {
-            out->boys_table = md_alloc(alloc, sizeof(double) * GTO_INT_BOYS_TAB_SIZE);
-            if (!out->boys_table) {
-                md_gto_int_charges_free(out, alloc);
-                return false;
-            }
-            gto_int_boys_table_fill(out->boys_table);
+    }
+    if (desc->num_gaussian_charges > 0) {
+        if (!desc->gaussian_xyz || !desc->gaussian_exponent || !desc->gaussian_charge) {
+            MD_LOG_ERROR("md_gto_int_charges_init: num_gaussian_charges given without positions, exponents or charges");
+            md_gto_int_charges_free(out, alloc);
+            return false;
         }
+        if (!gto_int_append_gaussian_charges(out, desc, alloc)) {
+            md_gto_int_charges_free(out, alloc);
+            return false;
+        }
+    }
+    if (out->num_gaussians > 0) {
+        out->boys_table = md_alloc(alloc, sizeof(double) * GTO_INT_BOYS_TAB_SIZE);
+        if (!out->boys_table) {
+            md_gto_int_charges_free(out, alloc);
+            return false;
+        }
+        gto_int_boys_table_fill(out->boys_table);
     }
 
     if (desc->num_points > 0) {

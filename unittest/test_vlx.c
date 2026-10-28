@@ -2,6 +2,8 @@
 
 #include "vlx_test_util.h"
 
+#include <md_gto_int.h>
+
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 
@@ -1437,6 +1439,26 @@ UTEST(vlx, cpcm_gaussians) {
 	vlx_test_surface_gaussians_normalised(utest_result, &t, "cpcm", num);
 
 	EXPECT_NEAR(78.39, qm_test_scalar(&t, STR_LIT("cpcm/epsilon"), 0.0), 1e-12);
+
+	// The reaction potential at the nuclei, from the attributes alone through md_gto_int's gaussian charges,
+	// against sum q erf(sqrt(w) r) / r over the file's own datasets (Python): positive at the N, whose lone
+	// pair draws the solvent's positive charge, negative at the H
+	{
+		double* c = (double*)md_alloc(t.alloc, sizeof(double) * 3 * num);
+		ASSERT_EQ(3 * num, qm_test_series(c, 3 * num, &t, STR_LIT("cpcm/center")));
+		md_gto_int_charges_t q_dist = {0};
+		ASSERT_TRUE(md_gto_int_charges_init(&q_dist, &(md_gto_int_charges_desc_t){
+			.gaussian_xyz = c, .gaussian_exponent = w, .gaussian_charge = charge, .num_gaussian_charges = num }, t.alloc));
+		double qm_xyz[12];
+		ASSERT_EQ(12u, md_attribute_extract_f64(qm_xyz, 12, qm_test_attr(&t, STR_LIT("qm/atom/coordinate")), md_attribute_slice_all(), md_unit_bohr_radius()));
+		float nuclei[12];
+		for (int i = 0; i < 12; ++i) nuclei[i] = (float)qm_xyz[i];
+		double V[4];
+		md_gto_int_potential_xyz(V, NULL, nuclei, 4, 0, &q_dist);
+		const double ref[4] = { 0.004367848171825594, -0.010279780863804818, -0.010263014197906168, -0.010299224037465873 };
+		for (int i = 0; i < 4; ++i) EXPECT_NEAR(ref[i], V[i], 1e-7);	// the nuclei narrowed to float
+		md_gto_int_charges_free(&q_dist, t.alloc);
+	}
 	EXPECT_FALSE(qm_test_has(&t, STR_LIT("gostshyp/amplitude")));
 
 	qm_test_free(&t);
