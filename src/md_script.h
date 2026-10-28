@@ -39,6 +39,9 @@ typedef enum md_script_property_flags_t {
     MD_SCRIPT_PROPERTY_FLAG_TEMPORAL        = 0x0001,
     MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION    = 0x0002,
     MD_SCRIPT_PROPERTY_FLAG_VOLUME          = 0x0004,
+    // A temporal property of periodic values, such as angles about an axis: a value is the same as itself plus a whole
+    // period. script/<ident>/period and /seam say which period, and where a plot of the values is best cut (see
+    // md_script_eval_attributes), and the summary over its population is a circular one.
     MD_SCRIPT_PROPERTY_FLAG_PERIODIC        = 0x0008,
     MD_SCRIPT_PROPERTY_FLAG_SDF             = 0x0010,
 } md_script_property_flags_t;
@@ -392,6 +395,20 @@ size_t md_script_eval_property_count(const md_script_eval_t* eval);
 //   script/<ident>/mean       temporal with a population only: the per frame summary over it
 //   script/<ident>/variance
 //   script/<ident>/extent     2 components, (min, max)
+//   script/<ident>/period     periodic temporal only (MD_SCRIPT_PROPERTY_FLAG_PERIODIC): rank 0, 2 components
+//                             (beg, end). A value is the same as itself plus a whole number of end - beg. The values
+//                             are given in [beg, end[ where the expression gives them there (a dihedral in [-PI, PI[),
+//                             and are left as the expression gives them otherwise (dihedral(...) + 1).
+//   script/<ident>/seam       periodic temporal only: rank 0. Where a plot of the values is best cut, in [beg, end[:
+//                             where values of their kind are least likely to be, so that they cross it as seldom as
+//                             possible. Shown in [seam, seam + end - beg[, a value crossing it jumps the whole period.
+//                             The procedure states it (0 for a dihedral, 270 degrees for a pseudorotation phase), and
+//                             arithmetic carries it along: the difference of two angles is cut half a period from 0.
+//
+// The summary of a periodic property is circular, around the circle its values lie on: the mean is the circular mean,
+// in [beg, end[; the variance the square of the circular standard deviation sqrt(-2 ln R), at most (period / 2)^2,
+// where mean +- its root covers the whole period; the extent the shortest arc which holds every value, (min, max) with
+// min in [beg, end[ and max - min the length of the arc, so max may lie past end where the arc crosses it.
 //   script/<ident>/weight     a distribution's per bin weight
 //   script/<ident>/bin        a distribution's bin coordinates (virtual), in the bin axis unit
 //   time                      the frame axis every temporal property is temporal along (see FRAME
