@@ -4076,7 +4076,8 @@ static void vlx_publish_mm(const vlx_t* vlx) {
 // environment (vlx/scf/embedding/induced_dipole {P}), which needs nothing but the .h5 - and, when the
 // sites are atoms of the system, over the SYSTEM's atoms (atom/induced_dipole {N}), where a consumer
 // that knows nothing of embedding finds a per atom vector. The k-th dipole is the k-th polarizable
-// site in FILE order (see VLX_H5_INDUCED_DIPOLES), which is not atom order. A non-polarizable site is a site in which nothing
+// site in FILE order (see VLX_H5_INDUCED_DIPOLES), which is not atom order. With the sites in the system they are
+// a dipole group as well, dipole/embedding_induced/{vector,origin}, each anchored at its site. A non-polarizable site is a site in which nothing
 // is induced, zero - as its polarizability is - while the QM atoms, which are no sites, carry NAN.
 // vlx_read_mm_environment has already refused a potential whose polarizable sites do not count the
 // dipoles, so the sites are in the system only when the counts agree.
@@ -4124,6 +4125,21 @@ static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle) {
 			per_atom[num_qm + k] = d != UINT32_MAX ? mu[d] : (dvec3_t){0, 0, 0};
 		}
 		md_qm_publish_vec3_series(sys, STR_LIT("atom/induced_dipole"), STR_LIT("Induced Dipole"), e_bohr, per_atom, num_atoms);
+
+		// And as a dipole group, each dipole anchored at its site: what a consumer of dipole/ draws, one
+		// arrow per polarizable site. The origins are the sites' positions in the potential, which are
+		// the atoms' as loaded, in the dipoles' own (file row) order.
+		const double to_angstrom = md_pot_unit_to_angstrom(vlx->mm.pot.unit);
+		dvec3_t* origin = md_temp_alloc_array(temp, dvec3_t, num_sites);
+		size_t d = 0;
+		for (size_t row = 0; row < vlx->mm.count; ++row) {
+			if (!vlx->mm.polarizable[row]) continue;
+			const double* c = vlx->mm.pot.sites[row].coord;
+			origin[d++] = (dvec3_t){ c[0] * to_angstrom, c[1] * to_angstrom, c[2] * to_angstrom };
+		}
+		ASSERT(d == num_sites);
+		md_qm_publish_vec3_series(sys, STR_LIT("dipole/embedding_induced/vector"), STR_LIT("Embedding Induced"), e_bohr, mu, num_sites);
+		md_qm_publish_vec3_series(sys, STR_LIT("dipole/embedding_induced/origin"), (str_t){0}, md_unit_angstrom(), origin, num_sites);
 	}
 
 done:

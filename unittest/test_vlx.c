@@ -1256,6 +1256,7 @@ UTEST(vlx, pe_induced_dipoles_land_on_their_sites) {
 
 	double mu[3 * 12];
 	ASSERT_EQ(3 * num_atoms, qm_test_series(mu, ARRAY_SIZE(mu), &t, STR_LIT("atom/induced_dipole")));
+	EXPECT_EQ(4u, qm_test_count(&t, STR_LIT("dipole/embedding_induced/origin")) / 3);
 	for (size_t i = 0; i < 3 * num_qm; ++i) {
 		EXPECT_TRUE(vlx_test_absent(mu[i]));	// The QM atoms are no sites
 	}
@@ -1365,6 +1366,31 @@ UTEST(vlx, pe_induced_dipoles_from_file) {
 		next += polarizable;
 	}
 	EXPECT_EQ(48u, next);
+
+	// As a dipole group: the same dipoles in file order, each at its site - the atom it is on, as loaded
+	const md_attribute_t* gvec = qm_test_attr(&t, STR_LIT("dipole/embedding_induced/vector"));
+	const md_attribute_t* gorg = qm_test_attr(&t, STR_LIT("dipole/embedding_induced/origin"));
+	ASSERT_TRUE(gvec != NULL);
+	ASSERT_TRUE(gorg != NULL);
+	ASSERT_EQ(48u, md_attribute_value_count(&gvec->format));
+	ASSERT_EQ(48u, md_attribute_value_count(&gorg->format));
+	EXPECT_TRUE(md_unit_equal(gorg->unit, md_unit_angstrom()));
+	double gmu[3 * 48], gxyz[3 * 48];
+	ASSERT_EQ(ARRAY_SIZE(gmu),  qm_test_series(gmu,  ARRAY_SIZE(gmu),  &t, STR_LIT("dipole/embedding_induced/vector")));
+	ASSERT_EQ(ARRAY_SIZE(gxyz), qm_test_series(gxyz, ARRAY_SIZE(gxyz), &t, STR_LIT("dipole/embedding_induced/origin")));
+	{
+		size_t d = 0;
+		for (size_t i = num_qm; i < num_atoms; ++i) {
+			const int frag = md_system_residue_seq_id(&t.sys, md_system_residue_find_by_atom_idx(&t.sys, i));
+			if (frag != 6 && frag != 8 && frag != 9) continue;
+			for (int c = 0; c < 3; ++c) {
+				EXPECT_EQ(gmu[3 * d + c], atom_mu[3 * i + c]);
+				EXPECT_NEAR((double)t.state.xyz[i].elem[c], gxyz[3 * d + c], 1e-4);
+			}
+			d += 1;
+		}
+		EXPECT_EQ(48u, d);
+	}
 
 	// LYS 6 opens the polarizable dipoles with its backbone N
 	const md_residue_idx_t lys = md_system_residue_find_by_atom_idx(&t.sys, num_qm + 109);

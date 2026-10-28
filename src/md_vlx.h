@@ -116,6 +116,10 @@ struct md_system_state_t;
 //                                                            atom per mode
 //   dipole/{ground_state,electric_transition,                each a vector and an origin of the same
 //           magnetic_transition,velocity_transition}/*       shape, anchored at the centre of charge
+//   dipole/embedding_induced/{vector,origin}                 {P} each: the induced dipoles of an
+//                                                            embedding, each anchored at its
+//                                                            polarizable site (Angstrom), when the
+//                                                            sites are atoms of the system
 //
 // Most are read with md_attribute_extract_f32; the multi axis ones by building an
 // md_attribute_slice_t, asking md_attribute_slice_count how big it is and extracting into that.
