@@ -2126,6 +2126,147 @@ static void vlx_scf_density_locate(vlx_density_property_t* out, vlx_t* vlx, hid_
 // Defined with the embedding environment, whose sites it maps onto
 static void vlx_publish_induced_dipoles(const vlx_t* vlx, hid_t scf_handle);
 
+// ---------------------------------------------------------------------------
+// SURFACE GAUSSIANS
+//
+// Two of VeloxChem's environment models put normalised spherical gaussians on the tesserae of a
+// surface of scaled van der Waals spheres around the molecule, and write them to the SCF settings:
+//
+//   CPCM (solvation)      scf/cpcm_gaussian_{centers,widths,normalization_constants}, scf/cpcm_q
+//   GOSTSHYP (pressure)   scf/gostshyp_gaussian_{centers,width,normalization_constants,amplitudes}
+//
+// Gaussian k is  g_k(r) = a_k N_k exp(-w_k |r - s_k|^2)  with N_k = (w_k / pi)^(3/2), so that it
+// integrates to a_k. What a_k IS differs: for CPCM the surface charge q_k (e), the solvent's
+// polarisation smeared into a gaussian density whose width w_k = zeta_k^2 follows the tessera
+// (CpcmDriver); for GOSTSHYP the amplitude p_j = P A_j / f~_j (hartree bohr^3), and the sum of the
+// gaussians is the repulsive potential on the electrons that exerts the pressure (GostshypDriver,
+// the V1 part of its Fock contribution). Both are published in the same layout, so that one
+// consumer evaluates either: cpcm/{center,exponent,normalization,amplitude} and the same under
+// gostshyp/, one entry per gaussian, the amplitude's unit saying which kind of quantity it is.
+// 'exponent' and not 'width': it is the w in exp(-w r^2) (zeta^2 for CPCM), the inverse of a width.
+// ---------------------------------------------------------------------------
+
+typedef struct vlx_surface_gaussians_t {
+	const char* prefix;			// group in the table
+	const char* name;			// for the log
+	const char* center;			// datasets in the SCF settings
+	const char* exponent;
+	const char* normalization;
+	const char* amplitude;
+	const char* amplitude_label;
+} vlx_surface_gaussians_t;
+
+static void vlx_publish_surface_gaussians_one(md_system_t* sys, hid_t scf_handle, const vlx_surface_gaussians_t* g, md_unit_t amplitude_unit) {
+	const char* fields[4] = { g->center, g->exponent, g->normalization, g->amplitude };
+	int present = 0;
+	for (int i = 0; i < 4; ++i) present += h5_link_exists(scf_handle, fields[i]);
+	if (present == 0) {
+		return;
+	}
+	if (present < 4) {
+		MD_LOG_ERROR("VeloxChem: the %s gaussians are incomplete in the SCF settings (%d of centres, exponents, normalisations and amplitudes); they are not read", g->name, present);
+		return;
+	}
+
+	size_t c_dim[2] = {0};
+	if (h5_read_dataset_dims(c_dim, 2, scf_handle, g->center) != 2 || c_dim[1] != 3 || c_dim[0] == 0) {
+		MD_LOG_ERROR("VeloxChem: scf/%s is not one 3-vector per gaussian; the %s gaussians are not read", g->center, g->name);
+		return;
+	}
+	const size_t num = c_dim[0];
+	for (int i = 1; i < 4; ++i) {
+		size_t dim[2] = {0};
+		if (h5_read_dataset_dims(dim, 2, scf_handle, fields[i]) != 1 || dim[0] != num) {
+			MD_LOG_ERROR("VeloxChem: scf/%s does not hold one value for each of the %zu %s gaussians; they are not read", fields[i], num, g->name);
+			return;
+		}
+	}
+
+	md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+	dvec3_t* center = md_temp_alloc_array(temp, dvec3_t, num);
+	double*  values = md_temp_alloc_array(temp, double, 3 * num);
+	double*  w = values, *n = values + num, *a = values + 2 * num;
+	if (!h5_read_dataset_data(center, 3 * num, scf_handle, H5T_NATIVE_DOUBLE, g->center) ||
+		!h5_read_dataset_data(w, num, scf_handle, H5T_NATIVE_DOUBLE, g->exponent) ||
+		!h5_read_dataset_data(n, num, scf_handle, H5T_NATIVE_DOUBLE, g->normalization) ||
+		!h5_read_dataset_data(a, num, scf_handle, H5T_NATIVE_DOUBLE, g->amplitude)) {
+		MD_LOG_ERROR("VeloxChem: failed to read the %s gaussians", g->name);
+		goto done;
+	}
+
+	// The normalisation is (w/pi)^(3/2) by construction; one that is not is not the gaussian the
+	// rest of this assumes, though it is published as written
+	for (size_t k = 0; k < num; ++k) {
+		const double expected = pow(w[k] / PI, 1.5);
+		if (!(w[k] > 0.0) || fabs(n[k] - expected) > 1.0e-8 * fabs(expected)) {
+			MD_LOG_INFO("VeloxChem: %s gaussian %zu has normalisation %g, not (w/pi)^(3/2) = %g of its exponent %g", g->name, k, n[k], expected, w[k]);
+			break;
+		}
+	}
+
+	char path[64];
+	const md_unit_t bohr = md_unit_bohr_radius();
+	md_snprintf(path, sizeof(path), "%s/center", g->prefix);
+	md_qm_publish_vec3_series(sys, str_from_cstr(path), STR_LIT("Center"), bohr, center, num);
+	md_snprintf(path, sizeof(path), "%s/exponent", g->prefix);
+	md_qm_publish_series(sys, str_from_cstr(path), STR_LIT("Exponent"), md_unit_pow(bohr, -2), w, num);
+	md_snprintf(path, sizeof(path), "%s/normalization", g->prefix);
+	md_qm_publish_series(sys, str_from_cstr(path), STR_LIT("Normalization"), md_unit_pow(bohr, -3), n, num);
+	md_snprintf(path, sizeof(path), "%s/amplitude", g->prefix);
+	md_qm_publish_series(sys, str_from_cstr(path), str_from_cstr(g->amplitude_label), amplitude_unit, a, num);
+
+done:
+	md_temp_end(temp);
+}
+
+// The pressure GOSTSHYP applied, in the unit it was given in: the units VeloxChem accepts
+// (GostshypDriver.parse_pressure_units). Nothing for a unit it would not have.
+static bool vlx_pressure_unit(md_unit_t* out, str_t units) {
+	static const struct { const char* name; double pascal; } table[] = {
+		{"pa", 1.0}, {"pascal", 1.0}, {"hpa", 1.0e2}, {"hectopascal", 1.0e2}, {"kpa", 1.0e3}, {"kilopascal", 1.0e3},
+		{"bar", 1.0e5}, {"mpa", 1.0e6}, {"megapascal", 1.0e6}, {"gpa", 1.0e9}, {"gigapascal", 1.0e9},
+		{"atm", 101325.0}, {"atmosphere", 101325.0}, {"atmospheric", 101325.0}, {"torr", 101325.0 / 760.0},
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(table); ++i) {
+		if (str_eq_cstr_ignore_case(units, table[i].name)) {
+			*out = md_unit_scl(md_unit_pascal(), table[i].pascal);
+			return true;
+		}
+	}
+	if (str_eq_cstr_ignore_case(units, "au") || str_eq_cstr_ignore_case(units, "atomic") || str_eq_cstr_ignore_case(units, "atomic units")) {
+		*out = md_unit_div(md_unit_hartree(), md_unit_pow(md_unit_bohr_radius(), 3));
+		return true;
+	}
+	return false;
+}
+
+static void vlx_publish_surface_gaussians(md_system_t* sys, hid_t scf_handle) {
+	static const vlx_surface_gaussians_t cpcm = {
+		"cpcm", "CPCM", "cpcm_gaussian_centers", "cpcm_gaussian_widths", "cpcm_gaussian_normalization_constants", "cpcm_q", "Surface Charge",
+	};
+	static const vlx_surface_gaussians_t gostshyp = {
+		"gostshyp", "GOSTSHYP", "gostshyp_gaussian_centers", "gostshyp_gaussian_width", "gostshyp_gaussian_normalization_constants", "gostshyp_gaussian_amplitudes", "Amplitude",
+	};
+	const md_unit_t bohr = md_unit_bohr_radius();
+	vlx_publish_surface_gaussians_one(sys, scf_handle, &cpcm, md_unit_elementary_charge());
+	vlx_publish_surface_gaussians_one(sys, scf_handle, &gostshyp, md_unit_mul(md_unit_hartree(), md_unit_pow(bohr, 3)));
+
+	// What each model was run with, beside its gaussians
+	double epsilon = 0.0;
+	if (md_attributes_find(&sys->attributes, STR_LIT("cpcm/amplitude")) && h5_link_exists(scf_handle, "cpcm_epsilon") &&
+		h5_read_scalar(&epsilon, scf_handle, H5T_NATIVE_DOUBLE, "cpcm_epsilon")) {
+		md_qm_publish_scalar(sys, STR_LIT("cpcm/epsilon"), STR_LIT("Dielectric Constant"), md_unit_none(), epsilon);
+	}
+	double pressure = 0.0;
+	char units[32] = {0};
+	md_unit_t pressure_unit = {0};
+	if (md_attributes_find(&sys->attributes, STR_LIT("gostshyp/amplitude")) && h5_link_exists(scf_handle, "pressure") &&
+		h5_read_scalar(&pressure, scf_handle, H5T_NATIVE_DOUBLE, "pressure") &&
+		h5_read_cstr(units, sizeof(units), scf_handle, "pressure_units") && vlx_pressure_unit(&pressure_unit, str_trim(str_from_cstr(units)))) {
+		md_qm_publish_scalar(sys, STR_LIT("gostshyp/pressure"), STR_LIT("Pressure"), pressure_unit, pressure);
+	}
+}
+
 static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	md_system_t* sys = vlx->sys;
 	char scf_type[64] = {0};
@@ -2265,6 +2406,9 @@ static bool h5_read_scf_data(vlx_t* vlx, hid_t handle) {
 	// The embedding's induced dipoles, when the run kept them. The system exists by now, and with it
 	// the environment's sites as atoms, when they were added.
 	vlx_publish_induced_dipoles(vlx, handle);
+
+	// The surface gaussians of a CPCM or GOSTSHYP run
+	vlx_publish_surface_gaussians(sys, handle);
 
 	// NOTE: H5Lexists returns htri_t -- negative on error, which is truthy. Test
 	// explicitly, or a failed lookup is taken as "present" and the read proceeds.

@@ -1376,6 +1376,114 @@ UTEST(vlx, pe_induced_dipoles_from_file) {
 }
 
 // ---------------------------------------------------------------------------
+// SURFACE GAUSSIANS
+//
+// CPCM and GOSTSHYP runs keep normalised spherical gaussians on a surface around the molecule:
+// cpcm/ and gostshyp/{center,exponent,normalization,amplitude}, g_k(r) = a_k N_k exp(-w_k r^2) with
+// N_k = (w_k/pi)^(3/2). The amplitude's unit says what it is: a surface charge for CPCM, the
+// amplitude of a pressure potential for GOSTSHYP.
+// ---------------------------------------------------------------------------
+
+// Every gaussian integrates to its amplitude: the normalisation is (w/pi)^(3/2) of the exponent
+static void vlx_test_surface_gaussians_normalised(int* utest_result, const vlx_test_t* t, const char* group, size_t num) {
+	char path[64];
+	snprintf(path, sizeof(path), "%s/exponent", group);
+	double* w = (double*)md_alloc(t->alloc, sizeof(double) * num);
+	double* n = (double*)md_alloc(t->alloc, sizeof(double) * num);
+	ASSERT_EQ(num, qm_test_series(w, num, t, str_from_cstr(path)));
+	snprintf(path, sizeof(path), "%s/normalization", group);
+	ASSERT_EQ(num, qm_test_series(n, num, t, str_from_cstr(path)));
+	for (size_t k = 0; k < num; ++k) {
+		EXPECT_NEAR(pow(w[k] / PI, 1.5), n[k], 1e-10 * n[k]);
+	}
+}
+
+UTEST(vlx, cpcm_gaussians) {
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/cpcm_ammonia.h5"), MEGABYTES(64)));
+	EXPECT_EQ(4u, t.sys.atom.count);
+
+	const size_t num = 370;
+	const md_attribute_t* center = qm_test_attr(&t, STR_LIT("cpcm/center"));
+	ASSERT_TRUE(center != NULL);
+	EXPECT_EQ(3u, center->format.components);
+	ASSERT_EQ(num, md_attribute_value_count(&center->format));
+	EXPECT_TRUE(md_unit_equal(center->unit, md_unit_bohr_radius()));
+	double xyz[3 * 370];
+	ASSERT_EQ(3 * num, qm_test_series(xyz, ARRAY_SIZE(xyz), &t, STR_LIT("cpcm/center")));
+	EXPECT_NEAR(-7.51637054, xyz[0], 1e-8);
+	EXPECT_NEAR(-1.64584563, xyz[1], 1e-8);
+	EXPECT_NEAR( 2.29703013, xyz[2], 1e-8);
+	EXPECT_NEAR( 0.95167719, xyz[3 * num - 1], 1e-8);
+
+	// Read in Angstrom, the centres are where the cavity is: 1.2 x the 1.55 A radius of N from it
+	double xyz_aa[3];
+	ASSERT_EQ(3u, md_attribute_extract_f64(xyz_aa, 3, center, md_attribute_slice_1(0), md_unit_angstrom()));
+	EXPECT_NEAR(-7.51637054 * 0.529177210544, xyz_aa[0], 1e-6);
+
+	const md_attribute_t* q = qm_test_attr(&t, STR_LIT("cpcm/amplitude"));
+	ASSERT_TRUE(q != NULL);
+	EXPECT_TRUE(md_unit_equal(q->unit, md_unit_elementary_charge()));
+	double charge[370], w[370];
+	ASSERT_EQ(num, qm_test_series(charge, num, &t, STR_LIT("cpcm/amplitude")));
+	ASSERT_EQ(num, qm_test_series(w, num, &t, STR_LIT("cpcm/exponent")));
+	EXPECT_NEAR(-1.2273394862771203e-04, charge[0], 1e-16);
+	EXPECT_NEAR(-1.1671216234377673e-03, charge[num - 1], 1e-15);
+	double sum = 0.0;
+	for (size_t k = 0; k < num; ++k) sum += charge[k];
+	EXPECT_NEAR(-0.009365697101471476, sum, 1e-12);	// A neutral molecule: the solvent's charge nearly cancels
+	EXPECT_NEAR(86.88930493172515, w[0], 1e-10);
+	EXPECT_NEAR(31.6860551984003,  w[num - 1], 1e-10);
+	vlx_test_surface_gaussians_normalised(utest_result, &t, "cpcm", num);
+
+	EXPECT_NEAR(78.39, qm_test_scalar(&t, STR_LIT("cpcm/epsilon"), 0.0), 1e-12);
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("gostshyp/amplitude")));
+
+	qm_test_free(&t);
+}
+
+UTEST(vlx, gostshyp_gaussians) {
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/gostshyp_furan.h5"), MEGABYTES(64)));
+	EXPECT_EQ(9u, t.sys.atom.count);
+
+	const size_t num = 524;
+	ASSERT_EQ(num, md_attribute_value_count(&qm_test_attr(&t, STR_LIT("gostshyp/center"))->format));
+	double xyz[3 * 524];
+	ASSERT_EQ(3 * num, qm_test_series(xyz, ARRAY_SIZE(xyz), &t, STR_LIT("gostshyp/center")));
+	EXPECT_NEAR( 6.24272537, xyz[0], 1e-8);
+	EXPECT_NEAR(-6.31665735, xyz[3 * num - 1], 1e-8);
+
+	// The amplitude makes the sum of the normalised gaussians a potential energy
+	const md_attribute_t* amp = qm_test_attr(&t, STR_LIT("gostshyp/amplitude"));
+	ASSERT_TRUE(amp != NULL);
+	EXPECT_TRUE(md_unit_equal(amp->unit, md_unit_mul(md_unit_hartree(), md_unit_pow(md_unit_bohr_radius(), 3))));
+	const md_attribute_t* norm = qm_test_attr(&t, STR_LIT("gostshyp/normalization"));
+	ASSERT_TRUE(norm != NULL);
+	EXPECT_TRUE(md_unit_equal(md_unit_mul(amp->unit, norm->unit), md_unit_hartree()));
+
+	double a[524], w[524];
+	ASSERT_EQ(num, qm_test_series(a, num, &t, STR_LIT("gostshyp/amplitude")));
+	ASSERT_EQ(num, qm_test_series(w, num, &t, STR_LIT("gostshyp/exponent")));
+	EXPECT_NEAR(0.010310236498102669, a[0], 1e-15);
+	EXPECT_NEAR(0.34505304619269406,  a[num - 1], 1e-14);
+	EXPECT_NEAR(63.40937254113438, w[0], 1e-10);
+	EXPECT_NEAR(3.1379709103430087, w[num - 1], 1e-12);
+	vlx_test_surface_gaussians_normalised(utest_result, &t, "gostshyp", num);
+
+	// 50 GPa, in the unit it was given in
+	const md_attribute_t* p = qm_test_attr(&t, STR_LIT("gostshyp/pressure"));
+	ASSERT_TRUE(p != NULL);
+	EXPECT_EQ(0u, p->format.rank);
+	double pa = 0.0;
+	ASSERT_EQ(1u, md_attribute_extract_f64(&pa, 1, p, md_attribute_slice_all(), md_unit_pascal()));
+	EXPECT_NEAR(5.0e10, pa, 1.0);
+	EXPECT_FALSE(qm_test_has(&t, STR_LIT("cpcm/amplitude")));
+
+	qm_test_free(&t);
+}
+
+// ---------------------------------------------------------------------------
 // DENSITY PROPERTIES
 //
 // What gives an AO matrix its meaning is the basis set, and the ROOT of the file names it along with

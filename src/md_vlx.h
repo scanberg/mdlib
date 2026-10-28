@@ -50,6 +50,19 @@ struct md_system_state_t;
 //                                                            - published whether or not the
 //                                                            environment could be added
 //
+//   cpcm/{center,exponent,normalization,amplitude}           {K} each, one per gaussian of a CPCM or
+//   gostshyp/{center,exponent,normalization,amplitude}       GOSTSHYP run: g_k(r) = a_k N_k
+//                                                            exp(-w_k |r - s_k|^2), N_k = (w_k/pi)^1.5.
+//                                                            center bohr (x3), exponent bohr^-2,
+//                                                            normalization bohr^-3. amplitude: the
+//                                                            surface charge q (e) for CPCM, whose
+//                                                            gaussians are the solvent's smeared
+//                                                            polarisation charge; for GOSTSHYP p
+//                                                            (hartree bohr^3), the sum being the
+//                                                            pressure potential on the electrons
+//   cpcm/epsilon, gostshyp/pressure                          rank 0: the dielectric constant, and
+//                                                            the pressure in the unit it was given
+//
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}
 //   vlx/basis_set, vlx/dft_functional, vlx/potfile           rank 1 {1} strings
