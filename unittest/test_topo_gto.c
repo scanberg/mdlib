@@ -79,6 +79,35 @@ UTEST(topo_gto, water_topology_is_certified) {
     EXPECT_EQ(0u, count[MD_TOPO_JOIN_SADDLE]);
     EXPECT_EQ(0u, count[MD_TOPO_MINIMUM]);
 
+    // The vertices in double with the Hessian there: the float vertices are them rounded, the eigenvalues are
+    // ascending with signs that give the type, the eigenvectors orthonormal. A copy keeps them.
+    ASSERT_TRUE(graph.vertices_f64 != NULL);
+    for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+        const md_topo_vert_f64_t* d = &graph.vertices_f64[i];
+        EXPECT_EQ(graph.vertices[i].x, (float)d->x);
+        EXPECT_EQ(graph.vertices[i].y, (float)d->y);
+        EXPECT_EQ(graph.vertices[i].z, (float)d->z);
+        EXPECT_EQ(graph.vertices[i].value, (float)d->value);
+        EXPECT_LE(d->hessian_eigenvalues[0], d->hessian_eigenvalues[1]);
+        EXPECT_LE(d->hessian_eigenvalues[1], d->hessian_eigenvalues[2]);
+        int npos = 0;
+        for (int k = 0; k < 3; ++k) npos += d->hessian_eigenvalues[k] > 0.0;
+        EXPECT_EQ(graph.types[i] == MD_TOPO_MAXIMUM ? 0 : 1, npos);   // water: maxima and bond CPs only
+        for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) {
+            const double* u = d->hessian_eigenvectors[a];
+            const double* w = d->hessian_eigenvectors[b];
+            EXPECT_NEAR(a == b ? 1.0 : 0.0, u[0] * w[0] + u[1] * w[1] + u[2] * w[2], 1e-12);
+        }
+    }
+    {
+        md_topo_extremum_graph_t copy = { .alloc = in.t.alloc };
+        md_topo_extremum_graph_copy(&copy, &graph);
+        ASSERT_TRUE(copy.vertices_f64 != NULL);
+        EXPECT_EQ(0, memcmp(copy.vertices_f64, graph.vertices_f64, sizeof(md_topo_vert_f64_t) * graph.num_vertices));
+        md_topo_extremum_graph_free(&copy);
+        EXPECT_TRUE(copy.vertices_f64 == NULL);
+    }
+
     // Each maximum is a nuclear attractor. A GTO density has no cusp, so attractors are displaced from the
     // nuclei: negligibly for O, by several hundredths of a Bohr for H.
     int max_of_atom[3] = { -1, -1, -1 };

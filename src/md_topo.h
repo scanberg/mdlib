@@ -51,6 +51,15 @@ typedef struct md_topo_vert_t {
     float value;   // Scalar field value at the vertex
 } md_topo_vert_t;
 
+// A vertex in double, where its producer has it (the GTO search): the position and value the float vertex
+// is rounded from, and the Hessian of the field there.
+typedef struct md_topo_vert_f64_t {
+    double x, y, z;
+    double value;
+    double hessian_eigenvalues[3];      // ascending
+    double hessian_eigenvectors[3][3];  // [k]: the unit eigenvector of hessian_eigenvalues[k]
+} md_topo_vert_f64_t;
+
 // Result structure containing the Morse-Smale complex.
 // vertices[i] holds position + scalar value; types[i] holds the critical-point type.
 // Edge indices (from, to) are indices into the vertices/types arrays.
@@ -63,6 +72,10 @@ typedef struct md_topo_extremum_graph_t {
     uint32_t                       num_edges;
 
     struct md_allocator_i*         alloc;
+
+    // [num_vertices] or NULL: the vertices in double with the Hessian there, from a producer that has them
+    // (md_topo_compute_extremum_graph_gto*). md_topo_extremum_graph_copy carries them, md_topo_simplify does not.
+    md_topo_vert_f64_t*            vertices_f64;
 } md_topo_extremum_graph_t;
 
 #ifdef __cplusplus
@@ -114,9 +127,10 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
 // and PROVES, cube by cube, that a region holds no critical point or exactly one (Newton then
 // polishes it to |dx| < 1e-13 Bohr). Every non-degenerate critical point with rho >= rho_min is found;
 // near-degenerate topology that cannot be resolved down to h_min is reported, never guessed.
-// Vertices are in Bohr; types follow md_topo_critical_point_type_t (SPLIT_SADDLE = bond CP (3,-1),
-// JOIN_SADDLE = ring CP (3,+1), MINIMUM = cage CP (3,+3)). Edges run from a saddle to the extremum its
-// separatrix ends in (bond paths for BCPs, ring lines for RCPs), as in the volume pipeline.
+// Vertices are in Bohr, rounded to float; vertices_f64 holds them as polished, in double, with the Hessian
+// of rho there. Types follow md_topo_critical_point_type_t (SPLIT_SADDLE = bond CP (3,-1), JOIN_SADDLE =
+// ring CP (3,+1), MINIMUM = cage CP (3,+3)). Edges run from a saddle to the extremum its separatrix ends in
+// (bond paths for BCPs, RCP attractor paths for RCPs), as in the volume pipeline.
 // out_graph->alloc must be set (as for md_topo_simplify).
 // Multithreaded and deterministic: the output is bit-identical for any thread count. Blocking; run it
 // from a worker thread for interactive use and cancel through 'cancel' (returns false, info.cancelled).

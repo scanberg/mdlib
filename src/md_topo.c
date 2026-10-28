@@ -1020,6 +1020,7 @@ void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph) {
         if (graph->vertices) md_free(alloc, graph->vertices, graph->num_vertices * sizeof(md_topo_vert_t));
         if (graph->types)    md_free(alloc, graph->types,    graph->num_vertices * sizeof(md_topo_critical_point_type_t));
         if (graph->edges)    md_free(alloc, graph->edges,    graph->num_edges    * sizeof(md_topo_edge_t));
+        if (graph->vertices_f64) md_free(alloc, graph->vertices_f64, graph->num_vertices * sizeof(md_topo_vert_f64_t));
         MEMSET(graph, 0, sizeof(md_topo_extremum_graph_t));
         graph->alloc = alloc;
     }
@@ -1039,6 +1040,10 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
     MEMCPY(out_graph->vertices, src_graph->vertices, src_graph->num_vertices * sizeof(md_topo_vert_t));
     MEMCPY(out_graph->types,    src_graph->types,    src_graph->num_vertices * sizeof(md_topo_critical_point_type_t));
     MEMCPY(out_graph->edges,    src_graph->edges,    src_graph->num_edges    * sizeof(md_topo_edge_t));
+    if (src_graph->vertices_f64) {
+        out_graph->vertices_f64 = (md_topo_vert_f64_t*)md_alloc(alloc, src_graph->num_vertices * sizeof(md_topo_vert_f64_t));
+        MEMCPY(out_graph->vertices_f64, src_graph->vertices_f64, src_graph->num_vertices * sizeof(md_topo_vert_f64_t));
+    }
 }
 
 // =====================================================================================================
@@ -1075,7 +1080,7 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 // distance, charged to the cube; all the others by one global term. The search domain is derived from
 // the same tail bounds (rho <= rho_min outside).
 //
-// Separatrices (bond paths BCP -> 2 maxima, ring lines RCP -> CCP or infinity) are traced from the
+// Separatrices (bond paths BCP -> 2 maxima, RCP attractor paths RCP -> CCP or infinity) are traced from the
 // saddles along their unique eigen-directions with adaptive Dormand-Prince RK45; they become the graph
 // edges (from = saddle, to = extremum), exactly the edges the voxel pipeline produces.
 //
@@ -3144,10 +3149,20 @@ static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md
         out_graph->num_vertices = (uint32_t)ncp;
         out_graph->vertices = (md_topo_vert_t*)md_alloc(galloc, sizeof(md_topo_vert_t) * ncp);
         out_graph->types = (md_topo_critical_point_type_t*)md_alloc(galloc, sizeof(md_topo_critical_point_type_t) * ncp);
+        out_graph->vertices_f64 = (md_topo_vert_f64_t*)md_alloc(galloc, sizeof(md_topo_vert_f64_t) * ncp);
         int count[5] = {0};
         for (int i = 0; i < ncp; ++i) {
             out_graph->vertices[i] = (md_topo_vert_t){ (float)cps[i].x[0], (float)cps[i].x[1], (float)cps[i].x[2], (float)cps[i].rho };
             out_graph->types[i] = (md_topo_critical_point_type_t)cps[i].type;
+            md_topo_vert_f64_t* v = &out_graph->vertices_f64[i];
+            v->x = cps[i].x[0];
+            v->y = cps[i].x[1];
+            v->z = cps[i].x[2];
+            v->value = cps[i].rho;
+            for (int k = 0; k < 3; ++k) {
+                v->hessian_eigenvalues[k] = cps[i].ev[k];
+                for (int j = 0; j < 3; ++j) v->hessian_eigenvectors[k][j] = cps[i].evec[j][k];   // cpg_eigen_sym3: in columns
+            }
             count[cps[i].type]++;
         }
         info->poincare_hopf = count[MD_TOPO_MAXIMUM] - count[MD_TOPO_SPLIT_SADDLE] + count[MD_TOPO_JOIN_SADDLE] - count[MD_TOPO_MINIMUM];
