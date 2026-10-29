@@ -2009,6 +2009,131 @@ UTEST(gto_iso_density, split_comparison) {
 // the indirect grid); the host reads back once, the brick count after the octree, to size the
 // mesh buffers.
 
+// =============================================================================================
+// Average local ionization energy (md_qm_alie_orbitals): the weights, and I(r) from two product fields
+// =============================================================================================
+#include <md_qm.h>
+
+typedef struct iso_alie_t {
+    md_gto_iso_field_t* rho;    // sum n |phi|^2
+    md_gto_iso_field_t* num;    // sum n |e| |phi|^2
+    double homo;                // |e| of the least bound occupied orbital, hartree
+    size_t count;
+} iso_alie_t;
+
+static bool iso_alie_make(iso_alie_t* a, const iso_dens_src_t* s) {
+    memset(a, 0, sizeof(*a));
+    double *rows = NULL, *w = NULL, *we = NULL;
+    size_t na = 0;
+    a->count = md_qm_alie_orbitals(&rows, &w, &we, &na, &s->t.sys, md_get_heap_allocator());
+    if (!a->count || na != s->num_ao) return false;
+    a->homo = DBL_MAX;
+    for (size_t k = 0; k < a->count; ++k) a->homo = fmin(a->homo, we[k] / w[k]);
+    a->rho = md_gto_iso_field_create_products(&s->basis, s->xyz, 0, rows, NULL, w, a->count, md_get_heap_allocator());
+    a->num = md_gto_iso_field_create_products(&s->basis, s->xyz, 0, rows, NULL, we, a->count, md_get_heap_allocator());
+    md_free(md_get_heap_allocator(), rows, sizeof(double) * a->count * na);
+    md_free(md_get_heap_allocator(), w, sizeof(double) * a->count);
+    md_free(md_get_heap_allocator(), we, sizeof(double) * a->count);
+    return a->rho && a->num;
+}
+
+static void iso_alie_free(iso_alie_t* a) {
+    if (a->rho) md_gto_iso_field_destroy(a->rho);
+    if (a->num) md_gto_iso_field_destroy(a->num);
+    memset(a, 0, sizeof(*a));
+}
+
+UTEST(qm_alie, orbitals_and_limits) {
+    static const char* files[] = {"h2o.h5", "amide.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], false));
+        ASSERT_TRUE(md_qm_alie_available(&s.t.sys));
+        double *rows = NULL, *w = NULL, *we = NULL;
+        size_t na = 0;
+        const size_t count = md_qm_alie_orbitals(&rows, &w, &we, &na, &s.t.sys, md_get_heap_allocator());
+        ASSERT_GT(count, 0u);
+        // the same orbitals and weights as the total density's
+        double *drows = NULL, *dw = NULL;
+        size_t dna = 0;
+        const size_t dcount = md_qm_density_orbitals(&drows, &dw, &dna, &s.t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        ASSERT_EQ(count, dcount);
+        EXPECT_EQ(0, memcmp(rows, drows, sizeof(double) * count * na));
+        EXPECT_EQ(0, memcmp(w, dw, sizeof(double) * count));
+        // closed shell: n = 2 and the energy weights 2 |e| of the occupied orbitals in order
+        double* e = (double*)calloc(s.num_mo, sizeof(double));
+        ASSERT_EQ(qm_test_series(e, s.num_mo, &s.t, STR_LIT("orbital/alpha/energy")), s.num_mo);
+        size_t k = 0;
+        for (size_t m = 0; m < s.num_mo && k < count; ++m) {
+            if (s.occ[m] == 0.0) continue;
+            EXPECT_NEAR(w[k], 2.0, 1e-12);
+            EXPECT_NEAR(we[k], 2.0 * fabs(e[m]), 1e-12);
+            ++k;
+        }
+        EXPECT_EQ(k, count);
+        free(e);
+        md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
+        md_free(md_get_heap_allocator(), w, sizeof(double) * count);
+        md_free(md_get_heap_allocator(), we, sizeof(double) * count);
+        md_free(md_get_heap_allocator(), drows, sizeof(double) * dcount * dna);
+        md_free(md_get_heap_allocator(), dw, sizeof(double) * dcount);
+
+        // I(r): between |e_HOMO| and the deepest |e| everywhere, and on the 0.001 isodensity surface in the
+        // usual 0.3 - 0.8 hartree. Not |e_HOMO| far out, as it would be with exact orbitals: in a gaussian basis
+        // the tails are the most diffuse primitives' (and the evaluation cutoff's), so far from the molecule
+        // I(r) means nothing (water 8.7 bohr out, rho 7e-12: 0.49 against |e_HOMO| 0.29)
+        iso_alie_t a;
+        ASSERT_TRUE(iso_alie_make(&a, &s));
+        enum { N = 2000 };
+        iso_rng_t rng = {11};
+        double* pd = (double*)malloc(sizeof(double) * 3 * N);
+        float* pts = (float*)malloc(sizeof(float) * 3 * N);
+        iso_dens_points(pd, N, &s, &rng);
+        for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pd[i];
+        double* r = (double*)malloc(sizeof(double) * N);
+        double* q = (double*)malloc(sizeof(double) * N);
+        md_gto_iso_field_evaluate(a.rho, pts, N, 0, r, NULL);
+        md_gto_iso_field_evaluate(a.num, pts, N, 0, q, NULL);
+        double imin = DBL_MAX, imax = 0.0;
+        for (int i = 0; i < N; ++i) {
+            if (!(r[i] > 1e-12)) continue;
+            const double I = q[i] / r[i];
+            imin = fmin(imin, I);
+            imax = fmax(imax, I);
+        }
+        EXPECT_GE(imin, a.homo * (1.0 - 1e-6));
+        // on the 0.001 au isodensity surface
+        md_gto_iso_cache_t* cache = md_gto_iso_cache_create(a.rho, &(md_gto_iso_cache_desc_t){.cell_size = 0.3, .iso_min = 0.001}, md_get_heap_allocator());
+        ASSERT_TRUE(cache != NULL);
+        md_gto_iso_mesh_t m;
+        ASSERT_TRUE(md_gto_iso_mesh_extract(&m, cache, &(md_gto_iso_mesh_desc_t){.iso = 0.001, .project_iterations = 8, .relax_iterations = 2}, md_get_heap_allocator()));
+        const size_t nv = m.sheet_vertex_count[0];
+        double* rv = (double*)malloc(sizeof(double) * nv);
+        double* qv = (double*)malloc(sizeof(double) * nv);
+        const float* sp = m.position + 3 * (size_t)m.sheet_vertex_offset[0];
+        md_gto_iso_field_evaluate(a.rho, sp, nv, 0, rv, NULL);
+        md_gto_iso_field_evaluate(a.num, sp, nv, 0, qv, NULL);
+        double smin = DBL_MAX, smax = 0.0, rdev = 0.0;
+        for (size_t i = 0; i < nv; ++i) {
+            const double I = qv[i] / rv[i];
+            smin = fmin(smin, I);
+            smax = fmax(smax, I);
+            rdev = fmax(rdev, fabs(rv[i] - 0.001) / 0.001);
+        }
+        printf("  %-9s %zu occupied, |e_HOMO| %.4f Eh: I(r) at %d points %.4f .. %.4f; on rho = 0.001 (%zu vertices, rho within %.0e) %.4f .. %.4f Eh (%.2f .. %.2f eV)\n",
+               files[fi], a.count, a.homo, N, imin, imax, nv, rdev, smin, smax, smin * 27.211386, smax * 27.211386);
+        EXPECT_GE(smin, a.homo * (1.0 - 1e-6));
+        EXPECT_GT(smin, 0.2);
+        EXPECT_LT(smax, 1.0);
+        free(rv); free(qv);
+        md_gto_iso_mesh_free(&m);
+        md_gto_iso_cache_destroy(cache);
+        free(r); free(q); free(pd); free(pts);
+        iso_alie_free(&a);
+        iso_dens_src_free(&s);
+    }
+}
+
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
 #include "gto_iso_shaders.inl"
@@ -4223,6 +4348,83 @@ UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
 
         free(val); free(grad); free(pts); free(pd);
         for (int k = 0; k < NF; ++k) { if (fields[k]) md_gto_iso_field_destroy(fields[k]); iso_dens_prod_free(&p[k]); }
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
+// The average local ionization energy at the vertices of the 0.001 isodensity surface, on the device: the
+// density and the energy weighted density as two fields of one set, evaluated where the extraction left the
+// vertices, against the CPU
+UTEST(gto_iso_gpu_lib, alie_at_mesh_vertices) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    printf("  revision %s\n", ISOG_REVISION);
+    static const char* files[] = {"h2o.h5", "amide.h5", "mol.h5"};
+    for (int fi = 0; fi < 3; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], false));
+        iso_alie_t a;
+        ASSERT_TRUE(iso_alie_make(&a, &s));
+        md_gto_iso_field_set_maxima_at_atoms(a.rho, true);
+        const md_gto_iso_field_t* fl[2] = {a.rho, a.num};
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 2, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        // the surface of field 0 only: one sheet of the density
+        md_gto_iso_gpu_set_t* surf = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator());
+        ASSERT_TRUE(surf != NULL);
+        md_gto_iso_gpu_desc_t gd = {.cell_size = 0.3, .project_iterations = 8, .relax_iterations = 2};
+        gd.iso[0] = 0.001;
+        gd.sheets[0] = 1;
+        md_gto_iso_gpu_mesh_t gm;
+        ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, surf, &gd, &gm));
+        const uint32_t nv = gm.vertex_count;
+        ASSERT_GT(nv, 0u);
+        md_gpu_mem_t d = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, sizeof(float) * 2 * nv + 16);
+        md_gpu_mem_t h = md_gpu_malloc(g.s, MD_GPU_MEM_HOST_READ, sizeof(float) * 2 * nv + 16);
+        ASSERT_TRUE(d.gpu && h.gpu);
+        md_gto_iso_gpu_eval_desc_t ed = {0};
+        ed.xyz = gm.position;
+        ed.xyz_stride = sizeof(md_gpu_float4);
+        ed.num_xyz = nv;
+        ed.num_fields = 2;
+        ed.fields[0] = 0;
+        ed.fields[1] = 1;
+        ed.out_value = d.gpu;
+        ed.out_failed = d.gpu + sizeof(float) * 2 * nv;
+        md_tick_t t0 = md_tick_now();
+        ASSERT_TRUE(md_gto_iso_gpu_evaluate_launch(g.s, set, &ed));
+        md_gpu_copy(g.s, h.gpu, d.gpu, sizeof(float) * 2 * nv + sizeof(uint32_t));
+        md_gpu_stream_sync(g.s);
+        const double secs = md_tick_to_seconds(md_tick_now() - t0);
+        const float* hv = (const float*)h.cpu;
+        EXPECT_EQ(0u, *(const uint32_t*)(hv + 2 * nv));
+        float* pos = (float*)malloc(sizeof(float) * 4 * nv);
+        ASSERT_TRUE(md_gto_iso_gpu_mesh_read_all(g.s, &gm, pos, NULL, NULL));
+        double* rv = (double*)malloc(sizeof(double) * nv);
+        double* qv = (double*)malloc(sizeof(double) * nv);
+        md_gto_iso_field_evaluate(a.rho, pos, nv, 4 * sizeof(float), rv, NULL);
+        md_gto_iso_field_evaluate(a.num, pos, nv, 4 * sizeof(float), qv, NULL);
+        double err = 0.0, smin = DBL_MAX, smax = 0.0;
+        for (uint32_t i = 0; i < nv; ++i) {
+            const double Ic = qv[i] / rv[i];
+            const double Ig = (double)hv[nv + i] / (double)hv[i];
+            err = fmax(err, Ig == Ig ? fabs(Ig - Ic) : INFINITY);
+            smin = fmin(smin, Ic);
+            smax = fmax(smax, Ic);
+        }
+        printf("  %-9s %zu occupied: I(r) at %u vertices of rho = 0.001: %.4f .. %.4f Eh, GPU against CPU %.1e Eh | %.3f s\n",
+               files[fi], a.count, nv, smin, smax, err, secs);
+        EXPECT_LT(err, 1.0e-4);
+        free(pos); free(rv); free(qv);
+        md_gpu_free(g.s, d.gpu);
+        md_gpu_free(g.s, h.gpu);
+        md_gto_iso_gpu_mesh_free(g.s, &gm);
+        md_gto_iso_gpu_set_destroy(g.s, surf);
+        md_gto_iso_gpu_set_destroy(g.s, set);
+        iso_alie_free(&a);
         iso_dens_src_free(&s);
     }
     md_gto_iso_gpu_shutdown();
