@@ -34,6 +34,8 @@
 //   iso_bucket_*    vertices and triangles regrouped per field and sheet
 //   iso_grid        indirect grids from device-side counts
 //   iso_scan        exclusive prefix sums (the ordered lists)
+// Outside the extraction, the vertex evaluators serve the caller's points (md_gto_iso_gpu_evaluate_launch):
+//   iso_points_load the points as vertices of one field; iso_points_store their values from vval
 
 #include "../md_gpu.slang"
 
@@ -135,6 +137,13 @@ struct IsoArgs {
     uint*     dm_tao;         // per AO: its tiled index
     uint*     dm_map;         // [dm_nt][dm_nt], I <= J: the tile pair's pool entry, INVALID where not kept
     float*    dm_rows;        // iso_dmat_rows: per matrix and AO, sum over nu of |D_mu nu|
+    // iso_points_load, iso_points_store (md_gto_iso_gpu_evaluate_launch): the caller's points and values
+    float*    pts;            // point i at pts[i * pts_stride], float xyz
+    float*    pval;           // iso_points_store: the value at point i to pval[i]
+    uint      pts_stride;     // floats from one point to the next
+    uint      pts_field;      // iso_points_load: the field the points are evaluated for
+    uint      _pad3;
+    uint      _pad4;
 };
 MD_SHADER_ARGS(IsoArgs);
 
@@ -2753,6 +2762,36 @@ void iso_project_list_f1(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     a.vval[vi] = gv;
     a.vnrm[vi] = nrm;
     a.vdone[vi] = done;
+}
+
+// ------------------------------------------------------------------------------------------
+// Points: the vertex evaluators (iso_geval_*, iso_deval, iso_eval_orbital) at the caller's points
+// (md_gto_iso_gpu_evaluate_launch). A point is a vertex of field pts_field that has not converged.
+// ------------------------------------------------------------------------------------------
+
+// The count points from pts as vertices: mode 1 their positions (and vdone cleared), always the field
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_points_load(uint3 tid : SV_DispatchThreadID) {
+    IsoArgs a = MD_ARGS;
+    uint i = tid.x;
+    if (i >= a.count) return;
+    if ((a.mode & 1u) != 0u) {
+        uint o = i * a.pts_stride;
+        a.vpos[i] = float4(a.pts[o], a.pts[o + 1u], a.pts[o + 2u], 1.0);
+        a.vdone[i] = 0u;
+    }
+    a.vinfo[i] = uint4(0u, 0u, a.pts_field, 0u);
+}
+
+// The values of the count points evaluated (vval: gradient xyz, value w) to pval
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_points_store(uint3 tid : SV_DispatchThreadID) {
+    IsoArgs a = MD_ARGS;
+    uint i = tid.x;
+    if (i >= a.count) return;
+    a.pval[i] = a.vval[i].w;
 }
 
 // Sets of single-function fields (orbitals): one thread per vertex, its field's one column of C.

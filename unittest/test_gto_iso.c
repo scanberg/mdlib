@@ -4067,6 +4067,168 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
 // attribute, the field from it, the GPU set and the extraction, each timed. GTO_ISO_LARGE=<file in test_data/vlx>
 // (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025).
 #include <md_qm.h>
+// md_gto_iso_gpu_evaluate: the fields of a set at arbitrary points against md_gto_iso_field_evaluate in double,
+// through every vertex evaluator (orbitals, the tiled and the wide GEMM, the D form), from the host and on the
+// device at a mesh's own vertices
+typedef struct iso_ev_err_t { double val, grad, fmax, gmax; } iso_ev_err_t;
+
+static iso_ev_err_t iso_ev_compare(const md_gto_iso_field_t* f, const float* xyz, size_t stride, size_t n, const float* val, const float* grad, size_t gstride) {
+    double* rv = (double*)malloc(sizeof(double) * n);
+    double* rg = (double*)malloc(sizeof(double) * 3 * n);
+    md_gto_iso_field_evaluate(f, xyz, n, stride, rv, rg);
+    iso_ev_err_t e = {0};
+    for (size_t i = 0; i < n; ++i) {
+        e.fmax = fmax(e.fmax, fabs(rv[i]));
+        e.val = fmax(e.val, val[i] == val[i] ? fabs((double)val[i] - rv[i]) : INFINITY);
+        for (int c = 0; c < 3; ++c) {
+            e.gmax = fmax(e.gmax, fabs(rg[3 * i + c]));
+            if (grad) { const float gc = grad[gstride * i + c]; e.grad = fmax(e.grad, gc == gc ? fabs((double)gc - rg[3 * i + c]) : INFINITY); }
+        }
+    }
+    free(rv); free(rg);
+    return e;
+}
+
+UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    printf("  revision %s\n", ISOG_REVISION);
+    static const char* files[] = {"amide.h5", "mol.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], fi == 0));
+        const size_t lumo = vlx_test_lumo_idx(&s.t, STR_LIT("orbital/alpha/occupation"));
+        // 0, 1: HOMO, LUMO; 2: SCF density (products); 3: attachment - detachment of state 1 (signed; with NTOs)
+        enum { NF = 4 };
+        md_gto_iso_field_t* fields[NF];
+        iso_dens_prod_t p[NF];
+        memset(p, 0, sizeof(p));
+        fields[0] = md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + (lumo - 1) * s.num_ao, md_get_heap_allocator());
+        fields[1] = md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + lumo * s.num_ao, md_get_heap_allocator());
+        iso_dens_products(&p[2], &s, ISO_D_SCF);
+        fields[2] = iso_dens_field(&s, &p[2], false);
+        iso_dens_products(&p[3], &s, ISO_D_DIFF);
+        fields[3] = p[3].count ? iso_dens_field(&s, &p[3], false) : NULL;
+        for (int k = 0; k < 3; ++k) ASSERT_TRUE(fields[k] != NULL);
+
+        // random points, a third near the atoms, in no particular order
+        enum { N = 4000 };
+        iso_rng_t rng = {0x5eed + (uint64_t)fi};
+        double* pd = (double*)malloc(sizeof(double) * 3 * N);
+        float* pts = (float*)malloc(sizeof(float) * 3 * N);
+        iso_dens_points(pd, N, &s, &rng);
+        for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pd[i];
+        float* val = (float*)malloc(sizeof(float) * (NF + 1) * N);        // NF fields and a repeat
+        float* grad = (float*)malloc(sizeof(float) * 3 * (NF + 1) * N);
+
+        typedef struct { const char* name; int fields[NF]; int nf; int dform; } ev_case_t;
+        const ev_case_t cases[] = {
+            {"orbitals",          {0, 1},       2, 0},
+            {"scf density",       {2},          1, 0},
+            {"mixed",             {0, 2, 3, 1}, 4, 0},
+            {"densities, D form", {2, 3},       2, 1},
+        };
+        for (int ci = 0; ci < (int)(sizeof(cases) / sizeof(cases[0])); ++ci) {
+            const ev_case_t* c = &cases[ci];
+            const md_gto_iso_field_t* fl[NF];
+            int nf = 0;
+            for (int k = 0; k < c->nf; ++k) if (fields[c->fields[k]]) fl[nf++] = fields[c->fields[k]];
+            const int saved_dform = isog_dform;
+            isog_dform = c->dform;
+            md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, (uint32_t)nf, md_get_heap_allocator());
+            ASSERT_TRUE(set != NULL);
+            isog_args_t a;
+            memset(&a, 0, sizeof(a));
+            isog_args_set(&a, set);
+            const isog_vkernel_t vk = isog_vertex_kernel(set, a.dform != 0u, false);
+            // every field of the set, the last one twice (repeats are allowed)
+            uint32_t which[NF + 1];
+            for (int k = 0; k < nf; ++k) which[k] = (uint32_t)k;
+            which[nf] = (uint32_t)(nf - 1);
+            md_tick_t t0 = md_tick_now();
+            const bool ok = md_gto_iso_gpu_evaluate(g.s, set, which, (uint32_t)nf + 1, pts, 0, N, val, grad);
+            const double secs = md_tick_to_seconds(md_tick_now() - t0);
+            EXPECT_TRUE(ok);
+            if (ok) {
+                for (int k = 0; k <= nf; ++k) {
+                    const md_gto_iso_field_t* f = fl[which[k]];
+                    const iso_ev_err_t e = iso_ev_compare(f, pts, 0, N, val + (size_t)k * N, grad + 3 * (size_t)k * N, 3);
+                    printf("  %-9s %-18s %-24s field %d: max |f| %.2e, |df| %.1e (%.1e rel), max |grad| %.2e, |dgrad| %.1e (%.1e rel) | %.3f s\n",
+                           files[fi], c->name, isog_kname[vk.k] ? isog_kname[vk.k] : "?", k, e.fmax, e.val, e.val / e.fmax, e.gmax, e.grad, e.grad / e.gmax, secs);
+                    // float, and the AOs below the evaluation cutoff (1e-6) left out: relative and absolute parts
+                    EXPECT_LT(e.val, 1.0e-5 * e.fmax + 1.0e-5);
+                    EXPECT_LT(e.grad, 1.0e-5 * e.gmax + 1.0e-5);
+                }
+                // the repeated field: the same values
+                EXPECT_EQ(0, memcmp(val + (size_t)(nf - 1) * N, val + (size_t)nf * N, sizeof(float) * N));
+            }
+            md_gto_iso_gpu_set_destroy(g.s, set);
+            isog_dform = saved_dform;
+        }
+
+        // on the device: the SCF density at the vertices of the HOMO's mesh (stride 16), values only, then
+        // values and gradients
+        {
+            const md_gto_iso_field_t* fl[2] = {fields[0], fields[2]};
+            md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 2, md_get_heap_allocator());
+            ASSERT_TRUE(set != NULL);
+            md_gto_iso_gpu_desc_t gd = {.cell_size = 0.25, .project_iterations = 4, .relax_iterations = 2};
+            gd.iso[0] = 0.05;
+            gd.iso[1] = 0.02;
+            md_gto_iso_gpu_mesh_t gm;
+            ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &gm));
+            const uint32_t v0 = gm.vertex_offset[0][0];
+            const uint32_t nv = gm.vertex_count_of[0][0] + gm.vertex_count_of[0][1];   // the HOMO's two sheets
+            ASSERT_GT(nv, 0u);
+            md_gpu_mem_t d = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, (sizeof(float) + sizeof(md_gpu_float4)) * nv + 16);
+            md_gpu_mem_t h = md_gpu_malloc(g.s, MD_GPU_MEM_HOST_READ, (sizeof(float) + sizeof(md_gpu_float4)) * nv + 16);
+            ASSERT_TRUE(d.gpu && h.gpu);
+            md_gto_iso_gpu_eval_desc_t ed = {0};
+            ed.xyz = gm.position + (md_gpu_addr_t)v0 * sizeof(md_gpu_float4);
+            ed.xyz_stride = sizeof(md_gpu_float4);
+            ed.num_xyz = nv;
+            ed.num_fields = 1;
+            ed.fields[0] = 1;
+            ed.out_value = d.gpu;
+            ed.out_failed = d.gpu + (sizeof(float) + sizeof(md_gpu_float4)) * nv;
+            ASSERT_TRUE(md_gto_iso_gpu_evaluate_launch(g.s, set, &ed));
+            md_gpu_copy(g.s, h.gpu, d.gpu, sizeof(float) * nv);
+            md_gpu_copy(g.s, h.gpu + (sizeof(float) + sizeof(md_gpu_float4)) * nv, ed.out_failed, sizeof(uint32_t));
+            md_gpu_stream_sync(g.s);
+            float* only = (float*)malloc(sizeof(float) * nv);
+            memcpy(only, h.cpu, sizeof(float) * nv);
+            EXPECT_EQ(0u, *(const uint32_t*)((const char*)h.cpu + (sizeof(float) + sizeof(md_gpu_float4)) * nv));
+            ed.out_gradient = d.gpu + sizeof(float) * nv;
+            ASSERT_TRUE(md_gto_iso_gpu_evaluate_launch(g.s, set, &ed));
+            md_gpu_copy(g.s, h.gpu, d.gpu, (sizeof(float) + sizeof(md_gpu_float4)) * nv);
+            md_gpu_stream_sync(g.s);
+            const float* hv = (const float*)h.cpu;
+            const float* hg = (const float*)((const char*)h.cpu + sizeof(float) * nv);
+            EXPECT_EQ(0, memcmp(only, hv, sizeof(float) * nv));
+            for (uint32_t i = 0; i < nv; ++i) EXPECT_EQ(hv[i], hg[4 * i + 3]);
+            float* pos = (float*)malloc(sizeof(float) * 4 * gm.vertex_count);
+            ASSERT_TRUE(md_gto_iso_gpu_mesh_read_all(g.s, &gm, pos, NULL, NULL));
+            const iso_ev_err_t e = iso_ev_compare(fields[2], pos + 4 * (size_t)v0, 4 * sizeof(float), nv, hv, hg, 4);
+            printf("  %-9s scf density at %u HOMO vertices (device): max |f| %.2e, |df| %.1e (%.1e rel), |dgrad| %.1e (%.1e rel)\n",
+                   files[fi], nv, e.fmax, e.val, e.val / e.fmax, e.grad, e.grad / e.gmax);
+            EXPECT_LT(e.val, 1.0e-5 * e.fmax + 1.0e-5);
+            EXPECT_LT(e.grad, 1.0e-5 * e.gmax + 1.0e-5);
+            free(pos); free(only);
+            md_gpu_free(g.s, d.gpu);
+            md_gpu_free(g.s, h.gpu);
+            md_gto_iso_gpu_mesh_free(g.s, &gm);
+            md_gto_iso_gpu_set_destroy(g.s, set);
+        }
+
+        free(val); free(grad); free(pts); free(pd);
+        for (int k = 0; k < NF; ++k) { if (fields[k]) md_gto_iso_field_destroy(fields[k]); iso_dens_prod_free(&p[k]); }
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
 UTEST(gto_iso_gpu_lib, large_density) {
     const char* file = getenv("GTO_ISO_LARGE");
     if (!file || !file[0]) UTEST_SKIP("set GTO_ISO_LARGE=<file in test_data/vlx>");

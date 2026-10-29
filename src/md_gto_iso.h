@@ -332,6 +332,56 @@ bool md_gto_iso_gpu_mesh_read(md_gpu_stream_t stream, const md_gto_iso_gpu_mesh_
 bool md_gto_iso_gpu_mesh_read_all(md_gpu_stream_t stream, const md_gto_iso_gpu_mesh_t* mesh, float* position, float* normal, uint32_t* index);
 
 // ---------------------------------------------------------------------------
+// GPU: the fields of a set at arbitrary points
+// ---------------------------------------------------------------------------
+// The value and gradient of any field of a set wherever they are wanted - the vertices of a mesh (of
+// another field, or of another surface altogether), probe points, a path - by the kernels that evaluate
+// the extraction's vertices while projecting them onto their surface: the same evaluation, in float,
+// whatever the field (orbitals, products of orbitals, densities as phi^T D phi). The set needs no
+// extraction first and no iso value.
+//
+// What a field at a point costs depends on the AOs that reach it, found per group of consecutive points
+// (16 to 32 of them) against the group's bounding box: points in a spatially coherent order - a mesh's
+// vertices are - cost a fraction of the same points shuffled. The order never changes the values.
+//
+// Precision: float, as the extraction's vertices, with the extraction's evaluation cutoff (GTO_ISO_EVAL_EPS,
+// 1e-6 by default): an AO is left out where it is below it, so the error has an absolute part of that
+// order besides float rounding. Against md_gto_iso_field_evaluate in double, at 4000 random points around
+// amide and a 26 atom molecule (DEF2-SVP): orbitals within 3.2e-6 absolute (|psi| up to 0.5), SCF
+// densities within 4.1e-7 of their largest value, gradients alike.
+//
+// A value that cannot be made is NaN and counted (out_failed): a density in the D form (more than 1024
+// functions in the set) at a point that too many shells reach for one group's AO list. Nothing else fails
+// once the launch has been issued.
+typedef struct md_gto_iso_gpu_eval_desc_t {
+    md_gpu_addr_t xyz;              // positions in bohr, float: point i at xyz + i * xyz_stride
+    uint32_t      xyz_stride;       // bytes from one point to the next, a multiple of 4; 0 = packed float3 (12).
+                                    // A mesh's positions (md_gto_iso_gpu_mesh_t.position): 16
+    uint32_t      num_xyz;
+    uint32_t      num_fields;       // 1 .. MD_GTO_ISO_GPU_MAX_FIELDS
+    uint32_t      fields[MD_GTO_ISO_GPU_MAX_FIELDS];    // the set's fields to evaluate, by index; repeats allowed
+    // At least one of the two. Field k (the k:th of fields[]) of point i at [k * num_xyz + i]:
+    md_gpu_addr_t out_value;        // float: f
+    md_gpu_addr_t out_gradient;     // float4: df/dx, df/dy, df/dz (per bohr), f
+    md_gpu_addr_t out_failed;       // optional uint32: how many values could not be made (NaN), over all fields
+} md_gto_iso_gpu_eval_desc_t;
+
+// Issues the evaluation into 'stream': asynchronous, no readbacks and no waits. The set, the points and the
+// outputs must stay until the stream has passed it. Scratch is ~52 bytes per point, up to 2^20 points at a
+// time. One field's evaluation costs about as much as another's whatever the set: a set of several fields
+// evaluates the functions of all of them at every point, for every field asked for. Returns false, logged,
+// when nothing was issued (invalid input, a kernel this device could not make, out of device memory).
+bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t stream, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_eval_desc_t* desc);
+
+// The same from and to the host, waiting for the result. xyz: num_xyz points, xyz_stride bytes apart (0 =
+// packed float3). out_value [num_fields][num_xyz] and out_gradient [num_fields][num_xyz][3] (df/dx, df/dy,
+// df/dz), either may be NULL. The points are evaluated in a spatially coherent order (a Morton curve
+// through their box) and the results put back in theirs, so any order costs the same. Returns false, logged,
+// when nothing was evaluated, or when some value could not be made (NaN there).
+bool md_gto_iso_gpu_evaluate(md_gpu_stream_t stream, const md_gto_iso_gpu_set_t* set, const uint32_t* fields, uint32_t num_fields,
+                             const float* xyz, size_t xyz_stride, size_t num_xyz, float* out_value, float* out_gradient);
+
+// ---------------------------------------------------------------------------
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): a step by step profile of the extractions
 // ---------------------------------------------------------------------------
 // With a profile set, md_gto_iso_gpu_extract waits for the GPU after every step (so it runs slower than
