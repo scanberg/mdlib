@@ -94,8 +94,9 @@ typedef struct md_vial_compile_desc_t {
     str_t run;
 } md_vial_compile_desc_t;
 
-// Compiles a script. Phase 1 stops after the parser: the program holds the tokens, the syntax tree and the
-// diagnostics of the front end. Never fails on broken text, which gives diagnostics; NULL only when out of memory.
+// Compiles a script: the front end, then the checker, which types every expression, evaluates the static ones it can
+// (selectors, counts, literals) against desc->sys, and gives every compile-time diagnostic of the reference. Never
+// fails on broken text, which gives diagnostics; NULL only when out of memory.
 // desc may be NULL. The program keeps its own copy of src. Any text is safe to compile: deep nesting is reported
 // (E0104) rather than followed, so compiling needs less than 256 KB of stack, and time and memory grow linearly with
 // the length of src.
@@ -107,6 +108,39 @@ size_t md_vial_diagnostics(const md_vial_program_t* prog, const md_vial_diagnost
 
 // Every token, comments included, in source order, for highlighting
 size_t md_vial_tokens(const md_vial_program_t* prog, const md_vial_token_t** out);
+
+typedef enum md_vial_stage_t {
+    MD_VIAL_STAGE_STATIC = 0,           // once, when compiling
+    MD_VIAL_STAGE_FRAME,                // once per frame
+    MD_VIAL_STAGE_TRAJECTORY,           // over the frames it needs
+    MD_VIAL_STAGE_TRAJECTORY_PER_FRAME, // over the frames, keeping the frame, as smooth() gives
+} md_vial_stage_t;
+
+// One published value: a top-level name that does not start with _, bound to a number, a bool or a set, of at most
+// two dimensions. A set or an array of sets is a selection; a frame-stage one is a recipe, evaluated for the frame
+// shown. In the order the script binds them.
+typedef struct md_vial_output_t {
+    str_t           name;
+    md_vial_span_t  span;           // the name, where it is bound
+    char            type[128];      // as the reference prints it: float[433] Å
+    md_vial_stage_t stage;
+    uint32_t        pass;           // the read over the trajectory in which it is complete; 0 when static
+    bool            selection;
+} md_vial_output_t;
+
+size_t md_vial_outputs(const md_vial_program_t* prog, const md_vial_output_t** out);
+
+// What hover shows of the innermost expression at a byte offset of the source, as the checker knows it: its span,
+// type, stage, pass and, where known when compiling, its value. False where no expression with a type is.
+typedef struct md_vial_hover_t {
+    md_vial_span_t  span;
+    char            type[128];
+    md_vial_stage_t stage;
+    uint32_t        pass;
+    char            value[96];      // empty when not known when compiling
+} md_vial_hover_t;
+
+bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out);
 
 #ifdef __cplusplus
 }

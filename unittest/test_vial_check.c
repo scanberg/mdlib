@@ -680,3 +680,48 @@ UTEST_F(vial_check, w0605) {
         "W0605 1: dimensions of 4 that run over different units are paired by position: 0 is CA/MET1/A against CB/MET1/A;"
         " common(a, b, by='id') pairs them by id\n");
 }
+
+UTEST_F(vial_check, outputs_and_hover) {
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(P != NULL);
+    const char* src =
+        "ca    = particles(name='CA')\n"
+        "_p    = particles.xyz\n"
+        "rmsf  = sqrt(sum(var(_p, axis='frame'), axis=1))\n"
+        "ends  = distance(ca[0], ca[14])\n"
+        "h     = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))\n"
+        "near  = residues(within(4.0, of=ca[0]))\n"
+        "name0 = labels(residues)[0]\n"
+        "dev   = ends - mean(ends, axis='frame')\n"
+        "big   = zeros((2, 2, 2))\n";
+    const md_vial_compile_desc_t desc = {.sys = P};
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, utest_fixture->alloc);
+    const md_vial_output_t* o = NULL;
+    const size_t n = md_vial_outputs(prog, &o);
+    ASSERT_EQ(6, (int)n);
+    EXPECT_TRUE(str_eq(o[0].name, STR_LIT("ca")));   EXPECT_TRUE(o[0].selection);  EXPECT_EQ(MD_VIAL_STAGE_STATIC, o[0].stage);
+    EXPECT_TRUE(str_eq(o[1].name, STR_LIT("rmsf"))); EXPECT_STREQ(u8"float[153] Å", o[1].type); EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY, o[1].stage);
+    EXPECT_TRUE(str_eq(o[2].name, STR_LIT("ends"))); EXPECT_EQ(MD_VIAL_STAGE_FRAME, o[2].stage); EXPECT_EQ(1, (int)o[2].pass);
+    EXPECT_TRUE(str_eq(o[3].name, STR_LIT("h")));    EXPECT_STREQ("float[32]", o[3].type);
+    EXPECT_TRUE(str_eq(o[4].name, STR_LIT("near"))); EXPECT_TRUE(o[4].selection); EXPECT_EQ(MD_VIAL_STAGE_FRAME, o[4].stage);
+    EXPECT_TRUE(str_eq(o[5].name, STR_LIT("dev")));  EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY_PER_FRAME, o[5].stage); EXPECT_EQ(2, (int)o[5].pass);
+
+    // Hover: the innermost expression at an offset
+    md_vial_hover_t hv;
+    const uint32_t at_ca0 = (uint32_t)(strstr(src, "ca[0], ca[14]") - src) + 1;    // inside `ca` of ca[0]
+    ASSERT_TRUE(md_vial_hover(prog, at_ca0, &hv));
+    EXPECT_STREQ("set", hv.type);
+    const uint32_t at_idx = (uint32_t)(strstr(src, "ca[0], ca[14]") - src) + 3;    // the 0
+    ASSERT_TRUE(md_vial_hover(prog, at_idx, &hv));
+    EXPECT_STREQ("int", hv.type);
+    EXPECT_STREQ("0", hv.value);
+    const uint32_t at_name0 = (uint32_t)(strstr(src, "labels") - src);
+    ASSERT_TRUE(md_vial_hover(prog, at_name0, &hv));
+    EXPECT_STREQ("str[15]", hv.type);
+    const uint32_t at_dist = (uint32_t)(strstr(src, "distance") - src);
+    ASSERT_TRUE(md_vial_hover(prog, at_dist, &hv));
+    EXPECT_STREQ(u8"float Å", hv.type);
+    EXPECT_EQ(MD_VIAL_STAGE_FRAME, hv.stage);
+    EXPECT_FALSE(md_vial_hover(prog, 0xFFFFFF, &hv));
+    md_vial_program_free(prog);
+}

@@ -19,6 +19,7 @@ struct md_vial_program_t {
     vial_tree_t      tree;
     vial_check_t     check;
     vial_types_t     types;
+    md_vial_output_t* outputs;  // md_array
     // The prelude, compiled with every script
     str_t            prelude_src;
     vial_diags_t     prelude_diags;
@@ -26,6 +27,43 @@ struct md_vial_program_t {
 };
 
 #include <vial_prelude.inl>   // prelude_vial[], prelude_vial_size: src/vial/prelude.vial, embedded when configuring
+
+static md_vial_stage_t public_stage(const vial_type_t* t) {
+    switch (t->stage) {
+    case VIAL_STAGE_FRAME: return MD_VIAL_STAGE_FRAME;
+    case VIAL_STAGE_TRAJECTORY: return (t->flags & VIAL_TYPE_PER_FRAME) ? MD_VIAL_STAGE_TRAJECTORY_PER_FRAME : MD_VIAL_STAGE_TRAJECTORY;
+    default: return MD_VIAL_STAGE_STATIC;
+    }
+}
+
+static uint32_t public_pass(const vial_type_t* t) { return t->stage != VIAL_STAGE_STATIC && t->pass == 0 ? 1 : t->pass; }
+
+static void target_names(const vial_tree_t* t, vial_node_id target, vial_node_id** out, md_allocator_i* alloc);
+
+// The published values: top-level names, bound once each, to what can be published
+static void collect_outputs(md_vial_program_t* prog) {
+    const vial_tree_t* t = &prog->tree;
+    const vial_node_id root = t->root;
+    for (uint32_t i = 0; i < t->nodes[root].child_count; ++i) {
+        const vial_node_id s = vial_child(t, root, i);
+        if (t->nodes[s].kind != VIAL_N_ASSIGN || t->nodes[s].child_count < 2) continue;
+        vial_node_id* names = NULL;
+        for (uint32_t k = 0; k + 1 < t->nodes[s].child_count; ++k) target_names(t, vial_child(t, s, k), &names, prog->arena);
+        for (size_t k = 0; k < md_array_size(names); ++k) {
+            const vial_node_id nn = names[k];
+            const md_vial_span_t sp = t->nodes[nn].span;
+            const str_t name = {prog->src.ptr + sp.beg, sp.end - sp.beg};
+            if (!name.len || name.ptr[0] == '_') continue;
+            const vial_type_t* ty = &prog->types.types[nn];
+            const bool number = ty->dtype == VIAL_DT_BOOL || ty->dtype == VIAL_DT_INT || ty->dtype == VIAL_DT_FLOAT || ty->dtype == VIAL_DT_FLOAT64;
+            const bool set = ty->dtype == VIAL_DT_SET;
+            if (!(number && ty->ndim <= 2) && !set) continue;
+            md_vial_output_t o = {.name = name, .span = sp, .stage = public_stage(ty), .pass = public_pass(ty), .selection = set};
+            vial_type_print(o.type, sizeof(o.type), ty);
+            md_array_push(prog->outputs, o, prog->arena);
+        }
+    }
+}
 
 md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc, md_allocator_i* alloc) {
     (void)desc;
@@ -61,6 +99,8 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
     }
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
+
+    collect_outputs(prog);
 
     const size_t n = md_array_size(prog->tokens);
     md_array_resize(prog->pub_tokens, n, arena);
@@ -132,4 +172,37 @@ bool md_vial__line_result(const md_vial_program_t* prog, uint32_t line, md_vial_
         return true;
     }
     return false;
+}
+
+size_t md_vial_outputs(const md_vial_program_t* prog, const md_vial_output_t** out) {
+    if (!prog) { if (out) *out = NULL; return 0; }
+    if (out) *out = prog->outputs;
+    return md_array_size(prog->outputs);
+}
+
+bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out) {
+    memset(out, 0, sizeof(*out));
+    if (!prog) return false;
+    // The smallest expression with a type whose span holds offset. Expressions inside a def's body are typed per call
+    // and have no one type: hover shows them at the calls.
+    const vial_tree_t* t = &prog->tree;
+    vial_node_id best = 0;
+    uint32_t best_len = UINT32_MAX;
+    for (vial_node_id i = 1; i < md_array_size(t->nodes); ++i) {
+        const vial_node_t* n = &t->nodes[i];
+        if (n->kind < VIAL_N_NAME || n->kind == VIAL_N_CMPOP || n->kind == VIAL_N_KWARG || n->kind == VIAL_N_SLICE || n->kind == VIAL_N_UNIT) continue;
+        if (offset < n->span.beg || offset >= n->span.end) continue;
+        if (!prog->types.typed[i] || vial_type_is_error(&prog->types.types[i])) continue;
+        const uint32_t len = n->span.end - n->span.beg;
+        if (len < best_len) { best = i; best_len = len; }
+    }
+    if (!best) return false;
+    const vial_type_t* ty = &prog->types.types[best];
+    out->span = t->nodes[best].span;
+    vial_type_print(out->type, sizeof(out->type), ty);
+    out->stage = public_stage(ty);
+    out->pass = public_pass(ty);
+    const vial_value_t* v = &prog->types.values[best];
+    if (vial_value_is_scalar(v)) vial_value_print(out->value, sizeof(out->value), v);
+    return true;
 }
