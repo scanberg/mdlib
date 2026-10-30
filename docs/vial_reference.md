@@ -267,7 +267,7 @@ A system is built of particles, residues, parts and molecules, each nested in th
 | Selector | Keyword | Matches | Value |
 | --- | --- | --- | --- |
 | `particles` | `name` | the atom or bead name | string with `*` and `?`, or a list |
-|  | `serial` | the serial number in the file | int, `a..b` or a list |
+|  | `serial` | the serial number in the file; see below | int, `a..b` or a list |
 |  | `element` | the element | string or list |
 |  | `kind` | atom, bead or virtual | string or list |
 |  | `resid` | the number of its residue in the file | int, `a..b` or a list |
@@ -283,6 +283,8 @@ A system is built of particles, residues, parts and molecules, each nested in th
 |  | `chain` | the author id of its chain | string or list |
 | `chains` | `id` | the author chain id | string or list |
 | all of them | `scope` | the set to search instead of the default scope | a set, or `system` |
+
+A particle's serial is the number its file gives it. Where the file gives none, the count continues implicitly, one up from the particle before: a file without serials counts 1, 2, 3, and a file that wraps or stops counting past 99,999, as GRO and plain PDB do, goes on 100000, 100001. So serials are unique, and in a file that skips records, such as T, which keeps only the first alternate location, they are still the numbers on its lines. mdlib stores them only where they cannot be derived from the position plus a constant.
 
 A list means any of its values, and separate keywords must all hold. `element` ignores case, so `'MG'`, `'Mg'` and `'mg'` are magnesium; names and ids do not.
 
