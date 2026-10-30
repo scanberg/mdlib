@@ -18,6 +18,7 @@
 
 #include "vial_spec.h"
 #include "vial_fuzz_check.h"
+#include "vial_test_systems.h"
 
 #define VIAL_FUZZ_REFERENCE MD_UNITTEST_SOURCE_DIR "/../docs/vial_reference.md"
 #define VIAL_FUZZ_PRELUDE   MD_UNITTEST_SOURCE_DIR "/../src/vial/prelude.vial"
@@ -145,7 +146,7 @@ static void fuzz_print_input(const char* ptr, size_t len) {
 static const char* fuzz_check_copy(const char* ptr, size_t len, md_allocator_i* scratch) {
     char* copy = malloc(len ? len : 1);
     if (len) memcpy(copy, ptr, len);
-    const char* err = vial_fuzz_check((str_t){copy, len}, scratch);
+    const char* err = vial_fuzz_check((str_t){copy, len}, vial_test_system('T'), scratch);
     free(copy);
     return err;
 }

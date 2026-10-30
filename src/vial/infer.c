@@ -5,7 +5,7 @@
 // make a mismatch unknown (W0501), a quantity literal carries its unit, and two different dynamic extents never
 // broadcast. Static values are folded where the operands are known, so `2 < n <= 500` is True when n is.
 
-#include "infer.h"
+#include "infer_internal.h"
 
 #include <core/md_common.h>
 
@@ -13,15 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-typedef struct infer_t {
-    const vial_tree_t*  t;
-    str_t               src;
-    vial_diags_t*       diags;
-    const vial_names_t* n;
-    vial_types_t*       out;
-    md_allocator_i*     alloc;
-} infer_t;
 
 typedef vial_type_t T;
 
@@ -64,6 +55,24 @@ static const char* ustr(const T* t) {
     if (t->unit_kind != VIAL_UNIT_KNOWN || md_unit_is_none(t->unit)) { snprintf(b, 64, "no unit"); return b; }
     vial_unit_print(b, 64, t->unit);
     return b;
+}
+
+void vx_diag_fix(infer_t* x, const char code[6], vial_node_id at, const char* fix, const char* fmt, ...) {
+    char buf[400];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    diag_fix(x, code, at, fix, "%s", buf);
+}
+const char* vx_tstr(const vial_type_t* t) { return tstr(t); }
+str_t vx_text(const infer_t* x, vial_node_id id) { return text(x, id); }
+
+uint32_t vx_desc(infer_t* x, uint8_t level, const vial_sets_t* sets) {
+    if (level == VIAL_LEVEL_NONE) return 0;
+    if (!md_array_size(x->out->descs)) md_array_push(x->out->descs, ((vial_desc_t){0}), x->alloc);
+    md_array_push(x->out->descs, ((vial_desc_t){.level = level, .sets = sets}), x->alloc);
+    return (uint32_t)md_array_size(x->out->descs) - 1;
 }
 
 static T scalar(vial_dtype_t d) { return vial_type_scalar(d); }
@@ -251,7 +260,9 @@ static str_t string_value(infer_t* x, vial_node_id id) {
 static T infer(infer_t* x, vial_node_id id);
 
 static void set_value(infer_t* x, vial_node_id id, vial_value_t v) { x->out->values[id] = v; }
-static vial_value_t value_of(infer_t* x, vial_node_id id) { return x->out->values[id]; }
+static vial_value_t value_of(const infer_t* x, vial_node_id id) { return x->out->values[id]; }
+void vx_set_value(infer_t* x, vial_node_id id, vial_value_t v) { set_value(x, id, v); }
+vial_value_t vx_value_of(const infer_t* x, vial_node_id id) { return value_of(x, id); }
 
 static T infer_name(infer_t* x, vial_node_id id) {
     const vial_symbol_t* s = vial_names_symbol(x->n, id);
@@ -264,6 +275,11 @@ static T infer_name(infer_t* x, vial_node_id id) {
     case VIAL_SYM_DEF:
     case VIAL_SYM_PRELUDE:
         return scalar(VIAL_DT_DEF);
+    case VIAL_SYM_BUILTIN: {
+        T t;
+        if (s->builtin && vx_name_sets(x, id, s->builtin, &t)) return t;
+        return err();
+    }
     default:
         return err();   // built-in values, parameters and locals arrive with later steps
     }
@@ -576,6 +592,7 @@ static T infer_boolop(infer_t* x, vial_node_id id) {
     const uint32_t n = num_children(x, id);
     T t = err();
     bool known = true, v = sub_of(x, id) == VIAL_KW_AND;
+    vial_value_t sets = {0};
     for (uint32_t i = 0; i < n; ++i) {
         const vial_node_id cn = child(x, id, i);
         const T c = infer(x, cn);
@@ -599,8 +616,18 @@ static T infer_boolop(infer_t* x, vial_node_id id) {
         const vial_value_t cv = value_of(x, cn);
         if (cv.kind == VIAL_VAL_BOOL) v = sub_of(x, id) == VIAL_KW_AND ? (v && cv.b) : (v || cv.b);
         else known = false;
+        if (c.dtype == VIAL_DT_SET) {
+            sets = i == 0 ? cv : vx_sets_boolop(x, sub_of(x, id) == VIAL_KW_AND, &sets, &cv);
+        }
     }
-    if (t.dtype == VIAL_DT_SET) t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+    if (t.dtype == VIAL_DT_SET) {
+        t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+        if (sets.kind == VIAL_VAL_SETS && t.stage == VIAL_STAGE_STATIC) {
+            const T st = vx_sets_type(x, sets.sets, id);
+            t.flags |= st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+            set_value(x, id, sets);
+        }
+    }
     if (known && t.dtype == VIAL_DT_BOOL && t.ndim == 0) set_value(x, id, val_bool(v));
     return t;
 }
@@ -617,6 +644,14 @@ static T infer_not(infer_t* x, vial_node_id id) {
     if (v.kind == VIAL_VAL_BOOL) set_value(x, id, val_bool(!v.b));
     T t = a;
     t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+    if (a.dtype == VIAL_DT_SET && v.kind == VIAL_VAL_SETS) {
+        const vial_value_t nv = vx_sets_not(x, &v);
+        if (nv.kind == VIAL_VAL_SETS) {
+            const T st = vx_sets_type(x, nv.sets, id);
+            t.flags |= st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+            set_value(x, id, nv);
+        }
+    }
     return t;
 }
 
@@ -742,9 +777,48 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
     if (a.dtype == VIAL_DT_SET && a.ndim == 0) {
-        // Positions of a set's particles: a set, arriving with the selectors
-        if (in) infer(x, in);
-        return err();
+        // Positions of a set's particles: a set
+        if (!in || kind_of(x, in) == VIAL_N_TUPLE) {
+            if (in) infer(x, in);
+            diag(x, "E0319", id, "a set takes one position, a slice or a list of positions");
+            return err();
+        }
+        T t = a;
+        t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+        if (kind_of(x, in) == VIAL_N_SLICE) {
+            for (uint32_t k = 0; k < 3; ++k) {
+                const vial_node_id b = child(x, in, k);
+                if (!b) continue;
+                const T bt = infer(x, b);
+                if (vial_type_is_error(&bt)) return err();
+                join_stage(&t, &t, &bt);
+            }
+        } else {
+            const T ix = infer(x, in);
+            if (vial_type_is_error(&ix)) return err();
+            if (ix.dtype == VIAL_DT_INT && ix.ndim == 0) t.flags |= VIAL_TYPE_ONE_PARTICLE;
+            else if (!(ix.dtype == VIAL_DT_INT && ix.ndim == 1)) {
+                diag(x, "E0319", in, "a set's particles are taken by an int, a slice or a list of ints; this is %s", tstr(&ix));
+                return err();
+            }
+            join_stage(&t, &t, &ix);
+        }
+        const vial_value_t av = value_of(x, on);
+        if (av.kind == VIAL_VAL_SETS && t.stage == VIAL_STAGE_STATIC) {
+            const vial_value_t v = vx_sets_subscript(x, &av, in);
+            if (v.kind == VIAL_VAL_SETS) {
+                const T st = vx_sets_type(x, v.sets, id);
+                t.flags |= st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+                set_value(x, id, v);
+            } else if (kind_of(x, in) != VIAL_N_SLICE && value_of(x, in).kind == VIAL_VAL_INT) {
+                const int64_t k = value_of(x, in).i, n = vial_sets_size(av.sets, 0);
+                if (k >= n || k < -n) {
+                    diag(x, "E0304", in, "position %lld is outside a set of %lld particles", (long long)k, (long long)n);
+                    return err();
+                }
+            }
+        }
+        return t;
     }
     if (a.dtype == VIAL_DT_TUPLE) {
         int64_t k;
@@ -860,6 +934,21 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
         return err();
     }
     while (d < a.ndim) if (!vial_type_push_dim(&t, a.dims[d++])) goto too_many;
+    if (num == 1 && t.stage == VIAL_STAGE_STATIC) {
+        // The value of one position, slice or list of an array of sets or of strings
+        const vial_value_t av = value_of(x, on);
+        if (av.kind == VIAL_VAL_SETS || av.kind == VIAL_VAL_STRS || av.kind == VIAL_VAL_LABELS) {
+            const vial_value_t v = vx_sets_subscript(x, &av, items[0]);
+            if (v.kind == VIAL_VAL_SETS) {
+                const T st = vx_sets_type(x, v.sets, id);
+                t.flags = (t.flags & ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY)) | (st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY));
+                if (t.ndim >= 1 && st.ndim >= 1) t.dims[0] = st.dims[0];
+                set_value(x, id, v);
+            } else if (v.kind != VIAL_VAL_NONE) {
+                set_value(x, id, v);
+            }
+        }
+    }
     return t;
 too_many:
     diag(x, "E0308", id, "the result would have 7 dimensions; the limit is 6");
@@ -916,6 +1005,16 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
     case VIAL_N_TUPLE:    return infer_tuple(x, id);
     case VIAL_N_SUBSCRIPT: return infer_subscript(x, id);
     case VIAL_N_ATTR:     return infer_attr(x, id);
+    case VIAL_N_CALL: {
+        // Built-ins typed so far; everything else still has its arguments checked
+        const vial_node_id callee = child(x, id, 0);
+        if (callee && kind_of(x, callee) == VIAL_N_NAME) {
+            const vial_symbol_t* sym = vial_names_symbol(x->n, callee);
+            T t;
+            if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_sets(x, id, sym->builtin, &t)) return t;
+        }
+    }
+    // fallthrough
     default:
         // Calls, comprehensions and what arrives later: their parts are still checked
         for (uint32_t i = 0; i < num_children(x, id); ++i) {
@@ -931,6 +1030,8 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
         return err();
     }
 }
+
+T vx_infer(infer_t* x, vial_node_id id) { return infer(x, id); }
 
 static T infer(infer_t* x, vial_node_id id) {
     if (!id) return err();
@@ -1034,6 +1135,8 @@ void vial_check_types(vial_check_t* c, vial_types_t* out) {
     for (size_t i = 0; i < num; ++i) out->types[i] = vial_type_error();
 
     infer_t x = {.t = c->tree, .src = c->src, .diags = c->diags, .n = &c->names, .out = out, .alloc = c->alloc};
+    vial_sys_t* sys = md_alloc(c->alloc, sizeof(vial_sys_t));
+    if (c->sys && vial_sys_init(sys, c->sys, c->alloc)) x.sys = sys;
     const vial_node_id root = c->tree->root;
     for (uint32_t i = 0; i < num_children(&x, root); ++i) check_stmt(&x, child(&x, root, i));
     vial_diags_sort(c->diags);

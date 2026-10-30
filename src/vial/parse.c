@@ -591,10 +591,10 @@ static bool int_literal(const parser_t* p, vial_node_id id, int64_t* out) {
 // E0701 on a v1 call such as residue(1:4), with the VIAL spelling as the fix where it is clear: residues[0:4]
 static void report_v1_call(parser_t* p, vial_node_id call) {
     const md_vial_span_t s = p->tree.nodes[call].span;
-    const uint32_t len = s.end - s.beg;
     const size_t before = md_array_size(p->diags->items);
-    refuse(p, "E0701", s, "`%.*s%s` is v1; positions are subscripts", (int)(len > 40 ? 40 : len), p->src.ptr + s.beg,
-        len > 40 ? "…" : "");
+    char ex[VIAL_EXCERPT_MAX + 4];
+    const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){p->src.ptr + s.beg, s.end - s.beg});
+    refuse(p, "E0701", s, "`%.*s` is v1; positions are subscripts", (int)e.len, e.ptr);
     if (md_array_size(p->diags->items) == before) return;
 
     // The fix: one argument, a v1 range of int literals or open ends, on a selector v1 had

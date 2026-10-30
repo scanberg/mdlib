@@ -47,7 +47,7 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
 
     prog->check = (vial_check_t){.tree = &prog->tree, .src = prog->src, .diags = &prog->diags,
         .prelude = with_prelude ? &prog->prelude : NULL, .prelude_src = prog->prelude_src,
-        .prelude_diags = &prog->prelude_diags, .alloc = arena};
+        .prelude_diags = &prog->prelude_diags, .sys = desc ? desc->sys : NULL, .alloc = arena};
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
 
@@ -117,7 +117,7 @@ bool md_vial__line_result(const md_vial_program_t* prog, uint32_t line, md_vial_
         snprintf(r->stage, sizeof(r->stage), "%s", vial_stage_str(first));
         r->pass = first->pass;
         const vial_value_t* v = &prog->types.values[nodes[0]];
-        if (v->kind != VIAL_VAL_NONE) { r->has_value = true; vial_value_print(r->value, sizeof(r->value), v); }
+        if (vial_value_is_scalar(v)) { r->has_value = true; vial_value_print(r->value, sizeof(r->value), v); }
         return true;
     }
     return false;

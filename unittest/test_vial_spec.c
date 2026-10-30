@@ -5,8 +5,11 @@
 #include <core/md_str.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "vial_spec.h"
+
+#include "vial_test_systems.h"
 
 #define VIAL_REFERENCE_PATH MD_UNITTEST_SOURCE_DIR "/../docs/vial_reference.md"
 #define VIAL_PRELUDE_PATH   MD_UNITTEST_SOURCE_DIR "/../src/vial/prelude.vial"
@@ -243,7 +246,8 @@ UTEST_F(vial_spec, parses) {
 // The codes the checker gives so far; the gate grows with each step
 static bool vial_spec__is_checked_code(const char* code) {
     static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0502", "E0701", "E0801", "E0803",
-                                  "E0201", "W0201", "E0305", "E0312", "E0802"};
+                                  "E0201", "W0201", "E0305", "E0312", "E0802",
+                                  "E0202", "E0203", "E0205", "E0206", "E0207", "W0601", "W0602"};
     for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }
@@ -269,8 +273,11 @@ UTEST_F(vial_spec, checks) {
             for (size_t k = 0; k < prev->src.len; ++k) first_line += prev->src.ptr[k] == '\n';
             first_line += 1;
         }
-        // The reference's prelude block is the prelude: it compiles without another one
-        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0};
+        // The reference's prelude block is the prelude: it compiles without another one. Filters are evaluated within
+        // a group, which the harness cannot give yet: they compile without a system, so W0601 there is not checked.
+        const bool filters = b->mode == VIAL_BLOCK_FILTERS;
+        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
+            .sys = filters ? NULL : vial_test_system(b->structure)};
         md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
         ASSERT_TRUE(prog != NULL);
         const md_vial_diagnostic_t* d = NULL;
@@ -291,6 +298,7 @@ UTEST_F(vial_spec, checks) {
             const vial_expect_t* e = &b->expects[j];
             for (int k = 0; k < e->num_codes; ++k) {
                 if (!vial_spec__is_checked_code(e->codes[k])) continue;
+                if (filters && strncmp(e->codes[k], "W0601", 5) == 0) continue;
                 bool found = false;
                 for (size_t q = 0; q < nd && !found; ++q) {
                     const int line = (int)vial_line_of(&lines, d[q].span.beg) - first_line + 1;
@@ -319,6 +327,7 @@ UTEST_F(vial_spec, types) {
     const vial_spec_t* spec = &utest_fixture->spec;
     md_allocator_i* alloc = utest_fixture->alloc;
     int num_ok = 0, num_untyped = 0, num_failed = 0, num_values = 0;
+    const bool verbose = getenv("VIAL_SPEC_VERBOSE") != NULL;     // lists what is not typed yet
     for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
         const vial_block_t* b = &spec->blocks[i];
         if (b->mode == VIAL_BLOCK_FILTERS) continue;
@@ -334,20 +343,28 @@ UTEST_F(vial_spec, types) {
             for (size_t k = 0; k < prev->src.len; ++k) first_line += prev->src.ptr[k] == '\n';
             first_line += 1;
         }
-        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0};
+        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
+            .sys = vial_test_system(b->structure)};
         md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
         for (size_t j = 0; j < md_array_size(b->expects); ++j) {
             const vial_expect_t* e = &b->expects[j];
             vial_result_t want;
             if (str_empty(e->result) || !vial_spec_read_result(&want, e)) continue;
             md_vial__result_t got;
-            if (!md_vial__line_result(prog, (uint32_t)(e->line_in_block + first_line - 1), &got) || !got.typed) { num_untyped += 1; continue; }
+            if (!md_vial__line_result(prog, (uint32_t)(e->line_in_block + first_line - 1), &got) || !got.typed) {
+                if (verbose) printf("reference line %d: not typed yet: '%.*s'\n", e->line, (int)e->result.len, e->result.ptr);
+                num_untyped += 1;
+                continue;
+            }
             bool ok = true;
             if (want.is_value) {
-                if (got.has_value) {
-                    ok = str_eq(want.value, str_from_cstr(got.value));
-                    num_values += ok;
+                if (!got.has_value) {   // typed, its value not known yet
+                    if (verbose) printf("reference line %d: value not known yet: '%.*s', typed %s\n", e->line, (int)e->result.len, e->result.ptr, got.types[0]);
+                    num_untyped += 1;
+                    continue;
                 }
+                ok = str_eq(want.value, str_from_cstr(got.value));
+                num_values += ok;
             } else {
                 ok = want.num_types == got.num_types;
                 for (int k = 0; ok && k < want.num_types; ++k) ok = vial_spec_type_matches(want.types[k], str_from_cstr(got.types[k]));

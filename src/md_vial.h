@@ -23,6 +23,7 @@ extern "C" {
 #endif
 
 struct md_allocator_i;
+struct md_system_t;
 
 // A range of bytes in the source, [beg, end)
 typedef struct md_vial_span_t {
@@ -74,7 +75,14 @@ enum {
 };
 
 typedef struct md_vial_compile_desc_t {
-    uint32_t flags;     // MD_VIAL_COMPILE_*; the system, stored selections and loaded runs arrive with the checker
+    uint32_t flags;     // MD_VIAL_COMPILE_*
+
+    // The system the script runs on. Selectors and the predefined sets are evaluated against it when compiling, so
+    // their sizes, counts and labels are known and W0601, W0602 and E0207 are given. NULL compiles without one:
+    // selectors are typed with extents not known. The checker reads it only during md_vial_compile, and a program
+    // compiled against it holds its topology version. Frame readers for at(), stored selections and loaded runs arrive
+    // with later steps.
+    const struct md_system_t* sys;
 } md_vial_compile_desc_t;
 
 // Compiles a script. Phase 1 stops after the parser: the program holds the tokens, the syntax tree and the
