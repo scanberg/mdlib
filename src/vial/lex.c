@@ -54,6 +54,7 @@ const char* vial_token_kind_str(md_vial_token_kind_t kind) {
     case MD_VIAL_TOKEN_KEYWORD:  return "KW";
     case MD_VIAL_TOKEN_INT:      return "INT";
     case MD_VIAL_TOKEN_FLOAT:    return "FLOAT";
+    case MD_VIAL_TOKEN_UNIT:     return "UNIT";
     case MD_VIAL_TOKEN_STRING:   return "STRING";
     case MD_VIAL_TOKEN_OPERATOR: return "OP";
     case MD_VIAL_TOKEN_PUNCT:    return "PUNCT";
@@ -317,7 +318,14 @@ static void lex_number(lexer_t* l) {
         return;
     }
     if (!at_end(l) && is_ident_char(peek(l, 0))) {
-        while (!at_end(l) && is_ident_char(peek(l, 0))) l->pos += 1;
+        // A unit written against the number, 10ns, is lexed as the number and then the unit
+        size_t e = l->pos;
+        while (e < l->src.len && is_ident_char((unsigned char)l->src.ptr[e])) ++e;
+        if (!bad && vial_unit_name((str_t){l->src.ptr + l->pos, e - l->pos}, NULL)) {
+            emit(l, is_float ? MD_VIAL_TOKEN_FLOAT : MD_VIAL_TOKEN_INT, beg, l->pos, 0, 0);
+            return;
+        }
+        l->pos = e;
         bad = true;
     }
     if (bad) {
@@ -497,6 +505,13 @@ vial_token_t* vial_lex(str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
                 continue;
             }
             const vial_kw_t kw = keyword_of(word);
+            // A unit name right after a number is the number's unit, whatever the script binds that name to
+            const size_t nt = md_array_size(l.tokens);
+            const md_vial_token_kind_t prev = nt ? l.tokens[nt - 1].kind : MD_VIAL_TOKEN_EOF;
+            if (!kw && (prev == MD_VIAL_TOKEN_INT || prev == MD_VIAL_TOKEN_FLOAT) && vial_unit_name(word, NULL)) {
+                emit(&l, MD_VIAL_TOKEN_UNIT, beg, l.pos, 0, 0);
+                continue;
+            }
             emit(&l, kw ? MD_VIAL_TOKEN_KEYWORD : MD_VIAL_TOKEN_NAME, beg, l.pos, (uint16_t)kw, 0);
             continue;
         }

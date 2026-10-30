@@ -1,4 +1,4 @@
-module 0..424
+module 0..585
   assign 68..87
     name a 68..69
     binary + 72..87
@@ -127,4 +127,44 @@ module 0..424
       const True 407..411
       const None 413..417
       ellipsis 419..422
+  assign 492..584
+    name u 492..493
+    tuple 496..584
+      quantity 497..502
+        int 10 497..499
+        unit ns 500..502
+      quantity 504..508
+        int 10 504..506
+        unit ns 506..508
+      quantity 510..516
+        float 0.5 510..513
+        unit nm 514..516
+      quantity 518..524
+        int 90 518..520
+        unit deg 521..524
+      quantity 526..530
+        int 5 526..527
+        unit Å 528..530
+      quantity 532..534
+        int 2 532..533
+        unit e 533..534
+      quantity 536..548
+        float 1.5 536..539
+        unit 'kJ/mol' 540..548
+      binary / 550..558
+        name t 550..551
+        quantity 554..558
+          int 2 554..555
+          unit ps 556..558
+      unary - 560..571
+        binary ** 561..571
+          quantity 561..566
+            int 10 561..563
+            unit ns 564..566
+          int 2 570..571
+      binary * 573..583
+        name ps 573..575
+        quantity 578..583
+          int 10 578..580
+          unit ps 581..583
 --- diagnostics

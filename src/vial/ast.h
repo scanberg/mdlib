@@ -40,6 +40,8 @@ typedef enum vial_node_kind_t {
     VIAL_N_INT,
     VIAL_N_FLOAT,
     VIAL_N_STRING,                      // adjacent string literals are one node
+    VIAL_N_QUANTITY,                    // [number, UNIT]: 10 ns, 1.5 'kJ/mol'
+    VIAL_N_UNIT,                        // a unit name, or sub 1: a unit string
     VIAL_N_CONST,                       // sub: VIAL_KW_TRUE, VIAL_KW_FALSE or VIAL_KW_NONE_
     VIAL_N_ELLIPSIS,
     VIAL_N_UNARY,                       // [operand]; sub: VIAL_OP_PLUS, VIAL_OP_MINUS or VIAL_OP_TILDE

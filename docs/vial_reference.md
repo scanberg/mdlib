@@ -36,7 +36,7 @@ The counts come from the files, as mdlib loads them: it keeps only the first alt
 
 ## Lexical structure and statements
 
-A script is a Python 3 module: UTF-8 text, `#` comments, indentation for blocks, and Python's rules for names and literals. The only addition is the inclusive range `a..b`.
+A script is a Python 3 module: UTF-8 text, `#` comments, indentation for blocks, and Python's rules for names and literals. There are two additions, both where Python's grammar has no meaning: the inclusive range `a..b`, and a unit after a number, `10 ns`.
 
 ### Literals and operators
 
@@ -44,6 +44,7 @@ A script is a Python 3 module: UTF-8 text, `#` comments, indentation for blocks,
 | --- | --- | --- |
 | Integers | `42`, `1_000_000` | 32-bit |
 | Floats | `0.5`, `1e-3` | Stored in 32 bits |
+| Quantities | `10 ns`, `0.5 nm`, `90 deg`, `1.5 'kJ/mol'` | A number with its unit, one atom: see Units |
 | Strings | `'CA'`, `"GTP"` | Names and labels; no f-strings |
 | Booleans | `True`, `False` |  |
 | None | `None` | The absent default, as in `between=None` |
@@ -157,6 +158,21 @@ c : float[433][3] Å                                    frame
 - A bare number, and an array built by zeros, ones or full without unit=, takes the unit the operation expects. That is the other operand's unit in `+`, `-`, comparisons, `min`, `max`, `where` and `clip`, and the parameter's declared unit elsewhere, such as Å for a point, the radius of `within` and the `range` of a histogram. In `*` and `/` it has no unit.
 - Trigonometric functions take angles in any angle unit. `exp`, `log` and the like take values without a unit; anything else gives W0501.
 - `unitless(x)` drops the unit on purpose, without a warning.
+- A number followed by a unit is a quantity literal: `10 ns`, `0.5 nm`, `90 deg`. The space is optional, `10ns`, and the quantity is one atom, so `t / 2 ps` is `t / (2 ps)` and `-10 ns` is minus ten nanoseconds. It converts like any value with a unit, so `within(0.5 nm, of=protein)` is a radius of 5 Å.
+- The unit is a name from a fixed table, or for anything else a string in md_unit's notation, `1.5 'kJ/mol'`. A string that is not a unit is E0502. A unit name means a unit only right after a number, and Python's grammar gives a number followed by a name no other meaning, so `ps = ...` remains an ordinary variable while `10 ps` is ten picoseconds.
+- Units are not values: `10 * ns` is an unknown name (E0201), with the fix `10 ns`. To give a computed value a unit, multiply by a quantity, `x * 1 nm`.
+- A float needs digits in its exponent, so `2e5` is a float and `2e` is two elementary charges.
+
+| Unit names | Unit |
+| --- | --- |
+| `Å`, `angstrom` | ångström; `A` is the ampere, as in md_unit, so it is not a spelling of Å |
+| `nm`, `pm` | nanometre, picometre |
+| `fs`, `ps`, `ns`, `µs` (also `μs`, `us`) | time |
+| `deg`, `rad` | angles |
+| `K` | kelvin |
+| `e` | elementary charge |
+| `u` | atomic mass unit, the dalton |
+| `kJ`, `kcal` | energy; per mole as a string, `'kJ/mol'` |
 
 ```python
 # on T
@@ -181,6 +197,12 @@ gtp   = particles(resname='GTP').com                     # -> float[3] Å
 gdp   = particles(resname='GDP').com                     # -> float[3] Å
 dg    = distance(gtp, gdp)                               # -> float Å
 near  = dg < 12.0                                        # -> bool: 12.0 is read as Å
+near2 = dg < 1.2 nm                                      # -> bool: the same test, 1.2 nm is 12 Å
+short = dg < 1.2 * nm                                    # error E0201: nm is a unit, not a name; 1.2 nm
+bent  = angle(gtp, gdp, cv) > 90 deg                     # -> bool
+rate  = dg / 2 ps                                        # -> float Å/ps: dg / (2 ps)
+e_mol = 1.5 'kJ/mol'                                     # -> float kJ/mol
+badu  = 1.5 'kJ/mool'                                    # error E0502: 'kJ/mool' is not a unit
 scaled = dg / 10.0                                       # -> float Å
 mixed = dg + angle(gtp, gdp, cv)                         # warning W0501 -> float ?
 sw    = 1 / (1 + exp((dg - 4.0) / 0.5))                  # warning W0501 -> float ?: exp of a length
@@ -219,7 +241,7 @@ hist   = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))   # -> float[
 first  = at(ends, frame=0)                             # -> float Å, static: read from frame 0 when compiling
 drift  = ends - first                                  # -> float Å, frame
 dev    = ends - mean_e                                 # -> float Å, trajectory, per frame, pass 2
-near   = residues(within(4.0, residues[0]))            # -> set[?], frame: published as a recipe, evaluated per frame
+near   = residues(within(4.0, of=residues[0]))        # -> set[?], frame: published as a recipe, evaluated per frame
 n_near = len(near)                                     # -> int, frame
 d_near = distance(near.com, ca[0])                     # error E0401: a value, not a selection, and its length changes
 _d     = distance(near.com, ca[0])                     # -> float[?] Å, frame
@@ -307,7 +329,7 @@ miss   = particles(name='CA', resid=39, chain='A')     # warning W0601: matches 
 bad    = chains(name='A')                              # error E0202: chains have no name
 two    = residues(45, 'LYS')                           # error E0203
 num    = chains(0)                                     # error E0205: chains take an id string; positions are subscripts
-_nearv = residues(within(5.0, particles(resname='VLB')))   # -> set[?], frame
+_nearv = residues(within(5.0, of=particles(resname='VLB')))   # -> set[?], frame
 ```
 
 ```python
@@ -319,13 +341,13 @@ c      = chains('A')                                   # error E0207: P gives no
 
 ```python
 # on T, as filters in a representation group whose own filter is
-# residues(within(8.0, particles(resname='VLB'))): 22 residues and 241 particles,
+# residues(within(8.0, of=particles(resname='VLB'))): 22 residues and 241 particles,
 # twenty amino acids of chain B, GDP and VLB itself
 particles(name='CA')                                   # the CAs of the group's twenty amino acids
 residues[0]                                            # the group's first residue: residue 11 of chain B
 residues(177)                                          # chain B's residue 177; chain A's lies outside the group
 residues(250)                                          # warning W0601: not among this group's 241 particles
-within(4.0, particles(resid=181, chain='B', scope=system))   # the group's particles near residue 181 of chain B, which lies outside it
+within(4.0, of=particles(resid=181, chain='B', scope=system))   # the group's particles near residue 181 of chain B, which lies outside it
 ```
 
 ## Indexing: positions, ids, at(), sets as indices, by=
@@ -518,7 +540,7 @@ Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are
 | `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` |
 | `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`. Drawn as a sphere of that radius at the centre |
 | `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)`. Drawn as an arrow from the centre |
-| `within(r, x: points)` | `set`, frame | the scope's particles within r of any particle or point of x |
+| `within(r, of: points)` | `set`, frame | the scope's particles within r of any particle or point of `of`; `of=` is always written, so `within(5.0, of=protein)` reads as it means and the radius cannot be mistaken for the set. `within(5.0, of=protein)` is E0203, with the fix `of=protein` |
 
 A matrix of distances needs no special function; broadcasting gives it: `distance(c[:, None], c[None, :])`.
 
@@ -537,8 +559,10 @@ gtp    = particles(resname='GTP')                   # -> set: 32 particles
 vlb    = particles(resname='VLB')                   # -> set: 59 particles
 res_a  = residues(chain='A', kind='amino_acid')     # -> set[433]
 cas    = [particles(r, name='CA') for r in res_a]   # -> set[433]: one particle each
-near   = within(5.0, vlb)                           # -> set, frame: its size changes per frame
-near_r = residues(within(5.0, vlb))                 # -> set[?], frame
+near   = within(5.0, of=vlb)                       # -> set, frame: its size changes per frame
+near_r = residues(within(5.0, of=vlb))             # -> set[?], frame
+near_p = within(5.0, vlb)                           # error E0203: of= is always written; within(5.0, of=vlb)
+near_n = within(0.5 nm, of=vlb)                     # -> set, frame: the same as near
 ```
 
 | Kind | On T | Without `between=` | With `between=` | Adds |
@@ -624,7 +648,7 @@ d4   = distance(pg, particles(name='MG'))              # -> float Å: single par
 a    = angle(gtp.com, gdp.com, vlb.com)                # -> float °
 pos  = gtp.xyz                                        # -> float[32][3] Å, frame
 cg   = com(gtp)                                        # -> float[3] Å
-near = within(5.0, vlb)                                # -> set, frame
+near = within(5.0, of=vlb)                            # -> set, frame
 bad  = distance(12, gtp.com)                           # error E0302
 ```
 
@@ -924,7 +948,7 @@ Every top-level name bound to a number or a set is published under `script/<name
 | Static array of sets | one selection under its name, holding the array: filters use the name for the union, or name\[i\] | labels |
 | Three dimensions or more, `str`, `range`, tuples, drawings | not published; shown in hover |  |
 
-- A published frame value must have the same shape in every frame (E0401), since it is stored as a series. Selections are the exception: a set or array of sets whose length changes per frame, such as `residues(within(5.0, particles(resname='GTP')))`, is published as a recipe. It holds no values; representations and filters evaluate it for the frame they show. Other values whose length changes are kept private, or reduced with `len` or another reduction.
+- A published frame value must have the same shape in every frame (E0401), since it is stored as a series. Selections are the exception: a set or array of sets whose length changes per frame, such as `residues(within(5.0, of=particles(resname='GTP')))`, is published as a recipe. It holds no values; representations and filters evaluate it for the frame they show. Other values whose length changes are kept private, or reduced with `len` or another reduction.
 - A published per-frame value that would take more than 64 MB over the whole run, 16 million values, gives W0404 with its size. It is usually an intermediate missing its `_`.
 - Each published value has a fingerprint of what it depends on, so an edit re-evaluates only what it feeds.
 - viamd's stored selections are static sets in the script, read-only. Filters see published names and stored selections, never private names.
@@ -952,7 +976,7 @@ Hovering an expression in the editor draws its value in the 3D view, at the fram
 | A number per particle or per residue | the particles or residues coloured by value |
 | `bonds(...)` | the bonds |
 | `angle`, `dihedral` | an arc at the vertex; for a dihedral also the two planes |
-| `within(r, x)` | a sphere of radius r around each point of x, and the particles inside highlighted |
+| `within(r, of=x)` | a sphere of radius r around each point of x, and the particles inside highlighted |
 | anything else | nothing; hover shows the value as text |
 
 `shown(x, d)` is `x`, with `d` drawn when it is hovered. Its type, unit, stage and pass are `x`'s, and published values are computed exactly as without it: `d` is evaluated only for hover, at the frame being shown, so a drawing costs evaluation nothing. A name bound to `shown(...)`, and a call of a `def` that returns it, are drawn with `d`; passing the value through names and returns keeps its drawing, and any operation on it gives a new value, drawn by its type. Hover draws the hovered expression's own drawing only; its inputs show theirs when their spans are hovered.
@@ -1052,6 +1076,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | W0405 | A value that may be missing in some frames | near\[4\] is missing in frames with fewer than five residues nearby | none; the series shows gaps |
 | W0406 | More than three passes over the trajectory | pcs2 is pass 4; each pass reads every frame again |  |
 | W0501 | Units that do not match | adds Å to degrees; the result's unit becomes unknown | `unitless(...)` |
+| E0502 | A unit string that md_unit cannot read | `'kJ/mool'` is not a unit |  |
 | W0601 | A selector that matches nothing in its scope; set algebra such as a and b never warns | `residues(250)` is not among this group's 241 particles |  |
 | W0602 | `particles(resid=...)` with an id in several chains | `resid=501` matches chains A and B; the merge would hide it | `chain='A'` |
 | W0603 | Groups with no values in `by=` | 15 residues have no values in `_z` | a narrower group |
@@ -1091,6 +1116,6 @@ residues = 5                                            # warning W0201: last, s
 ```python
 # on P
 ca = particles(name='CA')
-_near = residues(within(3.0, ca[0]))                    # -> set[?], frame
+_near = residues(within(3.0, of=ca[0]))                # -> set[?], frame
 r = distance(_near[4].com, ca[0])                       # warning W0405; R0101 and a missing value in frames where fewer than five residues are that close
 ```
