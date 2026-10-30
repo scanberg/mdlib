@@ -353,8 +353,17 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
         const uint8_t level = selector_level(name, &pkind);
         if (level == VIAL_LEVEL_CHAIN && no_chains(x)) { report_no_chains(x, id); *out = err(); return true; }
         if (!x->sys) { *out = selector_unknown(level, VIAL_STAGE_STATIC, id); return true; }
-        const vial_select_t q = {.level = level, .particle_kind = pkind};
-        const vial_sets_t* s = vial_select(x->sys, &q, x->alloc);
+        // All of a level's units, once per compile, as the predefined sets
+        const vial_sets_t* s = NULL;
+        size_t k = 0;
+        for (; k < ARRAY_SIZE(x->predefined) && x->predefined[k].sets; ++k) {
+            if (str_eq(x->predefined[k].name, name)) { s = x->predefined[k].sets; break; }
+        }
+        if (!s) {
+            const vial_select_t q = {.level = level, .particle_kind = pkind};
+            s = vial_select(x->sys, &q, x->alloc);
+            if (k < ARRAY_SIZE(x->predefined)) { x->predefined[k].name = name; x->predefined[k].sets = s; }
+        }
         *out = vx_sets_type(x, s, id);
         vx_set_value(x, id, sets_value(s));
         return true;

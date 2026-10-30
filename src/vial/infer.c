@@ -805,8 +805,25 @@ static T infer_boolop(infer_t* x, vial_node_id id) {
         const vial_value_t cv = value_of(x, cn);
         if (cv.kind == VIAL_VAL_BOOL) v = sub_of(x, id) == VIAL_KW_AND ? (v && cv.b) : (v || cv.b);
         else known = false;
-        if (c.dtype == VIAL_DT_SET) {
-            sets = i == 0 ? cv : vx_sets_boolop(x, sub_of(x, id) == VIAL_KW_AND, &sets, &cv);
+        if (c.dtype == VIAL_DT_SET && !(sub_of(x, id) == VIAL_KW_AND && kind_of(x, cn) == VIAL_N_NOT)) {
+            sets = (i == 0 || sets.kind == VIAL_VAL_NULL) ? cv : vx_sets_boolop(x, sub_of(x, id) == VIAL_KW_AND, &sets, &cv);
+        } else if (c.dtype == VIAL_DT_SET && i == 0) {
+            sets = (vial_value_t){.kind = VIAL_VAL_NULL};     // only negated operands so far: subtracted below
+        }
+    }
+    if (t.dtype == VIAL_DT_SET && sub_of(x, id) == VIAL_KW_AND) {
+        // The negated operands, subtracted from what the others give, or from the scope when there are none
+        for (uint32_t i = 0; i < n; ++i) {
+            const vial_node_id cn = child(x, id, i);
+            if (kind_of(x, cn) != VIAL_N_NOT) continue;
+            const vial_value_t b = value_of(x, child(x, cn, 0));
+            if (b.kind != VIAL_VAL_SETS || !b.sets->single || !x->sys) { sets = val_none(); break; }
+            if (sets.kind == VIAL_VAL_NULL) {
+                if (!x->all) x->all = vial_sets_all(x->sys->num_atoms, x->alloc);
+                sets = (vial_value_t){.kind = VIAL_VAL_SETS, .sets = x->all};
+            }
+            if (sets.kind != VIAL_VAL_SETS || !sets.sets->single) { sets = val_none(); break; }
+            sets = (vial_value_t){.kind = VIAL_VAL_SETS, .sets = vial_sets_not(sets.sets, b.sets, 0, x->alloc)};
         }
     }
     if (t.dtype == VIAL_DT_SET) {
@@ -833,7 +850,11 @@ static T infer_not(infer_t* x, vial_node_id id) {
     if (v.kind == VIAL_VAL_BOOL) set_value(x, id, val_bool(!v.b));
     T t = a;
     t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
-    if (a.dtype == VIAL_DT_SET && v.kind == VIAL_VAL_SETS) {
+    // Under an `and` of sets, `not b` is not made: the `and` subtracts b, so `protein and not backbone` costs the
+    // size of the sets, not the system's
+    const vial_node_id up = x->n->parent[id];
+    const bool under_and = up && kind_of(x, up) == VIAL_N_BOOLOP && sub_of(x, up) == VIAL_KW_AND;
+    if (a.dtype == VIAL_DT_SET && v.kind == VIAL_VAL_SETS && !under_and) {
         const vial_value_t nv = vx_sets_not(x, &v);
         if (nv.kind == VIAL_VAL_SETS) {
             const T st = vx_sets_type(x, nv.sets, id);

@@ -40,7 +40,7 @@ typedef struct infer_t {
     vial_desc_t**       descs;      // what dimensions run over, one array for every frame: the top level's
     vial_sys_t*         sys;        // NULL without a system
     vial_sets_t*        all;        // every particle, the scope of a script, once `not` needs it
-    struct { str_t name; const vial_sets_t* sets; } predefined[8];     // evaluated once per compile
+    struct { str_t name; const vial_sets_t* sets; } predefined[16];    // predefined sets and bare selectors, once per compile
     const vial_check_t* c;          // the script's and the prelude's trees and names
     vx_frame_t*         frame;      // the def being checked, or NULL at top level
     vx_memo_t*          memo;       // a def's result by its arguments' types, shared by every frame

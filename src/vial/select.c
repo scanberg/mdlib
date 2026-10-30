@@ -600,18 +600,25 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         // lookup of its type's mask
         const md_system_t* sys = s->sys;
         const uint8_t* types = type_mask(s, q, alloc);
-        vial_sets_t* out = sets_new(1, s->num_atoms, alloc);
+        const uint32_t num_units = s->num_res ? s->num_res : 1;
+        // The residues that pass, and room for their particles: a selection costs its size, not the system's
+        uint32_t room = 0;
+        uint8_t* pass = md_alloc(alloc, num_units);
+        for (uint32_t r = 0; r < num_units; ++r) {
+            pass[r] = residue_passes_for_particles(s, q, s->num_res ? r : NONE32);
+            if (pass[r]) room += s->num_res ? (uint32_t)md_system_residue_atom_count(sys, r) : s->num_atoms;
+        }
+        vial_sets_t* out = sets_new(1, room, alloc);
         out->single = true;
         uint32_t n = 0;
-        const uint32_t num_units = s->num_res ? s->num_res : 1;
         for (uint32_t r = 0; r < num_units; ++r) {
             uint32_t beg = 0, end = s->num_atoms;
             if (s->num_res) {
                 const md_urange_t range = md_system_residue_atom_range(sys, r);
                 beg = range.beg; end = range.end < s->num_atoms ? range.end : s->num_atoms;
             }
-            if (!residue_passes_for_particles(s, q, s->num_res ? r : NONE32)) continue;
-            for (uint32_t a = beg; a < end; ++a) {
+            if (!pass[r]) continue;
+            for (uint32_t a = beg; a < end && n < room; ++a) {
                 if (!IN_SCOPE(a) || (within && !bit(within, a))) continue;
                 if (types) {
                     const md_particle_type_idx_t t = sys->atom.type_idx[a];
@@ -633,23 +640,31 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
     case VIAL_LEVEL_CHAIN:    num_units = s->num_chains; need_chains(s); break;
     default: break;
     }
-    // The units of a level never share a particle, so the particles of all of them fit in num_atoms
-    vial_sets_t* out = sets_new(0, s->num_atoms, alloc);
-    out->offset = md_alloc(alloc, (num_units + 1) * sizeof(uint32_t));
-    out->unit = md_alloc(alloc, (num_units + 1) * sizeof(uint32_t));
-    out->offset[0] = 0;
-    out->level = q->level;
-    uint32_t n = 0, w = 0;
+    // The units that pass, and room for their particles: the units of a level never share a particle
+    uint32_t* passing = md_alloc(alloc, (num_units + 1) * sizeof(uint32_t));
+    uint32_t num_pass = 0, room = 0;
     for (uint32_t u = 0; u < num_units; ++u) {
         bool pass = false;
+        uint32_t size = 0;
         switch (q->level) {
-        case VIAL_LEVEL_RESIDUE:  pass = residue_passes(s, q, u); break;
-        case VIAL_LEVEL_PART:     pass = part_passes(s, q, u); break;
-        case VIAL_LEVEL_MOLECULE: pass = molecule_passes(s, q, u); break;
-        case VIAL_LEVEL_CHAIN:    pass = chain_passes(s, q, u); break;
+        case VIAL_LEVEL_RESIDUE:  pass = residue_passes(s, q, u);  size = (uint32_t)md_system_residue_atom_count(s->sys, u); break;
+        case VIAL_LEVEL_PART:     pass = part_passes(s, q, u);     { const md_urange_t r = md_system_part_atom_range(s->sys, u); size = r.end - r.beg; } break;
+        case VIAL_LEVEL_MOLECULE: pass = molecule_passes(s, q, u); size = s->mol_offset[u + 1] - s->mol_offset[u]; break;
+        case VIAL_LEVEL_CHAIN:    pass = chain_passes(s, q, u);    size = s->chain_offset[u + 1] - s->chain_offset[u]; break;
         default: break;
         }
         if (!pass) continue;
+        passing[num_pass++] = u;
+        room += size;
+    }
+    vial_sets_t* out = sets_new(0, room, alloc);
+    out->offset = md_alloc(alloc, (num_pass + 1) * sizeof(uint32_t));
+    out->unit = md_alloc(alloc, (num_pass + 1) * sizeof(uint32_t));
+    out->offset[0] = 0;
+    out->level = q->level;
+    uint32_t n = 0, w = 0;
+    for (uint32_t pi = 0; pi < num_pass; ++pi) {
+        const uint32_t u = passing[pi];
         // Its particles: a range, or a list for molecules and chains
         const uint32_t* list = NULL;
         uint32_t beg = 0, end = 0;
@@ -662,7 +677,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         }
         const uint32_t mark = w;
         bool hit = !within;
-        for (uint32_t k = beg; k < end && w < s->num_atoms; ++k) {
+        for (uint32_t k = beg; k < end && w < room; ++k) {
             const uint32_t a = list ? list[k] : k;
             if (a >= s->num_atoms || !IN_SCOPE(a)) continue;
             if (within && bit(within, a)) hit = true;
