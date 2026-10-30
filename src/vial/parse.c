@@ -622,7 +622,10 @@ static vial_node_id parse_primary(parser_t* p) {
             const uint32_t m = mark(p);
             push(p, e);
             advance(p);
+            // Arguments nest like a bracket: f(f(f(... recurses here, after f's atom has returned
+            if (!enter(p)) { push(p, error_node(p)); return make(p, VIAL_N_CALL, 0, node_beg(p, e), p->last_end, m); }
             const bool v1 = parse_call_args(p, t);
+            leave(p);
             e = make(p, VIAL_N_CALL, 0, node_beg(p, e), p->last_end, m);
             if (v1) report_v1_call(p, e);
         } else if (tok_is_op(t, VIAL_OP_LBRACKET)) {
@@ -631,6 +634,7 @@ static vial_node_id parse_primary(parser_t* p) {
             advance(p);
             const uint32_t ibeg = cur(p)->span.beg;
             const uint32_t im = mark(p);
+            if (!enter(p)) { push(p, error_node(p)); return make(p, VIAL_N_SUBSCRIPT, 0, node_beg(p, e), p->last_end, m); }
             push(p, parse_subscript(p));
             bool tuple = false;
             while (accept_op(p, VIAL_OP_COMMA)) {
@@ -639,6 +643,7 @@ static vial_node_id parse_primary(parser_t* p) {
                 push(p, parse_subscript(p));
                 if (p->panic) break;
             }
+            leave(p);
             if (tuple) push(p, make(p, VIAL_N_TUPLE, 0, ibeg, p->last_end, im));
             expect_close(p, t, VIAL_OP_RBRACKET);
             e = make(p, VIAL_N_SUBSCRIPT, 0, node_beg(p, e), p->last_end, m);
