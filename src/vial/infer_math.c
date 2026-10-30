@@ -367,6 +367,7 @@ static bool broadcast_all(infer_t* x, vial_node_id call, const vial_node_id* arg
         if (!args[i]) continue;
         const T b = type_of(x, args[i]);
         T m = t;
+        vx_check_pairing(x, call, &t, &b);
         if (!vx_broadcast(&t, &b, &m)) {
             vx_diag_fix(x, "E0301", call, NULL, "`%s` and `%s` do not broadcast", tstr(&t), tstr(&b));
             return false;
@@ -1050,7 +1051,8 @@ static T call_common(infer_t* x, vial_node_id call) {
         }
         const uint32_t n = (uint32_t)md_array_size(pa);
         const vial_sets_t* sa = vial_sets_pick(va.sets, pa ? pa : (uint32_t[]){0}, n, x->alloc);
-        const vial_sets_t* sb = vial_sets_pick(vb.sets, pb ? pb : (uint32_t[]){0}, n, x->alloc);
+        vial_sets_t* sb = vial_sets_pick(vb.sets, pb ? pb : (uint32_t[]){0}, n, x->alloc);
+        sb->root = vial_sets_root(sa);     // common paired them: they pair by position without W0605
         elems[0].dims[0] = vial_extent_static(n);
         elems[1].dims[0] = vial_extent_static(n);
         elems[0].dims[0].desc = vx_desc(x, VIAL_LEVEL_RESIDUE, sa);

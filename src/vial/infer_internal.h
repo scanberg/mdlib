@@ -67,6 +67,7 @@ void vx_join_stage(vial_type_t* out, const vial_type_t* a, const vial_type_t* b)
 // The read over the trajectory in which a value is complete: 0 static, a frame value pass 1 at the earliest
 static inline uint8_t vx_pass(const vial_type_t* t) { return t->stage != VIAL_STAGE_STATIC && t->pass == 0 ? 1 : t->pass; }
 bool vx_extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out);
+void vx_check_pairing(infer_t* x, vial_node_id at, const vial_type_t* a, const vial_type_t* b);   // W0605
 
 void vx_unit_join(infer_t* x, vial_node_id at, const char* verb, const vial_type_t* a, const vial_type_t* b, vial_type_t* out);
 uint8_t vx_promote(const vial_type_t* a, const vial_type_t* b);    // NumPy 2's dtype of a and b together

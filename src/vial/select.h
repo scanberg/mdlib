@@ -66,6 +66,8 @@ typedef struct vial_sets_t {
     bool        single;         // one set, not an array of one
     uint8_t     level;          // vial_level_t: what each set is
     uint32_t*   unit;           // [count] the unit each set is, when level is not NONE
+    const struct vial_sets_t* root; // what it was sliced or picked from, transitively, or what common() paired it
+                                    // with; NULL for an original. Dimensions over sets of one root pair without W0605.
     uint32_t*   offset;         // [count + 1]
     uint32_t*   idx;            // [offset[count]] particle indices, ascending within a set
 } vial_sets_t;
@@ -75,6 +77,8 @@ static inline const uint32_t* vial_sets_items(const vial_sets_t* s, uint32_t i) 
 
 vial_sets_t* vial_sets_one(const uint32_t* idx, uint32_t n, md_allocator_i* alloc);    // copies idx
 vial_sets_t* vial_sets_all(uint32_t num_atoms, md_allocator_i* alloc);                  // every particle
+
+static inline const struct vial_sets_t* vial_sets_root(const struct vial_sets_t* s) { return s && s->root ? s->root : s; }
 
 // Set algebra on single sets: and, or, and the scope without a
 vial_sets_t* vial_sets_and(const vial_sets_t* a, uint32_t ia, const vial_sets_t* b, uint32_t ib, md_allocator_i* alloc);
