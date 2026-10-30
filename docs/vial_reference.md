@@ -512,8 +512,8 @@ Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are
 | `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Drawn as a line labelled with the value |
 | `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(a.xyz[:, None], b.xyz))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a spatial search, so no n×m matrix is computed or stored. Drawn as a line between the pair |
 | `displacement(a: point, b: point)` | `float[3]` Å | b minus a, minimum image |
-| `closest_pair(p: points, q: points)` | `(float Å, int, int)` | the shortest distance from a point of p to a point of q under the minimum image, and the two points' indices; built in, with a spatial search, so its time grows with n + m for compact groups. The indices are computed only where they are used, as when hover draws the pair. Missing, with W0601, when p or q is empty |
-| `farthest_pair(p: points, q: points)` | `(float Å, int, int)` | the longest distance, and its two indices |
+| `closest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the shortest distance from a point of p to a point of q under the minimum image, and the two points' indices; built in, with a spatial search, so its time grows with n + m for compact groups. `distinct=True` leaves out the pairs of a particle, or a unit such as a residue, with itself, by the dimensions' descriptions; for the nearest other point. The indices are computed only where they are used, as when hover draws the pair. Missing, with W0601, when p or q is empty |
+| `farthest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the longest distance, and its two indices |
 | `angle(a, b, c: point)` | `float` ° | also takes one `float[3][3]`, three points as rows; the one-argument form maps over leading dimensions, such as `set[k][3]` from `smiles_atoms` |
 | `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` |
 | `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`. Drawn as a sphere of that radius at the centre |
@@ -567,7 +567,7 @@ one   = distance(res_a[0:1], res_a.com)                       # error E0302: a s
 st    = distance(res_a[0:1].com, res_a.com)                   # -> float[433] Å: the [1] stretches
 lab   = distance(cas[0:2], cas[2:4])                          # -> float[2] Å, labelled MET1/A–GLU3/A, ARG2/A–CYS4/A: slices of one array, so no W0605
 zero  = distance(cas, cas)                                    # -> float[433] Å, all zero
-self_ = distance(gtp, gtp, between='closest')                 # -> float Å, zero
+self_ = distance(gtp, gtp, between='closest')                 # warning W0608 -> float Å: zero, each particle paired with itself
 n3    = sum(distance(near_r, mg, between='closest') < 3.0)     # -> int, frame: reduced, so it can be published
 bad   = distance(near_r, cas, between='closest')              # error E0301: [?] and [433] do not broadcast
 empty = distance(particles(resname='ATP'), mg)                # warning W0601, W0405 -> float Å | missing: empty on T, so missing in every frame
@@ -576,6 +576,30 @@ empty = distance(particles(resname='ATP'), mg)                # warning W0601, W
 pairs = distance(gtp.xyz[:, None], vlb.xyz)                   # -> float[32][59] Å: row i is GTP particle i
 flat  = flatten(pairs)                                        # -> float[1888] Å: v1's layout, b varying fastest
 four  = distance(particles(res_a[0:4]).xyz[:, None], vlb.xyz)                 # -> float[34][59] Å: v1 merged an array of sets; v2 says so with particles()
+```
+
+### Reductions over every pair
+
+A matrix of every pair is how a reduction over pairs is written, never how it is computed. When a minimum, a maximum or a count within a cutoff reduces a matrix of distances built by broadcasting, the compiler computes it with the spatial search of `closest_pair`, and the matrix is never made. The rule is applied when the checked program is lowered to the array IR, so it holds from the first version, whatever the optimizer does, and it sees through names, the prelude's `distance` and mapped defs: a private `dm` whose only use is `min(dm)` is never made either. The results are exactly those of the matrix, in 32-bit floats under the minimum image; missing entries are skipped, and NaN is not, as in any reduction.
+
+| Written, with `dm = distance(a[:, None], b)` over points | Computed as |
+| --- | --- |
+| `min(dm)`, `max(dm)` | the closest or farthest pair, as `closest_pair(a, b)` |
+| `min(dm, axis=1)`, `argmin(dm, axis=1)` | each point of a's nearest point of b, as `closest_pair(a[:, None], b)` maps |
+| `sum(dm < r)`, `sum(dm < r, axis=1)` | the pairs within r, or each point of a's count within r: coordination numbers, contacts |
+| `any(dm < r, axis=1)` | the points of a with a point of b within r |
+
+A minimum that pairs every point with itself is zero, which is rarely what was meant: the nearest residue to each residue is itself. W0608 says so, and offers `distinct=True`, which leaves out the pairs of a particle or unit with itself.
+
+```python
+# on T
+res_a = residues(chain='A', kind='amino_acid')                # -> set[433]
+vlb   = particles(resname='VLB')                              # -> set
+c     = com(res_a)                                            # -> float[433][3] Å
+dm    = distance(c[:, None], c)                               # -> float[433][433] Å, frame: hover evaluates it
+nn    = min(dm, axis=1)                                       # warning W0608 -> float[433] Å: zeros, each centre its own nearest
+dn, i, j = closest_pair(c[:, None], c, distinct=True)         # -> float[433] Å and int[433] and int[433]: each residue's nearest other residue
+cnt   = sum(distance(c[:, None], vlb.xyz) < 8.0, axis=1)      # -> int[433], frame: VLB particles within 8 Å of each centre, counted by the search
 ```
 
 ### Structure
@@ -918,7 +942,7 @@ dm    = distance(_c[:, None], _c[None, :])             # -> float[15][15] Å, fr
 
 ## Drawing: what hover shows
 
-Hovering an expression in the editor draws its value in the 3D view, at the frame being shown. A value is drawn by its type, unless a built-in or a `def` attached a drawing with `shown`.
+Hovering an expression in the editor draws its value in the 3D view, at the frame being shown. A value is drawn by its type, unless a built-in or a `def` attached a drawing with `shown`. Hover evaluates a value of at most 16 million entries, 64 MB; a larger one, such as the matrix of every pair of protein and water particles, shows its type and size and is not computed.
 
 | Value | Drawn as |
 | --- | --- |
@@ -1033,6 +1057,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | W0603 | Groups with no values in `by=` | 15 residues have no values in `_z` | a narrower group |
 | W0605 | Equal extents that describe different units, paired by position | pairs the 433 residues of chain A with the 433 of chain B by position | common(a, b, by='id') |
 | W0607 | An unannotated argument over the same units as a dimension the call maps over | cutoff is float\[433\] over the residues of chain A, and the call maps over them; it is passed whole, so the result is bool\[433\]\[433\] | cutoff: float |
+| W0608 | A minimum of distances that pairs every point with itself, so it is zero | each of the 433 centres is its own nearest | `closest_pair(c[:, None], c, distinct=True)` |
 | E0701 | A v1 spelling | `residue(1:4)` is v1; positions are subscripts | `residues[0:4]` |
 | E0801 | A construct not supported yet | `while` is not supported yet |  |
 | E0802 | Recursion | `walk` calls itself |  |
