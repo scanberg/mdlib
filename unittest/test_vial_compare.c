@@ -11,6 +11,8 @@
 #include "../src/vial/ir.h"
 #include "../src/vial/interp.h"
 
+#include <core/md_os.h>
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,8 +110,14 @@ UTEST(vial_compare, v1_and_v2_agree) {
     int agree = 0;
     for (size_t i = 0; i < ARRAY_SIZE(vial_pairs); ++i) {
         const vial_pair_t* pr = &vial_pairs[i];
+        const md_tick_t t0 = md_tick_now();
         if (!v1_values(pr->v1, sys, nf, a, alloc)) { EXPECT_TRUE(false); continue; }
+        const md_tick_t t1 = md_tick_now();
         if (!v2_values(pr->v2, sys, nf, b, alloc)) { EXPECT_TRUE(false); continue; }
+        const md_tick_t t2 = md_tick_now();
+        if (getenv("VIAL_COMPARE_TIME")) {
+            printf("vial compare r1: v1 %7.3f ms, v2 %7.3f ms: %s\n", md_tick_to_milliseconds(t1 - t0), md_tick_to_milliseconds(t2 - t1), pr->v2);
+        }
         double worst = 0.0;
         uint32_t at = 0;
         for (uint32_t f = 0; f < nf; ++f) if (fabs(a[f] - b[f]) > worst) { worst = fabs(a[f] - b[f]); at = f; }
