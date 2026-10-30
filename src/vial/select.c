@@ -213,6 +213,7 @@ vial_sets_t* vial_sets_pick(const vial_sets_t* a, const uint32_t* pos, uint32_t 
     for (uint32_t k = 0; k < n; ++k) total += vial_sets_size(a, pos[k]);
     vial_sets_t* s = sets_new(n, total, alloc);
     s->level = a->level;
+    s->root = vial_sets_root(a);
     if (a->unit) s->unit = md_alloc(alloc, (n + 1) * sizeof(uint32_t));
     uint32_t w = 0;
     for (uint32_t k = 0; k < n; ++k) {
@@ -228,6 +229,7 @@ vial_sets_t* vial_sets_pick(const vial_sets_t* a, const uint32_t* pos, uint32_t 
 vial_sets_t* vial_sets_pick_particles(const vial_sets_t* a, uint32_t i, const uint32_t* pos, uint32_t n, md_allocator_i* alloc) {
     vial_sets_t* s = sets_new(1, n, alloc);
     s->single = true;
+    if (a->single) s->root = vial_sets_root(a);
     const uint32_t* items = vial_sets_items(a, i);
     for (uint32_t k = 0; k < n; ++k) s->idx[k] = items[pos[k]];
     qsort(s->idx, n, sizeof(uint32_t), cmp_u32);

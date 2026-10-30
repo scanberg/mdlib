@@ -663,3 +663,20 @@ UTEST_F(vial_check, attributes) {
     type_run("e = attr('edr/Potential')\nf = at(e, frame=38)\n", 2, &sys, utest_fixture->alloc, &diags);
     EXPECT_STREQ("E0405 ", diags);
 }
+
+// ### STEP 10: PAIRING, OUTPUTS AND HOVER ###
+
+UTEST_F(vial_check, w0605) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_DIAGS_ON(T, "a = residues(1..4, chain='A').com\nb = residues(1..4, chain='B').com\nd = a - b\n",
+        "W0605 3: dimensions of 4 that run over different units are paired by position: 0 is MET1/A against MET1/B;"
+        " common(a, b, by='id') pairs them by id\n");
+    EXPECT_DIAGS_ON(T, "c = residues(chain='A').com\nd = c[1:5] - c[0:4]\n", "");
+    EXPECT_DIAGS_ON(T, "r = residues(1..4, chain='A')\ns = residues(1..4, chain='A')\nd = r.com - s.com\n", "");
+    EXPECT_DIAGS_ON(T, "a, b = common(residues(1..4, chain='A'), residues(1..4, chain='B'), by='id')\nd = distance(a.com, b.com)\n", "");
+    EXPECT_DIAGS_ON(T, "g = particles(resname='GTP')\nd = distance(g[0:3].xyz, g[3:6].xyz)\n", "");
+    EXPECT_DIAGS_ON(T, "d = distance(particles(name='CA', resid=1..4, chain='A').xyz, particles(name='CB', resid=1..4, chain='A').xyz)\n",
+        "W0605 1: dimensions of 4 that run over different units are paired by position: 0 is CA/MET1/A against CB/MET1/A;"
+        " common(a, b, by='id') pairs them by id\n");
+}

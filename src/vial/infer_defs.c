@@ -269,6 +269,7 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
         }
         cores[k] = core;
         T m = loop;
+        vx_check_pairing(x, call, &loop, &lp);
         if (!vx_broadcast(&loop, &lp, &m)) {
             vx_diag_fix(x, "E0301", call, NULL, "the dimensions `%s` maps over do not broadcast: `%s` and `%s`", g->fname, vx_tstr(&loop), vx_tstr(&lp));
             return err();

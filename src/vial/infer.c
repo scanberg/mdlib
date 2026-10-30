@@ -202,8 +202,10 @@ static void fix_new_axis(infer_t* x, char* fix, size_t cap, vial_node_id short_n
     if (n > 0 && (size_t)n < cap) snprintf(fix + n, cap - n, "]");
 }
 
+void vx_check_pairing(infer_t* x, vial_node_id at, const T* a, const T* b);
+
 static bool broadcast_or_report(infer_t* x, vial_node_id at, vial_node_id an, const T* a, vial_node_id bn, const T* b, T* out) {
-    if (broadcast(a, b, out)) return true;
+    if (broadcast(a, b, out)) { vx_check_pairing(x, at, a, b); return true; }
     char fix[160] = "";
     if (a->ndim < b->ndim) fix_new_axis(x, fix, sizeof(fix), an, a, b);
     else if (b->ndim < a->ndim) fix_new_axis(x, fix, sizeof(fix), bn, b, a);
@@ -212,6 +214,44 @@ static bool broadcast_or_report(infer_t* x, vial_node_id at, vial_node_id an, co
 }
 
 bool vx_broadcast(const T* a, const T* b, T* out) { return broadcast(a, b, out); }
+
+// The unit at position k of what a description runs over: a particle for a set's particles, else the set's unit
+static bool desc_unit(const vial_desc_t* d, uint32_t k, uint32_t* out) {
+    const vial_sets_t* s = d->sets;
+    if (!s) return false;
+    if (s->single) { if (k >= vial_sets_size(s, 0)) return false; *out = vial_sets_items(s, 0)[k]; return true; }
+    if (!s->unit || k >= s->count) return false;
+    *out = s->unit[k];
+    return true;
+}
+
+// W0605: dimensions of equal extent that run over different particles or units, paired by position. Slices of one
+// array or set, and what common() paired, pair without it; so do two that describe the same units in the same order.
+void vx_check_pairing(infer_t* x, vial_node_id at, const T* a, const T* b) {
+    const uint8_t n = a->ndim < b->ndim ? a->ndim : b->ndim;
+    for (uint8_t k = 1; k <= n; ++k) {
+        const vial_extent_t ea = a->dims[a->ndim - k], eb = b->dims[b->ndim - k];
+        if (ea.kind != VIAL_EXT_STATIC || eb.kind != VIAL_EXT_STATIC || ea.n != eb.n || ea.n < 2) continue;
+        if (!ea.desc || !eb.desc || ea.desc == eb.desc) continue;
+        if (ea.desc >= md_array_size(*x->descs) || eb.desc >= md_array_size(*x->descs)) continue;
+        const vial_desc_t* da = &(*x->descs)[ea.desc];
+        const vial_desc_t* db = &(*x->descs)[eb.desc];
+        if (!da->sets || !db->sets || vial_sets_root(da->sets) == vial_sets_root(db->sets)) continue;
+        for (uint32_t q = 0; q < ea.n; ++q) {
+            uint32_t ua, ub;
+            if (!desc_unit(da, q, &ua) || !desc_unit(db, q, &ub)) break;
+            if (ua == ub && da->level == db->level) continue;
+            char la[64] = "", lb[64] = "";
+            if (x->sys) {
+                vial_unit_label(la, sizeof(la), x->sys, da->sets->single ? VIAL_LEVEL_PARTICLE : da->level, ua);
+                vial_unit_label(lb, sizeof(lb), x->sys, db->sets->single ? VIAL_LEVEL_PARTICLE : db->level, ub);
+            }
+            diag_fix(x, "W0605", at, NULL, "dimensions of %u that run over different units are paired by position: %u is %s against %s; "
+                "common(a, b, by='id') pairs them by id", ea.n, q, la[0] ? la : "one", lb[0] ? lb : "another");
+            return;
+        }
+    }
+}
 bool vx_extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out) { return extent_join(a, b, out); }
 
 // ### UNITS ###

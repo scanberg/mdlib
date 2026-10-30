@@ -354,6 +354,7 @@ static bool map_args(infer_t* x, vial_node_id call, const char* fname, const par
         if (vial_type_is_error(&a)) { ok = false; continue; }
         if (!split(x, args[k], &a, params[k].kind, fname, params[k].name, &splits[k])) { ok = false; continue; }
         T m;
+        vx_check_pairing(x, call, loop, &splits[k].loop);
         if (!vx_broadcast(loop, &splits[k].loop, &m)) {
             vx_diag_fix(x, "E0301", call, NULL, "the dimensions `%s` maps over do not broadcast: `%s` and `%s`", fname, vx_tstr(loop),
                 vx_tstr(&splits[k].loop));
