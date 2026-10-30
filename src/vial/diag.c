@@ -18,6 +18,19 @@ void vial_diags_init(vial_diags_t* d, str_t src, md_allocator_i* alloc) {
     }
 }
 
+str_t vial_excerpt(char* buf, size_t cap, str_t text) {
+    // At most VIAL_EXCERPT_MAX bytes of the first line, cut on a character; "…" marks a cut
+    if (cap < VIAL_EXCERPT_MAX + 4) return (str_t){buf, 0};
+    size_t n = 0;
+    while (n < text.len && n < VIAL_EXCERPT_MAX && text.ptr[n] != '\n' && text.ptr[n] != '\r') ++n;
+    const bool cut = n < text.len;
+    while (n > 0 && n < text.len && ((unsigned char)text.ptr[n] & 0xC0) == 0x80) --n;
+    memcpy(buf, text.ptr, n);
+    if (cut) { memcpy(buf + n, "\xE2\x80\xA6", 3); n += 3; }
+    buf[n] = '\0';
+    return (str_t){buf, n};
+}
+
 uint32_t vial_line_of(const vial_diags_t* d, uint32_t offset) {
     // The last line start at or before offset
     size_t lo = 0, hi = md_array_size(d->line_beg);
@@ -35,7 +48,11 @@ void vial_diag(vial_diags_t* d, const char code[6], md_vial_span_t span, const c
     int len = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     if (len < 0) len = 0;
-    if ((size_t)len >= sizeof(buf)) len = (int)sizeof(buf) - 1;
+    if ((size_t)len >= sizeof(buf)) {
+        // Cut on a character, not inside one
+        len = (int)sizeof(buf) - 1;
+        while (len > 0 && ((unsigned char)buf[len] & 0xC0) == 0x80) --len;
+    }
 
     md_vial_diagnostic_t diag = {0};
     memcpy(diag.code, code, 5);

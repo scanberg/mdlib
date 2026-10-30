@@ -366,7 +366,9 @@ static void lex_number(lexer_t* l) {
         bad = true;
     }
     if (bad) {
-        vial_diag(l->diags, "E0101", span(beg, l->pos), "`%.*s` is not a number", (int)(l->pos - beg), l->src.ptr + beg);
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){l->src.ptr + beg, l->pos - beg});
+        vial_diag(l->diags, "E0101", span(beg, l->pos), "`%.*s` is not a number", (int)e.len, e.ptr);
         emit(l, MD_VIAL_TOKEN_ERROR, beg, l->pos, 0, 0);
         return;
     }

@@ -86,7 +86,7 @@ static inline const char* vial_fuzz__check_diags(const md_vial_diagnostic_t* d, 
         if (i > 0 && d[i - 1].span.beg > d[i].span.beg) return "diagnostics are out of source order";
         if (d[i].code[5] != '\0' || !(vial_fuzz__front_end_code(d[i].code) || (checked && vial_fuzz__checker_code(d[i].code)))) return "a diagnostic with a code the compiler does not give";
         if (str_empty(d[i].message)) return "a diagnostic without a message";
-        if (d[i].message.ptr[d[i].message.len - 1] == '\n') return "a message ends in a newline";
+        if (memchr(d[i].message.ptr, '\n', d[i].message.len) || memchr(d[i].message.ptr, '\r', d[i].message.len)) return "a message is more than one line";
     }
     if (n > len + 1) return "more diagnostics than bytes";
     return NULL;
