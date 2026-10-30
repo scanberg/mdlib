@@ -249,8 +249,8 @@ static bool vial_spec__is_checked_code(const char* code) {
                                   "E0201", "W0201", "E0305", "E0312", "E0802",
                                   "E0202", "E0203", "E0205", "E0206", "E0207", "W0601", "W0602", "E0318",
                                   "E0307", "E0309", "E0310", "E0311", "W0603",
-                                  "E0302", "W0608", "E0314", "E0313", "E0204", "W0501", "E0304"};
-    // E0301 and W0405 join with comprehensions and fold, which two of their examples need
+                                  "E0302", "W0608", "E0314", "E0313", "E0204", "W0501", "E0304",
+                                  "E0301", "W0405", "W0607", "E0315"};
     for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }

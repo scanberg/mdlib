@@ -426,11 +426,12 @@ UTEST_F(vial_check, building_and_joining) {
 UTEST_F(vial_check, defs) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);
-    EXPECT_TYPE("def twice(v):\n    return 2 * v\nd = twice(3.0 nm)\n", 3, "float nm, static");
-    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(1.0 nm)\n", 3, "float nm, static");
-    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(b=1 ns, a=2 ns)\n", 3, "int ns, static");
-    EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 5, "float, static");
-    EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 6, "bool, static");
+    EXPECT_TYPE("def twice(v):\n    return 2 * v\nd = twice(3.0 nm)\n", 3, "float nm, static = 6");
+    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(1.0 nm)\n", 3, "float nm, static = 3");
+    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(b=1 ns, a=2 ns)\ne = f(5 ns, 1 ns)\n", 3, "int ns, static = 3");
+    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(b=1 ns, a=2 ns)\ne = f(5 ns, 1 ns)\n", 4, "int ns, static = 6");
+    EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 5, "float, static = 1");
+    EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 6, "bool, static = True");
     EXPECT_DIAGS("def f(op):\n    assert op in ('a', 'b'), \"op= takes 'a' or 'b'\"\n    return 1\nx = f('c')\n",
         "E0314 2: op= takes 'a' or 'b'\n");
     EXPECT_DIAGS("def f(a):\n    return a\nx = f()\ny = f(1, 2)\nz = f(b=1)\n",
@@ -460,4 +461,64 @@ UTEST_F(vial_check, prelude_defs) {
     EXPECT_DIAGS_ON(T, "d = distance(particles(name='MG'), particles(name='MG'), between='nearest')\n",
         "E0314 1: between= takes 'closest' or 'farthest'\n");
     EXPECT_DIAGS_ON(T, "g = gyration(protein, weights='charge')\n", "E0314 1: weights= takes 'mass' or None\n");
+}
+
+UTEST_F(vial_check, comprehensions) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "cas = [particles(r, name='CA') for r in residues(chain='A', kind='amino_acid')]\n", 1, "set[433], static");
+    EXPECT_TYPE_ON(T, "cas = [particles(r, name='CA') for r in residues(chain='A', kind='amino_acid')]\np = cas.xyz\n", 2,
+        u8"float[433][3] Å, frame");
+    EXPECT_TYPE_ON(T, "cas = [particles(r, name='CA') for r in residues(chain='A', kind='amino_acid')]\nl = labels(cas)[2]\n", 2,
+        "str, static = 'GLU3/A'");
+    EXPECT_TYPE_ON(T, "m = [count(r) for r in residues(chain='A')]\n", 1, "int[442], static");
+    EXPECT_TYPE_ON(T, "m = [count(r) for r in residues(chain='A') if count(r) > 5]\n", 1, "int[n], static");
+    EXPECT_TYPE_ON(T, "s = [i * 2 for i in range(10)]\n", 1, "int[10], static");
+    EXPECT_TYPE_ON(T, "s = [i for i in range(2, 11, 3)]\n", 1, "int[3], static");
+    EXPECT_TYPE_ON(T, "p = [distance(a.com, b.com) for a, b in zip(residues[0:7], residues[8:15])]\n", 1, u8"float[7] Å, frame");
+    EXPECT_DIAGS_ON(T, "p = [a for a, b in zip(residues[0:7], residues[8:14])]\n", "E0301 1: `zip` pairs elements in order, and these have 7 and 6\n");
+    EXPECT_TYPE_ON(T, "o = [p for p in particles(resname='GTP')]\n", 1, "set[32], static");
+    EXPECT_DIAGS_ON(T, "o = [p for p in 5]\n", "E0313 1: a comprehension iterates over an array, a set, range() or zip(); this is int\n");
+}
+
+UTEST_F(vial_check, folds_and_loops) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    const char* run =
+        "e = distance(particles(name='MG'), particles(resname='GTP').com)\n"
+        "def step(s, v):\n"
+        "    return where(v > 30.0, s + 1, 0)\n"
+        "run = fold(step, e, init=0)\n"
+        "top = max(run, axis='frame')\n";
+    EXPECT_TYPE_ON(T, run, 4, "int, trajectory, per frame");
+    EXPECT_TYPE_ON(T, run, 5, "int, trajectory");
+    EXPECT_DIAGS_ON(T, "e = particles(resname='GTP').com\ndef step(s, v):\n    return v\nr = fold(step, e, init=0.0)\n",
+        u8"E0315 4: the step returns float[3] Å; init is float, and a fold's state keeps its type\n");
+    EXPECT_TYPE_ON(T, "e = distance(particles(name='MG'), particles(resname='GTP').com)\np = previous(e)\n", 2,
+        u8"float Å | missing, trajectory, per frame");
+    EXPECT_DIAGS_ON(T, "e = distance(particles(name='MG'), particles(resname='GTP').com)\np = previous(e)\nq = p * 2\n",
+        "W0405 2: this may be missing in some frames; the series shows gaps there\n");
+    EXPECT_TYPE_ON(T, "e = distance(particles(name='MG'), particles(resname='GTP').com)\nc = cumulative(e, op='max')\n", 2,
+        u8"float Å, trajectory, per frame");
+    EXPECT_TYPE_ON(T, "f = frame()\n", 1, "int, frame");
+    EXPECT_TYPE_ON(T, "t = time()\n", 1, "float64 ps, frame");
+    EXPECT_TYPE("def total(n):\n    s = 0\n    for i in range(n):\n        s = s + i\n    return s\nx = total(4)\n", 6, "int, static");
+}
+
+UTEST_F(vial_check, w0607) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    const char* src =
+        "res_a = residues(chain='A', kind='amino_acid')\n"
+        "cut = full(shape(res_a), 4.0)\n"
+        "def near(r: set, cutoff=4.0):\n"
+        "    return count(r) > cutoff\n"
+        "c = near(res_a, cut)\n"
+        "def near2(r: set, cutoff: float = 4.0):\n"
+        "    return count(r) > cutoff\n"
+        "d = near2(res_a, cut)\n";
+    EXPECT_TYPE_ON(T, src, 5, "bool[433][433], static");
+    EXPECT_TYPE_ON(T, src, 8, "bool[433], static");
+    EXPECT_DIAGS_ON(T, src, "W0607 5: `near` maps over int[433], and cutoff runs over the same units but is passed whole, so the result has both;"
+        " annotate it, cutoff: float, to pair them\n");
 }

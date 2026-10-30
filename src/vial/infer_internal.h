@@ -25,6 +25,7 @@ typedef struct vx_frame_t {
     vial_value_t*       sym_values;
     vial_node_id*       sym_prov;   // prelude: the script node a parameter's argument was written as, or 0
     vial_type_t         result;     // the returned values joined
+    vial_value_t        value;      // the value returned, when there is one return and it is known
     bool                has_result;
     uint32_t            depth;
 } vx_frame_t;
@@ -62,6 +63,9 @@ uint32_t vx_desc(infer_t* x, uint8_t level, const vial_sets_t* sets);
 
 bool vx_broadcast(const vial_type_t* a, const vial_type_t* b, vial_type_t* out);   // NumPy's, shapes only
 void vx_join_stage(vial_type_t* out, const vial_type_t* a, const vial_type_t* b);  // stage, pass, missing
+
+// The read over the trajectory in which a value is complete: 0 static, a frame value pass 1 at the earliest
+static inline uint8_t vx_pass(const vial_type_t* t) { return t->stage != VIAL_STAGE_STATIC && t->pass == 0 ? 1 : t->pass; }
 bool vx_extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out);
 
 void vx_unit_join(infer_t* x, vial_node_id at, const char* verb, const vial_type_t* a, const vial_type_t* b, vial_type_t* out);
@@ -100,6 +104,9 @@ bool vx_attr_geom(infer_t* x, vial_node_id attr, vial_node_id on, const vial_typ
 // body checked for those types, once per distinct set of them
 vial_type_t vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def);
 
+// A call to a def given as a value, with the types of its first num arguments: fold's step
+vial_type_t vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const vial_type_t* types, const vial_value_t* values, uint32_t num);
+
 // shown() and the drawing primitives, until step 9 types drawings fully; false for other names
 bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 
@@ -110,6 +117,11 @@ vial_node_id vx_frame_prov(const infer_t* x, uint32_t sym);
 
 // The value a return gives, joined into the frame's result
 void vx_frame_return(infer_t* x, vial_node_id at, const vial_type_t* t);
+
+// infer_comp.c: comprehensions, loops, fold, frame() and time()
+vial_type_t vx_listcomp(infer_t* x, vial_node_id id);
+bool        vx_check_for(infer_t* x, vial_node_id s);
+bool        vx_call_frames(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 
 // infer_math.c: reductions, math and arrays; false for other names
 bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);

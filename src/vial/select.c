@@ -556,7 +556,39 @@ static uint64_t* bitmap(const vial_sets_t* s, uint32_t num_atoms, md_allocator_i
 }
 static inline bool bit(const uint64_t* b, uint32_t i) { return (b[i / 64] >> (i % 64)) & 1; }
 
+// particles(s, ...) of one set: only s's particles are looked at, so selecting within a residue costs its size, not
+// the system's. Residues are found by walking s, which is ascending.
+static vial_sets_t* select_particles_of(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc) {
+    const md_system_t* sys = s->sys;
+    const uint32_t* items = vial_sets_items(q->within, 0);
+    const uint32_t n = vial_sets_size(q->within, 0);
+    const uint8_t* types = type_mask(s, q, alloc);
+    const uint64_t* scope = q->scope ? bitmap(q->scope, s->num_atoms, alloc) : NULL;
+    vial_sets_t* out = sets_new(1, n, alloc);
+    out->single = true;
+    uint32_t w = 0, r = NONE32, r_end = 0;
+    bool r_pass = false;
+    for (uint32_t k = 0; k < n; ++k) {
+        const uint32_t a = items[k];
+        if (a >= s->num_atoms || (scope && !bit(scope, a))) continue;
+        if (r == NONE32 || a >= r_end) {
+            r = atom_res(s, a);
+            r_end = r != NONE32 ? md_system_residue_atom_range(sys, r).end : a + 1;
+            r_pass = residue_passes_for_particles(s, q, s->num_res ? r : NONE32);
+        }
+        if (!r_pass) continue;
+        if (types) {
+            const md_particle_type_idx_t t = sys->atom.type_idx[a];
+            if (t < 0 || (uint32_t)t >= s->num_types || !types[t]) continue;
+        }
+        out->idx[w++] = a;
+    }
+    out->offset[1] = w;
+    return out;
+}
+
 vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc) {
+    if (q->level == VIAL_LEVEL_PARTICLE && q->within && q->within->single) return select_particles_of(s, q, alloc);
     const uint64_t* scope = q->scope ? bitmap(q->scope, s->num_atoms, alloc) : NULL;
     const uint64_t* within = q->within ? bitmap(q->within, s->num_atoms, alloc) : NULL;
     #define IN_SCOPE(a) (!scope || bit(scope, (a)))

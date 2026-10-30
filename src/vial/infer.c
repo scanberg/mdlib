@@ -136,11 +136,13 @@ void vx_join_stage(T* out, const T* a, const T* b) {
     const bool pb = b->stage == VIAL_STAGE_FRAME || (b->flags & VIAL_TYPE_PER_FRAME);
     const bool ta = a->stage == VIAL_STAGE_TRAJECTORY && !(a->flags & VIAL_TYPE_PER_FRAME);
     const bool tb = b->stage == VIAL_STAGE_TRAJECTORY && !(b->flags & VIAL_TYPE_PER_FRAME);
+    const uint8_t qa = vx_pass(a), qb = vx_pass(b);
     out->stage = a->stage > b->stage ? a->stage : b->stage;
-    out->pass  = a->pass > b->pass ? a->pass : b->pass;
+    out->pass  = qa > qb ? qa : qb;
     out->flags = (uint16_t)((out->flags & ~VIAL_TYPE_PER_FRAME) | ((a->flags | b->flags) & (VIAL_TYPE_MISSING | VIAL_TYPE_PER_FRAME)));
     if ((pa && tb) || (pb && ta)) {
-        const uint8_t after = (uint8_t)((ta ? a->pass : b->pass) + 1);
+        // A per-frame value that reads a finished whole-trajectory result of pass k is computed in pass k + 1
+        const uint8_t after = (uint8_t)((ta ? qa : qb) + 1);
         out->stage = VIAL_STAGE_TRAJECTORY;
         out->flags |= VIAL_TYPE_PER_FRAME;
         if (after > out->pass) out->pass = after;
@@ -1127,6 +1129,7 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
     case VIAL_N_TUPLE:    return infer_tuple(x, id);
     case VIAL_N_SUBSCRIPT: return infer_subscript(x, id);
     case VIAL_N_ATTR:     return infer_attr(x, id);
+    case VIAL_N_LISTCOMP: return vx_listcomp(x, id);
     case VIAL_N_CALL: {
         // Built-ins typed so far; everything else still has its arguments checked
         const vial_node_id callee = child(x, id, 0);
@@ -1137,6 +1140,7 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_geom(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_math(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_draw(x, id, sym->builtin, &t)) return t;
+            if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_frames(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_PRELUDE && x->c->prelude) {
                 vial_node_id d = sym->node;
                 if (d && x->c->prelude->nodes[d].kind == VIAL_N_NAME) d = x->c->prelude_names.parent[d];
@@ -1251,7 +1255,8 @@ bool vx_check_block(infer_t* x, vial_node_id b) { return check_block(x, b); }
 void vx_frame_return(infer_t* x, vial_node_id at, const T* t) {
     vx_frame_t* f = x->frame;
     if (vial_type_is_error(t)) { f->result = err(); f->has_result = true; return; }
-    if (!f->has_result) { f->result = *t; f->has_result = true; return; }
+    if (!f->has_result) { f->result = *t; f->has_result = true; f->value = value_of(x, at); return; }
+    f->value = val_none();
     if (vial_type_is_error(&f->result)) return;
     T m;
     if (f->result.dtype == VIAL_DT_TUPLE || t->dtype == VIAL_DT_TUPLE) {
@@ -1265,6 +1270,32 @@ void vx_frame_return(infer_t* x, vial_node_id at, const T* t) {
     f->result = m;
 }
 
+// W0405, once per top-level statement whose value may be missing, unless it reads a name that already may be, or
+// the statement was already told
+static void warn_missing(infer_t* x, vial_node_id s, vial_node_id value, const T* t) {
+    if (x->frame || !(t->flags & VIAL_TYPE_MISSING) || !value) return;
+    const md_vial_span_t span = x->t->nodes[s].span;
+    for (size_t i = md_array_size(x->diags->items); i-- > 0;) {
+        const md_vial_diagnostic_t* d = &x->diags->items[i];
+        if (d->span.beg >= span.beg && d->span.end <= span.end && strncmp(d->code, "W0405", 5) == 0) return;
+        if (d->span.end < span.beg) break;
+    }
+    vial_node_id* stack = NULL;
+    md_array_push(stack, value, x->alloc);
+    bool inherited = false;
+    while (md_array_size(stack) && !inherited) {
+        const vial_node_id n = *md_array_last(stack);
+        md_array_pop(stack);
+        if (kind_of(x, n) == VIAL_N_NAME) {
+            const uint32_t sym = x->n->ref[n];
+            const vial_symbol_t* sy = vial_names_symbol(x->n, n);
+            if (sy && sy->kind == VIAL_SYM_GLOBAL && (x->top->sym_types[sym].flags & VIAL_TYPE_MISSING)) inherited = true;
+        }
+        for (uint32_t i = 0; i < num_children(x, n); ++i) if (child(x, n, i)) md_array_push(stack, child(x, n, i), x->alloc);
+    }
+    if (!inherited) diag(x, "W0405", value, "this may be missing in some frames; the series shows gaps there");
+}
+
 static bool check_stmt(infer_t* x, vial_node_id s) {
     switch (kind_of(x, s)) {
     case VIAL_N_ASSIGN: {
@@ -1273,13 +1304,19 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
         const vial_node_id value = child(x, s, n - 1);
         const T t = infer(x, value);
         for (uint32_t i = 0; i + 1 < n; ++i) assign_target(x, child(x, s, i), &t, value);
+        warn_missing(x, s, value, &t);
         return false;
     }
     case VIAL_N_EXPR_STMT:
-        if (child(x, s, 0)) infer(x, child(x, s, 0));
+        if (child(x, s, 0)) {
+            const T t = infer(x, child(x, s, 0));
+            warn_missing(x, s, child(x, s, 0), &t);
+        }
         return false;
     case VIAL_N_IF:
         return check_if(x, s);
+    case VIAL_N_FOR:
+        return vx_check_for(x, s);
     case VIAL_N_RETURN: {
         if (!x->frame) return true;
         const vial_node_id v = child(x, s, 0);
