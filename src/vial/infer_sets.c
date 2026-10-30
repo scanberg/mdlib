@@ -12,6 +12,7 @@
 #include <core/md_common.h>
 #include <core/md_array.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -90,7 +91,7 @@ static const char* key_word(uint8_t key) {
 
 static bool int_of(const vial_value_t* v, int64_t* out) {
     if (v->kind == VIAL_VAL_INT) { *out = v->i; return true; }
-    if (v->kind == VIAL_VAL_FLOAT && v->f == (double)(int64_t)v->f) { *out = (int64_t)v->f; return true; }
+    if (v->kind == VIAL_VAL_FLOAT && v->f >= -9.0e15 && v->f <= 9.0e15 && v->f == floor(v->f)) { *out = (int64_t)v->f; return true; }
     return false;
 }
 

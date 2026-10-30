@@ -508,7 +508,9 @@ static T call_math(infer_t* x, vial_node_id call, str_t name, const char* fname)
         else if (str_eq(name, STR_LIT("float"))) { if (!is_float(t.dtype)) t.dtype = VIAL_DT_FLOAT; }
         else t.dtype = VIAL_DT_INT;
         const vial_value_t v = value(x, a);
-        if (str_eq(name, STR_LIT("int")) && v.kind == VIAL_VAL_FLOAT) vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_INT, .i = (int64_t)v.f});
+        if (str_eq(name, STR_LIT("int")) && v.kind == VIAL_VAL_FLOAT) {
+            if (v.f > -2147483649.0 && v.f < 2147483648.0) vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_INT, .i = (int64_t)v.f});
+        }
         else if (str_eq(name, STR_LIT("float")) && v.kind == VIAL_VAL_INT) vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = (double)v.i});
         else vx_set_value(x, call, v);
         return t;
