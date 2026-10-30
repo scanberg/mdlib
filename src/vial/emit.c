@@ -127,10 +127,22 @@ static bool const_of(infer_t* x, const vial_value_t* v, const T* t, vial_val_t* 
     case VIAL_VAL_NULL:
         *out = vial_val_none();
         return true;
-    case VIAL_VAL_SETS:
+    case VIAL_VAL_SETS: {
         if (t->dtype != VIAL_DT_SET || !v->sets) return false;
         *out = vial_val_sets(v->sets);
+        // An array of sets of several dimensions, set[k][4], keeps them: the sets are listed in row-major order
+        size_t n = 1;
+        bool known = t->ndim > 1;
+        for (uint8_t d = 0; d < t->ndim && known; ++d) {
+            if (t->dims[d].kind != VIAL_EXT_STATIC) known = false;
+            else n *= t->dims[d].n;
+        }
+        if (known && !v->sets->single && n == v->sets->count) {
+            out->ndim = t->ndim;
+            for (uint8_t d = 0; d < t->ndim; ++d) out->dims[d] = t->dims[d].n;
+        }
         return true;
+    }
     case VIAL_VAL_STRS: {
         const uint32_t n = v->n;
         *out = vial_val_make(VIAL_DT_STR, 1, &n, a);
@@ -472,7 +484,26 @@ void vx_emit(infer_t* x, vial_node_id id, const T* t) {
     // What the check knows is a constant, even when a handler lowered it already
     const vial_value_t v = vx_value_of(x, id);
     vial_val_t c;
-    if (v.kind != VIAL_VAL_NONE && k != VIAL_N_NAME && const_of(x, &v, t, &c)) {
+    // A static tuple of arrays of sets whose dimensions describe exactly their sets, as common() gives: a constant
+    if (t->dtype == VIAL_DT_TUPLE && t->stage == VIAL_STAGE_STATIC && k == VIAL_N_CALL && t->num_elems && t->num_elems <= 8) {
+        vial_val_t* el = md_alloc(x->ir->alloc, t->num_elems * sizeof(vial_val_t));
+        bool all = true;
+        for (uint32_t i = 0; i < t->num_elems && all; ++i) {
+            const T* e = &t->elems[i];
+            const uint32_t dsc = e->ndim == 1 ? e->dims[0].desc : 0;
+            const vial_sets_t* ss = dsc && dsc < md_array_size(*x->descs) ? (*x->descs)[dsc].sets : NULL;
+            all = e->dtype == VIAL_DT_SET && ss && !ss->single && e->dims[0].kind == VIAL_EXT_STATIC && ss->count == e->dims[0].n;
+            if (all) el[i] = vial_val_sets(ss);
+        }
+        if (all) {
+            const vial_val_t tv = {.dtype = VIAL_DT_TUPLE, .elems = el, .num_elems = t->num_elems};
+            vx_set_ssa(x, id, vial_ir_const(x->ir, &tv, t, node_text(x, id), vx_span(x, id)));
+            return;
+        }
+    }
+    const vial_symbol_t* nsym = k == VIAL_N_NAME ? vial_names_symbol(x->n, id) : NULL;
+    const bool user_name = k == VIAL_N_NAME && !(nsym && nsym->kind == VIAL_SYM_BUILTIN);
+    if (v.kind != VIAL_VAL_NONE && !user_name && const_of(x, &v, t, &c)) {
         const str_t text = k == VIAL_N_NAME || k == VIAL_N_CALL || k == VIAL_N_BOOLOP || k == VIAL_N_NOT || k == VIAL_N_SUBSCRIPT ? node_text(x, id) : (str_t){0};
         vx_set_ssa(x, id, vial_ir_const(x->ir, &c, t, text, vx_span(x, id)));
         return;

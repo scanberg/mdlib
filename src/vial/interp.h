@@ -40,18 +40,24 @@ typedef struct vial_interp_t {
     vial_val_t*                 vals;       // md_array by ssa
     uint8_t*                    state;      // md_array by ssa: 0 not computed, 1 computed for this frame, 2 static
     const vial_frame_t*         frame;      // the frame being evaluated, or NULL
-    vial_rt_error_t             error;
-    bool                        failed;
+    vial_rt_error_t             error;      // the first error since the interpreter began
+    bool                        failed;     // an op failed: what is computed from it is not computed
+    vial_rt_error_t*            errors;     // md_array: every op that failed, once each, in the order they failed
+    uint8_t*                    live;       // md_array by op: what the outputs need
+    // at(x, frame=i) reads another frame, in a step before the frames are evaluated: the caller loads it
+    bool                      (*load_frame)(void* user, int64_t index, vial_frame_t* out);
+    void*                       load_user;
 } vial_interp_t;
 
 bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, const struct md_system_t* msys, md_allocator_i* alloc);
 void vial_interp_free(vial_interp_t* in);
 
-// Computes the static values of the top level. False, with in->error, when one fails.
+// Computes the static values of the top level. An op that fails is recorded in in->errors, and what is computed from
+// it is not computed; the rest is. False when something failed.
 bool vial_interp_static(vial_interp_t* in);
 
-// Computes the top level for one frame; values of earlier frames are dropped. Static values are computed first when
-// they have not been. Trajectory values are not computed here.
+// Computes the top level for one frame, likewise; values of earlier frames are dropped. Static values are computed
+// first when they have not been. Trajectory values are not computed here.
 bool vial_interp_frame(vial_interp_t* in, const vial_frame_t* frame);
 
 // The value of v, as last computed; NULL when it was not
@@ -65,6 +71,7 @@ typedef struct vial_kctx_t {
     const vial_ir_op_t* op;
     const vial_type_t*  type;       // the result's type
     md_allocator_i*     alloc;      // where the result's data goes
+    int64_t             map_index;  // in a built-in mapped by its kinds: the call's position, for distinct=; else -1
 } vial_kctx_t;
 
 bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...);
@@ -80,6 +87,8 @@ bool vial_k_convert(vial_kctx_t* k, const vial_val_t* a, uint8_t dtype, vial_val
 bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* items, uint32_t num, vial_val_t* out);
 bool vial_k_stack(vial_kctx_t* k, const vial_val_t* items, uint32_t n, vial_val_t* out);
 bool vial_k_kind(vial_kctx_t* k, uint16_t kind, const vial_val_t* a, vial_val_t* out);
+
+bool vial_k_matmul(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
 
 // A built-in, its arguments by parameter (NULL when not given) and the parameters' names
 bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out);

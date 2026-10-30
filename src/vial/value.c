@@ -195,3 +195,44 @@ bool vial_val_equal(const vial_val_t* a, const vial_val_t* b) {
     const size_t bytes = n * vial_dtype_size(a->dtype);
     return !bytes || memcmp(a->data, b->data, bytes) == 0;
 }
+
+static vial_sets_t* sets_copy(const vial_sets_t* s, md_allocator_i* alloc) {
+    if (!s) return NULL;
+    vial_sets_t* c = md_alloc(alloc, sizeof(vial_sets_t));
+    *c = *s;
+    const uint32_t total = s->offset[s->count];
+    c->offset = md_alloc(alloc, (s->count + 1) * sizeof(uint32_t));
+    memcpy(c->offset, s->offset, (s->count + 1) * sizeof(uint32_t));
+    c->idx = md_alloc(alloc, (total ? total : 1) * sizeof(uint32_t));
+    if (total) memcpy(c->idx, s->idx, total * sizeof(uint32_t));
+    if (s->unit) {
+        c->unit = md_alloc(alloc, (s->count ? s->count : 1) * sizeof(uint32_t));
+        memcpy(c->unit, s->unit, s->count * sizeof(uint32_t));
+    }
+    c->root = NULL;
+    return c;
+}
+
+vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc) {
+    vial_val_t c = *v;
+    const size_t n = vial_val_count(v);
+    const size_t bytes = n * vial_dtype_size(v->dtype);
+    if (v->data && bytes) {
+        c.data = md_alloc(alloc, bytes);
+        memcpy(c.data, v->data, bytes);
+        if (v->dtype == VIAL_DT_STR) for (size_t i = 0; i < n; ++i) ((str_t*)c.data)[i] = str_copy(((const str_t*)v->data)[i], alloc);
+    }
+    if (v->missing) {
+        const size_t words = (n + 63) / 64;
+        c.missing = md_alloc(alloc, words * sizeof(uint64_t));
+        memcpy(c.missing, v->missing, words * sizeof(uint64_t));
+    }
+    c.sets = sets_copy(v->sets, alloc);
+    c.origin = sets_copy(v->origin, alloc);
+    if (v->dtype == VIAL_DT_TUPLE && v->num_elems) {
+        vial_val_t* el = md_alloc(alloc, v->num_elems * sizeof(vial_val_t));
+        for (uint32_t i = 0; i < v->num_elems; ++i) el[i] = vial_val_copy(&v->elems[i], alloc);
+        c.elems = el;
+    }
+    return c;
+}

@@ -162,9 +162,16 @@ static double floordiv_d(double a, double b, double* mod_out) {
 
 bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_val_t* b, vial_val_t* out) {
     const uint8_t dt = k->type->dtype;
-    if (dt == VIAL_DT_DRAWING) { *out = (vial_val_t){.dtype = VIAL_DT_DRAWING}; return true; }
+    if (dt == VIAL_DT_DRAWING) {
+        // Drawings combine: one per element of the broadcast shape
+        bc_t bc;
+        if (!bc_init(k, &bc, a, b, NULL)) return false;
+        *out = (vial_val_t){.dtype = VIAL_DT_DRAWING, .ndim = bc.nd};
+        memcpy(out->dims, bc.dims, sizeof(bc.dims));
+        return true;
+    }
     if (!is_num(a->dtype) || !is_num(b->dtype)) return vial_rt_fail(k, "R0103", "arithmetic on what is not a number");
-    if (op == VIAL_OP_AT) return vial_rt_fail(k, "R0103", "@ is not evaluated yet");
+    if (op == VIAL_OP_AT) return vial_k_matmul(k, a, b, out);
     // Computed in the result's dtype, as NumPy does once both sides are promoted
     const uint8_t cd = dt == VIAL_DT_BOOL ? VIAL_DT_INT : dt;
     const vial_val_t x = vial_val_as(a, cd, k->alloc), y = vial_val_as(b, cd, k->alloc);

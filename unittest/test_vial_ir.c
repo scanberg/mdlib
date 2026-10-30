@@ -244,3 +244,10 @@ UTEST(vial_ir, evaluates_frames) {
     free(n5);
     vial_ir__end(&r);
 }
+
+UTEST(vial_ir, test_runs_load) {
+    EXPECT_GT(vial_test_run('P'), 1);
+    EXPECT_EQ(0, vial_test_run('T'));
+    ASSERT_TRUE(vial_test_state('T') != NULL);
+    EXPECT_EQ(vial_test_system('T')->atom.count, vial_test_state('T')->num_atoms);
+}

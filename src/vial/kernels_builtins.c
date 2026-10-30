@@ -7,6 +7,8 @@
 
 #include <md_system.h>
 #include <md_util.h>
+#include <core/md_spatial_acc.h>
+#include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
@@ -341,8 +343,15 @@ static bool k_angle(vial_kctx_t* k, const bargs_t* ba, int npts, vial_val_t* out
     return true;
 }
 
-// The closest or farthest pair of points of p and q under the minimum image: (distance, i, j)
+// The closest or farthest pair of points of p and q under the minimum image: (distance, i, j). Distinct leaves out
+// the pairs of a particle with itself, by the points' particles; or, mapped over a dimension that runs over the units
+// q's points do, the pair of the call's own unit, skip.
+static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, bool closest, bool distinct, int64_t skip, vial_val_t* out);
 static bool k_pair(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, bool closest, vial_val_t* out) {
+    return k_pair_x(k, pv, qv, closest, false, -1, out);
+}
+
+static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, bool closest, bool distinct, int64_t skip, vial_val_t* out) {
     vial_val_t p, q;
     if (!points(k, pv, &p) || !points(k, qv, &q)) return false;
     if (p.ndim != 2 || q.ndim != 2) return vial_rt_fail(k, "R0103", "closest_pair over arrays of groups is mapped by its def");
@@ -361,9 +370,12 @@ static bool k_pair(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, b
         // spatial search that gives the same bits.
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
+        const bool by_particle = distinct && p.origin && q.origin;
         for (uint32_t i = 0; i < n; ++i) {
             const float* a = (const float*)p.data + 3 * i;
             for (uint32_t j = 0; j < m; ++j) {
+                if (distinct && (int64_t)j == skip) continue;
+                if (by_particle && vial_sets_items(p.origin, 0)[i] == vial_sets_items(q.origin, 0)[j]) continue;
                 const float* b = (const float*)q.data + 3 * j;
                 vec3_t dx = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
                 md_util_min_image_vec3(&dx, 1, &cell);
@@ -374,6 +386,7 @@ static bool k_pair(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, b
         *(float*)el[0].data = best;
         *(int32_t*)el[1].data = bi;
         *(int32_t*)el[2].data = bj;
+        if (bi < 0) for (int e = 0; e < 3; ++e) vial_val_set_missing(&el[e], 0, k->alloc);
     }
     *out = (vial_val_t){.dtype = VIAL_DT_TUPLE, .elems = el, .num_elems = 3};
     return true;
@@ -871,6 +884,11 @@ static bool k_concatenate(vial_kctx_t* k, const vial_val_t* items, const vial_va
         dims[ax] += e[i].dims[ax];
     }
     const uint8_t dt = k->type->dtype;
+    if (dt == VIAL_DT_SET) {
+        if (nd != 1) return vial_rt_fail(k, "R0103", "concatenate of sets joins one dimension");
+        return vial_k_stack(&(vial_kctx_t){.in = k->in, .op = k->op, .type = &(vial_type_t){.dtype = VIAL_DT_SET}, .alloc = k->alloc, .map_index = -1},
+                            e, n, out) && (out->ndim = 1, out->dims[0] = dims[0], true);
+    }
     vial_val_t o = make(k, dt, nd, dims);
     const size_t es = vial_dtype_size(dt);
     size_t outer = 1, inner = 1;
@@ -960,6 +978,743 @@ static bool k_diff(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* axis, 
     return true;
 }
 
+// ### MORE GEOMETRY ###
+
+typedef struct within_t {
+    uint8_t*    hit;
+    float       r2;
+} within_t;
+
+static void within_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* d2, size_t n, void* user) {
+    (void)i_idx;
+    within_t* w = user;
+    for (size_t i = 0; i < n; ++i) if (d2[i] <= w->r2) w->hit[j_idx[i]] = 1;
+}
+
+// The scope's particles within r of any point of `of`, d <= r under the minimum image
+static bool k_within(vial_kctx_t* k, const vial_val_t* rv, const vial_val_t* of, vial_val_t* out) {
+    const float* xyz = frame_xyz(k);
+    if (!xyz) return false;
+    if (!rv || !of) return vial_rt_fail(k, "R0103", "within takes r and of=");
+    const float r = (float)num_at(rv, 0);
+    vial_val_t p;
+    if (!points(k, of, &p)) return false;
+    const size_t np = vial_val_count(&p) / 3;
+    const size_t na = k->in->frame->num_atoms;
+    uint8_t* hit = md_alloc(k->alloc, na ? na : 1);
+    memset(hit, 0, na);
+    if (np && r >= 0.0f) {
+        const md_unitcell_t cell = frame_cell(k);
+        md_coord_stream_t all = md_coord_stream_from_aos(xyz, 3 * sizeof(float), NULL, na);
+        md_spatial_acc_t acc = {.alloc = k->alloc};
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &all, .cutoff = r > 0.0f ? r : 1.0f, .unitcell = &cell});
+        md_coord_stream_t ext = md_coord_stream_from_aos((const float*)p.data, 3 * sizeof(float), NULL, np);
+        within_t w = {.hit = hit, .r2 = r * r};
+        // The search may leave out a pair at exactly r; it is asked a hair further and the distance decides
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, nextafter((double)r, 1e30) * 1.000001, within_cb, &w, 0);
+        md_spatial_acc_free(&acc);
+    }
+    uint32_t n = 0;
+    for (size_t i = 0; i < na; ++i) n += hit[i];
+    uint32_t* idx = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
+    uint32_t w = 0;
+    for (size_t i = 0; i < na; ++i) if (hit[i]) idx[w++] = (uint32_t)i;
+    vial_sets_t* s = vial_sets_one(idx, n, k->alloc);
+    s->level = VIAL_LEVEL_PARTICLE;
+    *out = vial_val_sets(s);
+    return true;
+}
+
+// p superposed onto ref, by the rows of p whose particles are in `on` (all rows without it), with equal or mass weights
+static bool k_fit(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* rv, const vial_val_t* on, const vial_val_t* weights, vial_val_t* out) {
+    vial_val_t p, r;
+    if (!points(k, pv, &p) || !points(k, rv, &r)) return false;
+    if (p.ndim != 2 || r.ndim != 2) return vial_rt_fail(k, "R0103", "fit takes one group of points each");
+    const uint32_t n = p.dims[0];
+    if (r.dims[0] != n) return vial_rt_fail(k, "R0103", "fit pairs %u points with %u", n, r.dims[0]);
+    const bool by_mass = str_is(weights, "mass");
+    const md_system_t* sys = k->in->msys;
+    // The rows that fit, and their weights
+    uint8_t* use = md_alloc(k->alloc, n ? n : 1);
+    double* w = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint32_t particle = p.origin ? vial_sets_items(p.origin, 0)[i] : 0;
+        use[i] = 1;
+        if (on && on->dtype == VIAL_DT_SET) {
+            if (!p.origin) return vial_rt_fail(k, "R0103", "fit on= needs points whose particles are known");
+            use[i] = 0;
+            const uint32_t m = vial_sets_size(on->sets, 0);
+            const uint32_t* oi = vial_sets_items(on->sets, 0);
+            for (uint32_t q = 0; q < m && !use[i]; ++q) use[i] = oi[q] == particle;
+        }
+        w[i] = 1.0;
+        if (by_mass) {
+            if (!p.origin || !sys) return vial_rt_fail(k, "R0103", "fit by mass needs points whose particles are known");
+            w[i] = md_atom_mass(&sys->atom, particle);
+        }
+    }
+    double cp[3] = {0}, cr[3] = {0}, ws = 0.0;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (!use[i]) continue;
+        for (int c = 0; c < 3; ++c) { cp[c] += w[i] * ((const float*)p.data)[3 * i + c]; cr[c] += w[i] * ((const float*)r.data)[3 * i + c]; }
+        ws += w[i];
+    }
+    if (ws <= 0.0) return vial_rt_fail(k, "R0103", "fit on no particles");
+    for (int c = 0; c < 3; ++c) { cp[c] /= ws; cr[c] /= ws; }
+    vec4_t* rel_p = md_alloc(k->alloc, (n ? n : 1) * sizeof(vec4_t));
+    vec4_t* rel_r = md_alloc(k->alloc, (n ? n : 1) * sizeof(vec4_t));
+    uint32_t m = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (!use[i]) continue;
+        const float* a = (const float*)p.data + 3 * i;
+        const float* b = (const float*)r.data + 3 * i;
+        rel_p[m] = vec4_set((float)(a[0] - cp[0]), (float)(a[1] - cp[1]), (float)(a[2] - cp[2]), (float)w[i]);
+        rel_r[m] = vec4_set((float)(b[0] - cr[0]), (float)(b[1] - cr[1]), (float)(b[2] - cr[2]), (float)w[i]);
+        m++;
+    }
+    const mat3_t R = md_util_optimal_rotation_rel_vec4(rel_r, rel_p, m);
+    vial_val_t o = make(k, VIAL_DT_FLOAT, 2, p.dims);
+    for (uint32_t i = 0; i < n; ++i) {
+        const float* a = (const float*)p.data + 3 * i;
+        const vec3_t v = mat3_mul_vec3(R, (vec3_t){{(float)(a[0] - cp[0]), (float)(a[1] - cp[1]), (float)(a[2] - cp[2])}});
+        float* d = (float*)o.data + 3 * i;
+        d[0] = (float)(v.x + cr[0]); d[1] = (float)(v.y + cr[1]); d[2] = (float)(v.z + cr[2]);
+    }
+    o.origin = p.origin;
+    *out = o;
+    return true;
+}
+
+// ### MORE ARRAYS ###
+
+static bool k_component(vial_kctx_t* k, const vial_val_t* a, int c, vial_val_t* out) {
+    vial_val_t p;
+    if (!points(k, a, &p)) return false;
+    const size_t g = vial_val_count(&p) / 3;
+    vial_val_t o = make(k, VIAL_DT_FLOAT, p.ndim - 1, p.dims);
+    for (size_t i = 0; i < g; ++i) {
+        ((float*)o.data)[i] = ((const float*)p.data)[3 * i + c];
+        if (vial_val_is_missing(&p, 3 * i + c)) vial_val_set_missing(&o, i, k->alloc);
+    }
+    o.origin = p.origin;
+    *out = o;
+    return true;
+}
+
+static bool k_transpose(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out) {
+    if (a->ndim < 2) { *out = *a; return true; }
+    uint32_t dims[VIAL_MAX_DIMS];
+    for (uint8_t d = 0; d < a->ndim; ++d) dims[d] = a->dims[a->ndim - 1 - d];
+    vial_val_t o = make(k, a->dtype, a->ndim, dims);
+    const size_t n = vial_val_count(a), es = vial_dtype_size(a->dtype);
+    size_t st[VIAL_MAX_DIMS];
+    {
+        size_t s = 1;
+        for (int d = a->ndim - 1; d >= 0; --d) { st[d] = s; s *= a->dims[d]; }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        // Output index i over reversed dims: its source offset
+        size_t rem = i, off = 0;
+        for (int d = a->ndim - 1; d >= 0; --d) {
+            const uint32_t x = (uint32_t)(rem % dims[d]);
+            rem /= dims[d];
+            off += x * st[a->ndim - 1 - d];
+        }
+        memcpy((uint8_t*)o.data + i * es, (const uint8_t*)a->data + off * es, es);
+        if (vial_val_is_missing(a, off)) vial_val_set_missing(&o, i, k->alloc);
+    }
+    *out = o;
+    return true;
+}
+
+static bool k_reshape(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out) {
+    // The shape is the result type's; one extent may be known only now, as the rest's remainder
+    const vial_type_t* t = k->type;
+    vial_val_t o = *a;
+    o.ndim = t->ndim;
+    size_t known = 1;
+    int open = -1;
+    for (uint8_t d = 0; d < t->ndim; ++d) {
+        if (t->dims[d].kind == VIAL_EXT_STATIC) { o.dims[d] = t->dims[d].n; known *= t->dims[d].n; }
+        else if (open < 0) open = d;
+        else return vial_rt_fail(k, "R0103", "a shape with two extents not known");
+    }
+    const size_t n = vial_val_count(a);
+    if (open >= 0) { if (!known || n % known) return vial_rt_fail(k, "R0103", "%zu values do not reshape", n); o.dims[open] = (uint32_t)(n / known); }
+    else if (known != n) return vial_rt_fail(k, "R0103", "%zu values do not reshape to %zu", n, known);
+    o.origin = NULL;
+    *out = o;
+    return true;
+}
+
+static bool k_linspace(vial_kctx_t* k, const vial_val_t* lo, const vial_val_t* hi, const vial_val_t* nv, vial_val_t* out) {
+    const double a = num_at(lo, 0), b = num_at(hi, 0);
+    const int64_t n = (int64_t)num_at(nv, 0);
+    if (n < 0) return vial_rt_fail(k, "R0103", "linspace of a negative count");
+    const uint32_t cnt = (uint32_t)n;
+    vial_val_t o = make(k, VIAL_DT_FLOAT, 1, &cnt);
+    // NumPy's: start + i * step, and the last exactly hi
+    const double step = cnt > 1 ? (b - a) / (double)(cnt - 1) : 0.0;
+    for (uint32_t i = 0; i < cnt; ++i) ((float*)o.data)[i] = (float)(a + (double)i * step);
+    if (cnt > 1) ((float*)o.data)[cnt - 1] = (float)b;
+    *out = o;
+    return true;
+}
+
+static bool k_arange(vial_kctx_t* k, const vial_val_t* lo, const vial_val_t* hi, const vial_val_t* sv, vial_val_t* out) {
+    const double a = num_at(lo, 0), b = num_at(hi, 0), s = sv ? num_at(sv, 0) : 1.0;
+    if (s == 0.0) return vial_rt_fail(k, "R0103", "arange's step is 0");
+    double c = ceil((b - a) / s);
+    if (c < 0) c = 0;
+    const uint32_t cnt = (uint32_t)c;
+    vial_val_t o = make(k, k->type->dtype, 1, &cnt);
+    for (uint32_t i = 0; i < cnt; ++i) {
+        const double v = a + (double)i * s;
+        if (o.dtype == VIAL_DT_INT) ((int32_t*)o.data)[i] = (int32_t)v; else ((float*)o.data)[i] = (float)v;
+    }
+    *out = o;
+    return true;
+}
+
+static bool k_eye(vial_kctx_t* k, const vial_val_t* nv, vial_val_t* out) {
+    const uint32_t n = (uint32_t)num_at(nv, 0);
+    vial_val_t o = make(k, VIAL_DT_FLOAT, 2, (uint32_t[]){n, n});
+    for (uint32_t i = 0; i < n; ++i) ((float*)o.data)[i * n + i] = 1.0f;
+    *out = o;
+    return true;
+}
+
+// Each particle of the groups gets its group's value; the result runs over the groups' particles, merged and ascending
+static bool k_spread(vial_kctx_t* k, const vial_val_t* values, const vial_val_t* groups, const vial_val_t* combine, vial_val_t* out) {
+    if (!groups || groups->dtype != VIAL_DT_SET || groups->ndim != 1) return vial_rt_fail(k, "R0103", "spread takes groups");
+    const uint32_t g = groups->dims[0];
+    if (!values->ndim || values->dims[0] != g) return vial_rt_fail(k, "R0103", "spread gives each of %u groups one value", g);
+    const vial_sets_t* merged = vial_sets_merge(groups->sets, k->alloc);
+    const uint32_t n = vial_sets_size(merged, 0);
+    const uint32_t* mi = vial_sets_items(merged, 0);
+    const uint8_t dt = k->type->dtype;
+    const vial_val_t v = vial_val_as(values, dt == VIAL_DT_BOOL ? VIAL_DT_BOOL : VIAL_DT_FLOAT64, k->alloc);
+    size_t inner = 1;
+    for (uint8_t d = 1; d < values->ndim; ++d) inner *= values->dims[d];
+    uint32_t dims[VIAL_MAX_DIMS];
+    memcpy(dims, values->dims, values->ndim * sizeof(uint32_t));
+    dims[0] = n;
+    double* acc = md_alloc(k->alloc, ((size_t)n * inner ? (size_t)n * inner : 1) * sizeof(double));
+    uint32_t* cnt = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
+    memset(acc, 0, (size_t)n * inner * sizeof(double));
+    memset(cnt, 0, n * sizeof(uint32_t));
+    const bool mean = str_is(combine, "mean"), mx = str_is(combine, "max");
+    for (uint32_t q = 0; q < g; ++q) {
+        const uint32_t sz = vial_sets_size(groups->sets, q);
+        const uint32_t* gi = vial_sets_items(groups->sets, q);
+        for (uint32_t a = 0; a < sz; ++a) {
+            // The particle's place among the merged ones
+            uint32_t lo = 0, hi = n;
+            while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if (mi[mid] < gi[a]) lo = mid + 1; else hi = mid; }
+            for (size_t r = 0; r < inner; ++r) {
+                const double x = v.dtype == VIAL_DT_BOOL ? ((const uint8_t*)v.data)[q * inner + r] : ((const double*)v.data)[q * inner + r];
+                double* dst = &acc[(size_t)lo * inner + r];
+                if (!cnt[lo]) *dst = x;
+                else if (mean) *dst += x;
+                else if (mx) *dst = x > *dst ? x : *dst;
+            }
+            cnt[lo] += 1;
+        }
+    }
+    vial_val_t o = make(k, dt, values->ndim, dims);
+    for (uint32_t p = 0; p < n; ++p) {
+        for (size_t r = 0; r < inner; ++r) {
+            double x = acc[(size_t)p * inner + r];
+            if (mean && cnt[p]) x /= cnt[p];
+            switch (dt) {
+            case VIAL_DT_BOOL:    ((uint8_t*)o.data)[p * inner + r] = x != 0.0; break;
+            case VIAL_DT_INT:     ((int32_t*)o.data)[p * inner + r] = (int32_t)x; break;
+            case VIAL_DT_FLOAT:   ((float*)o.data)[p * inner + r] = (float)x; break;
+            case VIAL_DT_FLOAT64: ((double*)o.data)[p * inner + r] = x; break;
+            }
+        }
+    }
+    o.origin = merged;
+    *out = o;
+    return true;
+}
+
+// ### MAPPING ###
+// Built-ins whose kernels take one call's arguments are mapped here over the dimensions their kinds leave, as a def
+// with kinds is: closest_pair, farthest_pair and fit.
+
+static uint8_t core_rank(uint8_t kind, const vial_val_t* v) {
+    switch (kind) {
+    case VX_KIND_POINT:  return v->dtype == VIAL_DT_SET ? 0 : 1;
+    case VX_KIND_POINTS: return v->dtype == VIAL_DT_SET ? 0 : (v->ndim >= 2 ? 2 : 1);
+    case VX_KIND_GROUP:  return v->dtype == VIAL_DT_SET ? 0 : 1;
+    case VX_KIND_SET: case VX_KIND_FLOAT: case VX_KIND_INT: case VX_KIND_BOOL: return 0;
+    default:             return v->ndim;
+    }
+}
+
+typedef bool (*core_fn)(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out);
+
+static bool distinct_of(const vial_val_t* d) { return d && d->dtype == VIAL_DT_BOOL && d->data && *(const uint8_t*)d->data; }
+static bool core_pair_c(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
+    return k_pair_x(k, a[0], a[1], true, distinct_of(a[2]), k->map_index, out);
+}
+static bool core_pair_f(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
+    return k_pair_x(k, a[0], a[1], false, distinct_of(a[2]), k->map_index, out);
+}
+static bool core_fit(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) { return k_fit(k, a[0], a[1], a[2], a[3], out); }
+
+static vial_val_t elem_of(vial_kctx_t* k, const vial_val_t* a, uint8_t lead, size_t i) {
+    vial_val_t e = *a;
+    e.ndim = a->ndim - lead;
+    memmove(e.dims, a->dims + lead, e.ndim * sizeof(uint32_t));
+    size_t inner = 1;
+    for (uint8_t q = 0; q < e.ndim; ++q) inner *= e.dims[q];
+    if (a->dtype == VIAL_DT_SET) {
+        uint32_t pos = (uint32_t)i;
+        vial_sets_t* s = vial_sets_pick(a->sets, &pos, 1, k->alloc);
+        s->single = true;
+        e.sets = s;
+    } else if (a->data) {
+        e.data = (uint8_t*)a->data + i * inner * vial_dtype_size(a->dtype);
+        e.missing = NULL;
+        for (size_t q = 0; q < inner; ++q) if (vial_val_is_missing(a, i * inner + q)) vial_val_set_missing(&e, q, k->alloc);
+    }
+    return e;
+}
+
+static bool mapped(vial_kctx_t* k, const vial_val_t* const* args, const uint8_t* kinds, uint32_t n, core_fn fn, vial_val_t* out) {
+    uint8_t lead[8], lnd = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        lead[i] = args[i] ? (uint8_t)(args[i]->ndim - core_rank(kinds[i], args[i])) : 0;
+        if (args[i] && args[i]->dtype == VIAL_DT_SET && args[i]->ndim == 0) lead[i] = 0;
+        if (lead[i] > lnd) lnd = lead[i];
+    }
+    if (!lnd) return fn(k, args, out);
+    uint32_t ldims[VIAL_MAX_DIMS];
+    for (uint8_t d = 0; d < lnd; ++d) ldims[d] = 1;
+    for (uint32_t i = 0; i < n; ++i) {
+        for (uint8_t d = 0; d < lead[i]; ++d) {
+            uint32_t* o = &ldims[lnd - lead[i] + d];
+            const uint32_t e = args[i]->dims[d];
+            if (*o == 1) *o = e;
+            else if (e != 1 && e != *o) return vial_rt_fail(k, "R0103", "mapped extents %u and %u do not broadcast", *o, e);
+        }
+    }
+    size_t count = 1;
+    for (uint8_t d = 0; d < lnd; ++d) count *= ldims[d];
+    vial_val_t* res = md_alloc(k->alloc, (count ? count : 1) * sizeof(vial_val_t));
+    for (size_t c = 0; c < count; ++c) {
+        uint32_t idx[VIAL_MAX_DIMS];
+        size_t rem = c;
+        for (int d = lnd - 1; d >= 0; --d) { idx[d] = (uint32_t)(rem % ldims[d]); rem /= ldims[d]; }
+        vial_val_t el[8];
+        const vial_val_t* ep[8];
+        for (uint32_t i = 0; i < n; ++i) {
+            if (!args[i] || !lead[i]) { ep[i] = args[i]; continue; }
+            size_t lin = 0;
+            for (uint8_t d = 0; d < lead[i]; ++d) {
+                const uint32_t e = args[i]->dims[d];
+                lin = lin * e + (e == 1 ? 0 : idx[lnd - lead[i] + d]);
+            }
+            el[i] = elem_of(k, args[i], lead[i], lin);
+            ep[i] = &el[i];
+        }
+        k->map_index = lnd == 1 ? (int64_t)c : -1;
+        const bool ok = fn(k, ep, &res[c]);
+        k->map_index = -1;
+        if (!ok) return false;
+    }
+    // Stacked: a tuple's elements each stacked, or the values themselves
+    if (res[0].dtype == VIAL_DT_TUPLE) {
+        const uint32_t ne = res[0].num_elems;
+        vial_val_t* el = md_alloc(k->alloc, ne * sizeof(vial_val_t));
+        for (uint32_t e = 0; e < ne; ++e) {
+            const vial_val_t* f = &res[0].elems[e];
+            uint32_t dims[VIAL_MAX_DIMS];
+            memcpy(dims, ldims, lnd * sizeof(uint32_t));
+            memcpy(dims + lnd, f->dims, f->ndim * sizeof(uint32_t));
+            el[e] = make(k, f->dtype, lnd + f->ndim, dims);
+            const size_t inner = vial_val_count(f), es = vial_dtype_size(f->dtype);
+            for (size_t c = 0; c < count; ++c) {
+                memcpy((uint8_t*)el[e].data + c * inner * es, res[c].elems[e].data, inner * es);
+                for (size_t q = 0; q < inner; ++q) if (vial_val_is_missing(&res[c].elems[e], q)) vial_val_set_missing(&el[e], c * inner + q, k->alloc);
+            }
+        }
+        *out = (vial_val_t){.dtype = VIAL_DT_TUPLE, .elems = el, .num_elems = ne};
+        return true;
+    }
+    const vial_val_t* f = &res[0];
+    uint32_t dims[VIAL_MAX_DIMS];
+    memcpy(dims, ldims, lnd * sizeof(uint32_t));
+    memcpy(dims + lnd, f->dims, f->ndim * sizeof(uint32_t));
+    vial_val_t o = make(k, f->dtype, lnd + f->ndim, dims);
+    const size_t inner = vial_val_count(f), es = vial_dtype_size(f->dtype);
+    for (size_t c = 0; c < count; ++c) {
+        if (vial_val_count(&res[c]) != inner) return vial_rt_fail(k, "R0103", "mapped calls give values of different shapes");
+        memcpy((uint8_t*)o.data + c * inner * es, res[c].data, inner * es);
+        for (size_t q = 0; q < inner; ++q) if (vial_val_is_missing(&res[c], q)) vial_val_set_missing(&o, c * inner + q, k->alloc);
+    }
+    *out = o;
+    return true;
+}
+
+// ### GROUPS: by= ###
+
+// A reduction in groups along a's dimension over particles: one result per group, over the group's particles there
+static bool k_reduce_by(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_val_t* by, vial_val_t* out) {
+    if (!by || by->dtype != VIAL_DT_SET || by->ndim != 1) return vial_rt_fail(k, "R0103", "by= takes an array of sets");
+    // The particles a's first dimension runs over: from the values, or the type's description
+    const vial_sets_t* over = a->origin;
+    const vial_type_t* at = &k->in->ir->values[k->in->ir->args[k->op->arg_beg]].type;
+    if (!over && at->ndim && at->dims[0].desc && k->in->ir->descs) over = k->in->ir->descs[at->dims[0].desc].sets;
+    if (!over || !a->ndim || vial_sets_size(over, 0) != a->dims[0]) return vial_rt_fail(k, "R0103", "by= on values whose particles are not known");
+    const uint32_t g = by->dims[0], n = a->dims[0];
+    const uint32_t* oi = vial_sets_items(over, 0);
+    size_t inner = 1;
+    for (uint8_t d = 1; d < a->ndim; ++d) inner *= a->dims[d];
+    uint32_t odims[VIAL_MAX_DIMS];
+    memcpy(odims, a->dims, a->ndim * sizeof(uint32_t));
+    odims[0] = g;
+    vial_val_t o = make(k, k->type->dtype, a->ndim, odims);
+    vial_kctx_t k2 = *k;
+    k2.op = NULL;
+    for (uint32_t q = 0; q < g; ++q) {
+        // The group's rows of a, in a's order
+        const uint32_t sz = vial_sets_size(by->sets, q);
+        const uint32_t* gi = vial_sets_items(by->sets, q);
+        uint32_t* rows = md_alloc(k->alloc, (sz ? sz : 1) * sizeof(uint32_t));
+        uint32_t nr = 0;
+        for (uint32_t r = 0; r < n; ++r) {
+            uint32_t lo = 0, hi = sz;
+            while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if (gi[mid] < oi[r]) lo = mid + 1; else hi = mid; }
+            if (lo < sz && gi[lo] == oi[r]) rows[nr++] = r;
+        }
+        vial_val_t sub = make(k, a->dtype, a->ndim, (uint32_t[]){nr, a->dims[1], a->dims[2], a->dims[3], a->dims[4], a->dims[5]});
+        const size_t es = vial_dtype_size(a->dtype);
+        for (uint32_t r = 0; r < nr; ++r) {
+            memcpy((uint8_t*)sub.data + r * inner * es, (const uint8_t*)a->data + rows[r] * inner * es, inner * es);
+            for (size_t z = 0; z < inner; ++z) if (vial_val_is_missing(a, rows[r] * inner + z)) vial_val_set_missing(&sub, r * inner + z, k->alloc);
+        }
+        vial_val_t one;
+        vial_type_t t1 = *k->type;
+        t1.ndim = 0;
+        k2.type = &t1;
+        const vial_val_t ax = vial_val_int(0, k->alloc);
+        if (!k_reduce(&k2, red, &sub, &ax, &one)) return false;
+        const size_t os = vial_dtype_size(o.dtype);
+        memcpy((uint8_t*)o.data + q * inner * os, one.data, inner * os);
+        for (size_t z = 0; z < inner; ++z) if (vial_val_is_missing(&one, z)) vial_val_set_missing(&o, q * inner + z, k->alloc);
+    }
+    *out = o;
+    return true;
+}
+
+// ### MATRICES ###
+
+// NumPy's matmul: a vector is a row on the left and a column on the right, and leading dimensions broadcast
+static bool k_matmul(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, vial_val_t* out) {
+    const vial_val_t x = vial_val_as(a, VIAL_DT_FLOAT, k->alloc), y = vial_val_as(b, VIAL_DT_FLOAT, k->alloc);
+    if (!x.ndim || !y.ndim) return vial_rt_fail(k, "R0103", "@ takes arrays");
+    const bool xv = x.ndim == 1, yv = y.ndim == 1;
+    const uint32_t n = xv ? 1 : x.dims[x.ndim - 2], kk = x.dims[x.ndim - 1];
+    const uint32_t kk2 = yv ? y.dims[0] : y.dims[y.ndim - 2], m = yv ? 1 : y.dims[y.ndim - 1];
+    if (kk != kk2) return vial_rt_fail(k, "R0103", "@ of %u columns and %u rows", kk, kk2);
+    const uint8_t bx = xv ? 0 : x.ndim - 2, by = yv ? 0 : y.ndim - 2;
+    const uint8_t nb = bx > by ? bx : by;
+    uint32_t bd[VIAL_MAX_DIMS];
+    for (uint8_t d = 0; d < nb; ++d) bd[d] = 1;
+    for (int w = 0; w < 2; ++w) {
+        const vial_val_t* v = w ? &y : &x;
+        const uint8_t nv = w ? by : bx;
+        for (uint8_t d = 0; d < nv; ++d) {
+            uint32_t* o = &bd[nb - nv + d];
+            if (*o == 1) *o = v->dims[d];
+            else if (v->dims[d] != 1 && v->dims[d] != *o) return vial_rt_fail(k, "R0103", "@'s leading dimensions do not broadcast");
+        }
+    }
+    uint32_t od[VIAL_MAX_DIMS];
+    uint8_t ond = 0;
+    for (uint8_t d = 0; d < nb; ++d) od[ond++] = bd[d];
+    if (!xv) od[ond++] = n;
+    if (!yv) od[ond++] = m;
+    vial_val_t o = make(k, VIAL_DT_FLOAT, ond, od);
+    size_t nbatch = 1;
+    for (uint8_t d = 0; d < nb; ++d) nbatch *= bd[d];
+    for (size_t q = 0; q < nbatch; ++q) {
+        size_t rem = q, ox = 0, oy = 0, sx = 1, sy = 1;
+        for (int d = nb - 1; d >= 0; --d) {
+            const uint32_t i = (uint32_t)(rem % bd[d]);
+            rem /= bd[d];
+            const int dx = d - (nb - bx), dy = d - (nb - by);
+            if (dx >= 0) { if (x.dims[dx] != 1) ox += i * sx; sx *= x.dims[dx]; }
+            if (dy >= 0) { if (y.dims[dy] != 1) oy += i * sy; sy *= y.dims[dy]; }
+        }
+        const float* A = (const float*)x.data + ox * n * kk;
+        const float* B = (const float*)y.data + oy * kk * m;
+        float* C = (float*)o.data + q * n * m;
+        for (uint32_t i = 0; i < n; ++i) {
+            for (uint32_t j = 0; j < m; ++j) {
+                float s = 0.0f;
+                for (uint32_t z = 0; z < kk; ++z) s += A[i * kk + z] * B[z * m + j];
+                C[i * m + j] = s;
+            }
+        }
+    }
+    *out = o;
+    return true;
+}
+
+bool vial_k_matmul(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, vial_val_t* out) { return k_matmul(k, a, b, out); }
+
+// Square matrices over the last two dimensions, each in doubles: n, and how many
+static bool square(vial_kctx_t* k, const vial_val_t* m, uint32_t* n, size_t* count) {
+    if (m->ndim < 2 || m->dims[m->ndim - 1] != m->dims[m->ndim - 2]) return vial_rt_fail(k, "R0103", "a square matrix is [n][n]");
+    *n = m->dims[m->ndim - 1];
+    *count = *n ? vial_val_count(m) / ((size_t)*n * *n) : 0;
+    return true;
+}
+
+// Symmetric eigendecomposition by cyclic Jacobi rotations, in doubles: eigenvalues ascending, eigenvectors in the
+// columns, each with its largest component positive so the sign is the same on every machine
+static void jacobi(double* A, double* V, uint32_t n) {
+    for (uint32_t i = 0; i < n; ++i) for (uint32_t j = 0; j < n; ++j) V[i * n + j] = i == j;
+    for (int sweep = 0; sweep < 100; ++sweep) {
+        double off = 0.0;
+        for (uint32_t i = 0; i < n; ++i) for (uint32_t j = i + 1; j < n; ++j) off += A[i * n + j] * A[i * n + j];
+        if (off < 1e-30) break;
+        for (uint32_t p = 0; p < n; ++p) {
+            for (uint32_t q = p + 1; q < n; ++q) {
+                const double apq = A[p * n + q];
+                if (fabs(apq) < 1e-300) continue;
+                const double theta = (A[q * n + q] - A[p * n + p]) / (2.0 * apq);
+                const double t = (theta >= 0 ? 1.0 : -1.0) / (fabs(theta) + sqrt(theta * theta + 1.0));
+                const double c = 1.0 / sqrt(t * t + 1.0), sn = t * c;
+                for (uint32_t r = 0; r < n; ++r) {
+                    const double arp = A[r * n + p], arq = A[r * n + q];
+                    A[r * n + p] = c * arp - sn * arq;
+                    A[r * n + q] = sn * arp + c * arq;
+                }
+                for (uint32_t r = 0; r < n; ++r) {
+                    const double apr = A[p * n + r], aqr = A[q * n + r];
+                    A[p * n + r] = c * apr - sn * aqr;
+                    A[q * n + r] = sn * apr + c * aqr;
+                }
+                for (uint32_t r = 0; r < n; ++r) {
+                    const double vrp = V[r * n + p], vrq = V[r * n + q];
+                    V[r * n + p] = c * vrp - sn * vrq;
+                    V[r * n + q] = sn * vrp + c * vrq;
+                }
+            }
+        }
+    }
+}
+
+static bool k_eigh(vial_kctx_t* k, const vial_val_t* m, vial_val_t* out) {
+    uint32_t n;
+    size_t cnt;
+    if (!square(k, m, &n, &cnt)) return false;
+    vial_val_t w = make(k, VIAL_DT_FLOAT, m->ndim - 1, m->dims);
+    vial_val_t v = make(k, VIAL_DT_FLOAT, m->ndim, m->dims);
+    double* A = md_alloc(k->alloc, ((size_t)n * n ? (size_t)n * n : 1) * sizeof(double));
+    double* V = md_alloc(k->alloc, ((size_t)n * n ? (size_t)n * n : 1) * sizeof(double));
+    uint32_t* order = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
+    for (size_t q = 0; q < cnt; ++q) {
+        // The lower triangle, as NumPy's eigh reads it
+        for (uint32_t i = 0; i < n; ++i) for (uint32_t j = 0; j < n; ++j) {
+            const uint32_t a = i >= j ? i : j, b = i >= j ? j : i;
+            A[i * n + j] = num_at(m, q * n * n + (size_t)a * n + b);
+        }
+        jacobi(A, V, n);
+        for (uint32_t i = 0; i < n; ++i) order[i] = i;
+        for (uint32_t i = 1; i < n; ++i) {
+            const uint32_t x = order[i];
+            uint32_t j = i;
+            while (j > 0 && A[order[j - 1] * n + order[j - 1]] > A[x * n + x]) { order[j] = order[j - 1]; --j; }
+            order[j] = x;
+        }
+        for (uint32_t c = 0; c < n; ++c) {
+            const uint32_t src = order[c];
+            ((float*)w.data)[q * n + c] = (float)A[src * n + src];
+            uint32_t big = 0;
+            for (uint32_t r = 1; r < n; ++r) if (fabs(V[r * n + src]) > fabs(V[big * n + src])) big = r;
+            const double sign = V[big * n + src] < 0 ? -1.0 : 1.0;
+            for (uint32_t r = 0; r < n; ++r) ((float*)v.data)[q * n * n + (size_t)r * n + c] = (float)(sign * V[r * n + src]);
+        }
+    }
+    vial_val_t* el = md_alloc(k->alloc, 2 * sizeof(vial_val_t));
+    el[0] = w;
+    el[1] = v;
+    *out = (vial_val_t){.dtype = VIAL_DT_TUPLE, .elems = el, .num_elems = 2};
+    return true;
+}
+
+// LU with partial pivoting, in doubles: the determinant, and solutions for rhs columns
+static bool lu_solve(double* A, double* B, uint32_t n, uint32_t nrhs, double* det) {
+    double d = 1.0;
+    for (uint32_t c = 0; c < n; ++c) {
+        uint32_t p = c;
+        for (uint32_t r = c + 1; r < n; ++r) if (fabs(A[r * n + c]) > fabs(A[p * n + c])) p = r;
+        if (A[p * n + c] == 0.0) { *det = 0.0; return false; }
+        if (p != c) {
+            for (uint32_t j = 0; j < n; ++j) { const double t = A[c * n + j]; A[c * n + j] = A[p * n + j]; A[p * n + j] = t; }
+            for (uint32_t j = 0; j < nrhs; ++j) { const double t = B[c * nrhs + j]; B[c * nrhs + j] = B[p * nrhs + j]; B[p * nrhs + j] = t; }
+            d = -d;
+        }
+        d *= A[c * n + c];
+        for (uint32_t r = c + 1; r < n; ++r) {
+            const double f = A[r * n + c] / A[c * n + c];
+            for (uint32_t j = c; j < n; ++j) A[r * n + j] -= f * A[c * n + j];
+            for (uint32_t j = 0; j < nrhs; ++j) B[r * nrhs + j] -= f * B[c * nrhs + j];
+        }
+    }
+    for (int r = (int)n - 1; r >= 0; --r) {
+        for (uint32_t j = 0; j < nrhs; ++j) {
+            double s = B[r * nrhs + j];
+            for (uint32_t c = r + 1; c < n; ++c) s -= A[r * n + c] * B[c * nrhs + j];
+            B[r * nrhs + j] = s / A[r * n + r];
+        }
+    }
+    *det = d;
+    return true;
+}
+
+static bool k_linalg(vial_kctx_t* k, const char* name, const vial_val_t* m, const vial_val_t* b, vial_val_t* out) {
+    uint32_t n;
+    size_t cnt;
+    if (!square(k, m, &n, &cnt)) return false;
+    const bool is_trace = !strcmp(name, "trace"), is_det = !strcmp(name, "det"), is_inv = !strcmp(name, "inv");
+    vial_val_t o;
+    uint32_t nrhs = n;
+    if (is_trace || is_det) o = make(k, VIAL_DT_FLOAT, m->ndim - 2, m->dims);
+    else if (is_inv) o = make(k, VIAL_DT_FLOAT, m->ndim, m->dims);
+    else {
+        // solve(m, b): b a vector [n] or a matrix [n][k]
+        if (!b || !b->ndim || b->dims[0] != n || cnt != 1) return vial_rt_fail(k, "R0103", "solve takes [n][n] and [n] or [n][k]");
+        nrhs = b->ndim == 1 ? 1 : b->dims[1];
+        o = make(k, VIAL_DT_FLOAT, b->ndim, b->dims);
+    }
+    double* A = md_alloc(k->alloc, ((size_t)n * n ? (size_t)n * n : 1) * sizeof(double));
+    double* B = md_alloc(k->alloc, ((size_t)n * nrhs ? (size_t)n * nrhs : 1) * sizeof(double));
+    for (size_t q = 0; q < cnt; ++q) {
+        for (size_t i = 0; i < (size_t)n * n; ++i) A[i] = num_at(m, q * n * n + i);
+        if (is_trace) {
+            double t = 0.0;
+            for (uint32_t i = 0; i < n; ++i) t += A[i * n + i];
+            ((float*)o.data)[q] = (float)t;
+            continue;
+        }
+        if (is_inv) for (uint32_t i = 0; i < n; ++i) for (uint32_t j = 0; j < n; ++j) B[i * n + j] = i == j;
+        else if (!is_det) for (size_t i = 0; i < (size_t)n * nrhs; ++i) B[i] = num_at(b, i);
+        double det;
+        const bool ok = lu_solve(A, B, n, is_det ? 0 : nrhs, &det);
+        if (is_det) { ((float*)o.data)[q] = (float)det; continue; }
+        const size_t sz = (size_t)n * nrhs;
+        for (size_t i = 0; i < sz; ++i) {
+            ((float*)o.data)[q * sz + i] = (float)B[i];
+            if (!ok) vial_val_set_missing(&o, q * sz + i, k->alloc);     // singular
+        }
+    }
+    *out = o;
+    return true;
+}
+
+// The covariance of the rows of x along axis: x[axis] are the samples, the rest the variables
+static bool k_covariance(vial_kctx_t* k, const vial_val_t* x, const vial_val_t* axis, vial_val_t* out) {
+    if (!axis || axis->dtype == VIAL_DT_STR) return vial_rt_fail(k, "R0103", "covariance over frames is a trajectory value");
+    if (x->ndim != 2) return vial_rt_fail(k, "R0103", "covariance takes samples by variables, [m][n]");
+    int64_t ax = *(const int32_t*)axis->data;
+    if (ax < 0) ax += 2;
+    const uint32_t m = x->dims[ax], n = x->dims[1 - ax];
+    vial_val_t o = make(k, VIAL_DT_FLOAT, 2, (uint32_t[]){n, n});
+    double* mean = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
+    for (uint32_t j = 0; j < n; ++j) {
+        double s = 0.0;
+        for (uint32_t i = 0; i < m; ++i) s += num_at(x, ax == 0 ? (size_t)i * n + j : (size_t)j * m + i);
+        mean[j] = m ? s / m : 0.0;
+    }
+    for (uint32_t a = 0; a < n; ++a) {
+        for (uint32_t b = 0; b < n; ++b) {
+            double s = 0.0;
+            for (uint32_t i = 0; i < m; ++i) {
+                const double xa = num_at(x, ax == 0 ? (size_t)i * n + a : (size_t)a * m + i) - mean[a];
+                const double xb = num_at(x, ax == 0 ? (size_t)i * n + b : (size_t)b * m + i) - mean[b];
+                s += xa * xb;
+            }
+            ((float*)o.data)[a * n + b] = (float)(m > 1 ? s / (m - 1) : 0.0);
+        }
+    }
+    *out = o;
+    return true;
+}
+
+// ### SELECTORS, WHEN EVALUATED ###
+// What the check could not select when compiling: a positional set that changes per frame, as residues(within(...)).
+// Keywords are the same filters the check builds.
+
+static uint8_t level_of(const char* name, uint8_t* pkind) {
+    *pkind = 0;
+    if (!strcmp(name, "particles")) return VIAL_LEVEL_PARTICLE;
+    if (!strcmp(name, "atoms")) { *pkind = 1; return VIAL_LEVEL_PARTICLE; }
+    if (!strcmp(name, "beads")) { *pkind = 2; return VIAL_LEVEL_PARTICLE; }
+    if (!strcmp(name, "residues")) return VIAL_LEVEL_RESIDUE;
+    if (!strcmp(name, "parts")) return VIAL_LEVEL_PART;
+    if (!strcmp(name, "molecules")) return VIAL_LEVEL_MOLECULE;
+    if (!strcmp(name, "chains")) return VIAL_LEVEL_CHAIN;
+    return VIAL_LEVEL_NONE;
+}
+
+static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_val_t* out) {
+    if (!k->in->sys) return vial_rt_fail(k, "R0103", "%s needs a system", name);
+    uint8_t pkind;
+    const uint8_t level = level_of(name, &pkind);
+    if (level == VIAL_LEVEL_NONE) {
+        // A predefined set
+        vial_sets_t* s = vial_select_predefined(k->in->sys, str_from_cstr(name), k->alloc);
+        if (!s) return vial_rt_fail(k, "R0103", "%s is not a set", name);
+        *out = vial_val_sets(s);
+        return true;
+    }
+    vial_select_t q = {.level = level, .particle_kind = pkind};
+    for (uint32_t i = 0; i < ba->n; ++i) {
+        const vial_val_t* v = ba->v[i];
+        if (!v) continue;
+        if (!ba->names[i].len) {
+            if (v->dtype != VIAL_DT_SET) return vial_rt_fail(k, "R0103", "%s takes sets as positional arguments here", name);
+            q.within = v->sets;
+            continue;
+        }
+        const uint8_t key = vial_select_key(ba->names[i]);
+        if (key == VIAL_KEY_SCOPE) {
+            if (v->dtype == VIAL_DT_SET) q.scope = v->sets->single ? v->sets : vial_sets_merge(v->sets, k->alloc);
+            continue;
+        }
+        if (key == VIAL_KEY_NONE) return vial_rt_fail(k, "R0103", "%s takes no keyword %.*s", name, (int)ba->names[i].len, ba->names[i].ptr);
+        vial_filter_t f = {.key = key};
+        const size_t cnt = vial_val_count(v);
+        for (size_t e = 0; e < cnt; ++e) {
+            vial_match_t m = {0};
+            if (v->dtype == VIAL_DT_STR) { m.kind = 0; m.s = ((const str_t*)v->data)[e]; }
+            else if (v->dtype == VIAL_DT_RANGE) { m.kind = 2; m.lo = (int64_t)((const double*)v->data)[0]; m.hi = (int64_t)((const double*)v->data)[1]; }
+            else if (v->dtype == VIAL_DT_INT) { m.kind = 1; m.lo = ((const int32_t*)v->data)[e]; }
+            else return vial_rt_fail(k, "R0103", "a keyword's value here is a string, an int or a range");
+            md_array_push(f.any, m, k->alloc);
+        }
+        md_array_push(q.filters, f, k->alloc);
+    }
+    vial_sets_t* s = vial_select(k->in->sys, &q, k->alloc);
+    if (!s) return vial_rt_fail(k, "R0103", "%s selects nothing it can", name);
+    vial_val_t o = vial_val_sets(s);
+    // A selector with a positional set that is one set gives one set when the check typed it so
+    if (k->type && k->type->ndim == 0 && !s->single) {
+        vial_sets_t* m = vial_sets_merge(s, k->alloc);
+        m->single = true;
+        o = vial_val_sets(m);
+    }
+    *out = o;
+    return true;
+}
+
 // ### DISPATCH ###
 
 bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out) {
@@ -970,7 +1725,36 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("displacement")) return k_displacement(k, arg(&ba, "a", 0), arg(&ba, "b", 1), out);
     if (IS("angle")) return k_angle(k, &ba, 3, out);
     if (IS("dihedral")) return k_angle(k, &ba, 4, out);
-    if (IS("closest_pair") || IS("farthest_pair")) return k_pair(k, arg(&ba, "p", 0), arg(&ba, "q", 1), IS("closest_pair"), out);
+    if (IS("closest_pair") || IS("farthest_pair")) {
+        const vial_val_t* a[3] = {arg(&ba, "p", 0), arg(&ba, "q", 1), arg(&ba, "distinct", 2)};
+        if (!a[0] || !a[1]) return vial_rt_fail(k, "R0103", "%s takes p and q", name);
+        k->map_index = -1;
+        return mapped(k, a, (const uint8_t[]){VX_KIND_POINTS, VX_KIND_POINTS, VX_KIND_WHOLE}, 3, IS("closest_pair") ? core_pair_c : core_pair_f, out);
+    }
+    if (IS("fit")) {
+        const vial_val_t* a[4] = {arg(&ba, "p", 0), arg(&ba, "ref", 1), arg(&ba, "on", 2), arg(&ba, "weights", 3)};
+        return mapped(k, a, (const uint8_t[]){VX_KIND_POINTS, VX_KIND_POINTS, VX_KIND_WHOLE, VX_KIND_WHOLE}, 4, core_fit, out);
+    }
+    if (IS("within")) return k_within(k, arg(&ba, "r", 0), arg(&ba, "of", 1), out);
+    if (IS("eigh")) return k_eigh(k, arg(&ba, "m", 0), out);
+    if (IS("trace") || IS("det") || IS("inv") || IS("solve")) return k_linalg(k, name, arg(&ba, "m", 0), arg(&ba, "b", 1), out);
+    if (IS("covariance")) return k_covariance(k, arg(&ba, "x", 0), arg(&ba, "axis", 1), out);
+    if (IS("x") || IS("y") || IS("z")) return k_component(k, args[0], IS("x") ? 0 : IS("y") ? 1 : 2, out);
+    if (IS("T")) return k_transpose(k, args[0], out);
+    if (IS("reshape")) return k_reshape(k, arg(&ba, "a", 0), out);
+    if (IS("flatten")) {
+        const vial_val_t* a = arg(&ba, "a", 0);
+        vial_val_t o = *a;
+        o.ndim = 1;
+        o.dims[0] = (uint32_t)vial_val_count(a);
+        o.origin = NULL;
+        *out = o;
+        return true;
+    }
+    if (IS("linspace")) return k_linspace(k, arg(&ba, "lo", 0), arg(&ba, "hi", 1), arg(&ba, "n", 2), out);
+    if (IS("arange")) return k_arange(k, arg(&ba, "lo", 0), arg(&ba, "hi", 1), arg(&ba, "step", 2), out);
+    if (IS("eye")) return k_eye(k, arg(&ba, "n", 0), out);
+    if (IS("spread")) return k_spread(k, arg(&ba, "values", 0), arg(&ba, "groups", 1), arg(&ba, "combine", 2), out);
     if (IS("mass") || IS("charge") || IS("name") || IS("element")) return k_property(k, name, arg(&ba, "s", 0), out);
     if (IS("norm") || IS("normalize")) return k_norm(k, arg(&ba, "v", 0), IS("normalize"), out);
     if (IS("dot") || IS("cross")) return k_dot_cross(k, arg(&ba, "u", 0), arg(&ba, "v", 1), IS("cross"), out);
@@ -978,7 +1762,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
         ((IS("min") || IS("max")) && !arg(&ba, "b", 1))) {
         const red_t r = IS("sum") ? R_SUM : IS("mean") ? R_MEAN : IS("std") ? R_STD : IS("var") ? R_VAR : IS("any") ? R_ANY :
                         IS("all") ? R_ALL : IS("argmin") ? R_ARGMIN : IS("argmax") ? R_ARGMAX : IS("min") ? R_MIN : R_MAX;
-        if (arg(&ba, "by", 99)) return vial_rt_fail(k, "R0103", "by= is not evaluated yet");
+        if (arg(&ba, "by", 99)) return k_reduce_by(k, r, arg(&ba, "a", 0), arg(&ba, "by", 99), out);
         return k_reduce(k, r, arg(&ba, "a", 0), arg(&ba, "axis", 1), out);
     }
     if (IS("min") || IS("max")) {
@@ -1014,8 +1798,21 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     }
     if (IS("shown")) { *out = *arg(&ba, "x", 0); return true; }
     if (IS("marker") || IS("line") || IS("arrow") || IS("sphere") || IS("arc") || IS("disk") || IS("label") || IS("highlight")) {
-        // Drawings are values for hover; what they draw is made when hover asks
-        *out = (vial_val_t){.dtype = VIAL_DT_DRAWING};
+        // Drawings are values for hover; what they draw is made when hover asks. One per element of the broadcast
+        // points, as the type says.
+        vial_val_t o = {.dtype = VIAL_DT_DRAWING, .ndim = k->type->ndim};
+        for (uint8_t d = 0; d < o.ndim; ++d) {
+            if (k->type->dims[d].kind == VIAL_EXT_STATIC) { o.dims[d] = k->type->dims[d].n; continue; }
+            // An extent known only now: the arguments' leading dimension of that place
+            o.dims[d] = 1;
+            for (uint32_t i = 0; i < n; ++i) {
+                const vial_val_t* v = args[i];
+                if (!v || v->ndim < 1) continue;
+                const int lead = (v->dtype == VIAL_DT_SET ? v->ndim : v->ndim - 1) - (o.ndim - d);
+                if (lead >= 0 && v->dims[lead] > o.dims[d]) o.dims[d] = v->dims[lead];
+            }
+        }
+        *out = o;
         return true;
     }
     if (IS("range")) return k_range(k, &ba, out);
@@ -1053,6 +1850,13 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
         s->single = true;
         *out = vial_val_sets(s);
         return true;
+    }
+    {
+        uint8_t pk;
+        if (level_of(name, &pk) != VIAL_LEVEL_NONE || IS("protein") || IS("nucleic") || IS("water") || IS("ion") || IS("lipid") ||
+            IS("backbone") || IS("sidechain") || IS("system")) {
+            return k_select(k, name, &ba, out);
+        }
     }
     #undef IS
     return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
