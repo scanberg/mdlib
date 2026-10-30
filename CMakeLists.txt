@@ -194,6 +194,10 @@ set(SRC_FILES
   src/vial/units.c
   src/vial/types.h
   src/vial/types.c
+  src/vial/builtins.h
+  src/vial/builtins.c
+  src/vial/check.h
+  src/vial/check.c
   src/vial/api.c
   src/md_smiles.c
   src/md_smiles.h
@@ -365,6 +369,7 @@ endif()
 create_resources("${GL_SHADER_FILES}"   "gen/gl_shaders.inl")
 create_resources("${GTO_SHADER_FILES}"  "gen/gto_shaders.inl")
 create_resources("${TOPO_SHADER_FILES}" "gen/topo_shaders.inl")
+create_resources("${CMAKE_CURRENT_SOURCE_DIR}/src/vial/prelude.vial" "gen/vial_prelude.inl")
 
 # Detect AppleClang vs other Clang
 if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -542,11 +547,11 @@ if (MD_VIAL_FUZZ)
   find_package(Threads REQUIRED)
   add_executable(fuzz_vial
     unittest/fuzz_vial.c
-    src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/api.c
+    src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/types.c src/vial/builtins.c src/vial/check.c src/vial/api.c
     src/core/md_str.c src/core/md_allocator.c src/core/md_arena_allocator.c src/core/md_common.c
     src/core/md_os.c src/core/md_log.c src/core/md_parse.c src/core/md_unit.c
   )
-  target_include_directories(fuzz_vial PRIVATE src unittest ext)
+  target_include_directories(fuzz_vial PRIVATE src unittest ext ext/xxhash gen)
   target_compile_options(fuzz_vial PRIVATE -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
   target_link_options(fuzz_vial PRIVATE -fsanitize=fuzzer,address,undefined)
   target_link_libraries(fuzz_vial PRIVATE m Threads::Threads)

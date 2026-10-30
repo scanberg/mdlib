@@ -28,6 +28,15 @@ static inline bool vial_fuzz__front_end_code(const char* code) {
     return false;
 }
 
+// The codes the checker gives so far
+static inline bool vial_fuzz__checker_code(const char* code) {
+    static const char* codes[] = {"E0201", "W0201", "E0305", "E0312", "E0701", "E0801", "E0802", "E0803"};
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
+        if (memcmp(code, codes[i], 6) == 0) return true;
+    }
+    return false;
+}
+
 static inline bool vial_fuzz__layout_byte(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\\';
 }
@@ -70,11 +79,11 @@ static inline const char* vial_fuzz__check_tree(const vial_tree_t* t, uint32_t l
     return NULL;
 }
 
-static inline const char* vial_fuzz__check_diags(const md_vial_diagnostic_t* d, size_t n, uint32_t len) {
+static inline const char* vial_fuzz__check_diags(const md_vial_diagnostic_t* d, size_t n, uint32_t len, bool checked) {
     for (size_t i = 0; i < n; ++i) {
         if (d[i].span.beg > d[i].span.end || d[i].span.end > len) return "a diagnostic's span is out of bounds";
         if (i > 0 && d[i - 1].span.beg > d[i].span.beg) return "diagnostics are out of source order";
-        if (d[i].code[5] != '\0' || !vial_fuzz__front_end_code(d[i].code)) return "a diagnostic with a code the front end does not give";
+        if (d[i].code[5] != '\0' || !(vial_fuzz__front_end_code(d[i].code) || (checked && vial_fuzz__checker_code(d[i].code)))) return "a diagnostic with a code the compiler does not give";
         if (str_empty(d[i].message)) return "a diagnostic without a message";
         if (d[i].message.ptr[d[i].message.len - 1] == '\n') return "a message ends in a newline";
     }
@@ -116,13 +125,14 @@ static inline const char* vial_fuzz_check(str_t src, md_allocator_i* alloc) {
     if (err) return err;
     const size_t num_diags = md_array_size(diags.items);
     if (num_diags < num_lex_diags) return "the parser dropped a diagnostic of the lexer";
-    err = vial_fuzz__check_diags(diags.items, num_diags, len);
+    err = vial_fuzz__check_diags(diags.items, num_diags, len, false);
     if (err) return err;
 
     str_t dump = vial_tree_dump(&tree, src, alloc);
     if (str_empty(dump)) return "the tree dump is empty";
 
     // The public API, twice: the same tokens and diagnostics, so compiling is deterministic
+    size_t first_count = 0;
     for (int round = 0; round < 2; ++round) {
         md_vial_program_t* prog = md_vial_compile(src, NULL, alloc);
         if (!prog) return "md_vial_compile returned NULL";
@@ -137,14 +147,20 @@ static inline const char* vial_fuzz_check(str_t src, md_allocator_i* alloc) {
                 why = "md_vial_tokens differs from the lexer";
             }
         }
-        if (!why && npd != num_diags) why = "md_vial_diagnostics differs from the stages";
-        for (size_t i = 0; !why && i < npd; ++i) {
-            if (memcmp(pd[i].code, diags.items[i].code, 6) != 0 || pd[i].span.beg != diags.items[i].span.beg ||
-                pd[i].span.end != diags.items[i].span.end || !str_eq(pd[i].message, diags.items[i].message) ||
-                !str_eq(pd[i].fix, diags.items[i].fix)) {
-                why = "md_vial_diagnostics differs from the stages";
+        // The front end's diagnostics are all there, as the stages gave them, among the checker's; and the whole list
+        // keeps the promises, in source order. The two rounds give the same list.
+        if (!why) why = vial_fuzz__check_diags(pd, npd, len, true);
+        size_t k = 0;
+        for (size_t i = 0; !why && i < npd && k < num_diags; ++i) {
+            if (memcmp(pd[i].code, diags.items[k].code, 6) == 0 && pd[i].span.beg == diags.items[k].span.beg &&
+                pd[i].span.end == diags.items[k].span.end && str_eq(pd[i].message, diags.items[k].message) &&
+                str_eq(pd[i].fix, diags.items[k].fix)) {
+                k += 1;
             }
         }
+        if (!why && k != num_diags) why = "md_vial_diagnostics lost a diagnostic of the front end";
+        if (!why && round == 0) first_count = npd;
+        if (!why && round == 1 && npd != first_count) why = "compiling twice gives different diagnostics";
         md_vial_program_free(prog);
         if (why) return why;
     }

@@ -983,7 +983,7 @@ Hovering an expression in the editor draws its value in the 3D view, at the fram
 
 | Primitive | Draws |
 | --- | --- |
-| `dot(p: point)` | a point |
+| `marker(p: point)` | a point, marked |
 | `line(a: point, b: point, label=None)` | a segment, labelled at its middle when `label=` is given |
 | `arrow(a: point, b: point)`, `arrow(a: point, direction=v, length=r)` | a segment with a head; the second form starts at a and runs r along v |
 | `sphere(c: point, r)` | a sphere of radius r |
@@ -1025,7 +1025,7 @@ def end_to_end(s: set):
     a = s[0]
     b = s[-1]
     r = distance(a, b)
-    return shown(r, line(a, b, label=r) + dot(a) + dot(b))
+    return shown(r, line(a, b, label=r) + marker(a) + marker(b))
 
 ca = particles(name='CA')                                        # -> set
 e  = end_to_end(ca)                                              # -> float Å, frame: published as a series; hover draws it
