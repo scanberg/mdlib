@@ -29,6 +29,11 @@ void     vial_diags_sort(vial_diags_t* d);   // into source order, stable
 bool     vial_diag_at(const vial_diags_t* d, uint32_t offset);   // does a diagnostic start at offset
 void     vial_diag_set_fix(vial_diags_t* d, size_t index, str_t fix);   // copies fix
 
+// Source text as a message quotes it: its first line, at most VIAL_EXCERPT_MAX bytes, cut on a character and ending in
+// "…" when cut. Messages are one line, and a string literal or a bracketed expression may span many.
+#define VIAL_EXCERPT_MAX 32
+str_t    vial_excerpt(char* buf, size_t cap, str_t text);   // cap of at least VIAL_EXCERPT_MAX + 4
+
 // ### TOKENS ###
 
 typedef enum vial_kw_t {

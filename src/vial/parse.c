@@ -84,8 +84,9 @@ static void describe(char* buf, size_t cap, const parser_t* p, const vial_token_
     case MD_VIAL_TOKEN_INDENT:  snprintf(buf, cap, "indent"); break;
     case MD_VIAL_TOKEN_DEDENT:  snprintf(buf, cap, "end of block"); break;
     default: {
-        const uint32_t len = t->span.end - t->span.beg;
-        snprintf(buf, cap, "`%.*s`", (int)(len > 24 ? 24 : len), p->src.ptr + t->span.beg);
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){p->src.ptr + t->span.beg, t->span.end - t->span.beg});
+        snprintf(buf, cap, "`%.*s`", (int)e.len, e.ptr);
         break;
     }
     }
@@ -430,7 +431,9 @@ static vial_node_id parse_number(parser_t* p) {
             while (b < u->span.end && p->src.ptr[b] != '\'' && p->src.ptr[b] != '"') ++b;   // past r
             const str_t text = {p->src.ptr + b + q, (u->span.end - b) >= 2 * q ? u->span.end - b - 2 * q : 0};
             if (!vial_unit_string(text, NULL)) {
-                refuse(p, "E0502", tok_span(u), "`%.*s` is not a unit", (int)(u->span.end - u->span.beg), p->src.ptr + u->span.beg);
+                char ex[VIAL_EXCERPT_MAX + 4];
+                const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){p->src.ptr + u->span.beg, u->span.end - u->span.beg});
+                refuse(p, "E0502", tok_span(u), "`%.*s` is not a unit", (int)e.len, e.ptr);
             }
         }
         const uint32_t m = mark(p);

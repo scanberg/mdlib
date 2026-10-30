@@ -269,8 +269,10 @@ static void declare_def(resolver_t* r, vial_node_id def, uint32_t parent) {
         if (ann) {
             const str_t a = text(r, ann);
             if (kind_of(r, ann) != VIAL_N_NAME || !is_kind_name(a)) {
+                char ex[VIAL_EXCERPT_MAX + 4];
+                const str_t e = vial_excerpt(ex, sizeof(ex), a);
                 diag_fix(r, "E0312", ann, "", "`%.*s` is not a parameter kind; the kinds are set, group, point, points, float, int and bool",
-                    (int)a.len, a.ptr);
+                    (int)e.len, e.ptr);
             }
         }
     }

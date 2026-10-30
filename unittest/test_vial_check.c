@@ -89,6 +89,15 @@ UTEST_F(vial_check, annotations) {
     EXPECT_DIAGS("def f(a) -> float:\n    return a\n", "E0312 1: a def's result is not annotated; it is inferred at each call\n");
 }
 
+// A message quotes at most the first line of source text, cut on a character, so it stays one line
+UTEST_F(vial_check, quoted_source) {
+    EXPECT_DIAGS("x = 1 '''kJ\nmol'''\n", "E0502 1: `'''kJ…` is not a unit\n");
+    EXPECT_DIAGS("x = 2 'abcdefghijklmnopqrstuvwxyz\xC3\xA5\xC3\xA4\xC3\xB6" "abc'\n",
+        "E0502 1: `'abcdefghijklmnopqrstuvwxyz\xC3\xA5\xC3\xA4…` is not a unit\n");
+    EXPECT_DIAGS("def f(a: [1,\n         2]):\n    return a\n",
+        "E0312 1: `[1,…` is not a parameter kind; the kinds are set, group, point, points, float, int and bool\n");
+}
+
 UTEST_F(vial_check, recursion) {
     EXPECT_DIAGS("def walk(n):\n    return walk(n - 1)\n", "E0802 2: `walk` calls itself; VIAL has no recursion\n");
     EXPECT_DIAGS("def a(n):\n    return b(n)\ndef b(n):\n    return a(n)\n",
