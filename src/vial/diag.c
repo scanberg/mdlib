@@ -25,7 +25,7 @@ str_t vial_excerpt(char* buf, size_t cap, str_t text) {
     while (n < text.len && n < VIAL_EXCERPT_MAX && text.ptr[n] != '\n' && text.ptr[n] != '\r') ++n;
     const bool cut = n < text.len;
     while (n > 0 && n < text.len && ((unsigned char)text.ptr[n] & 0xC0) == 0x80) --n;
-    memcpy(buf, text.ptr, n);
+    if (n) memcpy(buf, text.ptr, n);     // an empty string's text may have no pointer at all
     if (cut) { memcpy(buf + n, "\xE2\x80\xA6", 3); n += 3; }
     buf[n] = '\0';
     return (str_t){buf, n};

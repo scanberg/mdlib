@@ -270,6 +270,8 @@ UTEST_F(vial_check, selector_diagnostics) {
     EXPECT_DIAGS_ON(T, "p = parts('GTP')\n", "E0205 1: `parts` takes a set; parts have no name or id, not str\n");
     EXPECT_DIAGS_ON(T, "r = residues(kind='amino')\n",
         "E0206 1: 'amino' is not a residue kind; the kinds are amino_acid, nucleotide, water, ion, lipid and other | 'amino_acid'\n");
+    EXPECT_DIAGS_ON(T, "r = residues(kind='')\n",
+        "E0206 1: '' is not a residue kind; the kinds are amino_acid, nucleotide, water, ion, lipid and other\n");
     EXPECT_DIAGS_ON(T, "r = residues(id='12')\n", "E0206 1: `id` takes an int, a range a..b, or a list of ints; this is str\n");
     EXPECT_DIAGS_ON(T, "r = residues(39..45, chain='A')\n", "W0601 1: `residues(39..45, chain='A')` matches nothing in its scope\n");
     EXPECT_DIAGS_ON(T, "p = particles(resid=501)\n",
