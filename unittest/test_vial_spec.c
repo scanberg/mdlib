@@ -65,6 +65,20 @@ UTEST_F(vial_spec, reads) {
 }
 
 // Every code an example expects is in the diagnostics table
+// A block is one script on one structure: a comment that names another structure starts a new block
+UTEST_F(vial_spec, one_structure_per_block) {
+    const vial_spec_t* spec = &utest_fixture->spec;
+    for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
+        const vial_block_t* b = &spec->blocks[i];
+        for (size_t j = 0; j < md_array_size(b->expects); ++j) {
+            if (b->expects[j].structure == b->structure) continue;
+            printf("reference line %d: the block of line %d is on %c, and this line on %c\n", b->expects[j].line, b->line,
+                b->structure ? b->structure : '-', b->expects[j].structure ? b->expects[j].structure : '-');
+            EXPECT_EQ(b->structure, b->expects[j].structure);
+        }
+    }
+}
+
 UTEST_F(vial_spec, codes_are_listed) {
     const vial_spec_t* spec = &utest_fixture->spec;
     EXPECT_GT(md_array_size(spec->diag_codes), 30);

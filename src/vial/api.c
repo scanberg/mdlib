@@ -1,4 +1,7 @@
 #include "check.h"
+
+#include <md_system.h>
+#include <md_attributes.h>
 #include "infer.h"
 
 #include <core/md_arena_allocator.h>
@@ -48,7 +51,14 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
     prog->check = (vial_check_t){.tree = &prog->tree, .src = prog->src, .diags = &prog->diags,
         .prelude = with_prelude ? &prog->prelude : NULL, .prelude_src = prog->prelude_src,
         .prelude_diags = &prog->prelude_diags, .sys = desc ? desc->sys : NULL,
-        .num_frames = desc ? desc->num_frames : 0, .alloc = arena};
+        .num_frames = desc ? desc->num_frames : 0, .run = desc ? str_copy(desc->run, arena) : (str_t){0}, .alloc = arena};
+    if (!prog->check.num_frames && prog->check.sys && !str_empty(prog->check.run)) {
+        // The run's frame axis
+        char path[256];
+        snprintf(path, sizeof(path), "%.*s/time", (int)prog->check.run.len, prog->check.run.ptr);
+        const md_attribute_t* time = md_attributes_find(&prog->check.sys->attributes, str_from_cstr(path));
+        if (time && time->format.rank >= 1) prog->check.num_frames = time->format.shape[0];
+    }
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
 

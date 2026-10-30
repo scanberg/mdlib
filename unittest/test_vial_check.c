@@ -615,3 +615,51 @@ UTEST_F(vial_check, bonds_spread_and_set_indices) {
     EXPECT_DIAGS_ON(T, "r = residues(chain='A')[0:2]\ns = spread(count(concatenate([r, r])), concatenate([r, r]))\n",
         "E0306 2: the groups share particles, so each of those would get several values; combine= says how | combine='mean'\n");
 }
+
+// attr() on a run whose energy terms are attributes, as an energy file gives them
+#include <md_attributes.h>
+
+static const char* type_run(const char* src, uint32_t line, const md_system_t* sys, md_allocator_i* alloc, const char** diags) {
+    const md_vial_compile_desc_t desc = {.sys = sys, .run = STR_LIT("run/md")};
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
+    static char out[256];
+    md_vial__result_t r;
+    if (!md_vial__line_result(prog, line, &r)) snprintf(out, sizeof(out), "(none)");
+    else snprintf(out, sizeof(out), "%s, %s", r.types[0], r.stage);
+    const md_vial_diagnostic_t* d = NULL;
+    const size_t n = md_vial_diagnostics(prog, &d);
+    static char dbuf[512];
+    dbuf[0] = '\0';
+    for (size_t i = 0; i < n; ++i) snprintf(dbuf + strlen(dbuf), sizeof(dbuf) - strlen(dbuf), "%s ", d[i].code);
+    *diags = dbuf;
+    md_vial_program_free(prog);
+    return out;
+}
+
+UTEST_F(vial_check, attributes) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    md_system_t sys = *T;
+    sys.attributes = (md_attributes_t){.alloc = utest_fixture->alloc};
+    md_unit_t kj_mol;
+    vial_unit_string(STR_LIT("kJ/mol"), &kj_mol);
+    const md_attribute_desc_t time = {.path = STR_LIT("run/md/time"), .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+        .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {38}}};
+    ASSERT_TRUE(md_attributes_create(&sys.attributes, &time) != MD_ATTRIBUTE_INVALID);
+    const char* terms[] = {"run/md/edr/Potential", "run/md/edr/coul_sr_a", "run/md/edr/coul_sr_b"};
+    for (int i = 0; i < 3; ++i) {
+        const md_attribute_desc_t d = {.path = str_from_cstr(terms[i]), .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = kj_mol,
+            .format = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 1, .shape = {38}}};
+        ASSERT_TRUE(md_attributes_create(&sys.attributes, &d) != MD_ATTRIBUTE_INVALID);
+    }
+    const char* diags;
+    EXPECT_STREQ("float kJ/mol, frame", type_run("pot = attr('edr/Potential')\n", 1, &sys, utest_fixture->alloc, &diags));
+    EXPECT_STREQ("", diags);
+    EXPECT_STREQ("float[2] kJ/mol, frame", type_run("c = attr('edr/coul_sr_*')\n", 1, &sys, utest_fixture->alloc, &diags));
+    EXPECT_STREQ("float kJ/mol, frame", type_run("c = sum(attr('edr/coul_sr_*'))\n", 1, &sys, utest_fixture->alloc, &diags));
+    type_run("p = attr('edr/Kinetic')\n", 1, &sys, utest_fixture->alloc, &diags);
+    EXPECT_STREQ("E0206 ", diags);
+    // The run's frame axis gives the number of frames
+    type_run("e = attr('edr/Potential')\nf = at(e, frame=38)\n", 2, &sys, utest_fixture->alloc, &diags);
+    EXPECT_STREQ("E0405 ", diags);
+}
