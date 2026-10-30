@@ -160,6 +160,18 @@ UTEST_F(vial_check, literals_and_units) {
     EXPECT_DIAGS("x = 2.0 ** 1 nm\n", "W0501 1: a power of nm; an exponent has no unit | unitless(...)\n");
 }
 
+// Folding never overflows: a result beyond 32 bits, or a float beyond an int, is typed and not folded
+UTEST_F(vial_check, folding_limits) {
+    EXPECT_TYPE("x = 2147483647 + 1\n", 1, "int, static");
+    EXPECT_TYPE("x = 99999999999999999999 * 3\n", 1, "int, static");
+    EXPECT_TYPE("x = 2 ** 40\n", 1, "int, static");
+    EXPECT_TYPE("x = 2 ** 30\n", 1, "int, static = 1073741824");
+    EXPECT_TYPE("x = int(1e30)\n", 1, "int, static");
+    EXPECT_TYPE("x = 1e300 * 1e300\n", 1, "float, static");
+    EXPECT_TYPE("x = -2147483647 - 1\n", 1, "int, static = -2147483648");
+    EXPECT_TYPE("x = 1 << 40\n", 1, "int, static");
+}
+
 UTEST_F(vial_check, shapes) {
     EXPECT_TYPE("ids = [45, 48, 112]\n", 1, "int[3], static");
     EXPECT_TYPE(u8"c = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nd = c * 2 Å\n", 2, u8"float[2][3] Å, static");

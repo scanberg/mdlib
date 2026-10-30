@@ -387,7 +387,7 @@ static T infer_unary(infer_t* x, vial_node_id id) {
         t.period_beg = -a.period_end; t.period_end = -a.period_beg; t.seam = -a.seam;
     }
     const vial_value_t v = value_of(x, on);
-    if (op == VIAL_OP_MINUS && v.kind == VIAL_VAL_INT) set_value(x, id, val_int(-v.i));
+    if (op == VIAL_OP_MINUS && v.kind == VIAL_VAL_INT) set_value(x, id, v.i > INT64_MIN ? val_int(-v.i) : val_none());
     else if (op == VIAL_OP_MINUS && v.kind == VIAL_VAL_FLOAT) set_value(x, id, val_float(-v.f));
     else if (op == VIAL_OP_PLUS) set_value(x, id, v);
     else if (op == VIAL_OP_TILDE && v.kind == VIAL_VAL_INT) set_value(x, id, val_int(~v.i));
@@ -424,28 +424,65 @@ static bool convert_value(const T* a, const T* b, vial_value_t* vb) {
     return true;
 }
 
+// An int of a value: exact for ints and bools, and for a float only when it is whole and in range
+static bool val_int_exact(const vial_value_t* v, int64_t* out) {
+    switch (v->kind) {
+    case VIAL_VAL_INT:  *out = v->i; return true;
+    case VIAL_VAL_BOOL: *out = v->b; return true;
+    case VIAL_VAL_FLOAT:
+        if (!(v->f >= -9.0e15 && v->f <= 9.0e15) || v->f != floor(v->f)) return false;
+        *out = (int64_t)v->f;
+        return true;
+    default: return false;
+    }
+}
+
+// An int result is folded only when it fits in VIAL's 32 bits; beyond that it is R0102 when evaluated
+static vial_value_t val_int32(int64_t i) { return i >= INT32_MIN && i <= INT32_MAX ? val_int(i) : val_none(); }
+
 static vial_value_t fold(uint16_t op, const vial_value_t* a, const vial_value_t* b, uint8_t dtype) {
     double fa, fb;
     if (!val_num(a, &fa) || !val_num(b, &fb)) return val_none();
-    const bool ints = dtype == VIAL_DT_INT;
-    const int64_t ia = (int64_t)fa, ib = (int64_t)fb;
+    if (dtype != VIAL_DT_INT) {
+        double r;
+        switch (op) {
+        case VIAL_OP_PLUS:  r = fa + fb; break;
+        case VIAL_OP_MINUS: r = fa - fb; break;
+        case VIAL_OP_STAR:  r = fa * fb; break;
+        case VIAL_OP_SLASH: if (fb == 0.0) return val_none(); r = fa / fb; break;
+        case VIAL_OP_DSLASH: if (fb == 0.0) return val_none(); r = floor(fa / fb); break;
+        case VIAL_OP_PERCENT: if (fb == 0.0) return val_none(); r = fa - fb * floor(fa / fb); break;
+        case VIAL_OP_POW:   r = pow(fa, fb); break;
+        default: return val_none();
+        }
+        return isfinite(r) ? val_float(r) : val_none();
+    }
+    // Ints, exactly; operands of 32 bits keep every result below in 64
+    int64_t ia, ib;
+    if (!val_int_exact(a, &ia) || !val_int_exact(b, &ib)) return val_none();
+    if (ia < INT32_MIN || ia > INT32_MAX || ib < INT32_MIN || ib > INT32_MAX) return val_none();
     switch (op) {
-    case VIAL_OP_PLUS:  return ints ? val_int(ia + ib) : val_float(fa + fb);
-    case VIAL_OP_MINUS: return ints ? val_int(ia - ib) : val_float(fa - fb);
-    case VIAL_OP_STAR:  return ints ? val_int(ia * ib) : val_float(fa * fb);
-    case VIAL_OP_SLASH: return fb != 0.0 ? val_float(fa / fb) : val_none();
-    case VIAL_OP_DSLASH:
-        if (ints) return ib ? val_int((ia - ((ia % ib) + ib) % ib) / ib) : val_none();
-        return fb != 0.0 ? val_float(floor(fa / fb)) : val_none();
-    case VIAL_OP_PERCENT:
-        if (ints) return ib ? val_int(((ia % ib) + ib) % ib) : val_none();
-        return fb != 0.0 ? val_float(fa - fb * floor(fa / fb)) : val_none();
-    case VIAL_OP_POW:   return ints && ib >= 0 ? val_int((int64_t)pow((double)ia, (double)ib)) : val_float(pow(fa, fb));
-    case VIAL_OP_AMP:   return val_int(ia & ib);
-    case VIAL_OP_PIPE:  return val_int(ia | ib);
-    case VIAL_OP_CARET: return val_int(ia ^ ib);
-    case VIAL_OP_LSHIFT: return ib >= 0 && ib < 63 ? val_int(ia << ib) : val_none();
-    case VIAL_OP_RSHIFT: return ib >= 0 && ib < 63 ? val_int(ia >> ib) : val_none();
+    case VIAL_OP_PLUS:  return val_int32(ia + ib);
+    case VIAL_OP_MINUS: return val_int32(ia - ib);
+    case VIAL_OP_STAR:  return val_int32(ia * ib);
+    case VIAL_OP_SLASH: return ib ? val_float((double)ia / (double)ib) : val_none();
+    case VIAL_OP_DSLASH: return ib ? val_int32((ia - ((ia % ib) + ib) % ib) / ib) : val_none();
+    case VIAL_OP_PERCENT: return ib ? val_int32(((ia % ib) + ib) % ib) : val_none();
+    case VIAL_OP_POW: {
+        if (ib < 0) return val_float(pow((double)ia, (double)ib));
+        int64_t r = 1;
+        for (int64_t k = 0; k < ib; ++k) {
+            r *= ia;
+            if (r < INT32_MIN || r > INT32_MAX) return val_none();
+            if (r == 0 || r == 1) break;
+        }
+        return val_int32(r);
+    }
+    case VIAL_OP_AMP:    return val_int32(ia & ib);
+    case VIAL_OP_PIPE:   return val_int32(ia | ib);
+    case VIAL_OP_CARET:  return val_int32(ia ^ ib);
+    case VIAL_OP_LSHIFT: return ib >= 0 && ib < 32 ? val_int32((int64_t)((uint64_t)ia << ib)) : val_none();
+    case VIAL_OP_RSHIFT: return ib >= 0 && ib < 63 ? val_int32(ia >> ib) : val_none();
     default: return val_none();
     }
 }
@@ -1141,7 +1178,12 @@ static T infer_attr(infer_t* x, vial_node_id id) {
 
 static T infer_uncached(infer_t* x, vial_node_id id) {
     switch (kind_of(x, id)) {
-    case VIAL_N_INT:      set_value(x, id, val_int(parse_int(text(x, id)))); return number(VIAL_DT_INT);
+    case VIAL_N_INT: {
+        // VIAL's ints are 32 bits: a literal beyond them is typed but not folded
+        const int64_t i = parse_int(text(x, id));
+        set_value(x, id, i >= INT32_MIN && i <= INT32_MAX ? val_int(i) : val_none());
+        return number(VIAL_DT_INT);
+    }
     case VIAL_N_FLOAT:    set_value(x, id, val_float(parse_float(text(x, id)))); return number(VIAL_DT_FLOAT);
     case VIAL_N_QUANTITY: return infer_quantity(x, id);
     case VIAL_N_STRING:   set_value(x, id, (vial_value_t){.kind = VIAL_VAL_STR, .s = string_value(x, id)}); return scalar(VIAL_DT_STR);
