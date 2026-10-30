@@ -19,6 +19,7 @@
 // compile-time codes, the interpreter the values and runtime codes. Everything the reference says is recorded here,
 // so the harness can report what is still unchecked.
 
+#include <core/md_common.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
 #include <core/md_allocator.h>
@@ -26,6 +27,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #define VIAL_SPEC_MAX_CODES 4
 
@@ -160,6 +162,115 @@ static inline bool vial_spec__parse_expect(vial_expect_t* e, str_t c) {
         e->note = str_trim(str_substr(s, 1, SIZE_MAX));
     }
     return true;
+}
+
+// ### RESULTS ###
+// What a result says, read for the checker: one or more types (a tuple unpacked, "set[424] and set[424]"), or a
+// static value such as 442, True or 'MET1/A'; and, from the note, the stage and the pass when they are written.
+
+#define VIAL_SPEC_MAX_TYPES 4
+
+typedef struct vial_result_t {
+    bool  is_value;                     // a value, as 442 or 'MET1/A', rather than a type
+    str_t value;
+    int   num_types;
+    str_t types[VIAL_SPEC_MAX_TYPES];
+    bool  has_stage;                    // the note names a stage
+    char  stage[24];                    // "static", "frame", "trajectory" or "trajectory, per frame"
+    int   pass;                         // 0 when the note names none
+} vial_result_t;
+
+static inline bool vial_spec__is_value(str_t s) {
+    if (str_empty(s)) return false;
+    const char c = s.ptr[0];
+    return is_digit(c) || c == '-' || c == '\'' || c == '"' || str_eq(s, STR_LIT("True")) || str_eq(s, STR_LIT("False")) ||
+           str_eq(s, STR_LIT("None"));
+}
+
+// Reads the stage and pass at the start of a note: "frame", "trajectory, per frame, pass 2", "static: read from ..."
+static inline void vial_spec__read_stage(vial_result_t* r, str_t note) {
+    static const char* stages[] = {"trajectory, per frame", "trajectory", "static", "frame"};
+    for (size_t i = 0; i < 4; ++i) {
+        if (vial_spec__starts_word(note, stages[i])) {
+            r->has_stage = true;
+            snprintf(r->stage, sizeof(r->stage), "%s", stages[i]);
+            note = str_trim(str_substr(note, strlen(stages[i]), SIZE_MAX));
+            if (note.len && note.ptr[0] == ',') note = str_trim(str_substr(note, 1, SIZE_MAX));
+            break;
+        }
+    }
+    if (vial_spec__starts_word(note, "pass") && note.len > 5 && is_digit(note.ptr[5])) r->pass = note.ptr[5] - '0';
+}
+
+static inline bool vial_spec_read_result(vial_result_t* r, const vial_expect_t* e) {
+    memset(r, 0, sizeof(*r));
+    if (str_empty(e->result)) return false;
+    vial_spec__read_stage(r, e->note);
+    if (vial_spec__is_value(e->result)) {
+        r->is_value = true;
+        r->value = e->result;
+        return true;
+    }
+    // Types joined by " and "
+    str_t s = e->result;
+    while (!str_empty(s)) {
+        size_t at = SIZE_MAX;
+        for (size_t i = 0; i + 5 <= s.len; ++i) {
+            if (memcmp(s.ptr + i, " and ", 5) == 0) { at = i; break; }
+        }
+        if (r->num_types == VIAL_SPEC_MAX_TYPES) return false;
+        r->types[r->num_types++] = str_trim(str_substr(s, 0, at));
+        s = at == SIZE_MAX ? (str_t){0} : str_substr(s, at + 5, SIZE_MAX);
+    }
+    // Each must start with a dtype
+    static const char* dtypes[] = {"bool", "int", "float64", "float", "str", "set", "range", "drawing", "("};
+    for (int k = 0; k < r->num_types; ++k) {
+        bool ok = false;
+        for (size_t i = 0; i < ARRAY_SIZE(dtypes) && !ok; ++i) ok = str_begins_with(r->types[k], str_from_cstr(dtypes[i]));
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// Does a printed type match the type a result writes? A letter as an extent, [n], matches any extent, and a power
+// may be written Å² or Å^2.
+static inline size_t vial_spec__norm_type(char* out, size_t cap, str_t s) {
+    size_t n = 0;
+    for (size_t i = 0; i < s.len && n + 4 < cap; ++i) {
+        // ² ³ as ^2 ^3
+        if ((unsigned char)s.ptr[i] == 0xC2 && i + 1 < s.len && ((unsigned char)s.ptr[i + 1] == 0xB2 || (unsigned char)s.ptr[i + 1] == 0xB3)) {
+            out[n++] = '^';
+            out[n++] = (unsigned char)s.ptr[i + 1] == 0xB2 ? '2' : '3';
+            ++i;
+            continue;
+        }
+        out[n++] = s.ptr[i];
+    }
+    out[n] = '\0';
+    return n;
+}
+
+static inline bool vial_spec_type_matches(str_t expected, str_t actual) {
+    char e[256], a[256];
+    const size_t ne = vial_spec__norm_type(e, sizeof(e), expected);
+    const size_t na = vial_spec__norm_type(a, sizeof(a), actual);
+    size_t i = 0, j = 0;
+    while (i < ne && j < na) {
+        if (e[i] == '[' && i + 2 < ne && is_alpha(e[i + 1]) && e[i + 1] != '?') {
+            // [letter...]: any extent
+            size_t k = i + 1;
+            while (k < ne && is_alpha(e[k])) ++k;
+            if (k < ne && e[k] == ']' && a[j] == '[') {
+                while (j < na && a[j] != ']') ++j;
+                i = k + 1;
+                j += 1;
+                continue;
+            }
+        }
+        if (e[i] != a[j]) return false;
+        ++i; ++j;
+    }
+    return i == ne && j == na;
 }
 
 // Reads the codes of the reference's diagnostics table: rows that start with "| E0101 |"

@@ -192,6 +192,8 @@ set(SRC_FILES
   src/vial/ast.h
   src/vial/parse.c
   src/vial/units.c
+  src/vial/types.h
+  src/vial/types.c
   src/vial/api.c
   src/md_smiles.c
   src/md_smiles.h
