@@ -1,4 +1,4 @@
-module 0..103
+module 0..129
   assign 0..4
     name a 0..1
     error 4..4
@@ -45,6 +45,14 @@ module 0..103
   assign 94..102
     name l 94..95
     error 98..102
+  assign 103..118
+    name q 103..104
+    quantity 107..118
+      int 1 107..108
+      unit 'kJ/mool' 109..118
+  assign 119..125
+    name r 119..120
+    int 10 123..125
 --- diagnostics
 E0101 1:5 unexpected `=`; expected an expression
 E0102 3:6 `(` opened on line 3 is never closed
@@ -55,3 +63,5 @@ E0103 9:3 unexpected indent; no block starts on the line before
 E0103 11:1 expected an indented block after `if`
 E0101 12:5 unexpected `$`
 E0101 13:5 `1abc` is not a number
+E0502 14:7 `'kJ/mool'` is not a unit
+E0101 15:8 unexpected `xs`; expected end of line

@@ -13,3 +13,5 @@ z = c[..., 0] + c.x
 l = [r.com for r in residues(1..4) if r]
 n = [[a for a in r] for r in s]
 q = ('a' "b", 1, 2.5e-3, True, None, ...)
+# Quantity literals: a unit name or string after a number, one atom
+u = (10 ns, 10ns, 0.5 nm, 90 deg, 5 Å, 2e, 1.5 'kJ/mol', t / 2 ps, -10 ns ** 2, ps * 10 ps)

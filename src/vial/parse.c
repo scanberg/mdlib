@@ -407,12 +407,46 @@ static vial_node_id parse_atom(parser_t* p) {
     return e;
 }
 
+// A number, and its unit if one follows: a name from the unit table, `10 ns`, or a string, `1.5 'kJ/mol'`. The
+// quantity is one atom, so t / 2 ns is t / (2 ns).
+static vial_node_id parse_number(parser_t* p) {
+    const vial_token_t* t = cur(p);
+    advance(p);
+    const vial_node_id num = leaf(p, t->kind == MD_VIAL_TOKEN_INT ? VIAL_N_INT : VIAL_N_FLOAT, 0, t);
+    const vial_token_t* u = cur(p);
+    if (u->kind == MD_VIAL_TOKEN_UNIT) {
+        advance(p);
+        const uint32_t m = mark(p);
+        push(p, num);
+        push(p, leaf(p, VIAL_N_UNIT, 0, u));
+        return make(p, VIAL_N_QUANTITY, 0, t->span.beg, u->span.end, m);
+    }
+    if (u->kind == MD_VIAL_TOKEN_STRING && !(u->flags & (VIAL_STR_FORMAT | VIAL_STR_BYTES))) {
+        advance(p);
+        if (!(u->flags & VIAL_STR_UNCLOSED)) {
+            // The text between the quotes
+            const uint32_t q = (u->flags & VIAL_STR_TRIPLE) ? 3 : 1;
+            uint32_t b = u->span.beg;
+            while (b < u->span.end && p->src.ptr[b] != '\'' && p->src.ptr[b] != '"') ++b;   // past r
+            const str_t text = {p->src.ptr + b + q, (u->span.end - b) >= 2 * q ? u->span.end - b - 2 * q : 0};
+            if (!vial_unit_string(text, NULL)) {
+                refuse(p, "E0502", tok_span(u), "`%.*s` is not a unit", (int)(u->span.end - u->span.beg), p->src.ptr + u->span.beg);
+            }
+        }
+        const uint32_t m = mark(p);
+        push(p, num);
+        push(p, leaf(p, VIAL_N_UNIT, 1, u));
+        return make(p, VIAL_N_QUANTITY, 0, t->span.beg, u->span.end, m);
+    }
+    return num;
+}
+
 static vial_node_id parse_atom_(parser_t* p) {
     const vial_token_t* t = cur(p);
     switch (t->kind) {
     case MD_VIAL_TOKEN_NAME:   advance(p); return leaf(p, VIAL_N_NAME, 0, t);
-    case MD_VIAL_TOKEN_INT:    advance(p); return leaf(p, VIAL_N_INT, 0, t);
-    case MD_VIAL_TOKEN_FLOAT:  advance(p); return leaf(p, VIAL_N_FLOAT, 0, t);
+    case MD_VIAL_TOKEN_INT:
+    case MD_VIAL_TOKEN_FLOAT:  return parse_number(p);
     case MD_VIAL_TOKEN_STRING: return parse_strings(p);
     case MD_VIAL_TOKEN_ERROR:  advance(p); p->panic = true; return leaf(p, VIAL_N_ERROR, 0, t);  // reported by the lexer
     case MD_VIAL_TOKEN_KEYWORD:
@@ -1240,7 +1274,7 @@ const char* vial_node_kind_str(vial_node_kind_t kind) {
         [VIAL_N_PARAM] = "param", [VIAL_N_RETURN] = "return", [VIAL_N_IF] = "if", [VIAL_N_FOR] = "for",
         [VIAL_N_WHILE] = "while", [VIAL_N_BREAK] = "break", [VIAL_N_CONTINUE] = "continue", [VIAL_N_PASS] = "pass",
         [VIAL_N_ASSERT] = "assert", [VIAL_N_UNSUPPORTED] = "unsupported", [VIAL_N_ERROR] = "error",
-        [VIAL_N_NAME] = "name", [VIAL_N_INT] = "int", [VIAL_N_FLOAT] = "float", [VIAL_N_STRING] = "string",
+        [VIAL_N_NAME] = "name", [VIAL_N_INT] = "int", [VIAL_N_FLOAT] = "float", [VIAL_N_STRING] = "string", [VIAL_N_QUANTITY] = "quantity", [VIAL_N_UNIT] = "unit",
         [VIAL_N_CONST] = "const", [VIAL_N_ELLIPSIS] = "ellipsis", [VIAL_N_UNARY] = "unary", [VIAL_N_NOT] = "not",
         [VIAL_N_BINARY] = "binary", [VIAL_N_BOOLOP] = "boolop", [VIAL_N_COMPARE] = "compare", [VIAL_N_CMPOP] = "cmpop",
         [VIAL_N_RANGE] = "range", [VIAL_N_TERNARY] = "ternary", [VIAL_N_CALL] = "call", [VIAL_N_KWARG] = "kwarg",
@@ -1303,7 +1337,7 @@ static void dump_node(char** buf, const vial_tree_t* t, vial_node_id id, str_t s
     case VIAL_N_BOOLOP: case VIAL_N_CONST: dump_fmt(buf, alloc, " %s", vial_kw_str((vial_kw_t)n->sub)); break;
     case VIAL_N_CMPOP: dump_fmt(buf, alloc, " %s", vial_cmp_str((vial_cmp_t)n->sub)); break;
     case VIAL_N_UNSUPPORTED: dump_fmt(buf, alloc, " %s", unsupported_name((vial_unsupported_t)n->sub)); break;
-    case VIAL_N_NAME: case VIAL_N_INT: case VIAL_N_FLOAT: case VIAL_N_STRING: {
+    case VIAL_N_NAME: case VIAL_N_INT: case VIAL_N_FLOAT: case VIAL_N_STRING: case VIAL_N_UNIT: {
         const uint32_t len = n->span.end - n->span.beg;
         dump_fmt(buf, alloc, " %.*s", (int)(len > 60 ? 60 : len), src.ptr + n->span.beg);
         break;

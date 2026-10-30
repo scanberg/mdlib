@@ -141,7 +141,7 @@ UTEST(vial_spec, grammar) {
 
 // Whether a code is one the front end reports
 static bool vial_spec__is_syntax_code(const char* code) {
-    static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0701", "E0801", "E0803"};
+    static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0502", "E0701", "E0801", "E0803"};
     for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }

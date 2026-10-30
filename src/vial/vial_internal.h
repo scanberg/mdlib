@@ -80,6 +80,13 @@ typedef struct vial_token_t {
 vial_token_t* vial_lex(str_t src, vial_diags_t* diags, md_allocator_i* alloc);
 
 const char* vial_kw_str(vial_kw_t kw);
+
+// ### UNITS ###
+// The names that may follow a number, `10 ns`, and the strings, `1.5 'kJ/mol'`. Both fill unit when it is not NULL.
+
+struct md_unit_t;
+bool vial_unit_name(str_t name, struct md_unit_t* unit);
+bool vial_unit_string(str_t text, struct md_unit_t* unit);
 const char* vial_op_str(vial_op_t op);
 const char* vial_token_kind_str(md_vial_token_kind_t kind);
 

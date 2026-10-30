@@ -11,3 +11,5 @@ if z:
 j = 7
 k = $
 l = 1abc
+q = 1 'kJ/mool'
+r = 10 xs

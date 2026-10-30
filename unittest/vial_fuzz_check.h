@@ -21,7 +21,7 @@
 
 // The codes the front end may give
 static inline bool vial_fuzz__front_end_code(const char* code) {
-    static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0701", "E0801", "E0803"};
+    static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0502", "E0701", "E0801", "E0803"};
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
         if (memcmp(code, codes[i], 6) == 0) return true;
     }

@@ -50,6 +50,7 @@ typedef enum md_vial_token_kind_t {
     MD_VIAL_TOKEN_KEYWORD,
     MD_VIAL_TOKEN_INT,
     MD_VIAL_TOKEN_FLOAT,
+    MD_VIAL_TOKEN_UNIT,         // the unit of a quantity literal: ns in `10 ns`
     MD_VIAL_TOKEN_STRING,
     MD_VIAL_TOKEN_OPERATOR,
     MD_VIAL_TOKEN_PUNCT,
