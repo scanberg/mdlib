@@ -213,6 +213,10 @@ set(SRC_FILES
   src/vial/ir.h
   src/vial/ir.c
   src/vial/emit.c
+  src/vial/interp.h
+  src/vial/interp.c
+  src/vial/kernels.c
+  src/vial/kernels_builtins.c
   src/vial/api.c
   src/md_smiles.c
   src/md_smiles.h
@@ -564,7 +568,7 @@ if (MD_VIAL_FUZZ)
   add_executable(fuzz_vial
     unittest/fuzz_vial.c
     src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/types.c src/vial/builtins.c src/vial/check.c
-    src/vial/infer.c src/vial/infer_sets.c src/vial/infer_geom.c src/vial/infer_math.c src/vial/infer_defs.c src/vial/infer_comp.c src/vial/select.c src/vial/value.c src/vial/ir.c src/vial/emit.c src/vial/api.c
+    src/vial/infer.c src/vial/infer_sets.c src/vial/infer_geom.c src/vial/infer_math.c src/vial/infer_defs.c src/vial/infer_comp.c src/vial/select.c src/vial/value.c src/vial/ir.c src/vial/emit.c src/vial/interp.c src/vial/kernels.c src/vial/kernels_builtins.c src/vial/api.c
   )
   add_dependencies(fuzz_vial mdlib)
   target_include_directories(fuzz_vial PRIVATE src unittest ext ext/xxhash gen)
@@ -756,6 +760,19 @@ target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
+
+# The VIAL interpreter's kernels contract nothing: where a multiply and an add fuse is decided once, by the compiler, as
+# an explicit fma in the IR, so the interpreter and native code give the same bits. Kernels every backend calls by
+# address (com, within, the spatial search) keep mdlib's flags, since all backends share their bits.
+# @TODO: MSVC adds /fp:contract to MD_FLAGS and has no flag that takes it back for one file.
+set(VIAL_NO_CONTRACT src/vial/interp.c src/vial/kernels.c src/vial/kernels_builtins.c)
+if (NOT (COMPILER_TYPE STREQUAL "MSVC"))
+  if (COMPILER_TYPE STREQUAL "CLANG_CL")
+    set_source_files_properties(${VIAL_NO_CONTRACT} PROPERTIES COMPILE_OPTIONS "/clang:-ffp-contract=off")
+  else()
+    set_source_files_properties(${VIAL_NO_CONTRACT} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  endif()
+endif()
 
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PUBLIC ${MD_LIBS})
