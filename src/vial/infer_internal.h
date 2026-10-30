@@ -35,13 +35,31 @@ uint32_t vx_desc(infer_t* x, uint8_t level, const vial_sets_t* sets);
 bool vx_broadcast(const vial_type_t* a, const vial_type_t* b, vial_type_t* out);   // NumPy's, shapes only
 bool vx_extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out);
 
+void vx_unit_join(infer_t* x, vial_node_id at, const char* verb, const vial_type_t* a, const vial_type_t* b, vial_type_t* out);
+uint8_t vx_promote(const vial_type_t* a, const vial_type_t* b);    // NumPy 2's dtype of a and b together
+
 // infer_geom.c
+
+// A parameter of a built-in: its name, its kind (how much of an argument one call takes) and whether it must be given
+typedef struct vx_param_t {
+    const char* name;
+    uint8_t     kind;       // VX_KIND_*
+    bool        required;
+} vx_param_t;
+
+enum { VX_KIND_WHOLE = 0, VX_KIND_SET, VX_KIND_GROUP, VX_KIND_POINT, VX_KIND_POINTS, VX_KIND_FLOAT, VX_KIND_INT, VX_KIND_BOOL };
+
+// Binds a call's arguments to parameters, by position and then by keyword, and types each; E0202 and E0204
+bool vx_bind(infer_t* x, vial_node_id call, const char* fname, const vx_param_t* params, uint32_t np, vial_node_id* args);
 
 // A call to a geometry built-in, with kinds converting and mapping its arguments; false for other names
 bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 
 // .xyz, .x, .y, .z on a set, and .com on a set or points; false when it is not one of them
 bool vx_attr_geom(infer_t* x, vial_node_id attr, vial_node_id on, const vial_type_t* a, str_t name, vial_type_t* out);
+
+// infer_math.c: reductions, math and arrays; false for other names
+bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 
 // infer_sets.c
 
