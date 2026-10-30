@@ -434,6 +434,10 @@ UTEST_F(vial_spec, lowers) {
             printf("reference block at line %d: the IR does not verify: %s\n", b->line, err);
             num_invalid += 1;
         }
+        if (md_vial__run_ir(prog) && !vial_ir_verify(md_vial__run_ir(prog), err, sizeof(err))) {
+            printf("reference block at line %d: the inlined IR does not verify: %s\n", b->line, err);
+            num_invalid += 1;
+        }
         const size_t nf = md_array_size(ir->failures);
         if (nf == 0) num_lowered += 1;
         num_failures += (int)nf;
@@ -504,7 +508,8 @@ UTEST_F(vial_spec, evaluates) {
         if (!sys) continue;
         const md_vial_compile_desc_t desc = {.sys = sys};
         md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
-        const vial_ir_t* ir = md_vial__ir(prog);
+        const vial_ir_t* ir = md_vial__run_ir(prog);
+        if (!ir) { printf("reference block at line %d: does not inline\n", b->line); md_vial_program_free(prog); num_blocks += 1; continue; }
         vial_sys_t vs;
         vial_sys_init(&vs, sys, alloc);
         vial_interp_t in;
@@ -513,29 +518,17 @@ UTEST_F(vial_spec, evaluates) {
         md_system_state_init(&frames.state, sys->atom.count);
         in.load_frame = vial_spec__load;
         in.load_user = &frames;
-        vial_interp_static(&in);
-        md_system_state_t state = {.alloc = md_get_heap_allocator()};
-        md_system_state_init(&state, sys->atom.count);
-        const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
-        md_system_extract_t* ex = nf ? md_system_extract_begin(sys, STR_LIT("run"), paths, 2, md_get_heap_allocator()) : NULL;
-        for (int64_t f = 0; ex && f < nf && f < 3; ++f) {
-            if (!md_system_extract_frame(ex, f, &state)) break;
-            const vial_frame_t fr = {.xyz = (const float*)state.xyz, .num_atoms = state.num_atoms, .cell = state.unitcell, .index = f, .time = (double)f};
-            vial_interp_frame(&in, &fr);
-        }
-        if (ex) md_system_extract_end(ex);
-        if (!nf) {
-            // One model: its own coordinates are the frame
-            const md_system_state_t* st = vial_test_state(b->structure);
-            const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell, .index = 0};
-            vial_interp_frame(&in, &fr);
-        }
-        md_system_state_free(&state);
+        vial_interp_run(&in, nf ? nf : 1);
+
         // Every computed output agrees with its type: dtype, rank, and the extents the check knows
         for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
-            const vial_val_t* v = vial_interp_value(&in, ir->outputs[k].value);
+            const vial_val_t* v = vial_interp_at(&in, ir->outputs[k].value, 0);
             const vial_type_t* t = &ir->values[ir->outputs[k].value].type;
-            if (!v || t->dtype == VIAL_DT_TUPLE || t->stage == VIAL_STAGE_TRAJECTORY) continue;
+            if (!v || t->dtype == VIAL_DT_TUPLE) continue;
+            // A series kept whole, as smooth gives, is one value per frame
+            vial_val_t one = *v;
+            if (v->flags & VIAL_VAL_FRAMES) { one.ndim -= 1; memmove(one.dims, one.dims + 1, one.ndim * sizeof(uint32_t)); }
+            v = &one;
             bool ok = v->dtype == t->dtype && v->ndim == t->ndim;
             for (uint8_t d = 0; ok && d < t->ndim; ++d) ok = t->dims[d].kind != VIAL_EXT_STATIC || t->dims[d].n == v->dims[d];
             if (!ok) {

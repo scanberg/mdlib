@@ -170,6 +170,7 @@ static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* s
         if (!why && (round & 1) == 0) first_count = npd;
         if (!why && (round & 1) == 1 && npd != first_count) why = "compiling twice gives different diagnostics";
         if (!why && !vial_ir_verify(md_vial__ir(prog), NULL, 0)) why = "the array IR does not verify";
+        if (!why && md_vial__run_ir(prog) && !vial_ir_verify(md_vial__run_ir(prog), NULL, 0)) why = "the inlined IR does not verify";
         md_vial_program_free(prog);
         if (why) return why;
     }
