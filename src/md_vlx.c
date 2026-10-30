@@ -4976,9 +4976,10 @@ static vlx_density_source_t* vlx_density_source_create(size_t* out_bytes, md_sys
 //                            the same check that the file has not changed since it was loaded.
 //   vlx/rsp/nto/...          virtual. The first request for a state computes all three of its NTO
 //                            quantities in one decomposition - weights, hole and particle orbitals -
-//                            and keeps them in a small cache (vlx_nto_cache_t, owned by the weights),
-//                            so the next request for that state, whichever of the three it is for,
-//                            is a copy.
+//                            and keeps them (vlx_nto_cache_t, owned by the weights: every state when
+//                            they fit in 256 MB, else as many as do), so the next request for that
+//                            state, whichever of the three it is for, is a copy. A consumer that does
+//                            not want to wait for it reads a state once on a worker thread first.
 //
 // The cost moves to the first look at a state: one read of its vector, a Gram matrix of min(o,v)^2 x
 // max(o,v) and a dense symmetric eigensolve of min(o,v)^2. Asking for a whole attribute (no slice)
@@ -5547,17 +5548,22 @@ done:
 	return ok;
 }
 
-// The last few states' NTOs, owned by vlx/rsp/nto/lambda and read by all three NTO providers. Variable
-// length: per slot, lambda[lmax], hole[lmax x A] and particle[lmax x A] follow the struct.
-#define VLX_NTO_CACHE_SLOTS 4
+// The states' NTOs once computed, owned by vlx/rsp/nto/lambda and read by all three NTO providers. Every
+// state has a slot when they fit in VLX_NTO_CACHE_BUDGET - which is no more than the resident attributes
+// held before they were computed on demand - so a state computed once (by a consumer warming it on a worker
+// thread, say) stays; past that, as many slots as fit, at least VLX_NTO_CACHE_MIN_SLOTS, the least recently
+// used given up. Variable length: int32_t state[num_slots] (-1: empty), uint32_t used[num_slots], then per
+// slot lambda[lmax], hole[lmax x A] and particle[lmax x A].
+#define VLX_NTO_CACHE_BUDGET    (256ull << 20)
+#define VLX_NTO_CACHE_MIN_SLOTS 4
 typedef struct vlx_nto_cache_t {
 	const md_system_t* sys;      // borrowed: a provider never outlives its system
 	uint32_t num_states;
 	uint32_t lmax;
 	uint32_t num_ao;
 	uint32_t clock;
-	int32_t  state[VLX_NTO_CACHE_SLOTS]; // -1: empty
-	uint32_t used[VLX_NTO_CACHE_SLOTS];
+	uint32_t num_slots;
+	uint32_t pad;
 } vlx_nto_cache_t;
 
 typedef enum { VLX_NTO_LAMBDA = 0, VLX_NTO_HOLE = 1, VLX_NTO_PARTICLE = 2 } vlx_nto_part_t;
@@ -5565,11 +5571,22 @@ typedef enum { VLX_NTO_LAMBDA = 0, VLX_NTO_HOLE = 1, VLX_NTO_PARTICLE = 2 } vlx_
 static inline size_t vlx_nto_cache_slot_doubles(const vlx_nto_cache_t* c) {
 	return (size_t)c->lmax * (1 + 2 * (size_t)c->num_ao);
 }
-static inline size_t vlx_nto_cache_bytes(size_t lmax, size_t num_ao) {
-	return sizeof(vlx_nto_cache_t) + sizeof(double) * VLX_NTO_CACHE_SLOTS * lmax * (1 + 2 * num_ao);
+static inline size_t vlx_nto_cache_num_slots(size_t num_states, size_t lmax, size_t num_ao) {
+	const size_t slot  = sizeof(double) * lmax * (1 + 2 * num_ao);
+	const size_t fit   = slot > 0 ? (size_t)(VLX_NTO_CACHE_BUDGET / slot) : num_states;
+	return MIN(num_states, MAX(fit, (size_t)VLX_NTO_CACHE_MIN_SLOTS));
+}
+static inline size_t vlx_nto_cache_bytes(size_t num_slots, size_t lmax, size_t num_ao) {
+	return sizeof(vlx_nto_cache_t) + (sizeof(int32_t) + sizeof(uint32_t)) * num_slots + sizeof(double) * num_slots * lmax * (1 + 2 * num_ao);
+}
+static inline int32_t* vlx_nto_cache_state(vlx_nto_cache_t* c) {
+	return (int32_t*)(c + 1);
+}
+static inline uint32_t* vlx_nto_cache_used(vlx_nto_cache_t* c) {
+	return (uint32_t*)(vlx_nto_cache_state(c) + c->num_slots);
 }
 static inline double* vlx_nto_cache_part(vlx_nto_cache_t* c, size_t slot, vlx_nto_part_t part) {
-	double* base = (double*)(c + 1) + slot * vlx_nto_cache_slot_doubles(c);
+	double* base = (double*)(vlx_nto_cache_used(c) + c->num_slots) + slot * vlx_nto_cache_slot_doubles(c);
 	return part == VLX_NTO_LAMBDA ? base : base + c->lmax + (part == VLX_NTO_PARTICLE ? (size_t)c->lmax * c->num_ao : 0);
 }
 
@@ -5578,10 +5595,12 @@ static inline double* vlx_nto_cache_part(vlx_nto_cache_t* c, size_t slot, vlx_nt
 // a short hold, and the one lock every reader of this file already shares - and the computation without
 // it, since it reads the file through it. Two threads asking for the same new state both compute it.
 static bool vlx_nto_cache_fetch(double* out, vlx_nto_cache_t* c, uint32_t state, vlx_nto_part_t part, size_t offset, size_t count) {
+	int32_t*  slot_state = vlx_nto_cache_state(c);
+	uint32_t* slot_used  = vlx_nto_cache_used(c);
 	md_hdf5_lock_t lock = md_hdf5_lock();
-	for (size_t s = 0; s < VLX_NTO_CACHE_SLOTS; ++s) {
-		if (c->state[s] == (int32_t)state) {
-			c->used[s] = ++c->clock;
+	for (size_t s = 0; s < c->num_slots; ++s) {
+		if (slot_state[s] == (int32_t)state) {
+			slot_used[s] = ++c->clock;
 			MEMCPY(out, vlx_nto_cache_part(c, s, part) + offset, sizeof(double) * count);
 			md_hdf5_unlock(lock);
 			return true;
@@ -5598,15 +5617,15 @@ static bool vlx_nto_cache_fetch(double* out, vlx_nto_cache_t* c, uint32_t state,
 		// the state's own slot if another thread got there first, else an empty one, else the oldest
 		size_t slot = 0;
 		bool found = false;
-		for (size_t s = 0; s < VLX_NTO_CACHE_SLOTS && !found; ++s) {
-			if (c->state[s] == (int32_t)state) { slot = s; found = true; }
+		for (size_t s = 0; s < c->num_slots && !found; ++s) {
+			if (slot_state[s] == (int32_t)state) { slot = s; found = true; }
 		}
-		for (size_t s = 0; s < VLX_NTO_CACHE_SLOTS && !found; ++s) {
-			if (c->state[s] < 0) { slot = s; break; }
-			if (c->used[s] < c->used[slot]) slot = s;
+		for (size_t s = 0; s < c->num_slots && !found; ++s) {
+			if (slot_state[s] < 0) { slot = s; break; }
+			if (slot_used[s] < slot_used[slot]) slot = s;
 		}
-		c->state[slot] = (int32_t)state;
-		c->used[slot]  = ++c->clock;
+		slot_state[slot] = (int32_t)state;
+		slot_used[slot]  = ++c->clock;
 		MEMCPY(vlx_nto_cache_part(c, slot, VLX_NTO_LAMBDA), buf, sizeof(double) * vlx_nto_cache_slot_doubles(c));
 		MEMCPY(out, vlx_nto_cache_part(c, slot, part) + offset, sizeof(double) * count);
 		md_hdf5_unlock(lock);
@@ -5954,11 +5973,15 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		const size_t nvir   = (size_t)vlx->rsp.num_virtual;
 		const size_t lmax   = MIN((size_t)VLX_NTO_MAX_LAMBDAS, MIN(nocc, nvir));
 		const size_t num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
-		const size_t bytes  = vlx_nto_cache_bytes(lmax, num_ao);
+		const size_t slots  = vlx_nto_cache_num_slots(num_states, lmax, num_ao);
+		const size_t bytes  = vlx_nto_cache_bytes(slots, lmax, num_ao);
 		vlx_nto_cache_t* cache = lmax > 0 ? (vlx_nto_cache_t*)md_attributes_alloc_user_data(&sys->attributes, bytes) : NULL;
 		if (cache) {
-			*cache = (vlx_nto_cache_t){ .sys = sys, .num_states = (uint32_t)num_states, .lmax = (uint32_t)lmax, .num_ao = (uint32_t)num_ao };
-			for (size_t k = 0; k < VLX_NTO_CACHE_SLOTS; ++k) cache->state[k] = -1;
+			*cache = (vlx_nto_cache_t){ .sys = sys, .num_states = (uint32_t)num_states, .lmax = (uint32_t)lmax, .num_ao = (uint32_t)num_ao, .num_slots = (uint32_t)slots };
+			for (size_t k = 0; k < slots; ++k) {
+				vlx_nto_cache_state(cache)[k] = -1;
+				vlx_nto_cache_used(cache)[k]  = 0;
+			}
 
 			const md_attribute_format_t lambda_format = {
 				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,

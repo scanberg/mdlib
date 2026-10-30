@@ -76,8 +76,10 @@ struct md_system_state_t;
 //                                                            time: slice by state
 //   vlx/rsp/nto/{particle,hole}/coefficient                  {S,Lmax,A}, computed on demand with the
 //                                                            weights - one decomposition per state
-//                                                            gives all three, and the last four
-//                                                            states' are kept
+//                                                            gives all three - and kept (every
+//                                                            state's when they fit in 256 MB). Read
+//                                                            a state once on a worker thread to
+//                                                            have it ready without waiting
 //   vlx/rsp/transition_density/*                             {S,A,A}, computed on demand
 //   vlx/rsp/solution_matrix, vlx/rsp/num_{core,valence,       the raw response eigenvectors and the
 //   virtual}                                                  occupied/virtual split they are
