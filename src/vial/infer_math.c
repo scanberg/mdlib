@@ -24,11 +24,7 @@ static bool is_float(uint8_t d) { return d == VIAL_DT_FLOAT || d == VIAL_DT_FLOA
 static bool is_number(const T* t) { return t->dtype == VIAL_DT_INT || is_float(t->dtype) || t->dtype == VIAL_DT_BOOL; }
 static bool has_unit(const T* t) { return t->unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(t->unit); }
 
-static void join_stage(T* out, const T* a) {
-    if (a->stage > out->stage) out->stage = a->stage;
-    if (a->pass > out->pass) out->pass = a->pass;
-    out->flags |= a->flags & (VIAL_TYPE_MISSING | VIAL_TYPE_PER_FRAME);
-}
+static void join_stage(T* out, const T* a) { const T o = *out; vx_join_stage(out, &o, a); }
 
 static void set_unit(T* t, md_unit_t u) { t->unit_kind = VIAL_UNIT_KNOWN; t->unit = u; }
 static void no_unit(T* t) { set_unit(t, md_unit_none()); }
@@ -40,7 +36,7 @@ static md_unit_t unit_named(const char* name) {
 }
 
 static vial_value_t value(infer_t* x, vial_node_id n) { return n ? vx_value_of(x, n) : (vial_value_t){0}; }
-static T type_of(infer_t* x, vial_node_id n) { return n ? x->out->types[n] : err(); }
+static T type_of(infer_t* x, vial_node_id n) { return n ? x->out->types[(n) - x->out->base] : err(); }
 
 static const char* tstr(const T* t) { return vx_tstr(t); }
 
@@ -151,8 +147,8 @@ static T reduce_sets(infer_t* x, vial_node_id call, vial_node_id an, const T* a,
 static int particle_dim(infer_t* x, const T* a, const vial_desc_t** desc) {
     for (uint8_t k = 0; k < a->ndim; ++k) {
         const uint32_t d = a->dims[k].desc;
-        if (d && d < md_array_size(x->out->descs) && x->out->descs[d].level == VIAL_LEVEL_PARTICLE) {
-            if (desc) *desc = &x->out->descs[d];
+        if (d && d < md_array_size((*x->descs)) && (*x->descs)[d].level == VIAL_LEVEL_PARTICLE) {
+            if (desc) *desc = &(*x->descs)[d];
             return k;
         }
     }
@@ -242,7 +238,7 @@ static T call_reduce(infer_t* x, vial_node_id call, int red, const char* fname) 
         if (vial_type_is_error(&t)) return t;
     } else {
         axes_t ax;
-        if (args[1] && vial_type_is_error(&x->out->types[args[1]])) return err();
+        if (args[1] && vial_type_is_error(&x->out->types[(args[1]) - x->out->base])) return err();
         if (!read_axes(x, args[1], &a, &ax)) return err();
         t = a;
         remove_axes(&t, &a, &ax);
@@ -254,6 +250,18 @@ static T call_reduce(infer_t* x, vial_node_id call, int red, const char* fname) 
             t.stage = VIAL_STAGE_TRAJECTORY;
             t.pass = (uint8_t)(a.pass + 1);
             t.flags &= ~VIAL_TYPE_PER_FRAME;
+        }
+        // The minimum of a matrix of distances whose two dimensions run over the same units pairs each with itself
+        if ((red == RED_MIN || red == RED_ARGMIN) && a.ndim >= 2 && has_unit(&a) && md_unit_base_equal(a.unit, unit_named("angstrom"))) {
+            bool self = false;
+            for (uint8_t k = 0; k < a.ndim && !self; ++k) {
+                if (!(ax.all || ((ax.mask >> k) & 1)) || !a.dims[k].desc) continue;
+                for (uint8_t q = 0; q < a.ndim && !self; ++q) self = q != k && a.dims[q].desc == a.dims[k].desc;
+            }
+            if (self) {
+                vx_diag_fix(x, "W0608", call, NULL, "`%s` of distances between the same units pairs each with itself, so it is zero; "
+                    "closest_pair(..., distinct=True) leaves those pairs out", fname);
+            }
         }
         // A reduction over an extent that is empty in some frame has no value there, where it has no identity
         bool dynamic = false;
@@ -333,6 +341,8 @@ static T call_unary(infer_t* x, vial_node_id call, str_t name, const char* fname
     if (trig) {
         if (a.unit_kind == VIAL_UNIT_KNOWN && !is_angle_unit(&a)) {
             vx_diag_fix(x, "W0501", call, "unitless(...)", "`%s` takes an angle; this is %s", fname, tstr(&a));
+            t.unit_kind = VIAL_UNIT_UNKNOWN;
+            return t;
         }
         no_unit(&t);
         return t;
@@ -340,7 +350,10 @@ static T call_unary(infer_t* x, vial_node_id call, str_t name, const char* fname
     const bool inverse = str_eq(name, STR_LIT("asin")) || str_eq(name, STR_LIT("acos")) || str_eq(name, STR_LIT("atan"));
     if (has_unit(&a)) {
         vx_diag_fix(x, "W0501", call, "unitless(...)", "`%s` takes a value without a unit; this is %s", fname, tstr(&a));
+        t.unit_kind = VIAL_UNIT_UNKNOWN;
+        return t;
     }
+    if (a.unit_kind == VIAL_UNIT_UNKNOWN) return t;
     if (inverse) set_unit(&t, unit_named("deg"));
     else no_unit(&t);
     return t;
@@ -366,7 +379,7 @@ static bool broadcast_all(infer_t* x, vial_node_id call, const vial_node_id* arg
 }
 
 static bool all_typed(infer_t* x, const vial_node_id* args, uint32_t n) {
-    for (uint32_t i = 0; i < n; ++i) if (args[i] && vial_type_is_error(&x->out->types[args[i]])) return false;
+    for (uint32_t i = 0; i < n; ++i) if (args[i] && vial_type_is_error(&x->out->types[(args[i]) - x->out->base])) return false;
     return true;
 }
 

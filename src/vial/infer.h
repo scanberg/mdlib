@@ -41,6 +41,7 @@ typedef struct vial_desc_t {
 } vial_desc_t;
 
 typedef struct vial_types_t {
+    uint32_t        base;       // the arrays by node id cover ids from base: 0 for a script, a def's first node for a call
     vial_type_t*    types;      // md_array by node id
     vial_value_t*   values;     // md_array by node id
     uint8_t*        typed;      // md_array by node id: 1 when types[] holds its type

@@ -23,18 +23,45 @@ static inline vial_node_id child(const infer_t* x, vial_node_id id, uint32_t i) 
 static inline uint32_t num_children(const infer_t* x, vial_node_id id) { return x->t->nodes[id].child_count; }
 static inline uint16_t sub_of(const infer_t* x, vial_node_id id) { return x->t->nodes[id].sub; }
 
+// In the prelude, a parameter's name stands for what the script wrote as its argument
+static vial_node_id provenance(const infer_t* x, vial_node_id id) {
+    if (!x->frame || !x->frame->prelude || !id || x->t->nodes[id].kind != VIAL_N_NAME) return 0;
+    const uint32_t sym = x->n->ref[id];
+    return sym ? vx_frame_prov(x, sym) : 0;
+}
+
 static inline str_t text(const infer_t* x, vial_node_id id) {
+    const vial_node_id p = provenance(x, id);
+    if (p) {
+        const md_vial_span_t s = x->c->tree->nodes[p].span;
+        return (str_t){x->c->src.ptr + s.beg, s.end - s.beg};
+    }
     const md_vial_span_t s = x->t->nodes[id].span;
     return (str_t){x->src.ptr + s.beg, s.end - s.beg};
 }
 
+// A diagnostic, once. In the prelude it is reported in the script: at the argument a parameter stands for, or else at
+// the call that led there, without a fix, since a fix would quote the prelude.
 static void diag_fix(infer_t* x, const char code[6], vial_node_id at, const char* fix, const char* fmt, ...) {
     char buf[400];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    vial_diag(x->diags, code, x->t->nodes[at].span, "%s", buf);
+    md_vial_span_t span = x->t->nodes[at].span;
+    if (x->frame && x->frame->prelude) {
+        const vial_node_id p = provenance(x, at);
+        if (p) span = x->c->tree->nodes[p].span;
+        else { span = x->c->tree->nodes[x->frame->site].span; fix = NULL; }
+    }
+    if (vial_diag_at(x->diags, span.beg)) {
+        const size_t n = md_array_size(x->diags->items);
+        for (size_t i = n; i-- > 0;) {
+            const md_vial_diagnostic_t* d = &x->diags->items[i];
+            if (d->span.beg == span.beg && d->span.end == span.end && strncmp(d->code, code, 5) == 0) return;   // one mistake, one diagnostic
+        }
+    }
+    vial_diag(x->diags, code, span, "%s", buf);
     if (fix) vial_diag_set_fix(x->diags, md_array_size(x->diags->items) - 1, str_from_cstr(fix));
 }
 #define diag(x, code, at, ...) diag_fix(x, code, at, NULL, __VA_ARGS__)
@@ -70,9 +97,16 @@ str_t vx_text(const infer_t* x, vial_node_id id) { return text(x, id); }
 
 uint32_t vx_desc(infer_t* x, uint8_t level, const vial_sets_t* sets) {
     if (level == VIAL_LEVEL_NONE) return 0;
-    if (!md_array_size(x->out->descs)) md_array_push(x->out->descs, ((vial_desc_t){0}), x->alloc);
-    md_array_push(x->out->descs, ((vial_desc_t){.level = level, .sets = sets}), x->alloc);
-    return (uint32_t)md_array_size(x->out->descs) - 1;
+    if (!md_array_size((*x->descs))) md_array_push((*x->descs), ((vial_desc_t){0}), x->alloc);
+    // The same sets describe the same units: one description, so their dimensions are known to pair
+    if (sets) {
+        const size_t n = md_array_size(*x->descs);
+        for (size_t i = n; i-- > 1 && i + 64 >= n;) {
+            if ((*x->descs)[i].sets == sets && (*x->descs)[i].level == level) return (uint32_t)i;
+        }
+    }
+    md_array_push((*x->descs), ((vial_desc_t){.level = level, .sets = sets}), x->alloc);
+    return (uint32_t)md_array_size((*x->descs)) - 1;
 }
 
 static T scalar(vial_dtype_t d) { return vial_type_scalar(d); }
@@ -94,11 +128,25 @@ static const char* dtype_word(const T* t) {
 }
 
 // The later stage and pass of two values, and missing if either may be
-static void join_stage(T* out, const T* a, const T* b) {
+// The stage and pass of a value computed from a and b. A value that exists per frame (frame stage, or a trajectory
+// value that keeps the frame) combined with a trajectory value complete after pass p is computed per frame in pass
+// p + 1: `ends - mean(ends, axis='frame')` is trajectory, per frame, pass 2.
+void vx_join_stage(T* out, const T* a, const T* b) {
+    const bool pa = a->stage == VIAL_STAGE_FRAME || (a->flags & VIAL_TYPE_PER_FRAME);
+    const bool pb = b->stage == VIAL_STAGE_FRAME || (b->flags & VIAL_TYPE_PER_FRAME);
+    const bool ta = a->stage == VIAL_STAGE_TRAJECTORY && !(a->flags & VIAL_TYPE_PER_FRAME);
+    const bool tb = b->stage == VIAL_STAGE_TRAJECTORY && !(b->flags & VIAL_TYPE_PER_FRAME);
     out->stage = a->stage > b->stage ? a->stage : b->stage;
     out->pass  = a->pass > b->pass ? a->pass : b->pass;
-    out->flags |= (a->flags | b->flags) & (VIAL_TYPE_MISSING | VIAL_TYPE_PER_FRAME);
+    out->flags = (uint16_t)((out->flags & ~VIAL_TYPE_PER_FRAME) | ((a->flags | b->flags) & (VIAL_TYPE_MISSING | VIAL_TYPE_PER_FRAME)));
+    if ((pa && tb) || (pb && ta)) {
+        const uint8_t after = (uint8_t)((ta ? a->pass : b->pass) + 1);
+        out->stage = VIAL_STAGE_TRAJECTORY;
+        out->flags |= VIAL_TYPE_PER_FRAME;
+        if (after > out->pass) out->pass = after;
+    }
 }
+static void join_stage(T* out, const T* a, const T* b) { vx_join_stage(out, a, b); }
 
 // ### SHAPES ###
 
@@ -264,8 +312,8 @@ static str_t string_value(infer_t* x, vial_node_id id) {
 
 static T infer(infer_t* x, vial_node_id id);
 
-static void set_value(infer_t* x, vial_node_id id, vial_value_t v) { x->out->values[id] = v; }
-static vial_value_t value_of(const infer_t* x, vial_node_id id) { return x->out->values[id]; }
+static void set_value(infer_t* x, vial_node_id id, vial_value_t v) { x->out->values[(id) - x->out->base] = v; }
+static vial_value_t value_of(const infer_t* x, vial_node_id id) { return x->out->values[(id) - x->out->base]; }
 void vx_set_value(infer_t* x, vial_node_id id, vial_value_t v) { set_value(x, id, v); }
 vial_value_t vx_value_of(const infer_t* x, vial_node_id id) { return value_of(x, id); }
 
@@ -273,10 +321,17 @@ static T infer_name(infer_t* x, vial_node_id id) {
     const vial_symbol_t* s = vial_names_symbol(x->n, id);
     if (!s) return err();
     const uint32_t si = x->n->ref[id];
+    T ft;
+    vial_value_t fv;
+    if (x->frame && s->kind != VIAL_SYM_BUILTIN && vx_frame_get(x, si, &ft, &fv)) {
+        set_value(x, id, fv);
+        return ft;
+    }
     switch (s->kind) {
     case VIAL_SYM_GLOBAL:
-        set_value(x, id, x->out->sym_values[si]);
-        return x->out->sym_types[si];
+        if (x->t != x->c->tree) return err();
+        set_value(x, id, x->top->sym_values[si]);
+        return x->top->sym_types[si];
     case VIAL_SYM_DEF:
     case VIAL_SYM_PRELUDE:
         return scalar(VIAL_DT_DEF);
@@ -489,14 +544,14 @@ static T infer_binary(infer_t* x, vial_node_id id) {
     } else if ((op == VIAL_OP_PLUS || op == VIAL_OP_MINUS) && (pa != pb) && (pa ? b.stage : a.stage) == VIAL_STAGE_STATIC) {
         const T* p = pa ? &a : &b;
         double c;
-        if (val_num(pa ? &x->out->values[bn] : &x->out->values[an], &c)) {
+        if (val_num(pa ? &x->out->values[(bn) - x->out->base] : &x->out->values[(an) - x->out->base], &c)) {
             const float s = (float)(op == VIAL_OP_MINUS && pa ? -c : c);
             t.flags |= VIAL_TYPE_PERIODIC;
             t.period_beg = p->period_beg + s; t.period_end = p->period_end + s; t.seam = p->seam + s;
         }
     } else if ((op == VIAL_OP_STAR || op == VIAL_OP_SLASH) && (pa != pb)) {
         double c;
-        if (val_num(pa ? &x->out->values[bn] : &x->out->values[an], &c) && c != 0.0 && (op == VIAL_OP_STAR || pa)) {
+        if (val_num(pa ? &x->out->values[(bn) - x->out->base] : &x->out->values[(an) - x->out->base], &c) && c != 0.0 && (op == VIAL_OP_STAR || pa)) {
             const T* p = pa ? &a : &b;
             const float k = (float)(op == VIAL_OP_SLASH ? 1.0 / c : c);
             t.flags |= VIAL_TYPE_PERIODIC;
@@ -548,6 +603,9 @@ static T infer_compare(infer_t* x, vial_node_id id) {
         if (cmp == VIAL_CMP_IS || cmp == VIAL_CMP_IS_NOT) {
             // is compares static values; checked further with stages
             join_stage(&pair, &a, &b);
+        } else if ((cmp == VIAL_CMP_IN || cmp == VIAL_CMP_NOT_IN) && b.dtype == VIAL_DT_TUPLE) {
+            // One of a tuple's values, as assert op in ('closest', 'farthest')
+            join_stage(&pair, &a, &b);
         } else if (cmp == VIAL_CMP_IN || cmp == VIAL_CMP_NOT_IN) {
             if (b.dtype == VIAL_DT_RANGE) {
                 if (!is_number(&a)) { diag(x, "E0319", on, "`in` a range takes numbers; this is %s", dtype_word(&a)); failed = true; continue; }
@@ -562,6 +620,21 @@ static T infer_compare(infer_t* x, vial_node_id id) {
         } else {
             const bool ordered = cmp != VIAL_CMP_EQ && cmp != VIAL_CMP_NE;
             const bool both_str = a.dtype == VIAL_DT_STR && b.dtype == VIAL_DT_STR;
+            const bool with_none = !ordered && (a.dtype == VIAL_DT_NONE || b.dtype == VIAL_DT_NONE) && a.ndim == 0 && b.ndim == 0;
+            if (with_none) {
+                // None equals only None, as `weights == 'mass'` with weights=None
+                join_stage(&pair, &a, &b);
+                const vial_value_t va = value_of(x, an), vb = value_of(x, bn);
+                if (all_known && va.kind != VIAL_VAL_NONE && vb.kind != VIAL_VAL_NONE) {
+                    const bool eq = va.kind == vb.kind;
+                    value = value && (cmp == VIAL_CMP_EQ ? eq : !eq);
+                } else {
+                    all_known = false;
+                }
+                T merged0 = result;
+                if (broadcast(&result, &pair, &merged0)) { join_stage(&merged0, &result, &pair); result = merged0; }
+                continue;
+            }
             if (!(is_number(&a) && is_number(&b)) && !(both_str && !ordered) &&
                 !(!ordered && a.dtype == b.dtype && (a.dtype == VIAL_DT_SET || a.dtype == VIAL_DT_BOOL))) {
                 diag(x, "E0319", on, "`%s` takes %s; this is %s and %s", vial_cmp_str((vial_cmp_t)cmp), ordered ? "numbers" : "two values of one kind",
@@ -583,6 +656,31 @@ static T infer_compare(infer_t* x, vial_node_id id) {
         result = merged;
         vial_value_t va = value_of(x, an), vb = value_of(x, bn);
         bool r;
+        if (cmp == VIAL_CMP_IS || cmp == VIAL_CMP_IS_NOT) {
+            // Known when either side is None and both are known, or both are static strings or bools
+            const bool known = va.kind != VIAL_VAL_NONE && vb.kind != VIAL_VAL_NONE && (va.kind == VIAL_VAL_NULL || vb.kind == VIAL_VAL_NULL);
+            if (all_known && known) {
+                r = va.kind == vb.kind;
+                value = value && (cmp == VIAL_CMP_IS ? r : !r);
+            } else {
+                all_known = false;
+            }
+            continue;
+        }
+        if ((cmp == VIAL_CMP_IN || cmp == VIAL_CMP_NOT_IN) && b.dtype == VIAL_DT_TUPLE) {
+            bool found = false, known = all_known && va.kind != VIAL_VAL_NONE && kind_of(x, bn) == VIAL_N_TUPLE;
+            for (uint32_t k = 0; known && k < num_children(x, bn); ++k) {
+                const vial_value_t e = value_of(x, child(x, bn, k));
+                if (e.kind == VIAL_VAL_NONE) { known = false; break; }
+                bool eq = false;
+                if (e.kind == VIAL_VAL_NULL || va.kind == VIAL_VAL_NULL) eq = e.kind == va.kind;
+                else if (!compare_values(VIAL_CMP_EQ, &va, &e, &eq)) eq = false;
+                found = found || eq;
+            }
+            if (known) value = value && (cmp == VIAL_CMP_IN ? found : !found);
+            else all_known = false;
+            continue;
+        }
         if (all_known && is_number(&a) && !convert_value(&a, &b, &vb)) all_known = false;
         if (all_known && compare_values(cmp, &va, &vb, &r)) value = value && r;
         else all_known = false;
@@ -924,7 +1022,12 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
                 diag(x, "E0304", it, "position %lld is outside `%s`", (long long)k2, ext);
                 return err();
             }
-            if (e.kind == VIAL_EXT_DYNAMIC) t.flags |= VIAL_TYPE_MISSING;
+            if (e.kind == VIAL_EXT_DYNAMIC && ix.stage == VIAL_STAGE_STATIC) {
+                // A constant position may be past the end in some frame; a position computed per frame, such as the
+                // index closest_pair gives, is one the array has
+                t.flags |= VIAL_TYPE_MISSING;
+                diag(x, "W0405", it, "a position in `[?]`, whose length changes per frame, is missing in the frames where it is outside (R0101)");
+            }
             join_stage(&t, &t, &ix);
             continue;   // the dimension is removed
         }
@@ -1033,6 +1136,19 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_sets(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_geom(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_math(x, id, sym->builtin, &t)) return t;
+            if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_draw(x, id, sym->builtin, &t)) return t;
+            if (sym && sym->kind == VIAL_SYM_PRELUDE && x->c->prelude) {
+                vial_node_id d = sym->node;
+                if (d && x->c->prelude->nodes[d].kind == VIAL_N_NAME) d = x->c->prelude_names.parent[d];
+                if (d && x->c->prelude->nodes[d].kind == VIAL_N_DEF) {
+                    return vx_call_def(x, id, x->c->prelude, &x->c->prelude_names, x->c->prelude_src, true, d);
+                }
+            }
+            if (sym && sym->kind == VIAL_SYM_DEF && sym->node) {
+                vial_node_id d = sym->node;
+                if (kind_of(x, d) == VIAL_N_NAME) d = x->n->parent[d];
+                if (d && kind_of(x, d) == VIAL_N_DEF) return vx_call_def(x, id, x->t, x->n, x->src, x->t == x->c->prelude, d);
+            }
         }
     }
     // fallthrough
@@ -1056,11 +1172,11 @@ T vx_infer(infer_t* x, vial_node_id id) { return infer(x, id); }
 
 static T infer(infer_t* x, vial_node_id id) {
     if (!id) return err();
-    if (x->out->typed[id]) return x->out->types[id];
+    if (x->out->typed[(id) - x->out->base]) return x->out->types[(id) - x->out->base];
     T t = infer_uncached(x, id);
     if (t.ndim > VIAL_MAX_DIMS) t = err();
-    x->out->types[id] = t;
-    x->out->typed[id] = 1;
+    x->out->types[(id) - x->out->base] = t;
+    x->out->typed[(id) - x->out->base] = 1;
     return t;
 }
 
@@ -1069,14 +1185,17 @@ static T infer(infer_t* x, vial_node_id id) {
 static void assign_target(infer_t* x, vial_node_id target, const T* t, vial_node_id value) {
     const vial_node_kind_t k = kind_of(x, target);
     if (k == VIAL_N_NAME) {
-        x->out->types[target] = *t;
-        x->out->typed[target] = 1;
+        const vial_value_t v = value ? x->out->values[(value) - x->out->base] : val_none();
+        x->out->types[(target) - x->out->base] = *t;
+        x->out->typed[(target) - x->out->base] = 1;
+        x->out->values[(target) - x->out->base] = v;
         const uint32_t s = x->n->ref[target];
-        if (s) {
+        if (s && x->frame) {
+            vx_frame_set(x, s, t, &v, provenance(x, value));
+        } else if (s) {
             x->out->sym_types[s] = *t;
-            x->out->sym_values[s] = value ? x->out->values[value] : val_none();
+            x->out->sym_values[s] = v;
         }
-        x->out->values[target] = value ? x->out->values[value] : val_none();
         return;
     }
     if (k == VIAL_N_TUPLE || k == VIAL_N_LIST) {
@@ -1100,43 +1219,98 @@ static void assign_target(infer_t* x, vial_node_id target, const T* t, vial_node
     }
 }
 
-static void check_stmt(infer_t* x, vial_node_id s);
+static bool check_stmt(infer_t* x, vial_node_id s);
 
-static void check_block(infer_t* x, vial_node_id b) {
-    if (!b) return;
-    if (kind_of(x, b) != VIAL_N_BLOCK) { check_stmt(x, b); return; }
-    for (uint32_t i = 0; i < num_children(x, b); ++i) check_stmt(x, child(x, b, i));
+// The statements of a block in order; true when it surely returned, so what follows is never reached
+static bool check_block(infer_t* x, vial_node_id b) {
+    if (!b) return false;
+    if (kind_of(x, b) != VIAL_N_BLOCK) return check_stmt(x, b);
+    for (uint32_t i = 0; i < num_children(x, b); ++i) {
+        if (check_stmt(x, child(x, b, i))) return true;
+    }
+    return false;
 }
 
-static void check_stmt(infer_t* x, vial_node_id s) {
+// An if: a static condition checks only the branch it takes. True when every branch that can run returned.
+static bool check_if(infer_t* x, vial_node_id s) {
+    const vial_node_id c = child(x, s, 0);
+    const T ct = infer(x, c);
+    const vial_value_t v = value_of(x, c);
+    const vial_node_id other = child(x, s, 2);
+    if (!vial_type_is_error(&ct) && v.kind == VIAL_VAL_BOOL && ct.stage == VIAL_STAGE_STATIC) {
+        if (v.b) return check_block(x, child(x, s, 1));
+        return other ? (kind_of(x, other) == VIAL_N_IF ? check_if(x, other) : check_block(x, other)) : false;
+    }
+    const bool a = check_block(x, child(x, s, 1));
+    const bool b = other ? (kind_of(x, other) == VIAL_N_IF ? check_if(x, other) : check_block(x, other)) : false;
+    return a && b;
+}
+
+bool vx_check_block(infer_t* x, vial_node_id b) { return check_block(x, b); }
+
+void vx_frame_return(infer_t* x, vial_node_id at, const T* t) {
+    vx_frame_t* f = x->frame;
+    if (vial_type_is_error(t)) { f->result = err(); f->has_result = true; return; }
+    if (!f->has_result) { f->result = *t; f->has_result = true; return; }
+    if (vial_type_is_error(&f->result)) return;
+    T m;
+    if (f->result.dtype == VIAL_DT_TUPLE || t->dtype == VIAL_DT_TUPLE) {
+        if (f->result.dtype != t->dtype || f->result.num_elems != t->num_elems) {
+            diag(x, "E0319", at, "the returns of a def have one type; these are %s and %s", tstr(&f->result), tstr(t));
+            f->result = err();
+        }
+        return;
+    }
+    if (!join_types(x, at, "the returns of a def", &f->result, t, &m)) { f->result = err(); return; }
+    f->result = m;
+}
+
+static bool check_stmt(infer_t* x, vial_node_id s) {
     switch (kind_of(x, s)) {
     case VIAL_N_ASSIGN: {
         const uint32_t n = num_children(x, s);
-        if (!n) return;
+        if (!n) return false;
         const vial_node_id value = child(x, s, n - 1);
         const T t = infer(x, value);
         for (uint32_t i = 0; i + 1 < n; ++i) assign_target(x, child(x, s, i), &t, value);
-        return;
+        return false;
     }
     case VIAL_N_EXPR_STMT:
         if (child(x, s, 0)) infer(x, child(x, s, 0));
-        return;
-    case VIAL_N_IF: {
-        const vial_node_id c = child(x, s, 0);
+        return false;
+    case VIAL_N_IF:
+        return check_if(x, s);
+    case VIAL_N_RETURN: {
+        if (!x->frame) return true;
+        const vial_node_id v = child(x, s, 0);
+        const T t = v ? infer(x, v) : scalar(VIAL_DT_NONE);
+        if (v) set_value(x, s, value_of(x, v));
+        vx_frame_return(x, v ? v : s, &t);
+        return true;
+    }
+    case VIAL_N_ASSERT: {
+        const vial_node_id c = child(x, s, 0), m = child(x, s, 1);
         const T ct = infer(x, c);
+        if (m) infer(x, m);
         const vial_value_t v = value_of(x, c);
-        if (!vial_type_is_error(&ct) && v.kind == VIAL_VAL_BOOL && ct.stage == VIAL_STAGE_STATIC) {
-            // Static: only the branch taken is type-checked
-            if (v.b) check_block(x, child(x, s, 1));
-            else if (child(x, s, 2)) check_block(x, child(x, s, 2));
-            return;
+        if (!vial_type_is_error(&ct) && ct.stage == VIAL_STAGE_STATIC && v.kind == VIAL_VAL_BOOL && !v.b) {
+            const vial_value_t mv = m ? value_of(x, m) : val_none();
+            if (mv.kind == VIAL_VAL_STR) {
+                char ex[256];
+                const size_t len = mv.s.len < sizeof(ex) - 1 ? mv.s.len : sizeof(ex) - 1;
+                memcpy(ex, mv.s.ptr, len);
+                ex[len] = '\0';
+                for (size_t i = 0; i < len; ++i) if (ex[i] == '\n' || ex[i] == '\r') ex[i] = ' ';
+                diag(x, "E0314", c, "%s", ex);
+            } else {
+                diag(x, "E0314", c, "the assert fails for these arguments");
+            }
+            return true;    // nothing after it runs
         }
-        check_block(x, child(x, s, 1));
-        if (child(x, s, 2)) check_block(x, child(x, s, 2));
-        return;
+        return false;
     }
     default:
-        return;     // defs are checked at their calls; loops and the rest arrive with later steps
+        return false;   // nested defs are checked at their calls; loops and the rest arrive with later steps
     }
 }
 
@@ -1155,7 +1329,11 @@ void vial_check_types(vial_check_t* c, vial_types_t* out) {
     memset(out->sym_values, 0, nsym * sizeof(*out->sym_values));
     for (size_t i = 0; i < num; ++i) out->types[i] = vial_type_error();
 
-    infer_t x = {.t = c->tree, .src = c->src, .diags = c->diags, .n = &c->names, .out = out, .alloc = c->alloc};
+    vx_memo_t* memo = md_alloc(c->alloc, sizeof(vx_memo_t));
+    memset(memo, 0, sizeof(*memo));
+    memo->map.allocator = c->alloc;
+    infer_t x = {.t = c->tree, .src = c->src, .diags = c->diags, .n = &c->names, .out = out, .top = out, .descs = &out->descs, .c = c, .memo = memo,
+        .alloc = c->alloc};
     vial_sys_t* sys = md_alloc(c->alloc, sizeof(vial_sys_t));
     if (c->sys && vial_sys_init(sys, c->sys, c->alloc)) x.sys = sys;
     const vial_node_id root = c->tree->root;

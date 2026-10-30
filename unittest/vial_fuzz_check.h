@@ -33,7 +33,7 @@ static inline bool vial_fuzz__checker_code(const char* code) {
     static const char* codes[] = {"E0201", "W0201", "E0305", "E0312", "E0701", "E0801", "E0802", "E0803",
                                   "E0301", "E0303", "E0304", "E0308", "E0319", "W0501",
                                   "E0202", "E0203", "E0204", "E0205", "E0206", "E0207", "E0313", "E0316", "W0601", "W0602",
-                                  "E0302", "E0318", "W0608", "E0307", "E0309", "E0310", "E0311", "W0405", "W0603"};
+                                  "E0302", "E0318", "W0608", "E0307", "E0309", "E0310", "E0311", "W0405", "W0603", "E0314"};
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
         if (memcmp(code, codes[i], 6) == 0) return true;
     }

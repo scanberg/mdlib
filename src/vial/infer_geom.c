@@ -23,11 +23,7 @@ static md_unit_t unit_named(const char* name) {
     return u;
 }
 
-static void join_stage(T* out, const T* a) {
-    if (a->stage > out->stage) out->stage = a->stage;
-    if (a->pass > out->pass) out->pass = a->pass;
-    out->flags |= a->flags & VIAL_TYPE_MISSING;
-}
+static void join_stage(T* out, const T* a) { const T o = *out; vx_join_stage(out, &o, a); }
 
 static bool is_float(const T* t) { return t->dtype == VIAL_DT_FLOAT || t->dtype == VIAL_DT_FLOAT64; }
 static bool is_number(const T* t) { return t->dtype == VIAL_DT_INT || is_float(t) || t->dtype == VIAL_DT_BOOL; }
@@ -157,6 +153,8 @@ static T ragged_positions(infer_t* x, vial_node_id node, const T* a) {
     } else {
         vial_type_push_dim(&t, (vial_extent_t){.kind = VIAL_EXT_DYNAMIC, .id = (uint32_t)node});
     }
+    // One of the sets' particles, a different set per call: described as particles, which are not known here
+    t.dims[0].desc = vx_desc(x, VIAL_LEVEL_PARTICLE, NULL);
     vial_type_push_dim(&t, vial_extent_static(3));
     return t;
 }
@@ -189,6 +187,14 @@ static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const
             join_stage(&out->core, a);
             vial_type_push_dim(&out->core, vial_extent_static(3));
             set_loop(out, a, a->ndim);
+            return true;
+        }
+        if (a->dtype == VIAL_DT_SET && a->ndim == 0 && (a->flags & VIAL_TYPE_EMPTY)) {
+            // A set known to be empty (W0601 where it was selected) has no position in any frame
+            out->core = coords();
+            out->core.flags |= VIAL_TYPE_MISSING;
+            vial_type_push_dim(&out->core, vial_extent_static(3));
+            vx_diag_fix(x, "W0405", node, NULL, "`%s` is empty, so what `%s` gives is missing in every frame", excerpt(ex, sizeof(ex), x, node), fname);
             return true;
         }
         excerpt(ex, sizeof(ex), x, node);
@@ -273,6 +279,14 @@ static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const
     }
 }
 
+bool vx_split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const char* fname, const char* pname, T* core, T* loop) {
+    split_t s;
+    if (!split(x, node, a, kind, fname, pname, &s)) return false;
+    *core = s.core;
+    *loop = s.loop;
+    return true;
+}
+
 // ### ARGUMENTS ###
 
 typedef vx_param_t param_t;
@@ -336,7 +350,7 @@ static bool map_args(infer_t* x, vial_node_id call, const char* fname, const par
     bool ok = true;
     for (uint32_t k = 0; k < np; ++k) {
         if (!args[k]) { memset(&splits[k], 0, sizeof(splits[k])); continue; }
-        const T a = x->out->types[args[k]];
+        const T a = x->out->types[(args[k]) - x->out->base];
         if (vial_type_is_error(&a)) { ok = false; continue; }
         if (!split(x, args[k], &a, params[k].kind, fname, params[k].name, &splits[k])) { ok = false; continue; }
         T m;
@@ -379,7 +393,7 @@ static T call_com(infer_t* x, vial_node_id call, const char* fname, vial_node_id
     if (!s_node && !bind(x, call, fname, params, 2, args)) return err();
     if (args[1]) {
         const vial_value_t w = value(x, args[1]);
-        const T wt = x->out->types[args[1]];
+        const T wt = x->out->types[(args[1]) - x->out->base];
         const bool ok = (w.kind == VIAL_VAL_STR && str_eq(w.s, STR_LIT("mass"))) || w.kind == VIAL_VAL_NULL || vial_type_is_error(&wt);
         if (!ok) {
             vx_diag_fix(x, "E0313", args[1], NULL, "`weights` takes 'mass' or None");
@@ -402,7 +416,7 @@ static T call_property(infer_t* x, vial_node_id call, str_t name) {
     char fname[16];
     snprintf(fname, sizeof(fname), "%.*s", (int)name.len, name.ptr);
     if (!bind(x, call, fname, params, 1, args)) return err();
-    const T s = x->out->types[args[0]];
+    const T s = x->out->types[(args[0]) - x->out->base];
     if (vial_type_is_error(&s)) return err();
     if (s.dtype != VIAL_DT_SET) {
         vx_diag_fix(x, "E0313", args[0], NULL, "`%s` takes a set; this is %s", fname, vx_tstr(&s));
@@ -451,7 +465,7 @@ static T call_angle(infer_t* x, vial_node_id call, bool dihedral) {
         static const param_t one[] = {{"points", VK_WHOLE, true}};
         vial_node_id arg;
         if (!bind(x, call, fname, one, 1, &arg)) return err();
-        const T a = x->out->types[arg];
+        const T a = x->out->types[(arg) - x->out->base];
         if (vial_type_is_error(&a)) return err();
         loop = vial_type_scalar(VIAL_DT_INT);
         const bool rows = is_float(&a) && a.ndim >= 2 && last_is(&a, 3) && a.dims[a.ndim - 2].kind == VIAL_EXT_STATIC && a.dims[a.ndim - 2].n == n;
@@ -537,7 +551,7 @@ static T call_fit(infer_t* x, vial_node_id call) {
     T loop;
     if (!bind(x, call, "fit", params, 4, args) || !map_args(x, call, "fit", params, 4, args, sp, &loop)) return err();
     if (args[2]) {
-        const T on = x->out->types[args[2]];
+        const T on = x->out->types[(args[2]) - x->out->base];
         if (on.dtype != VIAL_DT_SET && on.dtype != VIAL_DT_NONE) {
             vx_diag_fix(x, "E0313", args[2], NULL, "`on` takes a set or None; this is %s", vx_tstr(&on));
             return err();
@@ -559,7 +573,7 @@ bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
         vial_node_id arg;
         *out = err();
         if (!bind(x, call, "positions", params, 1, &arg)) return true;
-        const T a = x->out->types[arg];
+        const T a = x->out->types[(arg) - x->out->base];
         if (vial_type_is_error(&a)) return true;
         if (a.dtype == VIAL_DT_SET) positions_of(x, arg, &a, call, out);
         else if (is_float(&a) && last_is(&a, 3)) *out = a;
