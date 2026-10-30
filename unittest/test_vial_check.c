@@ -420,3 +420,44 @@ UTEST_F(vial_check, building_and_joining) {
     EXPECT_TYPE("m = missing_where([True, False], [1.0, 2.0])\n", 1, "float[2] | missing, static");
     EXPECT_TYPE("m = filled(missing_where([True, False], [1.0, 2.0]), 0.0)\n", 1, "float[2], static");
 }
+
+// ### STEP 7: DEFS ###
+
+UTEST_F(vial_check, defs) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE("def twice(v):\n    return 2 * v\nd = twice(3.0 nm)\n", 3, "float nm, static");
+    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(1.0 nm)\n", 3, "float nm, static");
+    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(b=1 ns, a=2 ns)\n", 3, "int ns, static");
+    EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 5, "float, static");
+    EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 6, "bool, static");
+    EXPECT_DIAGS("def f(op):\n    assert op in ('a', 'b'), \"op= takes 'a' or 'b'\"\n    return 1\nx = f('c')\n",
+        "E0314 2: op= takes 'a' or 'b'\n");
+    EXPECT_DIAGS("def f(a):\n    return a\nx = f()\ny = f(1, 2)\nz = f(b=1)\n",
+        "E0204 3: `f` needs a\nE0204 4: `f` takes 1 argument\nE0202 5: `f` takes no keyword `b`\n");
+    EXPECT_TYPE_ON(T, "def size(r: set):\n    return count(r)\nn = size(residues(chain='A'))\n", 3, "int[442], static");
+    EXPECT_TYPE_ON(T, "def mid(p: points):\n    return mean(p, axis=0)\nm = mid(residues(chain='A', kind='amino_acid'))\n", 3,
+        u8"float[433][3] Å, frame");
+    EXPECT_TYPE_ON(T, "def f(a: point, b: point):\n    return norm(b - a)\nd = f(residues(kind='water'), particles(name='MG'))\n", 3,
+        u8"float[8] Å, frame");
+}
+
+UTEST_F(vial_check, prelude_defs) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "d = distance(particles(name='MG'), particles(resname='GTP').com)\n", 1, u8"float Å, frame");
+    EXPECT_TYPE_ON(T, "d = distance(particles(resname='GTP'), particles(resname='VLB'), between='closest')\n", 1, u8"float Å, frame");
+    EXPECT_TYPE_ON(T, "d = distance(residues(chain='A', kind='amino_acid'), particles(resname='VLB'), between='farthest')\n", 1,
+        u8"float[433] Å, frame");
+    EXPECT_TYPE_ON(T, "g = gyration(residues(chain='A', kind='amino_acid'))\n", 1, u8"float[433] Å, frame");
+    EXPECT_TYPE_ON(T, "c = centroid(particles(resname='GTP'))\n", 1, u8"float[3] Å, frame");
+    EXPECT_DIAGS_ON(T, "g = particles(resname='GTP')\nd = distance(g, particles(resname='GDP'))\n",
+        "E0302 2: `displacement` needs a point for a; `g` may hold several particles, so write .com for its centre or between='closest' | g.com\n"
+        "E0302 2: `displacement` needs a point for b; `particles(resname='GDP')` may hold several particles, so write .com for its centre"
+        " or between='closest' | particles(resname='GDP').com\n");
+    EXPECT_DIAGS_ON(T, "g = particles(resname='GTP')\nd = distance(g, g, between='closest')\n",
+        "W0608 2: `closest_pair` pairs every point with itself, so the shortest distance is zero; distinct=True leaves those pairs out\n");
+    EXPECT_DIAGS_ON(T, "d = distance(particles(name='MG'), particles(name='MG'), between='nearest')\n",
+        "E0314 1: between= takes 'closest' or 'farthest'\n");
+    EXPECT_DIAGS_ON(T, "g = gyration(protein, weights='charge')\n", "E0314 1: weights= takes 'mass' or None\n");
+}

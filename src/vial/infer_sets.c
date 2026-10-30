@@ -17,11 +17,7 @@ typedef vial_type_t T;
 
 static T err(void) { return vial_type_error(); }
 
-static void join_stage(T* out, const T* a) {
-    if (a->stage > out->stage) out->stage = a->stage;
-    if (a->pass > out->pass) out->pass = a->pass;
-    out->flags |= a->flags & VIAL_TYPE_MISSING;
-}
+static void join_stage(T* out, const T* a) { const T o = *out; vx_join_stage(out, &o, a); }
 
 static vial_value_t sets_value(const vial_sets_t* s) { return (vial_value_t){.kind = VIAL_VAL_SETS, .sets = s}; }
 
@@ -99,7 +95,7 @@ static bool int_of(const vial_value_t* v, int64_t* out) {
 // One value of a keyword, from a node already typed: a string, an int or a range. 1 when known, 0 when not known
 // when compiling, -1 when it is a value the keyword does not take.
 static int match_of(infer_t* x, vial_node_id node, bool wants_str, vial_match_t* m) {
-    const T t = x->out->types[node];
+    const T t = x->out->types[(node) - x->out->base];
     const vial_value_t v = vx_value_of(x, node);
     memset(m, 0, sizeof(*m));
     if (wants_str) {
@@ -124,7 +120,7 @@ static int match_of(infer_t* x, vial_node_id node, bool wants_str, vial_match_t*
 // A keyword's value: one value, or a list of them. Typed already. 1 known, 0 not known, -1 refused (reported).
 static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, vial_filter_t* f) {
     const bool wants_str = key_takes_str(level, key);
-    const T t = x->out->types[node];
+    const T t = x->out->types[(node) - x->out->base];
     f->key = key;
     f->any = NULL;
     int known = 1;
@@ -260,10 +256,30 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
             continue;
         }
         if (vial_type_is_error(&vt)) { failed = true; continue; }
-        join_stage(&stage, &vt);
+        if (!(level == VIAL_LEVEL_PARTICLE && vt.ndim >= 1 && vt.dtype != VIAL_DT_STR && vt.dtype != VIAL_DT_INT && vt.dtype != VIAL_DT_SET)) {
+            join_stage(&stage, &vt);    // particles(x) on an array reads only what x runs over, which is static
+        }
         if (vt.dtype == VIAL_DT_SET) {
             const vial_value_t v = vx_value_of(x, arg);
             if (v.kind == VIAL_VAL_SETS) q.within = v.sets;
+            else known = false;
+            continue;
+        }
+        if (level == VIAL_LEVEL_PARTICLE && vt.ndim >= 1 && vt.dtype != VIAL_DT_STR && vt.dtype != VIAL_DT_INT) {
+            // particles(x) on an array: the particles its first particle dimension describes
+            int pd = -1;
+            for (uint8_t k = 0; k < vt.ndim && pd < 0; ++k) {
+                const uint32_t d = vt.dims[k].desc;
+                if (d && d < md_array_size((*x->descs)) && (*x->descs)[d].level == VIAL_LEVEL_PARTICLE) pd = k;
+            }
+            if (pd < 0) {
+                vx_diag_fix(x, "E0311", arg, NULL, "particles(x) takes the particles an array runs over, and `%s` has no dimension over particles",
+                    vx_tstr(&vt));
+                failed = true;
+                continue;
+            }
+            const vial_desc_t* d = &(*x->descs)[vt.dims[pd].desc];
+            if (d->sets && vt.dims[pd].kind == VIAL_EXT_STATIC) q.within = d->sets;
             else known = false;
             continue;
         }
@@ -572,8 +588,8 @@ static T call_labels(infer_t* x, vial_node_id call) {
     vial_type_push_dim(&t, e);
     t.stage = e.kind == VIAL_EXT_DYNAMIC ? a.stage : VIAL_STAGE_STATIC;
     // The labels themselves, when the dimension describes known units
-    if (e.desc && e.desc < md_array_size(x->out->descs) && x->sys) {
-        const vial_desc_t* d = &x->out->descs[e.desc];
+    if (e.desc && e.desc < md_array_size((*x->descs)) && x->sys) {
+        const vial_desc_t* d = &(*x->descs)[e.desc];
         if (d->sets && d->level != VIAL_LEVEL_NONE && d->sets->unit && e.kind == VIAL_EXT_STATIC && d->sets->count == e.n) {
             vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_LABELS, .sets = d->sets});
         }

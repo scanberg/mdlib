@@ -6,15 +6,43 @@
 #include "infer.h"
 #include "select.h"
 
+// The results of defs already checked, by the def and its arguments' types
+typedef struct vx_memo_t {
+    md_hashmap32_t      map;        // key -> index + 1
+    vial_type_t*        results;    // md_array
+    vial_value_t*       values;
+} vx_memo_t;
+
+// A call to a def being checked: its own types for the def's nodes and symbols, in the def's tree
+typedef struct vx_frame_t {
+    struct vx_frame_t*  parent;
+    const vial_tree_t*  t;          // the def's tree: the script's or the prelude's
+    vial_node_id        def;
+    bool                prelude;    // the def is the prelude's: its diagnostics are reported in the script
+    vial_node_id        site;       // prelude: the call in the script that led here, where its diagnostics go
+    md_hashmap32_t      syms;       // symbol -> slot + 1
+    vial_type_t*        sym_types;  // md_array by slot
+    vial_value_t*       sym_values;
+    vial_node_id*       sym_prov;   // prelude: the script node a parameter's argument was written as, or 0
+    vial_type_t         result;     // the returned values joined
+    bool                has_result;
+    uint32_t            depth;
+} vx_frame_t;
+
 typedef struct infer_t {
     const vial_tree_t*  t;
     str_t               src;
     vial_diags_t*       diags;
     const vial_names_t* n;
     vial_types_t*       out;
+    vial_types_t*       top;        // the script's top level: its names' types
+    vial_desc_t**       descs;      // what dimensions run over, one array for every frame: the top level's
     vial_sys_t*         sys;        // NULL without a system
     vial_sets_t*        all;        // every particle, the scope of a script, once `not` needs it
     struct { str_t name; const vial_sets_t* sets; } predefined[8];     // evaluated once per compile
+    const vial_check_t* c;          // the script's and the prelude's trees and names
+    vx_frame_t*         frame;      // the def being checked, or NULL at top level
+    vx_memo_t*          memo;       // a def's result by its arguments' types, shared by every frame
     md_allocator_i*     alloc;
 } infer_t;
 
@@ -33,6 +61,7 @@ static inline uint32_t vx_num_children(const infer_t* x, vial_node_id id) { retu
 uint32_t vx_desc(infer_t* x, uint8_t level, const vial_sets_t* sets);
 
 bool vx_broadcast(const vial_type_t* a, const vial_type_t* b, vial_type_t* out);   // NumPy's, shapes only
+void vx_join_stage(vial_type_t* out, const vial_type_t* a, const vial_type_t* b);  // stage, pass, missing
 bool vx_extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out);
 
 void vx_unit_join(infer_t* x, vial_node_id at, const char* verb, const vial_type_t* a, const vial_type_t* b, vial_type_t* out);
@@ -49,6 +78,13 @@ typedef struct vx_param_t {
 
 enum { VX_KIND_WHOLE = 0, VX_KIND_SET, VX_KIND_GROUP, VX_KIND_POINT, VX_KIND_POINTS, VX_KIND_FLOAT, VX_KIND_INT, VX_KIND_BOOL };
 
+// What one call takes of an argument under a kind (core) and what it maps over (loop's dims); reports E0302, E0313
+bool vx_split(infer_t* x, vial_node_id node, const vial_type_t* a, uint8_t kind, const char* fname, const char* pname,
+              vial_type_t* core, vial_type_t* loop);
+
+// The statements of a block; true when it surely returned
+bool vx_check_block(infer_t* x, vial_node_id block);
+
 // Binds a call's arguments to parameters, by position and then by keyword, and types each; E0202 and E0204
 bool vx_bind(infer_t* x, vial_node_id call, const char* fname, const vx_param_t* params, uint32_t np, vial_node_id* args);
 
@@ -57,6 +93,23 @@ bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_t
 
 // .xyz, .x, .y, .z on a set, and .com on a set or points; false when it is not one of them
 bool vx_attr_geom(infer_t* x, vial_node_id attr, vial_node_id on, const vial_type_t* a, str_t name, vial_type_t* out);
+
+// infer_defs.c
+
+// A call to a def of the script or the prelude: its arguments bound to its parameters, split by their kinds, and its
+// body checked for those types, once per distinct set of them
+vial_type_t vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def);
+
+// shown() and the drawing primitives, until step 9 types drawings fully; false for other names
+bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
+
+// A symbol's type and value in the frames of the defs being checked; false when no frame binds it
+bool vx_frame_get(const infer_t* x, uint32_t sym, vial_type_t* t, vial_value_t* v);
+void vx_frame_set(infer_t* x, uint32_t sym, const vial_type_t* t, const vial_value_t* v, vial_node_id prov);
+vial_node_id vx_frame_prov(const infer_t* x, uint32_t sym);
+
+// The value a return gives, joined into the frame's result
+void vx_frame_return(infer_t* x, vial_node_id at, const vial_type_t* t);
 
 // infer_math.c: reductions, math and arrays; false for other names
 bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
