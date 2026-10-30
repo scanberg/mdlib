@@ -198,6 +198,8 @@ set(SRC_FILES
   src/vial/builtins.c
   src/vial/check.h
   src/vial/check.c
+  src/vial/infer.h
+  src/vial/infer.c
   src/vial/api.c
   src/md_smiles.c
   src/md_smiles.h
@@ -547,7 +549,7 @@ if (MD_VIAL_FUZZ)
   find_package(Threads REQUIRED)
   add_executable(fuzz_vial
     unittest/fuzz_vial.c
-    src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/types.c src/vial/builtins.c src/vial/check.c src/vial/api.c
+    src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/types.c src/vial/builtins.c src/vial/check.c src/vial/infer.c src/vial/api.c
     src/core/md_str.c src/core/md_allocator.c src/core/md_arena_allocator.c src/core/md_common.c
     src/core/md_os.c src/core/md_log.c src/core/md_parse.c src/core/md_unit.c
   )

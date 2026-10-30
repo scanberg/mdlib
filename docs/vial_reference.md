@@ -1067,6 +1067,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0316 | An axis the array does not have | axis=2 on float\[433\]\[3\] | axis=1 |
 | E0317 | is on a value that is not static | is compares static values; d changes per frame | == |
 | E0318 | The coordinates of an array of sets whose sizes differ | `res_a` holds 433 sets of 4 to 14 particles; their positions do not form one array | `particles(res_a).xyz`, or a def with a `points` parameter |
+| E0319 | An operator or property on a value it does not take | `+` takes numbers; this is str and int | |
 | E0401 | A published value, other than a selection, whose shape changes between frames | `d_near` has a different length in each frame | a reduction, or `_d_near` |
 | E0402 | A value from another system not pinned to a frame | values from `crystal` need a frame | `at(..., frame=0)` |
 | E0403 | A top-level `if` on a value that changes per frame | the condition changes per frame; outputs cannot | `where(...)` |

@@ -1,9 +1,11 @@
 #include "check.h"
+#include "infer.h"
 
 #include <core/md_arena_allocator.h>
 #include <core/md_common.h>
 
 #include <string.h>
+#include <stdio.h>
 
 struct md_vial_program_t {
     md_allocator_i*  arena;
@@ -13,6 +15,7 @@ struct md_vial_program_t {
     vial_diags_t     diags;
     vial_tree_t      tree;
     vial_check_t     check;
+    vial_types_t     types;
     // The prelude, compiled with every script
     str_t            prelude_src;
     vial_diags_t     prelude_diags;
@@ -46,6 +49,7 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
         .prelude = with_prelude ? &prog->prelude : NULL, .prelude_src = prog->prelude_src,
         .prelude_diags = &prog->prelude_diags, .alloc = arena};
     vial_check_names(&prog->check);
+    vial_check_types(&prog->check, &prog->types);
 
     const size_t n = md_array_size(prog->tokens);
     md_array_resize(prog->pub_tokens, n, arena);
@@ -75,4 +79,46 @@ size_t md_vial__prelude_diagnostics(const md_vial_program_t* prog, const md_vial
     if (!prog) { if (out) *out = NULL; return 0; }
     if (out) *out = prog->prelude_diags.items;
     return md_array_size(prog->prelude_diags.items);
+}
+
+// The names a statement binds, flattened in order
+static void target_names(const vial_tree_t* t, vial_node_id target, vial_node_id** out, md_allocator_i* alloc) {
+    const vial_node_kind_t k = (vial_node_kind_t)t->nodes[target].kind;
+    if (k == VIAL_N_NAME) { md_array_push(*out, target, alloc); return; }
+    if (k == VIAL_N_TUPLE || k == VIAL_N_LIST) {
+        for (uint32_t i = 0; i < t->nodes[target].child_count; ++i) target_names(t, vial_child(t, target, i), out, alloc);
+    }
+}
+
+bool md_vial__line_result(const md_vial_program_t* prog, uint32_t line, md_vial__result_t* r) {
+    memset(r, 0, sizeof(*r));
+    const vial_tree_t* t = &prog->tree;
+    const vial_node_id root = t->root;
+    for (uint32_t i = 0; i < t->nodes[root].child_count; ++i) {
+        const vial_node_id s = vial_child(t, root, i);
+        if (vial_line_of(&prog->diags, t->nodes[s].span.beg) != line) continue;
+        vial_node_id* nodes = NULL;
+        if (t->nodes[s].kind == VIAL_N_ASSIGN) {
+            const uint32_t n = t->nodes[s].child_count;
+            if (n >= 2) target_names(t, vial_child(t, s, 0), &nodes, prog->arena);
+        } else if (t->nodes[s].kind == VIAL_N_EXPR_STMT) {
+            md_array_push(nodes, vial_child(t, s, 0), prog->arena);
+        }
+        if (!md_array_size(nodes)) return false;
+        r->num_types = 0;
+        r->typed = true;
+        for (size_t k = 0; k < md_array_size(nodes) && k < 4; ++k) {
+            const vial_type_t* ty = &prog->types.types[nodes[k]];
+            if (vial_type_is_error(ty)) r->typed = false;
+            vial_type_print(r->types[k], sizeof(r->types[k]), ty);
+            r->num_types += 1;
+        }
+        const vial_type_t* first = &prog->types.types[nodes[0]];
+        snprintf(r->stage, sizeof(r->stage), "%s", vial_stage_str(first));
+        r->pass = first->pass;
+        const vial_value_t* v = &prog->types.values[nodes[0]];
+        if (v->kind != VIAL_VAL_NONE) { r->has_value = true; vial_value_print(r->value, sizeof(r->value), v); }
+        return true;
+    }
+    return false;
 }

@@ -1,0 +1,1040 @@
+// The checker, step 3: literals, operators, broadcasting, units and indexing.
+//
+// Types are inferred bottom up and memoized by node. Every operation follows NumPy for dtypes and shapes, with the
+// reference's additions: a bare number takes the unit it meets, `+`, `-` and comparisons convert compatible units and
+// make a mismatch unknown (W0501), a quantity literal carries its unit, and two different dynamic extents never
+// broadcast. Static values are folded where the operands are known, so `2 < n <= 500` is True when n is.
+
+#include "infer.h"
+
+#include <core/md_common.h>
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct infer_t {
+    const vial_tree_t*  t;
+    str_t               src;
+    vial_diags_t*       diags;
+    const vial_names_t* n;
+    vial_types_t*       out;
+    md_allocator_i*     alloc;
+} infer_t;
+
+typedef vial_type_t T;
+
+// ### HELPERS ###
+
+static inline vial_node_kind_t kind_of(const infer_t* x, vial_node_id id) { return (vial_node_kind_t)x->t->nodes[id].kind; }
+static inline vial_node_id child(const infer_t* x, vial_node_id id, uint32_t i) { return vial_child(x->t, id, i); }
+static inline uint32_t num_children(const infer_t* x, vial_node_id id) { return x->t->nodes[id].child_count; }
+static inline uint16_t sub_of(const infer_t* x, vial_node_id id) { return x->t->nodes[id].sub; }
+
+static inline str_t text(const infer_t* x, vial_node_id id) {
+    const md_vial_span_t s = x->t->nodes[id].span;
+    return (str_t){x->src.ptr + s.beg, s.end - s.beg};
+}
+
+static void diag_fix(infer_t* x, const char code[6], vial_node_id at, const char* fix, const char* fmt, ...) {
+    char buf[400];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    vial_diag(x->diags, code, x->t->nodes[at].span, "%s", buf);
+    if (fix) vial_diag_set_fix(x->diags, md_array_size(x->diags->items) - 1, str_from_cstr(fix));
+}
+#define diag(x, code, at, ...) diag_fix(x, code, at, NULL, __VA_ARGS__)
+
+// A type as text for messages; four buffers, so one message can show several
+static const char* tstr(const T* t) {
+    static char bufs[4][128];
+    static int k = 0;
+    char* b = bufs[k++ & 3];
+    vial_type_print(b, 128, t);
+    return b;
+}
+
+static const char* ustr(const T* t) {
+    static char bufs[4][64];
+    static int k = 0;
+    char* b = bufs[k++ & 3];
+    if (t->unit_kind != VIAL_UNIT_KNOWN || md_unit_is_none(t->unit)) { snprintf(b, 64, "no unit"); return b; }
+    vial_unit_print(b, 64, t->unit);
+    return b;
+}
+
+static T scalar(vial_dtype_t d) { return vial_type_scalar(d); }
+static T number(vial_dtype_t d) { T t = scalar(d); t.unit_kind = VIAL_UNIT_OPEN; return t; }
+static T err(void) { return vial_type_error(); }
+
+static bool is_number(const T* t) {
+    return t->dtype == VIAL_DT_INT || t->dtype == VIAL_DT_FLOAT || t->dtype == VIAL_DT_FLOAT64 || t->dtype == VIAL_DT_BOOL;
+}
+static bool is_float(uint8_t d) { return d == VIAL_DT_FLOAT || d == VIAL_DT_FLOAT64; }
+
+static const char* dtype_word(const T* t) {
+    switch (t->dtype) {
+    case VIAL_DT_BOOL: return "bool";   case VIAL_DT_INT: return "int";   case VIAL_DT_FLOAT: return "float";
+    case VIAL_DT_FLOAT64: return "float64"; case VIAL_DT_STR: return "str"; case VIAL_DT_SET: return "set";
+    case VIAL_DT_RANGE: return "range"; case VIAL_DT_DRAWING: return "drawing"; case VIAL_DT_NONE: return "None";
+    case VIAL_DT_TUPLE: return "tuple"; case VIAL_DT_DEF: return "def";  default: return "?";
+    }
+}
+
+// The later stage and pass of two values, and missing if either may be
+static void join_stage(T* out, const T* a, const T* b) {
+    out->stage = a->stage > b->stage ? a->stage : b->stage;
+    out->pass  = a->pass > b->pass ? a->pass : b->pass;
+    out->flags |= (a->flags | b->flags) & (VIAL_TYPE_MISSING | VIAL_TYPE_PER_FRAME);
+}
+
+// ### SHAPES ###
+
+static bool extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out) {
+    if (a.kind == VIAL_EXT_STATIC && a.n == 1) { *out = b; return true; }
+    if (b.kind == VIAL_EXT_STATIC && b.n == 1) { *out = a; return true; }
+    if (a.kind == VIAL_EXT_UNKNOWN) { *out = b; return true; }
+    if (b.kind == VIAL_EXT_UNKNOWN) { *out = a; return true; }
+    if (a.kind != b.kind) return false;
+    bool same = false;
+    switch (a.kind) {
+    case VIAL_EXT_STATIC:  same = a.n == b.n; break;
+    case VIAL_EXT_DYNAMIC: same = a.id == b.id && a.offset == b.offset; break;
+    case VIAL_EXT_RANGED:  same = a.n == b.n && a.m == b.m; break;
+    default: break;
+    }
+    if (!same) return false;
+    *out = a;
+    if (!out->desc) out->desc = b.desc;
+    return true;
+}
+
+// NumPy's broadcasting: shapes align from the right
+static bool broadcast(const T* a, const T* b, T* out) {
+    const uint8_t n = a->ndim > b->ndim ? a->ndim : b->ndim;
+    vial_extent_t dims[VIAL_MAX_DIMS];
+    for (uint8_t k = 0; k < n; ++k) {
+        const int ia = (int)a->ndim - (int)n + k, ib = (int)b->ndim - (int)n + k;
+        if (ia < 0) { dims[k] = b->dims[ib]; continue; }
+        if (ib < 0) { dims[k] = a->dims[ia]; continue; }
+        if (!extent_join(a->dims[ia], b->dims[ib], &dims[k])) return false;
+    }
+    out->ndim = n;
+    memcpy(out->dims, dims, n * sizeof(dims[0]));
+    return true;
+}
+
+// The fix for shapes that would broadcast with a new dimension on the right of the shorter: d[:, None]
+static void fix_new_axis(infer_t* x, char* fix, size_t cap, vial_node_id short_node, const T* s, const T* l) {
+    fix[0] = '\0';
+    if (s->ndim == 0 || s->ndim >= l->ndim) return;
+    for (uint8_t k = 0; k < s->ndim; ++k) {
+        vial_extent_t e;
+        if (!extent_join(s->dims[k], l->dims[k], &e)) return;
+    }
+    const str_t txt = text(x, short_node);
+    int n = snprintf(fix, cap, "%.*s[", (int)txt.len, txt.ptr);
+    for (uint8_t k = 0; k < l->ndim && n > 0 && (size_t)n < cap; ++k) {
+        n += snprintf(fix + n, cap - n, "%s%s", k ? ", " : "", k < s->ndim ? ":" : "None");
+    }
+    if (n > 0 && (size_t)n < cap) snprintf(fix + n, cap - n, "]");
+}
+
+static bool broadcast_or_report(infer_t* x, vial_node_id at, vial_node_id an, const T* a, vial_node_id bn, const T* b, T* out) {
+    if (broadcast(a, b, out)) return true;
+    char fix[160] = "";
+    if (a->ndim < b->ndim) fix_new_axis(x, fix, sizeof(fix), an, a, b);
+    else if (b->ndim < a->ndim) fix_new_axis(x, fix, sizeof(fix), bn, b, a);
+    diag_fix(x, "E0301", at, fix[0] ? fix : NULL, "`%s` and `%s` do not broadcast", tstr(a), tstr(b));
+    return false;
+}
+
+// ### UNITS ###
+
+// The unit of +, -, comparisons and the like: a bare number takes the other's; compatible units convert to the left's;
+// others give W0501 once, and an unknown unit
+static void unit_join(infer_t* x, vial_node_id at, const char* verb, const T* a, const T* b, T* out) {
+    if (a->unit_kind == VIAL_UNIT_UNKNOWN || b->unit_kind == VIAL_UNIT_UNKNOWN) { out->unit_kind = VIAL_UNIT_UNKNOWN; return; }
+    if (a->unit_kind == VIAL_UNIT_OPEN && b->unit_kind == VIAL_UNIT_OPEN) { out->unit_kind = VIAL_UNIT_OPEN; return; }
+    if (a->unit_kind == VIAL_UNIT_OPEN) { out->unit_kind = VIAL_UNIT_KNOWN; out->unit = b->unit; return; }
+    if (b->unit_kind == VIAL_UNIT_OPEN) { out->unit_kind = VIAL_UNIT_KNOWN; out->unit = a->unit; return; }
+    if (md_unit_base_equal(a->unit, b->unit)) { out->unit_kind = VIAL_UNIT_KNOWN; out->unit = a->unit; return; }
+    diag_fix(x, "W0501", at, "unitless(...)", "%s %s %s %s; the result's unit becomes unknown", verb, ustr(b),
+        strcmp(verb, "compares") == 0 ? "with" : "to", ustr(a));
+    out->unit_kind = VIAL_UNIT_UNKNOWN;
+}
+
+// The unit of * and /: a bare number has none
+static void unit_product(const T* a, const T* b, bool divide, T* out) {
+    if (a->unit_kind == VIAL_UNIT_UNKNOWN || b->unit_kind == VIAL_UNIT_UNKNOWN) { out->unit_kind = VIAL_UNIT_UNKNOWN; return; }
+    if (a->unit_kind == VIAL_UNIT_OPEN && b->unit_kind == VIAL_UNIT_OPEN) { out->unit_kind = VIAL_UNIT_OPEN; return; }
+    const md_unit_t ua = a->unit_kind == VIAL_UNIT_KNOWN ? a->unit : md_unit_none();
+    const md_unit_t ub = b->unit_kind == VIAL_UNIT_KNOWN ? b->unit : md_unit_none();
+    out->unit_kind = VIAL_UNIT_KNOWN;
+    out->unit = divide ? md_unit_div(ua, ub) : md_unit_mul(ua, ub);
+}
+
+// ### VALUES ###
+
+static vial_value_t val_none(void) { return (vial_value_t){0}; }
+static vial_value_t val_int(int64_t i) { return (vial_value_t){.kind = VIAL_VAL_INT, .i = i}; }
+static vial_value_t val_float(double f) { return (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = f}; }
+static vial_value_t val_bool(bool b) { return (vial_value_t){.kind = VIAL_VAL_BOOL, .b = b}; }
+static bool val_num(const vial_value_t* v, double* d) {
+    switch (v->kind) {
+    case VIAL_VAL_INT: *d = (double)v->i; return true;
+    case VIAL_VAL_FLOAT: *d = v->f; return true;
+    case VIAL_VAL_BOOL: *d = v->b ? 1.0 : 0.0; return true;
+    default: return false;
+    }
+}
+
+size_t vial_value_print(char* buf, size_t cap, const vial_value_t* v) {
+    int n = 0;
+    switch (v->kind) {
+    case VIAL_VAL_BOOL:  n = snprintf(buf, cap, "%s", v->b ? "True" : "False"); break;
+    case VIAL_VAL_INT:   n = snprintf(buf, cap, "%lld", (long long)v->i); break;
+    case VIAL_VAL_FLOAT: n = snprintf(buf, cap, "%.10g", v->f); break;
+    case VIAL_VAL_STR:   n = snprintf(buf, cap, "'%.*s'", (int)v->s.len, v->s.ptr); break;
+    case VIAL_VAL_NULL:  n = snprintf(buf, cap, "None"); break;
+    default:             n = snprintf(buf, cap, "?"); break;
+    }
+    return n > 0 ? (size_t)n : 0;
+}
+
+static int64_t parse_int(str_t s) {
+    char buf[64];
+    size_t n = 0;
+    for (size_t i = 0; i < s.len && n + 1 < sizeof(buf); ++i) if (s.ptr[i] != '_') buf[n++] = s.ptr[i];
+    buf[n] = '\0';
+    int base = 10;
+    const char* p = buf;
+    if (n > 2 && buf[0] == '0' && (buf[1] == 'x' || buf[1] == 'X')) { base = 16; p += 2; }
+    else if (n > 2 && buf[0] == '0' && (buf[1] == 'o' || buf[1] == 'O')) { base = 8; p += 2; }
+    else if (n > 2 && buf[0] == '0' && (buf[1] == 'b' || buf[1] == 'B')) { base = 2; p += 2; }
+    return strtoll(p, NULL, base);
+}
+
+static double parse_float(str_t s) {
+    char buf[64];
+    size_t n = 0;
+    for (size_t i = 0; i < s.len && n + 1 < sizeof(buf); ++i) if (s.ptr[i] != '_') buf[n++] = s.ptr[i];
+    buf[n] = '\0';
+    return strtod(buf, NULL);
+}
+
+// The text of string literals, adjacent ones joined; escapes other than \\, \' and \" are kept as written
+static str_t string_value(infer_t* x, vial_node_id id) {
+    const str_t s = text(x, id);
+    char* out = NULL;
+    for (size_t i = 0; i < s.len;) {
+        while (i < s.len && s.ptr[i] != '\'' && s.ptr[i] != '"') ++i;
+        if (i >= s.len) break;
+        const char q = s.ptr[i];
+        const bool triple = i + 2 < s.len && s.ptr[i + 1] == q && s.ptr[i + 2] == q;
+        i += triple ? 3 : 1;
+        while (i < s.len) {
+            if (s.ptr[i] == '\\' && i + 1 < s.len) { md_array_push(out, s.ptr[i + 1], x->alloc); i += 2; continue; }
+            if (s.ptr[i] == q && (!triple || (i + 2 < s.len && s.ptr[i + 1] == q && s.ptr[i + 2] == q))) { i += triple ? 3 : 1; break; }
+            md_array_push(out, s.ptr[i], x->alloc);
+            ++i;
+        }
+    }
+    return (str_t){out, md_array_size(out)};
+}
+
+// ### EXPRESSIONS ###
+
+static T infer(infer_t* x, vial_node_id id);
+
+static void set_value(infer_t* x, vial_node_id id, vial_value_t v) { x->out->values[id] = v; }
+static vial_value_t value_of(infer_t* x, vial_node_id id) { return x->out->values[id]; }
+
+static T infer_name(infer_t* x, vial_node_id id) {
+    const vial_symbol_t* s = vial_names_symbol(x->n, id);
+    if (!s) return err();
+    const uint32_t si = x->n->ref[id];
+    switch (s->kind) {
+    case VIAL_SYM_GLOBAL:
+        set_value(x, id, x->out->sym_values[si]);
+        return x->out->sym_types[si];
+    case VIAL_SYM_DEF:
+    case VIAL_SYM_PRELUDE:
+        return scalar(VIAL_DT_DEF);
+    default:
+        return err();   // built-in values, parameters and locals arrive with later steps
+    }
+}
+
+static T infer_quantity(infer_t* x, vial_node_id id) {
+    const vial_node_id num = child(x, id, 0), unit = child(x, id, 1);
+    T t = infer(x, num);
+    if (vial_type_is_error(&t)) return t;
+    md_unit_t u;
+    const str_t ut = text(x, unit);
+    bool ok;
+    if (sub_of(x, unit) == 1) {
+        // The text between the quotes, past a prefix
+        size_t b = 0;
+        while (b < ut.len && ut.ptr[b] != '\'' && ut.ptr[b] != '"') ++b;
+        const size_t q = (b + 2 < ut.len && ut.ptr[b + 1] == ut.ptr[b] && ut.ptr[b + 2] == ut.ptr[b]) ? 3 : 1;
+        ok = ut.len >= b + 2 * q && vial_unit_string(str_substr(ut, b + q, ut.len - b - 2 * q), &u);
+    } else {
+        ok = vial_unit_name(ut, &u);
+    }
+    if (!ok) return err();  // E0502, from the parser
+    t.unit_kind = VIAL_UNIT_KNOWN;
+    t.unit = u;
+    set_value(x, id, value_of(x, num));
+    return t;
+}
+
+static T infer_unary(infer_t* x, vial_node_id id) {
+    const vial_node_id on = child(x, id, 0);
+    const T a = infer(x, on);
+    if (vial_type_is_error(&a)) return a;
+    const uint16_t op = sub_of(x, id);
+    if (!is_number(&a) || (op == VIAL_OP_TILDE && a.dtype != VIAL_DT_INT && a.dtype != VIAL_DT_BOOL)) {
+        diag(x, "E0319", id, "`%s` takes %s; this is %s", vial_op_str((vial_op_t)op), op == VIAL_OP_TILDE ? "ints" : "numbers", dtype_word(&a));
+        return err();
+    }
+    T t = a;
+    if (t.dtype == VIAL_DT_BOOL) t.dtype = VIAL_DT_INT;
+    t.flags &= ~VIAL_TYPE_PERIODIC;
+    if (op == VIAL_OP_MINUS && (a.flags & VIAL_TYPE_PERIODIC)) {     // negation keeps a period, mirrored
+        t.flags |= VIAL_TYPE_PERIODIC;
+        t.period_beg = -a.period_end; t.period_end = -a.period_beg; t.seam = -a.seam;
+    }
+    const vial_value_t v = value_of(x, on);
+    if (op == VIAL_OP_MINUS && v.kind == VIAL_VAL_INT) set_value(x, id, val_int(-v.i));
+    else if (op == VIAL_OP_MINUS && v.kind == VIAL_VAL_FLOAT) set_value(x, id, val_float(-v.f));
+    else if (op == VIAL_OP_PLUS) set_value(x, id, v);
+    else if (op == VIAL_OP_TILDE && v.kind == VIAL_VAL_INT) set_value(x, id, val_int(~v.i));
+    return t;
+}
+
+static uint8_t promote(const T* a, const T* b) {
+    // A bare number takes the dtype of the array it meets when both are integers or both floats (NumPy 2)
+    if (a->dtype == b->dtype) return a->dtype;
+    uint8_t da = a->dtype == VIAL_DT_BOOL ? VIAL_DT_INT : a->dtype;
+    uint8_t db = b->dtype == VIAL_DT_BOOL ? VIAL_DT_INT : b->dtype;
+    if (da == db) return da;
+    if (is_float(da) && is_float(db)) {
+        // float64 meets float: 32 bits, unless the float side is a bare number
+        if (da == VIAL_DT_FLOAT64) return b->unit_kind == VIAL_UNIT_OPEN && b->ndim == 0 ? VIAL_DT_FLOAT64 : VIAL_DT_FLOAT;
+        return a->unit_kind == VIAL_UNIT_OPEN && a->ndim == 0 ? VIAL_DT_FLOAT64 : VIAL_DT_FLOAT;
+    }
+    if (is_float(da)) return da;
+    if (is_float(db)) return db;
+    return VIAL_DT_INT;
+}
+
+// A value of b's type in a's unit, for + - % and comparisons; false when the units do not convert
+static bool convert_value(const T* a, const T* b, vial_value_t* vb) {
+    if (a->unit_kind != VIAL_UNIT_KNOWN || b->unit_kind != VIAL_UNIT_KNOWN) return true;   // a bare number takes the other's
+    double f;
+    if (!md_unit_conversion_factor(&f, b->unit, a->unit)) return false;
+    if (f == 1.0) return true;
+    double d;
+    if (!val_num(vb, &d)) return true;
+    *vb = val_float(d * f);
+    return true;
+}
+
+static vial_value_t fold(uint16_t op, const vial_value_t* a, const vial_value_t* b, uint8_t dtype) {
+    double fa, fb;
+    if (!val_num(a, &fa) || !val_num(b, &fb)) return val_none();
+    const bool ints = dtype == VIAL_DT_INT;
+    const int64_t ia = (int64_t)fa, ib = (int64_t)fb;
+    switch (op) {
+    case VIAL_OP_PLUS:  return ints ? val_int(ia + ib) : val_float(fa + fb);
+    case VIAL_OP_MINUS: return ints ? val_int(ia - ib) : val_float(fa - fb);
+    case VIAL_OP_STAR:  return ints ? val_int(ia * ib) : val_float(fa * fb);
+    case VIAL_OP_SLASH: return fb != 0.0 ? val_float(fa / fb) : val_none();
+    case VIAL_OP_DSLASH:
+        if (ints) return ib ? val_int((ia - ((ia % ib) + ib) % ib) / ib) : val_none();
+        return fb != 0.0 ? val_float(floor(fa / fb)) : val_none();
+    case VIAL_OP_PERCENT:
+        if (ints) return ib ? val_int(((ia % ib) + ib) % ib) : val_none();
+        return fb != 0.0 ? val_float(fa - fb * floor(fa / fb)) : val_none();
+    case VIAL_OP_POW:   return ints && ib >= 0 ? val_int((int64_t)pow((double)ia, (double)ib)) : val_float(pow(fa, fb));
+    case VIAL_OP_AMP:   return val_int(ia & ib);
+    case VIAL_OP_PIPE:  return val_int(ia | ib);
+    case VIAL_OP_CARET: return val_int(ia ^ ib);
+    case VIAL_OP_LSHIFT: return ib >= 0 && ib < 63 ? val_int(ia << ib) : val_none();
+    case VIAL_OP_RSHIFT: return ib >= 0 && ib < 63 ? val_int(ia >> ib) : val_none();
+    default: return val_none();
+    }
+}
+
+static T infer_matmul(infer_t* x, vial_node_id id, const T* a, const T* b) {
+    // NumPy's matmul: a vector is promoted and its dimension removed again; leading dimensions broadcast
+    if (a->ndim == 0 || b->ndim == 0) {
+        diag(x, "E0319", id, "`@` takes vectors and matrices; this is %s and %s", tstr(a), tstr(b));
+        return err();
+    }
+    T aa = *a, bb = *b;
+    const bool va = a->ndim == 1, vb = b->ndim == 1;
+    if (va) { aa.ndim = 2; aa.dims[1] = a->dims[0]; aa.dims[0] = vial_extent_static(1); }
+    if (vb) { bb.ndim = 2; bb.dims[1] = vial_extent_static(1); bb.dims[0] = b->dims[0]; }
+    vial_extent_t inner;
+    if (!extent_join(aa.dims[aa.ndim - 1], bb.dims[bb.ndim - 2], &inner) ||
+        (aa.dims[aa.ndim - 1].kind == VIAL_EXT_STATIC && aa.dims[aa.ndim - 1].n == 1 && !(bb.dims[bb.ndim - 2].kind == VIAL_EXT_STATIC && bb.dims[bb.ndim - 2].n == 1))) {
+        diag(x, "E0301", id, "`%s` @ `%s`: the inner dimensions differ", tstr(a), tstr(b));
+        return err();
+    }
+    T la = aa, lb = bb;
+    la.ndim -= 2; lb.ndim -= 2;
+    T t = scalar(promote(a, b));
+    if (!broadcast(&la, &lb, &t)) {
+        diag(x, "E0301", id, "`%s` and `%s` do not broadcast", tstr(a), tstr(b));
+        return err();
+    }
+    if (!va) vial_type_push_dim(&t, aa.dims[aa.ndim - 2]);
+    if (!vb) vial_type_push_dim(&t, bb.dims[bb.ndim - 1]);
+    unit_product(a, b, false, &t);
+    join_stage(&t, a, b);
+    return t;
+}
+
+static T infer_binary(infer_t* x, vial_node_id id) {
+    const vial_node_id an = child(x, id, 0), bn = child(x, id, 1);
+    const T a = infer(x, an);
+    const T b = infer(x, bn);
+    if (vial_type_is_error(&a) || vial_type_is_error(&b)) return err();
+    const uint16_t op = sub_of(x, id);
+
+    // + on drawings combines them
+    if (op == VIAL_OP_PLUS && a.dtype == VIAL_DT_DRAWING && b.dtype == VIAL_DT_DRAWING) {
+        T t = scalar(VIAL_DT_DRAWING);
+        if (!broadcast_or_report(x, id, an, &a, bn, &b, &t)) return err();
+        join_stage(&t, &a, &b);
+        return t;
+    }
+    const bool bits = op == VIAL_OP_AMP || op == VIAL_OP_PIPE || op == VIAL_OP_CARET || op == VIAL_OP_LSHIFT || op == VIAL_OP_RSHIFT;
+    if (!is_number(&a) || !is_number(&b) || (bits && (is_float(a.dtype) || is_float(b.dtype)))) {
+        if (a.dtype == VIAL_DT_SET && b.dtype == VIAL_DT_SET && (op == VIAL_OP_AMP || op == VIAL_OP_PIPE)) {
+            diag_fix(x, "E0319", id, op == VIAL_OP_AMP ? "and" : "or", "sets combine with `and`, `or` and `not`, not `%s`", vial_op_str((vial_op_t)op));
+        } else {
+            diag(x, "E0319", id, "`%s` takes %s; this is %s and %s", vial_op_str((vial_op_t)op), bits ? "ints" : "numbers",
+                dtype_word(&a), dtype_word(&b));
+        }
+        return err();
+    }
+    if (op == VIAL_OP_AT) return infer_matmul(x, id, &a, &b);
+
+    T t = scalar(promote(&a, &b));
+    if (t.dtype == VIAL_DT_BOOL) t.dtype = VIAL_DT_INT;    // arithmetic on bools counts
+    if (!broadcast_or_report(x, id, an, &a, bn, &b, &t)) return err();
+    join_stage(&t, &a, &b);
+    switch (op) {
+    case VIAL_OP_PLUS:    unit_join(x, id, "adds", &a, &b, &t); break;
+    case VIAL_OP_MINUS:   unit_join(x, id, "subtracts", &a, &b, &t); break;
+    case VIAL_OP_PERCENT: unit_join(x, id, "takes the remainder of", &a, &b, &t); break;
+    case VIAL_OP_STAR:    unit_product(&a, &b, false, &t); break;
+    case VIAL_OP_SLASH:   unit_product(&a, &b, true, &t); if (!is_float(t.dtype)) t.dtype = VIAL_DT_FLOAT; break;
+    case VIAL_OP_DSLASH:  unit_product(&a, &b, true, &t); break;
+    case VIAL_OP_POW: {
+        const vial_value_t e = value_of(x, bn);
+        if (b.unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(b.unit)) {
+            diag_fix(x, "W0501", id, "unitless(...)", "a power of %s; an exponent has no unit", ustr(&b));
+            t.unit_kind = VIAL_UNIT_UNKNOWN;
+        } else if (a.unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(a.unit)) {
+            if (e.kind == VIAL_VAL_INT) { t.unit_kind = VIAL_UNIT_KNOWN; t.unit = md_unit_pow(a.unit, (int)e.i); }
+            else if (e.kind == VIAL_VAL_FLOAT && e.f == floor(e.f)) { t.unit_kind = VIAL_UNIT_KNOWN; t.unit = md_unit_pow(a.unit, (int)e.f); }
+            else {
+                diag_fix(x, "W0501", id, "unitless(...)", "%s to a power not known when compiling; the result's unit becomes unknown", ustr(&a));
+                t.unit_kind = VIAL_UNIT_UNKNOWN;
+            }
+        } else {
+            t.unit_kind = a.unit_kind == VIAL_UNIT_UNKNOWN ? VIAL_UNIT_UNKNOWN : a.unit_kind;
+        }
+        if (e.kind == VIAL_VAL_INT && e.i < 0 && t.dtype == VIAL_DT_INT) t.dtype = VIAL_DT_FLOAT;
+        break;
+    }
+    default:              t.unit_kind = VIAL_UNIT_OPEN; break;   // bits: integers without a unit
+    }
+    // Periods: moved or scaled by a constant, or the sum or difference of two of the same period
+    const bool pa = a.flags & VIAL_TYPE_PERIODIC, pb = b.flags & VIAL_TYPE_PERIODIC;
+    if ((op == VIAL_OP_PLUS || op == VIAL_OP_MINUS) && pa && pb && a.period_end - a.period_beg == b.period_end - b.period_beg) {
+        t.flags |= VIAL_TYPE_PERIODIC;
+        const float w = a.period_end - a.period_beg;
+        t.period_beg = -w / 2; t.period_end = w / 2; t.seam = w / 2;    // a difference of angles is cut half a period from 0
+    } else if ((op == VIAL_OP_PLUS || op == VIAL_OP_MINUS) && (pa != pb) && (pa ? b.stage : a.stage) == VIAL_STAGE_STATIC) {
+        const T* p = pa ? &a : &b;
+        double c;
+        if (val_num(pa ? &x->out->values[bn] : &x->out->values[an], &c)) {
+            const float s = (float)(op == VIAL_OP_MINUS && pa ? -c : c);
+            t.flags |= VIAL_TYPE_PERIODIC;
+            t.period_beg = p->period_beg + s; t.period_end = p->period_end + s; t.seam = p->seam + s;
+        }
+    } else if ((op == VIAL_OP_STAR || op == VIAL_OP_SLASH) && (pa != pb)) {
+        double c;
+        if (val_num(pa ? &x->out->values[bn] : &x->out->values[an], &c) && c != 0.0 && (op == VIAL_OP_STAR || pa)) {
+            const T* p = pa ? &a : &b;
+            const float k = (float)(op == VIAL_OP_SLASH ? 1.0 / c : c);
+            t.flags |= VIAL_TYPE_PERIODIC;
+            const float lo = p->period_beg * k, hi = p->period_end * k;
+            t.period_beg = lo < hi ? lo : hi; t.period_end = lo < hi ? hi : lo; t.seam = p->seam * k;
+        }
+    }
+    vial_value_t va = value_of(x, an), vb = value_of(x, bn);
+    if (op == VIAL_OP_PLUS || op == VIAL_OP_MINUS || op == VIAL_OP_PERCENT) {
+        if (t.unit_kind == VIAL_UNIT_UNKNOWN || !convert_value(&a, &b, &vb)) { set_value(x, id, val_none()); return t; }
+    }
+    set_value(x, id, fold(op, &va, &vb, t.dtype));
+    return t;
+}
+
+static bool compare_values(uint16_t cmp, const vial_value_t* a, const vial_value_t* b, bool* out) {
+    double fa, fb;
+    if (a->kind == VIAL_VAL_STR && b->kind == VIAL_VAL_STR) {
+        const bool eq = str_eq(a->s, b->s);
+        if (cmp == VIAL_CMP_EQ) { *out = eq; return true; }
+        if (cmp == VIAL_CMP_NE) { *out = !eq; return true; }
+        return false;
+    }
+    if (!val_num(a, &fa) || !val_num(b, &fb)) return false;
+    switch (cmp) {
+    case VIAL_CMP_LT: *out = fa < fb; return true;
+    case VIAL_CMP_GT: *out = fa > fb; return true;
+    case VIAL_CMP_LE: *out = fa <= fb; return true;
+    case VIAL_CMP_GE: *out = fa >= fb; return true;
+    case VIAL_CMP_EQ: *out = fa == fb; return true;
+    case VIAL_CMP_NE: *out = fa != fb; return true;
+    default: return false;
+    }
+}
+
+static T infer_compare(infer_t* x, vial_node_id id) {
+    // [operand, CMPOP, operand, CMPOP, operand, ...]
+    const uint32_t n = num_children(x, id);
+    T result = scalar(VIAL_DT_BOOL);
+    bool all_known = true, value = true;
+    bool failed = false;
+    for (uint32_t i = 0; i + 2 < n; i += 2) {
+        const vial_node_id an = child(x, id, i), on = child(x, id, i + 1), bn = child(x, id, i + 2);
+        const T a = infer(x, an);
+        const T b = infer(x, bn);
+        if (vial_type_is_error(&a) || vial_type_is_error(&b)) { failed = true; continue; }
+        const uint16_t cmp = sub_of(x, on);
+        T pair = scalar(VIAL_DT_BOOL);
+        if (cmp == VIAL_CMP_IS || cmp == VIAL_CMP_IS_NOT) {
+            // is compares static values; checked further with stages
+            join_stage(&pair, &a, &b);
+        } else if (cmp == VIAL_CMP_IN || cmp == VIAL_CMP_NOT_IN) {
+            if (b.dtype == VIAL_DT_RANGE) {
+                if (!is_number(&a)) { diag(x, "E0319", on, "`in` a range takes numbers; this is %s", dtype_word(&a)); failed = true; continue; }
+                pair.ndim = a.ndim; memcpy(pair.dims, a.dims, sizeof(a.dims));
+                T u = pair; unit_join(x, on, "compares", &a, &b, &u);
+            } else if (b.ndim >= 1) {
+                pair.ndim = a.ndim; memcpy(pair.dims, a.dims, sizeof(a.dims));
+            } else {
+                diag(x, "E0319", on, "`in` takes a range or an array; this is %s", tstr(&b)); failed = true; continue;
+            }
+            join_stage(&pair, &a, &b);
+        } else {
+            const bool ordered = cmp != VIAL_CMP_EQ && cmp != VIAL_CMP_NE;
+            const bool both_str = a.dtype == VIAL_DT_STR && b.dtype == VIAL_DT_STR;
+            if (!(is_number(&a) && is_number(&b)) && !(both_str && !ordered) &&
+                !(!ordered && a.dtype == b.dtype && (a.dtype == VIAL_DT_SET || a.dtype == VIAL_DT_BOOL))) {
+                diag(x, "E0319", on, "`%s` takes %s; this is %s and %s", vial_cmp_str((vial_cmp_t)cmp), ordered ? "numbers" : "two values of one kind",
+                    dtype_word(&a), dtype_word(&b));
+                failed = true;
+                continue;
+            }
+            if (!broadcast_or_report(x, on, an, &a, bn, &b, &pair)) { failed = true; continue; }
+            join_stage(&pair, &a, &b);
+            if (is_number(&a)) { T u = pair; unit_join(x, on, "compares", &a, &b, &u); }
+        }
+        T merged = result;
+        if (!broadcast(&result, &pair, &merged)) {
+            diag(x, "E0301", id, "`%s` and `%s` do not broadcast", tstr(&result), tstr(&pair));
+            failed = true;
+            continue;
+        }
+        join_stage(&merged, &result, &pair);
+        result = merged;
+        vial_value_t va = value_of(x, an), vb = value_of(x, bn);
+        bool r;
+        if (all_known && is_number(&a) && !convert_value(&a, &b, &vb)) all_known = false;
+        if (all_known && compare_values(cmp, &va, &vb, &r)) value = value && r;
+        else all_known = false;
+    }
+    if (failed) return err();
+    result.dtype = VIAL_DT_BOOL;
+    result.unit_kind = VIAL_UNIT_KNOWN;
+    result.unit = md_unit_none();
+    if (all_known && result.ndim == 0) set_value(x, id, val_bool(value));
+    return result;
+}
+
+static T infer_boolop(infer_t* x, vial_node_id id) {
+    const uint32_t n = num_children(x, id);
+    T t = err();
+    bool known = true, v = sub_of(x, id) == VIAL_KW_AND;
+    for (uint32_t i = 0; i < n; ++i) {
+        const vial_node_id cn = child(x, id, i);
+        const T c = infer(x, cn);
+        if (vial_type_is_error(&c)) return err();
+        if (c.dtype != VIAL_DT_BOOL && c.dtype != VIAL_DT_SET) {
+            diag(x, "E0319", cn, "`%s` takes bools or sets; this is %s", sub_of(x, id) == VIAL_KW_AND ? "and" : "or", dtype_word(&c));
+            return err();
+        }
+        if (i == 0) { t = c; }
+        else {
+            if (c.dtype != t.dtype) {
+                diag(x, "E0319", id, "`%s` takes two bools or two sets; this is %s and %s", sub_of(x, id) == VIAL_KW_AND ? "and" : "or",
+                    dtype_word(&t), dtype_word(&c));
+                return err();
+            }
+            T m = t;
+            if (!broadcast_or_report(x, id, child(x, id, 0), &t, cn, &c, &m)) return err();
+            join_stage(&m, &t, &c);
+            t = m;
+        }
+        const vial_value_t cv = value_of(x, cn);
+        if (cv.kind == VIAL_VAL_BOOL) v = sub_of(x, id) == VIAL_KW_AND ? (v && cv.b) : (v || cv.b);
+        else known = false;
+    }
+    if (t.dtype == VIAL_DT_SET) t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+    if (known && t.dtype == VIAL_DT_BOOL && t.ndim == 0) set_value(x, id, val_bool(v));
+    return t;
+}
+
+static T infer_not(infer_t* x, vial_node_id id) {
+    const vial_node_id on = child(x, id, 0);
+    const T a = infer(x, on);
+    if (vial_type_is_error(&a)) return a;
+    if (a.dtype != VIAL_DT_BOOL && a.dtype != VIAL_DT_SET) {
+        diag(x, "E0319", id, "`not` takes bools or sets; this is %s", dtype_word(&a));
+        return err();
+    }
+    const vial_value_t v = value_of(x, on);
+    if (v.kind == VIAL_VAL_BOOL) set_value(x, id, val_bool(!v.b));
+    T t = a;
+    t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+    return t;
+}
+
+// Two values of one type: a list's items, a conditional's branches. Units convert to the first's.
+static bool join_types(infer_t* x, vial_node_id at, const char* what, const T* a, const T* b, T* out) {
+    if (a->dtype != b->dtype && !(is_number(a) && is_number(b))) {
+        diag(x, "E0319", at, "%s have one type; these are %s and %s", what, tstr(a), tstr(b));
+        return false;
+    }
+    T t = *a;
+    if (is_number(a)) t.dtype = promote(a, b);
+    if (a->ndim != b->ndim) {
+        diag(x, "E0301", at, "%s have one shape; these are `%s` and `%s`", what, tstr(a), tstr(b));
+        return false;
+    }
+    for (uint8_t k = 0; k < a->ndim; ++k) {
+        if (!extent_join(a->dims[k], b->dims[k], &t.dims[k]) ||
+            (a->dims[k].kind == VIAL_EXT_STATIC && b->dims[k].kind == VIAL_EXT_STATIC && a->dims[k].n != b->dims[k].n)) {
+            diag(x, "E0301", at, "%s have one shape; these are `%s` and `%s`", what, tstr(a), tstr(b));
+            return false;
+        }
+    }
+    if (is_number(a)) unit_join(x, at, "joins", a, b, &t);
+    join_stage(&t, a, b);
+    *out = t;
+    return true;
+}
+
+static T infer_list(infer_t* x, vial_node_id id) {
+    const uint32_t n = num_children(x, id);
+    if (n == 0) { T t = number(VIAL_DT_FLOAT); vial_type_push_dim(&t, vial_extent_static(0)); return t; }
+    T item = infer(x, child(x, id, 0));
+    if (vial_type_is_error(&item)) return err();
+    for (uint32_t i = 1; i < n; ++i) {
+        const T c = infer(x, child(x, id, i));
+        if (vial_type_is_error(&c)) return err();
+        T m;
+        if (!join_types(x, child(x, id, i), "the items of a list", &item, &c, &m)) return err();
+        item = m;
+    }
+    if (item.dtype == VIAL_DT_TUPLE || item.dtype == VIAL_DT_DEF || item.dtype == VIAL_DT_NONE || item.dtype == VIAL_DT_RANGE) {
+        diag(x, "E0319", id, "a list holds numbers, strings, sets or drawings; this holds %s", dtype_word(&item));
+        return err();
+    }
+    T t = item;
+    t.ndim = 0;
+    t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+    if (!vial_type_push_dim(&t, vial_extent_static(n))) goto too_many;
+    for (uint8_t k = 0; k < item.ndim; ++k) if (!vial_type_push_dim(&t, item.dims[k])) goto too_many;
+    if (item.dtype == VIAL_DT_SET && (item.flags & VIAL_TYPE_ONE_PARTICLE)) t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    return t;
+too_many:
+    diag(x, "E0308", id, "the result would have 7 dimensions; the limit is 6");
+    return err();
+}
+
+static T infer_tuple(infer_t* x, vial_node_id id) {
+    const uint32_t n = num_children(x, id);
+    T* elems = md_alloc(x->alloc, (n ? n : 1) * sizeof(T));
+    T t = scalar(VIAL_DT_TUPLE);
+    bool failed = false;
+    for (uint32_t i = 0; i < n; ++i) {
+        elems[i] = infer(x, child(x, id, i));
+        if (vial_type_is_error(&elems[i])) failed = true;
+        join_stage(&t, &t, &elems[i]);
+    }
+    if (failed) return err();
+    t.elems = elems;
+    t.num_elems = n;
+    return t;
+}
+
+static T infer_range(infer_t* x, vial_node_id id) {
+    const vial_node_id an = child(x, id, 0), bn = child(x, id, 1);
+    const T a = infer(x, an);
+    const T b = infer(x, bn);
+    if (vial_type_is_error(&a) || vial_type_is_error(&b)) return err();
+    if (!is_number(&a) || !is_number(&b) || a.ndim || b.ndim) {
+        diag(x, "E0319", id, "`..` takes two numbers; this is %s and %s", tstr(&a), tstr(&b));
+        return err();
+    }
+    T t = scalar(VIAL_DT_RANGE);
+    unit_join(x, id, "joins", &a, &b, &t);
+    join_stage(&t, &a, &b);
+    return t;
+}
+
+static T infer_ternary(infer_t* x, vial_node_id id) {
+    const vial_node_id vn = child(x, id, 0), cn = child(x, id, 1), en = child(x, id, 2);
+    const T c = infer(x, cn);
+    if (vial_type_is_error(&c)) return err();
+    if (c.dtype != VIAL_DT_BOOL || c.ndim) {
+        diag_fix(x, "E0303", cn, "where(...)", "a conditional needs one bool; this is `%s`", tstr(&c));
+        return err();
+    }
+    const vial_value_t cv = value_of(x, cn);
+    if (cv.kind == VIAL_VAL_BOOL && c.stage == VIAL_STAGE_STATIC) {
+        // A static condition: the branch it does not take is not type-checked
+        const vial_node_id taken = cv.b ? vn : en;
+        const T t = infer(x, taken);
+        set_value(x, id, value_of(x, taken));
+        return t;
+    }
+    const T a = infer(x, vn);
+    const T b = infer(x, en);
+    if (vial_type_is_error(&a) || vial_type_is_error(&b)) return err();
+    T t;
+    if (!join_types(x, id, "the branches of a conditional", &a, &b, &t)) return err();
+    join_stage(&t, &t, &c);
+    return t;
+}
+
+// ### INDEXING ###
+
+static bool static_index(infer_t* x, vial_node_id id, int64_t* out) {
+    const vial_value_t v = value_of(x, id);
+    if (v.kind == VIAL_VAL_INT) { *out = v.i; return true; }
+    return false;
+}
+
+static T infer_subscript(infer_t* x, vial_node_id id) {
+    const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
+    const T a = infer(x, on);
+    if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
+    if (a.dtype == VIAL_DT_SET && a.ndim == 0) {
+        // Positions of a set's particles: a set, arriving with the selectors
+        if (in) infer(x, in);
+        return err();
+    }
+    if (a.dtype == VIAL_DT_TUPLE) {
+        int64_t k;
+        if (in && kind_of(x, in) != VIAL_N_SLICE) infer(x, in);
+        if (in && static_index(x, in, &k) && k >= -(int64_t)a.num_elems && k < (int64_t)a.num_elems) return a.elems[k < 0 ? k + a.num_elems : k];
+        diag(x, "E0319", id, "a tuple is indexed by a constant position");
+        return err();
+    }
+    // The index items, a tuple of them or one
+    vial_node_id items[16];
+    uint32_t num = 0;
+    if (in && kind_of(x, in) == VIAL_N_TUPLE) {
+        for (uint32_t i = 0; i < num_children(x, in) && num < 16; ++i) items[num++] = child(x, in, i);
+    } else if (in) {
+        items[num++] = in;
+    }
+    // How many existing dimensions the items take: all but None and ...
+    uint32_t takes = 0;
+    for (uint32_t i = 0; i < num; ++i) {
+        const vial_node_kind_t k = kind_of(x, items[i]);
+        if (k == VIAL_N_ELLIPSIS) continue;
+        if (!(k == VIAL_N_CONST && sub_of(x, items[i]) == VIAL_KW_NONE_)) takes += 1;
+    }
+    if (takes > a.ndim) {
+        diag(x, "E0319", id, "%u positions for `%s`, which has %u dimensions", takes, tstr(&a), a.ndim);
+        return err();
+    }
+    T t = a;
+    t.ndim = 0;
+    uint8_t d = 0;      // the next dimension of a to index
+    for (uint32_t i = 0; i < num; ++i) {
+        const vial_node_id it = items[i];
+        const vial_node_kind_t k = kind_of(x, it);
+        if (k == VIAL_N_ELLIPSIS) {
+            const uint32_t skip = a.ndim - takes;
+            for (uint32_t s = 0; s < skip; ++s) vial_type_push_dim(&t, a.dims[d++]);
+            continue;
+        }
+        if (k == VIAL_N_CONST && sub_of(x, it) == VIAL_KW_NONE_) {
+            if (!vial_type_push_dim(&t, vial_extent_static(1))) goto too_many;
+            continue;
+        }
+        const vial_extent_t e = a.dims[d++];
+        if (k == VIAL_N_SLICE) {
+            int64_t lo = 0, hi = 0, step = 1;
+            const vial_node_id ln = child(x, it, 0), hn = child(x, it, 1), sn = child(x, it, 2);
+            bool klo = true, khi = true, kst = true;
+            if (ln) { T lt = infer(x, ln); if (vial_type_is_error(&lt)) return err(); klo = static_index(x, ln, &lo); }
+            if (hn) { T ht = infer(x, hn); if (vial_type_is_error(&ht)) return err(); khi = static_index(x, hn, &hi); }
+            if (sn) { T st = infer(x, sn); if (vial_type_is_error(&st)) return err(); kst = static_index(x, sn, &step); }
+            if (kst && step == 0) { diag(x, "E0319", it, "a slice's step is not 0"); return err(); }
+            vial_extent_t r = e;
+            r.desc = e.desc;
+            if (e.kind == VIAL_EXT_STATIC && klo && khi && kst) {
+                // Python's slice arithmetic
+                const int64_t n = e.n;
+                int64_t b, en;
+                if (step > 0) {
+                    b = !ln ? 0 : (lo < 0 ? (lo + n < 0 ? 0 : lo + n) : (lo > n ? n : lo));
+                    en = !hn ? n : (hi < 0 ? (hi + n < 0 ? 0 : hi + n) : (hi > n ? n : hi));
+                    r.n = en > b ? (uint32_t)((en - b + step - 1) / step) : 0;
+                } else {
+                    b = !ln ? n - 1 : (lo < 0 ? (lo + n < -1 ? -1 : lo + n) : (lo >= n ? n - 1 : lo));
+                    en = !hn ? -1 : (hi < 0 ? (hi + n < -1 ? -1 : hi + n) : (hi >= n ? n - 1 : hi));
+                    r.n = b > en ? (uint32_t)((b - en - step - 1) / (-step)) : 0;
+                }
+                r.kind = VIAL_EXT_STATIC;
+            } else if (e.kind == VIAL_EXT_DYNAMIC && kst && step == 1 && klo && khi) {
+                // A slice by fixed offsets keeps a related identity: c[1:] and c[:-1] pair
+                const int64_t off_lo = ln ? lo : 0;
+                const int64_t off_hi = hn ? (hi < 0 ? -hi : -1) : 0;
+                if (off_lo >= 0 && off_hi >= 0 && (!hn || hi < 0)) { r.offset = e.offset + (int32_t)(off_lo + off_hi); }
+                else { r.kind = VIAL_EXT_DYNAMIC; r.id = (uint32_t)id; r.offset = 0; }
+            } else {
+                r = (vial_extent_t){.kind = e.kind == VIAL_EXT_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)id, .desc = e.desc};
+                if (e.kind == VIAL_EXT_UNKNOWN) r.kind = VIAL_EXT_UNKNOWN;
+            }
+            if (!vial_type_push_dim(&t, r)) goto too_many;
+            continue;
+        }
+        const T ix = infer(x, it);
+        if (vial_type_is_error(&ix)) return err();
+        if ((ix.dtype == VIAL_DT_INT) && ix.ndim == 0) {
+            int64_t k2;
+            if (static_index(x, it, &k2) && e.kind == VIAL_EXT_STATIC && (k2 >= (int64_t)e.n || k2 < -(int64_t)e.n)) {
+                char ext[32];
+                snprintf(ext, sizeof(ext), "[%u]", e.n);
+                diag(x, "E0304", it, "position %lld is outside `%s`", (long long)k2, ext);
+                return err();
+            }
+            if (e.kind == VIAL_EXT_DYNAMIC) t.flags |= VIAL_TYPE_MISSING;
+            join_stage(&t, &t, &ix);
+            continue;   // the dimension is removed
+        }
+        if (ix.dtype == VIAL_DT_INT && ix.ndim == 1) {
+            // Positions listed, in that order
+            vial_extent_t r = ix.dims[0];
+            r.desc = e.desc;
+            if (!vial_type_push_dim(&t, r)) goto too_many;
+            join_stage(&t, &t, &ix);
+            continue;
+        }
+        if (ix.dtype == VIAL_DT_BOOL && ix.ndim >= 1) {
+            // A mask over the leading dimensions: a shorter dimension, per frame if the mask is
+            vial_extent_t r = {.kind = ix.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)it, .desc = e.desc};
+            d += (uint8_t)(ix.ndim - 1);
+            if (!vial_type_push_dim(&t, r)) goto too_many;
+            join_stage(&t, &t, &ix);
+            continue;
+        }
+        if (ix.dtype == VIAL_DT_SET) return err();      // a set as index: with the selectors
+        diag(x, "E0319", it, "a position is an int, a slice, a list of ints or a bool mask; this is %s", tstr(&ix));
+        return err();
+    }
+    while (d < a.ndim) if (!vial_type_push_dim(&t, a.dims[d++])) goto too_many;
+    return t;
+too_many:
+    diag(x, "E0308", id, "the result would have 7 dimensions; the limit is 6");
+    return err();
+}
+
+static T infer_attr(infer_t* x, vial_node_id id) {
+    const vial_node_id on = child(x, id, 0), nn = child(x, id, 1);
+    const T a = infer(x, on);
+    if (vial_type_is_error(&a) || !nn) return err();
+    const str_t name = text(x, nn);
+    if (str_eq(name, STR_LIT("T"))) {
+        if (a.dtype == VIAL_DT_TUPLE || a.dtype == VIAL_DT_DEF) { diag(x, "E0319", id, "`.T` takes an array; this is %s", dtype_word(&a)); return err(); }
+        T t = a;
+        for (uint8_t k = 0; k < a.ndim; ++k) t.dims[k] = a.dims[a.ndim - 1 - k];
+        return t;
+    }
+    if (a.dtype == VIAL_DT_SET) return err();   // .xyz, .x, .com of sets: with the built-ins
+    const bool comp = str_eq(name, STR_LIT("x")) || str_eq(name, STR_LIT("y")) || str_eq(name, STR_LIT("z"));
+    if (comp || str_eq(name, STR_LIT("xyz"))) {
+        const bool coords = is_float(a.dtype) && a.ndim >= 1 && a.dims[a.ndim - 1].kind == VIAL_EXT_STATIC && a.dims[a.ndim - 1].n == 3;
+        if (!coords) {
+            diag(x, "E0319", id, "`.%.*s` takes coordinates, a last dimension of 3, or a set; this is `%s`", (int)name.len, name.ptr, tstr(&a));
+            return err();
+        }
+        T t = a;
+        if (comp) t.ndim -= 1;
+        return t;
+    }
+    return err();   // functions as methods: with the built-ins and defs
+}
+
+static T infer_uncached(infer_t* x, vial_node_id id) {
+    switch (kind_of(x, id)) {
+    case VIAL_N_INT:      set_value(x, id, val_int(parse_int(text(x, id)))); return number(VIAL_DT_INT);
+    case VIAL_N_FLOAT:    set_value(x, id, val_float(parse_float(text(x, id)))); return number(VIAL_DT_FLOAT);
+    case VIAL_N_QUANTITY: return infer_quantity(x, id);
+    case VIAL_N_STRING:   set_value(x, id, (vial_value_t){.kind = VIAL_VAL_STR, .s = string_value(x, id)}); return scalar(VIAL_DT_STR);
+    case VIAL_N_CONST:
+        switch (sub_of(x, id)) {
+        case VIAL_KW_TRUE:  set_value(x, id, val_bool(true));  return scalar(VIAL_DT_BOOL);
+        case VIAL_KW_FALSE: set_value(x, id, val_bool(false)); return scalar(VIAL_DT_BOOL);
+        default:            set_value(x, id, (vial_value_t){.kind = VIAL_VAL_NULL}); return scalar(VIAL_DT_NONE);
+        }
+    case VIAL_N_NAME:     return infer_name(x, id);
+    case VIAL_N_UNARY:    return infer_unary(x, id);
+    case VIAL_N_NOT:      return infer_not(x, id);
+    case VIAL_N_BINARY:   return infer_binary(x, id);
+    case VIAL_N_BOOLOP:   return infer_boolop(x, id);
+    case VIAL_N_COMPARE:  return infer_compare(x, id);
+    case VIAL_N_RANGE:    return infer_range(x, id);
+    case VIAL_N_TERNARY:  return infer_ternary(x, id);
+    case VIAL_N_LIST:     return infer_list(x, id);
+    case VIAL_N_TUPLE:    return infer_tuple(x, id);
+    case VIAL_N_SUBSCRIPT: return infer_subscript(x, id);
+    case VIAL_N_ATTR:     return infer_attr(x, id);
+    default:
+        // Calls, comprehensions and what arrives later: their parts are still checked
+        for (uint32_t i = 0; i < num_children(x, id); ++i) {
+            const vial_node_id c = child(x, id, i);
+            if (!c) continue;
+            const vial_node_kind_t k = kind_of(x, c);
+            if (k == VIAL_N_KWARG) { if (child(x, c, 1)) infer(x, child(x, c, 1)); continue; }
+            if (kind_of(x, id) == VIAL_N_CALL && i == 0) continue;
+            if (k == VIAL_N_COMP_FOR || kind_of(x, id) == VIAL_N_LISTCOMP) continue;    // comprehensions: with defs
+            if (k == VIAL_N_DEF || k == VIAL_N_UNSUPPORTED || k == VIAL_N_UNIT || k == VIAL_N_ERROR) continue;
+            infer(x, c);
+        }
+        return err();
+    }
+}
+
+static T infer(infer_t* x, vial_node_id id) {
+    if (!id) return err();
+    if (x->out->typed[id]) return x->out->types[id];
+    T t = infer_uncached(x, id);
+    if (t.ndim > VIAL_MAX_DIMS) t = err();
+    x->out->types[id] = t;
+    x->out->typed[id] = 1;
+    return t;
+}
+
+// ### STATEMENTS ###
+
+static void assign_target(infer_t* x, vial_node_id target, const T* t, vial_node_id value) {
+    const vial_node_kind_t k = kind_of(x, target);
+    if (k == VIAL_N_NAME) {
+        x->out->types[target] = *t;
+        x->out->typed[target] = 1;
+        const uint32_t s = x->n->ref[target];
+        if (s) {
+            x->out->sym_types[s] = *t;
+            x->out->sym_values[s] = value ? x->out->values[value] : val_none();
+        }
+        x->out->values[target] = value ? x->out->values[value] : val_none();
+        return;
+    }
+    if (k == VIAL_N_TUPLE || k == VIAL_N_LIST) {
+        const uint32_t n = num_children(x, target);
+        const vial_node_id vt = value && (kind_of(x, value) == VIAL_N_TUPLE || kind_of(x, value) == VIAL_N_LIST) &&
+                                num_children(x, value) == n ? value : 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            T e = err();
+            if (!vial_type_is_error(t)) {
+                if (t->dtype == VIAL_DT_TUPLE && t->num_elems == n) e = t->elems[i];
+                else if (t->dtype != VIAL_DT_TUPLE && t->ndim >= 1 && t->dims[0].kind == VIAL_EXT_STATIC && t->dims[0].n == n) {
+                    e = *t;
+                    e.ndim -= 1;
+                    memmove(e.dims, e.dims + 1, e.ndim * sizeof(e.dims[0]));
+                } else if (i == 0) {
+                    diag(x, "E0319", target, "%u names, and `%s` does not unpack into %u", n, tstr(t), n);
+                }
+            }
+            assign_target(x, child(x, target, i), &e, vt ? child(x, vt, i) : 0);
+        }
+    }
+}
+
+static void check_stmt(infer_t* x, vial_node_id s);
+
+static void check_block(infer_t* x, vial_node_id b) {
+    if (!b) return;
+    if (kind_of(x, b) != VIAL_N_BLOCK) { check_stmt(x, b); return; }
+    for (uint32_t i = 0; i < num_children(x, b); ++i) check_stmt(x, child(x, b, i));
+}
+
+static void check_stmt(infer_t* x, vial_node_id s) {
+    switch (kind_of(x, s)) {
+    case VIAL_N_ASSIGN: {
+        const uint32_t n = num_children(x, s);
+        if (!n) return;
+        const vial_node_id value = child(x, s, n - 1);
+        const T t = infer(x, value);
+        for (uint32_t i = 0; i + 1 < n; ++i) assign_target(x, child(x, s, i), &t, value);
+        return;
+    }
+    case VIAL_N_EXPR_STMT:
+        if (child(x, s, 0)) infer(x, child(x, s, 0));
+        return;
+    case VIAL_N_IF: {
+        const vial_node_id c = child(x, s, 0);
+        const T ct = infer(x, c);
+        const vial_value_t v = value_of(x, c);
+        if (!vial_type_is_error(&ct) && v.kind == VIAL_VAL_BOOL && ct.stage == VIAL_STAGE_STATIC) {
+            // Static: only the branch taken is type-checked
+            if (v.b) check_block(x, child(x, s, 1));
+            else if (child(x, s, 2)) check_block(x, child(x, s, 2));
+            return;
+        }
+        check_block(x, child(x, s, 1));
+        if (child(x, s, 2)) check_block(x, child(x, s, 2));
+        return;
+    }
+    default:
+        return;     // defs are checked at their calls; loops and the rest arrive with later steps
+    }
+}
+
+void vial_check_types(vial_check_t* c, vial_types_t* out) {
+    const size_t num = md_array_size(c->tree->nodes);
+    const size_t nsym = md_array_size(c->names.symbols);
+    memset(out, 0, sizeof(*out));
+    md_array_resize(out->types, num, c->alloc);
+    md_array_resize(out->values, num, c->alloc);
+    md_array_resize(out->typed, num, c->alloc);
+    md_array_resize(out->sym_types, nsym, c->alloc);
+    md_array_resize(out->sym_values, nsym, c->alloc);
+    memset(out->values, 0, num * sizeof(*out->values));
+    memset(out->typed, 0, num);
+    for (size_t i = 0; i < nsym; ++i) out->sym_types[i] = vial_type_error();
+    memset(out->sym_values, 0, nsym * sizeof(*out->sym_values));
+    for (size_t i = 0; i < num; ++i) out->types[i] = vial_type_error();
+
+    infer_t x = {.t = c->tree, .src = c->src, .diags = c->diags, .n = &c->names, .out = out, .alloc = c->alloc};
+    const vial_node_id root = c->tree->root;
+    for (uint32_t i = 0; i < num_children(&x, root); ++i) check_stmt(&x, child(&x, root, i));
+    vial_diags_sort(c->diags);
+}

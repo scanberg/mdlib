@@ -312,3 +312,59 @@ UTEST_F(vial_spec, checks) {
     }
     printf("vial reference: %zu expected codes checked\n", num_checked);
 }
+
+// Every result the checker gives a type for is the type the reference writes, with its stage and pass where written,
+// and its value where the checker knows it. Results it cannot type yet are counted, not failed.
+UTEST_F(vial_spec, types) {
+    const vial_spec_t* spec = &utest_fixture->spec;
+    md_allocator_i* alloc = utest_fixture->alloc;
+    int num_ok = 0, num_untyped = 0, num_failed = 0, num_values = 0;
+    for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
+        const vial_block_t* b = &spec->blocks[i];
+        if (b->mode == VIAL_BLOCK_FILTERS) continue;
+        str_t src = b->src;
+        int first_line = 1;
+        if (b->continues && i > 0) {
+            const vial_block_t* prev = &spec->blocks[i - 1];
+            char* buf = NULL;
+            md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
+            md_array_push(buf, '\n', alloc);
+            md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
+            src = (str_t){buf, md_array_size(buf)};
+            for (size_t k = 0; k < prev->src.len; ++k) first_line += prev->src.ptr[k] == '\n';
+            first_line += 1;
+        }
+        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0};
+        md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
+        for (size_t j = 0; j < md_array_size(b->expects); ++j) {
+            const vial_expect_t* e = &b->expects[j];
+            vial_result_t want;
+            if (str_empty(e->result) || !vial_spec_read_result(&want, e)) continue;
+            md_vial__result_t got;
+            if (!md_vial__line_result(prog, (uint32_t)(e->line_in_block + first_line - 1), &got) || !got.typed) { num_untyped += 1; continue; }
+            bool ok = true;
+            if (want.is_value) {
+                if (got.has_value) {
+                    ok = str_eq(want.value, str_from_cstr(got.value));
+                    num_values += ok;
+                }
+            } else {
+                ok = want.num_types == got.num_types;
+                for (int k = 0; ok && k < want.num_types; ++k) ok = vial_spec_type_matches(want.types[k], str_from_cstr(got.types[k]));
+            }
+            if (ok && want.has_stage) ok = strcmp(want.stage, got.stage) == 0;
+            if (ok && want.pass) ok = want.pass == got.pass;
+            if (!ok) {
+                printf("reference line %d: wanted '%.*s'%s%s, got '%s%s%s%s%s', %s, pass %d\n", e->line, (int)e->result.len, e->result.ptr,
+                    want.has_stage ? ", " : "", want.has_stage ? want.stage : "", got.types[0], got.num_types > 1 ? " and " : "",
+                    got.num_types > 1 ? got.types[1] : "", got.has_value ? " = " : "", got.has_value ? got.value : "", got.stage, got.pass);
+                num_failed += 1;
+            } else {
+                num_ok += 1;
+            }
+        }
+        md_vial_program_free(prog);
+    }
+    printf("vial reference: %d results checked, %d of them values; %d not typed yet; %d wrong\n", num_ok, num_values, num_untyped, num_failed);
+    EXPECT_EQ(0, num_failed);
+}

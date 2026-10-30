@@ -95,3 +95,82 @@ UTEST_F(vial_check, recursion) {
         "E0802 4: `b` calls `a`, which calls `b` again; VIAL has no recursion\n");
     EXPECT_DIAGS("def a(n):\n    return n\ndef b(n):\n    return a(n) + a(1)\nv = b(2)\n", "");
 }
+
+#include <vial/vial_internal.h>
+
+// The type the checker gives the statement on a line, as "type, stage = value"
+static const char* type_at(const char* src, uint32_t line, md_allocator_i* alloc) {
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), NULL, alloc);
+    md_vial__result_t r;
+    static char out[512];
+    if (!md_vial__line_result(prog, line, &r)) { snprintf(out, sizeof(out), "(none)"); }
+    else {
+        int n = 0;
+        for (int k = 0; k < r.num_types; ++k) n += snprintf(out + n, sizeof(out) - n, "%s%s", k ? " and " : "", r.types[k]);
+        n += snprintf(out + n, sizeof(out) - n, ", %s", r.stage);
+        if (r.has_value) snprintf(out + n, sizeof(out) - n, " = %s", r.value);
+    }
+    md_vial_program_free(prog);
+    return out;
+}
+
+#define EXPECT_TYPE(src, line, want) do { \
+    const char* got_ = type_at(src, line, utest_fixture->alloc); \
+    if (strcmp(got_, want) != 0) printf("for:\n%s\nline %d got:  %s\nwanted:      %s\n", src, line, got_, want); \
+    EXPECT_STREQ(want, got_); \
+} while (0)
+
+UTEST_F(vial_check, literals_and_units) {
+    EXPECT_TYPE("big = 1_000_000\n", 1, "int, static = 1000000");
+    EXPECT_TYPE("x = 0x1F\n", 1, "int, static = 31");
+    EXPECT_TYPE("f = 2.5e-3\n", 1, "float, static = 0.0025");
+    EXPECT_TYPE("t = 10 ns\n", 1, "int ns, static = 10");
+    EXPECT_TYPE("d = 0.5 nm + 2.0\n", 1, "float nm, static = 2.5");
+    EXPECT_TYPE(u8"d = 0.5 nm + 3.0 Å\n", 1, "float nm, static = 0.8");
+    EXPECT_TYPE(u8"c = 0.5 nm > 3.0 Å\n", 1, "bool, static = True");
+    EXPECT_TYPE(u8"r = 3.0 Å / 2 ps\n", 1, u8"float Å/ps, static = 1.5");
+    EXPECT_TYPE(u8"a = (3.0 Å)**2\n", 1, u8"float Å², static = 9");
+    EXPECT_TYPE("e = 1.5 'kJ/mol'\n", 1, "float kJ/mol, static = 1.5");
+    EXPECT_TYPE("h = 7 // 2\n", 1, "int, static = 3");
+    EXPECT_TYPE("q = 7 / 2\n", 1, "float, static = 3.5");
+    EXPECT_TYPE("m = -7 % 3\n", 1, "int, static = 2");
+    EXPECT_TYPE("s = 'CA' 'B'\n", 1, "str, static = 'CAB'");
+    EXPECT_TYPE("b = not True\n", 1, "bool, static = False");
+    EXPECT_TYPE("n = 442\nok = 2 < n <= 500\n", 2, "bool, static = True");
+    EXPECT_TYPE("k = 5 in 1..10\n", 1, "bool, static");
+    EXPECT_TYPE("n = None\n", 1, "None, static = None");
+    EXPECT_DIAGS(u8"x = 1.0 Å + 90 deg\n", u8"W0501 1: adds ° to Å; the result's unit becomes unknown | unitless(...)\n");
+    EXPECT_TYPE(u8"x = 1.0 Å + 90 deg\ny = x * 2.0\n", 2, "float ?, static");
+    EXPECT_DIAGS("x = 'CA' + 1\n", "E0319 1: `+` takes numbers; this is str and int\n");
+    EXPECT_DIAGS("x = 2.0 ** 1 nm\n", "W0501 1: a power of nm; an exponent has no unit | unitless(...)\n");
+}
+
+UTEST_F(vial_check, shapes) {
+    EXPECT_TYPE("ids = [45, 48, 112]\n", 1, "int[3], static");
+    EXPECT_TYPE(u8"c = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nd = c * 2 Å\n", 2, u8"float[2][3] Å, static");
+    EXPECT_TYPE("c = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nt = c.T\n", 2, "float[3][2], static");
+    EXPECT_TYPE("c = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nz = c.z\n", 2, "float[2], static");
+    EXPECT_TYPE("c = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nr = c[:, None] - c\n", 2, "float[2][2][3], static");
+    EXPECT_TYPE("c = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nr = c[1:]\n", 2, "float[1][3], static");
+    EXPECT_TYPE("c = [1.0, 2.0, 3.0, 4.0, 5.0]\nr = c[::2]\n", 2, "float[3], static");
+    EXPECT_TYPE("c = [1.0, 2.0, 3.0, 4.0, 5.0]\nr = c[-3:]\n", 2, "float[3], static");
+    EXPECT_TYPE("c = [1.0, 2.0, 3.0, 4.0, 5.0]\nr = c[[3, 0, 1]]\n", 2, "float[3], static");
+    EXPECT_TYPE("c = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nr = c[..., 2]\n", 2, "float[2], static");
+    EXPECT_TYPE("m = [[1.0, 0.0], [0.0, 1.0]]\nv = [1.0, 2.0]\nr = m @ v\n", 3, "float[2], static");
+    EXPECT_TYPE("m = [[1.0, 0.0], [0.0, 1.0]]\nr = m @ m\n", 2, "float[2][2], static");
+    EXPECT_TYPE("v = [1.0, 2.0]\nr = v @ v\n", 2, "float, static");
+    EXPECT_DIAGS("d = [1.0, 2.0]\nc = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nbad = d + c\n",
+        "E0301 3: `float[2]` and `float[2][3]` do not broadcast | d[:, None]\n");
+    EXPECT_DIAGS("c = [1.0, 2.0, 3.0]\nout = c[3]\n", "E0304 2: position 3 is outside `[3]`\n");
+    EXPECT_DIAGS("a = [1.0, [2.0]]\n", "E0301 1: the items of a list have one shape; these are `float` and `float[1]`\n");
+    EXPECT_DIAGS("c = [1.0, 2.0]\nz = c.z\n", "E0319 2: `.z` takes coordinates, a last dimension of 3, or a set; this is `float[2]`\n");
+    EXPECT_DIAGS("a = [[[[[[[1.0]]]]]]]\n", "E0308 1: the result would have 7 dimensions; the limit is 6\n");
+}
+
+UTEST_F(vial_check, static_conditions) {
+    // The branch a static condition does not take is not type-checked
+    EXPECT_TYPE("v = 1.0 if True else 'x' + 1\n", 1, "float, static = 1");
+    EXPECT_DIAGS("v = 1.0 if True else 'x' + 1\n", "");
+    EXPECT_DIAGS("v = 1.0 if [True, False] else 2.0\n", "E0303 1: a conditional needs one bool; this is `bool[2]` | where(...)\n");
+    EXPECT_TYPE("c = 3\nv = 1.0 if c > 2 else 2\n", 2, "float, static = 1");
+}
