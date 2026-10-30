@@ -117,3 +117,4 @@ bool md_vial__line_result(const md_vial_program_t* prog, uint32_t line, md_vial_
 // The program's array IR, for the tests
 struct vial_ir_t;
 const struct vial_ir_t* md_vial__ir(const md_vial_program_t* prog);
+const struct vial_ir_t* md_vial__run_ir(const md_vial_program_t* prog);   // inlined, for evaluation; NULL when not

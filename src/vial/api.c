@@ -21,6 +21,8 @@ struct md_vial_program_t {
     vial_check_t     check;
     vial_types_t     types;
     vial_ir_t        ir;        // the script lowered
+    vial_ir_t        run_ir;    // and inlined, for evaluation; empty when it does not inline
+    bool             has_run_ir;
     md_vial_output_t* outputs;  // md_array
     // The prelude, compiled with every script
     str_t            prelude_src;
@@ -103,6 +105,7 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
     prog->check.ir = &prog->ir;
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
+    if (!md_array_size(prog->ir.failures)) prog->has_run_ir = vial_ir_inline(&prog->ir, &prog->run_ir, arena);
 
     collect_outputs(prog);
 
@@ -212,3 +215,4 @@ bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover
 }
 
 const struct vial_ir_t* md_vial__ir(const md_vial_program_t* prog) { return prog ? &prog->ir : NULL; }
+const struct vial_ir_t* md_vial__run_ir(const md_vial_program_t* prog) { return prog && prog->has_run_ir ? &prog->run_ir : NULL; }

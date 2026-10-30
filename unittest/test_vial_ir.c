@@ -77,9 +77,10 @@ static bool vial_ir__start(vial_ir__run_t* r, const char* src, const md_system_t
     r->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const md_vial_compile_desc_t desc = {.sys = sys};
     r->prog = md_vial_compile(str_from_cstr(src), &desc, r->alloc);
-    const vial_ir_t* ir = md_vial__ir(r->prog);
-    if (md_array_size(ir->failures)) {
-        printf("not lowered: %s\n", ir->failures[0].what);
+    const vial_ir_t* ir = md_vial__run_ir(r->prog);
+    if (!ir) {
+        const vial_ir_t* lowered = md_vial__ir(r->prog);
+        printf("not lowered: %s\n", md_array_size(lowered->failures) ? lowered->failures[0].what : "does not inline");
         return false;
     }
     if (sys) vial_sys_init(&r->vs, sys, r->alloc);
@@ -95,7 +96,7 @@ static void vial_ir__end(vial_ir__run_t* r) {
 
 // The printed value of a published name, or what failed
 static const char* vial_ir__out(vial_ir__run_t* r, const char* name, char* buf, size_t cap) {
-    const vial_ir_t* ir = md_vial__ir(r->prog);
+    const vial_ir_t* ir = md_vial__run_ir(r->prog);
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
         if (!str_eq(ir->outputs[i].name, str_from_cstr(name))) continue;
         const vial_val_t* v = vial_interp_value(&r->in, ir->outputs[i].value);
@@ -182,7 +183,7 @@ static bool vial_ir__frames(vial_ir__run_t* r, const md_system_t* sys, int64_t n
     const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
     md_system_extract_t* ex = md_system_extract_begin(sys, STR_LIT("run"), paths, 2, r->alloc);
     if (!ex) return false;
-    const vial_ir_t* ir = md_vial__ir(r->prog);
+    const vial_ir_t* ir = md_vial__run_ir(r->prog);
     vial_ssa_t v = 0;
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (str_eq(ir->outputs[i].name, str_from_cstr(name))) v = ir->outputs[i].value;
     bool ok = v != 0;
@@ -250,4 +251,90 @@ UTEST(vial_ir, test_runs_load) {
     EXPECT_EQ(0, vial_test_run('T'));
     ASSERT_TRUE(vial_test_state('T') != NULL);
     EXPECT_EQ(vial_test_system('T')->atom.count, vial_test_state('T')->num_atoms);
+}
+
+typedef struct vial_ir__loader_t {
+    const md_system_t*  sys;
+    md_system_state_t   state;
+} vial_ir__loader_t;
+
+static bool vial_ir__load(void* user, int64_t index, vial_frame_t* out) {
+    vial_ir__loader_t* l = user;
+    const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(l->sys, STR_LIT("run"), paths, 2, md_get_heap_allocator());
+    const bool ok = ex && md_system_extract_frame(ex, index, &l->state);
+    if (ex) md_system_extract_end(ex);
+    *out = (vial_frame_t){.xyz = (const float*)l->state.xyz, .num_atoms = l->state.num_atoms, .cell = l->state.unitcell, .index = index, .time = (double)index};
+    return ok;
+}
+
+static double vial_ir__num(const vial_val_t* v) {
+    if (!v || !v->data || vial_val_is_missing(v, 0)) return NAN;
+    return v->dtype == VIAL_DT_FLOAT ? *(const float*)v->data : v->dtype == VIAL_DT_INT ? *(const int32_t*)v->data : *(const double*)v->data;
+}
+
+static vial_ssa_t vial_ir__output(const vial_ir_t* ir, const char* name) {
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (str_eq(ir->outputs[i].name, str_from_cstr(name))) return ir->outputs[i].value;
+    return 0;
+}
+
+UTEST(vial_ir, evaluates_trajectory) {
+    const md_system_t* sys = vial_test_system('P');
+    const int64_t nf = vial_test_run('P');
+    ASSERT_TRUE(sys && nf > 2);
+    vial_ir__run_t r;
+    const char* src =
+        "ca   = particles(name='CA')\n"
+        "ends = distance(ca[0], ca[14])\n"
+        "m    = mean(ends, axis='frame')\n"
+        "mx   = max(ends, axis='frame')\n"
+        "sm   = smooth(ends, 3)\n"
+        "prev = previous(ends)\n"
+        "def step(s, x):\n"
+        "    return s + x\n"
+        "cum  = fold(step, ends, init=zeros_like(ends))\n"
+        "dev  = ends - m\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r.alloc}};
+    md_system_state_init(&l.state, sys->atom.count);
+    r.in.load_frame = vial_ir__load;
+    r.in.load_user = &l;
+    const bool ok = vial_interp_run(&r.in, nf);
+    for (size_t i = 0; i < md_array_size(r.in.errors); ++i) printf("failed: %s %s\n", r.in.errors[i].code, r.in.errors[i].message);
+    ASSERT_TRUE(ok);
+    const vial_ir_t* ir = md_vial__run_ir(r.prog);
+    if (getenv("VIAL_IR_DUMP")) {
+        const str_t d = vial_ir_dump(ir, str_from_cstr(src), r.alloc);
+        printf("%.*s", (int)d.len, d.ptr);
+        for (size_t v = 1; v < md_array_size(ir->values); ++v) {
+            const uint32_t op = ir->values[v].op;
+            if (op == VIAL_IR_NO_OP || ir->ops[op].parent != ir->funcs[0].body) continue;
+            printf("%%%zu: class %u sweep %u live %u state %u series %p\n", v, r.in.op_class[op], r.in.op_sweep[op], r.in.live[op], r.in.state[v], (void*)r.in.series[v]);
+        }
+    }
+    const vial_ssa_t ends = vial_ir__output(ir, "ends"), m = vial_ir__output(ir, "m"), mx = vial_ir__output(ir, "mx"), sm = vial_ir__output(ir, "sm");
+    const vial_ssa_t prev = vial_ir__output(ir, "prev"), cum = vial_ir__output(ir, "cum"), dev = vial_ir__output(ir, "dev");
+    double sum = 0.0, best = -1e30;
+    float run = 0.0f;
+    for (int64_t f = 0; f < nf; ++f) {
+        const double e = vial_ir__num(vial_interp_at(&r.in, ends, f));
+        sum += e;
+        if (e > best) best = e;
+        run += (float)e;
+        EXPECT_NEAR(run, vial_ir__num(vial_interp_at(&r.in, cum, f)), 1e-3);
+        if (f == 0) EXPECT_TRUE(isnan(vial_ir__num(vial_interp_at(&r.in, prev, f))));
+        else EXPECT_EQ((float)vial_ir__num(vial_interp_at(&r.in, ends, f - 1)), (float)vial_ir__num(vial_interp_at(&r.in, prev, f)));
+        if (f > 0 && f + 1 < nf) {
+            const double want = (vial_ir__num(vial_interp_at(&r.in, ends, f - 1)) + e + vial_ir__num(vial_interp_at(&r.in, ends, f + 1))) / 3.0;
+            const vial_val_t* sv = vial_interp_at(&r.in, sm, f);
+            ASSERT_TRUE(sv != NULL);
+            EXPECT_NEAR(want, ((const float*)sv->data)[f], 1e-4);     // smooth keeps the whole series
+        }
+    }
+    EXPECT_NEAR(sum / nf, vial_ir__num(vial_interp_at(&r.in, m, 0)), 1e-4);
+    EXPECT_EQ((float)best, (float)vial_ir__num(vial_interp_at(&r.in, mx, 0)));
+    const double mean = vial_ir__num(vial_interp_at(&r.in, m, 0));
+    EXPECT_NEAR(vial_ir__num(vial_interp_at(&r.in, ends, 5)) - mean, vial_ir__num(vial_interp_at(&r.in, dev, 5)), 1e-4);
+    md_system_state_free(&l.state);
+    vial_ir__end(&r);
 }

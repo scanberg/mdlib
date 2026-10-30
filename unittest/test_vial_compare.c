@@ -68,7 +68,8 @@ static bool v2_values(const char* src, const md_system_t* sys, uint32_t nf, doub
     const md_vial_diagnostic_t* d;
     const size_t nd = md_vial_diagnostics(prog, &d);
     for (size_t i = 0; i < nd; ++i) if (d[i].code[0] == 'E') { printf("v2 does not compile: %s: %.*s\n", src, (int)d[i].message.len, d[i].message.ptr); return false; }
-    const vial_ir_t* ir = md_vial__ir(prog);
+    const vial_ir_t* ir = md_vial__run_ir(prog);
+    if (!ir) { printf("v2 does not inline: %s\n", src); return false; }
     vial_ssa_t p = 0;
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (str_eq(ir->outputs[i].name, STR_LIT("p"))) p = ir->outputs[i].value;
     if (!p) return false;

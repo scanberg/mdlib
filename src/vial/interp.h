@@ -47,7 +47,19 @@ typedef struct vial_interp_t {
     // at(x, frame=i) reads another frame, in a step before the frames are evaluated: the caller loads it
     bool                      (*load_frame)(void* user, int64_t index, vial_frame_t* out);
     void*                       load_user;
+    // Over the trajectory (vial_interp_run): how each top-level op is evaluated, in which sweep over the frames, and
+    // the per-frame values kept for what reads them as a series
+    uint8_t*                    op_class;   // md_array by op: VIAL_OP_STATIC, VIAL_OP_PER_FRAME or VIAL_OP_ONCE
+    uint8_t*                    op_sweep;   // md_array by op: the sweep a per-frame op runs in, after which a once op runs
+    vial_val_t**                series;     // md_array by ssa: the value at each frame, or NULL when it is not kept
+    double*                     times;      // [num_frames], time() of each frame
+    int64_t                     num_frames;
+    uint8_t                     sweep;      // the sweep being run
+    vial_val_t*                 fold_state; // md_array by ssa of a fold's result: its state
+    uint8_t*                    fold_has;
 } vial_interp_t;
+
+enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };
 
 bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, const struct md_system_t* msys, md_allocator_i* alloc);
 void vial_interp_free(vial_interp_t* in);
@@ -62,6 +74,15 @@ bool vial_interp_frame(vial_interp_t* in, const vial_frame_t* frame);
 
 // The value of v, as last computed; NULL when it was not
 const vial_val_t* vial_interp_value(const vial_interp_t* in, vial_ssa_t v);
+
+// Evaluates everything over num_frames frames, which in->load_frame gives: the static part, then sweeps over the
+// frames in order, each computing the per-frame values that what was computed after the sweep before lets it, and
+// after each sweep what reads whole series. False when something failed (in->errors).
+bool vial_interp_run(vial_interp_t* in, int64_t num_frames);
+
+// After vial_interp_run: the value of a per-frame value at frame f, or of a trajectory value (f ignored); NULL when it
+// was not computed or not kept
+const vial_val_t* vial_interp_at(const vial_interp_t* in, vial_ssa_t v, int64_t f);
 
 // ### KERNELS (kernels.c) ###
 // A kernel takes its arguments as runtime values and writes one result. It reports through the interpreter.

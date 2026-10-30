@@ -188,3 +188,9 @@ bool vial_ir_verify(const vial_ir_t* ir, char* err, size_t cap);
 
 // The IR as text, functions first, one op per line with its span as line:col in src and its stage
 str_t vial_ir_dump(const vial_ir_t* ir, str_t src, md_allocator_i* alloc);
+
+// ### PASSES (passes.c) ###
+
+// dst: src with every call and applied body replaced by a copy of the body, so it is one function. False when a body
+// cannot be inlined, as one that ends without its value where lowering failed.
+bool vial_ir_inline(const vial_ir_t* src, vial_ir_t* dst, md_allocator_i* alloc);

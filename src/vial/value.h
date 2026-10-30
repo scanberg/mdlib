@@ -26,6 +26,11 @@
 
 #include <stdint.h>
 
+// vial_val_t.flags
+enum {
+    VIAL_VAL_FRAMES = 1 << 0,   // the first dimension is the run's frames: a series, as trajectory operations take them
+};
+
 typedef struct vial_val_t {
     uint8_t             dtype;      // vial_dtype_t
     uint8_t             ndim;

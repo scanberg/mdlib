@@ -146,6 +146,12 @@ const vial_val_t* vial_interp_value(const vial_interp_t* in, vial_ssa_t v) {
 
 static bool eval_region(vial_interp_t* in, uint32_t region, const vial_val_t* params, vial_val_t* yields, uint32_t max_yields,
                         uint32_t* num_yields, md_allocator_i* alloc);
+static bool eval_op(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc);
+static bool eval_region_pub(vial_interp_t* in, uint32_t region, const vial_val_t* params, vial_val_t* yields, uint32_t max_yields,
+                            uint32_t* num_yields, md_allocator_i* alloc) {
+    return eval_region(in, region, params, yields, max_yields, num_yields, alloc);
+}
+static bool eval_op_pub(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) { return eval_op(in, opi, alloc); }
 
 // One element of a value along its leading dimensions: a view of numbers, or the picked set
 static vial_val_t element(const vial_val_t* a, uint32_t lead, size_t i, md_allocator_i* alloc) {
@@ -381,7 +387,7 @@ static bool eval_op(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) {
         return eval_region(in, op->region[c ? 0 : 1], NULL, out, op->num_results, &ny, alloc);
     }
     case VIAL_IR_FOLD:
-        return vial_rt_fail(&k, "R0103", "a fold is evaluated over the trajectory, not per frame");
+        return vial_rt_fail(&k, "R0103", "a fold is evaluated over the trajectory (vial_interp_run), not one frame alone");
     default:
         return vial_rt_fail(&k, "R0103", "%s is not evaluated yet", vial_ir_kind_str((vial_ir_kind_t)op->kind));
     }
@@ -464,4 +470,287 @@ bool vial_interp_frame(vial_interp_t* in, const vial_frame_t* frame) {
     const bool st = eval_top(in, true);
     in->frame = frame;
     return eval_top(in, false) && st;
+}
+
+// ### THE TRAJECTORY ###
+// A static op is computed once. A per-frame op runs for each frame, in the sweep its inputs allow: a value that reads
+// a whole series, such as ends - mean(ends, axis='frame'), runs in the sweep after the series ends. A once op runs
+// after a sweep: one that reads per-frame values as series (mean over frames, smooth, histogram), and one computed from
+// whole-trajectory values alone (eigh(C)). A fold is a per-frame op whose state carries from frame to frame.
+
+static bool reads_frames(const vial_ir_t* ir, const vial_ir_op_t* op) {
+    for (uint32_t k = 0; k < op->num_args; ++k) {
+        const vial_ssa_t a = ir->args[op->arg_beg + k];
+        if (!a) continue;
+        const vial_type_t* t = &ir->values[a].type;
+        if (t->stage == VIAL_STAGE_FRAME || (t->stage == VIAL_STAGE_TRAJECTORY && (t->flags & VIAL_TYPE_PER_FRAME))) return true;
+    }
+    return false;
+}
+
+static void classify(vial_interp_t* in) {
+    const vial_ir_t* ir = in->ir;
+    const size_t no = md_array_size(ir->ops);
+    md_array_resize(in->op_class, no, in->alloc);
+    md_array_resize(in->op_sweep, no, in->alloc);
+    memset(in->op_class, 0, no);
+    memset(in->op_sweep, 0, no);
+    const vial_ir_region_t* r = &ir->regions[ir->funcs[0].body];
+    for (size_t i = 0; i < md_array_size(r->ops); ++i) {
+        const uint32_t opi = r->ops[i];
+        const vial_ir_op_t* op = &ir->ops[opi];
+        if (!op->num_results || op->kind == VIAL_IR_YIELD) continue;
+        const vial_type_t* t = &ir->values[op->result].type;
+        uint8_t cls = VIAL_OP_STATIC;
+        if (t->stage == VIAL_STAGE_FRAME) cls = VIAL_OP_PER_FRAME;
+        else if (t->stage == VIAL_STAGE_TRAJECTORY) {
+            // A window over frames (smooth, derivative) keeps the frame but needs the whole series; every other value
+            // that keeps the frame is computed frame by frame, a fold in order
+            const char* bname = op->kind == VIAL_IR_BUILTIN ? vial_builtin_at(op->aux)->name : "";
+            const bool window = (!strcmp(bname, "smooth") || !strcmp(bname, "derivative")) && reads_frames(ir, op);
+            cls = op->kind == VIAL_IR_FOLD ? VIAL_OP_PER_FRAME :
+                  window ? VIAL_OP_ONCE :
+                  (t->flags & VIAL_TYPE_PER_FRAME) ? VIAL_OP_PER_FRAME : VIAL_OP_ONCE;
+        }
+        in->op_class[opi] = cls;
+        // The sweep: a per-frame op after its per-frame inputs' sweeps and after the sweeps once inputs follow
+        uint8_t sweep = cls == VIAL_OP_STATIC ? 0 : 1;
+        for (uint32_t k = 0; k < op->num_args; ++k) {
+            const vial_ssa_t a = ir->args[op->arg_beg + k];
+            if (!a || ir->values[a].op == VIAL_IR_NO_OP) continue;
+            const uint32_t src = ir->values[a].op;
+            const uint8_t sc = in->op_class[src], ss = in->op_sweep[src];
+            uint8_t need = 0;
+            if (sc == VIAL_OP_PER_FRAME) need = ss;
+            else if (sc == VIAL_OP_ONCE) need = cls == VIAL_OP_PER_FRAME ? ss + 1 : ss;
+            if (need > sweep) sweep = need;
+        }
+        in->op_sweep[opi] = sweep;
+    }
+}
+
+const vial_val_t* vial_interp_at(const vial_interp_t* in, vial_ssa_t v, int64_t f) {
+    if (!v || v >= md_array_size(in->vals)) return NULL;
+    const uint32_t op = in->ir->values[v].op;
+    if (op != VIAL_IR_NO_OP && in->op_class && in->op_class[op] == VIAL_OP_PER_FRAME) {
+        if (!in->series || !in->series[v] || f < 0 || f >= in->num_frames) return NULL;
+        return in->series[v][f].dtype || in->series[v][f].ndim ? &in->series[v][f] : NULL;
+    }
+    return vial_interp_value(in, v);
+}
+
+// One frame of a series, made by a once op such as smooth: the value at frame f
+static vial_val_t frame_of(const vial_val_t* s, int64_t f, md_allocator_i* alloc) {
+    vial_val_t e = *s;
+    e.flags &= ~VIAL_VAL_FRAMES;
+    e.ndim = s->ndim - 1;
+    memmove(e.dims, s->dims + 1, e.ndim * sizeof(uint32_t));
+    size_t inner = 1;
+    for (uint8_t k = 0; k < e.ndim; ++k) inner *= e.dims[k];
+    if (s->data) e.data = (uint8_t*)s->data + (size_t)f * inner * vial_dtype_size(s->dtype);
+    e.missing = NULL;
+    for (size_t k = 0; k < inner; ++k) if (vial_val_is_missing(s, (size_t)f * inner + k)) vial_val_set_missing(&e, k, alloc);
+    return e;
+}
+
+// A per-frame value's series, stacked: [frames] and its shape, flagged as frames
+static bool stacked(vial_interp_t* in, vial_ssa_t a, vial_val_t* out) {
+    const vial_val_t* s = in->series ? in->series[a] : NULL;
+    if (!s) return false;
+    const int64_t nf = in->num_frames;
+    const vial_val_t* first = &s[0];
+    vial_val_t o = {.dtype = first->dtype, .ndim = first->ndim + 1, .flags = VIAL_VAL_FRAMES};
+    o.dims[0] = (uint32_t)nf;
+    memcpy(o.dims + 1, first->dims, first->ndim * sizeof(uint32_t));
+    const size_t inner = vial_val_count(first), es = vial_dtype_size(first->dtype);
+    const vial_val_t made = vial_val_make(o.dtype, o.ndim, o.dims, in->alloc);
+    o.data = made.data;
+    for (int64_t f = 0; f < nf; ++f) {
+        const vial_val_t* v = &s[f];
+        if (vial_val_count(v) != inner || v->dtype != first->dtype) {
+            // A frame that was not computed: missing throughout
+            for (size_t k = 0; k < inner; ++k) vial_val_set_missing(&o, (size_t)f * inner + k, in->alloc);
+            continue;
+        }
+        if (es && v->data) memcpy((uint8_t*)o.data + (size_t)f * inner * es, v->data, inner * es);
+        for (size_t k = 0; k < inner; ++k) if (vial_val_is_missing(v, k)) vial_val_set_missing(&o, (size_t)f * inner + k, in->alloc);
+    }
+    *out = o;
+    return true;
+}
+
+// A fold's step for this frame: the state after it, or the state carried over when x is missing and skipped
+static bool eval_fold(vial_interp_t* in, uint32_t opi) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_op_t* op = &ir->ops[opi];
+    vial_kctx_t k = {.in = in, .op = op, .map_index = -1};
+    const vial_ssa_t r = op->result;
+    const vial_val_t* x = &in->vals[ir->args[op->arg_beg]];
+    const vial_val_t* init = &in->vals[ir->args[op->arg_beg + 1]];
+    if (md_array_size(in->fold_state) <= r) {
+        const size_t old = md_array_size(in->fold_state);
+        md_array_resize(in->fold_state, r + 1, in->alloc);
+        md_array_resize(in->fold_has, r + 1, in->alloc);
+        memset(in->fold_state + old, 0, (r + 1 - old) * sizeof(vial_val_t));
+        memset(in->fold_has + old, 0, r + 1 - old);
+    }
+    bool x_missing = false;
+    for (size_t i = 0; i < vial_val_count(x); ++i) x_missing = x_missing || vial_val_is_missing(x, i);
+    const bool skip = op->sub != 0;
+    if (!in->fold_has[r]) {
+        // The initial state: init, taken from the first frame where it is present
+        bool init_missing = false;
+        for (size_t i = 0; i < vial_val_count(init); ++i) init_missing = init_missing || vial_val_is_missing(init, i);
+        if (init_missing) { in->vals[r] = *init; return true; }
+        in->fold_state[r] = vial_val_copy(init, in->alloc);
+        in->fold_has[r] = 1;
+    }
+    if (!(skip && x_missing)) {
+        vial_val_t params[2] = {in->fold_state[r], *x};
+        vial_val_t next;
+        uint32_t ny = 0;
+        if (!eval_region_pub(in, op->region[0], params, &next, 1, &ny, in->temp)) return false;
+        if (ny != 1) return vial_rt_fail(&k, "R0103", "a fold's step gave no state");
+        in->fold_state[r] = vial_val_copy(&next, in->alloc);
+    }
+    in->vals[r] = in->fold_state[r];
+    return true;
+}
+
+static bool needs_series(const vial_interp_t* in, vial_ssa_t v) {
+    const vial_ir_t* ir = in->ir;
+    // Outputs, and what a once op or a later sweep reads
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (ir->outputs[i].value == v) return true;
+    return false;
+}
+
+bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
+    const vial_ir_t* ir = in->ir;
+    classify(in);
+    in->num_frames = num_frames;
+    in->times = md_alloc(in->alloc, (num_frames ? num_frames : 1) * sizeof(double));
+    bool ok = vial_interp_static(in);
+    // Which per-frame values are kept: outputs, and those read across sweeps or as series
+    const size_t nv = md_array_size(ir->values);
+    uint8_t* keep = md_alloc(in->alloc, nv ? nv : 1);
+    memset(keep, 0, nv);
+    uint8_t max_sweep = 0;
+    const vial_ir_region_t* top = &ir->regions[ir->funcs[0].body];
+    for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+        const uint32_t opi = top->ops[i];
+        const vial_ir_op_t* op = &ir->ops[opi];
+        if (!op->num_results || !in->live[opi]) continue;
+        if (in->op_sweep[opi] > max_sweep) max_sweep = in->op_sweep[opi];
+        if (in->op_class[opi] == VIAL_OP_PER_FRAME && needs_series(in, op->result)) keep[op->result] = 1;
+        for (uint32_t k = 0; k < op->num_args; ++k) {
+            const vial_ssa_t a = ir->args[op->arg_beg + k];
+            if (!a || ir->values[a].op == VIAL_IR_NO_OP) continue;
+            const uint32_t src = ir->values[a].op;
+            if (in->op_class[src] != VIAL_OP_PER_FRAME) continue;
+            if (in->op_class[opi] == VIAL_OP_ONCE || in->op_sweep[opi] > in->op_sweep[src]) keep[a] = 1;
+        }
+    }
+    md_array_resize(in->series, nv, in->alloc);
+    memset(in->series, 0, nv * sizeof(*in->series));
+    for (size_t v = 0; v < nv; ++v) {
+        if (!keep[v]) continue;
+        in->series[v] = md_alloc(in->alloc, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
+        memset(in->series[v], 0, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
+    }
+    for (uint8_t sweep = 1; sweep <= max_sweep; ++sweep) {
+        in->sweep = sweep;
+        bool any = false;
+        for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+            const uint32_t opi = top->ops[i];
+            if (in->live[opi] && in->op_class[opi] == VIAL_OP_PER_FRAME && in->op_sweep[opi] == sweep) any = true;
+        }
+        for (int64_t f = 0; any && f < num_frames; ++f) {
+            vial_frame_t fr;
+            if (!in->load_frame || !in->load_frame(in->load_user, f, &fr)) { vial_kctx_t k = {.in = in, .map_index = -1}; vial_rt_fail(&k, "R0104", "frame %lld does not load", (long long)f); return false; }
+            in->times[f] = fr.time;
+            in->frame = &fr;
+            for (size_t v = 0; v < nv; ++v) if (in->state[v] == 1) in->state[v] = 0;
+            md_arena_allocator_reset(in->temp);
+            for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+                const uint32_t opi = top->ops[i];
+                const vial_ir_op_t* op = &ir->ops[opi];
+                if (!op->num_results || !in->live[opi]) continue;
+                const uint8_t cls = in->op_class[opi];
+                if (cls == VIAL_OP_STATIC) continue;
+                if (cls == VIAL_OP_ONCE) {
+                    // A whole-trajectory value: a series of frames is read at this frame
+                    const vial_val_t* v = &in->vals[op->result];
+                    if (in->state[op->result] == 3 && (v->flags & VIAL_VAL_FRAMES)) {
+                        // Left as it is: readers take their frame below
+                    }
+                    continue;
+                }
+                const uint8_t sw = in->op_sweep[opi];
+                if (sw > sweep) continue;
+                if (sw < sweep) {
+                    // Computed in an earlier sweep: its value at this frame, when kept
+                    if (in->series[op->result] && (in->series[op->result][f].dtype || in->series[op->result][f].ndim)) {
+                        in->vals[op->result] = in->series[op->result][f];
+                        in->state[op->result] = 1;
+                    }
+                    continue;
+                }
+                // Inputs that are series made after an earlier sweep are read at this frame
+                bool ready = true;
+                const vial_val_t* saved_vals[64];
+                vial_ssa_t saved_ssa[64];
+                uint32_t ns = 0;
+                for (uint32_t k = 0; k < op->num_args; ++k) {
+                    const vial_ssa_t a = ir->args[op->arg_beg + k];
+                    if (!a) continue;
+                    if (!in->state[a]) { ready = false; break; }
+                    if (in->state[a] == 3 && (in->vals[a].flags & VIAL_VAL_FRAMES) && ns < 64) {
+                        saved_vals[ns] = md_alloc(in->temp, sizeof(vial_val_t));
+                        *(vial_val_t*)saved_vals[ns] = in->vals[a];
+                        saved_ssa[ns++] = a;
+                        in->vals[a] = frame_of(&in->vals[a], f, in->temp);
+                    }
+                }
+                bool done = false;
+                if (ready) {
+                    done = op->kind == VIAL_IR_FOLD ? eval_fold(in, opi) : eval_op_pub(in, opi, in->temp);
+                }
+                for (uint32_t q = 0; q < ns; ++q) in->vals[saved_ssa[q]] = *saved_vals[q];
+                if (!done) { ok = false; continue; }
+                in->state[op->result] = 1;
+                if (in->series[op->result]) in->series[op->result][f] = vial_val_copy(&in->vals[op->result], in->alloc);
+            }
+        }
+        // After the sweep: the once ops it completes, in program order
+        for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+            const uint32_t opi = top->ops[i];
+            const vial_ir_op_t* op = &ir->ops[opi];
+            if (!op->num_results || !in->live[opi] || in->op_class[opi] != VIAL_OP_ONCE || in->op_sweep[opi] != sweep) continue;
+            vial_ssa_t replaced[64];
+            vial_val_t old[64];
+            uint32_t nr = 0;
+            bool ready = true;
+            for (uint32_t k = 0; k < op->num_args && ready; ++k) {
+                const vial_ssa_t a = ir->args[op->arg_beg + k];
+                if (!a || ir->values[a].op == VIAL_IR_NO_OP) continue;
+                const uint32_t src = ir->values[a].op;
+                if (in->op_class[src] == VIAL_OP_PER_FRAME) {
+                    vial_val_t st;
+                    if (!stacked(in, a, &st)) { ready = false; break; }
+                    if (nr < 64) { replaced[nr] = a; old[nr++] = in->vals[a]; }
+                    in->vals[a] = st;
+                    in->state[a] = 1;
+                } else if (!in->state[a]) {
+                    ready = false;
+                }
+            }
+            bool done = false;
+            if (ready) done = eval_op_pub(in, opi, in->alloc);
+            for (uint32_t q = 0; q < nr; ++q) in->vals[replaced[q]] = old[q];
+            if (!done) { ok = false; continue; }
+            in->state[op->result] = 3;
+        }
+    }
+    in->frame = NULL;
+    return ok;
 }
