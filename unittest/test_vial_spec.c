@@ -265,7 +265,7 @@ static bool vial_spec__is_checked_code(const char* code) {
                                   "E0307", "E0309", "E0310", "E0311", "W0603",
                                   "E0302", "W0608", "E0314", "E0313", "E0204", "W0501", "E0304",
                                   "E0301", "W0405", "W0607", "E0315",
-                                  "E0317", "E0401", "E0403", "E0404", "E0405", "W0404", "W0406", "E0303", "W0605"};
+                                  "E0317", "E0401", "E0403", "E0404", "E0405", "W0404", "W0406", "E0303", "W0605", "E0306"};
     for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }
