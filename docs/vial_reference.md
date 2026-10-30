@@ -284,7 +284,7 @@ A system is built of particles, residues, parts and molecules, each nested in th
 | `chains` | `id` | the author chain id | string or list |
 | all of them | `scope` | the set to search instead of the default scope | a set, or `system` |
 
-A list means any of its values, and separate keywords must all hold.
+A list means any of its values, and separate keywords must all hold. `element` ignores case, so `'MG'`, `'Mg'` and `'mg'` are magnesium; names and ids do not.
 
 The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecules(parts(kind='peptide'))` gives the molecules they are in.
 
@@ -373,6 +373,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 - An out-of-range position on a static extent is E0304. On a dynamic extent it is R0101 in that frame, and the value is missing there; the compiler says so beforehand with W0405.
 - `by=` works with every reduction and is defined as `[f(a[s]) for s in g]`. A group with no values gives a missing value and W0603, which counts them. `a[s]` and `by=` act on the first dimension of `a` that describes particles; an array with no such dimension is E0311.
 - `var` and `std` over frames run in one pass, with Welford's algorithm.
+- A unit's label is how the data names it: a residue `MET1/A`, or `ALA1` where the data gives no chain ids; a particle `CA/MET1/A`; a chain its id, `A`. A part or a molecule of one residue is labelled as that residue, `GTP501/A`, and a longer one by its kind or its molecule's name and its chain, `peptide/A`, or by its kind and number where there are no chains, `peptide1`.
 
 ```python
 # on T
