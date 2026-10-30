@@ -179,6 +179,8 @@ static void unit_join(infer_t* x, vial_node_id at, const char* verb, const T* a,
     out->unit_kind = VIAL_UNIT_UNKNOWN;
 }
 
+void vx_unit_join(infer_t* x, vial_node_id at, const char* verb, const T* a, const T* b, T* out) { unit_join(x, at, verb, a, b, out); }
+
 // The unit of * and /: a bare number has none
 static void unit_product(const T* a, const T* b, bool divide, T* out) {
     if (a->unit_kind == VIAL_UNIT_UNKNOWN || b->unit_kind == VIAL_UNIT_UNKNOWN) { out->unit_kind = VIAL_UNIT_UNKNOWN; return; }
@@ -350,6 +352,8 @@ static uint8_t promote(const T* a, const T* b) {
     if (is_float(db)) return db;
     return VIAL_DT_INT;
 }
+
+uint8_t vx_promote(const T* a, const T* b) { return promote(a, b); }
 
 // A value of b's type in a's unit, for + - % and comparisons; false when the units do not convert
 static bool convert_value(const T* a, const T* b, vial_value_t* vb) {
@@ -826,7 +830,15 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     if (a.dtype == VIAL_DT_TUPLE) {
         int64_t k;
         if (in && kind_of(x, in) != VIAL_N_SLICE) infer(x, in);
-        if (in && static_index(x, in, &k) && k >= -(int64_t)a.num_elems && k < (int64_t)a.num_elems) return a.elems[k < 0 ? k + a.num_elems : k];
+        if (in && static_index(x, in, &k) && k >= -(int64_t)a.num_elems && k < (int64_t)a.num_elems) {
+            const uint32_t at = (uint32_t)(k < 0 ? k + a.num_elems : k);
+            // shape(a)[k]: the extent, when it is static
+            const vial_value_t sv = value_of(x, on);
+            if (sv.kind == VIAL_VAL_SHAPE && sv.type && at < sv.type->ndim && sv.type->dims[at].kind == VIAL_EXT_STATIC) {
+                set_value(x, id, val_int(sv.type->dims[at].n));
+            }
+            return a.elems[at];
+        }
         diag(x, "E0319", id, "a tuple is indexed by a constant position");
         return err();
     }
@@ -1020,6 +1032,7 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
             T t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_sets(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_geom(x, id, sym->builtin, &t)) return t;
+            if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_math(x, id, sym->builtin, &t)) return t;
         }
     }
     // fallthrough

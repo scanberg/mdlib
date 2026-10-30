@@ -19,6 +19,7 @@ typedef enum vial_value_kind_t {
     VIAL_VAL_SETS,          // a set or an array of sets: sets
     VIAL_VAL_STRS,          // an array of strings: strs[0..n)
     VIAL_VAL_LABELS,        // the labels of the units of sets, written only when one is taken
+    VIAL_VAL_SHAPE,         // shape(a): the extents of type, with what each runs over
 } vial_value_kind_t;
 
 typedef struct vial_value_t {
@@ -30,6 +31,7 @@ typedef struct vial_value_t {
     const vial_sets_t*  sets;
     const str_t*        strs;
     uint32_t            n;
+    const struct vial_type_t* type;
 } vial_value_t;
 
 // What a dimension runs over, for labels, set indices, by= and W0605: the sets of an array, whose units it describes

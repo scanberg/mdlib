@@ -124,16 +124,16 @@ static bool positions_of(infer_t* x, vial_node_id node, const T* s, vial_node_id
 
 // ### KINDS ###
 
-typedef enum vx_kind_t {
-    VK_WHOLE = 0,   // unannotated: taken whole
-    VK_SET,
-    VK_GROUP,
-    VK_POINT,
-    VK_POINTS,
-    VK_FLOAT,
-    VK_INT,
-    VK_BOOL,
-} vx_kind_t;
+enum {
+    VK_WHOLE = VX_KIND_WHOLE,   // unannotated: taken whole
+    VK_SET = VX_KIND_SET,
+    VK_GROUP = VX_KIND_GROUP,
+    VK_POINT = VX_KIND_POINT,
+    VK_POINTS = VX_KIND_POINTS,
+    VK_FLOAT = VX_KIND_FLOAT,
+    VK_INT = VX_KIND_INT,
+    VK_BOOL = VX_KIND_BOOL,
+};
 
 // What one call takes of an argument, and what is mapped over
 typedef struct split_t {
@@ -275,11 +275,7 @@ static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const
 
 // ### ARGUMENTS ###
 
-typedef struct param_t {
-    const char* name;
-    uint8_t     kind;       // vx_kind_t
-    bool        required;
-} param_t;
+typedef vx_param_t param_t;
 
 // Binds a call's arguments to parameters by position, then by keyword; reports E0202 and E0204. Every argument is typed.
 static bool bind(infer_t* x, vial_node_id call, const char* fname, const param_t* params, uint32_t np, vial_node_id* args) {
@@ -326,6 +322,10 @@ static bool bind(infer_t* x, vial_node_id call, const char* fname, const param_t
         }
     }
     return ok;
+}
+
+bool vx_bind(infer_t* x, vial_node_id call, const char* fname, const vx_param_t* params, uint32_t np, vial_node_id* args) {
+    return bind(x, call, fname, params, np, args);
 }
 
 // The types of bound arguments, split by kind, and their mapped dimensions broadcast. false when an argument failed

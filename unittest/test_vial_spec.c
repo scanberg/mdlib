@@ -247,7 +247,8 @@ UTEST_F(vial_spec, parses) {
 static bool vial_spec__is_checked_code(const char* code) {
     static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0502", "E0701", "E0801", "E0803",
                                   "E0201", "W0201", "E0305", "E0312", "E0802",
-                                  "E0202", "E0203", "E0205", "E0206", "E0207", "W0601", "W0602", "E0318"};
+                                  "E0202", "E0203", "E0205", "E0206", "E0207", "W0601", "W0602", "E0318",
+                                  "E0307", "E0309", "E0310", "E0311", "W0603"};
     for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
     return false;
 }

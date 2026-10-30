@@ -353,3 +353,70 @@ UTEST_F(vial_check, angles_and_pairs) {
     EXPECT_DIAGS_ON(T, "d, i, j = farthest_pair(protein, protein)\n", "");
     EXPECT_TYPE_ON(T, "f = fit(particles(resname='GTP'), particles(resname='GTP').xyz)\n", 1, u8"float[32][3] Å, frame");
 }
+
+// ### STEP 6: REDUCTIONS, MATH AND ARRAYS ###
+
+UTEST_F(vial_check, reductions) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A'))\ns = sum(c)\n", 2, u8"float Å, frame");
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A'))\ns = mean(c, axis=0)\n", 2, u8"float[3] Å, frame");
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A'))\ns = var(c, axis=-1)\n", 2, u8"float[442] Å², frame");
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A'))\ns = mean(c, axis='frame')\n", 2, u8"float[442][3] Å, trajectory");
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A'))\ns = std(c, axis=(0, 'frame'))\n", 2, u8"float[3] Å, trajectory");
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A'))\ni = argmin(c, axis=0)\n", 2, "int[3], frame");
+    EXPECT_TYPE_ON(T, "z = protein.z\nn = sum(z > 10.0)\n", 2, "int, frame");
+    EXPECT_TYPE_ON(T, "z = protein.z\nm = min(z, 5.0)\n", 2, u8"float[6784] Å, frame");
+    EXPECT_TYPE_ON(T, "b = any(residues(501))\n", 1, "set, static");
+    EXPECT_TYPE_ON(T, "n = count(any(residues(501)))\n", 1, "int, static = 60");
+    EXPECT_TYPE_ON(T, "n = count(all(residues(chain='A')[0:2]))\n", 1, "int, static = 0");
+    EXPECT_DIAGS_ON(T, "c = com(residues(chain='A'))\ns = sum(c, axis=2)\n",
+        u8"E0316 2: axis=2 on `float[442][3] Å`, which has 2 dimensions | axis=1\n");
+    EXPECT_DIAGS_ON(T, "s = sum(5.0, axis='frame')\n", "E0316 1: axis='frame' on a static value, which has no frames\n");
+    EXPECT_DIAGS_ON(T, "z = protein.z\nm = mean(z, by=residues)\n",
+        "W0405 2: the groups with no values are missing\nW0603 2: 15 of 880 groups have no values in `z`\n");
+    EXPECT_TYPE_ON(T, "z = protein.z\nm = mean(z, by=residues)\n", 2, u8"float[880] Å | missing, frame");
+    EXPECT_DIAGS_ON(T, "m = mean(zeros((10,)), by=residues)\n", "E0311 1: by= groups particles, and `float[10]` has no dimension over particles\n");
+    EXPECT_TYPE_ON(T, "n = within(5.0, of=protein).z\nm = max(n)\n", 2, u8"float Å | missing, frame");
+}
+
+UTEST_F(vial_check, math) {
+    EXPECT_TYPE("d = sqrt(4.0 'Å^2')\n", 1, u8"float Å, static");
+    EXPECT_TYPE("a = asin(0.5)\n", 1, u8"float °, static");
+    EXPECT_TYPE("s = sin(30 deg)\n", 1, "float, static");
+    EXPECT_DIAGS("e = exp(2.0 nm)\n", "W0501 1: `exp` takes a value without a unit; this is float nm | unitless(...)\n");
+    EXPECT_TYPE("d = dot([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])\n", 1, "float, static");
+    EXPECT_TYPE("c = cross([1.0, 0.0, 0.0] * 1 nm, [0.0, 1.0, 0.0])\n", 1, "float[3] nm, static");
+    EXPECT_TYPE("n = norm([[3.0, 4.0, 0.0]] * 1 nm)\n", 1, "float[1] nm, static");
+    EXPECT_TYPE("u = normalize([3.0, 4.0, 0.0] * 1 nm)\n", 1, "float[3], static");
+    EXPECT_TYPE("w = where([True, False], [1.0, 2.0], 0.0)\n", 1, "float[2], static");
+    EXPECT_TYPE("u = unitless(3.0 nm)\n", 1, "float, static = 3");
+    EXPECT_TYPE("i = int(3.7)\n", 1, "int, static = 3");
+    EXPECT_TYPE("a = atan2(1.0 nm, 2.0 nm)\n", 1, u8"float °, static");
+}
+
+UTEST_F(vial_check, building_and_joining) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "w = zeros(shape(residues(chain='A')))\n", 1, "float[442], static");
+    EXPECT_TYPE_ON(T, "n = shape(residues(chain='A'))[0]\n", 1, "int, static = 442");
+    EXPECT_TYPE("g = zeros((10, 3))\n", 1, "float[10][3], static");
+    EXPECT_TYPE("g = full(4, 2.0 nm)\n", 1, "float[4] nm, static");
+    EXPECT_TYPE("g = ones(3, unit='kJ/mol')\n", 1, "float[3] kJ/mol, static");
+    EXPECT_TYPE("r = linspace(0.0, 20.0, 81)\n", 1, "float[81], static");
+    EXPECT_TYPE("r = arange(0, 10, 3)\n", 1, "float[4], static");
+    EXPECT_TYPE("i = eye(3)\n", 1, "float[3][3], static");
+    EXPECT_TYPE("r = reshape(zeros((4, 3)), (2, -1))\n", 1, "float[2][6], static");
+    EXPECT_DIAGS("r = reshape(zeros((433, 3)), (400, 3))\n", "E0307 1: 1299 values do not fill 1200\n");
+    EXPECT_TYPE("f = flatten(zeros((4, 3)))\n", 1, "float[12], static");
+    EXPECT_TYPE("d = diff(zeros((4, 3)), axis=0)\n", 1, "float[3][3], static");
+    EXPECT_TYPE("c = concatenate([zeros((4, 3)), zeros((2, 3))])\n", 1, "float[6][3], static");
+    EXPECT_DIAGS("c = concatenate([zeros((4, 3)), zeros((4, 2))])\n", "E0309 1: `float[4][3]` and `float[4][2]` differ in dimension 1\n");
+    EXPECT_TYPE_ON(T, "ab = concatenate([residues(1..4, chain='A'), residues(1..4, chain='B')])\n", 1, "set[8], static");
+    EXPECT_TYPE_ON(T, "a, b = common(residues(chain='A', kind='amino_acid'), residues(chain='B', kind='amino_acid'), by='id')\n", 1,
+        "set[424] and set[424], static");
+    EXPECT_TYPE("w, v = eigh(eye(3) * 1 nm)\n", 1, "float[3] nm and float[3][3], static");
+    EXPECT_DIAGS("d = det(zeros((3, 2)))\n", "E0310 1: `det` needs a square matrix; this is `float[3][2]`\n");
+    EXPECT_TYPE("m = missing_where([True, False], [1.0, 2.0])\n", 1, "float[2] | missing, static");
+    EXPECT_TYPE("m = filled(missing_where([True, False], [1.0, 2.0]), 0.0)\n", 1, "float[2], static");
+}
