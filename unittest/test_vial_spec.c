@@ -237,3 +237,78 @@ UTEST_F(vial_spec, parses) {
 
     printf("vial reference: every block parses into %zu nodes; %zu expected syntax codes given\n", num_nodes, num_checked);
 }
+
+// ### PHASE 2 ###
+
+// The codes the checker gives so far; the gate grows with each step
+static bool vial_spec__is_checked_code(const char* code) {
+    static const char* codes[] = {"E0101", "E0102", "E0103", "E0104", "E0502", "E0701", "E0801", "E0803",
+                                  "E0201", "W0201", "E0305", "E0312", "E0802"};
+    for (size_t i = 0; i < ARRAY_SIZE(codes); ++i) if (strncmp(code, codes[i], 5) == 0) return true;
+    return false;
+}
+
+// Every block compiles through the API, the prelude with it. Each line gets exactly the codes it expects, among the
+// codes the checker gives so far. A block that continues the one before is compiled as one script with it.
+UTEST_F(vial_spec, checks) {
+    const vial_spec_t* spec = &utest_fixture->spec;
+    md_allocator_i* alloc = utest_fixture->alloc;
+    size_t num_checked = 0;
+    for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
+        const vial_block_t* b = &spec->blocks[i];
+        // The script: the blocks this one continues, then this one
+        str_t src = b->src;
+        int first_line = 1;     // the line of this block's first line in src
+        if (b->continues && i > 0) {
+            const vial_block_t* prev = &spec->blocks[i - 1];
+            char* buf = NULL;
+            md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
+            md_array_push(buf, '\n', alloc);
+            md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
+            src = (str_t){buf, md_array_size(buf)};
+            for (size_t k = 0; k < prev->src.len; ++k) first_line += prev->src.ptr[k] == '\n';
+            first_line += 1;
+        }
+        // The reference's prelude block is the prelude: it compiles without another one
+        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0};
+        md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
+        ASSERT_TRUE(prog != NULL);
+        const md_vial_diagnostic_t* d = NULL;
+        const size_t nd = md_vial_diagnostics(prog, &d);
+        vial_diags_t lines;
+        vial_diags_init(&lines, src, alloc);
+
+        for (size_t j = 0; j < nd; ++j) {
+            const int line = (int)vial_line_of(&lines, d[j].span.beg) - first_line + 1;
+            if (line < 1) continue;     // in the block before, checked with it
+            const bool expected = vial_spec__expects_code(vial_spec__expect_at(b, line), d[j].code);
+            if (!expected) {
+                printf("reference line %d: unexpected %s %.*s\n", b->line + line - 1, d[j].code, (int)d[j].message.len, d[j].message.ptr);
+            }
+            EXPECT_TRUE(expected);
+        }
+        for (size_t j = 0; j < md_array_size(b->expects); ++j) {
+            const vial_expect_t* e = &b->expects[j];
+            for (int k = 0; k < e->num_codes; ++k) {
+                if (!vial_spec__is_checked_code(e->codes[k])) continue;
+                bool found = false;
+                for (size_t q = 0; q < nd && !found; ++q) {
+                    const int line = (int)vial_line_of(&lines, d[q].span.beg) - first_line + 1;
+                    found = line == e->line_in_block && strncmp(d[q].code, e->codes[k], 5) == 0;
+                }
+                if (!found) printf("reference line %d: expected %s, not given\n", e->line, e->codes[k]);
+                EXPECT_TRUE(found);
+                num_checked += 1;
+            }
+        }
+        // The prelude compiles clean with every script
+        const md_vial_diagnostic_t* pd = NULL;
+        const size_t npd = md_vial__prelude_diagnostics(prog, &pd);
+        for (size_t j = 0; j < npd && i == 0; ++j) {
+            printf("prelude: %s %.*s\n", pd[j].code, (int)pd[j].message.len, pd[j].message.ptr);
+        }
+        EXPECT_EQ(0, npd);
+        md_vial_program_free(prog);
+    }
+    printf("vial reference: %zu expected codes checked\n", num_checked);
+}

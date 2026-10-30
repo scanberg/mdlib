@@ -1,0 +1,97 @@
+// The checker, step by step
+
+#include "utest.h"
+
+#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_array.h>
+#include <core/md_common.h>
+
+#include <stdio.h>
+#include <string.h>
+
+#include <md_vial.h>
+
+// The diagnostics of a script as "CODE line: message | fix", one per line
+static const char* diags_of(const char* src, md_allocator_i* alloc) {
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), NULL, alloc);
+    const md_vial_diagnostic_t* d = NULL;
+    const size_t n = md_vial_diagnostics(prog, &d);
+    char* out = NULL;
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t line = 1;
+        for (uint32_t k = 0; k < d[i].span.beg; ++k) line += src[k] == '\n';
+        char buf[512];
+        int len = snprintf(buf, sizeof(buf), "%s %u: %.*s%s%.*s\n", d[i].code, line, (int)d[i].message.len, d[i].message.ptr,
+            d[i].fix.len ? " | " : "", (int)d[i].fix.len, d[i].fix.ptr);
+        md_array_push_array(out, buf, (size_t)len, alloc);
+    }
+    md_array_push(out, '\0', alloc);
+    md_vial_program_free(prog);
+    return out;
+}
+
+struct vial_check { md_allocator_i* alloc; };
+UTEST_F_SETUP(vial_check) { utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4)); }
+UTEST_F_TEARDOWN(vial_check) { md_arena_allocator_destroy(utest_fixture->alloc); }
+
+#define EXPECT_DIAGS(src, want) do { \
+    const char* got_ = diags_of(src, utest_fixture->alloc); \
+    if (strcmp(got_, want) != 0) printf("for:\n%s\ngot:\n%s\nwanted:\n%s\n", src, got_, want); \
+    EXPECT_STREQ(want, got_); \
+} while (0)
+
+UTEST_F(vial_check, top_level_bindings) {
+    EXPECT_DIAGS("n = 1\nm = n + 1\n", "");
+    EXPECT_DIAGS("n = 1\nn = 2\n", "E0305 2: `n` is already bound on line 1\n");
+    EXPECT_DIAGS("n = 1\nn += 1\n", "E0305 2: `n` is already bound on line 1; at top level a name is bound once\n");
+    EXPECT_DIAGS("a, b = 1, 2\nb = 3\n", "E0305 2: `b` is already bound on line 1\n");
+    // The branches of a static if each bind the name once
+    EXPECT_DIAGS("c = True\nif c:\n    x = 1\nelif not c:\n    x = 2\nelse:\n    x = 3\ny = x\n", "");
+    EXPECT_DIAGS("c = True\nif c:\n    x = 1\n    x = 2\n", "E0305 4: `x` is already bound on line 3\n");
+    EXPECT_DIAGS("x = 0\nc = True\nif c:\n    x = 1\n", "E0305 4: `x` is already bound on line 1\n");
+    // A top-level loop's variable belongs to the loop
+    EXPECT_DIAGS("for r in range(3):\n    q = r\nfor r in range(4):\n    q = r\n", "");
+    EXPECT_DIAGS("__all__ = ['x']\n", "E0801 1: `__all__` is reserved: a later version may list the published names with it\n");
+}
+
+UTEST_F(vial_check, visibility) {
+    // A top-level name is seen from the statement after its binding
+    EXPECT_DIAGS("y = x\nx = 1\n", "E0201 1: `x` is used before it is bound, on line 2\n");
+    // A def body sees every top-level name: it runs when called
+    EXPECT_DIAGS("def f():\n    return k\nk = 2\nv = f()\n", "");
+    // Hiding a built-in: the lines above still see it
+    EXPECT_DIAGS("a = residues\nresidues = 5\nb = residues\n", "W0201 2: `residues` now names a variable; the built-in is hidden from here on\n");
+    EXPECT_DIAGS("def distance(a, b):\n    return 0\n", "W0201 1: `distance` now names a def; the built-in is hidden from here on\n");
+    // Locals, parameters, nested defs and comprehensions
+    EXPECT_DIAGS("def f(a, b=1):\n    c = a + b\n    def g(x):\n        return x + c\n    return g(c)\nv = f(1)\n", "");
+    EXPECT_DIAGS("v = [x * y for x in range(3) for y in range(x)]\nw = x\n", "E0201 2: `x` is not defined\n");
+    EXPECT_DIAGS("def f():\n    return z\n", "E0201 2: `z` is not defined\n");
+}
+
+UTEST_F(vial_check, unknown_names) {
+    EXPECT_DIAGS("c = centre(particles)\n", "E0201 1: `centre` is not defined | com\n");
+    EXPECT_DIAGS("c = residuez\n", "E0201 1: `residuez` is not defined | residues\n");
+    EXPECT_DIAGS("d = 1.2 * nm\n", "E0201 1: `nm` is a unit, not a name: write it after a number, as 10 nm | 1.2 nm\n");
+    EXPECT_DIAGS("c = com(residues)\nxy = c.xy\n", "E0201 2: `.xy` is not defined: VIAL has no swizzles; write c[..., 0:2] | c[..., 0:2]\n");
+    EXPECT_DIAGS("c = com(residues)\nxz = c.xz\n", "E0201 2: `.xz` is not defined: VIAL has no swizzles; write c[..., [0, 2]] | c[..., [0, 2]]\n");
+    EXPECT_DIAGS("c = residues.cmo\n", "E0201 1: `.cmo` is not a function or property | com\n");
+    EXPECT_DIAGS("d = distance_min(residues, residues)\n", "E0701 1: `distance_min` is v1; write distance(a, b, between='closest') | distance\n");
+    EXPECT_DIAGS("print(1)\n", "E0803 1: `print` is not part of VIAL; hover shows any value\n");
+    // A method is any function, built in or a def
+    EXPECT_DIAGS("def twice(x):\n    return 2 * x\nv = (3).twice()\nc = residues.com\n", "");
+}
+
+UTEST_F(vial_check, annotations) {
+    EXPECT_DIAGS("def f(a: set, b: points, c: float = 1.0):\n    return a\n", "");
+    EXPECT_DIAGS("def f(a: str):\n    return a\n",
+        "E0312 1: `str` is not a parameter kind; the kinds are set, group, point, points, float, int and bool\n");
+    EXPECT_DIAGS("def f(a) -> float:\n    return a\n", "E0312 1: a def's result is not annotated; it is inferred at each call\n");
+}
+
+UTEST_F(vial_check, recursion) {
+    EXPECT_DIAGS("def walk(n):\n    return walk(n - 1)\n", "E0802 2: `walk` calls itself; VIAL has no recursion\n");
+    EXPECT_DIAGS("def a(n):\n    return b(n)\ndef b(n):\n    return a(n)\n",
+        "E0802 4: `b` calls `a`, which calls `b` again; VIAL has no recursion\n");
+    EXPECT_DIAGS("def a(n):\n    return n\ndef b(n):\n    return a(n) + a(1)\nv = b(2)\n", "");
+}

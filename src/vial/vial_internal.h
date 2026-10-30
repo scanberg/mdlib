@@ -92,3 +92,6 @@ const char* vial_token_kind_str(md_vial_token_kind_t kind);
 
 // One line per token, "KIND beg..end text", for golden tests
 str_t vial_tokens_dump(const vial_token_t* tokens, str_t src, md_allocator_i* alloc);
+
+// The diagnostics of the prelude compiled with a program: none, unless the prelude has a mistake. For the tests.
+size_t md_vial__prelude_diagnostics(const md_vial_program_t* prog, const md_vial_diagnostic_t** out);

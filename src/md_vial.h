@@ -69,8 +69,12 @@ typedef struct md_vial_token_t {
 
 typedef struct md_vial_program_t md_vial_program_t;
 
+enum {
+    MD_VIAL_COMPILE_NO_PRELUDE = 1 << 0,    // compile without the prelude: for the prelude itself, and tests
+};
+
 typedef struct md_vial_compile_desc_t {
-    uint32_t flags;     // none yet; the system, stored selections and loaded runs arrive with the checker
+    uint32_t flags;     // MD_VIAL_COMPILE_*; the system, stored selections and loaded runs arrive with the checker
 } md_vial_compile_desc_t;
 
 // Compiles a script. Phase 1 stops after the parser: the program holds the tokens, the syntax tree and the
