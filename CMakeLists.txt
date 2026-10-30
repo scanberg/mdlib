@@ -202,6 +202,7 @@ set(SRC_FILES
   src/vial/infer_internal.h
   src/vial/infer.c
   src/vial/infer_sets.c
+  src/vial/infer_geom.c
   src/vial/select.h
   src/vial/select.c
   src/vial/api.c
@@ -555,7 +556,7 @@ if (MD_VIAL_FUZZ)
   add_executable(fuzz_vial
     unittest/fuzz_vial.c
     src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/types.c src/vial/builtins.c src/vial/check.c
-    src/vial/infer.c src/vial/infer_sets.c src/vial/select.c src/vial/api.c
+    src/vial/infer.c src/vial/infer_sets.c src/vial/infer_geom.c src/vial/select.c src/vial/api.c
   )
   add_dependencies(fuzz_vial mdlib)
   target_include_directories(fuzz_vial PRIVATE src unittest ext ext/xxhash gen)

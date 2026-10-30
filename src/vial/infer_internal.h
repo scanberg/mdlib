@@ -32,6 +32,17 @@ static inline uint32_t vx_num_children(const infer_t* x, vial_node_id id) { retu
 // A description for the dimension of an array of sets; 0 when there is nothing to describe
 uint32_t vx_desc(infer_t* x, uint8_t level, const vial_sets_t* sets);
 
+bool vx_broadcast(const vial_type_t* a, const vial_type_t* b, vial_type_t* out);   // NumPy's, shapes only
+bool vx_extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out);
+
+// infer_geom.c
+
+// A call to a geometry built-in, with kinds converting and mapping its arguments; false for other names
+bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
+
+// .xyz, .x, .y, .z on a set, and .com on a set or points; false when it is not one of them
+bool vx_attr_geom(infer_t* x, vial_node_id attr, vial_node_id on, const vial_type_t* a, str_t name, vial_type_t* out);
+
 // infer_sets.c
 
 // A call to a built-in: true when it is one infer_sets.c types (selectors, len, count, labels), with its type in out
