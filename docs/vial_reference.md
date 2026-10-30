@@ -215,7 +215,7 @@ Every value has one of three stages, inferred from what it reads. Nobody declare
 
 | Stage | Reads | Computed | Typical sources |
 | --- | --- | --- | --- |
-| static | the topology and constants | once, when compiling | selectors, literals, `smiles()`, `at(x, frame=k)`, values pinned from another system |
+| static | the topology and constants | once, when compiling, or for `at()` once before the frames | selectors, literals, `smiles()`, `at(x, frame=k)`, values pinned from another system |
 | frame | one frame | once per frame | `.xyz`, `attr()`, `within()`, anything that uses them |
 | trajectory | many frames | over the frames it needs | reductions with `axis='frame'`, `histogram` over frames, `smooth`, `autocorrelation` |
 
@@ -224,7 +224,7 @@ Every value has one of three stages, inferred from what it reads. Nobody declare
 - A value's pass is the read over the trajectory in which it is complete. Static values are pass 0, and frame values are pass 1 at the earliest. A frame value, a fold, and a reduction that streams over frames, such as `mean` or `histogram` with `axis='frame'`, are complete in the same pass as their latest input. A bounded window, as in `smooth` and `derivative`, also stays in its input's pass: what reads it waits until the window has arrived, as long as frames arrive in order. A value that reads a finished whole-trajectory result of pass k, such as `ends - mean_e`, is pass k + 1, since that result is known only when pass k ends. An operation on whole-trajectory results with no frame axis, such as `eigh(C)`, keeps pass k. So `ends` and `mean_e` are pass 1; `dev = ends - mean_e` and `mean(dev, axis='frame')` are pass 2; `ends - previous(ends)` and `ends - smooth(ends, 5)` are pass 1. Hover and the IR dump show the pass, and more than three passes is W0406.
 - A published frame value must have the same shape in every frame (E0401). Selections are the exception: a frame-stage set or array of sets is published as a recipe and evaluated for the frame being shown.
 - A value from another system must be pinned to one of its frames with `at()` (E0402).
-- `at(x, frame=k)` is evaluated when compiling by reading frame k, so compiling waits for that frame. `x` may depend on static values and on frame k alone: a trajectory value or another `at()` inside it is E0404, and a k past the run's last frame is E0405.
+- `at(x, frame=k)` is static: it is evaluated once, in a step before evaluation reads any other frame, by reading frame k, and remembered, so compiling never waits for a frame. The checker uses the remembered value once there is one; until the first evaluation it knows its type but not its value. `x` may depend on static values and on frame k alone: a trajectory value or another `at()` inside it is E0404, and a k past the run's last frame is E0405.
 - A value can be missing in a frame: an empty set where a point is needed, a group with no values, a position outside a dynamic extent (R0101), an integer out of range (R0102), or a set empty in that frame under `between=`. Evaluation goes on. A value that may be missing has an optional type, shown in hover as `float[433] | missing`, and carries a validity bitmask whatever its dtype, float included; a value the compiler knows is always present carries none. `missing_where(c, x)` marks values missing, `valid(x)` gives the mask as a bool array, and `filled(x, v)` replaces missing values and drops the mask. Elementwise operations are missing where an input is; reductions skip missing entries and frames and count them, published series show gaps, and W0405 is given at compile time, once per statement, where a value may be missing; values computed from it do not warn again. By default a fold skips a frame whose input is missing: `step` is not called and the state carries over. NaN from arithmetic is a value, not missing, and reductions do not skip it, so a bug shows as NaN.
 - `fold(step, x, init)` keeps one state from frame to frame, in order. With skip=False, step is also called for a frame whose x is missing, and the state may hold missing values. An init that is a frame value is taken from the first frame where it is present. Folds run once over the whole run and their per-frame results are stored, so evaluating a subset of frames reads them rather than running the fold again. Its result is a trajectory value per frame, and it is the only operation that needs frames in order.
 - Everything evaluated within a frame-stage scope is frame stage.
@@ -238,7 +238,7 @@ rg     = gyration(particles)                           # -> float Å, frame
 mean_e = mean(ends, axis='frame')                      # -> float Å, trajectory
 sm     = smooth(ends, 5)                               # -> float Å, trajectory, per frame
 hist   = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))   # -> float[32], trajectory
-first  = at(ends, frame=0)                             # -> float Å, static: read from frame 0 when compiling
+first  = at(ends, frame=0)                             # -> float Å, static: read from frame 0 before the other frames
 drift  = ends - first                                  # -> float Å, frame
 dev    = ends - mean_e                                 # -> float Å, trajectory, per frame, pass 2
 near   = residues(within(4.0, of=residues[0]))        # -> set[?], frame: published as a recipe, evaluated per frame
@@ -366,7 +366,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s.xyz` | a set's positions, `positions(s)`; coordinates themselves on coordinates | `float[n][3]` Å |
 | `c.x`, `c.y`, `c.z` | `c.xyz[..., 0]`, `[..., 1]`, `[..., 2]`, on a set or on coordinates |  |
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
-| `at(x, frame=k)` | frame k of a frame value, read when compiling | a static value |
+| `at(x, frame=k)` | frame k of a frame value, read once before the other frames | a static value |
 | `rmsf[s]` with a set | the values of the particles in set s; an intersection | a shorter dimension over those particles |
 | `a[mask]` with a bool array matching a's leading dimensions | the entries where the mask is true | a shorter dimension; per frame if the mask is |
 | `mean(a, by=g)` | for each set in array g, the reduction of `a[set]` | one value per set in g |
