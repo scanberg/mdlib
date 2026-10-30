@@ -7,6 +7,8 @@
 
 #include "infer_internal.h"
 
+#include <md_system.h>
+
 #include <core/md_common.h>
 #include <core/md_array.h>
 
@@ -655,6 +657,119 @@ static T call_within(infer_t* x, vial_node_id call) {
     return t;
 }
 
+// bonds(s=None): per bond with both ends in s, its two particles as one-particle sets, set[n][2]
+static T call_bonds(infer_t* x, vial_node_id call) {
+    static const vx_param_t p[] = {{"s", VX_KIND_WHOLE, false}, {"kind", VX_KIND_WHOLE, false}};
+    vial_node_id a[2];
+    if (!vx_bind(x, call, "bonds", p, 2, a)) return err();
+    T st = a[0] ? x->out->types[(a[0]) - x->out->base] : vial_type_scalar(VIAL_DT_NONE);
+    if (vial_type_is_error(&st)) return err();
+    if (st.dtype != VIAL_DT_SET && st.dtype != VIAL_DT_NONE) {
+        vx_diag_fix(x, "E0313", a[0], NULL, "`bonds` takes a set; this is %s", vx_tstr(&st));
+        return err();
+    }
+    if (st.dtype == VIAL_DT_SET && st.ndim) {
+        vx_diag_fix(x, "E0313", a[0], NULL, "`bonds` takes one set; particles(...) merges an array of them");
+        return err();
+    }
+    T t = vial_type_scalar(VIAL_DT_SET);
+    t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    t.stage = st.stage;
+    const vial_value_t sv = a[0] ? vx_value_of(x, a[0]) : (vial_value_t){0};
+    const bool all = !a[0] || st.dtype == VIAL_DT_NONE;
+    if (a[1] || !x->sys || st.stage != VIAL_STAGE_STATIC || (!all && sv.kind != VIAL_VAL_SETS)) {
+        // kind= arrives with md_bond's kinds; a set per frame, or no system, gives a count not known here
+        vial_type_push_dim(&t, (vial_extent_t){.kind = st.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
+        vial_type_push_dim(&t, vial_extent_static(2));
+        return t;
+    }
+    const md_system_t* sys = x->sys->sys;
+    const size_t nb = sys->bond.count;
+    const uint32_t* in = all ? NULL : vial_sets_items(sv.sets, 0);
+    const uint32_t nin = all ? 0 : vial_sets_size(sv.sets, 0);
+    uint32_t* idx = NULL;
+    for (size_t i = 0; i < nb; ++i) {
+        const md_atom_pair_t pr = sys->bond.pairs[i];
+        if (pr.idx[0] < 0 || pr.idx[1] < 0) continue;
+        if (!all) {
+            // Both ends in s, by binary search in its ascending list
+            bool both = true;
+            for (int e = 0; e < 2 && both; ++e) {
+                uint32_t lo = 0, hi = nin;
+                const uint32_t want = (uint32_t)pr.idx[e];
+                while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if (in[mid] < want) lo = mid + 1; else hi = mid; }
+                both = lo < nin && in[lo] == want;
+            }
+            if (!both) continue;
+        }
+        md_array_push(idx, (uint32_t)pr.idx[0], x->alloc);
+        md_array_push(idx, (uint32_t)pr.idx[1], x->alloc);
+    }
+    const uint32_t n2 = (uint32_t)md_array_size(idx);
+    vial_sets_t* r = md_alloc(x->alloc, sizeof(vial_sets_t));
+    memset(r, 0, sizeof(*r));
+    r->count = n2;
+    r->idx = idx ? idx : md_alloc(x->alloc, sizeof(uint32_t));
+    r->offset = md_alloc(x->alloc, (n2 + 1) * sizeof(uint32_t));
+    for (uint32_t k = 0; k <= n2; ++k) r->offset[k] = k;
+    vial_type_push_dim(&t, vial_extent_static(n2 / 2));
+    vial_type_push_dim(&t, vial_extent_static(2));
+    vx_set_value(x, call, sets_value(r));
+    return t;
+}
+
+// spread(values, groups, combine=None): each particle of a group gets that group's value, the reverse of by=
+static T call_spread(infer_t* x, vial_node_id call) {
+    static const vx_param_t p[] = {{"values", VX_KIND_WHOLE, true}, {"groups", VX_KIND_WHOLE, true}, {"combine", VX_KIND_WHOLE, false}};
+    vial_node_id a[3];
+    if (!vx_bind(x, call, "spread", p, 3, a)) return err();
+    const T v = x->out->types[(a[0]) - x->out->base], g = x->out->types[(a[1]) - x->out->base];
+    if (vial_type_is_error(&v) || vial_type_is_error(&g)) return err();
+    if (g.dtype != VIAL_DT_SET || g.ndim != 1) {
+        vx_diag_fix(x, "E0313", a[1], NULL, "`spread` takes groups, an array of sets; this is %s", vx_tstr(&g));
+        return err();
+    }
+    if (v.ndim == 0) {
+        vx_diag_fix(x, "E0313", a[0], NULL, "`spread` takes one value per group; this is %s", vx_tstr(&v));
+        return err();
+    }
+    vial_extent_t e;
+    if (!vx_extent_join(v.dims[0], g.dims[0], &e) || (v.dims[0].kind == VIAL_EXT_STATIC && g.dims[0].kind == VIAL_EXT_STATIC && v.dims[0].n != g.dims[0].n)) {
+        vx_diag_fix(x, "E0301", call, NULL, "`spread` gives each group one value, and these are %s for %s", vx_tstr(&v), vx_tstr(&g));
+        return err();
+    }
+    bool combine = false;
+    if (a[2]) {
+        const vial_value_t c = vx_value_of(x, a[2]);
+        if (c.kind != VIAL_VAL_STR || !(str_eq(c.s, STR_LIT("mean")) || str_eq(c.s, STR_LIT("max")) || str_eq(c.s, STR_LIT("first")))) {
+            vx_diag_fix(x, "E0313", a[2], NULL, "`combine` takes 'mean', 'max' or 'first'");
+            return err();
+        }
+        combine = true;
+    }
+    T t = v;
+    vx_join_stage(&t, &v, &g);
+    const vial_value_t gv = vx_value_of(x, a[1]);
+    if (gv.kind == VIAL_VAL_SETS && !gv.sets->single && g.stage == VIAL_STAGE_STATIC) {
+        const vial_sets_t* merged = vial_sets_merge(gv.sets, x->alloc);
+        const uint32_t n = vial_sets_size(merged, 0);
+        if (n != gv.sets->offset[gv.sets->count] && !combine) {
+            vx_diag_fix(x, "E0306", call, "combine='mean'", "the groups share particles, so each of those would get several values; combine= says how");
+            return err();
+        }
+        t.dims[0] = vial_extent_static(n);
+        t.dims[0].desc = vx_desc(x, VIAL_LEVEL_PARTICLE, merged);
+    } else {
+        if ((g.flags & VIAL_TYPE_OVERLAP) && !combine) {
+            vx_diag_fix(x, "E0306", call, "combine='mean'", "the groups may share particles, so each of those would get several values; combine= says how");
+            return err();
+        }
+        t.dims[0] = (vial_extent_t){.kind = g.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)call,
+                                    .desc = vx_desc(x, VIAL_LEVEL_PARTICLE, NULL)};
+    }
+    return t;
+}
+
 bool vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
     const str_t name = str_from_cstr(b->name);
     if ((b->flags & VIAL_BUILTIN_SELECTOR)) { *out = selector_call(x, call, name); return true; }
@@ -662,5 +777,7 @@ bool vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (str_eq(name, STR_LIT("count")))  { *out = call_count(x, call); return true; }
     if (str_eq(name, STR_LIT("labels"))) { *out = call_labels(x, call); return true; }
     if (str_eq(name, STR_LIT("within"))) { *out = call_within(x, call); return true; }
+    if (str_eq(name, STR_LIT("bonds")))  { *out = call_bonds(x, call); return true; }
+    if (str_eq(name, STR_LIT("spread"))) { *out = call_spread(x, call); return true; }
     return false;
 }
