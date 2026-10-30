@@ -403,3 +403,51 @@ UTEST_F(vial_spec, types) {
     printf("vial reference: %d results checked, %d of them values; %d not typed yet; %d wrong\n", num_ok, num_values, num_untyped, num_failed);
     EXPECT_EQ(0, num_failed);
 }
+
+// Phase 3: every block lowers to an array IR that verifies. What cannot be lowered yet is counted, not failed.
+#include "../src/vial/ir.h"
+
+UTEST_F(vial_spec, lowers) {
+    const vial_spec_t* spec = &utest_fixture->spec;
+    md_allocator_i* alloc = utest_fixture->alloc;
+    int num_blocks = 0, num_lowered = 0, num_failures = 0, num_invalid = 0;
+    const bool verbose = getenv("VIAL_SPEC_VERBOSE") != NULL;
+    for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
+        const vial_block_t* b = &spec->blocks[i];
+        if (b->mode == VIAL_BLOCK_FILTERS) continue;
+        str_t src = b->src;
+        if (b->continues && i > 0) {
+            const vial_block_t* prev = &spec->blocks[i - 1];
+            char* buf = NULL;
+            md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
+            md_array_push(buf, '\n', alloc);
+            md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
+            src = (str_t){buf, md_array_size(buf)};
+        }
+        const md_vial_compile_desc_t desc = {.flags = str_eq(b->section, STR_LIT("The prelude")) ? MD_VIAL_COMPILE_NO_PRELUDE : 0,
+            .sys = vial_test_system(b->structure)};
+        md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
+        const vial_ir_t* ir = md_vial__ir(prog);
+        num_blocks += 1;
+        char err[256];
+        if (!vial_ir_verify(ir, err, sizeof(err))) {
+            printf("reference block at line %d: the IR does not verify: %s\n", b->line, err);
+            num_invalid += 1;
+        }
+        const size_t nf = md_array_size(ir->failures);
+        if (nf == 0) num_lowered += 1;
+        num_failures += (int)nf;
+        for (size_t k = 0; verbose && k < nf; ++k) {
+            const md_vial_span_t sp = ir->failures[k].span;
+            const str_t text = {src.ptr + sp.beg, sp.end - sp.beg};
+            printf("reference block at line %d: not lowered: %s: '%.*s'\n", b->line, ir->failures[k].what, (int)(text.len < 60 ? text.len : 60), text.ptr);
+        }
+        if (getenv("VIAL_IR_DUMP")) {
+            const str_t d = vial_ir_dump(ir, src, alloc);
+            printf("---- block at line %d\n%.*s", b->line, (int)d.len, d.ptr);
+        }
+        md_vial_program_free(prog);
+    }
+    printf("vial reference: %d of %d blocks lowered; %d places not lowered yet\n", num_lowered, num_blocks, num_failures);
+    EXPECT_EQ(0, num_invalid);
+}

@@ -1318,6 +1318,7 @@ static T infer(infer_t* x, vial_node_id id) {
     if (t.ndim > VIAL_MAX_DIMS) t = err();
     x->out->types[(id) - x->out->base] = t;
     x->out->typed[(id) - x->out->base] = 1;
+    if (x->ir) vx_emit(x, id, &t);
     return t;
 }
 
@@ -1337,6 +1338,11 @@ static void assign_target(infer_t* x, vial_node_id target, const T* t, vial_node
             x->out->sym_types[s] = *t;
             x->out->sym_values[s] = v;
         }
+        if (x->ir && s) {
+            const vial_ssa_t sv = value ? vx_ssa(x, value) : 0;
+            vx_frame_set_ssa(x, s, sv);
+            vx_set_ssa(x, target, sv);
+        }
         return;
     }
     if (k == VIAL_N_TUPLE || k == VIAL_N_LIST) {
@@ -1354,6 +1360,18 @@ static void assign_target(infer_t* x, vial_node_id target, const T* t, vial_node
                 } else if (i == 0) {
                     diag(x, "E0319", target, "%u names, and `%s` does not unpack into %u", n, tstr(t), n);
                 }
+            }
+            if (x->ir && !vt && value && !vial_type_is_error(&e) && vx_ssa(x, value)) {
+                // One element of the value: its i-th, of a tuple or along the first dimension
+                const vial_node_id tn = child(x, target, i);
+                const uint32_t sym = kind_of(x, tn) == VIAL_N_NAME ? x->n->ref[tn] : 0;
+                assign_target(x, tn, &e, 0);
+                if (sym) {
+                    const vial_ssa_t sv = vx_unpack(x, target, vx_ssa(x, value), t, i, &e);
+                    vx_frame_set_ssa(x, sym, sv);
+                    vx_set_ssa(x, tn, sv);
+                }
+                continue;
             }
             assign_target(x, child(x, target, i), &e, vt ? child(x, vt, i) : 0);
         }
@@ -1501,6 +1519,7 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
         const T t = v ? infer(x, v) : scalar(VIAL_DT_NONE);
         if (v) set_value(x, s, value_of(x, v));
         vx_frame_return(x, v ? v : s, &t);
+        if (x->ir) vx_emit_return(x, v, s);
         return true;
     }
     case VIAL_N_ASSERT: {
@@ -1520,6 +1539,7 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
             } else {
                 diag(x, "E0314", c, "the assert fails for these arguments");
             }
+            if (x->ir) vx_emit_unreachable(x);
             return true;    // nothing after it runs
         }
         return false;
@@ -1551,7 +1571,12 @@ void vial_check_types(vial_check_t* c, vial_types_t* out) {
         .alloc = c->alloc};
     vial_sys_t* sys = md_alloc(c->alloc, sizeof(vial_sys_t));
     if (c->sys && vial_sys_init(sys, c->sys, c->alloc)) x.sys = sys;
+    if (c->ir) {
+        x.ir = c->ir;
+        vx_sizes_ssa(&x, out, num, nsym);
+    }
     const vial_node_id root = c->tree->root;
     for (uint32_t i = 0; i < num_children(&x, root); ++i) check_stmt(&x, child(&x, root, i));
+    if (c->ir) vx_emit_finish(&x);
     vial_diags_sort(c->diags);
 }

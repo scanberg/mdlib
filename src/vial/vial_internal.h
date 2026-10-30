@@ -113,3 +113,7 @@ typedef struct md_vial__result_t {
     char value[96];
 } md_vial__result_t;
 bool md_vial__line_result(const md_vial_program_t* prog, uint32_t line, md_vial__result_t* r);
+
+// The program's array IR, for the tests
+struct vial_ir_t;
+const struct vial_ir_t* md_vial__ir(const md_vial_program_t* prog);

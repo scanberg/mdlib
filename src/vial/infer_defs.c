@@ -7,6 +7,7 @@
 // parameter stands for, or at the call that led into the prelude.
 
 #include "infer_internal.h"
+#include "ir.h"
 
 #include <core/md_common.h>
 #include <core/md_array.h>
@@ -217,11 +218,13 @@ typedef struct arg_t {
     bool         given;     // by node or by type; otherwise the default
     T            type;
     vial_value_t value;
+    vial_ssa_t   ssa;       // lowering: given by type, its value in the IR
 } arg_t;
 
 // The call itself, its arguments bound: kinds split and map them, the body is checked once per distinct types
 static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def,
-                   const sig_t* g, const arg_t* args) {
+                   const sig_t* g, const arg_t* args, vial_ssa_t* out_ssa) {
+    if (out_ssa) *out_ssa = 0;
     const uint32_t depth = x->frame ? x->frame->depth + 1 : 1;
     vx_frame_t f = {.parent = x->frame, .t = t, .def = def, .prelude = prelude, .depth = depth};
     f.site = prelude ? (x->frame && x->frame->prelude ? x->frame->site : call) : 0;
@@ -237,6 +240,10 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
     memset(out.typed, 0, count);
     infer_t y = *x;
     y.t = t; y.n = n; y.src = src; y.out = &out; y.frame = &f;
+    if (x->ir) vx_sizes_ssa(&y, &out, count, 0);
+    vial_ssa_t argv[32] = {0};
+    uint32_t syms[32] = {0};
+    T loops[32], atypes[32];
 
     T loop = vial_type_scalar(VIAL_DT_INT);
     uint64_t key = md_hash64(&def, sizeof(def), (uint64_t)(uintptr_t)t);
@@ -262,11 +269,15 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
             if (lp.ndim == 0) v = args[k].value;
         } else {
             const vial_node_id dflt = vial_child(t, g->pnode[k], 2);
-            core = vx_infer(&y, dflt);
+            core = vx_infer(&y, dflt);     // lowering: into the caller's region, as an argument
             lp = vial_type_scalar(VIAL_DT_INT);
             if (vial_type_is_error(&core)) { ok = false; cores[k] = core; continue; }
             v = vx_value_of(&y, dflt);
+            argv[k] = vx_ssa(&y, dflt);
         }
+        if (args[k].given) argv[k] = args[k].node ? vx_ssa(x, args[k].node) : args[k].ssa;
+        loops[k] = lp;
+        atypes[k] = args[k].given ? args[k].type : core;
         cores[k] = core;
         T m = loop;
         vx_check_pairing(x, call, &loop, &lp);
@@ -283,6 +294,7 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
         const vial_node_id pn = vial_child(t, g->pnode[k], 0);
         const uint32_t sym = pn ? n->ref[pn] : 0;
         if (sym) vx_frame_set(&y, sym, &core, &v, prov);
+        syms[k] = sym;
     }
     if (!ok) return err();
 
@@ -308,17 +320,43 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
     const uint32_t* hit = memo ? md_hashmap_get(&x->memo->map, key) : NULL;
     T result;
     vial_value_t rv = {0};
+    uint32_t fn = 0, body = 0;
     if (hit) {
         result = x->memo->results[*hit];
         rv = x->memo->values[*hit];
+        fn = x->ir && *hit < md_array_size(x->memo->funcs) ? x->memo->funcs[*hit] : 0;
     } else {
-        vx_check_block(&y, vial_child(t, def, 3));
+        // Lowering: the body is one function of the IR per specialization, its parameters the def's
+        uint32_t saved = 0;
+        // A nested def reads the names around it, so its body is a region of the call instead, applied in place
+        if (x->ir) {
+            if (memo) {
+                const str_t fname = {g->fname, strlen(g->fname)};
+                fn = vial_ir_func(x->ir, str_copy(fname, x->ir->alloc), vx_span(x, call), cores, g->np);
+                body = x->ir->funcs[fn].body;
+            } else {
+                body = vial_ir_region(x->ir, VIAL_IR_NO_OP, x->ir->regions[x->ir->insert].func, cores, g->np);
+            }
+            for (uint32_t k = 0; k < g->np; ++k) if (syms[k]) vx_frame_set_ssa(&y, syms[k], vial_ir_param(x->ir, body, k));
+            saved = x->ir->insert;
+            x->ir->insert = body;
+        }
+        const bool returned = vx_check_block(&y, vial_child(t, def, 3));
         result = f.has_result ? f.result : vial_type_scalar(VIAL_DT_NONE);
         rv = f.value;
+        if (x->ir) {
+            if (!returned) vx_emit_return(&y, 0, call);
+            x->ir->insert = saved;
+            if (f.lower_failed) fn = body = 0;
+        }
         if (memo) {
             md_hashmap_add(&x->memo->map, key, (uint32_t)md_array_size(x->memo->results));
             md_array_push(x->memo->results, result, x->alloc);
             md_array_push(x->memo->values, rv, x->alloc);
+            if (x->ir) {
+                while (md_array_size(x->memo->funcs) < md_array_size(x->memo->results) - 1) md_array_push(x->memo->funcs, 0, x->alloc);
+                md_array_push(x->memo->funcs, fn, x->alloc);
+            }
         }
     }
     if (vial_type_is_error(&result)) return result;
@@ -326,6 +364,11 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
     else if (loop.ndim == 0 && call) vx_set_value(x, call, rv);
     T t2;
     if (!with_loop(x, call, &loop, &result, &t2)) return err();
+    if (x->ir) {
+        const vial_ssa_t r = fn || body ? vx_emit_call(x, call, fn, fn ? 0 : body, g->kind, argv, atypes, loops, cores, g->np, &t2) : 0;
+        if (!r) vx_lower_fail(x, call, "a call of a def whose body is not lowered");
+        if (out_ssa) *out_ssa = r;
+    }
     return t2;
 }
 
@@ -388,10 +431,14 @@ T vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_na
         args[k].type = x->out->types[(args[k].node) - x->out->base];
         args[k].value = vx_value_of(x, args[k].node);
     }
-    return call_core(x, call, t, n, src, prelude, def, &g, args);
+    vial_ssa_t r = 0;
+    const T res = call_core(x, call, t, n, src, prelude, def, &g, args, &r);
+    if (x->ir) vx_set_ssa(x, call, r);
+    return res;
 }
 
-T vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const T* types, const vial_value_t* values, uint32_t num) {
+T vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const T* types, const vial_value_t* values, uint32_t num,
+                    const vial_ssa_t* ssas, vial_ssa_t* out_ssa) {
     // A def passed as a value lives in the tree of the code that names it: the script's or the prelude's
     const bool prelude = x->t == x->c->prelude;
     const vial_tree_t* t = x->t;
@@ -405,14 +452,15 @@ T vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const T* ty
     }
     arg_t args[32];
     memset(args, 0, sizeof(args));
-    for (uint32_t k = 0; k < num; ++k) args[k] = (arg_t){.given = true, .type = types[k], .value = values ? values[k] : (vial_value_t){0}};
+    for (uint32_t k = 0; k < num; ++k) args[k] = (arg_t){.given = true, .type = types[k], .value = values ? values[k] : (vial_value_t){0},
+                                                         .ssa = ssas ? ssas[k] : 0};
     for (uint32_t k = num; k < g.np; ++k) {
         if (!vial_child(t, g.pnode[k], 2)) {
             vx_diag_fix(x, "E0204", site, NULL, "`%s` needs %.*s", g.fname, (int)g.pname[k].len, g.pname[k].ptr);
             return err();
         }
     }
-    return call_core(x, site, t, n, src, prelude, def, &g, args);
+    return call_core(x, site, t, n, src, prelude, def, &g, args, out_ssa);
 }
 
 // ### DRAWING ###
