@@ -30,7 +30,8 @@ static inline bool vial_fuzz__front_end_code(const char* code) {
 
 // The codes the checker gives so far
 static inline bool vial_fuzz__checker_code(const char* code) {
-    static const char* codes[] = {"E0201", "W0201", "E0305", "E0312", "E0701", "E0801", "E0802", "E0803"};
+    static const char* codes[] = {"E0201", "W0201", "E0305", "E0312", "E0701", "E0801", "E0802", "E0803",
+                                  "E0301", "E0303", "E0304", "E0308", "E0319", "W0501"};
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
         if (memcmp(code, codes[i], 6) == 0) return true;
     }

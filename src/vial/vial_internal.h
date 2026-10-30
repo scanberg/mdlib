@@ -95,3 +95,16 @@ str_t vial_tokens_dump(const vial_token_t* tokens, str_t src, md_allocator_i* al
 
 // The diagnostics of the prelude compiled with a program: none, unless the prelude has a mistake. For the tests.
 size_t md_vial__prelude_diagnostics(const md_vial_program_t* prog, const md_vial_diagnostic_t** out);
+
+// What the checker gives for the statement on a line of a program: the types of the names it binds (or of the
+// expression), the stage and pass of the first, and its static value when known. For the spec harness.
+typedef struct md_vial__result_t {
+    int  num_types;
+    char types[4][128];
+    bool typed;         // every type is known: none is an error
+    char stage[24];
+    int  pass;
+    bool has_value;
+    char value[96];
+} md_vial__result_t;
+bool md_vial__line_result(const md_vial_program_t* prog, uint32_t line, md_vial__result_t* r);
