@@ -8,6 +8,11 @@
 #include "infer_internal.h"
 
 #include <md_system.h>
+#include <md_match.h>
+#include <md_attributes.h>
+#include <md_smiles.h>
+#include <core/md_bitset.h>
+#include <core/md_hash.h>
 
 #include <core/md_common.h>
 #include <core/md_array.h>
@@ -771,6 +776,250 @@ static T call_spread(infer_t* x, vial_node_id call) {
     return t;
 }
 
+// ### PATTERNS ###
+
+typedef struct match_acc_t {
+    infer_t*        x;
+    const md_match_query_t* q;
+    bool            atoms;      // smiles_atoms: one particle per (tagged) pattern atom
+    uint32_t        width;      // its columns
+    uint32_t        cols[64];   // the query atoms of the columns, in class order or pattern order
+    uint32_t*       idx;        // md_array: the particles of each match
+    uint32_t*       offset;     // md_array
+    md_hashmap32_t  seen;       // smiles_atoms with classes: one match per set of tagged atoms
+    bool            overflow;
+} match_acc_t;
+
+static int cmp_u32_(const void* a, const void* b) {
+    const uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return x < y ? -1 : x > y;
+}
+
+static bool on_match(const int32_t* atom_idx, size_t width, uint32_t unit, void* user) {
+    (void)unit;
+    match_acc_t* m = user;
+    if (md_array_size(m->offset) > 1000000) { m->overflow = true; return false; }
+    if (m->atoms) {
+        uint32_t row[64];
+        for (uint32_t c = 0; c < m->width; ++c) {
+            const int32_t a = m->cols[c] < width ? atom_idx[m->cols[c]] : -1;
+            if (a < 0) return true;     // a pattern hydrogen with no hydrogen atom to map onto: no particle for the column
+            row[c] = (uint32_t)a;
+        }
+        // Unique over the tagged atoms: the OXT and O of a C-terminus give one match
+        uint32_t key[64];
+        memcpy(key, row, m->width * sizeof(uint32_t));
+        qsort(key, m->width, sizeof(uint32_t), cmp_u32_);
+        const uint64_t h = md_hash64(key, m->width * sizeof(uint32_t), 0) & ~(1ull << 63);
+        if (md_hashmap_get(&m->seen, h)) return true;
+        md_hashmap_add(&m->seen, h, 1);
+        for (uint32_t c = 0; c < m->width; ++c) {
+            md_array_push(m->idx, row[c], m->x->alloc);
+            md_array_push(m->offset, (uint32_t)md_array_size(m->idx), m->x->alloc);
+        }
+        return true;
+    }
+    const size_t mark = md_array_size(m->idx);
+    for (size_t i = 0; i < width; ++i) if (atom_idx[i] >= 0) md_array_push(m->idx, (uint32_t)atom_idx[i], m->x->alloc);
+    qsort(m->idx + mark, md_array_size(m->idx) - mark, sizeof(uint32_t), cmp_u32_);
+    // The same particle twice in a match (a hydrogen mapped once per bond) is one particle of the set
+    uint32_t w = (uint32_t)mark;
+    for (size_t i = mark; i < md_array_size(m->idx); ++i) if (w == mark || m->idx[w - 1] != m->idx[i]) m->idx[w++] = m->idx[i];
+    md_array_shrink(m->idx, w);
+    md_array_push(m->offset, (uint32_t)md_array_size(m->idx), m->x->alloc);
+    return true;
+}
+
+// smiles(pattern, scope=None, level='molecule', mode='unique') and smiles_atoms(...)
+static T call_smiles(infer_t* x, vial_node_id call, bool atoms) {
+    const char* fname = atoms ? "smiles_atoms" : "smiles";
+    static const vx_param_t p[] = {{"pattern", VX_KIND_WHOLE, true}, {"scope", VX_KIND_WHOLE, false}, {"level", VX_KIND_WHOLE, false},
+                                   {"mode", VX_KIND_WHOLE, false}};
+    vial_node_id a[4];
+    if (!vx_bind(x, call, fname, p, 4, a)) return err();
+    for (int k = 0; k < 4; ++k) if (a[k] && vial_type_is_error(&x->out->types[(a[k]) - x->out->base])) return err();
+    const vial_value_t pv = vx_value_of(x, a[0]);
+    if (pv.kind != VIAL_VAL_STR) {
+        vx_diag_fix(x, "E0313", a[0], NULL, "`%s` takes a pattern, a string known when compiling", fname);
+        return err();
+    }
+    md_match_level_t level = MD_MATCH_LEVEL_MOLECULE;
+    if (a[2]) {
+        const vial_value_t v = vx_value_of(x, a[2]);
+        if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("molecule"))) level = MD_MATCH_LEVEL_MOLECULE;
+        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("residue"))) level = MD_MATCH_LEVEL_RESIDUE;
+        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("part"))) level = MD_MATCH_LEVEL_PART;
+        else { vx_diag_fix(x, "E0206", a[2], NULL, "`level` takes 'molecule', 'residue' or 'part'"); return err(); }
+    }
+    md_match_mode_t mode = MD_MATCH_MODE_UNIQUE;
+    if (a[3]) {
+        const vial_value_t v = vx_value_of(x, a[3]);
+        if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("unique"))) mode = MD_MATCH_MODE_UNIQUE;
+        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("all"))) mode = MD_MATCH_MODE_ALL;
+        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("one_per_unit"))) mode = MD_MATCH_MODE_ONE_PER_UNIT;
+        else if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("disjoint"))) mode = MD_MATCH_MODE_DISJOINT;
+        else { vx_diag_fix(x, "E0206", a[3], NULL, "`mode` takes 'unique', 'all', 'one_per_unit' or 'disjoint'"); return err(); }
+    }
+    T st = a[1] ? x->out->types[(a[1]) - x->out->base] : vial_type_scalar(VIAL_DT_NONE);
+    if (st.dtype != VIAL_DT_SET && st.dtype != VIAL_DT_NONE) {
+        vx_diag_fix(x, "E0206", a[1], NULL, "`scope` takes a set or system; this is %s", vx_tstr(&st));
+        return err();
+    }
+    // The pattern, read when compiling
+    md_match_query_t q = {0};
+    md_smiles_error_t perr = {0};
+    if (!md_match_query_init_smiles(&q, pv.s, x->alloc, &perr)) {
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
+        vx_diag_fix(x, "E0206", a[0], NULL, "`%.*s` is not a SMILES pattern: %s at character %zu", (int)e.len, e.ptr, perr.message, perr.offset);
+        return err();
+    }
+    // smiles_atoms: the tagged atoms in class order, or every atom but the pattern's hydrogens
+    match_acc_t m = {.x = x, .q = &q, .atoms = atoms};
+    m.seen.allocator = x->alloc;
+    if (atoms) {
+        bool tagged = false;
+        for (size_t i = 0; i < q.num_atoms; ++i) tagged = tagged || q.atoms[i].tag;
+        for (uint32_t tag = 1, done = 0; tagged && done < 64 && tag < UINT16_MAX; ++tag) {
+            bool any = false;
+            for (size_t i = 0; i < q.num_atoms && m.width < 64; ++i) if (q.atoms[i].tag == tag) { m.cols[m.width++] = (uint32_t)i; any = true; }
+            if (any) ++done;
+            if (m.width == 64) break;
+            // Classes are sparse: stop once every tagged atom has its column
+            uint32_t tagged_n = 0;
+            for (size_t i = 0; i < q.num_atoms; ++i) tagged_n += q.atoms[i].tag != 0;
+            if (m.width >= tagged_n) break;
+        }
+        for (size_t i = 0; !tagged && i < q.num_atoms && m.width < 64; ++i) {
+            if (!((q.atoms[i].flags & MD_MATCH_ATOM_ELEMENT) && q.atoms[i].z == MD_Z_H)) m.cols[m.width++] = (uint32_t)i;
+        }
+    }
+    T t = vial_type_scalar(VIAL_DT_SET);
+    t.flags |= VIAL_TYPE_OVERLAP;
+    const vial_value_t sv = a[1] ? vx_value_of(x, a[1]) : (vial_value_t){0};
+    const bool scope_known = !a[1] || st.dtype == VIAL_DT_NONE || (sv.kind == VIAL_VAL_SETS && st.stage == VIAL_STAGE_STATIC);
+    if (!x->sys || !scope_known) {
+        vial_type_push_dim(&t, (vial_extent_t){.kind = st.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
+        if (atoms) { vial_type_push_dim(&t, vial_extent_static(m.width)); t.flags |= VIAL_TYPE_ONE_PARTICLE; }
+        t.stage = st.stage;
+        md_match_query_free(&q);
+        return t;
+    }
+    md_bitset_t mask = {0};
+    md_match_desc_t desc = {.query = &q, .level = level, .mode = mode, .max_steps = 50000000};
+    if (a[1] && st.dtype == VIAL_DT_SET) {
+        const vial_sets_t* s = sv.sets->single ? sv.sets : vial_sets_merge(sv.sets, x->alloc);
+        mask = md_bitset_from_indices(vial_sets_items(s, 0), vial_sets_size(s, 0), x->alloc);
+        desc.mask = &mask;
+    }
+    md_array_push(m.offset, 0, x->alloc);
+    bool incomplete = false;
+    const bool ok = md_match_for_each(NULL, &incomplete, &desc, x->sys->sys, on_match, &m);
+    md_match_query_free(&q);
+    if (!ok) {
+        vx_diag_fix(x, "E0206", a[0], NULL, "`%s` cannot search for this pattern", fname);
+        return err();
+    }
+    vial_sets_t* r = md_alloc(x->alloc, sizeof(vial_sets_t));
+    memset(r, 0, sizeof(*r));
+    r->count = (uint32_t)md_array_size(m.offset) - 1;
+    r->offset = m.offset;
+    r->idx = m.idx ? m.idx : md_alloc(x->alloc, sizeof(uint32_t));
+    const uint32_t rows = atoms ? (m.width ? r->count / m.width : 0) : r->count;
+    if (r->count == 0) {
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
+        vx_diag_fix(x, "W0601", call, NULL, "`%.*s` matches nothing in its scope", (int)e.len, e.ptr);
+    }
+    vial_type_push_dim(&t, vial_extent_static(rows));
+    if (atoms) {
+        vial_type_push_dim(&t, vial_extent_static(m.width));
+        t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    } else {
+        // Matches may share particles; say so only when they do
+        const vial_sets_t* merged = vial_sets_merge(r, x->alloc);
+        if (vial_sets_size(merged, 0) == r->offset[r->count]) t.flags &= ~VIAL_TYPE_OVERLAP;
+    }
+    vx_set_value(x, call, sets_value(r));
+    return t;
+}
+
+// ### ATTRIBUTES ###
+
+// The type of one attribute of the run: its numbers, its unit, its shape less the frame axis, and its components
+static bool attribute_type(const md_attribute_t* at, T* t) {
+    const md_attribute_format_t* f = &at->format;
+    if (!md_attribute_type_is_numeric(f->type)) return false;
+    *t = vial_type_scalar(f->type == MD_ATTRIBUTE_TYPE_F32 || f->type == MD_ATTRIBUTE_TYPE_F64 ? VIAL_DT_FLOAT : VIAL_DT_INT);
+    t->unit = at->unit;
+    const bool temporal = at->flags & MD_ATTRIBUTE_FLAG_TEMPORAL;
+    t->stage = temporal ? VIAL_STAGE_FRAME : VIAL_STAGE_STATIC;
+    for (uint32_t k = temporal ? 1 : 0; k < f->rank; ++k) if (!vial_type_push_dim(t, vial_extent_static(f->shape[k]))) return false;
+    if (f->components > 1 && !vial_type_push_dim(t, vial_extent_static(f->components))) return false;
+    return true;
+}
+
+// attr(path): an attribute of the run, such as an energy term; a path with * gives one member per match
+static T call_attr(infer_t* x, vial_node_id call) {
+    static const vx_param_t p[] = {{"path", VX_KIND_WHOLE, true}};
+    vial_node_id a;
+    if (!vx_bind(x, call, "attr", p, 1, &a)) return err();
+    const T pt = x->out->types[(a) - x->out->base];
+    if (vial_type_is_error(&pt)) return err();
+    const vial_value_t pv = vx_value_of(x, a);
+    if (pv.kind != VIAL_VAL_STR) {
+        vx_diag_fix(x, "E0313", a, NULL, "`attr` takes a path, a string known when compiling");
+        return err();
+    }
+    const str_t run = x->c->run;
+    if (!x->sys || str_empty(run)) return err();    // no run to read: typed when there is one
+    const md_attributes_t* attrs = &x->sys->sys->attributes;
+    char full[512];
+    snprintf(full, sizeof(full), "%.*s/%.*s", (int)run.len, run.ptr, (int)pv.s.len, pv.s.ptr);
+    bool glob = false;
+    for (size_t i = 0; i < pv.s.len; ++i) glob = glob || pv.s.ptr[i] == '*' || pv.s.ptr[i] == '?';
+    char ex[VIAL_EXCERPT_MAX + 4];
+    const str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
+    if (!glob) {
+        const md_attribute_t* at = md_attributes_find(attrs, str_from_cstr(full));
+        T t;
+        if (!at || !attribute_type(at, &t)) {
+            vx_diag_fix(x, "E0206", a, NULL, "the run has no numeric attribute `%.*s`", (int)e.len, e.ptr);
+            return err();
+        }
+        return t;
+    }
+    // One member per match, which must agree in type, unit and shape
+    char prefix[512];
+    snprintf(prefix, sizeof(prefix), "%.*s/", (int)run.len, run.ptr);
+    md_attribute_iter_t it = md_attributes_iter(attrs, run);
+    uint32_t n = 0;
+    T first = err();
+    while (md_attributes_next(&it)) {
+        const str_t path = it.attr->path;
+        if (path.len <= strlen(prefix) || strncmp(path.ptr, prefix, strlen(prefix)) != 0) continue;
+        const str_t rel = {path.ptr + strlen(prefix), path.len - strlen(prefix)};
+        if (!vial_glob(pv.s, rel)) continue;
+        T t;
+        if (!attribute_type(it.attr, &t)) continue;
+        if (n == 0) first = t;
+        else if (t.dtype != first.dtype || t.ndim != first.ndim || !md_unit_equal(t.unit, first.unit) || t.stage != first.stage) {
+            vx_diag_fix(x, "E0206", a, NULL, "the attributes `%.*s` matches differ in type, unit or shape", (int)e.len, e.ptr);
+            return err();
+        }
+        n += 1;
+    }
+    if (n == 0) {
+        vx_diag_fix(x, "E0206", a, NULL, "the run has no numeric attribute that `%.*s` matches", (int)e.len, e.ptr);
+        return err();
+    }
+    T t = first;
+    t.ndim = 0;
+    vial_type_push_dim(&t, vial_extent_static(n));
+    for (uint8_t k = 0; k < first.ndim; ++k) vial_type_push_dim(&t, first.dims[k]);
+    return t;
+}
+
 bool vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
     const str_t name = str_from_cstr(b->name);
     if ((b->flags & VIAL_BUILTIN_SELECTOR)) { *out = selector_call(x, call, name); return true; }
@@ -780,5 +1029,8 @@ bool vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (str_eq(name, STR_LIT("within"))) { *out = call_within(x, call); return true; }
     if (str_eq(name, STR_LIT("bonds")))  { *out = call_bonds(x, call); return true; }
     if (str_eq(name, STR_LIT("spread"))) { *out = call_spread(x, call); return true; }
+    if (str_eq(name, STR_LIT("smiles")))       { *out = call_smiles(x, call, false); return true; }
+    if (str_eq(name, STR_LIT("attr")))         { *out = call_attr(x, call); return true; }
+    if (str_eq(name, STR_LIT("smiles_atoms"))) { *out = call_smiles(x, call, true); return true; }
     return false;
 }

@@ -860,11 +860,14 @@ none = count(particles(chain='C') and protein)         # -> 0
 
 `level` is where a match may lie: within a `'molecule'`, a `'residue'` or a `'part'`. `mode` is `'unique'`, one match per distinct set of atoms, or of tagged atoms when the pattern has classes; `'all'`, every mapping; `'one_per_unit'`; or `'disjoint'`, which keeps the first of overlapping matches. Matches may overlap, and the compiler knows where. A hydrogen in a pattern is mapped onto one hydrogen of its atom, never searched.
 
-Hydrogens and charges follow md\_match, with one exception. An organic-subset atom such as `C` leaves its hydrogen count and charge open, and a bracket atom such as `[CH2]` fixes them. A bracket atom that only adds a class, such as `[C:1]`, leaves them open too, so tagging an atom never changes what it matches; `[CH1:1]` fixes the count. md\_match needs this exception added. Where the file has no bond orders, md\_chem perceives them and the pattern's orders are tested on those, as md\_match does, so a carboxylate's two oxygens both match =O.
+Hydrogens and charges follow md\_match, with one exception. An organic-subset atom such as `C` leaves its hydrogen count and charge open, and a bracket atom such as `[CH2]` fixes them. A bracket atom that only adds a class, such as `[C:1]`, leaves them open too, so tagging an atom never changes what it matches; `[CH1:1]` fixes the count, and `[Fe:1]` means what `[Fe]` does. Where the file has no bond orders, md\_chem perceives them and the pattern's orders are tested on those, as md\_match does, so a carboxylate's two oxygens both match =O.
 
 ```python
 # on T
 po4  = smiles("O=P(O)(O)O")                            # -> set[5]: three phosphates of GTP, two of GDP
+```
+
+```python
 # on P
 phi  = dihedral(smiles_atoms("[C:1](=O)[N:2][C:3][C:4]=O"))   # -> float[14] °, frame: φ of residues 2 to 15; residue 15's O and OXT give one match, since matches are unique over the tagged atoms
 ```
@@ -888,7 +891,7 @@ long = cov[bl > 1.6]                                   # -> set[?][2], frame
 
 ### Attributes
 
-`attr(path)` reads an attribute of the run, such as an energy term, with its unit. A path with `*` matches several and gives one member each, labelled by name.
+`attr(path)` reads an attribute of the run, such as an energy term, with its unit: `<run>/<path>` in the system's attributes, where viamd names the run. A path with `*` matches several and gives one member each, labelled by name; they must agree in type, unit and shape. A path the run does not have is E0206.
 
 ```python
 # on a run with an energy file
@@ -1051,7 +1054,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0203 | A second positional argument | `residues` takes one positional argument; `'LYS'` is the second | `name='LYS'` |
 | E0204 | Wrong number of arguments | `angle` takes 3 points; it got 2 |  |
 | E0205 | A positional value the selector does not take | `chains` takes an id string, not a position | `chains[0]` |
-| E0206 | A keyword value the selector does not know | 'amino' is not a residue kind | kind='amino\_acid' |
+| E0206 | A keyword value, a pattern or an attribute path the function does not know | 'amino' is not a residue kind; `C(=O` is not a SMILES pattern; the run has no attribute `edr/Kinetic` | kind='amino\_acid' |
 | E0207 | A chain where the data gives no chain ids | P gives no chain ids; chains are labels of the data and never inferred | `parts(kind='polymer')` |
 | E0301 | Shapes that do not broadcast | `float[433]` and `float[433][3]` do not broadcast | `d[:, None]` |
 | E0302 | Not a point: an int, or a set that may hold several particles | `distance` needs a point; `residues(1..4)` holds 4 sets of several particles | `.com` or `between='closest'`; `particles(serial=12)` for an int |

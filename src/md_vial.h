@@ -87,6 +87,11 @@ typedef struct md_vial_compile_desc_t {
     // past the last frame is E0405, and a published per-frame value over 64 MB for the run is W0404. at() reads its
     // frame when compiling once VIAL evaluates (phase 3); until then its value is typed but not known.
     uint64_t num_frames;
+
+    // The run the script is evaluated over: its prefix in sys->attributes, such as "run/md". attr(path) reads
+    // <run>/<path>, with its unit and shape, and the run's frame axis, <run>/time, gives the number of frames when
+    // num_frames is 0. Empty for none: attr() is then typed only when called, and its paths are not checked.
+    str_t run;
 } md_vial_compile_desc_t;
 
 // Compiles a script. Phase 1 stops after the parser: the program holds the tokens, the syntax tree and the
