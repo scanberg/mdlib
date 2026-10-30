@@ -1692,3 +1692,247 @@ UTEST(vlx, density_property_refuses_a_different_calculation) {
 
 	qm_test_free(&t);
 }
+
+// ---------------------------------------------------------------------------
+// RESPONSE VECTORS AND NATURAL TRANSITION ORBITALS, ON DEMAND
+//
+// Nothing of the response vectors is read at load: vlx/rsp/solution_matrix reads the states asked for
+// from the file, and the NTOs are computed a state at a time from it. acro-xps.h5 keeps one dataset per
+// state (rsp/S1, ...), pe_induced_dipoles.h5 the rows of rsp/full_solutions_matrix; a copy of the latter
+// with the matrix chunked and deflated is not one run of bytes and is read through HDF5.
+// ---------------------------------------------------------------------------
+
+// One state's response vector straight from the file, through HDF5 (heap, *out_len values)
+static double* vlx_test_h5_solution(size_t* out_len, const char* path, uint32_t state) {
+	double* out = NULL;
+	hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+	if (file < 0) return NULL;
+	char name[32];
+	snprintf(name, sizeof(name), "rsp/S%u", state + 1);
+	const bool per_state = H5Lexists(file, name, H5P_DEFAULT) > 0;
+	hid_t dset  = H5Dopen2(file, per_state ? name : "rsp/full_solutions_matrix", H5P_DEFAULT);
+	hid_t space = dset >= 0 ? H5Dget_space(dset) : -1;
+	hsize_t dims[2] = {0};
+	const int rank = space >= 0 ? H5Sget_simple_extent_dims(space, dims, NULL) : -1;
+	const hsize_t len = per_state ? dims[0] : dims[1];
+	if (rank == (per_state ? 1 : 2) && len > 0 && (per_state || dims[0] > state)) {
+		out = (double*)malloc(sizeof(double) * len);
+		hid_t mem = H5Screate_simple(1, &len, NULL);
+		if (!per_state) {
+			const hsize_t start[2] = { state, 0 }, count[2] = { 1, len };
+			H5Sselect_hyperslab(space, H5S_SELECT_SET, start, NULL, count, NULL);
+		}
+		if (H5Dread(dset, H5T_NATIVE_DOUBLE, mem, per_state ? H5S_ALL : space, H5P_DEFAULT, out) < 0) {
+			free(out);
+			out = NULL;
+		}
+		H5Sclose(mem);
+		*out_len = (size_t)len;
+	}
+	if (space >= 0) H5Sclose(space);
+	if (dset >= 0) H5Dclose(dset);
+	H5Fclose(file);
+	return out;
+}
+
+// A copy of 'src' with rsp/full_solutions_matrix rewritten chunked by row, and deflated where HDF5 has it
+static bool vlx_test_write_chunked_solutions_h5(str_t src, str_t dst) {
+	md_file_t in = {0};
+	if (!md_file_open(&in, src, MD_FILE_READ)) return false;
+	const size_t size = (size_t)md_file_size(in);
+	void* bytes = md_alloc(md_get_heap_allocator(), size);
+	const bool read = md_file_read(in, bytes, size) == size;
+	md_file_close(&in);
+	const bool written = read && vlx_test_write_file(dst, bytes, size);
+	md_free(md_get_heap_allocator(), bytes, size);
+	if (!written) return false;
+
+	char path[1024];
+	str_copy_to_char_buf(path, sizeof(path), dst);
+	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
+	if (file < 0) return false;
+	bool ok = false;
+	hid_t dset = H5Dopen2(file, "rsp/full_solutions_matrix", H5P_DEFAULT);
+	if (dset >= 0) {
+		hid_t space = H5Dget_space(dset);
+		hsize_t dims[2] = {0};
+		if (H5Sget_simple_extent_dims(space, dims, NULL) == 2) {
+			double* data = (double*)malloc(sizeof(double) * dims[0] * dims[1]);
+			ok = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
+			H5Dclose(dset);
+			dset = -1;
+			ok = ok && H5Ldelete(file, "rsp/full_solutions_matrix", H5P_DEFAULT) >= 0;
+			hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
+			const hsize_t chunk[2] = { 1, dims[1] };
+			H5Pset_chunk(dcpl, 2, chunk);
+			if (H5Zfilter_avail(H5Z_FILTER_DEFLATE) > 0) H5Pset_deflate(dcpl, 6);
+			hid_t out = ok ? H5Dcreate2(file, "rsp/full_solutions_matrix", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT) : -1;
+			ok = out >= 0 && H5Dwrite(out, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
+			if (out >= 0) H5Dclose(out);
+			H5Pclose(dcpl);
+			free(data);
+		}
+		H5Sclose(space);
+		if (dset >= 0) H5Dclose(dset);
+	}
+	H5Fclose(file);
+	return ok;
+}
+
+// Every state's vector, by state, by element and whole, is the file's, and the attribute holds none of it
+static void vlx_test_check_solutions(int32_t* utest_result, const vlx_test_t* t, const char* file) {
+	const md_attribute_t* sol = qm_test_attr(t, STR_LIT("vlx/rsp/solution_matrix"));
+	ASSERT_TRUE(sol != NULL);
+	ASSERT_TRUE(sol->data == NULL && sol->virt.provider != NULL);
+	const uint32_t num_states = sol->format.shape[0];
+	const size_t   len        = sol->format.shape[1];
+	ASSERT_TRUE(num_states > 0 && len > 0);
+
+	double* row   = (double*)malloc(sizeof(double) * len);
+	double* whole = (double*)malloc(sizeof(double) * len * num_states);
+	ASSERT_EQ(md_attribute_extract_f64(whole, len * num_states, sol, md_attribute_slice_all(), md_unit_none()), len * num_states);
+	for (uint32_t s = 0; s < num_states; ++s) {
+		size_t ref_len = 0;
+		double* ref = vlx_test_h5_solution(&ref_len, file, s);
+		ASSERT_TRUE(ref != NULL);
+		ASSERT_EQ(ref_len, len);
+		ASSERT_EQ(md_attribute_extract_f64(row, len, sol, md_attribute_slice_1(s), md_unit_none()), len);
+		EXPECT_EQ(0, memcmp(row, ref, sizeof(double) * len));
+		EXPECT_EQ(0, memcmp(whole + s * len, ref, sizeof(double) * len));
+		double elem = 0.0;
+		ASSERT_EQ(md_attribute_extract_f64(&elem, 1, sol, md_attribute_slice_2(s, (uint32_t)(len / 2)), md_unit_none()), 1u);
+		EXPECT_EQ(ref[len / 2], elem);
+		free(ref);
+	}
+	free(row);
+	free(whole);
+}
+
+UTEST(vlx, response_vectors_are_read_on_demand) {
+	const char* files[] = { MD_UNITTEST_DATA_DIR "/vlx/acro-xps.h5", MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5" };
+	for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+		vlx_test_t t = {0};
+		ASSERT_TRUE(vlx_test_load(&t, str_from_cstr(files[f]), MEGABYTES(64)));
+		vlx_test_check_solutions(utest_result, &t, files[f]);
+		qm_test_free(&t);
+	}
+}
+
+UTEST(vlx, response_vectors_chunked_are_read_through_hdf5) {
+	const str_t plain_path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5");
+	const str_t chunk_path = STR_LIT(VLX_PE_DIR "unittest_rsp_chunked.h5");
+	ASSERT_TRUE(vlx_test_write_chunked_solutions_h5(plain_path, chunk_path));
+
+	vlx_test_t plain = {0}, chunked = {0};
+	const bool loaded = vlx_test_load(&plain, plain_path, MEGABYTES(64)) && vlx_test_load(&chunked, chunk_path, MEGABYTES(64));
+	if (loaded) {
+		vlx_test_check_solutions(utest_result, &chunked, chunk_path.ptr);
+	}
+
+	// the same NTO weights, every state
+	const md_attribute_t* la = loaded ? qm_test_attr(&plain, STR_LIT("vlx/rsp/nto/lambda")) : NULL;
+	const md_attribute_t* lb = loaded ? qm_test_attr(&chunked, STR_LIT("vlx/rsp/nto/lambda")) : NULL;
+	size_t n = la ? md_attribute_element_count(&la->format) : 0;
+	double* a = (double*)malloc(sizeof(double) * (n + 1));
+	double* b = (double*)malloc(sizeof(double) * (n + 1));
+	const size_t got_a = la ? md_attribute_extract_f64(a, n, la, md_attribute_slice_all(), md_unit_none()) : 0;
+	const size_t got_b = lb ? md_attribute_extract_f64(b, n, lb, md_attribute_slice_all(), md_unit_none()) : 0;
+	remove(chunk_path.ptr);
+	ASSERT_TRUE(loaded);
+	ASSERT_TRUE(n > 0);
+	ASSERT_EQ(got_a, n);
+	ASSERT_EQ(got_b, n);
+	EXPECT_EQ(0, memcmp(a, b, sizeof(double) * n));
+	free(a);
+	free(b);
+	qm_test_free(&plain);
+	qm_test_free(&chunked);
+}
+
+// The NTOs are the singular value decomposition of the transition X = Z - Y, so with every pair kept
+// the weights sum to |X|^2, and the hole and particle orbitals are each orthonormal in the overlap
+// metric, as far as the MO coefficients are (C S C^T = 1, and the singular vectors are orthonormal). Asking for more states than the cache holds and
+// then for the first again recomputes it, to the same bits.
+UTEST(vlx, nto_are_the_transition_decomposed) {
+	vlx_test_t t = {0};
+	ASSERT_TRUE(vlx_test_load(&t, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5"), MEGABYTES(64)));
+	const md_attribute_t* la  = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/lambda"));
+	const md_attribute_t* ha  = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/hole/coefficient"));
+	const md_attribute_t* pa  = qm_test_attr(&t, STR_LIT("vlx/rsp/nto/particle/coefficient"));
+	const md_attribute_t* sol = qm_test_attr(&t, STR_LIT("vlx/rsp/solution_matrix"));
+	ASSERT_TRUE(la && ha && pa && sol);
+	ASSERT_TRUE(la->data == NULL && ha->data == NULL && pa->data == NULL);
+
+	const size_t nocc = (size_t)qm_test_scalar(&t, STR_LIT("vlx/rsp/num_valence"), 0.0);
+	const size_t nvir = (size_t)qm_test_scalar(&t, STR_LIT("vlx/rsp/num_virtual"), 0.0);
+	const uint32_t num_states = la->format.shape[0];
+	const size_t lmax = la->format.shape[1], num_ao = ha->format.shape[2], len = sol->format.shape[1];
+	ASSERT_TRUE(num_states > 4); // more than the cache's slots
+	ASSERT_EQ(lmax, nocc < nvir ? nocc : nvir); // every pair kept
+	ASSERT_TRUE(len == 2 * nocc * nvir);
+
+	size_t dim = 0;
+	const double* S = qm_test_matrix(&t, STR_LIT("basis/overlap"), &dim);
+	ASSERT_TRUE(S != NULL);
+	ASSERT_EQ(dim, num_ao);
+	// the bound the orbitals they are built from meet: this file's are orthonormal to some 4e-7
+	const double mo_error = qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient"));
+	ASSERT_LT(mo_error, 1.0e-5);
+
+	double* lam   = (double*)malloc(sizeof(double) * lmax);
+	double* x     = (double*)malloc(sizeof(double) * len);
+	double* orb   = (double*)malloc(sizeof(double) * lmax * num_ao);
+	double* first = (double*)malloc(sizeof(double) * lmax * num_ao);
+	double* So    = (double*)malloc(sizeof(double) * num_ao);
+	for (uint32_t s = 0; s < num_states; ++s) {
+		ASSERT_EQ(md_attribute_extract_f64(lam, lmax, la, md_attribute_slice_1(s), md_unit_none()), lmax);
+		ASSERT_EQ(md_attribute_extract_f64(x, len, sol, md_attribute_slice_1(s), md_unit_none()), len);
+		double norm2 = 0.0, sum = 0.0;
+		for (size_t k = 0; k < nocc * nvir; ++k) norm2 += (x[k] - x[nocc * nvir + k]) * (x[k] - x[nocc * nvir + k]);
+		for (size_t k = 0; k < lmax; ++k) {
+			sum += lam[k];
+			if (k > 0) EXPECT_TRUE(lam[k] <= lam[k - 1]);
+		}
+		EXPECT_NEAR(norm2, sum, 1.0e-12 * norm2);
+
+		const md_attribute_t* orbs[2] = { ha, pa };
+		for (int o = 0; o < 2; ++o) {
+			ASSERT_EQ(md_attribute_extract_f64(orb, lmax * num_ao, orbs[o], md_attribute_slice_1(s), md_unit_none()), lmax * num_ao);
+			if (s == 0 && o == 0) memcpy(first, orb, sizeof(double) * lmax * num_ao);
+			double worst = 0.0;
+			for (size_t k = 0; k < lmax; ++k) {
+				if (!(lam[k] > 0.0)) continue;
+				for (size_t a = 0; a < num_ao; ++a) {
+					double v = 0.0;
+					for (size_t b = 0; b < num_ao; ++b) v += S[a * num_ao + b] * orb[k * num_ao + b];
+					So[a] = v;
+				}
+				for (size_t l = 0; l < lmax; ++l) {
+					if (!(lam[l] > 0.0)) continue;
+					double v = 0.0;
+					for (size_t a = 0; a < num_ao; ++a) v += orb[l * num_ao + a] * So[a];
+					const double err = fabs(v - (k == l ? 1.0 : 0.0));
+					worst = err > worst ? err : worst;
+				}
+			}
+			EXPECT_LT(worst, 10.0 * mo_error + 1.0e-12);
+		}
+
+		// one pair's orbital alone is that row of the state's
+		double one[4096];
+		ASSERT_TRUE(num_ao <= ARRAY_SIZE(one));
+		ASSERT_EQ(md_attribute_extract_f64(one, num_ao, pa, md_attribute_slice_2(s, 0), md_unit_none()), num_ao);
+		EXPECT_EQ(0, memcmp(one, orb, sizeof(double) * num_ao));
+	}
+
+	// the first state, evicted by the others, computed again
+	ASSERT_EQ(md_attribute_extract_f64(orb, lmax * num_ao, ha, md_attribute_slice_1(0), md_unit_none()), lmax * num_ao);
+	EXPECT_EQ(0, memcmp(orb, first, sizeof(double) * lmax * num_ao));
+
+	free(lam);
+	free(x);
+	free(orb);
+	free(first);
+	free(So);
+	qm_test_free(&t);
+}

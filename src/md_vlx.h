@@ -70,15 +70,24 @@ struct md_system_state_t;
 //                                                            {F,P,3,3} - the complex tensor as
 //                                                            two real attributes, because a
 //                                                            value has one type
-//   vlx/rsp/nto/lambda                                       {S,Lmax}, ragged rows zero padded
-//   vlx/rsp/nto/{particle,hole}/coefficient                  {S,Lmax,A}
+//   vlx/rsp/nto/lambda                                       {S,Lmax}, Lmax = min(occupied, virtual,
+//                                                            32); a row is zero past its state's last
+//                                                            pair. Computed on demand, a state at a
+//                                                            time: slice by state
+//   vlx/rsp/nto/{particle,hole}/coefficient                  {S,Lmax,A}, computed on demand with the
+//                                                            weights - one decomposition per state
+//                                                            gives all three, and the last four
+//                                                            states' are kept
 //   vlx/rsp/transition_density/*                             {S,A,A}, computed on demand
 //   vlx/rsp/solution_matrix, vlx/rsp/num_{core,valence,       the raw response eigenvectors and the
 //   virtual}                                                  occupied/virtual split they are
 //                                                             indexed by. Not meant for direct
-//                                                             consumption - they are what lets the
-//                                                             transition densities above be rebuilt
-//                                                             on demand with no reader in reach
+//                                                             consumption - they are what the NTOs
+//                                                             and transition densities above are
+//                                                             computed from with no reader in reach.
+//                                                             Virtual: read from the file a state at
+//                                                             a time, so the file has to stay where
+//                                                             it was
 //   vlx/xps/*                                                {C} per core-hole state, one path per
 //                                                            field of the record
 //   vlx/vib/*                                                {D} per normal mode, plus

@@ -49,11 +49,6 @@ typedef enum {
 } vlx_spin_t;
 
 typedef enum {
-	VLX_NTO_PARTICLE = 0,
-	VLX_NTO_HOLE = 1,
-} vlx_nto_type_t;
-
-typedef enum {
 	VLX_TRANSITION_ATTACHMENT = 0,
 	VLX_TRANSITION_DETACHMENT = 1,
 	VLX_TRANSITION_DIFFERENCE = 2,
@@ -123,9 +118,8 @@ typedef struct vlx_density_property_t {
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.5291772109029999
 
-#define VLX_NTO_POWER_ITERATIONS 256
+// A natural transition orbital pair whose weight is below this is not one
 #define VLX_NTO_EIGENVALUE_EPSILON 1.0e-14
-#define VLX_NTO_CONVERGENCE_EPSILON 1.0e-10
 
 
 /*
@@ -226,8 +220,16 @@ typedef struct vlx_rsp_t {
 	dvec3_t* velocity_transition_dipoles;
 
 
-	// Linear only, Should have dimensions [number_of_frequencies][num_occ * num_vir * 2]
+	// Linear only: the response eigenvectors, [states][num_occ * num_vir (* 2 with Y)]. Only their SHAPE is
+	// read at load (solution_matrix.data stays NULL): the values are read from the file state by state on
+	// demand (vlx/rsp/solution_matrix, vlx_rsp_source_t). Where they are: one dataset per state (rsp/S1,
+	// rsp/S2, ...) or the rows of one matrix (rsp/full_solutions_matrix); solution_offset[state] is the
+	// first byte of each state's values when every state is one run of IEEE floats in solution_raw's
+	// encoding, else -1 throughout and they are read through HDF5.
 	vlx_2d_data_t solution_matrix;
+	bool          solution_per_state;
+	int64_t*      solution_offset;
+	vlx_raw_t     solution_raw;
 } vlx_rsp_t;
 
 // The classical environment of a polarizable embedding run: the sites of the potential file the SCF
@@ -389,13 +391,11 @@ static const double* vlx_scf_mo_occupancy(const vlx_t* vlx, vlx_spin_t spin);
 static const double* vlx_scf_mo_energy(const vlx_t* vlx, vlx_spin_t spin);
 static bool vlx_gto_basis_extract(md_gto_basis_t* out, const vlx_t* vlx, struct md_allocator_i* alloc);
 static const double* vlx_scf_mo_coefficients(const vlx_t* vlx, size_t mo_idx, vlx_spin_t spin);
-static size_t vlx_rsp_nto_coefficients_extract(double* out_coefficients, double* out_lambdas, const vlx_t* vlx, size_t state_idx, vlx_nto_type_t type, size_t lambda_count);
 static size_t vlx_rsp_number_of_excited_states(const vlx_t* vlx);
 static const dvec3_t* vlx_rsp_electric_transition_dipole_moments(const vlx_t* vlx);
 static const dvec3_t* vlx_rsp_magnetic_transition_dipole_moments(const vlx_t* vlx);
 static const dvec3_t* vlx_rsp_velocity_transition_dipole_moments(const vlx_t* vlx);
 static bool vlx_rsp_has_nto(const vlx_t* vlx);
-static size_t vlx_rsp_nto_lambdas_extract(double* out_lambdas, const vlx_t* vlx, size_t state_idx, size_t lambda_count);
 static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state);
 // Publishes what could NOT be published as it was read.
 //
@@ -2428,7 +2428,7 @@ static void vlx_rsp_infer_occupied_virtual_split(vlx_t* vlx) {
 		return;     // the file said so
 	}
 	const size_t vec_len = vlx->rsp.solution_matrix.size[1];
-	if (!vlx->rsp.solution_matrix.data || vec_len == 0) {
+	if (vlx->rsp.solution_matrix.size[0] == 0 || vec_len == 0) {
 		return;
 	}
 
@@ -2462,6 +2462,55 @@ static void vlx_rsp_infer_occupied_virtual_split(vlx_t* vlx) {
 	MD_LOG_DEBUG("Derived the response occupied/virtual split: %zu x %zu", nocc, nvir);
 }
 
+// Where the response eigenvectors are in the response group 'rsp': one dataset per state (S1, S2, ...) or the
+// rows of full_solutions_matrix, num_values each. offsets[num_states] is the first byte of each state's values
+// when every one of them is a single run of IEEE floats of one encoding (*out_raw), else -1 throughout and
+// VLX_RAW_NONE: read them through HDF5. False when a state's values are missing or not num_values long. Called
+// during the load, or holding the HDF5 lock.
+static bool vlx_rsp_locate_solutions(int64_t* offsets, vlx_raw_t* out_raw, hid_t rsp, size_t num_states, size_t num_values, bool per_state) {
+	vlx_raw_t raw = VLX_RAW_NONE;
+	bool all_raw = true;
+	if (per_state) {
+		char name[32];
+		for (size_t s = 0; s < num_states; ++s) {
+			md_snprintf(name, sizeof(name), "S%zu", s + 1);
+			size_t dim = 0;
+			if (!h5_link_exists(rsp, name) || h5_read_dataset_dims(&dim, 1, rsp, name) < 1 || dim != num_values) {
+				MD_LOG_ERROR("Response eigenvector '%s' is missing or does not hold %zu values", name, num_values);
+				return false;
+			}
+			hid_t dset = H5Dopen(rsp, name, H5P_DEFAULT);
+			int64_t off = -1;
+			const vlx_raw_t r = dset != H5I_INVALID_HID ? vlx_h5_raw_location(&off, dset) : VLX_RAW_NONE;
+			if (dset != H5I_INVALID_HID) H5Dclose(dset);
+			if (r == VLX_RAW_NONE || (s > 0 && r != raw)) all_raw = false;
+			raw = r;
+			offsets[s] = off;
+		}
+	} else {
+		size_t dims[2] = { 0 };
+		if (h5_read_dataset_dims(dims, 2, rsp, "full_solutions_matrix") != 2 || dims[0] < num_states || dims[1] != num_values) {
+			MD_LOG_ERROR("Response eigenvectors 'full_solutions_matrix' do not hold %zu rows of %zu values", num_states, num_values);
+			return false;
+		}
+		hid_t dset = H5Dopen(rsp, "full_solutions_matrix", H5P_DEFAULT);
+		int64_t off = -1;
+		raw = dset != H5I_INVALID_HID ? vlx_h5_raw_location(&off, dset) : VLX_RAW_NONE;
+		if (dset != H5I_INVALID_HID) H5Dclose(dset);
+		const size_t elem = (raw == VLX_RAW_F32LE || raw == VLX_RAW_F32BE) ? 4 : 8;
+		all_raw = raw != VLX_RAW_NONE;
+		for (size_t s = 0; s < num_states; ++s) {
+			offsets[s] = all_raw ? off + (int64_t)(s * num_values * elem) : -1;
+		}
+	}
+	if (!all_raw) {
+		for (size_t s = 0; s < num_states; ++s) offsets[s] = -1;
+		raw = VLX_RAW_NONE;
+	}
+	*out_raw = raw;
+	return true;
+}
+
 static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
 	md_system_t* sys = vlx->sys;
 
@@ -2488,39 +2537,33 @@ static bool h5_read_rsp_data(vlx_t* vlx, hid_t handle) {
 		vlx_publish_h5_series(sys, handle, "eigenvalues", STR_LIT("vlx/rsp/frequency"), STR_LIT("Response Frequency"),
 							  md_unit_hartree(), vlx->rsp.number_of_frequencies);
 
-		// The response eigenvectors. STAGED rather than published here: the occupied/virtual split
-		// they are indexed by is derived below from the SCF occupations, and they are republished
-		// together in vlx_publish_whole_file_attributes once it is known.
+		// The response eigenvectors: their shape and where they are in the file, and NOT their values,
+		// which are read state by state when something asks for them (vlx/rsp/solution_matrix). For a
+		// large system they are most of the file - states x occupied x virtual x 2 doubles - and nothing
+		// at load needs them.
+		size_t num_values = 0, num_rows = 0;
+		bool per_state = false;
 		if (h5_check_dataset_exists(handle, "S1")) {
-			size_t dims[2] = { vlx->rsp.number_of_frequencies, 0 };
-			h5_read_dataset_dims(&dims[1], 1, handle, "S1");
-
-			size_t len = dims[0] * dims[1];
-			if (len > 0) {
-				md_array_resize(vlx->rsp.solution_matrix.data, len, vlx->arena);
-				vlx->rsp.solution_matrix.size[0] = dims[0];
-				vlx->rsp.solution_matrix.size[1] = dims[1];
-				char field_name[16];
-				for (size_t state_idx = 0; state_idx < vlx->rsp.number_of_frequencies; ++state_idx) {
-					md_snprintf(field_name, sizeof(field_name), "S%zu", state_idx + 1);
-					double* dst = vlx->rsp.solution_matrix.data + state_idx * vlx->rsp.solution_matrix.size[1];
-					if (!h5_read_dataset_data(dst, vlx->rsp.solution_matrix.size[1], handle, H5T_NATIVE_DOUBLE, field_name)) {
-						return false;
-					}
-				}
-			}
+			h5_read_dataset_dims(&num_values, 1, handle, "S1");
+			num_rows  = vlx->rsp.number_of_frequencies;
+			per_state = true;
 		} else if (h5_check_dataset_exists(handle, "full_solutions_matrix")) {
 			size_t dims[2] = { 0 };
 			h5_read_dataset_dims(dims, 2, handle, "full_solutions_matrix");
-			size_t len = dims[0] * dims[1];
-			if (len > 0) {
-				md_array_resize(vlx->rsp.solution_matrix.data, len, vlx->arena);
-				vlx->rsp.solution_matrix.size[0] = dims[0];
-				vlx->rsp.solution_matrix.size[1] = dims[1];
-				if (!h5_read_dataset_data(vlx->rsp.solution_matrix.data, len, handle, H5T_NATIVE_DOUBLE, "full_solutions_matrix")) {
-					return false;
-				}
+			num_rows   = dims[0];
+			num_values = dims[1];
+		}
+		if (num_rows > 0 && num_values > 0) {
+			int64_t* offsets = (int64_t*)md_alloc(vlx->arena, sizeof(int64_t) * num_rows);
+			vlx_raw_t raw = VLX_RAW_NONE;
+			if (!offsets || !vlx_rsp_locate_solutions(offsets, &raw, handle, num_rows, num_values, per_state)) {
+				return false;
 			}
+			vlx->rsp.solution_matrix.size[0] = num_rows;
+			vlx->rsp.solution_matrix.size[1] = num_values;
+			vlx->rsp.solution_per_state = per_state;
+			vlx->rsp.solution_offset    = offsets;
+			vlx->rsp.solution_raw       = raw;
 		}
 	}
 
@@ -3146,44 +3189,6 @@ static bool h5_read_core_data(vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static const double* vlx_rsp_get_solution_vector(const vlx_t* vlx, size_t state_idx, size_t* out_nocc, size_t* out_nvir, size_t* out_amp_count, bool* out_has_y) {
-	ASSERT(vlx);
-
-	if (!vlx->rsp.solution_matrix.data || state_idx >= vlx->rsp.solution_matrix.size[0]) {
-		return NULL;
-	}
-
-	const size_t nocc = vlx->rsp.num_core > 0 ? vlx->rsp.num_core : vlx->rsp.num_valence;
-	if (nocc == 0) {
-		return NULL;
-	}
-
-	const size_t nvir = vlx->rsp.num_virtual;
-	if (nvir == 0) {
-		return NULL;
-	}
-
-	size_t vec_size = vlx->rsp.solution_matrix.size[1];
-
-	const size_t amp_count = nocc * nvir;
-	bool has_y = false;
-	if (vec_size == amp_count) {
-		has_y = false;
-	} else if (vec_size == 2 * amp_count) {
-		has_y = true;
-	} else {
-		MD_LOG_ERROR("Unexpected response eigenvector length for state %zu: got %zu, expected %zu or %zu", state_idx + 1, vec_size, amp_count, 2 * amp_count);
-		return NULL;
-	}
-
-	if (out_nocc) *out_nocc = nocc;
-	if (out_nvir) *out_nvir = nvir;
-	if (out_amp_count) *out_amp_count = amp_count;
-	if (out_has_y) *out_has_y = has_y;
-
-    return vlx->rsp.solution_matrix.data + state_idx * vec_size;
-}
-
 static void vlx_symmetrize_square(double* mat, size_t dim) {
 	ASSERT(mat);
 	for (size_t i = 0; i < dim; ++i) {
@@ -3399,270 +3404,6 @@ static double vlx_normalize(double* vec, size_t count) {
 		}
 	}
 	return norm;
-}
-
-static void vlx_orthogonalize(double* vec, const double* basis, size_t basis_count, size_t dim) {
-	for (size_t basis_idx = 0; basis_idx < basis_count; ++basis_idx) {
-		const double* b = basis + basis_idx * dim;
-		const double projection = vlx_dot(vec, b, dim);
-		for (size_t i = 0; i < dim; ++i) {
-			vec[i] -= projection * b[i];
-		}
-	}
-}
-
-static bool vlx_symmetric_top_eigenpairs(double* out_values, double* out_vectors, const double* matrix, size_t dim, size_t pair_count) {
-	ASSERT(out_values);
-	ASSERT(out_vectors);
-	ASSERT(matrix);
-
-	if (dim == 0 || pair_count == 0) {
-		return false;
-	}
-
-	md_temp_scope_t temp = md_temp_begin();
-	double* work = md_temp_alloc_array(temp, double, dim * dim);
-	double* vec  = md_temp_alloc_array(temp, double, dim);
-	double* next = md_temp_alloc_array(temp, double, dim);
-	MEMCPY(work, matrix, sizeof(double) * dim * dim);
-	MEMSET(out_values, 0, sizeof(double) * pair_count);
-	MEMSET(out_vectors, 0, sizeof(double) * pair_count * dim);
-
-	for (size_t pair_idx = 0; pair_idx < pair_count; ++pair_idx) {
-		for (size_t i = 0; i < dim; ++i) {
-			vec[i] = 1.0 + 0.013 * (double)(((i + 1) * (pair_idx + 3)) % 17);
-		}
-		vlx_orthogonalize(vec, out_vectors, pair_idx, dim);
-		if (vlx_normalize(vec, dim) <= DBL_EPSILON) {
-			vec[pair_idx % dim] = 1.0;
-			vlx_orthogonalize(vec, out_vectors, pair_idx, dim);
-			vlx_normalize(vec, dim);
-		}
-
-		for (size_t iter = 0; iter < VLX_NTO_POWER_ITERATIONS; ++iter) {
-			for (size_t i = 0; i < dim; ++i) {
-				double sum = 0.0;
-				for (size_t j = 0; j < dim; ++j) {
-					sum += work[i * dim + j] * vec[j];
-				}
-				next[i] = sum;
-			}
-
-			vlx_orthogonalize(next, out_vectors, pair_idx, dim);
-			if (vlx_normalize(next, dim) <= DBL_EPSILON) {
-				break;
-			}
-
-			double diff = 0.0;
-			double neg_diff = 0.0;
-			for (size_t i = 0; i < dim; ++i) {
-				const double d = next[i] - vec[i];
-				const double nd = next[i] + vec[i];
-				diff += d * d;
-				neg_diff += nd * nd;
-				vec[i] = next[i];
-			}
-			if (sqrt(MIN(diff, neg_diff)) < VLX_NTO_CONVERGENCE_EPSILON) {
-				break;
-			}
-		}
-
-		double eigenvalue = 0.0;
-		for (size_t i = 0; i < dim; ++i) {
-			double row_sum = 0.0;
-			for (size_t j = 0; j < dim; ++j) {
-				row_sum += work[i * dim + j] * vec[j];
-			}
-			eigenvalue += vec[i] * row_sum;
-		}
-
-		if (eigenvalue < VLX_NTO_EIGENVALUE_EPSILON) {
-			break;
-		}
-
-		out_values[pair_idx] = eigenvalue;
-		MEMCPY(out_vectors + pair_idx * dim, vec, sizeof(double) * dim);
-
-		for (size_t i = 0; i < dim; ++i) {
-			for (size_t j = 0; j < dim; ++j) {
-				work[i * dim + j] -= eigenvalue * vec[i] * vec[j];
-			}
-		}
-	}
-
-	md_temp_end(temp);
-	return true;
-}
-
-static size_t vlx_rsp_extract_nto_from_solution(double* out_coefficients, double* out_lambdas, const vlx_t* vlx, size_t state_idx, vlx_nto_type_t type, size_t lambda_count) {
-	ASSERT(vlx);
-
-	if (lambda_count == 0 || (!out_coefficients && !out_lambdas)) {
-		return 0;
-	}
-
-	size_t nocc = 0;
-	size_t nvir = 0;
-	size_t amp_count = 0;
-	bool has_y = false;
-    const double* solution_vector = vlx_rsp_get_solution_vector(vlx, state_idx, &nocc, &nvir, &amp_count, &has_y);
-    if (!solution_vector) {
-        return 0;
-    }
-
-	const size_t pair_count = MIN(MIN(nocc, nvir), lambda_count);
-	if (pair_count == 0) {
-		return 0;
-	}
-
-	const vlx_2d_data_t* scf_coeff = &vlx->scf.alpha.coefficients;
-	const size_t num_ao = scf_coeff->size[1];
-	const double* coeff = scf_coeff->data;
-
-	if (out_coefficients) {
-		MEMSET(out_coefficients, 0, sizeof(double) * lambda_count * num_ao);
-	}
-	if (out_lambdas) {
-		MEMSET(out_lambdas, 0, sizeof(double) * lambda_count);
-	}
-
-	const bool use_left_gram = nocc <= nvir;
-	const size_t small_dim = use_left_gram ? nocc : nvir;
-	const size_t large_dim = use_left_gram ? nvir : nocc;
-
-	size_t written_count = 0;
-	md_temp_scope_t temp = md_temp_begin();
-	double* transition = md_temp_alloc_array(temp, double, nocc * nvir);
-	double* gram = md_temp_alloc_array(temp, double, small_dim * small_dim);
-	double* eigenvalues = md_temp_alloc_array(temp, double, pair_count);
-	double* small_vectors = md_temp_alloc_array(temp, double, pair_count * small_dim);
-	double* large_vectors = md_temp_alloc_array(temp, double, pair_count * large_dim);
-	MEMSET(gram, 0, sizeof(double) * small_dim * small_dim);
-	MEMSET(large_vectors, 0, sizeof(double) * pair_count * large_dim);
-
-	for (size_t i = 0; i < nocc; ++i) {
-		for (size_t a = 0; a < nvir; ++a) {
-			const size_t idx = i * nvir + a;
-            const double z = solution_vector[idx];
-            const double y = has_y ? solution_vector[amp_count + idx] : 0.0;
-			transition[idx] = z - y;
-		}
-	}
-
-	if (use_left_gram) {
-		for (size_t i = 0; i < nocc; ++i) {
-			for (size_t j = i; j < nocc; ++j) {
-				double value = 0.0;
-				for (size_t a = 0; a < nvir; ++a) {
-					value += transition[i * nvir + a] * transition[j * nvir + a];
-				}
-				gram[i * nocc + j] = value;
-				gram[j * nocc + i] = value;
-			}
-		}
-	} else {
-		for (size_t a = 0; a < nvir; ++a) {
-			for (size_t b = a; b < nvir; ++b) {
-				double value = 0.0;
-				for (size_t i = 0; i < nocc; ++i) {
-					value += transition[i * nvir + a] * transition[i * nvir + b];
-				}
-				gram[a * nvir + b] = value;
-				gram[b * nvir + a] = value;
-			}
-		}
-	}
-
-	if (!vlx_symmetric_top_eigenpairs(eigenvalues, small_vectors, gram, small_dim, pair_count)) {
-		goto done;
-	}
-
-	for (size_t pair_idx = 0; pair_idx < pair_count; ++pair_idx) {
-		const double lambda = eigenvalues[pair_idx];
-		if (lambda < VLX_NTO_EIGENVALUE_EPSILON) {
-			break;
-		}
-
-		const double sigma = sqrt(lambda);
-		if (sigma <= DBL_EPSILON) {
-			break;
-		}
-
-		if (out_lambdas) {
-			out_lambdas[pair_idx] = lambda;
-		}
-
-		if (out_coefficients) {
-			// NOT 'small' and 'large': rpcndr.h, which windows.h drags in, does '#define small char',
-			// so a variable by that name preprocesses into a type keyword and every use of it is a
-			// syntax error. It only shows up in builds whose include chain reaches that header - the
-			// Windows arm64 cross build does, the x64 one did not - so it reads as an architecture
-			// problem and is not one.
-			const double* small_vec = small_vectors + pair_idx * small_dim;
-			double* large_vec = large_vectors + pair_idx * large_dim;
-
-			if (use_left_gram) {
-				for (size_t a = 0; a < nvir; ++a) {
-					double value = 0.0;
-					for (size_t i = 0; i < nocc; ++i) {
-						value += transition[i * nvir + a] * small_vec[i];
-					}
-					large_vec[a] = value / sigma;
-				}
-			} else {
-				for (size_t i = 0; i < nocc; ++i) {
-					double value = 0.0;
-					for (size_t a = 0; a < nvir; ++a) {
-						value += transition[i * nvir + a] * small_vec[a];
-					}
-					large_vec[i] = value / sigma;
-				}
-			}
-			vlx_normalize(large_vec, large_dim);
-
-			const double* u = use_left_gram ? small_vec : large_vec;
-			const double* v = use_left_gram ? large_vec : small_vec;
-			double* out_coeff = out_coefficients + pair_idx * num_ao;
-
-			if (type == VLX_NTO_PARTICLE) {
-				for (size_t ao = 0; ao < num_ao; ++ao) {
-					double value = 0.0;
-					for (size_t a = 0; a < nvir; ++a) {
-						value += coeff[(nocc + a) * num_ao + ao] * v[a];
-					}
-					out_coeff[ao] = value;
-				}
-			} else if (type == VLX_NTO_HOLE) {
-				for (size_t ao = 0; ao < num_ao; ++ao) {
-					double value = 0.0;
-					for (size_t i = 0; i < nocc; ++i) {
-						value += coeff[i * num_ao + ao] * u[i];
-					}
-					out_coeff[ao] = value;
-				}
-			} else {
-				break;
-			}
-		}
-
-		written_count++;
-	}
-
-done:
-	md_temp_end(temp);
-	return written_count;
-}
-
-static size_t vlx_rsp_extract_nto(double* out_coefficients, double* out_lambdas, const vlx_t* vlx, size_t state_idx, vlx_nto_type_t type, size_t lambda_count) {
-	if (!vlx || state_idx >= vlx->rsp.number_of_frequencies || lambda_count == 0) {
-		return 0;
-	}
-
-	if (vlx->rsp.solution_matrix.data && state_idx < vlx->rsp.solution_matrix.size[0]) {
-		return vlx_rsp_extract_nto_from_solution(out_coefficients, out_lambdas, vlx, state_idx, type, lambda_count);
-	}
-
-	return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -4704,18 +4445,10 @@ const dvec3_t* vlx_rsp_velocity_transition_dipole_moments(const vlx_t* vlx) {
 
 bool vlx_rsp_has_nto(const vlx_t* vlx) {
 	if (!vlx) return false;
-	if (vlx->rsp.solution_matrix.data && vlx->rsp.solution_matrix.size[0] == vlx->rsp.number_of_frequencies) {
+	if (vlx->rsp.solution_matrix.size[0] == vlx->rsp.number_of_frequencies && vlx->rsp.solution_matrix.size[1] > 0) {
 		return true;
 	}
 	return false;
-}
-
-size_t vlx_rsp_nto_lambdas_extract(double* out_lambdas, const vlx_t* vlx, size_t state_idx, size_t lambda_count) {
-	return vlx_rsp_extract_nto(NULL, out_lambdas, vlx, state_idx, VLX_NTO_PARTICLE, lambda_count);
-}
-
-size_t vlx_rsp_nto_coefficients_extract(double* out_coefficients, double* out_lambdas, const vlx_t* vlx, size_t state_idx, vlx_nto_type_t type, size_t lambda_count) {
-	return vlx_rsp_extract_nto(out_coefficients, out_lambdas, vlx, state_idx, type, lambda_count);
 }
 
 // OPT
@@ -5229,6 +4962,719 @@ static vlx_density_source_t* vlx_density_source_create(size_t* out_bytes, md_sys
 	return src;
 }
 
+// ---------------------------------------------------------------------------
+// RESPONSE EIGENVECTORS AND NATURAL TRANSITION ORBITALS, ON DEMAND
+//
+// The response eigenvectors are states x occupied x virtual (x 2 with the de-excitation part) doubles,
+// which for a large system is most of the file - hundreds of megabytes - and what is derived from them
+// is worse to precompute: a state's natural transition orbitals are an eigendecomposition. None of it
+// is needed to open the file, and a viewer looks at a handful of states, so none of it is done at load.
+//
+//   vlx/rsp/solution_matrix  virtual. Reads the states asked for from the file (vlx_rsp_source_t),
+//                            the way the density properties are read: a plain read at a byte offset
+//                            when the values are one run of IEEE floats, through HDF5 otherwise, with
+//                            the same check that the file has not changed since it was loaded.
+//   vlx/rsp/nto/...          virtual. The first request for a state computes all three of its NTO
+//                            quantities in one decomposition - weights, hole and particle orbitals -
+//                            and keeps them in a small cache (vlx_nto_cache_t, owned by the weights),
+//                            so the next request for that state, whichever of the three it is for,
+//                            is a copy.
+//
+// The cost moves to the first look at a state: one read of its vector, a Gram matrix of min(o,v)^2 x
+// max(o,v) and a dense symmetric eigensolve of min(o,v)^2. Asking for a whole attribute (no slice)
+// still does every state; slice by state.
+// ---------------------------------------------------------------------------
+
+// The solution matrix's provider state, owned by the attribute. Variable length: the per state offsets
+// and the file's path follow the struct.
+typedef struct vlx_rsp_source_t {
+	uint64_t       identity;   // vlx_h5_identity of the file as it was loaded
+	md_file_time_t mtime;      // the file as it was when the offsets were taken
+	int64_t        size;
+	uint32_t       num_states; // rows: rsp/S1 .. rsp/S<num_states>, or the rows of rsp/full_solutions_matrix
+	uint32_t       vec_len;
+	uint32_t       raw;        // vlx_raw_t of every row, VLX_RAW_NONE: read through HDF5
+	uint32_t       per_state;
+	uint32_t       path_len;
+	uint32_t       pad;
+	// int64_t offset[num_states], then char path[path_len + 1]
+} vlx_rsp_source_t;
+
+static inline size_t vlx_rsp_source_bytes(size_t num_states, size_t path_len) {
+	return sizeof(vlx_rsp_source_t) + sizeof(int64_t) * num_states + path_len + 1;
+}
+static inline int64_t* vlx_rsp_source_offsets(vlx_rsp_source_t* src) {
+	return (int64_t*)(src + 1);
+}
+static inline char* vlx_rsp_source_path(vlx_rsp_source_t* src) {
+	return (char*)(vlx_rsp_source_offsets(src) + src->num_states);
+}
+
+// Takes the rows' places in the file again, as the file is now. Called holding the HDF5 lock.
+static bool vlx_rsp_source_rebuild(vlx_rsp_source_t* src, const md_file_info_t* info) {
+	const char* path = vlx_rsp_source_path(src);
+	hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+	if (file == H5I_INVALID_HID) {
+		MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and can no longer be read as HDF5; reload it", path);
+		return false;
+	}
+	bool ok = false;
+	uint64_t identity = 0;
+	if (!vlx_h5_identity(&identity, file) || identity != src->identity) {
+		MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and no longer holds the same molecule and basis set; reload it to see its excited states", path);
+	} else {
+		hid_t rsp = h5_link_exists(file, "rsp") ? H5Gopen(file, "rsp", H5P_DEFAULT) : H5I_INVALID_HID;
+		vlx_raw_t raw = VLX_RAW_NONE;
+		if (rsp != H5I_INVALID_HID && vlx_rsp_locate_solutions(vlx_rsp_source_offsets(src), &raw, rsp, src->num_states, src->vec_len, src->per_state != 0)) {
+			src->raw   = (uint32_t)raw;
+			src->mtime = info->modified_time;
+			src->size  = (int64_t)info->size;
+			ok = true;
+			MD_LOG_INFO("VeloxChem: '%s' has changed since it was loaded; its response vectors are read from it as it is now, while the rest of what was loaded is not until it is reloaded", path);
+		} else {
+			MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and no longer holds %u response vectors of %u values; reload it", path, src->num_states, src->vec_len);
+		}
+		if (rsp != H5I_INVALID_HID) H5Gclose(rsp);
+	}
+	H5Fclose(file);
+	return ok;
+}
+
+// One row through HDF5: for a file whose rows are not single runs of bytes.
+static bool vlx_rsp_source_read_hdf5(double* out, vlx_rsp_source_t* src, uint32_t state) {
+	const hsize_t len = src->vec_len;
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	hid_t file = H5Fopen(vlx_rsp_source_path(src), H5F_ACC_RDONLY, H5P_DEFAULT);
+	bool ok = false;
+	if (file != H5I_INVALID_HID) {
+		char name[48];
+		if (src->per_state) {
+			md_snprintf(name, sizeof(name), "rsp/S%u", state + 1);
+		} else {
+			md_snprintf(name, sizeof(name), "rsp/full_solutions_matrix");
+		}
+		hid_t dset  = h5_link_exists(file, name) ? H5Dopen(file, name, H5P_DEFAULT) : H5I_INVALID_HID;
+		hid_t space = dset != H5I_INVALID_HID ? H5Dget_space(dset) : H5I_INVALID_HID;
+		if (space != H5I_INVALID_HID) {
+			hsize_t dims[2] = { 0 };
+			const int rank = H5Sget_simple_extent_dims(space, dims, NULL);
+			if (src->per_state) {
+				ok = rank == 1 && dims[0] == len && H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out) >= 0;
+			} else if (rank == 2 && dims[0] > state && dims[1] == len) {
+				const hsize_t start[2] = { state, 0 }, count[2] = { 1, len };
+				hid_t mem = H5Screate_simple(1, &len, NULL);
+				ok = mem != H5I_INVALID_HID && H5Sselect_hyperslab(space, H5S_SELECT_SET, start, NULL, count, NULL) >= 0 &&
+					H5Dread(dset, H5T_NATIVE_DOUBLE, mem, space, H5P_DEFAULT, out) >= 0;
+				if (mem != H5I_INVALID_HID) H5Sclose(mem);
+			}
+			H5Sclose(space);
+		}
+		if (dset != H5I_INVALID_HID) H5Dclose(dset);
+		H5Fclose(file);
+	}
+	md_hdf5_unlock(lock);
+	return ok;
+}
+
+// Rows of the solution matrix, {rows, len}: whole, one row (slice by state) or one element.
+static size_t vlx_rsp_solution_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	vlx_rsp_source_t* src = (vlx_rsp_source_t*)user_data;
+	if (!src || !dst) {
+		return 0;
+	}
+	const size_t len  = src->vec_len;
+	const uint32_t nfix = slice ? slice->num_idx : 0;
+	const uint32_t first = nfix > 0 ? slice->idx[0] : 0;
+	const size_t   rows  = nfix > 0 ? 1 : src->num_states;
+	if (nfix > 2 || first >= src->num_states || (nfix == 2 && slice->idx[1] >= len)) {
+		MD_LOG_ERROR("'" STR_FMT "': slice out of range", STR_ARG(attr->path));
+		return 0;
+	}
+	const size_t expected = nfix == 2 ? 1 : rows * len;
+	if (cap != expected) {
+		MD_LOG_ERROR("'" STR_FMT "': asked for %zu values, the slice has %zu", STR_ARG(attr->path), cap, expected);
+		return 0;
+	}
+
+	const char* path = vlx_rsp_source_path(src);
+	md_file_info_t info = {0};
+	if (!md_file_info_extract_from_path(str_from_cstr(path), &info)) {
+		MD_LOG_ERROR("VeloxChem: '%s', which '" STR_FMT "' is read from, can no longer be found; reload it", path, STR_ARG(attr->path));
+		return 0;
+	}
+
+	md_temp_scope_t temp = md_temp_begin();
+	int64_t* offsets = md_temp_alloc_array(temp, int64_t, rows);
+	double*  row     = nfix == 2 ? md_temp_alloc_array(temp, double, len) : NULL;
+
+	// The offsets are shared by every thread reading this attribute and a rebuild rewrites them, so
+	// they are taken - and rebuilt when stale - holding the lock.
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	const bool current = (info.modified_time == src->mtime && (int64_t)info.size == src->size) || vlx_rsp_source_rebuild(src, &info);
+	const vlx_raw_t raw = (vlx_raw_t)src->raw;
+	if (current) {
+		MEMCPY(offsets, vlx_rsp_source_offsets(src) + first, sizeof(int64_t) * rows);
+	}
+	md_hdf5_unlock(lock);
+
+	bool ok = current;
+	for (size_t r = 0; ok && r < rows; ++r) {
+		double* out = row ? row : (double*)dst + r * len;
+		const uint32_t state = first + (uint32_t)r;
+		ok = (raw != VLX_RAW_NONE && offsets[r] >= 0) ? vlx_density_source_read_raw(out, len, path, offsets[r], raw, io) : vlx_rsp_source_read_hdf5(out, src, state);
+		if (!ok) {
+			MD_LOG_ERROR("VeloxChem: failed to read the response vector of state %u from '%s'", state + 1, path);
+		}
+	}
+	if (ok && row) {
+		*(double*)dst = row[slice->idx[1]];
+	}
+	md_temp_end(temp);
+	return ok ? cap : 0;
+}
+
+static vlx_rsp_source_t* vlx_rsp_source_create(size_t* out_bytes, md_system_t* sys, const vlx_t* vlx) {
+	const size_t rows = vlx->rsp.solution_matrix.size[0];
+	const size_t len  = vlx->rsp.solution_matrix.size[1];
+	if (rows == 0 || len == 0 || len > UINT32_MAX || !vlx->rsp.solution_offset || str_empty(vlx->filename)) {
+		return NULL;
+	}
+	const size_t bytes = vlx_rsp_source_bytes(rows, vlx->filename.len);
+	vlx_rsp_source_t* src = (vlx_rsp_source_t*)md_attributes_alloc_user_data(&sys->attributes, bytes);
+	if (!src) {
+		return NULL;
+	}
+	*src = (vlx_rsp_source_t){
+		.identity   = vlx->identity,
+		.mtime      = vlx->file_info.modified_time,
+		.size       = (int64_t)vlx->file_info.size,
+		.num_states = (uint32_t)rows,
+		.vec_len    = (uint32_t)len,
+		.raw        = (uint32_t)vlx->rsp.solution_raw,
+		.per_state  = vlx->rsp.solution_per_state ? 1 : 0,
+		.path_len   = (uint32_t)vlx->filename.len,
+	};
+	MEMCPY(vlx_rsp_source_offsets(src), vlx->rsp.solution_offset, sizeof(int64_t) * rows);
+	char* path = vlx_rsp_source_path(src);
+	MEMCPY(path, vlx->filename.ptr, vlx->filename.len);
+	path[vlx->filename.len] = '\0';
+	*out_bytes = bytes;
+	return src;
+}
+
+// The eigenvalues (ascending, d[n]) and eigenvectors of the symmetric n x n matrix 'a', in place: on
+// return column j of 'a' - a[j*n .. j*n + n), as 'a' is stored COLUMN major here - is the eigenvector of
+// d[j]. Householder reduction to tridiagonal form and the implicit QL algorithm, after JAMA's tred2 and
+// tql2 (public domain; from EISPACK). Column major so that every inner loop runs down a column, which
+// is contiguous; a symmetric input reads the same either way. 'e' is n doubles of scratch.
+static bool vlx_symmetric_eigen(double* a, double* d, double* e, size_t n) {
+#define A_(r, c) a[(size_t)(c) * n + (size_t)(r)]
+	if (n == 0) return false;
+
+	// tred2
+	for (size_t j = 0; j < n; ++j) d[j] = A_(n - 1, j);
+	for (size_t i = n - 1; i > 0; --i) {
+		double scale = 0.0, h = 0.0;
+		for (size_t k = 0; k < i; ++k) scale += fabs(d[k]);
+		if (scale == 0.0) {
+			e[i] = d[i - 1];
+			for (size_t j = 0; j < i; ++j) {
+				d[j] = A_(i - 1, j);
+				A_(i, j) = 0.0;
+				A_(j, i) = 0.0;
+			}
+		} else {
+			for (size_t k = 0; k < i; ++k) {
+				d[k] /= scale;
+				h += d[k] * d[k];
+			}
+			double f = d[i - 1];
+			double g = sqrt(h);
+			if (f > 0) g = -g;
+			e[i] = scale * g;
+			h -= f * g;
+			d[i - 1] = f - g;
+			for (size_t j = 0; j < i; ++j) e[j] = 0.0;
+			for (size_t j = 0; j < i; ++j) {
+				f = d[j];
+				A_(j, i) = f;
+				const double* col = &A_(0, j);
+				// four lanes for the sum, which a compiler may not reorder on its own
+				double g4[4] = { 0.0, 0.0, 0.0, 0.0 };
+				size_t k = j + 1;
+				for (; k + 4 <= i; k += 4) {
+					for (int l = 0; l < 4; ++l) {
+						g4[l]    += col[k + l] * d[k + l];
+						e[k + l] += col[k + l] * f;
+					}
+				}
+				g = e[j] + A_(j, j) * f + ((g4[0] + g4[1]) + (g4[2] + g4[3]));
+				for (; k < i; ++k) {
+					g    += col[k] * d[k];
+					e[k] += col[k] * f;
+				}
+				e[j] = g;
+			}
+			f = 0.0;
+			for (size_t j = 0; j < i; ++j) {
+				e[j] /= h;
+				f += e[j] * d[j];
+			}
+			const double hh = f / (h + h);
+			for (size_t j = 0; j < i; ++j) e[j] -= hh * d[j];
+			for (size_t j = 0; j < i; ++j) {
+				f = d[j];
+				g = e[j];
+				double* col = &A_(0, j);
+				for (size_t k = j; k < i; ++k) col[k] -= (f * e[k] + g * d[k]);
+				d[j] = A_(i - 1, j);
+				A_(i, j) = 0.0;
+			}
+		}
+		d[i] = h;
+	}
+	for (size_t i = 0; i + 1 < n; ++i) {
+		A_(n - 1, i) = A_(i, i);
+		A_(i, i) = 1.0;
+		const double h = d[i + 1];
+		double* ci1 = &A_(0, i + 1);
+		if (h != 0.0) {
+			for (size_t k = 0; k <= i; ++k) d[k] = ci1[k] / h;
+			for (size_t j = 0; j <= i; ++j) {
+				double* cj = &A_(0, j);
+				double g4[4] = { 0.0, 0.0, 0.0, 0.0 };
+				size_t k = 0;
+				for (; k + 4 <= i + 1; k += 4) {
+					for (int l = 0; l < 4; ++l) g4[l] += ci1[k + l] * cj[k + l];
+				}
+				double g = (g4[0] + g4[1]) + (g4[2] + g4[3]);
+				for (; k <= i; ++k) g += ci1[k] * cj[k];
+				for (size_t k = 0; k <= i; ++k) cj[k] -= g * d[k];
+			}
+		}
+		for (size_t k = 0; k <= i; ++k) ci1[k] = 0.0;
+	}
+	for (size_t j = 0; j < n; ++j) {
+		d[j] = A_(n - 1, j);
+		A_(n - 1, j) = 0.0;
+	}
+	A_(n - 1, n - 1) = 1.0;
+	e[0] = 0.0;
+
+	// tql2
+	for (size_t i = 1; i < n; ++i) e[i - 1] = e[i];
+	e[n - 1] = 0.0;
+	double f = 0.0, tst1 = 0.0;
+	const double eps = DBL_EPSILON;
+	for (size_t l = 0; l < n; ++l) {
+		tst1 = MAX(tst1, fabs(d[l]) + fabs(e[l]));
+		size_t m = l;
+		while (m < n && fabs(e[m]) > eps * tst1) ++m;
+		if (m == n) m = n - 1; // e[n-1] is zero; not reached in exact arithmetic
+		if (m > l) {
+			int iter = 0;
+			do {
+				if (++iter > 64) {
+					return false;
+				}
+				double g = d[l];
+				double p = (d[l + 1] - g) / (2.0 * e[l]);
+				double r = hypot(p, 1.0);
+				if (p < 0) r = -r;
+				d[l] = e[l] / (p + r);
+				d[l + 1] = e[l] * (p + r);
+				const double dl1 = d[l + 1];
+				double h = g - d[l];
+				for (size_t i = l + 2; i < n; ++i) d[i] -= h;
+				f += h;
+
+				p = d[m];
+				double c = 1.0, c2 = c, c3 = c;
+				const double el1 = e[l + 1];
+				double s = 0.0, s2 = 0.0;
+				for (size_t ii = m; ii-- > l;) {
+					c3 = c2;
+					c2 = c;
+					s2 = s;
+					g = c * e[ii];
+					h = c * p;
+					r = hypot(p, e[ii]);
+					e[ii + 1] = s * r;
+					s = e[ii] / r;
+					c = p / r;
+					p = c * d[ii] - s * g;
+					d[ii + 1] = h + s * (c * g + s * d[ii]);
+					double* x = &A_(0, ii);
+					double* y = &A_(0, ii + 1);
+					for (size_t k = 0; k < n; ++k) {
+						const double t = y[k];
+						y[k] = s * x[k] + c * t;
+						x[k] = c * x[k] - s * t;
+					}
+				}
+				p = -s * s2 * c3 * el1 * e[l] / dl1;
+				e[l] = s * p;
+				d[l] = c * p;
+			} while (fabs(e[l]) > eps * tst1);
+		}
+		d[l] += f;
+		e[l] = 0.0;
+	}
+
+	// ascending, the vectors with them
+	for (size_t i = 0; i + 1 < n; ++i) {
+		size_t k = i;
+		double p = d[i];
+		for (size_t j = i + 1; j < n; ++j) {
+			if (d[j] < p) {
+				k = j;
+				p = d[j];
+			}
+		}
+		if (k != i) {
+			d[k] = d[i];
+			d[i] = p;
+			double* x = &A_(0, i);
+			double* y = &A_(0, k);
+			for (size_t j = 0; j < n; ++j) {
+				const double t = x[j];
+				x[j] = y[j];
+				y[j] = t;
+			}
+		}
+	}
+#undef A_
+	return true;
+}
+
+// One state's natural transition orbitals, from attributes alone: the response vector X = Z - Y as an
+// occupied x virtual matrix, its singular value decomposition X = sum_k sigma_k u_k v_k^T through the
+// smaller of its two Gram matrices, and the singular vectors taken to the AO basis by the MO
+// coefficients. Writes lambda[lmax] (sigma_k^2, largest first, zero padded), hole[lmax x A] and
+// particle[lmax x A] (zero rows past the last pair); with num_ao 0, only the weights, which need no
+// orbitals. The hole is sum_i u_ki C_i over the occupied
+// orbitals, the particle sum_a v_ka C_{nocc + a} over the virtuals; a pair's sign is fixed by making
+// the largest component of its smaller singular vector positive.
+static bool vlx_nto_compute(double* lambda, double* hole, double* particle, size_t lmax, size_t num_ao, const md_system_t* sys, uint32_t state) {
+	const md_attribute_t* sol   = md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/solution_matrix"));
+	const md_attribute_t* coeff = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/coefficient"));
+	const md_attribute_t* core  = md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/num_core"));
+	const md_attribute_t* val   = md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/num_valence"));
+	const md_attribute_t* vir   = md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/num_virtual"));
+	if (!sol || !core || !val || !vir || sol->format.rank != 2 || (num_ao > 0 && (!coeff || coeff->format.rank != 2 || coeff->format.shape[1] != num_ao))) {
+		MD_LOG_ERROR("Natural transition orbitals: the response data they are computed from is missing");
+		return false;
+	}
+	double num_core = 0.0, num_valence = 0.0, num_virtual = 0.0;
+	md_attribute_extract_f64(&num_core,    1, core, md_attribute_slice_all(), md_unit_none());
+	md_attribute_extract_f64(&num_valence, 1, val,  md_attribute_slice_all(), md_unit_none());
+	md_attribute_extract_f64(&num_virtual, 1, vir,  md_attribute_slice_all(), md_unit_none());
+	const size_t nocc    = num_core > 0.0 ? (size_t)num_core : (size_t)num_valence;
+	const size_t nvir    = (size_t)num_virtual;
+	const size_t vec_len = sol->format.shape[1];
+	const size_t num_mo  = num_ao > 0 ? coeff->format.shape[0] : nocc + nvir;
+	const size_t amp     = nocc * nvir;
+	if (nocc == 0 || nvir == 0 || nocc + nvir > num_mo || state >= sol->format.shape[0] || (vec_len != amp && vec_len != 2 * amp)) {
+		MD_LOG_ERROR("Natural transition orbitals of state %u: %zu occupied x %zu virtual does not index a response vector of %zu over %zu orbitals",
+			state + 1, nocc, nvir, vec_len, num_mo);
+		return false;
+	}
+
+	MEMSET(lambda,   0, sizeof(double) * lmax);
+	MEMSET(hole,     0, sizeof(double) * lmax * num_ao);
+	MEMSET(particle, 0, sizeof(double) * lmax * num_ao);
+
+	// The singular value decomposition goes through the Gram matrix over the shorter side: R R^T, with R
+	// the rows of X when there are no more occupied than virtual orbitals and of X^T otherwise. R is
+	// copied out of the vector with its rows padded to a multiple of four and its columns to a multiple
+	// of four, with zeros, for the Gram kernel below.
+	const bool   left = nocc <= nvir;
+	const size_t n    = left ? nocc : nvir;           // the Gram matrix's side, R's rows
+	const size_t m    = left ? nvir : nocc;           // R's columns
+	const size_t n4   = (n + 3) & ~(size_t)3;
+	const size_t m4   = (m + 3) & ~(size_t)3;
+	const size_t npairs = MIN(lmax, n);
+
+	md_temp_scope_t temp = md_temp_begin();
+	bool ok = false;
+	double* x    = md_temp_alloc_array(temp, double, vec_len);
+	double* R    = md_temp_alloc_array(temp, double, n4 * m4);
+	double* gram = md_temp_alloc_array(temp, double, n4 * n4);
+	double* d    = md_temp_alloc_array(temp, double, n);
+	double* e    = md_temp_alloc_array(temp, double, n);
+	double* sv   = md_temp_alloc_array(temp, double, npairs * n);  // the shorter side's singular vectors
+	double* lv   = md_temp_alloc_array(temp, double, npairs * m);  // the longer side's
+	if (!x || !R || !gram || !d || !e || !sv || !lv) {
+		MD_LOG_ERROR("Natural transition orbitals of state %u: out of memory", state + 1);
+		goto done;
+	}
+	if (md_attribute_extract_f64(x, vec_len, sol, md_attribute_slice_1(state), md_unit_none()) != vec_len) {
+		MD_LOG_ERROR("Natural transition orbitals of state %u: could not read the response vector", state + 1);
+		goto done;
+	}
+
+	// R from X = Z - Y, X[i][a] = x[i * nvir + a]
+	MEMSET(R, 0, sizeof(double) * n4 * m4);
+	const double* y = vec_len == 2 * amp ? x + amp : NULL;
+	if (left) {
+		for (size_t i = 0; i < nocc; ++i) {
+			double* r = R + i * m4;
+			const double* xi = x + i * nvir;
+			if (y) {
+				const double* yi = y + i * nvir;
+				for (size_t a = 0; a < nvir; ++a) r[a] = xi[a] - yi[a];
+			} else {
+				MEMCPY(r, xi, sizeof(double) * nvir);
+			}
+		}
+	} else {
+		for (size_t i = 0; i < nocc; ++i) {
+			const double* xi = x + i * nvir;
+			const double* yi = y ? y + i * nvir : NULL;
+			for (size_t a = 0; a < nvir; ++a) R[a * m4 + i] = yi ? xi[a] - yi[a] : xi[a];
+		}
+	}
+
+	// G = R R^T, the upper triangle, by 4 x 4 tiles of G whose sixteen sums run four lanes wide - which
+	// a compiler turns into vector registers, sixteen of them, fed by eight loads per four columns -
+	// over columns in blocks small enough that a block of every row stays in cache.
+	MEMSET(gram, 0, sizeof(double) * n4 * n4);
+	enum { NTO_KC = 256 };
+	for (size_t c0 = 0; c0 < m4; c0 += NTO_KC) {
+		const size_t c1 = MIN(m4, c0 + NTO_KC);
+		for (size_t i0 = 0; i0 < n4; i0 += 4) {
+			const double* ri = R + i0 * m4;
+			for (size_t j0 = i0; j0 < n4; j0 += 4) {
+				const double* rj = R + j0 * m4;
+				double acc[4][4][4] = {{{0}}};
+				for (size_t c = c0; c < c1; c += 4) {
+					for (int p = 0; p < 4; ++p) {
+						for (int q = 0; q < 4; ++q) {
+							for (int l = 0; l < 4; ++l) {
+								acc[p][q][l] += ri[p * m4 + c + l] * rj[q * m4 + c + l];
+							}
+						}
+					}
+				}
+				for (int p = 0; p < 4; ++p) {
+					for (int q = 0; q < 4; ++q) {
+						gram[(i0 + p) * n4 + j0 + q] += (acc[p][q][0] + acc[p][q][1]) + (acc[p][q][2] + acc[p][q][3]);
+					}
+				}
+			}
+		}
+	}
+	// the n x n matrix the eigensolver takes: mirrored, then moved forward out of its padded rows, which
+	// never writes past what is still to be read
+	for (size_t i = 0; i < n; ++i) {
+		for (size_t j = 0; j < i; ++j) gram[i * n4 + j] = gram[j * n4 + i];
+	}
+	for (size_t i = 1; i < n; ++i) {
+		for (size_t j = 0; j < n; ++j) gram[i * n + j] = gram[i * n4 + j];
+	}
+
+	if (!vlx_symmetric_eigen(gram, d, e, n)) {
+		MD_LOG_ERROR("Natural transition orbitals of state %u: the eigensolver did not converge", state + 1);
+		goto done;
+	}
+
+	// The pairs, largest first: the shorter side's singular vector is the eigenvector, the longer side's
+	// R^T s / sigma, which is what normalising it does. A pair's sign is fixed by making the largest
+	// component of the shorter side's vector positive.
+	size_t count = 0;
+	for (; count < npairs; ++count) {
+		const double lam = d[n - 1 - count];
+		if (!(lam >= VLX_NTO_EIGENVALUE_EPSILON)) break;
+		lambda[count] = lam;
+		double* s = sv + count * n;
+		MEMCPY(s, gram + (n - 1 - count) * n, sizeof(double) * n);
+		size_t imax = 0;
+		for (size_t i = 1; i < n; ++i) if (fabs(s[i]) > fabs(s[imax])) imax = i;
+		if (s[imax] < 0.0) for (size_t i = 0; i < n; ++i) s[i] = -s[i];
+	}
+	if (num_ao == 0 || count == 0) {
+		ok = true;
+		goto done;
+	}
+
+	// every pair's longer vector in one pass over R
+	MEMSET(lv, 0, sizeof(double) * count * m);
+	for (size_t r = 0; r < n; ++r) {
+		const double* row = R + r * m4;
+		for (size_t k = 0; k < count; ++k) {
+			const double w = sv[k * n + r];
+			double* v = lv + k * m;
+			for (size_t c = 0; c < m; ++c) v[c] += w * row[c];
+		}
+	}
+	for (size_t k = 0; k < count; ++k) vlx_normalize(lv + k * m, m);
+
+	// To the AO basis: hole_k = sum_i u_ki C_i, particle_k = sum_a v_ka C_(nocc + a). Each MO row is
+	// read once for every pair, over blocks of AOs that keep every pair's block of output in cache.
+	{
+		double* C = md_temp_alloc_array(temp, double, num_mo * num_ao);
+		if (!C || md_attribute_extract_f64(C, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) != num_mo * num_ao) {
+			MD_LOG_ERROR("Natural transition orbitals of state %u: could not read the orbitals", state + 1);
+			goto done;
+		}
+		const double* u = left ? sv : lv;   // over the occupied, stride nocc
+		const double* v = left ? lv : sv;   // over the virtuals, stride nvir
+		enum { NTO_AOB = 512 };
+		for (size_t a0 = 0; a0 < num_ao; a0 += NTO_AOB) {
+			const size_t na = MIN((size_t)NTO_AOB, num_ao - a0);
+			for (size_t i = 0; i < nocc; ++i) {
+				const double* c = C + i * num_ao + a0;
+				for (size_t k = 0; k < count; ++k) {
+					const double w = u[k * nocc + i];
+					double* h = hole + k * num_ao + a0;
+					for (size_t t = 0; t < na; ++t) h[t] += w * c[t];
+				}
+			}
+			for (size_t a = 0; a < nvir; ++a) {
+				const double* c = C + (nocc + a) * num_ao + a0;
+				for (size_t k = 0; k < count; ++k) {
+					const double w = v[k * nvir + a];
+					double* p = particle + k * num_ao + a0;
+					for (size_t t = 0; t < na; ++t) p[t] += w * c[t];
+				}
+			}
+		}
+	}
+	ok = true;
+
+done:
+	md_temp_end(temp);
+	return ok;
+}
+
+// The last few states' NTOs, owned by vlx/rsp/nto/lambda and read by all three NTO providers. Variable
+// length: per slot, lambda[lmax], hole[lmax x A] and particle[lmax x A] follow the struct.
+#define VLX_NTO_CACHE_SLOTS 4
+typedef struct vlx_nto_cache_t {
+	const md_system_t* sys;      // borrowed: a provider never outlives its system
+	uint32_t num_states;
+	uint32_t lmax;
+	uint32_t num_ao;
+	uint32_t clock;
+	int32_t  state[VLX_NTO_CACHE_SLOTS]; // -1: empty
+	uint32_t used[VLX_NTO_CACHE_SLOTS];
+} vlx_nto_cache_t;
+
+typedef enum { VLX_NTO_LAMBDA = 0, VLX_NTO_HOLE = 1, VLX_NTO_PARTICLE = 2 } vlx_nto_part_t;
+
+static inline size_t vlx_nto_cache_slot_doubles(const vlx_nto_cache_t* c) {
+	return (size_t)c->lmax * (1 + 2 * (size_t)c->num_ao);
+}
+static inline size_t vlx_nto_cache_bytes(size_t lmax, size_t num_ao) {
+	return sizeof(vlx_nto_cache_t) + sizeof(double) * VLX_NTO_CACHE_SLOTS * lmax * (1 + 2 * num_ao);
+}
+static inline double* vlx_nto_cache_part(vlx_nto_cache_t* c, size_t slot, vlx_nto_part_t part) {
+	double* base = (double*)(c + 1) + slot * vlx_nto_cache_slot_doubles(c);
+	return part == VLX_NTO_LAMBDA ? base : base + c->lmax + (part == VLX_NTO_PARTICLE ? (size_t)c->lmax * c->num_ao : 0);
+}
+
+// Copies values [offset, offset + count) of one state's 'part' into 'out', computing the state's NTOs
+// first when they are not in the cache. The bookkeeping and the copies are made holding the HDF5 lock -
+// a short hold, and the one lock every reader of this file already shares - and the computation without
+// it, since it reads the file through it. Two threads asking for the same new state both compute it.
+static bool vlx_nto_cache_fetch(double* out, vlx_nto_cache_t* c, uint32_t state, vlx_nto_part_t part, size_t offset, size_t count) {
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	for (size_t s = 0; s < VLX_NTO_CACHE_SLOTS; ++s) {
+		if (c->state[s] == (int32_t)state) {
+			c->used[s] = ++c->clock;
+			MEMCPY(out, vlx_nto_cache_part(c, s, part) + offset, sizeof(double) * count);
+			md_hdf5_unlock(lock);
+			return true;
+		}
+	}
+	md_hdf5_unlock(lock);
+
+	const size_t lmax = c->lmax, num_ao = c->num_ao;
+	md_temp_scope_t temp = md_temp_begin();
+	double* buf = md_temp_alloc_array(temp, double, lmax * (1 + 2 * num_ao));
+	bool ok = buf && vlx_nto_compute(buf, buf + lmax, buf + lmax + lmax * num_ao, lmax, num_ao, c->sys, state);
+	if (ok) {
+		lock = md_hdf5_lock();
+		// the state's own slot if another thread got there first, else an empty one, else the oldest
+		size_t slot = 0;
+		bool found = false;
+		for (size_t s = 0; s < VLX_NTO_CACHE_SLOTS && !found; ++s) {
+			if (c->state[s] == (int32_t)state) { slot = s; found = true; }
+		}
+		for (size_t s = 0; s < VLX_NTO_CACHE_SLOTS && !found; ++s) {
+			if (c->state[s] < 0) { slot = s; break; }
+			if (c->used[s] < c->used[slot]) slot = s;
+		}
+		c->state[slot] = (int32_t)state;
+		c->used[slot]  = ++c->clock;
+		MEMCPY(vlx_nto_cache_part(c, slot, VLX_NTO_LAMBDA), buf, sizeof(double) * vlx_nto_cache_slot_doubles(c));
+		MEMCPY(out, vlx_nto_cache_part(c, slot, part) + offset, sizeof(double) * count);
+		md_hdf5_unlock(lock);
+	}
+	md_temp_end(temp);
+	return ok;
+}
+
+// Whole, by state, or by state and pair (and AO, for the orbitals): the slice's leading index is the
+// state, the rest an offset into that state's plane.
+static size_t vlx_nto_provide(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, vlx_nto_cache_t* c, vlx_nto_part_t part) {
+	if (!c || !dst) {
+		return 0;
+	}
+	const size_t plane = part == VLX_NTO_LAMBDA ? c->lmax : (size_t)c->lmax * c->num_ao;
+	const uint32_t nfix = slice ? slice->num_idx : 0;
+	if (nfix == 0) {
+		if (cap != c->num_states * plane) {
+			MD_LOG_ERROR("'" STR_FMT "': asked for %zu values, it has %zu", STR_ARG(attr->path), cap, c->num_states * plane);
+			return 0;
+		}
+		for (uint32_t s = 0; s < c->num_states; ++s) {
+			if (!vlx_nto_cache_fetch((double*)dst + s * plane, c, s, part, 0, plane)) return 0;
+		}
+		return cap;
+	}
+	const uint32_t state = slice->idx[0];
+	size_t offset = 0, stride = plane;
+	bool in_range = state < c->num_states && nfix <= attr->format.rank;
+	for (uint32_t k = 1; in_range && k < nfix; ++k) {
+		const uint32_t extent = attr->format.shape[k];
+		in_range = slice->idx[k] < extent;
+		stride /= extent;
+		offset += (size_t)slice->idx[k] * stride;
+	}
+	if (!in_range || cap != stride) {
+		MD_LOG_ERROR("'" STR_FMT "': slice out of range, or asked for %zu values where it has %zu", STR_ARG(attr->path), cap, stride);
+		return 0;
+	}
+	return vlx_nto_cache_fetch((double*)dst, c, state, part, offset, cap) ? cap : 0;
+}
+
+static size_t vlx_nto_lambda_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)io;
+	return vlx_nto_provide(dst, cap, attr, slice, (vlx_nto_cache_t*)user_data, VLX_NTO_LAMBDA);
+}
+
+// The orbitals' providers find the cache through the weights, which own it.
+static vlx_nto_cache_t* vlx_nto_cache_of(void* user_data) {
+	const md_system_t* sys = (const md_system_t*)user_data;
+	const md_attribute_t* lambda = sys ? md_attributes_find(&sys->attributes, STR_LIT("vlx/rsp/nto/lambda")) : NULL;
+	if (!lambda || lambda->virt.provider != vlx_nto_lambda_provider) {
+		MD_LOG_ERROR("Natural transition orbitals: 'vlx/rsp/nto/lambda', which holds them, is missing");
+		return NULL;
+	}
+	return (vlx_nto_cache_t*)lambda->virt.user_data;
+}
+
+static size_t vlx_nto_hole_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)io;
+	return vlx_nto_provide(dst, cap, attr, slice, vlx_nto_cache_of(user_data), VLX_NTO_HOLE);
+}
+
+static size_t vlx_nto_particle_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	(void)io;
+	return vlx_nto_provide(dst, cap, attr, slice, vlx_nto_cache_of(user_data), VLX_NTO_PARTICLE);
+}
+
 // orbital/{alpha,beta}/density read from D_alpha and D_beta (beta a second name for alpha in a
 // restricted calculation), and orbital/{total,difference}/density from those. False, with nothing
 // published, when the file does not hold them in a form that can be read again: the caller then
@@ -5448,14 +5894,28 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 	// The number of EXCITED STATES, which only a linear response resolves.
 	const size_t num_states = vlx_rsp_number_of_excited_states(vlx);
 
-	// ---- RSP: the raw solution vectors and the occupied/virtual split they are indexed by. These
-	// are not meant for direct consumption - a consumer wants the reconstructed density, not the
-	// eigenvector it came from - they exist purely so vlx_transition_density_provide() below can
-	// rebuild a transition density with no 'vlx' object in reach, which is the whole point of
-	// storing them as attributes rather than reaching back into 'vlx' from the provider.
-	if (vlx->rsp.solution_matrix.data && num_states > 0) {
-		md_qm_publish_matrix(sys, STR_LIT("vlx/rsp/solution_matrix"), (str_t){0}, md_unit_none(),
-			vlx->rsp.solution_matrix.data, vlx->rsp.solution_matrix.size[0], vlx->rsp.solution_matrix.size[1]);
+	// ---- RSP: the solution vectors and the occupied/virtual split they are indexed by. Not meant for
+	// direct consumption - a consumer wants the reconstructed density or the NTOs, not the eigenvector
+	// they came from - they are what the transition densities and the NTOs below are computed from, with
+	// no 'vlx' object in reach. Virtual: read from the file a state at a time (vlx_rsp_source_t).
+	bool have_solutions = false;
+	if (vlx->rsp.solution_matrix.size[0] > 0 && num_states > 0) {
+		size_t bytes = 0;
+		vlx_rsp_source_t* src = vlx_rsp_source_create(&bytes, sys, vlx);
+		if (src) {
+			const md_attribute_format_t format = {
+				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
+				.shape = { src->num_states, src->vec_len },
+			};
+			const md_attribute_virtual_t virt = { .provider = vlx_rsp_solution_provide, .user_data = src, .user_data_size = bytes };
+			if (md_qm_publish_virtual(sys, STR_LIT("vlx/rsp/solution_matrix"), (str_t){0}, md_unit_none(), format, &virt) == MD_ATTRIBUTE_INVALID) {
+				md_free(sys->attributes.alloc, src, bytes); // only a published attribute releases its user_data
+			} else {
+				have_solutions = true;
+			}
+		}
+	}
+	if (have_solutions) {
 		md_qm_publish_scalar(sys, STR_LIT("vlx/rsp/num_core"),    (str_t){0}, md_unit_none(), (double)vlx->rsp.num_core);
 		md_qm_publish_scalar(sys, STR_LIT("vlx/rsp/num_valence"), (str_t){0}, md_unit_none(), (double)vlx->rsp.num_valence);
 		md_qm_publish_scalar(sys, STR_LIT("vlx/rsp/num_virtual"), (str_t){0}, md_unit_none(), (double)vlx->rsp.num_virtual);
@@ -5482,76 +5942,40 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		}
 	}
 
-	// ---- NTO lambdas: the weights of the natural transition orbital pairs, one row per excited
-	// state. The rows are RAGGED - a state has as many pairs as it has - so they are padded to the
-	// widest row and the shape is {S,Lmax}. Zero is the honest pad here rather than a sentinel: a
-	// lambda IS a weight, an absent pair carries none, and the consumer which already stops at a
-	// 1e-3 cutoff stops in exactly the same place. Anything ragged enough that zero would be a real
-	// value does not belong in a rectangular attribute at all.
-	if (vlx_rsp_has_nto(vlx) && num_states > 0) {
-		double row[VLX_NTO_MAX_LAMBDAS];
-		size_t max_lambdas = 0;
-		for (size_t s = 0; s < num_states; ++s) {
-			const size_t n = vlx_rsp_nto_lambdas_extract(row, vlx, s, ARRAY_SIZE(row));
-			max_lambdas = MAX(max_lambdas, n);
-		}
+	// ---- Natural transition orbitals: the weights {S,Lmax} and the hole and particle orbitals
+	// {S,Lmax,A}, computed a state at a time when asked for (vlx_nto_cache_t). Lmax is the most pairs a
+	// state can have, min(occupied, virtual), capped at VLX_NTO_MAX_LAMBDAS; a state's row is zero past
+	// its last pair. Zero is the honest pad: a lambda IS a weight, an absent pair carries none, and a
+	// consumer that stops at a cutoff stops in the same place. The orbitals' AO axis is the MO
+	// coefficients', which they are built from; without orbitals there are only the weights, which need
+	// nothing but the response vectors.
+	if (have_solutions && vlx_rsp_has_nto(vlx)) {
+		const size_t nocc   = vlx->rsp.num_core > 0 ? (size_t)vlx->rsp.num_core : (size_t)vlx->rsp.num_valence;
+		const size_t nvir   = (size_t)vlx->rsp.num_virtual;
+		const size_t lmax   = MIN((size_t)VLX_NTO_MAX_LAMBDAS, MIN(nocc, nvir));
+		const size_t num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
+		const size_t bytes  = vlx_nto_cache_bytes(lmax, num_ao);
+		vlx_nto_cache_t* cache = lmax > 0 ? (vlx_nto_cache_t*)md_attributes_alloc_user_data(&sys->attributes, bytes) : NULL;
+		if (cache) {
+			*cache = (vlx_nto_cache_t){ .sys = sys, .num_states = (uint32_t)num_states, .lmax = (uint32_t)lmax, .num_ao = (uint32_t)num_ao };
+			for (size_t k = 0; k < VLX_NTO_CACHE_SLOTS; ++k) cache->state[k] = -1;
 
-		if (max_lambdas > 0) {
-			md_attribute_format_t format = {
+			const md_attribute_format_t lambda_format = {
 				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2,
-				.shape = { (uint32_t)num_states, (uint32_t)max_lambdas },
+				.shape = { (uint32_t)num_states, (uint32_t)lmax },
 			};
-			md_attribute_id_t id = md_qm_publish(sys, STR_LIT("vlx/rsp/nto/lambda"), STR_LIT("NTO Weight"), md_unit_none(), format, NULL, 0);
-			double* dst = id != MD_ATTRIBUTE_INVALID ? (double*)md_attributes_data(&sys->attributes, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
-
-			if (dst) {
-				// Created zeroed, so a short row needs nothing written past its own length.
-				for (size_t s = 0; s < num_states; ++s) {
-					const size_t n = vlx_rsp_nto_lambdas_extract(row, vlx, s, ARRAY_SIZE(row));
-					MEMCPY(dst + s * max_lambdas, row, MIN(n, max_lambdas) * sizeof(double));
-				}
-			} else if (id != MD_ATTRIBUTE_INVALID) {
-				md_attributes_remove(&sys->attributes, id);
-			}
-		}
-
-		// The NTO coefficient vectors themselves, {S,Lmax,A}, padded on the lambda axis exactly as
-		// the weights above so the two index the same space and a consumer moves one slider.
-		//
-		// RESIDENT rather than computed on demand, unlike the transition densities. The reason is
-		// size, not principle: S x Lmax x A doubles is under a megabyte for a realistic file, while
-		// a transition density is A^2 PER STATE. And it is what keeps this self contained - the NTO
-		// math reads the vlx object, so a provider would have to close over the reader, which is
-		// the one thing the port exists to avoid. Paying it once at load buys that outright.
-		// The coefficients' AO axis, for the same reason as the transition densities above: NTOs are
-		// built from them, and vlx_rsp_extract_nto_from_solution writes rows of exactly that length.
-		const size_t num_ao_nto = number_of_atomic_orbitals(&vlx->scf.alpha);
-		if (max_lambdas > 0 && num_ao_nto > 0) {
-			const vlx_nto_type_t types[2] = { VLX_NTO_PARTICLE, VLX_NTO_HOLE };
-			str_t paths[2] = { STR_INIT("vlx/rsp/nto/particle/coefficient"), STR_INIT("vlx/rsp/nto/hole/coefficient") };
-			str_t labels[2] = { STR_INIT("Particle"), STR_INIT("Hole") };
-
-			md_attribute_format_t format = {
-				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
-				.shape = { (uint32_t)num_states, (uint32_t)max_lambdas, (uint32_t)num_ao_nto },
-			};
-
-			for (int t = 0; t < 2; ++t) {
-				md_attribute_id_t id = md_qm_publish(sys, paths[t], labels[t], md_unit_none(), format, NULL, 0);
-				double* dst = id != MD_ATTRIBUTE_INVALID ? (double*)md_attributes_data(&sys->attributes, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
-				if (!dst) {
-					if (id != MD_ATTRIBUTE_INVALID) md_attributes_remove(&sys->attributes, id);
-					continue;
-				}
-
-				// One state at a time, straight into its own plane of the table's storage. The
-				// extract writes [lambda_count][num_ao] which is exactly the plane's layout, and a
-				// state with fewer pairs leaves the rest of its plane at the zero it was created
-				// with.
-				const size_t plane = max_lambdas * num_ao_nto;
-				for (size_t s = 0; s < num_states; ++s) {
-					vlx_rsp_nto_coefficients_extract(dst + s * plane, NULL, vlx, s, types[t], max_lambdas);
-				}
+			const md_attribute_virtual_t lambda_virt = { .provider = vlx_nto_lambda_provider, .user_data = cache, .user_data_size = bytes };
+			if (md_qm_publish_virtual(sys, STR_LIT("vlx/rsp/nto/lambda"), STR_LIT("NTO Weight"), md_unit_none(), lambda_format, &lambda_virt) == MD_ATTRIBUTE_INVALID) {
+				md_free(sys->attributes.alloc, cache, bytes);
+			} else if (num_ao > 0) {
+				const md_attribute_format_t format = {
+					.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
+					.shape = { (uint32_t)num_states, (uint32_t)lmax, (uint32_t)num_ao },
+				};
+				const md_attribute_virtual_t particle_virt = { .provider = vlx_nto_particle_provider, .user_data = sys };
+				const md_attribute_virtual_t hole_virt     = { .provider = vlx_nto_hole_provider,     .user_data = sys };
+				md_qm_publish_virtual(sys, STR_LIT("vlx/rsp/nto/particle/coefficient"), STR_LIT("Particle"), md_unit_none(), format, &particle_virt);
+				md_qm_publish_virtual(sys, STR_LIT("vlx/rsp/nto/hole/coefficient"),     STR_LIT("Hole"),     md_unit_none(), format, &hole_virt);
 			}
 		}
 	}
