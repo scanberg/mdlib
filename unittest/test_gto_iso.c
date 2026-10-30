@@ -2134,6 +2134,67 @@ UTEST(qm_alie, orbitals_and_limits) {
     }
 }
 
+// Local electron attachment energy (md_qm_attachment_orbitals): the bound virtuals, each closed shell spatial
+// orbital twice (Brinck et al. 2016, eq. 10 and Table S1), E(r) <= 0, nothing when no virtual is bound. Checked
+// against the paper's Table S4 (CH3Cl -0.28, CH2FCl -0.54, CHF2Cl -1.14, CF3Cl -2.45 eV at the chlorine sigma
+// hole, 0.004 au) with B3LYP/6-31+G(d,p) Molden files from PySCF: -0.293, -0.542, -1.142, -2.451 eV.
+UTEST(qm_leae, orbitals_and_sign) {
+    static const char* files[] = {"h2o.h5", "amide.h5", "mol.h5"};
+    for (int fi = 0; fi < 3; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], false));
+        double* e = (double*)calloc(s.num_mo, sizeof(double));
+        ASSERT_EQ(qm_test_series(e, s.num_mo, &s.t, STR_LIT("orbital/alpha/energy")), s.num_mo);
+        size_t bound = 0;
+        for (size_t m = 0; m < s.num_mo; ++m) bound += s.occ[m] == 0.0 && e[m] < 0.0;
+        EXPECT_EQ(md_qm_attachment_available(&s.t.sys), bound > 0);
+        double *rows = NULL, *w = NULL;
+        size_t na = 0;
+        const size_t count = md_qm_attachment_orbitals(&rows, &w, &na, &s.t.sys, md_get_heap_allocator());
+        EXPECT_EQ(count, bound);
+        printf("  %-9s %zu bound virtual orbitals", files[fi], bound);
+        if (count) {
+            // closed shell: each bound virtual once, weight 2 e, in order, its own coefficients
+            size_t k = 0;
+            for (size_t m = 0; m < s.num_mo && k < count; ++m) {
+                if (!(s.occ[m] == 0.0 && e[m] < 0.0)) continue;
+                EXPECT_NEAR(w[k], 2.0 * e[m], 1e-12);
+                EXPECT_EQ(0, memcmp(rows + k * na, s.C + m * s.num_ao, sizeof(double) * na));
+                printf(" %.3f eV", e[m] * 27.211386);
+                ++k;
+            }
+            // E(r) <= 0 at random points
+            double *dr = NULL, *dw = NULL;
+            size_t dna = 0;
+            const size_t dn = md_qm_density_orbitals(&dr, &dw, &dna, &s.t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+            md_gto_iso_field_t* rho = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, dr, NULL, dw, dn, md_get_heap_allocator());
+            md_gto_iso_field_t* num = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, rows, NULL, w, count, md_get_heap_allocator());
+            enum { N = 1000 };
+            iso_rng_t rng = {5};
+            double* pd = (double*)malloc(sizeof(double) * 3 * N);
+            float* pts = (float*)malloc(sizeof(float) * 3 * N);
+            iso_dens_points(pd, N, &s, &rng);
+            for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pd[i];
+            double r[N], q[N];
+            md_gto_iso_field_evaluate(rho, pts, N, 0, r, NULL);
+            md_gto_iso_field_evaluate(num, pts, N, 0, q, NULL);
+            int positive = 0;
+            for (int i = 0; i < N; ++i) positive += q[i] > 0.0;
+            EXPECT_EQ(positive, 0);
+            md_gto_iso_field_destroy(rho);
+            md_gto_iso_field_destroy(num);
+            md_free(md_get_heap_allocator(), dr, sizeof(double) * dn * dna);
+            md_free(md_get_heap_allocator(), dw, sizeof(double) * dn);
+            md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
+            md_free(md_get_heap_allocator(), w, sizeof(double) * count);
+            free(pd); free(pts);
+        }
+        printf("\n");
+        free(e);
+        iso_dens_src_free(&s);
+    }
+}
+
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
 #include "gto_iso_shaders.inl"

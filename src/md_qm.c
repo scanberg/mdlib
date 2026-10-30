@@ -1010,6 +1010,101 @@ bool md_qm_alie_available(const md_system_t* sys) {
     return ok;
 }
 
+// A spin channel's occupations and energies: n {M}, e {M} (hartree) from 'alloc', with the coefficient attribute
+// and its shape. False when anything is missing, inconsistent or not finite. beta without a beta channel is alpha.
+static bool qm_spin_channel(const md_attribute_t** coeff, double** occ, double** energy, size_t* num_mo, size_t* num_ao,
+                            const md_system_t* sys, bool beta, md_temp_scope_t temp) {
+    const md_attribute_t* oa = NULL;
+    if (!qm_spin_orbital_attrs(coeff, &oa, num_mo, num_ao, sys, beta)) {
+        if (!beta || !qm_spin_orbital_attrs(coeff, &oa, num_mo, num_ao, sys, false)) return false;
+        beta = false;
+    }
+    *occ    = (double*)md_temp_alloc(temp, sizeof(double) * *num_mo);
+    *energy = (double*)md_temp_alloc(temp, sizeof(double) * *num_mo);
+    return *occ && *energy &&
+           md_attribute_extract_f64(*occ, *num_mo, oa, md_attribute_slice_all(), md_unit_none()) == *num_mo &&
+           qm_spin_orbital_energies(*energy, *num_mo, sys, beta);
+}
+
+// A spin orbital's share of E(r): (1 - n) e when it is empty, or partly, and bound (e < 0); else nothing
+static inline double qm_attachment_weight(double n, double e) {
+    return (e < 0.0 && n < 1.0 - 1.0e-3) ? (1.0 - n) * e : 0.0;
+}
+
+// Per spin occupations of canonical orbitals: each 0 or 1 (the readers publish a restricted orbital's 2 as 1 per spin)
+static bool qm_spin_occupations_canonical(const double* n, size_t num) {
+    for (size_t k = 0; k < num; ++k) if (fabs(n[k] - round(n[k])) > 1.0e-3 || n[k] < -1.0e-3 || n[k] > 1.001) return false;
+    return true;
+}
+
+size_t md_qm_attachment_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, const md_system_t* sys, md_allocator_i* alloc) {
+    if (!out_rows || !out_weights || !out_num_ao || !sys || !alloc) return 0;
+    *out_rows = NULL;
+    *out_weights = NULL;
+    *out_num_ao = 0;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    const md_attribute_t *ca = NULL, *cb = NULL;
+    double *na = NULL, *nb = NULL, *ea = NULL, *eb = NULL;
+    size_t ma = 0, mb = 0, aa = 0, ab = 0;
+    if (!qm_spin_channel(&ca, &na, &ea, &ma, &aa, sys, false, temp) || !qm_spin_channel(&cb, &nb, &eb, &mb, &ab, sys, true, temp) ||
+        aa != ab || !qm_spin_occupations_canonical(na, ma) || !qm_spin_occupations_canonical(nb, mb)) {
+        md_temp_end(temp);
+        return 0;
+    }
+    // one set of orbitals for both spins (restricted, restricted open shell): each orbital once, its two spins' shares summed
+    const bool shared = ma == mb && md_attribute_same_data(ca, cb);
+    size_t count = 0;
+    for (size_t k = 0; k < ma; ++k) count += (qm_attachment_weight(na[k], ea[k]) + (shared ? qm_attachment_weight(nb[k], eb[k]) : 0.0)) != 0.0;
+    for (size_t k = 0; !shared && k < mb; ++k) count += qm_attachment_weight(nb[k], eb[k]) != 0.0;
+    if (count == 0) {
+        md_temp_end(temp);
+        return 0;
+    }
+    const size_t nao = aa;
+    double* rows = (double*)md_alloc(alloc, sizeof(double) * count * nao);
+    double* w    = (double*)md_alloc(alloc, sizeof(double) * count);
+    bool ok = rows && w;
+    size_t n = 0;
+    for (size_t k = 0; ok && k < ma; ++k) {
+        const double wk = qm_attachment_weight(na[k], ea[k]) + (shared ? qm_attachment_weight(nb[k], eb[k]) : 0.0);
+        if (wk == 0.0) continue;
+        ok = md_attribute_extract_f64(rows + n * nao, nao, ca, md_attribute_slice_1((uint32_t)k), md_unit_none()) == nao;
+        w[n++] = wk;
+    }
+    for (size_t k = 0; ok && !shared && k < mb; ++k) {
+        const double wk = qm_attachment_weight(nb[k], eb[k]);
+        if (wk == 0.0) continue;
+        ok = md_attribute_extract_f64(rows + n * nao, nao, cb, md_attribute_slice_1((uint32_t)k), md_unit_none()) == nao;
+        w[n++] = wk;
+    }
+    md_temp_end(temp);
+    if (!ok) {
+        if (rows) md_free(alloc, rows, sizeof(double) * count * nao);
+        if (w)    md_free(alloc, w, sizeof(double) * count);
+        return 0;
+    }
+    *out_rows = rows;
+    *out_weights = w;
+    *out_num_ao = nao;
+    return count;
+}
+
+bool md_qm_attachment_available(const md_system_t* sys) {
+    if (!sys) return false;
+    md_temp_scope_t temp = md_temp_begin();
+    const md_attribute_t *ca = NULL, *cb = NULL;
+    double *na = NULL, *nb = NULL, *ea = NULL, *eb = NULL;
+    size_t ma = 0, mb = 0, aa = 0, ab = 0;
+    bool ok = qm_spin_channel(&ca, &na, &ea, &ma, &aa, sys, false, temp) && qm_spin_channel(&cb, &nb, &eb, &mb, &ab, sys, true, temp) &&
+              aa == ab && qm_spin_occupations_canonical(na, ma) && qm_spin_occupations_canonical(nb, mb);
+    bool any = false;
+    for (size_t k = 0; ok && !any && k < ma; ++k) any = qm_attachment_weight(na[k], ea[k]) != 0.0;
+    for (size_t k = 0; ok && !any && k < mb; ++k) any = qm_attachment_weight(nb[k], eb[k]) != 0.0;
+    md_temp_end(temp);
+    return ok && any;
+}
+
 bool md_qm_publish_orbital_density_combinations(md_system_t* sys) {
     ASSERT(sys);
     const md_attribute_t* alpha = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/density"));
