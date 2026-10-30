@@ -12,9 +12,12 @@
 
 #include <md_vial.h>
 
-// The diagnostics of a script as "CODE line: message | fix", one per line
-static const char* diags_of(const char* src, md_allocator_i* alloc) {
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), NULL, alloc);
+struct md_system_t;
+
+// The diagnostics of a script as "CODE line: message | fix", one per line; compiled against sys, which may be NULL
+static const char* diags_on(const char* src, const struct md_system_t* sys, md_allocator_i* alloc) {
+    const md_vial_compile_desc_t desc = {.sys = sys};
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
     const md_vial_diagnostic_t* d = NULL;
     const size_t n = md_vial_diagnostics(prog, &d);
     char* out = NULL;
@@ -30,6 +33,7 @@ static const char* diags_of(const char* src, md_allocator_i* alloc) {
     md_vial_program_free(prog);
     return out;
 }
+static const char* diags_of(const char* src, md_allocator_i* alloc) { return diags_on(src, NULL, alloc); }
 
 struct vial_check { md_allocator_i* alloc; };
 UTEST_F_SETUP(vial_check) { utest_fixture->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4)); }
@@ -107,9 +111,10 @@ UTEST_F(vial_check, recursion) {
 
 #include <vial/vial_internal.h>
 
-// The type the checker gives the statement on a line, as "type, stage = value"
-static const char* type_at(const char* src, uint32_t line, md_allocator_i* alloc) {
-    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), NULL, alloc);
+// The type the checker gives the statement on a line, as "type, stage = value"; compiled against sys, which may be NULL
+static const char* type_on(const char* src, uint32_t line, const struct md_system_t* sys, md_allocator_i* alloc) {
+    const md_vial_compile_desc_t desc = {.sys = sys};
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
     md_vial__result_t r;
     static char out[512];
     if (!md_vial__line_result(prog, line, &r)) { snprintf(out, sizeof(out), "(none)"); }
@@ -122,6 +127,7 @@ static const char* type_at(const char* src, uint32_t line, md_allocator_i* alloc
     md_vial_program_free(prog);
     return out;
 }
+static const char* type_at(const char* src, uint32_t line, md_allocator_i* alloc) { return type_on(src, line, NULL, alloc); }
 
 #define EXPECT_TYPE(src, line, want) do { \
     const char* got_ = type_at(src, line, utest_fixture->alloc); \
@@ -182,4 +188,110 @@ UTEST_F(vial_check, static_conditions) {
     EXPECT_DIAGS("v = 1.0 if True else 'x' + 1\n", "");
     EXPECT_DIAGS("v = 1.0 if [True, False] else 2.0\n", "E0303 1: a conditional needs one bool; this is `bool[2]` | where(...)\n");
     EXPECT_TYPE("c = 3\nv = 1.0 if c > 2 else 2\n", 2, "float, static = 1");
+}
+
+// ### STEP 4: THE SYSTEM AND THE SELECTORS ###
+
+#include "vial_test_systems.h"
+
+#define EXPECT_TYPE_ON(sys, src, line, want) do { \
+    const char* got_ = type_on(src, line, sys, utest_fixture->alloc); \
+    if (strcmp(got_, want) != 0) printf("for:\n%s\nline %d got:  %s\nwanted:      %s\n", src, line, got_, want); \
+    EXPECT_STREQ(want, got_); \
+} while (0)
+
+#define EXPECT_DIAGS_ON(sys, src, want) do { \
+    const char* got_ = diags_on(src, sys, utest_fixture->alloc); \
+    if (strcmp(got_, want) != 0) printf("for:\n%s\ngot:\n%s\nwanted:\n%s\n", src, got_, want); \
+    EXPECT_STREQ(want, got_); \
+} while (0)
+
+UTEST_F(vial_check, selectors) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "n = len(residues)\n", 1, "int, static = 880");
+    EXPECT_TYPE_ON(T, "r = residues(chain='A')\n", 1, "set[442], static");
+    EXPECT_TYPE_ON(T, "r = residues(1..4, chain='A')\n", 1, "set[4], static");
+    EXPECT_TYPE_ON(T, "n = len(residues([1, 3, 5], chain='B'))\n", 1, "int, static = 3");
+    EXPECT_TYPE_ON(T, "n = count(particles(name='C*', resname='GTP'))\n", 1, "int, static = 10");
+    EXPECT_TYPE_ON(T, "n = count(particles(resname=['GTP', 'GDP']))\n", 1, "int, static = 60");
+    EXPECT_TYPE_ON(T, "n = count(particles(element='MG'))\n", 1, "int, static = 1");    // elements ignore case
+    EXPECT_TYPE_ON(T, "n = count(particles(element=['Mg', 's']))\n", 1, "int, static = 52");     // 51 S, 1 Mg
+    EXPECT_TYPE_ON(T, "m = particles(name='MG')\n", 1, "set, static");
+    EXPECT_TYPE_ON(T, "n = len(residues(scope=particles(chain='B')))\n", 1, "int, static = 437");
+    EXPECT_TYPE_ON(T, "n = len(parts(kind='water'))\n", 1, "int, static = 8");
+    EXPECT_TYPE_ON(T, "n = len(parts(kind='ion'))\n", 1, "int, static = 1");
+    EXPECT_TYPE_ON(T, "n = len(molecules('SO*'))\n", 1, "int, static = 3");
+    EXPECT_TYPE_ON(T, "n = len(residues(particles(resname='GTP')))\n", 1, "int, static = 1");
+    EXPECT_TYPE_ON(T, "n = count(particles(residues(1..2, chain='A')))\n", 1, "int, static = 19");     // MET 8, ARG 11
+    EXPECT_TYPE_ON(T, "n = count(atoms(resname='VLB'))\n", 1, "int, static = 59");
+    EXPECT_TYPE_ON(T, "n = count(beads)\n", 1, "int, static = 0");
+}
+
+UTEST_F(vial_check, predefined_sets) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "n = count(protein)\n", 1, "int, static = 6784");
+    EXPECT_TYPE_ON(T, "n = count(water)\n", 1, "int, static = 8");
+    EXPECT_TYPE_ON(T, "n = count(ion)\n", 1, "int, static = 1");
+    EXPECT_TYPE_ON(T, "n = count(system)\n", 1, "int, static = 6927");
+    EXPECT_TYPE_ON(T, "n = count(protein and not backbone and not sidechain)\n", 1, "int, static = 865");
+    EXPECT_TYPE_ON(T, "n = count(protein or water)\n", 1, "int, static = 6792");
+    EXPECT_TYPE_ON(T, "n = count(not protein)\n", 1, "int, static = 143");
+    EXPECT_TYPE_ON(T, "n = count(backbone and particles(chain='A'))\n", 1, "int, static = 1299");
+}
+
+UTEST_F(vial_check, set_indexing_and_labels) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "s = particles[0]\n", 1, "set, static");
+    EXPECT_TYPE_ON(T, "n = count(particles(resname='GTP')[0:3])\n", 1, "int, static = 3");
+    EXPECT_TYPE_ON(T, "n = count(particles(resname='GTP')[[0, 5, 5]])\n", 1, "int, static = 2");
+    EXPECT_TYPE_ON(T, "r = residues[-3:]\n", 1, "set[3], static");
+    EXPECT_TYPE_ON(T, "n = count(residues[0])\n", 1, "int, static = 8");
+    EXPECT_TYPE_ON(T, "c = count(residues(1..3, chain='A'))\n", 1, "int[3], static");
+    EXPECT_TYPE_ON(T, "l = labels(chains)[1]\n", 1, "str, static = 'B'");
+    EXPECT_TYPE_ON(T, "l = labels(parts)[2]\n", 1, "str, static = 'GTP501/A'");
+    EXPECT_TYPE_ON(T, "l = labels(parts)[0]\n", 1, "str, static = 'peptide/A'");
+    EXPECT_TYPE_ON(T, "l = labels(residues(chain='B'))[-1]\n", 1, "str, static = 'HOH603/B'");
+    EXPECT_DIAGS_ON(T, "l = labels(particles(name='MG'))\n", "E0316 1: `labels` takes a dimension of set, which has 0\n");
+    EXPECT_DIAGS_ON(T, "s = particles(resname='GTP')[32]\n", "E0304 1: position 32 is outside a set of 32 particles\n");
+    EXPECT_DIAGS_ON(T, "s = residues[880]\n", "E0304 1: position 880 is outside `[880]`\n");
+}
+
+UTEST_F(vial_check, selector_diagnostics) {
+    const md_system_t* T = vial_test_system('T');
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(T != NULL && P != NULL);
+    EXPECT_DIAGS_ON(T, "b = chains(name='A')\n", "E0202 1: `chains` takes no keyword `name`; it takes id and scope | id='A'\n");
+    EXPECT_DIAGS_ON(T, "b = residues(resname='ALA')\n", "E0202 1: `residues` takes no keyword `resname`; it takes id, name, kind, chain and scope | name='ALA'\n");
+    EXPECT_DIAGS_ON(T, "t = residues(45, 'LYS')\n", "E0203 1: `residues` takes one positional argument; `'LYS'` is the second | name='LYS'\n");
+    EXPECT_DIAGS_ON(T, "n = chains(0)\n", "E0205 1: `chains` takes an id string, not int; positions are subscripts | chains[0]\n");
+    EXPECT_DIAGS_ON(T, "p = parts('GTP')\n", "E0205 1: `parts` takes a set; parts have no name or id, not str\n");
+    EXPECT_DIAGS_ON(T, "r = residues(kind='amino')\n",
+        "E0206 1: 'amino' is not a residue kind; the kinds are amino_acid, nucleotide, water, ion, lipid and other | 'amino_acid'\n");
+    EXPECT_DIAGS_ON(T, "r = residues(id='12')\n", "E0206 1: `id` takes an int, a range a..b, or a list of ints; this is str\n");
+    EXPECT_DIAGS_ON(T, "r = residues(39..45, chain='A')\n", "W0601 1: `residues(39..45, chain='A')` matches nothing in its scope\n");
+    EXPECT_DIAGS_ON(T, "p = particles(resid=501)\n",
+        "W0602 1: `resid=501` matches residues in chains A and B; the merged set hides which | resid=501, chain='A'\n");
+    EXPECT_DIAGS_ON(T, "p = particles(resid=501, chain='B')\nq = particles(resid=1..2)\n",
+        "W0602 2: `resid=1..2` matches residues in chains A and B; the merged set hides which | resid=1..2, chain='A'\n");
+    EXPECT_DIAGS_ON(P, "c = chains('A')\n",
+        "E0207 1: the data gives no chain ids, and chains are never inferred; a strand is found as a part | parts(kind='polymer')\n");
+    EXPECT_DIAGS_ON(P, "c = particles(chain='A')\n",
+        "E0207 1: the data gives no chain ids, and chains are never inferred; a strand is found as a part | parts(kind='polymer')\n");
+    EXPECT_DIAGS_ON(P, "s = parts(kind='peptide')\nn = len(molecules)\n", "");
+    EXPECT_TYPE_ON(P, "l = labels(residues)[0]\n", 1, "str, static = 'ALA1'");
+    EXPECT_TYPE_ON(P, "l = labels(parts)[0]\n", 1, "str, static = 'peptide1'");
+}
+
+UTEST_F(vial_check, selectors_without_a_system) {
+    EXPECT_TYPE("r = residues(1..4)\n", 1, "set[n], static");
+    EXPECT_TYPE("p = particles(name='CA')\n", 1, "set, static");
+    EXPECT_TYPE("n = len(residues)\n", 1, "int, static");
+    EXPECT_TYPE("n = count(protein)\n", 1, "int, static");
+    EXPECT_TYPE("w = within(5.0, of=protein)\n", 1, "set, frame");
+    EXPECT_TYPE("r = residues(within(5.0, of=protein))\n", 1, "set[?], frame");
+    EXPECT_DIAGS("w = within(5.0, protein)\n", "E0203 1: `within` takes the radius as its one positional argument; of= is always written, of=protein | of=protein\n");
+    EXPECT_DIAGS("w = within(5.0 ns, of=protein)\n", "E0313 1: `within` takes a radius, one length; this is float ns\n");
 }

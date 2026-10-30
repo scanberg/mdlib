@@ -199,7 +199,11 @@ set(SRC_FILES
   src/vial/check.h
   src/vial/check.c
   src/vial/infer.h
+  src/vial/infer_internal.h
   src/vial/infer.c
+  src/vial/infer_sets.c
+  src/vial/select.h
+  src/vial/select.c
   src/vial/api.c
   src/md_smiles.c
   src/md_smiles.h
@@ -540,8 +544,9 @@ if (MD_BENCHMARK)
   add_subdirectory(benchmark)
 endif()
 
-# The libFuzzer target of the VIAL front end (unittest/fuzz_vial.c). It builds the front end and the few core files it
-# uses on their own, so only VIAL is instrumented, and needs no other part of mdlib.
+# The libFuzzer target of VIAL (unittest/fuzz_vial.c). It builds VIAL's sources on their own, instrumented, and takes
+# the rest from mdlib, uninstrumented: the loaders of the test structures, the system and the units. The linker takes
+# VIAL's symbols from the instrumented objects, as an archive member is only pulled in for a symbol still unresolved.
 if (MD_VIAL_FUZZ)
   if (NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "MD_VIAL_FUZZ needs clang, for -fsanitize=fuzzer")
@@ -549,14 +554,15 @@ if (MD_VIAL_FUZZ)
   find_package(Threads REQUIRED)
   add_executable(fuzz_vial
     unittest/fuzz_vial.c
-    src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/types.c src/vial/builtins.c src/vial/check.c src/vial/infer.c src/vial/api.c
-    src/core/md_str.c src/core/md_allocator.c src/core/md_arena_allocator.c src/core/md_common.c
-    src/core/md_os.c src/core/md_log.c src/core/md_parse.c src/core/md_unit.c
+    src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/types.c src/vial/builtins.c src/vial/check.c
+    src/vial/infer.c src/vial/infer_sets.c src/vial/select.c src/vial/api.c
   )
+  add_dependencies(fuzz_vial mdlib)
   target_include_directories(fuzz_vial PRIVATE src unittest ext ext/xxhash gen)
   target_compile_options(fuzz_vial PRIVATE -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
   target_link_options(fuzz_vial PRIVATE -fsanitize=fuzzer,address,undefined)
-  target_link_libraries(fuzz_vial PRIVATE m Threads::Threads)
+  target_compile_definitions(fuzz_vial PRIVATE MD_UNITTEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/test_data\")
+  target_link_libraries(fuzz_vial PRIVATE mdlib m Threads::Threads)
 endif()
 
 # The basis sets have to sit beside the executables, because MD_VLX_BASIS_FOLDER is resolved

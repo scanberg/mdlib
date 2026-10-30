@@ -31,7 +31,8 @@ static inline bool vial_fuzz__front_end_code(const char* code) {
 // The codes the checker gives so far
 static inline bool vial_fuzz__checker_code(const char* code) {
     static const char* codes[] = {"E0201", "W0201", "E0305", "E0312", "E0701", "E0801", "E0802", "E0803",
-                                  "E0301", "E0303", "E0304", "E0308", "E0319", "W0501"};
+                                  "E0301", "E0303", "E0304", "E0308", "E0319", "W0501",
+                                  "E0202", "E0203", "E0204", "E0205", "E0206", "E0207", "E0313", "E0316", "W0601", "W0602"};
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i) {
         if (memcmp(code, codes[i], 6) == 0) return true;
     }
@@ -93,7 +94,7 @@ static inline const char* vial_fuzz__check_diags(const md_vial_diagnostic_t* d, 
 }
 
 // src need not end in a NUL; the stages must not read past src.len. alloc should be an arena: nothing is freed.
-static inline const char* vial_fuzz_check(str_t src, md_allocator_i* alloc) {
+static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* sys, md_allocator_i* alloc) {
     if (src.len > UINT32_MAX / 2) return NULL;
     const uint32_t len = (uint32_t)src.len;
 
@@ -132,10 +133,13 @@ static inline const char* vial_fuzz_check(str_t src, md_allocator_i* alloc) {
     str_t dump = vial_tree_dump(&tree, src, alloc);
     if (str_empty(dump)) return "the tree dump is empty";
 
-    // The public API, twice: the same tokens and diagnostics, so compiling is deterministic
+    // The public API, twice without a system and, given one, twice with it: the same tokens and diagnostics each time,
+    // so compiling is deterministic
     size_t first_count = 0;
-    for (int round = 0; round < 2; ++round) {
-        md_vial_program_t* prog = md_vial_compile(src, NULL, alloc);
+    const int rounds = sys ? 4 : 2;
+    for (int round = 0; round < rounds; ++round) {
+        const md_vial_compile_desc_t desc = {.sys = round >= 2 ? sys : NULL};
+        md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
         if (!prog) return "md_vial_compile returned NULL";
         const md_vial_token_t* pt = NULL;
         const md_vial_diagnostic_t* pd = NULL;
@@ -160,8 +164,8 @@ static inline const char* vial_fuzz_check(str_t src, md_allocator_i* alloc) {
             }
         }
         if (!why && k != num_diags) why = "md_vial_diagnostics lost a diagnostic of the front end";
-        if (!why && round == 0) first_count = npd;
-        if (!why && round == 1 && npd != first_count) why = "compiling twice gives different diagnostics";
+        if (!why && (round & 1) == 0) first_count = npd;
+        if (!why && (round & 1) == 1 && npd != first_count) why = "compiling twice gives different diagnostics";
         md_vial_program_free(prog);
         if (why) return why;
     }
