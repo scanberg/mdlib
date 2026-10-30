@@ -138,11 +138,11 @@ A type is a dtype, a shape and a unit, printed C-style: `float[433][3] Å`. Shap
 - Broadcasting is NumPy's: shapes align from the right, a dimension of 1 stretches, and equal extents pair in order. Anything else is E0301.
 - `axis=` takes an int, negative from the end, or a tuple. `.T` reverses the dimensions, and `a[:, None]` adds one.
 - Reductions reduce every dimension by default, as in NumPy. The frame is the exception: it is only reduced when named, `axis='frame'`.
-- Positions and other 3-vectors are a last dimension of 3. `c.x`, `c.y` and `c.z` are `c[..., 0]`, `c[..., 1]` and `c[..., 2]`.
-- Every dimension can carry a description of what it runs over, such as the residues of chain A, a pattern's matches, or x, y and z. Descriptions give labels in plots and exports, show in hover, and are the identity that `rmsf[r]`, `by=`, `spread`, `fit(on=)` and `common` need; those refuse an array without one (E0311). Descriptions never refuse arithmetic. Two dimensions of equal extent that describe different particles or units, paired by position, give W0605 and run, unless both derive from slices of one array or set, through elementwise operations, positions(), fit() and calls, such as c\[1:\] - c\[:-1\] or positions(ca\[0:7\]) against positions(ca\[8:15\]); or both come from one common() call; or a zip in a comprehension pairs them.
+- Positions and other 3-vectors are a last dimension of 3. `x.xyz` is the coordinates of x: a set's positions, `positions(s)`, or x itself when it is already coordinates. `x.x`, `x.y` and `x.z` are `x.xyz[..., 0]`, `[..., 1]` and `[..., 2]`, so they work on sets and arrays alike. These four are the only coordinate properties: VIAL has no swizzles, and `c.xy` is an unknown name (E0201) with the fix `c[..., 0:2]`.
+- Every dimension can carry a description of what it runs over, such as the residues of chain A, a pattern's matches, or x, y and z. Descriptions give labels in plots and exports, show in hover, and are the identity that `rmsf[r]`, `by=`, `spread`, `fit(on=)` and `common` need; those refuse an array without one (E0311). Descriptions never refuse arithmetic. Two dimensions of equal extent that describe different particles or units, paired by position, give W0605 and run, unless both derive from slices of one array or set, through elementwise operations, .xyz, fit() and calls, such as c\[1:\] - c\[:-1\] or ca\[0:7\].xyz against ca\[8:15\].xyz; or both come from one common() call; or a zip in a comprehension pairs them.
 - A result's labels come from the inputs that have each dimension; an extent of 1 or a missing dimension does not count. One such input gives its labels, inputs that describe the same units keep them, and inputs that describe different units give pair labels such as `MET1/A–GLU3/A`. Hover says what was paired with what, for example “dim 0: residues 1–4 of chain A with residues 1–4 of chain B”.
 - A value has at most six dimensions (E0308).
-- A dynamic extent `?` has an identity, the selection that produced it. Elementwise operations, `.com`, `positions()` indexing by a set, particles(x), per-particle properties such as mass(), and shape() keep it. A slice by fixed offsets, such as \[1:\] or \[:-1\], gives a related identity, ?−1, which pairs with any slice of the same ? and length, so c\[1:\] - c\[:-1\] and diff() work on a dynamic extent. Other slicing, a comprehension with an `if`, and a new selector give a new one. Two different `?` never broadcast (E0301).
+- A dynamic extent `?` has an identity, the selection that produced it. Elementwise operations, `.com`, `.xyz`, indexing by a set, particles(x), per-particle properties such as mass(), and shape() keep it. A slice by fixed offsets, such as \[1:\] or \[:-1\], gives a related identity, ?−1, which pairs with any slice of the same ? and length, so c\[1:\] - c\[:-1\] and diff() work on a dynamic extent. Other slicing, a comprehension with an `if`, and a new selector give a new one. Two different `?` never broadcast (E0301).
 
 ```text
 c : float[433][3] Å                                    frame
@@ -194,7 +194,7 @@ Every value has one of three stages, inferred from what it reads. Nobody declare
 | Stage | Reads | Computed | Typical sources |
 | --- | --- | --- | --- |
 | static | the topology and constants | once, when compiling | selectors, literals, `smiles()`, `at(x, frame=k)`, values pinned from another system |
-| frame | one frame | once per frame | `positions()`, `attr()`, `within()`, anything that uses them |
+| frame | one frame | once per frame | `.xyz`, `attr()`, `within()`, anything that uses them |
 | trajectory | many frames | over the frames it needs | reductions with `axis='frame'`, `histogram` over frames, `smooth`, `autocorrelation` |
 
 - A value's stage is the latest stage among its inputs and its operation. A trajectory value that keeps the frame axis, as `smooth()` gives, is marked per frame.
@@ -339,7 +339,8 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `a[[3, 0, 7]]` | the positions listed, in that order |  |
 | `a[:, None]` | a new dimension of 1, for broadcasting |  |
 | `a.T` | the dimensions reversed |  |
-| `c.x`, `c.y`, `c.z` | `c[..., 0]`, `c[..., 1]`, `c[..., 2]` |  |
+| `s.xyz` | a set's positions, `positions(s)`; coordinates themselves on coordinates | `float[n][3]` Å |
+| `c.x`, `c.y`, `c.z` | `c.xyz[..., 0]`, `[..., 1]`, `[..., 2]`, on a set or on coordinates |  |
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
 | `at(x, frame=k)` | frame k of a frame value, read when compiling | a static value |
 | `rmsf[s]` with a set | the values of the particles in set s; an intersection | a shorter dimension over those particles |
@@ -361,20 +362,23 @@ every = res_a[::2]                                     # -> set[217]
 c     = com(res_a)                                     # -> float[433][3] Å
 x     = c[:, 0]                                        # -> float[433] Å
 x2    = c.x                                            # -> float[433] Å: the same
+xy    = c.xy                                           # error E0201: no swizzles; c[..., 0:2]
 first = particles[0:10]                                # -> set: the first ten particles
 out   = res_a[433]                                     # error E0304
-_z    = positions(particles(protein)).z                # -> float[6784] Å
+_z    = protein.z                                      # -> float[6784] Å: the z of every protein particle
+rx    = res_a.xyz                                      # error E0318: 433 residues of 4 to 14 particles
+ra    = particles(res_a).xyz                           # -> float[n][3] Å: merged on purpose
 z_res = mean(_z, by=residues)                          # warning W0603, W0405 -> float[880] Å | missing: 15 residues have no values
 ```
 
 ```python
 # on P
-_p     = positions(particles)                          # -> float[153][3] Å, frame
+_p     = particles.xyz                                 # -> float[153][3] Å, frame
 rmsf   = sqrt(sum(var(_p, axis='frame'), axis=1))      # -> float[153] Å, trajectory
 ca     = rmsf[particles(name='CA')]                    # -> float[15] Å
 per_r  = mean(rmsf, by=residues)                       # -> float[15] Å
 same   = [mean(rmsf[r]) for r in residues]             # -> float[15] Å
-end0   = at(positions(particles(name='CA')), frame=0)  # -> float[15][3] Å, static
+end0   = at(particles(name='CA').xyz, frame=0)         # -> float[15][3] Å, static
 _close = residues[distance(residues.com, residues[0].com) < 6.0]   # -> set[?], frame
 ```
 
@@ -385,7 +389,7 @@ A parameter can be annotated with a kind. The kind says how much of an argument 
 | Kind | One call takes | Given `set[433]` | Given `float[32][3]` |
 | --- | --- | --- | --- |
 | `set` | one set | maps over the 433 | E0313 |
-| `group` | one set, or one point as a group of one location | maps over the 433 | maps over the 32 points |
+| `group` | one set, or one point as a group of one location, which the body sees as `float[1][3]` | maps over the 433 | maps over the 32 points |
 | `point` | `float[3]`, or a set known to hold one particle | E0302 | maps over the 32 points |
 | `points` | `float[n][3]`, or one set as its particles' positions | maps over the 433 | one call |
 | `float`, `int`, `bool` | one element | E0313 | maps over every dimension |
@@ -402,7 +406,7 @@ vlb   = particles(resname='VLB')                     # -> set
 
 def contacts(r: set, lig: set, cutoff: float = 4.0):
     """Particle pairs closer than cutoff."""
-    return sum(distance(positions(r)[:, None], positions(lig)) < cutoff)
+    return sum(distance(r.xyz[:, None], lig.xyz) < cutoff)
 
 n1  = contacts(res_a, vlb)                           # -> int[433], frame: one count per residue
 n2  = contacts(res_a[0], vlb)                        # -> int, frame: one residue, no mapping
@@ -429,8 +433,8 @@ def distance(a, b, between=None):
 
 def _between(a: group, b: group, op):
     assert op in ('closest', 'farthest'), "between= takes 'closest' or 'farthest'"
-    pa = positions(a)                            # one group each; maps over arrays of groups
-    pb = positions(b)
+    pa = a.xyz                                   # one group each; maps over arrays of groups
+    pb = b.xyz
     d, i, j = closest_pair(pa, pb) if op == 'closest' else farthest_pair(pa, pb)   # i and j only when drawn
     return shown(d, line(pa[i], pb[j], label=d))
 
@@ -484,7 +488,7 @@ The prelude uses nothing a script cannot, drawing included: `shown` attaches wha
 
 ## Built-in functions: geometry and structure
 
-Geometry takes points, and a parameter declared `point` or `points` is the only place where a selection turns into coordinates. A set of several particles never quietly becomes one point: write `s.com` or `centroid(s)` for its centre, or `between='closest'` for its closest particles. MDAnalysis, MDTraj and GROMACS also ask for centres explicitly.
+Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are the only places where a selection turns into coordinates. A set of several particles never quietly becomes one point: write `s.com` or `centroid(s)` for its centre, or `between='closest'` for its closest particles. MDAnalysis, MDTraj and GROMACS also ask for centres explicitly.
 
 | Parameter kind | Accepts | Becomes |
 | --- | --- | --- |
@@ -500,13 +504,13 @@ Geometry takes points, and a parameter declared `point` or `points` is the only 
 
 | Function | Result | Notes |
 | --- | --- | --- |
-| `positions(s)` | `float[n][3]` Å | frame stage; on a point, itself as float\[1\]\[3\]; n is `count(s)` |
+| `positions(s)`, also written `s.xyz` | `float[n][3]` Å | frame stage; n is `count(s)`. On coordinates, a float array whose last dimension is 3, itself. On an array of sets that each hold one particle, one position per set; on other arrays of sets E0318, since their positions do not form one array: `particles(res_a).xyz` merges them, and a def with a `points` or `group` parameter maps over them |
 | `mass(s)`, `charge(s)`, `element(s)`, `name(s)`, `bfactor(s)` | `float[n]` u, e, or `str[n]` | per-particle properties of a set; static, except `bfactor` where the file gives one per frame |
-| `particles(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particles(fit(positions(s), ref)))` works after a fit; an array with no such dimension is E0311 |
+| `particles(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particles(fit(s.xyz, ref)))` works after a fit; an array with no such dimension is E0311 |
 | `com(s, weights='mass')` | `float[3]` Å | periodic-aware; takes a set or points, and maps over arrays of sets; also written `s.com` |
 | `centroid(s)` | `float[3]` Å | prelude: `com(s, weights=None)` |
 | `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Drawn as a line labelled with the value |
-| `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(positions(a)[:, None], positions(b)))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a spatial search, so no n×m matrix is computed or stored. Drawn as a line between the pair |
+| `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(a.xyz[:, None], b.xyz))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a spatial search, so no n×m matrix is computed or stored. Drawn as a line between the pair |
 | `displacement(a: point, b: point)` | `float[3]` Å | b minus a, minimum image |
 | `closest_pair(p: points, q: points)` | `(float Å, int, int)` | the shortest distance from a point of p to a point of q under the minimum image, and the two points' indices; built in, with a spatial search, so its time grows with n + m for compact groups. The indices are computed only where they are used, as when hover draws the pair. Missing, with W0601, when p or q is empty |
 | `farthest_pair(p: points, q: points)` | `(float Å, int, int)` | the longest distance, and its two indices |
@@ -520,14 +524,14 @@ A matrix of distances needs no special function; broadcasting gives it: `distanc
 
 ### Every form of distance
 
-`distance` is a prelude function with two forms. `distance(a, b)` is `norm(displacement(a, b))` between points. `distance(a, b, between='closest')` calls `_between`, whose parameters are `group`s: one call takes one set, or one point on its own, and computes what `min(distance(positions(a)[:, None], positions(b)))` would, through `closest_pair`; `'farthest'` is `max`, through `farthest_pair`. An array of groups maps, adding its dimensions, so residues of different sizes never meet in one array, and no matrix of every pair is ever made. Everything else follows from the point rule, the kinds and broadcasting: each argument's kind decides what it becomes and which dimension it adds, and the dimensions broadcast as for any function. Every form gives Å under the minimum image and is frame stage because positions are.
+`distance` is a prelude function with two forms. `distance(a, b)` is `norm(displacement(a, b))` between points. `distance(a, b, between='closest')` calls `_between`, whose parameters are `group`s: one call takes one set, or one point on its own, and computes what `min(distance(a.xyz[:, None], b.xyz))` would, through `closest_pair`; `'farthest'` is `max`, through `farthest_pair`. An array of groups maps, adding its dimensions, so residues of different sizes never meet in one array, and no matrix of every pair is ever made. Everything else follows from the point rule, the kinds and broadcasting: each argument's kind decides what it becomes and which dimension it adds, and the dimensions broadcast as for any function. Every form gives Å under the minimum image and is frame stage because positions are.
 
 The examples use these names:
 
 ```python
 # on T
 p      = particles(resname='GTP').com               # -> float[3] Å
-ps     = positions(particles(resname='GTP'))        # -> float[32][3] Å
+ps     = particles(resname='GTP').xyz               # -> float[32][3] Å
 mg     = particles(name='MG')                       # -> set: one particle
 gtp    = particles(resname='GTP')                   # -> set: 32 particles
 vlb    = particles(resname='VLB')                   # -> set: 59 particles
@@ -569,9 +573,9 @@ bad   = distance(near_r, cas, between='closest')              # error E0301: [?]
 empty = distance(particles(resname='ATP'), mg)                # warning W0601, W0405 -> float Å | missing: empty on T, so missing in every frame
 
 # v1's distance_pair: every particle of a against every particle of b, minimum image
-pairs = distance(positions(gtp)[:, None], positions(vlb))     # -> float[32][59] Å: row i is GTP particle i
+pairs = distance(gtp.xyz[:, None], vlb.xyz)                   # -> float[32][59] Å: row i is GTP particle i
 flat  = flatten(pairs)                                        # -> float[1888] Å: v1's layout, b varying fastest
-four  = distance(positions(particles(res_a[0:4]))[:, None], positions(vlb))   # -> float[34][59] Å: v1 merged an array of sets; v2 says so with particles()
+four  = distance(particles(res_a[0:4]).xyz[:, None], vlb.xyz)                 # -> float[34][59] Å: v1 merged an array of sets; v2 says so with particles()
 ```
 
 ### Structure
@@ -594,7 +598,7 @@ d3   = distance(gtp, gdp)                              # error E0302: GTP has 32
 pg   = particles(resname='GTP', name='PG')             # -> set: one particle
 d4   = distance(pg, particles(name='MG'))              # -> float Å: single particles are points
 a    = angle(gtp.com, gdp.com, vlb.com)                # -> float °
-pos  = positions(gtp)                                  # -> float[32][3] Å, frame
+pos  = gtp.xyz                                        # -> float[32][3] Å, frame
 cg   = com(gtp)                                        # -> float[3] Å
 near = within(5.0, vlb)                                # -> set, frame
 bad  = distance(12, gtp.com)                           # error E0302
@@ -604,12 +608,12 @@ bad  = distance(12, gtp.com)                           # error E0302
 # on P
 ca   = particles(name='CA')
 tw   = dihedral(ca[0], ca[1], ca[2], ca[3])            # -> float °, frame
-ref0 = at(positions(ca), frame=0)                      # -> float[15][3] Å, static
-r    = rmsd(positions(ca), ref0)                       # -> float Å, frame
-raw  = rmsd(positions(ca), ref0, superpose=False)      # -> float Å, frame
-_f   = fit(positions(particles), at(positions(particles), frame=0), on=ca)   # -> float[153][3] Å, frame
-half = rmsd(positions(ca[0:7]), positions(ca[8:15]))   # -> float Å, frame: slices of one set pair in order without W0605
-odd  = rmsd(positions(ca[0:7]), positions(ca[7:15]))   # error E0301: [7][3] and [8][3] do not broadcast
+ref0 = at(ca.xyz, frame=0)                             # -> float[15][3] Å, static
+r    = rmsd(ca, ref0)                                  # -> float Å, frame: a points parameter takes the set
+raw  = rmsd(ca, ref0, superpose=False)                 # -> float Å, frame
+_f   = fit(particles.xyz, at(particles.xyz, frame=0), on=ca)   # -> float[153][3] Å, frame
+half = rmsd(ca[0:7], ca[8:15])                         # -> float Å, frame: slices of one set pair in order without W0605
+odd  = rmsd(ca[0:7], ca[7:15])                         # error E0301: [7][3] and [8][3] do not broadcast
 ```
 
 Later, ported from v1 after the first version: `rdf`, `sdf`, `density`, contact maps, hydrogen bonds, secondary structure and ring pucker.
@@ -671,14 +675,14 @@ Reductions remove dimensions, math works elementwise, and the array functions sa
 # on P
 ca    = particles(name='CA')
 c1    = distance(ca.com, ca[0])                # -> float Å: from the centre of the CAs to the first CA
-dd    = distance(positions(ca), ca[0])         # -> float[15] Å, frame: one distance per CA
+dd    = distance(ca.xyz, ca[0])                # -> float[15] Å, frame: one distance per CA
 total = sum(dd)                                # -> float Å, frame
 far   = argmax(dd)                             # -> int, frame
 n5    = sum(dd > 5.0)                          # -> int, frame
 lo    = min(dd, 5.0)                           # -> float[15] Å, frame
 mn    = min(dd)                                # -> float Å, frame
 w     = where(dd > 5.0, dd, 0.0)               # -> float[15] Å, frame
-bv    = diff(positions(ca), axis=0)            # -> float[14][3] Å, frame: CA to CA vectors
+bv    = diff(ca.xyz, axis=0)                   # -> float[14][3] Å, frame: CA to CA vectors
 bl    = norm(bv)                               # -> float[14] Å, frame
 cosb  = dot(normalize(bv[:-1]), normalize(bv[1:]))   # -> float[13], frame
 t_m   = mean(dd, axis='frame')                 # -> float[15] Å, trajectory
@@ -746,8 +750,8 @@ An outer product is broadcasting: `u[:, None] * v[None, :]`.
 ```python
 # on P
 ca    = particles(name='CA')
-ref0  = at(positions(ca), frame=0)
-_p    = fit(positions(ca), ref0)                         # -> float[15][3] Å, frame
+ref0  = at(ca.xyz, frame=0)
+_p    = fit(ca.xyz, ref0)                                # -> float[15][3] Å, frame
 _q    = flatten(_p)                                      # -> float[45] Å, frame
 C     = covariance(_q, axis='frame')                     # -> float[45][45] Å², trajectory
 w, v  = eigh(C)                                          # -> float[45] Å² and float[45][45], trajectory
@@ -904,11 +908,11 @@ Every top-level name bound to a number or a set is published under `script/<name
 ```python
 # on P
 ca    = particles(name='CA')                           # published: a selection
-_p    = positions(particles)                           # private
+_p    = particles.xyz                                  # private
 rmsf  = sqrt(sum(var(_p, axis='frame'), axis=1))       # published: 153 values, one per particle
 ends  = distance(ca[0], ca[14])                        # published: a series of 38 values
 h     = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))   # published: a curve with its bin edges
-_c    = positions(ca)
+_c    = ca.xyz
 dm    = distance(_c[:, None], _c[None, :])             # -> float[15][15] Å, frame: a matrix per frame
 ```
 
@@ -954,7 +958,7 @@ vlb   = particles(resname='VLB')                                 # -> set
 mg    = particles(resname='MG')                                  # -> set
 res_a = residues(chain='A', kind='amino_acid')                   # -> set[433]
 d     = distance(gtp.com, vlb.com)                               # -> float Å, frame: drawn as a labelled line
-dc, i, j = closest_pair(positions(gtp), positions(vlb))          # -> float Å and int and int
+dc, i, j = closest_pair(gtp, vlb)                                # -> float Å and int and int: points parameters take sets
 l     = line(gtp.com, vlb.com, label=d)                          # -> drawing, frame
 both  = l + sphere(mg, 3.0)                                      # -> drawing, frame: 3.0 is read as Å
 dd    = shown(d, both)                                           # -> float Å, frame: hover draws the line and the sphere
@@ -1014,6 +1018,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0315 | A fold step whose result differs from init in dtype, shape or unit | step returns float\[3\] Å; init is float Å |  |
 | E0316 | An axis the array does not have | axis=2 on float\[433\]\[3\] | axis=1 |
 | E0317 | is on a value that is not static | is compares static values; d changes per frame | == |
+| E0318 | The coordinates of an array of sets whose sizes differ | `res_a` holds 433 sets of 4 to 14 particles; their positions do not form one array | `particles(res_a).xyz`, or a def with a `points` parameter |
 | E0401 | A published value, other than a selection, whose shape changes between frames | `d_near` has a different length in each frame | a reduction, or `_d_near` |
 | E0402 | A value from another system not pinned to a frame | values from `crystal` need a frame | `at(..., frame=0)` |
 | E0403 | A top-level `if` on a value that changes per frame | the condition changes per frame; outputs cannot | `where(...)` |
@@ -1054,7 +1059,7 @@ def walk(n):
 
 m = smiles("O=P(O)(O)O")
 x = spread(count(m), m)                                 # error E0306: the phosphates of GTP share bridging oxygens
-n = rmsd(positions(particles(name='CA', resid=1..4, chain='A')), positions(particles(name='CB', resid=1..4, chain='A')))   # warning W0605: particle 0: CA against CB
+n = rmsd(particles(name='CA', resid=1..4, chain='A'), particles(name='CB', resid=1..4, chain='A'))   # warning W0605: particle 0: CA against CB
 residues = 5                                            # warning W0201: last, so the lines above still see the selector
 ```
 

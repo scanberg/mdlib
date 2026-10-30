@@ -6,8 +6,8 @@ def distance(a, b, between=None):
 
 def _between(a: group, b: group, op):
     assert op in ('closest', 'farthest'), "between= takes 'closest' or 'farthest'"
-    pa = positions(a)                            # one group each; maps over arrays of groups
-    pb = positions(b)
+    pa = a.xyz                                   # one group each; maps over arrays of groups
+    pb = b.xyz
     d, i, j = closest_pair(pa, pb) if op == 'closest' else farthest_pair(pa, pb)   # i and j only when drawn
     return shown(d, line(pa[i], pb[j], label=d))
 
