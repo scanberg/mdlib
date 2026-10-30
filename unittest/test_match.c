@@ -298,6 +298,23 @@ UTEST(match, query_from_smiles) {
     EXPECT_EQ(2, q.atoms[5].tag);
     md_match_query_free(&q);
 
+    // A bracket that only adds a class to an organic subset atom leaves hydrogens and charge open, as tagging must not
+    // change what an atom matches; one that writes H, a charge or an isotope, or an element outside the subset, states them
+    ASSERT_TRUE(md_match_query_init_smiles(&q, STR_LIT("[C:1](=O)[N:2][CH1:3][O-:4][Fe:5][13C:6][c:7][*:8]"), alloc, NULL));
+    EXPECT_FALSE(q.atoms[0].flags & (MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE));
+    EXPECT_FALSE(q.atoms[2].flags & (MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE));
+    EXPECT_TRUE (q.atoms[3].flags & MD_MATCH_ATOM_HCOUNT);
+    EXPECT_EQ(1, q.atoms[3].h_max);
+    EXPECT_TRUE (q.atoms[4].flags & MD_MATCH_ATOM_CHARGE);
+    EXPECT_EQ(-1, q.atoms[4].charge);
+    EXPECT_TRUE (q.atoms[5].flags & (MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE));
+    EXPECT_TRUE (q.atoms[6].flags & MD_MATCH_ATOM_HCOUNT);
+    EXPECT_FALSE(q.atoms[7].flags & (MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE));
+    EXPECT_TRUE (q.atoms[7].flags & MD_MATCH_ATOM_AROMATIC);
+    EXPECT_FALSE(q.atoms[8].flags & (MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE));
+    EXPECT_EQ(5, q.atoms[5].tag);
+    md_match_query_free(&q);
+
     // A syntax error reaches the caller
     md_smiles_error_t err = {0};
     EXPECT_FALSE(md_match_query_init_smiles(&q, STR_LIT("CC(C"), alloc, &err));
@@ -597,6 +614,9 @@ UTEST(match, bracket_hydrogens) {
     // A CA with two hydrogens is a glycine, of which there are none
     EXPECT_EQ(0,  count_smiles_ex("N[CH2]C=O",         &desc, ala));
     EXPECT_EQ(0,  count_smiles_ex("N[CH]([H])C=O",     &desc, ala));
+    // Tagging the atoms changes nothing: [C:1] matches what C does, where [C] would mean no hydrogens
+    EXPECT_EQ(15, count_smiles_ex("[N:1][C:2](C)[C:3]=O", &desc, ala));
+    EXPECT_EQ(0,  count_smiles_ex("N[C](C)C=O",            &desc, ala));
 }
 
 UTEST(match, aliphatic) {
