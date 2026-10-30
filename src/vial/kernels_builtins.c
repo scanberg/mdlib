@@ -266,12 +266,12 @@ static float dihedral4(const float* a, const float* b, const float* c, const flo
     md_util_min_image_vec3(&b1, 1, cell);
     md_util_min_image_vec3(&b2, 1, cell);
     md_util_min_image_vec3(&b3, 1, cell);
+    // Blondel and Karplus: atan2(|b2| b1 . (b2 x b3), (b1 x b2) . (b2 x b3)), positive clockwise, as IUPAC
     const double n1[3] = {(double)b1.y * b2.z - (double)b1.z * b2.y, (double)b1.z * b2.x - (double)b1.x * b2.z, (double)b1.x * b2.y - (double)b1.y * b2.x};
     const double n2[3] = {(double)b2.y * b3.z - (double)b2.z * b3.y, (double)b2.z * b3.x - (double)b2.x * b3.z, (double)b2.x * b3.y - (double)b2.y * b3.x};
     const double lb2 = sqrt((double)b2.x * b2.x + (double)b2.y * b2.y + (double)b2.z * b2.z);
-    const double m1[3] = {n1[1] * b2.z / lb2 - n1[2] * b2.y / lb2, n1[2] * b2.x / lb2 - n1[0] * b2.z / lb2, n1[0] * b2.y / lb2 - n1[1] * b2.x / lb2};
+    const double y = lb2 * ((double)b1.x * n2[0] + (double)b1.y * n2[1] + (double)b1.z * n2[2]);
     const double x = n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2];
-    const double y = m1[0] * n2[0] + m1[1] * n2[1] + m1[2] * n2[2];
     double r = atan2(y, x) * DEG_PER_RAD;
     if (r <= -180.0) r += 360.0;
     return (float)r;
