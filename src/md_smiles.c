@@ -220,6 +220,7 @@ static bool parse_bracket(parser_t* p, md_smiles_atom_t* atom) {
         parse_uint(&h, p, 2);
         if (h > UINT8_MAX) return fail(p, p->cur, "Hydrogen count out of range");
         atom->h_count = (uint8_t)h;
+        atom->flags |= MD_SMILES_ATOM_H_GIVEN;
     }
 
     // Charge: +, ++, +n and the same for -
@@ -239,6 +240,7 @@ static bool parse_bracket(parser_t* p, md_smiles_atom_t* atom) {
         }
         if (magnitude > 15) return fail(p, at, "Charge out of range");
         atom->charge = (int8_t)(sign == '+' ? magnitude : -magnitude);
+        atom->flags |= MD_SMILES_ATOM_CHARGE_GIVEN;
     }
 
     // Atom class
