@@ -72,6 +72,7 @@ set (SRC_FILES
     test_run_cache.c
     test_molden.c
     test_gto_int.c
+    test_topo_gto.c
 )
 
 if (MD_ENABLE_HDF5)

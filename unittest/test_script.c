@@ -7279,3 +7279,279 @@ UTEST(script, bond_delta) {
     EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "e = bond(bond_delta(), kind='ionic');", "Unknown bond kind 'ionic'"));
     md_vm_arena_destroy(alloc);
 }
+
+// ### PERIODIC VALUES ###
+// What the compilation says of the period of an expression (see PERIODIC VALUES in md_script.c), what the evaluation
+// publishes of it, and the circular summary over a population of periodic values.
+
+static period_t ident_period(md_script_ir_t* ir, const char* name) {
+    const identifier_t* ident = get_identifier(ir, str_from_cstr(name));
+    return (ident && ident->data) ? ident->data->period : (period_t){0};
+}
+
+#define EXPECT_PERIOD(ir, name, b, e, s) do { \
+    const period_t _p = ident_period(ir, name); \
+    EXPECT_TRUE(period_valid(_p)); \
+    EXPECT_NEAR((float)(b), _p.beg, 1.0e-4f); \
+    EXPECT_NEAR((float)(e), _p.end, 1.0e-4f); \
+    EXPECT_NEAR((float)(s), _p.seam, 1.0e-4f); \
+} while (0)
+
+#define EXPECT_NOT_PERIODIC(ir, name) EXPECT_FALSE(period_valid(ident_period(ir, name)))
+
+UTEST_F(script, periodic_propagation) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    // phi of residue 2 (C1 N2 CA2 C2), psi of residue 2 (N2 CA2 C2 N3) and phi of residue 3
+    const char* src =
+        "d    = dihedral(11, 13, 15, 21);\n"
+        "deg  = dihedral(11, 13, 15, 21) * 180 / PI;\n"
+        "half = dihedral(11, 13, 15, 21) / 2;\n"
+        "sh   = dihedral(11, 13, 15, 21) + 1.0;\n"
+        "lsh  = 1.0 + dihedral(11, 13, 15, 21);\n"
+        "rsh  = 1.0 - dihedral(11, 13, 15, 21);\n"
+        "neg  = -dihedral(11, 13, 15, 21);\n"
+        "diff = dihedral(11, 13, 15, 21) - dihedral(13, 15, 21, 23);\n"
+        "sum2 = dihedral(11, 13, 15, 21) + dihedral(13, 15, 21, 23);\n"
+        "arr  = {dihedral(11, 13, 15, 21), dihedral(21, 23, 25, 31)};\n"
+        "elem = arr[2];\n"
+        "lo   = min(arr);\n"
+        "tot  = sum(arr);\n"
+        "ref  = d;\n"
+        "at   = atan2(distance(1, 5), distance(5, 11));\n"
+        "mix  = {dihedral(11, 13, 15, 21), angle(11, 13, 15)};\n"
+        "ab   = abs(dihedral(11, 13, 15, 21));\n"
+        "co   = cos(dihedral(11, 13, 15, 21));\n"
+        "sq   = dihedral(11, 13, 15, 21) * dihedral(13, 15, 21, 23);\n"
+        "inv  = 1.0 / dihedral(11, 13, 15, 21);\n"
+        "an   = angle(11, 13, 15);\n"
+        "dist = distance(1, 5);\n";
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(src), mol, NULL));
+
+    // A dihedral is given in [-180, 180[ and cut at 0
+    EXPECT_PERIOD(ir, "d",    -PI, PI, 0);
+    // Scaled: degrees, and half angles
+    EXPECT_PERIOD(ir, "deg",  -180, 180, 0);
+    EXPECT_PERIOD(ir, "half", -PI / 2, PI / 2, 0);
+    // Moved along by a constant, on either side
+    EXPECT_PERIOD(ir, "sh",   -PI + 1, PI + 1, 1);
+    EXPECT_PERIOD(ir, "lsh",  -PI + 1, PI + 1, 1);
+    EXPECT_PERIOD(ir, "rsh",  1 - PI, 1 + PI, 1);
+    EXPECT_PERIOD(ir, "neg",  -PI, PI, 0);
+    // Two angles: about the difference (sum) of the middles, cut half a period from it
+    EXPECT_PERIOD(ir, "diff", -PI, PI, -PI);
+    EXPECT_PERIOD(ir, "sum2", -PI, PI, -PI);
+    // Arrays of them, their elements, the least of them, references
+    EXPECT_PERIOD(ir, "arr",  -PI, PI, 0);
+    EXPECT_PERIOD(ir, "elem", -PI, PI, 0);
+    EXPECT_PERIOD(ir, "lo",   -PI, PI, 0);
+    EXPECT_PERIOD(ir, "tot",  -PI, PI, 0);
+    EXPECT_PERIOD(ir, "ref",  -PI, PI, 0);
+    // atan2 is cut where it cuts
+    EXPECT_PERIOD(ir, "at",   -PI, PI, -PI);
+
+    // What no longer lies on a circle
+    EXPECT_NOT_PERIODIC(ir, "mix");
+    EXPECT_NOT_PERIODIC(ir, "ab");
+    EXPECT_NOT_PERIODIC(ir, "co");
+    EXPECT_NOT_PERIODIC(ir, "sq");
+    EXPECT_NOT_PERIODIC(ir, "inv");
+    EXPECT_NOT_PERIODIC(ir, "an");
+    EXPECT_NOT_PERIODIC(ir, "dist");
+
+    // -x is in the unit of x
+    const identifier_t* neg = get_identifier(ir, STR_LIT("neg"));
+    ASSERT_TRUE(neg && neg->data);
+    EXPECT_TRUE(md_unit_equal(md_unit_radian(), neg->data->unit[1]));
+
+    // The flags of the properties
+    const md_script_property_flags_t temporal_periodic = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_PERIODIC;
+    EXPECT_EQ(temporal_periodic, md_script_ir_property_flags(ir, STR_LIT("d")));
+    EXPECT_EQ(temporal_periodic, md_script_ir_property_flags(ir, STR_LIT("arr")));
+    EXPECT_EQ(MD_SCRIPT_PROPERTY_FLAG_TEMPORAL, md_script_ir_property_flags(ir, STR_LIT("ab")));
+    EXPECT_EQ(MD_SCRIPT_PROPERTY_FLAG_TEMPORAL, md_script_ir_property_flags(ir, STR_LIT("an")));
+
+    // Published beside the values, in their unit; nothing for what is not periodic
+    const uint32_t num_frames = script_frames(mol);
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_NE(NULL, eval);
+    const md_attributes_t* attributes = md_script_eval_attributes(eval);
+    const md_attribute_t* values = md_attributes_find(attributes, STR_LIT("script/deg"));
+    const md_attribute_t* period = md_attributes_find(attributes, STR_LIT("script/deg/period"));
+    const md_attribute_t* seam   = md_attributes_find(attributes, STR_LIT("script/deg/seam"));
+    ASSERT_TRUE(values && period && seam);
+    EXPECT_EQ(0u, period->format.rank);
+    EXPECT_EQ(2u, period->format.components);
+    EXPECT_EQ(0u, seam->format.rank);
+    EXPECT_EQ(1u, seam->format.components);
+    EXPECT_TRUE(md_unit_equal(values->unit, period->unit));
+    EXPECT_TRUE(md_unit_equal(values->unit, seam->unit));
+    float pv[2] = {0}, sv = 1;
+    EXPECT_EQ(2, md_attribute_extract_f32(pv, 2, period, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_EQ(1, md_attribute_extract_f32(&sv, 1, seam, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_NEAR(-180.0f, pv[0], 1.0e-3f);
+    EXPECT_NEAR( 180.0f, pv[1], 1.0e-3f);
+    EXPECT_NEAR(   0.0f, sv,    1.0e-3f);
+    EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/ab/period")) == NULL);
+    EXPECT_TRUE(md_attributes_find(attributes, STR_LIT("script/ab/seam")) == NULL);
+
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+}
+
+// The phases of puckers: Cremer-Pople phi2 cut at 0, the pseudorotation of a furanose at 270 degrees
+UTEST(script, periodic_pucker_phases) {
+    plane_sys_t ade = {0};
+    ASSERT_TRUE(plane_sys_init(&ade, "A"));
+    md_script_ir_t* ir = md_script_ir_create(ade.alloc);
+    ASSERT_TRUE(plane_compile(ir, "p = pucker(ring(kind='sugar')); P = pseudorotation(p); f = phase(p); t = theta(pucker(ring(size=6))); q = amplitude(p);", &ade));
+    EXPECT_PERIOD(ir, "P", 0, TWO_PI, 1.5 * PI);
+    EXPECT_PERIOD(ir, "f", 0, TWO_PI, 0);
+    EXPECT_NOT_PERIODIC(ir, "t");
+    EXPECT_NOT_PERIODIC(ir, "q");
+    md_script_ir_free(ir);
+    md_vm_arena_destroy(ade.alloc);
+}
+
+static double circ_diff(double a, double b, double len) {
+    const double d = period_wrap(a - b, -0.5 * len, len);
+    return fabs(d);
+}
+
+UTEST(script, circular_summary) {
+    float scratch[16];
+    float mn, mx, mean, var;
+    const period_t deg = period_make(-180, 180, 0);
+
+    // Across the end of the period: about 180, not 0
+    {
+        const float v[] = {179, -179};
+        compute_circular_summary(&mn, &mx, &mean, &var, v, 2, deg, scratch);
+        EXPECT_LT(circ_diff(mean, 180, 360), 1.0e-3);
+        EXPECT_NEAR(1.0f, sqrtf(var), 1.0e-3f);     // two values 2 degrees apart, as a standard deviation would have it
+        EXPECT_NEAR(179.0f, mn, 1.0e-4f);
+        EXPECT_NEAR(181.0f, mx, 1.0e-4f);           // past the end: the arc crosses it
+    }
+    // Within it: as the least and the greatest, and the mean as the linear one
+    {
+        const float v[] = {10, 30, 20};
+        compute_circular_summary(&mn, &mx, &mean, &var, v, 3, deg, scratch);
+        EXPECT_NEAR(20.0f, mean, 1.0e-3f);
+        EXPECT_NEAR(10.0f, mn, 1.0e-4f);
+        EXPECT_NEAR(30.0f, mx, 1.0e-4f);
+        // Close to the linear standard deviation (8.165 degrees) when the values are close together
+        const double R = (1.0 + 2.0 * cos(DEG_TO_RAD(10.0))) / 3.0;
+        EXPECT_NEAR((float)RAD_TO_DEG(sqrt(-2.0 * log(R))), sqrtf(var), 1.0e-3f);
+        EXPECT_NEAR(8.165f, sqrtf(var), 0.05f);
+    }
+    // Given outside of the period, a whole number of periods away
+    {
+        const float v[] = {370, -350, 10};
+        compute_circular_summary(&mn, &mx, &mean, &var, v, 3, deg, scratch);
+        EXPECT_NEAR(10.0f, mean, 1.0e-3f);
+        EXPECT_NEAR(10.0f, mn, 1.0e-3f);
+        EXPECT_NEAR(10.0f, mx, 1.0e-3f);
+        EXPECT_NEAR(0.0f, var, 1.0e-3f);
+    }
+    // All around the circle: the deviation covers the whole period, and so does the arc, but for the widest gap
+    {
+        const float v[] = {0, 90, 180, -90};
+        compute_circular_summary(&mn, &mx, &mean, &var, v, 4, deg, scratch);
+        EXPECT_NEAR(180.0f, sqrtf(var), 1.0e-3f);
+        EXPECT_NEAR(270.0f, mx - mn, 1.0e-3f);
+        EXPECT_TRUE(-180.0f <= mn && mn < 180.0f);
+    }
+    // One value
+    {
+        const float v[] = {-42};
+        compute_circular_summary(&mn, &mx, &mean, &var, v, 1, deg, scratch);
+        EXPECT_NEAR(-42.0f, mean, 1.0e-3f);
+        EXPECT_EQ(-42.0f, mn);
+        EXPECT_EQ(-42.0f, mx);
+        EXPECT_NEAR(0.0f, var, 1.0e-6f);
+    }
+    // A period of another length and place: [0, 2 PI[
+    {
+        const period_t rad = period_make(0, TWO_PI, 0);
+        const float v[] = {(float)DEG_TO_RAD(350.0), (float)DEG_TO_RAD(20.0)};
+        compute_circular_summary(&mn, &mx, &mean, &var, v, 2, rad, scratch);
+        EXPECT_LT(circ_diff(mean, DEG_TO_RAD(5.0), TWO_PI), 1.0e-4);
+        EXPECT_NEAR((float)DEG_TO_RAD(350.0), mn, 1.0e-4f);
+        EXPECT_NEAR((float)DEG_TO_RAD(380.0), mx, 1.0e-4f);
+    }
+}
+
+// The summary over the population of a periodic property, frame by frame, against circular statistics done here
+UTEST_F(script, periodic_summary_over_trajectory) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_system_t* mol = &utest_fixture->ala;
+    const uint32_t num_frames = script_frames(mol);
+    ASSERT_GT(num_frames, 1u);
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    // psi of residues 2 to 6, and the same in degrees
+    const char* src =
+        "psi = {dihedral(13, 15, 21, 23), dihedral(23, 25, 31, 33), dihedral(33, 35, 41, 43), dihedral(43, 45, 51, 53), dihedral(53, 55, 61, 63)};\n"
+        "psi_deg = psi * 180 / PI;\n";
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, str_from_cstr(src), mol, NULL));
+    md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_NE(NULL, eval);
+    ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, SCRIPT_RUN, 0, num_frames));
+
+    const char* names[2] = {"psi", "psi_deg"};
+    const double lens[2] = {TWO_PI, 360.0};
+    for (int n = 0; n < 2; ++n) {
+        char path[64];
+        const md_attributes_t* attributes = md_script_eval_attributes(eval);
+        snprintf(path, sizeof(path), "script/%s", names[n]);
+        const md_attribute_t* attr = md_attributes_find(attributes, str_from_cstr(path));
+        snprintf(path, sizeof(path), "script/%s/mean", names[n]);
+        const md_attribute_t* mean = md_attributes_find(attributes, str_from_cstr(path));
+        snprintf(path, sizeof(path), "script/%s/variance", names[n]);
+        const md_attribute_t* var  = md_attributes_find(attributes, str_from_cstr(path));
+        snprintf(path, sizeof(path), "script/%s/extent", names[n]);
+        const md_attribute_t* ext  = md_attributes_find(attributes, str_from_cstr(path));
+        ASSERT_TRUE(attr && mean && var && ext);
+        const uint32_t pop = attr->format.shape[1];
+        ASSERT_EQ(5u, pop);
+
+        const double len = lens[n];
+        const double beg = -0.5 * len;
+        const double to_angle = TWO_PI / len;
+        for (uint32_t f = 0; f < num_frames; ++f) {
+            const float* v = (const float*)attr->data + (size_t)f * pop;
+            double c = 0, s = 0;
+            for (uint32_t k = 0; k < pop; ++k) {
+                c += cos(v[k] * to_angle);
+                s += sin(v[k] * to_angle);
+            }
+            c /= pop;
+            s /= pop;
+            const double R = sqrt(c * c + s * s);
+            const double ref_mean = atan2(s, c) / to_angle;
+            const float m = ((const float*)mean->data)[f];
+            EXPECT_TRUE(beg <= m && m < beg + len);
+            EXPECT_LT(circ_diff(m, ref_mean, len), 1.0e-3 * len);
+            const double ref_sd = sqrt(MIN(-2.0 * log(R), PI * PI)) / to_angle;
+            EXPECT_NEAR((float)ref_sd, sqrtf(((const float*)var->data)[f]), (float)(1.0e-3 * len));
+
+            // Every value lies on the arc, which is no longer than it has to be: it begins and ends at values
+            const float* e = (const float*)ext->data + 2 * (size_t)f;
+            EXPECT_LE(e[0], e[1]);
+            EXPECT_LT(e[1] - e[0], len);
+            bool at_beg = false, at_end = false;
+            for (uint32_t k = 0; k < pop; ++k) {
+                const double w = period_wrap(v[k], e[0], len);
+                EXPECT_LE(w, e[1] + 1.0e-4 * len);
+                at_beg |= circ_diff(v[k], e[0], len) < 1.0e-4 * len;
+                at_end |= circ_diff(v[k], e[1], len) < 1.0e-4 * len;
+            }
+            EXPECT_TRUE(at_beg && at_end);
+        }
+    }
+
+    md_script_eval_free(eval);
+    md_script_ir_free(ir);
+}

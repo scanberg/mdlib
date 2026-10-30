@@ -5343,6 +5343,11 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->backchannel->unit[0] = md_unit_none();
             ctx->backchannel->unit[1] = md_unit_radian();
             //ctx->backchannel->value_range = (frange_t){-PI, PI};
+            // In [-180, 180[, cut at 0, where torsions are least likely to be: at 0 the outer bonds are eclipsed,
+            // the highest barrier of an sp3-sp3 torsion (chi, the nucleic acid backbone), the rare cis of a peptide
+            // omega, and a phi which the backbone does not reach. At 180 they would be cut through the trans of
+            // all of these, and through the beta strands of psi.
+            ctx->backchannel->period = period_make(-PI, PI, 0.0);
         }
     }
 
@@ -6302,6 +6307,16 @@ static int pucker_accessor_static(data_t arg[], pucker_need_t need, md_unit_t un
     if (ctx->backchannel) {
         ctx->backchannel->unit[0] = md_unit_none();
         ctx->backchannel->unit[1] = unit;
+        if (need == PUCKER_NEED_PHASE) {
+            // Cremer-Pople phi2 in [0, 360[, cut at 0: it moves around the whole circle (the pseudorotation of a five
+            // membered ring, the boats and skews of a six), and where it is least likely to be depends on the ring
+            ctx->backchannel->period = period_make(0.0, TWO_PI, 0.0);
+        } else if (need == PUCKER_NEED_PSEUDO) {
+            // P in [0, 360[, cut at 270: the west of the pseudorotation wheel (O4'-exo), the highest barrier of a
+            // furanose. North (C3'-endo, P near 18) and south (C2'-endo, near 162) meet through the east. At 0 they
+            // would be cut through the north.
+            ctx->backchannel->period = period_make(0.0, TWO_PI, 1.5 * PI);
+        }
     }
     return (int)n;
 }

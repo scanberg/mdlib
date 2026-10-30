@@ -17,7 +17,15 @@
 #       VERTEX   <entry> [<entry> ...]     # vertex stages
 #       FRAGMENT <entry> [<entry> ...]     # fragment stages
 #       DEPENDS  <file> [<file> ...]       # optional: files the source #includes
+#       PRECISE_MATH                       # optional: IEEE floating point on Metal (see below)
 #   )
+#
+# PRECISE_MATH: Metal compiles with fast math by default (reassociation and other algebraic rewrites,
+# no NaN / Inf, fast math functions), and so do these shaders unless they opt out with PRECISE_MATH,
+# for code whose correctness depends on IEEE semantics (md_topo's certified kernels). The offline
+# compiler gets -fno-fast-math; for MSL compiled at runtime the generated descriptors carry
+# precise_math, which md_gpu_metal turns into the matching MTLCompileOptions. Vulkan has no fast-math
+# mode, so there it changes nothing.
 #
 # At least one of ENTRIES / VERTEX / FRAGMENT is required. Produces, for each
 # entry point, symbols
@@ -128,10 +136,19 @@ if (MD_GPU_BACKEND STREQUAL "METAL")
     endif()
 endif()
 
+# Debug information in every shader binary (source files, lines, names), for shader profilers and
+# debuggers: Nsight Graphics' Shader Profiler and GPU Trace source views, RenderDoc, Xcode. SPIR-V gets
+# Slang's -g (NonSemantic.Shader.DebugInfo, core with Vulkan 1.3); offline Metal also
+# -gline-tables-only -frecord-sources. Off by default: larger binaries, and nothing else changes.
+option(MD_GPU_SHADER_DEBUG_INFO "Compile GPU shaders with debug information, for shader profilers" OFF)
+if (MD_GPU_SHADER_DEBUG_INFO)
+    message(STATUS "md_gpu: shaders compiled with debug information (MD_GPU_SHADER_DEBUG_INFO)")
+endif()
+
 function(compile_gpu_shaders OUT_HEADER)
     set(oneValueArgs TARGET NAMESPACE SOURCE)
     set(multiValueArgs ENTRIES VERTEX FRAGMENT DEPENDS)
-    cmake_parse_arguments(G2 "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+    cmake_parse_arguments(G2 "PRECISE_MATH" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if (NOT G2_TARGET OR NOT G2_NAMESPACE OR NOT G2_SOURCE)
         message(FATAL_ERROR "compile_gpu_shaders: TARGET, NAMESPACE and SOURCE are required")
@@ -139,6 +156,16 @@ function(compile_gpu_shaders OUT_HEADER)
     set(ALL_ENTRIES ${G2_ENTRIES} ${G2_VERTEX} ${G2_FRAGMENT})
     if (NOT ALL_ENTRIES)
         message(FATAL_ERROR "compile_gpu_shaders: at least one of ENTRIES, VERTEX, FRAGMENT is required")
+    endif()
+    set(MATH_ARGS "")               # build script: precise_math descriptors, debug information
+    set(METAL_FLAGS "")             # offline Metal compiler
+    if (G2_PRECISE_MATH)
+        set(MATH_ARGS --precise-math)
+        set(METAL_FLAGS -fno-fast-math)
+    endif()
+    if (MD_GPU_SHADER_DEBUG_INFO)
+        list(APPEND MATH_ARGS --debug-info)
+        list(APPEND METAL_FLAGS -gline-tables-only -frecord-sources)
     endif()
     if (NOT DEFINED SLANG_EXECUTABLE)
         message(FATAL_ERROR "compile_gpu_shaders: SLANG_EXECUTABLE not defined")
@@ -199,7 +226,8 @@ function(compile_gpu_shaders OUT_HEADER)
             --backend        ${MD_GPU_BACKEND}
             --stage          ${STAGE}
             --namespace      ${G2_NAMESPACE}
-            --spv ${SPV} --msl ${MSL} --desc ${DESC})
+            --spv ${SPV} --msl ${MSL} --desc ${DESC}
+            ${MATH_ARGS})
         set(BUILD_DEPS ${ABS_SRC} ${MD_GPU_SHADER_DEPS} ${G2_DEPENDS} ${SCRIPT_DEPS})
         # DEPENDS_EXPLICIT_ONLY below: a shader build reads only its sources and
         # the scripts, never the output of another target. Without it Ninja would
@@ -219,7 +247,7 @@ function(compile_gpu_shaders OUT_HEADER)
             )
             add_custom_command(
                 OUTPUT  ${METALLIB} ${C_FILE}
-                COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${MSL} -o ${AIR}
+                COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metal -c ${METAL_FLAGS} ${MSL} -o ${AIR}
                 COMMAND ${MD_GPU_XCRUN_EXECUTABLE} -sdk macosx metallib ${AIR} -o ${METALLIB}
                 COMMAND ${Python3_EXECUTABLE} ${BIN2C_SCRIPT} ${METALLIB} ${C_FILE} ${SYMBOL}
                 DEPENDS ${MSL} ${BIN2C_SCRIPT}

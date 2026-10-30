@@ -230,6 +230,43 @@ bool md_qm_publish_orbital_densities(struct md_system_t* sys);
 size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, const struct md_system_t* sys,
                               str_t density_path, struct md_allocator_i* alloc);
 
+// The orbitals of the AVERAGE LOCAL IONIZATION ENERGY (Sjoberg, Murray, Brinck and Politzer, Can. J. Chem. 68,
+// 1440 (1990)),
+//
+//     I(r) = sum_k n_k |e_k| |phi_k(r)|^2 / sum_k n_k |phi_k(r)|^2
+//
+// over the occupied orbitals of both spins, n_k the occupation and e_k the orbital energy: where the least
+// tightly held electrons are, the lowest values (on an isodensity surface, the sites an electrophile or a
+// radical attacks). Both sums are of squares of the same orbitals, so this hands out the rows once and two
+// sets of weights: weights, n_k (exactly md_qm_density_orbitals' for orbital/total/density: the denominator
+// is the electron density), and energy_weights, n_k |e_k| in hartree (the numerator). What
+// md_gto_iso_field_create_products takes, once with each.
+//
+// An orbital both spins share appears once with its weights summed: n_a + n_b, and n_a |e_a| + n_b |e_b| -
+// a restricted open shell's two spins may state different energies for the same orbital. Reads
+// orbital/{alpha,beta}/{coefficient,occupation,energy}.
+//
+// Canonical orbitals only: every occupation 0, 1 or 2 (within 1e-3). Natural orbitals (fractional
+// occupations) have no orbital energies to weight by, and a file that gives them a column of energies
+// anyway would give a plausible looking I(r) that means nothing; 0 is returned for them, and for a file
+// without orbital energies (TREXIO may leave them out) or with an energy that is not finite. The energies
+// of Kohn-Sham orbitals are not ionization energies, and I(r) from them lies below the Hartree-Fock one,
+// as is usual.
+//
+// Where it means something: I(r) >= |e_HOMO| everywhere, and on an isodensity surface of 0.001-0.002 au it
+// is the usual 0.3-0.6 hartree. Far out it is not |e_HOMO|, as with exact orbitals: a gaussian basis' tails
+// are its most diffuse primitives', and the ratio there is of two vanishing sums (water 8.7 bohr out, rho
+// 7e-12: 0.49 against |e_HOMO| 0.29). A consumer evaluates it where rho is substantial.
+//
+// Every array from 'alloc' (sizeof(double) * count * num_ao, and sizeof(double) * count each). Returns
+// count; 0 on failure.
+size_t md_qm_alie_orbitals(double** out_rows, double** out_weights, double** out_energy_weights, size_t* out_num_ao,
+                           const struct md_system_t* sys, struct md_allocator_i* alloc);
+
+// Whether md_qm_alie_orbitals can make them: the alpha orbitals' coefficients, occupations and energies are
+// there and the occupations are those of canonical orbitals. Reads the occupations only.
+bool md_qm_alie_available(const struct md_system_t* sys);
+
 // orbital/{total,difference}/density (alpha + beta, alpha - beta) as virtual attributes over whatever
 // orbital/{alpha,beta}/density are: for a producer that publishes those two itself (read from a file
 // that stores them, say). Where beta is an alias of alpha, alpha is read once for the total and not

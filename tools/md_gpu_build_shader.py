@@ -31,7 +31,7 @@ Usage:
     md_gpu_build_shader.py --slangc <path> --backend VULKAN|METAL
         --stage compute|vertex|fragment --namespace <ns>
         --spv <out.spv> --msl <out.metal> --desc <out.inl> [--embed <out.c>]
-        [--bindless-space <n>] <file.slang> <entry>
+        [--bindless-space <n>] [--precise-math] [--debug-info] <file.slang> <entry>
 """
 
 import argparse
@@ -49,8 +49,10 @@ import check_gpu_arg_layout as layout           # noqa: E402
 import spirv_deforward                          # noqa: E402
 
 
-def compile_both(slangc, source, entry, bindless_space):
-    """(spirv bytes, msl bytes) from one slangc run, or exit on failure."""
+def compile_both(slangc, source, entry, bindless_space, debug_info=False):
+    """(spirv bytes, msl bytes) from one slangc run, or exit on failure. With
+    debug_info, slangc -g: source files, lines and names for shader profilers
+    (SPIR-V: NonSemantic.Shader.DebugInfo.100)."""
     with tempfile.TemporaryDirectory() as td:
         spv, msl = Path(td) / "o.spv", Path(td) / "o.metal"
         cmd = [slangc, str(source), "-entry", entry,
@@ -65,6 +67,8 @@ def compile_both(slangc, source, entry, bindless_space):
                "-capability", "subgroup_basic+subgroup_ballot+subgroup_arithmetic",
                "-bindless-space-index", bindless_space, "-o", str(spv),
                "-target", "metal", "-o", str(msl)]
+        if debug_info:
+            cmd.insert(2, "-g")
         p = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
         # Pass slangc's own diagnostics through, warnings included.
         sys.stdout.write(p.stdout)
@@ -93,12 +97,16 @@ def main():
     ap.add_argument("--msl", required=True, help="MSL output")
     ap.add_argument("--desc", required=True, help="descriptor header output")
     ap.add_argument("--embed", help="write the backend binary as a C array to this file")
+    ap.add_argument("--precise-math", action="store_true",
+                    help="the descriptor asks for IEEE floating point (Metal: no fast math)")
+    ap.add_argument("--debug-info", action="store_true",
+                    help="compile with debug information (slangc -g), for shader profilers")
     ap.add_argument("source")
     ap.add_argument("entry")
     args = ap.parse_args()
 
     src, entry = Path(args.source), args.entry
-    spv, msl = compile_both(args.slangc, src, entry, args.bindless_space)
+    spv, msl = compile_both(args.slangc, src, entry, args.bindless_space, args.debug_info)
 
     problems, group_size, args_size = layout.check_entry(
         src.name, entry, args.stage != "compute", spv, msl.decode("utf8", "replace"))
@@ -122,7 +130,8 @@ def main():
         (args.msl, msl),
         (args.desc, layout.descriptor_source(
             args.namespace, src.stem, entry, group_size, args_size,
-            f"tools/md_gpu_build_shader.py from {src.name} [{entry}]").encode()),
+            f"tools/md_gpu_build_shader.py from {src.name} [{entry}]",
+            args.precise_math).encode()),
     ]
     if args.embed:
         blob = spv if args.backend == "VULKAN" else msl

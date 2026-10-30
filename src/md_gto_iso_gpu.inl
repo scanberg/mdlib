@@ -6,13 +6,14 @@
 // atoms, from seeds and a flood), Surface Nets, relaxation on the lattice's surface, Newton
 // projection, per-field regrouping. The host waits for the device three times (the brick and slot
 // counts, the vertex count, the final counts with the mesh), and once per flood round.
+// md_gto_iso_gpu_evaluate_launch runs the same vertex evaluators on the caller's points (at the end).
 
 #include <core/md_intrinsics.h>
 #include <core/md_gpu.h>
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r36 (the D form in tiles of the AO pairs that meet, built on the device; r35: kernels with the first set, the surface box per radial function)"
+#define ISOG_REVISION "r37 (the vertex evaluators at arbitrary points: md_gto_iso_gpu_evaluate; r36: the D form in tiles of the AO pairs that meet, built on the device)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -55,6 +56,8 @@ typedef struct isog_args_t {         // mirrors IsoArgs
     uint32_t group_base, grid_max;
     uint32_t dsparse, dm_nt, dm_pool, _pad2;
     md_gpu_addr_t dm_tao, dm_map, dm_rows;
+    md_gpu_addr_t pts, pval;
+    uint32_t pts_stride, pts_field, _pad3, _pad4;
 } isog_args_t;
 
 enum {
@@ -68,6 +71,7 @@ enum {
     ISOG_K_CELLS, ISOG_K_QUADS, ISOG_K_RELAX, ISOG_K_NEWTON, ISOG_K_EVAL1, ISOG_K_PROJ1,
     ISOG_K_BCOUNT, ISOG_K_BSCAN, ISOG_K_BVERTS, ISOG_K_BTRIS,
     ISOG_K_DROWS,
+    ISOG_K_PLOAD, ISOG_K_PSTORE,
     ISOG_K_COUNT
 };
 
@@ -226,6 +230,8 @@ static bool isog_kernels_make(void) {
         md_shader_gto_iso_gpu_iso_bucket_vertices_kernel(),
         md_shader_gto_iso_gpu_iso_bucket_triangles_kernel(),
         md_shader_gto_iso_gpu_iso_dmat_rows_kernel(),
+        md_shader_gto_iso_gpu_iso_points_load_kernel(),
+        md_shader_gto_iso_gpu_iso_points_store_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -895,6 +901,60 @@ static void isog_prof_groups(const md_gto_iso_gpu_set_t* set, const float* xyz, 
 static md_gpu_grid_t isog_groups(uint32_t n) {     // one group per item, split over y
     if (n == 0) return md_gpu_grid(0, 0, 0);
     return md_gpu_grid(n < 65535u ? n : 65535u, (n + 65534u) / 65535u, 1);
+}
+
+// The set's cutoff and screening as switched (remade when the switch changed since the set was made)
+static void isog_set_current(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set) {
+    const int screen = set->orbitals_only && set->sh_cmax;    // orbitals: a shell dropped where its largest coefficient times its AOs is below eps
+    if (set->eps_exp != isog_eval_eps_exp || set->screen != screen) isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, isog_eval_eps_exp, screen);
+}
+
+// What every evaluation of the set reads: the basis, the functions (C), the fields' terms and the D form
+static void isog_args_set(isog_args_t* a, const md_gto_iso_gpu_set_t* set) {
+    a->num_shells = set->num_shells;
+    a->num_ao     = set->num_ao;
+    a->num_fn     = set->num_fn;
+    a->fn_stride  = set->fn_stride;
+    a->num_fields = set->num_fields;
+    a->shells = set->shells.gpu; a->prims = set->prims.gpu; a->crit = set->crit.gpu;
+    a->ao_nrm = set->ao_nrm.gpu; a->ao_ijk = set->ao_ijk.gpu; a->C = set->C.gpu; a->terms = set->terms.gpu;
+    a->fn_tail = set->fn_tail.gpu;
+    a->wts = set->wts.gpu;
+    a->canon = set->canon ? 1u : 0u;
+    a->dmat = set->dmat.gpu;
+    a->fdmat = set->fdmat.gpu;
+    a->num_dmat = set->num_dmat;
+    a->dform = ((isog_dform || set->factorless) && set->num_dmat > 0) ? 1u : 0u;
+    a->drs = set->drs.gpu;
+    a->dsparse = set->dsparse;
+    a->dm_nt = set->dm_nt;
+    a->dm_pool = set->dm_pool;
+    a->dm_tao = set->dm_tao.gpu;
+    a->dm_map = set->dm_map.gpu;
+    a->dprop = set->dprop.gpu;
+}
+
+// The kernel that evaluates value and gradient at a list of vertices (vpos; vinfo.z the field; vdone 0 for the
+// ones to evaluate) into vval, and how many vertices a group of it takes (0: a thread each, md_gpu_grid_for).
+// 'project': a set of one orbital is evaluated and projected in one launch (iso_project_list_f1), as the
+// extraction does; otherwise only evaluated.
+//   orbitals:                          a thread per vertex, its field's one column of C (iso_eval_orbital)
+//   densities as phi^T D phi (dform):  32 per group (iso_deval)
+//   canonical sets of > 64 functions:  the wide GEMM, 16 per group (iso_geval_w128, _w192, _y256)
+//   otherwise:                         the tiled GEMM, 32 per group (iso_geval_f16, _f32, _f64)
+typedef struct isog_vkernel_t {
+    int      k;
+    uint32_t per_group;
+} isog_vkernel_t;
+
+static isog_vkernel_t isog_vertex_kernel(const md_gto_iso_gpu_set_t* set, bool dform, bool project) {
+    if (project && set->orbitals_only && set->num_fn == 1 && set->num_fields == 1) return (isog_vkernel_t){ISOG_K_PROJ1, 128u};
+    if (set->orbitals_only) return (isog_vkernel_t){ISOG_K_EVAL1, 0u};
+    if (dform) return (isog_vkernel_t){ISOG_K_DEVAL, 32u};
+    const uint32_t nf = set->num_fn;
+    const int kw = nf <= 128 ? ISOG_K_GEVAL_W128 : nf <= 192 ? ISOG_K_GEVAL_W192 : ISOG_K_GEVAL_Y256;
+    if (set->canon && nf > 64u && isog_k[kw]) return (isog_vkernel_t){kw, 16u};
+    return (isog_vkernel_t){nf <= 16 ? ISOG_K_GEVAL_F16 : nf <= 32 ? ISOG_K_GEVAL_F32 : ISOG_K_GEVAL_F64, 32u};
 }
 
 static void isog_stage(md_gpu_stream_t s, const md_gto_iso_gpu_desc_t* desc, md_gto_iso_gpu_mesh_t* out, int stage, md_tick_t* t) {
@@ -1770,20 +1830,16 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 // (iso_project_list_f1); other sets of orbitals: a thread per vertex (iso_eval_orbital); densities
                 // (and sets with any): the tiled GEMM, 32 vertices (4 channels each) per group, the wide one for
                 // canonical sets of more than 64 functions, 16 per group; or the D form
-                const bool one = set->orbitals_only && set->num_fn == 1 && set->num_fields == 1;
-                const uint32_t nfv = set->num_fn;
-                const int kwv = nfv <= 128 ? ISOG_K_GEVAL_W128 : nfv <= 192 ? ISOG_K_GEVAL_W192 : ISOG_K_GEVAL_Y256;
-                const bool vwide = !set->orbitals_only && !a.dform && a.canon && nfv > 64u && isog_k[kwv];
-                const int ke = one ? ISOG_K_PROJ1 : set->orbitals_only ? ISOG_K_EVAL1 : a.dform ? ISOG_K_DEVAL : vwide ? kwv
-                             : nfv <= 16 ? ISOG_K_GEVAL_F16 : nfv <= 32 ? ISOG_K_GEVAL_F32 : ISOG_K_GEVAL_F64;
-                if (!isog_have(ke)) { isog_job_fail(j, "md_gto_iso_gpu_extract: an evaluation kernel is missing"); break; }
-                md_gpu_kernel_t k_eval = isog_k[ke];
-                isog_used(ke);
+                const isog_vkernel_t vk = isog_vertex_kernel(set, a.dform != 0u, true);
+                const bool one = vk.k == ISOG_K_PROJ1;
+                if (!isog_have(vk.k)) { isog_job_fail(j, "md_gto_iso_gpu_extract: an evaluation kernel is missing"); break; }
+                md_gpu_kernel_t k_eval = isog_k[vk.k];
+                isog_used(vk.k);
                 // the evaluation's groups (0: a thread per vertex)
-                const uint32_t n_eval_groups = one ? (nv + 127) / 128 : set->orbitals_only ? 0u : vwide ? (nv + 15) / 16 : (nv + 31) / 32;
+                const uint32_t n_eval_groups = vk.per_group ? (nv + vk.per_group - 1) / vk.per_group : 0u;
                 const md_gpu_grid_t g_eval = n_eval_groups ? isog_groups(n_eval_groups) : g_vert;
                 if (isog_prof) {    // BENCHMARK: the boxes of the vertex groups (consecutive vertices), not timed
-                    const uint32_t vg = one ? 128u : vwide ? 16u : set->orbitals_only ? 0u : 32u;
+                    const uint32_t vg = vk.per_group;
                     md_gpu_float4* vp = vg ? (md_gpu_float4*)malloc(sizeof(md_gpu_float4) * nv) : NULL;
                     if (vp && isog_read(s, vp, a.vpos, sizeof(md_gpu_float4) * nv)) {
                         isog_prof->vgroup_size = vg;
@@ -1940,10 +1996,7 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
         return NULL;
     }
     if (!isog_kernels_ready()) return NULL;
-    {   // the set's cutoff and screening as switched (remade when the switch changed since the set was made)
-        const int screen = set->orbitals_only && set->sh_cmax;    // orbitals: a shell dropped where its largest coefficient times its AOs is below eps
-        if (set->eps_exp != isog_eval_eps_exp || set->screen != screen) isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, isog_eval_eps_exp, screen);
-    }
+    isog_set_current(s, set);
     const uint32_t F = set->num_fields;
     // root: the union of every field's surface box, as on the CPU (the same lattice for one field)
     double lo[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, hi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
@@ -1983,33 +2036,13 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
     j->out.cells_per_axis = 4u << L;
 
     isog_args_t* a = &j->a;
+    isog_args_set(a, set);
     a->origin_h   = (md_gpu_float4){(float)origin[0], (float)origin[1], (float)origin[2], (float)h};
-    a->num_shells = set->num_shells;
-    a->num_ao     = set->num_ao;
-    a->num_fn     = set->num_fn;
-    a->fn_stride  = set->fn_stride;
-    a->num_fields = F;
     a->brick_level = (uint32_t)L;
     a->step_max   = (float)(0.5 * h);
     a->lambda     = 0.5f;
     a->tol        = (float)(pow(10.0, -(double)ISOG_NEWTON_TOL_EXP) * h);
-    a->shells = set->shells.gpu; a->prims = set->prims.gpu; a->crit = set->crit.gpu;
-    a->ao_nrm = set->ao_nrm.gpu; a->ao_ijk = set->ao_ijk.gpu; a->C = set->C.gpu; a->terms = set->terms.gpu;
-    a->fn_tail = set->fn_tail.gpu;
-    a->wts = set->wts.gpu;
-    a->canon = set->canon ? 1u : 0u;
-    a->dmat = set->dmat.gpu;
-    a->fdmat = set->fdmat.gpu;
-    a->num_dmat = set->num_dmat;
-    a->dform = ((isog_dform || set->factorless) && set->num_dmat > 0) ? 1u : 0u;
     j->cdform = a->dform != 0;      // the corners in the D form with it
-    a->drs = set->drs.gpu;
-    a->dsparse = set->dsparse;
-    a->dm_nt = set->dm_nt;
-    a->dm_pool = set->dm_pool;
-    a->dm_tao = set->dm_tao.gpu;
-    a->dm_map = set->dm_map.gpu;
-    a->dprop = set->dprop.gpu;
     // the D form's octree bounds the matrix's density, within the factors' slack of what the factored
     // evaluation gives (the slack is in the bound): either evaluation goes with it
     j->odform = set->num_dmat > 0;
@@ -2168,4 +2201,208 @@ bool md_gto_iso_gpu_mesh_read_all(md_gpu_stream_t stream, const md_gto_iso_gpu_m
     if (index)    { memcpy(index,    (const char*)m.cpu + off, bi); off += bi; }
     md_gpu_free(stream, m.gpu);
     return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The fields at arbitrary points: the vertex evaluators on the caller's points
+// ---------------------------------------------------------------------------------------------
+
+#define ISOG_EVAL_BATCH (1u << 20)      // points per pass: the scratch is ~52 bytes a point
+
+bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_eval_desc_t* desc) {
+    if (!s || !set || !desc || !desc->xyz || desc->num_fields == 0 || desc->num_fields > MD_GTO_ISO_GPU_MAX_FIELDS ||
+        (!desc->out_value && !desc->out_gradient) || (desc->xyz_stride & 3u)) {
+        MD_LOG_ERROR("md_gto_iso_gpu_evaluate: invalid arguments");
+        return false;
+    }
+    for (uint32_t k = 0; k < desc->num_fields; ++k) {
+        if (desc->fields[k] >= set->num_fields) {
+            MD_LOG_ERROR("md_gto_iso_gpu_evaluate: field %u is not in the set (%u fields)", desc->fields[k], set->num_fields);
+            return false;
+        }
+    }
+    if (desc->num_xyz == 0) {
+        if (desc->out_failed) md_gpu_memset(s, desc->out_failed, 0, sizeof(uint32_t));
+        return true;
+    }
+    if (!isog_kernels_ready()) return false;
+    isog_set_current(s, set);
+
+    isog_args_t a;
+    memset(&a, 0, sizeof(a));
+    isog_args_set(&a, set);
+    const isog_vkernel_t vk = isog_vertex_kernel(set, a.dform != 0u, false);
+    if (!isog_have(vk.k) || !isog_have(ISOG_K_PLOAD) || !isog_have(ISOG_K_PSTORE)) return false;
+
+    const uint32_t n = desc->num_xyz;
+    const uint32_t B = n < ISOG_EVAL_BATCH ? n : ISOG_EVAL_BATCH;
+    const uint32_t stride = desc->xyz_stride ? desc->xyz_stride : 3u * (uint32_t)sizeof(float);
+    // the vertices' state; vval the caller's gradients where they are wanted
+    md_gpu_mem_t m_fields   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(isog_field_t) * MD_GTO_ISO_GPU_MAX_FIELDS);
+    md_gpu_mem_t m_counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 12);
+    md_gpu_mem_t m_vpos     = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * B);
+    md_gpu_mem_t m_vinfo    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_uint4) * B);
+    md_gpu_mem_t m_vdone    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * B);
+    md_gpu_mem_t m_vval     = desc->out_gradient ? (md_gpu_mem_t){0} : md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * B);
+    const bool ok = m_fields.gpu && m_counters.gpu && m_vpos.gpu && m_vinfo.gpu && m_vdone.gpu && (desc->out_gradient || m_vval.gpu);
+    if (ok) {
+        // the fields as the extraction uploads them, all 16 (unrolled loops may read past num_fields); their iso
+        // values are not read by an evaluation
+        isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];
+        memset(fields, 0, sizeof(fields));
+        memcpy(fields, set->fields, sizeof(isog_field_t) * set->num_fields);
+        md_gpu_upload(s, m_fields.gpu, fields, sizeof(fields));
+        md_gpu_memset(s, m_counters.gpu, 0, sizeof(uint32_t) * 12);
+        a.fields   = m_fields.gpu;
+        a.counters = m_counters.gpu;
+        a.count_in = m_counters.gpu;    // valid wherever a kernel may read it (llvmpipe loads both sides of a select)
+        a.vpos     = m_vpos.gpu;
+        a.vinfo    = m_vinfo.gpu;
+        a.vdone    = m_vdone.gpu;
+        a.pts_stride = stride / 4u;
+        for (uint32_t off = 0; off < n; off += B) {
+            const uint32_t nb = n - off < B ? n - off : B;
+            a.count = nb;
+            a.pts = desc->xyz + (md_gpu_addr_t)off * stride;
+            const md_gpu_grid_t g_pts = md_gpu_grid_for(isog_k[ISOG_K_PLOAD], nb, 1, 1);
+            const md_gpu_grid_t g_eval = vk.per_group ? isog_groups((nb + vk.per_group - 1) / vk.per_group) : md_gpu_grid_for(isog_k[vk.k], nb, 1, 1);
+            for (uint32_t k = 0; k < desc->num_fields; ++k) {
+                const size_t first = (size_t)k * n + off;      // this pass's first output of field k
+                a.pts_field = desc->fields[k];
+                a.mode = k == 0 ? 1u : 0u;                      // the positions once a pass, then only the field
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_PLOAD], g_pts, a);
+                a.mode = 0;
+                a.vval = desc->out_gradient ? desc->out_gradient + first * sizeof(md_gpu_float4) : m_vval.gpu;
+                md_gpu_memset(s, a.vval, 0xFF, sizeof(md_gpu_float4) * nb);    // NaN where no value is made
+                MD_GPU_LAUNCH(s, isog_k[vk.k], g_eval, a);
+                if (desc->out_value) {
+                    a.pval = desc->out_value + first * sizeof(float);
+                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_PSTORE], g_pts, a);
+                }
+            }
+        }
+        if (desc->out_failed) md_gpu_copy(s, desc->out_failed, m_counters.gpu + 7 * sizeof(uint32_t), sizeof(uint32_t));
+    } else {
+        MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of device memory (%u points)", B);
+    }
+    // stream ordered: after the work above
+    if (m_fields.gpu)   md_gpu_free(s, m_fields.gpu);
+    if (m_counters.gpu) md_gpu_free(s, m_counters.gpu);
+    if (m_vpos.gpu)     md_gpu_free(s, m_vpos.gpu);
+    if (m_vinfo.gpu)    md_gpu_free(s, m_vinfo.gpu);
+    if (m_vdone.gpu)    md_gpu_free(s, m_vdone.gpu);
+    if (m_vval.gpu)     md_gpu_free(s, m_vval.gpu);
+    return ok;
+}
+
+// 10 bits of x spread to every third bit
+static inline uint32_t isog_morton_spread(uint32_t x) {
+    x &= 0x3FFu;
+    x = (x | (x << 16)) & 0x030000FFu;
+    x = (x | (x << 8))  & 0x0300F00Fu;
+    x = (x | (x << 4))  & 0x030C30C3u;
+    x = (x | (x << 2))  & 0x09249249u;
+    return x;
+}
+
+static int isog_cmp_u64(const void* pa, const void* pb) {
+    const uint64_t x = *(const uint64_t*)pa, y = *(const uint64_t*)pb;
+    return x < y ? -1 : x > y;
+}
+
+bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const uint32_t* fields, uint32_t num_fields,
+                             const float* xyz, size_t xyz_stride, size_t num_xyz, float* out_value, float* out_gradient) {
+    if (!s || !set || !fields || num_fields == 0 || num_fields > MD_GTO_ISO_GPU_MAX_FIELDS || (num_xyz && !xyz) ||
+        (!out_value && !out_gradient) || num_xyz > UINT32_MAX) {
+        MD_LOG_ERROR("md_gto_iso_gpu_evaluate: invalid arguments");
+        return false;
+    }
+    if (num_xyz == 0) return true;
+    const size_t n = num_xyz;
+    const size_t st = xyz_stride ? xyz_stride : 3 * sizeof(float);
+#define ISOG_P(i) ((const float*)((const char*)xyz + (i) * st))
+
+    // a Morton curve through the points' box: code << 32 | index, sorted
+    float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (size_t i = 0; i < n; ++i) {
+        const float* p = ISOG_P(i);
+        for (int c = 0; c < 3; ++c) { lo[c] = MIN(lo[c], p[c]); hi[c] = MAX(hi[c], p[c]); }
+    }
+    float scl[3];
+    for (int c = 0; c < 3; ++c) scl[c] = hi[c] > lo[c] ? 1023.0f / (hi[c] - lo[c]) : 0.0f;
+    uint64_t* order = (uint64_t*)malloc(sizeof(uint64_t) * n);
+    md_gpu_float4* pts = (md_gpu_float4*)malloc(sizeof(md_gpu_float4) * n);
+    if (!order || !pts) {
+        free(order); free(pts);
+        MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of memory");
+        return false;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const float* p = ISOG_P(i);
+        uint32_t q[3];
+        for (int c = 0; c < 3; ++c) {
+            const float t = (p[c] - lo[c]) * scl[c];
+            q[c] = t > 0.0f ? (t < 1023.0f ? (uint32_t)t : 1023u) : 0u;     // NaN to 0
+        }
+        const uint32_t code = isog_morton_spread(q[0]) | (isog_morton_spread(q[1]) << 1) | (isog_morton_spread(q[2]) << 2);
+        order[i] = ((uint64_t)code << 32) | (uint64_t)i;
+    }
+    qsort(order, n, sizeof(uint64_t), isog_cmp_u64);
+    for (size_t r = 0; r < n; ++r) {
+        const float* p = ISOG_P((size_t)(uint32_t)order[r]);
+        pts[r] = (md_gpu_float4){p[0], p[1], p[2], 1.0f};
+    }
+#undef ISOG_P
+
+    // device: the points, the outputs and the count of failures; then all of it to one host-readable buffer
+    const size_t bv = out_value ? sizeof(float) * num_fields * n : 0;
+    const size_t bg = out_gradient ? sizeof(md_gpu_float4) * num_fields * n : 0;
+    md_gpu_mem_t d_pts = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * n);
+    md_gpu_mem_t d_out = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, bv + bg + 16);
+    md_gpu_mem_t h_out = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, bv + bg + 16);
+    bool ok = d_pts.gpu && d_out.gpu && h_out.gpu;
+    if (ok) {
+        md_gpu_upload(s, d_pts.gpu, pts, sizeof(md_gpu_float4) * n);
+        md_gto_iso_gpu_eval_desc_t d;
+        memset(&d, 0, sizeof(d));
+        d.xyz = d_pts.gpu;
+        d.xyz_stride = sizeof(md_gpu_float4);
+        d.num_xyz = (uint32_t)n;
+        d.num_fields = num_fields;
+        memcpy(d.fields, fields, sizeof(uint32_t) * num_fields);
+        d.out_value    = out_value ? d_out.gpu : 0;
+        d.out_gradient = out_gradient ? d_out.gpu + bv : 0;
+        d.out_failed   = d_out.gpu + bv + bg;
+        ok = md_gto_iso_gpu_evaluate_launch(s, set, &d);
+        if (ok) {
+            md_gpu_copy(s, h_out.gpu, d_out.gpu, bv + bg + sizeof(uint32_t));
+            md_gpu_stream_sync(s);
+            const float* hv = (const float*)h_out.cpu;
+            const md_gpu_float4* hg = (const md_gpu_float4*)((const char*)h_out.cpu + bv);
+            const uint32_t failed = *(const uint32_t*)((const char*)h_out.cpu + bv + bg);
+            for (uint32_t k = 0; k < num_fields; ++k) {
+                for (size_t r = 0; r < n; ++r) {
+                    const size_t i = (size_t)(uint32_t)order[r];
+                    if (out_value) out_value[(size_t)k * n + i] = hv[(size_t)k * n + r];
+                    if (out_gradient) {
+                        const md_gpu_float4 g = hg[(size_t)k * n + r];
+                        float* o = out_gradient + 3 * ((size_t)k * n + i);
+                        o[0] = g.x; o[1] = g.y; o[2] = g.z;
+                    }
+                }
+            }
+            if (failed) {
+                MD_LOG_ERROR("md_gto_iso_gpu_evaluate: %u values could not be made (too many shells reach their points)", failed);
+                ok = false;
+            }
+        }
+    } else {
+        MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of device memory (%zu points)", n);
+    }
+    if (d_pts.gpu) md_gpu_free(s, d_pts.gpu);
+    if (d_out.gpu) md_gpu_free(s, d_out.gpu);
+    if (h_out.gpu) md_gpu_free(s, h_out.gpu);
+    free(order);
+    free(pts);
+    return ok;
 }

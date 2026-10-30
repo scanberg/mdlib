@@ -307,6 +307,22 @@ struct type_info_t {
 // We need to differentiate between different lengths of arrays with the same type in our system, so for now it should probably reside within the type_info
 // I.e. the array length should be part of the fundamental type. This only strenghtens the type-system
 
+// PERIODIC VALUES. A value which is the same as itself plus a whole number of periods: an angle about an axis (a
+// dihedral is the same at -180 and at 180), the phase of a pucker. [beg, end[ is a period, the one its values are given
+// in, and end - beg its length. seam is where, in [beg, end[, a plot of the values best cuts the circle they lie on to lay
+// it out flat: where they are least likely to be, so that they cross the cut as seldom as possible. Every value which
+// crosses it jumps the length of the period in the plot, and is drawn across the whole of it.
+//
+// A procedure whose result is periodic states the period and the seam (static_backchannel_t), and the static check
+// carries them through the arithmetic done on it (see period_of_operator): dihedral(a,b,c,d) - dihedral(e,f,g,h) is an
+// angle as well, and so is dihedral(a,b,c,d) * 180 / PI, in a period of 360 rather than 2 PI. What no longer lies on a
+// circle (abs, cos, a comparison) is not periodic. Not periodic: end <= beg, as a zeroed one is.
+typedef struct period_t {
+    float beg;
+    float end;
+    float seam;     // in [beg, end[
+} period_t;
+
 // This is the struct which is passed as arguments into the procedures
 struct data_t {
     type_info_t type;
@@ -319,6 +335,7 @@ struct data_t {
 
     frange_t    value_range;
     md_unit_t   unit[2];
+    period_t    period;     // Of a periodic value (see PERIODIC VALUES), in the unit of the values (unit[1])
 
     // TYPE_DISTRIBUTION only: the weight of every bin, element for element beside ptr, so at the same byte offsets.
     // A bin is shown as value / weight. Both are additive (over frames, over merged bins, over pooled distributions),
@@ -359,6 +376,7 @@ typedef struct static_backchannel_t {
     flags_t   flags;
     md_unit_t unit[2];
     frange_t  value_range;
+    period_t  period;       // Set by a procedure whose result is periodic (see PERIODIC VALUES)
 } static_backchannel_t;
 
 // The diagnostics of one evaluation. They belong to whoever runs the evaluation, never to the IR,
@@ -642,6 +660,10 @@ typedef struct eval_property_t {
     float*  var;            // script/<ident>/variance
     vec2_t* ext;            // script/<ident>/extent
     vec2_t* range;          // script/<ident>/range      temporal and distribution
+
+    // Of a periodic temporal property (MD_SCRIPT_PROPERTY_FLAG_PERIODIC), as script/<ident>/period and /seam publish
+    // it: what makes its summary over the population (mean, var, ext) a circular one
+    period_t period;
 
     float   min_value;      // observed over everything evaluated so far
     float   max_value;
@@ -955,6 +977,56 @@ static size_t element_count(data_t arg) {
     return arg.type.dim[0];
 }
 
+// ### PERIODIC VALUES ###
+
+static inline bool period_valid(period_t p) {
+    return p.end > p.beg;
+}
+
+static inline double period_length(period_t p) {
+    return (double)p.end - (double)p.beg;
+}
+
+// x moved by whole periods of length len into [beg, beg + len[
+static inline double period_wrap(double x, double beg, double len) {
+    const double t = x - beg;
+    return beg + (t - len * floor(t / len));
+}
+
+// The period [beg, end[ with its seam at seam, moved into it. Not periodic unless end > beg.
+static period_t period_make(double beg, double end, double seam) {
+    if (!(end > beg)) return (period_t){0};
+    return (period_t){ (float)beg, (float)end, (float)period_wrap(seam, beg, end - beg) };
+}
+
+// Of the same length, to within what float holds: the two can be told apart from the other's values
+static bool period_same_length(period_t a, period_t b) {
+    const double la = period_length(a), lb = period_length(b);
+    return fabs(la - lb) <= 1.0e-5 * MAX(la, lb);
+}
+
+// The period of x + c, for a constant c
+static period_t period_shift(period_t p, double c) {
+    return period_make(p.beg + c, p.end + c, p.seam + c);
+}
+
+// The period of x * c, for a constant c. Its length is |c| times as long: 2x is the same at x and x + p only if it is
+// the same at 2x and 2x + 2p. None for c = 0, which is no longer anything but 0.
+static period_t period_scale(period_t p, double c) {
+    if (c > 0) return period_make(p.beg * c, p.end * c, p.seam * c);
+    if (c < 0) return period_make(p.end * c, p.beg * c, p.seam * c);
+    return (period_t){0};
+}
+
+// The period of a + b (sign 1) or a - b (sign -1), both periodic in periods of the same length: an angle as well, of
+// the same length, about the sum (or difference) of the middles of theirs. The seam half a period from that middle,
+// where the two are as far apart (or together) as they can be. The difference of two angles is then in [-180, 180[.
+static period_t period_combine(period_t a, period_t b, double sign) {
+    const double len = period_length(a);
+    const double mid = 0.5 * ((double)a.beg + a.end) + sign * 0.5 * ((double)b.beg + b.end);
+    return period_make(mid - 0.5 * len, mid + 0.5 * len, mid - 0.5 * len);
+}
+
 static type_info_t type_info_element_type(type_info_t ti) {
     ti.dim[0] = 1;
     return ti;
@@ -1150,6 +1222,7 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
     data->size = bytes;
     data->type = type;
     data->value_range = (frange_t){0, 0};
+    data->period = (period_t){0};
 
     data->unit[0] = md_unit_none();
     data->unit[1] = md_unit_none();
@@ -4292,6 +4365,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     data.unit[0] = expr_node->data.unit[0];
     data.unit[1] = expr_node->data.unit[1];
     data.value_range = expr_node->data.value_range;
+    data.period = expr_node->data.period;
    
     data_t* sub_dst = dst ? &data : NULL;
 
@@ -4481,6 +4555,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
             node->data = (data_t){0};
             node->data.unit[0] = node_copy->data.unit[0];
             node->data.unit[1] = node_copy->data.unit[1];
+            node->data.period = node_copy->data.period;
             node->type = AST_PROC_CALL;
             node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
             md_array_push(node->children, node_copy, ctx->compile_ir->arena);
@@ -4900,6 +4975,93 @@ static bool static_check_children(ast_node_t* node, eval_context_t* ctx) {
     return true;
 }
 
+// The value of a number known since the compilation: a literal, a constant, or what was evaluated of them ('180 / PI')
+static bool constant_scalar(double* out, const ast_node_t* node) {
+    if (!(node->flags & FLAG_CONSTANT) || !node->data.ptr || !is_scalar(node->data.type)) return false;
+    switch (node->data.type.base_type) {
+    case TYPE_FLOAT: *out = *(const float*)node->data.ptr; return true;
+    case TYPE_INT:   *out = *(const int*)node->data.ptr;   return true;
+    default: return false;
+    }
+}
+
+// The period of what an arithmetic operator gives, from those of its operands (see PERIODIC VALUES). x is periodic and
+// c a constant:
+//   x + c, c + x, x - c, c - x     periodic, the period and its seam moved along by c (and turned around for c - x)
+//   x * c, c * x, x / c            periodic, the period and its seam scaled by c (1 / c): dihedral(...) * 180 / PI
+//   -x                             periodic, the period and its seam turned around
+//   x + y, x - y                   both periodic in periods of the same length: periodic (period_combine)
+//   x + v, x - v, v + x, v - x     v not periodic, of the unit of x: the period of x (turned around for v - x), which the
+//                                  values are moved out of by v. They are still the same a period apart.
+// Nothing else is: x * y, c / x and x // c, and whatever does not give a number.
+static period_t period_of_operator(ast_type_t op, ast_node_t* const* arg, size_t num_args) {
+    if (num_args == 1) {
+        return op == AST_UNARY_NEG ? period_scale(arg[0]->data.period, -1.0) : (period_t){0};
+    }
+    if (num_args != 2) return (period_t){0};
+
+    const period_t pa = arg[0]->data.period;
+    const period_t pb = arg[1]->data.period;
+    const bool a = period_valid(pa);
+    const bool b = period_valid(pb);
+    if (!a && !b) return (period_t){0};
+
+    double c = 0;
+    switch (op) {
+    case AST_ADD:
+    case AST_SUB: {
+        const double sign = op == AST_ADD ? 1.0 : -1.0;
+        if (a && b) {
+            return period_same_length(pa, pb) ? period_combine(pa, pb, sign) : (period_t){0};
+        }
+        if (a) {
+            if (constant_scalar(&c, arg[1]))                                   return period_shift(pa, sign * c);
+            if (md_unit_equal(arg[0]->data.unit[1], arg[1]->data.unit[1]))     return pa;
+            return (period_t){0};
+        }
+        // The periodic one is the second
+        const period_t pr = op == AST_ADD ? pb : period_scale(pb, -1.0);
+        if (constant_scalar(&c, arg[0]))                                       return period_shift(pr, c);
+        if (md_unit_equal(arg[0]->data.unit[1], arg[1]->data.unit[1]))         return pr;
+        return (period_t){0};
+    }
+    case AST_MUL:
+        if (a && !b && constant_scalar(&c, arg[1])) return period_scale(pa, c);
+        if (b && !a && constant_scalar(&c, arg[0])) return period_scale(pb, c);
+        return (period_t){0};
+    case AST_DIV:
+        if (a && !b && constant_scalar(&c, arg[1]) && c != 0.0) return period_scale(pa, 1.0 / c);
+        return (period_t){0};
+    default:
+        return (period_t){0};
+    }
+}
+
+// The period of what a procedure gives which does not state one itself (see static_backchannel_t)
+static period_t period_of_proc_call(const ast_node_t* node) {
+    ASSERT(node && node->proc);
+    const size_t num_args = md_array_size(node->children);
+    int (*fn)(data_t*, data_t[], eval_context_t*) = node->proc->proc_ptr;
+
+    // An angle in [-180, 180[, cut where atan2 cuts it: nothing is known of where its values are
+    if (fn == _atan2f) {
+        return period_make(-PI, PI, -PI);
+    }
+    if (num_args == 1) {
+        const period_t p = node->children[0]->data.period;
+        // The least and the greatest of angles are angles of the same period
+        if (fn == _min_farr || fn == _max_farr) {
+            return p;
+        }
+        // The sum of n angles is an angle, about n times the middle of their period
+        if (fn == _sum_farr && period_valid(p)) {
+            const int n = type_info_array_len(node->children[0]->data.type);
+            return n > 0 ? period_shift(p, (n - 1) * 0.5 * ((double)p.beg + p.end)) : (period_t){0};
+        }
+    }
+    return (period_t){0};
+}
+
 static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(is_operator(node->type));
@@ -4947,12 +5109,22 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
                     break;
                 default: break;
                 }
+            } else if (node->type == AST_UNARY_NEG) {
+                // -x is in the unit of x
+                node->data.unit[0] = arg[0]->data.unit[0];
+                node->data.unit[1] = arg[0]->data.unit[1];
             }
+
+            // From the operands as they are written, before finalize_proc_call swaps and converts them
+            const period_t period = period_of_operator(node->type, arg, num_args);
 
             node->type = AST_PROC_CALL;
             node->proc = res.procedure;
             node->proc_flags = res.flags;
             result = finalize_proc_call(node, ctx);
+            if (result) {
+                node->data.period = period;
+            }
         } else {
             char arg_type_str[2][64] = {"empty", "empty"};
             bool bonds = false;
@@ -5666,6 +5838,12 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             node->data.unit[1] = node->children[0]->data.unit[1];
         }
 
+        // A procedure which states nothing about it during its static validation (below) is periodic by the rules of
+        // period_of_proc_call
+        if (result) {
+            node->data.period = period_of_proc_call(node);
+        }
+
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
             //MD_LOG_DEBUG("Static validating procedure: '"STR_FMT"'", STR_ARG(node->ident));
@@ -5676,6 +5854,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             node->data.unit[0] = channel.unit[0];
             node->data.unit[1] = channel.unit[1];
             node->data.value_range = channel.value_range;
+            node->data.period = channel.period;
             ctx->backchannel = prev_channel;
         }
     }
@@ -5859,6 +6038,16 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         node->data.unit[0] = array_unit[0];
         node->data.unit[1] = array_unit[1];
 
+        // Periodic if every element is, in periods of the same length: the period of the first. Elements given in
+        // other periods of that length are still the same a period apart.
+        node->data.period = num_elem > 0 ? elem[0]->data.period : (period_t){0};
+        for (size_t i = 1; i < num_elem; ++i) {
+            if (!period_valid(elem[i]->data.period) || !period_same_length(elem[i]->data.period, node->data.period)) {
+                node->data.period = (period_t){0};
+                break;
+            }
+        }
+
         bool children_constant = true;
         for (size_t i = 0; i < num_elem; ++i) {
             if (elem[i]->type != AST_CONSTANT_VALUE) {
@@ -6001,6 +6190,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
     node->data.type = result_type;
     node->data.unit[0] = lhs->data.unit[0];
     node->data.unit[1] = lhs->data.unit[1];
+    node->data.period = lhs->data.period;    // An element of a periodic array is periodic alike
     return true;
 }
 
@@ -6191,6 +6381,7 @@ static bool static_check_out(ast_node_t* node, eval_context_t* ctx) {
         node->data.unit[0] = expr->data.unit[0];
         node->data.unit[1] = expr->data.unit[1];
         node->data.value_range = expr->data.value_range;
+        node->data.period = expr->data.period;
         result = true;
     }
     ctx->mol_ctx = old_ctx;
@@ -6311,6 +6502,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     node->data.unit[0] = lhs->data.unit[0];
                     node->data.unit[1] = lhs->data.unit[1];
                     node->data.value_range = lhs->data.value_range;
+                    node->data.period = lhs->data.period;
 
                     propagate_contexts(lhs, contexts, num_contexts);
                     if (contexts_equivalent) {
@@ -6969,11 +7161,15 @@ static void publish_property_labels(md_attributes_t* attributes, str_t ident, co
 
 // Publishes the attributes of one property and points prop at them.
 // unit[0] is the coordinate unit (a distribution's bin axis), unit[1] the unit of the values.
-static void init_property(eval_property_t* prop, md_attributes_t* attributes, str_t ident, md_script_property_flags_t kind,
-                          type_info_t type, const md_unit_t unit[2], size_t num_frames, md_allocator_i* alloc) {
+// flags are those of the property (md_script_ir_property_flags): its kind, and whether it is periodic, in period.
+static void init_property(eval_property_t* prop, md_attributes_t* attributes, str_t ident, md_script_property_flags_t flags,
+                          type_info_t type, const md_unit_t unit[2], period_t period, size_t num_frames, md_allocator_i* alloc) {
     ASSERT(prop);
     ASSERT(attributes);
     ASSERT(alloc);
+
+    // The kind alone: what is evaluated, and how it is kept
+    const md_script_property_flags_t kind = flags & (MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME);
 
     MEMSET(prop, 0, sizeof(eval_property_t));
     prop->ident = ident;
@@ -7015,6 +7211,17 @@ static void init_property(eval_property_t* prop, md_attributes_t* attributes, st
                 // min and max are two COMPONENTS of one value, not two positions along an axis:
                 // they are not interchangeable and nothing indexes between them.
                 prop->ext  = (vec2_t*)script_attr_storage(attributes, alloc, ident, "/extent", value_unit, MD_ATTRIBUTE_FLAG_TEMPORAL, 2, 1, frames);
+            }
+
+            if ((flags & MD_SCRIPT_PROPERTY_FLAG_PERIODIC) && period_valid(period)) {
+                // The period its values are given in, and where a plot of them is best cut (see PERIODIC VALUES).
+                // Known since the compilation, so written once.
+                prop->period = period;
+                float* p = script_attr_storage(attributes, alloc, ident, "/period", value_unit, MD_ATTRIBUTE_FLAG_NONE, 2, 0, NULL);
+                p[0] = period.beg;
+                p[1] = period.end;
+                float* s = script_attr_storage(attributes, alloc, ident, "/seam", value_unit, MD_ATTRIBUTE_FLAG_NONE, 1, 0, NULL);
+                s[0] = period.seam;
             }
             break;
         }
@@ -7098,6 +7305,70 @@ static void compute_min_max_mean_variance(float* out_min, float* out_max, float*
     *out_max  = max;
     *out_mean = mean;
     *out_var  = var / (float)count;
+}
+
+static int compare_float(const void* a, const void* b) {
+    const float x = *(const float*)a;
+    const float y = *(const float*)b;
+    return (x > y) - (x < y);
+}
+
+// The summary of periodic values, in period p, as circular statistics have it (Mardia & Jupp, Directional Statistics,
+// 2000): the values as angles on a circle, of which the period is the whole way around.
+//   mean       the direction of the mean of the angles as unit vectors (the circular mean), in [p.beg, p.end[
+//   var        the square of the circular standard deviation sqrt(-2 ln R), R the length of that mean vector, in the
+//              unit of the values. It is the standard deviation of values which are close together (R near 1), and
+//              grows without bound as they spread around the circle (R near 0): it is capped at half the period, for
+//              mean +- that covers the whole period already.
+//   min, max   the shortest arc which holds every value: from where the widest gap between two of them ends, around
+//              to where it begins. min is in [p.beg, p.end[ and max - min is the length of the arc, so max may be past
+//              p.end: the arc crosses the end of the period. Values which do not cross it give their least and greatest.
+// scratch holds count floats.
+static void compute_circular_summary(float* out_min, float* out_max, float* out_mean, float* out_var, const float* data, size_t count,
+                                     period_t p, float* scratch) {
+    ASSERT(out_min && out_max && out_mean && out_var);
+    ASSERT(data && count > 0 && scratch);
+    ASSERT(period_valid(p));
+
+    const double beg = p.beg;
+    const double len = period_length(p);
+    const double to_angle = TWO_PI / len;
+
+    double sum_cos = 0, sum_sin = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const double v = period_wrap(data[i], beg, len);
+        // Rounded to float, a value just short of the end may land on it: the same value, at the start
+        scratch[i] = (float)v < p.end ? (float)v : p.beg;
+        const double a = (v - beg) * to_angle;
+        sum_cos += cos(a);
+        sum_sin += sin(a);
+    }
+    sum_cos /= (double)count;
+    sum_sin /= (double)count;
+
+    const double R = sqrt(sum_cos * sum_cos + sum_sin * sum_sin);
+    const double mean = period_wrap(beg + atan2(sum_sin, sum_cos) / to_angle, beg, len);
+    // R is at most 1, up to rounding, and the deviation is that of all directions alike at most
+    const double var_angle = R > 0.0 ? CLAMP(-2.0 * log(R), 0.0, PI * PI) : PI * PI;
+    const double sd = sqrt(var_angle) / to_angle;
+
+    // The widest gap between neighbours around the circle. The one across the end of the period is taken unless
+    // another is wider, so that values which do not cross it come out as their least and greatest.
+    qsort(scratch, count, sizeof(float), compare_float);
+    size_t first = 0;
+    double gap = (double)scratch[0] + len - (double)scratch[count - 1];
+    for (size_t i = 1; i < count; ++i) {
+        const double g = (double)scratch[i] - (double)scratch[i - 1];
+        if (g > gap) {
+            gap = g;
+            first = i;
+        }
+    }
+
+    *out_min  = scratch[first];
+    *out_max  = (float)((double)scratch[first] + (len - gap));
+    *out_mean = (float)mean;
+    *out_var  = (float)(sd * sd);
 }
 
 static void fill_float(float* dst, size_t count, float value) {
@@ -7344,6 +7615,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
             data[i].unit[0] = expr[i]->data.unit[0];
             data[i].unit[1] = expr[i]->data.unit[1];
             data[i].value_range = expr[i]->data.value_range;
+            data[i].period = expr[i]->data.period;
             if (data[i].value_range.beg == 0 && data[i].value_range.end == 0) {
                 data[i].value_range.beg = -FLT_MAX;
                 data[i].value_range.end = +FLT_MAX;
@@ -7386,9 +7658,19 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, str_
                 compute_min_max_mean_variance(&min, &max, &mean, &var, values, size);
 
                 if (prop->mean) {
-                    prop->mean[f_idx] = mean;
-                    prop->var [f_idx] = var;
-                    prop->ext [f_idx] = (vec2_t){min, max};
+                    if (period_valid(prop->period)) {
+                        // Around the circle the values lie on: the mean of 179 and -179 degrees is 180, not 0
+                        float c_min, c_max, c_mean, c_var;
+                        float* scratch = md_alloc(temp_alloc, size * sizeof(float));
+                        compute_circular_summary(&c_min, &c_max, &c_mean, &c_var, values, size, prop->period, scratch);
+                        prop->mean[f_idx] = c_mean;
+                        prop->var [f_idx] = c_var;
+                        prop->ext [f_idx] = (vec2_t){c_min, c_max};
+                    } else {
+                        prop->mean[f_idx] = mean;
+                        prop->var [f_idx] = var;
+                        prop->ext [f_idx] = (vec2_t){min, max};
+                    }
                 }
 
                 // Frame ranges are evaluated concurrently, and the extremes are shared by all of them
@@ -7714,12 +7996,16 @@ static bool extract_identifiers(md_script_ir_t* ir) {
 
 static bool create_property(md_script_ir_t* ir, str_t ident, const ast_node_t* node) {
     const type_info_t type = node->data.type;
-    const md_script_property_flags_t flags =
+    md_script_property_flags_t flags =
         is_temporal_type(type)     ? MD_SCRIPT_PROPERTY_FLAG_TEMPORAL :
         is_distribution_type(type) ? MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION :
         is_volume_type(type)       ? MD_SCRIPT_PROPERTY_FLAG_VOLUME :
                                      MD_SCRIPT_PROPERTY_FLAG_NONE;
     ASSERT(flags != MD_SCRIPT_PROPERTY_FLAG_NONE);
+    // Only values over time are summarized and shown as periodic
+    if (flags == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL && period_valid(node->data.period)) {
+        flags |= MD_SCRIPT_PROPERTY_FLAG_PERIODIC;
+    }
 
     md_array_push(ir->property_names, ident, ir->arena);
     md_array_push(ir->property_flags, flags, ir->arena);
@@ -8465,7 +8751,7 @@ static md_script_eval_t* eval_create(const md_script_ir_t* ir, const md_script_e
     for (size_t i = 0; i < num_props; ++i) {
         eval_property_t* prop = &eval->props[i];
         const ast_node_t* node = ir->property_nodes[i];
-        init_property(prop, attributes, ir->property_names[i], ir->property_flags[i], node->data.type, node->data.unit, num_frames, eval->arena);
+        init_property(prop, attributes, ir->property_names[i], ir->property_flags[i], node->data.type, node->data.unit, node->data.period, num_frames, eval->arena);
         if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
             publish_property_labels(attributes, ir->property_names[i], node, eval->arena);
         }
@@ -9670,6 +9956,7 @@ size_t md_script_vis_value_text(char* buf, size_t cap, md_script_vis_ref_t ref, 
             data.unit[0] = node->data.unit[0];
             data.unit[1] = node->data.unit[1];
             data.value_range = node->data.value_range;
+            data.period = node->data.period;
             summarize_data(&bw.w, data, subidx);
             if (node->type != AST_CONTEXT && node->num_contexts > 1) {
                 md_writef(&bw.w, "\n(the first of %zu contexts)", (size_t)node->num_contexts);

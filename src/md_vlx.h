@@ -19,18 +19,19 @@ struct md_system_state_t;
 //
 //   ATOMS AND STATE      the system's own atom list and coordinates (md_system_t / md_system_state_t)
 //
-//   EMBEDDING            a polarizable embedding run keeps the potential it ran with in the file:
-//                        potfile_text, which current VeloxChem fills with PyFraME's JSON (converted
-//                        from the .pot the run was given, when it was given one). Its sites are
+//   EMBEDDING            a polarizable embedding run names the potential it ran with in its SCF
+//                        settings (scf/potfile): the .pot as it was given to VeloxChem, which is not
+//                        in the .h5 and is looked for beside it (see vlx_resolve_potfile). Its sites are
 //                        APPENDED to the system's atoms, after the QM atoms: QM atom i is still system
 //                        atom i. Each fragment becomes a component named for its residue (VeloxChem's
-//                        _pe/_npe tag dropped) and numbered by its fragment number - which is its
-//                        position, the JSON keeps no residue numbers - and the QM atoms one component
-//                        "QM". The JSON keeps no atom names either, so a site is named for its element;
-//                        an 'X' site is a virtual site. A potential that is not PyFraME JSON (a CPPE
-//                        era run), or not one VeloxChem could have written, leaves the environment out
-//                        with a log line - the load itself does not fail. A supplemental load never adds
-//                        it: that system's atoms are not this reader's
+//                        _pe/_npe tag dropped) and numbered by its fragment number, the components in
+//                        the order of those numbers, and the QM atoms one component "QM". A site
+//                        without an element is a virtual site. A potential that is not found, that
+//                        VeloxChem would have refused, or whose polarizable sites do not count the
+//                        run's induced dipoles is not the one the run used: the environment is left out
+//                        with a log line - the load itself does not fail. A PyFraME JSON potential is
+//                        not read. A supplemental load never adds it: that system's atoms are not
+//                        this reader's
 //
 //   atom/charge                                              {N} over the SYSTEM's atoms, when the
 //   atom/polarizability                                      embedding was added: each site's charge
@@ -38,6 +39,16 @@ struct md_system_state_t;
 //                                                            a third of the trace); zero
 //                                                            polarizability is a non polarizable site.
 //                                                            NAN for the QM atoms, which are no sites
+//   atom/induced_dipole                                      {N} x 3, e bohr, over the SYSTEM's atoms,
+//                                                            when the embedding was added and the run
+//                                                            kept its induced dipoles: each site's
+//                                                            converged induced dipole, zero for a non
+//                                                            polarizable site, NAN for the QM atoms
+//   vlx/scf/embedding/induced_dipole                         {P} x 3, e bohr: the same as the file
+//                                                            holds them, over the POLARIZABLE sites
+//                                                            only, in the .pot's row order (fika's)
+//                                                            - published whether or not the
+//                                                            environment could be added
 //
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}

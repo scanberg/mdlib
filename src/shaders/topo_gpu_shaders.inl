@@ -6,3 +6,4 @@
 #include "critical_point_compaction_shaders.inl"
 #include "vertex_edge_extraction_shaders.inl"
 #include "topo_setup_shaders.inl"
+#include "topo_gto_cube_shaders.inl"
