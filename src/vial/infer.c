@@ -161,6 +161,9 @@ static bool broadcast_or_report(infer_t* x, vial_node_id at, vial_node_id an, co
     return false;
 }
 
+bool vx_broadcast(const T* a, const T* b, T* out) { return broadcast(a, b, out); }
+bool vx_extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out) { return extent_join(a, b, out); }
+
 // ### UNITS ###
 
 // The unit of +, -, comparisons and the like: a bare number takes the other's; compatible units convert to the left's;
@@ -966,7 +969,11 @@ static T infer_attr(infer_t* x, vial_node_id id) {
         for (uint8_t k = 0; k < a.ndim; ++k) t.dims[k] = a.dims[a.ndim - 1 - k];
         return t;
     }
-    if (a.dtype == VIAL_DT_SET) return err();   // .xyz, .x, .com of sets: with the built-ins
+    if (a.dtype == VIAL_DT_SET || str_eq(name, STR_LIT("com"))) {
+        T t;
+        if (vx_attr_geom(x, id, on, &a, name, &t)) return t;
+        return err();
+    }
     const bool comp = str_eq(name, STR_LIT("x")) || str_eq(name, STR_LIT("y")) || str_eq(name, STR_LIT("z"));
     if (comp || str_eq(name, STR_LIT("xyz"))) {
         const bool coords = is_float(a.dtype) && a.ndim >= 1 && a.dims[a.ndim - 1].kind == VIAL_EXT_STATIC && a.dims[a.ndim - 1].n == 3;
@@ -1012,6 +1019,7 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
             const vial_symbol_t* sym = vial_names_symbol(x->n, callee);
             T t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_sets(x, id, sym->builtin, &t)) return t;
+            if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_geom(x, id, sym->builtin, &t)) return t;
         }
     }
     // fallthrough

@@ -37,6 +37,10 @@ T vx_sets_type(infer_t* x, const vial_sets_t* s, vial_node_id at) {
     vial_extent_t e = vial_extent_static(s->count);
     e.desc = vx_desc(x, s->level, s);
     vial_type_push_dim(&t, e);
+    // An array whose every set holds one particle is an array of points, such as the waters of an X-ray structure
+    bool one = s->count > 0;
+    for (uint32_t i = 0; one && i < s->count; ++i) one = vial_sets_size(s, i) == 1;
+    if (one) t.flags |= VIAL_TYPE_ONE_PARTICLE;
     return t;
 }
 
@@ -58,6 +62,7 @@ static uint8_t selector_level(str_t name, uint8_t* particle_kind) {
 static T selector_unknown(uint8_t level, uint8_t stage, vial_node_id at) {
     T t = vial_type_scalar(VIAL_DT_SET);
     t.stage = stage;
+    t.ident = (uint32_t)at;
     if (level == VIAL_LEVEL_PARTICLE) return t;
     vial_extent_t e = {.kind = stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)at};
     vial_type_push_dim(&t, e);
@@ -628,6 +633,7 @@ static T call_within(infer_t* x, vial_node_id call) {
     }
     T t = vial_type_scalar(VIAL_DT_SET);
     t.stage = VIAL_STAGE_FRAME;
+    t.ident = (uint32_t)call;
     if (rt.stage > t.stage) t.stage = rt.stage;
     if (ot.stage > t.stage) t.stage = ot.stage;
     return t;

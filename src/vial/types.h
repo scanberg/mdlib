@@ -82,6 +82,7 @@ typedef struct vial_type_t {
     float           period_beg, period_end, seam;
     const struct vial_type_t* elems;    // VIAL_DT_TUPLE: its elements
     uint32_t        num_elems;
+    uint32_t        ident;      // a set that changes per frame: the selection that made it, so its positions pair
 } vial_type_t;
 
 // Scalars of each dtype, static, without a unit

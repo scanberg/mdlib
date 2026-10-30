@@ -295,3 +295,59 @@ UTEST_F(vial_check, selectors_without_a_system) {
     EXPECT_DIAGS("w = within(5.0, protein)\n", "E0203 1: `within` takes the radius as its one positional argument; of= is always written, of=protein | of=protein\n");
     EXPECT_DIAGS("w = within(5.0 ns, of=protein)\n", "E0313 1: `within` takes a radius, one length; this is float ns\n");
 }
+
+// ### STEP 5: KINDS AND GEOMETRY ###
+
+UTEST_F(vial_check, positions) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "p = particles(resname='GTP').xyz\n", 1, u8"float[32][3] Å, frame");
+    EXPECT_TYPE_ON(T, "z = protein.z\n", 1, u8"float[6784] Å, frame");
+    EXPECT_TYPE_ON(T, "w = residues(kind='water').xyz\n", 1, u8"float[8][3] Å, frame");
+    EXPECT_TYPE_ON(T, "p = positions(particles(name='MG'))\n", 1, u8"float[1][3] Å, frame");
+    EXPECT_TYPE_ON(T, "n = residues(within(5.0, of=protein)).xyz\n", 1, "error, static");
+    EXPECT_TYPE_ON(T, "n = within(5.0, of=protein).xyz\n", 1, u8"float[?][3] Å, frame");
+    EXPECT_DIAGS_ON(T, "r = residues(chain='A', kind='amino_acid').xyz\n",
+        u8"E0318 1: `residues(chain='A', kind='amino_…` holds 433 sets of 4 to 14 particles; their positions do not form one array"
+        " | particles(residues(chain='A', kind='amino_acid')).xyz\n");
+    EXPECT_TYPE_ON(T, "m = mass(particles(resname='GTP'))\n", 1, "float[32] u, static");
+    EXPECT_TYPE_ON(T, "e = element(particles(resname='GTP'))\n", 1, "str[32], static");
+    EXPECT_TYPE_ON(T, "q = charge(protein)\n", 1, "float[6784] e, static");
+}
+
+UTEST_F(vial_check, centres_and_points) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "c = particles(resname='GTP').com\n", 1, u8"float[3] Å, frame");
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A', kind='amino_acid'))\n", 1, u8"float[433][3] Å, frame");
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A'), weights=None)\n", 1, u8"float[442][3] Å, frame");
+    EXPECT_TYPE_ON(T, "c = [1.0, 2.0, 3.0].com\n", 1, u8"float[3] Å, static");
+    EXPECT_DIAGS_ON(T, "c = com(protein, weights='charge')\n", "E0313 1: `weights` takes 'mass' or None\n");
+    EXPECT_TYPE_ON(T, "d = displacement(particles(name='MG'), particles(resname='GTP').com)\n", 1, u8"float[3] Å, frame");
+    EXPECT_TYPE_ON(T, "d = displacement(residues(kind='water'), particles(name='MG'))\n", 1, u8"float[8][3] Å, frame");
+    EXPECT_DIAGS_ON(T, "d = displacement(particles(resname='GTP'), particles(name='MG'))\n",
+        "E0302 1: `displacement` needs a point for a; `particles(resname='GTP')` may hold several particles, so write .com for its centre"
+        " or between='closest' | particles(resname='GTP').com\n");
+    EXPECT_DIAGS_ON(T, "d = displacement(12, particles(name='MG'))\n",
+        "E0302 1: `displacement` needs a point for a; an int is not one | particles(serial=12)\n");
+    EXPECT_DIAGS_ON(T, "d = displacement(residues(1..4, chain='A').com, residues(1..3, chain='B').com)\n",
+        "E0301 1: the dimensions `displacement` maps over do not broadcast: `int[4]` and `int[3]`\n");
+}
+
+UTEST_F(vial_check, angles_and_pairs) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "a = angle(particles(resname='GTP').com, particles(resname='GDP').com, particles(name='MG'))\n", 1, u8"float °, frame");
+    EXPECT_TYPE_ON(T, "a = angle([1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0])\n", 1, u8"float °, static");
+    EXPECT_TYPE_ON(T, "c = com(residues(1..8, chain='A'))\nt = dihedral(c[0:4])\n", 2, u8"float °, frame");
+    EXPECT_TYPE_ON(T, "c = com(residues(1..8, chain='A'))\nt = dihedral(c[0], c[1], c[2], c[3:5])\n", 2, u8"float[2] °, frame");
+    EXPECT_DIAGS_ON(T, "a = angle(particles(name='MG'), particles(name='MG'))\n", "E0204 1: `angle` takes 3 points; it got 2\n");
+    EXPECT_TYPE_ON(T, "d, i, j = closest_pair(particles(resname='GTP'), particles(resname='VLB'))\n", 1, u8"float Å and int and int, frame");
+    EXPECT_TYPE_ON(T, "c = com(residues(chain='A', kind='amino_acid'))\nd, i, j = closest_pair(c[:, None], c, distinct=True)\n", 2,
+        u8"float[433] Å and int[433] and int[433], frame");
+    EXPECT_DIAGS_ON(T, "c = com(residues(chain='A', kind='amino_acid'))\nd, i, j = closest_pair(c[:, None], c)\n",
+        "W0608 2: `closest_pair` pairs every point with itself, so the shortest distance is zero; distinct=True leaves those pairs out"
+        " | closest_pair(c[:, None], c, distinct=True)\n");
+    EXPECT_DIAGS_ON(T, "d, i, j = farthest_pair(protein, protein)\n", "");
+    EXPECT_TYPE_ON(T, "f = fit(particles(resname='GTP'), particles(resname='GTP').xyz)\n", 1, u8"float[32][3] Å, frame");
+}
