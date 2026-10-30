@@ -179,70 +179,50 @@ static bool with_loop(infer_t* x, vial_node_id call, const T* loop, const T* cor
     return true;
 }
 
-T vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def) {
-    // A cycle of calls is E0802, from name resolution; checking it would not end
-    const uint32_t depth = x->frame ? x->frame->depth + 1 : 1;
-    bool cycle = depth > 32;
-    for (const vx_frame_t* f = x->frame; f && !cycle; f = f->parent) cycle = f->def == def && f->t == t;
-    if (cycle) { infer_all_args(x, call); return err(); }
+// A def nested in another reads the enclosing call's names, so its result depends on more than its arguments
+static bool is_nested(const vial_names_t* n, const vial_tree_t* t, vial_node_id def) {
+    for (vial_node_id p = n->parent[def]; p; p = n->parent[p]) if (t->nodes[p].kind == VIAL_N_DEF) return true;
+    return false;
+}
 
+// A def's parameters: its PARAM nodes, names, kinds and defaults
+typedef struct sig_t {
+    uint32_t     np;
+    vial_node_id pnode[32];
+    str_t        pname[32];
+    uint8_t      kind[32];
+    char         fname[48];
+} sig_t;
+
+static bool signature(const vial_tree_t* t, str_t src, vial_node_id def, sig_t* g) {
     const vial_node_id name_node = vial_child(t, def, 0);
     const str_t name = name_node ? text_in(t, src, name_node) : STR_LIT("def");
-    char fname[48];
-    snprintf(fname, sizeof(fname), "%.*s", (int)(name.len < 40 ? name.len : 40), name.ptr);
+    snprintf(g->fname, sizeof(g->fname), "%.*s", (int)(name.len < 40 ? name.len : 40), name.ptr);
     const vial_node_id params = vial_child(t, def, 1);
-    const uint32_t np = params ? t->nodes[params].child_count : 0;
-    if (np > 32) { infer_all_args(x, call); return err(); }
-    vial_node_id pnodes[32], args[32];
-    str_t pnames[32];
-    for (uint32_t k = 0; k < np; ++k) {
-        pnodes[k] = vial_child(t, params, k);
-        const vial_node_id pn = pnodes[k] ? vial_child(t, pnodes[k], 0) : 0;
-        pnames[k] = pn ? text_in(t, src, pn) : STR_LIT("");
-        args[k] = 0;
+    g->np = params ? t->nodes[params].child_count : 0;
+    if (g->np > 32) return false;
+    for (uint32_t k = 0; k < g->np; ++k) {
+        g->pnode[k] = vial_child(t, params, k);
+        const vial_node_id pn = g->pnode[k] ? vial_child(t, g->pnode[k], 0) : 0;
+        g->pname[k] = pn ? text_in(t, src, pn) : STR_LIT("");
+        const vial_node_id ann = g->pnode[k] ? vial_child(t, g->pnode[k], 1) : 0;
+        g->kind[k] = ann ? kind_of_annotation(text_in(t, src, ann)) : VX_KIND_WHOLE;
     }
+    return true;
+}
 
-    // Bind: by position, then by keyword
-    bool ok = true;
-    uint32_t pos = 0;
-    for (uint32_t i = 1; i < vx_num_children(x, call); ++i) {
-        const vial_node_id a = vx_child(x, call, i);
-        if (!a) continue;
-        if (vx_kind(x, a) == VIAL_N_KWARG) {
-            const vial_node_id kn = vx_child(x, a, 0), vn = vx_child(x, a, 1);
-            if (vn) vx_infer(x, vn);
-            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
-            uint32_t k = 0;
-            while (k < np && !str_eq(kw, pnames[k])) ++k;
-            if (k == np) {
-                vx_diag_fix(x, "E0202", a, NULL, "`%s` takes no keyword `%.*s`", fname, (int)kw.len, kw.ptr);
-                ok = false;
-            } else if (args[k]) {
-                vx_diag_fix(x, "E0204", a, NULL, "`%s` is given %.*s twice", fname, (int)kw.len, kw.ptr);
-                ok = false;
-            } else {
-                args[k] = vn;
-            }
-            continue;
-        }
-        vx_infer(x, a);
-        if (pos >= np) {
-            vx_diag_fix(x, "E0204", a, NULL, "`%s` takes %u argument%s", fname, np, np == 1 ? "" : "s");
-            ok = false;
-            continue;
-        }
-        args[pos++] = a;
-    }
-    for (uint32_t k = 0; ok && k < np; ++k) {
-        const vial_node_id dflt = pnodes[k] ? vial_child(t, pnodes[k], 2) : 0;
-        if (!args[k] && !dflt) {
-            vx_diag_fix(x, "E0204", call, NULL, "`%s` needs %.*s", fname, (int)pnames[k].len, pnames[k].ptr);
-            ok = false;
-        }
-    }
-    if (!ok) return err();
+// One argument as the core of a call sees it: given as a node of the caller, or as a type and value (fold's step)
+typedef struct arg_t {
+    vial_node_id node;      // in the caller's tree, or 0
+    bool         given;     // by node or by type; otherwise the default
+    T            type;
+    vial_value_t value;
+} arg_t;
 
-    // The frame: the def's nodes, its own symbols
+// The call itself, its arguments bound: kinds split and map them, the body is checked once per distinct types
+static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def,
+                   const sig_t* g, const arg_t* args) {
+    const uint32_t depth = x->frame ? x->frame->depth + 1 : 1;
     vx_frame_t f = {.parent = x->frame, .t = t, .def = def, .prelude = prelude, .depth = depth};
     f.site = prelude ? (x->frame && x->frame->prelude ? x->frame->site : call) : 0;
     f.syms.allocator = x->alloc;
@@ -258,67 +238,180 @@ T vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_na
     infer_t y = *x;
     y.t = t; y.n = n; y.src = src; y.out = &out; y.frame = &f;
 
-    // Each argument split by its parameter's kind; the mapped dimensions broadcast
     T loop = vial_type_scalar(VIAL_DT_INT);
     uint64_t key = md_hash64(&def, sizeof(def), (uint64_t)(uintptr_t)t);
     if (prelude) key = md_hash64(&f.site, sizeof(f.site), key);
-    for (uint32_t k = 0; k < np; ++k) {
-        const vial_node_id ann = pnodes[k] ? vial_child(t, pnodes[k], 1) : 0;
-        const uint8_t kind = ann ? kind_of_annotation(text_in(t, src, ann)) : VX_KIND_WHOLE;
+    bool ok = true;
+    T cores[32];
+    for (uint32_t k = 0; k < g->np; ++k) {
         T core, lp;
         vial_value_t v = {0};
         vial_node_id prov = 0;
         char pname[32];
-        snprintf(pname, sizeof(pname), "%.*s", (int)(pnames[k].len < 24 ? pnames[k].len : 24), pnames[k].ptr);
-        if (args[k]) {
-            const T a = x->out->types[(args[k]) - x->out->base];
-            if (vial_type_is_error(&a)) { ok = false; continue; }
-            if (!vx_split(x, args[k], &a, kind, fname, pname, &core, &lp)) { ok = false; continue; }
-            if (lp.ndim == 0) v = vx_value_of(x, args[k]);
-            prov = prelude ? provenance_of(x, args[k]) : 0;
+        snprintf(pname, sizeof(pname), "%.*s", (int)(g->pname[k].len < 24 ? g->pname[k].len : 24), g->pname[k].ptr);
+        if (args[k].given) {
+            const T a = args[k].type;
+            if (vial_type_is_error(&a)) { ok = false; cores[k] = a; continue; }
+            if (args[k].node) {
+                if (!vx_split(x, args[k].node, &a, g->kind[k], g->fname, pname, &core, &lp)) { ok = false; cores[k] = err(); continue; }
+                prov = prelude ? provenance_of(x, args[k].node) : 0;
+            } else {
+                core = a;                       // from fold: one state, one frame's value
+                lp = vial_type_scalar(VIAL_DT_INT);
+            }
+            if (lp.ndim == 0) v = args[k].value;
         } else {
-            const vial_node_id dflt = vial_child(t, pnodes[k], 2);
+            const vial_node_id dflt = vial_child(t, g->pnode[k], 2);
             core = vx_infer(&y, dflt);
             lp = vial_type_scalar(VIAL_DT_INT);
-            if (vial_type_is_error(&core)) { ok = false; continue; }
+            if (vial_type_is_error(&core)) { ok = false; cores[k] = core; continue; }
             v = vx_value_of(&y, dflt);
         }
+        cores[k] = core;
         T m = loop;
         if (!vx_broadcast(&loop, &lp, &m)) {
-            vx_diag_fix(x, "E0301", call, NULL, "the dimensions `%s` maps over do not broadcast: `%s` and `%s`", fname, vx_tstr(&loop), vx_tstr(&lp));
+            vx_diag_fix(x, "E0301", call, NULL, "the dimensions `%s` maps over do not broadcast: `%s` and `%s`", g->fname, vx_tstr(&loop), vx_tstr(&lp));
             return err();
         }
         loop.ndim = m.ndim;
         memcpy(loop.dims, m.dims, sizeof(m.dims));
-        if (lp.stage > loop.stage) loop.stage = lp.stage;
+        T o = loop;
+        vx_join_stage(&loop, &o, &lp);
         key = hash_type(key, &core);
         key = hash_value(key, &v);
-        const vial_node_id pn = vial_child(t, pnodes[k], 0);
+        const vial_node_id pn = vial_child(t, g->pnode[k], 0);
         const uint32_t sym = pn ? n->ref[pn] : 0;
         if (sym) vx_frame_set(&y, sym, &core, &v, prov);
     }
     if (!ok) return err();
 
-    // Checked once per def and arguments
-    key &= ~(1ull << 63);   // clear of the hashmap's reserved keys
-    const uint32_t* hit = md_hashmap_get(&x->memo->map, key);
+    // W0607: an argument taken whole that runs over the units the call maps over pairs nothing with them
+    for (uint32_t k = 0; k < g->np && loop.ndim; ++k) {
+        if (g->kind[k] != VX_KIND_WHOLE || !args[k].node) continue;
+        const T* c = &cores[k];
+        bool same = false;
+        for (uint8_t q = 0; q < c->ndim && !same; ++q) {
+            if (!c->dims[q].desc) continue;
+            for (uint8_t l = 0; l < loop.ndim && !same; ++l) same = loop.dims[l].desc == c->dims[q].desc;
+        }
+        if (same) {
+            vx_diag_fix(x, "W0607", args[k].node, NULL, "`%s` maps over %s, and %.*s runs over the same units but is passed whole, "
+                "so the result has both; annotate it, %.*s: float, to pair them", g->fname, vx_tstr(&loop), (int)g->pname[k].len,
+                g->pname[k].ptr, (int)g->pname[k].len, g->pname[k].ptr);
+        }
+    }
+
+    // Checked once per def and arguments, unless it reads an enclosing call's names
+    key &= ~(1ull << 63);
+    const bool memo = !is_nested(n, t, def);
+    const uint32_t* hit = memo ? md_hashmap_get(&x->memo->map, key) : NULL;
     T result;
+    vial_value_t rv = {0};
     if (hit) {
         result = x->memo->results[*hit];
-        if (loop.ndim == 0 && !prelude) vx_set_value(x, call, x->memo->values[*hit]);
+        rv = x->memo->values[*hit];
     } else {
-        const vial_node_id body = vial_child(t, def, 3);
-        vx_check_block(&y, body);
+        vx_check_block(&y, vial_child(t, def, 3));
         result = f.has_result ? f.result : vial_type_scalar(VIAL_DT_NONE);
-        vial_value_t rv = {0};
-        md_hashmap_add(&x->memo->map, key, (uint32_t)md_array_size(x->memo->results));
-        md_array_push(x->memo->results, result, x->alloc);
-        md_array_push(x->memo->values, rv, x->alloc);
+        rv = f.value;
+        if (memo) {
+            md_hashmap_add(&x->memo->map, key, (uint32_t)md_array_size(x->memo->results));
+            md_array_push(x->memo->results, result, x->alloc);
+            md_array_push(x->memo->values, rv, x->alloc);
+        }
     }
     if (vial_type_is_error(&result)) return result;
+    if (loop.ndim == 0 && call && x->t == x->c->tree && !x->frame) vx_set_value(x, call, rv);
+    else if (loop.ndim == 0 && call) vx_set_value(x, call, rv);
     T t2;
     if (!with_loop(x, call, &loop, &result, &t2)) return err();
     return t2;
+}
+
+static bool enter(infer_t* x, vial_node_id call, const vial_tree_t* t, vial_node_id def) {
+    // A cycle of calls is E0802, from name resolution; checking it would not end
+    const uint32_t depth = x->frame ? x->frame->depth + 1 : 1;
+    if (depth > 32) return false;
+    for (const vx_frame_t* f = x->frame; f; f = f->parent) if (f->def == def && f->t == t) return false;
+    (void)call;
+    return true;
+}
+
+T vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def) {
+    sig_t g;
+    if (!enter(x, call, t, def) || !signature(t, src, def, &g)) { infer_all_args(x, call); return err(); }
+    arg_t args[32];
+    memset(args, 0, sizeof(args));
+
+    // Bind: by position, then by keyword
+    bool ok = true;
+    uint32_t pos = 0;
+    for (uint32_t i = 1; i < vx_num_children(x, call); ++i) {
+        const vial_node_id a = vx_child(x, call, i);
+        if (!a) continue;
+        if (vx_kind(x, a) == VIAL_N_KWARG) {
+            const vial_node_id kn = vx_child(x, a, 0), vn = vx_child(x, a, 1);
+            if (vn) vx_infer(x, vn);
+            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
+            uint32_t k = 0;
+            while (k < g.np && !str_eq(kw, g.pname[k])) ++k;
+            if (k == g.np) {
+                vx_diag_fix(x, "E0202", a, NULL, "`%s` takes no keyword `%.*s`", g.fname, (int)kw.len, kw.ptr);
+                ok = false;
+            } else if (args[k].given) {
+                vx_diag_fix(x, "E0204", a, NULL, "`%s` is given %.*s twice", g.fname, (int)kw.len, kw.ptr);
+                ok = false;
+            } else if (vn) {
+                args[k] = (arg_t){.node = vn, .given = true};
+            }
+            continue;
+        }
+        vx_infer(x, a);
+        if (pos >= g.np) {
+            vx_diag_fix(x, "E0204", a, NULL, "`%s` takes %u argument%s", g.fname, g.np, g.np == 1 ? "" : "s");
+            ok = false;
+            continue;
+        }
+        args[pos++] = (arg_t){.node = a, .given = true};
+    }
+    for (uint32_t k = 0; ok && k < g.np; ++k) {
+        const vial_node_id dflt = g.pnode[k] ? vial_child(t, g.pnode[k], 2) : 0;
+        if (!args[k].given && !dflt) {
+            vx_diag_fix(x, "E0204", call, NULL, "`%s` needs %.*s", g.fname, (int)g.pname[k].len, g.pname[k].ptr);
+            ok = false;
+        }
+    }
+    if (!ok) return err();
+    for (uint32_t k = 0; k < g.np; ++k) {
+        if (!args[k].node) continue;
+        args[k].type = x->out->types[(args[k].node) - x->out->base];
+        args[k].value = vx_value_of(x, args[k].node);
+    }
+    return call_core(x, call, t, n, src, prelude, def, &g, args);
+}
+
+T vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const T* types, const vial_value_t* values, uint32_t num) {
+    // A def passed as a value lives in the tree of the code that names it: the script's or the prelude's
+    const bool prelude = x->t == x->c->prelude;
+    const vial_tree_t* t = x->t;
+    const vial_names_t* n = x->n;
+    const str_t src = x->src;
+    sig_t g;
+    if (!enter(x, site, t, def) || !signature(t, src, def, &g)) return err();
+    if (num > g.np) {
+        vx_diag_fix(x, "E0204", site, NULL, "`%s` takes %u argument%s; it is called with %u", g.fname, g.np, g.np == 1 ? "" : "s", num);
+        return err();
+    }
+    arg_t args[32];
+    memset(args, 0, sizeof(args));
+    for (uint32_t k = 0; k < num; ++k) args[k] = (arg_t){.given = true, .type = types[k], .value = values ? values[k] : (vial_value_t){0}};
+    for (uint32_t k = num; k < g.np; ++k) {
+        if (!vial_child(t, g.pnode[k], 2)) {
+            vx_diag_fix(x, "E0204", site, NULL, "`%s` needs %.*s", g.fname, (int)g.pname[k].len, g.pname[k].ptr);
+            return err();
+        }
+    }
+    return call_core(x, site, t, n, src, prelude, def, &g, args);
 }
 
 // ### DRAWING, FOR NOW ###

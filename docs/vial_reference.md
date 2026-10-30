@@ -921,7 +921,7 @@ h    = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))   # -> float[32
 sm   = smooth(ends, 5)                                 # -> float Å, trajectory, per frame
 ac   = autocorrelation(ends, max_lag=10)               # -> float[11], trajectory
 f    = frame()                                         # -> int, frame
-rate = ends - previous(ends)                           # warning W0405 -> float Å, trajectory, per frame: missing in frame 0
+rate = ends - previous(ends)                           # warning W0405 -> float Å | missing, trajectory, per frame: missing in frame 0
 
 def step(state, x):
     return where(x > 30.0, state + 1, 0)

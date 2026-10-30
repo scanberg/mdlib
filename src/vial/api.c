@@ -115,7 +115,7 @@ bool md_vial__line_result(const md_vial_program_t* prog, uint32_t line, md_vial_
         }
         const vial_type_t* first = &prog->types.types[nodes[0]];
         snprintf(r->stage, sizeof(r->stage), "%s", vial_stage_str(first));
-        r->pass = first->pass;
+        r->pass = first->stage != VIAL_STAGE_STATIC && first->pass == 0 ? 1 : first->pass;    // frame values are pass 1
         const vial_value_t* v = &prog->types.values[nodes[0]];
         if (vial_value_is_scalar(v)) { r->has_value = true; vial_value_print(r->value, sizeof(r->value), v); }
         return true;

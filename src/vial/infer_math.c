@@ -247,8 +247,9 @@ static T call_reduce(infer_t* x, vial_node_id call, int red, const char* fname) 
                 vx_diag_fix(x, "E0316", args[1], NULL, "axis='frame' on a static value, which has no frames");
                 return err();
             }
+            // A reduction that streams over frames is complete in its input's pass
             t.stage = VIAL_STAGE_TRAJECTORY;
-            t.pass = (uint8_t)(a.pass + 1);
+            t.pass = vx_pass(&a);
             t.flags &= ~VIAL_TYPE_PER_FRAME;
         }
         // The minimum of a matrix of distances whose two dimensions run over the same units pairs each with itself
@@ -898,7 +899,7 @@ static T call_linalg(infer_t* x, vial_node_id call, str_t name, const char* fnam
         vial_type_push_dim(&t, v.dims[0]);
         if (has_unit(&v)) set_unit(&t, md_unit_mul(v.unit, v.unit));
         t.stage = VIAL_STAGE_TRAJECTORY;
-        t.pass = (uint8_t)(v.pass + 1);
+        t.pass = vx_pass(&v);
         t.flags &= ~(VIAL_TYPE_PERIODIC | VIAL_TYPE_PER_FRAME);
         return t;
     }
