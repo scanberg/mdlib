@@ -231,6 +231,10 @@ UTEST_F(vial_fuzz, extremes) {
         {"lexer errors",    "",      "$ = (\n",        "",        5000, false},
         {"blank lines",     "",      "\n",             "",        5000, false},
         {"v1 calls",        "x = ",  "residue(1:4)",   "",        2000, false},
+        {"nested calls",    "x = ",  "f(",             "",        5000, true},
+        {"nested subscripts", "x = ", "a[",             "",        5000, true},
+        {"calls on lines",  "x = ",  "f(\n",           "",        5000, true},
+        {"blank lines in a bracket", "x = (", "\n",     "",      200000, false},   // linear, not one scan per line
     };
     for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
         const extreme_t* e = &cases[c];

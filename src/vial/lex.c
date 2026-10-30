@@ -75,6 +75,7 @@ typedef struct indent_t {
 
 typedef struct open_t {
     uint32_t pos;
+    uint32_t line_col8;     // the indentation of the line it is on
     char     c;
 } open_t;
 
@@ -85,6 +86,16 @@ typedef struct lexer_t {
     open_t*         open;       // brackets that are open
     indent_t*       indents;    // the enclosing blocks' indentation; the first is 0
     bool            line_has_token;
+    // The last answer of next_line_is_statement, kept for the blank lines that lead to the same line: one scan
+    // over a run of blank lines inside brackets, not one per line
+    size_t          ahead_from, ahead_to;
+    uint32_t        ahead_col8;
+    bool            ahead_result, ahead_valid;
+    // Where the last opener's line starts, and its indentation, so that finding an opener's line costs time in
+    // proportion to the text since the last opener, not to the length of its line
+    size_t          col_scan_pos, col_line_beg;
+    uint32_t        col_col8;
+    bool            col_valid;
     vial_diags_t*   diags;
     md_allocator_i* alloc;
 } lexer_t;
@@ -151,8 +162,23 @@ static indent_t measure_indent(const lexer_t* l, size_t p, size_t* out_end) {
 // After a line break inside brackets: does the next line look like a new statement, at or left of the indentation
 // of the line the outermost open bracket is on? Then the bracket was most likely never closed, and lexing goes on
 // as if it had been, so one missing ')' does not swallow the rest of the script.
-static bool next_line_is_statement(const lexer_t* l, size_t p, uint32_t open_line_col8) {
+static bool next_line_is_statement_(const lexer_t* l, size_t p, uint32_t open_line_col8, size_t* line);
+
+static bool next_line_is_statement(lexer_t* l, size_t p, uint32_t open_line_col8) {
+    if (l->ahead_valid && l->ahead_col8 == open_line_col8 && l->ahead_from <= p && p <= l->ahead_to) return l->ahead_result;
+    size_t line = l->src.len;
+    const bool r = next_line_is_statement_(l, p, open_line_col8, &line);
+    l->ahead_valid = true;
+    l->ahead_from = p;
+    l->ahead_to = line;
+    l->ahead_col8 = open_line_col8;
+    l->ahead_result = r;
+    return r;
+}
+
+static bool next_line_is_statement_(const lexer_t* l, size_t p, uint32_t open_line_col8, size_t* line) {
     for (;;) {
+        *line = p;
         size_t q;
         const indent_t ind = measure_indent(l, p, &q);
         if (q >= l->src.len) return false;
@@ -182,11 +208,22 @@ static bool next_line_is_statement(const lexer_t* l, size_t p, uint32_t open_lin
     }
 }
 
-static uint32_t indent_of_line_at(const lexer_t* l, size_t pos) {
+// The indentation of the line an opener at pos is on. Openers come in order, so each call scans back only to
+// the one before.
+static uint32_t opener_line_col8(lexer_t* l, size_t pos) {
+    const char* s = l->src.ptr;
     size_t p = pos;
-    while (p > 0 && l->src.ptr[p - 1] != '\n' && l->src.ptr[p - 1] != '\r') --p;
-    size_t q;
-    return measure_indent(l, p, &q).col8;
+    while (p > l->col_scan_pos && s[p - 1] != '\n' && s[p - 1] != '\r') --p;
+    const bool same_line = l->col_valid && p == l->col_scan_pos && p > 0 && s[p - 1] != '\n' && s[p - 1] != '\r';
+    const size_t line_beg = same_line ? l->col_line_beg : p;
+    if (!l->col_valid || line_beg != l->col_line_beg) {
+        size_t q;
+        l->col_col8 = measure_indent(l, line_beg, &q).col8;
+    }
+    l->col_valid = true;
+    l->col_scan_pos = pos;
+    l->col_line_beg = line_beg;
+    return l->col_col8;
 }
 
 static void close_all_open(lexer_t* l) {
@@ -372,7 +409,7 @@ static void lex_op(lexer_t* l) {
         if (l->pos + e->len <= l->src.len && memcmp(l->src.ptr + l->pos, e->str, e->len) == 0) {
             const char c = e->str[0];
             if (e->len == 1 && (c == '(' || c == '[' || c == '{')) {
-                open_t o = {(uint32_t)beg, c};
+                open_t o = {.pos = (uint32_t)beg, .line_col8 = opener_line_col8(l, beg), .c = c};
                 md_array_push(l->open, o, l->alloc);
             } else if (e->len == 1 && (c == ')' || c == ']' || c == '}')) {
                 const size_t n = md_array_size(l->open);
@@ -470,7 +507,7 @@ vial_token_t* vial_lex(str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
             const size_t n = newline_len(&l, l.pos);
             l.pos += n;
             if (md_array_size(l.open) > 0) {
-                const uint32_t col = indent_of_line_at(&l, l.open[0].pos);
+                const uint32_t col = l.open[0].line_col8;
                 if (!next_line_is_statement(&l, l.pos, col)) continue;   // a line break inside brackets
                 close_all_open(&l);
             }
