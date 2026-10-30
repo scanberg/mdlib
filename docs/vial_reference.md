@@ -687,6 +687,7 @@ Reductions remove dimensions, math works elementwise, and the array functions sa
 - `len(a)` is the extent of the first dimension, so `len(residues)` is the number of residues. On a single set it is the number of particles, the same as `count(s)`.
 - `min(a, b)` and `max(a, b)` with two arguments work elementwise, as Python's do; with one argument they reduce.
 - Sums accumulate in 64 bits in one fixed order, the same in every backend. An integer sum that does not fit in 32 bits is R0102 rather than wrapping around.
+- `mean`, `std` and `var` of a periodic value, such as a dihedral, are circular, and hover says so. The mean is the direction of the summed unit vectors, `atan2(Σ sin, Σ cos)`, in the value's own range, so the mean of 179° and −179° is 180°, not 0°. It keeps the period. `std` is the circular standard deviation, `sqrt(−2 ln R)` in the value's unit, where R is the length of the mean unit vector; `var` is its square, so `var == std**2` holds for every value. Neither is periodic. When R is 0, as for 0° and 180°, there is no mean direction and the spread is unbounded: all three are missing. All three stream over frames, since they need only the sums of sines and cosines. `sum`, `min` and `max` stay arithmetic on the values as given, and the arithmetic mean is `sum(x) / len(x)`.
 
 ### Math
 
