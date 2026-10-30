@@ -927,7 +927,7 @@ long = max(run, axis='frame')                          # -> int, trajectory
 
 ## Outputs: what is published and how
 
-Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not.
+Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not. `__all__` is reserved: binding it is an error for now, and a later version may use it, as Python does, for an explicit list of what is published.
 
 | Value | Published as | Alongside |
 | --- | --- | --- |
