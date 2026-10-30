@@ -80,9 +80,13 @@ typedef struct md_vial_compile_desc_t {
     // The system the script runs on. Selectors and the predefined sets are evaluated against it when compiling, so
     // their sizes, counts and labels are known and W0601, W0602 and E0207 are given. NULL compiles without one:
     // selectors are typed with extents not known. The checker reads it only during md_vial_compile, and a program
-    // compiled against it holds its topology version. Frame readers for at(), stored selections and loaded runs arrive
-    // with later steps.
+    // compiled against it holds its topology version. Stored selections and loaded runs arrive with later steps.
     const struct md_system_t* sys;
+
+    // The number of frames of the run the script will be evaluated over, or 0 when not known. at(x, frame=k) with k
+    // past the last frame is E0405, and a published per-frame value over 64 MB for the run is W0404. at() reads its
+    // frame when compiling once VIAL evaluates (phase 3); until then its value is typed but not known.
+    uint64_t num_frames;
 } md_vial_compile_desc_t;
 
 // Compiles a script. Phase 1 stops after the parser: the program holds the tokens, the syntax tree and the

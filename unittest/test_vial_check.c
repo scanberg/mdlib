@@ -522,3 +522,51 @@ UTEST_F(vial_check, w0607) {
     EXPECT_DIAGS_ON(T, src, "W0607 5: `near` maps over int[433], and cutoff runs over the same units but is passed whole, so the result has both;"
         " annotate it, cutoff: float, to pair them\n");
 }
+
+// ### STEP 8: STAGES, PASSES AND OUTPUTS ###
+
+static const char* diags_frames(const char* src, const md_system_t* sys, uint64_t frames, md_allocator_i* alloc) {
+    const md_vial_compile_desc_t desc = {.sys = sys, .num_frames = frames};
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
+    const md_vial_diagnostic_t* d = NULL;
+    const size_t n = md_vial_diagnostics(prog, &d);
+    char* out = NULL;
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t line = 1;
+        for (uint32_t k = 0; k < d[i].span.beg; ++k) line += src[k] == '\n';
+        char buf[512];
+        int len = snprintf(buf, sizeof(buf), "%s %u\n", d[i].code, line);
+        md_array_push_array(out, buf, (size_t)len, alloc);
+    }
+    md_array_push(out, '\0', alloc);
+    md_vial_program_free(prog);
+    return out;
+}
+
+UTEST_F(vial_check, stages) {
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(P != NULL);
+    const char* base = "ca = particles(name='CA')\nends = distance(ca[0], ca[14])\n";
+    char src[1024];
+#define WITH(tail) (snprintf(src, sizeof(src), "%s%s", base, tail), src)
+    EXPECT_TYPE_ON(P, WITH("m = mean(ends, axis='frame')\n"), 3, u8"float Å, trajectory");
+    EXPECT_TYPE_ON(P, WITH("m = ends - mean(ends, axis='frame')\n"), 3, u8"float Å, trajectory, per frame");
+    EXPECT_TYPE_ON(P, WITH("s = smooth(ends, 5)\n"), 3, u8"float Å, trajectory, per frame");
+    EXPECT_TYPE_ON(P, WITH("v = derivative(ends)\n"), 3, u8"float Å/ps, trajectory, per frame");
+    EXPECT_TYPE_ON(P, WITH("h = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))\n"), 3, "float[32], trajectory");
+    EXPECT_TYPE_ON(P, WITH("a = autocorrelation(ends, max_lag=10)\n"), 3, "float[11], trajectory");
+    EXPECT_TYPE_ON(P, WITH("f = at(ends, frame=0)\n"), 3, u8"float Å, static");
+    EXPECT_STREQ("E0405 3\n", diags_frames(WITH("f = at(ends, frame=38)\n"), P, 38, utest_fixture->alloc));
+    EXPECT_STREQ("", diags_frames(WITH("f = at(ends, frame=37)\n"), P, 38, utest_fixture->alloc));
+    EXPECT_STREQ("E0404 3\n", diags_frames(WITH("f = at(mean(ends, axis='frame'), frame=0)\n"), P, 0, utest_fixture->alloc));
+    EXPECT_STREQ("E0404 3\n", diags_frames(WITH("f = at(at(ends, frame=1) + ends, frame=0)\n"), P, 0, utest_fixture->alloc));
+    EXPECT_STREQ("E0313 3\n", diags_frames(WITH("s = smooth(ends, 4)\n"), P, 0, utest_fixture->alloc));
+    EXPECT_STREQ("E0403 3\n", diags_frames(WITH("if ends < 5.0:\n    pass\n"), P, 0, utest_fixture->alloc));
+    EXPECT_STREQ("E0317 3\n", diags_frames(WITH("b = ends is None\n"), P, 0, utest_fixture->alloc));
+    EXPECT_STREQ("E0401 3\n", diags_frames(WITH("d = distance(within(3.0, of=ca[0]).xyz, ca[0])\n"), P, 0, utest_fixture->alloc));
+    EXPECT_STREQ("", diags_frames(WITH("_d = distance(within(3.0, of=ca[0]).xyz, ca[0])\n"), P, 0, utest_fixture->alloc));
+    EXPECT_STREQ("W0404 3\n", diags_frames(WITH("dm = distance(particles.xyz[:, None], particles.xyz)\n"), P, 1000, utest_fixture->alloc));
+    EXPECT_STREQ("W0406 5\nW0406 6\n", diags_frames(WITH("a = ends - mean(ends, axis='frame')\nb = a - mean(a, axis='frame')\n"
+        "c = b - mean(b, axis='frame')\nd = c - mean(c, axis='frame')\n"), P, 0, utest_fixture->alloc));
+#undef WITH
+}

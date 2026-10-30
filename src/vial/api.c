@@ -47,7 +47,8 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
 
     prog->check = (vial_check_t){.tree = &prog->tree, .src = prog->src, .diags = &prog->diags,
         .prelude = with_prelude ? &prog->prelude : NULL, .prelude_src = prog->prelude_src,
-        .prelude_diags = &prog->prelude_diags, .sys = desc ? desc->sys : NULL, .alloc = arena};
+        .prelude_diags = &prog->prelude_diags, .sys = desc ? desc->sys : NULL,
+        .num_frames = desc ? desc->num_frames : 0, .alloc = arena};
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
 

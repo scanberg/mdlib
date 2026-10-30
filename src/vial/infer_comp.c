@@ -396,9 +396,12 @@ static T call_fold(infer_t* x, vial_node_id call) {
     return t;
 }
 
+bool vx_call_frames2(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out);
+
 bool vx_call_frames(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
     const str_t name = str_from_cstr(b->name);
     if (str_eq(name, STR_LIT("fold"))) { *out = call_fold(x, call); return true; }
+    if (vx_call_frames2(x, call, b, out)) return true;
     if (str_eq(name, STR_LIT("frame")) || str_eq(name, STR_LIT("time"))) {
         const bool time = str_eq(name, STR_LIT("time"));
         if (vx_num_children(x, call) > 1) {
@@ -412,6 +415,149 @@ bool vx_call_frames(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* o
         t.stage = VIAL_STAGE_FRAME;
         *out = t;
         return true;
+    }
+    return false;
+}
+
+// ### OVER FRAMES: smooth, derivative, histogram, autocorrelation, at ###
+
+static bool static_int(infer_t* x, vial_node_id n, const char* what, int64_t lo, int64_t* out) {
+    const vial_value_t v = vx_value_of(x, n);
+    if (v.kind != VIAL_VAL_INT || v.i < lo) {
+        vx_diag_fix(x, "E0313", n, NULL, "%s is an int of at least %lld, known when compiling", what, (long long)lo);
+        return false;
+    }
+    *out = v.i;
+    return true;
+}
+
+static bool needs_frames(infer_t* x, vial_node_id n, const T* t, const char* fname) {
+    if (t->stage != VIAL_STAGE_STATIC) return true;
+    vx_diag_fix(x, "E0313", n, NULL, "`%s` runs over frames, and %s is static", fname, vx_tstr(t));
+    return false;
+}
+
+// Does a subtree call at()
+static bool calls_at(infer_t* x, vial_node_id root) {
+    vial_node_id* stack = NULL;
+    md_array_push(stack, root, x->alloc);
+    while (md_array_size(stack)) {
+        const vial_node_id n = *md_array_last(stack);
+        md_array_pop(stack);
+        if (callee_is(x, n, "at")) return true;
+        for (uint32_t i = 0; i < vx_num_children(x, n); ++i) if (vx_child(x, n, i)) md_array_push(stack, vx_child(x, n, i), x->alloc);
+    }
+    return false;
+}
+
+static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char* fname) {
+    if (str_eq(name, STR_LIT("smooth")) || str_eq(name, STR_LIT("derivative"))) {
+        const bool smooth = str_eq(name, STR_LIT("smooth"));
+        static const vx_param_t ps[] = {{"x", VX_KIND_WHOLE, true}, {"n", VX_KIND_WHOLE, true}};
+        static const vx_param_t pd[] = {{"x", VX_KIND_WHOLE, true}};
+        vial_node_id a[2] = {0};
+        if (!vx_bind(x, call, fname, smooth ? ps : pd, smooth ? 2 : 1, a)) return err();
+        const T v = x->out->types[(a[0]) - x->out->base];
+        if (vial_type_is_error(&v) || !needs_frames(x, a[0], &v, fname)) return err();
+        if (smooth) {
+            int64_t n;
+            if (!static_int(x, a[1], "the window", 1, &n)) return err();
+            if (n % 2 == 0) { vx_diag_fix(x, "E0313", a[1], NULL, "a centred window has an odd number of frames; this is %lld", (long long)n); return err(); }
+        }
+        T t = v;
+        t.stage = VIAL_STAGE_TRAJECTORY;
+        t.flags |= VIAL_TYPE_PER_FRAME;
+        t.pass = vx_pass(&v);
+        if (!smooth) {
+            md_unit_t ps_unit;
+            vial_unit_name(STR_LIT("ps"), &ps_unit);
+            if (v.unit_kind == VIAL_UNIT_KNOWN) t.unit = md_unit_div(v.unit, ps_unit);
+            t.flags &= ~VIAL_TYPE_PERIODIC;
+            if (t.dtype != VIAL_DT_FLOAT64) t.dtype = VIAL_DT_FLOAT;
+        }
+        return t;
+    }
+    if (str_eq(name, STR_LIT("histogram"))) {
+        static const vx_param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}, {"bins", VX_KIND_WHOLE, true},
+                                       {"range", VX_KIND_WHOLE, true}, {"density", VX_KIND_WHOLE, false}};
+        vial_node_id a[5];
+        if (!vx_bind(x, call, fname, p, 5, a)) return err();
+        const T v = x->out->types[(a[0]) - x->out->base];
+        if (vial_type_is_error(&v)) return err();
+        if (a[1]) {
+            const vial_value_t av = vx_value_of(x, a[1]);
+            if (av.kind != VIAL_VAL_STR || !str_eq(av.s, STR_LIT("frame"))) {
+                vx_diag_fix(x, "E0316", a[1], NULL, "`histogram` bins over frames, axis='frame'");
+                return err();
+            }
+        }
+        if (!needs_frames(x, a[0], &v, fname)) return err();
+        int64_t bins;
+        if (!static_int(x, a[2], "bins", 1, &bins)) return err();
+        const T r = x->out->types[(a[3]) - x->out->base];
+        if (vial_type_is_error(&r)) return err();
+        if (vx_kind(x, a[3]) != VIAL_N_TUPLE || vx_num_children(x, a[3]) != 2) {
+            vx_diag_fix(x, "E0313", a[3], NULL, "range= is a tuple of two numbers, (lo, hi)");
+            return err();
+        }
+        T t = vial_type_scalar(VIAL_DT_FLOAT);
+        vial_type_push_dim(&t, vial_extent_static((uint32_t)bins));
+        t.stage = VIAL_STAGE_TRAJECTORY;
+        t.pass = vx_pass(&v);
+        return t;
+    }
+    if (str_eq(name, STR_LIT("autocorrelation"))) {
+        static const vx_param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"max_lag", VX_KIND_WHOLE, true}};
+        vial_node_id a[2];
+        if (!vx_bind(x, call, fname, p, 2, a)) return err();
+        const T v = x->out->types[(a[0]) - x->out->base];
+        if (vial_type_is_error(&v) || !needs_frames(x, a[0], &v, fname)) return err();
+        int64_t lag;
+        if (!static_int(x, a[1], "max_lag", 0, &lag)) return err();
+        T t = v;
+        t.dtype = VIAL_DT_FLOAT;
+        t.unit_kind = VIAL_UNIT_KNOWN; t.unit = md_unit_none();
+        t.flags &= ~(VIAL_TYPE_PERIODIC | VIAL_TYPE_PER_FRAME | VIAL_TYPE_MISSING);
+        vial_type_push_dim(&t, vial_extent_static((uint32_t)lag + 1));
+        t.stage = VIAL_STAGE_TRAJECTORY;
+        t.pass = vx_pass(&v);
+        return t;
+    }
+    if (str_eq(name, STR_LIT("at"))) {
+        static const vx_param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"frame", VX_KIND_WHOLE, true}};
+        vial_node_id a[2];
+        if (!vx_bind(x, call, fname, p, 2, a)) return err();
+        const T v = x->out->types[(a[0]) - x->out->base];
+        if (vial_type_is_error(&v)) return err();
+        if (v.stage == VIAL_STAGE_TRAJECTORY || calls_at(x, a[0])) {
+            vx_diag_fix(x, "E0404", a[0], NULL, v.stage == VIAL_STAGE_TRAJECTORY ? "at() reads one frame, and %s depends on other frames"
+                : "at() reads one frame, and this reads another with at()", vx_tstr(&v));
+            return err();
+        }
+        int64_t k;
+        if (!static_int(x, a[1], "frame=", 0, &k)) return err();
+        if (x->c->num_frames && (uint64_t)k >= x->c->num_frames) {
+            vx_diag_fix(x, "E0405", a[1], NULL, "frame %lld of a run with %llu frames", (long long)k, (unsigned long long)x->c->num_frames);
+            return err();
+        }
+        T t = v;
+        t.stage = VIAL_STAGE_STATIC;
+        t.pass = 0;
+        t.flags &= ~VIAL_TYPE_PER_FRAME;
+        for (uint8_t q = 0; q < t.ndim; ++q) {
+            // An extent that changes per frame is the one frame k has: known when compiling
+            if (t.dims[q].kind == VIAL_EXT_DYNAMIC) t.dims[q] = (vial_extent_t){.kind = VIAL_EXT_UNKNOWN, .id = (uint32_t)call, .desc = t.dims[q].desc};
+        }
+        if (t.dtype == VIAL_DT_SET) t.ident = 0;
+        return t;
+    }
+    return err();
+}
+
+bool vx_call_frames2(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
+    static const char* names[] = {"smooth", "derivative", "histogram", "autocorrelation", "at"};
+    for (size_t i = 0; i < ARRAY_SIZE(names); ++i) {
+        if (strcmp(b->name, names[i]) == 0) { *out = call_over_frames(x, call, str_from_cstr(b->name), b->name); return true; }
     }
     return false;
 }

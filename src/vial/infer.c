@@ -603,7 +603,12 @@ static T infer_compare(infer_t* x, vial_node_id id) {
         const uint16_t cmp = sub_of(x, on);
         T pair = scalar(VIAL_DT_BOOL);
         if (cmp == VIAL_CMP_IS || cmp == VIAL_CMP_IS_NOT) {
-            // is compares static values; checked further with stages
+            // is compares static values, such as a parameter with None
+            if (a.stage != VIAL_STAGE_STATIC || b.stage != VIAL_STAGE_STATIC) {
+                diag_fix(x, "E0317", on, cmp == VIAL_CMP_IS ? "==" : "!=", "`is` compares values known when compiling, and this changes per frame");
+                failed = true;
+                continue;
+            }
             join_stage(&pair, &a, &b);
         } else if ((cmp == VIAL_CMP_IN || cmp == VIAL_CMP_NOT_IN) && b.dtype == VIAL_DT_TUPLE) {
             // One of a tuple's values, as assert op in ('closest', 'farthest')
@@ -1245,6 +1250,11 @@ static bool check_if(infer_t* x, vial_node_id s) {
         if (v.b) return check_block(x, child(x, s, 1));
         return other ? (kind_of(x, other) == VIAL_N_IF ? check_if(x, other) : check_block(x, other)) : false;
     }
+    if (!vial_type_is_error(&ct) && (ct.dtype != VIAL_DT_BOOL || ct.ndim)) {
+        diag_fix(x, "E0303", c, "where(...)", "an if needs one bool; this is `%s`", tstr(&ct));
+    } else if (!x->frame && !vial_type_is_error(&ct) && ct.stage != VIAL_STAGE_STATIC) {
+        diag_fix(x, "E0403", c, "where(...)", "the condition changes per frame, and what a script publishes cannot; where() chooses per frame");
+    }
     const bool a = check_block(x, child(x, s, 1));
     const bool b = other ? (kind_of(x, other) == VIAL_N_IF ? check_if(x, other) : check_block(x, other)) : false;
     return a && b;
@@ -1268,6 +1278,36 @@ void vx_frame_return(infer_t* x, vial_node_id at, const T* t) {
     }
     if (!join_types(x, at, "the returns of a def", &f->result, t, &m)) { f->result = err(); return; }
     f->result = m;
+}
+
+// What a top-level name publishes must keep its shape from frame to frame (E0401), selections apart, and should not
+// take more than 64 MB over the run (W0404)
+static void check_published(infer_t* x, vial_node_id target, const T* t) {
+    if (x->frame || kind_of(x, target) != VIAL_N_NAME || vial_type_is_error(t)) return;
+    const str_t name = text(x, target);
+    if (name.len && name.ptr[0] == '_') return;
+    const bool publishable = t->dtype == VIAL_DT_BOOL || t->dtype == VIAL_DT_INT || t->dtype == VIAL_DT_FLOAT ||
+                             t->dtype == VIAL_DT_FLOAT64 || t->dtype == VIAL_DT_SET;
+    if (!publishable || t->dtype == VIAL_DT_SET) return;
+    bool dynamic = false;
+    uint64_t n = 1;
+    for (uint8_t k = 0; k < t->ndim; ++k) {
+        if (t->dims[k].kind == VIAL_EXT_DYNAMIC) dynamic = true;
+        if (t->dims[k].kind == VIAL_EXT_STATIC) n *= t->dims[k].n;
+    }
+    char fix[80];
+    snprintf(fix, sizeof(fix), "_%.*s", (int)(name.len < 70 ? name.len : 70), name.ptr);
+    if (dynamic) {
+        diag_fix(x, "E0401", target, fix, "`%.*s` has a different length in each frame, so it cannot be published as a series; reduce it, or name it %s",
+            (int)name.len, name.ptr, fix);
+        return;
+    }
+    const bool per_frame = t->stage == VIAL_STAGE_FRAME || (t->flags & VIAL_TYPE_PER_FRAME);
+    if (per_frame && x->c->num_frames && t->ndim < 3 && n * x->c->num_frames > 16u * 1024u * 1024u) {
+        const double mb = (double)(n * x->c->num_frames) * 4.0 / (1024.0 * 1024.0);
+        diag_fix(x, "W0404", target, fix, "`%.*s` takes %.0f MB over %llu frames; published values are kept for the whole run",
+            (int)name.len, name.ptr, mb, (unsigned long long)x->c->num_frames);
+    }
 }
 
 // W0405, once per top-level statement whose value may be missing, unless it reads a name that already may be, or
@@ -1303,8 +1343,14 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
         if (!n) return false;
         const vial_node_id value = child(x, s, n - 1);
         const T t = infer(x, value);
-        for (uint32_t i = 0; i + 1 < n; ++i) assign_target(x, child(x, s, i), &t, value);
+        for (uint32_t i = 0; i + 1 < n; ++i) {
+            assign_target(x, child(x, s, i), &t, value);
+            check_published(x, child(x, s, i), &t);
+        }
         warn_missing(x, s, value, &t);
+        if (!x->frame && !vial_type_is_error(&t) && vx_pass(&t) > 3) {
+            diag(x, "W0406", value, "this is pass %u; each pass reads every frame again", vx_pass(&t));
+        }
         return false;
     }
     case VIAL_N_EXPR_STMT:

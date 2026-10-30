@@ -66,6 +66,7 @@ typedef struct vial_check_t {
     vial_names_t        prelude_names;
 
     const struct md_system_t* sys;  // the system selectors are evaluated against, or NULL
+    uint64_t            num_frames; // of the run, or 0 when not known
 
     md_allocator_i*     alloc;
 } vial_check_t;
