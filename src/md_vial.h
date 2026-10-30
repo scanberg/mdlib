@@ -84,8 +84,8 @@ typedef struct md_vial_compile_desc_t {
     const struct md_system_t* sys;
 
     // The number of frames of the run the script will be evaluated over, or 0 when not known. at(x, frame=k) with k
-    // past the last frame is E0405, and a published per-frame value over 64 MB for the run is W0404. at() reads its
-    // frame when compiling once VIAL evaluates (phase 3); until then its value is typed but not known.
+    // past the last frame is E0405, and a published per-frame value over 64 MB for the run is W0404. at() is read in a
+    // step before evaluation reads the other frames, and remembered; compiling never waits for a frame.
     uint64_t num_frames;
 
     // The run the script is evaluated over: its prefix in sys->attributes, such as "run/md". attr(path) reads
