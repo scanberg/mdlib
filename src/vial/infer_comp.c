@@ -7,6 +7,7 @@
 // hold one particle per set, so it is points.
 
 #include "infer_internal.h"
+#include "ir.h"
 
 #include <core/md_common.h>
 #include <core/md_array.h>
@@ -225,6 +226,12 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     iter_t first = {0};
     uint32_t num_for = 0;
     bool filtered = false, ok = true;
+    // Lowering: one for is a map; its filters, an and of the conditions it keeps
+    vx_comp_t comp = {0};
+    vial_ssa_t keep = 0;
+    uint32_t fors = 0;
+    for (uint32_t i = 1; i < nc; ++i) fors += vx_child(x, id, i) && vx_kind(x, vx_child(x, id, i)) == VIAL_N_COMP_FOR;
+    if (x->ir && fors != 1) { vx_lower_fail(x, id, "a comprehension with several fors"); y.ir = NULL; }
     for (uint32_t i = 1; i < nc; ++i) {
         const vial_node_id cf = vx_child(x, id, i);
         if (!cf || vx_kind(x, cf) != VIAL_N_COMP_FOR) continue;
@@ -235,6 +242,7 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
         num_for += 1;
         if (r.stage > stage) stage = r.stage;
         if (!bind(&y, target, &r.elem, NULL)) ok = false;
+        if (y.ir && ok && !vx_comp_begin(&y, it, target, &r.elem, &comp)) { vx_lower_fail(x, id, "a comprehension over this iterable"); y.ir = NULL; }
         // A nested for runs inside the one before: the extents multiply
         if (dims.ndim == 0) vial_type_push_dim(&dims, r.extent);
         else if (dims.dims[0].kind == VIAL_EXT_STATIC && r.extent.kind == VIAL_EXT_STATIC) { dims.dims[0].n *= r.extent.n; dims.dims[0].desc = 0; }
@@ -251,14 +259,24 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
             }
             if (ct.stage > stage) stage = ct.stage;
             filtered = true;
+            if (y.ir && comp.ok) {
+                const vial_ssa_t kv = vx_ssa(&y, c);
+                keep = keep && kv ? vial_ir_op1(y.ir, VIAL_IR_LOGIC, VIAL_KW_AND, 0, (vial_ssa_t[]){keep, kv}, 2, &ct, vx_span(&y, c)) : kv;
+            }
         }
     }
-    if (!ok || num_for == 0) { vx_infer(&y, elem); return err(); }
+    if (!ok || num_for == 0) {
+        vx_infer(&y, elem);
+        if (comp.ok) vx_comp_end(&y, id, &comp, 0, 0, NULL);
+        return err();
+    }
     if (filtered) dims.dims[0] = (vial_extent_t){.kind = stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)id};
 
     const T e = vx_infer(&y, elem);
-    if (vial_type_is_error(&e)) return err();
-    if (e.dtype == VIAL_DT_TUPLE || e.dtype == VIAL_DT_DEF || e.dtype == VIAL_DT_NONE || e.dtype == VIAL_DT_RANGE) {
+    const vial_ssa_t ev = y.ir && comp.ok ? vx_ssa(&y, elem) : 0;
+    if (vial_type_is_error(&e) || e.dtype == VIAL_DT_TUPLE || e.dtype == VIAL_DT_DEF || e.dtype == VIAL_DT_NONE || e.dtype == VIAL_DT_RANGE) {
+        if (comp.ok) vx_comp_end(&y, id, &comp, 0, 0, NULL);
+        if (vial_type_is_error(&e)) return err();
         vx_diag_fix(x, "E0319", elem, NULL, "a list holds numbers, strings, sets or drawings; this holds %s", vx_tstr(&e));
         return err();
     }
@@ -268,6 +286,7 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     for (uint8_t k = 0; k < e.ndim; ++k) {
         if (!vial_type_push_dim(&t, e.dims[k])) {
             vx_diag_fix(x, "E0308", id, NULL, "the result would have 7 dimensions; the limit is 6");
+            if (comp.ok) vx_comp_end(&y, id, &comp, 0, 0, NULL);
             return err();
         }
     }
@@ -275,6 +294,11 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     vx_join_stage(&t, &o, &(T){.stage = stage});
     t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
     if (e.dtype == VIAL_DT_SET && (e.flags & VIAL_TYPE_ONE_PARTICLE)) t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    if (comp.ok) {
+        if (!ev) vx_lower_fail(&y, elem, "a comprehension's element");
+        vx_comp_end(&y, id, &comp, ev, keep, &t);
+    }
+    y.ir = NULL;    // what follows checks elements one by one: the map above is their IR
 
     // Evaluated element by element, when everything about it is known: an array of sets
     if (num_for == 1 && !filtered && first.known && first.count <= MAX_EVALUATED && e.dtype == VIAL_DT_SET && e.ndim == 0 &&
@@ -372,7 +396,21 @@ static T call_fold(infer_t* x, vial_node_id call) {
     if (!skip) { s.flags |= v.flags & VIAL_TYPE_MISSING; }
     else one.flags &= ~VIAL_TYPE_MISSING;
     const T types[2] = {s, one};
-    const T r = vx_call_def_types(x, call, def, types, NULL, 2);
+    // Lowering: a fold owns the step's region, its parameters the state and one frame's value
+    uint32_t region = 0, saved = 0;
+    vial_ssa_t sparams[2] = {0}, stepped = 0;
+    if (x->ir) {
+        region = vial_ir_region(x->ir, VIAL_IR_NO_OP, x->ir->regions[x->ir->insert].func, types, 2);
+        sparams[0] = vial_ir_param(x->ir, region, 0);
+        sparams[1] = vial_ir_param(x->ir, region, 1);
+        saved = x->ir->insert;
+        x->ir->insert = region;
+    }
+    const T r = vx_call_def_types(x, call, def, types, NULL, 2, sparams, &stepped);
+    if (x->ir) {
+        vial_ir_yield(x->ir, &stepped, stepped ? 1 : 0, vx_span(x, call));
+        x->ir->insert = saved;
+    }
     if (vial_type_is_error(&r)) return err();
     bool same = r.dtype == init.dtype && r.ndim == init.ndim && r.unit_kind == init.unit_kind &&
                 (r.unit_kind != VIAL_UNIT_KNOWN || md_unit_base_equal(r.unit, init.unit) || (md_unit_is_none(r.unit) && md_unit_is_none(init.unit)));
@@ -393,6 +431,17 @@ static T call_fold(infer_t* x, vial_node_id call) {
     t.flags |= r.flags & VIAL_TYPE_MISSING;
     const uint8_t pv = vx_pass(&v), pi = vx_pass(&init);
     t.pass = pv > pi ? pv : pi;
+    if (x->ir) {
+        const vial_ssa_t xs = vx_ssa(x, a[1]), is = vx_ssa(x, a[2]);
+        if (stepped && xs && is) {
+            const uint32_t op = vial_ir_emit(x->ir, &(vial_ir_emit_t){.kind = VIAL_IR_FOLD, .sub = skip, .args = (vial_ssa_t[]){xs, is}, .num_args = 2,
+                                                                     .types = &t, .num_results = 1, .span = vx_span(x, call)});
+            vial_ir_attach(x->ir, op, 0, region);
+            vx_set_ssa(x, call, x->ir->ops[op].result);
+        } else {
+            vx_lower_fail(x, call, "a fold whose step is not lowered");
+        }
+    }
     return t;
 }
 

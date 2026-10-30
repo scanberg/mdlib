@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_attributes.h>
 #include "infer.h"
+#include "ir.h"
 
 #include <core/md_arena_allocator.h>
 #include <core/md_common.h>
@@ -19,6 +20,7 @@ struct md_vial_program_t {
     vial_tree_t      tree;
     vial_check_t     check;
     vial_types_t     types;
+    vial_ir_t        ir;        // the script lowered
     md_vial_output_t* outputs;  // md_array
     // The prelude, compiled with every script
     str_t            prelude_src;
@@ -97,6 +99,8 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
         const md_attribute_t* time = md_attributes_find(&prog->check.sys->attributes, str_from_cstr(path));
         if (time && time->format.rank >= 1) prog->check.num_frames = time->format.shape[0];
     }
+    vial_ir_init(&prog->ir, arena);
+    prog->check.ir = &prog->ir;
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
 
@@ -206,3 +210,5 @@ bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover
     if (vial_value_is_scalar(v)) vial_value_print(out->value, sizeof(out->value), v);
     return true;
 }
+
+const struct vial_ir_t* md_vial__ir(const md_vial_program_t* prog) { return prog ? &prog->ir : NULL; }

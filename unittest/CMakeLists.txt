@@ -54,6 +54,7 @@ set (SRC_FILES
     test_vial_fuzz.c
     test_vial_types.c
     test_vial_check.c
+    test_vial_ir.c
     test_spatial_hash.c
     test_writer.c
     test_csv.c

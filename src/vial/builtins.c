@@ -67,6 +67,7 @@ const vial_builtin_t* vial_builtin_find(str_t name) {
 
 size_t vial_builtin_count(void) { return ARRAY_SIZE(builtins); }
 const vial_builtin_t* vial_builtin_at(size_t i) { return i < ARRAY_SIZE(builtins) ? &builtins[i] : NULL; }
+uint32_t vial_builtin_index(const vial_builtin_t* b) { return (uint32_t)(b - builtins); }
 
 // v1's names, with what to write in VIAL
 static const struct { const char* v1; const char* message; const char* fix; } v1_names[] = {

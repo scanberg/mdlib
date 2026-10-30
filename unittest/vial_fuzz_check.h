@@ -8,10 +8,12 @@
 //              inside their parent and in source order, the node count linear in the token count
 // Diagnostics  spans in bounds, in source order, a known code, a message
 // The API      md_vial_compile gives the same tokens and diagnostics as the stages run by hand, twice over
+// Lowering     the array IR verifies, whatever was lowered of it
 
 #include <md_vial.h>
 #include <vial/vial_internal.h>
 #include <vial/ast.h>
+#include <vial/ir.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -167,6 +169,7 @@ static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* s
         if (!why && k != num_diags) why = "md_vial_diagnostics lost a diagnostic of the front end";
         if (!why && (round & 1) == 0) first_count = npd;
         if (!why && (round & 1) == 1 && npd != first_count) why = "compiling twice gives different diagnostics";
+        if (!why && !vial_ir_verify(md_vial__ir(prog), NULL, 0)) why = "the array IR does not verify";
         md_vial_program_free(prog);
         if (why) return why;
     }

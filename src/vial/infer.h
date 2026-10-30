@@ -48,6 +48,11 @@ typedef struct vial_types_t {
     vial_type_t*    sym_types;  // md_array by symbol
     vial_value_t*   sym_values; // md_array by symbol
     vial_desc_t*    descs;      // md_array; an extent's desc indexes it, 0 is none
+    // Lowering, when the check emits the array IR
+    uint32_t*       ssa;        // md_array by node id: its value in the IR, 0 when none
+    uint32_t*       sym_ssa;    // md_array by symbol
+    uint32_t*       bind_of;    // md_array by node id: a built-in call's bound arguments, index + 1 into binds
+    struct vx_bound_t* binds;   // md_array
 } vial_types_t;
 
 // Types the top-level statements of c's tree in order. Runs after vial_check_names.
