@@ -72,5 +72,8 @@ void vial_val_set_missing(vial_val_t* v, size_t i, md_allocator_i* alloc);
 // max_items show their first items and "…". Returns the length written.
 size_t vial_val_print(char* buf, size_t cap, const vial_val_t* v, uint32_t max_items);
 
+// A copy of v whose data, mask, sets and elements are alloc's
+vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc);
+
 // Deep equality of dtype, shape, data and mask, bit for bit for floats
 bool vial_val_equal(const vial_val_t* a, const vial_val_t* b);

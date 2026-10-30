@@ -13,15 +13,20 @@
 
 bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...) {
     vial_interp_t* in = k->in;
-    if (in->failed) return false;
-    in->failed = true;
-    memcpy(in->error.code, code, 5);
-    in->error.code[5] = 0;
+    vial_rt_error_t e = {.span = k->op ? k->op->span : (md_vial_span_t){0}};
+    memcpy(e.code, code, 5);
     va_list args;
     va_start(args, fmt);
-    vsnprintf(in->error.message, sizeof(in->error.message), fmt, args);
+    vsnprintf(e.message, sizeof(e.message), fmt, args);
     va_end(args);
-    in->error.span = k->op ? k->op->span : (md_vial_span_t){0};
+    if (!in->failed) in->error = e;
+    in->failed = true;
+    // Once each: the same failure at the same place in every frame is one
+    for (size_t i = 0; i < md_array_size(in->errors); ++i) {
+        const vial_rt_error_t* g = &in->errors[i];
+        if (g->span.beg == e.span.beg && g->span.end == e.span.end && !strcmp(g->message, e.message)) return false;
+    }
+    md_array_push(in->errors, e, in->alloc);
     return false;
 }
 
@@ -38,7 +43,93 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     md_array_resize(in->state, nv, in->alloc);
     memset(in->vals, 0, nv * sizeof(*in->vals));
     memset(in->state, 0, nv);
+    // What the outputs need: the ops that define them, their arguments' ops, and everything in a live op's regions
+    const size_t no = md_array_size(ir->ops);
+    md_array_resize(in->live, no, in->alloc);
+    memset(in->live, 0, no);
+    uint32_t* stack = NULL;
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
+        const uint32_t op = ir->values[ir->outputs[i].value].op;
+        if (op != VIAL_IR_NO_OP) md_array_push(stack, op, in->alloc);
+    }
+    while (md_array_size(stack)) {
+        const uint32_t op = *md_array_last(stack);
+        md_array_pop(stack);
+        if (in->live[op]) continue;
+        in->live[op] = 1;
+        const vial_ir_op_t* o = &ir->ops[op];
+        for (uint32_t k = 0; k < o->num_args; ++k) {
+            const vial_ssa_t a = ir->args[o->arg_beg + k];
+            if (a && ir->values[a].op != VIAL_IR_NO_OP) md_array_push(stack, ir->values[a].op, in->alloc);
+        }
+        if (o->kind == VIAL_IR_CALL) {
+            const vial_ir_region_t* r = &ir->regions[ir->funcs[o->aux].body];
+            for (size_t q = 0; q < md_array_size(r->ops); ++q) md_array_push(stack, r->ops[q], in->alloc);
+        }
+        for (int k = 0; k < 2; ++k) {
+            if (!o->region[k]) continue;
+            const vial_ir_region_t* r = &ir->regions[o->region[k]];
+            for (size_t q = 0; q < md_array_size(r->ops); ++q) md_array_push(stack, r->ops[q], in->alloc);
+        }
+    }
     return true;
+}
+
+// at(x, frame=i): x as it is at frame i, computed in a step of its own before frames are evaluated
+static bool eval_at(vial_interp_t* in, uint32_t opi) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_op_t* op = &ir->ops[opi];
+    vial_kctx_t k = {.in = in, .op = op};
+    const vial_ssa_t xv = op->num_args > 0 ? ir->args[op->arg_beg] : 0;
+    const vial_ssa_t fv = op->num_args > 1 ? ir->args[op->arg_beg + 1] : 0;
+    if (!xv || !fv || !in->state[fv]) return vial_rt_fail(&k, "R0103", "at() needs a value and a frame");
+    const vial_val_t* f = &in->vals[fv];
+    if (f->dtype != VIAL_DT_INT || !f->data) return vial_rt_fail(&k, "R0103", "at()'s frame is an int");
+    const int64_t index = *(const int32_t*)f->data;
+    if (!in->load_frame) return vial_rt_fail(&k, "R0103", "at() needs the run's frames");
+    vial_frame_t fr;
+    if (!in->load_frame(in->load_user, index, &fr)) return vial_rt_fail(&k, "R0104", "at() reads frame %lld, which the run does not have", (long long)index);
+    vial_interp_t child;
+    if (!vial_interp_init(&child, ir, in->sys, in->msys, md_get_heap_allocator())) return vial_rt_fail(&k, "R0103", "out of memory");
+    // The child computes only what the value needs: the live ops are those of x
+    memset(child.live, 0, md_array_size(child.live));
+    {
+        uint32_t* stack = NULL;
+        md_array_push(stack, ir->values[xv].op, child.alloc);
+        while (md_array_size(stack)) {
+            const uint32_t q = *md_array_last(stack);
+            md_array_pop(stack);
+            if (q == VIAL_IR_NO_OP || child.live[q]) continue;
+            child.live[q] = 1;
+            const vial_ir_op_t* o = &ir->ops[q];
+            for (uint32_t a = 0; a < o->num_args; ++a) {
+                const vial_ssa_t s = ir->args[o->arg_beg + a];
+                if (s) md_array_push(stack, ir->values[s].op, child.alloc);
+            }
+            if (o->kind == VIAL_IR_CALL) {
+                const vial_ir_region_t* r = &ir->regions[ir->funcs[o->aux].body];
+                for (size_t z = 0; z < md_array_size(r->ops); ++z) md_array_push(stack, r->ops[z], child.alloc);
+            }
+            for (int z = 0; z < 2; ++z) {
+                if (!o->region[z]) continue;
+                const vial_ir_region_t* r = &ir->regions[o->region[z]];
+                for (size_t w = 0; w < md_array_size(r->ops); ++w) md_array_push(stack, r->ops[w], child.alloc);
+            }
+        }
+    }
+    child.load_frame = in->load_frame;
+    child.load_user = in->load_user;
+    const bool ok = vial_interp_frame(&child, &fr);
+    const vial_val_t* v = ok ? vial_interp_value(&child, xv) : NULL;
+    bool done = false;
+    if (v) {
+        in->vals[op->result] = vial_val_copy(v, in->alloc);
+        done = true;
+    } else {
+        vial_rt_fail(&k, child.failed ? child.error.code : "R0103", "at(): %s", child.failed ? child.error.message : "the value is not computed");
+    }
+    vial_interp_free(&child);
+    return done;
 }
 
 void vial_interp_free(vial_interp_t* in) {
@@ -332,26 +423,32 @@ static bool is_trajectory(const vial_ir_t* ir, const vial_ir_op_t* op) {
 static bool eval_top(vial_interp_t* in, bool static_only) {
     const vial_ir_t* ir = in->ir;
     const vial_ir_region_t* r = &ir->regions[ir->funcs[0].body];
+    bool ok = true;
     for (size_t i = 0; i < md_array_size(r->ops); ++i) {
         const uint32_t opi = r->ops[i];
         const vial_ir_op_t* op = &ir->ops[opi];
         if (op->kind == VIAL_IR_YIELD) break;
-        if (!op->num_results) continue;
+        if (!op->num_results || !in->live[opi]) continue;
         const bool st = is_static(ir, op);
         if (st && in->state[op->result] == 2) continue;
         if (static_only && !st) continue;
         if (!st && is_trajectory(ir, op)) continue;
+        if (st && op->kind == VIAL_IR_BUILTIN && !strcmp(vial_builtin_at(op->aux)->name, "at")) {
+            if (eval_at(in, opi)) in->state[op->result] = 2;
+            else ok = false;
+            continue;
+        }
         // A value computed from one that failed is not computed either
         bool ready = true;
         for (uint32_t k = 0; k < op->num_args; ++k) {
             const vial_ssa_t a = ir->args[op->arg_beg + k];
             if (a && !in->state[a]) ready = false;
         }
-        if (!ready) continue;
-        if (!eval_op(in, opi, st ? in->alloc : in->temp)) return false;
+        if (!ready) { ok = false; continue; }
+        if (!eval_op(in, opi, st ? in->alloc : in->temp)) { ok = false; continue; }
         for (uint32_t k = 0; k < op->num_results; ++k) in->state[op->result + k] = st ? 2 : 1;
     }
-    return true;
+    return ok;
 }
 
 bool vial_interp_static(vial_interp_t* in) {
@@ -364,8 +461,7 @@ bool vial_interp_frame(vial_interp_t* in, const vial_frame_t* frame) {
     const size_t nv = md_array_size(in->state);
     for (size_t i = 0; i < nv; ++i) if (in->state[i] == 1) in->state[i] = 0;
     md_arena_allocator_reset(in->temp);
-    if (!eval_top(in, true)) return false;
+    const bool st = eval_top(in, true);
     in->frame = frame;
-    const bool ok = eval_top(in, false);
-    return ok;
+    return eval_top(in, false) && st;
 }

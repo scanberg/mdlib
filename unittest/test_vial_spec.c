@@ -451,3 +451,117 @@ UTEST_F(vial_spec, lowers) {
     printf("vial reference: %d of %d blocks lowered; %d places not lowered yet\n", num_lowered, num_blocks, num_failures);
     EXPECT_EQ(0, num_invalid);
 }
+
+// Phase 3: every block is evaluated, its static part and its first frames, on its structure's run. What fails is
+// counted, not failed, until the interpreter is complete.
+#include "../src/vial/interp.h"
+
+// Frames for at(): the run's, or the structure's own coordinates for T
+typedef struct vial_spec__frames_t {
+    char                structure;
+    const md_system_t*  sys;
+    int64_t             num_frames;
+    md_system_state_t   state;
+} vial_spec__frames_t;
+
+static bool vial_spec__load(void* user, int64_t index, vial_frame_t* out) {
+    vial_spec__frames_t* f = user;
+    if (!f->num_frames) {
+        const md_system_state_t* st = vial_test_state(f->structure);
+        if (index != 0 || !st) return false;
+        *out = (vial_frame_t){.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell, .index = 0};
+        return true;
+    }
+    if (index < 0 || index >= f->num_frames) return false;
+    const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(f->sys, STR_LIT("run"), paths, 2, md_get_heap_allocator());
+    const bool ok = ex && md_system_extract_frame(ex, index, &f->state);
+    if (ex) md_system_extract_end(ex);
+    *out = (vial_frame_t){.xyz = (const float*)f->state.xyz, .num_atoms = f->state.num_atoms, .cell = f->state.unitcell, .index = index, .time = (double)index};
+    return ok;
+}
+
+UTEST_F(vial_spec, evaluates) {
+    const vial_spec_t* spec = &utest_fixture->spec;
+    md_allocator_i* alloc = utest_fixture->alloc;
+    int num_blocks = 0, num_clean = 0, num_errors = 0, num_outputs = 0, num_mismatch = 0;
+    const bool verbose = getenv("VIAL_SPEC_VERBOSE") != NULL;
+    for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
+        const vial_block_t* b = &spec->blocks[i];
+        if (b->mode == VIAL_BLOCK_FILTERS) continue;
+        if (b->structure != 'T' && b->structure != 'P') continue;
+        str_t src = b->src;
+        if (b->continues && i > 0) {
+            const vial_block_t* prev = &spec->blocks[i - 1];
+            char* buf = NULL;
+            md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
+            md_array_push(buf, '\n', alloc);
+            md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
+            src = (str_t){buf, md_array_size(buf)};
+        }
+        const md_system_t* sys = vial_test_system(b->structure);
+        const int64_t nf = vial_test_run(b->structure);
+        if (!sys) continue;
+        const md_vial_compile_desc_t desc = {.sys = sys};
+        md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
+        const vial_ir_t* ir = md_vial__ir(prog);
+        vial_sys_t vs;
+        vial_sys_init(&vs, sys, alloc);
+        vial_interp_t in;
+        vial_interp_init(&in, ir, &vs, sys, md_get_heap_allocator());
+        vial_spec__frames_t frames = {.structure = b->structure, .sys = sys, .num_frames = nf, .state = {.alloc = md_get_heap_allocator()}};
+        md_system_state_init(&frames.state, sys->atom.count);
+        in.load_frame = vial_spec__load;
+        in.load_user = &frames;
+        vial_interp_static(&in);
+        md_system_state_t state = {.alloc = md_get_heap_allocator()};
+        md_system_state_init(&state, sys->atom.count);
+        const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
+        md_system_extract_t* ex = nf ? md_system_extract_begin(sys, STR_LIT("run"), paths, 2, md_get_heap_allocator()) : NULL;
+        for (int64_t f = 0; ex && f < nf && f < 3; ++f) {
+            if (!md_system_extract_frame(ex, f, &state)) break;
+            const vial_frame_t fr = {.xyz = (const float*)state.xyz, .num_atoms = state.num_atoms, .cell = state.unitcell, .index = f, .time = (double)f};
+            vial_interp_frame(&in, &fr);
+        }
+        if (ex) md_system_extract_end(ex);
+        if (!nf) {
+            // One model: its own coordinates are the frame
+            const md_system_state_t* st = vial_test_state(b->structure);
+            const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell, .index = 0};
+            vial_interp_frame(&in, &fr);
+        }
+        md_system_state_free(&state);
+        // Every computed output agrees with its type: dtype, rank, and the extents the check knows
+        for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
+            const vial_val_t* v = vial_interp_value(&in, ir->outputs[k].value);
+            const vial_type_t* t = &ir->values[ir->outputs[k].value].type;
+            if (!v || t->dtype == VIAL_DT_TUPLE || t->stage == VIAL_STAGE_TRAJECTORY) continue;
+            bool ok = v->dtype == t->dtype && v->ndim == t->ndim;
+            for (uint8_t d = 0; ok && d < t->ndim; ++d) ok = t->dims[d].kind != VIAL_EXT_STATIC || t->dims[d].n == v->dims[d];
+            if (!ok) {
+                char tb[128], vb[160];
+                vial_type_print(tb, sizeof(tb), t);
+                vial_val_print(vb, sizeof(vb), v, 4);
+                printf("reference block at line %d: %.*s is %s but evaluates to dtype %d, rank %u: %s\n", b->line, (int)ir->outputs[k].name.len,
+                    ir->outputs[k].name.ptr, tb, v->dtype, v->ndim, vb);
+                num_mismatch += 1;
+            }
+            num_outputs += 1;
+        }
+        num_blocks += 1;
+        const size_t ne = md_array_size(in.errors);
+        if (!ne) num_clean += 1;
+        num_errors += (int)ne;
+        for (size_t k = 0; verbose && k < ne; ++k) {
+            const md_vial_span_t sp = in.errors[k].span;
+            const str_t text = {src.ptr + sp.beg, sp.end - sp.beg};
+            printf("reference block at line %d: %s %s: '%.*s'\n", b->line, in.errors[k].code, in.errors[k].message, (int)(text.len < 60 ? text.len : 60), text.ptr);
+        }
+        vial_interp_free(&in);
+        md_system_state_free(&frames.state);
+        md_vial_program_free(prog);
+    }
+    printf("vial reference: %d of %d blocks evaluated without an error; %d errors; %d outputs agree with their types, %d do not\n",
+        num_clean, num_blocks, num_errors, num_outputs - num_mismatch, num_mismatch);
+    EXPECT_EQ(0, num_mismatch);
+}
