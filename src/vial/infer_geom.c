@@ -335,6 +335,7 @@ static bool bind(infer_t* x, vial_node_id call, const char* fname, const param_t
             ok = false;
         }
     }
+    if (ok && x->ir) vx_record_bind(x, call, params, np, args);
     return ok;
 }
 

@@ -36,6 +36,8 @@ typedef struct vial_val_t {
     const vial_sets_t*  sets;       // SET
     const struct vial_val_t* elems; // TUPLE
     uint32_t            num_elems;
+    const vial_sets_t*  origin;     // positions and what is computed from them elementwise: the particles along their
+                                    // first dimension of particles, as particles(x) gives them; NULL when not known
 } vial_val_t;
 
 static inline size_t vial_val_count(const vial_val_t* v) {

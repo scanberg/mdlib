@@ -137,6 +137,7 @@ typedef struct vial_ir_t {
     vial_ir_output_t*   outputs;    // md_array
     vial_ir_failure_t*  failures;   // md_array
     uint32_t            insert;     // the region ops are emitted into
+    const struct vial_desc_t* descs;// what dimensions run over, by the descs of the types' extents: the check's
     md_allocator_i*     alloc;
 } vial_ir_t;
 

@@ -571,6 +571,7 @@ static void target_names(const vial_tree_t* t, vial_node_id target, vial_node_id
 
 void vx_emit_finish(infer_t* x) {
     vial_ir_t* ir = x->ir;
+    ir->descs = *x->descs;
     vial_ir_yield(ir, NULL, 0, (md_vial_span_t){0});
     const vial_tree_t* t = x->c->tree;
     const vial_node_id root = t->root;
