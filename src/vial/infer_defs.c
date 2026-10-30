@@ -414,65 +414,131 @@ T vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const T* ty
     return call_core(x, site, t, n, src, prelude, def, &g, args);
 }
 
-// ### DRAWING, FOR NOW ###
+// ### DRAWING ###
+
+// A primitive's parameters: points map, lengths map as floats, a label maps when it is a number
+typedef struct prim_t {
+    const char* name;
+    vx_param_t  params[4];
+    uint32_t    np;
+} prim_t;
+
+static const prim_t prims[] = {
+    {"marker",    {{"p", VX_KIND_POINT, true}}, 1},
+    {"line",      {{"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, true}, {"label", VX_KIND_WHOLE, false}}, 3},
+    {"arrow",     {{"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, false}, {"direction", VX_KIND_POINT, false}, {"length", VX_KIND_FLOAT, false}}, 4},
+    {"sphere",    {{"c", VX_KIND_POINT, true}, {"r", VX_KIND_FLOAT, true}}, 2},
+    {"arc",       {{"c", VX_KIND_POINT, true}, {"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, true}, {"label", VX_KIND_WHOLE, false}}, 4},
+    {"disk",      {{"c", VX_KIND_POINT, true}, {"n", VX_KIND_POINT, true}, {"r", VX_KIND_FLOAT, true}}, 3},
+    {"label",     {{"p", VX_KIND_POINT, true}, {"x", VX_KIND_WHOLE, true}}, 2},
+    {"highlight", {{"s", VX_KIND_SET, true}}, 1},
+};
+
+static T call_primitive(infer_t* x, vial_node_id call, const prim_t* pr) {
+    vial_node_id args[4];
+    if (!vx_bind(x, call, pr->name, pr->params, pr->np, args)) return err();
+    md_unit_t length;
+    vial_unit_name(STR_LIT("angstrom"), &length);
+    T loop = vial_type_scalar(VIAL_DT_INT);
+    T stage = vial_type_scalar(VIAL_DT_DRAWING);
+    bool ok = true;
+    for (uint32_t k = 0; k < pr->np; ++k) {
+        if (!args[k]) continue;
+        const T a = x->out->types[(args[k]) - x->out->base];
+        if (vial_type_is_error(&a)) { ok = false; continue; }
+        uint8_t kind = pr->params[k].kind;
+        // A label: a number maps with the points, a string is one label
+        const bool is_label = str_eq(str_from_cstr(pr->params[k].name), STR_LIT("label")) || (strcmp(pr->name, "label") == 0 && k == 1);
+        if (is_label) {
+            if (a.dtype == VIAL_DT_STR && a.ndim == 0) { T o = stage; vx_join_stage(&stage, &o, &a); continue; }
+            if (a.dtype == VIAL_DT_STR || !(a.dtype == VIAL_DT_INT || a.dtype == VIAL_DT_FLOAT || a.dtype == VIAL_DT_FLOAT64 || a.dtype == VIAL_DT_BOOL)) {
+                vx_diag_fix(x, "E0313", args[k], NULL, "`%s` labels with a number or a string; this is %s", pr->name, vx_tstr(&a));
+                ok = false;
+                continue;
+            }
+            kind = VX_KIND_FLOAT;
+        }
+        // A length: Å, or a bare number read as Å
+        if (kind == VX_KIND_FLOAT && !is_label && a.unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(a.unit) && !md_unit_base_equal(a.unit, length)) {
+            vx_diag_fix(x, "E0313", args[k], NULL, "`%s` takes a length for %s; this is %s", pr->name, pr->params[k].name, vx_tstr(&a));
+            ok = false;
+            continue;
+        }
+        T core, lp;
+        if (!vx_split(x, args[k], &a, kind, pr->name, pr->params[k].name, &core, &lp)) { ok = false; continue; }
+        T m = loop;
+        if (!vx_broadcast(&loop, &lp, &m)) {
+            vx_diag_fix(x, "E0301", call, NULL, "the dimensions `%s` maps over do not broadcast: `%s` and `%s`", pr->name, vx_tstr(&loop), vx_tstr(&lp));
+            return err();
+        }
+        loop.ndim = m.ndim;
+        memcpy(loop.dims, m.dims, sizeof(m.dims));
+        T o = stage;
+        vx_join_stage(&stage, &o, &core);
+        o = stage;
+        vx_join_stage(&stage, &o, &lp);
+    }
+    if (!ok) return err();
+    if (strcmp(pr->name, "arrow") == 0 && !args[1] == !(args[2] || args[3])) {
+        vx_diag_fix(x, "E0204", call, NULL, "`arrow` runs from a to b, or from a along direction= for length=");
+        return err();
+    }
+    if (strcmp(pr->name, "arrow") == 0 && args[2] && !args[3]) {
+        vx_diag_fix(x, "E0204", call, NULL, "`arrow` along direction= needs length=");
+        return err();
+    }
+    T t = stage;
+    t.dtype = VIAL_DT_DRAWING;
+    t.ndim = 0;
+    t.unit = md_unit_none();
+    t.unit_kind = VIAL_UNIT_KNOWN;
+    t.flags &= VIAL_TYPE_MISSING;
+    for (uint8_t k = 0; k < loop.ndim; ++k) vial_type_push_dim(&t, loop.dims[k]);
+    return t;
+}
 
 bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
     const str_t name = str_from_cstr(b->name);
-    static const char* prims[] = {"marker", "line", "arrow", "sphere", "arc", "disk", "label", "highlight"};
     if (str_eq(name, STR_LIT("shown"))) {
         // shown(x, d) is x, with d attached for hover. When x failed, d is not checked: one mistake, one diagnostic.
-        vial_node_id first = 0;
-        for (uint32_t i = 1; i < vx_num_children(x, call) && !first; ++i) {
+        static const vx_param_t params[] = {{"x", VX_KIND_WHOLE, true}, {"d", VX_KIND_WHOLE, true}};
+        vial_node_id first = 0, second = 0;
+        uint32_t pos = 0;
+        for (uint32_t i = 1; i < vx_num_children(x, call); ++i) {
             const vial_node_id a = vx_child(x, call, i);
-            if (a && vx_kind(x, a) != VIAL_N_KWARG) first = a;
-        }
-        if (first && !vial_type_is_error((T[]){vx_infer(x, first)})) {
-            for (uint32_t i = 1; i < vx_num_children(x, call); ++i) {
-                const vial_node_id a = vx_child(x, call, i);
-                if (!a || a == first) continue;
-                vx_infer(x, vx_kind(x, a) == VIAL_N_KWARG ? vx_child(x, a, 1) : a);
+            if (!a) continue;
+            if (vx_kind(x, a) == VIAL_N_KWARG) {
+                const vial_node_id kn = vx_child(x, a, 0);
+                const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
+                if (str_eq(kw, STR_LIT("x")) && !first) first = vx_child(x, a, 1);
+                else if (str_eq(kw, STR_LIT("d")) && !second) second = vx_child(x, a, 1);
+                else { if (vx_child(x, a, 1)) vx_infer(x, vx_child(x, a, 1)); vx_diag_fix(x, "E0202", a, NULL, "`shown` takes x and d"); *out = err(); return true; }
+                continue;
             }
+            if (pos == 0 && !first) first = a;
+            else if (pos == 1 && !second) second = a;
+            pos += 1;
         }
-        if (!first) { vx_diag_fix(x, "E0204", call, NULL, "`shown` takes a value and a drawing"); *out = err(); return true; }
-        *out = x->out->types[(first) - x->out->base];
-        if (!vial_type_is_error(out)) out->flags |= VIAL_TYPE_DRAWN;
+        (void)params;
+        if (!first || !second || pos > 2) {
+            infer_all_args(x, call);
+            vx_diag_fix(x, "E0204", call, NULL, "`shown` takes a value and a drawing, shown(x, d)");
+            *out = err();
+            return true;
+        }
+        const T xt = vx_infer(x, first);
+        if (vial_type_is_error(&xt)) { *out = err(); return true; }
+        const T dt = vx_infer(x, second);
+        if (!vial_type_is_error(&dt) && dt.dtype != VIAL_DT_DRAWING) {
+            vx_diag_fix(x, "E0313", second, NULL, "`shown` attaches a drawing, made by a primitive such as line(); this is %s", vx_tstr(&dt));
+        }
+        *out = xt;
+        out->flags |= VIAL_TYPE_DRAWN;
         vx_set_value(x, call, vx_value_of(x, first));
         return true;
     }
     for (size_t i = 0; i < ARRAY_SIZE(prims); ++i) {
-        if (!str_eq(name, str_from_cstr(prims[i]))) continue;
-        // The leading points map: line(res_a.com, vlb.com) is one line per residue. The rest arrives with step 9.
-        const uint32_t num_points = str_eq(name, STR_LIT("line")) ? 2 : str_eq(name, STR_LIT("highlight")) ? 0 : 1;
-        T t = vial_type_scalar(VIAL_DT_DRAWING);
-        T loop = vial_type_scalar(VIAL_DT_INT);
-        uint32_t pos = 0;
-        bool ok = true;
-        for (uint32_t k = 1; k < vx_num_children(x, call); ++k) {
-            const vial_node_id a = vx_child(x, call, k);
-            if (!a) continue;
-            const bool kw = vx_kind(x, a) == VIAL_N_KWARG;
-            const vial_node_id v = kw ? vx_child(x, a, 1) : a;
-            if (!v) continue;
-            const T at = vx_infer(x, v);
-            if (vial_type_is_error(&at)) { ok = false; continue; }
-            T o = t;
-            vx_join_stage(&t, &o, &at);
-            if (kw || pos++ >= num_points) continue;
-            T core, lp;
-            if (!vx_split(x, v, &at, VX_KIND_POINT, prims[i], pos == 1 ? "a" : "b", &core, &lp)) { ok = false; continue; }
-            T m = loop;
-            if (!vx_broadcast(&loop, &lp, &m)) {
-                vx_diag_fix(x, "E0301", call, NULL, "`%s` and `%s` do not broadcast", vx_tstr(&loop), vx_tstr(&lp));
-                ok = false;
-                continue;
-            }
-            loop.ndim = m.ndim;
-            memcpy(loop.dims, m.dims, sizeof(m.dims));
-        }
-        if (!ok) { *out = err(); return true; }
-        for (uint8_t k = 0; k < loop.ndim; ++k) vial_type_push_dim(&t, loop.dims[k]);
-        *out = t;
-        return true;
+        if (str_eq(name, str_from_cstr(prims[i].name))) { *out = call_primitive(x, call, &prims[i]); return true; }
     }
     return false;
 }

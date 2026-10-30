@@ -570,3 +570,36 @@ UTEST_F(vial_check, stages) {
         "c = b - mean(b, axis='frame')\nd = c - mean(c, axis='frame')\n"), P, 0, utest_fixture->alloc));
 #undef WITH
 }
+
+// ### STEP 9: DRAWINGS ###
+
+UTEST_F(vial_check, drawings) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "l = line(particles(resname='GTP').com, particles(name='MG'))\n", 1, "drawing, frame");
+    EXPECT_TYPE_ON(T, "l = line(residues(chain='A').com, particles(name='MG'), label=1.0)\n", 1, "drawing[442], frame");
+    EXPECT_TYPE_ON(T, "s = sphere(particles(name='MG'), 3.0) + marker([0.0, 0.0, 0.0])\n", 1, "drawing, frame");
+    EXPECT_TYPE_ON(T, "a = arrow([0.0, 0.0, 0.0], direction=[0.0, 0.0, 1.0], length=5.0)\n", 1, "drawing, static");
+    EXPECT_TYPE_ON(T, "h = highlight(residues(chain='A'))\n", 1, "drawing[442], static");
+    EXPECT_TYPE_ON(T, "t = label(particles(name='MG'), 'MG')\n", 1, "drawing, frame");
+    EXPECT_TYPE_ON(T, "d = shown(2.0 nm, sphere([0.0, 0.0, 0.0], 1.0))\n", 1, "float nm, static = 2");
+    EXPECT_DIAGS_ON(T, "s = sphere(particles(name='MG'), 3.0 ps)\n", "E0313 1: `sphere` takes a length for r; this is float ps\n");
+    EXPECT_DIAGS_ON(T, "a = arrow([0.0, 0.0, 0.0])\n", "E0204 1: `arrow` runs from a to b, or from a along direction= for length=\n");
+    EXPECT_DIAGS_ON(T, "d = shown(2.0, 3.0)\n", "E0313 1: `shown` attaches a drawing, made by a primitive such as line(); this is float\n");
+    EXPECT_DIAGS_ON(T, "b = arrow(particles(resname='GTP'), particles(name='MG'))\n",
+        "E0302 1: `arrow` needs a point for a; `particles(resname='GTP')` may hold several particles, so write .com for its centre or"
+        " between='closest' | particles(resname='GTP').com\n");
+}
+
+UTEST_F(vial_check, bonds_spread_and_set_indices) {
+    const md_system_t* T = vial_test_system('T');
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(T != NULL && P != NULL);
+    EXPECT_TYPE_ON(T, "b = bonds(particles(resname='GTP'))\nn = len(b)\n", 2, "int, static = 34");
+    EXPECT_TYPE_ON(T, "b = bonds(particles(resname='GTP'))\nl = distance(b[:, 0], b[:, 1])\n", 2, u8"float[34] Å, frame");
+    EXPECT_TYPE_ON(P, "p = particles.xyz\nz = p[particles(name='CA')]\n", 2, u8"float[15][3] Å, frame");
+    EXPECT_DIAGS_ON(P, "z = zeros(4)[particles(name='CA')]\n", "E0311 1: a set picks values by particle, and `float[4]` has no dimension over particles\n");
+    EXPECT_TYPE_ON(T, "s = spread(count(residues(chain='A')), residues(chain='A'))\n", 1, "int[3441], static");   // 3393 protein, 32 GTP, 1 MG, 10 SO4, 5 water
+    EXPECT_DIAGS_ON(T, "r = residues(chain='A')[0:2]\ns = spread(count(concatenate([r, r])), concatenate([r, r]))\n",
+        "E0306 2: the groups share particles, so each of those would get several values; combine= says how | combine='mean'\n");
+}

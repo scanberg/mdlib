@@ -1054,7 +1054,36 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             join_stage(&t, &t, &ix);
             continue;
         }
-        if (ix.dtype == VIAL_DT_SET) return err();      // a set as index: with the selectors
+        if (ix.dtype == VIAL_DT_SET) {
+            // a[s]: the values of the particles in s, an intersection, along a's first dimension over particles
+            if (ix.ndim || num != 1) {
+                diag(x, "E0319", it, "a set as a position is one set, alone in the brackets; this is %s", tstr(&ix));
+                return err();
+            }
+            int pd = -1;
+            for (uint8_t q = 0; q < a.ndim && pd < 0; ++q) {
+                const uint32_t dsc = a.dims[q].desc;
+                if (dsc && dsc < md_array_size(*x->descs) && (*x->descs)[dsc].level == VIAL_LEVEL_PARTICLE) pd = q;
+            }
+            if (pd < 0) {
+                diag_fix(x, "E0311", on, NULL, "a set picks values by particle, and `%s` has no dimension over particles", tstr(&a));
+                return err();
+            }
+            T r = a;
+            join_stage(&r, &a, &ix);
+            const vial_desc_t* dd = &(*x->descs)[a.dims[pd].desc];
+            const vial_value_t sv = value_of(x, it);
+            if (dd->sets && dd->sets->single && sv.kind == VIAL_VAL_SETS && sv.sets->single && ix.stage == VIAL_STAGE_STATIC &&
+                a.dims[pd].kind == VIAL_EXT_STATIC) {
+                const vial_sets_t* both = vial_sets_and(dd->sets, 0, sv.sets, 0, x->alloc);
+                r.dims[pd] = vial_extent_static(vial_sets_size(both, 0));
+                r.dims[pd].desc = vx_desc(x, VIAL_LEVEL_PARTICLE, both);
+            } else {
+                r.dims[pd] = (vial_extent_t){.kind = ix.stage == VIAL_STAGE_STATIC && a.dims[pd].kind != VIAL_EXT_DYNAMIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC,
+                                             .id = (uint32_t)id, .desc = vx_desc(x, VIAL_LEVEL_PARTICLE, NULL)};
+            }
+            return r;
+        }
         diag(x, "E0319", it, "a position is an int, a slice, a list of ints or a bool mask; this is %s", tstr(&ix));
         return err();
     }

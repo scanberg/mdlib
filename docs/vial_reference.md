@@ -748,7 +748,7 @@ pairs = [distance(x.com, y.com) for x, y in zip(residues[0:7], residues[8:15])] 
 res_a = residues(chain='A', kind='amino_acid')
 vlb   = particles(resname='VLB')
 d_res = distance(res_a, vlb, between='closest')     # -> float[433] Å: each residue's closest approach to VLB
-shade = spread(d_res, res_a)                        # -> float[n] Å over the particles of res_a; the groups do not overlap
+shade = spread(d_res, res_a)                        # -> float[n] Å: over the particles of res_a; the groups do not overlap
 rb    = residues(chain='B', kind='amino_acid')      # -> set[432]
 a, b  = common(res_a, rb, by='id')                  # -> set[424] and set[424]: the ids both chains have
 dab   = distance(a.com, b.com)                      # -> float[424] Å, no warning: common paired them; labelled MET1/A–MET1/B, ARG2/A–ARG2/B, …, CYS4/A–ILE4/B, …
