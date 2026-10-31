@@ -182,6 +182,7 @@ static void publish(md_vial_eval_t* e) {
 
 bool md_vial_eval_run(md_vial_eval_t* e) {
     if (!e) return false;
+    e->done = 0;    // a run again: its values are not read until it has finished
     const bool ok = vial_interp_run(&e->in, e->num_frames > 0 ? e->num_frames : 0);
     md_array_shrink(e->diags, 0);
     for (size_t i = 0; i < md_array_size(e->in.errors); ++i) {
