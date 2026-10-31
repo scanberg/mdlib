@@ -102,7 +102,7 @@ static bool copy_ops(inl_t* c, uint32_t region, vial_ssa_t* yields, uint32_t max
         vial_type_t types[8];
         for (uint32_t k = 0; k < op->num_results && k < 8; ++k) types[k] = src->values[op->result + k].type;
         // Attributes in ints: as many as the kind keeps there
-        const uint32_t nattr = op->kind == VIAL_IR_MAP ? op->num_args : 0;
+        const uint32_t nattr = op->kind == VIAL_IR_MAP ? op->num_args : op->kind == VIAL_IR_PAIRS ? 2 : 0;
         const uint32_t nop = vial_ir_emit(dst, &(vial_ir_emit_t){.kind = op->kind, .sub = op->sub, .aux = aux, .args = a,
             .names = op->num_args ? src->names + op->arg_beg : NULL, .num_args = op->num_args, .types = types, .num_results = op->num_results,
             .attr = nattr ? src->ints + op->attr : NULL, .num_attr = nattr, .span = op->span});
@@ -188,4 +188,114 @@ uint32_t vial_ir_contract(vial_ir_t* ir, md_allocator_i* alloc) {
     }
     md_free(alloc, uses, (nv ? nv : 1) * sizeof(uint32_t));
     return fused;
+}
+
+// ### REDUCTIONS OVER EVERY PAIR ###
+// red(norm(displacement(x, y))) and red(norm(displacement(x, y)) < r), with x of shape [n][1] and y [m] (points or sets
+// of one particle each), become a VIAL_IR_PAIRS op of x, y and r. What the reduction reads stays in the IR; with no
+// other reader it is not live, and the matrix is never built.
+
+static const char* builtin_name(const vial_ir_t* ir, const vial_ir_op_t* op) {
+    return op->kind == VIAL_IR_BUILTIN ? vial_builtin_at(op->aux)->name : "";
+}
+
+// The op's argument for a parameter, by name, or 0
+static vial_ssa_t arg_named(const vial_ir_t* ir, const vial_ir_op_t* op, const char* name) {
+    for (uint32_t k = 0; k < op->num_args; ++k) {
+        const str_t nm = ir->names[op->arg_beg + k];
+        if (nm.len && str_eq(nm, str_from_cstr(name))) return ir->args[op->arg_beg + k];
+    }
+    return 0;
+}
+
+static uint32_t def_op(const vial_ir_t* ir, vial_ssa_t v) { return v ? ir->values[v].op : VIAL_IR_NO_OP; }
+
+// The shape of x or y's points: a float type's dimensions but its last of 3, or a set type's
+static bool lead_shape(const vial_type_t* t, uint32_t* dims, uint8_t* nd) {
+    if (t->dtype == VIAL_DT_SET) { *nd = t->ndim; }
+    else if (t->dtype == VIAL_DT_FLOAT && t->ndim >= 1 && t->dims[t->ndim - 1].kind == VIAL_EXT_STATIC && t->dims[t->ndim - 1].n == 3) { *nd = t->ndim - 1; }
+    else return false;
+    for (uint8_t d = 0; d < *nd; ++d) dims[d] = t->dims[d].kind == VIAL_EXT_STATIC ? t->dims[d].n : 0;
+    return true;
+}
+
+uint32_t vial_ir_pairs(vial_ir_t* ir, md_allocator_i* alloc) {
+    (void)alloc;
+    uint32_t lowered = 0;
+    for (size_t i = 0; i < md_array_size(ir->ops); ++i) {
+        vial_ir_op_t* op = &ir->ops[i];
+        if (op->kind != VIAL_IR_BUILTIN) continue;
+        const char* name = builtin_name(ir, op);
+        uint32_t red = 0;
+        if (!strcmp(name, "min")) red = VIAL_PAIRS_MIN;
+        else if (!strcmp(name, "max")) red = VIAL_PAIRS_MAX;
+        else if (!strcmp(name, "argmin")) red = VIAL_PAIRS_ARGMIN;
+        else if (!strcmp(name, "argmax")) red = VIAL_PAIRS_ARGMAX;
+        else if (!strcmp(name, "sum")) red = VIAL_PAIRS_COUNT;
+        else if (!strcmp(name, "any")) red = VIAL_PAIRS_ANY;
+        else continue;
+        // Only a reduction of a, by axis=: not min(a, b), not by=
+        if (arg_named(ir, op, "b") || arg_named(ir, op, "by")) continue;
+        const vial_ssa_t a = arg_named(ir, op, "a");
+        const vial_ssa_t axis_v = arg_named(ir, op, "axis");
+        uint32_t axis = VIAL_PAIRS_ALL;
+        if (axis_v) {
+            const uint32_t ao = def_op(ir, axis_v);
+            if (ao == VIAL_IR_NO_OP || ir->ops[ao].kind != VIAL_IR_CONST) continue;
+            const vial_val_t* c = &ir->consts[ir->ops[ao].aux];
+            if (c->dtype != VIAL_DT_INT || c->ndim || !c->data) continue;
+            const int32_t ax = *(const int32_t*)c->data;
+            if (ax == 1 || ax == -1) axis = 1;
+            else if (ax == 0 || ax == -2) axis = 0;
+            else continue;
+        } else if (red == VIAL_PAIRS_ARGMIN || red == VIAL_PAIRS_ARGMAX) {
+            continue;   // a flat index over every pair: not one of the rule's
+        }
+        // The distances, or their test against r
+        uint32_t test = 0;
+        vial_ssa_t dist = a, r = 0;
+        if (red == VIAL_PAIRS_COUNT || red == VIAL_PAIRS_ANY) {
+            const uint32_t co = def_op(ir, a);
+            if (co == VIAL_IR_NO_OP || ir->ops[co].kind != VIAL_IR_COMPARE) continue;
+            const vial_ir_op_t* c = &ir->ops[co];
+            if (c->sub != VIAL_CMP_LT && c->sub != VIAL_CMP_LE) continue;
+            dist = ir->args[c->arg_beg];
+            r = ir->args[c->arg_beg + 1];
+            if (!r || ir->values[r].type.ndim != 0) continue;
+            test = c->sub;
+        }
+        const uint32_t no = def_op(ir, dist);
+        if (no == VIAL_IR_NO_OP || strcmp(builtin_name(ir, &ir->ops[no]), "norm") || ir->ops[no].num_args < 1) continue;
+        const vial_ir_op_t* nop = &ir->ops[no];
+        if (ir->values[dist].type.dtype != VIAL_DT_FLOAT || ir->values[dist].type.ndim != 2) continue;
+        const vial_ssa_t disp = ir->args[nop->arg_beg];
+        const uint32_t dop = def_op(ir, disp);
+        if (dop == VIAL_IR_NO_OP || strcmp(builtin_name(ir, &ir->ops[dop]), "displacement")) continue;
+        const vial_ir_op_t* dp = &ir->ops[dop];
+        const vial_ssa_t x = arg_named(ir, dp, "a") ? arg_named(ir, dp, "a") : ir->args[dp->arg_beg];
+        const vial_ssa_t y = arg_named(ir, dp, "b");
+        if (!x || !y) continue;
+        // x is [n][1] and y [m]
+        uint32_t xd[VIAL_MAX_DIMS], yd[VIAL_MAX_DIMS];
+        uint8_t xn, yn;
+        if (!lead_shape(&ir->values[x].type, xd, &xn) || !lead_shape(&ir->values[y].type, yd, &yn)) continue;
+        if (xn != 2 || xd[1] != 1 || yn != 1) continue;
+        // x and y are visible to the reduction: displacement read them, and the reduction reads what it gave
+        // The reduction becomes the pairs op: its arguments appended, its attributes in ints
+        const vial_ssa_t args[3] = {x, y, r};
+        op->kind = VIAL_IR_PAIRS;
+        op->sub = (uint16_t)red;
+        op->aux = 0;
+        op->arg_beg = (uint32_t)md_array_size(ir->args);
+        op->num_args = 3;
+        for (int k = 0; k < 3; ++k) {
+            md_array_push(ir->args, args[k], ir->alloc);
+            md_array_push(ir->names, (str_t){0}, ir->alloc);
+        }
+        op->attr = (uint32_t)md_array_size(ir->ints);
+        md_array_push(ir->ints, axis, ir->alloc);
+        md_array_push(ir->ints, test, ir->alloc);
+        lowered += 1;
+    }
+    return lowered;
 }

@@ -133,6 +133,10 @@ double vial_k_arith(uint16_t op, uint8_t dtype, double a, double b);
 // A map's calls of closest_pair or farthest_pair at once, as a map whose calls are only that gives them: call c pairs
 // group ia[c] of A with group ib[c] of B, each group a set's positions. out is float[count], made by the caller; its
 // distances have the bits the calls one by one give, and a call with no pair is missing.
+// VIAL_IR_PAIRS: red (vial_pairs_t) over axis of the distances between x [n][1] and y [m], or their test against r
+bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, const vial_val_t* x, const vial_val_t* y, const vial_val_t* r,
+                  vial_val_t* out);
+
 bool vial_k_pair_batch(vial_kctx_t* k, bool closest, const vial_sets_t* A, const vial_sets_t* B, const uint32_t* ia, const uint32_t* ib,
                        size_t count, vial_val_t* out);
 bool vial_k_fma(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, const vial_val_t* c, vial_val_t* out);
