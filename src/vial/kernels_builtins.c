@@ -1043,12 +1043,14 @@ static bool k_within(vial_kctx_t* k, const vial_val_t* rv, const vial_val_t* of,
     if (np && r >= 0.0f) {
         const md_unitcell_t cell = frame_cell(k);
         md_coord_stream_t all = md_coord_stream_from_aos(xyz, 3 * sizeof(float), NULL, na);
+        // The search may leave out a pair at exactly r; it is asked a hair further and the distance decides. The
+        // structure is built for that same cutoff: built for r, a query past it reaches two cells around, not one.
+        const double reach = r > 0.0f ? nextafter((double)r, 1e30) * 1.000001 : 1.0;
         md_spatial_acc_t acc = {.alloc = k->alloc};
-        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &all, .cutoff = r > 0.0f ? r : 1.0f, .unitcell = &cell});
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &all, .cutoff = reach, .unitcell = &cell});
         md_coord_stream_t ext = md_coord_stream_from_aos((const float*)p.data, 3 * sizeof(float), NULL, np);
         within_t w = {.hit = hit, .r2 = r * r};
-        // The search may leave out a pair at exactly r; it is asked a hair further and the distance decides
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, nextafter((double)r, 1e30) * 1.000001, within_cb, &w, 0);
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, reach, within_cb, &w, 0);
         md_spatial_acc_free(&acc);
     }
     uint32_t n = 0;
