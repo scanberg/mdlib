@@ -261,6 +261,7 @@ A system is built of particles, residues, parts and molecules, each nested in th
 | `atoms(...)`, `beads(...)` | `set` | `particles(kind='atom')`, `particles(kind='bead')` |
 | `residues(...)` | `set[n]`, one per residue | a residue |
 | `parts(...)` | `set[n]`, one per part | a polymer strand, glycan tree, ligand, lipid, ion or water |
+| `polymers(...)` | `set[n]`, one per strand | a polymer strand: the parts of a peptide, a nucleic acid or another polymer. Where a chain is a label of the data, a strand is the structure |
 | `molecules(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
 | `chains(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
 
@@ -280,6 +281,8 @@ A system is built of particles, residues, parts and molecules, each nested in th
 |  | `kind` | amino\_acid, nucleotide, water, ion, lipid, other | string or list |
 |  | `chain` | the author id of its chain | string or list |
 | `parts` | `kind` | polymer, peptide, nucleic, dna, rna, glycan, ligand, lipid, ion, water; see below | string or list |
+|  | `chain` | the author id of its chain | string or list |
+| `polymers` | `kind` | polymer, peptide, nucleic, dna, rna | string or list |
 |  | `chain` | the author id of its chain | string or list |
 | `molecules` | `name` | the name of its molecule type: the topology's, else what its parts are, such as peptide, GTP or water | string with `*` and `?`, or a list |
 |  | `chain` | the author id of its chain | string or list |
@@ -324,6 +327,9 @@ wat    = residues(kind='water')                        # -> set[8]
 so4    = residues('SO4')                               # -> set[3]
 n_part = len(parts)                                    # -> 17: two strands, six ligands, one ion, eight waters
 str_   = parts(kind='polymer')                         # -> set[2]: chain B's strand goes on over its gap
+strand = polymers                                      # -> set[2]: the same strands
+sb     = polymers(chain='B')                           # -> set[1]
+not_p  = polymers(kind='ligand')                       # error E0206: a ligand is not a polymer
 lig    = parts(kind='ligand')                          # -> set[6]: GTP, three SO4, GDP and VLB
 mol    = molecules(parts(kind='peptide'))              # -> set[2]: the molecules the strands are in
 n_mol  = len(molecules)                                # -> 17
@@ -339,6 +345,7 @@ _nearv = residues(within(5.0, of=particles(resname='VLB')))   # -> set[?], frame
 ```python
 # on P
 strand = parts(kind='peptide')                         # -> set[1]: no chain ids, but the strand is a part
+first  = polymers[0]                                   # -> set: the strand, by position
 n_mol  = len(molecules)                                # -> 1
 c      = chains('A')                                   # error E0207: P gives no chain ids; parts finds its strand
 ```

@@ -57,6 +57,7 @@ static uint8_t selector_level(str_t name, uint8_t* particle_kind) {
     if (str_eq(name, STR_LIT("beads"))) { *particle_kind = 2; return VIAL_LEVEL_PARTICLE; }
     if (str_eq(name, STR_LIT("residues"))) return VIAL_LEVEL_RESIDUE;
     if (str_eq(name, STR_LIT("parts"))) return VIAL_LEVEL_PART;
+    if (str_eq(name, STR_LIT("polymers"))) { *particle_kind = 1; return VIAL_LEVEL_PART; }  // the strands: parts of a polymer kind
     if (str_eq(name, STR_LIT("molecules"))) return VIAL_LEVEL_MOLECULE;
     if (str_eq(name, STR_LIT("chains"))) return VIAL_LEVEL_CHAIN;
     return VIAL_LEVEL_NONE;
@@ -200,7 +201,8 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
     uint8_t pkind = 0;
     const uint8_t level = selector_level(name, &pkind);
     vial_select_t q = {.level = level, .particle_kind = pkind};
-    const char* sel = vial_select_name(level);
+    const bool polymers = level == VIAL_LEVEL_PART && pkind;
+    const char* sel = polymers ? "polymers" : vial_select_name(level);
     T stage = vial_type_scalar(VIAL_DT_SET);
     bool failed = false, known = x->sys != NULL;
     uint32_t num_pos = 0;
@@ -306,7 +308,8 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
         else if (is_int && level == VIAL_LEVEL_PARTICLE) key = VIAL_KEY_SERIAL;
         if (!key) {
             char fix[96] = "";
-            const char* what = level == VIAL_LEVEL_CHAIN ? "an id string" : level == VIAL_LEVEL_PART ? "a set; parts have no name or id" :
+            const char* what = level == VIAL_LEVEL_CHAIN ? "an id string" : polymers ? "a set; strands have no name or id" :
+                               level == VIAL_LEVEL_PART ? "a set; parts have no name or id" :
                                level == VIAL_LEVEL_MOLECULE ? "a set or a name" : "a set, a name or an id";
             if (is_int && vt.dtype == VIAL_DT_INT && vx_num_children(x, call) == 2) {
                 char ex[VIAL_EXCERPT_MAX + 4];
@@ -324,6 +327,21 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
         if (r < 0) { failed = true; continue; }
         if (r == 0) known = false;
         md_array_push(q.filters, f, x->alloc);
+    }
+    // The kinds of a strand: polymers(kind='ligand') would pick nothing by construction
+    for (size_t i = 0; polymers && !failed && i < md_array_size(q.filters); ++i) {
+        const vial_filter_t* f = &q.filters[i];
+        if (f->key != VIAL_KEY_KIND) continue;
+        for (size_t j = 0; j < md_array_size(f->any); ++j) {
+            static const char* strands[] = {"polymer", "peptide", "nucleic", "dna", "rna"};
+            bool ok = false;
+            for (size_t k = 0; k < ARRAY_SIZE(strands) && !ok; ++k) ok = str_eq(f->any[j].s, str_from_cstr(strands[k]));
+            if (ok) continue;
+            vx_diag_fix(x, "E0206", call, NULL, "'%.*s' is not a kind of polymer; the kinds are polymer, peptide, nucleic, dna and rna",
+                (int)f->any[j].s.len, f->any[j].s.ptr);
+            failed = true;
+            break;
+        }
     }
     if (failed) return err();
     if (stage.stage != VIAL_STAGE_STATIC) return selector_unknown(level, stage.stage, call);

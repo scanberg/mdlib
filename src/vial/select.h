@@ -131,7 +131,8 @@ typedef struct vial_filter_t {
 
 typedef struct vial_select_t {
     uint8_t                 level;          // the selector's: particles is VIAL_LEVEL_PARTICLE
-    uint8_t                 particle_kind;  // atoms(), beads(): 1 + md_particle_kind_t; 0 for any
+    uint8_t                 particle_kind;  // atoms(), beads(): 1 + md_particle_kind_t; 0 for any. polymers(): 1, the
+                                            // parts of a polymer kind
     vial_filter_t*          filters;        // md_array
     const vial_sets_t*      within;         // a positional set or array of sets, or NULL
     const vial_sets_t*      scope;          // NULL for the system

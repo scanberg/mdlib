@@ -531,6 +531,7 @@ static bool residue_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t
 }
 
 static bool part_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t p) {
+    if (q->particle_kind && !(s->part_kind[p] >= VIAL_PART_PEPTIDE && s->part_kind[p] <= VIAL_PART_POLYMER)) return false;    // polymers()
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
         const vial_filter_t* f = &q->filters[i];
         switch (f->key) {

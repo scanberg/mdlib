@@ -2634,6 +2634,7 @@ static uint8_t level_of(const char* name, uint8_t* pkind) {
     if (!strcmp(name, "beads")) { *pkind = 2; return VIAL_LEVEL_PARTICLE; }
     if (!strcmp(name, "residues")) return VIAL_LEVEL_RESIDUE;
     if (!strcmp(name, "parts")) return VIAL_LEVEL_PART;
+    if (!strcmp(name, "polymers")) { *pkind = 1; return VIAL_LEVEL_PART; }
     if (!strcmp(name, "molecules")) return VIAL_LEVEL_MOLECULE;
     if (!strcmp(name, "chains")) return VIAL_LEVEL_CHAIN;
     return VIAL_LEVEL_NONE;
