@@ -487,7 +487,7 @@ static void call_params(cmpl_t* c, const md_vial_program_t* prog, vial_node_id c
         for (uint8_t lv = VIAL_LEVEL_PARTICLE; lv <= VIAL_LEVEL_CHAIN; ++lv) {
             const bool alias = lv == VIAL_LEVEL_PARTICLE && (str_eq(fname, STR_LIT("atoms")) || str_eq(fname, STR_LIT("beads")));
             if (!alias && !str_eq(fname, str_from_cstr(vial_select_name(lv)))) continue;
-            static const char* words[] = {"name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope"};
+            static const char* words[] = {"name", "element", "kind", "resid", "resname", "chain", "id", "scope"};  // not serial, until it is supported
             for (size_t w = 0; w < ARRAY_SIZE(words); ++w) {
                 if (alias && str_eq(str_from_cstr(words[w]), STR_LIT("kind"))) continue;    // atoms() and beads() are a kind
                 if (vial_select_takes(lv, vial_select_key(str_from_cstr(words[w])))) param_add(c, str_from_cstr(words[w]), given, ng);

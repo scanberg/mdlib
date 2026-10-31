@@ -205,7 +205,7 @@ static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const
             return false;
         }
         if (a->dtype == VIAL_DT_INT && a->ndim == 0) {
-            fix = fix_around(buf, sizeof(buf), x, node, "particles(serial=", ")");
+            fix = fix_around(buf, sizeof(buf), x, node, "particles[", "]");
             vx_diag_fix(x, "E0302", node, fix, "`%s` needs a point for %s; an int is not one", fname, pname);
             return false;
         }
@@ -246,7 +246,7 @@ static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const
             return true;
         }
         if (a->dtype == VIAL_DT_INT && a->ndim == 0) {
-            fix = fix_around(buf, sizeof(buf), x, node, "particles(serial=", ")");
+            fix = fix_around(buf, sizeof(buf), x, node, "particles[", "]");
             vx_diag_fix(x, "E0302", node, fix, "`%s` needs %s for %s; an int is not one", fname, kind_name(kind), pname);
             return false;
         }

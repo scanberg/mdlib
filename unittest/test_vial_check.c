@@ -343,7 +343,7 @@ UTEST_F(vial_check, centres_and_points) {
         "E0302 1: `displacement` needs a point for a; `particles(resname='GTP')` may hold several particles, so write .com for its centre"
         " or between='closest' | particles(resname='GTP').com\n");
     EXPECT_DIAGS_ON(T, "d = displacement(12, particles(name='MG'))\n",
-        "E0302 1: `displacement` needs a point for a; an int is not one | particles(serial=12)\n");
+        "E0302 1: `displacement` needs a point for a; an int is not one | particles[12]\n");
     EXPECT_DIAGS_ON(T, "d = displacement(residues(1..4, chain='A').com, residues(1..3, chain='B').com)\n",
         "E0301 1: the dimensions `displacement` maps over do not broadcast: `int[4]` and `int[3]`\n");
 }

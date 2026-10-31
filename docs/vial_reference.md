@@ -286,7 +286,7 @@ A system is built of particles, residues, parts and molecules, each nested in th
 | `chains` | `id` | the author chain id | string or list |
 | all of them | `scope` | the set to search instead of the default scope | a set, or `system` |
 
-A particle's serial is the number its file gives it. Where the file gives none, the count continues implicitly, one up from the particle before: a file without serials counts 1, 2, 3, and a file that wraps or stops counting past 99,999, as GRO and plain PDB do, goes on 100000, 100001. So serials are unique, and in a file that skips records, such as T, which keeps only the first alternate location, they are still the numbers on its lines. mdlib stores them only where they cannot be derived from the position plus a constant.
+A particle's serial is the number its file gives it. Where the file gives none, the count continues implicitly, one up from the particle before: a file without serials counts 1, 2, 3, and a file that wraps or stops counting past 99,999, as GRO and plain PDB do, goes on 100000, 100001. So serials are unique, and in a file that skips records, such as T, which keeps only the first alternate location, they are still the numbers on its lines. mdlib stores them only where they cannot be derived from the position plus a constant. Selecting by serial is not supported yet, as mdlib keeps no serials: it is E0801, and a particle is selected by its position, `particles[i]`, until it does.
 
 A list means any of its values, and separate keywords must all hold. `element` ignores case, so `'MG'`, `'Mg'` and `'mg'` are magnesium; names and ids do not.
 
@@ -424,7 +424,7 @@ A parameter can be annotated with a kind. The kind says how much of an argument 
 - An unannotated parameter takes its argument whole, as in Python. When an unannotated argument has a dimension that describes the same units as a mapped one, W0607 suggests the annotation that pairs them.
 - Inside the body the mapped dimensions are not visible, so a reduction there reduces only what one call took. An extent that changes from call to call, such as the number of particles in each residue, behaves like `?`: it broadcasts only with itself or 1, and hover shows its range, `float[4..14][3]`.
 - A group that is empty in some frame gives a missing entry, which reductions skip.
-- Any other annotation, and a return annotation, is E0312. An int where a point or group is expected is E0302, with the particles(serial=) fix; any other argument that does not fit its kind, such as a float for int, is E0313. particles(p), per-particle properties and shape() keep the identity of p's extents, so the weights in gyration pair with its positions.
+- Any other annotation, and a return annotation, is E0312. An int where a point or group is expected is E0302, with the particles[i] fix; any other argument that does not fit its kind, such as a float for int, is E0313. particles(p), per-particle properties and shape() keep the identity of p's extents, so the weights in gyration pair with its positions.
 
 ```python
 # on T
@@ -523,7 +523,7 @@ Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are
 | `point` | a set the compiler knows holds one particle, such as `ca[0]` or `particles(name='MG')` | that particle's position |
 | `point` | an array of such sets, such as `smiles_atoms(...)[:, 0]` | one position per set |
 | `point` | a set that may hold several particles | E0302, with fixes that write `.com` or `between='closest'` |
-| `point` | an int | E0302, with a fix that writes `particles(serial=12)` |
+| `point` | an int | E0302, with a fix that writes `particles[12]` |
 | `points` | `float[n][3]` | itself |
 | `points` | a set | the positions of its particles; an array of sets maps, one result per set |
 
@@ -1061,7 +1061,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0206 | A keyword value, a pattern or an attribute path the function does not know | 'amino' is not a residue kind; `C(=O` is not a SMILES pattern; the run has no attribute `edr/Kinetic` | kind='amino\_acid' |
 | E0207 | A chain where the data gives no chain ids | P gives no chain ids; chains are labels of the data and never inferred | `parts(kind='polymer')` |
 | E0301 | Shapes that do not broadcast | `float[433]` and `float[433][3]` do not broadcast | `d[:, None]` |
-| E0302 | Not a point: an int, or a set that may hold several particles | `distance` needs a point; `residues(1..4)` holds 4 sets of several particles | `.com` or `between='closest'`; `particles(serial=12)` for an int |
+| E0302 | Not a point: an int, or a set that may hold several particles | `distance` needs a point; `residues(1..4)` holds 4 sets of several particles | `.com` or `between='closest'`; `particles[12]` for an int |
 | E0303 | A condition on an array | `if` needs one bool; this is `bool[442]` | `where(...)` |
 | E0304 | A position outside a static extent | position 433 is outside `[433]` |  |
 | E0305 | A top-level name bound twice | `n` is already bound on line 2 |  |

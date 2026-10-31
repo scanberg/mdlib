@@ -80,6 +80,12 @@ static void report_no_chains(infer_t* x, vial_node_id at) {
         "the data gives no chain ids, and chains are never inferred; a strand is found as a part");
 }
 
+// mdlib keeps no serial numbers yet, and a serial is not its position where the file skips records, so a particle is
+// selected by its position until it does, rather than by a number that would match the wrong one
+static void report_no_serials(infer_t* x, vial_node_id at) {
+    vx_diag_fix(x, "E0801", at, NULL, "selecting particles by serial is not supported yet; select them by position, particles[i]");
+}
+
 // Whether a keyword takes strings or ints
 static bool key_takes_str(uint8_t level, uint8_t key) {
     switch (key) {
@@ -238,11 +244,11 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
                 continue;
             }
             if (key == VIAL_KEY_CHAIN && no_chains(x)) { report_no_chains(x, arg); failed = true; continue; }
+            if (key == VIAL_KEY_SERIAL) { report_no_serials(x, arg); failed = true; continue; }
             vial_filter_t f;
             const int r = filter_of(x, level, key, vn, &f);
             if (r < 0) { failed = true; continue; }
             if (r == 0) known = false;
-            if (key == VIAL_KEY_SERIAL) known = false;      // mdlib keeps no serial numbers yet
             if (key == VIAL_KEY_RESID) resid_arg = arg;
             md_array_push(q.filters, f, x->alloc);
             continue;
@@ -256,8 +262,8 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
             const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, arg));
             if (vt.dtype == VIAL_DT_STR && vial_select_takes(level, level == VIAL_LEVEL_CHAIN ? VIAL_KEY_ID : VIAL_KEY_NAME)) {
                 snprintf(fix, sizeof(fix), "%s=%.*s", level == VIAL_LEVEL_CHAIN ? "id" : "name", (int)e.len, e.ptr);
-            } else if ((vt.dtype == VIAL_DT_INT || vt.dtype == VIAL_DT_RANGE) && (level == VIAL_LEVEL_RESIDUE || level == VIAL_LEVEL_PARTICLE)) {
-                snprintf(fix, sizeof(fix), "%s=%.*s", level == VIAL_LEVEL_RESIDUE ? "id" : "serial", (int)e.len, e.ptr);
+            } else if ((vt.dtype == VIAL_DT_INT || vt.dtype == VIAL_DT_RANGE) && level == VIAL_LEVEL_RESIDUE) {
+                snprintf(fix, sizeof(fix), "id=%.*s", (int)e.len, e.ptr);
             }
             vx_diag_fix(x, "E0203", arg, fix[0] ? fix : NULL, "`%s` takes one positional argument; `%.*s` is the second", sel, (int)e.len, e.ptr);
             failed = true;
@@ -312,10 +318,11 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
             failed = true;
             continue;
         }
+        if (key == VIAL_KEY_SERIAL) { report_no_serials(x, arg); failed = true; continue; }
         vial_filter_t f;
         const int r = filter_of(x, level, key, arg, &f);
         if (r < 0) { failed = true; continue; }
-        if (r == 0 || key == VIAL_KEY_SERIAL) known = false;
+        if (r == 0) known = false;
         md_array_push(q.filters, f, x->alloc);
     }
     if (failed) return err();
