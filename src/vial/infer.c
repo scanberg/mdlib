@@ -1496,7 +1496,22 @@ static bool lower_dynamic_if(infer_t* x, vial_node_id s, bool* returned) {
         vial_ir_attach(ir, op, 1, r2);
         const vial_ssa_t r = ir->ops[op].result;
         vial_ir_yield(ir, &r, 1, sp);
+        vx_close_pending(x);
         *returned = true;
+        return true;
+    }
+    // One branch returns and the other has no return: the rest of the body goes on in the other branch's region, and
+    // the if is emitted when it returns (vx_close_pending). Only in the body itself or in such a rest, where the rest
+    // of the body is the rest of that region.
+    vx_frame_t* f = x->frame;
+    const bool at_body = saved == f->body_region || (f->num_pending && saved == f->pending[f->num_pending - 1].rest);
+    if ((a && !re) != (b && !rt) && at_body && f->num_pending < 16) {
+        const bool then_goes_on = !a;
+        env_set(x, then_goes_on ? env1 : env2);
+        f->pending[f->num_pending++] = (vx_pending_t){.outer = saved, .then_r = r1, .else_r = r2,
+            .rest = then_goes_on ? r1 : r2, .cond = cv, .span = sp};
+        ir->insert = then_goes_on ? r1 : r2;
+        *returned = false;
         return true;
     }
     if (rt || re) {
@@ -1576,6 +1591,24 @@ static bool check_if(infer_t* x, vial_node_id s) {
 }
 
 bool vx_check_block(infer_t* x, vial_node_id b) { return check_block(x, b); }
+
+void vx_close_pending(infer_t* x) {
+    vx_frame_t* f = x->frame;
+    vial_ir_t* ir = x->ir;
+    while (f && ir && f->num_pending && ir->insert == f->pending[f->num_pending - 1].rest) {
+        const uint32_t k = --f->num_pending;
+        // The def's value, from the branch taken: the one that returned, or the rest that just did
+        const T rt_t = f->has_result ? f->result : scalar(VIAL_DT_NONE);
+        ir->insert = f->pending[k].outer;
+        const vial_ssa_t cv = f->pending[k].cond;
+        const uint32_t op = vial_ir_emit(ir, &(vial_ir_emit_t){.kind = VIAL_IR_IF, .args = &cv, .num_args = 1, .types = &rt_t,
+            .num_results = 1, .span = f->pending[k].span});
+        vial_ir_attach(ir, op, 0, f->pending[k].then_r);
+        vial_ir_attach(ir, op, 1, f->pending[k].else_r);
+        const vial_ssa_t r = ir->ops[op].result;
+        vial_ir_yield(ir, &r, 1, f->pending[k].span);
+    }
+}
 
 void vx_frame_return(infer_t* x, vial_node_id at, const T* t) {
     vx_frame_t* f = x->frame;
