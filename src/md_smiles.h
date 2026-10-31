@@ -51,6 +51,8 @@ typedef enum md_smiles_atom_flags_t {
     MD_SMILES_ATOM_CHIRAL_CCW = 0x04,   // @
     MD_SMILES_ATOM_CHIRAL_CW  = 0x08,   // @@
     MD_SMILES_ATOM_CHIRAL_EXT = 0x10,   // An extended chirality class (@TH, @AL, @SP, @TB, @OH), number in 'chiral_class'
+    MD_SMILES_ATOM_H_GIVEN    = 0x20,   // A bracket atom that writes its hydrogens, H or Hn: [CH0] and [C] differ in that
+    MD_SMILES_ATOM_CHARGE_GIVEN = 0x40, // A bracket atom that writes its charge: [N+0] and [N] differ in that
 } md_smiles_atom_flags_t;
 
 typedef struct md_smiles_atom_t {

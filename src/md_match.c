@@ -2491,8 +2491,15 @@ bool md_match_query_init_smiles(md_match_query_t* query, str_t smiles, struct md
         } else if (in_ring && !in_ring[i] && src->z != 0 && src->z != MD_Z_H) {
             dst->flags |= MD_MATCH_ATOM_ALIPHATIC;
         }
-        // Bracket atoms state their hydrogens and charge, organic subset atoms leave them open
-        if (src->flags & MD_SMILES_ATOM_BRACKET) {
+        // Bracket atoms state their hydrogens and charge, organic subset atoms leave them open. A bracket that only adds
+        // a class to an atom of the organic subset ([C:1], [n:2], [*:3]) leaves them open too, so tagging an atom never
+        // changes what it matches; [CH1:1] or [O-:2] states them as usual.
+        const bool organic = src->z == 0 || src->z == MD_Z_B || src->z == MD_Z_C || src->z == MD_Z_N || src->z == MD_Z_O ||
+                             src->z == MD_Z_P || src->z == MD_Z_S || src->z == MD_Z_F || src->z == MD_Z_Cl || src->z == MD_Z_Br ||
+                             src->z == MD_Z_I;
+        const bool only_class = src->atom_class != 0 && src->isotope == 0 && organic &&
+                                !(src->flags & (MD_SMILES_ATOM_H_GIVEN | MD_SMILES_ATOM_CHARGE_GIVEN));
+        if ((src->flags & MD_SMILES_ATOM_BRACKET) && !only_class) {
             const uint32_t h = MIN((uint32_t)src->h_count + h_atoms[i], 254u);
             dst->flags |= MD_MATCH_ATOM_HCOUNT | MD_MATCH_ATOM_CHARGE;
             dst->h_min  = (uint8_t)h;

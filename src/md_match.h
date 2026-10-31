@@ -161,7 +161,10 @@ struct md_smiles_error_t;
 //     purine). A bond without a symbol is single, or aromatic between two aromatic atoms; see md_match_bond_order_t
 //     for how orders compare.
 //   - The atom class (:n) becomes the tag of the atom (md_match_atom_t.tag), which the search ignores: it names the
-//     atoms of a pattern for whoever reads the result (OC(=O)[CH:1](C)[NH2:2]: the CA is tagged 1, the N 2).
+//     atoms of a pattern for whoever reads the result (OC(=O)[CH:1](C)[NH2:2]: the CA is tagged 1, the N 2). A
+//     bracket that only adds a class to an atom of the organic subset, [C:1], leaves the hydrogens and the charge open
+//     as C does, so tagging an atom never changes what it matches; [CH1:1] fixes the count and [O-:2] the charge, and
+//     [Fe:1] states them as [Fe] does.
 //   - Isotope and chirality are read but not tested: md_system_t has no isotopes, and chirality would take
 //     coordinates.
 //   - '*' matches any atom which is not a hydrogen.
