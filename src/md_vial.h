@@ -231,6 +231,13 @@ const struct md_attributes_t* md_vial_eval_attributes(const md_vial_eval_t* eval
 // is less.
 size_t md_vial_eval_output_frames(const md_vial_eval_t* eval, str_t name, uint8_t* out, size_t cap);
 
+// An output over the trajectory, such as a histogram over the frames, computed again over chosen frames: those where
+// frames[f] is nonzero, from the per-frame values the evaluation kept, so nothing is evaluated again. What a plot
+// period shows (decided 31 October). Into out as floats, NaN where missing; returns how many values it has, and writes
+// them only when cap holds them all. 0 when the run has not finished, or the output is not computed over the frames
+// from per-frame values. Safe from any thread once md_vial_eval_run has returned.
+size_t md_vial_eval_aggregate(const md_vial_eval_t* eval, str_t name, const uint8_t* frames, float* out, size_t cap);
+
 // The value of the expression md_vial_hover shows at offset, at a frame of the run, as the reference prints values,
 // cut at cap. It is computed for that value alone, at most 16 million entries, with a reader and an interpreter of its
 // own, so it may run while md_vial_eval_run does. A value over the trajectory needs every frame: it is the

@@ -13,6 +13,7 @@
 #include <core/md_os.h>
 #include <core/md_common.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -473,6 +474,26 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* e, str_t name, uint8_t* 
         return nf;
     }
     return nf;
+}
+
+size_t md_vial_eval_aggregate(const md_vial_eval_t* e, str_t name, const uint8_t* frames, float* out, size_t cap) {
+    if (!e || !frames || !md_atomic_load64(&e->done)) return 0;
+    const vial_ir_t* ir = e->ir;
+    vial_ssa_t v = 0;
+    for (size_t k = 0; k < md_array_size(ir->outputs) && !v; ++k) if (str_eq(ir->outputs[k].name, name)) v = ir->outputs[k].value;
+    if (!v) return 0;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    vial_val_t r;
+    size_t n = 0;
+    if (vial_interp_over_frames(&e->in, v, frames, &r, arena) && (r.dtype == VIAL_DT_FLOAT || r.dtype == VIAL_DT_FLOAT64 || r.dtype == VIAL_DT_INT) && r.data) {
+        n = vial_val_count(&r);
+        for (size_t i = 0; out && n <= cap && i < n; ++i) {
+            const double x = r.dtype == VIAL_DT_FLOAT ? ((const float*)r.data)[i] : r.dtype == VIAL_DT_FLOAT64 ? ((const double*)r.data)[i] : ((const int32_t*)r.data)[i];
+            out[i] = vial_val_is_missing(&r, i) ? NAN : (float)x;
+        }
+    }
+    md_arena_allocator_destroy(arena);
+    return n;
 }
 
 // ### HOVER ###

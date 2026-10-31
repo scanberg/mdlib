@@ -1049,3 +1049,85 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
     if (stopped && in->stop && md_atomic_load64(in->stop)) { in->interrupted = true; return false; }
     return ok && !stopped;
 }
+
+// ### OVER CHOSEN FRAMES ###
+// A value over the trajectory computed again over some frames: its op run on the per-frame series the run kept, cut
+// to those frames, in an interpreter of its own, so the evaluation's values are not touched
+
+static bool once_subset(const vial_interp_t* in, vial_interp_t* child, uint32_t opi, const uint8_t* mask, md_allocator_i* alloc) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_op_t* op = &ir->ops[opi];
+    if (op->kind == VIAL_IR_ELEM) {
+        // An element of a tuple a once op gives
+        const vial_ssa_t t = op->num_args ? ir->args[op->arg_beg] : 0;
+        const uint32_t src = t ? ir->values[t].op : VIAL_IR_NO_OP;
+        if (src == VIAL_IR_NO_OP || !once_subset(in, child, src, mask, alloc)) return false;
+        const vial_val_t* tv = &child->vals[t];
+        if (tv->dtype != VIAL_DT_TUPLE || op->aux >= tv->num_elems) return false;
+        child->vals[op->result] = tv->elems[op->aux];
+        child->state[op->result] = 1;
+        return true;
+    }
+    if (!in->op_class || in->op_class[opi] != VIAL_OP_ONCE) return false;
+    const int64_t nf = in->num_frames;
+    bool reads_series = false;
+    for (uint32_t k = 0; k < op->num_args; ++k) {
+        const vial_ssa_t a = ir->args[op->arg_beg + k];
+        if (!a) continue;
+        const uint32_t src = ir->values[a].op;
+        if (src != VIAL_IR_NO_OP && in->op_class[src] == VIAL_OP_PER_FRAME) {
+            const vial_val_t* s = in->series ? in->series[a] : NULL;
+            if (!s) return false;
+            // The kept frames that are chosen, stacked as the run stacks a whole series
+            int64_t first = -1, count = 0;
+            for (int64_t f = 0; f < nf; ++f) if (mask[f] && (s[f].dtype || s[f].ndim)) { if (first < 0) first = f; count++; }
+            if (!count) return false;
+            const vial_val_t* proto = &s[first];
+            vial_val_t o = {.dtype = proto->dtype, .ndim = proto->ndim + 1, .flags = VIAL_VAL_FRAMES};
+            o.dims[0] = (uint32_t)count;
+            memcpy(o.dims + 1, proto->dims, proto->ndim * sizeof(uint32_t));
+            const size_t inner = vial_val_count(proto), es = vial_dtype_size(proto->dtype);
+            const vial_val_t made = vial_val_make(o.dtype, o.ndim, o.dims, alloc);
+            o.data = made.data;
+            int64_t w = 0;
+            for (int64_t f = 0; f < nf; ++f) {
+                if (!mask[f] || !(s[f].dtype || s[f].ndim)) continue;
+                const vial_val_t* v = &s[f];
+                if (vial_val_count(v) != inner || v->dtype != proto->dtype) {
+                    for (size_t q = 0; q < inner; ++q) vial_val_set_missing(&o, (size_t)w * inner + q, alloc);
+                } else {
+                    if (es && v->data) memcpy((uint8_t*)o.data + (size_t)w * inner * es, v->data, inner * es);
+                    for (size_t q = 0; q < inner; ++q) if (vial_val_is_missing(v, q)) vial_val_set_missing(&o, (size_t)w * inner + q, alloc);
+                }
+                w++;
+            }
+            child->vals[a] = o;
+            child->state[a] = 1;
+            reads_series = true;
+        } else if (!child->state[a]) {
+            return false;
+        }
+    }
+    return reads_series && eval_op_pub(child, opi, alloc);
+}
+
+bool vial_interp_over_frames(const vial_interp_t* in, vial_ssa_t v, const uint8_t* mask, vial_val_t* out, md_allocator_i* alloc) {
+    const vial_ir_t* ir = in->ir;
+    if (!v || v >= md_array_size(ir->values) || ir->values[v].op == VIAL_IR_NO_OP) return false;
+    vial_interp_t child;
+    if (!vial_interp_init(&child, ir, in->sys, in->msys, md_get_heap_allocator())) return false;
+    // What the run computed that is not per frame: static values, and once values of earlier sweeps
+    const size_t nv = md_array_size(in->state);
+    for (size_t i = 0; i < nv; ++i) if (in->state[i] >= 2) { child.vals[i] = in->vals[i]; child.state[i] = in->state[i]; }
+    child.op_class = in->op_class;
+    child.op_sweep = in->op_sweep;
+    child.num_frames = in->num_frames;
+    child.max_elements = in->max_elements;
+    const bool ok = once_subset(in, &child, ir->values[v].op, mask, alloc);
+    if (ok && child.state[v]) *out = vial_val_copy(&child.vals[v], alloc);
+    const bool got = ok && child.state[v];
+    child.op_class = NULL;
+    child.op_sweep = NULL;
+    vial_interp_free(&child);
+    return got;
+}

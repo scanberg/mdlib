@@ -636,6 +636,73 @@ UTEST(vial_ir, output_fingerprints) {
     md_arena_allocator_destroy(alloc);
 }
 
+// A plot period: outputs over the frames computed again over chosen frames from the kept series
+UTEST(vial_ir, eval_aggregate) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* src =
+        "ca = particles(name='CA')\n"
+        "d  = distance(ca[0], ca[1])\n"
+        "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n"
+        "m  = mean(d, axis='frame')\n"
+        "x  = max(d * 2.0, axis='frame')\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    for (int threads = 1; threads <= 3; threads += 2) {
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
+        ASSERT_TRUE(e != NULL);
+        uint8_t* all = md_alloc(alloc, (size_t)nf);
+        uint8_t* odd = md_alloc(alloc, (size_t)nf);
+        for (int64_t f = 0; f < nf; ++f) { all[f] = 1; odd[f] = (uint8_t)(f & 1); }
+        float h[10];
+        EXPECT_EQ(0u, md_vial_eval_aggregate(e, STR_LIT("h"), all, h, 10));   // not run yet
+        EXPECT_TRUE(md_vial_eval_run(e));
+        const md_attributes_t* attr = md_vial_eval_attributes(e);
+        const md_attribute_t* ad = md_attributes_find(attr, STR_LIT("script/d"));
+        const md_attribute_t* ah = md_attributes_find(attr, STR_LIT("script/h"));
+        const md_attribute_t* am = md_attributes_find(attr, STR_LIT("script/m"));
+        ASSERT_TRUE(ad && ah && am);
+        const float* d = (const float*)ad->data;
+
+        // Over every frame: what was published
+        ASSERT_EQ(10u, md_vial_eval_aggregate(e, STR_LIT("h"), all, h, 10));
+        for (int i = 0; i < 10; ++i) EXPECT_EQ(((const float*)ah->data)[i], h[i]);
+        float m = 0;
+        ASSERT_EQ(1u, md_vial_eval_aggregate(e, STR_LIT("m"), all, &m, 1));
+        EXPECT_EQ(((const float*)am->data)[0], m);
+
+        // Over the odd frames: counted by hand from the per-frame distances
+        float want[10] = {0};
+        double sum = 0, mx = -INFINITY;
+        int n = 0;
+        for (int64_t f = 1; f < nf; f += 2) {
+            const int bin = (int)(d[f] / 2.0f);
+            if (bin >= 0 && bin < 10) want[bin] += 1.0f;
+            sum += d[f]; mx = MAX(mx, 2.0 * d[f]); ++n;
+        }
+        ASSERT_EQ(10u, md_vial_eval_aggregate(e, STR_LIT("h"), odd, h, 10));
+        for (int i = 0; i < 10; ++i) EXPECT_EQ(want[i], h[i]);
+        ASSERT_EQ(1u, md_vial_eval_aggregate(e, STR_LIT("m"), odd, &m, 1));
+        EXPECT_NEAR((float)(sum / n), m, 1e-4f);
+        float x = 0;
+        ASSERT_EQ(1u, md_vial_eval_aggregate(e, STR_LIT("x"), odd, &x, 1));
+        EXPECT_NEAR((float)mx, x, 1e-4f);
+
+        // Too small an out: the count, nothing written; not over the frames, or unknown: 0
+        h[0] = -1.0f;
+        EXPECT_EQ(10u, md_vial_eval_aggregate(e, STR_LIT("h"), odd, h, 4));
+        EXPECT_EQ(-1.0f, h[0]);
+        EXPECT_EQ(0u, md_vial_eval_aggregate(e, STR_LIT("d"), odd, h, 10));
+        EXPECT_EQ(0u, md_vial_eval_aggregate(e, STR_LIT("nope"), odd, h, 10));
+        md_vial_eval_free(e);
+    }
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, contraction) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     // Fused: a product used once, floats throughout. Not fused: ints, and a product that is also published.

@@ -131,6 +131,11 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames);
 // needs to set up in->stream. vial_interp_run does it again.
 void vial_interp_classify(vial_interp_t* in);
 
+// After vial_interp_run: value v, computed over the trajectory, computed again over the frames where mask[f] is set,
+// from the per-frame values the run kept; into out, allocated with alloc. False when v is not such a value, reads no
+// per-frame value, or one it reads was not kept. The evaluation's own values are not touched.
+bool vial_interp_over_frames(const vial_interp_t* in, vial_ssa_t v, const uint8_t* mask, vial_val_t* out, md_allocator_i* alloc);
+
 // After vial_interp_run: the value of a per-frame value at frame f, or of a trajectory value (f ignored); NULL when it
 // was not computed or not kept
 const vial_val_t* vial_interp_at(const vial_interp_t* in, vial_ssa_t v, int64_t f);
