@@ -1496,7 +1496,7 @@ static bool k_eye(vial_kctx_t* k, const vial_val_t* nv, vial_val_t* out) {
     const double nd = num_at(nv, 0);
     if (!(nd >= 0.0) || nd > 65536.0) return vial_rt_fail(k, "R0105", "eye of %g", nd);
     const uint32_t n = (uint32_t)nd;
-    vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, 2, (uint32_t[]){n, n}, &o)) return false;
+    vial_val_t o; if (!vial_k_make_zero(k, VIAL_DT_FLOAT, 2, (uint32_t[]){n, n}, &o)) return false;
     for (uint32_t i = 0; i < n; ++i) ((float*)o.data)[i * n + i] = 1.0f;
     *out = o;
     return true;

@@ -52,7 +52,19 @@ bool vial_k_make(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* di
         n *= dims[i];
     }
     if (!vial_k_room(k, n)) return false;
-    *out = vial_val_make(dtype, ndim, dims, k->alloc);
+    // Not zeroed: every kernel writes every element it makes, and what it marks missing is zeroed by the mask. A
+    // debug build fills it with ones bits instead (NaN, -1, True), so a kernel that reads what it did not write
+    // shows in the tests' values.
+    *out = vial_val_make_uninit(dtype, ndim, dims, k->alloc);
+#ifndef NDEBUG
+    if (out->data) memset(out->data, 0xFF, vial_val_count(out) * vial_dtype_size(dtype));
+#endif
+    return true;
+}
+
+bool vial_k_make_zero(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* dims, vial_val_t* out) {
+    if (!vial_k_make(k, dtype, ndim, dims, out)) return false;
+    if (out->data) memset(out->data, 0, vial_val_count(out) * vial_dtype_size(dtype));
     return true;
 }
 

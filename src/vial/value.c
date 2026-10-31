@@ -19,6 +19,14 @@ size_t vial_dtype_size(uint8_t dtype) {
     }
 }
 
+vial_val_t vial_val_make_uninit(uint8_t dtype, uint8_t ndim, const uint32_t* dims, md_allocator_i* alloc) {
+    vial_val_t v = {.dtype = dtype, .ndim = ndim};
+    if (ndim) memcpy(v.dims, dims, ndim * sizeof(uint32_t));
+    const size_t bytes = vial_val_count(&v) * vial_dtype_size(dtype);
+    if (bytes) v.data = md_alloc(alloc, bytes);
+    return v;
+}
+
 vial_val_t vial_val_make(uint8_t dtype, uint8_t ndim, const uint32_t* dims, md_allocator_i* alloc) {
     vial_val_t v = {.dtype = dtype, .ndim = ndim};
     if (ndim) memcpy(v.dims, dims, ndim * sizeof(uint32_t));
@@ -75,6 +83,9 @@ void vial_val_set_missing(vial_val_t* v, size_t i, md_allocator_i* alloc) {
         memset(v->missing, 0, words * sizeof(uint64_t));
     }
     v->missing[i >> 6] |= 1ull << (i & 63);
+    // What is under the mask is zero, so a value's bytes are the same whatever its memory held
+    const size_t es = vial_dtype_size(v->dtype);
+    if (v->data && es && v->dtype != VIAL_DT_SET && v->dtype != VIAL_DT_TUPLE) memset((uint8_t*)v->data + i * es, 0, es);
 }
 
 int vial_print_float(char* buf, size_t cap, double f, bool is32) {

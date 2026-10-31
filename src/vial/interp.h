@@ -121,6 +121,8 @@ bool vial_k_room(vial_kctx_t* k, size_t count);
 
 // A value of dtype and shape, zeroed: false, with R0105, when it would exceed the limit
 bool vial_k_make(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* dims, vial_val_t* out);
+// The same, its data zeroed: for a kernel that writes only some elements (eye) or accumulates
+bool vial_k_make_zero(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* dims, vial_val_t* out);
 
 bool vial_k_unary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, vial_val_t* out);
 bool vial_k_not(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out);

@@ -60,6 +60,8 @@ static inline bool vial_val_is_missing(const vial_val_t* v, size_t i) {
 
 // A value of dtype and shape, its data zeroed, from alloc
 vial_val_t vial_val_make(uint8_t dtype, uint8_t ndim, const uint32_t* dims, md_allocator_i* alloc);
+// The same, its data not zeroed: for a kernel that writes every element
+vial_val_t vial_val_make_uninit(uint8_t dtype, uint8_t ndim, const uint32_t* dims, md_allocator_i* alloc);
 
 // Scalars
 vial_val_t vial_val_bool(bool b, md_allocator_i* alloc);

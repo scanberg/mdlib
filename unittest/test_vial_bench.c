@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VIAL_BENCH_VERSION "vial bench r1"
+#define VIAL_BENCH_VERSION "vial bench r2"
 
 typedef struct vial_bench_pair_t {
     const char* v1;
@@ -43,6 +43,18 @@ static const vial_bench_pair_t vial_bench_pairs[] = {
     {"p = distance_min(atom(1:50), atom(51:100));",           "p = distance(particles[0:50], particles[50:100], between='closest')"},
     {"p = count(within(5.0, atom(1:50)));",                   "p = len(within(5.0, of=particles[0:50]) and not particles[0:50])"},
     {"p = distance(residue(1), residue(2));",                 "p = distance(residues[0].com, residues[1].com)"},
+    // The rest of the comparison corpus (test_vial_compare.c), on what the catalyst has
+    {"p = distance(1, 300);",                                 "p = distance(particles[0], particles[299])"},
+    {"p = dihedral(5, 7, 9, 15);",                            "p = dihedral(particles[4], particles[6], particles[8], particles[14])"},
+    {"p = angle(1, 50, 120);",                                "p = angle(particles[0], particles[49], particles[119])"},
+    {"p = distance_max(atom(1:50), atom(51:100));",           "p = distance(particles[0:50], particles[50:100], between='farthest')"},
+    {"p = distance_min(atom(1:20), atom(100:130));",          "p = distance(particles[0:20], particles[99:130], between='closest')"},
+    {"p = count(within(8.0, atom(1:10)));",                   "p = len(within(8.0, of=particles[0:10]) and not particles[0:10])"},
+    {"p = coord_x(atom(10));",                                "p = particles[9].x"},
+    {"p = coord_z(com(residue(2)));",                         "p = residues[1].com.z"},
+    {"p = angle(residue(1), residue(2), residue(3));",        "p = angle(residues[0].com, residues[1].com, residues[2].com)"},
+    {"p = rmsd(atom(1:40));",                                 "x = particles[0:40]\np = rmsd(x, at(x.xyz, frame=0), weights='mass')"},
+    {"p = distance_min(atom(1:400), atom(401:1336));",        "p = distance(particles[0:400], particles[400:1336], between='closest')"},
 };
 
 static bool str_ends(str_t s, const char* e) {
@@ -111,7 +123,11 @@ UTEST(vial_bench, against_v1) {
         sys.atom.count, md_system_residue_count(&sys), (int)traj.len, traj.ptr, nf, reps);
     printf("%s: %-60s %10s %10s %10s %10s\n", VIAL_BENCH_VERSION, "v2 script", "v1 compile", "v2 compile", "v1 eval", "v2 eval");
 
+    // VIAL_BENCH_ONLY=i: pair i alone, for a profiler; nothing else is run
+    const int only = getenv("VIAL_BENCH_ONLY") ? atoi(getenv("VIAL_BENCH_ONLY")) : -1;
+    double sum_v1 = 0.0, sum_v2 = 0.0;
     for (size_t i = 0; i < ARRAY_SIZE(vial_bench_pairs); ++i) {
+        if (only >= 0 && (size_t)only != i) continue;
         double best[4] = {1e30, 1e30, 1e30, 1e30};
         bool ok = true;
         for (int r = 0; r < reps && ok; ++r) {
@@ -127,7 +143,15 @@ UTEST(vial_bench, against_v1) {
             md_arena_allocator_destroy(a);
         }
         if (!ok) { printf("%s: %-60s failed\n", VIAL_BENCH_VERSION, vial_bench_pairs[i].v2); continue; }
-        printf("%s: %-60s %8.3f ms %8.3f ms %8.2f ms %8.2f ms\n", VIAL_BENCH_VERSION, vial_bench_pairs[i].v2, best[0], best[1], best[2], best[3]);
+        printf("%s: %-60s %8.3f ms %8.3f ms %8.2f ms %8.2f ms  %5.2fx\n", VIAL_BENCH_VERSION, vial_bench_pairs[i].v2, best[0], best[1], best[2], best[3],
+            best[3] / best[2]);
+        sum_v1 += best[2];
+        sum_v2 += best[3];
+    }
+    printf("%s: %-60s %10s %10s %8.2f ms %8.2f ms  %5.2fx\n", VIAL_BENCH_VERSION, "every pair", "", "", sum_v1, sum_v2, sum_v2 / sum_v1);
+    if (only >= 0) {
+        md_arena_allocator_destroy(alloc);
+        return;
     }
 
     // What a cache across compiles would save: 100 lines of selections, compiled as on every keystroke
