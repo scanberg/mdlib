@@ -671,7 +671,7 @@ half = rmsd(ca[0:7], ca[8:15])                         # -> float Å, frame: sli
 odd  = rmsd(ca[0:7], ca[7:15])                         # error E0301: [7][3] and [8][3] do not broadcast
 ```
 
-Later, ported from v1 after the first version: `rdf`, `sdf`, `density`, contact maps, hydrogen bonds, secondary structure and ring pucker.
+Later, ported from v1 after the first version: `rdf`, `sdf`, `density`, contact maps, hydrogen bonds, secondary structure and ring pucker. A volume, from `sdf` or `density`, is not a fixed grid as in v1: it takes a sampling density, samples per length, and its grid's size follows from the extent it covers, so a pocket and a whole box are sampled alike.
 
 ## Built-in functions: reductions, math and arrays
 
