@@ -113,10 +113,10 @@ static inline bool vial_fuzz__frame(void* user, int64_t index, vial_frame_t* out
 
 // One evaluation over one frame, its interpreter's memory from eval_alloc
 static inline bool vial_fuzz__run(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* vs, const struct md_system_t* sys,
-                                  const md_system_state_t* state, md_allocator_i* eval_alloc, bool no_batch) {
+                                  const md_system_state_t* state, md_allocator_i* eval_alloc, bool plain) {
     if (!vial_interp_init(in, ir, vs, sys, eval_alloc)) return false;
     in->max_elements = (size_t)1 << 20;
-    in->no_batch = no_batch;
+    in->plain = plain;
     in->load_frame = vial_fuzz__frame;
     in->load_user = (void*)state;
     vial_interp_run(in, 1);

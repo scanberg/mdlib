@@ -601,7 +601,7 @@ UTEST(vial_ir, map_interrupt_and_memory) {
     r.in.stop = &stop;
     // Batched for the built-in, and call by call
     for (int b = 0; b < 2; ++b) {
-        r.in.no_batch = b == 1;
+        r.in.plain = b == 1;
         r.in.interrupted = false;
         EXPECT_FALSE(vial_interp_frame(&r.in, &fr));
         EXPECT_TRUE(r.in.interrupted);
@@ -643,7 +643,7 @@ UTEST(vial_ir, pair_maps_batch) {
         vial_ir__run_t r[2];
         for (int b = 0; b < 2; ++b) {
             ASSERT_TRUE(vial_ir__start(&r[b], pass ? src_p : src, sys));
-            r[b].in.no_batch = b == 1;
+            r[b].in.plain = b == 1;
         }
         vial_frame_t fr;
         vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r[0].alloc}};
@@ -769,6 +769,30 @@ UTEST(vial_ir, pairs_reductions) {
             }
         }
         if (pass) md_system_state_free(&l.state);
+        vial_ir__end(&r);
+    }
+}
+
+// within() by every pair and by a spatial search, against the matrix's entries: the same particles, also at a tie,
+// where r is the distance of a pair exactly
+UTEST(vial_ir, within_matches_matrix) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL);
+    const char* src =
+        "_e = distance(particles.xyz[:, None], particles[0:3].xyz)\n"
+        "_f = distance(particles.xyz[:, None], particles(name='CA').xyz)\n"
+        "bad = abs(len(within(4.5, of=particles[0:3])) - sum(any(_e <= 4.5, axis=1)))"
+        " + abs(len(within(6.0, of=particles(name='CA'))) - sum(any(_f <= 6.0, axis=1)))"
+        " + abs(len(within(0.5, of=particles[0:3])) - sum(any(_e <= 0.5, axis=1)))\n";
+    for (int plain = 0; plain < 2; ++plain) {
+        vial_ir__run_t r;
+        ASSERT_TRUE(vial_ir__start(&r, src, sys));
+        r.in.plain = plain == 1;
+        double bad[64] = {0};
+        const int64_t n = nf < 64 ? nf : 64;
+        EXPECT_TRUE(vial_ir__frames(&r, sys, n, "bad", bad));
+        for (int64_t f = 0; f < n; ++f) EXPECT_EQ(0.0, bad[f]);
         vial_ir__end(&r);
     }
 }

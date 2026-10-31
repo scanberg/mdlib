@@ -14,6 +14,7 @@
 #include <md_system.h>
 #include <md_util.h>
 #include <core/md_intrinsics.h>
+#include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
@@ -155,6 +156,19 @@ bool vial_k_positions(vial_kctx_t* k, const vial_val_t* s, vial_val_t* out) {
     }
     *out = o;
     return true;
+}
+
+// A spatial search of this op's: built with the cell extent its last one was, so the spread of the points is
+// estimated once, in the first frame, not in every frame (md_spatial_acc_desc_t.cell_ext)
+static void k_spatial_init(vial_kctx_t* k, md_spatial_acc_t* acc, md_coord_stream_t* coords, double cutoff, const md_unitcell_t* cell) {
+    vial_interp_t* in = k->in;
+    double* ext = NULL;
+    if (k->op && in->cell_ext) {
+        const size_t opi = (size_t)(k->op - in->ir->ops);
+        if (opi < md_array_size(in->cell_ext)) ext = &in->cell_ext[opi];
+    }
+    md_spatial_acc_init(acc, &(md_spatial_acc_desc_t){.coords = coords, .cutoff = cutoff, .unitcell = cell, .cell_ext = ext ? *ext : 0.0});
+    if (ext) *ext = md_spatial_acc_cell_ext(acc);
 }
 
 static md_unitcell_t frame_cell(vial_kctx_t* k) {
@@ -443,17 +457,27 @@ static void pair_extreme(const float* P, uint32_t n, const float* Q, uint32_t m,
     *bj_out = bj;
 }
 
-// The largest magnitude of v[n], false if one is not finite
+// The largest magnitude of v[n], false if one is not finite. Eight at a time: positions of every particle of a
+// trajectory pass through it each frame.
 static bool finite_scale(const float* v, size_t n, float* scale) {
-    // Without a branch, so it vectorizes: a NaN or an infinity fails the comparison
-    float s = *scale;
+    const md_256 abs_mask = md_mm256_castsi256_ps(md_mm256_set1_epi32(0x7FFFFFFF));
+    const md_256 fmax = md_mm256_set1_ps(FLT_MAX);
+    md_256 s = md_mm256_set1_ps(*scale);
     int bad = 0;
-    for (size_t i = 0; i < n; ++i) {
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const md_256 a = md_mm256_and_ps(md_mm256_loadu_ps(v + i), abs_mask);
+        // A NaN or an infinity is not <= FLT_MAX
+        bad |= md_mm256_movemask_ps(md_mm256_cmple_ps(a, fmax)) ^ 0xFF;
+        s = md_mm256_max_ps(s, a);
+    }
+    float m = md_mm256_reduce_max_ps(s);
+    for (; i < n; ++i) {
         const float a = fabsf(v[i]);
         bad |= !(a <= FLT_MAX);
-        s = a > s ? a : s;
+        m = a > m ? a : m;
     }
-    *scale = s;
+    *scale = m;
     return !bad;
 }
 
@@ -526,7 +550,7 @@ bool vial_k_pair_batch(vial_kctx_t* k, bool closest, const vial_sets_t* A, const
         if (n && m) {
             const float* P = pos[0] + 3 * (size_t)A->offset[ia[c]];
             const float* Q = pos[1] + 3 * (size_t)B->offset[ib[c]];
-            if (!pair_extreme_fast(k->alloc, P, n, Q, m, &cell, closest, &best, &bi, &bj)) {
+            if (k->in->plain || !pair_extreme_fast(k->alloc, P, n, Q, m, &cell, closest, &best, &bi, &bj)) {
                 pair_extreme(P, n, Q, m, &cell, closest, false, -1, NULL, NULL, row, d2, &best, &bi, &bj);
             }
         }
@@ -556,7 +580,7 @@ static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv,
         float* d2 = md_alloc(k->alloc, m * sizeof(float));
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
-        if (distinct || p.missing || q.missing ||
+        if (distinct || p.missing || q.missing || k->in->plain ||
             !pair_extreme_fast(k->alloc, (const float*)p.data, n, (const float*)q.data, m, &cell, closest, &best, &bi, &bj)) {
             pair_extreme((const float*)p.data, n, (const float*)q.data, m, &cell, closest, distinct, skip,
                 by_particle ? vial_sets_items(p.origin, 0) : NULL, by_particle ? vial_sets_items(q.origin, 0) : NULL, row, d2, &best, &bi, &bj);
@@ -878,6 +902,10 @@ static void pairs_nearest_cb(const uint32_t* i_idx, const uint32_t* j_idx, const
     }
 }
 
+// within(): every particle against groups of eight points of `of`, rather than a spatial search over every particle,
+// up to this many tests of eight particles against a group, about a millisecond
+#define VIAL_WITHIN_BRUTE 262144
+
 // How far the search for nearest pairs looks: a line whose nearest is past it is computed whole
 #define VIAL_PAIRS_NEAR 8.0
 
@@ -907,7 +935,7 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
             md_coord_stream_t ys = md_coord_stream_from_aos(py.data, 3 * sizeof(float), NULL, m);
             md_coord_stream_t xs = md_coord_stream_from_aos(px.data, 3 * sizeof(float), NULL, n);
             md_spatial_acc_t acc = {.alloc = k->alloc};
-            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &ys, .cutoff = reach, .unitcell = &cell});
+            k_spatial_init(k, &acc, &ys, reach, &cell);
             md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &xs, reach, pairs_search_cb, &ps, 0);
             md_spatial_acc_free(&acc);
             const size_t nl = rows ? n : m;
@@ -934,7 +962,7 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
         }
     }
     // The minimum or maximum over every pair: the closest or farthest pair's entry, by the kernels
-    if (!test && axis == VIAL_PAIRS_ALL && (red == VIAL_PAIRS_MIN || red == VIAL_PAIRS_MAX) && odt == VIAL_DT_FLOAT && !px.missing && !py.missing && n && m) {
+    if (!test && axis == VIAL_PAIRS_ALL && (red == VIAL_PAIRS_MIN || red == VIAL_PAIRS_MAX) && odt == VIAL_DT_FLOAT && !px.missing && !py.missing && n && m && !k->in->plain) {
         float best;
         int32_t bi, bj;
         if (pair_extreme_fast(k->alloc, px.data, (uint32_t)n, py.data, (uint32_t)m, &cell, red == VIAL_PAIRS_MIN, &best, &bi, &bj)) {
@@ -973,7 +1001,7 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
         md_coord_stream_t ys = md_coord_stream_from_aos(py.data, 3 * sizeof(float), NULL, m);
         md_coord_stream_t xs = md_coord_stream_from_aos(px.data, 3 * sizeof(float), NULL, n);
         md_spatial_acc_t acc = {.alloc = k->alloc};
-        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &ys, .cutoff = near_reach, .unitcell = &cell});
+        k_spatial_init(k, &acc, &ys, near_reach, &cell);
         md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &xs, near_reach, pairs_nearest_cb, &ns, 0);
         md_spatial_acc_free(&acc);
         resolved = md_alloc(k->alloc, lines);
@@ -1397,18 +1425,130 @@ static bool k_diff(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* axis, 
 
 // ### MORE GEOMETRY ###
 
+// Whether point a is within r of point b, d <= r with d as distance() gives it, bit for bit. A search's own squared
+// distance decides where it is clearly on one side, beyond slack of r; between, the exact distance does.
 typedef struct within_t {
-    uint8_t*    hit;
-    float       r2;
+    uint8_t*            hit;
+    float               r;
+    float               lo2, hi2;       // (r - slack)^2, -1 when r <= slack; (r + slack)^2
+    const float*        p;              // the points of `of`
+    const float*        xyz;            // every particle's position
+    const md_unitcell_t* cell;
 } within_t;
 
-static void within_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* d2, size_t n, void* user) {
-    (void)i_idx;
-    within_t* w = user;
-    for (size_t i = 0; i < n; ++i) if (d2[i] <= w->r2) w->hit[j_idx[i]] = 1;
+static inline bool within_decide(const within_t* w, float d2, uint32_t i, uint32_t j) {
+    if (d2 <= w->lo2) return true;
+    if (d2 > w->hi2) return false;
+    return pair_entry(w->p + 3 * (size_t)i, w->xyz + 3 * (size_t)j, w->cell) <= w->r;   // near r, or not a number
 }
 
-// The scope's particles within r of any point of `of`, d <= r under the minimum image
+static void within_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* d2, size_t n, void* user) {
+    within_t* w = user;
+    for (size_t q = 0; q < n; ++q) {
+        const uint32_t j = j_idx[q];
+        if (!w->hit[j] && within_decide(w, d2[q], i_idx[q], j)) w->hit[j] = 1;
+    }
+}
+
+// Every particle against every point of `of`, eight particles at a time, skipping the groups of eight points of `of`
+// too far from them: unless `of` is large, cheaper than building a search over every particle each frame. False
+// where it does not apply: a triclinic cell.
+static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np) {
+    const md_unitcell_t* cell = w->cell;
+    if (md_unitcell_flags(cell) & MD_UNITCELL_TRICLINIC) return false;
+    float ext[3];
+    md_unitcell_diag_extract_float(ext, cell);
+    const bool ortho = (md_unitcell_flags(cell) & MD_UNITCELL_ORTHO) != 0;
+    md_256 vext[3], vinv[3];
+    for (int c = 0; c < 3; ++c) {
+        const float e = ortho ? ext[c] : 0.0f;
+        vext[c] = md_mm256_set1_ps(e);
+        vinv[c] = md_mm256_set1_ps(e != 0.0f ? 1.0f / e : 0.0f);
+    }
+    // The particles, one array per axis, padded to eight with the last
+    const size_t cap = (na + 7) & ~(size_t)7;
+    float* ax = md_alloc(k->alloc, 3 * cap * sizeof(float));
+    float* ay = ax + cap;
+    float* az = ay + cap;
+    for (size_t j = 0; j < cap; ++j) {
+        const float* q = w->xyz + 3 * MIN(j, na - 1);
+        ax[j] = q[0]; ay[j] = q[1]; az[j] = q[2];
+    }
+    // `of` in groups of eight points in order, each as one image around its first point: a centre and a radius. A
+    // particle further from the centre than r, the radius and the rounding is within r of none of them.
+    const size_t nc = (np + 7) / 8;
+    float* cen = md_alloc(k->alloc, 4 * nc * sizeof(float));
+    for (size_t c = 0; c < nc; ++c) {
+        const float* p0 = w->p + 24 * c;
+        const size_t cnt = MIN((size_t)8, np - 8 * c);
+        float q[8][3], lo[3], hi[3];
+        for (size_t i = 0; i < cnt; ++i) {
+            for (int d = 0; d < 3; ++d) {
+                float v = p0[3 * i + d] - p0[d];
+                if (ortho && ext[d] != 0.0f) v -= ext[d] * nearbyintf(v / ext[d]);
+                q[i][d] = p0[d] + v;
+                lo[d] = i ? MIN(lo[d], q[i][d]) : q[i][d];
+                hi[d] = i ? MAX(hi[d], q[i][d]) : q[i][d];
+            }
+        }
+        float r2 = 0.0f;
+        for (int d = 0; d < 3; ++d) cen[4 * c + d] = 0.5f * (lo[d] + hi[d]);
+        for (size_t i = 0; i < cnt; ++i) {
+            float e = 0.0f;
+            for (int d = 0; d < 3; ++d) e += (q[i][d] - cen[4 * c + d]) * (q[i][d] - cen[4 * c + d]);
+            r2 = MAX(r2, e);
+        }
+        cen[4 * c + 3] = sqrtf(r2);
+    }
+    const float margin = sqrtf(w->hi2) - w->r;   // the slack
+    const md_256 lo2 = md_mm256_set1_ps(w->lo2), hi2 = md_mm256_set1_ps(w->hi2);
+    for (size_t j0 = 0; j0 < na; j0 += 8) {
+        const int valid = na - j0 >= 8 ? 0xFF : (1 << (na - j0)) - 1;
+        const md_256 x = md_mm256_loadu_ps(ax + j0), y = md_mm256_loadu_ps(ay + j0), z = md_mm256_loadu_ps(az + j0);
+        int hit = 0;
+        for (size_t c = 0; c < nc && hit != valid; ++c) {
+            md_256 dx = md_mm256_sub_ps(x, md_mm256_set1_ps(cen[4 * c + 0]));
+            md_256 dy = md_mm256_sub_ps(y, md_mm256_set1_ps(cen[4 * c + 1]));
+            md_256 dz = md_mm256_sub_ps(z, md_mm256_set1_ps(cen[4 * c + 2]));
+            dx = md_mm256_sub_ps(dx, md_mm256_mul_ps(vext[0], md_mm256_round_ps(md_mm256_mul_ps(dx, vinv[0]))));
+            dy = md_mm256_sub_ps(dy, md_mm256_mul_ps(vext[1], md_mm256_round_ps(md_mm256_mul_ps(dy, vinv[1]))));
+            dz = md_mm256_sub_ps(dz, md_mm256_mul_ps(vext[2], md_mm256_round_ps(md_mm256_mul_ps(dz, vinv[2]))));
+            const md_256 dc2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
+            const float reach = w->r + cen[4 * c + 3] + 2.0f * margin;
+            // Not a number passes, for the exact distance to decide
+            const int near = (md_mm256_movemask_ps(md_mm256_cmpgt_ps(dc2, md_mm256_set1_ps(reach * reach))) ^ 0xFF) & valid & ~hit;
+            if (!near) continue;
+            for (size_t i = 8 * c; i < MIN(np, 8 * c + 8); ++i) {
+                const float* p = w->p + 3 * i;
+                dx = md_mm256_sub_ps(x, md_mm256_set1_ps(p[0]));
+                dy = md_mm256_sub_ps(y, md_mm256_set1_ps(p[1]));
+                dz = md_mm256_sub_ps(z, md_mm256_set1_ps(p[2]));
+                dx = md_mm256_sub_ps(dx, md_mm256_mul_ps(vext[0], md_mm256_round_ps(md_mm256_mul_ps(dx, vinv[0]))));
+                dy = md_mm256_sub_ps(dy, md_mm256_mul_ps(vext[1], md_mm256_round_ps(md_mm256_mul_ps(dy, vinv[1]))));
+                dz = md_mm256_sub_ps(dz, md_mm256_mul_ps(vext[2], md_mm256_round_ps(md_mm256_mul_ps(dz, vinv[2]))));
+                const md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
+                const int in = md_mm256_movemask_ps(md_mm256_cmple_ps(d2, lo2));
+                const int out = md_mm256_movemask_ps(md_mm256_cmpgt_ps(d2, hi2));
+                hit |= in & near;
+                // Near r, or not a number: the exact distance decides
+                int unsure = ~(in | out) & near & ~hit;
+                while (unsure) {
+                    const int lane = ctz32((uint32_t)unsure);
+                    unsure &= unsure - 1;
+                    if (pair_entry(p, w->xyz + 3 * (j0 + lane), cell) <= w->r) hit |= 1 << lane;
+                }
+            }
+        }
+        while (hit) {
+            const int lane = ctz32((uint32_t)hit);
+            hit &= hit - 1;
+            w->hit[j0 + lane] = 1;
+        }
+    }
+    return true;
+}
+
+// The scope's particles within r of any point of `of`, d <= r under the minimum image, d as distance() gives it
 static bool k_within(vial_kctx_t* k, const vial_val_t* rv, const vial_val_t* of, vial_val_t* out) {
     const float* xyz = frame_xyz(k);
     if (!xyz) return false;
@@ -1420,18 +1560,30 @@ static bool k_within(vial_kctx_t* k, const vial_val_t* rv, const vial_val_t* of,
     const size_t na = k->in->frame->num_atoms;
     uint8_t* hit = md_alloc(k->alloc, na ? na : 1);
     memset(hit, 0, na);
-    if (np && r >= 0.0f) {
+    if (np && na && r >= 0.0f) {
         const md_unitcell_t cell = frame_cell(k);
-        md_coord_stream_t all = md_coord_stream_from_aos(xyz, 3 * sizeof(float), NULL, na);
-        // The search may leave out a pair at exactly r; it is asked a hair further and the distance decides. The
-        // structure is built for that same cutoff: built for r, a query past it reaches two cells around, not one.
-        const double reach = r > 0.0f ? nextafter((double)r, 1e30) * 1.000001 : 1.0;
-        md_spatial_acc_t acc = {.alloc = k->alloc};
-        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &all, .cutoff = reach, .unitcell = &cell});
-        md_coord_stream_t ext = md_coord_stream_from_aos((const float*)p.data, 3 * sizeof(float), NULL, np);
-        within_t w = {.hit = hit, .r2 = r * r};
-        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, reach, within_cb, &w, 0);
-        md_spatial_acc_free(&acc);
+        // How far a search's squared distance may be from the exact one's square (see pair_extreme_fast)
+        float scale = 0.0f;
+        finite_scale(xyz, 3 * na, &scale);
+        finite_scale(p.data, 3 * np, &scale);
+        float ext[3];
+        md_unitcell_diag_extract_float(ext, &cell);
+        const float slack = (scale + ext[0] + ext[1] + ext[2]) * 1.0e-5f + 1.0e-4f;
+        within_t w = {.hit = hit, .r = r, .lo2 = r > slack ? (r - slack) * (r - slack) : -1.0f, .hi2 = (r + slack) * (r + slack),
+                      .p = p.data, .xyz = xyz, .cell = &cell};
+        // A few points of `of`: every pair, which costs less than building a search over every particle
+        if (k->in->plain || ((np + 7) / 8) * ((na + 7) / 8) > VIAL_WITHIN_BRUTE || !within_brute(k, &w, na, np)) {
+            md_coord_stream_t all = md_coord_stream_from_aos(xyz, 3 * sizeof(float), NULL, na);
+            // The search may leave out a pair at exactly r; it is asked past r by the slack, and the exact distance
+            // decides there. The structure is built for that same cutoff: built for r, a query past it reaches two
+            // cells around, not one.
+            const double reach = (double)r + slack;
+            md_spatial_acc_t acc = {.alloc = k->alloc};
+            k_spatial_init(k, &acc, &all, reach, &cell);
+            md_coord_stream_t ext_pts = md_coord_stream_from_aos((const float*)p.data, 3 * sizeof(float), NULL, np);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_pts, reach, within_cb, &w, 0);
+            md_spatial_acc_free(&acc);
+        }
     }
     uint32_t n = 0;
     for (size_t i = 0; i < na; ++i) n += hit[i];

@@ -48,6 +48,7 @@ typedef struct vial_interp_t {
     bool                        failed;     // an op failed: what is computed from it is not computed
     vial_rt_error_t*            errors;     // md_array: every op that failed, once each, in the order they failed
     uint8_t*                    live;       // md_array by op: what the outputs need
+    double*                     cell_ext;   // md_array by op: the cell extent its last spatial search was built with, 0 before one
     // at(x, frame=i) reads another frame, in a step before the frames are evaluated: the caller loads it
     bool                      (*load_frame)(void* user, int64_t index, vial_frame_t* out);
     void*                       load_user;
@@ -70,7 +71,9 @@ typedef struct vial_interp_t {
     // A map's calls are evaluated in a scratch arena per depth of maps in maps, reset after each call
     md_allocator_i*             map_scratch[VIAL_MAP_SCRATCH_DEPTH];
     uint32_t                    map_depth;
-    bool                        no_batch;   // tests: a map's calls one by one, never batched for a built-in
+    // Tests: only the plain paths, which the fast ones must agree with bit for bit: a map's calls one by one, never
+    // batched for a built-in; closest and farthest pairs by every pair; within() by a spatial search
+    bool                        plain;
 } vial_interp_t;
 
 enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };

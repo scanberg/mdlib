@@ -117,6 +117,8 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     // What the outputs need
     const size_t no = md_array_size(ir->ops);
     md_array_resize(in->live, no, in->alloc);
+    md_array_resize(in->cell_ext, no, in->alloc);
+    if (no) memset(in->cell_ext, 0, no * sizeof(double));
     uint32_t* roots = NULL;
     // What the outputs need, but a hidden name's (_x): nothing reads it but hover, which evaluates for itself, so a
     // matrix bound to _dm and only reduced is never built
@@ -253,7 +255,7 @@ static int param_of(const vial_ir_t* ir, uint32_t r, vial_ssa_t v) {
 static int eval_map_pairs(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t* const* av, const uint32_t* mapping,
                           const uint32_t* ldims, uint8_t lnd, size_t count, vial_val_t* out, md_allocator_i* alloc) {
     const vial_ir_t* ir = in->ir;
-    if (in->no_batch || op->sub == VIAL_MAP_FILTERED || in->ir->values[op->result].type.dtype != VIAL_DT_FLOAT) return -1;
+    if (in->plain || op->sub == VIAL_MAP_FILTERED || in->ir->values[op->result].type.dtype != VIAL_DT_FLOAT) return -1;
     const uint32_t ri = op->region[0];
     const vial_ir_region_t* r = &ir->regions[ri];
     // Its live ops: a kind of each parameter it reads, the built-in, the distance out of its tuple, the yield

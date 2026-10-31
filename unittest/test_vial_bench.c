@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VIAL_BENCH_VERSION "vial bench r4"
+#define VIAL_BENCH_VERSION "vial bench r6"
 
 typedef struct vial_bench_pair_t {
     const char* v1;
@@ -136,7 +136,9 @@ UTEST(vial_bench, against_v1) {
         for (int r = 0; r < reps && ok; ++r) {
             md_allocator_i* a = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
             double c1, e1, c2, e2;
-            ok = bench_v1(vial_bench_pairs[i].v1, &sys, nf, a, &c1, &e1) && bench_v2(vial_bench_pairs[i].v2, &sys, a, &c2, &e2);
+            // Every other rep runs v2 first, so neither gains from running second, in a warm cache
+            ok = r % 2 ? bench_v2(vial_bench_pairs[i].v2, &sys, a, &c2, &e2) && bench_v1(vial_bench_pairs[i].v1, &sys, nf, a, &c1, &e1)
+                       : bench_v1(vial_bench_pairs[i].v1, &sys, nf, a, &c1, &e1) && bench_v2(vial_bench_pairs[i].v2, &sys, a, &c2, &e2);
             if (ok) {
                 if (c1 < best[0]) best[0] = c1;
                 if (c2 < best[1]) best[1] = c2;

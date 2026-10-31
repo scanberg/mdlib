@@ -10243,6 +10243,8 @@ static FORCE_INLINE bool dist_cluster_test(float* best2, int64_t* ia, int64_t* i
         }
     }
     const float m = largest ? md_mm256_reduce_max_ps(d2) : md_mm256_reduce_min_ps(d2);
+    // With near pairs, one comparison for the usual lanes, as without: not near the best is not better than it either
+    if (nr && (largest ? !(m >= nr->bound2) : !(m <= nr->bound2))) return false;
     const bool better = largest ? m > *best2 : m < *best2;
     if (better) {
         const int lane = ctz32((uint32_t)md_mm256_movemask_ps(md_mm256_cmpeq_ps(d2, md_mm256_set1_ps(m))));
@@ -10251,8 +10253,7 @@ static FORCE_INLINE bool dist_cluster_test(float* best2, int64_t* ia, int64_t* i
         *ib = (int64_t)j;
         if (nr) nr->bound2 = dist_near_bound2(m, nr->tol, largest);
     }
-    // Usually no lane is near: the extreme of the lanes says so
-    if (nr && record && (largest ? m >= nr->bound2 : m <= nr->bound2)) {
+    if (nr && record) {
         const md_256 e = md_mm256_set1_ps(nr->bound2);
         const int mask = md_mm256_movemask_ps(largest ? md_mm256_cmpge_ps(d2, e) : md_mm256_cmple_ps(d2, e)) & ((1 << cl->count) - 1);
         if (mask) {
