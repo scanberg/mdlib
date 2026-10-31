@@ -188,11 +188,9 @@ size_t md_vial_outputs(const md_vial_program_t* prog, const md_vial_output_t** o
     return md_array_size(prog->outputs);
 }
 
-bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out) {
-    memset(out, 0, sizeof(*out));
-    if (!prog) return false;
-    // The smallest expression with a type whose span holds offset. Expressions inside a def's body are typed per call
-    // and have no one type: hover shows them at the calls.
+// The smallest expression with a type whose span holds offset, or 0. Expressions inside a def's body are typed per call
+// and have no one type: hover shows them at the calls.
+static vial_node_id hover_node(const md_vial_program_t* prog, uint32_t offset) {
     const vial_tree_t* t = &prog->tree;
     vial_node_id best = 0;
     uint32_t best_len = UINT32_MAX;
@@ -204,15 +202,30 @@ bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover
         const uint32_t len = n->span.end - n->span.beg;
         if (len < best_len) { best = i; best_len = len; }
     }
+    return best;
+}
+
+bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out) {
+    memset(out, 0, sizeof(*out));
+    if (!prog) return false;
+    const vial_node_id best = hover_node(prog, offset);
     if (!best) return false;
     const vial_type_t* ty = &prog->types.types[best];
-    out->span = t->nodes[best].span;
+    out->span = prog->tree.nodes[best].span;
     vial_type_print(out->type, sizeof(out->type), ty);
     out->stage = public_stage(ty);
     out->pass = public_pass(ty);
     const vial_value_t* v = &prog->types.values[best];
     if (vial_value_is_scalar(v)) vial_value_print(out->value, sizeof(out->value), v);
     return true;
+}
+
+uint32_t md_vial__hover_value(const md_vial_program_t* prog, uint32_t offset, md_vial_span_t* span) {
+    if (!prog) return 0;
+    const vial_node_id n = hover_node(prog, offset);
+    if (!n || n - prog->types.base >= md_array_size(prog->types.ssa)) return 0;
+    if (span) *span = prog->tree.nodes[n].span;
+    return prog->types.ssa[n - prog->types.base];
 }
 
 const struct vial_ir_t* md_vial__ir(const md_vial_program_t* prog) { return prog ? &prog->ir : NULL; }

@@ -118,3 +118,5 @@ bool md_vial__line_result(const md_vial_program_t* prog, uint32_t line, md_vial_
 struct vial_ir_t;
 const struct vial_ir_t* md_vial__ir(const md_vial_program_t* prog);
 const struct vial_ir_t* md_vial__run_ir(const md_vial_program_t* prog);   // inlined, for evaluation; NULL when not
+// The value in md_vial__ir of the expression hover shows at offset, and its span; 0 when it has none
+uint32_t md_vial__hover_value(const md_vial_program_t* prog, uint32_t offset, md_vial_span_t* span);

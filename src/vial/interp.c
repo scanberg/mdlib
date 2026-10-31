@@ -59,7 +59,7 @@ bool vial_k_make(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* di
 // The live ops: those that define the roots, their arguments' ops, and in a live op's regions, the yield and what
 // it needs. Every op is pure, so an op nothing live reads is not evaluated, in a region as at the top: a map's calls
 // skip the witnesses of a built-in that only a drawing, dropped when inlining, would have read.
-static void mark_live(vial_interp_t* in, const vial_ssa_t* roots, size_t n) {
+void vial_interp_only(vial_interp_t* in, const vial_ssa_t* roots, size_t n) {
     const vial_ir_t* ir = in->ir;
     memset(in->live, 0, md_array_size(in->live));
     uint32_t* stack = NULL;
@@ -105,7 +105,7 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     md_array_resize(in->live, no, in->alloc);
     uint32_t* roots = NULL;
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) md_array_push(roots, ir->outputs[i].value, in->alloc);
-    mark_live(in, roots, md_array_size(roots));
+    vial_interp_only(in, roots, md_array_size(roots));
     return true;
 }
 
@@ -126,7 +126,7 @@ static bool eval_at(vial_interp_t* in, uint32_t opi) {
     vial_interp_t child;
     if (!vial_interp_init(&child, ir, in->sys, in->msys, md_get_heap_allocator())) return vial_rt_fail(&k, "R0103", "out of memory");
     // The child computes only what the value needs: the live ops are those of x
-    mark_live(&child, &xv, 1);
+    vial_interp_only(&child, &xv, 1);
     child.load_frame = in->load_frame;
     child.load_user = in->load_user;
     const bool ok = vial_interp_frame(&child, &fr);
