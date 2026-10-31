@@ -7,6 +7,7 @@
 
 #include "infer_internal.h"
 #include "ir.h"
+#include "interp.h"
 
 #include <core/md_common.h>
 
@@ -302,7 +303,8 @@ size_t vial_value_print(char* buf, size_t cap, const vial_value_t* v) {
     switch (v->kind) {
     case VIAL_VAL_BOOL:  n = snprintf(buf, cap, "%s", v->b ? "True" : "False"); break;
     case VIAL_VAL_INT:   n = snprintf(buf, cap, "%lld", (long long)v->i); break;
-    case VIAL_VAL_FLOAT: n = snprintf(buf, cap, "%.10g", v->f); break;
+    // A float's value as the float it is, a number not yet rounded to one (a literal) as written
+    case VIAL_VAL_FLOAT: n = vial_print_float(buf, cap, v->f, (double)(float)v->f == v->f); break;
     case VIAL_VAL_STR:   n = snprintf(buf, cap, "'%.*s'", (int)v->s.len, v->s.ptr); break;
     case VIAL_VAL_NULL:  n = snprintf(buf, cap, "None"); break;
     default:             n = snprintf(buf, cap, "?"); break;
@@ -453,6 +455,20 @@ static uint8_t promote(const T* a, const T* b) {
 
 uint8_t vx_promote(const T* a, const T* b) { return promote(a, b); }
 
+// The dtype an operand is evaluated in beside the other: its own, except that a bare float number meeting a float64
+// is a float64 (promote), which the lowering emits it as
+static bool bare_number(const T* t) { return t->unit_kind == VIAL_UNIT_OPEN && t->ndim == 0; }
+uint8_t vx_operand_dtype(const T* self, const T* other) {
+    if (self->dtype == VIAL_DT_FLOAT && other->dtype == VIAL_DT_FLOAT64 && bare_number(self)) return VIAL_DT_FLOAT64;
+    return self->dtype;
+}
+
+// A known number as the dtype holds it: a float's value rounded to float
+static vial_value_t val_in_dtype(vial_value_t v, uint8_t dtype) {
+    if (dtype == VIAL_DT_FLOAT && v.kind == VIAL_VAL_FLOAT) v.f = (double)(float)v.f;
+    return v;
+}
+
 // A value of b's type in a's unit, for + - % and comparisons; false when the units do not convert
 static bool convert_value(const T* a, const T* b, vial_value_t* vb) {
     if (a->unit_kind != VIAL_UNIT_KNOWN || b->unit_kind != VIAL_UNIT_KNOWN) return true;   // a bare number takes the other's
@@ -461,7 +477,8 @@ static bool convert_value(const T* a, const T* b, vial_value_t* vb) {
     if (f == 1.0) return true;
     double d;
     if (!val_num(vb, &d)) return true;
-    *vb = val_float(d * f);
+    // As the lowering converts it: times the factor, in float unless b is a float64
+    *vb = val_float(vial_k_arith(VIAL_OP_STAR, b->dtype == VIAL_DT_FLOAT64 ? VIAL_DT_FLOAT64 : VIAL_DT_FLOAT, d, f));
     return true;
 }
 
@@ -485,17 +502,12 @@ static vial_value_t fold(uint16_t op, const vial_value_t* a, const vial_value_t*
     double fa, fb;
     if (!val_num(a, &fa) || !val_num(b, &fb)) return val_none();
     if (dtype != VIAL_DT_INT) {
-        double r;
-        switch (op) {
-        case VIAL_OP_PLUS:  r = fa + fb; break;
-        case VIAL_OP_MINUS: r = fa - fb; break;
-        case VIAL_OP_STAR:  r = fa * fb; break;
-        case VIAL_OP_SLASH: if (fb == 0.0) return val_none(); r = fa / fb; break;
-        case VIAL_OP_DSLASH: if (fb == 0.0) return val_none(); r = floor(fa / fb); break;
-        case VIAL_OP_PERCENT: if (fb == 0.0) return val_none(); r = fa - fb * floor(fa / fb); break;
-        case VIAL_OP_POW:   r = pow(fa, fb); break;
-        default: return val_none();
-        }
+        // As evaluation computes it, in float when the dtype is float: the value known when compiling is the value
+        // evaluated, bit for bit
+        if (op != VIAL_OP_PLUS && op != VIAL_OP_MINUS && op != VIAL_OP_STAR && op != VIAL_OP_SLASH && op != VIAL_OP_DSLASH &&
+            op != VIAL_OP_PERCENT && op != VIAL_OP_POW) return val_none();
+        if ((op == VIAL_OP_SLASH || op == VIAL_OP_DSLASH || op == VIAL_OP_PERCENT) && fb == 0.0) return val_none();
+        const double r = vial_k_arith(op, dtype == VIAL_DT_FLOAT64 ? VIAL_DT_FLOAT64 : VIAL_DT_FLOAT, fa, fb);
         return isfinite(r) ? val_float(r) : val_none();
     }
     // Ints, exactly; operands of 32 bits keep every result below in 64
@@ -767,6 +779,11 @@ static T infer_compare(infer_t* x, vial_node_id id) {
             continue;
         }
         if (all_known && is_number(&a) && !convert_value(&a, &b, &vb)) all_known = false;
+        // Compared as evaluation compares them: each operand in its dtype, then exactly
+        if (is_number(&a) && is_number(&b)) {
+            va = val_in_dtype(va, vx_operand_dtype(&a, &b));
+            vb = val_in_dtype(vb, vx_operand_dtype(&b, &a));
+        }
         if (all_known && compare_values(cmp, &va, &vb, &r)) value = value && r;
         else all_known = false;
     }

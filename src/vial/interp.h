@@ -116,6 +116,10 @@ bool vial_k_make(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* di
 bool vial_k_unary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, vial_val_t* out);
 bool vial_k_not(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out);
 bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
+// One element of + - * / // % ** in VIAL_DT_FLOAT (a and b rounded to float first) or VIAL_DT_FLOAT64, exactly as
+// vial_k_binary computes it. The check folds known values with it, so a value known when compiling is the value
+// evaluation would give.
+double vial_k_arith(uint16_t op, uint8_t dtype, double a, double b);
 bool vial_k_fma(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, const vial_val_t* c, vial_val_t* out);
 bool vial_k_compare(vial_kctx_t* k, uint16_t cmp, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
 bool vial_k_logic(vial_kctx_t* k, uint16_t kw, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);

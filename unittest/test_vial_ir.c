@@ -482,3 +482,48 @@ UTEST(vial_ir, if_per_frame) {
     md_system_state_free(&l.state);
     vial_ir__end(&r);
 }
+
+// What the check folds is what evaluation gives, bit for bit: each a is known when compiling and its b, the same
+// arithmetic on a value of the frame, is evaluated. Float is 32 bits in both; a bare number beside a float64 is one.
+UTEST(vial_ir, folds_as_evaluated) {
+    vial_ir__run_t r;
+    const char* src =
+        "one = unitless(particles[0].x * 0.0) + 1.0\n"
+        "a1 = 0.1 + 0.2 - 0.3\n"
+        "b1 = one * 0.1 + 0.2 - 0.3\n"
+        "a2 = 1.1 ** 3\n"
+        "b2 = (one * 1.1) ** 3\n"
+        "a3 = 1.0 // 0.1\n"
+        "b3 = one // 0.1\n"
+        "a4 = 0.3 == 0.1 + 0.2\n"
+        "b4 = one * 0.3 == one * 0.1 + 0.2\n"
+        "a5 = 0.0 Å + 1.3 nm\n"
+        "b5 = one * 0.0 Å + 1.3 nm\n"
+        "a6 = int(2.9999999999)\n"
+        "b6 = int(one * 2.9999999999)\n"
+        "a7 = float(16777217)\n"
+        "b7 = float(int(one) * 16777217)\n"
+        "a8 = 7.0 % 0.7\n"
+        "b8 = (one * 7.0) % 0.7\n";
+    const md_system_state_t* st = vial_test_state('T');
+    ASSERT_TRUE(st != NULL);
+    ASSERT_TRUE(vial_ir__start(&r, src, vial_test_system('T')));
+    const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
+    EXPECT_TRUE(vial_interp_frame(&r.in, &fr));
+    const vial_ir_t* ir = md_vial__run_ir(r.prog);
+    for (int i = 1; i <= 8; ++i) {
+        char an[8], bn[8], av[128], bv[128], wrapped[140];
+        snprintf(an, sizeof(an), "a%d", i);
+        snprintf(bn, sizeof(bn), "b%d", i);
+        // a is a constant: folded, not computed
+        const vial_ssa_t as = vial_ir__output(ir, an);
+        ASSERT_TRUE(as != 0);
+        EXPECT_EQ(VIAL_IR_CONST, ir->ops[ir->values[as].op].kind);
+        vial_ir__out(&r, an, av, sizeof(av));
+        vial_ir__out(&r, bn, bv, sizeof(bv));
+        snprintf(wrapped, sizeof(wrapped), "[%s]", av);
+        if (strcmp(wrapped, bv)) printf("%s = %s, but %s = %s\n", an, av, bn, bv);
+        EXPECT_STREQ(wrapped, bv);
+    }
+    vial_ir__end(&r);
+}

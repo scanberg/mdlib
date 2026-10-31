@@ -80,5 +80,9 @@ size_t vial_val_print(char* buf, size_t cap, const vial_val_t* v, uint32_t max_i
 // A copy of v whose data, mask, sets and elements are alloc's
 vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc);
 
+// The shortest text that reads back as the same float, as NumPy prints float32 (is32) and Python float64; a whole
+// number keeps its point: 12.0
+int vial_print_float(char* buf, size_t cap, double f, bool is32);
+
 // Deep equality of dtype, shape, data and mask, bit for bit for floats
 bool vial_val_equal(const vial_val_t* a, const vial_val_t* b);

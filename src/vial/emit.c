@@ -206,10 +206,27 @@ static vial_ssa_t in_unit_of(infer_t* x, vial_node_id at, const T* a, vial_ssa_t
     return op1(x, at, VIAL_IR_BINARY, VIAL_OP_STAR, 0, (vial_ssa_t[]){bv, c}, 2, &r);
 }
 
+// An operand evaluated as a float64 beside one (vx_operand_dtype): a bare float number is emitted again as a float64
+// constant of the value the check knows, so 0.1 beside a float64 is 0.1 and not the float nearest it
+static vial_ssa_t in_operand_dtype(infer_t* x, vial_node_id n, vial_ssa_t v, const T* self, const T* other) {
+    if (!v || vx_operand_dtype(self, other) == self->dtype) return v;
+    const vial_value_t val = vx_value_of(x, n);
+    double d;
+    if (val.kind == VIAL_VAL_FLOAT) d = val.f;
+    else if (val.kind == VIAL_VAL_INT) d = (double)val.i;
+    else return v;
+    T ft = *self;
+    ft.dtype = VIAL_DT_FLOAT64;
+    const vial_val_t fv = vial_val_float64(d, x->ir->alloc);
+    return vial_ir_const(x->ir, &fv, &ft, (str_t){0}, vx_span(x, n));
+}
+
 static vial_ssa_t emit_binary(infer_t* x, vial_node_id id, const T* t) {
     const vial_node_id an = vx_child(x, id, 0), bn = vx_child(x, id, 1);
     const uint16_t op = sub_of(x, id);
     vial_ssa_t a = vx_ssa(x, an), b = vx_ssa(x, bn);
+    a = in_operand_dtype(x, an, a, type_at(x, an), type_at(x, bn));
+    b = in_operand_dtype(x, bn, b, type_at(x, bn), type_at(x, an));
     if (op == VIAL_OP_PLUS || op == VIAL_OP_MINUS || op == VIAL_OP_PERCENT) b = in_unit_of(x, id, type_at(x, an), b, type_at(x, bn));
     return op1(x, id, VIAL_IR_BINARY, op, 0, (vial_ssa_t[]){a, b}, 2, t);
 }
@@ -235,6 +252,8 @@ static vial_ssa_t emit_compare(infer_t* x, vial_node_id id, const T* t) {
         pt.unit_kind = VIAL_UNIT_KNOWN;
         pt.unit = md_unit_none();
         vial_ssa_t a = vx_ssa(x, an), b = vx_ssa(x, bn);
+        a = in_operand_dtype(x, an, a, at, bt);
+        b = in_operand_dtype(x, bn, b, bt, at);
         if (bt->dtype != VIAL_DT_RANGE) b = in_unit_of(x, on, at, b, bt);
         const vial_ssa_t c = op1(x, on, VIAL_IR_COMPARE, cmp, 0, (vial_ssa_t[]){a, b}, 2, i + 3 >= n && !acc ? t : &pt);
         if (!c) return 0;

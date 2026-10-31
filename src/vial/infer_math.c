@@ -505,14 +505,18 @@ static T call_math(infer_t* x, vial_node_id call, str_t name, const char* fname)
         vial_node_id a;
         if (!vx_bind(x, call, fname, p, 1, &a) || !all_typed(x, &a, 1) || !all_numbers(x, fname, &a, 1)) return err();
         T t = type_of(x, a);
+        const uint8_t adt = t.dtype;
         if (str_eq(name, STR_LIT("unitless"))) { no_unit(&t); t.flags &= ~VIAL_TYPE_PERIODIC; }
         else if (str_eq(name, STR_LIT("float"))) { if (!is_float(t.dtype)) t.dtype = VIAL_DT_FLOAT; }
         else t.dtype = VIAL_DT_INT;
-        const vial_value_t v = value(x, a);
+        vial_value_t v = value(x, a);
+        // Folded as evaluation converts: a float's value is the float's, and an int becomes the float nearest it
+        if (v.kind == VIAL_VAL_FLOAT && adt == VIAL_DT_FLOAT) v.f = (double)(float)v.f;
         if (str_eq(name, STR_LIT("int")) && v.kind == VIAL_VAL_FLOAT) {
-            if (v.f > -2147483649.0 && v.f < 2147483648.0) vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_INT, .i = (int64_t)v.f});
+            if (v.f >= -2147483648.0 && v.f < 2147483648.0) vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_INT, .i = (int64_t)v.f});
         }
-        else if (str_eq(name, STR_LIT("float")) && v.kind == VIAL_VAL_INT) vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = (double)v.i});
+        else if (str_eq(name, STR_LIT("float")) && v.kind == VIAL_VAL_INT)
+            vx_set_value(x, call, (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = t.dtype == VIAL_DT_FLOAT64 ? (double)v.i : (double)(float)v.i});
         else vx_set_value(x, call, v);
         return t;
     }

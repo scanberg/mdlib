@@ -377,13 +377,17 @@ static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv,
         vial_val_set_missing(&el[1], 0, k->alloc);
         vial_val_set_missing(&el[2], 0, k->alloc);
     } else {
-        // Every pair, in order: the first pair at the extreme wins ties. The search lowering replaces this by a
-        // spatial search that gives the same bits.
+        // Every pair, in order, by the squared distance: the first pair at the extreme of it wins ties, and the
+        // distance is its square root, the same bits distance() gives for that pair. The search lowering replaces
+        // this by a spatial search that gives the same bits.
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
         const bool by_particle = distinct && p.origin && q.origin;
+        const uint32_t* pp = by_particle ? vial_sets_items(p.origin, 0) : NULL;
+        const uint32_t* qp = by_particle ? vial_sets_items(q.origin, 0) : NULL;
         // A row at a time: q's points against one of p's, the minimum image taken over the row in one call
         vec3_t* row = md_alloc(k->alloc, m * sizeof(vec3_t));
+        float* d2 = md_alloc(k->alloc, m * sizeof(float));
         for (uint32_t i = 0; i < n; ++i) {
             const float* a = (const float*)p.data + 3 * i;
             for (uint32_t j = 0; j < m; ++j) {
@@ -391,15 +395,20 @@ static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv,
                 row[j] = (vec3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
             }
             md_util_min_image_vec3(row, m, &cell);
+            for (uint32_t j = 0; j < m; ++j) d2[j] = row[j].x * row[j].x + row[j].y * row[j].y + row[j].z * row[j].z;
+            if (!distinct) {
+                for (uint32_t j = 0; j < m; ++j) {
+                    if (bi < 0 || (closest ? d2[j] < best : d2[j] > best)) { best = d2[j]; bi = (int32_t)i; bj = (int32_t)j; }
+                }
+                continue;
+            }
             for (uint32_t j = 0; j < m; ++j) {
-                if (distinct && (int64_t)j == skip) continue;
-                if (by_particle && vial_sets_items(p.origin, 0)[i] == vial_sets_items(q.origin, 0)[j]) continue;
-                const vec3_t dx = row[j];
-                const float d = sqrtf(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z);
-                if (bi < 0 || (closest ? d < best : d > best)) { best = d; bi = (int32_t)i; bj = (int32_t)j; }
+                if ((int64_t)j == skip) continue;
+                if (by_particle && pp[i] == qp[j]) continue;
+                if (bi < 0 || (closest ? d2[j] < best : d2[j] > best)) { best = d2[j]; bi = (int32_t)i; bj = (int32_t)j; }
             }
         }
-        *(float*)el[0].data = best;
+        *(float*)el[0].data = sqrtf(best);
         *(int32_t*)el[1].data = bi;
         *(int32_t*)el[2].data = bj;
         if (bi < 0) for (int e = 0; e < 3; ++e) vial_val_set_missing(&el[e], 0, k->alloc);
@@ -645,57 +654,46 @@ static bool k_math1(vial_kctx_t* k, const char* name, const vial_val_t* a, vial_
     if (odt == VIAL_DT_INT) {
         const vial_val_t x = vial_val_as(a, VIAL_DT_INT, k->alloc);
         vial_val_t o; if (!vial_k_make(k, VIAL_DT_INT, x.ndim, x.dims, &o)) return false;
+        const bool is_abs = !strcmp(name, "abs");
         for (size_t i = 0; i < n; ++i) {
             const int32_t v = ((const int32_t*)x.data)[i];
-            if (!strcmp(name, "abs")) { if (v == INT32_MIN) vial_val_set_missing(&o, i, k->alloc); else ((int32_t*)o.data)[i] = v < 0 ? -v : v; }
+            if (is_abs) { if (v == INT32_MIN) vial_val_set_missing(&o, i, k->alloc); else ((int32_t*)o.data)[i] = v < 0 ? -v : v; }
             else ((int32_t*)o.data)[i] = v;    // floor, ceil and round of ints
         }
         o.missing = o.missing ? o.missing : x.missing;
         *out = o;
         return true;
     }
+    // In double, rounded once to the result's dtype: a float's sin is the float nearest the sine of its value, not
+    // whatever sinf makes of it, and an angle in degrees is turned to radians before any rounding
+    enum { M_ABS, M_FLOOR, M_CEIL, M_ROUND, M_SQRT, M_EXP, M_LOG, M_LOG10, M_SIN, M_COS, M_TAN, M_ASIN, M_ACOS, M_ATAN, M_COUNT };
+    static const char* names[M_COUNT] = {"abs", "floor", "ceil", "round", "sqrt", "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos", "atan"};
+    int fn = -1;
+    for (int f = 0; f < M_COUNT; ++f) if (!strcmp(name, names[f])) fn = f;
+    if (fn < 0) return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
     const vial_val_t x = vial_val_as(a, odt, k->alloc);
     vial_val_t o; if (!vial_k_make(k, odt, x.ndim, x.dims, &o)) return false;
     for (size_t i = 0; i < n; ++i) {
         const double v = num_at(&x, i) * scale;
         double r;
-        if (odt == VIAL_DT_FLOAT) {
-            const float f = (float)v;
-            float rf;
-            if (!strcmp(name, "abs")) rf = fabsf(f);
-            else if (!strcmp(name, "floor")) rf = floorf(f);
-            else if (!strcmp(name, "ceil")) rf = ceilf(f);
-            else if (!strcmp(name, "round")) rf = nearbyintf(f);
-            else if (!strcmp(name, "sqrt")) rf = sqrtf(f);
-            else if (!strcmp(name, "exp")) rf = expf(f);
-            else if (!strcmp(name, "log")) rf = logf(f);
-            else if (!strcmp(name, "log10")) rf = log10f(f);
-            else if (!strcmp(name, "sin")) rf = sinf(f);
-            else if (!strcmp(name, "cos")) rf = cosf(f);
-            else if (!strcmp(name, "tan")) rf = tanf(f);
-            else if (!strcmp(name, "asin")) rf = asinf(f) * (float)DEG_PER_RAD;
-            else if (!strcmp(name, "acos")) rf = acosf(f) * (float)DEG_PER_RAD;
-            else if (!strcmp(name, "atan")) rf = atanf(f) * (float)DEG_PER_RAD;
-            else return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
-            ((float*)o.data)[i] = rf;
-            continue;
+        switch (fn) {
+        case M_ABS:   r = fabs(v); break;
+        case M_FLOOR: r = floor(v); break;
+        case M_CEIL:  r = ceil(v); break;
+        case M_ROUND: r = nearbyint(v); break;
+        case M_SQRT:  r = sqrt(v); break;
+        case M_EXP:   r = exp(v); break;
+        case M_LOG:   r = log(v); break;
+        case M_LOG10: r = log10(v); break;
+        case M_SIN:   r = sin(v); break;
+        case M_COS:   r = cos(v); break;
+        case M_TAN:   r = tan(v); break;
+        case M_ASIN:  r = asin(v) * DEG_PER_RAD; break;
+        case M_ACOS:  r = acos(v) * DEG_PER_RAD; break;
+        default:      r = atan(v) * DEG_PER_RAD; break;
         }
-        if (!strcmp(name, "abs")) r = fabs(v);
-        else if (!strcmp(name, "floor")) r = floor(v);
-        else if (!strcmp(name, "ceil")) r = ceil(v);
-        else if (!strcmp(name, "round")) r = nearbyint(v);
-        else if (!strcmp(name, "sqrt")) r = sqrt(v);
-        else if (!strcmp(name, "exp")) r = exp(v);
-        else if (!strcmp(name, "log")) r = log(v);
-        else if (!strcmp(name, "log10")) r = log10(v);
-        else if (!strcmp(name, "sin")) r = sin(v);
-        else if (!strcmp(name, "cos")) r = cos(v);
-        else if (!strcmp(name, "tan")) r = tan(v);
-        else if (!strcmp(name, "asin")) r = asin(v) * DEG_PER_RAD;
-        else if (!strcmp(name, "acos")) r = acos(v) * DEG_PER_RAD;
-        else if (!strcmp(name, "atan")) r = atan(v) * DEG_PER_RAD;
-        else return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
-        ((double*)o.data)[i] = r;
+        if (odt == VIAL_DT_FLOAT) ((float*)o.data)[i] = (float)r;
+        else ((double*)o.data)[i] = r;
     }
     o.missing = x.missing;
     o.origin = a->origin;
