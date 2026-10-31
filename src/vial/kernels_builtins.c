@@ -21,6 +21,7 @@
 #include <core/md_common.h>
 #include <core/md_vec_math.h>
 
+#include <float.h>
 #include <math.h>
 #include <string.h>
 
@@ -1794,39 +1795,125 @@ static bool square(vial_kctx_t* k, const vial_val_t* m, uint32_t* n, size_t* cou
     return true;
 }
 
-// Symmetric eigendecomposition by cyclic Jacobi rotations, in doubles: eigenvalues ascending, eigenvectors in the
-// columns, each with its largest component positive so the sign is the same on every machine
-static void jacobi(double* A, double* V, uint32_t n) {
-    for (uint32_t i = 0; i < n; ++i) for (uint32_t j = 0; j < n; ++j) V[i * n + j] = i == j;
-    for (int sweep = 0; sweep < 100; ++sweep) {
-        double off = 0.0;
-        for (uint32_t i = 0; i < n; ++i) for (uint32_t j = i + 1; j < n; ++j) off += A[i * n + j] * A[i * n + j];
-        if (off < 1e-30) break;
-        for (uint32_t p = 0; p < n; ++p) {
-            for (uint32_t q = p + 1; q < n; ++q) {
-                const double apq = A[p * n + q];
-                if (fabs(apq) < 1e-300) continue;
-                const double theta = (A[q * n + q] - A[p * n + p]) / (2.0 * apq);
-                const double t = (theta >= 0 ? 1.0 : -1.0) / (fabs(theta) + sqrt(theta * theta + 1.0));
-                const double c = 1.0 / sqrt(t * t + 1.0), sn = t * c;
-                for (uint32_t r = 0; r < n; ++r) {
-                    const double arp = A[r * n + p], arq = A[r * n + q];
-                    A[r * n + p] = c * arp - sn * arq;
-                    A[r * n + q] = sn * arp + c * arq;
-                }
-                for (uint32_t r = 0; r < n; ++r) {
-                    const double apr = A[p * n + r], aqr = A[q * n + r];
-                    A[p * n + r] = c * apr - sn * aqr;
-                    A[q * n + r] = sn * apr + c * aqr;
-                }
-                for (uint32_t r = 0; r < n; ++r) {
-                    const double vrp = V[r * n + p], vrq = V[r * n + q];
-                    V[r * n + p] = c * vrp - sn * vrq;
-                    V[r * n + q] = sn * vrp + c * vrq;
-                }
+// Symmetric eigendecomposition: Householder tridiagonalization and the implicit QL algorithm (tred2 / tql2 as in
+// EISPACK and JAMA; the same as md_gto_iso.c's), in doubles. In: V = S (row major). Out: V's columns the eigenvectors,
+// val the eigenvalues; e is scratch of n. About 9 n^3 operations against cyclic Jacobi's 3 n^3 per sweep, with
+// several sweeps, and it reads rows rather than columns: a 433 x 433 matrix in milliseconds rather than seconds.
+static void sym_eigen(double* V, double* val, int n, double* e) {
+#define EIG_V(i, j) V[(size_t)(i) * n + (j)]
+    double* d = val;
+    for (int j = 0; j < n; ++j) e[j] = 0.0;
+    for (int j = 0; j < n; ++j) d[j] = EIG_V(n - 1, j);
+    for (int i = n - 1; i > 0; --i) {
+        double scale = 0.0, h = 0.0;
+        for (int k = 0; k < i; ++k) scale += fabs(d[k]);
+        if (scale == 0.0) {
+            e[i] = d[i - 1];
+            for (int j = 0; j < i; ++j) { d[j] = EIG_V(i - 1, j); EIG_V(i, j) = 0.0; EIG_V(j, i) = 0.0; }
+        } else {
+            for (int k = 0; k < i; ++k) { d[k] /= scale; h += d[k] * d[k]; }
+            double f = d[i - 1];
+            double g = sqrt(h);
+            if (f > 0) g = -g;
+            e[i] = scale * g;
+            h -= f * g;
+            d[i - 1] = f - g;
+            for (int j = 0; j < i; ++j) e[j] = 0.0;
+            for (int j = 0; j < i; ++j) {
+                f = d[j];
+                EIG_V(j, i) = f;
+                g = e[j] + EIG_V(j, j) * f;
+                for (int k = j + 1; k <= i - 1; ++k) { g += EIG_V(k, j) * d[k]; e[k] += EIG_V(k, j) * f; }
+                e[j] = g;
+            }
+            f = 0.0;
+            for (int j = 0; j < i; ++j) { e[j] /= h; f += e[j] * d[j]; }
+            const double hh = f / (h + h);
+            for (int j = 0; j < i; ++j) e[j] -= hh * d[j];
+            for (int j = 0; j < i; ++j) {
+                f = d[j];
+                g = e[j];
+                for (int k = j; k <= i - 1; ++k) EIG_V(k, j) -= (f * e[k] + g * d[k]);
+                d[j] = EIG_V(i - 1, j);
+                EIG_V(i, j) = 0.0;
             }
         }
+        d[i] = h;
     }
+    for (int i = 0; i < n - 1; ++i) {
+        EIG_V(n - 1, i) = EIG_V(i, i);
+        EIG_V(i, i) = 1.0;
+        const double h = d[i + 1];
+        if (h != 0.0) {
+            for (int k = 0; k <= i; ++k) d[k] = EIG_V(k, i + 1) / h;
+            for (int j = 0; j <= i; ++j) {
+                double g = 0.0;
+                for (int k = 0; k <= i; ++k) g += EIG_V(k, i + 1) * EIG_V(k, j);
+                for (int k = 0; k <= i; ++k) EIG_V(k, j) -= g * d[k];
+            }
+        }
+        for (int k = 0; k <= i; ++k) EIG_V(k, i + 1) = 0.0;
+    }
+    for (int j = 0; j < n; ++j) { d[j] = EIG_V(n - 1, j); EIG_V(n - 1, j) = 0.0; }
+    EIG_V(n - 1, n - 1) = 1.0;
+    e[0] = 0.0;
+
+    for (int i = 1; i < n; ++i) e[i - 1] = e[i];
+    e[n - 1] = 0.0;
+    double f = 0.0, tst1 = 0.0;
+    const double eps = DBL_EPSILON;
+    for (int l = 0; l < n; ++l) {
+        tst1 = fmax(tst1, fabs(d[l]) + fabs(e[l]));
+        int m = l;
+        while (m < n) {
+            if (fabs(e[m]) <= eps * tst1) break;
+            m++;
+        }
+        if (m > l) {
+            int iter = 0;
+            do {
+                if (++iter > 60) break;
+                double g = d[l];
+                double p = (d[l + 1] - g) / (2.0 * e[l]);
+                double r = hypot(p, 1.0);
+                if (p < 0) r = -r;
+                d[l] = e[l] / (p + r);
+                d[l + 1] = e[l] * (p + r);
+                const double dl1 = d[l + 1];
+                double h = g - d[l];
+                for (int i = l + 2; i < n; ++i) d[i] -= h;
+                f += h;
+                p = d[m];
+                double c = 1.0, c2 = c, c3 = c;
+                const double el1 = e[l + 1];
+                double s = 0.0, s2 = 0.0;
+                for (int i = m - 1; i >= l; --i) {
+                    c3 = c2;
+                    c2 = c;
+                    s2 = s;
+                    g = c * e[i];
+                    h = c * p;
+                    r = hypot(p, e[i]);
+                    e[i + 1] = s * r;
+                    s = e[i] / r;
+                    c = p / r;
+                    p = c * d[i] - s * g;
+                    d[i + 1] = h + s * (c * g + s * d[i]);
+                    for (int k = 0; k < n; ++k) {
+                        h = EIG_V(k, i + 1);
+                        EIG_V(k, i + 1) = s * EIG_V(k, i) + c * h;
+                        EIG_V(k, i) = c * EIG_V(k, i) - s * h;
+                    }
+                }
+                p = -s * s2 * c3 * el1 * e[l] / dl1;
+                e[l] = s * p;
+                d[l] = c * p;
+            } while (fabs(e[l]) > eps * tst1);
+        }
+        d[l] += f;
+        e[l] = 0.0;
+    }
+#undef EIG_V
 }
 
 static bool k_eigh(vial_kctx_t* k, const vial_val_t* m, vial_val_t* out) {
@@ -1839,23 +1926,28 @@ static bool k_eigh(vial_kctx_t* k, const vial_val_t* m, vial_val_t* out) {
     double* A = md_alloc(k->alloc, ((size_t)n * n ? (size_t)n * n : 1) * sizeof(double));
     double* V = md_alloc(k->alloc, ((size_t)n * n ? (size_t)n * n : 1) * sizeof(double));
     uint32_t* order = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
+    double* val = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
+    double* scratch = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
     for (size_t q = 0; q < cnt; ++q) {
         // The lower triangle, as NumPy's eigh reads it
         for (uint32_t i = 0; i < n; ++i) for (uint32_t j = 0; j < n; ++j) {
             const uint32_t a = i >= j ? i : j, b = i >= j ? j : i;
             A[i * n + j] = num_at(m, q * n * n + (size_t)a * n + b);
         }
-        jacobi(A, V, n);
+        // Eigenvalues ascending, eigenvectors in the columns, each with its largest component positive so the sign
+        // is the same on every machine
+        memcpy(V, A, (size_t)n * n * sizeof(double));
+        if (n) sym_eigen(V, val, (int)n, scratch);
         for (uint32_t i = 0; i < n; ++i) order[i] = i;
         for (uint32_t i = 1; i < n; ++i) {
             const uint32_t x = order[i];
             uint32_t j = i;
-            while (j > 0 && A[order[j - 1] * n + order[j - 1]] > A[x * n + x]) { order[j] = order[j - 1]; --j; }
+            while (j > 0 && val[order[j - 1]] > val[x]) { order[j] = order[j - 1]; --j; }
             order[j] = x;
         }
         for (uint32_t c = 0; c < n; ++c) {
             const uint32_t src = order[c];
-            ((float*)w.data)[q * n + c] = (float)A[src * n + src];
+            ((float*)w.data)[q * n + c] = (float)val[src];
             uint32_t big = 0;
             for (uint32_t r = 1; r < n; ++r) if (fabs(V[r * n + src]) > fabs(V[big * n + src])) big = r;
             const double sign = V[big * n + src] < 0 ? -1.0 : 1.0;
