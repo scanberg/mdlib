@@ -56,6 +56,7 @@ set (SRC_FILES
     test_vial_check.c
     test_vial_ir.c
     test_vial_compare.c
+    test_vial_bench.c
     test_spatial_hash.c
     test_writer.c
     test_csv.c

@@ -3,6 +3,7 @@
 // a mean over frames) is at the top level, where the trajectory's sweeps see it.
 
 #include "ir.h"
+#include "builtins.h"
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -72,6 +73,11 @@ static bool copy_ops(inl_t* c, uint32_t region, vial_ssa_t* yields, uint32_t max
             vial_ssa_t res;
             if (!inline_body(c, body, args, op->num_args, &res)) return false;
             c->map[op->result] = res;
+            continue;
+        }
+        // shown(x, d) is x: the drawing is for hover, which reads the IR as lowered, so evaluation never makes it
+        if (op->kind == VIAL_IR_BUILTIN && op->num_args >= 1 && !strcmp(vial_builtin_at(op->aux)->name, "shown")) {
+            c->map[op->result] = remap(c, args[0]);
             continue;
         }
         vial_ssa_t a[256];

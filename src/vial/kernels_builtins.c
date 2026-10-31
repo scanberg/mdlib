@@ -175,14 +175,14 @@ static bool k_displacement(vial_kctx_t* k, const vial_val_t* a, const vial_val_t
         }
         const float* A = (const float*)pa.data + 3 * ia;
         const float* B = (const float*)pb.data + 3 * ib;
-        vec3_t dx = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
-        md_util_min_image_vec3(&dx, 1, &cell);
         float* O = (float*)o.data + 3 * i;
-        O[0] = dx.x; O[1] = dx.y; O[2] = dx.z;
+        O[0] = B[0] - A[0]; O[1] = B[1] - A[1]; O[2] = B[2] - A[2];
         bool miss = false;
         for (int c = 0; c < 3; ++c) miss = miss || vial_val_is_missing(&pa, 3 * ia + c) || vial_val_is_missing(&pb, 3 * ib + c);
         if (miss) for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * i + c, k->alloc);
     }
+    // The minimum image over every difference in one call
+    md_util_min_image_vec3((vec3_t*)o.data, n, &cell);
     if (pb.origin && nd == lb.ndim) o.origin = pb.origin;
     *out = o;
     return true;
@@ -206,16 +206,14 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
             const uint32_t n = vial_sets_size(s->sets, (uint32_t)i);
             const int32_t* idx = (const int32_t*)vial_sets_items(s->sets, (uint32_t)i);
             if (!n) { for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * i + c, k->alloc); continue; }
-            float* w = NULL;
-            if (by_mass && sys) {
-                w = md_alloc(k->alloc, n * sizeof(float));
-                for (uint32_t q = 0; q < n; ++q) w[q] = md_atom_mass(&sys->atom, (size_t)idx[q]);
-                // The weights are indexed as the positions are: by particle
-                float* wf = md_alloc(k->alloc, k->in->frame->num_atoms * sizeof(float));
-                for (uint32_t q = 0; q < n; ++q) wf[idx[q]] = w[q];
-                w = wf;
+            // Gathered, so mdlib's packed kernel runs over contiguous positions and weights
+            vec3_t* g = md_alloc(k->alloc, n * sizeof(vec3_t));
+            float* w = by_mass && sys ? md_alloc(k->alloc, n * sizeof(float)) : NULL;
+            for (uint32_t q = 0; q < n; ++q) {
+                memcpy(&g[q], xyz + 3 * (size_t)idx[q], 3 * sizeof(float));
+                if (w) w[q] = md_atom_mass(&sys->atom, (size_t)idx[q]);
             }
-            const vec3_t c = md_util_com_compute((const vec3_t*)xyz, w, idx, n, &cell);
+            const vec3_t c = md_util_com_compute(g, w, NULL, n, &cell);
             float* O = (float*)o.data + 3 * i;
             O[0] = c.x; O[1] = c.y; O[2] = c.z;
         }
@@ -373,14 +371,19 @@ static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv,
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
         const bool by_particle = distinct && p.origin && q.origin;
+        // A row at a time: q's points against one of p's, the minimum image taken over the row in one call
+        vec3_t* row = md_alloc(k->alloc, m * sizeof(vec3_t));
         for (uint32_t i = 0; i < n; ++i) {
             const float* a = (const float*)p.data + 3 * i;
             for (uint32_t j = 0; j < m; ++j) {
+                const float* b = (const float*)q.data + 3 * j;
+                row[j] = (vec3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
+            }
+            md_util_min_image_vec3(row, m, &cell);
+            for (uint32_t j = 0; j < m; ++j) {
                 if (distinct && (int64_t)j == skip) continue;
                 if (by_particle && vial_sets_items(p.origin, 0)[i] == vial_sets_items(q.origin, 0)[j]) continue;
-                const float* b = (const float*)q.data + 3 * j;
-                vec3_t dx = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
-                md_util_min_image_vec3(&dx, 1, &cell);
+                const vec3_t dx = row[j];
                 const float d = sqrtf(dx.x * dx.x + dx.y * dx.y + dx.z * dx.z);
                 if (bi < 0 || (closest ? d < best : d > best)) { best = d; bi = (int32_t)i; bj = (int32_t)j; }
             }
