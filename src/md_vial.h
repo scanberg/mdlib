@@ -221,8 +221,15 @@ void            md_vial_eval_interrupt(md_vial_eval_t* eval);
 // What failed while evaluating: R diagnostics, each once, with the span of the expression
 size_t          md_vial_eval_diagnostics(const md_vial_eval_t* eval, const md_vial_diagnostic_t** out);
 
-// The published values, complete after md_vial_eval_run
+// The published values. A value per frame whose shape the type knows is there from the start of md_vial_eval_run, NaN
+// (0 for ints) at the frames not computed yet, and written as frames finish, from the evaluation's threads; its
+// version changes when the run ends. Everything else is there once md_vial_eval_run has finished.
 const struct md_attributes_t* md_vial_eval_attributes(const md_vial_eval_t* eval);
+
+// Which frames an output holds, from any thread while md_vial_eval_run runs: out[f] is 1 where it is computed. Every
+// frame once the run has finished, and for an output taken over. Returns the number of frames; writes nothing when cap
+// is less.
+size_t md_vial_eval_output_frames(const md_vial_eval_t* eval, str_t name, uint8_t* out, size_t cap);
 
 // The value of the expression md_vial_hover shows at offset, at a frame of the run, as the reference prints values,
 // cut at cap. It is computed for that value alone, at most 16 million entries, with a reader and an interpreter of its

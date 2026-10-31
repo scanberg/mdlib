@@ -48,6 +48,7 @@ struct md_vial_eval_t {
     md_vial_diagnostic_t*       diags;      // md_array
     volatile uint64_t           done;       // md_vial_eval_run finished every frame: its values may be read
     eval_held_t*                held;       // md_array: outputs taken over, published as they were
+    md_attribute_id_t*          streamed;   // md_array: outputs written as frames finish (decided 31 October)
     // Frames on several threads: one interpreter and one reader each
     vial_interp_t*              workers;
     eval_worker_t*              readers;
@@ -313,15 +314,12 @@ static md_attribute_type_t attr_type(uint8_t dtype) {
     }
 }
 
-static void publish(md_vial_eval_t* e) {
+// Before the frames: the frame axis, what was taken over, and the per-frame outputs whose shape the type knows, each
+// with its attribute made now, its frames not computed yet NaN (0 for ints), to be written as frames finish
+static void prepare(md_vial_eval_t* e) {
     md_attributes_t* attrs = &e->attributes;
-    for (size_t i = 0; i < md_array_size(e->held); ++i) {
-        md_attribute_desc_t d = e->held[i].desc;
-        d.path = str_from_cstr(e->held[i].path);
-        md_attributes_create(attrs, &d);
-    }
     const int64_t nf = e->num_frames;
-    if (nf > 0) {
+    if (nf > 0 && !md_attributes_find(attrs, STR_LIT("time"))) {
         const md_attribute_desc_t axis = {
             .path = STR_LIT("time"), .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {(uint32_t)nf}},
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .label = STR_LIT("Frame"),
@@ -330,6 +328,62 @@ static void publish(md_vial_eval_t* e) {
         double* ord = id ? md_attributes_data(attrs, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
         for (int64_t i = 0; ord && i < nf; ++i) ord[i] = (double)i;
     }
+    for (size_t i = 0; i < md_array_size(e->held); ++i) {
+        md_attribute_desc_t d = e->held[i].desc;
+        d.path = str_from_cstr(e->held[i].path);
+        if (!md_attributes_find(attrs, d.path)) md_attributes_create(attrs, &d);
+    }
+    vial_interp_t* in = &e->in;
+    vial_interp_classify(in);
+    for (int s = 0; s < 8; ++s) {
+        if (!in->frame_done[s]) in->frame_done[s] = md_alloc(e->arena, nf > 0 ? (size_t)nf : 1);
+        memset(in->frame_done[s], 0, nf > 0 ? (size_t)nf : 1);
+    }
+    const vial_ir_t* ir = e->ir;
+    const size_t nv = md_array_size(ir->values);
+    if (!in->stream) {
+        in->stream = md_alloc(e->arena, (nv ? nv : 1) * sizeof(uint8_t*));
+        in->stream_count = md_alloc(e->arena, (nv ? nv : 1) * sizeof(uint32_t));
+    }
+    memset(in->stream, 0, (nv ? nv : 1) * sizeof(uint8_t*));
+    md_array_shrink(e->streamed, 0);
+    if (nf <= 0) return;
+    for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
+        const vial_ir_output_t* o = &ir->outputs[k];
+        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        const uint32_t op = ir->values[o->value].op;
+        if (op == VIAL_IR_NO_OP || !in->live[op] || in->op_class[op] != VIAL_OP_PER_FRAME) continue;
+        const vial_type_t* t = &ir->values[o->value].type;
+        const md_attribute_type_t at = attr_type(t->dtype);
+        if (at == MD_ATTRIBUTE_TYPE_NONE || t->ndim > 2) continue;
+        bool known = true;
+        uint32_t inner = 1;
+        for (uint8_t d = 0; d < t->ndim; ++d) { known = known && t->dims[d].kind == VIAL_EXT_STATIC; inner *= t->dims[d].n; }
+        if (!known) continue;
+        char path[160];
+        snprintf(path, sizeof(path), "script/%.*s", (int)o->name.len, o->name.ptr);
+        md_attribute_desc_t desc = {.path = str_from_cstr(path), .unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none(),
+                                    .label = o->name, .format = {.type = at, .components = 1}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL};
+        desc.format.shape[desc.format.rank++] = (uint32_t)nf;
+        for (uint8_t d = 0; d < t->ndim; ++d) desc.format.shape[desc.format.rank++] = t->dims[d].n;
+        const md_attribute_id_t id = md_attributes_replace(attrs, &desc);
+        uint8_t* dst = id ? md_attributes_data(attrs, id, at) : NULL;
+        if (!dst) continue;
+        const size_t n = (size_t)nf * inner;
+        if (t->dtype == VIAL_DT_FLOAT) for (size_t i = 0; i < n; ++i) ((float*)dst)[i] = NAN;
+        else if (t->dtype == VIAL_DT_FLOAT64) for (size_t i = 0; i < n; ++i) ((double*)dst)[i] = NAN;
+        else memset(dst, 0, n * vial_dtype_size(t->dtype));
+        in->stream[o->value] = dst;
+        in->stream_count[o->value] = inner;
+        md_array_push(e->streamed, id, e->arena);
+    }
+}
+
+static void publish(md_vial_eval_t* e) {
+    md_attributes_t* attrs = &e->attributes;
+    const int64_t nf = e->num_frames;
+    // What was written as frames finished is complete: a new version, read once
+    for (size_t i = 0; i < md_array_size(e->streamed); ++i) md_attributes_touch(attrs, e->streamed[i]);
     const vial_ir_t* ir = e->ir;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
@@ -346,13 +400,16 @@ static void publish(md_vial_eval_t* e) {
         if (series_whole) { one.ndim -= 1; memmove(one.dims, one.dims + 1, one.ndim * sizeof(uint32_t)); }
         char path[160];
         snprintf(path, sizeof(path), "script/%.*s", (int)o->name.len, o->name.ptr);
-        if (md_attributes_find(attrs, str_from_cstr(path))) continue;   // taken over
+        if (e->in.stream && e->in.stream[o->value]) continue;            // written as frames finished
+        bool held = false;
+        for (size_t h = 0; h < md_array_size(e->held) && !held; ++h) held = str_eq(str_from_cstr(e->held[h].path), str_from_cstr(path));
+        if (held) continue;
         md_attribute_desc_t desc = {.path = str_from_cstr(path), .unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none(),
                                     .label = o->name, .format = {.type = at, .components = 1}};
         const bool temporal = (per_frame || series_whole) && nf > 0;
         if (temporal) { desc.flags = MD_ATTRIBUTE_FLAG_TEMPORAL; desc.format.shape[desc.format.rank++] = (uint32_t)nf; }
         for (uint8_t d = 0; d < one.ndim; ++d) desc.format.shape[desc.format.rank++] = one.dims[d];
-        const md_attribute_id_t id = md_attributes_create(attrs, &desc);
+        const md_attribute_id_t id = md_attributes_replace(attrs, &desc);
         uint8_t* dst = id ? md_attributes_data(attrs, id, at) : NULL;
         if (!dst) continue;
         const size_t inner = vial_val_count(&one), es = vial_dtype_size(t->dtype);
@@ -378,6 +435,7 @@ static void publish(md_vial_eval_t* e) {
 bool md_vial_eval_run(md_vial_eval_t* e) {
     if (!e) return false;
     e->done = 0;    // a run again: its values are not read until it has finished
+    prepare(e);
     const bool ok = vial_interp_run(&e->in, e->num_frames > 0 ? e->num_frames : 0);
     md_array_shrink(e->diags, 0);
     for (size_t i = 0; i < md_array_size(e->in.errors); ++i) {
@@ -391,6 +449,30 @@ bool md_vial_eval_run(md_vial_eval_t* e) {
         md_atomic_fetch_add64(&e->done, 1);
     }
     return ok && !e->in.interrupted;
+}
+
+size_t md_vial_eval_output_frames(const md_vial_eval_t* e, str_t name, uint8_t* out, size_t cap) {
+    if (!e) return 0;
+    const size_t nf = e->num_frames > 0 ? (size_t)e->num_frames : 0;
+    if (!out || cap < nf) return nf;
+    memset(out, 0, nf);
+    char path[160];
+    snprintf(path, sizeof(path), "script/%.*s", (int)name.len, name.ptr);
+    for (size_t h = 0; h < md_array_size(e->held); ++h) {
+        if (str_eq(str_from_cstr(e->held[h].path), str_from_cstr(path))) { memset(out, 1, nf); return nf; }
+    }
+    const vial_ir_t* ir = e->ir;
+    for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
+        if (!str_eq(ir->outputs[k].name, name)) continue;
+        const uint32_t op = ir->values[ir->outputs[k].value].op;
+        const vial_interp_t* in = &e->in;
+        if (md_atomic_load64(&e->done)) { memset(out, 1, nf); return nf; }
+        if (op == VIAL_IR_NO_OP || !in->op_class || in->op_class[op] != VIAL_OP_PER_FRAME) return nf;
+        const uint8_t s = in->op_sweep[op];
+        if (s < 8 && in->frame_done[s]) memcpy(out, in->frame_done[s], nf);
+        return nf;
+    }
+    return nf;
 }
 
 // ### HOVER ###

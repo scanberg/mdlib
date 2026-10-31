@@ -11,6 +11,7 @@
 #include <core/md_os.h>
 #include <core/md_intrinsics.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -442,11 +443,19 @@ UTEST(vial_ir, eval_api) {
     }
     md_vial_eval_free(eval);
 
-    // Interrupted before it starts: nothing is published
+    // Interrupted before it starts: a value per frame is there, as written so far, which is nothing; the rest is not
     eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     md_vial_eval_interrupt(eval);
     EXPECT_FALSE(md_vial_eval_run(eval));
-    EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eval), STR_LIT("script/ends")) == NULL);
+    {
+        const md_attribute_t* e2 = md_attributes_find(md_vial_eval_attributes(eval), STR_LIT("script/ends"));
+        ASSERT_TRUE(e2 != NULL);
+        for (int64_t f = 0; f < nf; ++f) EXPECT_TRUE(isnan(((const float*)e2->data)[f]));
+        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eval), STR_LIT("script/m")) == NULL);
+        uint8_t held[256];
+        ASSERT_EQ((size_t)nf, md_vial_eval_output_frames(eval, STR_LIT("ends"), held, sizeof(held)));
+        for (int64_t f = 0; f < nf; ++f) EXPECT_EQ(0, held[f]);
+    }
     md_vial_eval_free(eval);
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);

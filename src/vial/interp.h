@@ -94,6 +94,12 @@ typedef struct vial_interp_t {
     vial_parallel_for_t         parallel_for;
     void*                       parallel_user;
     volatile uint64_t           busy;       // a worker: taken by a chunk
+    // Values written out as each frame computes them (vial_interp_run): by ssa, NULL or where frame f's value goes,
+    // f * stream_count[v] elements of its dtype in; a missing float as NaN. Disjoint per frame, so any thread writes.
+    uint8_t**                   stream;
+    uint32_t*                   stream_count;
+    // Frames done, per sweep: done[sweep][f] is set once the frame's values of that sweep are computed
+    uint8_t*                    frame_done[8];
     uint32_t                    err_seq;    // errors so far at this frame
 } vial_interp_t;
 
@@ -120,6 +126,10 @@ const vial_val_t* vial_interp_value(const vial_interp_t* in, vial_ssa_t v);
 // frames in order, each computing the per-frame values that what was computed after the sweep before lets it, and
 // after each sweep what reads whole series. False when something failed (in->errors).
 bool vial_interp_run(vial_interp_t* in, int64_t num_frames);
+
+// How vial_interp_run will evaluate each top-level op (in->op_class, in->op_sweep), before it runs: what the caller
+// needs to set up in->stream. vial_interp_run does it again.
+void vial_interp_classify(vial_interp_t* in);
 
 // After vial_interp_run: the value of a per-frame value at frame f, or of a trajectory value (f ignored); NULL when it
 // was not computed or not kept

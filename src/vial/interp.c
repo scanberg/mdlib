@@ -15,6 +15,7 @@
 #include <core/md_common.h>
 #include <core/md_intrinsics.h>
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -633,7 +634,10 @@ static bool reads_frames(const vial_ir_t* ir, const vial_ir_op_t* op) {
     return false;
 }
 
-static void classify(vial_interp_t* in) {
+void vial_interp_classify(vial_interp_t* in);
+static void classify(vial_interp_t* in) { vial_interp_classify(in); }
+
+void vial_interp_classify(vial_interp_t* in) {
     const vial_ir_t* ir = in->ir;
     const size_t no = md_array_size(ir->ops);
     md_array_resize(in->op_class, no, in->alloc);
@@ -771,6 +775,23 @@ static bool needs_series(const vial_interp_t* in, vial_ssa_t v) {
 
 enum { FRAME_OK = 0, FRAME_FAILED = 1, FRAME_STOP = 2 };
 
+// A value written out at frame f: as many elements as its row holds, NaN for a missing float, nothing when it has
+// another shape than the row (the row keeps what it was set to)
+static void stream_out(vial_interp_t* main, vial_ssa_t v, int64_t f, const vial_val_t* val) {
+    const uint32_t n = main->stream_count[v];
+    const uint8_t dt = main->ir->values[v].type.dtype;
+    if (val->dtype != dt || vial_val_count(val) != n || !val->data) return;
+    const size_t es = vial_dtype_size(dt);
+    uint8_t* row = main->stream[v] + (size_t)f * n * es;
+    memcpy(row, val->data, n * es);
+    if (!val->missing) return;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (!vial_val_is_missing(val, i)) continue;
+        if (dt == VIAL_DT_FLOAT) ((float*)row)[i] = NAN;
+        else if (dt == VIAL_DT_FLOAT64) ((double*)row)[i] = NAN;
+    }
+}
+
 // One frame of a sweep, in `in`, which is main or one of its workers: the per-frame ops of this sweep, and what earlier
 // sweeps computed read at this frame. FRAME_FAILED when an op failed, which leaves the rest of the frame computed;
 // FRAME_STOP when the frame does not load or the evaluation is interrupted.
@@ -835,7 +856,9 @@ static int run_frame(vial_interp_t* in, vial_interp_t* main, uint8_t sweep, int6
         if (!done) { result = FRAME_FAILED; continue; }
         in->state[op->result] = 1;
         if (in->series[op->result]) in->series[op->result][f] = vial_val_copy(&in->vals[op->result], in->alloc);
+        if (main->stream && main->stream[op->result]) stream_out(main, op->result, f, &in->vals[op->result]);
     }
+    if (sweep < 8 && main->frame_done[sweep]) main->frame_done[sweep][f] = 1;
     in->frame = NULL;
     return result;
 }
