@@ -179,8 +179,10 @@ const struct md_attributes_t* md_vial_eval_attributes(const md_vial_eval_t* eval
 
 // The value of the expression md_vial_hover shows at offset, at a frame of the run, as the reference prints values,
 // cut at cap. It is computed for that value alone, at most 16 million entries, with a reader and an interpreter of its
-// own, so it may run while md_vial_eval_run does. False when there is none: no expression there, one inside a def's
-// body, a value over the trajectory (it needs every frame), or one that fails or is past the budget.
+// own, so it may run while md_vial_eval_run does. A value over the trajectory needs every frame: it is the
+// evaluation's, once md_vial_eval_run has finished, where the evaluation computed it. False when there is none: no
+// expression there, one inside a def's body, a value over the trajectory not (yet) computed, or one that fails or is
+// past the budget.
 bool md_vial_eval_hover(const md_vial_eval_t* eval, uint32_t offset, int64_t frame, char* buf, size_t cap);
 
 #ifdef __cplusplus
