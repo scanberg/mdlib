@@ -487,6 +487,8 @@ UTEST_F(vial_check, comprehensions) {
     EXPECT_TYPE_ON(T, "m = [count(r) for r in residues(chain='A') if count(r) > 5]\n", 1, "int[n], static");
     EXPECT_TYPE_ON(T, "s = [i * 2 for i in range(10)]\n", 1, "int[10], static");
     EXPECT_TYPE_ON(T, "s = [i for i in range(2, 11, 3)]\n", 1, "int[3], static");
+    // Sets indexed by a range: the range's ints are not sets to evaluate element by element (found by fuzzing)
+    EXPECT_TYPE_ON(T, "s = [residues[i] for i in range(3)]\n", 1, "set[3], static");
     EXPECT_TYPE_ON(T, "p = [distance(a.com, b.com) for a, b in zip(residues[0:7], residues[8:15])]\n", 1, u8"float[7] Å, frame");
     EXPECT_DIAGS_ON(T, "p = [a for a, b in zip(residues[0:7], residues[8:14])]\n", "E0301 1: `zip` pairs elements in order, and these have 7 and 6\n");
     EXPECT_TYPE_ON(T, "o = [p for p in particles(resname='GTP')]\n", 1, "set[32], static");
