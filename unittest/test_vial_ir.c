@@ -415,3 +415,26 @@ UTEST(vial_ir, eval_api) {
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }
+
+UTEST(vial_ir, contraction) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    // Fused: a product used once, floats throughout. Not fused: ints, and a product that is also published.
+    md_vial_program_t* prog = vial_ir__compile("a = [1.5, 2.5]\nb = [3.0, 4.0]\nc = a * b + 1.0\nd = 2 * 3 + 1\ne = a * b\nf = e + 1.0\n", 0, alloc);
+    const vial_ir_t* ir = md_vial__run_ir(prog);
+    ASSERT_TRUE(ir != NULL);
+    int fmas = 0;
+    for (size_t i = 0; i < md_array_size(ir->ops); ++i) fmas += ir->ops[i].kind == VIAL_IR_FMA;
+    EXPECT_EQ(1, fmas);
+    char err[256];
+    EXPECT_TRUE(vial_ir_verify(ir, err, sizeof(err)));
+    vial_interp_t in;
+    vial_interp_init(&in, ir, NULL, NULL, alloc);
+    EXPECT_TRUE(vial_interp_static(&in));
+    const vial_val_t* c = vial_interp_value(&in, vial_ir__output(ir, "c"));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_EQ(fmaf(1.5f, 3.0f, 1.0f), ((const float*)c->data)[0]);
+    EXPECT_EQ(fmaf(2.5f, 4.0f, 1.0f), ((const float*)c->data)[1]);
+    vial_interp_free(&in);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}

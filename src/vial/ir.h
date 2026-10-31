@@ -194,3 +194,7 @@ str_t vial_ir_dump(const vial_ir_t* ir, str_t src, md_allocator_i* alloc);
 // dst: src with every call and applied body replaced by a copy of the body, so it is one function. False when a body
 // cannot be inlined, as one that ends without its value where lowering failed.
 bool vial_ir_inline(const vial_ir_t* src, vial_ir_t* dst, md_allocator_i* alloc);
+
+// a * b + c as fma(a, b, c) where the product has no other use and every value is a float of one dtype; in place, on
+// the inlined IR. Returns how many it fused.
+uint32_t vial_ir_contract(vial_ir_t* ir, md_allocator_i* alloc);

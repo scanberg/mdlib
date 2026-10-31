@@ -106,6 +106,7 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
     if (!md_array_size(prog->ir.failures)) prog->has_run_ir = vial_ir_inline(&prog->ir, &prog->run_ir, arena);
+    if (prog->has_run_ir) vial_ir_contract(&prog->run_ir, arena);
 
     collect_outputs(prog);
 
