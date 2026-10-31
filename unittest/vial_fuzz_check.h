@@ -137,7 +137,15 @@ static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, con
     void* junk = md_alloc(arena, KILOBYTES(32));
     memset(junk, 0xA5, KILOBYTES(32));
     md_free(arena, junk, KILOBYTES(32));
-    const bool ran = vial_fuzz__run(&again, ir, &vs, sys, state, arena, true);
+    // The second time, the script inlined and contracted but not with its reductions over every pair lowered: they
+    // must give the matrix's bits
+    vial_ir_t plain;
+    const bool inlined = vial_ir_inline(md_vial__ir(prog), &plain, arena);
+    if (inlined) vial_ir_contract(&plain, arena);
+    const bool ran = inlined && md_array_size(plain.outputs) == md_array_size(ir->outputs) &&
+                     vial_fuzz__run(&again, &plain, &vs, sys, state, arena, true);
+    bool again_budget = false;
+    for (size_t e = 0; ran && e < md_array_size(again.errors); ++e) again_budget = again_budget || !strncmp(again.errors[e].code, "R0105", 5);
     static char buf[200];
     const char* why = NULL;
     for (size_t k = 0; k < md_array_size(ir->outputs) && !why; ++k) {
@@ -145,8 +153,10 @@ static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, con
         const vial_type_t* t = &ir->values[ir->outputs[k].value].type;
         const int nl = (int)(ir->outputs[k].name.len < 40 ? ir->outputs[k].name.len : 40);
         if (ran) {
-            const vial_val_t* w = vial_interp_at(&again, ir->outputs[k].value, 0);
-            if ((!v) != (!w) || (v && !vial_val_equal(v, w))) {
+            const vial_val_t* w = vial_interp_at(&again, plain.outputs[k].value, 0);
+            // A matrix past the budget that the lowered reduction never built
+            const bool budget = v && !w && again_budget;
+            if (!budget && ((!v) != (!w) || (v && !vial_val_equal(v, w)))) {
                 snprintf(buf, sizeof(buf), "evaluating twice gives different values: %.*s", nl, ir->outputs[k].name.ptr);
                 why = buf;
                 break;
