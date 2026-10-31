@@ -16,12 +16,14 @@
 #include <core/md_intrinsics.h>
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
 bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...) {
     vial_interp_t* in = k->in;
-    vial_rt_error_t e = {.span = k->op ? k->op->span : (md_vial_span_t){0}};
+    vial_rt_error_t e = {.span = k->op ? k->op->span : (md_vial_span_t){0}, .sweep = in->sweep,
+                         .frame = in->frame ? in->frame->index : INT64_MAX, .seq = in->err_seq++};
     memcpy(e.code, code, 5);
     va_list args;
     va_start(args, fmt);
@@ -767,11 +769,163 @@ static bool needs_series(const vial_interp_t* in, vial_ssa_t v) {
     return false;
 }
 
+enum { FRAME_OK = 0, FRAME_FAILED = 1, FRAME_STOP = 2 };
+
+// One frame of a sweep, in `in`, which is main or one of its workers: the per-frame ops of this sweep, and what earlier
+// sweeps computed read at this frame. FRAME_FAILED when an op failed, which leaves the rest of the frame computed;
+// FRAME_STOP when the frame does not load or the evaluation is interrupted.
+static int run_frame(vial_interp_t* in, vial_interp_t* main, uint8_t sweep, int64_t f) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_region_t* top = &ir->regions[ir->funcs[0].body];
+    const size_t nv = md_array_size(ir->values);
+    if (main->stop && md_atomic_load64(main->stop)) return FRAME_STOP;
+    md_atomic_fetch_add64(&main->frames_done, 1);
+    in->sweep = sweep;
+    in->frame = NULL;
+    in->err_seq = 0;
+    vial_frame_t fr;
+    if (!in->load_frame || !in->load_frame(in->load_user, f, &fr)) {
+        vial_frame_t at = {.index = f};
+        in->frame = &at;
+        vial_kctx_t k = {.in = in, .map_index = -1};
+        vial_rt_fail(&k, "R0104", "frame %lld does not load", (long long)f);
+        in->frame = NULL;
+        return FRAME_STOP;
+    }
+    main->times[f] = fr.time;
+    in->frame = &fr;
+    for (size_t v = 0; v < nv; ++v) if (in->state[v] == 1) in->state[v] = 0;
+    md_vm_arena_reset(in->temp);
+    int result = FRAME_OK;
+    for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+        const uint32_t opi = top->ops[i];
+        const vial_ir_op_t* op = &ir->ops[opi];
+        if (!op->num_results || !in->live[opi]) continue;
+        // Static ops were computed before the sweeps; once ops after an earlier sweep, their series read below
+        if (in->op_class[opi] != VIAL_OP_PER_FRAME) continue;
+        const uint8_t sw = in->op_sweep[opi];
+        if (sw > sweep) continue;
+        if (sw < sweep) {
+            // Computed in an earlier sweep: its value at this frame, when kept
+            if (in->series[op->result] && (in->series[op->result][f].dtype || in->series[op->result][f].ndim)) {
+                in->vals[op->result] = in->series[op->result][f];
+                in->state[op->result] = 1;
+            }
+            continue;
+        }
+        // Inputs that are series made after an earlier sweep are read at this frame
+        bool ready = true;
+        const vial_val_t* saved_vals[64];
+        vial_ssa_t saved_ssa[64];
+        uint32_t ns = 0;
+        for (uint32_t k = 0; k < op->num_args; ++k) {
+            const vial_ssa_t a = ir->args[op->arg_beg + k];
+            if (!a) continue;
+            if (!in->state[a]) { ready = false; break; }
+            if (in->state[a] == 3 && (in->vals[a].flags & VIAL_VAL_FRAMES) && ns < 64) {
+                saved_vals[ns] = md_alloc(in->temp, sizeof(vial_val_t));
+                *(vial_val_t*)saved_vals[ns] = in->vals[a];
+                saved_ssa[ns++] = a;
+                in->vals[a] = frame_of(&in->vals[a], f, in->temp);
+            }
+        }
+        bool done = false;
+        if (ready) done = op->kind == VIAL_IR_FOLD ? eval_fold(in, opi) : eval_op_pub(in, opi, in->temp);
+        for (uint32_t q = 0; q < ns; ++q) in->vals[saved_ssa[q]] = *saved_vals[q];
+        if (!done) { result = FRAME_FAILED; continue; }
+        in->state[op->result] = 1;
+        if (in->series[op->result]) in->series[op->result][f] = vial_val_copy(&in->vals[op->result], in->alloc);
+    }
+    in->frame = NULL;
+    return result;
+}
+
+// A sweep's frames in chunks, each taken by a free worker
+typedef struct sweep_job_t {
+    vial_interp_t*      main;
+    uint8_t             sweep;
+    int64_t             num_frames;
+    int64_t             chunk;
+    volatile uint64_t   failed;
+    volatile uint64_t   stop;
+} sweep_job_t;
+
+static void sweep_chunk(void* arg, size_t c) {
+    sweep_job_t* job = arg;
+    vial_interp_t* main = job->main;
+    // A free worker: there are as many as calls run at once, so one is always free soon
+    vial_interp_t* w = NULL;
+    while (!w) {
+        for (size_t q = 0; q < main->num_workers && !w; ++q) {
+            vial_interp_t* cand = &main->workers[q];
+            if (md_atomic_fetch_add64(&cand->busy, 1) == 0) w = cand;
+            else md_atomic_fetch_add64(&cand->busy, UINT64_MAX);
+        }
+    }
+    const int64_t beg = (int64_t)c * job->chunk, end = MIN(beg + job->chunk, job->num_frames);
+    for (int64_t f = beg; f < end && !md_atomic_load64(&job->stop); ++f) {
+        const int r = run_frame(w, main, job->sweep, f);
+        if (r == FRAME_FAILED) md_atomic_fetch_add64(&job->failed, 1);
+        if (r == FRAME_STOP) { md_atomic_fetch_add64(&job->failed, 1); md_atomic_fetch_add64(&job->stop, 1); }
+    }
+    if (w->load_release) w->load_release(w->load_user);
+    md_atomic_fetch_add64(&w->busy, UINT64_MAX);
+}
+
+// A worker ready for a sweep: what main holds that is not per frame, static values and what earlier sweeps finished
+static void worker_sync(vial_interp_t* w, const vial_interp_t* main) {
+    const size_t nv = md_array_size(main->state);
+    for (size_t v = 0; v < nv; ++v) {
+        if (main->state[v] >= 2) { w->vals[v] = main->vals[v]; w->state[v] = main->state[v]; }
+        else w->state[v] = 0;
+    }
+    w->op_class = main->op_class;
+    w->op_sweep = main->op_sweep;
+    w->series = main->series;
+    w->num_frames = main->num_frames;
+    w->times = main->times;
+    w->stop = main->stop;
+    w->max_elements = main->max_elements;
+    w->plain = main->plain;
+    memcpy(w->live, main->live, md_array_size(main->live));
+}
+
+static int cmp_error(const void* a, const void* b) {
+    const vial_rt_error_t* x = a;
+    const vial_rt_error_t* y = b;
+    if (x->sweep != y->sweep) return x->sweep < y->sweep ? -1 : 1;
+    if (x->frame != y->frame) return x->frame < y->frame ? -1 : 1;
+    return x->seq < y->seq ? -1 : x->seq > y->seq;
+}
+
+// Every interpreter's errors as one: in the order one thread meets them, each failure once
+static void merge_errors(vial_interp_t* in) {
+    vial_rt_error_t* all = NULL;
+    for (size_t i = 0; i < md_array_size(in->errors); ++i) md_array_push(all, in->errors[i], in->alloc);
+    for (size_t w = 0; w < in->num_workers; ++w) {
+        const vial_interp_t* wk = &in->workers[w];
+        for (size_t i = 0; i < md_array_size(wk->errors); ++i) md_array_push(all, wk->errors[i], in->alloc);
+    }
+    const size_t n = md_array_size(all);
+    if (n > 1) qsort(all, n, sizeof(vial_rt_error_t), cmp_error);
+    md_array_shrink(in->errors, 0);
+    for (size_t i = 0; i < n; ++i) {
+        bool seen = false;
+        for (size_t j = 0; j < md_array_size(in->errors) && !seen; ++j) {
+            const vial_rt_error_t* g = &in->errors[j];
+            seen = g->span.beg == all[i].span.beg && g->span.end == all[i].span.end && !strcmp(g->message, all[i].message);
+        }
+        if (!seen) md_array_push(in->errors, all[i], in->alloc);
+    }
+    if (md_array_size(in->errors)) { in->failed = true; in->error = in->errors[0]; }
+}
+
 bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
     const vial_ir_t* ir = in->ir;
     classify(in);
     in->num_frames = num_frames;
     in->times = md_alloc(in->alloc, (num_frames ? num_frames : 1) * sizeof(double));
+    in->sweep = 0;
     bool ok = vial_interp_static(in);
     // Which per-frame values are kept: outputs, and those read across sweeps or as series
     const size_t nv = md_array_size(ir->values);
@@ -800,83 +954,43 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
         in->series[v] = md_alloc(in->alloc, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
         memset(in->series[v], 0, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
     }
-    int64_t sweeps_with_frames = 0;
-    for (uint8_t sweep = 1; sweep <= max_sweep; ++sweep) {
-        for (size_t i = 0; i < md_array_size(top->ops); ++i) {
-            const uint32_t opi = top->ops[i];
-            if (in->live[opi] && in->op_class[opi] == VIAL_OP_PER_FRAME && in->op_sweep[opi] == sweep) { sweeps_with_frames++; break; }
-        }
+    // The sweeps with per-frame ops, and those of them with a fold, whose frames go in order
+    uint8_t has_frames[256] = {0}, has_fold[256] = {0};
+    for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+        const uint32_t opi = top->ops[i];
+        if (!in->live[opi] || in->op_class[opi] != VIAL_OP_PER_FRAME) continue;
+        has_frames[in->op_sweep[opi]] = 1;
+        if (ir->ops[opi].kind == VIAL_IR_FOLD) has_fold[in->op_sweep[opi]] = 1;
     }
+    int64_t sweeps_with_frames = 0;
+    for (uint32_t sweep = 1; sweep <= max_sweep; ++sweep) sweeps_with_frames += has_frames[sweep];
     in->frames_done = 0;
     in->frames_total = (uint64_t)(sweeps_with_frames * num_frames);
     in->interrupted = false;
-    for (uint8_t sweep = 1; sweep <= max_sweep; ++sweep) {
-        in->sweep = sweep;
-        bool any = false;
-        for (size_t i = 0; i < md_array_size(top->ops); ++i) {
-            const uint32_t opi = top->ops[i];
-            if (in->live[opi] && in->op_class[opi] == VIAL_OP_PER_FRAME && in->op_sweep[opi] == sweep) any = true;
-        }
-        for (int64_t f = 0; any && f < num_frames; ++f) {
-            if (in->stop && md_atomic_load64(in->stop)) { in->interrupted = true; in->frame = NULL; return false; }
-            md_atomic_fetch_add64(&in->frames_done, 1);
-            vial_frame_t fr;
-            if (!in->load_frame || !in->load_frame(in->load_user, f, &fr)) { vial_kctx_t k = {.in = in, .map_index = -1}; vial_rt_fail(&k, "R0104", "frame %lld does not load", (long long)f); return false; }
-            in->times[f] = fr.time;
-            in->frame = &fr;
-            for (size_t v = 0; v < nv; ++v) if (in->state[v] == 1) in->state[v] = 0;
-            md_vm_arena_reset(in->temp);
-            for (size_t i = 0; i < md_array_size(top->ops); ++i) {
-                const uint32_t opi = top->ops[i];
-                const vial_ir_op_t* op = &ir->ops[opi];
-                if (!op->num_results || !in->live[opi]) continue;
-                const uint8_t cls = in->op_class[opi];
-                if (cls == VIAL_OP_STATIC) continue;
-                if (cls == VIAL_OP_ONCE) {
-                    // A whole-trajectory value: a series of frames is read at this frame
-                    const vial_val_t* v = &in->vals[op->result];
-                    if (in->state[op->result] == 3 && (v->flags & VIAL_VAL_FRAMES)) {
-                        // Left as it is: readers take their frame below
-                    }
-                    continue;
+    bool stopped = false;
+    for (uint32_t sweep = 1; sweep <= max_sweep && !stopped; ++sweep) {
+        in->sweep = (uint8_t)sweep;
+        if (has_frames[sweep] && num_frames > 0) {
+            if (in->num_workers && in->parallel_for && !has_fold[sweep]) {
+                for (size_t w = 0; w < in->num_workers; ++w) worker_sync(&in->workers[w], in);
+                // Chunks of a few frames: enough of them that the workers finish together
+                const int64_t chunk = MAX((int64_t)1, num_frames / (int64_t)(in->num_workers * 8));
+                sweep_job_t job = {.main = in, .sweep = (uint8_t)sweep, .num_frames = num_frames, .chunk = chunk};
+                in->parallel_for(in->parallel_user, (size_t)((num_frames + chunk - 1) / chunk), sweep_chunk, &job);
+                if (md_atomic_load64(&job.failed)) ok = false;
+                if (md_atomic_load64(&job.stop)) stopped = true;
+            } else {
+                for (int64_t f = 0; f < num_frames; ++f) {
+                    const int r = run_frame(in, in, (uint8_t)sweep, f);
+                    if (r != FRAME_OK) ok = false;
+                    if (r == FRAME_STOP) { stopped = true; break; }
                 }
-                const uint8_t sw = in->op_sweep[opi];
-                if (sw > sweep) continue;
-                if (sw < sweep) {
-                    // Computed in an earlier sweep: its value at this frame, when kept
-                    if (in->series[op->result] && (in->series[op->result][f].dtype || in->series[op->result][f].ndim)) {
-                        in->vals[op->result] = in->series[op->result][f];
-                        in->state[op->result] = 1;
-                    }
-                    continue;
-                }
-                // Inputs that are series made after an earlier sweep are read at this frame
-                bool ready = true;
-                const vial_val_t* saved_vals[64];
-                vial_ssa_t saved_ssa[64];
-                uint32_t ns = 0;
-                for (uint32_t k = 0; k < op->num_args; ++k) {
-                    const vial_ssa_t a = ir->args[op->arg_beg + k];
-                    if (!a) continue;
-                    if (!in->state[a]) { ready = false; break; }
-                    if (in->state[a] == 3 && (in->vals[a].flags & VIAL_VAL_FRAMES) && ns < 64) {
-                        saved_vals[ns] = md_alloc(in->temp, sizeof(vial_val_t));
-                        *(vial_val_t*)saved_vals[ns] = in->vals[a];
-                        saved_ssa[ns++] = a;
-                        in->vals[a] = frame_of(&in->vals[a], f, in->temp);
-                    }
-                }
-                bool done = false;
-                if (ready) {
-                    done = op->kind == VIAL_IR_FOLD ? eval_fold(in, opi) : eval_op_pub(in, opi, in->temp);
-                }
-                for (uint32_t q = 0; q < ns; ++q) in->vals[saved_ssa[q]] = *saved_vals[q];
-                if (!done) { ok = false; continue; }
-                in->state[op->result] = 1;
-                if (in->series[op->result]) in->series[op->result][f] = vial_val_copy(&in->vals[op->result], in->alloc);
             }
         }
+        if (stopped) break;
         // After the sweep: the once ops it completes, in program order
+        in->frame = NULL;
+        in->err_seq = 0;
         for (size_t i = 0; i < md_array_size(top->ops); ++i) {
             const uint32_t opi = top->ops[i];
             const vial_ir_op_t* op = &ir->ops[opi];
@@ -907,5 +1021,8 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
         }
     }
     in->frame = NULL;
-    return ok;
+    if (in->load_release) in->load_release(in->load_user);
+    merge_errors(in);
+    if (stopped && in->stop && md_atomic_load64(in->stop)) { in->interrupted = true; return false; }
+    return ok && !stopped;
 }

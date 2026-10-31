@@ -8,6 +8,8 @@
 #include "../src/vial/vial_internal.h"
 #include "../src/vial/ir.h"
 #include "../src/vial/interp.h"
+#include <core/md_os.h>
+#include <core/md_intrinsics.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -446,6 +448,87 @@ UTEST(vial_ir, eval_api) {
     EXPECT_FALSE(md_vial_eval_run(eval));
     EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eval), STR_LIT("script/ends")) == NULL);
     md_vial_eval_free(eval);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A caller's pool for md_vial_eval: threads of its own per call, taking indices in turn
+typedef struct vial_ir__pool_t {
+    size_t              count;
+    void              (*fn)(void* arg, size_t i);
+    void*               arg;
+    volatile uint64_t   next;
+} vial_ir__pool_t;
+
+static void vial_ir__pool_work(void* data) {
+    vial_ir__pool_t* p = data;
+    for (uint64_t i; (i = md_atomic_fetch_add64(&p->next, 1)) < p->count;) p->fn(p->arg, (size_t)i);
+}
+
+static void vial_ir__parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
+    (void)user;
+    vial_ir__pool_t pool = {.count = count, .fn = fn, .arg = arg};
+    md_thread_t* th[2];
+    for (int t = 0; t < 2; ++t) th[t] = md_thread_create(vial_ir__pool_work, &pool);
+    vial_ir__pool_work(&pool);
+    for (int t = 0; t < 2; ++t) if (th[t]) md_thread_join(th[t]);
+}
+
+// The evaluation API on several threads, its own and a caller's: the same attributes, byte for byte, and the same
+// diagnostics in the same order as on one
+UTEST(vial_ir, eval_threads) {
+    const md_system_t* sys = vial_test_system('P');
+    const int64_t nf = vial_test_run('P');
+    ASSERT_TRUE(sys && nf > 2);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* src =
+        "ca   = particles(name='CA')\n"
+        "ends = distance(ca[0], ca[14])\n"
+        "m    = mean(ends, axis='frame')\n"
+        "dev  = ends - m\n"
+        "near = len(within(6.0, of=ca[0:3]))\n"
+        "cp   = distance(ca[0:5], ca[8:15], between='closest')\n"
+        "big  = zeros(100) + ends\n"
+        "acc  = cumulative(ends, op='sum')\n";
+    const md_vial_compile_desc_t cdesc = {.sys = sys, .run = STR_LIT("run")};
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &cdesc, alloc);
+    ASSERT_TRUE(prog != NULL);
+    md_vial_eval_t* ev[3];
+    ev[0] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50}, alloc);
+    ev[1] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50, .num_threads = 4}, alloc);
+    ev[2] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50, .num_threads = 3,
+                                                             .parallel_for = vial_ir__parallel_for}, alloc);
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(ev[i] != NULL);
+        EXPECT_FALSE(md_vial_eval_run(ev[i]));     // big is past the limit: R0105 at every frame, once
+        EXPECT_EQ(1.0, md_vial_eval_progress(ev[i]));
+    }
+    const md_vial_diagnostic_t* d0;
+    const size_t n0 = md_vial_eval_diagnostics(ev[0], &d0);
+    EXPECT_GE(n0, (size_t)1);
+    const md_attributes_t* a0 = md_vial_eval_attributes(ev[0]);
+    for (int i = 1; i < 3; ++i) {
+        const md_vial_diagnostic_t* di;
+        ASSERT_EQ(n0, md_vial_eval_diagnostics(ev[i], &di));
+        for (size_t k = 0; k < n0; ++k) {
+            EXPECT_EQ(0, strncmp(d0[k].code, di[k].code, 5));
+            EXPECT_EQ(d0[k].span.beg, di[k].span.beg);
+        }
+        const md_attributes_t* ai = md_vial_eval_attributes(ev[i]);
+        EXPECT_EQ(md_attributes_count(a0), md_attributes_count(ai));
+        int compared = 0;
+        for (md_attribute_iter_t it = md_attributes_iter(a0, STR_LIT("script")); md_attributes_next(&it);) {
+            const md_attribute_t* x = it.attr;
+            const md_attribute_t* y = md_attributes_find(ai, x->path);
+            ASSERT_TRUE(y != NULL);
+            const size_t bytes = md_attribute_byte_size(&x->format);
+            ASSERT_EQ(bytes, md_attribute_byte_size(&y->format));
+            EXPECT_TRUE(x->data && y->data && memcmp(x->data, y->data, bytes) == 0);
+            compared += 1;
+        }
+        EXPECT_GE(compared, 6);
+    }
+    for (int i = 0; i < 3; ++i) md_vial_eval_free(ev[i]);
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }

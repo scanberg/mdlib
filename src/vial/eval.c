@@ -10,9 +10,20 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_intrinsics.h>
+#include <core/md_os.h>
+#include <core/md_common.h>
 
 #include <stdio.h>
 #include <string.h>
+
+// A worker's own reader of the run, and view of the system
+typedef struct eval_worker_t {
+    struct md_vial_eval_t*      e;
+    md_allocator_i*             arena;      // its own: workers allocate at once
+    vial_sys_t                  vs;
+    md_system_extract_t*        ex;
+    md_system_state_t           state;
+} eval_worker_t;
 
 struct md_vial_eval_t {
     md_allocator_i*             arena;
@@ -30,20 +41,78 @@ struct md_vial_eval_t {
     md_attributes_t             attributes;
     md_vial_diagnostic_t*       diags;      // md_array
     volatile uint64_t           done;       // md_vial_eval_run finished every frame: its values may be read
+    // Frames on several threads: one interpreter and one reader each
+    vial_interp_t*              workers;
+    eval_worker_t*              readers;
+    size_t                      num_readers;
+    size_t                      num_workers;
+    md_vial_parallel_for_t      parallel_for;
+    void*                       parallel_user;
 };
+
+static bool read_frame(md_vial_eval_t* e, md_system_extract_t** ex, md_system_state_t* state, md_allocator_i* alloc, int64_t index, vial_frame_t* out) {
+    if (index < 0 || index >= e->num_frames) return false;
+    if (!*ex) {
+        const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
+        *ex = md_system_extract_begin(e->sys, e->run, paths, 2, alloc);
+        if (!*ex) return false;
+    }
+    if (!md_system_extract_frame(*ex, index, state)) return false;
+    *out = (vial_frame_t){.xyz = (const float*)state->xyz, .num_atoms = state->num_atoms, .cell = state->unitcell, .index = index,
+                          .time = e->times ? e->times[index] : (double)index};
+    return true;
+}
 
 static bool load_frame(void* user, int64_t index, vial_frame_t* out) {
     md_vial_eval_t* e = user;
-    if (index < 0 || index >= e->num_frames) return false;
-    if (!e->ex) {
-        const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
-        e->ex = md_system_extract_begin(e->sys, e->run, paths, 2, e->arena);
-        if (!e->ex) return false;
+    return read_frame(e, &e->ex, &e->state, e->arena, index, out);
+}
+
+static bool worker_load_frame(void* user, int64_t index, vial_frame_t* out) {
+    eval_worker_t* w = user;
+    return read_frame(w->e, &w->ex, &w->state, w->arena, index, out);
+}
+
+// A reader belongs to one thread at a time, and a worker moves between threads: it ends its reader when a thread is
+// done with it, and the next thread begins one
+static void worker_release(void* user) {
+    eval_worker_t* w = user;
+    if (w->ex) { md_system_extract_end(w->ex); w->ex = NULL; }
+}
+
+static void main_release(void* user) {
+    md_vial_eval_t* e = user;
+    if (e->ex) { md_system_extract_end(e->ex); e->ex = NULL; }
+}
+
+// Without the caller's pool: num_workers - 1 threads of our own and the calling one, taking indices in turn
+typedef struct own_pool_t {
+    size_t              count;
+    void              (*fn)(void* arg, size_t i);
+    void*               arg;
+    volatile uint64_t   next;
+} own_pool_t;
+
+static void own_pool_work(void* data) {
+    own_pool_t* p = data;
+    for (;;) {
+        const uint64_t i = md_atomic_fetch_add64(&p->next, 1);
+        if (i >= p->count) break;
+        p->fn(p->arg, (size_t)i);
     }
-    if (!md_system_extract_frame(e->ex, index, &e->state)) return false;
-    *out = (vial_frame_t){.xyz = (const float*)e->state.xyz, .num_atoms = e->state.num_atoms, .cell = e->state.unitcell, .index = index,
-                          .time = e->times ? e->times[index] : (double)index};
-    return true;
+}
+
+static void own_parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
+    const md_vial_eval_t* e = user;
+    own_pool_t pool = {.count = count, .fn = fn, .arg = arg};
+    md_thread_t* threads[64];
+    size_t nt = 0;
+    for (size_t t = 1; t < e->num_workers && t < 64 && t < count; ++t) {
+        md_thread_t* th = md_thread_create(own_pool_work, &pool);
+        if (th) threads[nt++] = th;
+    }
+    own_pool_work(&pool);
+    for (size_t t = 0; t < nt; ++t) md_thread_join(threads[t]);
 }
 
 md_vial_eval_t* md_vial_eval_create(const md_vial_program_t* prog, const md_vial_eval_desc_t* desc, md_allocator_i* alloc) {
@@ -83,12 +152,48 @@ md_vial_eval_t* md_vial_eval_create(const md_vial_program_t* prog, const md_vial
     e->in.max_elements = desc->max_elements;
     e->in.load_frame = load_frame;
     e->in.load_user = e;
+    e->in.load_release = main_release;
     e->in.stop = &e->stop;
+    // Frames on several threads: an interpreter, a reader and a view of the system per thread
+    if (desc->num_threads > 1 && e->num_frames > 1) {
+        const size_t nw = MIN(desc->num_threads, (size_t)64);
+        e->workers = md_alloc(arena, nw * sizeof(vial_interp_t));
+        e->readers = md_alloc(arena, nw * sizeof(eval_worker_t));
+        memset(e->workers, 0, nw * sizeof(vial_interp_t));
+        memset(e->readers, 0, nw * sizeof(eval_worker_t));
+        for (size_t w = 0; w < nw; ++w) {
+            eval_worker_t* r = &e->readers[w];
+            r->e = e;
+            // From the heap, which threads may share, not from alloc, which may be an arena
+            r->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+            if (!r->arena) { md_vial_eval_free(e); return NULL; }
+            e->num_readers = w + 1;
+            r->state = (md_system_state_t){.alloc = r->arena};
+            md_system_state_init(&r->state, desc->sys->atom.count);
+            vial_sys_init(&r->vs, desc->sys, r->arena);
+            if (!vial_interp_init(&e->workers[w], ir, &r->vs, desc->sys, md_get_heap_allocator())) { md_vial_eval_free(e); return NULL; }
+            e->workers[w].load_frame = worker_load_frame;
+            e->workers[w].load_user = r;
+            e->workers[w].load_release = worker_release;
+            e->num_workers = w + 1;
+        }
+        e->parallel_for = desc->parallel_for ? desc->parallel_for : own_parallel_for;
+        e->parallel_user = desc->parallel_for ? desc->parallel_user : e;
+        e->in.workers = e->workers;
+        e->in.num_workers = e->num_workers;
+        e->in.parallel_for = e->parallel_for;
+        e->in.parallel_user = e->parallel_user;
+    }
     return e;
 }
 
 void md_vial_eval_free(md_vial_eval_t* e) {
     if (!e) return;
+    for (size_t w = 0; w < e->num_workers; ++w) {
+        if (e->readers[w].ex) md_system_extract_end(e->readers[w].ex);
+        vial_interp_free(&e->workers[w]);
+    }
+    for (size_t w = 0; w < e->num_readers; ++w) md_arena_allocator_destroy(e->readers[w].arena);
     if (e->ex) md_system_extract_end(e->ex);
     vial_interp_free(&e->in);
     md_arena_allocator_destroy(e->arena);

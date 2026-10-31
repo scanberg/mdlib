@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VIAL_BENCH_VERSION "vial bench r6"
+#define VIAL_BENCH_VERSION "vial bench r7"
 
 typedef struct vial_bench_pair_t {
     const char* v1;
@@ -99,7 +99,9 @@ static bool bench_v2(const char* src, const md_system_t* sys, md_allocator_i* al
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
     *compile_ms = ms_since(t0);
     t0 = md_tick_now();
-    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    // VIAL_BENCH_THREADS=n: v2's frames on n threads; v1 runs on one either way
+    const size_t threads = getenv("VIAL_BENCH_THREADS") ? (size_t)atoi(getenv("VIAL_BENCH_THREADS")) : 0;
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
     const bool ok = eval && md_vial_eval_run(eval);
     *eval_ms = ms_since(t0);
     if (eval) md_vial_eval_free(eval);
@@ -122,8 +124,9 @@ UTEST(vial_bench, against_v1) {
     const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/time"));
     ASSERT_TRUE(time != NULL);
     const uint32_t nf = time->format.shape[0];
-    printf("%s: %.*s, %zu particles, %zu residues; %.*s, %u frames; fastest of %d\n", VIAL_BENCH_VERSION, (int)top.len, top.ptr,
-        sys.atom.count, md_system_residue_count(&sys), (int)traj.len, traj.ptr, nf, reps);
+    printf("%s: %.*s, %zu particles, %zu residues; %.*s, %u frames; fastest of %d; v2 on %d threads\n", VIAL_BENCH_VERSION, (int)top.len, top.ptr,
+        sys.atom.count, md_system_residue_count(&sys), (int)traj.len, traj.ptr, nf, reps,
+        getenv("VIAL_BENCH_THREADS") && atoi(getenv("VIAL_BENCH_THREADS")) > 1 ? atoi(getenv("VIAL_BENCH_THREADS")) : 1);
     printf("%s: %2s %-72s %10s %10s %10s %10s\n", VIAL_BENCH_VERSION, "", "v2 script", "v1 compile", "v2 compile", "v1 eval", "v2 eval");
 
     // VIAL_BENCH_ONLY=i: pair i alone, for a profiler; nothing else is run

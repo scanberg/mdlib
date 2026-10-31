@@ -148,15 +148,25 @@ bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover
 // frame as the outer axis for a value per frame, beside "time", the evaluation's frame axis of ordinals. Selections
 // are recipes and are not published as values. The interpreter is the reference of every other backend.
 //
-// Phase 3's API: one call evaluates every frame. Evaluating a range of frames, frames in parallel, and taking over
-// what an earlier evaluation computed come with viamd's integration.
+// Frames are evaluated on several threads when asked, with the same bits as on one: each frame is computed alone, and
+// the trajectory operations after a sweep run on one thread in a fixed order. Taking over what an earlier evaluation
+// computed comes with viamd's integration.
 
 typedef struct md_vial_eval_t md_vial_eval_t;
+
+// The caller's thread pool: calls fn(arg, i) for every i in [0, count), on up to num_threads threads at once, and
+// returns when every call has returned. viamd passes its task system.
+typedef void (*md_vial_parallel_for_t)(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg);
 
 typedef struct md_vial_eval_desc_t {
     const struct md_system_t* sys;  // the system the program was compiled against
     str_t       run;                // the run whose frames are evaluated: its prefix in sys->attributes, as "run/ala"
     size_t      max_elements;       // the most elements one value may have (R0105); 0 for 2^28
+    // Threads for the frames: 0 or 1 evaluates them on the calling thread. With parallel_for NULL, md_vial_eval_run
+    // starts num_threads - 1 threads of its own for each sweep over the frames and works on the calling one.
+    size_t                  num_threads;
+    md_vial_parallel_for_t  parallel_for;
+    void*                   parallel_user;
 } md_vial_eval_desc_t;
 
 // NULL when the program cannot be evaluated: it has errors, or something in it is not evaluated yet

@@ -459,6 +459,8 @@ UTEST_F(vial_spec, lowers) {
 // Phase 3: every block is evaluated, its static part and its first frames, on its structure's run. What fails is
 // counted, not failed, until the interpreter is complete.
 #include "../src/vial/interp.h"
+#include <core/md_os.h>
+#include <core/md_intrinsics.h>
 
 // Frames for at(): the run's, or the structure's own coordinates for T
 typedef struct vial_spec__frames_t {
@@ -497,7 +499,8 @@ static str_t vial_spec__block_src(const vial_spec_t* spec, size_t i, md_allocato
     return (str_t){buf, md_array_size(buf)};
 }
 
-// A block compiled and evaluated over every frame of its structure's run
+// A block compiled and evaluated over every frame of its structure's run, on threads workers when more than 0
+#define VIAL_SPEC_MAX_WORKERS 4
 typedef struct vial_spec__eval_t {
     md_vial_program_t*  prog;
     const vial_ir_t*    ir;
@@ -505,10 +508,37 @@ typedef struct vial_spec__eval_t {
     vial_interp_t       in;
     vial_spec__frames_t frames;
     int64_t             num_frames;
+    vial_interp_t       workers[VIAL_SPEC_MAX_WORKERS];
+    vial_sys_t          worker_vs[VIAL_SPEC_MAX_WORKERS];
+    vial_spec__frames_t worker_frames[VIAL_SPEC_MAX_WORKERS];
+    md_allocator_i*     worker_arena[VIAL_SPEC_MAX_WORKERS];
+    int                 num_workers;
 } vial_spec__eval_t;
 
+// Threads of its own for each sweep, taking chunks in turn
+typedef struct vial_spec__pool_t {
+    size_t              count;
+    void              (*fn)(void* arg, size_t i);
+    void*               arg;
+    volatile uint64_t   next;
+} vial_spec__pool_t;
+
+static void vial_spec__pool_work(void* data) {
+    vial_spec__pool_t* p = data;
+    for (uint64_t i; (i = md_atomic_fetch_add64(&p->next, 1)) < p->count;) p->fn(p->arg, (size_t)i);
+}
+
+static void vial_spec__parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
+    const int n = *(const int*)user;
+    vial_spec__pool_t pool = {.count = count, .fn = fn, .arg = arg};
+    md_thread_t* th[VIAL_SPEC_MAX_WORKERS];
+    for (int t = 0; t < n - 1; ++t) th[t] = md_thread_create(vial_spec__pool_work, &pool);
+    vial_spec__pool_work(&pool);
+    for (int t = 0; t < n - 1; ++t) if (th[t]) md_thread_join(th[t]);
+}
+
 // False when the block's structure has no system or the block does not inline (ir is then NULL, prog kept)
-static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_allocator_i* compile_alloc, md_allocator_i* eval_alloc) {
+static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_allocator_i* compile_alloc, md_allocator_i* eval_alloc, int threads) {
     memset(e, 0, sizeof(*e));
     const md_system_t* sys = vial_test_system(structure);
     if (!sys) return false;
@@ -523,11 +553,31 @@ static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_
     md_system_state_init(&e->frames.state, sys->atom.count);
     e->in.load_frame = vial_spec__load;
     e->in.load_user = &e->frames;
+    e->num_workers = threads < VIAL_SPEC_MAX_WORKERS ? threads : VIAL_SPEC_MAX_WORKERS;
+    for (int w = 0; w < e->num_workers; ++w) {
+        e->worker_arena[w] = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        vial_sys_init(&e->worker_vs[w], sys, e->worker_arena[w]);
+        vial_interp_init(&e->workers[w], e->ir, &e->worker_vs[w], sys, md_get_heap_allocator());
+        e->worker_frames[w] = (vial_spec__frames_t){.structure = structure, .sys = sys, .num_frames = e->num_frames, .state = {.alloc = e->worker_arena[w]}};
+        md_system_state_init(&e->worker_frames[w].state, sys->atom.count);
+        e->workers[w].load_frame = vial_spec__load;
+        e->workers[w].load_user = &e->worker_frames[w];
+    }
+    if (e->num_workers) {
+        e->in.workers = e->workers;
+        e->in.num_workers = (size_t)e->num_workers;
+        e->in.parallel_for = vial_spec__parallel_for;
+        e->in.parallel_user = &e->num_workers;
+    }
     vial_interp_run(&e->in, e->num_frames ? e->num_frames : 1);
     return true;
 }
 
 static void vial_spec__eval_free(vial_spec__eval_t* e) {
+    for (int w = 0; w < e->num_workers; ++w) {
+        vial_interp_free(&e->workers[w]);
+        md_arena_allocator_destroy(e->worker_arena[w]);
+    }
     if (e->ir) {
         vial_interp_free(&e->in);
         md_system_state_free(&e->frames.state);
@@ -549,7 +599,7 @@ UTEST_F(vial_spec, evaluates) {
         if (!vial_spec__evaluable(b)) continue;
         const str_t src = vial_spec__block_src(spec, i, alloc);
         vial_spec__eval_t e;
-        if (!vial_spec__eval(&e, src, b->structure, alloc, md_get_heap_allocator())) {
+        if (!vial_spec__eval(&e, src, b->structure, alloc, md_get_heap_allocator(), 0)) {
             if (e.prog) { printf("reference block at line %d: does not inline\n", b->line); num_blocks += 1; }
             vial_spec__eval_free(&e);
             continue;
@@ -594,8 +644,9 @@ UTEST_F(vial_spec, evaluates) {
 }
 
 // Determinism: a block compiled and evaluated twice gives the same bits for every output at every frame, and the same
-// runtime errors. The second time compiles and evaluates in fresh arenas, so addresses and the contents of memory
-// before it is written differ, and what depends on either shows.
+// runtime errors in the same order. The second time compiles and evaluates in fresh arenas, so addresses and the
+// contents of memory before it is written differ, and on four threads, so the order frames are computed in differs,
+// and what depends on any of it shows.
 UTEST_F(vial_spec, deterministic) {
     const vial_spec_t* spec = &utest_fixture->spec;
     md_allocator_i* alloc = utest_fixture->alloc;
@@ -610,8 +661,9 @@ UTEST_F(vial_spec, deterministic) {
         memset(junk, 0xA5, KILOBYTES(32));
         md_free(arena, junk, KILOBYTES(32));
         vial_spec__eval_t e[2];
-        const bool ok0 = vial_spec__eval(&e[0], src, b->structure, alloc, md_get_heap_allocator());
-        const bool ok1 = vial_spec__eval(&e[1], src, b->structure, arena, arena);
+        const bool ok0 = vial_spec__eval(&e[0], src, b->structure, alloc, md_get_heap_allocator(), 0);
+        // The second on four threads, frames in chunks across them
+        const bool ok1 = vial_spec__eval(&e[1], src, b->structure, arena, arena, 4);
         if (ok0 && ok1) {
             num_blocks += 1;
             const vial_ir_t* ir0 = e[0].ir;

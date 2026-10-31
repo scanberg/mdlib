@@ -29,7 +29,16 @@ typedef struct vial_rt_error_t {
     char            code[6];    // "R0103"
     char            message[160];
     md_vial_span_t  span;
+    // Where in the evaluation it happened, which orders the errors of frames run on several threads as one thread
+    // meets them: the sweep (0 for the static part), the frame (INT64_MAX after the sweep), the n-th error there
+    uint8_t         sweep;
+    int64_t         frame;
+    uint32_t        seq;
 } vial_rt_error_t;
+
+// Frames in parallel: calls fn(arg, i) for every i in [0, count), from any threads, at most as many at once as there
+// are workers, and returns when every call has returned
+typedef void (*vial_parallel_for_t)(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg);
 
 #define VIAL_MAP_SCRATCH_DEPTH 8
 
@@ -52,6 +61,9 @@ typedef struct vial_interp_t {
     // at(x, frame=i) reads another frame, in a step before the frames are evaluated: the caller loads it
     bool                      (*load_frame)(void* user, int64_t index, vial_frame_t* out);
     void*                       load_user;
+    // Called when a thread is done reading frames through load_user for now, before another thread may: a reader that
+    // belongs to one thread lets it go. NULL for none.
+    void                      (*load_release)(void* user);
     // Over the trajectory (vial_interp_run): how each top-level op is evaluated, in which sweep over the frames, and
     // the per-frame values kept for what reads them as a series
     uint8_t*                    op_class;   // md_array by op: VIAL_OP_STATIC, VIAL_OP_PER_FRAME or VIAL_OP_ONCE
@@ -74,6 +86,15 @@ typedef struct vial_interp_t {
     // Tests: only the plain paths, which the fast ones must agree with bit for bit: a map's calls one by one, never
     // batched for a built-in; closest and farthest pairs by every pair; within() by a spatial search
     bool                        plain;
+    // Frames in parallel (vial_interp_run): interpreters of the same IR, each with a frame reader and a vial_sys of its
+    // own, which take chunks of a sweep's frames through parallel_for; the static part and what follows a sweep stay
+    // here. None: every frame here, in order. A sweep with a fold runs here too, its frames in order.
+    struct vial_interp_t*       workers;
+    size_t                      num_workers;
+    vial_parallel_for_t         parallel_for;
+    void*                       parallel_user;
+    volatile uint64_t           busy;       // a worker: taken by a chunk
+    uint32_t                    err_seq;    // errors so far at this frame
 } vial_interp_t;
 
 enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };
