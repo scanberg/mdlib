@@ -15,6 +15,7 @@ size_t vial_dtype_size(uint8_t dtype) {
     case VIAL_DT_FLOAT64: return 8;
     case VIAL_DT_STR:     return sizeof(str_t);
     case VIAL_DT_RANGE:   return 16;
+    case VIAL_DT_DRAWING: return sizeof(const vial_drawing_t*);
     default:              return 0;
     }
 }
@@ -208,6 +209,20 @@ bool vial_val_equal(const vial_val_t* a, const vial_val_t* b) {
         for (size_t i = 0; i < n; ++i) if (!str_eq(((const str_t*)a->data)[i], ((const str_t*)b->data)[i])) return false;
         return true;
     }
+    if (a->dtype == VIAL_DT_DRAWING) {
+        for (size_t i = 0; i < n; ++i) {
+            const vial_drawing_t* x = ((const vial_drawing_t* const*)a->data)[i];
+            const vial_drawing_t* y = ((const vial_drawing_t* const*)b->data)[i];
+            const uint32_t nx = x ? x->count : 0, ny = y ? y->count : 0;
+            if (nx != ny) return false;
+            for (uint32_t q = 0; q < nx; ++q) {
+                const vial_prim_t* u = &x->prims[q];
+                const vial_prim_t* w = &y->prims[q];
+                if (u->kind != w->kind || memcmp(u->p, w->p, sizeof(u->p)) || u->r != w->r || !str_eq(u->text, w->text) || u->num_atoms != w->num_atoms) return false;
+            }
+        }
+        return true;
+    }
     const size_t bytes = n * vial_dtype_size(a->dtype);
     return !bytes || memcmp(a->data, b->data, bytes) == 0;
 }
@@ -229,6 +244,37 @@ static vial_sets_t* sets_copy(const vial_sets_t* s, md_allocator_i* alloc) {
     return c;
 }
 
+static vial_prim_t* prims_copy(vial_prim_t* dst, const vial_prim_t* src, uint32_t n, md_allocator_i* alloc) {
+    for (uint32_t i = 0; i < n; ++i) {
+        dst[i] = src[i];
+        dst[i].text = str_copy(src[i].text, alloc);
+        if (src[i].num_atoms) {
+            uint32_t* at = md_alloc(alloc, src[i].num_atoms * sizeof(uint32_t));
+            memcpy(at, src[i].atoms, src[i].num_atoms * sizeof(uint32_t));
+            dst[i].atoms = at;
+        }
+    }
+    return dst;
+}
+
+const vial_drawing_t* vial_drawing_make(const vial_prim_t* prims, uint32_t count, md_allocator_i* alloc) {
+    vial_drawing_t* d = md_alloc(alloc, sizeof(vial_drawing_t));
+    d->count = count;
+    d->prims = count ? prims_copy(md_alloc(alloc, count * sizeof(vial_prim_t)), prims, count, alloc) : NULL;
+    return d;
+}
+
+const vial_drawing_t* vial_drawing_concat(const vial_drawing_t* a, const vial_drawing_t* b, md_allocator_i* alloc) {
+    const uint32_t na = a ? a->count : 0, nb = b ? b->count : 0;
+    vial_drawing_t* d = md_alloc(alloc, sizeof(vial_drawing_t));
+    d->count = na + nb;
+    vial_prim_t* p = d->count ? md_alloc(alloc, d->count * sizeof(vial_prim_t)) : NULL;
+    if (na) prims_copy(p, a->prims, na, alloc);
+    if (nb) prims_copy(p + na, b->prims, nb, alloc);
+    d->prims = p;
+    return d;
+}
+
 vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc) {
     vial_val_t c = *v;
     const size_t n = vial_val_count(v);
@@ -237,6 +283,12 @@ vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc) {
         c.data = md_alloc(alloc, bytes);
         memcpy(c.data, v->data, bytes);
         if (v->dtype == VIAL_DT_STR) for (size_t i = 0; i < n; ++i) ((str_t*)c.data)[i] = str_copy(((const str_t*)v->data)[i], alloc);
+        if (v->dtype == VIAL_DT_DRAWING) {
+            for (size_t i = 0; i < n; ++i) {
+                const vial_drawing_t* d = ((const vial_drawing_t**)v->data)[i];
+                ((const vial_drawing_t**)c.data)[i] = d ? vial_drawing_make(d->prims, d->count, alloc) : NULL;
+            }
+        }
     }
     if (v->missing) {
         const size_t words = (n + 63) / 64;
@@ -249,6 +301,11 @@ vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc) {
         vial_val_t* el = md_alloc(alloc, v->num_elems * sizeof(vial_val_t));
         for (uint32_t i = 0; i < v->num_elems; ++i) el[i] = vial_val_copy(&v->elems[i], alloc);
         c.elems = el;
+    }
+    if (v->drawn) {
+        vial_val_t* d = md_alloc(alloc, sizeof(vial_val_t));
+        *d = vial_val_copy(v->drawn, alloc);
+        c.drawn = d;
     }
     return c;
 }

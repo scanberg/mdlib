@@ -703,6 +703,286 @@ UTEST(vial_ir, eval_aggregate) {
     md_arena_allocator_destroy(alloc);
 }
 
+// What hover draws: the drawing shown() attached, kept through names and calls; built-ins that draw themselves; and
+// values by their type
+UTEST(vial_ir, draw) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 3);
+    const md_system_state_t* st = vial_test_state('P');
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* src =
+        "ca = particles(name='CA')\n"
+        "d  = distance(ca[0], ca[1])\n"
+        "ang = angle(ca[0], ca[1], ca[2])\n"
+        "tor = dihedral(ca[0], ca[1], ca[2], ca[3])\n"
+        "w  = within(4.0, of=ca[0])\n"
+        "p  = ca.xyz\n"
+        "n  = count(ca)\n"
+        "both = line(ca[0], ca[1], label='x') + sphere(ca[2], 2.0)\n"
+        "rs = residues()\n"
+        "dc = distance(rs[0:3], ca[4], between='closest')\n"
+        "def ends(s: set):\n"
+        "    u = s[0]\n"
+        "    v = s[-1]\n"
+        "    q = distance(u, v)\n"
+        "    return shown(q, marker(u) + marker(v))\n"
+        "e = ends(ca)\n"
+        "f = e * 2.0\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    {
+        const md_vial_diagnostic_t* dg;
+        const size_t nd = md_vial_diagnostics(prog, &dg);
+        for (size_t i = 0; i < nd; ++i) if (dg[i].severity == MD_VIAL_SEVERITY_ERROR) printf("%s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    }
+    #define AT(text, plus) ((uint32_t)(strstr(src, text) - src) + (plus))
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 0, .state = st, .element = -1};
+    md_vial_drawing_t dr;
+
+    // A set: its particles, and they are the CA atoms
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("particles(", 9), alloc));
+    ASSERT_EQ(1u, dr.num_groups);
+    const uint32_t* ca = dr.atoms + dr.groups[0].beg;
+    const uint32_t nca = dr.groups[0].end - dr.groups[0].beg;
+    ASSERT_GT(nca, 4u);
+    const float* x = (const float*)st->xyz;
+    #define XYZ(atom, k) x[3 * (atom) + (k)]
+
+    // distance: the prelude's shown line, labelled with the distance in Å
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("distance(ca[0]", 8), alloc));
+    ASSERT_EQ(1u, dr.num_prims);
+    EXPECT_EQ((int)MD_VIAL_PRIM_LINE, (int)dr.prims[0].kind);
+    for (int k = 0; k < 3; ++k) { EXPECT_EQ(XYZ(ca[0], k), dr.prims[0].p[0][k]); EXPECT_NEAR(XYZ(ca[1], k), dr.prims[0].p[1][k], 1e-4f); }
+    ASSERT_EQ(1u, dr.num_labels);
+    float len = 0;
+    for (int k = 0; k < 3; ++k) len += (dr.prims[0].p[1][k] - dr.prims[0].p[0][k]) * (dr.prims[0].p[1][k] - dr.prims[0].p[0][k]);
+    EXPECT_NEAR(sqrtf(len), dr.labels[0].value, 1e-4);
+    EXPECT_FALSE(md_unit_is_none(dr.labels[0].unit));
+    EXPECT_GT(dr.labels[0].text.len, 4u);
+    // The name it is bound to draws the same
+    md_vial_drawing_t by_name;
+    ASSERT_TRUE(md_vial_draw(&by_name, &desc, AT("d  =", 0), alloc));
+    EXPECT_EQ(1u, by_name.num_prims);
+
+    // Moved coordinates move the drawing: values per frame come from the state given
+    {
+        md_system_state_t moved = {.alloc = alloc};
+        md_system_state_copy(&moved, st);
+        for (size_t i = 0; i < moved.num_atoms; ++i) moved.xyz[i].x += 10.0f;
+        md_vial_draw_desc_t d2 = desc;
+        d2.state = &moved;
+        md_vial_drawing_t m;
+        ASSERT_TRUE(md_vial_draw(&m, &d2, AT("distance(ca[0]", 8), alloc));
+        ASSERT_EQ(1u, m.num_prims);
+        EXPECT_NEAR(XYZ(ca[0], 0) + 10.0f, m.prims[0].p[0][0], 1e-4f);
+    }
+
+    // angle: an arc at the vertex; dihedral: the two planes and a label
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("angle(", 5), alloc));
+    ASSERT_EQ(1u, dr.num_prims);
+    EXPECT_EQ((int)MD_VIAL_PRIM_ARC, (int)dr.prims[0].kind);
+    for (int k = 0; k < 3; ++k) EXPECT_EQ(XYZ(ca[1], k), dr.prims[0].p[0][k]);
+    EXPECT_EQ(1u, dr.num_labels);
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("dihedral(", 8), alloc));
+    ASSERT_EQ(3u, dr.num_prims);
+    EXPECT_EQ((int)MD_VIAL_PRIM_DISK, (int)dr.prims[0].kind);
+    EXPECT_EQ((int)MD_VIAL_PRIM_DISK, (int)dr.prims[1].kind);
+    EXPECT_EQ((int)MD_VIAL_PRIM_ARC, (int)dr.prims[2].kind);
+    EXPECT_EQ(1u, dr.num_labels);
+    {
+        // The arc's arms are at right angles to the axis, and the angle between them is the dihedral's
+        const float* c = dr.prims[2].p[0];
+        float ax[3], u[3], v[3];
+        for (int k = 0; k < 3; ++k) { ax[k] = XYZ(ca[2], k) - XYZ(ca[1], k); u[k] = dr.prims[2].p[1][k] - c[k]; v[k] = dr.prims[2].p[2][k] - c[k]; }
+        const float uu = sqrtf(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]), vv = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        EXPECT_NEAR(0.0f, (u[0] * ax[0] + u[1] * ax[1] + u[2] * ax[2]) / uu, 1e-3f);
+        EXPECT_NEAR(0.0f, (v[0] * ax[0] + v[1] * ax[1] + v[2] * ax[2]) / vv, 1e-3f);
+        const double deg = acos((u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (uu * vv)) * 180.0 / 3.14159265358979;
+        EXPECT_NEAR(fabs(dr.labels[0].value), deg, 0.05);
+    }
+
+    // within: a sphere around the point, the particles in it highlighted
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("within(", 6), alloc));
+    ASSERT_EQ(1u, dr.num_prims);
+    EXPECT_EQ((int)MD_VIAL_PRIM_SPHERE, (int)dr.prims[0].kind);
+    EXPECT_EQ(4.0f, dr.prims[0].r);
+    ASSERT_EQ(1u, dr.num_groups);
+    bool has = false;
+    for (uint32_t i = dr.groups[0].beg; i < dr.groups[0].end; ++i) has |= dr.atoms[i] == ca[0];
+    EXPECT_TRUE(has);
+
+    // Points as markers; a number draws nothing
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT(".xyz", 1), alloc));
+    EXPECT_EQ((size_t)nca, dr.num_prims);
+    EXPECT_EQ((size_t)nca, dr.num_elements);
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("count(", 5), alloc));
+    EXPECT_EQ(0u, dr.num_prims + dr.num_labels + dr.num_groups);
+
+    // Primitives combined, a text label
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("both", 0), alloc));
+    ASSERT_EQ(2u, dr.num_prims);
+    EXPECT_EQ((int)MD_VIAL_PRIM_LINE, (int)dr.prims[0].kind);
+    EXPECT_EQ((int)MD_VIAL_PRIM_SPHERE, (int)dr.prims[1].kind);
+    ASSERT_EQ(1u, dr.num_labels);
+    EXPECT_TRUE(str_eq(dr.labels[0].text, STR_LIT("x")));
+    EXPECT_TRUE(isnan(dr.labels[0].value));
+
+    // A def mapped over groups: one line per element, and one element alone
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("distance(rs", 8), alloc));
+    EXPECT_EQ(3u, dr.num_elements);
+    EXPECT_EQ(3u, dr.num_prims);
+    for (size_t i = 0; i < dr.num_prims; ++i) EXPECT_EQ((uint32_t)i, dr.prims[i].element);
+    desc.element = 1;
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("distance(rs", 8), alloc));
+    ASSERT_EQ(1u, dr.num_prims);
+    EXPECT_EQ(1u, dr.prims[0].element);
+    desc.element = -1;
+
+    // A script's def: what it attached, through the call and the name; an operation on it is drawn by its type
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("ends(ca)", 4), alloc));
+    ASSERT_EQ(2u, dr.num_prims);
+    for (int k = 0; k < 3; ++k) { EXPECT_EQ(XYZ(ca[0], k), dr.prims[0].p[0][k]); EXPECT_EQ(XYZ(ca[nca - 1], k), dr.prims[1].p[0][k]); }
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("e = ", 0), alloc));
+    EXPECT_EQ(2u, dr.num_prims);
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("e * 2", 2), alloc));
+    EXPECT_EQ(0u, dr.num_prims);
+
+    // A frame of the run, read: the line is as long as the distance published for that frame
+    {
+        md_vial_eval_t* ev = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+        ASSERT_TRUE(ev != NULL);
+        EXPECT_TRUE(md_vial_eval_run(ev));
+        const md_attribute_t* ad = md_attributes_find(md_vial_eval_attributes(ev), STR_LIT("script/d"));
+        ASSERT_TRUE(ad != NULL);
+        md_vial_draw_desc_t d3 = {.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .eval = ev, .element = -1};
+        ASSERT_TRUE(md_vial_draw(&dr, &d3, AT("distance(ca[0]", 8), alloc));
+        ASSERT_EQ(1u, dr.num_labels);
+        EXPECT_NEAR(((const float*)ad->data)[3], dr.labels[0].value, 1e-5);
+        md_vial_eval_free(ev);
+    }
+    #undef XYZ
+    #undef AT
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Completion at the cursor, written | in the source
+static md_vial_completions_t vial_ir__complete(const char* marked, md_allocator_i* alloc) {
+    const char* bar = strchr(marked, '|');
+    char* src = md_alloc(alloc, strlen(marked));
+    const size_t at = (size_t)(bar - marked);
+    memcpy(src, marked, at);
+    strcpy(src + at, bar + 1);
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = vial_test_system('P'), .run = STR_LIT("run")}, alloc);
+    md_vial_completions_t c;
+    md_vial_complete(&c, prog, (uint32_t)at, alloc);
+    // Strings are alloc's: the program may go
+    md_vial_program_free(prog);
+    return c;
+}
+
+static const md_vial_completion_t* vial_ir__find(const md_vial_completions_t* c, const char* label) {
+    for (size_t i = 0; i < c->count; ++i) if (str_eq(c->items[i].label, str_from_cstr(label))) return &c->items[i];
+    return NULL;
+}
+
+UTEST(vial_ir, editor) {
+    ASSERT_TRUE(vial_test_system('P') != NULL);
+    ASSERT_GT(vial_test_run('P'), 0);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    // Lists for highlighting, and names
+    EXPECT_EQ(35u, md_vial_keywords(NULL, 0));
+    str_t names[512];
+    const size_t nb = md_vial_builtin_names(names, 512);
+    ASSERT_LT(nb, 512u);
+    bool has_particles = false, has_distance = false, has_hidden = false;
+    for (size_t i = 0; i < nb; ++i) {
+        has_particles |= str_eq(names[i], STR_LIT("particles"));
+        has_distance |= str_eq(names[i], STR_LIT("distance"));
+        has_hidden |= names[i].len && names[i].ptr[0] == '_';
+    }
+    EXPECT_TRUE(has_particles && has_distance && !has_hidden);
+    EXPECT_TRUE(md_vial_name_valid(STR_LIT("my_sel2")));
+    EXPECT_TRUE(md_vial_name_valid(STR_LIT("_x")));
+    EXPECT_FALSE(md_vial_name_valid(STR_LIT("def")));
+    EXPECT_FALSE(md_vial_name_valid(STR_LIT("particles")));
+    EXPECT_FALSE(md_vial_name_valid(STR_LIT("distance")));
+    EXPECT_FALSE(md_vial_name_valid(STR_LIT("2a")));
+    EXPECT_FALSE(md_vial_name_valid(STR_LIT("a-b")));
+    EXPECT_TRUE(str_eq(STR_LIT("energy/total"), md_vial_attr_path(STR_LIT("run"), STR_LIT("run/energy/total"))));
+    EXPECT_EQ(0u, md_vial_attr_path(STR_LIT("run"), STR_LIT("runs/x")).len);
+
+    md_vial_completions_t c;
+    const md_vial_completion_t* it;
+    // A name being typed: what starts so, names before keywords
+    c = vial_ir__complete("ca = particles(name='CA')\nu = ce|", alloc);
+    EXPECT_TRUE(str_eq(c.prefix, STR_LIT("ce")));
+    EXPECT_TRUE(vial_ir__find(&c, "centroid") != NULL);
+    for (size_t i = 0; i < c.count; ++i) EXPECT_TRUE(c.items[i].label.len >= 2 && !strncmp(c.items[i].label.ptr, "ce", 2));
+    c = vial_ir__complete("a1 = 1\nb = a|\na2 = 2\n", alloc);
+    ASSERT_TRUE((it = vial_ir__find(&c, "a1")) != NULL);
+    EXPECT_EQ((int)MD_VIAL_COMPLETION_VARIABLE, (int)it->kind);
+    EXPECT_TRUE(vial_ir__find(&c, "a2") == NULL);     // bound after
+    EXPECT_TRUE(vial_ir__find(&c, "b") == NULL);      // being bound
+    ASSERT_TRUE((it = vial_ir__find(&c, "and")) != NULL);
+    EXPECT_EQ((int)MD_VIAL_COMPLETION_KEYWORD, (int)it->kind);
+    EXPECT_EQ((int)MD_VIAL_COMPLETION_VARIABLE, (int)c.items[0].kind);
+    // In a def: its parameters and locals; not outside it
+    c = vial_ir__complete("def f(s: set, scale=1.0):\n    inner = count(s)\n    return in|\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "inner") != NULL);
+    EXPECT_TRUE(vial_ir__find(&c, "in") != NULL);
+    c = vial_ir__complete("def f(s: set, scale=1.0):\n    inner = count(s)\n    return inner\nq = in|\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "inner") == NULL);
+    c = vial_ir__complete("def f(s: set, scale=1.0):\n    return s|\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "scale") != NULL);
+
+    // The parameters of the call around the cursor: a prelude def's, a script def's, a built-in's; not one given
+    c = vial_ir__complete("ca = particles(name='CA')\nd = distance(ca[0], ca[1], |)\n", alloc);
+    ASSERT_TRUE((it = vial_ir__find(&c, "between")) != NULL);
+    EXPECT_TRUE(str_eq(it->text, STR_LIT("between=")));
+    EXPECT_EQ((int)MD_VIAL_COMPLETION_PARAMETER, (int)c.items[0].kind);
+    c = vial_ir__complete("def f(s: set, scale=1.0):\n    return count(s) * scale\nx = f(particles(), sc|)\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "scale") != NULL && vial_ir__find(&c, "scale")->kind == MD_VIAL_COMPLETION_PARAMETER);
+    c = vial_ir__complete("x = histogram(particles().x, axis='frame', |)\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "bins") != NULL);
+    EXPECT_TRUE(vial_ir__find(&c, "axis") == NULL);
+    c = vial_ir__complete("ca = particles(name='CA')\nd = angle(ca[0], ca[1], |)\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "c") != NULL);
+
+    // A selector's keywords, those of its level
+    c = vial_ir__complete("x = particles(res|)\n", alloc);
+    ASSERT_TRUE((it = vial_ir__find(&c, "resname")) != NULL);
+    EXPECT_EQ((int)MD_VIAL_COMPLETION_PARAMETER, (int)it->kind);
+    c = vial_ir__complete("x = residues(|)\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "resname") == NULL);
+    EXPECT_TRUE(vial_ir__find(&c, "id") != NULL);
+
+    // After a dot: properties
+    c = vial_ir__complete("ca = particles(name='CA')\nd = ca.c|\n", alloc);
+    ASSERT_TRUE((it = vial_ir__find(&c, "com")) != NULL);
+    EXPECT_EQ((int)MD_VIAL_COMPLETION_PROPERTY, (int)it->kind);
+    EXPECT_TRUE(vial_ir__find(&c, "count") == NULL || vial_ir__find(&c, "count")->kind == MD_VIAL_COMPLETION_PROPERTY);
+
+    // In a string: the system's values for the keyword, and the run's attributes for attr()
+    c = vial_ir__complete("x = particles(resname='|')\n", alloc);
+    ASSERT_TRUE((it = vial_ir__find(&c, "ALA")) != NULL);
+    EXPECT_EQ((int)MD_VIAL_COMPLETION_VALUE, (int)it->kind);
+    c = vial_ir__complete("x = particles(name='C|')\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL && vial_ir__find(&c, "CB") != NULL);
+    EXPECT_TRUE(vial_ir__find(&c, "N") == NULL);
+    EXPECT_TRUE(str_eq(c.prefix, STR_LIT("C")));
+    c = vial_ir__complete("x = particles('C|')\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL);
+    c = vial_ir__complete("x = residues(kind='a|')\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "amino_acid") != NULL);
+    c = vial_ir__complete("w = attr('|')\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "time") != NULL);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, contraction) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     // Fused: a product used once, floats throughout. Not fused: ints, and a product that is also published.

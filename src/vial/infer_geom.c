@@ -293,6 +293,7 @@ typedef vx_param_t param_t;
 
 // Binds a call's arguments to parameters by position, then by keyword; reports E0202 and E0204. Every argument is typed.
 static bool bind(infer_t* x, vial_node_id call, const char* fname, const param_t* params, uint32_t np, vial_node_id* args) {
+    vx_record_sig(x, call, params, np);
     bool ok = true;
     uint32_t pos = 0;
     memset(args, 0, np * sizeof(vial_node_id));
@@ -460,6 +461,7 @@ static T call_angle(infer_t* x, vial_node_id call, bool dihedral) {
     const char* fname = dihedral ? "dihedral" : "angle";
     const uint32_t n = dihedral ? 4 : 3;
     static const param_t params4[] = {{"a", VK_POINT, true}, {"b", VK_POINT, true}, {"c", VK_POINT, true}, {"d", VK_POINT, true}};
+    vx_record_sig(x, call, params4, n);     // what completion offers while the call is being written
     uint32_t num_pos = 0;
     for (uint32_t i = 1; i < vx_num_children(x, call); ++i) num_pos += vx_child(x, call, i) && vx_kind(x, vx_child(x, call, i)) != VIAL_N_KWARG;
     T loop;

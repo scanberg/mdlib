@@ -553,6 +553,7 @@ bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (str_eq(name, STR_LIT("shown"))) {
         // shown(x, d) is x, with d attached for hover. When x failed, d is not checked: one mistake, one diagnostic.
         static const vx_param_t params[] = {{"x", VX_KIND_WHOLE, true}, {"d", VX_KIND_WHOLE, true}};
+        vx_record_sig(x, call, params, 2);
         vial_node_id first = 0, second = 0;
         uint32_t pos = 0;
         for (uint32_t i = 1; i < vx_num_children(x, call); ++i) {

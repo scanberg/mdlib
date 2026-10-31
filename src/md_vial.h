@@ -13,6 +13,7 @@
 // v1 (md_script.h) is untouched; a workspace uses one language or the other.
 
 #include <core/md_str.h>
+#include <core/md_unit.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -24,6 +25,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_system_state_t;
 
 // A range of bytes in the source, [beg, end)
 typedef struct md_vial_span_t {
@@ -153,6 +155,51 @@ typedef struct md_vial_hover_t {
 
 bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out);
 
+// ### EDITOR ###
+
+// The words the language reserves, every keyword of Python, for highlighting: how many there are, and up to cap of
+// them into out, which may be NULL
+size_t md_vial_keywords(str_t* out, size_t cap);
+
+// Every name a script reads without binding it, for highlighting: the built-ins, the predefined sets and the prelude's
+// defs, not those starting with _. How many there are, and up to cap of them into out, which may be NULL.
+size_t md_vial_builtin_names(str_t* out, size_t cap);
+
+// Whether a script, or a stored selection it reads, may bind name: an identifier that is no keyword and no built-in name
+bool md_vial_name_valid(str_t name);
+
+// The path attr() reads an attribute by, in a script evaluated over run: its name past "<run>/", empty when the
+// attribute is not one of the run's
+str_t md_vial_attr_path(str_t run, str_t attribute_name);
+
+typedef enum md_vial_completion_kind_t {
+    MD_VIAL_COMPLETION_KEYWORD = 0,
+    MD_VIAL_COMPLETION_FUNCTION,    // a built-in, a selector or a def, to call
+    MD_VIAL_COMPLETION_CONSTANT,    // a predefined set, such as protein
+    MD_VIAL_COMPLETION_VARIABLE,    // a name the script binds where the cursor is
+    MD_VIAL_COMPLETION_PARAMETER,   // a parameter of the call at the cursor, as name=
+    MD_VIAL_COMPLETION_PROPERTY,    // after a dot: .xyz, .com, and methods
+    MD_VIAL_COMPLETION_VALUE,       // inside a string: a value from the system, such as a residue name for resname=
+} md_vial_completion_kind_t;
+
+typedef struct md_vial_completion_t {
+    str_t                       label;  // what to show, and match what has been typed against
+    str_t                       text;   // what replaces the span
+    md_vial_completion_kind_t   kind;
+} md_vial_completion_t;
+
+typedef struct md_vial_completions_t {
+    md_vial_span_t          span;       // the bytes a completion replaces
+    str_t                   prefix;     // what has been typed of it
+    md_vial_completion_t*   items;      // those that start with prefix: parameters, names, then keywords; each once
+    size_t                  count;
+} md_vial_completions_t;
+
+// What may be written at a byte offset of prog's source, from what prog knows there: the names in scope, the
+// parameters of the call around the cursor, and inside a string a selector keyword's values in the system prog was
+// compiled against, or attr()'s paths in its run. Everything from alloc.
+bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog, uint32_t cursor, struct md_allocator_i* alloc);
+
 // ### EVALUATION ###
 // A program evaluated over the frames of one run: its static part once, then sweeps over the frames in order, as many
 // as its values need (see the reference's passes). The published values become attributes: "script/<name>", with the
@@ -160,8 +207,8 @@ bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover
 // are recipes and are not published as values. The interpreter is the reference of every other backend.
 //
 // Frames are evaluated on several threads when asked, with the same bits as on one: each frame is computed alone, and
-// the trajectory operations after a sweep run on one thread in a fixed order. Taking over what an earlier evaluation
-// computed comes with viamd's integration.
+// the trajectory operations after a sweep run on one thread in a fixed order. An evaluation made from an earlier one
+// takes over what that one computed alike (md_vial_eval_create_from).
 
 typedef struct md_vial_eval_t md_vial_eval_t;
 
@@ -245,6 +292,75 @@ size_t md_vial_eval_aggregate(const md_vial_eval_t* eval, str_t name, const uint
 // expression there, one inside a def's body, a value over the trajectory not (yet) computed, or one that fails or is
 // past the budget.
 bool md_vial_eval_hover(const md_vial_eval_t* eval, uint32_t offset, int64_t frame, char* buf, size_t cap);
+
+// ### DRAWING ###
+// What hover draws of an expression, as the reference's Drawing section has it: the drawing a built-in or a def
+// attached with shown(), else the value by its type, a set or an array of sets as its particles, points as markers.
+// In mdlib's own layout, which viamd converts to its vertices; no colours or styles.
+
+typedef enum md_vial_prim_kind_t {
+    MD_VIAL_PRIM_MARKER = 0,    // p[0]
+    MD_VIAL_PRIM_LINE,          // p[0] to p[1], which is the image of the end nearest p[0], so no segment spans the box
+    MD_VIAL_PRIM_ARROW,         // p[0] to p[1], the head at p[1]
+    MD_VIAL_PRIM_SPHERE,        // centre p[0], radius r
+    MD_VIAL_PRIM_ARC,           // the angle at p[0] from p[1] to p[2], both nearest images
+    MD_VIAL_PRIM_DISK,          // centre p[0], unit normal p[1], radius r: a plane
+} md_vial_prim_kind_t;
+
+typedef struct md_vial_prim_t {
+    md_vial_prim_kind_t kind;
+    uint32_t            element;    // the element of the value it draws, in row-major order; 0 for a scalar
+    float               p[3][3];    // Å
+    float               r;
+} md_vial_prim_t;
+
+// Text at a point: a number with its unit, which viamd may format in units of its own, or a string (value NaN)
+typedef struct md_vial_label_t {
+    float       pos[3];
+    uint32_t    element;
+    str_t       text;       // always set: the number with two decimals and its unit, or the string
+    double      value;
+    md_unit_t   unit;
+} md_vial_label_t;
+
+// Particles highlighted: atoms[beg, end) of the drawing, ascending
+typedef struct md_vial_group_t {
+    uint32_t    element;
+    uint32_t    beg;
+    uint32_t    end;
+} md_vial_group_t;
+
+typedef struct md_vial_drawing_t {
+    md_vial_prim_t*     prims;
+    size_t              num_prims;
+    md_vial_label_t*    labels;
+    size_t              num_labels;
+    md_vial_group_t*    groups;
+    size_t              num_groups;
+    uint32_t*           atoms;          // the groups' particles: indices of the system's atoms
+    size_t              num_elements;   // of the value drawn
+    size_t              num_omitted;    // primitives and labels left out past 10,000
+} md_vial_drawing_t;
+
+typedef struct md_vial_draw_desc_t {
+    const md_vial_program_t*        prog;
+    const struct md_system_t*       sys;    // the system prog was compiled against
+    str_t                           run;    // the run: at() reads its frames, and the frame drawn when state is NULL
+    int64_t                         frame;  // the frame shown: frame(), time(), and a value over the trajectory
+    // The coordinates shown, which may be interpolated or recentred: values per frame are computed from them. NULL
+    // reads frame from the run.
+    const struct md_system_state_t* state;
+    // An evaluation of prog over the run, for values over the trajectory once md_vial_eval_run has finished; may be
+    // NULL, and those are then not drawn
+    const md_vial_eval_t*           eval;
+    int64_t                         element;    // the element of an array drawn alone; -1 for every element
+} md_vial_draw_desc_t;
+
+// What the expression at a byte offset of the source draws, its arrays from alloc. The expression is computed alone,
+// as hover computes it, with its own reader and interpreter, so it may run while md_vial_eval_run does. False when
+// there is none there, it fails, or it is over the trajectory and not computed; true with nothing in it when the
+// value draws nothing, such as a number, which hover shows as text.
+bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint32_t offset, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

@@ -53,6 +53,9 @@ typedef struct vial_types_t {
     uint32_t*       sym_ssa;    // md_array by symbol
     uint32_t*       bind_of;    // md_array by node id: a built-in call's bound arguments, index + 1 into binds
     struct vx_bound_t* binds;   // md_array
+    // The script's own built-in calls, by node id of its tree: the parameters the call binds against, recorded before
+    // its arguments are, so that a call being typed has them; for completion
+    struct vx_sig_t* sigs;      // md_array, from the top level's
 } vial_types_t;
 
 // Types the top-level statements of c's tree in order. Runs after vial_check_names.

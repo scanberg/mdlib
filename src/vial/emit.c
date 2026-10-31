@@ -92,6 +92,19 @@ void vx_frame_set_ssa(infer_t* x, uint32_t sym, vial_ssa_t v) {
     f->sym_ssa[*s] = v;
 }
 
+void vx_record_sig(infer_t* x, vial_node_id call, const vx_param_t* params, uint32_t np) {
+    if (!x->top || !x->c || x->t != x->c->tree) return;
+    vial_types_t* t = x->top;
+    const size_t nn = md_array_size(x->t->nodes);
+    if (call >= nn) return;
+    const size_t had = md_array_size(t->sigs);
+    if (had < nn) {
+        md_array_resize(t->sigs, nn, x->alloc);
+        memset(t->sigs + had, 0, (nn - had) * sizeof(vx_sig_t));
+    }
+    t->sigs[call] = (vx_sig_t){.params = params, .np = np};
+}
+
 void vx_record_bind(infer_t* x, vial_node_id call, const vx_param_t* params, uint32_t np, const vial_node_id* args) {
     if (!x->ir || !x->out->bind_of || np > 12) return;
     vx_bound_t b = {.params = params, .np = np};

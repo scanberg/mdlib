@@ -86,6 +86,9 @@ typedef struct vial_interp_t {
     // Tests: only the plain paths, which the fast ones must agree with bit for bit: a map's calls one by one, never
     // batched for a built-in; closest and farthest pairs by every pair; within() by a spatial search
     bool                        plain;
+    // Drawing: shown(x, d) gives x with d attached (vial_val_t.drawn), which names, returns and calls keep and every
+    // other operation drops, and a map gathers its calls' drawings. For the IR as lowered, where shown() still is.
+    bool                        draw;
     // Frames in parallel (vial_interp_run): interpreters of the same IR, each with a frame reader and a vial_sys of its
     // own, which take chunks of a sweep's frames through parallel_for; the static part and what follows a sweep stay
     // here. None: every frame here, in order. A sweep with a fold runs here too, its frames in order.
@@ -149,6 +152,7 @@ typedef struct vial_kctx_t {
     const vial_type_t*  type;       // the result's type
     md_allocator_i*     alloc;      // where the result's data goes
     int64_t             map_index;  // in a built-in mapped by its kinds: the call's position, for distinct=; else -1
+    const void*         core;       // what a built-in's per-element function needs beyond its arguments
 } vial_kctx_t;
 
 bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...);
@@ -194,6 +198,10 @@ bool vial_k_matmul(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, via
 
 // A built-in, its arguments by parameter (NULL when not given) and the parameters' names
 bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out);
+// What built-in name draws of its own with these arguments and its value: a drawing into out, false when it draws
+// nothing of its own and is drawn by its type
+bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n,
+                         const vial_val_t* result, vial_val_t* out);
 
 // A value as dtype, converted elementwise; the same value when it already is
 vial_val_t vial_val_as(const vial_val_t* a, uint8_t dtype, md_allocator_i* alloc);

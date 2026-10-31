@@ -349,12 +349,13 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
     size_t count = 1;
     for (uint8_t d = 0; d < lnd; ++d) count *= ldims[d];
     if (!vial_k_room(&k, count)) return false;
-    const int batched = eval_map_pairs(in, op, av, mapping, ldims, lnd, count, out, alloc);
+    const int batched = in->draw ? -1 : eval_map_pairs(in, op, av, mapping, ldims, lnd, count, out, alloc);
     if (batched >= 0) return batched == 1;
     const vial_ir_region_t* r = &in->ir->regions[op->region[0]];
     const bool filtered = op->sub == VIAL_MAP_FILTERED;
     const vial_type_t* rt = k.type;
-    md_allocator_i* scratch = map_scratch(in);
+    md_allocator_i* scratch = in->draw ? NULL : map_scratch(in);     // drawing: a call's drawing outlives the call
+    const vial_drawing_t** drawn = NULL;                                // drawing: each call's, gathered
     md_allocator_i* ea = scratch ? scratch : alloc;
     const size_t entry = scratch ? md_vm_arena_get_pos(scratch) : 0;
     in->map_depth += 1;
@@ -365,7 +366,7 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
     if (filtered) { o.ndim = 1; o.dims[0] = (uint32_t)count; }
     else { o.ndim = lnd; memcpy(o.dims, ldims, lnd * sizeof(uint32_t)); }
     const uint8_t outer_nd = o.ndim;
-    const bool has_data = o.dtype != VIAL_DT_SET && o.dtype != VIAL_DT_TUPLE && o.dtype != VIAL_DT_NONE && o.dtype != VIAL_DT_DRAWING;
+    const bool has_data = o.dtype != VIAL_DT_SET && o.dtype != VIAL_DT_TUPLE && o.dtype != VIAL_DT_NONE;
     bool shaped = false;
     size_t kept = 0;
     uint32_t* set_off = NULL;   // md_array in alloc: an array of sets, gathered call by call
@@ -429,6 +430,18 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
             } else if (has_data) {
                 if (!place(&k, &o, kept, y, ea)) { ok = false; break; }
             }
+            if (in->draw && y->drawn && y->drawn->dtype == VIAL_DT_DRAWING && y->drawn->data) {
+                // One drawing per call: what the call's value drew, every element of it
+                if (!drawn) {
+                    drawn = md_alloc(alloc, count * sizeof(*drawn));
+                    memset(drawn, 0, count * sizeof(*drawn));
+                }
+                const size_t m = vial_val_count(y->drawn);
+                const vial_drawing_t* const* src = y->drawn->data;
+                const vial_drawing_t* acc = m == 1 ? src[0] : NULL;
+                for (size_t q = 0; m != 1 && q < m; ++q) acc = vial_drawing_concat(acc, src[q], alloc);
+                drawn[kept] = acc;
+            }
             kept += 1;
         }
         if (scratch) md_vm_arena_set_pos_back(scratch, mark);
@@ -457,11 +470,19 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
         if (o.ndim == 0) s->single = true;
         o.sets = s;
     }
+    if (drawn) {
+        // The calls' drawings, over the map's own dimensions
+        vial_val_t* dv = md_alloc(alloc, sizeof(vial_val_t));
+        *dv = (vial_val_t){.dtype = VIAL_DT_DRAWING, .ndim = outer_nd, .data = (void*)drawn};
+        memcpy(dv->dims, o.dims, outer_nd * sizeof(uint32_t));
+        if (filtered) dv->dims[0] = (uint32_t)kept;
+        o.drawn = dv;
+    }
     *out = o;
     return true;
 }
 
-static bool eval_op(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) {
+static bool eval_op_raw(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) {
     const vial_ir_t* ir = in->ir;
     const vial_ir_op_t* op = &ir->ops[opi];
     vial_kctx_t k = {.in = in, .op = op, .type = op->num_results ? &ir->values[op->result].type : NULL, .alloc = alloc};
@@ -536,6 +557,55 @@ static bool eval_op(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) {
     default:
         return vial_rt_fail(&k, "R0103", "%s is not evaluated yet", vial_ir_kind_str((vial_ir_kind_t)op->kind));
     }
+}
+
+// An op, and while drawing, what it does to drawings: shown() attaches one; a name, a call's return, an if's branch
+// and a tuple's element keep the drawing of what they pass on; anything else computes a new value, drawn by its type
+static bool eval_op(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) {
+    if (!in->draw) return eval_op_raw(in, opi, alloc);
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_op_t* op = &ir->ops[opi];
+    if (op->kind == VIAL_IR_BUILTIN && op->num_args >= 2 && !strcmp(vial_builtin_at(op->aux)->name, "shown")) {
+        const vial_ssa_t x = ir->args[op->arg_beg], d = ir->args[op->arg_beg + 1];
+        if (!x) return eval_op_raw(in, opi, alloc);
+        vial_val_t* out = &in->vals[op->result];
+        *out = in->vals[x];
+        if (d && in->state[d] && in->vals[d].dtype == VIAL_DT_DRAWING) {
+            vial_val_t* dv = md_alloc(alloc, sizeof(vial_val_t));
+            *dv = in->vals[d];
+            dv->drawn = NULL;
+            out->drawn = dv;
+        }
+        return true;
+    }
+    if (!eval_op_raw(in, opi, alloc)) return false;
+    if (op->kind == VIAL_IR_BUILTIN && op->num_results == 1) {
+        const char* bn = vial_builtin_at(op->aux)->name;
+        if (!strcmp(bn, "angle") || !strcmp(bn, "dihedral") || !strcmp(bn, "within")) {
+            vial_kctx_t k = {.in = in, .op = op, .type = &ir->values[op->result].type, .alloc = alloc, .map_index = -1};
+            const vial_val_t* av[64];
+            for (uint32_t i = 0; i < op->num_args && i < 64; ++i) av[i] = ir->args[op->arg_beg + i] ? &in->vals[ir->args[op->arg_beg + i]] : NULL;
+            vial_val_t d;
+            vial_val_t* res = &in->vals[op->result];
+            const uint32_t nerr = (uint32_t)md_array_size(in->errors);
+            const bool failed = in->failed;
+            const vial_rt_error_t first = in->error;
+            if (vial_k_builtin_draw(&k, bn, av, op->num_args ? ir->names + op->arg_beg : NULL, op->num_args, res, &d)) {
+                vial_val_t* dv = md_alloc(alloc, sizeof(vial_val_t));
+                *dv = d;
+                res->drawn = dv;
+            }
+            // What fails to draw is no error of the value's
+            if (md_array_size(in->errors) > nerr) md_array_shrink(in->errors, nerr);
+            in->failed = failed;
+            in->error = first;
+            return true;
+        }
+    }
+    const bool keeps = op->kind == VIAL_IR_CALL || op->kind == VIAL_IR_APPLY || op->kind == VIAL_IR_IF || op->kind == VIAL_IR_ELEM ||
+                       op->kind == VIAL_IR_MAP;
+    if (!keeps) for (uint32_t k = 0; k < op->num_results; ++k) in->vals[op->result + k].drawn = NULL;
+    return true;
 }
 
 static bool eval_region(vial_interp_t* in, uint32_t region, const vial_val_t* params, vial_val_t* yields, uint32_t max_yields,

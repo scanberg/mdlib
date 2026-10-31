@@ -205,11 +205,16 @@ double vial_k_arith(uint16_t op, uint8_t dtype, double a, double b) {
 bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_val_t* b, vial_val_t* out) {
     const uint8_t dt = k->type->dtype;
     if (dt == VIAL_DT_DRAWING) {
-        // Drawings combine: one per element of the broadcast shape
+        // Drawings combine: one per element of the broadcast shape, a's primitives then b's
+        if (a->dtype != VIAL_DT_DRAWING || b->dtype != VIAL_DT_DRAWING) return vial_rt_fail(k, "R0103", "+ of a drawing and what is not one");
         bc_t bc;
         if (!bc_init(k, &bc, a, b, NULL)) return false;
-        *out = (vial_val_t){.dtype = VIAL_DT_DRAWING, .ndim = bc.nd};
-        memcpy(out->dims, bc.dims, sizeof(bc.dims));
+        vial_val_t o; if (!vial_k_make(k, VIAL_DT_DRAWING, bc.nd, bc.dims, &o)) return false;
+        const vial_drawing_t* const* A = a->data;
+        const vial_drawing_t* const* B = b->data;
+        const vial_drawing_t** O = o.data;
+        BC_FOR(bc, O[io] = vial_drawing_concat(A ? A[ia] : NULL, B ? B[ib] : NULL, k->alloc));
+        *out = o;
         return true;
     }
     if (!is_num(a->dtype) || !is_num(b->dtype)) return vial_rt_fail(k, "R0103", "arithmetic on what is not a number");

@@ -59,6 +59,24 @@ struct md_vial_eval_t {
     void*                       parallel_user;
 };
 
+// The run's time axis, <run>/time, in ps where it has a unit, and its number of frames; NULL and 0 when it has none
+static double* run_times(const md_system_t* sys, str_t run, md_allocator_i* alloc, int64_t* num_frames) {
+    *num_frames = 0;
+    char path[256];
+    snprintf(path, sizeof(path), "%.*s/time", (int)run.len, run.ptr);
+    const md_attribute_t* time = md_attributes_find(&sys->attributes, str_from_cstr(path));
+    if (!time || time->format.rank < 1) return NULL;
+    const int64_t n = time->format.shape[0];
+    double* times = md_alloc(alloc, (n ? n : 1) * sizeof(double));
+    double f;
+    const md_unit_t unit = !md_unit_is_none(time->unit) && md_unit_conversion_factor(&f, time->unit, md_unit_picosecond()) ? md_unit_picosecond() : time->unit;
+    if (md_attribute_extract_f64(times, (size_t)n, time, md_attribute_slice_all(), unit) != (size_t)n) {
+        for (int64_t i = 0; i < n; ++i) times[i] = (double)i;
+    }
+    *num_frames = n;
+    return times;
+}
+
 static bool read_frame(md_vial_eval_t* e, md_system_extract_t** ex, md_system_state_t* state, md_allocator_i* alloc, int64_t index, vial_frame_t* out) {
     if (index < 0 || index >= e->num_frames) return false;
     if (!*ex) {
@@ -183,18 +201,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     e->run = str_copy(desc->run, arena);
     e->attributes.alloc = arena;
     // The run's frames, and their times
-    char path[256];
-    snprintf(path, sizeof(path), "%.*s/time", (int)e->run.len, e->run.ptr);
-    const md_attribute_t* time = md_attributes_find(&desc->sys->attributes, str_from_cstr(path));
-    if (time && time->format.rank >= 1) {
-        e->num_frames = time->format.shape[0];
-        e->times = md_alloc(arena, (e->num_frames ? e->num_frames : 1) * sizeof(double));
-        double f;
-        const md_unit_t unit = !md_unit_is_none(time->unit) && md_unit_conversion_factor(&f, time->unit, md_unit_picosecond()) ? md_unit_picosecond() : time->unit;
-        if (md_attribute_extract_f64(e->times, (size_t)e->num_frames, time, md_attribute_slice_all(), unit) != (size_t)e->num_frames) {
-            for (int64_t i = 0; i < e->num_frames; ++i) e->times[i] = (double)i;
-        }
-    }
+    e->times = run_times(desc->sys, e->run, arena, &e->num_frames);
     e->state = (md_system_state_t){.alloc = arena};
     md_system_state_init(&e->state, desc->sys->atom.count);
     vial_sys_init(&e->vs, desc->sys, arena);
@@ -525,6 +532,75 @@ static bool hover_load(void* user, int64_t index, vial_frame_t* out) {
     return true;
 }
 
+// One value of the IR as lowered, alone: its own interpreter, reader and view of the system
+typedef struct point_t {
+    md_allocator_i* arena;
+    hover_frames_t  h;
+    vial_sys_t      vs;
+    vial_interp_t   in;
+    bool            have_in;
+} point_t;
+
+static void point_free(point_t* pt) {
+    if (pt->have_in) vial_interp_free(&pt->in);
+    if (pt->h.ex) md_system_extract_end(pt->h.ex);
+    if (pt->arena) md_arena_allocator_destroy(pt->arena);
+    memset(pt, 0, sizeof(*pt));
+}
+
+// v at frame of the run, or at the coordinates of state when given, which are then that frame's; at most 16 million
+// entries. While drawing, what it draws is attached (vial_val_t.drawn).
+static const vial_val_t* point_eval(point_t* pt, const md_vial_program_t* prog, const md_system_t* sys, str_t run, const double* times,
+                                    int64_t num_frames, int64_t frame, const md_system_state_t* state, vial_ssa_t v, bool draw) {
+    memset(pt, 0, sizeof(*pt));
+    const vial_ir_t* ir = md_vial__ir(prog);
+    pt->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    pt->h = (hover_frames_t){.sys = sys, .run = run, .times = times, .num_frames = num_frames, .alloc = pt->arena, .state = {.alloc = pt->arena}};
+    md_system_state_init(&pt->h.state, sys->atom.count);
+    vial_sys_init(&pt->vs, sys, pt->arena);
+    if (!vial_interp_init(&pt->in, ir, &pt->vs, sys, md_get_heap_allocator())) return NULL;
+    pt->have_in = true;
+    vial_interp_t* in = &pt->in;
+    vial_interp_only(in, &v, 1);
+    in->max_elements = (size_t)1 << 24;     // hover computes at most 16 million entries
+    in->load_frame = hover_load;
+    in->load_user = &pt->h;
+    in->draw = draw;
+    // Static values first: at() reads its own frame, through the same reader
+    bool ok = vial_interp_static(in);
+    if (ok && ir->values[v].type.stage != VIAL_STAGE_STATIC) {
+        vial_frame_t fr;
+        if (state) {
+            if (state->num_atoms != sys->atom.count || !state->xyz) return NULL;
+            fr = (vial_frame_t){.xyz = (const float*)state->xyz, .num_atoms = state->num_atoms, .cell = state->unitcell, .index = frame,
+                                .time = times && frame >= 0 && frame < num_frames ? times[frame] : (double)frame};
+        } else if (!hover_load(&pt->h, frame, &fr)) {
+            return NULL;
+        }
+        ok = vial_interp_frame(in, &fr);
+    }
+    return ok ? vial_interp_value(in, v) : NULL;
+}
+
+// A value over the trajectory, from a finished evaluation, at frame when it is a series kept whole: into one
+static bool trajectory_value(const md_vial_eval_t* e, vial_ssa_t v, int64_t frame, vial_val_t* one) {
+    if (!e || !md_atomic_load64(&e->done)) return false;
+    const vial_ssa_t rv = md_vial__run_value(e->prog, v);
+    const vial_val_t* val = rv ? vial_interp_at(&e->in, rv, frame) : NULL;
+    if (!val) return false;
+    *one = *val;
+    if (!(val->flags & VIAL_VAL_FRAMES)) return true;
+    // A series kept whole, as smooth gives: its frame
+    if (frame < 0 || frame >= (int64_t)val->dims[0] || val->missing) return false;
+    one->flags &= ~VIAL_VAL_FRAMES;
+    one->ndim -= 1;
+    memmove(one->dims, one->dims + 1, one->ndim * sizeof(uint32_t));
+    size_t inner = 1;
+    for (uint8_t q = 0; q < one->ndim; ++q) inner *= one->dims[q];
+    one->data = (uint8_t*)val->data + (size_t)frame * inner * vial_dtype_size(val->dtype);
+    return true;
+}
+
 bool md_vial_eval_hover(const md_vial_eval_t* e, uint32_t offset, int64_t frame, char* buf, size_t cap) {
     if (buf && cap) buf[0] = 0;
     if (!e || !buf || !cap) return false;
@@ -533,52 +609,152 @@ bool md_vial_eval_hover(const md_vial_eval_t* e, uint32_t offset, int64_t frame,
     if (!ir || !v || v >= md_array_size(ir->values)) return false;
     // A value over the trajectory needs every frame: the evaluation's, once it has finished and if it computed it
     if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) {
-        if (!md_atomic_load64(&e->done)) return false;
-        const vial_ssa_t rv = md_vial__run_value(e->prog, v);
-        const vial_val_t* val = rv ? vial_interp_at(&e->in, rv, frame) : NULL;
-        if (!val) return false;
-        // A series kept whole, as smooth gives: its frame
-        if (val->flags & VIAL_VAL_FRAMES) {
-            if (frame < 0 || frame >= (int64_t)val->dims[0]) return false;
-            vial_val_t one = *val;
-            one.flags &= ~VIAL_VAL_FRAMES;
-            one.ndim -= 1;
-            memmove(one.dims, one.dims + 1, one.ndim * sizeof(uint32_t));
-            size_t inner = 1;
-            for (uint8_t q = 0; q < one.ndim; ++q) inner *= one.dims[q];
-            if (val->missing) return false;
-            one.data = (uint8_t*)val->data + (size_t)frame * inner * vial_dtype_size(val->dtype);
-            vial_val_print(buf, cap, &one, 6);
-            return true;
-        }
-        vial_val_print(buf, cap, val, 6);
+        vial_val_t one;
+        if (!trajectory_value(e, v, frame, &one)) return false;
+        vial_val_print(buf, cap, &one, 6);
         return true;
     }
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    hover_frames_t h = {.sys = e->sys, .run = e->run, .times = e->times, .num_frames = e->num_frames, .alloc = arena,
-                        .state = {.alloc = arena}};
-    md_system_state_init(&h.state, e->sys->atom.count);
-    vial_sys_t vs;
-    vial_sys_init(&vs, e->sys, arena);
-    vial_interp_t in;
-    bool ok = vial_interp_init(&in, ir, &vs, e->sys, md_get_heap_allocator());
-    if (ok) {
-        vial_interp_only(&in, &v, 1);
-        in.max_elements = (size_t)1 << 24;     // hover computes at most 16 million entries
-        in.load_frame = hover_load;
-        in.load_user = &h;
-        // Static values first: at() reads its own frame, through the same reader
-        ok = vial_interp_static(&in);
-        if (ok && ir->values[v].type.stage != VIAL_STAGE_STATIC) {
-            vial_frame_t fr;
-            ok = hover_load(&h, frame, &fr) && vial_interp_frame(&in, &fr);
+    point_t pt;
+    const vial_val_t* val = point_eval(&pt, e->prog, e->sys, e->run, e->times, e->num_frames, frame, NULL, v, false);
+    if (val) vial_val_print(buf, cap, val, 6);
+    point_free(&pt);
+    return val != NULL;
+}
+
+// ### DRAWING ###
+
+#define DRAW_MAX_PRIMS 10000
+
+typedef struct draw_out_t {
+    md_vial_drawing_t*  d;
+    md_allocator_i*     alloc;
+    int64_t             only;   // the element drawn alone, or -1
+    size_t              count;  // primitives and labels so far
+} draw_out_t;
+
+static bool draw_room(draw_out_t* o) {
+    if (o->count >= DRAW_MAX_PRIMS) { o->d->num_omitted += 1; return false; }
+    o->count += 1;
+    return true;
+}
+
+static void draw_label(draw_out_t* o, const float pos[3], uint32_t element, const vial_prim_t* p) {
+    if (!draw_room(o)) return;
+    md_vial_label_t l = {.pos = {pos[0], pos[1], pos[2]}, .element = element, .text = str_copy(p->text, o->alloc), .value = p->value, .unit = p->unit};
+    md_array_push(o->d->labels, l, o->alloc);
+}
+
+static void draw_group(draw_out_t* o, uint32_t element, const uint32_t* atoms, uint32_t n) {
+    md_vial_group_t g = {.element = element, .beg = (uint32_t)md_array_size(o->d->atoms)};
+    if (n) md_array_push_array(o->d->atoms, atoms, n, o->alloc);
+    g.end = (uint32_t)md_array_size(o->d->atoms);
+    md_array_push(o->d->groups, g, o->alloc);
+}
+
+static void draw_prims(draw_out_t* o, const vial_drawing_t* dr, uint32_t element) {
+    if (!dr) return;
+    for (uint32_t i = 0; i < dr->count; ++i) {
+        const vial_prim_t* p = &dr->prims[i];
+        switch (p->kind) {
+        case VIAL_PRIM_HIGHLIGHT: draw_group(o, element, p->atoms, p->num_atoms); continue;
+        case VIAL_PRIM_LABEL:     draw_label(o, p->p[0], element, p); continue;
+        default: break;
         }
-        const vial_val_t* val = ok ? vial_interp_value(&in, v) : NULL;
-        ok = val != NULL;
-        if (ok) vial_val_print(buf, cap, val, 6);
-        vial_interp_free(&in);
+        if (!draw_room(o)) continue;
+        static const md_vial_prim_kind_t kinds[] = {
+            [VIAL_PRIM_MARKER] = MD_VIAL_PRIM_MARKER, [VIAL_PRIM_LINE] = MD_VIAL_PRIM_LINE, [VIAL_PRIM_ARROW] = MD_VIAL_PRIM_ARROW,
+            [VIAL_PRIM_SPHERE] = MD_VIAL_PRIM_SPHERE, [VIAL_PRIM_ARC] = MD_VIAL_PRIM_ARC, [VIAL_PRIM_DISK] = MD_VIAL_PRIM_DISK,
+        };
+        md_vial_prim_t q = {.kind = kinds[p->kind], .element = element, .r = p->r};
+        memcpy(q.p, p->p, sizeof(q.p));
+        md_array_push(o->d->prims, q, o->alloc);
+        if (!p->labelled) continue;
+        // A line's label at its middle, an arc's inside the angle
+        float at[3];
+        for (int k = 0; k < 3; ++k) {
+            at[k] = p->kind == VIAL_PRIM_ARC ? p->p[0][k] + 0.25f * ((p->p[1][k] - p->p[0][k]) + (p->p[2][k] - p->p[0][k]))
+                                             : 0.5f * (p->p[0][k] + p->p[1][k]);
+        }
+        draw_label(o, at, element, p);
     }
-    if (h.ex) md_system_extract_end(h.ex);
-    md_arena_allocator_destroy(arena);
+}
+
+// A value by its type: sets as their particles, points (Å, a last dimension of 3) as markers, anything else nothing
+static void draw_by_type(draw_out_t* o, const vial_val_t* v, const vial_type_t* t) {
+    const size_t n = v->dtype == VIAL_DT_SET ? (v->ndim ? vial_val_count(v) : 1) : vial_val_count(v);
+    if (v->dtype == VIAL_DT_SET && v->sets) {
+        o->d->num_elements = n;
+        for (size_t i = 0; i < n; ++i) {
+            if (o->only >= 0 && (int64_t)i != o->only) continue;
+            draw_group(o, (uint32_t)i, vial_sets_items(v->sets, (uint32_t)i), vial_sets_size(v->sets, (uint32_t)i));
+        }
+        return;
+    }
+    md_unit_t length;
+    vial_unit_name(STR_LIT("angstrom"), &length);
+    const bool pts = (v->dtype == VIAL_DT_FLOAT || v->dtype == VIAL_DT_FLOAT64) && v->ndim >= 1 && v->dims[v->ndim - 1] == 3 && v->data &&
+                     t->unit_kind == VIAL_UNIT_KNOWN && md_unit_base_equal(t->unit, length);
+    o->d->num_elements = pts ? n / 3 : n;
+    if (!pts) return;
+    for (size_t i = 0; i < n / 3; ++i) {
+        if (o->only >= 0 && (int64_t)i != o->only) continue;
+        md_vial_prim_t q = {.kind = MD_VIAL_PRIM_MARKER, .element = (uint32_t)i};
+        bool ok = true;
+        for (int k = 0; k < 3; ++k) {
+            const size_t at = 3 * i + (size_t)k;
+            q.p[0][k] = v->dtype == VIAL_DT_FLOAT ? ((const float*)v->data)[at] : (float)((const double*)v->data)[at];
+            ok = ok && !vial_val_is_missing(v, at) && isfinite(q.p[0][k]);
+        }
+        if (ok && draw_room(o)) md_array_push(o->d->prims, q, o->alloc);
+    }
+}
+
+static void draw_value(draw_out_t* o, const vial_val_t* v, const vial_type_t* t) {
+    // The drawing attached, or the value itself when it is a drawing
+    const vial_val_t* d = v->drawn ? v->drawn : v->dtype == VIAL_DT_DRAWING ? v : NULL;
+    if (!d) { draw_by_type(o, v, t); return; }
+    const size_t n = vial_val_count(d);
+    o->d->num_elements = n;
+    if (!d->data) return;
+    for (size_t i = 0; i < n; ++i) {
+        if (o->only >= 0 && (int64_t)i != o->only) continue;
+        if (vial_val_is_missing(d, i)) continue;
+        draw_prims(o, ((const vial_drawing_t* const*)d->data)[i], (uint32_t)i);
+    }
+}
+
+static bool draw_done(md_vial_drawing_t* d, bool ok) {
+    d->num_prims = md_array_size(d->prims);
+    d->num_labels = md_array_size(d->labels);
+    d->num_groups = md_array_size(d->groups);
     return ok;
+}
+
+bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint32_t offset, md_allocator_i* alloc) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!desc || !desc->prog || !desc->sys || !alloc) return false;
+    const vial_ir_t* ir = md_vial__ir(desc->prog);
+    const vial_ssa_t v = md_vial__hover_value(desc->prog, offset, NULL);
+    if (!ir || !v || v >= md_array_size(ir->values)) return false;
+    const vial_type_t* t = &ir->values[v].type;
+    draw_out_t o = {.d = out, .alloc = alloc, .only = desc->element};
+    if (t->stage == VIAL_STAGE_TRAJECTORY) {
+        // Over the trajectory: the evaluation's value, drawn by its type
+        vial_val_t one;
+        if (!trajectory_value(desc->eval, v, desc->frame, &one)) return false;
+        one.drawn = NULL;
+        draw_value(&o, &one, t);
+        return draw_done(out, true);
+    }
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    int64_t num_frames = 0;
+    const double* times = desc->eval ? desc->eval->times : run_times(desc->sys, desc->run, arena, &num_frames);
+    if (desc->eval) num_frames = desc->eval->num_frames;
+    point_t pt;
+    const vial_val_t* val = point_eval(&pt, desc->prog, desc->sys, desc->run, times, num_frames, desc->frame, desc->state, v, true);
+    if (val) draw_value(&o, val, t);
+    point_free(&pt);
+    md_arena_allocator_destroy(arena);
+    return draw_done(out, val != NULL);
 }

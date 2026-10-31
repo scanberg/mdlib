@@ -1886,6 +1886,14 @@ static bool mapped(vial_kctx_t* k, const vial_val_t* const* args, const uint8_t*
     }
     size_t count = 1;
     for (uint8_t d = 0; d < lnd; ++d) count *= ldims[d];
+    if (!count && k->type && vial_dtype_size(k->type->dtype)) {
+        // No call: the type's dtype, and its shape past the mapped dimensions where it is static
+        uint32_t dims[VIAL_MAX_DIMS];
+        memcpy(dims, ldims, lnd * sizeof(uint32_t));
+        uint8_t nd = lnd;
+        for (uint8_t q = lnd; q < k->type->ndim && nd < VIAL_MAX_DIMS; ++q) dims[nd++] = k->type->dims[q].kind == VIAL_EXT_STATIC ? k->type->dims[q].n : 0;
+        return vial_k_make(k, k->type->dtype, nd, dims, out);
+    }
     vial_val_t* res = md_alloc(k->alloc, (count ? count : 1) * sizeof(vial_val_t));
     for (size_t c = 0; c < count; ++c) {
         uint32_t idx[VIAL_MAX_DIMS];
@@ -1940,6 +1948,294 @@ static bool mapped(vial_kctx_t* k, const vial_val_t* const* args, const uint8_t*
     }
     *out = o;
     return true;
+}
+
+// ### DRAWING ###
+// A primitive per element of its broadcast arguments: points map by their last dimension, lengths and a numeric label
+// as floats, a set for highlight. A primitive with a missing or empty input draws nothing there.
+
+typedef struct prim_core_t {
+    vial_prim_kind_t kind;
+    const char*      name;
+    md_unit_t        label_unit;
+    bool             text_label;    // the label is one string for every element
+    const vial_val_t* label;
+} prim_core_t;
+
+// A point: a coordinate, or the centre of a set's particles at the frame, as a point of one particle is its position
+static bool point_of(vial_kctx_t* k, const vial_val_t* v, float out[3]) {
+    if (!v || v->dtype == VIAL_DT_NONE) return false;
+    if (v->dtype == VIAL_DT_SET) {
+        vial_val_t p;
+        if (!vial_k_positions(k, v, &p)) return false;
+        const size_t n = vial_val_count(&p) / 3;
+        if (!n || !p.data) return false;
+        double c[3] = {0, 0, 0};
+        const float* x = p.data;
+        for (size_t i = 0; i < n; ++i) for (int q = 0; q < 3; ++q) c[q] += x[i * 3 + q];
+        for (int q = 0; q < 3; ++q) out[q] = (float)(c[q] / (double)n);
+        return true;
+    }
+    if (!v->data || vial_val_count(v) < 3) return false;
+    for (int q = 0; q < 3; ++q) {
+        if (vial_val_is_missing(v, (size_t)q)) return false;
+        out[q] = (float)num_at(v, (size_t)q);
+        if (!isfinite(out[q])) return false;
+    }
+    return true;
+}
+
+static bool scalar_of(const vial_val_t* v, double* out) {
+    if (!v || !v->data || !is_num(v->dtype) || vial_val_is_missing(v, 0)) return false;
+    *out = num_at(v, 0);
+    return isfinite(*out);
+}
+
+// b moved to its image nearest a, as displacement() has it, so no segment spans the box
+static void nearest_image(vial_kctx_t* k, const float a[3], float b[3]) {
+    if (!k->in->frame) return;
+    vec3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    md_util_min_image_vec3(&d, 1, &k->in->frame->cell);
+    b[0] = a[0] + d.x; b[1] = a[1] + d.y; b[2] = a[2] + d.z;
+}
+
+static void label_text(vial_kctx_t* k, vial_prim_t* p, const prim_core_t* c, const vial_val_t* lab) {
+    if (c->text_label) {
+        p->labelled = true;
+        p->value = NAN;
+        p->unit = md_unit_none();
+        p->text = lab->data ? *(const str_t*)lab->data : (str_t){0};
+        return;
+    }
+    double x;
+    if (!scalar_of(lab, &x)) return;
+    p->labelled = true;
+    p->value = x;
+    p->unit = c->label_unit;
+    char buf[96];
+    int len = snprintf(buf, sizeof(buf), lab->dtype == VIAL_DT_INT || lab->dtype == VIAL_DT_BOOL ? "%.0f" : "%.2f", x);
+    if (!md_unit_is_none(p->unit) && len > 0 && len < (int)sizeof(buf) - 2) {
+        buf[len++] = ' ';
+        len += (int)md_unit_print(buf + len, sizeof(buf) - (size_t)len, p->unit);
+    }
+    p->text = str_copy((str_t){buf, (size_t)MIN(len, (int)sizeof(buf) - 1)}, k->alloc);
+}
+
+static bool core_prim(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
+    const prim_core_t* c = k->core;
+    vial_prim_t p = {.kind = (uint8_t)c->kind, .value = NAN};
+    bool ok = true;
+    double r = 0.0;
+    switch (c->kind) {
+    case VIAL_PRIM_MARKER:
+        ok = point_of(k, a[0], p.p[0]);
+        break;
+    case VIAL_PRIM_LINE:
+        ok = point_of(k, a[0], p.p[0]) && point_of(k, a[1], p.p[1]);
+        if (ok) nearest_image(k, p.p[0], p.p[1]);
+        if (ok && a[2]) label_text(k, &p, c, a[2]);
+        break;
+    case VIAL_PRIM_ARROW:
+        ok = point_of(k, a[0], p.p[0]);
+        if (ok && a[1]) {
+            ok = point_of(k, a[1], p.p[1]);
+            if (ok) nearest_image(k, p.p[0], p.p[1]);
+        } else if (ok) {
+            // From a along direction= for length=
+            float d[3];
+            ok = point_of(k, a[2], d) && scalar_of(a[3], &r);
+            const double n = ok ? sqrt((double)d[0] * d[0] + (double)d[1] * d[1] + (double)d[2] * d[2]) : 0.0;
+            ok = ok && n > 0.0;
+            for (int q = 0; ok && q < 3; ++q) p.p[1][q] = (float)(p.p[0][q] + d[q] / n * r);
+        }
+        break;
+    case VIAL_PRIM_SPHERE:
+        ok = point_of(k, a[0], p.p[0]) && scalar_of(a[1], &r) && r >= 0.0;
+        p.r = (float)r;
+        break;
+    case VIAL_PRIM_ARC:
+        ok = point_of(k, a[0], p.p[0]) && point_of(k, a[1], p.p[1]) && point_of(k, a[2], p.p[2]);
+        if (ok) { nearest_image(k, p.p[0], p.p[1]); nearest_image(k, p.p[0], p.p[2]); }
+        if (ok && a[3]) label_text(k, &p, c, a[3]);
+        break;
+    case VIAL_PRIM_DISK: {
+        float nv[3];
+        ok = point_of(k, a[0], p.p[0]) && point_of(k, a[1], nv) && scalar_of(a[2], &r) && r >= 0.0;
+        const double n = ok ? sqrt((double)nv[0] * nv[0] + (double)nv[1] * nv[1] + (double)nv[2] * nv[2]) : 0.0;
+        ok = ok && n > 0.0;
+        for (int q = 0; ok && q < 3; ++q) p.p[1][q] = (float)(nv[q] / n);
+        p.r = (float)r;
+        break;
+    }
+    case VIAL_PRIM_LABEL:
+        ok = point_of(k, a[0], p.p[0]) && a[1];
+        if (ok) label_text(k, &p, c, a[1]);
+        ok = ok && p.labelled;
+        break;
+    case VIAL_PRIM_HIGHLIGHT:
+        ok = a[0] && a[0]->dtype == VIAL_DT_SET && a[0]->sets;
+        if (ok) {
+            p.num_atoms = vial_sets_size(a[0]->sets, 0);
+            p.atoms = vial_sets_items(a[0]->sets, 0);
+        }
+        break;
+    }
+    *out = vial_val_make_uninit(VIAL_DT_DRAWING, 0, NULL, k->alloc);
+    *(const vial_drawing_t**)out->data = vial_drawing_make(&p, ok ? 1 : 0, k->alloc);
+    return true;
+}
+
+static bool k_primitive(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_val_t* out) {
+    static const struct { const char* name; vial_prim_kind_t kind; const char* params[4]; uint8_t kinds[4]; uint32_t np; int label; } tab[] = {
+        {"marker",    VIAL_PRIM_MARKER,    {"p"},                            {VX_KIND_POINT}, 1, -1},
+        {"line",      VIAL_PRIM_LINE,      {"a", "b", "label"},              {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 3, 2},
+        {"arrow",     VIAL_PRIM_ARROW,     {"a", "b", "direction", "length"}, {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 4, -1},
+        {"sphere",    VIAL_PRIM_SPHERE,    {"c", "r"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, -1},
+        {"arc",       VIAL_PRIM_ARC,       {"c", "a", "b", "label"},         {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 4, 3},
+        {"disk",      VIAL_PRIM_DISK,      {"c", "n", "r"},                  {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 3, -1},
+        {"label",     VIAL_PRIM_LABEL,     {"p", "x"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, 1},
+        {"highlight", VIAL_PRIM_HIGHLIGHT, {"s"},                            {VX_KIND_SET}, 1, -1},
+    };
+    for (size_t t = 0; t < ARRAY_SIZE(tab); ++t) {
+        if (strcmp(name, tab[t].name)) continue;
+        const vial_val_t* a[4] = {0};
+        uint8_t kinds[4];
+        for (uint32_t i = 0; i < tab[t].np; ++i) {
+            a[i] = arg(ba, tab[t].params[i], i);
+            if (a[i] && a[i]->dtype == VIAL_DT_NONE) a[i] = NULL;
+            kinds[i] = tab[t].kinds[i];
+        }
+        prim_core_t c = {.kind = tab[t].kind, .name = name, .label_unit = md_unit_none()};
+        if (tab[t].label >= 0 && a[tab[t].label]) {
+            const vial_val_t* lab = a[tab[t].label];
+            c.label = lab;
+            if (lab->dtype == VIAL_DT_STR) {
+                // One string labels every element
+                c.text_label = true;
+                kinds[tab[t].label] = VX_KIND_WHOLE;
+            } else {
+                const vial_type_t* lt = arg_type(k, ba, lab);
+                if (lt && lt->unit_kind == VIAL_UNIT_KNOWN) c.label_unit = lt->unit;
+            }
+        }
+        const void* prev = k->core;
+        k->core = &c;
+        const bool ok = mapped(k, a, kinds, tab[t].np, core_prim, out);
+        k->core = prev;
+        return ok;
+    }
+    return vial_rt_fail(k, "R0103", "an unknown primitive %s", name);
+}
+
+// What a built-in draws of its own, as the reference's Drawing section has it: angle an arc at the vertex labelled with
+// the angle, dihedral the two planes, the arc between them about the axis and a label on it, within a sphere around
+// each point and the particles in them. Computed only while drawing, after the built-in's value, which labels it.
+static void near3(const md_unitcell_t* cell, const float a[3], const float b[3], float out[3]) {
+    vec3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    md_util_min_image_vec3(&d, 1, cell);
+    out[0] = a[0] + d.x; out[1] = a[1] + d.y; out[2] = a[2] + d.z;
+}
+
+static bool core_dihedral_draw(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
+    const prim_core_t* c = k->core;
+    float p[4][3];
+    bool ok = true;
+    for (int i = 0; i < 4 && ok; ++i) ok = point_of(k, a[i], p[i]);
+    vial_prim_t pr[4];
+    uint32_t n = 0;
+    if (ok) {
+        const md_unitcell_t cell = frame_cell(k);
+        float A[3], C[3], D[3];
+        near3(&cell, p[1], p[0], A);
+        near3(&cell, p[1], p[2], C);
+        near3(&cell, C, p[3], D);
+        const float* B = p[1];
+        const float u[3] = {A[0] - B[0], A[1] - B[1], A[2] - B[2]};
+        const float w[3] = {C[0] - B[0], C[1] - B[1], C[2] - B[2]};
+        const float x[3] = {D[0] - C[0], D[1] - C[1], D[2] - C[2]};
+        // The planes (a, b, c) and (b, c, d), each a disk through its end of the axis, as wide as the axis is long
+        float n1[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]};
+        float n2[3] = {w[1] * x[2] - w[2] * x[1], w[2] * x[0] - w[0] * x[2], w[0] * x[1] - w[1] * x[0]};
+        const float l1 = sqrtf(n1[0] * n1[0] + n1[1] * n1[1] + n1[2] * n1[2]), l2 = sqrtf(n2[0] * n2[0] + n2[1] * n2[1] + n2[2] * n2[2]);
+        const float axis = sqrtf(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+        if (l1 > 0.0f && l2 > 0.0f && axis > 0.0f) {
+            pr[n] = (vial_prim_t){.kind = VIAL_PRIM_DISK, .r = axis, .value = NAN};
+            for (int q = 0; q < 3; ++q) { pr[n].p[0][q] = B[q]; pr[n].p[1][q] = n1[q] / l1; }
+            ++n;
+            pr[n] = (vial_prim_t){.kind = VIAL_PRIM_DISK, .r = axis, .value = NAN};
+            for (int q = 0; q < 3; ++q) { pr[n].p[0][q] = C[q]; pr[n].p[1][q] = n2[q] / l2; }
+            ++n;
+            // The arc of the angle between the planes: about the axis at its middle, from a's arm to d's, each with
+            // its part along the axis taken out
+            const float m[3] = {0.5f * (B[0] + C[0]), 0.5f * (B[1] + C[1]), 0.5f * (B[2] + C[2])};
+            const float e[3] = {w[0] / axis, w[1] / axis, w[2] / axis};
+            const float du = u[0] * e[0] + u[1] * e[1] + u[2] * e[2], dx = x[0] * e[0] + x[1] * e[1] + x[2] * e[2];
+            pr[n] = (vial_prim_t){.kind = VIAL_PRIM_ARC, .value = NAN};
+            for (int q = 0; q < 3; ++q) {
+                pr[n].p[0][q] = m[q];
+                pr[n].p[1][q] = m[q] + u[q] - du * e[q];
+                pr[n].p[2][q] = m[q] + x[q] - dx * e[q];
+            }
+            ++n;
+        }
+        if (a[4]) {
+            pr[n] = (vial_prim_t){.kind = VIAL_PRIM_LABEL, .value = NAN};
+            for (int q = 0; q < 3; ++q) pr[n].p[0][q] = 0.5f * (B[q] + C[q]);
+            label_text(k, &pr[n], c, a[4]);
+            if (pr[n].labelled) ++n;
+        }
+    }
+    *out = vial_val_make_uninit(VIAL_DT_DRAWING, 0, NULL, k->alloc);
+    *(const vial_drawing_t**)out->data = vial_drawing_make(pr, n, k->alloc);
+    return true;
+}
+
+bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n,
+                         const vial_val_t* result, vial_val_t* out) {
+    bargs_t ba = {.v = args, .names = names, .n = n};
+    const bool is_angle = !strcmp(name, "angle"), is_dihedral = !strcmp(name, "dihedral");
+    prim_core_t c = {.label_unit = k->type && k->type->unit_kind == VIAL_UNIT_KNOWN ? k->type->unit : md_unit_none()};
+    const void* prev = k->core;
+    bool ok = false;
+    if ((is_angle || is_dihedral) && !arg(&ba, "points", 0) && result && result->data) {
+        const int np = is_angle ? 3 : 4;
+        const char* pn[4] = {"a", "b", "c", "d"};
+        const vial_val_t* a[5] = {0};
+        for (int i = 0; i < np; ++i) if (!(a[i] = arg(&ba, pn[i], (uint32_t)i))) return false;
+        const uint8_t kinds[5] = {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT};
+        k->core = &c;
+        if (is_angle) {
+            // The arc at b, from a to c
+            c.kind = VIAL_PRIM_ARC;
+            const vial_val_t* arcs[4] = {a[1], a[0], a[2], result};
+            ok = mapped(k, arcs, kinds + 1, 4, core_prim, out);
+        } else {
+            a[4] = result;
+            ok = mapped(k, a, kinds, 5, core_dihedral_draw, out);
+        }
+    } else if (!strcmp(name, "within") && result && result->dtype == VIAL_DT_SET) {
+        const vial_val_t* rv = arg(&ba, "r", 0);
+        const vial_val_t* of = arg(&ba, "of", 1);
+        vial_val_t p;
+        double r;
+        if (!rv || !of || !scalar_of(rv, &r) || !points(k, of, &p)) return false;
+        const size_t np = vial_val_count(&p) / 3;
+        vial_prim_t* pr = md_alloc(k->alloc, (np + 1) * sizeof(vial_prim_t));
+        uint32_t m = 0;
+        for (size_t i = 0; i < np; ++i) {
+            const float* x = (const float*)p.data + 3 * i;
+            if (!isfinite(x[0]) || !isfinite(x[1]) || !isfinite(x[2])) continue;
+            pr[m] = (vial_prim_t){.kind = VIAL_PRIM_SPHERE, .r = (float)r, .value = NAN, .p = {{x[0], x[1], x[2]}}};
+            ++m;
+        }
+        pr[m++] = (vial_prim_t){.kind = VIAL_PRIM_HIGHLIGHT, .value = NAN, .atoms = vial_sets_items(result->sets, 0),
+                                .num_atoms = vial_sets_size(result->sets, 0)};
+        *out = vial_val_make_uninit(VIAL_DT_DRAWING, 0, NULL, k->alloc);
+        *(const vial_drawing_t**)out->data = vial_drawing_make(pr, m, k->alloc);
+        ok = true;
+    }
+    k->core = prev;
+    return ok;
 }
 
 // ### GROUPS: by= ###
@@ -2617,22 +2913,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     }
     if (IS("shown")) { *out = *arg(&ba, "x", 0); return true; }
     if (IS("marker") || IS("line") || IS("arrow") || IS("sphere") || IS("arc") || IS("disk") || IS("label") || IS("highlight")) {
-        // Drawings are values for hover; what they draw is made when hover asks. One per element of the broadcast
-        // points, as the type says.
-        vial_val_t o = {.dtype = VIAL_DT_DRAWING, .ndim = k->type->ndim};
-        for (uint8_t d = 0; d < o.ndim; ++d) {
-            if (k->type->dims[d].kind == VIAL_EXT_STATIC) { o.dims[d] = k->type->dims[d].n; continue; }
-            // An extent known only now: the arguments' leading dimension of that place
-            o.dims[d] = 1;
-            for (uint32_t i = 0; i < n; ++i) {
-                const vial_val_t* v = args[i];
-                if (!v || v->ndim < 1) continue;
-                const int lead = (v->dtype == VIAL_DT_SET ? v->ndim : v->ndim - 1) - (o.ndim - d);
-                if (lead >= 0 && v->dims[lead] > o.dims[d]) o.dims[d] = v->dims[lead];
-            }
-        }
-        *out = o;
-        return true;
+        return k_primitive(k, name, &ba, out);
     }
     if (IS("range")) return k_range(k, &ba, out);
     if (IS("zeros")) return k_fill(k, 0.0, out);

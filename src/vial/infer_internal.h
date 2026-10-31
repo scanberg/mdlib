@@ -178,6 +178,12 @@ typedef struct vx_bound_t {
     vial_node_id        args[12];
 } vx_bound_t;
 
+typedef struct vx_sig_t {
+    const vx_param_t*   params;     // NULL when none is recorded
+    uint32_t            np;
+} vx_sig_t;
+
+void        vx_record_sig(infer_t* x, vial_node_id call, const vx_param_t* params, uint32_t np);
 void        vx_record_bind(infer_t* x, vial_node_id call, const vx_param_t* params, uint32_t np, const vial_node_id* args);
 vial_ssa_t  vx_ssa(const infer_t* x, vial_node_id id);
 void        vx_set_ssa(infer_t* x, vial_node_id id, vial_ssa_t v);
