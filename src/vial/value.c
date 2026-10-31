@@ -82,10 +82,16 @@ int vial_print_float(char* buf, size_t cap, double f, bool is32) {
     if (isinf(f)) return snprintf(buf, cap, f < 0 ? "-inf" : "inf");
     char tmp[40];
     const int maxp = is32 ? 9 : 17;
-    for (int p = 1; p <= maxp; ++p) {
+    int p = 1;
+    for (; p <= maxp; ++p) {
         snprintf(tmp, sizeof(tmp), "%.*g", p, f);
         const double back = strtod(tmp, NULL);
         if (is32 ? (float)back == (float)f : back == f) break;
+    }
+    // Positional, as Python's repr, unless the exponent is below -4 or 16 and above: 40.0, not 4e+01
+    if (strpbrk(tmp, "eE") && f != 0.0) {
+        const int e = (int)floor(log10(fabs(f)));
+        if (e >= -4 && e < 16 && e + 1 > p) snprintf(tmp, sizeof(tmp), "%.*g", e + 1, f);
     }
     // A whole number keeps a point, so a float never reads as an int: 12.0
     if (!strpbrk(tmp, ".eEn")) {

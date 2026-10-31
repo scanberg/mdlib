@@ -15,6 +15,12 @@ typedef struct vx_memo_t {
 } vx_memo_t;
 
 // A call to a def being checked: its own types for the def's nodes and symbols, in the def's tree
+typedef struct vx_pending_t {
+    uint32_t        outer, then_r, else_r, rest;    // regions: the if's, its branches', and the one going on
+    uint32_t        cond;                           // the condition's value
+    md_vial_span_t  span;
+} vx_pending_t;
+
 typedef struct vx_frame_t {
     struct vx_frame_t*  parent;
     const vial_tree_t*  t;          // the def's tree: the script's or the prelude's
@@ -31,6 +37,11 @@ typedef struct vx_frame_t {
     bool                has_result;
     uint32_t            depth;
     bool                lower_failed;   // lowering: something in the body was not lowered
+    // Lowering: the body's region, and the ifs per frame of which one branch returns and the other goes on. The
+    // rest of the body is emitted into the branch that goes on; when it returns, the if is emitted and yields.
+    uint32_t            body_region;
+    vx_pending_t        pending[16];
+    uint32_t            num_pending;
 } vx_frame_t;
 
 typedef struct infer_t {
@@ -74,6 +85,8 @@ bool vx_extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out);
 void vx_check_pairing(infer_t* x, vial_node_id at, const vial_type_t* a, const vial_type_t* b);   // W0605
 
 void vx_unit_join(infer_t* x, vial_node_id at, const char* verb, const vial_type_t* a, const vial_type_t* b, vial_type_t* out);
+// Lowering: after a yield of the def's value, the ifs whose remaining branch it ended (vx_frame_t.pending)
+void vx_close_pending(infer_t* x);
 uint8_t vx_promote(const vial_type_t* a, const vial_type_t* b);    // NumPy 2's dtype of a and b together
 uint8_t vx_operand_dtype(const vial_type_t* self, const vial_type_t* other);   // a bare float beside a float64 is one
 

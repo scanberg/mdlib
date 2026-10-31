@@ -456,10 +456,31 @@ UTEST(vial_ir, if_per_frame) {
         "    if d > 30.0:\n"
         "        e = d - 10.0\n"
         "    return e\n"
+        // One branch returns, the other goes on: the rest of the body is that branch's
+        "def early(d):\n"
+        "    if d > 30.0:\n"
+        "        return 30.0\n"
+        "    e = d * 2.0\n"
+        "    return e\n"
+        "def late(d):\n"
+        "    if d <= 30.0:\n"
+        "        e = d + 1.0\n"
+        "    else:\n"
+        "        return 0.0\n"
+        "    return e\n"
+        "def chain(d):\n"
+        "    if d > 40.0:\n"
+        "        return 40.0\n"
+        "    if d > 30.0:\n"
+        "        return 30.0\n"
+        "    return d\n"
         "ends = distance(ca[0], ca[14])\n"
         "c = clamp(ends)\n"
         "b = bump(ends)\n"
-        "t = 30.0 if ends > 30.0 else ends\n";
+        "t = 30.0 if ends > 30.0 else ends\n"
+        "m1 = early(ends)\n"
+        "m2 = late(ends)\n"
+        "m3 = chain(ends)\n";
     ASSERT_TRUE(vial_ir__start(&r, src, sys));
     vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r.alloc}};
     md_system_state_init(&l.state, sys->atom.count);
@@ -476,6 +497,9 @@ UTEST(vial_ir, if_per_frame) {
         EXPECT_EQ((float)(e > 30.0 ? 30.0 : e), (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "c"), f)));
         EXPECT_EQ(e > 30.0 ? (float)e - 10.0f : (float)e, (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "b"), f)));
         EXPECT_EQ((float)(e > 30.0 ? 30.0 : e), (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "t"), f)));
+        EXPECT_EQ(e > 30.0 ? 30.0f : (float)e * 2.0f, (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "m1"), f)));
+        EXPECT_EQ(e <= 30.0 ? (float)e + 1.0f : 0.0f, (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "m2"), f)));
+        EXPECT_EQ(e > 40.0 ? 40.0f : e > 30.0 ? 30.0f : (float)e, (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "m3"), f)));
     }
     EXPECT_GT(above, 0);
     EXPECT_LT(above, (int)nf);

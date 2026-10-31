@@ -657,6 +657,7 @@ void vx_emit_return(infer_t* x, vial_node_id value, vial_node_id at) {
         return;
     }
     vial_ir_yield(x->ir, &r, 1, vx_span(x, at));
+    vx_close_pending(x);
 }
 
 // An argument as the parameter's kind takes it: a set's positions, a set of one particle's position, a point as a

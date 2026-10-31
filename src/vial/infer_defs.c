@@ -340,12 +340,14 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
             for (uint32_t k = 0; k < g->np; ++k) if (syms[k]) vx_frame_set_ssa(&y, syms[k], vial_ir_param(x->ir, body, k));
             saved = x->ir->insert;
             x->ir->insert = body;
+            f.body_region = body;
         }
         const bool returned = vx_check_block(&y, vial_child(t, def, 3));
         result = f.has_result ? f.result : vial_type_scalar(VIAL_DT_NONE);
         rv = f.value;
         if (x->ir) {
             if (!returned) vx_emit_return(&y, 0, call);
+            if (f.num_pending) { vx_lower_fail(&y, call, "an if per frame whose other branch does not end in a return"); f.num_pending = 0; }
             x->ir->insert = saved;
             if (f.lower_failed) fn = body = 0;
         }
