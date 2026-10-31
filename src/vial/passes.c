@@ -33,9 +33,9 @@ static uint32_t copy_region(inl_t* c, uint32_t src_region) {
     for (uint32_t i = 0; i < r->num_params; ++i) c->map[r->param_beg + i] = vial_ir_param(dst, nr, i);
     const uint32_t saved = dst->insert;
     dst->insert = nr;
-    vial_ssa_t ys[8];
+    vial_ssa_t ys[64];
     uint32_t ny = 0;
-    copy_ops(c, src_region, ys, 8, &ny);
+    copy_ops(c, src_region, ys, 64, &ny);
     vial_ir_yield(dst, ys, ny, (md_vial_span_t){0});
     dst->insert = saved;
     return nr;
