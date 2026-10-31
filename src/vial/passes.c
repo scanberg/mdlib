@@ -116,7 +116,10 @@ static bool copy_ops(inl_t* c, uint32_t region, vial_ssa_t* yields, uint32_t max
     return true;
 }
 
-bool vial_ir_inline(const vial_ir_t* src, vial_ir_t* dst, md_allocator_i* alloc) {
+bool vial_ir_inline(const vial_ir_t* src, vial_ir_t* dst, md_allocator_i* alloc) { return vial_ir_inline_map(src, dst, alloc, NULL); }
+
+bool vial_ir_inline_map(const vial_ir_t* src, vial_ir_t* dst, md_allocator_i* alloc, vial_ssa_t** map) {
+    if (map) *map = NULL;
     vial_ir_init(dst, alloc);
     dst->descs = src->descs;
     const size_t nv = md_array_size(src->values);
@@ -133,7 +136,8 @@ bool vial_ir_inline(const vial_ir_t* src, vial_ir_t* dst, md_allocator_i* alloc)
         md_array_push(dst->outputs, o, alloc);
     }
     for (size_t i = 0; i < md_array_size(src->failures); ++i) md_array_push(dst->failures, src->failures[i], alloc);
-    md_free(alloc, c.map, (nv ? nv : 1) * sizeof(vial_ssa_t));
+    if (map) *map = c.map;
+    else md_free(alloc, c.map, (nv ? nv : 1) * sizeof(vial_ssa_t));
     return true;
 }
 

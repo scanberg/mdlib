@@ -377,6 +377,11 @@ UTEST(vial_ir, eval_api) {
     const md_vial_eval_desc_t edesc = {.sys = sys, .run = STR_LIT("run"), .max_elements = 50};
     md_vial_eval_t* eval = md_vial_eval_create(prog, &edesc, alloc);
     ASSERT_TRUE(eval != NULL);
+    {
+        // Before the evaluation has run: no value over the trajectory yet
+        char hv[64];
+        EXPECT_FALSE(md_vial_eval_hover(eval, (uint32_t)(strstr(src, "mean(") - src) + 4, 0, hv, sizeof(hv)));
+    }
     // A value of 100 elements is over this evaluation's limit: R0105, and the rest is computed
     EXPECT_FALSE(md_vial_eval_run(eval));
     EXPECT_EQ(1.0, md_vial_eval_progress(eval));
@@ -421,8 +426,16 @@ UTEST(vial_ir, eval_api) {
         EXPECT_TRUE(hv[0] != 0);
         EXPECT_TRUE(md_vial_eval_hover(eval, (uint32_t)(strstr(src, "zeros(100)") - src) + 5, 1, hv, sizeof(hv)));
         EXPECT_EQ('[', hv[0]);
-        // Over the trajectory: needs every frame
-        EXPECT_FALSE(md_vial_eval_hover(eval, (uint32_t)(strstr(src, "mean(") - src) + 4, 0, hv, sizeof(hv)));
+        // Over the trajectory: the evaluation's value, once it has run every frame. One value failed (R0105); the
+        // rest, the mean included, was computed and published
+        {
+            double mv;
+            md_attribute_extract_f64(&mv, 1, m, md_attribute_slice_all(), m->unit);
+            char wm[64];
+            vial_print_float(wm, sizeof(wm), (float)mv, true);
+            EXPECT_TRUE(md_vial_eval_hover(eval, (uint32_t)(strstr(src, "mean(") - src) + 4, 0, hv, sizeof(hv)));
+            EXPECT_STREQ(wm, hv);
+        }
         EXPECT_FALSE(md_vial_eval_hover(eval, 0xFFFFFFu, 0, hv, sizeof(hv)));
     }
     md_vial_eval_free(eval);

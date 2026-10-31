@@ -29,6 +29,7 @@ struct md_vial_eval_t {
     volatile uint64_t           stop;
     md_attributes_t             attributes;
     md_vial_diagnostic_t*       diags;      // md_array
+    volatile uint64_t           done;       // md_vial_eval_run finished every frame: its values may be read
 };
 
 static bool load_frame(void* user, int64_t index, vial_frame_t* out) {
@@ -189,7 +190,10 @@ bool md_vial_eval_run(md_vial_eval_t* e) {
         memcpy(d.code, r->code, 6);
         md_array_push(e->diags, d, e->arena);
     }
-    if (!e->in.interrupted) publish(e);
+    if (!e->in.interrupted) {
+        publish(e);
+        md_atomic_fetch_add64(&e->done, 1);
+    }
     return ok && !e->in.interrupted;
 }
 
@@ -228,8 +232,29 @@ bool md_vial_eval_hover(const md_vial_eval_t* e, uint32_t offset, int64_t frame,
     const vial_ir_t* ir = md_vial__ir(e->prog);
     const vial_ssa_t v = md_vial__hover_value(e->prog, offset, NULL);
     if (!ir || !v || v >= md_array_size(ir->values)) return false;
-    // A value over the trajectory needs every frame: not one frame's work
-    if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) return false;
+    // A value over the trajectory needs every frame: the evaluation's, once it has finished and if it computed it
+    if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) {
+        if (!md_atomic_load64(&e->done)) return false;
+        const vial_ssa_t rv = md_vial__run_value(e->prog, v);
+        const vial_val_t* val = rv ? vial_interp_at(&e->in, rv, frame) : NULL;
+        if (!val) return false;
+        // A series kept whole, as smooth gives: its frame
+        if (val->flags & VIAL_VAL_FRAMES) {
+            if (frame < 0 || frame >= (int64_t)val->dims[0]) return false;
+            vial_val_t one = *val;
+            one.flags &= ~VIAL_VAL_FRAMES;
+            one.ndim -= 1;
+            memmove(one.dims, one.dims + 1, one.ndim * sizeof(uint32_t));
+            size_t inner = 1;
+            for (uint8_t q = 0; q < one.ndim; ++q) inner *= one.dims[q];
+            if (val->missing) return false;
+            one.data = (uint8_t*)val->data + (size_t)frame * inner * vial_dtype_size(val->dtype);
+            vial_val_print(buf, cap, &one, 6);
+            return true;
+        }
+        vial_val_print(buf, cap, val, 6);
+        return true;
+    }
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     hover_frames_t h = {.sys = e->sys, .run = e->run, .times = e->times, .num_frames = e->num_frames, .alloc = arena,
                         .state = {.alloc = arena}};
