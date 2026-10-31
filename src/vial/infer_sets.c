@@ -353,18 +353,14 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
     return t;
 }
 
-bool vx_name_stored(infer_t* x, vial_node_id id, uint32_t stored, T* out) {
-    if (!x->c || stored >= x->c->num_stored) return false;
-    const md_vial_named_set_t* ns = &x->c->stored[stored];
-    const uint32_t na = x->sys ? x->sys->num_atoms : UINT32_MAX;
-    // Its particles, ascending, each once, those the system has
-    uint32_t* idx = md_alloc(x->alloc, (ns->num_atoms ? ns->num_atoms : 1) * sizeof(uint32_t));
+// The particles of a set of a stored selection, ascending, each once, those the system has, written at out: how many
+static uint32_t stored_set(const uint32_t* atoms, size_t n_in, uint32_t na, uint32_t* idx) {
     uint32_t n = 0;
     bool sorted = true;
-    for (size_t i = 0; i < ns->num_atoms; ++i) {
-        if (ns->atoms[i] >= na) continue;
-        if (n && ns->atoms[i] <= idx[n - 1]) sorted = false;
-        idx[n++] = ns->atoms[i];
+    for (size_t i = 0; i < n_in; ++i) {
+        if (atoms[i] >= na) continue;
+        if (n && atoms[i] <= idx[n - 1]) sorted = false;
+        idx[n++] = atoms[i];
     }
     if (!sorted) {
         // Insertion into place, then each once: stored selections are rarely out of order
@@ -378,16 +374,39 @@ bool vx_name_stored(infer_t* x, vial_node_id id, uint32_t stored, T* out) {
         for (uint32_t i = 0; i < n; ++i) if (!m || idx[i] != idx[m - 1]) idx[m++] = idx[i];
         n = m;
     }
+    return n;
+}
+
+bool vx_name_stored(infer_t* x, vial_node_id id, uint32_t stored, T* out) {
+    if (!x->c || stored >= x->c->num_stored) return false;
+    const md_vial_named_set_t* ns = &x->c->stored[stored];
+    const uint32_t na = x->sys ? x->sys->num_atoms : UINT32_MAX;
+    const uint32_t count = ns->ndim ? ns->dims[0] * (ns->ndim > 1 ? ns->dims[1] : 1) : 1;
     vial_sets_t* s = md_alloc(x->alloc, sizeof(vial_sets_t));
     memset(s, 0, sizeof(*s));
-    uint32_t* off = md_alloc(x->alloc, 2 * sizeof(uint32_t));
+    uint32_t* off = md_alloc(x->alloc, (count + 1) * sizeof(uint32_t));
+    uint32_t* idx = md_alloc(x->alloc, (ns->num_atoms ? ns->num_atoms : 1) * sizeof(uint32_t));
     off[0] = 0;
-    off[1] = n;
-    s->count = 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t b = ns->ndim ? ns->offsets[i] : 0;
+        const uint32_t e = ns->ndim ? ns->offsets[i + 1] : (uint32_t)ns->num_atoms;
+        off[i + 1] = off[i] + (e > b ? stored_set(ns->atoms + b, e - b, na, idx + off[i]) : 0);
+    }
+    s->count = count;
     s->offset = off;
     s->idx = idx;
-    s->single = true;
-    *out = vx_sets_type(x, s, id);
+    s->single = ns->ndim == 0;
+    if (ns->ndim < 2) {
+        *out = vx_sets_type(x, s, id);
+    } else {
+        T t = vial_type_scalar(VIAL_DT_SET);
+        vial_type_push_dim(&t, vial_extent_static(ns->dims[0]));
+        vial_type_push_dim(&t, vial_extent_static(ns->dims[1]));
+        bool one = count > 0;
+        for (uint32_t i = 0; one && i < count; ++i) one = vial_sets_size(s, i) == 1;
+        if (one) t.flags |= VIAL_TYPE_ONE_PARTICLE;
+        *out = t;
+    }
     vx_set_value(x, id, sets_value(s));
     return true;
 }

@@ -908,6 +908,35 @@ static bool expr_reads(str_t expr, str_t name) {
     return false;
 }
 
+// A selection of the program as a filter reads it by name: one set, or an array of them of one or two dimensions. copy:
+// the value does not outlive the call (a recipe's), so its particles are copied.
+static bool named_set_of(md_vial_named_set_t* ns, str_t name, const vial_val_t* v, md_allocator_i* arena, bool copy) {
+    if (v->dtype != VIAL_DT_SET || !v->sets || v->ndim > 2) return false;
+    const vial_sets_t* s = v->sets;
+    uint32_t count = 1;
+    for (uint8_t d = 0; d < v->ndim; ++d) count *= v->dims[d];
+    if (s->count != count || (v->ndim == 0 && count != 1)) return false;
+    const uint32_t total = s->offset[count];
+    memset(ns, 0, sizeof(*ns));
+    ns->name = name;
+    ns->atoms = s->idx + s->offset[0];
+    ns->num_atoms = total - s->offset[0];
+    if (copy) {
+        uint32_t* at = md_alloc(arena, (ns->num_atoms ? ns->num_atoms : 1) * sizeof(uint32_t));
+        if (ns->num_atoms) memcpy(at, ns->atoms, ns->num_atoms * sizeof(uint32_t));
+        ns->atoms = at;
+    }
+    if (v->ndim) {
+        uint32_t* off = md_alloc(arena, (count + 1) * sizeof(uint32_t));
+        for (uint32_t i = 0; i <= count; ++i) off[i] = s->offset[i] - s->offset[0];
+        ns->ndim = v->ndim;
+        ns->dims[0] = v->dims[0];
+        ns->dims[1] = v->ndim > 1 ? v->dims[1] : 0;
+        ns->offsets = off;
+    }
+    return true;
+}
+
 // The expression as a statement of its own, with the stored selections and the program's selections as names: its
 // static ones, and the recipes it reads, evaluated at the coordinates given, which make it dynamic
 static md_vial_program_t* filter_compile(str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* arena, bool* reads_recipe) {
@@ -930,11 +959,8 @@ static md_vial_program_t* filter_compile(str_t expr, const md_vial_filter_desc_t
                 if (!desc->state || !expr_reads(expr, o[i].name)) continue;
                 point_t pt;
                 const vial_val_t* rv = point_eval(&pt, desc->prog, desc->sys, desc->run, NULL, 0, 0, desc->state, v, false);
-                if (rv && rv->dtype == VIAL_DT_SET && rv->sets && !rv->ndim && rv->sets->count == 1) {
-                    const uint32_t n = vial_sets_size(rv->sets, 0);
-                    uint32_t* at = md_alloc(arena, (n ? n : 1) * sizeof(uint32_t));
-                    if (n) memcpy(at, vial_sets_items(rv->sets, 0), n * sizeof(uint32_t));
-                    md_vial_named_set_t ns = {.name = o[i].name, .atoms = at, .num_atoms = n};
+                md_vial_named_set_t ns;
+                if (rv && named_set_of(&ns, o[i].name, rv, arena, true)) {
                     md_array_push(sets, ns, arena);
                     if (reads_recipe) *reads_recipe = true;
                 }
@@ -943,10 +969,8 @@ static md_vial_program_t* filter_compile(str_t expr, const md_vial_filter_desc_t
             }
             const vial_ir_op_t* op = &ir->ops[ir->values[v].op];
             if (op->kind != VIAL_IR_CONST) continue;
-            const vial_val_t* c = &ir->consts[op->aux];
-            if (c->dtype != VIAL_DT_SET || !c->sets || c->ndim || c->sets->count != 1) continue;
-            md_vial_named_set_t ns = {.name = o[i].name, .atoms = vial_sets_items(c->sets, 0), .num_atoms = vial_sets_size(c->sets, 0)};
-            md_array_push(sets, ns, arena);
+            md_vial_named_set_t ns;
+            if (named_set_of(&ns, o[i].name, &ir->consts[op->aux], arena, false)) md_array_push(sets, ns, arena);
         }
     }
     const size_t head = sizeof(FILTER_HEAD) - 1;

@@ -138,9 +138,20 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
         for (size_t i = 0; i < desc->num_sets; ++i) {
             const md_vial_named_set_t* s = &desc->sets[i];
             if (!md_vial_name_valid(s->name)) continue;
+            if (s->ndim > 2 || (s->ndim && !s->offsets)) continue;
             uint32_t* at = md_alloc(arena, (s->num_atoms ? s->num_atoms : 1) * sizeof(uint32_t));
             if (s->num_atoms) memcpy(at, s->atoms, s->num_atoms * sizeof(uint32_t));
-            st[n++] = (md_vial_named_set_t){.name = str_copy(s->name, arena), .atoms = at, .num_atoms = s->num_atoms};
+            md_vial_named_set_t c = {.name = str_copy(s->name, arena), .atoms = at, .num_atoms = s->num_atoms, .ndim = s->ndim};
+            if (s->ndim) {
+                const size_t count = (size_t)s->dims[0] * (s->ndim > 1 ? s->dims[1] : 1);
+                if (s->offsets[count] > s->num_atoms) continue;
+                uint32_t* off = md_alloc(arena, (count + 1) * sizeof(uint32_t));
+                memcpy(off, s->offsets, (count + 1) * sizeof(uint32_t));
+                c.dims[0] = s->dims[0];
+                c.dims[1] = s->ndim > 1 ? s->dims[1] : 0;
+                c.offsets = off;
+            }
+            st[n++] = c;
         }
         prog->check.stored = st;
         prog->check.num_stored = n;

@@ -72,11 +72,16 @@ typedef struct md_vial_token_t {
 
 typedef struct md_vial_program_t md_vial_program_t;
 
-// A stored selection a script reads by name, as viamd keeps them: its particles, indices of the system's atoms
+// A stored selection a script reads by name, as viamd keeps them: its particles, indices of the system's atoms. Or an
+// array of them, such as a program's published residues(chain='A'): then offsets gives where each set's particles are
+// in atoms, [count + 1] for the count of sets dims make, row-major. Zeroed, ndim and offsets give one set.
 typedef struct md_vial_named_set_t {
     str_t           name;
     const uint32_t* atoms;
     size_t          num_atoms;
+    uint8_t         ndim;       // 0 for one set, else 1 or 2 (bonds are [n][2])
+    uint32_t        dims[2];
+    const uint32_t* offsets;    // [count + 1] when ndim > 0
 } md_vial_named_set_t;
 
 enum {
@@ -408,7 +413,7 @@ typedef struct md_vial_filter_desc_t {
     const md_vial_named_set_t*      sets;       // stored selections it may read by name
     size_t                          num_sets;
     // A program whose published selections it may read by name, below the stored ones: a static one as it is, and a
-    // recipe evaluated at state, which makes the filter dynamic. One set each; NULL for none.
+    // recipe evaluated at state, which makes the filter dynamic. A set, or an array of them; NULL for none.
     const md_vial_program_t*        prog;
     // The particles it picks within: what it picks is cut to these, and sets left empty dropped. NULL for all.
     const uint32_t*                 scope;

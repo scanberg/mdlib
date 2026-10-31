@@ -1115,6 +1115,41 @@ UTEST(vial_ir, filters) {
     EXPECT_TRUE(f.dynamic);
     EXPECT_FALSE(md_vial_filter(&f, STR_LIT("near"), &nd, alloc));
     EXPECT_FALSE(md_vial_filter(&f, STR_LIT("nearby"), &d, alloc));
+    // Arrays of sets the program publishes: the name gives the array, and a subscript one of it
+    {
+        md_vial_program_t* pa = md_vial_compile(STR_LIT("res = residues()\nca_r = residues() and particles(name='CA')\nbb = bonds(residues()[0])\n"),
+            &(md_vial_compile_desc_t){.sys = sys}, alloc);
+        md_vial_filter_desc_t ad = {.sys = sys, .state = st, .prog = pa};
+        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("res"), &ad, alloc));
+        EXPECT_EQ(1, f.ndim);
+        EXPECT_EQ(md_system_residue_count(sys), (size_t)f.dims[0]);
+        md_vial_filter_t r3;
+        ASSERT_TRUE(md_vial_filter(&r3, STR_LIT("residues()[3]"), &ad, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("res[3]"), &ad, alloc));
+        EXPECT_EQ(0, f.ndim);
+        ASSERT_EQ(r3.offsets[1], f.offsets[1]);
+        for (uint32_t i = 0; i < f.offsets[1]; ++i) EXPECT_EQ(r3.atoms[i], f.atoms[i]);
+        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("ca_r[2]"), &ad, alloc));
+        EXPECT_EQ(1u, f.offsets[1]);
+        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("bb"), &ad, alloc));
+        EXPECT_EQ(2, f.ndim);
+        EXPECT_EQ(2u, f.dims[1]);
+        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("any(res[0:2])"), &ad, alloc));
+        EXPECT_EQ(0, f.ndim);
+
+        // As a stored selection given to a script: an array, known when compiling
+        const uint32_t at[] = {0, 1, 2, 5, 4};
+        const uint32_t off[] = {0, 3, 5};
+        const md_vial_named_set_t arr[] = {{.name = STR_LIT("pair"), .atoms = at, .num_atoms = 5, .ndim = 1, .dims = {2}, .offsets = off}};
+        md_vial_program_t* q = md_vial_compile(STR_LIT("n = len(pair)\nm = count(pair[1])\n"), &(md_vial_compile_desc_t){.sys = sys, .sets = arr, .num_sets = 1}, alloc);
+        md_vial_hover_t h;
+        ASSERT_TRUE(md_vial_hover(q, 0, &h));
+        EXPECT_STREQ("2", h.value);
+        ASSERT_TRUE(md_vial_hover(q, (uint32_t)strlen("n = len(pair)\n"), &h));
+        EXPECT_STREQ("2", h.value);
+        md_vial_program_free(q);
+        md_vial_program_free(pa);
+    }
     // Within a scope: cut to it, emptied sets dropped
     {
         md_vial_filter_t r0;
