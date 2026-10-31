@@ -18,6 +18,7 @@ typedef enum vial_level_t {
     VIAL_LEVEL_PART,
     VIAL_LEVEL_MOLECULE,
     VIAL_LEVEL_CHAIN,
+    VIAL_LEVEL_TAIL,            // a tail of a lipid (md_lipid_data_t), with its branches and hydrogens
 } vial_level_t;
 
 // The kinds of a part, as the reference names them. mdlib's non-polymer parts are told apart here: a lipid when its
@@ -52,6 +53,11 @@ typedef struct vial_sys_t {
     bool        have_chains;
     uint32_t*   chain_offset;   // [chain + 1]
     uint32_t*   chain_atoms;
+    // Lipid tails, once needed: the particles of each, ascending
+    bool        have_tails;
+    uint32_t    num_tails;
+    uint32_t*   tail_offset;    // [tail + 1]
+    uint32_t*   tail_atoms;
 } vial_sys_t;
 
 str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1

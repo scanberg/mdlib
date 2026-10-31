@@ -100,6 +100,25 @@ static void need_mols(vial_sys_t* s) {
     s->mol_offset[s->num_mols] = w;
 }
 
+static void need_tails(vial_sys_t* s) {
+    if (s->have_tails) return;
+    s->have_tails = true;
+    const md_lipid_data_t* lip = &s->sys->lipid;
+    s->num_tails = (uint32_t)lip->tail.count;
+    s->tail_offset = md_alloc(s->alloc, (s->num_tails + 1) * sizeof(uint32_t));
+    uint32_t total = 0;
+    s->tail_offset[0] = 0;
+    for (uint32_t t = 0; t < s->num_tails; ++t) s->tail_offset[t + 1] = total += (uint32_t)md_lipid_tail_atom_count(lip, t);
+    s->tail_atoms = md_alloc(s->alloc, (total + 1) * sizeof(uint32_t));
+    for (uint32_t t = 0; t < s->num_tails; ++t) {
+        const md_atom_idx_t* a = md_lipid_tail_atoms(lip, t);
+        uint32_t* dst = s->tail_atoms + s->tail_offset[t];
+        const uint32_t n = s->tail_offset[t + 1] - s->tail_offset[t];
+        for (uint32_t k = 0; k < n; ++k) dst[k] = (uint32_t)a[k];
+        qsort(dst, n, sizeof(uint32_t), cmp_u32);
+    }
+}
+
 static void need_chains(vial_sys_t* s) {
     if (s->have_chains) return;
     s->have_chains = true;
@@ -289,6 +308,21 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
         break;
     }
     case VIAL_LEVEL_RESIDUE: return residue_label(buf, cap, s, unit);
+    case VIAL_LEVEL_TAIL: {
+        // Its number within its lipid and the residue it starts in: tail2/DPPC1
+        need_tails(s);
+        if (unit >= s->num_tails) break;
+        const md_lipid_data_t* lip = &sys->lipid;
+        uint32_t k = 0;
+        for (size_t l = 0; l < lip->count; ++l) {
+            if (unit >= lip->tail_offset[l] && unit < lip->tail_offset[l + 1]) { k = unit - lip->tail_offset[l]; break; }
+        }
+        n = snprintf(buf, cap, "tail%u/", k + 1);
+        const uint32_t first = s->tail_offset[unit] < s->tail_offset[unit + 1] ? s->tail_atoms[s->tail_offset[unit]] : NONE32;
+        const uint32_t r = first != NONE32 ? atom_res(s, first) : NONE32;
+        if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
+        break;
+    }
     case VIAL_LEVEL_CHAIN: {
         const str_t id = md_system_chain_id(sys, unit);
         n = snprintf(buf, cap, "%.*s", (int)id.len, id.ptr);
@@ -352,6 +386,7 @@ static uint32_t takes(uint8_t level) {
     case VIAL_LEVEL_PART:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_MOLECULE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_CHAIN:    return K(VIAL_KEY_ID) | K(VIAL_KEY_SCOPE);
+    case VIAL_LEVEL_TAIL:     return K(VIAL_KEY_SCOPE);
     default: return 0;
     }
 }
@@ -366,6 +401,7 @@ const char* vial_select_keywords(uint8_t level) {
     case VIAL_LEVEL_PART:     return "kind, chain and scope";
     case VIAL_LEVEL_MOLECULE: return "name, chain and scope";
     case VIAL_LEVEL_CHAIN:    return "id and scope";
+    case VIAL_LEVEL_TAIL:     return "scope";
     default: return "";
     }
 }
@@ -377,6 +413,7 @@ const char* vial_select_name(uint8_t level) {
     case VIAL_LEVEL_PART:     return "parts";
     case VIAL_LEVEL_MOLECULE: return "molecules";
     case VIAL_LEVEL_CHAIN:    return "chains";
+    case VIAL_LEVEL_TAIL:     return "tails";
     default: return "sets";
     }
 }
@@ -658,6 +695,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
     case VIAL_LEVEL_PART:     num_units = s->num_parts; break;
     case VIAL_LEVEL_MOLECULE: num_units = s->num_mols; need_mols(s); break;
     case VIAL_LEVEL_CHAIN:    num_units = s->num_chains; need_chains(s); break;
+    case VIAL_LEVEL_TAIL:     need_tails(s); num_units = s->num_tails; break;
     default: break;
     }
     // The units that pass, and room for their particles: the units of a level never share a particle
@@ -671,6 +709,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         case VIAL_LEVEL_PART:     pass = part_passes(s, q, u);     { const md_urange_t r = md_system_part_atom_range(s->sys, u); size = r.end - r.beg; } break;
         case VIAL_LEVEL_MOLECULE: pass = molecule_passes(s, q, u); size = s->mol_offset[u + 1] - s->mol_offset[u]; break;
         case VIAL_LEVEL_CHAIN:    pass = chain_passes(s, q, u);    size = s->chain_offset[u + 1] - s->chain_offset[u]; break;
+        case VIAL_LEVEL_TAIL:     pass = true;                     size = s->tail_offset[u + 1] - s->tail_offset[u]; break;
         default: break;
         }
         if (!pass) continue;
@@ -693,6 +732,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         case VIAL_LEVEL_PART:    { const md_urange_t r = md_system_part_atom_range(s->sys, u); beg = r.beg; end = r.end; break; }
         case VIAL_LEVEL_MOLECULE: list = s->mol_atoms; beg = s->mol_offset[u]; end = s->mol_offset[u + 1]; break;
         case VIAL_LEVEL_CHAIN:    list = s->chain_atoms; beg = s->chain_offset[u]; end = s->chain_offset[u + 1]; break;
+        case VIAL_LEVEL_TAIL:     list = s->tail_atoms; beg = s->tail_offset[u]; end = s->tail_offset[u + 1]; break;
         default: break;
         }
         const uint32_t mark = w;

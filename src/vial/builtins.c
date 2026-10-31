@@ -17,7 +17,7 @@
 static const vial_builtin_t builtins[] = {
     // Selectors, usable bare for all their units
     {"particles", SEL}, {"atoms", SEL}, {"beads", SEL}, {"residues", SEL}, {"parts", SEL}, {"polymers", SEL}, {"molecules", SEL},
-    {"chains", SEL},
+    {"chains", SEL}, {"tails", SEL},
     // Predefined sets
     {"protein", SET}, {"nucleic", SET}, {"water", SET}, {"ion", SET}, {"lipid", SET}, {"backbone", SET},
     {"sidechain", SET}, {"nucleobase", SET}, {"nucleoside", SET}, {"head", SET}, {"tail", SET}, {"system", SET | F},

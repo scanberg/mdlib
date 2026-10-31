@@ -262,6 +262,7 @@ A system is built of particles, residues, parts and molecules, each nested in th
 | `residues(...)` | `set[n]`, one per residue | a residue |
 | `parts(...)` | `set[n]`, one per part | a polymer strand, glycan tree, ligand, lipid, ion or water |
 | `polymers(...)` | `set[n]`, one per strand | a polymer strand: the parts of a peptide, a nucleic acid or another polymer. Where a chain is a label of the data, a strand is the structure |
+| `tails(...)` | `set[n]`, one per tail | a tail of a lipid: an acyl, alkyl or sphingoid chain, or the ring skeleton of a sterol, with its branches and hydrogens; labelled by its number in its lipid, `tail2/DPPC1` |
 | `molecules(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
 | `chains(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
 

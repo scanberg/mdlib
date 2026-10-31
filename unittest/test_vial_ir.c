@@ -1222,6 +1222,22 @@ UTEST(vial_ir, anatomy_sets) {
     EXPECT_EQ(lipid, head + tail);
     EXPECT_EQ(0u, vial_ir__count("head and tail", &sys, &st, alloc));
     EXPECT_EQ(lipid, vial_ir__count("head or tail", &sys, &st, alloc));
+    // One set per tail; all of them are the tail particles
+    md_vial_filter_t f;
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tails"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+    EXPECT_EQ(1, f.ndim);
+    EXPECT_EQ(sys.lipid.tail.count, (size_t)f.num_sets);
+    EXPECT_EQ(tail, f.offsets[f.num_sets]);
+    EXPECT_EQ(tail, vial_ir__count("particles(tails)", &sys, &st, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tails(residues[0])"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+    EXPECT_EQ(2u, (unsigned)f.num_sets);     // DPPC: two acyl chains
+    {
+        md_vial_program_t* p = md_vial_compile(STR_LIT("l = labels(tails)[1]\n"), &(md_vial_compile_desc_t){.sys = &sys}, alloc);
+        md_vial_hover_t h;
+        ASSERT_TRUE(md_vial_hover(p, 0, &h));
+        EXPECT_TRUE(strstr(h.value, "tail2/") != NULL);
+        md_vial_program_free(p);
+    }
 
     ASSERT_TRUE(vial_ir__load_file(&sys, &st, "nucl-dna.gro", alloc));
     const uint32_t base = vial_ir__count("nucleobase", &sys, &st, alloc), side = vial_ir__count("nucleoside", &sys, &st, alloc);
