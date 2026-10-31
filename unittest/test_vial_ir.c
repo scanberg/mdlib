@@ -1216,12 +1216,23 @@ UTEST(vial_ir, anatomy_sets) {
     md_system_t sys;
     md_system_state_t st;
     ASSERT_TRUE(vial_ir__load_file(&sys, &st, "dppc64.pdb", alloc));
-    const uint32_t lipid = vial_ir__count("lipid", &sys, &st, alloc), head = vial_ir__count("head", &sys, &st, alloc), tail = vial_ir__count("tail", &sys, &st, alloc);
+    const uint32_t lipid = vial_ir__count("lipid", &sys, &st, alloc);
+    const uint32_t head = vial_ir__count("particles(heads)", &sys, &st, alloc), tail = vial_ir__count("particles(tails)", &sys, &st, alloc);
     EXPECT_GT(head, 0u);
     EXPECT_GT(tail, 0u);
     EXPECT_EQ(lipid, head + tail);
-    EXPECT_EQ(0u, vial_ir__count("head and tail", &sys, &st, alloc));
-    EXPECT_EQ(lipid, vial_ir__count("head or tail", &sys, &st, alloc));
+    EXPECT_EQ(0u, vial_ir__count("particles(heads) and particles(tails)", &sys, &st, alloc));
+    EXPECT_EQ(lipid, vial_ir__count("particles(heads) or particles(tails)", &sys, &st, alloc));
+    EXPECT_EQ(UINT32_MAX, vial_ir__count("head", &sys, &st, alloc));     // units, not kinds: no head set
+    // One head per DPPC, with its hydrogens
+    {
+        md_vial_filter_t h;
+        ASSERT_TRUE(md_vial_filter(&h, STR_LIT("heads"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+        EXPECT_EQ(1, h.ndim);
+        EXPECT_EQ(sys.lipid.head.count, (size_t)h.num_sets);
+        EXPECT_EQ(sys.lipid.count, (size_t)h.num_sets);
+        EXPECT_EQ(head, h.offsets[h.num_sets]);
+    }
     // One set per tail; all of them are the tail particles
     md_vial_filter_t f;
     ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tails"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));

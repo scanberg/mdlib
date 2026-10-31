@@ -19,6 +19,7 @@ typedef enum vial_level_t {
     VIAL_LEVEL_MOLECULE,
     VIAL_LEVEL_CHAIN,
     VIAL_LEVEL_TAIL,            // a tail of a lipid (md_lipid_data_t), with its branches and hydrogens
+    VIAL_LEVEL_HEAD,            // a head of a lipid: a connected part of what is not a tail, with its hydrogens
     VIAL_LEVEL_RING,            // a ring of the bonds (md_ring_data_t): 3 to 7 atoms, the smallest rings
 } vial_level_t;
 
@@ -59,6 +60,11 @@ typedef struct vial_sys_t {
     uint32_t    num_tails;
     uint32_t*   tail_offset;    // [tail + 1]
     uint32_t*   tail_atoms;
+    // Lipid heads, once needed: the particles of each, ascending
+    bool        have_heads;
+    uint32_t    num_heads;
+    uint32_t*   head_offset;    // [head + 1]
+    uint32_t*   head_atoms;
     // Rings, once needed: the particles of each, ascending (rings that are fused share some)
     bool        have_rings;
     uint32_t    num_rings;

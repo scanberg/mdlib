@@ -119,6 +119,48 @@ static void need_tails(vial_sys_t* s) {
     }
 }
 
+// A head is its heavy atoms (md_lipid_data_t keeps those) and what else of its lipid is no tail and bonded to them, the
+// hydrogens; in a lipid of one head, all of it that is no tail. As v1's head() takes it, hydrogens included.
+static void need_heads(vial_sys_t* s) {
+    if (s->have_heads) return;
+    s->have_heads = true;
+    const md_system_t* sys = s->sys;
+    const md_lipid_data_t* lip = &sys->lipid;
+    s->num_heads = (uint32_t)lip->head.count;
+    int32_t* head_of = md_alloc(s->alloc, (s->num_atoms + 1) * sizeof(int32_t));
+    for (uint32_t a = 0; a < s->num_atoms; ++a) head_of[a] = -1;
+    for (uint32_t h = 0; h < s->num_heads; ++h) {
+        const md_atom_idx_t* a = md_lipid_head_atoms(lip, h);
+        const size_t n = md_lipid_head_atom_count(lip, h);
+        for (size_t k = 0; k < n; ++k) if ((uint32_t)a[k] < s->num_atoms) head_of[a[k]] = (int32_t)h;
+    }
+    for (size_t l = 0; l < lip->count; ++l) {
+        const uint32_t h0 = lip->head_offset[l], h1 = lip->head_offset[l + 1];
+        if (h0 == h1) continue;
+        const int32_t* res = md_lipid_residues(lip, l);
+        const size_t nr = md_lipid_residue_count(lip, l);
+        for (size_t c = 0; c < nr; ++c) {
+            const md_urange_t r = md_system_residue_atom_range(sys, (size_t)res[c]);
+            for (uint32_t a = r.beg; a < r.end && a < s->num_atoms; ++a) {
+                if (head_of[a] >= 0 || (md_system_atom_flags(sys, a) & MD_ATOM_FLAG_LIPID_TAIL)) continue;
+                if (h1 - h0 == 1) { head_of[a] = (int32_t)h0; continue; }
+                for (md_bond_iter_t it = md_bond_iter(&sys->bond, a); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                    const md_atom_idx_t o = md_bond_iter_atom_index(&it);
+                    if (o >= 0 && (uint32_t)o < s->num_atoms && head_of[o] >= (int32_t)h0 && head_of[o] < (int32_t)h1) { head_of[a] = head_of[o]; break; }
+                }
+            }
+        }
+    }
+    s->head_offset = md_alloc(s->alloc, (s->num_heads + 2) * sizeof(uint32_t));
+    memset(s->head_offset, 0, (s->num_heads + 2) * sizeof(uint32_t));
+    for (uint32_t a = 0; a < s->num_atoms; ++a) if (head_of[a] >= 0) s->head_offset[head_of[a] + 1] += 1;
+    for (uint32_t h = 0; h < s->num_heads; ++h) s->head_offset[h + 1] += s->head_offset[h];
+    s->head_atoms = md_alloc(s->alloc, (s->head_offset[s->num_heads] + 1) * sizeof(uint32_t));
+    uint32_t* fill = md_alloc(s->alloc, (s->num_heads + 1) * sizeof(uint32_t));
+    memcpy(fill, s->head_offset, (s->num_heads + 1) * sizeof(uint32_t));
+    for (uint32_t a = 0; a < s->num_atoms; ++a) if (head_of[a] >= 0) s->head_atoms[fill[head_of[a]]++] = a;   // ascending
+}
+
 static void need_rings(vial_sys_t* s) {
     if (s->have_rings) return;
     s->have_rings = true;
@@ -343,6 +385,21 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
         if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
         break;
     }
+    case VIAL_LEVEL_HEAD: {
+        // Its number within its lipid and the residue it starts in: head1/DPPC1
+        need_heads(s);
+        if (unit >= s->num_heads) break;
+        const md_lipid_data_t* lip = &sys->lipid;
+        uint32_t k = 0;
+        for (size_t l = 0; l < lip->count; ++l) {
+            if (unit >= lip->head_offset[l] && unit < lip->head_offset[l + 1]) { k = unit - lip->head_offset[l]; break; }
+        }
+        n = snprintf(buf, cap, "head%u/", k + 1);
+        const uint32_t first = s->head_offset[unit] < s->head_offset[unit + 1] ? s->head_atoms[s->head_offset[unit]] : NONE32;
+        const uint32_t r = first != NONE32 ? atom_res(s, first) : NONE32;
+        if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
+        break;
+    }
     case VIAL_LEVEL_TAIL: {
         // Its number within its lipid and the residue it starts in: tail2/DPPC1
         need_tails(s);
@@ -422,6 +479,7 @@ static uint32_t takes(uint8_t level) {
     case VIAL_LEVEL_MOLECULE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_CHAIN:    return K(VIAL_KEY_ID) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_TAIL:     return K(VIAL_KEY_SCOPE);
+    case VIAL_LEVEL_HEAD:     return K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_RING:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_SIZE) | K(VIAL_KEY_SCOPE);
     default: return 0;
     }
@@ -438,6 +496,7 @@ const char* vial_select_keywords(uint8_t level) {
     case VIAL_LEVEL_MOLECULE: return "name, chain and scope";
     case VIAL_LEVEL_CHAIN:    return "id and scope";
     case VIAL_LEVEL_TAIL:     return "scope";
+    case VIAL_LEVEL_HEAD:     return "scope";
     case VIAL_LEVEL_RING:     return "kind, size and scope";
     default: return "";
     }
@@ -451,6 +510,7 @@ const char* vial_select_name(uint8_t level) {
     case VIAL_LEVEL_MOLECULE: return "molecules";
     case VIAL_LEVEL_CHAIN:    return "chains";
     case VIAL_LEVEL_TAIL:     return "tails";
+    case VIAL_LEVEL_HEAD:     return "heads";
     case VIAL_LEVEL_RING:     return "rings";
     default: return "sets";
     }
@@ -762,6 +822,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
     case VIAL_LEVEL_MOLECULE: num_units = s->num_mols; need_mols(s); break;
     case VIAL_LEVEL_CHAIN:    num_units = s->num_chains; need_chains(s); break;
     case VIAL_LEVEL_TAIL:     need_tails(s); num_units = s->num_tails; break;
+    case VIAL_LEVEL_HEAD:     need_heads(s); num_units = s->num_heads; break;
     case VIAL_LEVEL_RING:     need_rings(s); num_units = s->num_rings; break;
     default: break;
     }
@@ -777,6 +838,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         case VIAL_LEVEL_MOLECULE: pass = molecule_passes(s, q, u); size = s->mol_offset[u + 1] - s->mol_offset[u]; break;
         case VIAL_LEVEL_CHAIN:    pass = chain_passes(s, q, u);    size = s->chain_offset[u + 1] - s->chain_offset[u]; break;
         case VIAL_LEVEL_TAIL:     pass = true;                     size = s->tail_offset[u + 1] - s->tail_offset[u]; break;
+        case VIAL_LEVEL_HEAD:     pass = true;                     size = s->head_offset[u + 1] - s->head_offset[u]; break;
         case VIAL_LEVEL_RING:     pass = ring_passes(s, q, u);     size = s->ring_offset[u + 1] - s->ring_offset[u]; break;
         default: break;
         }
@@ -801,6 +863,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         case VIAL_LEVEL_MOLECULE: list = s->mol_atoms; beg = s->mol_offset[u]; end = s->mol_offset[u + 1]; break;
         case VIAL_LEVEL_CHAIN:    list = s->chain_atoms; beg = s->chain_offset[u]; end = s->chain_offset[u + 1]; break;
         case VIAL_LEVEL_TAIL:     list = s->tail_atoms; beg = s->tail_offset[u]; end = s->tail_offset[u + 1]; break;
+        case VIAL_LEVEL_HEAD:     list = s->head_atoms; beg = s->head_offset[u]; end = s->head_offset[u + 1]; break;
         case VIAL_LEVEL_RING:     list = s->ring_atoms; beg = s->ring_offset[u]; end = s->ring_offset[u + 1]; break;
         default: break;
         }
@@ -830,30 +893,6 @@ vial_sets_t* vial_select_predefined(vial_sys_t* s, str_t name, md_allocator_i* a
     else if (str_eq(name, STR_LIT("sidechain")))  flag = MD_ATOM_FLAG_SIDE_CHAIN;
     else if (str_eq(name, STR_LIT("nucleobase"))) flag = MD_ATOM_FLAG_NUCLEOBASE;
     else if (str_eq(name, STR_LIT("nucleoside"))) flag = MD_ATOM_FLAG_NUCLEOSIDE;
-    else if (str_eq(name, STR_LIT("tail")))       flag = MD_ATOM_FLAG_LIPID_TAIL;
-    if (str_eq(name, STR_LIT("head"))) {
-        // All of a lipid but its tails, for the lipids whose heads are known: a lipid by name without bonds has none
-        const md_lipid_data_t* lip = &sys->lipid;
-        vial_sets_t* out = sets_new(1, s->num_atoms, alloc);
-        out->single = true;
-        uint64_t* in = md_alloc(alloc, ((s->num_atoms + 63) / 64 + 1) * sizeof(uint64_t));
-        memset(in, 0, ((s->num_atoms + 63) / 64 + 1) * sizeof(uint64_t));
-        for (size_t l = 0; l < lip->count; ++l) {
-            if (lip->head_offset[l + 1] == lip->head_offset[l]) continue;
-            const int32_t* res = md_lipid_residues(lip, l);
-            const size_t nr = md_lipid_residue_count(lip, l);
-            for (size_t c = 0; c < nr; ++c) {
-                const md_urange_t r = md_system_residue_atom_range(sys, (size_t)res[c]);
-                for (uint32_t a = r.beg; a < r.end && a < s->num_atoms; ++a) {
-                    if (!(md_system_atom_flags(sys, a) & MD_ATOM_FLAG_LIPID_TAIL)) in[a >> 6] |= 1ull << (a & 63);
-                }
-            }
-        }
-        uint32_t n = 0;
-        for (uint32_t a = 0; a < s->num_atoms; ++a) if (in[a >> 6] >> (a & 63) & 1) out->idx[n++] = a;
-        out->offset[1] = n;
-        return out;
-    }
     int part = -1;
     if (str_eq(name, STR_LIT("protein"))) part = 0;
     else if (str_eq(name, STR_LIT("nucleic"))) part = 1;

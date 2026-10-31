@@ -61,6 +61,7 @@ static uint8_t selector_level(str_t name, uint8_t* particle_kind) {
     if (str_eq(name, STR_LIT("molecules"))) return VIAL_LEVEL_MOLECULE;
     if (str_eq(name, STR_LIT("chains"))) return VIAL_LEVEL_CHAIN;
     if (str_eq(name, STR_LIT("tails"))) return VIAL_LEVEL_TAIL;
+    if (str_eq(name, STR_LIT("heads"))) return VIAL_LEVEL_HEAD;
     if (str_eq(name, STR_LIT("rings"))) return VIAL_LEVEL_RING;
     return VIAL_LEVEL_NONE;
 }

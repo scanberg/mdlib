@@ -2638,6 +2638,7 @@ static uint8_t level_of(const char* name, uint8_t* pkind) {
     if (!strcmp(name, "molecules")) return VIAL_LEVEL_MOLECULE;
     if (!strcmp(name, "chains")) return VIAL_LEVEL_CHAIN;
     if (!strcmp(name, "tails")) return VIAL_LEVEL_TAIL;
+    if (!strcmp(name, "heads")) return VIAL_LEVEL_HEAD;
     if (!strcmp(name, "rings")) return VIAL_LEVEL_RING;
     return VIAL_LEVEL_NONE;
 }
@@ -2958,7 +2959,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     {
         uint8_t pk;
         if (level_of(name, &pk) != VIAL_LEVEL_NONE || IS("protein") || IS("nucleic") || IS("water") || IS("ion") || IS("lipid") ||
-            IS("backbone") || IS("sidechain") || IS("nucleobase") || IS("nucleoside") || IS("head") || IS("tail") || IS("system")) {
+            IS("backbone") || IS("sidechain") || IS("nucleobase") || IS("nucleoside") || IS("system")) {
             return k_select(k, name, &ba, out);
         }
     }

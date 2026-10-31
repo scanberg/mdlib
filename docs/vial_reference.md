@@ -263,6 +263,7 @@ A system is built of particles, residues, parts and molecules, each nested in th
 | `parts(...)` | `set[n]`, one per part | a polymer strand, glycan tree, ligand, lipid, ion or water |
 | `polymers(...)` | `set[n]`, one per strand | a polymer strand: the parts of a peptide, a nucleic acid or another polymer. Where a chain is a label of the data, a strand is the structure |
 | `tails(...)` | `set[n]`, one per tail | a tail of a lipid: an acyl, alkyl or sphingoid chain, or the ring skeleton of a sterol, with its branches and hydrogens; labelled by its number in its lipid, `tail2/DPPC1` |
+| `heads(...)` | `set[n]`, one per head | a head of a lipid: a connected part of what is not a tail, with its hydrogens; a lipid has one, a bolalipid two. `particles(heads) or particles(tails)` is every lipid whose anatomy is known, which a lipid by name in a system without bonds is not. Labelled `head1/DPPC1` |
 | `rings(...)` | `set[n]`, one per ring | a ring of the bonds, 3 to 7 atoms, the smallest rings: naphthalene has two. Fused rings share particles. Labelled by its number in the residue it starts in, `ring2/TRP5` |
 | `molecules(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
 | `chains(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
@@ -309,7 +310,7 @@ The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna
 
 ### Predefined names
 
-`protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone`, `sidechain`, `nucleobase`, `nucleoside`, `head` and `tail` are sets: `protein` is the particles of the peptide parts, with their caps and the modified residues bonded into them, `nucleic` those of the nucleic acid parts, and `water`, `ion` and `lipid` those of the parts of that kind. `backbone` is N, CA and C of the amino acids and the sugar-phosphate chain of the nucleotides, `sidechain` an amino acid's atoms from CB outwards, `nucleobase` the base of a nucleotide and `nucleoside` its sugar and base. `tail` is the tails of the lipids, each acyl, alkyl or sphingoid chain and the ring skeleton of a sterol with their branches and hydrogens, and `head` all of a lipid but its tails; `head or tail` is every lipid whose anatomy is known, which a lipid by name in a system without bonds is not. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
+`protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone`, `sidechain`, `nucleobase` and `nucleoside` are sets: `protein` is the particles of the peptide parts, with their caps and the modified residues bonded into them, `nucleic` those of the nucleic acid parts, and `water`, `ion` and `lipid` those of the parts of that kind. `backbone` is N, CA and C of the amino acids and the sugar-phosphate chain of the nucleotides, `sidechain` an amino acid's atoms from CB outwards, `nucleobase` the base of a nucleotide and `nucleoside` its sugar and base. A lipid's anatomy is units, not kinds, since a lipid has two tails or, a bolalipid, two heads: `heads` and `tails` are selectors, and `particles(heads)` and `particles(tails)` all of them as one set. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
 
 ### Scope
 
