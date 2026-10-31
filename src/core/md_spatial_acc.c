@@ -147,6 +147,7 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
         md_array_shrink(acc->tier_base[t], 0);
     }
     acc->num_tiers = 0;
+    acc->cell_ext = 0.0;
     MEMSET(acc->top_dim, 0, sizeof(acc->top_dim));
 
     acc->num_cells = 0;
@@ -421,6 +422,15 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
 #define SPATIAL_ACC_MAX_CELL_SCALE   4.0
 #define SPATIAL_ACC_DEFAULT_CUTOFF   6.0     // For a description without a cutoff
 #define SPATIAL_ACC_OCCUPANCY_SAMPLES 16384
+// Fewer points than this take the cutoff as the cell extent without an estimate. Measured (spatial_acc_bench, r3,
+// release, x86-64 with AVX-512): for atomistic systems, dense at any cutoff, the estimate always picks the cutoff and
+// costs 30-50% of building the cells; for sparse points (uniform, 0.001 per A^3, 5 A) larger cells only break even
+// at 4000 points (build and one internal query: 0.66 ms either way) and win from about 16000 (2.6 against 2.8 ms;
+// at 64000, 10.0 against 11.9). Past twice SPATIAL_ACC_OCCUPANCY_SAMPLES the estimate's cost stops growing while what
+// larger cells save keeps growing. A caller building many frames passes md_spatial_acc_desc_t.cell_ext instead.
+#ifndef SPATIAL_ACC_OCCUPANCY_MIN_POINTS
+#define SPATIAL_ACC_OCCUPANCY_MIN_POINTS (2 * SPATIAL_ACC_OCCUPANCY_SAMPLES)
+#endif
 
 static inline uint64_t occupancy_hash(uint64_t x) {
     x ^= x >> 30;
@@ -431,22 +441,31 @@ static inline uint64_t occupancy_hash(uint64_t x) {
     return x;
 }
 
-static void sort_u64(uint64_t* keys, uint64_t* tmp, size_t n) {
-    // LSD radix, 8 bits at a time, passes where every key has the same digit are skipped
-    uint32_t hist[256];
-    for (int shift = 0; shift < 64; shift += 8) {
-        MEMSET(hist, 0, sizeof(hist));
-        for (size_t i = 0; i < n; ++i) hist[(keys[i] >> shift) & 0xFF] += 1;
-        if (n == 0 || hist[(keys[0] >> shift) & 0xFF] == n) continue;
-        uint32_t sum = 0;
-        for (int b = 0; b < 256; ++b) {
-            const uint32_t c = hist[b];
-            hist[b] = sum;
-            sum += c;
-        }
-        for (size_t i = 0; i < n; ++i) tmp[hist[(keys[i] >> shift) & 0xFF]++] = keys[i];
-        MEMCPY(keys, tmp, n * sizeof(uint64_t));
+// The mean number of points a point of the subset sees in its own cell of extent ext, the whole set's: a point
+// sharing its cell with k - 1 others of the subset sees about 1 + (k - 1) / f. The cells are counted in an
+// open-addressing table of cap slots (a power of two, at least twice m): one pass over the points, not a sort.
+static double occupancy_at(const vec4_t* pos, size_t m, vec4_t lo, double ext, double f, uint64_t* slot_key, uint32_t* slot_count, size_t cap) {
+    MEMSET(slot_key, 0, cap * sizeof(uint64_t));
+    const float inv = (float)(1.0 / ext);
+    const size_t mask = cap - 1;
+    for (size_t i = 0; i < m; ++i) {
+        const vec4_t c = vec4_mul1(vec4_sub(pos[i], lo), inv);
+        const uint64_t cx = (uint64_t)MIN(c.x, 2097151.0f);
+        const uint64_t cy = (uint64_t)MIN(c.y, 2097151.0f);
+        const uint64_t cz = (uint64_t)MIN(c.z, 2097151.0f);
+        const uint64_t key = ((cx << 42) | (cy << 21) | cz) + 1;     // 0 marks an empty slot
+        size_t h = (size_t)occupancy_hash(key) & mask;
+        while (slot_key[h] && slot_key[h] != key) h = (h + 1) & mask;
+        if (!slot_key[h]) { slot_key[h] = key; slot_count[h] = 0; }
+        slot_count[h] += 1;
     }
+    double sum = 0.0;
+    for (size_t h = 0; h < cap; ++h) {
+        if (!slot_key[h]) continue;
+        const double k = (double)slot_count[h];
+        sum += k * (1.0 + (k - 1.0) / f);
+    }
+    return sum / (double)m;
 }
 
 static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cutoff, const md_allocator_i* avoid) {
@@ -454,10 +473,12 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
     if (N == 0 || !(cutoff > 0.0)) return cutoff;
 
     md_temp_scope_t temp = md_temp_begin_avoid(avoid);
-    const size_t cap = MIN(N, (size_t)SPATIAL_ACC_OCCUPANCY_SAMPLES * 2);
-    vec4_t*   pos  = md_temp_alloc_array(temp, vec4_t, cap);
-    uint64_t* key  = md_temp_alloc_array(temp, uint64_t, cap);
-    uint64_t* tmp  = md_temp_alloc_array(temp, uint64_t, cap);
+    const size_t max_m = MIN(N, (size_t)SPATIAL_ACC_OCCUPANCY_SAMPLES * 2);
+    size_t cap = 16;
+    while (cap < 2 * max_m) cap *= 2;
+    vec4_t*   pos        = md_temp_alloc_array(temp, vec4_t, max_m);
+    uint64_t* slot_key   = md_temp_alloc_array(temp, uint64_t, cap);
+    uint32_t* slot_count = md_temp_alloc_array(temp, uint32_t, cap);
 
     // The subset: every point when there are few, otherwise each with probability f, decided by a hash of its position
     // in the stream. Positions in a stream follow molecules, so taking every n-th would not be a random subset.
@@ -465,39 +486,32 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
     const uint64_t threshold = f >= 1.0 ? UINT64_MAX : (uint64_t)(f * 18446744073709551616.0);
     size_t m = 0;
     vec4_t lo = vec4_set1(FLT_MAX);
-    for (size_t i = 0; i < N && m < cap; ++i) {
+    for (size_t i = 0; i < N && m < max_m; ++i) {
         if (f < 1.0 && occupancy_hash(i) >= threshold) continue;
         const vec4_t p = md_coord_stream_load_vec4(coords, i);
         pos[m++] = p;
         lo = vec4_min(lo, p);
     }
 
+    // The ladder: cutoff * 2^(k/4) for k = 0..8, up to SPATIAL_ACC_MAX_CELL_SCALE. Occupancy grows with the cells, so the
+    // first step that reaches the target is found by bisection: the cutoff first, since dense points stop there, then
+    // the top, then halving. The grids of two steps are not nested, so occupancy is not strictly monotone, and a step
+    // off from a scan's is possible; that is only speed, as any extent of at least the cutoff finds the same pairs.
+    enum { STEPS = 9 };
     double result = cutoff * SPATIAL_ACC_MAX_CELL_SCALE;
-    // Steps of 2^(1/4)
-    for (double scale = 1.0; scale <= SPATIAL_ACC_MAX_CELL_SCALE * 1.0001; scale *= 1.189207115002721) {
-        const double ext = cutoff * scale;
-        const float inv = (float)(1.0 / ext);
-        for (size_t i = 0; i < m; ++i) {
-            const vec4_t c = vec4_mul1(vec4_sub(pos[i], lo), inv);
-            const uint64_t cx = (uint64_t)MIN(c.x, 2097151.0f);
-            const uint64_t cy = (uint64_t)MIN(c.y, 2097151.0f);
-            const uint64_t cz = (uint64_t)MIN(c.z, 2097151.0f);
-            key[i] = (cx << 42) | (cy << 21) | cz;
+#define OCC(k) occupancy_at(pos, m, lo, cutoff * pow(2.0, (k) / 4.0), f, slot_key, slot_count, cap)
+    if (OCC(0) >= SPATIAL_ACC_TARGET_OCCUPANCY) {
+        result = cutoff;
+    } else if (OCC(STEPS - 1) >= SPATIAL_ACC_TARGET_OCCUPANCY) {
+        int below = 0, at = STEPS - 1;     // occupancy(below) < target <= occupancy(at)
+        while (at - below > 1) {
+            const int mid = (below + at) / 2;
+            if (OCC(mid) >= SPATIAL_ACC_TARGET_OCCUPANCY) at = mid;
+            else below = mid;
         }
-        sort_u64(key, tmp, m);
-        double sum = 0.0;
-        for (size_t i = 0; i < m;) {
-            size_t j = i + 1;
-            while (j < m && key[j] == key[i]) ++j;
-            const double k = (double)(j - i);
-            sum += k * (1.0 + (k - 1.0) / f);
-            i = j;
-        }
-        if (sum / (double)m >= SPATIAL_ACC_TARGET_OCCUPANCY) {
-            result = ext;
-            break;
-        }
+        result = cutoff * pow(2.0, at / 4.0);
     }
+#undef OCC
 
     md_temp_end(temp);
     return result;
@@ -550,7 +564,7 @@ static void store_frame(md_spatial_acc_t* acc, double A[3][3], double I[3][3], v
     acc->flags = flags;
 }
 
-static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double in_cutoff, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags) {
+static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stream_t* coords, double in_cutoff, const md_unitcell_t* in_unitcell, md_spatial_acc_flags_t in_flags, double in_cell_ext) {
     ASSERT(acc);
     ASSERT(coords);
 
@@ -575,9 +589,14 @@ static void spatial_acc_init_internal(md_spatial_acc_t* acc, const md_coord_stre
     }
 
     // The cells: at least the cutoff, so a query up to it reaches one cell around, larger where the points are sparse.
-    // Never below 3 A, which would only multiply the cells to visit.
+    // Never below 3 A, which would only multiply the cells to visit. The caller's extent when given (another frame of
+    // the same run); the cutoff itself for few points, where estimating would cost more than any query it speeds up
     const double cutoff   = in_cutoff > 0.0 ? in_cutoff : SPATIAL_ACC_DEFAULT_CUTOFF;
-    const double CELL_EXT = MAX(cell_ext_from_occupancy(coords, cutoff, acc->alloc), 3.0);
+    const double ext      = in_cell_ext > 0.0 ? MAX(in_cell_ext, cutoff) :
+                            coords->count < SPATIAL_ACC_OCCUPANCY_MIN_POINTS ? cutoff :
+                            cell_ext_from_occupancy(coords, cutoff, acc->alloc);
+    const double CELL_EXT = MAX(ext, 3.0);
+    acc->cell_ext = CELL_EXT;
 
     double A[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     double I[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
@@ -709,7 +728,11 @@ void md_spatial_acc_init(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* des
         MD_LOG_ERROR("md_spatial_acc_init: the description has no coordinates");
         return;
     }
-    spatial_acc_init_internal(acc, desc->coords, desc->cutoff, desc->unitcell, desc->flags);
+    spatial_acc_init_internal(acc, desc->coords, desc->cutoff, desc->unitcell, desc->flags, desc->cell_ext);
+}
+
+double md_spatial_acc_cell_ext(const md_spatial_acc_t* acc) {
+    return acc ? acc->cell_ext : 0.0;
 }
 
 // Generate forward neighbor offsets for a 3D grid cell
