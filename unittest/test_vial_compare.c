@@ -39,6 +39,15 @@ static const vial_pair_t vial_pairs[] = {
     {"p = distance_max(residue(1), residue(5));",            "p = distance(residues[0], residues[4], between='farthest')", 1e-4},
     {"p = angle(residue(1), residue(2), residue(3));",       "p = angle(residues[0].com, residues[1].com, residues[2].com)", 1e-3},
     {"p = count(within(5.0, residue(3)));",                  "p = len(within(5.0, of=residues[2]) and not residues[2])", 0.0},
+    {"p = count(within(8.0, atom(1:10)));",                  "p = len(within(8.0, of=particles[0:10]) and not particles[0:10])", 0.0},
+    {"p = angle(1, 50, 120);",                               "p = angle(particles[0], particles[49], particles[119])", 1e-3},
+    {"p = dihedral(residue(1), residue(2), residue(3), residue(4));",
+                                                             "p = dihedral(residues[0].com, residues[1].com, residues[2].com, residues[3].com)", 1e-3},
+    {"p = distance_min(atom(1:20), atom(100:130));",         "p = distance(particles[0:20], particles[99:130], between='closest')", 1e-4},
+    {"p = distance_max(atom(1:20), atom(100:130));",         "p = distance(particles[0:20], particles[99:130], between='farthest')", 1e-4},
+    {"p = coord_x(atom(10));",                               "p = particles[9].x", 1e-5},
+    {"p = coord_z(com(residue(7)));",                        "p = residues[6].com.z", 1e-4},
+    {"p = rmsd(atom(1:40));",                                "x = particles[0:40]\np = rmsd(x, at(x.xyz, frame=0), weights='mass')", 1e-3},
 };
 
 // v1's property p at every frame
