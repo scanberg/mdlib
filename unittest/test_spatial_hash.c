@@ -1492,14 +1492,14 @@ UTEST(spatial_acc_cells, micrometre_box) {
 // and the same pairs either way
 UTEST(spatial_acc_cells, cell_extent_from_cutoff) {
     srand(2718);
-    const size_t count = 20000;
+    const size_t count = 40000;     // past SPATIAL_ACC_OCCUPANCY_MIN_POINTS, so the extent is estimated
     float* x = (float*)malloc(count * sizeof(float));
     float* y = (float*)malloc(count * sizeof(float));
     float* z = (float*)malloc(count * sizeof(float));
     const double cutoff = 5.0;
 
     // Dense: ~0.1 points per A^3, about 12 per cell of the cutoff. Sparse: ~1 point per cell of the cutoff.
-    const double extents[2] = { 58.0, 136.0 };
+    const double extents[2] = { 73.0, 171.0 };
     for (int pass = 0; pass < 2; ++pass) {
         const double ext = extents[pass];
         for (size_t i = 0; i < count; ++i) {
@@ -1563,6 +1563,129 @@ UTEST(spatial_acc_cells, aabb_beyond_thin_nonperiodic_layer) {
         }
         md_spatial_acc_free(&acc);
     }
+    free(x);
+    free(y);
+    free(z);
+}
+
+// ### BENCHMARK: THE CELL EXTENT FROM OCCUPANCY ###
+// Run on demand: MD_BENCH_SPATIAL=1 md_unittest --filter=spatial_acc_bench.*
+// Per system and cutoff: building with the estimate and with the cutoff as the cell extent, and an internal and an
+// external (within-like, 50 points) query on each. The fastest of MD_BENCH_SPATIAL_REPS (default 5).
+
+#define SPATIAL_BENCH_VERSION "spatial acc bench r4"
+
+static void bench_count_cb(const uint32_t* i, const uint32_t* j, const float* d2, size_t n, void* user) {
+    (void)i; (void)j; (void)d2;
+    *(size_t*)user += n;
+}
+
+static double bench_ms(md_tick_t t0) { return md_tick_to_nanoseconds(md_tick_now() - t0) * 1e-6; }
+
+static void bench_system(const char* name, const vec3_t* xyz, size_t n, const md_unitcell_t* cell, double cutoff, int reps) {
+    md_coord_stream_t all = md_coord_stream_from_aos((const float*)xyz, sizeof(vec3_t), NULL, n);
+    const size_t ne = n < 50 ? n : 50;
+    md_coord_stream_t ext = md_coord_stream_from_aos((const float*)(xyz + n / 2 - ne / 2), sizeof(vec3_t), NULL, ne);
+    double best[2][3];
+    double cell_ext[2] = {0, 0};
+    size_t pairs[2] = {0, 0};
+    for (int mode = 0; mode < 2; ++mode) {
+        for (int k = 0; k < 3; ++k) best[mode][k] = 1e30;
+        for (int r = 0; r < reps; ++r) {
+            md_spatial_acc_t acc = {.alloc = md_get_heap_allocator()};
+            md_tick_t t0 = md_tick_now();
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &all, .cutoff = cutoff, .unitcell = cell, .cell_ext = mode ? cutoff : 0.0});
+            const double ti = bench_ms(t0);
+            size_t np = 0;
+            t0 = md_tick_now();
+            md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, bench_count_cb, &np);
+            const double tq = bench_ms(t0);
+            size_t ne_pairs = 0;
+            t0 = md_tick_now();
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext, cutoff, bench_count_cb, &ne_pairs, 0);
+            const double tx = bench_ms(t0);
+            if (ti < best[mode][0]) best[mode][0] = ti;
+            if (tq < best[mode][1]) best[mode][1] = tq;
+            if (tx < best[mode][2]) best[mode][2] = tx;
+            cell_ext[mode] = md_spatial_acc_cell_ext(&acc);
+            pairs[mode] = np;
+            md_spatial_acc_free(&acc);
+        }
+    }
+    printf("%s: %-22s %7zu %4.1f A | estimate: cell %5.2f build %8.3f internal %8.3f external %7.3f | cutoff: cell %5.2f build %8.3f internal %8.3f external %7.3f ms%s\n",
+        SPATIAL_BENCH_VERSION, name, n, cutoff, cell_ext[0], best[0][0], best[0][1], best[0][2], cell_ext[1], best[1][0], best[1][1], best[1][2],
+        pairs[0] == pairs[1] ? "" : "  PAIRS DIFFER");
+}
+
+UTEST(spatial_acc_bench, occupancy) {
+    if (!getenv("MD_BENCH_SPATIAL")) return;
+    const int reps = getenv("MD_BENCH_SPATIAL_REPS") ? atoi(getenv("MD_BENCH_SPATIAL_REPS")) : 5;
+    printf("%s\n", SPATIAL_BENCH_VERSION);
+    const char* files[] = {"catalyst.gro", "tryptophan-md.gro", "water.gro", "nucl-dna.gro", "inside-md-pullout.gro", "centered.gro"};
+    for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", MD_UNITTEST_DATA_DIR, files[f]);
+        md_gro_data_t gro = {0};
+        if (!md_gro_data_parse_file(&gro, str_from_cstr(path), md_get_heap_allocator())) continue;
+        vec3_t* xyz = (vec3_t*)md_alloc(md_get_heap_allocator(), gro.num_atoms * sizeof(vec3_t));
+        for (size_t i = 0; i < gro.num_atoms; ++i) xyz[i] = (vec3_t){{gro.atom_data[i].x * 10.0f, gro.atom_data[i].y * 10.0f, gro.atom_data[i].z * 10.0f}};
+        const md_unitcell_t cell = md_unitcell_from_extent(gro.box[0][0] * 10.0, gro.box[1][1] * 10.0, gro.box[2][2] * 10.0);
+        bench_system(files[f], xyz, gro.num_atoms, &cell, 5.0, reps);
+        bench_system(files[f], xyz, gro.num_atoms, &cell, 10.0, reps);
+        md_free(md_get_heap_allocator(), xyz, gro.num_atoms * sizeof(vec3_t));
+        md_gro_data_free(&gro, md_get_heap_allocator());
+    }
+    // Uniform random, dense (0.1 per A^3) and sparse (0.001 per A^3)
+    const size_t sizes[] = {1000, 4000, 16000, 64000};
+    srand(1);
+    for (int d = 0; d < 2; ++d) {
+        const double density = d ? 0.001 : 0.1;
+        for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+            const size_t n = sizes[s];
+            const double L = cbrt((double)n / density);
+            vec3_t* xyz = (vec3_t*)md_alloc(md_get_heap_allocator(), n * sizeof(vec3_t));
+            for (size_t i = 0; i < n; ++i) xyz[i] = (vec3_t){{(float)(L * rand() / RAND_MAX), (float)(L * rand() / RAND_MAX), (float)(L * rand() / RAND_MAX)}};
+            const md_unitcell_t cell = md_unitcell_from_extent(L, L, L);
+            char name[64];
+            snprintf(name, sizeof(name), "uniform %s", d ? "0.001/A3" : "0.1/A3");
+            bench_system(name, xyz, n, &cell, 5.0, reps);
+            if (L > 25.0) bench_system(name, xyz, n, &cell, 10.0, reps);
+            md_free(md_get_heap_allocator(), xyz, n * sizeof(vec3_t));
+        }
+    }
+}
+
+// Fewer points than SPATIAL_ACC_OCCUPANCY_MIN_POINTS take the cutoff; a cell extent from the description is taken as
+// given (raised to the cutoff), and md_spatial_acc_cell_ext reports what was used. Every structure finds the same pairs.
+UTEST(spatial_acc_cells, cell_extent_given_or_cutoff) {
+    srand(31);
+    const size_t count = 4000;
+    float* x = (float*)malloc(count * sizeof(float));
+    float* y = (float*)malloc(count * sizeof(float));
+    float* z = (float*)malloc(count * sizeof(float));
+    const double ext = 160.0, cutoff = 5.0;     // sparse: an estimate would take larger cells
+    for (size_t i = 0; i < count; ++i) {
+        x[i] = (float)rnd_rng(0, ext);
+        y[i] = (float)rnd_rng(0, ext);
+        z[i] = (float)rnd_rng(0, ext);
+    }
+    md_unitcell_t cell = md_unitcell_from_extent(ext, ext, ext);
+    md_coord_stream_t stream = md_coord_stream_from_soa(x, y, z, NULL, count);
+    const double given[3] = { 0.0, 16.0, 2.0 };
+    const double expect[3] = { cutoff, 16.0, cutoff };
+    for (int k = 0; k < 3; ++k) {
+        md_spatial_acc_t acc = { .alloc = md_get_heap_allocator() };
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &stream, .cutoff = cutoff, .unitcell = &cell, .cell_ext = given[k] });
+        EXPECT_EQ(expect[k], md_spatial_acc_cell_ext(&acc));
+        EXPECT_EQ((uint32_t)(ext / expect[k]), acc.cell_dim[0]);
+        EXPECT_TRUE(cell_matches_reference(&stream, &acc, cutoff, &cell, false));
+        md_spatial_acc_free(&acc);
+    }
+    md_spatial_acc_t empty = { .alloc = md_get_heap_allocator() };
+    md_coord_stream_t none = md_coord_stream_from_soa(x, y, z, NULL, 0);
+    md_spatial_acc_init(&empty, &(md_spatial_acc_desc_t){ .coords = &none, .cutoff = cutoff });
+    EXPECT_EQ(0.0, md_spatial_acc_cell_ext(&empty));
+    md_spatial_acc_free(&empty);
     free(x);
     free(y);
     free(z);

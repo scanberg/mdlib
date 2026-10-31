@@ -51,6 +51,9 @@ typedef struct md_spatial_acc_t {
     uint64_t* tier_mask[MD_SPATIAL_ACC_MAX_TIERS];      // Tiers 1 .. num_tiers - 1, [0] is unused
     uint32_t* tier_base[MD_SPATIAL_ACC_MAX_TIERS];
 
+    // The cell extent the cells were built for (see md_spatial_acc_desc_t.cell_ext)
+    double cell_ext;
+
     struct md_allocator_i* alloc;
 } md_spatial_acc_t;
 
@@ -72,6 +75,12 @@ typedef struct md_spatial_acc_desc_t {
     const struct md_unitcell_t* unitcell;
 
     md_spatial_acc_flags_t flags;
+
+    // The cell extent to use instead of estimating one from how the points are spread: what md_spatial_acc_cell_ext
+    // gave for an earlier build of points spread the same way, such as another frame of the same run. Estimating
+    // costs more than building the cells for a few thousand points, and the spread changes little from frame to
+    // frame. Raised to the cutoff when less. 0 to estimate.
+    double cell_ext;
 } md_spatial_acc_desc_t;
 
 #ifdef __cplusplus
@@ -92,6 +101,10 @@ typedef void (*md_spatial_acc_pair_callback_t)(const uint32_t* i_idx, const uint
 // Initialize a spatial acceleration structure from its description. Builds from scratch: call again to rebuild for
 // new coordinates. acc->alloc has to be set.
 void md_spatial_acc_init(md_spatial_acc_t* acc, const md_spatial_acc_desc_t* desc);
+
+// The cell extent the structure was built for: pass it as md_spatial_acc_desc_t.cell_ext when building the next
+// frame of the same run to skip the estimate. 0 for an empty structure.
+double md_spatial_acc_cell_ext(const md_spatial_acc_t* acc);
 
 // Free the data allocated for the spatial acceleration structure. This should be called when the spatial acceleration structure is no longer needed to free the allocated memory.
 void md_spatial_acc_free(md_spatial_acc_t* acc);
