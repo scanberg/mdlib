@@ -77,8 +77,7 @@ void vial_val_set_missing(vial_val_t* v, size_t i, md_allocator_i* alloc) {
     v->missing[i >> 6] |= 1ull << (i & 63);
 }
 
-// The shortest text that reads back as the same float, as NumPy prints float32 and Python float64
-static int print_float(char* buf, size_t cap, double f, bool is32) {
+int vial_print_float(char* buf, size_t cap, double f, bool is32) {
     if (isnan(f)) return snprintf(buf, cap, "nan");
     if (isinf(f)) return snprintf(buf, cap, f < 0 ? "-inf" : "inf");
     char tmp[40];
@@ -101,8 +100,8 @@ static int print_elem(char* buf, size_t cap, const vial_val_t* v, size_t i) {
     switch (v->dtype) {
     case VIAL_DT_BOOL:    return snprintf(buf, cap, "%s", ((const uint8_t*)v->data)[i] ? "True" : "False");
     case VIAL_DT_INT:     return snprintf(buf, cap, "%d", ((const int32_t*)v->data)[i]);
-    case VIAL_DT_FLOAT:   return print_float(buf, cap, ((const float*)v->data)[i], true);
-    case VIAL_DT_FLOAT64: return print_float(buf, cap, ((const double*)v->data)[i], false);
+    case VIAL_DT_FLOAT:   return vial_print_float(buf, cap, ((const float*)v->data)[i], true);
+    case VIAL_DT_FLOAT64: return vial_print_float(buf, cap, ((const double*)v->data)[i], false);
     case VIAL_DT_STR: {
         const str_t s = ((const str_t*)v->data)[i];
         return snprintf(buf, cap, "'%.*s'", (int)s.len, s.ptr);

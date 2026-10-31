@@ -144,7 +144,7 @@ UTEST_F(vial_check, literals_and_units) {
     EXPECT_TYPE(u8"d = 0.5 nm + 3.0 Å\n", 1, "float nm, static = 0.8");
     EXPECT_TYPE(u8"c = 0.5 nm > 3.0 Å\n", 1, "bool, static = True");
     EXPECT_TYPE(u8"r = 3.0 Å / 2 ps\n", 1, u8"float Å/ps, static = 1.5");
-    EXPECT_TYPE(u8"a = (3.0 Å)**2\n", 1, u8"float Å², static = 9");
+    EXPECT_TYPE(u8"a = (3.0 Å)**2\n", 1, u8"float Å², static = 9.0");
     EXPECT_TYPE("e = 1.5 'kJ/mol'\n", 1, "float kJ/mol, static = 1.5");
     EXPECT_TYPE("h = 7 // 2\n", 1, "int, static = 3");
     EXPECT_TYPE("q = 7 / 2\n", 1, "float, static = 3.5");
@@ -196,10 +196,10 @@ UTEST_F(vial_check, shapes) {
 
 UTEST_F(vial_check, static_conditions) {
     // The branch a static condition does not take is not type-checked
-    EXPECT_TYPE("v = 1.0 if True else 'x' + 1\n", 1, "float, static = 1");
+    EXPECT_TYPE("v = 1.0 if True else 'x' + 1\n", 1, "float, static = 1.0");
     EXPECT_DIAGS("v = 1.0 if True else 'x' + 1\n", "");
     EXPECT_DIAGS("v = 1.0 if [True, False] else 2.0\n", "E0303 1: a conditional needs one bool; this is `bool[2]` | where(...)\n");
-    EXPECT_TYPE("c = 3\nv = 1.0 if c > 2 else 2\n", 2, "float, static = 1");
+    EXPECT_TYPE("c = 3\nv = 1.0 if c > 2 else 2\n", 2, "float, static = 1.0");
 }
 
 // ### STEP 4: THE SYSTEM AND THE SELECTORS ###
@@ -402,7 +402,7 @@ UTEST_F(vial_check, math) {
     EXPECT_TYPE("n = norm([[3.0, 4.0, 0.0]] * 1 nm)\n", 1, "float[1] nm, static");
     EXPECT_TYPE("u = normalize([3.0, 4.0, 0.0] * 1 nm)\n", 1, "float[3], static");
     EXPECT_TYPE("w = where([True, False], [1.0, 2.0], 0.0)\n", 1, "float[2], static");
-    EXPECT_TYPE("u = unitless(3.0 nm)\n", 1, "float, static = 3");
+    EXPECT_TYPE("u = unitless(3.0 nm)\n", 1, "float, static = 3.0");
     EXPECT_TYPE("i = int(3.7)\n", 1, "int, static = 3");
     EXPECT_TYPE("a = atan2(1.0 nm, 2.0 nm)\n", 1, u8"float °, static");
 }
@@ -438,11 +438,11 @@ UTEST_F(vial_check, building_and_joining) {
 UTEST_F(vial_check, defs) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);
-    EXPECT_TYPE("def twice(v):\n    return 2 * v\nd = twice(3.0 nm)\n", 3, "float nm, static = 6");
-    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(1.0 nm)\n", 3, "float nm, static = 3");
+    EXPECT_TYPE("def twice(v):\n    return 2 * v\nd = twice(3.0 nm)\n", 3, "float nm, static = 6.0");
+    EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(1.0 nm)\n", 3, "float nm, static = 3.0");
     EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(b=1 ns, a=2 ns)\ne = f(5 ns, 1 ns)\n", 3, "int ns, static = 3");
     EXPECT_TYPE("def f(a, b=2.0):\n    return a + b\nd = f(b=1 ns, a=2 ns)\ne = f(5 ns, 1 ns)\n", 4, "int ns, static = 6");
-    EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 5, "float, static = 1");
+    EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 5, "float, static = 1.0");
     EXPECT_TYPE("def f(a, op='sum'):\n    if op == 'sum':\n        return a\n    return a > 0\nd = f(1.0)\ne = f(1.0, op='x')\n", 6, "bool, static = True");
     EXPECT_DIAGS("def f(op):\n    assert op in ('a', 'b'), \"op= takes 'a' or 'b'\"\n    return 1\nx = f('c')\n",
         "E0314 2: op= takes 'a' or 'b'\n");
@@ -594,7 +594,7 @@ UTEST_F(vial_check, drawings) {
     EXPECT_TYPE_ON(T, "a = arrow([0.0, 0.0, 0.0], direction=[0.0, 0.0, 1.0], length=5.0)\n", 1, "drawing, static");
     EXPECT_TYPE_ON(T, "h = highlight(residues(chain='A'))\n", 1, "drawing[442], static");
     EXPECT_TYPE_ON(T, "t = label(particles(name='MG'), 'MG')\n", 1, "drawing, frame");
-    EXPECT_TYPE_ON(T, "d = shown(2.0 nm, sphere([0.0, 0.0, 0.0], 1.0))\n", 1, "float nm, static = 2");
+    EXPECT_TYPE_ON(T, "d = shown(2.0 nm, sphere([0.0, 0.0, 0.0], 1.0))\n", 1, "float nm, static = 2.0");
     EXPECT_DIAGS_ON(T, "s = sphere(particles(name='MG'), 3.0 ps)\n", "E0313 1: `sphere` takes a length for r; this is float ps\n");
     EXPECT_DIAGS_ON(T, "a = arrow([0.0, 0.0, 0.0])\n", "E0204 1: `arrow` runs from a to b, or from a along direction= for length=\n");
     EXPECT_DIAGS_ON(T, "d = shown(2.0, 3.0)\n", "E0313 1: `shown` attaches a drawing, made by a primitive such as line(); this is float\n");

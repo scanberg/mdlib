@@ -75,6 +75,7 @@ void vx_check_pairing(infer_t* x, vial_node_id at, const vial_type_t* a, const v
 
 void vx_unit_join(infer_t* x, vial_node_id at, const char* verb, const vial_type_t* a, const vial_type_t* b, vial_type_t* out);
 uint8_t vx_promote(const vial_type_t* a, const vial_type_t* b);    // NumPy 2's dtype of a and b together
+uint8_t vx_operand_dtype(const vial_type_t* self, const vial_type_t* other);   // a bare float beside a float64 is one
 
 // infer_geom.c
 

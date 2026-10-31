@@ -163,6 +163,39 @@ static double floordiv_d(double a, double b, double* mod_out) {
     return fl;
 }
 
+// x ** y in float: computed in double and rounded once, so the result does not depend on a libm's powf, which
+// promises less than half an ulp; x ** 2 is x * x, the same bits (a float's square is exact in double)
+static inline float pow_f(float a, float b) { return b == 2.0f ? a * a : (float)pow((double)a, (double)b); }
+static inline double pow_d(double a, double b) { return b == 2.0 ? a * a : pow(a, b); }
+
+double vial_k_arith(uint16_t op, uint8_t dtype, double a, double b) {
+    if (dtype == VIAL_DT_FLOAT) {
+        const float x = (float)a, y = (float)b;
+        float m;
+        switch (op) {
+        case VIAL_OP_PLUS:    return x + y;
+        case VIAL_OP_MINUS:   return x - y;
+        case VIAL_OP_STAR:    return x * y;
+        case VIAL_OP_SLASH:   return x / y;
+        case VIAL_OP_DSLASH:  return floordiv_f(x, y, NULL);
+        case VIAL_OP_PERCENT: floordiv_f(x, y, &m); return m;
+        case VIAL_OP_POW:     return pow_f(x, y);
+        default:              return NAN;
+        }
+    }
+    double m;
+    switch (op) {
+    case VIAL_OP_PLUS:    return a + b;
+    case VIAL_OP_MINUS:   return a - b;
+    case VIAL_OP_STAR:    return a * b;
+    case VIAL_OP_SLASH:   return a / b;
+    case VIAL_OP_DSLASH:  return floordiv_d(a, b, NULL);
+    case VIAL_OP_PERCENT: floordiv_d(a, b, &m); return m;
+    case VIAL_OP_POW:     return pow_d(a, b);
+    default:              return NAN;
+    }
+}
+
 bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_val_t* b, vial_val_t* out) {
     const uint8_t dt = k->type->dtype;
     if (dt == VIAL_DT_DRAWING) {
@@ -190,7 +223,7 @@ bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_
         case VIAL_OP_SLASH:   BC_FOR(bc, O[io] = A[ia] / B[ib]); break;
         case VIAL_OP_DSLASH:  BC_FOR(bc, O[io] = floordiv_f(A[ia], B[ib], NULL)); break;
         case VIAL_OP_PERCENT: BC_FOR(bc, { float m; floordiv_f(A[ia], B[ib], &m); O[io] = m; }); break;
-        case VIAL_OP_POW:     BC_FOR(bc, O[io] = powf(A[ia], B[ib])); break;
+        case VIAL_OP_POW:     BC_FOR(bc, O[io] = pow_f(A[ia], B[ib])); break;
         default: return vial_rt_fail(k, "R0103", "`%s` on floats", vial_op_str((vial_op_t)op));
         }
     } else if (cd == VIAL_DT_FLOAT64) {
@@ -202,7 +235,7 @@ bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_
         case VIAL_OP_SLASH:   BC_FOR(bc, O[io] = A[ia] / B[ib]); break;
         case VIAL_OP_DSLASH:  BC_FOR(bc, O[io] = floordiv_d(A[ia], B[ib], NULL)); break;
         case VIAL_OP_PERCENT: BC_FOR(bc, { double m; floordiv_d(A[ia], B[ib], &m); O[io] = m; }); break;
-        case VIAL_OP_POW:     BC_FOR(bc, O[io] = pow(A[ia], B[ib])); break;
+        case VIAL_OP_POW:     BC_FOR(bc, O[io] = pow_d(A[ia], B[ib])); break;
         default: return vial_rt_fail(k, "R0103", "`%s` on floats", vial_op_str((vial_op_t)op));
         }
     } else {

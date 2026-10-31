@@ -134,6 +134,8 @@ A type is a dtype, a shape and a unit, printed C-style: `float[433][3] Å`. Shap
 
 `int` with `float` gives `float`. A number literal takes the dtype of the array it meets when both are integers or both are floats, as NumPy 2 does, so `0.5 * a` keeps a float array's dtype, and 0.5 times an int array is float. Reductions, including those over frames, accumulate in 64 bits internally and round once at the end, and an integer result that does not fit in 32 bits is R0102. `time()` is the one 64-bit value, since a 32-bit float resolves a 10 µs run to about 1 ps; what is computed from it alone stays 64-bit and rounds to 32 bits where it meets other data.
 
+Float arithmetic is IEEE 754 single precision, rounded once per operation, except that `a * b + c` on values of a frame may be fused into one rounding; the compiler decides where, the same way on every platform. Powers and functions of a float, such as `sqrt`, `exp` and `sin`, are computed in 64 bits and rounded once to 32, and `x ** 2` is `x * x`. A bare number beside a 64-bit value is 64-bit, so `time() + 0.1` adds 0.1 and not the float nearest it. A value known when compiling is computed exactly as evaluation computes it, so `0.1 + 0.2 == 0.3` is `True` here, as it is for float32 in NumPy, and what hover shows and what a static `if` decides are the values the script gives.
+
 ### Dimensions
 
 - Broadcasting is NumPy's: shapes align from the right, a dimension of 1 stretches, and equal extents pair in order. Anything else is E0301.
