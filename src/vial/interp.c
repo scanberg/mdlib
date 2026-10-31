@@ -152,6 +152,7 @@ static bool eval_at(vial_interp_t* in, uint32_t opi) {
 }
 
 void vial_interp_free(vial_interp_t* in) {
+    for (int d = 0; d < VIAL_MAP_SCRATCH_DEPTH; ++d) if (in->map_scratch[d]) md_vm_arena_destroy(in->map_scratch[d]);
     if (in->temp) md_arena_allocator_destroy(in->temp);
     if (in->alloc) md_arena_allocator_destroy(in->alloc);
     memset(in, 0, sizeof(*in));
@@ -200,19 +201,15 @@ static vial_val_t element(const vial_val_t* a, uint32_t lead, size_t i, md_alloc
     return e;
 }
 
-// Writes element i of a stacked result from one call's value
-static bool place(vial_kctx_t* k, vial_val_t* out, size_t i, const vial_val_t* e, uint32_t** set_pos, const vial_val_t** set_src) {
+// Writes element i of a stacked result from one call's value; a conversion of its dtype is made in scratch
+static bool place(vial_kctx_t* k, vial_val_t* out, size_t i, const vial_val_t* e, md_allocator_i* scratch) {
     size_t inner = 1;
     for (uint8_t q = out->ndim - e->ndim; q < out->ndim; ++q) inner *= out->dims[q];
     if (vial_val_count(e) != inner) return vial_rt_fail(k, "R0103", "the calls of a map give values of different shapes");
-    if (out->dtype == VIAL_DT_SET) {
-        // Sets are gathered at the end: remember which element of which call's sets
-        (void)set_pos; (void)set_src;
-        return true;
-    }
     if (e->dtype != out->dtype) {
-        const vial_val_t c = vial_val_as(e, out->dtype, k->alloc);
-        return place(k, out, i, &c, set_pos, set_src);
+        const vial_val_t c = vial_val_as(e, out->dtype, scratch);
+        if (c.dtype != out->dtype) return vial_rt_fail(k, "R0103", "the calls of a map give values of different kinds");
+        return place(k, out, i, &c, scratch);
     }
     const size_t es = vial_dtype_size(out->dtype);
     if (es && e->data) memcpy((uint8_t*)out->data + i * inner * es, e->data, inner * es);
@@ -220,6 +217,16 @@ static bool place(vial_kctx_t* k, vial_val_t* out, size_t i, const vial_val_t* e
         for (size_t q = 0; q < inner; ++q) if (vial_val_is_missing(e, q)) vial_val_set_missing(out, i * inner + q, k->alloc);
     }
     return true;
+}
+
+// The scratch arena of a map at the current depth, made on first use. A call of a map is evaluated in it and it is
+// reset once the call's value is placed, so a map holds its result and one call's intermediates, not every call's.
+// A map in a call is one deeper and has its own, so resetting it leaves the outer call's values alone.
+static md_allocator_i* map_scratch(vial_interp_t* in) {
+    if (in->map_depth >= VIAL_MAP_SCRATCH_DEPTH) return NULL;
+    md_allocator_i** a = &in->map_scratch[in->map_depth];
+    if (!*a) *a = md_vm_arena_create(GIGABYTES(4));
+    return *a;
 }
 
 static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t* const* av, vial_val_t* out, md_allocator_i* alloc) {
@@ -243,13 +250,31 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
     for (uint8_t d = 0; d < lnd; ++d) count *= ldims[d];
     if (!vial_k_room(&k, count)) return false;
     const vial_ir_region_t* r = &in->ir->regions[op->region[0]];
-    vial_val_t* params = md_alloc(alloc, (r->num_params ? r->num_params : 1) * sizeof(vial_val_t));
     const bool filtered = op->sub == VIAL_MAP_FILTERED;
     const vial_type_t* rt = k.type;
-    vial_val_t* results = md_alloc(alloc, (count ? count : 1) * sizeof(vial_val_t));
-    uint8_t* keep = filtered ? md_alloc(alloc, count ? count : 1) : NULL;
+    md_allocator_i* scratch = map_scratch(in);
+    md_allocator_i* ea = scratch ? scratch : alloc;
+    const size_t entry = scratch ? md_vm_arena_get_pos(scratch) : 0;
+    in->map_depth += 1;
+
+    // The result: the loop's dimensions (one, when filtered), then one call's, made when the first call gives its shape
+    vial_val_t o = {.dtype = rt->dtype};
+    // Filtered: room for every call while they run, of which the kept are the first; cut to them at the end
+    if (filtered) { o.ndim = 1; o.dims[0] = (uint32_t)count; }
+    else { o.ndim = lnd; memcpy(o.dims, ldims, lnd * sizeof(uint32_t)); }
+    const uint8_t outer_nd = o.ndim;
+    const bool has_data = o.dtype != VIAL_DT_SET && o.dtype != VIAL_DT_TUPLE && o.dtype != VIAL_DT_NONE && o.dtype != VIAL_DT_DRAWING;
+    bool shaped = false;
     size_t kept = 0;
-    for (size_t i = 0; i < count; ++i) {
+    uint32_t* set_off = NULL;   // md_array in alloc: an array of sets, gathered call by call
+    uint32_t* set_idx = NULL;
+    if (o.dtype == VIAL_DT_SET) md_array_push(set_off, 0, alloc);
+    vial_val_t* params = md_alloc(alloc, (r->num_params ? r->num_params : 1) * sizeof(vial_val_t));
+    bool ok = true;
+    for (size_t i = 0; i < count && ok; ++i) {
+        // Interruptible within a frame: a map can be most of a frame's work
+        if ((i & 255) == 0 && in->stop && md_atomic_load64(in->stop)) { in->interrupted = true; ok = false; break; }
+        const size_t mark = scratch ? md_vm_arena_get_pos(scratch) : 0;
         // The element of each operand at loop position i, by its own broadcast position
         size_t rem = i;
         uint32_t idx[VIAL_MAX_DIMS];
@@ -263,77 +288,65 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
                 const uint32_t j = e == 1 ? 0 : idx[lnd - m + d];
                 lin = lin * e + j;
             }
-            params[p] = element(av[p], m, lin, alloc);
+            params[p] = element(av[p], m, lin, ea);
         }
         vial_val_t ys[2];
         uint32_t ny = 0;
-        if (!eval_region(in, op->region[0], params, ys, 2, &ny, alloc)) return false;
-        if (ny < 1) return vial_rt_fail(&k, "R0103", "a map's call gave no value");
+        if (!eval_region(in, op->region[0], params, ys, 2, &ny, ea)) { ok = false; break; }
+        if (ny < 1) { ok = vial_rt_fail(&k, "R0103", "a map's call gave no value"); break; }
+        bool keep = true;
         if (filtered) {
-            if (ny < 2 || ys[1].dtype != VIAL_DT_BOOL || !ys[1].data) return vial_rt_fail(&k, "R0103", "a filter gave no bool");
-            keep[i] = *(const uint8_t*)ys[1].data && !vial_val_is_missing(&ys[1], 0);
-            if (!keep[i]) continue;
+            if (ny < 2 || ys[1].dtype != VIAL_DT_BOOL || !ys[1].data) { ok = vial_rt_fail(&k, "R0103", "a filter gave no bool"); break; }
+            keep = *(const uint8_t*)ys[1].data && !vial_val_is_missing(&ys[1], 0);
+        }
+        if (keep) {
+            const vial_val_t* y = &ys[0];
+            if (!shaped) {
+                shaped = true;
+                for (uint8_t q = 0; q < y->ndim && o.ndim < VIAL_MAX_DIMS; ++q) o.dims[o.ndim++] = y->dims[q];
+                if (has_data) {
+                    vial_val_t made;
+                    if (!vial_k_make(&k, o.dtype, o.ndim, o.dims, &made)) { ok = false; break; }
+                    o.data = made.data;
+                }
+            }
+            if (o.dtype == VIAL_DT_SET) {
+                const vial_sets_t* e = y->sets;
+                for (uint32_t q = 0; e && q < e->count; ++q) {
+                    const uint32_t sz = vial_sets_size(e, q);
+                    md_array_push_array(set_idx, vial_sets_items(e, q), sz, alloc);
+                    md_array_push(set_off, (uint32_t)md_array_size(set_idx), alloc);
+                }
+            } else if (has_data) {
+                if (!place(&k, &o, kept, y, ea)) { ok = false; break; }
+            }
             kept += 1;
         }
-        results[i] = ys[0];
+        if (scratch) md_vm_arena_set_pos_back(scratch, mark);
     }
-    // Stacked: the loop's dimensions (one, when filtered), then one call's
-    vial_val_t o = {.dtype = rt->dtype};
-    if (filtered) { o.ndim = 1; o.dims[0] = (uint32_t)kept; }
-    else { o.ndim = lnd; memcpy(o.dims, ldims, lnd * sizeof(uint32_t)); }
-    const vial_val_t* first = NULL;
-    for (size_t i = 0; i < count && !first; ++i) if (!filtered || keep[i]) first = &results[i];
-    vial_val_t inner_shape = first ? *first : (vial_val_t){0};
-    if (!first) {
+    in->map_depth -= 1;
+    if (scratch) md_vm_arena_set_pos_back(scratch, entry);
+    if (!ok) return false;
+    if (filtered) o.dims[0] = (uint32_t)kept;
+    if (!shaped) {
         // No call: the element's shape is the type's, where it is static
-        const uint8_t ond = filtered ? 1 : lnd;
-        inner_shape.ndim = rt->ndim > ond ? rt->ndim - ond : 0;
-        for (uint8_t q = 0; q < inner_shape.ndim; ++q) inner_shape.dims[q] = rt->dims[ond + q].kind == VIAL_EXT_STATIC ? rt->dims[ond + q].n : 0;
+        const uint8_t nd = rt->ndim > outer_nd ? rt->ndim - outer_nd : 0;
+        for (uint8_t q = 0; q < nd; ++q) o.dims[o.ndim++] = rt->dims[outer_nd + q].kind == VIAL_EXT_STATIC ? rt->dims[outer_nd + q].n : 0;
+        if (has_data) {
+            vial_val_t made;
+            if (!vial_k_make(&k, o.dtype, o.ndim, o.dims, &made)) return false;
+            o.data = made.data;
+        }
     }
-    for (uint8_t q = 0; q < inner_shape.ndim; ++q) o.dims[o.ndim++] = inner_shape.dims[q];
     if (o.dtype == VIAL_DT_SET) {
         // An array of sets: each call's sets, in order
-        uint32_t total = 0, nsets = 0;
-        for (size_t i = 0; i < count; ++i) {
-            if (filtered && !keep[i]) continue;
-            const vial_sets_t* s = results[i].sets;
-            nsets += s->count;
-            total += s->offset[s->count];
-        }
         vial_sets_t* s = md_alloc(alloc, sizeof(vial_sets_t));
         memset(s, 0, sizeof(*s));
-        s->count = nsets;
-        s->offset = md_alloc(alloc, (nsets + 1) * sizeof(uint32_t));
-        s->idx = md_alloc(alloc, (total ? total : 1) * sizeof(uint32_t));
-        uint32_t at = 0, n = 0;
-        s->offset[0] = 0;
-        for (size_t i = 0; i < count; ++i) {
-            if (filtered && !keep[i]) continue;
-            const vial_sets_t* e = results[i].sets;
-            for (uint32_t q = 0; q < e->count; ++q) {
-                const uint32_t sz = vial_sets_size(e, q);
-                memcpy(s->idx + at, vial_sets_items(e, q), sz * sizeof(uint32_t));
-                at += sz;
-                s->offset[++n] = at;
-            }
-        }
+        s->count = (uint32_t)md_array_size(set_off) - 1;
+        s->offset = set_off;
+        s->idx = set_idx ? set_idx : md_alloc(alloc, sizeof(uint32_t));
         if (o.ndim == 0) s->single = true;
         o.sets = s;
-        *out = o;
-        return true;
-    }
-    if (o.dtype == VIAL_DT_TUPLE || o.dtype == VIAL_DT_NONE || o.dtype == VIAL_DT_DRAWING) {
-        *out = (vial_val_t){.dtype = o.dtype, .ndim = o.ndim};
-        memcpy(out->dims, o.dims, sizeof(o.dims));
-        return true;
-    }
-    vial_val_t made;
-    if (!vial_k_make(&k, o.dtype, o.ndim, o.dims, &made)) return false;
-    o.data = made.data;
-    size_t j = 0;
-    for (size_t i = 0; i < count; ++i) {
-        if (filtered && !keep[i]) continue;
-        if (!place(&k, &o, j++, &results[i], NULL, NULL)) return false;
     }
     *out = o;
     return true;

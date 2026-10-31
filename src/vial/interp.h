@@ -31,6 +31,8 @@ typedef struct vial_rt_error_t {
     md_vial_span_t  span;
 } vial_rt_error_t;
 
+#define VIAL_MAP_SCRATCH_DEPTH 8
+
 typedef struct vial_interp_t {
     const vial_ir_t*            ir;
     vial_sys_t*                 sys;        // NULL without a system
@@ -62,8 +64,11 @@ typedef struct vial_interp_t {
     // that stops vial_interp_run between frames
     volatile uint64_t           frames_done;
     volatile uint64_t           frames_total;
-    const volatile uint64_t*    stop;       // nonzero: stop
+    const volatile uint64_t*    stop;       // nonzero: stop, between frames or between a map's calls
     bool                        interrupted;
+    // A map's calls are evaluated in a scratch arena per depth of maps in maps, reset after each call
+    md_allocator_i*             map_scratch[VIAL_MAP_SCRATCH_DEPTH];
+    uint32_t                    map_depth;
 } vial_interp_t;
 
 enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };
