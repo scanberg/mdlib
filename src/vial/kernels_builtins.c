@@ -33,7 +33,7 @@ static const vial_val_t* arg(const bargs_t* a, const char* name, uint32_t pos) {
     bool bound = false;
     for (uint32_t i = 0; i < a->n; ++i) {
         if (!a->names[i].len) continue;
-        if (str_eq(a->names[i], str_from_cstr(name))) return a->v[i];
+        if (a->names[i].ptr[0] == name[0] && str_eq(a->names[i], str_from_cstr(name))) return a->v[i];
         if (i == 0) bound = true;   // a bound call names its first parameter
     }
     if (bound) return NULL;
@@ -1897,7 +1897,8 @@ static bool k_autocorrelation(vial_kctx_t* k, const vial_val_t* x, const vial_va
 
 bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out) {
     bargs_t ba = {.v = args, .names = names, .n = n};
-    #define IS(s) (strcmp(name, s) == 0)
+    // The first letter first: most names differ there, and a mapped call dispatches once per element
+    #define IS(s) (name[0] == (s)[0] && strcmp(name, s) == 0)
     if (IS("positions")) return vial_k_positions(k, arg(&ba, "s", 0), out);
     if (IS("com")) return k_com(k, arg(&ba, "s", 0), arg(&ba, "weights", 1), out);
     if (IS("displacement")) return k_displacement(k, arg(&ba, "a", 0), arg(&ba, "b", 1), out);
