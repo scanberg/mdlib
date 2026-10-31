@@ -2,6 +2,12 @@
 // kinds. Built with floating-point contraction off: where a multiply and an add fuse is the compiler's decision, made
 // once in the IR, so every backend gives the same bits.
 
+// No contraction: where a multiply and an add fuse is the IR's decision (VIAL_IR_FMA). GCC and Clang get
+// -ffp-contract=off for this file from CMake; MSVC's /fp:contract is taken back here, which it allows per file.
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma fp_contract(off)
+#endif
+
 #include "interp.h"
 #include "ast.h"
 #include "infer_internal.h"

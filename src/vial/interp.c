@@ -1,3 +1,9 @@
+// No contraction: where a multiply and an add fuse is the IR's decision (VIAL_IR_FMA). GCC and Clang get
+// -ffp-contract=off for this file from CMake; MSVC's /fp:contract is taken back here, which it allows per file.
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma fp_contract(off)
+#endif
+
 #include "interp.h"
 #include "builtins.h"
 #include "ast.h"

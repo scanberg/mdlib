@@ -1,6 +1,12 @@
 // The interpreter's built-ins: geometry, properties, reductions, math and the array functions. Each takes its
 // arguments by parameter, as the check bound them. Built with floating-point contraction off, like kernels.c.
 
+// No contraction: where a multiply and an add fuse is the IR's decision (VIAL_IR_FMA). GCC and Clang get
+// -ffp-contract=off for this file from CMake; MSVC's /fp:contract is taken back here, which it allows per file.
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma fp_contract(off)
+#endif
+
 #include "interp.h"
 #include "infer_internal.h"
 #include "ast.h"
