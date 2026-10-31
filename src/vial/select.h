@@ -19,6 +19,7 @@ typedef enum vial_level_t {
     VIAL_LEVEL_MOLECULE,
     VIAL_LEVEL_CHAIN,
     VIAL_LEVEL_TAIL,            // a tail of a lipid (md_lipid_data_t), with its branches and hydrogens
+    VIAL_LEVEL_RING,            // a ring of the bonds (md_ring_data_t): 3 to 7 atoms, the smallest rings
 } vial_level_t;
 
 // The kinds of a part, as the reference names them. mdlib's non-polymer parts are told apart here: a lipid when its
@@ -58,6 +59,11 @@ typedef struct vial_sys_t {
     uint32_t    num_tails;
     uint32_t*   tail_offset;    // [tail + 1]
     uint32_t*   tail_atoms;
+    // Rings, once needed: the particles of each, ascending (rings that are fused share some)
+    bool        have_rings;
+    uint32_t    num_rings;
+    uint32_t*   ring_offset;    // [ring + 1]
+    uint32_t*   ring_atoms;
 } vial_sys_t;
 
 str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1
@@ -120,6 +126,7 @@ typedef enum vial_key_t {
     VIAL_KEY_CHAIN,
     VIAL_KEY_ID,
     VIAL_KEY_SCOPE,
+    VIAL_KEY_SIZE,              // rings: the number of atoms
     VIAL_KEY_COUNT
 } vial_key_t;
 

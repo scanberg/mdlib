@@ -263,6 +263,7 @@ A system is built of particles, residues, parts and molecules, each nested in th
 | `parts(...)` | `set[n]`, one per part | a polymer strand, glycan tree, ligand, lipid, ion or water |
 | `polymers(...)` | `set[n]`, one per strand | a polymer strand: the parts of a peptide, a nucleic acid or another polymer. Where a chain is a label of the data, a strand is the structure |
 | `tails(...)` | `set[n]`, one per tail | a tail of a lipid: an acyl, alkyl or sphingoid chain, or the ring skeleton of a sterol, with its branches and hydrogens; labelled by its number in its lipid, `tail2/DPPC1` |
+| `rings(...)` | `set[n]`, one per ring | a ring of the bonds, 3 to 7 atoms, the smallest rings: naphthalene has two. Fused rings share particles. Labelled by its number in the residue it starts in, `ring2/TRP5` |
 | `molecules(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
 | `chains(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
 
@@ -285,6 +286,8 @@ A system is built of particles, residues, parts and molecules, each nested in th
 |  | `chain` | the author id of its chain | string or list |
 | `polymers` | `kind` | polymer, peptide, nucleic, dna, rna | string or list |
 |  | `chain` | the author id of its chain | string or list |
+| `rings` | `kind` | aromatic (every bond), aliphatic, hetero (an atom other than C), heteroaromatic, sugar (a furanose or pyranose) | string or list |
+|  | `size` | the number of atoms | int, `a..b` or a list |
 | `molecules` | `name` | the name of its molecule type: the topology's, else what its parts are, such as peptide, GTP or water | string with `*` and `?`, or a list |
 |  | `chain` | the author id of its chain | string or list |
 | `chains` | `id` | the author chain id | string or list |
@@ -331,6 +334,10 @@ str_   = parts(kind='polymer')                         # -> set[2]: chain B's st
 strand = polymers                                      # -> set[2]: the same strands
 sb     = polymers(chain='B')                           # -> set[1]
 not_p  = polymers(kind='ligand')                       # error E0206: a ligand is not a polymer
+aro    = rings(kind='aromatic')                        # -> set[n]
+phe0   = rings(scope=residues('PHE')[0])               # -> set[1]: its benzene ring
+trp    = rings(particles(resname='TRP'))               # -> set[16]: eight TRP, two fused rings each
+flat   = rings(kind='flat')                            # error E0206
 lig    = parts(kind='ligand')                          # -> set[6]: GTP, three SO4, GDP and VLB
 mol    = molecules(parts(kind='peptide'))              # -> set[2]: the molecules the strands are in
 n_mol  = len(molecules)                                # -> 17

@@ -61,6 +61,7 @@ static uint8_t selector_level(str_t name, uint8_t* particle_kind) {
     if (str_eq(name, STR_LIT("molecules"))) return VIAL_LEVEL_MOLECULE;
     if (str_eq(name, STR_LIT("chains"))) return VIAL_LEVEL_CHAIN;
     if (str_eq(name, STR_LIT("tails"))) return VIAL_LEVEL_TAIL;
+    if (str_eq(name, STR_LIT("rings"))) return VIAL_LEVEL_RING;
     return VIAL_LEVEL_NONE;
 }
 
@@ -98,7 +99,7 @@ static bool key_takes_str(uint8_t level, uint8_t key) {
 }
 
 static const char* key_word(uint8_t key) {
-    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope"};
+    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size"};
     return key < ARRAY_SIZE(words) ? words[key] : "";
 }
 
@@ -177,7 +178,7 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
             char ex[VIAL_EXCERPT_MAX + 4];
             const str_t e = vial_excerpt(ex, sizeof(ex), w);
             vx_diag_fix(x, "E0206", node, fix[0] ? fix : NULL, "'%.*s' is not a %s kind; the kinds are %s", (int)e.len, e.ptr,
-                level == VIAL_LEVEL_PARTICLE ? "particle" : level == VIAL_LEVEL_RESIDUE ? "residue" : "part", kinds);
+                level == VIAL_LEVEL_PARTICLE ? "particle" : level == VIAL_LEVEL_RESIDUE ? "residue" : level == VIAL_LEVEL_RING ? "ring" : "part", kinds);
             return -1;
         }
     }

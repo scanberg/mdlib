@@ -2638,6 +2638,7 @@ static uint8_t level_of(const char* name, uint8_t* pkind) {
     if (!strcmp(name, "molecules")) return VIAL_LEVEL_MOLECULE;
     if (!strcmp(name, "chains")) return VIAL_LEVEL_CHAIN;
     if (!strcmp(name, "tails")) return VIAL_LEVEL_TAIL;
+    if (!strcmp(name, "rings")) return VIAL_LEVEL_RING;
     return VIAL_LEVEL_NONE;
 }
 
