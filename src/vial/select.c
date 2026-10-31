@@ -196,6 +196,25 @@ vial_sets_t* vial_sets_not(const vial_sets_t* scope, const vial_sets_t* a, uint3
     return s;
 }
 
+vial_sets_t* vial_sets_boolop_each(const vial_sets_t* arr, const vial_sets_t* one, bool is_and, md_allocator_i* alloc) {
+    // Each element on its own, then gathered, as the runtime's set algebra gathers them: no level, as an element is no
+    // longer a whole unit
+    vial_sets_t** parts = md_alloc(alloc, (arr->count ? arr->count : 1) * sizeof(vial_sets_t*));
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < arr->count; ++i) {
+        parts[i] = is_and ? vial_sets_and(arr, i, one, 0, alloc) : vial_sets_or(arr, i, one, 0, alloc);
+        total += parts[i]->offset[1];
+    }
+    vial_sets_t* s = sets_new(arr->count, total, alloc);
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < arr->count; ++i) {
+        MEMCPY(s->idx + at, parts[i]->idx, parts[i]->offset[1] * sizeof(uint32_t));
+        at += parts[i]->offset[1];
+        s->offset[i + 1] = at;
+    }
+    return s;
+}
+
 vial_sets_t* vial_sets_merge(const vial_sets_t* a, md_allocator_i* alloc) {
     const uint32_t total = a->offset[a->count];
     vial_sets_t* s = sets_new(1, total, alloc);

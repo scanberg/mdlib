@@ -841,7 +841,7 @@ bad   = reshape(com(res_a), (400, 3))                    # error E0307: 1,299 va
 
 | Form | Gives |
 | --- | --- |
-| `a and b`, `a or b`, `not a` | intersection, union, and complement within the scope |
+| `a and b`, `a or b`, `not a` | intersection, union, and complement within the scope; an array of sets with one set is taken set by set |
 | `any(arr, axis=)`, `all(arr, axis=)` | the union, or the intersection, of an array of sets along a dimension; the reductions of `or` and `and`. There is no `union()` |
 | `particles(x)` | the particles of a set or an array of sets, as one set |
 | `count(s)` | `int`: the number of particles |
@@ -853,6 +853,10 @@ sa   = particles(chain='A') and protein                # -> set
 side = protein and not backbone                        # -> set
 both = any(residues(501))                              # -> set: GTP and GDP merged
 none = count(particles(chain='C') and protein)         # -> 0
+ala_n  = residues('ALA') and particles(name='N')      # -> set[60]: an array with a set, set by set
+ala_ca = residues('ALA') and particles(name='CA')
+ala_c  = residues('ALA') and particles(name='C')
+bend   = angle(ala_n, ala_ca, ala_c)                   # -> float[60] °: each set is known to hold one particle
 ```
 
 ### Patterns

@@ -85,6 +85,9 @@ vial_sets_t* vial_sets_and(const vial_sets_t* a, uint32_t ia, const vial_sets_t*
 vial_sets_t* vial_sets_or(const vial_sets_t* a, uint32_t ia, const vial_sets_t* b, uint32_t ib, md_allocator_i* alloc);
 vial_sets_t* vial_sets_not(const vial_sets_t* scope, const vial_sets_t* a, uint32_t ia, md_allocator_i* alloc);
 
+// and, or of each set of an array with one set: an array of as many
+vial_sets_t* vial_sets_boolop_each(const vial_sets_t* arr, const vial_sets_t* one, bool is_and, md_allocator_i* alloc);
+
 // Every particle of every set, merged
 vial_sets_t* vial_sets_merge(const vial_sets_t* a, md_allocator_i* alloc);
 

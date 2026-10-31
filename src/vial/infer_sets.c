@@ -436,7 +436,15 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
 // ### SET ALGEBRA ###
 
 vial_value_t vx_sets_boolop(infer_t* x, bool is_and, const vial_value_t* a, const vial_value_t* b) {
-    if (a->kind != VIAL_VAL_SETS || b->kind != VIAL_VAL_SETS || !a->sets->single || !b->sets->single) return (vial_value_t){0};
+    if (a->kind != VIAL_VAL_SETS || b->kind != VIAL_VAL_SETS) return (vial_value_t){0};
+    // An array with one set broadcasts: residues('ALA') and particles(name='CA') is known set by set, so that each is
+    // known to hold one particle where it does
+    if (a->sets->single != b->sets->single) {
+        const vial_sets_t* arr = a->sets->single ? b->sets : a->sets;
+        const vial_sets_t* one = a->sets->single ? a->sets : b->sets;
+        return sets_value(vial_sets_boolop_each(arr, one, is_and, x->alloc));
+    }
+    if (!a->sets->single) return (vial_value_t){0};
     return sets_value(is_and ? vial_sets_and(a->sets, 0, b->sets, 0, x->alloc) : vial_sets_or(a->sets, 0, b->sets, 0, x->alloc));
 }
 
