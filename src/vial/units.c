@@ -14,9 +14,11 @@ typedef struct vial_unit_name_t {
     const char* unit;   // as md_unit_parse reads it
 } vial_unit_name_t;
 
+// Names outside ASCII are written as their UTF-8 bytes, which every compiler keeps as they are: \xC3\x85 is Å,
+// \xC2\xB5 the micro sign and \xCE\xBC the Greek mu, both read as μ
 static const vial_unit_name_t vial_unit_names[] = {
-    {u8"Å", u8"Å"}, {"angstrom", u8"Å"}, {"nm", "nm"}, {"pm", "pm"},
-    {"fs", "fs"}, {"ps", "ps"}, {"ns", "ns"}, {u8"µs", u8"μs"}, {u8"μs", u8"μs"}, {"us", u8"μs"},
+    {"\xC3\x85", "\xC3\x85"}, {"angstrom", "\xC3\x85"}, {"nm", "nm"}, {"pm", "pm"},
+    {"fs", "fs"}, {"ps", "ps"}, {"ns", "ns"}, {"\xC2\xB5s", "\xCE\xBCs"}, {"\xCE\xBCs", "\xCE\xBCs"}, {"us", "\xCE\xBCs"},
     {"deg", "deg"}, {"rad", "rad"},
     {"K", "K"}, {"e", "e"}, {"u", "u"}, {"kJ", "kJ"}, {"kcal", "kcal"},
 };

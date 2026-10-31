@@ -65,7 +65,8 @@ size_t vial_unit_print(char* buf, size_t cap, md_unit_t unit) {
     const size_t n = md_unit_print(raw, sizeof(raw), unit);
     out_t o = {buf, cap, 0};
     if (cap) buf[0] = '\0';
-    static const char* sup[] = {u8"⁰", u8"¹", u8"²", u8"³", u8"⁴", u8"⁵", u8"⁶", u8"⁷", u8"⁸", u8"⁹"};
+    // ⁰ to ⁹ as UTF-8 bytes, which every compiler keeps as they are
+    static const char* sup[] = {"\xE2\x81\xB0", "\xC2\xB9", "\xC2\xB2", "\xC2\xB3", "\xE2\x81\xB4", "\xE2\x81\xB5", "\xE2\x81\xB6", "\xE2\x81\xB7", "\xE2\x81\xB8", "\xE2\x81\xB9"};
     for (size_t i = 0; i < n; ++i) {
         // ^k for a small positive power becomes a superscript; anything else stays as md_unit spells it
         if (raw[i] == '^' && i + 1 < n && raw[i + 1] >= '2' && raw[i + 1] <= '9' && (i + 2 >= n || raw[i + 2] < '0' || raw[i + 2] > '9')) {

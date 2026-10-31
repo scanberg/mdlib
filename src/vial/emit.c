@@ -709,8 +709,9 @@ vial_ssa_t vx_emit_call(infer_t* x, vial_node_id call, uint32_t fn, uint32_t bod
         return call_op(x, fn, body, conv, np, result, sp);
     }
     // A map over the dimensions the kinds leave: each call gets one element of each mapped argument
-    T elems[32];
-    uint32_t mapping[32];
+    if (np > 32) return 0;
+    T elems[32] = {0};
+    uint32_t mapping[32] = {0};
     for (uint32_t k = 0; k < np; ++k) {
         elems[k] = atypes[k];
         mapping[k] = loops[k].ndim;

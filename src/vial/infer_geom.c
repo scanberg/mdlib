@@ -479,7 +479,7 @@ static T call_angle(infer_t* x, vial_node_id call, bool dihedral) {
                 fname, n, n, n, vx_tstr(&a));
             return err();
         }
-        for (uint8_t k = 0; k + (rows ? 2 : 1) < a.ndim + 0u; ++k) vial_type_push_dim(&loop, a.dims[k]);
+        for (uint32_t k = 0; k + (rows ? 2u : 1u) < (uint32_t)a.ndim; ++k) vial_type_push_dim(&loop, a.dims[k]);
         join_stage(&loop, &a);
         if (sets) loop.stage = loop.stage < VIAL_STAGE_FRAME ? VIAL_STAGE_FRAME : loop.stage;
     } else {

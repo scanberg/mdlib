@@ -1481,7 +1481,7 @@ static bool within_brute(vial_kctx_t* k, const within_t* w, size_t na, size_t np
     for (size_t c = 0; c < nc; ++c) {
         const float* p0 = w->p + 24 * c;
         const size_t cnt = MIN((size_t)8, np - 8 * c);
-        float q[8][3], lo[3], hi[3];
+        float q[8][3], lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
         for (size_t i = 0; i < cnt; ++i) {
             for (int d = 0; d < 3; ++d) {
                 float v = p0[3 * i + d] - p0[d];
@@ -1782,7 +1782,7 @@ static bool k_spread(vial_kctx_t* k, const vial_val_t* values, const vial_val_t*
     uint32_t dims[VIAL_MAX_DIMS];
     memcpy(dims, values->dims, values->ndim * sizeof(uint32_t));
     dims[0] = n;
-    double* acc = md_alloc(k->alloc, ((size_t)n * inner ? (size_t)n * inner : 1) * sizeof(double));
+    double* acc = md_alloc(k->alloc, MAX((size_t)n * inner, (size_t)1) * sizeof(double));
     uint32_t* cnt = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
     memset(acc, 0, (size_t)n * inner * sizeof(double));
     memset(cnt, 0, n * sizeof(uint32_t));
@@ -2479,13 +2479,13 @@ static void sym_eigen(double* V, double* val, int n, double* e) {
 
 static bool k_eigh(vial_kctx_t* k, const vial_val_t* m, vial_val_t* out) {
     if (!m) return vial_rt_fail(k, "R0103", "a missing argument");
-    uint32_t n;
-    size_t cnt;
+    uint32_t n = 0;
+    size_t cnt = 0;
     if (!square(k, m, &n, &cnt)) return false;
     vial_val_t w; if (!vial_k_make(k, VIAL_DT_FLOAT, m->ndim - 1, m->dims, &w)) return false;
     vial_val_t v; if (!vial_k_make(k, VIAL_DT_FLOAT, m->ndim, m->dims, &v)) return false;
-    double* A = md_alloc(k->alloc, ((size_t)n * n ? (size_t)n * n : 1) * sizeof(double));
-    double* V = md_alloc(k->alloc, ((size_t)n * n ? (size_t)n * n : 1) * sizeof(double));
+    double* A = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
+    double* V = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
     uint32_t* order = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
     double* val = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
     double* scratch = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
@@ -2554,8 +2554,8 @@ static bool lu_solve(double* A, double* B, uint32_t n, uint32_t nrhs, double* de
 
 static bool k_linalg(vial_kctx_t* k, const char* name, const vial_val_t* m, const vial_val_t* b, vial_val_t* out) {
     if (!m) return vial_rt_fail(k, "R0103", "a missing argument");
-    uint32_t n;
-    size_t cnt;
+    uint32_t n = 0;
+    size_t cnt = 0;
     if (!square(k, m, &n, &cnt)) return false;
     const bool is_trace = !strcmp(name, "trace"), is_det = !strcmp(name, "det"), is_inv = !strcmp(name, "inv");
     vial_val_t o;
@@ -2568,8 +2568,8 @@ static bool k_linalg(vial_kctx_t* k, const char* name, const vial_val_t* m, cons
         nrhs = b->ndim == 1 ? 1 : b->dims[1];
         if (!vial_k_make(k, VIAL_DT_FLOAT, b->ndim, b->dims, &o)) return false;
     }
-    double* A = md_alloc(k->alloc, ((size_t)n * n ? (size_t)n * n : 1) * sizeof(double));
-    double* B = md_alloc(k->alloc, ((size_t)n * nrhs ? (size_t)n * nrhs : 1) * sizeof(double));
+    double* A = md_alloc(k->alloc, MAX((size_t)n * n, (size_t)1) * sizeof(double));
+    double* B = md_alloc(k->alloc, MAX((size_t)n * nrhs, (size_t)1) * sizeof(double));
     for (size_t q = 0; q < cnt; ++q) {
         for (size_t i = 0; i < (size_t)n * n; ++i) A[i] = num_at(m, q * n * n + i);
         if (is_trace) {

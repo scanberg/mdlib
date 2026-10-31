@@ -262,8 +262,8 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
     int n = 0;
     switch (level) {
     case VIAL_LEVEL_PARTICLE: {
-        const md_particle_type_idx_t t = sys->atom.type_idx ? sys->atom.type_idx[unit] : -1;
-        const str_t name = t >= 0 ? LBL_TO_STR(sys->atom.type.name[t]) : STR_LIT("");
+        const bool has = sys->atom.type_idx && sys->atom.type_idx[unit] < sys->atom.type.count;
+        const str_t name = has ? LBL_TO_STR(sys->atom.type.name[sys->atom.type_idx[unit]]) : STR_LIT("");
         n = snprintf(buf, cap, "%.*s/", (int)name.len, name.ptr);
         const uint32_t r = atom_res(s, unit);
         if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
@@ -581,7 +581,7 @@ static vial_sets_t* select_particles_of(vial_sys_t* s, const vial_select_t* q, m
         if (!r_pass) continue;
         if (types) {
             const md_particle_type_idx_t t = sys->atom.type_idx[a];
-            if (t < 0 || (uint32_t)t >= s->num_types || !types[t]) continue;
+            if ((uint32_t)t >= s->num_types || !types[t]) continue;
         }
         out->idx[w++] = a;
     }
@@ -622,7 +622,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
                 if (!IN_SCOPE(a) || (within && !bit(within, a))) continue;
                 if (types) {
                     const md_particle_type_idx_t t = sys->atom.type_idx[a];
-                    if (t < 0 || (uint32_t)t >= s->num_types || !types[t]) continue;
+                    if ((uint32_t)t >= s->num_types || !types[t]) continue;
                 }
                 out->idx[n++] = a;
             }
