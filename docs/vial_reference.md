@@ -468,6 +468,16 @@ def in_contact(r: set, lig: set, cutoff=4.0):
 c   = in_contact(res_a, vlb, cut)                    # warning W0607 -> bool[433][433]: cutoff is passed whole
 ```
 
+A def may read another frame with `at()`: what it reads there is computed again from the def's own values at that frame, so a group a call maps over is fitted to its own first frame. A value from outside the def that changes per frame is that frame's, and reading it so is R0103; pass it in.
+
+```python
+# on P
+def drift(r: group):
+    return rmsd(r, at(r.xyz, frame=0))
+
+per_res = drift(residues)                              # -> float[15] Å, frame: each residue fitted on its own first frame
+```
+
 ## The prelude
 
 Functions marked *prelude* in the tables below are written in VIAL and compiled before every script. They are ordinary `def`s: specialized per call, fused like a user's code, shown in hover with their source. This section is generated from `vial/prelude.vial`, and the examples that use each function elsewhere in this reference are its tests. An error or warning raised inside a prelude function is reported at the user's call and names the function, as “distance: residues(1..4, chain='A') holds 4 sets of several particles”.
@@ -507,8 +517,9 @@ def normal(p: points):
 def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
     assert weights in ('mass', None), "weights= takes 'mass' or None"
     q = fit(p, ref, on=on, weights=weights) if superpose else p
-    w = mass(particles(q)) if weights == 'mass' else ones(shape(q)[0])
-    return sqrt(sum(w * norm(q - ref)**2) / sum(w))
+    d2 = norm(q - ref)**2
+    # Equal weights are a mean, which needs no extent known when compiling: a group a def maps over has none
+    return sqrt(sum(mass(particles(q)) * d2) / sum(mass(particles(q)))) if weights == 'mass' else sqrt(mean(d2))
 
 def previous(x, n=1):
     def step(s, v):

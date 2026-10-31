@@ -121,6 +121,7 @@ void vial_interp_only(vial_interp_t* in, const vial_ssa_t* roots, size_t n) {
 
 bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, const struct md_system_t* msys, md_allocator_i* alloc) {
     memset(in, 0, sizeof(*in));
+    in->at_index = -1;
     in->ir = ir;
     in->sys = sys;
     in->msys = msys;
@@ -629,6 +630,90 @@ static bool eval_op(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) {
     return true;
 }
 
+// at(x, frame=k) inside a def: x computed again from the def's own values at frame k, then the frame being evaluated
+// again. Only what the def computes can be: a value from outside it that changes per frame is that frame's, so it is
+// refused. The frame read is kept, as a def mapped over groups reads it once per group.
+static bool region_at(vial_interp_t* in, uint32_t region, size_t at_pos, md_allocator_i* alloc) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_region_t* r = &ir->regions[region];
+    const vial_ir_op_t* op = &ir->ops[r->ops[at_pos]];
+    vial_kctx_t k = {.in = in, .op = op, .map_index = -1};
+    const vial_ssa_t xv = op->num_args > 0 ? ir->args[op->arg_beg] : 0;
+    const vial_ssa_t fv = op->num_args > 1 ? ir->args[op->arg_beg + 1] : 0;
+    if (!xv || !fv || !in->state[fv]) return vial_rt_fail(&k, "R0103", "at() needs a value and a frame");
+    const vial_val_t* f = &in->vals[fv];
+    if (f->dtype != VIAL_DT_INT || !f->data) return vial_rt_fail(&k, "R0103", "at()'s frame is an int");
+    const int64_t index = *(const int32_t*)f->data;
+    if (!in->load_frame) return vial_rt_fail(&k, "R0103", "at() needs the run's frames");
+
+    // What x needs of the def's ops before it, and nothing from outside that changes per frame
+    const size_t nv = md_array_size(ir->values);
+    uint8_t* need = md_alloc(in->temp, nv ? nv : 1);
+    memset(need, 0, nv ? nv : 1);
+    need[xv] = 1;
+    for (size_t j = at_pos; j-- > 0;) {
+        const vial_ir_op_t* o = &ir->ops[r->ops[j]];
+        bool needed = false;
+        for (uint32_t q = 0; q < o->num_results; ++q) needed |= need[o->result + q] != 0;
+        if (!needed) continue;
+        for (uint32_t a = 0; a < o->num_args; ++a) { const vial_ssa_t s = ir->args[o->arg_beg + a]; if (s) need[s] = 1; }
+    }
+    for (size_t v = 1; v < nv; ++v) {
+        if (!need[v]) continue;
+        const vial_ir_value_t* iv = &ir->values[v];
+        const bool inside = iv->region == region && iv->op != VIAL_IR_NO_OP;
+        if (!inside && iv->type.stage == VIAL_STAGE_FRAME) {
+            return vial_rt_fail(&k, "R0103", "at() in a def reads a value that changes per frame from outside it; pass it to the def");
+        }
+    }
+
+    // The frame: kept, else read, which takes the reader's buffer, so the frame being evaluated is copied first
+    vial_frame_t* cur = (vial_frame_t*)in->frame;
+    if (in->at_index != index) {
+        if (cur && cur->xyz) {
+            float* keep = md_alloc(in->temp, cur->num_atoms * 3 * sizeof(float));
+            memcpy(keep, cur->xyz, cur->num_atoms * 3 * sizeof(float));
+            cur->xyz = keep;
+        }
+        vial_frame_t fr;
+        if (!in->load_frame(in->load_user, index, &fr)) return vial_rt_fail(&k, "R0104", "at() reads frame %lld, which the run does not have", (long long)index);
+        if (in->at_num_atoms < fr.num_atoms) {
+            in->at_xyz = md_alloc(in->alloc, fr.num_atoms * 3 * sizeof(float));
+            in->at_num_atoms = fr.num_atoms;
+        }
+        memcpy(in->at_xyz, fr.xyz, fr.num_atoms * 3 * sizeof(float));
+        in->at_frame = fr;
+        in->at_frame.xyz = in->at_xyz;
+        in->at_index = index;
+    }
+
+    // Computed at that frame, then what it overwrote put back
+    const vial_frame_t* prev = in->frame;
+    vial_val_t* saved = md_alloc(in->temp, nv * sizeof(vial_val_t));
+    uint8_t* saved_state = md_alloc(in->temp, nv);
+    memcpy(saved, in->vals, nv * sizeof(vial_val_t));
+    memcpy(saved_state, in->state, nv);
+    in->frame = &in->at_frame;
+    bool ok = true;
+    for (size_t j = 0; j < at_pos && ok; ++j) {
+        const uint32_t oj = r->ops[j];
+        const vial_ir_op_t* o = &ir->ops[oj];
+        bool needed = false;
+        for (uint32_t q = 0; q < o->num_results; ++q) needed |= need[o->result + q] != 0;
+        if (!needed || !in->live[oj] || o->kind == VIAL_IR_YIELD) continue;
+        ok = eval_op(in, oj, alloc);
+        for (uint32_t q = 0; q < o->num_results && ok; ++q) in->state[o->result + q] = 1;
+    }
+    vial_val_t got = {0};
+    if (ok && in->state[xv]) got = vial_val_copy(&in->vals[xv], alloc);
+    memcpy(in->vals, saved, nv * sizeof(vial_val_t));
+    memcpy(in->state, saved_state, nv);
+    in->frame = prev;
+    if (!ok) return false;
+    in->vals[op->result] = got;
+    return true;
+}
+
 static bool eval_region(vial_interp_t* in, uint32_t region, const vial_val_t* params, vial_val_t* yields, uint32_t max_yields,
                         uint32_t* num_yields, md_allocator_i* alloc) {
     const vial_ir_t* ir = in->ir;
@@ -647,7 +732,14 @@ static bool eval_region(vial_interp_t* in, uint32_t region, const vial_val_t* pa
             return true;
         }
         if (!in->live[opi]) continue;
-        if (!eval_op(in, opi, alloc)) return false;
+        // Without a frame (a def whose value is static, evaluated before the frames), what changes per frame in it
+        // feeds an at() alone, which computes it at its own frame
+        if (!in->frame && op->num_results && ir->values[op->result].type.stage == VIAL_STAGE_FRAME) continue;
+        if (op->kind == VIAL_IR_BUILTIN && !strcmp(vial_builtin_at(op->aux)->name, "at")) {
+            if (!region_at(in, region, i, alloc)) return false;
+        } else if (!eval_op(in, opi, alloc)) {
+            return false;
+        }
         for (uint32_t k = 0; k < op->num_results; ++k) in->state[op->result + k] = 1;
     }
     return true;

@@ -108,6 +108,11 @@ typedef struct vial_interp_t {
     // Frames done, per sweep: done[sweep][f] is set once the frame's values of that sweep are computed
     uint8_t*                    frame_done[8];
     uint32_t                    err_seq;    // errors so far at this frame
+    // The frame at() reads inside a def (a map over groups calls it per group and frame): kept, one, as its own copy
+    int64_t                     at_index;   // -1 for none
+    float*                      at_xyz;
+    size_t                      at_num_atoms;
+    vial_frame_t                at_frame;
 } vial_interp_t;
 
 // The summary of a population at each frame, as v1 publishes it beside a series: <path>/mean, /variance (in the unit

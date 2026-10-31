@@ -1907,3 +1907,37 @@ UTEST(vial_ir, eigh_decomposes) {
     vial_ir__end(&r);
 }
 
+
+// at() inside a def: computed from the def's own values at that frame, also when the def maps over groups, whose sizes
+// differ; static where the def's value is
+UTEST(vial_ir, at_in_a_def) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(vial_test_run('P'), 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    const char* src =
+        "def first_x(r: group):\n    return at(r.xyz, frame=0)[0, 0]\n"
+        "def drift(r: group):\n    return rmsd(r, at(r.xyz, frame=0))\n"
+        "x0 = first_x(residues)\n"
+        "x  = residues[1].xyz[0, 0]\n"
+        "per_res = drift(residues)\n"
+        "r1 = rmsd(residues[1], at(residues[1].xyz, frame=0))\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 3}, alloc);
+    ASSERT_TRUE(e && md_vial_eval_run(e));
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    const md_attribute_t* x0 = md_attributes_find(at, STR_LIT("script/x0"));
+    const md_attribute_t* x = md_attributes_find(at, STR_LIT("script/x"));
+    const md_attribute_t* pr = md_attributes_find(at, STR_LIT("script/per_res"));
+    const md_attribute_t* r1 = md_attributes_find(at, STR_LIT("script/r1"));
+    ASSERT_TRUE(x0 && x && pr && r1);
+    EXPECT_EQ(1, x0->format.rank);                  // static: one value per residue
+    EXPECT_NEAR(((const float*)x->data)[0], ((const float*)x0->data)[1], 1e-5);
+    const size_t nf = r1->format.shape[0], nr = pr->format.shape[1];
+    ASSERT_EQ(15u, (unsigned)nr);
+    for (size_t f = 0; f < nf; ++f) EXPECT_NEAR(((const float*)r1->data)[f], ((const float*)pr->data)[f * nr + 1], 1e-5);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
