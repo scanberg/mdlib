@@ -185,12 +185,24 @@ bool vial_ir_verify(const vial_ir_t* ir, char* err, size_t cap) {
     const size_t nv = md_array_size(ir->values);
     v.defined = md_alloc(ir->alloc, nv ? nv : 1);
     memset(v.defined, 0, nv ? nv : 1);
-    for (size_t f = 0; f < md_array_size(ir->funcs); ++f) {
+    // A def's body may read the script's top-level names, which are bound once each before any call that reads them
+    // (the check sees to that): the top level's values are defined in every function
+    const vial_ir_region_t* top = &ir->regions[ir->funcs[0].body];
+    for (size_t f = 1; f < md_array_size(ir->funcs); ++f) {
+        for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+            const vial_ir_op_t* op = &ir->ops[top->ops[i]];
+            for (uint32_t k = 0; k < op->num_results; ++k) v.defined[op->result + k] = 2;
+        }
         const uint32_t body = ir->funcs[f].body;
         bool has;
         const uint32_t ny = yields_of(ir, body, &has);
-        verify_region(&v, body, f == 0 ? 0 : (int)(has ? ny : 1));
+        verify_region(&v, body, (int)(has ? ny : 1));
+        for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+            const vial_ir_op_t* op = &ir->ops[top->ops[i]];
+            for (uint32_t k = 0; k < op->num_results; ++k) v.defined[op->result + k] = 0;
+        }
     }
+    verify_region(&v, ir->funcs[0].body, 0);
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
         const vial_ssa_t o = ir->outputs[i].value;
         if (!o || o >= nv || ir->values[o].region != ir->funcs[0].body) fail(&v, "output %u is not a value of the top level", (uint32_t)i, 0);
