@@ -359,3 +359,59 @@ UTEST(vial_ir, evaluates_trajectory) {
     md_system_state_free(&l.state);
     vial_ir__end(&r);
 }
+
+UTEST(vial_ir, eval_api) {
+    const md_system_t* sys = vial_test_system('P');
+    const int64_t nf = vial_test_run('P');
+    ASSERT_TRUE(sys && nf > 2);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* src =
+        "ca   = particles(name='CA')\n"
+        "ends = distance(ca[0], ca[14])\n"
+        "m    = mean(ends, axis='frame')\n"
+        "dd   = distance(ca.xyz, ca[0])\n"
+        "_hid = ends * 2.0\n"
+        "big  = zeros(100) + ends\n";
+    const md_vial_compile_desc_t cdesc = {.sys = sys, .run = STR_LIT("run")};
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &cdesc, alloc);
+    const md_vial_eval_desc_t edesc = {.sys = sys, .run = STR_LIT("run"), .max_elements = 50};
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &edesc, alloc);
+    ASSERT_TRUE(eval != NULL);
+    // A value of 100 elements is over this evaluation's limit: R0105, and the rest is computed
+    EXPECT_FALSE(md_vial_eval_run(eval));
+    EXPECT_EQ(1.0, md_vial_eval_progress(eval));
+    const md_vial_diagnostic_t* d;
+    ASSERT_EQ(1u, (unsigned)md_vial_eval_diagnostics(eval, &d));
+    EXPECT_EQ(0, strncmp(d[0].code, "R0105", 5));
+    EXPECT_EQ(MD_VIAL_SEVERITY_RUNTIME, d[0].severity);
+    const md_attributes_t* attrs = md_vial_eval_attributes(eval);
+    const md_attribute_t* ends = md_attributes_find(attrs, STR_LIT("script/ends"));
+    const md_attribute_t* m = md_attributes_find(attrs, STR_LIT("script/m"));
+    const md_attribute_t* dd = md_attributes_find(attrs, STR_LIT("script/dd"));
+    ASSERT_TRUE(ends && m && dd);
+    EXPECT_TRUE(ends->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
+    EXPECT_FALSE(m->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
+    EXPECT_EQ(2u, dd->format.rank);
+    EXPECT_EQ((uint32_t)nf, dd->format.shape[0]);
+    EXPECT_EQ(15u, dd->format.shape[1]);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/_hid")) == NULL);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/ca")) == NULL);      // a selection is a recipe
+    double sum = 0.0, mean = 0.0;
+    for (int64_t f = 0; f < nf; ++f) {
+        double v;
+        md_attribute_extract_f64(&v, 1, ends, md_attribute_slice_1((uint32_t)f), ends->unit);
+        sum += v;
+    }
+    md_attribute_extract_f64(&mean, 1, m, md_attribute_slice_all(), m->unit);
+    EXPECT_NEAR(sum / nf, mean, 1e-4);
+    md_vial_eval_free(eval);
+
+    // Interrupted before it starts: nothing is published
+    eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_eval_interrupt(eval);
+    EXPECT_FALSE(md_vial_eval_run(eval));
+    EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eval), STR_LIT("script/ends")) == NULL);
+    md_vial_eval_free(eval);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}

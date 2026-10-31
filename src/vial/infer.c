@@ -1405,8 +1405,19 @@ static bool check_if(infer_t* x, vial_node_id s) {
     } else if (!x->frame && !vial_type_is_error(&ct) && ct.stage != VIAL_STAGE_STATIC) {
         diag_fix(x, "E0403", c, "where(...)", "the condition changes per frame, and what a script publishes cannot; where() chooses per frame");
     }
+    // Lowering: an if whose branch is chosen per frame is not lowered yet; its branches are checked without emitting,
+    // and the def it is in is not evaluated
+    struct vial_ir_t* ir = x->ir;
+    if (ir) {
+        // An error was reported for the condition, E0303 or E0403, unless it is one bool in a def
+        const bool reported = vial_type_is_error(&ct) || ct.dtype != VIAL_DT_BOOL || ct.ndim || !x->frame;
+        if (reported) vx_emit_unreachable_mark(x);
+        else vx_lower_fail(x, s, "an if whose condition is not known when compiling");
+        x->ir = NULL;
+    }
     const bool a = check_block(x, child(x, s, 1));
     const bool b = other ? (kind_of(x, other) == VIAL_N_IF ? check_if(x, other) : check_block(x, other)) : false;
+    x->ir = ir;
     return a && b;
 }
 

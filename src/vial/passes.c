@@ -61,7 +61,7 @@ static bool copy_ops(inl_t* c, uint32_t region, vial_ssa_t* yields, uint32_t max
     *num_yields = 0;
     for (size_t i = 0; i < md_array_size(r->ops); ++i) {
         const vial_ir_op_t* op = &src->ops[r->ops[i]];
-        const vial_ssa_t* args = src->args + op->arg_beg;
+        const vial_ssa_t* args = op->num_args ? src->args + op->arg_beg : NULL;
         if (op->kind == VIAL_IR_YIELD) {
             for (uint32_t k = 0; k < op->num_args && k < max_yields; ++k) yields[k] = remap(c, args[k]);
             *num_yields = op->num_args < max_yields ? op->num_args : max_yields;
@@ -97,7 +97,7 @@ static bool copy_ops(inl_t* c, uint32_t region, vial_ssa_t* yields, uint32_t max
         // Attributes in ints: as many as the kind keeps there
         const uint32_t nattr = op->kind == VIAL_IR_MAP ? op->num_args : 0;
         const uint32_t nop = vial_ir_emit(dst, &(vial_ir_emit_t){.kind = op->kind, .sub = op->sub, .aux = aux, .args = a,
-            .names = src->names + op->arg_beg, .num_args = op->num_args, .types = types, .num_results = op->num_results,
+            .names = op->num_args ? src->names + op->arg_beg : NULL, .num_args = op->num_args, .types = types, .num_results = op->num_results,
             .attr = nattr ? src->ints + op->attr : NULL, .num_attr = nattr, .span = op->span});
         for (int k = 0; k < 2; ++k) {
             if (!op->region[k]) continue;

@@ -618,7 +618,8 @@ bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* 
     if (!es) return vial_rt_fail(k, "R0103", "indexing what holds no values");
     vial_val_t m; if (!vial_k_make(k, a->dtype, o.ndim, o.dims, &m)) return false;
     o.data = m.data;
-    for (size_t q = 0; q < total; ++q) memcpy((uint8_t*)o.data + q * es, (const uint8_t*)a->data + src[q] * es, es);
+    // A position past the end of an empty dimension reads nothing: the result is missing throughout
+    if (!missing_all && a->data) for (size_t q = 0; q < total; ++q) memcpy((uint8_t*)o.data + q * es, (const uint8_t*)a->data + src[q] * es, es);
     for (size_t q = 0; q < total; ++q) {
         if (missing_all || vial_val_is_missing(a, src[q])) vial_val_set_missing(&o, q, k->alloc);
     }

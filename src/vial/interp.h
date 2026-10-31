@@ -58,6 +58,12 @@ typedef struct vial_interp_t {
     uint8_t                     sweep;      // the sweep being run
     vial_val_t*                 fold_state; // md_array by ssa of a fold's result: its state
     uint8_t*                    fold_has;
+    // Progress and interruption, read and written from other threads: frames done of the frames to do, and a flag
+    // that stops vial_interp_run between frames
+    volatile uint64_t           frames_done;
+    volatile uint64_t           frames_total;
+    const volatile uint64_t*    stop;       // nonzero: stop
+    bool                        interrupted;
 } vial_interp_t;
 
 enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };
