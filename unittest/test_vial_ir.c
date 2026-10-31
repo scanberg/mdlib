@@ -458,7 +458,8 @@ UTEST(vial_ir, if_per_frame) {
         "    return e\n"
         "ends = distance(ca[0], ca[14])\n"
         "c = clamp(ends)\n"
-        "b = bump(ends)\n";
+        "b = bump(ends)\n"
+        "t = 30.0 if ends > 30.0 else ends\n";
     ASSERT_TRUE(vial_ir__start(&r, src, sys));
     vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r.alloc}};
     md_system_state_init(&l.state, sys->atom.count);
@@ -474,6 +475,7 @@ UTEST(vial_ir, if_per_frame) {
         above += e > 30.0;
         EXPECT_EQ((float)(e > 30.0 ? 30.0 : e), (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "c"), f)));
         EXPECT_EQ(e > 30.0 ? (float)e - 10.0f : (float)e, (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "b"), f)));
+        EXPECT_EQ((float)(e > 30.0 ? 30.0 : e), (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "t"), f)));
     }
     EXPECT_GT(above, 0);
     EXPECT_LT(above, (int)nf);

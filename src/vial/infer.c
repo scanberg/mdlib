@@ -966,12 +966,40 @@ static T infer_ternary(infer_t* x, vial_node_id id) {
         set_value(x, id, value_of(x, taken));
         return t;
     }
+    // Lowering: the branches are regions of an if, so only the one taken is evaluated, as Python's conditional
+    vial_ir_t* ir = x->ir;
+    const vial_ssa_t cs = ir ? vx_ssa(x, cn) : 0;
+    uint32_t r1 = 0, r2 = 0, saved = 0;
+    if (ir && cs && c.ndim == 0) {
+        saved = ir->insert;
+        r1 = vial_ir_region(ir, VIAL_IR_NO_OP, ir->regions[saved].func, NULL, 0);
+        ir->insert = r1;
+    }
     const T a = infer(x, vn);
+    if (r1) {
+        const vial_ssa_t ya = vx_ssa(x, vn);
+        vial_ir_yield(ir, &ya, ya ? 1 : 0, vx_span(x, vn));
+        r2 = vial_ir_region(ir, VIAL_IR_NO_OP, ir->regions[saved].func, NULL, 0);
+        ir->insert = r2;
+    }
     const T b = infer(x, en);
+    vial_ssa_t yb = 0;
+    if (r1) {
+        yb = vx_ssa(x, en);
+        vial_ir_yield(ir, &yb, yb ? 1 : 0, vx_span(x, en));
+        ir->insert = saved;
+    }
     if (vial_type_is_error(&a) || vial_type_is_error(&b)) return err();
     T t;
     if (!join_types(x, id, "the branches of a conditional", &a, &b, &t)) return err();
     join_stage(&t, &t, &c);
+    if (r1 && vx_ssa(x, vn) && yb && a.dtype == b.dtype) {
+        const uint32_t op = vial_ir_emit(ir, &(vial_ir_emit_t){.kind = VIAL_IR_IF, .args = &cs, .num_args = 1, .types = &t, .num_results = 1,
+                                                          .span = vx_span(x, id)});
+        vial_ir_attach(ir, op, 0, r1);
+        vial_ir_attach(ir, op, 1, r2);
+        vx_set_ssa(x, id, ir->ops[op].result);
+    }
     return t;
 }
 
