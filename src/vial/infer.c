@@ -1058,8 +1058,16 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             const T ix = infer(x, in);
             if (vial_type_is_error(&ix)) return err();
             if (ix.dtype == VIAL_DT_INT && ix.ndim == 0) t.flags |= VIAL_TYPE_ONE_PARTICLE;
-            else if (!(ix.dtype == VIAL_DT_INT && ix.ndim == 1)) {
-                diag(x, "E0319", in, "a set's particles are taken by an int, a slice or a list of ints; this is %s", tstr(&ix));
+            else if (ix.dtype == VIAL_DT_BOOL && ix.ndim == 1) {
+                // A mask over its particles, as NumPy's: those where it is true. particles[particles.z > 40.0]
+                const vial_value_t sv = value_of(x, on);
+                if (sv.kind == VIAL_VAL_SETS && sv.sets->single && ix.dims[0].kind == VIAL_EXT_STATIC &&
+                    ix.dims[0].n != vial_sets_size(sv.sets, 0)) {
+                    diag(x, "E0301", in, "a mask of %u values does not fit a set of %u particles", ix.dims[0].n, vial_sets_size(sv.sets, 0));
+                    return err();
+                }
+            } else if (!(ix.dtype == VIAL_DT_INT && ix.ndim == 1)) {
+                diag(x, "E0319", in, "a set's particles are taken by an int, a slice, a list of ints or a mask of bools; this is %s", tstr(&ix));
                 return err();
             }
             join_stage(&t, &t, &ix);

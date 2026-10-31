@@ -1192,6 +1192,44 @@ UTEST(vial_ir, filters) {
 }
 
 // A periodic output publishes its period and seam beside it, from when the evaluation is made, as v1 does
+// A mask over a set's particles picks those where it is true, per frame: as many as the mask counts
+UTEST(vial_ir, set_mask) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(vial_test_run('P'), 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    const char* src =
+        "n = count(particles[particles.z > particles[0].z])\n"
+        "m = sum(particles.z > particles[0].z)\n"
+        "k = count(protein[(protein.x in -5.0..5.0) and (protein.y > 0.0)])\n"
+        "j = sum((protein.x in -5.0..5.0) and (protein.y > 0.0))\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e && md_vial_eval_run(e));
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    const md_attribute_t* n = md_attributes_find(at, STR_LIT("script/n"));
+    const md_attribute_t* m = md_attributes_find(at, STR_LIT("script/m"));
+    const md_attribute_t* k = md_attributes_find(at, STR_LIT("script/k"));
+    const md_attribute_t* j = md_attributes_find(at, STR_LIT("script/j"));
+    ASSERT_TRUE(n && m && k && j);
+    const size_t nf = n->format.shape[0];
+    int varies = 0;
+    for (size_t f = 0; f < nf; ++f) {
+        EXPECT_EQ(((const int32_t*)m->data)[f], ((const int32_t*)n->data)[f]);
+        EXPECT_EQ(((const int32_t*)j->data)[f], ((const int32_t*)k->data)[f]);
+        varies |= ((const int32_t*)n->data)[f] != ((const int32_t*)n->data)[0];
+    }
+    EXPECT_TRUE(varies);
+    // As a filter: dynamic
+    md_vial_filter_t fl;
+    ASSERT_TRUE(md_vial_filter(&fl, STR_LIT("particles[particles.z > 0.0]"), &(md_vial_filter_desc_t){.sys = sys, .state = vial_test_state('P')}, alloc));
+    EXPECT_TRUE(fl.dynamic);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 // A per-frame population has its summary over the members published beside it, as v1's: /mean, /variance, /extent;
 // a periodic one around its circle. Its members are labelled by the units its dimension runs over.
 UTEST(vial_ir, population_summaries) {

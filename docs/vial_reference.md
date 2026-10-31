@@ -368,6 +368,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s.xyz` | a set's positions, `positions(s)`; coordinates themselves on coordinates | `float[n][3]` Å |
 | `c.x`, `c.y`, `c.z` | `c.xyz[..., 0]`, `[..., 1]`, `[..., 2]`, on a set or on coordinates |  |
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
+| `s[mask]` on a set, with a bool per particle of s | its particles where the mask is true: `particles[particles.z in 20.0..25.0]` is a slab, as v1's `within_z(20:25)` | a set; frame stage when the mask is |
 | `at(x, frame=k)` | frame k of a frame value, read once before the other frames | a static value |
 | `rmsf[s]` with a set | the values of the particles in set s; an intersection | a shorter dimension over those particles |
 | `a[mask]` with a bool array matching a's leading dimensions | the entries where the mask is true | a shorter dimension; per frame if the mask is |
@@ -396,6 +397,10 @@ _z    = protein.z                                      # -> float[6784] Å: the 
 rx    = res_a.xyz                                      # error E0318: 433 residues of 4 to 14 particles
 ra    = particles(res_a).xyz                           # -> float[n][3] Å: merged on purpose
 z_res = mean(_z, by=residues)                          # warning W0603, W0405 -> float[880] Å | missing: 15 residues have no values
+top   = water[water.z > 40.0]                          # -> set, frame: the waters above z = 40 Å in each frame
+slab  = particles[particles.z in 20.0..25.0]           # -> set, frame
+box   = protein[(protein.x in 20.0..60.0) and (protein.y in 20.0..60.0)]   # -> set, frame
+nope  = water[particles.z > 40.0]                      # error E0301: a mask over every particle does not fit the 8 of water
 ```
 
 ```python
