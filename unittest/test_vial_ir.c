@@ -677,7 +677,8 @@ UTEST(vial_ir, pairs_reductions) {
         "a9  = any(dm < 5.0, axis=0)\n"
         "a10 = min(dm, axis=-1)\n"
         "_h  = distance(p[:, None], q)\n"
-        "a11 = sum(_h < 6.0, axis=-1)\n";
+        "a11 = sum(_h < 6.0, axis=-1)\n"
+        "a12 = sum(dm < 1000.0, axis=1)\n";     // past half a period: every line computed, no search
     for (int pass = 0; pass < 2; ++pass) {
         char src[1024];
         snprintf(src, sizeof(src), "%s%s", pass ? "p = particles(name='CA').xyz\nq = p\n" :
@@ -690,7 +691,7 @@ UTEST(vial_ir, pairs_reductions) {
         const vial_ir_t* ir = md_vial__run_ir(r.prog);
         int npairs = 0;
         for (size_t i = 0; i < md_array_size(ir->ops); ++i) npairs += ir->ops[i].kind == VIAL_IR_PAIRS;
-        EXPECT_EQ(11, npairs);
+        EXPECT_EQ(12, npairs);
         vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r.alloc}};
         if (pass) md_system_state_init(&l.state, sys->atom.count);
         const md_system_state_t* st = vial_test_state('T');
@@ -705,8 +706,8 @@ UTEST(vial_ir, pairs_reductions) {
             EXPECT_TRUE(vial_interp_value(&r.in, vial_ir__output(ir, "_h")) == NULL);
             const uint32_t n = dm->dims[0], m = dm->dims[1];
             ASSERT_TRUE(n > 1 && m > 1);
-            const vial_val_t* a[12];
-            for (int k = 1; k <= 11; ++k) {
+            const vial_val_t* a[13];
+            for (int k = 1; k <= 12; ++k) {
                 char nm[8];
                 snprintf(nm, sizeof(nm), "a%d", k);
                 a[k] = vial_interp_value(&r.in, vial_ir__output(ir, nm));
@@ -725,13 +726,15 @@ UTEST(vial_ir, pairs_reductions) {
             EXPECT_EQ(c7, *(const int32_t*)a[7]->data);
             for (uint32_t i = 0; i < n; ++i) {
                 float rmin = vial_ir__f(dm, (size_t)i * m);
-                int32_t at = 0, c8 = 0, c11 = 0;
+                int32_t at = 0, c8 = 0, c11 = 0, c12 = 0;
                 for (uint32_t j = 0; j < m; ++j) {
                     const float d = vial_ir__f(dm, (size_t)i * m + j);
                     if (d < rmin) { rmin = d; at = (int32_t)j; }
                     c8 += (double)d <= 8.0;
                     c11 += (double)d < 6.0;
+                    c12 += (double)d < 1000.0;
                 }
+                EXPECT_EQ(c12, ((const int32_t*)a[12]->data)[i]);
                 EXPECT_EQ(rmin, vial_ir__f(a[3], i));
                 EXPECT_EQ(at, ((const int32_t*)a[5]->data)[i]);
                 EXPECT_EQ(c8, ((const int32_t*)a[8]->data)[i]);

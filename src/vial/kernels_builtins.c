@@ -700,6 +700,86 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
 // so every result has the matrix's bits. Over every pair, each row is reduced and then the rows' results, which min,
 // max, a count and any allow exactly. Memory is a line, not n * m.
 
+// A count or any of d < r over the pairs the spatial search finds within a hair past r, each tested with the matrix's
+// own entry: the same pairs pass as in the matrix, without computing the others.
+typedef struct pairs_search_t {
+    const float*        px;
+    const float*        py;
+    const md_unitcell_t* cell;
+    uint32_t            test;
+    double              r;
+    bool                rows;
+    int32_t*            counts;     // per row or column
+} pairs_search_t;
+
+static void pairs_search_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* d2, size_t n, void* user) {
+    (void)d2;
+    pairs_search_t* s = user;
+    for (size_t q = 0; q < n; ++q) {
+        const uint32_t i = i_idx[q], j = j_idx[q];
+        const float* A = s->px + 3 * (size_t)i;
+        const float* B = s->py + 3 * (size_t)j;
+        vec3_t v = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
+        md_util_min_image_vec3(&v, 1, s->cell);
+        float e = 0.0f;
+        e += v.x * v.x;
+        e += v.y * v.y;
+        e += v.z * v.z;
+        const float d = sqrtf(e);
+        const bool pass = s->test == VIAL_CMP_LT ? (double)d < s->r : (double)d <= s->r;
+        if (pass) s->counts[s->rows ? i : j] += 1;
+    }
+}
+
+// Whether the search reports every pair within reach once, as one image: no triclinic cell, and reach short of half
+// of every orthorhombic period
+static bool search_ok(const md_unitcell_t* cell, double reach) {
+    if (cell->flags & MD_UNITCELL_TRICLINIC) return false;
+    if (!(cell->flags & MD_UNITCELL_PBC_ALL)) return true;
+    float ext[3];
+    md_unitcell_diag_extract_float(ext, cell);
+    const uint32_t pbc[3] = {MD_UNITCELL_PBC_X, MD_UNITCELL_PBC_Y, MD_UNITCELL_PBC_Z};
+    for (int c = 0; c < 3; ++c) if ((cell->flags & pbc[c]) && !(reach < 0.5 * ext[c])) return false;
+    return true;
+}
+
+static bool all_finite(const float* v, size_t n) {
+    for (size_t i = 0; i < n; ++i) if (!isfinite(v[i])) return false;
+    return true;
+}
+
+// The nearest of each line among the pairs the search finds, each with the matrix's own entry; ties to the first
+typedef struct pairs_nearest_t {
+    const float*        px;
+    const float*        py;
+    const md_unitcell_t* cell;
+    bool                rows;
+    float*              best;
+    int32_t*            at;
+} pairs_nearest_t;
+
+static void pairs_nearest_cb(const uint32_t* i_idx, const uint32_t* j_idx, const float* d2, size_t n, void* user) {
+    (void)d2;
+    pairs_nearest_t* s = user;
+    for (size_t q = 0; q < n; ++q) {
+        const uint32_t i = i_idx[q], j = j_idx[q];
+        const float* A = s->px + 3 * (size_t)i;
+        const float* B = s->py + 3 * (size_t)j;
+        vec3_t v = {{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
+        md_util_min_image_vec3(&v, 1, s->cell);
+        float e = 0.0f;
+        e += v.x * v.x;
+        e += v.y * v.y;
+        e += v.z * v.z;
+        const float d = sqrtf(e);
+        const uint32_t L = s->rows ? i : j, other = s->rows ? j : i;
+        if (s->at[L] < 0 || d < s->best[L] || (d == s->best[L] && (int32_t)other < s->at[L])) { s->best[L] = d; s->at[L] = (int32_t)other; }
+    }
+}
+
+// How far the search for nearest pairs looks: a line whose nearest is past it is computed whole
+#define VIAL_PAIRS_NEAR 8.0
+
 bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, const vial_val_t* x, const vial_val_t* y, const vial_val_t* r,
                   vial_val_t* out) {
     if (!x || !y || (test && !r)) return vial_rt_fail(k, "R0103", "a missing argument");
@@ -714,6 +794,44 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
     const bool r_missing = test && vial_val_is_missing(r, 0);
     // The lines: rows of m entries, or columns of n
     const bool rows = axis != 0;
+
+    // A count or any within a cutoff: the spatial search, where every pair it reports is one image, the cutoff short
+    // of half an orthorhombic period, and no position is missing
+    if (test && (red == VIAL_PAIRS_COUNT || red == VIAL_PAIRS_ANY) && !px.missing && !py.missing && !r_missing && rv >= 0.0 && rv < 1e6 && n && m) {
+        const double reach = nextafter(rv, 1e30) * 1.00001 + 1e-4;
+        if (search_ok(&cell, reach)) {
+            int32_t* counts = md_alloc(k->alloc, (rows ? n : m) * sizeof(int32_t));
+            memset(counts, 0, (rows ? n : m) * sizeof(int32_t));
+            pairs_search_t ps = {.px = px.data, .py = py.data, .cell = &cell, .test = test, .r = rv, .rows = rows, .counts = counts};
+            md_coord_stream_t ys = md_coord_stream_from_aos(py.data, 3 * sizeof(float), NULL, m);
+            md_coord_stream_t xs = md_coord_stream_from_aos(px.data, 3 * sizeof(float), NULL, n);
+            md_spatial_acc_t acc = {.alloc = k->alloc};
+            md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &ys, .cutoff = reach, .unitcell = &cell});
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &xs, reach, pairs_search_cb, &ps, 0);
+            md_spatial_acc_free(&acc);
+            const size_t nl = rows ? n : m;
+            if (axis == VIAL_PAIRS_ALL) {
+                int64_t total = 0;
+                for (size_t L = 0; L < nl; ++L) total += counts[L];
+                vial_val_t o;
+                if (!vial_k_make(k, odt, 0, NULL, &o)) return false;
+                if (red == VIAL_PAIRS_ANY) *(uint8_t*)o.data = total > 0;
+                else if (total > INT32_MAX) vial_val_set_missing(&o, 0, k->alloc);     // R0102, as the sum gives
+                else *(int32_t*)o.data = (int32_t)total;
+                *out = o;
+                return true;
+            }
+            vial_val_t o;
+            const uint32_t od[1] = {(uint32_t)nl};
+            if (!vial_k_make(k, odt, 1, od, &o)) return false;
+            for (size_t L = 0; L < nl; ++L) {
+                if (red == VIAL_PAIRS_ANY) ((uint8_t*)o.data)[L] = counts[L] > 0;
+                else ((int32_t*)o.data)[L] = counts[L];
+            }
+            *out = o;
+            return true;
+        }
+    }
     const size_t lines = rows ? n : m, len = rows ? m : n;
     vec3_t* buf = md_alloc(k->alloc, (len ? len : 1) * sizeof(vec3_t));
     vial_val_t line = {.dtype = test ? VIAL_DT_BOOL : VIAL_DT_FLOAT, .ndim = 1, .dims = {(uint32_t)len}};
@@ -728,8 +846,34 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
     const uint32_t odims[1] = {(uint32_t)lines};
     if (!vial_k_make(k, odt, 1, odims, &o)) return false;
     const size_t es = vial_dtype_size(odt);
+
+    // The nearest of each line: every pair within VIAL_PAIRS_NEAR is found by the search, so a line whose nearest found
+    // is that close has it exactly, ties to the first as argmin has them; the other lines are computed whole below
+    uint8_t* resolved = NULL;
+    const double near_reach = VIAL_PAIRS_NEAR * 1.00001 + 1e-4;
+    if (!test && (red == VIAL_PAIRS_MIN || red == VIAL_PAIRS_ARGMIN) && !px.missing && !py.missing && n && m && search_ok(&cell, near_reach) &&
+        all_finite(px.data, 3 * n) && all_finite(py.data, 3 * m)) {
+        float* best = md_alloc(k->alloc, lines * sizeof(float));
+        int32_t* at = md_alloc(k->alloc, lines * sizeof(int32_t));
+        for (size_t L = 0; L < lines; ++L) { best[L] = 0.0f; at[L] = -1; }
+        pairs_nearest_t ns = {.px = px.data, .py = py.data, .cell = &cell, .rows = rows, .best = best, .at = at};
+        md_coord_stream_t ys = md_coord_stream_from_aos(py.data, 3 * sizeof(float), NULL, m);
+        md_coord_stream_t xs = md_coord_stream_from_aos(px.data, 3 * sizeof(float), NULL, n);
+        md_spatial_acc_t acc = {.alloc = k->alloc};
+        md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){.coords = &ys, .cutoff = near_reach, .unitcell = &cell});
+        md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &xs, near_reach, pairs_nearest_cb, &ns, 0);
+        md_spatial_acc_free(&acc);
+        resolved = md_alloc(k->alloc, lines);
+        for (size_t L = 0; L < lines; ++L) {
+            resolved[L] = at[L] >= 0 && (double)best[L] <= VIAL_PAIRS_NEAR;
+            if (!resolved[L]) continue;
+            if (red == VIAL_PAIRS_MIN) ((float*)o.data)[L] = best[L];
+            else ((int32_t*)o.data)[L] = at[L];
+        }
+    }
     for (size_t L = 0; L < lines; ++L) {
         if ((L & 63) == 0 && k->in->stop && md_atomic_load64(k->in->stop)) { k->in->interrupted = true; return false; }
+        if (resolved && resolved[L]) continue;
         bool any_missing = r_missing;
         for (size_t e = 0; e < len; ++e) {
             const size_t i = rows ? L : e, j = rows ? e : L;
