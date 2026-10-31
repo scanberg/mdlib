@@ -105,7 +105,9 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     in->sys = sys;
     in->msys = msys;
     in->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
-    in->temp = md_arena_allocator_create(alloc, MEGABYTES(1));
+    // A frame's values: a virtual memory arena, reset per frame and keeping what it committed, so a frame allocates
+    // no pages and faults none in after the first
+    in->temp = md_vm_arena_create(GIGABYTES(4));
     if (!in->alloc || !in->temp) return false;
     const size_t nv = md_array_size(ir->values);
     md_array_resize(in->vals, nv, in->alloc);
@@ -162,7 +164,7 @@ static bool eval_at(vial_interp_t* in, uint32_t opi) {
 
 void vial_interp_free(vial_interp_t* in) {
     for (int d = 0; d < VIAL_MAP_SCRATCH_DEPTH; ++d) if (in->map_scratch[d]) md_vm_arena_destroy(in->map_scratch[d]);
-    if (in->temp) md_arena_allocator_destroy(in->temp);
+    if (in->temp) md_vm_arena_destroy(in->temp);
     if (in->alloc) md_arena_allocator_destroy(in->alloc);
     memset(in, 0, sizeof(*in));
 }
@@ -605,7 +607,7 @@ bool vial_interp_frame(vial_interp_t* in, const vial_frame_t* frame) {
     // What the last frame computed goes
     const size_t nv = md_array_size(in->state);
     for (size_t i = 0; i < nv; ++i) if (in->state[i] == 1) in->state[i] = 0;
-    md_arena_allocator_reset(in->temp);
+    md_vm_arena_reset(in->temp);
     const bool st = eval_top(in, true);
     in->frame = frame;
     return eval_top(in, false) && st;
@@ -821,7 +823,7 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
             in->times[f] = fr.time;
             in->frame = &fr;
             for (size_t v = 0; v < nv; ++v) if (in->state[v] == 1) in->state[v] = 0;
-            md_arena_allocator_reset(in->temp);
+            md_vm_arena_reset(in->temp);
             for (size_t i = 0; i < md_array_size(top->ops); ++i) {
                 const uint32_t opi = top->ops[i];
                 const vial_ir_op_t* op = &ir->ops[opi];
