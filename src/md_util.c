@@ -10283,7 +10283,10 @@ static FORCE_INLINE float dist_threshold2(float best2, const dist_cluster_t* cl,
 static FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* a, const size_t* a_offsets, size_t num_groups,
                                      const dist_set_t* b, const dist_cell_t* c, const int mode, const bool largest, dist_near_t* nr) {
     int64_t prev = -1;
-    // In locals: what the near pairs' stores could alias as far as the compiler knows, it reloads every iteration
+    // In locals: what the near pairs' stores could alias as far as the compiler knows, it reloads every iteration.
+    // The cell too, whose address goes nowhere the stores do.
+    const dist_cell_t cell_local = *c;
+    c = &cell_local;
     const float* bx = b->x;
     const float* by = b->y;
     const float* bz = b->z;

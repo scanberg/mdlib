@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VIAL_BENCH_VERSION "vial bench r3"
+#define VIAL_BENCH_VERSION "vial bench r4"
 
 typedef struct vial_bench_pair_t {
     const char* v1;

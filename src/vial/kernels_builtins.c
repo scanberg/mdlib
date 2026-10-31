@@ -445,13 +445,16 @@ static void pair_extreme(const float* P, uint32_t n, const float* Q, uint32_t m,
 
 // The largest magnitude of v[n], false if one is not finite
 static bool finite_scale(const float* v, size_t n, float* scale) {
+    // Without a branch, so it vectorizes: a NaN or an infinity fails the comparison
     float s = *scale;
+    int bad = 0;
     for (size_t i = 0; i < n; ++i) {
-        if (!isfinite(v[i])) return false;
-        s = MAX(s, fabsf(v[i]));
+        const float a = fabsf(v[i]);
+        bad |= !(a <= FLT_MAX);
+        s = a > s ? a : s;
     }
     *scale = s;
-    return true;
+    return !bad;
 }
 
 // pair_extreme without distinct, by mdlib's distance kernel, which skips what cannot be the extreme: the same pair
