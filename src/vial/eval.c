@@ -303,6 +303,12 @@ void md_vial_eval_interrupt(md_vial_eval_t* e) {
     if (e) md_atomic_fetch_add64(&e->stop, 1);
 }
 
+void md_vial_eval_reset_interrupt(md_vial_eval_t* e) {
+    if (!e) return;
+    e->stop = 0;
+    e->in.interrupted = false;
+}
+
 size_t md_vial_eval_diagnostics(const md_vial_eval_t* e, const md_vial_diagnostic_t** out) {
     if (!e) { if (out) *out = NULL; return 0; }
     if (out) *out = e->diags;

@@ -292,6 +292,9 @@ bool            md_vial_eval_run(md_vial_eval_t* eval);
 double          md_vial_eval_progress(const md_vial_eval_t* eval);
 void            md_vial_eval_interrupt(md_vial_eval_t* eval);
 
+// A stop stays requested until this, called when md_vial_eval_run is not running; a run after it starts over
+void            md_vial_eval_reset_interrupt(md_vial_eval_t* eval);
+
 // What failed while evaluating: R diagnostics, each once, with the span of the expression
 size_t          md_vial_eval_diagnostics(const md_vial_eval_t* eval, const md_vial_diagnostic_t** out);
 

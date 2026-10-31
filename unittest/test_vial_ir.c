@@ -659,6 +659,11 @@ UTEST(vial_ir, eval_aggregate) {
         for (int64_t f = 0; f < nf; ++f) { all[f] = 1; odd[f] = (uint8_t)(f & 1); }
         float h[10];
         EXPECT_EQ(0u, md_vial_eval_aggregate(e, STR_LIT("h"), all, h, 10));   // not run yet
+        // Stopped before it starts, it stays stopped until reset
+        md_vial_eval_interrupt(e);
+        EXPECT_FALSE(md_vial_eval_run(e));
+        EXPECT_FALSE(md_vial_eval_run(e));
+        md_vial_eval_reset_interrupt(e);
         EXPECT_TRUE(md_vial_eval_run(e));
         const md_attributes_t* attr = md_vial_eval_attributes(e);
         const md_attribute_t* ad = md_attributes_find(attr, STR_LIT("script/d"));
