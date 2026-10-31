@@ -823,3 +823,7 @@ void vx_emit_unreachable(infer_t* x) {
     for (vx_frame_t* f = x->frame; f; f = f->parent) f->lower_failed = true;
     if (x->frame) vial_ir_yield(x->ir, NULL, 0, (md_vial_span_t){0});
 }
+
+void vx_emit_unreachable_mark(infer_t* x) {
+    for (vx_frame_t* f = x->frame; f; f = f->parent) f->lower_failed = true;
+}

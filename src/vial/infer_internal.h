@@ -207,3 +207,6 @@ void        vx_comp_end(infer_t* x, vial_node_id id, vx_comp_t* c, uint32_t valu
 
 // What follows a failed static assert never runs: the body ends there, and its def is not evaluated
 void        vx_emit_unreachable(infer_t* x);
+
+// What failed to check and was reported makes the def it is in not evaluated, without a lowering failure of its own
+void        vx_emit_unreachable_mark(infer_t* x);

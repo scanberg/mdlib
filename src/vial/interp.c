@@ -6,6 +6,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
+#include <core/md_intrinsics.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -223,7 +224,7 @@ static bool place(vial_kctx_t* k, vial_val_t* out, size_t i, const vial_val_t* e
 
 static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t* const* av, vial_val_t* out, md_allocator_i* alloc) {
     vial_kctx_t k = {.in = in, .op = op, .type = &in->ir->values[op->result].type, .alloc = alloc};
-    const uint32_t* mapping = in->ir->ints + op->attr;
+    const uint32_t* mapping = op->num_args ? in->ir->ints + op->attr : NULL;
     // The mapped dimensions of every operand, broadcast as NumPy's are, aligned on the right
     uint8_t lnd = 0;
     uint32_t ldims[VIAL_MAX_DIMS] = {0};
@@ -379,7 +380,7 @@ static bool eval_op(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) {
     case VIAL_IR_BUILTIN: {
         const vial_builtin_t* b = vial_builtin_at(op->aux);
         if (!b) return vial_rt_fail(&k, "R0103", "an unknown built-in");
-        return vial_k_builtin(&k, b->name, av, ir->names + op->arg_beg, op->num_args, out);
+        return vial_k_builtin(&k, b->name, av, op->num_args ? ir->names + op->arg_beg : NULL, op->num_args, out);
     }
     case VIAL_IR_CALL: {
         const uint32_t body = ir->funcs[op->aux].body;
@@ -677,6 +678,16 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
         in->series[v] = md_alloc(in->alloc, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
         memset(in->series[v], 0, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
     }
+    int64_t sweeps_with_frames = 0;
+    for (uint8_t sweep = 1; sweep <= max_sweep; ++sweep) {
+        for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+            const uint32_t opi = top->ops[i];
+            if (in->live[opi] && in->op_class[opi] == VIAL_OP_PER_FRAME && in->op_sweep[opi] == sweep) { sweeps_with_frames++; break; }
+        }
+    }
+    in->frames_done = 0;
+    in->frames_total = (uint64_t)(sweeps_with_frames * num_frames);
+    in->interrupted = false;
     for (uint8_t sweep = 1; sweep <= max_sweep; ++sweep) {
         in->sweep = sweep;
         bool any = false;
@@ -685,6 +696,8 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
             if (in->live[opi] && in->op_class[opi] == VIAL_OP_PER_FRAME && in->op_sweep[opi] == sweep) any = true;
         }
         for (int64_t f = 0; any && f < num_frames; ++f) {
+            if (in->stop && md_atomic_load64(in->stop)) { in->interrupted = true; in->frame = NULL; return false; }
+            md_atomic_fetch_add64(&in->frames_done, 1);
             vial_frame_t fr;
             if (!in->load_frame || !in->load_frame(in->load_user, f, &fr)) { vial_kctx_t k = {.in = in, .map_index = -1}; vial_rt_fail(&k, "R0104", "frame %lld does not load", (long long)f); return false; }
             in->times[f] = fr.time;

@@ -270,7 +270,7 @@ static void dump_op(dumper_t* d, uint32_t opi, int indent) {
         if (len < col) sb_fmt(d, "%*s", (int)(col - len), "");
     }
     sb_cstr(d, " = ");
-    const vial_ssa_t* args = ir->args + op->arg_beg;
+    const vial_ssa_t* args = op->num_args ? ir->args + op->arg_beg : NULL;
     switch (op->kind) {
     case VIAL_IR_CONST: {
         char vbuf[96];

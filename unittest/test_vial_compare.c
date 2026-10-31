@@ -63,38 +63,27 @@ static bool v1_values(const char* src, const md_system_t* sys, uint32_t nf, doub
     return true;
 }
 
-// v2's output p at every frame
+// v2's output p at every frame, through the public API: published as script/p
 static bool v2_values(const char* src, const md_system_t* sys, uint32_t nf, double* out, md_allocator_i* alloc) {
-    const md_vial_compile_desc_t desc = {.sys = sys};
+    const md_vial_compile_desc_t desc = {.sys = sys, .run = STR_LIT("run")};
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &desc, alloc);
     const md_vial_diagnostic_t* d;
     const size_t nd = md_vial_diagnostics(prog, &d);
     for (size_t i = 0; i < nd; ++i) if (d[i].code[0] == 'E') { printf("v2 does not compile: %s: %.*s\n", src, (int)d[i].message.len, d[i].message.ptr); return false; }
-    const vial_ir_t* ir = md_vial__run_ir(prog);
-    if (!ir) { printf("v2 does not inline: %s\n", src); return false; }
-    vial_ssa_t p = 0;
-    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (str_eq(ir->outputs[i].name, STR_LIT("p"))) p = ir->outputs[i].value;
-    if (!p) return false;
-    vial_sys_t vs;
-    vial_sys_init(&vs, sys, alloc);
-    vial_interp_t in;
-    vial_interp_init(&in, ir, &vs, sys, md_get_heap_allocator());
-    md_system_state_t state = {.alloc = alloc};
-    md_system_state_init(&state, sys->atom.count);
-    const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
-    md_system_extract_t* ex = md_system_extract_begin(sys, STR_LIT("run"), paths, 2, alloc);
-    bool ok = ex != NULL;
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    if (!eval) { printf("v2 does not evaluate: %s\n", src); md_vial_program_free(prog); return false; }
+    bool ok = md_vial_eval_run(eval);
+    const md_vial_diagnostic_t* rd;
+    const size_t nr = md_vial_eval_diagnostics(eval, &rd);
+    for (size_t i = 0; i < nr; ++i) printf("v2 fails: %s: %.5s %.*s\n", src, rd[i].code, (int)rd[i].message.len, rd[i].message.ptr);
+    const md_attribute_t* attr = md_attributes_find(md_vial_eval_attributes(eval), STR_LIT("script/p"));
+    ok = ok && attr && (attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) && attr->format.shape[0] == nf;
     for (uint32_t f = 0; ok && f < nf; ++f) {
-        ok = md_system_extract_frame(ex, f, &state);
-        const vial_frame_t fr = {.xyz = (const float*)state.xyz, .num_atoms = state.num_atoms, .cell = state.unitcell, .index = f, .time = f};
-        ok = ok && vial_interp_frame(&in, &fr);
-        const vial_val_t* v = ok ? vial_interp_value(&in, p) : NULL;
-        if (!v || !v->data || vial_val_count(v) != 1) { ok = false; break; }
-        out[f] = v->dtype == VIAL_DT_FLOAT ? *(const float*)v->data : v->dtype == VIAL_DT_INT ? *(const int32_t*)v->data : *(const double*)v->data;
+        double v = 0.0;
+        ok = md_attribute_extract_f64(&v, 1, attr, md_attribute_slice_1(f), attr->unit) == 1;
+        out[f] = v;
     }
-    if (!ok && in.failed) printf("v2 fails: %s: %s\n", src, in.error.message);
-    if (ex) md_system_extract_end(ex);
-    vial_interp_free(&in);
+    md_vial_eval_free(eval);
     md_vial_program_free(prog);
     return ok;
 }

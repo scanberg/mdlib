@@ -1409,38 +1409,37 @@ static bool k_reduce_by(vial_kctx_t* k, red_t red, const vial_val_t* a, const vi
     const uint32_t* oi = vial_sets_items(over, 0);
     size_t inner = 1;
     for (uint8_t d = 1; d < a->ndim; ++d) inner *= a->dims[d];
-    uint32_t odims[VIAL_MAX_DIMS];
-    memcpy(odims, a->dims, a->ndim * sizeof(uint32_t));
-    odims[0] = g;
-    vial_val_t o; if (!vial_k_make(k, k->type->dtype, a->ndim, odims, &o)) return false;
+    // One value per group: every value of the group's rows, all their dimensions, as a reduction without axis= takes
+    vial_val_t o; if (!vial_k_make(k, k->type->dtype, 1, &g, &o)) return false;
     vial_kctx_t k2 = *k;
     k2.op = NULL;
+    vial_type_t t1 = *k->type;
+    t1.ndim = 0;
+    k2.type = &t1;
+    const size_t es = vial_dtype_size(a->dtype), os = vial_dtype_size(o.dtype);
     for (uint32_t q = 0; q < g; ++q) {
         // The group's rows of a, in a's order
         const uint32_t sz = vial_sets_size(by->sets, q);
         const uint32_t* gi = vial_sets_items(by->sets, q);
-        uint32_t* rows = md_alloc(k->alloc, (sz ? sz : 1) * sizeof(uint32_t));
+        uint32_t* rows = md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t));
         uint32_t nr = 0;
         for (uint32_t r = 0; r < n; ++r) {
             uint32_t lo = 0, hi = sz;
             while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if (gi[mid] < oi[r]) lo = mid + 1; else hi = mid; }
             if (lo < sz && gi[lo] == oi[r]) rows[nr++] = r;
         }
-        vial_val_t sub; if (!vial_k_make(k, a->dtype, a->ndim, (uint32_t[]){nr, a->dims[1], a->dims[2], a->dims[3], a->dims[4], a->dims[5]}, &sub)) return false;
-        const size_t es = vial_dtype_size(a->dtype);
+        uint32_t sdims[VIAL_MAX_DIMS];
+        memcpy(sdims, a->dims, a->ndim * sizeof(uint32_t));
+        sdims[0] = nr;
+        vial_val_t sub; if (!vial_k_make(k, a->dtype, a->ndim, sdims, &sub)) return false;
         for (uint32_t r = 0; r < nr; ++r) {
             memcpy((uint8_t*)sub.data + r * inner * es, (const uint8_t*)a->data + rows[r] * inner * es, inner * es);
             for (size_t z = 0; z < inner; ++z) if (vial_val_is_missing(a, rows[r] * inner + z)) vial_val_set_missing(&sub, r * inner + z, k->alloc);
         }
         vial_val_t one;
-        vial_type_t t1 = *k->type;
-        t1.ndim = 0;
-        k2.type = &t1;
-        const vial_val_t ax = vial_val_int(0, k->alloc);
-        if (!k_reduce(&k2, red, &sub, &ax, &one)) return false;
-        const size_t os = vial_dtype_size(o.dtype);
-        memcpy((uint8_t*)o.data + q * inner * os, one.data, inner * os);
-        for (size_t z = 0; z < inner; ++z) if (vial_val_is_missing(&one, z)) vial_val_set_missing(&o, q * inner + z, k->alloc);
+        if (!k_reduce(&k2, red, &sub, NULL, &one)) return false;
+        memcpy((uint8_t*)o.data + q * os, one.data, os);
+        if (vial_val_is_missing(&one, 0)) vial_val_set_missing(&o, q, k->alloc);
     }
     *out = o;
     return true;

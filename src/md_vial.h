@@ -142,6 +142,41 @@ typedef struct md_vial_hover_t {
 
 bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out);
 
+// ### EVALUATION ###
+// A program evaluated over the frames of one run: its static part once, then sweeps over the frames in order, as many
+// as its values need (see the reference's passes). The published values become attributes: "script/<name>", with the
+// frame as the outer axis for a value per frame, beside "time", the evaluation's frame axis of ordinals. Selections
+// are recipes and are not published as values. The interpreter is the reference of every other backend.
+//
+// Phase 3's API: one call evaluates every frame. Evaluating a range of frames, frames in parallel, and taking over
+// what an earlier evaluation computed come with viamd's integration.
+
+typedef struct md_vial_eval_t md_vial_eval_t;
+
+typedef struct md_vial_eval_desc_t {
+    const struct md_system_t* sys;  // the system the program was compiled against
+    str_t       run;                // the run whose frames are evaluated: its prefix in sys->attributes, as "run/ala"
+    size_t      max_elements;       // the most elements one value may have (R0105); 0 for 2^28
+} md_vial_eval_desc_t;
+
+// NULL when the program cannot be evaluated: it has errors, or something in it is not evaluated yet
+md_vial_eval_t* md_vial_eval_create(const md_vial_program_t* prog, const md_vial_eval_desc_t* desc, struct md_allocator_i* alloc);
+void            md_vial_eval_free(md_vial_eval_t* eval);
+
+// Evaluates every frame. False when a value failed (its R diagnostic is in md_vial_eval_diagnostics; what does not
+// depend on it is still computed) or when interrupted.
+bool            md_vial_eval_run(md_vial_eval_t* eval);
+
+// From any thread while md_vial_eval_run runs: how far it is, 0 to 1, and a request to stop between frames
+double          md_vial_eval_progress(const md_vial_eval_t* eval);
+void            md_vial_eval_interrupt(md_vial_eval_t* eval);
+
+// What failed while evaluating: R diagnostics, each once, with the span of the expression
+size_t          md_vial_eval_diagnostics(const md_vial_eval_t* eval, const md_vial_diagnostic_t** out);
+
+// The published values, complete after md_vial_eval_run
+const struct md_attributes_t* md_vial_eval_attributes(const md_vial_eval_t* eval);
+
 #ifdef __cplusplus
 }
 #endif
