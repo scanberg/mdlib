@@ -7,6 +7,7 @@
 #include <md_vial.h>
 #include "../src/vial/vial_internal.h"
 #include "../src/vial/ir.h"
+#include "../src/vial/interp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,26 @@ UTEST(vial_ir, dump_script) {
     for (size_t k = 0; k < md_array_size(ir->failures); ++k) {
         const md_vial_span_t sp = ir->failures[k].span;
         printf("not lowered: %s: '%.*s'\n", ir->failures[k].what, (int)(sp.end - sp.beg), text.ptr + sp.beg);
+    }
+    if (sys && md_vial__run_ir(prog) && vial_test_state(sys[0])) {
+        // Evaluated over the structure's own frame, as the fuzz check does
+        const vial_ir_t* rir = md_vial__run_ir(prog);
+        vial_sys_t vs;
+        vial_sys_init(&vs, desc.sys, alloc);
+        vial_interp_t in;
+        vial_interp_init(&in, rir, &vs, desc.sys, md_get_heap_allocator());
+        const md_system_state_t* st = vial_test_state(sys[0]);
+        const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
+        vial_interp_frame(&in, &fr);
+        for (size_t k = 0; k < md_array_size(rir->outputs); ++k) {
+            char tb[128], vb[200] = "(not computed)";
+            vial_type_print(tb, sizeof(tb), &rir->values[rir->outputs[k].value].type);
+            const vial_val_t* v = vial_interp_value(&in, rir->outputs[k].value);
+            if (v) vial_val_print(vb, sizeof(vb), v, 4);
+            printf("= %.*s : %s = %s (dtype %d, rank %u)\n", (int)rir->outputs[k].name.len, rir->outputs[k].name.ptr, tb, vb, v ? v->dtype : -1, v ? v->ndim : 0);
+        }
+        for (size_t k = 0; k < md_array_size(in.errors); ++k) printf("%s %s\n", in.errors[k].code, in.errors[k].message);
+        vial_interp_free(&in);
     }
     const md_vial_diagnostic_t* diags;
     const size_t nd = md_vial_diagnostics(prog, &diags);

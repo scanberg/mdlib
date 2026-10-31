@@ -146,7 +146,7 @@ static void fuzz_print_input(const char* ptr, size_t len) {
 static const char* fuzz_check_copy(const char* ptr, size_t len, md_allocator_i* scratch) {
     char* copy = malloc(len ? len : 1);
     if (len) memcpy(copy, ptr, len);
-    const char* err = vial_fuzz_check((str_t){copy, len}, vial_test_system('T'), scratch);
+    const char* err = vial_fuzz_check((str_t){copy, len}, vial_test_system('T'), vial_test_state('T'), scratch);
     free(copy);
     return err;
 }

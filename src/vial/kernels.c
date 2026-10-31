@@ -96,8 +96,11 @@ static bool bc_init(vial_kctx_t* k, bc_t* b, const vial_val_t* x, const vial_val
     if (y) strides(y, b->nd, b->dims, b->sb);
     if (z) strides(z, b->nd, b->dims, b->sc);
     b->n = 1;
-    for (uint8_t d = 0; d < b->nd; ++d) b->n *= b->dims[d];
-    return true;
+    for (uint8_t d = 0; d < b->nd; ++d) {
+        if (b->dims[d] && b->n > SIZE_MAX / b->dims[d]) { b->n = SIZE_MAX; break; }
+        b->n *= b->dims[d];
+    }
+    return vial_k_room(k, b->n);
 }
 
 // Calls body(io, ia, ib, ic) for every element of the broadcast shape, in order
@@ -177,7 +180,7 @@ bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_
     const vial_val_t x = vial_val_as(a, cd, k->alloc), y = vial_val_as(b, cd, k->alloc);
     bc_t bc;
     if (!bc_init(k, &bc, &x, &y, NULL)) return false;
-    vial_val_t o = vial_val_make(cd, bc.nd, bc.dims, k->alloc);
+    vial_val_t o; if (!vial_k_make(k, cd, bc.nd, bc.dims, &o)) return false;
     if (cd == VIAL_DT_FLOAT) {
         const float* A = x.data; const float* B = y.data; float* O = o.data;
         switch (op) {
@@ -241,7 +244,7 @@ bool vial_k_fma(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, const 
     const vial_val_t x = vial_val_as(a, cd, k->alloc), y = vial_val_as(b, cd, k->alloc), z = vial_val_as(c, cd, k->alloc);
     bc_t bc;
     if (!bc_init(k, &bc, &x, &y, &z)) return false;
-    vial_val_t o = vial_val_make(cd, bc.nd, bc.dims, k->alloc);
+    vial_val_t o; if (!vial_k_make(k, cd, bc.nd, bc.dims, &o)) return false;
     if (cd == VIAL_DT_FLOAT) { const float *A = x.data, *B = y.data, *C = z.data; float* O = o.data; BC_FOR(bc, O[io] = fmaf(A[ia], B[ib], C[ic])); }
     else if (cd == VIAL_DT_FLOAT64) { const double *A = x.data, *B = y.data, *C = z.data; double* O = o.data; BC_FOR(bc, O[io] = fma(A[ia], B[ib], C[ic])); }
     else return vial_rt_fail(k, "R0103", "fma on ints");
@@ -253,7 +256,7 @@ bool vial_k_fma(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, const 
 bool vial_k_unary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, vial_val_t* out) {
     const uint8_t cd = k->type->dtype;
     const vial_val_t x = vial_val_as(a, cd, k->alloc);
-    vial_val_t o = vial_val_make(cd, x.ndim, x.dims, k->alloc);
+    vial_val_t o; if (!vial_k_make(k, cd, x.ndim, x.dims, &o)) return false;
     const size_t n = vial_val_count(&x);
     if (op == VIAL_OP_PLUS) { *out = x; return true; }
     switch (cd) {
@@ -276,7 +279,7 @@ bool vial_k_unary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, vial_val_t* 
 
 bool vial_k_not(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out) {
     if (a->dtype != VIAL_DT_BOOL) return vial_rt_fail(k, "R0103", "not of what is not a bool");
-    vial_val_t o = vial_val_make(VIAL_DT_BOOL, a->ndim, a->dims, k->alloc);
+    vial_val_t o; if (!vial_k_make(k, VIAL_DT_BOOL, a->ndim, a->dims, &o)) return false;
     const size_t n = vial_val_count(a);
     for (size_t i = 0; i < n; ++i) ((uint8_t*)o.data)[i] = !((const uint8_t*)a->data)[i];
     o.missing = a->missing;
@@ -288,7 +291,7 @@ bool vial_k_logic(vial_kctx_t* k, uint16_t kw, const vial_val_t* a, const vial_v
     if (a->dtype != VIAL_DT_BOOL || b->dtype != VIAL_DT_BOOL) return vial_rt_fail(k, "R0103", "and/or of what is not a bool");
     bc_t bc;
     if (!bc_init(k, &bc, a, b, NULL)) return false;
-    vial_val_t o = vial_val_make(VIAL_DT_BOOL, bc.nd, bc.dims, k->alloc);
+    vial_val_t o; if (!vial_k_make(k, VIAL_DT_BOOL, bc.nd, bc.dims, &o)) return false;
     const uint8_t *A = a->data, *B = b->data;
     uint8_t* O = o.data;
     if (kw == VIAL_KW_AND) BC_FOR(bc, O[io] = A[ia] && B[ib]);
@@ -309,7 +312,7 @@ bool vial_k_compare(vial_kctx_t* k, uint16_t cmp, const vial_val_t* a, const via
     if ((cmp == VIAL_CMP_IN || cmp == VIAL_CMP_NOT_IN) && b->dtype == VIAL_DT_RANGE) {
         // a..b includes both ends
         const double lo = ((const double*)b->data)[0], hi = ((const double*)b->data)[1];
-        vial_val_t o = vial_val_make(VIAL_DT_BOOL, a->ndim, a->dims, k->alloc);
+        vial_val_t o; if (!vial_k_make(k, VIAL_DT_BOOL, a->ndim, a->dims, &o)) return false;
         const size_t n = vial_val_count(a);
         for (size_t i = 0; i < n; ++i) {
             const double v = get_f64(a, i);
@@ -323,7 +326,7 @@ bool vial_k_compare(vial_kctx_t* k, uint16_t cmp, const vial_val_t* a, const via
     if (cmp == VIAL_CMP_IN || cmp == VIAL_CMP_NOT_IN) {
         // Each of a's values among b's, as NumPy's isin
         if (!is_num(a->dtype) || !is_num(b->dtype)) return vial_rt_fail(k, "R0103", "`in` of what is not a number");
-        vial_val_t o = vial_val_make(VIAL_DT_BOOL, a->ndim, a->dims, k->alloc);
+        vial_val_t o; if (!vial_k_make(k, VIAL_DT_BOOL, a->ndim, a->dims, &o)) return false;
         const size_t n = vial_val_count(a), m = vial_val_count(b);
         for (size_t i = 0; i < n; ++i) {
             const double v = get_f64(a, i);
@@ -337,7 +340,7 @@ bool vial_k_compare(vial_kctx_t* k, uint16_t cmp, const vial_val_t* a, const via
     }
     bc_t bc;
     if (!bc_init(k, &bc, a, b, NULL)) return false;
-    vial_val_t o = vial_val_make(VIAL_DT_BOOL, bc.nd, bc.dims, k->alloc);
+    vial_val_t o; if (!vial_k_make(k, VIAL_DT_BOOL, bc.nd, bc.dims, &o)) return false;
     uint8_t* O = o.data;
     if (is_num(a->dtype) && is_num(b->dtype)) {
         // In doubles, which hold every int and float of 32 bits exactly
@@ -580,8 +583,10 @@ bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* 
         if (!sels[i].out_dims) continue;
         if (o.ndim >= VIAL_MAX_DIMS) return vial_rt_fail(k, "R0103", "more than 6 dimensions");
         o.dims[o.ndim++] = sels[i].count;
-        total *= sels[i].count;
+        if (sels[i].count && total > SIZE_MAX / sels[i].count) total = SIZE_MAX;
+        else total *= sels[i].count;
     }
+    if (!vial_k_room(k, total)) return false;
     size_t* src = md_alloc(k->alloc, (total ? total : 1) * sizeof(size_t));
     {
         uint32_t idx[VIAL_MAX_DIMS * 2 + 2] = {0};
@@ -611,7 +616,7 @@ bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* 
     }
     const size_t es = vial_dtype_size(a->dtype);
     if (!es) return vial_rt_fail(k, "R0103", "indexing what holds no values");
-    vial_val_t m = vial_val_make(a->dtype, o.ndim, o.dims, k->alloc);
+    vial_val_t m; if (!vial_k_make(k, a->dtype, o.ndim, o.dims, &m)) return false;
     o.data = m.data;
     for (size_t q = 0; q < total; ++q) memcpy((uint8_t*)o.data + q * es, (const uint8_t*)a->data + src[q] * es, es);
     for (size_t q = 0; q < total; ++q) {
@@ -697,7 +702,7 @@ bool vial_k_stack(vial_kctx_t* k, const vial_val_t* items, uint32_t n, vial_val_
     }
     const size_t es = vial_dtype_size(dt);
     if (!es) { *out = o; return true; }
-    vial_val_t m = vial_val_make(dt, o.ndim, o.dims, k->alloc);
+    vial_val_t m; if (!vial_k_make(k, dt, o.ndim, o.dims, &m)) return false;
     o.data = m.data;
     size_t inner = 1;
     for (uint8_t d = 1; d < o.ndim; ++d) inner *= o.dims[d];
@@ -740,7 +745,7 @@ bool vial_k_kind(vial_kctx_t* k, uint16_t kind, const vial_val_t* a, vial_val_t*
     if (!vial_k_positions(k, a, &p)) return false;
     if (kind == VX_KIND_POINT) {
         // One particle's position; an empty set has none
-        vial_val_t o = vial_val_make(VIAL_DT_FLOAT, 1, (uint32_t[]){3}, k->alloc);
+        vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, 1, (uint32_t[]){3}, &o)) return false;
         if (p.dims[0] >= 1) memcpy(o.data, p.data, 3 * sizeof(float));
         else for (int i = 0; i < 3; ++i) vial_val_set_missing(&o, i, k->alloc);
         *out = o;

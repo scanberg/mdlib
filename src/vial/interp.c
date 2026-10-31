@@ -30,6 +30,24 @@ bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...) {
     return false;
 }
 
+bool vial_k_room(vial_kctx_t* k, size_t count) {
+    const size_t limit = k->in->max_elements ? k->in->max_elements : VIAL_MAX_ELEMENTS;
+    if (count <= limit) return true;
+    return vial_rt_fail(k, "R0105", "a value of %zu elements; the limit is %zu", count, limit);
+}
+
+bool vial_k_make(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* dims, vial_val_t* out) {
+    // The count saturates rather than wrapping: six extents of 2^32 overflow 64 bits
+    size_t n = 1;
+    for (uint8_t i = 0; i < ndim; ++i) {
+        if (dims[i] && n > SIZE_MAX / dims[i]) { n = SIZE_MAX; break; }
+        n *= dims[i];
+    }
+    if (!vial_k_room(k, n)) return false;
+    *out = vial_val_make(dtype, ndim, dims, k->alloc);
+    return true;
+}
+
 bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, const struct md_system_t* msys, md_allocator_i* alloc) {
     memset(in, 0, sizeof(*in));
     in->ir = ir;
@@ -222,6 +240,7 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
     }
     size_t count = 1;
     for (uint8_t d = 0; d < lnd; ++d) count *= ldims[d];
+    if (!vial_k_room(&k, count)) return false;
     const vial_ir_region_t* r = &in->ir->regions[op->region[0]];
     vial_val_t* params = md_alloc(alloc, (r->num_params ? r->num_params : 1) * sizeof(vial_val_t));
     const bool filtered = op->sub == VIAL_MAP_FILTERED;
@@ -307,7 +326,8 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
         memcpy(out->dims, o.dims, sizeof(o.dims));
         return true;
     }
-    const vial_val_t made = vial_val_make(o.dtype, o.ndim, o.dims, alloc);
+    vial_val_t made;
+    if (!vial_k_make(&k, o.dtype, o.ndim, o.dims, &made)) return false;
     o.data = made.data;
     size_t j = 0;
     for (size_t i = 0; i < count; ++i) {
