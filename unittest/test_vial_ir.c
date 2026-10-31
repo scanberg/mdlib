@@ -86,6 +86,8 @@ UTEST(vial_ir, lowers_and_verifies) {
 
 #include "../src/vial/interp.h"
 #include <md_pdb.h>
+#include <md_gro.h>
+#include <md_util.h>
 #include <core/md_vec_math.h>
 
 typedef struct vial_ir__run_t {
@@ -1192,6 +1194,44 @@ UTEST(vial_ir, filters) {
 }
 
 // A periodic output publishes its period and seam beside it, from when the evaluation is made, as v1 does
+// The predefined sets of the structure's anatomy: a lipid's head and tails, a nucleotide's base and nucleoside
+static bool vial_ir__load_file(md_system_t* sys, md_system_state_t* st, const char* file, md_allocator_i* alloc) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", MD_UNITTEST_DATA_DIR, file);
+    *sys = (md_system_t){.alloc = alloc};
+    *st = (md_system_state_t){.alloc = alloc};
+    const str_t p = str_from_cstr(path);
+    const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p) : md_pdb_system_init_from_file(sys, st, p, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
+    return ok && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL);
+}
+
+static uint32_t vial_ir__count(const char* expr, const md_system_t* sys, const md_system_state_t* st, md_allocator_i* alloc) {
+    md_vial_filter_t f;
+    if (!md_vial_filter(&f, str_from_cstr(expr), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc) || f.num_sets != 1) return UINT32_MAX;
+    return f.offsets[1];
+}
+
+UTEST(vial_ir, anatomy_sets) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_system_t sys;
+    md_system_state_t st;
+    ASSERT_TRUE(vial_ir__load_file(&sys, &st, "dppc64.pdb", alloc));
+    const uint32_t lipid = vial_ir__count("lipid", &sys, &st, alloc), head = vial_ir__count("head", &sys, &st, alloc), tail = vial_ir__count("tail", &sys, &st, alloc);
+    EXPECT_GT(head, 0u);
+    EXPECT_GT(tail, 0u);
+    EXPECT_EQ(lipid, head + tail);
+    EXPECT_EQ(0u, vial_ir__count("head and tail", &sys, &st, alloc));
+    EXPECT_EQ(lipid, vial_ir__count("head or tail", &sys, &st, alloc));
+
+    ASSERT_TRUE(vial_ir__load_file(&sys, &st, "nucl-dna.gro", alloc));
+    const uint32_t base = vial_ir__count("nucleobase", &sys, &st, alloc), side = vial_ir__count("nucleoside", &sys, &st, alloc);
+    EXPECT_GT(base, 0u);
+    EXPECT_GT(side, base);
+    EXPECT_EQ(base, vial_ir__count("nucleobase and nucleoside", &sys, &st, alloc));
+    EXPECT_EQ(0u, vial_ir__count("nucleoside and not nucleic", &sys, &st, alloc));
+    md_arena_allocator_destroy(alloc);
+}
+
 // A mask over a set's particles picks those where it is true, per frame: as many as the mask counts
 UTEST(vial_ir, set_mask) {
     const md_system_t* sys = vial_test_system('P');

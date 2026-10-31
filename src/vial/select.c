@@ -714,20 +714,48 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
 vial_sets_t* vial_select_predefined(vial_sys_t* s, str_t name, md_allocator_i* alloc) {
     if (str_eq(name, STR_LIT("system"))) return vial_sets_all(s->num_atoms, alloc);
     const md_system_t* sys = s->sys;
-    const bool backbone = str_eq(name, STR_LIT("backbone")), sidechain = str_eq(name, STR_LIT("sidechain"));
+    // By the flags of the particles: what the structure's perception marked
+    md_atom_flags_t flag = 0;
+    if (str_eq(name, STR_LIT("backbone")))        flag = MD_ATOM_FLAG_BACKBONE;
+    else if (str_eq(name, STR_LIT("sidechain")))  flag = MD_ATOM_FLAG_SIDE_CHAIN;
+    else if (str_eq(name, STR_LIT("nucleobase"))) flag = MD_ATOM_FLAG_NUCLEOBASE;
+    else if (str_eq(name, STR_LIT("nucleoside"))) flag = MD_ATOM_FLAG_NUCLEOSIDE;
+    else if (str_eq(name, STR_LIT("tail")))       flag = MD_ATOM_FLAG_LIPID_TAIL;
+    if (str_eq(name, STR_LIT("head"))) {
+        // All of a lipid but its tails, for the lipids whose heads are known: a lipid by name without bonds has none
+        const md_lipid_data_t* lip = &sys->lipid;
+        vial_sets_t* out = sets_new(1, s->num_atoms, alloc);
+        out->single = true;
+        uint64_t* in = md_alloc(alloc, ((s->num_atoms + 63) / 64 + 1) * sizeof(uint64_t));
+        memset(in, 0, ((s->num_atoms + 63) / 64 + 1) * sizeof(uint64_t));
+        for (size_t l = 0; l < lip->count; ++l) {
+            if (lip->head_offset[l + 1] == lip->head_offset[l]) continue;
+            const int32_t* res = md_lipid_residues(lip, l);
+            const size_t nr = md_lipid_residue_count(lip, l);
+            for (size_t c = 0; c < nr; ++c) {
+                const md_urange_t r = md_system_residue_atom_range(sys, (size_t)res[c]);
+                for (uint32_t a = r.beg; a < r.end && a < s->num_atoms; ++a) {
+                    if (!(md_system_atom_flags(sys, a) & MD_ATOM_FLAG_LIPID_TAIL)) in[a >> 6] |= 1ull << (a & 63);
+                }
+            }
+        }
+        uint32_t n = 0;
+        for (uint32_t a = 0; a < s->num_atoms; ++a) if (in[a >> 6] >> (a & 63) & 1) out->idx[n++] = a;
+        out->offset[1] = n;
+        return out;
+    }
     int part = -1;
     if (str_eq(name, STR_LIT("protein"))) part = 0;
     else if (str_eq(name, STR_LIT("nucleic"))) part = 1;
     else if (str_eq(name, STR_LIT("water"))) part = 2;
     else if (str_eq(name, STR_LIT("ion"))) part = 3;
     else if (str_eq(name, STR_LIT("lipid"))) part = 4;
-    if (!backbone && !sidechain && part < 0) return NULL;
+    if (!flag && part < 0) return NULL;
     vial_sets_t* out = sets_new(1, s->num_atoms, alloc);
     out->single = true;
     uint32_t n = 0;
-    if (backbone || sidechain) {
-        const md_atom_flags_t want = backbone ? MD_ATOM_FLAG_BACKBONE : MD_ATOM_FLAG_SIDE_CHAIN;
-        for (uint32_t a = 0; a < s->num_atoms; ++a) if (md_system_atom_flags(sys, a) & want) out->idx[n++] = a;
+    if (flag) {
+        for (uint32_t a = 0; a < s->num_atoms; ++a) if (md_system_atom_flags(sys, a) & flag) out->idx[n++] = a;
     } else {
         // The particles of the parts of that kind: each part is one range, and parts ascend
         for (uint32_t p = 0; p < s->num_parts; ++p) {

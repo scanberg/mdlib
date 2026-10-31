@@ -302,7 +302,7 @@ The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna
 
 ### Predefined names
 
-`protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone` and `sidechain` are sets: `protein` is the particles of the peptide parts, with their caps and the modified residues bonded into them, `nucleic` those of the nucleic acid parts, and `water`, `ion` and `lipid` those of the parts of that kind. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
+`protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone`, `sidechain`, `nucleobase`, `nucleoside`, `head` and `tail` are sets: `protein` is the particles of the peptide parts, with their caps and the modified residues bonded into them, `nucleic` those of the nucleic acid parts, and `water`, `ion` and `lipid` those of the parts of that kind. `backbone` is N, CA and C of the amino acids and the sugar-phosphate chain of the nucleotides, `sidechain` an amino acid's atoms from CB outwards, `nucleobase` the base of a nucleotide and `nucleoside` its sugar and base. `tail` is the tails of the lipids, each acyl, alkyl or sphingoid chain and the ring skeleton of a sterol with their branches and hydrogens, and `head` all of a lipid but its tails; `head or tail` is every lipid whose anatomy is known, which a lipid by name in a system without bonds is not. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
 
 ### Scope
 
