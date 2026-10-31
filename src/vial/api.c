@@ -4,6 +4,7 @@
 #include <md_attributes.h>
 #include "infer.h"
 #include "ir.h"
+#include "builtins.h"
 
 #include <core/md_arena_allocator.h>
 #include <core/md_common.h>
@@ -45,9 +46,29 @@ static uint32_t public_pass(const vial_type_t* t) { return t->stage != VIAL_STAG
 
 static void target_names(const vial_tree_t* t, vial_node_id target, vial_node_id** out, md_allocator_i* alloc);
 
+// A name's value in the inlined IR, 0 when it has none
+static vial_ssa_t run_output(const md_vial_program_t* prog, str_t name) {
+    if (!prog->has_run_ir) return 0;
+    for (size_t i = 0; i < md_array_size(prog->run_ir.outputs); ++i) {
+        if (str_eq(prog->run_ir.outputs[i].name, name)) return prog->run_ir.outputs[i].value;
+    }
+    return 0;
+}
+
+// Whether v is what histogram() gives, or an element of it
+static bool from_histogram(const vial_ir_t* ir, vial_ssa_t v) {
+    uint32_t op = ir->values[v].op;
+    if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_ELEM && ir->ops[op].num_args) op = ir->values[ir->args[ir->ops[op].arg_beg]].op;
+    return op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_BUILTIN && !strcmp(vial_builtin_at(ir->ops[op].aux)->name, "histogram");
+}
+
 // The published values: top-level names, bound once each, to what can be published
 static void collect_outputs(md_vial_program_t* prog) {
     const vial_tree_t* t = &prog->tree;
+    // Fingerprints share what they hash
+    const size_t nv = prog->has_run_ir ? md_array_size(prog->run_ir.values) : 0;
+    uint64_t* memo = nv ? md_alloc(prog->arena, nv * sizeof(uint64_t)) : NULL;
+    if (memo) memset(memo, 0, nv * sizeof(uint64_t));
     const vial_node_id root = t->root;
     for (uint32_t i = 0; i < t->nodes[root].child_count; ++i) {
         const vial_node_id s = vial_child(t, root, i);
@@ -65,6 +86,13 @@ static void collect_outputs(md_vial_program_t* prog) {
             if (!(number && ty->ndim <= 2) && !set) continue;
             md_vial_output_t o = {.name = name, .span = sp, .stage = public_stage(ty), .pass = public_pass(ty), .selection = set};
             vial_type_print(o.type, sizeof(o.type), ty);
+            if (o.stage == MD_VIAL_STAGE_FRAME || o.stage == MD_VIAL_STAGE_TRAJECTORY_PER_FRAME) o.flags |= MD_VIAL_OUTPUT_TEMPORAL;
+            if (ty->period_end > ty->period_beg) o.flags |= MD_VIAL_OUTPUT_PERIODIC;
+            const vial_ssa_t rv = run_output(prog, name);
+            if (rv) {
+                o.fingerprint = vial_ir_fingerprint(&prog->run_ir, rv, prog->check.sys, prog->check.run, memo);
+                if (from_histogram(&prog->run_ir, rv)) o.flags |= MD_VIAL_OUTPUT_DISTRIBUTION;
+            }
             md_array_push(prog->outputs, o, prog->arena);
         }
     }

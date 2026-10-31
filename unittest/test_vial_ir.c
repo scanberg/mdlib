@@ -452,6 +452,11 @@ UTEST(vial_ir, eval_api) {
     md_arena_allocator_destroy(alloc);
 }
 
+static uint64_t vial_ir__fp(const md_vial_output_t* o, size_t n, const char* name) {
+    for (size_t i = 0; i < n; ++i) if (str_eq(o[i].name, str_from_cstr(name))) return o[i].fingerprint;
+    return 0;
+}
+
 // A caller's pool for md_vial_eval: threads of its own per call, taking indices in turn
 typedef struct vial_ir__pool_t {
     size_t              count;
@@ -530,6 +535,95 @@ UTEST(vial_ir, eval_threads) {
     }
     for (int i = 0; i < 3; ++i) md_vial_eval_free(ev[i]);
     md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// Fingerprints: what a value is computed from, not what it is called or where it is written
+UTEST(vial_ir, output_fingerprints) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');     // publishes the run, before anything is compiled against it
+    ASSERT_GT(nf, 2);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* a =
+        "ca = particles(name='CA')\n"
+        "d  = distance(ca[0], ca[1])\n"
+        "e  = d * 2.0\n"
+        "f  = distance(ca[0], ca[2])\n"
+        "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n"
+        "m  = mean(d, axis='frame')\n";
+    const char* b =
+        "# the same, renamed and moved\n"
+        "ca = particles(name='CA')\n\n"
+        "dist = distance(ca[0],   ca[1])\n"
+        "m  = mean(dist, axis='frame')\n"
+        "e  = dist * 3.0\n"
+        "f  = distance(ca[0], ca[3])\n"
+        "h  = histogram(dist, axis='frame', bins=10, range=(0.0, 20.0))\n";
+    const md_vial_compile_desc_t desc = {.sys = sys, .run = STR_LIT("run")};
+    md_vial_program_t* pa = md_vial_compile(str_from_cstr(a), &desc, alloc);
+    md_vial_program_t* pb = md_vial_compile(str_from_cstr(b), &desc, alloc);
+    const md_vial_output_t* oa;
+    const md_vial_output_t* ob;
+    const size_t na = md_vial_outputs(pa, &oa), nb = md_vial_outputs(pb, &ob);
+    #define FP(o, n, nm) vial_ir__fp(o, n, nm)
+    EXPECT_NE(0u, (unsigned)(FP(oa, na, "d") != 0));
+    EXPECT_TRUE(FP(oa, na, "d") == FP(ob, nb, "dist"));     // renamed, spaced: the same
+    EXPECT_TRUE(FP(oa, na, "m") == FP(ob, nb, "m"));        // reads the same, bound elsewhere
+    EXPECT_TRUE(FP(oa, na, "h") == FP(ob, nb, "h"));
+    EXPECT_TRUE(FP(oa, na, "e") != FP(ob, nb, "e"));        // another constant
+    EXPECT_TRUE(FP(oa, na, "f") != FP(ob, nb, "f"));        // another particle
+    EXPECT_TRUE(FP(oa, na, "d") != FP(oa, na, "f"));
+    for (size_t i = 0; i < na; ++i) {
+        if (str_eq(oa[i].name, STR_LIT("d"))) EXPECT_TRUE(oa[i].flags & MD_VIAL_OUTPUT_TEMPORAL);
+        if (str_eq(oa[i].name, STR_LIT("h"))) { EXPECT_TRUE(oa[i].flags & MD_VIAL_OUTPUT_DISTRIBUTION); EXPECT_FALSE(oa[i].flags & MD_VIAL_OUTPUT_TEMPORAL); }
+        if (str_eq(oa[i].name, STR_LIT("m"))) EXPECT_EQ(0u, oa[i].flags);
+    }
+    #undef FP
+
+    // Taken over: an evaluation of b made from one of a publishes what a computed alike as a published it, and
+    // computes the rest
+    {
+        md_vial_eval_t* ea = md_vial_eval_create(pa, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+        ASSERT_TRUE(ea != NULL);
+        md_vial_plan_t plan[16];
+        // Before a has run every frame, nothing is held
+        ASSERT_TRUE(md_vial_eval_plan(plan, 16, ea, pb, (size_t)nf));
+        for (size_t i = 0; i < nb; ++i) EXPECT_NE((int)MD_VIAL_PLAN_HELD, (int)plan[i].status);
+        EXPECT_TRUE(md_vial_eval_run(ea));
+        ASSERT_TRUE(md_vial_eval_plan(plan, 16, ea, pb, (size_t)nf));
+        for (size_t i = 0; i < nb; ++i) {
+            const char* want = str_eq(ob[i].name, STR_LIT("e")) || str_eq(ob[i].name, STR_LIT("f")) ? "changed" : ob[i].selection ? "new" : "held";
+            const char* got = plan[i].status == MD_VIAL_PLAN_HELD ? "held" : plan[i].status == MD_VIAL_PLAN_CHANGED ? "changed" : "new";
+            if (str_eq(ob[i].name, STR_LIT("ca"))) continue;   // a selection: never taken over, evaluated as it is
+            EXPECT_STREQ(want, got);
+            if (str_eq(ob[i].name, STR_LIT("dist"))) EXPECT_TRUE(str_eq(plan[i].from, STR_LIT("d")));
+        }
+        md_vial_eval_t* eb = md_vial_eval_create_from(ea, pb, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+        ASSERT_TRUE(eb != NULL);
+        EXPECT_TRUE(md_vial_eval_run(eb));
+        const md_attributes_t* ta = md_vial_eval_attributes(ea);
+        const md_attributes_t* tb = md_vial_eval_attributes(eb);
+        const char* pairs[][2] = {{"script/d", "script/dist"}, {"script/m", "script/m"}, {"script/h", "script/h"}};
+        for (int k = 0; k < 3; ++k) {
+            const md_attribute_t* x = md_attributes_find(ta, str_from_cstr(pairs[k][0]));
+            const md_attribute_t* y = md_attributes_find(tb, str_from_cstr(pairs[k][1]));
+            ASSERT_TRUE(x && y);
+            const size_t bytes = md_attribute_byte_size(&x->format);
+            ASSERT_EQ(bytes, md_attribute_byte_size(&y->format));
+            EXPECT_EQ(0, memcmp(x->data, y->data, bytes));
+            EXPECT_EQ(x->flags, y->flags);
+        }
+        // Changed: computed again, e = dist * 3 where a had d * 2
+        const md_attribute_t* ae = md_attributes_find(ta, STR_LIT("script/e"));
+        const md_attribute_t* be = md_attributes_find(tb, STR_LIT("script/e"));
+        ASSERT_TRUE(ae && be);
+        EXPECT_NEAR(((const float*)ae->data)[3] * 1.5f, ((const float*)be->data)[3], 1e-4f);
+        md_vial_eval_free(eb);
+        md_vial_eval_free(ea);
+    }
+    md_vial_program_free(pa);
+    md_vial_program_free(pb);
     md_arena_allocator_destroy(alloc);
 }
 

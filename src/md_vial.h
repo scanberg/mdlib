@@ -119,6 +119,12 @@ typedef enum md_vial_stage_t {
 // One published value: a top-level name that does not start with _, bound to a number, a bool or a set, of at most
 // two dimensions. A set or an array of sets is a selection; a frame-stage one is a recipe, evaluated for the frame
 // shown. In the order the script binds them.
+enum {
+    MD_VIAL_OUTPUT_TEMPORAL     = 1 << 0,   // a value per frame: frame stage, or over the trajectory keeping the frame
+    MD_VIAL_OUTPUT_DISTRIBUTION = 1 << 1,   // a histogram over the frames
+    MD_VIAL_OUTPUT_PERIODIC     = 1 << 2,   // values that wrap, such as angles about an axis
+};
+
 typedef struct md_vial_output_t {
     str_t           name;
     md_vial_span_t  span;           // the name, where it is bound
@@ -126,6 +132,11 @@ typedef struct md_vial_output_t {
     md_vial_stage_t stage;
     uint32_t        pass;           // the read over the trajectory in which it is complete; 0 when static
     bool            selection;
+    uint32_t        flags;          // MD_VIAL_OUTPUT_*
+    // What it is computed from: the ops that compute it, their constants and types, the system's topology and the
+    // attributes it reads, not its name or where it is written. An evaluation of another compilation holds what this
+    // one would compute for it when the two agree (md_vial_eval_create_from). 0 when the program does not evaluate.
+    uint64_t        fingerprint;
 } md_vial_output_t;
 
 size_t md_vial_outputs(const md_vial_program_t* prog, const md_vial_output_t** out);
@@ -171,6 +182,32 @@ typedef struct md_vial_eval_desc_t {
 
 // NULL when the program cannot be evaluated: it has errors, or something in it is not evaluated yet
 md_vial_eval_t* md_vial_eval_create(const md_vial_program_t* prog, const md_vial_eval_desc_t* desc, struct md_allocator_i* alloc);
+
+// The same, taking over from prev every output computed alike (md_vial_output_t.fingerprint), whatever it is called
+// now: its values are published as prev published them, and nothing is evaluated for it. Only from an evaluation of
+// the same run that has finished every frame; prev is not changed, may still be evaluating something else's, and may
+// be freed after. Its program must still exist while this is called.
+md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vial_program_t* prog, const md_vial_eval_desc_t* desc,
+                                         struct md_allocator_i* alloc);
+
+// How each output of prog stands against prev, without evaluating anything: what md_vial_eval_create_from(prev, prog)
+// would take over, and how many frames would be evaluated for the rest
+typedef enum md_vial_plan_status_t {
+    MD_VIAL_PLAN_NEW = 0,       // nothing to take over
+    MD_VIAL_PLAN_CHANGED,       // prev has an output of its name computed otherwise
+    MD_VIAL_PLAN_HELD,          // taken over from an output computed alike
+} md_vial_plan_status_t;
+
+typedef struct md_vial_plan_t {
+    md_vial_plan_status_t status;
+    str_t    from;              // HELD: the output it is taken over from, which is named otherwise when it was renamed
+    uint32_t num_frames;        // the frames it would hold
+    uint32_t num_pending;       // the frames that would be evaluated for it
+} md_vial_plan_t;
+
+// One plan per output of prog (md_vial_outputs), in its order, against an evaluation of num_frames frames. prev may be
+// NULL. False, and nothing written, when cap is less than the number of outputs.
+bool md_vial_eval_plan(md_vial_plan_t* out, size_t cap, const md_vial_eval_t* prev, const md_vial_program_t* prog, size_t num_frames);
 void            md_vial_eval_free(md_vial_eval_t* eval);
 
 // Evaluates every frame. False when a value failed (its R diagnostic is in md_vial_eval_diagnostics; what does not

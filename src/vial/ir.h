@@ -214,3 +214,10 @@ uint32_t vial_ir_contract(vial_ir_t* ir, md_allocator_i* alloc);
 // build the matrix and give its bits. In place, on the inlined IR; a matrix something else reads is kept. Returns how
 // many it lowered.
 uint32_t vial_ir_pairs(vial_ir_t* ir, md_allocator_i* alloc);
+
+// What value v is computed from, as a hash: its op and every op it reads, with their constants, types and regions, the
+// system's topology version, and the version of each attribute attr() reads under run; not names, spans or ssa
+// numbers. Values that hash alike, also of different compilations, are computed alike. memo holds one entry per value
+// of ir, zeroed before the first call, and is shared by calls on the same ir. Never 0.
+struct md_system_t;
+uint64_t vial_ir_fingerprint(const vial_ir_t* ir, vial_ssa_t v, const struct md_system_t* sys, str_t run, uint64_t* memo);

@@ -9,6 +9,10 @@
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 
+#include <md_system.h>
+#include <md_attributes.h>
+
+#include <stdio.h>
 #include <string.h>
 
 typedef struct inl_t {
@@ -302,4 +306,164 @@ uint32_t vial_ir_pairs(vial_ir_t* ir, md_allocator_i* alloc) {
         lowered += 1;
     }
     return lowered;
+}
+
+// ### FINGERPRINTS ###
+// What a value is computed from, as a hash: its op and the ops it reads, transitively, with their constants, types,
+// parameters and regions, and not the names it is bound to, where it is in the source or the ssa numbers it got. Two
+// compilations whose values hash alike compute them alike from the same system: what an evaluation of one holds of it
+// is what an evaluation of the other would. The system enters by its topology version, and an attribute attr() reads
+// by its version.
+
+typedef struct fp_t {
+    const vial_ir_t*    ir;
+    const md_system_t*  sys;
+    str_t               run;
+    uint64_t*           memo;       // by ssa, 0 when not hashed yet
+    uint32_t            regions[64];// the regions being hashed, innermost last: a parameter is hashed by its depth
+    uint32_t            depth;
+} fp_t;
+
+static inline uint64_t fp_mix(uint64_t h, uint64_t v) {
+    // FNV-1a over the eight bytes, then a final avalanche when read
+    for (int i = 0; i < 8; ++i) { h ^= (v >> (8 * i)) & 0xFF; h *= 0x100000001B3ull; }
+    return h;
+}
+
+static uint64_t fp_bytes(uint64_t h, const void* p, size_t n) {
+    const uint8_t* b = p;
+    for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 0x100000001B3ull; }
+    return fp_mix(h, n);
+}
+
+static uint64_t fp_type(uint64_t h, const vial_type_t* t) {
+    h = fp_mix(h, t->dtype);
+    h = fp_mix(h, t->ndim);
+    h = fp_mix(h, t->stage);
+    h = fp_mix(h, t->flags);
+    for (uint8_t d = 0; d < t->ndim; ++d) h = fp_mix(fp_mix(h, t->dims[d].kind), t->dims[d].kind == VIAL_EXT_STATIC ? t->dims[d].n : 0);
+    h = fp_mix(h, t->unit_kind);
+    h = fp_bytes(h, &t->unit, sizeof(t->unit));
+    for (uint32_t e = 0; e < t->num_elems && t->elems; ++e) h = fp_type(h, &t->elems[e]);
+    return h;
+}
+
+static uint64_t fp_val(uint64_t h, const vial_val_t* v) {
+    h = fp_mix(h, v->dtype);
+    h = fp_mix(h, v->ndim);
+    for (uint8_t d = 0; d < v->ndim; ++d) h = fp_mix(h, v->dims[d]);
+    const size_t n = vial_val_count(v);
+    if (v->dtype == VIAL_DT_SET && v->sets) {
+        const vial_sets_t* s = v->sets;
+        h = fp_mix(fp_mix(h, s->count), s->single);
+        h = fp_bytes(h, s->offset, ((size_t)s->count + 1) * sizeof(uint32_t));
+        h = fp_bytes(h, s->idx, (size_t)s->offset[s->count] * sizeof(uint32_t));
+    } else if (v->dtype == VIAL_DT_STR && v->data) {
+        for (size_t i = 0; i < n; ++i) { const str_t* s = (const str_t*)v->data + i; h = fp_bytes(h, s->ptr, s->len); }
+    } else if (v->dtype == VIAL_DT_TUPLE) {
+        for (uint32_t e = 0; e < v->num_elems; ++e) h = fp_val(h, &v->elems[e]);
+    } else if (v->data) {
+        h = fp_bytes(h, v->data, n * vial_dtype_size(v->dtype));
+    }
+    if (v->missing) h = fp_bytes(fp_mix(h, 1), v->missing, (n + 63) / 64 * sizeof(uint64_t));
+    return h;
+}
+
+static uint64_t fp_value(fp_t* f, vial_ssa_t v);
+
+static uint64_t fp_region(fp_t* f, uint32_t r) {
+    const vial_ir_t* ir = f->ir;
+    const vial_ir_region_t* reg = &ir->regions[r];
+    uint64_t h = fp_mix(0xCBF29CE484222325ull, reg->num_params);
+    for (uint32_t p = 0; p < reg->num_params; ++p) h = fp_type(h, &ir->values[reg->param_beg + p].type);
+    // What it gives back is what it computes: the yield, read through
+    const uint32_t n = (uint32_t)md_array_size(reg->ops);
+    if (!n || f->depth >= 64) return fp_mix(h, f->depth >= 64 ? 0xDEEDull : 0);
+    const vial_ir_op_t* y = &ir->ops[reg->ops[n - 1]];
+    if (y->kind != VIAL_IR_YIELD) return fp_mix(h, 0xBADull);
+    f->regions[f->depth++] = r;
+    for (uint32_t k = 0; k < y->num_args; ++k) h = fp_mix(h, fp_value(f, ir->args[y->arg_beg + k]));
+    f->depth--;
+    return h;
+}
+
+// An attribute attr() reads, by its version: the path is the constant it is given, under the run
+static uint64_t fp_attr(fp_t* f, uint64_t h, const vial_ir_op_t* op) {
+    const vial_ir_t* ir = f->ir;
+    if (!f->sys || !op->num_args) return h;
+    const vial_ssa_t a = ir->args[op->arg_beg];
+    const uint32_t ao = a ? ir->values[a].op : VIAL_IR_NO_OP;
+    if (ao == VIAL_IR_NO_OP || ir->ops[ao].kind != VIAL_IR_CONST) return h;
+    const vial_val_t* c = &ir->consts[ir->ops[ao].aux];
+    if (c->dtype != VIAL_DT_STR || !c->data) return h;
+    const str_t path = *(const str_t*)c->data;
+    char full[512];
+    snprintf(full, sizeof(full), "%.*s/%.*s", (int)f->run.len, f->run.ptr, (int)path.len, path.ptr);
+    const md_attribute_t* at = md_attributes_find(&f->sys->attributes, str_from_cstr(full));
+    if (!at) at = md_attributes_find(&f->sys->attributes, path);
+    return at ? fp_mix(fp_bytes(h, at->path.ptr, at->path.len), at->version) : h;
+}
+
+static uint64_t fp_value(fp_t* f, vial_ssa_t v) {
+    const vial_ir_t* ir = f->ir;
+    if (!v) return 0x9E3779B97F4A7C15ull;
+    const vial_ir_value_t* val = &ir->values[v];
+    if (val->op == VIAL_IR_NO_OP) {
+        // A region's parameter: by how far out its region is, and which
+        uint32_t up = 0;
+        for (uint32_t d = f->depth; d-- > 0;) { if (f->regions[d] == val->region) break; up++; }
+        return fp_type(fp_mix(fp_mix(0x5A5A5A5Aull, up), val->index), &val->type);
+    }
+    // Memoized for values outside every region being hashed: those inside depend on the parameters' depth
+    const bool top = val->region == ir->funcs[0].body;
+    if (top && f->memo[v]) return f->memo[v];
+    const vial_ir_op_t* op = &ir->ops[val->op];
+    uint64_t h = 0xCBF29CE484222325ull;
+    h = fp_mix(h, op->kind);
+    h = fp_mix(h, op->sub);
+    h = fp_mix(h, val->index);
+    h = fp_type(h, &val->type);
+    switch (op->kind) {
+    case VIAL_IR_CONST:   h = fp_val(h, &ir->consts[op->aux]); break;
+    case VIAL_IR_BUILTIN: {
+        const char* name = vial_builtin_at(op->aux)->name;
+        h = fp_bytes(h, name, strlen(name));
+        if (!strcmp(name, "attr")) h = fp_attr(f, h, op);
+        break;
+    }
+    case VIAL_IR_ELEM:    h = fp_mix(h, op->aux); break;
+    case VIAL_IR_CALL:    h = fp_region(f, ir->funcs[op->aux].body); break;
+    case VIAL_IR_INDEX:
+        for (uint32_t i = 0; i < op->sub; ++i) {
+            const vial_index_item_t* it = &ir->index_items[op->aux + i];
+            h = fp_mix(h, it->kind);
+            h = fp_mix(h, fp_value(f, it->a));
+            h = fp_mix(h, fp_value(f, it->b));
+            h = fp_mix(h, fp_value(f, it->c));
+        }
+        break;
+    default: break;
+    }
+    // Attributes in ints, as many as the kind has
+    uint32_t nints = 0;
+    if (op->kind == VIAL_IR_PAIRS) nints = 2;
+    else if (op->kind == VIAL_IR_MAP || op->kind == VIAL_IR_BUILTIN) nints = op->num_args;
+    if (op->attr) for (uint32_t i = 0; i < nints && op->attr + i < md_array_size(ir->ints); ++i) h = fp_mix(h, ir->ints[op->attr + i]);
+    for (uint32_t k = 0; k < op->num_args; ++k) {
+        if (ir->names && op->arg_beg + k < md_array_size(ir->names)) h = fp_bytes(h, ir->names[op->arg_beg + k].ptr, ir->names[op->arg_beg + k].len);
+        h = fp_mix(h, fp_value(f, ir->args[op->arg_beg + k]));
+    }
+    for (int r = 0; r < 2; ++r) if (op->region[r]) h = fp_mix(h, fp_region(f, op->region[r]));
+    // The avalanche of murmur's finalizer, so that values a bit apart hash far apart
+    h ^= h >> 33; h *= 0xFF51AFD7ED558CCDull; h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ull; h ^= h >> 33;
+    if (!h) h = 1;
+    if (top) f->memo[v] = h;
+    return h;
+}
+
+uint64_t vial_ir_fingerprint(const vial_ir_t* ir, vial_ssa_t v, const md_system_t* sys, str_t run, uint64_t* memo) {
+    fp_t f = {.ir = ir, .sys = sys, .run = run, .memo = memo};
+    uint64_t h = fp_value(&f, v);
+    if (sys) h = fp_mix(h, sys->topology_version);
+    return h ? h : 1;
 }
