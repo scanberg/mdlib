@@ -78,6 +78,9 @@ static double* run_times(const md_system_t* sys, str_t run, md_allocator_i* allo
     return times;
 }
 
+static void publish_ranges(md_vial_eval_t* e);
+static void publish_held(md_vial_eval_t* e);
+
 static bool read_frame(md_vial_eval_t* e, md_system_extract_t** ex, md_system_state_t* state, md_allocator_i* alloc, int64_t index, vial_frame_t* out) {
     if (index < 0 || index >= e->num_frames) return false;
     if (!*ex) {
@@ -278,6 +281,8 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
         e->in.parallel_for = e->parallel_for;
         e->in.parallel_user = e->parallel_user;
     }
+    publish_held(e);
+    publish_ranges(e);
     return e;
 }
 
@@ -331,7 +336,9 @@ static md_attribute_type_t attr_type(uint8_t dtype) {
 
 // Before the frames: the frame axis, what was taken over, and the per-frame outputs whose shape the type knows, each
 // with its attribute made now, its frames not computed yet NaN (0 for ints), to be written as frames finish
-static void prepare(md_vial_eval_t* e) {
+// The frame axis and what is taken over: there from when the evaluation is made, so an evaluation that takes over every
+// output needs no run to be read
+static void publish_held(md_vial_eval_t* e) {
     md_attributes_t* attrs = &e->attributes;
     const int64_t nf = e->num_frames;
     if (nf > 0 && !md_attributes_find(attrs, STR_LIT("time"))) {
@@ -348,6 +355,12 @@ static void prepare(md_vial_eval_t* e) {
         d.path = str_from_cstr(e->held[i].path);
         if (!md_attributes_find(attrs, d.path)) md_attributes_create(attrs, &d);
     }
+}
+
+static void prepare(md_vial_eval_t* e) {
+    md_attributes_t* attrs = &e->attributes;
+    const int64_t nf = e->num_frames;
+    publish_held(e);
     vial_interp_t* in = &e->in;
     vial_interp_classify(in);
     for (int s = 0; s < 8; ++s) {
@@ -447,6 +460,66 @@ static void publish(md_vial_eval_t* e) {
     }
 }
 
+// A histogram's range=, in the unit of what it counts, published beside it as <path>/range: the bin edges, which a plot
+// of it takes its axis from. Static, so also for one taken over.
+static void publish_ranges(md_vial_eval_t* e) {
+    const vial_ir_t* ir = e->ir;
+    for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
+        const vial_ir_output_t* o = &ir->outputs[k];
+        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        uint32_t op = ir->values[o->value].op;
+        if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_ELEM && ir->ops[op].num_args) op = ir->values[ir->args[ir->ops[op].arg_beg]].op;
+        if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_BUILTIN || strcmp(vial_builtin_at(ir->ops[op].aux)->name, "histogram")) continue;
+        const vial_ir_op_t* h = &ir->ops[op];
+        vial_ssa_t rs = 0, xs = 0;
+        for (uint32_t a = 0; a < h->num_args; ++a) {
+            const str_t nm = ir->names ? ir->names[h->arg_beg + a] : (str_t){0};
+            if (str_eq(nm, STR_LIT("range"))) rs = ir->args[h->arg_beg + a];
+            else if (str_eq(nm, STR_LIT("x")) || (!nm.len && a == 0)) xs = ir->args[h->arg_beg + a];
+        }
+        // A constant, read from the IR, so it is known before anything is evaluated; else what the run computed
+        double lohi[2];
+        const uint32_t rop = rs ? ir->values[rs].op : VIAL_IR_NO_OP;
+        if (rop != VIAL_IR_NO_OP && ir->ops[rop].kind == VIAL_IR_TUPLE && ir->ops[rop].num_args == 2) {
+            bool ok = true;
+            for (int i = 0; i < 2 && ok; ++i) {
+                const vial_ssa_t a = ir->args[ir->ops[rop].arg_beg + i];
+                const uint32_t aop = a ? ir->values[a].op : VIAL_IR_NO_OP;
+                const vial_val_t* c = aop != VIAL_IR_NO_OP && ir->ops[aop].kind == VIAL_IR_CONST ? &ir->consts[ir->ops[aop].aux] : NULL;
+                ok = c && c->data && !c->ndim;
+                if (ok) lohi[i] = c->dtype == VIAL_DT_FLOAT ? *(const float*)c->data : c->dtype == VIAL_DT_FLOAT64 ? *(const double*)c->data :
+                                  c->dtype == VIAL_DT_INT ? *(const int32_t*)c->data : NAN;
+            }
+            if (ok) goto have;
+        }
+        const vial_val_t* r = rop != VIAL_IR_NO_OP && ir->ops[rop].kind == VIAL_IR_CONST ? &ir->consts[ir->ops[rop].aux] :
+                              rs && e->in.state && e->in.state[rs] ? vial_interp_at(&e->in, rs, 0) : NULL;
+        if (!r) continue;
+        if (r->dtype == VIAL_DT_TUPLE && r->num_elems == 2 && r->elems[0].data && r->elems[1].data) {
+            for (int i = 0; i < 2; ++i) {
+                const vial_val_t* el = &r->elems[i];
+                lohi[i] = el->dtype == VIAL_DT_FLOAT ? *(const float*)el->data : el->dtype == VIAL_DT_FLOAT64 ? *(const double*)el->data :
+                          el->dtype == VIAL_DT_INT ? *(const int32_t*)el->data : NAN;
+            }
+        } else if (r->dtype == VIAL_DT_RANGE && r->data) {
+            memcpy(lohi, r->data, sizeof(lohi));
+        } else if ((r->dtype == VIAL_DT_FLOAT || r->dtype == VIAL_DT_FLOAT64) && vial_val_count(r) == 2 && r->data) {
+            for (int i = 0; i < 2; ++i) lohi[i] = r->dtype == VIAL_DT_FLOAT ? ((const float*)r->data)[i] : ((const double*)r->data)[i];
+        } else {
+            continue;
+        }
+    have:;
+        const vial_type_t* xt = xs ? &ir->values[xs].type : NULL;
+        char path[192];
+        snprintf(path, sizeof(path), "script/%.*s/range", (int)o->name.len, o->name.ptr);
+        md_attribute_desc_t desc = {.path = str_from_cstr(path), .unit = xt && xt->unit_kind == VIAL_UNIT_KNOWN ? xt->unit : md_unit_none(),
+                                    .format = {.type = attr_type(VIAL_DT_FLOAT64), .components = 1, .rank = 1, .shape = {2}}};
+        const md_attribute_id_t id = md_attributes_replace(&e->attributes, &desc);
+        double* dst = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT64)) : NULL;
+        if (dst) { dst[0] = lohi[0]; dst[1] = lohi[1]; }
+    }
+}
+
 bool md_vial_eval_run(md_vial_eval_t* e) {
     if (!e) return false;
     e->done = 0;    // a run again: its values are not read until it has finished
@@ -461,6 +534,7 @@ bool md_vial_eval_run(md_vial_eval_t* e) {
     }
     if (!e->in.interrupted) {
         publish(e);
+        publish_ranges(e);
         md_atomic_fetch_add64(&e->done, 1);
     }
     return ok && !e->in.interrupted;

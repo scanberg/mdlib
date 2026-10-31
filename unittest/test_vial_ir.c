@@ -610,6 +610,9 @@ UTEST(vial_ir, output_fingerprints) {
         }
         md_vial_eval_t* eb = md_vial_eval_create_from(ea, pb, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
         ASSERT_TRUE(eb != NULL);
+        // Taken over: published from when it is made, before any run, with the histogram's range
+        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), STR_LIT("script/dist")) != NULL);
+        EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), STR_LIT("script/h/range")) != NULL);
         EXPECT_TRUE(md_vial_eval_run(eb));
         const md_attributes_t* ta = md_vial_eval_attributes(ea);
         const md_attributes_t* tb = md_vial_eval_attributes(eb);
@@ -671,6 +674,14 @@ UTEST(vial_ir, eval_aggregate) {
         const md_attribute_t* am = md_attributes_find(attr, STR_LIT("script/m"));
         ASSERT_TRUE(ad && ah && am);
         const float* d = (const float*)ad->data;
+        // Beside the histogram, its range: the bin edges, in the unit of what it counts
+        const md_attribute_t* ar = md_attributes_find(attr, STR_LIT("script/h/range"));
+        ASSERT_TRUE(ar != NULL);
+        double rr[2];
+        ASSERT_EQ(2u, md_attribute_extract_f64(rr, 2, ar, md_attribute_slice_all(), ar->unit));
+        EXPECT_EQ(0.0, rr[0]);
+        EXPECT_EQ(20.0, rr[1]);
+        EXPECT_TRUE(md_unit_base_equal(ar->unit, ad->unit));
 
         // Over every frame: what was published
         ASSERT_EQ(10u, md_vial_eval_aggregate(e, STR_LIT("h"), all, h, 10));
