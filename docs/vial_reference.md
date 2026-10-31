@@ -618,6 +618,8 @@ A matrix of every pair is how a reduction over pairs is written, never how it is
 | `sum(dm < r)`, `sum(dm < r, axis=1)` | the pairs within r, or each point of a's count within r: coordination numbers, contacts |
 | `any(dm < r, axis=1)` | the points of a with a point of b within r |
 
+The same holds along columns (`axis=0`), for `<=`, and for `max` and `argmax`, which have no cutoff to search within: they compute every pair, a row at a time, and store none. A name starting with `_` is not evaluated for its own sake, since nothing but hover reads it, so `_dm = distance(...)` used only by reductions is never made.
+
 A minimum that pairs every point with itself is zero, which is rarely what was meant: the nearest residue to each residue is itself. W0608 says so, and offers `distinct=True`, which leaves out the pairs of a particle or unit with itself.
 
 ```python
