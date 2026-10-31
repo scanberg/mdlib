@@ -766,7 +766,7 @@ set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_
 # The VIAL interpreter's kernels contract nothing: where a multiply and an add fuse is decided once, by the compiler, as
 # an explicit fma in the IR, so the interpreter and native code give the same bits. Kernels every backend calls by
 # address (com, within, the spatial search) keep mdlib's flags, since all backends share their bits.
-# @TODO: MSVC adds /fp:contract to MD_FLAGS and has no flag that takes it back for one file.
+# MSVC adds /fp:contract to MD_FLAGS and has no flag that takes it back for one file: the files say #pragma fp_contract(off).
 set(VIAL_NO_CONTRACT src/vial/interp.c src/vial/kernels.c src/vial/kernels_builtins.c)
 if (NOT (COMPILER_TYPE STREQUAL "MSVC"))
   if (COMPILER_TYPE STREQUAL "CLANG_CL")
