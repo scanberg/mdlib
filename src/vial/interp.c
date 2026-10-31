@@ -41,6 +41,23 @@ bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...) {
     return false;
 }
 
+void vial_rt_note(vial_kctx_t* k, const char code[6], const char* fmt, ...) {
+    vial_interp_t* in = k->in;
+    vial_rt_error_t e = {.span = k->op ? k->op->span : (md_vial_span_t){0}, .sweep = in->sweep,
+                         .frame = in->frame ? in->frame->index : INT64_MAX, .seq = in->err_seq++, .note = true};
+    memcpy(e.code, code, 5);
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(e.message, sizeof(e.message), fmt, args);
+    va_end(args);
+    // Once per place: the first frame it happens in says where
+    for (size_t i = 0; i < md_array_size(in->errors); ++i) {
+        const vial_rt_error_t* g = &in->errors[i];
+        if (g->span.beg == e.span.beg && g->span.end == e.span.end && !memcmp(g->code, e.code, 5)) return;
+    }
+    md_array_push(in->errors, e, in->alloc);
+}
+
 bool vial_k_room(vial_kctx_t* k, size_t count) {
     const size_t limit = k->in->max_elements ? k->in->max_elements : VIAL_MAX_ELEMENTS;
     if (count <= limit) return true;
@@ -1010,11 +1027,19 @@ static void merge_errors(vial_interp_t* in) {
         bool seen = false;
         for (size_t j = 0; j < md_array_size(in->errors) && !seen; ++j) {
             const vial_rt_error_t* g = &in->errors[j];
-            seen = g->span.beg == all[i].span.beg && g->span.end == all[i].span.end && !strcmp(g->message, all[i].message);
+            const bool place = g->span.beg == all[i].span.beg && g->span.end == all[i].span.end;
+            // A note once per place and code, the earliest kept: as one thread meets them
+            seen = place && (all[i].note ? (g->note && !memcmp(g->code, all[i].code, 5)) : !strcmp(g->message, all[i].message));
         }
         if (!seen) md_array_push(in->errors, all[i], in->alloc);
     }
-    if (md_array_size(in->errors)) { in->failed = true; in->error = in->errors[0]; }
+    // Only what failed fails the run
+    for (size_t i = 0; i < md_array_size(in->errors); ++i) {
+        if (in->errors[i].note) continue;
+        in->failed = true;
+        in->error = in->errors[i];
+        break;
+    }
 }
 
 bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {

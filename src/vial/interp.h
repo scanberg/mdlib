@@ -34,6 +34,7 @@ typedef struct vial_rt_error_t {
     uint8_t         sweep;
     int64_t         frame;
     uint32_t        seq;
+    bool            note;       // vial_rt_note: fails nothing; once per place and code
 } vial_rt_error_t;
 
 // Frames in parallel: calls fn(arg, i) for every i in [0, count), from any threads, at most as many at once as there
@@ -156,6 +157,10 @@ typedef struct vial_kctx_t {
 } vial_kctx_t;
 
 bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...);
+
+// A runtime diagnostic that fails nothing: the value is missing where it happens, as R0101 has it, and evaluation goes
+// on. Recorded once per place, with the first frame it happens in.
+void vial_rt_note(vial_kctx_t* k, const char code[6], const char* fmt, ...);
 
 // The default of vial_interp_t.max_elements: 2^28, a GB of floats
 #define VIAL_MAX_ELEMENTS ((size_t)1 << 28)

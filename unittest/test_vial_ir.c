@@ -719,6 +719,12 @@ UTEST(vial_ir, eval_aggregate) {
     md_arena_allocator_destroy(alloc);
 }
 
+static uint32_t vial_test_count_ca(const md_system_t* sys) {
+    uint32_t n = 0;
+    for (size_t i = 0; i < sys->atom.count; ++i) n += str_eq(md_atom_name(&sys->atom, i), STR_LIT("CA"));
+    return n;
+}
+
 // What hover draws: the drawing shown() attached, kept through names and calls; built-ins that draw themselves; and
 // values by their type
 UTEST(vial_ir, draw) {
@@ -1146,6 +1152,88 @@ UTEST(vial_ir, filters) {
     EXPECT_TRUE(vial_ir__find(&c, "ca_s") != NULL);
     ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("_"), 1, &d, alloc));
     EXPECT_TRUE(vial_ir__find(&c, "_filter") == NULL);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A periodic output publishes its period and seam beside it, from when the evaluation is made, as v1 does
+UTEST(vial_ir, periodic_outputs) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(vial_test_run('P'), 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* src =
+        "ca = particles(name='CA')\n"
+        "t  = dihedral(ca[0], ca[1], ca[2], ca[3])\n"
+        "d  = distance(ca[0], ca[1])\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    const md_vial_output_t* o;
+    const size_t no = md_vial_outputs(prog, &o);
+    for (size_t i = 0; i < no; ++i) {
+        if (str_eq(o[i].name, STR_LIT("t"))) EXPECT_TRUE(o[i].flags & MD_VIAL_OUTPUT_PERIODIC);
+        if (str_eq(o[i].name, STR_LIT("d"))) EXPECT_FALSE(o[i].flags & MD_VIAL_OUTPUT_PERIODIC);
+    }
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e != NULL);
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    const md_attribute_t* per = md_attributes_find(at, STR_LIT("script/t/period"));
+    const md_attribute_t* seam = md_attributes_find(at, STR_LIT("script/t/seam"));
+    ASSERT_TRUE(per && seam);
+    EXPECT_TRUE(md_attributes_find(at, STR_LIT("script/d/period")) == NULL);
+    double p[2], sm;
+    ASSERT_EQ(2u, md_attribute_extract_f64(p, 2, per, md_attribute_slice_all(), per->unit));
+    ASSERT_EQ(1u, md_attribute_extract_f64(&sm, 1, seam, md_attribute_slice_all(), seam->unit));
+    EXPECT_LT(p[0], p[1]);
+    EXPECT_GE(sm, p[0]);
+    EXPECT_LT(sm, p[1]);
+    // In the unit the values are published in, and the values lie in the period
+    EXPECT_TRUE(md_vial_eval_run(e));
+    const md_attribute_t* vt = md_attributes_find(at, STR_LIT("script/t"));
+    ASSERT_TRUE(vt != NULL);
+    per = md_attributes_find(at, STR_LIT("script/t/period"));     // the table has grown: pointers into it move
+    ASSERT_TRUE(per != NULL);
+    EXPECT_TRUE(md_unit_equal(per->unit, vt->unit));
+    const size_t nf = (size_t)vt->format.shape[0];
+    for (size_t f = 0; f < nf; ++f) {
+        const float v = ((const float*)vt->data)[f];
+        EXPECT_TRUE(v >= p[0] - 1e-3 && v <= p[1] + 1e-3);
+    }
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// R0101: a position outside a dynamic extent makes the value missing in that frame and is said once; nothing fails, and
+// threads say the same as one
+UTEST(vial_ir, missing_is_said) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 20);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* src =
+        "ca = particles(name='CA')\n"
+        "x = distance(ca[0], ca[frame()])\n"
+        "d = distance(ca[0], ca[1])\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    for (int threads = 1; threads <= 4; threads += 3) {
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
+        ASSERT_TRUE(e != NULL);
+        EXPECT_TRUE(md_vial_eval_run(e));
+        const md_vial_diagnostic_t* dg;
+        ASSERT_EQ(1u, md_vial_eval_diagnostics(e, &dg));
+        EXPECT_STREQ("R0101", dg[0].code);
+        EXPECT_EQ(MD_VIAL_SEVERITY_RUNTIME, dg[0].severity);
+        const md_attribute_t* ax = md_attributes_find(md_vial_eval_attributes(e), STR_LIT("script/x"));
+        ASSERT_TRUE(ax != NULL);
+        // The first frame past the CA particles names it, and from there the value is missing
+        char want[32];
+        snprintf(want, sizeof(want), "frame %u:", (unsigned)(vial_test_count_ca(sys)));
+        EXPECT_TRUE(strncmp(dg[0].message.ptr, want, strlen(want)) == 0);
+        EXPECT_TRUE(isnan(((const float*)ax->data)[nf - 1]));
+        EXPECT_FALSE(isnan(((const float*)ax->data)[1]));
+        md_vial_eval_free(e);
+    }
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }

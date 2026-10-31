@@ -535,7 +535,12 @@ bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* 
             if (p < 0) p += n;
             sel_t s = {.src_dims = 1, .out_dims = 0, .count = 1};
             s.offsets = md_alloc(k->alloc, sizeof(size_t));
-            if (vial_val_is_missing(iv, 0) || p < 0 || p >= n) { missing_all = true; s.offsets[0] = 0; }    // R0101: missing
+            if (vial_val_is_missing(iv, 0) || p < 0 || p >= n) {
+                // R0101: missing, and said once
+                if (!vial_val_is_missing(iv, 0)) vial_rt_note(k, "R0101", "frame %lld: position %lld is outside `[%u]`", (long long)(k->in->frame ? k->in->frame->index : -1), (long long)int_at(iv, 0), n);
+                missing_all = true;
+                s.offsets[0] = 0;
+            }
             else s.offsets[0] = (size_t)p * st[d];
             sels[ns++] = s;
             d++;
@@ -614,7 +619,12 @@ bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* 
         for (size_t q = 0; q < cnt; ++q) {
             int64_t p = int_at(iv, q);
             if (p < 0) p += n;
-            if (p < 0 || p >= n) return vial_rt_fail(k, "R0101", "position %lld is outside an extent of %u", (long long)int_at(iv, q), n);
+            if (p < 0 || p >= n) {
+                // R0101: the value is missing in this frame, and said once
+                vial_rt_note(k, "R0101", "frame %lld: position %lld is outside `[%u]`", (long long)(k->in->frame ? k->in->frame->index : -1), (long long)int_at(iv, q), n);
+                missing_all = true;
+                p = 0;
+            }
             s.offsets[q] = (size_t)p * st[d];
         }
         sels[ns++] = s;

@@ -460,9 +460,38 @@ static void publish(md_vial_eval_t* e) {
     }
 }
 
+// A periodic output's period and seam, as <path>/period [beg, end] and <path>/seam, in its unit: where a plot of it
+// wraps, and where it best cuts the circle its values lie on. Known from the type, so published once, as v1 does.
+static void publish_periods(md_vial_eval_t* e) {
+    const vial_ir_t* ir = e->ir;
+    for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
+        const vial_ir_output_t* o = &ir->outputs[k];
+        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        const vial_type_t* t = &ir->values[o->value].type;
+        if (!(t->flags & VIAL_TYPE_PERIODIC) || !(t->period_end > t->period_beg)) continue;
+        const md_unit_t unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none();
+        char path[192];
+        snprintf(path, sizeof(path), "script/%.*s/period", (int)o->name.len, o->name.ptr);
+        md_attribute_desc_t pd = {.path = str_from_cstr(path), .unit = unit, .format = {.type = attr_type(VIAL_DT_FLOAT), .components = 1, .rank = 1, .shape = {2}}};
+        md_attribute_id_t id = md_attributes_replace(&e->attributes, &pd);
+        float* p = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT)) : NULL;
+        if (p) { p[0] = t->period_beg; p[1] = t->period_end; }
+        snprintf(path, sizeof(path), "script/%.*s/seam", (int)o->name.len, o->name.ptr);
+        md_attribute_desc_t sd = {.path = str_from_cstr(path), .unit = unit, .format = {.type = attr_type(VIAL_DT_FLOAT), .components = 1, .rank = 1, .shape = {1}}};
+        id = md_attributes_replace(&e->attributes, &sd);
+        float* sm = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT)) : NULL;
+        // In [beg, end[, as v1 keeps it: a seam at the end is the seam at the beginning
+        const float len = t->period_end - t->period_beg;
+        float seam = t->seam - len * floorf((t->seam - t->period_beg) / len);
+        if (seam >= t->period_end) seam = t->period_beg;
+        if (sm) sm[0] = seam;
+    }
+}
+
 // A histogram's range=, in the unit of what it counts, published beside it as <path>/range: the bin edges, which a plot
 // of it takes its axis from. Static, so also for one taken over.
 static void publish_ranges(md_vial_eval_t* e) {
+    publish_periods(e);
     const vial_ir_t* ir = e->ir;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
