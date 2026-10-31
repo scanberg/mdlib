@@ -3,6 +3,7 @@
 
 #include "interp.h"
 #include "check.h"
+#include "infer.h"
 
 #include <md_system.h>
 #include <md_attributes.h>
@@ -30,7 +31,7 @@ typedef struct eval_worker_t {
 // An output taken over from an earlier evaluation: its attribute as that one published it, renamed
 typedef struct eval_held_t {
     md_attribute_desc_t desc;
-    char                path[160];
+    char                path[192];
 } eval_held_t;
 
 struct md_vial_eval_t {
@@ -80,6 +81,7 @@ static double* run_times(const md_system_t* sys, str_t run, md_allocator_i* allo
 
 static void publish_ranges(md_vial_eval_t* e);
 static void publish_held(md_vial_eval_t* e);
+static vial_summary_t* summary_attrs(md_vial_eval_t* e, str_t name, const vial_type_t* t, uint32_t inner);
 
 static bool read_frame(md_vial_eval_t* e, md_system_extract_t** ex, md_system_state_t* state, md_allocator_i* alloc, int64_t index, vial_frame_t* out) {
     if (index < 0 || index >= e->num_frames) return false;
@@ -219,8 +221,8 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
         for (size_t i = 0; i < n; ++i) {
             const md_vial_output_t* h = held_from(prev, &o[i]);
             const md_attribute_t* at = NULL;
+            char from[160] = "";
             if (h) {
-                char from[160];
                 snprintf(from, sizeof(from), "script/%.*s", (int)h->name.len, h->name.ptr);
                 at = md_attributes_find(&prev->attributes, str_from_cstr(from));
             }
@@ -233,6 +235,22 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
                 hd.desc = (md_attribute_desc_t){.format = at->format, .flags = at->flags, .unit = at->unit,
                                                 .label = str_copy(o[i].name, arena), .data = data, .byte_size = bytes};
                 md_array_push(e->held, hd, arena);
+                // And its summary, as it was
+                static const char* leaf[3] = {"/mean", "/variance", "/extent"};
+                for (int s = 0; s < 3; ++s) {
+                    char sfrom[192];
+                    snprintf(sfrom, sizeof(sfrom), "%s%s", from, leaf[s]);
+                    const md_attribute_t* sa = md_attributes_find(&prev->attributes, str_from_cstr(sfrom));
+                    if (!sa || !sa->data) continue;
+                    eval_held_t sh = {0};
+                    snprintf(sh.path, sizeof(sh.path), "%s%s", hd.path, leaf[s]);
+                    const size_t sb = md_attribute_byte_size(&sa->format);
+                    void* sd = md_alloc(arena, sb ? sb : 1);
+                    memcpy(sd, sa->data, sb);
+                    sh.desc = (md_attribute_desc_t){.format = sa->format, .flags = sa->flags, .unit = sa->unit, .label = hd.desc.label,
+                                                    .data = sd, .byte_size = sb};
+                    md_array_push(e->held, sh, arena);
+                }
                 continue;
             }
         }
@@ -372,8 +390,10 @@ static void prepare(md_vial_eval_t* e) {
     if (!in->stream) {
         in->stream = md_alloc(e->arena, (nv ? nv : 1) * sizeof(uint8_t*));
         in->stream_count = md_alloc(e->arena, (nv ? nv : 1) * sizeof(uint32_t));
+        in->stream_summary = md_alloc(e->arena, (nv ? nv : 1) * sizeof(vial_summary_t*));
     }
     memset(in->stream, 0, (nv ? nv : 1) * sizeof(uint8_t*));
+    memset(in->stream_summary, 0, (nv ? nv : 1) * sizeof(vial_summary_t*));
     md_array_shrink(e->streamed, 0);
     if (nf <= 0) return;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
@@ -403,8 +423,33 @@ static void prepare(md_vial_eval_t* e) {
         else memset(dst, 0, n * vial_dtype_size(t->dtype));
         in->stream[o->value] = dst;
         in->stream_count[o->value] = inner;
+        if (t->ndim == 1) in->stream_summary[o->value] = summary_attrs(e, o->name, t, inner);
         md_array_push(e->streamed, id, e->arena);
     }
+}
+
+// A per-frame population, float[n] with n > 1 at each frame (the caller tells), gets its summary over the members published beside it, as
+// v1's do: <path>/mean, /variance and /extent, made here with every frame NaN until written. NULL for any other.
+static vial_summary_t* summary_attrs(md_vial_eval_t* e, str_t name, const vial_type_t* t, uint32_t inner) {
+    const int64_t nf = e->num_frames;
+    if (nf <= 0 || t->dtype != VIAL_DT_FLOAT || inner < 2) return NULL;
+    const md_unit_t unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none();
+    static const char* leaf[3] = {"mean", "variance", "extent"};
+    float* data[3] = {0};
+    for (int i = 0; i < 3; ++i) {
+        char path[192];
+        snprintf(path, sizeof(path), "script/%.*s/%s", (int)name.len, name.ptr, leaf[i]);
+        md_attribute_desc_t d = {.path = str_from_cstr(path), .unit = i == 1 ? md_unit_mul(unit, unit) : unit, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+                                 .format = {.type = attr_type(VIAL_DT_FLOAT), .components = i == 2 ? 2 : 1, .rank = 1, .shape = {(uint32_t)nf}}};
+        const md_attribute_id_t id = md_attributes_replace(&e->attributes, &d);
+        data[i] = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT)) : NULL;
+        if (!data[i]) return NULL;
+        for (int64_t k = 0; k < nf * (i == 2 ? 2 : 1); ++k) data[i][k] = NAN;
+    }
+    vial_summary_t* sm = md_alloc(e->arena, sizeof(vial_summary_t));
+    *sm = (vial_summary_t){.mean = data[0], .var = data[1], .ext = data[2]};
+    if ((t->flags & VIAL_TYPE_PERIODIC) && t->period_end > t->period_beg) { sm->period_beg = t->period_beg; sm->period_end = t->period_end; }
+    return sm;
 }
 
 static void publish(md_vial_eval_t* e) {
@@ -457,6 +502,10 @@ static void publish(md_vial_eval_t* e) {
                 else if (t->dtype == VIAL_DT_FLOAT64) ((double*)row)[i] = NAN;
             }
         }
+        if (temporal && one.ndim == 1) {
+            const vial_summary_t* sm = summary_attrs(e, o->name, t, (uint32_t)inner);
+            for (int64_t f = 0; sm && f < nf; ++f) vial_summarize(sm, f, (const float*)dst + (size_t)f * inner, (uint32_t)inner);
+        }
     }
 }
 
@@ -488,10 +537,44 @@ static void publish_periods(md_vial_eval_t* e) {
     }
 }
 
+// What the members of an array output are, as <path>/labels: the labels of the units its one dimension runs over
+// (MET1/A for a residue, CA/MET1/A for a particle), which v1 gave only for what an attr() pattern matched. Static.
+static void publish_labels(md_vial_eval_t* e) {
+    const vial_ir_t* ir = e->ir;
+    if (!ir->descs) return;
+    for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
+        const vial_ir_output_t* o = &ir->outputs[k];
+        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        const vial_type_t* t = &ir->values[o->value].type;
+        if (t->ndim != 1 || t->dtype == VIAL_DT_SET || t->dims[0].kind != VIAL_EXT_STATIC) continue;
+        const uint32_t dsc = t->dims[0].desc;
+        if (!dsc || dsc >= md_array_size(ir->descs)) continue;
+        const vial_desc_t* d = &ir->descs[dsc];
+        const uint32_t n = t->dims[0].n;
+        // The particles of one set, or the units of an array of them
+        const vial_sets_t* ss = d->sets;
+        if (!ss || n == 0) continue;
+        if (ss->single ? vial_sets_size(ss, 0) != n : (d->level == VIAL_LEVEL_NONE || !ss->unit || ss->count != n)) continue;
+        str_t* labels = md_alloc(e->arena, n * sizeof(str_t));
+        for (uint32_t i = 0; i < n; ++i) {
+            char buf[128];
+            const size_t len = ss->single ? vial_unit_label(buf, sizeof(buf), &e->vs, VIAL_LEVEL_PARTICLE, vial_sets_items(ss, 0)[i])
+                                          : vial_unit_label(buf, sizeof(buf), &e->vs, d->level, ss->unit[i]);
+            labels[i] = str_copy((str_t){buf, len}, e->arena);
+        }
+        char path[192];
+        snprintf(path, sizeof(path), "script/%.*s/labels", (int)o->name.len, o->name.ptr);
+        md_attribute_desc_t ld = {.path = str_from_cstr(path), .format = {.type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = {n}},
+                                  .data = labels, .byte_size = n * sizeof(str_t)};
+        md_attributes_replace(&e->attributes, &ld);
+    }
+}
+
 // A histogram's range=, in the unit of what it counts, published beside it as <path>/range: the bin edges, which a plot
 // of it takes its axis from. Static, so also for one taken over.
 static void publish_ranges(md_vial_eval_t* e) {
     publish_periods(e);
+    publish_labels(e);
     const vial_ir_t* ir = e->ir;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];

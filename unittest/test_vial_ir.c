@@ -1192,6 +1192,79 @@ UTEST(vial_ir, filters) {
 }
 
 // A periodic output publishes its period and seam beside it, from when the evaluation is made, as v1 does
+// A per-frame population has its summary over the members published beside it, as v1's: /mean, /variance, /extent;
+// a periodic one around its circle. Its members are labelled by the units its dimension runs over.
+UTEST(vial_ir, population_summaries) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(vial_test_run('P'), 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    const char* src =
+        "ca  = particles(name='CA')\n"
+        "d   = distance(ca[0], ca.xyz)\n"
+        "psi = dihedral(residues() and particles(name='N'), residues() and particles(name='CA'), residues() and particles(name='C'), residues() and particles(name='O'))\n"
+        "one = distance(ca[0], ca[1])\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e != NULL);
+    ASSERT_TRUE(md_vial_eval_run(e));
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    const md_attribute_t* d = md_attributes_find(at, STR_LIT("script/d"));
+    const md_attribute_t* dm = md_attributes_find(at, STR_LIT("script/d/mean"));
+    const md_attribute_t* dv = md_attributes_find(at, STR_LIT("script/d/variance"));
+    const md_attribute_t* dx = md_attributes_find(at, STR_LIT("script/d/extent"));
+    ASSERT_TRUE(d && dm && dv && dx);
+    EXPECT_TRUE(md_attributes_find(at, STR_LIT("script/one/mean")) == NULL);    // one value has no population
+    const size_t nf = d->format.shape[0], n = d->format.shape[1];
+    ASSERT_EQ(15u, (unsigned)n);
+    EXPECT_EQ(nf, (size_t)dm->format.shape[0]);
+    EXPECT_EQ(2u, dx->format.components);
+    for (size_t f = 0; f < nf; ++f) {
+        const float* row = (const float*)d->data + f * n;
+        double sum = 0, lo = row[0], hi = row[0];
+        for (size_t i = 0; i < n; ++i) { sum += row[i]; lo = row[i] < lo ? row[i] : lo; hi = row[i] > hi ? row[i] : hi; }
+        const double mean = sum / n;
+        double var = 0;
+        for (size_t i = 0; i < n; ++i) var += (row[i] - mean) * (row[i] - mean);
+        EXPECT_NEAR(mean, ((const float*)dm->data)[f], 1e-3);
+        EXPECT_NEAR(var / n, ((const float*)dv->data)[f], 1e-2);
+        EXPECT_NEAR(lo, ((const float*)dx->data)[2 * f], 1e-5);
+        EXPECT_NEAR(hi, ((const float*)dx->data)[2 * f + 1], 1e-5);
+    }
+    // Periodic: the mean lies in the period, the arc starts in it
+    const md_attribute_t* pm = md_attributes_find(at, STR_LIT("script/psi/mean"));
+    const md_attribute_t* pp = md_attributes_find(at, STR_LIT("script/psi/period"));
+    const md_attribute_t* px = md_attributes_find(at, STR_LIT("script/psi/extent"));
+    ASSERT_TRUE(pm && pp && px);
+    const float beg = ((const float*)pp->data)[0], end = ((const float*)pp->data)[1];
+    for (size_t f = 0; f < nf; ++f) {
+        const float m = ((const float*)pm->data)[f], lo = ((const float*)px->data)[2 * f], hi = ((const float*)px->data)[2 * f + 1];
+        EXPECT_TRUE(m >= beg && m < end);
+        EXPECT_TRUE(lo >= beg && lo < end);
+        EXPECT_TRUE(hi >= lo && hi - lo <= end - beg);
+    }
+    // The labels of the CAs, as the data names them
+    const md_attribute_t* dl = md_attributes_find(at, STR_LIT("script/d/labels"));
+    ASSERT_TRUE(dl != NULL);
+    ASSERT_EQ(15u, dl->format.shape[0]);
+    EXPECT_TRUE(str_eq(md_attribute_str(at, dl, 0), STR_LIT("CA/ALA1")));
+
+    // An evaluation that takes d over keeps its summary
+    md_vial_program_t* p2 = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    md_vial_eval_t* e2 = md_vial_eval_create_from(e, p2, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e2 != NULL);
+    const md_attribute_t* dm2 = md_attributes_find(md_vial_eval_attributes(e2), STR_LIT("script/d/mean"));
+    ASSERT_TRUE(dm2 != NULL);
+    dm = md_attributes_find(at, STR_LIT("script/d/mean"));
+    EXPECT_EQ(0, memcmp(dm->data, dm2->data, nf * sizeof(float)));
+    md_vial_eval_free(e2);
+    md_vial_eval_free(e);
+    md_vial_program_free(p2);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, periodic_outputs) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);

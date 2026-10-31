@@ -949,7 +949,7 @@ Every top-level name bound to a number or a set is published under `script/<name
 | Static number | a constant | unit |
 | Static array | one constant per label | labels, unit |
 | Frame scalar, or a trajectory scalar per frame such as `smooth()` gives | a series over frames | unit |
-| Frame value with one dimension | one series per label | labels, unit |
+| Frame value with one dimension | one series per label | labels, unit; per frame, the mean, variance and extent over the labels |
 | Frame value with two dimensions | a matrix per frame, for heat maps | labels for each dimension |
 | Trajectory scalar | one value | the number of frames it covers |
 | Trajectory matrix, such as a covariance | a matrix, up to 64 MB; larger stays in hover (W0404) | labels for each dimension |
@@ -965,6 +965,7 @@ Every top-level name bound to a number or a set is published under `script/<name
 
 - A published frame value must have the same shape in every frame (E0401), since it is stored as a series. Selections are the exception: a set or array of sets whose length changes per frame, such as `residues(within(5.0, of=particles(resname='GTP')))`, is published as a recipe. It holds no values; representations and filters evaluate it for the frame they show. Other values whose length changes are kept private, or reduced with `len` or another reduction.
 - A published per-frame value that would take more than 64 MB over the whole run, 16 million values, gives W0404 with its size. It is usually an intermediate missing its `_`.
+- Beside `script/<name>` go `/labels`, the labels of a value's one dimension (`CA/ALA1`), and for a frame value of floats with one dimension of two or more, its summary over them at each frame: `/mean`, `/variance` in the unit squared, and `/extent`, the least and the greatest. A periodic value is summarized around its circle, as `/period` and `/seam` beside it describe: the circular mean, the square of the circular standard deviation, and the shortest arc holding every value, which may run past the period's end. Missing values are left out.
 - Each published value has a fingerprint of what it depends on, so an edit re-evaluates only what it feeds.
 - viamd's stored selections are static sets in the script, read-only. Filters see published names and stored selections, never private names.
 

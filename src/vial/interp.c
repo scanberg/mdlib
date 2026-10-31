@@ -875,12 +875,85 @@ static void stream_out(vial_interp_t* main, vial_ssa_t v, int64_t f, const vial_
     const size_t es = vial_dtype_size(dt);
     uint8_t* row = main->stream[v] + (size_t)f * n * es;
     memcpy(row, val->data, n * es);
-    if (!val->missing) return;
-    for (uint32_t i = 0; i < n; ++i) {
-        if (!vial_val_is_missing(val, i)) continue;
-        if (dt == VIAL_DT_FLOAT) ((float*)row)[i] = NAN;
-        else if (dt == VIAL_DT_FLOAT64) ((double*)row)[i] = NAN;
+    if (val->missing) {
+        for (uint32_t i = 0; i < n; ++i) {
+            if (!vial_val_is_missing(val, i)) continue;
+            if (dt == VIAL_DT_FLOAT) ((float*)row)[i] = NAN;
+            else if (dt == VIAL_DT_FLOAT64) ((double*)row)[i] = NAN;
+        }
     }
+    if (main->stream_summary && main->stream_summary[v] && dt == VIAL_DT_FLOAT) vial_summarize(main->stream_summary[v], f, (const float*)row, n);
+}
+
+static int cmp_float(const void* a, const void* b) {
+    const float x = *(const float*)a, y = *(const float*)b;
+    return (x > y) - (x < y);
+}
+
+// As v1's: the mean, variance and extent over the members; for periodic values circular statistics (Mardia & Jupp,
+// Directional Statistics): the mean direction, the square of the circular standard deviation sqrt(-2 ln R) capped at
+// half the period, and the shortest arc that holds every value, min in [beg, end[ and max past end where it crosses it.
+void vial_summarize(const vial_summary_t* s, int64_t f, const float* row, uint32_t n) {
+    float mean = NAN, var = NAN, lo = NAN, hi = NAN;
+    uint32_t k = 0;
+    if (s->period_end > s->period_beg) {
+        const double beg = s->period_beg, len = (double)s->period_end - beg, to_angle = 6.283185307179586 / len;
+        float stack[256];
+        float* sc = n <= 256 ? stack : md_alloc(md_get_heap_allocator(), n * sizeof(float));
+        double sc_sum = 0, ss_sum = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (isnan(row[i])) continue;
+            double w = fmod((double)row[i] - beg, len);
+            if (w < 0) w += len;
+            const float wf = (float)(beg + w);
+            sc[k++] = wf < s->period_end ? wf : s->period_beg;
+            sc_sum += cos(w * to_angle);
+            ss_sum += sin(w * to_angle);
+        }
+        if (k) {
+            sc_sum /= k; ss_sum /= k;
+            const double R = sqrt(sc_sum * sc_sum + ss_sum * ss_sum);
+            double m = fmod(atan2(ss_sum, sc_sum) / to_angle, len);
+            if (m < 0) m += len;
+            mean = (float)(beg + m);
+            if (mean >= s->period_end) mean = s->period_beg;
+            const double pi = 3.141592653589793;
+            double va = R > 0.0 ? -2.0 * log(R) : pi * pi;
+            va = va < 0 ? 0 : va > pi * pi ? pi * pi : va;
+            const double sd = sqrt(va) / to_angle;
+            var = (float)(sd * sd);
+            qsort(sc, k, sizeof(float), cmp_float);
+            uint32_t first = 0;
+            double gap = (double)sc[0] + len - (double)sc[k - 1];
+            for (uint32_t i = 1; i < k; ++i) {
+                const double g = (double)sc[i] - (double)sc[i - 1];
+                if (g > gap) { gap = g; first = i; }
+            }
+            lo = sc[first];
+            hi = (float)((double)sc[first] + (len - gap));
+        }
+        if (sc != stack) md_free(md_get_heap_allocator(), sc, n * sizeof(float));
+    } else {
+        double sum = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (isnan(row[i])) continue;
+            if (!k || row[i] < lo) lo = row[i];
+            if (!k || row[i] > hi) hi = row[i];
+            sum += row[i];
+            ++k;
+        }
+        if (k) {
+            const double m = sum / k;
+            double v = 0;
+            for (uint32_t i = 0; i < n; ++i) if (!isnan(row[i])) v += ((double)row[i] - m) * ((double)row[i] - m);
+            mean = (float)m;
+            var = (float)(v / k);
+        }
+    }
+    s->mean[f] = mean;
+    s->var[f] = var;
+    s->ext[2 * f] = lo;
+    s->ext[2 * f + 1] = hi;
 }
 
 // One frame of a sweep, in `in`, which is main or one of its workers: the per-frame ops of this sweep, and what earlier

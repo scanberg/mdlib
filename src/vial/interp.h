@@ -102,10 +102,26 @@ typedef struct vial_interp_t {
     // f * stream_count[v] elements of its dtype in; a missing float as NaN. Disjoint per frame, so any thread writes.
     uint8_t**                   stream;
     uint32_t*                   stream_count;
+    // A streamed population's summary over its members, written beside its row at each frame: by ssa, NULL or where
+    // it goes (vial_summarize)
+    struct vial_summary_t**     stream_summary;
     // Frames done, per sweep: done[sweep][f] is set once the frame's values of that sweep are computed
     uint8_t*                    frame_done[8];
     uint32_t                    err_seq;    // errors so far at this frame
 } vial_interp_t;
+
+// The summary of a population at each frame, as v1 publishes it beside a series: <path>/mean, /variance (in the unit
+// squared) and /extent (min, max), [frames] each and [frames][2] for the extent. Periodic values are summarized around
+// the circle they lie on (period_end > period_beg). Missing members (NaN) are left out; a frame with none is NaN.
+typedef struct vial_summary_t {
+    float*  mean;
+    float*  var;
+    float*  ext;
+    float   period_beg, period_end;
+} vial_summary_t;
+
+// Summarizes the n values of frame f into s
+void vial_summarize(const vial_summary_t* s, int64_t f, const float* row, uint32_t n);
 
 enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };
 
