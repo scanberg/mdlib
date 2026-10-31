@@ -301,7 +301,7 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     y.ir = NULL;    // what follows checks elements one by one: the map above is their IR
 
     // Evaluated element by element, when everything about it is known: an array of sets
-    if (num_for == 1 && !filtered && first.known && first.count <= MAX_EVALUATED && e.dtype == VIAL_DT_SET && e.ndim == 0 &&
+    if (num_for == 1 && !filtered && first.known && first.sets && first.count <= MAX_EVALUATED && e.dtype == VIAL_DT_SET && e.ndim == 0 &&
         e.stage == VIAL_STAGE_STATIC && t.stage == VIAL_STAGE_STATIC) {
         const vial_node_id cf = vx_child(x, id, 1);
         const vial_node_id target = vx_child(x, cf, 0);
