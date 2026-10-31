@@ -731,12 +731,12 @@ static bool draw_done(md_vial_drawing_t* d, bool ok) {
     return ok;
 }
 
-bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint32_t offset, md_allocator_i* alloc) {
+bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint32_t expr, md_allocator_i* alloc) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
     if (!desc || !desc->prog || !desc->sys || !alloc) return false;
     const vial_ir_t* ir = md_vial__ir(desc->prog);
-    const vial_ssa_t v = md_vial__hover_value(desc->prog, offset, NULL);
+    const vial_ssa_t v = md_vial__expr_value(desc->prog, expr);
     if (!ir || !v || v >= md_array_size(ir->values)) return false;
     const vial_type_t* t = &ir->values[v].type;
     draw_out_t o = {.d = out, .alloc = alloc, .only = desc->element};
@@ -758,6 +758,29 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
     point_free(&pt);
     md_arena_allocator_destroy(arena);
     return draw_done(out, val != NULL);
+}
+
+size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc, uint32_t expr) {
+    if (buf && cap) buf[0] = 0;
+    if (!buf || !cap || !desc || !desc->prog || !desc->sys) return 0;
+    const vial_ir_t* ir = md_vial__ir(desc->prog);
+    const vial_ssa_t v = md_vial__expr_value(desc->prog, expr);
+    if (!ir || !v || v >= md_array_size(ir->values)) return 0;
+    if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) {
+        vial_val_t one;
+        if (!trajectory_value(desc->eval, v, desc->frame, &one)) return 0;
+        return vial_val_print(buf, cap, &one, 6);
+    }
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    int64_t num_frames = 0;
+    const double* times = desc->eval ? desc->eval->times : run_times(desc->sys, desc->run, arena, &num_frames);
+    if (desc->eval) num_frames = desc->eval->num_frames;
+    point_t pt;
+    const vial_val_t* val = point_eval(&pt, desc->prog, desc->sys, desc->run, times, num_frames, desc->frame, desc->state, v, false);
+    const size_t len = val ? vial_val_print(buf, cap, val, 6) : 0;
+    point_free(&pt);
+    md_arena_allocator_destroy(arena);
+    return len;
 }
 
 // ### FILTERS ###

@@ -1849,6 +1849,7 @@ static bool core_fit(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out
 
 static vial_val_t elem_of(vial_kctx_t* k, const vial_val_t* a, uint8_t lead, size_t i) {
     vial_val_t e = *a;
+    e.drawn = NULL;
     e.ndim = a->ndim - lead;
     memmove(e.dims, a->dims + lead, e.ndim * sizeof(uint32_t));
     size_t inner = 1;

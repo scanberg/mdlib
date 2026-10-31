@@ -198,7 +198,7 @@ static inline const char* vial_fuzz__editor(const md_vial_program_t* prog, str_t
         if (!sys || !state) continue;
         md_vial_drawing_t d;
         const md_vial_draw_desc_t dd = {.prog = prog, .sys = sys, .state = state, .element = -1};
-        if (md_vial_draw(&d, &dd, at[0], alloc)) {
+        if (md_vial_draw(&d, &dd, md_vial_expr_at(prog, at[0]), alloc)) {
             const size_t ne = d.num_elements ? d.num_elements : 1;
             for (size_t k = 0; k < d.num_prims; ++k) if (d.prims[k].element >= ne) return "a drawn primitive's element is out of bounds";
             for (size_t k = 0; k < d.num_labels; ++k) if (d.labels[k].element >= ne || !d.labels[k].text.ptr) return "a drawn label is out of bounds";

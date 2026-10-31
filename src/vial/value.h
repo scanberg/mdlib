@@ -113,6 +113,8 @@ size_t vial_val_print(char* buf, size_t cap, const vial_val_t* v, uint32_t max_i
 // One drawing of the given primitives, copied into alloc; and a drawing of every primitive of a and b
 const vial_drawing_t* vial_drawing_make(const vial_prim_t* prims, uint32_t count, md_allocator_i* alloc);
 const vial_drawing_t* vial_drawing_concat(const vial_drawing_t* a, const vial_drawing_t* b, md_allocator_i* alloc);
+// One drawing of every primitive of n drawings, copied once; NULLs among them draw nothing
+const vial_drawing_t* vial_drawing_concat_n(const vial_drawing_t* const* ds, size_t n, md_allocator_i* alloc);
 
 // A copy of v whose data, mask, sets, elements and drawings are alloc's
 vial_val_t vial_val_copy(const vial_val_t* v, md_allocator_i* alloc);

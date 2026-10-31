@@ -167,6 +167,21 @@ typedef struct md_vial_hover_t {
 
 bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out);
 
+// Expressions by id: what the editor marks, hovers and draws. An id names one expression of one program, 0 none.
+// The innermost expression with a type at a byte offset, as md_vial_hover finds it; and what hover shows of one.
+uint32_t md_vial_expr_at(const md_vial_program_t* prog, uint32_t offset);
+bool     md_vial_expr_info(const md_vial_program_t* prog, uint32_t expr, md_vial_hover_t* out);
+
+// Every expression with a type, in source order, for the editor to mark: its span and how many marked expressions
+// hold it
+typedef struct md_vial_mark_t {
+    uint32_t        expr;
+    md_vial_span_t  span;
+    uint32_t        depth;
+} md_vial_mark_t;
+
+size_t md_vial_marks(const md_vial_program_t* prog, const md_vial_mark_t** out);
+
 // ### EDITOR ###
 
 // The words the language reserves, every keyword of Python, for highlighting: how many there are, and up to cap of
@@ -368,11 +383,15 @@ typedef struct md_vial_draw_desc_t {
     int64_t                         element;    // the element of an array drawn alone; -1 for every element
 } md_vial_draw_desc_t;
 
-// What the expression at a byte offset of the source draws, its arrays from alloc. The expression is computed alone,
+// What an expression (md_vial_expr_at) draws, its arrays from alloc. The expression is computed alone,
 // as hover computes it, with its own reader and interpreter, so it may run while md_vial_eval_run does. False when
 // there is none there, it fails, or it is over the trajectory and not computed; true with nothing in it when the
 // value draws nothing, such as a number, which hover shows as text.
-bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint32_t offset, struct md_allocator_i* alloc);
+bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint32_t expr, struct md_allocator_i* alloc);
+
+// The value of an expression where desc draws, as the reference prints values, cut at cap: what hover shows beside the
+// drawing. Returns its length, 0 when it has none there.
+size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc, uint32_t expr);
 
 // ### FILTERS ###
 // An expression that picks particles, as viamd's representations, groups and queries write them: compiled alone as one

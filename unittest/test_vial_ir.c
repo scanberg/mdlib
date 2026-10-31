@@ -723,6 +723,7 @@ UTEST(vial_ir, draw) {
         "both = line(ca[0], ca[1], label='x') + sphere(ca[2], 2.0)\n"
         "rs = residues()\n"
         "dc = distance(rs[0:3], ca[4], between='closest')\n"
+        "dm = distance(rs[:, None], rs, between='closest')\n"
         "def ends(s: set):\n"
         "    u = s[0]\n"
         "    v = s[-1]\n"
@@ -742,7 +743,7 @@ UTEST(vial_ir, draw) {
     md_vial_drawing_t dr;
 
     // A set: its particles, and they are the CA atoms
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("particles(", 9), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("particles(", 9)), alloc));
     ASSERT_EQ(1u, dr.num_groups);
     const uint32_t* ca = dr.atoms + dr.groups[0].beg;
     const uint32_t nca = dr.groups[0].end - dr.groups[0].beg;
@@ -751,7 +752,7 @@ UTEST(vial_ir, draw) {
     #define XYZ(atom, k) x[3 * (atom) + (k)]
 
     // distance: the prelude's shown line, labelled with the distance in Å
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("distance(ca[0]", 8), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("distance(ca[0]", 8)), alloc));
     ASSERT_EQ(1u, dr.num_prims);
     EXPECT_EQ((int)MD_VIAL_PRIM_LINE, (int)dr.prims[0].kind);
     for (int k = 0; k < 3; ++k) { EXPECT_EQ(XYZ(ca[0], k), dr.prims[0].p[0][k]); EXPECT_NEAR(XYZ(ca[1], k), dr.prims[0].p[1][k], 1e-4f); }
@@ -763,8 +764,40 @@ UTEST(vial_ir, draw) {
     EXPECT_GT(dr.labels[0].text.len, 4u);
     // The name it is bound to draws the same
     md_vial_drawing_t by_name;
-    ASSERT_TRUE(md_vial_draw(&by_name, &desc, AT("d  =", 0), alloc));
+    ASSERT_TRUE(md_vial_draw(&by_name, &desc, md_vial_expr_at(prog, AT("d  =", 0)), alloc));
     EXPECT_EQ(1u, by_name.num_prims);
+
+    // Marks: every expression with a type, outer before inner. ca[0] is marked apart from ca, which starts where it
+    // does; drawing the call's mark draws the line, and the value beside it is the distance
+    {
+        const md_vial_mark_t* mk;
+        const size_t nm = md_vial_marks(prog, &mk);
+        ASSERT_GT(nm, 10u);
+        for (size_t i = 1; i < nm; ++i) EXPECT_TRUE(mk[i - 1].span.beg < mk[i].span.beg || (mk[i - 1].span.beg == mk[i].span.beg && mk[i - 1].span.end >= mk[i].span.end));
+        const uint32_t at = AT("ca[0], ca[1])", 0);
+        size_t sub = SIZE_MAX, name = SIZE_MAX, call = SIZE_MAX;
+        for (size_t i = 0; i < nm; ++i) {
+            if (mk[i].span.beg == AT("distance(ca[0]", 0)) call = i;
+            if (mk[i].span.beg != at) continue;
+            if (sub == SIZE_MAX) sub = i; else if (name == SIZE_MAX) name = i;
+        }
+        ASSERT_TRUE(sub != SIZE_MAX && name != SIZE_MAX && call != SIZE_MAX);
+        EXPECT_EQ(5u, mk[sub].span.end - mk[sub].span.beg);
+        EXPECT_EQ(2u, mk[name].span.end - mk[name].span.beg);
+        EXPECT_EQ(mk[sub].depth + 1, mk[name].depth);
+        EXPECT_EQ(mk[call].depth + 1, mk[sub].depth);
+        EXPECT_EQ((uint32_t)strlen("distance(ca[0], ca[1])"), mk[call].span.end - mk[call].span.beg);
+        md_vial_drawing_t dm;
+        ASSERT_TRUE(md_vial_draw(&dm, &desc, mk[call].expr, alloc));
+        EXPECT_EQ(1u, dm.num_prims);
+        md_vial_hover_t info;
+        ASSERT_TRUE(md_vial_expr_info(prog, mk[call].expr, &info));
+        EXPECT_TRUE(strstr(info.type, "float") != NULL);
+        char vt[64];
+        ASSERT_GT(md_vial_value_text(vt, sizeof(vt), &desc, mk[call].expr), 0u);
+        EXPECT_NEAR(dm.labels[0].value, atof(vt), 1e-3);
+        EXPECT_EQ(0u, md_vial_value_text(vt, sizeof(vt), &desc, 0));
+    }
 
     // Moved coordinates move the drawing: values per frame come from the state given
     {
@@ -774,18 +807,18 @@ UTEST(vial_ir, draw) {
         md_vial_draw_desc_t d2 = desc;
         d2.state = &moved;
         md_vial_drawing_t m;
-        ASSERT_TRUE(md_vial_draw(&m, &d2, AT("distance(ca[0]", 8), alloc));
+        ASSERT_TRUE(md_vial_draw(&m, &d2, md_vial_expr_at(prog, AT("distance(ca[0]", 8)), alloc));
         ASSERT_EQ(1u, m.num_prims);
         EXPECT_NEAR(XYZ(ca[0], 0) + 10.0f, m.prims[0].p[0][0], 1e-4f);
     }
 
     // angle: an arc at the vertex; dihedral: the two planes and a label
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("angle(", 5), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("angle(", 5)), alloc));
     ASSERT_EQ(1u, dr.num_prims);
     EXPECT_EQ((int)MD_VIAL_PRIM_ARC, (int)dr.prims[0].kind);
     for (int k = 0; k < 3; ++k) EXPECT_EQ(XYZ(ca[1], k), dr.prims[0].p[0][k]);
     EXPECT_EQ(1u, dr.num_labels);
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("dihedral(", 8), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("dihedral(", 8)), alloc));
     ASSERT_EQ(3u, dr.num_prims);
     EXPECT_EQ((int)MD_VIAL_PRIM_DISK, (int)dr.prims[0].kind);
     EXPECT_EQ((int)MD_VIAL_PRIM_DISK, (int)dr.prims[1].kind);
@@ -804,7 +837,7 @@ UTEST(vial_ir, draw) {
     }
 
     // within: a sphere around the point, the particles in it highlighted
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("within(", 6), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("within(", 6)), alloc));
     ASSERT_EQ(1u, dr.num_prims);
     EXPECT_EQ((int)MD_VIAL_PRIM_SPHERE, (int)dr.prims[0].kind);
     EXPECT_EQ(4.0f, dr.prims[0].r);
@@ -814,14 +847,14 @@ UTEST(vial_ir, draw) {
     EXPECT_TRUE(has);
 
     // Points as markers; a number draws nothing
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT(".xyz", 1), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT(".xyz", 1)), alloc));
     EXPECT_EQ((size_t)nca, dr.num_prims);
     EXPECT_EQ((size_t)nca, dr.num_elements);
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("count(", 5), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("count(", 5)), alloc));
     EXPECT_EQ(0u, dr.num_prims + dr.num_labels + dr.num_groups);
 
     // Primitives combined, a text label
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("both", 0), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("both", 0)), alloc));
     ASSERT_EQ(2u, dr.num_prims);
     EXPECT_EQ((int)MD_VIAL_PRIM_LINE, (int)dr.prims[0].kind);
     EXPECT_EQ((int)MD_VIAL_PRIM_SPHERE, (int)dr.prims[1].kind);
@@ -830,23 +863,32 @@ UTEST(vial_ir, draw) {
     EXPECT_TRUE(isnan(dr.labels[0].value));
 
     // A def mapped over groups: one line per element, and one element alone
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("distance(rs", 8), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("distance(rs", 8)), alloc));
     EXPECT_EQ(3u, dr.num_elements);
     EXPECT_EQ(3u, dr.num_prims);
     for (size_t i = 0; i < dr.num_prims; ++i) EXPECT_EQ((uint32_t)i, dr.prims[i].element);
     desc.element = 1;
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("distance(rs", 8), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("distance(rs", 8)), alloc));
     ASSERT_EQ(1u, dr.num_prims);
     EXPECT_EQ(1u, dr.prims[0].element);
     desc.element = -1;
 
+    // A map over the pairs of an array with itself: one line per pair. An element of a drawn value is drawn by its
+    // type, so no call carries the whole array's drawing on
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("distance(rs[:", 8)), alloc));
+    {
+        const size_t nr = md_system_residue_count(sys);
+        EXPECT_EQ(nr * nr, dr.num_elements);
+        EXPECT_EQ(MIN(nr * nr, (size_t)5000), dr.num_prims);
+    }
+
     // A script's def: what it attached, through the call and the name; an operation on it is drawn by its type
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("ends(ca)", 4), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("ends(ca)", 4)), alloc));
     ASSERT_EQ(2u, dr.num_prims);
     for (int k = 0; k < 3; ++k) { EXPECT_EQ(XYZ(ca[0], k), dr.prims[0].p[0][k]); EXPECT_EQ(XYZ(ca[nca - 1], k), dr.prims[1].p[0][k]); }
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("e = ", 0), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("e = ", 0)), alloc));
     EXPECT_EQ(2u, dr.num_prims);
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, AT("e * 2", 2), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("e * 2", 2)), alloc));
     EXPECT_EQ(0u, dr.num_prims);
 
     // A frame of the run, read: the line is as long as the distance published for that frame
@@ -857,7 +899,7 @@ UTEST(vial_ir, draw) {
         const md_attribute_t* ad = md_attributes_find(md_vial_eval_attributes(ev), STR_LIT("script/d"));
         ASSERT_TRUE(ad != NULL);
         md_vial_draw_desc_t d3 = {.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .eval = ev, .element = -1};
-        ASSERT_TRUE(md_vial_draw(&dr, &d3, AT("distance(ca[0]", 8), alloc));
+        ASSERT_TRUE(md_vial_draw(&dr, &d3, md_vial_expr_at(prog, AT("distance(ca[0]", 8)), alloc));
         ASSERT_EQ(1u, dr.num_labels);
         EXPECT_NEAR(((const float*)ad->data)[3], dr.labels[0].value, 1e-5);
         md_vial_eval_free(ev);
@@ -1547,3 +1589,4 @@ UTEST(vial_ir, eigh_decomposes) {
     EXPECT_LT(ms, 2000.0);
     vial_ir__end(&r);
 }
+

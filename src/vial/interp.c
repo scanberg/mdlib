@@ -192,6 +192,7 @@ static bool eval_op_pub(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) 
 // One element of a value along its leading dimensions: a view of numbers, or the picked set
 static vial_val_t element(const vial_val_t* a, uint32_t lead, size_t i, md_allocator_i* alloc) {
     vial_val_t e = *a;
+    e.drawn = NULL;     // an element is a value of its own, drawn by its type
     e.ndim = a->ndim - (uint8_t)lead;
     memmove(e.dims, a->dims + lead, e.ndim * sizeof(uint32_t));
     size_t inner = 1;
@@ -229,6 +230,11 @@ static bool place(vial_kctx_t* k, vial_val_t* out, size_t i, const vial_val_t* e
     }
     const size_t es = vial_dtype_size(out->dtype);
     if (es && e->data) memcpy((uint8_t*)out->data + i * inner * es, e->data, inner * es);
+    if (out->dtype == VIAL_DT_DRAWING && e->data) {
+        // Drawings point into the call's scratch, which is reset after it: copied into the result's allocator
+        const vial_drawing_t** o = (const vial_drawing_t**)out->data + i * inner;
+        for (size_t q = 0; q < inner; ++q) if (o[q]) o[q] = vial_drawing_make(o[q]->prims, o[q]->count, k->alloc);
+    }
     if (e->missing) {
         for (size_t q = 0; q < inner; ++q) if (vial_val_is_missing(e, q)) vial_val_set_missing(out, i * inner + q, k->alloc);
     }
@@ -354,7 +360,7 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
     const vial_ir_region_t* r = &in->ir->regions[op->region[0]];
     const bool filtered = op->sub == VIAL_MAP_FILTERED;
     const vial_type_t* rt = k.type;
-    md_allocator_i* scratch = in->draw ? NULL : map_scratch(in);     // drawing: a call's drawing outlives the call
+    md_allocator_i* scratch = map_scratch(in);
     const vial_drawing_t** drawn = NULL;                                // drawing: each call's, gathered
     md_allocator_i* ea = scratch ? scratch : alloc;
     const size_t entry = scratch ? md_vm_arena_get_pos(scratch) : 0;
@@ -436,11 +442,9 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
                     drawn = md_alloc(alloc, count * sizeof(*drawn));
                     memset(drawn, 0, count * sizeof(*drawn));
                 }
+                // Copied out of the call's scratch, which is reset after it
                 const size_t m = vial_val_count(y->drawn);
-                const vial_drawing_t* const* src = y->drawn->data;
-                const vial_drawing_t* acc = m == 1 ? src[0] : NULL;
-                for (size_t q = 0; m != 1 && q < m; ++q) acc = vial_drawing_concat(acc, src[q], alloc);
-                drawn[kept] = acc;
+                drawn[kept] = vial_drawing_concat_n(y->drawn->data, m, alloc);
             }
             kept += 1;
         }

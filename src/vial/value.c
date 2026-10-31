@@ -247,7 +247,7 @@ static vial_sets_t* sets_copy(const vial_sets_t* s, md_allocator_i* alloc) {
 static vial_prim_t* prims_copy(vial_prim_t* dst, const vial_prim_t* src, uint32_t n, md_allocator_i* alloc) {
     for (uint32_t i = 0; i < n; ++i) {
         dst[i] = src[i];
-        dst[i].text = str_copy(src[i].text, alloc);
+        dst[i].text = src[i].text.len ? str_copy(src[i].text, alloc) : (str_t){0};
         if (src[i].num_atoms) {
             uint32_t* at = md_alloc(alloc, src[i].num_atoms * sizeof(uint32_t));
             memcpy(at, src[i].atoms, src[i].num_atoms * sizeof(uint32_t));
@@ -271,6 +271,22 @@ const vial_drawing_t* vial_drawing_concat(const vial_drawing_t* a, const vial_dr
     vial_prim_t* p = d->count ? md_alloc(alloc, d->count * sizeof(vial_prim_t)) : NULL;
     if (na) prims_copy(p, a->prims, na, alloc);
     if (nb) prims_copy(p + na, b->prims, nb, alloc);
+    d->prims = p;
+    return d;
+}
+
+const vial_drawing_t* vial_drawing_concat_n(const vial_drawing_t* const* ds, size_t n, md_allocator_i* alloc) {
+    size_t total = 0;
+    for (size_t i = 0; i < n; ++i) total += ds[i] ? ds[i]->count : 0;
+    vial_drawing_t* d = md_alloc(alloc, sizeof(vial_drawing_t));
+    d->count = (uint32_t)MIN(total, (size_t)UINT32_MAX);
+    vial_prim_t* p = d->count ? md_alloc(alloc, d->count * sizeof(vial_prim_t)) : NULL;
+    size_t at = 0;
+    for (size_t i = 0; p && i < n; ++i) {
+        if (!ds[i] || !ds[i]->count || at + ds[i]->count > d->count) continue;
+        prims_copy(p + at, ds[i]->prims, ds[i]->count, alloc);
+        at += ds[i]->count;
+    }
     d->prims = p;
     return d;
 }
