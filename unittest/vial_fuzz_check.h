@@ -154,9 +154,11 @@ static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, con
         const int nl = (int)(ir->outputs[k].name.len < 40 ? ir->outputs[k].name.len : 40);
         if (ran) {
             const vial_val_t* w = vial_interp_at(&again, plain.outputs[k].value, 0);
-            // A matrix past the budget that the lowered reduction never built
+            // A matrix past the budget that the lowered reduction never built; and a hidden name, which only what
+            // reads it computes: a lowered reduction reads the points, the matrix's reduction the matrix
             const bool budget = v && !w && again_budget;
-            if (!budget && ((!v) != (!w) || (v && !vial_val_equal(v, w)))) {
+            const bool hidden = ir->outputs[k].name.len && ir->outputs[k].name.ptr[0] == '_';
+            if (!budget && !hidden && ((!v) != (!w) || (v && !vial_val_equal(v, w)))) {
                 snprintf(buf, sizeof(buf), "evaluating twice gives different values: %.*s", nl, ir->outputs[k].name.ptr);
                 why = buf;
                 break;
