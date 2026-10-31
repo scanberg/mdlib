@@ -345,6 +345,14 @@ void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* o
 float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
+// Every pair whose distance is within tol of the minimum (maximum), in one pass with the same culling: for a caller
+// which computes the distances another way, where they may differ from these by some ulps, and wants the extreme by
+// its own. Up to cap pairs are written, as indices into coord_a and coord_b, in no particular order. Returns how many
+// there are, or more than cap when they do not all fit (the ones written are then only some of them); 0 when a or b
+// is empty.
+size_t md_util_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+size_t md_util_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+
 void md_util_min_image_vec3(vec3_t* in_out_dx, size_t count, const md_unitcell_t* cell);
 void md_util_min_image_vec4(vec4_t* in_out_dx, size_t count, const md_unitcell_t* cell);
 

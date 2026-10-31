@@ -10110,6 +10110,7 @@ typedef struct dist_cluster_t {
     md_256  x, y, z;
     float   cen[3];
     float   rad;
+    int     count;      // The lanes which are points of the group
     int64_t idx[8];
 } dist_cluster_t;
 
@@ -10123,6 +10124,7 @@ static FORCE_INLINE void dist_cluster_init(dist_cluster_t* cl, const vec3_t* a, 
         z[i] = a[k].z - p0.z;
         cl->idx[i] = (int64_t)k;
     }
+    cl->count = (int)n;
     md_256 vx = md_mm256_loadu_ps(x);
     md_256 vy = md_mm256_loadu_ps(y);
     md_256 vz = md_mm256_loadu_ps(z);
@@ -10160,9 +10162,68 @@ typedef struct dist_set_t {
     size_t n;
 } dist_set_t;
 
+// The pairs near the extreme: those whose distance is within tol of it, as the kernel computes distances. Kept while
+// they are near the best so far, which only ever gets more extreme, so every pair near the final one is among them.
+typedef struct dist_near_t {
+    float    tol;
+    float    bound2;     // dist_near_bound2 of the best so far
+    int64_t* a;
+    int64_t* b;
+    float*   d2;
+    size_t   cap;
+    size_t   count;
+    bool     overflow;   // A near pair did not fit: the ones kept are not all of them
+} dist_near_t;
+
+// What a squared distance must be within to be near best2: at most (best + tol)^2, or for the farthest at least
+// (best - tol)^2, where -1 takes every pair. Never short of best2 itself, whatever the rounding.
+static FORCE_INLINE float dist_near_bound2(float best2, float tol, const bool largest) {
+    if (largest) {
+        if (best2 < 0.0f) return -1.0f;
+        const float t = sqrtf(best2) - tol;
+        return t > 0.0f ? MIN(t * t, best2) : -1.0f;
+    }
+    if (best2 >= FLT_MAX) return FLT_MAX;
+    const float t = sqrtf(best2) + tol;
+    return MAX(t * t, best2);
+}
+
+static void dist_near_prune(dist_near_t* nr, const bool largest) {
+    const float e = nr->bound2;
+    size_t w = 0;
+    for (size_t r = 0; r < nr->count; ++r) {
+        if (largest ? nr->d2[r] >= e : nr->d2[r] <= e) {
+            nr->a[w] = nr->a[r];
+            nr->b[w] = nr->b[r];
+            nr->d2[w] = nr->d2[r];
+            ++w;
+        }
+    }
+    nr->count = w;
+}
+
+// The lanes of mask, near pairs with point j of b; lane i is point first + i of a
+static void dist_near_record(dist_near_t* nr, int64_t first, const float v[8], size_t j, int mask, const bool largest) {
+    while (mask) {
+        const int lane = ctz32((uint32_t)mask);
+        mask &= mask - 1;
+        if (nr->count == nr->cap) dist_near_prune(nr, largest);
+        if (nr->count == nr->cap) {
+            nr->overflow = true;
+            continue;
+        }
+        nr->a[nr->count] = first + lane;
+        nr->b[nr->count] = (int64_t)j;
+        nr->d2[nr->count] = v[lane];
+        nr->count += 1;
+    }
+}
+
 // The squared distances from the points of the cluster to point j of b, exact wherever that can change the
-// comparison with best2. If one improves on best2 it becomes the best pair and true is returned.
-static FORCE_INLINE bool dist_cluster_test(float* best2, int64_t* ia, int64_t* ib, const dist_cluster_t* cl, const dist_set_t* b, size_t j, const dist_cell_t* c, const int mode, const bool largest) {
+// comparison with best2. If one improves on best2 it becomes the best pair and true is returned. Given nr, they are
+// exact wherever they can be near, and the near ones are recorded unless record is false.
+static FORCE_INLINE bool dist_cluster_test(float* best2, int64_t* ia, int64_t* ib, const dist_cluster_t* cl, const dist_set_t* b, size_t j, const dist_cell_t* c, const int mode, const bool largest,
+                                           dist_near_t* nr, bool record) {
     md_256 dx = md_mm256_sub_ps(cl->x, md_mm256_set1_ps(b->x[j]));
     md_256 dy = md_mm256_sub_ps(cl->y, md_mm256_set1_ps(b->y[j]));
     md_256 dz = md_mm256_sub_ps(cl->z, md_mm256_set1_ps(b->z[j]));
@@ -10173,19 +10234,34 @@ static FORCE_INLINE bool dist_cluster_test(float* best2, int64_t* ia, int64_t* i
         const md_256 far = md_mm256_cmpge_ps(d2, md_mm256_set1_ps(c->rsafe2));
         const int far_mask = md_mm256_movemask_ps(far);
         if (far_mask) {
-            const bool matters = largest ? (md_mm256_movemask_ps(md_mm256_and_ps(far, md_mm256_cmpgt_ps(d2, md_mm256_set1_ps(*best2)))) != 0) : (c->rsafe2 < *best2);
+            // Equal to the bound matters too: a pair at it is near
+            const float bound = nr ? nr->bound2 : *best2;
+            const bool matters = largest ? (md_mm256_movemask_ps(md_mm256_and_ps(far, md_mm256_cmpge_ps(d2, md_mm256_set1_ps(bound)))) != 0) : (c->rsafe2 <= bound);
             if (matters) {
                 d2 = dist_search_d2(dx, dy, dz, c);
             }
         }
     }
     const float m = largest ? md_mm256_reduce_max_ps(d2) : md_mm256_reduce_min_ps(d2);
-    if (largest ? !(m > *best2) : !(m < *best2)) return false;
-    const int lane = ctz32((uint32_t)md_mm256_movemask_ps(md_mm256_cmpeq_ps(d2, md_mm256_set1_ps(m))));
-    *best2 = m;
-    *ia = cl->idx[lane];
-    *ib = (int64_t)j;
-    return true;
+    const bool better = largest ? m > *best2 : m < *best2;
+    if (better) {
+        const int lane = ctz32((uint32_t)md_mm256_movemask_ps(md_mm256_cmpeq_ps(d2, md_mm256_set1_ps(m))));
+        *best2 = m;
+        *ia = cl->idx[lane];
+        *ib = (int64_t)j;
+        if (nr) nr->bound2 = dist_near_bound2(m, nr->tol, largest);
+    }
+    // Usually no lane is near: the extreme of the lanes says so
+    if (nr && record && (largest ? m >= nr->bound2 : m <= nr->bound2)) {
+        const md_256 e = md_mm256_set1_ps(nr->bound2);
+        const int mask = md_mm256_movemask_ps(largest ? md_mm256_cmpge_ps(d2, e) : md_mm256_cmple_ps(d2, e)) & ((1 << cl->count) - 1);
+        if (mask) {
+            float v[8];
+            md_mm256_storeu_ps(v, d2);
+            dist_near_record(nr, cl->idx[0], v, j, mask, largest);
+        }
+    }
+    return better;
 }
 
 // The bound of the sphere test, squared: a point of b at a reduced distance from the centre of the cluster at or beyond
@@ -10202,9 +10278,16 @@ static FORCE_INLINE float dist_threshold2(float best2, const dist_cluster_t* cl,
     return t * t;
 }
 
+// Given nr, which takes one group, the culling leaves room for its tolerance and the pairs near the extreme are
+// recorded in it
 static FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* a, const size_t* a_offsets, size_t num_groups,
-                                     const dist_set_t* b, const dist_cell_t* c, const int mode, const bool largest) {
+                                     const dist_set_t* b, const dist_cell_t* c, const int mode, const bool largest, dist_near_t* nr) {
     int64_t prev = -1;
+    // In locals: what the near pairs' stores could alias as far as the compiler knows, it reloads every iteration
+    const float* bx = b->x;
+    const float* by = b->y;
+    const float* bz = b->z;
+    const size_t bn = b->n;
     for (size_t g = 0; g < num_groups; ++g) {
         const size_t beg = a_offsets[g];
         const size_t end = a_offsets[g + 1];
@@ -10212,27 +10295,29 @@ static FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int64_
         int64_t ia = -1;
         int64_t ib = -1;
         bool done = false;
+        if (nr) nr->bound2 = dist_near_bound2(best2, nr->tol, largest);
 
         for (size_t i = beg; i < end && !done; i += 8) {
             dist_cluster_t cl;
             dist_cluster_init(&cl, a, i, MIN(8, end - i), c, mode);
 
-            // The partner of the previous group: a real pair, usually close to the best one
+            // The partner of the previous group: a real pair, usually close to the best one. Not recorded: the scan
+            // below meets it again if it is near.
             if (prev >= 0) {
-                dist_cluster_test(&best2, &ia, &ib, &cl, b, (size_t)prev, c, mode, largest);
+                dist_cluster_test(&best2, &ia, &ib, &cl, b, (size_t)prev, c, mode, largest, nr, false);
             }
 
             const md_256 cx = md_mm256_set1_ps(cl.cen[0]);
             const md_256 cy = md_mm256_set1_ps(cl.cen[1]);
             const md_256 cz = md_mm256_set1_ps(cl.cen[2]);
-            float  thr2 = dist_threshold2(best2, &cl, c, largest);
+            float  thr2 = dist_threshold2(nr ? nr->bound2 : best2, &cl, c, largest);
             md_256 vthr = md_mm256_set1_ps(thr2);
             const md_256 vrsafe2 = md_mm256_set1_ps(c->rsafe2);
 
-            for (size_t j = 0; j < b->n && !done; j += 8) {
-                md_256 dx = md_mm256_sub_ps(cx, md_mm256_loadu_ps(b->x + j));
-                md_256 dy = md_mm256_sub_ps(cy, md_mm256_loadu_ps(b->y + j));
-                md_256 dz = md_mm256_sub_ps(cz, md_mm256_loadu_ps(b->z + j));
+            for (size_t j = 0; j < bn && !done; j += 8) {
+                md_256 dx = md_mm256_sub_ps(cx, md_mm256_loadu_ps(bx + j));
+                md_256 dy = md_mm256_sub_ps(cy, md_mm256_loadu_ps(by + j));
+                md_256 dz = md_mm256_sub_ps(cz, md_mm256_loadu_ps(bz + j));
                 dist_reduce(&dx, &dy, &dz, c, mode);
                 const md_256 d2 = dist_length2(dx, dy, dz);
                 int mask = md_mm256_movemask_ps(largest ? md_mm256_cmpgt_ps(d2, vthr) : md_mm256_cmplt_ps(d2, vthr));
@@ -10243,19 +10328,19 @@ static FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int64_
                         mask |= md_mm256_movemask_ps(md_mm256_cmplt_ps(dist_search_d2(dx, dy, dz, c), vthr));
                     }
                 }
-                if (j + 8 > b->n) {
-                    mask &= (1 << (b->n - j)) - 1;
+                if (j + 8 > bn) {
+                    mask &= (1 << (bn - j)) - 1;
                 }
                 while (mask) {
                     const size_t k = j + ctz32((uint32_t)mask);
                     mask &= mask - 1;
-                    if (dist_cluster_test(&best2, &ia, &ib, &cl, b, k, c, mode, largest)) {
-                        if (!largest && best2 <= 0.0f) {
+                    if (dist_cluster_test(&best2, &ia, &ib, &cl, b, k, c, mode, largest, nr, true)) {
+                        if (!largest && best2 <= 0.0f && !nr) {
                             // Nothing is nearer than a shared point
                             done = true;
                             break;
                         }
-                        thr2 = dist_threshold2(best2, &cl, c, largest);
+                        thr2 = dist_threshold2(nr ? nr->bound2 : best2, &cl, c, largest);
                         vthr = md_mm256_set1_ps(thr2);
                     }
                 }
@@ -10266,17 +10351,25 @@ static FORCE_INLINE void dist_groups(float* out_dist, int64_t* out_idx_a, int64_
         if (out_idx_a) out_idx_a[g] = ia;
         if (out_idx_b) out_idx_b[g] = ib;
         if (ib >= 0) prev = ib;
+        if (nr) dist_near_prune(nr, largest);
     }
 }
 
-static void dist_groups_none_min (float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE,      false); }
-static void dist_groups_ortho_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO,     false); }
-static void dist_groups_tri_min  (float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, false); }
-static void dist_groups_none_max (float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE,      true);  }
-static void dist_groups_ortho_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO,     true);  }
-static void dist_groups_tri_max  (float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, true);  }
+// One function per kind of cell and extreme, so each loop is compiled for it; the plain ones without near pairs
+static void dist_groups_none_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, false, NULL); }
+static void dist_groups_ortho_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, false, NULL); }
+static void dist_groups_tri_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, false, NULL); }
+static void dist_groups_none_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, true, NULL); }
+static void dist_groups_ortho_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, true, NULL); }
+static void dist_groups_tri_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { (void)nr; dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, true, NULL); }
+static void dist_near_none_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, false, nr); }
+static void dist_near_ortho_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, false, nr); }
+static void dist_near_tri_min(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, false, nr); }
+static void dist_near_none_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_NONE, true, nr); }
+static void dist_near_ortho_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_ORTHO, true, nr); }
+static void dist_near_tri_max(float* d, int64_t* ia, int64_t* ib, const vec3_t* a, const size_t* o, size_t n, const dist_set_t* b, const dist_cell_t* c, dist_near_t* nr) { dist_groups(d, ia, ib, a, o, n, b, c, DIST_PBC_TRICLINIC, true, nr); }
 
-static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell, bool largest) {
+static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell, bool largest, dist_near_t* nr) {
     ASSERT(out_dist);
     ASSERT(a_offsets || num_groups == 0);
     if (num_groups == 0) return;
@@ -10317,22 +10410,23 @@ static void distance_extent_groups(float* out_dist, int64_t* out_idx_a, int64_t*
     dist_cell_init(&c, cell, scale);
     const dist_set_t b = { bx, by, bz, num_b };
 
-    switch (c.mode) {
-    case DIST_PBC_NONE:      (largest ? dist_groups_none_max  : dist_groups_none_min) (out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, &b, &c); break;
-    case DIST_PBC_ORTHO:     (largest ? dist_groups_ortho_max : dist_groups_ortho_min)(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, &b, &c); break;
-    case DIST_PBC_TRICLINIC: (largest ? dist_groups_tri_max   : dist_groups_tri_min)  (out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, &b, &c); break;
-    default: ASSERT(false); break;
-    }
+    typedef void (*dist_fn)(float*, int64_t*, int64_t*, const vec3_t*, const size_t*, size_t, const dist_set_t*, const dist_cell_t*, dist_near_t*);
+    static const dist_fn fns[2][2][3] = {
+        { { dist_groups_none_min, dist_groups_ortho_min, dist_groups_tri_min }, { dist_groups_none_max, dist_groups_ortho_max, dist_groups_tri_max } },
+        { { dist_near_none_min,   dist_near_ortho_min,   dist_near_tri_min   }, { dist_near_none_max,   dist_near_ortho_max,   dist_near_tri_max   } },
+    };
+    ASSERT(c.mode >= DIST_PBC_NONE && c.mode <= DIST_PBC_TRICLINIC);
+    fns[nr != NULL][largest][c.mode](out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, &b, &c, nr);
 
     md_temp_end(temp);
 }
 
 void md_util_min_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
-    distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, false);
+    distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, false, NULL);
 }
 
 void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, const size_t* a_offsets, size_t num_groups, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
-    distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, true);
+    distance_extent_groups(out_dist, out_idx_a, out_idx_b, coord_a, a_offsets, num_groups, coord_b, num_b, cell, true, NULL);
 }
 
 float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
@@ -10341,7 +10435,7 @@ float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
     float   dist = 0.0f;
     int64_t ia = -1;
     int64_t ib = -1;
-    distance_extent_groups(&dist, &ia, &ib, coord_a, offsets, 1, coord_b, num_b, cell, false);
+    distance_extent_groups(&dist, &ia, &ib, coord_a, offsets, 1, coord_b, num_b, cell, false, NULL);
     if (out_idx_a) *out_idx_a = ia;
     if (out_idx_b) *out_idx_b = ib;
     return dist;
@@ -10353,12 +10447,40 @@ float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t*
     float   dist = 0.0f;
     int64_t ia = -1;
     int64_t ib = -1;
-    distance_extent_groups(&dist, &ia, &ib, coord_a, offsets, 1, coord_b, num_b, cell, true);
+    distance_extent_groups(&dist, &ia, &ib, coord_a, offsets, 1, coord_b, num_b, cell, true, NULL);
     if (dist > 0.0f) {
         if (out_idx_a) *out_idx_a = ia;
         if (out_idx_b) *out_idx_b = ib;
     }
     return dist;
+}
+
+static size_t distance_extent_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell, bool largest) {
+    if (num_a == 0 || num_b == 0) return 0;
+    ASSERT(out_idx_a && out_idx_b);
+    md_temp_scope_t temp = md_temp_begin();
+    dist_near_t nr = {
+        .tol = MAX(tol, 0.0f),
+        .a = out_idx_a,
+        .b = out_idx_b,
+        .d2 = md_temp_alloc_array(temp, float, MAX(cap, 1)),
+        .cap = cap,
+    };
+    const size_t offsets[2] = { 0, num_a };
+    float   dist = 0.0f;
+    int64_t ia = -1;
+    int64_t ib = -1;
+    distance_extent_groups(&dist, &ia, &ib, coord_a, offsets, 1, coord_b, num_b, cell, largest, &nr);
+    md_temp_end(temp);
+    return nr.overflow ? cap + 1 : nr.count;
+}
+
+size_t md_util_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+    return distance_extent_near(out_idx_a, out_idx_b, cap, tol, coord_a, num_a, coord_b, num_b, cell, false);
+}
+
+size_t md_util_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+    return distance_extent_near(out_idx_a, out_idx_b, cap, tol, coord_a, num_a, coord_b, num_b, cell, true);
 }
 
 #if MD_COMPILER_MSVC
