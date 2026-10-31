@@ -565,9 +565,14 @@ UTEST(vial_ir, map_interrupt_and_memory) {
     const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
     volatile uint64_t stop = 1;
     r.in.stop = &stop;
-    EXPECT_FALSE(vial_interp_frame(&r.in, &fr));
-    EXPECT_TRUE(r.in.interrupted);
-    EXPECT_EQ(0, (int)md_array_size(r.in.errors));
+    // Batched for the built-in, and call by call
+    for (int b = 0; b < 2; ++b) {
+        r.in.no_batch = b == 1;
+        r.in.interrupted = false;
+        EXPECT_FALSE(vial_interp_frame(&r.in, &fr));
+        EXPECT_TRUE(r.in.interrupted);
+        EXPECT_EQ(0, (int)md_array_size(r.in.errors));
+    }
     stop = 0;
     r.in.interrupted = false;
     EXPECT_TRUE(vial_interp_frame(&r.in, &fr));
@@ -582,4 +587,52 @@ UTEST(vial_ir, map_interrupt_and_memory) {
     EXPECT_TRUE(vial_interp_frame(&r.in, &fr));
     EXPECT_EQ(pos, md_vm_arena_get_pos(r.in.map_scratch[0]));
     vial_ir__end(&r);
+}
+
+// A map whose calls are only a closest or farthest pair gives the built-in every call at once: the same bits as the
+// calls one by one, on T and over P's frames
+UTEST(vial_ir, pair_maps_batch) {
+    const char* src =
+        "res = residues(chain='A', kind='amino_acid')\n"
+        "c = distance(res[:, None], res, between='closest')\n"
+        "f = distance(res[0:40, None], res[10:60], between='farthest')\n"
+        "e = distance(res[0:30], res[5:35], between='closest')\n";
+    const char* src_p =
+        "res = residues\n"
+        "c = distance(res[:, None], res, between='closest')\n"
+        "f = distance(res[:, None], res, between='farthest')\n";
+    for (int pass = 0; pass < 2; ++pass) {
+        const char structure = pass ? 'P' : 'T';
+        int64_t run_frames = 0;
+        const md_system_t* sys = pass ? vial_ir__run_p(&run_frames) : vial_test_system(structure);
+        ASSERT_TRUE(sys != NULL);
+        vial_ir__run_t r[2];
+        for (int b = 0; b < 2; ++b) {
+            ASSERT_TRUE(vial_ir__start(&r[b], pass ? src_p : src, sys));
+            r[b].in.no_batch = b == 1;
+        }
+        vial_frame_t fr;
+        vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r[0].alloc}};
+        const md_system_state_t* st = vial_test_state(structure);
+        const int64_t nf = pass ? 3 : 1;
+        if (pass) md_system_state_init(&l.state, sys->atom.count);
+        for (int64_t f = 0; f < nf; ++f) {
+            if (pass) ASSERT_TRUE(vial_ir__load(&l, f, &fr));
+            else fr = (vial_frame_t){.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
+            for (int b = 0; b < 2; ++b) EXPECT_TRUE(vial_interp_frame(&r[b].in, &fr));
+            const vial_ir_t* ir = md_vial__run_ir(r[0].prog);
+            for (size_t o = 0; o < md_array_size(ir->outputs); ++o) {
+                const vial_val_t* x = vial_interp_value(&r[0].in, ir->outputs[o].value);
+                const vial_val_t* y = vial_interp_value(&r[1].in, ir->outputs[o].value);
+                ASSERT_TRUE(x && y);
+                if (!vial_val_equal(x, y)) printf("%c frame %d: %.*s differs batched\n", structure, (int)f, (int)ir->outputs[o].name.len, ir->outputs[o].name.ptr);
+                EXPECT_TRUE(vial_val_equal(x, y));
+            }
+        }
+        // The batched run never ran a call of the map: it made no scratch arena for one
+        EXPECT_TRUE(r[0].in.map_scratch[0] == NULL);
+        EXPECT_TRUE(r[1].in.map_scratch[0] != NULL);
+        if (pass) md_system_state_free(&l.state);
+        for (int b = 0; b < 2; ++b) vial_ir__end(&r[b]);
+    }
 }

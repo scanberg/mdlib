@@ -69,6 +69,7 @@ typedef struct vial_interp_t {
     // A map's calls are evaluated in a scratch arena per depth of maps in maps, reset after each call
     md_allocator_i*             map_scratch[VIAL_MAP_SCRATCH_DEPTH];
     uint32_t                    map_depth;
+    bool                        no_batch;   // tests: a map's calls one by one, never batched for a built-in
 } vial_interp_t;
 
 enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };
@@ -125,6 +126,12 @@ bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_
 // vial_k_binary computes it. The check folds known values with it, so a value known when compiling is the value
 // evaluation would give.
 double vial_k_arith(uint16_t op, uint8_t dtype, double a, double b);
+
+// A map's calls of closest_pair or farthest_pair at once, as a map whose calls are only that gives them: call c pairs
+// group ia[c] of A with group ib[c] of B, each group a set's positions. out is float[count], made by the caller; its
+// distances have the bits the calls one by one give, and a call with no pair is missing.
+bool vial_k_pair_batch(vial_kctx_t* k, bool closest, const vial_sets_t* A, const vial_sets_t* B, const uint32_t* ia, const uint32_t* ib,
+                       size_t count, vial_val_t* out);
 bool vial_k_fma(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, const vial_val_t* c, vial_val_t* out);
 bool vial_k_compare(vial_kctx_t* k, uint16_t cmp, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
 bool vial_k_logic(vial_kctx_t* k, uint16_t kw, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);

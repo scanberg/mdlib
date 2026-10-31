@@ -13,6 +13,7 @@
 
 #include <md_system.h>
 #include <md_util.h>
+#include <core/md_intrinsics.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_coord_stream.h>
 #include <core/md_allocator.h>
@@ -368,6 +369,79 @@ static bool k_pair(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, b
     return k_pair_x(k, pv, qv, closest, false, -1, out);
 }
 
+// The extreme pair of points P[n] and Q[m] under the minimum image. Every pair, in order, by the squared distance: the
+// first pair at the extreme of it wins ties, and the distance is its square root, the same bits distance() gives for
+// that pair. Distinct leaves out j == skip and, given pp and qp, pairs of one particle. bi is -1 when no pair is left.
+// row and d2 hold m each. One definition for a call and for a map's calls at once (vial_k_pair_batch), so both give
+// the same bits. The search lowering replaces this by a spatial search that gives the same bits.
+static void pair_extreme(const float* P, uint32_t n, const float* Q, uint32_t m, const md_unitcell_t* cell, bool closest, bool distinct,
+                         int64_t skip, const uint32_t* pp, const uint32_t* qp, vec3_t* row, float* d2, float* best_out, int32_t* bi_out, int32_t* bj_out) {
+    float best = 0.0f;
+    int32_t bi = -1, bj = -1;
+    // A row at a time: Q's points against one of P's, the minimum image taken over the row in one call
+    for (uint32_t i = 0; i < n; ++i) {
+        const float* a = P + 3 * i;
+        for (uint32_t j = 0; j < m; ++j) {
+            const float* b = Q + 3 * j;
+            row[j] = (vec3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
+        }
+        md_util_min_image_vec3(row, m, cell);
+        for (uint32_t j = 0; j < m; ++j) d2[j] = row[j].x * row[j].x + row[j].y * row[j].y + row[j].z * row[j].z;
+        if (!distinct) {
+            for (uint32_t j = 0; j < m; ++j) {
+                if (bi < 0 || (closest ? d2[j] < best : d2[j] > best)) { best = d2[j]; bi = (int32_t)i; bj = (int32_t)j; }
+            }
+            continue;
+        }
+        for (uint32_t j = 0; j < m; ++j) {
+            if ((int64_t)j == skip) continue;
+            if (pp && qp && pp[i] == qp[j]) continue;
+            if (bi < 0 || (closest ? d2[j] < best : d2[j] > best)) { best = d2[j]; bi = (int32_t)i; bj = (int32_t)j; }
+        }
+    }
+    *best_out = best;
+    *bi_out = bi;
+    *bj_out = bj;
+}
+
+bool vial_k_pair_batch(vial_kctx_t* k, bool closest, const vial_sets_t* A, const vial_sets_t* B, const uint32_t* ia, const uint32_t* ib,
+                       size_t count, vial_val_t* out) {
+    const float* xyz = frame_xyz(k);
+    if (!xyz) return false;
+    const size_t na = k->in->frame->num_atoms;
+    const md_unitcell_t cell = frame_cell(k);
+    // Every group's positions once, packed, as vial_k_positions gives them
+    const vial_sets_t* G[2] = {A, B};
+    float* pos[2];
+    uint32_t mx[2] = {0, 0};
+    for (int g = 0; g < 2; ++g) {
+        const vial_sets_t* s = G[g];
+        const uint32_t total = s->offset[s->count];
+        pos[g] = md_alloc(k->alloc, (total ? total : 1) * 3 * sizeof(float));
+        for (uint32_t t = 0; t < total; ++t) {
+            if (s->idx[t] >= na) return vial_rt_fail(k, "R0103", "particle %u is beyond the frame's %zu", s->idx[t], na);
+            memcpy(pos[g] + 3 * (size_t)t, xyz + 3 * (size_t)s->idx[t], 3 * sizeof(float));
+        }
+        for (uint32_t c = 0; c < s->count; ++c) if (vial_sets_size(s, c) > mx[g]) mx[g] = vial_sets_size(s, c);
+    }
+    vec3_t* row = md_alloc(k->alloc, (mx[1] ? mx[1] : 1) * sizeof(vec3_t));
+    float* d2 = md_alloc(k->alloc, (mx[1] ? mx[1] : 1) * sizeof(float));
+    float* O = out->data;
+    for (size_t c = 0; c < count; ++c) {
+        if ((c & 255) == 0 && k->in->stop && md_atomic_load64(k->in->stop)) { k->in->interrupted = true; return false; }
+        const uint32_t n = vial_sets_size(A, ia[c]), m = vial_sets_size(B, ib[c]);
+        float best = 0.0f;
+        int32_t bi = -1, bj = -1;
+        if (n && m) {
+            pair_extreme(pos[0] + 3 * (size_t)A->offset[ia[c]], n, pos[1] + 3 * (size_t)B->offset[ib[c]], m, &cell, closest, false, -1,
+                NULL, NULL, row, d2, &best, &bi, &bj);
+        }
+        if (bi < 0) { O[c] = 0.0f; vial_val_set_missing(out, c, k->alloc); }
+        else O[c] = sqrtf(best);
+    }
+    return true;
+}
+
 static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, bool closest, bool distinct, int64_t skip, vial_val_t* out) {
     vial_val_t p, q;
     if (!points(k, pv, &p) || !points(k, qv, &q)) return false;
@@ -383,37 +457,13 @@ static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv,
         vial_val_set_missing(&el[1], 0, k->alloc);
         vial_val_set_missing(&el[2], 0, k->alloc);
     } else {
-        // Every pair, in order, by the squared distance: the first pair at the extreme of it wins ties, and the
-        // distance is its square root, the same bits distance() gives for that pair. The search lowering replaces
-        // this by a spatial search that gives the same bits.
-        float best = 0.0f;
-        int32_t bi = -1, bj = -1;
         const bool by_particle = distinct && p.origin && q.origin;
-        const uint32_t* pp = by_particle ? vial_sets_items(p.origin, 0) : NULL;
-        const uint32_t* qp = by_particle ? vial_sets_items(q.origin, 0) : NULL;
-        // A row at a time: q's points against one of p's, the minimum image taken over the row in one call
         vec3_t* row = md_alloc(k->alloc, m * sizeof(vec3_t));
         float* d2 = md_alloc(k->alloc, m * sizeof(float));
-        for (uint32_t i = 0; i < n; ++i) {
-            const float* a = (const float*)p.data + 3 * i;
-            for (uint32_t j = 0; j < m; ++j) {
-                const float* b = (const float*)q.data + 3 * j;
-                row[j] = (vec3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
-            }
-            md_util_min_image_vec3(row, m, &cell);
-            for (uint32_t j = 0; j < m; ++j) d2[j] = row[j].x * row[j].x + row[j].y * row[j].y + row[j].z * row[j].z;
-            if (!distinct) {
-                for (uint32_t j = 0; j < m; ++j) {
-                    if (bi < 0 || (closest ? d2[j] < best : d2[j] > best)) { best = d2[j]; bi = (int32_t)i; bj = (int32_t)j; }
-                }
-                continue;
-            }
-            for (uint32_t j = 0; j < m; ++j) {
-                if ((int64_t)j == skip) continue;
-                if (by_particle && pp[i] == qp[j]) continue;
-                if (bi < 0 || (closest ? d2[j] < best : d2[j] > best)) { best = d2[j]; bi = (int32_t)i; bj = (int32_t)j; }
-            }
-        }
+        float best = 0.0f;
+        int32_t bi = -1, bj = -1;
+        pair_extreme((const float*)p.data, n, (const float*)q.data, m, &cell, closest, distinct, skip,
+            by_particle ? vial_sets_items(p.origin, 0) : NULL, by_particle ? vial_sets_items(q.origin, 0) : NULL, row, d2, &best, &bi, &bj);
         *(float*)el[0].data = sqrtf(best);
         *(int32_t*)el[1].data = bi;
         *(int32_t*)el[2].data = bj;

@@ -7,6 +7,7 @@
 #include "interp.h"
 #include "builtins.h"
 #include "ast.h"
+#include "infer_internal.h"
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -219,6 +220,90 @@ static md_allocator_i* map_scratch(vial_interp_t* in) {
     return *a;
 }
 
+// The parameter of map region r that value v is, or -1
+static int param_of(const vial_ir_t* ir, uint32_t r, vial_ssa_t v) {
+    if (!v || ir->values[v].op != VIAL_IR_NO_OP || ir->values[v].region != r) return -1;
+    return (int)ir->values[v].index;
+}
+
+// A map whose calls are only the distance of closest_pair or farthest_pair between two of its parameters, each one set
+// taken as a group, as _between's map over arrays of groups is once inlined: the built-in gets every call at once
+// (vial_k_pair_batch), which gives the same bits as the calls one by one without a call's overhead each. -1 when the
+// map is not one; otherwise whether it succeeded.
+static int eval_map_pairs(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t* const* av, const uint32_t* mapping,
+                          const uint32_t* ldims, uint8_t lnd, size_t count, vial_val_t* out, md_allocator_i* alloc) {
+    const vial_ir_t* ir = in->ir;
+    if (in->no_batch || op->sub == VIAL_MAP_FILTERED || in->ir->values[op->result].type.dtype != VIAL_DT_FLOAT) return -1;
+    const uint32_t ri = op->region[0];
+    const vial_ir_region_t* r = &ir->regions[ri];
+    // Its live ops: a kind of each parameter it reads, the built-in, the distance out of its tuple, the yield
+    uint32_t kinds[2], nk = 0, bop = VIAL_IR_NO_OP, eop = VIAL_IR_NO_OP, yop = VIAL_IR_NO_OP;
+    for (size_t i = 0; i < md_array_size(r->ops); ++i) {
+        const uint32_t opi = r->ops[i];
+        const vial_ir_op_t* o = &ir->ops[opi];
+        if (o->kind != VIAL_IR_YIELD && !in->live[opi]) continue;
+        switch (o->kind) {
+        case VIAL_IR_KIND:    if (nk == 2) return -1; kinds[nk++] = opi; break;
+        case VIAL_IR_BUILTIN: if (bop != VIAL_IR_NO_OP) return -1; bop = opi; break;
+        case VIAL_IR_ELEM:    if (eop != VIAL_IR_NO_OP) return -1; eop = opi; break;
+        case VIAL_IR_YIELD:   yop = opi; break;
+        default:              return -1;
+        }
+        if (yop != VIAL_IR_NO_OP) break;
+    }
+    if (bop == VIAL_IR_NO_OP || eop == VIAL_IR_NO_OP || yop == VIAL_IR_NO_OP) return -1;
+    const vial_ir_op_t* b = &ir->ops[bop];
+    const char* bname = vial_builtin_at(b->aux)->name;
+    const bool closest = !strcmp(bname, "closest_pair");
+    if (!closest && strcmp(bname, "farthest_pair")) return -1;
+    const vial_ir_op_t* e = &ir->ops[eop];
+    const vial_ir_op_t* y = &ir->ops[yop];
+    if (e->aux != 0 || e->num_args != 1 || ir->args[e->arg_beg] != b->result) return -1;
+    if (y->num_args != 1 || ir->args[y->arg_beg] != e->result) return -1;
+    // p and q: kinds as groups or points of mapped parameters, each element one set; nothing else given
+    int par[2] = {-1, -1};
+    for (uint32_t a = 0; a < b->num_args; ++a) {
+        const vial_ssa_t v = ir->args[b->arg_beg + a];
+        if (!v) continue;
+        const str_t nm = ir->names[b->arg_beg + a];
+        const int which = str_eq(nm, STR_LIT("p")) ? 0 : str_eq(nm, STR_LIT("q")) ? 1 : -1;
+        if (which < 0) return -1;
+        const uint32_t ko = ir->values[v].op;
+        if (ko == VIAL_IR_NO_OP || ir->ops[ko].kind != VIAL_IR_KIND || (ko != kinds[0] && (nk < 2 || ko != kinds[1]))) return -1;
+        if (ir->ops[ko].sub != VX_KIND_GROUP && ir->ops[ko].sub != VX_KIND_POINTS) return -1;
+        par[which] = param_of(ir, ri, ir->args[ir->ops[ko].arg_beg]);
+    }
+    for (int w = 0; w < 2; ++w) {
+        if (par[w] < 0 || (uint32_t)par[w] >= op->num_args) return -1;
+        const vial_val_t* g = av[par[w]];
+        if (g->dtype != VIAL_DT_SET || !g->sets || !mapping[par[w]] || g->ndim != mapping[par[w]] || g->sets->count != vial_val_count(g)) return -1;
+    }
+    // Which group of each the calls pair, by the map's broadcast
+    vial_kctx_t k = {.in = in, .op = b, .type = &ir->values[op->result].type, .alloc = alloc};
+    uint32_t* ix[2];
+    for (int w = 0; w < 2; ++w) ix[w] = md_alloc(alloc, (count ? count : 1) * sizeof(uint32_t));
+    for (size_t i = 0; i < count; ++i) {
+        size_t rem = i;
+        uint32_t idx[VIAL_MAX_DIMS];
+        for (int d = lnd - 1; d >= 0; --d) { idx[d] = (uint32_t)(rem % ldims[d]); rem /= ldims[d]; }
+        for (int w = 0; w < 2; ++w) {
+            const vial_val_t* g = av[par[w]];
+            const uint32_t m = mapping[par[w]];
+            size_t lin = 0;
+            for (uint32_t d = 0; d < m; ++d) {
+                const uint32_t ext = g->dims[d];
+                lin = lin * ext + (ext == 1 ? 0 : idx[lnd - m + d]);
+            }
+            ix[w][i] = (uint32_t)lin;
+        }
+    }
+    vial_val_t o;
+    if (!vial_k_make(&k, VIAL_DT_FLOAT, lnd, ldims, &o)) return 0;
+    if (!vial_k_pair_batch(&k, closest, av[par[0]]->sets, av[par[1]]->sets, ix[0], ix[1], count, &o)) return 0;
+    *out = o;
+    return 1;
+}
+
 static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t* const* av, vial_val_t* out, md_allocator_i* alloc) {
     vial_kctx_t k = {.in = in, .op = op, .type = &in->ir->values[op->result].type, .alloc = alloc};
     const uint32_t* mapping = op->num_args ? in->ir->ints + op->attr : NULL;
@@ -239,6 +324,8 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
     size_t count = 1;
     for (uint8_t d = 0; d < lnd; ++d) count *= ldims[d];
     if (!vial_k_room(&k, count)) return false;
+    const int batched = eval_map_pairs(in, op, av, mapping, ldims, lnd, count, out, alloc);
+    if (batched >= 0) return batched == 1;
     const vial_ir_region_t* r = &in->ir->regions[op->region[0]];
     const bool filtered = op->sub == VIAL_MAP_FILTERED;
     const vial_type_t* rt = k.type;
