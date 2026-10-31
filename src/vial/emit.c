@@ -564,7 +564,7 @@ void vx_emit(infer_t* x, vial_node_id id, const T* t) {
         // A static condition takes one branch; the check typed only that one
         const vial_value_t cv = vx_value_of(x, vx_child(x, id, 1));
         if (cv.kind == VIAL_VAL_BOOL) r = vx_ssa(x, vx_child(x, id, cv.b ? 0 : 2));
-        else vx_lower_fail(x, id, "a conditional whose condition changes per frame");
+        else vx_lower_fail(x, id, "a conditional per frame whose branches differ in dtype");
         break;
     }
     default:
