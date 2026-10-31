@@ -3,6 +3,7 @@
 // a mean over frames) is at the top level, where the trajectory's sweeps see it.
 
 #include "ir.h"
+#include "ast.h"
 #include "builtins.h"
 
 #include <core/md_allocator.h>
@@ -134,4 +135,57 @@ bool vial_ir_inline(const vial_ir_t* src, vial_ir_t* dst, md_allocator_i* alloc)
     for (size_t i = 0; i < md_array_size(src->failures); ++i) md_array_push(dst->failures, src->failures[i], alloc);
     md_free(alloc, c.map, (nv ? nv : 1) * sizeof(vial_ssa_t));
     return true;
+}
+
+// ### CONTRACTION ###
+// a * b + c becomes fma(a, b, c), rounded once, where the product has no other use and every value is a float of one
+// dtype. Decided here, once, so every backend executes exactly these fusions and none of its own.
+
+static void count_uses(const vial_ir_t* ir, uint32_t* uses) {
+    for (size_t i = 0; i < md_array_size(ir->ops); ++i) {
+        const vial_ir_op_t* op = &ir->ops[i];
+        for (uint32_t k = 0; k < op->num_args; ++k) uses[ir->args[op->arg_beg + k]] += 1;
+    }
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) uses[ir->outputs[i].value] += 1;
+    uses[0] = 0;
+}
+
+static bool is_float_dtype(uint8_t dt) { return dt == VIAL_DT_FLOAT || dt == VIAL_DT_FLOAT64; }
+
+uint32_t vial_ir_contract(vial_ir_t* ir, md_allocator_i* alloc) {
+    const size_t nv = md_array_size(ir->values);
+    uint32_t* uses = md_alloc(alloc, (nv ? nv : 1) * sizeof(uint32_t));
+    memset(uses, 0, nv * sizeof(uint32_t));
+    count_uses(ir, uses);
+    uint32_t fused = 0;
+    for (size_t i = 0; i < md_array_size(ir->ops); ++i) {
+        vial_ir_op_t* op = &ir->ops[i];
+        if (op->kind != VIAL_IR_BINARY || op->sub != VIAL_OP_PLUS || op->num_args != 2) continue;
+        const uint8_t dt = ir->values[op->result].type.dtype;
+        if (!is_float_dtype(dt)) continue;
+        for (int side = 0; side < 2; ++side) {
+            const vial_ssa_t p = ir->args[op->arg_beg + side], c = ir->args[op->arg_beg + 1 - side];
+            const uint32_t pop = ir->values[p].op;
+            if (pop == VIAL_IR_NO_OP || uses[p] != 1) continue;
+            const vial_ir_op_t* mul = &ir->ops[pop];
+            if (mul->kind != VIAL_IR_BINARY || mul->sub != VIAL_OP_STAR || mul->parent != op->parent) continue;
+            const vial_ssa_t a = ir->args[mul->arg_beg], b = ir->args[mul->arg_beg + 1];
+            if (ir->values[p].type.dtype != dt || ir->values[a].type.dtype != dt || ir->values[b].type.dtype != dt || ir->values[c].type.dtype != dt) continue;
+            // The add becomes the fma, its arguments appended: a, b, c
+            op->kind = VIAL_IR_FMA;
+            op->sub = 0;
+            op->arg_beg = (uint32_t)md_array_size(ir->args);
+            op->num_args = 3;
+            const vial_ssa_t abc[3] = {a, b, c};
+            for (int k = 0; k < 3; ++k) {
+                md_array_push(ir->args, abc[k], ir->alloc);
+                md_array_push(ir->names, (str_t){0}, ir->alloc);
+            }
+            uses[p] = 0;
+            fused += 1;
+            break;
+        }
+    }
+    md_free(alloc, uses, (nv ? nv : 1) * sizeof(uint32_t));
+    return fused;
 }
