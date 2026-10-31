@@ -55,6 +55,37 @@ bool vial_k_make(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* di
     return true;
 }
 
+// The live ops: those that define the roots, their arguments' ops, and in a live op's regions, the yield and what
+// it needs. Every op is pure, so an op nothing live reads is not evaluated, in a region as at the top: a map's calls
+// skip the witnesses of a built-in that only a drawing, dropped when inlining, would have read.
+static void mark_live(vial_interp_t* in, const vial_ssa_t* roots, size_t n) {
+    const vial_ir_t* ir = in->ir;
+    memset(in->live, 0, md_array_size(in->live));
+    uint32_t* stack = NULL;
+    for (size_t i = 0; i < n; ++i) if (roots[i] && ir->values[roots[i]].op != VIAL_IR_NO_OP) md_array_push(stack, ir->values[roots[i]].op, in->alloc);
+    const uint32_t* yields[3];
+    while (md_array_size(stack)) {
+        const uint32_t op = *md_array_last(stack);
+        md_array_pop(stack);
+        if (in->live[op]) continue;
+        in->live[op] = 1;
+        const vial_ir_op_t* o = &ir->ops[op];
+        for (uint32_t k = 0; k < o->num_args; ++k) {
+            const vial_ssa_t a = ir->args[o->arg_beg + k];
+            if (a && ir->values[a].op != VIAL_IR_NO_OP) md_array_push(stack, ir->values[a].op, in->alloc);
+        }
+        uint32_t nr = 0;
+        if (o->kind == VIAL_IR_CALL) yields[nr++] = &ir->funcs[o->aux].body;
+        for (int k = 0; k < 2; ++k) if (o->region[k]) yields[nr++] = &o->region[k];
+        for (uint32_t k = 0; k < nr; ++k) {
+            const vial_ir_region_t* r = &ir->regions[*yields[k]];
+            // A region ends in its yield
+            const size_t m = md_array_size(r->ops);
+            if (m) md_array_push(stack, r->ops[m - 1], in->alloc);
+        }
+    }
+}
+
 bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, const struct md_system_t* msys, md_allocator_i* alloc) {
     memset(in, 0, sizeof(*in));
     in->ir = ir;
@@ -68,35 +99,12 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     md_array_resize(in->state, nv, in->alloc);
     memset(in->vals, 0, nv * sizeof(*in->vals));
     memset(in->state, 0, nv);
-    // What the outputs need: the ops that define them, their arguments' ops, and everything in a live op's regions
+    // What the outputs need
     const size_t no = md_array_size(ir->ops);
     md_array_resize(in->live, no, in->alloc);
-    memset(in->live, 0, no);
-    uint32_t* stack = NULL;
-    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
-        const uint32_t op = ir->values[ir->outputs[i].value].op;
-        if (op != VIAL_IR_NO_OP) md_array_push(stack, op, in->alloc);
-    }
-    while (md_array_size(stack)) {
-        const uint32_t op = *md_array_last(stack);
-        md_array_pop(stack);
-        if (in->live[op]) continue;
-        in->live[op] = 1;
-        const vial_ir_op_t* o = &ir->ops[op];
-        for (uint32_t k = 0; k < o->num_args; ++k) {
-            const vial_ssa_t a = ir->args[o->arg_beg + k];
-            if (a && ir->values[a].op != VIAL_IR_NO_OP) md_array_push(stack, ir->values[a].op, in->alloc);
-        }
-        if (o->kind == VIAL_IR_CALL) {
-            const vial_ir_region_t* r = &ir->regions[ir->funcs[o->aux].body];
-            for (size_t q = 0; q < md_array_size(r->ops); ++q) md_array_push(stack, r->ops[q], in->alloc);
-        }
-        for (int k = 0; k < 2; ++k) {
-            if (!o->region[k]) continue;
-            const vial_ir_region_t* r = &ir->regions[o->region[k]];
-            for (size_t q = 0; q < md_array_size(r->ops); ++q) md_array_push(stack, r->ops[q], in->alloc);
-        }
-    }
+    uint32_t* roots = NULL;
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) md_array_push(roots, ir->outputs[i].value, in->alloc);
+    mark_live(in, roots, md_array_size(roots));
     return true;
 }
 
@@ -117,31 +125,7 @@ static bool eval_at(vial_interp_t* in, uint32_t opi) {
     vial_interp_t child;
     if (!vial_interp_init(&child, ir, in->sys, in->msys, md_get_heap_allocator())) return vial_rt_fail(&k, "R0103", "out of memory");
     // The child computes only what the value needs: the live ops are those of x
-    memset(child.live, 0, md_array_size(child.live));
-    {
-        uint32_t* stack = NULL;
-        md_array_push(stack, ir->values[xv].op, child.alloc);
-        while (md_array_size(stack)) {
-            const uint32_t q = *md_array_last(stack);
-            md_array_pop(stack);
-            if (q == VIAL_IR_NO_OP || child.live[q]) continue;
-            child.live[q] = 1;
-            const vial_ir_op_t* o = &ir->ops[q];
-            for (uint32_t a = 0; a < o->num_args; ++a) {
-                const vial_ssa_t s = ir->args[o->arg_beg + a];
-                if (s) md_array_push(stack, ir->values[s].op, child.alloc);
-            }
-            if (o->kind == VIAL_IR_CALL) {
-                const vial_ir_region_t* r = &ir->regions[ir->funcs[o->aux].body];
-                for (size_t z = 0; z < md_array_size(r->ops); ++z) md_array_push(stack, r->ops[z], child.alloc);
-            }
-            for (int z = 0; z < 2; ++z) {
-                if (!o->region[z]) continue;
-                const vial_ir_region_t* r = &ir->regions[o->region[z]];
-                for (size_t w = 0; w < md_array_size(r->ops); ++w) md_array_push(stack, r->ops[w], child.alloc);
-            }
-        }
-    }
+    mark_live(&child, &xv, 1);
     child.load_frame = in->load_frame;
     child.load_user = in->load_user;
     const bool ok = vial_interp_frame(&child, &fr);
@@ -450,6 +434,7 @@ static bool eval_region(vial_interp_t* in, uint32_t region, const vial_val_t* pa
             *num_yields = op->num_args;
             return true;
         }
+        if (!in->live[opi]) continue;
         if (!eval_op(in, opi, alloc)) return false;
         for (uint32_t k = 0; k < op->num_results; ++k) in->state[op->result + k] = 1;
     }
