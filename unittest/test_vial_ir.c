@@ -788,3 +788,29 @@ UTEST(vial_ir, ragged_sets_fail) {
     EXPECT_EQ(0, strncmp(r.in.errors[0].code, "R0103", 5));
     vial_ir__end(&r);
 }
+
+// eigh: m v = v w and v's columns orthonormal, to float precision, on a symmetric 120 x 120 matrix; eigenvalues
+// ascending
+UTEST(vial_ir, eigh_decomposes) {
+    vial_ir__run_t r;
+    const char* src =
+        "c = com(residues(chain='A', kind='amino_acid')[0:120])\n"
+        "m = unitless(distance(c[:, None], c))\n"
+        "w, v = eigh(m)\n"
+        "res = max(abs(m @ v - v * w)) / max(abs(w))\n"
+        "orth = max(abs(v.T @ v - eye(120)))\n"
+        "up = int(all(w[1:] >= w[:-1]))\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, vial_test_system('T')));
+    const md_system_state_t* st = vial_test_state('T');
+    const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
+    const md_tick_t t0 = md_tick_now();
+    EXPECT_TRUE(vial_interp_frame(&r.in, &fr));
+    const double ms = md_tick_to_nanoseconds(md_tick_now() - t0) * 1e-6;
+    const vial_ir_t* ir = md_vial__run_ir(r.prog);
+    for (size_t i = 0; i < md_array_size(r.in.errors); ++i) printf("failed: %s %s\n", r.in.errors[i].code, r.in.errors[i].message);
+    EXPECT_LT(vial_ir__num(vial_interp_value(&r.in, vial_ir__output(ir, "res"))), 1e-5);
+    EXPECT_LT(vial_ir__num(vial_interp_value(&r.in, vial_ir__output(ir, "orth"))), 1e-5);
+    EXPECT_EQ(1.0, vial_ir__num(vial_interp_value(&r.in, vial_ir__output(ir, "up"))));
+    EXPECT_LT(ms, 2000.0);
+    vial_ir__end(&r);
+}
