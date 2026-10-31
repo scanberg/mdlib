@@ -113,9 +113,10 @@ static inline bool vial_fuzz__frame(void* user, int64_t index, vial_frame_t* out
 
 // One evaluation over one frame, its interpreter's memory from eval_alloc
 static inline bool vial_fuzz__run(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* vs, const struct md_system_t* sys,
-                                  const md_system_state_t* state, md_allocator_i* eval_alloc) {
+                                  const md_system_state_t* state, md_allocator_i* eval_alloc, bool no_batch) {
     if (!vial_interp_init(in, ir, vs, sys, eval_alloc)) return false;
     in->max_elements = (size_t)1 << 20;
+    in->no_batch = no_batch;
     in->load_frame = vial_fuzz__frame;
     in->load_user = (void*)state;
     vial_interp_run(in, 1);
@@ -123,7 +124,7 @@ static inline bool vial_fuzz__run(vial_interp_t* in, const vial_ir_t* ir, vial_s
 }
 
 // The program over one frame: NULL, or which promise broke. It is evaluated twice, the second time in an arena whose
-// memory is dirty and at other addresses, and must give the same bits.
+// memory is dirty and at other addresses and with every map run call by call, and must give the same bits.
 static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, const struct md_system_t* sys, const md_system_state_t* state,
                                               md_allocator_i* alloc) {
     const vial_ir_t* ir = md_vial__run_ir(prog);
@@ -131,12 +132,12 @@ static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, con
     vial_sys_t vs;
     if (!vial_sys_init(&vs, sys, alloc)) return NULL;
     vial_interp_t in, again;
-    if (!vial_fuzz__run(&in, ir, &vs, sys, state, md_get_heap_allocator())) return NULL;
+    if (!vial_fuzz__run(&in, ir, &vs, sys, state, md_get_heap_allocator(), false)) return NULL;
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     void* junk = md_alloc(arena, KILOBYTES(32));
     memset(junk, 0xA5, KILOBYTES(32));
     md_free(arena, junk, KILOBYTES(32));
-    const bool ran = vial_fuzz__run(&again, ir, &vs, sys, state, arena);
+    const bool ran = vial_fuzz__run(&again, ir, &vs, sys, state, arena, true);
     static char buf[200];
     const char* why = NULL;
     for (size_t k = 0; k < md_array_size(ir->outputs) && !why; ++k) {
