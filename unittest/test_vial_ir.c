@@ -772,3 +772,19 @@ UTEST(vial_ir, pairs_reductions) {
         vial_ir__end(&r);
     }
 }
+
+// A map whose calls give arrays of sets of different lengths is R0103, not a ragged array (found by fuzzing)
+UTEST(vial_ir, ragged_sets_fail) {
+    vial_ir__run_t r;
+    ASSERT_TRUE(vial_ir__start(&r, "n = [[a for a in r] for r in residues[0:3]]\n", vial_test_system('T')));
+    const md_system_state_t* st = vial_test_state('T');
+    const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
+    vial_interp_frame(&r.in, &fr);
+    const vial_ir_t* ir = md_vial__run_ir(r.prog);
+    const vial_val_t* n = vial_interp_value(&r.in, vial_ir__output(ir, "n"));
+    // T's first residues have 8, 11 and 9 particles
+    EXPECT_TRUE(n == NULL);
+    ASSERT_EQ(1, (int)md_array_size(r.in.errors));
+    EXPECT_EQ(0, strncmp(r.in.errors[0].code, "R0103", 5));
+    vial_ir__end(&r);
+}

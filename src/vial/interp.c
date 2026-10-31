@@ -394,8 +394,15 @@ static bool eval_map(vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t
                 }
             }
             if (o.dtype == VIAL_DT_SET) {
+                // Every call's sets fill the shape the first call gave: an array of sets is not ragged
+                size_t inner = 1;
+                for (uint8_t q = outer_nd; q < o.ndim; ++q) inner *= o.dims[q];
                 const vial_sets_t* e = y->sets;
-                for (uint32_t q = 0; e && q < e->count; ++q) {
+                if (!e || e->count != inner || vial_val_count(y) != inner) {
+                    ok = vial_rt_fail(&k, "R0103", "the calls of a map give values of different shapes");
+                    break;
+                }
+                for (uint32_t q = 0; q < e->count; ++q) {
                     const uint32_t sz = vial_sets_size(e, q);
                     md_array_push_array(set_idx, vial_sets_items(e, q), sz, alloc);
                     md_array_push(set_off, (uint32_t)md_array_size(set_idx), alloc);
