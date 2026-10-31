@@ -20,6 +20,8 @@
 #include <md_system.h>
 
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_common.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
 
@@ -109,33 +111,57 @@ static inline bool vial_fuzz__frame(void* user, int64_t index, vial_frame_t* out
     return true;
 }
 
-// The program over one frame: NULL, or which promise broke
+// One evaluation over one frame, its interpreter's memory from eval_alloc
+static inline bool vial_fuzz__run(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* vs, const struct md_system_t* sys,
+                                  const md_system_state_t* state, md_allocator_i* eval_alloc) {
+    if (!vial_interp_init(in, ir, vs, sys, eval_alloc)) return false;
+    in->max_elements = (size_t)1 << 20;
+    in->load_frame = vial_fuzz__frame;
+    in->load_user = (void*)state;
+    vial_interp_run(in, 1);
+    return true;
+}
+
+// The program over one frame: NULL, or which promise broke. It is evaluated twice, the second time in an arena whose
+// memory is dirty and at other addresses, and must give the same bits.
 static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, const struct md_system_t* sys, const md_system_state_t* state,
                                               md_allocator_i* alloc) {
     const vial_ir_t* ir = md_vial__run_ir(prog);
     if (!ir || !sys || !state) return NULL;
     vial_sys_t vs;
     if (!vial_sys_init(&vs, sys, alloc)) return NULL;
-    vial_interp_t in;
-    if (!vial_interp_init(&in, ir, &vs, sys, md_get_heap_allocator())) return NULL;
-    in.max_elements = (size_t)1 << 20;
-    in.load_frame = vial_fuzz__frame;
-    in.load_user = (void*)state;
-    vial_interp_run(&in, 1);
+    vial_interp_t in, again;
+    if (!vial_fuzz__run(&in, ir, &vs, sys, state, md_get_heap_allocator())) return NULL;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    void* junk = md_alloc(arena, KILOBYTES(32));
+    memset(junk, 0xA5, KILOBYTES(32));
+    md_free(arena, junk, KILOBYTES(32));
+    const bool ran = vial_fuzz__run(&again, ir, &vs, sys, state, arena);
+    static char buf[200];
     const char* why = NULL;
     for (size_t k = 0; k < md_array_size(ir->outputs) && !why; ++k) {
         const vial_val_t* v = vial_interp_at(&in, ir->outputs[k].value, 0);
         const vial_type_t* t = &ir->values[ir->outputs[k].value].type;
+        const int nl = (int)(ir->outputs[k].name.len < 40 ? ir->outputs[k].name.len : 40);
+        if (ran) {
+            const vial_val_t* w = vial_interp_at(&again, ir->outputs[k].value, 0);
+            if ((!v) != (!w) || (v && !vial_val_equal(v, w))) {
+                snprintf(buf, sizeof(buf), "evaluating twice gives different values: %.*s", nl, ir->outputs[k].name.ptr);
+                why = buf;
+                break;
+            }
+        }
         if (!v || t->dtype == VIAL_DT_TUPLE || t->dtype == VIAL_DT_ERROR || t->dtype == VIAL_DT_DEF) continue;
         const uint8_t nd = (v->flags & VIAL_VAL_FRAMES) ? v->ndim - 1 : v->ndim;
         if (v->dtype != t->dtype || nd != t->ndim) {
-            static char buf[200];
             snprintf(buf, sizeof(buf), "an evaluated value differs from its type: %.*s is dtype %d rank %u, typed %d rank %u",
-                (int)(ir->outputs[k].name.len < 40 ? ir->outputs[k].name.len : 40), ir->outputs[k].name.ptr, v->dtype, nd, t->dtype, t->ndim);
+                nl, ir->outputs[k].name.ptr, v->dtype, nd, t->dtype, t->ndim);
             why = buf;
         }
     }
+    if (ran) vial_interp_free(&again);
     vial_interp_free(&in);
+    md_arena_allocator_destroy(arena);
     return why;
 }
 

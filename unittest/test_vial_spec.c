@@ -485,6 +485,60 @@ static bool vial_spec__load(void* user, int64_t index, vial_frame_t* out) {
     return ok;
 }
 
+// A block's source: with the block before it when it continues that one
+static str_t vial_spec__block_src(const vial_spec_t* spec, size_t i, md_allocator_i* alloc) {
+    const vial_block_t* b = &spec->blocks[i];
+    if (!b->continues || i == 0) return b->src;
+    const vial_block_t* prev = &spec->blocks[i - 1];
+    char* buf = NULL;
+    md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
+    md_array_push(buf, '\n', alloc);
+    md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
+    return (str_t){buf, md_array_size(buf)};
+}
+
+// A block compiled and evaluated over every frame of its structure's run
+typedef struct vial_spec__eval_t {
+    md_vial_program_t*  prog;
+    const vial_ir_t*    ir;
+    vial_sys_t          vs;
+    vial_interp_t       in;
+    vial_spec__frames_t frames;
+    int64_t             num_frames;
+} vial_spec__eval_t;
+
+// False when the block's structure has no system or the block does not inline (ir is then NULL, prog kept)
+static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_allocator_i* compile_alloc, md_allocator_i* eval_alloc) {
+    memset(e, 0, sizeof(*e));
+    const md_system_t* sys = vial_test_system(structure);
+    if (!sys) return false;
+    e->num_frames = vial_test_run(structure);
+    const md_vial_compile_desc_t desc = {.sys = sys};
+    e->prog = md_vial_compile(src, &desc, compile_alloc);
+    e->ir = md_vial__run_ir(e->prog);
+    if (!e->ir) return false;
+    vial_sys_init(&e->vs, sys, compile_alloc);
+    vial_interp_init(&e->in, e->ir, &e->vs, sys, eval_alloc);
+    e->frames = (vial_spec__frames_t){.structure = structure, .sys = sys, .num_frames = e->num_frames, .state = {.alloc = md_get_heap_allocator()}};
+    md_system_state_init(&e->frames.state, sys->atom.count);
+    e->in.load_frame = vial_spec__load;
+    e->in.load_user = &e->frames;
+    vial_interp_run(&e->in, e->num_frames ? e->num_frames : 1);
+    return true;
+}
+
+static void vial_spec__eval_free(vial_spec__eval_t* e) {
+    if (e->ir) {
+        vial_interp_free(&e->in);
+        md_system_state_free(&e->frames.state);
+    }
+    if (e->prog) md_vial_program_free(e->prog);
+}
+
+static bool vial_spec__evaluable(const vial_block_t* b) {
+    return b->mode != VIAL_BLOCK_FILTERS && (b->structure == 'T' || b->structure == 'P');
+}
+
 UTEST_F(vial_spec, evaluates) {
     const vial_spec_t* spec = &utest_fixture->spec;
     md_allocator_i* alloc = utest_fixture->alloc;
@@ -492,37 +546,19 @@ UTEST_F(vial_spec, evaluates) {
     const bool verbose = getenv("VIAL_SPEC_VERBOSE") != NULL;
     for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
         const vial_block_t* b = &spec->blocks[i];
-        if (b->mode == VIAL_BLOCK_FILTERS) continue;
-        if (b->structure != 'T' && b->structure != 'P') continue;
-        str_t src = b->src;
-        if (b->continues && i > 0) {
-            const vial_block_t* prev = &spec->blocks[i - 1];
-            char* buf = NULL;
-            md_array_push_array(buf, prev->src.ptr, prev->src.len, alloc);
-            md_array_push(buf, '\n', alloc);
-            md_array_push_array(buf, b->src.ptr, b->src.len, alloc);
-            src = (str_t){buf, md_array_size(buf)};
+        if (!vial_spec__evaluable(b)) continue;
+        const str_t src = vial_spec__block_src(spec, i, alloc);
+        vial_spec__eval_t e;
+        if (!vial_spec__eval(&e, src, b->structure, alloc, md_get_heap_allocator())) {
+            if (e.prog) { printf("reference block at line %d: does not inline\n", b->line); num_blocks += 1; }
+            vial_spec__eval_free(&e);
+            continue;
         }
-        const md_system_t* sys = vial_test_system(b->structure);
-        const int64_t nf = vial_test_run(b->structure);
-        if (!sys) continue;
-        const md_vial_compile_desc_t desc = {.sys = sys};
-        md_vial_program_t* prog = md_vial_compile(src, &desc, alloc);
-        const vial_ir_t* ir = md_vial__run_ir(prog);
-        if (!ir) { printf("reference block at line %d: does not inline\n", b->line); md_vial_program_free(prog); num_blocks += 1; continue; }
-        vial_sys_t vs;
-        vial_sys_init(&vs, sys, alloc);
-        vial_interp_t in;
-        vial_interp_init(&in, ir, &vs, sys, md_get_heap_allocator());
-        vial_spec__frames_t frames = {.structure = b->structure, .sys = sys, .num_frames = nf, .state = {.alloc = md_get_heap_allocator()}};
-        md_system_state_init(&frames.state, sys->atom.count);
-        in.load_frame = vial_spec__load;
-        in.load_user = &frames;
-        vial_interp_run(&in, nf ? nf : 1);
+        const vial_ir_t* ir = e.ir;
 
         // Every computed output agrees with its type: dtype, rank, and the extents the check knows
         for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
-            const vial_val_t* v = vial_interp_at(&in, ir->outputs[k].value, 0);
+            const vial_val_t* v = vial_interp_at(&e.in, ir->outputs[k].value, 0);
             const vial_type_t* t = &ir->values[ir->outputs[k].value].type;
             if (!v || t->dtype == VIAL_DT_TUPLE) continue;
             // A series kept whole, as smooth gives, is one value per frame
@@ -542,19 +578,75 @@ UTEST_F(vial_spec, evaluates) {
             num_outputs += 1;
         }
         num_blocks += 1;
-        const size_t ne = md_array_size(in.errors);
+        const size_t ne = md_array_size(e.in.errors);
         if (!ne) num_clean += 1;
         num_errors += (int)ne;
         for (size_t k = 0; verbose && k < ne; ++k) {
-            const md_vial_span_t sp = in.errors[k].span;
+            const md_vial_span_t sp = e.in.errors[k].span;
             const str_t text = {src.ptr + sp.beg, sp.end - sp.beg};
-            printf("reference block at line %d: %s %s: '%.*s'\n", b->line, in.errors[k].code, in.errors[k].message, (int)(text.len < 60 ? text.len : 60), text.ptr);
+            printf("reference block at line %d: %s %s: '%.*s'\n", b->line, e.in.errors[k].code, e.in.errors[k].message, (int)(text.len < 60 ? text.len : 60), text.ptr);
         }
-        vial_interp_free(&in);
-        md_system_state_free(&frames.state);
-        md_vial_program_free(prog);
+        vial_spec__eval_free(&e);
     }
     printf("vial reference: %d of %d blocks evaluated without an error; %d errors; %d outputs agree with their types, %d do not\n",
         num_clean, num_blocks, num_errors, num_outputs - num_mismatch, num_mismatch);
     EXPECT_EQ(0, num_mismatch);
+}
+
+// Determinism: a block compiled and evaluated twice gives the same bits for every output at every frame, and the same
+// runtime errors. The second time compiles and evaluates in fresh arenas, so addresses and the contents of memory
+// before it is written differ, and what depends on either shows.
+UTEST_F(vial_spec, deterministic) {
+    const vial_spec_t* spec = &utest_fixture->spec;
+    md_allocator_i* alloc = utest_fixture->alloc;
+    int num_blocks = 0, num_values = 0, num_differ = 0;
+    for (size_t i = 0; i < md_array_size(spec->blocks); ++i) {
+        const vial_block_t* b = &spec->blocks[i];
+        if (!vial_spec__evaluable(b)) continue;
+        const str_t src = vial_spec__block_src(spec, i, alloc);
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        // Dirty the arena's first page, so memory it hands out is not zero
+        uint8_t* junk = md_alloc(arena, KILOBYTES(32));
+        memset(junk, 0xA5, KILOBYTES(32));
+        md_free(arena, junk, KILOBYTES(32));
+        vial_spec__eval_t e[2];
+        const bool ok0 = vial_spec__eval(&e[0], src, b->structure, alloc, md_get_heap_allocator());
+        const bool ok1 = vial_spec__eval(&e[1], src, b->structure, arena, arena);
+        if (ok0 && ok1) {
+            num_blocks += 1;
+            const vial_ir_t* ir0 = e[0].ir;
+            const vial_ir_t* ir1 = e[1].ir;
+            EXPECT_EQ(md_array_size(ir0->outputs), md_array_size(ir1->outputs));
+            const int64_t nf = e[0].num_frames ? e[0].num_frames : 1;
+            for (size_t k = 0; k < md_array_size(ir0->outputs) && k < md_array_size(ir1->outputs); ++k) {
+                for (int64_t f = 0; f < nf; ++f) {
+                    const vial_val_t* a = vial_interp_at(&e[0].in, ir0->outputs[k].value, f);
+                    const vial_val_t* c = vial_interp_at(&e[1].in, ir1->outputs[k].value, f);
+                    num_values += 1;
+                    if (!a && !c) continue;
+                    if (a && c && vial_val_equal(a, c)) continue;
+                    if (num_differ < 8) {
+                        char va[160] = "(none)", vc[160] = "(none)";
+                        if (a) vial_val_print(va, sizeof(va), a, 4);
+                        if (c) vial_val_print(vc, sizeof(vc), c, 4);
+                        printf("reference block at line %d: %.*s at frame %d differs between evaluations: %s and %s\n", b->line,
+                            (int)ir0->outputs[k].name.len, ir0->outputs[k].name.ptr, (int)f, va, vc);
+                    }
+                    num_differ += 1;
+                    break;
+                }
+            }
+            const size_t ne = md_array_size(e[0].in.errors);
+            EXPECT_EQ(ne, md_array_size(e[1].in.errors));
+            for (size_t k = 0; k < ne && k < md_array_size(e[1].in.errors); ++k) {
+                EXPECT_EQ(e[0].in.errors[k].span.beg, e[1].in.errors[k].span.beg);
+                EXPECT_STREQ(e[0].in.errors[k].message, e[1].in.errors[k].message);
+            }
+        }
+        vial_spec__eval_free(&e[0]);
+        vial_spec__eval_free(&e[1]);
+        md_arena_allocator_destroy(arena);
+    }
+    printf("vial reference: %d blocks evaluated twice; %d of %d values differ\n", num_blocks, num_differ, num_values);
+    EXPECT_EQ(0, num_differ);
 }

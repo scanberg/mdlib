@@ -188,6 +188,14 @@ static bool k_displacement(vial_kctx_t* k, const vial_val_t* a, const vial_val_t
     return true;
 }
 
+// Memory aligned to 64 bytes. mdlib's packed kernels peel scalar iterations up to the alignment of their input, so
+// where an array starts decides how its sum is grouped: given a 64-aligned array, they group the same way wherever
+// it is, and a result does not depend on the address of its operands.
+static void* k_alloc64(vial_kctx_t* k, size_t bytes) {
+    uint8_t* p = md_alloc(k->alloc, bytes + 64);
+    return (void*)(((uintptr_t)p + 63) & ~(uintptr_t)63);
+}
+
 // The centre of mass of each set or group of points; periodic-aware
 static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights, vial_val_t* out) {
     if (!s) return vial_rt_fail(k, "R0103", "a missing argument");
@@ -207,7 +215,7 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
             const int32_t* idx = (const int32_t*)vial_sets_items(s->sets, (uint32_t)i);
             if (!n) { for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * i + c, k->alloc); continue; }
             // Gathered, so mdlib's packed kernel runs over contiguous positions and weights
-            vec3_t* g = md_alloc(k->alloc, n * sizeof(vec3_t));
+            vec3_t* g = k_alloc64(k, n * sizeof(vec3_t));
             float* w = by_mass && sys ? md_alloc(k->alloc, n * sizeof(float)) : NULL;
             for (uint32_t q = 0; q < n; ++q) {
                 memcpy(&g[q], xyz + 3 * (size_t)idx[q], 3 * sizeof(float));
@@ -233,10 +241,13 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
         w = md_alloc(k->alloc, n * sizeof(float));
         for (uint32_t q = 0; q < n; ++q) w[q] = md_atom_mass(&sys->atom, vial_sets_items(p.origin, 0)[q]);
     }
+    // Each group copied to one aligned buffer, for the same grouping of its sum (k_alloc64)
+    vec3_t* buf = n ? k_alloc64(k, n * sizeof(vec3_t)) : NULL;
     for (size_t g = 0; g < groups; ++g) {
         float* O = (float*)o.data + 3 * g;
         if (!n) { for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * g + c, k->alloc); continue; }
-        const vec3_t c = md_util_com_compute((const vec3_t*)((const float*)p.data + 3 * (size_t)n * g), w, NULL, n, &cell);
+        memcpy(buf, (const float*)p.data + 3 * (size_t)n * g, n * sizeof(vec3_t));
+        const vec3_t c = md_util_com_compute(buf, w, NULL, n, &cell);
         O[0] = c.x; O[1] = c.y; O[2] = c.z;
     }
     *out = o;
