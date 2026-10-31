@@ -14,6 +14,7 @@
 #include <core/md_common.h>
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -757,4 +758,205 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
     point_free(&pt);
     md_arena_allocator_destroy(arena);
     return draw_done(out, val != NULL);
+}
+
+// ### FILTERS ###
+
+#define FILTER_HEAD "_filter = (\n"
+
+// Whether expr reads name: as a word of its own
+static bool expr_reads(str_t expr, str_t name) {
+    for (size_t i = 0; name.len && i + name.len <= expr.len; ++i) {
+        if (strncmp(expr.ptr + i, name.ptr, name.len)) continue;
+        const char a = i ? expr.ptr[i - 1] : ' ', z = i + name.len < expr.len ? expr.ptr[i + name.len] : ' ';
+        const bool wa = (a >= 'a' && a <= 'z') || (a >= 'A' && a <= 'Z') || (a >= '0' && a <= '9') || a == '_' || a == '.';
+        const bool wz = (z >= 'a' && z <= 'z') || (z >= 'A' && z <= 'Z') || (z >= '0' && z <= '9') || z == '_';
+        if (!wa && !wz) return true;
+    }
+    return false;
+}
+
+// The expression as a statement of its own, with the stored selections and the program's selections as names: its
+// static ones, and the recipes it reads, evaluated at the coordinates given, which make it dynamic
+static md_vial_program_t* filter_compile(str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* arena, bool* reads_recipe) {
+    if (reads_recipe) *reads_recipe = false;
+    md_vial_named_set_t* sets = NULL;
+    for (size_t i = 0; i < desc->num_sets && desc->sets; ++i) md_array_push(sets, desc->sets[i], arena);
+    if (desc->prog) {
+        const md_vial_output_t* o;
+        const size_t n = md_vial_outputs(desc->prog, &o);
+        const vial_ir_t* ir = md_vial__ir(desc->prog);
+        for (size_t i = 0; ir && i < n; ++i) {
+            if (!o[i].selection || (o[i].stage != MD_VIAL_STAGE_STATIC && o[i].stage != MD_VIAL_STAGE_FRAME)) continue;
+            bool taken = false;
+            for (size_t k = 0; k < md_array_size(sets); ++k) taken |= str_eq(sets[k].name, o[i].name);
+            if (taken) continue;
+            const vial_ssa_t v = md_vial__hover_value(desc->prog, o[i].span.beg, NULL);
+            if (!v || v >= md_array_size(ir->values) || ir->values[v].op == VIAL_IR_NO_OP) continue;
+            if (o[i].stage == MD_VIAL_STAGE_FRAME) {
+                // A recipe: evaluated at the coordinates, only when read
+                if (!desc->state || !expr_reads(expr, o[i].name)) continue;
+                point_t pt;
+                const vial_val_t* rv = point_eval(&pt, desc->prog, desc->sys, desc->run, NULL, 0, 0, desc->state, v, false);
+                if (rv && rv->dtype == VIAL_DT_SET && rv->sets && !rv->ndim && rv->sets->count == 1) {
+                    const uint32_t n = vial_sets_size(rv->sets, 0);
+                    uint32_t* at = md_alloc(arena, (n ? n : 1) * sizeof(uint32_t));
+                    if (n) memcpy(at, vial_sets_items(rv->sets, 0), n * sizeof(uint32_t));
+                    md_vial_named_set_t ns = {.name = o[i].name, .atoms = at, .num_atoms = n};
+                    md_array_push(sets, ns, arena);
+                    if (reads_recipe) *reads_recipe = true;
+                }
+                point_free(&pt);
+                continue;
+            }
+            const vial_ir_op_t* op = &ir->ops[ir->values[v].op];
+            if (op->kind != VIAL_IR_CONST) continue;
+            const vial_val_t* c = &ir->consts[op->aux];
+            if (c->dtype != VIAL_DT_SET || !c->sets || c->ndim || c->sets->count != 1) continue;
+            md_vial_named_set_t ns = {.name = o[i].name, .atoms = vial_sets_items(c->sets, 0), .num_atoms = vial_sets_size(c->sets, 0)};
+            md_array_push(sets, ns, arena);
+        }
+    }
+    const size_t head = sizeof(FILTER_HEAD) - 1;
+    char* src = md_alloc(arena, head + expr.len + 3);
+    memcpy(src, FILTER_HEAD, head);
+    if (expr.len) memcpy(src + head, expr.ptr, expr.len);
+    memcpy(src + head + expr.len, "\n)\n", 3);
+    const md_vial_compile_desc_t cd = {.sys = desc->sys, .run = desc->run, .sets = sets, .num_sets = md_array_size(sets)};
+    return md_vial_compile((str_t){src, head + expr.len + 3}, &cd, arena);
+}
+
+static bool filter_fail(md_vial_filter_t* out, md_allocator_i* alloc, str_t expr, const char code[6], md_vial_span_t span, uint32_t base, const char* fmt, ...) {
+    out->ok = false;
+    memcpy(out->error.code, code, 5);
+    out->error.severity = code[0] == 'R' ? MD_VIAL_SEVERITY_RUNTIME : MD_VIAL_SEVERITY_ERROR;
+    // The span in expr; empty where it is about the statement around it
+    if (span.beg >= base && span.end <= base + expr.len && span.end >= span.beg) out->error.span = (md_vial_span_t){span.beg - base, span.end - base};
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    out->error.message = str_copy(str_from_cstr(buf), alloc);
+    return false;
+}
+
+bool md_vial_filter(md_vial_filter_t* out, str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    const uint32_t base = (uint32_t)(sizeof(FILTER_HEAD) - 1);
+    const md_vial_span_t whole = {0, 0};
+    if (!desc || !desc->sys || !alloc) return filter_fail(out, alloc ? alloc : md_get_heap_allocator(), expr, "E0101", whole, base, "no system");
+    if (str_empty(str_trim(expr))) return filter_fail(out, alloc, expr, "E0101", whole, base, "the filter is empty");
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    bool reads_recipe = false;
+    md_vial_program_t* fp = filter_compile(expr, desc, arena, &reads_recipe);
+    bool ok = false;
+    point_t pt = {0};
+    if (!fp) { filter_fail(out, alloc, expr, "E0101", whole, base, "out of memory"); goto done; }
+    {
+        const md_vial_diagnostic_t* dg;
+        const size_t nd = md_vial_diagnostics(fp, &dg);
+        for (size_t i = 0; i < nd; ++i) {
+            if (dg[i].severity != MD_VIAL_SEVERITY_ERROR) continue;
+            filter_fail(out, alloc, expr, dg[i].code, dg[i].span, base, "%.*s", (int)dg[i].message.len, dg[i].message.ptr);
+            goto done;
+        }
+    }
+    const vial_ir_t* ir = md_vial__ir(fp);
+    const vial_ssa_t v = md_vial__hover_value(fp, 0, NULL);
+    if (!ir || !v || v >= md_array_size(ir->values)) { filter_fail(out, alloc, expr, "E0101", whole, base, "the filter has no value"); goto done; }
+    const vial_type_t* t = &ir->values[v].type;
+    if (t->dtype != VIAL_DT_SET) {
+        char ty[128];
+        vial_type_print(ty, sizeof(ty), t);
+        filter_fail(out, alloc, expr, "E0313", (md_vial_span_t){base, base + (uint32_t)expr.len}, base, "a filter picks particles; this is %s", ty);
+        goto done;
+    }
+    if (t->ndim > 2) { filter_fail(out, alloc, expr, "E0313", whole, base, "a filter gives a set, or an array of sets of one or two dimensions"); goto done; }
+    if (t->stage == VIAL_STAGE_TRAJECTORY) { filter_fail(out, alloc, expr, "E0401", whole, base, "a filter picks at one frame; this needs the trajectory"); goto done; }
+    out->dynamic = t->stage != VIAL_STAGE_STATIC || reads_recipe;
+    if (out->dynamic && !desc->state) { filter_fail(out, alloc, expr, "E0401", whole, base, "it depends on the coordinates, and there are none"); goto done; }
+    const vial_val_t* val = point_eval(&pt, fp, desc->sys, desc->run, NULL, 0, 0, desc->state, v, false);
+    if (!val || val->dtype != VIAL_DT_SET || !val->sets) {
+        if (pt.have_in && pt.in.failed) {
+            filter_fail(out, alloc, expr, pt.in.error.code, pt.in.error.span, base, "%s", pt.in.error.message);
+        } else {
+            filter_fail(out, alloc, expr, "R0103", whole, base, "the filter could not be evaluated");
+        }
+        goto done;
+    }
+    {
+        // Its sets, cut to the scope
+        const uint32_t na = (uint32_t)desc->sys->atom.count;
+        uint8_t* in_scope = NULL;
+        if (desc->scope) {
+            in_scope = md_alloc(arena, na ? na : 1);
+            memset(in_scope, 0, na);
+            for (size_t i = 0; i < desc->num_scope; ++i) if (desc->scope[i] < na) in_scope[desc->scope[i]] = 1;
+        }
+        const size_t n = val->ndim ? vial_val_count(val) : 1;
+        const size_t inner = val->ndim == 2 ? val->dims[1] : 1;
+        uint32_t* offsets = NULL;
+        uint32_t* atoms = NULL;
+        md_array_push(offsets, 0, alloc);
+        size_t rows = 0;
+        for (size_t r = 0; r < n / inner; ++r) {
+            const size_t mark_a = md_array_size(atoms), mark_o = md_array_size(offsets);
+            bool keep = true;
+            for (size_t q = 0; q < inner; ++q) {
+                const uint32_t si = (uint32_t)(r * inner + q);
+                const uint32_t* it = vial_sets_items(val->sets, si);
+                const uint32_t sz = vial_sets_size(val->sets, si);
+                size_t got = 0;
+                for (uint32_t k = 0; k < sz; ++k) {
+                    if (in_scope && (it[k] >= na || !in_scope[it[k]])) continue;
+                    md_array_push(atoms, it[k], alloc);
+                    ++got;
+                }
+                md_array_push(offsets, (uint32_t)md_array_size(atoms), alloc);
+                // An array's set left empty by the scope is dropped, a pair with it
+                if (in_scope && val->ndim && !got) keep = false;
+            }
+            if (!keep) {
+                md_array_shrink(atoms, mark_a);
+                md_array_shrink(offsets, mark_o);
+                continue;
+            }
+            ++rows;
+        }
+        out->ndim = val->ndim;
+        if (val->ndim >= 1) out->dims[0] = (uint32_t)rows;
+        if (val->ndim == 2) out->dims[1] = (uint32_t)inner;
+        out->num_sets = md_array_size(offsets) - 1;
+        out->offsets = offsets;
+        out->atoms = atoms ? atoms : md_alloc(alloc, sizeof(uint32_t));
+        out->ok = ok = true;
+    }
+done:
+    point_free(&pt);
+    if (fp) md_vial_program_free(fp);
+    md_arena_allocator_destroy(arena);
+    return ok;
+}
+
+bool md_vial_filter_complete(md_vial_completions_t* out, str_t expr, uint32_t cursor, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!desc || !desc->sys || !alloc || cursor > expr.len) return false;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_vial_program_t* fp = filter_compile(expr, desc, arena, NULL);
+    const uint32_t base = (uint32_t)(sizeof(FILTER_HEAD) - 1);
+    const bool ok = fp && md_vial_complete(out, fp, base + cursor, alloc);
+    if (ok) {
+        out->span.beg = out->span.beg >= base ? out->span.beg - base : 0;
+        out->span.end = out->span.end >= base ? MIN(out->span.end - base, (uint32_t)expr.len) : 0;
+        // The statement's own name is no name to write
+        size_t k = 0;
+        for (size_t i = 0; i < out->count; ++i) if (!str_eq(out->items[i].label, STR_LIT("_filter"))) out->items[k++] = out->items[i];
+        out->count = k;
+    }
+    if (fp) md_vial_program_free(fp);
+    md_arena_allocator_destroy(arena);
+    return ok;
 }

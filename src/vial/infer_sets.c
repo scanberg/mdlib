@@ -346,6 +346,45 @@ static T selector_call(infer_t* x, vial_node_id call, str_t name) {
     return t;
 }
 
+bool vx_name_stored(infer_t* x, vial_node_id id, uint32_t stored, T* out) {
+    if (!x->c || stored >= x->c->num_stored) return false;
+    const md_vial_named_set_t* ns = &x->c->stored[stored];
+    const uint32_t na = x->sys ? x->sys->num_atoms : UINT32_MAX;
+    // Its particles, ascending, each once, those the system has
+    uint32_t* idx = md_alloc(x->alloc, (ns->num_atoms ? ns->num_atoms : 1) * sizeof(uint32_t));
+    uint32_t n = 0;
+    bool sorted = true;
+    for (size_t i = 0; i < ns->num_atoms; ++i) {
+        if (ns->atoms[i] >= na) continue;
+        if (n && ns->atoms[i] <= idx[n - 1]) sorted = false;
+        idx[n++] = ns->atoms[i];
+    }
+    if (!sorted) {
+        // Insertion into place, then each once: stored selections are rarely out of order
+        for (uint32_t i = 1; i < n; ++i) {
+            const uint32_t v = idx[i];
+            uint32_t j = i;
+            while (j && idx[j - 1] > v) { idx[j] = idx[j - 1]; --j; }
+            idx[j] = v;
+        }
+        uint32_t m = 0;
+        for (uint32_t i = 0; i < n; ++i) if (!m || idx[i] != idx[m - 1]) idx[m++] = idx[i];
+        n = m;
+    }
+    vial_sets_t* s = md_alloc(x->alloc, sizeof(vial_sets_t));
+    memset(s, 0, sizeof(*s));
+    uint32_t* off = md_alloc(x->alloc, 2 * sizeof(uint32_t));
+    off[0] = 0;
+    off[1] = n;
+    s->count = 1;
+    s->offset = off;
+    s->idx = idx;
+    s->single = true;
+    *out = vx_sets_type(x, s, id);
+    vx_set_value(x, id, sets_value(s));
+    return true;
+}
+
 bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) {
     const str_t name = str_from_cstr(b->name);
     if (b->flags & VIAL_BUILTIN_SELECTOR) {

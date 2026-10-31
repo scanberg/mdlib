@@ -128,6 +128,8 @@ vial_type_t vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, c
                               const uint32_t* ssas, uint32_t* out_ssa);
 
 // shown() and the drawing primitives, until step 9 types drawings fully; false for other names
+// A stored selection read by name: a static set of its particles in the system
+bool vx_name_stored(infer_t* x, vial_node_id id, uint32_t stored, vial_type_t* out);
 bool vx_call_draw(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 
 // A symbol's type and value in the frames of the defs being checked; false when no frame binds it

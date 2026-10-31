@@ -129,6 +129,20 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
         .prelude = with_prelude ? &prog->prelude : NULL, .prelude_src = prog->prelude_src,
         .prelude_diags = &prog->prelude_diags, .sys = desc ? desc->sys : NULL,
         .num_frames = desc ? desc->num_frames : 0, .run = desc ? str_copy(desc->run, arena) : (str_t){0}, .alloc = arena};
+    if (desc && desc->num_sets && desc->sets) {
+        // The stored selections, copied: those with a name a script may bind
+        md_vial_named_set_t* st = md_alloc(arena, desc->num_sets * sizeof(md_vial_named_set_t));
+        size_t n = 0;
+        for (size_t i = 0; i < desc->num_sets; ++i) {
+            const md_vial_named_set_t* s = &desc->sets[i];
+            if (!md_vial_name_valid(s->name)) continue;
+            uint32_t* at = md_alloc(arena, (s->num_atoms ? s->num_atoms : 1) * sizeof(uint32_t));
+            if (s->num_atoms) memcpy(at, s->atoms, s->num_atoms * sizeof(uint32_t));
+            st[n++] = (md_vial_named_set_t){.name = str_copy(s->name, arena), .atoms = at, .num_atoms = s->num_atoms};
+        }
+        prog->check.stored = st;
+        prog->check.num_stored = n;
+    }
     if (!prog->check.num_frames && prog->check.sys && !str_empty(prog->check.run)) {
         // The run's frame axis
         char path[256];
@@ -351,7 +365,7 @@ typedef struct cmpl_t {
 } cmpl_t;
 
 static void cmpl_add(cmpl_t* c, str_t label, str_t text, md_vial_completion_kind_t kind) {
-    if (!label.len || label.len < c->prefix.len || strncmp(label.ptr, c->prefix.ptr, c->prefix.len)) return;
+    if (!label.len || label.len < c->prefix.len || (c->prefix.len && strncmp(label.ptr, c->prefix.ptr, c->prefix.len))) return;
     for (size_t i = 0; i < md_array_size(c->items); ++i) if (str_eq(c->items[i].label, label)) return;
     md_vial_completion_t it = {.label = str_copy(label, c->alloc), .text = str_copy(text, c->alloc), .kind = kind};
     md_array_push(c->items, it, c->alloc);
@@ -566,7 +580,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
     } else if (ti != SIZE_MAX) {
         span = toks[ti].span;
     }
-    c.prefix = (str_t){prog->src.ptr + span.beg, cursor - span.beg};
+    c.prefix = prog->src.ptr ? (str_t){prog->src.ptr + span.beg, cursor - span.beg} : (str_t){0};
     // The tokens before what is replaced, back to the call around it
     size_t prev = SIZE_MAX;
     for (size_t i = 0; i < nt && toks[i].span.end <= span.beg && toks[i].kind != MD_VIAL_TOKEN_EOF; ++i) {
@@ -655,6 +669,8 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             if (b->flags & (VIAL_BUILTIN_FUNC | VIAL_BUILTIN_SELECTOR)) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_FUNCTION);
             else if (b->flags & VIAL_BUILTIN_VALUE) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_CONSTANT);
         }
+        // Stored selections
+        for (size_t i = 0; i < prog->check.num_stored; ++i) cmpl_add(&c, prog->check.stored[i].name, prog->check.stored[i].name, MD_VIAL_COMPLETION_CONSTANT);
         str_t defs[64];
         const size_t nd = MIN(prelude_defs(defs, 64), 64);
         for (size_t i = 0; i < nd; ++i) cmpl_add(&c, defs[i], defs[i], MD_VIAL_COMPLETION_FUNCTION);

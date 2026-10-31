@@ -983,6 +983,115 @@ UTEST(vial_ir, editor) {
     md_arena_allocator_destroy(alloc);
 }
 
+// Stored selections read by name, and filters: an expression compiled alone, with names
+UTEST(vial_ir, filters) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const md_system_state_t* st = vial_test_state('P');
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const uint32_t mine[] = {2, 0, 1, 1};     // out of order, once twice: the set is 0, 1, 2
+    const md_vial_named_set_t stored[] = {{STR_LIT("mysel"), mine, 4}, {STR_LIT("bad name"), mine, 1}};
+
+    // In a script: a static set, counted when compiling; its atoms are in its fingerprint
+    {
+        const char* src = "n = count(mysel)\nm = mysel.com\n";
+        md_vial_program_t* p = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .sets = stored, .num_sets = 2}, alloc);
+        md_vial_hover_t h;
+        ASSERT_TRUE(md_vial_hover(p, 0, &h));
+        EXPECT_STREQ("3", h.value);
+        const uint32_t other[] = {0, 1, 3};
+        const md_vial_named_set_t moved[] = {{STR_LIT("mysel"), other, 3}};
+        md_vial_program_t* q = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .sets = moved, .num_sets = 1}, alloc);
+        const md_vial_output_t* op;
+        const md_vial_output_t* oq;
+        md_vial_outputs(p, &op);
+        md_vial_outputs(q, &oq);
+        EXPECT_TRUE(op[1].fingerprint != oq[1].fingerprint);
+        // A name the script binds hides it
+        md_vial_program_t* r = md_vial_compile(STR_LIT("mysel = particles(name='CA')\nn = count(mysel)\n"), &(md_vial_compile_desc_t){.sys = sys, .sets = stored, .num_sets = 1}, alloc);
+        ASSERT_TRUE(md_vial_hover(r, (uint32_t)strlen("mysel = particles(name='CA')\n"), &h));
+        EXPECT_STRNE("3", h.value);
+        md_vial_program_free(p); md_vial_program_free(q); md_vial_program_free(r);
+    }
+
+    md_vial_program_t* prog = md_vial_compile(STR_LIT("ca_s = particles(name='CA')\nnear = within(3.0, of=ca_s)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    md_vial_filter_desc_t d = {.sys = sys, .state = st, .sets = stored, .num_sets = 1, .prog = prog};
+    md_vial_filter_t f;
+    // A predefined set, a selector's array, a stored selection, the program's static selection
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("protein"), &d, alloc));
+    EXPECT_FALSE(f.dynamic);
+    EXPECT_EQ(0, f.ndim);
+    EXPECT_EQ(1u, f.num_sets);
+    EXPECT_GT(f.offsets[1], 0u);
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("residues()"), &d, alloc));
+    EXPECT_EQ(1, f.ndim);
+    EXPECT_EQ(md_system_residue_count(sys), (size_t)f.dims[0]);
+    EXPECT_EQ((size_t)f.dims[0], f.num_sets);
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mysel"), &d, alloc));
+    ASSERT_EQ(3u, f.offsets[1]);
+    EXPECT_EQ(0u, f.atoms[0]); EXPECT_EQ(1u, f.atoms[1]); EXPECT_EQ(2u, f.atoms[2]);
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("ca_s and not mysel"), &d, alloc));
+    const uint32_t nca = f.offsets[1];
+    EXPECT_GT(nca, 0u);
+    // Bonds: pairs of one-particle sets
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("bonds(residues()[0])"), &d, alloc));
+    EXPECT_EQ(2, f.ndim);
+    EXPECT_EQ(2u, f.dims[1]);
+    EXPECT_GT(f.dims[0], 0u);
+    for (size_t i = 0; i < f.num_sets; ++i) EXPECT_EQ(1u, f.offsets[i + 1] - f.offsets[i]);
+    // Dynamic: from the coordinates, and none without them
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("within(3.0, of=mysel)"), &d, alloc));
+    EXPECT_TRUE(f.dynamic);
+    EXPECT_GE(f.offsets[1], 3u);
+    md_vial_filter_desc_t nd = d;
+    nd.state = NULL;
+    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("within(3.0, of=mysel)"), &nd, alloc));
+    // A recipe of the program's: evaluated at the coordinates, so dynamic; without them it is not there
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("near and not ca_s"), &d, alloc));
+    EXPECT_TRUE(f.dynamic);
+    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("near"), &nd, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("nearby"), &d, alloc));
+    // Within a scope: cut to it, emptied sets dropped
+    {
+        md_vial_filter_t r0;
+        ASSERT_TRUE(md_vial_filter(&r0, STR_LIT("residues()[0]"), &d, alloc));
+        md_vial_filter_desc_t sd = d;
+        sd.scope = r0.atoms;
+        sd.num_scope = r0.offsets[1];
+        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("residues()"), &sd, alloc));
+        EXPECT_EQ(1u, f.dims[0]);
+        EXPECT_EQ(r0.offsets[1], f.offsets[1]);
+        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("protein"), &sd, alloc));
+        EXPECT_EQ(r0.offsets[1], f.offsets[1]);
+    }
+    // Errors, with spans in the expression
+    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("1 + 2"), &d, alloc));
+    EXPECT_STREQ("E0313", f.error.code);
+    EXPECT_EQ(0u, f.error.span.beg);
+    EXPECT_EQ(5u, f.error.span.end);
+    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("particles(nme='CA')"), &d, alloc));
+    EXPECT_GE(f.error.span.beg, 0u);
+    EXPECT_LE(f.error.span.end, 19u);
+    EXPECT_GT(f.error.message.len, 0u);
+    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("   "), &d, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("protein)"), &d, alloc));
+
+    // Completion, in the expression's own offsets
+    md_vial_completions_t c;
+    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("particles(resn"), 14, &d, alloc));
+    EXPECT_TRUE(vial_ir__find(&c, "resname") != NULL);
+    EXPECT_EQ(10u, c.span.beg);
+    EXPECT_EQ(14u, c.span.end);
+    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("mys"), 3, &d, alloc));
+    EXPECT_TRUE(vial_ir__find(&c, "mysel") != NULL);
+    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("ca"), 2, &d, alloc));
+    EXPECT_TRUE(vial_ir__find(&c, "ca_s") != NULL);
+    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("_"), 1, &d, alloc));
+    EXPECT_TRUE(vial_ir__find(&c, "_filter") == NULL);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, contraction) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     // Fused: a product used once, floats throughout. Not fused: ints, and a product that is also published.

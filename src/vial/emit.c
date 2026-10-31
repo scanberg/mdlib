@@ -534,7 +534,7 @@ void vx_emit(infer_t* x, vial_node_id id, const T* t) {
         }
     }
     const vial_symbol_t* nsym = k == VIAL_N_NAME ? vial_names_symbol(x->n, id) : NULL;
-    const bool user_name = k == VIAL_N_NAME && !(nsym && nsym->kind == VIAL_SYM_BUILTIN);
+    const bool user_name = k == VIAL_N_NAME && !(nsym && (nsym->kind == VIAL_SYM_BUILTIN || nsym->kind == VIAL_SYM_STORED));
     if (v.kind != VIAL_VAL_NONE && !user_name && const_of(x, &v, t, &c)) {
         const str_t text = k == VIAL_N_NAME || k == VIAL_N_CALL || k == VIAL_N_BOOLOP || k == VIAL_N_NOT || k == VIAL_N_SUBSCRIPT ? node_text(x, id) : (str_t){0};
         vx_set_ssa(x, id, vial_ir_const(x->ir, &c, t, text, vx_span(x, id)));

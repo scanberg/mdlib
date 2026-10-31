@@ -385,6 +385,11 @@ static T infer_name(infer_t* x, vial_node_id id) {
         if (s->builtin && vx_name_sets(x, id, s->builtin, &t)) return t;
         return err();
     }
+    case VIAL_SYM_STORED: {
+        T t;
+        if (vx_name_stored(x, id, s->stored, &t)) return t;
+        return err();
+    }
     default:
         return err();   // built-in values, parameters and locals arrive with later steps
     }

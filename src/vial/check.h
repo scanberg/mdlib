@@ -18,6 +18,7 @@ typedef enum vial_sym_kind_t {
     VIAL_SYM_LOCAL,         // bound inside a def, or inside a top-level loop
     VIAL_SYM_LOOP,          // the target of a top-level for: it belongs to the loop
     VIAL_SYM_COMP,          // the target of a comprehension's for
+    VIAL_SYM_STORED,        // a stored selection, given when compiling; stored is its index in vial_check_t.stored
 } vial_sym_kind_t;
 
 typedef struct vial_symbol_t {
@@ -28,6 +29,7 @@ typedef struct vial_symbol_t {
     vial_node_id            node;       // what binds it: a NAME, or a DEF
     uint32_t                stmt;       // VIAL_SYM_GLOBAL and VIAL_SYM_DEF: the top-level statement that binds it
     const vial_builtin_t*   builtin;
+    uint32_t                stored;
 } vial_symbol_t;
 
 typedef enum vial_scope_kind_t {
@@ -69,6 +71,8 @@ typedef struct vial_check_t {
     uint64_t            num_frames; // of the run, or 0 when not known
     str_t               run;        // the run's prefix in sys->attributes, or empty
     struct vial_ir_t*   ir;         // when not NULL, the check lowers the script into it
+    const struct md_vial_named_set_t* stored;   // stored selections the script may read by name
+    size_t              num_stored;
 
     md_allocator_i*     alloc;
 } vial_check_t;

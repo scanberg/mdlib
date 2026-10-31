@@ -72,6 +72,13 @@ typedef struct md_vial_token_t {
 
 typedef struct md_vial_program_t md_vial_program_t;
 
+// A stored selection a script reads by name, as viamd keeps them: its particles, indices of the system's atoms
+typedef struct md_vial_named_set_t {
+    str_t           name;
+    const uint32_t* atoms;
+    size_t          num_atoms;
+} md_vial_named_set_t;
+
 enum {
     MD_VIAL_COMPILE_NO_PRELUDE = 1 << 0,    // compile without the prelude: for the prelude itself, and tests
 };
@@ -82,7 +89,7 @@ typedef struct md_vial_compile_desc_t {
     // The system the script runs on. Selectors and the predefined sets are evaluated against it when compiling, so
     // their sizes, counts and labels are known and W0601, W0602 and E0207 are given. NULL compiles without one:
     // selectors are typed with extents not known. The checker reads it only during md_vial_compile, and a program
-    // compiled against it holds its topology version. Stored selections and loaded runs arrive with later steps.
+    // compiled against it holds its topology version. Stored selections are given below.
     const struct md_system_t* sys;
 
     // The number of frames of the run the script will be evaluated over, or 0 when not known. at(x, frame=k) with k
@@ -94,6 +101,11 @@ typedef struct md_vial_compile_desc_t {
     // <run>/<path>, with its unit and shape, and the run's frame axis, <run>/time, gives the number of frames when
     // num_frames is 0. Empty for none: attr() is then typed only when called, and its paths are not checked.
     str_t run;
+
+    // Stored selections the script may read by name: a static set each, as a predefined set is. A name the script
+    // binds hides one; a name that is not valid (md_vial_name_valid) is not read. Copied when compiling.
+    const md_vial_named_set_t* sets;
+    size_t                     num_sets;
 } md_vial_compile_desc_t;
 
 // Compiles a script: the front end, then the checker, which types every expression, evaluates the static ones it can
@@ -361,6 +373,44 @@ typedef struct md_vial_draw_desc_t {
 // there is none there, it fails, or it is over the trajectory and not computed; true with nothing in it when the
 // value draws nothing, such as a number, which hover shows as text.
 bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint32_t offset, struct md_allocator_i* alloc);
+
+// ### FILTERS ###
+// An expression that picks particles, as viamd's representations, groups and queries write them: compiled alone as one
+// statement, with the stored selections and the static selections of a program as names it may read.
+
+typedef struct md_vial_filter_desc_t {
+    const struct md_system_t*       sys;        // required
+    // The coordinates, for an expression that depends on them, such as within(): it is then dynamic. NULL fails one.
+    const struct md_system_state_t* state;
+    str_t                           run;        // for attr(); may be empty
+    const md_vial_named_set_t*      sets;       // stored selections it may read by name
+    size_t                          num_sets;
+    // A program whose published selections it may read by name, below the stored ones: a static one as it is, and a
+    // recipe evaluated at state, which makes the filter dynamic. One set each; NULL for none.
+    const md_vial_program_t*        prog;
+    // The particles it picks within: what it picks is cut to these, and sets left empty dropped. NULL for all.
+    const uint32_t*                 scope;
+    size_t                          num_scope;
+} md_vial_filter_desc_t;
+
+typedef struct md_vial_filter_t {
+    bool                    ok;
+    bool                    dynamic;    // what it picks depends on the coordinates: filter again when they change
+    // What it picks: one set, or an array of them, row-major, with its shape; bonds(...) is [n][2]
+    uint8_t                 ndim;       // 0 for one set
+    uint32_t                dims[2];
+    size_t                  num_sets;
+    uint32_t*               offsets;    // [num_sets + 1] into atoms
+    uint32_t*               atoms;      // each set's particles, ascending
+    // When not ok: the first error, its span in expr, empty when it is about the whole
+    md_vial_diagnostic_t    error;
+} md_vial_filter_t;
+
+bool md_vial_filter(md_vial_filter_t* out, str_t expr, const md_vial_filter_desc_t* desc, struct md_allocator_i* alloc);
+
+// What may be written at a byte offset of expr, as md_vial_complete; the span is in expr
+bool md_vial_filter_complete(md_vial_completions_t* out, str_t expr, uint32_t cursor, const md_vial_filter_desc_t* desc,
+                             struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

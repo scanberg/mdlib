@@ -178,6 +178,49 @@ static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, con
     return why;
 }
 
+// Completion, drawing and filtering at a few places of the text: none fails to return, and what they give is in bounds
+static inline const char* vial_fuzz__editor(const md_vial_program_t* prog, str_t src, const struct md_system_t* sys,
+                                            const md_system_state_t* state, const vial_token_t* tokens, size_t num_tokens,
+                                            md_allocator_i* alloc) {
+    const uint32_t len = (uint32_t)src.len;
+    const size_t step = num_tokens / 8 + 1;
+    const size_t na = sys ? sys->atom.count : 0;
+    for (size_t i = 0; i < num_tokens; i += step) {
+        const uint32_t at[2] = {tokens[i].span.beg, tokens[i].span.end};
+        for (int e = 0; e < 2; ++e) {
+            md_vial_completions_t c;
+            if (!md_vial_complete(&c, prog, at[e], alloc)) return "md_vial_complete failed within the text";
+            if (c.span.beg > c.span.end || c.span.end > len || c.span.beg > at[e]) return "a completion's span is out of bounds";
+            for (size_t k = 0; k < c.count; ++k) {
+                if (c.items[k].label.len < c.prefix.len || (c.prefix.len && strncmp(c.items[k].label.ptr, c.prefix.ptr, c.prefix.len))) return "a completion does not start with the prefix";
+            }
+        }
+        if (!sys || !state) continue;
+        md_vial_drawing_t d;
+        const md_vial_draw_desc_t dd = {.prog = prog, .sys = sys, .state = state, .element = -1};
+        if (md_vial_draw(&d, &dd, at[0], alloc)) {
+            const size_t ne = d.num_elements ? d.num_elements : 1;
+            for (size_t k = 0; k < d.num_prims; ++k) if (d.prims[k].element >= ne) return "a drawn primitive's element is out of bounds";
+            for (size_t k = 0; k < d.num_labels; ++k) if (d.labels[k].element >= ne || !d.labels[k].text.ptr) return "a drawn label is out of bounds";
+            for (size_t k = 0; k < d.num_groups; ++k) {
+                if (d.groups[k].beg > d.groups[k].end || d.groups[k].end > md_array_size(d.atoms)) return "a drawn group is out of bounds";
+                for (uint32_t q = d.groups[k].beg; q < d.groups[k].end; ++q) if (d.atoms[q] >= na) return "a drawn atom is out of bounds";
+            }
+            if (d.num_prims + d.num_labels > 10000) return "more than 10,000 primitives were drawn";
+        }
+    }
+    // The whole text as a filter
+    md_vial_filter_t f;
+    const md_vial_filter_desc_t fd = {.sys = sys, .state = state, .prog = prog};
+    if (sys && md_vial_filter(&f, src, &fd, alloc)) {
+        for (size_t k = 0; k < f.num_sets; ++k) if (f.offsets[k] > f.offsets[k + 1]) return "a filter's offsets are out of order";
+        for (uint32_t k = 0; k < f.offsets[f.num_sets]; ++k) if (f.atoms[k] >= na) return "a filter picked an atom out of bounds";
+    } else if (sys) {
+        if (f.error.span.beg > f.error.span.end || f.error.span.end > len) return "a filter's error span is out of bounds";
+    }
+    return NULL;
+}
+
 static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
     if (src.len > UINT32_MAX / 2) return NULL;
     const uint32_t len = (uint32_t)src.len;
@@ -253,6 +296,7 @@ static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* s
         if (!why && !vial_ir_verify(md_vial__ir(prog), NULL, 0)) why = "the array IR does not verify";
         if (!why && md_vial__run_ir(prog) && !vial_ir_verify(md_vial__run_ir(prog), NULL, 0)) why = "the inlined IR does not verify";
         if (!why && round == 3) why = vial_fuzz__evaluate(prog, sys, state, alloc);
+        if (!why && round == 3) why = vial_fuzz__editor(prog, src, sys, state, tokens, num_tokens, alloc);
         md_vial_program_free(prog);
         if (why) return why;
     }

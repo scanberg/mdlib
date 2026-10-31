@@ -31,6 +31,9 @@ typedef struct resolver_t {
     region_t*           regions;        // md_array: the top-level ifs being declared, innermost last
     md_hashset_t        shadow_warned;  // names W0201 has been given for
     uint32_t*           builtin_sym;    // md_array by built-in index: its symbol, 0 until used
+    const struct md_vial_named_set_t* stored;
+    size_t              num_stored;
+    uint32_t*           stored_sym;     // md_array by stored selection: its symbol, 0 until used
     uint32_t            num_suggested;  // suggestions looked for, which is bounded
 } resolver_t;
 
@@ -326,6 +329,20 @@ static uint32_t lookup(resolver_t* r, uint32_t scope, str_t name, uint32_t* late
     if (pre) return pre;
     const vial_builtin_t* b = vial_builtin_find(name);
     if (b && (b->flags & (VIAL_BUILTIN_FUNC | VIAL_BUILTIN_VALUE))) return builtin_symbol(r, b);
+    // A stored selection, last: what the script binds hides it
+    for (size_t i = 0; i < r->num_stored; ++i) {
+        if (!str_eq(r->stored[i].name, name)) continue;
+        if (md_array_size(r->stored_sym) < r->num_stored) {
+            const size_t had = md_array_size(r->stored_sym);
+            md_array_resize(r->stored_sym, r->num_stored, r->alloc);
+            memset(r->stored_sym + had, 0, (r->num_stored - had) * sizeof(uint32_t));
+        }
+        if (!r->stored_sym[i]) {
+            r->stored_sym[i] = new_symbol(r, 0, name, VIAL_SYM_STORED, 0);
+            r->n->symbols[r->stored_sym[i]].stored = (uint32_t)i;
+        }
+        return r->stored_sym[i];
+    }
     return 0;
 }
 
@@ -694,7 +711,7 @@ void vial_check_names(vial_check_t* c) {
     }
     names_init(&c->names, c->tree, c->alloc);
     resolver_t r = {.t = c->tree, .src = c->src, .diags = c->diags, .n = &c->names, .alloc = c->alloc,
-                    .prelude = c->prelude ? &c->prelude_names : NULL};
+                    .prelude = c->prelude ? &c->prelude_names : NULL, .stored = c->stored, .num_stored = c->num_stored};
     run(&r);
     vial_diags_sort(c->diags);
 }
