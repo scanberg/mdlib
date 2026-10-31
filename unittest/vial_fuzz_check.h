@@ -9,16 +9,21 @@
 // Diagnostics  spans in bounds, in source order, a known code, a message
 // The API      md_vial_compile gives the same tokens and diagnostics as the stages run by hand, twice over
 // Lowering     the array IR verifies, whatever was lowered of it
+// Evaluation   with a system and its coordinates, the program evaluates for one frame without crashing, within a limit
+//              on the size of values, and every value it computes has the dtype and rank of its type
 
 #include <md_vial.h>
 #include <vial/vial_internal.h>
 #include <vial/ast.h>
 #include <vial/ir.h>
+#include <vial/interp.h>
+#include <md_system.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
 
+#include <stdio.h>
 #include <string.h>
 
 // The codes the front end may give
@@ -97,7 +102,44 @@ static inline const char* vial_fuzz__check_diags(const md_vial_diagnostic_t* d, 
 }
 
 // src need not end in a NUL; the stages must not read past src.len. alloc should be an arena: nothing is freed.
-static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* sys, md_allocator_i* alloc) {
+static inline bool vial_fuzz__frame(void* user, int64_t index, vial_frame_t* out) {
+    const md_system_state_t* st = user;
+    if (index != 0 || !st) return false;
+    *out = (vial_frame_t){.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell, .index = 0};
+    return true;
+}
+
+// The program over one frame: NULL, or which promise broke
+static inline const char* vial_fuzz__evaluate(const md_vial_program_t* prog, const struct md_system_t* sys, const md_system_state_t* state,
+                                              md_allocator_i* alloc) {
+    const vial_ir_t* ir = md_vial__run_ir(prog);
+    if (!ir || !sys || !state) return NULL;
+    vial_sys_t vs;
+    if (!vial_sys_init(&vs, sys, alloc)) return NULL;
+    vial_interp_t in;
+    if (!vial_interp_init(&in, ir, &vs, sys, md_get_heap_allocator())) return NULL;
+    in.max_elements = (size_t)1 << 20;
+    in.load_frame = vial_fuzz__frame;
+    in.load_user = (void*)state;
+    vial_interp_run(&in, 1);
+    const char* why = NULL;
+    for (size_t k = 0; k < md_array_size(ir->outputs) && !why; ++k) {
+        const vial_val_t* v = vial_interp_at(&in, ir->outputs[k].value, 0);
+        const vial_type_t* t = &ir->values[ir->outputs[k].value].type;
+        if (!v || t->dtype == VIAL_DT_TUPLE || t->dtype == VIAL_DT_ERROR || t->dtype == VIAL_DT_DEF) continue;
+        const uint8_t nd = (v->flags & VIAL_VAL_FRAMES) ? v->ndim - 1 : v->ndim;
+        if (v->dtype != t->dtype || nd != t->ndim) {
+            static char buf[200];
+            snprintf(buf, sizeof(buf), "an evaluated value differs from its type: %.*s is dtype %d rank %u, typed %d rank %u",
+                (int)(ir->outputs[k].name.len < 40 ? ir->outputs[k].name.len : 40), ir->outputs[k].name.ptr, v->dtype, nd, t->dtype, t->ndim);
+            why = buf;
+        }
+    }
+    vial_interp_free(&in);
+    return why;
+}
+
+static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
     if (src.len > UINT32_MAX / 2) return NULL;
     const uint32_t len = (uint32_t)src.len;
 
@@ -171,6 +213,7 @@ static inline const char* vial_fuzz_check(str_t src, const struct md_system_t* s
         if (!why && (round & 1) == 1 && npd != first_count) why = "compiling twice gives different diagnostics";
         if (!why && !vial_ir_verify(md_vial__ir(prog), NULL, 0)) why = "the array IR does not verify";
         if (!why && md_vial__run_ir(prog) && !vial_ir_verify(md_vial__run_ir(prog), NULL, 0)) why = "the inlined IR does not verify";
+        if (!why && round == 3) why = vial_fuzz__evaluate(prog, sys, state, alloc);
         md_vial_program_free(prog);
         if (why) return why;
     }

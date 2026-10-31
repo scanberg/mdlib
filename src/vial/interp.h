@@ -37,6 +37,7 @@ typedef struct vial_interp_t {
     const struct md_system_t*   msys;
     md_allocator_i*             alloc;      // what lives as long as the interpreter: static values
     md_allocator_i*             temp;       // what lives for one frame: an arena, reset between frames
+    size_t                      max_elements;   // the most elements one value may have (R0105); 0 for the default
     vial_val_t*                 vals;       // md_array by ssa
     uint8_t*                    state;      // md_array by ssa: 0 not computed, 1 computed for this frame, 2 static
     const vial_frame_t*         frame;      // the frame being evaluated, or NULL
@@ -96,6 +97,15 @@ typedef struct vial_kctx_t {
 } vial_kctx_t;
 
 bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...);
+
+// The default of vial_interp_t.max_elements: 2^28, a GB of floats
+#define VIAL_MAX_ELEMENTS ((size_t)1 << 28)
+
+// Whether a value of count elements fits the evaluation's limit; R0105 when it does not
+bool vial_k_room(vial_kctx_t* k, size_t count);
+
+// A value of dtype and shape, zeroed: false, with R0105, when it would exceed the limit
+bool vial_k_make(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* dims, vial_val_t* out);
 
 bool vial_k_unary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, vial_val_t* out);
 bool vial_k_not(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out);

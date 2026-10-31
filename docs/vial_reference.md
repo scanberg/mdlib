@@ -1097,6 +1097,9 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0803 | A construct never supported | classes are not part of VIAL |  |
 | R0101 | A position outside a dynamic extent | frame 12: position 5 is outside `[4]` |  |
 | R0102 | An integer result outside 32 bits | sum over frames is 3,118,402,117, more than int holds | sum(float(x)) |
+| R0103 | Extents known only when evaluating that do not fit together, such as two per-frame lengths that do not broadcast | frame 7: extents 12 and 9 do not broadcast |  |
+| R0104 | `at()` of a frame the run does not have | at() reads frame 120, which the run does not have |  |
+| R0105 | A value larger than the evaluation's limit, 2^28 elements by default | a value of 3,000,000,000 elements; the limit is 268,435,456 |  |
 
 ```python
 # on T
