@@ -438,3 +438,45 @@ UTEST(vial_ir, contraction) {
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }
+
+UTEST(vial_ir, if_per_frame) {
+    const md_system_t* sys = vial_test_system('P');
+    const int64_t nf = vial_test_run('P');
+    ASSERT_TRUE(sys && nf > 2);
+    vial_ir__run_t r;
+    const char* src =
+        "ca = particles(name='CA')\n"
+        "def clamp(d):\n"
+        "    if d > 30.0:\n"
+        "        return 30.0\n"
+        "    else:\n"
+        "        return d\n"
+        "def bump(d):\n"
+        "    e = d\n"
+        "    if d > 30.0:\n"
+        "        e = d - 10.0\n"
+        "    return e\n"
+        "ends = distance(ca[0], ca[14])\n"
+        "c = clamp(ends)\n"
+        "b = bump(ends)\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r.alloc}};
+    md_system_state_init(&l.state, sys->atom.count);
+    r.in.load_frame = vial_ir__load;
+    r.in.load_user = &l;
+    const bool ok = vial_interp_run(&r.in, nf);
+    for (size_t i = 0; i < md_array_size(r.in.errors); ++i) printf("failed: %s %s\n", r.in.errors[i].code, r.in.errors[i].message);
+    ASSERT_TRUE(ok);
+    const vial_ir_t* ir = md_vial__run_ir(r.prog);
+    int above = 0;
+    for (int64_t f = 0; f < nf; ++f) {
+        const double e = vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "ends"), f));
+        above += e > 30.0;
+        EXPECT_EQ((float)(e > 30.0 ? 30.0 : e), (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "c"), f)));
+        EXPECT_EQ(e > 30.0 ? (float)e - 10.0f : (float)e, (float)vial_ir__num(vial_interp_at(&r.in, vial_ir__output(ir, "b"), f)));
+    }
+    EXPECT_GT(above, 0);
+    EXPECT_LT(above, (int)nf);
+    md_system_state_free(&l.state);
+    vial_ir__end(&r);
+}

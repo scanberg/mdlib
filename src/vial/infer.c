@@ -6,6 +6,7 @@
 // broadcast. Static values are folded where the operands are known, so `2 < n <= 500` is True when n is.
 
 #include "infer_internal.h"
+#include "ir.h"
 
 #include <core/md_common.h>
 
@@ -1391,6 +1392,112 @@ static bool check_block(infer_t* x, vial_node_id b) {
 }
 
 // An if: a static condition checks only the branch it takes. True when every branch that can run returned.
+static bool check_if(infer_t* x, vial_node_id s);
+static uint8_t ct_stage_of(const vial_ir_t* ir, vial_ssa_t v) { return ir->values[v].type.stage; }
+
+// Whether a statement holds a return, outside the defs nested in it
+static bool contains_return(const infer_t* x, vial_node_id n) {
+    if (!n) return false;
+    const vial_node_kind_t k = kind_of(x, n);
+    if (k == VIAL_N_RETURN) return true;
+    if (k == VIAL_N_DEF) return false;
+    for (uint32_t i = 0; i < num_children(x, n); ++i) if (contains_return(x, child(x, n, i))) return true;
+    return false;
+}
+
+static uint32_t* env_copy(const infer_t* x) {
+    uint32_t* e = NULL;
+    const size_t n = md_array_size(x->frame->sym_ssa);
+    md_array_resize(e, n, x->alloc);
+    if (n) memcpy(e, x->frame->sym_ssa, n * sizeof(uint32_t));
+    return e;
+}
+
+static void env_set(infer_t* x, const uint32_t* e) {
+    vx_frame_t* f = x->frame;
+    const size_t n = md_array_size(f->sym_ssa), m = md_array_size(e);
+    for (size_t i = 0; i < n; ++i) f->sym_ssa[i] = i < m ? e[i] : 0;
+}
+
+static uint32_t env_at(const uint32_t* e, size_t i) { return i < md_array_size(e) ? e[i] : 0; }
+
+// An if in a def whose condition is known only per frame: an IF op whose regions are the branches. Both branches
+// return, and the if's value is the def's; or neither holds a return, and the names they bind are merged. Anything
+// else is not lowered yet: false, with nothing emitted that is reachable.
+static bool lower_dynamic_if(infer_t* x, vial_node_id s, bool* returned) {
+    vial_ir_t* ir = x->ir;
+    const vial_node_id c = child(x, s, 0), then_n = child(x, s, 1), other = child(x, s, 2);
+    const vial_ssa_t cv = vx_ssa(x, c);
+    if (!cv) return false;
+    const bool rt = contains_return(x, then_n), re = contains_return(x, other);
+    const uint32_t saved = ir->insert, func = ir->regions[ir->insert].func;
+    uint32_t* snap = env_copy(x);
+    const uint32_t r1 = vial_ir_region(ir, VIAL_IR_NO_OP, func, NULL, 0);
+    ir->insert = r1;
+    const bool a = check_block(x, then_n);
+    uint32_t* env1 = env_copy(x);
+    env_set(x, snap);
+    const uint32_t r2 = vial_ir_region(ir, VIAL_IR_NO_OP, func, NULL, 0);
+    ir->insert = r2;
+    const bool b = other ? (kind_of(x, other) == VIAL_N_IF ? check_if(x, other) : check_block(x, other)) : false;
+    uint32_t* env2 = env_copy(x);
+    ir->insert = saved;
+    const md_vial_span_t sp = vx_span(x, s);
+    if (a && b) {
+        // Both return: each region ended in the yield of its return
+        const T rt_t = x->frame->has_result ? x->frame->result : scalar(VIAL_DT_NONE);
+        const uint32_t op = vial_ir_emit(ir, &(vial_ir_emit_t){.kind = VIAL_IR_IF, .args = &cv, .num_args = 1, .types = &rt_t, .num_results = 1, .span = sp});
+        vial_ir_attach(ir, op, 0, r1);
+        vial_ir_attach(ir, op, 1, r2);
+        const vial_ssa_t r = ir->ops[op].result;
+        vial_ir_yield(ir, &r, 1, sp);
+        *returned = true;
+        return true;
+    }
+    if (rt || re) {
+        env_set(x, env2);
+        vx_lower_fail(x, s, "an if per frame where one branch returns and the other does not");
+        *returned = a && b;
+        return true;
+    }
+    // Neither returns: the names either branch rebinds, from the branch taken
+    vial_ssa_t y1[64], y2[64];
+    T types[64];
+    uint32_t slots[64], n = 0;
+    const size_t ns = md_array_size(x->frame->sym_ssa);
+    bool ok = true;
+    for (size_t i = 0; i < ns && ok; ++i) {
+        const uint32_t s0 = env_at(snap, i), s1 = env_at(env1, i), s2 = env_at(env2, i);
+        if (s1 == s0 && s2 == s0) continue;
+        if (!s1 || !s2 || n == 64) { ok = false; break; }
+        const T* t1 = vial_ir_type(ir, s1);
+        const T* t2 = vial_ir_type(ir, s2);
+        if (t1->dtype != t2->dtype || t1->ndim != t2->ndim) { ok = false; break; }
+        y1[n] = s1; y2[n] = s2; types[n] = *t1; slots[n] = (uint32_t)i;
+        if (t2->stage > types[n].stage) types[n].stage = t2->stage;
+        if (ct_stage_of(ir, cv) > types[n].stage) types[n].stage = ct_stage_of(ir, cv);
+        n++;
+    }
+    if (!ok) {
+        env_set(x, env2);
+        vx_lower_fail(x, s, "an if per frame whose branches bind a name differently");
+        *returned = false;
+        return true;
+    }
+    ir->insert = r1;
+    vial_ir_yield(ir, y1, n, sp);
+    ir->insert = r2;
+    vial_ir_yield(ir, y2, n, sp);
+    ir->insert = saved;
+    const uint32_t op = vial_ir_emit(ir, &(vial_ir_emit_t){.kind = VIAL_IR_IF, .args = &cv, .num_args = 1, .types = types, .num_results = n, .span = sp});
+    vial_ir_attach(ir, op, 0, r1);
+    vial_ir_attach(ir, op, 1, r2);
+    env_set(x, snap);
+    for (uint32_t k = 0; k < n; ++k) x->frame->sym_ssa[slots[k]] = ir->ops[op].result + k;
+    *returned = false;
+    return true;
+}
+
 static bool check_if(infer_t* x, vial_node_id s) {
     const vial_node_id c = child(x, s, 0);
     const T ct = infer(x, c);
@@ -1405,8 +1512,10 @@ static bool check_if(infer_t* x, vial_node_id s) {
     } else if (!x->frame && !vial_type_is_error(&ct) && ct.stage != VIAL_STAGE_STATIC) {
         diag_fix(x, "E0403", c, "where(...)", "the condition changes per frame, and what a script publishes cannot; where() chooses per frame");
     }
-    // Lowering: an if whose branch is chosen per frame is not lowered yet; its branches are checked without emitting,
-    // and the def it is in is not evaluated
+    // Lowering: in a def, an if whose branch is chosen per frame is an if of the IR, its branches regions
+    bool returned;
+    if (x->ir && x->frame && !vial_type_is_error(&ct) && ct.dtype == VIAL_DT_BOOL && !ct.ndim && lower_dynamic_if(x, s, &returned)) return returned;
+    // Otherwise its branches are checked without emitting, and the def it is in is not evaluated
     struct vial_ir_t* ir = x->ir;
     if (ir) {
         // An error was reported for the condition, E0303 or E0403, unless it is one bool in a def
