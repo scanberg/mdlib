@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VIAL_BENCH_VERSION "vial bench r2"
+#define VIAL_BENCH_VERSION "vial bench r3"
 
 typedef struct vial_bench_pair_t {
     const char* v1;
@@ -55,6 +55,9 @@ static const vial_bench_pair_t vial_bench_pairs[] = {
     {"p = angle(residue(1), residue(2), residue(3));",        "p = angle(residues[0].com, residues[1].com, residues[2].com)"},
     {"p = rmsd(atom(1:40));",                                 "x = particles[0:40]\np = rmsd(x, at(x.xyz, frame=0), weights='mass')"},
     {"p = distance_min(atom(1:400), atom(401:1336));",        "p = distance(particles[0:400], particles[400:1336], between='closest')"},
+    // The same reductions written as a matrix of every pair, which the compiler computes by a search
+    {"p = distance_min(atom(1:400), atom(401:1336));",        "p = min(distance(particles[0:400].xyz[:, None], particles[400:1336].xyz))"},
+    {"p = distance_max(atom(1:50), atom(51:100));",           "p = max(distance(particles[0:50].xyz[:, None], particles[50:100].xyz))"},
 };
 
 static bool str_ends(str_t s, const char* e) {
@@ -121,7 +124,7 @@ UTEST(vial_bench, against_v1) {
     const uint32_t nf = time->format.shape[0];
     printf("%s: %.*s, %zu particles, %zu residues; %.*s, %u frames; fastest of %d\n", VIAL_BENCH_VERSION, (int)top.len, top.ptr,
         sys.atom.count, md_system_residue_count(&sys), (int)traj.len, traj.ptr, nf, reps);
-    printf("%s: %-60s %10s %10s %10s %10s\n", VIAL_BENCH_VERSION, "v2 script", "v1 compile", "v2 compile", "v1 eval", "v2 eval");
+    printf("%s: %2s %-72s %10s %10s %10s %10s\n", VIAL_BENCH_VERSION, "", "v2 script", "v1 compile", "v2 compile", "v1 eval", "v2 eval");
 
     // VIAL_BENCH_ONLY=i: pair i alone, for a profiler; nothing else is run
     const int only = getenv("VIAL_BENCH_ONLY") ? atoi(getenv("VIAL_BENCH_ONLY")) : -1;
@@ -142,13 +145,21 @@ UTEST(vial_bench, against_v1) {
             }
             md_arena_allocator_destroy(a);
         }
-        if (!ok) { printf("%s: %-60s failed\n", VIAL_BENCH_VERSION, vial_bench_pairs[i].v2); continue; }
-        printf("%s: %-60s %8.3f ms %8.3f ms %8.2f ms %8.2f ms  %5.2fx\n", VIAL_BENCH_VERSION, vial_bench_pairs[i].v2, best[0], best[1], best[2], best[3],
+        // The script on one line, its lines joined by "; "
+        char shown[256];
+        size_t w = 0;
+        for (const char* c = vial_bench_pairs[i].v2; *c && w + 3 < sizeof(shown); ++c) {
+            if (*c == '\n') { shown[w++] = ';'; shown[w++] = ' '; }
+            else shown[w++] = *c;
+        }
+        shown[w] = '\0';
+        if (!ok) { printf("%s: %2zu %-72s failed\n", VIAL_BENCH_VERSION, i, shown); continue; }
+        printf("%s: %2zu %-72s %8.3f ms %8.3f ms %8.2f ms %8.2f ms  %5.2fx\n", VIAL_BENCH_VERSION, i, shown, best[0], best[1], best[2], best[3],
             best[3] / best[2]);
         sum_v1 += best[2];
         sum_v2 += best[3];
     }
-    printf("%s: %-60s %10s %10s %8.2f ms %8.2f ms  %5.2fx\n", VIAL_BENCH_VERSION, "every pair", "", "", sum_v1, sum_v2, sum_v2 / sum_v1);
+    printf("%s: %2s %-72s %10s %10s %8.2f ms %8.2f ms  %5.2fx\n", VIAL_BENCH_VERSION, "", "every pair", "", "", sum_v1, sum_v2, sum_v2 / sum_v1);
     if (only >= 0) {
         md_arena_allocator_destroy(alloc);
         return;

@@ -626,6 +626,31 @@ bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* 
         else total *= sels[i].count;
     }
     if (!vial_k_room(k, total)) return false;
+    // A block of a, in order: each output dimension of more than one runs over its source with the stride of the
+    // dimensions after it, as a slice by 1 of a whole dimension, a new axis or a scalar position does. One copy.
+    if (a->dtype != VIAL_DT_SET && !missing_all && a->data) {
+        size_t base = 0, stride = 1;
+        bool block = true;
+        for (int i = (int)ns - 1; i >= 0 && block; --i) {
+            const sel_t* s = &sels[i];
+            base += s->offsets[0];
+            if (!s->out_dims || s->count <= 1) continue;
+            for (uint32_t q = 1; q < s->count && block; ++q) block = s->offsets[q] == s->offsets[0] + q * stride;
+            stride *= s->count;
+        }
+        if (block) {
+            const size_t es = vial_dtype_size(a->dtype);
+            if (!es) return vial_rt_fail(k, "R0103", "indexing what holds no values");
+            vial_val_t m; if (!vial_k_make(k, a->dtype, o.ndim, o.dims, &m)) return false;
+            o.data = m.data;
+            if (total) memcpy(o.data, (const uint8_t*)a->data + base * es, total * es);
+            if (a->missing && total) {
+                for (size_t q = 0; q < total; ++q) if (vial_val_is_missing(a, base + q)) vial_val_set_missing(&o, q, k->alloc);
+            }
+            *out = o;
+            return true;
+        }
+    }
     size_t* src = md_alloc(k->alloc, (total ? total : 1) * sizeof(size_t));
     {
         uint32_t idx[VIAL_MAX_DIMS * 2 + 2] = {0};

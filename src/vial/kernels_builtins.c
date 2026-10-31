@@ -80,9 +80,43 @@ static bool str_is(const vial_val_t* v, const char* s) {
 
 // ### POSITIONS ###
 
+// Each particle's mass, looked up once for the interpreter's life, as v1 did: a property of the system, not of a frame
+static const float* k_masses(vial_kctx_t* k) {
+    vial_interp_t* in = k->in;
+    if (in->masses || !in->msys) return in->masses;
+    const size_t n = in->msys->atom.count;
+    float* m = md_alloc(in->alloc, (n ? n : 1) * sizeof(float));
+    for (size_t i = 0; i < n; ++i) m[i] = md_atom_mass(&in->msys->atom, i);
+    in->masses = m;
+    return m;
+}
+
+static inline float k_mass(const float* masses, const md_system_t* sys, size_t i) {
+    return i < sys->atom.count ? masses[i] : 0.0f;
+}
+
 static const float* frame_xyz(vial_kctx_t* k) {
     if (!k->in->frame || !k->in->frame->xyz) { vial_rt_fail(k, "R0103", "positions need a frame"); return NULL; }
     return k->in->frame->xyz;
+}
+
+// The positions of particles idx[n] into out[3n]: one copy where they are a run, as slices and residues are (a set's
+// particles are sorted and distinct, so they are a run when the last is n - 1 past the first). False past the frame.
+static bool gather_xyz(float* out, const float* xyz, size_t na, const uint32_t* idx, uint32_t n) {
+    if (!n) return true;
+    if (idx[n - 1] >= na || idx[0] >= na) return false;
+    if (idx[n - 1] - idx[0] == n - 1) {
+        memcpy(out, xyz + 3 * (size_t)idx[0], 3 * sizeof(float) * n);
+        return true;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        if (idx[i] >= na) return false;
+        const float* p = xyz + 3 * (size_t)idx[i];
+        out[3 * i + 0] = p[0];
+        out[3 * i + 1] = p[1];
+        out[3 * i + 2] = p[2];
+    }
+    return true;
 }
 
 bool vial_k_positions(vial_kctx_t* k, const vial_val_t* s, vial_val_t* out) {
@@ -96,10 +130,7 @@ bool vial_k_positions(vial_kctx_t* k, const vial_val_t* s, vial_val_t* out) {
         const uint32_t n = vial_sets_size(set, 0);
         vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, 2, (uint32_t[]){n, 3}, &o)) return false;
         const uint32_t* idx = vial_sets_items(set, 0);
-        for (uint32_t i = 0; i < n; ++i) {
-            if (idx[i] >= na) return vial_rt_fail(k, "R0103", "particle %u is beyond the frame's %zu", idx[i], na);
-            memcpy((float*)o.data + 3 * i, xyz + 3 * (size_t)idx[i], 3 * sizeof(float));
-        }
+        if (!gather_xyz(o.data, xyz, na, idx, n)) return vial_rt_fail(k, "R0103", "a particle is beyond the frame's %zu", na);
         o.origin = set;
         *out = o;
         return true;
@@ -225,9 +256,12 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
             // Gathered, so mdlib's packed kernel runs over contiguous positions and weights
             vec3_t* g = k_alloc64(k, n * sizeof(vec3_t));
             float* w = by_mass && sys ? md_alloc(k->alloc, n * sizeof(float)) : NULL;
-            for (uint32_t q = 0; q < n; ++q) {
-                memcpy(&g[q], xyz + 3 * (size_t)idx[q], 3 * sizeof(float));
-                if (w) w[q] = md_atom_mass(&sys->atom, (size_t)idx[q]);
+            if (!gather_xyz((float*)g, xyz, k->in->frame->num_atoms, (const uint32_t*)idx, n)) {
+                return vial_rt_fail(k, "R0103", "a particle is beyond the frame's %zu", k->in->frame->num_atoms);
+            }
+            if (w) {
+                const float* ms = k_masses(k);
+                for (uint32_t q = 0; q < n; ++q) w[q] = k_mass(ms, sys, (size_t)idx[q]);
             }
             const vec3_t c = md_util_com_compute(g, w, NULL, n, &cell);
             float* O = (float*)o.data + 3 * i;
@@ -247,7 +281,8 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
     if (by_mass) {
         if (!p.origin || !sys || vial_sets_size(p.origin, 0) != n) return vial_rt_fail(k, "R0103", "com by mass of points whose particles are not known; write weights=None");
         w = md_alloc(k->alloc, n * sizeof(float));
-        for (uint32_t q = 0; q < n; ++q) w[q] = md_atom_mass(&sys->atom, vial_sets_items(p.origin, 0)[q]);
+        const float* ms = k_masses(k);
+        for (uint32_t q = 0; q < n; ++q) w[q] = k_mass(ms, sys, vial_sets_items(p.origin, 0)[q]);
     }
     // Each group copied to one aligned buffer, for the same grouping of its sum (k_alloc64)
     vec3_t* buf = n ? k_alloc64(k, n * sizeof(vec3_t)) : NULL;
@@ -370,39 +405,91 @@ static bool k_pair(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv, b
     return k_pair_x(k, pv, qv, closest, false, -1, out);
 }
 
-// The extreme pair of points P[n] and Q[m] under the minimum image. Every pair, in order, by the squared distance: the
-// first pair at the extreme of it wins ties, and the distance is its square root, the same bits distance() gives for
-// that pair. Distinct leaves out j == skip and, given pp and qp, pairs of one particle. bi is -1 when no pair is left.
-// row and d2 hold m each. One definition for a call and for a map's calls at once (vial_k_pair_batch), so both give
-// the same bits. The search lowering replaces this by a spatial search that gives the same bits.
+// The matrix's entry for points a and b: the length of b - a under the minimum image, as distance() computes it
+static inline float pair_entry(const float* a, const float* b, const md_unitcell_t* cell) {
+    vec3_t v = {{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
+    md_util_min_image_vec3(&v, 1, cell);
+    return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+// Row i of the matrix, each entry as pair_entry gives it, into d[m]; row holds m
+static void pair_row(const float* a, const float* Q, uint32_t m, const md_unitcell_t* cell, vec3_t* row, float* d) {
+    for (uint32_t j = 0; j < m; ++j) {
+        const float* b = Q + 3 * j;
+        row[j] = (vec3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
+    }
+    md_util_min_image_vec3(row, m, cell);
+    for (uint32_t j = 0; j < m; ++j) d[j] = sqrtf(row[j].x * row[j].x + row[j].y * row[j].y + row[j].z * row[j].z);
+}
+
+// The extreme pair of points P[n] and Q[m] under the minimum image, by the matrix's entries: the first pair in row
+// order at the extreme of them wins ties, and the distance is its entry, the same bits distance() gives for that pair.
+// Distinct leaves out j == skip and, given pp and qp, pairs of one particle. bi is -1 when no pair is left. row and d
+// hold m each. One definition for a call and for a map's calls at once (vial_k_pair_batch), so both give the same
+// bits; pair_extreme_fast finds the same pair faster.
 static void pair_extreme(const float* P, uint32_t n, const float* Q, uint32_t m, const md_unitcell_t* cell, bool closest, bool distinct,
-                         int64_t skip, const uint32_t* pp, const uint32_t* qp, vec3_t* row, float* d2, float* best_out, int32_t* bi_out, int32_t* bj_out) {
+                         int64_t skip, const uint32_t* pp, const uint32_t* qp, vec3_t* row, float* d, float* best_out, int32_t* bi_out, int32_t* bj_out) {
     float best = 0.0f;
     int32_t bi = -1, bj = -1;
-    // A row at a time: Q's points against one of P's, the minimum image taken over the row in one call
     for (uint32_t i = 0; i < n; ++i) {
-        const float* a = P + 3 * i;
+        pair_row(P + 3 * i, Q, m, cell, row, d);
         for (uint32_t j = 0; j < m; ++j) {
-            const float* b = Q + 3 * j;
-            row[j] = (vec3_t){{b[0] - a[0], b[1] - a[1], b[2] - a[2]}};
-        }
-        md_util_min_image_vec3(row, m, cell);
-        for (uint32_t j = 0; j < m; ++j) d2[j] = row[j].x * row[j].x + row[j].y * row[j].y + row[j].z * row[j].z;
-        if (!distinct) {
-            for (uint32_t j = 0; j < m; ++j) {
-                if (bi < 0 || (closest ? d2[j] < best : d2[j] > best)) { best = d2[j]; bi = (int32_t)i; bj = (int32_t)j; }
-            }
-            continue;
-        }
-        for (uint32_t j = 0; j < m; ++j) {
-            if ((int64_t)j == skip) continue;
-            if (pp && qp && pp[i] == qp[j]) continue;
-            if (bi < 0 || (closest ? d2[j] < best : d2[j] > best)) { best = d2[j]; bi = (int32_t)i; bj = (int32_t)j; }
+            if (distinct && ((int64_t)j == skip || (pp && qp && pp[i] == qp[j]))) continue;
+            if (bi < 0 || (closest ? d[j] < best : d[j] > best)) { best = d[j]; bi = (int32_t)i; bj = (int32_t)j; }
         }
     }
     *best_out = best;
     *bi_out = bi;
     *bj_out = bj;
+}
+
+// The largest magnitude of v[n], false if one is not finite
+static bool finite_scale(const float* v, size_t n, float* scale) {
+    float s = *scale;
+    for (size_t i = 0; i < n; ++i) {
+        if (!isfinite(v[i])) return false;
+        s = MAX(s, fabsf(v[i]));
+    }
+    *scale = s;
+    return true;
+}
+
+// pair_extreme without distinct, by mdlib's distance kernel, which skips what cannot be the extreme: the same pair
+// and the same bits. The kernel squares and reduces in another order than the matrix's entries, so its distances may
+// be a few ulps off them, within slack, a bound with ample room. The pair at the extreme of the entries is then within
+// twice that of the kernel's extreme, so the kernel collects every pair within it, in the same pass, and the extreme
+// of their entries is the matrix's. False where it does not apply: small inputs, which pair_extreme does as fast, a
+// triclinic cell, whose minimum image the kernel takes otherwise than distance() does, positions that are not
+// finite, and more near pairs than a tie of a few thousand.
+static bool pair_extreme_fast(md_allocator_i* alloc, const float* P, uint32_t n, const float* Q, uint32_t m, const md_unitcell_t* cell,
+                              bool closest, float* best_out, int32_t* bi_out, int32_t* bj_out) {
+    if ((uint64_t)n * m < 64 || (md_unitcell_flags(cell) & MD_UNITCELL_TRICLINIC)) return false;
+    float scale = 0.0f;
+    if (!finite_scale(P, 3 * (size_t)n, &scale) || !finite_scale(Q, 3 * (size_t)m, &scale)) return false;
+    float ext[3];
+    md_unitcell_diag_extract_float(ext, cell);
+    const float slack = (scale + ext[0] + ext[1] + ext[2]) * 1.0e-5f + 1.0e-4f;
+    for (size_t cap = 64; cap <= 4096; cap *= 8) {
+        int64_t* a = md_alloc(alloc, cap * sizeof(int64_t));
+        int64_t* b = md_alloc(alloc, cap * sizeof(int64_t));
+        const size_t cnt = closest ? md_util_min_distance_near(a, b, cap, 2.0f * slack, (const vec3_t*)P, n, (const vec3_t*)Q, m, cell)
+                                   : md_util_max_distance_near(a, b, cap, 2.0f * slack, (const vec3_t*)P, n, (const vec3_t*)Q, m, cell);
+        if (cnt > cap) continue;
+        float best = 0.0f;
+        int32_t bi = -1, bj = -1;
+        for (size_t c = 0; c < cnt; ++c) {
+            const int32_t i = (int32_t)a[c], j = (int32_t)b[c];
+            const float e = pair_entry(P + 3 * (size_t)i, Q + 3 * (size_t)j, cell);
+            // The first in row order among equal entries, as pair_extreme has it
+            if (bi < 0 || (closest ? e < best : e > best) || (e == best && (i < bi || (i == bi && j < bj)))) { best = e; bi = i; bj = j; }
+        }
+        if (bi < 0) return false;   // cannot be: the kernel's own extreme is near itself
+        *best_out = best;
+        *bi_out = bi;
+        *bj_out = bj;
+        return true;
+    }
+    return false;
 }
 
 bool vial_k_pair_batch(vial_kctx_t* k, bool closest, const vial_sets_t* A, const vial_sets_t* B, const uint32_t* ia, const uint32_t* ib,
@@ -434,11 +521,14 @@ bool vial_k_pair_batch(vial_kctx_t* k, bool closest, const vial_sets_t* A, const
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
         if (n && m) {
-            pair_extreme(pos[0] + 3 * (size_t)A->offset[ia[c]], n, pos[1] + 3 * (size_t)B->offset[ib[c]], m, &cell, closest, false, -1,
-                NULL, NULL, row, d2, &best, &bi, &bj);
+            const float* P = pos[0] + 3 * (size_t)A->offset[ia[c]];
+            const float* Q = pos[1] + 3 * (size_t)B->offset[ib[c]];
+            if (!pair_extreme_fast(k->alloc, P, n, Q, m, &cell, closest, &best, &bi, &bj)) {
+                pair_extreme(P, n, Q, m, &cell, closest, false, -1, NULL, NULL, row, d2, &best, &bi, &bj);
+            }
         }
         if (bi < 0) { O[c] = 0.0f; vial_val_set_missing(out, c, k->alloc); }
-        else O[c] = sqrtf(best);
+        else O[c] = best;
     }
     return true;
 }
@@ -463,9 +553,12 @@ static bool k_pair_x(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* qv,
         float* d2 = md_alloc(k->alloc, m * sizeof(float));
         float best = 0.0f;
         int32_t bi = -1, bj = -1;
-        pair_extreme((const float*)p.data, n, (const float*)q.data, m, &cell, closest, distinct, skip,
-            by_particle ? vial_sets_items(p.origin, 0) : NULL, by_particle ? vial_sets_items(q.origin, 0) : NULL, row, d2, &best, &bi, &bj);
-        *(float*)el[0].data = sqrtf(best);
+        if (distinct || p.missing || q.missing ||
+            !pair_extreme_fast(k->alloc, (const float*)p.data, n, (const float*)q.data, m, &cell, closest, &best, &bi, &bj)) {
+            pair_extreme((const float*)p.data, n, (const float*)q.data, m, &cell, closest, distinct, skip,
+                by_particle ? vial_sets_items(p.origin, 0) : NULL, by_particle ? vial_sets_items(q.origin, 0) : NULL, row, d2, &best, &bi, &bj);
+        }
+        *(float*)el[0].data = best;
         *(int32_t*)el[1].data = bi;
         *(int32_t*)el[2].data = bj;
         if (bi < 0) for (int e = 0; e < 3; ++e) vial_val_set_missing(&el[e], 0, k->alloc);
@@ -505,13 +598,17 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
     vial_val_t o; if (!vial_k_make(k, str ? VIAL_DT_STR : VIAL_DT_FLOAT, 1, &n, &o)) return false;
     const md_attribute_t* charges = !strcmp(name, "charge") ? md_attributes_find(&sys->attributes, STR_LIT("atom/charge")) : NULL;
     const float* cq = charges ? md_attribute_view(charges, MD_ATTRIBUTE_TYPE_F32, 1, 1) : NULL;
+    const int which = !strcmp(name, "mass") ? 0 : !strcmp(name, "charge") ? 1 : !strcmp(name, "name") ? 2 : !strcmp(name, "element") ? 3 : -1;
+    if (which < 0) return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
+    const float* ms = which == 0 ? k_masses(k) : NULL;
     for (uint32_t i = 0; i < n; ++i) {
         const size_t a = idx[i];
-        if (!strcmp(name, "mass"))         ((float*)o.data)[i] = md_atom_mass(&sys->atom, a);
-        else if (!strcmp(name, "charge"))  ((float*)o.data)[i] = cq ? cq[a] : (float)md_atom_formal_charge(&sys->atom, a);
-        else if (!strcmp(name, "name"))    ((str_t*)o.data)[i] = md_atom_name(&sys->atom, a);
-        else if (!strcmp(name, "element")) ((str_t*)o.data)[i] = md_util_element_symbol(md_atom_atomic_number(&sys->atom, a));
-        else return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
+        switch (which) {
+        case 0:  ((float*)o.data)[i] = k_mass(ms, sys, a); break;
+        case 1:  ((float*)o.data)[i] = cq ? cq[a] : (float)md_atom_formal_charge(&sys->atom, a); break;
+        case 2:  ((str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
+        default: ((str_t*)o.data)[i] = md_util_element_symbol(md_atom_atomic_number(&sys->atom, a)); break;
+        }
     }
     o.origin = s->sets;
     *out = o;
@@ -829,6 +926,18 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
                 if (red == VIAL_PAIRS_ANY) ((uint8_t*)o.data)[L] = counts[L] > 0;
                 else ((int32_t*)o.data)[L] = counts[L];
             }
+            *out = o;
+            return true;
+        }
+    }
+    // The minimum or maximum over every pair: the closest or farthest pair's entry, by the kernels
+    if (!test && axis == VIAL_PAIRS_ALL && (red == VIAL_PAIRS_MIN || red == VIAL_PAIRS_MAX) && odt == VIAL_DT_FLOAT && !px.missing && !py.missing && n && m) {
+        float best;
+        int32_t bi, bj;
+        if (pair_extreme_fast(k->alloc, px.data, (uint32_t)n, py.data, (uint32_t)m, &cell, red == VIAL_PAIRS_MIN, &best, &bi, &bj)) {
+            vial_val_t o;
+            if (!vial_k_make(k, odt, 0, NULL, &o)) return false;
+            *(float*)o.data = best;
             *out = o;
             return true;
         }
@@ -1358,7 +1467,7 @@ static bool k_fit(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* rv, co
         w[i] = 1.0;
         if (by_mass) {
             if (!p.origin || !sys) return vial_rt_fail(k, "R0103", "fit by mass needs points whose particles are known");
-            w[i] = md_atom_mass(&sys->atom, particle);
+            w[i] = k_mass(k_masses(k), sys, particle);
         }
     }
     double cp[3] = {0}, cr[3] = {0}, ws = 0.0;

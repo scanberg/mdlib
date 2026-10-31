@@ -773,6 +773,73 @@ UTEST(vial_ir, pairs_reductions) {
     }
 }
 
+// The closest and farthest pairs, which mdlib's kernels find, against the matrix: the same entry, and the first pair in
+// row order at it. Coordinates on a grid give many exact ties, and many within an ulp.
+UTEST(vial_ir, pair_extremes_match_matrix) {
+    const char* body =
+        "dm = distance(p[:, None], q)\n"
+        "c, ci, cj = closest_pair(p, q)\n"
+        "f, fi, fj = farthest_pair(p, q)\n";
+    const char* sets[3] = {
+        "p = particles(name='CA').xyz\nq = particles.xyz[100:400]\n",
+        "p = round(particles(name='CA').xyz / 2.0)\nq = round(particles(name='CA').xyz / 2.0 + 0.25)\n",
+        "p = round(particles(name='CA').xyz * 3.0) / 3.0 + 0.1\nq = round(particles.xyz[0:300] * 3.0) / 3.0\n",
+    };
+    // The trajectory's system is small, so its sets are every particle; its cell is periodic
+    const char* traj_sets[3] = {
+        "p = particles.xyz\nq = particles.xyz + 0.37\n",
+        "p = round(particles.xyz / 2.0)\nq = round(particles.xyz / 2.0 + 0.25)\n",
+        "p = round(particles.xyz * 2.0) / 2.0\nq = round(particles.xyz * 2.0) / 2.0 + 0.5\n",
+    };
+    for (int pass = 0; pass < 6; ++pass) {
+        const bool traj = pass >= 3;
+        char src[1024];
+        snprintf(src, sizeof(src), "%s%s", traj ? traj_sets[pass % 3] : sets[pass % 3], body);
+        int64_t run_frames = 0;
+        const md_system_t* sys = traj ? vial_ir__run_p(&run_frames) : vial_test_system('T');
+        ASSERT_TRUE(sys != NULL);
+        vial_ir__run_t r;
+        ASSERT_TRUE(vial_ir__start(&r, src, sys));
+        const vial_ir_t* ir = md_vial__run_ir(r.prog);
+        vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r.alloc}};
+        if (traj) md_system_state_init(&l.state, sys->atom.count);
+        const md_system_state_t* st = vial_test_state('T');
+        for (int64_t f = 0; f < (traj ? 3 : 1); ++f) {
+            vial_frame_t fr;
+            if (traj) ASSERT_TRUE(vial_ir__load(&l, f * 7, &fr));
+            else fr = (vial_frame_t){.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
+            EXPECT_TRUE(vial_interp_frame(&r.in, &fr));
+            const vial_val_t* dm = vial_interp_value(&r.in, vial_ir__output(ir, "dm"));
+            ASSERT_TRUE(dm && dm->ndim == 2);
+            const uint32_t n = dm->dims[0], m = dm->dims[1];
+            EXPECT_TRUE((uint64_t)n * m >= 64);     // as many as the kernel is used for
+            float mn = vial_ir__f(dm, 0), mx = mn;
+            int32_t mi = 0, mj = 0, xi = 0, xj = 0;
+            for (uint32_t i = 0; i < n; ++i) {
+                for (uint32_t j = 0; j < m; ++j) {
+                    const float d = vial_ir__f(dm, (size_t)i * m + j);
+                    if (d < mn) { mn = d; mi = (int32_t)i; mj = (int32_t)j; }
+                    if (d > mx) { mx = d; xi = (int32_t)i; xj = (int32_t)j; }
+                }
+            }
+            const char* names[6] = {"c", "ci", "cj", "f", "fi", "fj"};
+            const vial_val_t* v[6];
+            for (int k = 0; k < 6; ++k) {
+                v[k] = vial_interp_value(&r.in, vial_ir__output(ir, names[k]));
+                ASSERT_TRUE(v[k] != NULL);
+            }
+            EXPECT_EQ(mn, vial_ir__f(v[0], 0));
+            EXPECT_EQ(mi, *(const int32_t*)v[1]->data);
+            EXPECT_EQ(mj, *(const int32_t*)v[2]->data);
+            EXPECT_EQ(mx, vial_ir__f(v[3], 0));
+            EXPECT_EQ(xi, *(const int32_t*)v[4]->data);
+            EXPECT_EQ(xj, *(const int32_t*)v[5]->data);
+        }
+        if (traj) md_system_state_free(&l.state);
+        vial_ir__end(&r);
+    }
+}
+
 // A map whose calls give arrays of sets of different lengths is R0103, not a ragged array (found by fuzzing)
 UTEST(vial_ir, ragged_sets_fail) {
     vial_ir__run_t r;
