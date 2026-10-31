@@ -527,3 +527,35 @@ UTEST(vial_ir, folds_as_evaluated) {
     }
     vial_ir__end(&r);
 }
+
+// A map stops between calls when asked, and a map's calls do not keep their intermediates: one over every pair of
+// residues runs in the memory of its result and of one call
+UTEST(vial_ir, map_interrupt_and_memory) {
+    vial_ir__run_t r;
+    const char* src =
+        "res = residues(chain='A', kind='amino_acid')\n"
+        "d = distance(res[:, None], res, between='closest')\n";
+    const md_system_state_t* st = vial_test_state('T');
+    ASSERT_TRUE(st != NULL);
+    ASSERT_TRUE(vial_ir__start(&r, src, vial_test_system('T')));
+    const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
+    volatile uint64_t stop = 1;
+    r.in.stop = &stop;
+    EXPECT_FALSE(vial_interp_frame(&r.in, &fr));
+    EXPECT_TRUE(r.in.interrupted);
+    EXPECT_EQ(0, (int)md_array_size(r.in.errors));
+    stop = 0;
+    r.in.interrupted = false;
+    EXPECT_TRUE(vial_interp_frame(&r.in, &fr));
+    const vial_ir_t* ir = md_vial__run_ir(r.prog);
+    const vial_val_t* d = vial_interp_value(&r.in, vial_ir__output(ir, "d"));
+    ASSERT_TRUE(d != NULL);
+    EXPECT_EQ(2, (int)d->ndim);
+    EXPECT_EQ(d->dims[0], d->dims[1]);
+    // The scratch arena of the map is back where it began
+    ASSERT_TRUE(r.in.map_scratch[0] != NULL);
+    const size_t pos = md_vm_arena_get_pos(r.in.map_scratch[0]);
+    EXPECT_TRUE(vial_interp_frame(&r.in, &fr));
+    EXPECT_EQ(pos, md_vm_arena_get_pos(r.in.map_scratch[0]));
+    vial_ir__end(&r);
+}
