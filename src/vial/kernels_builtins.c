@@ -694,6 +694,75 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
     return true;
 }
 
+// ### REDUCTIONS OVER EVERY PAIR ###
+// VIAL_IR_PAIRS: a line of the matrix at a time, a row or a column, computed as displacement and norm compute an entry
+// (b - a, mdlib's minimum image over the line, the squares summed in order and sqrtf) and reduced by k_reduce itself,
+// so every result has the matrix's bits. Over every pair, each row is reduced and then the rows' results, which min,
+// max, a count and any allow exactly. Memory is a line, not n * m.
+
+bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, const vial_val_t* x, const vial_val_t* y, const vial_val_t* r,
+                  vial_val_t* out) {
+    if (!x || !y || (test && !r)) return vial_rt_fail(k, "R0103", "a missing argument");
+    vial_val_t px, py;
+    if (!point(k, x, &px) || !point(k, y, &py)) return false;
+    const size_t n = vial_val_count(&px) / 3, m = vial_val_count(&py) / 3;
+    const red_t rd = red == VIAL_PAIRS_MIN ? R_MIN : red == VIAL_PAIRS_MAX ? R_MAX : red == VIAL_PAIRS_ARGMIN ? R_ARGMIN :
+                     red == VIAL_PAIRS_ARGMAX ? R_ARGMAX : red == VIAL_PAIRS_COUNT ? R_SUM : R_ANY;
+    const uint8_t odt = k->type->dtype;
+    const md_unitcell_t cell = frame_cell(k);
+    const double rv = test ? num_at(r, 0) : 0.0;
+    const bool r_missing = test && vial_val_is_missing(r, 0);
+    // The lines: rows of m entries, or columns of n
+    const bool rows = axis != 0;
+    const size_t lines = rows ? n : m, len = rows ? m : n;
+    vec3_t* buf = md_alloc(k->alloc, (len ? len : 1) * sizeof(vec3_t));
+    vial_val_t line = {.dtype = test ? VIAL_DT_BOOL : VIAL_DT_FLOAT, .ndim = 1, .dims = {(uint32_t)len}};
+    line.data = md_alloc(k->alloc, (len ? len : 1) * sizeof(float));
+    const size_t mask_bytes = ((len ? len : 1) + 63) / 64 * sizeof(uint64_t);
+    uint64_t* mask = md_alloc(k->alloc, mask_bytes);
+    // One line's reduction to a scalar of the result's dtype, or of the partial's over every pair
+    const vial_type_t lt = vial_type_scalar((vial_dtype_t)odt);
+    vial_kctx_t lk = *k;
+    lk.type = &lt;
+    vial_val_t o;
+    const uint32_t odims[1] = {(uint32_t)lines};
+    if (!vial_k_make(k, odt, 1, odims, &o)) return false;
+    const size_t es = vial_dtype_size(odt);
+    for (size_t L = 0; L < lines; ++L) {
+        if ((L & 63) == 0 && k->in->stop && md_atomic_load64(k->in->stop)) { k->in->interrupted = true; return false; }
+        bool any_missing = r_missing;
+        for (size_t e = 0; e < len; ++e) {
+            const size_t i = rows ? L : e, j = rows ? e : L;
+            const float* A = (const float*)px.data + 3 * i;
+            const float* B = (const float*)py.data + 3 * j;
+            buf[e] = (vec3_t){{B[0] - A[0], B[1] - A[1], B[2] - A[2]}};
+        }
+        md_util_min_image_vec3(buf, len, &cell);
+        memset(mask, 0, mask_bytes);
+        for (size_t e = 0; e < len; ++e) {
+            const size_t i = rows ? L : e, j = rows ? e : L;
+            float s = 0.0f;
+            s += buf[e].x * buf[e].x;
+            s += buf[e].y * buf[e].y;
+            s += buf[e].z * buf[e].z;
+            const float d = sqrtf(s);
+            bool miss = r_missing;
+            for (int c = 0; c < 3 && !miss; ++c) miss = vial_val_is_missing(&px, 3 * i + c) || vial_val_is_missing(&py, 3 * j + c);
+            if (miss) { mask[e >> 6] |= 1ull << (e & 63); any_missing = true; }
+            if (test) ((uint8_t*)line.data)[e] = test == VIAL_CMP_LT ? (double)d < rv : (double)d <= rv;
+            else ((float*)line.data)[e] = d;
+        }
+        line.missing = any_missing ? mask : NULL;
+        vial_val_t res;
+        if (!k_reduce(&lk, rd, &line, NULL, &res)) return false;
+        memcpy((uint8_t*)o.data + L * es, res.data, es);
+        if (vial_val_is_missing(&res, 0)) vial_val_set_missing(&o, L, k->alloc);
+    }
+    if (axis != VIAL_PAIRS_ALL) { *out = o; return true; }
+    // Over every pair: the rows' results reduced, as the matrix's entries are; a count sums the rows' counts
+    return k_reduce(k, rd, &o, NULL, out);
+}
+
 // ### ELEMENTWISE MATH ###
 
 static bool k_math1(vial_kctx_t* k, const char* name, const vial_val_t* a, vial_val_t* out) {

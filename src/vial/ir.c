@@ -83,7 +83,7 @@ void vial_ir_yield(vial_ir_t* ir, const vial_ssa_t* args, uint32_t n, md_vial_sp
 
 const char* vial_ir_kind_str(vial_ir_kind_t kind) {
     static const char* s[] = {"none", "const", "unary", "not", "binary", "fma", "compare", "logic", "setop", "convert",
-                              "index", "list", "tuple", "elem", "builtin", "call", "apply", "if", "for", "map", "kind", "fold", "yield"};
+                              "index", "list", "tuple", "elem", "builtin", "call", "apply", "if", "for", "map", "kind", "fold", "pairs", "yield"};
     return kind < VIAL_IR_KIND_COUNT ? s[kind] : "?";
 }
 
@@ -118,7 +118,7 @@ static void verify_op(verifier_t* v, uint32_t opi, bool last) {
     for (uint32_t i = 0; i < op->num_args; ++i) {
         const vial_ssa_t a = ir->args[op->arg_beg + i];
         if (!a) {
-            if (op->kind != VIAL_IR_BUILTIN) fail(v, "op %u: argument %u is none", opi, i);
+            if (op->kind != VIAL_IR_BUILTIN && !(op->kind == VIAL_IR_PAIRS && i == 2)) fail(v, "op %u: argument %u is none", opi, i);
             continue;
         }
         if (a >= md_array_size(ir->values) || !v->defined[a]) fail(v, "op %u uses %%%u before it is defined", opi, a);
@@ -133,6 +133,9 @@ static void verify_op(verifier_t* v, uint32_t opi, bool last) {
         break;
     case VIAL_IR_FMA:
         if (op->num_args != 3) fail(v, "op %u takes 3 arguments, has %u", opi, op->num_args);
+        break;
+    case VIAL_IR_PAIRS:
+        if (op->num_args != 3 || !op->num_results) fail(v, "op %u takes 3 arguments and gives a value, has %u", opi, op->num_args);
         break;
     case VIAL_IR_CONST:
         if (op->aux >= md_array_size(ir->consts)) fail(v, "op %u: constant %u does not exist", opi, op->aux);
@@ -358,6 +361,12 @@ static void dump_op(dumper_t* d, uint32_t opi, int indent) {
         if (op->kind == VIAL_IR_MAP) {
             sb_cstr(d, " mapping");
             for (uint32_t i = 0; i < op->num_args; ++i) sb_fmt(d, " %u", ir->ints[op->attr + i]);
+        }
+        if (op->kind == VIAL_IR_PAIRS) {
+            static const char* reds[] = {"?", "min", "max", "argmin", "argmax", "count", "any"};
+            const uint32_t axis = ir->ints[op->attr], test = ir->ints[op->attr + 1];
+            sb_fmt(d, " %s %s%s", op->sub < 7 ? reds[op->sub] : "?", axis == VIAL_PAIRS_ALL ? "all" : axis ? "rows" : "columns",
+                test == VIAL_CMP_LT ? " d < r" : test == VIAL_CMP_LE ? " d <= r" : "");
         }
     }
     }

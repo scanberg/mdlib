@@ -104,7 +104,13 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     const size_t no = md_array_size(ir->ops);
     md_array_resize(in->live, no, in->alloc);
     uint32_t* roots = NULL;
-    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) md_array_push(roots, ir->outputs[i].value, in->alloc);
+    // What the outputs need, but a hidden name's (_x): nothing reads it but hover, which evaluates for itself, so a
+    // matrix bound to _dm and only reduced is never built
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
+        const str_t nm = ir->outputs[i].name;
+        if (nm.len && nm.ptr[0] == '_') continue;
+        md_array_push(roots, ir->outputs[i].value, in->alloc);
+    }
     vial_interp_only(in, roots, md_array_size(roots));
     return true;
 }
@@ -491,6 +497,8 @@ static bool eval_op(vial_interp_t* in, uint32_t opi, md_allocator_i* alloc) {
     }
     case VIAL_IR_MAP:
         return eval_map(in, op, av, out, alloc);
+    case VIAL_IR_PAIRS:
+        return vial_k_pairs(&k, op->sub, ir->ints[op->attr], ir->ints[op->attr + 1], av[0], av[1], av[2], out);
     case VIAL_IR_IF: {
         if (av[0]->dtype != VIAL_DT_BOOL || !av[0]->data) return vial_rt_fail(&k, "R0103", "an if without a bool");
         const bool c = *(const uint8_t*)av[0]->data;

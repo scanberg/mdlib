@@ -46,6 +46,10 @@ typedef enum vial_ir_kind_t {
     VIAL_IR_KIND,       // [a]; sub: the kind (VX_KIND_*) a parameter takes: a set's positions, or a set of one
                         //   particle's position; a point as a group of one
     VIAL_IR_FOLD,       // [series, initial state]; region: the step, (state, value) -> state
+    VIAL_IR_PAIRS,      // [x, y, r or 0]: a reduction over the distances d[i][j] = |minimum image of y[j] - x[i]|, x [n][1]
+                        //   and y [m] of points or sets of one particle, without the matrix (vial_ir_pairs); sub: the
+                        //   vial_pairs_t; attr: in ints, [the axis reduced: 1 rows, 0 columns, VIAL_PAIRS_ALL every pair;
+                        //   the test of each distance against r: 0 none, VIAL_CMP_LT or VIAL_CMP_LE]
     VIAL_IR_YIELD,      // [values...]: ends a region
     VIAL_IR_KIND_COUNT
 } vial_ir_kind_t;
@@ -53,6 +57,10 @@ typedef enum vial_ir_kind_t {
 // VIAL_IR_KIND's sub beyond the parameter kinds: a set's particles, as an array of sets of one particle each, which a
 // comprehension iterates over
 #define VIAL_KIND_EACH 32
+
+// VIAL_IR_PAIRS's sub: the reduction, as the built-in of that name over the matrix (count is sum of the tests)
+typedef enum vial_pairs_t { VIAL_PAIRS_MIN = 1, VIAL_PAIRS_MAX, VIAL_PAIRS_ARGMIN, VIAL_PAIRS_ARGMAX, VIAL_PAIRS_COUNT, VIAL_PAIRS_ANY } vial_pairs_t;
+#define VIAL_PAIRS_ALL 2
 
 // VIAL_IR_MAP's sub: the region yields (value, keep) and the results hold only the kept values, as a comprehension
 // with an if gives
@@ -198,3 +206,9 @@ bool vial_ir_inline(const vial_ir_t* src, vial_ir_t* dst, md_allocator_i* alloc)
 // a * b + c as fma(a, b, c) where the product has no other use and every value is a float of one dtype; in place, on
 // the inlined IR. Returns how many it fused.
 uint32_t vial_ir_contract(vial_ir_t* ir, md_allocator_i* alloc);
+
+// Reductions over every pair (30 October): min, max, argmin and argmax of a matrix of distances distance(x[:, None], y)
+// over every pair, a row or a column, and sum and any of its tests d < r and d <= r, as VIAL_IR_PAIRS ops that never
+// build the matrix and give its bits. In place, on the inlined IR; a matrix something else reads is kept. Returns how
+// many it lowered.
+uint32_t vial_ir_pairs(vial_ir_t* ir, md_allocator_i* alloc);

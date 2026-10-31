@@ -657,3 +657,102 @@ UTEST(vial_ir, pair_maps_batch) {
         for (int b = 0; b < 2; ++b) vial_ir__end(&r[b]);
     }
 }
+
+// Reductions over every pair (30 October) are lowered to VIAL_IR_PAIRS and never build the matrix; each gives the
+// bits the matrix gives, reduced here in C from the matrix the script also publishes. On T, CA against a ligand, and
+// on P, CA against CA over three frames.
+static float vial_ir__f(const vial_val_t* v, size_t i) { return ((const float*)v->data)[i]; }
+
+UTEST(vial_ir, pairs_reductions) {
+    const char* body =
+        "dm  = distance(p[:, None], q)\n"
+        "a1  = min(dm)\n"
+        "a2  = max(dm)\n"
+        "a3  = min(dm, axis=1)\n"
+        "a4  = max(dm, axis=0)\n"
+        "a5  = argmin(dm, axis=1)\n"
+        "a6  = argmax(dm, axis=0)\n"
+        "a7  = sum(dm < 8.0)\n"
+        "a8  = sum(dm <= 8.0, axis=1)\n"
+        "a9  = any(dm < 5.0, axis=0)\n"
+        "a10 = min(dm, axis=-1)\n"
+        "_h  = distance(p[:, None], q)\n"
+        "a11 = sum(_h < 6.0, axis=-1)\n";
+    for (int pass = 0; pass < 2; ++pass) {
+        char src[1024];
+        snprintf(src, sizeof(src), "%s%s", pass ? "p = particles(name='CA').xyz\nq = p\n" :
+                 "p = particles(name='CA').xyz\nq = particles(resname='VLB').xyz\n", body);
+        int64_t run_frames = 0;
+        const md_system_t* sys = pass ? vial_ir__run_p(&run_frames) : vial_test_system('T');
+        ASSERT_TRUE(sys != NULL);
+        vial_ir__run_t r;
+        ASSERT_TRUE(vial_ir__start(&r, src, sys));
+        const vial_ir_t* ir = md_vial__run_ir(r.prog);
+        int npairs = 0;
+        for (size_t i = 0; i < md_array_size(ir->ops); ++i) npairs += ir->ops[i].kind == VIAL_IR_PAIRS;
+        EXPECT_EQ(11, npairs);
+        vial_ir__loader_t l = {.sys = sys, .state = {.alloc = r.alloc}};
+        if (pass) md_system_state_init(&l.state, sys->atom.count);
+        const md_system_state_t* st = vial_test_state('T');
+        for (int64_t f = 0; f < (pass ? 3 : 1); ++f) {
+            vial_frame_t fr;
+            if (pass) ASSERT_TRUE(vial_ir__load(&l, f * 7, &fr));
+            else fr = (vial_frame_t){.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
+            EXPECT_TRUE(vial_interp_frame(&r.in, &fr));
+            const vial_val_t* dm = vial_interp_value(&r.in, vial_ir__output(ir, "dm"));
+            ASSERT_TRUE(dm && dm->ndim == 2);
+            // _h is hidden and only reduced: never built
+            EXPECT_TRUE(vial_interp_value(&r.in, vial_ir__output(ir, "_h")) == NULL);
+            const uint32_t n = dm->dims[0], m = dm->dims[1];
+            ASSERT_TRUE(n > 1 && m > 1);
+            const vial_val_t* a[12];
+            for (int k = 1; k <= 11; ++k) {
+                char nm[8];
+                snprintf(nm, sizeof(nm), "a%d", k);
+                a[k] = vial_interp_value(&r.in, vial_ir__output(ir, nm));
+                ASSERT_TRUE(a[k] != NULL);
+            }
+            float mn = vial_ir__f(dm, 0), mx = mn;
+            int32_t c7 = 0;
+            for (size_t e = 0; e < (size_t)n * m; ++e) {
+                const float d = vial_ir__f(dm, e);
+                if (d < mn) mn = d;
+                if (d > mx) mx = d;
+                c7 += (double)d < 8.0;
+            }
+            EXPECT_EQ(mn, vial_ir__f(a[1], 0));
+            EXPECT_EQ(mx, vial_ir__f(a[2], 0));
+            EXPECT_EQ(c7, *(const int32_t*)a[7]->data);
+            for (uint32_t i = 0; i < n; ++i) {
+                float rmin = vial_ir__f(dm, (size_t)i * m);
+                int32_t at = 0, c8 = 0, c11 = 0;
+                for (uint32_t j = 0; j < m; ++j) {
+                    const float d = vial_ir__f(dm, (size_t)i * m + j);
+                    if (d < rmin) { rmin = d; at = (int32_t)j; }
+                    c8 += (double)d <= 8.0;
+                    c11 += (double)d < 6.0;
+                }
+                EXPECT_EQ(rmin, vial_ir__f(a[3], i));
+                EXPECT_EQ(at, ((const int32_t*)a[5]->data)[i]);
+                EXPECT_EQ(c8, ((const int32_t*)a[8]->data)[i]);
+                EXPECT_EQ(rmin, vial_ir__f(a[10], i));
+                EXPECT_EQ(c11, ((const int32_t*)a[11]->data)[i]);
+            }
+            for (uint32_t j = 0; j < m; ++j) {
+                float cmax = vial_ir__f(dm, j);
+                int32_t at = 0;
+                bool near = false;
+                for (uint32_t i = 0; i < n; ++i) {
+                    const float d = vial_ir__f(dm, (size_t)i * m + j);
+                    if (d > cmax) { cmax = d; at = (int32_t)i; }
+                    near = near || (double)d < 5.0;
+                }
+                EXPECT_EQ(cmax, vial_ir__f(a[4], j));
+                EXPECT_EQ(at, ((const int32_t*)a[6]->data)[j]);
+                EXPECT_EQ(near, ((const uint8_t*)a[9]->data)[j] != 0);
+            }
+        }
+        if (pass) md_system_state_free(&l.state);
+        vial_ir__end(&r);
+    }
+}
