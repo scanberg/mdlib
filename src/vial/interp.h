@@ -75,6 +75,9 @@ typedef struct vial_interp_t {
 enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };
 
 bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, const struct md_system_t* msys, md_allocator_i* alloc);
+
+// Computes only what the given values need from now on, as hover and at() do; init marks what the outputs need
+void vial_interp_only(vial_interp_t* in, const vial_ssa_t* roots, size_t n);
 void vial_interp_free(vial_interp_t* in);
 
 // Computes the static values of the top level. An op that fails is recorded in in->errors, and what is computed from

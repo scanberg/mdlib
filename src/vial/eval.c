@@ -192,3 +192,69 @@ bool md_vial_eval_run(md_vial_eval_t* e) {
     if (!e->in.interrupted) publish(e);
     return ok && !e->in.interrupted;
 }
+
+// ### HOVER ###
+// The hovered expression's value at a frame: the script as lowered, before inlining, so every expression written is
+// there, evaluated for that value alone in an interpreter of its own, with its own reader of the run and its own view
+// of the system. It shares nothing that changes with md_vial_eval_run.
+
+typedef struct hover_frames_t {
+    const md_system_t*      sys;
+    str_t                   run;
+    const double*           times;
+    int64_t                 num_frames;
+    md_system_extract_t*    ex;
+    md_system_state_t       state;
+    md_allocator_i*         alloc;
+} hover_frames_t;
+
+static bool hover_load(void* user, int64_t index, vial_frame_t* out) {
+    hover_frames_t* h = user;
+    if (index < 0 || index >= h->num_frames) return false;
+    if (!h->ex) {
+        const str_t paths[] = {STR_LIT("atom/position"), STR_LIT("unitcell")};
+        h->ex = md_system_extract_begin(h->sys, h->run, paths, 2, h->alloc);
+        if (!h->ex) return false;
+    }
+    if (!md_system_extract_frame(h->ex, index, &h->state)) return false;
+    *out = (vial_frame_t){.xyz = (const float*)h->state.xyz, .num_atoms = h->state.num_atoms, .cell = h->state.unitcell, .index = index,
+                          .time = h->times ? h->times[index] : (double)index};
+    return true;
+}
+
+bool md_vial_eval_hover(const md_vial_eval_t* e, uint32_t offset, int64_t frame, char* buf, size_t cap) {
+    if (buf && cap) buf[0] = 0;
+    if (!e || !buf || !cap) return false;
+    const vial_ir_t* ir = md_vial__ir(e->prog);
+    const vial_ssa_t v = md_vial__hover_value(e->prog, offset, NULL);
+    if (!ir || !v || v >= md_array_size(ir->values)) return false;
+    // A value over the trajectory needs every frame: not one frame's work
+    if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) return false;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    hover_frames_t h = {.sys = e->sys, .run = e->run, .times = e->times, .num_frames = e->num_frames, .alloc = arena,
+                        .state = {.alloc = arena}};
+    md_system_state_init(&h.state, e->sys->atom.count);
+    vial_sys_t vs;
+    vial_sys_init(&vs, e->sys, arena);
+    vial_interp_t in;
+    bool ok = vial_interp_init(&in, ir, &vs, e->sys, md_get_heap_allocator());
+    if (ok) {
+        vial_interp_only(&in, &v, 1);
+        in.max_elements = (size_t)1 << 24;     // hover computes at most 16 million entries
+        in.load_frame = hover_load;
+        in.load_user = &h;
+        // Static values first: at() reads its own frame, through the same reader
+        ok = vial_interp_static(&in);
+        if (ok && ir->values[v].type.stage != VIAL_STAGE_STATIC) {
+            vial_frame_t fr;
+            ok = hover_load(&h, frame, &fr) && vial_interp_frame(&in, &fr);
+        }
+        const vial_val_t* val = ok ? vial_interp_value(&in, v) : NULL;
+        ok = val != NULL;
+        if (ok) vial_val_print(buf, cap, val, 6);
+        vial_interp_free(&in);
+    }
+    if (h.ex) md_system_extract_end(h.ex);
+    md_arena_allocator_destroy(arena);
+    return ok;
+}

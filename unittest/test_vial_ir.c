@@ -404,6 +404,27 @@ UTEST(vial_ir, eval_api) {
     }
     md_attribute_extract_f64(&mean, 1, m, md_attribute_slice_all(), m->unit);
     EXPECT_NEAR(sum / nf, mean, 1e-4);
+
+    // Hover: an expression's value at a frame, the bits the evaluation published
+    {
+        char hv[160], want[64];
+        const uint32_t call = (uint32_t)(strstr(src, "distance(ca[0]") - src) + 8;     // its '('
+        for (int64_t f = 0; f < nf; f += nf / 3) {
+            float v;
+            md_attribute_extract_f32(&v, 1, ends, md_attribute_slice_1((uint32_t)f), ends->unit);
+            vial_print_float(want, sizeof(want), v, true);
+            EXPECT_TRUE(md_vial_eval_hover(eval, call, f, hv, sizeof(hv)));
+            EXPECT_STREQ(want, hv);
+        }
+        // A static value, and one past the evaluation's budget but within hover's
+        EXPECT_TRUE(md_vial_eval_hover(eval, (uint32_t)(strstr(src, "ca[0]") - src) + 2, 0, hv, sizeof(hv)));
+        EXPECT_TRUE(hv[0] != 0);
+        EXPECT_TRUE(md_vial_eval_hover(eval, (uint32_t)(strstr(src, "zeros(100)") - src) + 5, 1, hv, sizeof(hv)));
+        EXPECT_EQ('[', hv[0]);
+        // Over the trajectory: needs every frame
+        EXPECT_FALSE(md_vial_eval_hover(eval, (uint32_t)(strstr(src, "mean(") - src) + 4, 0, hv, sizeof(hv)));
+        EXPECT_FALSE(md_vial_eval_hover(eval, 0xFFFFFFu, 0, hv, sizeof(hv)));
+    }
     md_vial_eval_free(eval);
 
     // Interrupted before it starts: nothing is published
