@@ -4635,3 +4635,69 @@ UTEST(util, index_data_cleared) {
     EXPECT_EQ(1u, md_index_range_size(&data, 0));
     md_vm_arena_destroy(alloc);
 }
+
+// The kernels that take packed positions give the same bits wherever the positions start in memory. Each runs on the
+// same values copied to every offset of 4 bytes within 64, the alignments a gather or an allocator can hand it. A
+// sum whose grouping followed the address (scalar up to an alignment, vector lanes after) fails here.
+static double addr_rnd(double lo, double hi) { return lo + (hi - lo) * (double)rand() / (double)RAND_MAX; }
+
+UTEST(util, packed_kernels_independent_of_address) {
+    enum { N = 103, OFFSETS = 16 };
+    srand(4711);
+    vec3_t src[N];
+    float w[N];
+    for (int i = 0; i < N; ++i) {
+        src[i] = (vec3_t){{(float)addr_rnd(-5.0, 45.0), (float)addr_rnd(-5.0, 45.0), (float)addr_rnd(-5.0, 45.0)}};
+        w[i] = (float)addr_rnd(1.0, 16.0);
+    }
+    const md_unitcell_t cell = md_unitcell_from_extent(40.0, 41.0, 42.0);
+    const md_unitcell_t none = {0};
+    // 64-byte aligned storage with room to slide the positions along it
+    float* raw = (float*)md_alloc(md_get_heap_allocator(), (6 * N + 64) * sizeof(float) + 64);
+    float* base = (float*)(((uintptr_t)raw + 63) & ~(uintptr_t)63);
+
+    vec3_t ref_com[4] = {0};
+    float ref_min[3], ref_max[3];
+    vec3_t ref_pbc[N], ref_lin[N];
+    for (int o = 0; o < OFFSETS; ++o) {
+        vec3_t* p = (vec3_t*)(base + o);
+        memcpy(p, src, sizeof(src));
+        const vec3_t com[4] = {
+            md_util_com_compute(p, NULL, NULL, N, &none),
+            md_util_com_compute(p, w, NULL, N, &none),
+            md_util_com_compute(p, NULL, NULL, N, &cell),
+            md_util_com_compute(p, w, NULL, N, &cell),
+        };
+        float mn[3], mx[3];
+        md_util_aabb_compute(mn, mx, p, NULL, NULL, N);
+        // pbc and interpolation write in place or to out: the result at this offset against the first offset's
+        memcpy(p, src, sizeof(src));
+        md_util_pbc(p, NULL, N, &cell);
+        vec3_t pbc[N];
+        memcpy(pbc, p, sizeof(pbc));
+        memcpy(p, src, sizeof(src));
+        vec3_t* q = (vec3_t*)(base + 3 * N + 32 - o);   // a second frame, at another alignment
+        for (int i = 0; i < N; ++i) q[i] = vec3_add(src[i], (vec3_t){{0.5f, -0.25f, 0.125f}});
+        const vec3_t* frames[2] = {p, q};
+        vec3_t lin[N];
+        md_util_interpolate_linear(lin, frames, N, &cell, 0.37f);
+        if (o == 0) {
+            memcpy(ref_com, com, sizeof(com));
+            memcpy(ref_min, mn, sizeof(mn));
+            memcpy(ref_max, mx, sizeof(mx));
+            memcpy(ref_pbc, pbc, sizeof(pbc));
+            memcpy(ref_lin, lin, sizeof(lin));
+            continue;
+        }
+        for (int k = 0; k < 4; ++k) {
+            if (memcmp(&ref_com[k], &com[k], sizeof(vec3_t))) printf("com %d differs at offset %d bytes: %.9g %.9g %.9g against %.9g %.9g %.9g\n",
+                k, 4 * o, com[k].x, com[k].y, com[k].z, ref_com[k].x, ref_com[k].y, ref_com[k].z);
+            EXPECT_EQ(0, memcmp(&ref_com[k], &com[k], sizeof(vec3_t)));
+        }
+        EXPECT_EQ(0, memcmp(ref_min, mn, sizeof(mn)));
+        EXPECT_EQ(0, memcmp(ref_max, mx, sizeof(mx)));
+        EXPECT_EQ(0, memcmp(ref_pbc, pbc, sizeof(pbc)));
+        EXPECT_EQ(0, memcmp(ref_lin, lin, sizeof(lin)));
+    }
+    md_free(md_get_heap_allocator(), raw, (6 * N + 64) * sizeof(float) + 64);
+}

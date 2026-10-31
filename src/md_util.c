@@ -8626,56 +8626,47 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
 }
 
 // Contiguous atoms without an index: the sums run on the packed floats, the weights spread to the
-// lanes of their atoms' three components. Scalar up to 32 byte alignment and for the last few.
+// lanes of their atoms' three components. Groups of eight atoms from the first, and the last few as
+// one more group padded with zeros, so how the sums group follows the atoms' indices and count alone,
+// never where in memory they lie: the same positions give the same bits from any buffer.
 static void com_packed(float out_com[3], const vec3_t* in_xyz, const float* in_w, size_t count) {
     const float* f = (const float*)in_xyz;
     double acc[3] = {0};
     double acc_w = 0;
 
-    size_t i = 0;
-    const size_t head = xyz_align_peel(in_xyz, count);
-    for (; i < head; ++i) {
-        const double w = in_w ? in_w[i] : 1.0;
-        acc[0] += in_xyz[i].x * w;
-        acc[1] += in_xyz[i].y * w;
-        acc[2] += in_xyz[i].z * w;
-        acc_w  += w;
-    }
-
     md_xv s[XYZ_GROUP_VECS];
     for (int j = 0; j < XYZ_GROUP_VECS; ++j) s[j] = md_xv_setzero_ps();
     md_xv sw = md_xv_setzero_ps();
-    const size_t beg = i;
-    if (in_w) {
-        for (; i + 8 <= count; i += 8) {
+    size_t i = 0;
+    // The last count % 8 atoms padded to a group: zero positions and, weighted, zero weights
+    float tail_f[24] = {0};
+    float tail_w[8]  = {0};
+    const size_t body = ROUND_DOWN(count, 8);
+    if (body < count) {
+        MEMCPY(tail_f, f + body * 3, (count - body) * 3 * sizeof(float));
+        if (in_w) MEMCPY(tail_w, in_w + body, (count - body) * sizeof(float));
+    }
+    for (; i < count; i += 8) {
+        const float* g = i < body ? f + i * 3 : tail_f;
+        if (in_w) {
+            const float* gw = i < body ? in_w + i : tail_w;
             md_xv w[XYZ_GROUP_VECS];
-            xyz_lane_spread(w, in_w + i);
+            xyz_lane_spread(w, gw);
             for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
-                s[j] = md_xv_fmadd_ps(md_xv_loadu_ps(f + i * 3 + j * MD_XV_WIDTH), w[j], s[j]);
+                s[j] = md_xv_fmadd_ps(md_xv_loadu_ps(g + j * MD_XV_WIDTH), w[j], s[j]);
             }
-            sw = md_xv_add_ps(sw, md_xv_loadu_ps(in_w + i));
+            sw = md_xv_add_ps(sw, md_xv_loadu_ps(gw));
 #if MD_XV_WIDTH == 4
-            sw = md_xv_add_ps(sw, md_xv_loadu_ps(in_w + i + 4));
+            sw = md_xv_add_ps(sw, md_xv_loadu_ps(gw + 4));
 #endif
-        }
-        acc_w += md_xv_reduce_add_ps(sw);
-    } else {
-        for (; i + 8 <= count; i += 8) {
+        } else {
             for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
-                s[j] = md_xv_add_ps(s[j], md_xv_loadu_ps(f + i * 3 + j * MD_XV_WIDTH));
+                s[j] = md_xv_add_ps(s[j], md_xv_loadu_ps(g + j * MD_XV_WIDTH));
             }
         }
-        acc_w += (double)(i - beg);
     }
+    acc_w = in_w ? md_xv_reduce_add_ps(sw) : (double)count;
     xyz_lane_reduce_add(acc, s);
-
-    for (; i < count; ++i) {
-        const double w = in_w ? in_w[i] : 1.0;
-        acc[0] += in_xyz[i].x * w;
-        acc[1] += in_xyz[i].y * w;
-        acc[2] += in_xyz[i].z * w;
-        acc_w  += w;
-    }
 
     out_com[0] = (float)(acc[0] / acc_w);
     out_com[1] = (float)(acc[1] / acc_w);
@@ -8691,23 +8682,10 @@ static void com_pbc_ortho_packed(float out_com[3], const vec3_t* in_xyz, const f
     double acc_s[3] = {0};
     double acc_w = 0;
 
+    // From the first atom, sixteen or eight at a time, and the last few as one more group of eight padded with zero
+    // weights: every atom's sine and cosine come from the same vector sincos, and how the sums group follows the
+    // atoms' indices and count alone, never where in memory they lie
     size_t i = 0;
-#if defined(__AVX512F__) && defined(__AVX512DQ__)
-    const size_t head = xyz_align_peel_to(in_xyz, count, 64);
-#else
-    const size_t head = xyz_align_peel(in_xyz, count);
-#endif
-    for (; i < head; ++i) {
-        const double w = in_w ? in_w[i] : 1.0;
-        for (int k = 0; k < 3; ++k) {
-            const double t = in_xyz[i].elem[k] * M[k][k];
-            acc_c[k] += w * cos(t);
-            acc_s[k] += w * sin(t);
-        }
-        acc_w += w;
-    }
-
-    const size_t beg = i;
 
 #if defined(__AVX512F__) && defined(__AVX512DQ__)
     {
@@ -8789,19 +8767,34 @@ static void com_pbc_ortho_packed(float out_com[3], const vec3_t* in_xyz, const f
             }
         }
     }
-    acc_w += in_w ? md_xv_reduce_add_ps(sw) : (double)(i - beg);
+    if (i < count) {
+        // The rest: a weight of 1 (or its own) for each atom and 0 for the padding, so the padding's cos 0 = 1
+        // adds nothing; c * 1 + acc is c + acc, the same as the unweighted lanes
+        const size_t rest = count - i;
+        float tf[24] = {0};
+        float tw[8]  = {0};
+        MEMCPY(tf, f + i * 3, rest * 3 * sizeof(float));
+        for (size_t q = 0; q < rest; ++q) tw[q] = in_w ? in_w[i + q] : 1.0f;
+        md_xv w[XYZ_GROUP_VECS];
+        xyz_lane_spread(w, tw);
+        if (in_w) {
+            sw = md_xv_add_ps(sw, md_xv_loadu_ps(tw));
+#if MD_XV_WIDTH == 4
+            sw = md_xv_add_ps(sw, md_xv_loadu_ps(tw + 4));
+#endif
+        }
+        for (int j = 0; j < XYZ_GROUP_VECS; ++j) {
+            const md_xv t = md_xv_mul_ps(md_xv_loadu_ps(tf + j * MD_XV_WIDTH), m[j]);
+            md_xv s, c;
+            md_xv_sincos_ps(t, &s, &c);
+            vc[j] = md_xv_fmadd_ps(c, w[j], vc[j]);
+            vs[j] = md_xv_fmadd_ps(s, w[j], vs[j]);
+        }
+        i = count;
+    }
+    acc_w += in_w ? md_xv_reduce_add_ps(sw) : (double)count;
     xyz_lane_reduce_add(acc_c, vc);
     xyz_lane_reduce_add(acc_s, vs);
-
-    for (; i < count; ++i) {
-        const double w = in_w ? in_w[i] : 1.0;
-        for (int k = 0; k < 3; ++k) {
-            const double t = in_xyz[i].elem[k] * M[k][k];
-            acc_c[k] += w * cos(t);
-            acc_s[k] += w * sin(t);
-        }
-        acc_w += w;
-    }
 
     const double inv_w = 1.0 / acc_w;
     double theta[3];
