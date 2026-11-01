@@ -41,7 +41,7 @@ static const vial_builtin_t builtins[] = {
     // Sets, patterns, bonds, attributes
     {"smiles", F}, {"smiles_atoms", F}, {"bonds", F}, {"formed", F}, {"broken", F}, {"attr", F},
     // Frames
-    {"histogram", F}, {"smooth", F}, {"derivative", F}, {"autocorrelation", F}, {"fold", F}, {"at", F},
+    {"histogram", F}, {"sdf", F}, {"density", F}, {"smooth", F}, {"derivative", F}, {"autocorrelation", F}, {"fold", F}, {"at", F},
     {"time", F}, {"frame", F},
     // Drawing
     {"shown", F}, {"marker", F}, {"line", F}, {"arrow", F}, {"sphere", F}, {"arc", F}, {"disk", F}, {"label", F},

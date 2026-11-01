@@ -703,7 +703,7 @@ half = rmsd(ca[0:7], ca[8:15])                         # -> float Å, frame: sli
 odd  = rmsd(ca[0:7], ca[7:15])                         # error E0301: [7][3] and [8][3] do not broadcast
 ```
 
-Later, ported from v1 after the first version: `rdf`, `sdf`, `density`, contact maps, hydrogen bonds, secondary structure and ring pucker. A volume, from `sdf` or `density`, is not a fixed grid as in v1: it takes a sampling density, samples per length, and its grid's size follows from the extent it covers, so a pocket and a whole box are sampled alike.
+Later, ported from v1 after the first version: `rdf`, contact maps, hydrogen bonds, secondary structure and ring pucker. The volumes, `sdf` and `density`, are under Frames.
 
 ## Built-in functions: reductions, math and arrays
 
@@ -972,6 +972,32 @@ run  = fold(step, ends, init=0)                        # -> int, trajectory, per
 long = max(run, axis='frame')                          # -> int, trajectory
 ```
 
+### Volumes
+
+A volume is a density on a grid, added up over the frames: `sdf` in the frame of a structure, `density` in the run's frame. Nothing of it is kept per frame. Each frame spreads its points over the eight voxels around each, by distance (cloud in cell), and the volume is the sum divided by what was added: the frames, times the structures for an sdf.
+
+| Function | Result | Stage |
+| --- | --- | --- |
+| `sdf(structures, target, extent, samples=4, ref=None, weights=None, sigma=0)` | `float[nx][ny][nz]` count/Å³: target's density about the structures, each fitted every frame onto the reference by mass, with periodic boundaries, in a box reaching `extent` from the reference's centre along its principal axes | trajectory |
+| `density(points, samples=4, box=None, weights=None, sigma=0)` | `float[nx][ny][nz]` count/Å³: the points' density in `box=((x0, y0, z0), (x1, y1, z1))`, each in the image nearest the box's centre; without box=, over the unit cell | trajectory |
+
+- **The grid** follows from what it covers: `samples` per Å along each axis, each axis rounded up to a multiple of 8, so a pocket and a whole box are sampled alike. A grid of more than 512³ voxels is sampled coarser to fit, with W0407 saying how. Extents, samples, box and sigma are known when compiling, so the type has the grid's extents. Over the unit cell, the grid is frame 0's cell, known when evaluating: its extents print as letters. A cell that changes keeps its voxels, in fractional coordinates.
+- **The value** is absolute: particles per Å³, or with `weights=` (one number per point, such as `mass(...)` or `charge(...)`) the weights' unit per Å³. Beside `script/<name>` go `/origin` and `/basis`, Å, the corner of voxel `[0][0][0]` and one step along each index, in the volume's frame; `/bulk`, the same particles' density over the unit cell, in the volume's unit, so ρ/ρ_bulk is one division; and `/samples`, what was added. `[i][j][k]` runs along x, y and z of the volume's frame, k fastest.
+- **sdf**: `structures` is a set or an array of sets, static, alike particle by particle: as many particles, of the same elements, or names where an element is not known (E0320). They are fitted onto `ref=`, static positions of one structure, by default the first structure at frame 0. The volume's frame is the reference's centre of mass and principal axes; a structure that spreads over too much of the cell to place in a frame is left out of it. A structure's own particles are never its target. Drawing an sdf draws each structure with the pose that places the volume on it.
+- `target` and `points` are one set or points, `float[n][3]` Å: `molecules(water).com` maps where the waters' centres are rather than every atom of them. `sigma=` smooths the volume at the end with a Gaussian of that width, Å.
+- A volume is added up at the top level of a script: one inside a comprehension or a def mapped over groups would be an array of volumes, which is not supported yet (E0406). Over a plot period it is made again from the period's frames, read again, since nothing is kept per frame.
+
+```python
+# on P
+ala  = residues[1:5]                                   # -> set[4]: alike, ten particles each
+o    = particles(name='O')
+s    = sdf(ala, o, 6.0)                                # -> float[48][48][48] count/Å³, trajectory
+sm   = sdf(ala, o, (6.0, 4.0, 3.0), samples=2, weights=mass(o))   # -> float[24][16][16] u/Å³, trajectory
+cv   = density(particles(name='CA'), samples=1)        # -> float[a][b][c] count/Å³, trajectory: over the cell
+box  = density(o, box=((0.0, 0.0, 0.0), (40.0, 40.0, 40.0)), sigma=0.5)   # -> float[160][160][160] count/Å³, trajectory
+odd  = sdf(residues[0:5], o, 6.0)                      # error E0320: the first residue is not like the others
+```
+
 ## Outputs: what is published and how
 
 Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not. `__all__` is reserved: binding it is an error for now, and a later version may use it, as Python does, for an explicit list of what is published.
@@ -991,9 +1017,10 @@ Every top-level name bound to a number or a set is published under `script/<name
 | Static matrix, such as `eye(3)` | a matrix | labels for each dimension |
 | bool | as an int, 0 or 1, in any of the forms above | — |
 | Histogram or autocorrelation | a curve | bin edges, or lags |
+| Volume, from `sdf` or `density` | a grid, `float[nx][ny][nz]` | `/origin`, `/basis`, `/bulk`, `/samples` |
 | `set`, static or frame, and a frame-stage array of sets, `set[?]` | a selection under its name; a frame-stage one is a recipe, evaluated for the frame being shown |  |
 | Static array of sets | one selection under its name, holding the array: filters use the name for the union, or name\[i\] | labels |
-| Three dimensions or more, `str`, `range`, tuples, drawings | not published; shown in hover |  |
+| Three dimensions or more, but a volume, `str`, `range`, tuples, drawings | not published; shown in hover |  |
 
 - A published frame value must have the same shape in every frame (E0401), since it is stored as a series. Selections are the exception: a set or array of sets whose length changes per frame, such as `residues(within(5.0, of=particles(resname='GTP')))`, is published as a recipe. It holds no values; representations and filters evaluate it for the frame they show. Other values whose length changes are kept private, or reduced with `len` or another reduction.
 - A published per-frame value that would take more than 64 MB over the whole run, 16 million values, gives W0404 with its size. It is usually an intermediate missing its `_`.
@@ -1116,14 +1143,17 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0317 | is on a value that is not static | is compares static values; d changes per frame | == |
 | E0318 | The coordinates of an array of sets whose sizes differ | `res_a` holds 433 sets of 4 to 14 particles; their positions do not form one array | `particles(res_a).xyz`, or a def with a `points` parameter |
 | E0319 | An operator or property on a value it does not take | `+` takes numbers; this is str and int | |
+| E0320 | Structures of an sdf that are not alike, particle by particle | the structures of `sdf` are fitted particle by particle; structure 1 has 10 particles and the first 13 |  |
 | E0401 | A published value, other than a selection, whose shape changes between frames | `d_near` has a different length in each frame | a reduction, or `_d_near` |
 | E0402 | A value from another system not pinned to a frame | values from `crystal` need a frame | `at(..., frame=0)` |
 | E0403 | A top-level `if` on a value that changes per frame | the condition changes per frame; outputs cannot | `where(...)` |
 | W0404 | A published per-frame value over 64 MB for the run | `dm` takes 2.1 GB over 22,000 frames | `_dm` |
 | E0404 | at() of a value that depends on other frames | mean\_e is a trajectory value; at() reads one frame |  |
 | E0405 | at() past the last frame | frame 500 of a run with 38 frames |  |
+| E0406 | A volume inside a comprehension or a def mapped over groups | `sdf` is added up over the frames at the top level; an array of volumes is not supported yet |  |
 | W0405 | A value that may be missing in some frames | near\[4\] is missing in frames with fewer than five residues nearby | none; the series shows gaps |
 | W0406 | More than three passes over the trajectory | pcs2 is pass 4; each pass reads every frame again |  |
+| W0407 | A volume of more than 512³ voxels: sampled coarser | 13,824,000,000 voxels at 4 samples per Å are more than 512³; it is sampled at 0.853 per Å, 512×512×512 | a smaller extent, or fewer samples |
 | W0501 | Units that do not match | adds Å to degrees; the result's unit becomes unknown | `unitless(...)` |
 | E0502 | A unit string that md_unit cannot read | `'kJ/mool'` is not a unit |  |
 | W0601 | A selector that matches nothing in its scope; set algebra such as a and b never warns | `residues(250)` is not among this group's 241 particles |  |

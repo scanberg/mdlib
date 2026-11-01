@@ -7,6 +7,7 @@
 #include "builtins.h"
 #include "infer_internal.h"
 #include "select.h"
+#include "volume.h"
 
 #include <md_util.h>
 #include <core/md_array.h>
@@ -72,6 +73,33 @@ static bool from_histogram(const vial_ir_t* ir, vial_ssa_t v) {
     return op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_BUILTIN && !strcmp(vial_builtin_at(ir->ops[op].aux)->name, "histogram");
 }
 
+// The volume op v is made by, sdf or density; NULL for another value
+static const char* volume_of(const vial_ir_t* ir, vial_ssa_t v) {
+    const uint32_t op = ir->values[v].op;
+    if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_BUILTIN) return NULL;
+    const char* name = vial_builtin_at(ir->ops[op].aux)->name;
+    return vial_volume_builtin(name) ? name : NULL;
+}
+
+// A volume is added up over the frames at the top level: one inside a map, as a comprehension or a def mapped over
+// groups gives, would be an array of volumes, which is not supported yet (E0406). The program is not evaluated.
+static bool volumes_at_top(md_vial_program_t* prog) {
+    const vial_ir_t* ir = &prog->run_ir;
+    const uint32_t top = ir->funcs[0].body;
+    bool ok = true;
+    for (size_t i = 0; i < md_array_size(ir->ops); ++i) {
+        const vial_ir_op_t* op = &ir->ops[i];
+        if (op->kind != VIAL_IR_BUILTIN || op->parent == top || !vial_volume_builtin(vial_builtin_at(op->aux)->name)) continue;
+        if (!vial_diag_at(&prog->diags, op->span.beg)) {
+            vial_diag(&prog->diags, "E0406", op->span, "`%s` is added up over the frames at the top level; an array of volumes, from a comprehension or a def mapped over groups, is not supported yet",
+                vial_builtin_at(op->aux)->name);
+        }
+        ok = false;
+    }
+    if (!ok) vial_diags_sort(&prog->diags);
+    return ok;
+}
+
 // The published values: top-level names, bound once each, to what can be published
 static void collect_outputs(md_vial_program_t* prog) {
     const vial_tree_t* t = &prog->tree;
@@ -93,12 +121,14 @@ static void collect_outputs(md_vial_program_t* prog) {
             const vial_type_t* ty = &prog->types.types[nn];
             const bool number = ty->dtype == VIAL_DT_BOOL || ty->dtype == VIAL_DT_INT || ty->dtype == VIAL_DT_FLOAT || ty->dtype == VIAL_DT_FLOAT64;
             const bool set = ty->dtype == VIAL_DT_SET;
-            if (!(number && ty->ndim <= 2) && !set) continue;
+            const vial_ssa_t rv = run_output(prog, name);
+            const char* vol = rv ? volume_of(&prog->run_ir, rv) : NULL;
+            if (!(number && (ty->ndim <= 2 || (vol && ty->ndim == 3))) && !set) continue;
             md_vial_output_t o = {.name = name, .span = sp, .stage = public_stage(ty), .pass = public_pass(ty), .selection = set};
             vial_type_print(o.type, sizeof(o.type), ty);
             if (o.stage == MD_VIAL_STAGE_FRAME || o.stage == MD_VIAL_STAGE_TRAJECTORY_PER_FRAME) o.flags |= MD_VIAL_OUTPUT_TEMPORAL;
             if (ty->period_end > ty->period_beg) o.flags |= MD_VIAL_OUTPUT_PERIODIC;
-            const vial_ssa_t rv = run_output(prog, name);
+            if (vol) o.flags |= MD_VIAL_OUTPUT_VOLUME | (!strcmp(vol, "sdf") ? MD_VIAL_OUTPUT_SDF : 0);
             if (rv) {
                 o.fingerprint = vial_ir_fingerprint(&prog->run_ir, rv, prog->check.sys, prog->check.run, memo);
                 if (from_histogram(&prog->run_ir, rv)) o.flags |= MD_VIAL_OUTPUT_DISTRIBUTION;
@@ -202,6 +232,7 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
     if (!md_array_size(prog->ir.failures)) prog->has_run_ir = vial_ir_inline_map(&prog->ir, &prog->run_ir, arena, &prog->run_of);
+    if (prog->has_run_ir && !volumes_at_top(prog)) prog->has_run_ir = false;
     if (prog->has_run_ir) {
         vial_ir_pairs(&prog->run_ir, arena);
         vial_ir_contract(&prog->run_ir, arena);

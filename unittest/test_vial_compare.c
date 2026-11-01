@@ -129,3 +129,52 @@ UTEST(vial_compare, v1_and_v2_agree) {
     printf("vial compare: %d of %d pairs agree over %u frames\n", agree, (int)ARRAY_SIZE(vial_pairs), nf);
     md_arena_allocator_destroy(alloc);
 }
+
+// sdf: v1's volume and VIAL's are of the same particles in the same frame. They are not the same numbers: v1 counts
+// each particle into one voxel and sums over the structures, VIAL spreads it over eight and gives a density per
+// structure. So what they hold is compared: the particles per structure in the box, and where they are.
+UTEST(vial_compare, sdf_agrees_with_v1) {
+    const md_system_t* sys = vial_test_system('P');
+    const uint32_t nf = (uint32_t)vial_test_run('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(nf, 1u);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    enum { D = 128 };
+    const double ext = 6.0, step = 2.0 * ext / D;
+    // v1
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    ASSERT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("p = sdf(residue(2:5), name(\"O\"), 6.0);"), sys, NULL));
+    md_script_eval_t* ev1 = md_script_eval_create(nf, ir, alloc);
+    ASSERT_TRUE(ev1 && md_script_eval_frame_range(ev1, ir, sys, STR_LIT("run"), 0, nf));
+    const md_attribute_t* a1 = md_attributes_find(md_script_eval_attributes(ev1), STR_LIT("script/p"));
+    ASSERT_TRUE(a1 && a1->data);
+    // VIAL, at v1's 128 a side
+    const char* src = "p = sdf(residues[1:5], particles(name='O'), 6.0, samples=128 / 12)\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
+    md_vial_eval_t* ev2 = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 4}, alloc);
+    ASSERT_TRUE(ev2 && md_vial_eval_run(ev2));
+    const md_attribute_t* a2 = md_attributes_find(md_vial_eval_attributes(ev2), STR_LIT("script/p"));
+    ASSERT_TRUE(a2 && a2->data);
+    ASSERT_EQ((uint32_t)D, a2->format.shape[0]);
+    const float* v1 = (const float*)a1->data;
+    const float* v2 = (const float*)a2->data;
+    double n1 = 0, n2 = 0, m1[3] = {0}, m2[3] = {0};
+    for (uint32_t x = 0; x < D; ++x) for (uint32_t y = 0; y < D; ++y) for (uint32_t z = 0; z < D; ++z) {
+        const double c[3] = {(x + 0.5) * step - ext, (y + 0.5) * step - ext, (z + 0.5) * step - ext};
+        const double w1 = v1[((size_t)z * D + y) * D + x] / 4.0;                       // x fastest, summed over 4
+        const double w2 = v2[((size_t)x * D + y) * D + z] * step * step * step;         // z fastest, per Å³
+        n1 += w1; n2 += w2;
+        for (int a = 0; a < 3; ++a) { m1[a] += w1 * c[a]; m2[a] += w2 * c[a]; }
+    }
+    printf("sdf: v1 %.4f, VIAL %.4f O per structure; centres (%.3f %.3f %.3f) and (%.3f %.3f %.3f)\n", n1, n2,
+           m1[0] / n1, m1[1] / n1, m1[2] / n1, m2[0] / n2, m2[1] / n2, m2[2] / n2);
+    EXPECT_GT(n1, 1.0);
+    EXPECT_NEAR(n1, n2, 0.02 * n1);
+    for (int a = 0; a < 3; ++a) EXPECT_NEAR(m1[a] / n1, m2[a] / n2, 0.05);
+    md_vial_eval_free(ev2);
+    md_vial_program_free(prog);
+    md_script_eval_free(ev1);
+    md_script_ir_free(ir);
+    md_arena_allocator_destroy(alloc);
+}

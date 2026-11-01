@@ -4,6 +4,7 @@
 #include "interp.h"
 #include "check.h"
 #include "infer.h"
+#include "volume.h"
 
 #include <md_system.h>
 #include <md_attributes.h>
@@ -452,6 +453,31 @@ static vial_summary_t* summary_attrs(md_vial_eval_t* e, str_t name, const vial_t
     return sm;
 }
 
+// What places a volume and reads it: <path>/origin and /basis, Å, in the volume's frame; /bulk, in the volume's unit;
+// /samples
+static void publish_volume(md_vial_eval_t* e, str_t name, const vial_volume_t* vol, md_unit_t unit) {
+    md_unit_t length;
+    vial_unit_name(STR_LIT("angstrom"), &length);
+    const struct { const char* leaf; uint32_t rank, shape0, shape1; md_unit_t unit; } a[4] = {
+        {"origin", 1, 3, 0, length}, {"basis", 2, 3, 3, length}, {"bulk", 1, 1, 0, unit}, {"samples", 1, 1, 0, md_unit_none()},
+    };
+    for (int i = 0; i < 4; ++i) {
+        char path[192];
+        snprintf(path, sizeof(path), "script/%.*s/%s", (int)name.len, name.ptr, a[i].leaf);
+        md_attribute_desc_t d = {.path = str_from_cstr(path), .unit = a[i].unit,
+                                 .format = {.type = attr_type(VIAL_DT_FLOAT64), .components = 1, .rank = a[i].rank, .shape = {a[i].shape0, a[i].shape1}}};
+        const md_attribute_id_t id = md_attributes_replace(&e->attributes, &d);
+        double* dst = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT64)) : NULL;
+        if (!dst) continue;
+        switch (i) {
+        case 0: for (int q = 0; q < 3; ++q) dst[q] = vol->origin[q]; break;
+        case 1: for (int q = 0; q < 3; ++q) for (int c = 0; c < 3; ++c) dst[3 * q + c] = vol->basis[q][c]; break;
+        case 2: dst[0] = vial_volume_bulk(vol); break;
+        case 3: dst[0] = (double)vol->added; break;
+        }
+    }
+}
+
 static void publish(md_vial_eval_t* e) {
     md_attributes_t* attrs = &e->attributes;
     const int64_t nf = e->num_frames;
@@ -463,7 +489,8 @@ static void publish(md_vial_eval_t* e) {
         if (!o->name.len || o->name.ptr[0] == '_') continue;
         const vial_type_t* t = &ir->values[o->value].type;
         const md_attribute_type_t at = attr_type(t->dtype);
-        if (at == MD_ATTRIBUTE_TYPE_NONE || t->ndim > 2) continue;
+        const vial_volume_t* vol = vial_interp_volume(&e->in, o->value);
+        if (at == MD_ATTRIBUTE_TYPE_NONE || (t->ndim > 2 && !vol)) continue;
         const uint32_t op = ir->values[o->value].op;
         const bool per_frame = op != VIAL_IR_NO_OP && e->in.op_class && e->in.op_class[op] == VIAL_OP_PER_FRAME;
         const vial_val_t* first = vial_interp_at(&e->in, o->value, 0);
@@ -506,6 +533,7 @@ static void publish(md_vial_eval_t* e) {
             const vial_summary_t* sm = summary_attrs(e, o->name, t, (uint32_t)inner);
             for (int64_t f = 0; sm && f < nf; ++f) vial_summarize(sm, f, (const float*)dst + (size_t)f * inner, (uint32_t)inner);
         }
+        if (vol) publish_volume(e, o->name, vol, desc.unit);
     }
 }
 
@@ -676,31 +704,7 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* e, str_t name, uint8_t* 
     return nf;
 }
 
-size_t md_vial_eval_aggregate(const md_vial_eval_t* e, str_t name, const uint8_t* frames, float* out, size_t cap) {
-    if (!e || !frames || !md_atomic_load64(&e->done)) return 0;
-    const vial_ir_t* ir = e->ir;
-    vial_ssa_t v = 0;
-    for (size_t k = 0; k < md_array_size(ir->outputs) && !v; ++k) if (str_eq(ir->outputs[k].name, name)) v = ir->outputs[k].value;
-    if (!v) return 0;
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    vial_val_t r;
-    size_t n = 0;
-    if (vial_interp_over_frames(&e->in, v, frames, &r, arena) && (r.dtype == VIAL_DT_FLOAT || r.dtype == VIAL_DT_FLOAT64 || r.dtype == VIAL_DT_INT) && r.data) {
-        n = vial_val_count(&r);
-        for (size_t i = 0; out && n <= cap && i < n; ++i) {
-            const double x = r.dtype == VIAL_DT_FLOAT ? ((const float*)r.data)[i] : r.dtype == VIAL_DT_FLOAT64 ? ((const double*)r.data)[i] : ((const int32_t*)r.data)[i];
-            out[i] = vial_val_is_missing(&r, i) ? NAN : (float)x;
-        }
-    }
-    md_arena_allocator_destroy(arena);
-    return n;
-}
-
-// ### HOVER ###
-// The hovered expression's value at a frame: the script as lowered, before inlining, so every expression written is
-// there, evaluated for that value alone in an interpreter of its own, with its own reader of the run and its own view
-// of the system. It shares nothing that changes with md_vial_eval_run.
-
+// A reader of the run of its own, as hover and the volumes over chosen frames read it
 typedef struct hover_frames_t {
     const md_system_t*      sys;
     str_t                   run;
@@ -724,6 +728,49 @@ static bool hover_load(void* user, int64_t index, vial_frame_t* out) {
                           .time = h->times ? h->times[index] : (double)index};
     return true;
 }
+
+size_t md_vial_eval_aggregate(const md_vial_eval_t* e, str_t name, const uint8_t* frames, float* out, size_t cap) {
+    if (!e || !frames || !md_atomic_load64(&e->done)) return 0;
+    const vial_ir_t* ir = e->ir;
+    vial_ssa_t v = 0;
+    for (size_t k = 0; k < md_array_size(ir->outputs) && !v; ++k) if (str_eq(ir->outputs[k].name, name)) v = ir->outputs[k].value;
+    if (!v) return 0;
+    const vial_volume_t* vol = vial_interp_volume(&e->in, v);
+    if (vol) {
+        // Its size is known without reading a frame: a caller asking for it does not pay for the frames
+        const size_t nv = (size_t)vol->dims[0] * vol->dims[1] * vol->dims[2];
+        if (!out || cap < nv) return nv;
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        hover_frames_t h = {.sys = e->sys, .run = e->run, .times = e->times, .num_frames = e->num_frames, .alloc = arena, .state = {.alloc = arena}};
+        md_system_state_init(&h.state, e->sys->atom.count);
+        vial_val_t r;
+        size_t n = 0;
+        if (vial_interp_volume_over(&e->in, v, frames, hover_load, &h, &r, arena) && r.dtype == VIAL_DT_FLOAT && vial_val_count(&r) == nv) {
+            memcpy(out, r.data, nv * sizeof(float));
+            n = nv;
+        }
+        if (h.ex) md_system_extract_end(h.ex);
+        md_arena_allocator_destroy(arena);
+        return n;
+    }
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    vial_val_t r;
+    size_t n = 0;
+    if (vial_interp_over_frames(&e->in, v, frames, &r, arena) && (r.dtype == VIAL_DT_FLOAT || r.dtype == VIAL_DT_FLOAT64 || r.dtype == VIAL_DT_INT) && r.data) {
+        n = vial_val_count(&r);
+        for (size_t i = 0; out && n <= cap && i < n; ++i) {
+            const double x = r.dtype == VIAL_DT_FLOAT ? ((const float*)r.data)[i] : r.dtype == VIAL_DT_FLOAT64 ? ((const double*)r.data)[i] : ((const int32_t*)r.data)[i];
+            out[i] = vial_val_is_missing(&r, i) ? NAN : (float)x;
+        }
+    }
+    md_arena_allocator_destroy(arena);
+    return n;
+}
+
+// ### HOVER ###
+// The hovered expression's value at a frame: the script as lowered, before inlining, so every expression written is
+// there, evaluated for that value alone in an interpreter of its own, with its own reader of the run and its own view
+// of the system. It shares nothing that changes with md_vial_eval_run.
 
 // One value of the IR as lowered, alone: its own interpreter, reader and view of the system
 typedef struct point_t {
@@ -920,6 +967,88 @@ static bool draw_done(md_vial_drawing_t* d, bool ok) {
     d->num_prims = md_array_size(d->prims);
     d->num_labels = md_array_size(d->labels);
     d->num_groups = md_array_size(d->groups);
+    d->num_poses = md_array_size(d->poses);
+    return ok;
+}
+
+// The sdf op that makes v, VIAL_IR_NO_OP for another value
+static uint32_t sdf_op(const vial_ir_t* ir, vial_ssa_t v) {
+    const uint32_t op = ir->values[v].op;
+    if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_BUILTIN || strcmp(vial_builtin_at(ir->ops[op].aux)->name, "sdf")) return VIAL_IR_NO_OP;
+    return op;
+}
+
+// An sdf drawn: its structures where the frame drawn has them, each with the pose that places the volume on it. What
+// places it is set up as the evaluation sets it up, from the static arguments and frame 0, in an interpreter of its
+// own; nothing is added, so no evaluation is needed.
+static bool draw_sdf(draw_out_t* o, const md_vial_draw_desc_t* desc, const vial_ir_t* ir, uint32_t opi, const double* times, int64_t num_frames) {
+    const vial_ir_op_t* op = &ir->ops[opi];
+    if (op->num_args > 16) return false;
+    point_t pt;
+    memset(&pt, 0, sizeof(pt));
+    pt.arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    pt.h = (hover_frames_t){.sys = desc->sys, .run = desc->run, .times = times, .num_frames = num_frames, .alloc = pt.arena, .state = {.alloc = pt.arena}};
+    md_system_state_init(&pt.h.state, desc->sys->atom.count);
+    vial_sys_init(&pt.vs, desc->sys, pt.arena);
+    bool ok = vial_interp_init(&pt.in, ir, &pt.vs, desc->sys, md_get_heap_allocator());
+    pt.have_in = ok;
+    vial_interp_t* in = &pt.in;
+    // Its static arguments alone: the target and the weights are what frames add
+    vial_ssa_t roots[16];
+    uint32_t nr = 0;
+    for (uint32_t k = 0; ok && k < op->num_args; ++k) {
+        const vial_ssa_t a = ir->args[op->arg_beg + k];
+        if (a && ir->values[a].type.stage == VIAL_STAGE_STATIC) roots[nr++] = a;
+    }
+    if (ok) {
+        vial_interp_only(in, roots, nr);
+        in->load_frame = hover_load;
+        in->load_user = &pt.h;
+        ok = vial_interp_static(in);
+    }
+    const vial_val_t* av[16] = {0};
+    for (uint32_t k = 0; ok && k < op->num_args; ++k) {
+        const vial_ssa_t a = ir->args[op->arg_beg + k];
+        av[k] = a && ir->values[a].type.stage == VIAL_STAGE_STATIC && in->state[a] ? &in->vals[a] : NULL;
+    }
+    vial_volume_t vol;
+    memset(&vol, 0, sizeof(vol));
+    if (ok) {
+        // Frame 0, kept: the next frame read takes the reader's state
+        vial_frame_t first;
+        float* xyz0 = NULL;
+        if (hover_load(&pt.h, 0, &first)) {
+            xyz0 = md_alloc(pt.arena, first.num_atoms * 3 * sizeof(float));
+            memcpy(xyz0, first.xyz, first.num_atoms * 3 * sizeof(float));
+            first.xyz = xyz0;
+        }
+        vial_kctx_t k = {.in = in, .op = op, .alloc = pt.arena, .map_index = -1};
+        ok = vial_volume_begin(&k, &vol, "sdf", av, op->num_args ? ir->names + op->arg_beg : NULL, op->num_args, xyz0 ? &first : NULL, false, pt.arena);
+    }
+    vial_frame_t fr = {0};
+    if (ok) {
+        if (desc->state) {
+            ok = desc->state->num_atoms == desc->sys->atom.count && desc->state->xyz;
+            if (ok) fr = (vial_frame_t){.xyz = (const float*)desc->state->xyz, .num_atoms = desc->state->num_atoms, .cell = desc->state->unitcell};
+        } else {
+            ok = hover_load(&pt.h, desc->frame, &fr);
+        }
+    }
+    if (ok) {
+        const vial_sets_t* st = vol.structures;
+        o->d->num_elements = 1;
+        for (uint32_t s = 0; s < st->count; ++s) {
+            mat4_t M;
+            if (!vial_volume_pose(&vol, s, fr.xyz, fr.num_atoms, &fr.cell, &M)) continue;
+            md_vial_pose_t ps = {.beg = (uint32_t)md_array_size(o->d->atoms)};
+            md_array_push_array(o->d->atoms, vial_sets_items(st, s), vial_sets_size(st, s), o->alloc);
+            ps.end = (uint32_t)md_array_size(o->d->atoms);
+            memcpy(ps.m, M.elem, sizeof(ps.m));
+            md_array_push(o->d->poses, ps, o->alloc);
+        }
+    }
+    vial_volume_free(&vol);
+    point_free(&pt);
     return ok;
 }
 
@@ -932,6 +1061,16 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
     if (!ir || !v || v >= md_array_size(ir->values)) return false;
     const vial_type_t* t = &ir->values[v].type;
     draw_out_t o = {.d = out, .alloc = alloc, .only = desc->element};
+    const uint32_t so = sdf_op(ir, v);
+    if (so != VIAL_IR_NO_OP) {
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        int64_t num_frames = 0;
+        const double* times = desc->eval ? desc->eval->times : run_times(desc->sys, desc->run, arena, &num_frames);
+        if (desc->eval) num_frames = desc->eval->num_frames;
+        const bool ok = draw_sdf(&o, desc, ir, so, times, num_frames);
+        md_arena_allocator_destroy(arena);
+        return draw_done(out, ok);
+    }
     if (t->stage == VIAL_STAGE_TRAJECTORY) {
         // Over the trajectory: the evaluation's value, drawn by its type
         vial_val_t one;

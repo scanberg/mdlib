@@ -8,6 +8,7 @@
 #include "builtins.h"
 #include "ast.h"
 #include "infer_internal.h"
+#include "volume.h"
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -185,7 +186,16 @@ static bool eval_at(vial_interp_t* in, uint32_t opi) {
     return done;
 }
 
+static void free_volumes(vial_interp_t* in) {
+    for (size_t i = 0; i < md_array_size(in->volumes); ++i) {
+        if (!in->volumes[i]) continue;
+        vial_volume_free(in->volumes[i]);
+        in->volumes[i] = NULL;
+    }
+}
+
 void vial_interp_free(vial_interp_t* in) {
+    free_volumes(in);
     for (int d = 0; d < VIAL_MAP_SCRATCH_DEPTH; ++d) if (in->map_scratch[d]) md_vm_arena_destroy(in->map_scratch[d]);
     if (in->temp) md_vm_arena_destroy(in->temp);
     if (in->alloc) md_arena_allocator_destroy(in->alloc);
@@ -841,11 +851,14 @@ void vial_interp_classify(vial_interp_t* in) {
             const char* bname = op->kind == VIAL_IR_BUILTIN ? vial_builtin_at(op->aux)->name : "";
             const bool window = (!strcmp(bname, "smooth") || !strcmp(bname, "derivative")) && reads_frames(ir, op);
             cls = op->kind == VIAL_IR_FOLD ? VIAL_OP_PER_FRAME :
+                  op->kind == VIAL_IR_BUILTIN && vial_volume_builtin(bname) ? VIAL_OP_VOLUME :
                   window ? VIAL_OP_ONCE :
                   (t->flags & VIAL_TYPE_PER_FRAME) ? VIAL_OP_PER_FRAME : VIAL_OP_ONCE;
         }
         in->op_class[opi] = cls;
-        // The sweep: a per-frame op after its per-frame inputs' sweeps and after the sweeps once inputs follow
+        // The sweep: a per-frame op after its per-frame inputs' sweeps and after the sweeps once inputs follow. A
+        // volume adds its frames as a per-frame op computes them, and is made, as a once op, after its sweep.
+        const bool by_frame = cls == VIAL_OP_PER_FRAME || cls == VIAL_OP_VOLUME;
         uint8_t sweep = cls == VIAL_OP_STATIC ? 0 : 1;
         for (uint32_t k = 0; k < op->num_args; ++k) {
             const vial_ssa_t a = ir->args[op->arg_beg + k];
@@ -854,7 +867,7 @@ void vial_interp_classify(vial_interp_t* in) {
             const uint8_t sc = in->op_class[src], ss = in->op_sweep[src];
             uint8_t need = 0;
             if (sc == VIAL_OP_PER_FRAME) need = ss;
-            else if (sc == VIAL_OP_ONCE) need = cls == VIAL_OP_PER_FRAME ? ss + 1 : ss;
+            else if (sc == VIAL_OP_ONCE || sc == VIAL_OP_VOLUME) need = by_frame ? ss + 1 : ss;
             if (need > sweep) sweep = need;
         }
         in->op_sweep[opi] = sweep;
@@ -1048,6 +1061,73 @@ void vial_summarize(const vial_summary_t* s, int64_t f, const float* row, uint32
     s->ext[2 * f + 1] = hi;
 }
 
+// A volume op's arguments, as the kernels take them
+static void volume_args(const vial_interp_t* in, const vial_ir_op_t* op, const vial_val_t** av, uint32_t cap) {
+    const vial_ir_t* ir = in->ir;
+    for (uint32_t i = 0; i < op->num_args && i < cap; ++i) {
+        const vial_ssa_t a = ir->args[op->arg_beg + i];
+        av[i] = a && in->state[a] ? &in->vals[a] : NULL;
+    }
+}
+
+// This frame added to a volume op's volume, which main holds, from `in`, main or a worker
+static bool add_volume(vial_interp_t* in, vial_interp_t* main, uint32_t opi) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_op_t* op = &ir->ops[opi];
+    vial_volume_t* vol = opi < md_array_size(main->volumes) ? main->volumes[opi] : NULL;
+    if (!vol) return false;     // it failed to begin, and said so
+    for (uint32_t k = 0; k < op->num_args; ++k) {
+        const vial_ssa_t a = ir->args[op->arg_beg + k];
+        if (a && !in->state[a]) return false;   // an argument failed at this frame, and said so
+    }
+    const vial_val_t* av[16] = {0};
+    if (op->num_args > 16) return false;
+    volume_args(in, op, av, 16);
+    vial_kctx_t k = {.in = in, .op = op, .type = &ir->values[op->result].type, .alloc = in->temp, .map_index = -1};
+    return vial_volume_add(&k, vol, av, op->num_args ? ir->names + op->arg_beg : NULL, op->num_args);
+}
+
+// The volume ops of a sweep set up, before its frames: their static arguments, and frame 0 for what a volume takes from
+// it (an sdf's reference, a cell's grid)
+static bool begin_volumes(vial_interp_t* in, uint8_t sweep) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_region_t* top = &ir->regions[ir->funcs[0].body];
+    bool ok = true;
+    for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+        const uint32_t opi = top->ops[i];
+        const vial_ir_op_t* op = &ir->ops[opi];
+        if (!in->live[opi] || in->op_class[opi] != VIAL_OP_VOLUME || in->op_sweep[opi] != sweep) continue;
+        vial_kctx_t k = {.in = in, .op = op, .type = &ir->values[op->result].type, .alloc = in->alloc, .map_index = -1};
+        const vial_val_t* av[16] = {0};
+        if (op->num_args > 16) { ok = vial_rt_fail(&k, "R0103", "a volume with more than 16 arguments"); continue; }
+        volume_args(in, op, av, 16);
+        vial_frame_t first;
+        const bool have_first = in->num_frames > 0 && in->load_frame && in->load_frame(in->load_user, 0, &first);
+        vial_volume_t* vol = md_alloc(in->alloc, sizeof(vial_volume_t));
+        if (!vial_volume_begin(&k, vol, vial_builtin_at(op->aux)->name, av, op->num_args ? ir->names + op->arg_beg : NULL, op->num_args,
+                               have_first ? &first : NULL, true, in->alloc)) {
+            vial_volume_free(vol);
+            ok = false;
+            continue;
+        }
+        in->volumes[opi] = vol;
+    }
+    return ok;
+}
+
+// The volume ops of a sweep made, after its frames: their values, as once ops have theirs
+static void end_volumes(vial_interp_t* in, uint8_t sweep) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_region_t* top = &ir->regions[ir->funcs[0].body];
+    for (size_t i = 0; i < md_array_size(top->ops); ++i) {
+        const uint32_t opi = top->ops[i];
+        const vial_ir_op_t* op = &ir->ops[opi];
+        if (!in->live[opi] || in->op_class[opi] != VIAL_OP_VOLUME || in->op_sweep[opi] != sweep || !in->volumes[opi]) continue;
+        vial_kctx_t k = {.in = in, .op = op, .type = &ir->values[op->result].type, .alloc = in->alloc, .map_index = -1};
+        if (vial_volume_end(&k, in->volumes[opi], &in->vals[op->result])) in->state[op->result] = 3;
+    }
+}
+
 // One frame of a sweep, in `in`, which is main or one of its workers: the per-frame ops of this sweep, and what earlier
 // sweeps computed read at this frame. FRAME_FAILED when an op failed, which leaves the rest of the frame computed;
 // FRAME_STOP when the frame does not load or the evaluation is interrupted.
@@ -1079,6 +1159,10 @@ static int run_frame(vial_interp_t* in, vial_interp_t* main, uint8_t sweep, int6
         const vial_ir_op_t* op = &ir->ops[opi];
         if (!op->num_results || !in->live[opi]) continue;
         // Static ops were computed before the sweeps; once ops after an earlier sweep, their series read below
+        if (in->op_class[opi] == VIAL_OP_VOLUME) {
+            if (in->op_sweep[opi] == sweep && !add_volume(in, main, opi)) result = FRAME_FAILED;
+            continue;
+        }
         if (in->op_class[opi] != VIAL_OP_PER_FRAME) continue;
         const uint8_t sw = in->op_sweep[opi];
         if (sw > sweep) continue;
@@ -1241,11 +1325,15 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
         in->series[v] = md_alloc(in->alloc, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
         memset(in->series[v], 0, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
     }
+    // What volumes are added to, made per run
+    free_volumes(in);
+    md_array_resize(in->volumes, md_array_size(ir->ops), in->alloc);
+    memset(in->volumes, 0, md_array_size(ir->ops) * sizeof(*in->volumes));
     // The sweeps with per-frame ops, and those of them with a fold, whose frames go in order
     uint8_t has_frames[256] = {0}, has_fold[256] = {0};
     for (size_t i = 0; i < md_array_size(top->ops); ++i) {
         const uint32_t opi = top->ops[i];
-        if (!in->live[opi] || in->op_class[opi] != VIAL_OP_PER_FRAME) continue;
+        if (!in->live[opi] || (in->op_class[opi] != VIAL_OP_PER_FRAME && in->op_class[opi] != VIAL_OP_VOLUME)) continue;
         has_frames[in->op_sweep[opi]] = 1;
         if (ir->ops[opi].kind == VIAL_IR_FOLD) has_fold[in->op_sweep[opi]] = 1;
     }
@@ -1257,6 +1345,7 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
     bool stopped = false;
     for (uint32_t sweep = 1; sweep <= max_sweep && !stopped; ++sweep) {
         in->sweep = (uint8_t)sweep;
+        if (has_frames[sweep] && num_frames > 0 && !begin_volumes(in, (uint8_t)sweep)) ok = false;
         if (has_frames[sweep] && num_frames > 0) {
             if (in->num_workers && in->parallel_for && !has_fold[sweep]) {
                 for (size_t w = 0; w < in->num_workers; ++w) worker_sync(&in->workers[w], in);
@@ -1275,9 +1364,10 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
             }
         }
         if (stopped) break;
-        // After the sweep: the once ops it completes, in program order
+        // After the sweep: its volumes, then the once ops it completes, in program order
         in->frame = NULL;
         in->err_seq = 0;
+        end_volumes(in, (uint8_t)sweep);
         for (size_t i = 0; i < md_array_size(top->ops); ++i) {
             const uint32_t opi = top->ops[i];
             const vial_ir_op_t* op = &ir->ops[opi];
@@ -1394,4 +1484,64 @@ bool vial_interp_over_frames(const vial_interp_t* in, vial_ssa_t v, const uint8_
     child.op_sweep = NULL;
     vial_interp_free(&child);
     return got;
+}
+
+// ### VOLUMES OVER CHOSEN FRAMES ###
+// Nothing of a volume is kept per frame, so a volume over other frames reads them again: what its arguments need is
+// computed for each in an interpreter of its own, from what the run computed that is not per frame, and added to a
+// volume set up as the run's is, with the same grid and reference
+
+const vial_volume_t* vial_interp_volume(const vial_interp_t* in, vial_ssa_t v) {
+    if (!in || !v || v >= md_array_size(in->ir->values)) return NULL;
+    const uint32_t op = in->ir->values[v].op;
+    return op != VIAL_IR_NO_OP && op < md_array_size(in->volumes) ? in->volumes[op] : NULL;
+}
+
+bool vial_interp_volume_over(const vial_interp_t* in, vial_ssa_t v, const uint8_t* mask, bool (*load)(void* user, int64_t index, vial_frame_t* out),
+                             void* load_user, vial_val_t* out, md_allocator_i* alloc) {
+    const vial_volume_t* run_vol = vial_interp_volume(in, v);
+    if (!run_vol || !load || !mask) return false;
+    const vial_ir_t* ir = in->ir;
+    const uint32_t opi = ir->values[v].op;
+    const vial_ir_op_t* op = &ir->ops[opi];
+    if (op->num_args > 16) return false;
+    vial_interp_t child;
+    if (!vial_interp_init(&child, ir, in->sys, in->msys, md_get_heap_allocator())) return false;
+    const size_t nv = md_array_size(in->state);
+    for (size_t i = 0; i < nv; ++i) if (in->state[i] >= 2) { child.vals[i] = in->vals[i]; child.state[i] = in->state[i]; }
+    child.max_elements = in->max_elements;
+    child.num_frames = in->num_frames;
+    child.load_frame = load;
+    child.load_user = load_user;
+    // Only what its arguments need, frame by frame
+    vial_ssa_t roots[16];
+    uint32_t nr = 0;
+    for (uint32_t k = 0; k < op->num_args; ++k) if (ir->args[op->arg_beg + k]) roots[nr++] = ir->args[op->arg_beg + k];
+    vial_interp_only(&child, roots, nr);
+    vial_volume_t vol;
+    bool ok = vial_volume_like(&vol, run_vol, child.alloc);
+    for (int64_t f = 0; ok && f < in->num_frames; ++f) {
+        if (!mask[f]) continue;
+        vial_frame_t fr;
+        if (!load(load_user, f, &fr)) { ok = false; break; }
+        // A frame where an argument fails is left out, as the run leaves it out
+        if (!vial_interp_frame(&child, &fr)) continue;
+        child.frame = &fr;
+        const vial_val_t* av[16] = {0};
+        volume_args(&child, op, av, 16);
+        vial_kctx_t k = {.in = &child, .op = op, .type = &ir->values[op->result].type, .alloc = child.temp, .map_index = -1};
+        bool ready = true;
+        for (uint32_t q = 0; q < op->num_args; ++q) if (ir->args[op->arg_beg + q] && !av[q]) ready = false;
+        if (ready) vial_volume_add(&k, &vol, av, op->num_args ? ir->names + op->arg_beg : NULL, op->num_args);
+        child.frame = NULL;
+    }
+    if (ok) {
+        vial_kctx_t k = {.in = &child, .op = op, .alloc = alloc, .map_index = -1};
+        vial_val_t made;
+        ok = vial_volume_end(&k, &vol, &made);
+        if (ok) *out = vial_val_copy(&made, alloc);
+    }
+    vial_volume_free(&vol);
+    vial_interp_free(&child);
+    return ok;
 }

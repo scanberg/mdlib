@@ -113,6 +113,9 @@ typedef struct vial_interp_t {
     float*                      at_xyz;
     size_t                      at_num_atoms;
     vial_frame_t                at_frame;
+    // Volumes (volume.h) over the trajectory: by op, what a volume op of the top level adds its frames to, from every
+    // thread; NULL for other ops. Its value is made from it after its sweep.
+    struct vial_volume_t**      volumes;    // md_array by op
 } vial_interp_t;
 
 // The summary of a population at each frame, as v1 publishes it beside a series: <path>/mean, /variance (in the unit
@@ -128,7 +131,9 @@ typedef struct vial_summary_t {
 // Summarizes the n values of frame f into s
 void vial_summarize(const vial_summary_t* s, int64_t f, const float* row, uint32_t n);
 
-enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2 };
+// How a top-level op is evaluated over the trajectory: once; per frame; once after a sweep, from what it read; or, a
+// volume, added to per frame and made once after its sweep, nothing of it kept per frame
+enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2, VIAL_OP_VOLUME = 3 };
 
 bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, const struct md_system_t* msys, md_allocator_i* alloc);
 
@@ -160,6 +165,15 @@ void vial_interp_classify(vial_interp_t* in);
 // from the per-frame values the run kept; into out, allocated with alloc. False when v is not such a value, reads no
 // per-frame value, or one it reads was not kept. The evaluation's own values are not touched.
 bool vial_interp_over_frames(const vial_interp_t* in, vial_ssa_t v, const uint8_t* mask, vial_val_t* out, md_allocator_i* alloc);
+
+// After vial_interp_run: volume v (sdf, density) made again over the frames where mask[f] is set, which it reads again
+// through load, a reader of the caller's, with what they need computed for each in an interpreter of its own; into
+// out, allocated with alloc. False when v is no volume the run set up.
+bool vial_interp_volume_over(const vial_interp_t* in, vial_ssa_t v, const uint8_t* mask, bool (*load)(void* user, int64_t index, vial_frame_t* out),
+                             void* load_user, vial_val_t* out, md_allocator_i* alloc);
+
+// The volume a volume op of the top level adds to, once its sweep has begun; NULL for other ops
+const struct vial_volume_t* vial_interp_volume(const vial_interp_t* in, vial_ssa_t v);
 
 // After vial_interp_run: the value of a per-frame value at frame f, or of a trajectory value (f ignored); NULL when it
 // was not computed or not kept

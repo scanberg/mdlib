@@ -145,6 +145,9 @@ vial_type_t vx_listcomp(infer_t* x, vial_node_id id);
 bool        vx_check_for(infer_t* x, vial_node_id s);
 bool        vx_call_frames(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 
+// infer_vol.c: the volumes, sdf and density; false for other names
+bool        vx_call_volume(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
+
 // infer_math.c: reductions, math and arrays; false for other names
 bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 

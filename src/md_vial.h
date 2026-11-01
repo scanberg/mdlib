@@ -136,12 +136,18 @@ typedef enum md_vial_stage_t {
 } md_vial_stage_t;
 
 // One published value: a top-level name that does not start with _, bound to a number, a bool or a set, of at most
-// two dimensions. A set or an array of sets is a selection; a frame-stage one is a recipe, evaluated for the frame
-// shown. In the order the script binds them.
+// two dimensions, or a volume. A set or an array of sets is a selection; a frame-stage one is a recipe, evaluated for
+// the frame shown. In the order the script binds them.
 enum {
     MD_VIAL_OUTPUT_TEMPORAL     = 1 << 0,   // a value per frame: frame stage, or over the trajectory keeping the frame
     MD_VIAL_OUTPUT_DISTRIBUTION = 1 << 1,   // a histogram over the frames
     MD_VIAL_OUTPUT_PERIODIC     = 1 << 2,   // values that wrap, such as angles about an axis
+    // A volume over the frames, float[nx][ny][nz], k fastest: a density per Å³, published with <path>/origin [3] and
+    // <path>/basis [3][3] (Å, the corner of voxel [0][0][0] and one step along each index, in the volume's frame),
+    // <path>/bulk (the same density over the unit cell, NaN without one) and <path>/samples (what was added: frames,
+    // times structures for an sdf)
+    MD_VIAL_OUTPUT_VOLUME       = 1 << 3,
+    MD_VIAL_OUTPUT_SDF          = 1 << 4,   // a volume in the frame of its structures, which drawing it places (md_vial_pose_t)
 };
 
 typedef struct md_vial_output_t {
@@ -315,7 +321,8 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* eval, str_t name, uint8_
 
 // An output over the trajectory, such as a histogram over the frames, computed again over chosen frames: those where
 // frames[f] is nonzero, from the per-frame values the evaluation kept, so nothing is evaluated again. What a plot
-// period shows (decided 31 October). Into out as floats, NaN where missing; returns how many values it has, and writes
+// period shows (decided 31 October). A volume keeps nothing per frame, so its frames are read again, one after the
+// other, with a reader of its own: that takes as long as evaluating them did on one thread. Into out as floats, NaN where missing; returns how many values it has, and writes
 // them only when cap holds them all. 0 when the run has not finished, or the output is not computed over the frames
 // from per-frame values. Safe from any thread once md_vial_eval_run has returned.
 size_t md_vial_eval_aggregate(const md_vial_eval_t* eval, str_t name, const uint8_t* frames, float* out, size_t cap);
@@ -365,6 +372,15 @@ typedef struct md_vial_group_t {
     uint32_t    end;
 } md_vial_group_t;
 
+// Where an sdf's volume sits on one of its structures at the frame drawn: the structure's particles, atoms[beg, end) of
+// the drawing, and the matrix from the run's frame to the volume's, column-major (m[column][row]); its inverse places
+// the volume on the structure. A structure that cannot be fitted at that frame has none.
+typedef struct md_vial_pose_t {
+    uint32_t    beg;
+    uint32_t    end;
+    float       m[4][4];
+} md_vial_pose_t;
+
 typedef struct md_vial_drawing_t {
     md_vial_prim_t*     prims;
     size_t              num_prims;
@@ -372,7 +388,9 @@ typedef struct md_vial_drawing_t {
     size_t              num_labels;
     md_vial_group_t*    groups;
     size_t              num_groups;
-    uint32_t*           atoms;          // the groups' particles: indices of the system's atoms
+    uint32_t*           atoms;          // the groups' and the poses' particles: indices of the system's atoms
+    md_vial_pose_t*     poses;          // an sdf's structures
+    size_t              num_poses;
     size_t              num_elements;   // of the value drawn
     size_t              num_omitted;    // primitives and labels left out past 10,000
 } md_vial_drawing_t;

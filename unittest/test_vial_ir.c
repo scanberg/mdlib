@@ -1941,3 +1941,175 @@ UTEST(vial_ir, at_in_a_def) {
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }
+
+// ### VOLUMES ###
+
+static const md_vial_output_t* vial_ir__pub(const md_vial_program_t* prog, const char* name) {
+    const md_vial_output_t* o;
+    const size_t n = md_vial_outputs(prog, &o);
+    for (size_t i = 0; i < n; ++i) if (str_eq(o[i].name, str_from_cstr(name))) return &o[i];
+    return NULL;
+}
+
+static double vial_ir__attr1(const md_attributes_t* at, const char* path, size_t i) {
+    const md_attribute_t* a = md_attributes_find(at, str_from_cstr(path));
+    if (!a || !a->data) return NAN;
+    return ((const double*)a->data)[i];
+}
+
+// sdf and density (decided 1 November): grids that follow what they cover, a density per Å³ that keeps the count it
+// was made from, and what places them published beside them
+UTEST(vial_ir, volumes) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    const char* src =
+        "s  = sdf(residues[1:5], particles(name='O'), 6.0)\n"
+        "sw = sdf(residues[1:5], particles(name='O'), (6.0, 4.0, 3.0), samples=2, weights=mass(particles(name='O')))\n"
+        "d  = density(particles(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25)\n"
+        "ds = density(particles(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25, sigma=6.0)\n"
+        "dc = density(particles(name='CA'), samples=1)\n"
+        "n  = max(s)\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    ASSERT_EQ(0u, (unsigned)ndg);
+    // Types: 12 Å at 4 per Å is 48 a side; 12, 8 and 6 Å at 2 per Å are 24, 16 and 12, rounded up to 24, 16 and 16
+    const md_vial_output_t* os = vial_ir__pub(prog, "s");
+    const md_vial_output_t* ow = vial_ir__pub(prog, "sw");
+    const md_vial_output_t* od = vial_ir__pub(prog, "d");
+    const md_vial_output_t* oc = vial_ir__pub(prog, "dc");
+    ASSERT_TRUE(os && ow && od && oc);
+    EXPECT_STREQ("float[48][48][48] count/Å³", os->type);
+    EXPECT_STREQ("float[24][16][16] u/Å³", ow->type);
+    EXPECT_STREQ("float[56][56][56] count/Å³", od->type);
+    EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY, os->stage);
+    EXPECT_EQ((uint32_t)(MD_VIAL_OUTPUT_VOLUME | MD_VIAL_OUTPUT_SDF), os->flags);
+    EXPECT_EQ((uint32_t)MD_VIAL_OUTPUT_VOLUME, od->flags);
+    EXPECT_EQ((uint32_t)MD_VIAL_OUTPUT_VOLUME, oc->flags);
+
+    for (int threads = 1; threads <= 4; threads += 3) {
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
+        ASSERT_TRUE(e != NULL);
+        ASSERT_TRUE(md_vial_eval_run(e));
+        const md_attributes_t* at = md_vial_eval_attributes(e);
+        // The box holds every particle, so a density over it, by voxel volume, holds them all: cloud in cell keeps
+        // what it spreads, and so does smoothing away from the edges
+        const md_attribute_t* ad = md_attributes_find(at, STR_LIT("script/d"));
+        const md_attribute_t* as = md_attributes_find(at, STR_LIT("script/ds"));
+        ASSERT_TRUE(ad && as);
+        ASSERT_EQ(3u, ad->format.rank);
+        EXPECT_EQ(56u, ad->format.shape[0]);
+        const double step = vial_ir__attr1(at, "script/d/basis", 0);
+        EXPECT_NEAR(200.0 / 56.0, step, 1e-9);
+        EXPECT_EQ(0.0, vial_ir__attr1(at, "script/d/basis", 1));
+        EXPECT_EQ(-100.0, vial_ir__attr1(at, "script/d/origin", 0));
+        EXPECT_EQ((double)nf, vial_ir__attr1(at, "script/d/samples", 0));
+        double sum = 0, ssum = 0;
+        for (size_t i = 0; i < 56 * 56 * 56; ++i) { sum += ((const float*)ad->data)[i]; ssum += ((const float*)as->data)[i]; }
+        EXPECT_NEAR((double)sys->atom.count, sum * step * step * step, 1e-2);
+        EXPECT_NEAR((double)sys->atom.count, ssum * step * step * step, 1e-2);
+        // The bulk density: the particles over the cell
+        const double cellv = 46.645 * 96.666 * 48.362;
+        EXPECT_NEAR(sys->atom.count / cellv, vial_ir__attr1(at, "script/d/bulk", 0), 1e-6);
+        // Over the cell: every CA in it, wrapped
+        const md_attribute_t* ac = md_attributes_find(at, STR_LIT("script/dc"));
+        ASSERT_TRUE(ac != NULL);
+        const size_t nc = (size_t)ac->format.shape[0] * ac->format.shape[1] * ac->format.shape[2];
+        EXPECT_EQ(48u, ac->format.shape[0]);
+        EXPECT_EQ(104u, ac->format.shape[1]);
+        EXPECT_EQ(56u, ac->format.shape[2]);
+        double csum = 0;
+        for (size_t i = 0; i < nc; ++i) csum += ((const float*)ac->data)[i];
+        EXPECT_NEAR(15.0, csum * cellv / (double)nc, 1e-2);
+        EXPECT_NEAR(46.645 / 48, vial_ir__attr1(at, "script/dc/basis", 0), 1e-4);
+        EXPECT_NEAR(96.666 / 104, vial_ir__attr1(at, "script/dc/basis", 4), 1e-4);
+        // An sdf: four structures each frame, in their own frame, centred
+        const md_attribute_t* asd = md_attributes_find(at, STR_LIT("script/s"));
+        ASSERT_TRUE(asd != NULL);
+        EXPECT_EQ(-6.0, vial_ir__attr1(at, "script/s/origin", 2));
+        EXPECT_EQ(0.25, vial_ir__attr1(at, "script/s/basis", 8));
+        EXPECT_EQ(4.0 * nf, vial_ir__attr1(at, "script/s/samples", 0));
+        double smax = 0, stot = 0;
+        for (size_t i = 0; i < 48 * 48 * 48; ++i) { smax = MAX(smax, ((const float*)asd->data)[i]); stot += ((const float*)asd->data)[i]; }
+        EXPECT_GT(stot, 0.0);
+        const md_attribute_t* an = md_attributes_find(at, STR_LIT("script/n"));
+        ASSERT_TRUE(an != NULL);
+        EXPECT_EQ((float)smax, ((const float*)an->data)[0]);
+        // Weighted by mass: an O weighs 16, so the volume is 16 times the count, where the grids are alike
+        const md_attribute_t* aw = md_attributes_find(at, STR_LIT("script/sw"));
+        ASSERT_TRUE(aw != NULL);
+        double wtot = 0;
+        for (size_t i = 0; i < 24 * 16 * 16; ++i) wtot += ((const float*)aw->data)[i];
+        EXPECT_GT(wtot, 0.0);
+
+        // Over chosen frames: every frame is what was published; its size is known without reading a frame
+        uint8_t* all = md_alloc(alloc, (size_t)nf);
+        memset(all, 1, (size_t)nf);
+        const size_t nv = 48 * 48 * 48;
+        EXPECT_EQ(nv, md_vial_eval_aggregate(e, STR_LIT("s"), all, NULL, 0));
+        float* over = md_alloc(alloc, nv * sizeof(float));
+        ASSERT_EQ(nv, md_vial_eval_aggregate(e, STR_LIT("s"), all, over, nv));
+        double maxdiff = 0;
+        for (size_t i = 0; i < nv; ++i) maxdiff = MAX(maxdiff, fabs((double)over[i] - ((const float*)asd->data)[i]));
+        EXPECT_LT(maxdiff, 1e-5 * (smax + 1));
+        // The first frame alone is not the whole
+        uint8_t* one = md_alloc(alloc, (size_t)nf);
+        memset(one, 0, (size_t)nf);
+        one[0] = 1;
+        ASSERT_EQ(nv, md_vial_eval_aggregate(e, STR_LIT("s"), one, over, nv));
+        double osum = 0;
+        for (size_t i = 0; i < nv; ++i) osum += over[i];
+        EXPECT_GT(osum, 0.0);
+        EXPECT_NE(osum, stot);
+        md_vial_eval_free(e);
+    }
+
+    // Drawing an sdf: its four structures where the frame has them, each with the pose that places the volume
+    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf(") - src));
+    md_vial_drawing_t dr;
+    ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 2, .element = -1}, expr, alloc));
+    ASSERT_EQ(4u, (unsigned)dr.num_poses);
+    for (size_t i = 0; i < dr.num_poses; ++i) {
+        EXPECT_EQ(10u, dr.poses[i].end - dr.poses[i].beg);
+        // A rigid motion: its rotation's columns have length 1
+        const float* c0 = dr.poses[i].m[0];
+        EXPECT_NEAR(1.0, sqrt(c0[0] * c0[0] + c0[1] * c0[1] + c0[2] * c0[2]), 1e-4);
+    }
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(vial_ir, volume_diagnostics) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    vial_test_run('P');
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    struct { const char* src; const char* code; } cases[] = {
+        {"v = sdf(residues[0:5], particles(name='O'), 6.0)\n", "E0320"},           // the first residue has three Hs on N
+        {"v = sdf(residues[1:5], particles(name='O'), 300.0)\n", "W0407"},         // 2,400 a side at 4 per Å
+        {"v = [sdf(r, particles(name='O'), 6.0) for r in residues[1:3]]\n", "E0406"},
+        {"v = sdf(residues[1:5], residues, 6.0)\n", "E0313"},                      // an array of sets is no target
+        {"v = sdf(residues[1:5], particles(name='O'), 6.0, samples=0)\n", "E0313"},
+        {"v = density(particles(), box=((0, 0, 0), (0, 10, 10)))\n", "E0313"},
+        {"x = 4.0\nv = sdf(residues[1:5], particles(name='O'), 6.0, ref=particles(name='O').xyz)\n", "E0313"},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        md_vial_program_t* prog = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+        const md_vial_diagnostic_t* d;
+        const size_t n = md_vial_diagnostics(prog, &d);
+        bool found = false;
+        for (size_t k = 0; k < n; ++k) found = found || !strncmp(d[k].code, cases[i].code, 5);
+        EXPECT_TRUE(found);
+        if (!found) {
+            printf("%s", cases[i].src);
+            for (size_t k = 0; k < n; ++k) printf("  %.5s %.*s\n", d[k].code, (int)d[k].message.len, d[k].message.ptr);
+        }
+        md_vial_program_free(prog);
+    }
+    md_arena_allocator_destroy(alloc);
+}

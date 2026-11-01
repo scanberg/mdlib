@@ -1336,6 +1336,7 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_geom(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_math(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_draw(x, id, sym->builtin, &t)) return t;
+            if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_volume(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_BUILTIN && sym->builtin && vx_call_frames(x, id, sym->builtin, &t)) return t;
             if (sym && sym->kind == VIAL_SYM_PRELUDE && x->c->prelude) {
                 vial_node_id d = sym->node;
