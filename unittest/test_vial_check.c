@@ -160,6 +160,32 @@ UTEST_F(vial_check, literals_and_units) {
     EXPECT_DIAGS("x = 2.0 ** 1 nm\n", "W0501 1: a power of nm; an exponent has no unit | unitless(...)\n");
 }
 
+UTEST_F(vial_check, compound_units) {
+    // Written without spaces, a unit divides by the units after it
+    EXPECT_TYPE("e = 1.5 kJ/mol\n", 1, "float kJ/mol, static = 1.5");
+    EXPECT_TYPE("e = 1.5kJ/mol\n", 1, "float kJ/mol, static = 1.5");
+    EXPECT_TYPE("k = 2.0 kJ/mol/K\n", 1, "float kJ/(mol*K), static = 2.0");
+    EXPECT_TYPE("v = 0.5 nm/ps > 499.0 'm/s'\n", 1, "bool, static = True");
+    EXPECT_TYPE(u8"v = 2.0 \xC3\x85/ps\n", 1, u8"float \xC3\x85/ps, static = 2.0");
+    EXPECT_TYPE("v = 1.0 / 2 nm/ps < 0.6 'ps/nm'\n", 1, "bool, static = True");
+    EXPECT_TYPE("r = 1.5 kJ/mol in 1.0 kJ/mol..2.0 kJ/mol\n", 1, "bool, static");
+    // Not a unit after the slash, or a unit that is called: division, as before
+    EXPECT_TYPE("t = 4.0\nv = 10.0 nm/t\n", 2, "float nm, static = 2.5");
+    EXPECT_TYPE("n = 4\nv = 10.0 nm//n\n", 2, "float nm, static = 2.0");
+    // A divisor the script binds is refused: it divided by the name before
+    EXPECT_DIAGS("ps = 2.0\nv = 10 nm/ps\n",
+        "E0503 2: `ps` is a unit in `nm/ps`, and a name here: (10 nm)/ps divides by the name, 10 'nm/ps' is the unit | (10 nm)/ps\n");
+    EXPECT_DIAGS("def f(K):\n    return 1 kJ/mol/K\nx = f(2.0)\n",
+        "E0503 2: `K` is a unit in `kJ/mol/K`, and a name here: (1 kJ/mol)/K divides by the name, 1 'kJ/mol/K' is the unit | (1 kJ/mol)/K\n");
+    EXPECT_TYPE("ps = 2.0\nv = (10 nm)/ps\n", 2, "float nm, static = 5.0");
+    // Spaced, or joined by *: the fix writes the unit
+    EXPECT_DIAGS("e = 1.5 kJ / mol\n", "E0201 1: `mol` is a unit: write a compound unit without spaces, as 1.5 kJ/mol | 1.5 kJ/mol\n");
+    EXPECT_DIAGS("e = 1.5 kJ/mol*K\n",
+        "E0201 1: `K` is a unit: a unit after a number divides by others with /, and anything else is a string, so 1.5 kJ/mol/K | 1.5 kJ/mol/K\n");
+    EXPECT_DIAGS("e = 1.5 kJ*mol\n",
+        "E0201 1: `mol` is a unit: a unit after a number divides by others with /, and anything else is a string, so 1.5 'kJ*mol' | 1.5 'kJ*mol'\n");
+}
+
 // Folding never overflows: a result beyond 32 bits, or a float beyond an int, is typed and not folded
 UTEST_F(vial_check, folding_limits) {
     EXPECT_TYPE("x = 2147483647 + 1\n", 1, "int, static");

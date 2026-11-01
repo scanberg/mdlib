@@ -409,7 +409,7 @@ static T infer_quantity(infer_t* x, vial_node_id id) {
         const size_t q = (b + 2 < ut.len && ut.ptr[b + 1] == ut.ptr[b] && ut.ptr[b + 2] == ut.ptr[b]) ? 3 : 1;
         ok = ut.len >= b + 2 * q && vial_unit_string(str_substr(ut, b + q, ut.len - b - 2 * q), &u);
     } else {
-        ok = vial_unit_name(ut, &u);
+        ok = vial_unit_written(ut, &u);
     }
     if (!ok) return err();  // E0502, from the parser
     t.unit_kind = VIAL_UNIT_KNOWN;

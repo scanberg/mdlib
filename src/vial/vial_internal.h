@@ -92,6 +92,10 @@ const char* vial_kw_str(vial_kw_t kw);
 struct md_unit_t;
 bool vial_unit_name(str_t name, struct md_unit_t* unit);
 bool vial_unit_string(str_t text, struct md_unit_t* unit);
+// A name that may follow the slash of a compound unit, `1.5 kJ/mol`: a unit name, or one name md_unit knows
+bool vial_unit_divisor(str_t name, struct md_unit_t* unit);
+// The unit of a quantity literal as written, a unit name and any divisors, `kJ/mol/nm`
+bool vial_unit_written(str_t text, struct md_unit_t* unit);
 const char* vial_op_str(vial_op_t op);
 const char* vial_token_kind_str(md_vial_token_kind_t kind);
 

@@ -420,6 +420,31 @@ static str_t suggest(resolver_t* r, uint32_t scope, str_t word, bool functions_o
     return best.name;
 }
 
+// 10 nm/ps where the script binds ps: before compound units this divided by the variable, so neither reading is
+// taken without saying. The fix keeps the division; a string keeps the unit.
+static void check_divisors(resolver_t* r, vial_node_id unit, uint32_t scope) {
+    if (node(r, unit)->sub != 0) return;
+    const str_t u = text(r, unit);
+    size_t i = 0;
+    while (i < u.len && u.ptr[i] != '/') ++i;
+    while (i < u.len) {
+        size_t e = i + 1;
+        while (e < u.len && u.ptr[e] != '/') ++e;
+        const str_t name = {u.ptr + i + 1, e - i - 1};
+        uint32_t late;
+        if (lookup(r, scope, name, &late)) {
+            const vial_node_id q = r->n->parent[unit];
+            const str_t num = text(r, child(r, q, 0));
+            char fix[160];
+            snprintf(fix, sizeof(fix), "(%.*s %.*s)/%.*s", (int)num.len, num.ptr, (int)i, u.ptr, (int)(u.len - i - 1), u.ptr + i + 1);
+            diag_fix(r, "E0503", q, fix, "`%.*s` is a unit in `%.*s`, and a name here: %s divides by the name, %.*s '%.*s' "
+                "is the unit", (int)name.len, name.ptr, (int)u.len, u.ptr, fix, (int)num.len, num.ptr, (int)u.len, u.ptr);
+            return;
+        }
+        i = e;
+    }
+}
+
 static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint32_t late) {
     const str_t name = text(r, at);
     if (vial_diag_at(r->diags, r->t->nodes[at].span.beg)) return;   // the parser said more, as E0701 for residue(1:4)
@@ -438,18 +463,46 @@ static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint3
             vial_line_of(r->diags, r->t->nodes[r->n->symbols[late].node].span.beg));
         return;
     }
+    const vial_node_id p = r->n->parent[at];
+    if (p && kind_of(r, p) == VIAL_N_BINARY && child(r, p, 1) == at && vial_unit_divisor(name, NULL)) {
+        // 1.5 kJ / mol and 1.5 kJ/mol*K: a quantity, then a unit it was meant to carry
+        const vial_node_id q = child(r, p, 0);
+        const uint32_t op = node(r, p)->sub;
+        if (kind_of(r, q) == VIAL_N_QUANTITY && node(r, child(r, q, 1))->sub == 0 && (op == VIAL_OP_SLASH || op == VIAL_OP_STAR)) {
+            const str_t qs = text(r, q);
+            char fix[160];
+            if (op == VIAL_OP_SLASH) {
+                snprintf(fix, sizeof(fix), "%.*s/%.*s", (int)qs.len, qs.ptr, (int)name.len, name.ptr);
+                diag_fix(r, "E0201", p, fix, "`%.*s` is a unit: write a compound unit without spaces, as %s",
+                    (int)name.len, name.ptr, fix);
+                return;
+            }
+            const str_t ut = text(r, child(r, q, 1));
+            if (memchr(ut.ptr, '/', ut.len)) {
+                // kJ/mol*K would read as kJ*K/mol; what is meant is a divisor
+                snprintf(fix, sizeof(fix), "%.*s/%.*s", (int)qs.len, qs.ptr, (int)name.len, name.ptr);
+            } else {
+                const str_t ns = text(r, child(r, q, 0));
+                snprintf(fix, sizeof(fix), "%.*s '%.*s*%.*s'", (int)ns.len, ns.ptr, (int)ut.len, ut.ptr, (int)name.len, name.ptr);
+            }
+            diag_fix(r, "E0201", p, fix, "`%.*s` is a unit: a unit after a number divides by others with /, and "
+                "anything else is a string, so %s", (int)name.len, name.ptr, fix);
+            return;
+        }
+    }
     if (vial_unit_name(name, NULL)) {
-        // 1.2 * nm: the fix writes the quantity literal
-        const vial_node_id p = r->n->parent[at];
+        // 1.2 * nm: the fix writes the quantity literal, in place of the product
         char fix[96] = "";
+        vial_node_id fix_at = at;
         if (p && kind_of(r, p) == VIAL_N_BINARY && node(r, p)->sub == VIAL_OP_STAR && child(r, p, 1) == at) {
             const vial_node_id num = child(r, p, 0);
             if (kind_of(r, num) == VIAL_N_INT || kind_of(r, num) == VIAL_N_FLOAT) {
                 const str_t ns = text(r, num);
                 snprintf(fix, sizeof(fix), "%.*s %.*s", (int)ns.len, ns.ptr, (int)name.len, name.ptr);
+                fix_at = p;
             }
         }
-        diag_fix(r, "E0201", at, fix[0] ? fix : NULL, "`%.*s` is a unit, not a name: write it after a number, as 10 %.*s",
+        diag_fix(r, "E0201", fix_at, fix[0] ? fix : NULL, "`%.*s` is a unit, not a name: write it after a number, as 10 %.*s",
             (int)name.len, name.ptr, (int)name.len, name.ptr);
         return;
     }
@@ -540,8 +593,10 @@ static void resolve(resolver_t* r, vial_node_id id, uint32_t scope) {
     case VIAL_N_LISTCOMP:
         resolve_comp(r, id, scope);
         return;
-    case VIAL_N_UNSUPPORTED:
     case VIAL_N_UNIT:
+        check_divisors(r, id, scope);
+        return;
+    case VIAL_N_UNSUPPORTED:
     case VIAL_N_ERROR:
         return;     // reported already, or nothing to resolve
     case VIAL_N_DEF: {

@@ -548,6 +548,18 @@ vial_token_t* vial_lex(str_t src, vial_diags_t* diags, md_allocator_i* alloc) {
             const size_t nt = md_array_size(l.tokens);
             const md_vial_token_kind_t prev = nt ? l.tokens[nt - 1].kind : MD_VIAL_TOKEN_EOF;
             if (!kw && (prev == MD_VIAL_TOKEN_INT || prev == MD_VIAL_TOKEN_FLOAT) && vial_unit_name(word, NULL)) {
+                // A compound unit is written without spaces, 1.5 kJ/mol: each slash takes a unit against it, which
+                // is not called, indexed or read an attribute of, so 10 nm/count(s) still divides
+                for (;;) {
+                    const size_t s0 = l.pos;
+                    if (s0 + 1 >= src.len || src.ptr[s0] != '/' || !is_ident_start((unsigned char)src.ptr[s0 + 1])) break;
+                    size_t e = s0 + 1;
+                    while (e < src.len && is_ident_char((unsigned char)src.ptr[e])) ++e;
+                    const str_t d = {src.ptr + s0 + 1, e - s0 - 1};
+                    if (keyword_of(d) || !vial_unit_divisor(d, NULL)) break;
+                    if (e < src.len && (src.ptr[e] == '(' || src.ptr[e] == '[' || (src.ptr[e] == '.' && !(e + 1 < src.len && src.ptr[e + 1] == '.')) || src.ptr[e] == '\'' || src.ptr[e] == '"')) break;
+                    l.pos = e;
+                }
                 emit(&l, MD_VIAL_TOKEN_UNIT, beg, l.pos, 0, 0);
                 continue;
             }

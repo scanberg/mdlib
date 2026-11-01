@@ -44,7 +44,7 @@ A script is a Python 3 module: UTF-8 text, `#` comments, indentation for blocks,
 | --- | --- | --- |
 | Integers | `42`, `1_000_000` | 32-bit |
 | Floats | `0.5`, `1e-3` | Stored in 32 bits |
-| Quantities | `10 ns`, `0.5 nm`, `90 deg`, `1.5 'kJ/mol'` | A number with its unit, one atom: see Units |
+| Quantities | `10 ns`, `0.5 nm`, `90 deg`, `1.5 kJ/mol` | A number with its unit, one atom: see Units |
 | Strings | `'CA'`, `"GTP"` | Names and labels; no f-strings |
 | Booleans | `True`, `False` |  |
 | None | `None` | The absent default, as in `between=None` |
@@ -161,7 +161,8 @@ c : float[433][3] Å                                    frame
 - Trigonometric functions take angles in any angle unit. `exp`, `log` and the like take values without a unit; anything else gives W0501.
 - `unitless(x)` drops the unit on purpose, without a warning.
 - A number followed by a unit is a quantity literal: `10 ns`, `0.5 nm`, `90 deg`. The space is optional, `10ns`, and the quantity is one atom, so `t / 2 ps` is `t / (2 ps)` and `-10 ns` is minus ten nanoseconds. It converts like any value with a unit, so `within(0.5 nm, of=protein)` is a radius of 5 Å.
-- The unit is a name from a fixed table, or for anything else a string in md_unit's notation, `1.5 'kJ/mol'`. A string that is not a unit is E0502. A unit name means a unit only right after a number, and Python's grammar gives a number followed by a name no other meaning, so `ps = ...` remains an ordinary variable while `10 ps` is ten picoseconds.
+- The unit is a name from a fixed table, divided by any units written against a slash, `1.5 kJ/mol` or `0.0083145 kJ/mol/K`, or for anything else a string in md_unit's notation, `1.5 'kJ/(mol*nm^2)'`. A string that is not a unit is E0502. A unit name means a unit only right after a number, and Python's grammar gives a number followed by a name no other meaning, so `ps = ...` remains an ordinary variable while `10 ps` is ten picoseconds.
+- A compound unit is written without spaces. After a slash may come a unit name or any one unit md_unit knows, such as `mol`, `s` or `bar`, unless it is called, indexed or read an attribute of, so `10 nm/count(s)` divides by a count, and `10 nm/t` by the variable `t`. With spaces, `1.5 kJ / mol` divides by a name `mol`, E0201, and the fix closes the gap. Only `/` joins units, since `kJ/mol*K` would read as kJ·K/mol; write `kJ/mol/K`, or a string for a product or a power. A unit after the slash that the script also binds is E0503: `10 nm/ps` divided by a variable `ps` before compound units, and neither reading is taken without saying.
 - Units are not values: `10 * ns` is an unknown name (E0201), with the fix `10 ns`. To give a computed value a unit, multiply by a quantity, `x * 1 nm`.
 - A float needs digits in its exponent, so `2e5` is a float and `2e` is two elementary charges.
 
@@ -174,7 +175,7 @@ c : float[433][3] Å                                    frame
 | `K` | kelvin |
 | `e` | elementary charge |
 | `u` | atomic mass unit, the dalton |
-| `kJ`, `kcal` | energy; per mole as a string, `'kJ/mol'` |
+| `kJ`, `kcal` | energy; per mole, `kJ/mol` |
 
 ```python
 # on T
@@ -203,7 +204,13 @@ near2 = dg < 1.2 nm                                      # -> bool: the same tes
 short = dg < 1.2 * nm                                    # error E0201: nm is a unit, not a name; 1.2 nm
 bent  = angle(gtp, gdp, cv) > 90 deg                     # -> bool
 rate  = dg / 2 ps                                        # -> float Å/ps: dg / (2 ps)
-e_mol = 1.5 'kJ/mol'                                     # -> float kJ/mol
+e_mol = 1.5 kJ/mol                                       # -> float kJ/mol
+k_b   = 0.0083145 kJ/mol/K                               # -> float kJ/(mol*K)
+e_str = 1.5 'kJ/mol'                                     # -> float kJ/mol: the same unit, as a string
+gap   = 1.5 kJ / mol                                     # error E0201: mol is a unit; the fix is 1.5 kJ/mol
+prod  = 1.5 kJ/mol*K                                     # error E0201: K is a unit; the fix is 1.5 kJ/mol/K
+K     = 300.0                                            # -> float: K is a name from here on, and 300 K still the temperature
+per_k = 1.0 kJ/mol/K                                     # error E0503: K is a unit in kJ/mol/K, and a name here
 badu  = 1.5 'kJ/mool'                                    # error E0502: 'kJ/mool' is not a unit
 scaled = dg / 10.0                                       # -> float Å
 mixed = dg + angle(gtp, gdp, cv)                         # warning W0501 -> float ?
@@ -1176,6 +1183,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | W0408 | mcs gave up before it was sure of the largest in common | the search gave up before it was sure: 130 heavy atoms in common is the most it found |  |
 | W0501 | Units that do not match | adds Å to degrees; the result's unit becomes unknown | `unitless(...)` |
 | E0502 | A unit string that md_unit cannot read | `'kJ/mool'` is not a unit |  |
+| E0503 | A unit after the slash of a compound unit that the script also binds as a name | `K` is a unit in `kJ/mol/K`, and a name here | `(1.0 kJ/mol)/K` divides by the name, `1.0 'kJ/mol/K'` is the unit |
 | W0601 | A selector that matches nothing in its scope; set algebra such as a and b never warns | `residues(250)` is not among this group's 241 particles |  |
 | W0602 | `particles(resid=...)` with an id in several chains | `resid=501` matches chains A and B; the merge would hide it | `chain='A'` |
 | W0603 | Groups with no values in `by=` | 15 residues have no values in `_z` | a narrower group |

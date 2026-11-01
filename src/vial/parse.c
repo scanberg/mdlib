@@ -408,8 +408,8 @@ static vial_node_id parse_atom(parser_t* p) {
     return e;
 }
 
-// A number, and its unit if one follows: a name from the unit table, `10 ns`, or a string, `1.5 'kJ/mol'`. The
-// quantity is one atom, so t / 2 ns is t / (2 ns).
+// A number, and its unit if one follows: a name from the unit table, `10 ns`, with any divisors, `1.5 kJ/mol`, or
+// a string, `1.5 'kJ/(mol*nm^2)'`. The quantity is one atom, so t / 2 ns is t / (2 ns).
 static vial_node_id parse_number(parser_t* p) {
     const vial_token_t* t = cur(p);
     advance(p);

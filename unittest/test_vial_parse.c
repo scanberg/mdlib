@@ -38,7 +38,7 @@ static str_t kinds(const lexed_t* r, const char* src, md_allocator_i* alloc) {
             snprintf(item, sizeof(item), "%s", vial_op_str((vial_op_t)t->sub));
         } else if (t->kind == MD_VIAL_TOKEN_KEYWORD) {
             snprintf(item, sizeof(item), "%s", vial_kw_str((vial_kw_t)t->sub));
-        } else if (t->kind == MD_VIAL_TOKEN_NAME || t->kind == MD_VIAL_TOKEN_INT || t->kind == MD_VIAL_TOKEN_FLOAT) {
+        } else if (t->kind == MD_VIAL_TOKEN_NAME || t->kind == MD_VIAL_TOKEN_INT || t->kind == MD_VIAL_TOKEN_FLOAT || t->kind == MD_VIAL_TOKEN_UNIT) {
             snprintf(item, sizeof(item), "%s:%.*s", k, (int)(t->span.end - t->span.beg), src + t->span.beg);
         } else {
             snprintf(item, sizeof(item), "%s", k);
@@ -99,6 +99,27 @@ UTEST_F(vial_lex, numbers_and_ranges) {
     EXPECT_KINDS("1..n+1", "INT:1 .. NAME:n + INT:1 NEWLINE EOF");
     EXPECT_KINDS("c[..., 0]", "NAME:c [ ... , INT:0 ] NEWLINE EOF");
     EXPECT_KINDS("a.com.x", "NAME:a . NAME:com . NAME:x NEWLINE EOF");
+}
+
+UTEST_F(vial_lex, units) {
+    md_allocator_i* alloc = utest_fixture->alloc;
+    EXPECT_KINDS("10 ns", "INT:10 UNIT:ns NEWLINE EOF");
+    EXPECT_KINDS("10ns", "INT:10 UNIT:ns NEWLINE EOF");
+    EXPECT_KINDS("ns = 1", "NAME:ns = INT:1 NEWLINE EOF");
+    // A compound unit is written without spaces; each name after a slash is a unit md_unit knows
+    EXPECT_KINDS("1.5 kJ/mol", "FLOAT:1.5 UNIT:kJ/mol NEWLINE EOF");
+    EXPECT_KINDS("2.0 kJ/mol/K", "FLOAT:2.0 UNIT:kJ/mol/K NEWLINE EOF");
+    EXPECT_KINDS("1.5 kJ / mol", "FLOAT:1.5 UNIT:kJ / NAME:mol NEWLINE EOF");
+    EXPECT_KINDS("1.5 kJ/mol*K", "FLOAT:1.5 UNIT:kJ/mol * NAME:K NEWLINE EOF");
+    EXPECT_KINDS("1.0 kJ/mol..2.0 kJ/mol", "FLOAT:1.0 UNIT:kJ/mol .. FLOAT:2.0 UNIT:kJ/mol NEWLINE EOF");
+    // Not a unit, a unit that is called, indexed or read, a floor division: the unit ends at the slash
+    EXPECT_KINDS("10 nm/t", "INT:10 UNIT:nm / NAME:t NEWLINE EOF");
+    EXPECT_KINDS("10 nm/count(s)", "INT:10 UNIT:nm / NAME:count ( NAME:s ) NEWLINE EOF");
+    EXPECT_KINDS("10 nm/s[0]", "INT:10 UNIT:nm / NAME:s [ INT:0 ] NEWLINE EOF");
+    EXPECT_KINDS("10 nm/s.x", "INT:10 UNIT:nm / NAME:s . NAME:x NEWLINE EOF");
+    EXPECT_KINDS("10 nm//s", "INT:10 UNIT:nm // NAME:s NEWLINE EOF");
+    EXPECT_KINDS("10 nm/ps2", "INT:10 UNIT:nm / NAME:ps2 NEWLINE EOF");
+    EXPECT_KINDS("10 nm/in", "INT:10 UNIT:nm / in NEWLINE EOF");
 }
 
 UTEST_F(vial_lex, operators) {

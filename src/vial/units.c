@@ -1,6 +1,8 @@
-// Quantity literals: the unit names that may follow a number, as in `10 ns`, and the unit strings, as in
-// `1.5 'kJ/mol'`. The names are a closed table, so whether a name after a number is a unit never depends on what
-// the script binds: `ps` stays free as a variable, and `10 ps` is always ten picoseconds.
+// Quantity literals: the unit names that may follow a number, as in `10 ns`, the units divided by them, as in
+// `1.5 kJ/mol`, and the unit strings, as in `1.5 'kJ/mol'`. The names are a closed table, so whether a name after a
+// number is a unit never depends on what the script binds: `ps` stays free as a variable, and `10 ps` is always ten
+// picoseconds. A divisor may be any one name md_unit knows (mol, s, K), written against the slash; the checker
+// refuses one the script also binds (E0503), since `10 nm/ps` divided by the variable before compound units.
 
 #include "vial_internal.h"
 
@@ -49,6 +51,32 @@ bool vial_unit_string(str_t text, md_unit_t* unit) {
     if (str_empty(s)) return false;
     md_unit_t u;
     if (!md_unit_parse(&u, s)) return false;
+    if (unit) *unit = u;
+    return true;
+}
+
+bool vial_unit_divisor(str_t name, md_unit_t* unit) {
+    if (str_empty(name)) return false;
+    for (size_t i = 0; i < name.len; ++i) {
+        const unsigned char c = (unsigned char)name.ptr[i];
+        if (!(c >= 0x80 || c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9'))) return false;
+    }
+    return vial_unit_name(name, unit) || vial_unit_string(name, unit);
+}
+
+bool vial_unit_written(str_t text, md_unit_t* unit) {
+    size_t e = 0;
+    while (e < text.len && text.ptr[e] != '/') ++e;
+    md_unit_t u;
+    if (!vial_unit_name((str_t){text.ptr, e}, &u)) return false;
+    while (e < text.len) {
+        const size_t b = e + 1;
+        e = b;
+        while (e < text.len && text.ptr[e] != '/') ++e;
+        md_unit_t d;
+        if (!vial_unit_divisor((str_t){text.ptr + b, e - b}, &d)) return false;
+        u = md_unit_div(u, d);
+    }
     if (unit) *unit = u;
     return true;
 }
