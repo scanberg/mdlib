@@ -41,6 +41,7 @@ set (SRC_FILES
     test_trr.c
     test_mmcif.c
     test_match.c
+    test_mcs.c
     test_ring.c
     test_lipid.c
     test_monomer.c
