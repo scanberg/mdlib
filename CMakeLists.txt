@@ -769,7 +769,7 @@ endif()
 target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
-set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
+set_source_files_properties(${EXT_FILES} PROPERTIES COMPILE_OPTIONS "${MD_FLAGS_EXT}")
 
 # The VIAL interpreter's kernels contract nothing: where a multiply and an add fuse is decided once, by the compiler, as
 # an explicit fma in the IR, so the interpreter and native code give the same bits. Kernels every backend calls by
