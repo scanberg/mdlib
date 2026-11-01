@@ -702,8 +702,16 @@ static void run(resolver_t* r) {
     check_recursion(r);
 }
 
+void vial_check_prelude(const vial_tree_t* prelude, str_t src, vial_diags_t* diags, vial_names_t* out, md_allocator_i* alloc) {
+    names_init(out, prelude, alloc);
+    resolver_t pr = {.t = prelude, .src = src, .diags = diags, .n = out, .alloc = alloc, .is_prelude = true};
+    run(&pr);
+}
+
 void vial_check_names(vial_check_t* c) {
-    if (c->prelude) {
+    if (c->prelude && c->prelude_resolved) {
+        c->prelude_names = *c->prelude_resolved;
+    } else if (c->prelude) {
         names_init(&c->prelude_names, c->prelude, c->alloc);
         resolver_t pr = {.t = c->prelude, .src = c->prelude_src, .diags = c->prelude_diags, .n = &c->prelude_names,
                          .alloc = c->alloc, .is_prelude = true};

@@ -63,6 +63,9 @@ typedef struct vial_check_t {
     vial_names_t        names;
 
     const vial_tree_t*  prelude;
+    // The prelude's names, resolved once for every program (they do not depend on a script or a system): copied in,
+    // read only. NULL to resolve them here.
+    const struct vial_names_t* prelude_resolved;
     str_t               prelude_src;
     vial_diags_t*       prelude_diags;
     vial_names_t        prelude_names;
@@ -78,6 +81,9 @@ typedef struct vial_check_t {
 } vial_check_t;
 
 void vial_check_names(vial_check_t* c);
+
+// The prelude's names alone, as vial_check_names resolves them: once, for every program to share
+void vial_check_prelude(const vial_tree_t* prelude, str_t src, vial_diags_t* diags, vial_names_t* out, md_allocator_i* alloc);
 
 // The symbol a NAME node reads or binds, or NULL
 const vial_symbol_t* vial_names_symbol(const vial_names_t* n, vial_node_id id);

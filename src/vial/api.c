@@ -10,6 +10,8 @@
 
 #include <md_util.h>
 #include <core/md_array.h>
+#include <core/md_intrinsics.h>
+#include <core/md_os.h>
 #include <stdlib.h>
 
 #include <core/md_arena_allocator.h>
@@ -106,6 +108,37 @@ static void collect_outputs(md_vial_program_t* prog) {
     }
 }
 
+// The prelude, lexed, parsed and resolved once for every program: it depends on no script and no system, and it was
+// most of what compiling a short script, or a filter, cost. Read only once made; never freed.
+static struct {
+    volatile uint64_t   ticket;     // the first to take one builds it
+    volatile uint64_t   ready;
+    md_allocator_i*     arena;
+    vial_diags_t        diags;
+    vial_tree_t         tree;
+    vial_names_t        names;
+} shared_prelude;
+
+static void prelude_build(void) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
+    const str_t src = {(const char*)prelude_vial, prelude_vial_size - 1};
+    vial_diags_init(&shared_prelude.diags, src, arena);
+    vial_token_t* tokens = vial_lex(src, &shared_prelude.diags, arena);
+    shared_prelude.tree = vial_parse(tokens, src, &shared_prelude.diags, arena);
+    vial_check_prelude(&shared_prelude.tree, src, &shared_prelude.diags, &shared_prelude.names, arena);
+    shared_prelude.arena = arena;
+}
+
+static void prelude_ensure(void) {
+    if (md_atomic_load64(&shared_prelude.ready)) return;
+    if (md_atomic_fetch_add64(&shared_prelude.ticket, 1) == 0) {
+        prelude_build();
+        md_atomic_fetch_add64(&shared_prelude.ready, 1);
+        return;
+    }
+    while (!md_atomic_load64(&shared_prelude.ready)) md_thread_sleep(0);
+}
+
 md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc, md_allocator_i* alloc) {
     (void)desc;
     md_allocator_i* arena = md_arena_allocator_create(alloc, KILOBYTES(64));
@@ -121,14 +154,15 @@ md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc
 
     const bool with_prelude = !(desc && (desc->flags & MD_VIAL_COMPILE_NO_PRELUDE));
     if (with_prelude) {
+        prelude_ensure();
         prog->prelude_src = (str_t){(const char*)prelude_vial, prelude_vial_size - 1};
-        vial_diags_init(&prog->prelude_diags, prog->prelude_src, arena);
-        vial_token_t* prelude_tokens = vial_lex(prog->prelude_src, &prog->prelude_diags, arena);
-        prog->prelude = vial_parse(prelude_tokens, prog->prelude_src, &prog->prelude_diags, arena);
+        prog->prelude_diags = shared_prelude.diags;     // read only: what the prelude itself says, normally nothing
+        prog->prelude = shared_prelude.tree;
     }
 
     prog->check = (vial_check_t){.tree = &prog->tree, .src = prog->src, .diags = &prog->diags,
-        .prelude = with_prelude ? &prog->prelude : NULL, .prelude_src = prog->prelude_src,
+        .prelude = with_prelude ? &prog->prelude : NULL, .prelude_resolved = with_prelude ? &shared_prelude.names : NULL,
+        .prelude_src = prog->prelude_src,
         .prelude_diags = &prog->prelude_diags, .sys = desc ? desc->sys : NULL,
         .num_frames = desc ? desc->num_frames : 0, .run = desc ? str_copy(desc->run, arena) : (str_t){0}, .alloc = arena};
     if (desc && desc->num_sets && desc->sets) {
