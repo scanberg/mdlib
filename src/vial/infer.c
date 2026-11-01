@@ -1371,9 +1371,26 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
 
 T vx_infer(infer_t* x, vial_node_id id) { return infer(x, id); }
 
+// Whether a node is one of a chain built in a loop, as high as it is long, whose left operand (child 0) is inferred
+// first and as any value is: a + b + c, a.b.c, a[1][2]. (A call's callee is not a value: f()() is not one.)
+static bool chain_link(infer_t* x, vial_node_id id) {
+    if (!id || x->out->typed[(id) - x->out->base]) return false;
+    const vial_node_kind_t k = kind_of(x, id);
+    return k == VIAL_N_BINARY || k == VIAL_N_ATTR || k == VIAL_N_SUBSCRIPT;
+}
+
 static T infer(infer_t* x, vial_node_id id) {
     if (!id) return err();
     if (x->out->typed[(id) - x->out->base]) return x->out->types[(id) - x->out->base];
+    // A chain a + b + c + ... (or a.b.c..., a[1][2]...) is up to VIAL_MAX_HEIGHT high, and each level would take a stack frame of inference: a
+    // thousand of them is more than a 1 MB stack (Windows' main thread). Its links are inferred from the bottom up
+    // instead, one at a time, each finding its left operand done: the order recursion takes, so the same types and
+    // diagnostics, in a frame or two.
+    while (chain_link(x, id) && chain_link(x, child(x, id, 0))) {
+        vial_node_id low = child(x, id, 0);
+        while (chain_link(x, child(x, low, 0))) low = child(x, low, 0);
+        infer(x, low);
+    }
     T t = infer_uncached(x, id);
     if (t.ndim > VIAL_MAX_DIMS) t = err();
     x->out->types[(id) - x->out->base] = t;

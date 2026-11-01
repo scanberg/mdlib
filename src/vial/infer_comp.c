@@ -217,9 +217,13 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     const uint32_t nc = vx_num_children(x, id);
     const vial_node_id elem = nc ? vx_child(x, id, 0) : 0;
     if (!elem) return err();
-    vx_frame_t f = child_frame(x, id);
-    infer_t y = *x;
-    y.frame = &f;
+    // The scope of the comprehension and the inference within it, in the compile's arena rather than on the stack: a
+    // comprehension nests in another up to VIAL_MAX_NESTING deep, and the two are 1.7 KB a level
+    vx_frame_t* f = md_alloc(x->alloc, sizeof(vx_frame_t));
+    *f = child_frame(x, id);
+    infer_t* y = md_alloc(x->alloc, sizeof(infer_t));
+    *y = *x;
+    y->frame = f;
 
     T dims = vial_type_scalar(VIAL_DT_INT);
     uint8_t stage = VIAL_STAGE_STATIC;
@@ -231,18 +235,18 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     vial_ssa_t keep = 0;
     uint32_t fors = 0;
     for (uint32_t i = 1; i < nc; ++i) fors += vx_child(x, id, i) && vx_kind(x, vx_child(x, id, i)) == VIAL_N_COMP_FOR;
-    if (x->ir && fors != 1) { vx_lower_fail(x, id, "a comprehension with several fors"); y.ir = NULL; }
+    if (x->ir && fors != 1) { vx_lower_fail(x, id, "a comprehension with several fors"); y->ir = NULL; }
     for (uint32_t i = 1; i < nc; ++i) {
         const vial_node_id cf = vx_child(x, id, i);
         if (!cf || vx_kind(x, cf) != VIAL_N_COMP_FOR) continue;
         const vial_node_id target = vx_child(x, cf, 0), it = vx_child(x, cf, 1);
         iter_t r;
-        if (!it || !iterate(&y, it, &r)) { ok = false; continue; }
+        if (!it || !iterate(y, it, &r)) { ok = false; continue; }
         if (num_for == 0) first = r;
         num_for += 1;
         if (r.stage > stage) stage = r.stage;
-        if (!bind(&y, target, &r.elem, NULL)) ok = false;
-        if (y.ir && ok && !vx_comp_begin(&y, it, target, &r.elem, &comp)) { vx_lower_fail(x, id, "a comprehension over this iterable"); y.ir = NULL; }
+        if (!bind(y, target, &r.elem, NULL)) ok = false;
+        if (y->ir && ok && !vx_comp_begin(y, it, target, &r.elem, &comp)) { vx_lower_fail(x, id, "a comprehension over this iterable"); y->ir = NULL; }
         // A nested for runs inside the one before: the extents multiply
         if (dims.ndim == 0) vial_type_push_dim(&dims, r.extent);
         else if (dims.dims[0].kind == VIAL_EXT_STATIC && r.extent.kind == VIAL_EXT_STATIC) { dims.dims[0].n *= r.extent.n; dims.dims[0].desc = 0; }
@@ -250,32 +254,32 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
         for (uint32_t k = 2; k < vx_num_children(x, cf); ++k) {
             const vial_node_id c = vx_child(x, cf, k);
             if (!c) continue;
-            const T ct = vx_infer(&y, c);
+            const T ct = vx_infer(y, c);
             if (vial_type_is_error(&ct)) { ok = false; continue; }
             if (ct.dtype != VIAL_DT_BOOL || ct.ndim) {
-                vx_diag_fix(&y, "E0303", c, NULL, "a comprehension's if needs one bool; this is `%s`", vx_tstr(&ct));
+                vx_diag_fix(y, "E0303", c, NULL, "a comprehension's if needs one bool; this is `%s`", vx_tstr(&ct));
                 ok = false;
                 continue;
             }
             if (ct.stage > stage) stage = ct.stage;
             filtered = true;
-            if (y.ir && comp.ok) {
-                const vial_ssa_t kv = vx_ssa(&y, c);
-                keep = keep && kv ? vial_ir_op1(y.ir, VIAL_IR_LOGIC, VIAL_KW_AND, 0, (vial_ssa_t[]){keep, kv}, 2, &ct, vx_span(&y, c)) : kv;
+            if (y->ir && comp.ok) {
+                const vial_ssa_t kv = vx_ssa(y, c);
+                keep = keep && kv ? vial_ir_op1(y->ir, VIAL_IR_LOGIC, VIAL_KW_AND, 0, (vial_ssa_t[]){keep, kv}, 2, &ct, vx_span(y, c)) : kv;
             }
         }
     }
     if (!ok || num_for == 0) {
-        vx_infer(&y, elem);
-        if (comp.ok) vx_comp_end(&y, id, &comp, 0, 0, NULL);
+        vx_infer(y, elem);
+        if (comp.ok) vx_comp_end(y, id, &comp, 0, 0, NULL);
         return err();
     }
     if (filtered) dims.dims[0] = (vial_extent_t){.kind = stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)id};
 
-    const T e = vx_infer(&y, elem);
-    const vial_ssa_t ev = y.ir && comp.ok ? vx_ssa(&y, elem) : 0;
+    const T e = vx_infer(y, elem);
+    const vial_ssa_t ev = y->ir && comp.ok ? vx_ssa(y, elem) : 0;
     if (vial_type_is_error(&e) || e.dtype == VIAL_DT_TUPLE || e.dtype == VIAL_DT_DEF || e.dtype == VIAL_DT_NONE || e.dtype == VIAL_DT_RANGE) {
-        if (comp.ok) vx_comp_end(&y, id, &comp, 0, 0, NULL);
+        if (comp.ok) vx_comp_end(y, id, &comp, 0, 0, NULL);
         if (vial_type_is_error(&e)) return err();
         vx_diag_fix(x, "E0319", elem, NULL, "a list holds numbers, strings, sets or drawings; this holds %s", vx_tstr(&e));
         return err();
@@ -286,7 +290,7 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     for (uint8_t k = 0; k < e.ndim; ++k) {
         if (!vial_type_push_dim(&t, e.dims[k])) {
             vx_diag_fix(x, "E0308", id, NULL, "the result would have 7 dimensions; the limit is 6");
-            if (comp.ok) vx_comp_end(&y, id, &comp, 0, 0, NULL);
+            if (comp.ok) vx_comp_end(y, id, &comp, 0, 0, NULL);
             return err();
         }
     }
@@ -295,10 +299,10 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
     t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
     if (e.dtype == VIAL_DT_SET && (e.flags & VIAL_TYPE_ONE_PARTICLE)) t.flags |= VIAL_TYPE_ONE_PARTICLE;
     if (comp.ok) {
-        if (!ev) vx_lower_fail(&y, elem, "a comprehension's element");
-        vx_comp_end(&y, id, &comp, ev, keep, &t);
+        if (!ev) vx_lower_fail(y, elem, "a comprehension's element");
+        vx_comp_end(y, id, &comp, ev, keep, &t);
     }
-    y.ir = NULL;    // what follows checks elements one by one: the map above is their IR
+    y->ir = NULL;    // what follows checks elements one by one: the map above is their IR
 
     // Evaluated element by element, when everything about it is known: an array of sets
     if (num_for == 1 && !filtered && first.known && first.sets && first.count <= MAX_EVALUATED && e.dtype == VIAL_DT_SET && e.ndim == 0 &&
@@ -306,7 +310,7 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
         const vial_node_id cf = vx_child(x, id, 1);
         const vial_node_id target = vx_child(x, cf, 0);
         vial_node_id* nodes = NULL;
-        subtree(&y, elem, &nodes);
+        subtree(y, elem, &nodes);
         uint32_t* offset = md_alloc(x->alloc, (first.count + 1) * sizeof(uint32_t));
         uint32_t* idx = NULL;
         offset[0] = 0;
@@ -319,11 +323,11 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
             T et = first.elem;
             et.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
             if (vial_sets_size(one, 0) == 1) et.flags |= VIAL_TYPE_ONE_PARTICLE;
-            if (vx_kind(&y, target) != VIAL_N_NAME) { known = false; break; }
-            bind(&y, target, &et, &v);
-            for (size_t q = 0; q < md_array_size(nodes); ++q) y.out->typed[nodes[q] - y.out->base] = 0;
-            vx_infer(&y, elem);
-            const vial_value_t r = vx_value_of(&y, elem);
+            if (vx_kind(y, target) != VIAL_N_NAME) { known = false; break; }
+            bind(y, target, &et, &v);
+            for (size_t q = 0; q < md_array_size(nodes); ++q) y->out->typed[nodes[q] - y->out->base] = 0;
+            vx_infer(y, elem);
+            const vial_value_t r = vx_value_of(y, elem);
             if (r.kind != VIAL_VAL_SETS || !r.sets->single) { known = false; break; }
             const uint32_t sz = vial_sets_size(r.sets, 0);
             all_one = all_one && sz == 1;
@@ -342,7 +346,7 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
             if (all_one) t.flags |= VIAL_TYPE_ONE_PARTICLE;
         }
         // The element's nodes keep the types of one element; the target, the element type
-        bind(&y, target, &first.elem, NULL);
+        bind(y, target, &first.elem, NULL);
     }
     return t;
 }

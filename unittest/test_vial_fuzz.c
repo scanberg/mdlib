@@ -15,6 +15,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
 
 #include "vial_spec.h"
 #include "vial_fuzz_check.h"
@@ -205,40 +209,50 @@ UTEST_F(vial_fuzz, seeds_and_prefixes) {
 }
 
 // Text no one writes by hand: deep nesting, long chains, many errors. Each must be reported (E0104 where it nests
-// too deep) and stay within the stack and time a script gets.
-UTEST_F(vial_fuzz, extremes) {
+// too deep) and stay within the stack and time a script gets: compiled on a thread of 1 MB of stack, what Windows gives
+// its main thread, so a stage that recurses too deep fails here on every platform and not on Windows alone.
+typedef struct { const char* name; const char* head; const char* unit; const char* tail; int count; bool deep; char close; } extreme_t;
+static const extreme_t extremes[] = {
+    {"parens",          "x = ",  "(",              "",        5000, true},
+    {"parens closed",   "x = ",  "(",              "1",       5000, true, ')'},
+    {"lists",           "x = ",  "[",              "",        5000, true},
+    {"list comps",      "x = ",  "[a for a in ",   "",        2000, true},
+    {"unary minus",     "x = ",  "-",              "1",       5000, true},
+    {"not",             "x = ",  "not ",           "1",       5000, true},
+    {"power",           "x = ",  "a**",            "1",       5000, true},
+    {"conditional",     "x = ",  "a if b else ",   "c",       5000, true},
+    {"lambda",          "x = ",  "lambda: ",       "1",       5000, true},
+    {"starred",         "f(",    "*",              "a)",      5000, true},
+    {"one-line ifs",    "",      "if a: ",         "pass",    5000, true},
+    {"sum",             "x = a", " + a",           "",        5000, true},
+    {"attributes",      "x = a", ".b",             "",        5000, true},
+    {"calls",           "x = f", "()",             "",        5000, true},
+    {"subscripts",      "x = a", "[1]",            "",        5000, true},
+    {"comparisons",     "x = a", " < a",           "",        5000, false},
+    {"tuple",           "x = ",  "1, ",            "",        5000, false},
+    {"statements",      "",      "x = 1;",         "",        5000, false},
+    {"error lines",     "",      "=\n",            "",        5000, false},
+    {"lexer errors",    "",      "$ = (\n",        "",        5000, false},
+    {"blank lines",     "",      "\n",             "",        5000, false},
+    {"v1 calls",        "x = ",  "residue(1:4)",   "",        2000, false},
+    {"nested calls",    "x = ",  "f(",             "",        5000, true},
+    {"nested subscripts", "x = ", "a[",             "",        5000, true},
+    {"calls on lines",  "x = ",  "f(\n",           "",        5000, true},
+    {"blank lines in a bracket", "x = (", "\n",     "",      200000, false},   // linear, not one scan per line
+};
+
+#define NUM_EXTREMES (sizeof(extremes) / sizeof(extremes[0]))
+
+typedef struct extremes_out_t {
+    char   err[NUM_EXTREMES][128];
+    size_t deep[NUM_EXTREMES];
+} extremes_out_t;
+
+static void* extremes_run(void* arg) {
+    extremes_out_t* out = (extremes_out_t*)arg;
     md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    typedef struct { const char* name; const char* head; const char* unit; const char* tail; int count; bool deep; char close; } extreme_t;
-    const extreme_t cases[] = {
-        {"parens",          "x = ",  "(",              "",        5000, true},
-        {"parens closed",   "x = ",  "(",              "1",       5000, true, ')'},
-        {"lists",           "x = ",  "[",              "",        5000, true},
-        {"list comps",      "x = ",  "[a for a in ",   "",        2000, true},
-        {"unary minus",     "x = ",  "-",              "1",       5000, true},
-        {"not",             "x = ",  "not ",           "1",       5000, true},
-        {"power",           "x = ",  "a**",            "1",       5000, true},
-        {"conditional",     "x = ",  "a if b else ",   "c",       5000, true},
-        {"lambda",          "x = ",  "lambda: ",       "1",       5000, true},
-        {"starred",         "f(",    "*",              "a)",      5000, true},
-        {"one-line ifs",    "",      "if a: ",         "pass",    5000, true},
-        {"sum",             "x = a", " + a",           "",        5000, true},
-        {"attributes",      "x = a", ".b",             "",        5000, true},
-        {"calls",           "x = f", "()",             "",        5000, true},
-        {"subscripts",      "x = a", "[1]",            "",        5000, true},
-        {"comparisons",     "x = a", " < a",           "",        5000, false},
-        {"tuple",           "x = ",  "1, ",            "",        5000, false},
-        {"statements",      "",      "x = 1;",         "",        5000, false},
-        {"error lines",     "",      "=\n",            "",        5000, false},
-        {"lexer errors",    "",      "$ = (\n",        "",        5000, false},
-        {"blank lines",     "",      "\n",             "",        5000, false},
-        {"v1 calls",        "x = ",  "residue(1:4)",   "",        2000, false},
-        {"nested calls",    "x = ",  "f(",             "",        5000, true},
-        {"nested subscripts", "x = ", "a[",             "",        5000, true},
-        {"calls on lines",  "x = ",  "f(\n",           "",        5000, true},
-        {"blank lines in a bracket", "x = (", "\n",     "",      200000, false},   // linear, not one scan per line
-    };
-    for (size_t c = 0; c < ARRAY_SIZE(cases); ++c) {
-        const extreme_t* e = &cases[c];
+    for (size_t c = 0; c < NUM_EXTREMES; ++c) {
+        const extreme_t* e = &extremes[c];
         char* src = NULL;
         md_array_push_array(src, e->head, strlen(e->head), scratch);
         for (int i = 0; i < e->count; ++i) md_array_push_array(src, e->unit, strlen(e->unit), scratch);
@@ -248,21 +262,54 @@ UTEST_F(vial_fuzz, extremes) {
         const size_t len = md_array_size(src);
 
         const char* err = fuzz_check_copy(src, len, scratch);
-        if (err) printf("%s: %s\n", e->name, err);
-        EXPECT_TRUE(err == NULL);
+        snprintf(out->err[c], sizeof(out->err[c]), "%s", err ? err : "");
 
         md_vial_program_t* prog = md_vial_compile((str_t){src, len}, NULL, scratch);
         const md_vial_diagnostic_t* d = NULL;
         const size_t n = md_vial_diagnostics(prog, &d);
-        size_t deep = 0;
-        for (size_t i = 0; i < n; ++i) deep += strcmp(d[i].code, "E0104") == 0;
-        if (e->deep && deep != 1) printf("%s: %zu E0104, not 1\n", e->name, deep);
-        if (e->deep) EXPECT_EQ(1, deep);
-        else         EXPECT_EQ(0, deep);
+        out->deep[c] = 0;
+        for (size_t i = 0; i < n; ++i) out->deep[c] += strcmp(d[i].code, "E0104") == 0;
         md_vial_program_free(prog);
         md_arena_allocator_reset(scratch);
     }
     md_arena_allocator_destroy(scratch);
+    return NULL;
+}
+
+UTEST_F(vial_fuzz, extremes) {
+    ASSERT_TRUE(vial_test_system('T') != NULL);     // loaded here, not on the small stack
+    static extremes_out_t out;
+#if defined(_WIN32)
+    extremes_run(&out);     // the main thread's stack is the 1 MB
+#else
+    // A sanitizer's red zones take several times the stack: it gets more
+#if defined(__SANITIZE_ADDRESS__)
+    const size_t stack = 8u << 20;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    const size_t stack = 8u << 20;
+#else
+    const size_t stack = 1u << 20;
+#endif
+#else
+    const size_t stack = 1u << 20;
+#endif
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    ASSERT_EQ(0, pthread_attr_setstacksize(&attr, stack));
+    pthread_t t;
+    ASSERT_EQ(0, pthread_create(&t, &attr, extremes_run, &out));
+    pthread_join(t, NULL);
+    pthread_attr_destroy(&attr);
+#endif
+    for (size_t c = 0; c < NUM_EXTREMES; ++c) {
+        const extreme_t* e = &extremes[c];
+        if (out.err[c][0]) printf("%s: %s\n", e->name, out.err[c]);
+        EXPECT_TRUE(out.err[c][0] == 0);
+        if (e->deep && out.deep[c] != 1) printf("%s: %zu E0104, not 1\n", e->name, out.deep[c]);
+        if (e->deep) EXPECT_EQ(1u, out.deep[c]);
+        else         EXPECT_EQ(0u, out.deep[c]);
+    }
 }
 
 UTEST_F(vial_fuzz, mutations) {

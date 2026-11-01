@@ -1,0 +1,3 @@
+# Golden outputs and inputs compared byte for byte, spans and all: kept as committed, with LF line endings, on every
+# platform (a Windows checkout would otherwise make them CRLF)
+unittest/vial_golden/** text eol=lf

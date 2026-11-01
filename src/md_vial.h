@@ -117,8 +117,9 @@ typedef struct md_vial_compile_desc_t {
 // (selectors, counts, literals) against desc->sys, and gives every compile-time diagnostic of the reference. Never
 // fails on broken text, which gives diagnostics; NULL only when out of memory.
 // desc may be NULL. The program keeps its own copy of src. Any text is safe to compile: deep nesting is reported
-// (E0104) rather than followed, so compiling needs less than 256 KB of stack, and time and memory grow linearly with
-// the length of src.
+// (E0104) rather than followed, so compiling fits the 1 MB of stack of Windows' main thread (the worst inputs take under
+// 768 KB in a debug build, 640 KB optimized; vial_fuzz.extremes compiles them on a thread of 1 MB), and time and memory
+// grow linearly with the length of src.
 md_vial_program_t* md_vial_compile(str_t src, const md_vial_compile_desc_t* desc, struct md_allocator_i* alloc);
 void               md_vial_program_free(md_vial_program_t* prog);
 

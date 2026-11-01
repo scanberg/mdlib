@@ -187,15 +187,15 @@ static bool is_nested(const vial_names_t* n, const vial_tree_t* t, vial_node_id 
 }
 
 // A def's parameters: its PARAM nodes, names, kinds and defaults
-typedef struct sig_t {
+typedef struct def_sig_t {
     uint32_t     np;
     vial_node_id pnode[32];
     str_t        pname[32];
     uint8_t      kind[32];
     char         fname[48];
-} sig_t;
+} def_sig_t;
 
-static bool signature(const vial_tree_t* t, str_t src, vial_node_id def, sig_t* g) {
+static bool signature(const vial_tree_t* t, str_t src, vial_node_id def, def_sig_t* g) {
     const vial_node_id name_node = vial_child(t, def, 0);
     const str_t name = name_node ? text_in(t, src, name_node) : STR_LIT("def");
     snprintf(g->fname, sizeof(g->fname), "%.*s", (int)(name.len < 40 ? name.len : 40), name.ptr);
@@ -223,7 +223,7 @@ typedef struct arg_t {
 
 // The call itself, its arguments bound: kinds split and map them, the body is checked once per distinct types
 static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def,
-                   const sig_t* g, const arg_t* args, vial_ssa_t* out_ssa) {
+                   const def_sig_t* g, const arg_t* args, vial_ssa_t* out_ssa) {
     if (out_ssa) *out_ssa = 0;
     const uint32_t depth = x->frame ? x->frame->depth + 1 : 1;
     vx_frame_t f = {.parent = x->frame, .t = t, .def = def, .prelude = prelude, .depth = depth};
@@ -384,7 +384,7 @@ static bool enter(infer_t* x, vial_node_id call, const vial_tree_t* t, vial_node
 }
 
 T vx_call_def(infer_t* x, vial_node_id call, const vial_tree_t* t, const vial_names_t* n, str_t src, bool prelude, vial_node_id def) {
-    sig_t g;
+    def_sig_t g;
     if (!enter(x, call, t, def) || !signature(t, src, def, &g)) { infer_all_args(x, call); return err(); }
     arg_t args[32];
     memset(args, 0, sizeof(args));
@@ -446,7 +446,7 @@ T vx_call_def_types(infer_t* x, vial_node_id site, vial_node_id def, const T* ty
     const vial_tree_t* t = x->t;
     const vial_names_t* n = x->n;
     const str_t src = x->src;
-    sig_t g;
+    def_sig_t g;
     if (!enter(x, site, t, def) || !signature(t, src, def, &g)) return err();
     if (num > g.np) {
         vx_diag_fix(x, "E0204", site, NULL, "`%s` takes %u argument%s; it is called with %u", g.fname, g.np, g.np == 1 ? "" : "s", num);

@@ -505,8 +505,11 @@ elseif (COMPILER_TYPE STREQUAL "GCC")
         "m"
         "Threads::Threads")
 elseif ((COMPILER_TYPE STREQUAL "MSVC"))
-    list(APPEND MD_FLAGS_EXT "/W2")
+    # The sources are UTF-8 (VIAL's units, Å and °, in strings and in the tests): MSVC reads them as the system's code
+    # page without /utf-8
+    list(APPEND MD_FLAGS_EXT "/W2" "/utf-8")
     list(APPEND MD_FLAGS
+      "/utf-8"
       "/W4"
       "/wd4201"
       "/wd4305"
