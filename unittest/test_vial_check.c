@@ -166,7 +166,7 @@ UTEST_F(vial_check, compound_units) {
     EXPECT_TYPE("e = 1.5kJ/mol\n", 1, "float kJ/mol, static = 1.5");
     EXPECT_TYPE("k = 2.0 kJ/mol/K\n", 1, "float kJ/(mol*K), static = 2.0");
     EXPECT_TYPE("v = 0.5 nm/ps > 499.0 'm/s'\n", 1, "bool, static = True");
-    EXPECT_TYPE(u8"v = 2.0 \xC3\x85/ps\n", 1, u8"float \xC3\x85/ps, static = 2.0");
+    EXPECT_TYPE(u8"v = 2.0 Å/ps\n", 1, u8"float Å/ps, static = 2.0");
     EXPECT_TYPE("v = 1.0 / 2 nm/ps < 0.6 'ps/nm'\n", 1, "bool, static = True");
     EXPECT_TYPE("r = 1.5 kJ/mol in 1.0 kJ/mol..2.0 kJ/mol\n", 1, "bool, static");
     // Not a unit after the slash, or a unit that is called: division, as before
