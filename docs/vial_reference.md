@@ -1,6 +1,6 @@
 # VIAL language reference
 
-Draft for phase 0. Every example ends with its expected result, and the phase 1 test suite runs them all.
+VIAL as implemented in mdlib (`src/vial`). Every example ends with its expected result, and the test suite runs them all (`unittest/test_vial_spec.c`).
 
 ## How to read this reference
 
@@ -32,7 +32,7 @@ A comment above each example names its structure: `# on T` or `# on P`.
 | a line with no expectation | an illustration, not checked |
 | `# on T`, `# on P` | the structure from here on; `# on a run with an energy file` has no test file yet |
 
-The counts come from the files, as mdlib loads them: it keeps only the first alternate location, so T's protein has 6,784 particles rather than 6,799 records. They must be confirmed against mdlib's classification when the tests are written. T has a CRYST1 cell of 64.7 × 129.7 × 252.8 Å, so, like any system with a unit cell, it is periodic and distances use the minimum image. The examples on T stay well under half the box; a test of long distances turns periodicity off for the system, which a user can do too.
+The counts come from the files, as mdlib loads them: it keeps only the first alternate location, so T's protein has 6,784 particles rather than 6,799 records. T has a CRYST1 cell of 64.7 × 129.7 × 252.8 Å, so, like any system with a unit cell, it is periodic and distances use the minimum image. The examples on T stay well under half the box; a test of long distances turns periodicity off for the system, which a user can do too.
 
 ## Lexical structure and statements
 
@@ -66,18 +66,18 @@ A script is a Python 3 module: UTF-8 text, `#` comments, indentation for blocks,
 
 ### Statements
 
-| Statement | Available | Notes |
+| Statement | Status | Notes |
 | --- | --- | --- |
-| Assignment, tuple unpacking | First version | A top-level name is bound once (E0305) |
-| `def`, `return`, defaults, keyword arguments, docstrings | First version | Specialized per call. No recursion (E0802). A def may be nested in another and read its names; it cannot be returned or stored, but may be passed as an argument, to fold or to another def, and each def passed gives its own specialization. Parameters may be annotated with a kind, which maps a call over arrays; see Mapping a def over arrays |
-| `if`, `elif`, `else` | First version | At top level the condition must be static (E0403); inside functions it may change per frame. Code that a static condition does not reach, the untaken branch of an if or a ternary and what follows a return taken on a static condition, is parsed and its names checked, but not type-checked. A condition on an array is E0303, which points to `where()`. A ternary `a if c else b` on a frame-stage scalar is allowed anywhere and lowers to `where()` |
-| `for`, `break`, `continue` | First version | Over a range, an array or a set; over a set, each particle as a one-particle set. A top-level loop variable belongs to the loop: it is not published, and it does not count for E0305 |
-| List comprehensions | First version | They build an array whose first dimension is what they iterate over; a nested comprehension adds a dimension per level. An `if` clause gives a dynamic extent |
-| `pass` | First version |  |
-| `assert c, 'message'` | First version | c must be static; when it is false, compiling fails with E0314 and the message, at the user's call. A condition that changes per frame is E0403. The prelude uses it to refuse unknown options |
-| Augmented assignment `x += 1` | First version, inside functions | At top level it rebinds a name: E0305 |
-| `while` | Later | Parsed from the start; until then E0801 |
-| Item assignment `a[i] = x` | Later, inside functions | Parsed from the start; until then E0801 |
+| Assignment, tuple unpacking | Supported | A top-level name is bound once (E0305) |
+| `def`, `return`, defaults, keyword arguments, docstrings | Supported | Specialized per call. No recursion (E0802). A def may be nested in another and read its names; it cannot be returned or stored, but may be passed as an argument, to fold or to another def, and each def passed gives its own specialization. Parameters may be annotated with a kind, which maps a call over arrays; see Mapping a def over arrays |
+| `if`, `elif`, `else` | Supported | At top level the condition must be static (E0403); inside functions it may change per frame. Code that a static condition does not reach, the untaken branch of an if or a ternary and what follows a return taken on a static condition, is parsed and its names checked, but not type-checked. A condition on an array is E0303, which points to `where()`. A ternary `a if c else b` on a frame-stage scalar is allowed anywhere and lowers to `where()` |
+| `for`, `break`, `continue` | Supported | Over a range, an array or a set; over a set, each particle as a one-particle set. A top-level loop variable belongs to the loop: it is not published, and it does not count for E0305 |
+| List comprehensions | Supported | They build an array whose first dimension is what they iterate over; a nested comprehension adds a dimension per level. An `if` clause gives a dynamic extent |
+| `pass` | Supported |  |
+| `assert c, 'message'` | Supported | c must be static; when it is false, compiling fails with E0314 and the message, at the user's call. A condition that changes per frame is E0403. The prelude uses it to refuse unknown options |
+| Augmented assignment `x += 1` | Supported inside functions | At top level it rebinds a name: E0305 |
+| `while` | Not yet | Parsed; E0801 |
+| Item assignment `a[i] = x` | Not yet | Parsed; E0801 |
 | Classes, `import`, `lambda`, exceptions, generators, `global`, decorators, `with`, `async`, dicts, set literals, `*args`, \*\*kwargs, `print` | Never | E0803 names the construct |
 
 ### Examples
@@ -93,7 +93,7 @@ n += 1                                          # error E0305
 
 def centre_distance(a, b):
     """Distance between the centres of mass of a and b."""
-    return distance(com(a), com(b))
+    return distance(a.com, b.com)
 
 d    = centre_distance(particles(resname='GTP'), particles(resname='GDP'))   # -> float Å
 
@@ -141,7 +141,7 @@ Float arithmetic is IEEE 754 single precision, rounded once per operation, excep
 - Broadcasting is NumPy's: shapes align from the right, a dimension of 1 stretches, and equal extents pair in order. Anything else is E0301.
 - `axis=` takes an int, negative from the end, or a tuple. `.T` reverses the dimensions, and `a[:, None]` adds one.
 - Reductions reduce every dimension by default, as in NumPy. The frame is the exception: it is only reduced when named, `axis='frame'`.
-- Positions and other 3-vectors are a last dimension of 3. `x.xyz` is the coordinates of x: a set's positions, `positions(s)`, or x itself when it is already coordinates. `x.x`, `x.y` and `x.z` are `x.xyz[..., 0]`, `[..., 1]` and `[..., 2]`, so they work on sets and arrays alike. These four are the only coordinate properties: VIAL has no swizzles, and `c.xy` is an unknown name (E0201) with the fix `c[..., 0:2]`.
+- Positions and other 3-vectors are a last dimension of 3. `x.xyz` is the coordinates of x: a set's positions, or x itself when it is already coordinates. `x.x`, `x.y` and `x.z` are `x.xyz[..., 0]`, `[..., 1]` and `[..., 2]`, so they work on sets and arrays alike. These four are the only coordinate properties: VIAL has no swizzles, and `c.xy` is an unknown name (E0201) with the fix `c[..., 0:2]`.
 - Every dimension can carry a description of what it runs over, such as the residues of chain A, a pattern's matches, or x, y and z. Descriptions give labels in plots and exports, show in hover, and are the identity that `rmsf[r]`, `by=`, `spread`, `fit(on=)` and `common` need; those refuse an array without one (E0311). Descriptions never refuse arithmetic. Two dimensions of equal extent that describe different particles or units, paired by position, give W0605 and run, unless both derive from slices of one array or set, through elementwise operations, .xyz, fit() and calls, such as c\[1:\] - c\[:-1\] or ca\[0:7\].xyz against ca\[8:15\].xyz; or both come from one common() call; or a zip in a comprehension pairs them.
 - A result's labels come from the inputs that have each dimension; an extent of 1 or a missing dimension does not count. One such input gives its labels, inputs that describe the same units keep them, and inputs that describe different units give pair labels such as `MET1/A–GLU3/A`. Hover says what was paired with what, for example “dim 0: residues 1–4 of chain A with residues 1–4 of chain B”.
 - A value has at most six dimensions (E0308).
@@ -180,7 +180,7 @@ c : float[433][3] Å                                    frame
 # on T
 res_a = residues(chain='A', kind='amino_acid')           # -> set[433]
 vlb   = particles(resname='VLB')                         # -> set
-c     = com(res_a)                                       # -> float[433][3] Å
+c     = res_a.com                                       # -> float[433][3] Å
 cv    = vlb.com                                          # -> float[3] Å
 d     = distance(c, cv)                                  # -> float[433] Å
 o     = distance(c, [0.0, 0.0, 0.0])                     # -> float[433] Å
@@ -381,7 +381,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `a[[3, 0, 7]]` | the positions listed, in that order |  |
 | `a[:, None]` | a new dimension of 1, for broadcasting |  |
 | `a.T` | the dimensions reversed |  |
-| `s.xyz` | a set's positions, `positions(s)`; coordinates themselves on coordinates | `float[n][3]` Å |
+| `s.xyz` | a set's positions; coordinates themselves on coordinates | `float[n][3]` Å |
 | `c.x`, `c.y`, `c.z` | `c.xyz[..., 0]`, `[..., 1]`, `[..., 2]`, on a set or on coordinates |  |
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
 | `s[mask]` on a set, with a bool per particle of s | its particles where the mask is true: `particles[particles.z in 20.0..25.0]` is a slab, as v1's `within_z(20:25)` | a set; frame stage when the mask is |
@@ -403,7 +403,7 @@ r0    = res_a[0]                                       # -> set: MET1/A
 name0 = labels(res_a)[0]                               # -> 'MET1/A'
 last3 = res_a[-3:]                                     # -> set[3]
 every = res_a[::2]                                     # -> set[217]
-c     = com(res_a)                                     # -> float[433][3] Å
+c     = res_a.com                                     # -> float[433][3] Å
 x     = c[:, 0]                                        # -> float[433] Å
 x2    = c.x                                            # -> float[433] Å: the same
 xy    = c.xy                                           # error E0201: no swizzles; c[..., 0:2]
@@ -563,10 +563,10 @@ Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are
 
 | Function | Result | Notes |
 | --- | --- | --- |
-| `positions(s)`, also written `s.xyz` | `float[n][3]` Å | frame stage; n is `count(s)`. On coordinates, a float array whose last dimension is 3, itself. On an array of sets that each hold one particle, one position per set; on other arrays of sets E0318, since their positions do not form one array: `particles(res_a).xyz` merges them, and a def with a `points` or `group` parameter maps over them |
+| `s.xyz`, also written `positions(s)` | `float[n][3]` Å | frame stage; n is `count(s)`. On coordinates, a float array whose last dimension is 3, itself. On an array of sets that each hold one particle, one position per set; on other arrays of sets E0318, since their positions do not form one array: `particles(res_a).xyz` merges them, and a def with a `points` or `group` parameter maps over them |
 | `mass(s)`, `charge(s)`, `element(s)`, `name(s)`, `bfactor(s)` | `float[n]` u, e, or `str[n]` | per-particle properties of a set; static, except `bfactor` where the file gives one per frame |
 | `particles(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particles(fit(s.xyz, ref)))` works after a fit; an array with no such dimension is E0311 |
-| `com(s, weights='mass')` | `float[3]` Å | periodic-aware; takes a set or points, and maps over arrays of sets; also written `s.com` |
+| `s.com`, `com(s, weights='mass')` | `float[3]` Å | the centre of mass, periodic-aware; takes a set or points, and maps over arrays of sets. `com(s, weights=None)` is the centre of geometry, `centroid(s)` |
 | `centroid(s)` | `float[3]` Å | prelude: `com(s, weights=None)` |
 | `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Drawn as a line labelled with the value |
 | `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(a.xyz[:, None], b.xyz))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a search that skips most pairs, so no n×m matrix is computed or stored. Drawn as a line between the pair |
@@ -641,7 +641,7 @@ four  = distance(particles(res_a[0:4]).xyz[:, None], vlb.xyz)                 # 
 
 ### Reductions over every pair
 
-A matrix of every pair is how a reduction over pairs is written, never how it is computed. When a minimum, a maximum or a count within a cutoff reduces a matrix of distances built by broadcasting, the compiler computes it with the search of `closest_pair`, or a spatial search for counts and each row's nearest, and the matrix is never made. The rule is applied when the checked program is lowered to the array IR, so it holds from the first version, whatever the optimizer does, and it sees through names, the prelude's `distance` and mapped defs: a private `dm` whose only use is `min(dm)` is never made either. The results are exactly those of the matrix, in 32-bit floats under the minimum image; missing entries are skipped, and NaN is not, as in any reduction.
+A matrix of every pair is how a reduction over pairs is written, never how it is computed. When a minimum, a maximum or a count within a cutoff reduces a matrix of distances built by broadcasting, the compiler computes it with the search of `closest_pair`, or a spatial search for counts and each row's nearest, and the matrix is never made. The rule is applied when the checked program is lowered to the array IR, so it holds whatever the optimizer does, and it sees through names, the prelude's `distance` and mapped defs: a private `dm` whose only use is `min(dm)` is never made either. The results are exactly those of the matrix, in 32-bit floats under the minimum image; missing entries are skipped, and NaN is not, as in any reduction.
 
 | Written, with `dm = distance(a[:, None], b)` over points | Computed as |
 | --- | --- |
@@ -658,7 +658,7 @@ A minimum that pairs every point with itself is zero, which is rarely what was m
 # on T
 res_a = residues(chain='A', kind='amino_acid')                # -> set[433]
 vlb   = particles(resname='VLB')                              # -> set
-c     = com(res_a)                                            # -> float[433][3] Å
+c     = res_a.com                                            # -> float[433][3] Å
 dm    = distance(c[:, None], c)                               # -> float[433][433] Å, frame: hover evaluates it
 nn    = min(dm, axis=1)                                       # warning W0608 -> float[433] Å: zeros, each centre its own nearest
 dn, i, j = closest_pair(c[:, None], c, distinct=True)         # -> float[433] Å and int[433] and int[433]: each residue's nearest other residue
@@ -686,7 +686,7 @@ pg   = particles(resname='GTP', name='PG')             # -> set: one particle
 d4   = distance(pg, particles(name='MG'))              # -> float Å: single particles are points
 a    = angle(gtp.com, gdp.com, vlb.com)                # -> float °
 pos  = gtp.xyz                                        # -> float[32][3] Å, frame
-cg   = com(gtp)                                        # -> float[3] Å
+cg   = gtp.com                                         # -> float[3] Å
 near = within(5.0, of=vlb)                            # -> set, frame
 bad  = distance(12, gtp.com)                           # error E0302
 ```
@@ -703,7 +703,7 @@ half = rmsd(ca[0:7], ca[8:15])                         # -> float Å, frame: sli
 odd  = rmsd(ca[0:7], ca[7:15])                         # error E0301: [7][3] and [8][3] do not broadcast
 ```
 
-Later, ported from v1 after the first version: `rdf`, contact maps, hydrogen bonds, secondary structure and ring pucker. The volumes, `sdf` and `density`, are under Frames.
+Not ported from v1 yet: `rdf`, contact maps, hydrogen bonds, secondary structure and ring pucker. The volumes, `sdf` and `density`, are under Volumes.
 
 ## Built-in functions: reductions, math and arrays
 
@@ -864,7 +864,7 @@ d_gtp = distance(gtp.com, vlb.com)
 d_gdp = distance(gdp.com, vlb.com)
 dd    = [d_gtp, d_gdp]                                   # -> float[2] Å, labelled d_gtp, d_gdp
 ab    = concatenate([residues(1..4, chain='A'), residues(1..4, chain='B')])     # -> set[8]
-bad   = reshape(com(res_a), (400, 3))                    # error E0307: 1,299 values do not fill 1,200
+bad   = reshape(res_a.com, (400, 3))                     # error E0307: 1,299 values do not fill 1,200
 ```
 
 ## Built-in functions: sets, patterns, bonds, attributes and frames
@@ -1017,7 +1017,7 @@ far  = mcs(particles(resname='GTP'), particles(resname='VLB'))   # error E0321: 
 
 ## Outputs: what is published and how
 
-Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not. `__all__` is reserved: binding it is an error for now, and a later version may use it, as Python does, for an explicit list of what is published.
+Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not. `__all__` is reserved, and binding it is an error: it is kept for an explicit list of what is published, as Python has it.
 
 | Value | Published as | Alongside |
 | --- | --- | --- |
