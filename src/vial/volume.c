@@ -492,7 +492,7 @@ static const vial_sdf_kind_t* kind_at(const vial_volume_t* vol, uint32_t s, uint
 }
 
 const uint32_t* vial_volume_structure(const vial_volume_t* vol, uint32_t s, uint32_t* n) {
-    uint32_t j;
+    uint32_t j = 0;
     const vial_sdf_kind_t* kind = vol && vol->kind == VIAL_VOLUME_SDF ? kind_at(vol, s, &j) : NULL;
     if (!kind) { *n = 0; return NULL; }
     *n = kind->n;
@@ -524,7 +524,7 @@ static void structure_frame(const vial_volume_t* vol, const vial_sdf_kind_t* kin
 }
 
 bool vial_volume_pose(const vial_volume_t* vol, uint32_t s, const float* xyz, size_t num_atoms, const md_unitcell_t* cell, mat4_t* out) {
-    uint32_t j;
+    uint32_t j = 0;
     const vial_sdf_kind_t* kind = vol && vol->kind == VIAL_VOLUME_SDF ? kind_at(vol, s, &j) : NULL;
     if (!kind) return false;
     md_allocator_i* heap = md_get_heap_allocator();
@@ -641,7 +641,7 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
             if (ext) *ext = md_spatial_acc_cell_ext(&acc);
         }
         for (uint32_t s = 0; s < vol->num_structures; ++s) {
-            uint32_t j;
+            uint32_t j = 0;
             const vial_sdf_kind_t* kind = kind_at(vol, s, &j);
             mat3_t R;
             vec3_t com;
