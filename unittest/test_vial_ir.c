@@ -1852,6 +1852,35 @@ UTEST(vial_ir, within_matches_matrix) {
     }
 }
 
+// The kernels' fast paths against their general ones, bit for bit: a flat elementwise loop (each operand the whole
+// shape or one value) against the index per dimension an outer broadcast takes; a sum over trailing dimensions with
+// nothing missing against one with a mask (nothing in it missing); sqrt and abs of floats; displacement of all the
+// points from one against the same with a mask
+UTEST(vial_ir, fast_paths_agree) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL);
+    const char* src =
+        "_d = distance(particles.xyz, particles[0].xyz)\n"
+        "_m = missing_where(_d < -1.0, _d)\n"
+        "_g = _d[:, None] * [0.37, 1.9, -2.5] - _d[:, None] / 7.0\n"
+        "_x = particles.xyz\n"
+        "_xm = missing_where(_x < -1.0e9, _x)\n"
+        "bad = abs(sum(_d) - sum(_m)) + abs(mean(_d) - mean(_m)) + abs(std(_d) - std(_m))"
+        " + sum(abs(_g[:, 1] - (_d * 1.9 - _d / 7.0)))"
+        " + sum(abs(sqrt(_d) - sqrt(_m))) + sum(abs(abs(_d - 3.0) - abs(_m - 3.0)))"
+        " + sum(abs(sum(_x, axis=1) - sum(_xm, axis=1)))"
+        " + sum(abs(displacement(_x, particles[0].xyz) - displacement(_xm, particles[0].xyz)))"
+        " + sum(abs(norm(_x) - norm(_xm)))\n";
+    vial_ir__run_t r;
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    double bad[64] = {0};
+    const int64_t n = nf < 64 ? nf : 64;
+    EXPECT_TRUE(vial_ir__frames(&r, sys, n, "bad", bad));
+    for (int64_t f = 0; f < n; ++f) EXPECT_EQ(0.0, bad[f]);
+    vial_ir__end(&r);
+}
+
 // The closest and farthest pairs, which mdlib's kernels find, against the matrix: the same entry, and the first pair in
 // row order at it. Coordinates on a grid give many exact ties, and many within an ulp.
 UTEST(vial_ir, pair_extremes_match_matrix) {

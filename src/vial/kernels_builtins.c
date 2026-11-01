@@ -218,7 +218,19 @@ static bool k_displacement(vial_kctx_t* k, const vial_val_t* a, const vial_val_t
     odims[nd] = 3;
     vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, nd + 1, odims, &o)) return false;
     const md_unitcell_t cell = frame_cell(k);
-    for (size_t i = 0; i < n; ++i) {
+    const size_t na = vial_val_count(&pa) / 3, nb = vial_val_count(&pb) / 3;
+    if (!pa.missing && !pb.missing && (na == n || na == 1) && (nb == n || nb == 1)) {
+        // Each side all the points, in order, or one point: the same differences without an index per dimension
+        const size_t fa = na == n ? 3 : 0, fb = nb == n ? 3 : 0;
+        const float* A = (const float*)pa.data;
+        const float* B = (const float*)pb.data;
+        float* O = (float*)o.data;
+        for (size_t i = 0; i < n; ++i) {
+            const float* a3 = A + fa * i;
+            const float* b3 = B + fb * i;
+            O[3 * i + 0] = b3[0] - a3[0]; O[3 * i + 1] = b3[1] - a3[1]; O[3 * i + 2] = b3[2] - a3[2];
+        }
+    } else for (size_t i = 0; i < n; ++i) {
         size_t rem = i, ia = 0, ib = 0, sa = 1, sb = 1;
         for (int d = nd - 1; d >= 0; --d) {
             const uint32_t x = (uint32_t)(rem % dims[d]);
@@ -726,6 +738,10 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
     const double pw = periodic ? (double)(at->period_end - at->period_beg) : 0.0;
     const uint8_t odt = rt->dtype;
     vial_val_t o; if (!vial_k_make(k, odt, ond, odims, &o)) return false;
+    // Sums of floats over the trailing dimensions with nothing missing: each output's inputs are rn in a row, so the
+    // walk below is a plain loop, the same values into the same lanes in the same order, so the same bits
+    bool trailing = !a->missing && a->dtype == VIAL_DT_FLOAT && !periodic && (red == R_SUM || red == R_MEAN || red == R_STD || red == R_VAR);
+    for (uint8_t d = 0; trailing && d < a->ndim; ++d) trailing = rd[d] == (d >= a->ndim - rnd);
     for (size_t oi = 0; oi < on; ++oi) {
         size_t base = 0, rem = oi;
         for (int d = ond - 1; d >= 0; --d) { base += (rem % odims[d]) * ostr[d]; rem /= odims[d]; }
@@ -734,7 +750,16 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
         acc.best_at = -1;
         bool bool_acc = red == R_ALL;
         size_t j = 0;
-        for (size_t ri = 0; ri < rn; ++ri) {
+        if (trailing) {
+            const float* X = (const float*)a->data + oi * rn;
+            for (size_t ri = 0; ri < rn; ++ri) {
+                const double v = X[ri];
+                acc.lane[ri & 7] += v;
+                acc.lane_sq[ri & 7] += v * v;
+            }
+            acc.count = rn;
+        }
+        for (size_t ri = 0; !trailing && ri < rn; ++ri) {
             size_t off = base, r2 = ri;
             for (int d = rnd - 1; d >= 0; --d) { off += (r2 % rdims[d]) * rstr[d]; r2 /= rdims[d]; }
             if (vial_val_is_missing(a, off)) continue;     // reductions skip missing entries
@@ -1084,7 +1109,19 @@ static bool k_math1(vial_kctx_t* k, const char* name, const vial_val_t* a, vial_
     if (fn < 0) return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
     const vial_val_t x = vial_val_as(a, odt, k->alloc);
     vial_val_t o; if (!vial_k_make(k, odt, x.ndim, x.dims, &o)) return false;
-    for (size_t i = 0; i < n; ++i) {
+    // Floats through sqrt, abs, floor and ceil: as the loop below computes them, without its switches per element
+    const bool plain = odt == VIAL_DT_FLOAT && x.dtype == VIAL_DT_FLOAT && (fn == M_SQRT || fn == M_ABS || fn == M_FLOOR || fn == M_CEIL);
+    if (plain) {
+        const float* X = (const float*)x.data;
+        float* O = (float*)o.data;
+        switch (fn) {
+        case M_SQRT:  for (size_t i = 0; i < n; ++i) O[i] = (float)sqrt((double)X[i] * scale); break;
+        case M_ABS:   for (size_t i = 0; i < n; ++i) O[i] = (float)fabs((double)X[i] * scale); break;
+        case M_FLOOR: for (size_t i = 0; i < n; ++i) O[i] = (float)floor((double)X[i] * scale); break;
+        default:      for (size_t i = 0; i < n; ++i) O[i] = (float)ceil((double)X[i] * scale); break;
+        }
+    }
+    for (size_t i = 0; !plain && i < n; ++i) {
         const double v = num_at(&x, i) * scale;
         double r;
         switch (fn) {
@@ -1179,11 +1216,24 @@ static bool k_norm(vial_kctx_t* k, const vial_val_t* a, bool normalize, vial_val
     const size_t g = m ? vial_val_count(&x) / m : 0;
     vial_val_t o;
     if (!vial_k_make(k, VIAL_DT_FLOAT, normalize ? x.ndim : x.ndim - 1, x.dims, &o)) return false;
+    if (m == 3 && !normalize && !x.missing) {
+        // Lengths of vectors, the commonest: the sum below in the same order, ((0 + a) + b) + c being (a + b) + c
+        const float* v = (const float*)x.data;
+        float* O = (float*)o.data;
+        for (size_t i = 0; i < g; ++i) {
+            const float a0 = v[3 * i], a1 = v[3 * i + 1], a2 = v[3 * i + 2];
+            O[i] = sqrtf((a0 * a0 + a1 * a1) + a2 * a2);
+        }
+        o.origin = a->origin;
+        *out = o;
+        return true;
+    }
     for (size_t i = 0; i < g; ++i) {
         const float* v = (const float*)x.data + i * m;
         float s = 0.0f;
         bool miss = false;
-        for (uint32_t c = 0; c < m; ++c) { s += v[c] * v[c]; miss = miss || vial_val_is_missing(&x, i * m + c); }
+        for (uint32_t c = 0; c < m; ++c) s += v[c] * v[c];
+        for (uint32_t c = 0; x.missing && c < m; ++c) miss = miss || vial_val_is_missing(&x, i * m + c);
         const float l = sqrtf(s);
         if (normalize) {
             for (uint32_t c = 0; c < m; ++c) {

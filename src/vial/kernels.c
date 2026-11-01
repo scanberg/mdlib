@@ -71,6 +71,10 @@ typedef struct bc_t {
     uint32_t dims[VIAL_MAX_DIMS];
     size_t   sa[VIAL_MAX_DIMS], sb[VIAL_MAX_DIMS], sc[VIAL_MAX_DIMS];   // element strides, 0 along broadcast dimensions
     size_t   n;
+    // Flat: each operand is the whole shape or one value, so element io of it is io or 0, and the loop needs no index
+    // per dimension (fa, fb, fc: 1 or 0). The same elements in the same order as the general loop, so the same bits.
+    bool     flat;
+    size_t   fa, fb, fc;
 } bc_t;
 
 static void strides(const vial_val_t* v, uint8_t nd, const uint32_t* dims, size_t* st) {
@@ -106,12 +110,44 @@ static bool bc_init(vial_kctx_t* k, bc_t* b, const vial_val_t* x, const vial_val
         if (b->dims[d] && b->n > SIZE_MAX / b->dims[d]) { b->n = SIZE_MAX; break; }
         b->n *= b->dims[d];
     }
+    // An operand of as many elements as the shape has every dimension of it (the shape is the largest of each), so its
+    // elements are in the same order; one of one element is the same for all
+    b->flat = true;
+    size_t* f[3] = {&b->fa, &b->fb, &b->fc};
+    for (int i = 0; i < 3; ++i) {
+        if (!v[i]) { *f[i] = 0; continue; }
+        const size_t c = vial_val_count(v[i]);
+        if (c == b->n) *f[i] = 1;
+        else if (c == 1) *f[i] = 0;
+        else b->flat = false;
+    }
     return vial_k_room(k, b->n);
 }
 
-// Calls body(io, ia, ib, ic) for every element of the broadcast shape, in order
+// One flat loop of BC_FOR's, a and b each the whole shape (1) or one value (0): constants, so the loop is plain and
+// the compiler can vectorize it
+#define BC_FLAT_(b, FA, FB, ...)                                                                        \
+    do {                                                                                                \
+        const size_t n_ = (b).n, fc_ = (b).fc;                                                          \
+        for (size_t io = 0; io < n_; ++io) {                                                            \
+            const size_t ia = io * (FA), ib = io * (FB), ic = io * fc_;                                 \
+            (void)ia; (void)ib; (void)ic;                                                               \
+            __VA_ARGS__;                                                                                \
+        }                                                                                               \
+    } while (0)
+
+// Calls body(io, ia, ib, ic) for every element of the broadcast shape, in order. Flat when each operand is the whole
+// shape or one value, which is most elementwise work (an array and a number, two arrays alike); else an index per
+// dimension.
 #define BC_FOR(b, ...)                                                                                  \
     do {                                                                                                \
+        if ((b).flat) {                                                                                 \
+            if ((b).fa && (b).fb)  BC_FLAT_(b, 1, 1, __VA_ARGS__);                                      \
+            else if ((b).fa)       BC_FLAT_(b, 1, 0, __VA_ARGS__);                                      \
+            else if ((b).fb)       BC_FLAT_(b, 0, 1, __VA_ARGS__);                                      \
+            else                   BC_FLAT_(b, 0, 0, __VA_ARGS__);                                      \
+            break;                                                                                      \
+        }                                                                                               \
         uint32_t idx_[VIAL_MAX_DIMS] = {0};                                                             \
         size_t ia = 0, ib = 0, ic = 0;                                                                  \
         for (size_t io = 0; io < (b).n; ++io) {                                                         \
