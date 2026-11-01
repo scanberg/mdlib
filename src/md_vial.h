@@ -393,7 +393,7 @@ typedef struct md_vial_drawing_t {
     md_vial_pose_t*     poses;          // an sdf's structures
     size_t              num_poses;
     size_t              num_elements;   // of the value drawn
-    size_t              num_omitted;    // primitives and labels left out past 10,000
+    size_t              num_omitted;    // primitives and labels left out past 10,000, and spheres past 1,000
 } md_vial_drawing_t;
 
 typedef struct md_vial_draw_desc_t {

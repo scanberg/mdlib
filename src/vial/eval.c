@@ -864,12 +864,15 @@ bool md_vial_eval_hover(const md_vial_eval_t* e, uint32_t offset, int64_t frame,
 // ### DRAWING ###
 
 #define DRAW_MAX_PRIMS 10000
+#define DRAW_MAX_SPHERES 1000
 
 typedef struct draw_out_t {
     md_vial_drawing_t*  d;
     md_allocator_i*     alloc;
-    int64_t             only;   // the element drawn alone, or -1
-    size_t              count;  // primitives and labels so far
+    int64_t             only;       // the element drawn alone, or -1
+    size_t              count;      // primitives and labels so far
+    md_vial_prim_t*     spheres;    // held back until every one is known, for draw_spheres to choose from
+    int64_t             frame;      // which spheres are drawn of more than DRAW_MAX_SPHERES
 } draw_out_t;
 
 static bool draw_room(draw_out_t* o) {
@@ -877,6 +880,36 @@ static bool draw_room(draw_out_t* o) {
     o->count += 1;
     return true;
 }
+
+static inline uint64_t mix64(uint64_t x) {
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdull; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ull; x ^= x >> 33;
+    return x;
+}
+
+static uint64_t gcd64(uint64_t a, uint64_t b) { while (b) { const uint64_t t = a % b; a = b; b = t; } return a; }
+
+// The spheres held back: every one when there are at most DRAW_MAX_SPHERES, else that many, a different choice for each
+// frame. Many spheres say little one by one (within's of a protein overlap into one blob) and cost viamd three circles
+// each; the first ones would all be of the first residues. They are taken a stride apart from a start the frame picks,
+// the stride near n/φ and prime to n, so they are spread over the indices, and so over space where the indices follow
+// it, never twice the same; playing, the choice moves from frame to frame. The same frame draws the same spheres.
+static void draw_spheres(draw_out_t* o) {
+    const size_t n = md_array_size(o->spheres);
+    if (!n) return;
+    const size_t m = MIN(n, (size_t)DRAW_MAX_SPHERES);
+    size_t start = 0, stride = 1;
+    if (m < n) {
+        start = (size_t)(mix64((uint64_t)o->frame * 0x9e3779b97f4a7c15ull + 1) % n);
+        stride = (size_t)((double)n * 0.6180339887498949) | 1;
+        while (gcd64(stride, n) != 1) ++stride;
+    }
+    for (size_t j = 0, i = start; j < m; ++j, i = (i + stride) % n) {
+        if (!draw_room(o)) return;
+        md_array_push(o->d->prims, o->spheres[i], o->alloc);
+    }
+    o->d->num_omitted += n - m;
+}
+
 
 static void draw_label(draw_out_t* o, const float pos[3], uint32_t element, const vial_prim_t* p) {
     if (!draw_room(o)) return;
@@ -900,13 +933,18 @@ static void draw_prims(draw_out_t* o, const vial_drawing_t* dr, uint32_t element
         case VIAL_PRIM_LABEL:     draw_label(o, p->p[0], element, p); continue;
         default: break;
         }
-        if (!draw_room(o)) continue;
         static const md_vial_prim_kind_t kinds[] = {
             [VIAL_PRIM_MARKER] = MD_VIAL_PRIM_MARKER, [VIAL_PRIM_LINE] = MD_VIAL_PRIM_LINE, [VIAL_PRIM_ARROW] = MD_VIAL_PRIM_ARROW,
             [VIAL_PRIM_SPHERE] = MD_VIAL_PRIM_SPHERE, [VIAL_PRIM_ARC] = MD_VIAL_PRIM_ARC, [VIAL_PRIM_DISK] = MD_VIAL_PRIM_DISK,
         };
         md_vial_prim_t q = {.kind = kinds[p->kind], .element = element, .r = p->r};
         memcpy(q.p, p->p, sizeof(q.p));
+        if (p->kind == VIAL_PRIM_SPHERE && !p->labelled) {
+            // Counted when chosen, by draw_spheres
+            md_array_push(o->spheres, q, o->alloc);
+            continue;
+        }
+        if (!draw_room(o)) continue;
         md_array_push(o->d->prims, q, o->alloc);
         if (!p->labelled) continue;
         // A line's label at its middle, an arc's inside the angle
@@ -1061,7 +1099,7 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
     const vial_ssa_t v = md_vial__expr_value(desc->prog, expr);
     if (!ir || !v || v >= md_array_size(ir->values)) return false;
     const vial_type_t* t = &ir->values[v].type;
-    draw_out_t o = {.d = out, .alloc = alloc, .only = desc->element};
+    draw_out_t o = {.d = out, .alloc = alloc, .only = desc->element, .frame = desc->frame};
     const uint32_t so = sdf_op(ir, v);
     if (so != VIAL_IR_NO_OP) {
         md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
@@ -1078,6 +1116,7 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
         if (!trajectory_value(desc->eval, v, desc->frame, &one)) return false;
         one.drawn = NULL;
         draw_value(&o, &one, t);
+        draw_spheres(&o);
         return draw_done(out, true);
     }
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
@@ -1086,7 +1125,7 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
     if (desc->eval) num_frames = desc->eval->num_frames;
     point_t pt;
     const vial_val_t* val = point_eval(&pt, desc->prog, desc->sys, desc->run, times, num_frames, desc->frame, desc->state, v, true);
-    if (val) draw_value(&o, val, t);
+    if (val) { draw_value(&o, val, t); draw_spheres(&o); }
     point_free(&pt);
     md_arena_allocator_destroy(arena);
     return draw_done(out, val != NULL);

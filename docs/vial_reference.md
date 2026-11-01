@@ -1089,6 +1089,7 @@ Hovering an expression in the editor draws its value in the 3D view, at the fram
 - A drawing has the stage of its inputs and may be later than the value it is attached to; it is drawn for the frame being shown.
 - Drawings carry no colours or styles: viamd draws them in its own, and emphasizes the hovered element of an array.
 - Hover draws at most 10,000 primitives. Above that it draws the hovered element only, and says how many were left out.
+- Of spheres it draws at most 1,000, so `within(3, of=protein)` stays readable and cheap; the particles inside are all highlighted. Past 1,000 it draws 1,000 spread over them, a different 1,000 at each frame, so playing shows them all in turn; the same frame always draws the same ones.
 - A drawing is never published; a top-level name bound to one is shown in hover only.
 
 ```python

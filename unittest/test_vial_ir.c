@@ -729,6 +729,60 @@ static uint32_t vial_test_count_ca(const md_system_t* sys) {
 
 // What hover draws: the drawing shown() attached, kept through names and calls; built-ins that draw themselves; and
 // values by their type
+// Of more than 1,000 spheres, 1,000 are drawn: distinct, the same at the same frame, others at another, and every
+// particle inside still highlighted
+UTEST(vial_ir, draw_spheres_capped) {
+    const md_system_t* sys = vial_test_system('T');
+    ASSERT_TRUE(sys != NULL);
+    const md_system_state_t* st = vial_test_state('T');
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    const char* src = "w = within(2.0, of=particles[0:3000])\nv = within(2.0, of=particles[0:10])\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .frame = 0, .state = st, .element = -1};
+    const uint32_t at = md_vial_expr_at(prog, (uint32_t)(strstr(src, "within(") - src) + 1);
+    md_vial_drawing_t a, b, c;
+    ASSERT_TRUE(md_vial_draw(&a, &desc, at, alloc));
+    ASSERT_TRUE(md_vial_draw(&b, &desc, at, alloc));
+    desc.frame = 1;
+    ASSERT_TRUE(md_vial_draw(&c, &desc, at, alloc));
+    ASSERT_EQ(1000u, a.num_prims);
+    EXPECT_EQ(2000u, a.num_omitted);
+    ASSERT_EQ(1u, a.num_groups);
+    EXPECT_GE(a.groups[0].end - a.groups[0].beg, 3000u);
+    // Distinct centres, each one of the 3,000 points
+    const float* x = (const float*)st->xyz;
+    uint8_t* seen = md_alloc(alloc, 3000);
+    memset(seen, 0, 3000);
+    uint32_t lo = 3000, hi = 0;
+    for (size_t i = 0; i < a.num_prims; ++i) {
+        ASSERT_EQ((int)MD_VIAL_PRIM_SPHERE, (int)a.prims[i].kind);
+        uint32_t j = 0;
+        while (j < 3000 && (x[3 * j] != a.prims[i].p[0][0] || x[3 * j + 1] != a.prims[i].p[0][1] || x[3 * j + 2] != a.prims[i].p[0][2])) ++j;
+        ASSERT_LT(j, 3000u);
+        EXPECT_EQ(0, seen[j]);
+        seen[j] = 1;
+        lo = MIN(lo, j); hi = MAX(hi, j);
+    }
+    // Spread over the points, not the first 1,000
+    EXPECT_LT(lo, 50u);
+    EXPECT_GT(hi, 2950u);
+    // The same frame draws the same; another frame other spheres
+    ASSERT_EQ(a.num_prims, b.num_prims);
+    EXPECT_EQ(0, memcmp(a.prims, b.prims, a.num_prims * sizeof(md_vial_prim_t)));
+    ASSERT_EQ(a.num_prims, c.num_prims);
+    size_t same = 0;
+    for (size_t i = 0; i < c.num_prims; ++i) same += memcmp(&a.prims[i], &c.prims[i], sizeof(md_vial_prim_t)) == 0;
+    EXPECT_LT(same, 100u);
+    // Few spheres are all drawn
+    desc.frame = 0;
+    ASSERT_TRUE(md_vial_draw(&a, &desc, md_vial_expr_at(prog, (uint32_t)(strstr(src, "v = within(") - src) + 5), alloc));
+    EXPECT_EQ(10u, a.num_prims);
+    EXPECT_EQ(0u, a.num_omitted);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, draw) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
