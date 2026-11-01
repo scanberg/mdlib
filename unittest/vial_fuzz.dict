@@ -210,3 +210,8 @@
 "ref="
 "weights=mass(particles())"
 "(6.0, 4.0, 3.0)"
+"mcs"
+"poses="
+"least="
+"by='name'"
+"(None, (eye(3), zeros(3)))"

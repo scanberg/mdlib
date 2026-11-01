@@ -16,7 +16,10 @@
 // - sdf(structures, target, extent): each structure is fitted, every frame, onto the reference (frame 0 of the first,
 //   or ref=), with periodic boundaries, as v1 does; target's particles within the box of half extent `extent` about it
 //   are added in the structure's frame. The volume's frame is the reference's centre of mass and principal axes. A
-//   structure's own particles are not its target.
+//   structure's own particles are not its target. Structures pair particle by particle: an array of sets alike (the
+//   residues of one name), or set[k][w], k structures whose column j plays one part in each (smiles_atoms, mcs).
+//   Kinds that are not alike, a tuple of such arrays, are each fitted onto a reference of their own, which is placed on
+//   the first kind's by what the two have in common (md_mcs), or by poses=: the volume is the first kind's frame.
 // - density(points, box=(lo, hi)): the points in a box of the run's frame, each taken in the image nearest the box's
 //   centre. Without box=, over the unit cell, in fractional coordinates, so a cell that changes keeps its voxels; the
 //   grid is that of frame 0's cell.
@@ -38,6 +41,19 @@ double vial_volume_grid(const double len[3], double samples, uint32_t dims[3], b
 // Whether a built-in is one of the volumes, accumulated over the frames rather than computed at one
 bool vial_volume_builtin(const char* name);
 
+// One kind of structure of an sdf: count structures of n particles, column j playing one part in each, fitted by mass
+// onto a reference of the kind, which R and t place on the first kind's
+typedef struct vial_sdf_kind_t {
+    uint32_t    count;
+    uint32_t    n;
+    uint32_t*   atoms;          // [count][n], in the order they pair
+    uint32_t*   own;            // [count][n], each structure's ascending: not its own target
+    vec4_t*     ref_xyzw;       // [n]
+    vec3_t      ref_com;
+    mat3_t      R;              // the kind's reference about its centre to the first kind's about its centre
+    vec3_t      t;
+} vial_sdf_kind_t;
+
 typedef enum vial_volume_kind_t {
     VIAL_VOLUME_SDF = 1,
     VIAL_VOLUME_BOX,
@@ -52,12 +68,13 @@ typedef struct vial_volume_t {
     double              samples;        // per Å, as used
     double              sigma;          // Å: a Gaussian the volume is smoothed with at the end; 0 for none
     md_unit_t           unit;           // of the value
-    // An sdf: the structures, each of n particles, and the reference they are fitted onto, by mass
-    const vial_sets_t*  structures;
-    uint32_t            n;
-    vec4_t*             ref_xyzw;
-    vec3_t              ref_com;
-    mat3_t              axes;           // the reference's frame to the volume's: its principal axes
+    // An sdf: its kinds of structure, and the first kind's principal axes, the volume's frame
+    struct vial_sdf_kind_t* kinds;
+    uint32_t            num_kinds;
+    uint32_t            num_structures; // over every kind, kind by kind
+    uint32_t            max_n;
+    mat3_t              axes;
+    const struct md_system_t* sys;
     double              extent[3];      // the box's half extents
     // A box: its corner and lengths in the run's frame
     double              lo[3], len[3];
@@ -92,6 +109,9 @@ bool vial_volume_end(vial_kctx_t* k, vial_volume_t* vol, vial_val_t* out);
 // A copy of vol set up alike, nothing added: for the same volume over other frames
 bool vial_volume_like(vial_volume_t* out, const vial_volume_t* vol, md_allocator_i* alloc);
 
+// Structure s of an sdf, over its kinds, kind by kind: its particles, ascending, n of them
+const uint32_t* vial_volume_structure(const vial_volume_t* vol, uint32_t s, uint32_t* n);
+
 // Structure s of an sdf at positions xyz in cell: the matrix from the run's frame to the volume's, column-major as
 // mat4_t is, the structure placed where it is drawn. False when it is not fitted at this frame, as when it spans too
 // much of the cell to place.
@@ -101,3 +121,22 @@ bool vial_volume_pose(const vial_volume_t* vol, uint32_t s, const float* xyz, si
 double vial_volume_bulk(const vial_volume_t* vol);
 
 void vial_volume_free(vial_volume_t* vol);
+
+// ### CORRESPONDENCE ###
+// mcs(a, b): which particles of b play the part of which of a (md_mcs.h), as two arrays of one particle each, a's in
+// ascending order and b's paired with them by position, b's pairing with a's without W0605. With xyz, the positions of
+// every particle, of the mappings the bonds allow the one of least RMSD; without, the first. The check makes it
+// without positions, evaluation with frame 0's, so the two differ at most by symmetric particles of b.
+typedef struct vial_mcs_t {
+    vial_sets_t*    a;
+    vial_sets_t*    b;
+    size_t          a_heavy, b_heavy;
+    bool            incomplete;
+    double          rmsd;
+} vial_mcs_t;
+
+bool vial_mcs(vial_mcs_t* out, const struct md_system_t* sys, const vial_sets_t* a, const vial_sets_t* b, bool by_name, const float* xyz,
+              md_allocator_i* alloc);
+
+// The built-in, from its arguments by parameter: a tuple of the two arrays. xyz as for vial_mcs, NULL for none.
+bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const str_t* names, uint32_t n, const float* xyz, vial_val_t* out);

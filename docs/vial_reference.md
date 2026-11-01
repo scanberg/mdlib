@@ -897,6 +897,9 @@ bend   = angle(ala_n, ala_ca, ala_c)                   # -> float[60] °: each s
 | --- | --- |
 | `smiles(pattern, scope=None, level='molecule', mode='unique')` | `set[k]`: one set per match |
 | `smiles_atoms(pattern, ...)` | `set[k][w]`: one particle per pattern atom, in pattern order; only the atoms tagged with a class such as `[C:1]` when the pattern has classes, in class order |
+| `mcs(a, b, by='element', least=0.5)` | `set[m]` and `set[m]`: which particles of b play the part of which of a, structures that are not the same (a mutant, GTP and GDP, the rings of PHE and TYR), as two arrays of one particle each, a's ascending and b's paired with them by position |
+
+`mcs` finds the largest set of heavy atoms the two have in common, connected, alike by element (or by element and name, `by='name'`), with the same bonds both ways round, whatever their orders; hydrogens are left out. Two polymers, two residues or more of amino acids or nucleotides each, are matched residue by residue: the residues aligned by name in order, a pair of one name by atom name and a pair of two names as a graph. Anything else is matched as one graph, exactly, which takes microseconds for residues and less than a millisecond for a ligand of 60 heavy atoms; more than 1024 heavy atoms is too many (E0321), and a search that gives up keeps the largest it found (W0408). The bonds alone do not tell symmetric atoms apart, the oxygens of a phosphate or the sides of a ring: of the mappings they allow, evaluation keeps the one that fits best at frame 0. Fewer than `least` of the smaller structure's heavy atoms in common is E0321: any two molecules have a few carbons in common. b's array pairs with a's without W0605, as `common()`'s do.
 
 `level` is where a match may lie: within a `'molecule'`, a `'residue'` or a `'part'`. `mode` is `'unique'`, one match per distinct set of atoms, or of tagged atoms when the pattern has classes; `'all'`, every mapping; `'one_per_unit'`; or `'disjoint'`, which keeps the first of overlapping matches. Matches may overlap, and the compiler knows where. A hydrogen in a pattern is mapped onto one hydrogen of its atom, never searched.
 
@@ -978,12 +981,13 @@ A volume is a density on a grid, added up over the frames: `sdf` in the frame of
 
 | Function | Result | Stage |
 | --- | --- | --- |
-| `sdf(structures, target, extent, samples=4, ref=None, weights=None, sigma=0)` | `float[nx][ny][nz]` count/Å³: target's density about the structures, each fitted every frame onto the reference by mass, with periodic boundaries, in a box reaching `extent` from the reference's centre along its principal axes | trajectory |
+| `sdf(structures, target, extent, samples=4, ref=None, weights=None, sigma=0, poses=None)` | `float[nx][ny][nz]` count/Å³: target's density about the structures, each fitted every frame onto the reference by mass, with periodic boundaries, in a box reaching `extent` from the reference's centre along its principal axes | trajectory |
 | `density(points, samples=4, box=None, weights=None, sigma=0)` | `float[nx][ny][nz]` count/Å³: the points' density in `box=((x0, y0, z0), (x1, y1, z1))`, each in the image nearest the box's centre; without box=, over the unit cell | trajectory |
 
 - **The grid** follows from what it covers: `samples` per Å along each axis, each axis rounded up to a multiple of 8, so a pocket and a whole box are sampled alike. A grid of more than 512³ voxels is sampled coarser to fit, with W0407 saying how. Extents, samples, box and sigma are known when compiling, so the type has the grid's extents. Over the unit cell, the grid is frame 0's cell, known when evaluating: its extents print as letters. A cell that changes keeps its voxels, in fractional coordinates.
 - **The value** is absolute: particles per Å³, or with `weights=` (one number per point, such as `mass(...)` or `charge(...)`) the weights' unit per Å³. Beside `script/<name>` go `/origin` and `/basis`, Å, the corner of voxel `[0][0][0]` and one step along each index, in the volume's frame; `/bulk`, the same particles' density over the unit cell, in the volume's unit, so ρ/ρ_bulk is one division; and `/samples`, what was added. `[i][j][k]` runs along x, y and z of the volume's frame, k fastest.
-- **sdf**: `structures` is a set or an array of sets, static, alike particle by particle: as many particles, of the same elements, or names where an element is not known (E0320). They are fitted onto `ref=`, static positions of one structure, by default the first structure at frame 0. The volume's frame is the reference's centre of mass and principal axes; a structure that spreads over too much of the cell to place in a frame is left out of it. A structure's own particles are never its target. Drawing an sdf draws each structure with the pose that places the volume on it.
+- **sdf**: `structures` is static, and pairs particle by particle: a set or an array of sets alike, as many particles, of the same elements, or names where an element is not known, in the order of their particles (E0320); or `set[k][w]`, k structures whose column j plays one part in each, as `smiles_atoms` and `mcs` give them, columns alike. They are fitted onto `ref=`, static positions of one structure in that order, by default the first structure at frame 0. The volume's frame is the reference's centre of mass and principal axes; a structure that spreads over too much of the cell to place in a frame is left out of it. A structure's own particles are never its target. Drawing an sdf draws each structure with the pose that places the volume on it.
+- **Kinds**: structures of kinds that are not alike, PHE and TYR, a ligand and its analogue, are a tuple of kinds, `sdf((phe, tyr), ...)`. Each kind is fitted onto a reference of its own, every particle of it, and the volume is the first kind's frame: each other kind's reference is placed on the first's by what their first structures have in common (`mcs`, once, at frame 0), or by `poses=`, a tuple with a pose per kind, the first None, each other None or `(R, t)`: float\[3\]\[3\] and float\[3\] Å with x = R @ y + t taking the kind's reference positions y onto the first's. `ref=` is then a tuple of a reference per kind, each None or positions. A kind with less than half of the smaller's heavy atoms in common with the first, and no pose, is E0321. Beyond what is common, the volume holds what each kind has around it, a mixture.
 - `target` and `points` are one set or points, `float[n][3]` Å: `molecules(water).com` maps where the waters' centres are rather than every atom of them. `sigma=` smooths the volume at the end with a Gaussian of that width, Å.
 - A volume is added up at the top level of a script: one inside a comprehension or a def mapped over groups would be an array of volumes, which is not supported yet (E0406). Over a plot period it is made again from the period's frames, read again, since nothing is kept per frame.
 
@@ -996,6 +1000,19 @@ sm   = sdf(ala, o, (6.0, 4.0, 3.0), samples=2, weights=mass(o))   # -> float[24]
 cv   = density(particles(name='CA'), samples=1)        # -> float[a][b][c] count/Å³, trajectory: over the cell
 box  = density(o, box=((0.0, 0.0, 0.0), (40.0, 40.0, 40.0)), sigma=0.5)   # -> float[160][160][160] count/Å³, trajectory
 odd  = sdf(residues[0:5], o, 6.0)                      # error E0320: the first residue is not like the others
+a, b = mcs(residues[1], residues[14])                  # -> set[5] and set[5]: the last residue has its OXT besides
+pair = sdf([a, b], o, 6.0)                             # -> float[48][48][48] count/Å³, trajectory: two structures, column by column
+kin  = sdf((ala, residues[14:15]), o, 6.0)             # -> float[48][48][48] count/Å³, trajectory: two kinds, the second placed by what it shares
+```
+
+```python
+# on T
+phe  = residues('PHE')[0:4]
+tyr  = residues('TYR')[0:4]
+r1, r2 = mcs(particles(resname='GTP'), particles(resname='GDP'))   # -> set[28] and set[28]: all of GDP
+dev  = rmsd(r2.xyz, r1.xyz)                            # -> float Å, frame
+ring = mcs(phe[0], tyr[0], by='element')               # -> (set[11], set[11])
+far  = mcs(particles(resname='GTP'), particles(resname='VLB'))   # error E0321: 13 heavy atoms in common of 32 and 59
 ```
 
 ## Outputs: what is published and how
@@ -1144,6 +1161,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0318 | The coordinates of an array of sets whose sizes differ | `res_a` holds 433 sets of 4 to 14 particles; their positions do not form one array | `particles(res_a).xyz`, or a def with a `points` parameter |
 | E0319 | An operator or property on a value it does not take | `+` takes numbers; this is str and int | |
 | E0320 | Structures of an sdf that are not alike, particle by particle | the structures of `sdf` are fitted particle by particle; structure 1 has 10 particles and the first 13 |  |
+| E0321 | Structures with too little in common to pair: mcs, or a kind of an sdf | the two have 13 heavy atoms in common, of 32 and 59; least=0.5 asks for 16 | least=, or poses= |
 | E0401 | A published value, other than a selection, whose shape changes between frames | `d_near` has a different length in each frame | a reduction, or `_d_near` |
 | E0402 | A value from another system not pinned to a frame | values from `crystal` need a frame | `at(..., frame=0)` |
 | E0403 | A top-level `if` on a value that changes per frame | the condition changes per frame; outputs cannot | `where(...)` |
@@ -1154,6 +1172,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | W0405 | A value that may be missing in some frames | near\[4\] is missing in frames with fewer than five residues nearby | none; the series shows gaps |
 | W0406 | More than three passes over the trajectory | pcs2 is pass 4; each pass reads every frame again |  |
 | W0407 | A volume of more than 512³ voxels: sampled coarser | 13,824,000,000 voxels at 4 samples per Å are more than 512³; it is sampled at 0.853 per Å, 512×512×512 | a smaller extent, or fewer samples |
+| W0408 | mcs gave up before it was sure of the largest in common | the search gave up before it was sure: 130 heavy atoms in common is the most it found |  |
 | W0501 | Units that do not match | adds Å to degrees; the result's unit becomes unknown | `unitless(...)` |
 | E0502 | A unit string that md_unit cannot read | `'kJ/mool'` is not a unit |  |
 | W0601 | A selector that matches nothing in its scope; set algebra such as a and b never warns | `residues(250)` is not among this group's 241 particles |  |

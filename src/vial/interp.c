@@ -10,6 +10,8 @@
 #include "infer_internal.h"
 #include "volume.h"
 
+#include <md_system.h>
+
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
@@ -192,6 +194,25 @@ static void free_volumes(vial_interp_t* in) {
         vial_volume_free(in->volumes[i]);
         in->volumes[i] = NULL;
     }
+}
+
+// mcs(a, b): its mapping, of the symmetric ones the bonds allow the one that fits best at frame 0, read in a step of its
+// own as at() reads its frame; from the bonds alone where there is no frame to read
+static bool eval_mcs(vial_interp_t* in, uint32_t opi) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_op_t* op = &ir->ops[opi];
+    vial_kctx_t k = {.in = in, .op = op, .type = &ir->values[op->result].type, .alloc = in->alloc, .map_index = -1};
+    const vial_val_t* av[8] = {0};
+    if (op->num_args > 8) return vial_rt_fail(&k, "R0103", "mcs with more than 8 arguments");
+    for (uint32_t i = 0; i < op->num_args; ++i) {
+        const vial_ssa_t a = ir->args[op->arg_beg + i];
+        if (a && !in->state[a]) return false;
+        av[i] = a ? &in->vals[a] : NULL;
+    }
+    vial_frame_t fr;
+    const float* xyz = NULL;
+    if (in->load_frame && in->load_frame(in->load_user, 0, &fr) && in->msys && fr.num_atoms == in->msys->atom.count) xyz = fr.xyz;
+    return vial_k_mcs(&k, av, op->num_args ? ir->names + op->arg_beg : NULL, op->num_args, xyz, &in->vals[op->result]);
 }
 
 void vial_interp_free(vial_interp_t* in) {
@@ -780,6 +801,11 @@ static bool eval_top(vial_interp_t* in, bool static_only) {
         if (!st && is_trajectory(ir, op)) continue;
         if (st && op->kind == VIAL_IR_BUILTIN && !strcmp(vial_builtin_at(op->aux)->name, "at")) {
             if (eval_at(in, opi)) in->state[op->result] = 2;
+            else ok = false;
+            continue;
+        }
+        if (st && op->kind == VIAL_IR_BUILTIN && !strcmp(vial_builtin_at(op->aux)->name, "mcs")) {
+            if (eval_mcs(in, opi)) in->state[op->result] = 2;
             else ok = false;
             continue;
         }

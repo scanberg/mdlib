@@ -223,6 +223,18 @@ vial_sets_t* vial_sets_one(const uint32_t* idx, uint32_t n, md_allocator_i* allo
     return s;
 }
 
+vial_sets_t* vial_sets_particles(const int32_t* atoms, uint32_t n, md_allocator_i* alloc) {
+    vial_sets_t* s = sets_new(n, n, alloc);
+    s->level = VIAL_LEVEL_PARTICLE;
+    s->unit = md_alloc(alloc, (n ? n : 1) * sizeof(uint32_t));
+    for (uint32_t i = 0; i < n; ++i) {
+        s->idx[i] = (uint32_t)atoms[i];
+        s->unit[i] = (uint32_t)atoms[i];
+        s->offset[i + 1] = i + 1;
+    }
+    return s;
+}
+
 vial_sets_t* vial_sets_all(uint32_t num_atoms, md_allocator_i* alloc) {
     vial_sets_t* s = sets_new(1, num_atoms, alloc);
     s->single = true;

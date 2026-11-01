@@ -517,7 +517,11 @@ void vx_emit(infer_t* x, vial_node_id id, const T* t) {
     const vial_value_t v = vx_value_of(x, id);
     vial_val_t c;
     // A static tuple of arrays of sets whose dimensions describe exactly their sets, as common() gives: a constant
-    if (t->dtype == VIAL_DT_TUPLE && t->stage == VIAL_STAGE_STATIC && k == VIAL_N_CALL && t->num_elems && t->num_elems <= 8) {
+    // mcs() is not: evaluation chooses among its symmetric mappings by frame 0's positions
+    const vial_node_id callee0 = k == VIAL_N_CALL ? vx_child(x, id, 0) : 0;
+    const vial_symbol_t* csym = callee0 && vx_kind(x, callee0) == VIAL_N_NAME ? vial_names_symbol(x->n, callee0) : NULL;
+    const bool is_mcs = csym && csym->kind == VIAL_SYM_BUILTIN && csym->builtin && !strcmp(csym->builtin->name, "mcs");
+    if (t->dtype == VIAL_DT_TUPLE && t->stage == VIAL_STAGE_STATIC && k == VIAL_N_CALL && t->num_elems && t->num_elems <= 8 && !is_mcs) {
         vial_val_t* el = md_alloc(x->ir->alloc, t->num_elems * sizeof(vial_val_t));
         bool all = true;
         for (uint32_t i = 0; i < t->num_elems && all; ++i) {

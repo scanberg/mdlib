@@ -1035,13 +1035,14 @@ static bool draw_sdf(draw_out_t* o, const md_vial_draw_desc_t* desc, const vial_
         }
     }
     if (ok) {
-        const vial_sets_t* st = vol.structures;
         o->d->num_elements = 1;
-        for (uint32_t s = 0; s < st->count; ++s) {
+        for (uint32_t s = 0; s < vol.num_structures; ++s) {
             mat4_t M;
             if (!vial_volume_pose(&vol, s, fr.xyz, fr.num_atoms, &fr.cell, &M)) continue;
+            uint32_t n;
+            const uint32_t* atoms = vial_volume_structure(&vol, s, &n);
             md_vial_pose_t ps = {.beg = (uint32_t)md_array_size(o->d->atoms)};
-            md_array_push_array(o->d->atoms, vial_sets_items(st, s), vial_sets_size(st, s), o->alloc);
+            md_array_push_array(o->d->atoms, atoms, n, o->alloc);
             ps.end = (uint32_t)md_array_size(o->d->atoms);
             memcpy(ps.m, M.elem, sizeof(ps.m));
             md_array_push(o->d->poses, ps, o->alloc);

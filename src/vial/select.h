@@ -95,6 +95,8 @@ static inline const uint32_t* vial_sets_items(const vial_sets_t* s, uint32_t i) 
 
 vial_sets_t* vial_sets_one(const uint32_t* idx, uint32_t n, md_allocator_i* alloc);    // copies idx
 vial_sets_t* vial_sets_all(uint32_t num_atoms, md_allocator_i* alloc);                  // every particle
+// An array of one particle each, in the order given: particles as units, so they pair in that order
+vial_sets_t* vial_sets_particles(const int32_t* atoms, uint32_t n, md_allocator_i* alloc);
 
 static inline const struct vial_sets_t* vial_sets_root(const struct vial_sets_t* s) { return s && s->root ? s->root : s; }
 

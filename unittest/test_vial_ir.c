@@ -2113,3 +2113,143 @@ UTEST(vial_ir, volume_diagnostics) {
     }
     md_arena_allocator_destroy(alloc);
 }
+
+// mcs(a, b): which particles of b play the part of which of a, typed when compiling
+UTEST(vial_ir, mcs) {
+    const md_system_t* sys = vial_test_system('T');
+    ASSERT_TRUE(sys != NULL);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    const char* src =
+        "gtp = particles(resname='GTP')\n"
+        "gdp = particles(resname='GDP')\n"
+        "a, b = mcs(gtp, gdp)\n"
+        "r = rmsd(b.xyz, a.xyz)\n"
+        "phe = residues('PHE')\n"
+        "tyr = residues('TYR')\n"
+        "c = mcs(phe[0], tyr[0], by='element')\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    const md_vial_diagnostic_t* d;
+    const size_t nd = md_vial_diagnostics(prog, &d);
+    for (size_t i = 0; i < nd; ++i) printf("%.5s %.*s\n", d[i].code, (int)d[i].message.len, d[i].message.ptr);
+    EXPECT_EQ(0u, (unsigned)nd);
+    md_vial__result_t r;
+    ASSERT_TRUE(md_vial__line_result(prog, 3, &r));
+    EXPECT_STREQ("set[28]", r.types[0]);
+    EXPECT_STREQ("set[28]", r.types[1]);
+    ASSERT_TRUE(md_vial__line_result(prog, 4, &r));
+    EXPECT_STREQ("float Å", r.types[0]);
+    // Of the particles, as filters read them: GDP's in the order of GTP's they play
+    md_vial_filter_t f;
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particles(resname='GTP'), particles(resname='GDP'))[1]"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
+    EXPECT_EQ(28u, (unsigned)f.num_sets);
+    // Too little in common: E0321, unless least= asks for less
+    struct { const char* src; const char* code; } bad[] = {
+        {"m = mcs(particles(resname='GTP'), particles(resname='VLB'))\n", "E0321"},
+        {"m = mcs(residues('PHE'), residues('TYR'))\n", "E0313"},
+        {"m = mcs(particles(resname='GTP'), particles(resname='GDP'), by='colour')\n", "E0313"},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(bad); ++i) {
+        md_vial_program_t* p = md_vial_compile(str_from_cstr(bad[i].src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+        const size_t n = md_vial_diagnostics(p, &d);
+        bool found = false;
+        for (size_t k = 0; k < n; ++k) found = found || !strncmp(d[k].code, bad[i].code, 5);
+        EXPECT_TRUE(found);
+        md_vial_program_free(p);
+    }
+    md_vial_program_t* ok = md_vial_compile(STR_LIT("m = mcs(particles(resname='GTP'), particles(resname='VLB'), least=0.2)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    EXPECT_EQ(0u, (unsigned)md_vial_diagnostics(ok, NULL));
+    md_vial_program_free(ok);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+static double vial_ir__max_diff(const md_attributes_t* at, const char* p, const char* q, size_t* n_out) {
+    const md_attribute_t* a = md_attributes_find(at, str_from_cstr(p));
+    const md_attribute_t* b = md_attributes_find(at, str_from_cstr(q));
+    if (!a || !b || !a->data || !b->data) return INFINITY;
+    const size_t n = md_attribute_element_count(&a->format);
+    if (n != md_attribute_element_count(&b->format)) return INFINITY;
+    double d = 0;
+    for (size_t i = 0; i < n; ++i) d = MAX(d, fabs((double)((const float*)a->data)[i] - ((const float*)b->data)[i]));
+    if (n_out) *n_out = n;
+    return d;
+}
+
+// An sdf over structures paired column by column, and over kinds of structure placed on the first kind's reference:
+// what is alike gives what one kind gives
+UTEST(vial_ir, sdf_kinds) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(vial_test_run('P'), 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    const char* src =
+        "ala = residues[1:3] and not particles(element='H')\n"
+        "cb  = particles(name='CB')\n"
+        "s   = sdf(ala, cb, 5.0)\n"
+        "a, b = mcs(residues[1], residues[2])\n"
+        "so  = sdf([a, b], cb, 5.0)\n"
+        "rv  = sdf([a[::-1], b[::-1]], cb, 5.0)\n"
+        "s2  = sdf((ala, ala), cb, 5.0)\n"
+        "sp  = sdf((ala, ala), cb, 5.0, poses=(None, (eye(3), zeros(3, unit='Å'))))\n"
+        "ct  = sdf((residues[1:5], residues[14:15]), cb, 5.0)\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    ASSERT_EQ(0u, (unsigned)ndg);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 3}, alloc);
+    ASSERT_TRUE(e != NULL);
+    ASSERT_TRUE(md_vial_eval_run(e));
+    const md_vial_diagnostic_t* rd;
+    const size_t nr = md_vial_eval_diagnostics(e, &rd);
+    for (size_t i = 0; i < nr; ++i) printf("%.5s %.*s\n", rd[i].code, (int)rd[i].message.len, rd[i].message.ptr);
+    EXPECT_EQ(0u, (unsigned)nr);
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    size_t n = 0;
+    // Paired column by column as mcs gives them, which is the residues' own order: the same volume; and with the
+    // columns the other way round, which pairs the same particles
+    EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/so", &n), 1e-6);
+    EXPECT_EQ(40u * 40u * 40u, (unsigned)n);
+    EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/rv", NULL), 2e-4);    // the fits sum in another order
+    // The same kind twice: placed on itself, the same density per structure, twice as much added
+    EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/s2", NULL), 1e-4);
+    EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/sp", NULL), 1e-4);
+    EXPECT_EQ(2 * vial_ir__attr1(at, "script/s/samples", 0), vial_ir__attr1(at, "script/s2/samples", 0));
+    // A kind not alike, the last residue with its OXT, placed by the five heavy atoms it has in common
+    const md_attribute_t* act = md_attributes_find(at, STR_LIT("script/ct"));
+    ASSERT_TRUE(act != NULL);
+    double tot = 0;
+    for (size_t i = 0; i < 40 * 40 * 40; ++i) tot += ((const float*)act->data)[i];
+    EXPECT_GT(tot, 0.0);
+    // Drawn: every structure of every kind with its pose
+    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf((residues") - src));
+    md_vial_drawing_t dr;
+    ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .element = -1}, expr, alloc));
+    EXPECT_EQ(5u, (unsigned)dr.num_poses);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+
+    // What the check says
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    struct { const md_system_t* sys; const char* src; const char* code; } cases[] = {
+        {T, "v = sdf((particles(resname='GTP'), particles(resname='VLB')), particles(name='O'), 8.0)\n", "E0321"},
+        {T, "v = sdf((residues('PHE')[0:2], residues('TYR')[0:2]), particles(name='O'), 8.0)\n", NULL},
+        {T, "v = sdf((residues('PHE'), residues('TYR')), particles(name='O'), 8.0, poses=(None, eye(3)))\n", "E0313"},
+        {T, "v = sdf((residues('PHE'), residues('TYR')), particles(name='O'), 8.0, poses=((eye(3), zeros(3)), None))\n", "E0313"},
+        {T, "v = sdf((residues('PHE'), residues('TYR')), particles(name='O'), 8.0, ref=(None,))\n", "E0313"},
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        md_vial_program_t* p = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = cases[i].sys}, alloc);
+        const size_t nd = md_vial_diagnostics(p, &dg);
+        bool found = cases[i].code == NULL ? nd == 0 : false;
+        for (size_t k = 0; cases[i].code && k < nd; ++k) found = found || !strncmp(dg[k].code, cases[i].code, 5);
+        EXPECT_TRUE(found);
+        if (!found) {
+            printf("%s", cases[i].src);
+            for (size_t k = 0; k < nd; ++k) printf("  %.5s %.*s\n", dg[k].code, (int)dg[k].message.len, dg[k].message.ptr);
+        }
+        md_vial_program_free(p);
+    }
+    md_arena_allocator_destroy(alloc);
+}
