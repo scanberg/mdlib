@@ -1770,6 +1770,61 @@ UTEST(attributes, replace_is_idempotent_across_reloads) {
     md_attributes_free(&t);
 }
 
+// Replace is in place: the same slot and id, its neighbours where they were, a new version; one that cannot be built
+// leaves nothing at the path, as the removal and failed create it once was did. (Publishing many attributes again is
+// linear: it was n^2 when every replace moved half the table and rebuilt the id index twice. The VIAL bench shows it.)
+UTEST(attributes, replace_in_place) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+    const float one[1] = {1.0f};
+    char path[64];
+    enum { N = 4000 };
+    for (int i = 0; i < N; ++i) {
+        snprintf(path, sizeof(path), "script/x%d", i);
+        ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){.path = str_from_cstr(path), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1),
+                                                                  .unit = md_unit_none(), .data = one, .byte_size = sizeof(one)}), MD_ATTRIBUTE_INVALID);
+    }
+    const md_attribute_t* before = md_attributes_find(&t, STR_LIT("script/x17"));
+    ASSERT_TRUE(before != NULL);
+    const md_attribute_id_t id = before->id;
+    const uint64_t version = before->version;
+    const md_attribute_id_t next = md_attributes_find(&t, STR_LIT("script/x170"))->id;
+
+    // Every one replaced, twice, each keeping its id
+    for (int r = 0; r < 2; ++r) {
+        for (int i = 0; i < N; ++i) {
+            const float v[1] = {(float)(i + r)};
+            snprintf(path, sizeof(path), "script/x%d", i);
+            ASSERT_EQ(md_attributes_replace(&t, &(md_attribute_desc_t){.path = str_from_cstr(path), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1),
+                                                                       .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)}),
+                      md_attributes_id_from_path(str_from_cstr(path)));
+        }
+    }
+    EXPECT_EQ((size_t)N, md_attributes_count(&t));
+    const md_attribute_t* after = md_attributes_find(&t, STR_LIT("script/x17"));
+    ASSERT_TRUE(after != NULL);
+    EXPECT_EQ(id, after->id);
+    EXPECT_GT(after->version, version);
+    float v = 0;
+    ASSERT_EQ(1u, md_attribute_extract_f32(&v, 1, after, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_EQ(18.0f, v);
+    // Found by id and by path alike, the index standing
+    EXPECT_TRUE(md_attributes_get(&t, next) == md_attributes_find(&t, STR_LIT("script/x170")));
+
+    // Of another format: in place too
+    const double d[2] = {1.0, 2.0};
+    ASSERT_EQ(id, md_attributes_replace(&t, &(md_attribute_desc_t){.path = STR_INIT("script/x17"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+                                                                   .unit = md_unit_none(), .data = d, .byte_size = sizeof(d)}));
+    EXPECT_EQ(MD_ATTRIBUTE_TYPE_F64, md_attributes_get(&t, id)->format.type);
+
+    // One that cannot be built: nothing left at the path, the rest as it was
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_replace(&t, &(md_attribute_desc_t){.path = STR_INIT("script/x17"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1),
+                                                                                    .unit = md_unit_none(), .data = d, .byte_size = 3}));
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("script/x17")) == NULL);
+    EXPECT_EQ((size_t)N - 1, md_attributes_count(&t));
+    EXPECT_TRUE(md_attributes_get(&t, next) == md_attributes_find(&t, STR_LIT("script/x170")));
+    md_attributes_free(&t);
+}
+
 // Versioning is what lets a consumer cache something DERIVED from an attribute. The contract that
 // matters is the negative one: md_attributes_data must NOT bump, because a producer holding that
 // pointer may take seconds to fill it and a consumer looking in that window would cache garbage.

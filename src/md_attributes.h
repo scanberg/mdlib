@@ -198,6 +198,7 @@ typedef struct md_attributes_t {
     struct md_allocator_i*   alloc;
     md_array(md_attribute_t) attr;          // sorted by path
     md_array(uint32_t)       id_index;      // open addressing over attr, holds index+1; 0 is empty
+    size_t                   num_aliases;   // of attr, so that what looks for aliases can skip the look when there are none
 
     // String pool behind MD_ATTRIBUTE_TYPE_STR: append only, interning, entry 0 is "".
     md_array(char)           str_data;
