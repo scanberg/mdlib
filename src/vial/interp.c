@@ -1522,6 +1522,8 @@ bool vial_interp_volume_over(const vial_interp_t* in, vial_ssa_t v, const uint8_
     bool ok = vial_volume_like(&vol, run_vol, child.alloc);
     for (int64_t f = 0; ok && f < in->num_frames; ++f) {
         if (!mask[f]) continue;
+        // Stopped as the evaluation is (md_vial_eval_interrupt): what it has is not the volume asked for
+        if (in->stop && md_atomic_load64(in->stop)) { ok = false; break; }
         vial_frame_t fr;
         if (!load(load_user, f, &fr)) { ok = false; break; }
         // A frame where an argument fails is left out, as the run leaves it out

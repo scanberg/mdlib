@@ -322,7 +322,8 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* eval, str_t name, uint8_
 // An output over the trajectory, such as a histogram over the frames, computed again over chosen frames: those where
 // frames[f] is nonzero, from the per-frame values the evaluation kept, so nothing is evaluated again. What a plot
 // period shows (decided 31 October). A volume keeps nothing per frame, so its frames are read again, one after the
-// other, with a reader of its own: that takes as long as evaluating them did on one thread. Into out as floats, NaN where missing; returns how many values it has, and writes
+// other, with a reader of its own: that takes as long as evaluating them did on one thread, and md_vial_eval_interrupt
+// stops it (0 is returned). Into out as floats, NaN where missing; returns how many values it has, and writes
 // them only when cap holds them all. 0 when the run has not finished, or the output is not computed over the frames
 // from per-frame values. Safe from any thread once md_vial_eval_run has returned.
 size_t md_vial_eval_aggregate(const md_vial_eval_t* eval, str_t name, const uint8_t* frames, float* out, size_t cap);
