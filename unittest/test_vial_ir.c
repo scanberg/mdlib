@@ -1871,7 +1871,8 @@ UTEST(vial_ir, fast_paths_agree) {
         " + sum(abs(sqrt(_d) - sqrt(_m))) + sum(abs(abs(_d - 3.0) - abs(_m - 3.0)))"
         " + sum(abs(sum(_x, axis=1) - sum(_xm, axis=1)))"
         " + sum(abs(displacement(_x, particles[0].xyz) - displacement(_xm, particles[0].xyz)))"
-        " + sum(abs(norm(_x) - norm(_xm)))\n";
+        " + sum(abs(norm(_x) - norm(_xm)))"
+        " + sum(sum(_x[:, 0:0], axis=1))\n";     // an empty reduction, which the trailing path must not walk
     vial_ir__run_t r;
     ASSERT_TRUE(vial_ir__start(&r, src, sys));
     double bad[64] = {0};

@@ -742,6 +742,7 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
     // walk below is a plain loop, the same values into the same lanes in the same order, so the same bits
     bool trailing = !a->missing && a->dtype == VIAL_DT_FLOAT && !periodic && (red == R_SUM || red == R_MEAN || red == R_STD || red == R_VAR);
     for (uint8_t d = 0; trailing && d < a->ndim; ++d) trailing = rd[d] == (d >= a->ndim - rnd);
+    trailing = trailing && rn > 0;     // an empty reduction has no data to point into
     for (size_t oi = 0; oi < on; ++oi) {
         size_t base = 0, rem = oi;
         for (int d = ond - 1; d >= 0; --d) { base += (rem % odims[d]) * ostr[d]; rem /= odims[d]; }
