@@ -175,6 +175,12 @@ typedef struct md_vial_hover_t {
     md_vial_stage_t stage;
     uint32_t        pass;
     char            value[96];      // empty when not known when compiling
+    // The unit, for an editor that shows units of its own: where type prints it, type[unit_at, unit_at + unit_len),
+    // and value as a number in it when value is one. unit is none, and unit_len 0, for a value without a unit.
+    md_unit_t       unit;
+    uint32_t        unit_at, unit_len;
+    bool            has_number;
+    double          number;
 } md_vial_hover_t;
 
 bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out);

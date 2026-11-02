@@ -398,6 +398,19 @@ bool md_vial_expr_info(const md_vial_program_t* prog, uint32_t expr, md_vial_hov
     out->pass = public_pass(ty);
     const vial_value_t* v = &prog->types.values[best];
     if (vial_value_is_scalar(v)) vial_value_print(out->value, sizeof(out->value), v);
+    if (ty->dtype != VIAL_DT_TUPLE && ty->unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(ty->unit)) {
+        // The type prints its dtype and extents, then a space and the unit: neither of the first has a space
+        char u[128];
+        const size_t un = vial_unit_print(u, sizeof(u), ty->unit);
+        const char* sp = strchr(out->type, ' ');
+        if (sp && un && strncmp(sp + 1, u, un) == 0) {
+            out->unit = ty->unit;
+            out->unit_at = (uint32_t)(sp + 1 - out->type);
+            out->unit_len = (uint32_t)un;
+            if (v->kind == VIAL_VAL_FLOAT) { out->has_number = true; out->number = v->f; }
+            else if (v->kind == VIAL_VAL_INT) { out->has_number = true; out->number = (double)v->i; }
+        }
+    }
     return true;
 }
 

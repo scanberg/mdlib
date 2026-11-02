@@ -750,6 +750,28 @@ UTEST_F(vial_check, outputs_and_hover) {
     ASSERT_TRUE(md_vial_hover(prog, at_dist, &hv));
     EXPECT_STREQ(u8"float Å", hv.type);
     EXPECT_EQ(MD_VIAL_STAGE_FRAME, hv.stage);
+    // Where the unit is, for an editor showing units of its own; no number for a value known only per frame
+    EXPECT_EQ(6u, hv.unit_at);
+    EXPECT_EQ(2u, hv.unit_len);     // Å is two bytes
+    EXPECT_TRUE(md_unit_base_equal(hv.unit, md_unit_angstrom()));
+    EXPECT_FALSE(hv.has_number);
+    ASSERT_TRUE(md_vial_hover(prog, at_idx, &hv));
+    EXPECT_EQ(0u, hv.unit_len);
+    EXPECT_TRUE(md_unit_is_none(hv.unit));
     EXPECT_FALSE(md_vial_hover(prog, 0xFFFFFF, &hv));
+    md_vial_program_free(prog);
+
+    // A quantity known when compiling: its unit, where the type prints it, and its value as a number
+    const char* q = "v = 10 nm/ps\nm = [1.0 nm, 2.0 nm]\n";
+    prog = md_vial_compile(str_from_cstr(q), &desc, utest_fixture->alloc);
+    ASSERT_TRUE(md_vial_hover(prog, 7, &hv));     // on the unit, which is the quantity's
+    EXPECT_STREQ("int km/s", hv.type);
+    EXPECT_EQ(4u, hv.unit_at);
+    EXPECT_EQ(4u, hv.unit_len);
+    EXPECT_TRUE(hv.has_number);
+    EXPECT_EQ(10.0, hv.number);
+    double f = 0.0;
+    EXPECT_TRUE(md_unit_conversion_factor(&f, hv.unit, md_unit_div(md_unit_meter(), md_unit_second())));
+    EXPECT_NEAR(1000.0, f, 1e-9);
     md_vial_program_free(prog);
 }
