@@ -3,6 +3,9 @@
 #include <md_system.h>
 #include <md_unitcell.h>
 #include <md_xdr.h>
+#if MD_HDF5
+#include <md_amber_netcdf4.h>
+#endif
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -534,7 +537,7 @@ static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_
     const cdf_parse_result_t r = cdf_open(&cdf, out_file, path, alloc, quiet);
     if (r == CDF_PARSE_HDF5) {
         if (!quiet) {
-            MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is NetCDF-4 (HDF5), which the Amber convention does not allow and which is not supported. "
+            MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is NetCDF-4 (HDF5), which this build reads only with HDF5 (MD_ENABLE_HDF5). "
                 "Convert it with cpptraj or MDAnalysis to the classic format", STR_ARG(path));
         }
         return MD_AMBER_NETCDF_HDF5;
@@ -560,7 +563,23 @@ static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_
     return layout->kind;
 }
 
+// NetCDF-4: HDF5 underneath, read by md_amber_netcdf4.c when the build has HDF5
+static bool amber_is_hdf5(str_t filename) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_READ)) return false;
+    uint8_t magic[8] = {0};
+    const bool ok = md_file_read(file, magic, sizeof(magic)) == sizeof(magic) && memcmp(magic, "\211HDF\r\n\032\n", 8) == 0;
+    md_file_close(&file);
+    return ok;
+}
+
 md_amber_netcdf_kind_t md_amber_netcdf_file_kind(str_t filename) {
+#if MD_HDF5
+    if (amber_is_hdf5(filename)) {
+        const md_amber_netcdf_kind_t kind = md_amber_nc4_file_kind(filename, NULL);
+        return kind == MD_AMBER_NETCDF_HDF5 ? MD_AMBER_NETCDF_NONE : kind;     // HDF5 of something else
+    }
+#endif
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
     amber_layout_t layout;
     const md_amber_netcdf_kind_t kind = amber_open(&layout, NULL, filename, arena, true);
@@ -569,6 +588,13 @@ md_amber_netcdf_kind_t md_amber_netcdf_file_kind(str_t filename) {
 }
 
 size_t md_amber_netcdf_file_atom_count(str_t filename) {
+#if MD_HDF5
+    if (amber_is_hdf5(filename)) {
+        size_t n = 0;
+        md_amber_nc4_file_kind(filename, &n);
+        return n;
+    }
+#endif
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
     amber_layout_t layout;
     const md_amber_netcdf_kind_t kind = amber_open(&layout, NULL, filename, arena, true);
@@ -652,6 +678,9 @@ bool md_amber_netcdf_state_init_from_file(md_system_state_t* state, str_t filena
         MD_LOG_ERROR("Amber NetCDF: the state has no allocator");
         return false;
     }
+#if MD_HDF5
+    if (amber_is_hdf5(filename)) return md_amber_nc4_state_init_from_file(state, filename, num_atoms);
+#endif
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     bool result = false;
     md_file_t file = {0};
@@ -784,6 +813,9 @@ static md_unit_t amber_time_unit(str_t units, bool* known) {
 
 bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint32_t flags) {
     ASSERT(sys);
+#if MD_HDF5
+    if (amber_is_hdf5(filename)) return md_amber_nc4_system_publish_run(sys, filename, run, flags);
+#endif
     (void)flags;    // Nothing to index: the header says where every frame is
     char path_buf[4096];
     const size_t path_len = md_path_write_canonical(path_buf, sizeof(path_buf), filename);

@@ -390,7 +390,12 @@ UTEST(amber_netcdf, restart_and_what_is_not_amber) {
     ASSERT_TRUE(md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
     md_file_write(f, "\211HDF\r\n\032\n and then some", 24);
     md_file_close(&f);
+#if MD_HDF5
+    // Read through HDF5, which does not take it for a file at all
+    EXPECT_EQ(MD_AMBER_NETCDF_NONE, md_amber_netcdf_file_kind(path));
+#else
     EXPECT_EQ(MD_AMBER_NETCDF_HDF5, md_amber_netcdf_file_kind(path));
+#endif
     EXPECT_FALSE(md_amber_netcdf_system_publish_run(&sys, path, STR_LIT("run/a"), 0));
 
     md_system_free(&sys);

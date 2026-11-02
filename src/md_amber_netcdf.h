@@ -20,8 +20,9 @@ extern "C" {
 // format is a header followed by plain big endian arrays, so a frame is one read at a known offset, from
 // any thread, without NetCDF-C.
 //
-// NetCDF-4 (HDF5 underneath, cpptraj's compressed "nc4") is outside the convention and recognized only
-// to be refused with a clear message.
+// NetCDF-4 (HDF5 underneath: cpptraj's compressed and integer compressed output, netCDF4-python's) is outside the
+// convention but written all the same. A build with HDF5 (MD_HDF5) reads it (md_amber_netcdf4.c), deflated and
+// shuffled frames decoded here without the HDF5 lock; a build without refuses it with a clear message.
 //
 // See https://ambermd.org/netcdf/nctraj.xhtml
 
@@ -29,7 +30,7 @@ typedef enum md_amber_netcdf_kind_t {
     MD_AMBER_NETCDF_NONE = 0,       // not NetCDF, or NetCDF without the Amber convention
     MD_AMBER_NETCDF_TRAJECTORY,     // Conventions "AMBER"
     MD_AMBER_NETCDF_RESTART,        // Conventions "AMBERRESTART"
-    MD_AMBER_NETCDF_HDF5,           // NetCDF-4 / HDF5: not supported
+    MD_AMBER_NETCDF_HDF5,           // NetCDF-4 / HDF5 in a build without HDF5: not supported
 } md_amber_netcdf_kind_t;
 
 // Tells from the header alone what the file is. Cheap: reads the first block of the file.
