@@ -32,6 +32,9 @@ extern "C" {
 // Nothing is scanned: DCD frames have a fixed size. The providers read through the io they are
 // handed, so inside an extraction context the file stays open across frames. Their user_data is
 // sys, borrowed: the run goes before the system does. The atom count must match the system's.
+// The atom count the header of the file says, 0 when it is not a DCD file
+size_t md_dcd_file_atom_count(str_t filename);
+
 bool md_dcd_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
 
 #ifdef __cplusplus

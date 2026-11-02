@@ -272,3 +272,11 @@ UTEST(dcd, run_refuses_a_different_system) {
     md_vm_arena_destroy(arena);
     remove(path.ptr);
 }
+
+UTEST(dcd, atom_count_from_the_header) {
+    const str_t path = STR_INIT("md_unittest_count.dcd");
+    const dcd_spec_t spec = { .charmm = true, .natoms = 11, .nframes = 2, .istart = 0, .nsavc = 1, .delta = 1.0 };
+    ASSERT_TRUE(dcd_write(path, &spec));
+    EXPECT_EQ(11u, md_dcd_file_atom_count(path));
+    remove(path.ptr);
+}

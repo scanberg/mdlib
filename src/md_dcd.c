@@ -936,3 +936,14 @@ done:
     md_arena_allocator_destroy(arena);
     return result;
 }
+
+size_t md_dcd_file_atom_count(str_t filename) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    dcd_file_header_t header;
+    const size_t n = dcd_parse_file_header(file, &header, arena) && header.natoms > 0 ? (size_t)header.natoms : 0;
+    md_arena_allocator_destroy(arena);
+    md_file_close(&file);
+    return n;
+}

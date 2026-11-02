@@ -1076,3 +1076,14 @@ done:
     md_arena_allocator_destroy(arena);
     return result;
 }
+
+size_t md_xtc_file_atom_count(str_t filename) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
+    uint8_t head[8];
+    const bool ok = md_file_read(file, head, sizeof(head)) == sizeof(head);
+    md_file_close(&file);
+    if (!ok || md_xdr_load_i32(head) != XTC_MAGIC) return 0;
+    const int32_t natoms = md_xdr_load_i32(head + 4);
+    return natoms > 0 ? (size_t)natoms : 0;
+}

@@ -787,3 +787,8 @@ UTEST(xtc, run_context_keeps_the_file_open) {
     md_vm_arena_destroy(arena);
 }
 #endif
+
+UTEST(xtc, atom_count_from_the_first_frame) {
+    EXPECT_EQ(1336u, md_xtc_file_atom_count(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc")));
+    EXPECT_EQ(0u, md_xtc_file_atom_count(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
+}
