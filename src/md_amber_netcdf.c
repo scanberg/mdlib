@@ -871,7 +871,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, str_t filename, str_t 
         .num_atoms     = N,
         .time          = times,
         .time_unit     = time_unit,
-        .unitcell      = layout.cell_lengths.present ? boxes : NULL,
+        .unitcell      = boxes,     // zero where the file has no box, as every run has it
         .source_path   = path,
         .source_offset = offsets,
         .source_size   = sizes,

@@ -48,6 +48,7 @@ bool md_amber_netcdf_state_init_from_file(struct md_system_state_t* state, str_t
 //
 //     <run>/time, unitcell, source/...   as every run; time in ps, ordinals when the file has no time
 //                                        (or one that does not increase), the cell zero without a box
+//                                        (always there, as for every run)
 //     <run>/atom/position   F32 {F,N} c3   Angstrom               VIRTUAL, read from the file when a
 //     <run>/atom/velocity   F32 {F,N} c3   Angstrom/ps            frame is asked for, scale_factor
 //     <run>/atom/force      F32 {F,N} c3   kcal/(mol Angstrom)    applied

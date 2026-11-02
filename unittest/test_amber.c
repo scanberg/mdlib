@@ -336,7 +336,10 @@ UTEST(amber_netcdf, trajectory_fixed_frames) {
     EXPECT_EQ(3u, time->format.shape[0]);
     EXPECT_TRUE(md_unit_equal(time->unit, md_unit_none()));
     EXPECT_EQ(2.0, ((const double*)time->data)[2]);
-    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/a/unitcell")) == NULL);
+    // No box: a cell of zeros, which every run has
+    const md_attribute_t* cell = md_attributes_find(&sys.attributes, STR_LIT("run/a/unitcell"));
+    ASSERT_TRUE(cell != NULL);
+    EXPECT_EQ(0.0f, ((const float*)cell->data)[0]);
     check_positions(utest_result, &sys, STR_LIT("run/a"), 3, arena);
     md_system_free(&sys);
     remove(path.ptr);
