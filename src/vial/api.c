@@ -732,6 +732,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
         prev = i;
     }
     str_t kw = {0}, callee = {0};
+    bool subscript = false;     // inside a subscript's brackets, s['|']: a particle's name
     bool after_dot = prev != SIZE_MAX && tok_op(&toks[prev], VIAL_OP_DOT);
     if (prev != SIZE_MAX && prev >= 1 && tok_op(&toks[prev], VIAL_OP_ASSIGN) && toks[prev - 1].kind == MD_VIAL_TOKEN_NAME) {
         kw = tok_text(prog, &toks[prev - 1]);
@@ -745,6 +746,8 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             if (tok_op(t, VIAL_OP_LPAREN) || tok_op(t, VIAL_OP_LBRACKET) || tok_op(t, VIAL_OP_LBRACE)) {
                 if (depth) { --depth; continue; }
                 if (tok_op(t, VIAL_OP_LPAREN) && j >= 1 && toks[j - 1].kind == MD_VIAL_TOKEN_NAME) callee = tok_text(prog, &toks[j - 1]);
+                if (tok_op(t, VIAL_OP_LBRACKET) && j >= 1 && (toks[j - 1].kind == MD_VIAL_TOKEN_NAME || tok_op(&toks[j - 1], VIAL_OP_RBRACKET) ||
+                                                             tok_op(&toks[j - 1], VIAL_OP_RPAREN))) subscript = true;
                 break;
             }
             if (j == 0) break;
@@ -763,6 +766,8 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             }
         } else if (callee.len) {
             system_values(&c, prog->check.sys, callee, kw);
+        } else if (subscript) {
+            system_values(&c, prog->check.sys, STR_LIT("particles"), STR_LIT("name"));
         }
     } else if (after_dot) {
         for (size_t i = 0; i < vial_builtin_count(); ++i) {
@@ -770,6 +775,8 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             if (b->name[0] == '_') continue;
             if (b->flags & VIAL_BUILTIN_PROPERTY) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_PROPERTY);
         }
+        // The particles within each set, for .particles[i] and .particles(...)
+        cmpl_add(&c, STR_LIT("particles"), STR_LIT("particles"), MD_VIAL_COMPLETION_PROPERTY);
     } else {
         // The call's parameters first
         if (callee.len && !kw.len) {

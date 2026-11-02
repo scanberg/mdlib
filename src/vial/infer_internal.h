@@ -174,6 +174,12 @@ vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id i
 // result is known to hold one particle per set; a set without it, or with two, gives an empty set, a missing point.
 vial_type_t        vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const vial_type_t* a);
 bool               vx_name_is_glob(str_t name);
+
+// s.particles, the particles of each set, as what a subscript or a call takes: s.particles[i] is the particle at position i
+// within each set, s.particles(name='O') those of each set that the keywords select. Not a value of its own.
+bool               vx_is_particles_view(const infer_t* x, vial_node_id n);
+vial_type_t        vx_particle_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const vial_type_t* a);
+vial_type_t        vx_particles_call(infer_t* x, vial_node_id call, vial_node_id view, const vial_type_t* a);
 const vial_sets_t* vx_named_particles(infer_t* x, str_t name);     // every particle of the name, NULL without a system
 
 // ### LOWERING (emit.c) ###

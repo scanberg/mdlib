@@ -78,6 +78,8 @@ typedef enum vial_index_kind_t {
     VIAL_INDEX_ELLIPSIS,
     VIAL_INDEX_ARRAY,       // an int array or a bool mask; or on a set, positions of its particles
     VIAL_INDEX_SET,         // a set: a, the values of its particles along dimension c (an int) over the particles b
+    VIAL_INDEX_EACH,        // an int a, on a set or an array of sets: within each set, its particle at that position,
+                            //   counted from the end when negative; an empty set where there is none. s.particles[i]
 } vial_index_kind_t;
 
 typedef struct vial_index_item_t {

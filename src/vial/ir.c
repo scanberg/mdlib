@@ -316,6 +316,7 @@ static void dump_op(dumper_t* d, uint32_t opi, int indent) {
             switch (it->kind) {
             case VIAL_INDEX_SCALAR: case VIAL_INDEX_ARRAY: dump_ssa(d, it->a); break;
             case VIAL_INDEX_SET: sb_cstr(d, "set "); dump_ssa(d, it->a); sb_cstr(d, " in "); dump_ssa(d, it->b); break;
+            case VIAL_INDEX_EACH: sb_cstr(d, "each "); dump_ssa(d, it->a); break;
             case VIAL_INDEX_NEWAXIS: sb_cstr(d, "None"); break;
             case VIAL_INDEX_ELLIPSIS: sb_cstr(d, "..."); break;
             case VIAL_INDEX_SLICE:

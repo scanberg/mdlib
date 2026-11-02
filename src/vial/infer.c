@@ -1037,6 +1037,7 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
+    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) return vx_particle_at(x, id, on, in, &a);
     if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) != VIAL_N_SLICE && kind_of(x, in) != VIAL_N_TUPLE) {
         // s['CA'], or a name bound to a string: a particle name
         const T ix = infer(x, in);
@@ -1273,6 +1274,14 @@ too_many:
     return err();
 }
 
+// x.f and x.f(...): VIAL calls functions, f(x, ...). The name was resolved as a built-in or a def, so it exists.
+static void method_refused(infer_t* x, vial_node_id at, vial_node_id on, vial_node_id nn, bool call) {
+    const str_t o = text(x, on), f = text(x, nn);
+    char fix[192];
+    snprintf(fix, sizeof(fix), "%.*s(%.*s%s)", (int)MIN(f.len, 40), f.ptr, (int)MIN(o.len, 120), o.ptr, call ? ", ..." : "");
+    diag_fix(x, "E0319", at, call ? NULL : fix, "`.%.*s` is no property: VIAL calls functions, %s", (int)f.len, f.ptr, fix);
+}
+
 static T infer_attr(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), nn = child(x, id, 1);
     const T a = infer(x, on);
@@ -1284,9 +1293,20 @@ static T infer_attr(infer_t* x, vial_node_id id) {
         for (uint8_t k = 0; k < a.ndim; ++k) t.dims[k] = a.dims[a.ndim - 1 - k];
         return t;
     }
+    if (a.dtype == VIAL_DT_SET && str_eq(name, STR_LIT("particles"))) {
+        // The particles of each set, for the subscript or call it is the start of
+        const vial_node_id p = x->n->parent[id];
+        if (p && child(x, p, 0) == id && (kind_of(x, p) == VIAL_N_SUBSCRIPT || kind_of(x, p) == VIAL_N_CALL)) return a;
+        const str_t o = text(x, on);
+        char fix[160];
+        snprintf(fix, sizeof(fix), "particles(%.*s)", (int)MIN(o.len, 120), o.ptr);
+        diag_fix(x, "E0319", id, fix, "`.particles` picks within each set, as .particles[i] or .particles(name=...); all of them as one set is %s", fix);
+        return err();
+    }
     if (a.dtype == VIAL_DT_SET || str_eq(name, STR_LIT("com"))) {
         T t;
         if (vx_attr_geom(x, id, on, &a, name, &t)) return t;
+        if (!vial_diag_at(x->diags, x->t->nodes[nn].span.beg)) method_refused(x, id, on, nn, false);
         return err();
     }
     const bool comp = str_eq(name, STR_LIT("x")) || str_eq(name, STR_LIT("y")) || str_eq(name, STR_LIT("z"));
@@ -1300,7 +1320,8 @@ static T infer_attr(infer_t* x, vial_node_id id) {
         if (comp) t.ndim -= 1;
         return t;
     }
-    return err();   // functions as methods: with the built-ins and defs
+    if (!vial_diag_at(x->diags, x->t->nodes[nn].span.beg)) method_refused(x, id, on, nn, false);
+    return err();
 }
 
 static T infer_uncached(infer_t* x, vial_node_id id) {
@@ -1336,6 +1357,20 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
     case VIAL_N_CALL: {
         // Built-ins typed so far; everything else still has its arguments checked
         const vial_node_id callee = child(x, id, 0);
+        if (callee && kind_of(x, callee) == VIAL_N_ATTR) {
+            const T a = infer(x, child(x, callee, 0));
+            if (vial_type_is_error(&a)) return err();
+            if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, callee)) return vx_particles_call(x, id, callee, &a);
+            if (child(x, callee, 1) && !vial_diag_at(x->diags, x->t->nodes[child(x, callee, 1)].span.beg)) {
+                method_refused(x, callee, child(x, callee, 0), child(x, callee, 1), true);
+            }
+            for (uint32_t i = 1; i < num_children(x, id); ++i) {
+                const vial_node_id c = child(x, id, i);
+                if (c && kind_of(x, c) == VIAL_N_KWARG) { if (child(x, c, 1)) infer(x, child(x, c, 1)); }
+                else if (c) infer(x, c);
+            }
+            return err();
+        }
         if (callee && kind_of(x, callee) == VIAL_N_NAME) {
             const vial_symbol_t* sym = vial_names_symbol(x->n, callee);
             T t;

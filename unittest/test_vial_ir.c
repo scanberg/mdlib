@@ -1090,6 +1090,13 @@ UTEST(vial_ir, editor) {
     ASSERT_TRUE((it = vial_ir__find(&c, "com")) != NULL);
     EXPECT_EQ((int)MD_VIAL_COMPLETION_PROPERTY, (int)it->kind);
     EXPECT_TRUE(vial_ir__find(&c, "count") == NULL || vial_ir__find(&c, "count")->kind == MD_VIAL_COMPLETION_PROPERTY);
+    c = vial_ir__complete("rs = residues[1:6]\np = rs.p|\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "particles") != NULL);
+    // A subscript's string: a particle's name
+    c = vial_ir__complete("rs = residues[1:6]\nca = rs['C|']\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL && vial_ir__find(&c, "CB") != NULL);
+    c = vial_ir__complete("ca = residues[1:6][0]['|']\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL);
 
     // In a string: the system's values for the keyword, and the run's attributes for attr()
     c = vial_ir__complete("x = particles(resname='|')\n", alloc);
@@ -1909,7 +1916,17 @@ UTEST(vial_ir, particle_names_agree) {
         "_e = distance(_near['CA'], _near['N'])\n"
         "def cn(r: set):\n"
         "    return distance((r and particles(name='CA')).com, (r and particles(name='N')).com)\n"
-        "bad = unitless(sum(abs(_a - _b)) + sum(abs(_a - _c)) + sum(abs(_a - _d))) + unitless(abs(mean(_h) - mean(_h2)))\n"
+        "_p = angle(rs.particles[1], rs.particles[0], rs.particles[2])\n"
+        "_q = [angle(r[1], r[0], r[2]) for r in rs]\n"
+        "def ph(r: set):\n"
+        "    return angle(r.particles[1], r.particles[0], r.particles[2])\n"
+        "_r = ph(rs)\n"
+        "def nh(r: set):\n"
+        "    return count(r.particles(element='H'))\n"
+        "_s = nh(_near)\n"
+        "_s2 = count(_near and particles(element='H'))\n"
+        "bad = unitless(sum(abs(_a - _b)) + sum(abs(_a - _c)) + sum(abs(_a - _d))) + unitless(abs(mean(_h) - mean(_h2)))"
+        " + unitless(sum(abs(_p - _q)) + sum(abs(_p - _r))) + sum(abs(_s - _s2))\n"
         "near = abs(sum(_e) - sum(cn(_near)))\n";
     vial_ir__run_t r;
     ASSERT_TRUE(vial_ir__start(&r, src, sys));

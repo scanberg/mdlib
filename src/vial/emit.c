@@ -349,6 +349,17 @@ static vial_ssa_t emit_subscript(infer_t* x, vial_node_id id, const T* t) {
         const int64_t i = k.i < 0 ? k.i + at->num_elems : k.i;
         return op1(x, id, VIAL_IR_ELEM, 0, (uint32_t)i, &a, 1, t);
     }
+    if (at->dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) {
+        // s.particles[i]: within each set
+        const vial_ssa_t iv = vx_ssa(x, in);
+        if (!iv) return 0;
+        const uint32_t first = (uint32_t)md_array_size(x->ir->index_items);
+        md_array_push(x->ir->index_items, ((vial_index_item_t){.kind = VIAL_INDEX_EACH, .a = iv}), x->ir->alloc);
+        const uint32_t op = vial_ir_emit(x->ir, &(vial_ir_emit_t){.kind = VIAL_IR_INDEX, .sub = 1, .aux = first,
+                                                                  .args = (vial_ssa_t[]){a, iv}, .num_args = 2, .types = t,
+                                                                  .num_results = 1, .span = vx_span(x, id)});
+        return x->ir->ops[op].result;
+    }
     if (at->dtype == VIAL_DT_SET && type_at(x, in)->dtype == VIAL_DT_STR && type_at(x, in)->ndim == 0) {
         // s['CA']: each set of s and the particles of the name, one of them where the name has no * or ?
         const vial_value_t nv = vx_value_of(x, in);
@@ -445,6 +456,7 @@ static vial_ssa_t emit_attr(infer_t* x, vial_node_id id, const T* t) {
     snprintf(buf, sizeof(buf), "%.*s", (int)(name.len < 15 ? name.len : 15), name.ptr);
     // .xyz of a set is its positions; of coordinates, itself
     const T* at = type_at(x, on);
+    if (str_eq(name, STR_LIT("particles")) && at->dtype == VIAL_DT_SET) return a;    // s.particles[i]: the subscript picks
     if (str_eq(name, STR_LIT("xyz")) && at->dtype != VIAL_DT_SET) return a;
     if (str_eq(name, STR_LIT("xyz"))) return builtin(x, id, "positions", &a, NULL, 1, t);
     return builtin(x, id, buf, &a, NULL, 1, t);
@@ -472,6 +484,17 @@ static vial_ssa_t items_as_tuple(infer_t* x, vial_node_id an) {
 
 static vial_ssa_t emit_call(infer_t* x, vial_node_id id, const T* t) {
     const vial_node_id callee = vx_child(x, id, 0);
+    if (callee && vx_is_particles_view(x, callee)) {
+        // s.particles(name=...): each set of s and the selection, which the check left on the view
+        const vial_ssa_t a = vx_ssa(x, vx_child(x, callee, 0));
+        const vial_value_t sv = vx_value_of(x, callee);
+        if (!a) return 0;
+        if (sv.kind != VIAL_VAL_SETS) { vx_lower_fail(x, id, "a selection within each set that changes per frame"); return 0; }
+        const vial_val_t v = vial_val_sets(sv.sets->single ? sv.sets : vial_sets_merge(sv.sets, x->ir->alloc));
+        const T st = vial_type_scalar(VIAL_DT_SET);
+        const vial_ssa_t b = vial_ir_const(x->ir, &v, &st, (str_t){0}, vx_span(x, id));
+        return op1(x, id, VIAL_IR_SETOP, VIAL_KW_AND, 0, (vial_ssa_t[]){a, b}, 2, t);
+    }
     const vial_symbol_t* sym = callee && vx_kind(x, callee) == VIAL_N_NAME ? vial_names_symbol(x->n, callee) : NULL;
     if (!sym || sym->kind != VIAL_SYM_BUILTIN || !sym->builtin) {
         vx_lower_fail(x, id, "a call that is not lowered yet");

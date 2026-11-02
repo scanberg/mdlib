@@ -520,7 +520,37 @@ static int64_t int_at(const vial_val_t* v, size_t i) { return (int64_t)get_f64(v
 
 static bool index_set_particles(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* it, vial_val_t* out);
 
+// s.particles[i]: within each set, its particle at position i, or an empty set where it has none
+static bool index_each(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* iv, vial_val_t* out) {
+    if (a->dtype != VIAL_DT_SET || iv->ndim != 0) return vial_rt_fail(k, "R0103", "a position within each set of what is not sets");
+    const vial_sets_t* s = a->sets;
+    const uint32_t count = s->count;
+    vial_sets_t* o = md_alloc(k->alloc, sizeof(vial_sets_t));
+    memset(o, 0, sizeof(*o));
+    o->count = count;
+    o->single = s->single;
+    o->offset = md_alloc(k->alloc, (count + 1) * sizeof(uint32_t));
+    o->idx = md_alloc(k->alloc, (count ? count : 1) * sizeof(uint32_t));
+    const bool missing = vial_val_is_missing(iv, 0);
+    const int64_t p = missing ? 0 : int_at(iv, 0);
+    uint32_t at = 0;
+    o->offset[0] = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const int64_t n = vial_sets_size(s, i), q = p < 0 ? p + n : p;
+        if (!missing && q >= 0 && q < n) o->idx[at++] = vial_sets_items(s, i)[q];
+        else if (!missing) vial_rt_note(k, "R0101", "position %lld is outside a set of %lld particles; its entry is missing", (long long)p, (long long)n);
+        o->offset[i + 1] = at;
+    }
+    vial_val_t r = *a;
+    r.sets = o;
+    r.missing = NULL;
+    r.data = NULL;
+    *out = r;
+    return true;
+}
+
 bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* items, uint32_t num, vial_val_t* out) {
+    if (num == 1 && items[0].kind == VIAL_INDEX_EACH) return index_each(k, a, &k->in->vals[items[0].a], out);
     if (a->dtype == VIAL_DT_SET && a->ndim == 0) {
         if (num != 1) return vial_rt_fail(k, "R0103", "a set takes one position");
         return index_set_particles(k, a, items, out);

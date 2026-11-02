@@ -82,8 +82,9 @@ UTEST_F(vial_check, unknown_names) {
     EXPECT_DIAGS("c = residues.cmo\n", "E0201 1: `.cmo` is not a function or property | com\n");
     EXPECT_DIAGS("d = distance_min(residues, residues)\n", "E0701 1: `distance_min` is v1; write distance(a, b, between='closest') | distance\n");
     EXPECT_DIAGS("print(1)\n", "E0803 1: `print` is not part of VIAL; hover shows any value\n");
-    // A method is any function, built in or a def
-    EXPECT_DIAGS("def twice(x):\n    return 2 * x\nv = (3).twice()\nc = residues.com\n", "");
+    // A function's name resolves after a dot, but VIAL has no methods: it calls the function, rather than drop the value
+    EXPECT_DIAGS("def twice(x):\n    return 2 * x\nv = (3).twice()\nc = residues.com\n",
+        "E0319 3: `.twice` is no property: VIAL calls functions, twice(3, ...)\n");
 }
 
 UTEST_F(vial_check, annotations) {
@@ -268,12 +269,35 @@ UTEST_F(vial_check, particle_names) {
     EXPECT_DIAGS_ON(T, "w = water['O']\n",
         "W0609 1: the set has 8 particles named 'O', and a name picks one per set: subscript its units, such as residues(s)['O']\n");
     EXPECT_DIAGS_ON(P, "h = residues['NOPE']\n", "W0601 1: no particle is named 'NOPE'\n");
+    EXPECT_DIAGS_ON(P, "h = residues['']\n", "W0601 1: no particle is named ''\n");
     EXPECT_DIAGS_ON(T, "g = residues['GTP']\n",
         "W0601 1: no particle is named 'GTP'; a subscript names particles, and residues of that name are residues('GTP') | residues('GTP')\n");
     EXPECT_DIAGS_ON(P, "n = 'CA'\nc = residues[n]\n", "");
     EXPECT_DIAGS_ON(P, "c = residues[f'C{1}']\n", "E0803 1: f-strings are not part of VIAL\n");
     EXPECT_DIAGS_ON(P, "c = residues[3.0]\n",
         "E0319 1: a position is an int, a slice, a list of ints or a bool mask, or a particle name as a string; this is float\n");
+}
+
+// s.particles: within each set, a position, s.particles[i], or a selection, s.particles(element='O'); not a value alone
+UTEST_F(vial_check, particles_of_each) {
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(P != NULL);
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\np = rs.particles[1]\n", 2, "set[5], static");
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\na = angle(rs.particles[1], rs.particles[0], rs.particles[2])\n", 2, u8"float[5] °, frame");
+    EXPECT_TYPE_ON(P, "def a(r: set):\n    return angle(r.particles[1], r.particles[0], r.particles[2])\nx = a(residues[1:6])\n", 3, u8"float[5] °, frame");
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\no = rs.particles(element='O')\n", 2, "set[5], static");
+    EXPECT_TYPE_ON(P, "def b(r: set):\n    return count(r.particles(element='H'))\nx = b(residues[1:6])\n", 3, "int[5], static");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nfar = rs.particles[10]\n",
+        "W0609 2: position 10 is outside 5 of 5 sets, which have fewer particles; their entries are missing\n");
+    EXPECT_DIAGS_ON(P, "r = residues[1]\nfar = r.particles[10]\n", "W0609 2: position 10 is outside the set of 10 particles, so its point is missing\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs.particles\n",
+        "E0319 2: `.particles` picks within each set, as .particles[i] or .particles(name=...); all of them as one set is particles(rs) | particles(rs)\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs.particles(1:3)\n", "E0701 2: `rs.particles(1:3)` is v1; positions are subscripts\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs.particles('O')\n", "E0203 2: `.particles(...)` takes keywords, as particles() does: name=, element=, ...\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs.particles[0:2]\n", "E0319 2: `.particles[i]` takes one position, the same within each set\n");
+    // Methods are refused, not silently dropped
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nc = rs.count\n", "E0319 2: `.count` is no property: VIAL calls functions, count(rs) | count(rs)\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nc = rs.count()\n", "E0319 2: `.count` is no property: VIAL calls functions, count(rs, ...)\n");
 }
 
 UTEST_F(vial_check, selectors) {

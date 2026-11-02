@@ -393,6 +393,8 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
 | `s['CA']` on a set or an array of sets | within each set, its particle of that name: one per set, so a point wherever a point is taken. `angle(rs['N'], rs['CA'], rs['C'])` is the angle in each residue of `rs`, as v1's `angle(...) in residue(...)` by position | the same shape, a set of one particle per set |
 | `s['H*']`, a name with `*` or `?` | within each set, its particles that match | the same shape, a set per set |
+| `s.particles[i]` on a set or an array of sets | within each set, its particle at position i, counted from the end when negative: v1's positions within a structure, `angle(rs.particles[1], rs.particles[0], rs.particles[2])` for v1's `angle(2,1,3) in residue(...)` | the same shape, a set of one particle per set |
+| `s.particles(element='O')` | within each set, the particles the keywords select, as `particles()` takes them | the same shape, a set per set |
 | `s[mask]` on a set, with a bool per particle of s | its particles where the mask is true: `particles[particles.z in 20.0..25.0]` is a slab, as v1's `within_z(20:25)` | a set; frame stage when the mask is |
 | `at(x, frame=k)` | frame k of a frame value, read once before the other frames | a static value |
 | `rmsf[s]` with a set | the values of the particles in set s; an intersection | a shorter dimension over those particles |
@@ -402,6 +404,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 
 - An out-of-range position on a static extent is E0304. On a dynamic extent it is R0101 in that frame, and the value is missing there; the compiler says so beforehand with W0405.
 - A name picks a particle within each set, so the result keeps the shape and labels of what it subscripts, and works the same on a def's parameter, a set per frame and the sets of a comprehension. A set without a particle of the name, or with two, has an empty set in its place, whose point is missing: `res_a['CB']` is missing for every glycine. When the sets are known when compiling, W0609 counts them; otherwise the run notes it (R0101) where it happens. A name no particle has is W0601, which points a residue's name at `residues('ALA')`: a subscript always names particles. For other keywords, `s and particles(element='O')`.
+- `.particles` is the particles of each set, for the subscript or call it starts: positions there count within each set, in the file's order, so they depend on how a force field orders a residue's atoms, which a name does not. A set too short for a position has an empty set in its place, as for a name (W0609). Alone, `.particles` is E0319, with the fix `particles(s)` for all of them as one set; VIAL has no other methods, and `s.count` is E0319 with the fix `count(s)`.
 - `by=` works with every reduction and is defined as `[f(a[s]) for s in g]`. A group with no values gives a missing value and W0603, which counts them. `a[s]` and `by=` act on the first dimension of `a` that describes particles; an array with no such dimension is E0311.
 - `var` and `std` over frames run in one pass, with Welford's algorithm.
 - A unit's label is how the data names it: a residue `MET1/A`, or `ALA1` where the data gives no chain ids; a particle `CA/MET1/A`; a chain its id, `A`. A part or a molecule of one residue is labelled as that residue, `GTP501/A`, and a longer one by its kind or its molecule's name and its chain, `peptide/A`, or by its kind and number where there are no chains, `peptide1`.
@@ -448,6 +451,10 @@ rs     = residues[1:6]                                 # -> set[5]
 nca    = angle(rs['N'], rs['CA'], rs['C'])             # -> float[5] °, frame: N-CA-C in each residue
 phi    = dihedral(rs[:-1]['C'], rs[1:]['N'], rs[1:]['CA'], rs[1:]['C'])   # -> float[4] °, frame: across neighbours
 _nn    = angle(_close['N'], _close['CA'], _close['C'])  # -> float[?] °, frame: of the residues near the first
+p1     = rs.particles[1]                               # -> set[5]: the second particle of each residue
+v1ang  = angle(rs.particles[1], rs.particles[0], rs.particles[2])   # -> float[5] °, frame: v1's angle(2,1,3) in residue(2:6)
+ox     = rs.particles(element='O')                     # -> set[5]: the oxygens of each residue
+far    = rs.particles[10]                              # warning W0609 -> set[5] | missing: a residue has 10 particles
 ```
 
 ## Mapping a def over arrays
@@ -1213,7 +1220,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | W0605 | Equal extents that describe different units, paired by position | pairs the 433 residues of chain A with the 433 of chain B by position | common(a, b, by='id') |
 | W0607 | An unannotated argument over the same units as a dimension the call maps over | cutoff is float\[433\] over the residues of chain A, and the call maps over them; it is passed whole, so the result is bool\[433\]\[433\] | cutoff: float |
 | W0608 | A minimum of distances that pairs every point with itself, so it is zero | each of the 433 centres is its own nearest | `closest_pair(c[:, None], c, distinct=True)` |
-| W0609 | A particle name that some sets of a subscript lack, or hold twice: their entries are missing | a particle named 'CB' is one per set in 403 of 433 sets; 30 have none, and their entries are missing |  |
+| W0609 | A particle name, or a position in `.particles[i]`, that some sets lack, or a name they hold twice: their entries are missing | a particle named 'CB' is one per set in 403 of 433 sets; 30 have none, and their entries are missing |  |
 | E0701 | A v1 spelling | `residue(1:4)` is v1; positions are subscripts | `residues[0:4]` |
 | E0801 | A construct not supported yet | `while` is not supported yet |  |
 | E0802 | Recursion | `walk` calls itself |  |
