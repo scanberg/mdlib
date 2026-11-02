@@ -71,8 +71,19 @@ void md_unitcell_extract_extent_angles(double* out_a, double* out_b, double* out
     double a = cell->x;
     double b = sqrt(cell->xy * cell->xy + cell->y * cell->y);
     double c = sqrt(cell->xz * cell->xz + cell->yz * cell->yz + cell->z * cell->z);
+    if (!(a > 0.0 && b > 0.0 && c > 0.0)) {
+        // No box: nothing to measure angles between
+        if (out_a) *out_a = a;
+        if (out_b) *out_b = b;
+        if (out_c) *out_c = c;
+        if (out_alpha) *out_alpha = 0;
+        if (out_beta) *out_beta = 0;
+        if (out_gamma) *out_gamma = 0;
+        return;
+    }
 
-    double alpha = RAD_TO_DEG(acos((cell->yz * cell->xy - cell->y * cell->xz) / (b * c)));
+    // The vectors are a = (x, 0, 0), b = (xy, y, 0), c = (xz, yz, z): alpha is between b and c
+    double alpha = RAD_TO_DEG(acos((cell->xy * cell->xz + cell->y * cell->yz) / (b * c)));
     double beta  = RAD_TO_DEG(acos((cell->xz) / c));
     double gamma = RAD_TO_DEG(acos((cell->xy) / b));
 
