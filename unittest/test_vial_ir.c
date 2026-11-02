@@ -874,6 +874,11 @@ UTEST(vial_ir, draw) {
         char vt[64];
         ASSERT_GT(md_vial_value_text(vt, sizeof(vt), &desc, mk[call].expr), 0u);
         EXPECT_NEAR(dm.labels[0].value, atof(vt), 1e-3);
+        // In another unit's scale: Å shown as nm
+        md_vial_draw_desc_t in_nm = desc;
+        in_nm.value_scale = 0.1;
+        ASSERT_GT(md_vial_value_text(vt, sizeof(vt), &in_nm, mk[call].expr), 0u);
+        EXPECT_NEAR(dm.labels[0].value * 0.1, atof(vt), 1e-4);
         EXPECT_EQ(0u, md_vial_value_text(vt, sizeof(vt), &desc, 0));
     }
 

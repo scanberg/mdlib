@@ -415,6 +415,8 @@ typedef struct md_vial_draw_desc_t {
     // NULL, and those are then not drawn
     const md_vial_eval_t*           eval;
     int64_t                         element;    // the element of an array drawn alone; -1 for every element
+    // md_vial_value_text prints numbers times this, for an editor showing the value's unit in another (0 is 1)
+    double                          value_scale;
 } md_vial_draw_desc_t;
 
 // What an expression (md_vial_expr_at) draws, its arrays from alloc. The expression is computed alone,

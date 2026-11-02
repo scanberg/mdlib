@@ -1137,10 +1137,11 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
     const vial_ir_t* ir = md_vial__ir(desc->prog);
     const vial_ssa_t v = md_vial__expr_value(desc->prog, expr);
     if (!ir || !v || v >= md_array_size(ir->values)) return 0;
+    const double scale = desc->value_scale != 0.0 ? desc->value_scale : 1.0;
     if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) {
         vial_val_t one;
         if (!trajectory_value(desc->eval, v, desc->frame, &one)) return 0;
-        return vial_val_print(buf, cap, &one, 6);
+        return vial_val_print_scaled(buf, cap, &one, 6, scale);
     }
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     int64_t num_frames = 0;
@@ -1148,7 +1149,7 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
     if (desc->eval) num_frames = desc->eval->num_frames;
     point_t pt;
     const vial_val_t* val = point_eval(&pt, desc->prog, desc->sys, desc->run, times, num_frames, desc->frame, desc->state, v, false);
-    const size_t len = val ? vial_val_print(buf, cap, val, 6) : 0;
+    const size_t len = val ? vial_val_print_scaled(buf, cap, val, 6, scale) : 0;
     point_free(&pt);
     md_arena_allocator_destroy(arena);
     return len;

@@ -109,6 +109,8 @@ void vial_val_set_missing(vial_val_t* v, size_t i, md_allocator_i* alloc);
 // The value as the reference writes it after ->, cut at cap: 442, 12.5, True, 'MET1/A', [1, 2, 3]. Arrays longer than
 // max_items show their first items and "…". Returns the length written.
 size_t vial_val_print(char* buf, size_t cap, const vial_val_t* v, uint32_t max_items);
+// The same with every number times scale, for a unit shown in another
+size_t vial_val_print_scaled(char* buf, size_t cap, const vial_val_t* v, uint32_t max_items, double scale);
 
 // One drawing of the given primitives, copied into alloc; and a drawing of every primitive of a and b
 const vial_drawing_t* vial_drawing_make(const vial_prim_t* prims, uint32_t count, md_allocator_i* alloc);

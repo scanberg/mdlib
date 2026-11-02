@@ -140,6 +140,7 @@ typedef struct printer_t {
     size_t cap;
     size_t len;
     uint32_t max_items;
+    double scale;       // numbers are printed times this, as a unit shown in another asks; 1 prints them as they are
 } printer_t;
 
 static void put(printer_t* p, const char* s) {
@@ -151,7 +152,14 @@ static void put(printer_t* p, const char* s) {
 static void print_dims(printer_t* p, const vial_val_t* v, uint8_t d, size_t base) {
     if (d == v->ndim) {
         char tmp[96];
-        print_elem(tmp, sizeof(tmp), v, base);
+        const bool number = v->dtype == VIAL_DT_INT || v->dtype == VIAL_DT_FLOAT || v->dtype == VIAL_DT_FLOAT64;
+        if (p->scale != 1.0 && number && !vial_val_is_missing(v, base)) {
+            const double x = v->dtype == VIAL_DT_INT ? (double)((const int32_t*)v->data)[base]
+                           : v->dtype == VIAL_DT_FLOAT ? (double)((const float*)v->data)[base] : ((const double*)v->data)[base];
+            vial_print_float(tmp, sizeof(tmp), x * p->scale, v->dtype != VIAL_DT_FLOAT64);
+        } else {
+            print_elem(tmp, sizeof(tmp), v, base);
+        }
         put(p, tmp);
         return;
     }
@@ -169,14 +177,18 @@ static void print_dims(printer_t* p, const vial_val_t* v, uint8_t d, size_t base
 }
 
 size_t vial_val_print(char* buf, size_t cap, const vial_val_t* v, uint32_t max_items) {
-    printer_t p = {.buf = buf, .cap = cap, .max_items = max_items};
+    return vial_val_print_scaled(buf, cap, v, max_items, 1.0);
+}
+
+size_t vial_val_print_scaled(char* buf, size_t cap, const vial_val_t* v, uint32_t max_items, double scale) {
+    printer_t p = {.buf = buf, .cap = cap, .max_items = max_items, .scale = scale};
     if (cap) buf[0] = 0;
     if (v->dtype == VIAL_DT_TUPLE) {
         put(&p, "(");
         for (uint32_t i = 0; i < v->num_elems; ++i) {
             if (i) put(&p, ", ");
             char tmp[256];
-            vial_val_print(tmp, sizeof(tmp), &v->elems[i], max_items);
+            vial_val_print(tmp, sizeof(tmp), &v->elems[i], max_items);    // each its own unit: as it is
             put(&p, tmp);
         }
         put(&p, ")");
