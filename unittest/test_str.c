@@ -337,3 +337,14 @@ UTEST(str, labels) {
     EXPECT_TRUE(md_label_eq(make_label(STR_LIT("ABCDEFGH")), make_label(STR_LIT("ABCDEFGHI"))));
     EXPECT_NE(md_label_key(make_label(STR_LIT("CA"))), md_label_key(make_label(STR_LIT("CB"))));
 }
+
+UTEST(str, extract_ext_of_the_file_name) {
+    str_t ext = {0};
+    EXPECT_TRUE(extract_ext(&ext, STR_LIT("/data/run.1/traj.nc")));
+    EXPECT_TRUE(str_eq_cstr(ext, "nc"));
+    // A dot in a folder is not an extension of a file without one (Amber's mdout, prmtop)
+    EXPECT_FALSE(extract_ext(&ext, STR_LIT("/data/run.1/mdout")));
+    EXPECT_FALSE(extract_ext(&ext, STR_LIT("C:\\runs\\v1.2\\prmtop")));
+    EXPECT_TRUE(extract_ext(&ext, STR_LIT("C:\\runs\\v1.2\\sys.parm7")));
+    EXPECT_TRUE(str_eq_cstr(ext, "parm7"));
+}
