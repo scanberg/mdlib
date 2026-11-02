@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <stdlib.h>
 
 #include <md_amber_netcdf.h>
 #include <md_amber_prmtop.h>

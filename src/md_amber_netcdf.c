@@ -270,11 +270,11 @@ invalid:
 
 // Reads and parses the header of the file. Its size is not known in advance: the first block holds it for any
 // file of the Amber convention, and a larger header is read again with a larger block.
-static cdf_parse_result_t cdf_open(cdf_t* cdf, md_file_t* out_file, str_t path, md_allocator_i* alloc) {
+static cdf_parse_result_t cdf_open(cdf_t* cdf, md_file_t* out_file, str_t path, md_allocator_i* alloc, bool quiet) {
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
-        MD_LOG_ERROR("Amber NetCDF: cannot open '" STR_FMT "'", STR_ARG(path));
-        return CDF_PARSE_INVALID;
+        if (!quiet) MD_LOG_ERROR("Amber NetCDF: cannot open '" STR_FMT "'", STR_ARG(path));
+        return CDF_PARSE_NOT_CDF;
     }
     const uint64_t file_size = (uint64_t)md_file_size(file);
     size_t block = 64 * 1024;
@@ -531,7 +531,7 @@ static bool amber_layout(amber_layout_t* out, const cdf_t* cdf, str_t path) {
 
 static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_file, str_t path, md_allocator_i* alloc, bool quiet) {
     cdf_t cdf;
-    const cdf_parse_result_t r = cdf_open(&cdf, out_file, path, alloc);
+    const cdf_parse_result_t r = cdf_open(&cdf, out_file, path, alloc, quiet);
     if (r == CDF_PARSE_HDF5) {
         if (!quiet) {
             MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is NetCDF-4 (HDF5), which the Amber convention does not allow and which is not supported. "
@@ -540,7 +540,8 @@ static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_
         return MD_AMBER_NETCDF_HDF5;
     }
     if (r != CDF_PARSE_OK) {
-        if (!quiet) MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is not a NetCDF file, or its header is damaged", STR_ARG(path));
+        if (!quiet && r != CDF_PARSE_NOT_CDF) MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is not a NetCDF file, or its header is damaged", STR_ARG(path));
+        else if (!quiet && md_path_is_valid(path)) MD_LOG_ERROR("Amber NetCDF: '" STR_FMT "' is not a NetCDF file", STR_ARG(path));
         return MD_AMBER_NETCDF_NONE;
     }
     if (quiet) {
