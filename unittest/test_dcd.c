@@ -1,6 +1,8 @@
 #include "utest.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+#include <md_unitcell.h>
 
 #include <md_dcd.h>
 #include <md_system.h>
@@ -40,6 +42,7 @@ static void dcd_put_f64(dcd_writer_t* w, double d) {
 typedef struct dcd_spec_t {
     bool    charmm;       // CHARMM (float delta, flags) rather than X-PLOR (double delta)
     bool    cell_block;   // a unit cell block in every frame; CHARMM only
+    int     cell_style;   // how the block holds it: 0 lengths and cosines, 1 lengths and degrees, 2 CHARMM's box matrix
     bool    rev;          // the other byte order
     int     natoms;
     int     nfixed;       // the last nfixed atoms are fixed
@@ -115,8 +118,14 @@ static bool dcd_write(str_t path, const dcd_spec_t* s) {
 
     for (int f = 0; f < s->nframes; ++f) {
         if (s->charmm && s->cell_block) {
-            // A, cos(gamma), B, cos(beta), cos(alpha), C: a cell that grows a little per frame
-            const double uc[6] = { 30.0 + f, 0.0, 24.0, 0.0, 0.0, 20.0 };
+            // A, cos(gamma), B, cos(beta), cos(alpha), C: a cell that grows a little per frame. In degrees as NAMD
+            // 2.5 wrote it, or as the box matrix of CHARMM c36: h11, h21, h22, h31, h32, h33
+            const double styles[3][6] = {
+                { 30.0 + f, 0.0, 24.0, 0.0, 0.0, 20.0 },
+                { 30.0 + f, 90.0, 24.0, 90.0, 90.0, 20.0 },
+                { 30.0 + f, 5.0, 24.0, 3.0, -2.0, 20.0 },
+            };
+            const double* uc = styles[s->cell_style];
             dcd_put_i32(&w, 48);
             for (int i = 0; i < 6; ++i) dcd_put_f64(&w, uc[i]);
             dcd_put_i32(&w, 48);
@@ -278,5 +287,44 @@ UTEST(dcd, atom_count_from_the_header) {
     const dcd_spec_t spec = { .charmm = true, .natoms = 11, .nframes = 2, .istart = 0, .nsavc = 1, .delta = 1.0 };
     ASSERT_TRUE(dcd_write(path, &spec));
     EXPECT_EQ(11u, md_dcd_file_atom_count(path));
+    remove(path.ptr);
+}
+
+// The three ways a cell block holds the cell, the box matrix of CHARMM c36 among them: its rows are the cell vectors
+UTEST(dcd, cell_in_every_convention) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    const str_t path = STR_INIT("md_unittest_cell.dcd");
+    for (int style = 0; style < 3; ++style) {
+        const dcd_spec_t spec = { .charmm = true, .cell_block = true, .cell_style = style, .natoms = 4, .nframes = 2, .istart = 0, .nsavc = 1, .delta = 1.0 };
+        ASSERT_TRUE(dcd_write(path, &spec));
+        md_system_t sys = {.alloc = arena};
+        ASSERT_TRUE(md_dcd_system_publish_run(&sys, path, DCD_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+        const md_attribute_t* cell = md_attributes_find(&sys.attributes, STR_LIT("run/dcd/unitcell"));
+        ASSERT_TRUE(cell != NULL);
+        float A[9];
+        ASSERT_EQ(9u, md_attribute_extract_f32(A, 9, cell, md_attribute_slice_1(1), md_unit_none()));
+        const md_unitcell_t uc = md_unitcell_from_matrix_float((const float(*)[3])A);
+        double a, b, c, alpha, beta, gamma;
+        md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &uc);
+        if (style < 2) {
+            EXPECT_NEAR(31.0, a, 1e-4);
+            EXPECT_NEAR(24.0, b, 1e-4);
+            EXPECT_NEAR(20.0, c, 1e-4);
+            EXPECT_NEAR(90.0, alpha, 1e-3);
+            EXPECT_NEAR(90.0, gamma, 1e-3);
+        } else {
+            // e1 = (31, 5, 3), e2 = (5, 24, -2), e3 = (3, -2, 20)
+            const double e1[3] = {31, 5, 3}, e2[3] = {5, 24, -2}, e3[3] = {3, -2, 20};
+            const double l1 = sqrt(31.0*31 + 25 + 9), l2 = sqrt(25.0 + 576 + 4), l3 = sqrt(9.0 + 4 + 400);
+            EXPECT_NEAR(l1, a, 1e-3);
+            EXPECT_NEAR(l2, b, 1e-3);
+            EXPECT_NEAR(l3, c, 1e-3);
+            EXPECT_NEAR(acos((e2[0]*e3[0] + e2[1]*e3[1] + e2[2]*e3[2]) / (l2 * l3)) * 180.0 / 3.14159265358979, alpha, 1e-3);
+            EXPECT_NEAR(acos((e1[0]*e3[0] + e1[1]*e3[1] + e1[2]*e3[2]) / (l1 * l3)) * 180.0 / 3.14159265358979, beta, 1e-3);
+            EXPECT_NEAR(acos((e1[0]*e2[0] + e1[1]*e2[1] + e1[2]*e2[2]) / (l1 * l2)) * 180.0 / 3.14159265358979, gamma, 1e-3);
+        }
+        md_system_free(&sys);
+    }
+    md_vm_arena_destroy(arena);
     remove(path.ptr);
 }

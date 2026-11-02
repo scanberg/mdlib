@@ -865,8 +865,11 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         md_system_topology_changed(sys);
     }
 
-    // ## Charge and mass
+    // ## Charge and mass, replacing what an earlier topology (or the structure file) published: a column that is
+    // there already is not created again
     if (sys->attributes.alloc) {
+        md_attributes_remove_prefix(&sys->attributes, STR_LIT("atom/charge"));
+        md_attributes_remove_prefix(&sys->attributes, STR_LIT("atom/mass"));
         md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, atom_count);
         md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/mass"),   md_unit_dalton(),            1, mass,   atom_count);
     }

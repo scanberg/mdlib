@@ -4701,3 +4701,25 @@ UTEST(util, packed_kernels_independent_of_address) {
     }
     md_free(md_get_heap_allocator(), raw, (6 * N + 64) * sizeof(float) + 64);
 }
+
+// Lengths and angles in, lengths and angles out: a triclinic cell whose alpha is not 90 among them
+UTEST(util, unitcell_extent_angles_round_trip) {
+    const double cells[][6] = {
+        { 35.446, 35.062, 34.159, 91.328, 61.735, 44.407 },
+        { 40.0, 40.0, 40.0, 109.4712206, 109.4712206, 109.4712206 },   // truncated octahedron
+        { 30.0, 31.0, 32.0, 60.0, 70.0, 80.0 },
+        { 30.0, 31.0, 32.0, 90.0, 90.0, 90.0 },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cells); ++i) {
+        const double* p = cells[i];
+        const md_unitcell_t uc = md_unitcell_from_extent_and_angles(p[0], p[1], p[2], p[3], p[4], p[5]);
+        double v[6];
+        md_unitcell_extract_extent_angles(&v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &uc);
+        for (int k = 0; k < 6; ++k) EXPECT_NEAR(p[k], v[k], 1e-6);
+    }
+    // No cell: no angles, and no NaN
+    const md_unitcell_t none = md_unitcell_none();
+    double v[6];
+    md_unitcell_extract_extent_angles(&v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &none);
+    EXPECT_EQ(0.0, v[3]);
+}
