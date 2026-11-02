@@ -85,12 +85,14 @@ struct md_system_state_t;
 //     <run>/h5md/observables/<path>/value        F64, the observable as the file has it, with its
 //     <run>/h5md/observables/<path>/{time,step}  own frame axis when it is time dependent
 //
-// READING. GROMACS writes each frame as one uncompressed chunk, and a frame that is one contiguous
-// run of bytes - contiguous storage, or chunks spanning whole frames without filters - is read like
-// any other trajectory: through the io it is handed, straight from the file, with no HDF5 call and
-// safely from any number of threads. Anything else (compressed chunks, integer images, a type that
-// is not IEEE float) is read through HDF5, one reader at a time, since HDF5 is not thread safe. The
-// providers' user_data is their own; they read sys, borrowed, so the run goes before the system.
+// READING. A frame is read without HDF5 (md_hdf5_direct.h): how each dataset is stored is learned
+// when the run is published, and a frame is then read through the io it is handed, its chunks
+// inflated and unshuffled here, with no HDF5 call and from any number of threads. That covers
+// contiguous storage and chunks of any shape, plain or through shuffle, deflate and fletcher32, of
+// IEEE floats and integers - GROMACS writes each frame as one uncompressed chunk. Anything else (a
+// filter only HDF5 decodes) is read through HDF5, one reader at a time, since HDF5 is not
+// concurrent. The providers' user_data is their own; they read sys, borrowed, so the run goes
+// before the system.
 
 #ifdef __cplusplus
 extern "C" {

@@ -75,7 +75,7 @@ set (SRC_FILES
 )
 
 if (MD_ENABLE_HDF5)
-    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c test_gto_iso.c test_gto_dmat.c test_trexio.c test_h5md.c test_amber_nc4.c)
+    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c test_gto_iso.c test_gto_dmat.c test_trexio.c test_h5md.c test_amber_nc4.c test_hdf5_direct.c)
 endif()
 
 if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))

@@ -18,6 +18,7 @@
 
 #include <hdf5.h>
 #include "md_hdf5.h"
+#include "md_hdf5_direct.h"
 
 
 #include <inttypes.h>
@@ -1173,190 +1174,24 @@ done:
 
 // ### RUN ###
 
-// How the bytes of a frame read when they can be read without HDF5
-typedef enum h5md_raw_t {
-    H5MD_RAW_NONE = 0,  // not one contiguous run of IEEE floats: read through HDF5
-    H5MD_RAW_F32LE,
-    H5MD_RAW_F32BE,
-    H5MD_RAW_F64LE,
-    H5MD_RAW_F64BE,
-} h5md_raw_t;
-
-// A provider's own state, one per attribute and released with it
+// A provider's own state, one per attribute and released with it: this, then how the dataset is stored
+// (md_hdf5_direct_t), which is what a frame is read by - without HDF5 and its lock, unless the storage is one only HDF5
+// decodes
 typedef struct h5md_source_t {
     const md_system_t* sys;         // borrowed: the run goes before the system does
     md_attribute_id_t  file_id;     // <run>/source/path
-    md_attribute_id_t  offset_id;   // where each frame is in the file
-    uint32_t           raw;         // h5md_raw_t
     uint32_t           num_atoms;
     uint32_t           components;
-    float              scale;       // the file's unit to the published one
+    double             scale;       // the file's unit to the published one
     char               dataset[H5MD_PATH_MAX];
 } h5md_source_t;
 
-#if H5_VERSION_GE(1, 14, 0)
-typedef struct h5md_chunk_walk_t {
-    int64_t* out;
-    size_t   num_frames;
-    size_t   frames_per_chunk;
-    size_t   frame_bytes;
-} h5md_chunk_walk_t;
+STATIC_ASSERT(sizeof(h5md_source_t) % 8 == 0, "the storage after it must be aligned");
 
-static int h5md_chunk_visit(const hsize_t* offset, unsigned filter_mask, haddr_t addr, hsize_t size, void* data) {
-    (void)filter_mask;
-    (void)size;
-    const h5md_chunk_walk_t* walk = (const h5md_chunk_walk_t*)data;
-    const size_t first = (size_t)offset[0];
-    for (size_t f = first; f < MIN(walk->num_frames, first + walk->frames_per_chunk); ++f) {
-        walk->out[f] = (int64_t)(addr + (f - first) * walk->frame_bytes);
-    }
-    return H5_ITER_CONT;
-}
-#endif
-
-// Where each frame of a [F, ...] dataset starts in the file, when every frame is one contiguous
-// run of bytes of IEEE floats: contiguous storage, or chunks spanning whole frames with no filter.
-// H5MD_RAW_NONE otherwise, and then out is -1 throughout.
-static h5md_raw_t h5md_frame_offsets(int64_t* out, hid_t dset, size_t num_frames) {
-    for (size_t f = 0; f < num_frames; ++f) out[f] = -1;
-
-    hsize_t dims[H5S_MAX_RANK];
-    const int rank = h5_shape(dims, dset);
-    hid_t type = H5Dget_type(dset);
-    h5md_raw_t raw = H5MD_RAW_NONE;
-    if (type >= 0) {
-        if      (H5Tequal(type, H5T_IEEE_F32LE) > 0) raw = H5MD_RAW_F32LE;
-        else if (H5Tequal(type, H5T_IEEE_F32BE) > 0) raw = H5MD_RAW_F32BE;
-        else if (H5Tequal(type, H5T_IEEE_F64LE) > 0) raw = H5MD_RAW_F64LE;
-        else if (H5Tequal(type, H5T_IEEE_F64BE) > 0) raw = H5MD_RAW_F64BE;
-        H5Tclose(type);
-    }
-    if (raw == H5MD_RAW_NONE || rank < 1 || dims[0] != num_frames) {
-        return H5MD_RAW_NONE;
-    }
-    const size_t elem = (raw == H5MD_RAW_F32LE || raw == H5MD_RAW_F32BE) ? 4 : 8;
-    const size_t frame_bytes = h5_product(dims, 1, rank) * elem;
-
-    hid_t dcpl = H5Dget_create_plist(dset);
-    if (dcpl < 0) {
-        return H5MD_RAW_NONE;
-    }
-    bool ok = false;
-    const H5D_layout_t layout = H5Pget_layout(dcpl);
-    if (layout == H5D_CONTIGUOUS) {
-        const haddr_t addr = H5Dget_offset(dset);
-        if (addr != HADDR_UNDEF) {
-            for (size_t f = 0; f < num_frames; ++f) out[f] = (int64_t)(addr + f * frame_bytes);
-            ok = true;
-        }
-    }
-#if H5_VERSION_GE(1, 10, 5)
-    else if (layout == H5D_CHUNKED && H5Pget_nfilters(dcpl) == 0) {
-        // A chunk holds chunk[0] whole frames, one after the other, when it spans the other axes
-        hsize_t chunk[H5S_MAX_RANK];
-        ok = H5Pget_chunk(dcpl, rank, chunk) == rank && chunk[0] > 0;
-        for (int i = 1; ok && i < rank; ++i) ok = chunk[i] == dims[i];
-#if H5_VERSION_GE(1, 14, 0)
-        // One walk over the chunk index. Asking for each chunk by its coordinate costs a lookup of
-        // a third of a millisecond, which for a long trajectory is most of the time publishing takes
-        h5md_chunk_walk_t walk = { out, num_frames, (size_t)chunk[0], frame_bytes };
-        ok = ok && H5Dchunk_iter(dset, H5P_DEFAULT, h5md_chunk_visit, &walk) >= 0;
-#else
-        for (size_t f = 0; ok && f < num_frames; f += (size_t)chunk[0]) {
-            hsize_t coord[H5S_MAX_RANK] = {0};
-            coord[0] = (hsize_t)f;
-            unsigned mask = 0;
-            haddr_t  addr = HADDR_UNDEF;
-            hsize_t  size = 0;
-            ok = H5Dget_chunk_info_by_coord(dset, coord, &mask, &addr, &size) >= 0 && addr != HADDR_UNDEF;
-            for (size_t i = f; ok && i < MIN(num_frames, f + (size_t)chunk[0]); ++i) {
-                out[i] = (int64_t)(addr + (i - f) * frame_bytes);
-            }
-        }
-#endif
-        // A chunk never written has no place in the file
-        for (size_t f = 0; ok && f < num_frames; ++f) ok = out[f] >= 0;
-    }
-#endif
-    H5Pclose(dcpl);
-    if (!ok) {
-        for (size_t f = 0; f < num_frames; ++f) out[f] = -1;
-        return H5MD_RAW_NONE;
-    }
-    return raw;
+static const md_hdf5_direct_t* h5md_source_direct(const h5md_source_t* src) {
+    return (const md_hdf5_direct_t*)(src + 1);
 }
 
-static uint32_t h5md_load_u32_be(const uint8_t* p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
-static uint32_t h5md_load_u32_le(const uint8_t* p) {
-    return ((uint32_t)p[3] << 24) | ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[0];
-}
-
-// Values of the frame as floats, from the bytes of the file
-static void h5md_decode(float* out, const uint8_t* raw, size_t count, h5md_raw_t kind, float scale) {
-    for (size_t i = 0; i < count; ++i) {
-        switch (kind) {
-        case H5MD_RAW_F32LE:
-        case H5MD_RAW_F32BE: {
-            const uint32_t bits = kind == H5MD_RAW_F32LE ? h5md_load_u32_le(raw + i * 4) : h5md_load_u32_be(raw + i * 4);
-            float v;
-            MEMCPY(&v, &bits, 4);
-            out[i] = v * scale;
-            break;
-        }
-        case H5MD_RAW_F64LE:
-        case H5MD_RAW_F64BE: {
-            const uint8_t* p = raw + i * 8;
-            const uint64_t lo = kind == H5MD_RAW_F64LE ? h5md_load_u32_le(p)     : h5md_load_u32_be(p + 4);
-            const uint64_t hi = kind == H5MD_RAW_F64LE ? h5md_load_u32_le(p + 4) : h5md_load_u32_be(p);
-            const uint64_t bits = (hi << 32) | lo;
-            double v;
-            MEMCPY(&v, &bits, 8);
-            out[i] = (float)(v * scale);
-            break;
-        }
-        default:
-            out[i] = 0.0f;
-            break;
-        }
-    }
-}
-
-// Values of a frame through HDF5, for storage that is not plain bytes: particles first to first +
-// count of frame 'frame', as floats.
-static bool h5md_read_hdf5(float* out, str_t file_path, const char* dataset, uint32_t frame, size_t first, size_t count, size_t components) {
-    char path[4096];
-    str_copy_to_char_buf(path, sizeof(path), file_path);
-
-    h5md_lock_t lock = h5md_lock();
-    bool ok = false;
-    hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
-    hid_t dset = file >= 0 ? H5Dopen(file, dataset, H5P_DEFAULT) : -1;
-    if (dset >= 0) {
-        hsize_t dims[H5S_MAX_RANK];
-        const int rank = h5_shape(dims, dset);
-        if (rank == 2 || rank == 3) {
-            const hsize_t start[3]  = { frame, first, 0 };
-            const hsize_t extent[3] = { 1, count, rank == 3 ? dims[2] : 1 };
-            const hsize_t mem_dims  = (hsize_t)(count * components);
-            hid_t file_space = H5Dget_space(dset);
-            hid_t mem_space  = H5Screate_simple(1, &mem_dims, NULL);
-            ok = h5_product(extent, 0, rank) == count * components &&
-                 H5Sselect_hyperslab(file_space, H5S_SELECT_SET, start, NULL, extent, NULL) >= 0 &&
-                 H5Dread(dset, H5T_NATIVE_FLOAT, mem_space, file_space, H5P_DEFAULT, out) >= 0;
-            H5Sclose(mem_space);
-            H5Sclose(file_space);
-        }
-        H5Dclose(dset);
-    }
-    if (file >= 0) H5Fclose(file);
-    h5md_unlock(lock);
-    return ok;
-}
-
-// Every per particle quantity of a run: <run>/atom/position and the elements beside it
 static size_t h5md_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)attr;
     const h5md_source_t* src = (const h5md_source_t*)user_data;
@@ -1365,10 +1200,8 @@ static size_t h5md_provider(void* dst, size_t cap, const md_attribute_t* attr, c
         return 0;
     }
     const md_attributes_t* attributes = &src->sys->attributes;
-    const md_attribute_t* file   = md_attributes_get(attributes, src->file_id);
-    const md_attribute_t* offset = md_attributes_get(attributes, src->offset_id);
-    const int64_t* offsets = (const int64_t*)md_attribute_view(offset, MD_ATTRIBUTE_TYPE_I64, 1, 1);
-    if (!file || !offsets) {
+    const md_attribute_t* file = md_attributes_get(attributes, src->file_id);
+    if (!file) {
         MD_LOG_ERROR("H5MD: the run has lost its source attributes");
         return 0;
     }
@@ -1382,53 +1215,46 @@ static size_t h5md_provider(void* dst, size_t cap, const md_attribute_t* attr, c
         first = slice->idx[1];
         count = 1;
     }
-    if (frame >= offset->format.shape[0] || cap != count * K) {
+    const md_hdf5_direct_t* direct = h5md_source_direct(src);
+    if (frame >= direct->dims[0] || cap != count * K) {
         return 0;
     }
 
     const str_t path = md_attribute_str(attributes, file, 0);
-    const int64_t at = offsets[frame];
-    float* out = (float*)dst;
-
-    if (src->raw != H5MD_RAW_NONE && at >= 0) {
-        const size_t elem  = (src->raw == H5MD_RAW_F32LE || src->raw == H5MD_RAW_F32BE) ? 4 : 8;
-        const size_t bytes = count * K * elem;
-        md_temp_scope_t temp = md_temp_begin();
-        uint8_t* raw = md_temp_alloc(temp, bytes);
-        const bool ok = raw && md_attribute_io_read_at(io, path, at + (int64_t)(first * K * elem), raw, bytes) == bytes;
-        if (ok) {
-            h5md_decode(out, raw, count * K, (h5md_raw_t)src->raw, src->scale);
-        }
-        md_temp_end(temp);
-        if (!ok) {
-            MD_LOG_ERROR("H5MD: failed to read frame %u of '%s' from '" STR_FMT "'", frame, src->dataset, STR_ARG(path));
-            return 0;
-        }
-        return cap;
-    }
-
-    if (!h5md_read_hdf5(out, path, src->dataset, frame, first, count, K)) {
+    if (!md_hdf5_direct_read_f32((float*)dst, direct, path, src->dataset, frame, first * K, count * K, src->scale, io)) {
         MD_LOG_ERROR("H5MD: failed to read frame %u of '%s' from '" STR_FMT "'", frame, src->dataset, STR_ARG(path));
         return 0;
-    }
-    if (src->scale != 1.0f) {
-        for (size_t i = 0; i < count * K; ++i) out[i] *= src->scale;
     }
     return cap;
 }
 
-// Publishes a virtual attribute read by h5md_provider, with src as its own state. Freed again when
-// the attribute cannot be published, since only a published attribute releases its user_data.
-static bool h5md_publish_virtual(md_attributes_t* attributes, md_attribute_desc_t desc, const h5md_source_t* src) {
-    h5md_source_t* state = md_attributes_alloc_user_data(attributes, sizeof(h5md_source_t));
-    if (!state) {
-        return false;
+// The state of a provider of the dataset at src->dataset, owned by the attributes: src, then how the dataset is stored.
+// The lock is held. NULL when the dataset cannot be described; the size of the state in *out_size.
+static h5md_source_t* h5md_source_make(size_t* out_size, hid_t file, const h5md_source_t* src, md_attributes_t* attributes) {
+    hid_t dset = H5Dopen(file, src->dataset, H5P_DEFAULT);
+    if (dset < 0) return NULL;
+    md_hdf5_direct_t* direct = md_hdf5_direct_describe(file, dset, md_get_heap_allocator());
+    H5Dclose(dset);
+    if (!direct) return NULL;
+    const size_t size = sizeof(h5md_source_t) + (size_t)direct->size;
+    h5md_source_t* state = md_attributes_alloc_user_data(attributes, size);
+    if (state) {
+        *state = *src;
+        MEMCPY(state + 1, direct, (size_t)direct->size);
+        *out_size = size;
     }
-    *state = *src;
-    const md_attribute_virtual_t virt = { .provider = h5md_provider, .user_data = state, .user_data_size = sizeof(h5md_source_t) };
+    md_free(md_get_heap_allocator(), direct, (size_t)direct->size);
+    return state;
+}
+
+// Publishes a virtual attribute read by h5md_provider, with state (from h5md_source_make with the attributes'
+// allocator) as its own. Freed again when the attribute cannot be published, since only a published attribute
+// releases its user_data.
+static bool h5md_publish_virtual(md_attributes_t* attributes, md_attribute_desc_t desc, h5md_source_t* state, size_t size) {
+    const md_attribute_virtual_t virt = { .provider = h5md_provider, .user_data = state, .user_data_size = size };
     desc.virt = &virt;
     if (md_attributes_replace(attributes, &desc) == MD_ATTRIBUTE_INVALID) {
-        md_free(attributes->alloc, state, sizeof(h5md_source_t));
+        md_free(attributes->alloc, state, size);
         return false;
     }
     return true;
@@ -1502,42 +1328,48 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
         hid_t type = H5Dget_type(dset);
         const H5T_class_t cls = type >= 0 ? H5Tget_class(type) : H5T_NO_CLASS;
         if (type >= 0) H5Tclose(type);
+        H5Dclose(dset);
         if (cls != H5T_FLOAT && cls != H5T_INTEGER) {
-            H5Dclose(dset);
             continue;
         }
 
         const size_t K = e.rank == 3 ? (size_t)e.dims[2] : 1;
+        h5md_source_t src = *position;
+        src.components = (uint32_t)K;
+        src.scale      = 1.0;
+        md_snprintf(src.dataset, sizeof(src.dataset), "%s", e.value);
+        size_t state_size = 0;
+        h5md_source_t* state = h5md_source_make(&state_size, file, &src, attributes);
+        if (!state) continue;
         int64_t* offsets = md_alloc(scratch, e.num_frames * sizeof(int64_t));
-        const h5md_raw_t raw = h5md_frame_offsets(offsets, dset, e.num_frames);
-        H5Dclose(dset);
+        int64_t* sizes   = md_alloc(scratch, e.num_frames * sizeof(int64_t));
+        md_hdf5_direct_frame_spans(offsets, sizes, h5md_source_direct(state), e.num_frames);
 
         const bool aligned = e.num_frames == F && MEMCMP(e.step, p->position.step, F * sizeof(int64_t)) == 0;
         char group_buf[512];
         const int group_len = md_snprintf(group_buf, sizeof(group_buf), STR_FMT "/h5md/particles/" STR_FMT, STR_ARG(run), STR_ARG(name));
         char leaf_buf[256];
         const int leaf_len = md_snprintf(leaf_buf, sizeof(leaf_buf), "atom/" STR_FMT, STR_ARG(name));
-        if (group_len <= 0 || group_len >= (int)sizeof(group_buf) || leaf_len <= 0 || leaf_len >= (int)sizeof(leaf_buf)) continue;
+        if (group_len <= 0 || group_len >= (int)sizeof(group_buf) || leaf_len <= 0 || leaf_len >= (int)sizeof(leaf_buf)) {
+            md_free(attributes->alloc, state, state_size);
+            continue;
+        }
         const str_t group = { group_buf, (size_t)group_len };
         const str_t leaf  = { leaf_buf, (size_t)leaf_len };
 
         char buf[512];
         bool ok = aligned || h5md_publish_axis(attributes, group, &e, p->position.step, run_time, run_time_unit, F, scratch);
-        const str_t offset_path = md_run_path(buf, sizeof(buf), group, STR_LIT("source/offset"));
         ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-            .path = offset_path, .format = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)e.num_frames } },
+            .path = md_run_path(buf, sizeof(buf), group, STR_LIT("source/offset")), .format = { .type = MD_ATTRIBUTE_TYPE_I64, .components = 1, .rank = 1, .shape = { (uint32_t)e.num_frames } },
             .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = md_unit_none(), .data = offsets, .byte_size = e.num_frames * sizeof(int64_t)}) != MD_ATTRIBUTE_INVALID;
-
-        h5md_source_t src = *position;
-        src.offset_id  = md_attributes_id_from_path(offset_path);
-        src.raw        = raw;
-        src.components = (uint32_t)K;
-        src.scale      = 1.0f;
-        md_snprintf(src.dataset, sizeof(src.dataset), "%s", e.value);
-        ok = ok && h5md_publish_virtual(attributes, (md_attribute_desc_t){
-            .path = aligned ? md_run_path(buf, sizeof(buf), run, leaf) : md_run_path(buf, sizeof(buf), group, leaf),
-            .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = (uint32_t)K, .rank = 2, .shape = { (uint32_t)e.num_frames, (uint32_t)N } },
-            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = e.unit}, &src);
+        if (ok) {
+            ok = h5md_publish_virtual(attributes, (md_attribute_desc_t){
+                .path = aligned ? md_run_path(buf, sizeof(buf), run, leaf) : md_run_path(buf, sizeof(buf), group, leaf),
+                .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = (uint32_t)K, .rank = 2, .shape = { (uint32_t)e.num_frames, (uint32_t)N } },
+                .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = e.unit}, state, state_size);
+        } else {
+            md_free(attributes->alloc, state, state_size);
+        }
         if (!ok) {
             MD_LOG_ERROR("H5MD: failed to publish '%s'", path);
             return false;
@@ -1670,32 +1502,29 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
         goto done;
     }
 
-    int64_t* offsets = md_alloc(scratch, F * sizeof(int64_t));
-    int64_t* sizes   = md_alloc(scratch, F * sizeof(int64_t));
-    hid_t dset = H5Dopen(file, p.position.value, H5P_DEFAULT);
-    const h5md_raw_t raw = dset >= 0 ? h5md_frame_offsets(offsets, dset, F) : H5MD_RAW_NONE;
-    if (dset >= 0) H5Dclose(dset);
-    const size_t elem = (raw == H5MD_RAW_F64LE || raw == H5MD_RAW_F64BE) ? 8 : 4;
-    for (size_t f = 0; f < F; ++f) sizes[f] = raw != H5MD_RAW_NONE ? (int64_t)(N * 3 * elem) : 0;
-
     char buf[512];
     h5md_source_t src = {
         .sys        = sys,
         .file_id    = md_attributes_id_from_path(md_run_path(buf, sizeof(buf), run, STR_LIT("source/path"))),
-        .offset_id  = md_attributes_id_from_path(md_run_path(buf, sizeof(buf), run, STR_LIT("source/offset"))),
-        .raw        = raw,
         .num_atoms  = (uint32_t)N,
         .components = 3,
-        .scale      = (float)scale,
+        .scale      = scale,
     };
     md_snprintf(src.dataset, sizeof(src.dataset), "%s", p.position.value);
 
-    h5md_source_t* state = md_attributes_alloc_user_data(attributes, sizeof(h5md_source_t));
+    size_t state_size = 0;
+    h5md_source_t* state = h5md_source_make(&state_size, file, &src, attributes);
     if (!state) {
+        MD_LOG_ERROR("H5MD: cannot read the storage of '%s'", p.position.value);
         goto done;
     }
-    *state = src;
-    const md_attribute_virtual_t virt = { .provider = h5md_provider, .user_data = state, .user_data_size = sizeof(h5md_source_t) };
+    int64_t* offsets = md_alloc(scratch, F * sizeof(int64_t));
+    int64_t* sizes   = md_alloc(scratch, F * sizeof(int64_t));
+    md_hdf5_direct_frame_spans(offsets, sizes, h5md_source_direct(state), F);
+    if (!md_hdf5_direct_is_direct(h5md_source_direct(state))) {
+        MD_LOG_INFO("H5MD: the positions of '" STR_FMT "' are stored in a way read through HDF5, one frame at a time", STR_ARG(path));
+    }
+    const md_attribute_virtual_t virt = { .provider = h5md_provider, .user_data = state, .user_data_size = state_size };
     const md_run_desc_t desc = {
         .num_frames    = F,
         .num_atoms     = N,
@@ -1710,7 +1539,7 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
     };
     if (!md_run_publish(sys, run, &desc)) {
         // The position is the last thing published, so its state was never taken
-        md_free(attributes->alloc, state, sizeof(h5md_source_t));
+        md_free(attributes->alloc, state, state_size);
         goto done;
     }
     published = true;

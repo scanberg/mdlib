@@ -341,8 +341,8 @@ if (MD_ENABLE_HDF5)
   set(HDF5_PREFER_PARALLEL FALSE)
   find_package(HDF5 REQUIRED)
   list(APPEND MD_LIBS HDF5::HDF5)
-  # The Amber NetCDF-4 reader inflates the frames itself, outside the HDF5 lock (md_amber_netcdf4.c): zlib, which HDF5
-  # is built with for its own deflate filter
+  # Frames of HDF5 datasets are inflated here, outside the HDF5 lock (md_hdf5_direct.c): zlib, which HDF5 is built
+  # with for its own deflate filter
   find_package(ZLIB REQUIRED)
   list(APPEND MD_LIBS ZLIB::ZLIB)
 
@@ -357,6 +357,8 @@ if (MD_ENABLE_HDF5)
     src/md_hdf5.h
     src/md_amber_netcdf4.c
     src/md_amber_netcdf4.h
+    src/md_hdf5_direct.c
+    src/md_hdf5_direct.h
   )
   # Relative to the executable, because md_vlx.c always prefixes the executable's own directory
   # before this value. An absolute path here - which is what this defaulted to - produced
