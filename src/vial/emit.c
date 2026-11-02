@@ -349,6 +349,17 @@ static vial_ssa_t emit_subscript(infer_t* x, vial_node_id id, const T* t) {
         const int64_t i = k.i < 0 ? k.i + at->num_elems : k.i;
         return op1(x, id, VIAL_IR_ELEM, 0, (uint32_t)i, &a, 1, t);
     }
+    if (at->dtype == VIAL_DT_SET && type_at(x, in)->dtype == VIAL_DT_STR && type_at(x, in)->ndim == 0) {
+        // s['CA']: each set of s and the particles of the name, one of them where the name has no * or ?
+        const vial_value_t nv = vx_value_of(x, in);
+        const vial_sets_t* named = nv.kind == VIAL_VAL_STR ? vx_named_particles(x, nv.s) : NULL;
+        if (!named) { vx_lower_fail(x, in, "a particle name without a system"); return 0; }
+        const vial_val_t sv = vial_val_sets(named);
+        const T st = vial_type_scalar(VIAL_DT_SET);
+        const vial_ssa_t b = vial_ir_const(x->ir, &sv, &st, node_text(x, in), vx_span(x, in));
+        const uint16_t sub = vx_name_is_glob(nv.s) ? VIAL_KW_AND : VIAL_SETOP_ONE;
+        return op1(x, id, VIAL_IR_SETOP, sub, 0, (vial_ssa_t[]){a, b}, 2, t);
+    }
     vial_node_id items[16];
     uint32_t num = 0;
     if (vx_kind(x, in) == VIAL_N_TUPLE) {

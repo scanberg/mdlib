@@ -170,6 +170,12 @@ vial_value_t vx_sets_not(infer_t* x, const vial_value_t* a);
 // it is not known
 vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id item);
 
+// s['CA']: within each set of s, its particles of that name. A name without * or ? is the one particle of it, so the
+// result is known to hold one particle per set; a set without it, or with two, gives an empty set, a missing point.
+vial_type_t        vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const vial_type_t* a);
+bool               vx_name_is_glob(str_t name);
+const vial_sets_t* vx_named_particles(infer_t* x, str_t name);     // every particle of the name, NULL without a system
+
 // ### LOWERING (emit.c) ###
 // The check emits the array IR as it goes: each checked node gets its value in the IR, a constant when the check knows
 // its value. What cannot be lowered yet is recorded in the IR's failures, not reported: the program still checks.

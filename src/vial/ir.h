@@ -27,7 +27,8 @@ typedef enum vial_ir_kind_t {
     VIAL_IR_FMA,        // [a, b, c]: a * b + c, rounded once
     VIAL_IR_COMPARE,    // [a, b]; sub: the vial_cmp_t
     VIAL_IR_LOGIC,      // [a, b]; sub: VIAL_KW_AND or VIAL_KW_OR, elementwise on bools
-    VIAL_IR_SETOP,      // sub VIAL_KW_AND, VIAL_KW_OR: [a, b]; VIAL_KW_NOT: [scope, a]; VIAL_OP_MINUS: [a, b], a and not b
+    VIAL_IR_SETOP,      // sub VIAL_KW_AND, VIAL_KW_OR: [a, b]; VIAL_KW_NOT: [scope, a]; VIAL_OP_MINUS: [a, b], a and not b;
+                        //   VIAL_SETOP_ONE: [a, b], a and b where that is one particle, else empty: s['CA']
     VIAL_IR_CONVERT,    // [a]: to the result's dtype
     VIAL_IR_INDEX,      // [a, index values...]; aux: the first of its items in index_items, sub: how many
     VIAL_IR_LIST,       // [elements...]: stacked along a new first dimension
@@ -53,6 +54,9 @@ typedef enum vial_ir_kind_t {
     VIAL_IR_YIELD,      // [values...]: ends a region
     VIAL_IR_KIND_COUNT
 } vial_ir_kind_t;
+
+// VIAL_IR_SETOP's sub for s['CA']: each set of a and b where that is one particle, an empty set where it is not
+#define VIAL_SETOP_ONE 1000
 
 // VIAL_IR_KIND's sub beyond the parameter kinds: a set's particles, as an array of sets of one particle each, which a
 // comprehension iterates over

@@ -1037,6 +1037,12 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
+    if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) != VIAL_N_SLICE && kind_of(x, in) != VIAL_N_TUPLE) {
+        // s['CA'], or a name bound to a string: a particle name
+        const T ix = infer(x, in);
+        if (vial_type_is_error(&ix)) return err();
+        if (ix.dtype == VIAL_DT_STR && ix.ndim == 0) return vx_named(x, id, on, in, &a);
+    }
     if (a.dtype == VIAL_DT_SET && a.ndim == 0) {
         // Positions of a set's particles: a set
         if (!in || kind_of(x, in) == VIAL_N_TUPLE) {
@@ -1241,7 +1247,8 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             }
             return r;
         }
-        diag(x, "E0319", it, "a position is an int, a slice, a list of ints or a bool mask; this is %s", tstr(&ix));
+        diag(x, "E0319", it, "a position is an int, a slice, a list of ints or a bool mask%s; this is %s",
+            a.dtype == VIAL_DT_SET ? ", or a particle name as a string" : "", tstr(&ix));
         return err();
     }
     while (d < a.ndim) if (!vial_type_push_dim(&t, a.dims[d++])) goto too_many;
@@ -1696,7 +1703,8 @@ static void warn_missing(infer_t* x, vial_node_id s, vial_node_id value, const T
     const md_vial_span_t span = x->t->nodes[s].span;
     for (size_t i = md_array_size(x->diags->items); i-- > 0;) {
         const md_vial_diagnostic_t* d = &x->diags->items[i];
-        if (d->span.beg >= span.beg && d->span.end <= span.end && strncmp(d->code, "W0405", 5) == 0) return;
+        // Said already: by W0405, or by W0609 or W0601 for a particle name some sets lack
+        if (d->span.beg >= span.beg && d->span.end <= span.end && (strncmp(d->code, "W0405", 5) == 0 || strncmp(d->code, "W0609", 5) == 0 || strncmp(d->code, "W0601", 5) == 0)) return;
         if (d->span.end < span.beg) break;
     }
     vial_node_id* stack = NULL;

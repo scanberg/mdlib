@@ -244,6 +244,38 @@ UTEST_F(vial_check, static_conditions) {
     EXPECT_STREQ(want, got_); \
 } while (0)
 
+// s['CA']: within each set of s, its particle of that name, so a point; a glob gives the particles that match
+UTEST_F(vial_check, particle_names) {
+    const md_system_t* T = vial_test_system('T');
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(T != NULL && P != NULL);
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\nca = rs['CA']\n", 2, "set[5], static");
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\na = angle(rs['N'], rs['CA'], rs['C'])\n", 2, u8"float[5] °, frame");
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\nphi = dihedral(rs[:-1]['C'], rs[1:]['N'], rs[1:]['CA'], rs[1:]['C'])\n", 2, u8"float[4] °, frame");
+    EXPECT_TYPE_ON(P, "one = residues[1]['CA']\nd = distance(one, residues[2]['CA'])\n", 2, u8"float Å, frame");
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\nhs = rs['H*']\n", 2, "set[5], static");
+    // In a def the set is not known, and the name still makes a point
+    EXPECT_TYPE_ON(P, "def a(r: set):\n    return angle(r['N'], r['CA'], r['C'])\nx = a(residues[1:6])\n", 3, u8"float[5] °, frame");
+    // Per frame
+    EXPECT_TYPE_ON(P, "near = residues(within(5.0, of=residues[0]))\n_a = angle(near['N'], near['CA'], near['C'])\n", 2, u8"float[?] °, frame");
+    // A glob is no point
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\na = angle(rs['H*'], rs['N'], rs['CA'])\n",
+        "E0302 2: `angle` needs a point for a; `rs['H*']` holds sets that may hold several particles, so write .com for its centre or between='closest' | rs['H*'].com\n");
+    // Sets without the name, or with it twice: missing entries, counted
+    EXPECT_DIAGS_ON(T, "cb = residues(kind='amino_acid')['CB']\n",
+        "W0609 1: a particle named 'CB' is one per set in 802 of 865 sets; 63 have none, and their entries are missing\n");
+    EXPECT_TYPE_ON(T, "cb = residues(kind='amino_acid')['CB']\n", 1, "set[865] | missing, static");
+    EXPECT_DIAGS_ON(T, "w = water['O']\n",
+        "W0609 1: the set has 8 particles named 'O', and a name picks one per set: subscript its units, such as residues(s)['O']\n");
+    EXPECT_DIAGS_ON(P, "h = residues['NOPE']\n", "W0601 1: no particle is named 'NOPE'\n");
+    EXPECT_DIAGS_ON(T, "g = residues['GTP']\n",
+        "W0601 1: no particle is named 'GTP'; a subscript names particles, and residues of that name are residues('GTP') | residues('GTP')\n");
+    EXPECT_DIAGS_ON(P, "n = 'CA'\nc = residues[n]\n", "");
+    EXPECT_DIAGS_ON(P, "c = residues[f'C{1}']\n", "E0803 1: f-strings are not part of VIAL\n");
+    EXPECT_DIAGS_ON(P, "c = residues[3.0]\n",
+        "E0319 1: a position is an int, a slice, a list of ints or a bool mask, or a particle name as a string; this is float\n");
+}
+
 UTEST_F(vial_check, selectors) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);

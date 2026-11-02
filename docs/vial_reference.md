@@ -377,9 +377,9 @@ residues(250)                                          # warning W0601: not amon
 within(4.0, of=particles(resid=181, chain='B', scope=system))   # the group's particles near residue 181 of chain B, which lies outside it
 ```
 
-## Indexing: positions, ids, at(), sets as indices, by=
+## Indexing: positions, ids, names, at(), sets as indices, by=
 
-Positions count from 0 and are written as subscripts; ids are the file's numbers and names, written as filter values. A per-particle array can also be indexed by a set.
+Positions count from 0 and are written as subscripts; ids are the file's numbers and names, written as filter values. A set is also indexed by a particle's name, within each of its units, and a per-particle array by a set.
 
 | Form | Means | Result |
 | --- | --- | --- |
@@ -391,6 +391,8 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s.xyz` | a set's positions; coordinates themselves on coordinates | `float[n][3]` Å |
 | `c.x`, `c.y`, `c.z` | `c.xyz[..., 0]`, `[..., 1]`, `[..., 2]`, on a set or on coordinates |  |
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
+| `s['CA']` on a set or an array of sets | within each set, its particle of that name: one per set, so a point wherever a point is taken. `angle(rs['N'], rs['CA'], rs['C'])` is the angle in each residue of `rs`, as v1's `angle(...) in residue(...)` by position | the same shape, a set of one particle per set |
+| `s['H*']`, a name with `*` or `?` | within each set, its particles that match | the same shape, a set per set |
 | `s[mask]` on a set, with a bool per particle of s | its particles where the mask is true: `particles[particles.z in 20.0..25.0]` is a slab, as v1's `within_z(20:25)` | a set; frame stage when the mask is |
 | `at(x, frame=k)` | frame k of a frame value, read once before the other frames | a static value |
 | `rmsf[s]` with a set | the values of the particles in set s; an intersection | a shorter dimension over those particles |
@@ -399,6 +401,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `labels(a, axis=0)` | the labels of a dimension | `str` array |
 
 - An out-of-range position on a static extent is E0304. On a dynamic extent it is R0101 in that frame, and the value is missing there; the compiler says so beforehand with W0405.
+- A name picks a particle within each set, so the result keeps the shape and labels of what it subscripts, and works the same on a def's parameter, a set per frame and the sets of a comprehension. A set without a particle of the name, or with two, has an empty set in its place, whose point is missing: `res_a['CB']` is missing for every glycine. When the sets are known when compiling, W0609 counts them; otherwise the run notes it (R0101) where it happens. A name no particle has is W0601, which points a residue's name at `residues('ALA')`: a subscript always names particles. For other keywords, `s and particles(element='O')`.
 - `by=` works with every reduction and is defined as `[f(a[s]) for s in g]`. A group with no values gives a missing value and W0603, which counts them. `a[s]` and `by=` act on the first dimension of `a` that describes particles; an array with no such dimension is E0311.
 - `var` and `std` over frames run in one pass, with Welford's algorithm.
 - A unit's label is how the data names it: a residue `MET1/A`, or `ALA1` where the data gives no chain ids; a particle `CA/MET1/A`; a chain its id, `A`. A part or a molecule of one residue is labelled as that residue, `GTP501/A`, and a longer one by its kind or its molecule's name and its chain, `peptide/A`, or by its kind and number where there are no chains, `peptide1`.
@@ -424,6 +427,12 @@ top   = water[water.z > 40.0]                          # -> set, frame: the wate
 slab  = particles[particles.z in 20.0..25.0]           # -> set, frame
 box   = protein[(protein.x in 20.0..60.0) and (protein.y in 20.0..60.0)]   # -> set, frame
 nope  = water[particles.z > 40.0]                      # error E0301: a mask over every particle does not fit the 8 of water
+ca    = res_a['CA']                                    # -> set[433]: the CA of each residue
+cb    = res_a['CB']                                    # warning W0609 -> set[433] | missing: 30 glycines have none
+sc_o  = res_a['O*']                                    # -> set[433]: each residue's oxygens
+bend  = angle(res_a[:-2]['CA'], res_a[1:-1]['CA'], res_a[2:]['CA'])   # -> float[431] °, frame: the CA-CA-CA angles
+wo    = residues(water)['O']                           # -> set[8]: the O of each water
+one_o = water['O']                                     # warning W0609 -> set | missing: water is one set of 8
 ```
 
 ```python
@@ -435,6 +444,10 @@ per_r  = mean(rmsf, by=residues)                       # -> float[15] Å
 same   = [mean(rmsf[r]) for r in residues]             # -> float[15] Å
 end0   = at(particles(name='CA').xyz, frame=0)         # -> float[15][3] Å, static
 _close = residues[distance(residues.com, residues[0].com) < 6.0]   # -> set[?], frame
+rs     = residues[1:6]                                 # -> set[5]
+nca    = angle(rs['N'], rs['CA'], rs['C'])             # -> float[5] °, frame: N-CA-C in each residue
+phi    = dihedral(rs[:-1]['C'], rs[1:]['N'], rs[1:]['CA'], rs[1:]['C'])   # -> float[4] °, frame: across neighbours
+_nn    = angle(_close['N'], _close['CA'], _close['C'])  # -> float[?] °, frame: of the residues near the first
 ```
 
 ## Mapping a def over arrays
@@ -476,6 +489,16 @@ c   = in_contact(res_a, vlb, cut)                    # warning W0607 -> bool[433
 ```
 
 A def may read another frame with `at()`: what it reads there is computed again from the def's own values at that frame, so a group a call maps over is fitted to its own first frame. A value from outside the def that changes per frame is that frame's, and reading it so is R0103; pass it in.
+
+A parameter's particles are named the same way, so a def picks atoms by name in whatever set it is given:
+
+```python
+# on P
+def tau(r: set):
+    return angle(r['N'], r['CA'], r['C'])
+
+taus = tau(residues[1:-1])                             # -> float[13] °, frame
+```
 
 ```python
 # on P
@@ -1184,12 +1207,13 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | W0501 | Units that do not match | adds Å to degrees; the result's unit becomes unknown | `unitless(...)` |
 | E0502 | A unit string that md_unit cannot read | `'kJ/mool'` is not a unit |  |
 | E0503 | A unit after the slash of a compound unit that the script also binds as a name | `K` is a unit in `kJ/mol/K`, and a name here | `(1.0 kJ/mol)/K` divides by the name, `1.0 'kJ/mol/K'` is the unit |
-| W0601 | A selector that matches nothing in its scope; set algebra such as a and b never warns | `residues(250)` is not among this group's 241 particles |  |
+| W0601 | A selector that matches nothing in its scope, or a particle name no particle has; set algebra such as a and b never warns | `residues(250)` is not among this group's 241 particles | `residues('GTP')` for `residues['GTP']` |
 | W0602 | `particles(resid=...)` with an id in several chains | `resid=501` matches chains A and B; the merge would hide it | `chain='A'` |
 | W0603 | Groups with no values in `by=` | 15 residues have no values in `_z` | a narrower group |
 | W0605 | Equal extents that describe different units, paired by position | pairs the 433 residues of chain A with the 433 of chain B by position | common(a, b, by='id') |
 | W0607 | An unannotated argument over the same units as a dimension the call maps over | cutoff is float\[433\] over the residues of chain A, and the call maps over them; it is passed whole, so the result is bool\[433\]\[433\] | cutoff: float |
 | W0608 | A minimum of distances that pairs every point with itself, so it is zero | each of the 433 centres is its own nearest | `closest_pair(c[:, None], c, distinct=True)` |
+| W0609 | A particle name that some sets of a subscript lack, or hold twice: their entries are missing | a particle named 'CB' is one per set in 403 of 433 sets; 30 have none, and their entries are missing |  |
 | E0701 | A v1 spelling | `residue(1:4)` is v1; positions are subscripts | `residues[0:4]` |
 | E0801 | A construct not supported yet | `while` is not supported yet |  |
 | E0802 | Recursion | `walk` calls itself |  |

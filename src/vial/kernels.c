@@ -463,6 +463,17 @@ bool vial_k_setop(vial_kctx_t* k, uint16_t sub, const vial_val_t* a, const vial_
         case VIAL_KW_AND:  parts[io] = vial_sets_and(a->sets, i, b->sets, j, k->alloc); break;
         case VIAL_KW_OR:   parts[io] = vial_sets_or(a->sets, i, b->sets, j, k->alloc); break;
         case VIAL_KW_NOT:  parts[io] = vial_sets_not(a->sets, b->sets, j, k->alloc); break;     // [scope, a]
+        case VIAL_SETOP_ONE: {
+            // s['CA']: the one particle of the name, or none where there is not exactly one
+            parts[io] = vial_sets_and(a->sets, i, b->sets, j, k->alloc);
+            const uint32_t sz = vial_sets_size(parts[io], 0);
+            if (sz != 1) {
+                parts[io]->offset[1] = parts[io]->offset[0];
+                vial_rt_note(k, "R0101", sz ? "a set has several particles of the name; its entry is missing"
+                                            : "a set has no particle of the name; its entry is missing");
+            }
+            break;
+        }
         default: {
             // a and not b
             vial_sets_t* one = vial_sets_pick(a->sets, &i, 1, k->alloc);

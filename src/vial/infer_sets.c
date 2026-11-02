@@ -494,6 +494,96 @@ vial_value_t vx_sets_not(infer_t* x, const vial_value_t* a) {
     return sets_value(vial_sets_not(x->all, a->sets, 0, x->alloc));
 }
 
+// ### NAMES ###
+
+bool vx_name_is_glob(str_t name) {
+    return memchr(name.ptr, '*', name.len) || memchr(name.ptr, '?', name.len);
+}
+
+static vial_sets_t* select_named(infer_t* x, uint8_t level, str_t name) {
+    vial_select_t q = {.level = level};
+    vial_filter_t f = {.key = VIAL_KEY_NAME};
+    md_array_push(f.any, ((vial_match_t){.kind = 0, .s = name}), x->alloc);
+    md_array_push(q.filters, f, x->alloc);
+    return vial_select(x->sys, &q, x->alloc);
+}
+
+const vial_sets_t* vx_named_particles(infer_t* x, str_t name) {
+    return x->sys ? select_named(x, VIAL_LEVEL_PARTICLE, name) : NULL;
+}
+
+T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const T* a) {
+    const T st = vx_infer(x, in);
+    if (vial_type_is_error(&st)) return st;
+    const vial_value_t nv = vx_value_of(x, in);
+    if (nv.kind != VIAL_VAL_STR) {
+        vx_diag_fix(x, "E0319", in, NULL, "a set's particles are named by a constant string");
+        return vial_type_error();
+    }
+    const str_t name = nv.s;
+    const bool glob = vx_name_is_glob(name);
+    const bool said = vial_diag_at(x->diags, x->t->nodes[in].span.beg);    // an f-string, refused already
+    T t = *a;
+    t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+    if (!glob) t.flags |= VIAL_TYPE_ONE_PARTICLE;   // one particle per set by what the subscript means
+    if (!x->sys) return t;
+    const vial_sets_t* named = vx_named_particles(x, name);
+    if (said) return vial_type_error();
+    if (vial_sets_size(named, 0) == 0) {
+        // residues['ALA'] names particles: a residue name is residues('ALA')
+        const vial_sets_t* res = select_named(x, VIAL_LEVEL_RESIDUE, name);
+        if (res->count) {
+            char fix[96];
+            snprintf(fix, sizeof(fix), "residues('%.*s')", (int)MIN(name.len, 60), name.ptr);
+            vx_diag_fix(x, "W0601", in, fix, "no particle is named '%.*s'; a subscript names particles, and residues of that name are %s",
+                (int)name.len, name.ptr, fix);
+        } else {
+            vx_diag_fix(x, "W0601", in, NULL, "no particle is named '%.*s'", (int)name.len, name.ptr);
+        }
+    }
+    const vial_value_t av = vx_value_of(x, on);
+    if (av.kind != VIAL_VAL_SETS || t.stage != VIAL_STAGE_STATIC) return t;
+    vial_sets_t* r = av.sets->single ? vial_sets_and(av.sets, 0, named, 0, x->alloc) : vial_sets_boolop_each(av.sets, named, true, x->alloc);
+    if (av.sets->single) r->single = true;
+    if (!glob) {
+        // The sets without the name, or with it twice, are emptied: their point is missing
+        uint32_t none = 0, several = 0, first_size = r->count ? vial_sets_size(r, 0) : 0;
+        uint32_t* keep = md_alloc(x->alloc, (r->count + 1) * sizeof(uint32_t));
+        uint32_t at = 0;
+        keep[0] = 0;
+        for (uint32_t i = 0; i < r->count; ++i) {
+            const uint32_t sz = vial_sets_size(r, i);
+            none += sz == 0;
+            several += sz > 1;
+            if (sz == 1) r->idx[at++] = vial_sets_items(r, i)[0];
+            keep[i + 1] = at;
+        }
+        r->offset = keep;
+        if ((none || several) && vial_sets_size(named, 0) == 0) {
+            t.flags |= VIAL_TYPE_MISSING;      // no particle has the name at all: W0601 said so
+        } else if (none || several) {
+            t.flags |= VIAL_TYPE_MISSING;
+            char what[96];
+            if (none && several) snprintf(what, sizeof(what), "%u %s none and %u several", none, none == 1 ? "has" : "have", several);
+            else if (none) snprintf(what, sizeof(what), "%u %s none", none, none == 1 ? "has" : "have");
+            else snprintf(what, sizeof(what), "%u %s several", several, several == 1 ? "has" : "have");
+            if (av.sets->single) {
+                if (none) {
+                    vx_diag_fix(x, "W0609", id, NULL, "the set has no particle named '%.*s', so its point is missing", (int)name.len, name.ptr);
+                } else {
+                    vx_diag_fix(x, "W0609", id, NULL, "the set has %u particles named '%.*s', and a name picks one per set: subscript its units, "
+                        "such as residues(s)['%.*s']", first_size, (int)name.len, name.ptr, (int)name.len, name.ptr);
+                }
+            } else {
+                vx_diag_fix(x, "W0609", id, NULL, "a particle named '%.*s' is one per set in %u of %u sets; %s, and %s missing",
+                    (int)name.len, name.ptr, r->count - none - several, r->count, what, none + several == 1 ? "its entry is" : "their entries are");
+            }
+        }
+    }
+    vx_set_value(x, id, sets_value(r));
+    return t;
+}
+
 // ### INDEXING ###
 
 // Python's slice over n: the positions it takes, in order

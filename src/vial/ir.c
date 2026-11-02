@@ -255,7 +255,7 @@ static const char* op_text(uint16_t kind, uint16_t sub) {
     case VIAL_IR_BINARY:  return vial_op_str((vial_op_t)sub);
     case VIAL_IR_COMPARE: return vial_cmp_str((vial_cmp_t)sub);
     case VIAL_IR_LOGIC:   return sub == VIAL_KW_AND ? "and" : "or";
-    case VIAL_IR_SETOP:   return sub == VIAL_KW_AND ? "and" : sub == VIAL_KW_OR ? "or" : sub == VIAL_KW_NOT ? "not" : "and not";
+    case VIAL_IR_SETOP:   return sub == VIAL_KW_AND ? "and" : sub == VIAL_KW_OR ? "or" : sub == VIAL_KW_NOT ? "not" : sub == VIAL_SETOP_ONE ? "and one of" : "and not";
     default:              return vial_ir_kind_str((vial_ir_kind_t)kind);
     }
 }

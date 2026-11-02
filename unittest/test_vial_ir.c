@@ -1887,6 +1887,43 @@ UTEST(vial_ir, fast_paths_agree) {
     vial_ir__end(&r);
 }
 
+// s['CA'] every way it is evaluated: known when compiling, in a mapped def, in a comprehension, and as the set algebra it
+// stands for; and a name some sets lack, missing there in each
+UTEST(vial_ir, particle_names_agree) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL);
+    const char* src =
+        "rs = residues[1:6]\n"
+        "_a = angle(rs['N'], rs['CA'], rs['C'])\n"
+        "def f(r: set):\n"
+        "    return angle(r['N'], r['CA'], r['C'])\n"
+        "_b = f(rs)\n"
+        "_c = [angle(r['N'], r['CA'], r['C']) for r in rs]\n"
+        "_d = angle(rs and particles(name='N'), rs and particles(name='CA'), rs and particles(name='C'))\n"
+        "def g(r: set):\n"
+        "    return distance(r['H'], r['N'])\n"
+        "_h = g(residues)\n"
+        "_h2 = distance(residues['H'], residues['N'])\n"
+        "_near = residues(within(6.0, of=residues[0]))\n"
+        "_e = distance(_near['CA'], _near['N'])\n"
+        "def cn(r: set):\n"
+        "    return distance((r and particles(name='CA')).com, (r and particles(name='N')).com)\n"
+        "bad = unitless(sum(abs(_a - _b)) + sum(abs(_a - _c)) + sum(abs(_a - _d))) + unitless(abs(mean(_h) - mean(_h2)))\n"
+        "near = abs(sum(_e) - sum(cn(_near)))\n";
+    vial_ir__run_t r;
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    double bad[64] = {0}, near[64] = {0};
+    const int64_t n = nf < 64 ? nf : 64;
+    EXPECT_TRUE(vial_ir__frames(&r, sys, n, "bad", bad));
+    vial_ir__end(&r);
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    EXPECT_TRUE(vial_ir__frames(&r, sys, n, "near", near));
+    vial_ir__end(&r);
+    // The same particles: the same bits, but for a centre of one particle, which goes through a weighted mean
+    for (int64_t fr = 0; fr < n; ++fr) { EXPECT_EQ(0.0, bad[fr]); EXPECT_NEAR(0.0, near[fr], 1e-4); }
+}
+
 // The closest and farthest pairs, which mdlib's kernels find, against the matrix: the same entry, and the first pair in
 // row order at it. Coordinates on a grid give many exact ties, and many within an ulp.
 UTEST(vial_ir, pair_extremes_match_matrix) {
