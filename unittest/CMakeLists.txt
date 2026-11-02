@@ -27,6 +27,8 @@ set (SRC_FILES
     test_edr.c
     test_cube.c
     test_dcd.c
+    test_amber.c
+    test_psf.c
     test_fifo.c
     test_intrinsics.c
     test_simd.c

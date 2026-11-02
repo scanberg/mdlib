@@ -154,6 +154,20 @@ set(SRC_FILES
   src/md_itp.h
   src/md_dcd.c
   src/md_dcd.h
+  src/md_topology_build.c
+  src/md_topology_build.h
+  src/md_amber_netcdf.c
+  src/md_amber_netcdf.h
+  src/md_amber_prmtop.c
+  src/md_amber_prmtop.h
+  src/md_amber_rst7.c
+  src/md_amber_rst7.h
+  src/md_amber_energy.c
+  src/md_amber_energy.h
+  src/md_psf.c
+  src/md_psf.h
+  src/md_namdbin.c
+  src/md_namdbin.h
   src/md_dssp.c
   src/md_dssp.h
   src/md_dssp_cg.inl
