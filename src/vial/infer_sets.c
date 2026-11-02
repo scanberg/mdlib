@@ -592,46 +592,145 @@ bool vx_is_particles_view(const infer_t* x, vial_node_id n) {
     return nn && str_eq(vx_text(x, nn), STR_LIT("particles"));
 }
 
-T vx_particle_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const T* a) {
+T vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const T* a) {
     if (!in || vx_kind(x, in) == VIAL_N_SLICE || vx_kind(x, in) == VIAL_N_TUPLE) {
         if (in) vx_infer(x, in);
-        vx_diag_fix(x, "E0319", id, NULL, "`.particles[i]` takes one position, the same within each set");
+        vx_diag_fix(x, "E0319", id, NULL, "`.particles[i]` takes a position, or a list of them, the same within each set");
         return err();
     }
     const T ix = vx_infer(x, in);
     if (vial_type_is_error(&ix)) return err();
-    if (!(ix.dtype == VIAL_DT_INT && ix.ndim == 0)) {
-        vx_diag_fix(x, "E0319", in, NULL, "`.particles[i]` takes an int, a position within each set; this is %s", vx_tstr(&ix));
+    const bool list = ix.dtype == VIAL_DT_INT && ix.ndim == 1;
+    if (!(ix.dtype == VIAL_DT_INT && ix.ndim == 0) && !list) {
+        vx_diag_fix(x, "E0319", in, NULL, "`.particles[i]` takes an int, or a list of them, positions within each set; this is %s", vx_tstr(&ix));
+        return err();
+    }
+    if (list && a->ndim >= VIAL_MAX_DIMS) {
+        vx_diag_fix(x, "E0308", id, NULL, "the result would have 7 dimensions; the limit is 6");
         return err();
     }
     T t = *a;
     t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
     t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    if (list) {
+        vial_extent_t e = ix.dims[0];
+        e.desc = 0;
+        vial_type_push_dim(&t, e);
+    }
     join_stage(&t, &ix);
-    const vial_value_t av = vx_value_of(x, vx_child(x, view, 0)), iv = vx_value_of(x, in);
-    if (av.kind != VIAL_VAL_SETS || iv.kind != VIAL_VAL_INT || t.stage != VIAL_STAGE_STATIC) return t;
+    // The positions, when known
+    const vial_value_t av = vx_value_of(x, obj);
+    int64_t one;
+    int64_t* pos = &one;
+    uint32_t m = 1;
+    if (list) {
+        if (vx_kind(x, in) != VIAL_N_LIST) return t;
+        m = vx_num_children(x, in);
+        pos = md_alloc(x->alloc, (m ? m : 1) * sizeof(int64_t));
+        for (uint32_t j = 0; j < m; ++j) {
+            const vial_value_t c = vx_value_of(x, vx_child(x, in, j));
+            if (c.kind != VIAL_VAL_INT) return t;
+            pos[j] = c.i;
+        }
+    } else {
+        const vial_value_t iv = vx_value_of(x, in);
+        if (iv.kind != VIAL_VAL_INT) return t;
+        one = iv.i;
+    }
+    if (av.kind != VIAL_VAL_SETS || t.stage != VIAL_STAGE_STATIC) return t;
     const vial_sets_t* s = av.sets;
+    const uint32_t total = s->count * m;
     vial_sets_t* r = md_alloc(x->alloc, sizeof(vial_sets_t));
-    *r = *s;
-    r->root = NULL;
-    r->offset = md_alloc(x->alloc, (s->count + 1) * sizeof(uint32_t));
-    r->idx = md_alloc(x->alloc, (s->count ? s->count : 1) * sizeof(uint32_t));
-    uint32_t at = 0, outside = 0;
+    memset(r, 0, sizeof(*r));
+    r->count = total;
+    r->single = s->single && !list;
+    if (!list) { r->level = s->level; r->unit = s->unit; }
+    r->offset = md_alloc(x->alloc, (total + 1) * sizeof(uint32_t));
+    r->idx = md_alloc(x->alloc, (total ? total : 1) * sizeof(uint32_t));
+    uint32_t at = 0, outside = 0, c = 0, worst = 0;
+    int64_t worst_pos = 0;
     r->offset[0] = 0;
     for (uint32_t i = 0; i < s->count; ++i) {
-        const int64_t n = vial_sets_size(s, i), q = iv.i < 0 ? iv.i + n : iv.i;
-        if (q >= 0 && q < n) r->idx[at++] = vial_sets_items(s, i)[q];
-        else outside += 1;
-        r->offset[i + 1] = at;
+        const int64_t n = vial_sets_size(s, i);
+        bool short_set = false;
+        for (uint32_t j = 0; j < m; ++j) {
+            const int64_t q = pos[j] < 0 ? pos[j] + n : pos[j];
+            if (q >= 0 && q < n) r->idx[at++] = vial_sets_items(s, i)[q];
+            else { short_set = true; if (!worst) worst_pos = pos[j]; worst = 1; }
+            r->offset[++c] = at;
+        }
+        outside += short_set;
     }
     if (outside) {
         t.flags |= VIAL_TYPE_MISSING;
         if (s->single) {
-            vx_diag_fix(x, "W0609", id, NULL, "position %lld is outside the set of %u particles, so its point is missing", (long long)iv.i,
+            vx_diag_fix(x, "W0609", id, NULL, "position %lld is outside the set of %u particles, so its point is missing", (long long)worst_pos,
                 vial_sets_size(s, 0));
         } else {
-            vx_diag_fix(x, "W0609", id, NULL, "position %lld is outside %u of %u sets, which have fewer particles; %s missing", (long long)iv.i,
+            vx_diag_fix(x, "W0609", id, NULL, "position %lld is outside %u of %u sets, which have fewer particles; %s missing", (long long)worst_pos,
                 outside, s->count, outside == 1 ? "its entry is" : "their entries are");
+        }
+    }
+    vx_set_value(x, id, sets_value(r));
+    return t;
+}
+
+T vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const T* a) {
+    const uint32_t m = vx_num_children(x, in);
+    str_t* names = md_alloc(x->alloc, (m ? m : 1) * sizeof(str_t));
+    for (uint32_t j = 0; j < m; ++j) {
+        const vial_node_id c = vx_child(x, in, j);
+        const T ct = vx_infer(x, c);
+        if (vial_type_is_error(&ct)) return err();
+        const vial_value_t v = vx_value_of(x, c);
+        if (v.kind != VIAL_VAL_STR || vx_name_is_glob(v.s)) {
+            vx_diag_fix(x, "E0319", c, NULL, "a list names one particle each, as constant strings without * or ?");
+            return err();
+        }
+        names[j] = v.s;
+    }
+    if (!m) { vx_diag_fix(x, "E0319", in, NULL, "a list of names names at least one"); return err(); }
+    if (a->ndim >= VIAL_MAX_DIMS) { vx_diag_fix(x, "E0308", id, NULL, "the result would have 7 dimensions; the limit is 6"); return err(); }
+    T t = *a;
+    t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+    t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    vial_type_push_dim(&t, vial_extent_static(m));
+    if (!x->sys) return t;
+    const vial_sets_t** named = md_alloc(x->alloc, m * sizeof(vial_sets_t*));
+    for (uint32_t j = 0; j < m; ++j) {
+        named[j] = vx_named_particles(x, names[j]);
+        if (vial_sets_size(named[j], 0) == 0) vx_diag_fix(x, "W0601", vx_child(x, in, j), NULL, "no particle is named '%.*s'", (int)names[j].len, names[j].ptr);
+    }
+    const vial_value_t av = vx_value_of(x, on);
+    if (av.kind != VIAL_VAL_SETS || t.stage != VIAL_STAGE_STATIC) return t;
+    const vial_sets_t* s = av.sets;
+    const uint32_t total = s->count * m;
+    vial_sets_t* r = md_alloc(x->alloc, sizeof(vial_sets_t));
+    memset(r, 0, sizeof(*r));
+    r->count = total;
+    r->offset = md_alloc(x->alloc, (total + 1) * sizeof(uint32_t));
+    r->idx = md_alloc(x->alloc, (total ? total : 1) * sizeof(uint32_t));
+    uint32_t at = 0, c = 0, lacking = 0;
+    int first_bad = -1;
+    r->offset[0] = 0;
+    for (uint32_t i = 0; i < s->count; ++i) {
+        bool bad = false;
+        for (uint32_t j = 0; j < m; ++j) {
+            const vial_sets_t* both = vial_sets_and(s, i, named[j], 0, x->alloc);
+            if (vial_sets_size(both, 0) == 1) r->idx[at++] = vial_sets_items(both, 0)[0];
+            else { bad = true; if (first_bad < 0) first_bad = (int)j; }
+            r->offset[++c] = at;
+        }
+        lacking += bad;
+    }
+    if (lacking) {
+        t.flags |= VIAL_TYPE_MISSING;
+        const str_t n0 = names[first_bad];
+        if (s->single) {
+            vx_diag_fix(x, "W0609", id, NULL, "the set has no particle named '%.*s', or several, so its point is missing", (int)n0.len, n0.ptr);
+        } else {
+            vx_diag_fix(x, "W0609", id, NULL, "%u of %u sets lack a particle of a name, or have it twice, such as '%.*s'; %s missing",
+                lacking, s->count, (int)n0.len, n0.ptr, lacking == 1 ? "its entry is" : "their entries are");
         }
     }
     vx_set_value(x, id, sets_value(r));

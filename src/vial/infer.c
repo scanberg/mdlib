@@ -698,6 +698,12 @@ static T infer_compare(infer_t* x, vial_node_id id) {
         const uint16_t cmp = sub_of(x, on);
         T pair = scalar(VIAL_DT_BOOL);
         if (cmp == VIAL_CMP_IS || cmp == VIAL_CMP_IS_NOT) {
+            // x is None where x is no None: known from its type, whatever its value and stage, as b is None for a
+            // def's optional parameter given a set per frame
+            if ((a.dtype == VIAL_DT_NONE) != (b.dtype == VIAL_DT_NONE) && a.dtype != VIAL_DT_TUPLE && b.dtype != VIAL_DT_TUPLE) {
+                value = value && cmp == VIAL_CMP_IS_NOT;
+                continue;
+            }
             // is compares static values, such as a parameter with None
             if (a.stage != VIAL_STAGE_STATIC || b.stage != VIAL_STAGE_STATIC) {
                 diag_fix(x, "E0317", on, cmp == VIAL_CMP_IS ? "==" : "!=", "`is` compares values known when compiling, and this changes per frame");
@@ -1037,7 +1043,10 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
-    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) return vx_particle_at(x, id, on, in, &a);
+    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) return vx_particle_at(x, id, child(x, on, 0), in, &a);
+    if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) == VIAL_N_LIST && num_children(x, in) && kind_of(x, child(x, in, 0)) == VIAL_N_STRING) {
+        return vx_named_list(x, id, on, in, &a);
+    }
     if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) != VIAL_N_SLICE && kind_of(x, in) != VIAL_N_TUPLE) {
         // s['CA'], or a name bound to a string: a particle name
         const T ix = infer(x, in);
@@ -1050,6 +1059,12 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             if (in) infer(x, in);
             diag(x, "E0319", id, "a set takes one position, a slice or a list of positions");
             return err();
+        }
+        if (kind_of(x, in) != VIAL_N_SLICE) {
+            // A list of positions: one particle each, in the order listed, as NumPy gives a list's elements
+            const T ix = infer(x, in);
+            if (vial_type_is_error(&ix)) return err();
+            if (ix.dtype == VIAL_DT_INT && ix.ndim == 1) return vx_particle_at(x, id, on, in, &a);
         }
         T t = a;
         t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);

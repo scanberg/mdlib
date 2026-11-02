@@ -178,7 +178,11 @@ bool               vx_name_is_glob(str_t name);
 // s.particles, the particles of each set, as what a subscript or a call takes: s.particles[i] is the particle at position i
 // within each set, s.particles(name='O') those of each set that the keywords select. Not a value of its own.
 bool               vx_is_particles_view(const infer_t* x, vial_node_id n);
-vial_type_t        vx_particle_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const vial_type_t* a);
+// Positions within each set of what obj gives: one, s.particles[1], or a list, s.particles[[1, 0, 2]] and s[[1, 0, 2]] on
+// one set, stacked along a new last dimension in the order listed
+vial_type_t        vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const vial_type_t* a);
+// s[['N', 'CA', 'C']]: the named particles within each set, stacked along a new last dimension
+vial_type_t        vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const vial_type_t* a);
 vial_type_t        vx_particles_call(infer_t* x, vial_node_id call, vial_node_id view, const vial_type_t* a);
 const vial_sets_t* vx_named_particles(infer_t* x, str_t name);     // every particle of the name, NULL without a system
 

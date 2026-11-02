@@ -1,4 +1,10 @@
-def distance(a, b, between=None):
+def distance(a, b=None, between=None):
+    if b is None:
+        # One argument: two points stacked along its last dimension, as angle and dihedral take them
+        p = a.xyz
+        assert shape(p)[-2] == 2, "distance takes two points, or one array of them, float[2][3] or set[2] of single particles"
+        r = norm(displacement(p[..., 0, :], p[..., 1, :]))
+        return shown(r, line(p[..., 0, :], p[..., 1, :], label=r))
     if between is None:
         r = norm(displacement(a, b))
         return shown(r, line(a, b, label=r))

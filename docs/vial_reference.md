@@ -391,9 +391,12 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s.xyz` | a set's positions; coordinates themselves on coordinates | `float[n][3]` Å |
 | `c.x`, `c.y`, `c.z` | `c.xyz[..., 0]`, `[..., 1]`, `[..., 2]`, on a set or on coordinates |  |
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
+| `s[[1, 0, 2]]` on a set | its particles at those positions, one each, in the order listed, as NumPy gives a list's elements: `angle(particles(chain='A', resid=5)[[1, 0, 2]])` is v1's `angle(2,1,3) in residue(5)` | `set[3]` of one particle each |
 | `s['CA']` on a set or an array of sets | within each set, its particle of that name: one per set, so a point wherever a point is taken. `angle(rs['N'], rs['CA'], rs['C'])` is the angle in each residue of `rs`, as v1's `angle(...) in residue(...)` by position | the same shape, a set of one particle per set |
 | `s['H*']`, a name with `*` or `?` | within each set, its particles that match | the same shape, a set per set |
-| `s.particles[i]` on a set or an array of sets | within each set, its particle at position i, counted from the end when negative: v1's positions within a structure, `angle(rs.particles[1], rs.particles[0], rs.particles[2])` for v1's `angle(2,1,3) in residue(...)` | the same shape, a set of one particle per set |
+| `s[['N', 'CA', 'C']]` | within each set, the particle of each name, stacked along a new last dimension: `angle(rs[['N', 'CA', 'C']])` | the shape and `[3]`, one particle each |
+| `s.particles[i]` on a set or an array of sets | within each set, its particle at position i, counted from the end when negative: v1's positions within a structure | the same shape, a set of one particle per set |
+| `s.particles[[1, 0, 2]]` | within each set, its particles at those positions, stacked along a new last dimension: `angle(rs.particles[[1, 0, 2]])` is v1's `angle(2,1,3) in residue(...)` for every residue of `rs` | the shape and `[3]`, one particle each |
 | `s.particles(element='O')` | within each set, the particles the keywords select, as `particles()` takes them | the same shape, a set per set |
 | `s[mask]` on a set, with a bool per particle of s | its particles where the mask is true: `particles[particles.z in 20.0..25.0]` is a slab, as v1's `within_z(20:25)` | a set; frame stage when the mask is |
 | `at(x, frame=k)` | frame k of a frame value, read once before the other frames | a static value |
@@ -404,6 +407,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 
 - An out-of-range position on a static extent is E0304. On a dynamic extent it is R0101 in that frame, and the value is missing there; the compiler says so beforehand with W0405.
 - A name picks a particle within each set, so the result keeps the shape and labels of what it subscripts, and works the same on a def's parameter, a set per frame and the sets of a comprehension. A set without a particle of the name, or with two, has an empty set in its place, whose point is missing: `res_a['CB']` is missing for every glycine. When the sets are known when compiling, W0609 counts them; otherwise the run notes it (R0101) where it happens. A name no particle has is W0601, which points a residue's name at `residues('ALA')`: a subscript always names particles. For other keywords, `s and particles(element='O')`.
+- A list in a subscript stacks: `s[['N', 'CA', 'C']]` by names and `s.particles[[1, 0, 2]]` by positions give one particle per entry along a new last dimension, which `angle`, `dihedral` and `distance` take as their one argument. On one set, `s[[1, 0, 2]]` is the same as `s.particles[[1, 0, 2]]`; `particles(s[[1, 0, 2]])` merges them back into one set. A name in a list has no `*` or `?`.
 - `.particles` is the particles of each set, for the subscript or call it starts: positions there count within each set, in the file's order, so they depend on how a force field orders a residue's atoms, which a name does not. A set too short for a position has an empty set in its place, as for a name (W0609). Alone, `.particles` is E0319, with the fix `particles(s)` for all of them as one set; VIAL has no other methods, and `s.count` is E0319 with the fix `count(s)`.
 - `by=` works with every reduction and is defined as `[f(a[s]) for s in g]`. A group with no values gives a missing value and W0603, which counts them. `a[s]` and `by=` act on the first dimension of `a` that describes particles; an array with no such dimension is E0311.
 - `var` and `std` over frames run in one pass, with Welford's algorithm.
@@ -452,7 +456,11 @@ nca    = angle(rs['N'], rs['CA'], rs['C'])             # -> float[5] °, frame: 
 phi    = dihedral(rs[:-1]['C'], rs[1:]['N'], rs[1:]['CA'], rs[1:]['C'])   # -> float[4] °, frame: across neighbours
 _nn    = angle(_close['N'], _close['CA'], _close['C'])  # -> float[?] °, frame: of the residues near the first
 p1     = rs.particles[1]                               # -> set[5]: the second particle of each residue
-v1ang  = angle(rs.particles[1], rs.particles[0], rs.particles[2])   # -> float[5] °, frame: v1's angle(2,1,3) in residue(2:6)
+v1ang  = angle(rs.particles[[1, 0, 2]])                # -> float[5] °, frame: v1's angle(2,1,3) in residue(2:6)
+one    = angle(particles(resid=3)[[1, 0, 2]])          # -> float °, frame: v1's angle(2,1,3) in residue(3)
+nca2   = angle(rs[['N', 'CA', 'C']])                   # -> float[5] °, frame: nca, stacked
+nh     = distance(rs[['N', 'H']])                      # -> float[5] Å, frame
+bb     = rs[['N', 'CA', 'C']]                          # -> set[5][3]
 ox     = rs.particles(element='O')                     # -> set[5]: the oxygens of each residue
 far    = rs.particles[10]                              # warning W0609 -> set[5] | missing: a residue has 10 particles
 ```
@@ -520,7 +528,13 @@ per_res = drift(residues)                              # -> float[15] Å, frame:
 Functions marked *prelude* in the tables below are written in VIAL and compiled before every script. They are ordinary `def`s: specialized per call, fused like a user's code, shown in hover with their source. This section is generated from `vial/prelude.vial`, and the examples that use each function elsewhere in this reference are its tests. An error or warning raised inside a prelude function is reported at the user's call and names the function, as “distance: residues(1..4, chain='A') holds 4 sets of several particles”.
 
 ```python
-def distance(a, b, between=None):
+def distance(a, b=None, between=None):
+    if b is None:
+        # One argument: two points stacked along its last dimension, as angle and dihedral take them
+        p = a.xyz
+        assert shape(p)[-2] == 2, "distance takes two points, or one array of them, float[2][3] or set[2] of single particles"
+        r = norm(displacement(p[..., 0, :], p[..., 1, :]))
+        return shown(r, line(p[..., 0, :], p[..., 1, :], label=r))
     if between is None:
         r = norm(displacement(a, b))
         return shown(r, line(a, b, label=r))
@@ -605,13 +619,13 @@ Geometry takes points. A parameter declared `point` or `points`, and `.xyz`, are
 | `particles(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particles(fit(s.xyz, ref)))` works after a fit; an array with no such dimension is E0311 |
 | `s.com`, `com(s, weights='mass')` | `float[3]` Å | the centre of mass, periodic-aware; takes a set or points, and maps over arrays of sets. `com(s, weights=None)` is the centre of geometry, `centroid(s)` |
 | `centroid(s)` | `float[3]` Å | prelude: `com(s, weights=None)` |
-| `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Drawn as a line labelled with the value |
+| `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Also takes one argument of two points stacked along its last dimension, `float[2][3]` or `set[2]` of single particles, as `distance(r[['N', 'CA']])`, mapping over the dimensions before them. Drawn as a line labelled with the value |
 | `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: group, b: group)`, which is `min(distance(a.xyz[:, None], b.xyz))` for one group each and maps over arrays of groups; `max` for `'farthest'`. A group is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a search that skips most pairs, so no n×m matrix is computed or stored. Drawn as a line between the pair |
 | `displacement(a: point, b: point)` | `float[3]` Å | b minus a, minimum image |
 | `closest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the shortest distance from a point of p to a point of q under the minimum image, and the two points' indices; built in, with mdlib's distance kernel, which takes p eight points at a time and skips every point of q whose distance from their bounding sphere rules it out, so most pairs are never computed. The distance is the matrix's entry for the pair, the same bits `distance()` gives, and on equal entries the first pair in row order wins, as `argmin` has it: the kernel rounds in another order, so it also collects the pairs within rounding of its own extreme, and those are compared by their entries. `distinct=True` leaves out the pairs of a particle, or a unit such as a residue, with itself, by the dimensions' descriptions; for the nearest other point. The indices are computed only where they are used, as when hover draws the pair. Missing, with W0601, when p or q is empty |
 | `farthest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the longest distance, and its two indices |
-| `angle(a, b, c: point)` | `float` ° | also takes one `float[3][3]`, three points as rows; the one-argument form maps over leading dimensions, such as `set[k][3]` from `smiles_atoms` |
-| `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` |
+| `angle(a, b, c: point)` | `float` ° | also takes one `float[3][3]`, three points as rows; the one-argument form maps over leading dimensions, such as `set[k][3]` from `smiles_atoms` or `rs[['N', 'CA', 'C']]` |
+| `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` or `residues[['N', 'CA', 'CB', 'CG']]`, chi1 of every residue that has a CG |
 | `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`. Drawn as a sphere of that radius at the centre |
 | `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)`. Drawn as an arrow from the centre |
 | `within(r, of: points)` | `set`, frame | the scope's particles within r of any particle or point of `of`: d <= r, with d the bits `distance()` gives for the pair, under the minimum image; `of=` is always written, so `within(5.0, of=protein)` reads as it means and the radius cannot be mistaken for the set. `within(5.0, protein)` is E0203, with the fix `of=protein` |

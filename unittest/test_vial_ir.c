@@ -1925,8 +1925,22 @@ UTEST(vial_ir, particle_names_agree) {
         "    return count(r.particles(element='H'))\n"
         "_s = nh(_near)\n"
         "_s2 = count(_near and particles(element='H'))\n"
+        "_t1 = angle(rs[['N', 'CA', 'C']])\n"
+        "_t2 = angle(rs.particles[[1, 0, 2]])\n"
+        "def st(r: set):\n"
+        "    return angle(r[['N', 'CA', 'C']])\n"
+        "def sp(r: set):\n"
+        "    return angle(r[[1, 0, 2]])\n"
+        "_t3 = st(_near)\n"
+        "_t4 = angle(_near['N'], _near['CA'], _near['C'])\n"
+        "_t5 = sp(_near)\n"
+        "_t6 = angle(_near.particles[[1, 0, 2]])\n"
+        "_t7 = distance(rs[['N', 'CA']])\n"
+        "_t8 = distance(rs['N'], rs['CA'])\n"
         "bad = unitless(sum(abs(_a - _b)) + sum(abs(_a - _c)) + sum(abs(_a - _d))) + unitless(abs(mean(_h) - mean(_h2)))"
-        " + unitless(sum(abs(_p - _q)) + sum(abs(_p - _r))) + sum(abs(_s - _s2))\n"
+        " + unitless(sum(abs(_p - _q)) + sum(abs(_p - _r))) + sum(abs(_s - _s2))"
+        " + unitless(sum(abs(_t1 - _a)) + sum(abs(_t2 - _p)) + abs(sum(_t3) - sum(_t4)) + abs(sum(_t5) - sum(_t6)))"
+        " + unitless(sum(abs(_t7 - _t8)))\n"
         "near = abs(sum(_e) - sum(cn(_near)))\n";
     vial_ir__run_t r;
     ASSERT_TRUE(vial_ir__start(&r, src, sys));

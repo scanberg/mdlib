@@ -1738,6 +1738,8 @@ static bool k_transpose(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out) {
         size_t s = 1;
         for (int d = a->ndim - 1; d >= 0; --d) { st[d] = s; s *= a->dims[d]; }
     }
+    // Sets have no data of fixed size: they are picked in the new order, as lists of their own
+    uint32_t* pos = a->dtype == VIAL_DT_SET ? md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t)) : NULL;
     for (size_t i = 0; i < n; ++i) {
         // Output index i over reversed dims: its source offset
         size_t rem = i, off = 0;
@@ -1746,8 +1748,13 @@ static bool k_transpose(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out) {
             rem /= dims[d];
             off += x * st[a->ndim - 1 - d];
         }
-        memcpy((uint8_t*)o.data + i * es, (const uint8_t*)a->data + off * es, es);
+        if (pos) pos[i] = (uint32_t)off;
+        else memcpy((uint8_t*)o.data + i * es, (const uint8_t*)a->data + off * es, es);
         if (vial_val_is_missing(a, off)) vial_val_set_missing(&o, i, k->alloc);
+    }
+    if (pos) {
+        if (!a->sets) return vial_rt_fail(k, "R0103", "an array of sets without its sets");
+        o.sets = vial_sets_pick(a->sets, pos, (uint32_t)n, k->alloc);
     }
     *out = o;
     return true;

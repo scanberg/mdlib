@@ -349,8 +349,56 @@ static vial_ssa_t emit_subscript(infer_t* x, vial_node_id id, const T* t) {
         const int64_t i = k.i < 0 ? k.i + at->num_elems : k.i;
         return op1(x, id, VIAL_IR_ELEM, 0, (uint32_t)i, &a, 1, t);
     }
-    if (at->dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) {
-        // s.particles[i]: within each set
+    const T* in_t = type_at(x, in);
+    const bool each = at->dtype == VIAL_DT_SET && (vx_is_particles_view(x, on) ||
+                      (at->ndim == 0 && vx_kind(x, in) != VIAL_N_SLICE && in_t->dtype == VIAL_DT_INT && in_t->ndim == 1));
+    if (at->dtype == VIAL_DT_SET && vx_kind(x, in) == VIAL_N_LIST && t->ndim == at->ndim + 1 && in_t->dtype != VIAL_DT_INT) {
+        // s[['N', 'CA', 'C']]: s[..., None] and the particles of each name, one of each per set
+        const uint32_t m = vx_num_children(x, in);
+        vial_sets_t** parts = md_alloc(x->ir->alloc, (m ? m : 1) * sizeof(vial_sets_t*));
+        uint32_t total = 0;
+        for (uint32_t j = 0; j < m; ++j) {
+            const vial_value_t nv = vx_value_of(x, vx_child(x, in, j));
+            const vial_sets_t* named = nv.kind == VIAL_VAL_STR ? vx_named_particles(x, nv.s) : NULL;
+            if (!named) { vx_lower_fail(x, in, "particle names without a system"); return 0; }
+            parts[j] = (vial_sets_t*)named;
+            total += vial_sets_size(named, 0);
+        }
+        vial_sets_t* b = md_alloc(x->ir->alloc, sizeof(vial_sets_t));
+        memset(b, 0, sizeof(*b));
+        b->count = m;
+        b->offset = md_alloc(x->ir->alloc, (m + 1) * sizeof(uint32_t));
+        b->idx = md_alloc(x->ir->alloc, (total ? total : 1) * sizeof(uint32_t));
+        uint32_t pos = 0;
+        b->offset[0] = 0;
+        for (uint32_t j = 0; j < m; ++j) {
+            const uint32_t sz = vial_sets_size(parts[j], 0);
+            memcpy(b->idx + pos, vial_sets_items(parts[j], 0), sz * sizeof(uint32_t));
+            pos += sz;
+            b->offset[j + 1] = pos;
+        }
+        vial_val_t bv = vial_val_sets(b);
+        bv.ndim = 1;
+        bv.dims[0] = m;
+        T bt = vial_type_scalar(VIAL_DT_SET);
+        vial_type_push_dim(&bt, vial_extent_static(m));
+        const vial_ssa_t bs = vial_ir_const(x->ir, &bv, &bt, node_text(x, in), vx_span(x, in));
+        vial_ssa_t as = a;
+        if (at->ndim) {
+            // a[..., None], so that the names broadcast along a new last dimension
+            T nt = *at;
+            vial_type_push_dim(&nt, vial_extent_static(1));
+            const uint32_t first = (uint32_t)md_array_size(x->ir->index_items);
+            md_array_push(x->ir->index_items, ((vial_index_item_t){.kind = VIAL_INDEX_ELLIPSIS}), x->ir->alloc);
+            md_array_push(x->ir->index_items, ((vial_index_item_t){.kind = VIAL_INDEX_NEWAXIS}), x->ir->alloc);
+            const uint32_t op = vial_ir_emit(x->ir, &(vial_ir_emit_t){.kind = VIAL_IR_INDEX, .sub = 2, .aux = first, .args = &a, .num_args = 1,
+                                                                      .types = &nt, .num_results = 1, .span = vx_span(x, id)});
+            as = x->ir->ops[op].result;
+        }
+        return op1(x, id, VIAL_IR_SETOP, VIAL_SETOP_ONE, 0, (vial_ssa_t[]){as, bs}, 2, t);
+    }
+    if (each) {
+        // s.particles[i], s.particles[[i, j]] and s[[i, j]] on one set: within each set
         const vial_ssa_t iv = vx_ssa(x, in);
         if (!iv) return 0;
         const uint32_t first = (uint32_t)md_array_size(x->ir->index_items);

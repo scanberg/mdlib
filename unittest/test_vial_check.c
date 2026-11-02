@@ -294,10 +294,35 @@ UTEST_F(vial_check, particles_of_each) {
         "E0319 2: `.particles` picks within each set, as .particles[i] or .particles(name=...); all of them as one set is particles(rs) | particles(rs)\n");
     EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs.particles(1:3)\n", "E0701 2: `rs.particles(1:3)` is v1; positions are subscripts\n");
     EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs.particles('O')\n", "E0203 2: `.particles(...)` takes keywords, as particles() does: name=, element=, ...\n");
-    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs.particles[0:2]\n", "E0319 2: `.particles[i]` takes one position, the same within each set\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs.particles[0:2]\n", "E0319 2: `.particles[i]` takes a position, or a list of them, the same within each set\n");
     // Methods are refused, not silently dropped
     EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nc = rs.count\n", "E0319 2: `.count` is no property: VIAL calls functions, count(rs) | count(rs)\n");
     EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nc = rs.count()\n", "E0319 2: `.count` is no property: VIAL calls functions, count(rs, ...)\n");
+}
+
+// Stacked: s[['N', 'CA', 'C']], s[[1, 0, 2]] on one set and s.particles[[1, 0, 2]], along a new last dimension, which
+// angle, dihedral and distance take as one argument
+UTEST_F(vial_check, stacked_particles) {
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(P != NULL);
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\ns = rs[['N', 'CA', 'C']]\n", 2, "set[5][3], static");
+    EXPECT_TYPE_ON(P, "a = angle(particles(resid=3)[['N', 'CA', 'C']])\n", 1, u8"float °, frame");
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\na = angle(rs[['N', 'CA', 'C']])\n", 2, u8"float[5] °, frame");
+    EXPECT_TYPE_ON(P, "a = angle(particles(resid=3)[[1, 0, 2]])\n", 1, u8"float °, frame");
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\na = angle(rs.particles[[1, 0, 2]])\n", 2, u8"float[5] °, frame");
+    EXPECT_TYPE_ON(P, "d = dihedral(residues[['N', 'CA', 'CB', 'HB1']])\n", 1, u8"float[15] °, frame");
+    EXPECT_TYPE_ON(P, "rs = residues[1:6]\nd = distance(rs[['N', 'CA']])\n", 2, u8"float[5] Å, frame");
+    EXPECT_TYPE_ON(P, "d = distance(particles(resid=3)[[0, 1]])\n", 1, u8"float Å, frame");
+    EXPECT_TYPE_ON(P, "def f(r: set):\n    return angle(r[['N', 'CA', 'C']])\nx = f(residues[1:6])\n", 3, u8"float[5] °, frame");
+    EXPECT_TYPE_ON(P, "def g(r: set):\n    return angle(r[[1, 0, 2]])\nx = g(residues[1:6])\n", 3, u8"float[5] °, frame");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nb = rs[['N', 'C*']]\n", "E0319 2: a list names one particle each, as constant strings without * or ?\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nd = distance(rs[['N', 'CA', 'C']])\n",
+        "E0314 2: distance takes two points, or one array of them, float[2][3] or set[2] of single particles\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nfar = rs.particles[[0, 20]]\n",
+        "W0609 2: position 20 is outside 5 of 5 sets, which have fewer particles; their entries are missing\n");
+    EXPECT_DIAGS_ON(P, "rs = residues[1:6]\nh = rs[['N', 'H']]\n", "");
+    EXPECT_DIAGS_ON(P, "h = residues[['N', 'H']]\n",
+        "W0609 1: 1 of 15 sets lack a particle of a name, or have it twice, such as 'H'; its entry is missing\n");
 }
 
 UTEST_F(vial_check, selectors) {
@@ -340,7 +365,9 @@ UTEST_F(vial_check, set_indexing_and_labels) {
     ASSERT_TRUE(T != NULL);
     EXPECT_TYPE_ON(T, "s = particles[0]\n", 1, "set, static");
     EXPECT_TYPE_ON(T, "n = count(particles(resname='GTP')[0:3])\n", 1, "int, static = 3");
-    EXPECT_TYPE_ON(T, "n = count(particles(resname='GTP')[[0, 5, 5]])\n", 1, "int, static = 2");
+    // A list of positions: one particle each, in that order, as NumPy gives a list's elements
+    EXPECT_TYPE_ON(T, "n = count(particles(resname='GTP')[[0, 5, 5]])\n", 1, "int[3], static");
+    EXPECT_TYPE_ON(T, "s = particles(resname='GTP')[[5, 0]]\n", 1, "set[2], static");
     EXPECT_TYPE_ON(T, "r = residues[-3:]\n", 1, "set[3], static");
     EXPECT_TYPE_ON(T, "n = count(residues[0])\n", 1, "int, static = 8");
     EXPECT_TYPE_ON(T, "c = count(residues(1..3, chain='A'))\n", 1, "int[3], static");
@@ -658,7 +685,9 @@ UTEST_F(vial_check, stages) {
     EXPECT_STREQ("E0404 3\n", diags_frames(WITH("f = at(at(ends, frame=1) + ends, frame=0)\n"), P, 0, utest_fixture->alloc));
     EXPECT_STREQ("E0313 3\n", diags_frames(WITH("s = smooth(ends, 4)\n"), P, 0, utest_fixture->alloc));
     EXPECT_STREQ("E0403 3\n", diags_frames(WITH("if ends < 5.0:\n    pass\n"), P, 0, utest_fixture->alloc));
-    EXPECT_STREQ("E0317 3\n", diags_frames(WITH("b = ends is None\n"), P, 0, utest_fixture->alloc));
+    // A value per frame is never None, which its type says
+    EXPECT_STREQ("", diags_frames(WITH("b = ends is None\n"), P, 0, utest_fixture->alloc));
+    EXPECT_TYPE_ON(P, WITH("b = ends is not None\n"), 3, "bool, static = True");
     EXPECT_STREQ("E0401 3\n", diags_frames(WITH("d = distance(within(3.0, of=ca[0]).xyz, ca[0])\n"), P, 0, utest_fixture->alloc));
     EXPECT_STREQ("", diags_frames(WITH("_d = distance(within(3.0, of=ca[0]).xyz, ca[0])\n"), P, 0, utest_fixture->alloc));
     EXPECT_STREQ("W0404 3\n", diags_frames(WITH("dm = distance(particles.xyz[:, None], particles.xyz)\n"), P, 1000, utest_fixture->alloc));
