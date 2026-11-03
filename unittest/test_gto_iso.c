@@ -2223,6 +2223,7 @@ typedef struct iso_gpu_t {
     md_gpu_device_t dev;
     md_gpu_stream_t s;
     md_gpu_kernel_t k[ISO_K_COUNT];
+    md_gpu_temp_t   scope;      // the open extraction's; iso_gpu_alloc allocates in it
 } iso_gpu_t;
 
 static bool iso_gpu_init(iso_gpu_t* g) {
@@ -2262,7 +2263,7 @@ static void iso_gpu_free(iso_gpu_t* g) {
 
 // All device buffers of one extraction are temp allocations in the extraction's scope.
 static md_gpu_addr_t iso_gpu_alloc(iso_gpu_t* g, size_t bytes) {
-    return md_gpu_temp_alloc(g->s, MD_GPU_MEM_DEVICE, bytes ? bytes : 16).gpu;
+    return md_gpu_temp_alloc(g->scope, MD_GPU_MEM_DEVICE, bytes ? bytes : 16).gpu;
 }
 
 static md_gpu_addr_t iso_gpu_upload(iso_gpu_t* g, const void* src, size_t bytes) {
@@ -2381,8 +2382,7 @@ static void iso_gpu_stage(iso_gpu_t* g, const iso_gpu_opts_t* o, int stage, md_t
 
 static bool iso_gpu_extract_ex(iso_gpu_t* g, const iso_field_t* f, double iso, double h, const iso_gpu_opts_t* opt, iso_gpu_mesh_t* out) {
     memset(out, 0, sizeof(*out));
-    md_gpu_temp_t scope = md_gpu_temp_begin(g->s);
-    (void)scope;
+    g->scope = md_gpu_temp_begin(g->s);
     md_tick_t t0 = md_tick_now();
     md_tick_t ts = t0;
     const int relax_iters = opt->relax_iters;
@@ -2393,7 +2393,7 @@ static bool iso_gpu_extract_ex(iso_gpu_t* g, const iso_field_t* f, double iso, d
     const int Lb = iso_root(f, iso, 4.0 * h, out->origin);
     out->h = h;
     out->L_brick = Lb;
-    if (Lb >= 10) { md_gpu_temp_end(g->s, scope); return false; }   // brick coordinates are packed in 10 bits
+    if (Lb >= 10) { md_gpu_temp_end(g->scope); return false; }   // brick coordinates are packed in 10 bits
 
     iso_gpu_args_t a = {0};
     a.origin_h   = (md_gpu_float4){(float)out->origin[0], (float)out->origin[1], (float)out->origin[2], (float)h};
@@ -2437,9 +2437,9 @@ static bool iso_gpu_extract_ex(iso_gpu_t* g, const iso_field_t* f, double iso, d
     iso_gpu_read(g, ctr, counters, sizeof(ctr));
     out->t_octree = iso_seconds_since(t0);
     iso_gpu_stage(g, opt, ISO_GPU_STAGE_OCTREE, &ts);
-    if (ctr[3] || nb > ISO_GPU_NODE_CAP) { out->overflow = ctr[3] + 1; md_gpu_temp_end(g->s, scope); return false; }
+    if (ctr[3] || nb > ISO_GPU_NODE_CAP) { out->overflow = ctr[3] + 1; md_gpu_temp_end(g->scope); return false; }
     out->nb = nb;
-    if (nb == 0) { md_gpu_temp_end(g->s, scope); return true; }
+    if (nb == 0) { md_gpu_temp_end(g->scope); return true; }
 
     // ---- bricks: hash, corners, Surface Nets
     md_tick_t t1 = md_tick_now();
@@ -2507,7 +2507,7 @@ static bool iso_gpu_extract_ex(iso_gpu_t* g, const iso_field_t* f, double iso, d
     out->nq = ctr[1] < cap_q ? ctr[1] : cap_q;
     out->open_edges = ctr[2];
     out->overflow = ctr[3];
-    if (opt->no_readback) { md_gpu_temp_end(g->s, scope); return true; }
+    if (opt->no_readback) { md_gpu_temp_end(g->scope); return true; }
 
     out->bricks  = (uint32_t*)malloc(sizeof(md_gpu_uint4) * nb);
     out->corners = (float*)malloc(sizeof(float) * 125 * nb);
@@ -2523,7 +2523,7 @@ static bool iso_gpu_extract_ex(iso_gpu_t* g, const iso_field_t* f, double iso, d
     iso_gpu_read(g, out->nrm, a.vnrm, sizeof(float) * 4 * out->nv);
     iso_gpu_read(g, out->quads, a.quads, sizeof(uint32_t) * 4 * out->nq);
     iso_gpu_read(g, out->tris, a.tris, sizeof(uint32_t) * 6 * out->nq);
-    md_gpu_temp_end(g->s, scope);
+    md_gpu_temp_end(g->scope);
     return true;
 }
 
@@ -3171,9 +3171,9 @@ UTEST(gto_iso_gpu_lib, job_matches_extract) {
             prog = pr;
             // other work on the stream between the polls
             md_gpu_temp_t t = md_gpu_temp_begin(g.s);
-            md_gpu_mem_t tm = md_gpu_temp_alloc(g.s, MD_GPU_MEM_DEVICE, 1 << 16);
+            md_gpu_mem_t tm = md_gpu_temp_alloc(t, MD_GPU_MEM_DEVICE, 1 << 16);
             if (tm.gpu) md_gpu_memset(g.s, tm.gpu, 0x5A, 1 << 16);
-            md_gpu_temp_end(g.s, t);
+            md_gpu_temp_end(t);
             md_gpu_memset(g.s, scratch.gpu, 0, 4096);
             md_gpu_stream_flush(g.s);
         }

@@ -1085,8 +1085,8 @@ UTEST(gpu_render, inside_a_pass_only_draws_and_state_are_allowed) {
     md_gpu_mem_t m = md_gpu_malloc(f.gfx, MD_GPU_MEM_DEVICE, 64);
     EXPECT_TRUE(m.gpu != 0);
     md_gpu_temp_t scope = md_gpu_temp_begin(f.gfx);
-    EXPECT_TRUE(md_gpu_temp_alloc(f.gfx, MD_GPU_MEM_HOST_WRITE, 64).cpu != NULL);
-    md_gpu_temp_end(f.gfx, scope);
+    EXPECT_TRUE(md_gpu_temp_alloc(scope, MD_GPU_MEM_HOST_WRITE, 64).cpu != NULL);
+    md_gpu_temp_end(scope);
     /* Format mismatches: colour format, and a depth format the pass lacks. */
     EXPECT_FALSE(MD_GPU_DRAW(f.gfx, p16, 3, 1, a));
     EXPECT_FALSE(MD_GPU_DRAW(f.gfx, pd, 3, 1, a));
@@ -1232,8 +1232,8 @@ static void imgui_render(const imgui_renderer_t* r, md_gpu_stream_t s, const ImD
         const ImDrawList* list = &dd->lists[l];
         const size_t vbytes = (size_t)list->vtx_count * sizeof(ImDrawVert);
         const size_t ibytes = (size_t)list->idx_count * sizeof(ImDrawIdx);
-        md_gpu_mem_t v = md_gpu_temp_alloc(s, MD_GPU_MEM_HOST_WRITE, vbytes);
-        md_gpu_mem_t i = md_gpu_temp_alloc(s, MD_GPU_MEM_HOST_WRITE, ibytes);
+        md_gpu_mem_t v = md_gpu_temp_alloc(scope, MD_GPU_MEM_HOST_WRITE, vbytes);
+        md_gpu_mem_t i = md_gpu_temp_alloc(scope, MD_GPU_MEM_HOST_WRITE, ibytes);
         if (!v.cpu || !i.cpu) break;
         memcpy(v.cpu, list->vtx, vbytes);
         memcpy(i.cpu, list->idx, ibytes);
@@ -1259,7 +1259,7 @@ static void imgui_render(const imgui_renderer_t* r, md_gpu_stream_t s, const ImD
                                 cmd->elem_count, 1, a);
         }
     }
-    md_gpu_temp_end(s, scope);
+    md_gpu_temp_end(scope);
 }
 
 /* Two rectangles in a 32 x 32 display: a white one over the left half,
@@ -1328,7 +1328,7 @@ UTEST(gpu_render, imgui_renderer_frames) {
         ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
         imgui_render(&ui, f.gfx, &dd);
         ASSERT_TRUE(md_gpu_render_end(f.gfx));
-        md_gpu_temp_end(f.gfx, scope);
+        md_gpu_temp_end(scope);
         frame_done[frame % 2] = md_gpu_stream_record(f.gfx);
         md_gpu_device_poll(f.dev);
     }

@@ -539,15 +539,20 @@ void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr);
    triple buffering falls out without the caller counting frames.
 
        md_gpu_temp_t frame = md_gpu_temp_begin(gfx);
-       md_gpu_mem_t v = md_gpu_temp_alloc(gfx, MD_GPU_MEM_HOST_WRITE, bytes);
+       md_gpu_mem_t v = md_gpu_temp_alloc(frame, MD_GPU_MEM_HOST_WRITE, bytes);
        memcpy(v.cpu, verts, bytes);
        ... work that reads v.gpu ...
-       md_gpu_temp_end(gfx, frame);
+       md_gpu_temp_end(frame);
 
    Scopes nest, and must end in reverse order of beginning, exactly as CPU temp
    arenas do. That lets a library take temp memory inside its caller's scope
-   without touching the caller's allocations. md_gpu_temp_alloc outside any
-   scope fails.
+   without touching the caller's allocations. The scope knows its stream, so
+   alloc and end take only the scope, as md_temp_alloc and md_temp_end do.
+
+   Allocation goes to the innermost open scope. md_gpu_temp_alloc with any
+   other scope -- an outer one while an inner is open, one already ended, or
+   a zero md_gpu_temp_t -- fails rather than hand out memory that the inner
+   scope's end would reclaim.
 
    Rules:
      * Temp memory belongs to its stream. Another stream that reads it must be
@@ -567,8 +572,8 @@ typedef struct md_gpu_temp_t {
 } md_gpu_temp_t;
 
 md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t stream);
-md_gpu_mem_t  md_gpu_temp_alloc(md_gpu_stream_t stream, md_gpu_mem_kind_t kind, size_t size);
-void          md_gpu_temp_end(md_gpu_stream_t stream, md_gpu_temp_t scope);
+md_gpu_mem_t  md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size_t size);
+void          md_gpu_temp_end(md_gpu_temp_t scope);
 
 /* ---- Statistics -------------------------------------------------------------- */
 

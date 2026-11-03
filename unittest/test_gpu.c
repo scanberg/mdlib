@@ -287,8 +287,8 @@ UTEST(gpu, device_routes_all_host_allocations) {
     ASSERT_TRUE(m.gpu != 0);
     md_gpu_free(s, m.gpu);
     md_gpu_temp_t t = md_gpu_temp_begin(s);
-    ASSERT_TRUE(md_gpu_temp_alloc(s, MD_GPU_MEM_HOST_WRITE, 4096).cpu != NULL);
-    md_gpu_temp_end(s, t);
+    ASSERT_TRUE(md_gpu_temp_alloc(t, MD_GPU_MEM_HOST_WRITE, 4096).cpu != NULL);
+    md_gpu_temp_end(t);
 
     ASSERT_GT(stats.alloc_count, 0u);
     md_gpu_device_destroy(dev);
@@ -2007,9 +2007,9 @@ UTEST(gpu, object_lifetime_calls_do_not_wait_for_other_streams) {
     GPU_EXPECT_NO_WAIT(w, md_gpu_free(f.compute, small));
     GPU_EXPECT_NO_WAIT(w, md_gpu_free(f.compute, large));
     GPU_EXPECT_NO_WAIT(w, frame = md_gpu_temp_begin(f.compute));
-    GPU_EXPECT_NO_WAIT(w, temp = md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_WRITE, 1 << 20).cpu);
+    GPU_EXPECT_NO_WAIT(w, temp = md_gpu_temp_alloc(frame, MD_GPU_MEM_HOST_WRITE, 1 << 20).cpu);
     ASSERT_TRUE(temp != NULL);
-    GPU_EXPECT_NO_WAIT(w, md_gpu_temp_end(f.compute, frame));
+    GPU_EXPECT_NO_WAIT(w, md_gpu_temp_end(frame));
     GPU_EXPECT_NO_WAIT(w, md_gpu_device_poll(f.dev));
 
     if (!software) {
@@ -2519,8 +2519,8 @@ UTEST(gpu, device_destroy_reclaims_undestroyed_objects) {
 
     ASSERT_TRUE(md_gpu_malloc(s, MD_GPU_MEM_DEVICE, 64 * 1024).gpu != 0);
     ASSERT_TRUE(md_gpu_malloc(extra, MD_GPU_MEM_HOST_READ, 1000).gpu != 0);
-    md_gpu_temp_begin(extra);         /* a scope left open */
-    ASSERT_TRUE(md_gpu_temp_alloc(extra, MD_GPU_MEM_DEVICE, 4096).gpu != 0);
+    md_gpu_temp_t open = md_gpu_temp_begin(extra);   /* a scope left open */
+    ASSERT_TRUE(md_gpu_temp_alloc(open, MD_GPU_MEM_DEVICE, 4096).gpu != 0);
 
     md_gpu_texture_desc_t td = {0};
     td.type = MD_GPU_TEX_3D; td.format = MD_GPU_FORMAT_R32_FLOAT; td.usage = MD_GPU_TEX_STORAGE;
@@ -2607,32 +2607,34 @@ UTEST(gpu, temp_alloc_rules) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
 
-    /* Outside a scope, and for readback memory, temp allocation fails. */
-    EXPECT_EQ(0u, (unsigned)md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_WRITE, 64).gpu);
+    /* Without a scope, and for readback memory, temp allocation fails. */
+    const md_gpu_temp_t none = {0};
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_alloc(none, MD_GPU_MEM_HOST_WRITE, 64).gpu);
+    md_gpu_temp_end(none);
+    EXPECT_TRUE(md_gpu_last_error() != NULL);
     md_gpu_temp_t outer = md_gpu_temp_begin(f.compute);
-    EXPECT_EQ(0u, (unsigned)md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_READ, 64).gpu);
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_alloc(outer, MD_GPU_MEM_HOST_READ, 64).gpu);
 
-    md_gpu_mem_t h = md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_WRITE, 100);
-    md_gpu_mem_t d = md_gpu_temp_alloc(f.compute, MD_GPU_MEM_DEVICE, 100);
+    md_gpu_mem_t h = md_gpu_temp_alloc(outer, MD_GPU_MEM_HOST_WRITE, 100);
+    md_gpu_mem_t d = md_gpu_temp_alloc(outer, MD_GPU_MEM_DEVICE, 100);
     ASSERT_TRUE(h.gpu && h.cpu && d.gpu);
     EXPECT_TRUE(d.cpu == NULL);
     EXPECT_EQ(0u, (unsigned)(h.gpu % 256));
     EXPECT_EQ(0u, (unsigned)(d.gpu % 256));
 
-    /* Scopes end innermost first; ending an outer one early is refused. */
+    /* Scopes end innermost first; ending an outer one early is refused. Only the
+       innermost scope allocates: the inner end would reclaim the outer's memory. */
     md_gpu_temp_t inner = md_gpu_temp_begin(f.compute);
-    md_gpu_temp_end(f.compute, outer);
+    md_gpu_temp_end(outer);
     EXPECT_TRUE(md_gpu_last_error() != NULL);
-    EXPECT_TRUE(md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_WRITE, 64).gpu != 0);   /* still open */
-    md_gpu_temp_end(f.compute, inner);
-    md_gpu_temp_end(f.compute, outer);
-    EXPECT_EQ(0u, (unsigned)md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_WRITE, 64).gpu);
-
-    /* A scope is its stream's. */
-    md_gpu_temp_t t = md_gpu_temp_begin(f.compute);
-    md_gpu_temp_end(f.transfer, t);
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_alloc(outer, MD_GPU_MEM_HOST_WRITE, 64).gpu);
     EXPECT_TRUE(md_gpu_last_error() != NULL);
-    md_gpu_temp_end(f.compute, t);
+    EXPECT_TRUE(md_gpu_temp_alloc(inner, MD_GPU_MEM_HOST_WRITE, 64).gpu != 0);   /* still open */
+    md_gpu_temp_end(inner);
+    EXPECT_TRUE(md_gpu_temp_alloc(outer, MD_GPU_MEM_HOST_WRITE, 64).gpu != 0);   /* innermost again */
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_alloc(inner, MD_GPU_MEM_HOST_WRITE, 64).gpu);   /* ended */
+    md_gpu_temp_end(outer);
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_alloc(outer, MD_GPU_MEM_HOST_WRITE, 64).gpu);
 
     const md_gpu_memory_stats_t st = gpu_stats(f.dev, MD_GPU_MEM_HOST_WRITE);
     EXPECT_GT(st.bytes_temp, 0u);
@@ -2660,11 +2662,11 @@ UTEST(gpu, temp_frames_never_reuse_memory_the_gpu_still_reads) {
         sa.n = 4096; sa.iters = 2000; sa.dst = scratch;
         ASSERT_TRUE(md_gpu_launch(f.compute, f.k_spin, grid1(f.k_spin, 4096), &sa, sizeof(sa)));
 
-        md_gpu_mem_t t = md_gpu_temp_alloc(f.compute, MD_GPU_MEM_HOST_WRITE, N * sizeof(uint32_t));
+        md_gpu_mem_t t = md_gpu_temp_alloc(frame, MD_GPU_MEM_HOST_WRITE, N * sizeof(uint32_t));
         ASSERT_TRUE(t.cpu != NULL);
         for (int i = 0; i < N; ++i) ((uint32_t*)t.cpu)[i] = (uint32_t)(fr * 1000003 + i);
         ASSERT_TRUE(md_gpu_copy(f.compute, dst + (md_gpu_addr_t)fr * N * sizeof(uint32_t), t.gpu, N * sizeof(uint32_t)));
-        md_gpu_temp_end(f.compute, frame);
+        md_gpu_temp_end(frame);
         done[fr % 2] = md_gpu_stream_record(f.compute);
     }
 
@@ -2697,7 +2699,7 @@ UTEST(gpu, temp_scopes_nest) {
 
     enum { N = 1024 };
     md_gpu_temp_t outer = md_gpu_temp_begin(f.compute);
-    md_gpu_mem_t x = md_gpu_temp_alloc(f.compute, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t));
+    md_gpu_mem_t x = md_gpu_temp_alloc(outer, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t));
     ASSERT_TRUE(x.gpu != 0);
     fill_args_t fa = {0};
     fa.n = N; fa.base = 100; fa.dst = x.gpu;
@@ -2705,20 +2707,20 @@ UTEST(gpu, temp_scopes_nest) {
 
     for (int round = 0; round < 3; ++round) {
         md_gpu_temp_t inner = md_gpu_temp_begin(f.compute);
-        md_gpu_mem_t y = md_gpu_temp_alloc(f.compute, MD_GPU_MEM_DEVICE, 8u << 20);   /* forces its own chunk */
+        md_gpu_mem_t y = md_gpu_temp_alloc(inner, MD_GPU_MEM_DEVICE, 8u << 20);   /* forces its own chunk */
         ASSERT_TRUE(y.gpu != 0);
         ASSERT_TRUE(y.gpu + (8u << 20) <= x.gpu || x.gpu + N * sizeof(uint32_t) <= y.gpu);
         ASSERT_TRUE(md_gpu_memset(f.compute, y.gpu, 0xAB, 8u << 20));
-        md_gpu_temp_end(f.compute, inner);
+        md_gpu_temp_end(inner);
     }
-    md_gpu_mem_t z = md_gpu_temp_alloc(f.compute, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t));
+    md_gpu_mem_t z = md_gpu_temp_alloc(outer, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t));
     ASSERT_TRUE(z.gpu != 0 && z.gpu != x.gpu);
     ASSERT_TRUE(md_gpu_copy(f.compute, z.gpu, x.gpu, N * sizeof(uint32_t)));
 
     uint32_t host[N];
     ASSERT_TRUE(gpu_read(&f, f.compute, host, z.gpu, sizeof(host)));
     for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(100 + i), host[i]);
-    md_gpu_temp_end(f.compute, outer);
+    md_gpu_temp_end(outer);
     gpu_close(&f);
 }
 
