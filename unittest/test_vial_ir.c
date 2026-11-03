@@ -1528,6 +1528,43 @@ UTEST(vial_ir, taken_over_whole) {
     md_arena_allocator_destroy(alloc);
 }
 
+// A for over residues of a selection that changes per frame: residues in every frame, however many (one included)
+UTEST(vial_ir, for_over_dynamic_residues) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(vial_test_run('P'), 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* src =
+        "_d = [distance(r[1], r[2]) for r in residue(within(5.0, of=residue[14]))]\n"
+        "m = mean(_d)\n"
+        "n = len(residue(within(5.0, of=residue[14])))\n"
+        "_one = [distance(r[1], r[2]) for r in residue(within(5.0, of=residue[14]))[0:1]]\n"
+        "n1 = len(_one)\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    const md_vial_diagnostic_t* dg;
+    const size_t nd = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < nd; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e != NULL);
+    EXPECT_TRUE(md_vial_eval_run(e));
+    const size_t ne = md_vial_eval_diagnostics(e, &dg);
+    for (size_t i = 0; i < ne; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    EXPECT_EQ(0u, ne);
+    // As many values as residues near residue 14 in each frame, and one where one is taken
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    const md_attribute_t* an = md_attributes_find(at, STR_LIT("script/n"));
+    const md_attribute_t* a1 = md_attributes_find(at, STR_LIT("script/n1"));
+    ASSERT_TRUE(an && a1);
+    for (uint32_t f = 0; f < an->format.shape[0]; ++f) {
+        const int32_t k = ((const int32_t*)an->data)[f];
+        EXPECT_GT(k, 0);
+        EXPECT_EQ(1, ((const int32_t*)a1->data)[f]);
+    }
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, periodic_outputs) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);

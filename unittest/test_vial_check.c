@@ -378,6 +378,12 @@ UTEST_F(vial_check, iterating_one_set) {
     EXPECT_TYPE_ON(P, "a = angle(residue(id=2).particle[[2, 8, 9]])\n", 1, u8"float[1] °, frame");
     EXPECT_TYPE_ON(P, "a = angle(residue(id=2)[0][[2, 8, 9]])\n", 1, u8"float °, frame");
     EXPECT_DIAGS_ON(P, "v = [1.0, 2.0][[0, 5]]\n", "E0304 1: position 5 is outside `[2]`\n");
+    // What a for takes is its type's, never how many sets there are: an array of residues, of however many in a frame
+    // (one included), gives residues; one set gives particles
+    EXPECT_TYPE_ON(P, "d = [distance(r[1], r[2]) for r in residue(within(5.0, of=residue[14]))]\n", 1, u8"float[?] Å, frame");
+    EXPECT_TYPE_ON(P, "d = [distance(r[1], r[2]) for r in residue(within(0.5, of=residue[14]))]\n", 1, u8"float[?] Å, frame");
+    EXPECT_TYPE_ON(P, "d = [distance(r[1], r[2]) for r in residue[14:15]]\n", 1, u8"float[1] Å, frame");
+    EXPECT_TYPE_ON(P, "d = [count(r) for r in residue(within(5.0, of=residue[14]))[0:1]]\n", 1, "int[?], frame");
 }
 
 UTEST_F(vial_check, selectors) {
