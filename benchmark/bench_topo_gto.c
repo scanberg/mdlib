@@ -52,6 +52,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../unittest/test_executor.h"   // the benchmark's own threads: mdlib owns none
 #include "bench_rev.h"     // MD_BENCH_SOURCE_REV, generated at build time by bench_version.cmake
 
 #ifndef MD_BENCHMARK_DATA_DIR
@@ -528,8 +529,9 @@ int main(int argc, char** argv) {
             .rho_min = rho_min,
             .h_min = 1.0e-4,
             .trace_separatrices = true,
-            .num_threads = (uint32_t)threads,
         };
+        test_executor_t exec = test_executor_threads((uint32_t)(threads > 0 ? threads : (si.num_virtual_cores > 0 ? si.num_virtual_cores : 1)));
+        desc.executor = test_executor(&exec);
 
         result_t res = { names[di], -1.0, -1.0 };
         run_t cpu_ref;  memset(&cpu_ref, 0, sizeof(cpu_ref));

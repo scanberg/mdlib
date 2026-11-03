@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 // A benchmark of v2 against v1, run on demand: VIAL_BENCH=1 md_unittest --filter=vial_bench.*
 //
@@ -101,7 +102,7 @@ static bool bench_v2(const char* src, const md_system_t* sys, md_allocator_i* al
     t0 = md_tick_now();
     // VIAL_BENCH_THREADS=n: v2's frames on n threads; v1 runs on one either way
     const size_t threads = getenv("VIAL_BENCH_THREADS") ? (size_t)atoi(getenv("VIAL_BENCH_THREADS")) : 0;
-    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
     const bool ok = eval && md_vial_eval_run(eval);
     *eval_ms = ms_since(t0);
     if (eval) md_vial_eval_free(eval);

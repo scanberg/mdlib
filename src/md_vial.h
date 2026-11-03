@@ -257,19 +257,14 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
 
 typedef struct md_vial_eval_t md_vial_eval_t;
 
-// The caller's thread pool: calls fn(arg, i) for every i in [0, count), on up to num_threads threads at once, and
-// returns when every call has returned. viamd passes its task system.
-typedef void (*md_vial_parallel_for_t)(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg);
 
 typedef struct md_vial_eval_desc_t {
     const struct md_system_t* sys;  // the system the program was compiled against
     str_t       run;                // the run whose frames are evaluated: its prefix in sys->attributes, as "run/ala"
     size_t      max_elements;       // the most elements one value may have (R0105); 0 for 2^28
-    // Threads for the frames: 0 or 1 evaluates them on the calling thread. With parallel_for NULL, md_vial_eval_run
-    // starts num_threads - 1 threads of its own for each sweep over the frames and works on the calling one.
-    size_t                  num_threads;
-    md_vial_parallel_for_t  parallel_for;
-    void*                   parallel_user;
+    // What the frames run on (md_executor.h): an interpreter and a frame reader per thread_idx. NULL, or an
+    // executor of one thread, evaluates them on the calling thread. It must outlive the evaluation.
+    const struct md_executor_t* executor;
 } md_vial_eval_desc_t;
 
 // NULL when the program cannot be evaluated: it has errors, or something in it is not evaluated yet

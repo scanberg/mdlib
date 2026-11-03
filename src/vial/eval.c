@@ -58,8 +58,7 @@ struct md_vial_eval_t {
     eval_worker_t*              readers;
     size_t                      num_readers;
     size_t                      num_workers;
-    md_vial_parallel_for_t      parallel_for;
-    void*                       parallel_user;
+    const md_executor_t*        executor;
 };
 
 // The run's time axis, <run>/time, in ps where it has a unit, and its number of frames; NULL and 0 when it has none
@@ -117,36 +116,6 @@ static void worker_release(void* user) {
 static void main_release(void* user) {
     md_vial_eval_t* e = user;
     if (e->ex) { md_system_extract_end(e->ex); e->ex = NULL; }
-}
-
-// Without the caller's pool: num_workers - 1 threads of our own and the calling one, taking indices in turn
-typedef struct own_pool_t {
-    size_t              count;
-    void              (*fn)(void* arg, size_t i);
-    void*               arg;
-    volatile uint64_t   next;
-} own_pool_t;
-
-static void own_pool_work(void* data) {
-    own_pool_t* p = data;
-    for (;;) {
-        const uint64_t i = md_atomic_fetch_add64(&p->next, 1);
-        if (i >= p->count) break;
-        p->fn(p->arg, (size_t)i);
-    }
-}
-
-static void own_parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    const md_vial_eval_t* e = user;
-    own_pool_t pool = {.count = count, .fn = fn, .arg = arg};
-    md_thread_t* threads[64];
-    size_t nt = 0;
-    for (size_t t = 1; t < e->num_workers && t < 64 && t < count; ++t) {
-        md_thread_t* th = md_thread_create(own_pool_work, &pool);
-        if (th) threads[nt++] = th;
-    }
-    own_pool_work(&pool);
-    for (size_t t = 0; t < nt; ++t) md_thread_join(threads[t]);
 }
 
 // The output of prev that out is taken over from: one computed alike, the one of the same name first. NULL for none.
@@ -273,9 +242,10 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     e->in.load_user = e;
     e->in.load_release = main_release;
     e->in.stop = &e->stop;
-    // Frames on several threads: an interpreter, a reader and a view of the system per thread
-    if (desc->num_threads > 1 && e->num_frames > 1) {
-        const size_t nw = MIN(desc->num_threads, (size_t)64);
+    // Frames on several threads: an interpreter, a reader and a view of the system per thread_idx of the executor
+    const size_t num_threads = md_executor_num_threads(desc->executor);
+    if (num_threads > 1 && e->num_frames > 1) {
+        const size_t nw = num_threads;
         e->workers = md_alloc(arena, nw * sizeof(vial_interp_t));
         e->readers = md_alloc(arena, nw * sizeof(eval_worker_t));
         memset(e->workers, 0, nw * sizeof(vial_interp_t));
@@ -296,12 +266,10 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
             e->workers[w].load_release = worker_release;
             e->num_workers = w + 1;
         }
-        e->parallel_for = desc->parallel_for ? desc->parallel_for : own_parallel_for;
-        e->parallel_user = desc->parallel_for ? desc->parallel_user : e;
+        e->executor = desc->executor;
         e->in.workers = e->workers;
         e->in.num_workers = e->num_workers;
-        e->in.parallel_for = e->parallel_for;
-        e->in.parallel_user = e->parallel_user;
+        e->in.executor = e->executor;
     }
     publish_held(e);
     publish_ranges(e);

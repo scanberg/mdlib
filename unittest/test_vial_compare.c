@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 #include <core/md_common.h>
 #include <core/md_arena_allocator.h>
@@ -152,7 +153,7 @@ UTEST(vial_compare, sdf_agrees_with_v1) {
     const char* src = "p = sdf(residue[1:5], particle(name='O'), 6.0, samples=128 / 12)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
-    md_vial_eval_t* ev2 = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 4}, alloc);
+    md_vial_eval_t* ev2 = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads(4)}, alloc);
     ASSERT_TRUE(ev2 && md_vial_eval_run(ev2));
     const md_attribute_t* a2 = md_attributes_find(md_vial_eval_attributes(ev2), STR_LIT("script/p"));
     ASSERT_TRUE(a2 && a2->data);

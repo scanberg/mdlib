@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 #include <core/md_common.h>
 #include <core/md_arena_allocator.h>
@@ -516,28 +517,6 @@ typedef struct vial_spec__eval_t {
     int                 num_workers;
 } vial_spec__eval_t;
 
-// Threads of its own for each sweep, taking chunks in turn
-typedef struct vial_spec__pool_t {
-    size_t              count;
-    void              (*fn)(void* arg, size_t i);
-    void*               arg;
-    volatile uint64_t   next;
-} vial_spec__pool_t;
-
-static void vial_spec__pool_work(void* data) {
-    vial_spec__pool_t* p = data;
-    for (uint64_t i; (i = md_atomic_fetch_add64(&p->next, 1)) < p->count;) p->fn(p->arg, (size_t)i);
-}
-
-static void vial_spec__parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    const int n = *(const int*)user;
-    vial_spec__pool_t pool = {.count = count, .fn = fn, .arg = arg};
-    md_thread_t* th[VIAL_SPEC_MAX_WORKERS];
-    for (int t = 0; t < n - 1; ++t) th[t] = md_thread_create(vial_spec__pool_work, &pool);
-    vial_spec__pool_work(&pool);
-    for (int t = 0; t < n - 1; ++t) if (th[t]) md_thread_join(th[t]);
-}
-
 // False when the block's structure has no system or the block does not inline (ir is then NULL, prog kept)
 static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_allocator_i* compile_alloc, md_allocator_i* eval_alloc, int threads) {
     memset(e, 0, sizeof(*e));
@@ -567,8 +546,7 @@ static bool vial_spec__eval(vial_spec__eval_t* e, str_t src, char structure, md_
     if (e->num_workers) {
         e->in.workers = e->workers;
         e->in.num_workers = (size_t)e->num_workers;
-        e->in.parallel_for = vial_spec__parallel_for;
-        e->in.parallel_user = &e->num_workers;
+        e->in.executor = test_executor_of_threads((uint32_t)e->num_workers);
     }
     vial_interp_run(&e->in, e->num_frames ? e->num_frames : 1);
     return true;

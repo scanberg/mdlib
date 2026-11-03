@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 #include <core/md_common.h>
 #include <core/md_arena_allocator.h>
@@ -468,28 +469,6 @@ static uint64_t vial_ir__fp(const md_vial_output_t* o, size_t n, const char* nam
     return 0;
 }
 
-// A caller's pool for md_vial_eval: threads of its own per call, taking indices in turn
-typedef struct vial_ir__pool_t {
-    size_t              count;
-    void              (*fn)(void* arg, size_t i);
-    void*               arg;
-    volatile uint64_t   next;
-} vial_ir__pool_t;
-
-static void vial_ir__pool_work(void* data) {
-    vial_ir__pool_t* p = data;
-    for (uint64_t i; (i = md_atomic_fetch_add64(&p->next, 1)) < p->count;) p->fn(p->arg, (size_t)i);
-}
-
-static void vial_ir__parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    (void)user;
-    vial_ir__pool_t pool = {.count = count, .fn = fn, .arg = arg};
-    md_thread_t* th[2];
-    for (int t = 0; t < 2; ++t) th[t] = md_thread_create(vial_ir__pool_work, &pool);
-    vial_ir__pool_work(&pool);
-    for (int t = 0; t < 2; ++t) if (th[t]) md_thread_join(th[t]);
-}
-
 // The evaluation API on several threads, its own and a caller's: the same attributes, byte for byte, and the same
 // diagnostics in the same order as on one
 UTEST(vial_ir, eval_threads) {
@@ -510,10 +489,11 @@ UTEST(vial_ir, eval_threads) {
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &cdesc, alloc);
     ASSERT_TRUE(prog != NULL);
     md_vial_eval_t* ev[3];
+    test_executor_t shuffled = test_executor_shuffled(3);   // out of order, thread_idx in turn
     ev[0] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50}, alloc);
-    ev[1] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50, .num_threads = 4}, alloc);
-    ev[2] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50, .num_threads = 3,
-                                                             .parallel_for = vial_ir__parallel_for}, alloc);
+    ev[1] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50, .executor = test_executor_of_threads(4)}, alloc);
+    ev[2] = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .max_elements = 50,
+                                                             .executor = test_executor(&shuffled)}, alloc);
     for (int i = 0; i < 3; ++i) {
         ASSERT_TRUE(ev[i] != NULL);
         EXPECT_FALSE(md_vial_eval_run(ev[i]));     // big is past the limit: R0105 at every frame, once
@@ -657,7 +637,7 @@ UTEST(vial_ir, eval_aggregate) {
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
     for (int threads = 1; threads <= 3; threads += 2) {
-        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
         ASSERT_TRUE(e != NULL);
         uint8_t* all = md_alloc(alloc, (size_t)nf);
         uint8_t* odd = md_alloc(alloc, (size_t)nf);
@@ -1625,7 +1605,7 @@ UTEST(vial_ir, missing_is_said) {
         "d = distance(ca[0], ca[1])\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     for (int threads = 1; threads <= 4; threads += 3) {
-        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
         ASSERT_TRUE(e != NULL);
         EXPECT_TRUE(md_vial_eval_run(e));
         const md_vial_diagnostic_t* dg;
@@ -2210,7 +2190,7 @@ UTEST(vial_ir, at_in_a_def) {
         "r1 = rmsd(residue[1], at(residue[1].xyz, frame=0))\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 3}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads(3)}, alloc);
     ASSERT_TRUE(e && md_vial_eval_run(e));
     const md_attributes_t* at = md_vial_eval_attributes(e);
     const md_attribute_t* x0 = md_attributes_find(at, STR_LIT("script/x0"));
@@ -2279,7 +2259,7 @@ UTEST(vial_ir, volumes) {
     EXPECT_EQ((uint32_t)MD_VIAL_OUTPUT_VOLUME, oc->flags);
 
     for (int threads = 1; threads <= 4; threads += 3) {
-        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
         ASSERT_TRUE(e != NULL);
         ASSERT_TRUE(md_vial_eval_run(e));
         const md_attributes_t* at = md_vial_eval_attributes(e);
@@ -2483,7 +2463,7 @@ UTEST(vial_ir, sdf_kinds) {
     const size_t ndg = md_vial_diagnostics(prog, &dg);
     for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
     ASSERT_EQ(0u, (unsigned)ndg);
-    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 3}, alloc);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads(3)}, alloc);
     ASSERT_TRUE(e != NULL);
     ASSERT_TRUE(md_vial_eval_run(e));
     const md_vial_diagnostic_t* rd;
