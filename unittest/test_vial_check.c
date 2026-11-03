@@ -77,6 +77,11 @@ UTEST_F(vial_check, unknown_names) {
     EXPECT_DIAGS("c = centre(particle)\n", "E0201 1: `centre` is not defined | com\n");
     EXPECT_DIAGS("c = residuez\n", "E0201 1: `residuez` is not defined | residue\n");
     EXPECT_DIAGS("x = particle[0:zeros(4)]\n", "E0319 1: a slice's start, stop and step are ints; this is float[4]\n");
+    // A keyword's range is a..b, both ends: the file's numbers, as v1's resid(1:5) was; a:b is a slice of positions
+    EXPECT_DIAGS("p = particle(resid=1:5)\n",
+        "E0701 1: `1:5` is v1's range; a keyword's numbers are the file's, and a range of them is a..b with both ends, as v1's: 1..5 | 1..5\n");
+    EXPECT_DIAGS("p = residue(id=3:, name='ALA')\n",
+        "E0701 1: `3:` is v1's range; a keyword's numbers are the file's, and a range of them is a..b with both ends\n");
     // Names are singular; the plural is a slip, with the name as its fix
     EXPECT_DIAGS("c = residues\n", "E0201 1: `residues` is not defined | residue\n");
     EXPECT_DIAGS("b = bonds(particle)\n", "E0201 1: `bonds` is not defined | bond\n");
