@@ -316,7 +316,8 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
     int32_t biomolecule = 0;    // REMARK 350: the one whose groups of chains follow
     uint32_t num_bad_ids = 0;   // Serials and residue numbers which are not numbers of the format (parse_id)
     while (md_buffered_reader_extract_line(&line, reader)) {
-        if (line.len < 6) continue;
+        // A TER record may be the three letters alone (GROMACS, and the EM structures of the PDB written by some tools)
+        if (line.len < 6 && !str_eq_cstr_n(line, "TER", 3)) continue;
         if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line, &num_bad_ids);
             coord.flags |= line.ptr[0] == 'H' ? MD_PDB_COORD_FLAG_HETATM : 0;
@@ -486,17 +487,31 @@ static void pdb_assemblies(md_system_t* sys, const md_pdb_data_t* data, md_alloc
 // neither the bonds nor what the residues are by them: that is md_util_system_infer's, which a caller runs when (and
 // where, on what thread) it wants.
 
-// The occupancy and the b factor. Occupancy is a dimensionless fraction; the b factor is a mean square displacement. The
-// paths and the units are md_system's to define, not this loader's - md_mmcif publishes the same two out of the same
+// The formal charge of the charge column (79 to 80): a digit and its sign, "1-" or "2+" (and the sign first, as some
+// writers have it). NAN where there is none, which chemistry perception takes as not given (md_chem_perceive).
+static inline float pdb_charge(str_t field) {
+    field = str_trim(field);
+    if (field.len == 1 && field.ptr[0] == '0') return 0.0f;
+    if (field.len != 2) return NAN;
+    const char a = field.ptr[0], b = field.ptr[1];
+    if (is_digit(a) && (b == '+' || b == '-')) return (float)((b == '-' ? -1 : 1) * (a - '0'));
+    if (is_digit(b) && (a == '+' || a == '-')) return (float)((a == '-' ? -1 : 1) * (b - '0'));
+    return NAN;
+}
+
+// The occupancy, the b factor and the formal charge. Occupancy is a dimensionless fraction; the b factor is a mean square displacement. The
+// paths and the units are md_system's to define, not this loader's - md_mmcif publishes the same three out of the same
 // file family and they have to agree.
-static void pdb_publish_atom_columns(md_system_t* sys, const float* occupancy, const float* b_factor) {
+static void pdb_publish_atom_columns(md_system_t* sys, const float* occupancy, const float* b_factor, const float* formal_charge) {
     md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/occupancy"), md_unit_none(),                     1, occupancy, sys->atom.count);
     md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/b_factor"),  md_unit_pow(md_unit_angstrom(), 2), 1, b_factor,  sys->atom.count);
+    // As md_mmcif publishes it: chemistry perception starts from what the file gives (all NAN, none given: not published)
+    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, formal_charge, sys->atom.count);
 }
 
 // What follows the atoms and residues: the cell of the first CRYST1, the bonds of the CONECT records (by the serials of
 // the atoms loaded), the units of the file (the runs of residues of one chain id) and the assemblies of REMARK 350
-static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, const int32_t* atom_serial, const str_t* res_chain_ids, md_allocator_i* temp_arena) {
+static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, const int32_t* atom_serial, const str_t* res_chain_ids, const bool* res_after_ter, md_allocator_i* temp_arena) {
     if (data->num_cryst1 > 0) {
         // Use first crystal
         const md_pdb_cryst1_t* cryst = &data->cryst1[0];
@@ -547,8 +562,9 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
         }
     }
 
-    // The units of the file are its chains: the runs of residues of one chain id
-    md_util_system_instances_from_chain_ids(sys, res_chain_ids);
+    // The units of the file are its chains: the runs of residues of one chain id, which a TER record ends (two chains of
+    // one id written one after the other are two: the segments of an EM structure)
+    md_util_system_instances_from_chain_ids(sys, res_chain_ids, res_after_ter);
 
     // The assemblies name the chains by the ids they have in the file, which are those of the instances
     pdb_assemblies(sys, data, temp_arena);
@@ -595,12 +611,15 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // first alternate onwards.
     md_array(float) atom_occupancy = 0;
     md_array(float) atom_b_factor  = 0;
+    md_array(float) atom_charge    = 0;
     md_array(int32_t) atom_serial  = 0;
     md_array_ensure(atom_occupancy, capacity, temp_arena);
     md_array_ensure(atom_b_factor,  capacity, temp_arena);
+    md_array_ensure(atom_charge,    capacity, temp_arena);
     md_array_ensure(atom_serial,    capacity, temp_arena);
     // The chain id of each residue: the runs of one id are the units of the file (md_util_system_instances_from_chain_ids)
     md_array(str_t) res_auth_asym_ids = 0;
+    md_array(bool)  res_after_ter = 0;
 
     md_array_ensure(state->xyz,           capacity, state->alloc);
     md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
@@ -647,9 +666,9 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         uint64_t res_key = md_hash64_str(res_name, md_hash64(&icode, sizeof(icode), md_hash64(&seq_id, sizeof(seq_id), chain_id)));
 
         if (res_key != prev_res_key || terminator) {
-            // New residue. A TER record ends the residue before it, whatever the residue after it is called. Whether it
-            // also ends a chain is left to the chain ids and the bonds: TER is written inconsistently, and a chain
-            // continues over gaps anyway (see md_util_system_infer_parts).
+            // New residue. A TER record ends the residue before it, whatever the residue after it is called, and the
+            // chain: what follows is a unit of its own, also when it has the same chain id (md_util_system_instances_from_chain_ids)
+            md_array_push(res_after_ter, terminator, temp_arena);
             sys->residue.count += 1;
             md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
             md_array_push(sys->residue.name,     make_label(res_name), sys->alloc);
@@ -668,6 +687,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
         md_array_push_no_grow(atom_occupancy, data->atom_coordinates[i].occupancy);
         md_array_push_no_grow(atom_b_factor,  data->atom_coordinates[i].temp_factor);
+        md_array_push_no_grow(atom_charge,    pdb_charge(str_from_cstrn(data->atom_coordinates[i].charge, sizeof(data->atom_coordinates[i].charge))));
         md_array_push_no_grow(atom_serial,    data->atom_coordinates[i].atom_serial);
 
 		prev_res_key = res_key;
@@ -679,13 +699,13 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     ASSERT(md_array_size(state->xyz) == sys->atom.count);
     state->num_atoms = sys->atom.count;
 
-    pdb_publish_atom_columns(sys, atom_occupancy, atom_b_factor);
+    pdb_publish_atom_columns(sys, atom_occupancy, atom_b_factor, atom_charge);
 
     if (num_unassigned_particle_types > 0) {
         md_util_system_infer_particle_types(sys, atom_name);
     }
 
-    pdb_system_finish(sys, state, data, atom_serial, res_auth_asym_ids, temp_arena);
+    pdb_system_finish(sys, state, data, atom_serial, res_auth_asym_ids, res_after_ter, temp_arena);
 
     md_temp_end(temp_scope);
     return true;
@@ -716,6 +736,8 @@ typedef enum {
 } pdb_line_kind_t;
 
 static inline pdb_line_kind_t pdb_line_kind(str_t line) {
+    // A TER record may be the three letters alone (GROMACS, and the EM structures of the PDB written by some tools)
+    if (str_eq_cstr_n(line, "TER", 3)) return PDB_LINE_TER;
     if (line.len < 6) return PDB_LINE_NONE;
     if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
         const char alt_loc = extract_char(line, 17);
@@ -750,6 +772,7 @@ typedef struct pdb_residue_start_t {
     md_sequence_id_t seq_id;
     md_label_t       name;
     char             chain_id;
+    bool             after_ter;     // A TER record before it: it begins a unit of the file
 } pdb_residue_start_t;
 
 typedef struct pdb_record_t {
@@ -787,6 +810,7 @@ typedef struct pdb_block_t {
     uint8_t*              element;      // PDB_NO_ELEMENT when the line has none
     float*                occupancy;
     float*                b_factor;
+    float*                charge;
     int32_t*              serial;
 } pdb_block_t;
 
@@ -851,15 +875,15 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             if (kind == PDB_LINE_ATOM && b->atoms) {
                 // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B
                 // are three residues of the same number (the insertions of Kabat numbered antibodies), also when they
-                // share a name. A TER record ends the residue before it, whatever the residue after it is called.
-                // Whether it also ends a chain is left to the chain ids and the bonds: TER is written inconsistently,
-                // and a chain continues over gaps anyway (see md_util_system_infer_parts).
+                // share a name. A TER record ends the residue before it, whatever the residue after it is called, and
+                // the chain: what follows is a unit of its own (md_util_system_instances_from_chain_ids).
                 const pdb_res_fields_t fields = pdb_res_fields(line);
                 if (!has_prev || ter || MEMCMP(fields.c, prev.c, sizeof(fields.c)) != 0) {
                     res->atom     = (uint32_t)atom;
                     res->seq_id   = line.len >= 26 ? parse_id(line, 23, 26, &piece->num_bad_ids) : 0;
                     res->name     = make_label(str_trim(str_substr(line, 17, 4)));
                     res->chain_id = fields.c[21 - PDB_RES_FIELDS_BEG];
+                    res->after_ter = has_prev && ter;
                     ++res;
                 }
                 has_prev = true;
@@ -877,6 +901,7 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                 }
                 b->occupancy[atom] = extract_fixed_float(line, 55, 60, 2);
                 b->b_factor[atom]  = extract_fixed_float(line, 61, 66, 2);
+                b->charge[atom]    = pdb_charge(str_substr(line, 78, 2));
                 b->serial[atom]    = line.len >= 11 ? parse_id(line, 7, 11, &piece->num_bad_ids) : 0;
                 ++atom;
             } else if (kind >= PDB_LINE_TER) {
@@ -922,6 +947,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     md_array(uint8_t)             element = 0;
     md_array(float)               occupancy = 0;
     md_array(float)               b_factor = 0;
+    md_array(float)               charge = 0;
     md_array(int32_t)             serial = 0;
     md_pdb_data_t data = {0};       // The records which are not of atoms
     int32_t biomolecule = 0;
@@ -943,6 +969,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         md_array_ensure(element,   cap, heap);
         md_array_ensure(occupancy, cap, heap);
         md_array_ensure(b_factor,  cap, heap);
+        md_array_ensure(charge,    cap, heap);
         md_array_ensure(serial,    cap, heap);
     }
 
@@ -978,6 +1005,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         md_array_resize(element,   total, heap);
         md_array_resize(occupancy, total, heap);
         md_array_resize(b_factor,  total, heap);
+        md_array_resize(charge,    total, heap);
         md_array_resize(serial,    total, heap);
         md_array_resize(block_res, block_atoms, heap);
         md_array_resize(records, block_records, heap);
@@ -986,6 +1014,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         b.element = element;
         b.occupancy = occupancy;
         b.b_factor = b_factor;
+        b.charge = charge;
         b.serial = serial;
         b.records = records;
         // Each piece writes its residues at the place of its first atom, put in order below
@@ -1062,6 +1091,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
             MEMMOVE(element,    element + model_beg,    n * sizeof(uint8_t));
             MEMMOVE(occupancy,  occupancy + model_beg,  n * sizeof(float));
             MEMMOVE(b_factor,   b_factor + model_beg,   n * sizeof(float));
+            MEMMOVE(charge,     charge + model_beg,     n * sizeof(float));
             MEMMOVE(serial,     serial + model_beg,     n * sizeof(int32_t));
         }
         // The residue of the first atom of the model, which may have begun before it
@@ -1112,6 +1142,8 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     const size_t num_res = sys->residue.count;
     md_array(str_t) res_chain_ids = 0;
     md_array_resize(res_chain_ids, num_res, temp_arena);
+    md_array(bool) res_after_ter = 0;
+    md_array_resize(res_after_ter, num_res, temp_arena);
     md_array_resize(sys->residue.atom_offset, num_res + 1, sys->alloc);
     md_array_resize(sys->residue.name,   num_res, sys->alloc);
     md_array_resize(sys->residue.seq_id, num_res, sys->alloc);
@@ -1130,6 +1162,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         sys->residue.flags[r]  = MD_RESIDUE_FLAG_NONE;
         chain_chars[r] = rs->chain_id;
         res_chain_ids[r] = str_trim((str_t){ &chain_chars[r], 1 });
+        res_after_ter[r] = rs->after_ter;
     }
     sys->residue.atom_offset[num_res] = (uint32_t)num_atoms;    // Final sentinel
 
@@ -1157,8 +1190,8 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         md_util_system_infer_particle_types_from_labels(sys, atom_name);
     }
 
-    pdb_publish_atom_columns(sys, occupancy, b_factor);
-    pdb_system_finish(sys, state, &data, serial, res_chain_ids, temp_arena);
+    pdb_publish_atom_columns(sys, occupancy, b_factor, charge);
+    pdb_system_finish(sys, state, &data, serial, res_chain_ids, res_after_ter, temp_arena);
     result = true;
 
 done:
@@ -1172,6 +1205,7 @@ done:
     md_array_free(element, heap);
     md_array_free(occupancy, heap);
     md_array_free(b_factor, heap);
+    md_array_free(charge, heap);
     md_array_free(serial, heap);
     md_temp_end(temp_scope);
     if (!result) {

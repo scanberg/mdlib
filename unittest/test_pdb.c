@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_attributes.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 
@@ -718,13 +719,13 @@ UTEST(pdb, blocks_and_pieces) {
                 }
             }
         }
-        const char* ter = "TER\n";  // As GROMACS writes it, shorter than a record: no record at all
+        const char* ter = "TER\n";  // As GROMACS writes it: the three letters alone
         md_array_push_array(text, ter, strlen(ter), alloc);
         char line[64];
         const int n = snprintf(line, sizeof(line), "TER   %5d      ALA %c%4d\n", serial++, 'A' + c, num_res % 10000);
         md_array_push_array(text, line, (size_t)n, alloc);
     }
-    // Two residues of the same name and number across a TER: two residues
+    // Two residues of the same name and number across a TER: two residues, and two units of the same chain id
     pdb_blocks_atom(&text, alloc, serial++, "ZN", "ZN", 'Z', 1, ' ', ' ', 1, 2, 3, "ZN");
     md_array_push_array(text, "TER\n", 4, alloc);
     md_array_push_array(text, "TER   \n", 7, alloc);
@@ -749,7 +750,7 @@ UTEST(pdb, blocks_and_pieces) {
     EXPECT_EQ((size_t)(num_chains * (num_res + num_res / 50) * 4 + 2), ref.atom.count);
     EXPECT_EQ((size_t)(num_chains * (num_res + num_res / 50) + 2), ref.residue.count);
     EXPECT_EQ((size_t)1, ref.bond.count);
-    EXPECT_EQ((size_t)(num_chains + 1), ref.instance.count);
+    EXPECT_EQ((size_t)(num_chains + 2), ref.instance.count);
 
     test_executor_t threads  = test_executor_threads(4);
     test_executor_t shuffled = test_executor_shuffled(3);
@@ -776,5 +777,76 @@ UTEST(pdb, blocks_and_pieces) {
     }
 
     remove(path);
+    md_vm_arena_destroy(alloc);
+}
+
+// A TER record ends a chain, also the three letters alone and also between two chains of the same id: the segments of
+// an EM structure (T4SS, chain J of segment Z and of segment ZA) are two units, with no break of a chain between them
+UTEST(pdb, ter_ends_the_unit) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const str_t text = STR_LIT(
+        "ATOM      1  N   GLY J  48      10.000  10.000  10.000  1.00  0.00      Z    N\n"
+        "ATOM      2  CA  GLY J  48      11.458  10.000  10.000  1.00  0.00      Z    C\n"
+        "ATOM      3  C   GLY J  48      12.009  11.420  10.000  1.00  0.00      Z    C\n"
+        "ATOM      4  O   GLY J  48      11.251  12.390  10.000  1.00  0.00      Z    O\n"
+        "ATOM      5  N   GLY J  49      13.332  11.540  10.000  1.00  0.00      Z    N\n"
+        "ATOM      6  CA  GLY J  49      13.970  12.850  10.000  1.00  0.00      Z    C\n"
+        "ATOM      7  C   GLY J  49      15.480  12.730  10.000  1.00  0.00      Z    C\n"
+        "ATOM      8  O   GLY J  49      16.050  11.640  10.000  1.00  0.00      Z    O\n"
+        "TER\n"
+        "ATOM      9  N   GLY J 208      60.000  60.000  60.000  1.00  0.00      ZA   N\n"
+        "ATOM     10  CA  GLY J 208      61.458  60.000  60.000  1.00  0.00      ZA   C\n"
+        "ATOM     11  C   GLY J 208      62.009  61.420  60.000  1.00  0.00      ZA   C\n"
+        "ATOM     12  O   GLY J 208      61.251  62.390  60.000  1.00  0.00      ZA   O\n"
+        "ATOM     13  N   GLY J 209      63.332  61.540  60.000  1.00  0.00      ZA   N\n"
+        "ATOM     14  CA  GLY J 209      63.970  62.850  60.000  1.00  0.00      ZA   C\n"
+        "ATOM     15  C   GLY J 209      65.480  62.730  60.000  1.00  0.00      ZA   C\n"
+        "ATOM     16  O   GLY J 209      66.050  61.640  60.000  1.00  0.00      ZA   O\n"
+        "END\n");
+    // Both ways of reading it
+    md_pdb_data_t data = {0};
+    ASSERT_TRUE(md_pdb_data_parse_str(&data, text, alloc));
+    for (int way = 0; way < 2; ++way) {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t st = {.alloc = alloc};
+        ASSERT_TRUE(way == 0 ? md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL) : md_pdb_system_init_from_data(&sys, &st, &data, MD_PDB_OPTION_NONE));
+        ASSERT_EQ((size_t)4, sys.residue.count);
+        ASSERT_EQ((size_t)2, sys.instance.count);
+        EXPECT_EQ(2u, sys.instance.res_offset[1]);
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 0), STR_LIT("J")));
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, 1), STR_LIT("J")));
+        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+        EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
+        md_atom_idx_t atoms[2];
+        EXPECT_FALSE(md_util_chain_break_atoms(atoms, &sys, 1));
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// The charge column is the formal charge the file gives (atom/formal_charge), which chemistry perception starts from:
+// the glutamate of T4SS whose OE2 is "O1-" keeps its charge there, not on the OE1 perception would choose
+UTEST(pdb, formal_charge_column) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const str_t text = STR_LIT(
+        "ATOM  99999  N   GLU J  48     278.601 255.559 389.405  1.00 44.59      Z    N  \n"
+        "ATOM  99999  CA  GLU J  48     278.674 256.483 390.532  1.00 44.59      Z    C  \n"
+        "ATOM  99999  C   GLU J  48     278.403 257.917 390.089  1.00 44.59      Z    C  \n"
+        "ATOM  99999  O   GLU J  48     279.067 258.429 389.186  1.00 44.59      Z    O  \n"
+        "ATOM  99999  CB  GLU J  48     280.040 256.392 391.216  1.00 44.59      Z    C  \n"
+        "ATOM  99999  CG  GLU J  48     279.973 256.457 392.735  1.00 44.59      Z    C  \n"
+        "ATOM  99999  CD  GLU J  48     281.267 256.030 393.411  1.00 44.59      Z    C  \n"
+        "ATOM  99999  OE1 GLU J  48     281.325 256.024 394.663  1.00 44.59      Z    O  \n"
+        "ATOM  99999  OE2 GLU J  48     282.229 255.699 392.685  1.00 44.59      Z    O1-\n");
+    md_pdb_data_t data = {0};
+    ASSERT_TRUE(md_pdb_data_parse_str(&data, text, alloc));
+    for (int way = 0; way < 2; ++way) {
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t st = {.alloc = alloc};
+        ASSERT_TRUE(way == 0 ? md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL) : md_pdb_system_init_from_data(&sys, &st, &data, MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("atom/formal_charge")) != NULL);
+        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+        EXPECT_EQ(-1, (int)md_atom_formal_charge(&sys.atom, 8));
+        EXPECT_EQ(0,  (int)md_atom_formal_charge(&sys.atom, 7));
+    }
     md_vm_arena_destroy(alloc);
 }

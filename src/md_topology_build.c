@@ -164,7 +164,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     if (d.res_chain) {
         bool any = false;
         for (size_t r = 0; r < R && !any; ++r) any = !str_empty(d.res_chain[r]);
-        if (any) md_util_system_instances_from_chain_ids(sys, d.res_chain);
+        if (any) md_util_system_instances_from_chain_ids(sys, d.res_chain, NULL);
     }
 
     // ## Attributes

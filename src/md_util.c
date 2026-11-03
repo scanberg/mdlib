@@ -5139,7 +5139,7 @@ static void clear_instances(md_system_t* sys, md_allocator_i* alloc) {
     MEMSET(&sys->instance, 0, sizeof(sys->instance));
 }
 
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[]) {
+bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[], const bool res_unit_begins[]) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
         return false;
@@ -5163,7 +5163,7 @@ bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_c
     while (i < num_res) {
         const str_t id = str_trim(res_chain_id[i]);
         size_t j = i + 1;
-        while (j < num_res && str_eq(id, str_trim(res_chain_id[j]))) ++j;
+        while (j < num_res && str_eq(id, str_trim(res_chain_id[j])) && !(res_unit_begins && res_unit_begins[j])) ++j;
         md_array_push(sys->instance.id, (md_label_t){0}, alloc);
         md_array_push(sys->instance.auth_id, make_label(id), alloc);
         md_array_push(sys->instance.res_offset, (uint32_t)i, alloc);

@@ -528,8 +528,10 @@ UTEST(attributes, pdb_occupancy_and_b_factor) {
     // 6942 coordinate records, 15 of them the 'B' alternate of a pair
     EXPECT_EQ(sys.atom.count, 6927u);
 
+    // And the formal charges of its charge column (the Mg2+ of the GTP, the charged side chains)
     md_attribute_id_t ids[8];
-    EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &sys.attributes, STR_LIT("atom")), 2u);
+    EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &sys.attributes, STR_LIT("atom")), 3u);
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("atom/formal_charge")) != NULL);
 
     const md_attribute_t* occ = md_attributes_find(&sys.attributes, STR_LIT("atom/occupancy"));
     const md_attribute_t* bfc = md_attributes_find(&sys.attributes, STR_LIT("atom/b_factor"));

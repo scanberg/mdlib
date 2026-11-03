@@ -85,10 +85,12 @@ bool md_util_system_infer_residue_flags(md_system_t* sys);
 bool md_util_system_infer_lipids(md_system_t* sys);
 
 // Instances from the chain ids of the residues, for a format which gives a chain id per residue and no units of its
-// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id. A run without an
-// id is an instance of no id (the instances are back to back). Replaces the instances of the system. The instances are
-// what the data gives (md_instance_data_t): where it gives no chain ids at all the system has none.
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[]);
+// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id, and a new one
+// where res_unit_begins says the data ends one before the residue (a TER record of a PDB file), whatever the ids: two
+// chains of one id in a row are two (NULL: by the ids alone). A run without an id is an instance of no id (the
+// instances are back to back). Replaces the instances of the system. The instances are what the data gives
+// (md_instance_data_t): where it gives no chain ids at all the system has none.
+bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[], const bool res_unit_begins[]);
 
 // The chains of the system (sys->chain, see md_chain_data_t) from the author ids of its instances: one per id. A system
 // without ids has no chains. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT) and by the loaders which give the
