@@ -493,6 +493,24 @@ static vial_node_id parse_atom_(parser_t* p) {
     return error_node(p);
 }
 
+static bool int_literal(const parser_t* p, vial_node_id id, int64_t* out);
+
+// E0701 on a keyword's v1 range, resid=1:5: numbers, the file's, are a range a..b with both ends, as v1's a:b had
+static void report_v1_keyword_range(parser_t* p, vial_node_id range) {
+    const md_vial_span_t s = p->tree.nodes[range].span;
+    const size_t before = md_array_size(p->diags->items);
+    char ex[VIAL_EXCERPT_MAX + 4];
+    const str_t e = vial_excerpt(ex, sizeof(ex), (str_t){p->src.ptr + s.beg, s.end - s.beg});
+    const vial_node_id lo = vial_child(&p->tree, range, 0), hi = vial_child(&p->tree, range, 1);
+    int64_t a = 0, b = 0;
+    const bool both = lo && hi && int_literal(p, lo, &a) && int_literal(p, hi, &b);
+    char fix[64] = "";
+    if (both) snprintf(fix, sizeof(fix), "%lld..%lld", (long long)a, (long long)b);
+    refuse(p, "E0701", s, "`%.*s` is v1's range; a keyword's numbers are the file's, and a range of them is a..b with both ends%s%s",
+        (int)e.len, e.ptr, both ? ", as v1's: " : "", fix);
+    if (both && md_array_size(p->diags->items) > before) vial_diag_set_fix(p->diags, before, str_from_cstr(fix));
+}
+
 // The arguments of a call, after its '('. Returns whether a v1 range such as residue(1:4) was among them.
 static bool parse_call_args(parser_t* p, const vial_token_t* open) {
     bool v1 = false;
@@ -505,7 +523,17 @@ static bool parse_call_args(parser_t* p, const vial_token_t* open) {
             advance(p);
             push(p, leaf(p, VIAL_N_NAME, 0, t));
             advance(p);   // =
-            push(p, parse_test(p));
+            vial_node_id val = parse_test(p);
+            if (is_op(p, VIAL_OP_COLON) && !p->panic) {
+                // v1: resid(1:5), which a keyword reaches for as resid=1:5
+                const uint32_t mm = mark(p);
+                push(p, val);
+                advance(p);
+                push(p, (is_op(p, VIAL_OP_COMMA) || is_op(p, VIAL_OP_RPAREN)) ? 0 : parse_test(p));
+                val = make(p, VIAL_N_UNSUPPORTED, VIAL_UNSUP_V1_RANGE, node_beg(p, val), p->last_end, mm);
+                report_v1_keyword_range(p, val);
+            }
+            push(p, val);
             push(p, make(p, VIAL_N_KWARG, 0, t->span.beg, p->last_end, m));
         } else if (tok_is_op(t, VIAL_OP_COLON)) {
             // v1: residue(:), residue(:4)
