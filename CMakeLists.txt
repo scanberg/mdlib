@@ -226,6 +226,7 @@ set(SRC_FILES
   src/vial/eval.c
   src/vial/api.c
   src/md_smiles.c
+  src/md_smiles_write.c
   src/md_smiles.h
   src/md_topo.c
   src/md_topo.h

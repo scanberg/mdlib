@@ -112,6 +112,22 @@ extern "C" {
 
 // Returns false on a syntax error, described in err (optional). The graph is allocated from alloc.
 bool md_smiles_parse(md_smiles_t* out, str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err);
+
+// ### WRITING ###
+// A SMILES of atoms of a system (md_smiles_write.c), canonical: the same graph is written the same way whatever the
+// order the atoms are given in, and so the same chemistry gives the same text in any file. The graph is the atoms and
+// the bonds among them, with the system's elements, formal charges, bond orders and aromaticity (of an atom by any of
+// its bonds, so a ring atom given without its ring is still aromatic). Several components are joined by '.'.
+//
+// It reads as a pattern as much as a molecule: hydrogens are implicit unless given as atoms, a bracket atom carries no
+// hydrogen count, and a bond of unknown order is '~', any bond. classes, when not NULL, holds an atom class for each atom,
+// 0 for none, written as [C:1]: smiles_atoms() then gives the tagged atoms in class order.
+//
+// Returns the length of the string, as snprintf does (it may be longer than cap), or 0 when nothing can be written:
+// no atoms, an atom twice or out of range, more than MD_SMILES_WRITE_MAX of them, or more than 99 open rings.
+#define MD_SMILES_WRITE_MAX 2048
+struct md_system_t;
+size_t md_smiles_write(char* buf, size_t cap, const struct md_system_t* sys, const int32_t* atoms, size_t count, const uint32_t* classes);
 void md_smiles_free(md_smiles_t* smiles);
 
 #ifdef __cplusplus
