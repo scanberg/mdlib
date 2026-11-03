@@ -138,12 +138,12 @@ UTEST_F_SETUP(script) {
 
     utest_fixture->amy.alloc = utest_fixture->arena;
     md_system_state_t amy_state = { .alloc = utest_fixture->arena };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, &amy_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, &amy_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
     md_util_system_infer(&utest_fixture->amy, &amy_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->ala.alloc = utest_fixture->arena;
     md_system_state_t ala_state = { .alloc = utest_fixture->arena };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     // Its models are the frames the evaluations below step through.
     ASSERT_TRUE(md_pdb_system_publish_run(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), SCRIPT_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_util_system_infer(&utest_fixture->ala, &ala_state, MD_UTIL_INFER_ALL);
@@ -152,7 +152,7 @@ UTEST_F_SETUP(script) {
     // is exactly the shape that hides mistakes in the periodic neighbour walk.
     utest_fixture->npt.alloc = utest_fixture->arena;
     md_system_state_t npt_state = { .alloc = utest_fixture->arena };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
     md_util_system_infer(&utest_fixture->npt, &npt_state, MD_UTIL_INFER_ALL);
 }
 
@@ -2404,7 +2404,7 @@ UTEST(script, attr_reads_a_temporal_attribute_at_the_frame) {
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
     ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
 
     md_attributes_t* t = &sys.attributes;
@@ -2526,7 +2526,7 @@ UTEST(script, attr_patterns) {
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
     ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
 
     md_attributes_t* t = &sys.attributes;
@@ -4740,7 +4740,7 @@ UTEST(script, completion_attribute_paths) {
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
     ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_attributes_t* t = &sys.attributes;
     const md_attribute_t* run_time = md_attributes_find(t, STR_LIT("run/t/time"));
@@ -7045,7 +7045,7 @@ UTEST(script, bondsets) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(bonds_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(bonds_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
@@ -7223,7 +7223,7 @@ UTEST(script, bond_delta) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t ref = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, str_from_cstr(bonds_water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, str_from_cstr(bonds_water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &ref, MD_UTIL_INFER_ALL));
     ASSERT_EQ(4, (int)sys.bond.count);
 

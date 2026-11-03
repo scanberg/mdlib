@@ -177,12 +177,12 @@ UTEST_F_SETUP(hbond) {
 
     utest_fixture->npt = (md_system_t){ .alloc = alloc };
     utest_fixture->npt_state = (md_system_state_t){ .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &utest_fixture->npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &utest_fixture->npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&utest_fixture->npt, &utest_fixture->npt_state, MD_UTIL_INFER_ALL));
 
     utest_fixture->centered = (md_system_t){ .alloc = alloc };
     utest_fixture->centered_state = (md_system_state_t){ .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->centered, &utest_fixture->centered_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->centered, &utest_fixture->centered_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&utest_fixture->centered, &utest_fixture->centered_state, MD_UTIL_INFER_ALL));
 }
 
@@ -386,7 +386,7 @@ UTEST(hbond, no_hydrogens) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
     md_hbond_query_t q;
     ASSERT_TRUE(md_hbond_query_init(&q, NULL, &sys, alloc));
@@ -494,7 +494,7 @@ UTEST(hbond, roles_nucleic) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
     const size_t N = sys.atom.count;
     uint8_t* role = md_alloc(alloc, N);

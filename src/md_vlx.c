@@ -6177,12 +6177,8 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 	sys->atom.count = num_atoms;
     state->num_atoms = sys->atom.count;
 
-	if (vlx->mm.in_system) {
-		// The fragments are residues, and what kind of residue (water, above all) is read from their
-		// atoms and bonds - the same two calls a structure file's loader ends with.
-		md_util_system_infer_covalent_bonds(sys, state);
-		md_util_system_infer_residue_flags(sys);
-	}
+	// The fragments are residues, and what kind of residue (water, above all) is read from their atoms and bonds, by
+	// md_util_system_infer (MD_UTIL_INFER_BOND_BIT, _RESIDUE_BIT) as for a structure file.
 
 	if (!vlx_publish_core(vlx)) {
 		return false;

@@ -11,6 +11,9 @@
 #include <core/md_array.h>
 #include <core/md_parse.h>
 #include <core/md_hash.h>
+#include <core/md_executor.h>
+
+#include "md_text_blocks.h"
 
 #include <string.h>
 
@@ -74,6 +77,52 @@ static bool gro_coordinate_columns(size_t* width, size_t* decimals, str_t line) 
     return true;
 }
 
+// The coordinates of an atom line, in nm, and its velocities in nm/ps (NAN when the line has none). A line that keeps
+// to the columns (when there are, as the first atom line shows) is read field by field without a scan; one that does
+// not is read by its tokens. False when it was read by position, as it had too few tokens.
+static bool gro_parse_coordinates(float xyz[3], float vel[3], str_t line, bool columns, size_t width, size_t decimals) {
+    vel[0] = vel[1] = vel[2] = NAN;
+    if (columns && line.len >= 20 + 3 * width) {
+        const char* f = line.ptr + 20;
+        bool read = md_parse_fixed_f32(&xyz[0], (str_t){ f,             width }, decimals) &&
+                    md_parse_fixed_f32(&xyz[1], (str_t){ f + width,     width }, decimals) &&
+                    md_parse_fixed_f32(&xyz[2], (str_t){ f + 2 * width, width }, decimals);
+        // Then nothing, or the three velocities
+        if (read && !str_empty(str_trim(str_substr(line, 20 + 3 * width, SIZE_MAX)))) {
+            read = line.len >= 20 + 6 * width &&
+                   md_parse_fixed_f32(&vel[0], (str_t){ f + 3 * width, width }, decimals + 1) &&
+                   md_parse_fixed_f32(&vel[1], (str_t){ f + 4 * width, width }, decimals + 1) &&
+                   md_parse_fixed_f32(&vel[2], (str_t){ f + 5 * width, width }, decimals + 1);
+            if (!read) {
+                vel[0] = vel[1] = vel[2] = NAN;
+            }
+        }
+        if (read) return true;
+    }
+
+    str_t tokens[16];
+    const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
+    if (num_tokens < 3) {
+        // Fallback to fixed width format
+        xyz[0] = (float)parse_float(str_substr(line, 20, 8));
+        xyz[1] = (float)parse_float(str_substr(line, 28, 8));
+        xyz[2] = (float)parse_float(str_substr(line, 36, 8));
+        return false;
+    }
+    xyz[0] = (float)parse_float(tokens[0]);
+    xyz[1] = (float)parse_float(tokens[1]);
+    xyz[2] = (float)parse_float(tokens[2]);
+
+    // Velocities are all three or none: a line carrying only part of them is malformed, and
+    // guessing which residue was meant is worse than reading none.
+    if (num_tokens >= 6) {
+        vel[0] = (float)parse_float(tokens[3]);
+        vel[1] = (float)parse_float(tokens[4]);
+        vel[2] = (float)parse_float(tokens[5]);
+    }
+    return true;
+}
+
 static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(reader);
@@ -118,47 +167,12 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
             columns = gro_coordinate_columns(&width, &decimals, line);
         }
 
-        atom->vx = atom->vy = atom->vz = NAN;
-        bool read = false;
-        if (columns && line.len >= 20 + 3 * width) {
-            const char* f = line.ptr + 20;
-            read = md_parse_fixed_f32(&atom->x, (str_t){ f,             width }, decimals) &&
-                   md_parse_fixed_f32(&atom->y, (str_t){ f + width,     width }, decimals) &&
-                   md_parse_fixed_f32(&atom->z, (str_t){ f + 2 * width, width }, decimals);
-            // Then nothing, or the three velocities
-            if (read && !str_empty(str_trim(str_substr(line, 20 + 3 * width, SIZE_MAX)))) {
-                read = line.len >= 20 + 6 * width &&
-                       md_parse_fixed_f32(&atom->vx, (str_t){ f + 3 * width, width }, decimals + 1) &&
-                       md_parse_fixed_f32(&atom->vy, (str_t){ f + 4 * width, width }, decimals + 1) &&
-                       md_parse_fixed_f32(&atom->vz, (str_t){ f + 5 * width, width }, decimals + 1);
-                if (!read) {
-                    atom->vx = atom->vy = atom->vz = NAN;
-                }
-            }
+        float xyz[3], vel[3];
+        if (!gro_parse_coordinates(xyz, vel, line, columns, width, decimals)) {
+            warn_about_fixed_width = true;
         }
-
-        if (!read) {
-            const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
-            if (num_tokens < 3) {
-                warn_about_fixed_width = true;
-                // Fallback to fixed width format
-                atom->x = (float)parse_float(str_substr(line, 20, 8));
-                atom->y = (float)parse_float(str_substr(line, 28, 8));
-                atom->z = (float)parse_float(str_substr(line, 36, 8));
-            } else {
-                atom->x = (float)parse_float(tokens[0]);
-                atom->y = (float)parse_float(tokens[1]);
-                atom->z = (float)parse_float(tokens[2]);
-
-                // Velocities are all three or none: a line carrying only part of them is malformed, and
-                // guessing which residue was meant is worse than reading none.
-                if (num_tokens >= 6) {
-                    atom->vx = (float)parse_float(tokens[3]);
-                    atom->vy = (float)parse_float(tokens[4]);
-                    atom->vz = (float)parse_float(tokens[5]);
-                }
-            }
-        }
+        atom->x  = xyz[0]; atom->y  = xyz[1]; atom->z  = xyz[2];
+        atom->vx = vel[0]; atom->vy = vel[1]; atom->vz = vel[2];
 
         atom->res_id = (int32_t)parse_int(str_trim(str_substr(line, 0, 5)));
         
@@ -231,121 +245,412 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {
     MEMSET(data, 0, sizeof(md_gro_data_t));
 }
 
-bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_gro_data_t* data) {
-    ASSERT(sys);
-    ASSERT(state);
-    ASSERT(data);
+// ---------------------------------------------------------------------------------------------------------------------
+// THE SYSTEM
+//
+// What a load gives is the core: the atoms, where they are, their types, the residues and the cell. Nothing is derived
+// from the coordinates here, neither the bonds nor what the residues are by them: that is md_util_system_infer's, which
+// a caller runs when (and where, on what thread) it wants.
 
+static bool gro_system_begin(md_system_t* sys, md_system_state_t* state, size_t num_atoms) {
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
         return false;
     }
-
     if (!state || !state->alloc) {
         MD_LOG_ERROR("State allocator not set");
         return false;
     }
-
     md_system_reset(sys);
-    md_system_state_init(state, data->num_atoms);
+    if (!md_system_state_init(state, num_atoms)) return false;
 
-    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    str_t* atom_names = md_temp_alloc_array(temp, str_t, data->num_atoms);
-
-    const size_t capacity = ROUND_UP(data->num_atoms, 16);
-
+    const size_t capacity = ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags, capacity, sys->alloc);
+    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
+    MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    sys->atom.count = num_atoms;
 
     sys->atom.type.count = 0;
     md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    return true;
+}
+
+static inline void gro_push_residue(md_system_t* sys, uint32_t atom_beg, md_label_t name, md_sequence_id_t seq_id) {
+    sys->residue.count += 1;
+    md_array_push(sys->residue.atom_offset, atom_beg, sys->alloc);
+    md_array_push(sys->residue.name, name, sys->alloc);
+    md_array_push(sys->residue.seq_id, seq_id, sys->alloc);
+    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, sys->alloc);
+}
+
+// The velocities, in the file's own nm/ps rather than converted the way the coordinates are, because a velocity has a
+// unit and the attribute carries it: a consumer wanting Angstrom per picosecond asks the extract for it and gets a
+// checked conversion, which is strictly better than a silent one here that no one downstream can see happened.
+static void gro_publish_velocities(md_system_t* sys, const float* velocity, size_t num_atoms) {
+    const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());
+    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/velocity"), nm_per_ps, 3, velocity, num_atoms);
+}
+
+static bool gro_parse_box(md_unitcell_t* cell, str_t line) {
+    str_t tokens[16];
+    const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), line);
+    if (num_tokens != 3 && num_tokens != 9) {
+        MD_LOG_ERROR("Failed to parse box, expected 3 or 9 tokens");
+        return false;
+    }
+    float box[3][3] = {0};
+    box[0][0] = (float)parse_float(tokens[0]);
+    box[1][1] = (float)parse_float(tokens[1]);
+    box[2][2] = (float)parse_float(tokens[2]);
+    if (num_tokens > 3) {
+        box[0][1] = (float)parse_float(tokens[3]);
+        box[0][2] = (float)parse_float(tokens[4]);
+        box[1][0] = (float)parse_float(tokens[5]);
+        box[1][2] = (float)parse_float(tokens[6]);
+        box[2][0] = (float)parse_float(tokens[7]);
+        box[2][1] = (float)parse_float(tokens[8]);
+    }
+    // nm to Ångström
+    for (int i = 0; i < 3; ++i) {
+        box[i][0] *= NM_TO_ANGSTROM;
+        box[i][1] *= NM_TO_ANGSTROM;
+        box[i][2] *= NM_TO_ANGSTROM;
+    }
+    *cell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(box));
+    return true;
+}
+
+bool md_gro_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_gro_data_t* data) {
+    ASSERT(sys);
+    ASSERT(data);
+    if (!gro_system_begin(sys, state, data->num_atoms)) return false;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_label_t* atom_names = md_temp_alloc_array(temp, md_label_t, data->num_atoms);
 
 	uint64_t prev_res_key = 0;
     for (size_t i = 0; i < data->num_atoms; ++i) {
-        const float x = data->atom_data[i].x * NM_TO_ANGSTROM;
-        const float y = data->atom_data[i].y * NM_TO_ANGSTROM;
-        const float z = data->atom_data[i].z * NM_TO_ANGSTROM; 
-        str_t atom_name = str_from_cstrn(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name));
-        str_t res_name  = str_from_cstrn(data->atom_data[i].res_name,  sizeof(data->atom_data[i].res_name));
-        md_sequence_id_t res_id = data->atom_data[i].res_id;
-
-		uint64_t res_key = md_hash64_str(res_name, (uint64_t)res_id);
-        if (res_key != prev_res_key) {
-            // New residue
-            sys->residue.count += 1;
-            md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
-            md_array_push(sys->residue.name,    make_label(res_name), sys->alloc);
-            md_array_push(sys->residue.seq_id,      res_id, sys->alloc);
-            md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
+        const md_gro_atom_t* atom = &data->atom_data[i];
+        str_t res_name = str_from_cstrn(atom->res_name, sizeof(atom->res_name));
+		uint64_t res_key = md_hash64_str(res_name, (uint64_t)atom->res_id);
+        if (i == 0 || res_key != prev_res_key) {
+            gro_push_residue(sys, (uint32_t)i, make_label(res_name), atom->res_id);
 		}
-
-        sys->atom.count += 1;
-        atom_names[i] = atom_name;
-        state->xyz[i] = vec3_set(x, y, z);
-        sys->atom.type_idx[i] = 0;
-        sys->atom.flags[i] = 0;
-
 		prev_res_key = res_key;
+        atom_names[i] = make_label(str_from_cstrn(atom->atom_name, sizeof(atom->atom_name)));
+        state->xyz[i] = vec3_set(atom->x * NM_TO_ANGSTROM, atom->y * NM_TO_ANGSTROM, atom->z * NM_TO_ANGSTROM);
     }
 	md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);    // Final sentinel
 
-    // The optional velocity columns. Stored in the file's own nm/ps rather than converted the way
-    // the coordinates are, because a velocity has a unit and the attribute carries it - a consumer
-    // wanting Angstrom per picosecond asks the extract for it and gets a checked conversion, which
-    // is strictly better than a silent one here that no one downstream can see happened.
-    {
-        const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());
-        float* velocity = md_temp_alloc_array(temp, float, data->num_atoms * 3);
-        if (velocity) {
-            for (size_t i = 0; i < data->num_atoms; ++i) {
-                velocity[i * 3 + 0] = data->atom_data[i].vx;
-                velocity[i * 3 + 1] = data->atom_data[i].vy;
-                velocity[i * 3 + 2] = data->atom_data[i].vz;
-            }
-            md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/velocity"), nm_per_ps, 3, velocity, data->num_atoms);
+    float* velocity = md_temp_alloc_array(temp, float, data->num_atoms * 3);
+    if (velocity) {
+        for (size_t i = 0; i < data->num_atoms; ++i) {
+            velocity[i * 3 + 0] = data->atom_data[i].vx;
+            velocity[i * 3 + 1] = data->atom_data[i].vy;
+            velocity[i * 3 + 2] = data->atom_data[i].vz;
         }
+        gro_publish_velocities(sys, velocity, data->num_atoms);
     }
 
     float box[3][3] = {0};
-    // convert from nm to Ångström
     for (int i = 0; i < 3; ++i) {
         box[i][0] = data->box[i][0] * NM_TO_ANGSTROM;
         box[i][1] = data->box[i][1] * NM_TO_ANGSTROM;
         box[i][2] = data->box[i][2] * NM_TO_ANGSTROM;
     }
-
     state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(box));
 
-    md_util_system_infer_particle_types(sys, atom_names);
-    // NOTE: infer_res_flags below consumes bond connectivity, so this cannot simply move
-    // out into md_util_system_infer without moving res_flags with it.
-    md_util_system_infer_covalent_bonds(sys, state);
-    md_util_system_infer_residue_flags(sys);
+    md_util_system_infer_particle_types_from_labels(sys, atom_names);
 
     md_temp_end(temp);
     state->num_atoms = sys->atom.count;
-
     return true;
 }
 
-bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename) {
-    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    
-    md_gro_data_t data = {0};
-    bool success = md_gro_data_parse_file(&data, filename, temp_alloc) && md_gro_system_init_from_data(sys, state, &data);
+// ---------------------------------------------------------------------------------------------------------------------
+// Straight from the text: the lines of the atoms are read a block at a time, each block in pieces at line boundaries,
+// on as many threads as the executor has. A piece counts its lines first, which places its atoms; then it reads them
+// into the system's own arrays where they go. The residues are where the residue fields of a line differ from those of
+// the line before: each piece keeps the ones it finds, and they are appended in order once the pieces are done.
 
-    md_temp_end(temp);
-    return success;
+#define GRO_RES_FIELDS 10   // The residue number and name: columns 0 to 10
+
+// NAN, by its bits: mdlib builds with fast math
+static inline bool gro_absent(float v) {
+    uint32_t u;
+    MEMCPY(&u, &v, sizeof(u));
+    return (u & 0x7FFFFFFFu) > 0x7F800000u;
 }
 
-bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str) {
-    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+typedef struct gro_residue_start_t {
+    uint32_t         atom;
+    md_sequence_id_t seq_id;
+    md_label_t       name;
+} gro_residue_start_t;
 
-    md_gro_data_t data = {0};
-    bool success = md_gro_data_parse_str(&data, str, temp_alloc) && md_gro_system_init_from_data(sys, state, &data);
+typedef struct gro_piece_t {
+    md_text_piece_t range;      // of the block
+    size_t   num_lines;
+    size_t   first_line;        // of the block
+    size_t   num_residues;      // found, at res_starts + first_line
+    size_t   end_of_atoms;      // the byte after the last atom line, if the atoms end in this piece
+    bool     atoms_end;
+    bool     loose;             // a line was read by position
+} gro_piece_t;
 
-    md_temp_end(temp);
-    return success;
+typedef struct gro_block_t {
+    const char*           text;
+    size_t                len;
+    gro_piece_t*          pieces;
+    size_t                atom_beg;         // of the block's first line
+    size_t                num_atoms;        // of the file: the lines after them are not atoms
+    str_t                 prev_res;         // the residue fields of the line before the block, empty if none
+    gro_residue_start_t*  res_starts;       // [lines of the block]
+    bool                  columns;
+    size_t                width, decimals;
+    vec3_t*               xyz;
+    float*                velocity;         // NULL when the file has none
+    md_label_t*           atom_names;
+} gro_block_t;
+
+static void gro_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    gro_block_t* b = (gro_block_t*)arg;
+    for (uint32_t p = beg; p < end; ++p) {
+        gro_piece_t* piece = &b->pieces[p];
+        size_t n = 0;
+        const char* c = b->text + piece->range.beg;
+        const char* e = b->text + piece->range.end;
+        while (c < e && (c = memchr(c, '\n', (size_t)(e - c))) != NULL) { ++n; ++c; }
+        // The last line of the text may not end in one
+        if (piece->range.end == b->len && piece->range.end > piece->range.beg && b->text[piece->range.end - 1] != '\n') ++n;
+        piece->num_lines = n;
+    }
+}
+
+static inline bool gro_same_residue(str_t a, str_t b) {
+    const size_t na = MIN(a.len, GRO_RES_FIELDS);
+    const size_t nb = MIN(b.len, GRO_RES_FIELDS);
+    return na == nb && MEMCMP(a.ptr, b.ptr, na) == 0;
+}
+
+static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    gro_block_t* b = (gro_block_t*)arg;
+    for (uint32_t p = beg; p < end; ++p) {
+        gro_piece_t* piece = &b->pieces[p];
+        piece->num_residues = 0;
+        piece->atoms_end = false;
+        piece->loose = false;
+
+        // The residue fields of the line before: in the piece before, or the block before
+        str_t prev = piece->range.beg > 0 ? md_text_line_before(b->text, piece->range.beg) : b->prev_res;
+
+        gro_residue_start_t* res = b->res_starts + piece->first_line;
+        const char* c = b->text + piece->range.beg;
+        const char* e = b->text + piece->range.end;
+        size_t atom = b->atom_beg + piece->first_line;
+        while (c < e) {
+            if (atom >= b->num_atoms) {
+                piece->atoms_end = true;
+                piece->end_of_atoms = (size_t)(c - b->text);
+                break;
+            }
+            const str_t line = md_text_next_line(&c, e);
+
+            if (atom == 0 || !gro_same_residue(prev, line)) {
+                res->atom   = (uint32_t)atom;
+                res->seq_id = (md_sequence_id_t)parse_int(str_trim(str_substr(line, 0, 5)));
+                res->name   = make_label(str_trim(str_substr(line, 5, 5)));
+                ++res;
+            }
+            prev = line;
+
+            float xyz[3], vel[3];
+            if (!gro_parse_coordinates(xyz, vel, line, b->columns, b->width, b->decimals)) piece->loose = true;
+            b->xyz[atom] = vec3_set(xyz[0] * NM_TO_ANGSTROM, xyz[1] * NM_TO_ANGSTROM, xyz[2] * NM_TO_ANGSTROM);
+            if (b->velocity) {
+                b->velocity[atom * 3 + 0] = vel[0];
+                b->velocity[atom * 3 + 1] = vel[1];
+                b->velocity[atom * 3 + 2] = vel[2];
+            }
+            b->atom_names[atom] = make_label(str_trim(str_substr(line, 10, 5)));
+            ++atom;
+        }
+        if (!piece->atoms_end && atom >= b->num_atoms) {
+            piece->atoms_end = true;
+            piece->end_of_atoms = piece->range.end;
+        }
+        piece->num_residues = (size_t)(res - (b->res_starts + piece->first_line));
+    }
+}
+
+static bool gro_load(md_system_t* sys, md_system_state_t* state, md_text_source_t* src, const md_executor_t* ex) {
+    ASSERT(sys);
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+    md_allocator_i* heap = md_get_heap_allocator();
+    bool result = false;
+    size_t num_atoms = 0;
+    gro_block_t b = {0};
+    md_array(gro_piece_t) pieces = 0;
+    md_array(md_text_piece_t) ranges = 0;
+    md_array(gro_residue_start_t) res_starts = 0;  // of a block, at the place of the line of each piece
+    md_array(gro_residue_start_t) residues = 0;    // of the load
+    char prev_res[GRO_RES_FIELDS];
+    bool loose = false;
+    size_t atom = 0;
+    str_t line;
+
+    if (!md_text_source_line(&line, src)) {
+        MD_LOG_ERROR("Failed to parse gro title");
+        goto done;
+    }
+    if (!md_text_source_line(&line, src)) {
+        MD_LOG_ERROR("Failed to parse gro num atoms");
+        goto done;
+    }
+    const int64_t num_atoms_in_file = parse_int(str_trim(line));
+    if (num_atoms_in_file <= 0 || num_atoms_in_file >= UINT32_MAX) {
+        MD_LOG_ERROR("Failed to parse gro num atoms");
+        goto done;
+    }
+    num_atoms = (size_t)num_atoms_in_file;
+
+    if (!gro_system_begin(sys, state, num_atoms)) goto done;
+
+    // The columns, and whether there are velocities, as the first atom line shows them. GROMACS writes the velocities
+    // of all atoms or of none: a file whose first atom has none is read without.
+    b.num_atoms = num_atoms;
+    b.xyz = state->xyz;
+    {
+        const str_t first = md_text_source_peek(src);
+        b.columns = gro_coordinate_columns(&b.width, &b.decimals, first);
+        float xyz[3], vel[3];
+        gro_parse_coordinates(xyz, vel, first, b.columns, b.width, b.decimals);
+        if (!gro_absent(vel[0])) {
+            b.velocity = md_alloc(heap, num_atoms * 3 * sizeof(float));
+        }
+    }
+    b.atom_names = md_alloc(heap, num_atoms * sizeof(md_label_t));
+
+    const uint32_t num_threads = md_executor_num_threads(ex);
+
+    while (atom < num_atoms) {
+        const str_t block = md_text_source_block(src);
+        if (block.len == 0) {
+            MD_LOG_ERROR("The file ends after %zu of its %zu atoms", atom, num_atoms);
+            goto done;
+        }
+
+        const size_t num_pieces = md_text_num_pieces(block.len, num_threads);
+        md_array_resize(pieces, num_pieces, heap);
+        md_array_resize(ranges, num_pieces, heap);
+        md_text_split(ranges, num_pieces, block.ptr, block.len);
+        for (size_t p = 0; p < num_pieces; ++p) pieces[p] = (gro_piece_t){ .range = ranges[p] };
+
+        b.text = block.ptr;
+        b.len = block.len;
+        b.pieces = pieces;
+        b.atom_beg = atom;
+
+        if (!md_parallel_for(ex, (uint32_t)num_pieces, 1, gro_count_lines, &b)) {
+            goto done;  // Cancelled
+        }
+        size_t num_lines = 0;
+        for (size_t p = 0; p < num_pieces; ++p) {
+            pieces[p].first_line = num_lines;
+            num_lines += pieces[p].num_lines;
+        }
+        md_array_resize(res_starts, num_lines, heap);
+        b.res_starts = res_starts;
+
+        if (!md_parallel_for(ex, (uint32_t)num_pieces, 1, gro_parse_lines, &b)) {
+            goto done;  // Cancelled
+        }
+
+        // The residues in order, and where the atoms end
+        size_t consumed = block.len;
+        for (size_t p = 0; p < num_pieces; ++p) {
+            const gro_piece_t* piece = &pieces[p];
+            md_array_push_array(residues, res_starts + piece->first_line, piece->num_residues, heap);
+            loose |= piece->loose;
+            if (piece->atoms_end) {
+                consumed = piece->end_of_atoms;
+                break;
+            }
+        }
+        atom += MIN(num_lines, num_atoms - atom);
+
+        // The residue fields of the last atom line, for the next block
+        if (atom < num_atoms) {
+            const str_t last = md_text_line_before(block.ptr, consumed);
+            const size_t n = MIN(last.len, sizeof(prev_res));
+            MEMCPY(prev_res, last.ptr, n);
+            b.prev_res = (str_t){ prev_res, n };
+        }
+        md_text_source_advance(src, consumed);
+    }
+    // The residues, at once: arrays which grow in the system's allocator (an arena) leave their copies behind
+    {
+        const size_t num_res = md_array_size(residues);
+        md_array_resize(sys->residue.atom_offset, num_res + 1, sys->alloc);
+        md_array_resize(sys->residue.name,   num_res, sys->alloc);
+        md_array_resize(sys->residue.seq_id, num_res, sys->alloc);
+        md_array_resize(sys->residue.flags,  num_res, sys->alloc);
+        for (size_t r = 0; r < num_res; ++r) {
+            sys->residue.atom_offset[r] = residues[r].atom;
+            sys->residue.name[r]   = residues[r].name;
+            sys->residue.seq_id[r] = residues[r].seq_id;
+            sys->residue.flags[r]  = MD_RESIDUE_FLAG_NONE;
+        }
+        sys->residue.atom_offset[num_res] = (uint32_t)num_atoms;    // Final sentinel
+        sys->residue.count = num_res;
+    }
+
+    if (loose) {
+        MD_LOG_DEBUG("Parsed GRO file using fixed-width format. This may indicate an issue with the file formatting.");
+    }
+
+    if (!md_text_source_line(&line, src)) {
+        MD_LOG_ERROR("Failed to extract unitcell line");
+        goto done;
+    }
+    if (!gro_parse_box(&state->unitcell, line)) goto done;
+
+    if (b.velocity) {
+        gro_publish_velocities(sys, b.velocity, num_atoms);
+    }
+    md_util_system_infer_particle_types_from_labels(sys, b.atom_names);
+    state->num_atoms = num_atoms;
+    result = true;
+
+done:
+    if (b.velocity)   md_free(heap, b.velocity, num_atoms * 3 * sizeof(float));
+    if (b.atom_names) md_free(heap, b.atom_names, num_atoms * sizeof(md_label_t));
+    md_array_free(pieces, heap);
+    md_array_free(ranges, heap);
+    md_array_free(res_starts, heap);
+    md_array_free(residues, heap);
+    if (!result) md_system_reset(sys);
+    return result;
+}
+
+bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const md_executor_t* ex) {
+    md_text_source_t src;
+    if (!md_text_source_open(&src, filename, md_get_heap_allocator())) {
+        MD_LOG_ERROR("Could not open file '%.*s'", (int)filename.len, filename.ptr);
+        return false;
+    }
+    const bool result = gro_load(sys, state, &src, ex);
+    md_text_source_close(&src);
+    return result;
+}
+
+bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const md_executor_t* ex) {
+    md_text_source_t src = md_text_source_from_str(str);
+    return gro_load(sys, state, &src, ex);
 }

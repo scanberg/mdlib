@@ -115,7 +115,7 @@ UTEST(monomer, residue_types_nucleosome) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     EXPECT_VALID_SYSTEM(&sys);
 
@@ -172,7 +172,7 @@ UTEST(monomer, residue_types_without_monomer) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     EXPECT_VALID_SYSTEM(&sys);
 
@@ -202,7 +202,7 @@ UTEST(monomer, residue_types_without_monomer) {
 
     md_system_t sys2 = { .alloc = alloc };
     md_system_state_t state2 = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, str_from_cstr(ligand_water_ion_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys2, &state2, MD_UTIL_INFER_ALL));
     EXPECT_EQ(md_residue_type_color(type, lig), md_residue_type_color(&sys2.residue.type, type_of_name(&sys2, "LIG")));
 

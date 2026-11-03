@@ -202,7 +202,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     str_t gro = make_msc_gro(alloc, MOLS, SLICES, origin, box, 2);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
 
     md_itp_data_t data = {0};
@@ -265,7 +265,7 @@ UTEST(itp, residue_boundaries_disambiguate_polymers) {
     str_t gro = make_msc_gro(alloc, 2, 5, origin, box, 0);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
 
     md_itp_data_t data = {0};
     ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC10", 10), STR_LIT(""), alloc));
@@ -299,7 +299,7 @@ UTEST(itp, molecules_section_sequential_and_fallback) {
     str_t gro = make_msc_gro(alloc, 2, 3, origin, box, 1);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
 
     str_t water = STR_INIT("[ moleculetype ]\nW 1\n[ atoms ]\n1 W 1 W W 1 0.0 72.0\n");
     {
@@ -344,7 +344,7 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
     str_t gro = make_msc_gro(alloc, 1, 2, origin, box, 2);  // 14 beads, then W at 14 and 15
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
 
     md_bond_data_clear(&sys.bond);
     md_system_bond_insert(&sys, 1, 2, MD_BOND_FLAG_NONE);           // from the file, inside: replaced
@@ -396,7 +396,7 @@ UTEST(itp, elastic_bonds) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&gro)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&gro), NULL));
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
 
     md_itp_data_t data = {0};
@@ -458,7 +458,7 @@ UTEST(itp, supplement_beads_by_mass) {
 
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (str_t){gro, (size_t)len}));
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (str_t){gro, (size_t)len}, NULL));
         md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL);
         md_itp_data_t data = {0};
         ASSERT_TRUE(md_itp_data_parse_str(&data, (str_t){itp, (size_t)il}, STR_LIT(""), alloc));
@@ -488,7 +488,7 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
         "   3.00000   3.00000   3.00000\n");
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
 
     const char* itp_fmt =

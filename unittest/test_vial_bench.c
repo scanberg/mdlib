@@ -67,8 +67,8 @@ static bool str_ends(str_t s, const char* e) {
 }
 
 static bool vial_bench_load(md_system_t* sys, md_system_state_t* state, str_t top, str_t traj) {
-    bool ok = str_ends(top, ".gro") ? md_gro_system_init_from_file(sys, state, top) :
-              str_ends(top, ".pdb") ? md_pdb_system_init_from_file(sys, state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) : false;
+    bool ok = str_ends(top, ".gro") ? md_gro_system_init_from_file(sys, state, top, NULL) :
+              str_ends(top, ".pdb") ? md_pdb_system_init_from_file(sys, state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) : false;
     if (!ok) return false;
     md_util_system_infer(sys, state, MD_UTIL_INFER_ALL);
     const uint32_t flags = MD_RUN_FLAG_DISABLE_CACHE_WRITE;

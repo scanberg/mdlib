@@ -24,7 +24,7 @@ static const md_system_t* tubulin(void) {
         md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t st = {.alloc = alloc};
-        ok = md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) &&
+        ok = md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
              md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL);
     }
     return ok ? &sys : NULL;

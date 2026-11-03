@@ -1329,11 +1329,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffe
         out_state->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-    // NOTE: infer_res_flags below consumes bond connectivity, so this cannot simply move
-    // out into md_util_system_infer without moving res_flags with it.
-    md_util_system_infer_covalent_bonds(sys, out_state);
-    md_util_system_infer_residue_flags(sys);
-    md_util_system_infer_chains(sys);
+    // The bonds, what the residues are by them and the chains are md_util_system_infer's (MD_UTIL_INFER_BOND_BIT,
+    // _RESIDUE_BIT, _PART_BIT): the loader gives what the file says.
 
     // The assemblies name the instances by their asym ids
     mmcif_assemblies(sys, assembly_gen, opers, temp_arena);

@@ -735,6 +735,8 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 	// one for the QM region - components cover every atom or none.
 	ASSERT_EQ(1u + 50u, t.sys.residue.count);
 	EXPECT_VALID_SYSTEM(&t.sys);
+	// What the fragments are is inferred from their atoms and bonds, as for a structure file
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT));
 	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 0), STR_LIT("QM")));
 	EXPECT_EQ(0, md_system_residue_find_by_atom_idx(&t.sys, 0));
 	EXPECT_EQ(1, md_system_residue_find_by_atom_idx(&t.sys, num_qm));
@@ -852,6 +854,7 @@ UTEST(vlx, pe_environment_by_file_name_in_atomic_units) {
 
 	ASSERT_EQ(3u, t.sys.residue.count);
 	EXPECT_VALID_SYSTEM(&t.sys);
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT));
 	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 1), STR_LIT("NA")));
 	EXPECT_EQ(4, md_system_residue_seq_id(&t.sys, 1));
 	EXPECT_EQ(MD_RESIDUE_KIND_ION, md_system_residue_kind(&t.sys, 1));

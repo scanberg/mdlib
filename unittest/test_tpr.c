@@ -407,7 +407,7 @@ UTEST(tpr, martini) {
     {
         md_system_t gro = { .alloc = arena };
         md_system_state_t gro_state = { .alloc = arena };
-        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(TPR_DIR "martini3.gro")));
+        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(TPR_DIR "martini3.gro"), NULL));
         for (size_t i = 0; i < 8; ++i) {
             EXPECT_EQ(md_atom_mass(&sys.atom, i), md_atom_mass(&gro.atom, i));
             EXPECT_NEAR(md_atom_radius(&sys.atom, i), md_atom_radius(&gro.atom, i), 0.01f);

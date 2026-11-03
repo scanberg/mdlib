@@ -37,7 +37,7 @@ UBENCH_EX(gro, postprocess) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
-    if (!md_gro_system_init_from_file(&sys, &sys_state, path)) {
+    if (!md_gro_system_init_from_file(&sys, &sys_state, path, NULL)) {
         MD_LOG_ERROR("Failed to load system for GRO postprocess benchmark\n");
         md_free(md_get_heap_allocator(), buffer, capacity);
         return;

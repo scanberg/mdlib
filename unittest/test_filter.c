@@ -24,7 +24,7 @@ UTEST(filter, centered) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     
     md_bitset_t bf = {0};
@@ -44,7 +44,7 @@ UTEST(filter, variable_length) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
 
     const md_filter_context_t fctx = {&sys, &state, NULL};
@@ -88,7 +88,7 @@ UTEST(filter, qm_regions_need_a_qm_system) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
 
     md_bitset_t bf = {0};
@@ -111,7 +111,7 @@ UTEST(filter, errors_say_where) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
 
     md_bitset_t bf = {0};
@@ -174,7 +174,7 @@ UTEST(filter, in_context) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
 
     const md_filter_context_t whole = {&sys, &state, NULL, NULL};
@@ -260,7 +260,7 @@ UTEST(filter, completion_within_context) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
 
     const md_filter_context_t whole = {&sys, &state, NULL, NULL};
@@ -317,7 +317,7 @@ UTEST(filter, bonds) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(filter_bonds_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(filter_bonds_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
@@ -419,7 +419,7 @@ UTEST(filter, bonds_as_atoms) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(filter_bonds_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(filter_bonds_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
 
@@ -579,7 +579,7 @@ UTEST(filter, chains_without_ids) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
     ASSERT_EQ(md_system_chain_count(&sys), 0);
@@ -627,7 +627,7 @@ UTEST(filter, molecules) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
     const size_t num = md_system_molecule_count(&sys);
@@ -723,7 +723,7 @@ UTEST(filter, parts_and_glycans) {
         "END\n";
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ(4u, md_system_residue_count(&sys));
     EXPECT_EQ(1u, md_system_molecule_count(&sys));

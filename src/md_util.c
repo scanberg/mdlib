@@ -6843,10 +6843,15 @@ static bool resname_of_kind(str_t res_name, md_residue_kind_t kind) {
 }
 
 static particle_type_t* find_predefined_particle_type(str_t res_name, str_t atom_name) {
+    // The patterns are matched against C strings, and the names need not end in a zero (a label of 8 characters, a
+    // name read from a file)
+    char res_buf[32], atom_buf[32];
+    str_copy_to_char_buf(res_buf, sizeof(res_buf), res_name);
+    str_copy_to_char_buf(atom_buf, sizeof(atom_buf), atom_name);
     for (size_t i = 0; i < ARRAY_SIZE(predefined_particle_types); ++i) {
         particle_type_t type = predefined_particle_types[i];
-        if (!pattern_match_any(type.atom, atom_name.ptr)) continue;
-        const bool res_match = type.res ? pattern_match_any(type.res, res_name.ptr) : resname_of_kind(res_name, type.res_kind);
+        if (!pattern_match_any(type.atom, atom_buf)) continue;
+        const bool res_match = type.res ? pattern_match_any(type.res, res_buf) : resname_of_kind(res_name, type.res_kind);
         if (res_match) {
             return (particle_type_t*)&predefined_particle_types[i];
         }
@@ -6861,13 +6866,29 @@ static inline void apply_predefined_res_kind(md_system_t* sys, size_t res_idx, m
     }
 }
 
-void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[]) {
+typedef struct residue_template_t {
+    size_t            res_idx;          // The first residue of the key: its atoms' types are the template's
+    size_t            role_offset;      // In the roles: the atom flags of the residue before it was typed
+    md_residue_kind_t kind;             // What the typing said the residue is
+    int32_t           unknown_variant;  // The Martini molecule of no topology it was, -1 if none
+} residue_template_t;
+
+// The roles the typing gave the template residue's atoms: their flags now, without what they had before
+static void add_residue_template(md_hashmap32_t* cache, md_array(residue_template_t)* templates, md_atom_flags_t* roles, residue_template_t* tmpl, uint64_t key, const md_system_t* sys, md_allocator_i* alloc) {
+    const md_urange_t range = md_system_residue_atom_range(sys, tmpl->res_idx);
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        md_atom_flags_t* role = &roles[tmpl->role_offset + (i - range.beg)];
+        const md_atom_flags_t now = sys->atom.flags ? sys->atom.flags[i] : 0;
+        *role = (md_atom_flags_t)((uint32_t)now & ~(uint32_t)*role);
+    }
+    md_hashmap_add(cache, key, (uint32_t)md_array_size(*templates));
+    md_array_push(*templates, *tmpl, alloc);
+}
+
+// The labels of the atoms through an accessor: an array of strings, or of labels
+static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, size_t), const void* label_data) {
     if (!sys) {
         MD_LOG_ERROR("system was null");
-        return;
-    }
-    if (!atom_labels) {
-        MD_LOG_ERROR("Must provide atom_labels");
         return;
     }
     if (!sys->alloc) {
@@ -6889,34 +6910,79 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
 
     if (sys->residue.count > 0) {
         // The masses and sizes of Martini beads depend on the version of Martini
-        const martini_system_t martini = martini_system(sys, label_of_array, atom_labels);
+        const martini_system_t martini = martini_system(sys, label, label_data);
         // The molecules of the force field of beads of none of its topologies, by name and size: the first and how many
         typedef struct { str_t name; size_t size; size_t first; size_t count; } unknown_variant_t;
         md_array(unknown_variant_t) unknown_variants = 0;
+        md_array(str_t) res_labels = 0;
+        // The residues whose atoms were typed by a look at each: by their key, the types and roles their atoms got
+        md_hashmap32_t residue_template_cache = {.allocator = temp_alloc };
+        md_array(residue_template_t) templates = 0;
+        md_array(md_atom_flags_t) template_roles = 0;
         for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
             str_t res_name         = md_system_residue_name(sys, res_idx);
             md_urange_t res_range = md_system_residue_atom_range(sys, res_idx);
             size_t res_size        = res_range.end - res_range.beg;
 
+            // The labels of the residue, by its atoms from 0
+            md_array_resize(res_labels, res_size, temp_alloc);
+            for (size_t k = 0; k < res_size; ++k) res_labels[k] = label(label_data, res_range.beg + k);
+            const str_t* labels = res_labels;
+
+            // The labels are part of the key, as which of them a name stands for can depend on the others; and
+            // everything the types of the residue's atoms come from is in it, so the atoms of a residue of a key seen
+            // before (a water among thousands) take what the first one's did, without a look at each atom
+            uint64_t res_key = md_hash64_str(res_name, res_size);
+            for (size_t k = 0; k < res_size; ++k) res_key = md_hash64_str(labels[k], res_key);
+
+            bool untyped = true;
+            for (size_t i = res_range.beg; i < res_range.end && untyped; ++i) untyped = sys->atom.type_idx[i] == 0;
+
+            if (untyped) {
+                const uint32_t* t = md_hashmap_get(&residue_template_cache, res_key);
+                if (t) {
+                    const residue_template_t* tmpl = &templates[*t];
+                    const md_urange_t from = md_system_residue_atom_range(sys, tmpl->res_idx);
+                    MEMCPY(sys->atom.type_idx + res_range.beg, sys->atom.type_idx + from.beg, res_size * sizeof(md_particle_type_idx_t));
+                    if (sys->atom.flags) {
+                        for (size_t k = 0; k < res_size; ++k) sys->atom.flags[res_range.beg + k] |= template_roles[tmpl->role_offset + k];
+                    }
+                    apply_predefined_res_kind(sys, res_idx, tmpl->kind);
+                    if (tmpl->unknown_variant >= 0) unknown_variants[tmpl->unknown_variant].count += 1;
+                    continue;
+                }
+            }
+            // What the residue's atoms got, for those to follow of its key
+            residue_template_t tmpl = { .res_idx = res_idx, .role_offset = md_array_size(template_roles), .kind = MD_RESIDUE_KIND_OTHER, .unknown_variant = -1 };
+            if (untyped) {
+                for (size_t i = res_range.beg; i < res_range.end; ++i) {
+                    md_array_push(template_roles, sys->atom.flags ? sys->atom.flags[i] : 0, temp_alloc);
+                }
+            }
+
             // A Martini molecule (a lipid, water, an ion, ...): its residue name and all its bead names tell it, and give
             // every bead its mass, size and particle kind. A residue of a single bead is one only in a Martini system:
             // an ion of Martini 3 (ION NA) is named like an atomistic one.
             uint8_t map[256];
-            const martini_db_residue_t* mol = martini_db_match_molecule(martini.version, res_name, atom_labels + res_range.beg, res_size, map);
+            const martini_db_residue_t* mol = martini_db_match_molecule(martini.version, res_name, labels, res_size, map);
             if (mol && res_size == 1 && !martini.martini && mol->kind != MD_RESIDUE_KIND_WATER) mol = NULL;
             // A molecule renamed (CHL for CHOL, the three letters of a PDB file) is told by its beads, in a Martini system
             // only: atomistic residues are named as their atoms, which may be the names of beads
             if (!mol && martini.martini && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name)) {
-                mol = martini_db_match_beads(martini.version, atom_labels + res_range.beg, NULL, res_size, map);
+                mol = martini_db_match_beads(martini.version, labels, NULL, res_size, map);
             }
             if (mol) {
                 for (size_t i = res_range.beg; i < res_range.end; ++i) {
                     if (sys->atom.type_idx[i] != 0) continue;
                     const martini_db_bead_t* bead = martini_db_bead(mol, map[i - res_range.beg]);
                     const md_particle_type_flags_t flags = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, bead->particle);
-                    sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, atom_labels[i], 0, bead->mass, bead->radius, 0, flags, alloc);
+                    sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, labels[i - res_range.beg], 0, bead->mass, bead->radius, 0, flags, alloc);
                 }
                 apply_predefined_res_kind(sys, res_idx, mol->kind);
+                if (untyped) {
+                    tmpl.kind = mol->kind;
+                    add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+                }
                 continue;
             }
             // A molecule of the force field whose beads are those of none of its topologies (a variant of it, a residue
@@ -6924,12 +6990,12 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
             // of a sterol vanadium, its C1 carbon). Regular beads, as nothing tells their masses and sizes, of the kind of
             // the molecule, and without a topology of it no bonds. Not of a polymer, whose residues are bonded by name.
             if (martini.martini && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name) && !martini_db_linked(res_name)) {
-                const martini_db_residue_t* like = martini_db_unknown_variant(res_name, atom_labels + res_range.beg, res_size);
+                const martini_db_residue_t* like = martini_db_unknown_variant(res_name, labels, res_size);
                 if (like) {
                     const md_particle_type_flags_t flags = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, MD_PARTICLE_BEAD);
                     for (size_t i = res_range.beg; i < res_range.end; ++i) {
                         if (sys->atom.type_idx[i] != 0) continue;
-                        sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, atom_labels[i], 0, 72.0f, MARTINI_R, 0, flags, alloc);
+                        sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, labels[i - res_range.beg], 0, 72.0f, MARTINI_R, 0, flags, alloc);
                     }
                     apply_predefined_res_kind(sys, res_idx, like->kind);
                     // Told once per name and size
@@ -6940,13 +7006,14 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
                         md_array_push(unknown_variants, v, temp_alloc);
                     }
                     unknown_variants[u].count += 1;
+                    if (untyped) {
+                        tmpl.kind = like->kind;
+                        tmpl.unknown_variant = (int32_t)u;
+                        add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+                    }
                     continue;
                 }
             }
-
-            // The labels of the residue are part of the key, as which of them a name stands for can depend on the others
-            uint64_t res_key = md_hash64_str(res_name, res_size);
-            for (size_t i = res_range.beg; i < res_range.end; ++i) res_key = md_hash64_str(atom_labels[i], res_key);
 
             // What the predefined types of its atoms say the residue is
             md_residue_kind_t res_kind = MD_RESIDUE_KIND_OTHER;
@@ -6954,14 +7021,14 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
                 if (sys->atom.type_idx[i] != 0) continue;
 
                 const particle_type_t* predef = NULL;
-                uint64_t key = md_hash64_str(atom_labels[i], res_key);
+                uint64_t key = md_hash64_str(labels[i - res_range.beg], res_key);
                 uint32_t* cached = md_hashmap_get(&particle_type_cache, key);
                 if (cached) {
                     sys->atom.type_idx[i] = (md_particle_type_idx_t)(*cached & 0xFFFF);
                     const uint32_t entry = *cached >> 16;
                     predef = entry ? &predefined_particle_types[entry - 1] : NULL;
                 } else {
-                    str_t atom_name = atom_labels[i];
+                    str_t atom_name = labels[i - res_range.beg];
                     md_atomic_number_t z = 0;
                     float mass = 0;
                     float radius = 0;
@@ -6978,7 +7045,7 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
                         flags   = md_particle_type_flags_set_particle_kind(flags, predef->particle);
                         if (predef->res_kind == MD_RESIDUE_KIND_AMINO_ACID || predef->res_kind == MD_RESIDUE_KIND_NUCLEOTIDE) {
                             // A Martini bead of an amino acid or a nucleotide: its version tells its mass and size
-                            const martini_db_bead_t* bead = martini_db_biopolymer_bead(martini.version, res_name, atom_labels + res_range.beg, res_size, i - res_range.beg);
+                            const martini_db_bead_t* bead = martini_db_biopolymer_bead(martini.version, res_name, labels, res_size, i - res_range.beg);
                             if (bead) {
                                 mass   = bead->mass;
                                 radius = bead->radius;
@@ -7003,6 +7070,10 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
                 }
             }
             apply_predefined_res_kind(sys, res_idx, res_kind);
+            if (untyped) {
+                tmpl.kind = res_kind;
+                add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+            }
         }
         for (size_t u = 0; u < md_array_size(unknown_variants); ++u) {
             const unknown_variant_t* v = &unknown_variants[u];
@@ -7011,7 +7082,7 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
             size_t len = 0;
             beads[0] = '\0';
             for (uint32_t i = range.beg; i < range.end && len + 8 < sizeof(beads); ++i) {
-                len += (size_t)snprintf(beads + len, sizeof(beads) - len, "%s" STR_FMT, len ? " " : "", STR_ARG(atom_labels[i]));
+                len += (size_t)snprintf(beads + len, sizeof(beads) - len, "%s" STR_FMT, len ? " " : "", STR_ARG(label(label_data, i)));
             }
             MD_LOG_INFO(STR_FMT " of %zu beads (%s), %zu of them: no Martini topology of the name has these beads; shown as regular beads, without bonds",
                 STR_ARG(v->name), v->size, beads, v->count);
@@ -7020,16 +7091,17 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
         for (size_t i = 0; i < sys->atom.count; ++i) {
             if (sys->atom.type_idx[i] != 0) continue;
 
-            uint64_t key = md_hash64_str(atom_labels[i], 0);
+            const str_t atom_label = label(label_data, i);
+            uint64_t key = md_hash64_str(atom_label, 0);
             uint32_t* cached_type = md_hashmap_get(&particle_type_cache, key);
             if (cached_type) {
                 sys->atom.type_idx[i] = (md_particle_type_idx_t)*cached_type;
             } else {
-                md_atomic_number_t z = md_atomic_number_infer_from_label(atom_labels[i], (str_t){0}, 0);
+                md_atomic_number_t z = md_atomic_number_infer_from_label(atom_label, (str_t){0}, 0);
                 float mass   = md_atomic_number_mass(z);
                 float radius = md_atomic_number_vdw_radius(z);
                 uint32_t color = md_atomic_number_cpk_color(z);
-                md_particle_type_idx_t type = md_particle_type_find_or_add(&sys->atom.type, atom_labels[i], z, mass, radius, color, MD_PARTICLE_TYPE_FLAG_NONE, alloc);
+                md_particle_type_idx_t type = md_particle_type_find_or_add(&sys->atom.type, atom_label, z, mass, radius, color, MD_PARTICLE_TYPE_FLAG_NONE, alloc);
                 sys->atom.type_idx[i] = type;
                 md_hashmap_add(&particle_type_cache, key, (uint32_t)type);
             }
@@ -7037,6 +7109,26 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
     }
 
     md_temp_end(temp);
+}
+
+static str_t label_of_labels(const void* data, size_t i) {
+    return md_label_str(&((const md_label_t*)data)[i]);
+}
+
+void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[]) {
+    if (!atom_labels) {
+        MD_LOG_ERROR("Must provide atom_labels");
+        return;
+    }
+    infer_particle_types(sys, label_of_array, atom_labels);
+}
+
+void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[]) {
+    if (!atom_labels) {
+        MD_LOG_ERROR("Must provide atom_labels");
+        return;
+    }
+    infer_particle_types(sys, label_of_labels, atom_labels);
 }
 
 void md_util_system_augment_particle_types(md_system_t* sys) {
@@ -12918,10 +13010,6 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     const bool cg = md_system_is_coarse_grained(sys);
     size_t num_particle_types = md_system_particle_type_count(sys);
 
-    if (cg) {
-        flags &= ~MD_UTIL_INFER_BOND_BIT;
-    }
-
     if (flags & MD_UTIL_INFER_COLOR_BIT) {
         if (sys->atom.type.color) {
             // @Note: The 0'th type is a sentinel type for representing invalid or unset atoms.
@@ -12958,12 +13046,19 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     if (flags & MD_UTIL_INFER_BOND_BIT) {
         // Setting the bit means "derive this", unconditionally. A format which supplies its own
         // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
+        // Beads too: a coarse grained system gets the bonds of its model's topologies (infer_coarse_grained_bonds).
         md_util_system_infer_covalent_bonds(sys, state);
     }
 
     // Whatever the bonds came from (inferred, a topology, a file, by hand): those between a metal and a non-metal are
     // coordination. Cheap, and every reader of the flags relies on it, so not behind a bit.
     md_util_system_infer_coordination(sys);
+
+    // What the residues are (amino acids, nucleotides, waters, ions) and the roles of their atoms: by their names and by
+    // the bonds, so after them. What a loader gives is the atoms and their names; everything below reads these.
+    if (flags & MD_UTIL_INFER_RESIDUE_BIT) {
+        md_util_system_infer_residue_flags(sys);
+    }
 
     // The parts before the molecules: a molecule holds its polymer strands whole (synthesize_molecule_links). They are
     // found from the instances the data gives, the bonds and the classified residues, which the molecules do not change.

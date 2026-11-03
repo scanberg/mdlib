@@ -235,7 +235,7 @@ UTEST(chem, ions) {
         "HETATM   16 CL    CL A   5      40.000   0.000   0.000  1.00  0.00          CL\n"
         "HETATM   17 MG    MG A   6      50.000   0.000   0.000  1.00  0.00          MG\n"
         "HETATM   18  O   HOH A   7      60.000   0.000   0.000  1.00  0.00           O\n";
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
 
     int q[8] = { 0 };
@@ -387,7 +387,7 @@ UTEST(chem, simulation_with_hydrogens) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
 
     int n_res = 0, unexpected = 0;

@@ -96,7 +96,7 @@ UTEST(pdb, assemblies) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
     const md_assembly_data_t* a = &sys.assembly;
     ASSERT_EQ(1, a->count);
     EXPECT_STREQ("1", str_ptr(md_assembly_id(a, 0)));
@@ -137,7 +137,7 @@ UTEST(pdb, assembly_groups) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){pdb, sizeof(pdb) - 1}, MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){pdb, sizeof(pdb) - 1}, MD_PDB_OPTION_NONE, NULL));
     ASSERT_EQ(3, sys.instance.count);
     const md_assembly_data_t* a = &sys.assembly;
     ASSERT_EQ(1, a->count);
@@ -176,7 +176,8 @@ UTEST(pdb, create_system) {
     EXPECT_EQ(1185, sys.residue.count);
     // The chains of the file are its units, and their strands its parts: three of one sequence
     EXPECT_EQ(3, sys.instance.count);
-    ASSERT_TRUE(md_util_system_infer_parts(&sys));
+    // The parts are found by the bonds and the kinds of the residues, which the load leaves to inference
+    ASSERT_TRUE(md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT | MD_UTIL_INFER_PART_BIT));
     EXPECT_EQ(3, sys.part.count);
     EXPECT_EQ(1, md_system_part_type_count(&sys));
 
@@ -214,7 +215,7 @@ UTEST(pdb, cryst_record_without_its_1) {
         "END\n";
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
     EXPECT_NEAR(246.108, state.unitcell.x, 1e-3);
     EXPECT_NEAR(246.108, state.unitcell.y, 1e-3);
     EXPECT_NEAR(398.534, state.unitcell.z, 1e-3);
@@ -255,7 +256,10 @@ UTEST(pdb, conect_bonds) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
+    // The load gives the file's bonds, and those alone
+    EXPECT_EQ((size_t)18, sys.bond.count);
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_BOND_BIT));
     EXPECT_EQ((size_t)18, count_bonds_of_origin(&sys, MD_BOND_ORIGIN_FILE));
     for (size_t i = 0; i < sys.bond.count; ++i) {
         if (md_bond_origin(sys.bond.flags[i]) != MD_BOND_ORIGIN_FILE) continue;
@@ -312,7 +316,7 @@ UTEST(pdb, four_character_atom_names) {
         "HETATM    2 HN4' TD6 B   1      44.050  64.155  39.051  1.00  0.00           H\n"
         "HETATM    3 HN4A TD6 B   1      44.059  65.650  38.601  1.00  0.00           H\n"
         "HETATM    4  CA  TD6 B   1      45.000  65.000  38.000  1.00  0.00           C\n");
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL));
     ASSERT_EQ((size_t)4, sys.atom.count);
     EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 0), STR_LIT("N4'")));
     EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 1), STR_LIT("HN4'")));
@@ -360,7 +364,7 @@ UTEST(pdb, run_matches_reference) {
     const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     ASSERT_TRUE(md_pdb_system_publish_run(&sys, path, PDB_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     run_check_refs(utest_result, &sys, PDB_RUN, 38, 153, pdb_refs, ARRAY_SIZE(pdb_refs));
 
@@ -614,7 +618,7 @@ UTEST(pdb, chain_breaks_of_files) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1LAF.pdb"), MD_PDB_OPTION_NONE, NULL));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
         size_t asp = SIZE_MAX;
@@ -629,7 +633,7 @@ UTEST(pdb, chain_breaks_of_files) {
     for (size_t f = 0; f < ARRAY_SIZE(whole); ++f) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, whole[f], MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, whole[f], MD_PDB_OPTION_NONE, NULL));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         EXPECT_EQ((size_t)0, count_residues_with(&sys, MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
     }
@@ -651,7 +655,7 @@ UTEST(pdb, write_ter_between_parts) {
         "   2.00000   2.00000   2.00000\n";
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
     ASSERT_EQ(2u, md_system_part_count(&sys));
 
@@ -663,10 +667,114 @@ UTEST(pdb, write_ter_between_parts) {
 
     md_system_t back = {.alloc = alloc};
     md_system_state_t back_st = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&back, &back_st, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&back, &back_st, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     remove(path.ptr);
     ASSERT_EQ(2u, back.residue.count);
     EXPECT_EQ(3u, md_system_residue_atom_range(&back, 0).end - md_system_residue_atom_range(&back, 0).beg);
     EXPECT_EQ(3u, md_system_residue_atom_range(&back, 1).end - md_system_residue_atom_range(&back, 1).beg);
+    md_vm_arena_destroy(alloc);
+}
+
+// ---------------------------------------------------------------------------
+// Straight from the text, in blocks and pieces
+//
+// A file of more than one block (md_text_blocks.h): chains ended by TER, residues straddling the blocks and the pieces,
+// insertion codes, alternate locations, atoms without an element, CONECT records at the end and a second model which is
+// not loaded. The same system read on the calling thread, on threads, and with the pieces out of order; from the file
+// and from a string; and as md_pdb_data_t reads it.
+// ---------------------------------------------------------------------------
+
+#include "test_executor.h"
+#include "test_load_blocks.h"
+
+static void pdb_blocks_atom(md_array(char)* text, md_allocator_i* alloc, int serial, const char* name, const char* res, char chain, int seq, char icode, char alt, float x, float y, float z, const char* element) {
+    char line[128];
+    const int n = snprintf(line, sizeof(line), "ATOM  %5d %-4s%c%-3s %c%4d%c   %8.3f%8.3f%8.3f%6.2f%6.2f          %2s\n",
+                           serial % 100000, name, alt, res, chain, seq % 10000, icode, x, y, z, 1.0, 0.5, element);
+    md_array_push_array(*text, line, (size_t)n, alloc);
+}
+
+UTEST(pdb, blocks_and_pieces) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_array(char) text = 0;
+    const char* header = "CRYST1  100.000  100.000  100.000  90.00  90.00  90.00 P 1           1\nMODEL        1\n";
+    md_array_push_array(text, header, strlen(header), alloc);
+
+    static const char* names[4] = { "N", "CA", "C", "O" };
+    static const char* elements[4] = { "N", "C", "C", "O" };
+    int serial = 1;
+    const int num_chains = 4, num_res = 30000;  // 480000 atom lines and some: two blocks
+    for (int c = 0; c < num_chains; ++c) {
+        for (int r = 0; r < num_res; ++r) {
+            // Every 50th residue an insertion after it, of the same number; every 70th residue without elements
+            const int copies = r % 50 == 0 ? 2 : 1;
+            for (int k = 0; k < copies; ++k) {
+                for (int a = 0; a < 4; ++a) {
+                    const float x = (float)(serial % 701) * 0.1f, y = (float)(serial % 709) * 0.1f, z = (float)(serial % 719) * 0.1f;
+                    const char* el = r % 70 == 0 ? "" : elements[a];
+                    pdb_blocks_atom(&text, alloc, serial++, names[a], "ALA", (char)('A' + c), r + 1, k ? 'A' : ' ', ' ', x, y, z, el);
+                    // An alternate location B of every 30th residue's CA, which is not loaded
+                    if (a == 1 && r % 30 == 0) pdb_blocks_atom(&text, alloc, serial++, names[a], "ALA", (char)('A' + c), r + 1, k ? 'A' : ' ', 'B', x + 1, y, z, el);
+                }
+            }
+        }
+        const char* ter = "TER\n";  // As GROMACS writes it, shorter than a record: no record at all
+        md_array_push_array(text, ter, strlen(ter), alloc);
+        char line[64];
+        const int n = snprintf(line, sizeof(line), "TER   %5d      ALA %c%4d\n", serial++, 'A' + c, num_res % 10000);
+        md_array_push_array(text, line, (size_t)n, alloc);
+    }
+    // Two residues of the same name and number across a TER: two residues
+    pdb_blocks_atom(&text, alloc, serial++, "ZN", "ZN", 'Z', 1, ' ', ' ', 1, 2, 3, "ZN");
+    md_array_push_array(text, "TER\n", 4, alloc);
+    md_array_push_array(text, "TER   \n", 7, alloc);
+    pdb_blocks_atom(&text, alloc, serial++, "ZN", "ZN", 'Z', 1, ' ', ' ', 4, 5, 6, "ZN");
+    md_array_push_array(text, "ENDMDL\nMODEL        2\n", 22, alloc);
+    pdb_blocks_atom(&text, alloc, serial++, "XX", "XXX", 'X', 1, ' ', ' ', 0, 0, 0, "C");
+    md_array_push_array(text, "ENDMDL\n", 7, alloc);
+    // A disulfide between two atoms far apart, in the CONECT records at the end
+    const char* conect = "CONECT    2  400\nCONECT  400    2\nEND\n";
+    md_array_push_array(text, conect, strlen(conect), alloc);
+    const str_t str = { text, md_array_size(text) };
+    ASSERT_GT(str.len, (size_t)MEGABYTES(33));
+
+    const char* path = "md_unittest_blocks.pdb";
+    ASSERT_TRUE(load_blocks_write(path, str));
+
+    md_system_t ref = { .alloc = alloc };
+    md_system_state_t ref_st = { .alloc = alloc };
+    md_pdb_data_t data = {0};
+    ASSERT_TRUE(md_pdb_data_parse_str(&data, str, alloc));
+    ASSERT_TRUE(md_pdb_system_init_from_data(&ref, &ref_st, &data, MD_PDB_OPTION_NONE));
+    EXPECT_EQ((size_t)(num_chains * (num_res + num_res / 50) * 4 + 2), ref.atom.count);
+    EXPECT_EQ((size_t)(num_chains * (num_res + num_res / 50) + 2), ref.residue.count);
+    EXPECT_EQ((size_t)1, ref.bond.count);
+    EXPECT_EQ((size_t)(num_chains + 1), ref.instance.count);
+
+    test_executor_t threads  = test_executor_threads(4);
+    test_executor_t shuffled = test_executor_shuffled(3);
+    const md_executor_t* executors[] = { NULL, test_executor(&threads), test_executor(&shuffled) };
+    for (size_t e = 0; e < ARRAY_SIZE(executors); ++e) {
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, str_from_cstr(path), MD_PDB_OPTION_NONE, executors[e]));
+        EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys, &st));
+        md_system_t sys2 = { .alloc = alloc };
+        md_system_state_t st2 = { .alloc = alloc };
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &st2, str, MD_PDB_OPTION_NONE, executors[e]));
+        EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys2, &st2));
+    }
+
+    // All models: the atoms of the second as well
+    {
+        md_system_t all = { .alloc = alloc }, sys = { .alloc = alloc };
+        md_system_state_t all_st = { .alloc = alloc }, st = { .alloc = alloc };
+        ASSERT_TRUE(md_pdb_system_init_from_data(&all, &all_st, &data, MD_PDB_OPTION_CONCAT_MODELS));
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, str_from_cstr(path), MD_PDB_OPTION_CONCAT_MODELS, test_executor(&threads)));
+        EXPECT_EQ(ref.atom.count + 1, all.atom.count);
+        EXPECT_EQ((size_t)0, load_blocks_diff(&all, &all_st, &sys, &st));
+    }
+
+    remove(path);
     md_vm_arena_destroy(alloc);
 }

@@ -191,7 +191,7 @@ static const md_system_t* vial_ir__run_p(int64_t* num_frames) {
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-        if (md_pdb_system_init_from_file(&sys, &state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE)) {
+        if (md_pdb_system_init_from_file(&sys, &state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL)) {
             md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
             if (md_pdb_system_publish_run(&sys, path, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
                 const md_attribute_t* t = md_attributes_find(&sys.attributes, STR_LIT("run/time"));
@@ -1247,7 +1247,7 @@ static bool vial_ir__load_file(md_system_t* sys, md_system_state_t* st, const ch
     *sys = (md_system_t){.alloc = alloc};
     *st = (md_system_state_t){.alloc = alloc};
     const str_t p = str_from_cstr(path);
-    const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p) : md_pdb_system_init_from_file(sys, st, p, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
+    const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p, NULL) : md_pdb_system_init_from_file(sys, st, p, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
     return ok && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL);
 }
 

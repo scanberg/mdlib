@@ -26,6 +26,13 @@
 #include "system_invariants.h"
 
 // The tests below lay out coordinates per axis, which reads well; a state holds them packed.
+
+// What a structure file's loader gave before it gave only the core (md_gro, md_pdb, md_mmcif): the bonds, what the
+// residues are by them, and the chains. The tests below were written against that.
+static bool test_infer_as_loaded(md_system_t* sys, md_system_state_t* state) {
+    return md_util_system_infer(sys, state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT) && md_util_system_infer_chains(sys);
+}
+
 static vec3_t* pack_xyz(vec3_t* dst, const float* x, const float* y, const float* z, size_t n) {
     for (size_t i = 0; i < n; ++i) dst[i] = vec3_set(x[i], y[i], z[i]);
     return dst;
@@ -77,38 +84,38 @@ UTEST_F_SETUP(util) {
 
     utest_fixture->mol_ala.alloc = alloc;
     md_system_state_t mol_ala_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&utest_fixture->mol_ala, &mol_ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
+    md_pdb_system_init_from_file(&utest_fixture->mol_ala, &mol_ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
     md_pdb_system_publish_run(&utest_fixture->mol_ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), STR_LIT("run/ala"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
     md_util_system_infer(&utest_fixture->mol_ala, &mol_ala_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_pftaa.alloc = alloc;
     md_system_state_t mol_pftaa_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&utest_fixture->mol_pftaa, &mol_pftaa_state, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"));
+    md_gro_system_init_from_file(&utest_fixture->mol_pftaa, &mol_pftaa_state, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL);
     md_util_system_infer(&utest_fixture->mol_pftaa, &mol_pftaa_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_nucleotides.alloc = alloc;
     md_system_state_t mol_nucleotides_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&utest_fixture->mol_nucleotides, &mol_nucleotides_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"));
+    md_gro_system_init_from_file(&utest_fixture->mol_nucleotides, &mol_nucleotides_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL);
     md_util_system_infer(&utest_fixture->mol_nucleotides, &mol_nucleotides_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_centered.alloc = alloc;
     md_system_state_t mol_centered_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&utest_fixture->mol_centered, &mol_centered_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"));
+    md_gro_system_init_from_file(&utest_fixture->mol_centered, &mol_centered_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL);
     md_util_system_infer(&utest_fixture->mol_centered, &mol_centered_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_dna.alloc = alloc;
     md_system_state_t mol_dna_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&utest_fixture->mol_dna, &mol_dna_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    md_gro_system_init_from_file(&utest_fixture->mol_dna, &mol_dna_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL);
     md_util_system_infer(&utest_fixture->mol_dna, &mol_dna_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_trp.alloc = alloc;
     md_system_state_t mol_trp_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&utest_fixture->mol_trp, &mol_trp_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    md_gro_system_init_from_file(&utest_fixture->mol_trp, &mol_trp_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL);
     md_util_system_infer(&utest_fixture->mol_trp, &mol_trp_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_aspirine.alloc = alloc;
     md_system_state_t mol_aspirine_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&utest_fixture->mol_aspirine, &mol_aspirine_state, STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"));
+    md_gro_system_init_from_file(&utest_fixture->mol_aspirine, &mol_aspirine_state, STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL);
     md_util_system_infer(&utest_fixture->mol_aspirine, &mol_aspirine_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_1fez.alloc = alloc;
@@ -123,7 +130,7 @@ UTEST_F_SETUP(util) {
 
     utest_fixture->mol_1k4r.alloc = alloc;
     md_system_state_t mol_1k4r_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&utest_fixture->mol_1k4r, &mol_1k4r_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE);
+    md_pdb_system_init_from_file(&utest_fixture->mol_1k4r, &mol_1k4r_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL);
     md_util_system_infer(&utest_fixture->mol_1k4r, &mol_1k4r_state, MD_UTIL_INFER_ALL);
 
     utest_fixture->mol_8g7u.alloc = alloc;
@@ -590,7 +597,8 @@ UTEST(util, coordinated_metals_are_molecules_of_their_own) {
         // The Mg of tubulin, between the phosphates of its GTP and four waters
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         size_t num_mg = 0;
         for (size_t i = 0; i < sys.atom.count; ++i) {
@@ -611,6 +619,7 @@ UTEST(util, coordinated_metals_are_molecules_of_their_own) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         int32_t mg = -1;
         for (size_t i = 0; i < sys.atom.count && mg < 0; ++i) if (md_atom_atomic_number(&sys.atom, i) == MD_Z_Mg) mg = (int32_t)i;
@@ -647,6 +656,7 @@ UTEST(util, molecules_hold_residues_and_chains) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         size_t breaks = 0;
         for (size_t i = 0; i < sys.residue.count; ++i) breaks += (md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER) != 0;
@@ -705,7 +715,8 @@ UTEST(util, molecules_hold_residues_and_chains) {
             "END\n";
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         ASSERT_EQ(sys.atom.count, 34u);
         EXPECT_EQ(md_system_instance_count(&sys), 1u);
@@ -730,7 +741,8 @@ UTEST(util, molecules_hold_residues_and_chains) {
             "END\n";
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         EXPECT_EQ(md_system_bond_count(&sys), 0u);
         EXPECT_EQ(md_system_molecule_count(&sys), 3u);
@@ -918,7 +930,8 @@ UTEST(util, martini3_peptide_gro) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_gro)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_gro), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     check_martini_peptide(utest_result, &sys, &state, 9);
     md_vm_arena_destroy(alloc);
 }
@@ -927,7 +940,8 @@ UTEST(util, martini3_peptide_pdb) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     check_martini_peptide(utest_result, &sys, &state, 9);
     md_vm_arena_destroy(alloc);
 }
@@ -995,7 +1009,8 @@ UTEST(util, martini_residue_names) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_EQ((size_t)n, md_system_residue_count(&sys));
     check_martini_peptide(utest_result, &sys, &state, (size_t)n);
     md_vm_arena_destroy(alloc);
@@ -1042,7 +1057,8 @@ UTEST(util, martini3_peptide_bonds) {
     {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, ARRAY_SIZE(topology), NULL, 0);
         EXPECT_EQ(1u, md_bond_conn_count(&sys.bond, 23));
     }
@@ -1057,7 +1073,8 @@ UTEST(util, martini3_peptide_bonds) {
         len += snprintf(text + len, sizeof(text) - len, "END\n");
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}, MD_PDB_OPTION_NONE));
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (str_t){text, (size_t)len}, MD_PDB_OPTION_NONE, NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, ARRAY_SIZE(topology), NULL, 0);
         EXPECT_EQ(ARRAY_SIZE(topology), sys.bond.count);
         for (size_t i = 0; i < sys.bond.count; ++i) {
@@ -1094,7 +1111,8 @@ UTEST(util, martini22p_peptide) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini22p_peptide_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini22p_peptide_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
 
     static const int topology[][2] = {
         {0, 1}, {0, 2}, {2, 3}, {2, 6}, {3, 4}, {4, 5}, {6, 7}, {6, 10}, {7, 8}, {8, 9}, {10, 11}, {10, 14}, {11, 12}, {12, 13},
@@ -1122,7 +1140,8 @@ UTEST(util, martini_masses_by_version) {
         // Martini 3 (Tyr has SC4 and Trp SC5)
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_gro)));
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(martini3_peptide_gro), NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, 0));     // Tyr BB, regular
         EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 4));     // Tyr SC4, tiny
         EXPECT_EQ(54.0f, md_atom_mass(&sys.atom, 5));     // Val BB, small
@@ -1155,7 +1174,8 @@ UTEST(util, martini_masses_by_version) {
             "   5.00000   5.00000   5.00000\n";
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text), NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         for (size_t i = 0; i < sys.atom.count; ++i) {
             const bool ring = 2 <= i && i <= 5;
             EXPECT_EQ(ring ? 45.0f : 72.0f, md_atom_mass(&sys.atom, i));
@@ -1185,7 +1205,8 @@ UTEST(util, branched_molecule_is_one_instance) {
         "END\n";
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ(5u, md_system_residue_count(&sys));
     // The branch: the third bonded to the first
@@ -1227,7 +1248,8 @@ UTEST(util, caps_are_of_their_strand) {
         "END\n";
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ(3u, md_system_residue_count(&sys));
     EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_system_residue_kind(&sys, 1));
@@ -1303,7 +1325,8 @@ UTEST(util, amino_acid_of_any_size) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(palmitoyl_cys_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(palmitoyl_cys_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ(1u, md_system_residue_count(&sys));
     ASSERT_EQ(58u, (unsigned)sys.atom.count);
@@ -1328,7 +1351,8 @@ UTEST(util, atom_roles_stay_in_their_residue) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         size_t num_pro = 0, num_with_side_chain = 0, num_aa = 0;
         for (size_t c = 0; c < sys.residue.count; ++c) {
@@ -1357,6 +1381,7 @@ UTEST(util, atom_roles_stay_in_their_residue) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         size_t num_mg = 0;
         for (size_t i = 0; i < sys.atom.count; ++i) {
@@ -1369,7 +1394,8 @@ UTEST(util, atom_roles_stay_in_their_residue) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         size_t num_nuc = 0, num_with_base = 0;
         for (size_t c = 0; c < sys.residue.count; ++c) {
@@ -1434,7 +1460,8 @@ UTEST(util, martini2_dna) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_EQ(4u, md_system_residue_count(&sys));
 
     for (size_t c = 0; c < 4; ++c) {
@@ -1509,7 +1536,8 @@ UTEST(util, martini2_dna_strands_under_one_chain_id) {
     memcpy(text + first_len, martini2_dna_second_strand_pdb, sizeof(martini2_dna_second_strand_pdb));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(text), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(text), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ(8u, md_system_residue_count(&sys));
     ASSERT_EQ(51u, (unsigned)sys.atom.count);
@@ -1545,7 +1573,8 @@ UTEST(util, martini_chain_links) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     static const int expected[][2] = {
         {0, 1}, {2, 3}, {4, 5}, {6, 7}, {8, 9},     // BB-SC1
         {0, 2}, {2, 4},                             // 1-2, and 2-921 over the jump
@@ -1580,7 +1609,8 @@ UTEST(util, martini_bonds_by_geometry) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     static const int expected[][2] = {
         {0, 1}, {1, 2}, {2, 4}, {3, 4}, {1, 3},     // Trp, without SC2-SC4 (2-3)
         {5, 6}, {7, 8}, {9, 10},                    // Ala BB-SC1
@@ -1619,7 +1649,8 @@ UTEST(util, martini_reference_systems) {
         md_system_t top = { .alloc = alloc }, gro = { .alloc = alloc };
         md_system_state_t top_state = { .alloc = alloc }, gro_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&top, &top_state, str_from_cstr(tpr_path)));
-        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, str_from_cstr(gro_path)));
+        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, str_from_cstr(gro_path), NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&gro, &gro_state));
         ASSERT_EQ(top.atom.count, gro.atom.count);
         ASSERT_EQ(top.residue.count, gro.residue.count);
 
@@ -1674,7 +1705,7 @@ UTEST(util, martini_nucleic_backbones) {
             snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.%s", systems[n].name, with_tpr ? "tpr" : "gro");
             md_system_t sys = { .alloc = alloc };
             md_system_state_t state = { .alloc = alloc };
-            ASSERT_TRUE(with_tpr ? md_tpr_system_init_from_file(&sys, &state, str_from_cstr(path)) : md_gro_system_init_from_file(&sys, &state, str_from_cstr(path)));
+            ASSERT_TRUE(with_tpr ? md_tpr_system_init_from_file(&sys, &state, str_from_cstr(path)) : md_gro_system_init_from_file(&sys, &state, str_from_cstr(path), NULL));
             ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
 
             const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
@@ -1756,7 +1787,8 @@ UTEST(util, martini_nucleic_break) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_gap_pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, str_from_cstr(martini2_dna_gap_pdb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ((size_t)6, md_system_residue_count(&sys));
     EXPECT_EQ(-1, md_bond_find(&sys.bond, 14, 18));    // BB3 of 3 and BB1 of 5
@@ -2577,7 +2609,7 @@ UTEST(util, rings_c60) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
 	md_system_t sys = { .alloc = alloc };
 	md_system_state_t sys_state = { .alloc = alloc };
-	md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE);
+	md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE, NULL);
 	md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
 	EXPECT_EQ(sys.atom.count, 60);
@@ -2617,7 +2649,7 @@ UTEST(util, rings_14kr) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE);
+    md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -2631,7 +2663,7 @@ UTEST(util, rings_trytophan_pdb) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_NONE);
+    md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), MD_PDB_OPTION_NONE, NULL);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -2682,7 +2714,7 @@ UTEST(util, rings_ciprofloxacin) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), MD_PDB_OPTION_NONE);
+    md_pdb_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), MD_PDB_OPTION_NONE, NULL);
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
     const int64_t num_rings = md_ring_data_count(&sys.ring);
@@ -2971,13 +3003,13 @@ static inline bool init_system(md_system_t* sys, md_system_state_t* sys_state, s
     }
 
     if (str_eq_ignore_case(ext, STR_LIT("pdb"))) {
-        return md_pdb_system_init_from_file(sys, sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
+        return md_pdb_system_init_from_file(sys, sys_state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) && test_infer_as_loaded(sys, sys_state);
     } else
     if (str_eq_ignore_case(ext, STR_LIT("gro"))) {
-        return md_gro_system_init_from_file(sys, sys_state, path);
+        return md_gro_system_init_from_file(sys, sys_state, path, NULL) && test_infer_as_loaded(sys, sys_state);
     } else
     if (str_eq_ignore_case(ext, STR_LIT("cif"))) {
-        return md_mmcif_system_init_from_file(sys, sys_state, path);
+        return md_mmcif_system_init_from_file(sys, sys_state, path) && test_infer_as_loaded(sys, sys_state);
     }
 
     return false;
@@ -3137,7 +3169,8 @@ UTEST(util, part_type_derived) {
         // Nucleosome: two DNA strands and eight histones, a .gro carries no units and no types
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
         md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
         EXPECT_EQ(md_system_instance_count(&sys), 0);
 
@@ -3163,6 +3196,7 @@ UTEST(util, part_type_derived) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
         md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
 
         // Each asym is one part, of the entity of the file
@@ -3188,6 +3222,7 @@ UTEST(util, part_type_instance_mmcif) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
 
         static const struct { md_part_kind_t kind; const char* desc; } types[] = {
             {MD_PART_KIND_PEPTIDE, "PHOSPHONOACETALDEHYDE HYDROLASE"}, {MD_PART_KIND_NON_POLYMER, "MAGNESIUM ION"},
@@ -3220,6 +3255,7 @@ UTEST(util, part_type_instance_mmcif) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
         md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
         ASSERT_GE(md_system_part_type_count(&sys), 5);
         EXPECT_EQ(md_system_part_type_kind(&sys, 2), MD_PART_KIND_RNA);
@@ -3337,7 +3373,8 @@ UTEST(util, hypermodified_nucleotide) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, str_from_cstr(text), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     ASSERT_EQ((size_t)3, md_system_residue_count(&sys));
     EXPECT_TRUE(str_eq(md_system_residue_name(&sys, 1), STR_LIT("YYG")));
@@ -3475,7 +3512,8 @@ UTEST(util, chains) {
 
         md_system_t gro = {.alloc = alloc};
         md_system_state_t gro_state = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.gro")));
+        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.gro"), NULL));
+        ASSERT_TRUE(test_infer_as_loaded(&gro, &gro_state));
         ASSERT_TRUE(md_util_system_infer(&gro, &gro_state, MD_UTIL_INFER_ALL));
         for (size_t p = 0; p < 2; ++p) {
             const md_urange_t a = md_system_part_atom_range(&sys, p), b = md_system_part_atom_range(&gro, p);
@@ -3608,6 +3646,7 @@ UTEST(util, molecule_type_inferred) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
         EXPECT_VALID_SYSTEM(&sys);
         // The two chains of the hydrolase, the Mg, the WO4 and the waters
@@ -3655,7 +3694,8 @@ UTEST(util, coarse_grained_strand_over_a_gap) {
     md_str_writer_push_cstr(&sb, "END\n");
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     EXPECT_TRUE(md_system_is_coarse_grained(&sys));
     EXPECT_VALID_SYSTEM(&sys);
@@ -3679,7 +3719,8 @@ UTEST(util, topology_supplement_reinfers_backbones) {
     md_str_writer_push_cstr(&sb, "   8.00000   8.00000   8.00000\n");
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
     EXPECT_EQ(1u, md_system_part_count(&sys));
 
@@ -3719,7 +3760,8 @@ UTEST(util, topology_version) {
     md_system_state_t st = {.alloc = alloc};
     EXPECT_EQ(sys.topology_version, 0u);
 
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &st));
     const uint64_t loaded = sys.topology_version;
     EXPECT_NE(loaded, 0u);
 
@@ -3755,7 +3797,8 @@ UTEST(util, topology_version) {
 
     // A system loaded anew, into the same struct, has a version none of the above had
     const uint64_t last = sys.topology_version;
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &st));
     EXPECT_GT(sys.topology_version, last);
 
     md_system_free(&sys);
@@ -3768,7 +3811,8 @@ UTEST(util, state_backbone) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &st));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
     const size_t n = sys.protein_backbone.segment.count;
     ASSERT_GT(n, 0);
@@ -3813,7 +3857,8 @@ UTEST(util, state_backbone) {
     // What a state carries for another backbone does not fit this one
     md_system_t other = {.alloc = alloc};
     md_system_state_t other_st = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_file(&other, &other_st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&other, &other_st, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&other, &other_st));
     ASSERT_TRUE(md_util_system_infer(&other, &other_st, MD_UTIL_INFER_ALL));
     EXPECT_TRUE(md_util_state_secondary_structure(&st, &other) == NULL);
 
@@ -3836,7 +3881,8 @@ UTEST(util, find_by_index) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
     md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
     for (size_t c = 0; c < sys.residue.count; ++c) {
         const md_urange_t range = md_system_residue_atom_range(&sys, c);
@@ -4538,8 +4584,8 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
     md_system_state_t ref_state = { .alloc = alloc };
     const str_t file = str_from_cstr(path);
     bool loaded = false;
-    if (str_ends_with(file, STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE);
-    if (str_ends_with(file, STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&ref, &ref_state, file);
+    if (str_ends_with(file, STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE, NULL);
+    if (str_ends_with(file, STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&ref, &ref_state, file, NULL);
     if (str_ends_with(file, STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&ref, &ref_state, file);
     ASSERT_TRUE(loaded);
     ASSERT_TRUE(md_util_system_infer(&ref, &ref_state, MD_UTIL_INFER_ALL));

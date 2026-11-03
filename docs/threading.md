@@ -28,7 +28,9 @@ A procedure reached through a generic interface gets its executor from the calle
   attribute built in parallel extracts it through `md_attribute_io_create(executor, alloc)` and the `_io` extract
   functions; a provider asks `md_attribute_io_executor(io)`, and hands `io` on to whatever it extracts in turn. A
   plain extract has no context: the provider then runs on the calling thread.
-- **Loaders** take it as an argument (`md_vlx_system_init_from_file(..., executor)`).
+- **Loaders** take it as an argument (`md_vlx_system_init_from_file(..., executor)`). The text loaders (`md_gro`,
+  `md_pdb`) read a file a block at a time and each block in pieces at line boundaries, one piece per loop index
+  (`md_text_blocks.h`): a piece counts its lines, which places its atoms, then reads them where they go.
 
 ## The executor contract
 
