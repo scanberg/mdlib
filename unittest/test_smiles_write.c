@@ -25,7 +25,7 @@ static const md_system_t* tubulin(void) {
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t st = {.alloc = alloc};
         ok = md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
-             md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL);
+             md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL);
     }
     return ok ? &sys : NULL;
 }

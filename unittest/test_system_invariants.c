@@ -25,7 +25,7 @@ static void check_file(int* utest_result, sys_load_fn load, str_t path) {
         return;
     }
 
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
     expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
 
     md_system_free(&sys);

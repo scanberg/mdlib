@@ -236,7 +236,7 @@ UTEST(chem, ions) {
         "HETATM   17 MG    MG A   6      50.000   0.000   0.000  1.00  0.00          MG\n"
         "HETATM   18  O   HOH A   7      60.000   0.000   0.000  1.00  0.00           O\n";
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
 
     int q[8] = { 0 };
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
@@ -340,7 +340,7 @@ UTEST(chem, deposited_structure) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     ASSERT_TRUE(sys.atom.formal_charge != NULL);
     ASSERT_TRUE(sys.atom.hydrogen_count != NULL);
 
@@ -388,7 +388,7 @@ UTEST(chem, simulation_with_hydrogens) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
 
     int n_res = 0, unexpected = 0;
     for (size_t ci = 0; ci < sys.residue.count; ++ci) {
@@ -923,8 +923,8 @@ static void delta_load(delta_fixture_chem_t* f, const char* before, const char* 
     f->frame        = (md_system_state_t){ .alloc = f->alloc };
     if (!md_xyz_system_init_from_str(&f->before, &f->before_state, str_from_cstr(before), MD_XYZ_OPTION_NONE)) return;
     if (!md_xyz_system_init_from_str(&f->after, &f->after_state, str_from_cstr(after), MD_XYZ_OPTION_NONE)) return;
-    if (!md_util_system_infer(&f->before, &f->before_state, MD_UTIL_INFER_ALL)) return;
-    if (!md_util_system_infer(&f->after, &f->after_state, MD_UTIL_INFER_ALL)) return;
+    if (!md_util_system_infer(&f->before, &f->before_state, MD_UTIL_INFER_ALL, NULL)) return;
+    if (!md_util_system_infer(&f->after, &f->after_state, MD_UTIL_INFER_ALL, NULL)) return;
     const size_t n = f->before.atom.count;
     if (f->after.atom.count != n) return;
     md_system_state_init(&f->frame, n);
@@ -1174,7 +1174,7 @@ UTEST(chem, delta_metal_contact) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_data(&sys, &st, &data, MD_XYZ_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     const size_t n = sys.atom.count;
     const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
     size_t frames = 0;

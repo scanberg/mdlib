@@ -203,7 +203,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
 
     md_itp_data_t data = {0};
     ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC", SLICES), STR_LIT(""), alloc));
@@ -248,7 +248,7 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     }
 
     // Re-inferring bonds keeps the topology's and adds nothing on top of them
-    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc);
+    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc, NULL);
     md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
     EXPECT_EQ(count_origin(&sys, MD_BOND_ORIGIN_TOPOLOGY), MOLS * bonds_per_mol);
 
@@ -397,7 +397,7 @@ UTEST(itp, elastic_bonds) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&gro), NULL));
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
 
     md_itp_data_t data = {0};
     ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_writer_to_str(&itp), STR_LIT(""), alloc));
@@ -459,7 +459,7 @@ UTEST(itp, supplement_beads_by_mass) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (str_t){gro, (size_t)len}, NULL));
-        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL);
+        md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL);
         md_itp_data_t data = {0};
         ASSERT_TRUE(md_itp_data_parse_str(&data, (str_t){itp, (size_t)il}, STR_LIT(""), alloc));
         ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
@@ -489,7 +489,7 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL);
 
     const char* itp_fmt =
         "[ moleculetype ]\nSOL 2\n"

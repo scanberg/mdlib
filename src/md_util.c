@@ -16,6 +16,7 @@
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
+#include <core/md_executor.h>
 #include <core/md_bitset.h>
 #include <core/md_os.h>
 #include <core/md_hash.h>
@@ -2968,6 +2969,83 @@ static void test_cov_bond_pair_callback(const uint32_t* i_idx, const uint32_t* j
     }
 }
 
+// The candidate pairs of the whole structure, on the threads of an executor: each thread collects the pairs of the
+// pieces it is handed into an array of its own, and the pieces are put together in their order, which is the order the
+// serial query gives them in. So the candidates, and the bonds made of them, do not depend on the threads.
+typedef struct cov_bond_segment_t {
+    size_t   piece_beg;
+    uint32_t thread;
+    size_t   offset;
+    size_t   count;
+} cov_bond_segment_t;
+
+typedef struct cov_bond_pass_t {
+    const md_spatial_acc_t*     acc;
+    double                      cutoff;
+    cov_bond_callback_param_t*  param;      // [num_threads], each with its own candidates
+    md_array(cov_bond_segment_t)* segments; // [num_threads]
+    md_allocator_i*             heap;
+} cov_bond_pass_t;
+
+static void cov_bond_pass_range(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    cov_bond_pass_t* pass = (cov_bond_pass_t*)arg;
+    cov_bond_callback_param_t* param = &pass->param[thread_idx];
+    const size_t offset = md_array_size(*param->candidates);
+    md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(pass->acc, pass->cutoff, beg, end, test_cov_bond_pair_callback, param);
+    const cov_bond_segment_t seg = { beg, thread_idx, offset, md_array_size(*param->candidates) - offset };
+    if (seg.count) md_array_push(pass->segments[thread_idx], seg, pass->heap);
+}
+
+static int compare_cov_bond_segment(const void* a, const void* b) {
+    const size_t x = ((const cov_bond_segment_t*)a)->piece_beg;
+    const size_t y = ((const cov_bond_segment_t*)b)->piece_beg;
+    return (x > y) - (x < y);
+}
+
+// The pairs within the bonding range of their radii, in the order of md_spatial_acc_for_each_internal_pair_within_cutoff
+static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc_t* acc, double cutoff, const cov_bond_callback_param_t* proto, const md_executor_t* ex, md_allocator_i* alloc) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    const uint32_t num_threads = md_executor_num_threads(ex);
+    const size_t num_pieces = md_spatial_acc_num_pieces(acc);
+    if (num_pieces == 0) return;
+
+    md_array(bond_pair_t)*        cand = md_alloc(heap, num_threads * sizeof(md_array(bond_pair_t)));
+    md_array(cov_bond_segment_t)* segs = md_alloc(heap, num_threads * sizeof(md_array(cov_bond_segment_t)));
+    cov_bond_callback_param_t*    param = md_alloc(heap, num_threads * sizeof(cov_bond_callback_param_t));
+    for (uint32_t t = 0; t < num_threads; ++t) {
+        cand[t] = 0;
+        segs[t] = 0;
+        param[t] = *proto;
+        param[t].candidates = &cand[t];
+        param[t].alloc = heap;
+    }
+    cov_bond_pass_t pass = { .acc = acc, .cutoff = cutoff, .param = param, .segments = segs, .heap = heap };
+    const uint32_t grain = (uint32_t)MAX(1, num_pieces / ((size_t)num_threads * 32));
+    md_parallel_for(ex, (uint32_t)num_pieces, grain, cov_bond_pass_range, &pass);
+
+    md_array(cov_bond_segment_t) all = 0;
+    size_t total = 0;
+    for (uint32_t t = 0; t < num_threads; ++t) {
+        md_array_push_array(all, segs[t], md_array_size(segs[t]), heap);
+        total += md_array_size(cand[t]);
+    }
+    // Not with a NULL array: qsort's pointer is declared non-null, which lets the compiler drop the NULL checks after it
+    if (md_array_size(all) > 1) qsort(all, md_array_size(all), sizeof(cov_bond_segment_t), compare_cov_bond_segment);
+    md_array_ensure(*out, md_array_size(*out) + total, alloc);
+    for (size_t k = 0; k < md_array_size(all); ++k) {
+        md_array_push_array(*out, cand[all[k].thread] + all[k].offset, all[k].count, alloc);
+    }
+
+    md_array_free(all, heap);
+    for (uint32_t t = 0; t < num_threads; ++t) {
+        md_array_free(cand[t], heap);
+        md_array_free(segs[t], heap);
+    }
+    md_free(heap, cand,  num_threads * sizeof(md_array(bond_pair_t)));
+    md_free(heap, segs,  num_threads * sizeof(md_array(cov_bond_segment_t)));
+    md_free(heap, param, num_threads * sizeof(cov_bond_callback_param_t));
+}
+
 // A water molecule whose atoms beyond its O and two H are virtual sites (4 and 5 site models)
 // One oxygen, two hydrogens and possibly virtual sites (4 and 5 site models): a water molecule, whatever it is called
 static bool atoms_are_water(const md_system_t* sys, md_urange_t range) {
@@ -3772,7 +3850,7 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
     }
 }
 
-void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc) {
+void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc, const md_executor_t* executor) {
     ASSERT(bond);
     ASSERT(state);
     ASSERT(sys);
@@ -3814,9 +3892,9 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
 
     size_t num_atoms = state->num_atoms;
     md_array(bond_pair_t) candidates = 0;
-    md_array_ensure(candidates, num_atoms, temp_arena);
 
     if (is_coarse_grained) {
+        md_array_ensure(candidates, num_atoms, temp_arena);
         infer_coarse_grained_bonds(&candidates, sys, state, temp_arena);
 
         size_t num_candidates = md_array_size(candidates);
@@ -3863,24 +3941,27 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             res_water[i] = md_system_residue_kind(sys, i) == MD_RESIDUE_KIND_WATER || atoms_are_water(sys, md_system_residue_atom_range(sys, i));
         }
 
+        // The candidates live on the heap: the spatial structure is given back (to the scratch it came from) before
+        // anything else is made, and what is made after it reuses that memory rather than adding to it
+        md_allocator_i* heap = md_get_heap_allocator();
         {
             // Find connections for all atoms
             cov_bond_callback_param_t param = {
                 .radius = atom_radius,
                 .k_min = bond_k_min,
                 .k_max = bond_k_coord,
-                .candidates = &candidates,
-                .alloc      = temp_arena,
             };
 
             // Candidates within reach of the largest covalent radius of the set: about 2.7 Å for organic matter
             const double cutoff = MAX(1.0, 2.0 * max_atom_rad * bond_k_coord);
 
             // Build candidate list
+            md_temp_scope_t acc_scope = md_temp_begin_in(temp_arena);
             md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, state->num_atoms);
-            md_spatial_acc_t acc = {.alloc = temp_arena};
+            md_spatial_acc_t acc = {.alloc = md_temp_allocator(acc_scope)};
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
-            md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, test_cov_bond_pair_callback, &param);
+            cov_bond_candidates(&candidates, &acc, cutoff, &param, executor, heap);
+            md_temp_end(acc_scope);
         }
 
         size_t num_candidates = md_array_size(candidates);
@@ -3933,6 +4014,14 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         md_bond_data_t temp_bond = { 0 };
         // We are lazy and propagate the correct periodic distance for each bond, so we can do more informed pruning later (e.g. for coordination bonds)
         md_array(float) temp_bond_dist = 0;
+        {
+            // Room for all of them at once: arrays which grow in an arena leave their copies behind
+            size_t num_bonds = md_array_size(metallic_pairs);
+            for (size_t i = 0; i < num_candidates; ++i) num_bonds += rules[i].factor > 0.0f;
+            md_array_ensure(temp_bond.pairs, num_bonds, temp_arena);
+            md_array_ensure(temp_bond.flags, num_bonds, temp_arena);
+            md_array_ensure(temp_bond_dist,  num_bonds, temp_arena);
+        }
 
         for (size_t i = 0; i < num_candidates; ++i) {
             if (rules[i].factor <= 0.0f) continue;
@@ -3944,6 +4033,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             md_bond_insert(&temp_bond, ai, aj, rules[i].coordinate ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred, temp_arena);
             md_array_push(temp_bond_dist, candidates[i].dist, temp_arena);
         }
+        md_array_free(candidates, heap);
         {
             const md_bond_flags_t flags = md_bond_flags_set_kind(inferred, MD_BOND_KIND_METALLIC);
             for (size_t k = 0; k < md_array_size(metallic_pairs); ++k) {
@@ -3957,8 +4047,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         bitfield_set_all(temp_bond_valid, temp_bond.count); // Set all bits to 1 (valid)
 
         // ### PRUNE ###
-        // Build temporary connectivity data for pruning
-        md_bond_build_connectivity(&temp_bond, sys->atom.count, temp_arena);
+        // By the counts of bonds of each atom: no connectivity is needed (the triangle pruning below would want it)
 
         // Atoms with more bonds than they can take: atoms that clash (overlapping molecules in a packed starting
         // structure, unresolved alternate conformations), most often a hydrogen within reach of two atoms. Bonds go
@@ -4160,7 +4249,7 @@ done:
     md_temp_end(temp_scope);
 }
 
-void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state) {
+void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state, const md_executor_t* executor) {
     md_system_topology_changed(sys);
     // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate, except the bonds a user
     // added by hand and those the file gives (CONECT records), which md_util_infer_covalent_bonds keeps and reconciles
@@ -4185,7 +4274,7 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
     sys->bond.count = num_user;
     md_array_shrink(sys->bond.pairs, num_user + num_noncovalent);
     md_array_shrink(sys->bond.flags, num_user + num_noncovalent);
-    md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc);
+    md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc, executor);
     md_bond_build_connectivity(&sys->bond, state->num_atoms, sys->alloc);
 
     // The atoms of the metallic phases are those of the metallic bonds (METALLIC PHASES)
@@ -5826,6 +5915,37 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
     }
 
+    // A ring is a cycle, and a cycle lies within what is left of the graph when its ends are cut off, one after
+    // another: an atom with a single neighbour (or none) is on no cycle, and once it is gone its neighbour may have a
+    // single one left. Most molecules have no ring at all (a solvent, an alkane chain) and nothing is left of them.
+    {
+        uint32_t* degree = md_temp_alloc_array(temp, uint32_t, num_atoms);
+        uint32_t* stack  = md_temp_alloc_array(temp, uint32_t, num_atoms);
+        size_t top = 0;
+        for (size_t i = 0; i < num_atoms; ++i) {
+            uint32_t d = 0;
+            if (!bitfield_test_bit(skip, i)) {
+                md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+                for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                    d += !bitfield_test_bit(skip, md_bond_iter_atom_index(&it));
+                }
+                if (d <= 1) stack[top++] = (uint32_t)i;
+            }
+            degree[i] = d;
+        }
+        while (top) {
+            const uint32_t i = stack[--top];
+            if (bitfield_test_bit(skip, i)) continue;
+            bitfield_set_bit(skip, i);
+            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+            for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                const uint32_t j = (uint32_t)md_bond_iter_atom_index(&it);
+                if (bitfield_test_bit(skip, j)) continue;
+                if (--degree[j] == 1) stack[top++] = j;
+            }
+        }
+    }
+
     find_rings(&sys->ring, &sys->bond, num_atoms, skip, alloc, temp);
 
     md_temp_end(temp);
@@ -6523,8 +6643,12 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
 
     const size_t atom_count = md_system_atom_count(sys);
 
-    // Reverse map from atom to slot, one entry per atom in the system
+    // Reverse map from atom to slot, one entry per atom in the system. Every atom is in one molecule: the slots are as
+    // many as the atoms, and reserved at once rather than grown (the system's allocator is often an arena, which keeps
+    // what a growing array leaves behind)
     md_array_resize(sys->molecule.atom_slot, atom_count, alloc);
+    md_array_ensure(sys->molecule.atom_idx, atom_count, alloc);
+    md_array_ensure(sys->molecule.parent_idx, atom_count, alloc);
 
     // Which atoms have been assigned to a molecule. Persists across components.
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
@@ -12992,7 +13116,7 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
 // (Chains)                 -> Backbone
-bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags) {
+bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags, const md_executor_t* executor) {
     ASSERT(sys);
 
     if (sys->atom.count == 0) return false;
@@ -13047,7 +13171,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         // Setting the bit means "derive this", unconditionally. A format which supplies its own
         // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
         // Beads too: a coarse grained system gets the bonds of its model's topologies (infer_coarse_grained_bonds).
-        md_util_system_infer_covalent_bonds(sys, state);
+        md_util_system_infer_covalent_bonds(sys, state, executor);
     }
 
     // Whatever the bonds came from (inferred, a topology, a file, by hand): those between a metal and a non-metal are

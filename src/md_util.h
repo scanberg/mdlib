@@ -8,6 +8,7 @@
 #include <core/md_hash.h>
 
 struct md_allocator_i;
+struct md_executor_t;
 struct md_bitset_t;
 struct md_bitmask_t;
 
@@ -185,14 +186,15 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_sy
 // Martini topologies are: a residue whose beads are those of a residue of the Martini force fields has the bonds of its
 // topology, any other amino acid or nucleotide a minimum spanning tree of its beads with its rings. The backbone bead of
 // each residue is bonded to that of the next unless the numbering starts over, and cysteines are bridged (see
-// infer_coarse_grained_bonds in md_util.c).
-void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
+// infer_coarse_grained_bonds in md_util.c). The pairs within reach are found on the threads of the executor (NULL: the
+// calling thread), and the bonds come out the same whatever the threads.
+void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc, const struct md_executor_t* executor);
 
 // Infers the covalent bonds of the system (md_util_infer_covalent_bonds) anew. The bonds a user added by hand and those
 // the file gives (MD_BOND_ORIGIN_FILE: the CONECT records of a PDB file) are kept, and so are the non-covalent bonds:
 // all other bonds of the graph are replaced, as are the metallic bonds. The atoms of the metallic bonds are marked
 // MD_ATOM_FLAG_METALLIC, and only they.
-void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
+void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state, const struct md_executor_t* executor);
 
 // Marks every bond between a metal and a non-metal MD_BOND_KIND_COORDINATE, whatever its origin, unless its kind was
 // given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_util_system_infer does it for each system; a bond
@@ -320,7 +322,10 @@ void md_util_system_augment_particle_types(md_system_t* sys);
 // reference is by construction the input which produced the topology. Requires coordinates for
 // anything geometric; a state without them (a topology only format such as PSF) still yields the
 // purely graph derived parts, provided the bonds were supplied by the format.
-bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags);
+//
+// The phases run one after the other, each on the threads of the executor where it spreads its work (NULL: the calling
+// thread); the result is the same whatever the threads.
+bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags, const struct md_executor_t* executor);
 
 
 // Computes an array of distances between two sets of coordinates in a periodic domain (cell)

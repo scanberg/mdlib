@@ -65,13 +65,13 @@ UTEST_F_SETUP(contact) {
     utest_fixture->ala.alloc = utest_fixture->alloc;
     utest_fixture->ala_state = (md_system_state_t){ .alloc = utest_fixture->alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &utest_fixture->ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    md_util_system_infer(&utest_fixture->ala, &utest_fixture->ala_state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&utest_fixture->ala, &utest_fixture->ala_state, MD_UTIL_INFER_ALL, NULL);
 
     // A triclinic cell, the case which exposes mistakes in the periodic neighbour walk
     utest_fixture->npt.alloc = utest_fixture->alloc;
     utest_fixture->npt_state = (md_system_state_t){ .alloc = utest_fixture->alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &utest_fixture->npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
-    md_util_system_infer(&utest_fixture->npt, &utest_fixture->npt_state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&utest_fixture->npt, &utest_fixture->npt_state, MD_UTIL_INFER_ALL, NULL);
 }
 
 UTEST_F_TEARDOWN(contact) {

@@ -1246,6 +1246,7 @@ static bool neighbor_stencil_fits(const int ncell[3], const char* caller) {
 typedef struct cell_iter_t {
     const md_spatial_acc_t* acc;
     size_t   top;                                       // Next top node to visit
+    size_t   top_end;                                   // The top nodes visited end here
     uint32_t depth;                                     // Tier of the node whose children are visited, num_tiers + 1 between top nodes
     uint64_t rem[MD_SPATIAL_ACC_MAX_TIERS + 1];         // Children not yet visited, per tier
     uint32_t next[MD_SPATIAL_ACC_MAX_TIERS + 1];        // Index of the next child, per tier
@@ -1259,13 +1260,14 @@ static inline cell_iter_t cell_iter(const md_spatial_acc_t* acc) {
     MEMSET(&it, 0, sizeof(it));
     it.acc = acc;
     it.depth = acc->num_tiers + 1;
+    it.top_end = (size_t)acc->top_dim[0] * acc->top_dim[1] * acc->top_dim[2];
     return it;
 }
 
 static inline bool cell_iter_next(cell_iter_t* it, uint32_t* out_idx, uint32_t out_c[3]) {
     const md_spatial_acc_t* acc = it->acc;
     const uint32_t L = acc->num_tiers;
-    const size_t num_top = (size_t)acc->top_dim[0] * acc->top_dim[1] * acc->top_dim[2];
+    const size_t num_top = it->top_end;
     for (;;) {
         const uint32_t d = it->depth;
         if (d > L) {
@@ -1367,7 +1369,7 @@ static inline void node_lookup_near(const cell_iter_t* it, const uint32_t c[3], 
 }
 
 
-static FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, const bool tri) {
+static FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cutoff, size_t top_beg, size_t top_end, md_spatial_acc_pair_callback_t callback, void* user_param, const bool tri) {
     int ncell[3];
     neighbor_cell_extent(ncell, cutoff, acc);
     if (!neighbor_stencil_fits(ncell, "md_spatial_acc_for_each_internal_pair_within_cutoff")) return;
@@ -1392,6 +1394,8 @@ static FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cuto
     uint32_t cur_node[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };
 
     cell_iter_t it = cell_iter(acc);
+    it.top = top_beg;
+    it.top_end = MIN(top_end, it.top_end);
     uint32_t ci;
     uint32_t cc[3];
     while (cell_iter_next(&it, &ci, cc)) {
@@ -1438,8 +1442,8 @@ static FORCE_INLINE void internal_pairs(const md_spatial_acc_t* acc, double cuto
     pair_out_flush(&out);
 }
 
-static void internal_pairs_ortho(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t cb, void* user) { internal_pairs(acc, cutoff, cb, user, false); }
-static void internal_pairs_tricl(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t cb, void* user) { internal_pairs(acc, cutoff, cb, user, true);  }
+static void internal_pairs_ortho(const md_spatial_acc_t* acc, double cutoff, size_t beg, size_t end, md_spatial_acc_pair_callback_t cb, void* user) { internal_pairs(acc, cutoff, beg, end, cb, user, false); }
+static void internal_pairs_tricl(const md_spatial_acc_t* acc, double cutoff, size_t beg, size_t end, md_spatial_acc_pair_callback_t cb, void* user) { internal_pairs(acc, cutoff, beg, end, cb, user, true);  }
 
 // --- EXTERNAL PAIRS ---
 
@@ -1648,7 +1652,21 @@ void md_spatial_acc_for_each_internal_pair_within_cutoff(const md_spatial_acc_t*
     ASSERT(callback);
     if (acc->num_elems == 0) return;
     const bool tricl = (acc->flags & MD_UNITCELL_TRICLINIC) != 0;
-    tricl ? internal_pairs_tricl(acc, cutoff, callback, user_param) : internal_pairs_ortho(acc, cutoff, callback, user_param);
+    tricl ? internal_pairs_tricl(acc, cutoff, 0, SIZE_MAX, callback, user_param) : internal_pairs_ortho(acc, cutoff, 0, SIZE_MAX, callback, user_param);
+}
+
+size_t md_spatial_acc_num_pieces(const md_spatial_acc_t* acc) {
+    ASSERT(acc);
+    if (acc->num_elems == 0) return 0;
+    return (size_t)acc->top_dim[0] * acc->top_dim[1] * acc->top_dim[2];
+}
+
+void md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(const md_spatial_acc_t* acc, double cutoff, size_t piece_beg, size_t piece_end, md_spatial_acc_pair_callback_t callback, void* user_param) {
+    ASSERT(acc);
+    ASSERT(callback);
+    if (acc->num_elems == 0 || piece_beg >= piece_end) return;
+    const bool tricl = (acc->flags & MD_UNITCELL_TRICLINIC) != 0;
+    tricl ? internal_pairs_tricl(acc, cutoff, piece_beg, piece_end, callback, user_param) : internal_pairs_ortho(acc, cutoff, piece_beg, piece_end, callback, user_param);
 }
 
 void md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(const md_spatial_acc_t* acc, const md_coord_stream_t* ext_stream, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param, md_spatial_acc_flags_t flags) {

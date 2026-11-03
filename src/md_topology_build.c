@@ -298,7 +298,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
     }
 
     // ## Derived topology, from the new bonds and the coordinates the system was inferred from
-    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT);
+    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT, NULL);
     md_util_system_infer_lipids(sys);
     md_util_system_infer_residue_types(sys);
     result = true;

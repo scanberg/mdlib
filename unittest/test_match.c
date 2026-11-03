@@ -57,7 +57,7 @@ static md_system_t* get_sys(sys_id_t id) {
         case SYS_TIP4P:    md_gro_system_init_from_file(s, st, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL); break;
         default: break;
         }
-        md_util_system_infer(s, st, MD_UTIL_INFER_ALL);
+        md_util_system_infer(s, st, MD_UTIL_INFER_ALL, NULL);
         loaded[id] = true;
     }
     return &sys_data[id];
