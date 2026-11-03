@@ -1039,6 +1039,13 @@ static bool static_index(infer_t* x, vial_node_id id, int64_t* out) {
     return false;
 }
 
+// A slice's start, stop and step: ints, one each
+static bool slice_bound_ok(infer_t* x, vial_node_id b, const T* bt) {
+    if (bt->dtype == VIAL_DT_INT && bt->ndim == 0) return true;
+    diag(x, "E0319", b, "a slice's start, stop and step are ints; this is %s", tstr(bt));
+    return false;
+}
+
 static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
@@ -1073,7 +1080,7 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
                 const vial_node_id b = child(x, in, k);
                 if (!b) continue;
                 const T bt = infer(x, b);
-                if (vial_type_is_error(&bt)) return err();
+                if (vial_type_is_error(&bt) || !slice_bound_ok(x, b, &bt)) return err();
                 join_stage(&t, &t, &bt);
             }
         } else {
@@ -1096,7 +1103,7 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
         }
         const vial_value_t av = value_of(x, on);
         if (av.kind == VIAL_VAL_SETS && t.stage == VIAL_STAGE_STATIC) {
-            const vial_value_t v = vx_sets_subscript(x, &av, in);
+            const vial_value_t v = vx_sets_subscript(x, &av, in, 1);
             if (v.kind == VIAL_VAL_SETS) {
                 const T st = vx_sets_type(x, v.sets, id);
                 t.flags |= st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
@@ -1165,9 +1172,9 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             int64_t lo = 0, hi = 0, step = 1;
             const vial_node_id ln = child(x, it, 0), hn = child(x, it, 1), sn = child(x, it, 2);
             bool klo = true, khi = true, kst = true;
-            if (ln) { T lt = infer(x, ln); if (vial_type_is_error(&lt)) return err(); klo = static_index(x, ln, &lo); }
-            if (hn) { T ht = infer(x, hn); if (vial_type_is_error(&ht)) return err(); khi = static_index(x, hn, &hi); }
-            if (sn) { T st = infer(x, sn); if (vial_type_is_error(&st)) return err(); kst = static_index(x, sn, &step); }
+            if (ln) { T lt = infer(x, ln); if (vial_type_is_error(&lt) || !slice_bound_ok(x, ln, &lt)) return err(); klo = static_index(x, ln, &lo); }
+            if (hn) { T ht = infer(x, hn); if (vial_type_is_error(&ht) || !slice_bound_ok(x, hn, &ht)) return err(); khi = static_index(x, hn, &hi); }
+            if (sn) { T st = infer(x, sn); if (vial_type_is_error(&st) || !slice_bound_ok(x, sn, &st)) return err(); kst = static_index(x, sn, &step); }
             if (kst && step == 0) { diag(x, "E0319", it, "a slice's step is not 0"); return err(); }
             vial_extent_t r = e;
             r.desc = e.desc;
@@ -1272,11 +1279,17 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
         // The value of one position, slice or list of an array of sets or of strings
         const vial_value_t av = value_of(x, on);
         if (av.kind == VIAL_VAL_SETS || av.kind == VIAL_VAL_STRS || av.kind == VIAL_VAL_LABELS) {
-            const vial_value_t v = vx_sets_subscript(x, &av, items[0]);
+            // Sets per position along the first dimension: 1 for one dimension, the product of the rest otherwise
+            uint32_t inner = 1;
+            for (uint8_t k = 1; k < a.ndim; ++k) inner = a.dims[k].kind == VIAL_EXT_STATIC ? inner * a.dims[k].n : 0;
+            const vial_value_t v = vx_sets_subscript(x, &av, items[0], av.kind == VIAL_VAL_SETS ? inner : 1);
             if (v.kind == VIAL_VAL_SETS) {
                 const T st = vx_sets_type(x, v.sets, id);
                 t.flags = (t.flags & ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY)) | (st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY));
-                if (t.ndim >= 1 && st.ndim >= 1) t.dims[0] = st.dims[0];
+                if (t.ndim >= 1 && st.ndim >= 1) {
+                    t.dims[0] = st.dims[0];
+                    if (inner > 1) t.dims[0].n = v.sets->count / inner;
+                }
                 set_value(x, id, v);
             } else if (v.kind != VIAL_VAL_NONE) {
                 set_value(x, id, v);

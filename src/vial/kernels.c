@@ -797,6 +797,9 @@ bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* 
         if (a->ndim == 0 && a->sets->single) {
             return vial_rt_fail(k, "R0103", "positions in a set are taken on its particles");
         }
+        for (size_t q = 0; q < total; ++q) {
+            if (pos[q] >= a->sets->count) return vial_rt_fail(k, "R0103", "a position past the %u sets of an array", a->sets->count);
+        }
         vial_sets_t* s = vial_sets_pick(a->sets, pos, (uint32_t)total, k->alloc);
         if (o.ndim == 0) s->single = true;
         o.sets = s;

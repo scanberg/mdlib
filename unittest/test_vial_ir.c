@@ -1308,6 +1308,14 @@ UTEST(vial_ir, selector_views) {
     EXPECT_TRUE(vial_ir__same_sets("chain.atom[3]", b, sys, st, alloc, &n));
     EXPECT_TRUE(vial_ir__same_sets("residue('PHE').ring[0]", "(residue('PHE') and within(1000.0, of=particle(resname='GTP'))).ring[0]", sys, st, alloc, &n));
     EXPECT_EQ(42u, n);
+    // Positions along the first dimension of a stacked array take its rows whole (found by the fuzzer)
+    const md_system_t* P = vial_test_system('P');
+    const md_system_state_t* Ps = vial_test_state('P');
+    ASSERT_TRUE(P && Ps);
+    EXPECT_TRUE(vial_ir__same_sets("residue[2:6][['N', 'CA', 'C']]", "residue[1:6][['N', 'CA', 'C']][1:]", P, Ps, alloc, &n));
+    EXPECT_EQ(12u, n);
+    EXPECT_TRUE(vial_ir__same_sets("residue[[5, 3]][['N', 'CA', 'C']]", "residue[1:6][['N', 'CA', 'C']][[4, 2]]", P, Ps, alloc, &n));
+    EXPECT_EQ(6u, n);
     md_arena_allocator_destroy(alloc);
 }
 

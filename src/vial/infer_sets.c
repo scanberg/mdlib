@@ -907,7 +907,7 @@ static uint32_t* positions(infer_t* x, vial_node_id item, uint32_t n, uint32_t* 
     return NULL;
 }
 
-vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id item) {
+vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id item, uint32_t inner) {
     vial_value_t none = {0};
     if (!item) return none;
     if (a->kind == VIAL_VAL_LABELS) {
@@ -939,8 +939,17 @@ vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id i
         if (!pos) return none;
         return sets_value(vial_sets_pick_particles(s, 0, pos, cnt, x->alloc));
     }
-    const uint32_t* pos = positions(x, item, s->count, &cnt, &single);
+    // An array of more dimensions than one: positions along the first, each a block of the rest
+    if (inner == 0 || s->count % inner) return none;
+    const uint32_t* pos = positions(x, item, s->count / inner, &cnt, &single);
     if (!pos) return none;
+    if (inner > 1) {
+        uint32_t* all = md_alloc(x->alloc, ((size_t)cnt * inner + 1) * sizeof(uint32_t));
+        for (uint32_t k = 0; k < cnt; ++k) for (uint32_t j = 0; j < inner; ++j) all[k * inner + j] = pos[k] * inner + j;
+        vial_sets_t* r = vial_sets_pick(s, all, cnt * inner, x->alloc);
+        r->single = false;
+        return sets_value(r);
+    }
     vial_sets_t* r = vial_sets_pick(s, pos, cnt, x->alloc);
     r->single = single;
     return sets_value(r);

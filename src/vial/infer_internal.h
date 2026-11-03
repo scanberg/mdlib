@@ -168,7 +168,7 @@ vial_value_t vx_sets_not(infer_t* x, const vial_value_t* a);
 
 // The value of a subscript on a known set, an array of sets or an array of strings, with one index item; none when
 // it is not known
-vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id item);
+vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id item, uint32_t inner);   // inner: sets per first index
 
 // s['CA']: within each set of s, its particles of that name. A name without * or ? is the one particle of it, so the
 // result is known to hold one particle per set; a set without it, or with two, gives an empty set, a missing point.

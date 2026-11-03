@@ -76,6 +76,7 @@ UTEST_F(vial_check, visibility) {
 UTEST_F(vial_check, unknown_names) {
     EXPECT_DIAGS("c = centre(particle)\n", "E0201 1: `centre` is not defined | com\n");
     EXPECT_DIAGS("c = residuez\n", "E0201 1: `residuez` is not defined | residue\n");
+    EXPECT_DIAGS("x = particle[0:zeros(4)]\n", "E0319 1: a slice's start, stop and step are ints; this is float[4]\n");
     // Names are singular; the plural is a slip, with the name as its fix
     EXPECT_DIAGS("c = residues\n", "E0201 1: `residues` is not defined | residue\n");
     EXPECT_DIAGS("b = bonds(particle)\n", "E0201 1: `bonds` is not defined | bond\n");
@@ -310,6 +311,8 @@ UTEST_F(vial_check, stacked_particles) {
     const md_system_t* P = vial_test_system('P');
     ASSERT_TRUE(P != NULL);
     EXPECT_TYPE_ON(P, "rs = residue[1:6]\ns = rs[['N', 'CA', 'C']]\n", 2, "set[5][3], static");
+    EXPECT_TYPE_ON(P, "rs = residue[1:6][['N', 'CA', 'C']]\np = rs[1:]\n", 2, "set[4][3], static");
+    EXPECT_TYPE_ON(P, "rs = residue[1:6][['N', 'CA', 'C']]\na = angle(rs[1:])\n", 2, u8"float[4] °, frame");
     EXPECT_TYPE_ON(P, "a = angle(particle(resid=3)[['N', 'CA', 'C']])\n", 1, u8"float °, frame");
     EXPECT_TYPE_ON(P, "rs = residue[1:6]\na = angle(rs[['N', 'CA', 'C']])\n", 2, u8"float[5] °, frame");
     EXPECT_TYPE_ON(P, "a = angle(particle(resid=3)[[1, 0, 2]])\n", 1, u8"float °, frame");
