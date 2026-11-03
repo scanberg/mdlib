@@ -1548,6 +1548,54 @@ void md_attribute_io_close_all(md_attribute_io_t* io) {
     for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_FILES; ++i) {
         attr_io_close_slot(io, i);
     }
+    for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) {
+        if (io->block[i].data) md_free(md_get_heap_allocator(), io->block[i].data, io->block[i].capacity);
+        MEMSET(&io->block[i], 0, sizeof(io->block[i]));
+    }
+}
+
+void md_attribute_io_block_forget(md_attribute_io_t* io, uint64_t key) {
+    if (!io || key == 0) return;
+    for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) {
+        if (io->block[i].key == key) {
+            io->block[i].key = 0;
+            io->block[i].bytes = 0;
+            io->block[i].last_use = 0;
+        }
+    }
+}
+
+uint64_t md_attribute_io_block_key(str_t path, int64_t offset) {
+    const uint64_t key = md_hash64_combine(md_hash64(path.ptr, path.len, 0), md_hash64(&offset, sizeof(offset), 0x9e3779b97f4a7c15ull));
+    return key ? key : 1;
+}
+
+void* md_attribute_io_block(md_attribute_io_t* io, uint64_t key, size_t bytes, bool* hit) {
+    ASSERT(hit);
+    *hit = false;
+    if (!io || key == 0 || bytes == 0) return NULL;
+    io->tick += 1;
+    size_t lru = 0;
+    for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) {
+        if (io->block[i].key == key && io->block[i].bytes == bytes) {
+            io->block[i].last_use = io->tick;
+            *hit = true;
+            return io->block[i].data;
+        }
+        if (io->block[i].last_use < io->block[lru].last_use) lru = i;
+    }
+    // The least recently used slot, grown when it is too small for the block
+    if (io->block[lru].capacity < bytes) {
+        if (io->block[lru].data) md_free(md_get_heap_allocator(), io->block[lru].data, io->block[lru].capacity);
+        MEMSET(&io->block[lru], 0, sizeof(io->block[lru]));
+        io->block[lru].data = md_alloc(md_get_heap_allocator(), bytes);
+        if (!io->block[lru].data) return NULL;
+        io->block[lru].capacity = bytes;
+    }
+    io->block[lru].key      = key;
+    io->block[lru].bytes    = bytes;
+    io->block[lru].last_use = io->tick;
+    return io->block[lru].data;
 }
 
 size_t md_attribute_packed_symmetric_dim(size_t extent) {

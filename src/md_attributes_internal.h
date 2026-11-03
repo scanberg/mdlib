@@ -7,6 +7,7 @@
 #include <core/md_os.h>
 
 #define MD_ATTRIBUTE_IO_MAX_FILES 16
+#define MD_ATTRIBUTE_IO_MAX_BLOCKS 4
 
 // A small cache of open files, keyed by path. A handful is enough: an extraction context reads one
 // run, and a run is one file per source. The limit is what keeps a long ensemble, one context per
@@ -18,6 +19,15 @@ struct md_attribute_io_t {
         md_file_t file;
         uint64_t  last_use;
     } slot[MD_ATTRIBUTE_IO_MAX_FILES];
+    // Decoded blocks of the files (md_attribute_io_block), from the heap: a block of a chunked HDF5 dataset can be
+    // far larger than what the context's arena is meant to hold
+    struct {
+        uint64_t  key;        // 0 marks an empty slot
+        void*     data;
+        size_t    bytes;      // valid
+        size_t    capacity;   // allocated
+        uint64_t  last_use;
+    } block[MD_ATTRIBUTE_IO_MAX_BLOCKS];
     uint64_t               tick;
     struct md_allocator_i* alloc;
 };

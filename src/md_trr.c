@@ -611,3 +611,15 @@ done:
     md_arena_allocator_destroy(arena);
     return result;
 }
+
+size_t md_trr_file_atom_count(str_t filename) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
+    uint8_t head[TRR_MAX_HEADER_SIZE];
+    const size_t len = md_file_read(file, head, sizeof(head));
+    md_file_close(&file);
+    md_xdr_t xdr = md_xdr_init(head, len);
+    trr_header_t sh;
+    if (!trr_read_frame_header_buf(&xdr, &sh) || sh.natoms <= 0) return 0;
+    return (size_t)sh.natoms;
+}

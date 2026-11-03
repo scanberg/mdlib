@@ -264,3 +264,8 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
     md_vm_arena_destroy(arena);
     remove(path.ptr);
 }
+
+UTEST(trr, atom_count_from_the_first_frame) {
+    EXPECT_EQ(6495u, md_trr_file_atom_count(TRR_FILE));
+    EXPECT_EQ(0u, md_trr_file_atom_count(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
+}

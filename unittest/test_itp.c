@@ -1,6 +1,8 @@
 #include "utest.h"
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include <md_itp.h>
 #include <md_gro.h>
@@ -472,4 +474,42 @@ UTEST(itp, supplement_beads_by_mass) {
         }
         md_vm_arena_destroy(alloc);
     }
+}
+
+// A topology applied again, here with other charges: its columns replace those of the first
+UTEST(itp, supplement_again_replaces_charge_and_mass) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const str_t gro = STR_LIT(
+        "water\n"
+        "    3\n"
+        "    1SOL     OW    1   0.100   0.100   0.100\n"
+        "    1SOL    HW1    2   0.196   0.100   0.100\n"
+        "    1SOL    HW2    3   0.076   0.193   0.100\n"
+        "   3.00000   3.00000   3.00000\n");
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro));
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL);
+
+    const char* itp_fmt =
+        "[ moleculetype ]\nSOL 2\n"
+        "[ atoms ]\n"
+        "1 OW 1 SOL OW  1 %s 15.9994\n"
+        "2 HW 1 SOL HW1 1 %s 1.008\n"
+        "3 HW 1 SOL HW2 1 %s 1.008\n"
+        "[ bonds ]\n1 2\n1 3\n";
+    const char* charges[2][2] = { { "-0.834", "0.417" }, { "-1.0484", "0.5242" } };
+    for (int k = 0; k < 2; ++k) {
+        char itp[512];
+        snprintf(itp, sizeof(itp), itp_fmt, charges[k][0], charges[k][1], charges[k][1]);
+        md_itp_data_t data = {0};
+        ASSERT_TRUE(md_itp_data_parse_str(&data, str_from_cstr(itp), STR_LIT(""), alloc));
+        ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+        const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+        ASSERT_TRUE(charge != NULL);
+        float q[3];
+        ASSERT_EQ(3u, md_attribute_extract_f32(q, 3, charge, md_attribute_slice_all(), md_unit_elementary_charge()));
+        EXPECT_NEAR((float)atof(charges[k][0]), q[0], 1e-5f);
+    }
+    md_vm_arena_destroy(alloc);
 }

@@ -155,6 +155,20 @@ set(SRC_FILES
   src/md_itp.h
   src/md_dcd.c
   src/md_dcd.h
+  src/md_topology_build.c
+  src/md_topology_build.h
+  src/md_amber_netcdf.c
+  src/md_amber_netcdf.h
+  src/md_amber_prmtop.c
+  src/md_amber_prmtop.h
+  src/md_amber_rst7.c
+  src/md_amber_rst7.h
+  src/md_amber_energy.c
+  src/md_amber_energy.h
+  src/md_psf.c
+  src/md_psf.h
+  src/md_namdbin.c
+  src/md_namdbin.h
   src/md_dssp.c
   src/md_dssp.h
   src/md_dssp_cg.inl
@@ -370,6 +384,10 @@ if (MD_ENABLE_HDF5)
   set(HDF5_PREFER_PARALLEL FALSE)
   find_package(HDF5 REQUIRED)
   list(APPEND MD_LIBS HDF5::HDF5)
+  # Frames of HDF5 datasets are inflated here, outside the HDF5 lock (md_hdf5_direct.c): zlib, which HDF5 is built
+  # with for its own deflate filter
+  find_package(ZLIB REQUIRED)
+  list(APPEND MD_LIBS ZLIB::ZLIB)
 
   list(APPEND SRC_FILES
     src/md_vlx.c
@@ -380,6 +398,10 @@ if (MD_ENABLE_HDF5)
     src/md_h5md.h
     src/md_hdf5.c
     src/md_hdf5.h
+    src/md_amber_netcdf4.c
+    src/md_amber_netcdf4.h
+    src/md_hdf5_direct.c
+    src/md_hdf5_direct.h
   )
   # Relative to the executable, because md_vlx.c always prefixes the executable's own directory
   # before this value. An absolute path here - which is what this defaulted to - produced

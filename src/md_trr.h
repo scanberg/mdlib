@@ -31,6 +31,9 @@ extern "C" {
 // the section asked for, through the io they are handed: inside an extraction context the file
 // stays open across frames. Their user_data is sys, borrowed: the run goes before the system does.
 // The file's atom count must match the system's.
+// The atom count of the first frame, 0 when the file is not TRR
+size_t md_trr_file_atom_count(str_t filename);
+
 bool md_trr_system_publish_run(struct md_system_t* sys, str_t filename, str_t run, uint32_t flags);
 
 #ifdef __cplusplus
