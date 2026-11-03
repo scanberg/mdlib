@@ -2461,7 +2461,7 @@ static bool gto_int_exact_grid(md_gpu_stream_t stream, const md_gto_int_gpu_char
     gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
     md_gpu_temp_t scope = md_gpu_temp_begin(stream);
     const size_t accum_bytes = sizeof(uint32_t) * 2 * plane * slab_z;
-    a.accum = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
+    a.accum = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
     if (!a.accum) {
         MD_LOG_ERROR("md_gto_int_gpu_potential_launch: failed to allocate %zu bytes of accumulator", accum_bytes);
     } else {
@@ -2493,7 +2493,7 @@ static bool gto_int_exact_grid(md_gpu_stream_t stream, const md_gto_int_gpu_char
         }
         md_gpu_stream_flush(stream);
     }
-    md_gpu_temp_end(stream, scope);
+    md_gpu_temp_end(scope);
     md_gpu_stream_set_ordering(stream, prev_ordering);
     return a.accum != 0;
 }
@@ -2532,7 +2532,7 @@ static bool gto_int_exact_xyz(md_gpu_stream_t stream, const md_gto_int_gpu_charg
     gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
     md_gpu_temp_t scope = md_gpu_temp_begin(stream);
     const size_t accum_bytes = sizeof(uint32_t) * 2 * (size_t)batch;
-    a.accum = md_gpu_temp_alloc(stream, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
+    a.accum = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, accum_bytes).gpu;
     if (!a.accum) {
         MD_LOG_ERROR("md_gto_int_gpu_potential_xyz_launch: failed to allocate %zu bytes of accumulator", accum_bytes);
     } else {
@@ -2561,7 +2561,7 @@ static bool gto_int_exact_xyz(md_gpu_stream_t stream, const md_gto_int_gpu_charg
         }
         md_gpu_stream_flush(stream);
     }
-    md_gpu_temp_end(stream, scope);
+    md_gpu_temp_end(scope);
     md_gpu_stream_set_ordering(stream, prev_ordering);
     return a.accum != 0;
 }
