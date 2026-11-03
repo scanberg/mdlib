@@ -357,6 +357,19 @@ UTEST_F(vial_check, selector_views) {
     EXPECT_DIAGS_ON(T, "r = chain.residue[500]\n", "W0609 1: a position is outside 3 of 3 sets, which hold fewer residues; their entries are missing\n");
 }
 
+// for r in residue[2]: one set, so its particles one at a time; a position past the first of r is known to be outside
+UTEST_F(vial_check, iterating_one_set) {
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(P != NULL);
+    EXPECT_TYPE_ON(P, "a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", 1, u8"float[3] °, frame");
+    EXPECT_TYPE_ON(P, "a = [angle(r[2], r[8], r[9]) for r in residue[2:3]]\n", 1, u8"float[1] °, frame");
+    EXPECT_TYPE_ON(P, "n = len([p for p in residue[2]])\n", 1, "int, static = 10");
+    EXPECT_DIAGS_ON(P, "a = [angle(r[2], r[8], r[9]) for r in residue[2]]\n",
+        "E0304 1: position 2 is outside `r`, one particle: a for over one set, `residue[2]`, takes its particles one at a time. "
+        "Over one unit as an array of one, slice it, as residue[2:3]; or take the positions in it at once, residue[2][[...]]\n");
+    EXPECT_TYPE_ON(P, "a = angle(residue[2][[2, 8, 9]])\n", 1, u8"float °, frame");
+}
+
 UTEST_F(vial_check, selectors) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);

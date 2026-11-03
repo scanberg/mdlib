@@ -1102,6 +1102,34 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             join_stage(&t, &t, &ix);
         }
         const vial_value_t av = value_of(x, on);
+        if (av.kind != VIAL_VAL_SETS && (a.flags & VIAL_TYPE_ONE_PARTICLE) && kind_of(x, in) != VIAL_N_SLICE &&
+            value_of(x, in).kind == VIAL_VAL_INT && value_of(x, in).i != 0 && value_of(x, in).i != -1) {
+            // One particle, known by its type: as for r in residue[2], whose r are the particles of that one residue
+            const int64_t k = value_of(x, in).i;
+            const vial_symbol_t* sym = kind_of(x, on) == VIAL_N_NAME ? vial_names_symbol(x->n, on) : NULL;
+            const vial_node_id bn = sym ? sym->node : 0;
+            const vial_node_id cf = bn ? x->n->parent[bn] : 0;
+            const vial_node_id iter = cf && kind_of(x, cf) == VIAL_N_COMP_FOR && child(x, cf, 0) == bn ? child(x, cf, 1) : 0;
+            const T* itt = iter && iter >= x->out->base && x->out->typed[iter - x->out->base] ? &x->out->types[iter - x->out->base] : NULL;
+            if (itt && itt->dtype == VIAL_DT_SET && itt->ndim == 0) {
+                // Said once for the comprehension, at its first position
+                const vial_node_id lc = x->n->parent[cf];
+                const md_vial_span_t ls = lc ? x->t->nodes[lc].span : x->t->nodes[cf].span;
+                for (size_t q = 0; q < md_array_size(x->diags->items); ++q) {
+                    const md_vial_diagnostic_t* dg = &x->diags->items[q];
+                    if (memcmp(dg->code, "E0304", 5) == 0 && dg->span.beg >= ls.beg && dg->span.beg < ls.end) return err();
+                }
+                char ex[VIAL_EXCERPT_MAX + 4];
+                const str_t e = vial_excerpt(ex, sizeof(ex), text(x, iter));
+                const str_t nm = text(x, on);
+                diag(x, "E0304", in, "position %lld is outside `%.*s`, one particle: a for over one set, `%.*s`, takes its particles one at a "
+                    "time. Over one unit as an array of one, slice it, as residue[2:3]; or take the positions in it at once, "
+                    "%.*s[[...]]", (long long)k, (int)nm.len, nm.ptr, (int)e.len, e.ptr, (int)e.len, e.ptr);
+            } else {
+                diag(x, "E0304", in, "position %lld is outside a set of one particle", (long long)k);
+            }
+            return err();
+        }
         if (av.kind == VIAL_VAL_SETS && t.stage == VIAL_STAGE_STATIC) {
             const vial_value_t v = vx_sets_subscript(x, &av, in, 1);
             if (v.kind == VIAL_VAL_SETS) {
