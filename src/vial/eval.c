@@ -264,6 +264,9 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
             if (!held) md_array_push(roots, ir->outputs[k].value, arena);
         }
         if (md_array_size(e->held)) vial_interp_only(&e->in, roots, md_array_size(roots));
+        // Everything taken over: nothing is left to compute, and nothing would run to say it is done. A script moved
+        // or renamed is this, and it is up to date as it is made
+        if (md_array_size(e->held) && md_array_size(roots) == 0) md_atomic_fetch_add64(&e->done, 1);
     }
     e->in.max_elements = desc->max_elements;
     e->in.load_frame = load_frame;

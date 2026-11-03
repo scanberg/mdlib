@@ -1478,6 +1478,56 @@ UTEST(vial_ir, population_summaries) {
     md_arena_allocator_destroy(alloc);
 }
 
+// A script whose outputs an earlier evaluation holds, moved to other lines or renamed: taken over whole, it is done as
+// it is made, and its plan says so; a run is not needed for it to be up to date
+UTEST(vial_ir, taken_over_whole) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const size_t nf = (size_t)vial_test_run('P');
+    ASSERT_GT(nf, 3u);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* a = "_ca = particle(name='CA')\nd = distance(_ca[0], _ca[1])\nt = dihedral(_ca[0], _ca[1], _ca[2], _ca[3])\n";
+    const char* b = "# moved down\n\n_ca = particle(name='CA')\nt = dihedral(_ca[0], _ca[1], _ca[2], _ca[3])\n\nd2 = distance(_ca[0], _ca[1])\n";
+    const md_vial_compile_desc_t cd = {.sys = sys, .run = STR_LIT("run")};
+    const md_vial_eval_desc_t ed = {.sys = sys, .run = STR_LIT("run")};
+    md_vial_program_t* pa = md_vial_compile(str_from_cstr(a), &cd, alloc);
+    md_vial_program_t* pb = md_vial_compile(str_from_cstr(b), &cd, alloc);
+    md_vial_eval_t* ea = md_vial_eval_create(pa, &ed, alloc);
+    ASSERT_TRUE(ea && pb);
+    ASSERT_TRUE(md_vial_eval_run(ea));
+    md_vial_eval_t* eb = md_vial_eval_create_from(ea, pb, &ed, alloc);
+    ASSERT_TRUE(eb != NULL);
+    const md_vial_output_t* o;
+    const size_t n = md_vial_outputs(pb, &o);
+    md_vial_plan_t plan[8];
+    ASSERT_LE(n, 8u);
+    ASSERT_TRUE(md_vial_eval_plan(plan, 8, eb, pb, nf));
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_EQ(MD_VIAL_PLAN_HELD, plan[i].status);
+        EXPECT_EQ(0u, plan[i].num_pending);
+        uint8_t held[64];
+        ASSERT_LE(nf, sizeof(held));
+        EXPECT_EQ(nf, md_vial_eval_output_frames(eb, o[i].name, held, sizeof(held)));
+        for (size_t f = 0; f < nf; ++f) EXPECT_EQ(1, held[f]);
+    }
+    EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), STR_LIT("script/d2")) != NULL);
+    // And partly: what is new is computed by a run, and the plan says how much
+    const char* c = "_ca = particle(name='CA')\nd = distance(_ca[0], _ca[1])\nnew = distance(_ca[0], _ca[2])\n";
+    md_vial_program_t* pc = md_vial_compile(str_from_cstr(c), &cd, alloc);
+    md_vial_eval_t* ec = md_vial_eval_create_from(ea, pc, &ed, alloc);
+    ASSERT_TRUE(ec != NULL);
+    ASSERT_TRUE(md_vial_eval_plan(plan, 8, ec, pc, nf));
+    const size_t nc = md_vial_outputs(pc, &o);
+    for (size_t i = 0; i < nc; ++i) if (str_eq(o[i].name, STR_LIT("new"))) EXPECT_EQ((uint32_t)nf, plan[i].num_pending);
+    md_vial_eval_free(ec);
+    md_vial_eval_free(eb);
+    md_vial_eval_free(ea);
+    md_vial_program_free(pc);
+    md_vial_program_free(pb);
+    md_vial_program_free(pa);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, periodic_outputs) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);

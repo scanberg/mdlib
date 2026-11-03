@@ -368,6 +368,16 @@ UTEST_F(vial_check, iterating_one_set) {
         "E0304 1: position 2 is outside `r`, one particle: a for over one set, `residue[2]`, takes its particles one at a time. "
         "Over one unit as an array of one, slice it, as residue[2:3]; or take the positions in it at once, residue[2][[...]]\n");
     EXPECT_TYPE_ON(P, "a = angle(residue[2][[2, 8, 9]])\n", 1, u8"float °, frame");
+    // A selector gives an array of units, even of one: a position picks among them, and within each is .particle
+    EXPECT_DIAGS_ON(P, "a = residue(id=2)[[2, 8, 9]]\n",
+        "E0304 1: position 2 is outside `[1]`: `residue(id=2)` is an array of 1 set, and a position picks among them; within each set it "
+        "is residue(id=2).particle[[2, 8, 9]] | residue(id=2).particle[[2, 8, 9]]\n");
+    EXPECT_DIAGS_ON(P, "a = residue(id=2)[8]\n",
+        "E0304 1: position 8 is outside `[1]`: `residue(id=2)` is an array of 1 set, and a position picks among them; within each set it "
+        "is residue(id=2).particle[8] | residue(id=2).particle[8]\n");
+    EXPECT_TYPE_ON(P, "a = angle(residue(id=2).particle[[2, 8, 9]])\n", 1, u8"float[1] °, frame");
+    EXPECT_TYPE_ON(P, "a = angle(residue(id=2)[0][[2, 8, 9]])\n", 1, u8"float °, frame");
+    EXPECT_DIAGS_ON(P, "v = [1.0, 2.0][[0, 5]]\n", "E0304 1: position 5 is outside `[2]`\n");
 }
 
 UTEST_F(vial_check, selectors) {
