@@ -16,13 +16,13 @@
 
 static const vial_builtin_t builtins[] = {
     // Selectors, usable bare for all their units
-    {"particles", SEL}, {"atoms", SEL}, {"beads", SEL}, {"residues", SEL}, {"parts", SEL}, {"polymers", SEL}, {"molecules", SEL},
-    {"chains", SEL}, {"tails", SEL}, {"heads", SEL}, {"rings", SEL},
+    {"particle", SEL}, {"atom", SEL}, {"bead", SEL}, {"residue", SEL}, {"part", SEL}, {"polymer", SEL}, {"molecule", SEL},
+    {"chain", SEL}, {"tail", SEL}, {"head", SEL}, {"ring", SEL},
     // Predefined sets
     {"protein", SET}, {"nucleic", SET}, {"water", SET}, {"ion", SET}, {"lipid", SET}, {"backbone", SET},
     {"sidechain", SET}, {"nucleobase", SET}, {"nucleoside", SET}, {"system", SET | F},
     // Geometry and structure
-    {"positions", F}, {"mass", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
+    {"mass", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
     {"displacement", F}, {"closest_pair", F}, {"farthest_pair", F}, {"angle", F}, {"dihedral", F}, {"within", F},
     {"fit", F},
     // Reductions
@@ -34,17 +34,17 @@ static const vial_builtin_t builtins[] = {
     {"dot", F}, {"cross", F}, {"norm", F}, {"normalize", F}, {"where", F}, {"unitless", F}, {"float", F | K},
     {"int", F | K},
     // Arrays
-    {"diff", F}, {"zip", F}, {"range", F}, {"common", F}, {"labels", F}, {"spread", F}, {"missing_where", F},
+    {"diff", F}, {"zip", F}, {"range", F}, {"common", F}, {"label", F}, {"spread", F}, {"missing_where", F},
     {"valid", F}, {"filled", F}, {"zeros", F}, {"ones", F}, {"full", F}, {"zeros_like", F}, {"ones_like", F},
     {"shape", F}, {"linspace", F}, {"arange", F}, {"eye", F}, {"reshape", F}, {"flatten", F}, {"concatenate", F},
     {"covariance", F}, {"eigh", F}, {"trace", F}, {"det", F}, {"inv", F}, {"solve", F},
     // Sets, patterns, bonds, attributes
-    {"smiles", F}, {"smiles_atoms", F}, {"bonds", F}, {"formed", F}, {"broken", F}, {"attr", F},
+    {"smiles", F}, {"smiles_atoms", F}, {"bond", F}, {"formed", F}, {"broken", F}, {"attr", F},
     // Frames
     {"histogram", F}, {"sdf", F}, {"density", F}, {"mcs", F}, {"smooth", F}, {"derivative", F}, {"autocorrelation", F}, {"fold", F}, {"at", F},
     {"time", F}, {"frame", F},
     // Drawing
-    {"shown", F}, {"marker", F}, {"line", F}, {"arrow", F}, {"sphere", F}, {"arc", F}, {"disk", F}, {"label", F},
+    {"shown", F}, {"marker", F}, {"line", F}, {"arrow", F}, {"sphere", F}, {"arc", F}, {"disk", F}, {"text", F},
     {"highlight", F},
     // Properties that exist only after a dot
     {"T", P}, {"xyz", P}, {"x", P}, {"y", P}, {"z", P},
@@ -71,16 +71,12 @@ uint32_t vial_builtin_index(const vial_builtin_t* b) { return (uint32_t)(b - bui
 
 // v1's names, with what to write in VIAL
 static const struct { const char* v1; const char* message; const char* fix; } v1_names[] = {
-    {"residue",       "`residue` is v1; selectors are plural, and positions are subscripts", "residues"},
-    {"chain",         "`chain` is v1; selectors are plural", "chains"},
-    {"atom",          "`atom` is v1; write particles", "particles"},
-    {"molecule",      "`molecule` is v1; selectors are plural", "molecules"},
     {"distance_min",  "`distance_min` is v1; write distance(a, b, between='closest')", "distance"},
     {"distance_max",  "`distance_max` is v1; write distance(a, b, between='farthest')", "distance"},
     {"distance_pair", "`distance_pair` is v1; every pair is distance(a.xyz[:, None], b.xyz)", "distance"},
-    {"coord",         "`coord` is v1; write s.xyz", "positions"},
-    {"resname",       "`resname` is v1; it is a keyword, particles(resname=...)", "particles"},
-    {"resid",         "`resid` is v1; it is a keyword, particles(resid=...)", "particles"},
+    {"coord",         "`coord` is v1; write s.xyz", NULL},
+    {"resname",       "`resname` is v1; it is a keyword, particle(resname=...)", "particle"},
+    {"resid",         "`resid` is v1; it is a keyword, particle(resid=...)", "particle"},
 };
 
 bool vial_builtin_v1(str_t name, const char** message, const char** fix) {
@@ -97,8 +93,12 @@ bool vial_builtin_v1(str_t name, const char** message, const char** fix) {
 // Words a script may reach for that VIAL spells differently
 static const struct { const char* word; const char* name; } synonyms[] = {
     {"centre", "com"}, {"center", "com"}, {"center_of_mass", "com"}, {"centroid_of", "centroid"},
-    {"rg", "gyration"}, {"radius_of_gyration", "gyration"}, {"coords", "positions"}, {"coordinates", "positions"},
-    {"pos", "positions"}, {"union", "any"}, {"intersection", "all"}, {"stack", "concatenate"},
+    {"rg", "gyration"}, {"radius_of_gyration", "gyration"}, {"union", "any"}, {"intersection", "all"},
+    {"stack", "concatenate"},
+    // Names are singular, whatever the shape of what they give: the type says that
+    {"particles", "particle"}, {"atoms", "atom"}, {"beads", "bead"}, {"residues", "residue"}, {"parts", "part"},
+    {"polymers", "polymer"}, {"molecules", "molecule"}, {"chains", "chain"}, {"tails", "tail"}, {"heads", "head"},
+    {"rings", "ring"}, {"bonds", "bond"}, {"labels", "label"},
 };
 
 const char* vial_builtin_synonym(str_t word) {

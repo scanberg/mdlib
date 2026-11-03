@@ -520,8 +520,8 @@ static int64_t int_at(const vial_val_t* v, size_t i) { return (int64_t)get_f64(v
 
 static bool index_set_particles(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* it, vial_val_t* out);
 
-// s.particles[i]: within each set, its particle at position i, or an empty set where it has none. A list of positions,
-// s.particles[[1, 0, 2]], stacks them along a new last dimension.
+// s.particle[i]: within each set, its particle at position i, or an empty set where it has none. A list of positions,
+// s.particle[[1, 0, 2]], stacks them along a new last dimension.
 static bool index_each(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* iv, vial_val_t* out) {
     if (a->dtype != VIAL_DT_SET || iv->ndim > 1 || (iv->ndim == 1 && a->ndim >= VIAL_MAX_DIMS)) {
         return vial_rt_fail(k, "R0103", "positions within each set of what is not sets");

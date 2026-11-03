@@ -153,7 +153,7 @@ bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_t
 
 // infer_sets.c
 
-// A call to a built-in: true when it is one infer_sets.c types (selectors, len, count, labels), with its type in out
+// A call to a built-in: true when it is one infer_sets.c types (selectors, len, count, label), with its type in out
 bool        vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
 
 // A built-in written bare: a selector means all its units, a predefined set its particles. False for other names.
@@ -175,10 +175,10 @@ vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id i
 vial_type_t        vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const vial_type_t* a);
 bool               vx_name_is_glob(str_t name);
 
-// s.particles, the particles of each set, as what a subscript or a call takes: s.particles[i] is the particle at position i
-// within each set, s.particles(name='O') those of each set that the keywords select. Not a value of its own.
+// s.particle, the particles of each set, as what a subscript or a call takes: s.particle[i] is the particle at position i
+// within each set, s.particle(name='O') those of each set that the keywords select. Not a value of its own.
 bool               vx_is_particles_view(const infer_t* x, vial_node_id n);
-// Positions within each set of what obj gives: one, s.particles[1], or a list, s.particles[[1, 0, 2]] and s[[1, 0, 2]] on
+// Positions within each set of what obj gives: one, s.particle[1], or a list, s.particle[[1, 0, 2]] and s[[1, 0, 2]] on
 // one set, stacked along a new last dimension in the order listed
 vial_type_t        vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const vial_type_t* a);
 // s[['N', 'CA', 'C']]: the named particles within each set, stacked along a new last dimension

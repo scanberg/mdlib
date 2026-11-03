@@ -37,27 +37,27 @@ typedef struct vial_bench_pair_t {
 } vial_bench_pair_t;
 
 static const vial_bench_pair_t vial_bench_pairs[] = {
-    {"p = distance(1, 2);",                                   "p = distance(particles[0], particles[1])"},
-    {"p = distance(com(atom(1:50)), com(atom(51:100)));",     "p = distance(particles[0:50].com, particles[50:100].com)"},
-    {"p = angle(1, 2, 3);",                                   "p = angle(particles[0], particles[1], particles[2])"},
-    {"p = distance_min(atom(1:50), atom(51:100));",           "p = distance(particles[0:50], particles[50:100], between='closest')"},
-    {"p = count(within(5.0, atom(1:50)));",                   "p = len(within(5.0, of=particles[0:50]) and not particles[0:50])"},
-    {"p = distance(residue(1), residue(2));",                 "p = distance(residues[0].com, residues[1].com)"},
+    {"p = distance(1, 2);",                                   "p = distance(particle[0], particle[1])"},
+    {"p = distance(com(atom(1:50)), com(atom(51:100)));",     "p = distance(particle[0:50].com, particle[50:100].com)"},
+    {"p = angle(1, 2, 3);",                                   "p = angle(particle[0], particle[1], particle[2])"},
+    {"p = distance_min(atom(1:50), atom(51:100));",           "p = distance(particle[0:50], particle[50:100], between='closest')"},
+    {"p = count(within(5.0, atom(1:50)));",                   "p = len(within(5.0, of=particle[0:50]) and not particle[0:50])"},
+    {"p = distance(residue(1), residue(2));",                 "p = distance(residue[0].com, residue[1].com)"},
     // The rest of the comparison corpus (test_vial_compare.c), on what the catalyst has
-    {"p = distance(1, 300);",                                 "p = distance(particles[0], particles[299])"},
-    {"p = dihedral(5, 7, 9, 15);",                            "p = dihedral(particles[4], particles[6], particles[8], particles[14])"},
-    {"p = angle(1, 50, 120);",                                "p = angle(particles[0], particles[49], particles[119])"},
-    {"p = distance_max(atom(1:50), atom(51:100));",           "p = distance(particles[0:50], particles[50:100], between='farthest')"},
-    {"p = distance_min(atom(1:20), atom(100:130));",          "p = distance(particles[0:20], particles[99:130], between='closest')"},
-    {"p = count(within(8.0, atom(1:10)));",                   "p = len(within(8.0, of=particles[0:10]) and not particles[0:10])"},
-    {"p = coord_x(atom(10));",                                "p = particles[9].x"},
-    {"p = coord_z(com(residue(2)));",                         "p = residues[1].com.z"},
-    {"p = angle(residue(1), residue(2), residue(3));",        "p = angle(residues[0].com, residues[1].com, residues[2].com)"},
-    {"p = rmsd(atom(1:40));",                                 "x = particles[0:40]\np = rmsd(x, at(x.xyz, frame=0), weights='mass')"},
-    {"p = distance_min(atom(1:400), atom(401:1336));",        "p = distance(particles[0:400], particles[400:1336], between='closest')"},
+    {"p = distance(1, 300);",                                 "p = distance(particle[0], particle[299])"},
+    {"p = dihedral(5, 7, 9, 15);",                            "p = dihedral(particle[4], particle[6], particle[8], particle[14])"},
+    {"p = angle(1, 50, 120);",                                "p = angle(particle[0], particle[49], particle[119])"},
+    {"p = distance_max(atom(1:50), atom(51:100));",           "p = distance(particle[0:50], particle[50:100], between='farthest')"},
+    {"p = distance_min(atom(1:20), atom(100:130));",          "p = distance(particle[0:20], particle[99:130], between='closest')"},
+    {"p = count(within(8.0, atom(1:10)));",                   "p = len(within(8.0, of=particle[0:10]) and not particle[0:10])"},
+    {"p = coord_x(atom(10));",                                "p = particle[9].x"},
+    {"p = coord_z(com(residue(2)));",                         "p = residue[1].com.z"},
+    {"p = angle(residue(1), residue(2), residue(3));",        "p = angle(residue[0].com, residue[1].com, residue[2].com)"},
+    {"p = rmsd(atom(1:40));",                                 "x = particle[0:40]\np = rmsd(x, at(x.xyz, frame=0), weights='mass')"},
+    {"p = distance_min(atom(1:400), atom(401:1336));",        "p = distance(particle[0:400], particle[400:1336], between='closest')"},
     // The same reductions written as a matrix of every pair, which the compiler computes by a search
-    {"p = distance_min(atom(1:400), atom(401:1336));",        "p = min(distance(particles[0:400].xyz[:, None], particles[400:1336].xyz))"},
-    {"p = distance_max(atom(1:50), atom(51:100));",           "p = max(distance(particles[0:50].xyz[:, None], particles[50:100].xyz))"},
+    {"p = distance_min(atom(1:400), atom(401:1336));",        "p = min(distance(particle[0:400].xyz[:, None], particle[400:1336].xyz))"},
+    {"p = distance_max(atom(1:50), atom(51:100));",           "p = max(distance(particle[0:50].xyz[:, None], particle[50:100].xyz))"},
 };
 
 static bool str_ends(str_t s, const char* e) {
@@ -178,8 +178,8 @@ UTEST(vial_bench, against_v1) {
         for (uint32_t k = 0; k < 100; ++k) {
             char line[160];
             const uint32_t lo = nres ? (k * 7) % nres : 0;
-            const int len = k % 2 ? snprintf(line, sizeof(line), "s%u = residues[%u:%u]\n", k, lo, lo + 5)
-                                  : snprintf(line, sizeof(line), "s%u = particles(element='C') and not particles[%u:%u]\n", k, lo, lo + 20);
+            const int len = k % 2 ? snprintf(line, sizeof(line), "s%u = residue[%u:%u]\n", k, lo, lo + 5)
+                                  : snprintf(line, sizeof(line), "s%u = particle(element='C') and not particle[%u:%u]\n", k, lo, lo + 20);
             md_array_push_array(src, line, (size_t)len, a);
         }
         md_array_push(src, '\0', a);
@@ -207,8 +207,8 @@ UTEST(vial_bench, against_v1) {
         for (int r = 0; r < reps; ++r) {
             md_allocator_i* a = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
             double c, e;
-            if (bench_v2("ref = at(particles.xyz, frame=0)\np = rmsd(particles, ref)", &sys, a, &c, &e) && e < with_at) with_at = e;
-            if (bench_v2("p = rmsd(particles, particles.xyz)", &sys, a, &c, &e) && e < without) without = e;
+            if (bench_v2("ref = at(particle.xyz, frame=0)\np = rmsd(particle, ref)", &sys, a, &c, &e) && e < with_at) with_at = e;
+            if (bench_v2("p = rmsd(particle, particle.xyz)", &sys, a, &c, &e) && e < without) without = e;
             md_arena_allocator_destroy(a);
         }
         printf("%s: rmsd of every particle against at(frame=0): %.2f ms; against itself, no at(): %.2f ms\n", VIAL_BENCH_VERSION, with_at, without);

@@ -86,6 +86,6 @@ E0803 10:5 `global` and `nonlocal` are not part of VIAL
 E0803 11:5 generators are not part of VIAL; a list comprehension builds the array
 E0801 12:1 `while` is not supported yet
 E0801 14:1 item assignment is not supported yet
-E0701 15:5 `residue(1:4)` is v1; positions are subscripts | fix: residues[0:4]
-E0701 16:5 `chain(:)` is v1; positions are subscripts | fix: chains
-E0701 17:5 `atom(2:)` is v1; positions are subscripts | fix: particles[1:]
+E0701 15:5 `residue(1:4)` is v1; positions are subscripts | fix: residue[0:4]
+E0701 16:5 `chain(:)` is v1; positions are subscripts | fix: chain
+E0701 17:5 `atom(2:)` is v1; positions are subscripts | fix: particle[1:]

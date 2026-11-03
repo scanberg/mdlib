@@ -8,7 +8,7 @@
 // ends with a yield of what it gives back. A def is a function, one per specialization the checker made of it, until
 // inlining removes them.
 //
-//     %3 : set[111]            = const residues(id=10..120, chain='A')      @ 5:10-5:38   static
+//     %3 : set[111]            = const residue(id=10..120, chain='A')      @ 5:10-5:38   static
 //     %8 : float[111][3] Å     = com(%3)                                    @ 10:10-10:32 frame
 //
 // The text form is for golden tests and for looking at what the compiler did (vial_ir_dump).
@@ -79,7 +79,7 @@ typedef enum vial_index_kind_t {
     VIAL_INDEX_ARRAY,       // an int array or a bool mask; or on a set, positions of its particles
     VIAL_INDEX_SET,         // a set: a, the values of its particles along dimension c (an int) over the particles b
     VIAL_INDEX_EACH,        // an int a, on a set or an array of sets: within each set, its particle at that position,
-                            //   counted from the end when negative; an empty set where there is none. s.particles[i]
+                            //   counted from the end when negative; an empty set where there is none. s.particle[i]
 } vial_index_kind_t;
 
 typedef struct vial_index_item_t {

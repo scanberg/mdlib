@@ -516,14 +516,14 @@ const char* vial_select_keywords(uint8_t level) {
 
 const char* vial_select_name(uint8_t level) {
     switch (level) {
-    case VIAL_LEVEL_PARTICLE: return "particles";
-    case VIAL_LEVEL_RESIDUE:  return "residues";
-    case VIAL_LEVEL_PART:     return "parts";
-    case VIAL_LEVEL_MOLECULE: return "molecules";
-    case VIAL_LEVEL_CHAIN:    return "chains";
-    case VIAL_LEVEL_TAIL:     return "tails";
-    case VIAL_LEVEL_HEAD:     return "heads";
-    case VIAL_LEVEL_RING:     return "rings";
+    case VIAL_LEVEL_PARTICLE: return "particle";
+    case VIAL_LEVEL_RESIDUE:  return "residue";
+    case VIAL_LEVEL_PART:     return "part";
+    case VIAL_LEVEL_MOLECULE: return "molecule";
+    case VIAL_LEVEL_CHAIN:    return "chain";
+    case VIAL_LEVEL_TAIL:     return "tail";
+    case VIAL_LEVEL_HEAD:     return "head";
+    case VIAL_LEVEL_RING:     return "ring";
     default: return "sets";
     }
 }
@@ -681,7 +681,7 @@ static bool residue_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t
 }
 
 static bool part_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t p) {
-    if (q->particle_kind && !(s->part_kind[p] >= VIAL_PART_PEPTIDE && s->part_kind[p] <= VIAL_PART_POLYMER)) return false;    // polymers()
+    if (q->particle_kind && !(s->part_kind[p] >= VIAL_PART_PEPTIDE && s->part_kind[p] <= VIAL_PART_POLYMER)) return false;    // polymer()
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
         const vial_filter_t* f = &q->filters[i];
         switch (f->key) {
@@ -753,7 +753,7 @@ static uint64_t* bitmap(const vial_sets_t* s, uint32_t num_atoms, md_allocator_i
 }
 static inline bool bit(const uint64_t* b, uint32_t i) { return (b[i / 64] >> (i % 64)) & 1; }
 
-// particles(s, ...) of one set: only s's particles are looked at, so selecting within a residue costs its size, not
+// particle(s, ...) of one set: only s's particles are looked at, so selecting within a residue costs its size, not
 // the system's. Residues are found by walking s, which is ascending.
 static vial_sets_t* select_particles_of(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc) {
     const md_system_t* sys = s->sys;

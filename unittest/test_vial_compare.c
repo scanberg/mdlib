@@ -30,24 +30,24 @@ typedef struct vial_pair_t {
 } vial_pair_t;
 
 static const vial_pair_t vial_pairs[] = {
-    {"p = distance(1, 2);",                                  "p = distance(particles[0], particles[1])", 1e-4},
-    {"p = distance(1, 30);",                                 "p = distance(particles[0], particles[29])", 1e-4},
-    {"p = angle(1, 2, 3);",                                  "p = angle(particles[0], particles[1], particles[2])", 1e-3},
-    {"p = dihedral(5, 7, 9, 15);",                           "p = dihedral(particles[4], particles[6], particles[8], particles[14])", 1e-3},
-    {"p = distance(residue(1), residue(5));",                "p = distance(residues[0].com, residues[4].com)", 1e-4},
-    {"p = distance_min(residue(1), residue(5));",            "p = distance(residues[0], residues[4], between='closest')", 1e-4},
-    {"p = distance_max(residue(1), residue(5));",            "p = distance(residues[0], residues[4], between='farthest')", 1e-4},
-    {"p = angle(residue(1), residue(2), residue(3));",       "p = angle(residues[0].com, residues[1].com, residues[2].com)", 1e-3},
-    {"p = count(within(5.0, residue(3)));",                  "p = len(within(5.0, of=residues[2]) and not residues[2])", 0.0},
-    {"p = count(within(8.0, atom(1:10)));",                  "p = len(within(8.0, of=particles[0:10]) and not particles[0:10])", 0.0},
-    {"p = angle(1, 50, 120);",                               "p = angle(particles[0], particles[49], particles[119])", 1e-3},
+    {"p = distance(1, 2);",                                  "p = distance(particle[0], particle[1])", 1e-4},
+    {"p = distance(1, 30);",                                 "p = distance(particle[0], particle[29])", 1e-4},
+    {"p = angle(1, 2, 3);",                                  "p = angle(particle[0], particle[1], particle[2])", 1e-3},
+    {"p = dihedral(5, 7, 9, 15);",                           "p = dihedral(particle[4], particle[6], particle[8], particle[14])", 1e-3},
+    {"p = distance(residue(1), residue(5));",                "p = distance(residue[0].com, residue[4].com)", 1e-4},
+    {"p = distance_min(residue(1), residue(5));",            "p = distance(residue[0], residue[4], between='closest')", 1e-4},
+    {"p = distance_max(residue(1), residue(5));",            "p = distance(residue[0], residue[4], between='farthest')", 1e-4},
+    {"p = angle(residue(1), residue(2), residue(3));",       "p = angle(residue[0].com, residue[1].com, residue[2].com)", 1e-3},
+    {"p = count(within(5.0, residue(3)));",                  "p = len(within(5.0, of=residue[2]) and not residue[2])", 0.0},
+    {"p = count(within(8.0, atom(1:10)));",                  "p = len(within(8.0, of=particle[0:10]) and not particle[0:10])", 0.0},
+    {"p = angle(1, 50, 120);",                               "p = angle(particle[0], particle[49], particle[119])", 1e-3},
     {"p = dihedral(residue(1), residue(2), residue(3), residue(4));",
-                                                             "p = dihedral(residues[0].com, residues[1].com, residues[2].com, residues[3].com)", 1e-3},
-    {"p = distance_min(atom(1:20), atom(100:130));",         "p = distance(particles[0:20], particles[99:130], between='closest')", 1e-4},
-    {"p = distance_max(atom(1:20), atom(100:130));",         "p = distance(particles[0:20], particles[99:130], between='farthest')", 1e-4},
-    {"p = coord_x(atom(10));",                               "p = particles[9].x", 1e-5},
-    {"p = coord_z(com(residue(7)));",                        "p = residues[6].com.z", 1e-4},
-    {"p = rmsd(atom(1:40));",                                "x = particles[0:40]\np = rmsd(x, at(x.xyz, frame=0), weights='mass')", 1e-3},
+                                                             "p = dihedral(residue[0].com, residue[1].com, residue[2].com, residue[3].com)", 1e-3},
+    {"p = distance_min(atom(1:20), atom(100:130));",         "p = distance(particle[0:20], particle[99:130], between='closest')", 1e-4},
+    {"p = distance_max(atom(1:20), atom(100:130));",         "p = distance(particle[0:20], particle[99:130], between='farthest')", 1e-4},
+    {"p = coord_x(atom(10));",                               "p = particle[9].x", 1e-5},
+    {"p = coord_z(com(residue(7)));",                        "p = residue[6].com.z", 1e-4},
+    {"p = rmsd(atom(1:40));",                                "x = particle[0:40]\np = rmsd(x, at(x.xyz, frame=0), weights='mass')", 1e-3},
 };
 
 // v1's property p at every frame
@@ -149,7 +149,7 @@ UTEST(vial_compare, sdf_agrees_with_v1) {
     const md_attribute_t* a1 = md_attributes_find(md_script_eval_attributes(ev1), STR_LIT("script/p"));
     ASSERT_TRUE(a1 && a1->data);
     // VIAL, at v1's 128 a side
-    const char* src = "p = sdf(residues[1:5], particles(name='O'), 6.0, samples=128 / 12)\n";
+    const char* src = "p = sdf(residue[1:5], particle(name='O'), 6.0, samples=128 / 12)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
     md_vial_eval_t* ev2 = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 4}, alloc);

@@ -73,7 +73,7 @@ typedef struct md_vial_token_t {
 typedef struct md_vial_program_t md_vial_program_t;
 
 // A stored selection a script reads by name, as viamd keeps them: its particles, indices of the system's atoms. Or an
-// array of them, such as a program's published residues(chain='A'): then offsets gives where each set's particles are
+// array of them, such as a program's published residue(chain='A'): then offsets gives where each set's particles are
 // in atoms, [count + 1] for the count of sets dims make, row-major. Zeroed, ndim and offsets give one set.
 typedef struct md_vial_named_set_t {
     str_t           name;
@@ -373,14 +373,14 @@ typedef struct md_vial_label_t {
     md_unit_t   unit;
 } md_vial_label_t;
 
-// Particles highlighted: atoms[beg, end) of the drawing, ascending
+// Particles highlighted: atom[beg, end) of the drawing, ascending
 typedef struct md_vial_group_t {
     uint32_t    element;
     uint32_t    beg;
     uint32_t    end;
 } md_vial_group_t;
 
-// Where an sdf's volume sits on one of its structures at the frame drawn: the structure's particles, atoms[beg, end) of
+// Where an sdf's volume sits on one of its structures at the frame drawn: the structure's particles, atom[beg, end) of
 // the drawing, and the matrix from the run's frame to the volume's, column-major (m[column][row]); its inverse places
 // the volume on the structure. A structure that cannot be fitted at that frame has none.
 typedef struct md_vial_pose_t {
@@ -451,7 +451,7 @@ typedef struct md_vial_filter_desc_t {
 typedef struct md_vial_filter_t {
     bool                    ok;
     bool                    dynamic;    // what it picks depends on the coordinates: filter again when they change
-    // What it picks: one set, or an array of them, row-major, with its shape; bonds(...) is [n][2]
+    // What it picks: one set, or an array of them, row-major, with its shape; bond(...) is [n][2]
     uint8_t                 ndim;       // 0 for one set
     uint32_t                dims[2];
     size_t                  num_sets;

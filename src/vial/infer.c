@@ -1081,7 +1081,7 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             if (vial_type_is_error(&ix)) return err();
             if (ix.dtype == VIAL_DT_INT && ix.ndim == 0) t.flags |= VIAL_TYPE_ONE_PARTICLE;
             else if (ix.dtype == VIAL_DT_BOOL && ix.ndim == 1) {
-                // A mask over its particles, as NumPy's: those where it is true. particles[particles.z > 40.0]
+                // A mask over its particles, as NumPy's: those where it is true. particle[particle.z > 40.0]
                 const vial_value_t sv = value_of(x, on);
                 if (sv.kind == VIAL_VAL_SETS && sv.sets->single && ix.dims[0].kind == VIAL_EXT_STATIC &&
                     ix.dims[0].n != vial_sets_size(sv.sets, 0)) {
@@ -1308,14 +1308,14 @@ static T infer_attr(infer_t* x, vial_node_id id) {
         for (uint8_t k = 0; k < a.ndim; ++k) t.dims[k] = a.dims[a.ndim - 1 - k];
         return t;
     }
-    if (a.dtype == VIAL_DT_SET && str_eq(name, STR_LIT("particles"))) {
+    if (a.dtype == VIAL_DT_SET && str_eq(name, STR_LIT("particle"))) {
         // The particles of each set, for the subscript or call it is the start of
         const vial_node_id p = x->n->parent[id];
         if (p && child(x, p, 0) == id && (kind_of(x, p) == VIAL_N_SUBSCRIPT || kind_of(x, p) == VIAL_N_CALL)) return a;
         const str_t o = text(x, on);
         char fix[160];
-        snprintf(fix, sizeof(fix), "particles(%.*s)", (int)MIN(o.len, 120), o.ptr);
-        diag_fix(x, "E0319", id, fix, "`.particles` picks within each set, as .particles[i] or .particles(name=...); all of them as one set is %s", fix);
+        snprintf(fix, sizeof(fix), "particle(%.*s)", (int)MIN(o.len, 120), o.ptr);
+        diag_fix(x, "E0319", id, fix, "`.particle` picks within each set, as .particle[i] or .particle(name=...); all of them as one set is %s", fix);
         return err();
     }
     if (a.dtype == VIAL_DT_SET || str_eq(name, STR_LIT("com"))) {

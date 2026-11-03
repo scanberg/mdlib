@@ -568,8 +568,8 @@ static vial_node_id parse_subscript(parser_t* p) {
 // v1's selectors by 1-based inclusive position, and what VIAL writes for them
 static const char* v1_plural(str_t name) {
     static const char* map[][2] = {
-        {"residue", "residues"}, {"chain", "chains"}, {"atom", "particles"}, {"molecule", "molecules"},
-        {"part", "parts"}, {"polymer", "parts"}, {"protein", "parts"}, {"nucleic", "parts"},
+        {"residue", "residue"}, {"chain", "chain"}, {"atom", "particle"}, {"molecule", "molecule"},
+        {"part", "part"}, {"polymer", "part"}, {"protein", "part"}, {"nucleic", "part"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(map); ++i) if (str_eq_cstr(name, map[i][0])) return map[i][1];
     return NULL;
@@ -588,7 +588,7 @@ static bool int_literal(const parser_t* p, vial_node_id id, int64_t* out) {
     return true;
 }
 
-// E0701 on a v1 call such as residue(1:4), with the VIAL spelling as the fix where it is clear: residues[0:4]
+// E0701 on a v1 call such as residue(1:4), with the VIAL spelling as the fix where it is clear: residue[0:4]
 static void report_v1_call(parser_t* p, vial_node_id call) {
     const md_vial_span_t s = p->tree.nodes[call].span;
     const size_t before = md_array_size(p->diags->items);

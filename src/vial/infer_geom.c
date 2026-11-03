@@ -107,7 +107,7 @@ static bool positions_of(infer_t* x, vial_node_id node, const T* s, vial_node_id
     }
     char ex[VIAL_EXCERPT_MAX + 4], buf[256];
     excerpt(ex, sizeof(ex), x, node);
-    const char* fix = fix_around(buf, sizeof(buf), x, node, "particles(", ").xyz");
+    const char* fix = fix_around(buf, sizeof(buf), x, node, "particle(", ").xyz");
     uint32_t lo, hi;
     if (set_sizes(x, node, &lo, &hi) && lo != hi) {
         vx_diag_fix(x, "E0318", at, fix, "`%s` holds %u sets of %u to %u particles; their positions do not form one array", ex,
@@ -205,7 +205,7 @@ static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const
             return false;
         }
         if (a->dtype == VIAL_DT_INT && a->ndim == 0) {
-            fix = fix_around(buf, sizeof(buf), x, node, "particles[", "]");
+            fix = fix_around(buf, sizeof(buf), x, node, "particle[", "]");
             vx_diag_fix(x, "E0302", node, fix, "`%s` needs a point for %s; an int is not one", fname, pname);
             return false;
         }
@@ -246,7 +246,7 @@ static bool split(infer_t* x, vial_node_id node, const T* a, uint8_t kind, const
             return true;
         }
         if (a->dtype == VIAL_DT_INT && a->ndim == 0) {
-            fix = fix_around(buf, sizeof(buf), x, node, "particles[", "]");
+            fix = fix_around(buf, sizeof(buf), x, node, "particle[", "]");
             vx_diag_fix(x, "E0302", node, fix, "`%s` needs %s for %s; an int is not one", fname, kind_name(kind), pname);
             return false;
         }
@@ -428,7 +428,7 @@ static T call_property(infer_t* x, vial_node_id call, str_t name) {
     if (s.ndim) {
         char ex[VIAL_EXCERPT_MAX + 4], buf[256], pre[32];
         excerpt(ex, sizeof(ex), x, args[0]);
-        snprintf(pre, sizeof(pre), "%s(particles(", fname);
+        snprintf(pre, sizeof(pre), "%s(particle(", fname);
         const char* fix = fix_around(buf, sizeof(buf), x, args[0], pre, "))");
         vx_diag_fix(x, "E0318", args[0], fix, "`%s` holds sets whose sizes may differ; their particles' %ss do not form one array", ex, fname);
         return err();
@@ -572,18 +572,6 @@ static T call_fit(infer_t* x, vial_node_id call) {
 bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
     const str_t name = str_from_cstr(b->name);
     if (str_eq(name, STR_LIT("com")))          { *out = call_com(x, call, "com", 0, 0); return true; }
-    if (str_eq(name, STR_LIT("positions"))) {
-        static const param_t params[] = {{"s", VK_WHOLE, true}};
-        vial_node_id arg;
-        *out = err();
-        if (!bind(x, call, "positions", params, 1, &arg)) return true;
-        const T a = x->out->types[(arg) - x->out->base];
-        if (vial_type_is_error(&a)) return true;
-        if (a.dtype == VIAL_DT_SET) positions_of(x, arg, &a, call, out);
-        else if (is_float(&a) && last_is(&a, 3)) *out = a;
-        else vx_diag_fix(x, "E0313", arg, NULL, "`positions` takes a set or coordinates; this is %s", vx_tstr(&a));
-        return true;
-    }
     if (str_eq(name, STR_LIT("mass")) || str_eq(name, STR_LIT("charge")) || str_eq(name, STR_LIT("element")) ||
         str_eq(name, STR_LIT("name")) || str_eq(name, STR_LIT("bfactor"))) { *out = call_property(x, call, name); return true; }
     if (str_eq(name, STR_LIT("displacement")))  { *out = call_displacement(x, call); return true; }

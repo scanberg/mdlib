@@ -1,4 +1,4 @@
-module 0..585
+module 0..587
   assign 68..87
     name a 68..69
     binary + 72..87
@@ -93,78 +93,80 @@ module 0..585
       attr 305..308
         name c 305..306
         name x 307..308
-  assign 309..349
+  assign 309..351
     name l 309..310
-    listcomp 313..349
+    listcomp 313..351
       attr 314..319
         name r 314..315
         name com 316..319
-      compfor 320..348
+      compfor 320..350
         name r 324..325
-        call 329..343
-          name residues 329..337
-          range 338..342
-            int 1 338..339
-            int 4 341..342
-        name r 347..348
-  assign 350..381
-    name n 350..351
-    listcomp 354..381
-      listcomp 355..369
-        name a 356..357
-        compfor 358..368
-          name a 362..363
-          name r 367..368
-      compfor 370..380
-        name r 374..375
-        name s 379..380
-  assign 382..423
-    name q 382..383
-    tuple 386..423
-      string 'a' "b" 387..394
-      int 1 396..397
-      float 2.5e-3 399..405
-      const True 407..411
-      const None 413..417
-      ellipsis 419..422
-  assign 492..584
-    name u 492..493
-    tuple 496..584
-      quantity 497..502
-        int 10 497..499
-        unit ns 500..502
-      quantity 504..508
-        int 10 504..506
-        unit ns 506..508
-      quantity 510..516
-        float 0.5 510..513
-        unit nm 514..516
-      quantity 518..524
-        int 90 518..520
-        unit deg 521..524
-      quantity 526..530
-        int 5 526..527
-        unit Å 528..530
-      quantity 532..534
-        int 2 532..533
-        unit e 533..534
-      quantity 536..548
-        float 1.5 536..539
-        unit 'kJ/mol' 540..548
-      binary / 550..558
-        name t 550..551
-        quantity 554..558
-          int 2 554..555
-          unit ps 556..558
-      unary - 560..571
-        binary ** 561..571
-          quantity 561..566
-            int 10 561..563
-            unit ns 564..566
-          int 2 570..571
-      binary * 573..583
-        name ps 573..575
-        quantity 578..583
-          int 10 578..580
-          unit ps 581..583
+        call 329..345
+          name residue 329..336
+          kwarg 337..344
+            name id 337..339
+            range 340..344
+              int 1 340..341
+              int 4 343..344
+        name r 349..350
+  assign 352..383
+    name n 352..353
+    listcomp 356..383
+      listcomp 357..371
+        name a 358..359
+        compfor 360..370
+          name a 364..365
+          name r 369..370
+      compfor 372..382
+        name r 376..377
+        name s 381..382
+  assign 384..425
+    name q 384..385
+    tuple 388..425
+      string 'a' "b" 389..396
+      int 1 398..399
+      float 2.5e-3 401..407
+      const True 409..413
+      const None 415..419
+      ellipsis 421..424
+  assign 494..586
+    name u 494..495
+    tuple 498..586
+      quantity 499..504
+        int 10 499..501
+        unit ns 502..504
+      quantity 506..510
+        int 10 506..508
+        unit ns 508..510
+      quantity 512..518
+        float 0.5 512..515
+        unit nm 516..518
+      quantity 520..526
+        int 90 520..522
+        unit deg 523..526
+      quantity 528..532
+        int 5 528..529
+        unit Å 530..532
+      quantity 534..536
+        int 2 534..535
+        unit e 535..536
+      quantity 538..550
+        float 1.5 538..541
+        unit 'kJ/mol' 542..550
+      binary / 552..560
+        name t 552..553
+        quantity 556..560
+          int 2 556..557
+          unit ps 558..560
+      unary - 562..573
+        binary ** 563..573
+          quantity 563..568
+            int 10 563..565
+            unit ns 566..568
+          int 2 572..573
+      binary * 575..585
+        name ps 575..577
+        quantity 580..585
+          int 10 580..582
+          unit ps 583..585
 --- diagnostics

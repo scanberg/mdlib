@@ -10,7 +10,7 @@ s = a & b | c ^ d << 2
 # Primaries
 d = distance(res_a[:, None], res_a, between='closest')
 z = c[..., 0] + c.x
-l = [r.com for r in residues(1..4) if r]
+l = [r.com for r in residue(id=1..4) if r]
 n = [[a for a in r] for r in s]
 q = ('a' "b", 1, 2.5e-3, True, None, ...)
 # Quantity literals: a unit name or string after a number, one atom

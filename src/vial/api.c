@@ -574,12 +574,12 @@ static void call_params(cmpl_t* c, const md_vial_program_t* prog, vial_node_id c
     if (f && t->nodes[f].kind == VIAL_N_NAME) {
         const str_t fname = {prog->src.ptr + t->nodes[f].span.beg, t->nodes[f].span.end - t->nodes[f].span.beg};
         for (uint8_t lv = VIAL_LEVEL_PARTICLE; lv <= VIAL_LEVEL_RING; ++lv) {
-            const bool alias = (lv == VIAL_LEVEL_PARTICLE && (str_eq(fname, STR_LIT("atoms")) || str_eq(fname, STR_LIT("beads")))) ||
-                               (lv == VIAL_LEVEL_PART && str_eq(fname, STR_LIT("polymers")));
+            const bool alias = (lv == VIAL_LEVEL_PARTICLE && (str_eq(fname, STR_LIT("atom")) || str_eq(fname, STR_LIT("bead")))) ||
+                               (lv == VIAL_LEVEL_PART && str_eq(fname, STR_LIT("polymer")));
             if (!alias && !str_eq(fname, str_from_cstr(vial_select_name(lv)))) continue;
             static const char* words[] = {"name", "element", "kind", "resid", "resname", "chain", "id", "size", "scope"};  // not serial, until it is supported
             for (size_t w = 0; w < ARRAY_SIZE(words); ++w) {
-                if (alias && lv == VIAL_LEVEL_PARTICLE && str_eq(str_from_cstr(words[w]), STR_LIT("kind"))) continue;    // atoms() and beads() are a kind
+                if (alias && lv == VIAL_LEVEL_PARTICLE && str_eq(str_from_cstr(words[w]), STR_LIT("kind"))) continue;    // atom() and bead() are a kind
                 if (vial_select_takes(lv, vial_select_key(str_from_cstr(words[w])))) param_add(c, str_from_cstr(words[w]), given, ng);
             }
             return;
@@ -620,8 +620,8 @@ static bool scope_holds(const md_vial_program_t* prog, uint32_t scope, uint32_t 
 // The values a selector keyword matches, in the system
 static void system_values(cmpl_t* c, const md_system_t* sys, str_t callee, str_t kw) {
     #define IS(a, b) (str_eq(a, STR_LIT(b)))
-    const bool particles = IS(callee, "particles") || IS(callee, "atoms") || IS(callee, "beads");
-    const bool residues = IS(callee, "residues");
+    const bool particles = IS(callee, "particle") || IS(callee, "atom") || IS(callee, "bead");
+    const bool residues = IS(callee, "residue");
     if (particles && IS(kw, "kind")) {
         static const char* k[] = {"atom", "bead", "virtual"};
         for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
@@ -632,7 +632,7 @@ static void system_values(cmpl_t* c, const md_system_t* sys, str_t callee, str_t
         for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
         return;
     }
-    if (IS(callee, "parts") && IS(kw, "kind")) {
+    if (IS(callee, "part") && IS(kw, "kind")) {
         static const char* k[] = {"polymer", "peptide", "nucleic", "dna", "rna", "glycan", "ligand", "lipid", "ion", "water"};
         for (size_t i = 0; i < ARRAY_SIZE(k); ++i) cmpl_add(c, str_from_cstr(k[i]), str_from_cstr(k[i]), MD_VIAL_COMPLETION_VALUE);
         return;
@@ -653,12 +653,12 @@ static void system_values(cmpl_t* c, const md_system_t* sys, str_t callee, str_t
             const str_t n = md_system_residue_name(sys, r);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
-    } else if (IS(kw, "chain") || (IS(callee, "chains") && (IS(kw, "id") || !kw.len))) {
+    } else if (IS(kw, "chain") || (IS(callee, "chain") && (IS(kw, "id") || !kw.len))) {
         for (size_t i = 0; i < md_system_chain_count(sys); ++i) {
             const str_t n = md_system_chain_id(sys, i);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
-    } else if (IS(callee, "molecules") && (IS(kw, "name") || !kw.len)) {
+    } else if (IS(callee, "molecule") && (IS(kw, "name") || !kw.len)) {
         for (size_t i = 0; i < md_system_molecule_type_count(sys); ++i) {
             const str_t n = md_system_molecule_type_name(sys, i);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
@@ -767,7 +767,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
         } else if (callee.len) {
             system_values(&c, prog->check.sys, callee, kw);
         } else if (subscript) {
-            system_values(&c, prog->check.sys, STR_LIT("particles"), STR_LIT("name"));
+            system_values(&c, prog->check.sys, STR_LIT("particle"), STR_LIT("name"));
         }
     } else if (after_dot) {
         for (size_t i = 0; i < vial_builtin_count(); ++i) {
@@ -775,8 +775,8 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             if (b->name[0] == '_') continue;
             if (b->flags & VIAL_BUILTIN_PROPERTY) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_PROPERTY);
         }
-        // The particles within each set, for .particles[i] and .particles(...)
-        cmpl_add(&c, STR_LIT("particles"), STR_LIT("particles"), MD_VIAL_COMPLETION_PROPERTY);
+        // The particles within each set, for .particle[i] and .particle(...)
+        cmpl_add(&c, STR_LIT("particle"), STR_LIT("particle"), MD_VIAL_COMPLETION_PROPERTY);
     } else {
         // The call's parameters first
         if (callee.len && !kw.len) {

@@ -481,7 +481,7 @@ static const prim_t prims[] = {
     {"sphere",    {{"c", VX_KIND_POINT, true}, {"r", VX_KIND_FLOAT, true}}, 2},
     {"arc",       {{"c", VX_KIND_POINT, true}, {"a", VX_KIND_POINT, true}, {"b", VX_KIND_POINT, true}, {"label", VX_KIND_WHOLE, false}}, 4},
     {"disk",      {{"c", VX_KIND_POINT, true}, {"n", VX_KIND_POINT, true}, {"r", VX_KIND_FLOAT, true}}, 3},
-    {"label",     {{"p", VX_KIND_POINT, true}, {"x", VX_KIND_WHOLE, true}}, 2},
+    {"text",      {{"p", VX_KIND_POINT, true}, {"x", VX_KIND_WHOLE, true}}, 2},
     {"highlight", {{"s", VX_KIND_SET, true}}, 1},
 };
 
@@ -499,7 +499,7 @@ static T call_primitive(infer_t* x, vial_node_id call, const prim_t* pr) {
         if (vial_type_is_error(&a)) { ok = false; continue; }
         uint8_t kind = pr->params[k].kind;
         // A label: a number maps with the points, a string is one label
-        const bool is_label = str_eq(str_from_cstr(pr->params[k].name), STR_LIT("label")) || (strcmp(pr->name, "label") == 0 && k == 1);
+        const bool is_label = str_eq(str_from_cstr(pr->params[k].name), STR_LIT("label")) || (strcmp(pr->name, "text") == 0 && k == 1);
         if (is_label) {
             if (a.dtype == VIAL_DT_STR && a.ndim == 0) { T o = stage; vx_join_stage(&stage, &o, &a); continue; }
             if (a.dtype == VIAL_DT_STR || !(a.dtype == VIAL_DT_INT || a.dtype == VIAL_DT_FLOAT || a.dtype == VIAL_DT_FLOAT64 || a.dtype == VIAL_DT_BOOL)) {

@@ -83,7 +83,7 @@ UTEST_F(vial_lex, names_and_keywords) {
     md_allocator_i* alloc = utest_fixture->alloc;
     EXPECT_KINDS("a = b", "NAME:a = NAME:b NEWLINE EOF");
     EXPECT_KINDS("x is None and not y", "NAME:x is None and not NAME:y NEWLINE EOF");
-    EXPECT_KINDS("_core2 = residues", "NAME:_core2 = NAME:residues NEWLINE EOF");
+    EXPECT_KINDS("_core2 = residue", "NAME:_core2 = NAME:residue NEWLINE EOF");
     EXPECT_KINDS("match = 1", "NAME:match = INT:1 NEWLINE EOF");   // soft keywords are names
     EXPECT_KINDS("dö = 1", "NAME:dö = INT:1 NEWLINE EOF");         // Python's names are Unicode
 }
@@ -431,7 +431,7 @@ UTEST_F(vial_parse, errors_and_recovery) {
 UTEST_F(vial_parse, spans_nest) {
     md_allocator_i* alloc = utest_fixture->alloc;
     const char* src = "def f(a: group, b=None):\n    d = norm(displacement(positions(a)[:, None], positions(b)))\n"
-                      "    return min(d) if b is None else max(d)\nx = [r.com for r in residues(1..4) if r]\n";
+                      "    return min(d) if b is None else max(d)\nx = [r.com for r in residue(id=1..4) if r]\n";
     parsed_t r = parse(src, alloc);
     EXPECT_EQ(0, md_array_size(r.diags.items));
     for (size_t id = 1; id < md_array_size(r.tree.nodes); ++id) {

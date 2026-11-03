@@ -448,6 +448,19 @@ static void check_divisors(resolver_t* r, vial_node_id unit, uint32_t scope) {
 static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint32_t late) {
     const str_t name = text(r, at);
     if (vial_diag_at(r->diags, r->t->nodes[at].span.beg)) return;   // the parser said more, as E0701 for residue(1:4)
+    // positions(s), coords(s): the positions of a set are s.xyz
+    if (str_eq(name, STR_LIT("positions")) || str_eq(name, STR_LIT("coords")) || str_eq(name, STR_LIT("coordinates")) ||
+        str_eq(name, STR_LIT("pos")) || str_eq(name, STR_LIT("coord"))) {
+        const vial_node_id call = r->n->parent[at];
+        if (call && kind_of(r, call) == VIAL_N_CALL && child(r, call, 0) == at && r->t->nodes[call].child_count == 2) {
+            const str_t a = text(r, child(r, call, 1));
+            char fix[160];
+            const bool simple = a.len < 100 && kind_of(r, child(r, call, 1)) != VIAL_N_BINARY;
+            snprintf(fix, sizeof(fix), simple ? "%.*s.xyz" : "(%.*s).xyz", (int)a.len, a.ptr);
+            diag_fix(r, str_eq(name, STR_LIT("coord")) ? "E0701" : "E0201", call, fix, "the positions of a set are %s", fix);
+            return;
+        }
+    }
     const char* v1_msg = NULL;
     const char* v1_fix = NULL;
     if (vial_builtin_v1(name, &v1_msg, &v1_fix)) {

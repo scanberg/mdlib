@@ -3,7 +3,7 @@
 // A comprehension iterates over an array (its first dimension), a set (its particles, one at a time), range() or
 // zip(). Its result has the iterable's extent, with its description, so `[mean(rmsf[r]) for r in residues]` is labelled
 // by residue; an `if` gives a new extent. When the iterable's value is known and the element is a set, the
-// comprehension is evaluated when compiling, element by element: `[particles(r, name='CA') for r in res_a]` is known to
+// comprehension is evaluated when compiling, element by element: `[particle(r, name='CA') for r in res_a]` is known to
 // hold one particle per set, so it is points.
 
 #include "infer_internal.h"
@@ -340,7 +340,7 @@ T vx_listcomp(infer_t* x, vial_node_id id) {
             s->count = first.count;
             s->offset = offset;
             s->idx = idx ? idx : md_alloc(x->alloc, sizeof(uint32_t));
-            // The units the iterable's sets are, when it has them: [particles(r, name='CA') for r in res_a] runs over res_a's residues
+            // The units the iterable's sets are, when it has them: [particle(r, name='CA') for r in res_a] runs over res_a's residues
             if (!first.particles && first.sets->unit) { s->level = first.sets->level; s->unit = first.sets->unit; }
             vx_set_value(x, id, (vial_value_t){.kind = VIAL_VAL_SETS, .sets = s});
             if (all_one) t.flags |= VIAL_TYPE_ONE_PARTICLE;

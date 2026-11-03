@@ -22,7 +22,7 @@ def centroid(s):
 
 def gyration(p: points, weights='mass'):
     assert weights in ('mass', None), "weights= takes 'mass' or None"
-    w = mass(particles(p)) if weights == 'mass' else ones(shape(p)[0])
+    w = mass(particle(p)) if weights == 'mass' else ones(shape(p)[0])
     c = com(p, weights)
     r = norm(displacement(c, p))                 # minimum image from a periodic-aware centre
     rg = sqrt(sum(w * r**2) / sum(w))
@@ -40,7 +40,7 @@ def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
     q = fit(p, ref, on=on, weights=weights) if superpose else p
     d2 = norm(q - ref)**2
     # Equal weights are a mean, which needs no extent known when compiling: a group a def maps over has none
-    return sqrt(sum(mass(particles(q)) * d2) / sum(mass(particles(q)))) if weights == 'mass' else sqrt(mean(d2))
+    return sqrt(sum(mass(particle(q)) * d2) / sum(mass(particle(q)))) if weights == 'mass' else sqrt(mean(d2))
 
 def previous(x, n=1):
     def step(s, v):

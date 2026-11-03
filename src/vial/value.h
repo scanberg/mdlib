@@ -71,7 +71,7 @@ typedef struct vial_val_t {
     const struct vial_val_t* elems; // TUPLE
     uint32_t            num_elems;
     const vial_sets_t*  origin;     // positions and what is computed from them elementwise: the particles along their
-                                    // first dimension of particles, as particles(x) gives them; NULL when not known
+                                    // first dimension of particles, as particle(x) gives them; NULL when not known
     const struct vial_val_t* drawn; // the drawing shown() attached, while drawing (vial_interp_t.draw); kept through
                                     // names, returns and calls, and dropped by any operation on the value
 } vial_val_t;

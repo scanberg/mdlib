@@ -2153,7 +2153,7 @@ static bool k_primitive(vial_kctx_t* k, const char* name, const bargs_t* ba, via
         {"sphere",    VIAL_PRIM_SPHERE,    {"c", "r"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, -1},
         {"arc",       VIAL_PRIM_ARC,       {"c", "a", "b", "label"},         {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 4, 3},
         {"disk",      VIAL_PRIM_DISK,      {"c", "n", "r"},                  {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 3, -1},
-        {"label",     VIAL_PRIM_LABEL,     {"p", "x"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, 1},
+        {"text",      VIAL_PRIM_LABEL,     {"p", "x"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, 1},
         {"highlight", VIAL_PRIM_HIGHLIGHT, {"s"},                            {VX_KIND_SET}, 1, -1},
     };
     for (size_t t = 0; t < ARRAY_SIZE(tab); ++t) {
@@ -2683,22 +2683,22 @@ static bool k_covariance(vial_kctx_t* k, const vial_val_t* x, const vial_val_t* 
 }
 
 // ### SELECTORS, WHEN EVALUATED ###
-// What the check could not select when compiling: a positional set that changes per frame, as residues(within(...)).
+// What the check could not select when compiling: a positional set that changes per frame, as residue(within(...)).
 // Keywords are the same filters the check builds.
 
 static uint8_t level_of(const char* name, uint8_t* pkind) {
     *pkind = 0;
-    if (!strcmp(name, "particles")) return VIAL_LEVEL_PARTICLE;
-    if (!strcmp(name, "atoms")) { *pkind = 1; return VIAL_LEVEL_PARTICLE; }
-    if (!strcmp(name, "beads")) { *pkind = 2; return VIAL_LEVEL_PARTICLE; }
-    if (!strcmp(name, "residues")) return VIAL_LEVEL_RESIDUE;
-    if (!strcmp(name, "parts")) return VIAL_LEVEL_PART;
-    if (!strcmp(name, "polymers")) { *pkind = 1; return VIAL_LEVEL_PART; }
-    if (!strcmp(name, "molecules")) return VIAL_LEVEL_MOLECULE;
-    if (!strcmp(name, "chains")) return VIAL_LEVEL_CHAIN;
-    if (!strcmp(name, "tails")) return VIAL_LEVEL_TAIL;
-    if (!strcmp(name, "heads")) return VIAL_LEVEL_HEAD;
-    if (!strcmp(name, "rings")) return VIAL_LEVEL_RING;
+    if (!strcmp(name, "particle")) return VIAL_LEVEL_PARTICLE;
+    if (!strcmp(name, "atom")) { *pkind = 1; return VIAL_LEVEL_PARTICLE; }
+    if (!strcmp(name, "bead")) { *pkind = 2; return VIAL_LEVEL_PARTICLE; }
+    if (!strcmp(name, "residue")) return VIAL_LEVEL_RESIDUE;
+    if (!strcmp(name, "part")) return VIAL_LEVEL_PART;
+    if (!strcmp(name, "polymer")) { *pkind = 1; return VIAL_LEVEL_PART; }
+    if (!strcmp(name, "molecule")) return VIAL_LEVEL_MOLECULE;
+    if (!strcmp(name, "chain")) return VIAL_LEVEL_CHAIN;
+    if (!strcmp(name, "tail")) return VIAL_LEVEL_TAIL;
+    if (!strcmp(name, "head")) return VIAL_LEVEL_HEAD;
+    if (!strcmp(name, "ring")) return VIAL_LEVEL_RING;
     return VIAL_LEVEL_NONE;
 }
 
@@ -2884,7 +2884,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     bargs_t ba = {.v = args, .names = names, .n = n};
     // The first letter first: most names differ there, and a mapped call dispatches once per element
     #define IS(s) (name[0] == (s)[0] && strcmp(name, s) == 0)
-    if (IS("positions")) return vial_k_positions(k, arg(&ba, "s", 0), out);
+    if (IS("xyz")) return vial_k_positions(k, arg(&ba, "s", 0), out);   // s.xyz
     if (IS("com")) return k_com(k, arg(&ba, "s", 0), arg(&ba, "weights", 1), out);
     if (IS("displacement")) return k_displacement(k, arg(&ba, "a", 0), arg(&ba, "b", 1), out);
     if (IS("angle")) return k_angle(k, &ba, 3, out);
@@ -2978,7 +2978,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
         return true;
     }
     if (IS("shown")) { *out = *arg(&ba, "x", 0); return true; }
-    if (IS("marker") || IS("line") || IS("arrow") || IS("sphere") || IS("arc") || IS("disk") || IS("label") || IS("highlight")) {
+    if (IS("marker") || IS("line") || IS("arrow") || IS("sphere") || IS("arc") || IS("disk") || IS("text") || IS("highlight")) {
         return k_primitive(k, name, &ba, out);
     }
     if (IS("range")) return k_range(k, &ba, out);
@@ -3009,7 +3009,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
         *out = (vial_val_t){.dtype = VIAL_DT_TUPLE, .elems = el, .num_elems = a->ndim};
         return true;
     }
-    if (IS("particles") && n == 1 && !names[0].len && args[0]->dtype != VIAL_DT_SET) {
+    if (IS("particle") && n == 1 && !names[0].len && args[0]->dtype != VIAL_DT_SET) {
         // The particles an array runs over
         if (!args[0]->origin) return vial_rt_fail(k, "R0103", "the particles of an array not computed from positions");
         vial_sets_t* s = vial_sets_pick(args[0]->origin, (uint32_t[]){0}, 1, k->alloc);

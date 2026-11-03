@@ -72,7 +72,7 @@ UTEST(vial_ir, dump_script) {
 
 UTEST(vial_ir, lowers_and_verifies) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    md_vial_program_t* prog = vial_ir__compile("a = 1 + 2\nb = residues(chain='A')\nc = distance(b.com, b[0].com)\n", 'T', alloc);
+    md_vial_program_t* prog = vial_ir__compile("a = 1 + 2\nb = residue(chain='A')\nc = distance(b.com, b[0].com)\n", 'T', alloc);
     const vial_ir_t* ir = md_vial__ir(prog);
     char err[256];
     EXPECT_TRUE(vial_ir_verify(ir, err, sizeof(err)));
@@ -150,8 +150,8 @@ UTEST(vial_ir, evaluates_static) {
         "k = [x for x in range(6) if x % 2 == 0]\n"
         "l = zeros(3)\n"
         "m = sqrt(16.0)\n"
-        "n = len(residues(chain='A'))\n"
-        "o = count(residues(chain='A'))[0:3]\n"
+        "n = len(residue(chain='A'))\n"
+        "o = count(residue(chain='A'))[0:3]\n"
         "p = where([True, False], [1, 2], [3, 4])\n"
         "q = concatenate(([1, 2], [3]))\n";
     ASSERT_TRUE(vial_ir__start(&r, src, vial_test_system('T')));
@@ -233,7 +233,7 @@ UTEST(vial_ir, evaluates_frames) {
     ASSERT_GT(nf, 1);
     vial_ir__run_t r;
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[3])\n"
         "a  = angle(ca[0], ca[1], ca[2])\n"
         "t  = dihedral(ca[0], ca[1], ca[2], ca[3])\n"
@@ -310,7 +310,7 @@ UTEST(vial_ir, evaluates_trajectory) {
     ASSERT_TRUE(sys && nf > 2);
     vial_ir__run_t r;
     const char* src =
-        "ca   = particles(name='CA')\n"
+        "ca   = particle(name='CA')\n"
         "ends = distance(ca[0], ca[14])\n"
         "m    = mean(ends, axis='frame')\n"
         "mx   = max(ends, axis='frame')\n"
@@ -371,7 +371,7 @@ UTEST(vial_ir, eval_api) {
     ASSERT_TRUE(sys && nf > 2);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const char* src =
-        "ca   = particles(name='CA')\n"
+        "ca   = particle(name='CA')\n"
         "ends = distance(ca[0], ca[14])\n"
         "m    = mean(ends, axis='frame')\n"
         "dd   = distance(ca.xyz, ca[0])\n"
@@ -498,7 +498,7 @@ UTEST(vial_ir, eval_threads) {
     ASSERT_TRUE(sys && nf > 2);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const char* src =
-        "ca   = particles(name='CA')\n"
+        "ca   = particle(name='CA')\n"
         "ends = distance(ca[0], ca[14])\n"
         "m    = mean(ends, axis='frame')\n"
         "dev  = ends - m\n"
@@ -557,7 +557,7 @@ UTEST(vial_ir, output_fingerprints) {
     ASSERT_GT(nf, 2);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const char* a =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
         "e  = d * 2.0\n"
         "f  = distance(ca[0], ca[2])\n"
@@ -565,7 +565,7 @@ UTEST(vial_ir, output_fingerprints) {
         "m  = mean(d, axis='frame')\n";
     const char* b =
         "# the same, renamed and moved\n"
-        "ca = particles(name='CA')\n\n"
+        "ca = particle(name='CA')\n\n"
         "dist = distance(ca[0],   ca[1])\n"
         "m  = mean(dist, axis='frame')\n"
         "e  = dist * 3.0\n"
@@ -649,7 +649,7 @@ UTEST(vial_ir, eval_aggregate) {
     ASSERT_GT(nf, 3);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
         "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n"
         "m  = mean(d, axis='frame')\n"
@@ -736,7 +736,7 @@ UTEST(vial_ir, draw_spheres_capped) {
     ASSERT_TRUE(sys != NULL);
     const md_system_state_t* st = vial_test_state('T');
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
-    const char* src = "w = within(2.0, of=particles[0:3000])\nv = within(2.0, of=particles[0:10])\n";
+    const char* src = "w = within(2.0, of=particle[0:3000])\nv = within(2.0, of=particle[0:10])\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     ASSERT_TRUE(prog != NULL);
     md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .frame = 0, .state = st, .element = -1};
@@ -791,7 +791,7 @@ UTEST(vial_ir, draw) {
     const md_system_state_t* st = vial_test_state('P');
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
         "ang = angle(ca[0], ca[1], ca[2])\n"
         "tor = dihedral(ca[0], ca[1], ca[2], ca[3])\n"
@@ -799,7 +799,7 @@ UTEST(vial_ir, draw) {
         "p  = ca.xyz\n"
         "n  = count(ca)\n"
         "both = line(ca[0], ca[1], label='x') + sphere(ca[2], 2.0)\n"
-        "rs = residues()\n"
+        "rs = residue()\n"
         "dc = distance(rs[0:3], ca[4], between='closest')\n"
         "dm = distance(rs[:, None], rs, between='closest')\n"
         "def ends(s: set):\n"
@@ -821,7 +821,7 @@ UTEST(vial_ir, draw) {
     md_vial_drawing_t dr;
 
     // A set: its particles, and they are the CA atoms
-    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("particles(", 9)), alloc));
+    ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("particle(", 9)), alloc));
     ASSERT_EQ(1u, dr.num_groups);
     const uint32_t* ca = dr.atoms + dr.groups[0].beg;
     const uint32_t nca = dr.groups[0].end - dr.groups[0].beg;
@@ -1025,7 +1025,7 @@ UTEST(vial_ir, editor) {
     ASSERT_LT(nb, 512u);
     bool has_particles = false, has_distance = false, has_hidden = false;
     for (size_t i = 0; i < nb; ++i) {
-        has_particles |= str_eq(names[i], STR_LIT("particles"));
+        has_particles |= str_eq(names[i], STR_LIT("particle"));
         has_distance |= str_eq(names[i], STR_LIT("distance"));
         has_hidden |= names[i].len && names[i].ptr[0] == '_';
     }
@@ -1033,7 +1033,7 @@ UTEST(vial_ir, editor) {
     EXPECT_TRUE(md_vial_name_valid(STR_LIT("my_sel2")));
     EXPECT_TRUE(md_vial_name_valid(STR_LIT("_x")));
     EXPECT_FALSE(md_vial_name_valid(STR_LIT("def")));
-    EXPECT_FALSE(md_vial_name_valid(STR_LIT("particles")));
+    EXPECT_FALSE(md_vial_name_valid(STR_LIT("particle")));
     EXPECT_FALSE(md_vial_name_valid(STR_LIT("distance")));
     EXPECT_FALSE(md_vial_name_valid(STR_LIT("2a")));
     EXPECT_FALSE(md_vial_name_valid(STR_LIT("a-b")));
@@ -1043,7 +1043,7 @@ UTEST(vial_ir, editor) {
     md_vial_completions_t c;
     const md_vial_completion_t* it;
     // A name being typed: what starts so, names before keywords
-    c = vial_ir__complete("ca = particles(name='CA')\nu = ce|", alloc);
+    c = vial_ir__complete("ca = particle(name='CA')\nu = ce|", alloc);
     EXPECT_TRUE(str_eq(c.prefix, STR_LIT("ce")));
     EXPECT_TRUE(vial_ir__find(&c, "centroid") != NULL);
     for (size_t i = 0; i < c.count; ++i) EXPECT_TRUE(c.items[i].label.len >= 2 && !strncmp(c.items[i].label.ptr, "ce", 2));
@@ -1065,50 +1065,50 @@ UTEST(vial_ir, editor) {
     EXPECT_TRUE(vial_ir__find(&c, "scale") != NULL);
 
     // The parameters of the call around the cursor: a prelude def's, a script def's, a built-in's; not one given
-    c = vial_ir__complete("ca = particles(name='CA')\nd = distance(ca[0], ca[1], |)\n", alloc);
+    c = vial_ir__complete("ca = particle(name='CA')\nd = distance(ca[0], ca[1], |)\n", alloc);
     ASSERT_TRUE((it = vial_ir__find(&c, "between")) != NULL);
     EXPECT_TRUE(str_eq(it->text, STR_LIT("between=")));
     EXPECT_EQ((int)MD_VIAL_COMPLETION_PARAMETER, (int)c.items[0].kind);
-    c = vial_ir__complete("def f(s: set, scale=1.0):\n    return count(s) * scale\nx = f(particles(), sc|)\n", alloc);
+    c = vial_ir__complete("def f(s: set, scale=1.0):\n    return count(s) * scale\nx = f(particle(), sc|)\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "scale") != NULL && vial_ir__find(&c, "scale")->kind == MD_VIAL_COMPLETION_PARAMETER);
-    c = vial_ir__complete("x = histogram(particles().x, axis='frame', |)\n", alloc);
+    c = vial_ir__complete("x = histogram(particle().x, axis='frame', |)\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "bins") != NULL);
     EXPECT_TRUE(vial_ir__find(&c, "axis") == NULL);
-    c = vial_ir__complete("ca = particles(name='CA')\nd = angle(ca[0], ca[1], |)\n", alloc);
+    c = vial_ir__complete("ca = particle(name='CA')\nd = angle(ca[0], ca[1], |)\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "c") != NULL);
 
     // A selector's keywords, those of its level
-    c = vial_ir__complete("x = particles(res|)\n", alloc);
+    c = vial_ir__complete("x = particle(res|)\n", alloc);
     ASSERT_TRUE((it = vial_ir__find(&c, "resname")) != NULL);
     EXPECT_EQ((int)MD_VIAL_COMPLETION_PARAMETER, (int)it->kind);
-    c = vial_ir__complete("x = residues(|)\n", alloc);
+    c = vial_ir__complete("x = residue(|)\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "resname") == NULL);
     EXPECT_TRUE(vial_ir__find(&c, "id") != NULL);
 
     // After a dot: properties
-    c = vial_ir__complete("ca = particles(name='CA')\nd = ca.c|\n", alloc);
+    c = vial_ir__complete("ca = particle(name='CA')\nd = ca.c|\n", alloc);
     ASSERT_TRUE((it = vial_ir__find(&c, "com")) != NULL);
     EXPECT_EQ((int)MD_VIAL_COMPLETION_PROPERTY, (int)it->kind);
     EXPECT_TRUE(vial_ir__find(&c, "count") == NULL || vial_ir__find(&c, "count")->kind == MD_VIAL_COMPLETION_PROPERTY);
-    c = vial_ir__complete("rs = residues[1:6]\np = rs.p|\n", alloc);
-    EXPECT_TRUE(vial_ir__find(&c, "particles") != NULL);
+    c = vial_ir__complete("rs = residue[1:6]\np = rs.p|\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "particle") != NULL);
     // A subscript's string: a particle's name
-    c = vial_ir__complete("rs = residues[1:6]\nca = rs['C|']\n", alloc);
+    c = vial_ir__complete("rs = residue[1:6]\nca = rs['C|']\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL && vial_ir__find(&c, "CB") != NULL);
-    c = vial_ir__complete("ca = residues[1:6][0]['|']\n", alloc);
+    c = vial_ir__complete("ca = residue[1:6][0]['|']\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL);
 
     // In a string: the system's values for the keyword, and the run's attributes for attr()
-    c = vial_ir__complete("x = particles(resname='|')\n", alloc);
+    c = vial_ir__complete("x = particle(resname='|')\n", alloc);
     ASSERT_TRUE((it = vial_ir__find(&c, "ALA")) != NULL);
     EXPECT_EQ((int)MD_VIAL_COMPLETION_VALUE, (int)it->kind);
-    c = vial_ir__complete("x = particles(name='C|')\n", alloc);
+    c = vial_ir__complete("x = particle(name='C|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL && vial_ir__find(&c, "CB") != NULL);
     EXPECT_TRUE(vial_ir__find(&c, "N") == NULL);
     EXPECT_TRUE(str_eq(c.prefix, STR_LIT("C")));
-    c = vial_ir__complete("x = particles('C|')\n", alloc);
+    c = vial_ir__complete("x = particle('C|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL);
-    c = vial_ir__complete("x = residues(kind='a|')\n", alloc);
+    c = vial_ir__complete("x = residue(kind='a|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "amino_acid") != NULL);
     c = vial_ir__complete("w = attr('|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "time") != NULL);
@@ -1140,13 +1140,13 @@ UTEST(vial_ir, filters) {
         md_vial_outputs(q, &oq);
         EXPECT_TRUE(op[1].fingerprint != oq[1].fingerprint);
         // A name the script binds hides it
-        md_vial_program_t* r = md_vial_compile(STR_LIT("mysel = particles(name='CA')\nn = count(mysel)\n"), &(md_vial_compile_desc_t){.sys = sys, .sets = stored, .num_sets = 1}, alloc);
-        ASSERT_TRUE(md_vial_hover(r, (uint32_t)strlen("mysel = particles(name='CA')\n"), &h));
+        md_vial_program_t* r = md_vial_compile(STR_LIT("mysel = particle(name='CA')\nn = count(mysel)\n"), &(md_vial_compile_desc_t){.sys = sys, .sets = stored, .num_sets = 1}, alloc);
+        ASSERT_TRUE(md_vial_hover(r, (uint32_t)strlen("mysel = particle(name='CA')\n"), &h));
         EXPECT_STRNE("3", h.value);
         md_vial_program_free(p); md_vial_program_free(q); md_vial_program_free(r);
     }
 
-    md_vial_program_t* prog = md_vial_compile(STR_LIT("ca_s = particles(name='CA')\nnear = within(3.0, of=ca_s)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    md_vial_program_t* prog = md_vial_compile(STR_LIT("ca_s = particle(name='CA')\nnear = within(3.0, of=ca_s)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     md_vial_filter_desc_t d = {.sys = sys, .state = st, .sets = stored, .num_sets = 1, .prog = prog};
     md_vial_filter_t f;
     // A predefined set, a selector's array, a stored selection, the program's static selection
@@ -1155,7 +1155,7 @@ UTEST(vial_ir, filters) {
     EXPECT_EQ(0, f.ndim);
     EXPECT_EQ(1u, f.num_sets);
     EXPECT_GT(f.offsets[1], 0u);
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("residues()"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("residue()"), &d, alloc));
     EXPECT_EQ(1, f.ndim);
     EXPECT_EQ(md_system_residue_count(sys), (size_t)f.dims[0]);
     EXPECT_EQ((size_t)f.dims[0], f.num_sets);
@@ -1166,7 +1166,7 @@ UTEST(vial_ir, filters) {
     const uint32_t nca = f.offsets[1];
     EXPECT_GT(nca, 0u);
     // Bonds: pairs of one-particle sets
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("bonds(residues()[0])"), &d, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("bond(residue()[0])"), &d, alloc));
     EXPECT_EQ(2, f.ndim);
     EXPECT_EQ(2u, f.dims[1]);
     EXPECT_GT(f.dims[0], 0u);
@@ -1185,14 +1185,14 @@ UTEST(vial_ir, filters) {
     EXPECT_FALSE(md_vial_filter(&f, STR_LIT("nearby"), &d, alloc));
     // Arrays of sets the program publishes: the name gives the array, and a subscript one of it
     {
-        md_vial_program_t* pa = md_vial_compile(STR_LIT("res = residues()\nca_r = residues() and particles(name='CA')\nbb = bonds(residues()[0])\n"),
+        md_vial_program_t* pa = md_vial_compile(STR_LIT("res = residue()\nca_r = residue() and particle(name='CA')\nbb = bond(residue()[0])\n"),
             &(md_vial_compile_desc_t){.sys = sys}, alloc);
         md_vial_filter_desc_t ad = {.sys = sys, .state = st, .prog = pa};
         ASSERT_TRUE(md_vial_filter(&f, STR_LIT("res"), &ad, alloc));
         EXPECT_EQ(1, f.ndim);
         EXPECT_EQ(md_system_residue_count(sys), (size_t)f.dims[0]);
         md_vial_filter_t r3;
-        ASSERT_TRUE(md_vial_filter(&r3, STR_LIT("residues()[3]"), &ad, alloc));
+        ASSERT_TRUE(md_vial_filter(&r3, STR_LIT("residue()[3]"), &ad, alloc));
         ASSERT_TRUE(md_vial_filter(&f, STR_LIT("res[3]"), &ad, alloc));
         EXPECT_EQ(0, f.ndim);
         ASSERT_EQ(r3.offsets[1], f.offsets[1]);
@@ -1221,11 +1221,11 @@ UTEST(vial_ir, filters) {
     // Within a scope: cut to it, emptied sets dropped
     {
         md_vial_filter_t r0;
-        ASSERT_TRUE(md_vial_filter(&r0, STR_LIT("residues()[0]"), &d, alloc));
+        ASSERT_TRUE(md_vial_filter(&r0, STR_LIT("residue()[0]"), &d, alloc));
         md_vial_filter_desc_t sd = d;
         sd.scope = r0.atoms;
         sd.num_scope = r0.offsets[1];
-        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("residues()"), &sd, alloc));
+        ASSERT_TRUE(md_vial_filter(&f, STR_LIT("residue()"), &sd, alloc));
         EXPECT_EQ(1u, f.dims[0]);
         EXPECT_EQ(r0.offsets[1], f.offsets[1]);
         ASSERT_TRUE(md_vial_filter(&f, STR_LIT("protein"), &sd, alloc));
@@ -1236,7 +1236,7 @@ UTEST(vial_ir, filters) {
     EXPECT_STREQ("E0313", f.error.code);
     EXPECT_EQ(0u, f.error.span.beg);
     EXPECT_EQ(5u, f.error.span.end);
-    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("particles(nme='CA')"), &d, alloc));
+    EXPECT_FALSE(md_vial_filter(&f, STR_LIT("particle(nme='CA')"), &d, alloc));
     EXPECT_GE(f.error.span.beg, 0u);
     EXPECT_LE(f.error.span.end, 19u);
     EXPECT_GT(f.error.message.len, 0u);
@@ -1245,10 +1245,10 @@ UTEST(vial_ir, filters) {
 
     // Completion, in the expression's own offsets
     md_vial_completions_t c;
-    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("particles(resn"), 14, &d, alloc));
+    ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("particle(resn"), 13, &d, alloc));
     EXPECT_TRUE(vial_ir__find(&c, "resname") != NULL);
-    EXPECT_EQ(10u, c.span.beg);
-    EXPECT_EQ(14u, c.span.end);
+    EXPECT_EQ(9u, c.span.beg);
+    EXPECT_EQ(13u, c.span.end);
     ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("mys"), 3, &d, alloc));
     EXPECT_TRUE(vial_ir__find(&c, "mysel") != NULL);
     ASSERT_TRUE(md_vial_filter_complete(&c, STR_LIT("ca"), 2, &d, alloc));
@@ -1283,17 +1283,17 @@ UTEST(vial_ir, anatomy_sets) {
     md_system_state_t st;
     ASSERT_TRUE(vial_ir__load_file(&sys, &st, "dppc64.pdb", alloc));
     const uint32_t lipid = vial_ir__count("lipid", &sys, &st, alloc);
-    const uint32_t head = vial_ir__count("particles(heads)", &sys, &st, alloc), tail = vial_ir__count("particles(tails)", &sys, &st, alloc);
+    const uint32_t head = vial_ir__count("particle(head)", &sys, &st, alloc), tail = vial_ir__count("particle(tail)", &sys, &st, alloc);
     EXPECT_GT(head, 0u);
     EXPECT_GT(tail, 0u);
     EXPECT_EQ(lipid, head + tail);
-    EXPECT_EQ(0u, vial_ir__count("particles(heads) and particles(tails)", &sys, &st, alloc));
-    EXPECT_EQ(lipid, vial_ir__count("particles(heads) or particles(tails)", &sys, &st, alloc));
+    EXPECT_EQ(0u, vial_ir__count("particle(head) and particle(tail)", &sys, &st, alloc));
+    EXPECT_EQ(lipid, vial_ir__count("particle(head) or particle(tail)", &sys, &st, alloc));
     EXPECT_EQ(UINT32_MAX, vial_ir__count("head", &sys, &st, alloc));     // units, not kinds: no head set
     // One head per DPPC, with its hydrogens
     {
         md_vial_filter_t h;
-        ASSERT_TRUE(md_vial_filter(&h, STR_LIT("heads"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+        ASSERT_TRUE(md_vial_filter(&h, STR_LIT("head"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
         EXPECT_EQ(1, h.ndim);
         EXPECT_EQ(sys.lipid.head.count, (size_t)h.num_sets);
         EXPECT_EQ(sys.lipid.count, (size_t)h.num_sets);
@@ -1301,15 +1301,15 @@ UTEST(vial_ir, anatomy_sets) {
     }
     // One set per tail; all of them are the tail particles
     md_vial_filter_t f;
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tails"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tail"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
     EXPECT_EQ(1, f.ndim);
     EXPECT_EQ(sys.lipid.tail.count, (size_t)f.num_sets);
     EXPECT_EQ(tail, f.offsets[f.num_sets]);
-    EXPECT_EQ(tail, vial_ir__count("particles(tails)", &sys, &st, alloc));
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tails(residues[0])"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
+    EXPECT_EQ(tail, vial_ir__count("particle(tail)", &sys, &st, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("tail(residue[0])"), &(md_vial_filter_desc_t){.sys = &sys, .state = &st}, alloc));
     EXPECT_EQ(2u, (unsigned)f.num_sets);     // DPPC: two acyl chains
     {
-        md_vial_program_t* p = md_vial_compile(STR_LIT("l = labels(tails)[1]\n"), &(md_vial_compile_desc_t){.sys = &sys}, alloc);
+        md_vial_program_t* p = md_vial_compile(STR_LIT("l = label(tail)[1]\n"), &(md_vial_compile_desc_t){.sys = &sys}, alloc);
         md_vial_hover_t h;
         ASSERT_TRUE(md_vial_hover(p, 0, &h));
         EXPECT_TRUE(strstr(h.value, "tail2/") != NULL);
@@ -1332,8 +1332,8 @@ UTEST(vial_ir, set_mask) {
     ASSERT_GT(vial_test_run('P'), 3);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
     const char* src =
-        "n = count(particles[particles.z > particles[0].z])\n"
-        "m = sum(particles.z > particles[0].z)\n"
+        "n = count(particle[particle.z > particle[0].z])\n"
+        "m = sum(particle.z > particle[0].z)\n"
         "k = count(protein[(protein.x in -5.0..5.0) and (protein.y > 0.0)])\n"
         "j = sum((protein.x in -5.0..5.0) and (protein.y > 0.0))\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
@@ -1356,7 +1356,7 @@ UTEST(vial_ir, set_mask) {
     EXPECT_TRUE(varies);
     // As a filter: dynamic
     md_vial_filter_t fl;
-    ASSERT_TRUE(md_vial_filter(&fl, STR_LIT("particles[particles.z > 0.0]"), &(md_vial_filter_desc_t){.sys = sys, .state = vial_test_state('P')}, alloc));
+    ASSERT_TRUE(md_vial_filter(&fl, STR_LIT("particle[particle.z > 0.0]"), &(md_vial_filter_desc_t){.sys = sys, .state = vial_test_state('P')}, alloc));
     EXPECT_TRUE(fl.dynamic);
     md_vial_eval_free(e);
     md_vial_program_free(prog);
@@ -1371,9 +1371,9 @@ UTEST(vial_ir, population_summaries) {
     ASSERT_GT(vial_test_run('P'), 3);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
     const char* src =
-        "ca  = particles(name='CA')\n"
+        "ca  = particle(name='CA')\n"
         "d   = distance(ca[0], ca.xyz)\n"
-        "psi = dihedral(residues() and particles(name='N'), residues() and particles(name='CA'), residues() and particles(name='C'), residues() and particles(name='O'))\n"
+        "psi = dihedral(residue() and particle(name='N'), residue() and particle(name='CA'), residue() and particle(name='C'), residue() and particle(name='O'))\n"
         "one = distance(ca[0], ca[1])\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
@@ -1442,7 +1442,7 @@ UTEST(vial_ir, periodic_outputs) {
     ASSERT_GT(vial_test_run('P'), 3);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "t  = dihedral(ca[0], ca[1], ca[2], ca[3])\n"
         "d  = distance(ca[0], ca[1])\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
@@ -1491,7 +1491,7 @@ UTEST(vial_ir, missing_is_said) {
     ASSERT_GT(nf, 20);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "x = distance(ca[0], ca[frame()])\n"
         "d = distance(ca[0], ca[1])\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
@@ -1546,7 +1546,7 @@ UTEST(vial_ir, if_per_frame) {
     ASSERT_TRUE(sys && nf > 2);
     vial_ir__run_t r;
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "def clamp(d):\n"
         "    if d > 30.0:\n"
         "        return 30.0\n"
@@ -1613,7 +1613,7 @@ UTEST(vial_ir, if_per_frame) {
 UTEST(vial_ir, folds_as_evaluated) {
     vial_ir__run_t r;
     const char* src =
-        "one = unitless(particles[0].x * 0.0) + 1.0\n"
+        "one = unitless(particle[0].x * 0.0) + 1.0\n"
         "a1 = 0.1 + 0.2 - 0.3\n"
         "b1 = one * 0.1 + 0.2 - 0.3\n"
         "a2 = 1.1 ** 3\n"
@@ -1658,7 +1658,7 @@ UTEST(vial_ir, folds_as_evaluated) {
 UTEST(vial_ir, map_interrupt_and_memory) {
     vial_ir__run_t r;
     const char* src =
-        "res = residues(chain='A', kind='amino_acid')\n"
+        "res = residue(chain='A', kind='amino_acid')\n"
         "d = distance(res[:, None], res, between='closest')\n";
     const md_system_state_t* st = vial_test_state('T');
     ASSERT_TRUE(st != NULL);
@@ -1694,12 +1694,12 @@ UTEST(vial_ir, map_interrupt_and_memory) {
 // calls one by one, on T and over P's frames
 UTEST(vial_ir, pair_maps_batch) {
     const char* src =
-        "res = residues(chain='A', kind='amino_acid')\n"
+        "res = residue(chain='A', kind='amino_acid')\n"
         "c = distance(res[:, None], res, between='closest')\n"
         "f = distance(res[0:40, None], res[10:60], between='farthest')\n"
         "e = distance(res[0:30], res[5:35], between='closest')\n";
     const char* src_p =
-        "res = residues\n"
+        "res = residue\n"
         "c = distance(res[:, None], res, between='closest')\n"
         "f = distance(res[:, None], res, between='farthest')\n";
     for (int pass = 0; pass < 2; ++pass) {
@@ -1761,8 +1761,8 @@ UTEST(vial_ir, pairs_reductions) {
         "a12 = sum(dm < 1000.0, axis=1)\n";     // past half a period: every line computed, no search
     for (int pass = 0; pass < 2; ++pass) {
         char src[1024];
-        snprintf(src, sizeof(src), "%s%s", pass ? "p = particles(name='CA').xyz\nq = p\n" :
-                 "p = particles(name='CA').xyz\nq = particles(resname='VLB').xyz\n", body);
+        snprintf(src, sizeof(src), "%s%s", pass ? "p = particle(name='CA').xyz\nq = p\n" :
+                 "p = particle(name='CA').xyz\nq = particle(resname='VLB').xyz\n", body);
         int64_t run_frames = 0;
         const md_system_t* sys = pass ? vial_ir__run_p(&run_frames) : vial_test_system('T');
         ASSERT_TRUE(sys != NULL);
@@ -1847,11 +1847,11 @@ UTEST(vial_ir, within_matches_matrix) {
     const md_system_t* sys = vial_ir__run_p(&nf);
     ASSERT_TRUE(sys != NULL);
     const char* src =
-        "_e = distance(particles.xyz[:, None], particles[0:3].xyz)\n"
-        "_f = distance(particles.xyz[:, None], particles(name='CA').xyz)\n"
-        "bad = abs(len(within(4.5, of=particles[0:3])) - sum(any(_e <= 4.5, axis=1)))"
-        " + abs(len(within(6.0, of=particles(name='CA'))) - sum(any(_f <= 6.0, axis=1)))"
-        " + abs(len(within(0.5, of=particles[0:3])) - sum(any(_e <= 0.5, axis=1)))\n";
+        "_e = distance(particle.xyz[:, None], particle[0:3].xyz)\n"
+        "_f = distance(particle.xyz[:, None], particle(name='CA').xyz)\n"
+        "bad = abs(len(within(4.5, of=particle[0:3])) - sum(any(_e <= 4.5, axis=1)))"
+        " + abs(len(within(6.0, of=particle(name='CA'))) - sum(any(_f <= 6.0, axis=1)))"
+        " + abs(len(within(0.5, of=particle[0:3])) - sum(any(_e <= 0.5, axis=1)))\n";
     for (int plain = 0; plain < 2; ++plain) {
         vial_ir__run_t r;
         ASSERT_TRUE(vial_ir__start(&r, src, sys));
@@ -1873,16 +1873,16 @@ UTEST(vial_ir, fast_paths_agree) {
     const md_system_t* sys = vial_ir__run_p(&nf);
     ASSERT_TRUE(sys != NULL);
     const char* src =
-        "_d = distance(particles.xyz, particles[0].xyz)\n"
+        "_d = distance(particle.xyz, particle[0].xyz)\n"
         "_m = missing_where(_d < -1.0, _d)\n"
         "_g = _d[:, None] * [0.37, 1.9, -2.5] - _d[:, None] / 7.0\n"
-        "_x = particles.xyz\n"
+        "_x = particle.xyz\n"
         "_xm = missing_where(_x < -1.0e9, _x)\n"
         "bad = abs(sum(_d) - sum(_m)) + abs(mean(_d) - mean(_m)) + abs(std(_d) - std(_m))"
         " + sum(abs(_g[:, 1] - (_d * 1.9 - _d / 7.0)))"
         " + sum(abs(sqrt(_d) - sqrt(_m))) + sum(abs(abs(_d - 3.0) - abs(_m - 3.0)))"
         " + sum(abs(sum(_x, axis=1) - sum(_xm, axis=1)))"
-        " + sum(abs(displacement(_x, particles[0].xyz) - displacement(_xm, particles[0].xyz)))"
+        " + sum(abs(displacement(_x, particle[0].xyz) - displacement(_xm, particle[0].xyz)))"
         " + sum(abs(norm(_x) - norm(_xm)))"
         " + sum(sum(_x[:, 0:0], axis=1))\n";     // an empty reduction, which the trailing path must not walk
     vial_ir__run_t r;
@@ -1901,32 +1901,32 @@ UTEST(vial_ir, particle_names_agree) {
     const md_system_t* sys = vial_ir__run_p(&nf);
     ASSERT_TRUE(sys != NULL);
     const char* src =
-        "rs = residues[1:6]\n"
+        "rs = residue[1:6]\n"
         "_a = angle(rs['N'], rs['CA'], rs['C'])\n"
         "def f(r: set):\n"
         "    return angle(r['N'], r['CA'], r['C'])\n"
         "_b = f(rs)\n"
         "_c = [angle(r['N'], r['CA'], r['C']) for r in rs]\n"
-        "_d = angle(rs and particles(name='N'), rs and particles(name='CA'), rs and particles(name='C'))\n"
+        "_d = angle(rs and particle(name='N'), rs and particle(name='CA'), rs and particle(name='C'))\n"
         "def g(r: set):\n"
         "    return distance(r['H'], r['N'])\n"
-        "_h = g(residues)\n"
-        "_h2 = distance(residues['H'], residues['N'])\n"
-        "_near = residues(within(6.0, of=residues[0]))\n"
+        "_h = g(residue)\n"
+        "_h2 = distance(residue['H'], residue['N'])\n"
+        "_near = residue(within(6.0, of=residue[0]))\n"
         "_e = distance(_near['CA'], _near['N'])\n"
         "def cn(r: set):\n"
-        "    return distance((r and particles(name='CA')).com, (r and particles(name='N')).com)\n"
-        "_p = angle(rs.particles[1], rs.particles[0], rs.particles[2])\n"
+        "    return distance((r and particle(name='CA')).com, (r and particle(name='N')).com)\n"
+        "_p = angle(rs.particle[1], rs.particle[0], rs.particle[2])\n"
         "_q = [angle(r[1], r[0], r[2]) for r in rs]\n"
         "def ph(r: set):\n"
-        "    return angle(r.particles[1], r.particles[0], r.particles[2])\n"
+        "    return angle(r.particle[1], r.particle[0], r.particle[2])\n"
         "_r = ph(rs)\n"
         "def nh(r: set):\n"
-        "    return count(r.particles(element='H'))\n"
+        "    return count(r.particle(element='H'))\n"
         "_s = nh(_near)\n"
-        "_s2 = count(_near and particles(element='H'))\n"
+        "_s2 = count(_near and particle(element='H'))\n"
         "_t1 = angle(rs[['N', 'CA', 'C']])\n"
-        "_t2 = angle(rs.particles[[1, 0, 2]])\n"
+        "_t2 = angle(rs.particle[[1, 0, 2]])\n"
         "def st(r: set):\n"
         "    return angle(r[['N', 'CA', 'C']])\n"
         "def sp(r: set):\n"
@@ -1934,7 +1934,7 @@ UTEST(vial_ir, particle_names_agree) {
         "_t3 = st(_near)\n"
         "_t4 = angle(_near['N'], _near['CA'], _near['C'])\n"
         "_t5 = sp(_near)\n"
-        "_t6 = angle(_near.particles[[1, 0, 2]])\n"
+        "_t6 = angle(_near.particle[[1, 0, 2]])\n"
         "_t7 = distance(rs[['N', 'CA']])\n"
         "_t8 = distance(rs['N'], rs['CA'])\n"
         "bad = unitless(sum(abs(_a - _b)) + sum(abs(_a - _c)) + sum(abs(_a - _d))) + unitless(abs(mean(_h) - mean(_h2)))"
@@ -1963,15 +1963,15 @@ UTEST(vial_ir, pair_extremes_match_matrix) {
         "c, ci, cj = closest_pair(p, q)\n"
         "f, fi, fj = farthest_pair(p, q)\n";
     const char* sets[3] = {
-        "p = particles(name='CA').xyz\nq = particles.xyz[100:400]\n",
-        "p = round(particles(name='CA').xyz / 2.0)\nq = round(particles(name='CA').xyz / 2.0 + 0.25)\n",
-        "p = round(particles(name='CA').xyz * 3.0) / 3.0 + 0.1\nq = round(particles.xyz[0:300] * 3.0) / 3.0\n",
+        "p = particle(name='CA').xyz\nq = particle.xyz[100:400]\n",
+        "p = round(particle(name='CA').xyz / 2.0)\nq = round(particle(name='CA').xyz / 2.0 + 0.25)\n",
+        "p = round(particle(name='CA').xyz * 3.0) / 3.0 + 0.1\nq = round(particle.xyz[0:300] * 3.0) / 3.0\n",
     };
     // The trajectory's system is small, so its sets are every particle; its cell is periodic
     const char* traj_sets[3] = {
-        "p = particles.xyz\nq = particles.xyz + 0.37\n",
-        "p = round(particles.xyz / 2.0)\nq = round(particles.xyz / 2.0 + 0.25)\n",
-        "p = round(particles.xyz * 2.0) / 2.0\nq = round(particles.xyz * 2.0) / 2.0 + 0.5\n",
+        "p = particle.xyz\nq = particle.xyz + 0.37\n",
+        "p = round(particle.xyz / 2.0)\nq = round(particle.xyz / 2.0 + 0.25)\n",
+        "p = round(particle.xyz * 2.0) / 2.0\nq = round(particle.xyz * 2.0) / 2.0 + 0.5\n",
     };
     for (int pass = 0; pass < 6; ++pass) {
         const bool traj = pass >= 3;
@@ -2025,7 +2025,7 @@ UTEST(vial_ir, pair_extremes_match_matrix) {
 // A map whose calls give arrays of sets of different lengths is R0103, not a ragged array (found by fuzzing)
 UTEST(vial_ir, ragged_sets_fail) {
     vial_ir__run_t r;
-    ASSERT_TRUE(vial_ir__start(&r, "n = [[a for a in r] for r in residues[0:3]]\n", vial_test_system('T')));
+    ASSERT_TRUE(vial_ir__start(&r, "n = [[a for a in r] for r in residue[0:3]]\n", vial_test_system('T')));
     const md_system_state_t* st = vial_test_state('T');
     const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell};
     vial_interp_frame(&r.in, &fr);
@@ -2043,7 +2043,7 @@ UTEST(vial_ir, ragged_sets_fail) {
 UTEST(vial_ir, eigh_decomposes) {
     vial_ir__run_t r;
     const char* src =
-        "c = com(residues(chain='A', kind='amino_acid')[0:120])\n"
+        "c = com(residue(chain='A', kind='amino_acid')[0:120])\n"
         "m = unitless(distance(c[:, None], c))\n"
         "w, v = eigh(m)\n"
         "res = max(abs(m @ v - v * w)) / max(abs(w))\n"
@@ -2075,10 +2075,10 @@ UTEST(vial_ir, at_in_a_def) {
     const char* src =
         "def first_x(r: group):\n    return at(r.xyz, frame=0)[0, 0]\n"
         "def drift(r: group):\n    return rmsd(r, at(r.xyz, frame=0))\n"
-        "x0 = first_x(residues)\n"
-        "x  = residues[1].xyz[0, 0]\n"
-        "per_res = drift(residues)\n"
-        "r1 = rmsd(residues[1], at(residues[1].xyz, frame=0))\n";
+        "x0 = first_x(residue)\n"
+        "x  = residue[1].xyz[0, 0]\n"
+        "per_res = drift(residue)\n"
+        "r1 = rmsd(residue[1], at(residue[1].xyz, frame=0))\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
     md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 3}, alloc);
@@ -2123,11 +2123,11 @@ UTEST(vial_ir, volumes) {
     ASSERT_GT(nf, 3);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
     const char* src =
-        "s  = sdf(residues[1:5], particles(name='O'), 6.0)\n"
-        "sw = sdf(residues[1:5], particles(name='O'), (6.0, 4.0, 3.0), samples=2, weights=mass(particles(name='O')))\n"
-        "d  = density(particles(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25)\n"
-        "ds = density(particles(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25, sigma=6.0)\n"
-        "dc = density(particles(name='CA'), samples=1)\n"
+        "s  = sdf(residue[1:5], particle(name='O'), 6.0)\n"
+        "sw = sdf(residue[1:5], particle(name='O'), (6.0, 4.0, 3.0), samples=2, weights=mass(particle(name='O')))\n"
+        "d  = density(particle(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25)\n"
+        "ds = density(particle(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25, sigma=6.0)\n"
+        "dc = density(particle(name='CA'), samples=1)\n"
         "n  = max(s)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
@@ -2247,13 +2247,13 @@ UTEST(vial_ir, volume_diagnostics) {
     vial_test_run('P');
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
     struct { const char* src; const char* code; } cases[] = {
-        {"v = sdf(residues[0:5], particles(name='O'), 6.0)\n", "E0320"},           // the first residue has three Hs on N
-        {"v = sdf(residues[1:5], particles(name='O'), 300.0)\n", "W0407"},         // 2,400 a side at 4 per Å
-        {"v = [sdf(r, particles(name='O'), 6.0) for r in residues[1:3]]\n", "E0406"},
-        {"v = sdf(residues[1:5], residues, 6.0)\n", "E0313"},                      // an array of sets is no target
-        {"v = sdf(residues[1:5], particles(name='O'), 6.0, samples=0)\n", "E0313"},
-        {"v = density(particles(), box=((0, 0, 0), (0, 10, 10)))\n", "E0313"},
-        {"x = 4.0\nv = sdf(residues[1:5], particles(name='O'), 6.0, ref=particles(name='O').xyz)\n", "E0313"},
+        {"v = sdf(residue[0:5], particle(name='O'), 6.0)\n", "E0320"},           // the first residue has three Hs on N
+        {"v = sdf(residue[1:5], particle(name='O'), 300.0)\n", "W0407"},         // 2,400 a side at 4 per Å
+        {"v = [sdf(r, particle(name='O'), 6.0) for r in residue[1:3]]\n", "E0406"},
+        {"v = sdf(residue[1:5], residue, 6.0)\n", "E0313"},                      // an array of sets is no target
+        {"v = sdf(residue[1:5], particle(name='O'), 6.0, samples=0)\n", "E0313"},
+        {"v = density(particle(), box=((0, 0, 0), (0, 10, 10)))\n", "E0313"},
+        {"x = 4.0\nv = sdf(residue[1:5], particle(name='O'), 6.0, ref=particle(name='O').xyz)\n", "E0313"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
         md_vial_program_t* prog = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
@@ -2277,12 +2277,12 @@ UTEST(vial_ir, mcs) {
     ASSERT_TRUE(sys != NULL);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
     const char* src =
-        "gtp = particles(resname='GTP')\n"
-        "gdp = particles(resname='GDP')\n"
+        "gtp = particle(resname='GTP')\n"
+        "gdp = particle(resname='GDP')\n"
         "a, b = mcs(gtp, gdp)\n"
         "r = rmsd(b.xyz, a.xyz)\n"
-        "phe = residues('PHE')\n"
-        "tyr = residues('TYR')\n"
+        "phe = residue('PHE')\n"
+        "tyr = residue('TYR')\n"
         "c = mcs(phe[0], tyr[0], by='element')\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     const md_vial_diagnostic_t* d;
@@ -2297,13 +2297,13 @@ UTEST(vial_ir, mcs) {
     EXPECT_STREQ("float Å", r.types[0]);
     // Of the particles, as filters read them: GDP's in the order of GTP's they play
     md_vial_filter_t f;
-    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particles(resname='GTP'), particles(resname='GDP'))[1]"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))[1]"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
     EXPECT_EQ(28u, (unsigned)f.num_sets);
     // Too little in common: E0321, unless least= asks for less
     struct { const char* src; const char* code; } bad[] = {
-        {"m = mcs(particles(resname='GTP'), particles(resname='VLB'))\n", "E0321"},
-        {"m = mcs(residues('PHE'), residues('TYR'))\n", "E0313"},
-        {"m = mcs(particles(resname='GTP'), particles(resname='GDP'), by='colour')\n", "E0313"},
+        {"m = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
+        {"m = mcs(residue('PHE'), residue('TYR'))\n", "E0313"},
+        {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='colour')\n", "E0313"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(bad); ++i) {
         md_vial_program_t* p = md_vial_compile(str_from_cstr(bad[i].src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
@@ -2313,7 +2313,7 @@ UTEST(vial_ir, mcs) {
         EXPECT_TRUE(found);
         md_vial_program_free(p);
     }
-    md_vial_program_t* ok = md_vial_compile(STR_LIT("m = mcs(particles(resname='GTP'), particles(resname='VLB'), least=0.2)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    md_vial_program_t* ok = md_vial_compile(STR_LIT("m = mcs(particle(resname='GTP'), particle(resname='VLB'), least=0.2)\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     EXPECT_EQ(0u, (unsigned)md_vial_diagnostics(ok, NULL));
     md_vial_program_free(ok);
     md_vial_program_free(prog);
@@ -2340,15 +2340,15 @@ UTEST(vial_ir, sdf_kinds) {
     ASSERT_GT(vial_test_run('P'), 3);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
     const char* src =
-        "ala = residues[1:3] and not particles(element='H')\n"
-        "cb  = particles(name='CB')\n"
+        "ala = residue[1:3] and not particle(element='H')\n"
+        "cb  = particle(name='CB')\n"
         "s   = sdf(ala, cb, 5.0)\n"
-        "a, b = mcs(residues[1], residues[2])\n"
+        "a, b = mcs(residue[1], residue[2])\n"
         "so  = sdf([a, b], cb, 5.0)\n"
         "rv  = sdf([a[::-1], b[::-1]], cb, 5.0)\n"
         "s2  = sdf((ala, ala), cb, 5.0)\n"
         "sp  = sdf((ala, ala), cb, 5.0, poses=(None, (eye(3), zeros(3, unit='Å'))))\n"
-        "ct  = sdf((residues[1:5], residues[14:15]), cb, 5.0)\n";
+        "ct  = sdf((residue[1:5], residue[14:15]), cb, 5.0)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     const md_vial_diagnostic_t* dg;
     const size_t ndg = md_vial_diagnostics(prog, &dg);
@@ -2379,7 +2379,7 @@ UTEST(vial_ir, sdf_kinds) {
     for (size_t i = 0; i < 40 * 40 * 40; ++i) tot += ((const float*)act->data)[i];
     EXPECT_GT(tot, 0.0);
     // Drawn: every structure of every kind with its pose
-    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf((residues") - src));
+    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf((residue") - src));
     md_vial_drawing_t dr;
     ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .element = -1}, expr, alloc));
     EXPECT_EQ(5u, (unsigned)dr.num_poses);
@@ -2390,11 +2390,11 @@ UTEST(vial_ir, sdf_kinds) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);
     struct { const md_system_t* sys; const char* src; const char* code; } cases[] = {
-        {T, "v = sdf((particles(resname='GTP'), particles(resname='VLB')), particles(name='O'), 8.0)\n", "E0321"},
-        {T, "v = sdf((residues('PHE')[0:2], residues('TYR')[0:2]), particles(name='O'), 8.0)\n", NULL},
-        {T, "v = sdf((residues('PHE'), residues('TYR')), particles(name='O'), 8.0, poses=(None, eye(3)))\n", "E0313"},
-        {T, "v = sdf((residues('PHE'), residues('TYR')), particles(name='O'), 8.0, poses=((eye(3), zeros(3)), None))\n", "E0313"},
-        {T, "v = sdf((residues('PHE'), residues('TYR')), particles(name='O'), 8.0, ref=(None,))\n", "E0313"},
+        {T, "v = sdf((particle(resname='GTP'), particle(resname='VLB')), particle(name='O'), 8.0)\n", "E0321"},
+        {T, "v = sdf((residue('PHE')[0:2], residue('TYR')[0:2]), particle(name='O'), 8.0)\n", NULL},
+        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, poses=(None, eye(3)))\n", "E0313"},
+        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, poses=((eye(3), zeros(3)), None))\n", "E0313"},
+        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, ref=(None,))\n", "E0313"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
         md_vial_program_t* p = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = cases[i].sys}, alloc);

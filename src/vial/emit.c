@@ -398,7 +398,7 @@ static vial_ssa_t emit_subscript(infer_t* x, vial_node_id id, const T* t) {
         return op1(x, id, VIAL_IR_SETOP, VIAL_SETOP_ONE, 0, (vial_ssa_t[]){as, bs}, 2, t);
     }
     if (each) {
-        // s.particles[i], s.particles[[i, j]] and s[[i, j]] on one set: within each set
+        // s.particle[i], s.particle[[i, j]] and s[[i, j]] on one set: within each set
         const vial_ssa_t iv = vx_ssa(x, in);
         if (!iv) return 0;
         const uint32_t first = (uint32_t)md_array_size(x->ir->index_items);
@@ -504,9 +504,9 @@ static vial_ssa_t emit_attr(infer_t* x, vial_node_id id, const T* t) {
     snprintf(buf, sizeof(buf), "%.*s", (int)(name.len < 15 ? name.len : 15), name.ptr);
     // .xyz of a set is its positions; of coordinates, itself
     const T* at = type_at(x, on);
-    if (str_eq(name, STR_LIT("particles")) && at->dtype == VIAL_DT_SET) return a;    // s.particles[i]: the subscript picks
+    if (str_eq(name, STR_LIT("particle")) && at->dtype == VIAL_DT_SET) return a;    // s.particle[i]: the subscript picks
     if (str_eq(name, STR_LIT("xyz")) && at->dtype != VIAL_DT_SET) return a;
-    if (str_eq(name, STR_LIT("xyz"))) return builtin(x, id, "positions", &a, NULL, 1, t);
+    if (str_eq(name, STR_LIT("xyz"))) return builtin(x, id, "xyz", &a, NULL, 1, t);
     return builtin(x, id, buf, &a, NULL, 1, t);
 }
 
@@ -533,7 +533,7 @@ static vial_ssa_t items_as_tuple(infer_t* x, vial_node_id an) {
 static vial_ssa_t emit_call(infer_t* x, vial_node_id id, const T* t) {
     const vial_node_id callee = vx_child(x, id, 0);
     if (callee && vx_is_particles_view(x, callee)) {
-        // s.particles(name=...): each set of s and the selection, which the check left on the view
+        // s.particle(name=...): each set of s and the selection, which the check left on the view
         const vial_ssa_t a = vx_ssa(x, vx_child(x, callee, 0));
         const vial_value_t sv = vx_value_of(x, callee);
         if (!a) return 0;
