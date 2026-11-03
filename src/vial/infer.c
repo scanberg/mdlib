@@ -1046,6 +1046,29 @@ static bool slice_bound_ok(infer_t* x, vial_node_id b, const T* bt) {
     return false;
 }
 
+// A position past an array's dimension. On the first dimension of an array of sets, what was most likely meant: the
+// particles at those positions within each set, as residue(id=2) is an array of the residues of that id
+static void outside_of_array(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id it, const T* a, uint32_t d, int64_t k, uint32_t n) {
+    char ext[32];
+    snprintf(ext, sizeof(ext), "[%u]", n);
+    // Only where the position is one within the sets: residue[880] is past the residues, and nothing else
+    const vial_value_t av = value_of(x, on);
+    const bool within = av.kind == VIAL_VAL_SETS && !av.sets->single && av.sets->count &&
+                        (k >= 0 ? k < (int64_t)vial_sets_size(av.sets, 0) : -k <= (int64_t)vial_sets_size(av.sets, 0));
+    if (a->dtype == VIAL_DT_SET && d == 1 && !(a->flags & VIAL_TYPE_ONE_PARTICLE) && within) {
+        char eo[VIAL_EXCERPT_MAX + 4], ei[VIAL_EXCERPT_MAX + 4];
+        const str_t so = vial_excerpt(eo, sizeof(eo), text(x, on));
+        const str_t si = vial_excerpt(ei, sizeof(ei), text(x, it));
+        char fix[2 * VIAL_EXCERPT_MAX + 32];
+        snprintf(fix, sizeof(fix), "%.*s.particle[%.*s]", (int)so.len, so.ptr, (int)si.len, si.ptr);
+        const bool exact = so.len == text(x, on).len && si.len == text(x, it).len;
+        diag_fix(x, "E0304", id, exact ? fix : NULL, "position %lld is outside `%s`: `%.*s` is an array of %u set%s, and a position "
+            "picks among them; within each set it is %s", (long long)k, ext, (int)so.len, so.ptr, n, n == 1 ? "" : "s", fix);
+        return;
+    }
+    diag(x, "E0304", it, "position %lld is outside `%s`", (long long)k, ext);
+}
+
 static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
@@ -1102,6 +1125,34 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             join_stage(&t, &t, &ix);
         }
         const vial_value_t av = value_of(x, on);
+        if (av.kind != VIAL_VAL_SETS && (a.flags & VIAL_TYPE_ONE_PARTICLE) && kind_of(x, in) != VIAL_N_SLICE &&
+            value_of(x, in).kind == VIAL_VAL_INT && value_of(x, in).i != 0 && value_of(x, in).i != -1) {
+            // One particle, known by its type: as for r in residue[2], whose r are the particles of that one residue
+            const int64_t k = value_of(x, in).i;
+            const vial_symbol_t* sym = kind_of(x, on) == VIAL_N_NAME ? vial_names_symbol(x->n, on) : NULL;
+            const vial_node_id bn = sym ? sym->node : 0;
+            const vial_node_id cf = bn ? x->n->parent[bn] : 0;
+            const vial_node_id iter = cf && kind_of(x, cf) == VIAL_N_COMP_FOR && child(x, cf, 0) == bn ? child(x, cf, 1) : 0;
+            const T* itt = iter && iter >= x->out->base && x->out->typed[iter - x->out->base] ? &x->out->types[iter - x->out->base] : NULL;
+            if (itt && itt->dtype == VIAL_DT_SET && itt->ndim == 0) {
+                // Said once for the comprehension, at its first position
+                const vial_node_id lc = x->n->parent[cf];
+                const md_vial_span_t ls = lc ? x->t->nodes[lc].span : x->t->nodes[cf].span;
+                for (size_t q = 0; q < md_array_size(x->diags->items); ++q) {
+                    const md_vial_diagnostic_t* dg = &x->diags->items[q];
+                    if (memcmp(dg->code, "E0304", 5) == 0 && dg->span.beg >= ls.beg && dg->span.beg < ls.end) return err();
+                }
+                char ex[VIAL_EXCERPT_MAX + 4];
+                const str_t e = vial_excerpt(ex, sizeof(ex), text(x, iter));
+                const str_t nm = text(x, on);
+                diag(x, "E0304", in, "position %lld is outside `%.*s`, one particle: a for over one set, `%.*s`, takes its particles one at a "
+                    "time. Over one unit as an array of one, slice it, as residue[2:3]; or take the positions in it at once, "
+                    "%.*s[[...]]", (long long)k, (int)nm.len, nm.ptr, (int)e.len, e.ptr, (int)e.len, e.ptr);
+            } else {
+                diag(x, "E0304", in, "position %lld is outside a set of one particle", (long long)k);
+            }
+            return err();
+        }
         if (av.kind == VIAL_VAL_SETS && t.stage == VIAL_STAGE_STATIC) {
             const vial_value_t v = vx_sets_subscript(x, &av, in, 1);
             if (v.kind == VIAL_VAL_SETS) {
@@ -1210,9 +1261,7 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
         if ((ix.dtype == VIAL_DT_INT) && ix.ndim == 0) {
             int64_t k2;
             if (static_index(x, it, &k2) && e.kind == VIAL_EXT_STATIC && (k2 >= (int64_t)e.n || k2 < -(int64_t)e.n)) {
-                char ext[32];
-                snprintf(ext, sizeof(ext), "[%u]", e.n);
-                diag(x, "E0304", it, "position %lld is outside `%s`", (long long)k2, ext);
+                outside_of_array(x, id, on, it, &a, d, k2, e.n);
                 return err();
             }
             if (e.kind == VIAL_EXT_DYNAMIC && ix.stage == VIAL_STAGE_STATIC) {
@@ -1225,7 +1274,16 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             continue;   // the dimension is removed
         }
         if (ix.dtype == VIAL_DT_INT && ix.ndim == 1) {
-            // Positions listed, in that order
+            // Positions listed, in that order; those known must be in it
+            if (e.kind == VIAL_EXT_STATIC && kind_of(x, it) == VIAL_N_LIST) {
+                for (uint32_t q = 0; q < num_children(x, it); ++q) {
+                    int64_t kq;
+                    if (static_index(x, child(x, it, q), &kq) && (kq >= (int64_t)e.n || kq < -(int64_t)e.n)) {
+                        outside_of_array(x, id, on, it, &a, d, kq, e.n);
+                        return err();
+                    }
+                }
+            }
             vial_extent_t r = ix.dims[0];
             r.desc = e.desc;
             if (!vial_type_push_dim(&t, r)) goto too_many;
