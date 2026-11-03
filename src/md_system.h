@@ -1611,6 +1611,11 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
 void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocator
 void md_system_free(md_system_t* sys); // Free all memory associated with the system, including the allocator if set.
 
+// A copy of src in dst's allocator, which dst keeps: every array of the system, its reference state and description,
+// and its topology version (it is the same topology). Not the attribute table, which dst gets empty, nor the force
+// field (nonbonded): what is computed on a copy (inference, in the background) reads neither. What dst had is freed.
+bool md_system_copy(md_system_t* dst, const md_system_t* src);
+
 // Frees the lipids of a system (allocated from alloc, the system's) and leaves them empty
 void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc);
 
