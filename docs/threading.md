@@ -20,9 +20,15 @@ Where a procedure's work runs in parallel is decided by its shape, in this order
 A procedure never creates threads of its own (`md_thread_create`) to get its work done. One that does is a sign the
 right one of the three above is missing.
 
-Still to move: `md_gto_sph_to_cart_orbitals` and `md_gto_density_from_orbitals` start threads of their own. They are
-reached through the VeloxChem loader and through md_qm's density attribute provider, which have no executor to pass
-on yet.
+## Executors through generic interfaces
+
+A procedure reached through a generic interface gets its executor from the caller of that interface:
+
+- **Virtual attributes**: the extraction context (`md_attribute_io_t`) carries one. A caller that wants a computed
+  attribute built in parallel extracts it through `md_attribute_io_create(executor, alloc)` and the `_io` extract
+  functions; a provider asks `md_attribute_io_executor(io)`, and hands `io` on to whatever it extracts in turn. A
+  plain extract has no context: the provider then runs on the calling thread.
+- **Loaders** take it as an argument (`md_vlx_system_init_from_file(..., executor)`).
 
 ## The executor contract
 

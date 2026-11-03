@@ -144,7 +144,7 @@ static bool input_load(input_t* in, const char* path) {
     }
 #if defined(MD_HDF5)
     else if (ends_with(path, ".h5")) {
-        ok = md_vlx_system_init_from_file(&in->sys, &in->state, file);
+        ok = md_vlx_system_init_from_file(&in->sys, &in->state, file, NULL);
     }
 #endif
     else {

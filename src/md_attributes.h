@@ -7,6 +7,7 @@
 #include <core/md_unit.h>
 
 struct md_allocator_i;
+struct md_executor_t;
 
 // ATTRIBUTES
 //
@@ -126,8 +127,12 @@ static inline md_attribute_slice_t md_attribute_slice_2(uint32_t i, uint32_t j) 
 
 typedef struct md_attribute_t md_attribute_t;
 
-// What a provider that streams from disk reads through (md_attribute_io_read_at). Owned by an
-// extraction context (md_system_extract_begin), which keeps files open across frames; NULL otherwise.
+// The context an extraction hands its providers: the files a provider streaming from disk reads through
+// (md_attribute_io_read_at), kept open across calls, and the executor a provider spreads heavy work over
+// (md_attribute_io_executor; md_executor.h). md_system_extract_begin owns one for a pass over frames;
+// md_attribute_io_create makes one for anything else. NULL where the caller gave none: no open files kept, and
+// every loop on the calling thread. A provider which reads other attributes hands its io on to them
+// (md_attribute_extract_io_f32/f64), so the context reaches what they compute in turn.
 typedef struct md_attribute_io_t md_attribute_io_t;
 
 // VIRTUAL ATTRIBUTES are computed on every extract by a provider; the table never caches the result.
@@ -291,6 +296,11 @@ size_t md_attribute_packed_symmetric_dim(size_t extent);
 size_t md_attribute_extract_f32(float  dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit);
 size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit);
 
+// The same through an extraction context (md_attribute_io_t), handed to the providers of virtual attributes: their
+// files are kept open in it, and their heavy loops run on its executor. io may be NULL.
+size_t md_attribute_extract_io_f32(float  dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io);
+size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io);
+
 // The same, into a buffer allocated from alloc (count * sizeof(float|double) bytes). NULL on
 // failure, with nothing left allocated. out_count, when given, receives the element count.
 float*  md_attribute_extract_alloc_f32(size_t* out_count, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, struct md_allocator_i* alloc);
@@ -405,6 +415,15 @@ const md_attribute_t* md_attributes_axis(const md_attributes_t* attributes, cons
 // decreasing; an axis without a unit holds ordinals and only matches another such axis. False, and
 // out_index untouched, when nothing matches.
 bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, size_t src_index, const md_attribute_t* dst_axis);
+
+// An extraction context of its own, for extractions outside a pass over frames: executor (may be NULL) is what the
+// providers of what is extracted through it run their loops on, and must outlive it. Not to be used by two threads
+// at once. alloc holds it and the paths of the files it keeps open.
+md_attribute_io_t* md_attribute_io_create(const struct md_executor_t* executor, struct md_allocator_i* alloc);
+void               md_attribute_io_destroy(md_attribute_io_t* io);
+
+// For a provider: the executor its loops run on (md_parallel_for), NULL for NULL io or none given
+const struct md_executor_t* md_attribute_io_executor(const md_attribute_io_t* io);
 
 // For a provider: read bytes at offset from the file at path, through io's cache of open files when
 // io is non NULL. Returns the number of bytes read.

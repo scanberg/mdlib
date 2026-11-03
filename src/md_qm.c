@@ -72,7 +72,7 @@ static size_t qm_symmetric_dim(bool* out_packed, const md_attribute_t* attr, md_
     return n;
 }
 
-size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice) {
+size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
     bool packed = false;
     const size_t n = qm_symmetric_dim(&packed, attr, slice);
     if (n == 0 || !dst) {
@@ -85,13 +85,13 @@ size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const md_attri
     }
 
     if (packed) {
-        return md_attribute_extract_f32(dst, len, attr, slice, md_unit_none()) == len ? n : 0;
+        return md_attribute_extract_io_f32(dst, len, attr, slice, md_unit_none(), io) == len ? n : 0;
     }
 
     md_temp_scope_t temp = md_temp_begin();
     double* full = md_temp_alloc_array(temp, double, n * n);
     size_t result = 0;
-    if (full && md_attribute_extract_f64(full, n * n, attr, slice, md_unit_none()) == n * n) {
+    if (full && md_attribute_extract_io_f64(full, n * n, attr, slice, md_unit_none(), io) == n * n) {
         size_t k = 0;
         for (size_t i = 0; i < n; ++i) {
             for (size_t j = i; j < n; ++j) {
@@ -104,7 +104,7 @@ size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const md_attri
     return result;
 }
 
-size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice) {
+size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
     bool packed = false;
     const size_t n = qm_symmetric_dim(&packed, attr, slice);
     if (n == 0 || !dst) {
@@ -116,14 +116,14 @@ size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const md_attribute_t
     }
 
     if (!packed) {
-        return md_attribute_extract_f64(dst, n * n, attr, slice, md_unit_none()) == n * n ? n : 0;
+        return md_attribute_extract_io_f64(dst, n * n, attr, slice, md_unit_none(), io) == n * n ? n : 0;
     }
 
     const size_t len = n * (n + 1) / 2;
     md_temp_scope_t temp = md_temp_begin();
     float* tri = md_temp_alloc_array(temp, float, len);
     size_t result = 0;
-    if (tri && md_attribute_extract_f32(tri, len, attr, slice, md_unit_none()) == len) {
+    if (tri && md_attribute_extract_io_f32(tri, len, attr, slice, md_unit_none(), io) == len) {
         size_t k = 0;
         for (size_t i = 0; i < n; ++i) {
             for (size_t j = i; j < n; ++j) {
@@ -272,7 +272,7 @@ size_t md_qm_sph_to_cart_coefficients(double* dst, const double* src, size_t num
     if (n_sph == 0 || n_cart == 0) {
         return 0;
     }
-    if (md_gto_sph_to_cart_orbitals(dst, src, n_sph, 1, NULL, num_mo, basis) != num_mo) {
+    if (md_gto_sph_to_cart_orbitals(dst, src, n_sph, 1, NULL, num_mo, basis, NULL) != num_mo) {
         MD_LOG_ERROR("Spherical to Cartesian conversion of %zu orbitals failed", num_mo);
         return 0;
     }
@@ -678,13 +678,10 @@ bool md_qm_publish_overlap(md_system_t* sys) {
 }
 
 // D_ij = sum_mo occ[mo] * C[mo][i] * C[mo][j]. Exact, not an approximation: an SCF density IS that
-// sum, fractional occupations included, so nothing is gained by storing it separately. Blocked and
-// over the cores (md_gto_density_from_orbitals): a large basis is ~num_occ num_ao^2 / 2 multiply-adds.
-static bool qm_build_density(double* out, const double* coeff, const double* occ, size_t num_mo, size_t num_ao) {
-    return md_gto_density_from_orbitals(out, coeff, num_ao, 1, occ, num_mo, num_ao);
-}
-
-static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, bool beta) {
+// sum, fractional occupations included, so nothing is gained by storing it separately. Blocked, and
+// over the extraction's executor (md_gto_density_from_orbitals): a large basis is ~num_occ num_ao^2 / 2
+// multiply-adds.
+static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, bool beta, md_attribute_io_t* io) {
     md_system_t* sys = (md_system_t*)user_data;
 
     const str_t coeff_path = beta ? STR_LIT("orbital/beta/coefficient") : STR_LIT("orbital/alpha/coefficient");
@@ -719,10 +716,10 @@ static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* at
         MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), num_mo * num_ao + num_mo);
     }
     if (ok) {
-        ok = md_attribute_extract_f64(coeff_data, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao
-          && md_attribute_extract_f64(occ_data, num_mo, occ, md_attribute_slice_all(), md_unit_none()) == num_mo;
+        ok = md_attribute_extract_io_f64(coeff_data, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none(), io) == num_mo * num_ao
+          && md_attribute_extract_io_f64(occ_data, num_mo, occ, md_attribute_slice_all(), md_unit_none(), io) == num_mo;
         if (ok) {
-            ok = qm_build_density((double*)dst, coeff_data, occ_data, num_mo, num_ao);
+            ok = md_gto_density_from_orbitals((double*)dst, coeff_data, num_ao, 1, occ_data, num_mo, num_ao, md_attribute_io_executor(io));
         }
     }
 
@@ -732,19 +729,19 @@ static size_t qm_density_provide(void* dst, size_t cap, const md_attribute_t* at
 
 static size_t qm_alpha_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;  // one whole {A,A} matrix, not indexed by anything a slice could fix
-    return qm_density_provide(dst, cap, attr, user_data, false);
+    return qm_density_provide(dst, cap, attr, user_data, false, io);
 }
 
 static size_t qm_beta_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;
-    return qm_density_provide(dst, cap, attr, user_data, true);
+    return qm_density_provide(dst, cap, attr, user_data, true, io);
 }
 
 // alpha +/- beta. Both halves are themselves virtual, so this is a derivation over derivations,
 // legal because the dependency graph stays acyclic. A restricted calculation gets it for free:
 // beta is an ALIAS of alpha there, so the total is twice alpha and the difference is zero, and alpha
 // is read once (or, for the difference, not at all) rather than once per name.
-static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, double beta_scale) {
+static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* attr, void* user_data, double beta_scale, md_attribute_io_t* io) {
     md_system_t* sys = (md_system_t*)user_data;
 
     const md_attribute_t* alpha = md_attributes_find(&sys->attributes, STR_LIT("orbital/alpha/density"));
@@ -761,7 +758,7 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
             MEMSET(out, 0, sizeof(double) * cap);
             return cap;
         }
-        if (md_attribute_extract_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none()) != cap) {
+        if (md_attribute_extract_io_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none(), io) != cap) {
             MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(alpha->path));
             return 0;
         }
@@ -778,11 +775,11 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
     if (!ok) {
         MD_LOG_ERROR("'" STR_FMT "': failed to allocate %zu doubles of scratch", STR_ARG(attr->path), cap);
     }
-    if (ok && md_attribute_extract_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none()) != cap) {
+    if (ok && md_attribute_extract_io_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none(), io) != cap) {
         MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(alpha->path));
         ok = false;
     }
-    if (ok && md_attribute_extract_f64(beta_data, cap, beta, md_attribute_slice_all(), md_unit_none()) != cap) {
+    if (ok && md_attribute_extract_io_f64(beta_data, cap, beta, md_attribute_slice_all(), md_unit_none(), io) != cap) {
         MD_LOG_ERROR("'" STR_FMT "': could not read '" STR_FMT "'", STR_ARG(attr->path), STR_ARG(beta->path));
         ok = false;
     }
@@ -798,12 +795,12 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
 
 static size_t qm_total_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;
-    return qm_density_combine(dst, cap, attr, user_data, 1.0);
+    return qm_density_combine(dst, cap, attr, user_data, 1.0, io);
 }
 
 static size_t qm_difference_density_provider(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
     (void)slice;
-    return qm_density_combine(dst, cap, attr, user_data, -1.0);
+    return qm_density_combine(dst, cap, attr, user_data, -1.0, io);
 }
 
 bool md_qm_publish_orbital_densities(md_system_t* sys) {

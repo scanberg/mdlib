@@ -50,7 +50,7 @@ static bool dm_load(dm_src_t* s, const char* file) {
     s->num_mo = md_qm_density_orbitals(&s->rows, &s->w, &s->num_ao, &s->t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
     if (s->num_mo == 0 || s->num_ao != md_gto_basis_num_ao(&s->basis)) return false;
     s->D = (double*)malloc(sizeof(double) * s->num_ao * s->num_ao);
-    return s->D && md_gto_density_from_orbitals(s->D, s->rows, s->num_ao, 1, s->w, s->num_mo, s->num_ao);
+    return s->D && md_gto_density_from_orbitals(s->D, s->rows, s->num_ao, 1, s->w, s->num_mo, s->num_ao, NULL);
 }
 
 static void dm_free(dm_src_t* s) {

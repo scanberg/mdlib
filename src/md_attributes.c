@@ -330,6 +330,10 @@ size_t md_attribute_extract_io_f32(float dst[], size_t cap, const md_attribute_t
     return attr_extract_F32(dst, cap, attr, slice, dst_unit, io);
 }
 
+size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) {
+    return attr_extract_F64(dst, cap, attr, slice, dst_unit, io);
+}
+
 bool md_attribute_read_stored(void* dst, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
     ASSERT(dst);
     ASSERT(attr);
@@ -1552,6 +1556,26 @@ void md_attribute_io_close_all(md_attribute_io_t* io) {
         if (io->block[i].data) md_free(md_get_heap_allocator(), io->block[i].data, io->block[i].capacity);
         MEMSET(&io->block[i], 0, sizeof(io->block[i]));
     }
+}
+
+md_attribute_io_t* md_attribute_io_create(const struct md_executor_t* executor, md_allocator_i* alloc) {
+    ASSERT(alloc);
+    md_attribute_io_t* io = md_alloc(alloc, sizeof(md_attribute_io_t));
+    if (!io) return NULL;
+    MEMSET(io, 0, sizeof(*io));
+    io->alloc = alloc;
+    io->executor = executor;
+    return io;
+}
+
+void md_attribute_io_destroy(md_attribute_io_t* io) {
+    if (!io) return;
+    md_attribute_io_close_all(io);
+    md_free(io->alloc, io, sizeof(md_attribute_io_t));
+}
+
+const struct md_executor_t* md_attribute_io_executor(const md_attribute_io_t* io) {
+    return io ? io->executor : NULL;
 }
 
 void md_attribute_io_block_forget(md_attribute_io_t* io, uint64_t key) {
