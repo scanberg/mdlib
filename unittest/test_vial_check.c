@@ -297,7 +297,7 @@ UTEST_F(vial_check, particles_of_each) {
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nb = rs.particle\n",
         "E0319 2: `.particle` picks within each set, as .particle[i] or .particle(name=...); all of them as one set is particle(rs) | particle(rs)\n");
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nb = rs.particle(1:3)\n", "E0701 2: `rs.particle(1:3)` is v1; positions are subscripts\n");
-    EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nb = rs.particle('O')\n", "E0203 2: `.particle(...)` takes keywords, as particle() does: name=, element=, ...\n");
+    EXPECT_TYPE_ON(P, "rs = residue[1:6]\nb = rs.particle('O')\n", 2, "set[5], static");     // a name, as particle('O') takes it
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nb = rs.particle[0:2]\n", "E0319 2: `.particle[i]` takes a position, or a list of them, the same within each set\n");
     // Methods are refused, not silently dropped
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nc = rs.count\n", "E0319 2: `.count` is no property: VIAL calls functions, count(rs) | count(rs)\n");
@@ -327,6 +327,31 @@ UTEST_F(vial_check, stacked_particles) {
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nh = rs[['N', 'H']]\n", "");
     EXPECT_DIAGS_ON(P, "h = residue[['N', 'H']]\n",
         "W0609 1: 1 of 15 sets lack a particle of a name, or have it twice, such as 'H'; its entry is missing\n");
+}
+
+// A selector after a dot is that selector within each set: s.residue[0] the first residue of each set, s.atom[0] its
+// first atom, s.ring(kind='aromatic') its aromatic rings as one set
+UTEST_F(vial_check, selector_views) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "t = chain.residue[0]\n", 1, "set[3], static");
+    EXPECT_TYPE_ON(T, "t = chain.residue[[0, -1]]\n", 1, "set[3][2], static");
+    EXPECT_TYPE_ON(T, "n = count(chain[0].residue[0])\n", 1, "int, static = 8");
+    EXPECT_TYPE_ON(T, "n = count(protein.residue[-1])\n", 1, "int, static = 9");
+    EXPECT_TYPE_ON(T, "r = residue('PHE').ring[0]\n", 1, "set[42], static");
+    EXPECT_TYPE_ON(T, "n = count(residue('PHE').ring[0])\n", 1, "int[42], static");
+    EXPECT_TYPE_ON(T, "a = residue('PHE').atom[0]\n", 1, "set[42], static");
+    EXPECT_TYPE_ON(T, "h = chain.residue(name='HIS')\n", 1, "set[3], static");
+    EXPECT_TYPE_ON(T, "n = count(part(kind='peptide')[0].residue[0])\n", 1, "int, static = 8");
+    EXPECT_TYPE_ON(T, "n = count(chain[0].particle(name='CA'))\n", 1, "int, static = 433");
+    EXPECT_TYPE_ON(T, "n = count(chain[0].residue('HIS'))\n", 1, "int, static = 130");
+    // Only within: a residue holds no chain; alone, a view is no value
+    EXPECT_DIAGS_ON(T, "c = residue.chain[0]\n",
+        "E0319 1: a residue holds no chain of its own; the chains that hold them are chain(residue) | chain(residue)\n");
+    EXPECT_DIAGS_ON(T, "r = chain.residue\n",
+        "E0319 1: `.residue` picks within each set, as .residue[i] or .residue(name=...); the residues of them all are residue(chain) | residue(chain)\n");
+    EXPECT_DIAGS_ON(T, "r = chain.residue[0:2]\n", "E0319 1: `.residue[i]` takes a position, or a list of them, the same within each set\n");
+    EXPECT_DIAGS_ON(T, "r = chain.residue[500]\n", "W0609 1: a position is outside 3 of 3 sets, which hold fewer residues; their entries are missing\n");
 }
 
 UTEST_F(vial_check, selectors) {

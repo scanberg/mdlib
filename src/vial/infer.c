@@ -1043,7 +1043,7 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
-    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) return vx_particle_at(x, id, child(x, on, 0), in, &a);
+    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) return vx_view_at(x, id, on, in, &a);
     if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) == VIAL_N_LIST && num_children(x, in) && kind_of(x, child(x, in, 0)) == VIAL_N_STRING) {
         return vx_named_list(x, id, on, in, &a);
     }
@@ -1308,14 +1308,34 @@ static T infer_attr(infer_t* x, vial_node_id id) {
         for (uint8_t k = 0; k < a.ndim; ++k) t.dims[k] = a.dims[a.ndim - 1 - k];
         return t;
     }
-    if (a.dtype == VIAL_DT_SET && str_eq(name, STR_LIT("particle"))) {
-        // The particles of each set, for the subscript or call it is the start of
+    uint8_t vpk = 0;
+    const uint8_t vlevel = a.dtype == VIAL_DT_SET ? vx_view_level(x, id, &vpk, NULL) : VIAL_LEVEL_NONE;
+    if (vlevel != VIAL_LEVEL_NONE) {
+        // A selector within each set, for the subscript or call it is the start of
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const str_t o = vial_excerpt(ex, sizeof(ex), text(x, on));
+        const int nl = (int)name.len;
+        char fix[160];
+        snprintf(fix, sizeof(fix), "%.*s(%.*s)", nl, name.ptr, (int)MIN(o.len, 120), o.ptr);
+        // Only what a unit can hold: a residue holds rings but no chains
+        static const uint8_t rank[] = {[VIAL_LEVEL_PARTICLE] = 1, [VIAL_LEVEL_RING] = 2, [VIAL_LEVEL_HEAD] = 2, [VIAL_LEVEL_TAIL] = 2,
+                                       [VIAL_LEVEL_RESIDUE] = 3, [VIAL_LEVEL_PART] = 4, [VIAL_LEVEL_MOLECULE] = 5, [VIAL_LEVEL_CHAIN] = 6};
+        const vial_value_t av = value_of(x, on);
+        if (av.kind == VIAL_VAL_SETS && !av.sets->single && av.sets->level < ARRAY_SIZE(rank) && rank[av.sets->level] &&
+            vlevel < ARRAY_SIZE(rank) && rank[vlevel] >= rank[av.sets->level]) {
+            const char* unit = vial_select_name(av.sets->level);
+            diag_fix(x, "E0319", id, fix, "a %s holds no %.*s of its own; the %.*ss that hold them are %s", unit, nl, name.ptr, nl, name.ptr, fix);
+            return err();
+        }
         const vial_node_id p = x->n->parent[id];
         if (p && child(x, p, 0) == id && (kind_of(x, p) == VIAL_N_SUBSCRIPT || kind_of(x, p) == VIAL_N_CALL)) return a;
-        const str_t o = text(x, on);
-        char fix[160];
-        snprintf(fix, sizeof(fix), "particle(%.*s)", (int)MIN(o.len, 120), o.ptr);
-        diag_fix(x, "E0319", id, fix, "`.particle` picks within each set, as .particle[i] or .particle(name=...); all of them as one set is %s", fix);
+        if (vlevel == VIAL_LEVEL_PARTICLE) {
+            diag_fix(x, "E0319", id, fix, "`.%.*s` picks within each set, as .%.*s[i] or .%.*s(name=...); all of them as one set is %s", nl, name.ptr,
+                nl, name.ptr, nl, name.ptr, fix);
+        } else {
+            diag_fix(x, "E0319", id, fix, "`.%.*s` picks within each set, as .%.*s[i] or .%.*s(name=...); the %.*ss of them all are %s", nl, name.ptr,
+                nl, name.ptr, nl, name.ptr, nl, name.ptr, fix);
+        }
         return err();
     }
     if (a.dtype == VIAL_DT_SET || str_eq(name, STR_LIT("com"))) {

@@ -398,13 +398,28 @@ static vial_ssa_t emit_subscript(infer_t* x, vial_node_id id, const T* t) {
         return op1(x, id, VIAL_IR_SETOP, VIAL_SETOP_ONE, 0, (vial_ssa_t[]){as, bs}, 2, t);
     }
     if (each) {
-        // s.particle[i], s.particle[[i, j]] and s[[i, j]] on one set: within each set
+        // s.particle[i], s.particle[[i, j]] and s[[i, j]] on one set: within each set. s.residue[i]: the units of each set
         const vial_ssa_t iv = vx_ssa(x, in);
         if (!iv) return 0;
+        uint8_t vpk = 0;
+        str_t vname = {0};
+        const uint8_t vl = vx_view_level(x, on, &vpk, &vname);
+        vial_ssa_t us = 0;
+        if (vl != VIAL_LEVEL_NONE && vl != VIAL_LEVEL_PARTICLE) {
+            const vial_sets_t* units = vx_view_units(x, vname);
+            if (!units) { vx_lower_fail(x, on, "units within each set without a system"); return 0; }
+            const vial_val_t uv = vial_val_sets(units);
+            T ut = vial_type_scalar(VIAL_DT_SET);
+            vial_type_push_dim(&ut, vial_extent_static(units->count));
+            vial_val_t uval = uv;
+            uval.ndim = 1;
+            uval.dims[0] = units->count;
+            us = vial_ir_const(x->ir, &uval, &ut, vname, vx_span(x, on));
+        }
         const uint32_t first = (uint32_t)md_array_size(x->ir->index_items);
-        md_array_push(x->ir->index_items, ((vial_index_item_t){.kind = VIAL_INDEX_EACH, .a = iv}), x->ir->alloc);
+        md_array_push(x->ir->index_items, ((vial_index_item_t){.kind = VIAL_INDEX_EACH, .a = iv, .b = us}), x->ir->alloc);
         const uint32_t op = vial_ir_emit(x->ir, &(vial_ir_emit_t){.kind = VIAL_IR_INDEX, .sub = 1, .aux = first,
-                                                                  .args = (vial_ssa_t[]){a, iv}, .num_args = 2, .types = t,
+                                                                  .args = (vial_ssa_t[]){a, iv, us}, .num_args = us ? 3 : 2, .types = t,
                                                                   .num_results = 1, .span = vx_span(x, id)});
         return x->ir->ops[op].result;
     }
@@ -504,7 +519,17 @@ static vial_ssa_t emit_attr(infer_t* x, vial_node_id id, const T* t) {
     snprintf(buf, sizeof(buf), "%.*s", (int)(name.len < 15 ? name.len : 15), name.ptr);
     // .xyz of a set is its positions; of coordinates, itself
     const T* at = type_at(x, on);
-    if (str_eq(name, STR_LIT("particle")) && at->dtype == VIAL_DT_SET) return a;    // s.particle[i]: the subscript picks
+    uint8_t vpk = 0;
+    if (at->dtype == VIAL_DT_SET && vx_view_level(x, id, &vpk, NULL) != VIAL_LEVEL_NONE) {
+        // s.particle[i], s.residue[i]: the subscript picks. s.atom[i]: among the particles of the kind
+        if (!vpk || vx_view_level(x, id, &vpk, NULL) != VIAL_LEVEL_PARTICLE) return a;
+        const vial_sets_t* kind = vx_view_units(x, name);
+        if (!kind) { vx_lower_fail(x, id, "particles of a kind without a system"); return 0; }
+        const vial_val_t kv = vial_val_sets(kind);
+        const T kt = vial_type_scalar(VIAL_DT_SET);
+        const vial_ssa_t ks = vial_ir_const(x->ir, &kv, &kt, name, vx_span(x, id));
+        return op1(x, id, VIAL_IR_SETOP, VIAL_KW_AND, 0, (vial_ssa_t[]){a, ks}, 2, type_at(x, on));
+    }
     if (str_eq(name, STR_LIT("xyz")) && at->dtype != VIAL_DT_SET) return a;
     if (str_eq(name, STR_LIT("xyz"))) return builtin(x, id, "xyz", &a, NULL, 1, t);
     return builtin(x, id, buf, &a, NULL, 1, t);

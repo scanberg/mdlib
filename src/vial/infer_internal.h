@@ -175,9 +175,14 @@ vial_value_t vx_sets_subscript(infer_t* x, const vial_value_t* a, vial_node_id i
 vial_type_t        vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const vial_type_t* a);
 bool               vx_name_is_glob(str_t name);
 
-// s.particle, the particles of each set, as what a subscript or a call takes: s.particle[i] is the particle at position i
-// within each set, s.particle(name='O') those of each set that the keywords select. Not a value of its own.
-bool               vx_is_particles_view(const infer_t* x, vial_node_id n);
+// s.particle, s.atom, s.residue, ...: a selector within each set, as what a subscript or a call takes. s.particle[i] is
+// the particle at position i within each set, s.residue[i] the i-th residue each set touches, with the particles it
+// shares with the set; s.particle(name='O') and s.residue(name='HIS') the particles of each set that the selector
+// with those keywords gives. Not a value of its own. A view finer than the units of an array of sets only.
+bool               vx_is_particles_view(const infer_t* x, vial_node_id n);     // any view
+uint8_t            vx_view_level(const infer_t* x, vial_node_id n, uint8_t* particle_kind, str_t* name);  // NONE if no view
+const vial_sets_t* vx_view_units(infer_t* x, str_t name);  // every unit of the selector, or every particle of its kind
+vial_type_t        vx_view_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const vial_type_t* a);
 // Positions within each set of what obj gives: one, s.particle[1], or a list, s.particle[[1, 0, 2]] and s[[1, 0, 2]] on
 // one set, stacked along a new last dimension in the order listed
 vial_type_t        vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const vial_type_t* a);

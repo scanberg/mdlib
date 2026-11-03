@@ -775,8 +775,9 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             if (b->name[0] == '_') continue;
             if (b->flags & VIAL_BUILTIN_PROPERTY) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_PROPERTY);
         }
-        // The particles within each set, for .particle[i] and .particle(...)
-        cmpl_add(&c, STR_LIT("particle"), STR_LIT("particle"), MD_VIAL_COMPLETION_PROPERTY);
+        // The selectors within each set, for .residue[i] and .particle(...)
+        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "polymer", "molecule", "head", "tail"};
+        for (size_t i = 0; i < ARRAY_SIZE(views); ++i) cmpl_add(&c, str_from_cstr(views[i]), str_from_cstr(views[i]), MD_VIAL_COMPLETION_PROPERTY);
     } else {
         // The call's parameters first
         if (callee.len && !kw.len) {

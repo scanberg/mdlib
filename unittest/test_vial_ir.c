@@ -1277,6 +1277,40 @@ static uint32_t vial_ir__count(const char* expr, const md_system_t* sys, const m
     return f.offsets[1];
 }
 
+static bool vial_ir__same_sets(const char* a, const char* b, const md_system_t* sys, const md_system_state_t* st, md_allocator_i* alloc, uint32_t* n) {
+    md_vial_filter_t fa, fb;
+    if (!md_vial_filter(&fa, str_from_cstr(a), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc)) return false;
+    if (!md_vial_filter(&fb, str_from_cstr(b), &(md_vial_filter_desc_t){.sys = sys, .state = st}, alloc)) return false;
+    if (fa.num_sets != fb.num_sets || fa.offsets[fa.num_sets] != fb.offsets[fb.num_sets]) return false;
+    for (uint32_t i = 0; i <= fa.num_sets; ++i) if (fa.offsets[i] != fb.offsets[i]) return false;
+    for (uint32_t i = 0; i < fa.offsets[fa.num_sets]; ++i) if (fa.atoms[i] != fb.atoms[i]) return false;
+    *n = fa.num_sets;
+    return true;
+}
+
+// s.residue[i] and the like, known when compiling and evaluated per frame: the same sets
+UTEST(vial_ir, selector_views) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    const md_system_t* sys = vial_test_system('T');
+    const md_system_state_t* st = vial_test_state('T');
+    ASSERT_TRUE(sys && st);
+    // Per frame: each chain and every particle within 1000 Å of GTP, which is all of it but GTP
+    const char* near = "(chain and within(1000.0, of=particle(resname='GTP')))";
+    char b[256];
+    uint32_t n = 0;
+    snprintf(b, sizeof(b), "%s.residue[0]", near);
+    EXPECT_TRUE(vial_ir__same_sets("chain.residue[0]", b, sys, st, alloc, &n));
+    EXPECT_EQ(3u, n);
+    snprintf(b, sizeof(b), "%s.residue[[0, 1, 2]]", near);
+    EXPECT_TRUE(vial_ir__same_sets("chain.residue[[0, 1, 2]]", b, sys, st, alloc, &n));
+    EXPECT_EQ(9u, n);
+    snprintf(b, sizeof(b), "%s.atom[3]", near);
+    EXPECT_TRUE(vial_ir__same_sets("chain.atom[3]", b, sys, st, alloc, &n));
+    EXPECT_TRUE(vial_ir__same_sets("residue('PHE').ring[0]", "(residue('PHE') and within(1000.0, of=particle(resname='GTP'))).ring[0]", sys, st, alloc, &n));
+    EXPECT_EQ(42u, n);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, anatomy_sets) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
     md_system_t sys;

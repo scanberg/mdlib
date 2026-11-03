@@ -399,7 +399,10 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s[['N', 'CA', 'C']]` | within each set, the particle of each name, stacked along a new last dimension: `angle(rs[['N', 'CA', 'C']])` | the shape and `[3]`, one particle each |
 | `s.particle[i]` on a set or an array of sets | within each set, its particle at position i, counted from the end when negative: v1's positions within a structure | the same shape, a set of one particle per set |
 | `s.particle[[1, 0, 2]]` | within each set, its particles at those positions, stacked along a new last dimension: `angle(rs.particle[[1, 0, 2]])` is v1's `angle(2,1,3) in residue(...)` for every residue of `rs` | the shape and `[3]`, one particle each |
-| `s.particle(element='O')` | within each set, the particles the keywords select, as `particle()` takes them | the same shape, a set per set |
+| `s.particle(element='O')` | within each set, the particles the selector with those arguments gives, as `particle()` takes them | the same shape, a set per set |
+| `s.atom[i]`, `s.bead[i]` | within each set, its i-th atom or bead, counted among those alone | the same shape, a set of one particle per set |
+| `s.residue[i]`, and `.ring`, `.part`, `.polymer`, `.molecule`, `.head`, `.tail` | within each set, the i-th unit of the selector it holds, in the system's order, with the particles it shares with the set: `chain.residue[[0, -1]]` is the first and last residue of each chain, `residue('PHE').ring[0]` each PHE's ring | the same shape, a set per set; a list stacks |
+| `s.residue('HIS')` | within each set, the particles of the units the selector with those arguments gives | the same shape, a set per set |
 | `s[mask]` on a set, with a bool per particle of s | its particles where the mask is true: `particle[particle.z in 20.0..25.0]` is a slab, as v1's `within_z(20:25)` | a set; frame stage when the mask is |
 | `at(x, frame=k)` | frame k of a frame value, read once before the other frames | a static value |
 | `rmsf[s]` with a set | the values of the particles in set s; an intersection | a shorter dimension over those particles |
@@ -410,7 +413,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 - An out-of-range position on a static extent is E0304. On a dynamic extent it is R0101 in that frame, and the value is missing there; the compiler says so beforehand with W0405.
 - A name picks a particle within each set, so the result keeps the shape and labels of what it subscripts, and works the same on a def's parameter, a set per frame and the sets of a comprehension. A set without a particle of the name, or with two, has an empty set in its place, whose point is missing: `res_a['CB']` is missing for every glycine. When the sets are known when compiling, W0609 counts them; otherwise the run notes it (R0101) where it happens. A name no particle has is W0601, which points a residue's name at `residue('ALA')`: a subscript always names particles. For other keywords, `s and particle(element='O')`.
 - A list in a subscript stacks: `s[['N', 'CA', 'C']]` by names and `s.particle[[1, 0, 2]]` by positions give one particle per entry along a new last dimension, which `angle`, `dihedral` and `distance` take as their one argument. On one set, `s[[1, 0, 2]]` is the same as `s.particle[[1, 0, 2]]`; `particle(s[[1, 0, 2]])` merges them back into one set. A name in a list has no `*` or `?`.
-- `.particle` is the particles of each set, for the subscript or call it starts: positions there count within each set, in the file's order, so they depend on how a force field orders a residue's atoms, which a name does not. A set too short for a position has an empty set in its place, as for a name (W0609). Alone, `.particle` is E0319, with the fix `particle(s)` for all of them as one set; VIAL has no other methods, and `s.count` is E0319 with the fix `count(s)`.
+- A selector after a dot is that selector within each set, for the subscript or call it starts. `.particle`, `.atom` and `.bead` count particles, `.residue`, `.ring`, `.part`, `.polymer`, `.molecule`, `.head` and `.tail` the units each set holds, each with the particles it shares with the set. Positions count within each set in the system's order, so a particle's position depends on how a force field orders a residue's atoms, which a name does not. A set too short for a position has an empty set in its place, as for a name (W0609). A view must be finer than the units it looks into: `residue.chain[0]` is E0319 with the fix `chain(residue)`, the chains that hold them, while one set may hold any, so `protein.residue[-1]` is the last residue of the protein. Alone, a view is E0319, with the fix `particle(s)` or `residue(s)` for all of them. `bond` is no view: a set's bonds are pairs whose number differs from set to set, so `bond(s)` takes one set. VIAL has no other methods, and `s.count` is E0319 with the fix `count(s)`.
 - `by=` works with every reduction and is defined as `[f(a[s]) for s in g]`. A group with no values gives a missing value and W0603, which counts them. `a[s]` and `by=` act on the first dimension of `a` that describes particles; an array with no such dimension is E0311.
 - `var` and `std` over frames run in one pass, with Welford's algorithm.
 - A unit's label is how the data names it: a residue `MET1/A`, or `ALA1` where the data gives no chain ids; a particle `CA/MET1/A`; a chain its id, `A`. A part or a molecule of one residue is labelled as that residue, `GTP501/A`, and a longer one by its kind or its molecule's name and its chain, `peptide/A`, or by its kind and number where there are no chains, `peptide1`.
@@ -442,6 +445,11 @@ sc_o  = res_a['O*']                                    # -> set[433]: each resid
 bend  = angle(res_a[:-2]['CA'], res_a[1:-1]['CA'], res_a[2:]['CA'])   # -> float[431] °, frame: the CA-CA-CA angles
 wo    = residue(water)['O']                          # -> set[8]: the O of each water
 one_o = water['O']                                     # warning W0609 -> set | missing: water is one set of 8
+ends  = chain.residue[[0, -1]]                         # -> set[3][2]: the first and last residue of each chain
+nterm = chain[0].residue[0]                            # -> set: MET1/A
+rings = residue('PHE').ring[0]                         # -> set[42]: the ring of each PHE
+his_a = chain.residue('HIS')                           # -> set[3]: the particles of each chain's HIS
+no    = residue.chain[0]                               # error E0319: a residue holds no chain
 ```
 
 ```python

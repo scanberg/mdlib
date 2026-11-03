@@ -8,6 +8,7 @@
 #include <core/md_array.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define NONE32 UINT32_MAX
@@ -255,6 +256,79 @@ vial_sets_t* vial_sets_and(const vial_sets_t* a, uint32_t ia, const vial_sets_t*
         else { s->idx[n++] = x[i]; ++i; ++j; }
     }
     s->offset[1] = n;
+    return s;
+}
+
+vial_sets_t* vial_sets_units_at(const vial_sets_t* a, const vial_sets_t* u, const int64_t* pos, const bool* skip, uint32_t m,
+                                uint32_t* outside, md_allocator_i* alloc) {
+    *outside = 0;
+    // Each particle's units, as offsets into one list: units may share particles, as fused rings do
+    uint32_t natoms = 0;
+    for (uint32_t k = 0; k < u->offset[u->count]; ++k) natoms = u->idx[k] + 1 > natoms ? u->idx[k] + 1 : natoms;
+    uint32_t* off = md_alloc(alloc, (natoms + 1) * sizeof(uint32_t));
+    memset(off, 0, (natoms + 1) * sizeof(uint32_t));
+    for (uint32_t k = 0; k < u->offset[u->count]; ++k) off[u->idx[k] + 1] += 1;
+    for (uint32_t p = 0; p < natoms; ++p) off[p + 1] += off[p];
+    const uint32_t total_refs = u->offset[u->count];
+    uint32_t* of = md_alloc(alloc, (total_refs ? total_refs : 1) * sizeof(uint32_t));
+    uint32_t* fill = md_alloc(alloc, (natoms ? natoms : 1) * sizeof(uint32_t));
+    if (natoms) memcpy(fill, off, natoms * sizeof(uint32_t));
+    for (uint32_t j = 0; j < u->count; ++j) {
+        for (uint32_t k = u->offset[j]; k < u->offset[j + 1]; ++k) of[fill[u->idx[k]]++] = j;
+    }
+    uint32_t* stamp = md_alloc(alloc, (u->count ? u->count : 1) * sizeof(uint32_t));
+    for (uint32_t j = 0; j < u->count; ++j) stamp[j] = UINT32_MAX;
+    uint32_t* touched = md_alloc(alloc, (u->count ? u->count : 1) * sizeof(uint32_t));
+
+    const uint32_t count = a->count * m;
+    vial_sets_t* s = md_alloc(alloc, sizeof(vial_sets_t));
+    memset(s, 0, sizeof(*s));
+    s->count = count;
+    s->offset = md_alloc(alloc, (count + 1) * sizeof(uint32_t));
+    s->offset[0] = 0;
+    uint32_t* units = md_alloc(alloc, (count ? count : 1) * sizeof(uint32_t));
+    md_array(uint32_t) idx = NULL;
+    bool whole = u->level != VIAL_LEVEL_NONE && u->unit != NULL;
+    uint32_t c = 0;
+    for (uint32_t i = 0; i < a->count; ++i) {
+        const uint32_t* x = vial_sets_items(a, i);
+        const uint32_t nx = vial_sets_size(a, i);
+        uint32_t n = 0;
+        for (uint32_t k = 0; k < nx; ++k) {
+            if (x[k] >= natoms) continue;
+            for (uint32_t r = off[x[k]]; r < off[x[k] + 1]; ++r) {
+                const uint32_t j = of[r];
+                if (stamp[j] != i) { stamp[j] = i; touched[n++] = j; }
+            }
+        }
+        qsort(touched, n, sizeof(uint32_t), cmp_u32);
+        bool short_set = false;
+        for (uint32_t e = 0; e < m; ++e) {
+            const int64_t q = pos[e] < 0 ? pos[e] + (int64_t)n : pos[e];
+            const bool none = (skip && skip[e]) || q < 0 || q >= (int64_t)n;
+            if (none) {
+                if (!(skip && skip[e])) short_set = true;
+                whole = false;
+                units[c] = 0;
+            } else {
+                const uint32_t j = touched[q];
+                const uint32_t* y = vial_sets_items(u, j);
+                const uint32_t ny = vial_sets_size(u, j);
+                uint32_t p = 0, t = 0, shared = 0;
+                while (p < nx && t < ny) {
+                    if (x[p] < y[t]) ++p;
+                    else if (y[t] < x[p]) ++t;
+                    else { md_array_push(idx, x[p], alloc); ++shared; ++p; ++t; }
+                }
+                if (shared != ny) whole = false;
+                units[c] = u->unit ? u->unit[j] : 0;
+            }
+            s->offset[++c] = (uint32_t)md_array_size(idx);
+        }
+        *outside += short_set;
+    }
+    s->idx = idx ? idx : md_alloc(alloc, sizeof(uint32_t));
+    if (whole && count) { s->level = u->level; s->unit = units; }
     return s;
 }
 

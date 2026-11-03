@@ -454,10 +454,15 @@ static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint3
         const vial_node_id call = r->n->parent[at];
         if (call && kind_of(r, call) == VIAL_N_CALL && child(r, call, 0) == at && r->t->nodes[call].child_count == 2) {
             const str_t a = text(r, child(r, call, 1));
+            const char* code = str_eq(name, STR_LIT("coord")) ? "E0701" : "E0201";
+            if (a.len >= 100 || memchr(a.ptr, '\n', a.len) || memchr(a.ptr, '\r', a.len)) {
+                diag(r, code, call, "the positions of a set s are s.xyz");
+                return;
+            }
             char fix[160];
-            const bool simple = a.len < 100 && kind_of(r, child(r, call, 1)) != VIAL_N_BINARY;
+            const bool simple = kind_of(r, child(r, call, 1)) != VIAL_N_BINARY;
             snprintf(fix, sizeof(fix), simple ? "%.*s.xyz" : "(%.*s).xyz", (int)a.len, a.ptr);
-            diag_fix(r, str_eq(name, STR_LIT("coord")) ? "E0701" : "E0201", call, fix, "the positions of a set are %s", fix);
+            diag_fix(r, code, call, fix, "the positions of a set are %s", fix);
             return;
         }
     }

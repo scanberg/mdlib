@@ -556,7 +556,33 @@ static bool index_each(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* iv
     return true;
 }
 
+// s.residue[i]: within each set, the i-th unit of u it touches, with the particles it shares with the set
+static bool index_units(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* iv, const vial_val_t* u, vial_val_t* out) {
+    if (a->dtype != VIAL_DT_SET || u->dtype != VIAL_DT_SET || iv->ndim > 1 || (iv->ndim == 1 && a->ndim >= VIAL_MAX_DIMS)) {
+        return vial_rt_fail(k, "R0103", "units within each set of what is not sets");
+    }
+    const uint32_t m = iv->ndim ? iv->dims[0] : 1;
+    int64_t* pos = md_alloc(k->alloc, m * sizeof(int64_t));
+    bool* skip = md_alloc(k->alloc, m * sizeof(bool));
+    for (uint32_t j = 0; j < m; ++j) {
+        skip[j] = vial_val_is_missing(iv, j);
+        pos[j] = skip[j] ? 0 : int_at(iv, j);
+    }
+    uint32_t outside = 0;
+    vial_sets_t* o = vial_sets_units_at(a->sets, u->sets, pos, skip, m, &outside, k->alloc);
+    o->single = a->sets->single && iv->ndim == 0;
+    if (outside) vial_rt_note(k, "R0101", "a position is outside %u of %u sets, which hold fewer units; their entries are missing", outside, a->sets->count);
+    vial_val_t r = *a;
+    r.sets = o;
+    r.missing = NULL;
+    r.data = NULL;
+    if (iv->ndim) r.dims[r.ndim++] = m;
+    *out = r;
+    return true;
+}
+
 bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* items, uint32_t num, vial_val_t* out) {
+    if (num == 1 && items[0].kind == VIAL_INDEX_EACH && items[0].b) return index_units(k, a, &k->in->vals[items[0].a], &k->in->vals[items[0].b], out);
     if (num == 1 && items[0].kind == VIAL_INDEX_EACH) return index_each(k, a, &k->in->vals[items[0].a], out);
     if (a->dtype == VIAL_DT_SET && a->ndim == 0) {
         if (num != 1) return vial_rt_fail(k, "R0103", "a set takes one position");

@@ -602,23 +602,75 @@ T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const 
 
 // ### THE PARTICLES OF EACH SET ###
 
-bool vx_is_particles_view(const infer_t* x, vial_node_id n) {
-    if (!n || vx_kind(x, n) != VIAL_N_ATTR) return false;
+uint8_t vx_view_level(const infer_t* x, vial_node_id n, uint8_t* particle_kind, str_t* name) {
+    *particle_kind = 0;
+    if (!n || vx_kind(x, n) != VIAL_N_ATTR) return VIAL_LEVEL_NONE;
     const vial_node_id nn = vx_child(x, n, 1);
-    return nn && str_eq(vx_text(x, nn), STR_LIT("particle"));
+    if (!nn) return VIAL_LEVEL_NONE;
+    const str_t t = vx_text(x, nn);
+    if (name) *name = t;
+    return selector_level(t, particle_kind);
 }
 
+bool vx_is_particles_view(const infer_t* x, vial_node_id n) {
+    uint8_t pk;
+    return vx_view_level(x, n, &pk, NULL) != VIAL_LEVEL_NONE;
+}
+
+const vial_sets_t* vx_view_units(infer_t* x, str_t name) {
+    if (!x->sys) return NULL;
+    for (size_t k = 0; k < ARRAY_SIZE(x->predefined) && x->predefined[k].sets; ++k) {
+        if (str_eq(x->predefined[k].name, name)) return x->predefined[k].sets;
+    }
+    uint8_t pkind = 0;
+    const uint8_t level = selector_level(name, &pkind);
+    const vial_select_t q = {.level = level, .particle_kind = pkind};
+    const vial_sets_t* s = vial_select(x->sys, &q, x->alloc);
+    for (size_t k = 0; k < ARRAY_SIZE(x->predefined); ++k) {
+        if (!x->predefined[k].sets) { x->predefined[k].name = name; x->predefined[k].sets = s; break; }
+    }
+    return s;
+}
+
+static T view_at(infer_t* x, vial_node_id id, vial_node_id in, const T* a, vial_value_t av, const vial_sets_t* units, str_t what);
+
 T vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const T* a) {
+    return view_at(x, id, in, a, vx_value_of(x, obj), NULL, STR_LIT("particle"));
+}
+
+T vx_view_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const T* a) {
+    uint8_t pkind;
+    str_t name = {0};
+    const uint8_t level = vx_view_level(x, view, &pkind, &name);
+    vial_value_t av = vx_value_of(x, vx_child(x, view, 0));
+    if (level == VIAL_LEVEL_PARTICLE) {
+        // atom, bead: the particles of the kind, then positions among them
+        if (pkind && av.kind == VIAL_VAL_SETS) {
+            const vial_sets_t* kind = vx_view_units(x, name);
+            av = kind ? sets_value(av.sets->single ? vial_sets_and(av.sets, 0, kind, 0, x->alloc) : vial_sets_boolop_each(av.sets, kind, true, x->alloc))
+                      : (vial_value_t){0};
+        }
+        return view_at(x, id, in, a, av, NULL, name);
+    }
+    const vial_sets_t* units = vx_view_units(x, name);
+    if (!units && x->sys) return err();
+    return view_at(x, id, in, a, av, units ? units : NULL, name);
+}
+
+static T view_at(infer_t* x, vial_node_id id, vial_node_id in, const T* a, vial_value_t av, const vial_sets_t* units, str_t what) {
+    const bool grouping = !str_eq(what, STR_LIT("particle")) && !str_eq(what, STR_LIT("atom")) && !str_eq(what, STR_LIT("bead"));
+    const int wl = (int)what.len;
     if (!in || vx_kind(x, in) == VIAL_N_SLICE || vx_kind(x, in) == VIAL_N_TUPLE) {
         if (in) vx_infer(x, in);
-        vx_diag_fix(x, "E0319", id, NULL, "`.particle[i]` takes a position, or a list of them, the same within each set");
+        vx_diag_fix(x, "E0319", id, NULL, "`.%.*s[i]` takes a position, or a list of them, the same within each set", wl, what.ptr);
         return err();
     }
     const T ix = vx_infer(x, in);
     if (vial_type_is_error(&ix)) return err();
     const bool list = ix.dtype == VIAL_DT_INT && ix.ndim == 1;
     if (!(ix.dtype == VIAL_DT_INT && ix.ndim == 0) && !list) {
-        vx_diag_fix(x, "E0319", in, NULL, "`.particle[i]` takes an int, or a list of them, positions within each set; this is %s", vx_tstr(&ix));
+        vx_diag_fix(x, "E0319", in, NULL, "`.%.*s[i]` takes an int, or a list of them, positions within each set; this is %s", wl, what.ptr,
+            vx_tstr(&ix));
         return err();
     }
     if (list && a->ndim >= VIAL_MAX_DIMS) {
@@ -627,7 +679,7 @@ T vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in,
     }
     T t = *a;
     t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
-    t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    if (!grouping) t.flags |= VIAL_TYPE_ONE_PARTICLE;
     if (list) {
         vial_extent_t e = ix.dims[0];
         e.desc = 0;
@@ -635,7 +687,6 @@ T vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in,
     }
     join_stage(&t, &ix);
     // The positions, when known
-    const vial_value_t av = vx_value_of(x, obj);
     int64_t one;
     int64_t* pos = &one;
     uint32_t m = 1;
@@ -655,6 +706,22 @@ T vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in,
     }
     if (av.kind != VIAL_VAL_SETS || t.stage != VIAL_STAGE_STATIC) return t;
     const vial_sets_t* s = av.sets;
+    if (grouping) {
+        if (!units) return t;
+        uint32_t outside = 0;
+        vial_sets_t* r = vial_sets_units_at(s, units, pos, NULL, m, &outside, x->alloc);
+        r->single = s->single && !list;
+        if (outside) {
+            t.flags |= VIAL_TYPE_MISSING;
+            if (s->single) vx_diag_fix(x, "W0609", id, NULL, "a position is beyond the %.*ss the set holds, so its entry is missing", wl, what.ptr);
+            else vx_diag_fix(x, "W0609", id, NULL, "a position is outside %u of %u sets, which hold fewer %.*ss; %s missing", outside, s->count,
+                wl, what.ptr, outside == 1 ? "its entry is" : "their entries are");
+        }
+        const T rt = vx_sets_type(x, r, id);
+        t.flags |= rt.flags & VIAL_TYPE_EMPTY;
+        vx_set_value(x, id, sets_value(r));
+        return t;
+    }
     const uint32_t total = s->count * m;
     vial_sets_t* r = md_alloc(x->alloc, sizeof(vial_sets_t));
     memset(r, 0, sizeof(*r));
@@ -754,17 +821,12 @@ T vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, c
 }
 
 T vx_particles_call(infer_t* x, vial_node_id call, vial_node_id view, const T* a) {
-    for (uint32_t i = 1; i < vx_num_children(x, call); ++i) {
-        const vial_node_id arg = vx_child(x, call, i);
-        if (arg && vx_kind(x, arg) != VIAL_N_KWARG) {
-            vx_infer(x, arg);
-            const bool said = vial_diag_at(x->diags, x->t->nodes[call].span.beg) || vial_diag_at(x->diags, x->t->nodes[arg].span.beg);
-            if (!said) vx_diag_fix(x, "E0203", arg, NULL, "`.particle(...)` takes keywords, as particle() does: name=, element=, ...");
-            return err();
-        }
-    }
-    // particle() with these keywords, then each set of a and those
-    const T sel = selector_call(x, call, STR_LIT("particle"));
+    uint8_t pkind;
+    str_t vname = STR_LIT("particle");
+    vx_view_level(x, view, &pkind, &vname);
+    // Its arguments as the selector takes them: residue('HIS') within each set is s.residue('HIS')
+    // The selector with these keywords, then each set of a and the particles of what it gives
+    const T sel = selector_call(x, call, vname);
     if (vial_type_is_error(&sel)) return err();
     const vial_value_t sv = vx_value_of(x, call);
     vx_set_value(x, call, (vial_value_t){0});
@@ -774,8 +836,9 @@ T vx_particles_call(infer_t* x, vial_node_id call, vial_node_id view, const T* a
     join_stage(&t, &sel);
     const vial_value_t av = vx_value_of(x, vx_child(x, view, 0));
     if (av.kind == VIAL_VAL_SETS && sv.kind == VIAL_VAL_SETS && t.stage == VIAL_STAGE_STATIC) {
-        const vial_value_t r = av.sets->single ? sets_value(vial_sets_and(av.sets, 0, sv.sets, 0, x->alloc))
-                                               : sets_value(vial_sets_boolop_each(av.sets, sv.sets, true, x->alloc));
+        const vial_sets_t* one = sv.sets->single ? sv.sets : vial_sets_merge(sv.sets, x->alloc);
+        const vial_value_t r = av.sets->single ? sets_value(vial_sets_and(av.sets, 0, one, 0, x->alloc))
+                                               : sets_value(vial_sets_boolop_each(av.sets, one, true, x->alloc));
         const T st = vx_sets_type(x, r.sets, call);
         t.flags |= st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
         vx_set_value(x, call, r);

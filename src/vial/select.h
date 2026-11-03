@@ -117,6 +117,13 @@ vial_sets_t* vial_sets_pick(const vial_sets_t* a, const uint32_t* pos, uint32_t 
 // The particles of one set at positions pos[0..n): a set, the positions in ascending order
 vial_sets_t* vial_sets_pick_particles(const vial_sets_t* a, uint32_t i, const uint32_t* pos, uint32_t n, md_allocator_i* alloc);
 
+// s.residue[i]: within each set of a, the units of u it touches, in u's order, and of those the ones at positions
+// pos[0..m), counted from the end when negative, each with only the particles it shares with the set; skip[j] (may be
+// NULL) leaves entry j empty. a->count * m sets, set i's entries together. *outside counts the sets that lack a unit at
+// some position, whose entries there are empty. The level and units of u where every entry is a whole unit of it.
+vial_sets_t* vial_sets_units_at(const vial_sets_t* a, const vial_sets_t* u, const int64_t* pos, const bool* skip, uint32_t m,
+                                uint32_t* outside, md_allocator_i* alloc);
+
 // A unit's label as hover and exports write it: MET1/A for a residue, CA/MET1/A for a particle, A for a chain; a part or
 // a molecule of one residue as that residue, else its kind or name and chain, peptide/A
 size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint32_t unit);
