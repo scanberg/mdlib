@@ -1,4 +1,5 @@
 #include "utest.h"
+#include <string.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -46,6 +47,26 @@ UTEST(allocator, default_temp) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
     COMMON_ALLOCATOR_TEST_BODY
+    md_temp_end(temp);
+}
+
+// A mark of a scope: what came after it goes, what came before stays, and the scope goes on (and is ended as usual)
+UTEST(allocator, temp_mark) {
+    md_temp_scope_t temp = md_temp_begin();
+    int* kept = md_temp_alloc_array(temp, int, 16);
+    for (int i = 0; i < 16; ++i) kept[i] = i;
+    const md_temp_mark_t mark = md_temp_mark(temp);
+    char* scratch = md_temp_alloc(temp, 4096);
+    memset(scratch, 0xAB, 4096);
+    md_temp_reset(temp, mark);
+    // The scratch's memory is handed out again, from the mark
+    char* again = md_temp_alloc(temp, 4096);
+    EXPECT_EQ((void*)scratch, (void*)again);
+    for (int i = 0; i < 16; ++i) EXPECT_EQ(i, kept[i]);
+    // A reset to the same mark twice, or to a mark at the top, changes nothing
+    md_temp_reset(temp, mark);
+    md_temp_reset(temp, md_temp_mark(temp));
+    EXPECT_EQ((void*)again, md_temp_alloc(temp, 16));
     md_temp_end(temp);
 }
 

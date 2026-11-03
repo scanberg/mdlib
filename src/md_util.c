@@ -3956,12 +3956,12 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             const double cutoff = MAX(1.0, 2.0 * max_atom_rad * bond_k_coord);
 
             // Build candidate list
-            md_temp_scope_t acc_scope = md_temp_begin_in(temp_arena);
+            const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
             md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, state->num_atoms);
-            md_spatial_acc_t acc = {.alloc = md_temp_allocator(acc_scope)};
+            md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
             cov_bond_candidates(&candidates, &acc, cutoff, &param, executor, heap);
-            md_temp_end(acc_scope);
+            md_temp_reset(temp_scope, before_acc);
         }
 
         size_t num_candidates = md_array_size(candidates);
