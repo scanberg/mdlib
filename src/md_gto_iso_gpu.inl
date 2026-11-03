@@ -337,13 +337,15 @@ static void isog_set_eps(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int 
     // per function: what the shells that do not reach a box can add over it, every AO of theirs being
     // below eps there (screened: every coefficient times its AO), twice that for the float distances
     // that decide it
-    float* tail = (float*)calloc(set->fn_stride + 1, sizeof(float));
+    
+    float* tail = (float*)md_gpu_upload_begin(stream, set->fn_tail.gpu, sizeof(float) * set->fn_stride);
+    if (!tail) { MD_LOG_ERROR("md_gto_iso_gpu: cannot upload the functions' tails"); return; }
     for (uint32_t j = 0; j < set->num_fn; ++j) {
         const double t = screen ? 2.0 * eps * (double)set->num_ao : 2.0 * eps * set->colsum[j];
         tail[j] = isog_f32_up(t * (1.0 + 1.0e-6));
     }
-    md_gpu_upload(stream, set->fn_tail.gpu, tail, sizeof(float) * set->fn_stride);
-    free(tail);
+    md_gpu_upload_end(stream);
+    
     isog_set_dprop(stream, set, eps);
     set->eps_exp = eps_exp;
     set->screen = screen;
@@ -357,47 +359,49 @@ static inline float isog_f32_up(double x) { float f = (float)x; return (double)f
 // md_gto_density_from_orbitals. An SCF density from its orbitals is num_occ squares, which a plain loop
 // over the terms would take num_occ passes over the whole matrix for. False when out of memory.
 static bool isog_dmat_from_terms(double* Dd, const iso_density_t* d) {
+    md_temp_scope_t temp = md_temp_begin();
+    bool success = false;
+
     const size_t na = (size_t)d->num_ao, nf = (size_t)d->num_fn;
     bool squares = true;
     for (int t = 0; t < d->num_terms && squares; ++t) squares = d->terms[t].a == d->terms[t].b;
     if (squares) {
         // per function the sum of its terms' weights: the functions are the columns of d->C
-        double* w = (double*)calloc(nf + 1, sizeof(double));
-        if (!w) return false;
-        for (int t = 0; t < d->num_terms; ++t) w[d->terms[t].a] += d->terms[t].w;
-        const bool ok = md_gto_density_from_orbitals(Dd, d->C, 1, nf, w, nf, na);
-        free(w);
-        return ok;
-    }
-    size_t nr = 0;
-    for (int t = 0; t < d->num_terms; ++t) nr += d->terms[t].a == d->terms[t].b ? 1 : 2;
-    double* rows = (double*)malloc(sizeof(double) * (nr * na + 1));
-    double* w = (double*)malloc(sizeof(double) * (nr + 1));
-    bool ok = rows && w;
-    if (ok) {
-        size_t r = 0;
-        for (int t = 0; t < d->num_terms; ++t) {
-            const iso_term_t* tm = &d->terms[t];
-            double* p = rows + r * na;
-            if (tm->a == tm->b) {
-                for (size_t i = 0; i < na; ++i) p[i] = d->C[i * nf + (size_t)tm->a];
-                w[r++] = tm->w;
-            } else {
-                double* q = p + na;
-                for (size_t i = 0; i < na; ++i) {
-                    const double ca = d->C[i * nf + (size_t)tm->a], cb = d->C[i * nf + (size_t)tm->b];
-                    p[i] = ca + cb;
-                    q[i] = ca - cb;
-                }
-                w[r++] = 0.25 * tm->w;
-                w[r++] = -0.25 * tm->w;
-            }
+        double* w = (double*)md_temp_alloc_zero_array(temp, double, nf + 1);
+        if (w) {
+            for (int t = 0; t < d->num_terms; ++t) w[d->terms[t].a] += d->terms[t].w;
+            success = md_gto_density_from_orbitals(Dd, d->C, 1, nf, w, nf, na);
         }
-        ok = md_gto_density_from_orbitals(Dd, rows, na, 1, w, nr, na);
+    } else {
+        size_t nr = 0;
+        for (int t = 0; t < d->num_terms; ++t) nr += d->terms[t].a == d->terms[t].b ? 1 : 2;
+        double* rows = (double*)md_temp_alloc_zero_array(temp, double, nr * na + 1);
+        double* w = (double*)md_temp_alloc_zero_array(temp, double, nr + 1);
+        if (rows && w) {
+            size_t r = 0;
+            for (int t = 0; t < d->num_terms; ++t) {
+                const iso_term_t* tm = &d->terms[t];
+                double* p = rows + r * na;
+                if (tm->a == tm->b) {
+                    for (size_t i = 0; i < na; ++i) p[i] = d->C[i * nf + (size_t)tm->a];
+                    w[r++] = tm->w;
+                } else {
+                    double* q = p + na;
+                    for (size_t i = 0; i < na; ++i) {
+                        const double ca = d->C[i * nf + (size_t)tm->a], cb = d->C[i * nf + (size_t)tm->b];
+                        p[i] = ca + cb;
+                        q[i] = ca - cb;
+                    }
+                    w[r++] = 0.25 * tm->w;
+                    w[r++] = -0.25 * tm->w;
+                }
+            }
+            success = md_gto_density_from_orbitals(Dd, rows, na, 1, w, nr, na);
+        }
     }
-    free(w);
-    free(rows);
-    return ok;
+    
+    md_temp_end(temp);
+    return success;
 }
 
 // The D form's matrices in tiles of the AO pairs that meet (md_gto_gpu_dmat), one pattern for all, built on the device
