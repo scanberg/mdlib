@@ -245,3 +245,126 @@ UTEST(hdf5_direct, block_cache) {
     EXPECT_TRUE(md_attribute_io_block(NULL, b, 16, &hit) == NULL);
     md_attribute_io_close_all(&io);
 }
+
+// HDF5 1.14.6's H5_checksum_fletcher32, as it is, to hold md_hdf5_fletcher32 against
+static uint32_t hd_fletcher_ref(const void* _data, size_t _len) {
+    const uint8_t* data = (const uint8_t*)_data;
+    size_t len = _len / 2;
+    uint32_t sum1 = 0, sum2 = 0;
+    while (len) {
+        size_t tlen = len > 360 ? 360 : len;
+        len -= tlen;
+        do {
+            sum1 += (uint32_t)(((uint16_t)data[0]) << 8) | ((uint16_t)data[1]);
+            data += 2;
+            sum2 += sum1;
+        } while (--tlen);
+        sum1 = (sum1 & 0xffff) + (sum1 >> 16);
+        sum2 = (sum2 & 0xffff) + (sum2 >> 16);
+    }
+    if (_len % 2) {
+        sum1 += (uint32_t)(((uint16_t)*data) << 8);
+        sum2 += sum1;
+        sum1 = (sum1 & 0xffff) + (sum1 >> 16);
+        sum2 = (sum2 & 0xffff) + (sum2 >> 16);
+    }
+    sum1 = (sum1 & 0xffff) + (sum1 >> 16);
+    sum2 = (sum2 & 0xffff) + (sum2 >> 16);
+    return (sum2 << 16) | sum1;
+}
+
+UTEST(hdf5_direct, fletcher32_as_hdf5) {
+    const size_t cap = 3 * 4096 * 2 + 77;
+    uint8_t* d = malloc(cap);
+    uint32_t seed = 12345;
+    int wrong = 0, checks = 0;
+    // Lengths around the block of 4096 words and the fold of 360, random and odd ones; random bytes, all 0xff (a sum
+    // that is a multiple of 65535), all zero, and mostly zero
+    size_t lengths[64];
+    size_t num_lengths = 0;
+    const size_t edges[] = { 1, 2, 3, 31, 32, 33, 719, 720, 721, 8191, 8192, 8193, 8194, 16384, 16385, 24576, 24577 };
+    for (size_t i = 0; i < ARRAY_SIZE(edges); ++i) lengths[num_lengths++] = edges[i];
+    while (num_lengths < ARRAY_SIZE(lengths)) { seed = seed * 1664525u + 1013904223u; lengths[num_lengths++] = 1 + seed % cap; }
+    for (int fill = 0; fill < 4; ++fill) {
+        for (size_t i = 0; i < cap; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            d[i] = fill == 0 ? (uint8_t)(seed >> 24) : fill == 1 ? 0xff : fill == 2 ? 0 : ((seed >> 24) % 7 == 0 ? (uint8_t)(seed >> 16) : 0);
+        }
+        for (size_t l = 0; l < num_lengths; ++l) {
+            // From an offset that is not aligned, too
+            for (size_t off = 0; off < 2; ++off) {
+                const size_t len = MIN(lengths[l], cap - off);
+                wrong += md_hdf5_fletcher32(d + off, len) != hd_fletcher_ref(d + off, len);
+                checks += 1;
+            }
+        }
+    }
+    EXPECT_EQ(0, wrong);
+    EXPECT_GT(checks, 500);
+    free(d);
+}
+
+// A damaged chunk is refused, as HDF5 refuses it; a checksum as HDF5 before 1.6.3 wrote it is accepted
+UTEST(hdf5_direct, fletcher32_damage) {
+    for (int fletcher_first = 0; fletcher_first < 2; ++fletcher_first) {
+        // The checksum last, of the deflated bytes as stored (h5py's order); or first, of the data, which is then
+        // shuffled (netCDF-4's order, without the deflate: a damaged deflate stream is zlib's to find)
+        const hd_case_t c = fletcher_first
+            ? (hd_case_t){ "checksum first", 3, {4, 600, 3}, {1, 600, 3}, H5T_IEEE_F32LE, .shuffle = true, .fletcher = true, .fletcher_first = true, .direct = true }
+            : (hd_case_t){ "checksum last",  3, {4, 600, 3}, {1, 600, 3}, H5T_IEEE_F32LE, .shuffle = true, .deflate = 1, .fletcher = true, .direct = true };
+        ASSERT_TRUE(hd_write(&c));
+
+        md_hdf5_lock_t lock = md_hdf5_lock();
+        hid_t file = H5Fopen(HD_PATH, H5F_ACC_RDONLY, H5P_DEFAULT);
+        hid_t dset = H5Dopen2(file, "data", H5P_DEFAULT);
+        md_hdf5_direct_t* d = md_hdf5_direct_describe(file, dset, md_get_heap_allocator());
+        H5Dclose(dset);
+        H5Fclose(file);
+        md_hdf5_unlock(lock);
+        ASSERT_TRUE(d && md_hdf5_direct_is_direct(d));
+
+        const size_t row = 600 * 3;
+        float* out = malloc(row * sizeof(float));
+        ASSERT_TRUE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
+
+        // The stored checksum of frame 2, and a byte of its chunk
+        const md_hdf5_direct_chunk_t e = d->table[2];
+        uint8_t* chunk = malloc(e.size);
+        md_file_t f = {0};
+        ASSERT_TRUE(md_file_open(&f, STR_LIT(HD_PATH), MD_FILE_READ | MD_FILE_WRITE));
+        ASSERT_EQ((size_t)e.size, md_file_read_at(f, e.offset, chunk, e.size));
+
+        // The pre 1.6.3 checksum, each half's bytes swapped: where the checksum is the last four bytes stored
+        if (!fletcher_first) {
+            const uint8_t* sum = chunk + e.size - 4;
+            const uint8_t swapped[4] = { sum[1], sum[0], sum[3], sum[2] };
+            md_file_write_at(f, e.offset + e.size - 4, swapped, 4);
+        }
+        md_file_close(&f);
+        EXPECT_TRUE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
+
+        // One byte in the middle of the chunk flipped: refused, by HDF5 as well
+        ASSERT_TRUE(md_file_open(&f, STR_LIT(HD_PATH), MD_FILE_READ | MD_FILE_WRITE));
+        uint8_t b = chunk[e.size / 2] ^ 0x10;
+        md_file_write_at(f, e.offset + e.size / 2, &b, 1);
+        md_file_close(&f);
+        EXPECT_FALSE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 2, 0, row, 1.0, NULL));
+        // The frames of other chunks are unharmed
+        EXPECT_TRUE(md_hdf5_direct_read_f32(out, d, STR_LIT(HD_PATH), "data", 1, 0, row, 1.0, NULL));
+
+        lock = md_hdf5_lock();
+        file = H5Fopen(HD_PATH, H5F_ACC_RDONLY, H5P_DEFAULT);
+        dset = H5Dopen2(file, "data", H5P_DEFAULT);
+        float* all = malloc(4 * row * sizeof(float));
+        EXPECT_LT(H5Dread(dset, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL, H5P_DEFAULT, all), 0);
+        free(all);
+        H5Dclose(dset);
+        H5Fclose(file);
+        md_hdf5_unlock(lock);
+
+        free(chunk);
+        free(out);
+        md_free(md_get_heap_allocator(), d, (size_t)d->size);
+    }
+    remove(HD_PATH);
+}
