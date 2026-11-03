@@ -68,7 +68,6 @@ set(CORE_FILES
   src/core/md_base64.h
   src/core/md_bitset.c
   src/core/md_bitset.h
-  src/core/md_bitop.inl
   src/core/md_coord_stream.h
   src/core/md_common.c
   src/core/md_common.h

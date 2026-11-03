@@ -11,7 +11,6 @@ set (SRC_FILES
     test_allocator.c
     test_array.c
     test_atomic.c
-    test_bitop.c
     test_grid.c
     test_bitset.c
     test_bonds.c

@@ -9,7 +9,6 @@
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_bitset.h>
-#include <core/md_bitop.inl>
 #include <core/md_os.h>
 #include <md_script.h>
 #include <md_filter.h>
@@ -208,6 +207,12 @@ static uint64_t make_bits(const char* bit_str) {
     return bits;
 }
 
+// Compare the first num_bits bits of a and b
+static bool bits64_equal(uint64_t a, uint64_t b, uint64_t num_bits) {
+    const uint64_t mask = num_bits >= 64 ? ~0ULL : ((1ULL << num_bits) - 1);
+    return (a & mask) == (b & mask);
+}
+
 static void print_bits(uint64_t* bits, uint64_t num_bits) {
     for (uint64_t i = 0; i < num_bits; ++i) {
         const uint64_t blk_idx = i / 64;
@@ -234,7 +239,7 @@ static bool compare_selection(const char* exprA, const char* exprB) {
 
     uint64_t a_bits = bitset_bits64(a);
     uint64_t b_bits = bitset_bits64(b);
-    bool cmp_res = bit_cmp(&a_bits, &b_bits, 0, ATOM_COUNT);
+    bool cmp_res = bits64_equal(a_bits, b_bits, ATOM_COUNT);
     if (!cmp_res) {
         printf("Got (A):\n");
         print_bits(&a_bits, ATOM_COUNT);
@@ -1174,7 +1179,7 @@ static bool test_selection(const char* expr, const char* ref_bit_str) {
         goto done;
     }
     uint64_t bits = bitset_bits64(bf);
-    bool cmp_res = bit_cmp(&bits, &ref, 0, ATOM_COUNT);
+    bool cmp_res = bits64_equal(bits, ref, ATOM_COUNT);
     if (!cmp_res) {
         printf("Got:\n");
         print_bits(&bits, ATOM_COUNT);
