@@ -13,7 +13,7 @@
 // elements converted to float. A chunk holding several frames is decoded once and kept by the io for the frames after.
 //
 // Decoded here: contiguous storage and chunked storage of any chunk shape, IEEE floats and integers of either byte
-// order, and the filters shuffle, deflate and fletcher32 (whose checksum is not verified). A dataset stored any other
+// order, and the filters shuffle, deflate and fletcher32 (whose checksum is verified, as HDF5 does). A dataset stored any other
 // way - another filter, a compact or virtual layout, external storage, an element type that is not one of these - is
 // read through HDF5 under the lock instead, as is a chunk that was never written.
 //
@@ -82,6 +82,9 @@ bool md_hdf5_direct_read_f32(float* out, const md_hdf5_direct_t* d, str_t path, 
 // stored as they are (contiguous, or in a chunk of whole frames without a filter), the chunk holding the frame when it
 // is a filtered chunk of whole frames; -1 and 0 otherwise.
 void md_hdf5_direct_frame_spans(int64_t* offsets, int64_t* sizes, const md_hdf5_direct_t* d, size_t num_frames);
+
+// The Fletcher-32 checksum of HDF5's fletcher32 filter (H5_checksum_fletcher32): the same value, 16 words at a time
+uint32_t md_hdf5_fletcher32(const void* data, size_t bytes);
 
 // Whether the frames of the dataset are read without HDF5
 static inline bool md_hdf5_direct_is_direct(const md_hdf5_direct_t* d) {

@@ -7,9 +7,11 @@
 #include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_simd.h>
 
 #include <zlib.h>
 
+#include <inttypes.h>
 #include <string.h>
 
 enum {
@@ -300,9 +302,102 @@ static bool direct_inflate(uint8_t* dst, size_t* dst_len, size_t cap, const uint
     return ret == Z_STREAM_END;
 }
 
+// ## Fletcher-32, as HDF5 computes it
+//
+// HDF5's (H5_checksum_fletcher32): the bytes as 16-bit big-endian words w_1.. w_n, a last odd byte the high half of a
+// word, both sums from 0 and kept mod 65535 by folding the carry back in:
+//
+//     s1 = sum w_k,   s2 = sum (n - k + 1) w_k,   checksum = s2 << 16 | s1
+//
+// with one quirk of the folding: a sum that is a nonzero multiple of 65535 comes out as 0xffff, not 0.
+//
+// HDF5 computes it word by word, s2 += s1, a chain no compiler vectorizes. Here every lane of a vector keeps sums of
+// its own - over rounds t of L lanes, word k = tL + j, lane j has v1_j = sum w and v2_j = the sum of v1_j before each
+// round - and s1 = sum v1_j, s2 = L sum v2_j + sum (L - j) v1_j. Additions only, 16 words at a time.
+
+#define FLETCHER_LANES  16
+#define FLETCHER_ROUNDS 256     // per block: v2 stays below 2^32 (256 * 255 / 2 * 65535)
+
+typedef struct direct_fletcher_t {
+    uint64_t s1, s2;            // mod 65535
+    bool     nonzero;           // any word nonzero: what tells 0 from 0xffff at the end
+} direct_fletcher_t;
+
+static inline void direct_fletcher_word(direct_fletcher_t* f, uint32_t w) {
+    f->s1 += w;
+    f->s2 += f->s1;
+    f->nonzero |= w != 0;
+}
+
+uint32_t md_hdf5_fletcher32(const void* data, size_t bytes) {
+    const uint8_t* p = (const uint8_t*)data;
+    const size_t n = bytes / 2;     // whole words
+    direct_fletcher_t f = {0};
+    size_t k = 0;
+
+    const size_t block = FLETCHER_LANES * FLETCHER_ROUNDS;
+    md_256i any = md_mm256_setzero_si256();
+    for (; k + block <= n; k += block) {
+        md_256i v1a = md_mm256_setzero_si256(), v1b = v1a, v2a = v1a, v2b = v1a;
+        const uint8_t* q = p + 2 * k;
+        for (size_t t = 0; t < FLETCHER_ROUNDS; ++t, q += 2 * FLETCHER_LANES) {
+            md_128i wa = md_mm_loadu_si128((const md_128i*)q);
+            md_128i wb = md_mm_loadu_si128((const md_128i*)(q + 16));
+            // Big endian words to the machine's order, widened to 32 bits: words 0-7 and 8-15
+            wa = md_mm_or_si128(simde_mm_slli_epi16(wa, 8), simde_mm_srli_epi16(wa, 8));
+            wb = md_mm_or_si128(simde_mm_slli_epi16(wb, 8), simde_mm_srli_epi16(wb, 8));
+            const md_256i a = simde_mm256_cvtepu16_epi32(wa);
+            const md_256i b = simde_mm256_cvtepu16_epi32(wb);
+            v2a = md_mm256_add_epi32(v2a, v1a);
+            v2b = md_mm256_add_epi32(v2b, v1b);
+            v1a = md_mm256_add_epi32(v1a, a);
+            v1b = md_mm256_add_epi32(v1b, b);
+            any = md_mm256_or_si256(any, md_mm256_or_si256(a, b));
+        }
+        uint32_t v1[FLETCHER_LANES], v2[FLETCHER_LANES];
+        md_mm256_storeu_si256((md_256i*)v1, v1a);
+        md_mm256_storeu_si256((md_256i*)(v1 + 8), v1b);
+        md_mm256_storeu_si256((md_256i*)v2, v2a);
+        md_mm256_storeu_si256((md_256i*)(v2 + 8), v2b);
+        uint64_t a = 0, c = 0;
+        for (size_t j = 0; j < FLETCHER_LANES; ++j) {
+            a += v1[j];
+            c += (uint64_t)FLETCHER_LANES * v2[j] + (uint64_t)(FLETCHER_LANES - j) * v1[j];
+        }
+        // The block after what came before it: each of its words also adds s1 so far to s2
+        f.s2 = (f.s2 + (uint64_t)block * f.s1 + c) % 65535;
+        f.s1 = (f.s1 + a) % 65535;
+    }
+    {
+        uint32_t lanes[8];
+        md_mm256_storeu_si256((md_256i*)lanes, any);
+        for (size_t j = 0; j < 8; ++j) f.nonzero |= lanes[j] != 0;
+    }
+    for (; k < n; ++k) {
+        direct_fletcher_word(&f, ((uint32_t)p[2 * k] << 8) | p[2 * k + 1]);
+        if ((k & 0xfff) == 0xfff) { f.s1 %= 65535; f.s2 %= 65535; }
+    }
+    if (bytes & 1) direct_fletcher_word(&f, (uint32_t)p[bytes - 1] << 8);
+
+    uint32_t s1 = (uint32_t)(f.s1 % 65535), s2 = (uint32_t)(f.s2 % 65535);
+    if (f.nonzero && s1 == 0) s1 = 0xffff;
+    if (f.nonzero && s2 == 0) s2 = 0xffff;
+    return (s2 << 16) | s1;
+}
+
+// Whether the four bytes after data hold its checksum: as HDF5 writes it (a little endian uint32), or as HDF5 before
+// 1.6.3 did on little endian machines, each half's two bytes swapped - which HDF5 still accepts
+static bool direct_fletcher_check(const uint8_t* data, size_t bytes) {
+    const uint8_t* c = data + bytes;
+    const uint32_t stored = (uint32_t)c[0] | ((uint32_t)c[1] << 8) | ((uint32_t)c[2] << 16) | ((uint32_t)c[3] << 24);
+    const uint32_t sum = md_hdf5_fletcher32(data, bytes);
+    const uint32_t swapped = ((sum & 0x00ff00ffu) << 8) | ((sum >> 8) & 0x00ff00ffu);
+    return stored == sum || stored == swapped;
+}
+
 // The bytes of a chunk as HDF5 would hand them out: the filters it was written through undone, in reverse. The last
-// step writes into out, which holds out_bytes and not a byte more.
-static bool direct_decode(uint8_t* out, size_t out_bytes, const uint8_t* stored, size_t stored_bytes, const md_hdf5_direct_t* d, uint32_t mask, md_temp_scope_t temp) {
+// step writes into out, which holds out_bytes and not a byte more. *bad_checksum is set when a checksum does not match.
+static bool direct_decode(uint8_t* out, size_t out_bytes, const uint8_t* stored, size_t stored_bytes, const md_hdf5_direct_t* d, uint32_t mask, bool* bad_checksum, md_temp_scope_t temp) {
     // The last filter to undo that writes anew (inflate, unshuffle) writes into out, the ones before it into scratch;
     // unless a checksum is still to be taken off after it, and out would be four bytes short
     int final = -1;
@@ -330,9 +425,13 @@ static bool direct_decode(uint8_t* out, size_t out_bytes, const uint8_t* stored,
         }
         switch (d->filter[i]) {
         case H5Z_FILTER_FLETCHER32:
-            // The checksum is the last four bytes; not verified here
+            // The checksum is the last four bytes, of the bytes before it, which were just read or just decoded
             if (len < 4) return false;
             len -= 4;
+            if (!direct_fletcher_check(cur, len)) {
+                *bad_checksum = true;
+                return false;
+            }
             break;
         case H5Z_FILTER_DEFLATE: {
             size_t n = 0;
@@ -372,8 +471,12 @@ static const uint8_t* direct_chunk(const md_hdf5_direct_t* d, uint64_t c, size_t
         ok = e->size == chunk_bytes && md_attribute_io_read_at(io, path, e->offset, out, chunk_bytes) == chunk_bytes;
     } else {
         uint8_t* stored = md_temp_alloc(temp, e->size);
+        bool bad_checksum = false;
         ok = stored && md_attribute_io_read_at(io, path, e->offset, stored, e->size) == e->size &&
-             direct_decode(out, chunk_bytes, stored, e->size, d, e->filter_mask, temp);
+             direct_decode(out, chunk_bytes, stored, e->size, d, e->filter_mask, &bad_checksum, temp);
+        if (bad_checksum) {
+            MD_LOG_ERROR("HDF5: the chunk at %" PRId64 " of '" STR_FMT "' does not match its Fletcher-32 checksum: the file is damaged", e->offset, STR_ARG(path));
+        }
     }
     if (!ok) {
         if (kept) md_attribute_io_block_forget(io, key);
