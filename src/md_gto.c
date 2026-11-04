@@ -1065,6 +1065,177 @@ static void gto_build_sparse_pairs(
     list->num_pairs = md_array_size(list->pairs);
 }
 
+// ---------------------------------------------------------------------------
+// The derivative basis (md_gto_basis_derivative, md_gto_orbital_gradients)
+// ---------------------------------------------------------------------------
+
+// One shell of a derivative basis: of 'src', the one of l - 1 (minus = 1) or l + 1 (minus = 0)
+typedef struct gto_dshell_t {
+    uint32_t l, atom, src, plus;
+} gto_dshell_t;
+
+static int gto_dshell_cmp(const void* pa, const void* pb) {
+    const gto_dshell_t* a = (const gto_dshell_t*)pa;
+    const gto_dshell_t* b = (const gto_dshell_t*)pb;
+    if (a->l != b->l)       return a->l < b->l ? -1 : 1;
+    if (a->atom != b->atom) return a->atom < b->atom ? -1 : 1;
+    if (a->src != b->src)   return a->src < b->src ? -1 : 1;
+    return (int)a->plus - (int)b->plus;
+}
+
+// The derivative basis' shells in order (2 num_shells at most, in dshell), and where each shell of 'basis' has its
+// l - 1 and l + 1 shells' first AO (minus_ao, plus_ao: num_shells each, UINT32_MAX for none). Returns the number
+// of shells; 0 when one would exceed MD_GTO_MAX_ANGULAR_MOMENTUM (logged).
+static size_t gto_derivative_layout(gto_dshell_t* dshell, uint32_t* minus_ao, uint32_t* plus_ao, size_t* out_num_ao, const md_gto_basis_t* basis) {
+    size_t n = 0;
+    for (uint32_t s = 0; s < basis->num_shells; ++s) {
+        const md_gto_shell_t* sh = &basis->shells[s];
+        if (sh->l + 1 > MD_GTO_MAX_ANGULAR_MOMENTUM) {
+            MD_LOG_ERROR("md_gto: shell %u has angular momentum %u, and its derivative one more than the supported %d", s, sh->l, MD_GTO_MAX_ANGULAR_MOMENTUM);
+            return 0;
+        }
+        if (sh->l > 0) dshell[n++] = (gto_dshell_t){ sh->l - 1, sh->atom_idx, s, 0 };
+        dshell[n++] = (gto_dshell_t){ sh->l + 1, sh->atom_idx, s, 1 };
+    }
+    qsort(dshell, n, sizeof(gto_dshell_t), gto_dshell_cmp);
+    for (uint32_t s = 0; s < basis->num_shells; ++s) {
+        minus_ao[s] = UINT32_MAX;
+        plus_ao[s]  = UINT32_MAX;
+    }
+    uint32_t ao = 0;
+    for (size_t k = 0; k < n; ++k) {
+        if (dshell[k].plus) plus_ao[dshell[k].src] = ao;
+        else                minus_ao[dshell[k].src] = ao;
+        ao += md_gto_num_cart_ao(dshell[k].l);
+    }
+    if (out_num_ao) *out_num_ao = ao;
+    return n;
+}
+
+bool md_gto_basis_derivative(md_gto_basis_t* out, const md_gto_basis_t* basis, md_allocator_i* alloc) {
+    ASSERT(out);
+    ASSERT(alloc);
+    MEMSET(out, 0, sizeof(*out));
+    if (!basis || basis->num_shells == 0) return false;
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    gto_dshell_t* dshell = md_temp_alloc_array(temp, gto_dshell_t, 2 * (size_t)basis->num_shells);
+    uint32_t* minus_ao   = md_temp_alloc_array(temp, uint32_t, basis->num_shells);
+    uint32_t* plus_ao    = md_temp_alloc_array(temp, uint32_t, basis->num_shells);
+    const size_t n = (dshell && minus_ao && plus_ao) ? gto_derivative_layout(dshell, minus_ao, plus_ao, NULL, basis) : 0;
+    if (n == 0) {
+        md_temp_end(temp);
+        return false;
+    }
+    size_t num_prim = 0;
+    for (size_t k = 0; k < n; ++k) num_prim += basis->shells[dshell[k].src].num_primitives;
+
+    md_array_resize(out->shells, n, alloc);
+    md_array_resize(out->alpha, num_prim, alloc);
+    md_array_resize(out->coeff, num_prim, alloc);
+    uint32_t p = 0;
+    for (size_t k = 0; k < n; ++k) {
+        const md_gto_shell_t* src = &basis->shells[dshell[k].src];
+        out->shells[k] = (md_gto_shell_t){
+            .atom_idx         = src->atom_idx,
+            .primitive_offset = p,
+            .num_primitives   = src->num_primitives,
+            .l                = dshell[k].l,
+        };
+        for (uint32_t q = 0; q < src->num_primitives; ++q) {
+            const float a = basis->alpha[src->primitive_offset + q];
+            const float c = basis->coeff[src->primitive_offset + q];
+            out->alpha[p] = a;
+            out->coeff[p] = dshell[k].plus ? (float)((double)a * (double)c) : c;
+            ++p;
+        }
+    }
+    out->num_shells     = (uint32_t)n;
+    out->num_primitives = p;
+    md_temp_end(temp);
+    return true;
+}
+
+size_t md_gto_orbital_gradients(double* out, size_t* out_num_ao, const double* coeff, size_t mo_stride, size_t num_mo, const md_gto_basis_t* basis) {
+    if (!basis || basis->num_shells == 0) return 0;
+    md_temp_scope_t temp = md_temp_begin();
+    gto_dshell_t* dshell = md_temp_alloc_array(temp, gto_dshell_t, 2 * (size_t)basis->num_shells);
+    uint32_t* minus_ao   = md_temp_alloc_array(temp, uint32_t, basis->num_shells);
+    uint32_t* plus_ao    = md_temp_alloc_array(temp, uint32_t, basis->num_shells);
+    size_t nd = 0;
+    const size_t n = (dshell && minus_ao && plus_ao) ? gto_derivative_layout(dshell, minus_ao, plus_ao, &nd, basis) : 0;
+    if (n == 0) {
+        md_temp_end(temp);
+        return 0;
+    }
+    if (out_num_ao) *out_num_ao = nd;
+    if (!out) {
+        md_temp_end(temp);
+        return 3 * num_mo;
+    }
+    if (!coeff) {
+        md_temp_end(temp);
+        return 0;
+    }
+
+    // Per AO of 'basis' and direction: the two AOs of the derivative basis it goes to and by what factor
+    //   d/dx: e = i;  to (i-1, j, k) by e f_ijk / f_(i-1)jk,  to (i+1, j, k) by -2 f_ijk / f_(i+1)jk
+    const size_t na = md_gto_basis_num_ao(basis);
+    uint32_t* to   = md_temp_alloc_array(temp, uint32_t, na * 6);   // [ao][dir][minus, plus], UINT32_MAX: none
+    double*   by   = md_temp_alloc_array(temp, double,   na * 6);
+    if (!to || !by) {
+        md_temp_end(temp);
+        return 0;
+    }
+    size_t ao = 0;
+    for (uint32_t s = 0; s < basis->num_shells; ++s) {
+        const uint32_t l = basis->shells[s].l;
+        for (uint32_t c = 0; c < md_gto_num_cart_ao(l); ++c, ++ao) {
+            int ijk[3] = { 0, 0, 0 };
+            md_gto_cart_ijk(&ijk[0], &ijk[1], &ijk[2], l, c);
+            const double f = md_gto_cart_norm_factor(ijk[0], ijk[1], ijk[2]);
+            for (int d = 0; d < 3; ++d) {
+                int lo[3] = { ijk[0], ijk[1], ijk[2] };
+                int hi[3] = { ijk[0], ijk[1], ijk[2] };
+                lo[d] -= 1;
+                hi[d] += 1;
+                uint32_t* t = to + ao * 6 + d * 2;
+                double*   b = by + ao * 6 + d * 2;
+                if (ijk[d] > 0) {
+                    // the AO's index in its shell of l - 1: (l-1-i)(l-i)/2 + (l-1-i-j)
+                    const int L = (int)l - 1;
+                    t[0] = minus_ao[s] + (uint32_t)((L - lo[0]) * (L - lo[0] + 1) / 2 + (L - lo[0] - lo[1]));
+                    b[0] = ijk[d] * f / md_gto_cart_norm_factor(lo[0], lo[1], lo[2]);
+                } else {
+                    t[0] = UINT32_MAX;
+                    b[0] = 0.0;
+                }
+                const int L = (int)l + 1;
+                t[1] = plus_ao[s] + (uint32_t)((L - hi[0]) * (L - hi[0] + 1) / 2 + (L - hi[0] - hi[1]));
+                b[1] = -2.0 * f / md_gto_cart_norm_factor(hi[0], hi[1], hi[2]);
+            }
+        }
+    }
+
+    MEMSET(out, 0, sizeof(double) * 3 * num_mo * nd);
+    for (size_t m = 0; m < num_mo; ++m) {
+        const double* cm = coeff + m * mo_stride;
+        for (size_t a = 0; a < na; ++a) {
+            const double v = cm[a];
+            if (v == 0.0) continue;
+            for (int d = 0; d < 3; ++d) {
+                double* row = out + (3 * m + d) * nd;
+                const uint32_t* t = to + a * 6 + d * 2;
+                const double*   b = by + a * 6 + d * 2;
+                if (t[0] != UINT32_MAX) row[t[0]] += v * b[0];
+                row[t[1]] += v * b[1];
+            }
+        }
+    }
+    md_temp_end(temp);
+    return 3 * num_mo;
+}
+
 size_t md_gto_pgto_count(const md_gto_basis_t* basis) {
     uint32_t nc, np;
     gto_basis_count(&nc, &np, basis);

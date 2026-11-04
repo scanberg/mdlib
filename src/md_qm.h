@@ -301,6 +301,65 @@ size_t md_qm_attachment_orbitals(double** out_rows, double** out_weights, size_t
 // bound. Reads the occupations and energies.
 bool md_qm_attachment_available(const struct md_system_t* sys);
 
+// The KINETIC ENERGY DENSITY of the density at density_path, one of orbital/{alpha,beta,total}/density,
+//
+//     tau(r) = 1/2 sum_k n_k |grad phi_k(r)|^2
+//
+// (the positive definite form, which the electron localization function and meta-GGA functionals take) as a sum
+// of squares of orbitals over the DERIVATIVE BASIS of the system's basis (md_gto_basis_derivative): each orbital
+// of md_qm_density_orbitals three times, its d/dx, d/dy and d/dz (md_gto_orbital_gradients), with weight n_k / 2.
+// What md_gto_iso_field_create_products takes over that basis - in double with its gradient, or in a GPU set -
+// and out_basis receives it (from 'alloc': md_gto_basis_free). rows: count x num_ao of the derivative basis, and
+// weights: count, from 'alloc' (sizeof(double) * count * num_ao and sizeof(double) * count). Returns count, three
+// per orbital; 0 for another path, missing orbitals or basis, or a basis with g functions, whose derivatives need
+// h functions, more than is evaluated (MD_GTO_MAX_ANGULAR_MOMENTUM).
+size_t md_qm_kinetic_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, struct md_gto_basis_t* out_basis,
+                              const struct md_system_t* sys, str_t density_path, struct md_allocator_i* alloc);
+
+// Whether md_qm_kinetic_orbitals can make them: the alpha orbitals and the basis are there, and the basis has
+// no shell of the highest angular momentum evaluated.
+bool md_qm_kinetic_available(const struct md_system_t* sys);
+
+// The ELECTRON LOCALIZATION FUNCTION (Becke and Edgecombe, J. Chem. Phys. 92, 5397 (1990), as Savin et al. read it,
+// Angew. Chem. Int. Ed. 31, 187 (1992)) at one point, from each spin's density rho_s, the square of its gradient
+// g2_s = |grad rho_s|^2 and its kinetic energy density tau_s (md_qm_kinetic_orbitals):
+//
+//     D_s  = tau_s - g2_s / (8 rho_s)                  spin s's excess kinetic energy density, due to the Pauli
+//                                                      principle: 0 where a single orbital makes its density
+//     D0_s = 3/10 (6 pi^2)^(2/3) rho_s^(5/3)           the same for the uniform electron gas of that density
+//     ELF  = 1 / (1 + chi^2),   chi = (D_a + D_b) / (D0_a + D0_b)
+//
+// The spin polarized form of Kohout and Savin (Int. J. Quantum Chem. 60, 875 (1996)), which Multiwfn uses. For a
+// closed shell it is the usual ELF of the total density (md_qm_elf_closed_shell): D = tau - |grad rho|^2 / (8 rho),
+// D0 = 3/10 (3 pi^2)^(2/3) rho^(5/3). In [0, 1]: 1 where one orbital or one pair alone makes the density (cores,
+// bonds, lone pairs), 1/2 where it is like the electron gas, low between shells and pairs. A spin of no density
+// adds nothing; D_s is clamped at 0 (tau_s >= g2_s / (8 rho_s) holds exactly, rounding aside).
+//
+// 0 where the density (both spins) is below rho_min. Far from the atoms D and D0 are a difference and a power of
+// vanishing sums, and with a gaussian basis' tails their ratio takes any value: as the most diffuse orbital comes
+// to make the density alone, ELF goes to 1 in the vacuum around a molecule. Isosurfaces want rho_min around 1e-4
+// to 1e-3; 0 keeps it everywhere the density is not exactly 0.
+double md_qm_elf(double rho_a, double g2_a, double tau_a, double rho_b, double g2_b, double tau_b, double rho_min);
+double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min);
+
+// The LOCALIZED ORBITAL LOCATOR (Schmider and Becke, J. Mol. Struct. THEOCHEM 527, 51 (2000)) from the same:
+// t = (D0_a + D0_b) / (tau_a + tau_b), LOL = t / (1 + t), in [0, 1]. It reads tau without the gradient term, so it
+// is smoother than ELF and its maxima are where ELF's are; high where the orbitals' gradients are small (cores,
+// bonds, lone pairs). 0 below rho_min, as ELF.
+double md_qm_lol(double rho_a, double tau_a, double rho_b, double tau_b, double rho_min);
+double md_qm_lol_closed_shell(double rho, double tau, double rho_min);
+
+// ELF and LOL at points, in double, on the CPU, from the system's orbitals (md_qm_density_orbitals and
+// md_qm_kinetic_orbitals of each spin, once for a closed shell): the reference the faster paths are checked
+// against, and what a consumer without them takes. On the GPU nothing of ELF's own is needed: rho and its
+// gradient from a set of the density over the basis, tau from a set of md_qm_kinetic_orbitals over the derivative
+// basis, both by md_gto_iso_gpu_evaluate at the same points, then md_qm_elf per point; with both sets at the AO
+// cutoff 1e-8 (md_gto_iso_gpu_set_cutoff), within 1e-5 of this where rho > 1e-3 (float, against double). xyz: count points, stride bytes apart (0 = packed float3), in
+// bohr, as atom_xyz (one per atom of the basis, bohr, atom_xyz_stride bytes apart, 0 = packed). Either output may
+// be NULL. Builds the fields on every call: for repeated evaluation, hold them. Returns count, 0 on failure.
+size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, size_t count, size_t stride,
+                          const struct md_system_t* sys, const float* atom_xyz, size_t atom_xyz_stride, double rho_min);
+
 // orbital/{total,difference}/density (alpha + beta, alpha - beta) as virtual attributes over whatever
 // orbital/{alpha,beta}/density are: for a producer that publishes those two itself (read from a file
 // that stores them, say). Where beta is an alias of alpha, alpha is read once for the total and not

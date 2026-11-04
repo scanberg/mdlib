@@ -2,6 +2,7 @@
 
 #include <md_system.h>
 #include <md_gto.h>
+#include <md_gto_iso.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -1122,4 +1123,168 @@ bool md_qm_publish_orbital_density_combinations(md_system_t* sys) {
     md_qm_publish_virtual(sys, STR_LIT("orbital/total/density"),      STR_LIT("Total Density"),           md_unit_none(), format, &total_virt);
     md_qm_publish_virtual(sys, STR_LIT("orbital/difference/density"), STR_LIT("Spin Difference Density"), md_unit_none(), format, &diff_virt);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Kinetic energy density, ELF and LOL
+// ---------------------------------------------------------------------------
+
+size_t md_qm_kinetic_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, md_gto_basis_t* out_basis,
+                              const md_system_t* sys, str_t density_path, md_allocator_i* alloc) {
+    if (!out_rows || !out_weights || !out_num_ao || !out_basis || !sys || !alloc) return 0;
+    *out_rows = NULL;
+    *out_weights = NULL;
+    *out_num_ao = 0;
+    MEMSET(out_basis, 0, sizeof(*out_basis));
+    if (!str_eq(density_path, STR_LIT("orbital/alpha/density")) && !str_eq(density_path, STR_LIT("orbital/beta/density")) &&
+        !str_eq(density_path, STR_LIT("orbital/total/density"))) {
+        return 0;
+    }
+
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* talloc = md_temp_allocator(temp);
+    double *orb = NULL, *occ = NULL;
+    size_t na = 0;
+    const size_t num_orb = md_qm_density_orbitals(&orb, &occ, &na, sys, density_path, talloc);
+    md_gto_basis_t basis = {0};
+    size_t nd = 0;  // the derivative basis' AOs; stays 0 for a basis without one
+    if (num_orb == 0 || !md_gto_basis_extract_attributes(&basis, &sys->attributes, talloc) || md_gto_basis_num_ao(&basis) != na ||
+        (md_gto_orbital_gradients(NULL, &nd, NULL, 0, 0, &basis), nd == 0)) {
+        md_temp_end(temp);
+        return 0;
+    }
+    const size_t count = 3 * num_orb;
+    double* rows = (double*)md_alloc(alloc, sizeof(double) * count * nd);
+    double* w    = (double*)md_alloc(alloc, sizeof(double) * count);
+    const bool ok = rows && w && md_gto_orbital_gradients(rows, &nd, orb, na, num_orb, &basis) == count &&
+                    md_gto_basis_derivative(out_basis, &basis, alloc);
+    md_temp_end(temp);
+    if (!ok) {
+        if (rows) md_free(alloc, rows, sizeof(double) * count * nd);
+        if (w)    md_free(alloc, w, sizeof(double) * count);
+        md_gto_basis_free(out_basis, alloc);
+        return 0;
+    }
+    for (size_t k = 0; k < num_orb; ++k) {
+        w[3 * k] = w[3 * k + 1] = w[3 * k + 2] = 0.5 * occ[k];
+    }
+    *out_rows = rows;
+    *out_weights = w;
+    *out_num_ao = nd;
+    return count;
+}
+
+bool md_qm_kinetic_available(const md_system_t* sys) {
+    if (!sys) return false;
+    const md_attribute_t *ca = NULL, *oa = NULL;
+    size_t nm = 0, na = 0;
+    if (!qm_spin_orbital_attrs(&ca, &oa, &nm, &na, sys, false)) return false;
+    const md_attribute_t* angl = md_attributes_find(&sys->attributes, STR_LIT("basis/shell/angular_momentum"));
+    if (!angl || angl->format.type != MD_ATTRIBUTE_TYPE_U32) return false;
+    const size_t n = md_attribute_element_count(&angl->format);
+    const uint32_t* l = (const uint32_t*)md_attribute_view(angl, MD_ATTRIBUTE_TYPE_U32, 1, 1);
+    bool ok = n > 0 && l;
+    for (size_t k = 0; ok && k < n; ++k) ok = l[k] < MD_GTO_MAX_ANGULAR_MOMENTUM;   // its derivative one more
+    return ok;
+}
+
+// 3/10 (6 pi^2)^(2/3): the uniform electron gas' kinetic energy density of one spin, over rho_s^(5/3)
+#define QM_ELF_CF_SPIN 4.557799872345596
+
+static inline double qm_elf_pauli(double rho, double g2, double tau) {
+    if (!(rho > 0.0)) return 0.0;
+    const double d = tau - g2 / (8.0 * rho);
+    return d > 0.0 ? d : 0.0;
+}
+
+double md_qm_elf(double rho_a, double g2_a, double tau_a, double rho_b, double g2_b, double tau_b, double rho_min) {
+    const double rho = rho_a + rho_b;
+    if (!(rho > 0.0) || rho < rho_min) return 0.0;
+    const double d  = qm_elf_pauli(rho_a, g2_a, tau_a) + qm_elf_pauli(rho_b, g2_b, tau_b);
+    const double d0 = QM_ELF_CF_SPIN * ((rho_a > 0.0 ? pow(rho_a, 5.0 / 3.0) : 0.0) + (rho_b > 0.0 ? pow(rho_b, 5.0 / 3.0) : 0.0));
+    if (!(d0 > 0.0)) return 0.0;
+    const double chi = d / d0;
+    return 1.0 / (1.0 + chi * chi);
+}
+
+double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min) {
+    // each spin half of it: rho/2, |grad rho|^2 / 4, tau/2
+    return md_qm_elf(0.5 * rho, 0.25 * g2, 0.5 * tau, 0.5 * rho, 0.25 * g2, 0.5 * tau, rho_min);
+}
+
+double md_qm_lol(double rho_a, double tau_a, double rho_b, double tau_b, double rho_min) {
+    const double rho = rho_a + rho_b;
+    if (!(rho > 0.0) || rho < rho_min) return 0.0;
+    const double d0  = QM_ELF_CF_SPIN * ((rho_a > 0.0 ? pow(rho_a, 5.0 / 3.0) : 0.0) + (rho_b > 0.0 ? pow(rho_b, 5.0 / 3.0) : 0.0));
+    const double tau = tau_a + tau_b;
+    if (!(tau > 0.0)) return 1.0;   // t = D0 / tau without bound
+    const double t = d0 / tau;
+    return t / (1.0 + t);
+}
+
+double md_qm_lol_closed_shell(double rho, double tau, double rho_min) {
+    return md_qm_lol(0.5 * rho, 0.5 * tau, 0.5 * rho, 0.5 * tau, rho_min);
+}
+
+// One spin's (or a closed shell's total) density and kinetic energy density at the points: rho, |grad rho|^2, tau
+static bool qm_elf_terms(double* rho, double* g2, double* tau, const float* xyz, size_t count, size_t stride, const md_system_t* sys,
+                         str_t density_path, const float* atom_xyz, size_t atom_xyz_stride, md_allocator_i* alloc) {
+    double *rr = NULL, *rw = NULL, *kr = NULL, *kw = NULL;
+    size_t rna = 0, kna = 0;
+    md_gto_basis_t basis = {0}, dbasis = {0};
+    const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, sys, density_path, alloc);
+    const size_t kn = rn ? md_qm_kinetic_orbitals(&kr, &kw, &kna, &dbasis, sys, density_path, alloc) : 0;
+    bool ok = rn && kn && md_gto_basis_extract_attributes(&basis, &sys->attributes, alloc);
+    md_gto_iso_field_t* fr = ok ? md_gto_iso_field_create_products(&basis, atom_xyz, atom_xyz_stride, rr, NULL, rw, rn, alloc) : NULL;
+    md_gto_iso_field_t* fk = ok ? md_gto_iso_field_create_products(&dbasis, atom_xyz, atom_xyz_stride, kr, NULL, kw, kn, alloc) : NULL;
+    ok = fr && fk;
+    double* grad = ok ? (double*)md_alloc(alloc, sizeof(double) * 3 * count) : NULL;
+    if (ok && grad) {
+        md_gto_iso_field_evaluate(fr, xyz, count, stride, rho, grad);
+        md_gto_iso_field_evaluate(fk, xyz, count, stride, tau, NULL);
+        for (size_t i = 0; i < count; ++i) {
+            g2[i] = grad[3 * i] * grad[3 * i] + grad[3 * i + 1] * grad[3 * i + 1] + grad[3 * i + 2] * grad[3 * i + 2];
+        }
+    }
+    ok = ok && grad;
+    if (fr) md_gto_iso_field_destroy(fr);
+    if (fk) md_gto_iso_field_destroy(fk);
+    return ok;
+}
+
+size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, size_t count, size_t stride,
+                          const md_system_t* sys, const float* atom_xyz, size_t atom_xyz_stride, double rho_min) {
+    if ((!out_elf && !out_lol) || !xyz || count == 0 || !sys || !atom_xyz) return 0;
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+
+    // A closed shell: the same orbitals and occupations in both spins, which are then one density
+    double *ar = NULL, *aw = NULL, *br = NULL, *bw = NULL;
+    size_t ana = 0, bna = 0;
+    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, sys, STR_LIT("orbital/alpha/density"), alloc);
+    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, sys, STR_LIT("orbital/beta/density"), alloc);
+    const bool closed = an == bn && ana == bna && (an == 0 || (memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0));
+
+    bool ok = an > 0 || bn > 0;
+    double* t = ok ? (double*)md_alloc(alloc, sizeof(double) * count * 6) : NULL;
+    ok = ok && t;
+    double *rho_a = t, *g2_a = t + count, *tau_a = t + 2 * count, *rho_b = t + 3 * count, *g2_b = t + 4 * count, *tau_b = t + 5 * count;
+    if (ok && closed) {
+        ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, STR_LIT("orbital/total/density"), atom_xyz, atom_xyz_stride, alloc);
+        for (size_t i = 0; ok && i < count; ++i) {
+            if (out_elf) out_elf[i] = md_qm_elf_closed_shell(rho_a[i], g2_a[i], tau_a[i], rho_min);
+            if (out_lol) out_lol[i] = md_qm_lol_closed_shell(rho_a[i], tau_a[i], rho_min);
+        }
+    } else if (ok) {
+        // a spin without occupied orbitals has no density: zero, not a failure
+        MEMSET(t, 0, sizeof(double) * count * 6);
+        if (an) ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, STR_LIT("orbital/alpha/density"), atom_xyz, atom_xyz_stride, alloc);
+        if (ok && bn) ok = qm_elf_terms(rho_b, g2_b, tau_b, xyz, count, stride, sys, STR_LIT("orbital/beta/density"), atom_xyz, atom_xyz_stride, alloc);
+        for (size_t i = 0; ok && i < count; ++i) {
+            if (out_elf) out_elf[i] = md_qm_elf(rho_a[i], g2_a[i], tau_a[i], rho_b[i], g2_b[i], tau_b[i], rho_min);
+            if (out_lol) out_lol[i] = md_qm_lol(rho_a[i], tau_a[i], rho_b[i], tau_b[i], rho_min);
+        }
+    }
+    md_temp_end(temp);
+    return ok ? count : 0;
 }

@@ -243,6 +243,33 @@ size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const m
 bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, size_t ao_stride,
                                   const double* weight, size_t num_mo, size_t num_ao);
 
+// ---------------------------------------------------------------------------
+// First derivatives of orbitals, as orbitals
+// ---------------------------------------------------------------------------
+// d/dx of a Cartesian AO f_ijk x^i y^j z^k R(r) of a shell of angular momentum l, R = sum_p c_p exp(-a_p r^2), is
+//
+//     f_ijk ( i x^(i-1) y^j z^k R(r)  -  2 x^(i+1) y^j z^k R'(r) ),     R' = sum_p a_p c_p exp(-a_p r^2)
+//
+// two AOs of two contracted shells on the same atom: one of l - 1 with the shell's own contraction, one of l + 1
+// with the contraction a_p c_p. So the gradient of an orbital is, exactly, three orbitals over the DERIVATIVE
+// BASIS made of those shells, and anything quadratic in the gradient is a sum of products of orbitals there - the
+// kinetic energy density tau = 1/2 sum_k n_k |grad phi_k|^2 is 3 x (occupied) squares - which every evaluator of
+// this library takes as it is: md_gto_iso_field_create_products (in double, with its gradient), the GPU sets and
+// their point evaluation, the grid kernels. The price is the basis: about twice the AOs of the one it is made from.
+//
+// The derivative basis of 'basis': for every shell of l > 0 a shell of l - 1, and for every shell one of l + 1, on
+// its atom, ordered as a basis is (angular momentum, then atom, then the order of the shells they come from). The
+// contraction coefficients a_p c_p are rounded to float as every coefficient of a basis is (relative 6e-8). A basis
+// with a shell of MD_GTO_MAX_ANGULAR_MOMENTUM has none, as its derivatives need one more: false (logged).
+// Allocates as md_gto_basis_extract_attributes does: release with md_gto_basis_free.
+bool md_gto_basis_derivative(md_gto_basis_t* out, const md_gto_basis_t* basis, struct md_allocator_i* alloc);
+
+// The gradients of orbitals as orbitals over md_gto_basis_derivative(basis): orbital m's md_gto_basis_num_ao(basis)
+// coefficients at coeff + m * mo_stride; its d/dx, d/dy and d/dz written as rows 3m, 3m + 1 and 3m + 2 of out,
+// md_gto_basis_num_ao of the derivative basis each (which out_num_ao receives, and which a NULL out asks for
+// alone). Returns the rows written, 3 num_mo, or 0 on failure (a basis without a derivative basis).
+size_t md_gto_orbital_gradients(double* out, size_t* out_num_ao, const double* coeff, size_t mo_stride, size_t num_mo, const md_gto_basis_t* basis);
+
 // Returns the upper bound on the number of Cartesian GTOs produced when
 // fully expanding all shells in the basis (before any cutoff filtering).
 // Use this to pre-allocate the output buffer for md_gto_expand_with_mo().

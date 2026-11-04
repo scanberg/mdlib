@@ -235,6 +235,17 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
                                                 const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc);
 void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set);
 
+// The AO cutoff 1e-eps_exp (4 to 12) this set is evaluated and extracted with, instead of the switch's
+// (md_gto_iso_gpu_switches_t.eval_eps_exp; 0 makes it the switch's again). An AO is left out of a sum where it is
+// below the cutoff, so values carry an absolute error of about that order: fine for a surface, too much for a
+// quantity made of small differences in the tails, such as the electron localization function (md_qm_elf), whose
+// sets want 1e-8 (amide, against double: ELF within 1e-5 where rho > 1e-3, 2e-4 where rho is 1e-4 to 1e-3,
+// against 3e-3 and 1.5e-2 at 1e-6). A tighter cutoff lists more AOs per point, and costs accordingly. Uploads the
+// radii on 'stream'. False, logged, for a set of more than 1024 functions (evaluated as phi^T D phi, D in tiles)
+// whose tiles were made for a looser cutoff than asked: they hold only the AO pairs that meet at it; make such a
+// set with the switch at the cutoff wanted.
+bool md_gto_iso_gpu_set_cutoff(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int eps_exp);
+
 typedef struct md_gto_iso_gpu_desc_t {
     double   cell_size;                               // lattice spacing in bohr
     double   iso[MD_GTO_ISO_GPU_MAX_FIELDS];          // per field, > 0

@@ -2195,6 +2195,222 @@ UTEST(qm_leae, orbitals_and_sign) {
     }
 }
 
+// =============================================================================================
+// Electron localization function: tau through the derivative basis, ELF and LOL (md_qm)
+// =============================================================================================
+
+#include <md_molden.h>
+
+// A Molden file of test_data/molden into a fresh system, and its atoms in bohr (3 per atom, malloc)
+static bool elf_molden_load(vlx_test_t* t, float** xyz, size_t* num_atoms, const char* file) {
+    char path[512];
+    snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/molden/%s", file);
+    qm_test_init(t, MEGABYTES(64));
+    if (!md_molden_system_init_from_file(&t->sys, &t->state, str_from_cstr(path))) return false;
+    *num_atoms = t->sys.atom.count;
+    *xyz = (float*)malloc(sizeof(float) * 3 * *num_atoms);
+    return vlx_test_atom_xyz_bohr(*xyz, 3 * *num_atoms, t) == *num_atoms;
+}
+
+// The gradient of an orbital, as the three orbitals over the derivative basis md_gto_orbital_gradients makes, is
+// the gradient md_gto_iso computes analytically - to the float rounding of the derivative shells' contraction
+// coefficients a_p c_p. A basis with g functions has no derivative basis (its derivatives need h functions).
+UTEST(qm_elf, derivative_basis_is_exact) {
+    static const char* files[] = {"h2o.h5", "amide.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], false));
+        md_gto_basis_t db = {0};
+        ASSERT_TRUE(md_gto_basis_derivative(&db, &s.basis, md_get_heap_allocator()));
+        size_t nd = 0;
+        ASSERT_EQ(md_gto_orbital_gradients(NULL, &nd, NULL, 0, 0, &s.basis), 0u);
+        EXPECT_EQ(nd, md_gto_basis_num_ao(&db));
+        for (uint32_t k = 1; k < db.num_shells; ++k) {
+            const md_gto_shell_t* a = &db.shells[k - 1];
+            const md_gto_shell_t* b = &db.shells[k];
+            EXPECT_TRUE(a->l < b->l || (a->l == b->l && a->atom_idx <= b->atom_idx));   // ordered as a basis is
+        }
+        const size_t nm = s.num_mo < 8 ? s.num_mo : 8;
+        double* G = (double*)malloc(sizeof(double) * 3 * nm * nd);
+        ASSERT_EQ(md_gto_orbital_gradients(G, &nd, s.C, s.num_ao, nm, &s.basis), 3 * nm);
+
+        enum { N = 600 };
+        iso_rng_t rng = {7};
+        double* pd = (double*)malloc(sizeof(double) * 3 * N);
+        float* pts = (float*)malloc(sizeof(float) * 3 * N);
+        iso_dens_points(pd, N, &s, &rng);
+        for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pd[i];
+        double* v = (double*)malloc(sizeof(double) * N);
+        double* g = (double*)malloc(sizeof(double) * 3 * N);
+        double* dv = (double*)malloc(sizeof(double) * N);
+        double worst = 0.0;
+        for (size_t m = 0; m < nm; ++m) {
+            md_gto_iso_field_t* f = md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + m * s.num_ao, md_get_heap_allocator());
+            ASSERT_TRUE(f != NULL);
+            md_gto_iso_field_evaluate(f, pts, N, 0, v, g);
+            double gmax = 0.0, err = 0.0;
+            for (int d = 0; d < 3; ++d) {
+                md_gto_iso_field_t* fd = md_gto_iso_field_create(&db, s.xyz, 0, G + (3 * m + d) * nd, md_get_heap_allocator());
+                ASSERT_TRUE(fd != NULL);
+                md_gto_iso_field_evaluate(fd, pts, N, 0, dv, NULL);
+                for (int i = 0; i < N; ++i) {
+                    err  = fmax(err, dv[i] == dv[i] ? fabs(dv[i] - g[3 * i + d]) : INFINITY);
+                    gmax = fmax(gmax, fabs(g[3 * i + d]));
+                }
+                md_gto_iso_field_destroy(fd);
+            }
+            worst = fmax(worst, err / gmax);
+            md_gto_iso_field_destroy(f);
+        }
+        printf("  %-9s %u shells -> %u, %zu AOs -> %zu: d psi from the derivative basis against grad psi, max relative %.1e\n",
+               files[fi], s.basis.num_shells, db.num_shells, s.num_ao, nd, worst);
+        EXPECT_LT(worst, 1.0e-6);
+        free(G); free(pd); free(pts); free(v); free(g); free(dv);
+        md_gto_basis_free(&db, md_get_heap_allocator());
+        iso_dens_src_free(&s);
+    }
+
+    // a g shell: no derivative basis
+    md_gto_shell_t sh[2] = {{0, 0, 1, 0}, {0, 1, 1, MD_GTO_MAX_ANGULAR_MOMENTUM}};
+    float alpha[2] = {1.0f, 0.5f}, coeff[2] = {1.0f, 1.0f};
+    const md_gto_basis_t gb = {2, 2, sh, alpha, coeff};
+    md_gto_basis_t db = {0};
+    EXPECT_FALSE(md_gto_basis_derivative(&db, &gb, md_get_heap_allocator()));
+    size_t nd = 0;
+    EXPECT_EQ(md_gto_orbital_gradients(NULL, &nd, NULL, 0, 0, &gb), 0u);
+}
+
+// ELF and LOL: the uniform electron gas gives 1/2; one orbital alone gives ELF = 1 (He); tau >= the von Weizsacker
+// tau_W = |grad rho|^2 / (8 rho) everywhere; a closed shell's ELF is its two spins' (Kohout and Savin); and an
+// open shell's (the OH radical, UHF/6-31G*, spherical d) is PySCF's at eight points, computed there with its own
+// AO evaluation (pyscf.dft.numint, PySCF 2.14) from the same Molden file.
+UTEST(qm_elf, limits_and_reference) {
+    // the uniform gas: D = D0
+    const double rho = 0.3, cf = 0.3 * pow(3.0 * M_PI * M_PI, 2.0 / 3.0), cs = 0.3 * pow(6.0 * M_PI * M_PI, 2.0 / 3.0);
+    EXPECT_NEAR(md_qm_elf_closed_shell(rho, 0.0, cf * pow(rho, 5.0 / 3.0), 0.0), 0.5, 1e-12);
+    EXPECT_NEAR(md_qm_elf(rho, 0.0, cs * pow(rho, 5.0 / 3.0), 0.0, 0.0, 0.0, 0.0), 0.5, 1e-12);
+    EXPECT_NEAR(md_qm_lol_closed_shell(rho, cf * pow(rho, 5.0 / 3.0), 0.0), 0.5, 1e-12);
+    EXPECT_NEAR(md_qm_elf_closed_shell(rho, 8.0 * rho * 0.2, 0.2, 0.0), 1.0, 1e-12);   // tau = tau_W: D = 0
+    EXPECT_EQ(md_qm_elf_closed_shell(1e-7, 0.0, 1.0, 1e-6), 0.0);                      // below rho_min
+    EXPECT_EQ(md_qm_lol_closed_shell(1e-7, 1.0, 1e-6), 0.0);
+
+    // He: one occupied orbital, so tau = tau_W and ELF = 1 wherever there is density
+    {
+        vlx_test_t t;
+        float* xyz = NULL;
+        size_t na = 0;
+        ASSERT_TRUE(elf_molden_load(&t, &xyz, &na, "he_ccpvdz.molden"));
+        ASSERT_TRUE(md_qm_kinetic_available(&t.sys));
+        enum { N = 1000 };
+        iso_rng_t rng = {3};
+        float* p = (float*)malloc(sizeof(float) * 3 * N);
+        for (int i = 0; i < 3 * N; ++i) p[i] = xyz[i % 3] + (float)iso_rng_range(&rng, -3.0, 3.0);
+        double* elf = (double*)malloc(sizeof(double) * N);
+        ASSERT_EQ(md_qm_elf_evaluate(elf, NULL, p, N, 0, &t.sys, xyz, 0, 1e-6), (size_t)N);
+        double worst = 0.0;
+        int kept = 0;
+        for (int i = 0; i < N; ++i) {
+            if (elf[i] == 0.0) continue;    // below rho_min
+            worst = fmax(worst, fabs(elf[i] - 1.0));
+            ++kept;
+        }
+        printf("  he_ccpvdz  ELF at %d points with rho > 1e-6: max |ELF - 1| %.1e\n", kept, worst);
+        EXPECT_GT(kept, N / 2);
+        EXPECT_LT(worst, 1e-9);
+        free(p); free(elf); free(xyz);
+        qm_test_free(&t);
+    }
+
+    // water and an amide: tau >= tau_W, ELF and LOL in [0, 1], and the closed shell form is the spin form
+    static const char* files[] = {"h2o.h5", "amide.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], false));
+        ASSERT_TRUE(md_qm_kinetic_available(&s.t.sys));
+        double *rr = NULL, *rw = NULL, *kr = NULL, *kw = NULL;
+        size_t rna = 0, kna = 0;
+        md_gto_basis_t db = {0};
+        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &s.t.sys, STR_LIT("orbital/alpha/density"), md_get_heap_allocator());
+        const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &db, &s.t.sys, STR_LIT("orbital/alpha/density"), md_get_heap_allocator());
+        ASSERT_GT(rn, 0u);
+        ASSERT_EQ(kn, 3 * rn);
+        EXPECT_EQ(kna, md_gto_basis_num_ao(&db));
+        for (size_t k = 0; k < rn; ++k) EXPECT_EQ(kw[3 * k], 0.5 * rw[k]);
+        md_gto_iso_field_t* fr = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, rr, NULL, rw, rn, md_get_heap_allocator());
+        md_gto_iso_field_t* fk = md_gto_iso_field_create_products(&db, s.xyz, 0, kr, NULL, kw, kn, md_get_heap_allocator());
+        ASSERT_TRUE(fr && fk);
+        enum { N = 2000 };
+        iso_rng_t rng = {13};
+        double* pd = (double*)malloc(sizeof(double) * 3 * N);
+        float* pts = (float*)malloc(sizeof(float) * 3 * N);
+        iso_dens_points(pd, N, &s, &rng);
+        for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pd[i];
+        double* r = (double*)malloc(sizeof(double) * N);
+        double* g = (double*)malloc(sizeof(double) * 3 * N);
+        double* tau = (double*)malloc(sizeof(double) * N);
+        double* elf = (double*)malloc(sizeof(double) * N);
+        double* lol = (double*)malloc(sizeof(double) * N);
+        md_gto_iso_field_evaluate(fr, pts, N, 0, r, g);
+        md_gto_iso_field_evaluate(fk, pts, N, 0, tau, NULL);
+        ASSERT_EQ(md_qm_elf_evaluate(elf, lol, pts, N, 0, &s.t.sys, s.xyz, 0, 1e-6), (size_t)N);
+        double below = 0.0, form = 0.0, lo = 1.0, hi = 0.0;
+        for (int i = 0; i < N; ++i) {
+            const double g2 = g[3 * i] * g[3 * i] + g[3 * i + 1] * g[3 * i + 1] + g[3 * i + 2] * g[3 * i + 2];
+            if (r[i] > 1e-10) below = fmax(below, (g2 / (8.0 * r[i]) - tau[i]) / fmax(tau[i], 1e-300));
+            // a closed shell: alpha's terms are each spin's
+            const double e = md_qm_elf(r[i], g2, tau[i], r[i], g2, tau[i], 1e-6);
+            const double l = md_qm_lol(r[i], tau[i], r[i], tau[i], 1e-6);
+            form = fmax(form, fmax(fabs(e - elf[i]), fabs(l - lol[i])));
+            lo = fmin(lo, fmin(elf[i], lol[i]));
+            hi = fmax(hi, fmax(elf[i], lol[i]));
+        }
+        printf("  %-9s tau - tau_W >= -%.1e tau; closed shell against spin form %.1e; ELF, LOL in [%.3f, %.3f]\n", files[fi], below, form, lo, hi);
+        EXPECT_LT(below, 1e-9);
+        EXPECT_LT(form, 1e-12);
+        EXPECT_GE(lo, 0.0);
+        EXPECT_LE(hi, 1.0);
+        md_gto_iso_field_destroy(fr);
+        md_gto_iso_field_destroy(fk);
+        free(pd); free(pts); free(r); free(g); free(tau); free(elf); free(lol);
+        md_free(md_get_heap_allocator(), rr, sizeof(double) * rn * rna);
+        md_free(md_get_heap_allocator(), rw, sizeof(double) * rn);
+        md_free(md_get_heap_allocator(), kr, sizeof(double) * kn * kna);
+        md_free(md_get_heap_allocator(), kw, sizeof(double) * kn);
+        md_gto_basis_free(&db, md_get_heap_allocator());
+        iso_dens_src_free(&s);
+    }
+
+    // the OH radical against PySCF
+    {
+        static const struct { float p[3]; double elf, lol; } ref[] = {
+            { {0.00f, 0.00f, 0.50f}, 0.1578635280, 0.2830355821 },   // rho 0.9857
+            { {0.00f, 0.00f, 1.00f}, 0.8975976785, 0.6885978643 },   // rho 0.4815
+            { {0.00f, 0.00f, 1.50f}, 0.9884900167, 0.9007809849 },   // rho 0.3473
+            { {0.00f, 0.00f, -0.75f}, 0.7803328356, 0.5620427699 },  // rho 0.6983
+            { {0.50f, 0.00f, 0.25f}, 0.2533458986, 0.3395894760 },   // rho 0.7772
+            { {0.00f, 0.75f, -0.50f}, 0.9242694557, 0.5987320948 },  // rho 0.5557
+            { {1.00f, 0.50f, 1.00f}, 0.6913628985, 0.3436567936 },   // rho 0.1127
+            { {0.00f, 0.00f, 2.50f}, 0.9985447231, 0.3510352219 },   // rho 0.07595
+        };
+        enum { N = sizeof(ref) / sizeof(ref[0]) };
+        vlx_test_t t;
+        float* xyz = NULL;
+        size_t na = 0;
+        ASSERT_TRUE(elf_molden_load(&t, &xyz, &na, "oh_631gs_uhf.molden"));
+        float p[3 * N];
+        for (int i = 0; i < N; ++i) for (int k = 0; k < 3; ++k) p[3 * i + k] = ref[i].p[k];
+        double elf[N], lol[N];
+        ASSERT_EQ(md_qm_elf_evaluate(elf, lol, p, N, 0, &t.sys, xyz, 0, 0.0), (size_t)N);
+        double err = 0.0;
+        for (int i = 0; i < N; ++i) err = fmax(err, fmax(fabs(elf[i] - ref[i].elf), fabs(lol[i] - ref[i].lol)));
+        printf("  oh_631gs_uhf (open shell) ELF and LOL against PySCF at %d points: max %.1e\n", N, err);
+        EXPECT_LT(err, 2e-6);
+        free(xyz);
+        qm_test_free(&t);
+    }
+}
+
+
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
 #include "gto_iso_shaders.inl"
@@ -4486,6 +4702,89 @@ UTEST(gto_iso_gpu_lib, alie_at_mesh_vertices) {
         md_gto_iso_gpu_set_destroy(g.s, surf);
         md_gto_iso_gpu_set_destroy(g.s, set);
         iso_alie_free(&a);
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
+// ELF on the GPU, with nothing of its own there: rho (and its gradient) from a set of the density over the basis,
+// tau from a set of md_qm_kinetic_orbitals over the derivative basis, both by md_gto_iso_gpu_evaluate at the same
+// points, and the two put together on the host. Against md_qm_elf_evaluate in double, by density: float and the
+// evaluation cutoff are what is left, and D = tau - |grad rho|^2 / (8 rho) is a difference, so the sets take 1e-8
+// (md_gto_iso_gpu_set_cutoff) for the default 1e-6, which is off by up to 1.5e-2 where rho is 1e-4 to 1e-3.
+UTEST(gto_iso_gpu_lib, elf_at_points) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    printf("  revision %s\n", ISOG_REVISION);
+    static const char* files[] = {"h2o.h5", "amide.h5", "mol.h5"};
+    for (int fi = 0; fi < 3; ++fi) {
+        iso_dens_src_t s;
+        ASSERT_TRUE(iso_dens_src_load_ex(&s, files[fi], false));
+        double *rr = NULL, *rw = NULL, *kr = NULL, *kw = NULL;
+        size_t rna = 0, kna = 0;
+        md_gto_basis_t db = {0};
+        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &s.t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &db, &s.t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        ASSERT_TRUE(rn > 0 && kn == 3 * rn);
+        md_gto_iso_field_t* fr = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, rr, NULL, rw, rn, md_get_heap_allocator());
+        md_gto_iso_field_t* fk = md_gto_iso_field_create_products(&db, s.xyz, 0, kr, NULL, kw, kn, md_get_heap_allocator());
+        ASSERT_TRUE(fr && fk);
+        const md_gto_iso_field_t* f1[1] = {fr};
+        const md_gto_iso_field_t* f2[1] = {fk};
+        md_gto_iso_gpu_set_t* sr = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, f1, 1, md_get_heap_allocator());
+        md_gto_iso_gpu_set_t* sk = md_gto_iso_gpu_set_create(g.s, &db, s.xyz, 0, f2, 1, md_get_heap_allocator());
+        ASSERT_TRUE(sr && sk);
+        // ELF's sets at 1e-8, as md_gto_iso_gpu_set_cutoff says: the default 1e-6 is off by 1e-2 where rho is 1e-4
+        ASSERT_TRUE(md_gto_iso_gpu_set_cutoff(g.s, sr, 8));
+        ASSERT_TRUE(md_gto_iso_gpu_set_cutoff(g.s, sk, 8));
+        EXPECT_FALSE(md_gto_iso_gpu_set_cutoff(g.s, sk, 3));
+
+        enum { N = 6000 };
+        iso_rng_t rng = {29};
+        double* pd = (double*)malloc(sizeof(double) * 3 * N);
+        float* pts = (float*)malloc(sizeof(float) * 3 * N);
+        iso_dens_points(pd, N, &s, &rng);
+        for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pd[i];
+        float* rg = (float*)malloc(sizeof(float) * 4 * N);
+        float* rv = (float*)malloc(sizeof(float) * N);
+        float* tv = (float*)malloc(sizeof(float) * N);
+        const uint32_t f0 = 0;
+        md_tick_t t0 = md_tick_now();
+        ASSERT_TRUE(md_gto_iso_gpu_evaluate(g.s, sr, &f0, 1, pts, 0, N, rv, rg));
+        ASSERT_TRUE(md_gto_iso_gpu_evaluate(g.s, sk, &f0, 1, pts, 0, N, tv, NULL));
+        const double secs = md_tick_to_seconds(md_tick_now() - t0);
+        double* ref = (double*)malloc(sizeof(double) * N);
+        double* rho = (double*)malloc(sizeof(double) * N);
+        ASSERT_EQ(md_qm_elf_evaluate(ref, NULL, pts, N, 0, &s.t.sys, s.xyz, 0, 0.0), (size_t)N);
+        md_gto_iso_field_evaluate(fr, pts, N, 0, rho, NULL);
+        // by density: [1e-4, 1e-3), [1e-3, 1e-2), >= 1e-2
+        double err[3] = {0, 0, 0};
+        int cnt[3] = {0, 0, 0};
+        for (int i = 0; i < N; ++i) {
+            if (!(rho[i] >= 1e-4)) continue;
+            const int b = rho[i] < 1e-3 ? 0 : rho[i] < 1e-2 ? 1 : 2;
+            const double g2 = (double)rg[3 * i] * rg[3 * i] + (double)rg[3 * i + 1] * rg[3 * i + 1] + (double)rg[3 * i + 2] * rg[3 * i + 2];
+            const double e = md_qm_elf_closed_shell(rv[i], g2, tv[i], 0.0);
+            err[b] = fmax(err[b], e == e ? fabs(e - ref[i]) : INFINITY);
+            cnt[b]++;
+        }
+        printf("  %-9s %zu + %zu functions over %zu + %zu AOs: ELF from the GPU's rho and tau against double, rho in [1e-4,1e-3) %.1e (%d), [1e-3,1e-2) %.1e (%d), >= 1e-2 %.1e (%d) | %.3f s\n",
+               files[fi], rn, kn, s.num_ao, kna, err[0], cnt[0], err[1], cnt[1], err[2], cnt[2], secs);
+        EXPECT_LT(err[0], 5e-4);
+        EXPECT_LT(err[1], 5e-5);
+        EXPECT_LT(err[2], 1e-5);
+        free(pd); free(pts); free(rg); free(rv); free(tv); free(ref); free(rho);
+        md_gto_iso_gpu_set_destroy(g.s, sr);
+        md_gto_iso_gpu_set_destroy(g.s, sk);
+        md_gto_iso_field_destroy(fr);
+        md_gto_iso_field_destroy(fk);
+        md_free(md_get_heap_allocator(), rr, sizeof(double) * rn * rna);
+        md_free(md_get_heap_allocator(), rw, sizeof(double) * rn);
+        md_free(md_get_heap_allocator(), kr, sizeof(double) * kn * kna);
+        md_free(md_get_heap_allocator(), kw, sizeof(double) * kn);
+        md_gto_basis_free(&db, md_get_heap_allocator());
         iso_dens_src_free(&s);
     }
     md_gto_iso_gpu_shutdown();

@@ -15,7 +15,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r37 (the vertex evaluators at arbitrary points: md_gto_iso_gpu_evaluate; r36: the D form in tiles of the AO pairs that meet, built on the device)"
+#define ISOG_REVISION "r38 (a set's own evaluation cutoff: md_gto_iso_gpu_set_cutoff; r37: the vertex evaluators at arbitrary points, md_gto_iso_gpu_evaluate)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -290,6 +290,8 @@ struct md_gto_iso_gpu_set_t {
     double*       colsum;           // per function column: sum of |C|
     double*       sh_cmax;          // per shell: the largest |C| of its AOs over the functions (coefficient screening)
     int           screen;           // the radii are coefficient-screened (sets of orbitals)
+    int           eps_own;          // md_gto_iso_gpu_set_cutoff: the set's own cutoff exponent, 0: the switch's
+    int           dm_eps_exp;       // the cutoff the D form's tiles were made for (0: no tiles)
 };
 
 static inline float isog_f32_up(double x);
@@ -686,6 +688,7 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
     for (uint32_t k = 0; k < num_fields && dform; ++k) if (first_of[k] == (int)k) num_dmat++;
     // in tiles of the AO pairs that meet, built on the device (isog_dmat_tiles); dense on the host where that fails
     const bool dsparse = dform && isog_dsparse && isog_dmat_tiles(set, stream, basis, atom_xyz, atom_xyz_stride, fields, num_fields, first_of, fdm, num_dmat);
+    set->dm_eps_exp = dsparse ? isog_eval_eps_exp : 0;
     float* Dm = NULL;
     float* Rs = NULL;
     if (dform && !dsparse) {
@@ -964,10 +967,28 @@ static md_gpu_grid_t isog_groups(uint32_t n) {     // one group per item, split 
 // when they could not be uploaded: nothing may then evaluate the set (its radii and tails may disagree).
 static bool isog_set_current(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set) {
     const int screen = set->orbitals_only && set->sh_cmax;    // orbitals: a shell dropped where its largest coefficient times its AOs is below eps
-    if (set->eps_exp == isog_eval_eps_exp && set->screen == screen) return true;
-    if (isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, isog_eval_eps_exp, screen)) return true;
-    MD_LOG_ERROR("md_gto_iso_gpu: the set's cutoff 1e-%d could not be uploaded", isog_eval_eps_exp);
+    const int eps_exp = set->eps_own ? set->eps_own : isog_eval_eps_exp;
+    if (set->eps_exp == eps_exp && set->screen == screen) return true;
+    if (isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, eps_exp, screen)) return true;
+    MD_LOG_ERROR("md_gto_iso_gpu: the set's cutoff 1e-%d could not be uploaded", eps_exp);
     return false;
+}
+
+bool md_gto_iso_gpu_set_cutoff(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int eps_exp) {
+    if (!set || (eps_exp != 0 && (eps_exp < 4 || eps_exp > 12))) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_cutoff: the cutoff is 1e-4 to 1e-12 (4 to 12), or 0 for the switch's");
+        return false;
+    }
+    // a D form in tiles holds the AO pairs that meet at the cutoff it was made for (and a margin): a tighter one
+    // lists AOs whose pairs it does not have. Only the evaluation of a set past 1024 functions reads it (the
+    // octree's bound reads it too, as when the switch changes after a set is made)
+    const int eff = eps_exp ? eps_exp : isog_eval_eps_exp;
+    if (set->factorless && set->dm_eps_exp && eff > set->dm_eps_exp) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_cutoff: the set's densities are in tiles made for 1e-%d, not the 1e-%d asked for; make the set with the switch at that", set->dm_eps_exp, eff);
+        return false;
+    }
+    set->eps_own = eps_exp;
+    return isog_set_current(stream, set);
 }
 
 // What every evaluation of the set reads: the basis, the functions (C), the fields' terms and the D form
