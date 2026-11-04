@@ -425,11 +425,11 @@ static bool isog_dmat_from_terms(double* Dd, const iso_density_t* d) {
     bool ok = false;
     if (isog_density_squares(d)) {
         const double* w = isog_density_column_weights(temp, d);
-        ok = w && md_gto_density_from_orbitals(Dd, d->C, 1, nf, w, nf, na);
+        ok = w && md_gto_density_from_orbitals(Dd, d->C, 1, nf, w, nf, na, NULL);
     } else {
         double *rows, *w;
         size_t nr;
-        ok = isog_density_square_rows(temp, d, na, &rows, &w, &nr) && md_gto_density_from_orbitals(Dd, rows, na, 1, w, nr, na);
+        ok = isog_density_square_rows(temp, d, na, &rows, &w, &nr) && md_gto_density_from_orbitals(Dd, rows, na, 1, w, nr, na, NULL);
     }
     md_temp_end(temp);
     return ok;
