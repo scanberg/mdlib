@@ -68,8 +68,8 @@ bool md_reader_line_slow(md_reader_i* r, str_t* line, const char** next) {
             return true;
         }
         const char* from = r->cur + searched;
-        const char* nl = (const char*)memchr(from, '\n', (size_t)(r->end - from));
-        if (nl) {
+        const char* nl = md_text_find_newline(from, r->end);
+        if (nl < r->end) {
             *line = md_reader_strip_cr((str_t){ r->cur, (size_t)(nl - r->cur) });
             *next = nl + 1;
             return true;

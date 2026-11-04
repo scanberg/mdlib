@@ -354,6 +354,23 @@ size_t md_attributes_remove_prefix(md_attributes_t* attributes, str_t prefix);
 // same way cannot test for NAN with v != v or isnan().
 md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count);
 
+// RESERVING: an attribute made before its values are known, for a producer to write them where they are kept (a loader
+// parsing a column of millions of atoms in parallel), with no buffer of its own to copy from.
+//
+// md_attributes_reserve publishes desc as create does, without data, and hands back its storage: of numbers (not STR),
+// not virtual, and NOT ZEROED - the producer writes all of it, before anything reads the attribute, and touches it
+// (md_attributes_touch) when it is done. The storage stays where it is until the attribute is removed or replaced,
+// whatever is created meanwhile (unlike the md_attribute_t pointers of LOOKUP), so it may be filled over a long load. It
+// is writable from any threads which own disjoint parts of it, as long as the table itself is not changed by them.
+md_attribute_id_t md_attributes_reserve(md_attributes_t* attributes, const md_attribute_desc_t* desc, void** out_data);
+
+// A per atom column as md_attributes_publish_atom_column makes it ({count} values of 'components' floats), reserved:
+// its storage, NULL on failure, and its id in out_id. md_attributes_commit_atom_column ends the writing: the column is
+// kept (its id) where it says anything, and removed (MD_ATTRIBUTE_INVALID) where publish would have skipped it, every
+// value the same or every value NAN.
+float* md_attributes_reserve_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, size_t count, md_attribute_id_t* out_id);
+md_attribute_id_t md_attributes_commit_atom_column(md_attributes_t* attributes, md_attribute_id_t id);
+
 // LOOKUP
 // Pointers are INVALIDATED by the next create, replace, alias or remove. Hold the id, not the pointer.
 

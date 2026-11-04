@@ -163,7 +163,8 @@ static inline uint32_t md_parse_eight_digits(uint64_t val) {
     return (uint32_t)val;
 }
 
-static inline bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) {
+// Inline always: a parser calls it for each column of each line, with constant widths and decimals which fold
+static FORCE_INLINE bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) {
     ASSERT(out);
     const size_t width = field.len;
     // A digit, the dot and the decimals at least

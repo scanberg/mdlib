@@ -800,7 +800,8 @@ size_t md_attribute_extract_str(str_t dst[], size_t cap, const md_attributes_t* 
 
 // What an attribute of desc is, its storage allocated and filled, for the path already cleared (attr_reserve_slot) or
 // already held (an in-place replace) under id. False, with nothing allocated, when the format or the data is not valid.
-static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* desc, md_attribute_id_t id, md_attribute_t* out) {
+// uninitialized: the storage of an attribute without data is left as it is allocated (md_attributes_reserve), else zeroed
+static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* desc, md_attribute_id_t id, md_attribute_t* out, bool uninitialized) {
     md_attribute_format_t format = desc->format;
     const str_t path = desc->path;
 
@@ -925,7 +926,7 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
             }
         } else if (desc->data) {
             MEMCPY(storage, desc->data, required);
-        } else {
+        } else if (!uninitialized) {
             MEMSET(storage, 0, required);
         }
     }
@@ -979,10 +980,38 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         return MD_ATTRIBUTE_INVALID;
     }
     md_attribute_t entry;
-    if (!attr_build(attributes, desc, id, &entry)) {
+    if (!attr_build(attributes, desc, id, &entry, false)) {
         return MD_ATTRIBUTE_INVALID;
     }
     attr_insert_at(attributes, idx, &entry);
+    return id;
+}
+
+md_attribute_id_t md_attributes_reserve(md_attributes_t* attributes, const md_attribute_desc_t* desc, void** out_data) {
+    ASSERT(attributes);
+    ASSERT(out_data);
+    *out_data = NULL;
+    if (!desc) {
+        MD_LOG_ERROR("Attribute descriptor is NULL");
+        return MD_ATTRIBUTE_INVALID;
+    }
+    // Storage to be written where it is: of numbers (text is interned, through create), not computed (virtual), and
+    // not filled from data
+    if (desc->virt || desc->data || desc->byte_size != 0 || desc->format.type == MD_ATTRIBUTE_TYPE_STR) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' cannot be reserved: storage of numbers, without data or a provider", STR_ARG(desc->path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    size_t idx;
+    md_attribute_id_t id;
+    if (!attr_reserve_slot(attributes, desc->path, &idx, &id)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    md_attribute_t entry;
+    if (!attr_build(attributes, desc, id, &entry, true)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    attr_insert_at(attributes, idx, &entry);
+    *out_data = entry.data;
     return id;
 }
 
@@ -1085,13 +1114,9 @@ static void attr_remove_aliases_of(md_attributes_t* attributes, md_attribute_id_
     }
 }
 
-md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count) {
-    ASSERT(attributes);
-
-    if (count == 0 || components == 0 || !values) {
-        return MD_ATTRIBUTE_INVALID;
-    }
-
+// Whether a per atom column says anything: not one value for every atom, nor no value for any (see
+// md_attributes_publish_atom_column)
+static bool attr_atom_column_informative(const float values[], size_t count, uint32_t components) {
     // Uniformity is a property of the whole VALUE, not of each component: a velocity column where
     // every atom moves the same way is as uninformative as a constant occupancy, and one where only
     // the x components happen to agree is not.
@@ -1126,9 +1151,19 @@ md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes,
             uniform = false;
         }
     }
-    if (uniform || all_absent) {
+    return !(uniform || all_absent);
+}
+
+md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count) {
+    ASSERT(attributes);
+
+    if (count == 0 || components == 0 || !values) {
         return MD_ATTRIBUTE_INVALID;
     }
+    if (!attr_atom_column_informative(values, count, components)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    const size_t num_elements = count * (size_t)components;
 
     // One scalar per atom: the atom axis is the only index axis, and a value is one component wide.
     // components is stated rather than left to a default; see the ATTRIBUTES note above.
@@ -1145,6 +1180,48 @@ md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes,
         .byte_size = num_elements * sizeof(float),
     };
     return md_attributes_create(attributes, &desc);
+}
+
+float* md_attributes_reserve_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, size_t count, md_attribute_id_t* out_id) {
+    ASSERT(attributes);
+    ASSERT(out_id);
+    *out_id = MD_ATTRIBUTE_INVALID;
+    if (count == 0 || components == 0 || count > UINT32_MAX) {
+        return NULL;
+    }
+    // As md_attributes_publish_atom_column makes it
+    const md_attribute_desc_t desc = {
+        .path   = path,
+        .format = {
+            .type       = MD_ATTRIBUTE_TYPE_F32,
+            .components = components,
+            .rank       = 1,
+            .shape      = {(uint32_t)count},
+        },
+        .unit = unit,
+    };
+    void* data = NULL;
+    *out_id = md_attributes_reserve(attributes, &desc, &data);
+    return (float*)data;
+}
+
+md_attribute_id_t md_attributes_commit_atom_column(md_attributes_t* attributes, md_attribute_id_t id) {
+    ASSERT(attributes);
+    const size_t idx = attr_index_from_id(attributes, id);
+    if (idx == SIZE_MAX) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    const md_attribute_t* attr = attributes->attr + idx;
+    if (attr->format.type != MD_ATTRIBUTE_TYPE_F32 || attr->format.rank != 1 || !attr->data || md_attribute_is_alias(attr)) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is no reserved per atom column", STR_ARG(attr->path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    if (!attr_atom_column_informative((const float*)attr->data, attr->format.shape[0], attr->format.components)) {
+        md_attributes_remove(attributes, id);
+        return MD_ATTRIBUTE_INVALID;
+    }
+    md_attributes_touch(attributes, id);
+    return id;
 }
 
 uint64_t md_attributes_version(const md_attributes_t* attributes, md_attribute_id_t id) {
@@ -1195,7 +1272,7 @@ md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_at
     attr_remove_aliases_of(attributes, id);
     const size_t idx = attr_index_from_id(attributes, id);
     md_attribute_t entry;
-    if (idx == SIZE_MAX || !attr_build(attributes, desc, id, &entry)) {
+    if (idx == SIZE_MAX || !attr_build(attributes, desc, id, &entry, false)) {
         // As a removal and a failed create left it: nothing at the path
         md_attributes_remove(attributes, id);
         return MD_ATTRIBUTE_INVALID;
