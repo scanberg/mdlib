@@ -1,6 +1,7 @@
 #include "ubench.h"
 
 #include <md_pdb.h>
+#include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
@@ -17,11 +18,12 @@ UBENCH_EX(pdb, dppc64) {
     }  
     UBENCH_SET_BYTES(text.len);
 
+    // The system of the file: what loading it is
     UBENCH_DO_BENCHMARK() {
         md_arena_allocator_reset(alloc);
-        md_pdb_data_t pdb = {0};
-        //md_pdb_data_parse_file(&pdb, STR_LIT(MD_BENCHMARK_DATA_DIR"/dppc64.pdb"), alloc);
-        md_pdb_data_parse_str(&pdb, text, alloc);
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL);
     }
 
     md_arena_allocator_destroy(alloc);

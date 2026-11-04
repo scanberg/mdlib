@@ -1,7 +1,7 @@
 ﻿#include "utest.h"
 #include <md_util.h>
 #include <md_system.h>
-#include <md_pdb.h>
+#include <core/md_os.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
@@ -34,33 +34,31 @@ UTEST(element_guess_compat, all_pdb_validation) {
     for (size_t file_idx = 0; file_idx < num_files; ++file_idx) {
 
         str_t path = {pdb_files[file_idx], strlen(pdb_files[file_idx])};
-        md_pdb_data_t pdb_data = {0};
-        bool parse_result = md_pdb_data_parse_file(&pdb_data, path, arena);
-        
-        if (!parse_result) {
+        // The columns of the atom lines themselves: the element (77 to 78), the atom name (13 to 16), the residue name
+        // (18 to 20). Not through a loader: one which reads the element column names its types by it.
+        str_t text = load_textfile(path, arena);
+        if (str_empty(text)) {
             // Some files might not exist, skip gracefully
             continue;
         }
-        
-        if (pdb_data.num_atom_coordinates > 0) {
-            files_processed++;
-            
-            for (size_t i = 0; i < pdb_data.num_atom_coordinates; ++i) {
-                str_t explicit_symbol = str_trim(str_from_cstr(pdb_data.atom_coordinates[i].element));
-                if (str_empty(explicit_symbol)) {
-                    continue;
-                }
-                total_explicit_elements++;
+        files_processed++;
+        str_t rest = text, line;
+        while (str_extract_line(&line, &rest)) {
+            if (!(str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) || line.len < 78) continue;
+            str_t explicit_symbol = str_trim(str_substr(line, 76, 2));
+            if (str_empty(explicit_symbol)) {
+                continue;
+            }
+            total_explicit_elements++;
 
-                str_t atom_name    = str_trim(str_from_cstr(pdb_data.atom_coordinates[i].atom_name));
-                str_t atom_resname = str_trim(str_from_cstr(pdb_data.atom_coordinates[i].res_name));
-                    
-                md_element_t expected_element = md_atomic_number_from_symbol(explicit_symbol, true);
-                md_element_t inferred_element = md_atomic_number_infer_from_label(atom_name, atom_resname, 0);
-                    
-                if (expected_element != 0 && inferred_element == expected_element) {
-                    total_correct_inferences++;
-                }
+            str_t atom_name    = str_trim(str_substr(line, 12, 4));
+            str_t atom_resname = str_trim(str_substr(line, 17, 3));
+
+            md_element_t expected_element = md_atomic_number_from_symbol(explicit_symbol, true);
+            md_element_t inferred_element = md_atomic_number_infer_from_label(atom_name, atom_resname, 0);
+
+            if (expected_element != 0 && inferred_element == expected_element) {
+                total_correct_inferences++;
             }
         }
 
