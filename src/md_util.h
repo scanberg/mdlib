@@ -108,6 +108,14 @@ bool md_util_system_infer_chains(md_system_t* sys);
 // after the bonds); whatever changes the instances, the bonds or the kinds calls it after.
 bool md_util_system_infer_parts(md_system_t* sys);
 
+// The backbones of the system (sys->protein_backbone, sys->nucleic_backbone, see md_protein_backbone_data_t and
+// md_nucleic_backbone_data_t), found anew: consecutive ranges of at least 3 residues along each strand of a polymer
+// (the peptide and nucleic acid parts), atomistic or coarse grained, ending where the chain breaks (CHAIN BREAKS), whose
+// residues it marks MD_RESIDUE_FLAG_BREAK_AFTER and _BEFORE (cleared first). A system without residues has its
+// backbones found from the covalent bonds alone. state gives the coordinates the links over a gap are measured by (NULL, or none: by consecutive sequence numbers).
+// Done by md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the parts); requires the parts, and the bonds.
+bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state);
+
 // The residue types of the system (sys->residue.type, see md_residue_type_data_t): one per name and kind of
 // residue, with the standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the
 // monomer, that of the element of a monatomic ion, else one made from its name. The types the system has already are
