@@ -660,6 +660,14 @@ static bool molden_gto_basis_extract(md_gto_basis_t* out, const molden_t* molden
 //
 // Per shell, because the two conventions can be mixed within one file and because a spherical shell
 // changes LENGTH on the way through: (2l+1) coefficients in, (l+1)(l+2)/2 out.
+//
+// A Cartesian shell's coefficients are taken as they are: the format normalises each Cartesian function on
+// its own (Molden itself, PySCF, IOData), and so does md_gto, so only the order changes. Some programs
+// write them against functions that share the (l,0,0) monomial's normalisation instead - Turbomole,
+// CFOUR 2.1, PSI4 <= 1.3.2, which IOData corrects on reading - and those files read with orbitals that are
+// not orthonormal where d and higher functions are occupied. Assuming that convention for every file (as
+// this did, with md_qm_cart_coeff_factor) got PySCF's [6D] files wrong instead: CH3Cl with 6-31+G(d,p) at
+// 25.977 electrons, densities off by up to 2%.
 static bool molden_coefficients_to_cartesian(double* dst, size_t dst_cap, const molden_t* molden, const double* src, size_t src_count) {
     size_t si = 0, ci = 0;
 
@@ -705,7 +713,7 @@ static bool molden_coefficients_to_cartesian(double* dst, size_t dst_cap, const 
                 if (c >= num_cart) {
                     return false;
                 }
-                dst[ci + c] = src[si + k] * md_qm_cart_coeff_factor(l, c);
+                dst[ci + c] = src[si + k];
             }
             si += num_cart;
         }

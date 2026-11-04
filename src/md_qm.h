@@ -136,11 +136,14 @@ double md_qm_shell_norm_factor(uint32_t l, const double alpha[], const double co
 // The factor a CARTESIAN AO coefficient read from a file must be multiplied by, for Cartesian AO
 // 'cart_idx' of a shell of angular momentum l.
 //
-// Gaussian, Molden's [6D] and friends normalise a Cartesian shell once, against the (l,0,0)
-// monomial, and use that one constant for all (l+1)(l+2)/2 functions - so their xy function is not
-// unit normalised and their xx one is. md_gto normalises every monomial in the shell. This is the
-// ratio between the two, sqrt((2i-1)!!(2j-1)!!(2k-1)!! / (2l-1)!!), and it is 1 for every AO of an
-// s or p shell, which is why a reader that forgets it still looks correct until the first d.
+// For a format that normalises a Cartesian shell once, against the (l,0,0) monomial, and uses that one
+// constant for all (l+1)(l+2)/2 functions - so its xy function is not unit normalised and its xx one is
+// (TREXIO, before its per function ao_normalization; Molden files from Turbomole, CFOUR 2.1 and PSI4
+// <= 1.3.2). md_gto normalises every monomial in the shell. This is the ratio between the two,
+// sqrt((2i-1)!!(2j-1)!!(2k-1)!! / (2l-1)!!), and it is 1 for every AO of an s or p shell, which is why
+// a reader that gets the convention wrong still looks correct until the first d. NOT the Molden format's
+// own convention: there each Cartesian function is normalised on its own, as in md_gto, and the
+// coefficients are taken as they are.
 double md_qm_cart_coeff_factor(uint32_t l, uint32_t cart_idx);
 
 // Converts a whole [num_mo][n_sph] coefficient matrix into [num_mo][n_cart] (md_gto_sph_to_cart_orbitals), where

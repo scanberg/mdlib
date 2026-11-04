@@ -3,6 +3,9 @@
 #include "qm_test_util.h"
 
 #include <md_molden.h>
+#include <md_qm.h>
+#include <md_gto.h>
+#include <md_gto_iso.h>
 
 #include <core/md_allocator.h>
 #include <core/md_str.h>
@@ -157,6 +160,7 @@ UTEST(molden, orbitals_are_orthonormal) {
     const char* files[] = {
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden",     // [5D], spherical d
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden",  // [6D], the same orbitals in Cartesian
+        MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart.molden",// [6D10F15G] from PySCF: d, f and g
     };
     for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
         qm_test_t t = {0};
@@ -173,6 +177,7 @@ UTEST(molden, total_density_holds_ten_electrons) {
     const char* files[] = {
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden",
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden",
+        MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart.molden",
     };
     for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
         qm_test_t t = {0};
@@ -185,15 +190,15 @@ UTEST(molden, total_density_holds_ten_electrons) {
     }
 }
 
-// The same calculation written two ways: [5D] states five spherical d functions, [6D] states six
-// Cartesian ones. The basis in the table is Cartesian for both, so both files must describe the
-// SAME twenty-five atomic orbitals - and, for the s and p shells, with the same coefficients, since
-// nothing in either path touches those.
+// The same calculation written two ways: [5D] states five spherical d functions, [6D] six Cartesian ones, each
+// normalised on its own as the format has them. The basis in the table is Cartesian for both, so both files
+// describe the same twenty-five atomic orbitals - and the same density everywhere, d functions included.
 //
-// The d coefficients are NOT expected to agree: a shell is normalised against the AO its own file
-// stated, so the [5D] file's d contraction is sqrt(12) smaller than the [6D] file's and its
-// coefficients are correspondingly larger. What must agree is the orbital they multiply out to,
-// which is what the overlap-weighted comparison below asks.
+// The coefficients are not compared: a shell is normalised against the AO its own file stated, so the two
+// d contractions differ by a constant the coefficients absorb. The density does not depend on that, so it
+// is compared at points: the electron density of each file, evaluated from its own basis and orbitals. Over
+// the s and p shells alone this would have passed with the Cartesian coefficients misread, as it did while
+// the reader took them against functions sharing the xx normalisation (PySCF: off by 3.6% in the density).
 UTEST(molden, spherical_and_cartesian_describe_one_wavefunction) {
     qm_test_t sph = {0};
     qm_test_t car = {0};
@@ -207,31 +212,44 @@ UTEST(molden, spherical_and_cartesian_describe_one_wavefunction) {
     ASSERT_EQ(sph_basis.num_shells, car_basis.num_shells);
     ASSERT_EQ(md_gto_basis_num_ao(&sph_basis), md_gto_basis_num_ao(&car_basis));
 
-    // <psi_i^sph | psi_i^car> == 1 for every orbital: same function, two spellings. The overlap is
-    // integrated from each file's own basis and the two bases differ by that per shell scale, so
-    // this is computed in the spherical file's basis with the Cartesian file's coefficients
-    // rescaled onto it - which is exactly what the DENSITY does, so compare that instead. A
-    // density is invariant under the shell scaling, because the coefficients absorb it.
-    size_t n_sph = 0, n_car = 0;
-    double* d_sph = qm_test_matrix(&sph, STR_LIT("orbital/total/density"), &n_sph);
-    double* d_car = qm_test_matrix(&car, STR_LIT("orbital/total/density"), &n_car);
-    ASSERT_TRUE(d_sph != NULL);
-    ASSERT_TRUE(d_car != NULL);
-    ASSERT_EQ(n_sph, n_car);
+    // the atoms in bohr, from the spherical file (the two state the same geometry)
+    const md_attribute_t* ca = qm_test_attr(&sph, STR_LIT("qm/atom/coordinate"));
+    ASSERT_TRUE(ca != NULL);
+    double xyz[9] = {0};
+    ASSERT_EQ(md_attribute_extract_f64(xyz, 9, ca, md_attribute_slice_all(), md_unit_none()), 9u);
+    float atom[9];
+    for (int i = 0; i < 9; ++i) atom[i] = (float)(xyz[i] * 1.8897261246257702);
 
-    // The Cartesian file's density is stated against a basis whose d functions are sqrt(12) larger,
-    // so it is correspondingly smaller there. Compare the invariant instead: both integrate to ten
-    // electrons against their own overlap, which the test above already asserts, and the s/p block -
-    // where the two bases are identical function for function - must agree outright.
-    double worst = 0.0;
-    for (size_t i = 0; i < 9; ++i) {         // the O s and p AOs, before the d shell starts
-        for (size_t j = 0; j < 9; ++j) {
-            const double e = fabs(d_sph[i * n_sph + j] - d_car[i * n_car + j]);
-            worst = (e > worst) ? e : worst;
-        }
+    // points around the molecule, from a fixed sequence
+    enum { N = 2000 };
+    float* p = (float*)malloc(sizeof(float) * 3 * N);
+    uint64_t r = 12345;
+    for (int i = 0; i < 3 * N; ++i) {
+        r = r * 6364136223846793005ull + 1442695040888963407ull;
+        p[i] = atom[i % 3] + 6.0f * ((float)(r >> 40) / (float)(1ull << 24) - 0.5f);
     }
-    EXPECT_LT(worst, 1.0e-6);
-
+    double rho[2][N];
+    qm_test_t* t[2] = {&sph, &car};
+    md_gto_basis_t* b[2] = {&sph_basis, &car_basis};
+    for (int k = 0; k < 2; ++k) {
+        double *rows = NULL, *w = NULL;
+        size_t na = 0;
+        const size_t n = md_qm_density_orbitals(&rows, &w, &na, &t[k]->sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+        ASSERT_EQ(n, 5u);
+        md_gto_iso_field_t* f = md_gto_iso_field_create_products(b[k], atom, 0, rows, NULL, w, n, md_get_heap_allocator());
+        ASSERT_TRUE(f != NULL);
+        md_gto_iso_field_evaluate(f, p, N, 0, rho[k], NULL);
+        md_gto_iso_field_destroy(f);
+        md_free(md_get_heap_allocator(), rows, sizeof(double) * n * na);
+        md_free(md_get_heap_allocator(), w, sizeof(double) * n);
+    }
+    double worst = 0.0;
+    for (int i = 0; i < N; ++i) {
+        if (rho[0][i] > 1e-6) worst = fmax(worst, fabs(rho[1][i] - rho[0][i]) / rho[0][i]);
+    }
+    printf("  [5D] and [6D] water: the densities at %d points agree to %.1e (relative)\n", N, worst);
+    EXPECT_LT(worst, 1.0e-5);
+    free(p);
     qm_test_free(&sph);
     qm_test_free(&car);
 }
