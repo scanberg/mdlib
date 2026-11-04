@@ -326,16 +326,6 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
 // neither the bonds nor what the residues are by them: that is md_util_system_infer's, which a caller runs when (and
 // where, on what thread) it wants.
 
-// The occupancy, the b factor and the formal charge. Occupancy is a dimensionless fraction; the b factor is a mean square displacement. The
-// paths and the units are md_system's to define, not this loader's - md_mmcif publishes the same three out of the same
-// file family and they have to agree.
-static void pdb_publish_atom_columns(md_system_t* sys, const float* occupancy, const float* b_factor, const float* formal_charge) {
-    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/occupancy"), md_unit_none(),                     1, occupancy, sys->atom.count);
-    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/b_factor"),  md_unit_pow(md_unit_angstrom(), 2), 1, b_factor,  sys->atom.count);
-    // As md_mmcif publishes it: chemistry perception starts from what the file gives (all NAN, none given: not published)
-    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, formal_charge, sys->atom.count);
-}
-
 // What follows the atoms and residues: the cell, the bonds of the CONECT records (by the serials of the atoms loaded),
 // the units of the file (the runs of residues of one chain id) and the assemblies of REMARK 350
 static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const pdb_extras_t* x, const int32_t* atom_serial, const str_t* res_chain_ids, const bool* res_after_ter, md_allocator_i* temp_arena) {
@@ -347,6 +337,9 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
     // out (CONECT records usually cover the ligands only, in a coarse grained structure from martinize2 all of it).
     // Their serials name atoms of the first model; alternate locations other than the first are not loaded.
     const size_t num_conect = md_array_size(x->conect) / 2;
+    if (num_conect > 0 && !atom_serial) {
+        MD_LOG_INFO("PDB: CONECT records which are not at the end of the file, where the format has them, are not read");
+    }
     if (num_conect > 0 && atom_serial) {
         md_hashmap32_t serial_to_atom = { .allocator = temp_arena };
         md_hashmap_reserve(&serial_to_atom, sys->atom.count);
@@ -442,6 +435,8 @@ typedef struct pdb_piece_t {
     bool     unassigned;        // an atom without an element
 } pdb_piece_t;
 
+enum { PDB_COL_OCCUPANCY, PDB_COL_B_FACTOR, PDB_COL_CHARGE, PDB_NUM_COLUMNS };
+
 typedef struct pdb_block_t {
     const char*           text;
     size_t                len;
@@ -453,14 +448,12 @@ typedef struct pdb_block_t {
     bool                  prev_ter;     // a TER record after it, before the block
     pdb_residue_start_t*  res_starts;   // [atoms of the block]
     pdb_record_t*         records;      // [records of the block]
-    // Of the load, by atom
-    vec3_t*               xyz;
+    vec3_t*               xyz;          // Of the load, by atom: the state's
+    int32_t*              serial;       // Of the load, by atom, where CONECT records need them (pdb_has_conect): else NULL
+    // Of the block, by its atom: what is resolved once the block is read
     md_label_t*           atom_name;
     uint8_t*              element;      // PDB_NO_ELEMENT when the line has none
-    float*                occupancy;
-    float*                b_factor;
-    float*                charge;
-    int32_t*              serial;
+    float*                column[PDB_NUM_COLUMNS];  // occupancy, b factor, formal charge
 } pdb_block_t;
 
 static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
@@ -540,18 +533,21 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                 prev = fields;
 
                 b->xyz[atom] = vec3_set(extract_fixed_float(line, 31, 38, 3), extract_fixed_float(line, 39, 46, 3), extract_fixed_float(line, 47, 54, 3));
-                b->atom_name[atom] = make_label(str_trim(str_substr(line, 12, 4)));
+                const size_t k = atom - b->atom_beg;
+                b->atom_name[k] = make_label(str_trim(str_substr(line, 12, 4)));
                 const str_t element = str_trim(str_substr(line, 76, 2));
                 if (element.len) {
-                    b->element[atom] = (uint8_t)md_atomic_number_from_symbol(element, true);
+                    b->element[k] = (uint8_t)md_atomic_number_from_symbol(element, true);
                 } else {
-                    b->element[atom] = PDB_NO_ELEMENT;
+                    b->element[k] = PDB_NO_ELEMENT;
                     piece->unassigned = true;
                 }
-                b->occupancy[atom] = extract_fixed_float(line, 55, 60, 2);
-                b->b_factor[atom]  = extract_fixed_float(line, 61, 66, 2);
-                b->charge[atom]    = pdb_charge(str_substr(line, 78, 2));
-                b->serial[atom]    = line.len >= 11 ? parse_id(line, 7, 11, &piece->num_bad_ids) : 0;
+                b->column[PDB_COL_OCCUPANCY][k] = extract_fixed_float(line, 55, 60, 2);
+                b->column[PDB_COL_B_FACTOR][k]  = extract_fixed_float(line, 61, 66, 2);
+                b->column[PDB_COL_CHARGE][k]    = pdb_charge(str_substr(line, 78, 2));
+                if (b->serial) {
+                    b->serial[atom] = line.len >= 11 ? parse_id(line, 7, 11, &piece->num_bad_ids) : 0;
+                }
                 ++atom;
             } else if (kind >= PDB_LINE_TER) {
                 if (kind == PDB_LINE_TER) ter = true;
@@ -564,6 +560,70 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         }
         piece->num_residues = (size_t)(res - (b->res_starts + piece->first_atom));
     }
+}
+
+// A column of one value for every atom (the occupancy of 1 and the b factor of 0 of a file from a simulation, no formal
+// charge at all) is that value: an array is made once an atom differs, holding the value for the atoms before it. Bits
+// are compared, as md_attributes_publish_atom_column does to publish no column of one value (NAN is none).
+typedef struct pdb_column_t {
+    bool     seen;
+    uint32_t first;             // The bits of the first atom's value
+    md_array(float) data;       // NULL while every value is the first
+    size_t   reserve;           // Of the array, once made: for as many atoms as there can be
+} pdb_column_t;
+
+static inline uint32_t pdb_f32_bits(float x) {
+    uint32_t u;
+    MEMCPY(&u, &x, sizeof(u));
+    return u;
+}
+
+// The values of count atoms after the beg before them
+static void pdb_column_append(pdb_column_t* col, const float* values, size_t beg, size_t count, md_allocator_i* alloc) {
+    if (count == 0) return;
+    if (!col->data) {
+        if (!col->seen) {
+            col->seen = true;
+            col->first = pdb_f32_bits(values[0]);
+        }
+        size_t i = 0;
+        while (i < count && pdb_f32_bits(values[i]) == col->first) ++i;
+        if (i == count) return;
+        float first;
+        MEMCPY(&first, &col->first, sizeof(first));
+        md_array_ensure(col->data, MAX(beg + count, col->reserve), alloc);
+        md_array_resize(col->data, beg, alloc);
+        for (size_t j = 0; j < beg; ++j) col->data[j] = first;
+    }
+    md_array_push_array(col->data, values, count, alloc);
+}
+
+// Room for count elements in an array of the load, which grows by doubling past what was reserved
+#define PDB_ROOM(arr, count, alloc) do { \
+        if ((count) > md_array_capacity(arr)) md_array_ensure((arr), MAX((size_t)(count), 2 * md_array_capacity(arr)), (alloc)); \
+        md_array_resize((arr), (count), (alloc)); \
+    } while (0)
+
+// The CONECT records of a file are at its end (after the coordinates, before MASTER and END): when the end has none,
+// the serials of the atoms, which only they refer to, are not kept. A source which cannot be looked at the end of (a
+// stream) is taken to have them.
+#define PDB_CONECT_PROBE KILOBYTES(256)
+
+static bool pdb_has_conect(md_reader_i* src) {
+    const int64_t size = md_reader_size(src);
+    if (size < 0) return true;
+    const int64_t from = MAX(0, size - (int64_t)PDB_CONECT_PROBE);
+    if (!md_reader_seek(src, from)) return true;
+    bool found = false;
+    str_t line;
+    if (from > 0) md_reader_skip_line(src);     // The rest of a line which began before
+    while (!found && md_reader_extract_line(src, &line)) {
+        found = str_eq_cstr_n(line, "CONECT", 6);
+    }
+    if (!md_reader_rewind(src)) {
+        MD_LOG_ERROR("PDB: the source cannot be read from its start again");
+    }
+    return found;
 }
 
 static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, md_pdb_options_t options, const md_executor_t* ex) {
@@ -579,9 +639,14 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     md_system_reset(sys);
     md_system_state_init(state, 0);
 
-    md_allocator_i* heap = md_get_heap_allocator();
+    // Everything of the load but what the system keeps is in one temp scope, rewound at the end. The tasks of the
+    // executor take nothing of it (pdb_count_lines, pdb_parse_lines allocate nothing): a scope of their thread's own,
+    // the calling thread's too, would not collide with it. Arrays are reserved for as many atoms as there can be, so
+    // that none grows (and copies) in the arena while another is above it: the reservation is address space, and only
+    // what is written becomes memory.
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+    md_allocator_i* scratch = temp_arena;
 
     const bool concat_models = (options & MD_PDB_OPTION_CONCAT_MODELS) != 0;
 
@@ -591,16 +656,16 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     md_array(pdb_residue_start_t) res_starts = 0;   // of the load
     md_array(pdb_residue_start_t) block_res = 0;    // of a block, at the place of the atom of each piece
     md_array(pdb_record_t)        records = 0;      // of a block
-    md_array(vec3_t)              xyz = 0;
+    // Of a block
     md_array(md_label_t)          atom_name = 0;
     md_array(uint8_t)             element = 0;
-    md_array(float)               occupancy = 0;
-    md_array(float)               b_factor = 0;
-    md_array(float)               charge = 0;
-    md_array(int32_t)             serial = 0;
+    md_array(float)               column[PDB_NUM_COLUMNS] = {0};
+    // Of the load, where they are needed
+    md_array(int32_t)             serial = 0;       // Where the file has CONECT records
+    md_array(md_label_t)          labels = 0;       // Where atoms have no element: their names, to be typed by
+    pdb_column_t                  col[PDB_NUM_COLUMNS] = {0};
     pdb_extras_t extras = { .alloc = temp_arena };
     uint32_t num_bad_ids = 0;
-    bool unassigned = false;
     bool result = false;
 
     // The first model: [model_beg, model_end) of the atoms read, once its MODEL and ENDMDL records are seen
@@ -608,18 +673,36 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     size_t num_models = 0;
     size_t model_beg = 0;
 
-    // Room for as many atoms as there can be: an atom line of coordinates has 54 characters at least. Pages are only
-    // taken when written, so the room beyond the atoms costs nothing, and the arrays do not grow (and copy) as they fill.
+    // Straight into the state and the system: as many atoms as there can be, as an atom line of coordinates has 54
+    // characters at least. The room beyond the atoms is address space, not memory, until written.
+    const bool keep_serial = pdb_has_conect(src);
+    const int64_t src_size = md_reader_size(src);
+    const size_t max_atoms = src_size >= 0 ? (size_t)src_size / 55 + 16 : 0;
     {
-        const size_t cap = (size_t)MAX(0, md_reader_size(src)) / 55 + 16;
-        md_array_ensure(xyz,       cap, heap);
-        md_array_ensure(atom_name, cap, heap);
-        md_array_ensure(element,   cap, heap);
-        md_array_ensure(occupancy, cap, heap);
-        md_array_ensure(b_factor,  cap, heap);
-        md_array_ensure(charge,    cap, heap);
-        md_array_ensure(serial,    cap, heap);
+        md_array_ensure(state->xyz, max_atoms, state->alloc);
+        md_array_ensure(sys->atom.type_idx, ROUND_UP(max_atoms, 16), sys->alloc);
+        md_array_ensure(res_starts, max_atoms, scratch);
+        if (keep_serial) md_array_ensure(serial, max_atoms, scratch);
+        // Of a block: of as many atoms as a block of the reader holds (a string is one block)
+        const size_t block_cap = src->cap ? src->cap : (size_t)MAX(0, src_size);
+        const size_t block_atoms = block_cap / 55 + 16;
+        md_array_ensure(atom_name, block_atoms, scratch);
+        md_array_ensure(element,   block_atoms, scratch);
+        md_array_ensure(block_res, block_atoms, scratch);
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) md_array_ensure(column[c], block_atoms, scratch);
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) col[c].reserve = max_atoms;
+        md_array_ensure(pieces, md_text_num_pieces(block_cap, md_executor_num_threads(ex)), scratch);
+        md_array_ensure(ranges, md_text_num_pieces(block_cap, md_executor_num_threads(ex)), scratch);
     }
+
+    // The types, as the atoms are read: of the name and the element where the line gives one
+	// Add default unknown particle type at index 0
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_hashmap32_t type_map = { .allocator = temp_arena };
+    // The atom before's type, which the next often shares (a water's hydrogens, an ion after another)
+    uint64_t prev_name = 0;
+    uint8_t  prev_element = PDB_NO_ELEMENT;
+    md_particle_type_idx_t prev_type = 0;
 
     const uint32_t num_threads = md_executor_num_threads(ex);
     for (;;) {
@@ -627,8 +710,8 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         if (block.len == 0) break;
 
         const size_t num_pieces = md_text_num_pieces(block.len, num_threads);
-        md_array_resize(pieces, num_pieces, heap);
-        md_array_resize(ranges, num_pieces, heap);
+        md_array_resize(pieces, num_pieces, scratch);
+        md_array_resize(ranges, num_pieces, scratch);
         md_text_split(ranges, num_pieces, block.ptr, block.len);
         for (size_t p = 0; p < num_pieces; ++p) pieces[p] = (pdb_piece_t){ .range = ranges[p] };
 
@@ -648,22 +731,19 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
 
         // Room for the atoms of the block, where they go
         const size_t total = num_atoms + block_atoms;
-        md_array_resize(xyz,       total, heap);
-        md_array_resize(atom_name, total, heap);
-        md_array_resize(element,   total, heap);
-        md_array_resize(occupancy, total, heap);
-        md_array_resize(b_factor,  total, heap);
-        md_array_resize(charge,    total, heap);
-        md_array_resize(serial,    total, heap);
-        md_array_resize(block_res, block_atoms, heap);
-        md_array_resize(records, block_records, heap);
-        b.xyz = xyz;
+        PDB_ROOM(state->xyz, total, state->alloc);
+        PDB_ROOM(sys->atom.type_idx, total, sys->alloc);
+        if (keep_serial) PDB_ROOM(serial, total, scratch);
+        PDB_ROOM(atom_name, block_atoms, scratch);
+        PDB_ROOM(element,   block_atoms, scratch);
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) PDB_ROOM(column[c], block_atoms, scratch);
+        PDB_ROOM(block_res, block_atoms, scratch);
+        PDB_ROOM(records, block_records, scratch);
+        b.xyz = state->xyz;
+        b.serial = keep_serial ? serial : NULL;
         b.atom_name = atom_name;
         b.element = element;
-        b.occupancy = occupancy;
-        b.b_factor = b_factor;
-        b.charge = charge;
-        b.serial = serial;
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) b.column[c] = column[c];
         b.records = records;
         // Each piece writes its residues at the place of its first atom, put in order below
         b.res_starts = block_res;
@@ -671,13 +751,37 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         if (!md_parallel_for(ex, (uint32_t)num_pieces, 1, pdb_parse_lines, &b)) goto done;   // Cancelled
 
         // The residues in order, after those before the block
+        bool unassigned = false;
         for (size_t p = 0; p < num_pieces; ++p) {
             const pdb_piece_t* piece = &pieces[p];
-            md_array_push_array(res_starts, block_res + piece->first_atom, piece->num_residues, heap);
+            md_array_push_array(res_starts, block_res + piece->first_atom, piece->num_residues, scratch);
             num_bad_ids += piece->num_bad_ids;
             unassigned |= piece->unassigned;
         }
         sys->residue.count = md_array_size(res_starts);   // Counted here, made below
+
+        // The types of the block's atoms. Atoms without an element are typed by their names once all are read: the
+        // names are kept from the first such atom on, and those of the atoms before it are those of their types.
+        for (size_t k = 0; k < block_atoms; ++k) {
+            if (element[k] == PDB_NO_ELEMENT) {
+                sys->atom.type_idx[num_atoms + k] = 0;
+                continue;
+            }
+            const uint64_t name = md_label_key(atom_name[k]);
+            if (name != prev_name || element[k] != prev_element) {
+                prev_type = md_util_particle_type_find_or_add(sys, &type_map, md_label_str(&atom_name[k]), (md_atomic_number_t)element[k]);
+                prev_name = name;
+                prev_element = element[k];
+            }
+            sys->atom.type_idx[num_atoms + k] = prev_type;
+        }
+        if (unassigned && !labels) {
+            md_array_ensure(labels, MAX(total, max_atoms), scratch);
+            md_array_resize(labels, num_atoms, scratch);
+            for (size_t i = 0; i < num_atoms; ++i) labels[i] = sys->atom.type.name[sys->atom.type_idx[i]];
+        }
+        if (labels) md_array_push_array(labels, atom_name, block_atoms, scratch);
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) pdb_column_append(&col[c], column[c], num_atoms, block_atoms, scratch);
 
         // The residue fields of the last atom, and a TER after it, for the next block
         if (block_atoms > 0) {
@@ -736,13 +840,13 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     {
         const size_t n = num_atoms - model_beg;
         if (model_beg > 0) {
-            MEMMOVE(xyz,        xyz + model_beg,        n * sizeof(vec3_t));
-            MEMMOVE(atom_name,  atom_name + model_beg,  n * sizeof(md_label_t));
-            MEMMOVE(element,    element + model_beg,    n * sizeof(uint8_t));
-            MEMMOVE(occupancy,  occupancy + model_beg,  n * sizeof(float));
-            MEMMOVE(b_factor,   b_factor + model_beg,   n * sizeof(float));
-            MEMMOVE(charge,     charge + model_beg,     n * sizeof(float));
-            MEMMOVE(serial,     serial + model_beg,     n * sizeof(int32_t));
+            MEMMOVE(state->xyz,         state->xyz + model_beg,         n * sizeof(vec3_t));
+            MEMMOVE(sys->atom.type_idx, sys->atom.type_idx + model_beg, n * sizeof(md_particle_type_idx_t));
+            if (serial) MEMMOVE(serial, serial + model_beg, n * sizeof(int32_t));
+            if (labels) MEMMOVE(labels, labels + model_beg, n * sizeof(md_label_t));
+            for (int c = 0; c < PDB_NUM_COLUMNS; ++c) {
+                if (col[c].data) MEMMOVE(col[c].data, col[c].data + model_beg, n * sizeof(float));
+            }
         }
         // The residue of the first atom of the model, which may have begun before it
         pdb_residue_start_t first = {0};
@@ -756,7 +860,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         }
         if (n > 0 && (num_res == 0 || res_starts[0].atom != 0)) {
             first.atom = 0;
-            md_array_push(res_starts, first, heap);     // Room for one more
+            md_array_push(res_starts, first, scratch);     // Room for one more
             MEMMOVE(res_starts + 1, res_starts, num_res * sizeof(pdb_residue_start_t));
             res_starts[0] = first;
             num_res += 1;
@@ -772,14 +876,15 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
 
     // The atoms
     md_array_resize(state->xyz, num_atoms, state->alloc);
-    MEMCPY(state->xyz, xyz, num_atoms * sizeof(vec3_t));
     state->num_atoms = num_atoms;
     sys->atom.count = num_atoms;
-    const size_t capacity = ROUND_UP(num_atoms, 16);
-    md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
-    md_array_resize(sys->atom.flags,    capacity, sys->alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MEMSET(sys->atom.flags,    0, capacity * sizeof(md_atom_flags_t));
+    {
+        const size_t capacity = ROUND_UP(num_atoms, 16);
+        PDB_ROOM(sys->atom.type_idx, capacity, sys->alloc);
+        MEMSET(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
+        md_array_resize(sys->atom.flags, capacity, sys->alloc);
+        MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    }
 
     // The residues, and their chain ids
     const size_t num_res = sys->residue.count;
@@ -809,47 +914,26 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     }
     sys->residue.atom_offset[num_res] = (uint32_t)num_atoms;    // Final sentinel
 
-    // The types: of the name and the element where the line gives one, by name otherwise
-	// Add default unknown particle type at index 0
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
-    {
-        md_hashmap32_t type_map = { .allocator = temp_arena };
-        // The atom before's type, which the next often shares (a water's hydrogens, an ion after another)
-        uint64_t prev_name = 0;
-        uint8_t  prev_element = PDB_NO_ELEMENT;
-        md_particle_type_idx_t prev_type = 0;
-        for (size_t i = 0; i < num_atoms; ++i) {
-            if (element[i] == PDB_NO_ELEMENT) continue;
-            const uint64_t name = md_label_key(atom_name[i]);
-            if (name != prev_name || element[i] != prev_element) {
-                prev_type = md_util_particle_type_find_or_add(sys, &type_map, md_label_str(&atom_name[i]), (md_atomic_number_t)element[i]);
-                prev_name = name;
-                prev_element = element[i];
-            }
-            sys->atom.type_idx[i] = prev_type;
-        }
-    }
-    if (unassigned) {
-        md_util_system_infer_particle_types_from_labels(sys, atom_name);
+    if (labels) {
+        md_util_system_infer_particle_types_from_labels(sys, labels);
     }
 
-    pdb_publish_atom_columns(sys, occupancy, b_factor, charge);
+    // The columns which hold more than one value: md_mmcif publishes the same, and they have to agree
+    if (col[PDB_COL_OCCUPANCY].data) {
+        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/occupancy"), md_unit_none(), 1, col[PDB_COL_OCCUPANCY].data, num_atoms);
+    }
+    if (col[PDB_COL_B_FACTOR].data) {
+        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/b_factor"), md_unit_pow(md_unit_angstrom(), 2), 1, col[PDB_COL_B_FACTOR].data, num_atoms);
+    }
+    if (col[PDB_COL_CHARGE].data) {
+        // Chemistry perception starts from what the file gives
+        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, col[PDB_COL_CHARGE].data, num_atoms);
+    }
     pdb_system_finish(sys, state, &extras, serial, res_chain_ids, res_after_ter, temp_arena);
     result = true;
 
 done:
-    md_array_free(pieces, heap);
-    md_array_free(ranges, heap);
-    md_array_free(res_starts, heap);
-    md_array_free(block_res, heap);
-    md_array_free(xyz, heap);
-    md_array_free(records, heap);
-    md_array_free(atom_name, heap);
-    md_array_free(element, heap);
-    md_array_free(occupancy, heap);
-    md_array_free(b_factor, heap);
-    md_array_free(charge, heap);
-    md_array_free(serial, heap);
+    // The scratch goes with the scope
     md_temp_end(temp_scope);
     if (!result) {
         md_system_reset(sys);
@@ -858,20 +942,26 @@ done:
     return result;
 }
 
+#undef PDB_ROOM
+
 bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, md_pdb_options_t options, const md_executor_t* executor) {
     md_reader_i src = md_reader_from_str(str);
     return pdb_load(sys, state, &src, options, executor);
 }
 
 bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options, const md_executor_t* executor) {
+    // The reader's buffer in a temp scope, below the one of the load (pdb_load)
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
-    if (!md_file_reader_open(&fr, filename, MD_TEXT_BLOCK_SIZE, md_get_heap_allocator())) {
+    if (!md_file_reader_open(&fr, filename, MD_TEXT_BLOCK_SIZE, md_temp_allocator(temp))) {
         MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
+        md_temp_end(temp);
         return false;
     }
     // Several models are a trajectory as well: md_pdb_system_publish_run makes them a run.
     const bool result = pdb_load(sys, state, &fr.r, options, executor);
     md_file_reader_close(&fr);
+    md_temp_end(temp);
     return result;
 }
 
