@@ -43,7 +43,7 @@ static inline float extract_float(str_t line, size_t beg, size_t end) {
 // A column the format writes with a fixed number of decimals ("%8.3f" for coordinates, "%6.2f" for
 // occupancy and temperature factor): read without a scan when it is laid out that way, and parsed like
 // any other column when it is not
-static inline float extract_fixed_float(str_t line, size_t beg, size_t end, size_t decimals) {
+static FORCE_INLINE float extract_fixed_float(str_t line, size_t beg, size_t end, size_t decimals) {
     if (line.len < end) return 0.0f;
     const str_t field = str_substr(line, beg - 1, end-beg + 1);
     float value;
@@ -72,7 +72,7 @@ static inline int32_t parse_id(str_t line, size_t beg, size_t end, uint32_t* num
 
 // The formal charge of the charge column (79 to 80): a digit and its sign, "1-" or "2+" (and the sign first, as some
 // writers have it). NAN where there is none, which chemistry perception takes as not given (md_chem_perceive).
-static inline float pdb_charge(str_t field) {
+static FORCE_INLINE float pdb_charge(str_t field) {
     field = str_trim(field);
     if (field.len == 1 && field.ptr[0] == '0') return 0.0f;
     if (field.len != 2) return NAN;
@@ -103,20 +103,31 @@ static inline bool is_cryst1_record(str_t line) {
     return str_eq_cstr_n(line, "CRYST", 5) && (line.len == 5 || line.ptr[5] == '1' || line.ptr[5] == ' ');
 }
 
-static inline pdb_line_kind_t pdb_line_kind(str_t line) {
-    // A TER record may be the three letters alone (GROMACS, and the EM structures of the PDB written by some tools)
-    if (str_eq_cstr_n(line, "TER", 3)) return PDB_LINE_TER;
-    if (line.len < 6) return PDB_LINE_NONE;
-    if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-        // The first alternate location only: blank or A
-        const char alt_loc = extract_char(line, 17);
-        return (alt_loc == ' ' || alt_loc == 'A') ? PDB_LINE_ATOM : PDB_LINE_ATOM_SKIPPED;
+// The first four characters of a record name as a word, as they are in memory (little endian)
+#define PDB_TAG(a, b, c, d) ((uint32_t)(uint8_t)(a) | ((uint32_t)(uint8_t)(b) << 8) | ((uint32_t)(uint8_t)(c) << 16) | ((uint32_t)(uint8_t)(d) << 24))
+
+// What a line is, by its record name: its first four characters as one word, the atoms first (they are the most)
+static FORCE_INLINE pdb_line_kind_t pdb_line_kind(str_t line) {
+    const char* p = line.ptr;
+    if (line.len >= 6) {
+        uint32_t w;
+        MEMCPY(&w, p, 4);
+        if (w == PDB_TAG('A','T','O','M') || (w == PDB_TAG('H','E','T','A') && p[4] == 'T' && p[5] == 'M')) {
+            // The first alternate location only: blank or A
+            const char alt_loc = extract_char(line, 17);
+            return (alt_loc == ' ' || alt_loc == 'A') ? PDB_LINE_ATOM : PDB_LINE_ATOM_SKIPPED;
+        }
+        if ((w & 0xFFFFFF) == (PDB_TAG('T','E','R',0)))                         return PDB_LINE_TER;
+        if (w == PDB_TAG('M','O','D','E') && p[4] == 'L')                       return PDB_LINE_MODEL;
+        if (w == PDB_TAG('E','N','D','M') && p[4] == 'D' && p[5] == 'L')        return PDB_LINE_ENDMDL;
+        if (w == PDB_TAG('C','O','N','E') && p[4] == 'C' && p[5] == 'T')        return PDB_LINE_CONECT;
+        if (w == PDB_TAG('C','R','Y','S') && is_cryst1_record(line))            return PDB_LINE_CRYST1;
+        if (w == PDB_TAG('R','E','M','A') && str_eq_cstr_n(line, "REMARK 350", 10)) return PDB_LINE_REMARK_350;
+        return PDB_LINE_NONE;
     }
-    if (str_eq_cstr_n(line, "MODEL", 5))        return PDB_LINE_MODEL;
-    if (str_eq_cstr_n(line, "ENDMDL", 6))       return PDB_LINE_ENDMDL;
-    if (str_eq_cstr_n(line, "CONECT", 6))       return PDB_LINE_CONECT;
-    if (is_cryst1_record(line))                 return PDB_LINE_CRYST1;
-    if (str_eq_cstr_n(line, "REMARK 350", 10))  return PDB_LINE_REMARK_350;
+    // A TER record may be the three letters alone (GROMACS, and the EM structures of the PDB written by some tools)
+    if (line.len >= 3 && p[0] == 'T' && p[1] == 'E' && p[2] == 'R') return PDB_LINE_TER;
+    if (line.len == 5 && is_cryst1_record(line))                    return PDB_LINE_CRYST1;
     return PDB_LINE_NONE;
 }
 
@@ -462,16 +473,39 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     for (uint32_t p = beg; p < end; ++p) {
         pdb_piece_t* piece = &b->pieces[p];
         size_t num_atoms = 0, num_records = 0;
-        const char* c = b->text + piece->range.beg;
-        const char* e = b->text + piece->range.end;
-        while (c < e) {
-            const pdb_line_kind_t kind = pdb_line_kind(md_text_next_line(&c, e));
+        md_text_lines_t lines = md_text_lines(b->text + piece->range.beg, b->text + piece->range.end);
+        str_t line;
+        while (md_text_lines_next(&lines, &line)) {
+            const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_ATOM) num_atoms += b->atoms ? 1 : 0;
             else if (kind >= PDB_LINE_TER) num_records += 1;
         }
         piece->num_atoms = num_atoms;
         piece->num_records = num_records;
     }
+}
+
+// A column of the atom lines as the last atom had it: its characters (up to 8, in the low bytes of a word), and the value
+// they are. UINT64_MAX is none: no field of up to 6 characters is that.
+typedef struct pdb_field_cache_t {
+    uint64_t raw;
+    float    value;
+} pdb_field_cache_t;
+
+// Columns beg to end (from 1, both included) of the line: the occupancy and the b factor ("%6.2f"), or the charge
+static FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, str_t line, size_t beg, size_t end) {
+    const size_t width = end - beg + 1;
+    uint64_t raw = 0;
+    if (line.len >= end) {
+        MEMCPY(&raw, line.ptr + beg - 1, width);
+    } else if (line.len >= beg) {
+        MEMCPY(&raw, line.ptr + beg - 1, line.len - beg + 1);      // The end of a line shorter than the column
+    }
+    raw |= (uint64_t)MIN(line.len - MIN(line.len, beg - 1), width) << 56;    // and how much of it there is
+    if (raw == cache->raw) return cache->value;
+    cache->raw = raw;
+    cache->value = width == 2 ? pdb_charge(str_substr(line, beg - 1, 2)) : extract_fixed_float(line, beg, end, 2);
+    return cache->value;
 }
 
 static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
@@ -506,13 +540,13 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             }
         }
 
+        pdb_field_cache_t cache[PDB_NUM_COLUMNS] = { {UINT64_MAX}, {UINT64_MAX}, {UINT64_MAX} };
         pdb_residue_start_t* res = b->res_starts + piece->first_atom;
         pdb_record_t* rec = b->records + piece->first_record;
         size_t atom = b->atom_beg + piece->first_atom;
-        const char* c = b->text + piece->range.beg;
-        const char* e = b->text + piece->range.end;
-        while (c < e) {
-            const str_t line = md_text_next_line(&c, e);
+        md_text_lines_t lines = md_text_lines(b->text + piece->range.beg, b->text + piece->range.end);
+        str_t line;
+        while (md_text_lines_next(&lines, &line)) {
             const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_ATOM && b->atoms) {
                 // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B
@@ -542,9 +576,11 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                     b->element[k] = PDB_NO_ELEMENT;
                     piece->unassigned = true;
                 }
-                b->column[PDB_COL_OCCUPANCY][k] = extract_fixed_float(line, 55, 60, 2);
-                b->column[PDB_COL_B_FACTOR][k]  = extract_fixed_float(line, 61, 66, 2);
-                b->column[PDB_COL_CHARGE][k]    = pdb_charge(str_substr(line, 78, 2));
+                // The occupancy, b factor and charge of most atoms are those of the atom before: the same characters,
+                // which are not parsed again
+                b->column[PDB_COL_OCCUPANCY][k] = pdb_field_cached(&cache[PDB_COL_OCCUPANCY], line, 55, 60);
+                b->column[PDB_COL_B_FACTOR][k]  = pdb_field_cached(&cache[PDB_COL_B_FACTOR],  line, 61, 66);
+                b->column[PDB_COL_CHARGE][k]    = pdb_field_cached(&cache[PDB_COL_CHARGE],    line, 79, 80);
                 if (b->serial) {
                     b->serial[atom] = line.len >= 11 ? parse_id(line, 7, 11, &piece->num_bad_ids) : 0;
                 }
@@ -706,8 +742,11 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
 
     const uint32_t num_threads = md_executor_num_threads(ex);
     for (;;) {
-        const str_t block = md_reader_block(src);
+        str_t block = md_reader_block(src);
         if (block.len == 0) break;
+        // A pass over at most MD_TEXT_PASS_SIZE: what the lines are, then what they hold, of text the first left in
+        // the caches (a block of a file is larger than most last level caches; a string is one block)
+        block.len = md_text_pass_len(block.ptr, block.len);
 
         const size_t num_pieces = md_text_num_pieces(block.len, num_threads);
         md_array_resize(pieces, num_pieces, scratch);

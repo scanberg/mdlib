@@ -420,10 +420,7 @@ static void gro_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     gro_block_t* b = (gro_block_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         gro_piece_t* piece = &b->pieces[p];
-        size_t n = 0;
-        const char* c = b->text + piece->range.beg;
-        const char* e = b->text + piece->range.end;
-        while (c < e && (c = memchr(c, '\n', (size_t)(e - c))) != NULL) { ++n; ++c; }
+        size_t n = md_text_count_newlines(b->text + piece->range.beg, b->text + piece->range.end);
         // The last line of the text may not end in one
         if (piece->range.end == b->len && piece->range.end > piece->range.beg && b->text[piece->range.end - 1] != '\n') ++n;
         piece->num_lines = n;
@@ -449,16 +446,18 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         str_t prev = piece->range.beg > 0 ? md_text_line_before(b->text, piece->range.beg) : b->prev_res;
 
         gro_residue_start_t* res = b->res_starts + piece->first_line;
-        const char* c = b->text + piece->range.beg;
-        const char* e = b->text + piece->range.end;
+        md_text_lines_t lines = md_text_lines(b->text + piece->range.beg, b->text + piece->range.end);
         size_t atom = b->atom_beg + piece->first_line;
-        while (c < e) {
+        str_t line;
+        for (;;) {
             if (atom >= b->num_atoms) {
-                piece->atoms_end = true;
-                piece->end_of_atoms = (size_t)(c - b->text);
+                if (lines.beg < lines.end) {
+                    piece->atoms_end = true;
+                    piece->end_of_atoms = (size_t)(lines.beg - b->text);
+                }
                 break;
             }
-            const str_t line = md_text_next_line(&c, e);
+            if (!md_text_lines_next(&lines, &line)) break;
 
             if (atom == 0 || !gro_same_residue(prev, line)) {
                 res->atom   = (uint32_t)atom;
@@ -493,7 +492,10 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         MD_LOG_ERROR("System allocator not set");
         return false;
     }
-    md_allocator_i* heap = md_get_heap_allocator();
+    // What the load holds besides the system, in a temp scope rewound at the end: the executor's tasks allocate
+    // nothing (gro_count_lines, gro_parse_lines), so their threads' scopes and this one do not meet
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_allocator_i* scratch = md_temp_allocator(temp);
     bool result = false;
     size_t num_atoms = 0;
     gro_block_t b = {0};
@@ -522,6 +524,10 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     num_atoms = (size_t)num_atoms_in_file;
 
     if (!gro_system_begin(sys, state, num_atoms)) goto done;
+    // Room for what the passes hold, so that nothing grows (and copies) in the arena: the residues of the load (no
+    // more than the atoms), the residues of a pass (no more than its lines, of 20 characters at least)
+    md_array_ensure(residues, num_atoms, scratch);
+    md_array_ensure(res_starts, MD_TEXT_PASS_SIZE / 20 + 16, scratch);
 
     // The columns, and whether there are velocities, as the first atom line shows them. GROMACS writes the velocities
     // of all atoms or of none: a file whose first atom has none is read without.
@@ -534,23 +540,25 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         float xyz[3], vel[3];
         gro_parse_coordinates(xyz, vel, first, b.columns, b.width, b.decimals);
         if (!gro_absent(vel[0])) {
-            b.velocity = md_alloc(heap, num_atoms * 3 * sizeof(float));
+            b.velocity = md_alloc(scratch, num_atoms * 3 * sizeof(float));
         }
     }
-    b.atom_names = md_alloc(heap, num_atoms * sizeof(md_label_t));
+    b.atom_names = md_alloc(scratch, num_atoms * sizeof(md_label_t));
 
     const uint32_t num_threads = md_executor_num_threads(ex);
 
     while (atom < num_atoms) {
-        const str_t block = md_reader_block(src);
+        str_t block = md_reader_block(src);
         if (block.len == 0) {
             MD_LOG_ERROR("The file ends after %zu of its %zu atoms", atom, num_atoms);
             goto done;
         }
+        // A pass over at most MD_TEXT_PASS_SIZE: the lines counted, then read, of text the count left in the caches
+        block.len = md_text_pass_len(block.ptr, block.len);
 
         const size_t num_pieces = md_text_num_pieces(block.len, num_threads);
-        md_array_resize(pieces, num_pieces, heap);
-        md_array_resize(ranges, num_pieces, heap);
+        md_array_resize(pieces, num_pieces, scratch);
+        md_array_resize(ranges, num_pieces, scratch);
         md_text_split(ranges, num_pieces, block.ptr, block.len);
         for (size_t p = 0; p < num_pieces; ++p) pieces[p] = (gro_piece_t){ .range = ranges[p] };
 
@@ -567,7 +575,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
             pieces[p].first_line = num_lines;
             num_lines += pieces[p].num_lines;
         }
-        md_array_resize(res_starts, num_lines, heap);
+        md_array_resize(res_starts, num_lines, scratch);
         b.res_starts = res_starts;
 
         if (!md_parallel_for(ex, (uint32_t)num_pieces, 1, gro_parse_lines, &b)) {
@@ -578,7 +586,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         size_t consumed = block.len;
         for (size_t p = 0; p < num_pieces; ++p) {
             const gro_piece_t* piece = &pieces[p];
-            md_array_push_array(residues, res_starts + piece->first_line, piece->num_residues, heap);
+            md_array_push_array(residues, res_starts + piece->first_line, piece->num_residues, scratch);
             loose |= piece->loose;
             if (piece->atoms_end) {
                 consumed = piece->end_of_atoms;
@@ -631,24 +639,24 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     result = true;
 
 done:
-    if (b.velocity)   md_free(heap, b.velocity, num_atoms * 3 * sizeof(float));
-    if (b.atom_names) md_free(heap, b.atom_names, num_atoms * sizeof(md_label_t));
-    md_array_free(pieces, heap);
-    md_array_free(ranges, heap);
-    md_array_free(res_starts, heap);
-    md_array_free(residues, heap);
+    // The scratch goes with the scope
+    md_temp_end(temp);
     if (!result) md_system_reset(sys);
     return result;
 }
 
 bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const md_executor_t* ex) {
+    // The reader's buffer in a temp scope, below the one of the load (gro_load)
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
-    if (!md_file_reader_open(&fr, filename, MD_TEXT_BLOCK_SIZE, md_get_heap_allocator())) {
+    if (!md_file_reader_open(&fr, filename, MD_TEXT_BLOCK_SIZE, md_temp_allocator(temp))) {
         MD_LOG_ERROR("Could not open file '%.*s'", (int)filename.len, filename.ptr);
+        md_temp_end(temp);
         return false;
     }
     const bool result = gro_load(sys, state, &fr.r, ex);
     md_file_reader_close(&fr);
+    md_temp_end(temp);
     return result;
 }
 

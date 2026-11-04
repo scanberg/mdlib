@@ -750,3 +750,47 @@ UTEST(parse, perf) {
         md_tick_to_milliseconds(t1 - t0) * 1e6 / nf, md_tick_to_milliseconds(t2 - t1) * 1e6 / nf,
         md_tick_to_milliseconds(t3 - t2) * 1e6 / ni, md_tick_to_milliseconds(t4 - t3) * 1e6 / ni, facc, (long long)iacc);
 }
+
+// The lines of a range in bulk (md_text_lines_t) are those of a plain split, for every start and end in a text of
+// empty lines, CRLF ends, long lines, and none at its end: the masks of the chunks before the start and past the end
+// see bytes of the text which are not of the range.
+static size_t text_lines_reference(str_t* out, size_t cap, const char* c, const char* e) {
+    size_t n = 0;
+    while (c < e && n < cap) {
+        const char* nl = c;
+        while (nl < e && *nl != '\n') ++nl;
+        const char* le = nl;
+        if (le > c && le[-1] == '\r') --le;
+        out[n++] = (str_t){ c, (size_t)(le - c) };
+        c = nl < e ? nl + 1 : e;
+    }
+    return n;
+}
+
+UTEST(parse, text_lines) {
+    char text[512 + 64];
+    uint64_t state = 7;
+    for (size_t i = 0; i < 512; ++i) {
+        const uint64_t r = rng_next(&state) % 23;
+        text[i] = r == 0 ? '\n' : r == 1 ? '\r' : (char)('a' + r);
+    }
+    // A long line, and runs of empty lines
+    for (size_t i = 100; i < 230; ++i) text[i] = 'x';
+    for (size_t i = 300; i < 310; ++i) text[i] = '\n';
+    str_t want[600], got[600];
+    size_t mismatches = 0;
+    for (size_t beg = 0; beg < 200; beg += 1) {
+        for (size_t end = beg; end <= 512; end += 7) {
+            const size_t n = text_lines_reference(want, ARRAY_SIZE(want), text + beg, text + end);
+            md_text_lines_t it = md_text_lines(text + beg, text + end);
+            size_t m = 0;
+            str_t line;
+            while (m < ARRAY_SIZE(got) && md_text_lines_next(&it, &line)) got[m++] = line;
+            if (m != n) { mismatches += 1; continue; }
+            for (size_t k = 0; k < n; ++k) {
+                if (got[k].ptr != want[k].ptr || got[k].len != want[k].len) { mismatches += 1; break; }
+            }
+        }
+    }
+    EXPECT_EQ((size_t)0, mismatches);
+}
