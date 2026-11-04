@@ -518,24 +518,6 @@ static double qm_overlap_1d(int la, int lb, double pa, double pb, double p) {
     return sum;
 }
 
-// <mono_a exp(-a|r-A|^2) | mono_b exp(-b|r-B|^2)>, the whole three dimensional primitive overlap.
-static double qm_primitive_overlap(double a, const double A[3], const int lmn_a[3],
-                                   double b, const double B[3], const int lmn_b[3]) {
-    const double p  = a + b;
-    const double mu = a * b / p;
-    double r2 = 0.0;
-    for (int k = 0; k < 3; ++k) {
-        const double d = A[k] - B[k];
-        r2 += d * d;
-    }
-    double v = exp(-mu * r2) * pow(PI / p, 1.5);
-    for (int k = 0; k < 3; ++k) {
-        const double P = (a * A[k] + b * B[k]) / p;
-        v *= qm_overlap_1d(lmn_a[k], lmn_b[k], P - A[k], P - B[k], p);
-    }
-    return v;
-}
-
 size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const dvec3_t atom_coord_bohr[], size_t num_atoms) {
     if (!out || !basis || !atom_coord_bohr || basis->num_shells == 0) {
         return 0;
@@ -562,42 +544,77 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const dve
         }
     }
 
+    // Per shell pair and primitive pair, the Gaussian prefactor and the three axes' one dimensional overlaps of
+    // every monomial power once (at most 5 x 5 each), and every Cartesian pair of the two shells as a product of
+    // three of those: exp(-mu r^2) (pi/p)^(3/2) times the product of the three axes' qm_overlap_1d.
+    // A primitive pair whose prefactor is below e^-46 (1e-20) adds nothing a double holds beside the rest.
+    enum { L1 = MD_GTO_MAX_ANGULAR_MOMENTUM + 1, NC = ((MD_GTO_MAX_ANGULAR_MOMENTUM + 1) * (MD_GTO_MAX_ANGULAR_MOMENTUM + 2)) / 2 };
+    int    ijk[L1][NC][3];
+    double nrm[L1][NC];
+    for (int l = 0; l < L1; ++l) {
+        for (uint32_t c = 0; c < md_gto_num_cart_ao((uint32_t)l); ++c) {
+            md_gto_cart_ijk(&ijk[l][c][0], &ijk[l][c][1], &ijk[l][c][2], (uint32_t)l, c);
+            nrm[l][c] = md_gto_cart_norm_factor(ijk[l][c][0], ijk[l][c][1], ijk[l][c][2]);
+        }
+    }
+
     for (uint32_t si = 0; si < basis->num_shells; ++si) {
         const md_gto_shell_t* a = &basis->shells[si];
         const dvec3_t         A = atom_coord_bohr[a->atom_idx];
         const double          Av[3] = { A.x, A.y, A.z };
-        const uint32_t        na = md_gto_num_cart_ao(a->l);
+        const uint32_t        la = a->l, na = md_gto_num_cart_ao(la);
+        if (la > MD_GTO_MAX_ANGULAR_MOMENTUM) {
+            MD_LOG_ERROR("Shell %u has angular momentum %u, above the supported %d", si, la, MD_GTO_MAX_ANGULAR_MOMENTUM);
+            md_temp_end(temp);
+            return 0;
+        }
 
         for (uint32_t sj = si; sj < basis->num_shells; ++sj) {
             const md_gto_shell_t* b = &basis->shells[sj];
             const dvec3_t         B = atom_coord_bohr[b->atom_idx];
             const double          Bv[3] = { B.x, B.y, B.z };
-            const uint32_t        nb = md_gto_num_cart_ao(b->l);
+            const uint32_t        lb = b->l, nb = md_gto_num_cart_ao(lb);
+            if (lb > MD_GTO_MAX_ANGULAR_MOMENTUM) {
+                MD_LOG_ERROR("Shell %u has angular momentum %u, above the supported %d", sj, lb, MD_GTO_MAX_ANGULAR_MOMENTUM);
+                md_temp_end(temp);
+                return 0;
+            }
+            double r2 = 0.0;
+            for (int k = 0; k < 3; ++k) r2 += (Av[k] - Bv[k]) * (Av[k] - Bv[k]);
 
-            for (uint32_t ca = 0; ca < na; ++ca) {
-                int ia, ja, ka;
-                md_gto_cart_ijk(&ia, &ja, &ka, a->l, ca);
-                const int    lmn_a[3] = { ia, ja, ka };
-                const double fa = md_gto_cart_norm_factor(ia, ja, ka);
-
-                for (uint32_t cb = 0; cb < nb; ++cb) {
-                    int ib, jb, kb;
-                    md_gto_cart_ijk(&ib, &jb, &kb, b->l, cb);
-                    const int    lmn_b[3] = { ib, jb, kb };
-                    const double fb = md_gto_cart_norm_factor(ib, jb, kb);
-
-                    double v = 0.0;
-                    for (uint32_t p = 0; p < a->num_primitives; ++p) {
-                        const double alpha_a = basis->alpha[a->primitive_offset + p];
-                        const double coeff_a = basis->coeff[a->primitive_offset + p];
-                        for (uint32_t q = 0; q < b->num_primitives; ++q) {
-                            const double alpha_b = basis->alpha[b->primitive_offset + q];
-                            const double coeff_b = basis->coeff[b->primitive_offset + q];
-                            v += coeff_a * coeff_b * qm_primitive_overlap(alpha_a, Av, lmn_a, alpha_b, Bv, lmn_b);
+            double blk[NC][NC];
+            MEMSET(blk, 0, sizeof(blk));
+            for (uint32_t p = 0; p < a->num_primitives; ++p) {
+                const double alpha_a = basis->alpha[a->primitive_offset + p];
+                const double coeff_a = basis->coeff[a->primitive_offset + p];
+                for (uint32_t q = 0; q < b->num_primitives; ++q) {
+                    const double alpha_b = basis->alpha[b->primitive_offset + q];
+                    const double coeff_b = basis->coeff[b->primitive_offset + q];
+                    const double pp = alpha_a + alpha_b;
+                    const double mu = alpha_a * alpha_b / pp;
+                    if (mu * r2 > 46.0) continue;
+                    const double pref = coeff_a * coeff_b * exp(-mu * r2) * pow(PI / pp, 1.5);
+                    double E[3][L1][L1];
+                    for (int k = 0; k < 3; ++k) {
+                        const double P = (alpha_a * Av[k] + alpha_b * Bv[k]) / pp;
+                        for (uint32_t i = 0; i <= la; ++i) {
+                            for (uint32_t j = 0; j <= lb; ++j) {
+                                E[k][i][j] = qm_overlap_1d((int)i, (int)j, P - Av[k], P - Bv[k], pp);
+                            }
                         }
                     }
-                    v *= fa * fb;
-
+                    for (uint32_t ca = 0; ca < na; ++ca) {
+                        const int* ea = ijk[la][ca];
+                        for (uint32_t cb = 0; cb < nb; ++cb) {
+                            const int* eb = ijk[lb][cb];
+                            blk[ca][cb] += pref * E[0][ea[0]][eb[0]] * E[1][ea[1]][eb[1]] * E[2][ea[2]][eb[2]];
+                        }
+                    }
+                }
+            }
+            for (uint32_t ca = 0; ca < na; ++ca) {
+                for (uint32_t cb = 0; cb < nb; ++cb) {
+                    const double v = blk[ca][cb] * nrm[la][ca] * nrm[lb][cb];
                     const size_t i = offset[si] + ca;
                     const size_t j = offset[sj] + cb;
                     out[i * num_ao + j] = v;

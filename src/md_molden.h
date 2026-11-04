@@ -27,6 +27,12 @@ struct md_system_state_t;
 //                            coefficients below were read under. The published basis is Cartesian
 //                            either way - this records what the file said, because nothing else in
 //                            the table can be used to work it out afterwards
+//   molden/cartesian_        rank 1 {1} string, where the file has Cartesian shells of l >= 2: how
+//   normalisation            their functions were normalised, as the orbitals show it. "function":
+//                            each on its own, the format's convention (Molden, PySCF), and the
+//                            default. "shell": all of a shell with its (l,0,0) monomial's constant,
+//                            so xy is sqrt(3) smaller than xx (Turbomole, CFOUR 2.1, PSI4 <= 1.3.2),
+//                            taken when the orbitals are normalised that way and not the other
 //
 //   qm/atom/{atomic_number,  the QM ATOM DOMAIN - the atoms this calculation covered, in its order
 //            coordinate}     and at its geometry. basis/shell/atom_index indexes THIS space
@@ -66,6 +72,11 @@ struct md_system_state_t;
 //     can at least see what was assumed.
 //   - A Molden file carries NO CHARGE and NO SPIN MULTIPLICITY, so neither is published. The
 //     occupations are what a consumer counts electrons from.
+//   - How CARTESIAN FUNCTIONS of l >= 2 are normalised is not stated either. The format has each
+//     on its own; some programs write them all with their shell's (l,0,0) constant. The orbitals
+//     tell: they are orthonormal only in the convention they were written in, so where the file
+//     has such shells the reader checks a few orbitals' norms both ways (molden/cartesian_normalisation),
+//     and keeps the format's unless the other is clearly the one.
 //   - AO coefficients are stated against NORMALISED contracted functions, which is what every
 //     writer means and what the primitive coefficients are scaled to here - see md_qm.h. A file
 //     whose contractions are deliberately unnormalised is not distinguishable from one whose are,

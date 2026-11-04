@@ -11,6 +11,7 @@
 #include <core/md_str.h>
 
 #include <math.h>
+#include <string.h>
 
 // Everything a Molden file carries reaches a consumer as an md_system_t and its ATTRIBUTE TABLE:
 // md_molden.h has three entry points and no reader object to ask questions of. So these tests read
@@ -161,6 +162,8 @@ UTEST(molden, orbitals_are_orthonormal) {
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden",     // [5D], spherical d
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden",  // [6D], the same orbitals in Cartesian
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart.molden",// [6D10F15G] from PySCF: d, f and g
+        MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d_shell.molden",   // the two above with their Cartesian
+        MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart_shell.molden", // functions normalised as a shell
     };
     for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
         qm_test_t t = {0};
@@ -178,6 +181,8 @@ UTEST(molden, total_density_holds_ten_electrons) {
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden",
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden",
         MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart.molden",
+        MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d_shell.molden",
+        MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart_shell.molden",
     };
     for (size_t i = 0; i < ARRAY_SIZE(files); ++i) {
         qm_test_t t = {0};
@@ -188,6 +193,57 @@ UTEST(molden, total_density_holds_ten_electrons) {
         EXPECT_NEAR( 0.0, qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-9);
         qm_test_free(&t);
     }
+}
+
+// The electron density of a loaded file at n points (bohr), from its own basis and orbitals. 'atom' is the
+// water's three atoms in bohr, read from the first file a comparison loads.
+static bool molden_density_at(double* rho, const float* p, size_t n, qm_test_t* t, const float atom[9]) {
+    md_gto_basis_t basis = {0};
+    if (!qm_test_basis(&basis, t)) return false;
+    double *rows = NULL, *w = NULL;
+    size_t na = 0;
+    const size_t k = md_qm_density_orbitals(&rows, &w, &na, &t->sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
+    md_gto_iso_field_t* f = k ? md_gto_iso_field_create_products(&basis, atom, 0, rows, NULL, w, k, md_get_heap_allocator()) : NULL;
+    if (f) {
+        md_gto_iso_field_evaluate(f, p, n, 0, rho, NULL);
+        md_gto_iso_field_destroy(f);
+    }
+    if (rows) md_free(md_get_heap_allocator(), rows, sizeof(double) * k * na);
+    if (w)    md_free(md_get_heap_allocator(), w, sizeof(double) * k);
+    return f != NULL;
+}
+
+// The largest relative difference between two files' densities at points around the water (> 1e-6 only)
+static double molden_density_difference(const char* file_a, const char* file_b) {
+    qm_test_t a = {0}, b = {0};
+    double worst = INFINITY;
+    if (molden_load(&a, file_a, MEGABYTES(32)) && molden_load(&b, file_b, MEGABYTES(32))) {
+        const md_attribute_t* ca = qm_test_attr(&a, STR_LIT("qm/atom/coordinate"));
+        double xyz[9] = {0};
+        if (ca && md_attribute_extract_f64(xyz, 9, ca, md_attribute_slice_all(), md_unit_none()) == 9) {
+            float atom[9];
+            for (int i = 0; i < 9; ++i) atom[i] = (float)(xyz[i] * 1.8897261246257702);
+            enum { N = 2000 };
+            float* p = (float*)malloc(sizeof(float) * 3 * N);
+            double* ra = (double*)malloc(sizeof(double) * N);
+            double* rb = (double*)malloc(sizeof(double) * N);
+            uint64_t r = 12345;
+            for (int i = 0; i < 3 * N; ++i) {
+                r = r * 6364136223846793005ull + 1442695040888963407ull;
+                p[i] = atom[i % 3] + 6.0f * ((float)(r >> 40) / (float)(1ull << 24) - 0.5f);
+            }
+            if (molden_density_at(ra, p, N, &a, atom) && molden_density_at(rb, p, N, &b, atom)) {
+                worst = 0.0;
+                for (int i = 0; i < N; ++i) {
+                    if (ra[i] > 1e-6) worst = fmax(worst, fabs(rb[i] - ra[i]) / ra[i]);
+                }
+            }
+            free(p); free(ra); free(rb);
+        }
+    }
+    qm_test_free(&a);
+    qm_test_free(&b);
+    return worst;
 }
 
 // The same calculation written two ways: [5D] states five spherical d functions, [6D] six Cartesian ones, each
@@ -204,54 +260,56 @@ UTEST(molden, spherical_and_cartesian_describe_one_wavefunction) {
     qm_test_t car = {0};
     ASSERT_TRUE(molden_load(&sph, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MEGABYTES(32)));
     ASSERT_TRUE(molden_load(&car, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden", MEGABYTES(32)));
-
     md_gto_basis_t sph_basis = {0};
     md_gto_basis_t car_basis = {0};
     ASSERT_TRUE(qm_test_basis(&sph_basis, &sph));
     ASSERT_TRUE(qm_test_basis(&car_basis, &car));
     ASSERT_EQ(sph_basis.num_shells, car_basis.num_shells);
     ASSERT_EQ(md_gto_basis_num_ao(&sph_basis), md_gto_basis_num_ao(&car_basis));
-
-    // the atoms in bohr, from the spherical file (the two state the same geometry)
-    const md_attribute_t* ca = qm_test_attr(&sph, STR_LIT("qm/atom/coordinate"));
-    ASSERT_TRUE(ca != NULL);
-    double xyz[9] = {0};
-    ASSERT_EQ(md_attribute_extract_f64(xyz, 9, ca, md_attribute_slice_all(), md_unit_none()), 9u);
-    float atom[9];
-    for (int i = 0; i < 9; ++i) atom[i] = (float)(xyz[i] * 1.8897261246257702);
-
-    // points around the molecule, from a fixed sequence
-    enum { N = 2000 };
-    float* p = (float*)malloc(sizeof(float) * 3 * N);
-    uint64_t r = 12345;
-    for (int i = 0; i < 3 * N; ++i) {
-        r = r * 6364136223846793005ull + 1442695040888963407ull;
-        p[i] = atom[i % 3] + 6.0f * ((float)(r >> 40) / (float)(1ull << 24) - 0.5f);
-    }
-    double rho[2][N];
-    qm_test_t* t[2] = {&sph, &car};
-    md_gto_basis_t* b[2] = {&sph_basis, &car_basis};
-    for (int k = 0; k < 2; ++k) {
-        double *rows = NULL, *w = NULL;
-        size_t na = 0;
-        const size_t n = md_qm_density_orbitals(&rows, &w, &na, &t[k]->sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
-        ASSERT_EQ(n, 5u);
-        md_gto_iso_field_t* f = md_gto_iso_field_create_products(b[k], atom, 0, rows, NULL, w, n, md_get_heap_allocator());
-        ASSERT_TRUE(f != NULL);
-        md_gto_iso_field_evaluate(f, p, N, 0, rho[k], NULL);
-        md_gto_iso_field_destroy(f);
-        md_free(md_get_heap_allocator(), rows, sizeof(double) * n * na);
-        md_free(md_get_heap_allocator(), w, sizeof(double) * n);
-    }
-    double worst = 0.0;
-    for (int i = 0; i < N; ++i) {
-        if (rho[0][i] > 1e-6) worst = fmax(worst, fabs(rho[1][i] - rho[0][i]) / rho[0][i]);
-    }
-    printf("  [5D] and [6D] water: the densities at %d points agree to %.1e (relative)\n", N, worst);
-    EXPECT_LT(worst, 1.0e-5);
-    free(p);
     qm_test_free(&sph);
     qm_test_free(&car);
+
+    const double worst = molden_density_difference(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden", MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden");
+    printf("  [5D] and [6D] water: the densities at 2000 points agree to %.1e (relative)\n", worst);
+    EXPECT_LT(worst, 1.0e-5);
+}
+
+// Two normalisations of Cartesian functions are written: each on its own (the format's: Molden, PySCF), and all
+// of a shell with its (l,0,0) monomial's constant (Turbomole, CFOUR 2.1, PSI4 <= 1.3.2), the files not saying
+// which. The reader tells them apart by the orbitals, which are normalised in only one of them, and says which it
+// took (molden/cartesian_normalisation). Each _shell file is its counterpart with its coefficients restated in
+// the shell convention - the cc-pVDZ water over d functions, the cc-pVQZ one over d, f and g - so read right, the
+// two give one density.
+UTEST(molden, cartesian_normalisation_is_read_from_the_orbitals) {
+    static const struct { const char* file; const char* expect; } cases[] = {
+        { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden",            NULL },        // spherical d: nothing to decide
+        { MD_UNITTEST_DATA_DIR "/molden/ammonia_sto3g.molden",         NULL },        // no d at all
+        { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden",         "function" },
+        { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d_shell.molden",   "shell" },
+        { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart.molden",       "function" },
+        { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart_shell.molden", "shell" },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        qm_test_t t = {0};
+        ASSERT_TRUE(molden_load(&t, cases[i].file, MEGABYTES(32)));
+        const bool has = qm_test_has(&t, STR_LIT("molden/cartesian_normalisation"));
+        if (cases[i].expect) {
+            EXPECT_TRUE(has);
+            EXPECT_TRUE(str_eq(qm_test_string(&t, STR_LIT("molden/cartesian_normalisation")), str_from_cstr(cases[i].expect)));
+        } else {
+            EXPECT_FALSE(has);
+        }
+        qm_test_free(&t);
+    }
+    static const char* pairs[][2] = {
+        { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d.molden",   MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz_6d_shell.molden" },
+        { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart.molden", MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvqz_cart_shell.molden" },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(pairs); ++i) {
+        const double worst = molden_density_difference(pairs[i][0], pairs[i][1]);
+        printf("  %s: each function and shell normalised read to one density, %.1e (relative)\n", pairs[i][0] + strlen(MD_UNITTEST_DATA_DIR "/molden/"), worst);
+        EXPECT_LT(worst, 1.0e-9);
+    }
 }
 
 // ---------------------------------------------------------------------------
