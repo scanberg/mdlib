@@ -201,11 +201,14 @@ bool md_qm_publish_overlap(struct md_system_t* sys);
 // The packed upper triangle as float - row i holding columns i..N-1, N(N+1)/2 values - which is the
 // layout the GTO density kernels take. A packed attribute is extracted straight into dst, so nothing
 // larger than the triangle is ever made; a square one is extracted whole into scratch first.
-size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const struct md_attribute_t* attr, md_attribute_slice_t slice);
+size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
 
 // The whole N x N matrix as double, row major: a packed attribute is extracted into scratch and its
 // lower half mirrored from the upper; a square one is extracted as it is.
-size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const struct md_attribute_t* attr, md_attribute_slice_t slice);
+//
+// Both through io (may be NULL): a density computed on demand (orbital/*/density, from the orbitals) is built on
+// its executor (md_attribute_io_create).
+size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
 
 // S[a][b] over the basis's Cartesian AOs, row major, md_gto_basis_num_ao(basis) on a side.
 // 'atom_coord_bohr' holds one position per atom the shell list indexes, in BOHR - the unit the

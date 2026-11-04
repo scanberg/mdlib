@@ -294,6 +294,7 @@ typedef struct vlx_t {
 	// Built by vlx_resolve_basis_set() straight after the core block; used to read every AO matrix the
 	// file carries - C, D and the density properties - in shell order.
 	int* ao_remap;
+	const struct md_executor_t* executor;	// what the loader's heavy loops run on (md_executor.h); NULL: the calling thread
 
 	// The number of atomic orbitals the basis set spans over this molecule, in VeloxChem's spherical
 	// (pure) basis: the dimension every AO matrix has AS STORED IN THE FILE, and the length of ao_remap.
@@ -2003,7 +2004,7 @@ static bool vlx_read_orbitals(vlx_2d_data_t* out, md_attribute_id_t* out_id, vlx
 	const bool ao_major = dim[0] == num_ao;
 	const size_t mo_stride = ao_major ? 1 : num_ao;
 	const size_t ao_stride = ao_major ? num_mo : 1;
-	if (md_gto_sph_to_cart_orbitals(dst, raw, mo_stride, ao_stride, vlx->ao_remap, num_mo, &basis) != num_mo) {
+	if (md_gto_sph_to_cart_orbitals(dst, raw, mo_stride, ao_stride, vlx->ao_remap, num_mo, &basis, vlx->executor) != num_mo) {
 		MD_LOG_ERROR("%s: spherical to Cartesian conversion failed", dataset);
 		md_attributes_remove(&vlx->sys->attributes, id);
 		goto done;
@@ -6176,12 +6177,8 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 	sys->atom.count = num_atoms;
     state->num_atoms = sys->atom.count;
 
-	if (vlx->mm.in_system) {
-		// The fragments are residues, and what kind of residue (water, above all) is read from their
-		// atoms and bonds - the same two calls a structure file's loader ends with.
-		md_util_system_infer_covalent_bonds(sys, state);
-		md_util_system_infer_residue_flags(sys);
-	}
+	// The fragments are residues, and what kind of residue (water, above all) is read from their atoms and bonds, by
+	// md_util_system_infer (MD_UTIL_INFER_BOND_BIT, _RESIDUE_BIT) as for a structure file.
 
 	if (!vlx_publish_core(vlx)) {
 		return false;
@@ -6269,7 +6266,7 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 	}
 }
 
-bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, str_t filename) {
+bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, str_t filename, const struct md_executor_t* executor) {
 	ASSERT(sys);
 
 	// Heap backed, not temp backed - see vlx_create.
@@ -6277,6 +6274,7 @@ bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* st
 	if (!vlx) {
 		return false;
 	}
+	vlx->executor = executor;
 
 	// The system is built from the core block and everything after it publishes into the table as it
 	// is read - see vlx_system_begin. That is what makes the table a property of the LOAD: a system
@@ -6294,7 +6292,7 @@ bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* st
 	return success;
 }
 
-bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename) {
+bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename, const struct md_executor_t* executor) {
 	ASSERT(sys);
 
 	if (!sys->attributes.alloc) {
@@ -6307,6 +6305,7 @@ bool md_vlx_system_supplement_from_file(md_system_t* sys, str_t filename) {
 	if (!vlx) {
 		return false;
 	}
+	vlx->executor = executor;
 
 	// A NULL state is what tells vlx_system_begin this file is supplementing: the atoms and the
 	// state belong to whatever loaded the system first and are left alone, and this file only adds

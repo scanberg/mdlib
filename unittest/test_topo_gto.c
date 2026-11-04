@@ -1,6 +1,7 @@
 #include "utest.h"
 
 #include "qm_test_util.h"
+#include "test_executor.h"
 
 #include <md_molden.h>
 #include <md_topo.h>
@@ -148,30 +149,46 @@ UTEST(topo_gto, water_topology_is_certified) {
     qm_test_free(&in.t);
 }
 
-// Same input, same output, bit for bit, whatever the thread count: cubes are decided independently and
-// their results merged in cube order, with no atomics and no ordering that depends on scheduling.
-UTEST(topo_gto, deterministic_across_thread_counts) {
+// Same input, same output, bit for bit, whatever the executor: cubes are decided independently and their
+// results merged in cube order, with no ordering that depends on scheduling. The shuffled executor runs the
+// pieces out of order and hands them thread_idx in turn, so a dependence on either shows here every time.
+UTEST(topo_gto, deterministic_across_executors) {
     topo_gto_input_t in;
     ASSERT_TRUE(topo_gto_load_water(&in));
+    test_executor_t threads = test_executor_threads(4);
+    test_executor_t shuffled = test_executor_shuffled(3);
     md_topo_gto_desc_t da = topo_gto_desc(&in);
     md_topo_gto_desc_t db = topo_gto_desc(&in);
-    da.num_threads = 1;
-    db.num_threads = 4;
+    md_topo_gto_desc_t dc = topo_gto_desc(&in);
+    da.executor = NULL;
+    db.executor = test_executor(&threads);
+    dc.executor = test_executor(&shuffled);
 
     md_topo_extremum_graph_t a = { .alloc = in.t.alloc };
     md_topo_extremum_graph_t b = { .alloc = in.t.alloc };
-    md_topo_gto_info_t ia, ib;
+    md_topo_extremum_graph_t c = { .alloc = in.t.alloc };
+    md_topo_gto_info_t ia, ib, ic;
     ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&a, &ia, &da));
     ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&b, &ib, &db));
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&c, &ic, &dc));
     EXPECT_EQ(1u, ia.num_threads);
     EXPECT_EQ(4u, ib.num_threads);
-    ASSERT_EQ(a.num_vertices, b.num_vertices);
-    ASSERT_EQ(a.num_edges, b.num_edges);
-    EXPECT_EQ(ia.num_box_evals, ib.num_box_evals);
-    EXPECT_EQ(0, memcmp(a.vertices, b.vertices, sizeof(md_topo_vert_t) * a.num_vertices));
-    EXPECT_EQ(0, memcmp(a.types, b.types, sizeof(md_topo_critical_point_type_t) * a.num_vertices));
-    EXPECT_EQ(0, memcmp(a.edges, b.edges, sizeof(md_topo_edge_t) * a.num_edges));
+    EXPECT_EQ(3u, ic.num_threads);
+    EXPECT_GT((uint32_t)threads.pieces, 0u);
+    EXPECT_GT((uint32_t)shuffled.pieces, 0u);
+    const md_topo_extremum_graph_t* other[2] = { &b, &c };
+    const md_topo_gto_info_t* other_info[2] = { &ib, &ic };
+    for (int k = 0; k < 2; ++k) {
+        const md_topo_extremum_graph_t* o = other[k];
+        ASSERT_EQ(a.num_vertices, o->num_vertices);
+        ASSERT_EQ(a.num_edges, o->num_edges);
+        EXPECT_EQ(ia.num_box_evals, other_info[k]->num_box_evals);
+        EXPECT_EQ(0, memcmp(a.vertices, o->vertices, sizeof(md_topo_vert_t) * a.num_vertices));
+        EXPECT_EQ(0, memcmp(a.types, o->types, sizeof(md_topo_critical_point_type_t) * a.num_vertices));
+        EXPECT_EQ(0, memcmp(a.edges, o->edges, sizeof(md_topo_edge_t) * a.num_edges));
+    }
 
+    md_topo_extremum_graph_free(&c);
     md_topo_extremum_graph_free(&a);
     md_topo_extremum_graph_free(&b);
     qm_test_free(&in.t);

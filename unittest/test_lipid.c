@@ -95,8 +95,8 @@ UTEST(lipid, dppc_united_atom_pdb) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
 
     EXPECT_EQ(64, (int)sys.lipid.count);
     EXPECT_EQ(64, (int)sys.lipid.head.count);
@@ -189,8 +189,8 @@ UTEST(lipid, martini3_membrane) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro")));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"), NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     // POPC 32, POPE 16, POPS 8; CHOL 16
     EXPECT_TRUE(martini_membrane_ok(&sys, 32 + 16 + 8, 16));
     md_arena_allocator_destroy(alloc);
@@ -202,7 +202,7 @@ UTEST(lipid, martini3_membrane_tpr) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr")));
     // The bonds are the topology's
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL));
     EXPECT_TRUE(martini_membrane_ok(&sys, 32 + 16 + 8, 16));
     md_arena_allocator_destroy(alloc);
 }
@@ -211,8 +211,8 @@ UTEST(lipid, martini2_membrane_protein) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro")));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro"), NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     // DPPC 50, DOPC 50; CHOL 24. The protein has no lipids.
     EXPECT_TRUE(martini_membrane_ok(&sys, 50 + 50, 24));
     md_arena_allocator_destroy(alloc);
@@ -421,8 +421,8 @@ UTEST(lipid, script) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
 
     const md_filter_context_t fctx = { &sys, &st, NULL };
     md_bitset_t bf = {0};
@@ -533,7 +533,7 @@ static bool martini_system_from_beads(md_system_t* sys, md_system_state_t* st, c
         }
     }
     const int n = snprintf(gro, sizeof(gro), "beads\n%5d\n%s%10.5f%10.5f%10.5f\n", num_atoms, body, 60.0, 60.0, 60.0);
-    return md_gro_system_init_from_str(sys, st, (str_t){gro, (size_t)n}) && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL);
+    return md_gro_system_init_from_str(sys, st, (str_t){gro, (size_t)n}, NULL) && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL, NULL);
 }
 
 // The lipid whose first residue is res, -1 when none
@@ -621,7 +621,7 @@ UTEST(lipid, martini_renamed_tpr) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_tpr_system_init_from_data(&sys, &st, &data));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL));
     size_t sterols = 0;
     for (size_t l = 0; l < sys.lipid.count; ++l) {
         if (!str_eq_cstr(md_system_residue_name(&sys, (size_t)lipid_res(&sys, l, 0)), "CHL")) continue;

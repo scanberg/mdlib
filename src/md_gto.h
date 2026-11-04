@@ -168,6 +168,7 @@ static inline uint32_t md_gto_num_sph_ao(uint32_t l) { return 2 * l + 1; }
 // shell spanning primitives which were not published are all failures.
 struct md_attributes_t;
 struct md_allocator_i;
+struct md_executor_t;
 bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const struct md_attributes_t* attributes, struct md_allocator_i* alloc);
 
 void md_gto_basis_free(md_gto_basis_t* basis, struct md_allocator_i* alloc);
@@ -224,8 +225,10 @@ size_t md_gto_sph_to_cart_vector(double* out_cart, const double* in_sph, const m
 //           mo_stride 1, ao_stride num_mo.
 // out_cart: [num_mo][md_gto_basis_num_ao(basis)] row major; must not overlap in_sph.
 // Per orbital, the values of md_gto_sph_to_cart_vector (to rounding). In one pass over the input,
-// threaded for large sets. Returns num_mo, 0 on failure.
-size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_t mo_stride, size_t ao_stride, const int* ao_perm, size_t num_mo, const md_gto_basis_t* basis);
+// blocks of orbitals spread over executor for large sets (md_executor.h; NULL: the calling thread). The
+// same values for any executor. Returns num_mo, 0 on failure (or cancelled through the executor).
+size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_t mo_stride, size_t ao_stride, const int* ao_perm, size_t num_mo, const md_gto_basis_t* basis,
+                                   const struct md_executor_t* executor);
 
 // Convert a square AO-basis matrix (density, overlap, transition density):
 //   M_cart = T^T * M_sph * T
@@ -238,10 +241,11 @@ size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const m
 // occupations as weights, or any sum of squares of orbitals. D: num_ao x num_ao, row major, exactly
 // symmetric. Element (orbital k, AO i) of C is C[k * mo_stride + i * ao_stride]: mo_stride num_ao and
 // ao_stride 1 for orbitals as rows, the reverse for orbitals as columns. Orbitals of weight 0 are
-// skipped. Blocked and vectorized, over all cores when it is large: about num_mo num_ao^2 / 2
-// multiply-adds. Returns false only when out of memory.
+// skipped. Blocked and vectorized, its tiles spread over executor when it is large (md_executor.h; NULL:
+// the calling thread): about num_mo num_ao^2 / 2 multiply-adds. Bit for bit the same for any executor.
+// Returns false when out of memory, or cancelled through the executor (D then incomplete).
 bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, size_t ao_stride,
-                                  const double* weight, size_t num_mo, size_t num_ao);
+                                  const double* weight, size_t num_mo, size_t num_ao, const struct md_executor_t* executor);
 
 // ---------------------------------------------------------------------------
 // First derivatives of orbitals, as orbitals

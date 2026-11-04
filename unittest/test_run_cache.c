@@ -152,15 +152,15 @@ typedef bool (*publish_fn)(md_system_t* sys, str_t path, str_t run, md_allocator
 
 static bool publish_xtc(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
-    return md_gro_system_init_from_file(sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")) && md_xtc_system_publish_run(sys, path, run, 0);
+    return md_gro_system_init_from_file(sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL) && md_xtc_system_publish_run(sys, path, run, 0);
 }
 static bool publish_trr(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
-    return md_gro_system_init_from_file(sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")) && md_trr_system_publish_run(sys, path, run, 0);
+    return md_gro_system_init_from_file(sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL) && md_trr_system_publish_run(sys, path, run, 0);
 }
 static bool publish_pdb(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};
-    return md_pdb_system_init_from_file(sys, &st, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) && md_pdb_system_publish_run(sys, path, run, 0);
+    return md_pdb_system_init_from_file(sys, &st, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) && md_pdb_system_publish_run(sys, path, run, 0);
 }
 static bool publish_xyz(md_system_t* sys, str_t path, str_t run, md_allocator_i* arena) {
     md_system_state_t st = {.alloc = arena};

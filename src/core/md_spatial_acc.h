@@ -115,6 +115,12 @@ void md_spatial_acc_free(md_spatial_acc_t* acc);
 // The cutoff may reach at most two cells: cutoff <= 2 * cell extent.
 void md_spatial_acc_for_each_internal_pair_within_cutoff(const md_spatial_acc_t* acc, double cutoff, md_spatial_acc_pair_callback_t callback, void* user_param);
 
+// The same, a range of the structure's pieces at a time, to spread over threads (md_executor.h): every pair is in one
+// piece, and the pieces [0, md_spatial_acc_num_pieces) in order give the pairs in the order of the call above. Each
+// piece is a block of cells (many are empty). Calls with disjoint ranges may run at the same time.
+size_t md_spatial_acc_num_pieces(const md_spatial_acc_t* acc);
+void   md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(const md_spatial_acc_t* acc, double cutoff, size_t piece_beg, size_t piece_end, md_spatial_acc_pair_callback_t callback, void* user_param);
+
 // --- EXTERNAL PAIR TESTS ---
 
 // Test external points against internal points within the spatial acceleration structure for a supplied cutoff

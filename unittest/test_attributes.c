@@ -7,6 +7,7 @@
 #include <md_pdb.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
+#include <core/md_executor.h>
 
 // Is this value the NAN a loader writes for "no value for this atom"? A question about the BUILD,
 // not about attributes, which is why it lives here and not in md_system.h: mdlib compiles with
@@ -363,7 +364,7 @@ UTEST(attributes, extract_from_pdb) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     const md_attribute_t* bfc = md_attributes_find(&sys.attributes, STR_LIT("atom/b_factor"));
     ASSERT_TRUE(bfc != NULL);
@@ -522,7 +523,7 @@ UTEST(attributes, pdb_occupancy_and_b_factor) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     // 6942 coordinate records, 15 of them the 'B' alternate of a pair
     EXPECT_EQ(sys.atom.count, 6927u);
@@ -575,7 +576,7 @@ UTEST(attributes, pdb_uniform_column_is_not_published) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("atom/occupancy")) == NULL);
 
@@ -594,7 +595,7 @@ UTEST(attributes, pdb_without_useful_columns_publishes_nothing) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     EXPECT_EQ(md_attributes_count(&sys.attributes), 0u);
     EXPECT_EQ(md_attributes_query(NULL, 0, &sys.attributes, STR_LIT("atom")), 0u);
@@ -891,6 +892,75 @@ UTEST(attributes, virtual_create_and_reject) {
     EXPECT_FALSE(md_attribute_is_alias(a));
     EXPECT_TRUE(a->data == NULL);
 
+    md_attributes_free(&t);
+}
+
+// The extraction context reaches a provider with its executor, and a provider that reads another computed
+// attribute through it hands it on (md_attribute_extract_io_f64): a total density from its spin densities
+// builds them on the caller's executor.
+typedef struct io_probe_t {
+    md_attributes_t* table;
+    const md_executor_t* seen_inner;
+    const md_executor_t* seen_outer;
+    int inner_calls, outer_calls;
+} io_probe_t;
+
+static size_t provider_inner_f64(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)attr; (void)slice;
+    io_probe_t* p = (io_probe_t*)user_data;
+    p->inner_calls += 1;
+    p->seen_inner = md_attribute_io_executor(io);
+    for (size_t i = 0; i < cap; ++i) ((double*)dst)[i] = (double)i;
+    return cap;
+}
+
+static size_t provider_outer_f64(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)attr; (void)slice;
+    io_probe_t* p = (io_probe_t*)user_data;
+    p->outer_calls += 1;
+    p->seen_outer = md_attribute_io_executor(io);
+    const md_attribute_t* inner = md_attributes_find(p->table, STR_LIT("probe/inner"));
+    if (!inner || md_attribute_extract_io_f64((double*)dst, cap, inner, md_attribute_slice_all(), md_unit_none(), io) != cap) return 0;
+    for (size_t i = 0; i < cap; ++i) ((double*)dst)[i] *= 2.0;
+    return cap;
+}
+
+static bool probe_parallel_for(void* user, uint32_t count, uint32_t grain, md_range_fn body, void* arg) {
+    (void)user; (void)grain;
+    body(arg, 0, count, 0);
+    return true;
+}
+
+UTEST(attributes, extraction_context_hands_its_executor_on) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+    io_probe_t probe = {.table = &t};
+    const md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {5}};
+    md_attribute_virtual_t inner = {.provider = provider_inner_f64, .user_data = &probe};
+    md_attribute_virtual_t outer = {.provider = provider_outer_f64, .user_data = &probe};
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("probe/inner"), .format = fmt, .unit = md_unit_none(), .virt = &inner}), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("probe/outer"), .format = fmt, .unit = md_unit_none(), .virt = &outer}), MD_ATTRIBUTE_INVALID);
+    const md_attribute_t* a = md_attributes_find(&t, STR_LIT("probe/outer"));
+    ASSERT_TRUE(a != NULL);
+
+    const md_executor_t ex = {.parallel_for = probe_parallel_for, .num_threads = 2};
+    md_attribute_io_t* io = md_attribute_io_create(&ex, md_get_heap_allocator());
+    ASSERT_TRUE(io != NULL);
+    EXPECT_TRUE(md_attribute_io_executor(io) == &ex);
+
+    double v[5] = {0};
+    EXPECT_EQ(5u, md_attribute_extract_io_f64(v, 5, a, md_attribute_slice_all(), md_unit_none(), io));
+    EXPECT_EQ(8.0, v[4]);
+    EXPECT_TRUE(probe.seen_outer == &ex);
+    EXPECT_TRUE(probe.seen_inner == &ex);
+
+    // Without a context: none, all the way down
+    probe.seen_inner = probe.seen_outer = &ex;
+    EXPECT_EQ(5u, md_attribute_extract_f64(v, 5, a, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_TRUE(probe.seen_outer == NULL);
+    EXPECT_TRUE(probe.seen_inner == NULL);
+    EXPECT_TRUE(md_attribute_io_executor(NULL) == NULL);
+
+    md_attribute_io_destroy(io);
     md_attributes_free(&t);
 }
 

@@ -16,6 +16,7 @@ typedef struct md_system_state_t md_system_state_t;
 
 struct md_allocator_i;
 struct md_system_loader_i;
+struct md_executor_t;
 
 enum {
     MD_PDB_COORD_FLAG_NONE          = 0,
@@ -181,9 +182,13 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // SYSTEM
+// The system: the atoms (of the first model, or of all with MD_PDB_OPTION_CONCAT_MODELS), where they are, their types,
+// the residues, the units of the file (its chains), the bonds of the CONECT records, the cell and the assemblies. No
+// bonds beyond the file's, nor what the residues are by them: md_util_system_infer derives those, when the caller wants
+// them. The executor (NULL: the calling thread) reads the atom lines of a file or string in parallel.
 bool md_pdb_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options);
-bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options);
-bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str,      md_pdb_options_t options);
+bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options, const struct md_executor_t* executor);
+bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str,      md_pdb_options_t options, const struct md_executor_t* executor);
 
 // EXPORT
 bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms, int model_num);

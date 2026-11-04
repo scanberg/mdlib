@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 // A benchmark of v2 against v1, run on demand: VIAL_BENCH=1 md_unittest --filter=vial_bench.*
 //
@@ -66,10 +67,10 @@ static bool str_ends(str_t s, const char* e) {
 }
 
 static bool vial_bench_load(md_system_t* sys, md_system_state_t* state, str_t top, str_t traj) {
-    bool ok = str_ends(top, ".gro") ? md_gro_system_init_from_file(sys, state, top) :
-              str_ends(top, ".pdb") ? md_pdb_system_init_from_file(sys, state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) : false;
+    bool ok = str_ends(top, ".gro") ? md_gro_system_init_from_file(sys, state, top, NULL) :
+              str_ends(top, ".pdb") ? md_pdb_system_init_from_file(sys, state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) : false;
     if (!ok) return false;
-    md_util_system_infer(sys, state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(sys, state, MD_UTIL_INFER_ALL, NULL);
     const uint32_t flags = MD_RUN_FLAG_DISABLE_CACHE_WRITE;
     return str_ends(traj, ".xtc") ? md_xtc_system_publish_run(sys, traj, STR_LIT("run"), flags) :
            str_ends(traj, ".trr") ? md_trr_system_publish_run(sys, traj, STR_LIT("run"), flags) :
@@ -101,7 +102,7 @@ static bool bench_v2(const char* src, const md_system_t* sys, md_allocator_i* al
     t0 = md_tick_now();
     // VIAL_BENCH_THREADS=n: v2's frames on n threads; v1 runs on one either way
     const size_t threads = getenv("VIAL_BENCH_THREADS") ? (size_t)atoi(getenv("VIAL_BENCH_THREADS")) : 0;
-    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = threads}, alloc);
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .executor = test_executor_of_threads((uint32_t)(threads))}, alloc);
     const bool ok = eval && md_vial_eval_run(eval);
     *eval_ms = ms_since(t0);
     if (eval) md_vial_eval_free(eval);

@@ -11,6 +11,7 @@
 #include <core/md_str.h>
 #include <core/md_array.h>
 #include <core/md_intrinsics.h>
+#include <core/md_executor.h>
 #include <md_system.h>
 
 #include <stdbool.h>
@@ -400,7 +401,6 @@ size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const m
 // conversion after them 1.5 s.
 #define GTO_S2C_NB          256
 #define GTO_S2C_CW          128
-#define GTO_S2C_MAX_THREADS 64
 
 typedef struct gto_s2c_entries_t {
     int     num;
@@ -419,9 +419,11 @@ typedef struct gto_s2c_ctx_t {
     const uint32_t*          sph_off;
     const uint32_t*          cart_off;  // [num_shells + 1]
     const gto_s2c_entries_t* ent;       // [l][isph], GTO_MAX_SPH_PER_SHELL per l
-    volatile uint64_t        next;
-    volatile uint64_t        failed;
+    double*                  scratch;   // per thread_idx: GTO_S2C_SCRATCH doubles
 } gto_s2c_ctx_t;
+
+// A thread's scratch: the accumulators of a shell, a gathered input column and the tile written out
+#define GTO_S2C_SCRATCH (GTO_MAX_CART_PER_SHELL * GTO_S2C_NB + GTO_S2C_NB + GTO_S2C_NB * GTO_S2C_CW)
 
 // n values from src to dst, which is written and not read: non-temporal where it is 16 byte aligned
 static inline void gto_s2c_stream(double* dst, const double* src, size_t n) {
@@ -431,17 +433,13 @@ static inline void gto_s2c_stream(double* dst, const double* src, size_t n) {
     for (; i < n; ++i) dst[i] = src[i];
 }
 
-static void gto_s2c_work(void* user) {
-    gto_s2c_ctx_t* c = (gto_s2c_ctx_t*)user;
-    const uint64_t num_blocks = (c->num_mo + GTO_S2C_NB - 1) / GTO_S2C_NB;
-    double* acc  = (double*)malloc(sizeof(double) * GTO_MAX_CART_PER_SHELL * GTO_S2C_NB);
-    double* x    = (double*)malloc(sizeof(double) * GTO_S2C_NB);
-    double* tile = (double*)malloc(sizeof(double) * GTO_S2C_NB * GTO_S2C_CW);
-    if (!acc || !x || !tile) {
-        md_atomic_fetch_add64(&c->failed, 1);
-    } else for (;;) {
-        const uint64_t b = md_atomic_fetch_add64(&c->next, 1);
-        if (b >= num_blocks) break;
+// Blocks [b_beg, b_end) of orbitals, on the scratch of thread_idx (md_executor.h)
+static void gto_s2c_blocks(void* arg, uint32_t b_beg, uint32_t b_end, uint32_t thread_idx) {
+    const gto_s2c_ctx_t* c = (const gto_s2c_ctx_t*)arg;
+    double* acc  = c->scratch + (size_t)thread_idx * GTO_S2C_SCRATCH;
+    double* x    = acc + GTO_MAX_CART_PER_SHELL * GTO_S2C_NB;
+    double* tile = x + GTO_S2C_NB;
+    for (uint32_t b = b_beg; b < b_end; ++b) {
         const size_t m0 = (size_t)b * GTO_S2C_NB;
         const size_t nb = MIN((size_t)GTO_S2C_NB, c->num_mo - m0);
         for (uint32_t s0 = 0; s0 < c->num_shells; ) {
@@ -479,13 +477,12 @@ static void gto_s2c_work(void* user) {
             s0 = s1;
         }
     }
+    // the stores are non-temporal: in order before the piece ends, for whoever reads them after the loop
     md_mm_sfence();
-    free(tile);
-    free(x);
-    free(acc);
 }
 
-size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_t mo_stride, size_t ao_stride, const int* ao_perm, size_t num_mo, const md_gto_basis_t* basis) {
+size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_t mo_stride, size_t ao_stride, const int* ao_perm, size_t num_mo, const md_gto_basis_t* basis,
+                                   const md_executor_t* executor) {
     if (!out_cart || !in_sph || !basis || num_mo == 0) return 0;
     const size_t n_sph  = md_gto_basis_num_sph_ao(basis);
     const size_t n_cart = md_gto_basis_num_ao(basis);
@@ -521,26 +518,25 @@ size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_
         cart_off[basis->num_shells] = co;
     }
 
+    // Over the executor for anything worth it, on the calling thread otherwise
+    const uint32_t num_blocks = (uint32_t)((num_mo + GTO_S2C_NB - 1) / GTO_S2C_NB);
+    const md_executor_t* ex = (double)num_mo * (double)n_cart > 4.0e6 ? executor : NULL;
+    const size_t num_scratch = (size_t)md_executor_num_threads(ex) * GTO_S2C_SCRATCH;
     gto_s2c_ctx_t ctx = {
         .out = out_cart, .in = in_sph, .mo_stride = mo_stride, .ao_stride = ao_stride, .perm = ao_perm,
         .num_mo = num_mo, .n_cart = n_cart, .shells = basis->shells, .num_shells = basis->num_shells,
         .sph_off = sph_off, .cart_off = cart_off, .ent = ent,
+        .scratch = (double*)malloc(sizeof(double) * num_scratch),
     };
-    // one thread per core, the calling thread one of them, for anything worth it
-    const uint64_t num_blocks = (num_mo + GTO_S2C_NB - 1) / GTO_S2C_NB;
-    int num_threads = 1;
-    md_os_sys_info_t info;
-    if ((double)num_mo * (double)n_cart > 4.0e6 && md_os_sys_info_query(&info)) {
-        num_threads = info.num_physical_cores > 0 ? info.num_physical_cores : info.num_virtual_cores;
+    bool ok = ctx.scratch != NULL;
+    if (!ok) {
+        MD_LOG_ERROR("md_gto_sph_to_cart_orbitals: out of memory");
+    } else if (!md_parallel_for(ex, num_blocks, 1, gto_s2c_blocks, &ctx)) {
+        MD_LOG_DEBUG("md_gto_sph_to_cart_orbitals: cancelled");
+        ok = false;
     }
-    num_threads = (int)CLAMP((uint64_t)num_threads, (uint64_t)1, MIN((uint64_t)GTO_S2C_MAX_THREADS, num_blocks));
-    md_thread_t* threads[GTO_S2C_MAX_THREADS] = {0};
-    for (int i = 1; i < num_threads; ++i) threads[i] = md_thread_create(gto_s2c_work, &ctx);
-    gto_s2c_work(&ctx);
-    for (int i = 1; i < num_threads; ++i) if (threads[i]) md_thread_join(threads[i]);
-    const bool ok = md_atomic_load64(&ctx.failed) == 0 || md_atomic_load64(&ctx.next) >= num_blocks;
-    if (!ok) MD_LOG_ERROR("md_gto_sph_to_cart_orbitals: out of memory");
 
+    free(ctx.scratch);
     free(off);
     return ok ? num_mo : 0;
 }
@@ -551,12 +547,11 @@ size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_
 // D in tiles of GTO_DM_NB x GTO_DM_NB, the upper triangle of them computed and mirrored on writing,
 // each tile over panels of GTO_DM_KC orbitals: per panel the tile's rows (times the weights) and
 // columns are packed into micro panels, and GTO_DM_MR x GTO_DM_NR blocks are summed in registers.
-// The threads take tiles from a shared counter.
+// The tiles are the items of a loop over the executor; a tile's sums never depend on which thread made it.
 #define GTO_DM_MR 6
 #define GTO_DM_NR 8
 #define GTO_DM_NB 96            // a multiple of MR and NR
 #define GTO_DM_KC 256
-#define GTO_DM_MAX_THREADS 64
 
 typedef struct gto_dm_ctx_t {
     double*         D;
@@ -567,9 +562,11 @@ typedef struct gto_dm_ctx_t {
     size_t          num_mo, num_ao;
     const uint32_t* tiles;      // (I, J) per tile, I <= J
     uint64_t        num_tiles;
-    volatile uint64_t next;
-    volatile uint64_t failed;
+    double*         scratch;    // per thread_idx: GTO_DM_SCRATCH doubles
 } gto_dm_ctx_t;
+
+// A thread's scratch: the packed panels A and B and the tile's sums T
+#define GTO_DM_SCRATCH (2 * GTO_DM_KC * GTO_DM_NB + GTO_DM_NB * GTO_DM_NB)
 
 // Rows r0 .. r0 + nr - 1 (AOs) of panel k0 .. k0 + kc - 1 (orbitals), R at a time: P[(b kc + k) R + m]
 // is AO r0 + b R + m of orbital k (times its weight), zero past nr.
@@ -621,17 +618,14 @@ static void gto_dm_micro(size_t kc, const double* a, const double* b, double* t,
 #undef GTO_DM_ADD
 }
 
-static void gto_dm_work(void* user) {
-    gto_dm_ctx_t* c = (gto_dm_ctx_t*)user;
+// Tiles [t_beg, t_end), on the scratch of thread_idx (md_executor.h)
+static void gto_dm_tiles(void* arg, uint32_t t_beg, uint32_t t_end, uint32_t thread_idx) {
+    const gto_dm_ctx_t* c = (const gto_dm_ctx_t*)arg;
     const size_t NB = GTO_DM_NB, KC = GTO_DM_KC, n = c->num_ao;
-    double* A = (double*)malloc(sizeof(double) * KC * NB);
-    double* B = (double*)malloc(sizeof(double) * KC * NB);
-    double* T = (double*)malloc(sizeof(double) * NB * NB);
-    if (!A || !B || !T) {
-        md_atomic_fetch_add64(&c->failed, 1);
-    } else for (;;) {
-        const uint64_t t = md_atomic_fetch_add64(&c->next, 1);
-        if (t >= c->num_tiles) break;
+    double* A = c->scratch + (size_t)thread_idx * GTO_DM_SCRATCH;
+    double* B = A + KC * NB;
+    double* T = B + KC * NB;
+    for (uint32_t t = t_beg; t < t_end; ++t) {
         const size_t i0 = (size_t)c->tiles[2 * t] * NB, j0 = (size_t)c->tiles[2 * t + 1] * NB;
         const size_t ni = MIN(NB, n - i0), nj = MIN(NB, n - j0);
         MEMSET(T, 0, sizeof(double) * NB * NB);
@@ -655,12 +649,10 @@ static void gto_dm_work(void* user) {
             }
         }
     }
-    free(T);
-    free(B);
-    free(A);
 }
 
-bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, size_t ao_stride, const double* weight, size_t num_mo, size_t num_ao) {
+bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, size_t ao_stride, const double* weight, size_t num_mo, size_t num_ao,
+                                  const md_executor_t* executor) {
     if (!D || !C || !weight || num_ao == 0) return false;
     uint32_t* mo = (uint32_t*)malloc(sizeof(uint32_t) * (num_mo + 1));
     double*   w  = (double*)malloc(sizeof(double) * (num_mo + 1));
@@ -691,23 +683,21 @@ bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, 
     if (nk == 0) {
         MEMSET(D, 0, sizeof(double) * num_ao * num_ao);
     } else {
+        // Over the executor when it is large; small products on the calling thread alone
+        const md_executor_t* ex = (double)nk * (double)num_ao * (double)num_ao > 4.0e8 ? executor : NULL;
         gto_dm_ctx_t ctx = {
             .D = D, .C = C, .mo_stride = mo_stride, .ao_stride = ao_stride, .mo = mo, .w = w,
             .num_mo = nk, .num_ao = num_ao, .tiles = tiles, .num_tiles = num_tiles,
+            .scratch = (double*)malloc(sizeof(double) * (size_t)md_executor_num_threads(ex) * GTO_DM_SCRATCH),
         };
-        // one thread per core, the calling thread one of them; small products on the calling thread alone
-        int num_threads = 1;
-        md_os_sys_info_t info;
-        if ((double)nk * (double)num_ao * (double)num_ao > 4.0e8 && md_os_sys_info_query(&info)) {
-            num_threads = info.num_physical_cores > 0 ? info.num_physical_cores : info.num_virtual_cores;
+        if (!ctx.scratch) {
+            MD_LOG_ERROR("md_gto_density_from_orbitals: out of memory");
+            ok = false;
+        } else if (!md_parallel_for(ex, (uint32_t)num_tiles, 1, gto_dm_tiles, &ctx)) {
+            MD_LOG_DEBUG("md_gto_density_from_orbitals: cancelled");
+            ok = false;
         }
-        num_threads = (int)CLAMP((uint64_t)num_threads, (uint64_t)1, MIN((uint64_t)GTO_DM_MAX_THREADS, num_tiles));
-        md_thread_t* threads[GTO_DM_MAX_THREADS] = {0};
-        for (int i = 1; i < num_threads; ++i) threads[i] = md_thread_create(gto_dm_work, &ctx);
-        gto_dm_work(&ctx);
-        for (int i = 1; i < num_threads; ++i) if (threads[i]) md_thread_join(threads[i]);
-        ok = md_atomic_load64(&ctx.failed) == 0 || md_atomic_load64(&ctx.next) >= num_tiles;
-        if (!ok) MD_LOG_ERROR("md_gto_density_from_orbitals: out of memory");
+        free(ctx.scratch);
     }
     free(tiles);
     free(w);

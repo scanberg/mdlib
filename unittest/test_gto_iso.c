@@ -4816,7 +4816,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     const md_attribute_t* da = qm_test_attr(&t, STR_LIT("orbital/total/density"));
     ASSERT_TRUE(da != NULL);
     double* D = (double*)malloc(sizeof(double) * nao * nao);
-    ASSERT_EQ(md_qm_extract_symmetric_f64(D, nao * nao, da, md_attribute_slice_all()), nao);
+    ASSERT_EQ(md_qm_extract_symmetric_f64(D, nao * nao, da, md_attribute_slice_all(), NULL), nao);
     double tr = 0.0;
     for (size_t i = 0; i < nao; ++i) tr += D[i * nao + i];
     printf("  density matrix (orbital/total/density): %.2f s (trace %.6g)\n", md_tick_to_seconds(md_tick_now() - t0), tr);

@@ -72,6 +72,7 @@ set(CORE_FILES
   src/core/md_common.c
   src/core/md_common.h
   src/core/md_compiler.h
+  src/core/md_executor.h
   src/core/md_fifo.c
   src/core/md_fifo.h
   src/core/md_fft.c

@@ -27,7 +27,7 @@ UTEST(gro, parse_small) {
     }
     md_system_reset(&sys);
 
-    EXPECT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path));
+    EXPECT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path, NULL));
     // A format without force field types still keeps the column aligned, with empty entries
     EXPECT_EQ(sys.atom.type.count, md_array_size(sys.atom.type.ff_type));
     for (size_t t = 0; t < sys.atom.type.count; ++t) {
@@ -62,7 +62,7 @@ UTEST(gro, parse_big) {
     }
     md_system_reset(&sys);
 
-    EXPECT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path));
+    EXPECT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path, NULL));
     for (size_t i = 0; i < sys.atom.count; ++i) {
         EXPECT_EQ(sys_state.xyz[i].x, gro_data.atom_data[i].x * NM_TO_ANGSTROM);
         EXPECT_EQ(sys_state.xyz[i].y, gro_data.atom_data[i].y * NM_TO_ANGSTROM);
@@ -234,4 +234,89 @@ UTEST(gro, coordinate_columns_match_the_tokens) {
     EXPECT_EQ(0, gro_test_compare_with_tokens(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
     EXPECT_EQ(0, gro_test_compare_with_tokens(STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro")));
     EXPECT_EQ(0, gro_test_compare_with_tokens(STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
+}
+
+// ---------------------------------------------------------------------------
+// Straight from the text, in blocks and pieces
+//
+// A file of more than one block (md_text_blocks.h) whose residues straddle the blocks and the pieces, with velocities on
+// some lines and none on others: the same system read on the calling thread, on threads, and with the pieces out of
+// order; from the file and from a string; and as md_gro_data_t reads it.
+// ---------------------------------------------------------------------------
+
+#include "test_executor.h"
+#include "test_load_blocks.h"
+#include <core/md_arena_allocator.h>
+#include <md_attributes.h>
+#include <core/md_unit.h>
+#include <stdio.h>
+
+UTEST(gro, blocks_and_pieces) {
+    const size_t num_waters = 300000;   // 900000 lines of about 68 characters: two blocks
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    md_array(char) text = 0;
+    char line[128];
+    int n = snprintf(line, sizeof(line), "waters\n%5zu\n", num_waters * 3);
+    md_array_push_array(text, line, (size_t)n, alloc);
+    static const char* names[3] = { "OW", "HW1", "HW2" };
+    for (size_t w = 0; w < num_waters; ++w) {
+        for (int a = 0; a < 3; ++a) {
+            const size_t i = w * 3 + a;
+            const float x = (float)(i % 997) * 0.01f, y = (float)(i % 991) * 0.01f, z = (float)(i % 983) * 0.01f;
+            // GROMACS numbers residues and atoms modulo 100000
+            if (w % 7 == 3) {
+                n = snprintf(line, sizeof(line), "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n", (int)((w + 1) % 100000), "SOL", names[a], (int)((i + 1) % 100000), x, y, z);
+            } else {
+                n = snprintf(line, sizeof(line), "%5d%-5s%5s%5d%8.3f%8.3f%8.3f%8.4f%8.4f%8.4f\n", (int)((w + 1) % 100000), "SOL", names[a], (int)((i + 1) % 100000), x, y, z, 0.1f * a, -0.2f, 0.3f);
+            }
+            md_array_push_array(text, line, (size_t)n, alloc);
+        }
+    }
+    n = snprintf(line, sizeof(line), "   9.97000   9.91000   9.83000\n");
+    md_array_push_array(text, line, (size_t)n, alloc);
+    const str_t str = { text, md_array_size(text) };
+    ASSERT_GT(str.len, (size_t)MEGABYTES(33));
+
+    const char* path = "md_unittest_blocks.gro";
+    ASSERT_TRUE(load_blocks_write(path, str));
+
+    md_system_t ref = { .alloc = alloc };
+    md_system_state_t ref_st = { .alloc = alloc };
+    md_gro_data_t data = {0};
+    ASSERT_TRUE(md_gro_data_parse_str(&data, str, alloc));
+    ASSERT_TRUE(md_gro_system_init_from_data(&ref, &ref_st, &data));
+    EXPECT_EQ(num_waters * 3, ref.atom.count);
+    EXPECT_EQ(num_waters, ref.residue.count);
+
+    test_executor_t threads  = test_executor_threads(4);
+    test_executor_t shuffled = test_executor_shuffled(3);
+    const md_executor_t* executors[] = { NULL, test_executor(&threads), test_executor(&shuffled) };
+    for (size_t e = 0; e < ARRAY_SIZE(executors); ++e) {
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), executors[e]));
+        EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys, &st));
+        md_system_t sys2 = { .alloc = alloc };
+        md_system_state_t st2 = { .alloc = alloc };
+        ASSERT_TRUE(md_gro_system_init_from_str(&sys2, &st2, str, executors[e]));
+        EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys2, &st2));
+    }
+
+    // The velocities: of every line which has them, absent where a line has none
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), test_executor(&threads)));
+    const md_attribute_t* vel = md_attributes_find(&sys.attributes, STR_LIT("atom/velocity"));
+    ASSERT_TRUE(vel != NULL);
+    const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());
+    float v[3] = {0};
+    // Water 3 has none, water 4 has them
+    ASSERT_EQ((size_t)3, md_attribute_extract_f32(v, 3, vel, md_attribute_slice_1(3 * 3 + 1), nm_per_ps));
+    EXPECT_TRUE(gro_test_absent(v[0]));
+    ASSERT_EQ((size_t)3, md_attribute_extract_f32(v, 3, vel, md_attribute_slice_1(4 * 3 + 1), nm_per_ps));
+    EXPECT_TRUE(gro_test_same(v[0], 0.1f));
+    EXPECT_TRUE(gro_test_same(v[1], -0.2f));
+
+    remove(path);
+    md_vm_arena_destroy(alloc);
 }

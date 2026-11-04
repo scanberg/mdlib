@@ -16,6 +16,7 @@
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
+#include <core/md_executor.h>
 #include <core/md_bitset.h>
 #include <core/md_os.h>
 #include <core/md_hash.h>
@@ -2968,6 +2969,83 @@ static void test_cov_bond_pair_callback(const uint32_t* i_idx, const uint32_t* j
     }
 }
 
+// The candidate pairs of the whole structure, on the threads of an executor: each thread collects the pairs of the
+// pieces it is handed into an array of its own, and the pieces are put together in their order, which is the order the
+// serial query gives them in. So the candidates, and the bonds made of them, do not depend on the threads.
+typedef struct cov_bond_segment_t {
+    size_t   piece_beg;
+    uint32_t thread;
+    size_t   offset;
+    size_t   count;
+} cov_bond_segment_t;
+
+typedef struct cov_bond_pass_t {
+    const md_spatial_acc_t*     acc;
+    double                      cutoff;
+    cov_bond_callback_param_t*  param;      // [num_threads], each with its own candidates
+    md_array(cov_bond_segment_t)* segments; // [num_threads]
+    md_allocator_i*             heap;
+} cov_bond_pass_t;
+
+static void cov_bond_pass_range(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    cov_bond_pass_t* pass = (cov_bond_pass_t*)arg;
+    cov_bond_callback_param_t* param = &pass->param[thread_idx];
+    const size_t offset = md_array_size(*param->candidates);
+    md_spatial_acc_for_each_internal_pair_within_cutoff_in_pieces(pass->acc, pass->cutoff, beg, end, test_cov_bond_pair_callback, param);
+    const cov_bond_segment_t seg = { beg, thread_idx, offset, md_array_size(*param->candidates) - offset };
+    if (seg.count) md_array_push(pass->segments[thread_idx], seg, pass->heap);
+}
+
+static int compare_cov_bond_segment(const void* a, const void* b) {
+    const size_t x = ((const cov_bond_segment_t*)a)->piece_beg;
+    const size_t y = ((const cov_bond_segment_t*)b)->piece_beg;
+    return (x > y) - (x < y);
+}
+
+// The pairs within the bonding range of their radii, in the order of md_spatial_acc_for_each_internal_pair_within_cutoff
+static void cov_bond_candidates(md_array(bond_pair_t)* out, const md_spatial_acc_t* acc, double cutoff, const cov_bond_callback_param_t* proto, const md_executor_t* ex, md_allocator_i* alloc) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    const uint32_t num_threads = md_executor_num_threads(ex);
+    const size_t num_pieces = md_spatial_acc_num_pieces(acc);
+    if (num_pieces == 0) return;
+
+    md_array(bond_pair_t)*        cand = md_alloc(heap, num_threads * sizeof(md_array(bond_pair_t)));
+    md_array(cov_bond_segment_t)* segs = md_alloc(heap, num_threads * sizeof(md_array(cov_bond_segment_t)));
+    cov_bond_callback_param_t*    param = md_alloc(heap, num_threads * sizeof(cov_bond_callback_param_t));
+    for (uint32_t t = 0; t < num_threads; ++t) {
+        cand[t] = 0;
+        segs[t] = 0;
+        param[t] = *proto;
+        param[t].candidates = &cand[t];
+        param[t].alloc = heap;
+    }
+    cov_bond_pass_t pass = { .acc = acc, .cutoff = cutoff, .param = param, .segments = segs, .heap = heap };
+    const uint32_t grain = (uint32_t)MAX(1, num_pieces / ((size_t)num_threads * 32));
+    md_parallel_for(ex, (uint32_t)num_pieces, grain, cov_bond_pass_range, &pass);
+
+    md_array(cov_bond_segment_t) all = 0;
+    size_t total = 0;
+    for (uint32_t t = 0; t < num_threads; ++t) {
+        md_array_push_array(all, segs[t], md_array_size(segs[t]), heap);
+        total += md_array_size(cand[t]);
+    }
+    // Not with a NULL array: qsort's pointer is declared non-null, which lets the compiler drop the NULL checks after it
+    if (md_array_size(all) > 1) qsort(all, md_array_size(all), sizeof(cov_bond_segment_t), compare_cov_bond_segment);
+    md_array_ensure(*out, md_array_size(*out) + total, alloc);
+    for (size_t k = 0; k < md_array_size(all); ++k) {
+        md_array_push_array(*out, cand[all[k].thread] + all[k].offset, all[k].count, alloc);
+    }
+
+    md_array_free(all, heap);
+    for (uint32_t t = 0; t < num_threads; ++t) {
+        md_array_free(cand[t], heap);
+        md_array_free(segs[t], heap);
+    }
+    md_free(heap, cand,  num_threads * sizeof(md_array(bond_pair_t)));
+    md_free(heap, segs,  num_threads * sizeof(md_array(cov_bond_segment_t)));
+    md_free(heap, param, num_threads * sizeof(cov_bond_callback_param_t));
+}
+
 // A water molecule whose atoms beyond its O and two H are virtual sites (4 and 5 site models)
 // One oxygen, two hydrogens and possibly virtual sites (4 and 5 site models): a water molecule, whatever it is called
 static bool atoms_are_water(const md_system_t* sys, md_urange_t range) {
@@ -3772,7 +3850,7 @@ static void infer_coarse_grained_bonds(md_array(bond_pair_t)* candidates, const 
     }
 }
 
-void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc) {
+void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc, const md_executor_t* executor) {
     ASSERT(bond);
     ASSERT(state);
     ASSERT(sys);
@@ -3814,9 +3892,9 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
 
     size_t num_atoms = state->num_atoms;
     md_array(bond_pair_t) candidates = 0;
-    md_array_ensure(candidates, num_atoms, temp_arena);
 
     if (is_coarse_grained) {
+        md_array_ensure(candidates, num_atoms, temp_arena);
         infer_coarse_grained_bonds(&candidates, sys, state, temp_arena);
 
         size_t num_candidates = md_array_size(candidates);
@@ -3863,24 +3941,27 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             res_water[i] = md_system_residue_kind(sys, i) == MD_RESIDUE_KIND_WATER || atoms_are_water(sys, md_system_residue_atom_range(sys, i));
         }
 
+        // The candidates live on the heap: the spatial structure is given back (to the scratch it came from) before
+        // anything else is made, and what is made after it reuses that memory rather than adding to it
+        md_allocator_i* heap = md_get_heap_allocator();
         {
             // Find connections for all atoms
             cov_bond_callback_param_t param = {
                 .radius = atom_radius,
                 .k_min = bond_k_min,
                 .k_max = bond_k_coord,
-                .candidates = &candidates,
-                .alloc      = temp_arena,
             };
 
             // Candidates within reach of the largest covalent radius of the set: about 2.7 Å for organic matter
             const double cutoff = MAX(1.0, 2.0 * max_atom_rad * bond_k_coord);
 
             // Build candidate list
+            const md_temp_mark_t before_acc = md_temp_mark(temp_scope);
             md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state->xyz, sizeof(vec3_t), NULL, state->num_atoms);
             md_spatial_acc_t acc = {.alloc = temp_arena};
             md_spatial_acc_init(&acc, &(md_spatial_acc_desc_t){ .coords = &coords, .cutoff = cutoff, .unitcell = &state->unitcell });
-            md_spatial_acc_for_each_internal_pair_within_cutoff(&acc, cutoff, test_cov_bond_pair_callback, &param);
+            cov_bond_candidates(&candidates, &acc, cutoff, &param, executor, heap);
+            md_temp_reset(temp_scope, before_acc);
         }
 
         size_t num_candidates = md_array_size(candidates);
@@ -3933,6 +4014,14 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         md_bond_data_t temp_bond = { 0 };
         // We are lazy and propagate the correct periodic distance for each bond, so we can do more informed pruning later (e.g. for coordination bonds)
         md_array(float) temp_bond_dist = 0;
+        {
+            // Room for all of them at once: arrays which grow in an arena leave their copies behind
+            size_t num_bonds = md_array_size(metallic_pairs);
+            for (size_t i = 0; i < num_candidates; ++i) num_bonds += rules[i].factor > 0.0f;
+            md_array_ensure(temp_bond.pairs, num_bonds, temp_arena);
+            md_array_ensure(temp_bond.flags, num_bonds, temp_arena);
+            md_array_ensure(temp_bond_dist,  num_bonds, temp_arena);
+        }
 
         for (size_t i = 0; i < num_candidates; ++i) {
             if (rules[i].factor <= 0.0f) continue;
@@ -3944,6 +4033,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
             md_bond_insert(&temp_bond, ai, aj, rules[i].coordinate ? md_bond_flags_set_kind(inferred, MD_BOND_KIND_COORDINATE) : inferred, temp_arena);
             md_array_push(temp_bond_dist, candidates[i].dist, temp_arena);
         }
+        md_array_free(candidates, heap);
         {
             const md_bond_flags_t flags = md_bond_flags_set_kind(inferred, MD_BOND_KIND_METALLIC);
             for (size_t k = 0; k < md_array_size(metallic_pairs); ++k) {
@@ -3957,8 +4047,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         bitfield_set_all(temp_bond_valid, temp_bond.count); // Set all bits to 1 (valid)
 
         // ### PRUNE ###
-        // Build temporary connectivity data for pruning
-        md_bond_build_connectivity(&temp_bond, sys->atom.count, temp_arena);
+        // By the counts of bonds of each atom: no connectivity is needed (the triangle pruning below would want it)
 
         // Atoms with more bonds than they can take: atoms that clash (overlapping molecules in a packed starting
         // structure, unresolved alternate conformations), most often a hydrogen within reach of two atoms. Bonds go
@@ -4160,7 +4249,7 @@ done:
     md_temp_end(temp_scope);
 }
 
-void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state) {
+void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state, const md_executor_t* executor) {
     md_system_topology_changed(sys);
     // Overwrite semantics: discard whatever was there so a repeat call cannot accumulate, except the bonds a user
     // added by hand and those the file gives (CONECT records), which md_util_infer_covalent_bonds keeps and reconciles
@@ -4185,7 +4274,7 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
     sys->bond.count = num_user;
     md_array_shrink(sys->bond.pairs, num_user + num_noncovalent);
     md_array_shrink(sys->bond.flags, num_user + num_noncovalent);
-    md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc);
+    md_util_infer_covalent_bonds(&sys->bond, state, sys, sys->alloc, executor);
     md_bond_build_connectivity(&sys->bond, state->num_atoms, sys->alloc);
 
     // The atoms of the metallic phases are those of the metallic bonds (METALLIC PHASES)
@@ -5826,6 +5915,37 @@ bool md_util_system_infer_rings(md_system_t* sys) {
         if (md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_ATOM) bitfield_set_bit(skip, i);
     }
 
+    // A ring is a cycle, and a cycle lies within what is left of the graph when its ends are cut off, one after
+    // another: an atom with a single neighbour (or none) is on no cycle, and once it is gone its neighbour may have a
+    // single one left. Most molecules have no ring at all (a solvent, an alkane chain) and nothing is left of them.
+    {
+        uint32_t* degree = md_temp_alloc_array(temp, uint32_t, num_atoms);
+        uint32_t* stack  = md_temp_alloc_array(temp, uint32_t, num_atoms);
+        size_t top = 0;
+        for (size_t i = 0; i < num_atoms; ++i) {
+            uint32_t d = 0;
+            if (!bitfield_test_bit(skip, i)) {
+                md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+                for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                    d += !bitfield_test_bit(skip, md_bond_iter_atom_index(&it));
+                }
+                if (d <= 1) stack[top++] = (uint32_t)i;
+            }
+            degree[i] = d;
+        }
+        while (top) {
+            const uint32_t i = stack[--top];
+            if (bitfield_test_bit(skip, i)) continue;
+            bitfield_set_bit(skip, i);
+            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+            for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                const uint32_t j = (uint32_t)md_bond_iter_atom_index(&it);
+                if (bitfield_test_bit(skip, j)) continue;
+                if (--degree[j] == 1) stack[top++] = j;
+            }
+        }
+    }
+
     find_rings(&sys->ring, &sys->bond, num_atoms, skip, alloc, temp);
 
     md_temp_end(temp);
@@ -6523,8 +6643,12 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
 
     const size_t atom_count = md_system_atom_count(sys);
 
-    // Reverse map from atom to slot, one entry per atom in the system
+    // Reverse map from atom to slot, one entry per atom in the system. Every atom is in one molecule: the slots are as
+    // many as the atoms, and reserved at once rather than grown (the system's allocator is often an arena, which keeps
+    // what a growing array leaves behind)
     md_array_resize(sys->molecule.atom_slot, atom_count, alloc);
+    md_array_ensure(sys->molecule.atom_idx, atom_count, alloc);
+    md_array_ensure(sys->molecule.parent_idx, atom_count, alloc);
 
     // Which atoms have been assigned to a molecule. Persists across components.
     uint64_t* visited = make_bitfield(atom_count, temp_arena);
@@ -6843,10 +6967,15 @@ static bool resname_of_kind(str_t res_name, md_residue_kind_t kind) {
 }
 
 static particle_type_t* find_predefined_particle_type(str_t res_name, str_t atom_name) {
+    // The patterns are matched against C strings, and the names need not end in a zero (a label of 8 characters, a
+    // name read from a file)
+    char res_buf[32], atom_buf[32];
+    str_copy_to_char_buf(res_buf, sizeof(res_buf), res_name);
+    str_copy_to_char_buf(atom_buf, sizeof(atom_buf), atom_name);
     for (size_t i = 0; i < ARRAY_SIZE(predefined_particle_types); ++i) {
         particle_type_t type = predefined_particle_types[i];
-        if (!pattern_match_any(type.atom, atom_name.ptr)) continue;
-        const bool res_match = type.res ? pattern_match_any(type.res, res_name.ptr) : resname_of_kind(res_name, type.res_kind);
+        if (!pattern_match_any(type.atom, atom_buf)) continue;
+        const bool res_match = type.res ? pattern_match_any(type.res, res_buf) : resname_of_kind(res_name, type.res_kind);
         if (res_match) {
             return (particle_type_t*)&predefined_particle_types[i];
         }
@@ -6861,13 +6990,29 @@ static inline void apply_predefined_res_kind(md_system_t* sys, size_t res_idx, m
     }
 }
 
-void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[]) {
+typedef struct residue_template_t {
+    size_t            res_idx;          // The first residue of the key: its atoms' types are the template's
+    size_t            role_offset;      // In the roles: the atom flags of the residue before it was typed
+    md_residue_kind_t kind;             // What the typing said the residue is
+    int32_t           unknown_variant;  // The Martini molecule of no topology it was, -1 if none
+} residue_template_t;
+
+// The roles the typing gave the template residue's atoms: their flags now, without what they had before
+static void add_residue_template(md_hashmap32_t* cache, md_array(residue_template_t)* templates, md_atom_flags_t* roles, residue_template_t* tmpl, uint64_t key, const md_system_t* sys, md_allocator_i* alloc) {
+    const md_urange_t range = md_system_residue_atom_range(sys, tmpl->res_idx);
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        md_atom_flags_t* role = &roles[tmpl->role_offset + (i - range.beg)];
+        const md_atom_flags_t now = sys->atom.flags ? sys->atom.flags[i] : 0;
+        *role = (md_atom_flags_t)((uint32_t)now & ~(uint32_t)*role);
+    }
+    md_hashmap_add(cache, key, (uint32_t)md_array_size(*templates));
+    md_array_push(*templates, *tmpl, alloc);
+}
+
+// The labels of the atoms through an accessor: an array of strings, or of labels
+static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, size_t), const void* label_data) {
     if (!sys) {
         MD_LOG_ERROR("system was null");
-        return;
-    }
-    if (!atom_labels) {
-        MD_LOG_ERROR("Must provide atom_labels");
         return;
     }
     if (!sys->alloc) {
@@ -6889,34 +7034,79 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
 
     if (sys->residue.count > 0) {
         // The masses and sizes of Martini beads depend on the version of Martini
-        const martini_system_t martini = martini_system(sys, label_of_array, atom_labels);
+        const martini_system_t martini = martini_system(sys, label, label_data);
         // The molecules of the force field of beads of none of its topologies, by name and size: the first and how many
         typedef struct { str_t name; size_t size; size_t first; size_t count; } unknown_variant_t;
         md_array(unknown_variant_t) unknown_variants = 0;
+        md_array(str_t) res_labels = 0;
+        // The residues whose atoms were typed by a look at each: by their key, the types and roles their atoms got
+        md_hashmap32_t residue_template_cache = {.allocator = temp_alloc };
+        md_array(residue_template_t) templates = 0;
+        md_array(md_atom_flags_t) template_roles = 0;
         for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
             str_t res_name         = md_system_residue_name(sys, res_idx);
             md_urange_t res_range = md_system_residue_atom_range(sys, res_idx);
             size_t res_size        = res_range.end - res_range.beg;
 
+            // The labels of the residue, by its atoms from 0
+            md_array_resize(res_labels, res_size, temp_alloc);
+            for (size_t k = 0; k < res_size; ++k) res_labels[k] = label(label_data, res_range.beg + k);
+            const str_t* labels = res_labels;
+
+            // The labels are part of the key, as which of them a name stands for can depend on the others; and
+            // everything the types of the residue's atoms come from is in it, so the atoms of a residue of a key seen
+            // before (a water among thousands) take what the first one's did, without a look at each atom
+            uint64_t res_key = md_hash64_str(res_name, res_size);
+            for (size_t k = 0; k < res_size; ++k) res_key = md_hash64_str(labels[k], res_key);
+
+            bool untyped = true;
+            for (size_t i = res_range.beg; i < res_range.end && untyped; ++i) untyped = sys->atom.type_idx[i] == 0;
+
+            if (untyped) {
+                const uint32_t* t = md_hashmap_get(&residue_template_cache, res_key);
+                if (t) {
+                    const residue_template_t* tmpl = &templates[*t];
+                    const md_urange_t from = md_system_residue_atom_range(sys, tmpl->res_idx);
+                    MEMCPY(sys->atom.type_idx + res_range.beg, sys->atom.type_idx + from.beg, res_size * sizeof(md_particle_type_idx_t));
+                    if (sys->atom.flags) {
+                        for (size_t k = 0; k < res_size; ++k) sys->atom.flags[res_range.beg + k] |= template_roles[tmpl->role_offset + k];
+                    }
+                    apply_predefined_res_kind(sys, res_idx, tmpl->kind);
+                    if (tmpl->unknown_variant >= 0) unknown_variants[tmpl->unknown_variant].count += 1;
+                    continue;
+                }
+            }
+            // What the residue's atoms got, for those to follow of its key
+            residue_template_t tmpl = { .res_idx = res_idx, .role_offset = md_array_size(template_roles), .kind = MD_RESIDUE_KIND_OTHER, .unknown_variant = -1 };
+            if (untyped) {
+                for (size_t i = res_range.beg; i < res_range.end; ++i) {
+                    md_array_push(template_roles, sys->atom.flags ? sys->atom.flags[i] : 0, temp_alloc);
+                }
+            }
+
             // A Martini molecule (a lipid, water, an ion, ...): its residue name and all its bead names tell it, and give
             // every bead its mass, size and particle kind. A residue of a single bead is one only in a Martini system:
             // an ion of Martini 3 (ION NA) is named like an atomistic one.
             uint8_t map[256];
-            const martini_db_residue_t* mol = martini_db_match_molecule(martini.version, res_name, atom_labels + res_range.beg, res_size, map);
+            const martini_db_residue_t* mol = martini_db_match_molecule(martini.version, res_name, labels, res_size, map);
             if (mol && res_size == 1 && !martini.martini && mol->kind != MD_RESIDUE_KIND_WATER) mol = NULL;
             // A molecule renamed (CHL for CHOL, the three letters of a PDB file) is told by its beads, in a Martini system
             // only: atomistic residues are named as their atoms, which may be the names of beads
             if (!mol && martini.martini && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name)) {
-                mol = martini_db_match_beads(martini.version, atom_labels + res_range.beg, NULL, res_size, map);
+                mol = martini_db_match_beads(martini.version, labels, NULL, res_size, map);
             }
             if (mol) {
                 for (size_t i = res_range.beg; i < res_range.end; ++i) {
                     if (sys->atom.type_idx[i] != 0) continue;
                     const martini_db_bead_t* bead = martini_db_bead(mol, map[i - res_range.beg]);
                     const md_particle_type_flags_t flags = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, bead->particle);
-                    sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, atom_labels[i], 0, bead->mass, bead->radius, 0, flags, alloc);
+                    sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, labels[i - res_range.beg], 0, bead->mass, bead->radius, 0, flags, alloc);
                 }
                 apply_predefined_res_kind(sys, res_idx, mol->kind);
+                if (untyped) {
+                    tmpl.kind = mol->kind;
+                    add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+                }
                 continue;
             }
             // A molecule of the force field whose beads are those of none of its topologies (a variant of it, a residue
@@ -6924,12 +7114,12 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
             // of a sterol vanadium, its C1 carbon). Regular beads, as nothing tells their masses and sizes, of the kind of
             // the molecule, and without a topology of it no bonds. Not of a polymer, whose residues are bonded by name.
             if (martini.martini && !md_util_resname_amino_acid(res_name) && !md_util_resname_nucleotide(res_name) && !martini_db_linked(res_name)) {
-                const martini_db_residue_t* like = martini_db_unknown_variant(res_name, atom_labels + res_range.beg, res_size);
+                const martini_db_residue_t* like = martini_db_unknown_variant(res_name, labels, res_size);
                 if (like) {
                     const md_particle_type_flags_t flags = md_particle_type_flags_set_particle_kind(MD_PARTICLE_TYPE_FLAG_NONE, MD_PARTICLE_BEAD);
                     for (size_t i = res_range.beg; i < res_range.end; ++i) {
                         if (sys->atom.type_idx[i] != 0) continue;
-                        sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, atom_labels[i], 0, 72.0f, MARTINI_R, 0, flags, alloc);
+                        sys->atom.type_idx[i] = find_or_add_particle_type(&sys->atom.type, labels[i - res_range.beg], 0, 72.0f, MARTINI_R, 0, flags, alloc);
                     }
                     apply_predefined_res_kind(sys, res_idx, like->kind);
                     // Told once per name and size
@@ -6940,13 +7130,14 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
                         md_array_push(unknown_variants, v, temp_alloc);
                     }
                     unknown_variants[u].count += 1;
+                    if (untyped) {
+                        tmpl.kind = like->kind;
+                        tmpl.unknown_variant = (int32_t)u;
+                        add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+                    }
                     continue;
                 }
             }
-
-            // The labels of the residue are part of the key, as which of them a name stands for can depend on the others
-            uint64_t res_key = md_hash64_str(res_name, res_size);
-            for (size_t i = res_range.beg; i < res_range.end; ++i) res_key = md_hash64_str(atom_labels[i], res_key);
 
             // What the predefined types of its atoms say the residue is
             md_residue_kind_t res_kind = MD_RESIDUE_KIND_OTHER;
@@ -6954,14 +7145,14 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
                 if (sys->atom.type_idx[i] != 0) continue;
 
                 const particle_type_t* predef = NULL;
-                uint64_t key = md_hash64_str(atom_labels[i], res_key);
+                uint64_t key = md_hash64_str(labels[i - res_range.beg], res_key);
                 uint32_t* cached = md_hashmap_get(&particle_type_cache, key);
                 if (cached) {
                     sys->atom.type_idx[i] = (md_particle_type_idx_t)(*cached & 0xFFFF);
                     const uint32_t entry = *cached >> 16;
                     predef = entry ? &predefined_particle_types[entry - 1] : NULL;
                 } else {
-                    str_t atom_name = atom_labels[i];
+                    str_t atom_name = labels[i - res_range.beg];
                     md_atomic_number_t z = 0;
                     float mass = 0;
                     float radius = 0;
@@ -6978,7 +7169,7 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
                         flags   = md_particle_type_flags_set_particle_kind(flags, predef->particle);
                         if (predef->res_kind == MD_RESIDUE_KIND_AMINO_ACID || predef->res_kind == MD_RESIDUE_KIND_NUCLEOTIDE) {
                             // A Martini bead of an amino acid or a nucleotide: its version tells its mass and size
-                            const martini_db_bead_t* bead = martini_db_biopolymer_bead(martini.version, res_name, atom_labels + res_range.beg, res_size, i - res_range.beg);
+                            const martini_db_bead_t* bead = martini_db_biopolymer_bead(martini.version, res_name, labels, res_size, i - res_range.beg);
                             if (bead) {
                                 mass   = bead->mass;
                                 radius = bead->radius;
@@ -7003,6 +7194,10 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
                 }
             }
             apply_predefined_res_kind(sys, res_idx, res_kind);
+            if (untyped) {
+                tmpl.kind = res_kind;
+                add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
+            }
         }
         for (size_t u = 0; u < md_array_size(unknown_variants); ++u) {
             const unknown_variant_t* v = &unknown_variants[u];
@@ -7011,7 +7206,7 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
             size_t len = 0;
             beads[0] = '\0';
             for (uint32_t i = range.beg; i < range.end && len + 8 < sizeof(beads); ++i) {
-                len += (size_t)snprintf(beads + len, sizeof(beads) - len, "%s" STR_FMT, len ? " " : "", STR_ARG(atom_labels[i]));
+                len += (size_t)snprintf(beads + len, sizeof(beads) - len, "%s" STR_FMT, len ? " " : "", STR_ARG(label(label_data, i)));
             }
             MD_LOG_INFO(STR_FMT " of %zu beads (%s), %zu of them: no Martini topology of the name has these beads; shown as regular beads, without bonds",
                 STR_ARG(v->name), v->size, beads, v->count);
@@ -7020,16 +7215,17 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
         for (size_t i = 0; i < sys->atom.count; ++i) {
             if (sys->atom.type_idx[i] != 0) continue;
 
-            uint64_t key = md_hash64_str(atom_labels[i], 0);
+            const str_t atom_label = label(label_data, i);
+            uint64_t key = md_hash64_str(atom_label, 0);
             uint32_t* cached_type = md_hashmap_get(&particle_type_cache, key);
             if (cached_type) {
                 sys->atom.type_idx[i] = (md_particle_type_idx_t)*cached_type;
             } else {
-                md_atomic_number_t z = md_atomic_number_infer_from_label(atom_labels[i], (str_t){0}, 0);
+                md_atomic_number_t z = md_atomic_number_infer_from_label(atom_label, (str_t){0}, 0);
                 float mass   = md_atomic_number_mass(z);
                 float radius = md_atomic_number_vdw_radius(z);
                 uint32_t color = md_atomic_number_cpk_color(z);
-                md_particle_type_idx_t type = md_particle_type_find_or_add(&sys->atom.type, atom_labels[i], z, mass, radius, color, MD_PARTICLE_TYPE_FLAG_NONE, alloc);
+                md_particle_type_idx_t type = md_particle_type_find_or_add(&sys->atom.type, atom_label, z, mass, radius, color, MD_PARTICLE_TYPE_FLAG_NONE, alloc);
                 sys->atom.type_idx[i] = type;
                 md_hashmap_add(&particle_type_cache, key, (uint32_t)type);
             }
@@ -7037,6 +7233,26 @@ void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labe
     }
 
     md_temp_end(temp);
+}
+
+static str_t label_of_labels(const void* data, size_t i) {
+    return md_label_str(&((const md_label_t*)data)[i]);
+}
+
+void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[]) {
+    if (!atom_labels) {
+        MD_LOG_ERROR("Must provide atom_labels");
+        return;
+    }
+    infer_particle_types(sys, label_of_array, atom_labels);
+}
+
+void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[]) {
+    if (!atom_labels) {
+        MD_LOG_ERROR("Must provide atom_labels");
+        return;
+    }
+    infer_particle_types(sys, label_of_labels, atom_labels);
 }
 
 void md_util_system_augment_particle_types(md_system_t* sys) {
@@ -12900,7 +13116,7 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
 // (Chains)                 -> Backbone
-bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags) {
+bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags, const md_executor_t* executor) {
     ASSERT(sys);
 
     if (sys->atom.count == 0) return false;
@@ -12917,10 +13133,6 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
 
     const bool cg = md_system_is_coarse_grained(sys);
     size_t num_particle_types = md_system_particle_type_count(sys);
-
-    if (cg) {
-        flags &= ~MD_UTIL_INFER_BOND_BIT;
-    }
 
     if (flags & MD_UTIL_INFER_COLOR_BIT) {
         if (sys->atom.type.color) {
@@ -12958,12 +13170,19 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     if (flags & MD_UTIL_INFER_BOND_BIT) {
         // Setting the bit means "derive this", unconditionally. A format which supplies its own
         // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
-        md_util_system_infer_covalent_bonds(sys, state);
+        // Beads too: a coarse grained system gets the bonds of its model's topologies (infer_coarse_grained_bonds).
+        md_util_system_infer_covalent_bonds(sys, state, executor);
     }
 
     // Whatever the bonds came from (inferred, a topology, a file, by hand): those between a metal and a non-metal are
     // coordination. Cheap, and every reader of the flags relies on it, so not behind a bit.
     md_util_system_infer_coordination(sys);
+
+    // What the residues are (amino acids, nucleotides, waters, ions) and the roles of their atoms: by their names and by
+    // the bonds, so after them. What a loader gives is the atoms and their names; everything below reads these.
+    if (flags & MD_UTIL_INFER_RESIDUE_BIT) {
+        md_util_system_infer_residue_flags(sys);
+    }
 
     // The parts before the molecules: a molecule holds its polymer strands whole (synthesize_molecule_links). They are
     // found from the instances the data gives, the bonds and the classified residues, which the molecules do not change.
