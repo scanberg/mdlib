@@ -85,10 +85,12 @@ bool md_util_system_infer_residue_flags(md_system_t* sys);
 bool md_util_system_infer_lipids(md_system_t* sys);
 
 // Instances from the chain ids of the residues, for a format which gives a chain id per residue and no units of its
-// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id. A run without an
-// id is an instance of no id (the instances are back to back). Replaces the instances of the system. The instances are
-// what the data gives (md_instance_data_t): where it gives no chain ids at all the system has none.
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[]);
+// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id, and a new one
+// where res_unit_begins says the data ends one before the residue (a TER record of a PDB file), whatever the ids: two
+// chains of one id in a row are two (NULL: by the ids alone). A run without an id is an instance of no id (the
+// instances are back to back). Replaces the instances of the system. The instances are what the data gives
+// (md_instance_data_t): where it gives no chain ids at all the system has none.
+bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[], const bool res_unit_begins[]);
 
 // The chains of the system (sys->chain, see md_chain_data_t) from the author ids of its instances: one per id. A system
 // without ids has no chains. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT) and by the loaders which give the
@@ -105,6 +107,14 @@ bool md_util_system_infer_chains(md_system_t* sys);
 // A given type of unknown kind is classified from its first part. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT,
 // after the bonds); whatever changes the instances, the bonds or the kinds calls it after.
 bool md_util_system_infer_parts(md_system_t* sys);
+
+// The backbones of the system (sys->protein_backbone, sys->nucleic_backbone, see md_protein_backbone_data_t and
+// md_nucleic_backbone_data_t), found anew: consecutive ranges of at least 3 residues along each strand of a polymer
+// (the peptide and nucleic acid parts), atomistic or coarse grained, ending where the chain breaks (CHAIN BREAKS), whose
+// residues it marks MD_RESIDUE_FLAG_BREAK_AFTER and _BEFORE (cleared first). A system without residues has its
+// backbones found from the covalent bonds alone. state gives the coordinates the links over a gap are measured by (NULL, or none: by consecutive sequence numbers).
+// Done by md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the parts); requires the parts, and the bonds.
+bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state);
 
 // The residue types of the system (sys->residue.type, see md_residue_type_data_t): one per name and kind of
 // residue, with the standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the
@@ -326,6 +336,35 @@ void md_util_system_augment_particle_types(md_system_t* sys);
 // The phases run one after the other, each on the threads of the executor where it spreads its work (NULL: the calling
 // thread); the result is the same whatever the threads.
 bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags, const struct md_executor_t* executor);
+
+// INFERENCE WHILE THE SYSTEM IS IN USE. Inference reads the CORE of a system (the atoms, their types, the residues, the
+// instances, the assemblies) and writes the rest, the DERIVED (md_system_fields.h). So a system can be shown and used
+// while it is inferred on another thread, without a copy of it:
+//
+//   md_util_system_infer_prepare     The work: of the system, what inference writes, copied into alloc; the coordinates
+//                                    in state, which become its reference; the per atom arrays of the core shared. On
+//                                    the thread which owns the system.
+//   md_util_system_infer_run         Inference on the work: on any thread, while the system is read (and its core
+//                                    is not written: what changes the topology waits for the work, or discards it).
+//                                    All but MD_UTIL_INFER_COLOR_BIT, which is of the types of the atoms: the system
+//                                    is given its colors before, md_util_system_infer with that bit alone.
+//   md_util_system_infer_publish     The derived arrays of the work become the system's, which keeps its core, its
+//                                    attributes and its force field. On the thread which owns the system, nothing
+//                                    else reading it. False, and nothing done, when the topology of the system changed
+//                                    after the work was prepared: the work is of a system which is no more.
+//
+// The arrays of the work are in alloc, which the caller keeps with the system once published (they become the system's)
+// and frees otherwise (the work is never md_system_free'd: it shares arrays of the system). The types of the atoms are
+// copied too (a few per system), so that the system's may be changed meanwhile (their colors, their radii): they stay
+// the system's when published.
+typedef struct md_util_infer_work_t {
+    struct md_system_t sys;     // Inferred on: md_util_system_infer_run
+    uint64_t base_version;      // The topology version of the system it was prepared of
+} md_util_infer_work_t;
+
+bool md_util_system_infer_prepare(md_util_infer_work_t* work, const struct md_system_t* sys, const md_system_state_t* state, struct md_allocator_i* alloc);
+bool md_util_system_infer_run(md_util_infer_work_t* work, md_infer_flags_t flags, const struct md_executor_t* executor);
+bool md_util_system_infer_publish(struct md_system_t* sys, md_util_infer_work_t* work);
 
 
 // Computes an array of distances between two sets of coordinates in a periodic domain (cell)

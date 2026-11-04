@@ -710,8 +710,8 @@ UTEST(match, coordination) {
     md_match_result_free(&res);
     md_match_query_free(&q);
 
-    // The Mg is a molecule of its own too
-    EXPECT_LT(0, (int)count_smiles_ex("[Mg]", &(md_match_desc_t){.flags = MD_MATCH_FLAG_WHOLE}, sys));
+    // The Mg is a molecule of its own too, the Mg2+ the file's charge column says it is
+    EXPECT_LT(0, (int)count_smiles_ex("[Mg+2]", &(md_match_desc_t){.flags = MD_MATCH_FLAG_WHOLE}, sys));
 }
 
 UTEST(match, molecules) {

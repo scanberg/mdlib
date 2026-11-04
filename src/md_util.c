@@ -1,6 +1,7 @@
 ﻿#include <md_util.h>
 
 #include <md_system.h>
+#include "md_system_fields.h"
 #include <md_chem.h>
 #include <md_dssp.h>
 #include <md_match.h>
@@ -5139,7 +5140,7 @@ static void clear_instances(md_system_t* sys, md_allocator_i* alloc) {
     MEMSET(&sys->instance, 0, sizeof(sys->instance));
 }
 
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[]) {
+bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[], const bool res_unit_begins[]) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
         return false;
@@ -5163,7 +5164,7 @@ bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_c
     while (i < num_res) {
         const str_t id = str_trim(res_chain_id[i]);
         size_t j = i + 1;
-        while (j < num_res && str_eq(id, str_trim(res_chain_id[j]))) ++j;
+        while (j < num_res && str_eq(id, str_trim(res_chain_id[j])) && !(res_unit_begins && res_unit_begins[j])) ++j;
         md_array_push(sys->instance.id, (md_label_t){0}, alloc);
         md_array_push(sys->instance.auth_id, make_label(id), alloc);
         md_array_push(sys->instance.res_offset, (uint32_t)i, alloc);
@@ -6885,6 +6886,8 @@ static const particle_type_t predefined_particle_types[] = {
     { "ION", "K",   19, 39.10f,     2.7f, MD_PARTICLE_ATOM, 0, MD_RESIDUE_KIND_ION },
     { "ION", "CA",  20, 40.08f,     2.7f, MD_PARTICLE_ATOM, 0, MD_RESIDUE_KIND_ION },
 	{ "ION", "MG",  12, 24.31f,     2.0f, MD_PARTICLE_ATOM, 0, MD_RESIDUE_KIND_ION },
+
+    { "CLA", "CLA", 17, 35.45f,     1.8f, MD_PARTICLE_ATOM, 0, MD_RESIDUE_KIND_ION },
 
     {"*", "IC", 0,   3240.0f,   12.5f, MD_PARTICLE_BEAD, 0, MD_RESIDUE_KIND_OTHER},
     {"*", "OC", 0,   3240.0f,   12.5f, MD_PARTICLE_BEAD, 0, MD_RESIDUE_KIND_OTHER},
@@ -13112,6 +13115,214 @@ bool md_util_system_infer_residue_types(md_system_t* sys) {
     return true;
 }
 
+bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state) {
+    if (!sys) {
+        MD_LOG_ERROR("Missing system");
+        return false;
+    }
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+    md_allocator_i* alloc = sys->alloc;
+    md_system_topology_changed(sys);
+
+    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+
+    static const size_t MIN_BACKBONE_LENGTH = 3;
+
+    // Derived from scratch: a repeated inference must not append to the backbones of the last one
+    md_array_shrink(sys->protein_backbone.range.offset, 0);
+    md_array_shrink(sys->protein_backbone.range.part_idx, 0);
+    md_array_shrink(sys->protein_backbone.segment.atoms, 0);
+    md_array_shrink(sys->protein_backbone.segment.res_idx, 0);
+    sys->protein_backbone.range.count = 0;
+    sys->protein_backbone.segment.count = 0;
+    md_array_shrink(sys->nucleic_backbone.range.offset, 0);
+    md_array_shrink(sys->nucleic_backbone.range.part_idx, 0);
+    md_array_shrink(sys->nucleic_backbone.segment.atoms, 0);
+    md_array_shrink(sys->nucleic_backbone.segment.res_idx, 0);
+    sys->nucleic_backbone.range.count = 0;
+    sys->nucleic_backbone.segment.count = 0;
+
+    if (sys->part.count && sys->atom.type_idx) {
+        // The backbones are found within the strands: the parts of a polymer, in which consecutive ranges of
+        // residues form backbones
+
+        static const size_t MAX_BACKBONE_LENGTH = 1 << 15;
+
+        // The chain breaks too (mark_chain_break), found anew with the backbones
+        if (md_array_size(sys->residue.flags) < sys->residue.count) {
+            const size_t size = md_array_size(sys->residue.flags);
+            md_array_resize(sys->residue.flags, sys->residue.count, alloc);
+            MEMSET(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
+        }
+        for (size_t i = 0; i < sys->residue.count; ++i) {
+            sys->residue.flags[i] = (md_residue_flags_t)((uint32_t)sys->residue.flags[i] & ~(uint32_t)(MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
+        }
+
+        size_t temp_pos = md_vm_arena_get_pos(temp_arena);
+
+        {
+            md_array(md_amino_acid_atoms_t) backbone_atoms = 0;
+            md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
+            md_residue_idx_t res_base = -1;
+            md_sequence_id_t prev_seq_id = -1;
+
+            for (size_t part_idx = 0; part_idx < sys->part.count; ++part_idx) {
+                if (md_system_part_kind(sys, part_idx) != MD_PART_KIND_PEPTIDE) {
+                    continue;
+                }
+
+                md_urange_t range = md_system_part_residue_range(sys, part_idx);
+                for (size_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
+                    md_amino_acid_atoms_t atoms;
+                    md_urange_t atom_range = md_system_residue_atom_range(sys, res_idx);
+                    bool has_backbone_atoms = md_util_amino_acid_atoms_extract(&atoms, &sys->atom, atom_range);
+                    if (!has_backbone_atoms) {
+                        // A coarse grained residue: its backbone bead, a segment of a trace
+                        const md_atom_idx_t bead = amino_acid_backbone_bead(sys, res_idx);
+                        if (bead >= 0) {
+                            MEMSET(&atoms, -1, sizeof(atoms));
+                            atoms.ca = bead;
+                            has_backbone_atoms = true;
+                        }
+                    }
+
+                    if (has_backbone_atoms) {
+                        md_sequence_id_t seq_id = md_system_residue_seq_id(sys, res_idx);
+                        size_t backbone_length = md_array_size(backbone_atoms);
+
+                        if (backbone_length > 0) {
+                            // The residue before it in the chain. A range is atomistic or a trace throughout, and
+                            // ends where the chain breaks: where the backbone is not linked, whatever the sequence
+                            // numbers say (CHAIN BREAKS in md_util.h)
+                            const md_amino_acid_atoms_t prev = *md_array_last(backbone_atoms);
+                            const bool trace = atoms.n < 0;
+                            if (trace != (prev.n < 0)) {
+                                flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                            } else if (!protein_backbone_linked(sys, state, &prev, &atoms, seq_id == prev_seq_id + 1)) {
+                                if (!protein_chain_ends_between(sys, res_idx - 1, res_idx, &prev, &atoms)) {
+                                    mark_chain_break(sys, res_idx - 1, res_idx);
+                                }
+                                flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                            }
+                        }
+
+                        if (res_base == -1) {
+                            res_base = (md_residue_idx_t)res_idx;
+                        }
+                        md_array_push(backbone_atoms, atoms, temp_arena);
+                        prev_seq_id = seq_id;
+                        continue;
+                    }
+
+                    flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                    prev_seq_id = -1;
+                }
+                // Possibly commit remainder of the chain
+                flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
+                prev_seq_id = -1;
+            }
+
+            sys->protein_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
+            if (sys->protein_backbone.range.count) {
+                // Add end offset
+                md_array_push(sys->protein_backbone.range.offset, (uint32_t)md_array_size(sys->protein_backbone.segment.atoms), alloc);
+            }
+            sys->protein_backbone.segment.count = md_array_size(sys->protein_backbone.segment.atoms);
+        }
+        md_vm_arena_set_pos_back(temp_arena, temp_pos);
+
+        {
+            md_array(md_nucleic_acid_atoms_t) backbone_atoms = 0;
+            md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
+            md_residue_idx_t res_base = -1;
+            md_sequence_id_t prev_seq_id = -1;
+
+            for (size_t part_idx = 0; part_idx < sys->part.count; ++part_idx) {
+                if (!md_part_kind_is_nucleic_acid(md_system_part_kind(sys, part_idx))) {
+                    continue;
+                }
+
+                md_urange_t range = md_system_part_residue_range(sys, part_idx);
+                for (md_residue_idx_t res_idx = (int)range.beg; res_idx < (int)range.end; ++res_idx) {
+                    md_nucleic_acid_atoms_t atoms;
+                    md_urange_t atom_range = md_system_residue_atom_range(sys, res_idx);
+                    bool has_backbone_atoms = md_util_nucleic_acid_atoms_extract(&atoms, &sys->atom, atom_range);
+                    if (!has_backbone_atoms) {
+                        // A coarse grained nucleotide: its backbone beads
+                        has_backbone_atoms = nucleotide_backbone_beads(&atoms, sys, (size_t)res_idx);
+                    }
+
+                    if (has_backbone_atoms) {
+                        md_sequence_id_t seq_id = md_system_residue_seq_id(sys, res_idx);
+                        size_t backbone_length = md_array_size(backbone_atoms);
+
+                        if (backbone_length > 0) {
+                            // The residue before it in the chain: a range is of atoms or of beads throughout, and
+                            // ends where the chain breaks (CHAIN BREAKS in md_util.h); a residue without its P (or
+                            // phosphate bead), which is linked to nothing before it, begins one
+                            const md_nucleic_acid_atoms_t prev = *md_array_last(backbone_atoms);
+                            if (nucleic_atoms_are_beads(&atoms) != nucleic_atoms_are_beads(&prev)) {
+                                flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                            } else if (!nucleic_backbone_linked(sys, state, &prev, &atoms, seq_id == prev_seq_id + 1)) {
+                                if (!nucleic_chain_ends_between(sys, &prev, &atoms)) {
+                                    mark_chain_break(sys, (size_t)res_idx - 1, (size_t)res_idx);
+                                }
+                                flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                            }
+                        }
+
+                        if (res_base == -1) {
+                            res_base = res_idx;
+                        }
+                        md_array_push(backbone_atoms, atoms, temp_arena);
+                        prev_seq_id = seq_id;
+                        continue;
+                    }
+
+                    flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                    prev_seq_id = -1;
+                }
+                // Possibly commit remainder of the chain
+                flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
+                prev_seq_id = -1;
+            }
+
+            sys->nucleic_backbone.range.count = md_array_size(sys->nucleic_backbone.range.offset);
+            if (sys->nucleic_backbone.range.count) {
+                // Add end offset
+                md_array_push(sys->nucleic_backbone.range.offset, (uint32_t)md_array_size(sys->nucleic_backbone.segment.atoms), alloc);
+            }
+            sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
+        }
+        md_vm_arena_set_pos_back(temp_arena, temp_pos);
+    } else if (sys->residue.count == 0 && sys->bond.count && sys->atom.type_idx) {
+        // No residues to find them by: from the bonds alone (BACKBONES FROM THE BONDS)
+        const size_t temp_pos = md_vm_arena_get_pos(temp_arena);
+        protein_backbones_from_bonds(sys, state, MIN_BACKBONE_LENGTH, temp_scope);
+        nucleic_backbones_from_bonds(sys, MIN_BACKBONE_LENGTH, temp_scope);
+        md_vm_arena_set_pos_back(temp_arena, temp_pos);
+
+        sys->protein_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
+        if (sys->protein_backbone.range.count) {
+            md_array_push(sys->protein_backbone.range.offset, (uint32_t)md_array_size(sys->protein_backbone.segment.atoms), alloc);
+        }
+        sys->protein_backbone.segment.count = md_array_size(sys->protein_backbone.segment.atoms);
+
+        sys->nucleic_backbone.range.count = md_array_size(sys->nucleic_backbone.range.offset);
+        if (sys->nucleic_backbone.range.count) {
+            md_array_push(sys->nucleic_backbone.range.offset, (uint32_t)md_array_size(sys->nucleic_backbone.segment.atoms), alloc);
+        }
+        sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
+    }
+
+    md_temp_end(temp_scope);
+    return true;
+}
+
 // Try to fill in missing fields for molecule struct
 // (Coordinates & Elements) -> Covalent Bonds
 // (residues & Bonds)       -> Chains
@@ -13128,11 +13339,13 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
 
     md_allocator_i* alloc = sys->alloc;
 
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-
     const bool cg = md_system_is_coarse_grained(sys);
     size_t num_particle_types = md_system_particle_type_count(sys);
+
+    if (!sys->atom.flags) {
+        md_array_resize(sys->atom.flags, sys->atom.count, alloc);
+        MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
+    }
 
     if (flags & MD_UTIL_INFER_COLOR_BIT) {
         if (sys->atom.type.color) {
@@ -13160,11 +13373,6 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                 }
             }
         }
-    }
-
-    if (!sys->atom.flags) {
-        md_array_resize(sys->atom.flags, sys->atom.count, alloc);
-        MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     }
    
     if (flags & MD_UTIL_INFER_BOND_BIT) {
@@ -13211,194 +13419,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     }
 
     if (flags & MD_UTIL_INFER_BACKBONE_BIT) {
-        static const size_t MIN_BACKBONE_LENGTH = 3;
-
-        // Derived from scratch: a repeated inference must not append to the backbones of the last one
-        md_array_shrink(sys->protein_backbone.range.offset, 0);
-        md_array_shrink(sys->protein_backbone.range.part_idx, 0);
-        md_array_shrink(sys->protein_backbone.segment.atoms, 0);
-        md_array_shrink(sys->protein_backbone.segment.res_idx, 0);
-        sys->protein_backbone.range.count = 0;
-        sys->protein_backbone.segment.count = 0;
-        md_array_shrink(sys->nucleic_backbone.range.offset, 0);
-        md_array_shrink(sys->nucleic_backbone.range.part_idx, 0);
-        md_array_shrink(sys->nucleic_backbone.segment.atoms, 0);
-        md_array_shrink(sys->nucleic_backbone.segment.res_idx, 0);
-        sys->nucleic_backbone.range.count = 0;
-        sys->nucleic_backbone.segment.count = 0;
-
-        if (sys->part.count && sys->atom.type_idx) {
-            // The backbones are found within the strands: the parts of a polymer, in which consecutive ranges of
-            // residues form backbones
-
-            static const size_t MAX_BACKBONE_LENGTH = 1 << 15;
-
-            // The chain breaks too (mark_chain_break), found anew with the backbones
-            if (md_array_size(sys->residue.flags) < sys->residue.count) {
-                const size_t size = md_array_size(sys->residue.flags);
-                md_array_resize(sys->residue.flags, sys->residue.count, alloc);
-                MEMSET(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
-            }
-            for (size_t i = 0; i < sys->residue.count; ++i) {
-                sys->residue.flags[i] = (md_residue_flags_t)((uint32_t)sys->residue.flags[i] & ~(uint32_t)(MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
-            }
-
-            size_t temp_pos = md_vm_arena_get_pos(temp_arena);
-
-            {
-                md_array(md_amino_acid_atoms_t) backbone_atoms = 0;
-                md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
-                md_residue_idx_t res_base = -1;
-                md_sequence_id_t prev_seq_id = -1;
-
-                for (size_t part_idx = 0; part_idx < sys->part.count; ++part_idx) {
-                    if (md_system_part_kind(sys, part_idx) != MD_PART_KIND_PEPTIDE) {
-                        continue;
-                    }
-
-                    md_urange_t range = md_system_part_residue_range(sys, part_idx);
-                    for (size_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
-                        md_amino_acid_atoms_t atoms;
-                        md_urange_t atom_range = md_system_residue_atom_range(sys, res_idx);
-                        bool has_backbone_atoms = md_util_amino_acid_atoms_extract(&atoms, &sys->atom, atom_range);
-                        if (!has_backbone_atoms) {
-                            // A coarse grained residue: its backbone bead, a segment of a trace
-                            const md_atom_idx_t bead = amino_acid_backbone_bead(sys, res_idx);
-                            if (bead >= 0) {
-                                MEMSET(&atoms, -1, sizeof(atoms));
-                                atoms.ca = bead;
-                                has_backbone_atoms = true;
-                            }
-                        }
-
-                        if (has_backbone_atoms) {
-                            md_sequence_id_t seq_id = md_system_residue_seq_id(sys, res_idx);
-                            size_t backbone_length = md_array_size(backbone_atoms);
-
-                            if (backbone_length > 0) {
-                                // The residue before it in the chain. A range is atomistic or a trace throughout, and
-                                // ends where the chain breaks: where the backbone is not linked, whatever the sequence
-                                // numbers say (CHAIN BREAKS in md_util.h)
-                                const md_amino_acid_atoms_t prev = *md_array_last(backbone_atoms);
-                                const bool trace = atoms.n < 0;
-                                if (trace != (prev.n < 0)) {
-                                    flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
-                                } else if (!protein_backbone_linked(sys, state, &prev, &atoms, seq_id == prev_seq_id + 1)) {
-                                    if (!protein_chain_ends_between(sys, res_idx - 1, res_idx, &prev, &atoms)) {
-                                        mark_chain_break(sys, res_idx - 1, res_idx);
-                                    }
-                                    flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
-                                }
-                            }
-
-                            if (res_base == -1) {
-                                res_base = (md_residue_idx_t)res_idx;
-                            }
-                            md_array_push(backbone_atoms, atoms, temp_arena);
-                            prev_seq_id = seq_id;
-                            continue;
-                        }
-
-                        flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
-                        prev_seq_id = -1;
-                    }
-                    // Possibly commit remainder of the chain
-                    flush_protein_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->protein_backbone, alloc, MIN_BACKBONE_LENGTH);
-                    prev_seq_id = -1;
-                }
-
-                sys->protein_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
-                if (sys->protein_backbone.range.count) {
-                    // Add end offset
-                    md_array_push(sys->protein_backbone.range.offset, (uint32_t)md_array_size(sys->protein_backbone.segment.atoms), alloc);
-                }
-                sys->protein_backbone.segment.count = md_array_size(sys->protein_backbone.segment.atoms);
-            }
-            md_vm_arena_set_pos_back(temp_arena, temp_pos);
-
-            {
-                md_array(md_nucleic_acid_atoms_t) backbone_atoms = 0;
-                md_array_ensure(backbone_atoms, MAX_BACKBONE_LENGTH, temp_arena);
-                md_residue_idx_t res_base = -1;
-                md_sequence_id_t prev_seq_id = -1;
-
-                for (size_t part_idx = 0; part_idx < sys->part.count; ++part_idx) {
-                    if (!md_part_kind_is_nucleic_acid(md_system_part_kind(sys, part_idx))) {
-                        continue;
-                    }
-
-                    md_urange_t range = md_system_part_residue_range(sys, part_idx);
-                    for (md_residue_idx_t res_idx = (int)range.beg; res_idx < (int)range.end; ++res_idx) {
-                        md_nucleic_acid_atoms_t atoms;
-                        md_urange_t atom_range = md_system_residue_atom_range(sys, res_idx);
-                        bool has_backbone_atoms = md_util_nucleic_acid_atoms_extract(&atoms, &sys->atom, atom_range);
-                        if (!has_backbone_atoms) {
-                            // A coarse grained nucleotide: its backbone beads
-                            has_backbone_atoms = nucleotide_backbone_beads(&atoms, sys, (size_t)res_idx);
-                        }
-
-                        if (has_backbone_atoms) {
-                            md_sequence_id_t seq_id = md_system_residue_seq_id(sys, res_idx);
-                            size_t backbone_length = md_array_size(backbone_atoms);
-
-                            if (backbone_length > 0) {
-                                // The residue before it in the chain: a range is of atoms or of beads throughout, and
-                                // ends where the chain breaks (CHAIN BREAKS in md_util.h); a residue without its P (or
-                                // phosphate bead), which is linked to nothing before it, begins one
-                                const md_nucleic_acid_atoms_t prev = *md_array_last(backbone_atoms);
-                                if (nucleic_atoms_are_beads(&atoms) != nucleic_atoms_are_beads(&prev)) {
-                                    flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
-                                } else if (!nucleic_backbone_linked(sys, state, &prev, &atoms, seq_id == prev_seq_id + 1)) {
-                                    if (!nucleic_chain_ends_between(sys, &prev, &atoms)) {
-                                        mark_chain_break(sys, (size_t)res_idx - 1, (size_t)res_idx);
-                                    }
-                                    flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
-                                }
-                            }
-
-                            if (res_base == -1) {
-                                res_base = res_idx;
-                            }
-                            md_array_push(backbone_atoms, atoms, temp_arena);
-                            prev_seq_id = seq_id;
-                            continue;
-                        }
-
-                        flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
-                        prev_seq_id = -1;
-                    }
-                    // Possibly commit remainder of the chain
-                    flush_nucleic_backbone_segment(backbone_atoms, &res_base, part_idx, &sys->nucleic_backbone, alloc, MIN_BACKBONE_LENGTH);
-                    prev_seq_id = -1;
-                }
-
-                sys->nucleic_backbone.range.count = md_array_size(sys->nucleic_backbone.range.offset);
-                if (sys->nucleic_backbone.range.count) {
-                    // Add end offset
-                    md_array_push(sys->nucleic_backbone.range.offset, (uint32_t)md_array_size(sys->nucleic_backbone.segment.atoms), alloc);
-                }
-                sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
-            }
-            md_vm_arena_set_pos_back(temp_arena, temp_pos);
-        } else if (sys->residue.count == 0 && sys->bond.count && sys->atom.type_idx) {
-            // No residues to find them by: from the bonds alone (BACKBONES FROM THE BONDS)
-            const size_t temp_pos = md_vm_arena_get_pos(temp_arena);
-            protein_backbones_from_bonds(sys, state, MIN_BACKBONE_LENGTH, temp_scope);
-            nucleic_backbones_from_bonds(sys, MIN_BACKBONE_LENGTH, temp_scope);
-            md_vm_arena_set_pos_back(temp_arena, temp_pos);
-
-            sys->protein_backbone.range.count = md_array_size(sys->protein_backbone.range.offset);
-            if (sys->protein_backbone.range.count) {
-                md_array_push(sys->protein_backbone.range.offset, (uint32_t)md_array_size(sys->protein_backbone.segment.atoms), alloc);
-            }
-            sys->protein_backbone.segment.count = md_array_size(sys->protein_backbone.segment.atoms);
-
-            sys->nucleic_backbone.range.count = md_array_size(sys->nucleic_backbone.range.offset);
-            if (sys->nucleic_backbone.range.count) {
-                md_array_push(sys->nucleic_backbone.range.offset, (uint32_t)md_array_size(sys->nucleic_backbone.segment.atoms), alloc);
-            }
-            sys->nucleic_backbone.segment.count = md_array_size(sys->nucleic_backbone.segment.atoms);
-        }
+        md_util_system_infer_backbones(sys, state);
     }
 
     if (flags & MD_UTIL_INFER_LIPID_BIT) {
@@ -13410,14 +13431,6 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     // and what a residue type is follows from the residues alone, so not behind a bit.
     md_util_system_infer_residue_types(sys);
 
-#if 0
-    if ((flags & MD_UTIL_INFER_UNWRAP_MOLECULE_BIT) && 
-        (state->unitcell.flags != 0) && md_system_molecule_count(sys) > 0)
-    {
-        md_util_system_unwrap(sys);
-    }
-#endif
-
     // Record the state the topology above was inferred from. Written here, as part of performing
     // the inference, so it cannot disagree with what it produced.
     if (state != &sys->reference) {
@@ -13425,7 +13438,113 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         md_system_state_copy(&sys->reference, state);
     }
 
-    md_temp_end(temp_scope);
+    return true;
+}
+
+// ### INFERENCE WHILE THE SYSTEM IS IN USE ###
+
+#define INFER_COPY_ARRAY(f) do { \
+        work->sys.f = NULL; \
+        if (md_array_size(sys->f)) md_array_push_array(work->sys.f, sys->f, md_array_size(sys->f), alloc); \
+    } while (0);
+
+#define INFER_COPY_STRINGS(f) do { \
+        work->sys.f = NULL; \
+        const size_t n = md_array_size(sys->f); \
+        if (n) { \
+            md_array_resize(work->sys.f, n, alloc); \
+            for (size_t i = 0; i < n; ++i) work->sys.f[i] = str_empty(sys->f[i]) ? (str_t){0} : str_copy(sys->f[i], alloc); \
+        } \
+    } while (0);
+
+bool md_util_system_infer_prepare(md_util_infer_work_t* work, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
+    ASSERT(work);
+    ASSERT(sys);
+    ASSERT(alloc);
+    MEMSET(work, 0, sizeof(*work));
+
+    // The core and the counts, shared. Not what is the system's alone: its description, its force field, its attributes
+    // (which its owner may add to meanwhile).
+    work->sys = *sys;
+    work->sys.alloc = alloc;
+    work->sys.nonbonded = NULL;
+    work->sys.description = (str_t){0};
+    MEMSET(&work->sys.attributes, 0, sizeof(work->sys.attributes));
+    work->sys.attributes.alloc = alloc;
+    MEMSET(&work->sys.reference, 0, sizeof(work->sys.reference));
+    work->base_version = sys->topology_version;
+
+    // The types of the atoms, which the owner may change meanwhile (a color, a radius): a few of them
+    INFER_COPY_ARRAY(atom.type.name)
+    INFER_COPY_ARRAY(atom.type.ff_type)
+    INFER_COPY_ARRAY(atom.type.z)
+    INFER_COPY_ARRAY(atom.type.mass)
+    INFER_COPY_ARRAY(atom.type.radius)
+    INFER_COPY_ARRAY(atom.type.color)
+    INFER_COPY_ARRAY(atom.type.flags)
+
+    // What inference writes, of its own: what the data gave of it is added to or replaced
+    MD_SYSTEM_DERIVED_ARRAYS(INFER_COPY_ARRAY)
+    MD_SYSTEM_DERIVED_STRINGS(INFER_COPY_STRINGS)
+
+    // The one attribute inference reads: the formal charges the data gives, which the chemistry starts from
+    // (md_chem_perceive)
+    const md_attribute_t* q = md_attributes_find(&sys->attributes, STR_LIT("atom/formal_charge"));
+    if (q && md_attribute_slice_count(q, md_attribute_slice_all()) == sys->atom.count) {
+        const float* values = (const float*)md_attribute_view(q, MD_ATTRIBUTE_TYPE_F32, 1, 1);
+        if (values) {
+            md_attributes_publish_atom_column(&work->sys.attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, values, sys->atom.count);
+        }
+    }
+
+    // The coordinates, which the system's owner changes as it likes (a frame of a run): those inferred from, and kept
+    // as the reference of what is inferred
+    if (state && (state->xyz || state->num_atoms)) {
+        work->sys.reference.alloc = alloc;
+        if (!md_system_state_copy(&work->sys.reference, state)) return false;
+    }
+    return true;
+}
+
+#undef INFER_COPY_ARRAY
+#undef INFER_COPY_STRINGS
+
+bool md_util_system_infer_run(md_util_infer_work_t* work, md_infer_flags_t flags, const md_executor_t* executor) {
+    ASSERT(work);
+    // The colors are of the types of the atoms, which stay the system's: given them before, which is what they are
+    // shown with meanwhile
+    flags &= ~MD_UTIL_INFER_COLOR_BIT;
+    return md_util_system_infer(&work->sys, &work->sys.reference, flags, executor);
+}
+
+bool md_util_system_infer_publish(md_system_t* sys, md_util_infer_work_t* work) {
+    ASSERT(sys);
+    ASSERT(work);
+    if (sys->topology_version != work->base_version) return false;
+    // The core it shares is the system's still
+    ASSERT(sys->atom.count == work->sys.atom.count && sys->atom.type_idx == work->sys.atom.type_idx);
+    ASSERT(sys->residue.count == work->sys.residue.count && sys->residue.atom_offset == work->sys.residue.atom_offset);
+
+    md_allocator_i* alloc = sys->alloc;
+    // What the system had of the derived: given back (to an arena, which frees nothing, this is nothing)
+#define FREE_ARRAY(f) md_array_free(sys->f, alloc);
+#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!str_empty(sys->f[i])) str_free(sys->f[i], alloc); } md_array_free(sys->f, alloc);
+    MD_SYSTEM_DERIVED_ARRAYS(FREE_ARRAY)
+    MD_SYSTEM_DERIVED_STRINGS(FREE_STRINGS)
+#undef FREE_ARRAY
+#undef FREE_STRINGS
+    md_system_state_free(&sys->reference);
+
+#define MOVE(f) sys->f = work->sys.f;
+    MD_SYSTEM_DERIVED_STRUCTS(MOVE)
+    MD_SYSTEM_DERIVED_ARRAYS(MOVE)
+    MD_SYSTEM_DERIVED_STRINGS(MOVE)
+#undef MOVE
+    sys->reference = work->sys.reference;
+
+    // Of its own: the work's attributes go with it
+    MEMSET(work, 0, sizeof(*work));
+    md_system_topology_changed(sys);
     return true;
 }
 

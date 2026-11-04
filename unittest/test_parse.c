@@ -1,6 +1,7 @@
 #include "utest.h"
 
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
@@ -444,7 +445,7 @@ UTEST(parse, peek_and_skip_agree_with_extract) {
 }
 
 // The same lines, through a file buffer that holds only a few of them at a time and through a string
-UTEST(parse, buffered_reader) {
+UTEST(parse, reader) {
     md_allocator_i* heap = md_get_heap_allocator();
     const str_t path = STR_LIT("md_unittest_parse_lines.txt");
 
@@ -467,23 +468,27 @@ UTEST(parse, buffered_reader) {
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
     ASSERT_EQ(len, md_file_write(file, text, len));
     md_file_close(&file);
-    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
 
-    char buf[64];   // Fits a few lines at a time, and never all of them
-    md_buffered_reader_t fr = md_buffered_reader_from_file(buf, sizeof(buf), file);
-    md_buffered_reader_t sr = md_buffered_reader_from_str((str_t){ text, len });
+    // A buffer which fits a few lines at a time, and never all of them
+    md_file_reader_t frd;
+    ASSERT_TRUE(md_file_reader_open(&frd, path, 64, heap));
+    md_reader_i* fr = &frd.r;
+    md_reader_i sr = md_reader_from_str((str_t){ text, len });
+    EXPECT_EQ((int64_t)len, md_reader_size(fr));
+    EXPECT_EQ((int64_t)len, md_reader_size(&sr));
 
+    int64_t offset[500];
     for (int pass = 0; pass < 2; ++pass) {
         int count = 0;
         str_t a, b, peek;
         while (true) {
-            const int64_t pos_f = md_buffered_reader_tellg(&fr);
-            const int64_t pos_s = md_buffered_reader_tellg(&sr);
+            const int64_t pos_f = md_reader_tell(fr);
+            const int64_t pos_s = md_reader_tell(&sr);
             EXPECT_EQ(pos_s, pos_f);
 
-            const bool peeked = md_buffered_reader_peek_line(&peek, &fr);
-            const bool got_f = md_buffered_reader_extract_line(&a, &fr);
-            const bool got_s = md_buffered_reader_extract_line(&b, &sr);
+            const bool peeked = md_reader_peek_line(fr, &peek);
+            const bool got_f = md_reader_extract_line(fr, &a);
+            const bool got_s = md_reader_extract_line(&sr, &b);
             EXPECT_EQ(got_s, got_f);
             EXPECT_EQ(got_f, peeked);
             if (!got_f || !got_s) break;
@@ -493,21 +498,69 @@ UTEST(parse, buffered_reader) {
             int64_t idx = -1;
             EXPECT_TRUE(md_parse_i64(&idx, a) > 0);
             EXPECT_EQ(count, idx);
+            if (count < num_lines) offset[count] = pos_f;
             count += 1;
         }
         EXPECT_EQ(num_lines, count);
+        EXPECT_TRUE(md_reader_end(fr));
+        EXPECT_TRUE(md_reader_end(&sr));
 
-        md_buffered_reader_reset(&fr);
-        md_buffered_reader_reset(&sr);
+        EXPECT_TRUE(md_reader_rewind(fr));
+        EXPECT_TRUE(md_reader_rewind(&sr));
     }
 
     // Skipping goes past a line without handing it out
-    EXPECT_TRUE(md_buffered_reader_skip_line(&fr));
+    EXPECT_TRUE(md_reader_skip_line(fr));
     str_t line;
-    EXPECT_TRUE(md_buffered_reader_extract_line(&line, &fr));
+    EXPECT_TRUE(md_reader_extract_line(fr, &line));
     EXPECT_EQ(0, strncmp(line.ptr, "1:", 2));
 
-    md_file_close(&file);
+    // An offset taken before a line is the line's: back to it, in either direction, outside what is buffered
+    for (int i = num_lines - 1; i >= 0; i -= 37) {
+        EXPECT_TRUE(md_reader_seek(fr, offset[i]));
+        EXPECT_TRUE(md_reader_seek(&sr, offset[i]));
+        str_t a, b;
+        EXPECT_TRUE(md_reader_extract_line(fr, &a));
+        EXPECT_TRUE(md_reader_extract_line(&sr, &b));
+        EXPECT_TRUE(str_eq(a, b));
+        int64_t idx = -1;
+        EXPECT_TRUE(md_parse_i64(&idx, a) > 0);
+        EXPECT_EQ(i, idx);
+    }
+    EXPECT_FALSE(md_reader_seek(fr, (int64_t)len + 1));
+
+    // The blocks are whole lines, which put together are the text
+    EXPECT_TRUE(md_reader_rewind(fr));
+    size_t at = 0;
+    bool same = true;
+    for (str_t block; (block = md_reader_block(fr)).len > 0; ) {
+        if (at + block.len < len) {     // all but the last, which is the text's unterminated last line
+            same &= block.ptr[block.len - 1] == '\n';
+        }
+        same &= at + block.len <= len && memcmp(text + at, block.ptr, block.len) == 0;
+        at += block.len;
+        md_reader_advance(fr, block.len);
+    }
+    EXPECT_TRUE(same);
+    EXPECT_EQ(len, at);
+    md_file_reader_close(&frd);
+
+    // A line longer than the buffer comes in pieces of it, which put together are the line
+    {
+        ASSERT_TRUE(md_file_reader_open(&frd, path, 8, heap));
+        size_t got = 0;
+        bool match = true;
+        for (str_t piece; md_reader_extract_line(&frd.r, &piece); ) {
+            match &= piece.len <= 8;
+            // what comes back is the text without its line ends: find it in order
+            while (got < len && (text[got] == '\n' || text[got] == '\r')) ++got;
+            match &= got + piece.len <= len && memcmp(text + got, piece.ptr, piece.len) == 0;
+            got += piece.len;
+        }
+        EXPECT_TRUE(match);
+        md_file_reader_close(&frd);
+    }
+
     remove(path.ptr);
     md_free(heap, text, 64 * 1024);
 }
@@ -696,4 +749,48 @@ UTEST(parse, perf) {
     printf("  per number: strtod %.1f ns, md_parse_f64 %.1f ns | strtoll %.1f ns, md_parse_i64 %.1f ns (%g %lld)\n",
         md_tick_to_milliseconds(t1 - t0) * 1e6 / nf, md_tick_to_milliseconds(t2 - t1) * 1e6 / nf,
         md_tick_to_milliseconds(t3 - t2) * 1e6 / ni, md_tick_to_milliseconds(t4 - t3) * 1e6 / ni, facc, (long long)iacc);
+}
+
+// The lines of a range in bulk (md_text_lines_t) are those of a plain split, for every start and end in a text of
+// empty lines, CRLF ends, long lines, and none at its end: the masks of the chunks before the start and past the end
+// see bytes of the text which are not of the range.
+static size_t text_lines_reference(str_t* out, size_t cap, const char* c, const char* e) {
+    size_t n = 0;
+    while (c < e && n < cap) {
+        const char* nl = c;
+        while (nl < e && *nl != '\n') ++nl;
+        const char* le = nl;
+        if (le > c && le[-1] == '\r') --le;
+        out[n++] = (str_t){ c, (size_t)(le - c) };
+        c = nl < e ? nl + 1 : e;
+    }
+    return n;
+}
+
+UTEST(parse, text_lines) {
+    char text[512 + 64];
+    uint64_t state = 7;
+    for (size_t i = 0; i < 512; ++i) {
+        const uint64_t r = rng_next(&state) % 23;
+        text[i] = r == 0 ? '\n' : r == 1 ? '\r' : (char)('a' + r);
+    }
+    // A long line, and runs of empty lines
+    for (size_t i = 100; i < 230; ++i) text[i] = 'x';
+    for (size_t i = 300; i < 310; ++i) text[i] = '\n';
+    str_t want[600], got[600];
+    size_t mismatches = 0;
+    for (size_t beg = 0; beg < 200; beg += 1) {
+        for (size_t end = beg; end <= 512; end += 7) {
+            const size_t n = text_lines_reference(want, ARRAY_SIZE(want), text + beg, text + end);
+            md_text_lines_t it = md_text_lines(text + beg, text + end);
+            size_t m = 0;
+            str_t line;
+            while (m < ARRAY_SIZE(got) && md_text_lines_next(&it, &line)) got[m++] = line;
+            if (m != n) { mismatches += 1; continue; }
+            for (size_t k = 0; k < n; ++k) {
+                if (got[k].ptr != want[k].ptr || got[k].len != want[k].len) { mismatches += 1; break; }
+            }
+        }
+    }
+    EXPECT_EQ((size_t)0, mismatches);
 }

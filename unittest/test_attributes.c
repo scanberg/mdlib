@@ -1,6 +1,7 @@
 ﻿#include "utest.h"
 
 #include <stdio.h>
+#include <math.h>
 
 #include <md_system.h>
 #include <core/md_unit.h>
@@ -126,6 +127,62 @@ UTEST(attributes, create_and_reject) {
 
     md_attributes_free(&t);
     EXPECT_EQ(md_attributes_count(&t), 0u);
+}
+
+// A reserved attribute is written where it is kept: its storage stays put while the table changes around it, and a
+// column of the atoms is kept or dropped on commit as publish would have it
+UTEST(attributes, reserve) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    void* data = NULL;
+    const md_attribute_id_t id = md_attributes_reserve(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/x"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1000), .unit = md_unit_none()}, &data);
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, id);
+    ASSERT_TRUE(data != NULL);
+    const uint64_t version = md_attributes_version(&t, id);
+
+    // Others created before and after it in path order: the table's array moves, the storage does not
+    for (int i = 0; i < 200; ++i) {
+        char path[32];
+        snprintf(path, sizeof(path), "%s/%03d", i % 2 ? "a" : "z", i);
+        md_attributes_create(&t, &(md_attribute_desc_t){.path = str_from_cstr(path), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none()});
+    }
+    EXPECT_EQ(data, md_attributes_get(&t, id)->data);
+    float* x = (float*)data;
+    for (int i = 0; i < 1000; ++i) x[i] = (float)i * 0.5f;
+    EXPECT_NE(version, md_attributes_touch(&t, id));
+    float got[1000];
+    ASSERT_EQ(1000u, md_attribute_extract_f32(got, 1000, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()));
+    EXPECT_EQ(499.5f, got[999]);
+
+    // Of numbers, without data or a provider; not at a path taken
+    void* none = (void*)1;
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_reserve(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/name"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_STR, 4), .unit = md_unit_none()}, &none));
+    EXPECT_TRUE(none == NULL);
+    const float four[4] = {0};
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_reserve(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/y"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = four, .byte_size = sizeof(four)}, &none));
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_reserve(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/x"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none()}, &none));
+
+    // Columns of the atoms: kept where they say something, dropped where every value is one, or none
+    md_attribute_id_t col = MD_ATTRIBUTE_INVALID;
+    float* v = md_attributes_reserve_atom_column(&t, STR_LIT("atom/velocity"), md_unit_none(), 3, 100, &col);
+    ASSERT_TRUE(v != NULL);
+    for (int i = 0; i < 300; ++i) v[i] = (float)(i % 7);
+    EXPECT_EQ(col, md_attributes_commit_atom_column(&t, col));
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/velocity")) != NULL);
+
+    float* o = md_attributes_reserve_atom_column(&t, STR_LIT("atom/occupancy"), md_unit_none(), 1, 100, &col);
+    ASSERT_TRUE(o != NULL);
+    for (int i = 0; i < 100; ++i) o[i] = 1.0f;
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_commit_atom_column(&t, col));
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/occupancy")) == NULL);
+
+    float* q = md_attributes_reserve_atom_column(&t, STR_LIT("atom/formal_charge"), md_unit_none(), 1, 100, &col);
+    ASSERT_TRUE(q != NULL);
+    for (int i = 0; i < 100; ++i) q[i] = NAN;
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_commit_atom_column(&t, col));
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/formal_charge")) == NULL);
+
+    md_attributes_free(&t);
 }
 
 UTEST(attributes, create_with_data) {
@@ -528,8 +585,10 @@ UTEST(attributes, pdb_occupancy_and_b_factor) {
     // 6942 coordinate records, 15 of them the 'B' alternate of a pair
     EXPECT_EQ(sys.atom.count, 6927u);
 
+    // And the formal charges of its charge column (the Mg2+ of the GTP, the charged side chains)
     md_attribute_id_t ids[8];
-    EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &sys.attributes, STR_LIT("atom")), 2u);
+    EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &sys.attributes, STR_LIT("atom")), 3u);
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("atom/formal_charge")) != NULL);
 
     const md_attribute_t* occ = md_attributes_find(&sys.attributes, STR_LIT("atom/occupancy"));
     const md_attribute_t* bfc = md_attributes_find(&sys.attributes, STR_LIT("atom/b_factor"));

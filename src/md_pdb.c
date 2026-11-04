@@ -1,4 +1,4 @@
-﻿#include <md_pdb.h>
+#include <md_pdb.h>
 
 #include <md_system.h>
 #include <md_util.h>
@@ -13,11 +13,10 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 #include <core/md_hash.h>
+#include <core/md_executor.h>
+#include <core/md_reader.h>
 
 #include <hybrid_36_c.h>
-
-#include <core/md_executor.h>
-#include "md_text_blocks.h"
 
 #include <stdio.h>
 
@@ -25,20 +24,16 @@
 extern "C" {
 #endif
 
+// The PDB loader reads what a system is made of, straight from the text into the system: the atoms of the first
+// model (ATOM, HETATM), where TER records end the chains, the cell of the first CRYST1 record, the bonds of the CONECT
+// records and the biomolecules of REMARK 350. Every other record is passed over. A file of several models is a run as
+// well (md_pdb_system_publish_run), whose index is found by a scan of the record names alone.
+
 #define MD_PDB_CACHE_MAGIC 0x89172bab124545
-#define MD_PDB_CACHE_VERSION 17
-#define MD_PDB_PARSE_BIOMT 1
+#define MD_PDB_CACHE_VERSION 18     // 18: a model's atoms are those the system has (its first alternate locations)
 
-static inline void copy_str_field(char* dst, size_t dst_size, str_t line, size_t beg, size_t end) {
-    str_copy_to_char_buf(dst, dst_size, str_trim(str_substr(line, beg - 1, end-beg + 1)));
-}
-
-// We massage the beg and end indices here to correspond the pdb specification
-// This makes our life easier when specifying all the different ranges
-static inline int32_t extract_int(str_t line, size_t beg, size_t end) {
-    if (line.len < end) return 0;
-    return (int32_t)parse_int(str_substr(line, beg - 1, end-beg + 1));
-}
+// ### COLUMNS ###
+// Columns as the format numbers them, from 1, both ends included
 
 static inline float extract_float(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0.0f;
@@ -48,7 +43,7 @@ static inline float extract_float(str_t line, size_t beg, size_t end) {
 // A column the format writes with a fixed number of decimals ("%8.3f" for coordinates, "%6.2f" for
 // occupancy and temperature factor): read without a scan when it is laid out that way, and parsed like
 // any other column when it is not
-static inline float extract_fixed_float(str_t line, size_t beg, size_t end, size_t decimals) {
+static FORCE_INLINE float extract_fixed_float(str_t line, size_t beg, size_t end, size_t decimals) {
     if (line.len < end) return 0.0f;
     const str_t field = str_substr(line, beg - 1, end-beg + 1);
     float value;
@@ -75,112 +70,32 @@ static inline int32_t parse_id(str_t line, size_t beg, size_t end, uint32_t* num
     return res;
 }
 
-static inline md_pdb_coordinate_t extract_coord(str_t line, uint32_t* num_bad_ids) {
-    char chain_id = extract_char(line, 22);
-    if (!is_alpha(chain_id)) {
-		chain_id = ' ';
-	}
-    md_pdb_coordinate_t coord = {
-        .atom_serial = parse_id(line, 7, 11, num_bad_ids),
-        .atom_name = {0},
-        .alt_loc = extract_char(line, 17),
-        .res_name = {0},
-        .chain_id = chain_id,
-        .res_seq = parse_id(line, 23, 26, num_bad_ids),
-        .icode = extract_char(line, 27),
-        .x = extract_fixed_float(line, 31, 38, 3),
-        .y = extract_fixed_float(line, 39, 46, 3),
-        .z = extract_fixed_float(line, 47, 54, 3),
-        .occupancy = extract_fixed_float(line, 55, 60, 2),
-        .temp_factor = extract_fixed_float(line, 61, 66, 2),
-        .element = {0},
-        .charge = {0},
-    };
-    copy_str_field(coord.atom_name, sizeof(coord.atom_name),    line, 13, 16);
-    copy_str_field(coord.res_name,  sizeof(coord.res_name),     line, 18, 21);
-    copy_str_field(coord.element,   sizeof(coord.element),      line, 77, 78);
-    copy_str_field(coord.charge,    sizeof(coord.charge),       line, 79, 80);
-    return coord;
+// The formal charge of the charge column (79 to 80): a digit and its sign, "1-" or "2+" (and the sign first, as some
+// writers have it). NAN where there is none, which chemistry perception takes as not given (md_chem_perceive).
+static FORCE_INLINE float pdb_charge(str_t field) {
+    field = str_trim(field);
+    if (field.len == 1 && field.ptr[0] == '0') return 0.0f;
+    if (field.len != 2) return NAN;
+    const char a = field.ptr[0], b = field.ptr[1];
+    if (is_digit(a) && (b == '+' || b == '-')) return (float)((b == '-' ? -1 : 1) * (a - '0'));
+    if (is_digit(b) && (a == '+' || a == '-')) return (float)((a == '-' ? -1 : 1) * (b - '0'));
+    return NAN;
 }
 
-static inline md_pdb_helix_t extract_helix(str_t line) {
-    md_pdb_helix_t helix = {
-        .serial_number = extract_int(line, 8, 10),
-        .id = {0},
-        .init_res_name = {0},
-        .init_chain_id = extract_char(line, 20),
-        .init_res_seq = extract_int(line, 22, 25),
-        .init_res_i_code = extract_char(line, 26),
-        .end_res_name = {0},
-        .end_chain_id = extract_char(line, 32),
-        .end_res_seq = extract_int(line, 34, 37),
-        .end_res_i_code = extract_char(line, 38),
-        .helix_class = extract_int(line, 39, 40),
-        .comment = {0},
-        .length = extract_int(line, 72, 76),
-    };
-    copy_str_field(helix.id,            sizeof(helix.id),               line, 12, 14);
-    copy_str_field(helix.init_res_name, sizeof(helix.init_res_name),    line, 16, 18);
-    copy_str_field(helix.end_res_name,  sizeof(helix.end_res_name),     line, 28, 30);
-    copy_str_field(helix.comment,       sizeof(helix.comment),          line, 41, 70);
-    return helix;
-}
+// ### RECORDS ###
 
-static inline md_pdb_sheet_t extract_sheet(str_t line) {
-    md_pdb_sheet_t sheet = {
-        .strand = extract_int(line, 8, 10),
-        .id = {0},
-        .num_strands = extract_int(line, 15, 16),
-        .init_res_name = {0},
-        .init_chain_id = extract_char(line, 20),
-        .init_res_seq = extract_int(line, 22, 25),
-        .init_res_i_code = extract_char(line, 26),
-        .end_res_name = {0},
-        .end_chain_id = extract_char(line, 32),
-        .end_res_seq = extract_int(line, 34, 37),
-        .end_res_i_code = extract_char(line, 38),
-        .sense = extract_int(line, 39, 40),
-        .cur_atom_name = {0},
-        .cur_res_name = {0},
-        .cur_chain_id = extract_char(line, 50),
-        .cur_res_seq = extract_int(line, 51, 54),
-        .cur_res_i_code = extract_char(line, 55),
-        .prev_atom_name = {0},
-        .prev_res_name = {0},
-        .prev_chain_id = extract_char(line, 65),
-        .prev_res_seq = extract_int(line, 66, 69),
-        .prev_res_i_code = extract_char(line, 70),
-    };
-    copy_str_field(sheet.id,            sizeof(sheet.id),               line, 12, 14);
-    copy_str_field(sheet.init_res_name, sizeof(sheet.init_res_name),    line, 18, 20);
-    copy_str_field(sheet.end_res_name,  sizeof(sheet.end_res_name),     line, 29, 31);
-    copy_str_field(sheet.cur_atom_name, sizeof(sheet.cur_atom_name),    line, 42, 45);
-    copy_str_field(sheet.cur_res_name,  sizeof(sheet.cur_res_name),     line, 46, 48);
-    copy_str_field(sheet.prev_atom_name,sizeof(sheet.prev_atom_name),   line, 57, 60);
-    copy_str_field(sheet.prev_res_name, sizeof(sheet.prev_res_name),    line, 61, 63);
-    return sheet;
-}
-
-// A serial of a CONECT record, 0 where there is none. Serials are hybrid-36 as those of the atoms are, past 99999 atoms.
-static inline int32_t extract_connect_serial(str_t line, size_t beg, size_t end) {
-    if (line.len < end) return 0;
-    if (str_empty(str_trim(str_substr(line, beg - 1, end - beg + 1)))) return 0;
-    return parse_id(line, beg, end, NULL);
-}
-
-static inline md_pdb_connect_t extract_connect(str_t line) {
-    line = str_trim(line);
-    md_pdb_connect_t c = {
-        .atom_serial = {
-            [0] = extract_connect_serial(line, 7, 11),
-            [1] = extract_connect_serial(line, 12, 16),
-            [2] = extract_connect_serial(line, 17, 21),
-            [3] = extract_connect_serial(line, 22, 26),
-            [4] = extract_connect_serial(line, 27, 31),
-        },
-    };
-    return c;
-}
+typedef enum {
+    PDB_LINE_NONE,          // a record nothing reads (HEADER, REMARK, HELIX, SHEET, ...)
+    PDB_LINE_ATOM,          // ATOM or HETATM, kept
+    PDB_LINE_ATOM_SKIPPED,  // an alternate location other than the first
+    // The records which are not of atoms, read in order once the atoms are placed
+    PDB_LINE_TER,
+    PDB_LINE_MODEL,
+    PDB_LINE_ENDMDL,
+    PDB_LINE_CRYST1,
+    PDB_LINE_CONECT,
+    PDB_LINE_REMARK_350,
+} pdb_line_kind_t;
 
 // The record of the cell: CRYST1, and CRYST with a blank where the 1 is, as some tools write it (the Conformational
 // Analysis Tools of CHARMM-GUI's trajectories, with all angles 0)
@@ -188,83 +103,122 @@ static inline bool is_cryst1_record(str_t line) {
     return str_eq_cstr_n(line, "CRYST", 5) && (line.len == 5 || line.ptr[5] == '1' || line.ptr[5] == ' ');
 }
 
-static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
-    line = str_trim(line);
-    md_pdb_cryst1_t c = {
-        .a = extract_float(line, 7,  15),
-        .b = extract_float(line, 16, 24),
-        .c = extract_float(line, 25, 33),
-        .alpha = extract_float(line, 34, 40),
-        .beta  = extract_float(line, 41, 47),
-        .gamma = extract_float(line, 48, 54),
-        .space_group = {0},
-        .z = extract_int(line, 67, 70),
-    };
-    copy_str_field(c.space_group, ARRAY_SIZE(c.space_group), line, 56, 66);
-    // No angles at all is a rectangular box whose angles were left out, not a degenerate cell
-    if (c.alpha == 0 && c.beta == 0 && c.gamma == 0) {
-        c.alpha = c.beta = c.gamma = 90;
-    }
-    return c;
-}
+// The first four characters of a record name as a word, as they are in memory (little endian)
+#define PDB_TAG(a, b, c, d) ((uint32_t)(uint8_t)(a) | ((uint32_t)(uint8_t)(b) << 8) | ((uint32_t)(uint8_t)(c) << 16) | ((uint32_t)(uint8_t)(d) << 24))
 
-// A further CONECT record of the same atom: its bonded atoms go into the free slots, as many as there are
-static inline void append_connect(md_pdb_connect_t* connect, const md_pdb_connect_t* other) {
-    size_t n = 1;
-    while (n < ARRAY_SIZE(connect->atom_serial) && connect->atom_serial[n]) ++n;
-    for (size_t k = 1; k < ARRAY_SIZE(other->atom_serial) && other->atom_serial[k] && n < ARRAY_SIZE(connect->atom_serial); ++k) {
-        connect->atom_serial[n++] = other->atom_serial[k];
-    }
-}
-
-// The records which are not of the atoms (ATOM, HETATM, TER, MODEL, ENDMDL): HELIX, SHEET, CONECT, CRYST1 and REMARK 350.
-// biomolecule is the one of REMARK 350 whose groups of chains follow, kept from one record to the next.
-static bool pdb_is_other_record(str_t line) {
-    return str_eq_cstr_n(line, "HELIX", 5) || str_eq_cstr_n(line, "SHEET", 5) || str_eq_cstr_n(line, "CONECT", 6) ||
-           is_cryst1_record(line) || str_eq_cstr_n(line, "REMARK 350", 10);
-}
-
-static void pdb_parse_other_record(md_pdb_data_t* data, str_t line, int32_t* biomolecule_ptr, md_allocator_i* alloc) {
-    int32_t biomolecule = *biomolecule_ptr;
-    if (str_eq_cstr_n(line, "HELIX", 5)) {
-        md_pdb_helix_t helix = extract_helix(line);
-        md_array_push(data->helices, helix, alloc);
-    }
-    else if (str_eq_cstr_n(line, "SHEET", 5)) {
-        md_pdb_sheet_t sheet = extract_sheet(line);
-        md_array_push(data->sheets, sheet, alloc);
-    }
-    else if (str_eq_cstr_n(line, "CONECT", 6)) {
-        md_pdb_connect_t connect = extract_connect(line);
-        md_pdb_connect_t* last = md_array_last(data->connections);
-        if (last && last->atom_serial[0] == connect.atom_serial[0]) {
-            append_connect(last, &connect);
+// What a line is, by its record name: its first four characters as one word, the atoms first (they are the most)
+static FORCE_INLINE pdb_line_kind_t pdb_line_kind(str_t line) {
+    const char* p = line.ptr;
+    if (line.len >= 6) {
+        uint32_t w;
+        MEMCPY(&w, p, 4);
+        if (w == PDB_TAG('A','T','O','M') || (w == PDB_TAG('H','E','T','A') && p[4] == 'T' && p[5] == 'M')) {
+            // The first alternate location only: blank or A
+            const char alt_loc = extract_char(line, 17);
+            return (alt_loc == ' ' || alt_loc == 'A') ? PDB_LINE_ATOM : PDB_LINE_ATOM_SKIPPED;
         }
-        else {
-            md_array_push(data->connections, connect, alloc);
+        if ((w & 0xFFFFFF) == (PDB_TAG('T','E','R',0)))                         return PDB_LINE_TER;
+        if (w == PDB_TAG('M','O','D','E') && p[4] == 'L')                       return PDB_LINE_MODEL;
+        if (w == PDB_TAG('E','N','D','M') && p[4] == 'D' && p[5] == 'L')        return PDB_LINE_ENDMDL;
+        if (w == PDB_TAG('C','O','N','E') && p[4] == 'C' && p[5] == 'T')        return PDB_LINE_CONECT;
+        if (w == PDB_TAG('C','R','Y','S') && is_cryst1_record(line))            return PDB_LINE_CRYST1;
+        if (w == PDB_TAG('R','E','M','A') && str_eq_cstr_n(line, "REMARK 350", 10)) return PDB_LINE_REMARK_350;
+        return PDB_LINE_NONE;
+    }
+    // A TER record may be the three letters alone (GROMACS, and the EM structures of the PDB written by some tools)
+    if (line.len >= 3 && p[0] == 'T' && p[1] == 'E' && p[2] == 'R') return PDB_LINE_TER;
+    if (line.len == 5 && is_cryst1_record(line))                    return PDB_LINE_CRYST1;
+    return PDB_LINE_NONE;
+}
+
+// The cell of a CRYST1 record. No angles at all is a rectangular box whose angles were left out, not a degenerate cell.
+// False for a cell of 1 x 1 x 1 at right angles, which writers put there for a structure of no cell (no periodic
+// boundaries).
+static bool pdb_cryst1_cell(md_unitcell_t* cell, str_t line) {
+    float a = extract_float(line, 7, 15), b = extract_float(line, 16, 24), c = extract_float(line, 25, 33);
+    float alpha = extract_float(line, 34, 40), beta = extract_float(line, 41, 47), gamma = extract_float(line, 48, 54);
+    if (alpha == 0 && beta == 0 && gamma == 0) {
+        alpha = beta = gamma = 90;
+    }
+    if (a == 1 && b == 1 && c == 1 && alpha == 90 && beta == 90 && gamma == 90) {
+        return false;
+    }
+    *cell = md_unitcell_from_extent_and_angles(a, b, c, alpha, beta, gamma);
+    return true;
+}
+
+// A group of chains of a biomolecule of REMARK 350: the biomolecule copies the chains of the group ("APPLY THE FOLLOWING
+// TO CHAINS:" and the "AND CHAINS:" lines after it) by each of the BIOMT transforms which follow the group
+typedef struct pdb_group_t {
+    int32_t  id;                // The number of the biomolecule, which its groups share
+    uint32_t chain_offset;      // Its chains, a character each, in chains
+    uint32_t chain_count;
+    uint32_t transform_offset;  // Its transforms, in transforms
+    uint32_t transform_count;
+} pdb_group_t;
+
+// What the records which are not of atoms give the system
+typedef struct pdb_extras_t {
+    bool    seen_cryst1;
+    bool    has_cell;           // The first CRYST1 record gives one
+    md_unitcell_t cell;
+    md_array(int32_t) conect;   // The serials of the bonds of the CONECT records, two for each
+    int32_t biomolecule;        // REMARK 350: the one whose groups of chains follow
+    md_array(pdb_group_t) groups;
+    md_array(char)   chains;
+    md_array(mat4_t) transforms;
+    md_allocator_i*  alloc;
+} pdb_extras_t;
+
+// A serial of a CONECT record, 0 where there is none. Serials are hybrid-36 as those of the atoms are, past 99999 atoms.
+static inline int32_t conect_serial(str_t line, size_t beg) {
+    const size_t end = beg + 4;
+    if (line.len < end) return 0;
+    if (str_empty(str_trim(str_substr(line, beg - 1, 5)))) return 0;
+    return parse_id(line, beg, end, NULL);
+}
+
+static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, str_t line) {
+    md_allocator_i* alloc = x->alloc;
+    switch (kind) {
+    case PDB_LINE_CRYST1:
+        // The first one: a file of models has one for each, the same
+        if (!x->seen_cryst1) {
+            x->seen_cryst1 = true;
+            x->has_cell = pdb_cryst1_cell(&x->cell, str_trim(line));
         }
+        break;
+    case PDB_LINE_CONECT: {
+        // The atom of columns 7 to 11 and up to four atoms bonded to it, each a bond. A record of more is continued on
+        // the next line, which names the atom again.
+        line = str_trim(line);
+        const int32_t a = conect_serial(line, 7);
+        if (!a) break;
+        for (size_t beg = 12; beg <= 27; beg += 5) {
+            const int32_t b = conect_serial(line, beg);
+            if (!b) continue;
+            md_array_push(x->conect, a, alloc);
+            md_array_push(x->conect, b, alloc);
+        }
+        break;
     }
-    else if (is_cryst1_record(line)) {
-        md_pdb_cryst1_t cryst1 = extract_cryst1(line);
-        md_array_push(data->cryst1, cryst1, alloc);
-    }
-    else if (str_eq_cstr_n(line, "REMARK 350", 10)) {
+    case PDB_LINE_REMARK_350: {
         // A biomolecule is one or more groups of chains, each followed by the BIOMT transforms which copy them
         const str_t rest = str_substr(line, 11, SIZE_MAX);
         if (str_eq_cstr_n(rest, "BIOMOLECULE:", 12)) {
-            biomolecule = (int32_t)parse_int(str_trim(str_substr(rest, 12, SIZE_MAX)));
+            x->biomolecule = (int32_t)parse_int(str_trim(str_substr(rest, 12, SIZE_MAX)));
         }
         else if (str_eq_cstr_n(rest, "APPLY THE FOLLOWING TO CHAINS:", 30) || str_eq_cstr_n(str_trim(rest), "AND CHAINS:", 11)) {
             // A group begins with the chains to apply to, which AND CHAINS lines continue
             if (str_eq_cstr_n(rest, "APPLY", 5)) {
-                const md_pdb_assembly_t group = {
-                    .id = biomolecule,
-                    .chain_offset = (uint32_t)md_array_size(data->assembly_chains),
-                    .transform_offset = (uint32_t)md_array_size(data->transforms),
+                const pdb_group_t group = {
+                    .id = x->biomolecule,
+                    .chain_offset = (uint32_t)md_array_size(x->chains),
+                    .transform_offset = (uint32_t)md_array_size(x->transforms),
                 };
-                md_array_push(data->assemblies, group, alloc);
+                md_array_push(x->groups, group, alloc);
             }
-            md_pdb_assembly_t* group = md_array_last(data->assemblies);
+            pdb_group_t* group = md_array_last(x->groups);
             if (group) {
                 size_t colon = 0;
                 str_find_char(&colon, rest, ':');
@@ -273,7 +227,7 @@ static void pdb_parse_other_record(md_pdb_data_t* data, str_t line, int32_t* bio
                 while (extract_token_delim(&chain, &chains, ',')) {
                     chain = str_trim(chain);
                     if (str_empty(chain)) continue;
-                    md_array_push(data->assembly_chains, chain.ptr[0], alloc);
+                    md_array_push(x->chains, chain.ptr[0], alloc);
                     group->chain_count += 1;
                 }
             } else {
@@ -282,7 +236,7 @@ static void pdb_parse_other_record(md_pdb_data_t* data, str_t line, int32_t* bio
         }
         else if (str_eq_cstr_n(str_trim(rest), "BIOMT", 5) && line.len > 18) {
             // REMARK 350   BIOMTr   n  m[r][1] m[r][2] m[r][3]  t[r], the rows of transform n of the group
-            md_pdb_assembly_t* group = md_array_last(data->assemblies);
+            pdb_group_t* group = md_array_last(x->groups);
             const int32_t row = char_to_digit(line.ptr[18]) - 1;
             str_t fields = str_substr(line, 19, SIZE_MAX);
             str_t tok[5];
@@ -291,149 +245,46 @@ static void pdb_parse_other_record(md_pdb_data_t* data, str_t line, int32_t* bio
                 MD_LOG_DEBUG("REMARK 350: a malformed BIOMT record");
             } else {
                 if (row == 0) {
-                    md_array_push(data->transforms, mat4_ident(), alloc);
+                    md_array_push(x->transforms, mat4_ident(), alloc);
                     group->transform_count += 1;
                 }
-                mat4_t* transform = md_array_last(data->transforms);
+                mat4_t* transform = md_array_last(x->transforms);
                 for (int c = 0; c < 3; ++c) {
                     transform->elem[c][row] = (float)parse_float(tok[1 + c]);
                 }
                 transform->elem[3][row] = (float)parse_float(tok[4]);
             }
         }
+        break;
     }
-    *biomolecule_ptr = biomolecule;
-}
-
-// PUBLIC PROCEDURES
-
-bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc, bool stop_after_first_model) {
-    ASSERT(data);
-    ASSERT(reader);
-    ASSERT(alloc);
-
-    str_t line;
-    int32_t biomolecule = 0;    // REMARK 350: the one whose groups of chains follow
-    uint32_t num_bad_ids = 0;   // Serials and residue numbers which are not numbers of the format (parse_id)
-    while (md_buffered_reader_extract_line(&line, reader)) {
-        if (line.len < 6) continue;
-        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-            md_pdb_coordinate_t coord = extract_coord(line, &num_bad_ids);
-            coord.flags |= line.ptr[0] == 'H' ? MD_PDB_COORD_FLAG_HETATM : 0;
-            md_array_push(data->atom_coordinates, coord, alloc);
-        }
-        else if (str_eq_cstr_n(line, "TER", 3)) {
-			md_pdb_coordinate_t* last = md_array_last(data->atom_coordinates);
-            if (last) {
-				last->flags |= MD_PDB_COORD_FLAG_TERMINATOR;
-            }
-        }
-        else if (str_eq_cstr_n(line, "MODEL", 5)) {
-            if (stop_after_first_model && md_array_size(data->models) > 0) {
-                break;
-            }
-            const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
-            // This is a bit nasty, we want to get the correct offset to the beginning of the current line.
-            // Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
-            // all the way back in case there were skipped \r characters.
-            const int64_t offset = (size_t)MAX(0, md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr));
-            md_pdb_model_t model = {
-                .serial = (int32_t)parse_int(str_substr(line, 6, SIZE_MAX)),
-                .beg_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1,
-                .beg_atom_index = num_coords,
-                .byte_offset = offset,
-            };
-            md_array_push(data->models, model, alloc);
-        }
-        else if (str_eq_cstr_n(line, "ENDMDL", 6)) {
-            const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
-            md_pdb_model_t* model = md_array_last(data->models);
-            if (model) {
-                model->end_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1;
-                model->end_atom_index = num_coords;
-            }
-        }
-        else if (pdb_is_other_record(line)) {
-            pdb_parse_other_record(data, line, &biomolecule, alloc);
-        }
+    default:
+        break;
     }
-
-    data->num_models            = md_array_size(data->models);
-    data->num_atom_coordinates  = md_array_size(data->atom_coordinates);
-    data->num_helices           = md_array_size(data->helices);
-    data->num_sheets            = md_array_size(data->sheets);
-    data->num_connections       = md_array_size(data->connections);
-    data->num_cryst1            = md_array_size(data->cryst1);
-    data->num_assemblies        = md_array_size(data->assemblies);
-    data->num_assembly_chains   = md_array_size(data->assembly_chains);
-    data->num_transforms        = md_array_size(data->transforms);
-    if (num_bad_ids > 0) {
-        MD_LOG_DEBUG("%u atom serials or residue numbers are not numbers of the PDB format ('*****' past the width of the field, "
-            "or hexadecimal as VMD writes past 99999): the atoms are taken in their order", num_bad_ids);
-    }
-
-    return true;
-}
-
-bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, md_allocator_i* alloc) {
-    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-    return pdb_parse(data, &reader, alloc, false);
-}
-
-bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i* alloc) {
-    md_file_t file = {0};
-    if (!md_file_open(&file, filename, MD_FILE_READ)) {
-        MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
-        return false;
-    }
-
-    const size_t cap = MEGABYTES(1);
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-    char* buf = md_temp_alloc(temp_scope, cap);
-        
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-    bool result = pdb_parse(data, &reader, alloc, false);
-        
-    md_temp_end(temp_scope);
-    md_file_close(&file);
-
-    return result;
-}
-
-void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
-    ASSERT(data);
-    ASSERT(alloc);
-    if (data->cryst1)               md_array_free(data->cryst1, alloc);
-    if (data->models)               md_array_free(data->models, alloc);
-    if (data->atom_coordinates)     md_array_free(data->atom_coordinates, alloc);
-    if (data->helices)              md_array_free(data->helices, alloc);
-    if (data->sheets)               md_array_free(data->sheets, alloc);
-    if (data->connections)          md_array_free(data->connections, alloc);
-    if (data->assemblies)           md_array_free(data->assemblies, alloc);
-    if (data->assembly_chains)      md_array_free(data->assembly_chains, alloc);
-    if (data->transforms)           md_array_free(data->transforms, alloc);
 }
 
 // The assemblies of REMARK 350: the chains of a group of a biomolecule are the instances of their ids (a chain, and
 // the molecules it holds: its ligands, its waters). A transform in two groups (the identity of each) is one operator,
 // so that the copy it makes is one, named by its number in the first group which has it.
-static void pdb_assemblies(md_system_t* sys, const md_pdb_data_t* data, md_allocator_i* temp_alloc) {
-    if (data->num_assemblies == 0 || data->num_transforms == 0) return;
+static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator_i* temp_alloc) {
+    const size_t num_groups = md_array_size(x->groups);
+    const size_t num_chains = md_array_size(x->chains);
+    const size_t num_transforms = md_array_size(x->transforms);
+    if (num_groups == 0 || num_transforms == 0) return;
 
     md_array(mat4_t)     transform = 0;
     md_array(md_label_t) oper_id = 0;
     md_array(md_assembly_gen_t) gen = 0;
 
-    for (size_t a = 0; a < data->num_assemblies; ++a) {
-        const md_pdb_assembly_t* group = data->assemblies + a;
-        if (group->chain_offset + group->chain_count > data->num_assembly_chains || group->transform_offset + group->transform_count > data->num_transforms) {
+    for (size_t a = 0; a < num_groups; ++a) {
+        const pdb_group_t* group = x->groups + a;
+        if (group->chain_offset + group->chain_count > num_chains || group->transform_offset + group->transform_count > num_transforms) {
             MD_LOG_ERROR("REMARK 350: a group of chains out of range");
             continue;
         }
 
         md_array(md_instance_idx_t) inst = 0;
         for (uint32_t c = 0; c < group->chain_count; ++c) {
-            const char chain = data->assembly_chains[group->chain_offset + c];
+            const char chain = x->chains[group->chain_offset + c];
             bool found = false;
             for (size_t i = 0; i < sys->instance.count; ++i) {
                 const str_t auth = md_system_instance_auth_id(sys, i);
@@ -449,7 +300,7 @@ static void pdb_assemblies(md_system_t* sys, const md_pdb_data_t* data, md_alloc
 
         md_array(uint32_t) oper = 0;
         for (uint32_t t = 0; t < group->transform_count; ++t) {
-            const mat4_t M = data->transforms[group->transform_offset + t];
+            const mat4_t M = x->transforms[group->transform_offset + t];
             size_t k = 0;
             for (; k < md_array_size(transform); ++k) {
                 if (MEMCMP(&transform[k], &M, sizeof(mat4_t)) == 0) break;
@@ -486,32 +337,21 @@ static void pdb_assemblies(md_system_t* sys, const md_pdb_data_t* data, md_alloc
 // neither the bonds nor what the residues are by them: that is md_util_system_infer's, which a caller runs when (and
 // where, on what thread) it wants.
 
-// The occupancy and the b factor. Occupancy is a dimensionless fraction; the b factor is a mean square displacement. The
-// paths and the units are md_system's to define, not this loader's - md_mmcif publishes the same two out of the same
-// file family and they have to agree.
-static void pdb_publish_atom_columns(md_system_t* sys, const float* occupancy, const float* b_factor) {
-    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/occupancy"), md_unit_none(),                     1, occupancy, sys->atom.count);
-    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/b_factor"),  md_unit_pow(md_unit_angstrom(), 2), 1, b_factor,  sys->atom.count);
-}
-
-// What follows the atoms and residues: the cell of the first CRYST1, the bonds of the CONECT records (by the serials of
-// the atoms loaded), the units of the file (the runs of residues of one chain id) and the assemblies of REMARK 350
-static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, const int32_t* atom_serial, const str_t* res_chain_ids, md_allocator_i* temp_arena) {
-    if (data->num_cryst1 > 0) {
-        // Use first crystal
-        const md_pdb_cryst1_t* cryst = &data->cryst1[0];
-        if (cryst->a == 1 && cryst->b == 1 && cryst->c == 1 && cryst->alpha == 90 && cryst->beta == 90 && cryst->gamma == 90) {
-            // This is a special case:
-            // This is the identity matrix, and in such case, we assume there is no unit cell (no periodic boundary conditions)
-        } else {
-            state->unitcell = md_unitcell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
-        }
+// What follows the atoms and residues: the cell, the bonds of the CONECT records (by the serials of the atoms loaded),
+// the units of the file (the runs of residues of one chain id) and the assemblies of REMARK 350
+static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const pdb_extras_t* x, const int32_t* atom_serial, const str_t* res_chain_ids, const bool* res_after_ter, md_allocator_i* temp_arena) {
+    if (x->has_cell) {
+        state->unitcell = x->cell;
     }
 
     // The bonds of the CONECT records, of origin MD_BOND_ORIGIN_FILE: inference keeps them and adds the bonds they leave
     // out (CONECT records usually cover the ligands only, in a coarse grained structure from martinize2 all of it).
     // Their serials name atoms of the first model; alternate locations other than the first are not loaded.
-    if (data->num_connections > 0 && atom_serial) {
+    const size_t num_conect = md_array_size(x->conect) / 2;
+    if (num_conect > 0 && !atom_serial) {
+        MD_LOG_INFO("PDB: CONECT records which are not at the end of the file, where the format has them, are not read");
+    }
+    if (num_conect > 0 && atom_serial) {
         md_hashmap32_t serial_to_atom = { .allocator = temp_arena };
         md_hashmap_reserve(&serial_to_atom, sys->atom.count);
         for (size_t i = 0; i < sys->atom.count; ++i) {
@@ -522,178 +362,37 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
 
         // Each bond is in the records of both its atoms, and some writers repeat it for its bond order
         md_hashmap32_t seen = { .allocator = temp_arena };
-        md_hashmap_reserve(&seen, data->num_connections * 4);
+        md_hashmap_reserve(&seen, num_conect);
         const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
-        for (size_t i = 0; i < data->num_connections; ++i) {
-            const int32_t* serial = data->connections[i].atom_serial;
-            if (!serial[0]) continue;
-            const uint32_t* a = md_hashmap_get(&serial_to_atom, (uint64_t)(uint32_t)serial[0]);
-            if (!a) continue;
-            for (size_t k = 1; k < ARRAY_SIZE(data->connections[i].atom_serial) && serial[k]; ++k) {
-                const uint32_t* b = md_hashmap_get(&serial_to_atom, (uint64_t)(uint32_t)serial[k]);
-                if (!b || *a == *b) continue;
-                const uint32_t lo = MIN(*a, *b), hi = MAX(*a, *b);
-                const uint64_t pair_key = ((uint64_t)lo << 32) | hi;
-                if (md_hashmap_get(&seen, pair_key)) continue;
-                md_hashmap_add(&seen, pair_key, 1);
-                md_atom_pair_t pair = {{ (md_atom_idx_t)lo, (md_atom_idx_t)hi }};
-                md_array_push(sys->bond.pairs, pair, sys->alloc);
-                md_array_push(sys->bond.flags, file, sys->alloc);
-                sys->bond.count += 1;
-            }
+        for (size_t i = 0; i < num_conect; ++i) {
+            const uint32_t* a = md_hashmap_get(&serial_to_atom, (uint64_t)(uint32_t)x->conect[2 * i + 0]);
+            const uint32_t* b = md_hashmap_get(&serial_to_atom, (uint64_t)(uint32_t)x->conect[2 * i + 1]);
+            if (!a || !b || *a == *b) continue;
+            const uint32_t lo = MIN(*a, *b), hi = MAX(*a, *b);
+            const uint64_t pair_key = ((uint64_t)lo << 32) | hi;
+            if (md_hashmap_get(&seen, pair_key)) continue;
+            md_hashmap_add(&seen, pair_key, 1);
+            md_atom_pair_t pair = {{ (md_atom_idx_t)lo, (md_atom_idx_t)hi }};
+            md_array_push(sys->bond.pairs, pair, sys->alloc);
+            md_array_push(sys->bond.flags, file, sys->alloc);
+            sys->bond.count += 1;
         }
         if (sys->bond.count) {
             md_bond_build_connectivity(&sys->bond, sys->atom.count, sys->alloc);
         }
     }
 
-    // The units of the file are its chains: the runs of residues of one chain id
-    md_util_system_instances_from_chain_ids(sys, res_chain_ids);
+    // The units of the file are its chains: the runs of residues of one chain id, which a TER record ends (two chains of
+    // one id written one after the other are two: the segments of an EM structure)
+    md_util_system_instances_from_chain_ids(sys, res_chain_ids, res_after_ter);
 
     // The assemblies name the chains by the ids they have in the file, which are those of the instances
-    pdb_assemblies(sys, data, temp_arena);
-}
-
-bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, const md_pdb_data_t* data, md_pdb_options_t options) {
-    ASSERT(sys);
-    ASSERT(state);
-    ASSERT(data);
-
-    if (!sys->alloc) {
-        MD_LOG_ERROR("System allocator not set");
-        return false;
-    }
-
-    if (!state || !state->alloc) {
-        MD_LOG_ERROR("State allocator not set");
-        return false;
-    }
-
-    md_system_reset(sys);
-    md_system_state_init(state, 0);
-
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-
-    size_t beg_atom_index = 0;
-    size_t end_atom_index = data->num_atom_coordinates;
-
-    // if we have more than one model, interperet it as a trajectory and only load the first model
-    if (data->num_models > 0 && !(options & MD_PDB_OPTION_CONCAT_MODELS)) {
-        // Limit the scope of atom coordinate entries if we have a trajectory (only consider first model)
-        beg_atom_index = data->models[0].beg_atom_index;
-        end_atom_index = data->models[0].end_atom_index;
-    }
-
-    size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
-
-    md_array(str_t) atom_name = 0;
-    md_array_ensure(atom_name, capacity, temp_arena);
-
-    // Accumulated over the atoms actually kept, not over the coordinate records: altLoc
-    // entries are skipped below, so a column indexed by record would be misaligned from the
-    // first alternate onwards.
-    md_array(float) atom_occupancy = 0;
-    md_array(float) atom_b_factor  = 0;
-    md_array(int32_t) atom_serial  = 0;
-    md_array_ensure(atom_occupancy, capacity, temp_arena);
-    md_array_ensure(atom_b_factor,  capacity, temp_arena);
-    md_array_ensure(atom_serial,    capacity, temp_arena);
-    // The chain id of each residue: the runs of one id are the units of the file (md_util_system_instances_from_chain_ids)
-    md_array(str_t) res_auth_asym_ids = 0;
-
-    md_array_ensure(state->xyz,           capacity, state->alloc);
-    md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
-    md_array_ensure(sys->atom.flags,    capacity, sys->alloc);
-
-	// Add default unknown particle type at index 0
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
-    md_hashmap32_t type_map = { .allocator = temp_arena };
-
-	uint64_t prev_res_key = 0;
-    size_t num_unassigned_particle_types = 0;
-
-    bool terminator = false;
-    for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
-		char alt_loc = data->atom_coordinates[i].alt_loc;
-		if (alt_loc != ' ' && alt_loc != 'A') continue; // Ignore alt loc entries unless 'A' == first alt loc
-
-        float x = data->atom_coordinates[i].x;
-        float y = data->atom_coordinates[i].y;
-        float z = data->atom_coordinates[i].z;
-        
-        str_t atom_id  = str_from_cstrn(data->atom_coordinates[i].atom_name, sizeof(data->atom_coordinates[i].atom_name));
-        str_t res_name = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
-        md_sequence_id_t seq_id = data->atom_coordinates[i].res_seq;
-        if (seq_id == INT_MAX) {
-			// Missing residue sequence id, assign one based on previous residue
-			seq_id = sys->residue.seq_id ? sys->residue.seq_id[sys->residue.count - 1] + 1 : 1;
-		}
-        char chain_id = data->atom_coordinates[i].chain_id;
-        md_particle_type_idx_t particle_type_idx = 0;
-
-        if (data->atom_coordinates[i].element[0]) {
-            // If the element is available, use that to lookup the element
-            str_t sym = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
-            const md_atomic_number_t atomic_number = md_atomic_number_from_symbol(sym, true);
-            particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
-        } else {
-            num_unassigned_particle_types += 1;
-        }
-
-        // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B are three
-        // residues of the same number (the insertions of Kabat numbered antibodies), also when they share a name
-        const char icode = data->atom_coordinates[i].icode;
-        uint64_t res_key = md_hash64_str(res_name, md_hash64(&icode, sizeof(icode), md_hash64(&seq_id, sizeof(seq_id), chain_id)));
-
-        if (res_key != prev_res_key || terminator) {
-            // New residue. A TER record ends the residue before it, whatever the residue after it is called. Whether it
-            // also ends a chain is left to the chain ids and the bonds: TER is written inconsistently, and a chain
-            // continues over gaps anyway (see md_util_system_infer_parts).
-            sys->residue.count += 1;
-            md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);
-            md_array_push(sys->residue.name,     make_label(res_name), sys->alloc);
-            md_array_push(sys->residue.seq_id, seq_id, sys->alloc);
-            md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, sys->alloc);
-
-            str_t asym_id = str_trim(str_from_cstrn(&data->atom_coordinates[i].chain_id, 1));
-            md_array_push(res_auth_asym_ids, asym_id, temp_arena);
-        }
-
-        sys->atom.count += 1;
-
-        md_array_push_no_grow(atom_name, atom_id);
-        md_array_push_no_grow(state->xyz, vec3_set(x, y, z));
-        md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
-        md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
-        md_array_push_no_grow(atom_occupancy, data->atom_coordinates[i].occupancy);
-        md_array_push_no_grow(atom_b_factor,  data->atom_coordinates[i].temp_factor);
-        md_array_push_no_grow(atom_serial,    data->atom_coordinates[i].atom_serial);
-
-		prev_res_key = res_key;
-
-        terminator = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) != 0;
-    }
-    md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, sys->alloc);    // Final sentinel
-
-    ASSERT(md_array_size(state->xyz) == sys->atom.count);
-    state->num_atoms = sys->atom.count;
-
-    pdb_publish_atom_columns(sys, atom_occupancy, atom_b_factor);
-
-    if (num_unassigned_particle_types > 0) {
-        md_util_system_infer_particle_types(sys, atom_name);
-    }
-
-    pdb_system_finish(sys, state, data, atom_serial, res_auth_asym_ids, temp_arena);
-
-    md_temp_end(temp_scope);
-    return true;
+    pdb_assemblies(sys, x, temp_arena);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Straight from the text, a block at a time, each block in pieces at line boundaries on as many threads as the executor
-// has (md_text_blocks.h). A piece counts the atoms it keeps (an alternate location other than the first is not) and the
+// has (md_reader.h: blocks and pieces). A piece counts the atoms it keeps (an alternate location other than the first is not) and the
 // other records of interest first, which places them; then it reads its atoms into arrays where they go, and the
 // residues where the residue fields of an atom differ from those of the atom before (or a TER record is between them).
 // The other records are few: they are read in order, on the calling thread, once the pieces are done.
@@ -704,30 +403,6 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 #define PDB_RES_FIELDS_BEG  17      // The residue name, the chain id, the sequence number and the insertion code:
 #define PDB_RES_FIELDS_END  27      // columns 18 to 27
 #define PDB_NO_ELEMENT      0xFF
-
-typedef enum {
-    PDB_LINE_NONE,
-    PDB_LINE_ATOM,          // ATOM or HETATM, kept
-    PDB_LINE_ATOM_SKIPPED,  // an alternate location other than the first
-    PDB_LINE_TER,
-    PDB_LINE_MODEL,
-    PDB_LINE_ENDMDL,
-    PDB_LINE_OTHER,         // pdb_is_other_record
-} pdb_line_kind_t;
-
-static inline pdb_line_kind_t pdb_line_kind(str_t line) {
-    if (line.len < 6) return PDB_LINE_NONE;
-    if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-        const char alt_loc = extract_char(line, 17);
-        // Ignore alt loc entries unless 'A' == first alt loc
-        return (alt_loc == ' ' || alt_loc == 'A') ? PDB_LINE_ATOM : PDB_LINE_ATOM_SKIPPED;
-    }
-    if (str_eq_cstr_n(line, "TER", 3))      return PDB_LINE_TER;
-    if (str_eq_cstr_n(line, "MODEL", 5))    return PDB_LINE_MODEL;
-    if (str_eq_cstr_n(line, "ENDMDL", 6))   return PDB_LINE_ENDMDL;
-    if (pdb_is_other_record(line))          return PDB_LINE_OTHER;
-    return PDB_LINE_NONE;
-}
 
 // The residue fields of an atom line, the chain id as the loader takes it (a letter, or none)
 typedef struct pdb_res_fields_t {
@@ -750,6 +425,7 @@ typedef struct pdb_residue_start_t {
     md_sequence_id_t seq_id;
     md_label_t       name;
     char             chain_id;
+    bool             after_ter;     // A TER record before it: it begins a unit of the file
 } pdb_residue_start_t;
 
 typedef struct pdb_record_t {
@@ -770,6 +446,8 @@ typedef struct pdb_piece_t {
     bool     unassigned;        // an atom without an element
 } pdb_piece_t;
 
+enum { PDB_COL_OCCUPANCY, PDB_COL_B_FACTOR, PDB_COL_CHARGE, PDB_NUM_COLUMNS };
+
 typedef struct pdb_block_t {
     const char*           text;
     size_t                len;
@@ -781,13 +459,12 @@ typedef struct pdb_block_t {
     bool                  prev_ter;     // a TER record after it, before the block
     pdb_residue_start_t*  res_starts;   // [atoms of the block]
     pdb_record_t*         records;      // [records of the block]
-    // Of the load, by atom
-    vec3_t*               xyz;
+    vec3_t*               xyz;          // Of the load, by atom: the state's
+    int32_t*              serial;       // Of the load, by atom, where CONECT records need them (pdb_has_conect): else NULL
+    // Of the block, by its atom: what is resolved once the block is read
     md_label_t*           atom_name;
     uint8_t*              element;      // PDB_NO_ELEMENT when the line has none
-    float*                occupancy;
-    float*                b_factor;
-    int32_t*              serial;
+    float*                column[PDB_NUM_COLUMNS];  // occupancy, b factor, formal charge
 } pdb_block_t;
 
 static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
@@ -796,16 +473,39 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     for (uint32_t p = beg; p < end; ++p) {
         pdb_piece_t* piece = &b->pieces[p];
         size_t num_atoms = 0, num_records = 0;
-        const char* c = b->text + piece->range.beg;
-        const char* e = b->text + piece->range.end;
-        while (c < e) {
-            const pdb_line_kind_t kind = pdb_line_kind(md_text_next_line(&c, e));
+        md_text_lines_t lines = md_text_lines(b->text + piece->range.beg, b->text + piece->range.end);
+        str_t line;
+        while (md_text_lines_next(&lines, &line)) {
+            const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_ATOM) num_atoms += b->atoms ? 1 : 0;
             else if (kind >= PDB_LINE_TER) num_records += 1;
         }
         piece->num_atoms = num_atoms;
         piece->num_records = num_records;
     }
+}
+
+// A column of the atom lines as the last atom had it: its characters (up to 8, in the low bytes of a word), and the value
+// they are. UINT64_MAX is none: no field of up to 6 characters is that.
+typedef struct pdb_field_cache_t {
+    uint64_t raw;
+    float    value;
+} pdb_field_cache_t;
+
+// Columns beg to end (from 1, both included) of the line: the occupancy and the b factor ("%6.2f"), or the charge
+static FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, str_t line, size_t beg, size_t end) {
+    const size_t width = end - beg + 1;
+    uint64_t raw = 0;
+    if (line.len >= end) {
+        MEMCPY(&raw, line.ptr + beg - 1, width);
+    } else if (line.len >= beg) {
+        MEMCPY(&raw, line.ptr + beg - 1, line.len - beg + 1);      // The end of a line shorter than the column
+    }
+    raw |= (uint64_t)MIN(line.len - MIN(line.len, beg - 1), width) << 56;    // and how much of it there is
+    if (raw == cache->raw) return cache->value;
+    cache->raw = raw;
+    cache->value = width == 2 ? pdb_charge(str_substr(line, beg - 1, 2)) : extract_fixed_float(line, beg, end, 2);
+    return cache->value;
 }
 
 static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
@@ -840,26 +540,26 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             }
         }
 
+        pdb_field_cache_t cache[PDB_NUM_COLUMNS] = { {UINT64_MAX}, {UINT64_MAX}, {UINT64_MAX} };
         pdb_residue_start_t* res = b->res_starts + piece->first_atom;
         pdb_record_t* rec = b->records + piece->first_record;
         size_t atom = b->atom_beg + piece->first_atom;
-        const char* c = b->text + piece->range.beg;
-        const char* e = b->text + piece->range.end;
-        while (c < e) {
-            const str_t line = md_text_next_line(&c, e);
+        md_text_lines_t lines = md_text_lines(b->text + piece->range.beg, b->text + piece->range.end);
+        str_t line;
+        while (md_text_lines_next(&lines, &line)) {
             const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_ATOM && b->atoms) {
                 // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B
                 // are three residues of the same number (the insertions of Kabat numbered antibodies), also when they
-                // share a name. A TER record ends the residue before it, whatever the residue after it is called.
-                // Whether it also ends a chain is left to the chain ids and the bonds: TER is written inconsistently,
-                // and a chain continues over gaps anyway (see md_util_system_infer_parts).
+                // share a name. A TER record ends the residue before it, whatever the residue after it is called, and
+                // the chain: what follows is a unit of its own (md_util_system_instances_from_chain_ids).
                 const pdb_res_fields_t fields = pdb_res_fields(line);
                 if (!has_prev || ter || MEMCMP(fields.c, prev.c, sizeof(fields.c)) != 0) {
                     res->atom     = (uint32_t)atom;
                     res->seq_id   = line.len >= 26 ? parse_id(line, 23, 26, &piece->num_bad_ids) : 0;
                     res->name     = make_label(str_trim(str_substr(line, 17, 4)));
                     res->chain_id = fields.c[21 - PDB_RES_FIELDS_BEG];
+                    res->after_ter = has_prev && ter;
                     ++res;
                 }
                 has_prev = true;
@@ -867,17 +567,23 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                 prev = fields;
 
                 b->xyz[atom] = vec3_set(extract_fixed_float(line, 31, 38, 3), extract_fixed_float(line, 39, 46, 3), extract_fixed_float(line, 47, 54, 3));
-                b->atom_name[atom] = make_label(str_trim(str_substr(line, 12, 4)));
+                const size_t k = atom - b->atom_beg;
+                b->atom_name[k] = make_label(str_trim(str_substr(line, 12, 4)));
                 const str_t element = str_trim(str_substr(line, 76, 2));
                 if (element.len) {
-                    b->element[atom] = (uint8_t)md_atomic_number_from_symbol(element, true);
+                    b->element[k] = (uint8_t)md_atomic_number_from_symbol(element, true);
                 } else {
-                    b->element[atom] = PDB_NO_ELEMENT;
+                    b->element[k] = PDB_NO_ELEMENT;
                     piece->unassigned = true;
                 }
-                b->occupancy[atom] = extract_fixed_float(line, 55, 60, 2);
-                b->b_factor[atom]  = extract_fixed_float(line, 61, 66, 2);
-                b->serial[atom]    = line.len >= 11 ? parse_id(line, 7, 11, &piece->num_bad_ids) : 0;
+                // The occupancy, b factor and charge of most atoms are those of the atom before: the same characters,
+                // which are not parsed again
+                b->column[PDB_COL_OCCUPANCY][k] = pdb_field_cached(&cache[PDB_COL_OCCUPANCY], line, 55, 60);
+                b->column[PDB_COL_B_FACTOR][k]  = pdb_field_cached(&cache[PDB_COL_B_FACTOR],  line, 61, 66);
+                b->column[PDB_COL_CHARGE][k]    = pdb_field_cached(&cache[PDB_COL_CHARGE],    line, 79, 80);
+                if (b->serial) {
+                    b->serial[atom] = line.len >= 11 ? parse_id(line, 7, 11, &piece->num_bad_ids) : 0;
+                }
                 ++atom;
             } else if (kind >= PDB_LINE_TER) {
                 if (kind == PDB_LINE_TER) ter = true;
@@ -892,7 +598,71 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     }
 }
 
-static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_t* src, md_pdb_options_t options, const md_executor_t* ex) {
+// A column of one value for every atom (the occupancy of 1 and the b factor of 0 of a file from a simulation, no formal
+// charge at all) is that value: an array is made once an atom differs, holding the value for the atoms before it. Bits
+// are compared, as md_attributes_publish_atom_column does to publish no column of one value (NAN is none).
+typedef struct pdb_column_t {
+    bool     seen;
+    uint32_t first;             // The bits of the first atom's value
+    md_array(float) data;       // NULL while every value is the first
+    size_t   reserve;           // Of the array, once made: for as many atoms as there can be
+} pdb_column_t;
+
+static inline uint32_t pdb_f32_bits(float x) {
+    uint32_t u;
+    MEMCPY(&u, &x, sizeof(u));
+    return u;
+}
+
+// The values of count atoms after the beg before them
+static void pdb_column_append(pdb_column_t* col, const float* values, size_t beg, size_t count, md_allocator_i* alloc) {
+    if (count == 0) return;
+    if (!col->data) {
+        if (!col->seen) {
+            col->seen = true;
+            col->first = pdb_f32_bits(values[0]);
+        }
+        size_t i = 0;
+        while (i < count && pdb_f32_bits(values[i]) == col->first) ++i;
+        if (i == count) return;
+        float first;
+        MEMCPY(&first, &col->first, sizeof(first));
+        md_array_ensure(col->data, MAX(beg + count, col->reserve), alloc);
+        md_array_resize(col->data, beg, alloc);
+        for (size_t j = 0; j < beg; ++j) col->data[j] = first;
+    }
+    md_array_push_array(col->data, values, count, alloc);
+}
+
+// Room for count elements in an array of the load, which grows by doubling past what was reserved
+#define PDB_ROOM(arr, count, alloc) do { \
+        if ((count) > md_array_capacity(arr)) md_array_ensure((arr), MAX((size_t)(count), 2 * md_array_capacity(arr)), (alloc)); \
+        md_array_resize((arr), (count), (alloc)); \
+    } while (0)
+
+// The CONECT records of a file are at its end (after the coordinates, before MASTER and END): when the end has none,
+// the serials of the atoms, which only they refer to, are not kept. A source which cannot be looked at the end of (a
+// stream) is taken to have them.
+#define PDB_CONECT_PROBE KILOBYTES(256)
+
+static bool pdb_has_conect(md_reader_i* src) {
+    const int64_t size = md_reader_size(src);
+    if (size < 0) return true;
+    const int64_t from = MAX(0, size - (int64_t)PDB_CONECT_PROBE);
+    if (!md_reader_seek(src, from)) return true;
+    bool found = false;
+    str_t line;
+    if (from > 0) md_reader_skip_line(src);     // The rest of a line which began before
+    while (!found && md_reader_extract_line(src, &line)) {
+        found = str_eq_cstr_n(line, "CONECT", 6);
+    }
+    if (!md_reader_rewind(src)) {
+        MD_LOG_ERROR("PDB: the source cannot be read from its start again");
+    }
+    return found;
+}
+
+static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, md_pdb_options_t options, const md_executor_t* ex) {
     ASSERT(sys);
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -905,9 +675,14 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     md_system_reset(sys);
     md_system_state_init(state, 0);
 
-    md_allocator_i* heap = md_get_heap_allocator();
+    // Everything of the load but what the system keeps is in one temp scope, rewound at the end. The tasks of the
+    // executor take nothing of it (pdb_count_lines, pdb_parse_lines allocate nothing): a scope of their thread's own,
+    // the calling thread's too, would not collide with it. Arrays are reserved for as many atoms as there can be, so
+    // that none grows (and copies) in the arena while another is above it: the reservation is address space, and only
+    // what is written becomes memory.
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+    md_allocator_i* scratch = temp_arena;
 
     const bool concat_models = (options & MD_PDB_OPTION_CONCAT_MODELS) != 0;
 
@@ -917,16 +692,16 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     md_array(pdb_residue_start_t) res_starts = 0;   // of the load
     md_array(pdb_residue_start_t) block_res = 0;    // of a block, at the place of the atom of each piece
     md_array(pdb_record_t)        records = 0;      // of a block
-    md_array(vec3_t)              xyz = 0;
+    // Of a block
     md_array(md_label_t)          atom_name = 0;
     md_array(uint8_t)             element = 0;
-    md_array(float)               occupancy = 0;
-    md_array(float)               b_factor = 0;
-    md_array(int32_t)             serial = 0;
-    md_pdb_data_t data = {0};       // The records which are not of atoms
-    int32_t biomolecule = 0;
+    md_array(float)               column[PDB_NUM_COLUMNS] = {0};
+    // Of the load, where they are needed
+    md_array(int32_t)             serial = 0;       // Where the file has CONECT records
+    md_array(md_label_t)          labels = 0;       // Where atoms have no element: their names, to be typed by
+    pdb_column_t                  col[PDB_NUM_COLUMNS] = {0};
+    pdb_extras_t extras = { .alloc = temp_arena };
     uint32_t num_bad_ids = 0;
-    bool unassigned = false;
     bool result = false;
 
     // The first model: [model_beg, model_end) of the atoms read, once its MODEL and ENDMDL records are seen
@@ -934,26 +709,48 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     size_t num_models = 0;
     size_t model_beg = 0;
 
-    // Room for as many atoms as there can be: an atom line of coordinates has 54 characters at least. Pages are only
-    // taken when written, so the room beyond the atoms costs nothing, and the arrays do not grow (and copy) as they fill.
+    // Straight into the state and the system: as many atoms as there can be, as an atom line of coordinates has 54
+    // characters at least. The room beyond the atoms is address space, not memory, until written.
+    const bool keep_serial = pdb_has_conect(src);
+    const int64_t src_size = md_reader_size(src);
+    const size_t max_atoms = src_size >= 0 ? (size_t)src_size / 55 + 16 : 0;
     {
-        const size_t cap = src->total / 55 + 16;
-        md_array_ensure(xyz,       cap, heap);
-        md_array_ensure(atom_name, cap, heap);
-        md_array_ensure(element,   cap, heap);
-        md_array_ensure(occupancy, cap, heap);
-        md_array_ensure(b_factor,  cap, heap);
-        md_array_ensure(serial,    cap, heap);
+        md_array_ensure(state->xyz, max_atoms, state->alloc);
+        md_array_ensure(sys->atom.type_idx, ROUND_UP(max_atoms, 16), sys->alloc);
+        md_array_ensure(res_starts, max_atoms, scratch);
+        if (keep_serial) md_array_ensure(serial, max_atoms, scratch);
+        // Of a block: of as many atoms as a block of the reader holds (a string is one block)
+        const size_t block_cap = src->cap ? src->cap : (size_t)MAX(0, src_size);
+        const size_t block_atoms = block_cap / 55 + 16;
+        md_array_ensure(atom_name, block_atoms, scratch);
+        md_array_ensure(element,   block_atoms, scratch);
+        md_array_ensure(block_res, block_atoms, scratch);
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) md_array_ensure(column[c], block_atoms, scratch);
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) col[c].reserve = max_atoms;
+        md_array_ensure(pieces, md_text_num_pieces(block_cap, md_executor_num_threads(ex)), scratch);
+        md_array_ensure(ranges, md_text_num_pieces(block_cap, md_executor_num_threads(ex)), scratch);
     }
+
+    // The types, as the atoms are read: of the name and the element where the line gives one
+	// Add default unknown particle type at index 0
+    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    md_hashmap32_t type_map = { .allocator = temp_arena };
+    // The atom before's type, which the next often shares (a water's hydrogens, an ion after another)
+    uint64_t prev_name = 0;
+    uint8_t  prev_element = PDB_NO_ELEMENT;
+    md_particle_type_idx_t prev_type = 0;
 
     const uint32_t num_threads = md_executor_num_threads(ex);
     for (;;) {
-        const str_t block = md_text_source_block(src);
+        str_t block = md_reader_block(src);
         if (block.len == 0) break;
+        // A pass over at most MD_TEXT_PASS_SIZE: what the lines are, then what they hold, of text the first left in
+        // the caches (a block of a file is larger than most last level caches; a string is one block)
+        block.len = md_text_pass_len(block.ptr, block.len);
 
         const size_t num_pieces = md_text_num_pieces(block.len, num_threads);
-        md_array_resize(pieces, num_pieces, heap);
-        md_array_resize(ranges, num_pieces, heap);
+        md_array_resize(pieces, num_pieces, scratch);
+        md_array_resize(ranges, num_pieces, scratch);
         md_text_split(ranges, num_pieces, block.ptr, block.len);
         for (size_t p = 0; p < num_pieces; ++p) pieces[p] = (pdb_piece_t){ .range = ranges[p] };
 
@@ -973,20 +770,19 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
 
         // Room for the atoms of the block, where they go
         const size_t total = num_atoms + block_atoms;
-        md_array_resize(xyz,       total, heap);
-        md_array_resize(atom_name, total, heap);
-        md_array_resize(element,   total, heap);
-        md_array_resize(occupancy, total, heap);
-        md_array_resize(b_factor,  total, heap);
-        md_array_resize(serial,    total, heap);
-        md_array_resize(block_res, block_atoms, heap);
-        md_array_resize(records, block_records, heap);
-        b.xyz = xyz;
+        PDB_ROOM(state->xyz, total, state->alloc);
+        PDB_ROOM(sys->atom.type_idx, total, sys->alloc);
+        if (keep_serial) PDB_ROOM(serial, total, scratch);
+        PDB_ROOM(atom_name, block_atoms, scratch);
+        PDB_ROOM(element,   block_atoms, scratch);
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) PDB_ROOM(column[c], block_atoms, scratch);
+        PDB_ROOM(block_res, block_atoms, scratch);
+        PDB_ROOM(records, block_records, scratch);
+        b.xyz = state->xyz;
+        b.serial = keep_serial ? serial : NULL;
         b.atom_name = atom_name;
         b.element = element;
-        b.occupancy = occupancy;
-        b.b_factor = b_factor;
-        b.serial = serial;
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) b.column[c] = column[c];
         b.records = records;
         // Each piece writes its residues at the place of its first atom, put in order below
         b.res_starts = block_res;
@@ -994,13 +790,37 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         if (!md_parallel_for(ex, (uint32_t)num_pieces, 1, pdb_parse_lines, &b)) goto done;   // Cancelled
 
         // The residues in order, after those before the block
+        bool unassigned = false;
         for (size_t p = 0; p < num_pieces; ++p) {
             const pdb_piece_t* piece = &pieces[p];
-            md_array_push_array(res_starts, block_res + piece->first_atom, piece->num_residues, heap);
+            md_array_push_array(res_starts, block_res + piece->first_atom, piece->num_residues, scratch);
             num_bad_ids += piece->num_bad_ids;
             unassigned |= piece->unassigned;
         }
         sys->residue.count = md_array_size(res_starts);   // Counted here, made below
+
+        // The types of the block's atoms. Atoms without an element are typed by their names once all are read: the
+        // names are kept from the first such atom on, and those of the atoms before it are those of their types.
+        for (size_t k = 0; k < block_atoms; ++k) {
+            if (element[k] == PDB_NO_ELEMENT) {
+                sys->atom.type_idx[num_atoms + k] = 0;
+                continue;
+            }
+            const uint64_t name = md_label_key(atom_name[k]);
+            if (name != prev_name || element[k] != prev_element) {
+                prev_type = md_util_particle_type_find_or_add(sys, &type_map, md_label_str(&atom_name[k]), (md_atomic_number_t)element[k]);
+                prev_name = name;
+                prev_element = element[k];
+            }
+            sys->atom.type_idx[num_atoms + k] = prev_type;
+        }
+        if (unassigned && !labels) {
+            md_array_ensure(labels, MAX(total, max_atoms), scratch);
+            md_array_resize(labels, num_atoms, scratch);
+            for (size_t i = 0; i < num_atoms; ++i) labels[i] = sys->atom.type.name[sys->atom.type_idx[i]];
+        }
+        if (labels) md_array_push_array(labels, atom_name, block_atoms, scratch);
+        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) pdb_column_append(&col[c], column[c], num_atoms, block_atoms, scratch);
 
         // The residue fields of the last atom, and a TER after it, for the next block
         if (block_atoms > 0) {
@@ -1043,26 +863,29 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
                     b.atoms = false;
                 }
                 break;
-            case PDB_LINE_OTHER:
-                pdb_parse_other_record(&data, line, &biomolecule, temp_arena);
+            case PDB_LINE_CRYST1:
+            case PDB_LINE_CONECT:
+            case PDB_LINE_REMARK_350:
+                pdb_extras_record(&extras, rec->kind, line);
                 break;
             default:
                 break;
             }
         }
-        md_text_source_advance(src, block.len);
+        md_reader_advance(src, block.len);
     }
 
     // The atoms of the first model: those before its MODEL record and after its end are not
     {
         const size_t n = num_atoms - model_beg;
         if (model_beg > 0) {
-            MEMMOVE(xyz,        xyz + model_beg,        n * sizeof(vec3_t));
-            MEMMOVE(atom_name,  atom_name + model_beg,  n * sizeof(md_label_t));
-            MEMMOVE(element,    element + model_beg,    n * sizeof(uint8_t));
-            MEMMOVE(occupancy,  occupancy + model_beg,  n * sizeof(float));
-            MEMMOVE(b_factor,   b_factor + model_beg,   n * sizeof(float));
-            MEMMOVE(serial,     serial + model_beg,     n * sizeof(int32_t));
+            MEMMOVE(state->xyz,         state->xyz + model_beg,         n * sizeof(vec3_t));
+            MEMMOVE(sys->atom.type_idx, sys->atom.type_idx + model_beg, n * sizeof(md_particle_type_idx_t));
+            if (serial) MEMMOVE(serial, serial + model_beg, n * sizeof(int32_t));
+            if (labels) MEMMOVE(labels, labels + model_beg, n * sizeof(md_label_t));
+            for (int c = 0; c < PDB_NUM_COLUMNS; ++c) {
+                if (col[c].data) MEMMOVE(col[c].data, col[c].data + model_beg, n * sizeof(float));
+            }
         }
         // The residue of the first atom of the model, which may have begun before it
         pdb_residue_start_t first = {0};
@@ -1076,7 +899,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         }
         if (n > 0 && (num_res == 0 || res_starts[0].atom != 0)) {
             first.atom = 0;
-            md_array_push(res_starts, first, heap);     // Room for one more
+            md_array_push(res_starts, first, scratch);     // Room for one more
             MEMMOVE(res_starts + 1, res_starts, num_res * sizeof(pdb_residue_start_t));
             res_starts[0] = first;
             num_res += 1;
@@ -1089,29 +912,25 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         MD_LOG_DEBUG("%u atom serials or residue numbers are not numbers of the PDB format ('*****' past the width of the field, "
             "or hexadecimal as VMD writes past 99999): the atoms are taken in their order", num_bad_ids);
     }
-    data.num_helices         = md_array_size(data.helices);
-    data.num_sheets          = md_array_size(data.sheets);
-    data.num_connections     = md_array_size(data.connections);
-    data.num_cryst1          = md_array_size(data.cryst1);
-    data.num_assemblies      = md_array_size(data.assemblies);
-    data.num_assembly_chains = md_array_size(data.assembly_chains);
-    data.num_transforms      = md_array_size(data.transforms);
 
     // The atoms
     md_array_resize(state->xyz, num_atoms, state->alloc);
-    MEMCPY(state->xyz, xyz, num_atoms * sizeof(vec3_t));
     state->num_atoms = num_atoms;
     sys->atom.count = num_atoms;
-    const size_t capacity = ROUND_UP(num_atoms, 16);
-    md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
-    md_array_resize(sys->atom.flags,    capacity, sys->alloc);
-    MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MEMSET(sys->atom.flags,    0, capacity * sizeof(md_atom_flags_t));
+    {
+        const size_t capacity = ROUND_UP(num_atoms, 16);
+        PDB_ROOM(sys->atom.type_idx, capacity, sys->alloc);
+        MEMSET(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
+        md_array_resize(sys->atom.flags, capacity, sys->alloc);
+        MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    }
 
     // The residues, and their chain ids
     const size_t num_res = sys->residue.count;
     md_array(str_t) res_chain_ids = 0;
     md_array_resize(res_chain_ids, num_res, temp_arena);
+    md_array(bool) res_after_ter = 0;
+    md_array_resize(res_after_ter, num_res, temp_arena);
     md_array_resize(sys->residue.atom_offset, num_res + 1, sys->alloc);
     md_array_resize(sys->residue.name,   num_res, sys->alloc);
     md_array_resize(sys->residue.seq_id, num_res, sys->alloc);
@@ -1130,49 +949,30 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         sys->residue.flags[r]  = MD_RESIDUE_FLAG_NONE;
         chain_chars[r] = rs->chain_id;
         res_chain_ids[r] = str_trim((str_t){ &chain_chars[r], 1 });
+        res_after_ter[r] = rs->after_ter;
     }
     sys->residue.atom_offset[num_res] = (uint32_t)num_atoms;    // Final sentinel
 
-    // The types: of the name and the element where the line gives one, by name otherwise
-	// Add default unknown particle type at index 0
-    md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
-    {
-        md_hashmap32_t type_map = { .allocator = temp_arena };
-        // The atom before's type, which the next often shares (a water's hydrogens, an ion after another)
-        uint64_t prev_name = 0;
-        uint8_t  prev_element = PDB_NO_ELEMENT;
-        md_particle_type_idx_t prev_type = 0;
-        for (size_t i = 0; i < num_atoms; ++i) {
-            if (element[i] == PDB_NO_ELEMENT) continue;
-            const uint64_t name = md_label_key(atom_name[i]);
-            if (name != prev_name || element[i] != prev_element) {
-                prev_type = md_util_particle_type_find_or_add(sys, &type_map, md_label_str(&atom_name[i]), (md_atomic_number_t)element[i]);
-                prev_name = name;
-                prev_element = element[i];
-            }
-            sys->atom.type_idx[i] = prev_type;
-        }
-    }
-    if (unassigned) {
-        md_util_system_infer_particle_types_from_labels(sys, atom_name);
+    if (labels) {
+        md_util_system_infer_particle_types_from_labels(sys, labels);
     }
 
-    pdb_publish_atom_columns(sys, occupancy, b_factor);
-    pdb_system_finish(sys, state, &data, serial, res_chain_ids, temp_arena);
+    // The columns which hold more than one value: md_mmcif publishes the same, and they have to agree
+    if (col[PDB_COL_OCCUPANCY].data) {
+        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/occupancy"), md_unit_none(), 1, col[PDB_COL_OCCUPANCY].data, num_atoms);
+    }
+    if (col[PDB_COL_B_FACTOR].data) {
+        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/b_factor"), md_unit_pow(md_unit_angstrom(), 2), 1, col[PDB_COL_B_FACTOR].data, num_atoms);
+    }
+    if (col[PDB_COL_CHARGE].data) {
+        // Chemistry perception starts from what the file gives
+        md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, col[PDB_COL_CHARGE].data, num_atoms);
+    }
+    pdb_system_finish(sys, state, &extras, serial, res_chain_ids, res_after_ter, temp_arena);
     result = true;
 
 done:
-    md_array_free(pieces, heap);
-    md_array_free(ranges, heap);
-    md_array_free(res_starts, heap);
-    md_array_free(block_res, heap);
-    md_array_free(xyz, heap);
-    md_array_free(records, heap);
-    md_array_free(atom_name, heap);
-    md_array_free(element, heap);
-    md_array_free(occupancy, heap);
-    md_array_free(b_factor, heap);
-    md_array_free(serial, heap);
+    // The scratch goes with the scope
     md_temp_end(temp_scope);
     if (!result) {
         md_system_reset(sys);
@@ -1181,20 +981,26 @@ done:
     return result;
 }
 
+#undef PDB_ROOM
+
 bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, md_pdb_options_t options, const md_executor_t* executor) {
-    md_text_source_t src = md_text_source_from_str(str);
+    md_reader_i src = md_reader_from_str(str);
     return pdb_load(sys, state, &src, options, executor);
 }
 
 bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options, const md_executor_t* executor) {
-    md_text_source_t src;
-    if (!md_text_source_open(&src, filename, md_get_heap_allocator())) {
+    // The reader's buffer in a temp scope, below the one of the load (pdb_load)
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_file_reader_t fr;
+    if (!md_file_reader_open(&fr, filename, MD_TEXT_BLOCK_SIZE, md_temp_allocator(temp))) {
         MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
+        md_temp_end(temp);
         return false;
     }
     // Several models are a trajectory as well: md_pdb_system_publish_run makes them a run.
-    const bool result = pdb_load(sys, state, &src, options, executor);
-    md_text_source_close(&src);
+    const bool result = pdb_load(sys, state, &fr.r, options, executor);
+    md_file_reader_close(&fr);
+    md_temp_end(temp);
     return result;
 }
 
@@ -1244,10 +1050,11 @@ static bool write_cache(const pdb_cache_t* cache, str_t path, const md_file_info
     return ok;
 }
 
-// Where each model is and the file's cell, from the cache beside the file when that is current and
-// from a parse of the file otherwise (writing the cache unless told not to). From alloc; the parse's
-// scratch keeps clear of avoid, which is what alloc was made from.
-static bool pdb_index_load(pdb_cache_t* cache, str_t filename, md_run_flags_t flags, md_allocator_i* alloc, md_allocator_i* avoid) {
+// Where each model is and the file's cell, from the cache beside the file when that is current and from a scan of the
+// file otherwise (writing the cache unless told not to). The scan reads the names of the records, and of the lines
+// nothing else but the first CRYST1's: a model begins at its MODEL record, and its atoms are those the system has of
+// it (the first alternate locations, pdb_line_kind), up to its ENDMDL record or the next MODEL record.
+static bool pdb_index_load(pdb_cache_t* cache, str_t filename, md_run_flags_t flags, md_allocator_i* alloc) {
     MEMSET(cache, 0, sizeof(*cache));
 
     if (try_read_cache(cache, filename, alloc)) {
@@ -1255,92 +1062,107 @@ static bool pdb_index_load(pdb_cache_t* cache, str_t filename, md_run_flags_t fl
     }
     MEMSET(cache, 0, sizeof(*cache));
 
-    // The file as it is before the parse is what the cache is stamped with
+    // The file as it is before the scan is what the cache is stamped with
     md_file_info_t scanned = { 0 };
     if (!md_file_info_extract_from_path(filename, &scanned)) {
         MD_LOG_ERROR("Failed to extract file info from path '" STR_FMT "'", STR_ARG(filename));
         return false;
     }
-    const size_t filesize = scanned.size;
 
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(avoid);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
-    bool success = false;
-
-    md_pdb_data_t data = {0};
-    if (!md_pdb_data_parse_file(&data, filename, temp_alloc)) {
-        goto done;
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_file_reader_t fr;
+    if (!md_file_reader_open(&fr, filename, MD_READER_DEFAULT_CAPACITY, heap)) {
+        MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
+        return false;
     }
 
-    if (data.num_models <= 1) {
+    md_array(int64_t)  model_offset = 0;
+    md_array(uint32_t) model_atoms = 0;
+    pdb_extras_t extras = { .alloc = heap };    // The cell
+    bool in_model = false;
+    str_t line;
+    for (;;) {
+        const int64_t at = md_reader_tell(&fr.r);   // The offset of the line
+        if (!md_reader_extract_line(&fr.r, &line)) break;
+        const pdb_line_kind_t kind = pdb_line_kind(line);
+        switch (kind) {
+        case PDB_LINE_ATOM:
+            if (in_model) *md_array_last(model_atoms) += 1;
+            break;
+        case PDB_LINE_MODEL:
+            md_array_push(model_offset, at, heap);
+            md_array_push(model_atoms, 0, heap);
+            in_model = true;
+            break;
+        case PDB_LINE_ENDMDL:
+            in_model = false;
+            break;
+        case PDB_LINE_CRYST1:
+            pdb_extras_record(&extras, kind, line);
+            break;
+        default:
+            break;
+        }
+    }
+    md_file_reader_close(&fr);
+
+    bool success = false;
+    const size_t num_models = md_array_size(model_offset);
+    if (num_models <= 1) {
         MD_LOG_INFO("The PDB file does not contain multiple model entries and cannot be read as a trajectory");
         goto done;
     }
-
-    // Validate the models
-    const size_t num_atoms = (size_t)MAX(0, data.models[0].end_atom_index - data.models[0].beg_atom_index);
+    // Models of the same atoms (an empty one aside)
+    const size_t num_atoms = model_atoms[0];
     if (!num_atoms) {
         MD_LOG_ERROR("The PDB file models are empty and cannot be read as a trajectory");
         goto done;
     }
-    for (size_t i = 1; i < data.num_models; ++i) {
-        const size_t length = (size_t)MAX(0, data.models[i].end_atom_index - data.models[i].beg_atom_index);
-        if (length && length != num_atoms) {
-            MD_LOG_ERROR("The PDB file models are empty or not of equal length and cannot be read as a trajectory");
+    for (size_t i = 1; i < num_models; ++i) {
+        if (model_atoms[i] && model_atoms[i] != num_atoms) {
+            MD_LOG_ERROR("The PDB file models are not of equal length and cannot be read as a trajectory");
             goto done;
         }
     }
 
     cache->header.num_atoms = num_atoms;
-    cache->header.num_frames = data.num_models;
-
-    cache->frame_offsets = md_alloc(alloc, (cache->header.num_frames + 1) * sizeof(int64_t));
-    for (size_t i = 0; i < cache->header.num_frames; ++i) {
-        cache->frame_offsets[i] = data.models[i].byte_offset;
-    }
-    cache->frame_offsets[cache->header.num_frames] = filesize;
-
-    if (data.num_cryst1 > 0) {
-        if (data.num_cryst1 > 1) {
-            md_log(MD_LOG_TYPE_INFO, "The PDB file contains multiple CRYST1 entries, will pick the first one for determining the simulation box");
-        }
-        // If it is in fact a box, that will be handled as well
-        cache->cell = md_unitcell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
+    cache->header.num_frames = num_models;
+    cache->frame_offsets = md_alloc(alloc, (num_models + 1) * sizeof(int64_t));
+    MEMCPY(cache->frame_offsets, model_offset, num_models * sizeof(int64_t));
+    cache->frame_offsets[num_models] = (int64_t)scanned.size;
+    if (extras.has_cell) {
+        cache->cell = extras.cell;
     }
 
     if (!(flags & MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
-        // A cache that cannot be written only costs the next load a parse
+        // A cache that cannot be written only costs the next load a scan
         write_cache(cache, filename, &scanned);
     }
     success = true;
 
 done:
-    md_temp_end(temp_scope);
+    md_array_free(model_offset, heap);
+    md_array_free(model_atoms, heap);
     return success;
 }
 
 // ### RUN ###
 
-// The coordinates of atoms [first, first + count) of one model, packed xyz, straight off its ATOM and
-// HETATM records. Returns how many were written.
+// The coordinates of atoms [first, first + count) of one model, packed xyz, straight off its ATOM and HETATM records:
+// those the system has (the first alternate locations), read as the load reads them. Returns how many were written.
 static size_t pdb_parse_model_coords(float* xyz, str_t str, size_t first, size_t count) {
     str_t line;
-    // The model's leading MODEL record
-    str_extract_line(&line, &str);
-
     size_t i = 0;
     size_t written = 0;
     while (written < count && str_extract_line(&line, &str)) {
-        if (line.len < 6) continue;
-        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-            if (i >= first) {
-                xyz[written * 3 + 0] = extract_float(line, 31, 38);
-                xyz[written * 3 + 1] = extract_float(line, 39, 46);
-                xyz[written * 3 + 2] = extract_float(line, 47, 54);
-                written += 1;
-            }
-            i += 1;
+        if (pdb_line_kind(line) != PDB_LINE_ATOM) continue;
+        if (i >= first) {
+            xyz[written * 3 + 0] = extract_fixed_float(line, 31, 38, 3);
+            xyz[written * 3 + 1] = extract_fixed_float(line, 39, 46, 3);
+            xyz[written * 3 + 2] = extract_fixed_float(line, 47, 54, 3);
+            written += 1;
         }
+        i += 1;
     }
     return written;
 }
@@ -1392,7 +1214,7 @@ bool md_pdb_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
     bool result = false;
 
     pdb_cache_t index;
-    if (path_len == 0 || !pdb_index_load(&index, path, flags, arena, md_get_heap_allocator())) {
+    if (path_len == 0 || !pdb_index_load(&index, path, flags, arena)) {
         goto done;
     }
 

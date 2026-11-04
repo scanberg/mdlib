@@ -2,6 +2,7 @@
 
 #include <core/md_str.h>
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_log.h>
 #include <core/md_hash.h>
 #include <core/md_arena_allocator.h>
@@ -265,7 +266,7 @@ static inline int parse_int_with_default(str_t tok, int def) {
 }
 
 typedef struct {
-    md_buffered_reader_t* reader;
+    md_reader_i* reader;
     md_str_writer_t sb;
     str_t line;
     str_t peek;
@@ -281,7 +282,7 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
     s->line_start = false;
     while (true) {
         if (str_empty(s->line)) {
-            if (!md_buffered_reader_extract_line(&s->line, s->reader)) {
+            if (!md_reader_extract_line(s->reader, &s->line)) {
                 return false;
             }
             s->line_start = true;
@@ -314,7 +315,7 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
             md_str_writer_push_str(&s->sb, s->line);
 
             bool term = false;
-            while (md_buffered_reader_extract_line(&s->line, s->reader)) {
+            while (md_reader_extract_line(s->reader, &s->line)) {
                 if (s->line.len > 0 && s->line.ptr[0] == ';') {
                     term = true;
                     s->line = (str_t) {0};
@@ -1110,7 +1111,7 @@ static bool mmcif_parse_cell(mmcif_cell_params_t* cell, mmcif_parse_state_t* sta
     return (field_flags == (CELL_FIELD_A | CELL_FIELD_B | CELL_FIELD_C | CELL_FIELD_ALPHA | CELL_FIELD_BETA | CELL_FIELD_GAMMA));
 }
 
-static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reader_i* reader, md_allocator_i* alloc) {
     bool result = false;
     bool atom_site_parsed = false;
     bool cell_parsed = false;
@@ -1364,7 +1365,7 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, s
     md_system_reset(sys);
     md_system_state_init(state, 0);
 
-    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+    md_reader_i reader = md_reader_from_str(str);
     bool result = mmcif_parse(sys, state, &reader, sys->alloc);
     state->num_atoms = sys->atom.count;
     return result;
@@ -1395,12 +1396,13 @@ bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, 
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     const size_t cap = MEGABYTES(1);
-    char* buf = md_temp_alloc(temp, cap);
 
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-    bool result = mmcif_parse(sys, state, &reader, sys->alloc);
+    md_file_reader_t reader;
+    md_file_reader_init(&reader, file, cap, md_temp_allocator(temp));
+    bool result = mmcif_parse(sys, state, &reader.r, sys->alloc);
     state->num_atoms = sys->atom.count;
 
+    md_file_reader_close(&reader);
     md_temp_end(temp);
     md_file_close(&file);
 

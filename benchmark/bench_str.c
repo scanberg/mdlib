@@ -2,6 +2,7 @@
 
 #include <core/md_str.h>
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
@@ -10,30 +11,26 @@
 #include <stdlib.h>
 #include <string.h>
 
-UBENCH_EX(str, buffered_reader) {
+// Lines through a file reader (md_reader.h): the search for the line ends, what md_reader_extract_line costs per byte
+UBENCH_EX(str, reader_lines) {
     str_t path = STR_INIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
-    md_file_t file = {0};
-    if (!md_file_open(&file, path, MD_FILE_READ)) {
-        MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
+    md_file_reader_t fr;
+    if (!md_file_reader_open(&fr, path, MEGABYTES(1), md_get_heap_allocator())) {
+        MD_LOG_ERROR("Could not open file '%.*s'", (int)path.len, path.ptr);
         return;
     }
-    const int64_t cap = MEGABYTES(1);
-    char* buf = md_alloc(md_get_heap_allocator(), cap);
-    
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 
-    UBENCH_SET_BYTES(md_file_size(file));
+    UBENCH_SET_BYTES(md_reader_size(&fr.r));
 
     UBENCH_DO_BENCHMARK() {
-        md_file_seek(file, 0, MD_FILE_BEG);
+        md_reader_rewind(&fr.r);
         str_t line;
-        while (md_buffered_reader_extract_line(&line, &reader)) {
+        while (md_reader_extract_line(&fr.r, &line)) {
             // do nothing
         }
     }
 
-    md_free(md_get_heap_allocator(), buf, cap);
-    md_file_close(&file);
+    md_file_reader_close(&fr);
 }
 
 UBENCH_EX(str, parse_int) {

@@ -132,6 +132,12 @@ static int isog_chunks = 0;
 //                             protein of 9636 AOs, and its product C W C^T seconds of the CPU), rather than in tiles
 //                             of the AO pairs that meet (md_gto_gpu_dmat), built on the device (default 1)
 static int isog_dsparse = 1;
+//   GTO_ISO_READBACK_SHORT=1  TEST: the first readback copies no triangles, so that the second one does (default 0)
+static int isog_readback_short = 0;
+//   GTO_ISO_FN_CAP=n          TEST: fewer functions than the factored kernels hold (ISOG_FN_CAP), to exercise the sets
+//                             of the D form only on small systems
+#define ISOG_FN_CAP 1024     // O_FN_CAP in the shader
+static uint32_t isog_fn_cap = ISOG_FN_CAP;
 // The pattern's margin (md_gto_gpu_dmat_desc_t): the AO lists and the pattern take their radii from different
 // bounds; a pair the lists hold and the pattern not is zero in the matrix (both AOs below the cutoff wherever one is)
 #define ISOG_DMAT_MARGIN 1.0
@@ -158,6 +164,11 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_chunks = atoi(e);
     e = getenv("GTO_ISO_DSPARSE");
     if (e && e[0]) isog_dsparse = atoi(e);
+    // Read here, with the others, and not on an extraction's first use: extractions run on any thread
+    isog_readback_short = getenv("GTO_ISO_READBACK_SHORT") != NULL;
+    isog_fn_cap = ISOG_FN_CAP;
+    e = getenv("GTO_ISO_FN_CAP");
+    if (e && atoi(e) > 0 && (uint32_t)atoi(e) < isog_fn_cap) isog_fn_cap = (uint32_t)atoi(e);
 }
 
 // Every kernel is made at once. One a device cannot make (more groupshared memory than it allows, say)
@@ -262,8 +273,6 @@ void md_gto_iso_gpu_shutdown(void) {
 // ---------------------------------------------------------------------------------------------
 // The field set
 // ---------------------------------------------------------------------------------------------
-
-#define ISOG_FN_CAP 1024     // O_FN_CAP in the shader
 
 struct md_gto_iso_gpu_set_t {
     md_gpu_mem_t shells, prims, crit, ao_nrm, ao_ijk, C, terms, fn_tail, wts, dmat, fdmat, drs, dprop;
@@ -419,6 +428,9 @@ static bool isog_density_square_rows(md_temp_scope_t temp, const iso_density_t* 
 // squares (isog_density_square_rows) through the blocked product md_gto_density_from_orbitals. An SCF
 // density from its orbitals is num_occ squares, which a plain loop over the terms would take num_occ
 // passes over the whole matrix for. False when out of memory.
+//
+// On the calling thread: md_gto_iso_gpu_set_create takes no executor. This is the dense fallback only, for when the
+// tiles cannot be made (isog_dmat_tiles) or GTO_ISO_DSPARSE=0; the tiles are built on the device.
 static bool isog_dmat_from_terms(double* Dd, const iso_density_t* d) {
     const size_t na = (size_t)d->num_ao, nf = (size_t)d->num_fn;
     md_temp_scope_t temp = md_temp_begin();
@@ -843,10 +855,7 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         if (!d) { dform_ok = false; break; }
         for (int t = 0; t < d->num_terms; ++t) if (d->terms[t].b < 0) dform_ok = false;
     }
-    // TEST: GTO_ISO_FN_CAP lowers the limit (to exercise the factorless sets on small systems)
-    uint32_t fn_cap = ISOG_FN_CAP;
-    const char* ce = getenv("GTO_ISO_FN_CAP");
-    if (ce && atoi(ce) > 0 && (uint32_t)atoi(ce) < fn_cap) fn_cap = (uint32_t)atoi(ce);
+    const uint32_t fn_cap = isog_fn_cap;
     const bool factorless = nf > fn_cap && dform_ok;
     if (nf > fn_cap && !factorless) {
         MD_LOG_ERROR("md_gto_iso_gpu_set_create: %u functions in all, more than %u, and not every field a density of products (the D form)", nf, fn_cap);
@@ -2018,9 +2027,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             isog_jfetch_add(j, j->ctr, a.counters, sizeof(j->ctr));
             j->idx_copied = 0;
             if (desc->read_back) {
-                static int test_short = -1;     // TEST: GTO_ISO_READBACK_SHORT=1 copies no triangles first (the second readback)
-                if (test_short < 0) test_short = getenv("GTO_ISO_READBACK_SHORT") != NULL;
-                const uint32_t qc = test_short ? 0u : cap_q < 2 * nv + 64 ? cap_q : 2 * nv + 64;
+                const uint32_t qc = isog_readback_short ? 0u : cap_q < 2 * nv + 64 ? cap_q : 2 * nv + 64;
                 j->idx_copied = 6 * qc;
                 isog_jfetch_add(j, NULL, out->position, sizeof(md_gpu_float4) * nv);
                 isog_jfetch_add(j, NULL, out->normal, sizeof(md_gpu_float4) * nv);
