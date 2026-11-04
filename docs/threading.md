@@ -30,7 +30,7 @@ A procedure reached through a generic interface gets its executor from the calle
   plain extract has no context: the provider then runs on the calling thread.
 - **Loaders** take it as an argument (`md_vlx_system_init_from_file(..., executor)`). The text loaders (`md_gro`,
   `md_pdb`) read a file a block at a time and each block in pieces at line boundaries, one piece per loop index
-  (`md_text_blocks.h`): a piece counts its lines, which places its atoms, then reads them where they go.
+  (`core/md_reader.h`: blocks and pieces): a piece counts its lines, which places its atoms, then reads them where they go.
 
 ## The executor contract
 

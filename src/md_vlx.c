@@ -3,6 +3,7 @@
 #include <core/md_os.h>
 #include <core/md_log.h>
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
@@ -690,7 +691,7 @@ static void normalize_basis_set(basis_set_t* basis_set) {
 	}
 }
 
-static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static bool parse_basis_set(basis_set_t* basis_set, md_reader_i* reader, md_allocator_i* alloc) {
 	MEMSET(basis_set, 0, sizeof(basis_set_t));
 
 	str_t line;
@@ -701,7 +702,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 	const basis_set_basis_t null_basis = {0};
 
 	basis_set_basis_t* curr_atom_basis = NULL;
-	while (md_buffered_reader_extract_line(&line, reader)) {
+	while (md_reader_extract_line(reader, &line)) {
 		line_count += 1;
 		str_t line_original = line;
 		size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
@@ -772,7 +773,7 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 			basis_set->basis_func.count += 1;
 
 			for (int i = 0; i < count; ++i) {
-				if (!md_buffered_reader_extract_line(&line, reader)) {
+				if (!md_reader_extract_line(reader, &line)) {
 					MD_LOG_ERROR("Failed to parse coefficients in atom basis function");
 					return false;
 				}
@@ -4272,7 +4273,6 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
 	bool result = false;
 
 	const size_t cap = KILOBYTES(16);
-	char* buf = md_temp_alloc_array(temp, char, cap);
 	md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
 	str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
@@ -4307,8 +4307,10 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, str_t filename) {
 	}
 
 	MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
-	md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
-	const bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
+	md_file_reader_t basis_reader;
+	md_file_reader_init(&basis_reader, basis_file, cap, md_temp_allocator(temp));
+	const bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader.r, vlx->arena);
+	md_file_reader_close(&basis_reader);
 	md_file_close(&basis_file);
 	if (!parse_result) {
 		MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");

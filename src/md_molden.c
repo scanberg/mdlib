@@ -12,6 +12,7 @@
 #include <core/md_log.h>
 #include <core/md_os.h>
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_str.h>
 #include <core/md_unit.h>
 #include <core/md_vec_math.h>
@@ -207,7 +208,7 @@ static void molden_push_shell(molden_t* molden, uint32_t atom_idx, uint32_t l, c
     md_array_push(molden->shell, shell, molden->alloc);
 }
 
-static bool molden_parse_atoms(molden_t* molden, md_buffered_reader_t* reader, str_t arg) {
+static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, str_t arg) {
     // "[Atoms] Angs", "[Atoms] (AU)", "[ATOMS] AU" - the parentheses are decoration. Angstrom is
     // the default, which is what an argument-less header means.
     str_t a = arg;
@@ -217,12 +218,12 @@ static bool molden_parse_atoms(molden_t* molden, md_buffered_reader_t* reader, s
     const bool bohr = str_eq_cstr_ignore_case(a, "au") || str_eq_cstr_ignore_case(a, "bohr");
 
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, sec_arg;
         if (molden_section_header(&name, &sec_arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
 
         str_t tok[8];
         str_t rest = line;
@@ -255,7 +256,7 @@ static bool molden_parse_atoms(molden_t* molden, md_buffered_reader_t* reader, s
 // 'sp' is a shell with TWO coefficient columns sharing one set of exponents; it becomes an s shell
 // and a p shell in that order, which is also the order its four AOs appear in, so nothing downstream
 // has to know it existed.
-static bool molden_parse_gto(molden_t* molden, md_buffered_reader_t* reader) {
+static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
     const size_t num_atoms = md_array_size(molden->atomic_number);
     if (num_atoms == 0) {
         MD_LOG_ERROR("MOLDEN: [GTO] appears before [Atoms]");
@@ -270,12 +271,12 @@ static bool molden_parse_gto(molden_t* molden, md_buffered_reader_t* reader) {
     bool have_atom = false;
 
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
 
         str_t rest = str_trim(line);
         if (str_empty(rest)) {
@@ -328,7 +329,7 @@ static bool molden_parse_gto(molden_t* molden, md_buffered_reader_t* reader) {
 
         for (size_t p = 0; p < num_prim; ++p) {
             str_t prim_line;
-            if (!md_buffered_reader_extract_line(&prim_line, reader)) {
+            if (!md_reader_extract_line(reader, &prim_line)) {
                 MD_LOG_ERROR("MOLDEN: [GTO] ends inside a contraction");
                 return false;
             }
@@ -359,7 +360,7 @@ static bool molden_parse_gto(molden_t* molden, md_buffered_reader_t* reader) {
 // [MO] is a run of blocks, each a few key lines followed by "<ao index> <value>" pairs. The keys
 // may come in any order and any of them may be absent, so a block ends when a key line appears
 // after at least one coefficient has been read - which is the only marker the format gives.
-static bool molden_parse_mo(molden_t* molden, md_buffered_reader_t* reader, size_t num_ao) {
+static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao) {
     if (num_ao == 0) {
         MD_LOG_ERROR("MOLDEN: [MO] appears before a basis is known");
         return false;
@@ -370,12 +371,12 @@ static bool molden_parse_mo(molden_t* molden, md_buffered_reader_t* reader, size
     size_t num_coeff = 0;
 
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
 
         str_t s = str_trim(line);
         if (str_empty(s)) {
@@ -437,15 +438,15 @@ static bool molden_parse_mo(molden_t* molden, md_buffered_reader_t* reader, size
 }
 
 // [FR-NORM-COORD] is "vibration <n>" followed by one displacement per atom, in bohr.
-static void molden_parse_normal_modes(molden_t* molden, md_buffered_reader_t* reader) {
+static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
     const size_t num_atoms = md_array_size(molden->atomic_number);
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
 
         str_t s = str_trim(line);
         if (str_empty(s)) {
@@ -456,7 +457,7 @@ static void molden_parse_normal_modes(molden_t* molden, md_buffered_reader_t* re
         }
         for (size_t a = 0; a < num_atoms; ++a) {
             str_t disp_line;
-            if (!md_buffered_reader_extract_line(&disp_line, reader)) {
+            if (!md_reader_extract_line(reader, &disp_line)) {
                 return;
             }
             str_t tok[4];
@@ -473,14 +474,14 @@ static void molden_parse_normal_modes(molden_t* molden, md_buffered_reader_t* re
     }
 }
 
-static void molden_parse_number_series(md_array(double)* out, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static void molden_parse_number_series(md_array(double)* out, md_reader_i* reader, md_allocator_i* alloc) {
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
         str_t s = str_trim(line);
         if (str_empty(s)) {
             continue;
@@ -493,19 +494,19 @@ static void molden_parse_number_series(md_array(double)* out, md_buffered_reader
     }
 }
 
-static void molden_skip_section(md_buffered_reader_t* reader) {
+static void molden_skip_section(md_reader_i* reader) {
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             return;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
     }
 }
 
 static bool molden_parse(molden_t* molden, str_t str) {
-    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+    md_reader_i reader = md_reader_from_str(str);
 
     // [MO] can only be read once the basis is known, and the format does not promise an order, so
     // the section positions are noted on the first pass and [MO] is read on a second.
@@ -513,7 +514,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
 
     bool seen_header = false;
     str_t line;
-    while (md_buffered_reader_extract_line(&line, &reader)) {
+    while (md_reader_extract_line(&reader, &line)) {
         str_t name, arg;
         if (!molden_section_header(&name, &arg, line)) {
             continue;
@@ -523,7 +524,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
             seen_header = true;
         } else if (str_eq_cstr_ignore_case(name, "title")) {
             str_t title_line;
-            if (md_buffered_reader_peek_line(&title_line, &reader)) {
+            if (md_reader_peek_line(&reader, &title_line)) {
                 str_t n, a;
                 if (!molden_section_header(&n, &a, title_line)) {
                     molden->title = str_copy(str_trim(title_line), molden->alloc);
@@ -566,7 +567,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
             molden_parse_normal_modes(molden, &reader);
         } else if (str_eq_cstr_ignore_case(name, "mo")) {
             // Remember where it starts; the basis may not have been read yet.
-            mo_section = (str_t){ reader.str.ptr, reader.str.len };
+            mo_section = (str_t){ reader.cur, (size_t)(reader.end - reader.cur) };
             molden_skip_section(&reader);
         } else {
             molden_skip_section(&reader);
@@ -586,7 +587,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
             MD_LOG_ERROR("MOLDEN: file has [MO] but no [GTO]");
             return false;
         }
-        md_buffered_reader_t mo_reader = md_buffered_reader_from_str(mo_section);
+        md_reader_i mo_reader = md_reader_from_str(mo_section);
         if (!molden_parse_mo(molden, &mo_reader, molden_num_file_ao(molden))) {
             return false;
         }

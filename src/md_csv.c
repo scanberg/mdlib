@@ -9,14 +9,15 @@
 #include "core/md_writer.h"
 #include "core/md_array.h"
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 
-static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
+static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* alloc) {
     ASSERT(csv);
     ASSERT(reader);
     ASSERT(alloc);
     
     str_t line;
-    if (!md_buffered_reader_extract_line(&line, reader)) {
+    if (!md_reader_extract_line(reader, &line)) {
         MD_LOG_ERROR("CSV: Failed to read any line");
         return false;
     }
@@ -60,7 +61,7 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
         md_array_push(csv->field_values, NULL, alloc);
     }
 
-    while (md_buffered_reader_extract_line(&line, reader)) {
+    while (md_reader_extract_line(reader, &line)) {
         size_t i;
         for (i = 0; i < num_fields; ++i) {
             if (!extract_token_delim(&tok, &line, ',')) {
@@ -87,7 +88,7 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
 }
 
 bool md_csv_parse_str (md_csv_t* csv, str_t in_str, struct md_allocator_i* alloc) {
-	md_buffered_reader_t reader = md_buffered_reader_from_str(in_str);
+	md_reader_i reader = md_reader_from_str(in_str);
     return parse(csv, &reader, alloc);
 }
 
@@ -96,9 +97,10 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
     if (md_file_open(&file, in_path, MD_FILE_READ)) {
         size_t cap = MEGABYTES(1);
         md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-        char* buf = md_temp_alloc(temp_scope, cap);
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-        bool result = parse(csv, &reader, alloc);
+        md_file_reader_t reader;
+        md_file_reader_init(&reader, file, cap, md_temp_allocator(temp_scope));
+        bool result = parse(csv, &reader.r, alloc);
+        md_file_reader_close(&reader);
         md_temp_end(temp_scope);
         md_file_close(&file);
         return result;

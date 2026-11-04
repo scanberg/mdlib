@@ -1,6 +1,6 @@
 #pragma once
 
-// For the tests of the loaders which read their lines in blocks and pieces (md_text_blocks.h): what two loads of the
+// For the tests of the loaders which read their lines in blocks and pieces (md_reader.h): what two loads of the
 // same text are to agree on, and files large enough for several blocks
 
 #include <md_system.h>

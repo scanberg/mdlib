@@ -9,6 +9,7 @@
 #include "core/md_writer.h"
 #include "core/md_array.h"
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 
 #include <time.h>
 
@@ -128,7 +129,7 @@ str_t concat_tokens(str_t first, str_t last) {
 	return str;
 }
 
-bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+bool parse_header_info(md_xvg_header_info_t* header_info, md_reader_i* reader, md_allocator_i* alloc) {
 	str_t line;
 
 	bool result = false;
@@ -136,9 +137,9 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
-	while (md_buffered_reader_peek_line(&line, reader)) {
+	while (md_reader_peek_line(reader, &line)) {
 		if (line.ptr[0] != '#' && line.ptr[0] != '@') break;
-		md_buffered_reader_skip_line(reader);
+		md_reader_skip_line(reader);
 		md_str_writer_push_str(&sb, line);
 		md_str_writer_push_char(&sb, '\n');
 	}
@@ -185,13 +186,13 @@ done:
 	return result;
 }
 
-bool parse(md_xvg_t* xvg, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 	if (!parse_header_info(&xvg->header_info, reader, alloc)) {
 		return false;
 	}
 
 	str_t line;
-	if (!md_buffered_reader_extract_line(&line, reader)) {
+	if (!md_reader_extract_line(reader, &line)) {
 		MD_LOG_ERROR("XVG: Expected field values");
 		return false;
 	}
@@ -213,7 +214,7 @@ bool parse(md_xvg_t* xvg, md_buffered_reader_t* reader, md_allocator_i* alloc) {
 
 	const size_t num_fields = md_array_size(fields);
 	
-	while (md_buffered_reader_extract_line(&line, reader)) {
+	while (md_reader_extract_line(reader, &line)) {
 		for (size_t i = 0; i < num_fields; ++i) {
 			if (!extract_token(&tok, &line)) {
 				MD_LOG_ERROR("XVG: To few entries in field line, expected %i, got %i", (int)num_fields, i);
@@ -244,7 +245,7 @@ bool parse(md_xvg_t* xvg, md_buffered_reader_t* reader, md_allocator_i* alloc) {
 bool md_xvg_parse_str(md_xvg_t* xvg, str_t str, md_allocator_i* alloc) {
 	ASSERT(alloc);
 
-	md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+	md_reader_i reader = md_reader_from_str(str);
 	return parse(xvg, &reader, alloc);
 }
 
@@ -260,10 +261,11 @@ bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 
 	const size_t cap = MEGABYTES(1);
 	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-	char* buf = md_temp_alloc_array(temp, char, cap);
-	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+	md_file_reader_t reader;
+	md_file_reader_init(&reader, file, cap, md_temp_allocator(temp));
 
-	bool result = parse(xvg, &reader, alloc);
+	bool result = parse(xvg, &reader.r, alloc);
+	md_file_reader_close(&reader);
 	md_temp_end(temp);
 	md_file_close(&file);
 	return result;
