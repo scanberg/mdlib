@@ -6887,6 +6887,8 @@ static const particle_type_t predefined_particle_types[] = {
     { "ION", "CA",  20, 40.08f,     2.7f, MD_PARTICLE_ATOM, 0, MD_RESIDUE_KIND_ION },
 	{ "ION", "MG",  12, 24.31f,     2.0f, MD_PARTICLE_ATOM, 0, MD_RESIDUE_KIND_ION },
 
+    { "CLA", "CLA", 17, 35.45f,     1.8f, MD_PARTICLE_ATOM, 0, MD_RESIDUE_KIND_ION },
+
     {"*", "IC", 0,   3240.0f,   12.5f, MD_PARTICLE_BEAD, 0, MD_RESIDUE_KIND_OTHER},
     {"*", "OC", 0,   3240.0f,   12.5f, MD_PARTICLE_BEAD, 0, MD_RESIDUE_KIND_OTHER},
     {"*", "CC", 0,   3900.0f,   14.0f, MD_PARTICLE_BEAD, 0, MD_RESIDUE_KIND_OTHER},
