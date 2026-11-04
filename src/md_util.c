@@ -13411,14 +13411,6 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     // and what a residue type is follows from the residues alone, so not behind a bit.
     md_util_system_infer_residue_types(sys);
 
-#if 0
-    if ((flags & MD_UTIL_INFER_UNWRAP_MOLECULE_BIT) && 
-        (state->unitcell.flags != 0) && md_system_molecule_count(sys) > 0)
-    {
-        md_util_system_unwrap(sys);
-    }
-#endif
-
     // Record the state the topology above was inferred from. Written here, as part of performing
     // the inference, so it cannot disagree with what it produced.
     if (state != &sys->reference) {
