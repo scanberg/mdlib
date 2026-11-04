@@ -288,9 +288,12 @@ static inline void gro_push_residue(md_system_t* sys, uint32_t atom_beg, md_labe
 // The velocities, in the file's own nm/ps rather than converted the way the coordinates are, because a velocity has a
 // unit and the attribute carries it: a consumer wanting Angstrom per picosecond asks the extract for it and gets a
 // checked conversion, which is strictly better than a silent one here that no one downstream can see happened.
+static inline md_unit_t gro_velocity_unit(void) {
+    return md_unit_div(md_unit_nanometer(), md_unit_picosecond());
+}
+
 static void gro_publish_velocities(md_system_t* sys, const float* velocity, size_t num_atoms) {
-    const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());
-    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/velocity"), nm_per_ps, 3, velocity, num_atoms);
+    md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/velocity"), gro_velocity_unit(), 3, velocity, num_atoms);
 }
 
 static bool gro_parse_box(md_unitcell_t* cell, str_t line) {
@@ -507,6 +510,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     bool loose = false;
     size_t atom = 0;
     str_t line;
+    md_attribute_id_t velocity_id = MD_ATTRIBUTE_INVALID;
 
     if (!md_reader_extract_line(src, &line)) {
         MD_LOG_ERROR("Failed to parse gro title");
@@ -540,7 +544,8 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         float xyz[3], vel[3];
         gro_parse_coordinates(xyz, vel, first, b.columns, b.width, b.decimals);
         if (!gro_absent(vel[0])) {
-            b.velocity = md_alloc(scratch, num_atoms * 3 * sizeof(float));
+            // Read into the attribute itself, committed once all are read
+            b.velocity = md_attributes_reserve_atom_column(&sys->attributes, STR_LIT("atom/velocity"), gro_velocity_unit(), 3, num_atoms, &velocity_id);
         }
     }
     b.atom_names = md_alloc(scratch, num_atoms * sizeof(md_label_t));
@@ -632,7 +637,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     if (!gro_parse_box(&state->unitcell, line)) goto done;
 
     if (b.velocity) {
-        gro_publish_velocities(sys, b.velocity, num_atoms);
+        md_attributes_commit_atom_column(&sys->attributes, velocity_id);
     }
     md_util_system_infer_particle_types_from_labels(sys, b.atom_names);
     state->num_atoms = num_atoms;
