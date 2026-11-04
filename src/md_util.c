@@ -13337,11 +13337,13 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
 
     md_allocator_i* alloc = sys->alloc;
 
-    md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-
     const bool cg = md_system_is_coarse_grained(sys);
     size_t num_particle_types = md_system_particle_type_count(sys);
+
+    if (!sys->atom.flags) {
+        md_array_resize(sys->atom.flags, sys->atom.count, alloc);
+        MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
+    }
 
     if (flags & MD_UTIL_INFER_COLOR_BIT) {
         if (sys->atom.type.color) {
@@ -13369,11 +13371,6 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
                 }
             }
         }
-    }
-
-    if (!sys->atom.flags) {
-        md_array_resize(sys->atom.flags, sys->atom.count, alloc);
-        MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     }
    
     if (flags & MD_UTIL_INFER_BOND_BIT) {
@@ -13439,7 +13436,6 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
         md_system_state_copy(&sys->reference, state);
     }
 
-    md_temp_end(temp_scope);
     return true;
 }
 
