@@ -1,6 +1,7 @@
 ﻿#include <md_system.h>
 #include "md_attributes_internal.h"
 #include <md_nonbonded.h>
+#include "md_system_fields.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -642,111 +643,14 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     dst->attributes.alloc = alloc;
     dst->description = str_empty(src->description) ? (str_t){0} : str_copy(src->description, alloc);
 
-    // ATOM
-    COPY_ARRAY(dst->atom.type_idx, src->atom.type_idx, alloc);
-    COPY_ARRAY(dst->atom.flags, src->atom.flags, alloc);
-    COPY_ARRAY(dst->atom.formal_charge, src->atom.formal_charge, alloc);
-    COPY_ARRAY(dst->atom.hydrogen_count, src->atom.hydrogen_count, alloc);
-
-    // PARTICLE TYPE
-    COPY_ARRAY(dst->atom.type.name, src->atom.type.name, alloc);
-    COPY_ARRAY(dst->atom.type.ff_type, src->atom.type.ff_type, alloc);
-    COPY_ARRAY(dst->atom.type.z, src->atom.type.z, alloc);
-    COPY_ARRAY(dst->atom.type.mass, src->atom.type.mass, alloc);
-    COPY_ARRAY(dst->atom.type.radius, src->atom.type.radius, alloc);
-    COPY_ARRAY(dst->atom.type.color, src->atom.type.color, alloc);
-    COPY_ARRAY(dst->atom.type.flags, src->atom.type.flags, alloc);
-
-    // RESIDUE
-    COPY_ARRAY(dst->residue.name, src->residue.name, alloc);
-    COPY_ARRAY(dst->residue.seq_id, src->residue.seq_id, alloc);
-    COPY_ARRAY(dst->residue.atom_offset, src->residue.atom_offset, alloc);
-    COPY_ARRAY(dst->residue.flags, src->residue.flags, alloc);
-    COPY_ARRAY(dst->residue.type_idx, src->residue.type_idx, alloc);
-
-    // RESIDUE TYPE
-    COPY_ARRAY(dst->residue.type.name, src->residue.type.name, alloc);
-    COPY_ARRAY(dst->residue.type.kind, src->residue.type.kind, alloc);
-    COPY_ARRAY(dst->residue.type.monomer, src->residue.type.monomer, alloc);
-    COPY_ARRAY(dst->residue.type.color, src->residue.type.color, alloc);
-
-    // INSTANCE
-    COPY_ARRAY(dst->instance.id, src->instance.id, alloc);
-    COPY_ARRAY(dst->instance.auth_id, src->instance.auth_id, alloc);
-    COPY_ARRAY(dst->instance.res_offset, src->instance.res_offset, alloc);
-    COPY_ARRAY(dst->instance.part_type_idx, src->instance.part_type_idx, alloc);
-    COPY_ARRAY(dst->instance.mol_type_idx, src->instance.mol_type_idx, alloc);
-
-    // CHAIN
-    COPY_ARRAY(dst->chain.id, src->chain.id, alloc);
-    COPY_ARRAY(dst->chain.run_offset, src->chain.run_offset, alloc);
-    COPY_ARRAY(dst->chain.run, src->chain.run, alloc);
-    COPY_ARRAY(dst->chain.res_chain, src->chain.res_chain, alloc);
-
-    // PART
-    COPY_ARRAY(dst->part.res_offset, src->part.res_offset, alloc);
-    COPY_ARRAY(dst->part.type_idx, src->part.type_idx, alloc);
-    COPY_ARRAY(dst->part.type.id, src->part.type.id, alloc);
-    COPY_ARRAY(dst->part.type.flags, src->part.type.flags, alloc);
-    copy_strings(&dst->part.type.description, src->part.type.description, alloc);
-
-    // PROTEIN BACKBONE
-    COPY_ARRAY(dst->protein_backbone.range.offset, src->protein_backbone.range.offset, alloc);
-    COPY_ARRAY(dst->protein_backbone.range.part_idx, src->protein_backbone.range.part_idx, alloc);
-    COPY_ARRAY(dst->protein_backbone.segment.atoms, src->protein_backbone.segment.atoms, alloc);
-    COPY_ARRAY(dst->protein_backbone.segment.res_idx, src->protein_backbone.segment.res_idx, alloc);
-
-    // NUCLEIC BACKBONE
-    COPY_ARRAY(dst->nucleic_backbone.range.offset, src->nucleic_backbone.range.offset, alloc);
-    COPY_ARRAY(dst->nucleic_backbone.range.part_idx, src->nucleic_backbone.range.part_idx, alloc);
-    COPY_ARRAY(dst->nucleic_backbone.segment.atoms, src->nucleic_backbone.segment.atoms, alloc);
-    COPY_ARRAY(dst->nucleic_backbone.segment.res_idx, src->nucleic_backbone.segment.res_idx, alloc);
-
-    // LIPIDS
-    COPY_ARRAY(dst->lipid.residue_offset, src->lipid.residue_offset, alloc);
-    COPY_ARRAY(dst->lipid.residue_idx, src->lipid.residue_idx, alloc);
-    COPY_ARRAY(dst->lipid.head_offset, src->lipid.head_offset, alloc);
-    COPY_ARRAY(dst->lipid.tail_offset, src->lipid.tail_offset, alloc);
-    COPY_ARRAY(dst->lipid.head.offset, src->lipid.head.offset, alloc);
-    COPY_ARRAY(dst->lipid.head.atom_idx, src->lipid.head.atom_idx, alloc);
-    COPY_ARRAY(dst->lipid.tail.spine_offset, src->lipid.tail.spine_offset, alloc);
-    COPY_ARRAY(dst->lipid.tail.spine_idx, src->lipid.tail.spine_idx, alloc);
-    COPY_ARRAY(dst->lipid.tail.atom_offset, src->lipid.tail.atom_offset, alloc);
-    COPY_ARRAY(dst->lipid.tail.atom_idx, src->lipid.tail.atom_idx, alloc);
-    COPY_ARRAY(dst->lipid.tail.anchor_beg, src->lipid.tail.anchor_beg, alloc);
-    COPY_ARRAY(dst->lipid.tail.anchor_end, src->lipid.tail.anchor_end, alloc);
-    COPY_ARRAY(dst->lipid.tail.head_beg, src->lipid.tail.head_beg, alloc);
-    COPY_ARRAY(dst->lipid.tail.head_end, src->lipid.tail.head_end, alloc);
-    COPY_ARRAY(dst->lipid.tail.kind, src->lipid.tail.kind, alloc);
-
-    // BONDS
-    COPY_ARRAY(dst->bond.pairs, src->bond.pairs, alloc);
-    COPY_ARRAY(dst->bond.flags, src->bond.flags, alloc);
-    COPY_ARRAY(dst->bond.conn.atom_idx, src->bond.conn.atom_idx, alloc);
-    COPY_ARRAY(dst->bond.conn.bond_idx, src->bond.conn.bond_idx, alloc);
-    COPY_ARRAY(dst->bond.conn.offset, src->bond.conn.offset, alloc);
-
-    // RINGS
-    COPY_ARRAY(dst->ring.rings, src->ring.rings, alloc);
-
-    // MOLECULES
-    COPY_ARRAY(dst->molecule.offset, src->molecule.offset, alloc);
-    COPY_ARRAY(dst->molecule.atom_idx, src->molecule.atom_idx, alloc);
-    COPY_ARRAY(dst->molecule.parent_idx, src->molecule.parent_idx, alloc);
-    COPY_ARRAY(dst->molecule.atom_slot, src->molecule.atom_slot, alloc);
-    COPY_ARRAY(dst->molecule.type_idx, src->molecule.type_idx, alloc);
-    copy_strings(&dst->molecule.type.name, src->molecule.type.name, alloc);
-    COPY_ARRAY(dst->molecule.type.flags, src->molecule.type.flags, alloc);
-
-    // ASSEMBLY
-    COPY_ARRAY(dst->assembly.id, src->assembly.id, alloc);
-    COPY_ARRAY(dst->assembly.group_offset, src->assembly.group_offset, alloc);
-    COPY_ARRAY(dst->assembly.group_inst_offset, src->assembly.group_inst_offset, alloc);
-    COPY_ARRAY(dst->assembly.inst, src->assembly.inst, alloc);
-    COPY_ARRAY(dst->assembly.group_oper_offset, src->assembly.group_oper_offset, alloc);
-    COPY_ARRAY(dst->assembly.oper, src->assembly.oper, alloc);
-    COPY_ARRAY(dst->assembly.oper_id, src->assembly.oper_id, alloc);
-    COPY_ARRAY(dst->assembly.oper_transform, src->assembly.oper_transform, alloc);
+    // Every array, CORE and DERIVED (md_system_fields.h)
+#define COPY_FIELD(f) COPY_ARRAY(dst->f, src->f, alloc);
+#define COPY_STRINGS(f) copy_strings(&dst->f, src->f, alloc);
+    MD_SYSTEM_CORE_ARRAYS(COPY_FIELD)
+    MD_SYSTEM_DERIVED_ARRAYS(COPY_FIELD)
+    MD_SYSTEM_DERIVED_STRINGS(COPY_STRINGS)
+#undef COPY_FIELD
+#undef COPY_STRINGS
 
     // REFERENCE STATE
     MEMSET(&dst->reference, 0, sizeof(dst->reference));

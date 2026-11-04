@@ -1,6 +1,7 @@
 ﻿#include <md_util.h>
 
 #include <md_system.h>
+#include "md_system_fields.h"
 #include <md_chem.h>
 #include <md_dssp.h>
 #include <md_match.h>
@@ -13426,6 +13427,113 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
     }
 
     md_temp_end(temp_scope);
+    return true;
+}
+
+// ### INFERENCE WHILE THE SYSTEM IS IN USE ###
+
+#define INFER_COPY_ARRAY(f) do { \
+        work->sys.f = NULL; \
+        if (md_array_size(sys->f)) md_array_push_array(work->sys.f, sys->f, md_array_size(sys->f), alloc); \
+    } while (0);
+
+#define INFER_COPY_STRINGS(f) do { \
+        work->sys.f = NULL; \
+        const size_t n = md_array_size(sys->f); \
+        if (n) { \
+            md_array_resize(work->sys.f, n, alloc); \
+            for (size_t i = 0; i < n; ++i) work->sys.f[i] = str_empty(sys->f[i]) ? (str_t){0} : str_copy(sys->f[i], alloc); \
+        } \
+    } while (0);
+
+bool md_util_system_infer_prepare(md_util_infer_work_t* work, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
+    ASSERT(work);
+    ASSERT(sys);
+    ASSERT(alloc);
+    MEMSET(work, 0, sizeof(*work));
+
+    // The core and the counts, shared. Not what is the system's alone: its description, its force field, its attributes
+    // (which its owner may add to meanwhile).
+    work->sys = *sys;
+    work->sys.alloc = alloc;
+    work->sys.nonbonded = NULL;
+    work->sys.description = (str_t){0};
+    MEMSET(&work->sys.attributes, 0, sizeof(work->sys.attributes));
+    work->sys.attributes.alloc = alloc;
+    MEMSET(&work->sys.reference, 0, sizeof(work->sys.reference));
+    work->base_version = sys->topology_version;
+
+    // The types of the atoms, which the owner may change meanwhile (a color, a radius): a few of them
+    INFER_COPY_ARRAY(atom.type.name)
+    INFER_COPY_ARRAY(atom.type.ff_type)
+    INFER_COPY_ARRAY(atom.type.z)
+    INFER_COPY_ARRAY(atom.type.mass)
+    INFER_COPY_ARRAY(atom.type.radius)
+    INFER_COPY_ARRAY(atom.type.color)
+    INFER_COPY_ARRAY(atom.type.flags)
+
+    // What inference writes, of its own: what the data gave of it is added to or replaced
+    MD_SYSTEM_DERIVED_ARRAYS(INFER_COPY_ARRAY)
+    MD_SYSTEM_DERIVED_STRINGS(INFER_COPY_STRINGS)
+
+    // The one attribute inference reads: the formal charges the data gives, which the chemistry starts from
+    // (md_chem_perceive)
+    const md_attribute_t* q = md_attributes_find(&sys->attributes, STR_LIT("atom/formal_charge"));
+    if (q && md_attribute_slice_count(q, md_attribute_slice_all()) == sys->atom.count) {
+        const float* values = (const float*)md_attribute_view(q, MD_ATTRIBUTE_TYPE_F32, 1, 1);
+        if (values) {
+            md_attributes_publish_atom_column(&work->sys.attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, values, sys->atom.count);
+        }
+    }
+
+    // The coordinates, which the system's owner changes as it likes (a frame of a run): those inferred from, and kept
+    // as the reference of what is inferred
+    if (state && (state->xyz || state->num_atoms)) {
+        work->sys.reference.alloc = alloc;
+        if (!md_system_state_copy(&work->sys.reference, state)) return false;
+    }
+    return true;
+}
+
+#undef INFER_COPY_ARRAY
+#undef INFER_COPY_STRINGS
+
+bool md_util_system_infer_run(md_util_infer_work_t* work, md_infer_flags_t flags, const md_executor_t* executor) {
+    ASSERT(work);
+    // The colors are of the types of the atoms, which stay the system's: given them before, which is what they are
+    // shown with meanwhile
+    flags &= ~MD_UTIL_INFER_COLOR_BIT;
+    return md_util_system_infer(&work->sys, &work->sys.reference, flags, executor);
+}
+
+bool md_util_system_infer_publish(md_system_t* sys, md_util_infer_work_t* work) {
+    ASSERT(sys);
+    ASSERT(work);
+    if (sys->topology_version != work->base_version) return false;
+    // The core it shares is the system's still
+    ASSERT(sys->atom.count == work->sys.atom.count && sys->atom.type_idx == work->sys.atom.type_idx);
+    ASSERT(sys->residue.count == work->sys.residue.count && sys->residue.atom_offset == work->sys.residue.atom_offset);
+
+    md_allocator_i* alloc = sys->alloc;
+    // What the system had of the derived: given back (to an arena, which frees nothing, this is nothing)
+#define FREE_ARRAY(f) md_array_free(sys->f, alloc);
+#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!str_empty(sys->f[i])) str_free(sys->f[i], alloc); } md_array_free(sys->f, alloc);
+    MD_SYSTEM_DERIVED_ARRAYS(FREE_ARRAY)
+    MD_SYSTEM_DERIVED_STRINGS(FREE_STRINGS)
+#undef FREE_ARRAY
+#undef FREE_STRINGS
+    md_system_state_free(&sys->reference);
+
+#define MOVE(f) sys->f = work->sys.f;
+    MD_SYSTEM_DERIVED_STRUCTS(MOVE)
+    MD_SYSTEM_DERIVED_ARRAYS(MOVE)
+    MD_SYSTEM_DERIVED_STRINGS(MOVE)
+#undef MOVE
+    sys->reference = work->sys.reference;
+
+    // Of its own: the work's attributes go with it
+    MEMSET(work, 0, sizeof(*work));
+    md_system_topology_changed(sys);
     return true;
 }
 

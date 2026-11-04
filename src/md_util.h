@@ -329,6 +329,35 @@ void md_util_system_augment_particle_types(md_system_t* sys);
 // thread); the result is the same whatever the threads.
 bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags, const struct md_executor_t* executor);
 
+// INFERENCE WHILE THE SYSTEM IS IN USE. Inference reads the CORE of a system (the atoms, their types, the residues, the
+// instances, the assemblies) and writes the rest, the DERIVED (md_system_fields.h). So a system can be shown and used
+// while it is inferred on another thread, without a copy of it:
+//
+//   md_util_system_infer_prepare     The work: of the system, what inference writes, copied into alloc; the coordinates
+//                                    in state, which become its reference; the per atom arrays of the core shared. On
+//                                    the thread which owns the system.
+//   md_util_system_infer_run         Inference on the work: on any thread, while the system is read (and its core
+//                                    is not written: what changes the topology waits for the work, or discards it).
+//                                    All but MD_UTIL_INFER_COLOR_BIT, which is of the types of the atoms: the system
+//                                    is given its colors before, md_util_system_infer with that bit alone.
+//   md_util_system_infer_publish     The derived arrays of the work become the system's, which keeps its core, its
+//                                    attributes and its force field. On the thread which owns the system, nothing
+//                                    else reading it. False, and nothing done, when the topology of the system changed
+//                                    after the work was prepared: the work is of a system which is no more.
+//
+// The arrays of the work are in alloc, which the caller keeps with the system once published (they become the system's)
+// and frees otherwise (the work is never md_system_free'd: it shares arrays of the system). The types of the atoms are
+// copied too (a few per system), so that the system's may be changed meanwhile (their colors, their radii): they stay
+// the system's when published.
+typedef struct md_util_infer_work_t {
+    struct md_system_t sys;     // Inferred on: md_util_system_infer_run
+    uint64_t base_version;      // The topology version of the system it was prepared of
+} md_util_infer_work_t;
+
+bool md_util_system_infer_prepare(md_util_infer_work_t* work, const struct md_system_t* sys, const md_system_state_t* state, struct md_allocator_i* alloc);
+bool md_util_system_infer_run(md_util_infer_work_t* work, md_infer_flags_t flags, const struct md_executor_t* executor);
+bool md_util_system_infer_publish(struct md_system_t* sys, md_util_infer_work_t* work);
+
 
 // Computes an array of distances between two sets of coordinates in a periodic domain (cell)
 // out_dist:  Output array of distances, must have length of (num_a * num_b)
