@@ -13,7 +13,7 @@
 #include <core/md_hash.h>
 #include <core/md_executor.h>
 
-#include "md_text_blocks.h"
+#include <core/md_reader.h>
 
 #include <string.h>
 
@@ -123,20 +123,20 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], str_t line, bool c
     return true;
 }
 
-static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
+static bool md_gro_data_parse(md_gro_data_t* data, md_reader_i* reader, struct md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(reader);
     ASSERT(alloc);
     str_t line;
     str_t tokens[16];
 
-    if (!md_buffered_reader_extract_line(&line, reader)) {
+    if (!md_reader_extract_line(reader, &line)) {
         MD_LOG_ERROR("Failed to parse gro title");
         return false;
     }
     str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
-    if (!md_buffered_reader_extract_line(&line, reader)) {
+    if (!md_reader_extract_line(reader, &line)) {
         MD_LOG_ERROR("Failed to parse gro num atoms");
         return false;
     }
@@ -157,7 +157,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
     bool columns = false;
 
     for (size_t i = 0; i < data->num_atoms; ++i) {
-        if (!md_buffered_reader_extract_line(&line, reader)) {
+        if (!md_reader_extract_line(reader, &line)) {
             MD_LOG_ERROR("Failed to extract atom line");
             return false;
         }
@@ -184,7 +184,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
         MD_LOG_DEBUG("Parsed GRO file using fixed-width format. This may indicate an issue with the file formatting.");
 	}
 
-    if (!md_buffered_reader_extract_line(&line, reader)) {
+    if (!md_reader_extract_line(reader, &line)) {
         MD_LOG_ERROR("Failed to extract unitcell line");
         return false;
     }
@@ -216,7 +216,7 @@ bool md_gro_data_parse_str(md_gro_data_t* data, str_t str, struct md_allocator_i
     ASSERT(data);
     ASSERT(alloc);
 
-    md_buffered_reader_t line_reader = md_buffered_reader_from_str(str);
+    md_reader_i line_reader = md_reader_from_str(str);
     return md_gro_data_parse(data, &line_reader, alloc);
 }
 
@@ -226,11 +226,12 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
     if (md_file_open(&file, filename, MD_FILE_READ)) {
         const int64_t cap = MEGABYTES(1);
         md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-        char* buf = md_temp_alloc(temp_scope, cap);
         
-        md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
-        result = md_gro_data_parse(data, &line_reader, alloc);
+        md_file_reader_t line_reader;
+        md_file_reader_init(&line_reader, file, cap, md_temp_allocator(temp_scope));
+        result = md_gro_data_parse(data, &line_reader.r, alloc);
         
+        md_file_reader_close(&line_reader);
         md_temp_end(temp_scope);
         md_file_close(&file);
     } else {
@@ -486,7 +487,7 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     }
 }
 
-static bool gro_load(md_system_t* sys, md_system_state_t* state, md_text_source_t* src, const md_executor_t* ex) {
+static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, const md_executor_t* ex) {
     ASSERT(sys);
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -505,11 +506,11 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     size_t atom = 0;
     str_t line;
 
-    if (!md_text_source_line(&line, src)) {
+    if (!md_reader_extract_line(src, &line)) {
         MD_LOG_ERROR("Failed to parse gro title");
         goto done;
     }
-    if (!md_text_source_line(&line, src)) {
+    if (!md_reader_extract_line(src, &line)) {
         MD_LOG_ERROR("Failed to parse gro num atoms");
         goto done;
     }
@@ -527,7 +528,8 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     b.num_atoms = num_atoms;
     b.xyz = state->xyz;
     {
-        const str_t first = md_text_source_peek(src);
+        str_t first = {0};
+        md_reader_peek_line(src, &first);
         b.columns = gro_coordinate_columns(&b.width, &b.decimals, first);
         float xyz[3], vel[3];
         gro_parse_coordinates(xyz, vel, first, b.columns, b.width, b.decimals);
@@ -540,7 +542,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     const uint32_t num_threads = md_executor_num_threads(ex);
 
     while (atom < num_atoms) {
-        const str_t block = md_text_source_block(src);
+        const str_t block = md_reader_block(src);
         if (block.len == 0) {
             MD_LOG_ERROR("The file ends after %zu of its %zu atoms", atom, num_atoms);
             goto done;
@@ -592,7 +594,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_text_source_
             MEMCPY(prev_res, last.ptr, n);
             b.prev_res = (str_t){ prev_res, n };
         }
-        md_text_source_advance(src, consumed);
+        md_reader_advance(src, consumed);
     }
     // The residues, at once: arrays which grow in the system's allocator (an arena) leave their copies behind
     {
@@ -615,7 +617,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_text_source_
         MD_LOG_DEBUG("Parsed GRO file using fixed-width format. This may indicate an issue with the file formatting.");
     }
 
-    if (!md_text_source_line(&line, src)) {
+    if (!md_reader_extract_line(src, &line)) {
         MD_LOG_ERROR("Failed to extract unitcell line");
         goto done;
     }
@@ -640,17 +642,17 @@ done:
 }
 
 bool md_gro_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, const md_executor_t* ex) {
-    md_text_source_t src;
-    if (!md_text_source_open(&src, filename, md_get_heap_allocator())) {
+    md_file_reader_t fr;
+    if (!md_file_reader_open(&fr, filename, MD_TEXT_BLOCK_SIZE, md_get_heap_allocator())) {
         MD_LOG_ERROR("Could not open file '%.*s'", (int)filename.len, filename.ptr);
         return false;
     }
-    const bool result = gro_load(sys, state, &src, ex);
-    md_text_source_close(&src);
+    const bool result = gro_load(sys, state, &fr.r, ex);
+    md_file_reader_close(&fr);
     return result;
 }
 
 bool md_gro_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, const md_executor_t* ex) {
-    md_text_source_t src = md_text_source_from_str(str);
+    md_reader_i src = md_reader_from_str(str);
     return gro_load(sys, state, &src, ex);
 }

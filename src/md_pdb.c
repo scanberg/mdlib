@@ -17,7 +17,7 @@
 #include <hybrid_36_c.h>
 
 #include <core/md_executor.h>
-#include "md_text_blocks.h"
+#include <core/md_reader.h>
 
 #include <stdio.h>
 
@@ -307,7 +307,7 @@ static void pdb_parse_other_record(md_pdb_data_t* data, str_t line, int32_t* bio
 
 // PUBLIC PROCEDURES
 
-bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc, bool stop_after_first_model) {
+bool pdb_parse(md_pdb_data_t* data, md_reader_i* reader, struct md_allocator_i* alloc, bool stop_after_first_model) {
     ASSERT(data);
     ASSERT(reader);
     ASSERT(alloc);
@@ -315,7 +315,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
     str_t line;
     int32_t biomolecule = 0;    // REMARK 350: the one whose groups of chains follow
     uint32_t num_bad_ids = 0;   // Serials and residue numbers which are not numbers of the format (parse_id)
-    while (md_buffered_reader_extract_line(&line, reader)) {
+    while (md_reader_extract_line(reader, &line)) {
         // A TER record may be the three letters alone (GROMACS, and the EM structures of the PDB written by some tools)
         if (line.len < 6 && !str_eq_cstr_n(line, "TER", 3)) continue;
         if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
@@ -337,7 +337,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
             // This is a bit nasty, we want to get the correct offset to the beginning of the current line.
             // Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
             // all the way back in case there were skipped \r characters.
-            const int64_t offset = (size_t)MAX(0, md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr));
+            const int64_t offset = MAX(0, md_reader_tell(reader) - (int64_t)(reader->cur - line.ptr));     // the line's
             md_pdb_model_t model = {
                 .serial = (int32_t)parse_int(str_substr(line, 6, SIZE_MAX)),
                 .beg_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1,
@@ -377,7 +377,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
 }
 
 bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, md_allocator_i* alloc) {
-    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+    md_reader_i reader = md_reader_from_str(str);
     return pdb_parse(data, &reader, alloc, false);
 }
 
@@ -390,11 +390,12 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i*
 
     const size_t cap = MEGABYTES(1);
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-    char* buf = md_temp_alloc(temp_scope, cap);
         
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-    bool result = pdb_parse(data, &reader, alloc, false);
+    md_file_reader_t reader;
+    md_file_reader_init(&reader, file, cap, md_temp_allocator(temp_scope));
+    bool result = pdb_parse(data, &reader.r, alloc, false);
         
+    md_file_reader_close(&reader);
     md_temp_end(temp_scope);
     md_file_close(&file);
 
@@ -713,7 +714,7 @@ bool md_pdb_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Straight from the text, a block at a time, each block in pieces at line boundaries on as many threads as the executor
-// has (md_text_blocks.h). A piece counts the atoms it keeps (an alternate location other than the first is not) and the
+// has (md_reader.h: blocks and pieces). A piece counts the atoms it keeps (an alternate location other than the first is not) and the
 // other records of interest first, which places them; then it reads its atoms into arrays where they go, and the
 // residues where the residue fields of an atom differ from those of the atom before (or a TER record is between them).
 // The other records are few: they are read in order, on the calling thread, once the pieces are done.
@@ -917,7 +918,7 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     }
 }
 
-static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_t* src, md_pdb_options_t options, const md_executor_t* ex) {
+static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* src, md_pdb_options_t options, const md_executor_t* ex) {
     ASSERT(sys);
     if (!sys->alloc) {
         MD_LOG_ERROR("System allocator not set");
@@ -963,7 +964,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
     // Room for as many atoms as there can be: an atom line of coordinates has 54 characters at least. Pages are only
     // taken when written, so the room beyond the atoms costs nothing, and the arrays do not grow (and copy) as they fill.
     {
-        const size_t cap = src->total / 55 + 16;
+        const size_t cap = (size_t)MAX(0, md_reader_size(src)) / 55 + 16;
         md_array_ensure(xyz,       cap, heap);
         md_array_ensure(atom_name, cap, heap);
         md_array_ensure(element,   cap, heap);
@@ -975,7 +976,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
 
     const uint32_t num_threads = md_executor_num_threads(ex);
     for (;;) {
-        const str_t block = md_text_source_block(src);
+        const str_t block = md_reader_block(src);
         if (block.len == 0) break;
 
         const size_t num_pieces = md_text_num_pieces(block.len, num_threads);
@@ -1079,7 +1080,7 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_text_source_
                 break;
             }
         }
-        md_text_source_advance(src, block.len);
+        md_reader_advance(src, block.len);
     }
 
     // The atoms of the first model: those before its MODEL record and after its end are not
@@ -1216,19 +1217,19 @@ done:
 }
 
 bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, str_t str, md_pdb_options_t options, const md_executor_t* executor) {
-    md_text_source_t src = md_text_source_from_str(str);
+    md_reader_i src = md_reader_from_str(str);
     return pdb_load(sys, state, &src, options, executor);
 }
 
 bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options, const md_executor_t* executor) {
-    md_text_source_t src;
-    if (!md_text_source_open(&src, filename, md_get_heap_allocator())) {
+    md_file_reader_t fr;
+    if (!md_file_reader_open(&fr, filename, MD_TEXT_BLOCK_SIZE, md_get_heap_allocator())) {
         MD_LOG_ERROR("Could not open file '" STR_FMT "'", STR_ARG(filename));
         return false;
     }
     // Several models are a trajectory as well: md_pdb_system_publish_run makes them a run.
-    const bool result = pdb_load(sys, state, &src, options, executor);
-    md_text_source_close(&src);
+    const bool result = pdb_load(sys, state, &fr.r, options, executor);
+    md_file_reader_close(&fr);
     return result;
 }
 

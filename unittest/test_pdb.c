@@ -679,7 +679,7 @@ UTEST(pdb, write_ter_between_parts) {
 // ---------------------------------------------------------------------------
 // Straight from the text, in blocks and pieces
 //
-// A file of more than one block (md_text_blocks.h): chains ended by TER, residues straddling the blocks and the pieces,
+// A file of more than one block (md_reader.h): chains ended by TER, residues straddling the blocks and the pieces,
 // insertion codes, alternate locations, atoms without an element, CONECT records at the end and a second model which is
 // not loaded. The same system read on the calling thread, on threads, and with the pieces out of order; from the file
 // and from a string; and as md_pdb_data_t reads it.

@@ -7,6 +7,7 @@
 #include <core/md_array.h>
 #include <core/md_str.h>
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
@@ -74,18 +75,18 @@ static inline bool is_string(str_t str) {
     return true;
 }
 
-static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) {
+static inline bool extract_flags(uint32_t* flags, md_reader_i* reader) {
     ASSERT(flags);    
 
     // Extract first three lines
     str_t lines[3];
     bool extract_lines = (
-        md_buffered_reader_extract_line(&lines[0], reader) &&
-        md_buffered_reader_extract_line(&lines[1], reader) && 
-        md_buffered_reader_extract_line(&lines[2], reader));
+        md_reader_extract_line(reader, &lines[0]) &&
+        md_reader_extract_line(reader, &lines[1]) && 
+        md_reader_extract_line(reader, &lines[2]));
 
     // Reset reader back to its original position
-    md_buffered_reader_reset(reader);
+    md_reader_rewind(reader);
     
     if (!extract_lines) {
         MD_LOG_ERROR("Invalid format for XYZ: Failed to extract first three lines to determine format");
@@ -354,7 +355,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     return true;
 }
 
-static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_reader_t* reader, uint32_t flags, size_t* coord_count, md_allocator_i* alloc) {
+static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_reader_i* reader, uint32_t flags, size_t* coord_count, md_allocator_i* alloc) {
     ASSERT(model);
     ASSERT(reader);
     ASSERT(coord_count);
@@ -367,7 +368,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
         while(0);
     }
 
-    if (!md_buffered_reader_extract_line(&line, reader)) {
+    if (!md_reader_extract_line(reader, &line)) {
         return false;
     }
 
@@ -403,7 +404,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
     if (!pure_tinker) {
         // Tinker is the only format that only uses 1 line for the header
         // The others uses 2 lines
-        if (!md_buffered_reader_extract_line(&line, reader)) {
+        if (!md_reader_extract_line(reader, &line)) {
             MD_LOG_ERROR("Failed to extract extra line");
         }
 
@@ -475,7 +476,7 @@ static inline int32_t xyz_parse_model_coordinates(md_xyz_data_t* data, str_t* st
 }
 */
 
-bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i* alloc, bool stop_after_first_model) {
+bool xyz_parse(md_xyz_data_t* data, md_reader_i* reader, md_allocator_i* alloc, bool stop_after_first_model) {
     ASSERT(data);
     ASSERT(reader);
     ASSERT(alloc);
@@ -498,7 +499,7 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
         for (size_t i = 0; i < expected_count; ++i) {
             str_t line;
             md_xyz_coordinate_t coord = {0};
-            if (md_buffered_reader_extract_line(&line, reader) &&
+            if (md_reader_extract_line(reader, &line) &&
                 extract_coord(&coord, line, flags))
             {
                 md_array_push(data->coordinates, coord, alloc);
@@ -514,7 +515,7 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
         if (stop_after_first_model) {
             break;
         }
-        byte_offset = (size_t)md_buffered_reader_tellg(reader);
+        byte_offset = (size_t)md_reader_tell(reader);
     }
 
     data->num_coordinates = md_array_size(data->coordinates);
@@ -535,7 +536,7 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
 // (given that the number of coordinates are the same)
 
 bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i* alloc) {
-    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+    md_reader_i reader = md_reader_from_str(str);
     return xyz_parse(data, &reader, alloc, false);
 }
 
@@ -547,11 +548,12 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
     }
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     size_t buf_cap = MEGABYTES(1);
-    char* buf = md_temp_alloc(temp, buf_cap);
     
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
-    bool result = xyz_parse(data, &reader, alloc, false);
+    md_file_reader_t reader;
+    md_file_reader_init(&reader, file, buf_cap, md_temp_allocator(temp));
+    bool result = xyz_parse(data, &reader.r, alloc, false);
     
+    md_file_reader_close(&reader);
     md_temp_end(temp);
     md_file_close(&file);
 
@@ -643,7 +645,7 @@ bool md_xyz_system_init_from_str(md_system_t* sys, md_system_state_t* state, str
     
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+    md_reader_i reader = md_reader_from_str(str);
 
     md_xyz_data_t data = {0};
     bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, state, &data, options);
@@ -664,15 +666,16 @@ bool md_xyz_system_init_from_file(md_system_t* sys, md_system_state_t* state, st
     md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
     size_t buf_cap = MEGABYTES(1);
-    char* buf = md_temp_alloc(temp_scope, buf_cap);
 
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
+    md_file_reader_t reader;
+    md_file_reader_init(&reader, file, buf_cap, md_temp_allocator(temp_scope));
     
     md_xyz_data_t data = {0};
-    bool result = xyz_parse(&data, &reader, temp_arena, false) && md_xyz_system_init_from_data(sys, state, &data, options);
+    bool result = xyz_parse(&data, &reader.r, temp_arena, false) && md_xyz_system_init_from_data(sys, state, &data, options);
 
     // Several frames are a trajectory as well: md_xyz_system_publish_run makes them a run.
 
+    md_file_reader_close(&reader);
     md_temp_end(temp_scope);
     md_file_close(&file);
 
@@ -746,7 +749,7 @@ static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, str_t fi
     {
         char buf[1024];
         size_t len = md_file_read(file, buf, sizeof(buf));
-        md_buffered_reader_t reader = md_buffered_reader_from_str((str_t){buf, len});
+        md_reader_i reader = md_reader_from_str((str_t){buf, len});
         if (!extract_flags(&xyz_flags, &reader)) {
             MD_LOG_ERROR("Failed to determine format for XYZ trajectory");
             md_file_close(&file);
@@ -818,7 +821,7 @@ done:
 // The coordinates of atoms [first, first + count) of one frame's text, packed xyz. Returns how many
 // were written.
 static size_t xyz_parse_frame_coords(float* xyz, str_t text, uint32_t flags, size_t first, size_t count) {
-    md_buffered_reader_t reader = md_buffered_reader_from_str(text);
+    md_reader_i reader = md_reader_from_str(text);
     md_xyz_model_t model = {0};
     size_t coord_count = 0;
     if (!xyz_parse_model_header(&model, &reader, flags, &coord_count, NULL)) {
@@ -829,7 +832,7 @@ static size_t xyz_parse_frame_coords(float* xyz, str_t text, uint32_t flags, siz
     size_t written = 0;
     str_t line;
     str_t tokens[8];
-    while (written < count && i < coord_count && md_buffered_reader_extract_line(&line, &reader)) {
+    while (written < count && i < coord_count && md_reader_extract_line(&reader, &line)) {
         if (line.len < 6) continue;
         const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
         if (num_tokens < 4) {
