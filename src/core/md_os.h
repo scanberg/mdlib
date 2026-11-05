@@ -110,6 +110,16 @@ typedef struct md_os_sys_info_t {
 // Fills the md_os_info_t struct with system information. Returns true on success.
 bool md_os_sys_info_query(md_os_sys_info_t* info);
 
+// ### ENVIRONMENT ###
+// The value of a variable of the process's environment, NULL when it is not set. The pointer is the environment's:
+// valid until the variable is set again.
+const char* md_os_env_get(const char* name);
+
+// Sets a variable of the process's environment to value, or removes it (value NULL), for this process and what it
+// starts from now on. True on success. Not thread safe with respect to other changes of or reads from the environment:
+// for setup, tests and tools, not for state that threads share.
+bool md_os_env_set(const char* name, const char* value);
+
 // ### PATH ###
 // Gets the current working directory
 // Writes into a buffer (up to buf_cap) and returns the number of characters written

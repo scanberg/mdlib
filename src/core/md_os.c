@@ -84,6 +84,7 @@ STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t 
 #endif
 
 #include <string.h>
+#include <stdlib.h>   // getenv, setenv, unsetenv, _putenv_s
 
 #define SZBUF_FROM_STR(buf, str) strncpy(buf, str.ptr, MIN(sizeof(buf)-1, str.len))
 
@@ -496,6 +497,28 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
 
 // https://stackoverflow.com/questions/2899013/how-do-i-get-the-application-data-path-in-windows-using-c
 // https://stackoverflow.com/questions/2910377/get-home-directory-in-linux
+const char* md_os_env_get(const char* name) {
+    if (!name || !name[0]) return NULL;
+    return getenv(name);
+}
+
+bool md_os_env_set(const char* name, const char* value) {
+    if (!name || !name[0] || strchr(name, '=')) return false;
+#if MD_PLATFORM_WINDOWS
+    // _putenv_s removes the variable when given an empty value; an empty value to keep is not representable
+    if (value && !value[0]) {
+        MD_LOG_ERROR("md_os_env_set: an empty value cannot be set on Windows (it removes '%s')", name);
+        return false;
+    }
+    return _putenv_s(name, value ? value : "") == 0;
+#elif MD_PLATFORM_UNIX
+    return (value ? setenv(name, value, 1) : unsetenv(name)) == 0;
+#else
+    (void)value;
+    return false;
+#endif
+}
+
 size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
     ASSERT(buf);
     if (buf_cap == 0) {

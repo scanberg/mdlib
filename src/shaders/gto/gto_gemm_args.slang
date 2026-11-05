@@ -13,6 +13,19 @@
 
 #define BLOCK_VOXELS 512
 
+// The shape of a block of voxels (BLOCK_VOXELS of them): 8x8x8, or for a grid of one layer (the image of a plane;
+// the *_2d.slang wrappers) 32x16x1 - as many voxels as near together, none of the block off the grid. Voxel p of a
+// block is at block_voxel(p): x fastest, as SV_GroupIndex orders a group of numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z).
+#ifndef BLOCK_X
+#define BLOCK_X 8
+#define BLOCK_Y 8
+#define BLOCK_Z 8
+#endif
+#define BLOCK_SHAPE uint3(BLOCK_X, BLOCK_Y, BLOCK_Z)
+uint3 block_voxel(uint p) {
+    return uint3(p % uint(BLOCK_X), (p / uint(BLOCK_X)) % uint(BLOCK_Y), p / uint(BLOCK_X * BLOCK_Y));
+}
+
 struct RootArgs {
     float4x4 world_to_model;
     float4x4 index_to_world;

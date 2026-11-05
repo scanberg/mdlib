@@ -330,6 +330,21 @@ UTEST(os, file_read_seek_tell_size) {
     EXPECT_FALSE(md_file_valid(file));
 }
 
+UTEST(os, env_set_get_remove) {
+    const char* name = "MD_OS_TEST_ENV_VARIABLE";
+    ASSERT_TRUE(md_os_env_set(name, NULL));     // removing what is not there is no failure
+    EXPECT_TRUE(md_os_env_get(name) == NULL);
+    ASSERT_TRUE(md_os_env_set(name, "a value"));
+    ASSERT_TRUE(md_os_env_get(name) != NULL);
+    EXPECT_STREQ(md_os_env_get(name), "a value");
+    ASSERT_TRUE(md_os_env_set(name, "another"));
+    EXPECT_STREQ(md_os_env_get(name), "another");
+    ASSERT_TRUE(md_os_env_set(name, NULL));
+    EXPECT_TRUE(md_os_env_get(name) == NULL);
+    EXPECT_FALSE(md_os_env_set("A=B", "c"));    // not a name
+    EXPECT_FALSE(md_os_env_set("", "c"));
+}
+
 #if 0
 // This cannot be guaranteed on windows because the underlying implementation uses the synchronous path.
 UTEST(os, file_read_at_preserves_offset) {

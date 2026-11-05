@@ -1,6 +1,6 @@
 // eval_gto_mo_shell.slang
 //
-// Molecular orbitals on a 3D grid, one workgroup per 8x8x8 block:
+// Molecular orbitals on a 3D grid, one workgroup per 8x8x8 block (32x16x1 for a grid of one layer):
 //
 //   psi_m(r) = sum_mu C[m][mu] phi_mu(r)
 //   result   = sum_m w_m * psi_m          (mode 0, PSI)
@@ -35,9 +35,25 @@
 #define MB 1
 #endif
 
-#define WG_X 8
-#define WG_Y 8
-#define WG_Z (8 / VPT)
+// A group's block of voxels: 8x8x8, VPT voxels a thread along z; or for a grid of one layer (the *_2d.slang
+// wrappers) 32x16x1, VPT along y
+#ifndef BLOCK_X
+#define BLOCK_X 8
+#define BLOCK_Y 8
+#define BLOCK_Z 8
+#endif
+#define BLOCK_SHAPE uint3(BLOCK_X, BLOCK_Y, BLOCK_Z)
+#if BLOCK_Z > 1
+#define WG_X BLOCK_X
+#define WG_Y BLOCK_Y
+#define WG_Z (BLOCK_Z / VPT)
+#define VPT_STEP uint3(0u, 0u, uint(WG_Z))
+#else
+#define WG_X BLOCK_X
+#define WG_Y (BLOCK_Y / VPT)
+#define WG_Z 1
+#define VPT_STEP uint3(0u, uint(WG_Y), 0u)
+#endif
 #define WG_SIZE (WG_X * WG_Y * WG_Z)
 
 #define GTO_SCAN_WG_SIZE WG_SIZE
@@ -95,14 +111,14 @@ groupshared uint chunk_shell[WG_SIZE];
 [shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
 void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
-    const float3 aabb_min = float3( gid             * uint3(8u, 8u, 8u)) * args.step.xyz;
-    const float3 aabb_max = float3((gid + uint3(1u)) * uint3(8u, 8u, 8u)) * args.step.xyz;
+    const float3 aabb_min = float3( gid             * BLOCK_SHAPE) * args.step.xyz;
+    const float3 aabb_max = float3((gid + uint3(1u)) * BLOCK_SHAPE) * args.step.xyz;
 
     float3 coord[VPT];
     uint3  vox[VPT];
     float  result[VPT];
     [ForceUnroll] for (int v = 0; v < VPT; ++v) {
-        vox[v]    = gid * uint3(8u, 8u, 8u) + uint3(gtid.x, gtid.y, gtid.z + uint(v) * WG_Z);
+        vox[v]    = gid * BLOCK_SHAPE + gtid + uint(v) * VPT_STEP;
         coord[v]  = mul(args.index_to_world, float4(float3(vox[v]), 1.0f)).xyz;
         result[v] = 0.0f;
     }
