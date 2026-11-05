@@ -13,6 +13,8 @@ Every value is read from the force field files themselves:
 - bonds are the chemical ones, as GROMACS flags them (IF_CHEMBOND): [ bonds ] of type 1, 2, 3, 4, 5, 7, 8 and
   [ constraints ] of type 1, and a virtual site to the first atom it is constructed from, as md_tpr bonds it.
   Harmonic potentials (type 6: elastic networks) and restraints are not bonds.
+- names as the files have them, and for the errata of a source (ERRATA), an atom named other than structure files
+  built otherwise name it, as well as they do: a second residue of the molecule
 
 Sources (the directory of each is an argument, see --help):
   Martini 3   martini_v3.0.0.itp, ions, solvents and sterols v1 and the v2 lipidome of
@@ -136,6 +138,15 @@ class ForceField:
 Residue = collections.namedtuple('Residue', 'name kind beads bonds')
 
 
+# Errata of the source files: (molecule type, atom number, its name there) to the name structure files built otherwise
+# give it. The cardiolipins of the Martini 2 lipidome (martini_v2.0_CDL0/1/2_01.itp) name the first glycerol bead of
+# their second phosphatidyl (atom 16) GL21, the name of the second glycerol bead of the first (atom 4): by the scheme of
+# the names, GLxy the bead x of phosphatidyl y as GL11 GL21 GL22 have it, and in the structures of CHARMM-GUI, it is
+# GL12. What GROMACS writes of a system of the itp has the name of the itp, so a molecule of an erratum is both: as the
+# itp names it, and a second residue of the corrected names after it.
+ERRATA = {('CDL0', 16, 'GL21'): 'GL12', ('CDL1', 16, 'GL21'): 'GL12', ('CDL2', 16, 'GL21'): 'GL12'}
+
+
 def molecules(path, defines=()):
     """The molecule types of an itp: residues of (name, type, mass, vsite) and bonds"""
     mols = []
@@ -171,7 +182,14 @@ def molecules(path, defines=()):
                 continue
             mol['vsites'].add(site)
             mol['bonds'].append((site, first))
-    return mols
+    # The molecules of an erratum, as well with the names corrected
+    corrected = []
+    for mol in mols:
+        atoms = [dict(a, name=ERRATA.get((mol['name'], k + 1, a['name']), a['name'])) for k, a in enumerate(mol['atoms'])]
+        corrected.append(mol)
+        if atoms != mol['atoms']:
+            corrected.append(dict(mol, atoms=atoms))
+    return corrected
 
 
 def residue_runs(mol):

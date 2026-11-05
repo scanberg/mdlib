@@ -734,6 +734,51 @@ UTEST(lipid, martini_unknown_variant_is_beads) {
 
 // Martini 2 molecules whose chains are named without the letter of a tail: fatty acids, detergents, the lyso PC whose
 // tail is one bead. The inositol of a phosphatidylinositol is named so too (C1 C2 C3) and stays in its head: a ring.
+// The cardiolipins of the Martini 2 lipidome name the first glycerol bead of their second phosphatidyl GL21, as the
+// second of the first is named (an erratum of the itp); CHARMM-GUI names it GL12, as the scheme GLxy (bead x of
+// phosphatidyl y) has it. Of either, the beads and bonds of the topology: a head of the glycerol and the phosphatidyls,
+// and the four tails each off its glycerol bead.
+UTEST(lipid, martini2_cardiolipin_of_either_name) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    static const martini_residue_t res[] = {
+        {"POPE", "NH3 PO4 GL1 GL2 C1A D2A C3A C4A C1B C2B C3B C4B"},
+        {"CDL2", "GL0 PO41 GL11 GL21 C1A1 C2A1 D3A1 C4A1 C5A1 C1B1 C2B1 D3B1 C4B1 C5B1 PO42 GL12 GL22 C1A2 C2A2 D3A2 C4A2 C5A2 C1B2 C2B2 D3B2 C4B2 C5B2"},
+        {"CDL2", "GL0 PO41 GL11 GL21 C1A1 C2A1 D3A1 C4A1 C5A1 C1B1 C2B1 D3B1 C4B1 C5B1 PO42 GL21 GL22 C1A2 C2A2 D3A2 C4A2 C5A2 C1B2 C2B2 D3B2 C4B2 C5B2"},
+    };
+    ASSERT_TRUE(martini_system_from_beads(&sys, &st, res, ARRAY_SIZE(res)));
+    ASSERT_EQ(3, (int)sys.lipid.count);
+    EXPECT_TRUE(lipid_invariants_hold(&sys));
+    char head[256];
+    for (size_t r = 1; r <= 2; ++r) {
+        const md_urange_t range = md_system_residue_atom_range(&sys, r);
+        size_t num_bonds = 0;
+        for (uint32_t i = range.beg; i < range.end; ++i) {
+            EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, i));
+            EXPECT_NEAR(72.0f, md_atom_mass(&sys.atom, i), 1e-3f);
+            md_bond_iter_t it = md_bond_iter(&sys.bond, i);
+            while (md_bond_iter_has_next(&it)) {
+                const md_atom_idx_t j = md_bond_iter_atom_index(&it);
+                num_bonds += (uint32_t)j > i && (uint32_t)j < range.end;
+                md_bond_iter_next(&it);
+            }
+        }
+        EXPECT_EQ(26, (int)num_bonds);
+        const int l = lipid_of_res(&sys, r);
+        ASSERT_TRUE(l >= 0);
+        ASSERT_EQ(1, (int)lipid_num_heads(&sys, l));
+        lipid_head_names(head, sizeof(head), &sys, l);
+        EXPECT_STREQ(r == 1 ? "GL0 PO41 GL11 GL21 PO42 GL12 GL22" : "GL0 PO41 GL11 GL21 PO42 GL21 GL22", head);
+        ASSERT_EQ(4, (int)lipid_num_tails(&sys, l));
+        for (uint32_t t = sys.lipid.tail_offset[l]; t < sys.lipid.tail_offset[l + 1]; ++t) {
+            EXPECT_EQ(5, (int)tail_spine_len(&sys, t));
+            EXPECT_EQ(MD_LIPID_TAIL_CHAIN, sys.lipid.tail.kind[t]);
+        }
+    }
+    md_vm_arena_destroy(alloc);
+}
+
 UTEST(lipid, martini2_letterless_chains) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
