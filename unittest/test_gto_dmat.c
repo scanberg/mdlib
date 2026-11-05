@@ -695,8 +695,9 @@ UTEST(gto_gpu, plane_matches_volume) {
             rel = plane_pair_diff(&pp, &m);
             printf("  %-8s %zu orbital%s: max |plane - layer| / max = %.2e (max %.3g); 1 layer %.1f ms (3D kernels %.1f ms)\n",
                    files[fi], n, n == 1 ? " " : "s", rel, m, ms[1], ms[2]);
-            // (the shell kernel screens by |C| |phi| per block: other blocks, other shells at the cutoff; 7e-6 measured)
-            EXPECT_LT(rel, 3.0e-5);
+            // the shell kernel screens by |C| |phi| per block: other blocks, other shells at the cutoff (the basis's, 1e-6):
+            // a difference of that order, not relative to the values (2.2e-6 measured, mol, one orbital)
+            EXPECT_LT(rel * m, 1.0e-5);
             EXPECT_GT(m, 1.0e-3);
             md_gpu_stream_sync(g.s);
             md_gpu_free(g.s, c);
