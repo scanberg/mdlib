@@ -3088,14 +3088,26 @@ static inline int max_coordination(md_atomic_number_t z) {
     return 8;   // Seven coordinate Ru, eight coordinate Ca, ...
 }
 
-// A bond in excess of what its atoms can take. Removed in order: bonds between residues (residues, molecules)
-// before bonds within one, and within each the bonds whose length is furthest from the sum of the radii (a clash
-// as much as a stretch).
+// A bond in excess of what its atoms can take. Removed in order: bonds between residues apart (bond_separation)
+// first, then bonds between residues next to each other, then bonds within one, and within each the bonds whose
+// length is furthest from the sum of the radii (a clash as much as a stretch).
 typedef struct bond_excess_t {
     uint32_t inter;
     float    deviation;
     uint32_t idx;
 } bond_excess_t;
+
+// How far apart the residues of a bond's atoms are, the first key of the order of bond_excess_t: 0 within one
+// residue, 1 between residues next to each other (along a chain, and the head and tails of a lipid that AMBER splits
+// into residues), 2 between residues apart or of an atom of none. Of an atom whose bonds are too many, the bond to a
+// residue apart is the clash of molecules that overlap (a packed starting structure), and goes before the bond that
+// joins the residues of a molecule: the ester of a tail's C12 to its head, 1.54 A, is further from the radii than a
+// clash of that C12 with an ester oxygen of a lipid that overlaps it, 1.42 A.
+static inline uint32_t bond_separation(int res_i, int res_j) {
+    if (res_i == res_j) return 0;
+    if (res_i < 0 || res_j < 0) return 2;
+    return (res_i - res_j == 1 || res_j - res_i == 1) ? 1 : 2;
+}
 
 static int compare_bond_excess(const void* a, const void* b) {
     const bond_excess_t* x = (const bond_excess_t*)a;
@@ -4142,7 +4154,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
                 if (exceeds) {
                     const float sum_r = atom_radius[x] + atom_radius[y];
                     bond_excess_t e = {
-                        .inter = comp_id[x] != comp_id[y],
+                        .inter = bond_separation(comp_id[x], comp_id[y]),
                         .deviation = sum_r > 0 ? fabsf(temp_bond_dist[b] / sum_r - 1.0f) : 0.0f,
                         .idx = (uint32_t)b,
                     };
@@ -4667,7 +4679,8 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
             n[ej] += 1;
         }
 
-        // In the order of md_util_infer_covalent_bonds: bonds between residues first, then the furthest from the radii
+        // In the order of md_util_infer_covalent_bonds: bonds between residues apart first, then between residues next
+        // to each other, then the furthest from the radii (bond_excess_t)
         md_array(bond_excess_t) over = 0;
         for (size_t k = 0; k < num_candidates; ++k) {
             const uint32_t i = (uint32_t)formed[k].atom_i;
@@ -4688,7 +4701,7 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
             if (exceeds) {
                 const float sum_r = element_covalent_radius(zi) + element_covalent_radius(zj);
                 bond_excess_t x = {
-                    .inter = delta_res(&atoms, i) != delta_res(&atoms, j),
+                    .inter = bond_separation(delta_res(&atoms, i), delta_res(&atoms, j)),
                     .deviation = sum_r > 0 ? fabsf(fabsf(formed[k].dist) / sum_r - 1.0f) : 0.0f,
                     .idx = (uint32_t)k,
                 };
