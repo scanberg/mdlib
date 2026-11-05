@@ -554,6 +554,40 @@ bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait);
 // Frees the job. One not yet issued is dropped: out_tex is not written.
 void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
 
+// ---------------------------------------------------------------------------
+// The electron localization function (ELF) and the localized orbital locator (LOL) on a grid
+// ---------------------------------------------------------------------------
+// From the spins' density matrices: per voxel rho_s, grad rho_s and the kinetic energy density
+// tau_s = 1/2 sum_ij D_ij grad chi_i . grad chi_j, from the AOs and their gradients, then ELF or LOL as md_qm_elf
+// and md_qm_lol take them (the Kohout-Savin spin form; md_qm.h), in float, written to out_tex. One kernel, with
+// the reference density kernel's structure (eval_gto_localization.slang): about 7 times its multiply-adds per AO
+// pair and spin.
+//
+// The basis's radii decide which AOs are summed at a voxel: ELF is made of small differences in the tails, and
+// wants a basis made with the cutoff 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
+typedef enum md_gto_gpu_localization_t {
+    MD_GTO_GPU_ELF = 0,
+    MD_GTO_GPU_LOL = 1,
+} md_gto_gpu_localization_t;
+
+typedef struct md_gto_gpu_localization_desc_t {
+    md_gto_gpu_basis_t basis;
+    md_gpu_addr_t      atom_xyz;      // packed float4, bohr
+    // num_spins 1: [0] the total density of a closed shell (taken as two equal spins); 2: [0] alpha, [1] beta.
+    // Each a packed upper-triangular D (md_gto_gpu_coeff_pack_density) or a dmat; both of one kind.
+    uint32_t           num_spins;
+    md_gpu_addr_t      coeff[2];
+    md_gto_gpu_dmat_t  dmat[2];
+    md_gto_gpu_localization_t kind;
+    double             rho_min;       // where rho (both spins) is below it, 0 (md_qm_elf)
+    md_gpu_texture_t   out_tex;       // R32F, needs MD_GPU_TEX_STORAGE; mip 0 is written
+    const md_grid_t*   grid;
+    float              sample_offset[3];
+} md_gto_gpu_localization_desc_t;
+
+// Issues the evaluation into `stream` (asynchronous). False, logged, for invalid input.
+bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
+
 // Orbital evaluation algorithm.
 typedef enum md_gto_gpu_orbital_algo_t {
     // SHELL for up to 8 orbitals, GEMM for more.

@@ -1764,6 +1764,7 @@ static md_gpu_kernel_t gto_k_density_gemm2[2] = {0};   // [32, 64 AO tile], 128 
 static md_gpu_kernel_t gto_k_mo_shell[2]      = {0};   // [1, 8 orbitals per pass], 4 voxels per thread
 static md_gpu_kernel_t gto_k_mo_gemm          = NULL;  // 32 orbitals per tile
 static md_gpu_kernel_t gto_k_dmat_tiles       = NULL;  // md_gto_gpu_dmat_build
+static md_gpu_kernel_t gto_k_localization     = NULL;  // md_gto_gpu_localization_launch
 // Held while a kernel is made: the evaluations and the dmat may be driven from different threads, each on a
 // stream of its own, and both make kernels on first use
 static md_mutex_t      gto_kernel_mutex;
@@ -1795,6 +1796,7 @@ void md_gto_gpu_initialize(md_gpu_device_t device) {
 void md_gto_gpu_shutdown(void) {
     destroy_kernel(&gto_k_density);
     destroy_kernel(&gto_k_mo);
+    destroy_kernel(&gto_k_localization);
     destroy_kernel(&gto_k_density_gemm_count);
     destroy_kernel(&gto_k_density_gemm_phi);
     destroy_kernel(&gto_k_density_gemm_dgather);
@@ -1849,6 +1851,34 @@ typedef struct {
     md_gpu_addr_t   dm_map;
     md_gpu_storage_tex_t out_tex;
 } gto_density_args_t;
+
+/* Mirrors RootArgs in eval_gto_localization.slang */
+typedef struct {
+    md_gpu_float4x4 world_to_model;
+    md_gpu_float4x4 index_to_world;
+    md_gpu_float4   step;
+    md_gpu_uint4    grid_dim;
+    uint32_t        num_cgtos;
+    uint32_t        num_spins;
+    uint32_t        lol;
+    float           rho_min;
+    uint32_t        dm_tiled;
+    uint32_t        dm_nt;
+    uint32_t        _pad0;
+    uint32_t        _pad1;
+    md_gpu_addr_t   cgto_atom_idx;
+    md_gpu_addr_t   cgto_r;
+    md_gpu_addr_t   cgto_off_len;
+    md_gpu_addr_t   pgto;
+    md_gpu_addr_t   atom_xyz;
+    md_gpu_addr_t   D_a;
+    md_gpu_addr_t   D_b;
+    md_gpu_addr_t   dm_tao_a;
+    md_gpu_addr_t   dm_map_a;
+    md_gpu_addr_t   dm_tao_b;
+    md_gpu_addr_t   dm_map_b;
+    md_gpu_storage_tex_t out_tex;
+} gto_localization_args_t;
 
 /* Mirrors RootArgs in eval_gto_density_gemm.slang (shared by its three entry points). */
 typedef struct {
@@ -2520,6 +2550,55 @@ static void gto_density_launch_reference(md_gpu_stream_t stream, const md_gto_gp
 
     const md_gpu_grid_t g = md_gpu_grid_for(gto_k_density, a.grid_dim.x, a.grid_dim.y, a.grid_dim.z);
     md_gpu_launch(stream, gto_k_density, g, &a, sizeof(a));
+}
+
+bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+    if (!stream || !desc || !desc->basis || !desc->atom_xyz || !desc->grid || !desc->out_tex ||
+        (desc->num_spins != 1 && desc->num_spins != 2)) {
+        MD_LOG_ERROR("md_gto_gpu_localization_launch: invalid arguments");
+        return false;
+    }
+    const bool tiled = desc->dmat[0] != NULL;
+    for (uint32_t s = 0; s < desc->num_spins; ++s) {
+        if (tiled ? (!desc->dmat[s] || desc->coeff[s]) : (!desc->coeff[s] || desc->dmat[s])) {
+            MD_LOG_ERROR("md_gto_gpu_localization_launch: every spin's matrix packed (coeff) or in tiles (dmat), not both");
+            return false;
+        }
+    }
+    if (tiled && desc->num_spins == 2 && desc->dmat[0]->nt != desc->dmat[1]->nt) {
+        MD_LOG_ERROR("md_gto_gpu_localization_launch: the spins' dmats are of different bases");
+        return false;
+    }
+    ensure_kernel(gto_gpu_device, &gto_k_localization, md_shader_eval_gto_localization_main_kernel());
+    if (!gto_k_localization) return false;
+
+    const md_gto_basis_layout_t* L = &desc->basis->layout;
+    const md_gpu_addr_t base = desc->basis->buffer;
+    gto_localization_args_t a = {0};
+    gto_fill_common_args(&a.world_to_model, &a.index_to_world, &a.step, &a.grid_dim, desc->grid, desc->sample_offset);
+    a.num_cgtos = L->num_cgtos;
+    a.num_spins = desc->num_spins;
+    a.lol       = desc->kind == MD_GTO_GPU_LOL ? 1u : 0u;
+    a.rho_min   = (float)desc->rho_min;
+    a.cgto_atom_idx = base + L->off_cgto_atom_idx;
+    a.cgto_r        = base + L->off_cgto_r;
+    a.cgto_off_len  = base + L->off_cgto_off_len;
+    a.pgto          = base + L->off_pgto;
+    a.atom_xyz      = desc->atom_xyz;
+    if (tiled) {
+        a.dm_tiled = 1;
+        a.dm_nt    = desc->dmat[0]->nt;
+        a.D_a = desc->dmat[0]->tiles; a.dm_tao_a = desc->dmat[0]->tao; a.dm_map_a = desc->dmat[0]->map;
+        const md_gto_gpu_dmat_t b = desc->num_spins == 2 ? desc->dmat[1] : desc->dmat[0];
+        a.D_b = b->tiles; a.dm_tao_b = b->tao; a.dm_map_b = b->map;
+    } else {
+        a.D_a = desc->coeff[0];
+        a.D_b = desc->num_spins == 2 ? desc->coeff[1] : desc->coeff[0];
+    }
+    a.out_tex = md_gpu_texture_storage(desc->out_tex, 0);
+    const md_gpu_grid_t g = md_gpu_grid_for(gto_k_localization, a.grid_dim.x, a.grid_dim.y, a.grid_dim.z);
+    md_gpu_launch(stream, gto_k_localization, g, &a, sizeof(a));
+    return true;
 }
 
 #define GTO_GEMM_BLOCK_VOXELS 512u

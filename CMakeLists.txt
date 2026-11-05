@@ -316,6 +316,7 @@ set(TOPO_GTO_SLANG_FILE src/shaders/topo/topo_gto_cube.slang)
 
 set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_density.slang
+  src/shaders/gto/eval_gto_localization.slang
   src/shaders/gto/eval_gto_mo.slang
   src/shaders/gto/eval_gto_density_gemm2_128x32.slang
   src/shaders/gto/eval_gto_density_gemm2_128x64.slang
