@@ -7,6 +7,9 @@
 //   gto_dmat.density_job_matches_launch  mol: md_gto_gpu_density_job_begin, polled, bitwise the launch (the dmat
 //                                     and the packed matrix, every algorithm); a job ended before it is
 //                                     issued writes nothing
+//   gto_dmat.density_pieces_match_launch  mol: the GEMM in pieces of a few blocks each (piece_work), as a launch
+//                                     and as a job polled over many polls, bitwise the launch in one piece; the
+//                                     job's progress reaches 1, and a job dropped midway lets the stream go on
 //   gto_dmat.benchmark                GTO_DMAT_FILE=<file in test_data/vlx> (protein.h5): the pattern, the
 //                                     build per frame (packing, upload, kernel), and a sub-volume through
 //                                     the dmat against the packed matrix; GTO_DMAT_REPS (5),
@@ -251,6 +254,87 @@ UTEST(gto_dmat, density_job_matches_launch) {
         md_gpu_stream_sync(g.s);
         size_t differ = 0;
         for (size_t i = 0; i < g.num_vox; ++i) differ += memcmp(&((const float*)g.rb.cpu)[i], &out[i], sizeof(float)) != 0;
+        EXPECT_EQ(differ, (size_t)0);
+    }
+    free(out); free(ref);
+    md_gto_gpu_dmat_destroy(g.s, dm);
+    dm_gpu_free(&g);
+    dm_free(&s);
+}
+
+UTEST(gto_dmat, density_pieces_match_launch) {
+    dm_src_t s;
+    ASSERT_TRUE(dm_load(&s, "mol.h5"));
+    const md_grid_t grid = dm_grid(&s, 37, 0.3f);
+    dm_gpu_t g;
+    if (!dm_gpu_init(&g, &s, &grid)) { dm_gpu_free(&g); dm_free(&s); UTEST_SKIP("no GPU device"); }
+    md_gto_gpu_dmat_t dm = md_gto_gpu_dmat_create(g.s, &(md_gto_gpu_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6 });
+    ASSERT_TRUE(dm != NULL);
+    ASSERT_TRUE(md_gto_gpu_dmat_build(g.s, dm, s.rows, s.w, s.num_mo));
+    float* ref = (float*)malloc(sizeof(float) * g.num_vox);
+    float* out = (float*)malloc(sizeof(float) * g.num_vox);
+    // a piece of about two blocks of 64 AOs: hundreds of pieces, batches split by their blocks
+    const uint64_t piece_work = (uint64_t)2 * 512 * 64 * 64;
+    for (int with_dmat = 0; with_dmat < 2; ++with_dmat) {
+        dm_eval(&g, with_dmat ? dm : NULL, MD_GTO_GPU_DENSITY_ALGO_GEMM, ref);
+        md_gto_gpu_density_desc_t desc = {
+            .basis = g.basis, .atom_xyz = g.atoms, .coeff = with_dmat ? 0 : g.coeff, .dmat = with_dmat ? dm : NULL, .out_tex = g.tex,
+            .grid = &g.grid, .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = MD_GTO_GPU_DENSITY_ALGO_GEMM,
+            .piece_work = piece_work,
+        };
+        for (int as_job = 0; as_job < 2; ++as_job) {
+            md_gpu_addr_t zero = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, sizeof(float) * g.num_vox).gpu;
+            ASSERT_TRUE(zero != 0);
+            md_gpu_memset(g.s, zero, 0, sizeof(float) * g.num_vox);
+            ASSERT_TRUE(md_gpu_copy_to_texture(g.s, g.tex, NULL, zero));
+            md_gpu_free(g.s, zero);
+            int polls = 0;
+            float progress = 0.0f;
+            if (as_job) {
+                md_gto_gpu_job_t* job = md_gto_gpu_density_job_begin(g.s, &desc);
+                ASSERT_TRUE(job != NULL);
+                float last = 0.0f;
+                while (!md_gto_gpu_job_poll(job, false)) {
+                    const float f = md_gto_gpu_job_progress(job);
+                    EXPECT_GE(f, last);     // never back
+                    last = f;
+                    ++polls;
+                }
+                md_gpu_stream_sync(g.s);
+                progress = md_gto_gpu_job_progress(job);
+                md_gto_gpu_job_end(job);
+            } else {
+                md_gto_gpu_density_launch(g.s, &desc);
+            }
+            md_gpu_copy_from_texture(g.s, g.rb.gpu, g.tex, NULL);
+            md_gpu_stream_sync(g.s);
+            memcpy(out, g.rb.cpu, sizeof(float) * g.num_vox);
+            size_t differ = 0;
+            for (size_t i = 0; i < g.num_vox; ++i) differ += memcmp(&out[i], &ref[i], sizeof(float)) != 0;
+            printf("  %s, %s: %d polls, progress %.3f, %zu of %zu voxels differ from the launch in one piece\n",
+                   with_dmat ? "dmat  " : "packed", as_job ? "job   " : "launch", polls, progress, differ, g.num_vox);
+            EXPECT_EQ(differ, (size_t)0);
+            if (as_job) {
+                EXPECT_GT(polls, 0);    // more pieces than are kept in flight
+                EXPECT_EQ(progress, 1.0f);
+            }
+        }
+    }
+    // dropped midway: what is in flight completes, nothing more is issued, and the stream goes on
+    {
+        md_gto_gpu_density_desc_t desc = {
+            .basis = g.basis, .atom_xyz = g.atoms, .dmat = dm, .out_tex = g.tex, .grid = &g.grid,
+            .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = MD_GTO_GPU_DENSITY_ALGO_GEMM, .piece_work = piece_work,
+        };
+        md_gto_gpu_job_t* job = md_gto_gpu_density_job_begin(g.s, &desc);
+        ASSERT_TRUE(job != NULL);
+        md_gpu_stream_sync(g.s);
+        EXPECT_FALSE(md_gto_gpu_job_poll(job, false));     // the counts planned, the first pieces issued
+        EXPECT_LT(md_gto_gpu_job_progress(job), 1.0f);
+        md_gto_gpu_job_end(job);
+        dm_eval(&g, dm, MD_GTO_GPU_DENSITY_ALGO_GEMM, out);
+        size_t differ = 0;
+        for (size_t i = 0; i < g.num_vox; ++i) differ += memcmp(&out[i], &ref[i], sizeof(float)) != 0;
         EXPECT_EQ(differ, (size_t)0);
     }
     free(out); free(ref);

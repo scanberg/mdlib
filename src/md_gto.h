@@ -531,7 +531,15 @@ typedef struct md_gto_gpu_density_desc_t {
     // GEMM only: kernel configuration, normally left at 0 = automatic (per GPU vendor).
     uint32_t gemm_tile;          // AOs per output tile: 32 or 64
     int32_t  gemm_small_block;   // blocks with at most this many AOs use 32-wide tiles; -1 = never
+
+    // GEMM only: the work of a submission, in multiply-adds (MD_GTO_GPU_GEMM_PIECES_REVISION); 0 = 2^34
+    uint64_t piece_work;
 } md_gto_gpu_density_desc_t;
+
+// The GEMM algorithm (density, and orbitals by GEMM) is issued in PIECES of a bounded amount of work, each its own
+// submission: the watchdog (TDR) times submissions, and a large system's evaluation as one would lose the device
+// (VK_ERROR_DEVICE_LOST) and keep the display's work off the GPU until it is done. Measurements: the revision.
+#define MD_GTO_GPU_GEMM_PIECES_REVISION "pieces r1 (2^34 multiply-adds a submission; jobs keep 8+ in flight, doubled when the GPU runs dry)"
 
 // Issue an electron density evaluation into `stream`.
 // atom_xyz must contain packed float4 atom positions (xyz in Bohr).
@@ -541,17 +549,28 @@ typedef struct md_gto_gpu_density_desc_t {
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 
 // The same as a job, for a thread that is not to wait: the GEMM algorithm's counting pass is issued and the call
-// returns, and md_gto_gpu_job_poll issues the rest once the counts are on the host (the launch waits for them,
-// and for whatever the stream held before them). Until then the evaluation writes nothing to out_tex, and what
-// the descriptor names (the basis, the atom positions, the coefficients or the dmat) must stay as they are. The
-// reference algorithm is issued at once. NULL for invalid input (logged).
+// returns; md_gto_gpu_job_poll plans the rest once the counts are on the host (the launch waits for them, and for
+// whatever the stream held before them) and issues its pieces over the polls, a few in flight, the next as the
+// GPU passes one. Until it is all issued, what the descriptor names (the basis, the atom positions, the
+// coefficients or the dmat) must stay as they are. The reference algorithm is issued at once. NULL for invalid
+// input (logged).
+//   md_gto_gpu_job_t* job = md_gto_gpu_density_job_begin(stream, &desc);
+//   ... once a frame: if (md_gto_gpu_job_poll(job, false)) { ... all issued: read out_tex back after it ... }
+//   ... md_gto_gpu_job_progress(job) for a progress display, md_gto_gpu_job_end(job) once it is no longer watched
+// One thread at a time, the stream's.
 typedef struct md_gto_gpu_job_t md_gto_gpu_job_t;
 md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 
-// True once all of it is issued: it is then on the stream as a launch would be. wait: waits for the counts.
+// Issues what the GPU has room for. True once all of it is issued: it is then on the stream as a launch would
+// be. wait: waits for the counts, and issues everything left at once (in pieces still; nothing waits for them).
 bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait);
 
-// Frees the job. One not yet issued is dropped: out_tex is not written.
+// How far the evaluation is on the GPU, 0 to 1: the work of the pieces that have passed, by the plan's estimate.
+// 0 until the counts are planned; 1 once out_tex holds all of it. Never waits.
+float md_gto_gpu_job_progress(md_gto_gpu_job_t* job);
+
+// Frees the job, done or not; never waits for the GPU. One not yet all issued is dropped: the pieces in flight
+// complete and nothing more is issued, so out_tex is left part written (not to be read).
 void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
 
 // Orbital evaluation algorithm.
