@@ -38,9 +38,9 @@ void md_reader_free(md_reader_i* r) {
     MEMSET(r, 0, sizeof(*r));
 }
 
-// Keeps what is not taken at the start of the buffer, and reads as much after it as fits. Returns the bytes read: 0 at
-// the end of the source, for a string, or when the buffer is full of what is not taken.
-static size_t refill(md_reader_i* r) {
+// Keeps what is not taken at the start of the buffer, and returns the room after it: 0 at the end of the source, for a
+// string, or when the buffer is full of what is not taken
+static size_t refill_begin(md_reader_i* r) {
     if (!r->vt || (r->flags & MD_READER_FLAG_END)) return 0;
     const size_t rest = (size_t)(r->end - r->cur);
     if (rest == r->cap) return 0;
@@ -48,11 +48,22 @@ static size_t refill(md_reader_i* r) {
     if (rest && r->cur != r->mem) memmove(r->mem, r->cur, rest);
     r->buf = r->cur = r->mem;
     r->end = r->mem + rest;
+    return r->cap - rest;
+}
 
-    const size_t want = r->cap - rest;
-    const size_t n = r->vt->read(r, r->mem + rest, want);
+// n of the want bytes of room were read
+static void refill_end(md_reader_i* r, size_t n, size_t want) {
     r->end += n;
     if (n < want) r->flags |= MD_READER_FLAG_END;
+}
+
+// Keeps what is not taken at the start of the buffer, and reads as much after it as fits. Returns the bytes read: 0 at
+// the end of the source, for a string, or when the buffer is full of what is not taken.
+static size_t refill(md_reader_i* r) {
+    const size_t want = refill_begin(r);
+    if (want == 0) return 0;
+    const size_t n = r->vt->read(r, r->mem + (r->end - r->mem), want);
+    refill_end(r, n, want);
     return n;
 }
 
@@ -78,18 +89,78 @@ bool md_reader_line_slow(md_reader_i* r, str_t* line, const char** next) {
     }
 }
 
-str_t md_reader_block(md_reader_i* r) {
-    ASSERT(r);
-    refill(r);
+// The whole lines of what the buffer holds: up to the last newline (the rest is read again with the next block)
+static str_t whole_lines(const md_reader_i* r) {
     const char* text = r->cur;
     size_t len = (size_t)(r->end - r->cur);
     if (!(r->flags & MD_READER_FLAG_END)) {
-        // Whole lines: up to the last newline (the rest is read again with the next block)
         const char* c = text + len;
         while (c > text && c[-1] != '\n') --c;
         if (c > text) len = (size_t)(c - text);     // else a line longer than the buffer: cut at it
     }
     return (str_t){ text, len };
+}
+
+str_t md_reader_block(md_reader_i* r) {
+    ASSERT(r);
+    refill(r);
+    return whole_lines(r);
+}
+
+// The reads of a refill over the threads of an executor: pieces of the room, each read at its offset
+#define READER_PARALLEL_PIECE MEGABYTES(2)
+
+typedef struct parallel_read_t {
+    const md_reader_i* r;
+    int64_t offset;     // Of the source, where the room begins
+    char*   dst;
+    size_t  want;
+    size_t* got;        // By piece
+} parallel_read_t;
+
+static void parallel_read_piece(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    parallel_read_t* pr = (parallel_read_t*)arg;
+    for (uint32_t p = beg; p < end; ++p) {
+        const size_t at = (size_t)p * READER_PARALLEL_PIECE;
+        const size_t len = MIN(READER_PARALLEL_PIECE, pr->want - at);
+        pr->got[p] = pr->r->vt->read_at(pr->r, pr->offset + (int64_t)at, pr->dst + at, len);
+    }
+}
+
+str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex) {
+    ASSERT(r);
+    if (md_executor_num_threads(ex) <= 1 || !r->vt || !r->vt->read_at || !r->vt->seek) {
+        return md_reader_block(r);
+    }
+    const size_t want = refill_begin(r);
+    if (want > 0) {
+        const uint32_t num_pieces = (uint32_t)((want + READER_PARALLEL_PIECE - 1) / READER_PARALLEL_PIECE);
+        size_t got_buf[64];
+        size_t* got = num_pieces <= 64 ? got_buf : (size_t*)md_alloc(r->alloc, num_pieces * sizeof(size_t));
+        parallel_read_t pr = {
+            .r = r,
+            .offset = r->base + (int64_t)(r->end - r->buf),
+            .dst = r->mem + (r->end - r->mem),
+            .want = want,
+            .got = got,
+        };
+        // Cancelled: nothing more is read (the pieces not read count as none)
+        for (uint32_t p = 0; p < num_pieces; ++p) got[p] = 0;
+        md_parallel_for(ex, num_pieces, 1, parallel_read_piece, &pr);
+        // What was read without a gap: a piece short of its length is the end of the source
+        size_t n = 0;
+        for (uint32_t p = 0; p < num_pieces; ++p) {
+            const size_t len = MIN(READER_PARALLEL_PIECE, want - (size_t)p * READER_PARALLEL_PIECE);
+            n += got[p];
+            if (got[p] < len) break;
+        }
+        if (got != got_buf) md_free(r->alloc, got, num_pieces * sizeof(size_t));
+        // Where the next read begins, past what was read here
+        if (!r->vt->seek(r, pr.offset + (int64_t)n)) r->flags |= MD_READER_FLAG_ERROR;
+        refill_end(r, n, want);
+    }
+    return whole_lines(r);
 }
 
 bool md_reader_seek(md_reader_i* r, int64_t offset) {
@@ -128,9 +199,15 @@ static bool file_seek(md_reader_i* r, int64_t offset) {
     return md_file_seek(fr->file, offset, MD_FILE_BEG);
 }
 
+static size_t file_read_at(const md_reader_i* r, int64_t offset, char* dst, size_t cap) {
+    const md_file_reader_t* fr = (const md_file_reader_t*)r;
+    return md_file_read_at(fr->file, offset, dst, cap);
+}
+
 static const md_reader_vtable_t file_vtable = {
     .read = file_read,
     .seek = file_seek,
+    .read_at = file_read_at,
     .name = "file",
 };
 

@@ -3511,12 +3511,17 @@ typedef struct {
 // versions only votes for those: Ala with SC1, Tyr with SC4 and Trp with SC5 for Martini 3, the charge dummies and the
 // polarizable water for polarizable Martini 2, cholesterol of 8 beads for Martini 2, ... Martini 3 when nothing tells,
 // the current one and martinize2's default, and Martini 2 over polarizable Martini 2 on a tie.
-static martini_system_t martini_system(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data) {
-    size_t votes[3] = {0};  // MARTINI_2, MARTINI_2P, MARTINI_3
-    bool martini = false;
+// The votes and the word of the residues [beg, end[
+typedef struct martini_votes_t {
+    size_t votes[3];    // MARTINI_2, MARTINI_2P, MARTINI_3
+    bool   martini;
+} martini_votes_t;
+
+static martini_votes_t martini_votes(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data, size_t res_beg, size_t res_end) {
+    martini_votes_t v = {0};
     str_t labels[256];
     uint8_t map[256];
-    for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
+    for (size_t res_idx = res_beg; res_idx < res_end; ++res_idx) {
         const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         const size_t n = range.end - range.beg;
         if (n == 0 || n > 255) continue;
@@ -3531,17 +3536,59 @@ static martini_system_t martini_system(const md_system_t* sys, str_t (*label)(co
             versions |= res->versions;
             // No atomistic residue has the name and the atom names of a Martini residue of several beads, of Martini water
             // or of a monomer of a Martini polymer
-            if (n > 1 || res->kind == MD_RESIDUE_KIND_WATER || martini_db_linked(str_from_cstr(res->name))) martini = true;
+            if (n > 1 || res->kind == MD_RESIDUE_KIND_WATER || martini_db_linked(str_from_cstr(res->name))) v.martini = true;
         }
         if (versions == 0 || versions == MARTINI_ANY) continue;
-        if (versions & MARTINI_2)  votes[0] += 1;
-        if (versions & MARTINI_2P) votes[1] += 1;
-        if (versions & MARTINI_3)  votes[2] += 1;
+        if (versions & MARTINI_2)  v.votes[0] += 1;
+        if (versions & MARTINI_2P) v.votes[1] += 1;
+        if (versions & MARTINI_3)  v.votes[2] += 1;
     }
-    martini_system_t result = { .version = MARTINI_3, .martini = martini };
-    if (votes[0] > votes[2] && votes[0] >= votes[1]) result.version = MARTINI_2;
-    else if (votes[1] > votes[2] && votes[1] > votes[0]) result.version = MARTINI_2P;
+    return v;
+}
+
+#define MARTINI_VOTE_CHUNK 4096
+
+typedef struct martini_vote_task_t {
+    const md_system_t* sys;
+    str_t (*label)(const void*, size_t);
+    const void* data;
+    martini_votes_t* chunk;
+} martini_vote_task_t;
+
+static void martini_vote_chunks(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    martini_vote_task_t* t = (martini_vote_task_t*)arg;
+    for (uint32_t c = beg; c < end; ++c) {
+        const size_t r_beg = (size_t)c * MARTINI_VOTE_CHUNK;
+        t->chunk[c] = martini_votes(t->sys, t->label, t->data, r_beg, MIN(r_beg + MARTINI_VOTE_CHUNK, t->sys->residue.count));
+    }
+}
+
+static martini_system_t martini_system_ex(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data, const md_executor_t* ex) {
+    martini_votes_t v = {0};
+    const size_t num_chunks = DIV_UP(sys->residue.count, MARTINI_VOTE_CHUNK);
+    if (md_executor_num_threads(ex) > 1 && num_chunks > 1) {
+        // A count of each chunk, summed: exact, whichever thread had which
+        md_temp_scope_t temp = md_temp_begin();
+        martini_vote_task_t task = { sys, label, data, md_temp_alloc(temp, num_chunks * sizeof(martini_votes_t)) };
+        MEMSET(task.chunk, 0, num_chunks * sizeof(martini_votes_t));
+        md_parallel_for(ex, (uint32_t)num_chunks, 1, martini_vote_chunks, &task);
+        for (size_t c = 0; c < num_chunks; ++c) {
+            for (int k = 0; k < 3; ++k) v.votes[k] += task.chunk[c].votes[k];
+            v.martini |= task.chunk[c].martini;
+        }
+        md_temp_end(temp);
+    } else {
+        v = martini_votes(sys, label, data, 0, sys->residue.count);
+    }
+    martini_system_t result = { .version = MARTINI_3, .martini = v.martini };
+    if (v.votes[0] > v.votes[2] && v.votes[0] >= v.votes[1]) result.version = MARTINI_2;
+    else if (v.votes[1] > v.votes[2] && v.votes[1] > v.votes[0]) result.version = MARTINI_2P;
     return result;
+}
+
+static martini_system_t martini_system(const md_system_t* sys, str_t (*label)(const void*, size_t), const void* data) {
+    return martini_system_ex(sys, label, data, NULL);
 }
 
 // Lipids by name: those of the Martini lipidomes (whose names the atomistic force fields mostly share: POPC, DPPC, CHOL,
@@ -7012,8 +7059,68 @@ static void add_residue_template(md_hashmap32_t* cache, md_array(residue_templat
     md_array_push(*templates, *tmpl, alloc);
 }
 
-// The labels of the atoms through an accessor: an array of strings, or of labels
-static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, size_t), const void* label_data) {
+// The key of each residue and whether its atoms have no types yet (untyped), a chunk of INFER_KEY_CHUNK at a time: what
+// the typing of a residue looks up the typing of the first of its key by. Of each residue alone, so in parallel.
+#define INFER_KEY_CHUNK 4096
+
+typedef struct infer_keys_t {
+    const md_system_t* sys;
+    str_t (*label)(const void*, size_t);
+    const void* label_data;
+    uint64_t* key;
+    uint8_t*  untyped;
+} infer_keys_t;
+
+static void infer_residue_keys(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    const infer_keys_t* t = (const infer_keys_t*)arg;
+    const md_system_t* sys = t->sys;
+    const size_t r_end = MIN((size_t)end * INFER_KEY_CHUNK, sys->residue.count);
+    for (size_t res_idx = (size_t)beg * INFER_KEY_CHUNK; res_idx < r_end; ++res_idx) {
+        const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
+        const size_t res_size = range.end - range.beg;
+        // The labels are part of the key, as which of them a name stands for can depend on the others; and
+        // everything the types of the residue's atoms come from is in it, so the atoms of a residue of a key seen
+        // before (a water among thousands) take what the first one's did, without a look at each atom
+        uint64_t key = md_hash64_str(md_system_residue_name(sys, res_idx), res_size);
+        for (size_t i = range.beg; i < range.end; ++i) key = md_hash64_str(t->label(t->label_data, i), key);
+        bool untyped = true;
+        for (size_t i = range.beg; i < range.end && untyped; ++i) untyped = sys->atom.type_idx[i] == 0;
+        t->key[res_idx] = key;
+        t->untyped[res_idx] = untyped;
+    }
+}
+
+// The residues of a key seen before: the types and roles of the first of it (its template), and what it is
+typedef struct infer_apply_t {
+    md_system_t* sys;
+    const uint32_t* tmpl_of;    // [residues] The template of each, UINT32_MAX for none
+    const residue_template_t* templates;
+    const md_atom_flags_t* roles;
+} infer_apply_t;
+
+static void infer_apply_templates(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    (void)thread_idx;
+    const infer_apply_t* t = (const infer_apply_t*)arg;
+    md_system_t* sys = t->sys;
+    const size_t r_end = MIN((size_t)end * INFER_KEY_CHUNK, sys->residue.count);
+    for (size_t res_idx = (size_t)beg * INFER_KEY_CHUNK; res_idx < r_end; ++res_idx) {
+        if (t->tmpl_of[res_idx] == UINT32_MAX) continue;
+        const residue_template_t* tmpl = &t->templates[t->tmpl_of[res_idx]];
+        const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
+        const md_urange_t from = md_system_residue_atom_range(sys, tmpl->res_idx);
+        const size_t res_size = range.end - range.beg;
+        MEMCPY(sys->atom.type_idx + range.beg, sys->atom.type_idx + from.beg, res_size * sizeof(md_particle_type_idx_t));
+        if (sys->atom.flags) {
+            for (size_t k = 0; k < res_size; ++k) sys->atom.flags[range.beg + k] |= t->roles[tmpl->role_offset + k];
+        }
+        apply_predefined_res_kind(sys, res_idx, tmpl->kind);
+    }
+}
+
+// The labels of the atoms through an accessor: an array of strings, or of labels. The residues are typed in order, each
+// the first of its key: the others take what it got, over the threads of ex (NULL: the calling thread), as do the keys.
+static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, size_t), const void* label_data, const md_executor_t* ex) {
     if (!sys) {
         MD_LOG_ERROR("system was null");
         return;
@@ -7037,7 +7144,7 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
 
     if (sys->residue.count > 0) {
         // The masses and sizes of Martini beads depend on the version of Martini
-        const martini_system_t martini = martini_system(sys, label, label_data);
+        const martini_system_t martini = martini_system_ex(sys, label, label_data, ex);
         // The molecules of the force field of beads of none of its topologies, by name and size: the first and how many
         typedef struct { str_t name; size_t size; size_t first; size_t count; } unknown_variant_t;
         md_array(unknown_variant_t) unknown_variants = 0;
@@ -7046,7 +7153,46 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
         md_hashmap32_t residue_template_cache = {.allocator = temp_alloc };
         md_array(residue_template_t) templates = 0;
         md_array(md_atom_flags_t) template_roles = 0;
-        for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
+
+        const size_t num_res = sys->residue.count;
+        const uint32_t num_chunks = (uint32_t)DIV_UP(num_res, INFER_KEY_CHUNK);
+        uint64_t* res_keys = md_temp_alloc(temp, num_res * sizeof(uint64_t));
+        uint8_t*  res_untyped = md_temp_alloc(temp, num_res);
+        uint32_t* tmpl_of = md_temp_alloc(temp, num_res * sizeof(uint32_t));
+        {
+            infer_keys_t task = { sys, label, label_data, res_keys, res_untyped };
+            md_parallel_for(ex, num_chunks, 1, infer_residue_keys, &task);
+        }
+        // The template a residue of the key before was given: a run of one key (the waters, the lipids) looks it up once
+        uint64_t hit_key = 0;
+        uint32_t hit_tmpl = UINT32_MAX;
+        size_t num_hits = 0;
+
+        for (size_t res_idx = 0; res_idx < num_res; ++res_idx) {
+            tmpl_of[res_idx] = UINT32_MAX;
+            const uint64_t res_key = res_keys[res_idx];
+            const bool untyped = res_untyped[res_idx] != 0;
+            if (untyped) {
+                uint32_t t = UINT32_MAX;
+                if (hit_tmpl != UINT32_MAX && res_key == hit_key) {
+                    t = hit_tmpl;
+                } else {
+                    const uint32_t* found = md_hashmap_get(&residue_template_cache, res_key);
+                    if (found) {
+                        t = *found;
+                        hit_key = res_key;
+                        hit_tmpl = t;
+                    }
+                }
+                if (t != UINT32_MAX) {
+                    // Given its template's types once all are typed
+                    tmpl_of[res_idx] = t;
+                    num_hits += 1;
+                    if (templates[t].unknown_variant >= 0) unknown_variants[templates[t].unknown_variant].count += 1;
+                    continue;
+                }
+            }
+
             str_t res_name         = md_system_residue_name(sys, res_idx);
             md_urange_t res_range = md_system_residue_atom_range(sys, res_idx);
             size_t res_size        = res_range.end - res_range.beg;
@@ -7056,29 +7202,6 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
             for (size_t k = 0; k < res_size; ++k) res_labels[k] = label(label_data, res_range.beg + k);
             const str_t* labels = res_labels;
 
-            // The labels are part of the key, as which of them a name stands for can depend on the others; and
-            // everything the types of the residue's atoms come from is in it, so the atoms of a residue of a key seen
-            // before (a water among thousands) take what the first one's did, without a look at each atom
-            uint64_t res_key = md_hash64_str(res_name, res_size);
-            for (size_t k = 0; k < res_size; ++k) res_key = md_hash64_str(labels[k], res_key);
-
-            bool untyped = true;
-            for (size_t i = res_range.beg; i < res_range.end && untyped; ++i) untyped = sys->atom.type_idx[i] == 0;
-
-            if (untyped) {
-                const uint32_t* t = md_hashmap_get(&residue_template_cache, res_key);
-                if (t) {
-                    const residue_template_t* tmpl = &templates[*t];
-                    const md_urange_t from = md_system_residue_atom_range(sys, tmpl->res_idx);
-                    MEMCPY(sys->atom.type_idx + res_range.beg, sys->atom.type_idx + from.beg, res_size * sizeof(md_particle_type_idx_t));
-                    if (sys->atom.flags) {
-                        for (size_t k = 0; k < res_size; ++k) sys->atom.flags[res_range.beg + k] |= template_roles[tmpl->role_offset + k];
-                    }
-                    apply_predefined_res_kind(sys, res_idx, tmpl->kind);
-                    if (tmpl->unknown_variant >= 0) unknown_variants[tmpl->unknown_variant].count += 1;
-                    continue;
-                }
-            }
             // What the residue's atoms got, for those to follow of its key
             residue_template_t tmpl = { .res_idx = res_idx, .role_offset = md_array_size(template_roles), .kind = MD_RESIDUE_KIND_OTHER, .unknown_variant = -1 };
             if (untyped) {
@@ -7202,6 +7325,10 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
                 add_residue_template(&residue_template_cache, &templates, template_roles, &tmpl, res_key, sys, temp_alloc);
             }
         }
+        if (num_hits > 0) {
+            infer_apply_t task = { sys, tmpl_of, templates, template_roles };
+            md_parallel_for(ex, num_chunks, 1, infer_apply_templates, &task);
+        }
         for (size_t u = 0; u < md_array_size(unknown_variants); ++u) {
             const unknown_variant_t* v = &unknown_variants[u];
             const md_urange_t range = md_system_residue_atom_range(sys, v->first);
@@ -7242,20 +7369,20 @@ static str_t label_of_labels(const void* data, size_t i) {
     return md_label_str(&((const md_label_t*)data)[i]);
 }
 
-void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[]) {
+void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[], const md_executor_t* ex) {
     if (!atom_labels) {
         MD_LOG_ERROR("Must provide atom_labels");
         return;
     }
-    infer_particle_types(sys, label_of_array, atom_labels);
+    infer_particle_types(sys, label_of_array, atom_labels, ex);
 }
 
-void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[]) {
+void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[], const md_executor_t* ex) {
     if (!atom_labels) {
         MD_LOG_ERROR("Must provide atom_labels");
         return;
     }
-    infer_particle_types(sys, label_of_labels, atom_labels);
+    infer_particle_types(sys, label_of_labels, atom_labels, ex);
 }
 
 void md_util_system_augment_particle_types(md_system_t* sys) {

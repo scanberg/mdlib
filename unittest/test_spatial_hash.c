@@ -1625,15 +1625,20 @@ UTEST(spatial_acc_bench, occupancy) {
     for (size_t f = 0; f < sizeof(files) / sizeof(files[0]); ++f) {
         char path[512];
         snprintf(path, sizeof(path), "%s/%s", MD_UNITTEST_DATA_DIR, files[f]);
-        md_gro_data_t gro = {0};
-        if (!md_gro_data_parse_file(&gro, str_from_cstr(path), md_get_heap_allocator())) continue;
-        vec3_t* xyz = (vec3_t*)md_alloc(md_get_heap_allocator(), gro.num_atoms * sizeof(vec3_t));
-        for (size_t i = 0; i < gro.num_atoms; ++i) xyz[i] = (vec3_t){{gro.atom_data[i].x * 10.0f, gro.atom_data[i].y * 10.0f, gro.atom_data[i].z * 10.0f}};
-        const md_unitcell_t cell = md_unitcell_from_extent(gro.box[0][0] * 10.0, gro.box[1][1] * 10.0, gro.box[2][2] * 10.0);
-        bench_system(files[f], xyz, gro.num_atoms, &cell, 5.0, reps);
-        bench_system(files[f], xyz, gro.num_atoms, &cell, 10.0, reps);
-        md_free(md_get_heap_allocator(), xyz, gro.num_atoms * sizeof(vec3_t));
-        md_gro_data_free(&gro, md_get_heap_allocator());
+        md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+        md_system_t sys = { .alloc = arena };
+        md_system_state_t st = { .alloc = arena };
+        if (!md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), NULL)) {
+            md_vm_arena_destroy(arena);
+            continue;
+        }
+        // The box as its extent (its diagonal, in Angstrom)
+        float A[3][3];
+        md_unitcell_A_extract_float(A, &st.unitcell);
+        const md_unitcell_t cell = md_unitcell_from_extent(A[0][0], A[1][1], A[2][2]);
+        bench_system(files[f], st.xyz, sys.atom.count, &cell, 5.0, reps);
+        bench_system(files[f], st.xyz, sys.atom.count, &cell, 10.0, reps);
+        md_vm_arena_destroy(arena);
     }
     // Uniform random, dense (0.1 per A^3) and sparse (0.001 per A^3)
     const size_t sizes[] = {1000, 4000, 16000, 64000};

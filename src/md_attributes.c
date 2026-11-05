@@ -1150,6 +1150,8 @@ static bool attr_atom_column_informative(const float values[], size_t count, uin
         if (bits_i != bits_0) {
             uniform = false;
         }
+        // Both answered: the rest cannot change them
+        if (!uniform && !all_absent) return true;
     }
     return !(uniform || all_absent);
 }

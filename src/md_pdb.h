@@ -33,9 +33,11 @@ typedef uint32_t md_pdb_options_t;
 
 // SYSTEM
 // The system: the atoms (of the first model, or of all with MD_PDB_OPTION_CONCAT_MODELS), where they are, their types,
-// the residues, the units of the file (its chains), the bonds of the CONECT records, the cell and the assemblies. No
-// bonds beyond the file's, nor what the residues are by them: md_util_system_infer derives those, when the caller wants
-// them. The executor (NULL: the calling thread) reads the atom lines of a file or string in parallel.
+// the residues, the units of the file (its chains, by the character of column 22 as the file has it: a digit is an id as
+// a letter is, a blank none), the bonds of the CONECT records, the cell and the assemblies. No bonds beyond the file's,
+// nor what the residues are by them: md_util_system_infer derives those, when the caller wants them. The executor
+// (NULL: the calling thread) reads a file and its lines in parallel; of a file of several models, the first model and
+// the CONECT records after the last are read, not the models between.
 bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, str_t filename, md_pdb_options_t options, const struct md_executor_t* executor);
 bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, str_t str,      md_pdb_options_t options, const struct md_executor_t* executor);
 

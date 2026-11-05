@@ -289,6 +289,62 @@ UTEST(pdb, conect_continued_and_hybrid36) {
     md_vm_arena_destroy(alloc);
 }
 
+// CONECT records refer to atoms by their serials however the file numbers them (not counting up from the first, the
+// same serial twice: the first atom of it), wherever in the file they are, and a bond given twice (each of its atoms
+// names the other, or a writer repeats it for its order) is one
+UTEST(pdb, conect_serials_out_of_order) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const str_t text = STR_LIT(
+        "HETATM   30  C1  LIG A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM   10  C2  LIG A   1       1.500   0.000   0.000  1.00  0.00           C\n"
+        "CONECT   30   10\n"
+        "HETATM   20  C3  LIG A   1       3.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM   20  C4  LIG A   1       4.500   0.000   0.000  1.00  0.00           C\n"
+        "CONECT   10   30   20\n"
+        "CONECT   20   10   10\n"
+        "CONECT   30   99\n");
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL));
+    ASSERT_EQ((size_t)4, sys.atom.count);
+    ASSERT_EQ((size_t)2, sys.bond.count);
+    // In the order the records first give them
+    EXPECT_EQ(0, (int)sys.bond.pairs[0].idx[0]);
+    EXPECT_EQ(1, (int)sys.bond.pairs[0].idx[1]);
+    EXPECT_EQ(1, (int)sys.bond.pairs[1].idx[0]);
+    EXPECT_EQ(2, (int)sys.bond.pairs[1].idx[1]);
+    md_vm_arena_destroy(alloc);
+}
+
+// The bonds of a coarse grained structure (martinize2 writes CONECT for every bead) are between neighbouring atoms,
+// each given by both of them: as many as there are, in time linear in them (a map of pairs keyed by their atoms took
+// time quadratic in them, as neighbouring atoms hashed alike)
+UTEST(pdb, conect_dense) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const size_t n = 50000;
+    const size_t cap = n * 82 + (n - 1) * 34 + 1;
+    char* buf = md_alloc(alloc, cap);
+    size_t len = 0;
+    for (size_t i = 0; i < n; ++i) {
+        len += (size_t)snprintf(buf + len, cap - len, "ATOM  %5d  BB  ALA A%4d    %8.3f%8.3f%8.3f  1.00  0.00           C\n",
+            (int)(i + 1), (int)(i % 9999) + 1, (float)(i % 1000), 0.0f, 0.0f);
+    }
+    for (size_t i = 1; i < n; ++i) {
+        len += (size_t)snprintf(buf + len, cap - len, "CONECT%5d%5d\nCONECT%5d%5d\n", (int)i, (int)(i + 1), (int)(i + 1), (int)i);
+    }
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, (str_t){buf, len}, MD_PDB_OPTION_NONE, NULL));
+    ASSERT_EQ(n, sys.atom.count);
+    ASSERT_EQ(n - 1, sys.bond.count);
+    size_t wrong = 0;
+    for (size_t i = 0; i + 1 < n; ++i) {
+        wrong += sys.bond.pairs[i].idx[0] != (md_atom_idx_t)i || sys.bond.pairs[i].idx[1] != (md_atom_idx_t)(i + 1);
+    }
+    EXPECT_EQ((size_t)0, wrong);
+    md_vm_arena_destroy(alloc);
+}
+
 // An atom name of four characters fills columns 13 to 16 and is kept whole: HN4' and HN4A are two atoms, not two HN4
 UTEST(pdb, four_character_atom_names) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
@@ -868,6 +924,98 @@ UTEST(pdb, formal_charge_column) {
         ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
         EXPECT_EQ(-1, (int)md_atom_formal_charge(&sys.atom, 8));
         EXPECT_EQ(0,  (int)md_atom_formal_charge(&sys.atom, 7));
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// The chain id is whatever character column 22 holds, a digit as well as a letter, kept as a string (a blank is no
+// chain): '1' and 'A' are two chains, and '1' is not the number 1
+UTEST(pdb, chain_ids_as_given) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const str_t text = STR_LIT(
+        "ATOM      1  CA  GLY 1   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  GLY 1   2       3.800   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   1      20.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      4  CA  GLY a   1      40.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      5  CA  GLY #   1      60.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      6  CA  GLY     1      80.000   0.000   0.000  1.00  0.00           C\n");
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL));
+    ASSERT_EQ((size_t)6, sys.atom.count);
+    ASSERT_EQ((size_t)5, sys.instance.count);
+    const char* ids[] = { "1", "A", "a", "#", "" };
+    for (size_t i = 0; i < 5; ++i) {
+        EXPECT_TRUE(str_eq(md_system_instance_auth_id(&sys, i), str_from_cstr(ids[i])));
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// A residue number which is not a number of the format ('****' past 9999) is the one after the residue before
+UTEST(pdb, residue_numbers_which_are_not_numbers) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const str_t text = STR_LIT(
+        "ATOM      1  OW  SOL X9998       0.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM      2  OW  SOL X9999       3.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM      3  OW  SOL X****       6.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM      4  OW  SOL X####       9.000   0.000   0.000  1.00  0.00           O\n");
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, MD_PDB_OPTION_NONE, NULL));
+    ASSERT_EQ((size_t)4, sys.residue.count);
+    EXPECT_EQ(9998, sys.residue.seq_id[0]);
+    EXPECT_EQ(9999, sys.residue.seq_id[1]);
+    EXPECT_EQ(10000, sys.residue.seq_id[2]);
+    EXPECT_EQ(10001, sys.residue.seq_id[3]);
+    md_vm_arena_destroy(alloc);
+}
+
+// A file of many models is read to the end of the first, and then from the last MODEL or ENDMDL record on, for the
+// CONECT records which follow the models: of a file larger than what is looked through at the end at first, and of one
+// whose models have no ENDMDL. And the same where the rest is a single model's CONECT records, which are read through.
+UTEST(pdb, models_then_conect) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    test_executor_t threads = test_executor_threads(3);
+    const md_executor_t* executors[] = { NULL, test_executor(&threads) };
+    for (int variant = 0; variant < 3; ++variant) {
+        md_array(char) text = 0;
+        // More than a pass (md_text_pass_size): the end of the first model is not in the pass which has the CONECT records
+        const int num_models = variant == 2 ? 1 : 7000;
+        const int num_atoms = variant == 2 ? 70000 : 10;
+        char line[128];
+        for (int m = 0; m < num_models; ++m) {
+            int n = snprintf(line, sizeof(line), "MODEL     %4d\n", m + 1);
+            md_array_push_array(text, line, (size_t)n, alloc);
+            for (int i = 0; i < num_atoms; ++i) {
+                n = snprintf(line, sizeof(line), "ATOM  %5d  C%-2d LIG A   1    %8.3f%8.3f%8.3f  1.00  0.00           C\n",
+                    i + 1, i % 100, (float)i * 1.5f, (float)m * 0.001f, 0.0f);
+                md_array_push_array(text, line, (size_t)n, alloc);
+            }
+            if (variant != 1) md_array_push_array(text, "ENDMDL\n", 7, alloc);
+        }
+        // The bonds of the first model's atoms, numbered as they are in every model
+        for (int i = 1; i < num_atoms; ++i) {
+            const int n = snprintf(line, sizeof(line), "CONECT%5d%5d\n", i, i + 1);
+            md_array_push_array(text, line, (size_t)n, alloc);
+        }
+        md_array_push_array(text, "END\n", 4, alloc);
+        const str_t str = { text, md_array_size(text) };
+        ASSERT_GT(str.len, (size_t)MEGABYTES(5));
+
+        const char* path = "md_unittest_models_conect.pdb";
+        ASSERT_TRUE(load_blocks_write(path, str));
+        for (size_t e = 0; e < ARRAY_SIZE(executors); ++e) {
+            md_system_t sys = { .alloc = alloc }, sys2 = { .alloc = alloc };
+            md_system_state_t st = { .alloc = alloc }, st2 = { .alloc = alloc };
+            ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, str_from_cstr(path), MD_PDB_OPTION_NONE, executors[e]));
+            ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &st2, str, MD_PDB_OPTION_NONE, executors[e]));
+            EXPECT_EQ((size_t)num_atoms, sys.atom.count);
+            EXPECT_EQ((size_t)(num_atoms - 1), sys.bond.count);
+            EXPECT_EQ((size_t)0, load_blocks_diff(&sys, &st, &sys2, &st2));
+            // Of the first model
+            EXPECT_EQ(0.0f, st.xyz[num_atoms - 1].y);
+        }
+        remove(path);
     }
     md_vm_arena_destroy(alloc);
 }

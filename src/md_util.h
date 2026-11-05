@@ -311,9 +311,9 @@ md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_ha
 // residue named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
 // the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
 // one label with a different element, mass, size or particle kind are of different types.
-void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[]);
+void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[], const struct md_executor_t* ex);
 // The same, with the labels as labels (8 characters): what a loader keeps per atom at half the size of a string.
-void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[]);
+void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[], const struct md_executor_t* ex);
 
 // Applies the predefined particle type tables (coarse grained beads) to atoms that already have a type,
 // for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ

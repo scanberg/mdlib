@@ -57,32 +57,32 @@ UTEST(xdr, cursor) {
 
 // Checks the system built from a tpr against the .gro gmx writes from the same file
 static void compare_with_gro(int* utest_result, const md_system_t* sys, const md_system_state_t* state, str_t gro_path) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    md_gro_data_t gro = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro, gro_path, alloc));
-    ASSERT_EQ(gro.num_atoms, sys->atom.count);
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t gro = { .alloc = alloc };
+    md_system_state_t gro_st = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_st, gro_path, NULL));
+    ASSERT_EQ(gro.atom.count, sys->atom.count);
 
-    size_t res = 0;
+    size_t res = 0, gro_res = 0;
     size_t res_mismatch = 0, coord_mismatch = 0;
     for (size_t i = 0; i < sys->atom.count; ++i) {
         while (res + 1 < sys->residue.count && sys->residue.atom_offset[res + 1] <= i) res++;
-        const md_gro_atom_t* a = &gro.atom_data[i];
-        str_t res_name = str_from_cstrn(a->res_name, sizeof(a->res_name));
-        if (!str_eq(md_system_residue_name(sys, res), res_name) || sys->residue.seq_id[res] != a->res_id) {
+        while (gro_res + 1 < gro.residue.count && gro.residue.atom_offset[gro_res + 1] <= i) gro_res++;
+        if (!str_eq(md_system_residue_name(sys, res), md_system_residue_name(&gro, gro_res)) || sys->residue.seq_id[res] != gro.residue.seq_id[gro_res]) {
             res_mismatch += 1;
         }
         // A .gro has three decimals in nm
-        if (fabsf(state->xyz[i].x - a->x * 10.0f) > 0.006f || fabsf(state->xyz[i].y - a->y * 10.0f) > 0.006f || fabsf(state->xyz[i].z - a->z * 10.0f) > 0.006f) {
+        if (fabsf(state->xyz[i].x - gro_st.xyz[i].x) > 0.006f || fabsf(state->xyz[i].y - gro_st.xyz[i].y) > 0.006f || fabsf(state->xyz[i].z - gro_st.xyz[i].z) > 0.006f) {
             coord_mismatch += 1;
         }
     }
     EXPECT_EQ(0u, res_mismatch);
     EXPECT_EQ(0u, coord_mismatch);
-    EXPECT_NEAR(gro.box[0][0] * 10.0f, (float)state->unitcell.x, 0.006f);
-    EXPECT_NEAR(gro.box[1][1] * 10.0f, (float)state->unitcell.y, 0.006f);
-    EXPECT_NEAR(gro.box[2][2] * 10.0f, (float)state->unitcell.z, 0.006f);
+    EXPECT_NEAR(gro_st.unitcell.x, state->unitcell.x, 0.006);
+    EXPECT_NEAR(gro_st.unitcell.y, state->unitcell.y, 0.006);
+    EXPECT_NEAR(gro_st.unitcell.z, state->unitcell.z, 0.006);
 
-    md_gro_data_free(&gro, alloc);
+    md_vm_arena_destroy(alloc);
 }
 
 UTEST(tpr, parse_tip3p) {

@@ -7,6 +7,7 @@
 #include <core/md_allocator.h>
 
 #include "comma_locale.h"
+#include "test_executor.h"
 
 #include <float.h>
 #include <math.h>
@@ -543,6 +544,38 @@ UTEST(parse, reader) {
     }
     EXPECT_TRUE(same);
     EXPECT_EQ(len, at);
+
+    // And read over threads, at offsets: the same text, also where a block is taken in part (what is left is read again)
+    {
+        test_executor_t threads = test_executor_threads(3);
+        EXPECT_TRUE(md_reader_rewind(fr));
+        at = 0;
+        same = true;
+        size_t num_blocks = 0;
+        for (str_t block; (block = md_reader_block_parallel(fr, test_executor(&threads))).len > 0; ++num_blocks) {
+            // Every other block in part: up to a line in its middle
+            size_t take = block.len;
+            if (num_blocks % 2 == 0 && block.len > 2) {
+                const char* nl = memchr(block.ptr + block.len / 2, '\n', block.len - block.len / 2);
+                if (nl) take = (size_t)(nl - block.ptr) + 1;
+            }
+            same &= at + take <= len && memcmp(text + at, block.ptr, take) == 0;
+            at += take;
+            md_reader_advance(fr, take);
+        }
+        EXPECT_TRUE(same);
+        EXPECT_EQ(len, at);
+        EXPECT_TRUE(md_reader_end(fr));
+        EXPECT_FALSE(md_reader_failed(fr));
+        // Where the next sequential read begins is where the parallel reads ended
+        EXPECT_TRUE(md_reader_rewind(fr));
+        str_t block = md_reader_block_parallel(fr, test_executor(&threads));
+        md_reader_advance(fr, block.len);
+        str_t line;
+        if (md_reader_extract_line(fr, &line)) {
+            EXPECT_EQ(0, memcmp(text + block.len, line.ptr, line.len));
+        }
+    }
     md_file_reader_close(&frd);
 
     // A line longer than the buffer comes in pieces of it, which put together are the line

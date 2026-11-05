@@ -4,6 +4,7 @@
 #include <core/md_str.h>
 #include <core/md_os.h>     // md_file_t
 #include <core/md_intrinsics.h>
+#include <core/md_executor.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -50,7 +51,9 @@ BLOCKS
 
 A loader which parses its lines in parallel (md_executor.h) takes them a block at a time: md_reader_block gives the
 whole lines the buffer holds (reading more first), md_reader_advance takes what was parsed. md_text_split cuts a block
-into pieces at line boundaries, one per task.
+into pieces at line boundaries, one per task. A loader takes all of a block before it asks for the next: what it
+leaves is moved to the start of the buffer when more is read, which for the rest of a block is most of the buffer.
+md_reader_block_parallel reads the block over the threads of an executor, where the source reads at offsets.
 
 PADDING
 
@@ -260,6 +263,10 @@ typedef struct md_reader_vtable_t {
     // Positions the source at offset from its start, where the next read begins. NULL: it cannot (a stream).
     bool (*seek)(md_reader_i* r, int64_t offset);
 
+    // Reads up to cap bytes at offset into dst, without moving where the next read begins: from several threads at once.
+    // NULL: it cannot.
+    size_t (*read_at)(const md_reader_i* r, int64_t offset, char* dst, size_t cap);
+
     const char* name;   // "file", ...: for the debugger
 } md_reader_vtable_t;
 
@@ -356,6 +363,9 @@ static inline bool md_reader_skip_line(md_reader_i* r) {
 // the buffer is cut at it. Taken with md_reader_advance, up to its length.
 str_t md_reader_block(md_reader_i* r);
 
+// md_reader_block, reading what more there is over the threads of ex where the source reads at offsets (a file)
+str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex);
+
 static inline void md_reader_advance(md_reader_i* r, size_t bytes) {
     ASSERT(r && bytes <= (size_t)(r->end - r->cur));
     r->cur += bytes;
@@ -407,14 +417,26 @@ void md_file_reader_close(md_file_reader_t* fr);
 #define MD_TEXT_BLOCK_SIZE      MEGABYTES(32)   // The buffer of a loader which parses a block at a time
 #define MD_TEXT_MIN_PIECE_SIZE  KILOBYTES(256)
 #define MD_TEXT_PASS_SIZE       MEGABYTES(4)    // What a loader reads in two passes (lines, then fields): in cache for the second
+#define MD_TEXT_PASS_PER_THREAD MEGABYTES(1)    // and for each thread past four, so that every thread has pieces of a pass
+
+// The bytes of a pass for an executor of num_threads: a few pieces of MD_TEXT_MIN_PIECE_SIZE for each thread
+static inline size_t md_text_pass_size(uint32_t num_threads) {
+    return MAX((size_t)MD_TEXT_PASS_SIZE, (size_t)num_threads * MD_TEXT_PASS_PER_THREAD);
+}
+
+// The whole lines of the first pass_size bytes of a block of whole lines, all of it when it is no longer (or the first
+// line is longer)
+static inline size_t md_text_pass_len_of(const char* text, size_t len, size_t pass_size) {
+    if (len <= pass_size) return len;
+    size_t at = pass_size;
+    while (at > 0 && text[at - 1] != '\n') --at;
+    return at > 0 ? at : len;
+}
 
 // The whole lines of the first MD_TEXT_PASS_SIZE bytes of a block of whole lines, all of it when it is no longer (or the
 // first line is longer): the loader advances by what it took, and the next block is the rest
 static inline size_t md_text_pass_len(const char* text, size_t len) {
-    if (len <= MD_TEXT_PASS_SIZE) return len;
-    size_t at = MD_TEXT_PASS_SIZE;
-    while (at > 0 && text[at - 1] != '\n') --at;
-    return at > 0 ? at : len;
+    return md_text_pass_len_of(text, len, MD_TEXT_PASS_SIZE);
 }
 
 typedef struct md_text_piece_t {
