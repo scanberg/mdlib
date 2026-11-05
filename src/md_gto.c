@@ -1864,8 +1864,8 @@ typedef struct {
     float           rho_min;
     uint32_t        dm_tiled;
     uint32_t        dm_nt;
-    uint32_t        _pad0;
-    uint32_t        _pad1;
+    float           fade_lo;
+    float           fade_hi;
     md_gpu_addr_t   cgto_atom_idx;
     md_gpu_addr_t   cgto_r;
     md_gpu_addr_t   cgto_off_len;
@@ -2580,6 +2580,8 @@ bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_loc
     a.num_spins = desc->num_spins;
     a.lol       = desc->kind == MD_GTO_GPU_LOL ? 1u : 0u;
     a.rho_min   = (float)desc->rho_min;
+    a.fade_lo   = desc->fade_hi > 0.0 ? (float)desc->fade_lo : 0.0f;
+    a.fade_hi   = desc->fade_hi > 0.0 ? (float)desc->fade_hi : 0.0f;
     a.cgto_atom_idx = base + L->off_cgto_atom_idx;
     a.cgto_r        = base + L->off_cgto_r;
     a.cgto_off_len  = base + L->off_cgto_off_len;

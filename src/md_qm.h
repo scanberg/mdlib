@@ -348,6 +348,18 @@ bool md_qm_kinetic_available(const struct md_system_t* sys);
 double md_qm_elf(double rho_a, double g2_a, double tau_a, double rho_b, double g2_b, double tau_b, double rho_min);
 double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min);
 
+// How far ELF can be trusted at a point, from float inputs: chi = D / D0 is a small difference of large terms
+// over D0, and an error of float's epsilon in them (the basis, the coordinates, the sums), as any evaluation from
+// float data has, moves chi by about epsilon * (tau_a + tau_b) / (D0_a + D0_b), which this returns (inf where
+// D0 is 0). It grows smoothly outward as rho^(-2/3); measured against double, ELF's error is within a few times
+// it (mean a fifth of it). md_qm_elf_fade(noise, lo, hi) is 1 below lo, 0 above hi, and between them a smoothstep
+// in log(noise) from 1 to 0: ELF times it fades out where the noise takes over rather than ending at a floor of
+// rho. MD_QM_ELF_FADE_LO and _HI keep ELF within about 1e-2 of exact (rho down to about 1e-7).
+#define MD_QM_ELF_FADE_LO 1.0e-3
+#define MD_QM_ELF_FADE_HI 1.0e-2
+double md_qm_elf_noise(double rho_a, double tau_a, double rho_b, double tau_b);
+double md_qm_elf_fade(double noise, double lo, double hi);
+
 // The LOCALIZED ORBITAL LOCATOR (Schmider and Becke, J. Mol. Struct. THEOCHEM 527, 51 (2000)) from the same:
 // t = (D0_a + D0_b) / (tau_a + tau_b), LOL = t / (1 + t), in [0, 1]. It reads tau without the gradient term, so it
 // is smoother than ELF and its maxima are where ELF's are; high where the orbitals' gradients are small (cores,

@@ -1226,6 +1226,20 @@ double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min)
     return md_qm_elf(0.5 * rho, 0.25 * g2, 0.5 * tau, 0.5 * rho, 0.25 * g2, 0.5 * tau, rho_min);
 }
 
+double md_qm_elf_noise(double rho_a, double tau_a, double rho_b, double tau_b) {
+    const double d0 = QM_ELF_CF_SPIN * ((rho_a > 0.0 ? pow(rho_a, 5.0 / 3.0) : 0.0) + (rho_b > 0.0 ? pow(rho_b, 5.0 / 3.0) : 0.0));
+    const double tau = tau_a + tau_b;
+    if (!(d0 > 0.0)) return INFINITY;
+    return 5.9604644775390625e-8 * (tau > 0.0 ? tau : 0.0) / d0;   // float's unit roundoff, 2^-24
+}
+
+double md_qm_elf_fade(double noise, double lo, double hi) {
+    if (!(noise < hi)) return 0.0;
+    if (noise <= lo || !(lo > 0.0)) return 1.0;
+    const double t = (log(noise) - log(lo)) / (log(hi) - log(lo));
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+
 double md_qm_lol(double rho_a, double tau_a, double rho_b, double tau_b, double rho_min) {
     const double rho = rho_a + rho_b;
     if (!(rho > 0.0) || rho < rho_min) return 0.0;

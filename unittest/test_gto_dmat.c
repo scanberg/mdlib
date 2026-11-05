@@ -10,6 +10,8 @@
 //   gto_localization.matches_cpu      ELF and LOL by their grid kernel (md_gto_gpu_localization_launch) against
 //                                     md_qm_elf_evaluate in double at the voxels: h2o and mol (closed shells; the
 //                                     packed matrix and a dmat), the OH radical (UHF, open shell)
+//   gto_localization.tails_fade       out to 9 bohr beyond the atoms, no floor of rho: ELF faded where float
+//                                     runs out (md_qm_elf_noise), LOL as it is, against the matrices in double
 //   gto_dmat.benchmark                GTO_DMAT_FILE=<file in test_data/vlx> (protein.h5): the pattern, the
 //                                     build per frame (packing, upload, kernel), and a sub-volume through
 //                                     the dmat against the packed matrix; GTO_DMAT_REPS (5),
@@ -420,6 +422,8 @@ static void loc_free(loc_src_t* s) {
 }
 
 // ELF (kind ELF) or LOL into out at the grid's voxel centres, by the kernel, from the packed matrices or dmats
+static double loc_fade_lo = 0.0, loc_fade_hi = 0.0;   // the fade the kernel is launched with (0: none)
+
 static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, md_gto_gpu_localization_t kind, bool use_dmat, double rho_min, double* out_seconds) {
     md_gpu_device_t dev = md_gpu_device_create(NULL);
     if (!dev) return false;
@@ -433,7 +437,7 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
     md_gpu_upload_end(st);
     md_gto_gpu_localization_desc_t desc = {
         .basis = basis, .atom_xyz = atoms, .num_spins = (uint32_t)s->num_spins, .kind = kind, .rho_min = rho_min,
-        .grid = grid, .sample_offset = {0.5f, 0.5f, 0.5f},
+        .fade_lo = loc_fade_lo, .fade_hi = loc_fade_hi, .grid = grid, .sample_offset = {0.5f, 0.5f, 0.5f},
     };
     md_gpu_addr_t coeff[2] = {0, 0};
     for (int k = 0; k < s->num_spins; ++k) {
@@ -536,6 +540,130 @@ UTEST(gto_localization, matches_cpu) {
             }
         }
         free(g); free(elf); free(lol); free(pts);
+        loc_free(&s);
+    }
+}
+// ELF and LOL out into the tails, where rho vanishes: the kernel with no floor of rho and ELF faded
+// (MD_QM_ELF_FADE_LO, _HI), against the matrices in double (tails_dmat_terms: every AO, no cutoff) at every 3rd
+// voxel of a grid out to 9 bohr beyond the outermost atom. ELF is within 2e-2 of the exact one faded the same way
+// everywhere, LOL within 1e-5 with no floor at all. By decade of rho: what ELF is (mean), its error unfaded
+// (where float runs out: about 1e-2 at rho 1e-7, any value by 1e-10) and faded, and the mean fade.
+
+// rho, grad rho, tau of one spin's matrix D at a point, all in double: the AOs from the basis (its float exponents
+// and coefficients, as the kernel has them) without a cutoff
+static void tails_dmat_terms(double* rho, double g[3], double* tau, const loc_src_t* s, const double* D, const float p[3], double* ao, double* aog) {
+    size_t n = 0;
+    for (uint32_t si = 0; si < s->basis.num_shells; ++si) {
+        const md_gto_shell_t sh = s->basis.shells[si];
+        const double d[3] = { (double)p[0] - s->xyz[3 * sh.atom_idx], (double)p[1] - s->xyz[3 * sh.atom_idx + 1], (double)p[2] - s->xyz[3 * sh.atom_idx + 2] };
+        const double r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        double rad = 0, drad = 0;   // sum c e^(-a r^2), and sum -2 a c e^(-a r^2)
+        for (uint32_t k = 0; k < sh.num_primitives; ++k) {
+            const double a = s->basis.alpha[sh.primitive_offset + k], c = s->basis.coeff[sh.primitive_offset + k];
+            const double e = c * exp(-a * r2);
+            rad += e; drad += -2.0 * a * e;
+        }
+        const int l = (int)sh.l;
+        for (int i = l; i >= 0; --i) for (int j = l - i; j >= 0; --j) {
+            const int k = l - i - j;
+            const int e3[3] = {i, j, k};
+            const double f = md_gto_cart_norm_factor(i, j, k);
+            double m = 1, dm[3];
+            for (int q = 0; q < 3; ++q) m *= pow(d[q], e3[q]);
+            for (int q = 0; q < 3; ++q) {
+                double o = 1;
+                for (int w = 0; w < 3; ++w) if (w != q) o *= pow(d[w], e3[w]);
+                dm[q] = (e3[q] > 0 ? e3[q] * pow(d[q], e3[q] - 1) : 0.0) * o;
+            }
+            ao[n] = f * m * rad;
+            for (int q = 0; q < 3; ++q) aog[3 * n + q] = f * (dm[q] * rad + m * drad * d[q]);
+            ++n;
+        }
+    }
+    double r = 0, gx = 0, gy = 0, gz = 0, t = 0;
+    for (size_t i = 0; i < n; ++i) {
+        double u = 0, v[3] = {0, 0, 0};
+        for (size_t j = 0; j < n; ++j) {
+            const double Dij = D[i * n + j];
+            u += Dij * ao[j];
+            v[0] += Dij * aog[3 * j]; v[1] += Dij * aog[3 * j + 1]; v[2] += Dij * aog[3 * j + 2];
+        }
+        r += ao[i] * u;
+        gx += 2 * aog[3 * i] * u; gy += 2 * aog[3 * i + 1] * u; gz += 2 * aog[3 * i + 2] * u;
+        t += 0.5 * (aog[3 * i] * v[0] + aog[3 * i + 1] * v[1] + aog[3 * i + 2] * v[2]);
+    }
+    *rho = r; g[0] = gx; g[1] = gy; g[2] = gz; *tau = t;
+}
+
+static void loc_ref_dmat(double* elf, double* lol, double* rho, double* noise, const loc_src_t* s, const float* p, double* ao) {
+    double r[2] = {0, 0}, g[2][3] = {{0}}, t[2] = {0, 0};
+    for (int k = 0; k < s->num_spins; ++k) tails_dmat_terms(&r[k], g[k], &t[k], s, s->D[k], p, ao, ao + s->num_ao);
+    if (s->num_spins == 1) {   // two equal halves
+        r[0] *= 0.5; t[0] *= 0.5; for (int q = 0; q < 3; ++q) g[0][q] *= 0.5;
+        r[1] = r[0]; t[1] = t[0]; for (int q = 0; q < 3; ++q) g[1][q] = g[0][q];
+    }
+    const double g2a = g[0][0] * g[0][0] + g[0][1] * g[0][1] + g[0][2] * g[0][2];
+    const double g2b = g[1][0] * g[1][0] + g[1][1] * g[1][1] + g[1][2] * g[1][2];
+    *elf = md_qm_elf(r[0], g2a, t[0], r[1], g2b, t[1], 0.0);
+    *lol = md_qm_lol(r[0], t[0], r[1], t[1], 0.0);
+    *rho = r[0] + r[1];
+    *noise = md_qm_elf_noise(r[0], t[0], r[1], t[1]);
+}
+
+UTEST(gto_localization, tails_fade) {
+    static const char* files[] = {"h2o.h5", "mol.h5", "oh_631gs_uhf.molden"};
+    for (int fi = 0; fi < 3; ++fi) {
+        loc_src_t s;
+        if (!loc_load(&s, files[fi])) { loc_free(&s); ASSERT_TRUE(false); }
+        double c[3] = {0, 0, 0}, ext = 0;
+        for (size_t a = 0; a < s.num_atoms; ++a) for (int k = 0; k < 3; ++k) c[k] += s.xyz[3 * a + k] / (double)s.num_atoms;
+        for (size_t a = 0; a < s.num_atoms; ++a) for (int k = 0; k < 3; ++k) ext = fmax(ext, fabs(s.xyz[3 * a + k] - c[k]));
+        const int dim = 32;
+        const float h = (float)(2.0 * (ext + 9.0) / dim);
+        const md_grid_t grid = {
+            .orientation = mat3_ident(),
+            .origin  = vec3_set((float)c[0] - 0.5f * h * dim, (float)c[1] - 0.5f * h * dim, (float)c[2] - 0.5f * h * dim),
+            .spacing = vec3_set(h, h, h),
+            .dim     = { dim, dim, dim },
+        };
+        const size_t n = (size_t)dim * dim * dim;
+        float* elf_raw = (float*)malloc(sizeof(float) * n);
+        float* elf_fad = (float*)malloc(sizeof(float) * n);
+        float* lol = (float*)malloc(sizeof(float) * n);
+        loc_fade_lo = 0.0; loc_fade_hi = 0.0;
+        bool ok = loc_eval_gpu(elf_raw, &s, &grid, MD_GTO_GPU_ELF, true, 0.0, NULL) && loc_eval_gpu(lol, &s, &grid, MD_GTO_GPU_LOL, true, 0.0, NULL);
+        loc_fade_lo = MD_QM_ELF_FADE_LO; loc_fade_hi = MD_QM_ELF_FADE_HI;
+        ok = ok && loc_eval_gpu(elf_fad, &s, &grid, MD_GTO_GPU_ELF, true, 0.0, NULL);
+        loc_fade_lo = 0.0; loc_fade_hi = 0.0;
+        if (!ok) { free(elf_raw); free(elf_fad); free(lol); loc_free(&s); UTEST_SKIP("no GPU device"); }
+
+        double* ao = (double*)malloc(sizeof(double) * 4 * s.num_ao);
+        enum { NB = 14 };   // decades 1e1 .. 1e-12 and below
+        double val[NB] = {0}, raw[NB] = {0}, fad[NB] = {0}, wsum[NB] = {0};
+        size_t cnt[NB] = {0};
+        double worst_elf = 0, worst_lol = 0, rho_half = 0;
+        for (size_t i = 0; i < n; i += 3) {
+            const size_t x = i % dim, y = (i / dim) % dim, z = i / ((size_t)dim * dim);
+            const float p[3] = { grid.origin.x + ((float)x + 0.5f) * h, grid.origin.y + ((float)y + 0.5f) * h, grid.origin.z + ((float)z + 0.5f) * h };
+            double e, l, rho, noise;
+            loc_ref_dmat(&e, &l, &rho, &noise, &s, p, ao);
+            const double w = md_qm_elf_fade(noise, MD_QM_ELF_FADE_LO, MD_QM_ELF_FADE_HI);
+            const double d = fabs((double)elf_fad[i] - e * w);
+            worst_elf = fmax(worst_elf, d);
+            worst_lol = fmax(worst_lol, fabs((double)lol[i] - l));
+            if (w > 0.4 && w < 0.6) rho_half = fmax(rho_half, rho);
+            int b = rho > 0 ? (int)floor(1.0 - log10(rho)) : NB - 1;
+            b = b < 0 ? 0 : (b >= NB ? NB - 1 : b);
+            val[b] += e; raw[b] = fmax(raw[b], fabs((double)elf_raw[i] - e)); fad[b] = fmax(fad[b], d); wsum[b] += w; cnt[b]++;
+        }
+        printf("  %-20s ELF faded within %.1e (half faded by rho %.0e), LOL within %.1e (" MD_GTO_GPU_LOCALIZATION_REVISION ")\n", files[fi], worst_elf, rho_half, worst_lol);
+        printf("    rho     voxels  ELF    unfaded  faded    fade\n");
+        for (int b = 0; b < NB; ++b) if (cnt[b]) {
+            printf("    1e%+03d %6zu  %.3f  %.2e  %.2e  %.2f\n", 1 - b, cnt[b], val[b] / cnt[b], raw[b], fad[b], wsum[b] / cnt[b]);
+        }
+        EXPECT_LT(worst_elf, 2.0e-2);
+        EXPECT_LT(worst_lol, 1.0e-5);
+        free(ao); free(elf_raw); free(elf_fad); free(lol);
         loc_free(&s);
     }
 }

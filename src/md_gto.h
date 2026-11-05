@@ -565,6 +565,11 @@ void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
 //
 // The basis's radii decide which AOs are summed at a voxel: ELF is made of small differences in the tails, and
 // wants a basis made with the cutoff 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
+//
+// Precision: in the tails ELF is a small difference of large terms, and float carries it to where its noise,
+// md_qm_elf_noise, is about 1e-2 (rho about 1e-7 to 1e-8, against 1e-4 for a fixed floor). fade_lo, fade_hi fade
+// it out to 0 there, smoothly (md_qm_elf_fade), rather than at a floor of rho; MD_QM_ELF_FADE_LO and _HI are the
+// values measured for. LOL takes no difference and needs neither: it holds to where rho underflows.
 typedef enum md_gto_gpu_localization_t {
     MD_GTO_GPU_ELF = 0,
     MD_GTO_GPU_LOL = 1,
@@ -579,14 +584,16 @@ typedef struct md_gto_gpu_localization_desc_t {
     md_gpu_addr_t      coeff[2];
     md_gto_gpu_dmat_t  dmat[2];
     md_gto_gpu_localization_t kind;
-    double             rho_min;       // where rho (both spins) is below it, 0 (md_qm_elf)
+    double             rho_min;       // where rho (both spins) is below it, 0 (md_qm_elf); 0 with a fade
+    double             fade_lo;       // ELF times md_qm_elf_fade(md_qm_elf_noise, fade_lo, fade_hi); fade_hi 0: none
+    double             fade_hi;
     md_gpu_texture_t   out_tex;       // R32F, needs MD_GPU_TEX_STORAGE; mip 0 is written
     const md_grid_t*   grid;
     float              sample_offset[3];
 } md_gto_gpu_localization_desc_t;
 
 // The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
-#define MD_GTO_GPU_LOCALIZATION_REVISION "r1"
+#define MD_GTO_GPU_LOCALIZATION_REVISION "r2"
 
 // Issues the evaluation into `stream` (asynchronous). False, logged, for invalid input.
 bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
