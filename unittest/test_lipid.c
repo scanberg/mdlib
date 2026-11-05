@@ -847,6 +847,215 @@ UTEST(lipid, molecule_of_residues_apart) {
     md_vm_arena_destroy(alloc);
 }
 
+// The atom of the name in residue res, -1 when none
+static int atom_in_res(const md_system_t* sys, size_t res, const char* name) {
+    const md_urange_t r = md_system_residue_atom_range(sys, res);
+    for (uint32_t i = r.beg; i < r.end; ++i) {
+        if (str_eq_cstr(md_atom_name(&sys->atom, i), name)) return (int)i;
+    }
+    return -1;
+}
+
+// The lipids of AMBER (Lipid14, 17 and 21) are split into residues, each acyl chain one (OL oleoyl, PA palmitoyl, ...)
+// whose C12 is bonded to the C11 or C21 of an ester of the head (PE, PC, PGR, ...), the residue before or after it: a
+// lipid by its structure, a molecule of the three. Here a DOPE of a packed starting structure, whose head another one
+// (PE170) overlaps: the C12 of OL142 is 1.54 A from the C11 of its own head, and 1.42 A from O22 and 1.53 A from C21 of
+// the other, more bonds than a carbon takes. The bonds to the residue apart go, not the ester to the residue next to
+// it, and the chain is a tail of its lipid rather than a molecule of its own.
+UTEST(lipid, amber_tail_kept_on_its_head_over_a_clash) {
+    static const char gro[] =
+        "OL142 PE143 OL144, a DOPE of AMBER Lipid21, and PE170, whose head overlaps that of PE143\n"
+        "  158\n"
+        "  142OL     C12    1   3.062   6.995   2.513\n"
+        "  142OL     H2R    2   3.113   6.898   2.535\n"
+        "  142OL     H2S    3   3.086   7.026   2.409\n"
+        "  142OL     C13    4   3.103   7.107   2.613\n"
+        "  142OL     H3R    5   3.214   7.107   2.618\n"
+        "  142OL     H3S    6   3.059   7.085   2.713\n"
+        "  142OL     C14    7   3.050   7.248   2.593\n"
+        "  142OL     H4R    8   3.077   7.279   2.490\n"
+        "  142OL     H4S    9   2.939   7.243   2.596\n"
+        "  142OL     C15   10   3.071   7.352   2.697\n"
+        "  142OL     H5R   11   3.007   7.441   2.684\n"
+        "  142OL     H5S   12   3.176   7.385   2.678\n"
+        "  142OL     C16   13   3.051   7.309   2.847\n"
+        "  142OL     H6R   14   3.113   7.219   2.866\n"
+        "  142OL     H6S   15   2.941   7.292   2.845\n"
+        "  142OL     C17   16   3.087   7.411   2.955\n"
+        "  142OL     H7R   17   3.103   7.370   3.057\n"
+        "  142OL     H7S   18   3.183   7.459   2.925\n"
+        "  142OL     C18   19   2.976   7.515   2.969\n"
+        "  142OL     H8R   20   2.886   7.453   2.987\n"
+        "  142OL     H8S   21   2.955   7.569   2.874\n"
+        "  142OL     C19   22   3.013   7.617   3.077\n"
+        "  142OL     H9R   23   3.079   7.698   3.042\n"
+        "  142OL    C110   24   2.972   7.619   3.205\n"
+        "  142OL    H10R   25   3.006   7.701   3.271\n"
+        "  142OL    C111   26   2.880   7.510   3.259\n"
+        "  142OL    H11R   27   2.833   7.447   3.180\n"
+        "  142OL    H11S   28   2.938   7.430   3.310\n"
+        "  142OL    C112   29   2.788   7.565   3.376\n"
+        "  142OL    H12R   30   2.693   7.508   3.388\n"
+        "  142OL    H12S   31   2.750   7.668   3.361\n"
+        "  142OL    C113   32   2.862   7.553   3.507\n"
+        "  142OL    H13R   33   2.894   7.448   3.524\n"
+        "  142OL    H13S   34   2.952   7.618   3.507\n"
+        "  142OL    C114   35   2.771   7.582   3.633\n"
+        "  142OL    H14R   36   2.683   7.515   3.624\n"
+        "  142OL    H14S   37   2.728   7.685   3.631\n"
+        "  142OL    C115   38   2.839   7.547   3.770\n"
+        "  142OL    H15R   39   2.949   7.549   3.755\n"
+        "  142OL    H15S   40   2.818   7.443   3.806\n"
+        "  142OL    C116   41   2.791   7.648   3.883\n"
+        "  142OL    H16R   42   2.837   7.744   3.850\n"
+        "  142OL    H16S   43   2.829   7.615   3.982\n"
+        "  142OL    C117   44   2.642   7.645   3.889\n"
+        "  142OL    H17R   45   2.591   7.680   3.797\n"
+        "  142OL    H17S   46   2.607   7.539   3.885\n"
+        "  142OL    C118   47   2.599   7.722   4.014\n"
+        "  142OL    H18R   48   2.646   7.823   4.016\n"
+        "  142OL    H18S   49   2.489   7.738   4.010\n"
+        "  142OL    H18T   50   2.620   7.668   4.109\n"
+        "  143PE     C11   51   2.911   6.969   2.530\n"
+        "  143PE     O12   52   2.843   6.985   2.628\n"
+        "  143PE     O11   53   2.861   6.919   2.414\n"
+        "  143PE      C1   54   2.724   6.882   2.417\n"
+        "  143PE      HR   55   2.722   6.799   2.342\n"
+        "  143PE      HS   56   2.680   6.850   2.514\n"
+        "  143PE      C2   57   2.635   7.001   2.351\n"
+        "  143PE      HX   58   2.529   6.968   2.344\n"
+        "  143PE      C3   59   2.680   7.051   2.210\n"
+        "  143PE      HA   60   2.782   7.088   2.233\n"
+        "  143PE      HB   61   2.679   6.966   2.139\n"
+        "  143PE     O31   62   2.601   7.154   2.158\n"
+        "  143PE     P31   63   2.611   7.188   2.006\n"
+        "  143PE     O32   64   2.758   7.247   1.998\n"
+        "  143PE     C31   65   2.788   7.365   2.059\n"
+        "  143PE     H1A   66   2.732   7.447   2.009\n"
+        "  143PE     H1B   67   2.764   7.367   2.167\n"
+        "  143PE     C32   68   2.938   7.402   2.038\n"
+        "  143PE     H2A   69   2.995   7.321   2.089\n"
+        "  143PE     H2B   70   2.958   7.400   1.928\n"
+        "  143PE     N31   71   2.974   7.541   2.094\n"
+        "  143PE    HN1A   72   2.892   7.587   2.138\n"
+        "  143PE    HN1B   73   3.051   7.530   2.163\n"
+        "  143PE    HN1C   74   3.007   7.605   2.019\n"
+        "  143PE     O33   75   2.607   7.062   1.927\n"
+        "  143PE     O34   76   2.505   7.282   1.973\n"
+        "  143PE     O21   77   2.635   7.111   2.441\n"
+        "  143PE     C21   78   2.559   7.101   2.550\n"
+        "  143PE     O22   79   2.477   7.014   2.559\n"
+        "  144OL     C12   80   2.571   7.229   2.630\n"
+        "  144OL     H2R   81   2.556   7.318   2.566\n"
+        "  144OL     H2S   82   2.672   7.227   2.679\n"
+        "  144OL     C13   83   2.473   7.238   2.746\n"
+        "  144OL     H3R   84   2.464   7.141   2.801\n"
+        "  144OL     H3S   85   2.374   7.259   2.699\n"
+        "  144OL     C14   86   2.522   7.326   2.865\n"
+        "  144OL     H4R   87   2.608   7.287   2.924\n"
+        "  144OL     H4S   88   2.438   7.346   2.935\n"
+        "  144OL     C15   89   2.566   7.466   2.822\n"
+        "  144OL     H5R   90   2.475   7.503   2.768\n"
+        "  144OL     H5S   91   2.658   7.451   2.762\n"
+        "  144OL     C16   92   2.605   7.552   2.943\n"
+        "  144OL     H6R   93   2.700   7.514   2.986\n"
+        "  144OL     H6S   94   2.538   7.536   3.030\n"
+        "  144OL     C17   95   2.610   7.700   2.923\n"
+        "  144OL     H7R   96   2.517   7.744   2.882\n"
+        "  144OL     H7S   97   2.691   7.710   2.847\n"
+        "  144OL     C18   98   2.638   7.781   3.048\n"
+        "  144OL     H8R   99   2.675   7.711   3.125\n"
+        "  144OL     H8S  100   2.545   7.821   3.095\n"
+        "  144OL     C19  101   2.748   7.882   3.031\n"
+        "  144OL     H9R  102   2.831   7.850   2.966\n"
+        "  144OL    C110  103   2.748   8.010   3.083\n"
+        "  144OL    H10R  104   2.841   8.070   3.091\n"
+        "  144OL    C111  105   2.638   8.067   3.170\n"
+        "  144OL    H11R  106   2.540   8.087   3.122\n"
+        "  144OL    H11S  107   2.663   8.172   3.196\n"
+        "  144OL    C112  108   2.626   7.996   3.312\n"
+        "  144OL    H12R  109   2.632   7.886   3.301\n"
+        "  144OL    H12S  110   2.530   8.035   3.352\n"
+        "  144OL    C113  111   2.735   8.043   3.402\n"
+        "  144OL    H13R  112   2.715   8.143   3.446\n"
+        "  144OL    H13S  113   2.832   8.059   3.350\n"
+        "  144OL    C114  114   2.755   7.949   3.523\n"
+        "  144OL    H14R  115   2.714   7.848   3.501\n"
+        "  144OL    H14S  116   2.693   7.984   3.609\n"
+        "  144OL    C115  117   2.897   7.933   3.569\n"
+        "  144OL    H15R  118   2.959   7.872   3.500\n"
+        "  144OL    H15S  119   2.888   7.861   3.653\n"
+        "  144OL    C116  120   2.964   8.059   3.617\n"
+        "  144OL    H16R  121   2.898   8.115   3.687\n"
+        "  144OL    H16S  122   2.990   8.129   3.535\n"
+        "  144OL    C117  123   3.103   8.031   3.689\n"
+        "  144OL    H17R  124   3.163   8.124   3.703\n"
+        "  144OL    H17S  125   3.167   7.970   3.622\n"
+        "  144OL    C118  126   3.099   7.968   3.827\n"
+        "  144OL    H18R  127   3.057   8.041   3.900\n"
+        "  144OL    H18S  128   3.206   7.955   3.854\n"
+        "  144OL    H18T  129   3.040   7.874   3.831\n"
+        "  170PE     C11  130   3.329   7.324   2.254\n"
+        "  170PE     O12  131   3.341   7.247   2.346\n"
+        "  170PE     O11  132   3.255   7.297   2.144\n"
+        "  170PE      C1  133   3.194   7.169   2.142\n"
+        "  170PE      HR  134   3.189   7.148   2.033\n"
+        "  170PE      HS  135   3.243   7.086   2.197\n"
+        "  170PE      C2  136   3.039   7.182   2.189\n"
+        "  170PE      HX  137   2.988   7.084   2.177\n"
+        "  170PE      C3  138   2.953   7.290   2.114\n"
+        "  170PE      HA  139   3.008   7.382   2.141\n"
+        "  170PE      HB  140   2.952   7.268   2.006\n"
+        "  170PE     O31  141   2.820   7.297   2.159\n"
+        "  170PE     P31  142   2.715   7.374   2.072\n"
+        "  170PE     O32  143   2.768   7.522   2.084\n"
+        "  170PE     C31  144   2.762   7.588   2.203\n"
+        "  170PE     H1A  145   2.655   7.602   2.232\n"
+        "  170PE     H1B  146   2.812   7.534   2.286\n"
+        "  170PE     C32  147   2.819   7.732   2.190\n"
+        "  170PE     H2A  148   2.926   7.718   2.164\n"
+        "  170PE     H2B  149   2.765   7.783   2.108\n"
+        "  170PE     N31  150   2.803   7.814   2.320\n"
+        "  170PE    HN1A  151   2.758   7.760   2.395\n"
+        "  170PE    HN1B  152   2.897   7.847   2.350\n"
+        "  170PE    HN1C  153   2.743   7.898   2.305\n"
+        "  170PE     O33  154   2.729   7.330   1.930\n"
+        "  170PE     O34  155   2.583   7.349   2.127\n"
+        "  170PE     O21  156   3.037   7.210   2.328\n"
+        "  170PE     C21  157   3.063   7.109   2.411\n"
+        "  170PE     O22  158   3.066   6.996   2.371\n"
+        "  15.35366  15.35366   8.45366\n";
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro), NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_EQ(4, (int)md_system_residue_count(&sys));
+    EXPECT_TRUE(lipid_invariants_hold(&sys));
+
+    const int c12 = atom_in_res(&sys, 0, "C12");
+    const int c11 = atom_in_res(&sys, 1, "C11");
+    ASSERT_TRUE(c12 >= 0 && c11 >= 0);
+    EXPECT_GE(md_bond_find(&sys.bond, c12, c11), 0);
+    EXPECT_LT(md_bond_find(&sys.bond, c12, atom_in_res(&sys, 3, "O22")), 0);
+    EXPECT_LT(md_bond_find(&sys.bond, c12, atom_in_res(&sys, 3, "C21")), 0);
+
+    // Both chains are of the lipid of PE143 (which the overlap of the heads may join PE170 to), and the chain of OL142 is
+    // a tail of it, from its C12 off the C11 of the head
+    EXPECT_EQ(MD_RESIDUE_KIND_LIPID, md_system_residue_kind(&sys, 0));
+    EXPECT_EQ(MD_RESIDUE_KIND_LIPID, md_system_residue_kind(&sys, 2));
+    const int l = lipid_of_res(&sys, 0);
+    ASSERT_TRUE(l >= 0);
+    EXPECT_EQ(1, lipid_res(&sys, l, 1));
+    EXPECT_EQ(2, lipid_res(&sys, l, 2));
+    bool tail = false;
+    for (uint32_t t = sys.lipid.tail_offset[l]; t < sys.lipid.tail_offset[l + 1]; ++t) {
+        tail |= sys.lipid.tail.anchor_beg[t] == c11 && md_lipid_tail_spine(&sys.lipid, t)[0] == c12 && tail_spine_len(&sys, t) == 17;
+    }
+    EXPECT_TRUE(tail);
+    md_vm_arena_destroy(alloc);
+}
+
 UTEST(lipid, martini_unknown_by_tail_beads) {
     // A coarse grained glycolipid the Martini database does not have (a ganglioside of a topology of its own), from a GRO
     // and its topology: its sugar beads (GM1 GM2 GM3) and amides (AM1 AM2), its tails named as those of the lipidomes. The
