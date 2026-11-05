@@ -345,8 +345,8 @@ bool md_qm_kinetic_available(const struct md_system_t* sys);
 // settings.ini ELF_addminimal = 1). Far from the atoms D and D0 are a difference and a power of vanishing sums: with a
 // gaussian basis' tails their ratio takes any value, and as the most diffuse orbital comes to make the density alone
 // D goes to 0 and ELF to 1 in the vacuum around a molecule. With d_min it goes to 0 instead, smoothly, as D0 falls
-// below d_min: MD_QM_ELF_D_MIN (1e-5) has ELF follow the exact one to the 1e-3 isodensity (within 0.1 there) and
-// gone by rho 1e-4, as Multiwfn's (and the figures made with it). d_min also keeps ELF of float data from its noise
+// below d_min: MD_QM_ELF_D_MIN (1e-5) has ELF follow the exact one to near the 1e-3 isodensity (lower by 0.11 to 0.15
+// there: d_min / D0 is 0.35 at rho 1e-3) and gone by rho 1e-4, as Multiwfn's (and the figures made with it). d_min also keeps ELF of float data from its noise
 // (md_qm_elf_noise), which is far below it wherever ELF is not already 0. d_min 0: the function as defined, out to
 // where the density vanishes. 0 where the density (both spins) is below rho_min.
 #define MD_QM_ELF_D_MIN 1.0e-5
