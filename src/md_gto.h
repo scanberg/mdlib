@@ -595,6 +595,11 @@ typedef struct md_gto_gpu_localization_desc_t {
 // The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
 #define MD_GTO_GPU_LOCALIZATION_REVISION "r2"
 
+// The revision of the grid kernels' 2D variants (a grid of one layer: blocks of 32x16x1 voxels, 16x16x1 for ELF and
+// LOL), for measurements.
+// MD_GTO_GPU_NO_2D (set in the environment) takes the 3D kernels for every grid, to compare.
+#define MD_GTO_GPU_PLANE_REVISION "plane-kernels r2"
+
 // Issues the evaluation into `stream` (asynchronous). False, logged, for invalid input.
 bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
 
