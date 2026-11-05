@@ -323,6 +323,13 @@ set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
   src/shaders/gto/eval_gto_mo_gemm_128x32.slang
+  # the same for a grid of one layer (the image of a plane): blocks of 32x16x1 voxels
+  src/shaders/gto/eval_gto_localization_2d.slang
+  src/shaders/gto/eval_gto_density_gemm2_128x32_2d.slang
+  src/shaders/gto/eval_gto_density_gemm2_128x64_2d.slang
+  src/shaders/gto/eval_gto_mo_shell_v4_m1_2d.slang
+  src/shaders/gto/eval_gto_mo_shell_v4_m8_2d.slang
+  src/shaders/gto/eval_gto_mo_gemm_128x32_2d.slang
 )
 
 set(GEN_FILES)
@@ -704,6 +711,8 @@ if (MD_ENABLE_GPU)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm2.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_gemm.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
   )
   foreach(GTO_SRC ${GTO_SLANG_FILES})
     get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
@@ -720,6 +729,13 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
+    ENTRIES   count_main phi_main dgather_main
+    DEPENDS   ${GTO_SLANG_INCLUDES}
+  )
+  compile_gpu_shaders(eval_gto_density_gemm_2d_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm_2d.slang
     ENTRIES   count_main phi_main dgather_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )

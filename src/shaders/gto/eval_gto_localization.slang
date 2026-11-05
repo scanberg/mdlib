@@ -61,9 +61,12 @@ uint4 unpack_ijkl(uint packed) {
     return uint4((packed >> 0) & 0xFFu, (packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu, (packed >> 24) & 0xFFu);
 }
 
+// A group's block of voxels: 8x8x8, or for a grid of one layer (eval_gto_localization_2d.slang) 32x16x1
+#ifndef WG_X
 #define WG_X 8
 #define WG_Y 8
 #define WG_Z 8
+#endif
 #define WG_SIZE (WG_X * WG_Y * WG_Z)
 #define TILE_SIZE 16
 #define TILE_AREA (TILE_SIZE * TILE_SIZE)

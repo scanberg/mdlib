@@ -10,6 +10,8 @@
 //   gto_localization.matches_cpu      ELF and LOL by their grid kernel (md_gto_gpu_localization_launch) against
 //                                     md_qm_elf_evaluate in double at the voxels: h2o and mol (closed shells; the
 //                                     packed matrix and a dmat), the OH radical (UHF, open shell)
+//   gto_gpu.plane_matches_volume      a grid of one layer (the 2D kernels, 32x16x1) against the first layer of the
+//                                     same grid 8 deep (3D, 8x8x8): density, orbitals, ELF and LOL
 //   gto_localization.tails_fade       out to 9 bohr beyond the atoms, no floor of rho: ELF faded where float
 //                                     runs out (md_qm_elf_noise), LOL as it is, against the matrices in double
 //   gto_dmat.benchmark                GTO_DMAT_FILE=<file in test_data/vlx> (protein.h5): the pattern, the
@@ -543,6 +545,166 @@ UTEST(gto_localization, matches_cpu) {
         loc_free(&s);
     }
 }
+// A grid of one layer is evaluated by the 2D kernels (blocks of 32x16x1 voxels): what they give is the first layer of
+// the same grid eight layers deep, by the 3D ones (8x8x8), within the difference of what the two screen out. A turned
+// grid, as a plane's is; the density (packed and dmat, every algorithm), orbitals (1: shell, 4: shell of 8, 12: GEMM)
+// and ELF, LOL.
+typedef struct plane_pair_t {
+    md_grid_t        g3, g2;
+    md_gpu_texture_t t3, t2;
+    md_gpu_mem_t     rb3, rb2;
+    size_t           n3, n2;
+    float            *v3, *v2;
+} plane_pair_t;
+
+static md_grid_t plane_grid(const float* xyz, size_t num_atoms, int layers) {
+    double c[3] = {0, 0, 0};
+    for (size_t a = 0; a < num_atoms; ++a) for (int k = 0; k < 3; ++k) c[k] += xyz[3 * a + k] / (double)num_atoms;
+    // turned by 0.5 rad about (1, 2, 3) / |(1, 2, 3)|
+    const double ax[3] = {1.0 / sqrt(14.0), 2.0 / sqrt(14.0), 3.0 / sqrt(14.0)}, an = 0.5, co = cos(an), si = sin(an);
+    mat3_t R;
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+        const double k[3][3] = {{0, -ax[2], ax[1]}, {ax[2], 0, -ax[0]}, {-ax[1], ax[0], 0}};
+        double kk = 0; for (int m = 0; m < 3; ++m) kk += k[i][m] * k[m][j];
+        R.elem[j][i] = (float)((i == j ? 1.0 : 0.0) + si * k[i][j] + (1.0 - co) * kk);   // column j, row i
+    }
+    const float h = 0.21f;
+    const int w = 45, hh = 38;
+    // the corner: the centre less half the extent along the first two axes, the first layer through the centre
+    md_grid_t g = { .orientation = R, .spacing = vec3_set(h, h, h), .dim = { w, hh, layers } };
+    vec3_t o = vec3_set((float)c[0], (float)c[1], (float)c[2]);
+    for (int k = 0; k < 3; ++k) o.elem[k] -= 0.5f * h * (float)w * R.elem[0][k] + 0.5f * h * (float)hh * R.elem[1][k];
+    g.origin = o;
+    return g;
+}
+
+static bool plane_pair_init(plane_pair_t* p, md_gpu_stream_t st, const float* xyz, size_t num_atoms) {
+    memset(p, 0, sizeof(*p));
+    p->g3 = plane_grid(xyz, num_atoms, 8);
+    p->g2 = plane_grid(xyz, num_atoms, 1);
+    p->n3 = (size_t)p->g3.dim[0] * p->g3.dim[1] * p->g3.dim[2];
+    p->n2 = (size_t)p->g2.dim[0] * p->g2.dim[1];
+    for (int k = 0; k < 2; ++k) {
+        const md_grid_t* g = k ? &p->g2 : &p->g3;
+        md_gpu_texture_t t = md_gpu_texture_create(st, &(md_gpu_texture_desc_t){
+            .type = MD_GPU_TEX_3D, .format = MD_GPU_FORMAT_R32_FLOAT, .usage = MD_GPU_TEX_STORAGE,
+            .width = (uint32_t)g->dim[0], .height = (uint32_t)g->dim[1], .depth_or_layers = (uint32_t)g->dim[2] });
+        if (k) p->t2 = t; else p->t3 = t;
+    }
+    p->rb3 = md_gpu_malloc(st, MD_GPU_MEM_HOST_READ, sizeof(float) * p->n3);
+    p->rb2 = md_gpu_malloc(st, MD_GPU_MEM_HOST_READ, sizeof(float) * p->n2);
+    p->v3 = (float*)malloc(sizeof(float) * p->n3);
+    p->v2 = (float*)malloc(sizeof(float) * p->n2);
+    return p->t3 && p->t2 && p->rb3.cpu && p->rb2.cpu;
+}
+
+static void plane_pair_read(plane_pair_t* p, md_gpu_stream_t st) {
+    md_gpu_copy_from_texture(st, p->rb3.gpu, p->t3, NULL);
+    md_gpu_copy_from_texture(st, p->rb2.gpu, p->t2, NULL);
+    md_gpu_stream_sync(st);
+    memcpy(p->v3, p->rb3.cpu, sizeof(float) * p->n3);
+    memcpy(p->v2, p->rb2.cpu, sizeof(float) * p->n2);
+}
+
+// max |one layer - first layer| / max |first layer|
+static double plane_pair_diff(const plane_pair_t* p, double* out_max) {
+    return dm_rel_diff(p->v2, p->v3, p->n2, out_max);
+}
+
+static void plane_pair_free(plane_pair_t* p, md_gpu_stream_t st) {
+    if (p->t3) md_gpu_texture_destroy(p->t3);
+    if (p->t2) md_gpu_texture_destroy(p->t2);
+    md_gpu_free(st, p->rb3.gpu);
+    md_gpu_free(st, p->rb2.gpu);
+    free(p->v3); free(p->v2);
+}
+
+UTEST(gto_gpu, plane_matches_volume) {
+    static const char* files[] = {"h2o.h5", "mol.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        dm_src_t s;
+        ASSERT_TRUE(dm_load(&s, files[fi]));
+        const md_grid_t any = dm_grid(&s, 8, 0.3f);
+        dm_gpu_t g;
+        if (!dm_gpu_init(&g, &s, &any)) { dm_gpu_free(&g); dm_free(&s); UTEST_SKIP("no GPU device"); }
+        plane_pair_t pp;
+        ASSERT_TRUE(plane_pair_init(&pp, g.s, s.xyz, s.num_atoms));
+        md_gto_gpu_dmat_t dm = md_gto_gpu_dmat_create(g.s, &(md_gto_gpu_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6 });
+        ASSERT_TRUE(dm && md_gto_gpu_dmat_set_matrix(g.s, dm, s.D));
+        double m = 0.0, rel = 0.0;
+        // the density
+        for (int algo = MD_GTO_GPU_DENSITY_ALGO_REFERENCE; algo < MD_GTO_GPU_DENSITY_ALGO_COUNT; ++algo) {
+            for (int use_dm = 0; use_dm < 2; ++use_dm) {
+                for (int k = 0; k < 2; ++k) {
+                    md_gto_gpu_density_desc_t d = {
+                        .basis = g.basis, .atom_xyz = g.atoms, .coeff = use_dm ? 0 : g.coeff, .dmat = use_dm ? dm : NULL,
+                        .out_tex = k ? pp.t2 : pp.t3, .grid = k ? &pp.g2 : &pp.g3, .sample_offset = {0.5f, 0.5f, 0.5f},
+                        .op = MD_GTO_OP_SET, .algorithm = (md_gto_gpu_density_algo_t)algo,
+                    };
+                    md_gto_gpu_density_launch(g.s, &d);
+                }
+                plane_pair_read(&pp, g.s);
+                rel = plane_pair_diff(&pp, &m);
+                printf("  %-8s density, algorithm %d, %s: max |plane - layer| / max = %.2e (max %.3g)\n", files[fi], algo, use_dm ? "dmat  " : "packed", rel, m);
+                EXPECT_LT(rel, 1.0e-5);
+                EXPECT_GT(m, 1.0e-3);
+            }
+        }
+        // orbitals: the first n occupied, as psi (1) or psi^2 (more)
+        static const size_t counts[] = {1, 4, 12};
+        for (int ci = 0; ci < 3; ++ci) {
+            const size_t n = counts[ci] < s.num_mo ? counts[ci] : s.num_mo;
+            const double** rows = (const double**)malloc(sizeof(double*) * n);
+            for (size_t i = 0; i < n; ++i) rows[i] = s.rows + (s.num_mo - 1 - i) * s.num_ao;   // from the highest
+            md_gpu_addr_t c = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_mo(n, s.num_ao)).gpu;
+            float* dst = (float*)md_gpu_upload_begin(g.s, c, md_gto_gpu_coeff_size_mo(n, s.num_ao));
+            md_gto_gpu_coeff_pack_mo(dst, rows, NULL, n, s.num_ao);
+            md_gpu_upload_end(g.s);
+            for (int k = 0; k < 2; ++k) {
+                md_gto_gpu_orbital_desc_t d = {
+                    .basis = g.basis, .atom_xyz = g.atoms, .coeff = c, .out_tex = k ? pp.t2 : pp.t3, .grid = k ? &pp.g2 : &pp.g3,
+                    .sample_offset = {0.5f, 0.5f, 0.5f}, .num_orbitals = n,
+                    .eval_mode = n == 1 ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED, .op = MD_GTO_OP_SET,
+                };
+                md_gto_gpu_orbital_launch(g.s, &d);
+            }
+            plane_pair_read(&pp, g.s);
+            rel = plane_pair_diff(&pp, &m);
+            printf("  %-8s %zu orbital%s: max |plane - layer| / max = %.2e (max %.3g)\n", files[fi], n, n == 1 ? " " : "s", rel, m);
+            // (the shell kernel screens by |C| |phi| per block: other blocks, other shells at the cutoff; 7e-6 measured)
+            EXPECT_LT(rel, 3.0e-5);
+            EXPECT_GT(m, 1.0e-3);
+            md_gpu_stream_sync(g.s);
+            md_gpu_free(g.s, c);
+            free(rows);
+        }
+        md_gto_gpu_dmat_destroy(g.s, dm);
+        plane_pair_free(&pp, g.s);
+        dm_gpu_free(&g);
+        dm_free(&s);
+    }
+    // ELF and LOL (loc_eval_gpu makes a device of its own each time)
+    loc_src_t ls;
+    ASSERT_TRUE(loc_load(&ls, "mol.h5"));
+    const md_grid_t g3 = plane_grid(ls.xyz, ls.num_atoms, 8), g2 = plane_grid(ls.xyz, ls.num_atoms, 1);
+    const size_t n3 = (size_t)g3.dim[0] * g3.dim[1] * g3.dim[2], n2 = (size_t)g2.dim[0] * g2.dim[1];
+    float* v3 = (float*)malloc(sizeof(float) * n3);
+    float* v2 = (float*)malloc(sizeof(float) * n2);
+    for (int kind = 0; kind < 2; ++kind) {
+        const md_gto_gpu_localization_t kd = kind ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF;
+        if (!loc_eval_gpu(v3, &ls, &g3, kd, true, 1.0e-4, NULL) || !loc_eval_gpu(v2, &ls, &g2, kd, true, 1.0e-4, NULL)) {
+            free(v3); free(v2); loc_free(&ls);
+            UTEST_SKIP("no GPU device");
+        }
+        double d = 0.0;
+        for (size_t i = 0; i < n2; ++i) d = fmax(d, fabs((double)v2[i] - (double)v3[i]));
+        printf("  mol.h5   %s: max |plane - layer| = %.2e\n", kind ? "LOL" : "ELF", d);
+        EXPECT_LT(d, kind ? 1.0e-5 : 1.0e-3);
+    }
+    free(v3); free(v2);
+    loc_free(&ls);
+}
+
 // ELF and LOL out into the tails, where rho vanishes: the kernel with no floor of rho, against the matrices in double
 // (tails_dmat_terms: every AO, no cutoff) at every 3rd voxel of a grid out to 9 bohr beyond the outermost atom. ELF's
 // error is within 30 times md_qm_elf_noise (plus 1e-4) wherever it is not faded out (the estimate holds), and faded
