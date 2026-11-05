@@ -420,7 +420,7 @@ static void loc_free(loc_src_t* s) {
 }
 
 // ELF (kind ELF) or LOL into out at the grid's voxel centres, by the kernel, from the packed matrices or dmats
-static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, md_gto_gpu_localization_t kind, bool use_dmat, double rho_min) {
+static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, md_gto_gpu_localization_t kind, bool use_dmat, double rho_min, double* out_seconds) {
     md_gpu_device_t dev = md_gpu_device_create(NULL);
     if (!dev) return false;
     md_gpu_stream_t st = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
@@ -454,7 +454,11 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
         .width = (uint32_t)grid->dim[0], .height = (uint32_t)grid->dim[1], .depth_or_layers = (uint32_t)grid->dim[2],
     });
     md_gpu_mem_t rb = md_gpu_malloc(st, MD_GPU_MEM_HOST_READ, sizeof(float) * n);
+    md_gpu_stream_sync(st);
+    const md_tick_t t0 = md_tick_now();
     bool ok = basis && atoms && desc.out_tex && rb.cpu && md_gto_gpu_localization_launch(st, &desc);
+    md_gpu_stream_sync(st);
+    if (out_seconds) *out_seconds = md_tick_to_seconds(md_tick_now() - t0);
     if (ok) {
         md_gpu_copy_from_texture(st, rb.gpu, desc.out_tex, NULL);
         md_gpu_stream_sync(st);
@@ -506,7 +510,8 @@ UTEST(gto_localization, matches_cpu) {
         float* g = (float*)malloc(sizeof(float) * n);
         for (int kind = 0; kind < 2; ++kind) {
             for (int dmat = 0; dmat < 2; ++dmat) {
-                if (!loc_eval_gpu(g, &s, &grid, kind ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF, dmat != 0, rho_min)) {
+                double sec = 0.0;
+                if (!loc_eval_gpu(g, &s, &grid, kind ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF, dmat != 0, rho_min, &sec)) {
                     free(g); free(elf); free(lol); free(pts); loc_free(&s);
                     UTEST_SKIP("no GPU device");
                 }
@@ -522,8 +527,8 @@ UTEST(gto_localization, matches_cpu) {
                     sum += d;
                     ++nz;
                 }
-                printf("  %-20s %s %-6s: %zu voxels, max |gpu - cpu| %.2e, mean %.2e (%zu at the rho_min floor)\n", files[fi],
-                       kind ? "LOL" : "ELF", dmat ? "dmat" : "packed", nz, worst, nz ? sum / nz : 0.0, edge);
+                printf("  %-20s %s %-6s: %zu voxels, max |gpu - cpu| %.2e, mean %.2e (%zu at the rho_min floor), kernel %.0f ms (" MD_GTO_GPU_LOCALIZATION_REVISION ")\n", files[fi],
+                       kind ? "LOL" : "ELF", dmat ? "dmat" : "packed", nz, worst, nz ? sum / nz : 0.0, edge, 1000.0 * sec);
                 // measured on lavapipe: ELF within 7.8e-5 (mol), LOL within 2.4e-6, the same through a dmat
                 EXPECT_GT(nz, n / 20);
                 EXPECT_LT(worst, kind ? 2.0e-5 : 5.0e-4);

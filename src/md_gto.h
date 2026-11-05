@@ -585,6 +585,9 @@ typedef struct md_gto_gpu_localization_desc_t {
     float              sample_offset[3];
 } md_gto_gpu_localization_desc_t;
 
+// The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
+#define MD_GTO_GPU_LOCALIZATION_REVISION "r1"
+
 // Issues the evaluation into `stream` (asynchronous). False, logged, for invalid input.
 bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
 
