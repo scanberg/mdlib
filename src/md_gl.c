@@ -78,12 +78,15 @@
 // draws bind and before MD_GL_USER_TEXTURE_UNIT
 #define INSTANCE_TEXTURE_UNIT 9
 #define LIST_TEXTURE_UNIT 10
-// DASHED LINES. Every dashed line md_gl draws (the weak bonds, the partners of delocalized bonds, the gaps of chains)
-// is given by the length of its dashes and of the gaps between them, never by a number of dashes: as many dashes fit
-// as come closest to the lengths, at least two, the first starting at one end and the last ending at the other, the
-// dashes and gaps stretched or shrunk alike to fit (bond.vert). So no dash is cut off at an end, and each kind of line
-// keeps a look of its own at any length. The lines md_gl styles itself have their lengths in proportion to their
-// radius, so they keep that look at any thickness too.
+// The radii of the atoms for the bonds (bond.vert): where their dashes start
+#define ATOM_RADIUS_TEXTURE_UNIT 11
+// DASHED LINES. Every dashed line md_gl draws (the weak bonds, the coordinate bonds, the partners of delocalized bonds,
+// the gaps of chains) is given by the length of its dashes and of the gaps between them, never by a number of dashes:
+// as many dashes fit as come closest to the lengths, at least two, the first starting at one end and the last ending at
+// the other, the dashes and gaps stretched or shrunk alike to fit (bond.vert). So no dash is cut off at an end, and each
+// kind of line keeps a look of its own at any length. The ends of a bond are the spheres at its atoms, where there are
+// any (BOND DASHES in md_gl.h). md_gl styles every line itself, with the lengths in proportion to its radius, so each
+// keeps its look at any thickness too.
 // The one exception are the dashed circles of fused aromatic rings (ring.vert): a closed loop tied to the atoms of its
 // ring, so a number of dashes per bond, the gaps centred on the atoms, which follows from the size of the ring and the
 // radius of the sticks alone and so does not change from frame to frame as the atoms move.
@@ -101,6 +104,24 @@
 #define CHAIN_GAP_RADIUS_LINK     0.5f
 #define CHAIN_GAP_DASH_LENGTH     4.0f
 #define CHAIN_GAP_GAP_LENGTH      4.0f
+
+// The dashes of the bonds by kind (BOND DASHES in md_gl.h): the radius, the length of the dashes and of the gaps between
+// them, relative to the radius of the sticks, indexed by DASH_STYLE_*. bond.vert takes them from bond_params_t
+// dash_style, where a dash length of 0 makes a bond solid. The styles are designed together, and with the partners and
+// gaps above: change one and check that it still reads apart from the others.
+enum {
+    DASH_STYLE_OTHER       = 0,     // Covalent, elastic and metallic: only where every bond is dashed (MD_GL_DASHES_ALL)
+    DASH_STYLE_COORDINATE  = 1,
+    DASH_STYLE_HYDROGEN    = 2,
+    DASH_STYLE_INTERACTION = 3,
+    DASH_STYLE_COUNT
+};
+static const float bond_dash_styles[DASH_STYLE_COUNT][3] = {
+    {1.00f, 2.4f, 0.6f},
+    {0.70f, 2.0f, 0.8f},
+    {0.45f, 0.9f, 0.9f},
+    {0.35f, 0.5f, 1.1f},
+};
 
 #define UBO_SIZE (1 << 10)
 
@@ -196,6 +217,7 @@ enum {
     GL_TEXTURE_BUFFER_6,
     GL_TEXTURE_BUFFER_7,
     GL_TEXTURE_BUFFER_8,
+    GL_TEXTURE_BUFFER_ATOM_RADIUS,  // The radii of the atoms in bond.vert, on ATOM_RADIUS_TEXTURE_UNIT
     GL_TEXTURE_BUFFER_INSTANCE,     // ctx.instance_buf, on INSTANCE_TEXTURE_UNIT
     GL_TEXTURE_BUFFER_LIST,         // ctx.list_buf, on LIST_TEXTURE_UNIT
     GL_TEXTURE_MAX_DEPTH,
@@ -510,6 +532,7 @@ typedef struct {
     uint32_t weak_bond_capacity;
     gl_buffer_t weak_bond_atoms;    // u32[2]
     gl_buffer_t weak_bond_weight;   // f32
+    gl_buffer_t weak_bond_kind;     // u32, BOND_KIND_* (bond_kind_of)
     float weak_bond_max_weight;     // The largest weight, which scales the radius
     prim_blocks_t weak_bond_blocks; // MARKS, SUBSETS
 } representation_t;
@@ -1662,7 +1685,7 @@ void md_gl_initialize(void) {
     {
         // Quad q has the vertices 4q .. 4q + 3 (bond.vert): triangles (0, 1, 2) and (2, 1, 3), counter clockwise
         STATIC_ASSERT(QUAD_BLOCK * 4 <= 65536, "Quad indices must fit in u16");
-        STATIC_ASSERT(LIST_TEXTURE_UNIT < MD_GL_USER_TEXTURE_UNIT && INSTANCE_TEXTURE_UNIT < MD_GL_USER_TEXTURE_UNIT, "The units of the instances and the lists must not be the caller's");
+        STATIC_ASSERT(LIST_TEXTURE_UNIT < MD_GL_USER_TEXTURE_UNIT && INSTANCE_TEXTURE_UNIT < MD_GL_USER_TEXTURE_UNIT && ATOM_RADIUS_TEXTURE_UNIT < MD_GL_USER_TEXTURE_UNIT, "The units of the instances, the lists and the radii must not be the caller's");
         const uint32_t count = QUAD_BLOCK * 6;
         uint16_t* indices = md_alloc(md_get_heap_allocator(), count * sizeof(uint16_t));
         for (uint32_t q = 0; q < QUAD_BLOCK; ++q) {
@@ -1791,16 +1814,35 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 //
 // BEGIN BOND ORDER DERIVATION (plain arrays in, the contents of the buffers out; tested on its own)
 
-// Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert). An elastic bond (MD_BOND_KIND_ELASTIC) is drawn as a plain one
-// where the representation shows the elastic bonds, and not at all elsewhere. A metallic bond (MD_BOND_KIND_METALLIC)
-// is never drawn by licorice and ball and stick: a Bonds representation draws it.
+// Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert), three bits. An elastic bond (MD_BOND_KIND_ELASTIC) is drawn as a
+// plain one where the representation shows the elastic bonds, and not at all elsewhere. A metallic bond
+// (MD_BOND_KIND_METALLIC) is never drawn by licorice and ball and stick: a Bonds representation draws it. A coordinate
+// bond (MD_BOND_KIND_COORDINATE) is drawn dashed (BOND DASHES), or plain where the representation has them solid. The
+// weak bonds of a representation have a kind each too (md_gl_rep_set_weak_bonds), which gives their dashes: plain
+// (covalent), elastic, metallic, coordinate, hydrogen or interaction.
 enum {
-    BOND_KIND_PLAIN    = 0,
-    BOND_KIND_DOUBLE   = 1,
-    BOND_KIND_TRIPLE   = 2,
-    BOND_KIND_ELASTIC  = 3,
-    BOND_KIND_METALLIC = 4,
+    BOND_KIND_PLAIN       = 0,
+    BOND_KIND_DOUBLE      = 1,
+    BOND_KIND_TRIPLE      = 2,
+    BOND_KIND_ELASTIC     = 3,
+    BOND_KIND_METALLIC    = 4,
+    BOND_KIND_COORDINATE  = 5,
+    BOND_KIND_HYDROGEN    = 6,
+    BOND_KIND_INTERACTION = 7,
 };
+
+// The kind of a bond in the buffers of md_gl, from its flags: what a bond is, before its order makes a plain one double or
+// triple
+static inline uint32_t bond_kind_of(uint32_t flags) {
+    switch (md_bond_kind((md_bond_flags_t)flags)) {
+    case MD_BOND_KIND_ELASTIC:     return BOND_KIND_ELASTIC;
+    case MD_BOND_KIND_METALLIC:    return BOND_KIND_METALLIC;
+    case MD_BOND_KIND_COORDINATE:  return BOND_KIND_COORDINATE;
+    case MD_BOND_KIND_HYDROGEN:    return BOND_KIND_HYDROGEN;
+    case MD_BOND_KIND_INTERACTION: return BOND_KIND_INTERACTION;
+    default:                       return BOND_KIND_PLAIN;
+    }
+}
 #define BOND_REF_NONE 0xFFFFFFFFu
 
 // Entries of GL_BUFFER_AROMATIC_RING (ring.vert): u32[8], the index of the ring | dashed << 28 | its atom count << 29,
@@ -1998,8 +2040,10 @@ static uint32_t compute_bond_orders(uint32_t* out_order, uint32_t* out_ref, cons
     uint32_t entries = 0;
     for (uint32_t i = 0; i < in->bond_count; ++i) {
         const uint32_t f = in->flags[i];
-        const md_bond_kind_t kind = md_bond_kind(f);
-        out_order[i] = kind == MD_BOND_KIND_ELASTIC ? BOND_KIND_ELASTIC : kind == MD_BOND_KIND_METALLIC ? BOND_KIND_METALLIC : BOND_KIND_PLAIN;
+        out_order[i] = bond_kind_of(f);
+        // Only a covalent bond shows its order: a coordinate bond is dashed (or a plain stick) whatever its order, and the
+        // bonds outside of the graph have none
+        if (out_order[i] != BOND_KIND_PLAIN) continue;
         if (!bo_valid_bond(in, i) || (f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED))) continue;
         const uint32_t a = in->pairs[2 * i + 0];
         const uint32_t b = in->pairs[2 * i + 1];
@@ -3078,6 +3122,7 @@ void md_gl_rep_destroy(md_gl_rep_t handle) {
         gl_buffer_conditional_delete(&rep->atom_color);
         gl_buffer_conditional_delete(&rep->weak_bond_atoms);
         gl_buffer_conditional_delete(&rep->weak_bond_weight);
+        gl_buffer_conditional_delete(&rep->weak_bond_kind);
         blocks_free(&rep->weak_bond_blocks);
         MEMSET(rep, 0, sizeof(representation_t));
         md_handle_pool_free_slot(&ctx.representation_pool, handle.id);
@@ -3122,7 +3167,7 @@ void md_gl_rep_set_atom_colors(md_gl_rep_t handle, uint32_t offset, uint32_t cou
     //md_update_visible_atom_color_range(rep);
 }
 
-void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t* atom_a, const uint32_t* atom_b, const float* weight) {
+void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t* atom_a, const uint32_t* atom_b, const float* weight, const md_bond_flags_t* flags) {
     representation_t* rep = rep_lookup(handle.id);
     if (rep == NULL) {
         MD_LOG_ERROR("representation was invalid");
@@ -3150,8 +3195,10 @@ void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t
         const uint32_t capacity = MAX(count, rep->weak_bond_capacity + rep->weak_bond_capacity / 2);
         gl_buffer_conditional_delete(&rep->weak_bond_atoms);
         gl_buffer_conditional_delete(&rep->weak_bond_weight);
+        gl_buffer_conditional_delete(&rep->weak_bond_kind);
         rep->weak_bond_atoms  = gl_buffer_create(capacity * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_DRAW);
         rep->weak_bond_weight = gl_buffer_create(capacity * sizeof(float),        NULL, GL_DYNAMIC_DRAW);
+        rep->weak_bond_kind   = gl_buffer_create(capacity * sizeof(uint32_t),     NULL, GL_DYNAMIC_DRAW);
         rep->weak_bond_capacity = capacity;
     }
 
@@ -3181,9 +3228,21 @@ void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
+
+    glBindBuffer(GL_ARRAY_BUFFER, rep->weak_bond_kind.id);
+    uint32_t* kind = (uint32_t*)glMapBufferRange(GL_ARRAY_BUFFER, 0, count * sizeof(uint32_t), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (kind) {
+        uint32_t j = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count) {
+                kind[j++] = flags ? bond_kind_of((uint32_t)flags[i]) : BOND_KIND_HYDROGEN;
+            }
+        }
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+    }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    if (!atoms || !w) {
+    if (!atoms || !w || !kind) {
         MD_LOG_ERROR("Failed to map the buffers of the weak bonds");
         return;
     }
@@ -3616,14 +3675,33 @@ typedef struct {
     int32_t  mode;
     float    sharpness;
     uint32_t uniform_color;
-    float    dash_length;   // Dashed lines (weak bonds, partners, gaps): the length of the dashes (Ångström), see DASHED LINES
+    float    dash_length;   // Dashed lines of their own (partners, gaps): the length of the dashes (Ångström), see DASHED LINES
     float    gap_length;    // And of the gaps between them
     uint32_t bond_orders;   // Show the orders of covalent bonds (bond_set_t order, order_ref)
     float    spread;        // Envelope of the thinner sticks of multiple bonds, relative to the radius
     uint32_t gap_index_base;// The gaps of the chains: their picking base (md_gl_picking_offset_t gap_base)
     uint32_t bond_kinds;    // The kind of each bond is known (bond_set_t order, which tells the elastic bonds)
     uint32_t elastic_bonds; // Show the elastic bonds (BOND_KIND_ELASTIC), which are left out otherwise
+    float    end_radius;    // Bonds drawn dashed (BOND DASHES): the dashes run between spheres at the atoms of this
+    float    end_radius_scale; // radius, or of the radius of the atom times this, whichever is larger
+    float    pad_[2];
+    float    dash_style[DASH_STYLE_COUNT][4]; // Per DASH_STYLE_*: radius, dash and gap relative to radius (0 dash: solid), -
 } bond_params_t;
+
+STATIC_ASSERT((sizeof(gl_ubo_base_t) + offsetof(bond_params_t, dash_style)) % 16 == 0, "std140: an array of vec4 is 16 byte aligned");
+
+// The dashes of the bonds of each kind (bond_params_t dash_style), of those dashed: the styles of their kinds, solid for
+// the others
+static void bond_params_set_dashes(bond_params_t* params, md_gl_dashes_t dashes, bool solid_coordinate) {
+    for (uint32_t i = 0; i < DASH_STYLE_COUNT; ++i) {
+        const bool dashed = dashes == MD_GL_DASHES_ALL || (dashes == MD_GL_DASHES_BY_KIND && i != DASH_STYLE_OTHER);
+        const bool solid  = !dashed || (solid_coordinate && i == DASH_STYLE_COORDINATE);
+        params->dash_style[i][0] = solid ? 1.0f : bond_dash_styles[i][0];
+        params->dash_style[i][1] = solid ? 0.0f : bond_dash_styles[i][1];
+        params->dash_style[i][2] = solid ? 0.0f : bond_dash_styles[i][2];
+        params->dash_style[i][3] = 0.0f;
+    }
+}
 
 // The parameters of the gaps of the chains (draw_chain_gaps): a line of the radius with its dashes in proportion,
 // colored as the bonds are, drawn at any length
@@ -4454,7 +4532,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
         case MD_GL_REP_LICORICE: {
             const bool kinds  = mol->bond_order_count == mol->bond_count;
             const bool orders = draw_op->args.licorice.bond_orders && kinds;
-            const bond_params_t params = {
+            bond_params_t params = {
                 .radius = 0.2f * draw_op->args.licorice.radius,
                 .max_d2 = max_length * max_length,
                 .mode = draw_op->args.licorice.color_mode,
@@ -4465,7 +4543,11 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 .spread = 1.0f,
                 .bond_kinds = kinds,
                 .elastic_bonds = draw_op->args.licorice.elastic_bonds,
+                .end_radius_scale = 0.0f,
             };
+            // The coordinate bonds dashed between the joints (or the balls), the rest are sticks
+            params.end_radius = params.radius;
+            bond_params_set_dashes(&params, MD_GL_DASHES_BY_KIND, draw_op->args.licorice.solid_coordinate_bonds);
             const bond_set_t bonds = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, mol->buffer[GL_BUFFER_BOND_ORDER], mol->buffer[GL_BUFFER_BOND_ORDER_REF], {0}, mol->bond_count};
             const draw_range_t bond_range = RANGE(bonds);
             draw_bonds(shaders->licorice[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size, &bond_range);
@@ -4485,7 +4567,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
         case MD_GL_REP_BALL_AND_STICK: {
             const bool kinds  = mol->bond_order_count == mol->bond_count;
             const bool orders = draw_op->args.ball_and_stick.bond_orders && kinds;
-            const bond_params_t params = {
+            bond_params_t params = {
                 .radius = 0.2f * draw_op->args.ball_and_stick.stick_radius,
                 .max_d2 = max_length * max_length,
                 .mode = draw_op->args.ball_and_stick.color_mode,
@@ -4496,7 +4578,11 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 .spread = 1.3f,
                 .bond_kinds = kinds,
                 .elastic_bonds = draw_op->args.ball_and_stick.elastic_bonds,
+                .end_radius_scale = 0.2f * draw_op->args.ball_and_stick.ball_scale,
             };
+            // The coordinate bonds dashed between the joints (or the balls), the rest are sticks
+            params.end_radius = params.radius;
+            bond_params_set_dashes(&params, MD_GL_DASHES_BY_KIND, draw_op->args.ball_and_stick.solid_coordinate_bonds);
             const bond_set_t bonds = {mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], {0}, mol->buffer[GL_BUFFER_BOND_ORDER], mol->buffer[GL_BUFFER_BOND_ORDER_REF], {0}, mol->bond_count};
             const draw_range_t bond_range = RANGE(bonds);
             draw_bonds(shaders->licorice[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size, &bond_range);
@@ -4516,22 +4602,19 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             break;
         }
         case MD_GL_REP_WEAK_BONDS: {
-            const float dash = draw_op->args.weak_bonds.dash_length;
-            const float gap  = draw_op->args.weak_bonds.gap_length > 0.0f ? draw_op->args.weak_bonds.gap_length : dash;
-            if (!(dash > 0.0f)) {
-                MD_LOG_ERROR("Weak bonds with a dash length of %f: it must be positive", dash);
-                break;
-            }
-            const bond_params_t params = {
+            bond_params_t params = {
                 .radius = draw_op->args.weak_bonds.radius,
                 .max_d2 = max_length * max_length,
                 .mode = draw_op->args.weak_bonds.color_mode,
                 .sharpness = draw_op->args.weak_bonds.sharpness,
                 .uniform_color = draw_op->args.weak_bonds.uniform_color,
-                .dash_length = dash,
-                .gap_length = gap,
+                // The kind of each bond gives its dashes
+                .bond_kinds = 1,
+                .end_radius = MAX(draw_op->args.weak_bonds.end_radius, 0.0f),
+                .end_radius_scale = MAX(draw_op->args.weak_bonds.end_radius_scale, 0.0f),
             };
-            const bond_set_t bonds = {rep->weak_bond_atoms, rep->weak_bond_weight, {0}, {0}, {0}, rep->weak_bond_count};
+            bond_params_set_dashes(&params, draw_op->args.weak_bonds.dashes, false);
+            const bond_set_t bonds = {rep->weak_bond_atoms, rep->weak_bond_weight, rep->weak_bond_kind, {0}, {0}, rep->weak_bond_count};
             // Found in this draw, in its lists
             const draw_range_t range = draw_range(prep, lists ? &prep->weak_blocks : NULL, 0);
             draw_bonds(shaders->weak_bonds[program_permutation], mol, rep->atom_color, bonds, &params, viewport_size, &range);
@@ -4735,6 +4818,10 @@ static bool draw_bonds(gl_program_t program, const molecule_t* mol, gl_buffer_t 
         glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32UI, bonds.partner.id);
     }
 
+    glActiveTexture(GL_TEXTURE0 + ATOM_RADIUS_TEXTURE_UNIT);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_ATOM_RADIUS].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, mol->buffer[GL_BUFFER_ATOM_RADIUS].id);
+
     if (p.bond_kinds || p.bond_orders) {
         glActiveTexture(GL_TEXTURE6);
         glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_6].id);
@@ -4759,6 +4846,7 @@ static bool draw_bonds(gl_program_t program, const molecule_t* mol, gl_buffer_t 
     glUniform1i(glGetUniformLocation(program.id, "u_buf_bond_order"), 6);
     glUniform1i(glGetUniformLocation(program.id, "u_buf_bond_ref"),   7);
     glUniform1i(glGetUniformLocation(program.id, "u_buf_bond_partner"), 8);
+    glUniform1i(glGetUniformLocation(program.id, "u_buf_atom_rad"), ATOM_RADIUS_TEXTURE_UNIT);
     glUniform2f(glGetUniformLocation(program.id, "u_viewport_size"), viewport_size[0], viewport_size[1]);
 
     issue_quads(program.id, 0, bonds.count, range);
