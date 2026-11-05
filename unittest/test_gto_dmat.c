@@ -644,7 +644,7 @@ UTEST(gto_gpu, plane_matches_volume) {
             for (int use_dm = 0; use_dm < 2; ++use_dm) {
                 double ms[3];
                 for (int k = 0; k < 3; ++k) {
-                    if (k == 2) setenv("MD_GTO_GPU_NO_2D", "1", 1);   // one layer again, by the 3D kernels: what it cost before
+                    if (k == 2) md_os_env_set("MD_GTO_GPU_NO_2D", "1");   // one layer again, by the 3D kernels: what it cost before
                     md_gto_gpu_density_desc_t d = {
                         .basis = g.basis, .atom_xyz = g.atoms, .coeff = use_dm ? 0 : g.coeff, .dmat = use_dm ? dm : NULL,
                         .out_tex = k ? pp.t2 : pp.t3, .grid = k ? &pp.g2 : &pp.g3, .sample_offset = {0.5f, 0.5f, 0.5f},
@@ -657,7 +657,7 @@ UTEST(gto_gpu, plane_matches_volume) {
                     md_gto_gpu_density_launch(g.s, &d);
                     md_gpu_stream_sync(g.s);
                     ms[k] = md_tick_to_milliseconds(md_tick_now() - t0);
-                    if (k == 2) unsetenv("MD_GTO_GPU_NO_2D");
+                    if (k == 2) md_os_env_set("MD_GTO_GPU_NO_2D", NULL);
                 }
                 rel = plane_pair_diff(&pp, &m);
                 printf("  %-8s density, algorithm %d, %s: max |plane - layer| / max = %.2e (max %.3g); 1 layer %.1f ms (3D kernels %.1f ms)\n",
@@ -678,7 +678,7 @@ UTEST(gto_gpu, plane_matches_volume) {
             md_gpu_upload_end(g.s);
             double ms[3];
             for (int k = 0; k < 3; ++k) {
-                if (k == 2) { plane_pair_read(&pp, g.s); setenv("MD_GTO_GPU_NO_2D", "1", 1); }
+                if (k == 2) { plane_pair_read(&pp, g.s); md_os_env_set("MD_GTO_GPU_NO_2D", "1"); }
                 md_gto_gpu_orbital_desc_t d = {
                     .basis = g.basis, .atom_xyz = g.atoms, .coeff = c, .out_tex = k ? pp.t2 : pp.t3, .grid = k ? &pp.g2 : &pp.g3,
                     .sample_offset = {0.5f, 0.5f, 0.5f}, .num_orbitals = n,
@@ -690,7 +690,7 @@ UTEST(gto_gpu, plane_matches_volume) {
                 md_gto_gpu_orbital_launch(g.s, &d);
                 md_gpu_stream_sync(g.s);
                 ms[k] = md_tick_to_milliseconds(md_tick_now() - t0);
-                if (k == 2) unsetenv("MD_GTO_GPU_NO_2D");
+                if (k == 2) md_os_env_set("MD_GTO_GPU_NO_2D", NULL);
             }
             rel = plane_pair_diff(&pp, &m);
             printf("  %-8s %zu orbital%s: max |plane - layer| / max = %.2e (max %.3g); 1 layer %.1f ms (3D kernels %.1f ms)\n",
@@ -719,9 +719,9 @@ UTEST(gto_gpu, plane_matches_volume) {
         const md_gto_gpu_localization_t kd = kind ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF;
         double ms[3] = {0, 0, 0};
         float* v2b = (float*)malloc(sizeof(float) * n2);
-        setenv("MD_GTO_GPU_NO_2D", "1", 1);
+        md_os_env_set("MD_GTO_GPU_NO_2D", "1");
         const bool ok3 = loc_eval_gpu(v2b, &ls, &g2, kd, true, 1.0e-4, &ms[2]);
-        unsetenv("MD_GTO_GPU_NO_2D");
+        md_os_env_set("MD_GTO_GPU_NO_2D", NULL);
         free(v2b);
         if (!ok3 || !loc_eval_gpu(v3, &ls, &g3, kd, true, 1.0e-4, &ms[0]) || !loc_eval_gpu(v2, &ls, &g2, kd, true, 1.0e-4, &ms[1])) {
             free(v3); free(v2); loc_free(&ls);

@@ -1765,7 +1765,7 @@ static uint32_t        gto_gpu_vendor = 0;
 enum { GTO_SHAPE_3D = 0, GTO_SHAPE_2D = 1, GTO_SHAPE_COUNT = 2 };
 static const uint32_t gto_block_shape[GTO_SHAPE_COUNT][3] = { {8, 8, 8}, {32, 16, 1} };
 // MD_GTO_GPU_NO_2D (set): the 3D kernels for every grid, to measure what the 2D ones save
-static inline int gto_shape_of_dim(uint32_t dim_z) { return dim_z == 1 && !getenv("MD_GTO_GPU_NO_2D") ? GTO_SHAPE_2D : GTO_SHAPE_3D; }
+static inline int gto_shape_of_dim(uint32_t dim_z) { return dim_z == 1 && !md_os_env_get("MD_GTO_GPU_NO_2D") ? GTO_SHAPE_2D : GTO_SHAPE_3D; }
 
 static md_gpu_kernel_t gto_k_density_gemm_count[GTO_SHAPE_COUNT]   = {0};
 static md_gpu_kernel_t gto_k_density_gemm_phi[GTO_SHAPE_COUNT]     = {0};
