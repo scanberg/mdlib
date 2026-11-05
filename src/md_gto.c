@@ -1879,6 +1879,11 @@ typedef struct {
     md_gpu_float4x4 index_to_world;
     md_gpu_float4   step;
     md_gpu_uint4    grid_dim;
+    md_gpu_uint4    group_dim;
+    uint32_t        group_first;
+    uint32_t        group_count;
+    uint32_t        count_only;
+    uint32_t        _pad1;
     uint32_t        num_cgtos;
     uint32_t        num_spins;
     uint32_t        lol;
@@ -1898,6 +1903,7 @@ typedef struct {
     md_gpu_addr_t   dm_map_a;
     md_gpu_addr_t   dm_tao_b;
     md_gpu_addr_t   dm_map_b;
+    md_gpu_addr_t   group_aos;
     md_gpu_storage_tex_t out_tex;
 } gto_localization_args_t;
 
@@ -2573,57 +2579,217 @@ static void gto_density_launch_reference(md_gpu_stream_t stream, const md_gto_gp
     md_gpu_launch(stream, gto_k_density, g, &a, sizeof(a));
 }
 
-bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+/* ELF and LOL in PIECES, as the density's GEMM (see gto_gemm_plan_t): one launch over a large system's grid is
+   minutes of GPU work at the cutoff ELF takes (1e-8), a certain loss of the device to the watchdog (TDR). A group's
+   cost is the pairs of the AOs that reach its box, which varies by orders of magnitude over a grid, so the groups
+   are counted first (the kernel with count_only: the screening alone, a small part of the evaluation), and the
+   pieces planned from the counts: runs of consecutive groups of about GTO_LOC_PIECE_WORK, each its own submission. */
+
+/* A piece's work in voxel x AO pair x spin: each about 12 multiply-adds (rho, its gradient, tau). 2^30: some ms on an
+   RTX 3080, a few tens on a GTX 1060. */
+#define GTO_LOC_PIECE_WORK  ((uint64_t)1 << 30)
+#define GTO_LOC_MAX_SCREENED 2048u      /* MAX_SCREENED_CGTOS in eval_gto_localization.slang */
+static const uint32_t gto_loc_group_shape[GTO_SHAPE_COUNT][3] = { {8, 8, 8}, {16, 16, 1} };
+
+typedef struct gto_loc_plan_t {
+    md_gpu_stream_t         stream;
+    md_gpu_kernel_t         kernel;
+    gto_localization_args_t a;
+    uint32_t                num_groups;
+    uint32_t                group_voxels;
+    uint64_t                piece_work;
+    /* the counts */
+    md_gpu_addr_t           counts;
+    md_gpu_mem_t            counts_rb;
+    md_gpu_sync_t           sync;
+    md_tick_t               t_count0;
+    double                  t_count;        /* ms of the calling thread on the counts and the plan */
+    /* the pieces: piece k the groups [first[k], first[k + 1]) */
+    uint32_t*               first;
+    uint64_t*               work;
+    uint32_t                num_pieces;
+    uint32_t                next;
+    uint64_t                work_total, work_issued;
+    uint32_t                max_aos, over; /* the most AOs at a group; groups over GTO_LOC_MAX_SCREENED */
+} gto_loc_plan_t;
+
+static void gto_loc_plan_free(gto_loc_plan_t* P) {
+    if (!P) return;
+    md_gpu_free(P->stream, P->counts);       /* stream-ordered: after what reads them */
+    md_gpu_free(P->stream, P->counts_rb.gpu);
+    free(P->first);
+    free(P->work);
+    free(P);
+}
+
+static void gto_loc_launch_groups(gto_loc_plan_t* P, uint32_t first, uint32_t count, uint32_t count_only) {
+    P->a.group_first = first;
+    P->a.group_count = count;
+    P->a.count_only  = count_only;
+    md_gpu_launch(P->stream, P->kernel, md_gpu_grid(MIN(count, 65535u), DIV_UP(count, 65535u), 1), &P->a, sizeof(P->a));
+}
+
+/* The plan of an evaluation with its counting pass issued; NULL (logged) for invalid input */
+static gto_loc_plan_t* gto_loc_begin(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
     if (!stream || !desc || !desc->basis || !desc->atom_xyz || !desc->grid || !desc->out_tex ||
         (desc->num_spins != 1 && desc->num_spins != 2)) {
-        MD_LOG_ERROR("md_gto_gpu_localization_launch: invalid arguments");
-        return false;
+        MD_LOG_ERROR("md_gto_gpu_localization: invalid arguments");
+        return NULL;
     }
     const bool tiled = desc->dmat[0] != NULL;
     for (uint32_t s = 0; s < desc->num_spins; ++s) {
         if (tiled ? (!desc->dmat[s] || desc->coeff[s]) : (!desc->coeff[s] || desc->dmat[s])) {
-            MD_LOG_ERROR("md_gto_gpu_localization_launch: every spin's matrix packed (coeff) or in tiles (dmat), not both");
-            return false;
+            MD_LOG_ERROR("md_gto_gpu_localization: every spin's matrix packed (coeff) or in tiles (dmat), not both");
+            return NULL;
         }
     }
     if (tiled && desc->num_spins == 2 && desc->dmat[0]->nt != desc->dmat[1]->nt) {
-        MD_LOG_ERROR("md_gto_gpu_localization_launch: the spins' dmats are of different bases");
-        return false;
+        MD_LOG_ERROR("md_gto_gpu_localization: the spins' dmats are of different bases");
+        return NULL;
     }
     const int sh = gto_shape_of_dim((uint32_t)desc->grid->dim[2]);
     ensure_kernel(gto_gpu_device, &gto_k_localization[sh], sh == GTO_SHAPE_2D ? md_shader_eval_gto_localization_2d_main_kernel()
                                                                               : md_shader_eval_gto_localization_main_kernel());
     md_gpu_kernel_t k = gto_k_localization[sh];
-    if (!k) return false;
+    if (!k) return NULL;
 
+    gto_loc_plan_t* P = (gto_loc_plan_t*)calloc(1, sizeof(gto_loc_plan_t));
+    if (!P) return NULL;
+    P->stream = stream;
+    P->kernel = k;
+    P->piece_work = desc->piece_work ? desc->piece_work : GTO_LOC_PIECE_WORK;
+    gto_localization_args_t* a = &P->a;
     const md_gto_basis_layout_t* L = &desc->basis->layout;
     const md_gpu_addr_t base = desc->basis->buffer;
-    gto_localization_args_t a = {0};
-    gto_fill_common_args(&a.world_to_model, &a.index_to_world, &a.step, &a.grid_dim, desc->grid, desc->sample_offset);
-    a.num_cgtos = L->num_cgtos;
-    a.num_spins = desc->num_spins;
-    a.lol       = desc->kind == MD_GTO_GPU_LOL ? 1u : 0u;
-    a.rho_min   = (float)desc->rho_min;
-    a.d_min     = desc->d_min > 0.0 ? (float)desc->d_min : 0.0f;
-    a.cgto_atom_idx = base + L->off_cgto_atom_idx;
-    a.cgto_r        = base + L->off_cgto_r;
-    a.cgto_off_len  = base + L->off_cgto_off_len;
-    a.pgto          = base + L->off_pgto;
-    a.atom_xyz      = desc->atom_xyz;
+    gto_fill_common_args(&a->world_to_model, &a->index_to_world, &a->step, &a->grid_dim, desc->grid, desc->sample_offset);
+    const uint32_t* gs = gto_loc_group_shape[sh];
+    a->group_dim.x = DIV_UP(a->grid_dim.x, gs[0]);
+    a->group_dim.y = DIV_UP(a->grid_dim.y, gs[1]);
+    a->group_dim.z = DIV_UP(a->grid_dim.z, gs[2]);
+    P->num_groups   = a->group_dim.x * a->group_dim.y * a->group_dim.z;
+    P->group_voxels = gs[0] * gs[1] * gs[2];
+    a->num_cgtos = L->num_cgtos;
+    a->num_spins = desc->num_spins;
+    a->lol       = desc->kind == MD_GTO_GPU_LOL ? 1u : 0u;
+    a->rho_min   = (float)desc->rho_min;
+    a->d_min     = desc->d_min > 0.0 ? (float)desc->d_min : 0.0f;
+    a->cgto_atom_idx = base + L->off_cgto_atom_idx;
+    a->cgto_r        = base + L->off_cgto_r;
+    a->cgto_off_len  = base + L->off_cgto_off_len;
+    a->pgto          = base + L->off_pgto;
+    a->atom_xyz      = desc->atom_xyz;
     if (tiled) {
-        a.dm_tiled = 1;
-        a.dm_nt    = desc->dmat[0]->nt;
-        a.D_a = desc->dmat[0]->tiles; a.dm_tao_a = desc->dmat[0]->tao; a.dm_map_a = desc->dmat[0]->map;
+        a->dm_tiled = 1;
+        a->dm_nt    = desc->dmat[0]->nt;
+        a->D_a = desc->dmat[0]->tiles; a->dm_tao_a = desc->dmat[0]->tao; a->dm_map_a = desc->dmat[0]->map;
         const md_gto_gpu_dmat_t b = desc->num_spins == 2 ? desc->dmat[1] : desc->dmat[0];
-        a.D_b = b->tiles; a.dm_tao_b = b->tao; a.dm_map_b = b->map;
+        a->D_b = b->tiles; a->dm_tao_b = b->tao; a->dm_map_b = b->map;
     } else {
-        a.D_a = desc->coeff[0];
-        a.D_b = desc->num_spins == 2 ? desc->coeff[1] : desc->coeff[0];
+        a->D_a = desc->coeff[0];
+        a->D_b = desc->num_spins == 2 ? desc->coeff[1] : desc->coeff[0];
     }
-    a.out_tex = md_gpu_texture_storage(desc->out_tex, 0);
-    const md_gpu_grid_t g = md_gpu_grid_for(k, a.grid_dim.x, a.grid_dim.y, a.grid_dim.z);
-    md_gpu_launch(stream, k, g, &a, sizeof(a));
+    a->out_tex = md_gpu_texture_storage(desc->out_tex, 0);
+    if (!a->out_tex.handle) {
+        MD_LOG_ERROR("md_gto_gpu_localization: out_tex needs MD_GPU_TEX_STORAGE usage");
+        free(P);
+        return NULL;
+    }
+    if (P->num_groups == 0) return P;   /* nothing to evaluate: a plan of no pieces */
+
+    const size_t bytes = sizeof(uint32_t) * P->num_groups;
+    P->counts    = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, bytes).gpu;
+    P->counts_rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, bytes);
+    if (!P->counts || !P->counts_rb.cpu) {
+        MD_LOG_ERROR("md_gto_gpu_localization: failed to allocate the groups' counts");
+        gto_loc_plan_free(P);
+        return NULL;
+    }
+    P->t_count0 = md_tick_now();
+    a->group_aos = P->counts;
+    gto_loc_launch_groups(P, 0, P->num_groups, 1);
+    md_gpu_copy(stream, P->counts_rb.gpu, P->counts, bytes);
+    P->sync = md_gpu_stream_record(stream);
+    return P;
+}
+
+/* The pieces, from the counts (on the host: P->sync complete). False (logged) when they could not be planned. */
+static bool gto_loc_plan(gto_loc_plan_t* P, double waited_ms) {
+    const md_tick_t t0 = md_tick_now();
+    if (P->num_groups == 0) return true;
+    const uint32_t* cnt = (const uint32_t*)P->counts_rb.cpu;
+    const uint64_t spins = P->a.num_spins;
+    /* at most a piece per group, and one past */
+    P->first = (uint32_t*)malloc(sizeof(uint32_t) * ((size_t)P->num_groups + 1));
+    P->work  = (uint64_t*)malloc(sizeof(uint64_t) * ((size_t)P->num_groups + 1));
+    if (!P->first || !P->work) {
+        MD_LOG_ERROR("md_gto_gpu_localization: out of memory for the plan of %u groups", P->num_groups);
+        return false;
+    }
+    uint64_t w = 0;
+    P->first[0] = 0;
+    for (uint32_t g = 0; g < P->num_groups; ++g) {
+        const uint32_t n = cnt[g];
+        P->max_aos = MAX(P->max_aos, n);
+        P->over += n > GTO_LOC_MAX_SCREENED ? 1 : 0;
+        const uint64_t m = MIN(n, GTO_LOC_MAX_SCREENED);
+        /* the pairs of each spin, and the AOs' values and gradients (about 8 pairs' worth each); 1: the group's own */
+        w += P->group_voxels * (m * (m + 1) / 2 * spins + 8 * m) + 1;
+        if (w >= P->piece_work || g + 1 == P->num_groups) {
+            P->work[P->num_pieces] = w;
+            P->work_total += w;
+            P->first[++P->num_pieces] = g + 1;
+            w = 0;
+        }
+    }
+    md_gpu_free(P->stream, P->counts_rb.gpu);
+    P->counts_rb = (md_gpu_mem_t){0};
+    P->a.group_aos = 0;
+    md_gpu_free(P->stream, P->counts);  /* stream-ordered: after the count read it */
+    P->counts = 0;
+    if (P->over) {
+        MD_LOG_ERROR("md_gto_gpu_localization: %u of %u groups are reached by more than %u AOs (at most %u): their values leave out the rest",
+                     P->over, P->num_groups, GTO_LOC_MAX_SCREENED, P->max_aos);
+    }
+    P->t_count = waited_ms + md_tick_to_milliseconds(md_tick_now() - t0);
     return true;
+}
+
+static inline bool gto_loc_plan_issued(const gto_loc_plan_t* P) {
+    return P->next >= P->num_pieces;
+}
+
+/* One piece, not yet submitted */
+static void gto_loc_issue_piece(gto_loc_plan_t* P) {
+    const uint32_t k = P->next++;
+    gto_loc_launch_groups(P, P->first[k], P->first[k + 1] - P->first[k], 0);
+    P->work_issued += P->work[k];
+}
+
+static void gto_loc_plan_log(const gto_loc_plan_t* P) {
+    MD_LOG_DEBUG("GTO %s (" MD_GTO_GPU_LOCALIZATION_REVISION "): %u groups of %u voxels in %u pieces (%.2f G voxel-pairs), at most %u AOs at a group; "
+                 "the calling thread spent %.1f ms on the counts (waiting for them, and what the stream held before them, unless a job) and the plan",
+                 P->a.lol ? "LOL" : "ELF", P->num_groups, P->group_voxels, P->num_pieces, (double)P->work_total * 1.0e-9, P->max_aos, P->t_count);
+}
+
+bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+    gto_loc_plan_t* P = gto_loc_begin(stream, desc);
+    if (!P) return false;
+    double waited = 0.0;
+    if (P->num_groups) {
+        /* the one place this blocks the calling thread: the counts */
+        md_gpu_sync_wait(P->sync);
+        waited = md_tick_to_milliseconds(md_tick_now() - P->t_count0);
+    }
+    const bool ok = gto_loc_plan(P, waited);
+    if (ok) {
+        while (!gto_loc_plan_issued(P)) {
+            gto_loc_issue_piece(P);
+            md_gpu_stream_flush(stream);    /* a submission of its own */
+        }
+        gto_loc_plan_log(P);
+    }
+    gto_loc_plan_free(P);
+    return ok;
 }
 
 #define GTO_GEMM_BLOCK_VOXELS 512u
@@ -3142,8 +3308,9 @@ STATIC_ASSERT(GTO_GEMM_JOB_MARKS >= GTO_GEMM_JOB_IN_FLIGHT_MAX, "a mark per piec
 struct md_gto_gpu_job_t {
     md_gpu_stream_t    stream;
     gto_gemm_pending_t p;
-    bool               counting;   /* p holds the counting pass, not yet planned */
+    bool               counting;   /* the counting pass (p's, or loc's) not yet planned */
     gto_gemm_plan_t*   plan;       /* the pieces, while some are not issued */
+    gto_loc_plan_t*    loc;        /* ELF or LOL (md_gto_gpu_localization_job_begin): its counts, then its pieces */
     bool               issued;     /* all of it on the stream */
     uint32_t           in_flight;
     md_gpu_sync_t      marks[GTO_GEMM_JOB_MARKS];
@@ -3198,40 +3365,92 @@ md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_
     return job;
 }
 
+md_gto_gpu_job_t* md_gto_gpu_localization_job_begin(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+    gto_loc_plan_t* P = gto_loc_begin(stream, desc);
+    if (!P) return NULL;
+    md_gto_gpu_job_t* job = (md_gto_gpu_job_t*)calloc(1, sizeof(md_gto_gpu_job_t));
+    if (!job) {
+        gto_loc_plan_free(P);
+        return NULL;
+    }
+    job->stream = stream;
+    job->in_flight = GTO_GEMM_JOB_IN_FLIGHT_0;
+    job->loc = P;
+    job->counting = true;
+    return job;
+}
+
+// The job's plan, of either kind: all of it issued, the next piece, how many so far
+static inline bool gto_job_plan_issued(const md_gto_gpu_job_t* job) {
+    return job->loc ? gto_loc_plan_issued(job->loc) : gto_gemm_plan_issued(job->plan);
+}
+
+static inline uint64_t gto_job_issue_piece(md_gto_gpu_job_t* job) {
+    if (job->loc) {
+        gto_loc_issue_piece(job->loc);
+        return job->loc->work_issued;
+    }
+    gto_gemm_issue_piece(job->plan);
+    return job->plan->work_issued;
+}
+
+static inline uint32_t gto_job_pieces_issued(const md_gto_gpu_job_t* job) {
+    return job->loc ? job->loc->next : job->plan->pieces;
+}
+
 bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait) {
     if (!job) return true;
     gto_gemm_job_take_marks(job);
     if (job->issued) return true;
     if (job->counting) {
-        if (!md_gpu_sync_is_complete(job->p.sync)) {
+        md_gpu_sync_t sync = job->loc ? job->loc->sync : job->p.sync;
+        double waited = 0.0;
+        if (!(job->loc && job->loc->num_groups == 0) && !md_gpu_sync_is_complete(sync)) {
             if (!wait) return false;
             const md_tick_t t0 = md_tick_now();
-            md_gpu_sync_wait(job->p.sync);
-            job->p.waited_ms = md_tick_to_milliseconds(md_tick_now() - t0);
+            md_gpu_sync_wait(sync);
+            waited = md_tick_to_milliseconds(md_tick_now() - t0);
         }
         job->counting = false;
-        job->plan = gto_gemm_plan(&job->p);
-        if (!job->plan) {
-            job->issued = true;     // logged: nothing is written
-            return true;
+        if (job->loc) {
+            if (!gto_loc_plan(job->loc, waited)) {
+                gto_loc_plan_free(job->loc);
+                job->loc = NULL;
+                job->issued = true;     // logged: nothing is written
+                return true;
+            }
+            job->work_total = job->loc->work_total;
+        } else {
+            job->p.waited_ms = waited;
+            job->plan = gto_gemm_plan(&job->p);
+            if (!job->plan) {
+                job->issued = true;     // logged: nothing is written
+                return true;
+            }
+            job->work_total = job->plan->work_total;
         }
-        job->work_total = job->plan->work_total;
-    } else if (!wait && job->plan->pieces > 0 && job->mark_head == job->mark_tail && job->in_flight < GTO_GEMM_JOB_IN_FLIGHT_MAX) {
+    } else if (!wait && gto_job_pieces_issued(job) > 0 && job->mark_head == job->mark_tail && job->in_flight < GTO_GEMM_JOB_IN_FLIGHT_MAX) {
         // every piece issued has passed and there is more: the GPU ran dry between the polls
         job->in_flight = MIN(job->in_flight * 2, GTO_GEMM_JOB_IN_FLIGHT_MAX);
     }
-    gto_gemm_plan_t* P = job->plan;
     const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(job->stream);
     md_gpu_stream_set_ordering(job->stream, MD_GPU_ORDER_IMPLICIT);
-    while (!gto_gemm_plan_issued(P) && (wait || job->mark_tail - job->mark_head < job->in_flight)) {
-        gto_gemm_issue_piece(P);
-        gto_gemm_job_mark(job, P->work_issued);     // a submission of its own
+    while (!gto_job_plan_issued(job) && (wait || job->mark_tail - job->mark_head < job->in_flight)) {
+        const uint64_t issued = gto_job_issue_piece(job);
+        gto_gemm_job_mark(job, issued);     // a submission of its own
     }
     md_gpu_stream_set_ordering(job->stream, prev_ordering);
-    if (gto_gemm_plan_issued(P)) {
-        gto_gemm_plan_log(P);
-        gto_gemm_plan_free(P);      // stream-ordered: after the pieces
-        job->plan = NULL;
+    if (gto_job_plan_issued(job)) {
+        // stream-ordered: freed after the pieces
+        if (job->loc) {
+            gto_loc_plan_log(job->loc);
+            gto_loc_plan_free(job->loc);
+            job->loc = NULL;
+        } else {
+            gto_gemm_plan_log(job->plan);
+            gto_gemm_plan_free(job->plan);
+            job->plan = NULL;
+        }
         job->issued = true;
     }
     return job->issued;
@@ -3247,7 +3466,8 @@ float md_gto_gpu_job_progress(md_gto_gpu_job_t* job) {
 
 void md_gto_gpu_job_end(md_gto_gpu_job_t* job) {
     if (!job) return;
-    if (job->counting) gto_gemm_drop(&job->p);
+    if (job->counting && !job->loc) gto_gemm_drop(&job->p);
+    gto_loc_plan_free(job->loc);    // its counts too, if they were not yet planned
     // the pieces in flight complete, nothing more is issued: out_tex is left part written
     gto_gemm_plan_free(job->plan);
     free(job);

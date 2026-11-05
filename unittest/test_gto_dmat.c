@@ -14,6 +14,9 @@
 //                                     same grid 8 deep (3D, 8x8x8): density, orbitals, ELF and LOL
 //   gto_localization.matches_independent  ELF and LOL against PySCF's AOs with Multiwfn's formulas
 //                                     (unittest/elf_ref_data, tools/elf_reference.py), out into the tails
+//   gto_localization.pieces_match_one_launch  mol: ELF and LOL in pieces of a group each (piece_work), as a launch
+//                                     and as a job polled over many polls, bitwise the launch in one piece; the
+//                                     job's progress reaches 1
 //   gto_localization.tails            out to 9 bohr beyond the atoms, no floor of rho: ELF with d_min (Multiwfn's
 //                                     convention) and without it (within its noise, md_qm_elf_noise), LOL, against
 //                                     the matrices in double
@@ -512,6 +515,10 @@ static void loc_free(loc_src_t* s) {
 
 // ELF (kind ELF) or LOL into out at the grid's voxel centres, by the kernel, from the packed matrices or dmats
 static double loc_d_min = 0.0;   // the d_min the kernel is launched with (md_qm_elf; 0: none)
+static uint64_t loc_piece_work = 0;  // the work of a submission (0: the default)
+static bool loc_as_job = false;      // as a job (md_gto_gpu_localization_job_begin), polled without waiting
+static int loc_job_polls = 0;
+static float loc_job_progress = 0.0f;
 
 static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, md_gto_gpu_localization_t kind, bool use_dmat, double rho_min, double* out_seconds) {
     md_gpu_device_t dev = md_gpu_device_create(NULL);
@@ -526,7 +533,7 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
     md_gpu_upload_end(st);
     md_gto_gpu_localization_desc_t desc = {
         .basis = basis, .atom_xyz = atoms, .num_spins = (uint32_t)s->num_spins, .kind = kind, .rho_min = rho_min,
-        .d_min = loc_d_min, .grid = grid, .sample_offset = {0.5f, 0.5f, 0.5f},
+        .d_min = loc_d_min, .grid = grid, .sample_offset = {0.5f, 0.5f, 0.5f}, .piece_work = loc_piece_work,
     };
     md_gpu_addr_t coeff[2] = {0, 0};
     for (int k = 0; k < s->num_spins; ++k) {
@@ -551,7 +558,18 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
     if (out_seconds && basis && atoms && desc.out_tex) md_gto_gpu_localization_launch(st, &desc);
     md_gpu_stream_sync(st);
     const md_tick_t t0 = md_tick_now();
-    bool ok = basis && atoms && desc.out_tex && rb.cpu && md_gto_gpu_localization_launch(st, &desc);
+    bool ok = basis && atoms && desc.out_tex && rb.cpu;
+    if (ok && loc_as_job) {
+        md_gto_gpu_job_t* job = md_gto_gpu_localization_job_begin(st, &desc);
+        ok = job != NULL;
+        loc_job_polls = 0;
+        while (ok && !md_gto_gpu_job_poll(job, false)) loc_job_polls++;
+        md_gpu_stream_sync(st);
+        loc_job_progress = md_gto_gpu_job_progress(job);
+        md_gto_gpu_job_end(job);
+    } else if (ok) {
+        ok = md_gto_gpu_localization_launch(st, &desc);
+    }
     md_gpu_stream_sync(st);
     if (out_seconds) *out_seconds = md_tick_to_seconds(md_tick_now() - t0);
     if (ok) {
@@ -571,6 +589,49 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
     md_gto_gpu_shutdown();
     md_gpu_device_destroy(dev);
     return ok;
+}
+
+UTEST(gto_localization, pieces_match_one_launch) {
+    loc_src_t s;
+    if (!loc_load(&s, "mol.h5")) { loc_free(&s); ASSERT_TRUE(false); }
+    double c[3] = {0, 0, 0};
+    for (size_t a = 0; a < s.num_atoms; ++a) for (int k = 0; k < 3; ++k) c[k] += s.xyz[3 * a + k] / (double)s.num_atoms;
+    const int dim = 28;
+    const float h = 0.35f;
+    const md_grid_t grid = {
+        .orientation = mat3_ident(),
+        .origin  = vec3_set((float)c[0] - 0.5f * h * dim, (float)c[1] - 0.5f * h * dim, (float)c[2] - 0.5f * h * dim),
+        .spacing = vec3_set(h, h, h),
+        .dim     = { dim, dim, dim },
+    };
+    const size_t n = (size_t)dim * dim * dim;
+    float* ref = (float*)malloc(sizeof(float) * n);
+    float* out = (float*)malloc(sizeof(float) * n);
+    for (int kind = 0; kind < 2; ++kind) {
+        const md_gto_gpu_localization_t k = kind ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF;
+        loc_piece_work = (uint64_t)1 << 62;     // one piece
+        loc_as_job = false;
+        if (!loc_eval_gpu(ref, &s, &grid, k, true, 0.0, NULL)) { free(ref); free(out); loc_free(&s); UTEST_SKIP("no GPU device"); }
+        for (int as_job = 0; as_job < 2; ++as_job) {
+            loc_piece_work = 1;                 // a group each: 4^3 pieces
+            loc_as_job = as_job != 0;
+            ASSERT_TRUE(loc_eval_gpu(out, &s, &grid, k, true, 0.0, NULL));
+            size_t differ = 0;
+            for (size_t i = 0; i < n; ++i) differ += memcmp(&out[i], &ref[i], sizeof(float)) != 0;
+            printf("  %s %s: %zu of %zu voxels differ from one launch%s\n", kind ? "LOL" : "ELF", as_job ? "job   " : "launch", differ, n,
+                   as_job ? "" : "");
+            if (as_job) printf("    %d polls, progress %.3f\n", loc_job_polls, loc_job_progress);
+            EXPECT_EQ(differ, (size_t)0);
+            if (as_job) {
+                EXPECT_GT(loc_job_polls, 0);
+                EXPECT_EQ(loc_job_progress, 1.0f);
+            }
+        }
+    }
+    loc_piece_work = 0;
+    loc_as_job = false;
+    free(ref); free(out);
+    loc_free(&s);
 }
 
 UTEST(gto_localization, matches_cpu) {

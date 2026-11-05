@@ -27,6 +27,11 @@ struct RootArgs {
     float4x4 index_to_world;
     float4   step;
     uint4    grid_dim;
+    uint4    group_dim;     // the grid's groups along each axis (w unused)
+    uint     group_first;   // this launch: the groups [group_first, group_first + group_count) in linear order
+    uint     group_count;   // (x fastest), group (gid.y * 65535 + gid.x) of it
+    uint     count_only;    // 1: each group's screened AO count to group_aos, nothing evaluated
+    uint     _pad1;
     uint     num_cgtos;
     uint     num_spins;     // 1: D_a is the total density of a closed shell; 2: D_a and D_b are the spins'
     uint     lol;           // 0: ELF, 1: LOL
@@ -47,6 +52,7 @@ struct RootArgs {
     uint*   dm_map_a;
     uint*   dm_tao_b;
     uint*   dm_map_b;
+    uint*   group_aos;      // count_only: per group (linear), the AOs that reach it (before MAX_SCREENED_CGTOS)
     DescriptorHandle<RWTexture3D<float>> out_tex;
 };
 
@@ -217,7 +223,15 @@ void add_pair(inout Terms t, float D, float pi, float3 gi, float pj, float3 gj, 
 
 [shader("compute")]
 [numthreads(WG_X, WG_Y, WG_Z)]
-void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex, uint3 dtid : SV_DispatchThreadID) {
+void main(uint3 lgid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
+    // A launch takes a range of the grid's groups (md_gto_gpu_localization_*: pieces of bounded work, each a
+    // submission of its own): the group's place in the grid from its index in the range. Uniform per group.
+    uint li = lgid.y * 65535u + lgid.x;
+    if (li >= args.group_count) return;
+    uint l = args.group_first + li;
+    uint3 gid = uint3(l % args.group_dim.x, (l / args.group_dim.x) % args.group_dim.y, l / (args.group_dim.x * args.group_dim.y));
+    uint3 dtid = gid * uint3(WG_X, WG_Y, WG_Z) + gtid;
+
     if (tid == 0) num_screened_cgtos = 0;
     GroupMemoryBarrierWithGroupSync();
 
@@ -248,6 +262,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         }
     }
     GroupMemoryBarrierWithGroupSync();
+    if (args.count_only != 0u) {
+        if (tid == 0) args.group_aos[l] = num_screened_cgtos;
+        return;
+    }
 
     Terms ta = { 0.0f, float3(0.0f), 0.0f };
     Terms tb = { 0.0f, float3(0.0f), 0.0f };
