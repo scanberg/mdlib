@@ -607,18 +607,31 @@ typedef struct md_gto_gpu_localization_desc_t {
     md_gpu_texture_t   out_tex;       // R32F, needs MD_GPU_TEX_STORAGE; mip 0 is written
     const md_grid_t*   grid;
     float              sample_offset[3];
+    uint64_t           piece_work;    // the work of a submission, in voxel x AO pair x spin; 0 = 2^30
 } md_gto_gpu_localization_desc_t;
 
 // The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
-#define MD_GTO_GPU_LOCALIZATION_REVISION "r3"
+#define MD_GTO_GPU_LOCALIZATION_REVISION "r4 (counted, then in pieces of 2^30 voxel-pairs, each its own submission)"
 
 // The revision of the grid kernels' 2D variants (a grid of one layer: blocks of 32x16x1 voxels, 16x16x1 for ELF and
 // LOL), for measurements.
 // MD_GTO_GPU_NO_2D (set in the environment) takes the 3D kernels for every grid, to compare.
 #define MD_GTO_GPU_PLANE_REVISION "plane-kernels r2"
 
-// Issues the evaluation into `stream` (asynchronous). False, logged, for invalid input.
+// In pieces, each its own submission, as the density's GEMM (MD_GTO_GPU_GEMM_PIECES_REVISION): at the cutoff ELF
+// takes, a large system's grid as one launch is minutes of GPU work, which the watchdog (TDR) takes the device for.
+// A group's cost is the pairs of the AOs that reach it, so the groups are counted first (the screening alone) and
+// the pieces planned from the counts: runs of consecutive groups of about piece_work each.
+//
+// Issues the evaluation into `stream`. Waits for the counting pass on the calling thread (and for what the stream
+// held before it), then issues every piece. False, logged, for invalid input.
 bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
+
+// The same as a job (md_gto_gpu_job_poll, md_gto_gpu_job_progress, md_gto_gpu_job_end: as the density's): the
+// counting pass issued and the call returns; the polls plan the pieces once the counts are on the host and issue
+// them a few in flight. Until it is all issued, what the descriptor names (the basis, the atom positions, the
+// matrices) must stay as they are. NULL, logged, for invalid input.
+md_gto_gpu_job_t* md_gto_gpu_localization_job_begin(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
 
 // Orbital evaluation algorithm.
 typedef enum md_gto_gpu_orbital_algo_t {
