@@ -289,6 +289,7 @@ struct md_reader_i {
 typedef struct md_file_reader_t {
     md_reader_i r;
     md_file_t file;
+    int64_t pos;        // Where the next read of the source begins
     bool owns_file;     // Opened by md_file_reader_open, closed by md_file_reader_close
 } md_file_reader_t;
 
@@ -404,7 +405,8 @@ static inline bool md_reader_failed(const md_reader_i* r) {
 // alloc. False if the file cannot be opened.
 bool md_file_reader_open(md_file_reader_t* fr, str_t path, size_t cap, struct md_allocator_i* alloc);
 
-// Of a file opened by the caller, from where it is positioned, which the caller closes after md_file_reader_close
+// Of a file opened by the caller, from where it is positioned (from its start, if opened with MD_FILE_CONCURRENT, which
+// has no position), which the caller closes after md_file_reader_close
 bool md_file_reader_init(md_file_reader_t* fr, md_file_t file, size_t cap, struct md_allocator_i* alloc);
 
 // Frees the buffer, and closes the file if the reader opened it

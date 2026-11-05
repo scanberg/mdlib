@@ -1,5 +1,7 @@
 #include "utest.h"
 
+#include <stdio.h>
+
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
@@ -345,8 +347,7 @@ UTEST(os, env_set_get_remove) {
     EXPECT_FALSE(md_os_env_set("", "c"));
 }
 
-#if 0
-// This cannot be guaranteed on windows because the underlying implementation uses the synchronous path.
+// On every platform: on Windows the file pointer which a positional read moves is put back
 UTEST(os, file_read_at_preserves_offset) {
     const str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
     md_file_t file = {0};
@@ -366,4 +367,101 @@ UTEST(os, file_read_at_preserves_offset) {
 
     EXPECT_TRUE(md_file_close(&file));
 }
-#endif
+
+// A file of n bytes, byte i of which is a function of i: what a read at any offset must give
+static uint8_t file_pattern(size_t i) {
+    return (uint8_t)((i * 2654435761u) >> 13);
+}
+
+static bool write_pattern_file(const char* path, size_t n) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, str_from_cstr(path), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
+    uint8_t buf[4096];
+    bool ok = true;
+    for (size_t at = 0; at < n && ok; at += sizeof(buf)) {
+        const size_t len = MIN(sizeof(buf), n - at);
+        for (size_t i = 0; i < len; ++i) buf[i] = file_pattern(at + i);
+        ok = md_file_write(file, buf, len) == len;
+    }
+    md_file_close(&file);
+    return ok;
+}
+
+typedef struct concurrent_reads_t {
+    md_file_t file;
+    size_t    size;
+    uint32_t  seed;
+    size_t    wrong;    // bytes which differ from the pattern, or reads short of what was asked
+} concurrent_reads_t;
+
+static void concurrent_reads(void* arg) {
+    concurrent_reads_t* r = (concurrent_reads_t*)arg;
+    uint8_t buf[70000];
+    uint32_t x = r->seed;
+    for (int k = 0; k < 400; ++k) {
+        x = x * 1664525u + 1013904223u;
+        const size_t len = 1 + (x >> 8) % sizeof(buf);
+        x = x * 1664525u + 1013904223u;
+        const size_t at = (size_t)x % (r->size - len);
+        if (md_file_read_at(r->file, (md_file_offset_t)at, buf, len) != len) {
+            r->wrong += 1;
+            continue;
+        }
+        for (size_t i = 0; i < len; ++i) r->wrong += buf[i] != file_pattern(at + i);
+    }
+}
+
+// MD_FILE_CONCURRENT: one handle read at offsets by several threads at once, each read what is at its offset; reads past
+// the end come back short; and the calls which take a position fail
+UTEST(os, file_concurrent_reads) {
+    const char* path = "md_unittest_concurrent.bin";
+    const size_t size = MEGABYTES(4) + 123;
+    ASSERT_TRUE(write_pattern_file(path, size));
+
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, str_from_cstr(path), MD_FILE_READ | MD_FILE_CONCURRENT | MD_FILE_SEQUENTIAL));
+    EXPECT_EQ((md_file_offset_t)size, md_file_size(file));
+
+    concurrent_reads_t reads[8];
+    md_thread_t* threads[8];
+    for (int t = 0; t < 8; ++t) {
+        reads[t] = (concurrent_reads_t){ .file = file, .size = size, .seed = 17u + (uint32_t)t };
+        threads[t] = md_thread_create(concurrent_reads, &reads[t]);
+        ASSERT_TRUE(threads[t] != NULL);
+    }
+    size_t wrong = 0;
+    for (int t = 0; t < 8; ++t) {
+        md_thread_join(threads[t]);
+        wrong += reads[t].wrong;
+    }
+    EXPECT_EQ((size_t)0, wrong);
+
+    // The end
+    uint8_t tail[64];
+    EXPECT_EQ((size_t)23, md_file_read_at(file, (md_file_offset_t)(size - 23), tail, sizeof(tail)));
+    EXPECT_EQ(file_pattern(size - 1), tail[22]);
+    EXPECT_EQ((size_t)0, md_file_read_at(file, (md_file_offset_t)size + 10, tail, sizeof(tail)));
+
+    // No position
+    EXPECT_EQ((size_t)0, md_file_read(file, tail, 8));
+    EXPECT_FALSE(md_file_seek(file, 0, MD_FILE_BEG));
+    EXPECT_EQ((md_file_offset_t)-1, md_file_tell(file));
+    md_file_close(&file);
+
+    // Writes at offsets on a concurrent handle, read back through an ordinary one
+    ASSERT_TRUE(md_file_open(&file, str_from_cstr(path), MD_FILE_READ | MD_FILE_WRITE | MD_FILE_CONCURRENT));
+    const char text[] = "concurrent";
+    EXPECT_EQ(sizeof(text), md_file_write_at(file, 1000, text, sizeof(text)));
+    EXPECT_EQ((size_t)0, md_file_write(file, text, sizeof(text)));
+    md_file_close(&file);
+    ASSERT_TRUE(md_file_open(&file, str_from_cstr(path), MD_FILE_READ));
+    char back[sizeof(text)] = {0};
+    EXPECT_EQ(sizeof(text), md_file_read_at(file, 1000, back, sizeof(back)));
+    EXPECT_STREQ(text, back);
+    md_file_close(&file);
+
+    // What does not go together
+    EXPECT_FALSE(md_file_open(&file, str_from_cstr(path), MD_FILE_APPEND | MD_FILE_CONCURRENT));
+    EXPECT_FALSE(md_file_open(&file, str_from_cstr(path), MD_FILE_READ | MD_FILE_SEQUENTIAL | MD_FILE_RANDOM));
+    remove(path);
+}

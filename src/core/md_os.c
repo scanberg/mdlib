@@ -857,6 +857,10 @@ static bool file_has_write_access(md_file_t file) {
     return (file.flags & (MD_FILE_WRITE | MD_FILE_APPEND)) != 0;
 }
 
+static bool file_is_concurrent(md_file_t file) {
+    return (file.flags & MD_FILE_CONCURRENT) != 0;
+}
+
 static bool file_is_append_only(md_file_t file) {
     return (file.flags & MD_FILE_APPEND) != 0;
 }
@@ -1054,6 +1058,16 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
         return false;
     }
 
+    const bool want_concurrent = (flags & MD_FILE_CONCURRENT) != 0;
+    if (want_concurrent && want_append) {
+        MD_LOG_ERROR("md_file_open: MD_FILE_CONCURRENT and MD_FILE_APPEND are mutually exclusive");
+        return false;
+    }
+    if ((flags & MD_FILE_SEQUENTIAL) && (flags & MD_FILE_RANDOM)) {
+        MD_LOG_ERROR("md_file_open: MD_FILE_SEQUENTIAL and MD_FILE_RANDOM are mutually exclusive");
+        return false;
+    }
+
 #if MD_PLATFORM_WINDOWS
     wchar_t w_file[MD_MAX_PATH] = {0};
     const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, ARRAY_SIZE(w_file));
@@ -1083,13 +1097,20 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
         creation_disposition = OPEN_ALWAYS;
     }
 
+    // A concurrent handle is overlapped: the I/O manager serializes every request on a synchronous handle, and an
+    // overlapped one has no file pointer for them to share
+    DWORD attributes = FILE_ATTRIBUTE_NORMAL;
+    if (want_concurrent)           attributes |= FILE_FLAG_OVERLAPPED;
+    if (flags & MD_FILE_SEQUENTIAL) attributes |= FILE_FLAG_SEQUENTIAL_SCAN;
+    if (flags & MD_FILE_RANDOM)     attributes |= FILE_FLAG_RANDOM_ACCESS;
+
     HANDLE handle = CreateFileW(
         w_file,
         desired_access,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL,
         creation_disposition,
-        FILE_ATTRIBUTE_NORMAL,
+        attributes,
         NULL);
 
     if (handle == INVALID_HANDLE_VALUE) {
@@ -1139,6 +1160,15 @@ bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags) {
         return false;
     }
 
+    // The hints. MD_FILE_CONCURRENT needs nothing here: pread and pwrite take no position and run concurrently.
+    if (flags & (MD_FILE_SEQUENTIAL | MD_FILE_RANDOM)) {
+#if defined(__APPLE__)
+        fcntl(fd, F_RDAHEAD, (flags & MD_FILE_SEQUENTIAL) ? 1 : 0);
+#elif defined(POSIX_FADV_SEQUENTIAL)
+        posix_fadvise(fd, 0, 0, (flags & MD_FILE_SEQUENTIAL) ? POSIX_FADV_SEQUENTIAL : POSIX_FADV_RANDOM);
+#endif
+    }
+
     *out_file = (md_file_t){.fd = fd, .flags = (uint32_t)flags | MD_FILE_FLAG_VALID};
     md_temp_end(temp_scope);
     return true;
@@ -1181,6 +1211,10 @@ bool md_file_close(md_file_t* file) {
 md_file_offset_t md_file_tell(md_file_t file) {
     if (!md_file_valid(file)) {
         MD_LOG_ERROR("md_file_tell: file was invalid");
+        return -1;
+    }
+    if (file_is_concurrent(file)) {
+        MD_LOG_ERROR("md_file_tell: a handle opened with MD_FILE_CONCURRENT has no position");
         return -1;
     }
 
@@ -1240,6 +1274,10 @@ bool md_file_seek(md_file_t file, md_file_offset_t offset, md_file_seek_origin_t
         MD_LOG_ERROR("md_file_seek: file was invalid");
         return false;
     }
+    if (file_is_concurrent(file)) {
+        MD_LOG_ERROR("md_file_seek: a handle opened with MD_FILE_CONCURRENT has no position");
+        return false;
+    }
 
 #if MD_PLATFORM_WINDOWS
     DWORD move_method = 0;
@@ -1290,6 +1328,10 @@ size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes) {
     }
     if (!file_has_read_access(file)) {
         MD_LOG_ERROR("md_file_read: file was not opened for reading");
+        return 0;
+    }
+    if (file_is_concurrent(file)) {
+        MD_LOG_ERROR("md_file_read: a handle opened with MD_FILE_CONCURRENT is read at offsets only (md_file_read_at)");
         return 0;
     }
     if (!ptr && num_bytes > 0) {
@@ -1359,6 +1401,10 @@ size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
         MD_LOG_ERROR("md_file_write: file was not opened for writing");
         return 0;
     }
+    if (file_is_concurrent(file)) {
+        MD_LOG_ERROR("md_file_write: a handle opened with MD_FILE_CONCURRENT is written at offsets only (md_file_write_at)");
+        return 0;
+    }
     if (!ptr && num_bytes > 0) {
         MD_LOG_ERROR("md_file_write: buffer was NULL");
         return 0;
@@ -1419,6 +1465,43 @@ size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes) {
 #endif
 }
 
+#if MD_PLATFORM_WINDOWS
+// One read or write of up to 4 GB at pos. On an overlapped (concurrent) handle with an event of its own, so that calls
+// from several threads each wait for theirs. On a synchronous handle the OVERLAPPED gives the offset, and the call moves
+// the file pointer, which the caller puts back. False on failure, with the error in *err (ERROR_HANDLE_EOF at the end).
+static bool win_positional_io(HANDLE h, bool concurrent, bool write, uint64_t pos, void* buf, DWORD bytes, DWORD* transferred, DWORD* err) {
+    OVERLAPPED ov = {0};
+    ov.Offset     = (DWORD)(pos & 0xffffffffu);
+    ov.OffsetHigh = (DWORD)(pos >> 32);
+    *transferred = 0;
+    *err = 0;
+    if (concurrent) {
+        ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (!ov.hEvent) {
+            *err = GetLastError();
+            return false;
+        }
+    }
+    BOOL ok = write ? WriteFile(h, buf, bytes, transferred, &ov) : ReadFile(h, buf, bytes, transferred, &ov);
+    if (!ok) {
+        *err = GetLastError();
+        if (concurrent && *err == ERROR_IO_PENDING) {
+            ok = GetOverlappedResult(h, &ov, transferred, TRUE);
+            *err = ok ? 0 : GetLastError();
+        }
+    }
+    if (concurrent) CloseHandle(ov.hEvent);
+    return ok != 0;
+}
+
+// The file pointer of a synchronous handle, which a positional call moves: kept and put back, so that positional calls
+// leave it where it was, as pread and pwrite do
+static bool win_get_pointer(HANDLE h, LARGE_INTEGER* pos) {
+    LARGE_INTEGER zero = {0};
+    return SetFilePointerEx(h, zero, pos, FILE_CURRENT) != 0;
+}
+#endif
+
 size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_t num_bytes) {
     if (!md_file_valid(file)) {
         MD_LOG_ERROR("md_file_read_at: file was invalid");
@@ -1438,6 +1521,10 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
     }
 
 #if MD_PLATFORM_WINDOWS
+    HANDLE h = (HANDLE)file.handle;
+    const bool concurrent = file_is_concurrent(file);
+    LARGE_INTEGER kept = {0};
+    const bool restore = !concurrent && win_get_pointer(h, &kept);
     char* out = (char*)ptr;
     size_t total = 0;
 
@@ -1445,17 +1532,14 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
         const size_t remaining = num_bytes - total;
         const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
         const uint64_t pos = (uint64_t)(offset + (md_file_offset_t)total);
-        OVERLAPPED overlapped = {0};
-        overlapped.Offset = (DWORD)(pos & 0xffffffffu);
-        overlapped.OffsetHigh = (DWORD)(pos >> 32);
 
-        DWORD transferred = 0;
-        if (!ReadFile((HANDLE)file.handle, out + total, chunk, &transferred, &overlapped)) {
-            DWORD err = GetLastError();
+        DWORD transferred = 0, err = 0;
+        if (!win_positional_io(h, concurrent, false, pos, out + total, chunk, &transferred, &err)) {
             if (err == ERROR_HANDLE_EOF) {
                 break;
             }
             MD_LOG_ERROR("md_file_read_at: failed to read file");
+            SetLastError(err);
             print_windows_error();
             break;
         }
@@ -1466,6 +1550,7 @@ size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_
         total += (size_t)transferred;
     }
 
+    if (restore) SetFilePointerEx(h, kept, NULL, FILE_BEGIN);
     return total;
 
 #elif MD_PLATFORM_UNIX
@@ -1521,6 +1606,10 @@ size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr
     }
 
 #if MD_PLATFORM_WINDOWS
+    HANDLE h = (HANDLE)file.handle;
+    const bool concurrent = file_is_concurrent(file);
+    LARGE_INTEGER kept = {0};
+    const bool restore = !concurrent && win_get_pointer(h, &kept);
     const char* in = (const char*)ptr;
     size_t total = 0;
 
@@ -1528,13 +1617,11 @@ size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr
         const size_t remaining = num_bytes - total;
         const DWORD chunk = (DWORD)MIN(remaining, (size_t)UINT32_MAX);
         const uint64_t pos = (uint64_t)(offset + (md_file_offset_t)total);
-        OVERLAPPED overlapped = {0};
-        overlapped.Offset = (DWORD)(pos & 0xffffffffu);
-        overlapped.OffsetHigh = (DWORD)(pos >> 32);
 
-        DWORD transferred = 0;
-        if (!WriteFile((HANDLE)file.handle, in + total, chunk, &transferred, &overlapped)) {
+        DWORD transferred = 0, err = 0;
+        if (!win_positional_io(h, concurrent, true, pos, (void*)(in + total), chunk, &transferred, &err)) {
             MD_LOG_ERROR("md_file_write_at: failed to write file");
+            SetLastError(err);
             print_windows_error();
             break;
         }
@@ -1546,6 +1633,7 @@ size_t md_file_write_at(md_file_t file, md_file_offset_t offset, const void* ptr
         total += (size_t)transferred;
     }
 
+    if (restore) SetFilePointerEx(h, kept, NULL, FILE_BEGIN);
     return total;
 
 #elif MD_PLATFORM_UNIX

@@ -1715,7 +1715,7 @@ size_t md_attribute_packed_symmetric_dim(size_t extent) {
 size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset, void* dst, size_t bytes) {
     if (!io) {
         md_file_t file = {0};
-        if (!md_file_open(&file, path, MD_FILE_READ)) {
+        if (!md_file_open(&file, path, MD_FILE_READ | MD_FILE_CONCURRENT)) {
             MD_LOG_ERROR("Failed to open '" STR_FMT "'", STR_ARG(path));
             return 0;
         }
@@ -1743,8 +1743,9 @@ size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset
         // An empty slot has last_use 0, so the least recently used is also the first empty one.
         idx = lru;
         attr_io_close_slot(io, idx);
+        // Read at offsets only, by any thread: a handle which could be shared by the contexts of several threads
         md_file_t file = {0};
-        if (!md_file_open(&file, path, MD_FILE_READ)) {
+        if (!md_file_open(&file, path, MD_FILE_READ | MD_FILE_CONCURRENT)) {
             MD_LOG_ERROR("Failed to open '" STR_FMT "'", STR_ARG(path));
             return 0;
         }

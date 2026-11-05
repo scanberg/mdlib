@@ -182,21 +182,32 @@ bool md_reader_seek(md_reader_i* r, int64_t offset) {
 
 // ### FILE READER ###
 
+// A file opened with MD_FILE_CONCURRENT (md_file_reader_open) has no position: the reader keeps its own (pos) and reads
+// at it. One opened by the caller (md_file_reader_init) is read from its position, which reading moves.
+static bool file_concurrent(const md_file_reader_t* fr) {
+    return (fr->file.flags & MD_FILE_CONCURRENT) != 0;
+}
+
 static size_t file_read(md_reader_i* r, char* dst, size_t cap) {
     md_file_reader_t* fr = (md_file_reader_t*)r;
+    const bool concurrent = file_concurrent(fr);
     size_t total = 0;
     // A read may come back short of what was asked for before the end (large requests on some platforms)
     while (total < cap) {
-        const size_t n = md_file_read(fr->file, dst + total, cap - total);
+        const size_t n = concurrent ? md_file_read_at(fr->file, fr->pos, dst + total, cap - total)
+                                    : md_file_read(fr->file, dst + total, cap - total);
         if (n == 0) break;
         total += n;
+        fr->pos += (int64_t)n;
     }
     return total;
 }
 
 static bool file_seek(md_reader_i* r, int64_t offset) {
     md_file_reader_t* fr = (md_file_reader_t*)r;
-    return md_file_seek(fr->file, offset, MD_FILE_BEG);
+    if (!file_concurrent(fr) && !md_file_seek(fr->file, offset, MD_FILE_BEG)) return false;
+    fr->pos = offset;
+    return true;
 }
 
 static size_t file_read_at(const md_reader_i* r, int64_t offset, char* dst, size_t cap) {
@@ -222,15 +233,18 @@ bool md_file_reader_init(md_file_reader_t* fr, md_file_t file, size_t cap, struc
     }
     fr->file = file;
     fr->owns_file = false;
-    // From where the file is positioned
-    fr->r.base = (int64_t)md_file_tell(file);
+    // From where the file is positioned: the start of one which has no position
+    fr->pos = (file.flags & MD_FILE_CONCURRENT) ? 0 : (int64_t)md_file_tell(file);
+    fr->r.base = fr->pos;
     return true;
 }
 
 bool md_file_reader_open(md_file_reader_t* fr, str_t path, size_t cap, struct md_allocator_i* alloc) {
     ASSERT(fr);
+    // Read front to back, and at offsets from several threads (md_reader_block_parallel): a handle every thread reads
+    // at once, which on Windows a synchronous one would serialize
     md_file_t file = {0};
-    if (!md_file_open(&file, path, MD_FILE_READ)) {
+    if (!md_file_open(&file, path, MD_FILE_READ | MD_FILE_CONCURRENT | MD_FILE_SEQUENTIAL)) {
         MEMSET(fr, 0, sizeof(*fr));
         return false;
     }
