@@ -3432,17 +3432,26 @@ UTEST(gto_iso_gpu_lib, job_matches_extract) {
             ASSERT_TRUE(jc != NULL);
             float seen[256];
             uint32_t nseen = 0;
+            bool back = false;
             while (md_gto_iso_gpu_job_poll(jc, 0.0) == MD_GTO_ISO_GPU_JOB_RUNNING) {
                 const float pr = md_gto_iso_gpu_job_progress(jc);
+                if (nseen > 0 && pr < seen[nseen - 1]) back = true;
                 if ((nseen == 0 || pr != seen[nseen - 1]) && nseen < 256) seen[nseen++] = pr;
             }
             isog_chunks = saved;
+            // What the job recorded, not what the polls happened to see: markers that pass between two polls
+            // show as one value, so the values seen depend on how the CPU keeps up with the GPU (under load on
+            // llvmpipe, 8 of the 15 for amide_homo). A marker per chunk of the corner and the vertex launches.
+            const uint32_t marks = jc->mark_tail;
+            const float last = md_gto_iso_gpu_job_progress(jc);
             md_gto_iso_gpu_mesh_t cm;
             ASSERT_TRUE(md_gto_iso_gpu_job_end(jc, &cm));
-            printf("    in 6 chunks: %u progress values seen:", nseen);
+            printf("    in 6 chunks: %u markers, %u progress values seen:", marks, nseen);
             for (uint32_t i = 0; i < nseen; ++i) printf(" %.2f", seen[i]);
             printf("\n");
-            EXPECT_TRUE(nseen >= 8);
+            EXPECT_GE(marks, 12u);
+            EXPECT_FALSE(back);
+            EXPECT_EQ(last, 1.0f);
             ASSERT_EQ(cm.vertex_count, nv);
             ASSERT_EQ(cm.index_count, ni);
             if (nv > 0) {
