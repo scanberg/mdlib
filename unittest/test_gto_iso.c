@@ -55,6 +55,8 @@
 #include <core/md_array.h>
 #include <core/md_os.h>
 
+// To get defines of constants such as M_PI from math
+#define _USE_MATH_DEFINES
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
