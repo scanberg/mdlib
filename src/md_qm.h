@@ -341,26 +341,24 @@ bool md_qm_kinetic_available(const struct md_system_t* sys);
 // bonds, lone pairs), 1/2 where it is like the electron gas, low between shells and pairs. A spin of no density
 // adds nothing; D_s is clamped at 0 (tau_s >= g2_s / (8 rho_s) holds exactly, rounding aside).
 //
-// 0 where the density (both spins) is below rho_min. Far from the atoms D and D0 are a difference and a power of
-// vanishing sums, and with a gaussian basis' tails their ratio takes any value: as the most diffuse orbital comes
-// to make the density alone, ELF goes to 1 in the vacuum around a molecule. Isosurfaces want rho_min around 1e-4
-// to 1e-3; 0 keeps it everywhere the density is not exactly 0.
-double md_qm_elf(double rho_a, double g2_a, double tau_a, double rho_b, double g2_b, double tau_b, double rho_min);
-double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min);
+// In the tails: D (both spins) plus d_min, as Multiwfn has it (function.f90, ELF_LOL: D = D + 1e-5 by default,
+// settings.ini ELF_addminimal = 1). Far from the atoms D and D0 are a difference and a power of vanishing sums: with a
+// gaussian basis' tails their ratio takes any value, and as the most diffuse orbital comes to make the density alone
+// D goes to 0 and ELF to 1 in the vacuum around a molecule. With d_min it goes to 0 instead, smoothly, as D0 falls
+// below d_min: MD_QM_ELF_D_MIN (1e-5) has ELF follow the exact one to the 1e-3 isodensity (within 0.1 there) and
+// gone by rho 1e-4, as Multiwfn's (and the figures made with it). d_min also keeps ELF of float data from its noise
+// (md_qm_elf_noise), which is far below it wherever ELF is not already 0. d_min 0: the function as defined, out to
+// where the density vanishes. 0 where the density (both spins) is below rho_min.
+#define MD_QM_ELF_D_MIN 1.0e-5
+double md_qm_elf(double rho_a, double g2_a, double tau_a, double rho_b, double g2_b, double tau_b, double rho_min, double d_min);
+double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min, double d_min);
 
-// How far ELF can be trusted at a point, from float inputs: chi = D / D0 is a small difference of large terms
+// How far ELF (d_min 0) can be trusted at a point, from float inputs: chi = D / D0 is a small difference of large terms
 // over D0, and an error of float's epsilon in them (the basis, the coordinates, the sums), as any evaluation from
-// float data has, moves chi by about epsilon * (tau_a + tau_b) / (D0_a + D0_b), which this returns (inf where
-// D0 is 0). It grows smoothly outward as rho^(-2/3); measured against double, ELF's error is mostly within a few
-// times it (mean a fifth of it, worst about 20 times). md_qm_elf_fade(noise, lo, hi) is 1 below lo, 0 above hi, and
-// between them a smoothstep in log(noise) from 1 to 0: ELF times it ends where the noise has taken over rather than
-// at a floor of rho. MD_QM_ELF_FADE_LO and _HI let the noise show before it is faded: ELF is as computed while the
-// noise is below 1e-2 (errors up to about 0.1 in places, rho down to about 1e-8), and gone where it reaches 0.2
-// (where the values are mostly noise, rho about 1e-9 to 1e-10).
-#define MD_QM_ELF_FADE_LO 1.0e-2
-#define MD_QM_ELF_FADE_HI 2.0e-1
+// float data has, moves chi by about epsilon * (tau_a + tau_b) / (D0_a + D0_b), which this returns (inf where D0 is 0).
+// It grows smoothly outward as rho^(-2/3); measured against double, ELF's error is mostly within a few times it (mean
+// a fifth of it, worst about 20 times): about 1e-2 by rho 1e-7.
 double md_qm_elf_noise(double rho_a, double tau_a, double rho_b, double tau_b);
-double md_qm_elf_fade(double noise, double lo, double hi);
 
 // The LOCALIZED ORBITAL LOCATOR (Schmider and Becke, J. Mol. Struct. THEOCHEM 527, 51 (2000)) from the same:
 // t = (D0_a + D0_b) / (tau_a + tau_b), LOL = t / (1 + t), in [0, 1]. It reads tau without the gradient term, so it
@@ -376,9 +374,10 @@ double md_qm_lol_closed_shell(double rho, double tau, double rho_min);
 // basis, both by md_gto_iso_gpu_evaluate at the same points, then md_qm_elf per point; with both sets at the AO
 // cutoff 1e-8 (md_gto_iso_gpu_set_cutoff), within 1e-5 of this where rho > 1e-3 (float, against double). xyz: count points, stride bytes apart (0 = packed float3), in
 // bohr, as atom_xyz (one per atom of the basis, bohr, atom_xyz_stride bytes apart, 0 = packed). Either output may
-// be NULL. Builds the fields on every call: for repeated evaluation, hold them. Returns count, 0 on failure.
+// be NULL. rho_min, d_min: as md_qm_elf. Builds the fields on every call: for repeated evaluation, hold them. Returns
+// count, 0 on failure.
 size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, size_t count, size_t stride,
-                          const struct md_system_t* sys, const float* atom_xyz, size_t atom_xyz_stride, double rho_min);
+                          const struct md_system_t* sys, const float* atom_xyz, size_t atom_xyz_stride, double rho_min, double d_min);
 
 // orbital/{total,difference}/density (alpha + beta, alpha - beta) as virtual attributes over whatever
 // orbital/{alpha,beta}/density are: for a producer that publishes those two itself (read from a file

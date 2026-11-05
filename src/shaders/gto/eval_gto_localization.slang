@@ -8,7 +8,7 @@
 //     grad rho_s = sum_ij D_ij (chi_i grad chi_j + grad chi_i chi_j)
 //     tau_s      = 1/2 sum_ij D_ij grad chi_i . grad chi_j        (the positive definite kinetic energy density)
 //
-// then ELF or LOL as md_qm_elf / md_qm_lol take them, ELF faded to 0 where float runs out (md_qm_elf_noise) (the Kohout-Savin spin form; one matrix, the total density,
+// then ELF or LOL as md_qm_elf / md_qm_lol take them, with D plus d_min (Multiwfn's convention, MD_QM_ELF_D_MIN) (the Kohout-Savin spin form; one matrix, the total density,
 // for a closed shell, taken as two equal spins). The structure is the reference density kernel's
 // (eval_gto_density.slang): the AOs that reach a group of 8^3 voxels screened, then tile pairs of 16 AOs, each
 // AO's value and gradient evaluated in registers and contracted with the matrices' tiles in groupshared memory.
@@ -33,8 +33,8 @@ struct RootArgs {
     float    rho_min;       // below it (both spins) the value is 0
     uint     dm_tiled;      // the matrices are tile pools of md_gto_gpu_dmats (dm_tao, dm_map of each)
     uint     dm_nt;
-    float    fade_lo;       // ELF faded to 0 as its noise (localization_noise) goes from fade_lo to fade_hi; both 0: none
-    float    fade_hi;
+    float    d_min;         // ELF: added to D (both spins), md_qm_elf's d_min
+    float    _pad0;
 
     uint*   cgto_atom_idx;
     float*  cgto_r;
@@ -199,16 +199,6 @@ void eval_phis(out float phi[TILE_SIZE], out float3 grad[TILE_SIZE], float3 coor
     }
 }
 
-// md_qm_elf_noise and md_qm_elf_fade (md_qm.h): chi's error to expect, float's epsilon times tau / D0, and the
-// weight that fades ELF out as it grows, 1 to 0 by a smoothstep in its log from lo to hi
-#define ELF_NOISE_EPS 5.9604645e-8
-float elf_fade(float noise, float lo, float hi) {
-    if (!(noise < hi)) return 0.0f;     // NaN and inf too (rho^(5/3) underflowed)
-    if (noise <= lo) return 1.0f;
-    float t = (log(noise) - log(lo)) / (log(hi) - log(lo));
-    return 1.0f - t * t * (3.0f - 2.0f * t);
-}
-
 // The terms of one spin, accumulated
 struct Terms {
     float  rho;
@@ -331,9 +321,8 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
             } else if (d0 > 0.0f) {
                 float da = ra > 0.0f ? max(tau_a - g2a / (8.0f * ra), 0.0f) : 0.0f;
                 float db = rb > 0.0f ? max(tau_b - g2b / (8.0f * rb), 0.0f) : 0.0f;
-                float chi = (da + db) / d0;
-                value = 1.0f / (1.0f + chi * chi);
-                if (args.fade_hi > 0.0f) value *= elf_fade(ELF_NOISE_EPS * (tau_a + tau_b) / d0, args.fade_lo, args.fade_hi);
+                float chi = (da + db + args.d_min) / d0;
+                value = 1.0f / (1.0f + chi * chi);     // (chi^2 inf where d0 underflows: 0)
             }
         }
         out_vol[dtid] = value;

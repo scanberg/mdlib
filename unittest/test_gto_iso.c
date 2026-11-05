@@ -2289,11 +2289,14 @@ UTEST(qm_elf, derivative_basis_is_exact) {
 UTEST(qm_elf, limits_and_reference) {
     // the uniform gas: D = D0
     const double rho = 0.3, cf = 0.3 * pow(3.0 * M_PI * M_PI, 2.0 / 3.0), cs = 0.3 * pow(6.0 * M_PI * M_PI, 2.0 / 3.0);
-    EXPECT_NEAR(md_qm_elf_closed_shell(rho, 0.0, cf * pow(rho, 5.0 / 3.0), 0.0), 0.5, 1e-12);
-    EXPECT_NEAR(md_qm_elf(rho, 0.0, cs * pow(rho, 5.0 / 3.0), 0.0, 0.0, 0.0, 0.0), 0.5, 1e-12);
+    EXPECT_NEAR(md_qm_elf_closed_shell(rho, 0.0, cf * pow(rho, 5.0 / 3.0), 0.0, 0.0), 0.5, 1e-12);
+    EXPECT_NEAR(md_qm_elf(rho, 0.0, cs * pow(rho, 5.0 / 3.0), 0.0, 0.0, 0.0, 0.0, 0.0), 0.5, 1e-12);
     EXPECT_NEAR(md_qm_lol_closed_shell(rho, cf * pow(rho, 5.0 / 3.0), 0.0), 0.5, 1e-12);
-    EXPECT_NEAR(md_qm_elf_closed_shell(rho, 8.0 * rho * 0.2, 0.2, 0.0), 1.0, 1e-12);   // tau = tau_W: D = 0
-    EXPECT_EQ(md_qm_elf_closed_shell(1e-7, 0.0, 1.0, 1e-6), 0.0);                      // below rho_min
+    EXPECT_NEAR(md_qm_elf_closed_shell(rho, 8.0 * rho * 0.2, 0.2, 0.0, 0.0), 1.0, 1e-12);   // tau = tau_W: D = 0
+    EXPECT_EQ(md_qm_elf_closed_shell(1e-7, 0.0, 1.0, 1e-6, 0.0), 0.0);                      // below rho_min
+    // d_min (Multiwfn's D + 1e-5): of no matter where D0 is large, ELF to 0 where D0 is small against it
+    EXPECT_NEAR(md_qm_elf_closed_shell(1.0, 8.0 * 0.2, 0.2, 0.0, MD_QM_ELF_D_MIN), 1.0 / (1.0 + pow(MD_QM_ELF_D_MIN / cf, 2.0)), 1e-12);
+    EXPECT_LT(md_qm_elf_closed_shell(1e-5, 8.0 * 1e-5 * 0.2, 0.2, 0.0, MD_QM_ELF_D_MIN), 1e-3);
     EXPECT_EQ(md_qm_lol_closed_shell(1e-7, 1.0, 1e-6), 0.0);
 
     // He: one occupied orbital, so tau = tau_W and ELF = 1 wherever there is density
@@ -2308,7 +2311,7 @@ UTEST(qm_elf, limits_and_reference) {
         float* p = (float*)malloc(sizeof(float) * 3 * N);
         for (int i = 0; i < 3 * N; ++i) p[i] = xyz[i % 3] + (float)iso_rng_range(&rng, -3.0, 3.0);
         double* elf = (double*)malloc(sizeof(double) * N);
-        ASSERT_EQ(md_qm_elf_evaluate(elf, NULL, p, N, 0, &t.sys, xyz, 0, 1e-6), (size_t)N);
+        ASSERT_EQ(md_qm_elf_evaluate(elf, NULL, p, N, 0, &t.sys, xyz, 0, 1e-6, 0.0), (size_t)N);
         double worst = 0.0;
         int kept = 0;
         for (int i = 0; i < N; ++i) {
@@ -2354,13 +2357,13 @@ UTEST(qm_elf, limits_and_reference) {
         double* lol = (double*)malloc(sizeof(double) * N);
         md_gto_iso_field_evaluate(fr, pts, N, 0, r, g);
         md_gto_iso_field_evaluate(fk, pts, N, 0, tau, NULL);
-        ASSERT_EQ(md_qm_elf_evaluate(elf, lol, pts, N, 0, &s.t.sys, s.xyz, 0, 1e-6), (size_t)N);
+        ASSERT_EQ(md_qm_elf_evaluate(elf, lol, pts, N, 0, &s.t.sys, s.xyz, 0, 1e-6, 0.0), (size_t)N);
         double below = 0.0, form = 0.0, lo = 1.0, hi = 0.0;
         for (int i = 0; i < N; ++i) {
             const double g2 = g[3 * i] * g[3 * i] + g[3 * i + 1] * g[3 * i + 1] + g[3 * i + 2] * g[3 * i + 2];
             if (r[i] > 1e-10) below = fmax(below, (g2 / (8.0 * r[i]) - tau[i]) / fmax(tau[i], 1e-300));
             // a closed shell: alpha's terms are each spin's
-            const double e = md_qm_elf(r[i], g2, tau[i], r[i], g2, tau[i], 1e-6);
+            const double e = md_qm_elf(r[i], g2, tau[i], r[i], g2, tau[i], 1e-6, 0.0);
             const double l = md_qm_lol(r[i], tau[i], r[i], tau[i], 1e-6);
             form = fmax(form, fmax(fabs(e - elf[i]), fabs(l - lol[i])));
             lo = fmin(lo, fmin(elf[i], lol[i]));
@@ -2402,7 +2405,7 @@ UTEST(qm_elf, limits_and_reference) {
         float p[3 * N];
         for (int i = 0; i < N; ++i) for (int k = 0; k < 3; ++k) p[3 * i + k] = ref[i].p[k];
         double elf[N], lol[N];
-        ASSERT_EQ(md_qm_elf_evaluate(elf, lol, p, N, 0, &t.sys, xyz, 0, 0.0), (size_t)N);
+        ASSERT_EQ(md_qm_elf_evaluate(elf, lol, p, N, 0, &t.sys, xyz, 0, 0.0, 0.0), (size_t)N);
         double err = 0.0;
         for (int i = 0; i < N; ++i) err = fmax(err, fmax(fabs(elf[i] - ref[i].elf), fabs(lol[i] - ref[i].lol)));
         printf("  oh_631gs_uhf (open shell) ELF and LOL against PySCF at %d points: max %.1e\n", N, err);
@@ -4759,7 +4762,7 @@ UTEST(gto_iso_gpu_lib, elf_at_points) {
         const double secs = md_tick_to_seconds(md_tick_now() - t0);
         double* ref = (double*)malloc(sizeof(double) * N);
         double* rho = (double*)malloc(sizeof(double) * N);
-        ASSERT_EQ(md_qm_elf_evaluate(ref, NULL, pts, N, 0, &s.t.sys, s.xyz, 0, 0.0), (size_t)N);
+        ASSERT_EQ(md_qm_elf_evaluate(ref, NULL, pts, N, 0, &s.t.sys, s.xyz, 0, 0.0, 0.0), (size_t)N);
         md_gto_iso_field_evaluate(fr, pts, N, 0, rho, NULL);
         // by density: [1e-4, 1e-3), [1e-3, 1e-2), >= 1e-2
         double err[3] = {0, 0, 0};
@@ -4768,7 +4771,7 @@ UTEST(gto_iso_gpu_lib, elf_at_points) {
             if (!(rho[i] >= 1e-4)) continue;
             const int b = rho[i] < 1e-3 ? 0 : rho[i] < 1e-2 ? 1 : 2;
             const double g2 = (double)rg[3 * i] * rg[3 * i] + (double)rg[3 * i + 1] * rg[3 * i + 1] + (double)rg[3 * i + 2] * rg[3 * i + 2];
-            const double e = md_qm_elf_closed_shell(rv[i], g2, tv[i], 0.0);
+            const double e = md_qm_elf_closed_shell(rv[i], g2, tv[i], 0.0, 0.0);
             err[b] = fmax(err[b], e == e ? fabs(e - ref[i]) : INFINITY);
             cnt[b]++;
         }

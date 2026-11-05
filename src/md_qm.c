@@ -1211,19 +1211,19 @@ static inline double qm_elf_pauli(double rho, double g2, double tau) {
     return d > 0.0 ? d : 0.0;
 }
 
-double md_qm_elf(double rho_a, double g2_a, double tau_a, double rho_b, double g2_b, double tau_b, double rho_min) {
+double md_qm_elf(double rho_a, double g2_a, double tau_a, double rho_b, double g2_b, double tau_b, double rho_min, double d_min) {
     const double rho = rho_a + rho_b;
     if (!(rho > 0.0) || rho < rho_min) return 0.0;
-    const double d  = qm_elf_pauli(rho_a, g2_a, tau_a) + qm_elf_pauli(rho_b, g2_b, tau_b);
+    const double d  = qm_elf_pauli(rho_a, g2_a, tau_a) + qm_elf_pauli(rho_b, g2_b, tau_b) + (d_min > 0.0 ? d_min : 0.0);
     const double d0 = QM_ELF_CF_SPIN * ((rho_a > 0.0 ? pow(rho_a, 5.0 / 3.0) : 0.0) + (rho_b > 0.0 ? pow(rho_b, 5.0 / 3.0) : 0.0));
     if (!(d0 > 0.0)) return 0.0;
     const double chi = d / d0;
     return 1.0 / (1.0 + chi * chi);
 }
 
-double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min) {
-    // each spin half of it: rho/2, |grad rho|^2 / 4, tau/2
-    return md_qm_elf(0.5 * rho, 0.25 * g2, 0.5 * tau, 0.5 * rho, 0.25 * g2, 0.5 * tau, rho_min);
+double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min, double d_min) {
+    // each spin half of it: rho/2, |grad rho|^2 / 4, tau/2 (d_min is of D, both spins)
+    return md_qm_elf(0.5 * rho, 0.25 * g2, 0.5 * tau, 0.5 * rho, 0.25 * g2, 0.5 * tau, rho_min, d_min);
 }
 
 double md_qm_elf_noise(double rho_a, double tau_a, double rho_b, double tau_b) {
@@ -1231,13 +1231,6 @@ double md_qm_elf_noise(double rho_a, double tau_a, double rho_b, double tau_b) {
     const double tau = tau_a + tau_b;
     if (!(d0 > 0.0)) return INFINITY;
     return 5.9604644775390625e-8 * (tau > 0.0 ? tau : 0.0) / d0;   // float's unit roundoff, 2^-24
-}
-
-double md_qm_elf_fade(double noise, double lo, double hi) {
-    if (!(noise < hi)) return 0.0;
-    if (noise <= lo || !(lo > 0.0)) return 1.0;
-    const double t = (log(noise) - log(lo)) / (log(hi) - log(lo));
-    return 1.0 - t * t * (3.0 - 2.0 * t);
 }
 
 double md_qm_lol(double rho_a, double tau_a, double rho_b, double tau_b, double rho_min) {
@@ -1281,7 +1274,7 @@ static bool qm_elf_terms(double* rho, double* g2, double* tau, const float* xyz,
 }
 
 size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, size_t count, size_t stride,
-                          const md_system_t* sys, const float* atom_xyz, size_t atom_xyz_stride, double rho_min) {
+                          const md_system_t* sys, const float* atom_xyz, size_t atom_xyz_stride, double rho_min, double d_min) {
     if ((!out_elf && !out_lol) || !xyz || count == 0 || !sys || !atom_xyz) return 0;
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
@@ -1300,7 +1293,7 @@ size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, si
     if (ok && closed) {
         ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, STR_LIT("orbital/total/density"), atom_xyz, atom_xyz_stride, alloc);
         for (size_t i = 0; ok && i < count; ++i) {
-            if (out_elf) out_elf[i] = md_qm_elf_closed_shell(rho_a[i], g2_a[i], tau_a[i], rho_min);
+            if (out_elf) out_elf[i] = md_qm_elf_closed_shell(rho_a[i], g2_a[i], tau_a[i], rho_min, d_min);
             if (out_lol) out_lol[i] = md_qm_lol_closed_shell(rho_a[i], tau_a[i], rho_min);
         }
     } else if (ok) {
@@ -1309,7 +1302,7 @@ size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, si
         if (an) ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, STR_LIT("orbital/alpha/density"), atom_xyz, atom_xyz_stride, alloc);
         if (ok && bn) ok = qm_elf_terms(rho_b, g2_b, tau_b, xyz, count, stride, sys, STR_LIT("orbital/beta/density"), atom_xyz, atom_xyz_stride, alloc);
         for (size_t i = 0; ok && i < count; ++i) {
-            if (out_elf) out_elf[i] = md_qm_elf(rho_a[i], g2_a[i], tau_a[i], rho_b[i], g2_b[i], tau_b[i], rho_min);
+            if (out_elf) out_elf[i] = md_qm_elf(rho_a[i], g2_a[i], tau_a[i], rho_b[i], g2_b[i], tau_b[i], rho_min, d_min);
             if (out_lol) out_lol[i] = md_qm_lol(rho_a[i], tau_a[i], rho_b[i], tau_b[i], rho_min);
         }
     }
