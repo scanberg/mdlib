@@ -566,10 +566,10 @@ void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
 // The basis's radii decide which AOs are summed at a voxel: ELF is made of small differences in the tails, and
 // wants a basis made with the cutoff 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
 //
-// Precision: in the tails ELF is a small difference of large terms, and float carries it to where its noise,
-// md_qm_elf_noise, is about 1e-2 (rho about 1e-7 to 1e-8, against 1e-4 for a fixed floor). fade_lo, fade_hi fade
-// it out to 0 there, smoothly (md_qm_elf_fade), rather than at a floor of rho; MD_QM_ELF_FADE_LO and _HI are the
-// values measured for. LOL takes no difference and needs neither: it holds to where rho underflows.
+// Precision: in the tails ELF is a small difference of large terms, and from float it is good to about its noise,
+// md_qm_elf_noise, which grows outward as rho^(-2/3). fade_lo, fade_hi fade it out to 0 where the noise has taken
+// over, smoothly (md_qm_elf_fade), rather than at a floor of rho; MD_QM_ELF_FADE_LO and _HI let the noise show
+// first. LOL takes no difference and needs neither: it holds to where rho underflows.
 typedef enum md_gto_gpu_localization_t {
     MD_GTO_GPU_ELF = 0,
     MD_GTO_GPU_LOL = 1,

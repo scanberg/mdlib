@@ -351,12 +351,14 @@ double md_qm_elf_closed_shell(double rho, double g2, double tau, double rho_min)
 // How far ELF can be trusted at a point, from float inputs: chi = D / D0 is a small difference of large terms
 // over D0, and an error of float's epsilon in them (the basis, the coordinates, the sums), as any evaluation from
 // float data has, moves chi by about epsilon * (tau_a + tau_b) / (D0_a + D0_b), which this returns (inf where
-// D0 is 0). It grows smoothly outward as rho^(-2/3); measured against double, ELF's error is within a few times
-// it (mean a fifth of it). md_qm_elf_fade(noise, lo, hi) is 1 below lo, 0 above hi, and between them a smoothstep
-// in log(noise) from 1 to 0: ELF times it fades out where the noise takes over rather than ending at a floor of
-// rho. MD_QM_ELF_FADE_LO and _HI keep ELF within about 1e-2 of exact (rho down to about 1e-7).
-#define MD_QM_ELF_FADE_LO 1.0e-3
-#define MD_QM_ELF_FADE_HI 1.0e-2
+// D0 is 0). It grows smoothly outward as rho^(-2/3); measured against double, ELF's error is mostly within a few
+// times it (mean a fifth of it, worst about 20 times). md_qm_elf_fade(noise, lo, hi) is 1 below lo, 0 above hi, and
+// between them a smoothstep in log(noise) from 1 to 0: ELF times it ends where the noise has taken over rather than
+// at a floor of rho. MD_QM_ELF_FADE_LO and _HI let the noise show before it is faded: ELF is as computed while the
+// noise is below 1e-2 (errors up to about 0.1 in places, rho down to about 1e-8), and gone where it reaches 0.2
+// (where the values are mostly noise, rho about 1e-9 to 1e-10).
+#define MD_QM_ELF_FADE_LO 1.0e-2
+#define MD_QM_ELF_FADE_HI 2.0e-1
 double md_qm_elf_noise(double rho_a, double tau_a, double rho_b, double tau_b);
 double md_qm_elf_fade(double noise, double lo, double hi);
 

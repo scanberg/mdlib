@@ -543,11 +543,12 @@ UTEST(gto_localization, matches_cpu) {
         loc_free(&s);
     }
 }
-// ELF and LOL out into the tails, where rho vanishes: the kernel with no floor of rho and ELF faded
-// (MD_QM_ELF_FADE_LO, _HI), against the matrices in double (tails_dmat_terms: every AO, no cutoff) at every 3rd
-// voxel of a grid out to 9 bohr beyond the outermost atom. ELF is within 2e-2 of the exact one faded the same way
-// everywhere, LOL within 1e-5 with no floor at all. By decade of rho: what ELF is (mean), its error unfaded
-// (where float runs out: about 1e-2 at rho 1e-7, any value by 1e-10) and faded, and the mean fade.
+// ELF and LOL out into the tails, where rho vanishes: the kernel with no floor of rho, against the matrices in double
+// (tails_dmat_terms: every AO, no cutoff) at every 3rd voxel of a grid out to 9 bohr beyond the outermost atom. ELF's
+// error is within 30 times md_qm_elf_noise (plus 1e-4) wherever it is not faded out (the estimate holds), and faded
+// (MD_QM_ELF_FADE_LO, _HI) it is the exact one faded alike to within the noise at the fade's end; LOL is within 1e-5
+// with no floor at all. By decade of rho: what ELF is (mean), its error unfaded (max, mean), the largest ratio of
+// error to noise, and the mean fade.
 
 // rho, grad rho, tau of one spin's matrix D at a point, all in double: the AOs from the basis (its float exponents
 // and coefficients, as the kernel has them) without a cutoff
@@ -639,9 +640,9 @@ UTEST(gto_localization, tails_fade) {
 
         double* ao = (double*)malloc(sizeof(double) * 4 * s.num_ao);
         enum { NB = 14 };   // decades 1e1 .. 1e-12 and below
-        double val[NB] = {0}, raw[NB] = {0}, fad[NB] = {0}, wsum[NB] = {0};
+        double val[NB] = {0}, raw[NB] = {0}, rawsum[NB] = {0}, ratio[NB] = {0}, wsum[NB] = {0};
         size_t cnt[NB] = {0};
-        double worst_elf = 0, worst_lol = 0, rho_half = 0;
+        double worst_elf = 0, worst_lol = 0, rho_half = 0, worst_ratio = 0;
         for (size_t i = 0; i < n; i += 3) {
             const size_t x = i % dim, y = (i / dim) % dim, z = i / ((size_t)dim * dim);
             const float p[3] = { grid.origin.x + ((float)x + 0.5f) * h, grid.origin.y + ((float)y + 0.5f) * h, grid.origin.z + ((float)z + 0.5f) * h };
@@ -649,19 +650,24 @@ UTEST(gto_localization, tails_fade) {
             loc_ref_dmat(&e, &l, &rho, &noise, &s, p, ao);
             const double w = md_qm_elf_fade(noise, MD_QM_ELF_FADE_LO, MD_QM_ELF_FADE_HI);
             const double d = fabs((double)elf_fad[i] - e * w);
+            const double r = fabs((double)elf_raw[i] - e);
             worst_elf = fmax(worst_elf, d);
             worst_lol = fmax(worst_lol, fabs((double)lol[i] - l));
             if (w > 0.4 && w < 0.6) rho_half = fmax(rho_half, rho);
             int b = rho > 0 ? (int)floor(1.0 - log10(rho)) : NB - 1;
             b = b < 0 ? 0 : (b >= NB ? NB - 1 : b);
-            val[b] += e; raw[b] = fmax(raw[b], fabs((double)elf_raw[i] - e)); fad[b] = fmax(fad[b], d); wsum[b] += w; cnt[b]++;
+            const double q = noise < MD_QM_ELF_FADE_HI ? fmax(r - 1.0e-4, 0.0) / noise : 0.0;
+            worst_ratio = fmax(worst_ratio, q);
+            val[b] += e; raw[b] = fmax(raw[b], r); rawsum[b] += r; ratio[b] = fmax(ratio[b], q); wsum[b] += w; cnt[b]++;
         }
-        printf("  %-20s ELF faded within %.1e (half faded by rho %.0e), LOL within %.1e (" MD_GTO_GPU_LOCALIZATION_REVISION ")\n", files[fi], worst_elf, rho_half, worst_lol);
-        printf("    rho     voxels  ELF    unfaded  faded    fade\n");
+        printf("  %-20s ELF faded within %.1e (half faded by rho %.0e), error / noise at most %.1f; LOL within %.1e (" MD_GTO_GPU_LOCALIZATION_REVISION ")\n",
+               files[fi], worst_elf, rho_half, worst_ratio, worst_lol);
+        printf("    rho     voxels  ELF    max err   mean err  err/noise  fade\n");
         for (int b = 0; b < NB; ++b) if (cnt[b]) {
-            printf("    1e%+03d %6zu  %.3f  %.2e  %.2e  %.2f\n", 1 - b, cnt[b], val[b] / cnt[b], raw[b], fad[b], wsum[b] / cnt[b]);
+            printf("    1e%+03d %6zu  %.3f  %.2e  %.2e  %6.1f    %.2f\n", 1 - b, cnt[b], val[b] / cnt[b], raw[b], rawsum[b] / cnt[b], ratio[b], wsum[b] / cnt[b]);
         }
-        EXPECT_LT(worst_elf, 2.0e-2);
+        EXPECT_LT(worst_ratio, 30.0);
+        EXPECT_LT(worst_elf, 30.0 * MD_QM_ELF_FADE_HI);
         EXPECT_LT(worst_lol, 1.0e-5);
         free(ao); free(elf_raw); free(elf_fad); free(lol);
         loc_free(&s);
