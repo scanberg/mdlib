@@ -7438,8 +7438,27 @@ void md_util_system_augment_particle_types(md_system_t* sys) {
     md_system_topology_changed(sys);
 
     const size_t num_types = sys->atom.type.count;
+
+    // The entry of an atom depends on its residue's name and its type alone, of which a system has few: each pair is
+    // matched against the tables once (found, by a hash of the two), and while residues of the same name follow one
+    // another, an atom takes its type's entry from the slot of its type, without a lookup. A slot holds the entry of the
+    // run of residue names it was filled in (by the run's number: 0 for none), so a new run needs no clearing.
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_hashmap32_t found = { .allocator = md_temp_allocator(temp) };
+    uint32_t* slot_run   = md_temp_alloc_array(temp, uint32_t, num_types + 1);
+    uint32_t* slot_entry = md_temp_alloc_array(temp, uint32_t, num_types + 1);     // The entry + 1, 0 for none
+    MEMSET(slot_run, 0, (num_types + 1) * sizeof(uint32_t));
+    uint32_t run = 0;
+    str_t run_name = {0};
+    uint64_t run_key = 0;
+
     for (size_t res_idx = 0; res_idx < sys->residue.count; ++res_idx) {
         const str_t res_name = md_system_residue_name(sys, res_idx);
+        if (run == 0 || !str_eq(res_name, run_name)) {
+            run += 1;
+            run_name = res_name;
+            run_key = md_hash64_str(res_name, 0);
+        }
         const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         md_residue_kind_t res_kind = MD_RESIDUE_KIND_OTHER;
         for (uint32_t i = range.beg; i < range.end; ++i) {
@@ -7447,8 +7466,22 @@ void md_util_system_augment_particle_types(md_system_t* sys) {
             // Only types without an element: an atom with one is not what these tables describe
             if (t <= 0 || (size_t)t >= num_types || sys->atom.type.z[t] != 0) continue;
 
-            const particle_type_t* entry = find_predefined_particle_type(res_name, md_particle_type_name(&sys->atom.type, t));
-            if (!entry) continue;
+            if (slot_run[t] != run) {
+                const uint64_t key = md_hash64(&t, sizeof(t), run_key);
+                const uint32_t* known = md_hashmap_get(&found, key);
+                uint32_t e;
+                if (known) {
+                    e = *known;
+                } else {
+                    const particle_type_t* match = find_predefined_particle_type(res_name, md_particle_type_name(&sys->atom.type, t));
+                    e = match ? (uint32_t)(match - predefined_particle_types) + 1 : 0;
+                    md_hashmap_add(&found, key, e);
+                }
+                slot_run[t] = run;
+                slot_entry[t] = e;
+            }
+            if (slot_entry[t] == 0) continue;
+            const particle_type_t* entry = &predefined_particle_types[slot_entry[t] - 1];
 
             // The loader's word on what the particle is (a tpr knows its virtual sites) stands over the table's
             if (sys->atom.type.flags && md_particle_type_particle_kind(&sys->atom.type, t) == MD_PARTICLE_ATOM) {
@@ -7459,6 +7492,7 @@ void md_util_system_augment_particle_types(md_system_t* sys) {
         }
         apply_predefined_res_kind(sys, res_idx, res_kind);
     }
+    md_temp_end(temp);
 }
 
 void md_util_mask_grow_by_bonds(md_bitmask_t* mask, const md_system_t* sys, size_t extent, const md_bitset_t* viable_mask) {

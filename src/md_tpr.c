@@ -1501,6 +1501,12 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         size_t* mt_counts = md_temp_alloc_array(temp, size_t, 3 * (data->num_moltypes + 1));
         MEMSET(mt_counts, 0, 3 * (data->num_moltypes + 1) * sizeof(size_t));
 
+        // What an inference gives, by what it is of: once per molecule type atom is once per atom where every molecule
+        // is a type of its own (as many coarse grained systems are written), and the same few names and masses then make
+        // up millions of atoms. By the names' views of the symbol table (the same name, the same view; the length too, as
+        // an empty name's view is where the next name begins) and the residue's size and the mass.
+        md_hashmap32_t inferred = { .allocator = md_temp_allocator(temp) };
+
         for (size_t t = 0; t < data->num_moltypes; ++t) {
             const md_tpr_moltype_t* mt = &data->moltypes[t];
             moltype_z[t] = md_temp_alloc_array(temp, md_atomic_number_t, mt->num_atoms + 1);
@@ -1526,7 +1532,20 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     counts[1] += 1;
                 } else if (atom->ptype == MD_TPR_PTYPE_ATOM) {
                     const md_tpr_residue_t* res = &mt->residues[atom->residue];
-                    z = tpr_infer_atomic_number(atom->name, res->name, res_size[atom->residue], atom->mass);
+                    const struct {
+                        const char* name;
+                        const char* res_name;
+                        uint32_t name_len, res_name_len, res_size;
+                        float mass;
+                    } of = { atom->name.ptr, res->name.ptr, (uint32_t)atom->name.len, (uint32_t)res->name.len, res_size[atom->residue], atom->mass };
+                    const uint64_t key = md_hash64(&of, sizeof(of), 0);
+                    const uint32_t* known = md_hashmap_get(&inferred, key);
+                    if (known) {
+                        z = (md_atomic_number_t)*known;
+                    } else {
+                        z = tpr_infer_atomic_number(atom->name, res->name, res_size[atom->residue], atom->mass);
+                        md_hashmap_add(&inferred, key, (uint32_t)z);
+                    }
                     if (z) {
                         counts[2] += 1;
                         moltype_inferred[t][i] = true;
@@ -1732,8 +1751,13 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         // A charge site is tied to the atom it is built from by its construction, not by a bond: no bond, the
         // same as when the system is read from coordinates. md_util_system_infer_molecules keeps it with its
         // molecule. Sites that interact (coarse grained beads) keep theirs.
-        size_t kept = 0;
-        for (size_t k = 0; k < count; ++k) {
+        // Of the types first: a system of no charge sites (most) keeps every bond, without a look at each
+        bool any_site = false;
+        for (size_t t = 0; t < sys->atom.type.count && !any_site; ++t) {
+            any_site = md_particle_type_particle_kind(&sys->atom.type, t) == MD_PARTICLE_VIRTUAL_SITE;
+        }
+        size_t kept = any_site ? 0 : count;
+        for (size_t k = 0; any_site && k < count; ++k) {
             const md_atom_pair_t pair = sys->bond.pairs[k];
             if (md_atom_particle_kind(&sys->atom, pair.idx[0]) == MD_PARTICLE_VIRTUAL_SITE ||
                 md_atom_particle_kind(&sys->atom, pair.idx[1]) == MD_PARTICLE_VIRTUAL_SITE) continue;
