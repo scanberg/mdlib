@@ -7,6 +7,9 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
+#include <core/md_os.h>
+#include <md_unitcell.h>
+#include <stdio.h>
 
 #include "run_check.h"
 
@@ -398,4 +401,242 @@ UTEST(lammps, comprehensive_data_validation) {
         md_system_free(&sys);
         md_system_state_free(&sys_state);
     }
+}
+
+// ### DATA FILES ###
+
+static bool lammps_load_str(md_system_t* sys, md_system_state_t* state, const char* text) {
+    return md_lammps_system_init_from_str(sys, state, str_from_cstr(text), NULL);
+}
+
+// Comments after the counts and the keywords, as LAMMPS allows them anywhere after a blank
+UTEST(lammps, data_comments) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st,
+        "LAMMPS data file # title\n\n"
+        "3 atoms # three\n2 bonds\n2 atom types\n1 bond types\n\n"
+        "0.0 10.0 xlo xhi # box\n0.0 10.0 ylo yhi\n0.0 10.0 zlo zhi\n\n"
+        "Masses # masses\n\n1 15.9994 # O\n2 1.008 # H\n\n"
+        "Atoms # full\n\n1 1 1 -0.8 1.0 1.0 1.0 # O\n2 1 2 0.4 1.9 1.0 1.0\n3 1 2 0.4 0.8 1.9 1.0\n\n"
+        "Bonds\n\n1 1 1 2\n2 1 1 3\n"));
+    EXPECT_EQ(3u, sys.atom.count);
+    EXPECT_EQ(2u, sys.bond.count);
+    EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, 0));
+    EXPECT_EQ(MD_Z_H, md_atom_atomic_number(&sys.atom, 1));
+    md_arena_allocator_destroy(arena);
+}
+
+// Masses is optional: the types are there without it, of no element
+UTEST(lammps, data_without_masses) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st,
+        "no masses\n\n3 atoms\n2 atom types\n\n0.0 10.0 xlo xhi\n0.0 10.0 ylo yhi\n0.0 10.0 zlo zhi\n\n"
+        "Atoms # atomic\n\n1 1 1.0 1.0 1.0\n2 2 1.9 1.0 1.0\n3 2 0.8 1.9 1.0\n"));
+    ASSERT_EQ(3u, sys.atom.count);
+    EXPECT_NE(sys.atom.type_idx[0], sys.atom.type_idx[1]);
+    EXPECT_EQ(sys.atom.type_idx[1], sys.atom.type_idx[2]);
+    md_arena_allocator_destroy(arena);
+}
+
+// Atom ids need not be 1 to N (atoms deleted), nor Masses in the order of the types: bonds are by the ids
+UTEST(lammps, data_sparse_ids) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st,
+        "sparse\n\n3 atoms\n2 bonds\n2 atom types\n\n0.0 10.0 xlo xhi\n0.0 10.0 ylo yhi\n0.0 10.0 zlo zhi\n\n"
+        "Masses\n\n2 1.008\n1 15.9994\n\n"
+        "Atoms # full\n\n40 7 2 0.4 0.8 1.9 1.0\n10 7 1 -0.8 1.0 1.0 1.0\n25 7 2 0.4 1.9 1.0 1.0\n\n"
+        "Bonds\n\n1 1 10 25\n2 1 40 10\n"));
+    ASSERT_EQ(3u, sys.atom.count);
+    EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, 0));
+    EXPECT_EQ(1.0f, st.xyz[0].x);
+    EXPECT_EQ(0.8f, st.xyz[2].x);
+    ASSERT_EQ(2u, sys.bond.count);
+    EXPECT_EQ(0u, sys.bond.pairs[0].idx[0]);
+    EXPECT_EQ(1u, sys.bond.pairs[0].idx[1]);
+    EXPECT_EQ(0u, sys.bond.pairs[1].idx[0]);
+    EXPECT_EQ(2u, sys.bond.pairs[1].idx[1]);
+    md_arena_allocator_destroy(arena);
+}
+
+// Type labels: in Masses and Atoms in place of the numbers, and the names of the types
+UTEST(lammps, data_type_labels) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st,
+        "labels\n\n3 atoms\n2 atom types\n\n0.0 10.0 xlo xhi\n0.0 10.0 ylo yhi\n0.0 10.0 zlo zhi\n\n"
+        "Atom Type Labels\n\n1 OW\n2 HW\n\n"
+        "Masses\n\nOW 15.9994\nHW 1.008\n\n"
+        "Atoms # full\n\n1 1 OW -0.8 1.0 1.0 1.0\n2 1 HW 0.4 1.9 1.0 1.0\n3 1 2 0.4 0.8 1.9 1.0\n"));
+    ASSERT_EQ(3u, sys.atom.count);
+    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 0), STR_LIT("OW")));
+    EXPECT_TRUE(str_eq(md_atom_name(&sys.atom, 1), STR_LIT("HW")));
+    EXPECT_EQ(sys.atom.type_idx[1], sys.atom.type_idx[2]);
+    EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, 0));
+    EXPECT_EQ(MD_Z_H, md_atom_atomic_number(&sys.atom, 2));
+    md_arena_allocator_destroy(arena);
+}
+
+// More than 99 types are as many types (their names are cut, not merged), and molecules past 99 molecules
+UTEST(lammps, data_many_types) {
+    char* text = md_alloc(md_get_heap_allocator(), 64 * 1024);
+    int len = snprintf(text, 64 * 1024, "many\n\n120 atoms\n120 atom types\n\n0 100 xlo xhi\n0 100 ylo yhi\n0 100 zlo zhi\n\nMasses\n\n");
+    for (int t = 1; t <= 120; ++t) len += snprintf(text + len, 64 * 1024 - len, "%d %s\n", t, t % 2 ? "12.011" : "1.008");
+    len += snprintf(text + len, 64 * 1024 - len, "\nAtoms # molecular\n\n");
+    for (int i = 1; i <= 120; ++i) len += snprintf(text + len, 64 * 1024 - len, "%d %d %d %g 1.0 1.0\n", i, i, i, i * 0.5);
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st, text));
+    EXPECT_EQ(120u, sys.atom.count);
+    EXPECT_EQ(121u, sys.atom.type.count);
+    EXPECT_EQ(120u, sys.residue.count);
+    for (size_t i = 1; i < sys.atom.count; ++i) EXPECT_NE(sys.atom.type_idx[i - 1], sys.atom.type_idx[i]);
+    EXPECT_EQ(105, sys.residue.seq_id[104]);
+    md_arena_allocator_destroy(arena);
+    md_free(md_get_heap_allocator(), text, 64 * 1024);
+}
+
+// Without the style in the Atoms keyword line, the lines tell it: full, molecular, charge or atomic, with or without
+// image flags
+UTEST(lammps, data_detect_style) {
+    const char* head = "detect\n\n2 atoms\n2 atom types\n\n0.0 10.0 xlo xhi\n0.0 10.0 ylo yhi\n0.0 10.0 zlo zhi\n\nMasses\n\n1 15.9994\n2 1.008\n\nAtoms\n\n";
+    const struct { const char* atoms; md_lammps_atom_format_t format; } cases[] = {
+        { "1 1 1 -0.8 1.0 2.0 3.0 0 0 0\n2 1 2 0.4 1.5 2.0 3.0 0 0 0\n", MD_LAMMPS_ATOM_FORMAT_FULL },
+        { "1 1 1 -0.8 1.0 2.0 3.0\n2 1 2 0.4 1.5 2.0 3.0\n",             MD_LAMMPS_ATOM_FORMAT_FULL },
+        { "1 1 1 1.0 2.0 3.0\n2 1 2 1.5 2.0 3.0\n",                       MD_LAMMPS_ATOM_FORMAT_MOLECULAR },
+        { "1 1 -0.8 1.0 2.0 3.0\n2 2 0.4 1.5 2.0 3.0\n",                  MD_LAMMPS_ATOM_FORMAT_CHARGE },
+        { "1 1 1.0 2.0 3.0 1 0 -1\n2 2 1.5 2.0 3.0 0 0 0\n",              MD_LAMMPS_ATOM_FORMAT_ATOMIC },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        char buf[1024];
+        const int len = snprintf(buf, sizeof(buf), "%s%s", head, cases[i].atoms);
+        EXPECT_EQ((int)cases[i].format, (int)md_lammps_atom_format_from_str((str_t){buf, (size_t)len}));
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        md_system_t sys = {.alloc = arena};
+        md_system_state_t st = {.alloc = arena};
+        EXPECT_TRUE(lammps_load_str(&sys, &st, buf));
+        EXPECT_EQ(1.5f, st.xyz[1].x);
+        EXPECT_EQ(MD_Z_H, md_atom_atomic_number(&sys.atom, 1));
+        md_arena_allocator_destroy(arena);
+    }
+    // Named styles of the newer releases
+    EXPECT_EQ((int)MD_LAMMPS_ATOM_FORMAT_HYBRID, (int)md_lammps_atom_format_from_str(STR_LIT("t\n\n1 atoms\n1 atom types\n\nAtoms # hybrid sphere dipole\n\n1 1 1.0 2.0 3.0 1.0 1.0 0 0 0 0\n")));
+}
+
+// Argon and potassium told apart by their masses (Ar is the heavier, out of the order of the elements)
+UTEST(lammps, element_from_mass) {
+    EXPECT_EQ(MD_Z_Ar, md_atomic_number_infer_from_mass(39.948f));
+    EXPECT_EQ(MD_Z_K,  md_atomic_number_infer_from_mass(39.0983f));
+    EXPECT_EQ(MD_Z_Co, md_atomic_number_infer_from_mass(58.933f));
+    EXPECT_EQ(MD_Z_Ni, md_atomic_number_infer_from_mass(58.693f));
+    EXPECT_NEAR(39.948f, md_atomic_number_mass(MD_Z_Ar), 1e-3f);
+    EXPECT_NEAR(39.098f, md_atomic_number_mass(MD_Z_K), 1e-3f);
+}
+
+// A general triclinic box: the cell turned so that a lies along x, and the atoms with it
+UTEST(lammps, data_general_triclinic) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st,
+        "general\n\n2 atoms\n1 atom types\n\n0 4 4 avec\n4 0 4 bvec\n4 4 0 cvec\n1 1 1 abc origin\n\nMasses\n\n1 63.546\n\n"
+        "Atoms # atomic\n\n1 1 1.0 1.0 1.0\n2 1 5.0 5.0 1.0\n"));
+    double a, b, c, alpha, beta, gamma;
+    md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &st.unitcell);
+    EXPECT_NEAR(4.0 * sqrt(2.0), a, 1e-5);
+    EXPECT_NEAR(60.0, gamma, 1e-4);
+    EXPECT_NEAR(0.0, st.xyz[0].x, 1e-6);
+    // Atom 2 is c from the origin
+    double A[3][3];
+    md_unitcell_A_extract_double(A, &st.unitcell);
+    for (int k = 0; k < 3; ++k) EXPECT_NEAR(A[2][k], st.xyz[1].elem[k], 1e-5);
+    md_arena_allocator_destroy(arena);
+}
+
+// ### DUMPS ###
+
+static bool write_text(str_t path, const char* text) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
+    const size_t len = strlen(text);
+    const bool ok = md_file_write(file, text, len) == len;
+    md_file_close(&file);
+    return ok;
+}
+
+static const char* lammps_two_atoms = "two\n\n2 atoms\n1 atom types\n\n0.0 10.0 xlo xhi\n0.0 10.0 ylo yhi\n0.0 10.0 zlo zhi\n\nMasses\n\n1 39.948\n\nAtoms # atomic\n\n1 1 1.0 1.0 1.0\n2 1 5.0 5.0 5.0\n";
+
+// The cell of the bounds of a dump's triclinic box: those of the box with its tilts, xy + xz among them
+UTEST(lammps, dump_triclinic_bounds) {
+    const str_t path = STR_LIT("md_unittest_dump_tri.lammpstrj");
+    ASSERT_TRUE(write_text(path,
+        "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS xy xz yz pp pp pp\n0.0 13.5 2.0\n0.0 10.0 1.5\n0.0 10.0 0.0\n"
+        "ITEM: ATOMS id type x y z\n2 1 5.0 5.0 5.0\n1 1 1.0 1.0 1.0\n"));
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st, lammps_two_atoms));
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, path, LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_system_state_t got = {.alloc = arena};
+    md_system_state_init(&got, 2);
+    ASSERT_TRUE(run_extract_one(&got, &sys, LAMMPS_RUN, 0));
+    EXPECT_NEAR(10.0, got.unitcell.x, 1e-6);
+    EXPECT_NEAR(2.0, got.unitcell.xy, 1e-6);
+    EXPECT_NEAR(1.5, got.unitcell.xz, 1e-6);
+    EXPECT_EQ(1.0f, got.xyz[0].x);
+    EXPECT_EQ(5.0f, got.xyz[1].x);
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
+    remove(path.ptr);
+}
+
+// UNITS and TIME before the TIMESTEP, boundaries other than periodic, scaled coordinates unwrapped by their image flags
+UTEST(lammps, dump_time_boundaries_images) {
+    const str_t path = STR_LIT("md_unittest_dump_fixed.lammpstrj");
+    ASSERT_TRUE(write_text(path,
+        "ITEM: UNITS\nreal\nITEM: TIME\n0.0\nITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS ff pp fm\n0.0 10.0\n0.0 10.0\n0.0 10.0\n"
+        "ITEM: ATOMS id type xs ys zs ix iy iz\n1 1 0.1 0.1 0.1 1 0 0\n2 1 0.5 0.5 0.5 0 0 0\n"
+        "ITEM: TIME\n1.0\nITEM: TIMESTEP\n100\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS ff pp fm\n0.0 10.0\n0.0 10.0\n0.0 10.0\n"
+        "ITEM: ATOMS id type xs ys zs ix iy iz\n1 1 0.2 0.1 0.1 1 0 0\n2 1 0.5 0.6 0.5 0 0 0\n"));
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st, lammps_two_atoms));
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, path, LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    EXPECT_EQ(2u, run_num_frames(&sys, LAMMPS_RUN));
+    md_system_state_t got = {.alloc = arena};
+    md_system_state_init(&got, 2);
+    ASSERT_TRUE(run_extract_one(&got, &sys, LAMMPS_RUN, 1));
+    EXPECT_NEAR(12.0f, got.xyz[0].x, 1e-5f);
+    EXPECT_NEAR(6.0f, got.xyz[1].y, 1e-5f);
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
+    remove(path.ptr);
+}
+
+// Unwrapped coordinates are not unwrapped again by the image flags beside them
+UTEST(lammps, dump_unwrapped_with_images) {
+    const str_t path = STR_LIT("md_unittest_dump_unwrapped.lammpstrj");
+    ASSERT_TRUE(write_text(path,
+        "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS pp pp pp\n0.0 10.0\n0.0 10.0\n0.0 10.0\n"
+        "ITEM: ATOMS id type xu yu zu ix iy iz\n1 1 11.0 1.0 1.0 1 0 0\n2 1 5.0 5.0 5.0 0 0 0\n"));
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    md_system_state_t st = {.alloc = arena};
+    ASSERT_TRUE(lammps_load_str(&sys, &st, lammps_two_atoms));
+    ASSERT_TRUE(md_lammps_system_publish_run(&sys, path, LAMMPS_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_system_state_t got = {.alloc = arena};
+    md_system_state_init(&got, 2);
+    ASSERT_TRUE(run_extract_one(&got, &sys, LAMMPS_RUN, 0));
+    EXPECT_EQ(11.0f, got.xyz[0].x);
+    md_system_free(&sys);
+    md_vm_arena_destroy(arena);
+    remove(path.ptr);
 }

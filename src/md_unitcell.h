@@ -56,6 +56,14 @@ static inline md_unitcell_t md_unitcell_from_matrix_double(const double A[3][3])
     return md_unitcell_from_basis_parameters(A[0][0], A[1][1], A[2][2], A[1][0], A[2][0], A[2][1]);
 }
 
+// The cell of three basis vectors in any orientation (basis[0] a, basis[1] b, basis[2] c), turned so that a lies
+// along x and b in the xy plane: the only orientation an md_unitcell_t holds. True when the vectors are not in that
+// orientation already, with out_R (which may be NULL) the rotation that turns them into it, which is what the
+// coordinates of the atoms within the cell are turned by as well: p' = R p. False otherwise, and out_R the identity:
+// components which ought to be zero but are no more than 1e-4 of the longest vector (a writer's round off) are taken
+// as zero rather than turned away.
+bool md_unitcell_from_basis_vectors(md_unitcell_t* out_cell, double out_R[3][3], const double basis[3][3]);
+
 // --- Parameter extraction ---
 
 // Angles are returned in degrees. Any output pointer may be NULL.

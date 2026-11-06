@@ -827,3 +827,84 @@ UTEST(parse, text_lines) {
     }
     EXPECT_EQ((size_t)0, mismatches);
 }
+
+// Skipping lines lands where extracting them would: by the chunks of what is read, through a buffer that holds a few
+// lines at a time and through a string, of any count, the last line without its newline, past the end
+UTEST(parse, reader_skip_lines) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    const str_t path = STR_LIT("md_unittest_skip_lines.txt");
+
+    char* text = md_alloc(heap, 256 * 1024);
+    size_t len = 0;
+    uint64_t state = 7;
+    const int num_lines = 3000;
+    for (int i = 0; i < num_lines; ++i) {
+        const int n = (int)(rng_next(&state) % 150);
+        len += snprintf(text + len, 256 * 1024 - len, "%d:", i);
+        for (int k = 0; k < n; ++k) text[len++] = (char)('a' + k % 26);
+        if (i + 1 < num_lines) {
+            if (i % 5 == 0) text[len++] = '\r';
+            text[len++] = '\n';
+        }
+    }
+
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
+    ASSERT_EQ(len, md_file_write(file, text, len));
+    md_file_close(&file);
+
+    // The newlines of the text directly, from every start, against memchr
+    {
+        bool same = true;
+        for (size_t beg = 0; beg < 300; ++beg) {
+            for (size_t n = 0; n < 40; n += 3) {
+                size_t left = n;
+                const char* got = md_text_skip_newlines(text + beg, text + len, &left);
+                const char* ref = text + beg;
+                size_t ref_left = n;
+                while (ref_left) {
+                    const char* nl = memchr(ref, '\n', (size_t)(text + len - ref));
+                    if (!nl) { ref = text + len; break; }
+                    ref = nl + 1;
+                    ref_left -= 1;
+                }
+                same &= got == ref && left == ref_left;
+            }
+        }
+        EXPECT_TRUE(same);
+    }
+
+    const size_t caps[] = { 256, 4096, MEGABYTES(1) };
+    for (size_t c = 0; c < ARRAY_SIZE(caps); ++c) {
+        md_file_reader_t frd;
+        ASSERT_TRUE(md_file_reader_open(&frd, path, caps[c], heap));
+        md_reader_i sr = md_reader_from_str((str_t){ text, len });
+        md_reader_i* readers[2] = { &frd.r, &sr };
+        for (int r = 0; r < 2; ++r) {
+            uint64_t st = 11;
+            int at = 0;
+            bool same = true;
+            while (at < num_lines) {
+                const size_t k = (size_t)(rng_next(&st) % 64);
+                const size_t skipped = md_reader_skip_lines(readers[r], k);
+                same &= skipped == MIN(k, (size_t)(num_lines - at));
+                at += (int)skipped;
+                str_t line;
+                if (at < num_lines) {
+                    same &= md_reader_extract_line(readers[r], &line);
+                    int idx = -1;
+                    sscanf(line.ptr, "%d:", &idx);
+                    same &= idx == at;
+                    at += 1;
+                }
+            }
+            EXPECT_TRUE(same);
+            EXPECT_EQ(0u, md_reader_skip_lines(readers[r], 5));
+            EXPECT_TRUE(md_reader_end(readers[r]));
+        }
+        md_file_reader_close(&frd);
+    }
+
+    remove(path.ptr);
+    md_free(heap, text, 256 * 1024);
+}

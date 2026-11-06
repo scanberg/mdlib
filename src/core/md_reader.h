@@ -276,6 +276,39 @@ MD_TEXT_NO_SANITIZE static inline size_t md_text_count_newlines(const char* c, c
 #endif
 }
 
+// Past the n:th newline of [c, e), or e where there are fewer, with *n lessened by those there were: a count of the
+// bits of the masks of its chunks, as md_text_count_newlines, but for the chunk in which the n:th is
+MD_TEXT_NO_SANITIZE static inline const char* md_text_skip_newlines(const char* c, const char* e, size_t* n) {
+    if (c >= e || *n == 0) return c;
+#if defined(MD_TEXT_SCAN_WIDTH)
+    const char* chunk = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_CHUNK - 1));
+    uint64_t m = md_text_newline_chunk(chunk) & (~UINT64_C(0) << (uintptr_t)(c - chunk));
+    for (;;) {
+        const size_t past = (size_t)MAX((ptrdiff_t)0, (chunk + MD_TEXT_CHUNK) - e);
+        if (past) m &= ~UINT64_C(0) >> past;
+        const size_t k = (size_t)popcnt64(m);
+        if (k >= *n) {
+            // The n:th of this chunk's: the lowest n - 1 cleared
+            for (size_t i = 1; i < *n; ++i) m &= m - 1;
+            *n = 0;
+            return chunk + ctz64(m) + 1;
+        }
+        *n -= k;
+        chunk += MD_TEXT_CHUNK;
+        if (past || chunk >= e) return e;
+        m = md_text_newline_chunk(chunk);
+    }
+#else
+    while (*n && c < e) {
+        const char* nl = (const char*)memchr(c, '\n', (size_t)(e - c));
+        if (!nl) return e;
+        c = nl + 1;
+        *n -= 1;
+    }
+    return c;
+#endif
+}
+
 MD_TEXT_NO_SANITIZE static inline const char* md_text_find_newline(const char* c, const char* e) {
 #if defined(MD_TEXT_SCAN_WIDTH)
     if (c >= e) return e;
@@ -425,6 +458,25 @@ str_t md_reader_block_parallel(md_reader_i* r, const md_executor_t* ex);
 static inline void md_reader_advance(md_reader_i* r, size_t bytes) {
     ASSERT(r && bytes <= (size_t)(r->end - r->cur));
     r->cur += bytes;
+}
+
+// Takes the next n lines, as n md_reader_skip_line would, but by the chunks of what is read rather than line by line:
+// how many there were (fewer than n at the end of the source)
+static inline size_t md_reader_skip_lines(md_reader_i* r, size_t n) {
+    ASSERT(r);
+    size_t left = n;
+    while (left) {
+        const str_t block = md_reader_block(r);
+        if (!block.len) break;
+        const char* e = block.ptr + block.len;
+        const char* c = md_text_skip_newlines(block.ptr, e, &left);
+        if (left && c == e && e[-1] != '\n' && (r->flags & MD_READER_FLAG_END) && e == r->end) {
+            // The last line of the source, without a newline: md_reader_block gives it only at the end
+            left -= 1;
+        }
+        md_reader_advance(r, (size_t)(c - block.ptr));
+    }
+    return n - left;
 }
 
 // The offset in the source of the next byte to take

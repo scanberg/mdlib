@@ -31,13 +31,15 @@ typedef struct md_xyz_coordinate_t {
 	float y;
 	float z;
 	int particle_type;			// Tinker only
-	int connectivity[9];	// Tinker only
+	int connectivity[9];	// Tinker only: the atom indices bonded to it, 0 after the last. A system has them as its bonds.
 } md_xyz_coordinate_t;
 
 typedef struct md_xyz_model_t {
 	size_t byte_offset;
 	uint32_t beg_coord_index;
 	uint32_t end_coord_index;
+	// The cell as the file gives it, row i vector i, zero without one. A system made of the model holds it turned so
+	// that a lies along x and b in the xy plane (md_unitcell_from_basis_vectors), and its atoms turned with it.
 	float cell[3][3];
 	str_t comment;
 } md_xyz_model_t;

@@ -41,14 +41,24 @@ typedef enum {
 	MD_LAMMPS_ATOM_FORMAT_TEMPLATE,
 	MD_LAMMPS_ATOM_FORMAT_TRI,
 	MD_LAMMPS_ATOM_FORMAT_WAVEPACKET,
+	MD_LAMMPS_ATOM_FORMAT_AMOEBA,
+	MD_LAMMPS_ATOM_FORMAT_BPM_SPHERE,
+	MD_LAMMPS_ATOM_FORMAT_DIELECTRIC,
+	MD_LAMMPS_ATOM_FORMAT_HYBRID,		// The columns all hybrid styles begin with: id type x y z
+	MD_LAMMPS_ATOM_FORMAT_RHEO,
+	MD_LAMMPS_ATOM_FORMAT_RHEO_THERMAL,
+	MD_LAMMPS_ATOM_FORMAT_SPH,
+	MD_LAMMPS_ATOM_FORMAT_SPIN,
+	MD_LAMMPS_ATOM_FORMAT_TDPD,
 	MD_LAMMPS_ATOM_FORMAT_COUNT
 } md_lammps_atom_format_t;
 
-// Representing particle type data
+// Representing particle type data: particle_types[i] is of type i + 1
 typedef struct md_lammps_atom_type_t {
 	int32_t id;
-	float mass;
+	float mass;		// 0 where the file gives none (Masses is optional)
 	float radius; // Approximated from LJ or equivalent (if present)
+	char label[16];	// Of the Atom Type Labels section, empty without one
 } md_lammps_atom_type_t;
 
 // Contains data about a single atom
@@ -85,6 +95,11 @@ typedef struct md_lammps_cell_t {
 	float ylo, yhi;
 	float zlo, zhi;
 	float xy, xz, yz;
+	// A general triclinic box (avec, bvec, cvec and abc origin in the header), which the coordinates of the atoms
+	// are given in the frame of, instead of the above
+	bool  general;
+	float avec[3], bvec[3], cvec[3];
+	float origin[3];
 } md_lammps_cell_t;
 
 typedef struct md_lammps_data_t {

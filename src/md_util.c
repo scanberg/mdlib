@@ -245,7 +245,7 @@ static const float element_vdw_radii[] = {
 // last element padded with 295
 static const float element_atomic_mass[] = {
     0,       1.00794,    4.002602, 6.941,     9.012182, 10.811,    12.0107,   14.0067,     15.9994, 18.9984032, 20.1797, 22.98976928,
-    24.3050, 26.9815386, 28.0855,  30.973762, 32.065,   35.453,    39.0983,   39.948,      40.078,  44.955912,  47.867,  50.9415,
+    24.3050, 26.9815386, 28.0855,  30.973762, 32.065,   35.453,    39.948,    39.0983,     40.078,  44.955912,  47.867,  50.9415,
     51.9961, 54.938045,  55.845,   58.933195, 58.6934,  63.546,    65.409,    69.723,      72.64,   74.92160,   78.96,   79.904,
     83.798,  85.4678,    87.62,    88.90585,  91.224,   92.906,    95.94,     98,          101.07,  102.905,    106.42,  107.8682,
     112.411, 114.818,    118.710,  121.760,   127.60,   126.904,   131.293,   132.9054519, 137.327, 138.90547,  140.116, 140.90765,
@@ -1496,14 +1496,14 @@ size_t md_util_element_from_mass(md_element_t element[], const float mass[], siz
         const float eps = 0.001f * fmaxf(1.0f, m * 0.01f);
 
         if (0.0f < m && m != 1.0f) {
-            // Linear search for matching atomic mass
+            // The nearest within eps. The masses are not in the order of the elements throughout (Ar is heavier
+            // than K, Co than Ni, Te than I), so all are looked at.
+            float best = eps;
             for (size_t j = 1; j < ARRAY_SIZE(element_atomic_mass); ++j) {
-                if (fabs(m - element_atomic_mass[j]) < eps) {
+                const float d = fabsf(m - element_atomic_mass[j]);
+                if (d < best) {
+                    best = d;
                     elem = (md_element_t)j;
-                    break;
-                } else if (m < element_atomic_mass[j]) {
-                    //Masses are sorted, no need to continue searching
-                    break;
                 }
             }
         }
