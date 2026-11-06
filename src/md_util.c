@@ -3384,6 +3384,8 @@ static inline bool martini_db_biopolymer(const martini_db_residue_t* res) {
     return res->kind == MD_RESIDUE_KIND_AMINO_ACID || res->kind == MD_RESIDUE_KIND_NUCLEOTIDE;
 }
 
+STATIC_ASSERT(ARRAY_SIZE(martini_db_residues) <= UINT16_MAX, "martini_votes keeps the ranges of names as 16 bits");
+
 // The residues of the name, [*beg, *end)
 static void martini_db_find(str_t name, size_t* beg, size_t* end) {
     size_t lo = 0, hi = ARRAY_SIZE(martini_db_residues);
@@ -3533,13 +3535,32 @@ static martini_votes_t martini_votes(const md_system_t* sys, str_t (*label)(cons
     martini_votes_t v = {0};
     str_t labels[256];
     uint8_t map[256];
+    // The residues of the database of a name, by the name's word: a system has few names (the amino acids, a few
+    // lipids), whose binary searches through the database are done once
+    struct { uint64_t key; uint16_t beg, end; } found[256];
+    MEMSET(found, 0, sizeof(found));
     for (size_t res_idx = res_beg; res_idx < res_end; ++res_idx) {
         const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         const size_t n = range.end - range.beg;
         if (n == 0 || n > 255) continue;
         size_t beg, end;
-        martini_db_find(md_system_residue_name(sys, res_idx), &beg, &end);
-        if (beg == end) continue;
+        const uint64_t key = sys->residue.name ? md_label_key(sys->residue.name[res_idx]) : 0;
+        const size_t slot = (size_t)((key * 0x9E3779B97F4A7C15ull) >> 56);
+        if (key != 0 && found[slot].key == key) {
+            beg = found[slot].beg;
+            end = found[slot].end;
+        } else {
+            martini_db_find(md_system_residue_name(sys, res_idx), &beg, &end);
+            if (key != 0) {
+                found[slot].key = key;
+                found[slot].beg = (uint16_t)beg;
+                found[slot].end = (uint16_t)end;
+            }
+        }
+        // Only residues of as many beads as it has atoms can be it: most atomistic residues are none
+        bool fits = false;
+        for (size_t k = beg; k < end && !fits; ++k) fits = martini_db_residues[k].num_beads == n;
+        if (!fits) continue;
         for (size_t i = 0; i < n; ++i) labels[i] = label(data, range.beg + i);
         uint32_t versions = 0;
         for (size_t k = beg; k < end; ++k) {
@@ -7080,9 +7101,14 @@ typedef struct infer_keys_t {
     const md_system_t* sys;
     str_t (*label)(const void*, size_t);
     const void* label_data;
+    const md_label_t* words;    // The labels as md_label_t, when they are (else NULL)
     uint64_t* key;
     uint8_t*  untyped;
 } infer_keys_t;
+
+static str_t label_of_labels(const void* data, size_t i) {
+    return md_label_str(&((const md_label_t*)data)[i]);
+}
 
 static void infer_residue_keys(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
     (void)thread_idx;
@@ -7095,8 +7121,18 @@ static void infer_residue_keys(void* arg, uint32_t beg, uint32_t end, uint32_t t
         // The labels are part of the key, as which of them a name stands for can depend on the others; and
         // everything the types of the residue's atoms come from is in it, so the atoms of a residue of a key seen
         // before (a water among thousands) take what the first one's did, without a look at each atom
-        uint64_t key = md_hash64_str(md_system_residue_name(sys, res_idx), res_size);
-        for (size_t i = range.beg; i < range.end; ++i) key = md_hash64_str(t->label(t->label_data, i), key);
+        const str_t res_name = md_system_residue_name(sys, res_idx);
+        uint64_t key = XXH3_64bits_withSeed(res_name.ptr, res_name.len, res_size);
+        if (t->words) {
+            // Labels as words (zero padded, of no zero byte): equal bytes are equal labels, so the residue's are hashed
+            // in one go
+            key = XXH3_64bits_withSeed(t->words + range.beg, res_size * sizeof(md_label_t), key);
+        } else {
+            for (size_t i = range.beg; i < range.end; ++i) {
+                const str_t lbl = t->label(t->label_data, i);
+                key = XXH3_64bits_withSeed(lbl.ptr, lbl.len, key);
+            }
+        }
         bool untyped = true;
         for (size_t i = range.beg; i < range.end && untyped; ++i) untyped = sys->atom.type_idx[i] == 0;
         t->key[res_idx] = key;
@@ -7173,7 +7209,8 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
         uint8_t*  res_untyped = md_temp_alloc(temp, num_res);
         uint32_t* tmpl_of = md_temp_alloc(temp, num_res * sizeof(uint32_t));
         {
-            infer_keys_t task = { sys, label, label_data, res_keys, res_untyped };
+            const md_label_t* words = label == label_of_labels ? (const md_label_t*)label_data : NULL;
+            infer_keys_t task = { sys, label, label_data, words, res_keys, res_untyped };
             md_parallel_for(ex, num_chunks, 1, infer_residue_keys, &task);
         }
         // The template a residue of the key before was given: a run of one key (the waters, the lipids) looks it up once
@@ -7376,10 +7413,6 @@ static void infer_particle_types(md_system_t* sys, str_t (*label)(const void*, s
     }
 
     md_temp_end(temp);
-}
-
-static str_t label_of_labels(const void* data, size_t i) {
-    return md_label_str(&((const md_label_t*)data)[i]);
 }
 
 void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[], const md_executor_t* ex) {
