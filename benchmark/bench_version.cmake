@@ -28,7 +28,12 @@ if (GIT_FOUND)
                 list(APPEND files "...")
             endif()
             list(JOIN files ", " files)
-            set(rev "${rev} +local changes: ${files}")
+            # And a hash of the changes themselves: each edit of the same files is a revision of its own
+            execute_process(COMMAND ${GIT_EXECUTABLE} -C ${SRC} --no-optional-locks diff HEAD --ignore-submodules=all
+                            OUTPUT_VARIABLE diff ERROR_QUIET)
+            string(SHA1 diff_hash "${diff}")
+            string(SUBSTRING "${diff_hash}" 0 8 diff_hash)
+            set(rev "${rev} +local changes: ${files} (diff ${diff_hash})")
         endif()
     endif()
 endif()

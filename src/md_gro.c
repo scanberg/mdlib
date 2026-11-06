@@ -10,6 +10,7 @@
 #include <core/md_os.h>
 #include <core/md_array.h>
 #include <core/md_parse.h>
+#include <core/md_parse_simd.h>
 #include <core/md_hash.h>
 #include <core/md_executor.h>
 
@@ -117,6 +118,17 @@ static bool gro_parse_coordinates(float xyz[3], float vel[3], str_t line, bool c
     return true;
 }
 
+// The coordinates and velocities of an atom line in the columns GROMACS writes by default, "%8.3f" and "%8.4f": three
+// fields at a time (md_parse_fixed_f32x3_w8), what gro_parse_coordinates reads by those columns. False where it would
+// read the line otherwise, or would find something there that is not three velocities: the caller reads the line with it.
+static FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3], str_t line) {
+    if (line.len < 20 + 24 || !md_parse_fixed_f32x3_w8(xyz, line.ptr + 20, 3)) return false;
+    if (line.len == 20 + 24) {
+        vel[0] = vel[1] = vel[2] = NAN;
+        return true;
+    }
+    return line.len >= 20 + 48 && md_parse_fixed_f32x3_w8(vel, line.ptr + 44, 4);
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // THE SYSTEM
@@ -146,10 +158,71 @@ static inline bool gro_absent(float v) {
     return (u & 0x7FFFFFFFu) > 0x7F800000u;
 }
 
-static inline bool gro_same_residue(str_t a, str_t b) {
-    const size_t na = MIN(a.len, GRO_RES_FIELDS);
-    const size_t nb = MIN(b.len, GRO_RES_FIELDS);
-    return na == nb && MEMCMP(a.ptr, b.ptr, na) == 0;
+// The residue fields of a line (its first GRO_RES_FIELDS characters, fewer of a shorter line) as words, and how many
+// there are: two lines are of the same residue where these are the same
+typedef struct gro_res_fields_t {
+    uint64_t lo;
+    uint16_t hi;
+    uint16_t len;
+} gro_res_fields_t;
+
+static FORCE_INLINE gro_res_fields_t gro_res_fields(str_t line) {
+    gro_res_fields_t f = { 0, 0, (uint16_t)MIN(line.len, GRO_RES_FIELDS) };
+    if (line.len >= GRO_RES_FIELDS) {
+        MEMCPY(&f.lo, line.ptr, 8);
+        MEMCPY(&f.hi, line.ptr + 8, 2);
+    } else if (line.len) {
+        char c[GRO_RES_FIELDS] = {0};
+        MEMCPY(c, line.ptr, line.len);
+        MEMCPY(&f.lo, c, 8);
+        MEMCPY(&f.hi, c + 8, 2);
+    }
+    return f;
+}
+
+static FORCE_INLINE bool gro_res_fields_eq(gro_res_fields_t a, gro_res_fields_t b) {
+    return a.lo == b.lo && a.hi == b.hi && a.len == b.len;
+}
+
+// The field of 5 characters at offset as a label, without the whitespace around it: make_label(str_trim()) of it. As one
+// word where the line goes on for 8 characters from there and the field has no control character (whose blanks are
+// spaces alone, which a byte above ' ' bounds: no scan); else as make_label(str_trim()).
+static FORCE_INLINE md_label_t gro_label5(str_t line, size_t offset) {
+    if (line.len >= offset + 8) {
+        uint64_t w;
+        MEMCPY(&w, line.ptr + offset, 8);
+        const uint64_t field = 0x8080808080ull;                             // the high bits of its 5 bytes
+        const uint64_t x = w & 0x7F7F7F7F7F7F7F7Full;
+        // 0x80 in each byte at or above ' ' (or with its high bit set): none below it, no control character
+        if ((((x + 0x6060606060606060ull) | w) & field) == field) {
+            // 0x80 in each byte above ' '
+            const uint64_t mark = ((x + 0x5F5F5F5F5F5F5F5Full) | w) & field;
+            md_label_t lbl = {0};
+            if (mark) {
+                const uint32_t lo = ctz64(mark) >> 3;
+                const uint32_t hi = (63 - clz64(mark)) >> 3;
+                const uint64_t v = (w >> (8 * lo)) & (~UINT64_C(0) >> (64 - 8 * (hi - lo + 1)));
+                MEMCPY(lbl.buf, &v, sizeof(v));
+            }
+            return lbl;
+        }
+    }
+    return make_label(str_trim(str_substr(line, offset, 5)));
+}
+
+// The residue number of a line (columns 0 to 4): parse_int(str_trim()) of it. Blanks and then digits up to its end
+// without a scan of what is around; else as parse_int(str_trim()).
+static FORCE_INLINE int64_t gro_res_number(str_t line) {
+    if (line.len >= 5) {
+        const char* c = line.ptr;
+        uint32_t i = 0;
+        while (i < 5 && c[i] == ' ') ++i;
+        int64_t value = 0;
+        uint32_t j = i;
+        while (j < 5 && is_digit(c[j])) value = value * 10 + (c[j++] - '0');
+        if (j == 5) return value;
+    }
+    return parse_int(str_trim(str_substr(line, 0, 5)));
 }
 
 // The velocities, in the file's own nm/ps rather than converted the way the coordinates are, because a velocity has a
@@ -213,6 +286,7 @@ typedef struct gro_load_t {
     size_t                atom_beg;         // the atom of the pass's first line
     size_t                num_atoms;        // of the file: the lines after them are not atoms
     str_t                 prev;             // the residue fields of the atom line before the pass, empty if none
+    bool                  columns_w8;       // the columns GROMACS writes by default: three fields of 8 at a time
     gro_residue_start_t*  pass_res;         // [lines of the pass]
     gro_residue_start_t*  res;              // of the load
     bool                  columns;
@@ -246,7 +320,7 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         piece->end_of_atoms = piece->range.end;
 
         // The residue fields of the line before: in the piece before, or the pass before
-        str_t prev = piece->range.beg > 0 ? md_text_line_before(L->text, piece->range.beg) : L->prev;
+        gro_res_fields_t prev = gro_res_fields(piece->range.beg > 0 ? md_text_line_before(L->text, piece->range.beg) : L->prev);
 
         gro_residue_start_t* res = L->pass_res + piece->first_line;
         md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
@@ -254,23 +328,25 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         const size_t atom_end = atom + piece->num_atoms;
         str_t line;
         while (atom < atom_end && md_text_lines_next(&lines, &line)) {
-            if (atom == 0 || !gro_same_residue(prev, line)) {
+            const gro_res_fields_t fields = gro_res_fields(line);
+            if (atom == 0 || !gro_res_fields_eq(prev, fields)) {
                 res->atom   = (uint32_t)atom;
-                res->seq_id = (md_sequence_id_t)parse_int(str_trim(str_substr(line, 0, 5)));
-                res->name   = make_label(str_trim(str_substr(line, 5, 5)));
+                res->seq_id = (md_sequence_id_t)gro_res_number(line);
+                res->name   = gro_label5(line, 5);
                 ++res;
             }
-            prev = line;
+            prev = fields;
 
             float xyz[3], vel[3];
-            if (!gro_parse_coordinates(xyz, vel, line, L->columns, L->width, L->decimals)) piece->loose = true;
+            if (!(L->columns_w8 && gro_parse_coordinates_w8(xyz, vel, line)) &&
+                !gro_parse_coordinates(xyz, vel, line, L->columns, L->width, L->decimals)) piece->loose = true;
             L->xyz[atom] = vec3_set(xyz[0] * NM_TO_ANGSTROM, xyz[1] * NM_TO_ANGSTROM, xyz[2] * NM_TO_ANGSTROM);
             if (L->velocity) {
                 L->velocity[atom * 3 + 0] = vel[0];
                 L->velocity[atom * 3 + 1] = vel[1];
                 L->velocity[atom * 3 + 2] = vel[2];
             }
-            L->atom_names[atom] = make_label(str_trim(str_substr(line, 10, 5)));
+            L->atom_names[atom] = gro_label5(line, 10);
             L->type_idx[atom] = 0;
             L->atom_flags[atom] = 0;
             ++atom;
@@ -444,6 +520,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         const char* fc = c;
         const str_t first = md_text_next_line(&fc, e);
         L.columns = gro_coordinate_columns(&L.width, &L.decimals, first);
+        L.columns_w8 = L.columns && L.width == 8;
         float xyz[3], vel[3];
         gro_parse_coordinates(xyz, vel, first, L.columns, L.width, L.decimals);
         if (!gro_absent(vel[0])) {

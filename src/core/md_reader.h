@@ -126,22 +126,35 @@ MD_TEXT_NO_SANITIZE static inline uint64_t md_text_newline_mask(const char* p) {
 #endif
 
 // THE LINES OF A RANGE, in bulk: md_text_lines_t takes the lines of [c, e) one after the other, from masks of the
-// newlines of a chunk of bytes at a time (64 bytes, 16 on arm64), each line from the mask alone (its lowest bit,
+// newlines of a chunk of 64 bytes at a time, each line from the mask alone (its lowest bit,
 // cleared). Where md_text_find_newline searches from where the last line ended, a chain of loads which each wait for
 // the one before, the chunks are loaded one after the other whatever the lines are: twice as fast over lines of 80
 // characters (8 GB/s with AVX2, 6 with SSE2, against 4.4 for memchr or md_text_find_newline line by line).
 
 #if defined(MD_TEXT_SCAN_WIDTH)
-#   define MD_TEXT_CHUNK (64 / MD_TEXT_SCAN_BITS)   // Bytes of a chunk: one bit of a 64 bit mask per byte, four on arm64
+#   define MD_TEXT_CHUNK 64     // Bytes of a chunk: one bit of a 64 bit mask per byte, on every target
 
-// The newlines of the aligned chunk at p, MD_TEXT_SCAN_BITS bits per byte
+// The newlines of the aligned chunk at p, one bit per byte. On arm64 the four comparisons of a chunk are not narrowed
+// one by one (four bits per byte, a chunk of 16 bytes: a refill every 16 bytes, which for lines of 80 characters is a
+// branch on whether the chunk had a newline that no predictor gets right), but together: each byte its bit of its
+// place (1 to 128, twice a register), summed in pairs three times to a byte of bits of each 8 bytes, in order (the
+// movemask of x86 as and + addp).
 MD_TEXT_NO_SANITIZE static inline uint64_t md_text_newline_chunk(const char* p) {
 #   if defined(__AVX2__)
     return md_text_newline_mask(p) | (md_text_newline_mask(p + 32) << 32);
 #   elif MD_TEXT_SCAN_BITS == 1
     return md_text_newline_mask(p) | (md_text_newline_mask(p + 16) << 16) | (md_text_newline_mask(p + 32) << 32) | (md_text_newline_mask(p + 48) << 48);
 #   else
-    return md_text_newline_mask(p);
+    static const uint8_t place[16] = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
+    const uint8x16_t bit = vld1q_u8(place);
+    const uint8x16_t nl  = vdupq_n_u8('\n');
+    const uint8_t* q = (const uint8_t*)p;
+    const uint8x16_t m0 = vandq_u8(vceqq_u8(vld1q_u8(q),      nl), bit);
+    const uint8x16_t m1 = vandq_u8(vceqq_u8(vld1q_u8(q + 16), nl), bit);
+    const uint8x16_t m2 = vandq_u8(vceqq_u8(vld1q_u8(q + 32), nl), bit);
+    const uint8x16_t m3 = vandq_u8(vceqq_u8(vld1q_u8(q + 48), nl), bit);
+    const uint8x16_t s  = vpaddq_u8(vpaddq_u8(m0, m1), vpaddq_u8(m2, m3));
+    return vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(s, s)), 0);
 #   endif
 }
 #endif
@@ -159,7 +172,7 @@ MD_TEXT_NO_SANITIZE static inline md_text_lines_t md_text_lines(const char* c, c
     md_text_lines_t it = { .beg = c, .end = e };
 #if defined(MD_TEXT_SCAN_WIDTH)
     it.chunk = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_CHUNK - 1));
-    it.mask = c < e ? md_text_newline_chunk(it.chunk) & (~UINT64_C(0) << ((uintptr_t)(c - it.chunk) * MD_TEXT_SCAN_BITS)) : 0;
+    it.mask = c < e ? md_text_newline_chunk(it.chunk) & (~UINT64_C(0) << (uintptr_t)(c - it.chunk)) : 0;
 #endif
     return it;
 }
@@ -172,9 +185,9 @@ MD_TEXT_NO_SANITIZE static inline bool md_text_lines_next(md_text_lines_t* it, s
     for (;;) {
         if (it->mask) {
             const uint32_t bit = (uint32_t)ctz64(it->mask);
-            // The lowest newline: its bit, or its nibble on arm64 (whose bits are all set)
-            it->mask &= ~(((UINT64_C(1) << MD_TEXT_SCAN_BITS) - 1) << bit);
-            nl = it->chunk + bit / MD_TEXT_SCAN_BITS;
+            // The lowest newline: its bit
+            it->mask &= it->mask - 1;
+            nl = it->chunk + bit;
             if (nl > it->end) nl = it->end;
             break;
         }
@@ -200,16 +213,16 @@ MD_TEXT_NO_SANITIZE static inline size_t md_text_count_newlines(const char* c, c
     if (c >= e) return 0;
 #if defined(MD_TEXT_SCAN_WIDTH)
     const char* chunk = (const char*)((uintptr_t)c & ~(uintptr_t)(MD_TEXT_CHUNK - 1));
-    uint64_t m = md_text_newline_chunk(chunk) & (~UINT64_C(0) << ((uintptr_t)(c - chunk) * MD_TEXT_SCAN_BITS));
+    uint64_t m = md_text_newline_chunk(chunk) & (~UINT64_C(0) << (uintptr_t)(c - chunk));
     size_t n = 0;
     for (;;) {
         const size_t past = (size_t)MAX((ptrdiff_t)0, (chunk + MD_TEXT_CHUNK) - e);
         if (past) {
             // The last chunk: not past e
-            m &= ~UINT64_C(0) >> (past * MD_TEXT_SCAN_BITS);
-            return n + (size_t)popcnt64(m) / MD_TEXT_SCAN_BITS;
+            m &= ~UINT64_C(0) >> past;
+            return n + (size_t)popcnt64(m);
         }
-        n += (size_t)popcnt64(m) / MD_TEXT_SCAN_BITS;
+        n += (size_t)popcnt64(m);
         chunk += MD_TEXT_CHUNK;
         if (chunk >= e) return n;   // e at the end of a chunk: none past it is loaded
         m = md_text_newline_chunk(chunk);

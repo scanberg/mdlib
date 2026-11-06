@@ -12,6 +12,7 @@
 #include <core/md_log.h>
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
+#include <core/md_parse_simd.h>
 #include <core/md_hash.h>
 #include <core/md_executor.h>
 #include <core/md_reader.h>
@@ -107,37 +108,43 @@ typedef enum {
     PDB_LINE_REMARK_350,
 } pdb_line_kind_t;
 
-// The record of the cell: CRYST1, and CRYST with a blank where the 1 is, as some tools write it (the Conformational
-// Analysis Tools of CHARMM-GUI's trajectories, with all angles 0)
-static inline bool is_cryst1_record(str_t line) {
-    return str_eq_cstr_n(line, "CRYST", 5) && (line.len == 5 || line.ptr[5] == '1' || line.ptr[5] == ' ');
+// The first eight characters of a line as a word, as they are in memory (little endian), and of those the first n
+#define PDB_W8(a, b, c, d, e, f, g, h) ( \
+      (uint64_t)(uint8_t)(a)        | ((uint64_t)(uint8_t)(b) << 8)  | ((uint64_t)(uint8_t)(c) << 16) | ((uint64_t)(uint8_t)(d) << 24) \
+    | ((uint64_t)(uint8_t)(e) << 32) | ((uint64_t)(uint8_t)(f) << 40) | ((uint64_t)(uint8_t)(g) << 48) | ((uint64_t)(uint8_t)(h) << 56))
+#define PDB_MASK(n) (~UINT64_C(0) >> (64 - 8 * (n)))
+
+// The first eight characters of a line, blanks past the end of a shorter one: a record of its name alone (TER, ENDMDL,
+// CRYST) is read as the same line with blanks after it. No load past the line, which may end the string.
+static FORCE_INLINE uint64_t pdb_line_head(str_t line) {
+    uint64_t w;
+    if (line.len >= 8) {
+        MEMCPY(&w, line.ptr, 8);
+    } else {
+        w = 0x2020202020202020ull;
+        MEMCPY(&w, line.ptr, line.len);
+    }
+    return w;
 }
 
-// The first four characters of a record name as a word, as they are in memory (little endian)
-#define PDB_TAG(a, b, c, d) ((uint32_t)(uint8_t)(a) | ((uint32_t)(uint8_t)(b) << 8) | ((uint32_t)(uint8_t)(c) << 16) | ((uint32_t)(uint8_t)(d) << 24))
-
-// What a line is, by its record name: its first four characters as one word, the atoms first (they are the most)
+// What a line is, by its record name (columns 1 to 6): of its first eight characters, those of the name each record is
+// told by, the atoms first (they are the most). TER and ATOM by their first three and four (TER may be followed by
+// anything, and ATOM by a serial which runs into columns 5 and 6), CRYST1 also as CRYST with a blank where the 1 is, as
+// some tools write it (the Conformational Analysis Tools of CHARMM-GUI's trajectories, with all angles 0).
 static FORCE_INLINE pdb_line_kind_t pdb_line_kind(str_t line) {
-    const char* p = line.ptr;
-    if (line.len >= 6) {
-        uint32_t w;
-        MEMCPY(&w, p, 4);
-        if (w == PDB_TAG('A','T','O','M') || (w == PDB_TAG('H','E','T','A') && p[4] == 'T' && p[5] == 'M')) {
-            // The first alternate location only: blank or A
-            const char alt_loc = extract_char(line, 17);
-            return (alt_loc == ' ' || alt_loc == 'A') ? PDB_LINE_ATOM : PDB_LINE_ATOM_SKIPPED;
-        }
-        if ((w & 0xFFFFFF) == (PDB_TAG('T','E','R',0)))                         return PDB_LINE_TER;
-        if (w == PDB_TAG('M','O','D','E') && p[4] == 'L')                       return PDB_LINE_MODEL;
-        if (w == PDB_TAG('E','N','D','M') && p[4] == 'D' && p[5] == 'L')        return PDB_LINE_ENDMDL;
-        if (w == PDB_TAG('C','O','N','E') && p[4] == 'C' && p[5] == 'T')        return PDB_LINE_CONECT;
-        if (w == PDB_TAG('C','R','Y','S') && is_cryst1_record(line))            return PDB_LINE_CRYST1;
-        if (w == PDB_TAG('R','E','M','A') && str_eq_cstr_n(line, "REMARK 350", 10)) return PDB_LINE_REMARK_350;
-        return PDB_LINE_NONE;
+    const uint64_t w  = pdb_line_head(line);
+    const uint64_t w6 = w & PDB_MASK(6);
+    if (((w & PDB_MASK(4)) == PDB_W8('A','T','O','M',0,0,0,0)) | (w6 == PDB_W8('H','E','T','A','T','M',0,0))) {
+        // The first alternate location only: blank or A
+        const char alt_loc = extract_char(line, 17);
+        return (alt_loc == ' ' || alt_loc == 'A') ? PDB_LINE_ATOM : PDB_LINE_ATOM_SKIPPED;
     }
-    // A TER record may be the three letters alone (GROMACS, and the EM structures of the PDB written by some tools)
-    if (line.len >= 3 && p[0] == 'T' && p[1] == 'E' && p[2] == 'R') return PDB_LINE_TER;
-    if (line.len == 5 && is_cryst1_record(line))                    return PDB_LINE_CRYST1;
+    if ((w & PDB_MASK(3)) == PDB_W8('T','E','R',0,0,0,0,0))                         return PDB_LINE_TER;
+    if ((w & PDB_MASK(5)) == PDB_W8('M','O','D','E','L',0,0,0))                     return PDB_LINE_MODEL;
+    if (w6 == PDB_W8('E','N','D','M','D','L',0,0))                                  return PDB_LINE_ENDMDL;
+    if (w6 == PDB_W8('C','O','N','E','C','T',0,0))                                  return PDB_LINE_CONECT;
+    if (w6 == PDB_W8('C','R','Y','S','T','1',0,0) || w6 == PDB_W8('C','R','Y','S','T',' ',0,0)) return PDB_LINE_CRYST1;
+    if (w == PDB_W8('R','E','M','A','R','K',' ','3') && line.len >= 10 && line.ptr[8] == '5' && line.ptr[9] == '0') return PDB_LINE_REMARK_350;
     return PDB_LINE_NONE;
 }
 
@@ -532,68 +539,17 @@ static FORCE_INLINE md_label_t pdb_label(str_t line, size_t offset, size_t width
     return lbl;
 }
 
-// The three coordinates of an atom line, "%8.3f" each from column 31, at once: the characters of each in classes
-// (digit, blank, '-', '.') as bit masks, checked to be laid out as md_parse_fixed_f32 takes them, and the digits made
-// the integer part and the decimals by two multiply-adds. False, out untouched, if any is laid out otherwise: the
-// caller parses them one by one. The value is md_parse_fixed_f32's: the same integer over the same power of ten.
-#if defined(__AVX2__) || defined(__SSSE3__)
-#   include <immintrin.h>
-#   define PDB_COORDS_SIMD 1
-
-// Of the three fields at once (8 bits of each mask a field): blanks, then an optional '-', then digits up to the '.' at
-// 4, and 3 decimals. In the low nibble of each field the digits and the '-' are one run up to its bit 3, whose bit 3 is
-// a digit, the '-' (if any) its lowest bit; the rest of the nibble blanks.
-static FORCE_INLINE bool pdb_coord_layout(uint32_t digit, uint32_t blank, uint32_t minus, uint32_t dot) {
-    const uint32_t run = (digit | minus) & 0x0F0F0F;
-    return (dot & 0xFFFFFF) == 0x101010
-        && (digit & 0xE8E8E8) == 0xE8E8E8                       // the decimals, and the last digit before the dot
-        && (((run << 1) & 0x0E0E0E) & ~run) == 0                // one run up to bit 3: 1000, 1100, 1110, 1111
-        && ((minus >> 1) & run & 0x070707) == 0                 // the '-' its lowest bit
-        && (minus & 0xF0F0F0) == 0
-        && ((blank ^ ~run) & 0x0F0F0F) == 0 && (blank & 0xF0F0F0) == 0;
+// The three coordinates of an atom line, "%8.3f" each from column 31: at once (md_parse_fixed_f32x3_w8), and one by one
+// (md_parse_fixed_f32, else parse_float) where any is laid out otherwise or the line is too short for them
+static inline void pdb_coords_scalar(float out[3], str_t line) {
+    out[0] = extract_fixed_float(line, 31, 38, 3);
+    out[1] = extract_fixed_float(line, 39, 46, 3);
+    out[2] = extract_fixed_float(line, 47, 54, 3);
 }
 
-static FORCE_INLINE bool pdb_coords(float out[3], str_t line) {
-    if (line.len < 54) return false;
-    const char* p = line.ptr + 30;
-    const __m128i v[2] = { _mm_loadu_si128((const __m128i*)p), _mm_loadl_epi64((const __m128i*)(p + 16)) };
-    __m128i num[2];
-    uint32_t digit = 0, blank = 0, minus = 0, dot = 0;
-    for (int k = 0; k < 2; ++k) {
-        const __m128i d  = _mm_sub_epi8(v[k], _mm_set1_epi8('0'));
-        const __m128i is = _mm_cmpeq_epi8(_mm_min_epu8(d, _mm_set1_epi8(9)), d);
-        digit |= (uint32_t)_mm_movemask_epi8(is) << (16 * k);
-        blank |= (uint32_t)_mm_movemask_epi8(_mm_cmpeq_epi8(v[k], _mm_set1_epi8(' '))) << (16 * k);
-        minus |= (uint32_t)_mm_movemask_epi8(_mm_cmpeq_epi8(v[k], _mm_set1_epi8('-'))) << (16 * k);
-        dot   |= (uint32_t)_mm_movemask_epi8(_mm_cmpeq_epi8(v[k], _mm_set1_epi8('.'))) << (16 * k);
-        // Pairs of digits (10, 1), then pairs of those (100, 1): of each field its integer part and its decimals
-        const __m128i pairs = _mm_maddubs_epi16(_mm_and_si128(d, is), _mm_set1_epi16(0x010A));
-        num[k] = _mm_madd_epi16(pairs, _mm_set1_epi32(0x00010064));
-    }
-    if (!pdb_coord_layout(digit, blank, minus, dot)) return false;
-    // The integer parts and decimals (at most 9999 and 999) as 16 bits, then each field's integer: (1000, 1)
-    const __m128i n = _mm_madd_epi16(_mm_packs_epi32(num[0], num[1]), _mm_set1_epi32(0x000103E8));
-    const __m128d lo = _mm_div_pd(_mm_cvtepi32_pd(n), _mm_set1_pd(1000.0));
-    const __m128d hi = _mm_div_pd(_mm_cvtepi32_pd(_mm_unpackhi_epi64(n, n)), _mm_set1_pd(1000.0));
-    const __m128 val = _mm_movelh_ps(_mm_cvtpd_ps(lo), _mm_cvtpd_ps(hi));
-    // The sign last, on the float, as md_parse_fixed_f32 negates the value (a "-0.000" is -0): of each field, bit 4 of
-    // its byte if its nibble has the '-', moved to bit 31 of its lane
-    const uint32_t neg = ((minus & 0x0F0F0F) + 0x0F0F0F) & 0x101010;
-    const __m128i zero = _mm_setzero_si128();
-    const __m128i sign = _mm_slli_epi32(_mm_unpacklo_epi16(_mm_unpacklo_epi8(_mm_cvtsi32_si128((int)neg), zero), zero), 27);
-    float res[4];
-    _mm_storeu_ps(res, _mm_xor_ps(val, _mm_castsi128_ps(sign)));
-    out[0] = res[0];
-    out[1] = res[1];
-    out[2] = res[2];
-    return true;
+static FORCE_INLINE void pdb_coords(float out[3], str_t line) {
+    if (line.len < 54 || !md_parse_fixed_f32x3_w8(out, line.ptr + 30, 3)) pdb_coords_scalar(out, line);
 }
-#else
-static FORCE_INLINE bool pdb_coords(float out[3], str_t line) {
-    (void)out; (void)line;
-    return false;
-}
-#endif
 
 typedef struct pdb_residue_start_t {
     uint32_t         atom;      // of the load
@@ -651,10 +607,28 @@ static inline md_particle_type_idx_t pdb_types_find_or_add(pdb_types_t* t, md_la
 
 enum { PDB_COL_OCCUPANCY, PDB_COL_B_FACTOR, PDB_COL_CHARGE, PDB_NUM_COLUMNS };
 
+// A line of a pass the parse reads, as the count found it: an atom kept, or a record (TER to REMARK 350). The lines are
+// split and told apart once, by the count: the parse takes them from these. Of an atom, whether it begins a residue and
+// whether a TER record is between it and the atom before (in its piece: its first atom's are the place's to tell).
+#define PDB_LINE_MAX_LEN ((1u << 26) - 1)       // a longer line (no record or atom is) is cut at that
+
+typedef struct pdb_line_t {
+    uint32_t offset;            // of the pass
+    uint32_t len        : 26;
+    uint32_t kind       : 4;    // pdb_line_kind_t
+    uint32_t begins_res : 1;
+    uint32_t after_ter  : 1;
+} pdb_line_t;
+
+// No line of these is shorter than 3 characters and its newline: of len bytes, a piece has at most len / 4 + 1
+#define PDB_LINES_OF(len) ((len) / 4 + 1)
+
 typedef struct pdb_piece_t {
     md_text_piece_t range;
     pdb_types_t* types;
+    pdb_line_t* lines;          // its lines of the index, room for PDB_LINES_OF its bytes
     // The count
+    uint32_t num_lines;
     uint32_t num_atoms;         // kept
     uint32_t num_records;
     uint32_t num_inner_res;     // residues which begin at an atom of the piece after its first
@@ -708,6 +682,8 @@ typedef struct pdb_load_t {
     md_array(pdb_piece_t) pieces;
     md_array(pdb_record_t) records;
     pdb_types_t*        types;          // A table for each piece
+    pdb_line_t*         lines;          // The index of the lines of a pass, the pieces' after one another
+    size_t              lines_cap;
     bool                atoms;          // false once the first model ended: the atom lines are passed over
 
     // Of the load, by atom (the coordinates, types and flags where the state and the system keep them)
@@ -741,7 +717,11 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     const pdb_load_t* L = (const pdb_load_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         pdb_piece_t* piece = &L->pieces[p];
-        uint32_t num_atoms = 0, num_records = 0, num_inner_res = 0;
+        // Few counts in the loop, which has more to keep than registers: the lines from where the index ends, the records
+        // from the lines and the atoms
+        const char* text = L->text;
+        pdb_line_t* out = piece->lines;
+        uint32_t num_atoms = 0, num_inner_res = 0;
         bool ter = false, ter_first = false;
         pdb_res_fields_t prev = {0};
         md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
@@ -750,21 +730,33 @@ static void pdb_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             const pdb_line_kind_t kind = pdb_line_kind(line);
             if (kind == PDB_LINE_ATOM) {
                 if (!L->atoms) continue;
+                // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B
+                // are three residues of the same number (the insertions of Kabat numbered antibodies), also when they
+                // share a name. A TER record ends the residue before it, whatever the residue after it is called, and
+                // the chain: what follows is a unit of its own (md_util_system_instances_from_chain_ids).
                 const pdb_res_fields_t fields = pdb_res_fields(line);
+                bool begins = false;
                 if (num_atoms == 0) {
                     piece->first = fields;
                     ter_first = ter;
                 } else if (ter || !pdb_res_fields_eq(&fields, &prev)) {
                     num_inner_res += 1;
+                    begins = true;
                 }
+                *out++ = (pdb_line_t){ .offset = (uint32_t)(line.ptr - text), .len = (uint32_t)MIN(line.len, PDB_LINE_MAX_LEN),
+                                       .kind = PDB_LINE_ATOM, .begins_res = begins, .after_ter = ter };
                 prev = fields;
                 ter = false;
                 num_atoms += 1;
             } else if (kind >= PDB_LINE_TER) {
                 if (kind == PDB_LINE_TER) ter = true;
-                num_records += 1;
+                *out++ = (pdb_line_t){ .offset = (uint32_t)(line.ptr - text), .len = (uint32_t)MIN(line.len, PDB_LINE_MAX_LEN), .kind = kind };
             }
         }
+        const uint32_t num_lines = (uint32_t)(out - piece->lines);
+        const uint32_t num_records = num_lines - num_atoms;
+        ASSERT(num_lines <= PDB_LINES_OF(piece->range.end - piece->range.beg));
+        piece->num_lines = num_lines;
         piece->num_atoms = num_atoms;
         piece->num_records = num_records;
         piece->num_inner_res = num_inner_res;
@@ -834,50 +826,36 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         pdb_residue_start_t* res = L->res_starts + piece->first_res;
         pdb_record_t* rec = L->records + piece->first_record;
         size_t atom = piece->first_atom;
-        bool first = true, ter = false;
-        pdb_res_fields_t prev = {0};
-        md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
-        str_t line;
-        while (md_text_lines_next(&lines, &line)) {
-            const pdb_line_kind_t kind = pdb_line_kind(line);
-            if (kind >= PDB_LINE_TER) {
-                if (kind == PDB_LINE_TER) ter = true;
-                rec->offset = (size_t)(line.ptr - L->text);
-                rec->len    = line.len;
+        // The lines of the piece as the count found them: its atoms (none once the first model ended) and records
+        const pdb_line_t* lines = piece->lines;
+        for (uint32_t i = 0; i < piece->num_lines; ++i) {
+            const pdb_line_t ln = lines[i];
+            const str_t line = { L->text + ln.offset, ln.len };
+            if (ln.kind != PDB_LINE_ATOM) {
+                rec->offset = ln.offset;
+                rec->len    = ln.len;
                 rec->atom   = atom;
-                rec->kind   = kind;
+                rec->kind   = (pdb_line_kind_t)ln.kind;
                 ++rec;
                 continue;
             }
-            if (kind != PDB_LINE_ATOM || !L->atoms) continue;
 
-            // A residue is its name, its sequence number and its insertion code in its chain: 100, 100A and 100B are
-            // three residues of the same number (the insertions of Kabat numbered antibodies), also when they share a
-            // name. A TER record ends the residue before it, whatever the residue after it is called, and the chain:
-            // what follows is a unit of its own (md_util_system_instances_from_chain_ids).
-            const pdb_res_fields_t fields = pdb_res_fields(line);
-            if (first ? piece->first_begins_res : (ter || !pdb_res_fields_eq(&fields, &prev))) {
+            // Where a residue begins, as the count found it, and the first atom's as the place found it
+            const bool first = atom == piece->first_atom;
+            if (first ? piece->first_begins_res : ln.begins_res) {
                 uint32_t bad = 0;
                 const int32_t seq_id = line.len >= 26 ? parse_id(line, 23, 26, &bad) : 0;
                 piece->num_bad_seq += bad;
                 res->atom      = (uint32_t)atom;
                 res->seq_id    = bad ? INT_MAX : seq_id;
                 res->name      = pdb_label(line, 17, 4);
+                const pdb_res_fields_t fields = pdb_res_fields(line);
                 res->chain_id  = pdb_res_fields_chain(&fields);
-                res->after_ter = first ? piece->first_after_ter : ter;
+                res->after_ter = first ? piece->first_after_ter : ln.after_ter;
                 ++res;
             }
-            first = false;
-            ter = false;
-            prev = fields;
 
-            float c[3];
-            if (!pdb_coords(c, line)) {
-                c[0] = extract_fixed_float(line, 31, 38, 3);
-                c[1] = extract_fixed_float(line, 39, 46, 3);
-                c[2] = extract_fixed_float(line, 47, 54, 3);
-            }
-            xyz[atom] = vec3_set(c[0], c[1], c[2]);
+            pdb_coords(xyz[atom].elem, line);
             flags[atom] = MD_ATOM_FLAG_NONE;
             const md_label_t name = pdb_label(line, 12, 4);
             const md_label_t element = pdb_label(line, 76, 2);
@@ -968,10 +946,10 @@ static void pdb_type_lines(void* arg, uint32_t beg, uint32_t end, uint32_t threa
 static void pdb_type_overflow(pdb_load_t* L, const pdb_piece_t* piece) {
     md_system_t* sys = L->sys;
     size_t atom = piece->first_atom;
-    md_text_lines_t lines = md_text_lines(L->text + piece->range.beg, L->text + piece->range.end);
-    str_t line;
-    while (atom < piece->first_atom + piece->num_atoms && md_text_lines_next(&lines, &line)) {
-        if (pdb_line_kind(line) != PDB_LINE_ATOM) continue;
+    for (uint32_t i = 0; i < piece->num_lines; ++i) {
+        const pdb_line_t ln = piece->lines[i];
+        if (ln.kind != PDB_LINE_ATOM) continue;
+        const str_t line = { L->text + ln.offset, ln.len };
         if (sys->atom.type_idx[atom] == PDB_TYPE_OVERFLOW) {
             const str_t name = str_trim(str_substr(line, 12, 4));
             const md_atomic_number_t z = md_atomic_number_from_symbol(str_trim(str_substr(line, 76, 2)), true);
@@ -1093,7 +1071,17 @@ static bool pdb_read_pass(pdb_load_t* L, const char* text, size_t len, const md_
     md_array_resize(L->ranges, num_pieces, L->temp);
     md_array_resize(L->pieces, num_pieces, L->temp);
     md_text_split(L->ranges, num_pieces, text, len);
-    for (size_t p = 0; p < num_pieces; ++p) L->pieces[p] = (pdb_piece_t){ .range = L->ranges[p], .types = &L->types[p] };
+    // The index: of each piece PDB_LINES_OF its bytes, after one another. More than the load reserved only for a pass of
+    // a line longer than a pass (which has room for a pass of short lines).
+    if (PDB_LINES_OF(len) + num_pieces > L->lines_cap) {
+        L->lines_cap = PDB_LINES_OF(len) + num_pieces;
+        L->lines = md_alloc(L->temp, L->lines_cap * sizeof(pdb_line_t));
+    }
+    pdb_line_t* lines = L->lines;
+    for (size_t p = 0; p < num_pieces; ++p) {
+        L->pieces[p] = (pdb_piece_t){ .range = L->ranges[p], .types = &L->types[p], .lines = lines };
+        lines += PDB_LINES_OF(L->ranges[p].end - L->ranges[p].beg);
+    }
     L->text = text;
 
     md_tick_t t = md_tick_now();
@@ -1369,6 +1357,9 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     md_array_ensure(L.pieces, max_pieces, temp);
     md_array_ensure(L.ranges, max_pieces, temp);
     L.types = md_alloc(temp, max_pieces * sizeof(pdb_types_t));
+    // The index of the lines of a pass: address space for a pass of the shortest lines, of which those of atoms are written
+    L.lines_cap = PDB_LINES_OF(pass_size) + max_pieces;
+    L.lines = md_alloc(temp, L.lines_cap * sizeof(pdb_line_t));
 
     // Add default unknown particle type at index 0
     md_particle_type_find_or_add(&sys->atom.type, STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
@@ -1390,7 +1381,10 @@ static bool pdb_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         // The block a pass at a time: what the lines are, then what they hold, of text the first left in the caches
         size_t taken = 0;
         while (taken < block.len && (L.atoms || tail || L.concat_models)) {
-            const size_t len = md_text_pass_len_of(block.ptr + taken, block.len - taken, pass_size);
+            size_t len = md_text_pass_len_of(block.ptr + taken, block.len - taken, pass_size);
+            // A pass whose first line is longer than a pass is all of the block: of more than 32 bits of offsets (a
+            // string of one), its first line alone
+            if (len > UINT32_MAX) len = MIN(block.len - taken, (size_t)(md_text_find_newline(block.ptr + taken, block.ptr + block.len) - (block.ptr + taken)) + 1);
             if (!pdb_read_pass(&L, block.ptr + taken, len, ex)) goto done;     // Cancelled
             taken += len;
         }
