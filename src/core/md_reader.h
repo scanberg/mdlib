@@ -159,6 +159,48 @@ MD_TEXT_NO_SANITIZE static inline uint64_t md_text_newline_chunk(const char* p) 
 }
 #endif
 
+#if defined(MD_TEXT_SCAN_WIDTH)
+// The whitespace of the aligned chunk at p ('\t', '\n', '\r' and ' ', what is_whitespace and extract_token split by),
+// one bit per byte: what a tokenizer takes the tokens of a line from, a chunk at a time. On arm64 the three below ' ' by a
+// table of the low 16 byte values (a lookup gives 0 for any byte past them), the comparisons then summed in pairs as
+// md_text_newline_chunk sums its.
+MD_TEXT_NO_SANITIZE static inline uint64_t md_text_whitespace_chunk(const char* p) {
+#   if defined(__AVX2__)
+    uint64_t m = 0;
+    for (int k = 0; k < 2; ++k) {
+        const __m256i v = _mm256_load_si256((const __m256i*)(p + 32 * k));
+        const __m256i ws = _mm256_or_si256(_mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8(' ')), _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\t'))),
+                                           _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\n')), _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\r'))));
+        m |= (uint64_t)(uint32_t)_mm256_movemask_epi8(ws) << (32 * k);
+    }
+    return m;
+#   elif MD_TEXT_SCAN_BITS == 1
+    uint64_t m = 0;
+    for (int k = 0; k < 4; ++k) {
+        const __m128i v = _mm_load_si128((const __m128i*)(p + 16 * k));
+        const __m128i ws = _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(' ')), _mm_cmpeq_epi8(v, _mm_set1_epi8('\t'))),
+                                        _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\n')), _mm_cmpeq_epi8(v, _mm_set1_epi8('\r'))));
+        m |= (uint64_t)(uint32_t)_mm_movemask_epi8(ws) << (16 * k);
+    }
+    return m;
+#   else
+    static const uint8_t low[16]   = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0xFF, 0, 0 };     // '\t' '\n' '\r'
+    static const uint8_t place[16] = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
+    const uint8x16_t table = vld1q_u8(low);
+    const uint8x16_t bit   = vld1q_u8(place);
+    const uint8x16_t space = vdupq_n_u8(' ');
+    const uint8_t* q = (const uint8_t*)p;
+    uint8x16_t m[4];
+    for (int k = 0; k < 4; ++k) {
+        const uint8x16_t v = vld1q_u8(q + 16 * k);
+        m[k] = vandq_u8(vorrq_u8(vqtbl1q_u8(table, v), vceqq_u8(v, space)), bit);
+    }
+    const uint8x16_t sum = vpaddq_u8(vpaddq_u8(m[0], m[1]), vpaddq_u8(m[2], m[3]));
+    return vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(sum, sum)), 0);
+#   endif
+}
+#endif
+
 typedef struct md_text_lines_t {
     const char* beg;        // Of the next line
     const char* end;        // Of the range

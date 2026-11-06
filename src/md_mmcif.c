@@ -273,13 +273,18 @@ typedef struct {
     bool has_peek;
     bool line_start;
     bool in_loop;
+    bool plain;         // The token fetched last is as the line has it (not a quoted string or a text field)
+    bool peek_plain;    // and the one peeked
+    bool pending_start; // line is a line given back whole (mmcif_parse_atom_site): its first token is at a line start
 } mmcif_parse_state_t;
 
 // Returns true if token was extracted,
 // False if EOF / stream
 static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
     str_t tok = {0};
-    s->line_start = false;
+    s->line_start = s->pending_start;
+    s->pending_start = false;
+    s->plain = true;
     while (true) {
         if (str_empty(s->line)) {
             if (!md_reader_extract_line(s->reader, &s->line)) {
@@ -294,6 +299,7 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
 
         char first_char = tok.ptr[0];
         if (first_char == '\'' || first_char == '\"') {
+            s->plain = false;
             char delim = tok.ptr[0];
             if (tok.len > 1 && tok.ptr[tok.len-1] == delim) {
                 tok.ptr +=1;
@@ -310,6 +316,7 @@ static bool mmcif_fetch_token(str_t* out_tok, mmcif_parse_state_t* s) {
                 s->line.len -= (loc+1);
             }
         } else if (first_char == ';') {
+            s->plain = false;
             md_str_writer_reset(&s->sb);
             md_str_writer_push_str(&s->sb, str_substr(tok, 1, SIZE_MAX));
             md_str_writer_push_str(&s->sb, s->line);
@@ -359,6 +366,7 @@ static inline bool mmcif_peek_token(str_t* tok, mmcif_parse_state_t* state) {
         return false;
     }
     state->has_peek = true;
+    state->peek_plain = state->plain;
     *tok = state->peek;
     return true;
 }
@@ -944,6 +952,97 @@ static void mmcif_assemblies(md_system_t* sys, const md_array(mmcif_assembly_gen
     md_system_assemblies_init(sys, gen, md_array_size(gen), transform, id, oper_count);
 }
 
+// The tokens of a row which is a line of its own (from beg, its first token, to end), as mmcif_fetch_token gives them:
+// whitespace delimited, a quoted one without its quotes. False where the line is not num tokens, or one of them is not
+// read that way (a comment, a text field, a quoted string with whitespace in it): the tokenizer reads the row instead.
+//
+// The whitespace of the line a chunk of 64 bytes at a time (md_text_whitespace_chunk; no chunk from end on), and of each
+// chunk where the tokens begin (a byte which is not whitespace after one which is) and where they end (whitespace after
+// a byte which is not), all of them at once: the n:th token is from the n:th beginning to the n:th end. Not one token
+// after another, each from where the last ended, which is a chain of as many steps as the row has tokens.
+#if defined(MD_TEXT_SCAN_WIDTH)
+// The whitespace of the chunk at c, the bytes from end on counted as such
+MD_TEXT_NO_SANITIZE static inline uint64_t mmcif_ws_chunk(const char* c, const char* end) {
+    uint64_t ws = md_text_whitespace_chunk(c);
+    if (end - c < 64) ws |= ~UINT64_C(0) << (end - c);
+    return ws;
+}
+#endif
+
+// What mmcif_fetch_token reads otherwise when a token begins with it: 1 a comment or a text field, 2 a quoted string
+static const uint8_t mmcif_first_char[256] = { ['#'] = 1, [';'] = 1, ['\''] = 2, ['"'] = 2 };
+
+// tok has room for MMCIF_SPLIT_SLACK tokens past num, which the loops below write ahead of the count
+#define MMCIF_SPLIT_SLACK 4
+
+MD_TEXT_NO_SANITIZE static bool mmcif_split_row(str_t* tok, size_t num, const char* beg, const char* end) {
+    size_t n = 0;
+    uint32_t first = 0;         // Of the tokens' first characters, what mmcif_first_char says of them
+#if defined(MD_TEXT_SCAN_WIDTH)
+    size_t n_end = 0;
+    const char* chunk = (const char*)((uintptr_t)beg & ~(uintptr_t)63);
+    uint64_t before = (UINT64_C(1) << (beg - chunk)) - 1;      // The bytes before beg count as whitespace
+    uint64_t carry = 1;                                         // Whether the byte before the chunk is whitespace
+    for (; chunk < end; chunk += 64) {
+        const uint64_t ws = mmcif_ws_chunk(chunk, end) | before;
+        before = 0;
+        const uint64_t prev = (ws << 1) | carry;                // Of each byte, whether the one before it is whitespace
+        carry = ws >> 63;
+        uint64_t starts = ~ws & prev;
+        uint64_t ends = ws & ~prev;
+        const size_t count = (size_t)popcnt64(starts);
+        if (n + count > num) return false;                      // More tokens than columns
+        // Four at a time, a branch for four (a bit past the last is no bit: ctz64(0) is past the chunk, written to the
+        // room past the count, and a later chunk's token there writes over it)
+        for (size_t k = 0; k < count; k += 4) {
+            for (int j = 0; j < 4; ++j) {
+                const char* t = chunk + (starts ? ctz64(starts) : 0);
+                tok[n + k + j].ptr = t;
+                first |= starts ? mmcif_first_char[(uint8_t)*t] : 0;
+                starts &= starts - 1;
+            }
+        }
+        n += count;
+        // Of tokens which began here or before
+        const size_t count_end = (size_t)popcnt64(ends);
+        for (size_t k = 0; k < count_end; k += 4) {
+            for (int j = 0; j < 4; ++j) {
+                const size_t i = n_end + k + j;
+                if (i < n) tok[i].len = (size_t)(chunk + (ends ? ctz64(ends) : 0) - tok[i].ptr);
+                ends &= ends - 1;
+            }
+        }
+        n_end += count_end;
+    }
+    // The last one ends with the line, where the line ends with a chunk
+    if (n_end < n) {
+        tok[n_end].len = (size_t)(end - tok[n_end].ptr);
+    }
+#else
+    for (const char* c = beg;;) {
+        while (c < end && is_whitespace(*c)) ++c;
+        if (c >= end) break;
+        if (n == num) return false;
+        const char* t = c;
+        while (c < end && !is_whitespace(*c)) ++c;
+        tok[n++] = (str_t){ t, (size_t)(c - t) };
+        first |= mmcif_first_char[(uint8_t)*t];
+    }
+#endif
+    if (n != num) return false;
+    if (first & 1) return false;
+    // As mmcif_fetch_token: a quoted token without its quotes, where it ends in its quote
+    for (size_t i = 0; first && i < num; ++i) {
+        const char f = tok[i].ptr[0];
+        if (f == '\'' || f == '"') {
+            if (tok[i].len < 2 || tok[i].ptr[tok[i].len - 1] != f) return false;
+            tok[i].ptr += 1;
+            tok[i].len -= 2;
+        }
+    }
+    return true;
+}
+
 static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entries, mmcif_parse_state_t* state, md_allocator_i* alloc) {
     ASSERT(atom_entries);
     ASSERT(state);
@@ -986,20 +1085,50 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
 
     // One token per column of a row. A file carries as many _atom_site columns as its producer chose to write, so
     // the row is sized by them rather than by a fixed bound.
-    str_t* tok = md_alloc(alloc, sizeof(str_t) * num_cols);
-    MEMSET(tok, 0, sizeof(str_t) * num_cols);
+    str_t* tok = md_alloc(alloc, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
+    MEMSET(tok, 0, sizeof(str_t) * (num_cols + MMCIF_SPLIT_SLACK));
 
-    while (mmcif_advance_to_next_line(state)) {
-        str_t peek;
-        if (!mmcif_peek_token(&peek, state)) {
-            MD_LOG_ERROR("Unexpected EOF while reading _atom_site entries");
-        }
-        if (str_empty(peek) || mmcif_is_item(peek) || mmcif_is_control(peek)) {
-            // End of _atom_site section
-            break;
+    for (;;) {
+        // A row which is a line of its own, as files write them: its tokens at once (mmcif_split_row). Taken from the
+        // reader where the tokenizer has nothing of a line left, else from the tokenizer's line. A line which is not
+        // such a row (a comment, a row over lines, what comes after the rows) is given back to the tokenizer whole,
+        // which reads it as it reads any.
+        bool split = false;
+        if (!state->has_peek && str_empty(state->line)) {
+            str_t line;
+            if (!md_reader_extract_line(state->reader, &line)) break;      // The end of the file
+            const char* b = line.ptr;
+            const char* e = line.ptr + line.len;
+            while (b < e && is_whitespace(*b)) ++b;
+            if (b < e && *b != '\'' && *b != '"') {
+                split = mmcif_split_row(tok, num_cols, b, e) && !mmcif_is_item(tok[0]) && !mmcif_is_control(tok[0]);
+            }
+            if (!split) {
+                state->line = line;
+                state->pending_start = true;
+            }
         }
 
-        for (size_t i = 0; i < num_cols; ++i) {
+        if (!split) {
+            if (!mmcif_advance_to_next_line(state)) break;
+            str_t peek;
+            if (!mmcif_peek_token(&peek, state)) {
+                MD_LOG_ERROR("Unexpected EOF while reading _atom_site entries");
+            }
+            if (str_empty(peek) || mmcif_is_item(peek) || mmcif_is_control(peek)) {
+                // End of _atom_site section
+                break;
+            }
+            // From the token peeked (as the line has it) to the end of the line, which is what the tokenizer has left
+            if (state->has_peek && state->peek_plain && state->line_start && state->line.ptr) {
+                split = mmcif_split_row(tok, num_cols, peek.ptr, state->line.ptr + state->line.len);
+                if (split) {
+                    state->has_peek = false;
+                    state->line = (str_t){0};
+                }
+            }
+        }
+        for (size_t i = 0; !split && i < num_cols; ++i) {
             if (!mmcif_next_token(&tok[i], state)) {
                 MD_LOG_ERROR("Unexpected EOF while reading _atom_site entry");
                 return false;
@@ -1223,8 +1352,24 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         float* b_iso          = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
         float* formal_charge  = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
 
-        uint64_t prev_res_key = 0; // Key of active componenent
-        uint64_t prev_inst_key = 0; // Key of active instance
+        // Of the atom before: the fields of its residue and its instance as words (the entries' fields are zero past
+        // their characters, so the same characters are the same words), and its entity. A residue begins where the
+        // residue's differ, an instance where the asym's does.
+        bool     have_prev = false;
+        uint64_t prev_asym = 0, prev_comp = 0, prev_entity = 0;
+        int      prev_seq = 0;
+        md_part_type_idx_t entity_idx = -1;
+
+        // The type of an atom by its name and element symbol, of which a structure has few (the atoms of each residue
+        // of a kind have the same): looked up once for each, by their words, before the element is found by its
+        // symbol and the type by its name
+        typedef struct {
+            uint64_t name;
+            uint32_t symbol;
+            md_particle_type_idx_t type;
+        } mmcif_type_seen_t;
+        md_array(mmcif_type_seen_t) seen = 0;
+        md_hashmap32_t seen_map = { .allocator = temp_arena };
 
 
         for (size_t i = 0; i < num_atoms; ++i) {
@@ -1232,29 +1377,51 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             if (atom_entries[i].label_alt_id != '.' &&
                 atom_entries[i].label_alt_id != 'A') continue;
 
-            str_t symbol = str_from_cstrn(atom_entries[i].type_symbol, sizeof(atom_entries[i].type_symbol));
-            str_t atom_id = str_from_cstrn(atom_entries[i].label_atom_id, sizeof(atom_entries[i].label_atom_id));
-            str_t entity_id = str_from_cstrn(atom_entries[i].label_entity_id, sizeof(atom_entries[i].label_entity_id));
-            str_t auth_asym_id = str_from_cstrn(atom_entries[i].auth_asym_id, sizeof(atom_entries[i].auth_asym_id));
-            str_t label_asym_id = str_from_cstrn(atom_entries[i].label_asym_id, sizeof(atom_entries[i].label_asym_id));
-            // The chain id is the author's (md_chain_data_t). A file which does not give it calls its chains by their
-            // labels only, and those are then its chain ids.
-            if (str_empty(auth_asym_id) || str_eq(auth_asym_id, STR_LIT("?")) || str_eq(auth_asym_id, STR_LIT("."))) {
-                auth_asym_id = label_asym_id;
+            const mmcif_atom_site_entry_t* entry = &atom_entries[i];
+            uint64_t asym, comp, entity, name;
+            uint32_t symbol_word = 0;
+            STATIC_ASSERT(sizeof(entry->label_asym_id) == 8 && sizeof(entry->label_comp_id) == 8 && sizeof(entry->label_entity_id) == 8 &&
+                          sizeof(entry->label_atom_id) == 8 && sizeof(entry->type_symbol) == 3, "Fields of 8 characters (a word), the symbol of 3");
+            MEMCPY(&asym,   entry->label_asym_id,   8);
+            MEMCPY(&comp,   entry->label_comp_id,   8);
+            MEMCPY(&entity, entry->label_entity_id, 8);
+            MEMCPY(&name,   entry->label_atom_id,   8);
+            MEMCPY(&symbol_word, entry->type_symbol, 3);
+            const int seq_id = entry->label_seq_id != INT32_MIN ? entry->label_seq_id : entry->auth_seq_id;
+
+            if (!have_prev || entity != prev_entity) {
+                entity_idx = md_system_part_type_find_by_id(sys, str_from_cstrn(entry->label_entity_id, sizeof(entry->label_entity_id)));
             }
 
-            md_part_type_idx_t entity_idx = md_system_part_type_find_by_id(sys, entity_id);
+            md_particle_type_idx_t particle_type_idx = 0;
+            {
+                const uint64_t key = (name ^ ((uint64_t)symbol_word << 40 | symbol_word)) * 0x9E3779B97F4A7C15ull;
+                const uint32_t* s_idx = md_hashmap_get(&seen_map, key);
+                if (s_idx && seen[*s_idx].name == name && seen[*s_idx].symbol == symbol_word) {
+                    particle_type_idx = seen[*s_idx].type;
+                } else {
+                    str_t symbol = str_from_cstrn(entry->type_symbol, sizeof(entry->type_symbol));
+                    str_t atom_id = str_from_cstrn(entry->label_atom_id, sizeof(entry->label_atom_id));
+                    md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
+                    particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
+                    if (!s_idx) {
+                        md_hashmap_add(&seen_map, key, (uint32_t)md_array_size(seen));
+                        md_array_push(seen, ((mmcif_type_seen_t){ name, symbol_word, particle_type_idx }), temp_arena);
+                    }
+                }
+            }
 
-		    uint64_t inst_key = md_hash64_str(label_asym_id, 0);
+            const bool new_inst = !have_prev || asym != prev_asym;
+            if (new_inst || comp != prev_comp || seq_id != prev_seq) {
+                str_t comp_id = str_from_cstrn(entry->label_comp_id, ARRAY_SIZE(entry->label_comp_id));
+                str_t label_asym_id = str_from_cstrn(entry->label_asym_id, sizeof(entry->label_asym_id));
+                str_t auth_asym_id = str_from_cstrn(entry->auth_asym_id, sizeof(entry->auth_asym_id));
+                // The chain id is the author's (md_chain_data_t). A file which does not give it calls its chains by their
+                // labels only, and those are then its chain ids.
+                if (str_empty(auth_asym_id) || str_eq(auth_asym_id, STR_LIT("?")) || str_eq(auth_asym_id, STR_LIT("."))) {
+                    auth_asym_id = label_asym_id;
+                }
 
-            str_t comp_id = str_from_cstrn(atom_entries[i].label_comp_id, ARRAY_SIZE(atom_entries[i].label_comp_id));
-            int seq_id = atom_entries[i].label_seq_id != INT32_MIN ? atom_entries[i].label_seq_id : atom_entries[i].auth_seq_id;
-            uint64_t res_key = md_hash64_str(comp_id, (uint64_t)seq_id ^ inst_key);
-
-            md_atomic_number_t atomic_number = md_atomic_number_from_symbol(symbol, true);
-            md_particle_type_idx_t particle_type_idx = md_util_particle_type_find_or_add(sys, &type_map, atom_id, atomic_number);
-
-            if (res_key != prev_res_key) {
                 // --- New residue boundary ---
                 // Start residue (store atom offset before adding any residue atoms)
                 md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
@@ -1267,7 +1434,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 // instance of its own, sharing the asym id.
                 const md_part_kind_t entity_kind = entity_idx != -1 ? md_system_part_type_kind(sys, entity_idx) : MD_PART_KIND_UNKNOWN;
                 const bool one_per_residue = entity_kind == MD_PART_KIND_WATER || entity_kind == MD_PART_KIND_NON_POLYMER;
-                if (sys->instance.count == 0 || inst_key != prev_inst_key || one_per_residue) {
+                if (sys->instance.count == 0 || new_inst || one_per_residue) {
                     md_array_push(sys->instance.id, make_label(label_asym_id), alloc);
                     md_array_push(sys->instance.auth_id, make_label(auth_asym_id), alloc);
                     md_array_push(sys->instance.res_offset, (uint32_t)sys->residue.count, alloc);
@@ -1278,8 +1445,11 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 sys->residue.count += 1;
             }
  
-            prev_inst_key = inst_key;
-            prev_res_key = res_key;
+            have_prev = true;
+            prev_asym = asym;
+            prev_comp = comp;
+            prev_entity = entity;
+            prev_seq = seq_id;
  
             md_array_push_no_grow(out_state->xyz, vec3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
             md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
