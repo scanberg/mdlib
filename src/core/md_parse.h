@@ -3,8 +3,6 @@
 #include <core/md_str.h>
 #include <core/md_os.h>
 
-#include <string.h>
-
 // Text parsing primitives: buffered line reading, whitespace and delimiter tokenization, and numbers.
 //
 // NUMBERS
