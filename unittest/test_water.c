@@ -128,8 +128,8 @@ static bool load_case(md_system_t* sys, md_system_state_t* st, const water_case_
     *sys = (md_system_t){ .alloc = alloc };
     *st  = (md_system_state_t){ .alloc = alloc };
     const str_t text = str_from_cstr(c->text);
-    const bool ok = c->gro ? md_gro_system_init_from_str(sys, st, text) : md_pdb_system_init_from_str(sys, st, text, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
-    return ok && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL);
+    const bool ok = c->gro ? md_gro_system_init_from_str(sys, st, text, NULL) : md_pdb_system_init_from_str(sys, st, text, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+    return ok && md_util_system_infer(sys, st, MD_UTIL_INFER_ALL, NULL);
 }
 
 static inline md_particle_kind_t particle(const md_system_t* sys, size_t i) {
@@ -214,8 +214,8 @@ UTEST(water, unwrap_virtual_site) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(text)));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(text), NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     EXPECT_EQ(2, (int)sys.bond.count);
     EXPECT_EQ(1, (int)sys.molecule.count);
     md_util_unwrap_system(&st, &sys);
@@ -233,10 +233,10 @@ UTEST(water, tip4p_gro_and_tpr) {
     for (int f = 0; f < 2; ++f) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        const bool ok = f == 0 ? md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"))
+        const bool ok = f == 0 ? md_gro_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL)
                                : md_tpr_system_init_from_file(&sys, &st, STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr"));
         ASSERT_TRUE(ok);
-        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
         size_t water = 0, sites = 0, bonded_sites = 0, cg = 0;
         for (size_t ci = 0; ci < sys.residue.count; ++ci) water += md_system_residue_kind(&sys, ci) == MD_RESIDUE_KIND_WATER;
         for (size_t i = 0; i < sys.atom.count; ++i) {
@@ -270,7 +270,7 @@ UTEST(water, martini_bead_unchanged) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(text)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(text), NULL));
     EXPECT_EQ(MD_PARTICLE_BEAD, particle(&sys, 0));
     EXPECT_EQ(MD_RESIDUE_KIND_WATER, md_system_residue_kind(&sys, 0));
     md_vm_arena_destroy(alloc);

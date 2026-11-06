@@ -9,6 +9,7 @@
 #include <core/md_log.h>
 #include <core/md_array.h>
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_hash.h>
 
 #define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
@@ -222,7 +223,7 @@ static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_
 }
 
 // Only detects Atomic or Full which are predefined strings that we can return
-static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) {
+static md_lammps_atom_format_t detect_atom_format(md_reader_i* reader) {
 	str_t tok[16];
 	str_t atom_lines[8];
 	str_t line;
@@ -230,7 +231,7 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 	size_t atom_line_count = 0;
 	md_lammps_atom_format_t format = MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 
-	while (md_buffered_reader_extract_line(&line, reader)) {
+	while (md_reader_extract_line(reader, &line)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok > 0) {
 			if (str_eq(tok[0], STR_LIT("Atoms"))) {
@@ -239,7 +240,7 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 				}
 
 				// Read empty line
-				md_buffered_reader_extract_line(&line, reader);
+				md_reader_extract_line(reader, &line);
 				if (!str_empty(line)) {
 					// Expected empty line here
 					return format;
@@ -247,7 +248,7 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 
 				// We found Atoms entry, now read some lines
 				for (size_t i = 0; i < ARRAY_SIZE(atom_lines); ++i) {
-					md_buffered_reader_extract_line(&line, reader);
+					md_reader_extract_line(reader, &line);
 					if (str_empty(line)) {
 						break;
 					}
@@ -257,7 +258,7 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 			}
 		}
 
-		if (md_buffered_reader_tellg(reader) > MEGABYTES(1)) {
+		if (md_reader_tell(reader) > MEGABYTES(1)) {
 			// If we cannot find the Atom entry within the first megabyte, we give up
 			MD_LOG_ERROR("Failed to detect atom format, could not find 'Atoms' entry");
 			return format;
@@ -331,7 +332,7 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 	return MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 }
 
-static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffered_reader_t* reader, const int mappings[]) {
+static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_reader_i* reader, const int mappings[]) {
 	ASSERT(mappings[ATOM_FIELD_ID]	 != -1);
 	ASSERT(mappings[ATOM_FIELD_TYPE] != -1);
 	ASSERT(mappings[ATOM_FIELD_X]	 != -1);
@@ -341,7 +342,7 @@ static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffe
 	str_t tok[16];
 	str_t line;
 	size_t read_atoms = 0;
-	while (read_atoms < num_atoms && md_buffered_reader_extract_line(&line, reader)) {
+	while (read_atoms < num_atoms && md_reader_extract_line(reader, &line)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 5) {
 			MD_LOG_ERROR("Failed to parse atom line, expected at least 5 tokens, got %i", (int)num_tok);
@@ -363,11 +364,11 @@ static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffe
 	return true;
 }
 
-static bool parse_bonds(md_lammps_bond_t out_bonds[], size_t bond_cap, md_buffered_reader_t* reader) {
+static bool parse_bonds(md_lammps_bond_t out_bonds[], size_t bond_cap, md_reader_i* reader) {
 	str_t tok[4];
 	str_t line;
 	size_t num_bonds = 0;
-	while (num_bonds < bond_cap && md_buffered_reader_extract_line(&line, reader)) {
+	while (num_bonds < bond_cap && md_reader_extract_line(reader, &line)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 4) {
 			MD_LOG_ERROR("Failed to parse bond line, expected 4 tokens, got %i", (int)num_tok);
@@ -384,11 +385,11 @@ static bool parse_bonds(md_lammps_bond_t out_bonds[], size_t bond_cap, md_buffer
 	return true;
 }
 
-static bool parse_angles(md_lammps_angle_t out_angles[], size_t angle_cap, md_buffered_reader_t* reader) {
+static bool parse_angles(md_lammps_angle_t out_angles[], size_t angle_cap, md_reader_i* reader) {
 	str_t tok[8];
 	str_t line;
 	size_t num_angles = 0;
-	while (num_angles < angle_cap && md_buffered_reader_extract_line(&line, reader)) {
+	while (num_angles < angle_cap && md_reader_extract_line(reader, &line)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 5) {
 			MD_LOG_ERROR("Failed to parse angle line, expected 5 tokens, got %i", (int)num_tok);
@@ -406,11 +407,11 @@ static bool parse_angles(md_lammps_angle_t out_angles[], size_t angle_cap, md_bu
 	return true;
 }
 
-static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedral_cap, md_buffered_reader_t* reader) {
+static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedral_cap, md_reader_i* reader) {
 	str_t tok[8];
 	str_t line;
 	size_t num_dihedrals = 0;
-	while (num_dihedrals < dihedral_cap && md_buffered_reader_extract_line(&line, reader)) {
+	while (num_dihedrals < dihedral_cap && md_reader_extract_line(reader, &line)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 6) {
 			MD_LOG_ERROR("Failed to parse dihedral line, expected 6 tokens, got %i", (int)num_tok);
@@ -429,12 +430,12 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedra
 	return true;
 }
 
-static size_t parse_masses(md_lammps_atom_type_t types[], size_t num_particle_types, md_buffered_reader_t* reader) {
+static size_t parse_masses(md_lammps_atom_type_t types[], size_t num_particle_types, md_reader_i* reader) {
 	str_t tok[4];
 	str_t line;
 	size_t count = 0;
 	for (size_t i = 0; i < num_particle_types; ++i) {
-		if (!md_buffered_reader_extract_line(&line, reader)) {
+		if (!md_reader_extract_line(reader, &line)) {
 			MD_LOG_ERROR("Failed to extract mass line");
 			goto done;
 		}
@@ -520,7 +521,7 @@ static double estimate_radius(str_t style, const double* params, int nparams) {
 	return 0.0; // unknown / unsupported
 }
 
-static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_particle_types, md_buffered_reader_t* reader, str_t hint) {
+static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_particle_types, md_reader_i* reader, str_t hint) {
 	str_t tok[8];
 	double params[8];
 
@@ -535,7 +536,7 @@ static bool parse_pair_coeffs(md_lammps_atom_type_t types[], size_t num_particle
 
 		str_t line;
 		for (size_t i = 0; i < num_particle_types; ++i) {
-			if (md_buffered_reader_extract_line(&line, reader)) {
+			if (md_reader_extract_line(reader, &line)) {
 				size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 
 				int type = (int)parse_int(tok[0]);
@@ -583,7 +584,7 @@ const char** md_lammps_atom_format_strings(void) {
 }
 
 md_lammps_atom_format_t md_lammps_atom_format_from_str(str_t str) {
-	md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+	md_reader_i reader = md_reader_from_str(str);
 	return detect_atom_format(&reader);
 }
 
@@ -596,11 +597,12 @@ md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
 
 	md_temp_scope_t temp = md_temp_begin();
 	const size_t cap = MEGABYTES(1);
-	char* buf = md_temp_alloc(temp, cap);
 
-	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-	md_lammps_atom_format_t format = detect_atom_format(&reader);
+	md_file_reader_t reader;
+	md_file_reader_init(&reader, file, cap, md_temp_allocator(temp));
+	md_lammps_atom_format_t format = detect_atom_format(&reader.r);
 
+	md_file_reader_close(&reader);
 	md_temp_end(temp);
 	md_file_close(&file);
 
@@ -613,7 +615,7 @@ static int compare_atom(const void* a, const void* b) {
 	return atom_a->id - atom_b->id;
 }
 
-static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* reader, const char* format, struct md_allocator_i* alloc) {
+static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, const char* format, struct md_allocator_i* alloc) {
 	ASSERT(data);
 	ASSERT(reader);
 	ASSERT(alloc);
@@ -627,7 +629,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	}
 
 	// Read the title of the file
-	if (!md_buffered_reader_extract_line(&line, reader)) {
+	if (!md_reader_extract_line(reader, &line)) {
 		MD_LOG_ERROR("Failed to parse lammps title");
 		return false;
 	}
@@ -637,14 +639,14 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
 	// Parse headers and sections
-	while (md_buffered_reader_extract_line(&line, reader)) {
+	while (md_reader_extract_line(reader, &line)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok > 0 && str_eq(tok[0], STR_LIT("Atoms"))) {
 			if (!data->num_atoms) {
 				MD_LOG_ERROR("Encountered Atom entries, but number of atoms was not set or zero");
 				return false;
 			}
-			md_buffered_reader_skip_line(reader);
+			md_reader_skip_line(reader);
 			md_array_resize(data->atoms, data->num_atoms, alloc);
 			if (!parse_atoms(data->atoms, data->num_atoms, reader, mappings)) {
 				return false;
@@ -656,7 +658,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				MD_LOG_ERROR("Encountered Bond entries, but number of bonds was not set or zero");
 				return false;
 			}
-			md_buffered_reader_skip_line(reader);
+			md_reader_skip_line(reader);
 			md_array_resize(data->bonds, data->num_bonds, alloc);
 			if (!parse_bonds(data->bonds, data->num_bonds, reader)) {
 				return false;
@@ -666,7 +668,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				MD_LOG_ERROR("Encountered Angle entries, but number of angles was not set or zero");
 				return false;
 			}
-			md_buffered_reader_skip_line(reader);
+			md_reader_skip_line(reader);
 			md_array_resize(data->angles, data->num_angles, alloc);
 			if (!parse_angles(data->angles, data->num_angles, reader)) {
 				return false;
@@ -676,7 +678,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				MD_LOG_ERROR("Encountered Dihedral entries, but number of dihedrals was not set or zero");
 				return false;
 			}
-			md_buffered_reader_skip_line(reader);
+			md_reader_skip_line(reader);
 			md_array_resize(data->dihedrals, data->num_dihedrals, alloc);
 			if (!parse_dihedrals(data->dihedrals, data->num_dihedrals, reader)) {
 				return false;
@@ -686,7 +688,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				MD_LOG_ERROR("Encountered Impropers entries, but number of impropers was not set or zero");
 				return false;
 			}
-			md_buffered_reader_skip_line(reader);
+			md_reader_skip_line(reader);
 			md_array_resize(data->impropers, data->num_impropers, alloc);
 			if (!parse_dihedrals(data->impropers, data->num_impropers, reader)) {
 				return false;
@@ -702,7 +704,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				MEMSET(data->particle_types, 0, md_array_bytes(data->particle_types));
 			}
 			
-			md_buffered_reader_skip_line(reader);
+			md_reader_skip_line(reader);
 			if (parse_masses(data->particle_types, data->num_particle_types, reader) != data->num_particle_types) {
 				MD_LOG_ERROR("Number of entries in Masses section did not match the number of atom types");
 				return false;
@@ -729,7 +731,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				hint = str_from_cstr(buf);
 			}
 
-			md_buffered_reader_skip_line(reader);
+			md_reader_skip_line(reader);
 			if (!parse_pair_coeffs(data->particle_types, data->num_particle_types, reader, hint)) {
 				return false;
 			}
@@ -801,7 +803,7 @@ bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* for
 	ASSERT(data);
 	ASSERT(alloc);
 
-	md_buffered_reader_t line_reader = md_buffered_reader_from_str(str);
+	md_reader_i line_reader = md_reader_from_str(str);
 	return md_lammps_data_parse(data, &line_reader, format, alloc);
 }
 
@@ -811,11 +813,12 @@ bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const cha
 	if (md_file_open(&file, filename, MD_FILE_READ)) {
 		const size_t cap = MEGABYTES(1);
 		md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-		char* buf = md_temp_alloc(temp_scope, cap);
 
-		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
-		result = md_lammps_data_parse(data, &line_reader, format, alloc);
+		md_file_reader_t line_reader;
+		md_file_reader_init(&line_reader, file, cap, md_temp_allocator(temp_scope));
+		result = md_lammps_data_parse(data, &line_reader.r, format, alloc);
 
+		md_file_reader_close(&line_reader);
 		md_temp_end(temp_scope);
 		md_file_close(&file);
 	}
@@ -1120,11 +1123,11 @@ typedef struct {
 	box_bounds_t box_bounds;
 } header_t;
 
-static bool parse_box_bounds(box_bounds_t* box_bounds, md_buffered_reader_t* reader) {
+static bool parse_box_bounds(box_bounds_t* box_bounds, md_reader_i* reader) {
 	ASSERT(reader);
 	str_t line;
 
-	if (!md_buffered_reader_extract_line(&line, reader)) {
+	if (!md_reader_extract_line(reader, &line)) {
 		MD_LOG_ERROR("Could not extract box bounds");
 		return false;
 	}
@@ -1145,7 +1148,7 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_buffered_reader_t* rea
 	str_t tokens[4];
 	double values[3][3] = {0};
 	for (size_t i = 0; i < 3; ++i) {
-		if (!md_buffered_reader_extract_line(&line, reader)) {
+		if (!md_reader_extract_line(reader, &line)) {
 			MD_LOG_ERROR("Failed to extract box bounds");
 			return false;
 		}
@@ -1166,18 +1169,18 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_buffered_reader_t* rea
 	return true;
 }
 
-static bool parse_header(header_t* header, md_buffered_reader_t* reader) {
+static bool parse_header(header_t* header, md_reader_i* reader) {
 	ASSERT(reader);
 	str_t line;
 
-	if (!md_buffered_reader_peek_line(&line, reader) ||
+	if (!md_reader_peek_line(reader, &line) ||
 		!str_eq_cstr_n(line, "ITEM: TIMESTEP", 14))
 	{
 		return false;
 	}
 
-	md_buffered_reader_skip_line(reader);
-	if (md_buffered_reader_extract_line(&line, reader)) {
+	md_reader_skip_line(reader);
+	if (md_reader_extract_line(reader, &line)) {
 		if (header) {
 			header->timestep = parse_int(line);
 		} else if (!is_int(line)) {
@@ -1189,10 +1192,10 @@ static bool parse_header(header_t* header, md_buffered_reader_t* reader) {
 		return false;
 	}
 
-	if (md_buffered_reader_peek_line(&line, reader) &&
+	if (md_reader_peek_line(reader, &line) &&
 		str_eq_cstr_n(line, "ITEM: NUMBER OF ATOMS", 21) &&
-		md_buffered_reader_skip_line(reader) &&
-		md_buffered_reader_extract_line(&line, reader))
+		md_reader_skip_line(reader) &&
+		md_reader_extract_line(reader, &line))
 	{
 		if (header) {
 			header->num_atoms = parse_int(line);
@@ -1205,7 +1208,7 @@ static bool parse_header(header_t* header, md_buffered_reader_t* reader) {
 		return false;
 	}
 
-	if (md_buffered_reader_peek_line(&line, reader) &&
+	if (md_reader_peek_line(reader, &line) &&
 		str_eq_cstr_n(line, "ITEM: BOX BOUNDS", 16))
 	{
 		if (!parse_box_bounds(header ? &header->box_bounds : NULL, reader)) {
@@ -1332,7 +1335,7 @@ static bool lammps_decode_frame_text(const coord_mappings_t* mappings, str_t str
 	str_t tokens[32];
 	const bool output_coords = out_x != NULL && out_y != NULL && out_z != NULL;
 
-	md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+	md_reader_i reader = md_reader_from_str(str);
 	str_t line;
 
 	header_t header;
@@ -1357,7 +1360,7 @@ static bool lammps_decode_frame_text(const coord_mappings_t* mappings, str_t str
 	}
 
 	if (output_coords) {
-		if (!md_buffered_reader_extract_line(&line, &reader) || !str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
+		if (!md_reader_extract_line(&reader, &line) || !str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
 			MD_LOG_ERROR("Expected ITEM: ATOMS after header");
 			goto done;
 		}
@@ -1369,7 +1372,7 @@ static bool lammps_decode_frame_text(const coord_mappings_t* mappings, str_t str
 		md_temp_scope_t temp_scope = md_temp_begin();
 		id_xyz_t* id_xyz = md_temp_alloc_array(temp_scope, id_xyz_t, header.num_atoms);
 
-		while (md_buffered_reader_extract_line(&line, &reader) && line_count < header.num_atoms) {
+		while (md_reader_extract_line(&reader, &line) && line_count < header.num_atoms) {
 			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 			if (num_tokens != expected_num_tokens) {
 				MD_LOG_ERROR("Unexpected number of tokens in ITEM: ATOMS line, got %zu, expected %zu", num_tokens, expected_num_tokens);
@@ -1434,7 +1437,7 @@ done:
 }
 
 // Parse and validate the trajectory data and record offsets into the file for each frame
-static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
+static bool lammps_trajectory_parse(lammps_cache_t* cache, md_reader_i* reader, struct md_allocator_i* alloc) {
 	ASSERT(reader);
 	ASSERT(alloc);
 	str_t line;
@@ -1443,8 +1446,8 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 	size_t num_frames = 0;
 	coord_mappings_t mappings = {0};
 
-	while (md_buffered_reader_peek_line(&line, reader)) {
-		const int64_t offset = md_buffered_reader_tellg(reader);
+	while (md_reader_peek_line(reader, &line)) {
+		const int64_t offset = md_reader_tell(reader);
 		header_t header;
 		if (!parse_header(&header, reader)) {
 			break;
@@ -1457,7 +1460,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 			return false;
 		}
 
-		if (!md_buffered_reader_peek_line(&line, reader) ||
+		if (!md_reader_peek_line(reader, &line) ||
 			!str_eq_cstr_n(line, "ITEM: ATOMS", 11)) {
 			MD_LOG_ERROR("Expected ITEM: ATOMS after header");
 			return false;
@@ -1472,11 +1475,11 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 		}
 
 		// Skip ITEM: ATOMS line
-		md_buffered_reader_skip_line(reader);
+		md_reader_skip_line(reader);
 
 		// In theory, we could just skip the lines, but we want to validate something in the atom coordinate section
 		for (size_t i = 0; i < header.num_atoms; ++i) {
-			if (!md_buffered_reader_extract_line(&line, reader)) {
+			if (!md_reader_extract_line(reader, &line)) {
 				MD_LOG_ERROR("Could not extract atom line");
 				return false;
 			}
@@ -1508,7 +1511,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 	cache->coord_mappings = mappings;
 	//We add the end of the file to frame_offsets, so frame_offset size = num_frames + 1
 
-	const int64_t end_of_file = md_buffered_reader_tellg(reader);
+	const int64_t end_of_file = md_reader_tell(reader);
 	md_array_push(cache->frame_offsets, end_of_file, alloc);
 
 	return true;
@@ -1522,11 +1525,12 @@ static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, 
 		// Clear of what alloc was made from, not of alloc itself: an arena on a temp allocator would
 		// otherwise be rewound with the scratch.
 		md_temp_scope_t temp_scope = md_temp_begin_avoid(avoid);
-		char* buf = md_temp_alloc(temp_scope, cap);
 
-		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
-		result = lammps_trajectory_parse(cache, &line_reader, alloc);
+		md_file_reader_t line_reader;
+		md_file_reader_init(&line_reader, file, cap, md_temp_allocator(temp_scope));
+		result = lammps_trajectory_parse(cache, &line_reader.r, alloc);
 
+		md_file_reader_close(&line_reader);
 		md_temp_end(temp_scope);
 		md_file_close(&file);
 	}

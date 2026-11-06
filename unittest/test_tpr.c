@@ -57,32 +57,32 @@ UTEST(xdr, cursor) {
 
 // Checks the system built from a tpr against the .gro gmx writes from the same file
 static void compare_with_gro(int* utest_result, const md_system_t* sys, const md_system_state_t* state, str_t gro_path) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    md_gro_data_t gro = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro, gro_path, alloc));
-    ASSERT_EQ(gro.num_atoms, sys->atom.count);
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    md_system_t gro = { .alloc = alloc };
+    md_system_state_t gro_st = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_st, gro_path, NULL));
+    ASSERT_EQ(gro.atom.count, sys->atom.count);
 
-    size_t res = 0;
+    size_t res = 0, gro_res = 0;
     size_t res_mismatch = 0, coord_mismatch = 0;
     for (size_t i = 0; i < sys->atom.count; ++i) {
         while (res + 1 < sys->residue.count && sys->residue.atom_offset[res + 1] <= i) res++;
-        const md_gro_atom_t* a = &gro.atom_data[i];
-        str_t res_name = str_from_cstrn(a->res_name, sizeof(a->res_name));
-        if (!str_eq(md_system_residue_name(sys, res), res_name) || sys->residue.seq_id[res] != a->res_id) {
+        while (gro_res + 1 < gro.residue.count && gro.residue.atom_offset[gro_res + 1] <= i) gro_res++;
+        if (!str_eq(md_system_residue_name(sys, res), md_system_residue_name(&gro, gro_res)) || sys->residue.seq_id[res] != gro.residue.seq_id[gro_res]) {
             res_mismatch += 1;
         }
         // A .gro has three decimals in nm
-        if (fabsf(state->xyz[i].x - a->x * 10.0f) > 0.006f || fabsf(state->xyz[i].y - a->y * 10.0f) > 0.006f || fabsf(state->xyz[i].z - a->z * 10.0f) > 0.006f) {
+        if (fabsf(state->xyz[i].x - gro_st.xyz[i].x) > 0.006f || fabsf(state->xyz[i].y - gro_st.xyz[i].y) > 0.006f || fabsf(state->xyz[i].z - gro_st.xyz[i].z) > 0.006f) {
             coord_mismatch += 1;
         }
     }
     EXPECT_EQ(0u, res_mismatch);
     EXPECT_EQ(0u, coord_mismatch);
-    EXPECT_NEAR(gro.box[0][0] * 10.0f, (float)state->unitcell.x, 0.006f);
-    EXPECT_NEAR(gro.box[1][1] * 10.0f, (float)state->unitcell.y, 0.006f);
-    EXPECT_NEAR(gro.box[2][2] * 10.0f, (float)state->unitcell.z, 0.006f);
+    EXPECT_NEAR(gro_st.unitcell.x, state->unitcell.x, 0.006);
+    EXPECT_NEAR(gro_st.unitcell.y, state->unitcell.y, 0.006);
+    EXPECT_NEAR(gro_st.unitcell.z, state->unitcell.z, 0.006);
 
-    md_gro_data_free(&gro, alloc);
+    md_vm_arena_destroy(alloc);
 }
 
 UTEST(tpr, parse_tip3p) {
@@ -173,7 +173,7 @@ UTEST(tpr, system_tip3p) {
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "peptide_tip3p.gro"));
 
     // What a caller does next: everything but the bonds is derived. One structure per molecule.
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
     EXPECT_EQ(1u + 509u + 4u, md_system_molecule_count(&sys));
 
@@ -223,7 +223,7 @@ UTEST(tpr, virtual_sites) {
     }
 
     // The site still belongs to its water's structure: one per molecule
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
     EXPECT_EQ(1u + 506u + 4u, md_system_molecule_count(&sys));
 
     compare_with_gro(utest_result, &sys, &state, STR_LIT(TPR_DIR "peptide_tip4p.gro"));
@@ -407,7 +407,7 @@ UTEST(tpr, martini) {
     {
         md_system_t gro = { .alloc = arena };
         md_system_state_t gro_state = { .alloc = arena };
-        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(TPR_DIR "martini3.gro")));
+        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, STR_LIT(TPR_DIR "martini3.gro"), NULL));
         for (size_t i = 0; i < 8; ++i) {
             EXPECT_EQ(md_atom_mass(&sys.atom, i), md_atom_mass(&gro.atom, i));
             EXPECT_NEAR(md_atom_radius(&sys.atom, i), md_atom_radius(&gro.atom, i), 0.01f);
@@ -418,7 +418,7 @@ UTEST(tpr, martini) {
     }
 
     // One structure per molecule: the peptide, two lipids, four ions, 583 waters
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
     EXPECT_EQ(1u + 2u + 4u + 583u, md_system_molecule_count(&sys));
 
     md_arena_allocator_destroy(arena);
@@ -683,14 +683,14 @@ UTEST(tpr, elastic_bonds) {
     }
 
     // Structures, rings and chemistry go by the molecules alone
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
-    md_util_system_infer(&base, &base_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
+    md_util_system_infer(&base, &base_state, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
     EXPECT_EQ(md_system_molecule_count(&base), md_system_molecule_count(&sys));
     EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));
     EXPECT_EQ(2u, count_elastic(&sys));
 
     // Inferring the bonds anew keeps the elastic bonds: nothing infers them
-    md_util_system_infer_covalent_bonds(&sys, &state);
+    md_util_system_infer_covalent_bonds(&sys, &state, NULL);
     EXPECT_EQ(2u, count_elastic(&sys));
 
     md_arena_allocator_destroy(arena);

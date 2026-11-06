@@ -865,8 +865,11 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         md_system_topology_changed(sys);
     }
 
-    // ## Charge and mass
+    // ## Charge and mass, replacing what an earlier topology (or the structure file) published: a column that is
+    // there already is not created again
     if (sys->attributes.alloc) {
+        md_attributes_remove_prefix(&sys->attributes, STR_LIT("atom/charge"));
+        md_attributes_remove_prefix(&sys->attributes, STR_LIT("atom/mass"));
         md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/charge"), md_unit_elementary_charge(), 1, charge, atom_count);
         md_attributes_publish_atom_column(&sys->attributes, STR_LIT("atom/mass"),   md_unit_dalton(),            1, mass,   atom_count);
     }
@@ -1022,7 +1025,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
 
     // ## Derived topology: the parts (and the chains) from the units and the bonds, the molecules and the rings, and the
     // backbones, which name their parts, from the coordinates the system was inferred from
-    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT);
+    md_util_system_infer(sys, &sys->reference, MD_UTIL_INFER_PART_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_BACKBONE_BIT, NULL);
     // The lipids follow from the bonds, and the kinds of the residues from the lipids
     md_util_system_infer_lipids(sys);
     md_util_system_infer_residue_types(sys);

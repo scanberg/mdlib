@@ -32,7 +32,7 @@ static const struct { size_t frame; double sum[3]; double first[3]; } trr_vel_re
 static bool trr_load(md_system_t* sys, md_allocator_i* arena) {
     sys->alloc = arena;
     md_system_state_t sys_state = {.alloc = arena};
-    return md_gro_system_init_from_file(sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")) &&
+    return md_gro_system_init_from_file(sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL) &&
         md_trr_system_publish_run(sys, TRR_FILE, TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE);
 }
 
@@ -116,7 +116,7 @@ UTEST(trr, run_refuses_a_different_system) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL));
     EXPECT_FALSE(md_trr_system_publish_run(&sys, TRR_FILE, TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     EXPECT_EQ(0u, run_num_frames(&sys, TRR_RUN));
     md_system_free(&sys);
@@ -263,4 +263,9 @@ UTEST(trr, run_publishes_sections_at_their_own_times) {
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
     remove(path.ptr);
+}
+
+UTEST(trr, atom_count_from_the_first_frame) {
+    EXPECT_EQ(6495u, md_trr_file_atom_count(TRR_FILE));
+    EXPECT_EQ(0u, md_trr_file_atom_count(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
 }

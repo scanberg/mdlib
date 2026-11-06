@@ -1244,7 +1244,7 @@ UTEST(gto_int, benchmark) {
     const size_t num_mo = md_qm_density_orbitals(&rows, &w, &num_ao, &t.sys, STR_LIT("orbital/total/density"), md_get_heap_allocator());
     ASSERT_TRUE(num_mo > 0 && num_ao == md_gto_basis_num_ao(&basis));
     double* D = (double*)malloc(sizeof(double) * num_ao * num_ao);
-    ASSERT_TRUE(md_gto_density_from_orbitals(D, rows, num_ao, 1, w, num_mo, num_ao));
+    ASSERT_TRUE(md_gto_density_from_orbitals(D, rows, num_ao, 1, w, num_mo, num_ao, NULL));
     printf("\n  md_gto_int far field %s\n  device: %s | %s: %zu atoms, %zu AOs (loaded, and D, in %.1f s)\n",
            MD_GTO_INT_FAR_FIELD_REVISION, dinfo.name, file, na, num_ao, md_tick_to_seconds(md_tick_now() - t0));
 

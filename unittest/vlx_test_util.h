@@ -21,7 +21,7 @@ typedef qm_test_t vlx_test_t;
 // Parses 'filename' into a fresh system. Returns false exactly when the reader declines the file.
 static inline bool vlx_test_load(vlx_test_t* out, str_t filename, size_t arena_bytes) {
     qm_test_init(out, arena_bytes);
-    return md_vlx_system_init_from_file(&out->sys, &out->state, filename);
+    return md_vlx_system_init_from_file(&out->sys, &out->state, filename, NULL);
 }
 
 // The frontier orbital, derived from the published occupations by the SAME rule the reader used

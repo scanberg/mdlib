@@ -1,0 +1,107 @@
+module 0..473
+  expr 0..25
+    string """A module docstring.""" 0..25
+  assign 26..59
+    tuple 26..30
+      name a 26..27
+      name b 29..30
+    call 33..59
+      name common 33..39
+      name res_a 40..45
+      name rb 47..49
+      kwarg 51..58
+        name by 51..53
+        string 'id' 54..58
+  assign 60..69
+    name x 60..61
+    name y 64..65
+    int 0 68..69
+  augassign += 70..76
+    name x 70..71
+    int 1 75..76
+  augassign -= 78..84
+    name y 78..79
+    int 2 83..84
+  def 86..472
+    name contacts 90..98
+    params 98..137
+      param 99..105
+        name r 99..100
+        name set 102..105
+        -
+      param 107..115
+        name lig 107..110
+        name set 112..115
+        -
+      param 117..136
+        name cutoff 117..123
+        name float 125..130
+        float 4.0 133..136
+    name int 141..144
+    block 150..472
+      expr 150..190
+        string """Particle pairs closer than cutoff.""" 150..190
+      def 195..231
+        name step 199..203
+        params 203..209
+          param 204..205
+            name s 204..205
+            -
+            -
+          param 207..208
+            name v 207..208
+            -
+            -
+        -
+        block 219..231
+          return 219..231
+            binary + 226..231
+              name s 226..227
+              name v 230..231
+      assert 236..282
+        compare 243..255
+          name cutoff 243..249
+          cmpop > 250..251
+          float 0.0 252..255
+        string "cutoff must be positive" 257..282
+      for 287..399
+        tuple 291..295
+          name i 291..292
+          name j 294..295
+        call 299..310
+          name zip 299..302
+          name r 303..304
+          name lig 306..309
+        block 320..399
+          if 320..399
+            name i 323..324
+            block 338..346
+              continue 338..346
+            if 355..399
+              name j 360..361
+              block 363..368
+                break 363..368
+              block 395..399
+                pass 395..399
+      return 404..472
+        call 411..472
+          name sum 411..414
+          compare 415..471
+            call 415..462
+              name distance 415..423
+              subscript 424..445
+                call 424..436
+                  name positions 424..433
+                  name r 434..435
+                tuple 437..444
+                  slice 437..438
+                    -
+                    -
+                    -
+                  const None 440..444
+              call 447..461
+                name positions 447..456
+                name lig 457..460
+            cmpop < 463..464
+            name cutoff 465..471
+--- diagnostics

@@ -1,0 +1,64 @@
+def distance(a, b=None, between=None):
+    if b is None:
+        # One argument: two points stacked along its last dimension, as angle and dihedral take them
+        p = a.xyz
+        assert shape(p)[-2] == 2, "distance takes two points, or one array of them, float[2][3] or set[2] of single particles"
+        r = norm(displacement(p[..., 0, :], p[..., 1, :]))
+        return shown(r, line(p[..., 0, :], p[..., 1, :], label=r))
+    if between is None:
+        r = norm(displacement(a, b))
+        return shown(r, line(a, b, label=r))
+    return _between(a, b, between)
+
+def _between(a: group, b: group, op):
+    assert op in ('closest', 'farthest'), "between= takes 'closest' or 'farthest'"
+    pa = a.xyz                                   # one group each; maps over arrays of groups
+    pb = b.xyz
+    d, i, j = closest_pair(pa, pb) if op == 'closest' else farthest_pair(pa, pb)   # i and j only when drawn
+    return shown(d, line(pa[i], pb[j], label=d))
+
+def centroid(s):
+    return com(s, weights=None)
+
+def gyration(p: points, weights='mass'):
+    assert weights in ('mass', None), "weights= takes 'mass' or None"
+    w = mass(particle(p)) if weights == 'mass' else ones(shape(p)[0])
+    c = com(p, weights)
+    r = norm(displacement(c, p))                 # minimum image from a periodic-aware centre
+    rg = sqrt(sum(w * r**2) / sum(w))
+    return shown(rg, sphere(c, rg))
+
+def normal(p: points):
+    c = com(p, weights=None)
+    d = displacement(c, p)                       # float[n][3]
+    w, v = eigh(d.T @ d)                         # eigenvalues ascending
+    n = v[:, 0]                                  # the direction of least spread
+    return shown(n, arrow(c, direction=n, length=5.0))
+
+def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
+    assert weights in ('mass', None), "weights= takes 'mass' or None"
+    q = fit(p, ref, on=on, weights=weights) if superpose else p
+    d2 = norm(q - ref)**2
+    # Equal weights are a mean, which needs no extent known when compiling: a group a def maps over has none
+    return sqrt(sum(mass(particle(q)) * d2) / sum(mass(particle(q)))) if weights == 'mass' else sqrt(mean(d2))
+
+def previous(x, n=1):
+    def step(s, v):
+        return concatenate((s[1:], v[None]))
+    h = fold(step, x, init=[x for _ in range(n + 1)], skip=False)
+    return missing_where(frame() < n, h[0])
+
+def cumulative(x, op='sum'):
+    assert op in ('sum', 'min', 'max'), "op= takes 'sum', 'min' or 'max'"
+    def step(s, v):
+        if op == 'max':
+            return max(s, v)
+        if op == 'min':
+            return min(s, v)
+        return s + v
+    return fold(step, x, init=zeros_like(x) if op == 'sum' else x)
+
+def ema(x, alpha):
+    def step(s, v):
+        return s + alpha * (v - s)
+    return fold(step, x, init=x)

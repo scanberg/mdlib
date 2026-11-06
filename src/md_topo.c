@@ -6,6 +6,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_grid.h>
 #include <core/md_array.h>
+#include <core/md_executor.h>
 
 #include <float.h>
 
@@ -1105,7 +1106,6 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 #define CPG_NV      20              // centre values: orders 0..3
 #define CPG_NDV     20              // D-products: orders 0..3
 #define CPG_MAXPRIM 64
-#define CPG_MAX_THREADS 64
 #define CPG_SEP_EXTRA 2             // exact centre terms per 1D factor beyond each remainder's order (cpg_shell_rem)
 #define CPG_SEP_A   (4 + CPG_SEP_EXTRA + 1)  // 1D derivative orders 0 .. 4 + CPG_SEP_EXTRA
 #define CPG_CHUNK   32              // cubes per work chunk
@@ -2213,29 +2213,13 @@ typedef struct cpg_rootrec_t {
     cpg_cp_t cp;
 } cpg_rootrec_t;
 
-// Work items handed out one at a time, in order, to whichever worker asks next: for jobs whose items
-// differ a lot in cost and are few (separatrices, polish). Every result is written to the item's own
-// slot, so which thread takes which item changes nothing.
-typedef struct cpg_queue_t {
-    md_mutex_t mutex;
-    int        next;
-    int        count;
-} cpg_queue_t;
-
-static int cpg_queue_pop(cpg_queue_t* q) {
-    md_mutex_lock(&q->mutex);
-    const int i = q->next < q->count ? q->next++ : -1;
-    md_mutex_unlock(&q->mutex);
-    return i;
-}
-
 typedef struct cpg_polish_t {
     int      r;                         // cpg_polish_root's result
     cpg_cp_t cp;
 } cpg_polish_t;
 
-// desc->progress. Written by the calling thread only (worker 0 runs on it), so it never goes back. The
-// run gives each part of the search (setup, sweep, polish, separatrices) a span of [0, 1] ending where
+// desc->progress. Written by one thread at a time (cpg_run_progress_add holds a lock in a loop), so it never goes
+// back. The run gives each part of the search (setup, sweep, polish, separatrices) a span of [0, 1] ending where
 // the next part begins; a part maps its own fraction onto what is left of its span.
 typedef struct cpg_progress_t {
     volatile float* out;
@@ -2277,21 +2261,19 @@ static double cpg_subtree_size(double h) {
     return k < 0 ? s[0] * pow(3.5, (double)-k) : k > 9 ? 1.0 : s[k];
 }
 
+// What a loop of the run uses on one thread: one per thread_idx of the executor (md_executor.h), its scratch and
+// its counts its own, the rest the same in all of them.
 typedef struct cpg_worker_t {
     const cpg_ctx_t* ctx;
     cpg_scratch_t sc;
-    int tid, nthreads;
     int job;                            // 0: cube sweep, 1: separatrices, 2: polish
     volatile int32_t* cancel;
-    cpg_progress_t* prog;               // worker 0 only: reports (prog_base + its position) / prog_total
-    double prog_base, prog_total;
-    cpg_queue_t* queue;                 // jobs 1, 2 and 3
     // sweep
     const cpg_box_t* boxes;
     size_t nboxes;
     uint32_t* kind;                     // one slot per cube, written by exactly one worker
     double h_min;
-    md_array(cpg_rootrec_t) roots;      // this worker's certified roots
+    md_array(cpg_rootrec_t) roots;      // the certified roots of the cubes this thread took, sorted after the loop
     uint64_t inflated;
     // separatrices: item t traces path traces[t] % 2 of saddle saddles[traces[t] / 2]
     const cpg_cp_t* cps;
@@ -2397,61 +2379,44 @@ static int cpg_process_box(cpg_worker_t* w, const cpg_box_t* box, cpg_cp_t* out_
     return children ? (int)(CPG_SPLIT | (children << 8)) : CPG_DISCARD_CHILDREN;
 }
 
-static void cpg_worker_entry(void* data) {
-    cpg_worker_t* w = (cpg_worker_t*)data;
-    md_allocator_i* heap = md_get_heap_allocator();
+// Item i of the loop the worker is set up for, on the calling thread. Returns the units of progress it was: cubes
+// for the sweep, items for the others; 0 when it was cancelled before it began.
+static uint32_t cpg_worker_item(cpg_worker_t* w, uint32_t i) {
+    if (w->cancel && *w->cancel) return 0;
     if (w->job == 0) {
-        // fixed interleaved chunks: the result of every cube is independent of which thread computed it
-        for (size_t chunk = (size_t)w->tid; chunk * CPG_CHUNK < w->nboxes; chunk += (size_t)w->nthreads) {
-            if (w->cancel && *w->cancel) return;
-            const size_t end = (chunk + 1) * CPG_CHUNK < w->nboxes ? (chunk + 1) * CPG_CHUNK : w->nboxes;
-            for (size_t bi = chunk * CPG_CHUNK; bi < end; ++bi) {
-                cpg_rootrec_t rec;
-                const int k = cpg_process_box(w, &w->boxes[bi], &rec.cp);
-                w->kind[bi] = (uint32_t)k;
-                if (CPG_KIND(k) == CPG_ROOT) { rec.box = bi; md_array_push(w->roots, rec, heap); }
-            }
-            // the workers take the chunks in turn, so worker 0's position is about everyone's
-            cpg_progress_set(w->prog, (w->prog_base + (double)end) / w->prog_total);
+        // a chunk of cubes: the result of every cube is independent of which thread computed it
+        md_allocator_i* heap = md_get_heap_allocator();
+        const size_t beg = (size_t)i * CPG_CHUNK;
+        const size_t end = beg + CPG_CHUNK < w->nboxes ? beg + CPG_CHUNK : w->nboxes;
+        for (size_t bi = beg; bi < end; ++bi) {
+            cpg_rootrec_t rec;
+            const int k = cpg_process_box(w, &w->boxes[bi], &rec.cp);
+            w->kind[bi] = (uint32_t)k;
+            if (CPG_KIND(k) == CPG_ROOT) { rec.box = bi; md_array_push(w->roots, rec, heap); }
         }
+        return (uint32_t)(end - beg);
     } else if (w->job == 1) {
-        for (int t; (t = cpg_queue_pop(w->queue)) >= 0; ) {
-            if (w->cancel && *w->cancel) return;
-            cpg_progress_set(w->prog, (w->prog_base + (double)t) / w->prog_total);
-            const int i = w->traces[t] / 2, e = w->traces[t] % 2;
-            const cpg_cp_t* cp = &w->cps[w->saddles[i]];
-            const bool bcp = cp->type == MD_TOPO_SPLIT_SADDLE;
-            const int col = bcp ? 2 : 0;                    // the unique eigen-direction
-            const double sign = bcp ? 1.0 : -1.0;           // ascend to maxima / descend to minima
-            const int target = bcp ? MD_TOPO_MAXIMUM : MD_TOPO_MINIMUM;
-            double dir[3];
-            for (int k = 0; k < 3; ++k) dir[k] = (e ? -1.0 : 1.0) * cp->evec[k][col];
-            const uint64_t e0 = w->sc.trace_evals, a0 = w->sc.trace_aos, b0 = w->sc.trace_block_aos;
-            w->ends[2 * i + e] = cpg_trace(w->ctx, &w->sc, cp->x, dir, sign, w->cps, w->ncp, target, bcp ? w->sep_rho_hi : w->sep_rho_lo);
-            const uint64_t ne = w->sc.trace_evals - e0;
-            w->sep_evals += ne;
-            w->sep_aos += w->sc.trace_aos - a0;
-            w->sep_block_aos += w->sc.trace_block_aos - b0;
-            if (ne > w->sep_max_evals) w->sep_max_evals = (uint32_t)MIN(ne, UINT32_MAX);
-            if (w->ends[2 * i + e] < 0) w->sep_open++;
-        }
+        const int t = (int)i;
+        const int s = w->traces[t] / 2, e = w->traces[t] % 2;
+        const cpg_cp_t* cp = &w->cps[w->saddles[s]];
+        const bool bcp = cp->type == MD_TOPO_SPLIT_SADDLE;
+        const int col = bcp ? 2 : 0;                    // the unique eigen-direction
+        const double sign = bcp ? 1.0 : -1.0;           // ascend to maxima / descend to minima
+        const int target = bcp ? MD_TOPO_MAXIMUM : MD_TOPO_MINIMUM;
+        double dir[3];
+        for (int k = 0; k < 3; ++k) dir[k] = (e ? -1.0 : 1.0) * cp->evec[k][col];
+        const uint64_t e0 = w->sc.trace_evals, a0 = w->sc.trace_aos, b0 = w->sc.trace_block_aos;
+        w->ends[2 * s + e] = cpg_trace(w->ctx, &w->sc, cp->x, dir, sign, w->cps, w->ncp, target, bcp ? w->sep_rho_hi : w->sep_rho_lo);
+        const uint64_t ne = w->sc.trace_evals - e0;
+        w->sep_evals += ne;
+        w->sep_aos += w->sc.trace_aos - a0;
+        w->sep_block_aos += w->sc.trace_block_aos - b0;
+        if (ne > w->sep_max_evals) w->sep_max_evals = (uint32_t)MIN(ne, UINT32_MAX);
+        if (w->ends[2 * s + e] < 0) w->sep_open++;
+        return 1;
     } else {
-        for (int t; (t = cpg_queue_pop(w->queue)) >= 0; ) {
-            if (w->cancel && *w->cancel) return;
-            cpg_progress_set(w->prog, (w->prog_base + (double)t) / w->prog_total);
-            w->pres[t].r = cpg_polish_root(w->ctx, &w->sc, &w->pboxes[t], &w->pres[t].cp);
-        }
-    }
-}
-
-// Runs every worker; worker 0 on the calling thread. A worker whose thread cannot be created runs inline.
-static void cpg_run_workers(cpg_worker_t* workers, int n) {
-    md_thread_t* th[CPG_MAX_THREADS] = {0};
-    for (int t = 1; t < n; ++t) th[t] = md_thread_create(cpg_worker_entry, &workers[t]);
-    cpg_worker_entry(&workers[0]);
-    for (int t = 1; t < n; ++t) {
-        if (th[t]) md_thread_join(th[t]);
-        else cpg_worker_entry(&workers[t]);
+        w->pres[i].r = cpg_polish_root(w->ctx, &w->sc, &w->pboxes[i], &w->pres[i].cp);
+        return 1;
     }
 }
 
@@ -2498,8 +2463,11 @@ typedef struct cpg_run_t {
     const md_topo_gto_desc_t* desc;
     md_allocator_i*           heap;
     cpg_ctx_t*                ctx;
-    cpg_worker_t*             workers;
-    int                       nthreads;
+    cpg_worker_t*             workers;      // one per thread_idx of the executor
+    int                       nthreads;     // its number of thread_idx
+    md_mutex_t                prog_mutex;   // over prog, while a loop runs
+    volatile uint64_t         prog_done;    // the units of the loop under way done: (prog_base + done) / prog_total
+    double                    prog_base, prog_total;
     double                    h_min;
     bool                      ok;
     md_array(cpg_cp_t)        cps;
@@ -2514,6 +2482,32 @@ typedef struct cpg_run_t {
     cpg_progress_t            prog;
     md_topo_gto_info_t        info;
 } cpg_run_t;
+
+// A piece of the loop under way, on one of the executor's threads: the worker of its thread_idx
+static void cpg_run_piece(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+    cpg_run_t* R = (cpg_run_t*)arg;
+    ASSERT((int)thread_idx < R->nthreads);
+    cpg_worker_t* w = &R->workers[thread_idx];
+    for (uint32_t i = beg; i < end; ++i) {
+        const uint32_t units = cpg_worker_item(w, i);
+        if (!units) return;     // cancelled
+        const uint64_t done = md_atomic_fetch_add64(&R->prog_done, units) + units;
+        // whoever gets the lock: a count missed now is in the next one
+        if (R->prog.out && md_mutex_try_lock(&R->prog_mutex)) {
+            cpg_progress_set(&R->prog, (R->prog_base + (double)done) / R->prog_total);
+            md_mutex_unlock(&R->prog_mutex);
+        }
+    }
+}
+
+// Items [0, count) of the job the workers are set up for, over the executor. Progress from base to total (in the
+// units cpg_worker_item counts).
+static void cpg_run_loop(cpg_run_t* R, uint32_t count, double prog_base, double prog_total) {
+    R->prog_done = 0;
+    R->prog_base = prog_base;
+    R->prog_total = MAX(prog_total, 1.0);
+    if (!md_parallel_for(R->desc->executor, count, 1, cpg_run_piece, R)) R->info.cancelled = true;
+}
 
 static bool cpg_run_cancelled(cpg_run_t* R) {
     if (R->desc->cancel && *R->desc->cancel) R->info.cancelled = true;
@@ -2579,13 +2573,9 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     const double h_root = desc->h_root > 0.0 ? desc->h_root : 1.0;
     const size_t stride = desc->atom_xyz_stride ? desc->atom_xyz_stride : sizeof(float) * 3;
 
-    int nthreads = (int)desc->num_threads;
-    if (nthreads <= 0) {
-        md_os_sys_info_t si = {0};
-        nthreads = md_os_sys_info_query(&si) && si.num_virtual_cores > 0 ? si.num_virtual_cores : 1;
-    }
-    if (nthreads > CPG_MAX_THREADS) nthreads = CPG_MAX_THREADS;
+    const int nthreads = (int)md_executor_num_threads(desc->executor);
     R->nthreads = nthreads;
+    md_mutex_init(&R->prog_mutex);
     R->info.num_threads = (uint32_t)nthreads;
 
     // --- basis -> shells / AOs (double precision copies)
@@ -2630,10 +2620,7 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     MEMSET(R->workers, 0, sizeof(cpg_worker_t) * nthreads);
     for (int t = 0; t < nthreads; ++t) {
         R->workers[t].ctx = ctx;
-        R->workers[t].tid = t;
-        R->workers[t].nthreads = nthreads;
         R->workers[t].cancel = desc->cancel;
-        R->workers[t].prog = t == 0 ? &R->prog : NULL;
         R->workers[t].h_min = R->h_min;
         cpg_scratch_alloc(&R->workers[t].sc, N, NS, heap);
     }
@@ -2932,8 +2919,7 @@ static void cpg_run_sweep_cpu(cpg_run_t* R) {
             if (R->cur[bi].h != h_prev) { h_prev = R->cur[bi].h; s = cpg_subtree_size(h_prev); }
             ahead += s;
         }
-        workers[0].prog_base = done;
-        workers[0].prog_total = done + MAX(ahead, (double)nb);
+        const double total = done + MAX(ahead, (double)nb);
         for (int t = 0; t < nthreads; ++t) {
             workers[t].job = 0;
             workers[t].boxes = R->cur;
@@ -2941,10 +2927,10 @@ static void cpg_run_sweep_cpu(cpg_run_t* R) {
             workers[t].kind = R->kind;
             md_array_shrink(workers[t].roots, 0);
         }
-        cpg_run_workers(workers, nthreads);
+        cpg_run_loop(R, (uint32_t)((nb + CPG_CHUNK - 1) / CPG_CHUNK), done, total);
         if (cpg_run_cancelled(R)) break;
         done += (double)nb;
-        cpg_progress_set(&R->prog, done / workers[0].prog_total);
+        cpg_progress_set(&R->prog, done / total);
 
         // roots, in cube order, deduplicated against everything accepted so far
         md_array_shrink(R->roots, 0);
@@ -3053,27 +3039,23 @@ static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md
                 info->separatrices_on_gpu = true;
             }
 #endif
-            cpg_queue_t queue = { .next = 0, .count = (int)md_array_size(cpu_traces) };
-            md_mutex_init(&queue.mutex);       // in place: a CRITICAL_SECTION or pthread mutex must not be copied
+            const uint32_t num_cpu_traces = (uint32_t)md_array_size(cpu_traces);
             for (int t = 0; t < nthreads; ++t) {
                 workers[t].job = 1;
-                workers[t].queue = &queue;
                 workers[t].cps = cps;
                 workers[t].ncp = ncp;
                 workers[t].saddles = saddles;
                 workers[t].traces = cpu_traces;
                 workers[t].ends = ends;
             }
-            workers[0].prog_base = (double)(md_array_size(traces) - md_array_size(cpu_traces));   // the GPU's are done
-            workers[0].prog_total = (double)md_array_size(traces);
             for (int t = 0; t < nthreads; ++t) {
                 workers[t].sep_evals = workers[t].sep_aos = workers[t].sep_block_aos = 0;
                 workers[t].sep_max_evals = workers[t].sep_open = 0;
                 workers[t].sep_rho_lo = rho_lo * (1.0 - 1e-6);
                 workers[t].sep_rho_hi = rho_hi * (1.0 + 1e-6);
             }
-            if (queue.count > 0) cpg_run_workers(workers, MIN(nthreads, queue.count));
-            md_mutex_destroy(&queue.mutex);
+            // the GPU's are done
+            if (num_cpu_traces > 0) cpg_run_loop(R, num_cpu_traces, (double)(md_array_size(traces) - num_cpu_traces), (double)md_array_size(traces));
             md_array_free(rest, heap);
 #if MD_ENABLE_GPU
             if (R->gpu) cpg_gpu_keep_free(R);     // its memory is not needed past here
@@ -3193,6 +3175,7 @@ static void cpg_run_free(cpg_run_t* R) {
         cpg_scratch_free(&R->workers[t].sc, N, ctx->nshell, heap);
     }
     md_free(heap, R->workers, sizeof(cpg_worker_t) * R->nthreads);
+    md_mutex_destroy(&R->prog_mutex);
     md_array_free(R->roots, heap);
     md_array_free(R->kind, heap);
     md_array_free(R->cps, heap);
@@ -3958,19 +3941,13 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         const md_tick_t tp = md_tick_now();
         cpg_polish_t* pres = (cpg_polish_t*)md_alloc(heap, sizeof(cpg_polish_t) * npr);
         for (size_t i = 0; i < npr; ++i) pres[i].r = -1;   // left so if cancelled: the CPU takes the cube
-        cpg_queue_t queue = { .next = 0, .count = (int)npr };
-        md_mutex_init(&queue.mutex);
         cpg_progress_begin(&R->prog, CPG_PROGRESS_POLISH);
-        R->workers[0].prog_base = 0.0;
-        R->workers[0].prog_total = (double)npr;
         for (int t = 0; t < R->nthreads; ++t) {
             R->workers[t].job = 2;
-            R->workers[t].queue = &queue;
             R->workers[t].pboxes = proots;
             R->workers[t].pres = pres;
         }
-        cpg_run_workers(R->workers, (int)MIN((size_t)R->nthreads, npr));
-        md_mutex_destroy(&queue.mutex);
+        cpg_run_loop(R, (uint32_t)npr, 0.0, (double)npr);
         for (size_t i = 0; i < npr; ++i) {
             if (pres[i].r == 1) cpg_run_accept(R, &pres[i].cp);
             else if (pres[i].r < 0) md_array_push(esc, proots[i], heap);   // Newton failed despite the certificate

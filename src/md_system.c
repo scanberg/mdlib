@@ -1,6 +1,7 @@
 ﻿#include <md_system.h>
 #include "md_attributes_internal.h"
 #include <md_nonbonded.h>
+#include "md_system_fields.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -610,6 +611,57 @@ void md_lipid_data_free(md_lipid_data_t* lipid, md_allocator_i* alloc) {
     md_array_free(lipid->tail.kind, alloc);
     MEMSET(lipid, 0, sizeof(md_lipid_data_t));
 }
+
+// ### COPY ###
+
+#define COPY_ARRAY(dst, src, alloc) do { (dst) = NULL; if (md_array_size(src)) md_array_push_array((dst), (src), md_array_size(src), (alloc)); } while (0)
+
+static void copy_strings(str_t** dst, const str_t* src, md_allocator_i* alloc) {
+    *dst = NULL;
+    const size_t n = md_array_size(src);
+    if (!n) return;
+    md_array_resize(*dst, n, alloc);
+    for (size_t i = 0; i < n; ++i) (*dst)[i] = str_empty(src[i]) ? (str_t){0} : str_copy(src[i], alloc);
+}
+
+bool md_system_copy(md_system_t* dst, const md_system_t* src) {
+    ASSERT(dst);
+    ASSERT(src);
+    if (dst == src) return true;
+    if (!dst->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+    md_allocator_i* alloc = dst->alloc;
+    md_system_free(dst);
+
+    // The counts and everything which is not an array, as they are; the arrays below anew
+    *dst = *src;
+    dst->alloc = alloc;
+    dst->nonbonded = NULL;
+    MEMSET(&dst->attributes, 0, sizeof(dst->attributes));
+    dst->attributes.alloc = alloc;
+    dst->description = str_empty(src->description) ? (str_t){0} : str_copy(src->description, alloc);
+
+    // Every array, CORE and DERIVED (md_system_fields.h)
+#define COPY_FIELD(f) COPY_ARRAY(dst->f, src->f, alloc);
+#define COPY_STRINGS(f) copy_strings(&dst->f, src->f, alloc);
+    MD_SYSTEM_CORE_ARRAYS(COPY_FIELD)
+    MD_SYSTEM_DERIVED_ARRAYS(COPY_FIELD)
+    MD_SYSTEM_DERIVED_STRINGS(COPY_STRINGS)
+#undef COPY_FIELD
+#undef COPY_STRINGS
+
+    // REFERENCE STATE
+    MEMSET(&dst->reference, 0, sizeof(dst->reference));
+    if (src->reference.xyz || src->reference.num_atoms) {
+        dst->reference.alloc = alloc;
+        md_system_state_copy(&dst->reference, &src->reference);
+    }
+    return true;
+}
+
+#undef COPY_ARRAY
 
 void md_system_reset(md_system_t* sys) {
     ASSERT(sys);

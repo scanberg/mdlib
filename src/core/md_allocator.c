@@ -254,6 +254,35 @@ void md_temp_end(md_temp_scope_t temp) {
     md_vm_arena_set_pos_back(temp.arena, temp.pos);
 }
 
+md_temp_mark_t md_temp_mark(md_temp_scope_t temp) {
+    ASSERT(temp.arena);
+    md_temp_mark_t mark = { md_vm_arena_get_pos(temp.arena) };
+    return mark;
+}
+
+void md_temp_reset(md_temp_scope_t temp, md_temp_mark_t mark) {
+    ASSERT(temp.arena);
+    if (mark.pos < temp.pos) {
+        MD_LOG_ERROR("A temporary scope is reset to a mark before its own beginning");
+        ASSERT(false);
+        return;
+    }
+#if DEBUG
+    thread_local_data_t* thread_data = thread_local_data_get();
+    if (thread_data && thread_data->depth > 0) {
+        const md_temp_scope_t active = thread_data->scope_stack[thread_data->depth - 1];
+        if (active.arena != temp.arena || active.pos != temp.pos) {
+            MD_LOG_ERROR("Only the innermost temporary scope is reset to a mark: the scopes begun after it end first");
+            ASSERT(false);
+            return;
+        }
+    }
+#endif
+    if (mark.pos <= md_vm_arena_get_pos(temp.arena)) {
+        md_vm_arena_set_pos_back(temp.arena, mark.pos);
+    }
+}
+
 void md_temp_trim(void) {
     thread_local_data_t* thread_data = _thread_local_data;
     if (!thread_data) return;

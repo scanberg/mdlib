@@ -202,10 +202,18 @@ str_t str_printf(struct md_allocator_i* alloc, const char* format, ...) {
 
 // c:/folder/file.ext -> ext
 bool extract_ext(str_t* ext, str_t path) {
+    // The last '.' of the file name, not of the path: "/data/run.1/mdout" has no extension
+    size_t name_beg = 0;
+    for (size_t i = path.len; i > 0; --i) {
+        if (path.ptr[i - 1] == '/' || path.ptr[i - 1] == '\\') {
+            name_beg = i;
+            break;
+        }
+    }
     size_t loc;
-    if (str_rfind_char(&loc, path, '.')) {
+    if (str_rfind_char(&loc, str_substr(path, name_beg, SIZE_MAX), '.')) {
         if (ext) {
-            loc += 1; // skip '.'
+            loc += name_beg + 1; // skip '.'
             ext->ptr = path.ptr + loc;
             ext->len = path.len - loc;
         }

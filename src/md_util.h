@@ -8,6 +8,7 @@
 #include <core/md_hash.h>
 
 struct md_allocator_i;
+struct md_executor_t;
 struct md_bitset_t;
 struct md_bitmask_t;
 
@@ -22,6 +23,7 @@ typedef enum {
     MD_UTIL_INFER_PART_BIT            = 1u << 3,     // The chains and the parts with their types (md_util_system_infer_chains, _parts)
     MD_UTIL_INFER_BACKBONE_BIT        = 1u << 4,
     MD_UTIL_INFER_MOLECULE_BIT        = 1u << 5,
+    MD_UTIL_INFER_RESIDUE_BIT         = 1u << 6,     // The kinds of the residues and the roles of their atoms (md_util_system_infer_residue_flags), after the bonds which tell them
 	//MD_UTIL_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
 	MD_UTIL_INFER_UNWRAP_MOLECULE_BIT = 1u << 7,
     MD_UTIL_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
@@ -83,10 +85,12 @@ bool md_util_system_infer_residue_flags(md_system_t* sys);
 bool md_util_system_infer_lipids(md_system_t* sys);
 
 // Instances from the chain ids of the residues, for a format which gives a chain id per residue and no units of its
-// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id. A run without an
-// id is an instance of no id (the instances are back to back). Replaces the instances of the system. The instances are
-// what the data gives (md_instance_data_t): where it gives no chain ids at all the system has none.
-bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[]);
+// own (a PDB file): one instance per run of consecutive residues of the same id, its auth_id the id, and a new one
+// where res_unit_begins says the data ends one before the residue (a TER record of a PDB file), whatever the ids: two
+// chains of one id in a row are two (NULL: by the ids alone). A run without an id is an instance of no id (the
+// instances are back to back). Replaces the instances of the system. The instances are what the data gives
+// (md_instance_data_t): where it gives no chain ids at all the system has none.
+bool md_util_system_instances_from_chain_ids(md_system_t* sys, const str_t res_chain_id[], const bool res_unit_begins[]);
 
 // The chains of the system (sys->chain, see md_chain_data_t) from the author ids of its instances: one per id. A system
 // without ids has no chains. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT) and by the loaders which give the
@@ -103,6 +107,14 @@ bool md_util_system_infer_chains(md_system_t* sys);
 // A given type of unknown kind is classified from its first part. Done by md_util_system_infer (MD_UTIL_INFER_PART_BIT,
 // after the bonds); whatever changes the instances, the bonds or the kinds calls it after.
 bool md_util_system_infer_parts(md_system_t* sys);
+
+// The backbones of the system (sys->protein_backbone, sys->nucleic_backbone, see md_protein_backbone_data_t and
+// md_nucleic_backbone_data_t), found anew: consecutive ranges of at least 3 residues along each strand of a polymer
+// (the peptide and nucleic acid parts), atomistic or coarse grained, ending where the chain breaks (CHAIN BREAKS), whose
+// residues it marks MD_RESIDUE_FLAG_BREAK_AFTER and _BEFORE (cleared first). A system without residues has its
+// backbones found from the covalent bonds alone. state gives the coordinates the links over a gap are measured by (NULL, or none: by consecutive sequence numbers).
+// Done by md_util_system_infer (MD_UTIL_INFER_BACKBONE_BIT, after the parts); requires the parts, and the bonds.
+bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* state);
 
 // The residue types of the system (sys->residue.type, see md_residue_type_data_t): one per name and kind of
 // residue, with the standard monomer it is a form of (md_monomer_from_residue_name) and a default color: that of the
@@ -184,14 +196,15 @@ bool md_util_state_backbone_compute(md_system_state_t* state, const struct md_sy
 // Martini topologies are: a residue whose beads are those of a residue of the Martini force fields has the bonds of its
 // topology, any other amino acid or nucleotide a minimum spanning tree of its beads with its rings. The backbone bead of
 // each residue is bonded to that of the next unless the numbering starts over, and cysteines are bridged (see
-// infer_coarse_grained_bonds in md_util.c).
-void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc);
+// infer_coarse_grained_bonds in md_util.c). The pairs within reach are found on the threads of the executor (NULL: the
+// calling thread), and the bonds come out the same whatever the threads.
+void md_util_infer_covalent_bonds(md_bond_data_t* out_bond, const md_system_state_t* state, const md_system_t* sys, struct md_allocator_i* alloc, const struct md_executor_t* executor);
 
 // Infers the covalent bonds of the system (md_util_infer_covalent_bonds) anew. The bonds a user added by hand and those
 // the file gives (MD_BOND_ORIGIN_FILE: the CONECT records of a PDB file) are kept, and so are the non-covalent bonds:
 // all other bonds of the graph are replaced, as are the metallic bonds. The atoms of the metallic bonds are marked
 // MD_ATOM_FLAG_METALLIC, and only they.
-void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state);
+void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state_t* state, const struct md_executor_t* executor);
 
 // Marks every bond between a metal and a non-metal MD_BOND_KIND_COORDINATE, whatever its origin, unless its kind was
 // given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_util_system_infer does it for each system; a bond
@@ -298,7 +311,9 @@ md_particle_type_idx_t md_util_particle_type_find_or_add(md_system_t* sys, md_ha
 // residue named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
 // the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
 // one label with a different element, mass, size or particle kind are of different types.
-void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[]);
+void md_util_system_infer_particle_types(md_system_t* sys, const str_t atom_labels[], const struct md_executor_t* ex);
+// The same, with the labels as labels (8 characters): what a loader keeps per atom at half the size of a string.
+void md_util_system_infer_particle_types_from_labels(md_system_t* sys, const md_label_t atom_labels[], const struct md_executor_t* ex);
 
 // Applies the predefined particle type tables (coarse grained beads) to atoms that already have a type,
 // for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
@@ -317,7 +332,39 @@ void md_util_system_augment_particle_types(md_system_t* sys);
 // reference is by construction the input which produced the topology. Requires coordinates for
 // anything geometric; a state without them (a topology only format such as PSF) still yields the
 // purely graph derived parts, provided the bonds were supplied by the format.
-bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags);
+//
+// The phases run one after the other, each on the threads of the executor where it spreads its work (NULL: the calling
+// thread); the result is the same whatever the threads.
+bool md_util_system_infer(struct md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags, const struct md_executor_t* executor);
+
+// INFERENCE WHILE THE SYSTEM IS IN USE. Inference reads the CORE of a system (the atoms, their types, the residues, the
+// instances, the assemblies) and writes the rest, the DERIVED (md_system_fields.h). So a system can be shown and used
+// while it is inferred on another thread, without a copy of it:
+//
+//   md_util_system_infer_prepare     The work: of the system, what inference writes, copied into alloc; the coordinates
+//                                    in state, which become its reference; the per atom arrays of the core shared. On
+//                                    the thread which owns the system.
+//   md_util_system_infer_run         Inference on the work: on any thread, while the system is read (and its core
+//                                    is not written: what changes the topology waits for the work, or discards it).
+//                                    All but MD_UTIL_INFER_COLOR_BIT, which is of the types of the atoms: the system
+//                                    is given its colors before, md_util_system_infer with that bit alone.
+//   md_util_system_infer_publish     The derived arrays of the work become the system's, which keeps its core, its
+//                                    attributes and its force field. On the thread which owns the system, nothing
+//                                    else reading it. False, and nothing done, when the topology of the system changed
+//                                    after the work was prepared: the work is of a system which is no more.
+//
+// The arrays of the work are in alloc, which the caller keeps with the system once published (they become the system's)
+// and frees otherwise (the work is never md_system_free'd: it shares arrays of the system). The types of the atoms are
+// copied too (a few per system), so that the system's may be changed meanwhile (their colors, their radii): they stay
+// the system's when published.
+typedef struct md_util_infer_work_t {
+    struct md_system_t sys;     // Inferred on: md_util_system_infer_run
+    uint64_t base_version;      // The topology version of the system it was prepared of
+} md_util_infer_work_t;
+
+bool md_util_system_infer_prepare(md_util_infer_work_t* work, const struct md_system_t* sys, const md_system_state_t* state, struct md_allocator_i* alloc);
+bool md_util_system_infer_run(md_util_infer_work_t* work, md_infer_flags_t flags, const struct md_executor_t* executor);
+bool md_util_system_infer_publish(struct md_system_t* sys, md_util_infer_work_t* work);
 
 
 // Computes an array of distances between two sets of coordinates in a periodic domain (cell)
@@ -344,6 +391,14 @@ void md_util_max_distance_groups(float* out_dist, int64_t* out_idx_a, int64_t* o
 // left unwritten (for the maximum also when it is 0).
 float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+
+// Every pair whose distance is within tol of the minimum (maximum), in one pass with the same culling: for a caller
+// which computes the distances another way, where they may differ from these by some ulps, and wants the extreme by
+// its own. Up to cap pairs are written, as indices into coord_a and coord_b, in no particular order. Returns how many
+// there are, or more than cap when they do not all fit (the ones written are then only some of them); 0 when a or b
+// is empty.
+size_t md_util_min_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
+size_t md_util_max_distance_near(int64_t* out_idx_a, int64_t* out_idx_b, size_t cap, float tol, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell);
 
 void md_util_min_image_vec3(vec3_t* in_out_dx, size_t count, const md_unitcell_t* cell);
 void md_util_min_image_vec4(vec4_t* in_out_dx, size_t count, const md_unitcell_t* cell);

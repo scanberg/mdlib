@@ -735,6 +735,8 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 	// one for the QM region - components cover every atom or none.
 	ASSERT_EQ(1u + 50u, t.sys.residue.count);
 	EXPECT_VALID_SYSTEM(&t.sys);
+	// What the fragments are is inferred from their atoms and bonds, as for a structure file
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT, NULL));
 	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 0), STR_LIT("QM")));
 	EXPECT_EQ(0, md_system_residue_find_by_atom_idx(&t.sys, 0));
 	EXPECT_EQ(1, md_system_residue_find_by_atom_idx(&t.sys, num_qm));
@@ -791,7 +793,7 @@ UTEST(vlx, pe_environment_becomes_atoms_of_the_system) {
 
 	// And what an application infers from that once it is loaded: every water a part of its own, the QM region one
 	// more. The file gives no units: no instances.
-	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL, NULL));
 	EXPECT_VALID_SYSTEM(&t.sys);
 	EXPECT_EQ(0u, t.sys.instance.count);
 	EXPECT_EQ(1u + 50u, t.sys.part.count);
@@ -852,6 +854,7 @@ UTEST(vlx, pe_environment_by_file_name_in_atomic_units) {
 
 	ASSERT_EQ(3u, t.sys.residue.count);
 	EXPECT_VALID_SYSTEM(&t.sys);
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_RESIDUE_BIT, NULL));
 	EXPECT_TRUE(str_eq(md_system_residue_name(&t.sys, 1), STR_LIT("NA")));
 	EXPECT_EQ(4, md_system_residue_seq_id(&t.sys, 1));
 	EXPECT_EQ(MD_RESIDUE_KIND_ION, md_system_residue_kind(&t.sys, 1));
@@ -1057,7 +1060,7 @@ UTEST(vlx, pe_fragments_follow_their_numbers) {
 	EXPECT_NEAR(6.0, a[15], 1e-12);
 
 	// What viamd infers from it: the three residues one peptide, with one backbone through them all
-	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL));
+	ASSERT_TRUE(md_util_system_infer(&t.sys, &t.state, MD_UTIL_INFER_ALL, NULL));
 	EXPECT_VALID_SYSTEM(&t.sys);
 	const md_part_idx_t part = md_system_part_find_by_residue_idx(&t.sys, 1);
 	ASSERT_TRUE(part >= 0);
@@ -1138,7 +1141,7 @@ UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
 
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, STR_LIT(VLX_PE_DIR "h2o.h5"), MEGABYTES(64));
-	const bool supplemented = loaded && md_vlx_system_supplement_from_file(&t.sys, h5);
+	const bool supplemented = loaded && md_vlx_system_supplement_from_file(&t.sys, h5, NULL);
 	remove(h5.ptr);
 
 	EXPECT_TRUE(supplemented);
@@ -1483,11 +1486,11 @@ static bool vlx_test_write_density_property_h5(str_t dst, vlx_test_density_file_
 // or not symmetric; *out_n receives N.
 static float* vlx_test_packed(size_t* out_n, const vlx_test_t* t, str_t path) {
 	const md_attribute_t* attr = qm_test_attr(t, path);
-	const size_t n = md_qm_extract_packed_symmetric_f32(NULL, 0, attr, md_attribute_slice_all());
+	const size_t n = md_qm_extract_packed_symmetric_f32(NULL, 0, attr, md_attribute_slice_all(), NULL);
 	if (n == 0) return NULL;
 	const size_t len = n * (n + 1) / 2;
 	float* dst = (float*)md_alloc(t->alloc, sizeof(float) * len);
-	if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, md_attribute_slice_all()) != n) return NULL;
+	if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, md_attribute_slice_all(), NULL) != n) return NULL;
 	*out_n = n;
 	return dst;
 }
@@ -1524,7 +1527,7 @@ UTEST(vlx, density_property_is_read_from_the_file) {
 	ASSERT_TRUE(packed != NULL);
 	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n);
 	double full[VLX_TEST_H2O_NUM_CART * VLX_TEST_H2O_NUM_CART];
-	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, ARRAY_SIZE(full), attr, md_attribute_slice_all()));
+	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, ARRAY_SIZE(full), attr, md_attribute_slice_all(), NULL));
 	size_t k = 0;
 	double max_diff = 0.0;
 	for (size_t i = 0; i < n; ++i) {
@@ -1537,7 +1540,7 @@ UTEST(vlx, density_property_is_read_from_the_file) {
 
 	// Gone with its file
 	remove(h5.ptr);
-	EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f32(packed, n * (n + 1) / 2, attr, md_attribute_slice_all()));
+	EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f32(packed, n * (n + 1) / 2, attr, md_attribute_slice_all(), NULL));
 
 	qm_test_free(&t);
 }
@@ -1686,7 +1689,7 @@ UTEST(vlx, density_property_refuses_a_different_calculation) {
 	// Padded as well, so the change is seen by size even where the file system keeps coarse times
 	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){ .padding = true, .move_atom = true }));
 	const md_attribute_t* attr = qm_test_attr(&t, STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	const size_t got = md_qm_extract_packed_symmetric_f32(before, n * (n + 1) / 2, attr, md_attribute_slice_all());
+	const size_t got = md_qm_extract_packed_symmetric_f32(before, n * (n + 1) / 2, attr, md_attribute_slice_all(), NULL);
 	remove(h5.ptr);
 	EXPECT_EQ(0u, got);
 

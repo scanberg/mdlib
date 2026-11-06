@@ -1,0 +1,17 @@
+"""A module docstring."""
+a, b = common(res_a, rb, by='id')
+x = y = 0
+x += 1; y -= 2
+
+def contacts(r: set, lig: set, cutoff: float = 4.0) -> int:
+    """Particle pairs closer than cutoff."""
+    def step(s, v):
+        return s + v
+    assert cutoff > 0.0, "cutoff must be positive"
+    for i, j in zip(r, lig):
+        if i:
+            continue
+        elif j: break
+        else:
+            pass
+    return sum(distance(positions(r)[:, None], positions(lig)) < cutoff)

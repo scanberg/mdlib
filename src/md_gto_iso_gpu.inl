@@ -8,12 +8,14 @@
 // counts, the vertex count, the final counts with the mesh), and once per flood round.
 // md_gto_iso_gpu_evaluate_launch runs the same vertex evaluators on the caller's points (at the end).
 
+#include <core/md_allocator.h>
+
 #include <core/md_intrinsics.h>
 #include <core/md_gpu.h>
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r37 (the vertex evaluators at arbitrary points: md_gto_iso_gpu_evaluate; r36: the D form in tiles of the AO pairs that meet, built on the device)"
+#define ISOG_REVISION "r38 (a set's own evaluation cutoff: md_gto_iso_gpu_set_cutoff; r37: the vertex evaluators at arbitrary points, md_gto_iso_gpu_evaluate)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -130,6 +132,12 @@ static int isog_chunks = 0;
 //                             protein of 9636 AOs, and its product C W C^T seconds of the CPU), rather than in tiles
 //                             of the AO pairs that meet (md_gto_gpu_dmat), built on the device (default 1)
 static int isog_dsparse = 1;
+//   GTO_ISO_READBACK_SHORT=1  TEST: the first readback copies no triangles, so that the second one does (default 0)
+static int isog_readback_short = 0;
+//   GTO_ISO_FN_CAP=n          TEST: fewer functions than the factored kernels hold (ISOG_FN_CAP), to exercise the sets
+//                             of the D form only on small systems
+#define ISOG_FN_CAP 1024     // O_FN_CAP in the shader
+static uint32_t isog_fn_cap = ISOG_FN_CAP;
 // The pattern's margin (md_gto_gpu_dmat_desc_t): the AO lists and the pattern take their radii from different
 // bounds; a pair the lists hold and the pattern not is zero in the matrix (both AOs below the cutoff wherever one is)
 #define ISOG_DMAT_MARGIN 1.0
@@ -156,6 +164,11 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_chunks = atoi(e);
     e = getenv("GTO_ISO_DSPARSE");
     if (e && e[0]) isog_dsparse = atoi(e);
+    // Read here, with the others, and not on an extraction's first use: extractions run on any thread
+    isog_readback_short = getenv("GTO_ISO_READBACK_SHORT") != NULL;
+    isog_fn_cap = ISOG_FN_CAP;
+    e = getenv("GTO_ISO_FN_CAP");
+    if (e && atoi(e) > 0 && (uint32_t)atoi(e) < isog_fn_cap) isog_fn_cap = (uint32_t)atoi(e);
 }
 
 // Every kernel is made at once. One a device cannot make (more groupshared memory than it allows, say)
@@ -261,8 +274,6 @@ void md_gto_iso_gpu_shutdown(void) {
 // The field set
 // ---------------------------------------------------------------------------------------------
 
-#define ISOG_FN_CAP 1024     // O_FN_CAP in the shader
-
 struct md_gto_iso_gpu_set_t {
     md_gpu_mem_t shells, prims, crit, ao_nrm, ao_ijk, C, terms, fn_tail, wts, dmat, fdmat, drs, dprop;
     md_gpu_mem_t dm_tao, dm_map, dm_rows;   // dsparse: the pattern the matrices are in (md_gto_gpu_dmat_view)
@@ -288,6 +299,8 @@ struct md_gto_iso_gpu_set_t {
     double*       colsum;           // per function column: sum of |C|
     double*       sh_cmax;          // per shell: the largest |C| of its AOs over the functions (coefficient screening)
     int           screen;           // the radii are coefficient-screened (sets of orbitals)
+    int           eps_own;          // md_gto_iso_gpu_set_cutoff: the set's own cutoff exponent, 0: the switch's
+    int           dm_eps_exp;       // the cutoff the D form's tiles were made for (0: no tiles)
 };
 
 static inline float isog_f32_up(double x);
@@ -306,9 +319,9 @@ static double isog_shell_r2(const md_gto_iso_gpu_set_t* set, uint32_t s, double 
 }
 
 // The matrices' tail constants for the cutoff eps (what the AOs a node drops, each below eps over it,
-// can add; doubled for the float distances that decide it), uploaded
-static void isog_set_dprop(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, double eps) {
-    if (!set->num_dmat || !set->dprop.gpu) return;
+// can add; doubled for the float distances that decide it), uploaded. False when the upload fails.
+static bool isog_set_dprop(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, double eps) {
+    if (!set->num_dmat || !set->dprop.gpu) return true;
     md_gpu_float4 pr[MD_GTO_ISO_GPU_MAX_FIELDS];
     for (uint32_t u = 0; u < set->num_dmat; ++u) {
         pr[u].x = isog_f32_up(4.0 * eps * eps * set->d_sraw[u] * (1.0 + 1.0e-6));
@@ -316,11 +329,13 @@ static void isog_set_dprop(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, do
         pr[u].z = set->d_psd[u] ? 1.0f : 0.0f;
         pr[u].w = set->d_slack[u];
     }
-    md_gpu_upload(stream, set->dprop.gpu, pr, sizeof(md_gpu_float4) * set->num_dmat);
+    return md_gpu_upload(stream, set->dprop.gpu, pr, sizeof(md_gpu_float4) * set->num_dmat);
 }
 
-// The shells' radii and the functions' tails for the cutoff 1e-eps_exp, uploaded
-static void isog_set_eps(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int eps_exp, int screen) {
+// The shells' radii and the functions' tails for the cutoff 1e-eps_exp, uploaded. False when an upload
+// fails: the set's eps_exp and screen are then left as they were, so the next use redoes all of it (the
+// shells' radii on the device may be the new ones meanwhile, which nothing reads before then).
+static bool isog_set_eps(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int eps_exp, int screen) {
     const double eps = pow(10.0, -(double)eps_exp);
     screen = screen && set->orbitals_only && set->sh_cmax;
     for (uint32_t s = 0; s < set->num_shells; ++s) {
@@ -333,70 +348,102 @@ static void isog_set_eps(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int 
             set->prof_shells[s].c.w = -1.0f;    // no coefficient: never listed
         }
     }
-    md_gpu_upload(stream, set->shells.gpu, set->prof_shells, sizeof(isog_shell_t) * set->num_shells);
+    if (!md_gpu_upload(stream, set->shells.gpu, set->prof_shells, sizeof(isog_shell_t) * set->num_shells)) return false;
     // per function: what the shells that do not reach a box can add over it, every AO of theirs being
     // below eps there (screened: every coefficient times its AO), twice that for the float distances
-    // that decide it
-    float* tail = (float*)calloc(set->fn_stride + 1, sizeof(float));
-    for (uint32_t j = 0; j < set->num_fn; ++j) {
-        const double t = screen ? 2.0 * eps * (double)set->num_ao : 2.0 * eps * set->colsum[j];
-        tail[j] = isog_f32_up(t * (1.0 + 1.0e-6));
+    // that decide it. Written in place (the padding columns past num_fn are never read).
+    if (set->num_fn > 0) {
+        float* tail = (float*)md_gpu_upload_begin(stream, set->fn_tail.gpu, sizeof(float) * set->num_fn);
+        if (!tail) return false;
+        for (uint32_t j = 0; j < set->num_fn; ++j) {
+            const double t = screen ? 2.0 * eps * (double)set->num_ao : 2.0 * eps * set->colsum[j];
+            tail[j] = isog_f32_up(t * (1.0 + 1.0e-6));
+        }
+        if (!md_gpu_upload_end(stream)) return false;
     }
-    md_gpu_upload(stream, set->fn_tail.gpu, tail, sizeof(float) * set->fn_stride);
-    free(tail);
-    isog_set_dprop(stream, set, eps);
+    if (!isog_set_dprop(stream, set, eps)) return false;
     set->eps_exp = eps_exp;
     set->screen = screen;
+    return true;
 }
 
 static inline float isog_f32_dn(double x) { float f = (float)x; return (double)f > x ? nextafterf(f, -INFINITY) : f; }
 static inline float isog_f32_up(double x) { float f = (float)x; return (double)f < x ? nextafterf(f,  INFINITY) : f; }
 
-// A density's matrix from its terms, D = sum_t w_t sym(a_t b_t^T), into Dd (num_ao^2): every term as
-// squares (a square as it is, a product as (w/4) ((a + b)^2 - (a - b)^2)) through the blocked product
-// md_gto_density_from_orbitals. An SCF density from its orbitals is num_occ squares, which a plain loop
-// over the terms would take num_occ passes over the whole matrix for. False when out of memory.
-static bool isog_dmat_from_terms(double* Dd, const iso_density_t* d) {
-    const size_t na = (size_t)d->num_ao, nf = (size_t)d->num_fn;
-    bool squares = true;
-    for (int t = 0; t < d->num_terms && squares; ++t) squares = d->terms[t].a == d->terms[t].b;
-    if (squares) {
-        // per function the sum of its terms' weights: the functions are the columns of d->C
-        double* w = (double*)calloc(nf + 1, sizeof(double));
-        if (!w) return false;
-        for (int t = 0; t < d->num_terms; ++t) w[d->terms[t].a] += d->terms[t].w;
-        const bool ok = md_gto_density_from_orbitals(Dd, d->C, 1, nf, w, nf, na);
-        free(w);
-        return ok;
-    }
+// Every term of the density a square (w a^2)
+static bool isog_density_squares(const iso_density_t* d) {
+    for (int t = 0; t < d->num_terms; ++t) if (d->terms[t].a != d->terms[t].b) return false;
+    return true;
+}
+
+// Positive semidefinite: every term a square with w >= 0
+static bool isog_density_psd(const iso_density_t* d) {
+    for (int t = 0; t < d->num_terms; ++t) if (d->terms[t].a != d->terms[t].b || d->terms[t].w < 0.0) return false;
+    return true;
+}
+
+// A density of squares: per function the sum of its terms' weights (the functions are the columns of d->C).
+// In temp; NULL when out of memory.
+static double* isog_density_column_weights(md_temp_scope_t temp, const iso_density_t* d) {
+    double* w = md_temp_alloc_zero_array(temp, double, (size_t)d->num_fn + 1);
+    if (!w) return NULL;
+    for (int t = 0; t < d->num_terms; ++t) w[d->terms[t].a] += d->terms[t].w;
+    return w;
+}
+
+// Any density: its terms as weighted squares of rows over the na AOs, a square as its function's column, a
+// product as (w/4) ((a + b)^2 - (a - b)^2). The rows (na each) and weights in temp; false when out of memory.
+static bool isog_density_square_rows(md_temp_scope_t temp, const iso_density_t* d, size_t na, double** out_rows, double** out_w, size_t* out_nr) {
+    const size_t nf = (size_t)d->num_fn;
     size_t nr = 0;
     for (int t = 0; t < d->num_terms; ++t) nr += d->terms[t].a == d->terms[t].b ? 1 : 2;
-    double* rows = (double*)malloc(sizeof(double) * (nr * na + 1));
-    double* w = (double*)malloc(sizeof(double) * (nr + 1));
-    bool ok = rows && w;
-    if (ok) {
-        size_t r = 0;
-        for (int t = 0; t < d->num_terms; ++t) {
-            const iso_term_t* tm = &d->terms[t];
-            double* p = rows + r * na;
-            if (tm->a == tm->b) {
-                for (size_t i = 0; i < na; ++i) p[i] = d->C[i * nf + (size_t)tm->a];
-                w[r++] = tm->w;
-            } else {
-                double* q = p + na;
-                for (size_t i = 0; i < na; ++i) {
-                    const double ca = d->C[i * nf + (size_t)tm->a], cb = d->C[i * nf + (size_t)tm->b];
-                    p[i] = ca + cb;
-                    q[i] = ca - cb;
-                }
-                w[r++] = 0.25 * tm->w;
-                w[r++] = -0.25 * tm->w;
+    double* rows = md_temp_alloc_array(temp, double, nr * na + 1);
+    double* w    = md_temp_alloc_array(temp, double, nr + 1);
+    if (!rows || !w) return false;
+    size_t r = 0;
+    for (int t = 0; t < d->num_terms; ++t) {
+        const iso_term_t* tm = &d->terms[t];
+        double* p = rows + r * na;
+        if (tm->a == tm->b) {
+            for (size_t i = 0; i < na; ++i) p[i] = d->C[i * nf + (size_t)tm->a];
+            w[r++] = tm->w;
+        } else {
+            double* q = p + na;
+            for (size_t i = 0; i < na; ++i) {
+                const double ca = d->C[i * nf + (size_t)tm->a], cb = d->C[i * nf + (size_t)tm->b];
+                p[i] = ca + cb;
+                q[i] = ca - cb;
             }
+            w[r++] = 0.25 * tm->w;
+            w[r++] = -0.25 * tm->w;
         }
-        ok = md_gto_density_from_orbitals(Dd, rows, na, 1, w, nr, na);
     }
-    free(w);
-    free(rows);
+    *out_rows = rows;
+    *out_w = w;
+    *out_nr = nr;
+    return true;
+}
+
+// A density's matrix from its terms, D = sum_t w_t sym(a_t b_t^T), into Dd (num_ao^2): every term as
+// squares (isog_density_square_rows) through the blocked product md_gto_density_from_orbitals. An SCF
+// density from its orbitals is num_occ squares, which a plain loop over the terms would take num_occ
+// passes over the whole matrix for. False when out of memory.
+//
+// On the calling thread: md_gto_iso_gpu_set_create takes no executor. This is the dense fallback only, for when the
+// tiles cannot be made (isog_dmat_tiles) or GTO_ISO_DSPARSE=0; the tiles are built on the device.
+static bool isog_dmat_from_terms(double* Dd, const iso_density_t* d) {
+    const size_t na = (size_t)d->num_ao, nf = (size_t)d->num_fn;
+    md_temp_scope_t temp = md_temp_begin();
+    bool ok = false;
+    if (isog_density_squares(d)) {
+        const double* w = isog_density_column_weights(temp, d);
+        ok = w && md_gto_density_from_orbitals(Dd, d->C, 1, nf, w, nf, na, NULL);
+    } else {
+        double *rows, *w;
+        size_t nr;
+        ok = isog_density_square_rows(temp, d, na, &rows, &w, &nr) && md_gto_density_from_orbitals(Dd, rows, na, 1, w, nr, na, NULL);
+    }
+    md_temp_end(temp);
     return ok;
 }
 
@@ -434,51 +481,23 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
         if (first_of[k] != (int)k) { fdm[k] = fdm[first_of[k]]; continue; }
         const md_gto_iso_field_t* fk = fields[k];
         const iso_density_t* d = fk->f.dens;
-        bool squares = true;
-        for (int t = 0; t < d->num_terms && squares; ++t) squares = d->terms[t].a == d->terms[t].b;
+        md_temp_scope_t temp = md_temp_begin();     // the build's inputs: md_gto_gpu_dmat_build* consumes them before returning
         if (fk->dmat && fk->dmat_dim == nao) {
-            ok = md_gto_gpu_dmat_set_matrix(stream, dm, fk->dmat);              // the matrix the field was made from
-        } else if (squares) {
-            // per function the sum of its terms' weights: the functions are the columns of d->C
-            double* w = (double*)calloc((size_t)d->num_fn + 1, sizeof(double));
-            ok = w != NULL;
-            for (int t = 0; ok && t < d->num_terms; ++t) w[d->terms[t].a] += d->terms[t].w;
-            ok = ok && md_gto_gpu_dmat_build_columns(stream, dm, d->C, (size_t)d->num_fn, w, (size_t)d->num_fn);
-            free(w);
+            // the matrix the field was made from: floats, which md_gto_gpu_dmat_set_matrix takes as doubles
+            double* Dd = md_temp_alloc_array(temp, double, nao * nao + 1);
+            if (Dd) for (size_t e = 0; e < nao * nao; ++e) Dd[e] = fk->dmat[e];
+            ok = Dd && md_gto_gpu_dmat_set_matrix(stream, dm, Dd);
+        } else if (isog_density_squares(d)) {
+            const double* w = isog_density_column_weights(temp, d);
+            ok = w && md_gto_gpu_dmat_build_columns(stream, dm, d->C, (size_t)d->num_fn, w, (size_t)d->num_fn);
         } else {
-            // a product as (w/4) ((a + b)^2 - (a - b)^2), as isog_dmat_from_terms does
-            size_t nr = 0;
-            for (int t = 0; t < d->num_terms; ++t) nr += d->terms[t].a == d->terms[t].b ? 1 : 2;
-            const size_t nf = (size_t)d->num_fn;
-            double* rows = (double*)malloc(sizeof(double) * (nr * nao + 1));
-            double* w = (double*)malloc(sizeof(double) * (nr + 1));
-            ok = rows && w;
-            size_t r = 0;
-            for (int t = 0; ok && t < d->num_terms; ++t) {
-                const iso_term_t* tm = &d->terms[t];
-                double* p = rows + r * nao;
-                if (tm->a == tm->b) {
-                    for (size_t i = 0; i < nao; ++i) p[i] = d->C[i * nf + (size_t)tm->a];
-                    w[r++] = tm->w;
-                } else {
-                    double* q = p + nao;
-                    for (size_t i = 0; i < nao; ++i) {
-                        const double ca = d->C[i * nf + (size_t)tm->a], cb = d->C[i * nf + (size_t)tm->b];
-                        p[i] = ca + cb;
-                        q[i] = ca - cb;
-                    }
-                    w[r++] = 0.25 * tm->w;
-                    w[r++] = -0.25 * tm->w;
-                }
-            }
-            ok = ok && md_gto_gpu_dmat_build(stream, dm, rows, w, nr);
-            free(rows);
-            free(w);
+            double *rows, *w;
+            size_t nr;
+            ok = isog_density_square_rows(temp, d, nao, &rows, &w, &nr) && md_gto_gpu_dmat_build(stream, dm, rows, w, nr);
         }
+        md_temp_end(temp);
         ok = ok && md_gpu_copy(stream, set->dmat.gpu + sizeof(float) * pool * u, v.tiles, sizeof(float) * pool);
-        bool psd = true;
-        for (int t = 0; t < d->num_terms && psd; ++t) psd = d->terms[t].a == d->terms[t].b && d->terms[t].w >= 0.0;
-        set->d_psd[u] = psd;
+        set->d_psd[u] = isog_density_psd(d);
         set->d_slack[u] = isog_f32_up(d->slack);
         fdm[k] = u++;
     }
@@ -537,81 +556,66 @@ static bool isog_dmat_rows(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream) {
     return ok;
 }
 
-md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-                                                const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc) {
-    if (!stream || !basis || !atom_xyz || !fields || !alloc || num_fields == 0 || num_fields > MD_GTO_ISO_GPU_MAX_FIELDS) {
-        MD_LOG_ERROR("md_gto_iso_gpu_set_create: invalid arguments (1 to %d fields)", MD_GTO_ISO_GPU_MAX_FIELDS);
-        return NULL;
-    }
-    // The kernels with the set, on its thread: the first extraction then costs its own thread nothing for them
-    // (seconds on a CPU device, a fraction of one on most GPUs)
-    if (!isog_kernels_ready()) return NULL;
-    size_t num_atoms;
-    float* xyz = iso_pack_atoms(basis, atom_xyz, atom_xyz_stride, &num_atoms);
-    iso_density_t B = {0};      // the basis as contracted shells, and their radial functions
-    bool ok = iso_density_ao_shells(&B, basis, xyz, NULL);
-    free(xyz);
-    if (!ok) { free(B.ao_shells); MD_LOG_ERROR("md_gto_iso_gpu_set_create: unsupported basis"); return NULL; }
-    iso_radial_init(&B.radial, B.ao_shells, B.num_ao_shells);
-    const uint32_t nao = (uint32_t)B.num_ao;
-
-    // functions: every field's, each field starting at an even index (pairs never straddle a tile).
-    // A field given more than once (one density at several iso values) shares its functions.
-    int first_of[MD_GTO_ISO_GPU_MAX_FIELDS];
-    for (uint32_t k = 0; k < num_fields; ++k) {
-        first_of[k] = (int)k;
-        for (uint32_t j = 0; j < k; ++j) if (fields[j] == fields[k]) { first_of[k] = (int)j; break; }
-    }
-    // a set of orbitals has no pair terms, so its functions need no alignment
-    bool orbitals_only = true;
-    for (uint32_t k = 0; k < num_fields; ++k) orbitals_only &= fields[k] && fields[k]->f.dens == NULL;
-    const uint32_t align = orbitals_only ? 0u : 1u;
-    uint32_t nf = 0;
-    for (uint32_t k = 0; k < num_fields; ++k) {
-        const md_gto_iso_field_t* fk = fields[k];
-        if (!fk) { ok = false; break; }
-        if (first_of[k] != (int)k) continue;
-        const uint32_t n = fk->f.dens ? (uint32_t)fk->f.dens->num_fn : 1u;
-        if ((fk->f.dens ? (uint32_t)fk->f.dens->num_ao : (uint32_t)fk->num_coeff) != nao) { ok = false; break; }
-        nf = (nf + align) & ~align;
-        nf += n;
-    }
-    // the D form (phi^T D phi): every field a density of products (no linear terms), the indices of the
-    // local lists in 16 bits. With more functions than the factored kernels hold, the set has no
-    // functions at all and only the D form runs.
-    bool dform_ok = ok && B.num_ao_shells <= 65535 && nao <= 65535;
-    for (uint32_t k = 0; k < num_fields && dform_ok; ++k) {
-        const iso_density_t* d = fields[k]->f.dens;
-        if (!d) { dform_ok = false; break; }
-        for (int t = 0; t < d->num_terms; ++t) if (d->terms[t].b < 0) dform_ok = false;
-    }
-    // TEST: GTO_ISO_FN_CAP lowers the limit (to exercise the factorless sets on small systems)
-    uint32_t fn_cap = ISOG_FN_CAP;
-    const char* ce = getenv("GTO_ISO_FN_CAP");
-    if (ce && atoi(ce) > 0 && (uint32_t)atoi(ce) < fn_cap) fn_cap = (uint32_t)atoi(ce);
-    const bool factorless = nf > fn_cap && dform_ok;
-    if (!ok || (nf > fn_cap && !factorless)) {
-        md_array_free(B.radial.shells, md_get_heap_allocator()); md_array_free(B.radial.crit, md_get_heap_allocator()); free(B.ao_shells);
-        MD_LOG_ERROR("md_gto_iso_gpu_set_create: fields of a different basis, or more than %d functions in all (and not all densities)", ISOG_FN_CAP);
-        return NULL;
-    }
-    if (factorless) nf = 0;
-    const uint32_t stride = nf > 0 ? ((nf + 63u) / 64u) * 64u : 64u;
-    float* C = (float*)calloc((size_t)nao * stride + 1, sizeof(float));
-    isog_term_t* terms = NULL;
+// The basis as iso_density_ao_shells and iso_radial_init make it (heap arrays)
+static void isog_basis_free(iso_density_t* B) {
     md_allocator_i* heap = md_get_heap_allocator();
+    md_array_free(B->radial.shells, heap);
+    md_array_free(B->radial.crit, heap);
+    free(B->ao_shells);
+    B->ao_shells = NULL;
+}
 
-    md_gto_iso_gpu_set_t* set = (md_gto_iso_gpu_set_t*)md_alloc(alloc, sizeof(md_gto_iso_gpu_set_t));
-    memset(set, 0, sizeof(*set));
-    set->alloc = alloc;
+// The set's arrays, on the host and the device (md_gto_iso_gpu_set_create, which fills in the set's sizes first).
+// NULL, or what failed. The scratch is in temp; what it gives the set is the set's, freed by
+// md_gto_iso_gpu_set_destroy whether the set was made or not.
+static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, md_temp_scope_t temp, const iso_density_t* B,
+                                  const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                  const md_gto_iso_field_t* const* fields, const int* first_of, bool dform_ok) {
+    const uint32_t nao = set->num_ao, nsh = set->num_shells, nf = set->num_fn, stride = set->fn_stride, num_fields = set->num_fields;
+    const bool factorless = set->factorless;
+    const uint32_t align = set->orbitals_only ? 0u : 1u;
+
+    // what the arrays hold: the terms (per distinct field), the primitives and critical intervals (per shell)
+    size_t num_terms = 0, num_prims = 0, num_crit = 0;
+    for (uint32_t k = 0; k < num_fields; ++k) {
+        if (first_of[k] != (int)k) continue;
+        const iso_density_t* d = fields[k]->f.dens;
+        num_terms += !d ? 1 : factorless ? 0 : (size_t)d->num_terms;
+    }
+    for (uint32_t s = 0; s < nsh; ++s) {
+        num_prims += (size_t)B->ao_shells[s].nprim;
+        num_crit  += (size_t)B->radial.shells[s].crit_num[0][0];
+    }
+
+    // kept with the set: isog_set_eps re-derives the shells' radii and the functions' tails from these (and the
+    // profile counts work with the shells)
+    isog_shell_t*  sh = set->prof_shells = (isog_shell_t*)calloc(nsh + 1, sizeof(isog_shell_t));
+    md_gpu_float2* pr = set->host_prims  = (md_gpu_float2*)malloc(sizeof(md_gpu_float2) * (num_prims + 1));
+    set->sh_nmax = (double*)calloc(nsh + 1, sizeof(double));
+    set->sh_amin = (double*)calloc(nsh + 1, sizeof(double));
+    set->colsum  = (double*)calloc(stride + 1, sizeof(double));
+    // scratch for the uploads: C (its padding columns zero: the kernels read whole tiles of 64), the terms, the
+    // weights per field and column, the critical intervals, the AO tables, the first tails
+    float*         C     = md_temp_alloc_zero_array(temp, float, (size_t)nao * stride + 1);
+    isog_term_t*   terms = md_temp_alloc_array(temp, isog_term_t, num_terms + 1);
+    float*         W     = md_temp_alloc_zero_array(temp, float, (size_t)num_fields * 3 * stride + 1);
+    md_gpu_float4* cr    = md_temp_alloc_array(temp, md_gpu_float4, num_crit + 1);
+    float*         nrm   = md_temp_alloc_zero_array(temp, float, (size_t)nao + 1);
+    uint32_t*      ijk   = md_temp_alloc_zero_array(temp, uint32_t, (size_t)nao + 1);
+    float*         tail  = md_temp_alloc_zero_array(temp, float, (size_t)stride + 1);
+    if (!sh || !pr || !set->sh_nmax || !set->sh_amin || !set->colsum || !C || !terms || !W || !cr || !nrm || !ijk || !tail) return "out of memory";
+
+    // functions: every field's, each field starting at an even index (pairs never straddle a tile); a field
+    // given more than once shares its functions
     uint32_t f0 = 0;
-    for (uint32_t k = 0; k < num_fields && ok; ++k) {
+    size_t nt = 0;
+    for (uint32_t k = 0; k < num_fields; ++k) {
         const md_gto_iso_field_t* fk = fields[k];
         set->src[k] = fk;
         set->host[k] = fk->f;
         if (first_of[k] != (int)k) { set->fields[k] = set->fields[first_of[k]]; continue; }
         f0 = (f0 + align) & ~align;
-        set->fields[k].term_off = (uint32_t)md_array_size(terms);
+        set->fields[k].term_off = (uint32_t)nt;
         if (fk->f.dens && factorless) {
             set->fields[k].slack = isog_f32_up(fk->f.dens->slack);    // no functions, no terms
         } else if (fk->f.dens) {
@@ -619,25 +623,24 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
             for (uint32_t i = 0; i < nao; ++i) for (int j = 0; j < d->num_fn; ++j) C[(size_t)i * stride + f0 + j] = (float)d->C[(size_t)i * d->num_fn + j];
             for (int t = 0; t < d->num_terms; ++t) {
                 const iso_term_t* tm = &d->terms[t];
-                isog_term_t g = {(float)tm->w, f0 + (uint32_t)tm->a, tm->b < 0 ? 0xFFFFFFFFu : f0 + (uint32_t)tm->b, 0};
-                if (tm->b >= 0 && (g.a / 64u) != (g.b / 64u)) ok = false;   // the epilogue sees one tile of 64
-                md_array_push(terms, g, heap);
+                const isog_term_t g = {(float)tm->w, f0 + (uint32_t)tm->a, tm->b < 0 ? 0xFFFFFFFFu : f0 + (uint32_t)tm->b, 0};
+                if (tm->b >= 0 && (g.a / 64u) != (g.b / 64u)) return "a pair term spans two tiles of 64 functions";   // the epilogue sees one tile
+                terms[nt++] = g;
             }
             set->fields[k].slack = isog_f32_up(d->slack);
             f0 += (uint32_t)d->num_fn;
         } else {
             for (uint32_t i = 0; i < nao; ++i) C[(size_t)i * stride + f0] = (float)fk->coeff[i];
-            isog_term_t g = {1.0f, f0, 0xFFFFFFFFu, 0};
-            md_array_push(terms, g, heap);
+            terms[nt++] = (isog_term_t){1.0f, f0, 0xFFFFFFFFu, 0};
             f0 += 1u;
         }
-        set->fields[k].term_count = (uint32_t)md_array_size(terms) - set->fields[k].term_off;
+        set->fields[k].term_count = (uint32_t)nt - set->fields[k].term_off;
     }
+    ASSERT(nt == num_terms);
 
     // the terms per field and column, when each is w a, w a^2 or w a b with a even and b = a + 1 (what
     // orbitals, density matrices and products of pairs give): the register-form epilogues' weights
-    bool canon = ok;
-    float* W = (float*)calloc((size_t)num_fields * 3 * stride + 1, sizeof(float));
+    bool canon = true;
     for (uint32_t k = 0; k < num_fields && canon; ++k) {
         float* wl = W + (size_t)k * 3 * stride;
         float* wd = wl + stride;
@@ -652,26 +655,21 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
             else canon = false;
         }
     }
+    set->canon = canon;
 
     // shells, primitives, radial critical intervals (outward rounded), AO tables
-    isog_shell_t* sh = (isog_shell_t*)calloc(B.num_ao_shells + 1, sizeof(isog_shell_t));
-    double* sh_nmax = (double*)calloc(B.num_ao_shells + 1, sizeof(double));
-    double* sh_amin = (double*)calloc(B.num_ao_shells + 1, sizeof(double));
-    md_gpu_float2* pr = NULL;
-    md_gpu_float4* cr = NULL;
-    float*    nrm = (float*)calloc(nao + 1, sizeof(float));
-    uint32_t* ijk = (uint32_t*)calloc(nao + 1, sizeof(uint32_t));
-    for (int s = 0; s < B.num_ao_shells; ++s) {
-        const iso_ao_shell_t* a = &B.ao_shells[s];
-        const iso_shell_t* g = &B.radial.shells[s];
-        if (a->nprim > 64) ok = false;      // the corner and vertex kernels stage at most 64 per shell
+    size_t np = 0, nc = 0;
+    for (uint32_t s = 0; s < nsh; ++s) {
+        const iso_ao_shell_t* a = &B->ao_shells[s];
+        const iso_shell_t* g = &B->radial.shells[s];
+        if (a->nprim > 64) return "a shell of more than 64 primitives";     // the corner and vertex kernels stage at most 64 per shell
         // point values: every AO of the shell below 1e-10 beyond this radius (the corner values only
         // decide on which side of an iso value a corner lies; the bounds do not use it)
         double nmax = 0.0, amin = DBL_MAX;
         for (int n = 0; n < a->ncart; ++n) nmax = fmax(nmax, fabs(a->nrm[n]));
         for (int q = 0; q < a->nprim; ++q) amin = fmin(amin, a->alpha[q]);
-        sh_nmax[s] = nmax;
-        sh_amin[s] = amin;
+        set->sh_nmax[s] = nmax;
+        set->sh_amin[s] = amin;
         double r = sqrt(a->l / (2.0 * amin));
         for (;; r += 0.05) {
             double t = 0.0;
@@ -679,34 +677,36 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
             if (nmax * pow(r, a->l) * t < 1.0e-10) break;
         }
         sh[s].c     = (md_gpu_float4){(float)a->c[0], (float)a->c[1], (float)a->c[2], isog_f32_up(r * r)};
-        sh[s].info  = (md_gpu_uint4){(uint32_t)a->l, (uint32_t)a->ncart, (uint32_t)a->nprim, (uint32_t)md_array_size(pr)};
-        sh[s].info2 = (md_gpu_uint4){(uint32_t)a->ao, (uint32_t)md_array_size(cr), (uint32_t)g->crit_num[0][0], 0};
-        for (int q = 0; q < a->nprim; ++q) { md_gpu_float2 p = {(float)a->alpha[q], (float)a->coef[q]}; md_array_push(pr, p, heap); }
+        sh[s].info  = (md_gpu_uint4){(uint32_t)a->l, (uint32_t)a->ncart, (uint32_t)a->nprim, (uint32_t)np};
+        sh[s].info2 = (md_gpu_uint4){(uint32_t)a->ao, (uint32_t)nc, (uint32_t)g->crit_num[0][0], 0};
+        for (int q = 0; q < a->nprim; ++q) pr[np++] = (md_gpu_float2){(float)a->alpha[q], (float)a->coef[q]};
         for (int k = 0; k < g->crit_num[0][0]; ++k) {
-            const iso_crit_t* c = &B.radial.crit[g->crit_off[0][0] + k];
-            md_gpu_float4 cf = {isog_f32_dn(c->lo), isog_f32_up(c->hi), isog_f32_dn(c->g.lo - 1e-7 * fabs(c->g.lo)), isog_f32_up(c->g.hi + 1e-7 * fabs(c->g.hi))};
-            md_array_push(cr, cf, heap);
+            const iso_crit_t* c = &B->radial.crit[g->crit_off[0][0] + k];
+            cr[nc++] = (md_gpu_float4){isog_f32_dn(c->lo), isog_f32_up(c->hi), isog_f32_dn(c->g.lo - 1e-7 * fabs(c->g.lo)), isog_f32_up(c->g.hi + 1e-7 * fabs(c->g.hi))};
         }
         for (int n = 0; n < a->ncart; ++n) {
             nrm[a->ao + n] = (float)a->nrm[n];
             ijk[a->ao + n] = (uint32_t)a->ijk[n][0] | ((uint32_t)a->ijk[n][1] << 4) | ((uint32_t)a->ijk[n][2] << 8);
         }
     }
+    ASSERT(np == num_prims && nc == num_crit);
+
     // the densities as matrices (dform): D = sum of the terms' symmetrized products, times the AO
     // normalizations, one per distinct field; when every field is a density of products (no linear
     // terms) and the local lists of the kernels hold every shell
     uint32_t num_dmat = 0;
-    float* Dm = NULL;
-    float* Rs = NULL;
     uint32_t fdm[MD_GTO_ISO_GPU_MAX_FIELDS] = {0};
     bool dform = dform_ok;
     for (uint32_t k = 0; k < num_fields && dform; ++k) if (first_of[k] == (int)k) num_dmat++;
     // in tiles of the AO pairs that meet, built on the device (isog_dmat_tiles); dense on the host where that fails
     const bool dsparse = dform && isog_dsparse && isog_dmat_tiles(set, stream, basis, atom_xyz, atom_xyz_stride, fields, num_fields, first_of, fdm, num_dmat);
+    set->dm_eps_exp = dsparse ? isog_eval_eps_exp : 0;
+    float* Dm = NULL;
+    float* Rs = NULL;
     if (dform && !dsparse) {
-        Dm = (float*)calloc((size_t)num_dmat * nao * nao + 1, sizeof(float));
-        Rs = (float*)calloc((size_t)num_dmat * nao + 1, sizeof(float));
-        double* Dd = (double*)malloc(sizeof(double) * ((size_t)nao * nao + 1));
+        Dm = md_temp_alloc_array(temp, float, (size_t)num_dmat * nao * nao + 1);
+        Rs = md_temp_alloc_array(temp, float, (size_t)num_dmat * nao + 1);
+        double* Dd = md_temp_alloc_array(temp, double, (size_t)nao * nao + 1);
         uint32_t u = 0;
         for (uint32_t k = 0; k < num_fields && Dm && Rs && Dd; ++k) {
             if (first_of[k] != (int)k) { fdm[k] = fdm[first_of[k]]; continue; }
@@ -734,80 +734,62 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
                 }
                 Rs[(size_t)u * nao + i] = isog_f32_up(rs * (1.0 + 1.0e-6));
             }
-            bool psd = true;
-            for (int t = 0; t < d->num_terms && psd; ++t) psd = d->terms[t].a == d->terms[t].b && d->terms[t].w >= 0.0;
             set->d_sraw[u] = sraw;
-            set->d_psd[u] = psd;
+            set->d_psd[u] = isog_density_psd(d);
             set->d_slack[u] = isog_f32_up(d->slack);
             fdm[k] = u++;
         }
-        free(Dd);
-        if (!Dm || !Rs || u < num_dmat) dform = false;
+        if (u < num_dmat) {     // Dm, Rs or Dd not had, or a matrix's scratch
+            MD_LOG_DEBUG("md_gto_iso_gpu_set_create: out of memory for the D form's dense matrices (%u of %u x %u)", num_dmat, nao, nao);
+            dform = false;
+        }
     }
     if (!dform) num_dmat = 0;
-    set->factorless = factorless;
+    if (factorless && !num_dmat) return "more functions than the factored kernels hold, and the D form's matrices could not be made";
 
-    set->num_shells = (uint32_t)B.num_ao_shells;
-    set->num_ao = nao;
-    set->num_fn = nf;
-    set->fn_stride = stride;
-    set->num_fields = num_fields;
-    set->orbitals_only = orbitals_only;
-    set->canon = canon;
-
-    // per function column: the sum of |C| (the tails for the shells a box drops: isog_set_eps)
-    double* colsum = (double*)calloc(stride + 1, sizeof(double));
+    // per function column: the sum of |C| (the tails for the shells a box drops: isog_set_eps), and the
+    // first tails, for the radii above (1e-10)
     for (uint32_t j = 0; j < nf; ++j) {
         double t = 0.0;
         for (uint32_t i = 0; i < nao; ++i) t += fabs((double)C[(size_t)i * stride + j]);
-        colsum[j] = t;
+        set->colsum[j] = t;
+        tail[j] = isog_f32_up(2.0e-10 * t * (1.0 + 1.0e-6));
     }
-    float* tail = (float*)calloc(stride + 1, sizeof(float));
-    for (uint32_t j = 0; j < nf; ++j) tail[j] = isog_f32_up(2.0e-10 * colsum[j] * (1.0 + 1.0e-6));
 
-#define ISOG_UP(mem, ptr, bytes) do { const size_t nb_ = (bytes); set->mem = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, nb_ > 0 ? nb_ : 16); if (set->mem.gpu && nb_ > 0) md_gpu_upload(stream, set->mem.gpu, (ptr), nb_); ok &= set->mem.gpu != 0; } while (0)
-    if (ok) {
-        ISOG_UP(shells, sh, sizeof(isog_shell_t) * B.num_ao_shells);
-        ISOG_UP(prims,  pr, sizeof(md_gpu_float2) * md_array_size(pr));
-        ISOG_UP(crit,   cr, sizeof(md_gpu_float4) * md_array_size(cr));
-        ISOG_UP(ao_nrm, nrm, sizeof(float) * nao);
-        ISOG_UP(ao_ijk, ijk, sizeof(uint32_t) * nao);
-        ISOG_UP(C,      C,   sizeof(float) * (size_t)nao * stride);
-        ISOG_UP(terms,  terms, sizeof(isog_term_t) * md_array_size(terms));
-        ISOG_UP(fn_tail, tail, sizeof(float) * stride);
-        ISOG_UP(wts, W, sizeof(float) * (size_t)num_fields * 3 * stride);
-        if (num_dmat && !dsparse) {
-            ISOG_UP(dmat, Dm, sizeof(float) * (size_t)num_dmat * nao * nao);
-            ISOG_UP(drs, Rs, sizeof(float) * (size_t)num_dmat * nao);
-        }
-        if (num_dmat) {
-            ISOG_UP(fdmat, fdm, sizeof(fdm));
-            set->dprop = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * MD_GTO_ISO_GPU_MAX_FIELDS);
-            ok &= set->dprop.gpu != 0;
-        }
-        // the tiles' row sums (drs, and d_sraw), with the AO normalizations above
-        set->num_dmat = num_dmat;
-        if (num_dmat && dsparse) ok &= isog_dmat_rows(set, stream);
+#define ISOG_UP(mem, ptr, bytes) do { \
+        const size_t nb_ = (bytes); \
+        set->mem = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, nb_ > 0 ? nb_ : 16); \
+        if (!set->mem.gpu || (nb_ > 0 && !md_gpu_upload(stream, set->mem.gpu, (ptr), nb_))) return "out of device memory"; \
+    } while (0)
+    ISOG_UP(shells,  sh,    sizeof(isog_shell_t) * nsh);
+    ISOG_UP(prims,   pr,    sizeof(md_gpu_float2) * num_prims);
+    ISOG_UP(crit,    cr,    sizeof(md_gpu_float4) * num_crit);
+    ISOG_UP(ao_nrm,  nrm,   sizeof(float) * nao);
+    ISOG_UP(ao_ijk,  ijk,   sizeof(uint32_t) * nao);
+    ISOG_UP(C,       C,     sizeof(float) * (size_t)nao * stride);
+    ISOG_UP(terms,   terms, sizeof(isog_term_t) * num_terms);
+    ISOG_UP(fn_tail, tail,  sizeof(float) * stride);
+    ISOG_UP(wts,     W,     sizeof(float) * (size_t)num_fields * 3 * stride);
+    if (num_dmat && !dsparse) {
+        ISOG_UP(dmat, Dm, sizeof(float) * (size_t)num_dmat * nao * nao);
+        ISOG_UP(drs,  Rs, sizeof(float) * (size_t)num_dmat * nao);
     }
-    set->num_dmat = num_dmat;
-    if (ok && num_dmat) isog_set_dprop(stream, set, 1.0e-10);    // the radii above are for 1e-10 (isog_set_eps re-derives)
-    if (factorless && !num_dmat) ok = false;
-    free(Dm);
-    free(Rs);
-    free(tail);
-    free(W);
+    if (num_dmat) {
+        ISOG_UP(fdmat, fdm, sizeof(fdm));
+        set->dprop = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * MD_GTO_ISO_GPU_MAX_FIELDS);
+        if (!set->dprop.gpu) return "out of device memory";
+    }
 #undef ISOG_UP
-    set->prof_shells = sh;          // BENCHMARK: kept for the profile's work counts
-    set->eps_exp = 10;
-    set->sh_nmax = sh_nmax;
-    set->sh_amin = sh_amin;
-    set->colsum = colsum;
-    set->host_prims = (md_gpu_float2*)malloc(sizeof(md_gpu_float2) * (md_array_size(pr) + 1));
-    memcpy(set->host_prims, pr, sizeof(md_gpu_float2) * md_array_size(pr));
+    set->num_dmat = num_dmat;
+    // the tiles' row sums (drs, and d_sraw), with the AO normalizations above
+    if (num_dmat && dsparse && !isog_dmat_rows(set, stream)) return "the D form's row sums could not be made";
+    if (!isog_set_dprop(stream, set, 1.0e-10)) return "out of device memory";     // the radii above are for 1e-10
+
     // per shell, the largest coefficient of its AOs over the set's functions (orbitals: coefficient screening)
-    if (orbitals_only) {
-        set->sh_cmax = (double*)calloc(B.num_ao_shells + 1, sizeof(double));
-        for (int k = 0; k < B.num_ao_shells && set->sh_cmax; ++k) {
+    if (set->orbitals_only) {
+        set->sh_cmax = (double*)calloc(nsh + 1, sizeof(double));
+        if (!set->sh_cmax) return "out of memory";
+        for (uint32_t k = 0; k < nsh; ++k) {
             double m = 0.0;
             for (uint32_t n = 0; n < sh[k].info.y; ++n) {
                 const size_t ao = sh[k].info2.x + n;
@@ -816,11 +798,95 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
             set->sh_cmax[k] = m;
         }
     }
-    free(nrm); free(ijk); free(C);
-    md_array_free(pr, heap); md_array_free(cr, heap); md_array_free(terms, heap);
-    md_array_free(B.radial.shells, heap); md_array_free(B.radial.crit, heap); free(B.ao_shells);
-    if (!ok) {
-        MD_LOG_ERROR("md_gto_iso_gpu_set_create: a pair term spans two tiles of 64 functions, a shell of more than 64 primitives, or out of device memory");
+    return NULL;
+}
+
+md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                                const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc) {
+    if (!stream || !basis || !atom_xyz || !fields || !alloc || num_fields == 0 || num_fields > MD_GTO_ISO_GPU_MAX_FIELDS) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_create: invalid arguments (1 to %d fields)", MD_GTO_ISO_GPU_MAX_FIELDS);
+        return NULL;
+    }
+    for (uint32_t k = 0; k < num_fields; ++k) {
+        if (!fields[k]) { MD_LOG_ERROR("md_gto_iso_gpu_set_create: field %u is NULL", k); return NULL; }
+    }
+    // The kernels with the set, on its thread: the first extraction then costs its own thread nothing for them
+    // (seconds on a CPU device, a fraction of one on most GPUs)
+    if (!isog_kernels_ready()) return NULL;
+    size_t num_atoms;
+    float* xyz = iso_pack_atoms(basis, atom_xyz, atom_xyz_stride, &num_atoms);
+    if (!xyz) { MD_LOG_ERROR("md_gto_iso_gpu_set_create: out of memory"); return NULL; }
+    iso_density_t B = {0};      // the basis as contracted shells, and their radial functions
+    const bool basis_ok = iso_density_ao_shells(&B, basis, xyz, NULL);
+    free(xyz);
+    if (!basis_ok) { isog_basis_free(&B); MD_LOG_ERROR("md_gto_iso_gpu_set_create: unsupported basis"); return NULL; }
+    iso_radial_init(&B.radial, B.ao_shells, B.num_ao_shells);
+    const uint32_t nao = (uint32_t)B.num_ao;
+
+    // A field given more than once (one density at several iso values) shares its functions
+    int first_of[MD_GTO_ISO_GPU_MAX_FIELDS];
+    for (uint32_t k = 0; k < num_fields; ++k) {
+        first_of[k] = (int)k;
+        for (uint32_t j = 0; j < k; ++j) if (fields[j] == fields[k]) { first_of[k] = (int)j; break; }
+    }
+    // the functions in all; a set of orbitals has no pair terms, so its functions need no alignment
+    bool orbitals_only = true;
+    for (uint32_t k = 0; k < num_fields; ++k) orbitals_only &= fields[k]->f.dens == NULL;
+    const uint32_t align = orbitals_only ? 0u : 1u;
+    uint32_t nf = 0;
+    for (uint32_t k = 0; k < num_fields; ++k) {
+        const md_gto_iso_field_t* fk = fields[k];
+        if (first_of[k] != (int)k) continue;
+        const uint32_t fao = fk->f.dens ? (uint32_t)fk->f.dens->num_ao : (uint32_t)fk->num_coeff;
+        if (fao != nao) {
+            MD_LOG_ERROR("md_gto_iso_gpu_set_create: field %u is over %u AOs, the basis has %u", k, fao, nao);
+            isog_basis_free(&B);
+            return NULL;
+        }
+        nf = (nf + align) & ~align;
+        nf += fk->f.dens ? (uint32_t)fk->f.dens->num_fn : 1u;
+    }
+    // the D form (phi^T D phi): every field a density of products (no linear terms), the indices of the
+    // local lists in 16 bits. With more functions than the factored kernels hold, the set has no
+    // functions at all and only the D form runs.
+    bool dform_ok = B.num_ao_shells <= 65535 && nao <= 65535;
+    for (uint32_t k = 0; k < num_fields && dform_ok; ++k) {
+        const iso_density_t* d = fields[k]->f.dens;
+        if (!d) { dform_ok = false; break; }
+        for (int t = 0; t < d->num_terms; ++t) if (d->terms[t].b < 0) dform_ok = false;
+    }
+    const uint32_t fn_cap = isog_fn_cap;
+    const bool factorless = nf > fn_cap && dform_ok;
+    if (nf > fn_cap && !factorless) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_create: %u functions in all, more than %u, and not every field a density of products (the D form)", nf, fn_cap);
+        isog_basis_free(&B);
+        return NULL;
+    }
+    if (factorless) nf = 0;
+
+    md_gto_iso_gpu_set_t* set = (md_gto_iso_gpu_set_t*)md_alloc(alloc, sizeof(md_gto_iso_gpu_set_t));
+    if (!set) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_create: out of memory");
+        isog_basis_free(&B);
+        return NULL;
+    }
+    memset(set, 0, sizeof(*set));
+    set->alloc = alloc;
+    set->num_shells = (uint32_t)B.num_ao_shells;
+    set->num_ao = nao;
+    set->num_fn = nf;
+    set->fn_stride = nf > 0 ? ((nf + 63u) / 64u) * 64u : 64u;
+    set->num_fields = num_fields;
+    set->orbitals_only = orbitals_only;
+    set->factorless = factorless;
+    set->eps_exp = 10;      // the radii isog_set_build derives (isog_set_eps re-derives them)
+
+    md_temp_scope_t temp = md_temp_begin();
+    const char* err = isog_set_build(set, stream, temp, &B, basis, atom_xyz, atom_xyz_stride, fields, first_of, dform_ok);
+    md_temp_end(temp);
+    isog_basis_free(&B);
+    if (err) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_create: %s", err);
         md_gto_iso_gpu_set_destroy(stream, set);
         return NULL;
     }
@@ -855,15 +921,18 @@ typedef struct isog_debug_t {
 } isog_debug_t;
 static isog_debug_t* isog_debug = NULL;
 
+// [src, src + bytes) to dst (blocking). False, with dst untouched, when the copy cannot be made.
 static bool isog_read(md_gpu_stream_t s, void* dst, md_gpu_addr_t src, size_t bytes) {
     if (!bytes) return true;
     md_gpu_mem_t m = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, bytes);
     if (!m.gpu) return false;
-    md_gpu_copy(s, m.gpu, src, bytes);
-    md_gpu_stream_sync(s);
-    memcpy(dst, m.cpu, bytes);
+    const bool ok = md_gpu_copy(s, m.gpu, src, bytes);
+    if (ok) {
+        md_gpu_stream_sync(s);
+        memcpy(dst, m.cpu, bytes);
+    }
     md_gpu_free(s, m.gpu);
-    return true;
+    return ok;
 }
 
 // BENCHMARK: the AOs of the shells that reach the box [lo, hi] (what a kernel lists for it)
@@ -903,10 +972,32 @@ static md_gpu_grid_t isog_groups(uint32_t n) {     // one group per item, split 
     return md_gpu_grid(n < 65535u ? n : 65535u, (n + 65534u) / 65535u, 1);
 }
 
-// The set's cutoff and screening as switched (remade when the switch changed since the set was made)
-static void isog_set_current(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set) {
+// The set's cutoff and screening as switched (remade when the switch changed since the set was made). False
+// when they could not be uploaded: nothing may then evaluate the set (its radii and tails may disagree).
+static bool isog_set_current(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set) {
     const int screen = set->orbitals_only && set->sh_cmax;    // orbitals: a shell dropped where its largest coefficient times its AOs is below eps
-    if (set->eps_exp != isog_eval_eps_exp || set->screen != screen) isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, isog_eval_eps_exp, screen);
+    const int eps_exp = set->eps_own ? set->eps_own : isog_eval_eps_exp;
+    if (set->eps_exp == eps_exp && set->screen == screen) return true;
+    if (isog_set_eps(s, (md_gto_iso_gpu_set_t*)set, eps_exp, screen)) return true;
+    MD_LOG_ERROR("md_gto_iso_gpu: the set's cutoff 1e-%d could not be uploaded", eps_exp);
+    return false;
+}
+
+bool md_gto_iso_gpu_set_cutoff(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, int eps_exp) {
+    if (!set || (eps_exp != 0 && (eps_exp < 4 || eps_exp > 12))) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_cutoff: the cutoff is 1e-4 to 1e-12 (4 to 12), or 0 for the switch's");
+        return false;
+    }
+    // a D form in tiles holds the AO pairs that meet at the cutoff it was made for (and a margin): a tighter one
+    // lists AOs whose pairs it does not have. Only the evaluation of a set past 1024 functions reads it (the
+    // octree's bound reads it too, as when the switch changes after a set is made)
+    const int eff = eps_exp ? eps_exp : isog_eval_eps_exp;
+    if (set->factorless && set->dm_eps_exp && eff > set->dm_eps_exp) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_cutoff: the set's densities are in tiles made for 1e-%d, not the 1e-%d asked for; make the set with the switch at that", set->dm_eps_exp, eff);
+        return false;
+    }
+    set->eps_own = eps_exp;
+    return isog_set_current(stream, set);
 }
 
 // What every evaluation of the set reads: the basis, the functions (C), the fields' terms and the D form
@@ -1057,7 +1148,8 @@ static void isog_prof_active(md_gpu_stream_t s, md_gpu_addr_t vdone, uint32_t nv
     *out_active = 0;
     *out_groups = 0;
     if (!isog_prof || nv == 0) return;
-    uint32_t* d = (uint32_t*)malloc(sizeof(uint32_t) * nv);
+    md_temp_scope_t temp = md_temp_begin();
+    uint32_t* d = md_temp_alloc_array(temp, uint32_t, nv);
     if (d && isog_read(s, d, vdone, sizeof(uint32_t) * nv)) {
         for (uint32_t g = 0; g < nv; g += 64) {
             uint32_t n = 0;
@@ -1066,7 +1158,7 @@ static void isog_prof_active(md_gpu_stream_t s, md_gpu_addr_t vdone, uint32_t nv
             *out_groups += n > 0;
         }
     }
-    free(d);
+    md_temp_end(temp);
     isog_mark_skip(s);
 }
 
@@ -1248,9 +1340,11 @@ static void isog_jfree(md_gto_iso_gpu_job_t* j, md_gpu_addr_t p) {
     }
 }
 
-// A copy of [src, src + bytes) to dst, made with the next isog_jfetch
+// A copy of [src, src + bytes) to dst, made with the next isog_jfetch. Every add takes the next slot, of no
+// bytes too: the callers find their copies in fetch_off by the order of their adds.
 static void isog_jfetch_add(md_gto_iso_gpu_job_t* j, void* dst, md_gpu_addr_t src, size_t bytes) {
-    if (j->num_fetch >= ISOG_JOB_FETCH || !bytes) return;
+    ASSERT(j->num_fetch < ISOG_JOB_FETCH);
+    if (j->num_fetch >= ISOG_JOB_FETCH) return;
     j->fetch_dst[j->num_fetch] = dst;
     j->fetch_off[j->num_fetch] = (size_t)src;      // the source until isog_jfetch
     j->fetch_bytes[j->num_fetch] = bytes;
@@ -1264,10 +1358,17 @@ static bool isog_jfetch(md_gto_iso_gpu_job_t* j) {
     j->fetch_mem = md_gpu_malloc(j->s, MD_GPU_MEM_HOST_READ, total ? total : 16);
     if (!j->fetch_mem.gpu) { j->num_fetch = 0; return false; }
     size_t off = 0;
+    bool ok = true;
     for (uint32_t i = 0; i < j->num_fetch; ++i) {
-        md_gpu_copy(j->s, j->fetch_mem.gpu + off, (md_gpu_addr_t)j->fetch_off[i], j->fetch_bytes[i]);
+        if (j->fetch_bytes[i]) ok = ok && md_gpu_copy(j->s, j->fetch_mem.gpu + off, (md_gpu_addr_t)j->fetch_off[i], j->fetch_bytes[i]);
         j->fetch_off[i] = off;
         off += (j->fetch_bytes[i] + 15) & ~(size_t)15;
+    }
+    if (!ok) {      // stream-ordered: after whatever copies were made
+        md_gpu_free(j->s, j->fetch_mem.gpu);
+        j->fetch_mem = (md_gpu_mem_t){0};
+        j->num_fetch = 0;
+        return false;
     }
     j->fetch_sync = md_gpu_stream_record(j->s);
     j->fetching = true;
@@ -1277,7 +1378,7 @@ static bool isog_jfetch(md_gto_iso_gpu_job_t* j) {
 // The readback has passed: its bytes to their destinations
 static void isog_jfetch_take(md_gto_iso_gpu_job_t* j) {
     for (uint32_t i = 0; i < j->num_fetch; ++i) {
-        if (j->fetch_dst[i]) memcpy(j->fetch_dst[i], (const char*)j->fetch_mem.cpu + j->fetch_off[i], j->fetch_bytes[i]);
+        if (j->fetch_dst[i] && j->fetch_bytes[i]) memcpy(j->fetch_dst[i], (const char*)j->fetch_mem.cpu + j->fetch_off[i], j->fetch_bytes[i]);
     }
     if (j->fetch_keep) j->kept = j->fetch_mem;
     else md_gpu_free(j->s, j->fetch_mem.gpu);
@@ -1403,8 +1504,11 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     nl *= 8;
                     memcpy(lv, nx, sizeof(md_gpu_uint4) * nl);
                 }
-                md_gpu_upload(s, j->nodes[l0 & 1], lv, sizeof(md_gpu_uint4) * nl);
-                md_gpu_upload(s, j->counts + sizeof(uint32_t) * l0, &nl, sizeof(nl));
+                if (!md_gpu_upload(s, j->nodes[l0 & 1], lv, sizeof(md_gpu_uint4) * nl) ||
+                    !md_gpu_upload(s, j->counts + sizeof(uint32_t) * l0, &nl, sizeof(nl))) {
+                    isog_job_fail(j, "md_gto_iso_gpu_extract: the octree's first level could not be uploaded");
+                    break;
+                }
             }
             isog_mark(s, "octree setup", 0, 0);
             bool ok = true;
@@ -1510,11 +1614,13 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             const uint32_t nb = j->nb, nslots = j->nslots;
             const double* origin = j->origin;
             if (isog_prof || isog_debug) {    // the bricks and their slots on the host: the profile's and the tests' only
+                // held across the job's waits (polls), so on the heap rather than in a temp scope
                 j->bl = (md_gpu_uint4*)malloc(sizeof(md_gpu_uint4) * (nb + 1));
                 j->slot = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
-                if (j->bl && j->slot && nb) {
-                    isog_read(s, j->bl, j->bricks, sizeof(md_gpu_uint4) * nb);
-                    isog_read(s, j->slot, j->bslot, sizeof(uint32_t) * nb);
+                if (!j->bl || !j->slot) { isog_job_fail(j, "md_gto_iso_gpu_extract: out of memory (the profile's or the tests' brick list)"); break; }
+                if (!isog_read(s, j->bl, j->bricks, sizeof(md_gpu_uint4) * nb) || !isog_read(s, j->slot, j->bslot, sizeof(uint32_t) * nb)) {
+                    isog_job_fail(j, "md_gto_iso_gpu_extract: the brick list could not be read back");
+                    break;
                 }
                 isog_mark_skip(s);
             }
@@ -1650,8 +1756,9 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 isog_prof->corner_points = c8[5];
                 // the boxes of the groups the corner kernel takes (consecutive points of the list)
                 const uint32_t np = c8[5];
-                uint32_t* pl = (uint32_t*)malloc(sizeof(uint32_t) * (np + 1));
-                float* px = (float*)malloc(sizeof(float) * 3 * (np + 1));
+                md_temp_scope_t temp = md_temp_begin();
+                uint32_t* pl = md_temp_alloc_array(temp, uint32_t, np + 1);
+                float* px = md_temp_alloc_array(temp, float, 3 * ((size_t)np + 1));
                 if (pl && px && np > 0 && isog_read(s, pl, a.plist, sizeof(uint32_t) * np)) {
                     for (uint32_t i = 0; i < np; ++i) {
                         const uint32_t b = pl[i] >> 7, k = (pl[i] & 127u) < 124u ? (pl[i] & 127u) : 124u;
@@ -1661,8 +1768,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     isog_prof->cgroup_size = wide ? 64u : gemm ? 128u : 256u;     // f1v4: 64 threads x 4 points
                     isog_prof_groups(set, px, 3, np, isog_prof->cgroup_size, &isog_prof->cgroup_ao_sum, &isog_prof->cgroup_count);
                 }
-                free(pl);
-                free(px);
+                md_temp_end(temp);
                 isog_mark_skip(s);
             }
             {   // the corners a brick shares with the neighbours that evaluated them
@@ -1714,7 +1820,10 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             // the bricks no round reached: no cells (and the host's list says so, for the profile)
             MD_GPU_LAUNCH(s, isog_k[ISOG_K_FFINISH], md_gpu_grid((nb + 63) / 64, 1, 1), a);
             isog_used(ISOG_K_FFINISH);
-            if (isog_prof || isog_debug) isog_read(s, j->bl, a.bricks, sizeof(md_gpu_uint4) * nb);   // the profile's and the tests' only
+            if ((isog_prof || isog_debug) && !isog_read(s, j->bl, a.bricks, sizeof(md_gpu_uint4) * nb)) {   // the profile's and the tests' only
+                isog_job_fail(j, "md_gto_iso_gpu_extract: the brick list could not be read back");
+                break;
+            }
             isog_mark(s, "flood: finish", j->flood_bricks, j->flood_rounds);
             isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &j->ts);
             j->stage = ISOG_J_NETS;
@@ -1744,8 +1853,9 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             isog_jprog(j, 0.65f);
             if (nb > 0) isog_mark(s, "readback: vertex count", nv, 0);
             if (nb > 0 && isog_prof) {     // BENCHMARK: the bricks given corners, by their corners (not timed)
-                uint32_t* sc = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
-                float* cv = (float*)malloc(sizeof(float) * 125 * ((size_t)nslots + 1));
+                md_temp_scope_t temp = md_temp_begin();
+                uint32_t* sc = md_temp_alloc_array(temp, uint32_t, nb + 1);
+                float* cv = md_temp_alloc_array(temp, float, 125 * ((size_t)nslots + 1));
                 if (sc && cv && isog_read(s, sc, a.scan, sizeof(uint32_t) * (nb + 1)) &&
                     isog_read(s, cv, a.corners, sizeof(float) * 125 * (size_t)nslots)) {
                     for (uint32_t b = 0; b < nb; ++b) {
@@ -1768,20 +1878,25 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                         if (in) isog_prof->brick_in++; else isog_prof->brick_out++;
                     }
                 }
-                free(sc);
-                free(cv);
+                md_temp_end(temp);
                 isog_mark_skip(s);
             }
             if (isog_debug) {
-                isog_debug_t* dbg = isog_debug;
-                dbg->num_bricks = nb;
-                dbg->num_slots = nslots;
+                isog_debug_t* dbg = isog_debug;     // the test frees the arrays (free)
                 dbg->bricks  = (uint32_t*)malloc(sizeof(md_gpu_uint4) * (nb + 1));
                 dbg->slots   = (uint32_t*)malloc(sizeof(uint32_t) * (nb + 1));
                 dbg->corners = (float*)malloc(sizeof(float) * 125 * ((size_t)nslots + 1));
+                if (!dbg->bricks || !dbg->slots || !dbg->corners || !isog_read(s, dbg->corners, a.corners, sizeof(float) * 125 * (size_t)nslots)) {
+                    free(dbg->bricks); free(dbg->slots); free(dbg->corners);
+                    dbg->bricks = dbg->slots = NULL;
+                    dbg->corners = NULL;
+                    isog_job_fail(j, "md_gto_iso_gpu_extract: out of memory, or the corners could not be read back (the tests' copy)");
+                    break;
+                }
+                dbg->num_bricks = nb;
+                dbg->num_slots = nslots;
                 memcpy(dbg->bricks, bl, sizeof(md_gpu_uint4) * nb);
                 memcpy(dbg->slots, slot, sizeof(uint32_t) * nb);
-                isog_read(s, dbg->corners, a.corners, sizeof(float) * 125 * (size_t)nslots);
                 memcpy(dbg->origin, j->origin, sizeof(j->origin));
                 dbg->brick_level = L;
                 isog_mark_skip(s);
@@ -1840,12 +1955,13 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 const md_gpu_grid_t g_eval = n_eval_groups ? isog_groups(n_eval_groups) : g_vert;
                 if (isog_prof) {    // BENCHMARK: the boxes of the vertex groups (consecutive vertices), not timed
                     const uint32_t vg = vk.per_group;
-                    md_gpu_float4* vp = vg ? (md_gpu_float4*)malloc(sizeof(md_gpu_float4) * nv) : NULL;
+                    md_temp_scope_t temp = md_temp_begin();
+                    md_gpu_float4* vp = vg ? md_temp_alloc_array(temp, md_gpu_float4, nv) : NULL;
                     if (vp && isog_read(s, vp, a.vpos, sizeof(md_gpu_float4) * nv)) {
                         isog_prof->vgroup_size = vg;
                         isog_prof_groups(set, &vp[0].x, 4, nv, vg, &isog_prof->vgroup_ao_sum, &isog_prof->vgroup_count);
                     }
-                    free(vp);
+                    md_temp_end(temp);
                     isog_mark_skip(s);
                 }
                 // relaxation reads vpos and writes vpos_out: the two swap roles after every pass (no copy)
@@ -1911,9 +2027,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             isog_jfetch_add(j, j->ctr, a.counters, sizeof(j->ctr));
             j->idx_copied = 0;
             if (desc->read_back) {
-                static int test_short = -1;     // TEST: GTO_ISO_READBACK_SHORT=1 copies no triangles first (the second readback)
-                if (test_short < 0) test_short = getenv("GTO_ISO_READBACK_SHORT") != NULL;
-                const uint32_t qc = test_short ? 0u : cap_q < 2 * nv + 64 ? cap_q : 2 * nv + 64;
+                const uint32_t qc = isog_readback_short ? 0u : cap_q < 2 * nv + 64 ? cap_q : 2 * nv + 64;
                 j->idx_copied = 6 * qc;
                 isog_jfetch_add(j, NULL, out->position, sizeof(md_gpu_float4) * nv);
                 isog_jfetch_add(j, NULL, out->normal, sizeof(md_gpu_float4) * nv);
@@ -1995,8 +2109,7 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
         MD_LOG_ERROR("md_gto_iso_gpu_extract: invalid arguments");
         return NULL;
     }
-    if (!isog_kernels_ready()) return NULL;
-    isog_set_current(s, set);
+    if (!isog_kernels_ready() || !isog_set_current(s, set)) return NULL;
     const uint32_t F = set->num_fields;
     // root: the union of every field's surface box, as on the CPU (the same lattice for one field)
     double lo[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, hi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
@@ -2068,8 +2181,11 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
         MD_LOG_ERROR("md_gto_iso_gpu_extract: out of device memory");
         return NULL;
     }
-    md_gpu_upload(s, a->fields, fields, sizeof(fields));
-    md_gpu_memset(s, a->counters, 0, sizeof(uint32_t) * 12);
+    if (!md_gpu_upload(s, a->fields, fields, sizeof(fields)) || !md_gpu_memset(s, a->counters, 0, sizeof(uint32_t) * 12)) {
+        md_gto_iso_gpu_job_end(j, NULL);
+        MD_LOG_ERROR("md_gto_iso_gpu_extract: the fields could not be uploaded");
+        return NULL;
+    }
     // count_in valid wherever a kernel may read it (llvmpipe loads both sides of a select)
     a->count_in = a->counters;
     j->root_mask = root_mask;
@@ -2168,17 +2284,25 @@ bool md_gto_iso_gpu_mesh_read(md_gpu_stream_t stream, const md_gto_iso_gpu_mesh_
         out->sheet_index_offset[s]  = mesh->index_offset[field][s] - i0;
         out->sheet_index_count[s]   = mesh->index_count_of[field][s];
     }
-    if (nv == 0) return true;
-    float* p4 = (float*)malloc(sizeof(float) * 4 * nv);
-    float* n4 = (float*)malloc(sizeof(float) * 4 * nv);
-    bool ok = isog_read(stream, p4, mesh->position + sizeof(float) * 4 * v0, sizeof(float) * 4 * nv)
-           && isog_read(stream, n4, mesh->normal + sizeof(float) * 4 * v0, sizeof(float) * 4 * nv)
-           && isog_read(stream, out->index, mesh->index + sizeof(uint32_t) * i0, sizeof(uint32_t) * ni);
-    for (uint32_t i = 0; i < nv; ++i) {
-        for (int k = 0; k < 3; ++k) { out->position[3 * i + k] = p4[4 * i + k]; out->normal[3 * i + k] = n4[4 * i + k]; }
+    // the device's float4 positions and normals, to the CPU layout's float3
+    md_temp_scope_t temp = md_temp_begin();
+    float* p4 = md_temp_alloc_array(temp, float, 4 * ((size_t)nv + 1));
+    float* n4 = md_temp_alloc_array(temp, float, 4 * ((size_t)nv + 1));
+    const bool ok = out->position && out->normal && out->index && p4 && n4
+                 && isog_read(stream, p4, mesh->position + sizeof(float) * 4 * v0, sizeof(float) * 4 * nv)
+                 && isog_read(stream, n4, mesh->normal + sizeof(float) * 4 * v0, sizeof(float) * 4 * nv)
+                 && isog_read(stream, out->index, mesh->index + sizeof(uint32_t) * i0, sizeof(uint32_t) * ni);
+    if (ok) {
+        for (uint32_t i = 0; i < nv; ++i) {
+            for (int k = 0; k < 3; ++k) { out->position[3 * i + k] = p4[4 * i + k]; out->normal[3 * i + k] = n4[4 * i + k]; }
+        }
+        for (uint32_t i = 0; i < ni; ++i) out->index[i] -= v0;
     }
-    for (uint32_t i = 0; i < ni; ++i) out->index[i] -= v0;
-    free(p4); free(n4);
+    md_temp_end(temp);
+    if (!ok) {
+        MD_LOG_ERROR("md_gto_iso_gpu_mesh_read: out of memory, or the mesh could not be read back");
+        md_gto_iso_mesh_free(out);      // nothing for the caller to free
+    }
     return ok;
 }
 
@@ -2191,16 +2315,19 @@ bool md_gto_iso_gpu_mesh_read_all(md_gpu_stream_t stream, const md_gto_iso_gpu_m
     md_gpu_mem_t m = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, bytes);
     if (!m.gpu) return false;
     size_t off = 0;
-    if (position && bv) { md_gpu_copy(stream, m.gpu + off, mesh->position, bv); off += bv; }
-    if (normal && bv)   { md_gpu_copy(stream, m.gpu + off, mesh->normal, bv);   off += bv; }
-    if (index && bi)    { md_gpu_copy(stream, m.gpu + off, mesh->index, bi);    off += bi; }
-    md_gpu_stream_sync(stream);
-    off = 0;
-    if (position) { memcpy(position, (const char*)m.cpu + off, bv); off += bv; }
-    if (normal)   { memcpy(normal,   (const char*)m.cpu + off, bv); off += bv; }
-    if (index)    { memcpy(index,    (const char*)m.cpu + off, bi); off += bi; }
+    bool ok = true;
+    if (position && bv) { ok = ok && md_gpu_copy(stream, m.gpu + off, mesh->position, bv); off += bv; }
+    if (normal && bv)   { ok = ok && md_gpu_copy(stream, m.gpu + off, mesh->normal, bv);   off += bv; }
+    if (index && bi)    { ok = ok && md_gpu_copy(stream, m.gpu + off, mesh->index, bi);    off += bi; }
+    if (ok) {
+        md_gpu_stream_sync(stream);
+        off = 0;
+        if (position) { memcpy(position, (const char*)m.cpu + off, bv); off += bv; }
+        if (normal)   { memcpy(normal,   (const char*)m.cpu + off, bv); off += bv; }
+        if (index)    { memcpy(index,    (const char*)m.cpu + off, bi); off += bi; }
+    }
     md_gpu_free(stream, m.gpu);
-    return true;
+    return ok;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2225,8 +2352,7 @@ bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t s, const md_gto_iso_gpu_set_
         if (desc->out_failed) md_gpu_memset(s, desc->out_failed, 0, sizeof(uint32_t));
         return true;
     }
-    if (!isog_kernels_ready()) return false;
-    isog_set_current(s, set);
+    if (!isog_kernels_ready() || !isog_set_current(s, set)) return false;
 
     isog_args_t a;
     memset(&a, 0, sizeof(a));
@@ -2244,15 +2370,15 @@ bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t s, const md_gto_iso_gpu_set_
     md_gpu_mem_t m_vinfo    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_uint4) * B);
     md_gpu_mem_t m_vdone    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * B);
     md_gpu_mem_t m_vval     = desc->out_gradient ? (md_gpu_mem_t){0} : md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * B);
-    const bool ok = m_fields.gpu && m_counters.gpu && m_vpos.gpu && m_vinfo.gpu && m_vdone.gpu && (desc->out_gradient || m_vval.gpu);
+    bool ok = m_fields.gpu && m_counters.gpu && m_vpos.gpu && m_vinfo.gpu && m_vdone.gpu && (desc->out_gradient || m_vval.gpu);
+    if (!ok) MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of device memory (%u points)", B);
     if (ok) {
         // the fields as the extraction uploads them, all 16 (unrolled loops may read past num_fields); their iso
         // values are not read by an evaluation
         isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];
         memset(fields, 0, sizeof(fields));
         memcpy(fields, set->fields, sizeof(isog_field_t) * set->num_fields);
-        md_gpu_upload(s, m_fields.gpu, fields, sizeof(fields));
-        md_gpu_memset(s, m_counters.gpu, 0, sizeof(uint32_t) * 12);
+        ok = md_gpu_upload(s, m_fields.gpu, fields, sizeof(fields)) && md_gpu_memset(s, m_counters.gpu, 0, sizeof(uint32_t) * 12);
         a.fields   = m_fields.gpu;
         a.counters = m_counters.gpu;
         a.count_in = m_counters.gpu;    // valid wherever a kernel may read it (llvmpipe loads both sides of a select)
@@ -2260,30 +2386,29 @@ bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t s, const md_gto_iso_gpu_set_
         a.vinfo    = m_vinfo.gpu;
         a.vdone    = m_vdone.gpu;
         a.pts_stride = stride / 4u;
-        for (uint32_t off = 0; off < n; off += B) {
+        for (uint32_t off = 0; ok && off < n; off += B) {
             const uint32_t nb = n - off < B ? n - off : B;
             a.count = nb;
             a.pts = desc->xyz + (md_gpu_addr_t)off * stride;
             const md_gpu_grid_t g_pts = md_gpu_grid_for(isog_k[ISOG_K_PLOAD], nb, 1, 1);
             const md_gpu_grid_t g_eval = vk.per_group ? isog_groups((nb + vk.per_group - 1) / vk.per_group) : md_gpu_grid_for(isog_k[vk.k], nb, 1, 1);
-            for (uint32_t k = 0; k < desc->num_fields; ++k) {
+            for (uint32_t k = 0; ok && k < desc->num_fields; ++k) {
                 const size_t first = (size_t)k * n + off;      // this pass's first output of field k
                 a.pts_field = desc->fields[k];
                 a.mode = k == 0 ? 1u : 0u;                      // the positions once a pass, then only the field
-                MD_GPU_LAUNCH(s, isog_k[ISOG_K_PLOAD], g_pts, a);
+                ok = MD_GPU_LAUNCH(s, isog_k[ISOG_K_PLOAD], g_pts, a);
                 a.mode = 0;
                 a.vval = desc->out_gradient ? desc->out_gradient + first * sizeof(md_gpu_float4) : m_vval.gpu;
-                md_gpu_memset(s, a.vval, 0xFF, sizeof(md_gpu_float4) * nb);    // NaN where no value is made
-                MD_GPU_LAUNCH(s, isog_k[vk.k], g_eval, a);
-                if (desc->out_value) {
+                ok = ok && md_gpu_memset(s, a.vval, 0xFF, sizeof(md_gpu_float4) * nb);    // NaN where no value is made
+                ok = ok && MD_GPU_LAUNCH(s, isog_k[vk.k], g_eval, a);
+                if (ok && desc->out_value) {
                     a.pval = desc->out_value + first * sizeof(float);
-                    MD_GPU_LAUNCH(s, isog_k[ISOG_K_PSTORE], g_pts, a);
+                    ok = MD_GPU_LAUNCH(s, isog_k[ISOG_K_PSTORE], g_pts, a);
                 }
             }
         }
-        if (desc->out_failed) md_gpu_copy(s, desc->out_failed, m_counters.gpu + 7 * sizeof(uint32_t), sizeof(uint32_t));
-    } else {
-        MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of device memory (%u points)", B);
+        if (ok && desc->out_failed) ok = md_gpu_copy(s, desc->out_failed, m_counters.gpu + 7 * sizeof(uint32_t), sizeof(uint32_t));
+        if (!ok) MD_LOG_ERROR("md_gto_iso_gpu_evaluate: the evaluation could not be issued (%u points)", n);
     }
     // stream ordered: after the work above
     if (m_fields.gpu)   md_gpu_free(s, m_fields.gpu);
@@ -2330,10 +2455,11 @@ bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set,
     }
     float scl[3];
     for (int c = 0; c < 3; ++c) scl[c] = hi[c] > lo[c] ? 1023.0f / (hi[c] - lo[c]) : 0.0f;
-    uint64_t* order = (uint64_t*)malloc(sizeof(uint64_t) * n);
-    md_gpu_float4* pts = (md_gpu_float4*)malloc(sizeof(md_gpu_float4) * n);
+    md_temp_scope_t temp = md_temp_begin();
+    uint64_t* order = md_temp_alloc_array(temp, uint64_t, n);
+    md_gpu_float4* pts = md_temp_alloc_array(temp, md_gpu_float4, n);
     if (!order || !pts) {
-        free(order); free(pts);
+        md_temp_end(temp);
         MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of memory");
         return false;
     }
@@ -2362,7 +2488,6 @@ bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set,
     md_gpu_mem_t h_out = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, bv + bg + 16);
     bool ok = d_pts.gpu && d_out.gpu && h_out.gpu;
     if (ok) {
-        md_gpu_upload(s, d_pts.gpu, pts, sizeof(md_gpu_float4) * n);
         md_gto_iso_gpu_eval_desc_t d;
         memset(&d, 0, sizeof(d));
         d.xyz = d_pts.gpu;
@@ -2373,9 +2498,10 @@ bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set,
         d.out_value    = out_value ? d_out.gpu : 0;
         d.out_gradient = out_gradient ? d_out.gpu + bv : 0;
         d.out_failed   = d_out.gpu + bv + bg;
-        ok = md_gto_iso_gpu_evaluate_launch(s, set, &d);
+        ok = md_gpu_upload(s, d_pts.gpu, pts, sizeof(md_gpu_float4) * n)
+          && md_gto_iso_gpu_evaluate_launch(s, set, &d)
+          && md_gpu_copy(s, h_out.gpu, d_out.gpu, bv + bg + sizeof(uint32_t));
         if (ok) {
-            md_gpu_copy(s, h_out.gpu, d_out.gpu, bv + bg + sizeof(uint32_t));
             md_gpu_stream_sync(s);
             const float* hv = (const float*)h_out.cpu;
             const md_gpu_float4* hg = (const md_gpu_float4*)((const char*)h_out.cpu + bv);
@@ -2402,7 +2528,6 @@ bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set,
     if (d_pts.gpu) md_gpu_free(s, d_pts.gpu);
     if (d_out.gpu) md_gpu_free(s, d_out.gpu);
     if (h_out.gpu) md_gpu_free(s, h_out.gpu);
-    free(order);
-    free(pts);
+    md_temp_end(temp);
     return ok;
 }

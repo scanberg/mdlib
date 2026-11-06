@@ -1,0 +1,242 @@
+#pragma once
+
+// The interpreter: runs the array IR one op at a time, each a call into a runtime kernel, much like NumPy. It is the
+// reference every other backend must match bit for bit, and it keeps every intermediate value, so it also serves
+// hover and drawing.
+//
+// Static values are computed once and kept. Frame values are computed for one frame at a time, from that frame's
+// positions and unit cell; regions (maps, applied bodies, folds) run their ops once per call.
+
+#include "ir.h"
+#include "select.h"
+
+#include <md_unitcell.h>
+#include <core/md_executor.h>
+
+struct md_system_t;
+struct vec3_t;
+
+// One frame of a run, as the interpreter reads it
+typedef struct vial_frame_t {
+    const float*    xyz;        // [num_atoms][3], Å
+    size_t          num_atoms;
+    md_unitcell_t   cell;
+    int64_t         index;      // the frame's position in the run
+    double          time;       // the run's time axis at that frame, in its unit
+} vial_frame_t;
+
+// Runtime errors: an evaluation that cannot go on, with the code of the reference's diagnostics table
+typedef struct vial_rt_error_t {
+    char            code[6];    // "R0103"
+    char            message[160];
+    md_vial_span_t  span;
+    // Where in the evaluation it happened, which orders the errors of frames run on several threads as one thread
+    // meets them: the sweep (0 for the static part), the frame (INT64_MAX after the sweep), the n-th error there
+    uint8_t         sweep;
+    int64_t         frame;
+    uint32_t        seq;
+    bool            note;       // vial_rt_note: fails nothing; once per place and code
+} vial_rt_error_t;
+
+#define VIAL_MAP_SCRATCH_DEPTH 8
+
+typedef struct vial_interp_t {
+    const vial_ir_t*            ir;
+    vial_sys_t*                 sys;        // NULL without a system
+    const struct md_system_t*   msys;
+    float*                      masses;     // each particle's mass in msys, made the first time a kernel asks
+    md_allocator_i*             alloc;      // what lives as long as the interpreter: static values
+    md_allocator_i*             temp;       // what lives for one frame: an arena, reset between frames
+    size_t                      max_elements;   // the most elements one value may have (R0105); 0 for the default
+    vial_val_t*                 vals;       // md_array by ssa
+    uint8_t*                    state;      // md_array by ssa: 0 not computed, 1 computed for this frame, 2 static
+    const vial_frame_t*         frame;      // the frame being evaluated, or NULL
+    vial_rt_error_t             error;      // the first error since the interpreter began
+    bool                        failed;     // an op failed: what is computed from it is not computed
+    vial_rt_error_t*            errors;     // md_array: every op that failed, once each, in the order they failed
+    uint8_t*                    live;       // md_array by op: what the outputs need
+    double*                     cell_ext;   // md_array by op: the cell extent its last spatial search was built with, 0 before one
+    // at(x, frame=i) reads another frame, in a step before the frames are evaluated: the caller loads it
+    bool                      (*load_frame)(void* user, int64_t index, vial_frame_t* out);
+    void*                       load_user;
+    // Called when a thread is done reading frames through load_user for now, before another thread may: a reader that
+    // belongs to one thread lets it go. NULL for none.
+    void                      (*load_release)(void* user);
+    // Over the trajectory (vial_interp_run): how each top-level op is evaluated, in which sweep over the frames, and
+    // the per-frame values kept for what reads them as a series
+    uint8_t*                    op_class;   // md_array by op: VIAL_OP_STATIC, VIAL_OP_PER_FRAME or VIAL_OP_ONCE
+    uint8_t*                    op_sweep;   // md_array by op: the sweep a per-frame op runs in, after which a once op runs
+    vial_val_t**                series;     // md_array by ssa: the value at each frame, or NULL when it is not kept
+    double*                     times;      // [num_frames], time() of each frame
+    int64_t                     num_frames;
+    uint8_t                     sweep;      // the sweep being run
+    vial_val_t*                 fold_state; // md_array by ssa of a fold's result: its state
+    uint8_t*                    fold_has;
+    // Progress and interruption, read and written from other threads: frames done of the frames to do, and a flag
+    // that stops vial_interp_run between frames
+    volatile uint64_t           frames_done;
+    volatile uint64_t           frames_total;
+    const volatile uint64_t*    stop;       // nonzero: stop, between frames or between a map's calls
+    bool                        interrupted;
+    // A map's calls are evaluated in a scratch arena per depth of maps in maps, reset after each call
+    md_allocator_i*             map_scratch[VIAL_MAP_SCRATCH_DEPTH];
+    uint32_t                    map_depth;
+    // Tests: only the plain paths, which the fast ones must agree with bit for bit: a map's calls one by one, never
+    // batched for a built-in; closest and farthest pairs by every pair; within() by a spatial search
+    bool                        plain;
+    // Drawing: shown(x, d) gives x with d attached (vial_val_t.drawn), which names, returns and calls keep and every
+    // other operation drops, and a map gathers its calls' drawings. For the IR as lowered, where shown() still is.
+    bool                        draw;
+    // Frames in parallel (vial_interp_run): interpreters of the same IR, each with a frame reader and a vial_sys of its
+    // own, one per thread_idx of the executor, which take chunks of a sweep's frames; the static part and what follows
+    // a sweep stay here. None: every frame here, in order. A sweep with a fold runs here too, its frames in order.
+    struct vial_interp_t*       workers;
+    size_t                      num_workers;
+    const md_executor_t*        executor;
+    // Values written out as each frame computes them (vial_interp_run): by ssa, NULL or where frame f's value goes,
+    // f * stream_count[v] elements of its dtype in; a missing float as NaN. Disjoint per frame, so any thread writes.
+    uint8_t**                   stream;
+    uint32_t*                   stream_count;
+    // A streamed population's summary over its members, written beside its row at each frame: by ssa, NULL or where
+    // it goes (vial_summarize)
+    struct vial_summary_t**     stream_summary;
+    // Frames done, per sweep: done[sweep][f] is set once the frame's values of that sweep are computed
+    uint8_t*                    frame_done[8];
+    uint32_t                    err_seq;    // errors so far at this frame
+    // The frame at() reads inside a def (a map over groups calls it per group and frame): kept, one, as its own copy
+    int64_t                     at_index;   // -1 for none
+    float*                      at_xyz;
+    size_t                      at_num_atoms;
+    vial_frame_t                at_frame;
+    // Volumes (volume.h) over the trajectory: by op, what a volume op of the top level adds its frames to, from every
+    // thread; NULL for other ops. Its value is made from it after its sweep.
+    struct vial_volume_t**      volumes;    // md_array by op
+} vial_interp_t;
+
+// The summary of a population at each frame, as v1 publishes it beside a series: <path>/mean, /variance (in the unit
+// squared) and /extent (min, max), [frames] each and [frames][2] for the extent. Periodic values are summarized around
+// the circle they lie on (period_end > period_beg). Missing members (NaN) are left out; a frame with none is NaN.
+typedef struct vial_summary_t {
+    float*  mean;
+    float*  var;
+    float*  ext;
+    float   period_beg, period_end;
+} vial_summary_t;
+
+// Summarizes the n values of frame f into s
+void vial_summarize(const vial_summary_t* s, int64_t f, const float* row, uint32_t n);
+
+// How a top-level op is evaluated over the trajectory: once; per frame; once after a sweep, from what it read; or, a
+// volume, added to per frame and made once after its sweep, nothing of it kept per frame
+enum { VIAL_OP_STATIC = 0, VIAL_OP_PER_FRAME = 1, VIAL_OP_ONCE = 2, VIAL_OP_VOLUME = 3 };
+
+bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, const struct md_system_t* msys, md_allocator_i* alloc);
+
+// Computes only what the given values need from now on, as hover and at() do; init marks what the outputs need
+void vial_interp_only(vial_interp_t* in, const vial_ssa_t* roots, size_t n);
+void vial_interp_free(vial_interp_t* in);
+
+// Computes the static values of the top level. An op that fails is recorded in in->errors, and what is computed from
+// it is not computed; the rest is. False when something failed.
+bool vial_interp_static(vial_interp_t* in);
+
+// Computes the top level for one frame, likewise; values of earlier frames are dropped. Static values are computed
+// first when they have not been. Trajectory values are not computed here.
+bool vial_interp_frame(vial_interp_t* in, const vial_frame_t* frame);
+
+// The value of v, as last computed; NULL when it was not
+const vial_val_t* vial_interp_value(const vial_interp_t* in, vial_ssa_t v);
+
+// Evaluates everything over num_frames frames, which in->load_frame gives: the static part, then sweeps over the
+// frames in order, each computing the per-frame values that what was computed after the sweep before lets it, and
+// after each sweep what reads whole series. False when something failed (in->errors).
+bool vial_interp_run(vial_interp_t* in, int64_t num_frames);
+
+// How vial_interp_run will evaluate each top-level op (in->op_class, in->op_sweep), before it runs: what the caller
+// needs to set up in->stream. vial_interp_run does it again.
+void vial_interp_classify(vial_interp_t* in);
+
+// After vial_interp_run: value v, computed over the trajectory, computed again over the frames where mask[f] is set,
+// from the per-frame values the run kept; into out, allocated with alloc. False when v is not such a value, reads no
+// per-frame value, or one it reads was not kept. The evaluation's own values are not touched.
+bool vial_interp_over_frames(const vial_interp_t* in, vial_ssa_t v, const uint8_t* mask, vial_val_t* out, md_allocator_i* alloc);
+
+// After vial_interp_run: volume v (sdf, density) made again over the frames where mask[f] is set, which it reads again
+// through load, a reader of the caller's, with what they need computed for each in an interpreter of its own; into
+// out, allocated with alloc. False when v is no volume the run set up.
+bool vial_interp_volume_over(const vial_interp_t* in, vial_ssa_t v, const uint8_t* mask, bool (*load)(void* user, int64_t index, vial_frame_t* out),
+                             void* load_user, vial_val_t* out, md_allocator_i* alloc);
+
+// The volume a volume op of the top level adds to, once its sweep has begun; NULL for other ops
+const struct vial_volume_t* vial_interp_volume(const vial_interp_t* in, vial_ssa_t v);
+
+// After vial_interp_run: the value of a per-frame value at frame f, or of a trajectory value (f ignored); NULL when it
+// was not computed or not kept
+const vial_val_t* vial_interp_at(const vial_interp_t* in, vial_ssa_t v, int64_t f);
+
+// ### KERNELS (kernels.c) ###
+// A kernel takes its arguments as runtime values and writes one result. It reports through the interpreter.
+
+typedef struct vial_kctx_t {
+    vial_interp_t*      in;
+    const vial_ir_op_t* op;
+    const vial_type_t*  type;       // the result's type
+    md_allocator_i*     alloc;      // where the result's data goes
+    int64_t             map_index;  // in a built-in mapped by its kinds: the call's position, for distinct=; else -1
+    const void*         core;       // what a built-in's per-element function needs beyond its arguments
+} vial_kctx_t;
+
+bool vial_rt_fail(vial_kctx_t* k, const char code[6], const char* fmt, ...);
+
+// A runtime diagnostic that fails nothing: the value is missing where it happens, as R0101 has it, and evaluation goes
+// on. Recorded once per place, with the first frame it happens in.
+void vial_rt_note(vial_kctx_t* k, const char code[6], const char* fmt, ...);
+
+// The default of vial_interp_t.max_elements: 2^28, a GB of floats
+#define VIAL_MAX_ELEMENTS ((size_t)1 << 28)
+
+// Whether a value of count elements fits the evaluation's limit; R0105 when it does not
+bool vial_k_room(vial_kctx_t* k, size_t count);
+
+// A value of dtype and shape, zeroed: false, with R0105, when it would exceed the limit
+bool vial_k_make(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* dims, vial_val_t* out);
+// The same, its data zeroed: for a kernel that writes only some elements (eye) or accumulates
+bool vial_k_make_zero(vial_kctx_t* k, uint8_t dtype, uint8_t ndim, const uint32_t* dims, vial_val_t* out);
+
+bool vial_k_unary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, vial_val_t* out);
+bool vial_k_not(vial_kctx_t* k, const vial_val_t* a, vial_val_t* out);
+bool vial_k_binary(vial_kctx_t* k, uint16_t op, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
+// One element of + - * / // % ** in VIAL_DT_FLOAT (a and b rounded to float first) or VIAL_DT_FLOAT64, exactly as
+// vial_k_binary computes it. The check folds known values with it, so a value known when compiling is the value
+// evaluation would give.
+double vial_k_arith(uint16_t op, uint8_t dtype, double a, double b);
+
+// A map's calls of closest_pair or farthest_pair at once, as a map whose calls are only that gives them: call c pairs
+// group ia[c] of A with group ib[c] of B, each group a set's positions. out is float[count], made by the caller; its
+// distances have the bits the calls one by one give, and a call with no pair is missing.
+// VIAL_IR_PAIRS: red (vial_pairs_t) over axis of the distances between x [n][1] and y [m], or their test against r
+bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, const vial_val_t* x, const vial_val_t* y, const vial_val_t* r,
+                  vial_val_t* out);
+
+bool vial_k_pair_batch(vial_kctx_t* k, bool closest, const vial_sets_t* A, const vial_sets_t* B, const uint32_t* ia, const uint32_t* ib,
+                       size_t count, vial_val_t* out);
+bool vial_k_fma(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, const vial_val_t* c, vial_val_t* out);
+bool vial_k_compare(vial_kctx_t* k, uint16_t cmp, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
+bool vial_k_logic(vial_kctx_t* k, uint16_t kw, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
+bool vial_k_setop(vial_kctx_t* k, uint16_t sub, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
+bool vial_k_convert(vial_kctx_t* k, const vial_val_t* a, uint8_t dtype, vial_val_t* out);
+bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* items, uint32_t num, vial_val_t* out);
+bool vial_k_stack(vial_kctx_t* k, const vial_val_t* items, uint32_t n, vial_val_t* out);
+bool vial_k_kind(vial_kctx_t* k, uint16_t kind, const vial_val_t* a, vial_val_t* out);
+
+bool vial_k_matmul(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* b, vial_val_t* out);
+
+// A built-in, its arguments by parameter (NULL when not given) and the parameters' names
+bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n, vial_val_t* out);
+// What built-in name draws of its own with these arguments and its value: a drawing into out, false when it draws
+// nothing of its own and is drawn by its type
+bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const str_t* names, uint32_t n,
+                         const vial_val_t* result, vial_val_t* out);
+
+// A value as dtype, converted elementwise; the same value when it already is
+vial_val_t vial_val_as(const vial_val_t* a, uint8_t dtype, md_allocator_i* alloc);

@@ -9,7 +9,6 @@
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_bitset.h>
-#include <core/md_bitop.inl>
 #include <core/md_os.h>
 #include <md_script.h>
 #include <md_filter.h>
@@ -139,22 +138,22 @@ UTEST_F_SETUP(script) {
 
     utest_fixture->amy.alloc = utest_fixture->arena;
     md_system_state_t amy_state = { .alloc = utest_fixture->arena };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, &amy_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
-    md_util_system_infer(&utest_fixture->amy, &amy_state, MD_UTIL_INFER_ALL);
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, &amy_state, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
+    md_util_system_infer(&utest_fixture->amy, &amy_state, MD_UTIL_INFER_ALL, NULL);
 
     utest_fixture->ala.alloc = utest_fixture->arena;
     md_system_state_t ala_state = { .alloc = utest_fixture->arena };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
     // Its models are the frames the evaluations below step through.
     ASSERT_TRUE(md_pdb_system_publish_run(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), SCRIPT_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    md_util_system_infer(&utest_fixture->ala, &ala_state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&utest_fixture->ala, &ala_state, MD_UTIL_INFER_ALL, NULL);
 
     // A triclinic cell, not just a box. Every other system in this fixture is orthorhombic, which
     // is exactly the shape that hides mistakes in the periodic neighbour walk.
     utest_fixture->npt.alloc = utest_fixture->arena;
     md_system_state_t npt_state = { .alloc = utest_fixture->arena };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro")));
-    md_util_system_infer(&utest_fixture->npt, &npt_state, MD_UTIL_INFER_ALL);
+    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &npt_state, STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
+    md_util_system_infer(&utest_fixture->npt, &npt_state, MD_UTIL_INFER_ALL, NULL);
 }
 
 UTEST_F_TEARDOWN(script) {
@@ -208,6 +207,12 @@ static uint64_t make_bits(const char* bit_str) {
     return bits;
 }
 
+// Compare the first num_bits bits of a and b
+static bool bits64_equal(uint64_t a, uint64_t b, uint64_t num_bits) {
+    const uint64_t mask = num_bits >= 64 ? ~0ULL : ((1ULL << num_bits) - 1);
+    return (a & mask) == (b & mask);
+}
+
 static void print_bits(uint64_t* bits, uint64_t num_bits) {
     for (uint64_t i = 0; i < num_bits; ++i) {
         const uint64_t blk_idx = i / 64;
@@ -234,7 +239,7 @@ static bool compare_selection(const char* exprA, const char* exprB) {
 
     uint64_t a_bits = bitset_bits64(a);
     uint64_t b_bits = bitset_bits64(b);
-    bool cmp_res = bit_cmp(&a_bits, &b_bits, 0, ATOM_COUNT);
+    bool cmp_res = bits64_equal(a_bits, b_bits, ATOM_COUNT);
     if (!cmp_res) {
         printf("Got (A):\n");
         print_bits(&a_bits, ATOM_COUNT);
@@ -1174,7 +1179,7 @@ static bool test_selection(const char* expr, const char* ref_bit_str) {
         goto done;
     }
     uint64_t bits = bitset_bits64(bf);
-    bool cmp_res = bit_cmp(&bits, &ref, 0, ATOM_COUNT);
+    bool cmp_res = bits64_equal(bits, ref, ATOM_COUNT);
     if (!cmp_res) {
         printf("Got:\n");
         print_bits(&bits, ATOM_COUNT);
@@ -2399,7 +2404,7 @@ UTEST(script, attr_reads_a_temporal_attribute_at_the_frame) {
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
     ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
 
     md_attributes_t* t = &sys.attributes;
@@ -2521,7 +2526,7 @@ UTEST(script, attr_patterns) {
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
     ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
 
     md_attributes_t* t = &sys.attributes;
@@ -4735,7 +4740,7 @@ UTEST(script, completion_attribute_paths) {
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
     ASSERT_TRUE(md_trr_system_publish_run(&sys, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_attributes_t* t = &sys.attributes;
     const md_attribute_t* run_time = md_attributes_find(t, STR_LIT("run/t/time"));
@@ -7040,8 +7045,8 @@ UTEST(script, bondsets) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(bonds_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(bonds_site_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
     // A hydrogen bond a user marks, from a water hydrogen to O2
@@ -7218,8 +7223,8 @@ UTEST(script, bond_delta) {
     md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t ref = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, str_from_cstr(bonds_water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &ref, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, str_from_cstr(bonds_water_pair_pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &ref, MD_UTIL_INFER_ALL, NULL));
     ASSERT_EQ(4, (int)sys.bond.count);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);

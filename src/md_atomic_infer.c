@@ -24,6 +24,7 @@ static const Mapping predefined_mappings[] = {
     {STR_INIT("SOD:NA"),MD_Z_Na},
     {STR_INIT("K:K"),   MD_Z_K},
     {STR_INIT("POT:K"), MD_Z_K},
+    {STR_INIT("POT:POT"), MD_Z_K},  // CHARMM names the ion as its residue
     {STR_INIT("CL:CL"), MD_Z_Cl},
     {STR_INIT("CLA:CL"),MD_Z_Cl},
     {STR_INIT("CLA:CLA"),MD_Z_Cl},

@@ -1,6 +1,7 @@
 ﻿#include "ubench.h"
 
 #include <md_gro.h>
+#include <md_system.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_linear_allocator.h>
@@ -20,10 +21,12 @@ UBENCH_EX(gro, load) {
     UBENCH_SET_BYTES(md_file_size(file));
     md_file_close(&file);
 
+    // The system of the file: what loading it is
     UBENCH_DO_BENCHMARK() {
         md_arena_allocator_reset(alloc);
-        md_gro_data_t gro = {0};
-        md_gro_data_parse_file(&gro, path, alloc);
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        md_gro_system_init_from_file(&sys, &st, path, NULL);
     }
 
     md_arena_allocator_destroy(alloc);
@@ -37,17 +40,17 @@ UBENCH_EX(gro, postprocess) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
-    if (!md_gro_system_init_from_file(&sys, &sys_state, path)) {
+    if (!md_gro_system_init_from_file(&sys, &sys_state, path, NULL)) {
         MD_LOG_ERROR("Failed to load system for GRO postprocess benchmark\n");
         md_free(md_get_heap_allocator(), buffer, capacity);
         return;
     }
 
-    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL, NULL);
 
     size_t reset_pos = md_linear_allocator_get_pos(alloc);
     UBENCH_DO_BENCHMARK() {
-        md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_BOND_BIT);
+        md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_BOND_BIT, NULL);
         md_system_reset(&sys);
         md_linear_allocator_set_pos_back(alloc, reset_pos);
     }

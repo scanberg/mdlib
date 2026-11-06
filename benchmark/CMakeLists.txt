@@ -48,3 +48,12 @@ add_custom_target(md_topo_gto_bench_rev
     VERBATIM)
 add_dependencies(md_topo_gto_bench md_topo_gto_bench_rev)
 target_include_directories(md_topo_gto_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+# How structure files (PDB, GRO) load over threads: best and median per thread count, the speedup, and a hash of the
+# system each count loads (see bench_load.c). Its own executable, which takes the files to load.
+add_executable(md_load_bench bench_load.c)
+target_compile_options(md_load_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+target_link_options(md_load_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
+target_link_libraries(md_load_bench PRIVATE mdlib $<$<PLATFORM_ID:Windows>:psapi>)
+add_dependencies(md_load_bench md_topo_gto_bench_rev)
+target_include_directories(md_load_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

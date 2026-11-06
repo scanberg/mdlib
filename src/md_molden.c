@@ -12,6 +12,7 @@
 #include <core/md_log.h>
 #include <core/md_os.h>
 #include <core/md_parse.h>
+#include <core/md_reader.h>
 #include <core/md_str.h>
 #include <core/md_unit.h>
 #include <core/md_vec_math.h>
@@ -73,6 +74,11 @@ typedef struct molden_t {
     size_t                     num_modes;
 
     bool has_gto;
+
+    // How the file normalised its Cartesian functions of l >= 2 (molden_cartesian_convention): each on its
+    // own (false; the format's convention, and the default) or all of a shell with its (l,0,0) monomial's
+    // constant (true; Turbomole, CFOUR 2.1, PSI4 <= 1.3.2)
+    bool cart_shared;
 } molden_t;
 
 // ---------------------------------------------------------------------------
@@ -207,7 +213,7 @@ static void molden_push_shell(molden_t* molden, uint32_t atom_idx, uint32_t l, c
     md_array_push(molden->shell, shell, molden->alloc);
 }
 
-static bool molden_parse_atoms(molden_t* molden, md_buffered_reader_t* reader, str_t arg) {
+static bool molden_parse_atoms(molden_t* molden, md_reader_i* reader, str_t arg) {
     // "[Atoms] Angs", "[Atoms] (AU)", "[ATOMS] AU" - the parentheses are decoration. Angstrom is
     // the default, which is what an argument-less header means.
     str_t a = arg;
@@ -217,12 +223,12 @@ static bool molden_parse_atoms(molden_t* molden, md_buffered_reader_t* reader, s
     const bool bohr = str_eq_cstr_ignore_case(a, "au") || str_eq_cstr_ignore_case(a, "bohr");
 
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, sec_arg;
         if (molden_section_header(&name, &sec_arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
 
         str_t tok[8];
         str_t rest = line;
@@ -255,7 +261,7 @@ static bool molden_parse_atoms(molden_t* molden, md_buffered_reader_t* reader, s
 // 'sp' is a shell with TWO coefficient columns sharing one set of exponents; it becomes an s shell
 // and a p shell in that order, which is also the order its four AOs appear in, so nothing downstream
 // has to know it existed.
-static bool molden_parse_gto(molden_t* molden, md_buffered_reader_t* reader) {
+static bool molden_parse_gto(molden_t* molden, md_reader_i* reader) {
     const size_t num_atoms = md_array_size(molden->atomic_number);
     if (num_atoms == 0) {
         MD_LOG_ERROR("MOLDEN: [GTO] appears before [Atoms]");
@@ -270,12 +276,12 @@ static bool molden_parse_gto(molden_t* molden, md_buffered_reader_t* reader) {
     bool have_atom = false;
 
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
 
         str_t rest = str_trim(line);
         if (str_empty(rest)) {
@@ -328,7 +334,7 @@ static bool molden_parse_gto(molden_t* molden, md_buffered_reader_t* reader) {
 
         for (size_t p = 0; p < num_prim; ++p) {
             str_t prim_line;
-            if (!md_buffered_reader_extract_line(&prim_line, reader)) {
+            if (!md_reader_extract_line(reader, &prim_line)) {
                 MD_LOG_ERROR("MOLDEN: [GTO] ends inside a contraction");
                 return false;
             }
@@ -359,7 +365,7 @@ static bool molden_parse_gto(molden_t* molden, md_buffered_reader_t* reader) {
 // [MO] is a run of blocks, each a few key lines followed by "<ao index> <value>" pairs. The keys
 // may come in any order and any of them may be absent, so a block ends when a key line appears
 // after at least one coefficient has been read - which is the only marker the format gives.
-static bool molden_parse_mo(molden_t* molden, md_buffered_reader_t* reader, size_t num_ao) {
+static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao) {
     if (num_ao == 0) {
         MD_LOG_ERROR("MOLDEN: [MO] appears before a basis is known");
         return false;
@@ -370,12 +376,12 @@ static bool molden_parse_mo(molden_t* molden, md_buffered_reader_t* reader, size
     size_t num_coeff = 0;
 
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
 
         str_t s = str_trim(line);
         if (str_empty(s)) {
@@ -437,15 +443,15 @@ static bool molden_parse_mo(molden_t* molden, md_buffered_reader_t* reader, size
 }
 
 // [FR-NORM-COORD] is "vibration <n>" followed by one displacement per atom, in bohr.
-static void molden_parse_normal_modes(molden_t* molden, md_buffered_reader_t* reader) {
+static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
     const size_t num_atoms = md_array_size(molden->atomic_number);
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
 
         str_t s = str_trim(line);
         if (str_empty(s)) {
@@ -456,7 +462,7 @@ static void molden_parse_normal_modes(molden_t* molden, md_buffered_reader_t* re
         }
         for (size_t a = 0; a < num_atoms; ++a) {
             str_t disp_line;
-            if (!md_buffered_reader_extract_line(&disp_line, reader)) {
+            if (!md_reader_extract_line(reader, &disp_line)) {
                 return;
             }
             str_t tok[4];
@@ -473,14 +479,14 @@ static void molden_parse_normal_modes(molden_t* molden, md_buffered_reader_t* re
     }
 }
 
-static void molden_parse_number_series(md_array(double)* out, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static void molden_parse_number_series(md_array(double)* out, md_reader_i* reader, md_allocator_i* alloc) {
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             break;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
         str_t s = str_trim(line);
         if (str_empty(s)) {
             continue;
@@ -493,19 +499,19 @@ static void molden_parse_number_series(md_array(double)* out, md_buffered_reader
     }
 }
 
-static void molden_skip_section(md_buffered_reader_t* reader) {
+static void molden_skip_section(md_reader_i* reader) {
     str_t line;
-    while (md_buffered_reader_peek_line(&line, reader)) {
+    while (md_reader_peek_line(reader, &line)) {
         str_t name, arg;
         if (molden_section_header(&name, &arg, line)) {
             return;
         }
-        md_buffered_reader_skip_line(reader);
+        md_reader_skip_line(reader);
     }
 }
 
 static bool molden_parse(molden_t* molden, str_t str) {
-    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+    md_reader_i reader = md_reader_from_str(str);
 
     // [MO] can only be read once the basis is known, and the format does not promise an order, so
     // the section positions are noted on the first pass and [MO] is read on a second.
@@ -513,7 +519,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
 
     bool seen_header = false;
     str_t line;
-    while (md_buffered_reader_extract_line(&line, &reader)) {
+    while (md_reader_extract_line(&reader, &line)) {
         str_t name, arg;
         if (!molden_section_header(&name, &arg, line)) {
             continue;
@@ -523,7 +529,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
             seen_header = true;
         } else if (str_eq_cstr_ignore_case(name, "title")) {
             str_t title_line;
-            if (md_buffered_reader_peek_line(&title_line, &reader)) {
+            if (md_reader_peek_line(&reader, &title_line)) {
                 str_t n, a;
                 if (!molden_section_header(&n, &a, title_line)) {
                     molden->title = str_copy(str_trim(title_line), molden->alloc);
@@ -566,7 +572,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
             molden_parse_normal_modes(molden, &reader);
         } else if (str_eq_cstr_ignore_case(name, "mo")) {
             // Remember where it starts; the basis may not have been read yet.
-            mo_section = (str_t){ reader.str.ptr, reader.str.len };
+            mo_section = (str_t){ reader.cur, (size_t)(reader.end - reader.cur) };
             molden_skip_section(&reader);
         } else {
             molden_skip_section(&reader);
@@ -586,7 +592,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
             MD_LOG_ERROR("MOLDEN: file has [MO] but no [GTO]");
             return false;
         }
-        md_buffered_reader_t mo_reader = md_buffered_reader_from_str(mo_section);
+        md_reader_i mo_reader = md_reader_from_str(mo_section);
         if (!molden_parse_mo(molden, &mo_reader, molden_num_file_ao(molden))) {
             return false;
         }
@@ -660,6 +666,11 @@ static bool molden_gto_basis_extract(md_gto_basis_t* out, const molden_t* molden
 //
 // Per shell, because the two conventions can be mixed within one file and because a spherical shell
 // changes LENGTH on the way through: (2l+1) coefficients in, (l+1)(l+2)/2 out.
+//
+// A Cartesian shell's coefficients are taken as they are when the file normalised each Cartesian function on
+// its own, as the format does (Molden itself, PySCF, IOData) and as md_gto does: only the order changes. A
+// file written against functions that share the (l,0,0) monomial's normalisation (molden->cart_shared, see
+// molden_cartesian_convention) has its coefficients scaled onto md_gto's by md_qm_cart_coeff_factor.
 static bool molden_coefficients_to_cartesian(double* dst, size_t dst_cap, const molden_t* molden, const double* src, size_t src_count) {
     size_t si = 0, ci = 0;
 
@@ -705,7 +716,7 @@ static bool molden_coefficients_to_cartesian(double* dst, size_t dst_cap, const 
                 if (c >= num_cart) {
                     return false;
                 }
-                dst[ci + c] = src[si + k] * md_qm_cart_coeff_factor(l, c);
+                dst[ci + c] = molden->cart_shared ? src[si + k] * md_qm_cart_coeff_factor(l, c) : src[si + k];
             }
             si += num_cart;
         }
@@ -731,6 +742,126 @@ static str_t molden_ao_convention(const molden_t* molden, char* buf, size_t cap)
         return (str_t){0};
     }
     return str_from_cstrn(buf, (size_t)len);
+}
+
+static bool molden_has_cartesian_beyond_p(const molden_t* molden) {
+    for (size_t s = 0; s < md_array_size(molden->shell); ++s) {
+        if (molden->shell[s].l >= 2 && !molden_shell_is_pure(molden, molden->shell[s].l)) return true;
+    }
+    return false;
+}
+
+// HOW THE FILE NORMALISED ITS CARTESIAN FUNCTIONS. The format normalises each Cartesian function on its own -
+// Molden itself, PySCF's writer and reader, IOData - and so does md_gto: then a file's coefficients are taken as
+// they are. Some programs write them against functions that all share their shell's (l,0,0) normalisation
+// instead, so that xy is sqrt(3) smaller than xx: Turbomole, CFOUR 2.1, PSI4 <= 1.3.2 (which IOData corrects on
+// reading, as this does). The file does not say which, and the two differ only in the coefficients of the
+// Cartesian functions of l >= 2 that are not powers of one coordinate. The orbitals do: a file's orbitals are
+// orthonormal, and only in the convention they were written in. So where the file has Cartesian shells of
+// l >= 2, the norms <psi|S|psi> of the orbitals with the most weight on those functions are compared under both,
+// and the other convention is taken only when it is clearly the one they are normalised in. A file normalised in
+// neither keeps the format's, with a warning.
+#define MOLDEN_CONVENTION_ORBITALS 16
+#define MOLDEN_CONVENTION_MAX_AO   4096    // the overlap is num_ao^2 doubles; past this the format's is assumed
+
+static void molden_cartesian_convention(molden_t* molden, const md_gto_basis_t* basis, md_allocator_i* temp) {
+    molden->cart_shared = false;
+    const size_t num_ao = md_gto_basis_num_ao(basis);
+    const size_t num_orb = md_array_size(molden->orbital);
+    if (num_orb == 0 || num_ao == 0) return;
+
+    // the factor each md_gto AO's coefficient takes in the shared convention; 1 where the two agree
+    md_temp_scope_t scope = md_temp_begin_avoid(temp);
+    double* fac = md_temp_alloc_array(scope, double, num_ao);
+    bool any = false;
+    size_t ao = 0;
+    for (size_t s = 0; s < md_array_size(molden->shell); ++s) {
+        const uint32_t l = molden->shell[s].l;
+        const bool cart = !molden_shell_is_pure(molden, l);
+        for (uint32_t c = 0; c < md_gto_num_cart_ao(l); ++c, ++ao) {
+            fac[ao] = (cart && l >= 2) ? md_qm_cart_coeff_factor(l, c) : 1.0;
+            any = any || fac[ao] != 1.0;
+        }
+    }
+    if (!any || ao != num_ao) {
+        md_temp_end(scope);
+        return;
+    }
+    if (num_ao > MOLDEN_CONVENTION_MAX_AO) {
+        MD_LOG_INFO("MOLDEN: %zu atomic orbitals; each Cartesian function is taken as normalised on its own, the format's convention, without checking", num_ao);
+        md_temp_end(scope);
+        return;
+    }
+
+    // every orbital in the format's convention, and the ones with the most weight where the two differ
+    const size_t num_file_ao = molden_num_file_ao(molden);
+    double* C = md_temp_alloc_array(scope, double, num_orb * num_ao);
+    double* S = md_temp_alloc_array(scope, double, num_ao * num_ao);
+    dvec3_t* xyz = md_temp_alloc_array(scope, dvec3_t, md_array_size(molden->coord));
+    if (!C || !S || !xyz) {
+        md_temp_end(scope);
+        return;
+    }
+    size_t pick[MOLDEN_CONVENTION_ORBITALS];
+    double weight[MOLDEN_CONVENTION_ORBITALS];
+    size_t num_pick = 0;
+    for (size_t i = 0; i < num_orb; ++i) {
+        double* c = C + i * num_ao;
+        if (!molden_coefficients_to_cartesian(c, num_ao, molden, molden->orbital[i].coefficient, num_file_ao)) {
+            md_temp_end(scope);
+            return;    // reported where the orbitals are published
+        }
+        double w = 0.0;
+        for (size_t a = 0; a < num_ao; ++a) if (fac[a] != 1.0) w += c[a] * c[a];
+        // keep the MOLDEN_CONVENTION_ORBITALS largest
+        size_t at = num_pick;
+        if (num_pick < MOLDEN_CONVENTION_ORBITALS) num_pick++;
+        else if (w <= weight[num_pick - 1]) continue;
+        else at = num_pick - 1;
+        while (at > 0 && weight[at - 1] < w) { weight[at] = weight[at - 1]; pick[at] = pick[at - 1]; --at; }
+        weight[at] = w;
+        pick[at] = i;
+    }
+    for (size_t a = 0; a < md_array_size(molden->coord); ++a) {
+        xyz[a] = (dvec3_t){ molden->coord[a].x * 1.8897261246257702, molden->coord[a].y * 1.8897261246257702, molden->coord[a].z * 1.8897261246257702 };
+    }
+    if (num_pick == 0 || weight[0] == 0.0 || md_qm_compute_overlap(S, basis, xyz, md_array_size(molden->coord)) != num_ao) {
+        md_temp_end(scope);
+        return;
+    }
+
+    // the largest |<psi|S|psi> - 1| of those orbitals in either convention
+    double* sc = md_temp_alloc_array(scope, double, num_ao);
+    double* c2 = md_temp_alloc_array(scope, double, num_ao);
+    double err[2] = {0.0, 0.0};
+    for (size_t k = 0; k < num_pick; ++k) {
+        const double* c = C + pick[k] * num_ao;
+        for (int conv = 0; conv < 2; ++conv) {
+            for (size_t a = 0; a < num_ao; ++a) c2[a] = conv ? c[a] * fac[a] : c[a];
+            double n = 0.0;
+            for (size_t a = 0; a < num_ao; ++a) {
+                const double* row = S + a * num_ao;
+                double v = 0.0;
+                for (size_t b = 0; b < num_ao; ++b) v += row[b] * c2[b];
+                sc[a] = v;
+            }
+            for (size_t a = 0; a < num_ao; ++a) n += c2[a] * sc[a];
+            err[conv] = fmax(err[conv], fabs(n - 1.0));
+        }
+    }
+    // The other convention only when the orbitals are normalised in it and clearly not in the format's: the
+    // basis is float, which leaves norms ~1e-7 from 1 in a file written to many digits
+    molden->cart_shared = err[0] > 1.0e-5 && err[1] < 0.25 * err[0];
+    const double chosen = molden->cart_shared ? err[1] : err[0];
+    if (molden->cart_shared) {
+        MD_LOG_INFO("MOLDEN: the Cartesian functions are normalised as a shell, not each on its own (as Turbomole, CFOUR 2.1 and PSI4 <= 1.3.2 write them): "
+                    "the orbitals are normalised to %.1e that way, %.1e the format's", err[1], err[0]);
+    }
+    if (chosen > 1.0e-3) {
+        MD_LOG_INFO("MOLDEN: the orbitals are not normalised with the Cartesian functions normalised either way (%.1e each on its own, %.1e as a shell); "
+                       "read as the format has them", err[0], err[1]);
+    }
+    md_temp_end(scope);
 }
 
 static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md_allocator_i* temp) {
@@ -904,7 +1035,7 @@ static bool molden_system_begin(md_system_t* sys, md_system_state_t* state, cons
     return true;
 }
 
-static bool molden_publish(md_system_t* sys, const molden_t* molden, md_allocator_i* temp) {
+static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* temp) {
     if (!sys->attributes.alloc) {
         MD_LOG_ERROR("Attribute table allocator not set; the system has not been initialised");
         return false;
@@ -924,6 +1055,12 @@ static bool molden_publish(md_system_t* sys, const molden_t* molden, md_allocato
         md_gto_basis_t basis = {0};
         if (molden_gto_basis_extract(&basis, molden, temp)) {
             md_qm_publish_basis(sys, &basis);
+            molden_cartesian_convention(molden, &basis, temp);
+            if (molden->cart_shared) {
+                md_qm_publish_str(sys, STR_LIT("molden/cartesian_normalisation"), STR_LIT("Cartesian Normalisation"), STR_LIT("shell"));
+            } else if (molden_has_cartesian_beyond_p(molden)) {
+                md_qm_publish_str(sys, STR_LIT("molden/cartesian_normalisation"), STR_LIT("Cartesian Normalisation"), STR_LIT("function"));
+            }
         }
         if (!molden_publish_orbitals(sys, molden, temp)) {
             return false;

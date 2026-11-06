@@ -68,7 +68,7 @@ UTEST(mmcif, 8g7u) {
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
     bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path);
     EXPECT_TRUE(result);
-    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL, NULL);
 
     if (result) {
         EXPECT_EQ(14229, sys.atom.count);
@@ -265,11 +265,11 @@ UTEST(mmcif, tokenizer) {
         str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-        char* buf = md_temp_alloc(temp, MEGABYTES(1));
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+        md_file_reader_t reader;
+        ASSERT_TRUE(md_file_reader_init(&reader, file, MEGABYTES(1), alloc));
 
         mmcif_parse_state_t state = {
-            .reader = &reader,
+            .reader = &reader.r,
             .sb = md_str_writer_create(alloc),
         };
 
@@ -307,11 +307,11 @@ UTEST(mmcif, tokenizer) {
         str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/8g7u.cif");
         md_file_t file = {0};
         ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-        char* buf = md_temp_alloc(temp, MEGABYTES(1));
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+        md_file_reader_t reader;
+        ASSERT_TRUE(md_file_reader_init(&reader, file, MEGABYTES(1), alloc));
 
         mmcif_parse_state_t state = {
-            .reader = &reader,
+            .reader = &reader.r,
             .sb = md_str_writer_create(alloc),
         };
 
@@ -378,7 +378,7 @@ UTEST(mmcif, parse_section) {
     );
 
     {
-        md_buffered_reader_t reader = md_buffered_reader_from_str(section);
+        md_reader_i reader = md_reader_from_str(section);
         mmcif_parse_state_t state = {
             .reader = &reader,
             .sb = md_str_writer_create(alloc),
@@ -444,7 +444,7 @@ UTEST(mmcif, parse_section) {
     );
 
     {
-        md_buffered_reader_t reader = md_buffered_reader_from_str(item_looped);
+        md_reader_i reader = md_reader_from_str(item_looped);
         mmcif_parse_state_t state = {
             .reader = &reader,
             .sb = md_str_writer_create(alloc),
@@ -560,11 +560,11 @@ UTEST(mmcif, advance_to_next_control) {
     str_t path = STR_INIT(MD_UNITTEST_DATA_DIR "/1fez.cif");
     md_file_t file = {0};
     ASSERT_TRUE(md_file_open(&file, path, MD_FILE_READ));
-    char* buf = md_temp_alloc(temp, MEGABYTES(1));
-    md_buffered_reader_t reader = md_buffered_reader_from_file(buf, MEGABYTES(1), file);
+    md_file_reader_t reader;
+    ASSERT_TRUE(md_file_reader_init(&reader, file, MEGABYTES(1), alloc));
 
     mmcif_parse_state_t state = {
-        .reader = &reader,
+        .reader = &reader.r,
         .sb = md_str_writer_create(alloc),
     };
 
@@ -653,7 +653,7 @@ UTEST(mmcif, chain_breaks) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif")));
-    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
 
     const struct {
         const char* chain;

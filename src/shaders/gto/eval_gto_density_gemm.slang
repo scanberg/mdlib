@@ -4,7 +4,7 @@
 //
 //   rho_p = sum_mu Phi[p][mu] * X[p][mu],   X = Phi * D_b
 //
-// for every 8x8x8 block b of the grid, where Phi (512 voxels x n_b AOs) holds the
+// for every 8x8x8 block b of the grid (32x16x1 of a grid of one layer: BLOCK_X, _Y, _Z), where Phi (512 voxels x n_b AOs) holds the
 // AOs that survive screening for that block and D_b is the matching sub-matrix of D.
 //
 // Entry points (all share one argument struct):
@@ -36,15 +36,15 @@ bool shell_passes(uint s_in, float3 aabb_min, float3 aabb_max) {
 }
 
 void block_aabb(uint3 blk, out float3 aabb_min, out float3 aabb_max) {
-    aabb_min = float3( blk             * uint3(8u, 8u, 8u)) * args.step.xyz;
-    aabb_max = float3((blk + uint3(1u)) * uint3(8u, 8u, 8u)) * args.step.xyz;
+    aabb_min = float3( blk             * BLOCK_SHAPE) * args.step.xyz;
+    aabb_max = float3((blk + uint3(1u)) * BLOCK_SHAPE) * args.step.xyz;
 }
 
 // ---------------------------------------------------------------------------
 // Pass 0: counts
 // ---------------------------------------------------------------------------
 [shader("compute")]
-[numthreads(8, 8, 8)]
+[numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z)]
 void count_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     float3 aabb_min, aabb_max;
     block_aabb(gid, aabb_min, aabb_max);
@@ -76,7 +76,7 @@ groupshared uint2 chunk_list[512];      // (global shell, local AO offset) of th
 groupshared uint  phi_na_written;
 
 [shader("compute")]
-[numthreads(8, 8, 8)]
+[numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z)]
 void phi_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
     const uint b = gid.x;
     if (b >= args.num_blocks) return;   // uniform per group
@@ -91,7 +91,7 @@ void phi_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : 
     float3 aabb_min, aabb_max;
     block_aabb(blk, aabb_min, aabb_max);
 
-    const uint3  vox   = blk * uint3(8u, 8u, 8u) + gtid;
+    const uint3  vox   = blk * BLOCK_SHAPE + gtid;
     const float3 coord = mul(args.index_to_world, float4(float3(vox), 1.0f)).xyz;
 
     if (tid == 0u) phi_na_written = 0u;

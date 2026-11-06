@@ -1,12 +1,14 @@
 ﻿#include "utest.h"
 
 #include <stdio.h>
+#include <math.h>
 
 #include <md_system.h>
 #include <core/md_unit.h>
 #include <md_pdb.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
+#include <core/md_executor.h>
 
 // Is this value the NAN a loader writes for "no value for this atom"? A question about the BUILD,
 // not about attributes, which is why it lives here and not in md_system.h: mdlib compiles with
@@ -125,6 +127,62 @@ UTEST(attributes, create_and_reject) {
 
     md_attributes_free(&t);
     EXPECT_EQ(md_attributes_count(&t), 0u);
+}
+
+// A reserved attribute is written where it is kept: its storage stays put while the table changes around it, and a
+// column of the atoms is kept or dropped on commit as publish would have it
+UTEST(attributes, reserve) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+
+    void* data = NULL;
+    const md_attribute_id_t id = md_attributes_reserve(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/x"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1000), .unit = md_unit_none()}, &data);
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, id);
+    ASSERT_TRUE(data != NULL);
+    const uint64_t version = md_attributes_version(&t, id);
+
+    // Others created before and after it in path order: the table's array moves, the storage does not
+    for (int i = 0; i < 200; ++i) {
+        char path[32];
+        snprintf(path, sizeof(path), "%s/%03d", i % 2 ? "a" : "z", i);
+        md_attributes_create(&t, &(md_attribute_desc_t){.path = str_from_cstr(path), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none()});
+    }
+    EXPECT_EQ(data, md_attributes_get(&t, id)->data);
+    float* x = (float*)data;
+    for (int i = 0; i < 1000; ++i) x[i] = (float)i * 0.5f;
+    EXPECT_NE(version, md_attributes_touch(&t, id));
+    float got[1000];
+    ASSERT_EQ(1000u, md_attribute_extract_f32(got, 1000, md_attributes_get(&t, id), md_attribute_slice_all(), md_unit_none()));
+    EXPECT_EQ(499.5f, got[999]);
+
+    // Of numbers, without data or a provider; not at a path taken
+    void* none = (void*)1;
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_reserve(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/name"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_STR, 4), .unit = md_unit_none()}, &none));
+    EXPECT_TRUE(none == NULL);
+    const float four[4] = {0};
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_reserve(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/y"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none(), .data = four, .byte_size = sizeof(four)}, &none));
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_reserve(&t, &(md_attribute_desc_t){.path = STR_INIT("atom/x"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 4), .unit = md_unit_none()}, &none));
+
+    // Columns of the atoms: kept where they say something, dropped where every value is one, or none
+    md_attribute_id_t col = MD_ATTRIBUTE_INVALID;
+    float* v = md_attributes_reserve_atom_column(&t, STR_LIT("atom/velocity"), md_unit_none(), 3, 100, &col);
+    ASSERT_TRUE(v != NULL);
+    for (int i = 0; i < 300; ++i) v[i] = (float)(i % 7);
+    EXPECT_EQ(col, md_attributes_commit_atom_column(&t, col));
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/velocity")) != NULL);
+
+    float* o = md_attributes_reserve_atom_column(&t, STR_LIT("atom/occupancy"), md_unit_none(), 1, 100, &col);
+    ASSERT_TRUE(o != NULL);
+    for (int i = 0; i < 100; ++i) o[i] = 1.0f;
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_commit_atom_column(&t, col));
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/occupancy")) == NULL);
+
+    float* q = md_attributes_reserve_atom_column(&t, STR_LIT("atom/formal_charge"), md_unit_none(), 1, 100, &col);
+    ASSERT_TRUE(q != NULL);
+    for (int i = 0; i < 100; ++i) q[i] = NAN;
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_commit_atom_column(&t, col));
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/formal_charge")) == NULL);
+
+    md_attributes_free(&t);
 }
 
 UTEST(attributes, create_with_data) {
@@ -363,7 +421,7 @@ UTEST(attributes, extract_from_pdb) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     const md_attribute_t* bfc = md_attributes_find(&sys.attributes, STR_LIT("atom/b_factor"));
     ASSERT_TRUE(bfc != NULL);
@@ -522,13 +580,15 @@ UTEST(attributes, pdb_occupancy_and_b_factor) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     // 6942 coordinate records, 15 of them the 'B' alternate of a pair
     EXPECT_EQ(sys.atom.count, 6927u);
 
+    // And the formal charges of its charge column (the Mg2+ of the GTP, the charged side chains)
     md_attribute_id_t ids[8];
-    EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &sys.attributes, STR_LIT("atom")), 2u);
+    EXPECT_EQ(md_attributes_query(ids, ARRAY_SIZE(ids), &sys.attributes, STR_LIT("atom")), 3u);
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("atom/formal_charge")) != NULL);
 
     const md_attribute_t* occ = md_attributes_find(&sys.attributes, STR_LIT("atom/occupancy"));
     const md_attribute_t* bfc = md_attributes_find(&sys.attributes, STR_LIT("atom/b_factor"));
@@ -575,7 +635,7 @@ UTEST(attributes, pdb_uniform_column_is_not_published) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("atom/occupancy")) == NULL);
 
@@ -594,7 +654,7 @@ UTEST(attributes, pdb_without_useful_columns_publishes_nothing) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), MD_PDB_OPTION_NONE, NULL));
 
     EXPECT_EQ(md_attributes_count(&sys.attributes), 0u);
     EXPECT_EQ(md_attributes_query(NULL, 0, &sys.attributes, STR_LIT("atom")), 0u);
@@ -891,6 +951,75 @@ UTEST(attributes, virtual_create_and_reject) {
     EXPECT_FALSE(md_attribute_is_alias(a));
     EXPECT_TRUE(a->data == NULL);
 
+    md_attributes_free(&t);
+}
+
+// The extraction context reaches a provider with its executor, and a provider that reads another computed
+// attribute through it hands it on (md_attribute_extract_io_f64): a total density from its spin densities
+// builds them on the caller's executor.
+typedef struct io_probe_t {
+    md_attributes_t* table;
+    const md_executor_t* seen_inner;
+    const md_executor_t* seen_outer;
+    int inner_calls, outer_calls;
+} io_probe_t;
+
+static size_t provider_inner_f64(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)attr; (void)slice;
+    io_probe_t* p = (io_probe_t*)user_data;
+    p->inner_calls += 1;
+    p->seen_inner = md_attribute_io_executor(io);
+    for (size_t i = 0; i < cap; ++i) ((double*)dst)[i] = (double)i;
+    return cap;
+}
+
+static size_t provider_outer_f64(void* dst, size_t cap, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)attr; (void)slice;
+    io_probe_t* p = (io_probe_t*)user_data;
+    p->outer_calls += 1;
+    p->seen_outer = md_attribute_io_executor(io);
+    const md_attribute_t* inner = md_attributes_find(p->table, STR_LIT("probe/inner"));
+    if (!inner || md_attribute_extract_io_f64((double*)dst, cap, inner, md_attribute_slice_all(), md_unit_none(), io) != cap) return 0;
+    for (size_t i = 0; i < cap; ++i) ((double*)dst)[i] *= 2.0;
+    return cap;
+}
+
+static bool probe_parallel_for(void* user, uint32_t count, uint32_t grain, md_range_fn body, void* arg) {
+    (void)user; (void)grain;
+    body(arg, 0, count, 0);
+    return true;
+}
+
+UTEST(attributes, extraction_context_hands_its_executor_on) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+    io_probe_t probe = {.table = &t};
+    const md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {5}};
+    md_attribute_virtual_t inner = {.provider = provider_inner_f64, .user_data = &probe};
+    md_attribute_virtual_t outer = {.provider = provider_outer_f64, .user_data = &probe};
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("probe/inner"), .format = fmt, .unit = md_unit_none(), .virt = &inner}), MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){.path = STR_INIT("probe/outer"), .format = fmt, .unit = md_unit_none(), .virt = &outer}), MD_ATTRIBUTE_INVALID);
+    const md_attribute_t* a = md_attributes_find(&t, STR_LIT("probe/outer"));
+    ASSERT_TRUE(a != NULL);
+
+    const md_executor_t ex = {.parallel_for = probe_parallel_for, .num_threads = 2};
+    md_attribute_io_t* io = md_attribute_io_create(&ex, md_get_heap_allocator());
+    ASSERT_TRUE(io != NULL);
+    EXPECT_TRUE(md_attribute_io_executor(io) == &ex);
+
+    double v[5] = {0};
+    EXPECT_EQ(5u, md_attribute_extract_io_f64(v, 5, a, md_attribute_slice_all(), md_unit_none(), io));
+    EXPECT_EQ(8.0, v[4]);
+    EXPECT_TRUE(probe.seen_outer == &ex);
+    EXPECT_TRUE(probe.seen_inner == &ex);
+
+    // Without a context: none, all the way down
+    probe.seen_inner = probe.seen_outer = &ex;
+    EXPECT_EQ(5u, md_attribute_extract_f64(v, 5, a, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_TRUE(probe.seen_outer == NULL);
+    EXPECT_TRUE(probe.seen_inner == NULL);
+    EXPECT_TRUE(md_attribute_io_executor(NULL) == NULL);
+
+    md_attribute_io_destroy(io);
     md_attributes_free(&t);
 }
 
@@ -1767,6 +1896,61 @@ UTEST(attributes, replace_is_idempotent_across_reloads) {
     EXPECT_EQ(md_attributes_count(&t), 2u);
     EXPECT_TRUE(md_attributes_find(&t, STR_LIT("atom/weight")) == NULL);
 
+    md_attributes_free(&t);
+}
+
+// Replace is in place: the same slot and id, its neighbours where they were, a new version; one that cannot be built
+// leaves nothing at the path, as the removal and failed create it once was did. (Publishing many attributes again is
+// linear: it was n^2 when every replace moved half the table and rebuilt the id index twice. The VIAL bench shows it.)
+UTEST(attributes, replace_in_place) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+    const float one[1] = {1.0f};
+    char path[64];
+    enum { N = 4000 };
+    for (int i = 0; i < N; ++i) {
+        snprintf(path, sizeof(path), "script/x%d", i);
+        ASSERT_NE(md_attributes_create(&t, &(md_attribute_desc_t){.path = str_from_cstr(path), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1),
+                                                                  .unit = md_unit_none(), .data = one, .byte_size = sizeof(one)}), MD_ATTRIBUTE_INVALID);
+    }
+    const md_attribute_t* before = md_attributes_find(&t, STR_LIT("script/x17"));
+    ASSERT_TRUE(before != NULL);
+    const md_attribute_id_t id = before->id;
+    const uint64_t version = before->version;
+    const md_attribute_id_t next = md_attributes_find(&t, STR_LIT("script/x170"))->id;
+
+    // Every one replaced, twice, each keeping its id
+    for (int r = 0; r < 2; ++r) {
+        for (int i = 0; i < N; ++i) {
+            const float v[1] = {(float)(i + r)};
+            snprintf(path, sizeof(path), "script/x%d", i);
+            ASSERT_EQ(md_attributes_replace(&t, &(md_attribute_desc_t){.path = str_from_cstr(path), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1),
+                                                                       .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)}),
+                      md_attributes_id_from_path(str_from_cstr(path)));
+        }
+    }
+    EXPECT_EQ((size_t)N, md_attributes_count(&t));
+    const md_attribute_t* after = md_attributes_find(&t, STR_LIT("script/x17"));
+    ASSERT_TRUE(after != NULL);
+    EXPECT_EQ(id, after->id);
+    EXPECT_GT(after->version, version);
+    float v = 0;
+    ASSERT_EQ(1u, md_attribute_extract_f32(&v, 1, after, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_EQ(18.0f, v);
+    // Found by id and by path alike, the index standing
+    EXPECT_TRUE(md_attributes_get(&t, next) == md_attributes_find(&t, STR_LIT("script/x170")));
+
+    // Of another format: in place too
+    const double d[2] = {1.0, 2.0};
+    ASSERT_EQ(id, md_attributes_replace(&t, &(md_attribute_desc_t){.path = STR_INIT("script/x17"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F64, 2),
+                                                                   .unit = md_unit_none(), .data = d, .byte_size = sizeof(d)}));
+    EXPECT_EQ(MD_ATTRIBUTE_TYPE_F64, md_attributes_get(&t, id)->format.type);
+
+    // One that cannot be built: nothing left at the path, the rest as it was
+    EXPECT_EQ(MD_ATTRIBUTE_INVALID, md_attributes_replace(&t, &(md_attribute_desc_t){.path = STR_INIT("script/x17"), .format = fmt_scalars(MD_ATTRIBUTE_TYPE_F32, 1),
+                                                                                    .unit = md_unit_none(), .data = d, .byte_size = 3}));
+    EXPECT_TRUE(md_attributes_find(&t, STR_LIT("script/x17")) == NULL);
+    EXPECT_EQ((size_t)N - 1, md_attributes_count(&t));
+    EXPECT_TRUE(md_attributes_get(&t, next) == md_attributes_find(&t, STR_LIT("script/x170")));
     md_attributes_free(&t);
 }
 

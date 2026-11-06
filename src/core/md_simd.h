@@ -63,6 +63,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 //   md_mm256_movemask_ps     the two halves of the 128 bit form.
 //   md_*_fnmadd_*, fmsub_*,  fused, as on x86 (simde multiplies and subtracts in places, which the compiler
 //   fnmsub_*                 may or may not fuse: MSVC does not).
+//   md_mm_maddubs_epi16      widening multiplies and a saturating add of the pairs, as on x86 (simde shifts out
+//                            the even and odd bytes of both operands first).
+//   md_mm_testz_si128        a maximum across the and, where simde takes both halves out to scalar registers.
 #if defined(SIMDE_ARM_NEON_A64V8_NATIVE)
 #define MD_SIMD_NEON 1
 #endif
@@ -74,6 +77,10 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define MD_FROM_F32(x)  simde__m128_from_neon_f32(x)
 #define MD_FROM_F64(x)  simde__m128d_from_neon_f64(x)
 #define MD_FROM_I32(x)  simde__m128i_from_neon_i32(x)
+#define MD_NEON_I8(x)   simde__m128i_to_neon_i8(x)
+#define MD_NEON_U8(x)   simde__m128i_to_neon_u8(x)
+#define MD_NEON_U32(x)  simde__m128i_to_neon_u32(x)
+#define MD_FROM_I16(x)  simde__m128i_from_neon_i16(x)
 
 // An eight (four) lane operation as two four (two) lane ones: simde holds the 256 bit types as two 128 bit
 // halves on NEON, so the split and the join cost nothing. Each argument is used twice: arguments are names.
@@ -490,6 +497,8 @@ MD_SIMD_INLINE int md_mm256_movemask_ps(md_256 a) {
 #define md_mm256_loadu_epi32 simde_mm256_loadu_epi32
 #define md_mm256_loadu_epi64 simde_mm256_loadu_epi64
 
+#define md_mm_loadl_epi64 simde_mm_loadl_epi64     // 8 bytes to the low half, the high half zero
+
 #define md_mm_load_si128 simde_mm_load_si128
 #define md_mm_load_epi32 simde_mm_load_si128
 #define md_mm_load_epi64 simde_mm_load_si128
@@ -508,6 +517,8 @@ MD_SIMD_INLINE int md_mm256_movemask_ps(md_256 a) {
 #define md_mm256_storeu_si256 simde_mm256_storeu_si256
 #define md_mm256_storeu_epi32 simde_mm256_storeu_si256
 #define md_mm256_storeu_epi64 simde_mm256_storeu_si256
+
+#define md_mm_storel_epi64 simde_mm_storel_epi64   // The low half: 8 bytes
 
 #define md_mm_store_si128 simde_mm_store_si128
 #define md_mm_store_epi32 simde_mm_store_si128
@@ -555,11 +566,15 @@ MD_SIMD_INLINE int md_mm256_movemask_ps(md_256 a) {
 #define md_mm_not_si128(a) md_mm_xor_si128(md_mm_set1_epi32(0xFFFFFFFF), a)
 #define md_mm256_not_si256(a) md_mm256_xor_si256(md_mm256_set1_epi32(0xFFFFFFFF), a)
 
+#define md_mm_add_epi8  simde_mm_add_epi8
+#define md_mm_add_epi16 simde_mm_add_epi16
 #define md_mm_add_epi32 simde_mm_add_epi32
 #define md_mm_add_epi64 simde_mm_add_epi64
 #define md_mm256_add_epi32 simde_mm256_add_epi32
 #define md_mm256_add_epi64 simde_mm256_add_epi64
 
+#define md_mm_sub_epi8  simde_mm_sub_epi8
+#define md_mm_sub_epi16 simde_mm_sub_epi16
 #define md_mm_sub_epi32 simde_mm_sub_epi32
 #define md_mm_sub_epi64 simde_mm_sub_epi64
 #define md_mm256_sub_epi32 simde_mm256_sub_epi32
@@ -612,6 +627,49 @@ MD_SIMD_INLINE int md_mm256_movemask_ps(md_256 a) {
 
 #define md_mm_movemask_epi8 simde_mm_movemask_epi8
 #define md_mm256_movemask_epi8 simde_mm256_movemask_epi8
+
+#define md_mm_min_epu8 simde_mm_min_epu8
+#define md_mm_max_epu8 simde_mm_max_epu8
+#define md_mm256_min_epu8 simde_mm256_min_epu8
+#define md_mm256_max_epu8 simde_mm256_max_epu8
+
+#define md_mm_packs_epi16 simde_mm_packs_epi16       // Saturated to half the width: a's lanes, then b's
+#define md_mm_packs_epi32 simde_mm_packs_epi32
+#define md_mm_packus_epi16 simde_mm_packus_epi16
+#define md_mm_packus_epi32 simde_mm_packus_epi32
+
+#define md_mm_unpacklo_epi64 simde_mm_unpacklo_epi64
+#define md_mm_unpackhi_epi64 simde_mm_unpackhi_epi64
+
+// Multiplies: of the unsigned bytes of a by the signed bytes of b, the pairs summed (saturated) to 16 bits; of the
+// 16 bit lanes, the pairs summed to 32 bits; of the low 32 bits of each 64 bit lane, unsigned, to 64 bits
+#if defined(MD_SIMD_NEON)
+MD_SIMD_INLINE md_128i md_mm_maddubs_epi16(md_128i a, md_128i b) {
+    const uint8x16_t ua = MD_NEON_U8(a);
+    const int8x16_t  sb = MD_NEON_I8(b);
+    // Each product of an unsigned byte and a signed one fits 16 bits; their sum may not, and saturates as on x86
+    const int16x8_t lo = vmulq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(ua))), vmovl_s8(vget_low_s8(sb)));
+    const int16x8_t hi = vmulq_s16(vreinterpretq_s16_u16(vmovl_high_u8(ua)), vmovl_high_s8(sb));
+    return MD_FROM_I16(vqaddq_s16(vuzp1q_s16(lo, hi), vuzp2q_s16(lo, hi)));
+}
+#else
+#define md_mm_maddubs_epi16 simde_mm_maddubs_epi16
+#endif
+#define md_mm256_maddubs_epi16 simde_mm256_maddubs_epi16
+#define md_mm_madd_epi16 simde_mm_madd_epi16
+#define md_mm256_madd_epi16 simde_mm256_madd_epi16
+#define md_mm_mul_epu32 simde_mm_mul_epu32
+#define md_mm256_mul_epu32 simde_mm256_mul_epu32
+
+// 1 where a & b has no bit set
+#if defined(MD_SIMD_NEON)
+MD_SIMD_INLINE int md_mm_testz_si128(md_128i a, md_128i b) {
+    return vmaxvq_u32(vandq_u32(MD_NEON_U32(a), MD_NEON_U32(b))) == 0;
+}
+#else
+#define md_mm_testz_si128 simde_mm_testz_si128
+#endif
+#define md_mm256_testz_si256 simde_mm256_testz_si256
 
 // CASTS AND CONVERSIONS
 

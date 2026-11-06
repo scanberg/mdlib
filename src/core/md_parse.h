@@ -161,7 +161,8 @@ static inline uint32_t md_parse_eight_digits(uint64_t val) {
     return (uint32_t)val;
 }
 
-static inline bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) {
+// Inline always: a parser calls it for each column of each line, with constant widths and decimals which fold
+static FORCE_INLINE bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) {
     ASSERT(out);
     const size_t width = field.len;
     // A digit, the dot and the decimals at least
@@ -213,113 +214,7 @@ static inline bool md_parse_fixed_f32(float* out, str_t field, size_t decimals) 
     return true;
 }
 
-// LINES
-
-// Reads as many COMPLETE lines from the file as fit in buf, and leaves the file positioned at the
-// start of the first line it did not return. A single line longer than cap is returned in pieces.
-static inline size_t md_parse_read_lines(md_file_t file, char* buf, size_t cap) {
-    if (!md_file_valid(file) || !buf || cap < 1) return 0;
-    size_t len = md_file_read(file, buf, cap);
-    if (len == cap) {
-        size_t loc;
-        const str_t str = {buf, len};
-        if (str_rfind_char(&loc, str, '\n')) {
-            const int64_t offset = (int64_t)loc + 1 - (int64_t)len;
-            // Set file pointer to the beginning of the next line
-            md_file_seek(file, offset, MD_FILE_CUR);
-            len = loc + 1;
-        }
-    }
-    return len;
-}
-
-// Line by line reading from a file through a caller owned buffer, or from a string in memory, behind
-// one interface. The lines are views into the buffer or the string: a file backed line is valid
-// until the next call that refills the buffer.
-typedef struct md_buffered_reader_t {
-    str_t   str;
-    char*   buf;
-    size_t  cap;
-    md_file_t  file;
-} md_buffered_reader_t;
-
-static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, size_t cap, md_file_t  file) {
-    ASSERT(buf);
-    ASSERT(md_file_valid(file));
-
-    md_buffered_reader_t lr = {
-        .str = {0, 0},
-        .buf = buf,
-        .cap = cap,
-        .file = file,
-    };
-
-    return lr;
-}
-
-static inline md_buffered_reader_t md_buffered_reader_from_str(str_t str) {
-    md_buffered_reader_t reader = {
-        .str = str,
-        .cap = str.len,
-        .file = {0},
-    };
-    return reader;
-}
-
-static inline void md_buffered_reader_ensure_lines(md_buffered_reader_t* r) {
-    ASSERT(r);
-    if (md_file_valid(r->file) && !r->str.len) {
-        ASSERT(r->buf);
-        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
-        if (bytes_read > 0) {
-            r->str.ptr = r->buf;
-            r->str.len = bytes_read;
-        }
-    }
-}
-
-static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_reader_t* r) {
-    ASSERT(r);
-    ASSERT(line);
-    md_buffered_reader_ensure_lines(r);
-    return str_extract_line(line, &r->str);
-}
-
-static inline bool md_buffered_reader_peek_line(str_t* line, md_buffered_reader_t* r) {
-    ASSERT(r);
-    ASSERT(line);
-    md_buffered_reader_ensure_lines(r);
-    return str_peek_line(line, &r->str);
-}
-
-static inline bool md_buffered_reader_skip_line(md_buffered_reader_t* r) {
-    ASSERT(r);
-    md_buffered_reader_ensure_lines(r);
-    return str_skip_line(&r->str);
-}
-
-// Back to the first line
-static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {
-    ASSERT(r);
-    if (md_file_valid(r->file)) {
-        md_file_seek(r->file, 0, MD_FILE_BEG);
-        r->str.ptr = NULL;
-        r->str.len = 0;
-    } else {
-        ASSERT(r->str.ptr && "Cannot reset uninitialized reader");
-        r->str.ptr += r->str.len - r->cap;
-        r->str.len = r->cap;
-    }
-}
-
-// Offset of the next unread byte from the start of the file or string
-static inline int64_t md_buffered_reader_tellg(const md_buffered_reader_t* r) {
-    if (md_file_valid(r->file)) {
-        return md_file_tell(r->file) - r->str.len;
-    } else {
-        return r->cap - r->str.len;
-    }
-}
+// LINES: a reader of a file or a string (md_reader.h)
 
 // TOKENS
 

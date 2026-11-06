@@ -23,7 +23,7 @@ UBENCH_EX(spatial_acc, query_ext_vs_int_pair) {
 
     md_system_t sys = { .alloc = arena };
     md_system_state_t sys_state = { .alloc = arena };
-    if (!md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"))) {
+    if (!md_gro_system_init_from_file(&sys, &sys_state, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"), NULL)) {
         fprintf(stderr, "Failed to load system for spatial acc benchmark\n");
         md_vm_arena_destroy(arena);
         return;

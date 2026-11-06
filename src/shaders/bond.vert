@@ -47,10 +47,17 @@
 // gap runs from 5/6 of the way from the neighbour of a to a, where the cartoon of a chain ends (its uniform cubic
 // B-spline at the clamped end of a chain), to the same point at b; an end which is its own neighbour is the atom itself.
 //
-// DASHED LINES (weak bonds, partners, gaps): dashes of u_dash_length with u_gap_length between them (Ångström), never a
-// number of dashes. A line of length L gets the number of dashes n that comes closest to the lengths,
-// n = round((L + gap) / (dash + gap)), at least 2, and bond.frag draws the first from pa and the last up to pb, the
-// dashes and gaps stretched or shrunk alike by L / (n dash + (n - 1) gap) to fit: no dash is cut off at either end.
+// DASHED LINES (weak bonds, coordinate bonds, partners, gaps): dashes of a length with gaps of a length between them
+// (Ångström), never a number of dashes. A line of length L gets the number of dashes n that comes closest to the
+// lengths, n = round((L + gap) / (dash + gap)), at least 2, and bond.frag draws the first from its start and the last up
+// to its end, the dashes and gaps stretched or shrunk alike by L / (n dash + (n - 1) gap) to fit: no dash is cut off at
+// either end. The partners and the gaps of chains have their lengths in u_dash_length and u_gap_length. A bond has those
+// of the style of its kind (u_dash_style, BOND DASHES in md_gl.h), and its line runs between the spheres at its atoms
+// (u_end_radius, u_end_radius_scale): from where the rim of its first dash meets the sphere at pa to where that of its
+// last meets the sphere at pb, so that no dash is hidden in a sphere and none stands off from it.
+// COORDINATE BONDS (licorice and ball and stick): dashed where u_dash_style has a dash length for them, between the
+// spheres of radius r at their ends, which a single bond has too: the joint at the atom of a licorice, also for a metal
+// with no other bond.
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -82,6 +89,15 @@
 #define KIND_TRIPLE     2u
 #define KIND_ELASTIC    3u
 #define KIND_METALLIC   4u      // Never drawn here: a Bonds representation draws them
+#define KIND_COORDINATE 5u      // Dashed, or a plain stick
+#define KIND_HYDROGEN   6u      // Weak bonds only
+#define KIND_INTERACTION 7u     // Weak bonds only
+
+// The styles of u_dash_style (DASH_STYLE_* in md_gl.c)
+#define DASH_STYLE_OTHER       0
+#define DASH_STYLE_COORDINATE  1
+#define DASH_STYLE_HYDROGEN    2
+#define DASH_STYLE_INTERACTION 3
 
 // Relative to the radius of the stick (r) and to the envelope of the thinner sticks (u_spread * r)
 #define DOUBLE_RADIUS   0.42    // * envelope
@@ -117,6 +133,11 @@ layout (std140) uniform ubo {
     uint  u_gap_index_base;
     uint  u_bond_kinds;     // u_buf_bond_order is bound: the kind of every bond is known
     uint  u_elastic_bonds;  // Draw the elastic bonds (KIND_ELASTIC), which are left out otherwise
+    float u_end_radius;     // DASHED LINES of bonds: they run between spheres of this radius at the atoms, or of the
+    float u_end_radius_scale; // radius of the atom times this, whichever is larger
+    float u_pad0;
+    float u_pad1;
+    vec4  u_dash_style[4];  // Per DASH_STYLE_*: radius, dash and gap relative to u_radius (dash 0: solid)
 };
 
 #pragma INSTANCES
@@ -127,6 +148,7 @@ uniform samplerBuffer  u_buf_atom_pos;      // RGB32F
 uniform samplerBuffer  u_buf_atom_vel;      // RGB32F
 uniform usamplerBuffer u_buf_atom_flags;    // R8UI
 uniform samplerBuffer  u_buf_atom_color;    // RGBA8
+uniform samplerBuffer  u_buf_atom_rad;      // R32F, where the dashes of a bond start
 #if CHAIN_GAPS
 uniform usamplerBuffer u_buf_gap;           // RGBA32UI, (a, neighbour of a, b, neighbour of b)
 uniform usamplerBuffer u_buf_gap_comp;      // R32UI, the component before the break, which the gap picks as
@@ -135,6 +157,7 @@ uniform usamplerBuffer u_buf_bond;          // RG32UI, atom indices
 #endif
 #if WEAK_BONDS
 uniform samplerBuffer  u_buf_bond_weight;   // R32F, scales the radius
+uniform usamplerBuffer u_buf_bond_order;    // R32UI, the kind of each bond (KIND_*), which gives its dashes
 #elif CHAIN_GAPS
 #elif BOND_PARTNERS
 uniform usamplerBuffer u_buf_bond_partner;  // RGBA32UI, (bond, atom bonded to its first atom, to its second atom, -)
@@ -159,9 +182,9 @@ out Fragment {
     flat vec3  side;                    // Unit, perpendicular to the axis, in the plane of the bond
     flat vec2  sub;                     // (offset, radius) of the thinner sticks
 #endif
-#if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
-    flat uint  dash_count;              // DASHED LINES
-#endif
+    flat uint  dash_count;              // DASHED LINES: 0 for none (a solid bond)
+    flat vec4  dash;                    // Of the dashes: radius, the fraction of the period they cover, and where they
+                                        // start and end, as the fractions of the length of the bond before and after
     smooth vec3 view_pos;               // On the quad, the ray of the fragment starts here
 } out_frag;
 
@@ -316,6 +339,41 @@ float inset_factor(vec3 u, vec3 c, bool has) {
     return sqrt((1.0 + cos_angle) / (1.0 - cos_angle));
 }
 
+// The style of the dashes of a bond of a kind (u_dash_style)
+int dash_style(uint kind) {
+    if (kind == KIND_COORDINATE)  return DASH_STYLE_COORDINATE;
+    if (kind == KIND_HYDROGEN)    return DASH_STYLE_HYDROGEN;
+    if (kind == KIND_INTERACTION) return DASH_STYLE_INTERACTION;
+    return DASH_STYLE_OTHER;
+}
+
+// Where the dashes of radius rd of a bond start, from the center of its atom: where their rim meets the sphere at the
+// atom (u_end_radius, or u_end_radius_scale times the radius of the atom), 0 without one
+float dash_inset(uint atom, float rd) {
+    float re = max(u_end_radius, u_end_radius_scale * texelFetch(u_buf_atom_rad, int(atom)).x);
+    return sqrt(max(re * re - rd * rd, 0.0));
+}
+
+// DASHED LINES: the dashes of radius rd, of length dash with gap between them, over the line from pa to pb of length len
+// less ia at pa and ib at pb. A dash length of 0 or less is one solid dash. Between spheres (ia, ib) too short a line,
+// not half a dash, is left out: the spheres all but touch.
+void set_dashes(float len, float rd, float dash, float gap, float ia, float ib) {
+    float span = len - ia - ib;
+    uint  n;
+    float fill;
+    if (!(dash > 0.0)) {
+        n = span > 0.0 ? 1u : 0u;
+        fill = 1.0;
+    } else {
+        gap  = max(gap, 0.0);
+        fill = dash / (dash + gap);
+        bool left_out = span <= 0.0 || (ia + ib > 0.0 && span <= 0.5 * dash);
+        n = left_out ? 0u : uint(clamp(floor((span + gap) / (dash + gap) + 0.5), 2.0, 4096.0));
+    }
+    out_frag.dash_count = n;
+    out_frag.dash = vec4(rd, fill, ia / len, ib / len);
+}
+
 void main() {
     uint prim   = quad_primitive();
     uint corner = uint(gl_VertexID) & 3u;
@@ -360,7 +418,9 @@ void main() {
 
     float r = u_radius;
 #if WEAK_BONDS
-    r *= texelFetch(u_buf_bond_weight, int(bond)).x;
+    // The style of its kind: its radius relative to that of the sticks, scaled by the weight of the bond
+    vec4 style = u_dash_style[dash_style(texelFetch(u_buf_bond_order, int(bond)).x & 7u)];
+    r *= style.x * texelFetch(u_buf_bond_weight, int(bond)).x;
 #endif
 
     vec3 wa = texelFetch(u_buf_atom_pos, int(atom.x)).xyz;
@@ -434,6 +494,15 @@ void main() {
     out_frag.pa = pa;
     out_frag.pb = pb;
     out_frag.radius = r;
+    {
+        float len = sqrt(d2);
+        set_dashes(len, r, style.y * u_radius, style.z * u_radius, dash_inset(atom.x, r), dash_inset(atom.y, r));
+        if (out_frag.dash_count == 0u) {
+            // Within the spheres at its atoms
+            cull();
+            return;
+        }
+    }
 #elif CHAIN_GAPS
     out_frag.pa = pa;
     out_frag.pb = pb;
@@ -443,11 +512,19 @@ void main() {
     out_frag.pb = pb;
     out_frag.radius = r;
 
-    // Without the orders shown every bond is a single stick, and so is an elastic one where it is shown
+    // Without the orders shown every bond is a single stick, and so is an elastic one where it is shown. A coordinate
+    // bond is dashed whether the orders are shown or not, unless the representation has it solid.
     uint kind = u_bond_orders != 0u ? (order & 7u) : KIND_PLAIN;
     vec3 side = vec3(0.0);
     vec2 sub  = vec2(0.0);
-    if (kind == KIND_DOUBLE || kind == KIND_TRIPLE) {
+    out_frag.dash_count = 0u;
+    out_frag.dash = vec4(0.0);
+    vec4 coord_style = u_dash_style[DASH_STYLE_COORDINATE];
+    if ((order & 7u) == KIND_COORDINATE && coord_style.y > 0.0) {
+        kind = KIND_COORDINATE;
+        float rd = coord_style.x * r;
+        set_dashes(sqrt(d2), rd, coord_style.y * r, coord_style.z * r, dash_inset(atom.x, rd), dash_inset(atom.y, rd));
+    } else if (kind == KIND_DOUBLE || kind == KIND_TRIPLE) {
         vec3 ax = d * inversesqrt(d2);
         side = bond_side(ax, pa, pb, texelFetch(u_buf_bond_ref, int(order >> 3u)));
         float envelope = u_spread * r;
@@ -463,15 +540,9 @@ void main() {
     out_frag.sub  = sub;
 #endif
 
-#if WEAK_BONDS || BOND_PARTNERS || CHAIN_GAPS
-    {
-        // DASHED LINES: the number of dashes which comes closest to their length and that of the gaps, over the line
-        // as drawn (a partner inset from its bond)
-        float dash = max(u_dash_length, 1.0e-4);
-        float gap  = max(u_gap_length, 0.0);
-        float n = floor((sqrt(d2) + gap) / (dash + gap) + 0.5);
-        out_frag.dash_count = uint(clamp(n, 2.0, 4096.0));
-    }
+#if BOND_PARTNERS || CHAIN_GAPS
+    // DASHED LINES: over the line as drawn (a partner inset from its bond), from end to end
+    set_dashes(sqrt(d2), r, max(u_dash_length, 1.0e-4), u_gap_length, 0.0, 0.0);
 #endif
 
     // Distance from the eye to the near plane (z = -near)

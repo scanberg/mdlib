@@ -340,10 +340,11 @@ UTEST(h5md, spec_run) {
     EXPECT_NEAR(20.0, st.unitcell.x, 1.0e-6);
     EXPECT_NEAR(0.0,  st.unitcell.z, 1.0e-6);
 
-    // Force at every position step: beside the positions. It is compressed, so HDF5 reads it
+    // Force at every position step: beside the positions. Deflated, a frame to a chunk, and decoded here: each frame
+    // has its chunk in the file
     const md_attribute_t* force = attr(&t.sys, "run/spec/atom/force");
     ASSERT_TRUE(force != NULL);
-    EXPECT_EQ(-1, ((const int64_t*)attr(&t.sys, "run/spec/h5md/particles/force/source/offset")->data)[0]);
+    EXPECT_GT(((const int64_t*)attr(&t.sys, "run/spec/h5md/particles/force/source/offset")->data)[0], 0);
     ASSERT_EQ(12u, slice_f64(x, 12, force, md_attribute_slice_1(3)));
     EXPECT_NEAR(-spec_position(3, 1, 2), x[5], 1.0e-6);
 
@@ -409,7 +410,11 @@ UTEST(h5md, spec_bare) {
     ASSERT_TRUE(time != NULL);
     EXPECT_TRUE(md_unit_is_none(time->unit));
     EXPECT_EQ(3.0, ((const double*)time->data)[3]);
-    EXPECT_EQ(-1, ((const int64_t*)attr(&t.sys, "run/bare/source/offset")->data)[0]);
+    // Shuffled and deflated two frames to a chunk: the two have the one chunk
+    const int64_t* bare_offset = (const int64_t*)attr(&t.sys, "run/bare/source/offset")->data;
+    EXPECT_GT(bare_offset[0], 0);
+    EXPECT_EQ(bare_offset[0], bare_offset[1]);
+    EXPECT_NE(bare_offset[1], bare_offset[2]);
 
     md_system_state_t st = { .alloc = t.arena };
     md_system_state_init(&st, 4);

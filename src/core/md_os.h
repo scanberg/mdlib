@@ -81,11 +81,21 @@ typedef struct md_file_t {
 } md_file_t;
 
 typedef enum md_file_flags_t {
-    MD_FILE_READ     = 1u << 0,
-    MD_FILE_WRITE    = 1u << 1,
-    MD_FILE_APPEND   = 1u << 2,
-    MD_FILE_CREATE   = 1u << 3,
-    MD_FILE_TRUNCATE = 1u << 4,
+    MD_FILE_READ       = 1u << 0,
+    MD_FILE_WRITE      = 1u << 1,
+    MD_FILE_APPEND     = 1u << 2,
+    MD_FILE_CREATE     = 1u << 3,
+    MD_FILE_TRUNCATE   = 1u << 4,
+
+    // Positional only: the handle has no position of its own. md_file_read_at and md_file_write_at may be called on it
+    // from several threads at once, and run concurrently; md_file_read, md_file_write, md_file_seek and md_file_tell
+    // fail on it. Not with MD_FILE_APPEND.
+    MD_FILE_CONCURRENT = 1u << 5,
+
+    // Hints of how the file will be read, which change no result: front to back (the OS reads further ahead), or in
+    // jumps (it reads no further than asked). At most one of them.
+    MD_FILE_SEQUENTIAL = 1u << 6,
+    MD_FILE_RANDOM     = 1u << 7,
 } md_file_flags_t;
 ENUM_FLAGS(md_file_flags_t)
 
@@ -109,6 +119,16 @@ typedef struct md_os_sys_info_t {
 
 // Fills the md_os_info_t struct with system information. Returns true on success.
 bool md_os_sys_info_query(md_os_sys_info_t* info);
+
+// ### ENVIRONMENT ###
+// The value of a variable of the process's environment, NULL when it is not set. The pointer is the environment's:
+// valid until the variable is set again.
+const char* md_os_env_get(const char* name);
+
+// Sets a variable of the process's environment to value, or removes it (value NULL), for this process and what it
+// starts from now on. True on success. Not thread safe with respect to other changes of or reads from the environment:
+// for setup, tests and tools, not for state that threads share.
+bool md_os_env_set(const char* name, const char* value);
 
 // ### PATH ###
 // Gets the current working directory
@@ -198,6 +218,8 @@ bool md_mutex_unlock(md_mutex_t* mutex);
 // - MD_FILE_CREATE creates the file if it does not exist.
 // - MD_FILE_TRUNCATE truncates an existing file and requires write access.
 // - MD_FILE_APPEND and MD_FILE_TRUNCATE are mutually exclusive.
+// - MD_FILE_CONCURRENT makes a handle positional only, shared by threads (see md_file_flags_t); not with MD_FILE_APPEND.
+// - MD_FILE_SEQUENTIAL and MD_FILE_RANDOM are mutually exclusive hints.
 // - A zero-initialized md_file_t represents an invalid or unopened file.
 // returns true on success and false on failure, in which case out_file is not modified.
 bool md_file_open(md_file_t* out_file, str_t filename, md_file_flags_t flags);
@@ -212,15 +234,19 @@ bool md_file_close(md_file_t* file);
 bool md_file_info_extract(md_file_t file, md_file_info_t* out_info);
 bool md_file_info_extract_from_path(str_t filename, md_file_info_t* out_info);
 
+// The position: not of a handle opened with MD_FILE_CONCURRENT, which has none (-1 and false)
 md_file_offset_t md_file_tell(md_file_t file);
 md_file_offset_t md_file_size(md_file_t file);
 bool md_file_seek(md_file_t file, md_file_offset_t offset, md_file_seek_origin_t origin);
 
-// Sequential I/O. Returns the number of bytes transferred and may return less than requested.
+// Sequential I/O. Returns the number of bytes transferred and may return less than requested. Not on a handle opened
+// with MD_FILE_CONCURRENT (0).
 size_t md_file_read(md_file_t file, void* ptr, size_t num_bytes);
 size_t md_file_write(md_file_t file, const void* ptr, size_t num_bytes);
 
-// Positional I/O. Does not modify the current file position.
+// Positional I/O. Does not modify the current file position, on any platform.
+// On a handle opened with MD_FILE_CONCURRENT they may be called from several threads at once and run concurrently (on
+// Windows the handle is overlapped; elsewhere pread and pwrite are). On any other handle, one call at a time.
 // md_file_write_at rejects handles opened with MD_FILE_APPEND because append-only and positional
 // write semantics conflict across platforms.
 size_t md_file_read_at(md_file_t file, md_file_offset_t offset, void* ptr, size_t num_bytes);

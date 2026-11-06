@@ -168,6 +168,7 @@ static inline uint32_t md_gto_num_sph_ao(uint32_t l) { return 2 * l + 1; }
 // shell spanning primitives which were not published are all failures.
 struct md_attributes_t;
 struct md_allocator_i;
+struct md_executor_t;
 bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const struct md_attributes_t* attributes, struct md_allocator_i* alloc);
 
 void md_gto_basis_free(md_gto_basis_t* basis, struct md_allocator_i* alloc);
@@ -224,8 +225,10 @@ size_t md_gto_sph_to_cart_vector(double* out_cart, const double* in_sph, const m
 //           mo_stride 1, ao_stride num_mo.
 // out_cart: [num_mo][md_gto_basis_num_ao(basis)] row major; must not overlap in_sph.
 // Per orbital, the values of md_gto_sph_to_cart_vector (to rounding). In one pass over the input,
-// threaded for large sets. Returns num_mo, 0 on failure.
-size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_t mo_stride, size_t ao_stride, const int* ao_perm, size_t num_mo, const md_gto_basis_t* basis);
+// blocks of orbitals spread over executor for large sets (md_executor.h; NULL: the calling thread). The
+// same values for any executor. Returns num_mo, 0 on failure (or cancelled through the executor).
+size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_t mo_stride, size_t ao_stride, const int* ao_perm, size_t num_mo, const md_gto_basis_t* basis,
+                                   const struct md_executor_t* executor);
 
 // Convert a square AO-basis matrix (density, overlap, transition density):
 //   M_cart = T^T * M_sph * T
@@ -238,10 +241,38 @@ size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const m
 // occupations as weights, or any sum of squares of orbitals. D: num_ao x num_ao, row major, exactly
 // symmetric. Element (orbital k, AO i) of C is C[k * mo_stride + i * ao_stride]: mo_stride num_ao and
 // ao_stride 1 for orbitals as rows, the reverse for orbitals as columns. Orbitals of weight 0 are
-// skipped. Blocked and vectorized, over all cores when it is large: about num_mo num_ao^2 / 2
-// multiply-adds. Returns false only when out of memory.
+// skipped. Blocked and vectorized, its tiles spread over executor when it is large (md_executor.h; NULL:
+// the calling thread): about num_mo num_ao^2 / 2 multiply-adds. Bit for bit the same for any executor.
+// Returns false when out of memory, or cancelled through the executor (D then incomplete).
 bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, size_t ao_stride,
-                                  const double* weight, size_t num_mo, size_t num_ao);
+                                  const double* weight, size_t num_mo, size_t num_ao, const struct md_executor_t* executor);
+
+// ---------------------------------------------------------------------------
+// First derivatives of orbitals, as orbitals
+// ---------------------------------------------------------------------------
+// d/dx of a Cartesian AO f_ijk x^i y^j z^k R(r) of a shell of angular momentum l, R = sum_p c_p exp(-a_p r^2), is
+//
+//     f_ijk ( i x^(i-1) y^j z^k R(r)  -  2 x^(i+1) y^j z^k R'(r) ),     R' = sum_p a_p c_p exp(-a_p r^2)
+//
+// two AOs of two contracted shells on the same atom: one of l - 1 with the shell's own contraction, one of l + 1
+// with the contraction a_p c_p. So the gradient of an orbital is, exactly, three orbitals over the DERIVATIVE
+// BASIS made of those shells, and anything quadratic in the gradient is a sum of products of orbitals there - the
+// kinetic energy density tau = 1/2 sum_k n_k |grad phi_k|^2 is 3 x (occupied) squares - which every evaluator of
+// this library takes as it is: md_gto_iso_field_create_products (in double, with its gradient), the GPU sets and
+// their point evaluation, the grid kernels. The price is the basis: about twice the AOs of the one it is made from.
+//
+// The derivative basis of 'basis': for every shell of l > 0 a shell of l - 1, and for every shell one of l + 1, on
+// its atom, ordered as a basis is (angular momentum, then atom, then the order of the shells they come from). The
+// contraction coefficients a_p c_p are rounded to float as every coefficient of a basis is (relative 6e-8). A basis
+// with a shell of MD_GTO_MAX_ANGULAR_MOMENTUM has none, as its derivatives need one more: false (logged).
+// Allocates as md_gto_basis_extract_attributes does: release with md_gto_basis_free.
+bool md_gto_basis_derivative(md_gto_basis_t* out, const md_gto_basis_t* basis, struct md_allocator_i* alloc);
+
+// The gradients of orbitals as orbitals over md_gto_basis_derivative(basis): orbital m's md_gto_basis_num_ao(basis)
+// coefficients at coeff + m * mo_stride; its d/dx, d/dy and d/dz written as rows 3m, 3m + 1 and 3m + 2 of out,
+// md_gto_basis_num_ao of the derivative basis each (which out_num_ao receives, and which a NULL out asks for
+// alone). Returns the rows written, 3 num_mo, or 0 on failure (a basis without a derivative basis).
+size_t md_gto_orbital_gradients(double* out, size_t* out_num_ao, const double* coeff, size_t mo_stride, size_t num_mo, const md_gto_basis_t* basis);
 
 // Returns the upper bound on the number of Cartesian GTOs produced when
 // fully expanding all shells in the basis (before any cutoff filtering).
@@ -500,7 +531,15 @@ typedef struct md_gto_gpu_density_desc_t {
     // GEMM only: kernel configuration, normally left at 0 = automatic (per GPU vendor).
     uint32_t gemm_tile;          // AOs per output tile: 32 or 64
     int32_t  gemm_small_block;   // blocks with at most this many AOs use 32-wide tiles; -1 = never
+
+    // GEMM only: the work of a submission, in multiply-adds (MD_GTO_GPU_GEMM_PIECES_REVISION); 0 = 2^34
+    uint64_t piece_work;
 } md_gto_gpu_density_desc_t;
+
+// The GEMM algorithm (density, and orbitals by GEMM) is issued in PIECES of a bounded amount of work, each its own
+// submission: the watchdog (TDR) times submissions, and a large system's evaluation as one would lose the device
+// (VK_ERROR_DEVICE_LOST) and keep the display's work off the GPU until it is done. Measurements: the revision.
+#define MD_GTO_GPU_GEMM_PIECES_REVISION "pieces r1 (2^34 multiply-adds a submission; jobs keep 8+ in flight, doubled when the GPU runs dry)"
 
 // Issue an electron density evaluation into `stream`.
 // atom_xyz must contain packed float4 atom positions (xyz in Bohr).
@@ -510,18 +549,89 @@ typedef struct md_gto_gpu_density_desc_t {
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 
 // The same as a job, for a thread that is not to wait: the GEMM algorithm's counting pass is issued and the call
-// returns, and md_gto_gpu_job_poll issues the rest once the counts are on the host (the launch waits for them,
-// and for whatever the stream held before them). Until then the evaluation writes nothing to out_tex, and what
-// the descriptor names (the basis, the atom positions, the coefficients or the dmat) must stay as they are. The
-// reference algorithm is issued at once. NULL for invalid input (logged).
+// returns; md_gto_gpu_job_poll plans the rest once the counts are on the host (the launch waits for them, and for
+// whatever the stream held before them) and issues its pieces over the polls, a few in flight, the next as the
+// GPU passes one. Until it is all issued, what the descriptor names (the basis, the atom positions, the
+// coefficients or the dmat) must stay as they are. The reference algorithm is issued at once. NULL for invalid
+// input (logged).
+//   md_gto_gpu_job_t* job = md_gto_gpu_density_job_begin(stream, &desc);
+//   ... once a frame: if (md_gto_gpu_job_poll(job, false)) { ... all issued: read out_tex back after it ... }
+//   ... md_gto_gpu_job_progress(job) for a progress display, md_gto_gpu_job_end(job) once it is no longer watched
+// One thread at a time, the stream's.
 typedef struct md_gto_gpu_job_t md_gto_gpu_job_t;
 md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 
-// True once all of it is issued: it is then on the stream as a launch would be. wait: waits for the counts.
+// Issues what the GPU has room for. True once all of it is issued: it is then on the stream as a launch would
+// be. wait: waits for the counts, and issues everything left at once (in pieces still; nothing waits for them).
 bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait);
 
-// Frees the job. One not yet issued is dropped: out_tex is not written.
+// How far the evaluation is on the GPU, 0 to 1: the work of the pieces that have passed, by the plan's estimate.
+// 0 until the counts are planned; 1 once out_tex holds all of it. Never waits.
+float md_gto_gpu_job_progress(md_gto_gpu_job_t* job);
+
+// Frees the job, done or not; never waits for the GPU. One not yet all issued is dropped: the pieces in flight
+// complete and nothing more is issued, so out_tex is left part written (not to be read).
 void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
+
+// ---------------------------------------------------------------------------
+// The electron localization function (ELF) and the localized orbital locator (LOL) on a grid
+// ---------------------------------------------------------------------------
+// From the spins' density matrices: per voxel rho_s, grad rho_s and the kinetic energy density
+// tau_s = 1/2 sum_ij D_ij grad chi_i . grad chi_j, from the AOs and their gradients, then ELF or LOL as md_qm_elf
+// and md_qm_lol take them (the Kohout-Savin spin form; md_qm.h), in float, written to out_tex. One kernel, with
+// the reference density kernel's structure (eval_gto_localization.slang): about 7 times its multiply-adds per AO
+// pair and spin.
+//
+// The basis's radii decide which AOs are summed at a voxel: ELF is made of small differences in the tails, and
+// wants a basis made with the cutoff 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
+//
+// The tails: d_min is added to D as md_qm_elf has it, MD_QM_ELF_D_MIN for Multiwfn's convention (ELF to 0 by rho 1e-4);
+// 0 for the function as defined, which in float is good to about its noise (md_qm_elf_noise, 1e-2 by rho 1e-7).
+// LOL takes no difference: it holds to where rho underflows.
+typedef enum md_gto_gpu_localization_t {
+    MD_GTO_GPU_ELF = 0,
+    MD_GTO_GPU_LOL = 1,
+} md_gto_gpu_localization_t;
+
+typedef struct md_gto_gpu_localization_desc_t {
+    md_gto_gpu_basis_t basis;
+    md_gpu_addr_t      atom_xyz;      // packed float4, bohr
+    // num_spins 1: [0] the total density of a closed shell (taken as two equal spins); 2: [0] alpha, [1] beta.
+    // Each a packed upper-triangular D (md_gto_gpu_coeff_pack_density) or a dmat; both of one kind.
+    uint32_t           num_spins;
+    md_gpu_addr_t      coeff[2];
+    md_gto_gpu_dmat_t  dmat[2];
+    md_gto_gpu_localization_t kind;
+    double             rho_min;       // where rho (both spins) is below it, 0 (md_qm_elf)
+    double             d_min;         // ELF: added to D (md_qm_elf; MD_QM_ELF_D_MIN), 0: none
+    md_gpu_texture_t   out_tex;       // R32F, needs MD_GPU_TEX_STORAGE; mip 0 is written
+    const md_grid_t*   grid;
+    float              sample_offset[3];
+    uint64_t           piece_work;    // the work of a submission, in voxel x AO pair x spin; 0 = 2^30
+} md_gto_gpu_localization_desc_t;
+
+// The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
+#define MD_GTO_GPU_LOCALIZATION_REVISION "r4 (counted, then in pieces of 2^30 voxel-pairs, each its own submission)"
+
+// The revision of the grid kernels' 2D variants (a grid of one layer: blocks of 32x16x1 voxels, 16x16x1 for ELF and
+// LOL), for measurements.
+// MD_GTO_GPU_NO_2D (set in the environment) takes the 3D kernels for every grid, to compare.
+#define MD_GTO_GPU_PLANE_REVISION "plane-kernels r2"
+
+// In pieces, each its own submission, as the density's GEMM (MD_GTO_GPU_GEMM_PIECES_REVISION): at the cutoff ELF
+// takes, a large system's grid as one launch is minutes of GPU work, which the watchdog (TDR) takes the device for.
+// A group's cost is the pairs of the AOs that reach it, so the groups are counted first (the screening alone) and
+// the pieces planned from the counts: runs of consecutive groups of about piece_work each.
+//
+// Issues the evaluation into `stream`. Waits for the counting pass on the calling thread (and for what the stream
+// held before it), then issues every piece. False, logged, for invalid input.
+bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
+
+// The same as a job (md_gto_gpu_job_poll, md_gto_gpu_job_progress, md_gto_gpu_job_end: as the density's): the
+// counting pass issued and the call returns; the polls plan the pieces once the counts are on the host and issue
+// them a few in flight. Until it is all issued, what the descriptor names (the basis, the atom positions, the
+// matrices) must stay as they are. NULL, logged, for invalid input.
+md_gto_gpu_job_t* md_gto_gpu_localization_job_begin(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
 
 // Orbital evaluation algorithm.
 typedef enum md_gto_gpu_orbital_algo_t {

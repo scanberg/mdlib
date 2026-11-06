@@ -5,6 +5,7 @@
 
 struct md_system_t;
 struct md_system_state_t;
+struct md_executor_t;
 
 // VeloxChem (.h5 / .out) reader.
 //
@@ -147,14 +148,15 @@ extern "C" {
 #endif
 
 // Parse a VeloxChem .h5 or .out file into a system, replacing its atoms, its state and its
-// attribute table with what the file carried.
-bool md_vlx_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, str_t filename);
+// attribute table with what the file carried. executor (md_executor.h; may be NULL) is what the loader's
+// heavy loops run on: the conversion of the orbitals to Cartesian AOs.
+bool md_vlx_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, str_t filename, const struct md_executor_t* executor);
 
 // For a file whose atoms are a subset of an ALREADY loaded system - see
 // md_vlx_system_is_file_supplemental, which is how a caller decides between the two. Parses and
 // publishes onto that system, leaving its atoms and its state untouched where
 // md_vlx_system_init_from_file would replace them.
-bool md_vlx_system_supplement_from_file(struct md_system_t* sys, str_t filename);
+bool md_vlx_system_supplement_from_file(struct md_system_t* sys, str_t filename, const struct md_executor_t* executor);
 
 bool md_vlx_system_is_file_supplemental(const struct md_system_t* sys, str_t filename);
 

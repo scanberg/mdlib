@@ -95,7 +95,7 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     md_array_push(sys->residue.atom_offset, (uint32_t)n, alloc);
 
     if (infer) {
-        md_util_infer_covalent_bonds(&sys->bond, st, sys, alloc);
+        md_util_infer_covalent_bonds(&sys->bond, st, sys, alloc, NULL);
     } else {
         for (size_t b = 0; b < md_array_size(c->bond); ++b) {
             const ref_bond_t* r = &c->bond[b];

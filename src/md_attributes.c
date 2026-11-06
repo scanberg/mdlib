@@ -330,6 +330,10 @@ size_t md_attribute_extract_io_f32(float dst[], size_t cap, const md_attribute_t
     return attr_extract_F32(dst, cap, attr, slice, dst_unit, io);
 }
 
+size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io) {
+    return attr_extract_F64(dst, cap, attr, slice, dst_unit, io);
+}
+
 bool md_attribute_read_stored(void* dst, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
     ASSERT(dst);
     ASSERT(attr);
@@ -437,6 +441,29 @@ static void attr_id_index_rebuild(md_attributes_t* attributes) {
         }
         attributes->id_index[slot] = (uint32_t)(i + 1);
     }
+}
+
+// The index after an entry went in at idx and those after it moved up one: the moved ones' slots say one more, and
+// the new one gets a slot of its own. A rehash only when the table must grow. It was a rehash every time, which made
+// creating n attributes n^2 in hashing alone; this is a pass over plain integers.
+static void attr_id_index_insert(md_attributes_t* attributes, size_t idx) {
+    const size_t count = md_array_size(attributes->attr);
+    const size_t cap = md_array_size(attributes->id_index);
+    if (cap == 0 || cap < count * 2) {
+        attr_id_index_rebuild(attributes);
+        return;
+    }
+    uint32_t* slots = attributes->id_index;
+    const uint32_t first_moved = (uint32_t)idx + 1;     // as stored, index + 1
+    for (size_t s = 0; s < cap; ++s) {
+        slots[s] += (slots[s] >= first_moved) ? 1u : 0u;
+    }
+    const size_t mask = cap - 1;
+    size_t slot = (size_t)attributes->attr[idx].id & mask;
+    while (slots[slot] != 0) {
+        slot = (slot + 1) & mask;
+    }
+    slots[slot] = (uint32_t)idx + 1;
 }
 
 static size_t attr_index_from_id(const md_attributes_t* attributes, md_attribute_id_t id) {
@@ -560,7 +587,8 @@ static void attr_insert_at(md_attributes_t* attributes, size_t idx, const md_att
         MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
     }
     attributes->attr[idx] = *attr;
-    attr_id_index_rebuild(attributes);
+    attributes->num_aliases += md_attribute_is_alias(attr) ? 1 : 0;
+    attr_id_index_insert(attributes, idx);
 }
 
 // Everything one attribute owns. Removing one and tearing the whole table down have to agree about
@@ -770,45 +798,32 @@ size_t md_attribute_extract_str(str_t dst[], size_t cap, const md_attributes_t* 
     return count;
 }
 
-md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc) {
-    ASSERT(attributes);
-
-    if (!desc) {
-        MD_LOG_ERROR("Attribute descriptor is NULL");
-        return MD_ATTRIBUTE_INVALID;
-    }
-
+// What an attribute of desc is, its storage allocated and filled, for the path already cleared (attr_reserve_slot) or
+// already held (an in-place replace) under id. False, with nothing allocated, when the format or the data is not valid.
+// uninitialized: the storage of an attribute without data is left as it is allocated (md_attributes_reserve), else zeroed
+static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* desc, md_attribute_id_t id, md_attribute_t* out, bool uninitialized) {
     md_attribute_format_t format = desc->format;
     const str_t path = desc->path;
 
-    // The path is settled before the format is looked at: it is the cheaper rejection, and "that
-    // path is taken" is a more actionable message than a format complaint about a create which was
-    // never going to land anyway.
-    size_t idx;
-    md_attribute_id_t id;
-    if (!attr_reserve_slot(attributes, path, &idx, &id)) {
-        return MD_ATTRIBUTE_INVALID;
-    }
-
     if (md_attribute_type_size(format.type) == 0) {
         MD_LOG_ERROR("Invalid type for attribute '" STR_FMT "'", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
+        return false;
     }
     // Zero components is a producer who declared the extents and forgot to say how wide a value
     // is. It is not defaulted to 1: that would make the mistake legal and silent, and a wrong
     // components is indistinguishable from a right one everywhere downstream.
     if (format.components == 0) {
         MD_LOG_ERROR("Attribute '" STR_FMT "' declares 0 components; one value is at least 1 component wide", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
+        return false;
     }
     if (format.rank > MD_ATTRIBUTE_MAX_RANK) {
         MD_LOG_ERROR("Rank %u exceeds MD_ATTRIBUTE_MAX_RANK for attribute '" STR_FMT "'", format.rank, STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
+        return false;
     }
     for (uint32_t i = 0; i < format.rank; ++i) {
         if (format.shape[i] == 0) {
             MD_LOG_ERROR("Zero extent in axis %u of attribute '" STR_FMT "'", i, STR_ARG(path));
-            return MD_ATTRIBUTE_INVALID;
+            return false;
         }
     }
     // An extent past the declared rank is not harmless padding, it is a producer who wrote the
@@ -819,7 +834,7 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         if (format.shape[i] != 0) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' sets extent %u on axis %u, beyond its rank of %u",
                 STR_ARG(path), format.shape[i], i, format.rank);
-            return MD_ATTRIBUTE_INVALID;
+            return false;
         }
     }
 
@@ -835,27 +850,27 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         // A provider writes the STORED type, and the stored type here is a handle into a pool the
         // provider has no way to intern into.
         MD_LOG_ERROR("Attribute '" STR_FMT "' is a string and cannot be virtual", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
+        return false;
     }
 
     if (desc->virt) {
         if (!desc->virt->provider) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' declares virt with no provider", STR_ARG(path));
-            return MD_ATTRIBUTE_INVALID;
+            return false;
         }
         if (desc->data || desc->byte_size != 0) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' declares virt and resident data at the same time", STR_ARG(path));
-            return MD_ATTRIBUTE_INVALID;
+            return false;
         }
     } else if (desc->data) {
         if (desc->byte_size != input_size) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' declares %zu bytes but %zu were supplied", STR_ARG(path), input_size, desc->byte_size);
-            return MD_ATTRIBUTE_INVALID;
+            return false;
         }
     } else if (desc->byte_size != 0) {
         // A size without a pointer is a caller who meant to pass one.
         MD_LOG_ERROR("Attribute '" STR_FMT "' supplied %zu bytes with no data pointer", STR_ARG(path), desc->byte_size);
-        return MD_ATTRIBUTE_INVALID;
+        return false;
     }
 
     // PACKED_SYMMETRIC is a claim about the innermost axis, and checked for the same reason TEMPORAL
@@ -864,7 +879,7 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         if (desc->format.rank == 0 || desc->format.components != 1 ||
             md_attribute_packed_symmetric_dim(desc->format.shape[desc->format.rank - 1]) == 0) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' is packed symmetric but its innermost axis is not the upper triangle of a square matrix", STR_ARG(path));
-            return MD_ATTRIBUTE_INVALID;
+            return false;
         }
     }
 
@@ -875,18 +890,18 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
     if (desc->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) {
         if (desc->format.rank == 0) {
             MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal but has no index axes", STR_ARG(path));
-            return MD_ATTRIBUTE_INVALID;
+            return false;
         }
         if (!(attr_leaf_is_time(path) && attr_format_is_axis(&format, desc->flags))) {
             const md_attribute_t* axis = attr_axis_above(attributes, path);
             if (!axis) {
                 MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal but no frame axis ('time') exists at or above it", STR_ARG(path));
-                return MD_ATTRIBUTE_INVALID;
+                return false;
             }
             if (desc->format.shape[0] != axis->format.shape[0]) {
                 MD_LOG_ERROR("Attribute '" STR_FMT "' is temporal with an outermost extent of %u, but its axis '" STR_FMT "' has %u frames",
                     STR_ARG(path), desc->format.shape[0], STR_ARG(axis->path), axis->format.shape[0]);
-                return MD_ATTRIBUTE_INVALID;
+                return false;
             }
         }
     }
@@ -898,7 +913,7 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         storage = md_alloc(alloc, required);
         if (!storage) {
             MD_LOG_ERROR("Failed to allocate %zu bytes for attribute '" STR_FMT "'", required, STR_ARG(path));
-            return MD_ATTRIBUTE_INVALID;
+            return false;
         }
         if (desc->data && is_str) {
             // Interned one at a time. A zeroed handle is the empty string, so a failure to intern
@@ -911,7 +926,7 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
             }
         } else if (desc->data) {
             MEMCPY(storage, desc->data, required);
-        } else {
+        } else if (!uninitialized) {
             MEMSET(storage, 0, required);
         }
     }
@@ -922,7 +937,7 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
             md_free(alloc, storage, required);
         }
         MD_LOG_ERROR("Failed to copy attribute path '" STR_FMT "'", STR_ARG(path));
-        return MD_ATTRIBUTE_INVALID;
+        return false;
     }
 
     // Presentation only, so an empty one is a valid state and a failed copy is not worth failing
@@ -943,8 +958,60 @@ md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_att
         .virt        = desc->virt ? *desc->virt : (md_attribute_virtual_t){0},
         .root        = id,   // it owns its own storage; an alias is what points elsewhere
     };
-    attr_insert_at(attributes, idx, &entry);
+    *out = entry;
+    return true;
+}
 
+
+md_attribute_id_t md_attributes_create(md_attributes_t* attributes, const md_attribute_desc_t* desc) {
+    ASSERT(attributes);
+
+    if (!desc) {
+        MD_LOG_ERROR("Attribute descriptor is NULL");
+        return MD_ATTRIBUTE_INVALID;
+    }
+
+    // The path is settled before the format is looked at: it is the cheaper rejection, and "that
+    // path is taken" is a more actionable message than a format complaint about a create which was
+    // never going to land anyway.
+    size_t idx;
+    md_attribute_id_t id;
+    if (!attr_reserve_slot(attributes, desc->path, &idx, &id)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    md_attribute_t entry;
+    if (!attr_build(attributes, desc, id, &entry, false)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    attr_insert_at(attributes, idx, &entry);
+    return id;
+}
+
+md_attribute_id_t md_attributes_reserve(md_attributes_t* attributes, const md_attribute_desc_t* desc, void** out_data) {
+    ASSERT(attributes);
+    ASSERT(out_data);
+    *out_data = NULL;
+    if (!desc) {
+        MD_LOG_ERROR("Attribute descriptor is NULL");
+        return MD_ATTRIBUTE_INVALID;
+    }
+    // Storage to be written where it is: of numbers (text is interned, through create), not computed (virtual), and
+    // not filled from data
+    if (desc->virt || desc->data || desc->byte_size != 0 || desc->format.type == MD_ATTRIBUTE_TYPE_STR) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' cannot be reserved: storage of numbers, without data or a provider", STR_ARG(desc->path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    size_t idx;
+    md_attribute_id_t id;
+    if (!attr_reserve_slot(attributes, desc->path, &idx, &id)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    md_attribute_t entry;
+    if (!attr_build(attributes, desc, id, &entry, true)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    attr_insert_at(attributes, idx, &entry);
+    *out_data = entry.data;
     return id;
 }
 
@@ -1016,6 +1083,7 @@ static void attr_remove_at(md_attributes_t* attributes, size_t idx) {
     md_allocator_i* alloc = attributes->alloc;
     ASSERT(alloc);
 
+    attributes->num_aliases -= md_attribute_is_alias(attributes->attr + idx) ? 1 : 0;
     attr_release(attributes->attr + idx, alloc);
 
     size_t count = md_array_size(attributes->attr);
@@ -1026,13 +1094,29 @@ static void attr_remove_at(md_attributes_t* attributes, size_t idx) {
     attr_id_index_rebuild(attributes);
 }
 
-md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count) {
-    ASSERT(attributes);
-
-    if (count == 0 || components == 0 || !values) {
-        return MD_ATTRIBUTE_INVALID;
+// Aliases read an attribute's storage, so they cannot outlive it. They go one at a time because every removal shifts
+// the array; aliases are flattened at creation, so nothing aliases an alias and one pass over the survivors always
+// terminates.
+static void attr_remove_aliases_of(md_attributes_t* attributes, md_attribute_id_t id) {
+    while (attributes->num_aliases > 0) {
+        size_t alias_idx = SIZE_MAX;
+        for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
+            const md_attribute_t* a = attributes->attr + i;
+            if (md_attribute_is_alias(a) && a->root == id) {
+                alias_idx = i;
+                break;
+            }
+        }
+        if (alias_idx == SIZE_MAX) {
+            break;
+        }
+        attr_remove_at(attributes, alias_idx);
     }
+}
 
+// Whether a per atom column says anything: not one value for every atom, nor no value for any (see
+// md_attributes_publish_atom_column)
+static bool attr_atom_column_informative(const float values[], size_t count, uint32_t components) {
     // Uniformity is a property of the whole VALUE, not of each component: a velocity column where
     // every atom moves the same way is as uninformative as a constant occupancy, and one where only
     // the x components happen to agree is not.
@@ -1066,10 +1150,22 @@ md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes,
         if (bits_i != bits_0) {
             uniform = false;
         }
+        // Both answered: the rest cannot change them
+        if (!uniform && !all_absent) return true;
     }
-    if (uniform || all_absent) {
+    return !(uniform || all_absent);
+}
+
+md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count) {
+    ASSERT(attributes);
+
+    if (count == 0 || components == 0 || !values) {
         return MD_ATTRIBUTE_INVALID;
     }
+    if (!attr_atom_column_informative(values, count, components)) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    const size_t num_elements = count * (size_t)components;
 
     // One scalar per atom: the atom axis is the only index axis, and a value is one component wide.
     // components is stated rather than left to a default; see the ATTRIBUTES note above.
@@ -1086,6 +1182,48 @@ md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes,
         .byte_size = num_elements * sizeof(float),
     };
     return md_attributes_create(attributes, &desc);
+}
+
+float* md_attributes_reserve_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, size_t count, md_attribute_id_t* out_id) {
+    ASSERT(attributes);
+    ASSERT(out_id);
+    *out_id = MD_ATTRIBUTE_INVALID;
+    if (count == 0 || components == 0 || count > UINT32_MAX) {
+        return NULL;
+    }
+    // As md_attributes_publish_atom_column makes it
+    const md_attribute_desc_t desc = {
+        .path   = path,
+        .format = {
+            .type       = MD_ATTRIBUTE_TYPE_F32,
+            .components = components,
+            .rank       = 1,
+            .shape      = {(uint32_t)count},
+        },
+        .unit = unit,
+    };
+    void* data = NULL;
+    *out_id = md_attributes_reserve(attributes, &desc, &data);
+    return (float*)data;
+}
+
+md_attribute_id_t md_attributes_commit_atom_column(md_attributes_t* attributes, md_attribute_id_t id) {
+    ASSERT(attributes);
+    const size_t idx = attr_index_from_id(attributes, id);
+    if (idx == SIZE_MAX) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    const md_attribute_t* attr = attributes->attr + idx;
+    if (attr->format.type != MD_ATTRIBUTE_TYPE_F32 || attr->format.rank != 1 || !attr->data || md_attribute_is_alias(attr)) {
+        MD_LOG_ERROR("Attribute '" STR_FMT "' is no reserved per atom column", STR_ARG(attr->path));
+        return MD_ATTRIBUTE_INVALID;
+    }
+    if (!attr_atom_column_informative((const float*)attr->data, attr->format.shape[0], attr->format.components)) {
+        md_attributes_remove(attributes, id);
+        return MD_ATTRIBUTE_INVALID;
+    }
+    md_attributes_touch(attributes, id);
+    return id;
 }
 
 uint64_t md_attributes_version(const md_attributes_t* attributes, md_attribute_id_t id) {
@@ -1108,6 +1246,11 @@ uint64_t md_attributes_touch(md_attributes_t* attributes, md_attribute_id_t id) 
     // moved again. One counter value for all of them, so they compare equal as well as fresh.
     const md_attribute_id_t root = attributes->attr[idx].root;
     const uint64_t version = ++attributes->version_counter;
+    if (attributes->num_aliases == 0) {
+        // One name: no other to look for
+        attributes->attr[idx].version = version;
+        return version;
+    }
     for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
         if (attributes->attr[i].root == root) {
             attributes->attr[i].version = version;
@@ -1121,10 +1264,25 @@ md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_at
     ASSERT(desc);
 
     const md_attribute_t* existing = md_attributes_find(attributes, desc->path);
-    if (existing) {
-        md_attributes_remove(attributes, existing->id);
+    if (!existing) {
+        return md_attributes_create(attributes, desc);
     }
-    return md_attributes_create(attributes, desc);
+    // In place: the same path is the same slot in the sorted array and the same id, so nothing moves and the id index
+    // stands. Removing and creating again moved half the table and rebuilt the index twice, which made publishing n
+    // attributes again cost n^2. What aliases it goes first, as a removal has it: an alias borrows the storage replaced.
+    const md_attribute_id_t id = existing->id;
+    attr_remove_aliases_of(attributes, id);
+    const size_t idx = attr_index_from_id(attributes, id);
+    md_attribute_t entry;
+    if (idx == SIZE_MAX || !attr_build(attributes, desc, id, &entry, false)) {
+        // As a removal and a failed create left it: nothing at the path
+        md_attributes_remove(attributes, id);
+        return MD_ATTRIBUTE_INVALID;
+    }
+    attributes->num_aliases -= md_attribute_is_alias(&attributes->attr[idx]) ? 1 : 0;
+    attr_release(&attributes->attr[idx], attributes->alloc);
+    attributes->attr[idx] = entry;
+    return id;
 }
 
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
@@ -1134,23 +1292,7 @@ bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
         return false;
     }
 
-    // Aliases read this attribute's storage, so they cannot outlive it. They go first, one at a
-    // time because every removal shifts the array; aliases are flattened at creation, so nothing
-    // aliases an alias and one pass over the survivors always terminates.
-    for (;;) {
-        size_t alias_idx = SIZE_MAX;
-        for (size_t i = 0; i < md_array_size(attributes->attr); ++i) {
-            const md_attribute_t* a = attributes->attr + i;
-            if (md_attribute_is_alias(a) && a->root == id) {
-                alias_idx = i;
-                break;
-            }
-        }
-        if (alias_idx == SIZE_MAX) {
-            break;
-        }
-        attr_remove_at(attributes, alias_idx);
-    }
+    attr_remove_aliases_of(attributes, id);
 
     // Re-find: removing the aliases shifted everything after them.
     size_t idx = attr_index_from_id(attributes, id);
@@ -1489,6 +1631,74 @@ void md_attribute_io_close_all(md_attribute_io_t* io) {
     for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_FILES; ++i) {
         attr_io_close_slot(io, i);
     }
+    for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) {
+        if (io->block[i].data) md_free(md_get_heap_allocator(), io->block[i].data, io->block[i].capacity);
+        MEMSET(&io->block[i], 0, sizeof(io->block[i]));
+    }
+}
+
+md_attribute_io_t* md_attribute_io_create(const struct md_executor_t* executor, md_allocator_i* alloc) {
+    ASSERT(alloc);
+    md_attribute_io_t* io = md_alloc(alloc, sizeof(md_attribute_io_t));
+    if (!io) return NULL;
+    MEMSET(io, 0, sizeof(*io));
+    io->alloc = alloc;
+    io->executor = executor;
+    return io;
+}
+
+void md_attribute_io_destroy(md_attribute_io_t* io) {
+    if (!io) return;
+    md_attribute_io_close_all(io);
+    md_free(io->alloc, io, sizeof(md_attribute_io_t));
+}
+
+const struct md_executor_t* md_attribute_io_executor(const md_attribute_io_t* io) {
+    return io ? io->executor : NULL;
+}
+
+void md_attribute_io_block_forget(md_attribute_io_t* io, uint64_t key) {
+    if (!io || key == 0) return;
+    for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) {
+        if (io->block[i].key == key) {
+            io->block[i].key = 0;
+            io->block[i].bytes = 0;
+            io->block[i].last_use = 0;
+        }
+    }
+}
+
+uint64_t md_attribute_io_block_key(str_t path, int64_t offset) {
+    const uint64_t key = md_hash64_combine(md_hash64(path.ptr, path.len, 0), md_hash64(&offset, sizeof(offset), 0x9e3779b97f4a7c15ull));
+    return key ? key : 1;
+}
+
+void* md_attribute_io_block(md_attribute_io_t* io, uint64_t key, size_t bytes, bool* hit) {
+    ASSERT(hit);
+    *hit = false;
+    if (!io || key == 0 || bytes == 0) return NULL;
+    io->tick += 1;
+    size_t lru = 0;
+    for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) {
+        if (io->block[i].key == key && io->block[i].bytes == bytes) {
+            io->block[i].last_use = io->tick;
+            *hit = true;
+            return io->block[i].data;
+        }
+        if (io->block[i].last_use < io->block[lru].last_use) lru = i;
+    }
+    // The least recently used slot, grown when it is too small for the block
+    if (io->block[lru].capacity < bytes) {
+        if (io->block[lru].data) md_free(md_get_heap_allocator(), io->block[lru].data, io->block[lru].capacity);
+        MEMSET(&io->block[lru], 0, sizeof(io->block[lru]));
+        io->block[lru].data = md_alloc(md_get_heap_allocator(), bytes);
+        if (!io->block[lru].data) return NULL;
+        io->block[lru].capacity = bytes;
+    }
+    io->block[lru].key      = key;
+    io->block[lru].bytes    = bytes;
+    io->block[lru].last_use = io->tick;
+    return io->block[lru].data;
 }
 
 size_t md_attribute_packed_symmetric_dim(size_t extent) {
@@ -1505,7 +1715,7 @@ size_t md_attribute_packed_symmetric_dim(size_t extent) {
 size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset, void* dst, size_t bytes) {
     if (!io) {
         md_file_t file = {0};
-        if (!md_file_open(&file, path, MD_FILE_READ)) {
+        if (!md_file_open(&file, path, MD_FILE_READ | MD_FILE_CONCURRENT)) {
             MD_LOG_ERROR("Failed to open '" STR_FMT "'", STR_ARG(path));
             return 0;
         }
@@ -1533,8 +1743,9 @@ size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset
         // An empty slot has last_use 0, so the least recently used is also the first empty one.
         idx = lru;
         attr_io_close_slot(io, idx);
+        // Read at offsets only, by any thread: a handle which could be shared by the contexts of several threads
         md_file_t file = {0};
-        if (!md_file_open(&file, path, MD_FILE_READ)) {
+        if (!md_file_open(&file, path, MD_FILE_READ | MD_FILE_CONCURRENT)) {
             MD_LOG_ERROR("Failed to open '" STR_FMT "'", STR_ARG(path));
             return 0;
         }

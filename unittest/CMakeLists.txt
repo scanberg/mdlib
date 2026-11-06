@@ -11,7 +11,6 @@ set (SRC_FILES
     test_allocator.c
     test_array.c
     test_atomic.c
-    test_bitop.c
     test_grid.c
     test_bitset.c
     test_bonds.c
@@ -27,6 +26,8 @@ set (SRC_FILES
     test_edr.c
     test_cube.c
     test_dcd.c
+    test_amber.c
+    test_psf.c
     test_fifo.c
     test_intrinsics.c
     test_simd.c
@@ -41,6 +42,8 @@ set (SRC_FILES
     test_trr.c
     test_mmcif.c
     test_match.c
+    test_smiles_write.c
+    test_mcs.c
     test_ring.c
     test_lipid.c
     test_monomer.c
@@ -49,6 +52,14 @@ set (SRC_FILES
     test_unit.c
     test_script.c
     test_filter.c
+    test_vial_spec.c
+    test_vial_parse.c
+    test_vial_fuzz.c
+    test_vial_types.c
+    test_vial_check.c
+    test_vial_ir.c
+    test_vial_compare.c
+    test_vial_bench.c
     test_spatial_hash.c
     test_writer.c
     test_csv.c
@@ -70,10 +81,11 @@ set (SRC_FILES
     test_molden.c
     test_gto_int.c
     test_topo_gto.c
+    test_executor.c
 )
 
 if (MD_ENABLE_HDF5)
-    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c test_gto_iso.c test_gto_dmat.c test_trexio.c test_h5md.c)
+    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c test_gto_iso.c test_gto_dmat.c test_trexio.c test_h5md.c test_amber_nc4.c test_hdf5_direct.c)
 endif()
 
 if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQUAL "METAL"))

@@ -33,6 +33,7 @@ option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
+option(MD_VIAL_FUZZ "Build fuzz_vial, the libFuzzer target of the VIAL front end, with ASan and UBSan (clang)" OFF)
 # The readers of the HDF5 based formats come as one: they share the one dependency, and a build that
 # has HDF5 has no reason to leave any of them out. Compiled in, they define MD_HDF5.
 option(MD_ENABLE_HDF5 "Enable the HDF5 based readers: VeloxChem, TREXIO and H5MD (requires HDF5)" OFF)
@@ -67,11 +68,11 @@ set(CORE_FILES
   src/core/md_base64.h
   src/core/md_bitset.c
   src/core/md_bitset.h
-  src/core/md_bitop.inl
   src/core/md_coord_stream.h
   src/core/md_common.c
   src/core/md_common.h
   src/core/md_compiler.h
+  src/core/md_executor.h
   src/core/md_fifo.c
   src/core/md_fifo.h
   src/core/md_fft.c
@@ -103,7 +104,9 @@ set(CORE_FILES
   src/core/md_spatial_acc.c
   src/core/md_spatial_acc.h
   src/core/md_writer.c
+  src/core/md_reader.c
   src/core/md_writer.h
+  src/core/md_reader.h
   src/core/md_str.c
   src/core/md_str.h
   src/core/md_tracking_allocator.c
@@ -154,6 +157,20 @@ set(SRC_FILES
   src/md_itp.h
   src/md_dcd.c
   src/md_dcd.h
+  src/md_topology_build.c
+  src/md_topology_build.h
+  src/md_amber_netcdf.c
+  src/md_amber_netcdf.h
+  src/md_amber_prmtop.c
+  src/md_amber_prmtop.h
+  src/md_amber_rst7.c
+  src/md_amber_rst7.h
+  src/md_amber_energy.c
+  src/md_amber_energy.h
+  src/md_psf.c
+  src/md_psf.h
+  src/md_namdbin.c
+  src/md_namdbin.h
   src/md_dssp.c
   src/md_dssp.h
   src/md_dssp_cg.inl
@@ -161,6 +178,8 @@ set(SRC_FILES
   src/md_lammps.h
   src/md_match.c
   src/md_match.h
+  src/md_mcs.c
+  src/md_mcs.h
   src/md_pucker.c
   src/md_pucker.h
   src/md_mmcif.c
@@ -183,7 +202,47 @@ set(SRC_FILES
   src/md_script.h
   src/md_script_functions.inl
   src/md_script_complete.inl
+  src/md_vial.h
+  src/vial/prelude.vial
+  src/vial/vial_internal.h
+  src/vial/diag.c
+  src/vial/lex.c
+  src/vial/ast.h
+  src/vial/parse.c
+  src/vial/units.c
+  src/vial/types.h
+  src/vial/types.c
+  src/vial/builtins.h
+  src/vial/builtins.c
+  src/vial/check.h
+  src/vial/check.c
+  src/vial/infer.h
+  src/vial/infer_internal.h
+  src/vial/infer.c
+  src/vial/infer_sets.c
+  src/vial/infer_geom.c
+  src/vial/infer_math.c
+  src/vial/infer_defs.c
+  src/vial/infer_comp.c
+  src/vial/infer_vol.c
+  src/vial/select.h
+  src/vial/select.c
+  src/vial/value.h
+  src/vial/value.c
+  src/vial/ir.h
+  src/vial/ir.c
+  src/vial/emit.c
+  src/vial/passes.c
+  src/vial/interp.h
+  src/vial/interp.c
+  src/vial/kernels.c
+  src/vial/kernels_builtins.c
+  src/vial/volume.h
+  src/vial/volume.c
+  src/vial/eval.c
+  src/vial/api.c
   src/md_smiles.c
+  src/md_smiles_write.c
   src/md_smiles.h
   src/md_topo.c
   src/md_topo.h
@@ -257,12 +316,20 @@ set(TOPO_GTO_SLANG_FILE src/shaders/topo/topo_gto_cube.slang)
 
 set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_density.slang
+  src/shaders/gto/eval_gto_localization.slang
   src/shaders/gto/eval_gto_mo.slang
   src/shaders/gto/eval_gto_density_gemm2_128x32.slang
   src/shaders/gto/eval_gto_density_gemm2_128x64.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
   src/shaders/gto/eval_gto_mo_gemm_128x32.slang
+  # the same for a grid of one layer (the image of a plane): blocks of 32x16x1 voxels
+  src/shaders/gto/eval_gto_localization_2d.slang
+  src/shaders/gto/eval_gto_density_gemm2_128x32_2d.slang
+  src/shaders/gto/eval_gto_density_gemm2_128x64_2d.slang
+  src/shaders/gto/eval_gto_mo_shell_v4_m1_2d.slang
+  src/shaders/gto/eval_gto_mo_shell_v4_m8_2d.slang
+  src/shaders/gto/eval_gto_mo_gemm_128x32_2d.slang
 )
 
 set(GEN_FILES)
@@ -327,6 +394,10 @@ if (MD_ENABLE_HDF5)
   set(HDF5_PREFER_PARALLEL FALSE)
   find_package(HDF5 REQUIRED)
   list(APPEND MD_LIBS HDF5::HDF5)
+  # Frames of HDF5 datasets are inflated here, outside the HDF5 lock (md_hdf5_direct.c): zlib, which HDF5 is built
+  # with for its own deflate filter
+  find_package(ZLIB REQUIRED)
+  list(APPEND MD_LIBS ZLIB::ZLIB)
 
   list(APPEND SRC_FILES
     src/md_vlx.c
@@ -337,6 +408,10 @@ if (MD_ENABLE_HDF5)
     src/md_h5md.h
     src/md_hdf5.c
     src/md_hdf5.h
+    src/md_amber_netcdf4.c
+    src/md_amber_netcdf4.h
+    src/md_hdf5_direct.c
+    src/md_hdf5_direct.h
   )
   # Relative to the executable, because md_vlx.c always prefixes the executable's own directory
   # before this value. An absolute path here - which is what this defaulted to - produced
@@ -353,6 +428,7 @@ endif()
 create_resources("${GL_SHADER_FILES}"   "gen/gl_shaders.inl")
 create_resources("${GTO_SHADER_FILES}"  "gen/gto_shaders.inl")
 create_resources("${TOPO_SHADER_FILES}" "gen/topo_shaders.inl")
+create_resources("${CMAKE_CURRENT_SOURCE_DIR}/src/vial/prelude.vial" "gen/vial_prelude.inl")
 
 # Detect AppleClang vs other Clang
 if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -462,8 +538,11 @@ elseif (COMPILER_TYPE STREQUAL "GCC")
         "m"
         "Threads::Threads")
 elseif ((COMPILER_TYPE STREQUAL "MSVC"))
-    list(APPEND MD_FLAGS_EXT "/W2")
+    # The sources are UTF-8 (VIAL's units, Å and °, in strings and in the tests): MSVC reads them as the system's code
+    # page without /utf-8
+    list(APPEND MD_FLAGS_EXT "/W2" "/utf-8")
     list(APPEND MD_FLAGS
+      "/utf-8"
       "/W4"
       "/wd4201"
       "/wd4305"
@@ -519,6 +598,27 @@ endif()
 
 if (MD_BENCHMARK)
   add_subdirectory(benchmark)
+endif()
+
+# The libFuzzer target of VIAL (unittest/fuzz_vial.c). It builds VIAL's sources on their own, instrumented, and takes
+# the rest from mdlib, uninstrumented: the loaders of the test structures, the system and the units. The linker takes
+# VIAL's symbols from the instrumented objects, as an archive member is only pulled in for a symbol still unresolved.
+if (MD_VIAL_FUZZ)
+  if (NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "MD_VIAL_FUZZ needs clang, for -fsanitize=fuzzer")
+  endif()
+  find_package(Threads REQUIRED)
+  add_executable(fuzz_vial
+    unittest/fuzz_vial.c
+    src/vial/diag.c src/vial/lex.c src/vial/parse.c src/vial/units.c src/vial/types.c src/vial/builtins.c src/vial/check.c
+    src/vial/infer.c src/vial/infer_sets.c src/vial/infer_geom.c src/vial/infer_math.c src/vial/infer_defs.c src/vial/infer_comp.c src/vial/infer_vol.c src/vial/select.c src/vial/value.c src/vial/ir.c src/vial/emit.c src/vial/passes.c src/vial/interp.c src/vial/kernels.c src/vial/kernels_builtins.c src/vial/volume.c src/vial/eval.c src/vial/api.c
+  )
+  add_dependencies(fuzz_vial mdlib)
+  target_include_directories(fuzz_vial PRIVATE src unittest ext ext/xxhash gen)
+  target_compile_options(fuzz_vial PRIVATE -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
+  target_link_options(fuzz_vial PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_compile_definitions(fuzz_vial PRIVATE MD_UNITTEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/test_data\")
+  target_link_libraries(fuzz_vial PRIVATE mdlib m Threads::Threads)
 endif()
 
 # The basis sets have to sit beside the executables, because MD_VLX_BASIS_FOLDER is resolved
@@ -611,6 +711,8 @@ if (MD_ENABLE_GPU)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm2.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_gemm.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
   )
   foreach(GTO_SRC ${GTO_SLANG_FILES})
     get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
@@ -627,6 +729,13 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
+    ENTRIES   count_main phi_main dgather_main
+    DEPENDS   ${GTO_SLANG_INCLUDES}
+  )
+  compile_gpu_shaders(eval_gto_density_gemm_2d_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm_2d.slang
     ENTRIES   count_main phi_main dgather_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )
@@ -702,7 +811,20 @@ endif()
 target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
-set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
+set_source_files_properties(${EXT_FILES} PROPERTIES COMPILE_OPTIONS "${MD_FLAGS_EXT}")
+
+# The VIAL interpreter's kernels contract nothing: where a multiply and an add fuse is decided once, by the compiler, as
+# an explicit fma in the IR, so the interpreter and native code give the same bits. Kernels every backend calls by
+# address (com, within, the spatial search) keep mdlib's flags, since all backends share their bits.
+# MSVC adds /fp:contract to MD_FLAGS and has no flag that takes it back for one file: the files say #pragma fp_contract(off).
+set(VIAL_NO_CONTRACT src/vial/interp.c src/vial/kernels.c src/vial/kernels_builtins.c)
+if (NOT (COMPILER_TYPE STREQUAL "MSVC"))
+  if (COMPILER_TYPE STREQUAL "CLANG_CL")
+    set_source_files_properties(${VIAL_NO_CONTRACT} PROPERTIES COMPILE_OPTIONS "/clang:-ffp-contract=off")
+  else()
+    set_source_files_properties(${VIAL_NO_CONTRACT} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  endif()
+endif()
 
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PUBLIC ${MD_LIBS})

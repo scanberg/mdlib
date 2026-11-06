@@ -9,6 +9,7 @@
 
 #include <md_cube.h>
 #include <md_gto.h>
+#include "test_executor.h"
 
 #include <float.h>
 #include <math.h>
@@ -275,7 +276,23 @@ UTEST(gto, sph_to_cart_orbitals_matches_vector) {
             const size_t ao_stride = layout == 0 ? nm : 1;
             const int*   p         = layout == 0 ? perm : NULL;
             for (size_t i = 0; i < nm * n_cart; ++i) out[i] = NAN;
-            ASSERT_EQ(nm, md_gto_sph_to_cart_orbitals(out, in, mo_stride, ao_stride, p, nm, &basis));
+            ASSERT_EQ(nm, md_gto_sph_to_cart_orbitals(out, in, mo_stride, ao_stride, p, nm, &basis, NULL));
+            // the same, bit for bit, over threads and out of order (the large case is past the threshold)
+            {
+                test_executor_t threads = test_executor_threads(4), shuffled = test_executor_shuffled(3);
+                const md_executor_t* exs[2] = { test_executor(&threads), test_executor(&shuffled) };
+                double* other = (double*)malloc(sizeof(double) * nm * n_cart);
+                ASSERT_TRUE(other != NULL);
+                for (int e = 0; e < 2; ++e) {
+                    ASSERT_EQ(nm, md_gto_sph_to_cart_orbitals(other, in, mo_stride, ao_stride, p, nm, &basis, exs[e]));
+                    EXPECT_EQ(0, memcmp(out, other, sizeof(double) * nm * n_cart));
+                }
+                if (nm * n_cart > 4000000) {
+                    EXPECT_GT((uint32_t)threads.pieces, 1u);
+                    EXPECT_GT((uint32_t)shuffled.pieces, 1u);
+                }
+                free(other);
+            }
             double max_diff = 0.0, peak = 0.0;
             for (size_t k = 0; k < nm; ++k) {
                 for (size_t a = 0; a < n_sph; ++a) sph[a] = in[k * mo_stride + (size_t)(p ? p[a] : (int)a) * ao_stride];
@@ -323,9 +340,27 @@ UTEST(gto, density_from_orbitals_matches_definition) {
         }
         for (int layout = 0; layout < 2; ++layout) {
             for (size_t i = 0; i < na * na; ++i) D[i] = NAN;
-            const bool ok = layout == 0 ? md_gto_density_from_orbitals(D, C, na, 1, w, nm, na)
-                                        : md_gto_density_from_orbitals(D, Ct, 1, nm, w, nm, na);
+            const bool ok = layout == 0 ? md_gto_density_from_orbitals(D, C, na, 1, w, nm, na, NULL)
+                                        : md_gto_density_from_orbitals(D, Ct, 1, nm, w, nm, na, NULL);
             ASSERT_TRUE(ok);
+            // the same, bit for bit, over threads and out of order (the large case is past the threshold)
+            {
+                test_executor_t threads = test_executor_threads(4), shuffled = test_executor_shuffled(3);
+                const md_executor_t* exs[2] = { test_executor(&threads), test_executor(&shuffled) };
+                double* other = (double*)malloc(sizeof(double) * na * na);
+                ASSERT_TRUE(other != NULL);
+                for (int e = 0; e < 2; ++e) {
+                    for (size_t i = 0; i < na * na; ++i) other[i] = NAN;
+                    ASSERT_TRUE(layout == 0 ? md_gto_density_from_orbitals(other, C, na, 1, w, nm, na, exs[e])
+                                            : md_gto_density_from_orbitals(other, Ct, 1, nm, w, nm, na, exs[e]));
+                    EXPECT_EQ(0, memcmp(D, other, sizeof(double) * na * na));
+                }
+                if (nm == 2100) {
+                    EXPECT_GT((uint32_t)threads.pieces, 1u);
+                    EXPECT_GT((uint32_t)shuffled.pieces, 1u);
+                }
+                free(other);
+            }
             double err = 0.0, asym = 0.0, mag = 0.0;
             for (size_t i = 0; i < na; ++i) {
                 for (size_t j = 0; j < na; ++j) {
@@ -340,6 +375,21 @@ UTEST(gto, density_from_orbitals_matches_definition) {
         }
         free(ref); free(D); free(w); free(Ct); free(C);
     }
+}
+
+// A cancel through the executor: the loops stop, and the kernels say they did not finish
+UTEST(gto, kernels_cancelled_through_the_executor) {
+    const size_t nm = 2100, na = 500;   // past the density's threshold
+    double* C = (double*)calloc(nm * na, sizeof(double));
+    double* w = (double*)malloc(sizeof(double) * nm);
+    double* D = (double*)malloc(sizeof(double) * na * na);
+    ASSERT_TRUE(C && w && D);
+    for (size_t k = 0; k < nm; ++k) { w[k] = 1.0; C[k * na + k % na] = 1.0; }
+    test_executor_t threads = test_executor_threads(4);
+    threads.cancel = 1;
+    EXPECT_FALSE(md_gto_density_from_orbitals(D, C, na, 1, w, nm, na, test_executor(&threads)));
+    EXPECT_EQ(0u, (uint32_t)threads.pieces);
+    free(D); free(w); free(C);
 }
 
 UTEST(gto, evaluate_grid) {

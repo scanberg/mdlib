@@ -5,6 +5,7 @@
       "name": "hdf5",
       "default-features": false,
       "features": [ "zlib" ]
-    }
+    },
+    "zlib"
   ]
 }

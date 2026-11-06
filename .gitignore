@@ -29,6 +29,7 @@
 # Executables
 *.exe
 *.out
+!unittest/vial_golden/*.out
 *.app
 
 # Misc

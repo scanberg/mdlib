@@ -315,31 +315,64 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
 
 // ==================== Unit cell conversion ====================
 
-// The DCD periodic-cell extra block stores 6 doubles in this order:
-//   [0] A        length of a-vector
-//   [1] cos(γ)   angle between a and b  (or γ in degrees for old NAMD ≤ 2.5)
-//   [2] B        length of b-vector
-//   [3] cos(β)   angle between a and c  (or β in degrees)
-//   [4] cos(α)   angle between b and c  (or α in degrees)
-//   [5] C        length of c-vector
+// The DCD periodic-cell extra block stores 6 doubles, written three ways:
 //
-// We distinguish cosines from degree values by checking whether the angle
-// slot at index 1 lies within the valid cosine range [-1, 1].
-static md_unitcell_t dcd_unitcell_from_params(const double uc[6]) {
-    double a = uc[0], b = uc[2], c = uc[5];
-    double alpha_deg, beta_deg, gamma_deg;
+//   NAMD > 2.5, CHARMM:   [A, cos(gamma), B, cos(beta), cos(alpha), C]
+//   NAMD <= 2.5:          [A, gamma, B, beta, alpha, C], angles in degrees
+//   CHARMM c36 and later: the symmetric box (shape) matrix, lower triangle [h11, h21, h22, h31, h32, h33], whose
+//                         rows are the cell vectors
+//
+// Nothing in the file says which. The first two are told by whether the angle slots hold cosines; either is taken
+// only when it makes a cell (angles that span a volume), and the matrix otherwise - what MDAnalysis does, with the
+// difference that a reading which makes no cell is not taken. A matrix of a box sheared by less than an Angstrom
+// reads as cosines too; with no shear at all the two readings agree.
 
-    if (fabs(uc[1]) <= 1.0) {
-        gamma_deg = RAD_TO_DEG(acos(uc[1]));
-        beta_deg  = RAD_TO_DEG(acos(uc[3]));
-        alpha_deg = RAD_TO_DEG(acos(uc[4]));
-    } else {
-        gamma_deg = uc[1];
-        beta_deg  = uc[3];
-        alpha_deg = uc[4];
+// Angles in degrees that a cell can have: each strictly between 0 and 180, and the three spanning a volume
+static bool dcd_cell_angles_valid(double alpha, double beta, double gamma) {
+    if (!(alpha > 0.0 && alpha < 180.0 && beta > 0.0 && beta < 180.0 && gamma > 0.0 && gamma < 180.0)) return false;
+    const double ca = cos(DEG_TO_RAD(alpha)), cb = cos(DEG_TO_RAD(beta)), cg = cos(DEG_TO_RAD(gamma));
+    return 1.0 - ca * ca - cb * cb - cg * cg + 2.0 * ca * cb * cg > 1.0e-6;
+}
+
+static double dcd_vec_angle(const double u[3], const double v[3]) {
+    const double uu = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    const double vv = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    const double c = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (uu * vv);
+    return RAD_TO_DEG(acos(CLAMP(c, -1.0, 1.0)));
+}
+
+static md_unitcell_t dcd_unitcell_from_params(const double uc[6]) {
+    const double a = uc[0], b = uc[2], c = uc[5];
+    const bool lengths = a > 0.0 && b > 0.0 && c > 0.0 && isfinite(a + b + c);
+
+    if (lengths && fabs(uc[1]) <= 1.0 && fabs(uc[3]) <= 1.0 && fabs(uc[4]) <= 1.0) {
+        const double gamma = RAD_TO_DEG(acos(uc[1]));
+        const double beta  = RAD_TO_DEG(acos(uc[3]));
+        const double alpha = RAD_TO_DEG(acos(uc[4]));
+        if (dcd_cell_angles_valid(alpha, beta, gamma)) {
+            return md_unitcell_from_extent_and_angles(a, b, c, alpha, beta, gamma);
+        }
+    }
+    if (lengths && dcd_cell_angles_valid(uc[4], uc[3], uc[1])) {
+        return md_unitcell_from_extent_and_angles(a, b, c, uc[4], uc[3], uc[1]);
     }
 
-    return md_unitcell_from_extent_and_angles(a, b, c, alpha_deg, beta_deg, gamma_deg);
+    // The box matrix: its rows (= columns, it is symmetric) are the cell vectors
+    const double e1[3] = { uc[0], uc[1], uc[3] };
+    const double e2[3] = { uc[1], uc[2], uc[4] };
+    const double e3[3] = { uc[3], uc[4], uc[5] };
+    const double la = sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]);
+    const double lb = sqrt(e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]);
+    const double lc = sqrt(e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]);
+    if (la > 0.0 && lb > 0.0 && lc > 0.0 && isfinite(la + lb + lc)) {
+        const double alpha = dcd_vec_angle(e2, e3);
+        const double beta  = dcd_vec_angle(e1, e3);
+        const double gamma = dcd_vec_angle(e1, e2);
+        if (dcd_cell_angles_valid(alpha, beta, gamma)) {
+            return md_unitcell_from_extent_and_angles(la, lb, lc, alpha, beta, gamma);
+        }
+    }
+    return md_unitcell_none();
 }
 
 // ==================== Low-level frame reading ====================
@@ -935,4 +968,15 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
 done:
     md_arena_allocator_destroy(arena);
     return result;
+}
+
+size_t md_dcd_file_atom_count(str_t filename) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_READ)) return 0;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    dcd_file_header_t header;
+    const size_t n = dcd_parse_file_header(file, &header, arena) && header.natoms > 0 ? (size_t)header.natoms : 0;
+    md_arena_allocator_destroy(arena);
+    md_file_close(&file);
+    return n;
 }

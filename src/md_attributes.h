@@ -7,6 +7,7 @@
 #include <core/md_unit.h>
 
 struct md_allocator_i;
+struct md_executor_t;
 
 // ATTRIBUTES
 //
@@ -126,8 +127,12 @@ static inline md_attribute_slice_t md_attribute_slice_2(uint32_t i, uint32_t j) 
 
 typedef struct md_attribute_t md_attribute_t;
 
-// What a provider that streams from disk reads through (md_attribute_io_read_at). Owned by an
-// extraction context (md_system_extract_begin), which keeps files open across frames; NULL otherwise.
+// The context an extraction hands its providers: the files a provider streaming from disk reads through
+// (md_attribute_io_read_at), kept open across calls, and the executor a provider spreads heavy work over
+// (md_attribute_io_executor; md_executor.h). md_system_extract_begin owns one for a pass over frames;
+// md_attribute_io_create makes one for anything else. NULL where the caller gave none: no open files kept, and
+// every loop on the calling thread. A provider which reads other attributes hands its io on to them
+// (md_attribute_extract_io_f32/f64), so the context reaches what they compute in turn.
 typedef struct md_attribute_io_t md_attribute_io_t;
 
 // VIRTUAL ATTRIBUTES are computed on every extract by a provider; the table never caches the result.
@@ -198,6 +203,7 @@ typedef struct md_attributes_t {
     struct md_allocator_i*   alloc;
     md_array(md_attribute_t) attr;          // sorted by path
     md_array(uint32_t)       id_index;      // open addressing over attr, holds index+1; 0 is empty
+    size_t                   num_aliases;   // of attr, so that what looks for aliases can skip the look when there are none
 
     // String pool behind MD_ATTRIBUTE_TYPE_STR: append only, interning, entry 0 is "".
     md_array(char)           str_data;
@@ -290,6 +296,11 @@ size_t md_attribute_packed_symmetric_dim(size_t extent);
 size_t md_attribute_extract_f32(float  dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit);
 size_t md_attribute_extract_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit);
 
+// The same through an extraction context (md_attribute_io_t), handed to the providers of virtual attributes: their
+// files are kept open in it, and their heavy loops run on its executor. io may be NULL.
+size_t md_attribute_extract_io_f32(float  dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io);
+size_t md_attribute_extract_io_f64(double dst[], size_t cap, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, md_attribute_io_t* io);
+
 // The same, into a buffer allocated from alloc (count * sizeof(float|double) bytes). NULL on
 // failure, with nothing left allocated. out_count, when given, receives the element count.
 float*  md_attribute_extract_alloc_f32(size_t* out_count, const md_attribute_t* attr, md_attribute_slice_t slice, md_unit_t dst_unit, struct md_allocator_i* alloc);
@@ -342,6 +353,23 @@ size_t md_attributes_remove_prefix(md_attributes_t* attributes, str_t prefix);
 // carried through extraction bit for bit. mdlib builds with fast math, so a consumer compiled the
 // same way cannot test for NAN with v != v or isnan().
 md_attribute_id_t md_attributes_publish_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, const float values[], size_t count);
+
+// RESERVING: an attribute made before its values are known, for a producer to write them where they are kept (a loader
+// parsing a column of millions of atoms in parallel), with no buffer of its own to copy from.
+//
+// md_attributes_reserve publishes desc as create does, without data, and hands back its storage: of numbers (not STR),
+// not virtual, and NOT ZEROED - the producer writes all of it, before anything reads the attribute, and touches it
+// (md_attributes_touch) when it is done. The storage stays where it is until the attribute is removed or replaced,
+// whatever is created meanwhile (unlike the md_attribute_t pointers of LOOKUP), so it may be filled over a long load. It
+// is writable from any threads which own disjoint parts of it, as long as the table itself is not changed by them.
+md_attribute_id_t md_attributes_reserve(md_attributes_t* attributes, const md_attribute_desc_t* desc, void** out_data);
+
+// A per atom column as md_attributes_publish_atom_column makes it ({count} values of 'components' floats), reserved:
+// its storage, NULL on failure, and its id in out_id. md_attributes_commit_atom_column ends the writing: the column is
+// kept (its id) where it says anything, and removed (MD_ATTRIBUTE_INVALID) where publish would have skipped it, every
+// value the same or every value NAN.
+float* md_attributes_reserve_atom_column(md_attributes_t* attributes, str_t path, md_unit_t unit, uint32_t components, size_t count, md_attribute_id_t* out_id);
+md_attribute_id_t md_attributes_commit_atom_column(md_attributes_t* attributes, md_attribute_id_t id);
 
 // LOOKUP
 // Pointers are INVALIDATED by the next create, replace, alias or remove. Hold the id, not the pointer.
@@ -405,9 +433,31 @@ const md_attribute_t* md_attributes_axis(const md_attributes_t* attributes, cons
 // out_index untouched, when nothing matches.
 bool md_attribute_axis_map(size_t* out_index, const md_attribute_t* src_axis, size_t src_index, const md_attribute_t* dst_axis);
 
+// An extraction context of its own, for extractions outside a pass over frames: executor (may be NULL) is what the
+// providers of what is extracted through it run their loops on, and must outlive it. Not to be used by two threads
+// at once. alloc holds it and the paths of the files it keeps open.
+md_attribute_io_t* md_attribute_io_create(const struct md_executor_t* executor, struct md_allocator_i* alloc);
+void               md_attribute_io_destroy(md_attribute_io_t* io);
+
+// For a provider: the executor its loops run on (md_parallel_for), NULL for NULL io or none given
+const struct md_executor_t* md_attribute_io_executor(const md_attribute_io_t* io);
+
 // For a provider: read bytes at offset from the file at path, through io's cache of open files when
 // io is non NULL. Returns the number of bytes read.
 size_t md_attribute_io_read_at(md_attribute_io_t* io, str_t path, int64_t offset, void* dst, size_t bytes);
+
+// For a provider: a buffer of bytes kept by io across calls under key (nonzero), for what a provider decodes once and
+// reads from for several frames - a compressed block of a file holding more than one. *hit is true when the buffer still
+// holds the bytes last stored under the key, with the same byte count; false when the provider must fill it. The buffer
+// is valid until the next call on io. NULL when io is NULL or the bytes cannot be had: the provider decodes into
+// scratch of its own then.
+void* md_attribute_io_block(md_attribute_io_t* io, uint64_t key, size_t bytes, bool* hit);
+
+// For a provider that was handed a block to fill and failed to: the block holds nothing under the key any more
+void md_attribute_io_block_forget(md_attribute_io_t* io, uint64_t key);
+
+// What a block key is made from: the file and where the block is in it
+uint64_t md_attribute_io_block_key(str_t path, int64_t offset);
 
 #ifdef __cplusplus
 }
