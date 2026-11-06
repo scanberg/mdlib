@@ -70,12 +70,14 @@ static inline int32_t parse_id(str_t line, size_t beg, size_t end, uint32_t* num
     uint32_t j = i;
     while (j < len && is_digit(c[j])) value = value * 10 + (c[j++] - '0');
     if (j == len) return value;
+    // hy36decode reads hybrid-36 where the field begins with a letter and decimal otherwise, where only a '-' or a blank
+    // (after digits, which it takes as a 0) is something more: anything else ('*****', VMD's hexadecimal) it rejects
     int32_t res = 0;
-    if (hy36decode(len, c, len, &res)) {
-        if (num_bad) *num_bad += 1;
-        return 0;
+    if ((is_alpha(c[0]) || c[j] == '-' || c[j] == ' ') && !hy36decode(len, c, len, &res)) {
+        return res;
     }
-    return res;
+    if (num_bad) *num_bad += 1;
+    return 0;
 }
 
 // The formal charge of the charge column (79 to 80): a digit and its sign, "1-" or "2+" (and the sign first, as some
@@ -478,23 +480,120 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
 #define PDB_RES_FIELDS_BEG  17      // The residue name, the chain id, the sequence number and the insertion code:
 #define PDB_RES_FIELDS_END  27      // columns 18 to 27
 
-// The residue fields of an atom line, the chain id as it is in the file
+// The residue fields of an atom line, its ten characters as two words (blanks past the end of a shorter line): the chain
+// id, as it is in the file, the fifth
 typedef struct pdb_res_fields_t {
-    char c[PDB_RES_FIELDS_END - PDB_RES_FIELDS_BEG];
+    uint64_t lo;
+    uint16_t hi;
 } pdb_res_fields_t;
 
-static inline pdb_res_fields_t pdb_res_fields(str_t line) {
+static FORCE_INLINE pdb_res_fields_t pdb_res_fields(str_t line) {
     pdb_res_fields_t f;
-    MEMSET(f.c, ' ', sizeof(f.c));
-    if (line.len > PDB_RES_FIELDS_BEG) {
-        MEMCPY(f.c, line.ptr + PDB_RES_FIELDS_BEG, MIN(line.len - PDB_RES_FIELDS_BEG, sizeof(f.c)));
+    if (line.len >= PDB_RES_FIELDS_END) {
+        MEMCPY(&f.lo, line.ptr + PDB_RES_FIELDS_BEG, 8);
+        MEMCPY(&f.hi, line.ptr + PDB_RES_FIELDS_BEG + 8, 2);
+    } else {
+        char c[PDB_RES_FIELDS_END - PDB_RES_FIELDS_BEG];
+        MEMSET(c, ' ', sizeof(c));
+        if (line.len > PDB_RES_FIELDS_BEG) MEMCPY(c, line.ptr + PDB_RES_FIELDS_BEG, line.len - PDB_RES_FIELDS_BEG);
+        MEMCPY(&f.lo, c, 8);
+        MEMCPY(&f.hi, c + 8, 2);
     }
     return f;
 }
 
-static inline bool pdb_res_fields_eq(const pdb_res_fields_t* a, const pdb_res_fields_t* b) {
-    return MEMCMP(a->c, b->c, sizeof(a->c)) == 0;
+static FORCE_INLINE bool pdb_res_fields_eq(const pdb_res_fields_t* a, const pdb_res_fields_t* b) {
+    return a->lo == b->lo && a->hi == b->hi;
 }
+
+static FORCE_INLINE char pdb_res_fields_chain(const pdb_res_fields_t* f) {
+    return (char)(f->lo >> (8 * (21 - PDB_RES_FIELDS_BEG)));
+}
+
+// A field of up to 4 columns from offset (from 0) as a label, without the blanks around it: what is at or below ' ' (a
+// tab, a carriage return, a nul) at its ends, which no name has. One word, no loop over its characters.
+static FORCE_INLINE md_label_t pdb_label(str_t line, size_t offset, size_t width) {
+    uint32_t w = 0x20202020u;
+    if (line.len >= offset + width) {
+        if (width == 4) MEMCPY(&w, line.ptr + offset, 4);
+        else            { uint16_t h; MEMCPY(&h, line.ptr + offset, 2); w = 0x20200000u | h; }
+    } else if (line.len > offset) {
+        MEMCPY(&w, line.ptr + offset, line.len - offset);
+    }
+    // 0x80 in every byte above ' ': its low 7 bits are, or its high bit is set (no borrow crosses a byte)
+    const uint32_t mark = (((w | 0x80808080u) - 0x21212121u) | w) & 0x80808080u;
+    md_label_t lbl = {0};
+    if (mark) {
+        const uint32_t lo = ctz32(mark) >> 3;
+        const uint32_t hi = (31 - clz32(mark)) >> 3;
+        const uint64_t v = ((uint64_t)w >> (8 * lo)) & ((UINT64_C(1) << (8 * (hi - lo + 1))) - 1);
+        MEMCPY(lbl.buf, &v, sizeof(v));
+    }
+    return lbl;
+}
+
+// The three coordinates of an atom line, "%8.3f" each from column 31, at once: the characters of each in classes
+// (digit, blank, '-', '.') as bit masks, checked to be laid out as md_parse_fixed_f32 takes them, and the digits made
+// the integer part and the decimals by two multiply-adds. False, out untouched, if any is laid out otherwise: the
+// caller parses them one by one. The value is md_parse_fixed_f32's: the same integer over the same power of ten.
+#if defined(__AVX2__) || defined(__SSSE3__)
+#   include <immintrin.h>
+#   define PDB_COORDS_SIMD 1
+
+// Of the three fields at once (8 bits of each mask a field): blanks, then an optional '-', then digits up to the '.' at
+// 4, and 3 decimals. In the low nibble of each field the digits and the '-' are one run up to its bit 3, whose bit 3 is
+// a digit, the '-' (if any) its lowest bit; the rest of the nibble blanks.
+static FORCE_INLINE bool pdb_coord_layout(uint32_t digit, uint32_t blank, uint32_t minus, uint32_t dot) {
+    const uint32_t run = (digit | minus) & 0x0F0F0F;
+    return (dot & 0xFFFFFF) == 0x101010
+        && (digit & 0xE8E8E8) == 0xE8E8E8                       // the decimals, and the last digit before the dot
+        && (((run << 1) & 0x0E0E0E) & ~run) == 0                // one run up to bit 3: 1000, 1100, 1110, 1111
+        && ((minus >> 1) & run & 0x070707) == 0                 // the '-' its lowest bit
+        && (minus & 0xF0F0F0) == 0
+        && ((blank ^ ~run) & 0x0F0F0F) == 0 && (blank & 0xF0F0F0) == 0;
+}
+
+static FORCE_INLINE bool pdb_coords(float out[3], str_t line) {
+    if (line.len < 54) return false;
+    const char* p = line.ptr + 30;
+    const __m128i v[2] = { _mm_loadu_si128((const __m128i*)p), _mm_loadl_epi64((const __m128i*)(p + 16)) };
+    __m128i num[2];
+    uint32_t digit = 0, blank = 0, minus = 0, dot = 0;
+    for (int k = 0; k < 2; ++k) {
+        const __m128i d  = _mm_sub_epi8(v[k], _mm_set1_epi8('0'));
+        const __m128i is = _mm_cmpeq_epi8(_mm_min_epu8(d, _mm_set1_epi8(9)), d);
+        digit |= (uint32_t)_mm_movemask_epi8(is) << (16 * k);
+        blank |= (uint32_t)_mm_movemask_epi8(_mm_cmpeq_epi8(v[k], _mm_set1_epi8(' '))) << (16 * k);
+        minus |= (uint32_t)_mm_movemask_epi8(_mm_cmpeq_epi8(v[k], _mm_set1_epi8('-'))) << (16 * k);
+        dot   |= (uint32_t)_mm_movemask_epi8(_mm_cmpeq_epi8(v[k], _mm_set1_epi8('.'))) << (16 * k);
+        // Pairs of digits (10, 1), then pairs of those (100, 1): of each field its integer part and its decimals
+        const __m128i pairs = _mm_maddubs_epi16(_mm_and_si128(d, is), _mm_set1_epi16(0x010A));
+        num[k] = _mm_madd_epi16(pairs, _mm_set1_epi32(0x00010064));
+    }
+    if (!pdb_coord_layout(digit, blank, minus, dot)) return false;
+    // The integer parts and decimals (at most 9999 and 999) as 16 bits, then each field's integer: (1000, 1)
+    const __m128i n = _mm_madd_epi16(_mm_packs_epi32(num[0], num[1]), _mm_set1_epi32(0x000103E8));
+    const __m128d lo = _mm_div_pd(_mm_cvtepi32_pd(n), _mm_set1_pd(1000.0));
+    const __m128d hi = _mm_div_pd(_mm_cvtepi32_pd(_mm_unpackhi_epi64(n, n)), _mm_set1_pd(1000.0));
+    const __m128 val = _mm_movelh_ps(_mm_cvtpd_ps(lo), _mm_cvtpd_ps(hi));
+    // The sign last, on the float, as md_parse_fixed_f32 negates the value (a "-0.000" is -0): of each field, bit 4 of
+    // its byte if its nibble has the '-', moved to bit 31 of its lane
+    const uint32_t neg = ((minus & 0x0F0F0F) + 0x0F0F0F) & 0x101010;
+    const __m128i zero = _mm_setzero_si128();
+    const __m128i sign = _mm_slli_epi32(_mm_unpacklo_epi16(_mm_unpacklo_epi8(_mm_cvtsi32_si128((int)neg), zero), zero), 27);
+    float res[4];
+    _mm_storeu_ps(res, _mm_xor_ps(val, _mm_castsi128_ps(sign)));
+    out[0] = res[0];
+    out[1] = res[1];
+    out[2] = res[2];
+    return true;
+}
+#else
+static FORCE_INLINE bool pdb_coords(float out[3], str_t line) {
+    (void)out; (void)line;
+    return false;
+}
+#endif
 
 typedef struct pdb_residue_start_t {
     uint32_t         atom;      // of the load
@@ -688,10 +787,11 @@ static FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, str_t line,
     uint64_t raw = 0;
     if (line.len >= end) {
         MEMCPY(&raw, line.ptr + beg - 1, width);
-    } else if (line.len >= beg) {
-        MEMCPY(&raw, line.ptr + beg - 1, line.len - beg + 1);      // The end of a line shorter than the column
+        raw |= (uint64_t)width << 56;                               // and how much of it there is
+    } else {
+        if (line.len >= beg) MEMCPY(&raw, line.ptr + beg - 1, line.len - beg + 1);     // The end of a shorter line
+        raw |= (uint64_t)(line.len - MIN(line.len, beg - 1)) << 56;
     }
-    raw |= (uint64_t)MIN(line.len - MIN(line.len, beg - 1), width) << 56;    // and how much of it there is
     if (raw == cache->raw) return cache->value;
     cache->raw = raw;
     cache->value = width == 2 ? pdb_charge(str_substr(line, beg - 1, 2)) : extract_fixed_float(line, beg, end, 2);
@@ -710,7 +810,6 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         piece->num_bad_ids = 0;
         piece->num_bad_seq = 0;
         piece->unassigned = false;
-        for (int c = 0; c < PDB_NUM_COLUMNS; ++c) piece->col_varies[c] = false;
         types->count = 0;
         types->overflow = false;
         if (L->atoms && piece->num_atoms) MEMSET(types->slot, 0, sizeof(types->slot));
@@ -722,6 +821,15 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         // The occupancy, b factor and charge of most atoms are those of the atom before: the same characters, which are
         // not parsed again
         pdb_field_cache_t cache[PDB_NUM_COLUMNS] = { {UINT64_MAX}, {UINT64_MAX}, {UINT64_MAX} };
+        // Of the columns: the bits of the first atom's value, and whether another atom's differ (kept here, not in the
+        // piece, which the stores of the atoms' values would make the compiler read again for every atom)
+        uint32_t col_first[PDB_NUM_COLUMNS] = {0};
+        bool col_varies[PDB_NUM_COLUMNS] = {false};
+        bool any_varies = false;
+        // The characters of the columns of the atom before, as two words: an atom of the same has its values, and while
+        // no column varies, nothing is written. UINT64_MAX in the second is none (a line too short for the words).
+        uint64_t cols_lo = 0, cols_hi = UINT64_MAX;
+        float col[PDB_NUM_COLUMNS] = {0};
 
         pdb_residue_start_t* res = L->res_starts + piece->first_res;
         pdb_record_t* rec = L->records + piece->first_record;
@@ -754,8 +862,8 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                 piece->num_bad_seq += bad;
                 res->atom      = (uint32_t)atom;
                 res->seq_id    = bad ? INT_MAX : seq_id;
-                res->name      = make_label(str_trim(str_substr(line, 17, 4)));
-                res->chain_id  = fields.c[21 - PDB_RES_FIELDS_BEG];
+                res->name      = pdb_label(line, 17, 4);
+                res->chain_id  = pdb_res_fields_chain(&fields);
                 res->after_ter = first ? piece->first_after_ter : ter;
                 ++res;
             }
@@ -763,17 +871,23 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             ter = false;
             prev = fields;
 
-            xyz[atom] = vec3_set(extract_fixed_float(line, 31, 38, 3), extract_fixed_float(line, 39, 46, 3), extract_fixed_float(line, 47, 54, 3));
+            float c[3];
+            if (!pdb_coords(c, line)) {
+                c[0] = extract_fixed_float(line, 31, 38, 3);
+                c[1] = extract_fixed_float(line, 39, 46, 3);
+                c[2] = extract_fixed_float(line, 47, 54, 3);
+            }
+            xyz[atom] = vec3_set(c[0], c[1], c[2]);
             flags[atom] = MD_ATOM_FLAG_NONE;
-            const md_label_t name = make_label(str_trim(str_substr(line, 12, 4)));
-            const str_t element = str_trim(str_substr(line, 76, 2));
-            if (element.len == 0) {
+            const md_label_t name = pdb_label(line, 12, 4);
+            const md_label_t element = pdb_label(line, 76, 2);
+            if (element.buf[0] == 0) {
                 // Typed by its name with the others of its residue, once all are read
                 L->atom_name[atom] = name;
                 type_idx[atom] = 0;
                 piece->unassigned = true;
             } else {
-                const uint8_t z = (uint8_t)md_atomic_number_from_symbol(element, true);
+                const uint8_t z = (uint8_t)md_atomic_number_from_symbol(md_label_str(&element), true);
                 const uint64_t key = md_label_key(name);
                 if (key != prev_key || z != prev_z || prev_type == 0) {
                     prev_type = pdb_types_find_or_add(types, name, z);
@@ -782,28 +896,54 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                 }
                 type_idx[atom] = prev_type;
             }
-            const float col[PDB_NUM_COLUMNS] = {
-                pdb_field_cached(&cache[PDB_COL_OCCUPANCY], line, 55, 60),
-                pdb_field_cached(&cache[PDB_COL_B_FACTOR],  line, 61, 66),
-                pdb_field_cached(&cache[PDB_COL_CHARGE],    line, 79, 80),
-            };
+            // Columns 55-66 (the occupancy and the b factor), and of 79-80 (the charge) what the line has of them and how
+            // much: at most 0x2FFFF, so the second word is never UINT64_MAX
+            uint64_t lo = 0, hi = UINT64_MAX;
+            if (line.len >= 66) {
+                uint32_t mid, charge = 0;
+                MEMCPY(&lo, line.ptr + 54, 8);
+                MEMCPY(&mid, line.ptr + 62, 4);
+                if (line.len >= 80) {
+                    uint16_t h;
+                    MEMCPY(&h, line.ptr + 78, 2);
+                    charge = 0x20000u | h;
+                } else if (line.len == 79) {
+                    charge = 0x10000u | (uint8_t)line.ptr[78];
+                }
+                hi = (uint64_t)charge << 32 | mid;
+            }
+            const bool same = hi != UINT64_MAX && lo == cols_lo && hi == cols_hi;
+            cols_lo = lo;
+            cols_hi = hi;
+            if (!same) {
+                col[PDB_COL_OCCUPANCY] = pdb_field_cached(&cache[PDB_COL_OCCUPANCY], line, 55, 60);
+                col[PDB_COL_B_FACTOR]  = pdb_field_cached(&cache[PDB_COL_B_FACTOR],  line, 61, 66);
+                col[PDB_COL_CHARGE]    = pdb_field_cached(&cache[PDB_COL_CHARGE],    line, 79, 80);
+            }
             // A column of one value (the occupancy of 1 and b factor of 0 of a simulation, no charges) is neither written
             // nor published: told by bits, as publish tells it. Once one varies in the piece, the atoms before have the
             // first's value.
-            for (int c = 0; c < PDB_NUM_COLUMNS; ++c) {
-                const uint32_t bits = pdb_f32_bits(col[c]);
-                if (atom == piece->first_atom) {
-                    piece->col_first[c] = bits;
-                } else if (!piece->col_varies[c] && bits != piece->col_first[c]) {
-                    piece->col_varies[c] = true;
+            if (atom == piece->first_atom) {
+                for (int k = 0; k < PDB_NUM_COLUMNS; ++k) col_first[k] = pdb_f32_bits(col[k]);
+            }
+            // The same values as the atom before, while all are the first's: nothing to tell or write
+            for (int k = 0; k < PDB_NUM_COLUMNS && (!same || any_varies); ++k) {
+                if (!col_varies[k]) {
+                    if (pdb_f32_bits(col[k]) == col_first[k]) continue;
+                    col_varies[k] = true;
+                    any_varies = true;
                     float first_value;
-                    MEMCPY(&first_value, &piece->col_first[c], sizeof(first_value));
-                    for (size_t i = piece->first_atom; i < atom; ++i) L->column[c][i] = first_value;
+                    MEMCPY(&first_value, &col_first[k], sizeof(first_value));
+                    for (size_t i = piece->first_atom; i < atom; ++i) L->column[k][i] = first_value;
                 }
-                if (piece->col_varies[c]) L->column[c][atom] = col[c];
+                L->column[k][atom] = col[k];
             }
             L->serial[atom] = line.len >= 11 ? parse_id(line, 7, 11, &piece->num_bad_ids) : 0;
             ++atom;
+        }
+        for (int k = 0; k < PDB_NUM_COLUMNS; ++k) {
+            piece->col_first[k] = col_first[k];
+            piece->col_varies[k] = col_varies[k];
         }
         ASSERT(atom == piece->first_atom + (L->atoms ? piece->num_atoms : 0));
     }
