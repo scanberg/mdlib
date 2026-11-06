@@ -486,7 +486,7 @@ UTEST(filter, chains_by_author_id) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
 

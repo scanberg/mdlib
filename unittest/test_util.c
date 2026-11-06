@@ -120,12 +120,12 @@ UTEST_F_SETUP(util) {
 
     utest_fixture->mol_1fez.alloc = alloc;
     md_system_state_t mol_1fez_state = { .alloc = alloc };
-    md_mmcif_system_init_from_file(&utest_fixture->mol_1fez, &mol_1fez_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
+    md_mmcif_system_init_from_file(&utest_fixture->mol_1fez, &mol_1fez_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL);
     md_util_system_infer(&utest_fixture->mol_1fez, &mol_1fez_state, MD_UTIL_INFER_ALL, NULL);
 
     utest_fixture->mol_2or2.alloc = alloc;
     md_system_state_t mol_2or2_state = { .alloc = alloc };
-    md_mmcif_system_init_from_file(&utest_fixture->mol_2or2, &mol_2or2_state, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
+    md_mmcif_system_init_from_file(&utest_fixture->mol_2or2, &mol_2or2_state, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL);
     md_util_system_infer(&utest_fixture->mol_2or2, &mol_2or2_state, MD_UTIL_INFER_ALL, NULL);
 
     utest_fixture->mol_1k4r.alloc = alloc;
@@ -135,7 +135,7 @@ UTEST_F_SETUP(util) {
 
     utest_fixture->mol_8g7u.alloc = alloc;
     md_system_state_t mol_8g7u_state = { .alloc = alloc };
-    md_mmcif_system_init_from_file(&utest_fixture->mol_8g7u, &mol_8g7u_state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
+    md_mmcif_system_init_from_file(&utest_fixture->mol_8g7u, &mol_8g7u_state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL);
     md_util_system_infer(&utest_fixture->mol_8g7u, &mol_8g7u_state, MD_UTIL_INFER_ALL, NULL);
 }
 
@@ -618,7 +618,7 @@ UTEST(util, coordinated_metals_are_molecules_of_their_own) {
         // The Mg of 1fez, coordinated by its protein; and then the same bonds as a topology would give them
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
         int32_t mg = -1;
@@ -655,7 +655,7 @@ UTEST(util, molecules_hold_residues_and_chains) {
         // 8g7u: chains with residues missing, each one molecule over its gaps
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
         size_t breaks = 0;
@@ -1380,7 +1380,7 @@ UTEST(util, atom_roles_stay_in_their_residue) {
         // The Mg of 1fez is coordinated by an aspartate
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
         size_t num_mg = 0;
@@ -3009,7 +3009,7 @@ static inline bool init_system(md_system_t* sys, md_system_state_t* sys_state, s
         return md_gro_system_init_from_file(sys, sys_state, path, NULL) && test_infer_as_loaded(sys, sys_state);
     } else
     if (str_eq_ignore_case(ext, STR_LIT("cif"))) {
-        return md_mmcif_system_init_from_file(sys, sys_state, path) && test_infer_as_loaded(sys, sys_state);
+        return md_mmcif_system_init_from_file(sys, sys_state, path, NULL) && test_infer_as_loaded(sys, sys_state);
     }
 
     return false;
@@ -3195,7 +3195,7 @@ UTEST(util, part_type_derived) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
         md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL, NULL);
 
@@ -3221,7 +3221,7 @@ UTEST(util, part_type_instance_mmcif) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
 
         static const struct { md_part_kind_t kind; const char* desc; } types[] = {
@@ -3254,7 +3254,7 @@ UTEST(util, part_type_instance_mmcif) {
         // RNA strands which begin with a GTP (the 5' triphosphate): linked into the chain, so a nucleotide
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif")));
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
         md_util_system_infer(&sys, &sys_state, MD_UTIL_INFER_ALL, NULL);
         ASSERT_GE(md_system_part_type_count(&sys), 5);
@@ -3645,7 +3645,7 @@ UTEST(util, molecule_type_inferred) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif")));
+        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL, NULL));
         EXPECT_VALID_SYSTEM(&sys);
@@ -4586,7 +4586,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
     bool loaded = false;
     if (str_ends_with(file, STR_LIT(".pdb"))) loaded = md_pdb_system_init_from_file(&ref, &ref_state, file, MD_PDB_OPTION_NONE, NULL);
     if (str_ends_with(file, STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&ref, &ref_state, file, NULL);
-    if (str_ends_with(file, STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&ref, &ref_state, file);
+    if (str_ends_with(file, STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&ref, &ref_state, file, NULL);
     ASSERT_TRUE(loaded);
     ASSERT_TRUE(md_util_system_infer(&ref, &ref_state, MD_UTIL_INFER_ALL, NULL));
 

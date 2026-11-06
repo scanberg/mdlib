@@ -38,6 +38,10 @@ static bool load_pdb(md_system_t* sys, md_system_state_t* state, str_t path) {
     return md_pdb_system_init_from_file(sys, state, path, MD_PDB_OPTION_NONE, NULL);
 }
 
+static bool load_mmcif(md_system_t* sys, md_system_state_t* state, str_t path) {
+    return md_mmcif_system_init_from_file(sys, state, path, NULL);
+}
+
 static bool load_gro(md_system_t* sys, md_system_state_t* state, str_t path) {
     return md_gro_system_init_from_file(sys, state, path, NULL);
 }
@@ -53,9 +57,9 @@ UTEST(system_invariants, pdb) {
 }
 
 UTEST(system_invariants, mmcif) {
-    check_file(utest_result, md_mmcif_system_init_from_file, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
-    check_file(utest_result, md_mmcif_system_init_from_file, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
-    check_file(utest_result, md_mmcif_system_init_from_file, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
+    check_file(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
+    check_file(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
+    check_file(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
 }
 
 UTEST(system_invariants, gro) {
@@ -230,8 +234,8 @@ UTEST(system_invariants, infer_write_set) {
     check_infer_write_set(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"));
     check_infer_write_set(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"));
     check_infer_write_set(utest_result, load_pdb, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"));
-    check_infer_write_set(utest_result, md_mmcif_system_init_from_file, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
-    check_infer_write_set(utest_result, md_mmcif_system_init_from_file, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
+    check_infer_write_set(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
+    check_infer_write_set(utest_result, load_mmcif, STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
     check_infer_write_set(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
     check_infer_write_set(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"));
     check_infer_write_set(utest_result, load_gro, STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_membrane_protein.gro"));
