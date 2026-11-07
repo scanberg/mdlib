@@ -574,7 +574,8 @@ static void call_params(cmpl_t* c, const md_vial_program_t* prog, vial_node_id c
     if (f && t->nodes[f].kind == VIAL_N_NAME) {
         const str_t fname = {prog->src.ptr + t->nodes[f].span.beg, t->nodes[f].span.end - t->nodes[f].span.beg};
         for (uint8_t lv = VIAL_LEVEL_PARTICLE; lv <= VIAL_LEVEL_RING; ++lv) {
-            const bool alias = lv == VIAL_LEVEL_PARTICLE && (str_eq(fname, STR_LIT("atom")) || str_eq(fname, STR_LIT("bead")));
+            const bool alias = (lv == VIAL_LEVEL_PARTICLE && (str_eq(fname, STR_LIT("atom")) || str_eq(fname, STR_LIT("bead")))) ||
+                               (lv == VIAL_LEVEL_PART && str_eq(fname, STR_LIT("polymer")));
             if (!alias && !str_eq(fname, str_from_cstr(vial_select_name(lv)))) continue;
             static const char* words[] = {"name", "element", "kind", "resid", "resname", "chain", "id", "size", "scope"};  // not serial, until it is supported
             for (size_t w = 0; w < ARRAY_SIZE(words); ++w) {
@@ -775,7 +776,7 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             if (b->flags & VIAL_BUILTIN_PROPERTY) cmpl_add(&c, str_from_cstr(b->name), str_from_cstr(b->name), MD_VIAL_COMPLETION_PROPERTY);
         }
         // The selectors within each set, for .residue[i] and .particle(...)
-        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "molecule", "head", "tail"};
+        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "polymer", "molecule", "head", "tail"};
         for (size_t i = 0; i < ARRAY_SIZE(views); ++i) cmpl_add(&c, str_from_cstr(views[i]), str_from_cstr(views[i]), MD_VIAL_COMPLETION_PROPERTY);
     } else {
         // The call's parameters first
