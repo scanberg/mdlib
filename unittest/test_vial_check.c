@@ -745,6 +745,32 @@ UTEST_F(vial_check, folds_and_loops) {
     EXPECT_DIAGS("break\n", "E0101 1: `break` outside a loop\n");
 }
 
+// pi, prod, median, percentile, cumsum, sort and argsort: their types, and what they refuse
+UTEST_F(vial_check, more_builtins) {
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(P != NULL);
+    EXPECT_TYPE("t = 2 * pi\n", 1, "float, static = 6.2831855");
+    EXPECT_TYPE("p = prod([2, 3, 4])\n", 1, "int, static");
+    EXPECT_TYPE("m = median([1.0, 2.0])\n", 1, "float, static");
+    EXPECT_TYPE("q = percentile([1, 2, 3, 4], 25)\n", 1, "float, static");
+    EXPECT_TYPE("c = cumsum([1, 2, 3])\n", 1, "int[3], static");
+    EXPECT_TYPE("s = sort([3.0, 1.0, 2.0])\n", 1, "float[3], static");
+    EXPECT_TYPE("i = argsort([3.0, 1.0, 2.0])\n", 1, "int[3], static");
+    EXPECT_TYPE_ON(P, "ca = particle(name='CA')\nd = distance(ca.xyz[:, None], ca.xyz)\nm = median(d, axis=1)\n", 3, u8"float[15] Å, frame");
+    EXPECT_TYPE_ON(P, "ca = particle(name='CA')\nd = distance(ca.xyz[:, None], ca.xyz)\no = argsort(d, axis=1)\n", 3, "int[15][15], frame");
+    EXPECT_DIAGS_ON(P, "ca = particle(name='CA')\nd = distance(ca[0], ca[14])\nq = percentile(d, 90, axis='frame')\n", "");
+    EXPECT_TYPE_ON(P, "ca = particle(name='CA')\nd = distance(ca[0], ca[14])\nq = percentile(d, 90, axis='frame')\n", 3, u8"float Å, trajectory");
+    EXPECT_DIAGS_ON(P, "ca = particle(name='CA')\nd = distance(ca[0], ca[14])\nc = cumsum(d, axis='frame')\n",
+        "E0316 3: `cumsum` runs along an axis of an array; over frames it is cumulative(d) | cumulative(d)\n");
+    EXPECT_TYPE_ON(P, "m = median(mass(particle), by=residue)\n", 1, "float[15] u, static");
+    EXPECT_DIAGS_ON(P, "p = prod(mass(particle))\n",
+        "E0313 1: `prod` takes unitless numbers, since the unit of a product depends on how many there are; this is float[153] u, and "
+        "unitless(mass(particle)) drops the unit\n");
+    EXPECT_DIAGS("q = percentile([1, 2, 3], 150)\n", "E0313 1: `percentile` takes q from 0 to 100, known when compiling; this is int\n");
+    EXPECT_DIAGS("s = sort(3)\n", "E0316 1: `sort` takes an array; this is int\n");
+    EXPECT_DIAGS("pi = 3\n", "W0201 1: `pi` now names a variable; the built-in is hidden from here on\n");
+}
+
 UTEST_F(vial_check, w0607) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);

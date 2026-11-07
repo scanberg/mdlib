@@ -721,7 +721,22 @@ static bool axes_of(vial_kctx_t* k, const vial_val_t* axis, const vial_val_t* a,
     return true;
 }
 
-typedef enum { R_SUM, R_MEAN, R_MIN, R_MAX, R_STD, R_VAR, R_ANY, R_ALL, R_ARGMIN, R_ARGMAX } red_t;
+typedef enum { R_SUM, R_MEAN, R_MIN, R_MAX, R_STD, R_VAR, R_ANY, R_ALL, R_ARGMIN, R_ARGMAX, R_PROD, R_MEDIAN, R_PERCENTILE } red_t;
+
+static int cmp_double(const void* a, const void* b) {
+    const double x = *(const double*)a, y = *(const double*)b;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+// The q-th percentile of n sorted values, interpolated linearly between the two nearest, as NumPy's default
+static double percentile_of(const double* v, size_t n, double q) {
+    if (!n) return NAN;
+    const double pos = (q / 100.0) * (double)(n - 1);
+    size_t lo = (size_t)pos;
+    if (lo >= n - 1) return v[n - 1];
+    const double f = pos - (double)lo;
+    return v[lo] + (v[lo + 1] - v[lo]) * f;
+}
 
 // One reduction over a strided run of n values. Sums go to 8 lanes in order, then a pairwise tree, in 64 bits: the
 // same order on every machine, whatever its vector width.
@@ -735,7 +750,7 @@ typedef struct racc_t {
 
 static double tree8(const double* l) { return ((l[0] + l[1]) + (l[2] + l[3])) + ((l[4] + l[5]) + (l[6] + l[7])); }
 
-static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_val_t* axis, vial_val_t* out) {
+static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_val_t* axis, double q, vial_val_t* out) {
     if (!a) return vial_rt_fail(k, "R0103", "a missing argument");
     const vial_type_t* rt = k->type;
     if (a->dtype == VIAL_DT_SET) {
@@ -781,6 +796,9 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
     bool trailing = !a->missing && a->dtype == VIAL_DT_FLOAT && !periodic && (red == R_SUM || red == R_MEAN || red == R_STD || red == R_VAR);
     for (uint8_t d = 0; trailing && d < a->ndim; ++d) trailing = rd[d] == (d >= a->ndim - rnd);
     trailing = trailing && rn > 0;     // an empty reduction has no data to point into
+    // An order statistic gathers its values and sorts them
+    const bool gathers = red == R_MEDIAN || red == R_PERCENTILE;
+    double* gathered = gathers ? md_alloc(k->alloc, (rn ? rn : 1) * sizeof(double)) : NULL;
     for (size_t oi = 0; oi < on; ++oi) {
         size_t base = 0, rem = oi;
         for (int d = ond - 1; d >= 0; --d) { base += (rem % odims[d]) * ostr[d]; rem /= odims[d]; }
@@ -788,6 +806,7 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
         memset(&acc, 0, sizeof(acc));
         acc.best_at = -1;
         bool bool_acc = red == R_ALL;
+        double prod = 1.0;
         size_t j = 0;
         if (trailing) {
             const float* X = (const float*)a->data + oi * rn;
@@ -827,6 +846,8 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
                 break;
             case R_ANY: bool_acc = bool_acc || v != 0.0; break;
             case R_ALL: bool_acc = bool_acc && v != 0.0; break;
+            case R_PROD: prod *= v; break;
+            case R_MEDIAN: case R_PERCENTILE: gathered[acc.count - 1] = v; break;
             }
         }
         double r = 0.0;
@@ -867,6 +888,12 @@ static bool k_reduce(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_
             r = (double)acc.best_at;
             break;
         case R_ANY: case R_ALL: r = bool_acc; break;
+        case R_PROD: r = prod; break;
+        case R_MEDIAN: case R_PERCENTILE:
+            if (!acc.count) { miss = true; break; }
+            qsort(gathered, acc.count, sizeof(double), cmp_double);
+            r = percentile_of(gathered, acc.count, red == R_MEDIAN ? 50.0 : q);
+            break;
         }
         switch (odt) {
         case VIAL_DT_BOOL:    ((uint8_t*)o.data)[oi] = r != 0.0; break;
@@ -1104,13 +1131,13 @@ bool vial_k_pairs(vial_kctx_t* k, uint32_t red, uint32_t axis, uint32_t test, co
         }
         line.missing = any_missing ? mask : NULL;
         vial_val_t res;
-        if (!k_reduce(&lk, rd, &line, NULL, &res)) return false;
+        if (!k_reduce(&lk, rd, &line, NULL, 0.0, &res)) return false;
         memcpy((uint8_t*)o.data + L * es, res.data, es);
         if (vial_val_is_missing(&res, 0)) vial_val_set_missing(&o, L, k->alloc);
     }
     if (axis != VIAL_PAIRS_ALL) { *out = o; return true; }
     // Over every pair: the rows' results reduced, as the matrix's entries are; a count sums the rows' counts
-    return k_reduce(k, rd, &o, NULL, out);
+    return k_reduce(k, rd, &o, NULL, 0.0, out);
 }
 
 // ### ELEMENTWISE MATH ###
@@ -1509,6 +1536,79 @@ static bool k_diff(vial_kctx_t* k, const vial_val_t* a, const vial_val_t* axis, 
             }
         }
     }
+    *out = o;
+    return true;
+}
+
+// cumsum, sort and argsort along one axis, keeping the shape. A missing value stays missing in a cumsum, and what
+// follows it too; sorted, missing values go last, as NaN does in NumPy, and argsort gives their positions last.
+typedef struct sort_key_t { double v; uint32_t i; bool miss; } sort_key_t;
+
+static int cmp_sort_key(const void* a, const void* b) {
+    const sort_key_t* x = a;
+    const sort_key_t* y = b;
+    if (x->miss != y->miss) return x->miss ? 1 : -1;
+    if (x->v < y->v) return -1;
+    if (x->v > y->v) return 1;
+    return x->i < y->i ? -1 : x->i > y->i ? 1 : 0;     // stable
+}
+
+static bool k_along(vial_kctx_t* k, const char* name, const vial_val_t* a, const vial_val_t* axis, vial_val_t* out) {
+    if (!a) return vial_rt_fail(k, "R0103", "a missing argument");
+    const bool cum = !strcmp(name, "cumsum"), arg = !strcmp(name, "argsort");
+    const uint8_t dt = k->type->dtype;
+    if (!is_num(a->dtype)) return vial_rt_fail(k, "R0103", "%s of what is not a number", name);
+    const vial_val_t x = arg ? *a : vial_val_as(a, dt, k->alloc);     // argsort reads a's values as they are
+    int64_t ax = axis && axis->dtype == VIAL_DT_INT ? *(const int32_t*)axis->data : cum ? 0 : -1;
+    if (ax < 0) ax += x.ndim;
+    if (ax < 0 || ax >= x.ndim) return vial_rt_fail(k, "R0103", "axis out of range");
+    vial_val_t o; if (!vial_k_make(k, dt, x.ndim, x.dims, &o)) return false;
+    const uint32_t n = x.dims[ax];
+    size_t outer = 1, inner = 1;
+    for (int64_t d = 0; d < ax; ++d) outer *= x.dims[d];
+    for (uint8_t d = (uint8_t)(ax + 1); d < x.ndim; ++d) inner *= x.dims[d];
+    sort_key_t* keys = cum ? NULL : md_alloc(k->alloc, (n ? n : 1) * sizeof(sort_key_t));
+    for (size_t q = 0; q < outer; ++q) {
+        for (size_t r = 0; r < inner; ++r) {
+            if (cum) {
+                double acc = 0.0;
+                bool miss = false;
+                for (uint32_t i = 0; i < n; ++i) {
+                    const size_t at = (q * n + i) * inner + r;
+                    miss = miss || vial_val_is_missing(&x, at);
+                    if (!miss) acc += num_at(&x, at);
+                    switch (dt) {
+                    case VIAL_DT_INT:     ((int32_t*)o.data)[at] = (int32_t)acc; break;
+                    case VIAL_DT_FLOAT:   ((float*)o.data)[at] = (float)acc; break;
+                    case VIAL_DT_FLOAT64: ((double*)o.data)[at] = acc; break;
+                    default: return vial_rt_fail(k, "R0103", "cumsum of what is not a number");
+                    }
+                    if (miss) vial_val_set_missing(&o, at, k->alloc);
+                }
+                continue;
+            }
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t at = (q * n + i) * inner + r;
+                keys[i] = (sort_key_t){.v = num_at(&x, at), .i = i, .miss = vial_val_is_missing(&x, at)};
+                if (keys[i].v != keys[i].v) keys[i].miss = true;
+            }
+            qsort(keys, n, sizeof(sort_key_t), cmp_sort_key);
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t at = (q * n + i) * inner + r;
+                if (arg) { ((int32_t*)o.data)[at] = (int32_t)keys[i].i; continue; }
+                const size_t from = (q * n + keys[i].i) * inner + r;
+                switch (dt) {
+                case VIAL_DT_BOOL:    ((uint8_t*)o.data)[at] = ((const uint8_t*)x.data)[from]; break;
+                case VIAL_DT_INT:     ((int32_t*)o.data)[at] = ((const int32_t*)x.data)[from]; break;
+                case VIAL_DT_FLOAT:   ((float*)o.data)[at] = ((const float*)x.data)[from]; break;
+                case VIAL_DT_FLOAT64: ((double*)o.data)[at] = ((const double*)x.data)[from]; break;
+                default: return vial_rt_fail(k, "R0103", "sort of what is not a number");
+                }
+                if (keys[i].miss) vial_val_set_missing(&o, at, k->alloc);
+            }
+        }
+    }
+    if (!arg) o.origin = NULL;
     *out = o;
     return true;
 }
@@ -2337,7 +2437,7 @@ bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* con
 // ### GROUPS: by= ###
 
 // A reduction in groups along a's dimension over particles: one result per group, over the group's particles there
-static bool k_reduce_by(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_val_t* by, vial_val_t* out) {
+static bool k_reduce_by(vial_kctx_t* k, red_t red, const vial_val_t* a, const vial_val_t* by, double q, vial_val_t* out) {
     if (!a) return vial_rt_fail(k, "R0103", "a missing argument");
     if (!by || by->dtype != VIAL_DT_SET || by->ndim != 1) return vial_rt_fail(k, "R0103", "by= takes an array of sets");
     // The particles a's first dimension runs over: from the values, or the type's description
@@ -2377,7 +2477,7 @@ static bool k_reduce_by(vial_kctx_t* k, red_t red, const vial_val_t* a, const vi
             for (size_t z = 0; z < inner; ++z) if (vial_val_is_missing(a, rows[r] * inner + z)) vial_val_set_missing(&sub, r * inner + z, k->alloc);
         }
         vial_val_t one;
-        if (!k_reduce(&k2, red, &sub, NULL, &one)) return false;
+        if (!k_reduce(&k2, red, &sub, NULL, q, &one)) return false;
         memcpy((uint8_t*)o.data + q * os, one.data, os);
         if (vial_val_is_missing(&one, 0)) vial_val_set_missing(&o, q, k->alloc);
     }
@@ -2979,11 +3079,21 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("norm") || IS("normalize")) return k_norm(k, arg(&ba, "v", 0), IS("normalize"), out);
     if (IS("dot") || IS("cross")) return k_dot_cross(k, arg(&ba, "u", 0), arg(&ba, "v", 1), IS("cross"), out);
     if (IS("sum") || IS("mean") || IS("std") || IS("var") || IS("any") || IS("all") || IS("argmin") || IS("argmax") ||
-        ((IS("min") || IS("max")) && !arg(&ba, "b", 1))) {
+        IS("prod") || IS("median") || IS("percentile") || ((IS("min") || IS("max")) && !arg(&ba, "b", 1))) {
         const red_t r = IS("sum") ? R_SUM : IS("mean") ? R_MEAN : IS("std") ? R_STD : IS("var") ? R_VAR : IS("any") ? R_ANY :
-                        IS("all") ? R_ALL : IS("argmin") ? R_ARGMIN : IS("argmax") ? R_ARGMAX : IS("min") ? R_MIN : R_MAX;
-        if (arg(&ba, "by", 99)) return k_reduce_by(k, r, arg(&ba, "a", 0), arg(&ba, "by", 99), out);
-        return k_reduce(k, r, arg(&ba, "a", 0), arg(&ba, "axis", 1), out);
+                        IS("all") ? R_ALL : IS("argmin") ? R_ARGMIN : IS("argmax") ? R_ARGMAX : IS("min") ? R_MIN : IS("max") ? R_MAX :
+                        IS("prod") ? R_PROD : IS("median") ? R_MEDIAN : R_PERCENTILE;
+        // percentile(a, q, axis=, by=): q comes second, so axis and by move one along
+        const uint32_t shift = r == R_PERCENTILE ? 1 : 0;
+        double q = 0.0;
+        if (r == R_PERCENTILE) {
+            const vial_val_t* qv = arg(&ba, "q", 1);
+            if (!qv || !is_num(qv->dtype) || vial_val_count(qv) != 1) return vial_rt_fail(k, "R0103", "percentile takes one q, 0 to 100");
+            q = num_at(qv, 0);
+            if (!(q >= 0.0 && q <= 100.0)) return vial_rt_fail(k, "R0103", "percentile's q is 0 to 100");
+        }
+        if (arg(&ba, "by", 99)) return k_reduce_by(k, r, arg(&ba, "a", 0), arg(&ba, "by", 99), q, out);
+        return k_reduce(k, r, arg(&ba, "a", 0), arg(&ba, "axis", 1 + shift), q, out);
     }
     if (IS("min") || IS("max")) {
         const vial_val_t* xs[2] = {arg(&ba, "a", 0), arg(&ba, "b", 1)};
@@ -3031,6 +3141,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("valid")) return k_valid(k, arg(&ba, "x", 0), out);
     if (IS("filled")) return k_filled(k, arg(&ba, "x", 0), arg(&ba, "v", 1), out);
     if (IS("diff")) return k_diff(k, arg(&ba, "a", 0), arg(&ba, "axis", 1), out);
+    if (IS("cumsum") || IS("sort") || IS("argsort")) return k_along(k, name, arg(&ba, "a", 0), arg(&ba, "axis", 1), out);
     if (IS("frame")) {
         if (!k->in->frame) return vial_rt_fail(k, "R0103", "frame() needs a frame");
         *out = vial_val_int((int32_t)k->in->frame->index, k->alloc);

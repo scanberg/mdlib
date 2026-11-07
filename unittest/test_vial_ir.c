@@ -307,6 +307,51 @@ static vial_ssa_t vial_ir__output(const vial_ir_t* ir, const char* name) {
     return 0;
 }
 
+// pi, prod, median, percentile, cumsum, sort and argsort: NumPy's answers on small arrays
+UTEST(vial_ir, more_builtins) {
+    vial_ir__run_t r;
+    const char* src =
+        "a   = [3.0, 1.0, 2.0]\n"
+        "s   = sort(a)\n"
+        "i   = argsort(a)\n"
+        "c   = cumsum([1, 2, 3])\n"
+        "cb  = cumsum([True, False, True])\n"
+        "m   = median(a)\n"
+        "m2  = median([4.0, 1.0, 3.0, 2.0])\n"
+        "p   = percentile(a, 50)\n"
+        "p0  = percentile([1.0, 2.0, 3.0, 4.0], 25)\n"
+        "p1  = percentile([1.0, 2.0, 3.0, 4.0], 100)\n"
+        "pr  = prod([2, 3, 4])\n"
+        "tp  = 2 * pi\n"
+        "sm  = sort([[3, 1], [2, 0]])\n"
+        "sa  = sort([[3, 1], [2, 0]], axis=0)\n"
+        "ia  = argsort([[3, 1], [2, 0]], axis=0)\n"
+        "c2  = cumsum([[1, 2], [3, 4]], axis=1)\n"
+        "mr  = median([[1.0, 5.0], [3.0, 2.0]], axis=1)\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, NULL));
+    const bool ok = vial_interp_static(&r.in);
+    if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+    EXPECT_TRUE(ok);
+    char buf[256];
+    EXPECT_STREQ("[1.0, 2.0, 3.0]", vial_ir__out(&r, "s", buf, sizeof(buf)));
+    EXPECT_STREQ("[1, 2, 0]", vial_ir__out(&r, "i", buf, sizeof(buf)));
+    EXPECT_STREQ("[1, 3, 6]", vial_ir__out(&r, "c", buf, sizeof(buf)));
+    EXPECT_STREQ("[1, 1, 2]", vial_ir__out(&r, "cb", buf, sizeof(buf)));
+    EXPECT_STREQ("2.0", vial_ir__out(&r, "m", buf, sizeof(buf)));
+    EXPECT_STREQ("2.5", vial_ir__out(&r, "m2", buf, sizeof(buf)));
+    EXPECT_STREQ("2.0", vial_ir__out(&r, "p", buf, sizeof(buf)));
+    EXPECT_STREQ("1.75", vial_ir__out(&r, "p0", buf, sizeof(buf)));
+    EXPECT_STREQ("4.0", vial_ir__out(&r, "p1", buf, sizeof(buf)));
+    EXPECT_STREQ("24", vial_ir__out(&r, "pr", buf, sizeof(buf)));
+    EXPECT_STREQ("6.2831855", vial_ir__out(&r, "tp", buf, sizeof(buf)));
+    EXPECT_STREQ("[[1, 3], [0, 2]]", vial_ir__out(&r, "sm", buf, sizeof(buf)));
+    EXPECT_STREQ("[[2, 0], [3, 1]]", vial_ir__out(&r, "sa", buf, sizeof(buf)));
+    EXPECT_STREQ("[[1, 1], [0, 0]]", vial_ir__out(&r, "ia", buf, sizeof(buf)));
+    EXPECT_STREQ("[[1, 3], [3, 7]]", vial_ir__out(&r, "c2", buf, sizeof(buf)));
+    EXPECT_STREQ("[3.0, 2.5]", vial_ir__out(&r, "mr", buf, sizeof(buf)));
+    vial_ir__end(&r);
+}
+
 // weights= means the same everywhere: 'mass', None, or one number per point, so the array forms give what the words give
 UTEST(vial_ir, weights_uniform) {
     const md_system_t* sys = vial_test_system('P');

@@ -452,6 +452,12 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
         vx_set_value(x, id, sets_value(s));
         return true;
     }
+    if (str_eq(name, STR_LIT("pi"))) {
+        // A float, as VIAL's numbers are: beside a float64 a bare float is read as one (in_operand_dtype)
+        *out = vial_type_scalar(VIAL_DT_FLOAT);
+        vx_set_value(x, id, (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = 3.14159265358979323846f});
+        return true;
+    }
     if (b->flags & VIAL_BUILTIN_VALUE) {
         if (!x->sys) { *out = vial_type_scalar(VIAL_DT_SET); return true; }
         const vial_sets_t* s = NULL;

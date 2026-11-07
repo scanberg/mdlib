@@ -111,10 +111,11 @@ static void remove_axes(T* t, const T* a, const axes_t* ax) {
 
 // ### REDUCTIONS ###
 
-typedef enum red_t { RED_SUM, RED_MEAN, RED_MIN, RED_MAX, RED_STD, RED_VAR, RED_ANY, RED_ALL, RED_ARGMIN, RED_ARGMAX } red_t;
+typedef enum red_t { RED_SUM, RED_MEAN, RED_MIN, RED_MAX, RED_STD, RED_VAR, RED_ANY, RED_ALL, RED_ARGMIN, RED_ARGMAX, RED_PROD, RED_MEDIAN,
+                     RED_PERCENTILE } red_t;
 
 static int reduction_of(str_t name) {
-    static const char* names[] = {"sum", "mean", "min", "max", "std", "var", "any", "all", "argmin", "argmax"};
+    static const char* names[] = {"sum", "mean", "min", "max", "std", "var", "any", "all", "argmin", "argmax", "prod", "median", "percentile"};
     for (int i = 0; i < (int)ARRAY_SIZE(names); ++i) if (str_eq(name, str_from_cstr(names[i]))) return i;
     return -1;
 }
@@ -219,10 +220,33 @@ static T call_reduce(infer_t* x, vial_node_id call, int red, const char* fname) 
         return t;
     }
     static const param_t params[] = {{"a", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}, {"by", VX_KIND_WHOLE, false}};
-    vial_node_id args[3];
-    if (!vx_bind(x, call, fname, params, 3, args)) return err();
+    static const param_t pparams[] = {{"a", VX_KIND_WHOLE, true}, {"q", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}, {"by", VX_KIND_WHOLE, false}};
+    vial_node_id args[4];
+    if (red == RED_PERCENTILE) {
+        // percentile(a, q, ...): q is a number from 0 to 100, known when compiling; then as the others
+        vial_node_id pa[4];
+        if (!vx_bind(x, call, fname, pparams, 4, pa)) return err();
+        const T qt = type_of(x, pa[1]);
+        const vial_value_t qv = value(x, pa[1]);
+        const double q = qv.kind == VIAL_VAL_INT ? (double)qv.i : qv.kind == VIAL_VAL_FLOAT ? qv.f : -1.0;
+        if (vial_type_is_error(&qt)) return err();
+        if (!is_number(&qt) || qt.ndim || qt.stage != VIAL_STAGE_STATIC || !(q >= 0.0 && q <= 100.0)) {
+            vx_diag_fix(x, "E0313", pa[1], NULL, "`percentile` takes q from 0 to 100, known when compiling; this is %s", tstr(&qt));
+            return err();
+        }
+        args[0] = pa[0]; args[1] = pa[2]; args[2] = pa[3];
+    } else if (!vx_bind(x, call, fname, params, 3, args)) {
+        return err();
+    }
     const T a = type_of(x, args[0]);
     if (vial_type_is_error(&a)) return err();
+    if (red == RED_PROD && has_unit(&a)) {
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, args[0]));
+        vx_diag_fix(x, "E0313", args[0], NULL, "`prod` takes unitless numbers, since the unit of a product depends on how many there are; "
+            "this is %s, and unitless(%.*s) drops the unit", tstr(&a), (int)e.len, e.ptr);
+        return err();
+    }
     if ((red == RED_ANY || red == RED_ALL) && a.dtype == VIAL_DT_SET && !args[1] && !args[2]) return reduce_sets(x, call, args[0], &a, red == RED_ANY);
     if (!is_number(&a)) {
         vx_diag_fix(x, "E0313", args[0], NULL, "`%s` takes numbers or bools; this is %s", fname, tstr(&a));
@@ -267,7 +291,7 @@ static T call_reduce(infer_t* x, vial_node_id call, int red, const char* fname) 
         // A reduction over an extent that is empty in some frame has no value there, where it has no identity
         bool dynamic = false;
         for (uint8_t k = 0; k < a.ndim; ++k) if ((ax.all || ((ax.mask >> k) & 1)) && a.dims[k].kind == VIAL_EXT_DYNAMIC) dynamic = true;
-        if (dynamic && red != RED_SUM && red != RED_ANY && red != RED_ALL) {
+        if (dynamic && red != RED_SUM && red != RED_PROD && red != RED_ANY && red != RED_ALL) {
             vx_diag_fix(x, "W0405", call, NULL, "`%s` over an extent that may be empty is missing in the frames where it is", fname);
             t.flags |= VIAL_TYPE_MISSING;
         }
@@ -300,6 +324,12 @@ static T call_reduce(infer_t* x, vial_node_id call, int red, const char* fname) 
     case RED_ARGMIN: case RED_ARGMAX:
         t.dtype = VIAL_DT_INT;
         no_unit(&t);
+        break;
+    case RED_PROD:
+        t.dtype = a.dtype == VIAL_DT_BOOL ? VIAL_DT_INT : a.dtype;
+        break;
+    case RED_MEDIAN: case RED_PERCENTILE:
+        t.dtype = a.dtype == VIAL_DT_FLOAT64 ? VIAL_DT_FLOAT64 : VIAL_DT_FLOAT;
         break;
     default: break;
     }
@@ -721,6 +751,41 @@ static T call_build(infer_t* x, vial_node_id call, str_t name, const char* fname
             (vial_extent_t){.kind = src.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
         return t;
     }
+    if (str_eq(name, STR_LIT("cumsum")) || str_eq(name, STR_LIT("sort")) || str_eq(name, STR_LIT("argsort"))) {
+        // Along one axis, keeping the shape: cumsum's default is the first, as diff's; sort's the last, as NumPy's
+        static const param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}};
+        vial_node_id a[2];
+        if (!vx_bind(x, call, fname, p, 2, a) || !all_typed(x, a, 2) || !all_numbers(x, fname, a, 1)) return err();
+        const T src = type_of(x, a[0]);
+        const bool sorts = !str_eq(name, STR_LIT("cumsum"));
+        int64_t axis = sorts ? -1 : 0;
+        if (a[1]) {
+            const vial_value_t v = value(x, a[1]);
+            if (v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("frame"))) {
+                // Over frames: a running sum is the prelude's cumulative(); a sort over frames has no place to go
+                char ex[VIAL_EXCERPT_MAX + 4], fix[VIAL_EXCERPT_MAX + 32] = "";
+                const str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, a[0]));
+                if (!sorts && e.len == vx_text(x, a[0]).len) snprintf(fix, sizeof(fix), "cumulative(%.*s)", (int)e.len, e.ptr);
+                if (!sorts) vx_diag_fix(x, "E0316", call, fix[0] ? fix : NULL, "`cumsum` runs along an axis of an array; over frames it is cumulative(%.*s)", (int)e.len, e.ptr);
+                else vx_diag_fix(x, "E0316", a[1], NULL, "`%s` runs along an axis of an array, not over frames", fname);
+                return err();
+            }
+            if (v.kind != VIAL_VAL_INT) { vx_diag_fix(x, "E0316", a[1], NULL, "`%s` takes one axis, an int known when compiling", fname); return err(); }
+            axis = v.i;
+        }
+        const int64_t k = axis < 0 ? axis + src.ndim : axis;
+        if (k < 0 || k >= src.ndim) {
+            if (!src.ndim) vx_diag_fix(x, "E0316", a[0], NULL, "`%s` takes an array; this is %s", fname, tstr(&src));
+            else vx_diag_fix(x, "E0316", a[1] ? a[1] : a[0], NULL, "axis=%lld on `%s`, which has %u dimensions", (long long)axis, tstr(&src), src.ndim);
+            return err();
+        }
+        T t = src;
+        t.flags &= ~VIAL_TYPE_PERIODIC;
+        if (str_eq(name, STR_LIT("argsort"))) { t.dtype = VIAL_DT_INT; no_unit(&t); }
+        else if (t.dtype == VIAL_DT_BOOL) t.dtype = VIAL_DT_INT;
+        if (sorts) t.dims[k].desc = 0;      // sorted, the positions no longer name what they ran over
+        return t;
+    }
     if (str_eq(name, STR_LIT("diff"))) {
         static const param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"axis", VX_KIND_WHOLE, false}};
         vial_node_id a[2];
@@ -1079,7 +1144,8 @@ bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     static const char* math[] = {"abs", "floor", "ceil", "round", "clip", "sqrt", "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos",
                                  "atan", "atan2", "dot", "cross", "norm", "normalize", "where", "unitless", "float", "int"};
     for (size_t i = 0; i < ARRAY_SIZE(math); ++i) if (str_eq(name, str_from_cstr(math[i]))) { *out = call_math(x, call, name, fname); return true; }
-    static const char* build[] = {"shape", "zeros", "ones", "full", "zeros_like", "ones_like", "linspace", "arange", "eye", "reshape", "flatten", "diff"};
+    static const char* build[] = {"shape", "zeros", "ones", "full", "zeros_like", "ones_like", "linspace", "arange", "eye", "reshape", "flatten", "diff",
+                                  "cumsum", "sort", "argsort"};
     for (size_t i = 0; i < ARRAY_SIZE(build); ++i) if (str_eq(name, str_from_cstr(build[i]))) { *out = call_build(x, call, name, fname); return true; }
     static const char* linalg[] = {"covariance", "eigh", "trace", "det", "inv", "solve"};
     for (size_t i = 0; i < ARRAY_SIZE(linalg); ++i) if (str_eq(name, str_from_cstr(linalg[i]))) { *out = call_linalg(x, call, name, fname); return true; }

@@ -212,7 +212,7 @@ e_mol = 1.5 kJ/mol                                       # -> float kJ/mol
 k_b   = 0.0083145 kJ/mol/K                               # -> float kJ/(mol*K)
 e_str = 1.5 'kJ/mol'                                     # -> float kJ/mol: the same unit, as a string
 gap   = 1.5 kJ / mol                                     # error E0201: mol is a unit; the fix is 1.5 kJ/mol
-prod  = 1.5 kJ/mol*K                                     # error E0201: K is a unit; the fix is 1.5 kJ/mol/K
+star  = 1.5 kJ/mol*K                                     # error E0201: K is a unit; the fix is 1.5 kJ/mol/K
 K     = 300.0                                            # -> float: K is a name from here on, and 300 K still the temperature
 per_k = 1.0 kJ/mol/K                                     # error E0503: K is a unit in kJ/mol/K, and a name here
 badu  = 1.5 'kJ/mool'                                    # error E0502: 'kJ/mool' is not a unit
@@ -791,14 +791,16 @@ Reductions remove dimensions, math works elementwise, and the array functions sa
 | --- | --- | --- |
 | `sum`, `mean`, `min`, `max` | the dimensions not reduced | the argument's |
 | `std`, `var` | the dimensions not reduced | the argument's; squared for `var` |
+| `median`, `percentile(a, q)` | the dimensions not reduced: the middle value, or the q-th percentile (0 to 100, known when compiling), interpolated between the two nearest as NumPy's default; a float | the argument's |
+| `prod` | the dimensions not reduced | none: it takes unitless numbers (E0313), since the unit of a product depends on how many there are |
 | `any`, `all` | `bool` | none |
 | `argmin`, `argmax` | `int`: a position along the reduced dimension | none |
 | `len(a)` | `int`: the extent of the first dimension | none |
 
 `count(s)` is for sets only: the number of particles in each set, mapping over an array of sets like `com`. How many values of a bool array are true is `sum(mask)`, an `int`.
 
-- `axis=` takes an int, negative from the end, a tuple, or `'frame'`. Without it every dimension is reduced, as in NumPy, but never the frame.
-- `by=` reduces in groups; see the indexing section. A reduction over an extent that is empty in some frame gives its identity where it has one, 0 for sum and len, false for any and true for all, and otherwise a missing value, for min, max, mean, std, var, argmin and argmax, with W0405.
+- `axis=` takes an int, negative from the end, a tuple, or `'frame'`. Without it every dimension is reduced, as in NumPy, but never the frame. Every reduction takes `axis='frame'`, `median` and `percentile` included: they gather the series, where `sum`, `mean`, `std` and `var` stream.
+- `by=` reduces in groups; see the indexing section. A reduction over an extent that is empty in some frame gives its identity where it has one, 0 for sum and len, 1 for prod, false for any and true for all, and otherwise a missing value, for min, max, mean, median, percentile, std, var, argmin and argmax, with W0405.
 - `len(a)` is the extent of the first dimension, so `len(residue)` is the number of residues. On a single set it is the number of particles, the same as `count(s)`.
 - `min(a, b)` and `max(a, b)` with two arguments work elementwise, as Python's do; with one argument they reduce.
 - Sums accumulate in 64 bits in one fixed order, the same in every backend. An integer sum that does not fit in 32 bits is R0102 rather than wrapping around.
@@ -820,12 +822,15 @@ Reductions remove dimensions, math works elementwise, and the array functions sa
 | `where(c, a, b)` | a bool array and two values | elementwise choice |
 | `unitless(x)` | any unit | no unit, without a warning |
 | `float(x)`, `int(x)` | any | the same values as float or int, keeping the unit; int truncates toward zero |
+| `pi` | — | 3.1415927, a float: `2 * pi * r`. Angles are degrees, so `sin(90)` needs no pi |
 
 ### Arrays
 
 | Function | Does |
 | --- | --- |
 | `diff(a, axis=0)` | differences of neighbours along a dimension, as NumPy's |
+| `cumsum(a, axis=0)` | the running sum along a dimension, the same shape; a missing value and what follows it stay missing. Over frames it is `cumulative(x)` (E0316 points there) |
+| `sort(a, axis=-1)`, `argsort(a, axis=-1)` | the values along a dimension in ascending order, or the positions that would put them there, stable; missing values and NaN go last. Sorted, the dimension no longer describes what it ran over, so `sort(d)[r]` is a position, not a residue |
 | `zip(a, b)` | Python's: pairs elements in order, for comprehensions |
 | `range(n)` | Python's: positions 0 to n−1 |
 | `common(a, b, match='id')` | the elements of a and b that match, as two arrays in a's order. `match='id'` matches the residue id, and for particles also the particle name; `match='label'` adds the residue name. Neither looks at the chain, so chain A pairs with chain B |
