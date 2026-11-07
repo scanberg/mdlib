@@ -71,11 +71,11 @@ A script is a Python 3 module: UTF-8 text, `#` comments, indentation for blocks,
 | Assignment, tuple unpacking | Supported | A top-level name is bound once (E0305) |
 | `def`, `return`, defaults, keyword arguments, docstrings | Supported | Specialized per call. No recursion (E0802). A def may be nested in another and read its names; it cannot be returned or stored, but may be passed as an argument, to fold or to another def, and each def passed gives its own specialization. Parameters may be annotated with a kind, which maps a call over arrays; see Mapping a def over arrays |
 | `if`, `elif`, `else` | Supported | At top level the condition must be static (E0403); inside functions it may change per frame. Code that a static condition does not reach, the untaken branch of an if or a ternary and what follows a return taken on a static condition, is parsed and its names checked, but not type-checked. A condition on an array is E0303, which points to `where()`. A ternary `a if c else b` on a frame-stage scalar is allowed anywhere and lowers to `where()` |
-| `for`, `break`, `continue` | Supported | Over a range, an array or a set; over a set, each particle as a one-particle set. A top-level loop variable belongs to the loop: it is not published, and it does not count for E0305 |
+| `for`, `break`, `continue` | Supported | Over a range, an array or a set; over a set, each particle as a one-particle set. A loop is unrolled when compiling, so how many turns it runs must be known then: a range of constants, an array of static extent or a selection, up to 4096 turns; over a per-frame selection it is E0801, and a comprehension or a reduction runs over any number. A name bound before the loop that the body binds again accumulates, at top level too: `t = 0` and `t = t + q` in the body give the sum, and `t` after the loop is the last value. The loop variable, and a name first bound in the body, belong to the loop: at top level they are not published, and do not count for E0305. `break` and `continue` take a static condition (E0403), since every frame runs the same turns |
 | List comprehensions | Supported | They build an array whose first dimension is what they iterate over; a nested comprehension adds a dimension per level. An `if` clause gives a dynamic extent |
 | `pass` | Supported |  |
 | `assert c, 'message'` | Supported | c must be static; when it is false, compiling fails with E0314 and the message, at the user's call. A condition that changes per frame is E0403. The prelude uses it to refuse unknown options |
-| Augmented assignment `x += 1` | Supported inside functions | At top level it rebinds a name: E0305 |
+| Augmented assignment `x += 1` | Supported | `x = x + 1`, in a def or a loop body. At top level outside a loop it rebinds a name: E0305 |
 | `while` | Not yet | Parsed; E0801 |
 | Item assignment `a[i] = x` | Not yet | Parsed; E0801 |
 | Classes, `import`, `lambda`, exceptions, generators, `global`, decorators, `with`, `async`, dicts, set literals, `*args`, \*\*kwargs, `print` | Never | E0803 names the construct |
@@ -90,6 +90,10 @@ ok   = 2 < n <= 500                             # -> True
 big  = 1_000_000                                # -> 1000000
 ids  = [45, 48, 112]                            # -> int[3]
 n += 1                                          # error E0305
+t    = 0
+for r in residue(chain='A', kind='amino_acid')[0:3]:
+    t += count(r)                               # accumulates: the loop is unrolled
+heavy = t                                       # -> 28
 
 def centre_distance(a, b):
     """Distance between the centres of mass of a and b."""

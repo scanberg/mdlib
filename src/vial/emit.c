@@ -236,7 +236,7 @@ static vial_ssa_t in_operand_dtype(infer_t* x, vial_node_id n, vial_ssa_t v, con
 
 static vial_ssa_t emit_binary(infer_t* x, vial_node_id id, const T* t) {
     const vial_node_id an = vx_child(x, id, 0), bn = vx_child(x, id, 1);
-    const uint16_t op = sub_of(x, id);
+    const uint16_t op = vial_op_of_aug((vial_op_t)sub_of(x, id));
     vial_ssa_t a = vx_ssa(x, an), b = vx_ssa(x, bn);
     a = in_operand_dtype(x, an, a, type_at(x, an), type_at(x, bn));
     b = in_operand_dtype(x, bn, b, type_at(x, bn), type_at(x, an));
@@ -695,6 +695,7 @@ void vx_emit(infer_t* x, vial_node_id id, const T* t) {
         break;
     }
     case VIAL_N_NOT:      r = emit_not(x, id, t); break;
+    case VIAL_N_AUG_ASSIGN:
     case VIAL_N_BINARY:   r = emit_binary(x, id, t); break;
     case VIAL_N_COMPARE:  r = emit_compare(x, id, t); break;
     case VIAL_N_BOOLOP:   r = emit_boolop(x, id, t); break;

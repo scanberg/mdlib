@@ -65,6 +65,20 @@ typedef enum vial_op_t {
     VIAL_OP_COUNT
 } vial_op_t;
 
+// The binary operator of an augmented assignment: += is +
+static inline vial_op_t vial_op_of_aug(vial_op_t op) {
+    switch (op) {
+    case VIAL_OP_PLUS_EQ:    return VIAL_OP_PLUS;    case VIAL_OP_MINUS_EQ:   return VIAL_OP_MINUS;
+    case VIAL_OP_STAR_EQ:    return VIAL_OP_STAR;    case VIAL_OP_SLASH_EQ:   return VIAL_OP_SLASH;
+    case VIAL_OP_DSLASH_EQ:  return VIAL_OP_DSLASH;  case VIAL_OP_PERCENT_EQ: return VIAL_OP_PERCENT;
+    case VIAL_OP_POW_EQ:     return VIAL_OP_POW;     case VIAL_OP_AT_EQ:      return VIAL_OP_AT;
+    case VIAL_OP_AMP_EQ:     return VIAL_OP_AMP;     case VIAL_OP_PIPE_EQ:    return VIAL_OP_PIPE;
+    case VIAL_OP_CARET_EQ:   return VIAL_OP_CARET;   case VIAL_OP_LSHIFT_EQ:  return VIAL_OP_LSHIFT;
+    case VIAL_OP_RSHIFT_EQ:  return VIAL_OP_RSHIFT;
+    default: return op;
+    }
+}
+
 enum {
     VIAL_STR_RAW    = 1 << 0,
     VIAL_STR_BYTES  = 1 << 1,

@@ -239,6 +239,7 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
     memset(out.values, 0, count * sizeof(*out.values));
     memset(out.typed, 0, count);
     infer_t y = *x;
+    y.loop_ctl = 0; y.loop_depth = 0; y.dyn_if = 0;    // a def's body is its own: a break in it is in its loops
     y.t = t; y.n = n; y.src = src; y.out = &out; y.frame = &f;
     if (x->ir) vx_sizes_ssa(&y, &out, count, 0);
     vial_ssa_t argv[32] = {0};

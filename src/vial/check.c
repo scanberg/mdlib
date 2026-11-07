@@ -65,6 +65,17 @@ static uint32_t scope_find(const resolver_t* r, uint32_t scope, str_t name) {
     return 0;
 }
 
+// A name bound in a loop body rebinds what an enclosing scope already binds, up to and including the def or the
+// module the loop is in: `t = t + x` in a loop accumulates into the t before it, as Python's does
+static uint32_t scope_find_enclosing(const resolver_t* r, uint32_t scope, str_t name) {
+    for (;;) {
+        const uint32_t v = scope_find(r, scope, name);
+        if (v) return v;
+        if (r->n->scopes[scope].kind != VIAL_SCOPE_LOOP || scope == 0) return 0;
+        scope = r->n->scopes[scope].parent;
+    }
+}
+
 static uint32_t new_symbol(resolver_t* r, uint32_t scope, str_t name, vial_sym_kind_t kind, vial_node_id at) {
     vial_symbol_t sym = {.name = name, .kind = (uint8_t)kind, .in_prelude = r->is_prelude, .scope = scope, .node = at,
                          .stmt = r->stmt};
@@ -169,8 +180,9 @@ static void bind_target(resolver_t* r, vial_node_id target, uint32_t scope, vial
             bind_top(r, target, kind);
         } else {
             const str_t name = text(r, target);
-            const uint32_t existing = scope_find(r, scope, name);
-            if (existing) r->n->ref[target] = existing;     // a local bound again: one local
+            const bool in_loop = r->n->scopes[scope].kind == VIAL_SCOPE_LOOP;
+            const uint32_t existing = in_loop ? scope_find_enclosing(r, scope, name) : scope_find(r, scope, name);
+            if (existing) r->n->ref[target] = existing;     // a local bound again: one local; in a loop, an accumulator
             else bind(r, scope, name, kind, target);
         }
         break;

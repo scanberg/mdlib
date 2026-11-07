@@ -697,7 +697,18 @@ UTEST_F(vial_check, folds_and_loops) {
         u8"float Å, trajectory, per frame");
     EXPECT_TYPE_ON(T, "f = frame()\n", 1, "int, frame");
     EXPECT_TYPE_ON(T, "t = time()\n", 1, "float64 ps, frame");
-    EXPECT_TYPE("def total(n):\n    s = 0\n    for i in range(n):\n        s = s + i\n    return s\nx = total(4)\n", 6, "int, static");
+    // A loop is unrolled, so what it accumulates is known: in a def, and at top level
+    EXPECT_TYPE("def total(n):\n    s = 0\n    for i in range(n):\n        s = s + i\n    return s\nx = total(4)\n", 6, "int, static = 6");
+    EXPECT_TYPE("t = 0\nfor q in range(4):\n    t += q\nu = t\n", 4, "int, static = 6");
+    EXPECT_DIAGS("t = 0\nfor q in range(4):\n    t += q\n", "");
+    // Its turns must be known when compiling; a comprehension runs over any number
+    EXPECT_DIAGS_ON(T, "ca = particle(name='CA')\nn = 0\nfor r in residue(within(5.0, of=ca)):\n    n += count(r)\n",
+        "E0801 3: a for over `residue(within(5.0, of=ca))` is not supported yet: how many times it runs is known only per "
+        "frame, and a loop is unrolled when compiling; a comprehension, or a reduction, runs over any number\n");
+    EXPECT_DIAGS("s = 0\nfor q in range(4):\n    if frame() > 2:\n        break\n    s += q\n",
+        "E0403 4: `break` under a condition that changes per frame: a loop runs the same turns in every frame, so the "
+        "condition must be known when compiling; where() chooses a value per frame\n");
+    EXPECT_DIAGS("break\n", "E0101 1: `break` outside a loop\n");
 }
 
 UTEST_F(vial_check, w0607) {

@@ -580,7 +580,7 @@ static T infer_binary(infer_t* x, vial_node_id id) {
     const T a = infer(x, an);
     const T b = infer(x, bn);
     if (vial_type_is_error(&a) || vial_type_is_error(&b)) return err();
-    const uint16_t op = sub_of(x, id);
+    const uint16_t op = vial_op_of_aug((vial_op_t)sub_of(x, id));
 
     // + on drawings combines them
     if (op == VIAL_OP_PLUS && a.dtype == VIAL_DT_DRAWING && b.dtype == VIAL_DT_DRAWING) {
@@ -1448,9 +1448,10 @@ static T infer_uncached(infer_t* x, vial_node_id id) {
         default:            set_value(x, id, (vial_value_t){.kind = VIAL_VAL_NULL}); return scalar(VIAL_DT_NONE);
         }
     case VIAL_N_NAME:     return infer_name(x, id);
+    case VIAL_N_AUG_ASSIGN:                       // x += v: x + v, then bound to x by the statement
+    case VIAL_N_BINARY:   return infer_binary(x, id);
     case VIAL_N_UNARY:    return infer_unary(x, id);
     case VIAL_N_NOT:      return infer_not(x, id);
-    case VIAL_N_BINARY:   return infer_binary(x, id);
     case VIAL_N_BOOLOP:   return infer_boolop(x, id);
     case VIAL_N_COMPARE:  return infer_compare(x, id);
     case VIAL_N_RANGE:    return infer_range(x, id);
@@ -1557,15 +1558,19 @@ static void assign_target(infer_t* x, vial_node_id target, const T* t, vial_node
         x->out->typed[(target) - x->out->base] = 1;
         x->out->values[(target) - x->out->base] = v;
         const uint32_t s = x->n->ref[target];
-        if (s && x->frame) {
+        // A top-level name rebound in a top-level loop stays the script's: its tables are the top level's, not the
+        // loop frame's, so what follows the loop reads the last value
+        const bool global = s && x->t == x->c->tree && x->n->symbols[s].kind == VIAL_SYM_GLOBAL;
+        if (s && x->frame && !global) {
             vx_frame_set(x, s, t, &v, provenance(x, value));
         } else if (s) {
-            x->out->sym_types[s] = *t;
-            x->out->sym_values[s] = v;
+            x->top->sym_types[s] = *t;
+            x->top->sym_values[s] = v;
         }
         if (x->ir && s) {
             const vial_ssa_t sv = value ? vx_ssa(x, value) : 0;
-            vx_frame_set_ssa(x, s, sv);
+            if (global && x->top->sym_ssa && s < md_array_size(x->top->sym_ssa)) x->top->sym_ssa[s] = sv;
+            else vx_frame_set_ssa(x, s, sv);
             vx_set_ssa(x, target, sv);
         }
         return;
@@ -1611,6 +1616,7 @@ static bool check_block(infer_t* x, vial_node_id b) {
     if (kind_of(x, b) != VIAL_N_BLOCK) return check_stmt(x, b);
     for (uint32_t i = 0; i < num_children(x, b); ++i) {
         if (check_stmt(x, child(x, b, i))) return true;
+        if (x->loop_ctl) return false;    // a break or continue: the rest of the body is not run this time
     }
     return false;
 }
@@ -1753,7 +1759,12 @@ static bool check_if(infer_t* x, vial_node_id s) {
     }
     // Lowering: in a def, an if whose branch is chosen per frame is an if of the IR, its branches regions
     bool returned;
-    if (x->ir && x->frame && !vial_type_is_error(&ct) && ct.dtype == VIAL_DT_BOOL && !ct.ndim && lower_dynamic_if(x, s, &returned)) return returned;
+    if (x->ir && x->frame && !vial_type_is_error(&ct) && ct.dtype == VIAL_DT_BOOL && !ct.ndim) {
+        x->dyn_if += 1;
+        const bool lowered = lower_dynamic_if(x, s, &returned);
+        x->dyn_if -= 1;
+        if (lowered) return returned;
+    }
     // Otherwise its branches are checked without emitting, and the def it is in is not evaluated
     struct vial_ir_t* ir = x->ir;
     if (ir) {
@@ -1887,6 +1898,31 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
             warn_missing(x, s, child(x, s, 0), &t);
         }
         return false;
+    case VIAL_N_AUG_ASSIGN: {
+        // x += v is x = x + v: the node is inferred as the binary, then bound to the target
+        const vial_node_id target = child(x, s, 0);
+        const T t = infer(x, s);
+        assign_target(x, target, &t, s);
+        check_published(x, target, &t);
+        warn_missing(x, s, s, &t);
+        return false;
+    }
+    case VIAL_N_BREAK:
+    case VIAL_N_CONTINUE: {
+        const char* word = kind_of(x, s) == VIAL_N_BREAK ? "break" : "continue";
+        if (!x->loop_depth) {
+            diag(x, "E0101", s, "`%s` outside a loop", word);
+            return false;
+        }
+        if (x->dyn_if) {
+            // The loop is unrolled when compiling, so which turn it leaves must be known then
+            diag(x, "E0403", s, "`%s` under a condition that changes per frame: a loop runs the same turns in every frame, so the "
+                "condition must be known when compiling; where() chooses a value per frame", word);
+            return false;
+        }
+        x->loop_ctl = kind_of(x, s) == VIAL_N_BREAK ? VX_LOOP_BREAK : VX_LOOP_CONTINUE;
+        return false;
+    }
     case VIAL_N_IF:
         return check_if(x, s);
     case VIAL_N_FOR:

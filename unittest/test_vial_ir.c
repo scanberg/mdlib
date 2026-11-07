@@ -304,6 +304,51 @@ static vial_ssa_t vial_ir__output(const vial_ir_t* ir, const char* name) {
     return 0;
 }
 
+// A for is unrolled: its body runs once per element, what it binds carries from turn to turn and out of the loop,
+// and break and continue on static conditions cut it short
+UTEST(vial_ir, loops_unrolled) {
+    vial_ir__run_t r;
+    const char* src =
+        "def f(n):\n    t = 0\n    for i in range(n):\n        t = t + i\n    return t\n"
+        "x = f(4)\n"
+        "t = 0\nfor q in range(4):\n    t = t + q\n"
+        "u = t\n"
+        "s = 0\nfor q in range(10):\n    if q == 3:\n        break\n    s += q\n"
+        "c = 0\nfor q in range(6):\n    if q % 2 == 0:\n        continue\n    c += q\n"
+        "n = 0\nfor res in residue[0:3]:\n    n += count(res)\n"
+        "m = 0.0\nfor p in residue[0]:\n    m += mass(p)[0]\n"
+        "z = 0\nfor a, b in zip([1, 2, 3], [10, 20, 30]):\n    z += a * b\n"
+        "w = 0\nfor v in [5, 6, 7]:\n    w = w * 10 + v\n"
+        "e = 0\nfor q in range(0):\n    e = 99\n"
+        "n2 = 0\nfor p in residue[0]:\n    n2 += 1\n"
+        "n3 = 0\nfor p in residue[0]:\n    n3 = n3 + count(p)\n"
+        "mr = sum(mass(residue[0]))\n"
+        "g = 0\nfor i in range(3):\n    for j in range(3):\n        if j > i:\n            break\n        g += 1\n"
+        "def h(k):\n    acc = 0\n    for i in range(k):\n        acc += i * i\n    return acc\n"
+        "hh = h(4)\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, vial_test_system('T')));
+    const bool ok = vial_interp_static(&r.in);
+    if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+    EXPECT_TRUE(ok);
+    char buf[256];
+    EXPECT_STREQ("6", vial_ir__out(&r, "x", buf, sizeof(buf)));
+    EXPECT_STREQ("6", vial_ir__out(&r, "u", buf, sizeof(buf)));
+    EXPECT_STREQ("6", vial_ir__out(&r, "t", buf, sizeof(buf)));
+    EXPECT_STREQ("3", vial_ir__out(&r, "s", buf, sizeof(buf)));
+    EXPECT_STREQ("9", vial_ir__out(&r, "c", buf, sizeof(buf)));
+    EXPECT_STREQ("28", vial_ir__out(&r, "n", buf, sizeof(buf)));       // MET, ARG, GLU of chain A: 8 + 11 + 9 heavy atoms
+    EXPECT_STREQ("8", vial_ir__out(&r, "n2", buf, sizeof(buf)));
+    EXPECT_STREQ("8", vial_ir__out(&r, "n3", buf, sizeof(buf)));
+    EXPECT_STREQ("140", vial_ir__out(&r, "z", buf, sizeof(buf)));
+    EXPECT_STREQ("567", vial_ir__out(&r, "w", buf, sizeof(buf)));
+    EXPECT_STREQ("0", vial_ir__out(&r, "e", buf, sizeof(buf)));
+    char ref[256];
+    EXPECT_STREQ(vial_ir__out(&r, "mr", ref, sizeof(ref)), vial_ir__out(&r, "m", buf, sizeof(buf)));
+    EXPECT_STREQ("6", vial_ir__out(&r, "g", buf, sizeof(buf)));         // (i, j) with j <= i: 1 + 2 + 3
+    EXPECT_STREQ("14", vial_ir__out(&r, "hh", buf, sizeof(buf)));
+    vial_ir__end(&r);
+}
+
 UTEST(vial_ir, evaluates_trajectory) {
     const md_system_t* sys = vial_test_system('P');
     const int64_t nf = vial_test_run('P');
