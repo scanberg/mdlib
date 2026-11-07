@@ -478,6 +478,27 @@ static void report_unknown(resolver_t* r, vial_node_id at, uint32_t scope, uint3
             return;
         }
     }
+    if (str_eq(name, STR_LIT("polymer")) || str_eq(name, STR_LIT("polymers"))) {
+        // A strand is a part of a polymer kind: one selector, one level, and the kind says which parts
+        const vial_node_id call = r->n->parent[at];
+        char fix[200] = "part(kind='polymer')";
+        vial_node_id fix_at = at;
+        if (call && kind_of(r, call) == VIAL_N_CALL && child(r, call, 0) == at) {
+            const vial_node_id first = r->t->nodes[call].child_count > 1 ? child(r, call, 1) : 0;
+            const str_t args = first ? (str_t){text(r, first).ptr, (size_t)(r->t->nodes[call].span.end - 1 - r->t->nodes[first].span.beg)} : (str_t){0};
+            if (args.len && args.len < 150 && !memchr(args.ptr, '\n', args.len) && !memchr(args.ptr, '\r', args.len)) {
+                snprintf(fix, sizeof(fix), "part(kind='polymer', %.*s)", (int)args.len, args.ptr);
+                fix_at = call;
+            } else if (!args.len) {
+                fix_at = call;
+            } else {
+                fix[0] = 0;
+            }
+        }
+        diag_fix(r, "E0201", fix_at, fix[0] ? fix : NULL, "`%.*s` is not a selector: a strand is a part of a polymer kind, "
+            "part(kind='polymer'), and kind='peptide', 'nucleic', 'dna' or 'rna' narrows it", (int)name.len, name.ptr);
+        return;
+    }
     const char* v1_msg = NULL;
     const char* v1_fix = NULL;
     if (vial_builtin_v1(name, &v1_msg, &v1_fix)) {
@@ -567,6 +588,11 @@ static void resolve_attr(resolver_t* r, vial_node_id id, uint32_t scope) {
         return;
     }
     if (vial_diag_at(r->diags, r->t->nodes[name_node].span.beg)) return;
+    if (str_eq(name, STR_LIT("polymer"))) {
+        diag_fix(r, "E0201", name_node, NULL, "`.polymer` is not a view: a strand is a part of a polymer kind, and the parts within a set are "
+            ".part[i] or .part(kind='polymer')");
+        return;
+    }
     // .xy and the like: VIAL has no swizzles
     bool swizzle = name.len >= 2 && name.len <= 4;
     for (size_t i = 0; i < name.len && swizzle; ++i) swizzle = name.ptr[i] == 'x' || name.ptr[i] == 'y' || name.ptr[i] == 'z';

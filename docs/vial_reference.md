@@ -273,8 +273,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 | `particle(...)` | `set` | an atom, a bead or a virtual site; given sets or arrays of sets, it merges them |
 | `atom(...)`, `bead(...)` | `set` | `particle(kind='atom')`, `particle(kind='bead')` |
 | `residue(...)` | `set[n]`, one per residue | a residue |
-| `part(...)` | `set[n]`, one per part | a polymer strand, glycan tree, ligand, lipid, ion or water |
-| `polymer(...)` | `set[n]`, one per strand | a polymer strand: the parts of a peptide, a nucleic acid or another polymer. Where a chain is a label of the data, a strand is the structure |
+| `part(...)` | `set[n]`, one per part | a polymer strand, glycan tree, ligand, lipid, ion or water. A strand is `part(kind='polymer')`, or by its kind, `part(kind='peptide')`: where a chain is a label of the data, a strand is the structure. There is no `polymer` selector (E0201), since a strand is a part |
 | `tail(...)` | `set[n]`, one per tail | a tail of a lipid: an acyl, alkyl or sphingoid chain, or the ring skeleton of a sterol, with its branches and hydrogens; labelled by its number in its lipid, `tail2/DPPC1` |
 | `head(...)` | `set[n]`, one per head | a head of a lipid: a connected part of what is not a tail, with its hydrogens; a lipid has one, a bolalipid two. `particle(head) or particle(tail)` is every lipid whose anatomy is known, which a lipid by name in a system without bonds is not. Labelled `head1/DPPC1` |
 | `ring(...)` | `set[n]`, one per ring | a ring of the bonds, 3 to 7 atoms, the smallest rings: naphthalene has two. Fused rings share particles. Labelled by its number in the residue it starts in, `ring2/TRP5` |
@@ -297,8 +296,6 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `kind` | amino\_acid, nucleotide, water, ion, lipid, other | string or list |
 |  | `chain` | the author id of its chain | string or list |
 | `part` | `kind` | polymer, peptide, nucleic, dna, rna, glycan, ligand, lipid, ion, water; see below | string or list |
-|  | `chain` | the author id of its chain | string or list |
-| `polymer` | `kind` | polymer, peptide, nucleic, dna, rna | string or list |
 |  | `chain` | the author id of its chain | string or list |
 | `ring` | `kind` | aromatic (every bond), aliphatic, hetero (an atom other than C), heteroaromatic, sugar (a furanose or pyranose) | string or list |
 |  | `size` | the number of atoms | int, `a..b` or a list |
@@ -345,9 +342,9 @@ wat    = residue(kind='water')                       # -> set[8]
 so4    = residue('SO4')                              # -> set[3]
 n_part = len(part)                                   # -> 17: two strands, six ligands, one ion, eight waters
 str_   = part(kind='polymer')                        # -> set[2]: chain B's strand goes on over its gap
-strand = polymer                                     # -> set[2]: the same strands
-sb     = polymer(chain='B')                          # -> set[1]
-not_p  = polymer(kind='ligand')                      # error E0206: a ligand is not a polymer
+strand = polymer                                     # error E0201: a strand is a part, part(kind='polymer')
+sb     = part(kind='polymer', chain='B')             # -> set[1]
+pep    = part(kind='peptide')                        # -> set[2]: the same two strands
 aro    = ring(kind='aromatic')                       # -> set[n]
 phe0   = ring(scope=residue('PHE')[0])               # -> set[1]: its benzene ring
 trp    = ring(particle(resname='TRP'))               # -> set[16]: eight TRP, two fused rings each
@@ -367,7 +364,7 @@ _nearv = residue(within(5.0, of=particle(resname='VLB')))   # -> set[?], frame
 ```python
 # on P
 strand = part(kind='peptide')                        # -> set[1]: no chain ids, but the strand is a part
-first  = polymer[0]                                  # -> set: the strand, by position
+first  = part(kind='polymer')[0]                     # -> set: the strand, by position
 n_mol  = len(molecule)                               # -> 1
 c      = chain('A')                                  # error E0207: P gives no chain ids; parts finds its strand
 ```
@@ -405,7 +402,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s.particle[[1, 0, 2]]` | within each set, its particles at those positions, stacked along a new last dimension: `angle(rs.particle[[1, 0, 2]])` is v1's `angle(2,1,3) in residue(...)` for every residue of `rs` | the shape and `[3]`, one particle each |
 | `s.particle(element='O')` | within each set, the particles the selector with those arguments gives, as `particle()` takes them | the same shape, a set per set |
 | `s.atom[i]`, `s.bead[i]` | within each set, its i-th atom or bead, counted among those alone | the same shape, a set of one particle per set |
-| `s.residue[i]`, and `.ring`, `.part`, `.polymer`, `.molecule`, `.head`, `.tail` | within each set, the i-th unit of the selector it holds, in the system's order, with the particles it shares with the set: `chain.residue[[0, -1]]` is the first and last residue of each chain, `residue('PHE').ring[0]` each PHE's ring | the same shape, a set per set; a list stacks |
+| `s.residue[i]`, and `.ring`, `.part`, `.molecule`, `.head`, `.tail` | within each set, the i-th unit of the selector it holds, in the system's order, with the particles it shares with the set: `chain.residue[[0, -1]]` is the first and last residue of each chain, `residue('PHE').ring[0]` each PHE's ring | the same shape, a set per set; a list stacks |
 | `s.residue('HIS')` | within each set, the particles of the units the selector with those arguments gives | the same shape, a set per set |
 | `s.residue`, `s.ring`, `s.atom`... alone, on one set | every unit of the selector within the set, each with the particles it shares with the set: `protein.residue` is the residues of the protein, `chain[0].residue[0:2]` its first two, `residue('PHE')[0].ring` one PHE's ring. The same as `residue(scope=s)`; on an array of sets it would be ragged, and is E0319 | `set[n]` for a grouping selector, `set` for `.particle`, `.atom` and `.bead`; frame stage when the set is |
 | `s[mask]` on a set, with a bool per particle of s | its particles where the mask is true: `particle[particle.z in 20.0..25.0]` is a slab, as v1's `within_z(20:25)` | a set; frame stage when the mask is |
@@ -421,7 +418,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 - What a `for` takes follows the type, never how many sets there are: `for r in residue(within(5.0, of=residue[14]))` takes residues in every frame, also one where a single residue is near, since a selector gives an array (`set[?]`). Only one set, with no dimension, gives particles.
 - A `for` over one set takes its particles one at a time, as over any set: `for r in residue[2]` gives the particles of that residue, so `r[2]` in it is E0304. Over one residue as an array of one, slice it, `residue[2:3]`; or take its particles at once, `angle(residue[2][[2, 8, 9]])`.
 - A list in a subscript stacks: `s[['N', 'CA', 'C']]` by names and `s.particle[[1, 0, 2]]` by positions give one particle per entry along a new last dimension, which `angle`, `dihedral` and `distance` take as their one argument. On one set, `s[[1, 0, 2]]` is the same as `s.particle[[1, 0, 2]]`; `particle(s[[1, 0, 2]])` merges them back into one set. A name in a list has no `*` or `?`.
-- A selector after a dot is that selector within each set, for the subscript or call it starts. `.particle`, `.atom` and `.bead` count particles, `.residue`, `.ring`, `.part`, `.polymer`, `.molecule`, `.head` and `.tail` the units each set holds, each with the particles it shares with the set. Positions count within each set in the system's order, so a particle's position depends on how a force field orders a residue's atoms, which a name does not. A set too short for a position has an empty set in its place, as for a name (W0609). A view must be finer than the units it looks into: `residue.chain[0]` is E0319 with the fix `chain(residue)`, the chains that hold them, while one set may hold any, so `protein.residue[-1]` is the last residue of the protein. Alone, on one set, a view is every unit within it, `residue(scope=s)`: `protein.residue`. Alone on an array of sets it is E0319, since the result would be ragged, with the fix `residue(rs)` for the residues of them all. `bond` is no view: a set's bonds are pairs whose number differs from set to set, so `bond(s)` takes one set. VIAL has no other methods, and `s.count` is E0319 with the fix `count(s)`.
+- A selector after a dot is that selector within each set, for the subscript or call it starts. `.particle`, `.atom` and `.bead` count particles, `.residue`, `.ring`, `.part`, `.molecule`, `.head` and `.tail` the units each set holds, each with the particles it shares with the set. Positions count within each set in the system's order, so a particle's position depends on how a force field orders a residue's atoms, which a name does not. A set too short for a position has an empty set in its place, as for a name (W0609). A view must be finer than the units it looks into: `residue.chain[0]` is E0319 with the fix `chain(residue)`, the chains that hold them, while one set may hold any, so `protein.residue[-1]` is the last residue of the protein. Alone, on one set, a view is every unit within it, `residue(scope=s)`: `protein.residue`. Alone on an array of sets it is E0319, since the result would be ragged, with the fix `residue(rs)` for the residues of them all. `bond` is no view: a set's bonds are pairs whose number differs from set to set, so `bond(s)` takes one set. VIAL has no other methods, and `s.count` is E0319 with the fix `count(s)`.
 - `by=` works with every reduction and is defined as `[f(a[s]) for s in g]`. A group with no values gives a missing value and W0603, which counts them. `a[s]` and `by=` act on the first dimension of `a` that describes particles; an array with no such dimension is E0311.
 - `var` and `std` over frames run in one pass, with Welford's algorithm.
 - A unit's label is how the data names it: a residue `MET1/A`, or `ALA1` where the data gives no chain ids; a particle `CA/MET1/A`; a chain its id, `A`. A part or a molecule of one residue is labelled as that residue, `GTP501/A`, and a longer one by its kind or its molecule's name and its chain, `peptide/A`, or by its kind and number where there are no chains, `peptide1`.

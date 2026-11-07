@@ -485,6 +485,19 @@ UTEST_F(vial_check, selector_diagnostics) {
     EXPECT_DIAGS_ON(P, "c = particle(chain='A')\n",
         "E0207 1: the data gives no chain ids, and chains are never inferred; a strand is found as a part | part(kind='polymer')\n");
     EXPECT_DIAGS_ON(P, "s = part(kind='peptide')\nn = len(molecule)\n", "");
+    // A strand is a part of a polymer kind: there is no polymer selector
+    EXPECT_DIAGS_ON(T, "s = polymer\n",
+        "E0201 1: `polymer` is not a selector: a strand is a part of a polymer kind, part(kind='polymer'), and kind='peptide', 'nucleic', "
+        "'dna' or 'rna' narrows it | part(kind='polymer')\n");
+    EXPECT_DIAGS_ON(T, "s = polymer(chain='B')\n",
+        "E0201 1: `polymer` is not a selector: a strand is a part of a polymer kind, part(kind='polymer'), and kind='peptide', 'nucleic', "
+        "'dna' or 'rna' narrows it | part(kind='polymer', chain='B')\n");
+    EXPECT_DIAGS_ON(T, "s = len(polymers)\n",
+        "E0201 1: `polymers` is not a selector: a strand is a part of a polymer kind, part(kind='polymer'), and kind='peptide', 'nucleic', "
+        "'dna' or 'rna' narrows it | part(kind='polymer')\n");
+    EXPECT_DIAGS_ON(T, "s = chain.polymer[0]\n",
+        "E0201 1: `.polymer` is not a view: a strand is a part of a polymer kind, and the parts within a set are .part[i] or .part(kind='polymer')\n");
+    EXPECT_TYPE_ON(T, "s = part(kind='polymer', chain='B')\n", 1, "set[1], static");
     EXPECT_TYPE_ON(P, "l = label(residue)[0]\n", 1, "str, static = 'ALA1'");
     EXPECT_TYPE_ON(P, "l = label(part)[0]\n", 1, "str, static = 'peptide1'");
 }

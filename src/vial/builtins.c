@@ -16,7 +16,7 @@
 
 static const vial_builtin_t builtins[] = {
     // Selectors, usable bare for all their units
-    {"particle", SEL}, {"atom", SEL}, {"bead", SEL}, {"residue", SEL}, {"part", SEL}, {"polymer", SEL}, {"molecule", SEL},
+    {"particle", SEL}, {"atom", SEL}, {"bead", SEL}, {"residue", SEL}, {"part", SEL}, {"molecule", SEL},
     {"chain", SEL}, {"tail", SEL}, {"head", SEL}, {"ring", SEL},
     // Predefined sets
     {"protein", SET}, {"nucleic", SET}, {"water", SET}, {"ion", SET}, {"lipid", SET}, {"backbone", SET},
@@ -97,7 +97,7 @@ static const struct { const char* word; const char* name; } synonyms[] = {
     {"stack", "concatenate"},
     // Names are singular, whatever the shape of what they give: the type says that
     {"particles", "particle"}, {"atoms", "atom"}, {"beads", "bead"}, {"residues", "residue"}, {"parts", "part"},
-    {"polymers", "polymer"}, {"molecules", "molecule"}, {"chains", "chain"}, {"tails", "tail"}, {"heads", "head"},
+    {"molecules", "molecule"}, {"chains", "chain"}, {"tails", "tail"}, {"heads", "head"},
     {"rings", "ring"}, {"bonds", "bond"}, {"labels", "label"},
 };
 
