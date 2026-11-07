@@ -301,7 +301,7 @@ UTEST_F(vial_check, particles_of_each) {
         "W0609 2: position 10 is outside 5 of 5 sets, which have fewer particles; their entries are missing\n");
     EXPECT_DIAGS_ON(P, "r = residue[1]\nfar = r.particle[10]\n", "W0609 2: position 10 is outside the set of 10 particles, so its point is missing\n");
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nb = rs.particle\n",
-        "E0319 2: `.particle` picks within each set, as .particle[i] or .particle(name=...); all of them as one set is particle(rs) | particle(rs)\n");
+        "E0319 2: `.particle` on an array of sets picks within each, as .particle[i] or .particle(name=...); all of them as one set is particle(rs) | particle(rs)\n");
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nb = rs.particle(1:3)\n", "E0701 2: `rs.particle(1:3)` is v1; positions are subscripts\n");
     EXPECT_TYPE_ON(P, "rs = residue[1:6]\nb = rs.particle('O')\n", 2, "set[5], static");     // a name, as particle('O') takes it
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\nb = rs.particle[0:2]\n", "E0319 2: `.particle[i]` takes a position, or a list of them, the same within each set\n");
@@ -357,7 +357,16 @@ UTEST_F(vial_check, selector_views) {
     EXPECT_DIAGS_ON(T, "c = residue.chain[0]\n",
         "E0319 1: a residue holds no chain of its own; the chains that hold them are chain(residue) | chain(residue)\n");
     EXPECT_DIAGS_ON(T, "r = chain.residue\n",
-        "E0319 1: `.residue` picks within each set, as .residue[i] or .residue(name=...); the residues of them all are residue(chain) | residue(chain)\n");
+        "E0319 1: `.residue` on an array of sets picks within each, as .residue[i] or .residue(name=...); the residues of them all are residue(chain) | residue(chain)\n");
+    // Alone on one set: every unit within it, residue(scope=s)
+    EXPECT_TYPE_ON(T, "r = protein.residue\n", 1, "set[865], static");
+    EXPECT_TYPE_ON(T, "r = chain[0].residue\n", 1, "set[442], static");
+    EXPECT_DIAGS_ON(T, "n = count(chain[0].residue[0:2].particle['CA'])\n", "");
+    EXPECT_TYPE_ON(T, "n = count(chain[0].residue[0:2].particle['CA'])\n", 1, "int[2], static");
+    EXPECT_TYPE_ON(T, "n = len(residue('PHE')[0].ring)\n", 1, "int, static = 1");
+    EXPECT_TYPE_ON(T, "a = particle(resname='GTP').atom\n", 1, "set, static");
+    EXPECT_TYPE_ON(T, "r = within(5.0, of=particle(resname='GTP')).residue\n", 1, "set[?], frame");
+    EXPECT_DIAGS_ON(T, "r = particle(name='MG').ring\n", "W0601 1: `particle(name='MG')` holds no ring\n");
     EXPECT_DIAGS_ON(T, "r = chain.residue[0:2]\n", "E0319 1: `.residue[i]` takes a position, or a list of them, the same within each set\n");
     EXPECT_DIAGS_ON(T, "r = chain.residue[500]\n", "W0609 1: a position is outside 3 of 3 sets, which hold fewer residues; their entries are missing\n");
 }

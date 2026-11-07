@@ -1073,7 +1073,7 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
-    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on)) return vx_view_at(x, id, on, in, &a);
+    if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on) && !vx_view_bare(x, on)) return vx_view_at(x, id, on, in, &a);
     if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) == VIAL_N_LIST && num_children(x, in) && kind_of(x, child(x, in, 0)) == VIAL_N_STRING) {
         return vx_named_list(x, id, on, in, &a);
     }
@@ -1398,14 +1398,15 @@ static T infer_attr(infer_t* x, vial_node_id id) {
             diag_fix(x, "E0319", id, fix, "a %s holds no %.*s of its own; the %.*ss that hold them are %s", unit, nl, name.ptr, nl, name.ptr, fix);
             return err();
         }
-        const vial_node_id p = x->n->parent[id];
-        if (p && child(x, p, 0) == id && (kind_of(x, p) == VIAL_N_SUBSCRIPT || kind_of(x, p) == VIAL_N_CALL)) return a;
+        if (!vx_view_bare(x, id)) return a;
+        // Alone, on one set: every unit within it. On an array of sets that would be ragged
+        if (a.ndim == 0) return vx_view_all(x, id, on, &a);
         if (vlevel == VIAL_LEVEL_PARTICLE) {
-            diag_fix(x, "E0319", id, fix, "`.%.*s` picks within each set, as .%.*s[i] or .%.*s(name=...); all of them as one set is %s", nl, name.ptr,
-                nl, name.ptr, nl, name.ptr, fix);
-        } else {
-            diag_fix(x, "E0319", id, fix, "`.%.*s` picks within each set, as .%.*s[i] or .%.*s(name=...); the %.*ss of them all are %s", nl, name.ptr,
+            diag_fix(x, "E0319", id, fix, "`.%.*s` on an array of sets picks within each, as .%.*s[i] or .%.*s(name=...); all of them as one set is %s",
                 nl, name.ptr, nl, name.ptr, nl, name.ptr, fix);
+        } else {
+            diag_fix(x, "E0319", id, fix, "`.%.*s` on an array of sets picks within each, as .%.*s[i] or .%.*s(name=...); the %.*ss of them all are %s",
+                nl, name.ptr, nl, name.ptr, nl, name.ptr, nl, name.ptr, fix);
         }
         return err();
     }

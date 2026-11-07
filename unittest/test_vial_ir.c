@@ -1353,6 +1353,20 @@ UTEST(vial_ir, selector_views) {
     EXPECT_TRUE(vial_ir__same_sets("chain.atom[3]", b, sys, st, alloc, &n));
     EXPECT_TRUE(vial_ir__same_sets("residue('PHE').ring[0]", "(residue('PHE') and within(1000.0, of=particle(resname='GTP'))).ring[0]", sys, st, alloc, &n));
     EXPECT_EQ(42u, n);
+    // A view alone on one set is the selector within it, when compiling and per frame
+    EXPECT_TRUE(vial_ir__same_sets("residue(scope=chain[0])", "chain[0].residue", sys, st, alloc, &n));
+    EXPECT_EQ(442u, n);
+    snprintf(b, sizeof(b), "(chain[0] and within(1000.0, of=particle(resname='GTP'))).residue");
+    EXPECT_TRUE(vial_ir__same_sets("residue(scope=(chain[0] and within(1000.0, of=particle(resname='GTP'))))", b, sys, st, alloc, &n));
+    EXPECT_EQ(442u, n);
+    EXPECT_TRUE(vial_ir__same_sets("residue(scope=chain[0])[0:2]", "chain[0].residue[0:2]", sys, st, alloc, &n));
+    EXPECT_EQ(2u, n);
+    // s.particle['CA'] is s['CA'] written in full, when compiling and per frame
+    EXPECT_TRUE(vial_ir__same_sets("residue('PHE')['CZ']", "residue('PHE').particle['CZ']", sys, st, alloc, &n));
+    EXPECT_EQ(42u, n);
+    EXPECT_TRUE(vial_ir__same_sets("(residue('PHE') and within(1000.0, of=particle(resname='GTP')))[['CG', 'CZ']]",
+                                   "(residue('PHE') and within(1000.0, of=particle(resname='GTP'))).atom[['CG', 'CZ']]", sys, st, alloc, &n));
+    EXPECT_EQ(84u, n);
     // Positions along the first dimension of a stacked array take its rows whole (found by the fuzzer)
     const md_system_t* P = vial_test_system('P');
     const md_system_state_t* Ps = vial_test_state('P');

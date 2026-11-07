@@ -521,6 +521,11 @@ static vial_ssa_t emit_attr(infer_t* x, vial_node_id id, const T* t) {
     const T* at = type_at(x, on);
     uint8_t vpk = 0;
     if (at->dtype == VIAL_DT_SET && vx_view_level(x, id, &vpk, NULL) != VIAL_LEVEL_NONE) {
+        // s.residue alone, on one set that changes per frame: residue(scope=s), selected when evaluated
+        if (vx_view_bare(x, id)) {
+            const str_t scope = STR_LIT("scope");
+            return builtin(x, id, buf, &a, &scope, 1, t);
+        }
         // s.particle[i], s.residue[i]: the subscript picks. s.atom[i]: among the particles of the kind
         if (!vpk || vx_view_level(x, id, &vpk, NULL) != VIAL_LEVEL_PARTICLE) return a;
         const vial_sets_t* kind = vx_view_units(x, name);

@@ -190,6 +190,8 @@ bool               vx_is_particles_view(const infer_t* x, vial_node_id n);     /
 uint8_t            vx_view_level(const infer_t* x, vial_node_id n, uint8_t* particle_kind, str_t* name);  // NONE if no view
 const vial_sets_t* vx_view_units(infer_t* x, str_t name);  // every unit of the selector, or every particle of its kind
 vial_type_t        vx_view_at(infer_t* x, vial_node_id id, vial_node_id view, vial_node_id in, const vial_type_t* a);
+vial_type_t        vx_view_all(infer_t* x, vial_node_id id, vial_node_id on, const vial_type_t* a);   // s.residue alone, on one set
+bool               vx_view_bare(const infer_t* x, vial_node_id id);   // a view as a value, not the start of a subscript or call
 // Positions within each set of what obj gives: one, s.particle[1], or a list, s.particle[[1, 0, 2]] and s[[1, 0, 2]] on
 // one set, stacked along a new last dimension in the order listed
 vial_type_t        vx_particle_at(infer_t* x, vial_node_id id, vial_node_id obj, vial_node_id in, const vial_type_t* a);
