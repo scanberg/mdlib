@@ -264,7 +264,7 @@ _d     = distance(near.com, ca[0])                     # -> float[?] Å, frame
 
 A system is built of particles, residues, parts and molecules, each nested in the next. A part is one polymer strand, one glycan tree, one ligand, one lipid, one ion or one water; a strand goes on over a gap and ends where the chemistry says it does. A molecule is what the bonds hold together, and with a topology it is the topology's molecule, so a glycoprotein is one molecule of several parts. A chain is not a level of it: it is the author's chain id, a label that the data files particles of any level under, and it is never inferred. Where the data gives no chain ids, as in a GRO file or a PDB file written by a simulation, the system has no chains, and a strand is found as a part.
 
-`particle()` returns one set; the grouping selectors return one set per unit. A selector written without parentheses means all its units, and every selector searches its scope.
+`particle()` returns one set; the grouping selectors return one set per unit. A selector written without parentheses means all its units, and every selector searches its scope. A selector is narrowed in two ways, which differ at the edges of a set: `residue(s)` is every residue that holds a particle of `s`, whole, and `s.residue` is every residue within `s`, each with only the particles it shares with `s`. See Scope.
 
 Names are singular, as every function's is, whatever the shape of what they give: the type says that, `particle()` one set and `residue()` one per residue. `atom` and `bead` are `particle` narrowed to a kind, not other names for it, so positions count within them: `atom[i]` is the i-th atom, which is `particle[i]` only where no bead or virtual site comes before it, and a number from another tool, which counts every particle, is a position in `particle`. Where a system holds both, `atom(name='C1')` and `bead(name='C1')` pick different particles. A bare number is not a selector argument (E0205), since it says neither which count it is in nor where that starts: `residue(id=5)` is the file's residue 5, in every chain that has one, and `residue[4]` the fifth residue, v1's `residue(5)`.
 
@@ -326,7 +326,8 @@ The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna
 
 - In a script the scope is the system. In a filter it is the set viamd evaluates it within: a representation group, or one reference structure of a density volume.
 - Positions count from the scope's start; ids are kept. The scope is all there is, so a unit partly inside it appears with only its particles inside.
-- `scope=system` reaches outside. Spatial selectors search the scope, but their points may lie outside it.
+- A selector is narrowed to a set in two ways. `residue(s)`, with the set as its positional argument, is every residue that holds a particle of `s`, whole within the scope: `residue(within(5.0, of=lig))` is the whole residues near the ligand. `s.residue`, the selector after a dot, is every residue within `s`, each with only the particles it shares with `s`: `protein.residue` is the protein's residues, and `s.residue[0]` the first of them. A view takes the selector's arguments too, `s.residue('HIS')`, and `s['CA']` is `s.particle['CA']`; see Indexing. `particle(s)` and `s.particle` are both `s`.
+- `scope=` is the dotted form as a keyword: `residue(scope=s, name='HIS')` is `s.residue('HIS')`. It is there for a filter, whose scope is its group, to reach outside it with `scope=system`, and for a def that is handed its scope as an argument. Spatial selectors search the scope, but their points may lie outside it.
 - Scopes nest. A scope that changes per frame makes everything evaluated within it frame stage.
 
 ```python
@@ -346,14 +347,17 @@ strand = polymer                                     # error E0201: a strand is 
 sb     = part(kind='polymer', chain='B')             # -> set[1]
 pep    = part(kind='peptide')                        # -> set[2]: the same two strands
 aro    = ring(kind='aromatic')                       # -> set[n]
-phe0   = ring(scope=residue('PHE')[0])               # -> set[1]: its benzene ring
+phe0   = residue('PHE')[0].ring                      # -> set[1]: its benzene ring
 trp    = ring(particle(resname='TRP'))               # -> set[16]: eight TRP, two fused rings each
+whole  = residue(particle(name='CA', chain='A'))     # -> set[433]: whole residues, one CA each
+cut    = particle(name='CA', chain='A').residue      # -> set[433]: the same residues, each clipped to its CA
 flat   = ring(kind='flat')                           # error E0206
 lig    = part(kind='ligand')                         # -> set[6]: GTP, three SO4, GDP and VLB
 mol    = molecule(part(kind='peptide'))              # -> set[2]: the molecules the strands are in
 n_mol  = len(molecule)                               # -> 17
 first5 = residue[0:5]                                # -> set[5]
-firstb = residue(scope=particle(chain='B'))[0]       # -> set: the first residue of chain B
+firstb = particle(chain='B').residue[0]              # -> set: the first residue of chain B
+scoped = residue(scope=particle(chain='B'))[0]       # -> set: the same, scope= as a keyword
 miss   = particle(name='CA', resid=39, chain='A')    # warning W0601: matches nothing
 bad    = chain(name='A')                             # error E0202: chains have no name
 two    = residue(protein, 'LYS')                     # error E0203
