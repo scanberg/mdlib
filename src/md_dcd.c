@@ -62,8 +62,6 @@ typedef struct dcd_t {
     float* first_frame_x;
     float* first_frame_y;
     float* first_frame_z;
-
-    vec3_t translation;
 } dcd_t;
 
 // ==================== Byte-swap helpers ====================
@@ -210,10 +208,15 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
 
     if ((beg_title_size - 4) % 80 == 0) {
         int32_t num_title;
-		md_file_read(file, &num_title, 4);
+		if (md_file_read(file, &num_title, 4) != 4) {
+            MD_LOG_ERROR("DCD: Failed to read the title count");
+            return false;
+        }
         num_title = dcd_swap32(num_title, rev);
-        if (num_title <= 0) {
-            MD_LOG_ERROR("DCD: Title block has non-positive title count");
+        // The titles are skipped by their count, which is not always what the size of the block says: some
+        // writers declare a block of two titles and write three (the trailing size then follows the third)
+        if (num_title < 0) {
+            MD_LOG_ERROR("DCD: Title block has a negative title count");
             return false;
 		}
 		// Skip the title lines, each 80 bytes long.
@@ -541,7 +544,7 @@ done:
 
 // Everything known about the file short of its coordinates: the header, where the frames are and when
 // they were taken, the first frame in full (which the fixed atoms of every later frame take their
-// positions from), and the translation the coordinates are presented with. Allocated from alloc.
+// positions from). Allocated from alloc.
 static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
     MEMSET(dcd, 0, sizeof(*dcd));
 
@@ -637,29 +640,12 @@ static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
             goto done;
         }
 
-        // We always read the first frame atoms and check the COM, we want to identify if the coordiantes should be shifted by unitcell center.
-        // The file stores x, y and z apart; the COM takes them packed
-        vec3_t com = {0};
-        {
-            md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-            vec3_t* xyz = md_temp_alloc_array(temp, vec3_t, (size_t)natoms);
-            for (int i = 0; i < natoms; ++i) {
-                xyz[i] = vec3_set(dcd->first_frame_x[i], dcd->first_frame_y[i], dcd->first_frame_z[i]);
-            }
-            com = md_util_com_compute(xyz, NULL, NULL, (size_t)natoms, &unitcell);
-            md_temp_end(temp);
-        }
-
-        mat3_t A = { 0 };
-        md_unitcell_A_extract_float(A.elem, &unitcell);
-        vec3_t uc_center = mat3_mul_vec3(A, (vec3_t) { 0.5f, 0.5f, 0.5f });
-
-        // Check which com is closest
-        float dist_com = vec3_distance(com, (vec3_t) { 0, 0, 0 });
-        float dist_uc_center = vec3_distance(com, uc_center);
-        if (dist_uc_center < dist_com) {
-            dcd->translation = uc_center;
-        }
+        // The coordinates are taken as the file holds them, as every other trajectory's are: a structure
+        // of the same simulation (a PDB of NAMD or CHARMM-GUI, centred on the origin like the DCD) lines up
+        // with its frames. (A shift by the centre of the cell was made here when the centre of mass of the
+        // first frame was nearer the centre of the cell than the origin: which moved atoms that sat in the
+        // cell to its corner, and, the centre of mass taken across the periodic boundaries of a box full
+        // of atoms being any point in it, was a coin toss for a solvated system.)
     }
     result = true;
 
@@ -715,8 +701,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
     const int64_t* sizes   = src.size;
     size_t layout_count = 0;
     const int32_t* layout      = dcd_resident(attributes, run, "source/layout",      MD_ATTRIBUTE_TYPE_I32, &layout_count);
-    const float*   translation = dcd_resident(attributes, run, "source/translation", MD_ATTRIBUTE_TYPE_F32, NULL);
-    if (!layout || layout_count != DCD_LAYOUT_COUNT || !translation) {
+    if (!layout || layout_count != DCD_LAYOUT_COUNT) {
         MD_LOG_ERROR("DCD: the run '" STR_FMT "' has lost its source attributes", STR_ARG(run));
         return 0;
     }
@@ -784,13 +769,6 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
             }
         }
         if (ok) {
-            if (translation[0] != 0.0f || translation[1] != 0.0f || translation[2] != 0.0f) {
-                for (size_t i = 0; i < N; ++i) {
-                    xyz[i * 3 + 0] += translation[0];
-                    xyz[i * 3 + 1] += translation[1];
-                    xyz[i * 3 + 2] += translation[2];
-                }
-            }
             if (count != N) {
                 MEMCPY(dst, xyz + first * 3, 3 * sizeof(float));
             }
@@ -915,7 +893,6 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         [DCD_LAYOUT_REVERSE_ENDIAN] = dcd.header.reverse_endian ? 1 : 0,
         [DCD_LAYOUT_NFIXED]         = dcd.header.nfixed,
     };
-    const float translation[3] = { dcd.translation.x, dcd.translation.y, dcd.translation.z };
     char buf[512];
 
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
@@ -925,12 +902,6 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         .description = STR_INIT("CHARMM flags, byte order reversed, number of fixed atoms"),
         .data = layout, .byte_size = sizeof(layout)});
 
-    ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
-        .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/translation")),
-        .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 0 },
-        .unit = md_unit_angstrom(),
-        .description = STR_INIT("Added to every coordinate read from the file"),
-        .data = translation, .byte_size = sizeof(translation)});
 
     if (ok && nfixed > 0) {
         // Every frame after the first carries only the free atoms; the fixed ones stay where the
@@ -954,7 +925,7 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         ok = ok && md_attributes_replace(attributes, &(md_attribute_desc_t){
             .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/first_frame")),
             .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 3, .rank = 1, .shape = { (uint32_t)N } },
-            .unit = md_unit_angstrom(), .description = STR_INIT("The first frame as stored, before the translation"),
+            .unit = md_unit_angstrom(), .description = STR_INIT("The first frame as stored"),
             .data = first_frame, .byte_size = N * 3 * sizeof(float)});
     }
 

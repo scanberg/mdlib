@@ -3,6 +3,7 @@
 #include <md_ase_traj.h>
 #include <md_system.h>
 #include <core/md_allocator.h>
+#include <math.h>
 
 #include "run_check.h"
 
@@ -113,8 +114,6 @@ UTEST(ase_traj, single_frame_is_a_structure) {
 
 UTEST(ase_traj, rejects_unsupported_input) {
     const str_t invalid[] = {
-        ASE_FILE("ase_rotated_cell.traj"),
-        ASE_FILE("ase_partial_pbc.traj"),
         ASE_FILE("make_fixtures.py"),
     };
     for (size_t i = 0; i < ARRAY_SIZE(invalid); ++i) {
@@ -124,6 +123,40 @@ UTEST(ase_traj, rejects_unsupported_input) {
         md_system_state_free(&state);
         md_system_free(&sys);
     }
+}
+
+// A cell in another orientation than a along x and b in the xy plane (as ase.build.bulk gives a primitive cell) is
+// turned into it, and the atoms with it: where they are within the cell is kept
+UTEST(ase_traj, rotated_cell_is_turned) {
+    md_system_t sys = {.alloc = md_get_heap_allocator()};
+    md_system_state_t state = {.alloc = md_get_heap_allocator()};
+    // cell [[9, 1, 0], [-1, 9, 0], [0, 0, 10]], H at (1, 2, 3)
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_rotated_cell.traj")));
+    const double l = sqrt(82.0);
+    EXPECT_NEAR(l, state.unitcell.x, 1e-5);
+    EXPECT_NEAR(l, state.unitcell.y, 1e-5);
+    EXPECT_NEAR(10.0, state.unitcell.z, 1e-5);
+    EXPECT_NEAR(0.0, state.unitcell.xy, 1e-5);
+    EXPECT_NEAR(11.0 / l, state.xyz[0].x, 1e-5);
+    EXPECT_NEAR(17.0 / l, state.xyz[0].y, 1e-5);
+    EXPECT_NEAR(3.0, state.xyz[0].z, 1e-5);
+    md_system_state_free(&state);
+    md_system_free(&sys);
+}
+
+// Periodic along some axes only (a slab, a wire): the cell has the vectors of those
+UTEST(ase_traj, partial_periodicity) {
+    md_system_t sys = {.alloc = md_get_heap_allocator()};
+    md_system_state_t state = {.alloc = md_get_heap_allocator()};
+    // cell 10 x 10 x 10, pbc [T, F, T]
+    ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_partial_pbc.traj")));
+    EXPECT_EQ(MD_UNITCELL_PBC_X | MD_UNITCELL_PBC_Z, state.unitcell.flags & MD_UNITCELL_PBC_ALL);
+    EXPECT_NEAR(10.0, state.unitcell.x, 1e-6);
+    EXPECT_NEAR(0.0, state.unitcell.y, 1e-6);
+    EXPECT_NEAR(10.0, state.unitcell.z, 1e-6);
+    EXPECT_NEAR(2.0, state.xyz[0].y, 1e-6);
+    md_system_state_free(&state);
+    md_system_free(&sys);
 }
 
 UTEST(ase_traj, changing_atoms_rejected_when_published) {
@@ -194,7 +227,7 @@ UTEST(ase_traj, failed_load_leaves_the_system_alone) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_fixed.traj")));
-    EXPECT_FALSE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("ase_rotated_cell.traj")));
+    EXPECT_FALSE(md_ase_traj_system_init_from_file(&sys, &state, ASE_FILE("make_fixtures.py")));
     EXPECT_EQ(3u, sys.atom.count);
     EXPECT_EQ(3u, state.num_atoms);
     md_system_state_free(&state);

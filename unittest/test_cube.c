@@ -142,3 +142,58 @@ UTEST(cube, empty_path) {
 	
 	md_cube_free(&cube, md_get_heap_allocator());
 }
+
+// A negative number of points means the header's lengths are in Angstrom (Gaussian's convention, cubegen writes it);
+// they are kept in bohr. The count was taken as given and the cube refused as one of no points.
+UTEST(cube, angstrom_header) {
+    const str_t text = STR_LIT(
+        "title\n"
+        "comment\n"
+        "    1    1.000000    0.000000    0.000000\n"
+        "   -2    0.529177    0.000000    0.000000\n"
+        "   -1    0.000000    0.529177    0.000000\n"
+        "   -1    0.000000    0.000000    0.529177\n"
+        "    8    8.000000    0.529177    0.000000    0.000000\n"
+        "  1.0E-01  2.0E-01\n");
+    md_cube_t cube = {0};
+    ASSERT_TRUE(md_cube_deserialize(&cube, text, md_get_heap_allocator()));
+    EXPECT_EQ(2, cube.data.num_x);
+    EXPECT_EQ(1, cube.data.num_y);
+    EXPECT_NEAR(1.0 / 0.52917721092, cube.origin[0], 1.0e-4);
+    EXPECT_NEAR(1.0, cube.xaxis[0], 1.0e-5);
+    EXPECT_NEAR(1.0, cube.atom.coord[0][0], 1.0e-5);
+    EXPECT_NEAR(0.2f, cube.data.val[1], 1.0e-7);
+    md_cube_free(&cube, md_get_heap_allocator());
+}
+
+// A grid without atoms, and a grid of two values per point (NVAL 2): the first was refused for having no atoms, the
+// second written with only one value in two.
+UTEST(cube, no_atoms_and_values_per_point) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    const str_t text = STR_LIT(
+        "no atoms\n"
+        "two values per point\n"
+        "    0    0.000000    0.000000    0.000000    2\n"
+        "    2    0.500000    0.000000    0.000000\n"
+        "    1    0.000000    0.500000    0.000000\n"
+        "    2    0.000000    0.000000    0.500000\n"
+        "  1.0E+00  2.0E+00  3.0E+00  4.0E+00  5.0E+00  6.0E+00\n"
+        "  7.0E+00  8.0E+00\n");
+    md_cube_t a = {0};
+    ASSERT_TRUE(md_cube_deserialize(&a, text, alloc));
+    EXPECT_EQ(0, a.atom.count);
+    EXPECT_EQ(2, a.data.num_m);
+    EXPECT_EQ(8.0f, a.data.val[7]);
+
+    str_t str = md_cube_serialize(&a, alloc);
+    ASSERT_FALSE(str_empty(str));
+    md_cube_t b = {0};
+    ASSERT_TRUE(md_cube_deserialize(&b, str, alloc));
+    EXPECT_EQ(2, b.data.num_m);
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(a.data.val[i], b.data.val[i]);
+    }
+    str_free(str, alloc);
+    md_cube_free(&a, alloc);
+    md_cube_free(&b, alloc);
+}

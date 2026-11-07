@@ -42,6 +42,7 @@ typedef struct {
     md_allocator_i* temp;
 
     str_t* defines;         // md_array, temp
+    str_t* define_values;   // md_array, temp: what each define stands for ("#define NL_CHARGE -0.66"), empty for none
 
     // Conditional stack. value: what the #ifdef/#ifndef tested. parent: whether the enclosing block was active.
     bool cond_value [ITP_MAX_COND_DEPTH];
@@ -64,6 +65,23 @@ static bool parser_active(const itp_parser_t* p) {
 static bool is_defined(const itp_parser_t* p, str_t name) {
     for (size_t i = 0; i < md_array_size(p->defines); ++i) {
         if (str_eq(p->defines[i], name)) return true;
+    }
+    return false;
+}
+
+// A number of an [ atoms ] line, which may be a macro that stands for one ("NL_CHARGE"), as grompp substitutes them
+static bool itp_number(float* out, const itp_parser_t* p, str_t tok) {
+    if (is_float(tok)) {
+        *out = (float)parse_float(tok);
+        return true;
+    }
+    for (size_t i = 0; i < md_array_size(p->defines); ++i) {
+        if (str_eq(p->defines[i], tok)) {
+            const str_t v = p->define_values[i];
+            if (!is_float(v)) return false;
+            *out = (float)parse_float(v);
+            return true;
+        }
     }
     return false;
 }
@@ -203,12 +221,10 @@ static void parse_data_line(itp_parser_t* p, str_t line) {
             .res_name = str_copy(tok[3], p->alloc),
             .name     = str_copy(tok[4], p->alloc),
         };
-        if (num_tok > 6 && is_float(tok[6])) {
-            atom.charge = parse_f32(tok[6]);
+        if (num_tok > 6 && itp_number(&atom.charge, p, tok[6])) {
             atom.has_charge = true;
         }
-        if (num_tok > 7 && is_float(tok[7])) {
-            atom.mass = parse_f32(tok[7]);
+        if (num_tok > 7 && itp_number(&atom.mass, p, tok[7])) {
             atom.has_mass = true;
         }
         md_array_push(mol->atoms, atom, p->alloc);
@@ -374,13 +390,18 @@ static void parse_directive(itp_parser_t* p, str_t line, str_t folder) {
         return;
     } else if (str_eq_cstr(word, "define")) {
         if (!str_empty(arg0) && !is_defined(p, arg0)) {
+            str_t value = args;
+            extract_token(&(str_t){0}, &value);
             md_array_push(p->defines, str_copy(arg0, p->temp), p->temp);
+            md_array_push(p->define_values, str_copy(str_trim(value), p->temp), p->temp);
         }
     } else if (str_eq_cstr(word, "undef")) {
         for (size_t i = 0; i < md_array_size(p->defines); ++i) {
             if (str_eq(p->defines[i], arg0)) {
                 p->defines[i] = *md_array_last(p->defines);
                 md_array_pop(p->defines);
+                p->define_values[i] = *md_array_last(p->define_values);
+                md_array_pop(p->define_values);
                 break;
             }
         }

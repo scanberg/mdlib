@@ -105,3 +105,53 @@ UTEST(namdbin, coordinates_in_either_byte_order) {
     remove(path.ptr);
     md_arena_allocator_destroy(arena);
 }
+
+// A blank segment id, as VMD and others write for a system without segments: the columns of the record are fixed
+// (I8,1X,A4,1X,A4,1X,A4,1X,A4,1X,A4 and I10,1X,A8,... in EXT), and read as words a blank field shifts every field
+// after it - the residue number read as the segment, the residue name as the number.
+UTEST(psf, blank_segment_ids) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const str_t path = STR_LIT("md_unittest_blank_segid.psf");
+    static const char* texts[2] = {
+        "PSF\n"
+        "\n"
+        "       1 !NTITLE\n"
+        " REMARKS no segments\n"
+        "\n"
+        "       2 !NATOM\n"
+        "       1      7    ALA  N    NH3   -0.300000       14.0070           0\n"
+        "       2      7    ALA  CA   CT1    0.210000       12.0110           0\n"
+        "\n"
+        "       1 !NBOND: bonds\n"
+        "       1       2\n",
+        "PSF EXT\n"
+        "\n"
+        "         1 !NTITLE\n"
+        " REMARKS no segments\n"
+        "\n"
+        "         2 !NATOM\n"
+        "         1          7        ALA      N        NH3     -0.300000       14.0070           0\n"
+        "         2          7        ALA      CA       CT1      0.210000       12.0110           0\n"
+        "\n"
+        "         1 !NBOND: bonds\n"
+        "         1         2\n",
+    };
+    for (int k = 0; k < 2; ++k) {
+        ASSERT_TRUE(psf_write_text(path, texts[k]));
+        md_system_t sys = { .alloc = arena };
+        md_system_state_t state = { .alloc = arena };
+        ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path));
+        ASSERT_EQ(2u, sys.atom.count);
+        ASSERT_EQ(1u, sys.residue.count);
+        EXPECT_TRUE(str_eq_cstr(md_system_residue_name(&sys, 0), "ALA"));
+        EXPECT_EQ(7, sys.residue.seq_id[0]);
+        EXPECT_TRUE(str_eq_cstr(md_atom_name(&sys.atom, 1), "CA"));
+        const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+        ASSERT_TRUE(charge != NULL);
+        EXPECT_NEAR(0.21f, ((const float*)charge->data)[1], 1e-5f);
+        EXPECT_EQ(1u, sys.bond.count);
+        md_system_free(&sys);
+    }
+    remove(path.ptr);
+    md_arena_allocator_destroy(arena);
+}

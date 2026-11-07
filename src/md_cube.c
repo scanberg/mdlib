@@ -31,6 +31,11 @@ bool md_cube_valid(const md_cube_t* cube) {
 		return false;
 	}
 
+	if (cube->atom.count == 0) {
+		// A grid without atoms is still a grid
+		return true;
+	}
+
 	if (!cube->atom.coord) {
 		MD_LOG_ERROR("CUBE: coord was NULL");
 		return false;
@@ -105,7 +110,8 @@ bool md_cube_write(md_writer_i* w, const md_cube_t* cube) {
 		md_write_char(w, '\n');
 	}
 	
-	const int64_t data_count = cube->data.num_x * cube->data.num_y * cube->data.num_z;
+	// Every value of every voxel: data[x][y][z][m]
+	const int64_t data_count = (int64_t)cube->data.num_x * cube->data.num_y * cube->data.num_z * cube->data.num_m;
 	for (int64_t i = 0; i < data_count; ++i) {
         md_writef(w, " %12.5E", cube->data.val[i]);
         if (i % 6 == 5) {
@@ -180,6 +186,20 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
 		goto parse_error;
 	}
 
+	// A negative number of points (by convention that of the first axis) means that the lengths of the header
+	// - the origin, the axes and the atoms - are given in Ångström rather than Bohr. They are kept in Bohr here.
+	const bool angstrom = cube->data.num_x < 0;
+	cube->data.num_x = abs(cube->data.num_x);
+	cube->data.num_y = abs(cube->data.num_y);
+	cube->data.num_z = abs(cube->data.num_z);
+	const float length_scale = angstrom ? (float)(1.0 / 0.52917721092) : 1.0f;
+	for (int i = 0; i < 3; ++i) {
+		cube->origin[i] *= length_scale;
+		cube->xaxis[i]  *= length_scale;
+		cube->yaxis[i]  *= length_scale;
+		cube->zaxis[i]  *= length_scale;
+	}
+
 	// geom
 	const int count = abs(cube->atom.count);
 	for (int i = 0; i < count; ++i) {
@@ -193,6 +213,9 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
         if (!(str_extract_i32(&number, &line) && str_extract_f32(&charge, &line) && str_extract_v3(coord, &line))) {
 			goto parse_error;
 		}
+		coord[0] *= length_scale;
+		coord[1] *= length_scale;
+		coord[2] *= length_scale;
 		
 		md_array_push(cube->atom.number, number, alloc);
 		md_array_push(cube->atom.charge, charge, alloc);
@@ -214,7 +237,19 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
 		}
 	}
 
-	int64_t num_data = cube->data.num_x * cube->data.num_y * cube->data.num_z * cube->data.num_m;
+	if (cube->data.num_x <= 0 || cube->data.num_y <= 0 || cube->data.num_z <= 0 || cube->data.num_m <= 0) {
+		MD_LOG_ERROR("CUBE: One or more data dimensions are zero");
+		return false;
+	}
+
+	// In 64 bits: a 1300^3 grid alone does not fit in an int
+	const int64_t num_data = (int64_t)cube->data.num_x * cube->data.num_y * cube->data.num_z * cube->data.num_m;
+	if ((uint64_t)num_data > str.len / 2 + 1) {
+		// Every value takes at least a digit and a separator: the file cannot hold them
+		MD_LOG_ERROR("CUBE: The file is too short for the %lld values its grid declares", (long long)num_data);
+		return false;
+	}
+	md_array_ensure(cube->data.val, (size_t)num_data, alloc);
     for (int64_t i = 0; i < num_data; ++i) {
         float val;
 

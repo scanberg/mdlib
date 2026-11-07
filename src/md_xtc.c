@@ -286,19 +286,6 @@ static FORCE_INLINE void extract_bits_be_raw_121(uint64_t out[2], const uint8_t*
     out[1] = lo >> shift_right;
 }
 
-// Extracts 1..32 bits via a single unaligned 8-byte read.
-static FORCE_INLINE uint32_t extract_bits_be_raw_32(const uint8_t* base, size_t bit_offset, size_t bit_length) {
-    size_t byte_offset = bit_offset >> 3;
-    size_t bit_in_byte = bit_offset & 7;
-
-    uint64_t raw;
-    MEMCPY(&raw, base + byte_offset, sizeof(raw));
-#if __LITTLE_ENDIAN__
-    raw = BSWAP64(raw);
-#endif
-    return (uint32_t)((raw << bit_in_byte) >> (64 - bit_length));
-}
-
 // Peek-style helper for the run-length 6-bit field. Reads up to 32 bits.
 static FORCE_INLINE uint32_t extract_bits_be_raw_25(const uint8_t* base, size_t bit_offset, size_t bit_length) {
     size_t byte_offset = bit_offset >> 3;
@@ -310,11 +297,6 @@ static FORCE_INLINE uint32_t extract_bits_be_raw_25(const uint8_t* base, size_t 
     raw = BSWAP32(raw);
 #endif
     return (raw << bit_in_byte) >> (32 - bit_length);
-}
-
-static FORCE_INLINE uint32_t unpack_uint32(uint32_t w, const bit_data_t* bits) {
-    uint32_t t = ((w << bits->sml_shift) & (~0xFFu)) | (w & bits->part_mask);
-    return BSWAP32(t) >> bits->big_shift;
 }
 
 // Combine a 64-bit packed word into (x, y, z) via two parallel divisions.
@@ -401,14 +383,32 @@ static FORCE_INLINE v4i_t extract_and_unpack(const uint8_t* base, size_t bit_off
     }
 }
 
-// Reads three independently bit-packed integers (one per axis). Used only
-// when sizeints exceed the 24-bit combined limit.
+// As extract_and_unpack, with plain divisions: for a range of a single value along y or z (all atoms in
+// one plane, or in one point), a divisor of 1, which libdivide's branchfree dividers cannot take.
+static v4i_t extract_and_unpack_plain(const uint8_t* base, size_t bit_offset, size_t bit_length, const unpack_data_t* unpack) {
+    if (bit_length > 64) {
+        uint64_t w[2];
+        extract_bits_be_raw_121(w, base, bit_offset, bit_length);
+        return unpack_coord128(w, unpack);
+    }
+    const uint64_t w = bit_length <= 57 ? extract_bits_be_raw_57(base, bit_offset, bit_length) : extract_bits_be_raw_64(base, bit_offset, bit_length);
+    const uint64_t t = ((w << unpack->bit.sml_shift) & (~0xFFull)) | (w & unpack->bit.part_mask);
+    const uint64_t v = BSWAP64(t) >> unpack->bit.big_shift;
+    const uint64_t zy = (uint64_t)unpack->size_y * unpack->size_z;
+    const uint64_t x  = v / zy;
+    const uint64_t q  = v - x * zy;
+    return v4i_set((uint32_t)x, (uint32_t)(q / unpack->size_z), (uint32_t)(q % unpack->size_z), 0);
+}
+
+// Reads three independently bit-packed integers (one per axis). Used only when a range exceeds
+// 0xffffff, where the writer sends each with sendbits rather than the three with sendints: the next
+// bits of the stream as they are, most significant first (receivebits), with none of the byte
+// reordering of receiveints. Each is at most 32 bits.
 static FORCE_INLINE v4i_t extract_ints3(const uint8_t* base, size_t bit_offset, const bit_data_t bits[3]) {
     uint32_t v[4] = {0};
     for (int i = 0; i < 3; ++i) {
-        uint32_t num_bits = bits[i].num_of_bits;
-        uint32_t w = extract_bits_be_raw_32(base, bit_offset, num_bits);
-        v[i] = unpack_uint32(w, &bits[i]);
+        const uint32_t num_bits = bits[i].num_of_bits;
+        v[i] = num_bits ? (uint32_t)extract_bits_be_raw_64(base, bit_offset, num_bits) : 0;
         bit_offset += num_bits;
     }
     return v4i_load(v);
@@ -680,6 +680,10 @@ static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_
         MD_LOG_ERROR("XTC: Invalid small index in frame header");
         return false;
     }
+    if (!(precision > 0.0f) || !isfinite(precision)) {
+        MD_LOG_ERROR("XTC: Invalid precision in frame header");
+        return false;
+    }
     if (num_bytes > frame_bytes - offset) {
         MD_LOG_ERROR("XTC: Frame holds fewer bytes than its header states");
         return false;
@@ -700,6 +704,7 @@ static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_
     unpack_data_t big_unpack = {0};
     xtc_big_div_t big_div = {0};
     bool big_fast = false;
+    bool big_plain = false;
 
     if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
         init_unpack_bit_data(&bitsizeint[0], sizeofint(sizeint[0]));
@@ -709,10 +714,15 @@ static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_
         bitsize = sizeofints(3, sizeint);
         big_unpack.size_y = sizeint[1];
         big_unpack.size_z = sizeint[2];
-        big_unpack.div_zy = DIV_INIT((uint64_t)sizeint[1] * sizeint[2]);
-        big_unpack.div_z  = DIV_INIT(sizeint[2]);
+        // A range of one value along y and z (atoms in a plane: a 2D material, a slab, a single atom
+        // repeated) divides by 1, which libdivide's branchfree dividers refuse (they abort)
+        big_plain = sizeint[2] < 2 || sizeint[1] < 2;
+        if (!big_plain) {
+            big_unpack.div_zy = DIV_INIT((uint64_t)sizeint[1] * sizeint[2]);
+            big_unpack.div_z  = DIV_INIT(sizeint[2]);
+        }
         init_unpack_bit_data(&big_unpack.bit, bitsize);
-        big_fast = bitsize <= 57 &&
+        big_fast = !big_plain && bitsize <= 57 &&
             xtc_big_magic(&big_div.m_zy, &big_div.sh_zy, (uint64_t)sizeint[1] * sizeint[2]) &&
             xtc_big_magic(&big_div.m_z,  &big_div.sh_z,  sizeint[2]);
     }
@@ -753,7 +763,9 @@ static bool xtc_decode_frame_data_scaled(const uint8_t* frame_ptr, size_t frame_
                 thiscoord = extract_ints3(stream, bit_offset, bitsizeint);
                 bit_offset += (size_t)bitsizeint[0].num_of_bits + bitsizeint[1].num_of_bits + bitsizeint[2].num_of_bits;
             } else {
-                thiscoord = big_fast ? extract_big(stream, bit_offset, &big_unpack, &big_div) : extract_and_unpack(stream, bit_offset, bitsize, &big_unpack);
+                thiscoord = big_fast ? extract_big(stream, bit_offset, &big_unpack, &big_div) :
+                           XTC_UNLIKELY(big_plain) ? extract_and_unpack_plain(stream, bit_offset, bitsize, &big_unpack) :
+                           extract_and_unpack(stream, bit_offset, bitsize, &big_unpack);
                 bit_offset += bitsize;
             }
 

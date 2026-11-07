@@ -269,3 +269,27 @@ UTEST(trr, atom_count_from_the_first_frame) {
     EXPECT_EQ(6495u, md_trr_file_atom_count(TRR_FILE));
     EXPECT_EQ(0u, md_trr_file_atom_count(STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro")));
 }
+
+// A header of no atoms which still promises coordinates: the size of a value is the section's bytes over the atoms,
+// which was a division by zero. Refused instead.
+UTEST(trr, no_atoms_with_coordinates_is_refused) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    const str_t path = STR_INIT("md_unittest_trr_no_atoms.trr");
+    md_file_t file = {0};
+    ASSERT_TRUE(md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
+    trr_put_i32(file, 1993);
+    trr_put_i32(file, 13);
+    trr_put_i32(file, 12);
+    md_file_write(file, "GMX_trn_file", 12);
+    const int32_t fields[13] = { 0, 0, 0, 0, 0, 0, 0, 36, 0, 0, 0, 0, 0 };   // x_size 36, natoms 0
+    for (int i = 0; i < 13; ++i) trr_put_i32(file, fields[i]);
+    trr_put_f32(file, 0.0f);
+    trr_put_f32(file, 0.0f);
+    for (int i = 0; i < 9; ++i) trr_put_f32(file, 1.0f);
+    md_file_close(&file);
+
+    md_system_t sys = {.alloc = arena};
+    EXPECT_FALSE(md_trr_system_publish_run(&sys, path, TRR_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    remove(path.ptr);
+    md_vm_arena_destroy(arena);
+}

@@ -2,6 +2,7 @@
 #include <md_system.h>
 #include <core/md_unit.h>
 #include <stdio.h>
+#include <math.h>
 
 #include "core/md_allocator.h"
 #include "core/md_os.h"
@@ -11,13 +12,51 @@
 #include <core/md_parse.h>
 #include <core/md_reader.h>
 
+// A field without the blanks and the quotes around it
+static str_t csv_field(str_t tok) {
+    tok = str_trim(tok);
+    if (tok.len >= 2 && ((tok.ptr[0] == '"' && tok.ptr[tok.len - 1] == '"') || (tok.ptr[0] == '\'' && tok.ptr[tok.len - 1] == '\''))) {
+        tok = str_trim(str_substr(tok, 1, tok.len - 2));
+    }
+    return tok;
+}
+
+// The next field of a row, up to the delimiter or the end, which may be empty ("1,,3"; "1," ends in an empty one):
+// false past the last one. *more is true at the start of a row.
+static bool csv_next_field(str_t* out, str_t* row, char delim, bool* more) {
+    if (!*more) return false;
+    size_t i = 0;
+    while (i < row->len && row->ptr[i] != delim) ++i;
+    *out = (str_t){ row->ptr, i };
+    if (i < row->len) {
+        *row = str_substr(*row, i + 1, SIZE_MAX);
+    } else {
+        *row = (str_t){ row->ptr + row->len, 0 };
+        *more = false;
+    }
+    return true;
+}
+
+// The next line which holds anything: blank lines and comments ('#') are passed over
+static bool csv_next_line(md_reader_i* reader, str_t* line) {
+    while (md_reader_extract_line(reader, line)) {
+        const str_t t = str_trim(*line);
+        if (t.len && t.ptr[0] != '#') return true;
+    }
+    return false;
+}
+
+// The rows of the file: a first row of names (any field of it not a number) or of values, which says how many
+// columns there are, then rows of values. The columns are separated by commas, or semicolons or tabs when the first
+// row has no comma (as spreadsheets with a decimal comma write them). An empty field is a value that is missing:
+// NaN. Blank lines and comments ('#') are passed over.
 static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* alloc) {
     ASSERT(csv);
     ASSERT(reader);
     ASSERT(alloc);
     
     str_t line;
-    if (!md_reader_extract_line(reader, &line)) {
+    if (!csv_next_line(reader, &line)) {
         MD_LOG_ERROR("CSV: Failed to read any line");
         return false;
     }
@@ -28,16 +67,20 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
 
     MEMSET(csv, 0, sizeof(md_csv_t));
 
+    size_t pos = 0;
+    const char delim = str_find_char(&pos, line, ',') ? ',' : str_find_char(&pos, line, ';') ? ';' : str_find_char(&pos, line, '\t') ? '\t' : ',';
+
     // Read first row explicitly to determine the expected number of columns
     // Also potentially extract field names from first row
     str_t tok;
-    str_t first_line = line;
-    bool has_field_names = true;
+    str_t first_line = str_trim(line);
+    bool has_field_names = false;
     size_t num_fields = 0;
-    while (extract_token_delim(&tok, &first_line, ',')) {
-        tok = str_trim(tok);
-        if (is_float(tok)) {
-            has_field_names = false;
+    bool more = true;
+    while (csv_next_field(&tok, &first_line, delim, &more)) {
+        tok = csv_field(tok);
+        if (!is_float(tok)) {
+            has_field_names = true;
         }
         num_fields += 1;
     }
@@ -46,40 +89,47 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
         MD_LOG_ERROR("CSV: No fields found");
         return false;
     }
-    
-    if (has_field_names) {
-        MD_LOG_INFO("CSV: First row contains non-numeric values, assuming field names");
-        // Read first line as field names
-        for (size_t i = 0; i < num_fields; ++i) {
-            extract_token_delim(&tok, &line, ',');
-            str_t name = str_copy(str_trim(tok), alloc);
-            md_array_push(csv->field_names, name, alloc);
-        }
-    }
 
     for (size_t i = 0; i < num_fields; ++i) {
         md_array_push(csv->field_values, NULL, alloc);
     }
 
-    while (md_reader_extract_line(reader, &line)) {
+    bool first = true;
+    do {
+        if (first && has_field_names) {
+            MD_LOG_INFO("CSV: First row contains non-numeric values, assuming field names");
+            str_t row = str_trim(line);
+            more = true;
+            for (size_t i = 0; i < num_fields; ++i) {
+                csv_next_field(&tok, &row, delim, &more);
+                md_array_push(csv->field_names, str_copy(csv_field(tok), alloc), alloc);
+            }
+            first = false;
+            continue;
+        }
+        first = false;
+        str_t row = str_trim(line);
+        more = true;
         size_t i;
         for (i = 0; i < num_fields; ++i) {
-            if (!extract_token_delim(&tok, &line, ',')) {
+            if (!csv_next_field(&tok, &row, delim, &more)) {
                 break;
             }
-            tok = str_trim(tok);
-            if (is_float(tok)) {
+            tok = csv_field(tok);
+            if (str_empty(tok)) {
+                md_array_push(csv->field_values[i], NAN, alloc);
+            } else if (is_float(tok)) {
                 md_array_push(csv->field_values[i], (float)parse_float(tok), alloc);
             } else {
                 MD_LOG_ERROR("CSV: Unable to parse float from token: '"STR_FMT"'", STR_ARG(tok));
                 return false;
             }
         }
-        if (i < num_fields || !str_empty(line)) {
-            MD_LOG_ERROR("CSV: Number of columns in row %zu does not match the first row", num_fields);
+        if (i < num_fields || more) {
+            MD_LOG_ERROR("CSV: A row has %s columns than the first row's %zu", i < num_fields ? "fewer" : "more", num_fields);
             return false;
         }
-    }
+    } while (csv_next_line(reader, &line));
 
     csv->num_fields = num_fields;
     csv->num_values = md_array_size(csv->field_values[0]);

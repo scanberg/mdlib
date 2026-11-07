@@ -13,6 +13,8 @@
 #include <core/md_str.h>
 
 #include "run_check.h"
+#include <hdf5.h>
+#include <stdio.h>
 
 // See test_data/h5md/README.md for where the files come from. The GROMACS ones are mdrun's own
 // output beside the run input it was given, so a system read from the trajectory can be held
@@ -523,4 +525,100 @@ UTEST(h5md, threads_read_from_the_file) {
 
 UTEST(h5md, threads_read_through_hdf5) {
     check_threads(utest_result, H5MD_DIR "spec_bare.h5md");
+}
+
+// ---------------------------------------------------------------------------
+// Steps that do not increase
+// ---------------------------------------------------------------------------
+
+static void h5_dset(hid_t loc, const char* name, hid_t file_type, hid_t mem_type, int rank, const hsize_t* dims, const void* data) {
+    const hid_t space = H5Screate_simple(rank, dims, NULL);
+    const hid_t d = H5Dcreate2(loc, name, file_type, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(d, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+    H5Dclose(d);
+    H5Sclose(space);
+}
+
+// A box with every frame and every step 0, as MDAnalysis writes a trajectory that has no steps of its own. The box
+// was matched to the positions by step, which gave every frame the first box; written with every frame, the boxes
+// go with the frames row by row.
+UTEST(h5md, box_per_frame_with_steps_all_zero) {
+    const char* path = "md_unittest_h5md_steps_zero.h5md";
+    enum { F = 3, N = 2 };
+    {
+        const hid_t file = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        ASSERT_TRUE(file >= 0);
+        const hid_t h5md = H5Gcreate2(file, "h5md", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        {
+            const int32_t version[2] = { 1, 1 };
+            const hsize_t two = 2;
+            const hid_t space = H5Screate_simple(1, &two, NULL);
+            const hid_t a = H5Acreate2(h5md, "version", H5T_STD_I32LE, space, H5P_DEFAULT, H5P_DEFAULT);
+            H5Awrite(a, H5T_NATIVE_INT32, version);
+            H5Aclose(a);
+            H5Sclose(space);
+        }
+        H5Gclose(h5md);
+        const hid_t particles = H5Gcreate2(file, "particles", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        const hid_t atoms = H5Gcreate2(particles, "atoms", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        const hid_t box = H5Gcreate2(atoms, "box", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        {
+            const int32_t dim = 3;
+            const hid_t scalar = H5Screate(H5S_SCALAR);
+            const hid_t a = H5Acreate2(box, "dimension", H5T_STD_I32LE, scalar, H5P_DEFAULT, H5P_DEFAULT);
+            H5Awrite(a, H5T_NATIVE_INT32, &dim);
+            H5Aclose(a);
+            H5Sclose(scalar);
+            const char boundary[3][8] = { "periodic", "periodic", "periodic" };
+            const hid_t str = H5Tcopy(H5T_C_S1);
+            H5Tset_size(str, 8);
+            const hsize_t three = 3;
+            const hid_t space = H5Screate_simple(1, &three, NULL);
+            const hid_t b = H5Acreate2(box, "boundary", str, space, H5P_DEFAULT, H5P_DEFAULT);
+            H5Awrite(b, str, boundary);
+            H5Aclose(b);
+            H5Sclose(space);
+            H5Tclose(str);
+        }
+        const int64_t steps[F] = { 0, 0, 0 };
+        const hsize_t dim_f = F;
+        const hid_t edges = H5Gcreate2(box, "edges", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        double edge[F][3][3] = {0};
+        for (int f = 0; f < F; ++f) for (int k = 0; k < 3; ++k) edge[f][k][k] = 2.0 + 0.5 * f;   // nm
+        const hsize_t dim_e[3] = { F, 3, 3 };
+        h5_dset(edges, "step", H5T_STD_I64LE, H5T_NATIVE_INT64, 1, &dim_f, steps);
+        h5_dset(edges, "value", H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, 3, dim_e, edge);
+        H5Gclose(edges);
+        H5Gclose(box);
+        const hid_t pos = H5Gcreate2(atoms, "position", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        float x[F][N][3];
+        for (int f = 0; f < F; ++f) for (int i = 0; i < N; ++i) for (int k = 0; k < 3; ++k) x[f][i][k] = 0.1f * f + 0.01f * i + 0.001f * k;
+        const hsize_t dim_x[3] = { F, N, 3 };
+        h5_dset(pos, "step", H5T_STD_I64LE, H5T_NATIVE_INT64, 1, &dim_f, steps);
+        h5_dset(pos, "value", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, 3, dim_x, x);
+        H5Gclose(pos);
+        const int32_t species[N] = { 6, 8 };
+        const hsize_t dim_n = N;
+        h5_dset(atoms, "species", H5T_STD_I32LE, H5T_NATIVE_INT32, 1, &dim_n, species);
+        H5Gclose(atoms);
+        H5Gclose(particles);
+        H5Fclose(file);
+    }
+
+    h5md_test_t t = {0};
+    ASSERT_TRUE(h5md_test_load(&t, path));
+    const str_t run = STR_LIT("run/zero");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_system_state_t st = {.alloc = t.arena};
+    md_system_state_init(&st, N);
+    double first = 0.0;
+    for (int f = 0; f < F; ++f) {
+        ASSERT_TRUE(run_extract_one(&st, &t.sys, run, f));
+        if (f == 0) first = st.unitcell.x;
+        EXPECT_NEAR((2.0 + 0.5 * f) / 2.0, st.unitcell.x / first, 1.0e-9);
+        EXPECT_NEAR((2.0 + 0.5 * f) / 2.0, st.unitcell.z / first, 1.0e-9);
+        EXPECT_NEAR(first / 2.0 * (0.1 * f + 0.01), st.xyz[1].x, 1.0e-5);
+    }
+    h5md_test_free(&t);
+    remove(path);
 }

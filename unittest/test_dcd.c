@@ -52,8 +52,7 @@ typedef struct dcd_spec_t {
     double  delta;        // AKMA
 } dcd_spec_t;
 
-// Atom i of frame f. Near (15, 12, 10), the middle of the cell the CHARMM file declares, so the
-// reader's translation heuristic has something to do.
+// Atom i of frame f. Near (15, 12, 10), the middle of the cell the CHARMM file declares: where they stay.
 static float dcd_coord(int f, int i, int d) {
     const float base[3] = { 15.0f, 12.0f, 10.0f };
     return base[d] + 0.25f * (float)i - 0.5f * (float)d + 0.125f * (float)f;
@@ -147,9 +146,9 @@ static bool dcd_write(str_t path, const dcd_spec_t* s) {
 static const str_t dcd_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
 
 // Every frame through one context against what the writer put there: free atoms at their frame's
-// position, fixed atoms at their first frame's, the translation added to all of them, and the cell
+// position, fixed atoms at their first frame's, and the cell
 // the frame's block describes or, without blocks, the system's own.
-static void dcd_check_frames(int* utest_result, const md_system_t* sys, str_t run, const dcd_spec_t* spec, const float translation[3], const md_unitcell_t* fixed_cell, md_allocator_i* arena) {
+static void dcd_check_frames(int* utest_result, const md_system_t* sys, str_t run, const dcd_spec_t* spec, const md_unitcell_t* fixed_cell, md_allocator_i* arena) {
     const size_t N = (size_t)spec->natoms;
     const int nfree = spec->natoms - spec->nfixed;
     md_system_state_t got = {.alloc = arena};
@@ -161,9 +160,9 @@ static void dcd_check_frames(int* utest_result, const md_system_t* sys, str_t ru
         ASSERT_TRUE(md_system_extract_frame(ex, f, &got));
         for (int i = 0; i < spec->natoms; ++i) {
             const int src = (f > 0 && spec->nfixed > 0 && i >= nfree) ? 0 : f;
-            EXPECT_EQ(dcd_coord(src, i, 0) + translation[0], got.xyz[i].x);
-            EXPECT_EQ(dcd_coord(src, i, 1) + translation[1], got.xyz[i].y);
-            EXPECT_EQ(dcd_coord(src, i, 2) + translation[2], got.xyz[i].z);
+            EXPECT_EQ(dcd_coord(src, i, 0), got.xyz[i].x);
+            EXPECT_EQ(dcd_coord(src, i, 1), got.xyz[i].y);
+            EXPECT_EQ(dcd_coord(src, i, 2), got.xyz[i].z);
         }
         if (fixed_cell) {
             EXPECT_EQ(fixed_cell->flags, got.unitcell.flags);
@@ -205,19 +204,15 @@ UTEST(dcd, run_matches_the_trajectory) {
     EXPECT_NEAR(1100 * 0.5 * 0.04888821, ((const double*)time->data)[2], 1.0e-9);
     EXPECT_EQ(1100, ((const int64_t*)step->data)[2]);
     EXPECT_TRUE(md_attributes_find(t, STR_LIT("run/dcd/source/free_atoms")) != NULL);
-    const md_attribute_t* tr = md_attributes_find(t, STR_LIT("run/dcd/source/translation"));
-    ASSERT_TRUE(tr != NULL);
-    // The atoms sit around the middle of the cell, so the run centres them there.
-    EXPECT_EQ(15.0f, ((const float*)tr->data)[0]);
+    // The coordinates as the file holds them: the atoms sit around the middle of the cell, and stay there
+    EXPECT_TRUE(md_attributes_find(t, STR_LIT("run/dcd/source/translation")) == NULL);
+    dcd_check_frames(utest_result, &sys, DCD_RUN, &spec, NULL, arena);
 
-    const float* shift = (const float*)tr->data;
-    dcd_check_frames(utest_result, &sys, DCD_RUN, &spec, shift, NULL, arena);
-
-    // A fixed atom at a later frame, alone: where the first frame put it, the translation applied.
+    // A fixed atom at a later frame, alone: where the first frame put it.
     float xyz[3];
     md_attribute_slice_t one = md_attribute_slice_2(4, 6);
     ASSERT_EQ(3u, md_attribute_extract_f32(xyz, 3, pos, one, md_unit_none()));
-    EXPECT_EQ(dcd_coord(0, 6, 0) + shift[0], xyz[0]);
+    EXPECT_EQ(dcd_coord(0, 6, 0), xyz[0]);
 
     // The cell of one frame on its own
     float box[9];
@@ -249,9 +244,7 @@ UTEST(dcd, run_without_cell_or_timestep) {
     EXPECT_EQ(2.0, ((const double*)time->data)[2]);
     EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/dcd/source/free_atoms")) == NULL);
 
-    // No cell in the first frame to centre on, so nothing is shifted.
-    const float no_shift[3] = {0};
-    dcd_check_frames(utest_result, &sys, DCD_RUN, &spec, no_shift, &sys.reference.unitcell, arena);
+    dcd_check_frames(utest_result, &sys, DCD_RUN, &spec, &sys.reference.unitcell, arena);
 
     md_system_state_t st = {.alloc = arena};
     md_system_state_init(&st, spec.natoms);

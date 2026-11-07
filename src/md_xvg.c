@@ -137,10 +137,13 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_reader_i* reader, m
 	md_allocator_i* temp_alloc = md_temp_allocator(temp_scope);
 	md_str_writer_t sb = md_str_writer_create(temp_alloc);
 
+	// Comments and meta lines, and the blank lines between them
 	while (md_reader_peek_line(reader, &line)) {
-		if (line.ptr[0] != '#' && line.ptr[0] != '@') break;
+		const str_t t = str_trim(line);
+		if (t.len && t.ptr[0] != '#' && t.ptr[0] != '@') break;
 		md_reader_skip_line(reader);
-		md_str_writer_push_str(&sb, line);
+		if (!t.len) continue;
+		md_str_writer_push_str(&sb, t);
 		md_str_writer_push_char(&sb, '\n');
 	}
 
@@ -166,7 +169,7 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_reader_i* reader, m
 	// Read meta
 	while (str_extract_line(&line, &header)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok && str_eq(tok[0], STR_LIT("@"))) {
+		if (num_tok >= 3 && str_eq(tok[0], STR_LIT("@"))) {
 			if		  (str_eq(tok[1], STR_LIT("title"))) {
 				header_info->title = remove_quotes(concat_tokens(tok[2], tok[num_tok - 1]));
 			} else if (str_eq(tok[1], STR_LIT("xaxis"))) {
@@ -191,33 +194,37 @@ bool parse(md_xvg_t* xvg, md_reader_i* reader, md_allocator_i* alloc) {
 		return false;
 	}
 
-	str_t line;
-	if (!md_reader_extract_line(reader, &line)) {
-		MD_LOG_ERROR("XVG: Expected field values");
-		return false;
-	}
-
+	// The values of the first set: lines of numbers, the first of which says how many columns there are. Blank
+	// lines, comments ('#', also after the values of a line) and meta lines ('@', which GROMACS may write between
+	// sets) are passed over; a '&' ends the set, and what follows it, another set, is not read.
 	md_array(md_array(float)) fields = 0;
-
-	// Go over the first line and make this our reference field line.
-	// Every following line is expected to contain as many values as this line.
-	str_t tok = {0};
-	while (extract_token(&tok, &line)) {
-		if (!is_float(tok)) {
-			MD_LOG_ERROR("XVG: Invalid float among field values: '"STR_FMT"'", STR_ARG(tok));
-			return false;
-		}
-		md_array(float) values = 0;
-		md_array_push(values, (float)parse_float(tok), alloc);
-		md_array_push(fields, values, alloc);
-	}
-
-	const size_t num_fields = md_array_size(fields);
-	
+	size_t num_fields = 0;
+	str_t line;
 	while (md_reader_extract_line(reader, &line)) {
+		size_t hash = 0;
+		if (str_find_char(&hash, line, '#')) line = str_substr(line, 0, hash);
+		line = str_trim(line);
+		if (!line.len || line.ptr[0] == '@') continue;
+		if (line.ptr[0] == '&') break;
+
+		str_t tok = {0};
+		if (!fields) {
+			// The first line of values makes the fields: every following one is expected to have as many
+			while (extract_token(&tok, &line)) {
+				if (!is_float(tok)) {
+					MD_LOG_ERROR("XVG: Invalid float among field values: '"STR_FMT"'", STR_ARG(tok));
+					return false;
+				}
+				md_array(float) values = 0;
+				md_array_push(values, (float)parse_float(tok), alloc);
+				md_array_push(fields, values, alloc);
+			}
+			num_fields = md_array_size(fields);
+			continue;
+		}
 		for (size_t i = 0; i < num_fields; ++i) {
 			if (!extract_token(&tok, &line)) {
-				MD_LOG_ERROR("XVG: To few entries in field line, expected %i, got %i", (int)num_fields, i);
+				MD_LOG_ERROR("XVG: To few entries in field line, expected %i, got %i", (int)num_fields, (int)i);
 				return false;
 			}
 

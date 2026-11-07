@@ -13,6 +13,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <stdio.h>
 
 // A table of records: one row per record, one column per term, NaN where a record lacks the term
 typedef struct amber_term_t {
@@ -98,7 +99,8 @@ static void amber_set(amber_table_t* t, str_t name, double value) {
 // A record runs from its NSTEP line to the dashes. Every "<name> = <value>" in it is a term; a name is what lies
 // between the value before and the '='.
 
-static void amber_parse_pairs(amber_table_t* t, str_t line, bool first_line, double* out_time) {
+// 'region' > 1: the terms are those of that TI region, named "<name> (TI region <region>)"
+static void amber_parse_pairs(amber_table_t* t, str_t line, bool first_line, double* out_time, int region) {
     size_t pos = 0;
     while (pos < line.len) {
         size_t eq = 0;
@@ -119,24 +121,42 @@ static void amber_parse_pairs(amber_table_t* t, str_t line, bool first_line, dou
             *out_time = value;
             continue;
         }
-        amber_set(t, name, value);
+        if (region > 1) {
+            char buf[128];
+            const int len = snprintf(buf, sizeof(buf), "%.*s (TI region %d)", (int)MIN(name.len, 64), name.ptr, region);
+            amber_set(t, (str_t){ buf, (size_t)MAX(len, 0) }, value);
+        } else {
+            amber_set(t, name, value);
+        }
     }
 }
 
+// A thermodynamic integration run states every record once per TI region, each opened by "| TI region <n>", with the
+// same step and time and energies of their own (each end state's). They are one row: region 1's terms under their own
+// names, the others' as "<name> (TI region <n>)". Read as rows of their own they would put every time on the axis twice.
 static bool amber_parse_mdout(amber_table_t* t, str_t text, str_t path) {
     bool in_results = false;
     bool any_section = false;
+    int ti_region = 0;
     while (text.len) {
         str_t line = amber_next_line(&text);
         const str_t trimmed = str_trim(line);
+        if (str_begins_with(trimmed, STR_LIT("| TI region"))) {
+            int64_t region = 0;
+            if (md_parse_i64(&region, str_trim(str_substr(trimmed, 11, SIZE_MAX))) > 0) ti_region = (int)region;
+            continue;
+        }
         // "   4.  RESULTS", "   5.  TIMINGS": the numbered sections of the log
         if (trimmed.len > 3 && trimmed.ptr[0] >= '1' && trimmed.ptr[0] <= '9' && trimmed.ptr[1] == '.' && trimmed.ptr[2] == ' ') {
             any_section = true;
             in_results = str_eq_cstr(str_trim(str_substr(trimmed, 2, SIZE_MAX)), "RESULTS");
             continue;
         }
-        // The averages and fluctuations at the end of the results, and between the stages of a run of several
-        if (str_find_str(NULL, trimmed, STR_LIT("A V E R A G E S")) || str_find_str(NULL, trimmed, STR_LIT("F L U C T U A T I O N S"))) {
+        // The averages and fluctuations at the end of the results, and between the stages of a run of several; and in a
+        // TI run the averages of DV/DL ("DV/DL, AVERAGES OVER 50000 STEPS"), which are a record of the last step to look at
+        if (str_find_str(NULL, trimmed, STR_LIT("A V E R A G E S")) || str_find_str(NULL, trimmed, STR_LIT("F L U C T U A T I O N S")) ||
+            str_find_str(NULL, trimmed, STR_LIT("AVERAGES OVER"))) {
+            ti_region = 0;
             // Skip their record, up to its dashes
             while (text.len) {
                 const str_t l = str_trim(amber_next_line(&text));
@@ -148,15 +168,33 @@ static bool amber_parse_mdout(amber_table_t* t, str_t text, str_t path) {
         if (!str_begins_with(trimmed, STR_LIT("NSTEP")) || !str_find_char(NULL, trimmed, '=')) continue;
 
         // A record
+        const int region = ti_region;
+        ti_region = 0;
+        if (region > 1 && md_array_size(t->time) > 0) {
+            // Another TI region's record of the step just read, into its row, when it is that step
+            double time = NAN;
+            str_t probe = line;
+            amber_parse_pairs(&(amber_table_t){ .alloc = t->alloc }, probe, true, &time, 0);
+            if (time == *md_array_last(t->time)) {
+                amber_parse_pairs(t, line, true, &time, region);
+                while (text.len) {
+                    line = amber_next_line(&text);
+                    const str_t l = str_trim(line);
+                    if (str_begins_with(l, STR_LIT("-----")) || str_empty(l)) break;
+                    amber_parse_pairs(t, line, false, &time, region);
+                }
+                continue;
+            }
+        }
         double time = NAN;
         const size_t row = md_array_size(t->time);
         amber_begin_row(t, NAN);
-        amber_parse_pairs(t, line, true, &time);
+        amber_parse_pairs(t, line, true, &time, 0);
         while (text.len) {
             line = amber_next_line(&text);
             const str_t l = str_trim(line);
             if (str_begins_with(l, STR_LIT("-----")) || str_empty(l)) break;
-            amber_parse_pairs(t, line, false, &time);
+            amber_parse_pairs(t, line, false, &time, 0);
         }
         if (!isfinite(time)) {
             // Not a record of molecular dynamics (minimization writes no time): dropped

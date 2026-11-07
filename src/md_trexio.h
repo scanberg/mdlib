@@ -60,12 +60,15 @@ struct md_system_state_t;
 // TOTAL over both spins, and what is published is HALF of it in each channel with beta an alias of
 // alpha - which is the per channel convention md_vlx.h uses and what makes the total and difference
 // densities come out right. The file's own numbers are published unaltered under trexio/mo/, so a
-// consumer that wants them as stated has them. A restricted OPEN shell calculation written with no
-// mo_spin column cannot be told apart from a closed shell one and is split the same way, which is
-// wrong for its singly occupied orbital; a file that fills in mo_spin is read exactly.
+// consumer that wants them as stated has them. A restricted OPEN shell calculation (ROHF,
+// ROKS) is told apart by its occupations - all 0, 1 or 2, some 1 - and its singly occupied orbitals
+// are alpha: occupation 1 in the alpha channel and 0 in the beta one, so that the spin density is
+// right. Fractional occupations (natural orbitals) are halved.
 //
 // NORMALISATION. basis_prim_factor, basis_shell_factor and ao_normalization are applied as TREXIO
-// defines them, and the contraction is then rescaled onto md_gto's convention - see md_qm.h. A file
+// defines them - the norm of each AO is what the formula gives, which is not 1 for every writer
+// (PySCF's Cartesian d functions) - and the contraction is then rescaled onto md_gto's convention,
+// the coefficients taking that norm on - see md_qm.h. A file
 // whose radial functions are not Gaussian (basis_type other than "Gaussian", or a non zero
 // basis_r_power) is DECLINED rather than read as if they were.
 

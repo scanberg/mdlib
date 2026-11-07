@@ -99,6 +99,65 @@ size_t md_psf_file_atom_count(str_t filename) {
     return result;
 }
 
+// The header's flags: "PSF EXT CMAP XPLOR", "PSF NAMD"
+static bool psf_has_flag(str_t text, const char* flag) {
+    while (text.len) {
+        const str_t line = str_trim(psf_next_line(&text));
+        if (str_empty(line)) continue;
+        str_t tok[16];
+        const size_t n = psf_tokens(tok, ARRAY_SIZE(tok), line);
+        for (size_t i = 1; i < n; ++i) {
+            if (str_eq_cstr(tok[i], flag)) return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+// The fields of an atom line: id segment residue resname name, then type charge mass and whatever a flavour adds
+typedef struct psf_atom_fields_t {
+    str_t id, seg, resid, resname, name, type, charge, mass;
+} psf_atom_fields_t;
+
+static bool psf_blank(str_t line, size_t col) {
+    return col >= line.len || line.ptr[col] == ' ' || line.ptr[col] == '\t';
+}
+
+// The atom line as CHARMM writes it, in columns: (I8,1X,A4,1X,A4,1X,A4,1X,A4,1X,...) or with EXT (I10,1X,A8,1X,A8,1X,
+// A8,1X,A8,1X,...), which VMD and ParmEd keep to as well. The type, charge and mass after the name are taken as
+// words: the type is 4 or 6 wide and the numbers are in different columns from writer to writer, but none of them
+// is ever blank. False when the line is not laid out so (a blank between the columns, the id a number).
+static bool psf_atom_columns(psf_atom_fields_t* f, str_t line, bool ext) {
+    const size_t id_w = ext ? 10 : 8;
+    const size_t w    = ext ? 8 : 4;
+    const size_t name_end = id_w + 4 * (w + 1);
+    if (line.len <= name_end) return false;
+    for (size_t k = 0; k < 4; ++k) {
+        if (!psf_blank(line, id_w + k * (w + 1))) return false;
+    }
+    if (!psf_blank(line, name_end)) return false;
+    f->id      = str_trim(str_substr(line, 0, id_w));
+    f->seg     = str_trim(str_substr(line, id_w + 1, w));
+    f->resid   = str_trim(str_substr(line, id_w + 1 + (w + 1), w));
+    f->resname = str_trim(str_substr(line, id_w + 1 + 2 * (w + 1), w));
+    f->name    = str_trim(str_substr(line, id_w + 1 + 3 * (w + 1), w));
+    str_t tok[3];
+    if (psf_tokens(tok, 3, str_substr(line, name_end, SIZE_MAX)) != 3) return false;
+    f->type = tok[0]; f->charge = tok[1]; f->mass = tok[2];
+    int64_t id;
+    return !str_empty(f->id) && md_parse_i64(&id, f->id) == f->id.len && !str_empty(f->resid) && !str_empty(f->resname) && !str_empty(f->name);
+}
+
+// The atom line as words: NAMD's format, and any writer that does not keep to the columns. A blank segment cannot
+// be told apart here, so the columns are tried first.
+static bool psf_atom_words(psf_atom_fields_t* f, str_t line) {
+    str_t tok[8];
+    if (psf_tokens(tok, ARRAY_SIZE(tok), line) < 8) return false;
+    f->id = tok[0]; f->seg = tok[1]; f->resid = tok[2]; f->resname = tok[3];
+    f->name = tok[4]; f->type = tok[5]; f->charge = tok[6]; f->mass = tok[7];
+    return true;
+}
+
 typedef struct psf_data_t {
     size_t num_atoms;
     str_t*  atom_name;
@@ -120,6 +179,9 @@ static bool psf_read(psf_data_t* d, str_t path, md_allocator_i* alloc) {
         MD_LOG_ERROR("PSF: '" STR_FMT "' does not start with 'PSF'", STR_ARG(path));
         return false;
     }
+    // EXT widens the columns of the atoms; NAMD's are words of any width
+    const bool ext  = psf_has_flag(text, "EXT");
+    const bool namd = psf_has_flag(text, "NAMD");
     bool have_atoms = false;
     while (text.len) {
         const str_t line = psf_next_line(&text);
@@ -148,11 +210,12 @@ static bool psf_read(psf_data_t* d, str_t path, md_allocator_i* alloc) {
                     MD_LOG_ERROR("PSF: '" STR_FMT "' ends within its atoms", STR_ARG(path));
                     return false;
                 }
-                str_t tok[12];
-                const size_t n = psf_tokens(tok, ARRAY_SIZE(tok), psf_next_line(&text));
+                const str_t line = psf_next_line(&text);
+                psf_atom_fields_t f;
                 int64_t id = 0;
-                if (n < 8 || md_parse_i64(&id, tok[0]) != tok[0].len ||
-                    md_parse_f64(&d->charge[i], tok[6]) != tok[6].len || md_parse_f64(&d->mass[i], tok[7]) != tok[7].len) {
+                const bool fields = (!namd && psf_atom_columns(&f, line, ext)) || psf_atom_words(&f, line);
+                if (!fields || md_parse_i64(&id, f.id) != f.id.len ||
+                    md_parse_f64(&d->charge[i], f.charge) != f.charge.len || md_parse_f64(&d->mass[i], f.mass) != f.mass.len) {
                     MD_LOG_ERROR("PSF: atom %zu of '" STR_FMT "' is not 'id segment residue resname name type charge mass'", i + 1, STR_ARG(path));
                     return false;
                 }
@@ -160,7 +223,7 @@ static bool psf_read(psf_data_t* d, str_t path, md_allocator_i* alloc) {
                     MD_LOG_ERROR("PSF: the atoms of '" STR_FMT "' are not numbered 1, 2, 3, ... (atom %zu is %lld)", STR_ARG(path), i + 1, (long long)id);
                     return false;
                 }
-                const str_t seg = tok[1], resid = tok[2], resname = tok[3];
+                const str_t seg = f.seg, resid = f.resid, resname = f.resname;
                 if (i == 0 || !str_eq(seg, prev_seg) || !str_eq(resid, prev_resid) || !str_eq(resname, prev_resname)) {
                     int64_t number = 0;
                     md_parse_i64(&number, resid);   // an insertion code may follow: 52A
@@ -170,8 +233,8 @@ static bool psf_read(psf_data_t* d, str_t path, md_allocator_i* alloc) {
                     md_array_push(d->res_chain, seg, alloc);
                     prev_seg = seg; prev_resid = resid; prev_resname = resname;
                 }
-                d->atom_name[i] = tok[4];
-                d->atom_type[i] = tok[5];
+                d->atom_name[i] = f.name;
+                d->atom_type[i] = f.type;
             }
             md_array_push(d->res_offset, (uint32_t)N, alloc);
             have_atoms = true;

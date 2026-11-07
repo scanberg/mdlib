@@ -1,4 +1,5 @@
 #include <md_pdb.h>
+#include <math.h>
 
 #include <md_system.h>
 #include <md_util.h>
@@ -36,9 +37,10 @@ extern "C" {
 // ### COLUMNS ###
 // Columns as the format numbers them, from 1, both ends included
 
+// The columns [beg, end], 1 based, of which a line cut short (trailing blanks trimmed) may hold only the first
 static inline float extract_float(str_t line, size_t beg, size_t end) {
-    if (line.len < end) return 0.0f;
-    return (float)parse_float(str_substr(line, beg - 1, end-beg + 1));
+    if (line.len < beg) return 0.0f;
+    return (float)parse_float(str_substr(line, beg - 1, MIN(end, line.len) - beg + 1));
 }
 
 // A column the format writes with a fixed number of decimals ("%8.3f" for coordinates, "%6.2f" for
@@ -158,6 +160,13 @@ static bool pdb_cryst1_cell(md_unitcell_t* cell, str_t line) {
         alpha = beta = gamma = 90;
     }
     if (a == 1 && b == 1 && c == 1 && alpha == 90 && beta == 90 && gamma == 90) {
+        return false;
+    }
+    // A cell of no volume (an angle missing or out of range, a length of zero) is none rather than one of infinities
+    const double ca = cos(DEG_TO_RAD(alpha)), cb = cos(DEG_TO_RAD(beta)), cg = cos(DEG_TO_RAD(gamma));
+    if (!(a > 0 && b > 0 && c > 0 && alpha > 0 && alpha < 180 && beta > 0 && beta < 180 && gamma > 0 && gamma < 180) ||
+        !(1.0 - ca * ca - cb * cb - cg * cg + 2.0 * ca * cb * cg > 1.0e-6)) {
+        MD_LOG_INFO("PDB: the CRYST1 record describes no cell (%g %g %g %g %g %g)", a, b, c, alpha, beta, gamma);
         return false;
     }
     *cell = md_unitcell_from_extent_and_angles(a, b, c, alpha, beta, gamma);

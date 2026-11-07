@@ -1,6 +1,7 @@
 #include "utest.h"
 
 #include "qm_test_util.h"
+#include "trexio_pyscf_fixtures.h"
 
 #include <md_trexio.h>
 #include <md_molden.h>
@@ -9,6 +10,7 @@
 #include <core/md_str.h>
 
 #include <math.h>
+#include <stdio.h>
 
 // Everything a TREXIO file carries reaches a consumer as an md_system_t and its ATTRIBUTE TABLE:
 // md_trexio.h has two entry points and no reader object to ask questions of. So these tests read
@@ -216,4 +218,72 @@ UTEST(trexio, a_file_that_is_not_hdf5_is_declined) {
     qm_test_init(&t, MEGABYTES(1));
     EXPECT_FALSE(md_trexio_system_init_from_file(&t.sys, &t.state, STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden")));
     qm_test_free(&t);
+}
+
+// ---------------------------------------------------------------------------
+// Files as PySCF writes them (trexio_pyscf_fixtures.h)
+// ---------------------------------------------------------------------------
+
+static bool tx_write(const char* path, const tx_item_t* items, size_t count) {
+    const hid_t file = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    if (file < 0) return false;
+    bool ok = true;
+    for (size_t i = 0; ok && i < count; ++i) {
+        const tx_item_t* it = &items[i];
+        const hid_t g = H5Lexists(file, it->group, H5P_DEFAULT) > 0 ? H5Gopen2(file, it->group, H5P_DEFAULT) : H5Gcreate2(file, it->group, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        if (g < 0) { ok = false; break; }
+        if (it->kind == TX_ATTR_I64) {
+            const hid_t space = H5Screate(H5S_SCALAR);
+            const hid_t a = H5Acreate2(g, it->name, H5T_STD_I64LE, space, H5P_DEFAULT, H5P_DEFAULT);
+            ok = a >= 0 && H5Awrite(a, H5T_NATIVE_INT64, &it->value) >= 0;
+            if (a >= 0) H5Aclose(a);
+            H5Sclose(space);
+        } else {
+            const bool f64 = it->kind == TX_DSET_F64;
+            const hid_t space = H5Screate_simple(it->rank, it->dims, NULL);
+            const hid_t d = H5Dcreate2(g, it->name, f64 ? H5T_IEEE_F64LE : H5T_STD_I64LE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            ok = d >= 0 && H5Dwrite(d, f64 ? H5T_NATIVE_DOUBLE : H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, it->data) >= 0;
+            if (d >= 0) H5Dclose(d);
+            H5Sclose(space);
+        }
+        H5Gclose(g);
+    }
+    H5Fclose(file);
+    return ok;
+}
+
+// The AOs as the formula states them. Each AO's norm is ao_normalization x its radial part x its angular one, which
+// for PySCF's xx is sqrt(4 pi / 5), and for its s functions 1 only with ao_normalization's 1/sqrt(4 pi) in it: read
+// as unit normalised with ao_normalization on top (as before), the orbitals of this file were off by up to a factor
+// sqrt(4 pi), and its density held the wrong number of electrons.
+UTEST(trexio, pyscf_cartesian_functions_as_stated) {
+    const char* path = "md_unittest_pyscf_h2o_cart.trexio";
+    ASSERT_TRUE(tx_write(path, h2o_631gs_cart, ARRAY_SIZE(h2o_631gs_cart)));
+    qm_test_t t = {0};
+    ASSERT_TRUE(trexio_load(&t, path, MEGABYTES(32)));
+    EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+    EXPECT_NEAR(10.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
+    qm_test_free(&t);
+    remove(path);
+}
+
+// A restricted open shell: one set of orbitals, occupations 2 2 2 2 1 0 and no mo_spin to say more. The singly
+// occupied orbital holds an alpha electron - halved into both channels, the radical had no spin density at all.
+UTEST(trexio, restricted_open_shell) {
+    const char* path = "md_unittest_pyscf_oh_rohf.trexio";
+    ASSERT_TRUE(tx_write(path, oh_sto3g_rohf, ARRAY_SIZE(oh_sto3g_rohf)));
+    qm_test_t t = {0};
+    ASSERT_TRUE(trexio_load(&t, path, MEGABYTES(32)));
+    EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+    double occ_a[6] = {0}, occ_b[6] = {0};
+    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, STR_LIT("orbital/alpha/occupation")));
+    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_b, 6, &t, STR_LIT("orbital/beta/occupation")));
+    EXPECT_EQ(1.0, occ_a[4]);
+    EXPECT_EQ(0.0, occ_b[4]);
+    EXPECT_EQ(1.0, occ_b[3]);
+    EXPECT_NEAR(9.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
+    EXPECT_NEAR(5.0, qm_test_electron_count(&t, STR_LIT("orbital/alpha/density")), 1.0e-5);
+    EXPECT_NEAR(1.0, qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-5);
+    qm_test_free(&t);
+    remove(path);
 }

@@ -68,6 +68,12 @@ typedef struct molden_t {
 
     md_array(molden_orbital_t) orbital;
 
+    // [FR-COORD]: the geometry of a vibrational file, in bohr, which is all a file written for its
+    // vibrations alone (CP2K, Psi4, Q-Chem) has: it has no [Atoms]
+    md_array(uint8_t)          fr_atomic_number;
+    md_array(dvec3_t)          fr_coord;      // Angstrom, converted on read
+    md_array(str_t)            fr_label;
+
     md_array(double)           frequency;     // cm^-1
     md_array(double)           ir_intensity;  // km/mol
     md_array(dvec3_t)          normal_mode;   // [num_modes * num_atoms]
@@ -442,6 +448,33 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
     return md_array_size(molden->orbital) > 0;
 }
 
+// [FR-COORD] is "<symbol> x y z" per atom, in bohr.
+static void molden_parse_fr_coord(molden_t* molden, md_reader_i* reader) {
+    str_t line;
+    while (md_reader_peek_line(reader, &line)) {
+        str_t name, arg;
+        if (molden_section_header(&name, &arg, line)) {
+            break;
+        }
+        md_reader_skip_line(reader);
+
+        str_t tok[5];
+        str_t scan = line;
+        if (extract_tokens(tok, ARRAY_SIZE(tok), &scan) < 4) {
+            continue;
+        }
+        const md_atomic_number_t z = md_atomic_number_from_symbol(tok[0], true);
+        dvec3_t xyz = {
+            molden_parse_float(tok[1]) * MOLDEN_BOHR_TO_ANGSTROM,
+            molden_parse_float(tok[2]) * MOLDEN_BOHR_TO_ANGSTROM,
+            molden_parse_float(tok[3]) * MOLDEN_BOHR_TO_ANGSTROM,
+        };
+        md_array_push(molden->fr_atomic_number, (uint8_t)z, molden->alloc);
+        md_array_push(molden->fr_coord, xyz, molden->alloc);
+        md_array_push(molden->fr_label, str_copy(tok[0], molden->alloc), molden->alloc);
+    }
+}
+
 // [FR-NORM-COORD] is "vibration <n>" followed by one displacement per atom, in bohr.
 static void molden_parse_normal_modes(molden_t* molden, md_reader_i* reader) {
     const size_t num_atoms = md_array_size(molden->atomic_number);
@@ -516,6 +549,7 @@ static bool molden_parse(molden_t* molden, str_t str) {
     // [MO] can only be read once the basis is known, and the format does not promise an order, so
     // the section positions are noted on the first pass and [MO] is read on a second.
     str_t mo_section = {0};
+    str_t fr_norm_section = {0};
 
     bool seen_header = false;
     str_t line;
@@ -568,8 +602,12 @@ static bool molden_parse(molden_t* molden, str_t str) {
             molden_parse_number_series(&molden->frequency, &reader, molden->alloc);
         } else if (str_eq_cstr_ignore_case(name, "int")) {
             molden_parse_number_series(&molden->ir_intensity, &reader, molden->alloc);
+        } else if (str_eq_cstr_ignore_case(name, "fr-coord")) {
+            molden_parse_fr_coord(molden, &reader);
         } else if (str_eq_cstr_ignore_case(name, "fr-norm-coord")) {
-            molden_parse_normal_modes(molden, &reader);
+            // Read once the atom count is known, which [Atoms] or [FR-COORD] may only state further down
+            fr_norm_section = (str_t){ reader.cur, (size_t)(reader.end - reader.cur) };
+            molden_skip_section(&reader);
         } else if (str_eq_cstr_ignore_case(name, "mo")) {
             // Remember where it starts; the basis may not have been read yet.
             mo_section = (str_t){ reader.cur, (size_t)(reader.end - reader.cur) };
@@ -582,9 +620,20 @@ static bool molden_parse(molden_t* molden, str_t str) {
     if (!seen_header) {
         MD_LOG_INFO("MOLDEN: file has no [Molden Format] header; reading it anyway");
     }
+    if (md_array_size(molden->atomic_number) == 0 && md_array_size(molden->fr_atomic_number) > 0) {
+        // A file written for its vibrations alone: [FR-COORD] is its geometry
+        molden->atomic_number = molden->fr_atomic_number;
+        molden->coord         = molden->fr_coord;
+        molden->atom_label    = molden->fr_label;
+    }
     if (md_array_size(molden->atomic_number) == 0) {
         MD_LOG_ERROR("MOLDEN: file contains no atoms");
         return false;
+    }
+
+    if (!str_empty(fr_norm_section)) {
+        md_reader_i fr_reader = md_reader_from_str(fr_norm_section);
+        molden_parse_normal_modes(molden, &fr_reader);
     }
 
     if (!str_empty(mo_section)) {
@@ -890,6 +939,21 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
     }
     const bool restricted = !has_beta && max_occupation > 1.0;
 
+    // A restricted OPEN shell (ROHF, ROKS) states its singly occupied orbitals with Occup= 1, and those hold an
+    // alpha electron, not half of one in each channel: halved, the spin density of a radical would be zero. Taken
+    // as such only when every occupation is 0, 1 or 2, which is what such a calculation writes; fractional ones
+    // (natural orbitals) are halved as before, which keeps their spin density at zero, as for a singlet.
+    bool open_shell = false;
+    if (restricted) {
+        bool integral = true;
+        for (size_t i = 0; i < num_orb; ++i) {
+            const double o = molden->orbital[i].occupation;
+            integral = integral && (o == 0.0 || o == 1.0 || o == 2.0);
+            open_shell = open_shell || o == 1.0;
+        }
+        open_shell = open_shell && integral;
+    }
+
     md_attribute_id_t alpha_ids[4] = {0};
 
     for (int spin = 0; spin < 2; ++spin) {
@@ -897,9 +961,21 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
 
         if (beta && restricted) {
             md_qm_alias(sys, alpha_ids[0], STR_LIT("orbital/beta/energy"));
-            md_qm_alias(sys, alpha_ids[1], STR_LIT("orbital/beta/occupation"));
             md_qm_alias(sys, alpha_ids[2], STR_LIT("orbital/beta/symmetry"));
             md_qm_alias(sys, alpha_ids[3], STR_LIT("orbital/beta/coefficient"));
+            if (!open_shell) {
+                md_qm_alias(sys, alpha_ids[1], STR_LIT("orbital/beta/occupation"));
+            } else {
+                // the same orbitals, with what the alpha channel does not hold
+                double* occ = md_alloc(temp, sizeof(double) * num_orb);
+                if (!occ) {
+                    return false;
+                }
+                for (size_t i = 0; i < num_orb; ++i) {
+                    occ[i] = molden->orbital[i].occupation - MIN(molden->orbital[i].occupation, 1.0);
+                }
+                md_qm_publish_series(sys, STR_LIT("orbital/beta/occupation"), STR_LIT("Occupation"), md_unit_none(), occ, num_orb);
+            }
             break;
         }
 
@@ -928,7 +1004,7 @@ static bool molden_publish_orbitals(md_system_t* sys, const molden_t* molden, md
                 continue;
             }
             energy[m] = o->energy;
-            occ[m]    = restricted ? 0.5 * o->occupation : o->occupation;
+            occ[m]    = !restricted ? o->occupation : open_shell ? MIN(o->occupation, 1.0) : 0.5 * o->occupation;
             sym[m]    = o->symmetry;
             have_symmetry = have_symmetry || !str_empty(o->symmetry);
             if (!molden_coefficients_to_cartesian(coeff + m * num_cart_ao, num_cart_ao, molden, o->coefficient, num_file_ao)) {

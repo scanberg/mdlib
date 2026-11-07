@@ -4,6 +4,7 @@
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <stdio.h>
+#include <math.h>
 #include <md_system.h>
 #include <md_util.h>
 #include <md_attributes.h>
@@ -1016,6 +1017,36 @@ UTEST(pdb, models_then_conect) {
             EXPECT_EQ(0.0f, st.xyz[num_atoms - 1].y);
         }
         remove(path);
+    }
+    md_vm_arena_destroy(alloc);
+}
+
+// CRYST1 records cut short, or of no volume. Columns past the end of the line were read from beyond it; now a short
+// record gives what it has (lengths without angles are a box of right angles), and a record that describes no cell
+// - the PDB's 1 1 1 placeholder, a zero length, an angle of 0 - gives none rather than a cell of infinities.
+UTEST(pdb, cryst1_short_or_empty) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const char* atom = "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N\n";
+    static const struct { const char* cryst1; bool cell; float x; } cases[] = {
+        { "CRYST1   40.000   50.000   60.000\n",                                         true,  40.0f },
+        { "CRYST1   40.000   50.000   60.000  90.00  90.00  90.00 P 1           1\n",   true,  40.0f },
+        { "CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1           1\n",   false, 0.0f },
+        { "CRYST1    0.000    0.000    0.000   0.00   0.00   0.00 P 1           1\n",   false, 0.0f },
+        { "CRYST1   40.000   50.000   60.000   0.00  90.00  90.00 P 1           1\n",   false, 0.0f },
+        { "CRYST1   40.000\n",                                                          false, 0.0f },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
+        char text[512];
+        snprintf(text, sizeof(text), "%s%s", cases[i].cryst1, atom);
+        md_system_t sys = {.alloc = alloc};
+        md_system_state_t st = {.alloc = alloc};
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(text), MD_PDB_OPTION_NONE, NULL));
+        const bool has_cell = st.unitcell.flags != 0;
+        EXPECT_EQ(cases[i].cell, has_cell);
+        if (cases[i].cell) {
+            EXPECT_NEAR(cases[i].x, (float)st.unitcell.x, 1e-4f);
+            EXPECT_TRUE(isfinite(st.unitcell.y) && isfinite(st.unitcell.z));
+        }
     }
     md_vm_arena_destroy(alloc);
 }

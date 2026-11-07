@@ -58,6 +58,11 @@ typedef struct trr_header_t {
 static bool n_float_size(const trr_header_t* sh, int* nflsz) {
     int nflsize = 0;
 
+    if (sh->natoms <= 0 && (sh->x_size || sh->v_size || sh->f_size)) {
+        MD_LOG_ERROR("TRR: Invalid number of atoms in header");
+        return false;
+    }
+
     if (sh->box_size) {
         nflsize = sh->box_size / (DIM * DIM);
     } else if (sh->x_size) {

@@ -1,6 +1,7 @@
 #include <md_ase_traj.h>
 
 #include <md_system.h>
+#include <md_unitcell.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_json.h>
@@ -22,7 +23,9 @@
 // absolute offset. All of it is little endian unless an item says "_little_endian": false, which a
 // big endian machine writes and which is refused here.
 //
-// Every frame has "positions." and "cell", whose rows are the box vectors. The first frame also has
+// Every frame has "positions." and "cell", whose rows are the box vectors, in any orientation (ase.build.bulk gives
+// the primitive cell of fcc as [[0, a/2, a/2], [a/2, 0, a/2], [a/2, a/2, 0]]): md_unitcell_t holds a along x and b
+// in the xy plane, so such a cell is turned into that orientation, and the positions of its frame with it. The first frame also has
 // the header - "version", "pbc", "numbers." - which ASE writes again only in a frame where something
 // in it changed; a frame without one has the first frame's, as ASE reads it.
 //
@@ -38,7 +41,11 @@ typedef struct ase_index_t {
     md_atomic_number_t* numbers;    // num_atoms, from the first frame
     int64_t*            offset;     // num_frames: where the positions of each frame start
     int64_t*            size;       // num_frames: their byte size, num_atoms * 3 * (4 or 8)
-    float*              cell;       // num_frames * 9: row i box vector i, zero without periodicity
+    float*              cell;       // num_frames * 9: row i box vector i, turned as md_unitcell_t holds it; zero along
+                                    // an axis that is not periodic
+    float*              rotation;   // num_frames * 9, row major, the rotation of each frame's positions into the
+                                    // orientation of its cell
+    bool                rotated;    // whether any frame's is other than the identity
     double*             time;       // num_frames
     md_unit_t           time_unit;
 } ase_index_t;
@@ -146,27 +153,43 @@ static bool ase_mat3(double out[3][3], md_json_val_t mat) {
     return true;
 }
 
-// The cell of a frame as a run holds it. md_unitcell_t has a along x and b in the xy plane, and is
-// periodic along every axis its diagonal is non zero along. A fully periodic cell in that orientation
-// is kept. Without periodicity the cell is dropped: the box ASE keeps around a molecule would
-// otherwise be taken to be a periodic one. Anything else - a rotated cell, or one periodic along
-// only some axes - is refused rather than shown wrong.
-static bool ase_cell(float out[9], const double A[3][3], const bool pbc[3]) {
+// The cell of a frame as a run holds it, and the rotation of its positions into it (true when they need one). Turned
+// into the orientation of md_unitcell_t, which is periodic along every axis its diagonal is non zero along: an axis
+// that is not periodic has its vector left out (a slab, pbc [T, T, F], is periodic in the plane only). Without
+// periodicity the cell is dropped altogether: the box ASE keeps around a molecule would otherwise be taken for a
+// periodic one. A periodic axis of no length is refused.
+static bool ase_cell(float out[9], float out_rot[9], bool* out_rotated, const double A[3][3], const bool pbc[3]) {
     MEMSET(out, 0, 9 * sizeof(float));
+    *out_rotated = false;
+    for (int i = 0; i < 9; ++i) out_rot[i] = (i % 4 == 0) ? 1.0f : 0.0f;
     if (!pbc[0] && !pbc[1] && !pbc[2]) {
         return true;
     }
-    if (!pbc[0] || !pbc[1] || !pbc[2] ||
-        fabs(A[0][1]) > ASE_CELL_EPS || fabs(A[0][2]) > ASE_CELL_EPS || fabs(A[1][2]) > ASE_CELL_EPS ||
-        !(A[0][0] > 0.0 && A[1][1] > 0.0 && A[2][2] > 0.0)) {
-        return false;
+    for (int i = 0; i < 3; ++i) {
+        if (pbc[i] && !(A[i][0] * A[i][0] + A[i][1] * A[i][1] + A[i][2] * A[i][2] > 0.0)) return false;
     }
-    for (size_t i = 0; i < 3; ++i) {
-        for (size_t j = 0; j <= i; ++j) {
-            out[i * 3 + j] = (float)A[i][j];
-        }
+    md_unitcell_t cell;
+    double R[3][3];
+    *out_rotated = md_unitcell_from_basis_vectors(&cell, R, A);
+    float M[3][3];
+    md_unitcell_A_extract_float(M, &cell);
+    if (!(M[0][0] > 0.0f)) return false;
+    for (int i = 0; i < 3; ++i) {
+        if (!pbc[i]) continue;
+        for (int j = 0; j < 3; ++j) out[i * 3 + j] = M[i][j];
     }
+    for (int i = 0; i < 9; ++i) out_rot[i] = (float)R[i / 3][i % 3];
     return true;
+}
+
+static void ase_rotate(float* xyz, size_t count, const float R[9]) {
+    for (size_t i = 0; i < count; ++i) {
+        float* p = xyz + i * 3;
+        const float x = p[0], y = p[1], z = p[2];
+        p[0] = R[0] * x + R[1] * y + R[2] * z;
+        p[1] = R[3] * x + R[4] * y + R[5] * z;
+        p[2] = R[6] * x + R[7] * y + R[8] * z;
+    }
 }
 
 // Frame i of the index from its item: the first frame sets the atoms and the header, the others
@@ -223,9 +246,11 @@ static const char* ase_frame_read(ase_index_t* idx, size_t i, md_json_val_t item
     if (!ase_mat3(A, md_json_get(item, STR_LIT("cell")))) {
         return "no cell";
     }
-    if (!ase_cell(idx->cell + i * 9, A, pbc)) {
-        return "a cell that is rotated or periodic along only some axes, which mdlib cannot represent";
+    bool rotated = false;
+    if (!ase_cell(idx->cell + i * 9, idx->rotation + i * 9, &rotated, (const double (*)[3])A, pbc)) {
+        return "a periodic axis of no length";
     }
+    idx->rotated |= rotated;
 
     // Not an ASE convention: some workflows keep the simulation time in info
     *has_time = *has_time && md_json_f64(&idx->time[i], md_json_get(md_json_get(item, STR_LIT("info")), STR_LIT("time_ps")));
@@ -265,8 +290,9 @@ static bool ase_index_read_file(ase_index_t* idx, md_file_t file, str_t path, si
     idx->offset     = md_temp_alloc_array(out, int64_t, F);
     idx->size       = md_temp_alloc_array(out, int64_t, F);
     idx->cell       = md_temp_alloc_array(out, float, F * 9);
+    idx->rotation   = md_temp_alloc_array(out, float, F * 9);
     idx->time       = md_temp_alloc_array(out, double, F);
-    if (!items || !idx->offset || !idx->size || !idx->cell || !idx->time ||
+    if (!items || !idx->offset || !idx->size || !idx->cell || !idx->rotation || !idx->time ||
         md_file_read_at(file, table_offset, items, F * sizeof(int64_t)) != F * sizeof(int64_t)) {
         MD_LOG_ERROR("ASE: could not read the table of frames of '" STR_FMT "'", STR_ARG(path));
         return false;
@@ -364,6 +390,11 @@ static size_t ase_position_provider(void* dst, size_t cap, const md_attribute_t*
         MD_LOG_ERROR("ASE: failed to read frame %zu of '" STR_FMT "'", frame, STR_ARG(src.path));
         return 0;
     }
+    // A cell in another orientation than md_unitcell_t's: its frame's positions turn with it
+    const md_attribute_t* rot = md_attributes_find_in(&sys->attributes, src.run, STR_LIT("source/rotation"));
+    if (rot && rot->data && rot->format.type == MD_ATTRIBUTE_TYPE_F32 && md_attribute_value_count(&rot->format) == src.num_frames * 9) {
+        ase_rotate((float*)dst, count, (const float*)rot->data + frame * 9);
+    }
     return cap;
 }
 
@@ -391,8 +422,9 @@ bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* stat
     }
     if (result) {
         const size_t N = idx.num_atoms;
+        ase_rotate(xyz, N, idx.rotation);
         MEMCPY(state->xyz, xyz, N * sizeof(vec3_t));
-        state->unitcell = md_unitcell_from_matrix_float(MD_AS_CONST_MAT3(idx.cell));
+        state->unitcell = md_unitcell_from_matrix_float((const float (*)[3])idx.cell);
 
         md_array_ensure(sys->atom.type_idx, N, sys->alloc);
         md_array_ensure(sys->atom.flags,    N, sys->alloc);
@@ -445,6 +477,16 @@ bool md_ase_traj_system_publish_run(md_system_t* sys, str_t filename, str_t run,
             .position_virt = &virt,
         };
         result = md_run_publish(sys, run, &desc);
+        if (result && idx.rotated) {
+            char buf[512];
+            result = md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
+                .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/rotation")),
+                .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = { (uint32_t)idx.num_frames, 9 } },
+                .unit = md_unit_none(),
+                .description = STR_INIT("The rotation (row major) of each frame's positions into the orientation of its cell"),
+                .data = idx.rotation, .byte_size = idx.num_frames * 9 * sizeof(float)});
+            if (!result) md_attributes_remove_prefix(&sys->attributes, run);
+        }
     }
 
     md_temp_end(temp);

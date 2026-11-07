@@ -518,3 +518,156 @@ UTEST(molden, malformed_files_are_declined) {
         qm_test_free(&t);
     }
 }
+
+// A file written for its vibrations alone, as CP2K, Psi4 and Q-Chem write them: no [Atoms], the geometry in
+// [FR-COORD] (bohr), and [FR-NORM-COORD] before it. It was declined as a file of no atoms.
+UTEST(molden, vibrations_without_atoms) {
+    static const char* file =
+        "[Molden Format]\n"
+        "[FREQ]\n"
+        "  1600.0\n"
+        "  3700.0\n"
+        "[FR-NORM-COORD]\n"
+        "vibration 1\n"
+        "  0.01  0.02  0.03\n"
+        "  0.11  0.12  0.13\n"
+        "  0.21  0.22  0.23\n"
+        "vibration 2\n"
+        "  1.01  1.02  1.03\n"
+        "  1.11  1.12  1.13\n"
+        "  1.21  1.22  1.23\n"
+        "[FR-COORD]\n"
+        "O   0.000000  0.000000  0.000000\n"
+        "H   0.000000  1.430000  1.100000\n"
+        "H   0.000000 -1.430000  1.100000\n"
+        "[INT]\n"
+        "  70.0\n"
+        "  5.0\n";
+    qm_test_t t = {0};
+    qm_test_init(&t, MEGABYTES(4));
+    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(file)));
+    ASSERT_EQ(3u, t.sys.atom.count);
+    EXPECT_EQ(8, t.sys.atom.type.z[t.sys.atom.type_idx[0]]);
+    EXPECT_EQ(1, t.sys.atom.type.z[t.sys.atom.type_idx[2]]);
+    EXPECT_NEAR(1.43 * 0.529177210903, t.state.xyz[1].y, 1.0e-5);
+    const md_attribute_t* mode = qm_test_attr(&t, STR_LIT("qm/atom/normal_mode"));
+    ASSERT_TRUE(mode != NULL);
+    EXPECT_EQ(2u, mode->format.shape[0]);
+    EXPECT_EQ(3u, mode->format.shape[1]);
+    double row[9] = {0};
+    ASSERT_EQ(qm_test_row(row, ARRAY_SIZE(row), &t, STR_LIT("qm/atom/normal_mode"), 1), ARRAY_SIZE(row));
+    EXPECT_NEAR(1.13, row[5], 1.0e-9);
+    qm_test_free(&t);
+}
+
+// A restricted open shell (PySCF 2.15, ROHF, the OH radical in STO-3G): one set of orbitals, Spin= Alpha throughout,
+// occupations 2 2 2 2 1 0. The singly occupied orbital holds an alpha electron; halved into both channels, as a
+// closed shell's are, the radical had no spin density at all.
+UTEST(molden, restricted_open_shell) {
+    static const char* file =
+        "[Molden Format]\n"
+        "made by pyscf v[2.15.0]\n"
+        "[Atoms] (AU)\n"
+        "O   1   8     0.00000000000000     0.00000000000000     0.00000000000000\n"
+        "H   2   1     0.00000000000000     0.00000000000000     1.83303434082811\n"
+        "[GTO]\n"
+        "1 0\n"
+        " s    3 1.00\n"
+        "             130.70932    0.15432896872316\n"
+        "             23.808861    0.53532813557095\n"
+        "             6.4436083    0.44463453632131\n"
+        " s    3 1.00\n"
+        "             5.0331513  -0.099967228656673\n"
+        "             1.1695961    0.39951282463148\n"
+        "              0.380389    0.70011546059208\n"
+        " p    3 1.00\n"
+        "             5.0331513    0.15591626847816\n"
+        "             1.1695961    0.60768371406861\n"
+        "              0.380389    0.39195738617424\n"
+        "\n"
+        "2 0\n"
+        " s    3 1.00\n"
+        "            3.42525091    0.15432897070298\n"
+        "            0.62391373    0.53532814243847\n"
+        "             0.1688554    0.44463454202535\n"
+        "\n"
+        "[5d7f]\n"
+        "[9g]\n"
+        "\n"
+        "[MO]\n"
+        " Sym= A\n"
+        " Ene=    -20.27129583\n"
+        " Spin= Alpha\n"
+        " Occup=    2.00000\n"
+        "   1       0.9945626376401\n"
+        "   2     0.023509062104489\n"
+        "   3    1.3677570470784e-17\n"
+        "   4    2.3337671420616e-17\n"
+        "   5     0.003644361259283\n"
+        "   6    -0.0064476686376652\n"
+        " Sym= A\n"
+        " Ene=    -1.208850438\n"
+        " Spin= Alpha\n"
+        " Occup=    2.00000\n"
+        "   1     -0.24179398932625\n"
+        "   2      0.89780274306493\n"
+        "   3    1.0159162976359e-15\n"
+        "   4    5.6148965780842e-16\n"
+        "   5      0.11267332478589\n"
+        "   6      0.20428126441498\n"
+        " Sym= A\n"
+        " Ene=    -0.527209433\n"
+        " Spin= Alpha\n"
+        " Occup=    2.00000\n"
+        "   1     0.096700991381621\n"
+        "   2     -0.49745798739808\n"
+        "   3    1.1903256819259e-15\n"
+        "   4    2.1529434108774e-15\n"
+        "   5      0.68004734112366\n"
+        "   6      0.51463740099703\n"
+        " Sym= A\n"
+        " Ene=   -0.4036456149\n"
+        " Spin= Alpha\n"
+        " Occup=    2.00000\n"
+        "   1    5.0809437030401e-17\n"
+        "   2    2.0510637235627e-16\n"
+        "   3       0.6415431432323\n"
+        "   4      0.76708695424419\n"
+        "   5    -1.929884967445e-15\n"
+        "   6    -1.2088032444811e-15\n"
+        " Sym= A\n"
+        " Ene=  -0.08217718097\n"
+        " Spin= Alpha\n"
+        " Occup=    1.00000\n"
+        "   1    1.3895534277119e-16\n"
+        "   2    -5.0554415987879e-16\n"
+        "   3      0.76708695424419\n"
+        "   4      -0.6415431432323\n"
+        "   5    2.4040749762842e-16\n"
+        "   6    1.5429487942981e-16\n"
+        " Sym= A\n"
+        " Ene=    0.6371595361\n"
+        " Spin= Alpha\n"
+        " Occup=    0.00000\n"
+        "   1     0.091703781549484\n"
+        "   2     -0.61151561679092\n"
+        "   3    -1.6355625335641e-16\n"
+        "   4    4.420622731964e-17\n"
+        "   5     -0.87516228317234\n"
+        "   6       1.1343874373653\n";
+
+    qm_test_t t = {0};
+    qm_test_init(&t, MEGABYTES(16));
+    ASSERT_TRUE(md_molden_system_init_from_str(&t.sys, &t.state, str_from_cstr(file)));
+    double occ_a[6] = {0}, occ_b[6] = {0};
+    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_a, 6, &t, STR_LIT("orbital/alpha/occupation")));
+    ASSERT_EQ(6u, (uint32_t)qm_test_series(occ_b, 6, &t, STR_LIT("orbital/beta/occupation")));
+    EXPECT_EQ(1.0, occ_a[3]);
+    EXPECT_EQ(1.0, occ_b[3]);
+    EXPECT_EQ(1.0, occ_a[4]);
+    EXPECT_EQ(0.0, occ_b[4]);
+    EXPECT_LT(qm_test_orthonormality(&t, STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
+    EXPECT_NEAR(9.0, qm_test_electron_count(&t, STR_LIT("orbital/total/density")), 1.0e-5);
+    EXPECT_NEAR(1.0, qm_test_electron_count(&t, STR_LIT("orbital/difference/density")), 1.0e-5);
+    qm_test_free(&t);
+}

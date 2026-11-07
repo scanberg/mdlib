@@ -622,10 +622,18 @@ static bool h5md_read_cells(float* out, hid_t file, const h5md_particles_t* p, m
         return false;
     }
 
+    // A box written with every position frame (the same steps, which may well be the same dataset) goes row by row:
+    // which is also what makes sense of a file whose steps do not increase (all 0, as MDAnalysis writes when the
+    // trajectory it writes has none), where matching by step would give every frame the first row.
+    const bool row_per_frame = p->edges.temporal && p->position.temporal && rows == F &&
+        MEMCMP(p->edges.step, p->position.step, F * sizeof(int64_t)) == 0;
+
     size_t missing = 0;
     size_t row = 0;
     for (size_t f = 0; f < F; ++f) {
-        if (p->edges.temporal) {
+        if (row_per_frame) {
+            row = f;
+        } else if (p->edges.temporal) {
             // Without frames of its own the position is matched to the first row
             const int64_t step = p->position.temporal ? p->position.step[f] : (rows ? p->edges.step[0] : 0);
             // Both are in step order, so the search only ever moves forward

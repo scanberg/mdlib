@@ -673,3 +673,89 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
     remove(out.ptr);
     md_arena_allocator_destroy(arena);
 }
+
+// A thermodynamic integration run (pmemd, as alchemlyb's test files): each record once per TI region, the same step
+// and time with energies of each region's own, then per region averages, and the averages of DV/DL as one more
+// record of the last step. One row per step: region 1 under the terms' own names, region 2 as "(TI region 2)". Read
+// as records of their own, every time was on the axis twice, and the DV/DL averages overwrote the last step.
+UTEST(amber_energy, ti_regions_are_one_record) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const str_t out = STR_LIT("md_unittest_amber_ti.mdout");
+    const char* text =
+        "          PMEMD implementation of SANDER, Release 22\n"
+        "|  MDIN: ti.in\n"
+        "   4.  RESULTS\n"
+        "\n"
+        "| TI region  1\n"
+        "\n"
+        " NSTEP =      500   TIME(PS) =       1.000  TEMP(K) =   300.00  PRESS =     0.0\n"
+        " Etot   =      -100.0000  EKtot   =        50.0000  EPtot      =      -150.0000\n"
+        " DV/DL  =         1.5000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  2\n"
+        "\n"
+        " NSTEP =      500   TIME(PS) =       1.000  TEMP(K) =   300.10  PRESS =     0.0\n"
+        " Etot   =      -101.0000  EKtot   =        49.0000  EPtot      =      -150.0000\n"
+        " DV/DL  =         1.5000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  1\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =   301.00  PRESS =     0.0\n"
+        " Etot   =      -102.0000  EKtot   =        51.0000  EPtot      =      -153.0000\n"
+        " DV/DL  =         2.5000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  2\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =   301.10  PRESS =     0.0\n"
+        " Etot   =      -103.0000  EKtot   =        50.0000  EPtot      =      -153.0000\n"
+        " DV/DL  =         2.5000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  1\n"
+        "\n"
+        "      A V E R A G E S   O V E R       2 S T E P S\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =   300.50  PRESS =     0.0\n"
+        " Etot   =      -101.0000  EKtot   =        50.5000  EPtot      =      -151.5000\n"
+        " DV/DL  =         2.0000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "| TI region  2\n"
+        "\n"
+        "      A V E R A G E S   O V E R       2 S T E P S\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =   300.60  PRESS =     0.0\n"
+        " Etot   =      -102.0000  EKtot   =        49.5000  EPtot      =      -151.5000\n"
+        " DV/DL  =         2.0000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "      DV/DL, AVERAGES OVER       2 STEPS\n"
+        "\n"
+        " NSTEP =     1000   TIME(PS) =       2.000  TEMP(K) =     0.00  PRESS =     0.0\n"
+        " Etot   =         0.0000  EKtot   =         0.0000  EPtot      =         2.0000\n"
+        " DV/DL  =         2.0000\n"
+        " ------------------------------------------------------------------------------\n"
+        "\n"
+        "   5.  TIMINGS\n";
+    ASSERT_TRUE(write_text(out, text));
+    md_system_t sys = { .alloc = arena };
+    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, STR_LIT("run/ti")));
+    const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/ti/amber_energy/time"));
+    const md_attribute_t* e1   = md_attributes_find(&sys.attributes, STR_LIT("run/ti/amber_energy/etot"));
+    const md_attribute_t* e2   = md_attributes_find(&sys.attributes, STR_LIT("run/ti/amber_energy/etot_ti_region_2"));
+    const md_attribute_t* t2   = md_attributes_find(&sys.attributes, STR_LIT("run/ti/amber_energy/temp_k_ti_region_2"));
+    ASSERT_TRUE(time && e1 && e2 && t2);
+    ASSERT_EQ(2u, time->format.shape[0]);
+    EXPECT_EQ(1.0, ((const double*)time->data)[0]);
+    EXPECT_EQ(2.0, ((const double*)time->data)[1]);
+    EXPECT_EQ(-102.0, ((const double*)e1->data)[1]);
+    EXPECT_EQ(-101.0, ((const double*)e2->data)[0]);
+    EXPECT_EQ(-103.0, ((const double*)e2->data)[1]);
+    EXPECT_EQ(301.1, ((const double*)t2->data)[1]);
+    md_system_free(&sys);
+    remove(out.ptr);
+    md_arena_allocator_destroy(arena);
+}

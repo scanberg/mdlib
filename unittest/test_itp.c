@@ -513,3 +513,31 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
     }
     md_vm_arena_destroy(alloc);
 }
+
+// A charge or mass given as a macro of #define, as the CHARMM and Martini topologies of GROMACS do (grompp substitutes
+// them): the atom takes the macro's value, and an #undef takes it back.
+UTEST(itp, macros_for_charge_and_mass) {
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    const str_t text = STR_LIT(
+        "#define QN  -0.47\n"
+        "#define MC  12.011\n"
+        "[ moleculetype ]\n"
+        "MOL 1\n"
+        "[ atoms ]\n"
+        "  1 NH1 1 ALA N  1 QN    14.007\n"
+        "  2 CT1 1 ALA CA 2 0.07  MC\n"
+        "#undef QN\n"
+        "  3 C   1 ALA C  3 QN    MC\n");
+    md_itp_data_t data = {0};
+    ASSERT_TRUE(md_itp_data_parse_str(&data, text, (str_t){0}, alloc));
+    ASSERT_EQ(1u, (uint32_t)md_array_size(data.moleculetypes));
+    const md_itp_moleculetype_t* mol = &data.moleculetypes[0];
+    ASSERT_EQ(3u, (uint32_t)md_array_size(mol->atoms));
+    EXPECT_TRUE(mol->atoms[0].has_charge);
+    EXPECT_NEAR(-0.47f, mol->atoms[0].charge, 1e-6f);
+    EXPECT_TRUE(mol->atoms[1].has_mass);
+    EXPECT_NEAR(12.011f, mol->atoms[1].mass, 1e-5f);
+    EXPECT_FALSE(mol->atoms[2].has_charge);   // QN is no longer defined
+    EXPECT_TRUE(mol->atoms[2].has_mass);
+    md_vm_arena_destroy(alloc);
+}

@@ -216,3 +216,43 @@ UTEST(xvg, csv_series_along_a_run) {
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
 }
+
+// What GROMACS tools and hand edits leave in a file: blank lines, comments between the values and at the end of a
+// line, '@' lines among them, and '&' closing a data set (xmgrace starts the next one after it; only the first is
+// the table's). Each of these used to end the table or fail it.
+UTEST(xvg, blank_lines_comments_and_set_separators) {
+    const str_t path = STR_LIT("md_unittest_messy.xvg");
+    md_file_t f = {0};
+    ASSERT_TRUE(md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
+    const char* text =
+        "# written by hand\n"
+        "\n"
+        "@    title \"Messy\"\n"
+        "@    xaxis  label \"Time (ps)\"\n"
+        "@    yaxis  label \"E\"\n"
+        "@TYPE xy\n"
+        "\n"
+        "0.0  1.0\n"
+        "# a comment between values\n"
+        "1.0  2.0   # and one after them\n"
+        "\n"
+        "@ s0 legend \"late\"\n"
+        "2.0  3.0\n"
+        "&\n"
+        "0.0  9.0\n"
+        "1.0  9.0\n";
+    md_file_write(f, text, strlen(text));
+    md_file_close(&f);
+
+    md_xvg_t xvg = {0};
+    ASSERT_TRUE(md_xvg_parse_file(&xvg, path, md_get_heap_allocator()));
+    EXPECT_EQ(2, (int)xvg.num_fields);
+    ASSERT_EQ(3, (int)xvg.num_values);
+    EXPECT_EQ(2.0f, xvg.fields[0][2]);
+    EXPECT_EQ(1.0f, xvg.fields[1][0]);
+    EXPECT_EQ(2.0f, xvg.fields[1][1]);
+    EXPECT_EQ(3.0f, xvg.fields[1][2]);
+    EXPECT_TRUE(str_eq(xvg.header_info.title, STR_LIT("Messy")));
+    md_xvg_free(&xvg, md_get_heap_allocator());
+    remove(path.ptr);
+}
