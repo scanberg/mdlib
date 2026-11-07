@@ -885,3 +885,58 @@ UTEST(xtc, ranges_beyond_24_bits) {
     remove(path.ptr);
     md_vm_arena_destroy(arena);
 }
+
+// The frames above restated as GROMACS 2023 writes a system of more than 298261617 atoms (and its own tests any
+// system): magic 2023, and the byte count of the compressed coordinates as a 64 bit integer, high half first.
+// Nothing else differs, so the same coordinates must come out.
+static size_t xtc_to_magic_2023(uint8_t* dst, const uint8_t* src, size_t size) {
+    size_t i = 0, o = 0;
+    while (i + 92 <= size) {
+        memcpy(dst + o, src + i, 88);
+        dst[o + 0] = 0; dst[o + 1] = 0; dst[o + 2] = 0x07; dst[o + 3] = 0xe7;   // 2023
+        const uint32_t n = ((uint32_t)src[i + 88] << 24) | ((uint32_t)src[i + 89] << 16) | ((uint32_t)src[i + 90] << 8) | src[i + 91];
+        memset(dst + o + 88, 0, 4);
+        memcpy(dst + o + 92, src + i + 88, 4);
+        const size_t padded = (n + 3) & ~(size_t)3;
+        memcpy(dst + o + 96, src + i + 92, padded);
+        i += 92 + padded;
+        o += 96 + padded;
+    }
+    return o;
+}
+
+UTEST(xtc, magic_2023) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    const str_t path = STR_LIT("md_unittest_magic_2023.xtc");
+    uint8_t bytes[512];
+    struct { const uint8_t* src; size_t size; int frames; } files[2] = {
+        { xtc_planar,     sizeof(xtc_planar),     2 },
+        { xtc_wide_range, sizeof(xtc_wide_range), 1 },
+    };
+    for (int k = 0; k < 2; ++k) {
+        const size_t size = xtc_to_magic_2023(bytes, files[k].src, files[k].size);
+        ASSERT_EQ(files[k].size + 4 * (size_t)files[k].frames, size);
+        ASSERT_TRUE(xtc_write_bytes(path, bytes, size));
+        EXPECT_EQ(12u, md_xtc_file_atom_count(path));
+        md_system_t sys = {.alloc = arena};
+        ASSERT_TRUE(md_xtc_system_publish_run(&sys, path, STR_LIT("run/n"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+        ASSERT_EQ((size_t)files[k].frames, run_num_frames(&sys, STR_LIT("run/n")));
+        md_system_state_t st = {.alloc = arena};
+        md_system_state_init(&st, 12);
+        for (int f = 0; f < files[k].frames; ++f) {
+            ASSERT_TRUE(run_extract_one(&st, &sys, STR_LIT("run/n"), f));
+            for (int i = 0; i < 12; ++i) {
+                if (k == 0) {
+                    EXPECT_NEAR(i + 0.5f * f, st.xyz[i].x, 1.0e-3f);
+                    EXPECT_NEAR(15.0f, st.xyz[i].z, 1.0e-3f);
+                } else {
+                    EXPECT_NEAR(-1500.0f + 250.0f * i, st.xyz[i].x, 1.0e-3f);
+                    EXPECT_NEAR(10.0f + 5.0f * i, st.xyz[i].z, 1.0e-3f);
+                }
+            }
+        }
+        md_system_free(&sys);
+    }
+    remove(path.ptr);
+    md_vm_arena_destroy(arena);
+}

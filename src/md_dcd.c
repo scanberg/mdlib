@@ -33,6 +33,10 @@ typedef struct dcd_file_header_t {
     int32_t  nfixed;         // Number of fixed atoms (0 = all atoms move)
     int32_t  natoms;         // Total number of atoms
     int32_t  charmm;         // CHARMm flags (DCD_IS_CHARMM, DCD_HAS_EXTRA_BLOCK, DCD_HAS_4DIMS)
+    int32_t  version;        // The CHARMM version the header states: 24 for NAMD, LAMMPS, VMD and MDAnalysis, which
+                             // pretend to be CHARMM 24; CHARMM itself writes its own (35, 36, ...)
+    int32_t  marker;         // The size of the Fortran record markers: 4, or 8 (gfortran -frecord-marker=8, g77 on
+                             // some 64 bit systems)
     double   delta;          // Integration timestep (AKMA units)
     bool     reverse_endian; // File byte order differs from host
     int64_t  header_size;    // Byte offset to the first frame data
@@ -77,6 +81,27 @@ static inline void dcd_swap32_array(int32_t* data, int count, bool swap) {
     }
 }
 
+// A Fortran record marker of 'marker' bytes (4 or 8)
+static inline int64_t dcd_load_marker(const uint8_t* p, int marker, bool rev) {
+    if (marker == 8) {
+        uint64_t u;
+        MEMCPY(&u, p, 8);
+        if (rev) u = BSWAP64(u);
+        return (int64_t)u;
+    }
+    uint32_t u;
+    MEMCPY(&u, p, 4);
+    if (rev) u = BSWAP32(u);
+    return (int32_t)u;
+}
+
+static bool dcd_read_marker(md_file_t file, int marker, bool rev, int64_t* out) {
+    uint8_t buf[8];
+    if (md_file_read(file, buf, (size_t)marker) != (size_t)marker) return false;
+    *out = dcd_load_marker(buf, marker, rev);
+    return true;
+}
+
 // ==================== Analytical frame offset ====================
 
 // DCD frames have fixed sizes so the file offset for any frame is a closed-form
@@ -87,16 +112,17 @@ static inline int64_t dcd_frame_offset(const dcd_t* dcd, int64_t frame_idx) {
 }
 
 // Compute the byte sizes of the first and subsequent frames from header fields.
-// Each coordinate dimension is a Fortran record: [int32: N*4][float[N]][int32: N*4]
-// = (N + 2) * 4 bytes per dimension.
+// Each coordinate dimension is a Fortran record: [marker: N*4][float[N]][marker: N*4]
+// = N * 4 + 2 * marker bytes per dimension.
 static void dcd_compute_frame_sizes(const dcd_file_header_t* h,
                                     int64_t* out_first,
                                     int64_t* out_subsequent)
 {
-    const int64_t extrablocksize = (h->charmm & DCD_HAS_EXTRA_BLOCK) ? (48 + 8) : 0;
+    const int64_t m              = h->marker;
+    const int64_t extrablocksize = (h->charmm & DCD_HAS_EXTRA_BLOCK) ? (48 + 2 * m) : 0;
     const int64_t ndims          = (h->charmm & DCD_HAS_4DIMS)       ? 4 : 3;
-    *out_first      = (int64_t)(h->natoms              + 2) * ndims * 4 + extrablocksize;
-    *out_subsequent = (int64_t)(h->natoms - h->nfixed  + 2) * ndims * 4 + extrablocksize;
+    *out_first      = ((int64_t)h->natoms              * 4 + 2 * m) * ndims + extrablocksize;
+    *out_subsequent = ((int64_t)(h->natoms - h->nfixed) * 4 + 2 * m) * ndims + extrablocksize;
 }
 
 // ==================== DCD file header parsing ====================
@@ -108,21 +134,27 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
     ASSERT(md_file_valid(file) && out && alloc);
     MEMSET(out, 0, sizeof(*out));
 
-    // The very first 4 bytes are a Fortran record marker that must equal 84.
-    // If the bytes compare as 84 when swapped, the file uses reverse endianness.
-    int32_t marker = 0;
-    if (md_file_read(file, &marker, 4) != 4) {
+    // The very first bytes are a Fortran record marker that must equal 84: 4 bytes of it, or 8 in a file written
+    // with 64 bit markers. If they compare as 84 when swapped, the file uses reverse endianness.
+    uint8_t first[8];
+    if (md_file_read(file, first, 8) != 8) {
         MD_LOG_ERROR("DCD: Failed to read initial record marker");
         return false;
     }
-    if (marker != 84) {
-        if ((int32_t)BSWAP32((uint32_t)marker) == 84) {
-            out->reverse_endian = true;
-        } else {
-            MD_LOG_ERROR("DCD: Invalid initial record marker (got %d, expected 84)", marker);
-            return false;
-        }
+    // A little endian 64 bit marker begins as a 32 bit one does: what follows it (the "CORD" of the header, or the
+    // zeros of the marker's upper half) tells them apart
+    const bool cord = first[4] == 'C' && first[5] == 'O' && first[6] == 'R' && first[7] == 'D';
+    int m = 0;
+    if (cord && dcd_load_marker(first, 4, false) == 84)      { m = 4; }
+    else if (cord && dcd_load_marker(first, 4, true) == 84)  { m = 4; out->reverse_endian = true; }
+    else if (dcd_load_marker(first, 8, false) == 84) { m = 8; }
+    else if (dcd_load_marker(first, 8, true) == 84)  { m = 8; out->reverse_endian = true; }
+    else {
+        MD_LOG_ERROR("DCD: Invalid initial record marker (expected 84)");
+        return false;
     }
+    out->marker = m;
+    md_file_seek(file, m, MD_FILE_BEG);
 
     const bool rev = out->reverse_endian;
 
@@ -134,12 +166,12 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
     }
 
     // Trailing record marker must also equal 84
-    int32_t trailer = 0;
-    if (md_file_read(file, &trailer, 4) != 4) {
+    int64_t trailer = 0;
+    if (!dcd_read_marker(file, m, rev, &trailer)) {
         MD_LOG_ERROR("DCD: Failed to read trailing record marker");
         return false;
     }
-    if (dcd_swap32(trailer, rev) != 84) {
+    if (trailer != 84) {
         MD_LOG_ERROR("DCD: Trailing record marker mismatch");
         return false;
     }
@@ -199,12 +231,11 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
 
     // Title block: [int32: size][size bytes: titles][int32: size]
     // We don't need the title content, so we skip over it entirely.
-    int32_t beg_title_size;
-    if (md_file_read(file, &beg_title_size, 4) != 4) {
+    int64_t beg_title_size;
+    if (!dcd_read_marker(file, m, rev, &beg_title_size)) {
         MD_LOG_ERROR("DCD: Failed to read title block size");
         return false;
     }
-    beg_title_size = dcd_swap32(beg_title_size, rev);
 
     if ((beg_title_size - 4) % 80 == 0) {
         int32_t num_title;
@@ -227,12 +258,11 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
         return false;
     }
 
-	int32_t end_title_size;
-    if (md_file_read(file, &end_title_size, 4) != 4) {
+	int64_t end_title_size;
+    if (!dcd_read_marker(file, m, rev, &end_title_size)) {
         MD_LOG_ERROR("DCD: Failed to read title block trailing size");
         return false;
 	}
-	end_title_size = dcd_swap32(end_title_size, rev);
 
 	if (end_title_size != beg_title_size) {
         MD_LOG_ERROR("DCD: Title block size mismatch");
@@ -241,12 +271,12 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
 
 
     // Natoms block: [int32: 4][int32: natoms][int32: 4]
-    int32_t natoms_sz;
-    if (md_file_read(file, &natoms_sz, 4) != 4) {
+    int64_t natoms_sz;
+    if (!dcd_read_marker(file, m, rev, &natoms_sz)) {
         MD_LOG_ERROR("DCD: Failed to read natoms block size");
         return false;
     }
-    if (dcd_swap32(natoms_sz, rev) != 4) {
+    if (natoms_sz != 4) {
         MD_LOG_ERROR("DCD: Natoms record has unexpected block size");
         return false;
     }
@@ -258,8 +288,8 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
     }
     natoms = dcd_swap32(natoms, rev);
 
-    int32_t natoms_sz2 = 0;
-    if (md_file_read(file, &natoms_sz2, 4) != 4) {
+    int64_t natoms_sz2 = 0;
+    if (!dcd_read_marker(file, m, rev, &natoms_sz2)) {
         MD_LOG_ERROR("DCD: Failed to read natoms block trailing size");
         return false;
     }
@@ -274,14 +304,13 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
             return false;
         }
 
-        int32_t idx_sz;
-        if (md_file_read(file, &idx_sz, 4) != 4) {
+        int64_t idx_sz;
+        if (!dcd_read_marker(file, m, rev, &idx_sz)) {
             MD_LOG_ERROR("DCD: Failed to read free-atom index block size");
             return false;
         }
-        idx_sz = dcd_swap32(idx_sz, rev);
-        if (idx_sz != nfree * 4) {
-            MD_LOG_ERROR("DCD: Free-atom index block has unexpected size (%d, expected %d)", idx_sz, nfree * 4);
+        if (idx_sz != (int64_t)nfree * 4) {
+            MD_LOG_ERROR("DCD: Free-atom index block has unexpected size (%lld, expected %d)", (long long)idx_sz, nfree * 4);
             return false;
         }
 
@@ -297,8 +326,8 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
                 out->free_indices[i] = dcd_swap32(out->free_indices[i], true);
         }
 
-        int32_t idx_sz2 = 0;
-        if (md_file_read(file, &idx_sz2, 4) != 4) {
+        int64_t idx_sz2 = 0;
+        if (!dcd_read_marker(file, m, rev, &idx_sz2)) {
             MD_LOG_ERROR("DCD: Failed to read free-atom index block trailing size");
             return false;
         }
@@ -310,6 +339,7 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
     out->nfixed      = namnf;
     out->natoms      = natoms;
     out->charmm      = charmm;
+    out->version     = charmm_version;
     out->delta       = delta;
     out->header_size = md_file_tell(file);
 
@@ -320,15 +350,15 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
 
 // The DCD periodic-cell extra block stores 6 doubles, written three ways:
 //
-//   NAMD > 2.5, CHARMM:   [A, cos(gamma), B, cos(beta), cos(alpha), C]
-//   NAMD <= 2.5:          [A, gamma, B, beta, alpha, C], angles in degrees
-//   CHARMM c36 and later: the symmetric box (shape) matrix, lower triangle [h11, h21, h22, h31, h32, h33], whose
-//                         rows are the cell vectors
+//   NAMD > 2.5 (and VMD, MDAnalysis): [A, cos(gamma), B, cos(beta), cos(alpha), C]
+//   NAMD <= 2.5:                      [A, gamma, B, beta, alpha, C], angles in degrees
+//   CHARMM:                           the symmetric box (shape) matrix, lower triangle [h11, h21, h22, h31, h32, h33],
+//                                     whose rows are the cell vectors, in the frame of the coordinates
 //
-// Nothing in the file says which. The first two are told by whether the angle slots hold cosines; either is taken
-// only when it makes a cell (angles that span a volume), and the matrix otherwise - what MDAnalysis does, with the
-// difference that a reading which makes no cell is not taken. A matrix of a box sheared by less than an Angstrom
-// reads as cosines too; with no shear at all the two readings agree.
+// The header's CHARMM version tells CHARMM's own files (35, 36, ...) from the others, which all state 24; within
+// those, the first two are told by whether the angle slots hold cosines, either taken only when it makes a cell
+// (angles that span a volume), and the matrix otherwise - what MDAnalysis does, with the difference that a reading
+// which makes no cell is not taken.
 
 // Angles in degrees that a cell can have: each strictly between 0 and 180, and the three spanning a volume
 static bool dcd_cell_angles_valid(double alpha, double beta, double gamma) {
@@ -344,7 +374,45 @@ static double dcd_vec_angle(const double u[3], const double v[3]) {
     return RAD_TO_DEG(acos(CLAMP(c, -1.0, 1.0)));
 }
 
-static md_unitcell_t dcd_unitcell_from_params(const double uc[6]) {
+// out_R (may be NULL): the rotation of the frame's positions into the orientation of the cell, p' = R p, and the
+// result true when there is one. Only the box matrix has an orientation of its own: CHARMM's coordinates are in the
+// frame of its symmetric box, whose vectors are not lower triangular, and they turn with it into an md_unitcell_t's.
+// Taken without the turn (as MDAnalysis does), a triclinic CHARMM box held its atoms up to 0.74 of a box length from
+// where they are in it.
+// The box matrix of CHARMM: its rows (= columns, it is symmetric) are the cell vectors. None when they make none.
+static bool dcd_cell_from_box_matrix(md_unitcell_t* out, const double uc[6], double out_R[3][3], bool* out_rotated) {
+    const double e1[3] = { uc[0], uc[1], uc[3] };
+    const double e2[3] = { uc[1], uc[2], uc[4] };
+    const double e3[3] = { uc[3], uc[4], uc[5] };
+    const double la = sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]);
+    const double lb = sqrt(e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]);
+    const double lc = sqrt(e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]);
+    if (!(la > 0.0 && lb > 0.0 && lc > 0.0 && isfinite(la + lb + lc))) return false;
+    if (!dcd_cell_angles_valid(dcd_vec_angle(e2, e3), dcd_vec_angle(e1, e3), dcd_vec_angle(e1, e2))) return false;
+    const double basis[3][3] = { { e1[0], e1[1], e1[2] }, { e2[0], e2[1], e2[2] }, { e3[0], e3[1], e3[2] } };
+    md_unitcell_t cell;
+    double R[3][3];
+    const bool rotated = md_unitcell_from_basis_vectors(&cell, R, basis);
+    if (md_unitcell_flags(&cell) == 0) return false;
+    *out = cell;
+    if (out_R) memcpy(out_R, R, sizeof(R));
+    if (out_rotated) *out_rotated = rotated;
+    return true;
+}
+
+// version is the CHARMM version of the header. A file CHARMM wrote states its own (35, 36, ...) and holds the box
+// matrix, which is then read as one first: the readings by values alone cannot tell a matrix of a box sheared by less
+// than an Angstrom from cosines. NAMD, LAMMPS, VMD and MDAnalysis write 24 (pretending to be CHARMM 24), and their
+// files are read by the values.
+static md_unitcell_t dcd_unitcell_from_params(const double uc[6], int32_t version, double out_R[3][3], bool* out_rotated) {
+    if (out_R) {
+        for (int i = 0; i < 9; ++i) out_R[i / 3][i % 3] = (i % 4 == 0) ? 1.0 : 0.0;
+    }
+    if (out_rotated) *out_rotated = false;
+    md_unitcell_t matrix_cell;
+    if (version > 24 && dcd_cell_from_box_matrix(&matrix_cell, uc, out_R, out_rotated)) {
+        return matrix_cell;
+    }
     const double a = uc[0], b = uc[2], c = uc[5];
     const bool lengths = a > 0.0 && b > 0.0 && c > 0.0 && isfinite(a + b + c);
 
@@ -360,20 +428,8 @@ static md_unitcell_t dcd_unitcell_from_params(const double uc[6]) {
         return md_unitcell_from_extent_and_angles(a, b, c, uc[4], uc[3], uc[1]);
     }
 
-    // The box matrix: its rows (= columns, it is symmetric) are the cell vectors
-    const double e1[3] = { uc[0], uc[1], uc[3] };
-    const double e2[3] = { uc[1], uc[2], uc[4] };
-    const double e3[3] = { uc[3], uc[4], uc[5] };
-    const double la = sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]);
-    const double lb = sqrt(e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]);
-    const double lc = sqrt(e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]);
-    if (la > 0.0 && lb > 0.0 && lc > 0.0 && isfinite(la + lb + lc)) {
-        const double alpha = dcd_vec_angle(e2, e3);
-        const double beta  = dcd_vec_angle(e1, e3);
-        const double gamma = dcd_vec_angle(e1, e2);
-        if (dcd_cell_angles_valid(alpha, beta, gamma)) {
-            return md_unitcell_from_extent_and_angles(la, lb, lc, alpha, beta, gamma);
-        }
+    if (version <= 24 && dcd_cell_from_box_matrix(&matrix_cell, uc, out_R, out_rotated)) {
+        return matrix_cell;
     }
     return md_unitcell_none();
 }
@@ -395,13 +451,13 @@ static bool dcd_read_bytes_at(md_file_t file, md_file_offset_t* offset, void* pt
 // Read one Fortran coordinate record: [int32: N*4][float[N]][int32: N*4].
 // When out is NULL the data is skipped.  Returns the atom count on success, -1 on error.
 // expected_count is used to validate the record size.
-static int dcd_read_coord_record(md_file_t file, md_file_offset_t* offset, int expected_count, bool rev, float* out) {
-    int32_t sz = 0;
-    if (!dcd_read_bytes_at(file, offset, &sz, 4)) return -1;
-    sz = dcd_swap32(sz, rev);
+static int dcd_read_coord_record(md_file_t file, md_file_offset_t* offset, int expected_count, bool rev, int marker, float* out) {
+    uint8_t mbuf[8];
+    if (!dcd_read_bytes_at(file, offset, mbuf, (size_t)marker)) return -1;
+    const int64_t sz = dcd_load_marker(mbuf, marker, rev);
 
-    const int n = sz / 4;
-    if (n != expected_count) {
+    const int n = (int)(sz / 4);
+    if (sz != (int64_t)expected_count * 4) {
         MD_LOG_ERROR("DCD: Coordinate record size mismatch (got %d atoms, expected %d)", n, expected_count);
         return -1;
     }
@@ -413,8 +469,7 @@ static int dcd_read_coord_record(md_file_t file, md_file_offset_t* offset, int e
         *offset += sz;
     }
 
-    int32_t sz2 = 0;
-    if (!dcd_read_bytes_at(file, offset, &sz2, 4)) return -1;
+    if (!dcd_read_bytes_at(file, offset, mbuf, (size_t)marker)) return -1;
 
     return n;
 }
@@ -430,7 +485,7 @@ static int dcd_read_coord_record(md_file_t file, md_file_offset_t* offset, int e
 // Any output pointer may be NULL (the corresponding data will be skipped).
 static bool dcd_read_frame_at(md_file_t file,
                               md_file_offset_t* offset,
-                              int natoms, int nfixed, int charmm, bool rev,
+                              int natoms, int nfixed, int charmm, int version, bool rev, int marker,
                               const int32_t* free_indices,
                               bool is_first_frame,
                               md_unitcell_t* out_unitcell,
@@ -445,12 +500,12 @@ static bool dcd_read_frame_at(md_file_t file,
 
     // --- Optional periodic cell block (CHARMm only) ---
     if ((charmm & DCD_IS_CHARMM) && (charmm & DCD_HAS_EXTRA_BLOCK)) {
-        int32_t block_sz = 0;
-        if (!dcd_read_bytes_at(file, offset, &block_sz, 4)) {
+        uint8_t mbuf[8];
+        if (!dcd_read_bytes_at(file, offset, mbuf, (size_t)marker)) {
             MD_LOG_ERROR("DCD: Failed to read extra block size");
             return false;
         }
-        block_sz = dcd_swap32(block_sz, rev);
+        const int64_t block_sz = dcd_load_marker(mbuf, marker, rev);
 
         if (block_sz == 48) {
             double uc[6];
@@ -467,14 +522,13 @@ static bool dcd_read_frame_at(md_file_t file,
                 }
             }
             if (out_unitcell)
-                *out_unitcell = dcd_unitcell_from_params(uc);
+                *out_unitcell = dcd_unitcell_from_params(uc, version, NULL, NULL);
         } else {
             // Unknown block size: skip the data
             *offset += block_sz;
         }
 
-        int32_t block_sz2 = 0;
-        if (!dcd_read_bytes_at(file, offset, &block_sz2, 4)) {
+        if (!dcd_read_bytes_at(file, offset, mbuf, (size_t)marker)) {
             MD_LOG_ERROR("DCD: Failed to read extra block trailing size");
             return false;
         }
@@ -483,15 +537,15 @@ static bool dcd_read_frame_at(md_file_t file,
     // --- Coordinate records ---
     if (all_atoms) {
         // First frame or no fixed atoms: read all atom coordinates directly.
-        if (dcd_read_coord_record(file, offset, natoms, rev, coords_requested ? out_x : NULL) < 0) {
+        if (dcd_read_coord_record(file, offset, natoms, rev, marker, coords_requested ? out_x : NULL) < 0) {
             MD_LOG_ERROR("DCD: Failed to read X coordinate record");
             return false;
         }
-        if (dcd_read_coord_record(file, offset, natoms, rev, coords_requested ? out_y : NULL) < 0) {
+        if (dcd_read_coord_record(file, offset, natoms, rev, marker, coords_requested ? out_y : NULL) < 0) {
             MD_LOG_ERROR("DCD: Failed to read Y coordinate record");
             return false;
         }
-        if (dcd_read_coord_record(file, offset, natoms, rev, coords_requested ? out_z : NULL) < 0) {
+        if (dcd_read_coord_record(file, offset, natoms, rev, marker, coords_requested ? out_z : NULL) < 0) {
             MD_LOG_ERROR("DCD: Failed to read Z coordinate record");
             return false;
         }
@@ -506,7 +560,7 @@ static bool dcd_read_frame_at(md_file_t file,
 
             for (int dim = 0; dim < 3; ++dim) {
                 float* dst = (dim == 0) ? out_x : (dim == 1) ? out_y : out_z;
-                if (dcd_read_coord_record(file, offset, nfree, rev, tmp) < 0) {
+                if (dcd_read_coord_record(file, offset, nfree, rev, marker, tmp) < 0) {
                     MD_LOG_ERROR("DCD: Failed to read free-atom coordinate record (dim %d)", dim);
                     goto done;
                 }
@@ -521,7 +575,7 @@ done:
             if (!success) return false;
         } else {
             for (int dim = 0; dim < 3; ++dim) {
-                if (dcd_read_coord_record(file, offset, nfree, rev, NULL) < 0) {
+                if (dcd_read_coord_record(file, offset, nfree, rev, marker, NULL) < 0) {
                     MD_LOG_ERROR("DCD: Failed to skip coordinate record (dim %d)", dim);
                     return false;
                 }
@@ -531,7 +585,7 @@ done:
 
     // --- Optional 4th-dimension record (CHARMm only) ---
     if (charmm & DCD_HAS_4DIMS) {
-        if (dcd_read_coord_record(file, offset, atoms_in_frame, rev, NULL) < 0) {
+        if (dcd_read_coord_record(file, offset, atoms_in_frame, rev, marker, NULL) < 0) {
             MD_LOG_ERROR("DCD: Failed to skip 4th-dimension record");
             return false;
         }
@@ -632,7 +686,7 @@ static bool dcd_index_load(dcd_t* dcd, str_t path, md_allocator_i* alloc) {
         md_file_offset_t first_frame_offset = dcd_frame_offset(dcd, 0);
         md_unitcell_t unitcell = { 0 };
         // Read the first frame treating nfixed as 0 so that all atoms are read.
-        if (!dcd_read_frame_at(file, &first_frame_offset, natoms, 0, fhdr.charmm, fhdr.reverse_endian,
+        if (!dcd_read_frame_at(file, &first_frame_offset, natoms, 0, fhdr.charmm, fhdr.version, fhdr.reverse_endian, fhdr.marker,
                                NULL, true, &unitcell,
                                dcd->first_frame_x, dcd->first_frame_y, dcd->first_frame_z))
         {
@@ -679,7 +733,7 @@ static inline int32_t dcd_load_i32(const uint8_t* p, bool rev) {
 }
 
 // source/layout: how a frame of this file is laid out
-enum { DCD_LAYOUT_CHARMM, DCD_LAYOUT_REVERSE_ENDIAN, DCD_LAYOUT_NFIXED, DCD_LAYOUT_COUNT };
+enum { DCD_LAYOUT_CHARMM, DCD_LAYOUT_REVERSE_ENDIAN, DCD_LAYOUT_NFIXED, DCD_LAYOUT_MARKER, DCD_LAYOUT_VERSION, DCD_LAYOUT_COUNT };
 
 static bool dcd_has_cell_block(int32_t charmm) {
     return (charmm & DCD_IS_CHARMM) && (charmm & DCD_HAS_EXTRA_BLOCK);
@@ -734,8 +788,9 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
     if (cap != count * 3) return 0;
 
     const size_t frame_size = (size_t)sizes[frame];
-    const size_t skip = dcd_has_cell_block(layout[DCD_LAYOUT_CHARMM]) ? 56 : 0;
-    const size_t record = (n + 2) * 4;
+    const int    marker = layout[DCD_LAYOUT_MARKER];
+    const size_t skip = dcd_has_cell_block(layout[DCD_LAYOUT_CHARMM]) ? 48 + 2 * (size_t)marker : 0;
+    const size_t record = n * 4 + 2 * (size_t)marker;
     if (skip + 3 * record > frame_size) return 0;
 
     md_temp_scope_t temp = md_temp_begin();
@@ -752,12 +807,12 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
         }
         for (size_t d = 0; d < 3 && ok; ++d) {
             const uint8_t* rec = raw + skip + d * record;
-            if ((size_t)dcd_load_i32(rec, rev) != n * 4) {
+            if (dcd_load_marker(rec, marker, rev) != (int64_t)(n * 4)) {
                 MD_LOG_ERROR("DCD: frame %u of '" STR_FMT "' is not laid out as its header says", frame, STR_ARG(file_path));
                 ok = false;
                 break;
             }
-            const uint8_t* data = rec + 4;
+            const uint8_t* data = rec + marker;
             if (all_atoms) {
                 for (size_t i = 0; i < N; ++i) xyz[i * 3 + d] = dcd_load_f32(data + i * 4, rev);
             } else {
@@ -765,6 +820,27 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
                     const int32_t idx = free_atoms[i];
                     if (idx < 0 || (size_t)idx >= N) { ok = false; break; }
                     xyz[(size_t)idx * 3 + d] = dcd_load_f32(data + i * 4, rev);
+                }
+            }
+        }
+        if (ok && skip && dcd_load_marker(raw, marker, rev) == 48) {
+            // A box matrix not in the orientation of an md_unitcell_t: the positions turn with it
+            double uc[6], R[3][3];
+            bool rotated = false;
+            for (int i = 0; i < 6; ++i) {
+                uint64_t u;
+                MEMCPY(&u, raw + marker + i * 8, 8);
+                if (rev) u = BSWAP64(u);
+                MEMCPY(&uc[i], &u, 8);
+            }
+            dcd_unitcell_from_params(uc, layout[DCD_LAYOUT_VERSION], R, &rotated);
+            if (rotated) {
+                for (size_t i = 0; i < N; ++i) {
+                    float* q = xyz + i * 3;
+                    const double x = q[0], y = q[1], z = q[2];
+                    q[0] = (float)(R[0][0] * x + R[0][1] * y + R[0][2] * z);
+                    q[1] = (float)(R[1][0] * x + R[1][1] * y + R[1][2] * z);
+                    q[2] = (float)(R[2][0] * x + R[2][1] * y + R[2][2] * z);
                 }
             }
         }
@@ -801,23 +877,25 @@ static size_t dcd_cell_provider(void* dst, size_t cap, const md_attribute_t* att
     if (slice->num_idx == 1 ? cap != 9 : (cap != 3 || slice->idx[1] >= 3)) return 0;
 
     const bool rev = layout[DCD_LAYOUT_REVERSE_ENDIAN] != 0;
+    const int  marker = layout[DCD_LAYOUT_MARKER];
     const str_t file_path = src.path;
-    uint8_t raw[4 + 48];
-    if (md_attribute_io_read_at(io, file_path, offsets[slice->idx[0]], raw, sizeof(raw)) != sizeof(raw)) {
+    uint8_t raw[8 + 48];
+    const size_t raw_size = (size_t)marker + 48;
+    if (md_attribute_io_read_at(io, file_path, offsets[slice->idx[0]], raw, raw_size) != raw_size) {
         MD_LOG_ERROR("DCD: Failed to read the cell of frame %u from '" STR_FMT "'", slice->idx[0], STR_ARG(file_path));
         return 0;
     }
 
     float A[3][3] = {0};
-    if (dcd_load_i32(raw, rev) == 48) {
+    if (dcd_load_marker(raw, marker, rev) == 48) {
         double uc[6];
         for (int i = 0; i < 6; ++i) {
             uint64_t u;
-            MEMCPY(&u, raw + 4 + i * 8, 8);
+            MEMCPY(&u, raw + marker + i * 8, 8);
             if (rev) u = BSWAP64(u);
             MEMCPY(&uc[i], &u, 8);
         }
-        const md_unitcell_t cell = dcd_unitcell_from_params(uc);
+        const md_unitcell_t cell = dcd_unitcell_from_params(uc, layout[DCD_LAYOUT_VERSION], NULL, NULL);
         md_unitcell_A_extract_float(A, &cell);
     }
     // A block of another size carries no cell known here: the frame has none.
@@ -892,6 +970,8 @@ bool md_dcd_system_publish_run(md_system_t* sys, str_t filename, str_t run, uint
         [DCD_LAYOUT_CHARMM]         = dcd.header.charmm,
         [DCD_LAYOUT_REVERSE_ENDIAN] = dcd.header.reverse_endian ? 1 : 0,
         [DCD_LAYOUT_NFIXED]         = dcd.header.nfixed,
+        [DCD_LAYOUT_MARKER]         = dcd.header.marker,
+        [DCD_LAYOUT_VERSION]        = dcd.header.version,
     };
     char buf[512];
 

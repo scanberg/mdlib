@@ -528,7 +528,7 @@ UTEST(h5md, threads_read_through_hdf5) {
 }
 
 // ---------------------------------------------------------------------------
-// Steps that do not increase
+// Files written here
 // ---------------------------------------------------------------------------
 
 static void h5_dset(hid_t loc, const char* name, hid_t file_type, hid_t mem_type, int rank, const hsize_t* dims, const void* data) {
@@ -539,71 +539,95 @@ static void h5_dset(hid_t loc, const char* name, hid_t file_type, hid_t mem_type
     H5Sclose(space);
 }
 
+// The value dataset 'name' under loc, and its unit
+static void h5_dset_unit(hid_t loc, const char* name, hid_t file_type, hid_t mem_type, int rank, const hsize_t* dims, const void* data, const char* unit) {
+    h5_dset(loc, name, file_type, mem_type, rank, dims, data);
+    const hid_t d = H5Dopen2(loc, name, H5P_DEFAULT);
+    const hid_t str = H5Tcopy(H5T_C_S1);
+    H5Tset_size(str, strlen(unit));
+    const hid_t space = H5Screate(H5S_SCALAR);
+    const hid_t a = H5Acreate2(d, "unit", str, space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(a, str, unit);
+    H5Aclose(a);
+    H5Sclose(space);
+    H5Tclose(str);
+    H5Dclose(d);
+}
+
+static void h5_attr_i32(hid_t loc, const char* name, const int32_t* v, hsize_t n) {
+    const hid_t space = n ? H5Screate_simple(1, &n, NULL) : H5Screate(H5S_SCALAR);
+    const hid_t a = H5Acreate2(loc, name, H5T_STD_I32LE, space, H5P_DEFAULT, H5P_DEFAULT);
+    H5Awrite(a, H5T_NATIVE_INT32, v);
+    H5Aclose(a);
+    H5Sclose(space);
+}
+
+// A file of one group of N carbons and oxygens over F frames, nm, periodic in all three: positions x (F x N x 3) at
+// 'steps', the box 'edges' (F x 3 x 3, vectors as rows) at the same steps, and velocities v (may be NULL) with them
+static bool h5md_test_write(const char* path, int F, int N, const int64_t* steps, const double* edges, const float* x, const float* v) {
+    const hid_t file = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    if (file < 0) return false;
+    const hid_t h5md = H5Gcreate2(file, "h5md", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    const int32_t version[2] = { 1, 1 };
+    h5_attr_i32(h5md, "version", version, 2);
+    H5Gclose(h5md);
+    const hid_t particles = H5Gcreate2(file, "particles", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    const hid_t atoms = H5Gcreate2(particles, "atoms", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    const hid_t box = H5Gcreate2(atoms, "box", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    const int32_t dim = 3;
+    h5_attr_i32(box, "dimension", &dim, 0);
+    {
+        const char boundary[3][8] = { "periodic", "periodic", "periodic" };
+        const hid_t str = H5Tcopy(H5T_C_S1);
+        H5Tset_size(str, 8);
+        const hsize_t three = 3;
+        const hid_t space = H5Screate_simple(1, &three, NULL);
+        const hid_t b = H5Acreate2(box, "boundary", str, space, H5P_DEFAULT, H5P_DEFAULT);
+        H5Awrite(b, str, boundary);
+        H5Aclose(b);
+        H5Sclose(space);
+        H5Tclose(str);
+    }
+    const hsize_t dim_f = (hsize_t)F;
+    const hsize_t dim_e[3] = { (hsize_t)F, 3, 3 };
+    const hsize_t dim_x[3] = { (hsize_t)F, (hsize_t)N, 3 };
+    const hsize_t dim_n = (hsize_t)N;
+    const hid_t g_edges = H5Gcreate2(box, "edges", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    h5_dset(g_edges, "step", H5T_STD_I64LE, H5T_NATIVE_INT64, 1, &dim_f, steps);
+    h5_dset_unit(g_edges, "value", H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, 3, dim_e, edges, "nm");
+    H5Gclose(g_edges);
+    H5Gclose(box);
+    const char* names[2] = { "position", "velocity" };
+    const char* units[2] = { "nm", "nm ps-1" };
+    const float* values[2] = { x, v };
+    for (int k = 0; k < 2; ++k) {
+        if (!values[k]) continue;
+        const hid_t g = H5Gcreate2(atoms, names[k], H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        h5_dset(g, "step", H5T_STD_I64LE, H5T_NATIVE_INT64, 1, &dim_f, steps);
+        h5_dset_unit(g, "value", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, 3, dim_x, values[k], units[k]);
+        H5Gclose(g);
+    }
+    int32_t species[16];
+    for (int i = 0; i < N && i < 16; ++i) species[i] = (i % 2) ? 8 : 6;
+    h5_dset(atoms, "species", H5T_STD_I32LE, H5T_NATIVE_INT32, 1, &dim_n, species);
+    H5Gclose(atoms);
+    H5Gclose(particles);
+    H5Fclose(file);
+    return true;
+}
+
 // A box with every frame and every step 0, as MDAnalysis writes a trajectory that has no steps of its own. The box
 // was matched to the positions by step, which gave every frame the first box; written with every frame, the boxes
 // go with the frames row by row.
 UTEST(h5md, box_per_frame_with_steps_all_zero) {
     const char* path = "md_unittest_h5md_steps_zero.h5md";
     enum { F = 3, N = 2 };
-    {
-        const hid_t file = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-        ASSERT_TRUE(file >= 0);
-        const hid_t h5md = H5Gcreate2(file, "h5md", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        {
-            const int32_t version[2] = { 1, 1 };
-            const hsize_t two = 2;
-            const hid_t space = H5Screate_simple(1, &two, NULL);
-            const hid_t a = H5Acreate2(h5md, "version", H5T_STD_I32LE, space, H5P_DEFAULT, H5P_DEFAULT);
-            H5Awrite(a, H5T_NATIVE_INT32, version);
-            H5Aclose(a);
-            H5Sclose(space);
-        }
-        H5Gclose(h5md);
-        const hid_t particles = H5Gcreate2(file, "particles", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        const hid_t atoms = H5Gcreate2(particles, "atoms", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        const hid_t box = H5Gcreate2(atoms, "box", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        {
-            const int32_t dim = 3;
-            const hid_t scalar = H5Screate(H5S_SCALAR);
-            const hid_t a = H5Acreate2(box, "dimension", H5T_STD_I32LE, scalar, H5P_DEFAULT, H5P_DEFAULT);
-            H5Awrite(a, H5T_NATIVE_INT32, &dim);
-            H5Aclose(a);
-            H5Sclose(scalar);
-            const char boundary[3][8] = { "periodic", "periodic", "periodic" };
-            const hid_t str = H5Tcopy(H5T_C_S1);
-            H5Tset_size(str, 8);
-            const hsize_t three = 3;
-            const hid_t space = H5Screate_simple(1, &three, NULL);
-            const hid_t b = H5Acreate2(box, "boundary", str, space, H5P_DEFAULT, H5P_DEFAULT);
-            H5Awrite(b, str, boundary);
-            H5Aclose(b);
-            H5Sclose(space);
-            H5Tclose(str);
-        }
-        const int64_t steps[F] = { 0, 0, 0 };
-        const hsize_t dim_f = F;
-        const hid_t edges = H5Gcreate2(box, "edges", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        double edge[F][3][3] = {0};
-        for (int f = 0; f < F; ++f) for (int k = 0; k < 3; ++k) edge[f][k][k] = 2.0 + 0.5 * f;   // nm
-        const hsize_t dim_e[3] = { F, 3, 3 };
-        h5_dset(edges, "step", H5T_STD_I64LE, H5T_NATIVE_INT64, 1, &dim_f, steps);
-        h5_dset(edges, "value", H5T_IEEE_F64LE, H5T_NATIVE_DOUBLE, 3, dim_e, edge);
-        H5Gclose(edges);
-        H5Gclose(box);
-        const hid_t pos = H5Gcreate2(atoms, "position", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        float x[F][N][3];
-        for (int f = 0; f < F; ++f) for (int i = 0; i < N; ++i) for (int k = 0; k < 3; ++k) x[f][i][k] = 0.1f * f + 0.01f * i + 0.001f * k;
-        const hsize_t dim_x[3] = { F, N, 3 };
-        h5_dset(pos, "step", H5T_STD_I64LE, H5T_NATIVE_INT64, 1, &dim_f, steps);
-        h5_dset(pos, "value", H5T_IEEE_F32LE, H5T_NATIVE_FLOAT, 3, dim_x, x);
-        H5Gclose(pos);
-        const int32_t species[N] = { 6, 8 };
-        const hsize_t dim_n = N;
-        h5_dset(atoms, "species", H5T_STD_I32LE, H5T_NATIVE_INT32, 1, &dim_n, species);
-        H5Gclose(atoms);
-        H5Gclose(particles);
-        H5Fclose(file);
-    }
+    const int64_t steps[F] = { 0, 0, 0 };
+    double edges[F][3][3] = {0};
+    for (int f = 0; f < F; ++f) for (int k = 0; k < 3; ++k) edges[f][k][k] = 2.0 + 0.5 * f;   // nm
+    float x[F][N][3];
+    for (int f = 0; f < F; ++f) for (int i = 0; i < N; ++i) for (int k = 0; k < 3; ++k) x[f][i][k] = 0.1f * f + 0.01f * i + 0.001f * k;
+    ASSERT_TRUE(h5md_test_write(path, F, N, steps, &edges[0][0][0], &x[0][0][0], NULL));
 
     h5md_test_t t = {0};
     ASSERT_TRUE(h5md_test_load(&t, path));
@@ -611,14 +635,79 @@ UTEST(h5md, box_per_frame_with_steps_all_zero) {
     ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_system_state_t st = {.alloc = t.arena};
     md_system_state_init(&st, N);
-    double first = 0.0;
     for (int f = 0; f < F; ++f) {
         ASSERT_TRUE(run_extract_one(&st, &t.sys, run, f));
-        if (f == 0) first = st.unitcell.x;
-        EXPECT_NEAR((2.0 + 0.5 * f) / 2.0, st.unitcell.x / first, 1.0e-9);
-        EXPECT_NEAR((2.0 + 0.5 * f) / 2.0, st.unitcell.z / first, 1.0e-9);
-        EXPECT_NEAR(first / 2.0 * (0.1 * f + 0.01), st.xyz[1].x, 1.0e-5);
+        EXPECT_NEAR(10.0 * (2.0 + 0.5 * f), st.unitcell.x, 1.0e-5);
+        EXPECT_NEAR(10.0 * (2.0 + 0.5 * f), st.unitcell.z, 1.0e-5);
+        EXPECT_NEAR(10.0 * (0.1 * f + 0.01), st.xyz[1].x, 1.0e-5);
     }
+    h5md_test_free(&t);
+    remove(path);
+}
+
+// Box vectors in any orientation, which H5MD allows (here a triclinic box turned about z and x): an md_unitcell_t
+// holds them with a along x and b in the xy plane, so the box is turned into that orientation and the positions and
+// velocities of its frame with it. Read as written, the components above the diagonal were dropped - a cell of
+// another shape, the atoms outside it.
+UTEST(h5md, box_in_any_orientation) {
+    const char* path = "md_unittest_h5md_turned_box.h5md";
+    enum { F = 2, N = 3 };
+    const int64_t steps[F] = { 0, 10 };
+    // The cell, lower triangular, nm; and a rotation Q = Rx(20 deg) Rz(30 deg)
+    const double L[3][3] = { { 3.0, 0.0, 0.0 }, { 0.8, 2.5, 0.0 }, { 0.4, 0.6, 2.2 } };
+    const double cz = cos(DEG_TO_RAD(30.0)), sz = sin(DEG_TO_RAD(30.0)), cx = cos(DEG_TO_RAD(20.0)), sx = sin(DEG_TO_RAD(20.0));
+    const double Rz[3][3] = { { cz, -sz, 0 }, { sz, cz, 0 }, { 0, 0, 1 } };
+    const double Rx[3][3] = { { 1, 0, 0 }, { 0, cx, -sx }, { 0, sx, cx } };
+    double Q[3][3] = {0};
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) for (int k = 0; k < 3; ++k) Q[i][j] += Rx[i][k] * Rz[k][j];
+    const double frac[N][3] = { { 0.1, 0.2, 0.3 }, { 0.5, 0.5, 0.5 }, { 0.9, 0.05, 0.7 } };
+    double edges[F][3][3] = {0};
+    float x[F][N][3], v[F][N][3];
+    for (int f = 0; f < F; ++f) {
+        const double s = 1.0 + 0.1 * f;
+        for (int r = 0; r < 3; ++r) for (int j = 0; j < 3; ++j) for (int k = 0; k < 3; ++k) edges[f][r][j] += s * L[r][k] * Q[j][k];   // row r of L, turned
+        for (int i = 0; i < N; ++i) for (int j = 0; j < 3; ++j) {
+            double p = 0.0;
+            for (int r = 0; r < 3; ++r) p += frac[i][r] * edges[f][r][j];
+            x[f][i][j] = (float)p;
+            v[f][i][j] = (float)p;
+        }
+    }
+    ASSERT_TRUE(h5md_test_write(path, F, N, steps, &edges[0][0][0], &x[0][0][0], &v[0][0][0]));
+
+    h5md_test_t t = {0};
+    ASSERT_TRUE(h5md_test_load(&t, path));
+    const str_t run = STR_LIT("run/turned");
+    ASSERT_TRUE(md_h5md_system_publish_run(&t.sys, str_from_cstr(path), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_system_state_t st = {.alloc = t.arena};
+    md_system_state_init(&st, N);
+    for (int f = 0; f < F; ++f) {
+        ASSERT_TRUE(run_extract_one(&st, &t.sys, run, f));
+        const double s = 10.0 * (1.0 + 0.1 * f);   // Angstrom
+        // The cell is L itself: the rotation undone
+        EXPECT_NEAR(s * 3.0, st.unitcell.x,  1.0e-4);
+        EXPECT_NEAR(s * 0.8, st.unitcell.xy, 1.0e-4);
+        EXPECT_NEAR(s * 2.5, st.unitcell.y,  1.0e-4);
+        EXPECT_NEAR(s * 0.4, st.unitcell.xz, 1.0e-4);
+        EXPECT_NEAR(s * 0.6, st.unitcell.yz, 1.0e-4);
+        EXPECT_NEAR(s * 2.2, st.unitcell.z,  1.0e-4);
+        // And the atoms where they were in it
+        for (int i = 0; i < N; ++i) {
+            EXPECT_NEAR(s * (frac[i][0] * 3.0 + frac[i][1] * 0.8 + frac[i][2] * 0.4), st.xyz[i].x, 1.0e-3);
+            EXPECT_NEAR(s * (frac[i][1] * 2.5 + frac[i][2] * 0.6), st.xyz[i].y, 1.0e-3);
+            EXPECT_NEAR(s * (frac[i][2] * 2.2), st.xyz[i].z, 1.0e-3);
+        }
+        // The velocities, the same numbers without a unit, turn the same way
+        double vel[N * 3];
+        ASSERT_EQ((size_t)(N * 3), slice_f64(vel, N * 3, attr(&t.sys, "run/turned/atom/velocity"), md_attribute_slice_1((uint32_t)f)));
+        for (int i = 0; i < N; ++i) {
+            EXPECT_NEAR(st.xyz[i].x, 10.0 * vel[i * 3 + 0], 1.0e-3);
+            EXPECT_NEAR(st.xyz[i].z, 10.0 * vel[i * 3 + 2], 1.0e-3);
+        }
+    }
+    // The structure of the file: the first frame, turned as well
+    EXPECT_NEAR(10.0 * 3.0, t.state.unitcell.x, 1.0e-4);
+    EXPECT_NEAR(10.0 * (frac[1][0] * 3.0 + frac[1][1] * 0.8 + frac[1][2] * 0.4), t.state.xyz[1].x, 1.0e-3);
     h5md_test_free(&t);
     remove(path);
 }

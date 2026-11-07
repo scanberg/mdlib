@@ -17,6 +17,7 @@
 typedef struct dcd_writer_t {
     md_file_t file;
     bool      rev;
+    int       marker;   // the size of the Fortran record markers, 4 or 8
 } dcd_writer_t;
 
 static void dcd_put_u32(dcd_writer_t* w, uint32_t u) {
@@ -39,10 +40,24 @@ static void dcd_put_f64(dcd_writer_t* w, double d) {
     md_file_write(w->file, &u, 8);
 }
 
+// A Fortran record marker
+static void dcd_put_marker(dcd_writer_t* w, int64_t n) {
+    if (w->marker == 8) {
+        uint64_t u = (uint64_t)n;
+        if (w->rev) u = BSWAP64(u);
+        md_file_write(w->file, &u, 8);
+    } else {
+        dcd_put_i32(w, (int32_t)n);
+    }
+}
+
 typedef struct dcd_spec_t {
     bool    charmm;       // CHARMM (float delta, flags) rather than X-PLOR (double delta)
     bool    cell_block;   // a unit cell block in every frame; CHARMM only
-    int     cell_style;   // how the block holds it: 0 lengths and cosines, 1 lengths and degrees, 2 CHARMM's box matrix
+    int     cell_style;   // how the block holds it: 0 lengths and cosines, 1 lengths and degrees, 2 CHARMM's box matrix,
+                          // 3 a box matrix sheared by less than an Angstrom (its off diagonal values pass for cosines)
+    int     version;      // the CHARMM version of the header; 0 is 24, what everything but CHARMM writes
+    int     marker;       // the size of the record markers; 0 is 4
     bool    rev;          // the other byte order
     int     natoms;
     int     nfixed;       // the last nfixed atoms are fixed
@@ -59,7 +74,7 @@ static float dcd_coord(int f, int i, int d) {
 }
 
 static bool dcd_write(str_t path, const dcd_spec_t* s) {
-    dcd_writer_t w = { .rev = s->rev };
+    dcd_writer_t w = { .rev = s->rev, .marker = s->marker ? s->marker : 4 };
     if (!md_file_open(&w.file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) return false;
 
     // The 84 byte header record
@@ -71,7 +86,7 @@ static bool dcd_write(str_t path, const dcd_spec_t* s) {
     ints[9] = s->nfixed;
     if (s->charmm) {
         ints[11] = s->cell_block ? 1 : 0;
-        ints[20] = 24;
+        ints[20] = s->version ? s->version : 24;
     }
     for (int i = 1; i < 21; ++i) {
         uint32_t u = (uint32_t)ints[i];
@@ -91,52 +106,53 @@ static bool dcd_write(str_t path, const dcd_spec_t* s) {
         if (s->rev) u = BSWAP64(u);
         MEMCPY(hdr + 40, &u, 8);
     }
-    dcd_put_i32(&w, 84);
+    dcd_put_marker(&w, 84);
     md_file_write(w.file, hdr, 84);
-    dcd_put_i32(&w, 84);
+    dcd_put_marker(&w, 84);
 
     // One title line
     char title[80];
     MEMSET(title, ' ', sizeof(title));
     MEMCPY(title, "md_unittest", 11);
-    dcd_put_i32(&w, 84);
+    dcd_put_marker(&w, 84);
     dcd_put_i32(&w, 1);
     md_file_write(w.file, title, 80);
-    dcd_put_i32(&w, 84);
+    dcd_put_marker(&w, 84);
 
-    dcd_put_i32(&w, 4);
+    dcd_put_marker(&w, 4);
     dcd_put_i32(&w, s->natoms);
-    dcd_put_i32(&w, 4);
+    dcd_put_marker(&w, 4);
 
     const int nfree = s->natoms - s->nfixed;
     if (s->nfixed > 0) {
-        dcd_put_i32(&w, nfree * 4);
+        dcd_put_marker(&w, nfree * 4);
         for (int i = 0; i < nfree; ++i) dcd_put_i32(&w, i + 1);
-        dcd_put_i32(&w, nfree * 4);
+        dcd_put_marker(&w, nfree * 4);
     }
 
     for (int f = 0; f < s->nframes; ++f) {
         if (s->charmm && s->cell_block) {
             // A, cos(gamma), B, cos(beta), cos(alpha), C: a cell that grows a little per frame. In degrees as NAMD
             // 2.5 wrote it, or as the box matrix of CHARMM c36: h11, h21, h22, h31, h32, h33
-            const double styles[3][6] = {
+            const double styles[4][6] = {
                 { 30.0 + f, 0.0, 24.0, 0.0, 0.0, 20.0 },
                 { 30.0 + f, 90.0, 24.0, 90.0, 90.0, 20.0 },
                 { 30.0 + f, 5.0, 24.0, 3.0, -2.0, 20.0 },
+                { 30.0 + f, 0.5, 24.0, 0.3, -0.2, 20.0 },
             };
             const double* uc = styles[s->cell_style];
-            dcd_put_i32(&w, 48);
+            dcd_put_marker(&w, 48);
             for (int i = 0; i < 6; ++i) dcd_put_f64(&w, uc[i]);
-            dcd_put_i32(&w, 48);
+            dcd_put_marker(&w, 48);
         }
         const int n = (f == 0 || s->nfixed == 0) ? s->natoms : nfree;
         for (int d = 0; d < 3; ++d) {
-            dcd_put_i32(&w, n * 4);
+            dcd_put_marker(&w, n * 4);
             for (int i = 0; i < n; ++i) {
                 // Fixed atoms stay where the first frame put them; a later frame never has them.
                 dcd_put_f32(&w, dcd_coord(f, i, d));
             }
-            dcd_put_i32(&w, n * 4);
+            dcd_put_marker(&w, n * 4);
         }
     }
     md_file_close(&w.file);
@@ -316,6 +332,79 @@ UTEST(dcd, cell_in_every_convention) {
             EXPECT_NEAR(acos((e1[0]*e3[0] + e1[1]*e3[1] + e1[2]*e3[2]) / (l1 * l3)) * 180.0 / 3.14159265358979, beta, 1e-3);
             EXPECT_NEAR(acos((e1[0]*e2[0] + e1[1]*e2[1] + e1[2]*e2[2]) / (l1 * l2)) * 180.0 / 3.14159265358979, gamma, 1e-3);
         }
+        md_system_free(&sys);
+    }
+    md_vm_arena_destroy(arena);
+    remove(path.ptr);
+}
+
+// Fortran record markers of 8 bytes (gfortran -frecord-marker=8, g77 on some 64 bit systems), in both byte orders,
+// with a cell in every frame and fixed atoms: read as the same trajectory. They were refused at the first marker.
+UTEST(dcd, record_markers_of_8_bytes) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    const str_t path = STR_INIT("md_unittest_marker8.dcd");
+    for (int rev = 0; rev < 2; ++rev) {
+        const dcd_spec_t spec = { .charmm = true, .cell_block = true, .rev = rev != 0, .marker = 8, .natoms = 7, .nfixed = 2, .nframes = 4, .istart = 0, .nsavc = 10, .delta = 0.5 };
+        ASSERT_TRUE(dcd_write(path, &spec));
+        EXPECT_EQ(7u, md_dcd_file_atom_count(path));
+        md_system_t sys = {.alloc = arena};
+        ASSERT_TRUE(md_dcd_system_publish_run(&sys, path, DCD_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+        const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/dcd/time"));
+        ASSERT_TRUE(time != NULL);
+        EXPECT_EQ(4u, time->format.shape[0]);
+        dcd_check_frames(utest_result, &sys, DCD_RUN, &spec, NULL, arena);
+        md_system_free(&sys);
+    }
+    md_vm_arena_destroy(arena);
+    remove(path.ptr);
+}
+
+// CHARMM's box matrix is the cell in the frame of the coordinates, and its vectors are not in the orientation of an
+// md_unitcell_t (a along x, b in the xy plane): the positions turn with it, so that each atom is where it was in the
+// cell. They were taken unturned (as MDAnalysis takes them), and an atom of a triclinic CHARMM box was up to 0.74 of a
+// box length from its place. A file of CHARMM itself (version 36) is read as a box matrix even when its shear is so
+// small that its values pass for cosines, which made a cell of 60 degrees of this box.
+UTEST(dcd, charmm_box_matrix_turns_the_positions) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    const str_t path = STR_INIT("md_unittest_charmm_box.dcd");
+    for (int style = 2; style <= 3; ++style) {
+        const dcd_spec_t spec = { .charmm = true, .cell_block = true, .cell_style = style, .version = 36, .natoms = 5, .nframes = 2, .istart = 0, .nsavc = 1, .delta = 1.0 };
+        ASSERT_TRUE(dcd_write(path, &spec));
+        md_system_t sys = {.alloc = arena};
+        ASSERT_TRUE(md_dcd_system_publish_run(&sys, path, DCD_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+        md_system_state_t got = {.alloc = arena};
+        md_system_state_init(&got, spec.natoms);
+        md_system_extract_t* ex = md_system_extract_begin(&sys, DCD_RUN, dcd_paths, ARRAY_SIZE(dcd_paths), md_get_heap_allocator());
+        ASSERT_TRUE(ex != NULL);
+        for (int f = 0; f < spec.nframes; ++f) {
+            ASSERT_TRUE(md_system_extract_frame(ex, f, &got));
+            // The box matrix as written, rows the cell vectors, and the fractional coordinates of each atom in it
+            const double off[2][3] = { { 5.0, 3.0, -2.0 }, { 0.5, 0.3, -0.2 } };
+            const double* o = off[style - 2];
+            const double H[3][3] = { { 30.0 + f, o[0], o[1] }, { o[0], 24.0, o[2] }, { o[1], o[2], 20.0 } };
+            float Lf[3][3];
+            md_unitcell_A_extract_float(Lf, &got.unitcell);
+            double L[3][3];
+            for (int i = 0; i < 9; ++i) L[i / 3][i % 3] = Lf[i / 3][i % 3];
+            // Same lengths: |row i| of L and of H
+            for (int r = 0; r < 3; ++r) {
+                EXPECT_NEAR(sqrt(H[r][0] * H[r][0] + H[r][1] * H[r][1] + H[r][2] * H[r][2]), sqrt(L[r][0] * L[r][0] + L[r][1] * L[r][1] + L[r][2] * L[r][2]), 1.0e-3);
+            }
+            for (int i = 0; i < spec.natoms; ++i) {
+                // s with x = s H (file) and with x' = s L (read): the same s
+                const double x[3]  = { dcd_coord(f, i, 0), dcd_coord(f, i, 1), dcd_coord(f, i, 2) };
+                const double xr[3] = { got.xyz[i].x, got.xyz[i].y, got.xyz[i].z };
+                // L is lower triangular: solve s L = x' by substitution from the last column
+                const double s2 = xr[2] / L[2][2];
+                const double s1 = (xr[1] - s2 * L[2][1]) / L[1][1];
+                const double s0 = (xr[0] - s1 * L[1][0] - s2 * L[2][0]) / L[0][0];
+                // and s H against x
+                for (int k = 0; k < 3; ++k) {
+                    EXPECT_NEAR(x[k], s0 * H[0][k] + s1 * H[1][k] + s2 * H[2][k], 1.0e-3);
+                }
+            }
+        }
+        md_system_extract_end(ex);
         md_system_free(&sys);
     }
     md_vm_arena_destroy(arena);

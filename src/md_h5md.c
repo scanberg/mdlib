@@ -598,13 +598,33 @@ static bool h5md_open(h5md_particles_t* p, hid_t file, md_allocator_i* alloc) {
     return true;
 }
 
+// p' = R p for each of count points, R row major
+static void h5md_rotate(float* xyz, size_t count, const float R[9]) {
+    for (size_t i = 0; i < count; ++i) {
+        float* q = xyz + i * 3;
+        const float x = q[0], y = q[1], z = q[2];
+        q[0] = R[0] * x + R[1] * y + R[2] * z;
+        q[1] = R[3] * x + R[4] * y + R[5] * z;
+        q[2] = R[6] * x + R[7] * y + R[8] * z;
+    }
+}
+
 // The cell at every position frame (one cell for a position without frames), box vectors as rows,
 // Angstrom: from the edges row at the same step, or the time independent edges throughout. A frame
 // with no row at its step has no cell, and so does a dimension that is not periodic - its row is
 // zero, which is what makes it not periodic in the cell.
-static bool h5md_read_cells(float* out, hid_t file, const h5md_particles_t* p, md_allocator_i* alloc) {
+//
+// H5MD's box vectors may point any way. An md_unitcell_t holds them with a along x and b in the xy plane (lower
+// triangular rows), so a box in any other orientation is turned into that one, and the positions of its frame with
+// it: out_rot (F * 9, row major, the identity where nothing turns) is that rotation, *out_rotated whether any frame
+// has one. Read as it was, the components above the diagonal were dropped: the cell of another shape, silently.
+static bool h5md_read_cells(float* out, float* out_rot, bool* out_rotated, hid_t file, const h5md_particles_t* p, md_allocator_i* alloc) {
     const size_t F = p->position.temporal ? p->position.num_frames : 1;
     MEMSET(out, 0, F * 9 * sizeof(float));
+    *out_rotated = false;
+    for (size_t f = 0; f < F; ++f) {
+        for (int i = 0; i < 9; ++i) out_rot[f * 9 + i] = (i % 4 == 0) ? 1.0f : 0.0f;
+    }
     if (!p->has_edges || !(p->periodic[0] || p->periodic[1] || p->periodic[2])) {
         return true;
     }
@@ -645,6 +665,31 @@ static bool h5md_read_cells(float* out, hid_t file, const h5md_particles_t* p, m
         }
         const double* m = edges + row * width;
         float* cell = out + f * 9;
+        if (matrix) {
+            const double big = MAX(fabs(m[0]), MAX(fabs(m[4]), fabs(m[8])));
+            const double tol = 1.0e-6 * big;
+            if (fabs(m[1]) > tol || fabs(m[2]) > tol || fabs(m[5]) > tol) {
+                // The whole box turned, the vectors of axes that are not periodic as well: they fix the orientation
+                // of a slab or a wire, and are left out of the cell afterwards
+                double A[3][3];
+                for (int i = 0; i < 9; ++i) A[i / 3][i % 3] = m[i] * scale;
+                md_unitcell_t turned;
+                double R[3][3];
+                if (md_unitcell_from_basis_vectors(&turned, R, A) && md_unitcell_flags(&turned) != 0) {
+                    float M[3][3];
+                    md_unitcell_A_extract_float(M, &turned);
+                    for (int i = 0; i < 3; ++i) {
+                        if (!p->periodic[i]) continue;
+                        for (int j = 0; j < 3; ++j) cell[i * 3 + j] = M[i][j];
+                    }
+                    for (int i = 0; i < 9; ++i) out_rot[f * 9 + i] = (float)R[i / 3][i % 3];
+                    *out_rotated = true;
+                    continue;
+                }
+                MD_LOG_INFO("H5MD: the box of frame %zu of '%s' cannot be turned into a cell (two of its vectors are parallel, or of no length)", f, p->path);
+                continue;
+            }
+        }
         for (int i = 0; i < 3; ++i) {
             if (!p->periodic[i]) continue;
             for (int j = 0; j < 3; ++j) {
@@ -1097,11 +1142,17 @@ bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, s
         }
         for (size_t i = 0; i < N * 3; ++i) xyz[i] = (float)(xyz[i] * scale);
 
-        float* cells = md_alloc(scratch, (p.position.temporal ? p.position.num_frames : 1) * 9 * sizeof(float));
-        if (!h5md_read_cells(cells, file, &p, scratch)) {
+        const size_t num_cells = p.position.temporal ? p.position.num_frames : 1;
+        float* cells = md_alloc(scratch, num_cells * 9 * sizeof(float));
+        float* rot   = md_alloc(scratch, num_cells * 9 * sizeof(float));
+        bool rotated = false;
+        if (!h5md_read_cells(cells, rot, &rotated, file, &p, scratch)) {
             goto done;
         }
         MEMCPY(cell, cells, sizeof(cell));
+        if (rotated) {
+            h5md_rotate(xyz, N, rot);
+        }
     } else {
         MD_LOG_INFO("H5MD: '%s' has no positions", p.path);
     }
@@ -1191,6 +1242,7 @@ typedef struct h5md_source_t {
     uint32_t           num_atoms;
     uint32_t           components;
     double             scale;       // the file's unit to the published one
+    bool               rotate;      // a vector of the frame's orientation: turned with the cell (<run>/source/rotation)
     char               dataset[H5MD_PATH_MAX];
 } h5md_source_t;
 
@@ -1232,6 +1284,13 @@ static size_t h5md_provider(void* dst, size_t cap, const md_attribute_t* attr, c
     if (!md_hdf5_direct_read_f32((float*)dst, direct, path, src->dataset, frame, first * K, count * K, src->scale, io)) {
         MD_LOG_ERROR("H5MD: failed to read frame %u of '%s' from '" STR_FMT "'", frame, src->dataset, STR_ARG(path));
         return 0;
+    }
+    if (src->rotate && K == 3) {
+        // A box in another orientation than md_unitcell_t's: its frame's vectors turn with it
+        const md_attribute_t* rot = md_attributes_sibling(attributes, file, STR_LIT("rotation"));
+        if (rot && rot->data && rot->format.type == MD_ATTRIBUTE_TYPE_F32 && rot->format.shape[0] > frame) {
+            h5md_rotate((float*)dst, count, (const float*)rot->data + (size_t)frame * 9);
+        }
     }
     return cap;
 }
@@ -1342,9 +1401,15 @@ static bool h5md_publish_particle_elements(md_system_t* sys, hid_t file, const h
         }
 
         const size_t K = e.rank == 3 ? (size_t)e.dims[2] : 1;
+        const bool aligned_steps = e.num_frames == F && MEMCMP(e.step, p->position.step, F * sizeof(int64_t)) == 0;
         h5md_source_t src = *position;
         src.components = (uint32_t)K;
         src.scale      = 1.0;
+        // Velocities and forces turn with the positions; at frames of their own there is no box to turn them by
+        src.rotate     = position->rotate && K == 3 && aligned_steps && (str_eq_cstr(name, "velocity") || str_eq_cstr(name, "force"));
+        if (position->rotate && K == 3 && !aligned_steps && (str_eq_cstr(name, "velocity") || str_eq_cstr(name, "force"))) {
+            MD_LOG_INFO("H5MD: '%s' is written at other steps than the positions, and is not turned with the box", path);
+        }
         md_snprintf(src.dataset, sizeof(src.dataset), "%s", e.value);
         size_t state_size = 0;
         h5md_source_t* state = h5md_source_make(&state_size, file, &src, attributes);
@@ -1505,8 +1570,10 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
     }
 
     float* cells = md_alloc(scratch, F * 9 * sizeof(float));
+    float* rot   = md_alloc(scratch, F * 9 * sizeof(float));
+    bool rotated = false;
     double scale;
-    if (!h5md_read_cells(cells, file, &p, scratch) || !h5md_length_scale(&scale, &p.position, "position")) {
+    if (!h5md_read_cells(cells, rot, &rotated, file, &p, scratch) || !h5md_length_scale(&scale, &p.position, "position")) {
         goto done;
     }
 
@@ -1517,6 +1584,7 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
         .num_atoms  = (uint32_t)N,
         .components = 3,
         .scale      = scale,
+        .rotate     = rotated,
     };
     md_snprintf(src.dataset, sizeof(src.dataset), "%s", p.position.value);
 
@@ -1551,6 +1619,15 @@ bool md_h5md_system_publish_run(md_system_t* sys, str_t filename, str_t run, uin
         goto done;
     }
     published = true;
+
+    if (rotated && md_attributes_replace(attributes, &(md_attribute_desc_t){
+            .path = md_run_path(buf, sizeof(buf), run, STR_LIT("source/rotation")),
+            .format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = { (uint32_t)F, 9 } },
+            .unit = md_unit_none(),
+            .description = STR_INIT("The rotation (row major) of each frame's positions into the orientation of its cell"),
+            .data = rot, .byte_size = F * 9 * sizeof(float)}) == MD_ATTRIBUTE_INVALID) {
+        goto done;
+    }
 
     if (!h5md_publish_particle_elements(sys, file, &p, run, &src, time, time_unit, scratch) ||
         !h5md_publish_observables(sys, file, "/observables", run, p.position.step, time, time_unit, F, scratch)) {
