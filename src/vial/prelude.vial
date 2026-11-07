@@ -4,10 +4,10 @@ def distance(a, b=None, between=None):
         p = a.xyz
         assert shape(p)[-2] == 2, "distance takes two points, or one array of them, float[2][3] or set[2] of single particles"
         r = norm(displacement(p[..., 0, :], p[..., 1, :]))
-        return shown(r, line(p[..., 0, :], p[..., 1, :], label=r))
+        return shown(r, line(p[..., 0, :], p[..., 1, :], text=r))
     if between is None:
         r = norm(displacement(a, b))
-        return shown(r, line(a, b, label=r))
+        return shown(r, line(a, b, text=r))
     return _between(a, b, between)
 
 def _between(a: group, b: group, op):
@@ -15,14 +15,13 @@ def _between(a: group, b: group, op):
     pa = a.xyz                                   # one group each; maps over arrays of groups
     pb = b.xyz
     d, i, j = closest_pair(pa, pb) if op == 'closest' else farthest_pair(pa, pb)   # i and j only when drawn
-    return shown(d, line(pa[i], pb[j], label=d))
+    return shown(d, line(pa[i], pb[j], text=d))
 
 def centroid(s):
     return com(s, weights=None)
 
 def gyration(p: points, weights='mass'):
-    assert weights in ('mass', None), "weights= takes 'mass' or None"
-    w = mass(particle(p)) if weights == 'mass' else ones(shape(p)[0])
+    w = weight(p, weights)                       # 'mass', None or one number per point, as everywhere
     c = com(p, weights)
     r = norm(displacement(c, p))                 # minimum image from a periodic-aware centre
     rg = sqrt(sum(w * r**2) / sum(w))
@@ -36,11 +35,10 @@ def normal(p: points):
     return shown(n, arrow(c, direction=n, length=5.0))
 
 def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
-    assert weights in ('mass', None), "weights= takes 'mass' or None"
     q = fit(p, ref, on=on, weights=weights) if superpose else p
+    w = weight(q, weights)
     d2 = norm(q - ref)**2
-    # Equal weights are a mean, which needs no extent known when compiling: a group a def maps over has none
-    return sqrt(sum(mass(particle(q)) * d2) / sum(mass(particle(q)))) if weights == 'mass' else sqrt(mean(d2))
+    return sqrt(sum(w * d2) / sum(w))
 
 def previous(x, n=1):
     def step(s, v):

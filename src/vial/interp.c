@@ -815,7 +815,16 @@ static bool eval_top(vial_interp_t* in, bool static_only) {
             const vial_ssa_t a = ir->args[op->arg_beg + k];
             if (a && !in->state[a]) ready = false;
         }
-        if (!ready) { ok = false; continue; }
+        if (!ready) {
+            // A static value's inputs are static and come before it, so one not ready, with nothing failed, is a
+            // value the check staged wrong: said, rather than a run that fails without a word
+            if (st && !in->failed) {
+                vial_kctx_t k = {.in = in, .op = op};
+                vial_rt_fail(&k, "R0103", "a value known when compiling reads one that is not: a mistake in the compiler; please report the script");
+            }
+            ok = false;
+            continue;
+        }
         if (!eval_op(in, opi, st ? in->alloc : in->temp)) { ok = false; continue; }
         for (uint32_t k = 0; k < op->num_results; ++k) in->state[op->result + k] = st ? 2 : 1;
     }

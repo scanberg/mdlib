@@ -84,17 +84,15 @@ static bool target_ok(infer_t* x, vial_node_id n, const char* fname, const char*
     return false;
 }
 
-// What one point weighs: float[n], one number per point; the unit of the volume is the weights' over Å³
+// What one point weighs, as weights= is everywhere: 'mass', None, or one number per point, float[n]; the unit of
+// the volume is the weights' over Å³
 static bool weights_ok(infer_t* x, vial_node_id n, const char* fname, md_unit_t* unit) {
     *unit = md_unit_count();
     if (is_none(x, n)) return true;
+    if (!vx_weights_ok(x, n, fname, NULL)) return false;
     const T* t = type_of(x, n);
-    if (vial_type_is_error(t)) return false;
-    const bool num = t->dtype == VIAL_DT_FLOAT || t->dtype == VIAL_DT_FLOAT64 || t->dtype == VIAL_DT_INT || t->dtype == VIAL_DT_BOOL;
-    if (!num || t->ndim != 1) {
-        vx_diag_fix(x, "E0313", n, NULL, "weights= of `%s` is one number per point, float[n]; this is %s", fname, vx_tstr(t));
-        return false;
-    }
+    const vial_value_t w = vx_value_of(x, n);
+    if (w.kind == VIAL_VAL_STR) { vial_unit_name(STR_LIT("u"), unit); return true; }
     if (t->unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(t->unit)) *unit = t->unit;
     return true;
 }
@@ -372,7 +370,7 @@ static T call_density(infer_t* x, vial_node_id call, const char* fname) {
 // mcs(a, b, by='element', least=0.5): known when compiling, from the topology; evaluation chooses among symmetric
 // mappings by frame 0's positions
 static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
-    static const vx_param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"b", VX_KIND_WHOLE, true}, {"by", VX_KIND_WHOLE, false}, {"least", VX_KIND_WHOLE, false}};
+    static const vx_param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"b", VX_KIND_WHOLE, true}, {"match", VX_KIND_WHOLE, false}, {"least", VX_KIND_WHOLE, false}};
     vial_node_id a[4] = {0};
     if (!vx_bind(x, call, fname, p, 4, a)) return err();
     bool ok = true;
@@ -392,7 +390,7 @@ static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
     if (a[2]) {
         const vial_value_t v = vx_value_of(x, a[2]);
         if (v.kind != VIAL_VAL_STR || !(str_eq(v.s, STR_LIT("element")) || str_eq(v.s, STR_LIT("name")))) {
-            vx_diag_fix(x, "E0313", a[2], NULL, "`by` takes 'element' or 'name'");
+            vx_diag_fix(x, "E0313", a[2], NULL, "match= takes 'element' or 'name'");
             ok = false;
         }
         by_name = v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("name"));

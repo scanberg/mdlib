@@ -1012,7 +1012,7 @@ static bool matches_by(const vial_sys_t* s, uint8_t level, uint32_t ua, uint32_t
 }
 
 static T call_common(infer_t* x, vial_node_id call) {
-    static const param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"b", VX_KIND_WHOLE, true}, {"by", VX_KIND_WHOLE, false}};
+    static const param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"b", VX_KIND_WHOLE, true}, {"match", VX_KIND_WHOLE, false}};
     vial_node_id a[3];
     if (!vx_bind(x, call, "common", p, 3, a) || !all_typed(x, a, 3)) return err();
     const T ta = type_of(x, a[0]), tb = type_of(x, a[1]);
@@ -1020,7 +1020,7 @@ static T call_common(infer_t* x, vial_node_id call) {
     if (a[2]) {
         const vial_value_t v = value(x, a[2]);
         if (v.kind != VIAL_VAL_STR || !(str_eq(v.s, STR_LIT("id")) || str_eq(v.s, STR_LIT("label")))) {
-            vx_diag_fix(x, "E0313", a[2], NULL, "`by` takes 'id' or 'label'");
+            vx_diag_fix(x, "E0313", a[2], NULL, "match= takes 'id' or 'label'");
             return err();
         }
         label = str_eq(v.s, STR_LIT("label"));

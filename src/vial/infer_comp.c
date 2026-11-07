@@ -677,8 +677,8 @@ static T call_over_frames(infer_t* x, vial_node_id call, str_t name, const char*
         if (!static_int(x, a[2], "bins", 1, &bins)) return err();
         const T r = x->out->types[(a[3]) - x->out->base];
         if (vial_type_is_error(&r)) return err();
-        if (vx_kind(x, a[3]) != VIAL_N_TUPLE || vx_num_children(x, a[3]) != 2) {
-            vx_diag_fix(x, "E0313", a[3], NULL, "range= is a tuple of two numbers, (lo, hi)");
+        if (r.dtype != VIAL_DT_RANGE && (vx_kind(x, a[3]) != VIAL_N_TUPLE || vx_num_children(x, a[3]) != 2)) {
+            vx_diag_fix(x, "E0313", a[3], NULL, "range= is lo..hi, or a tuple of two numbers, (lo, hi)");
             return err();
         }
         T t = vial_type_scalar(VIAL_DT_FLOAT);

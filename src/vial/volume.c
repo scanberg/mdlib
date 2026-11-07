@@ -54,7 +54,7 @@ static const vial_val_t* varg_k(const vial_val_t* const* args, const str_t* name
 bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const str_t* names, uint32_t n, const float* xyz, vial_val_t* out) {
     const vial_val_t* a = varg_k(args, names, n, "a", 0);
     const vial_val_t* b = varg_k(args, names, n, "b", 1);
-    const vial_val_t* by = varg_k(args, names, n, "by", 2);
+    const vial_val_t* by = varg_k(args, names, n, "match", 2);
     if (!a || !b || a->dtype != VIAL_DT_SET || b->dtype != VIAL_DT_SET || !a->sets || !b->sets || a->sets->count != 1 || b->sets->count != 1) {
         return vial_rt_fail(k, "R0103", "mcs takes two sets");
     }
@@ -609,7 +609,16 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
     const double scale = vox > 0.0 ? vol->vref / vox : 1.0;
     float* w = md_alloc(k->alloc, (np ? np : 1) * sizeof(float));
     double total = 0.0;
-    if (!is_none(wv)) {
+    if (!is_none(wv) && wv->dtype == VIAL_DT_STR) {
+        // weights='mass': the particles' masses, so the points must be particles
+        const md_system_t* sys = k->in->msys;
+        if (!ids || !sys) return vial_rt_fail(k, "R0103", "weights='mass' needs points whose particles are known");
+        for (size_t i = 0; i < np; ++i) {
+            const double x = ids[i] < sys->atom.count ? md_atom_mass(&sys->atom, ids[i]) : 0.0;
+            w[i] = (float)(x * scale);
+            total += x;
+        }
+    } else if (!is_none(wv)) {
         if (!is_num(wv) || vial_val_count(wv) != np) return vial_rt_fail(k, "R0103", "weights= has one number per point: %zu, not %zu", np, wv ? vial_val_count(wv) : 0);
         for (size_t i = 0; i < np; ++i) {
             const double x = vial_val_is_missing(wv, i) ? 0.0 : num(wv, i);

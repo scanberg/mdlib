@@ -249,7 +249,7 @@ void vx_check_pairing(infer_t* x, vial_node_id at, const T* a, const T* b) {
                 vial_unit_label(lb, sizeof(lb), x->sys, db->sets->single ? VIAL_LEVEL_PARTICLE : db->level, ub);
             }
             diag_fix(x, "W0605", at, NULL, "dimensions of %u that run over different units are paired by position: %u is %s against %s; "
-                "common(a, b, by='id') pairs them by id", ea.n, q, la[0] ? la : "one", lb[0] ? lb : "another");
+                "common(a, b, match='id') pairs them by id", ea.n, q, la[0] ? la : "one", lb[0] ? lb : "another");
             return;
         }
     }

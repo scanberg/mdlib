@@ -539,7 +539,19 @@ UTEST_F(vial_check, centres_and_points) {
     EXPECT_TYPE_ON(T, "c = com(residue(chain='A', kind='amino_acid'))\n", 1, u8"float[433][3] Å, frame");
     EXPECT_TYPE_ON(T, "c = com(residue(chain='A'), weights=None)\n", 1, u8"float[442][3] Å, frame");
     EXPECT_TYPE_ON(T, "c = [1.0, 2.0, 3.0].com\n", 1, u8"float[3] Å, static");
-    EXPECT_DIAGS_ON(T, "c = com(protein, weights='charge')\n", "E0313 1: `weights` takes 'mass' or None\n");
+    EXPECT_DIAGS_ON(T, "c = com(protein, weights='charge')\n", "E0313 1: weights= takes 'mass', None, or one number per point, float[n]; this is str\n");
+    // weights= is the same everywhere: 'mass', None, or one number per point; an array pairs with one set's points
+    EXPECT_TYPE_ON(T, "c = com(protein, weights=charge(protein))\n", 1, u8"float[3] Å, frame");
+    EXPECT_TYPE_ON(T, "c = fit(protein.xyz, at(protein.xyz, frame=0), weights=mass(protein))\n", 1, u8"float[6784][3] Å, frame");
+    EXPECT_TYPE_ON(T, "w = weight(protein)\n", 1, "float[6784] u, static");
+    EXPECT_TYPE_ON(T, "w = weight(protein, weights=None)\n", 1, "float[6784], static");
+    EXPECT_TYPE_ON(T, "w = weight(protein, weights=charge(protein))\n", 1, "float[6784] e, static");
+    EXPECT_DIAGS_ON(T, "c = com(residue, weights=mass(protein))\n",
+        "E0313 1: an array of weights pairs with the points of one set, and `com` is given set[880]; weights='mass' weighs each set's particles\n");
+    EXPECT_DIAGS_ON(T, "c = com(protein, weight=None)\n", "E0202 1: `com` takes no keyword `weight`; it is weights= | weights=None\n");
+    EXPECT_DIAGS_ON(T, "a, b = common(residue(chain='A'), residue(chain='B'), by='id')\n",
+        "E0202 1: `common` takes no keyword `by`; it is match= | match='id'\n");
+    EXPECT_DIAGS_ON(T, "l = line(protein.com, water.com, label='x')\n", "E0202 1: `line` takes no keyword `label`; it is text= | text='x'\n");
     EXPECT_TYPE_ON(T, "d = displacement(particle(name='MG'), particle(resname='GTP').com)\n", 1, u8"float[3] Å, frame");
     EXPECT_TYPE_ON(T, "d = displacement(residue(kind='water'), particle(name='MG'))\n", 1, u8"float[8][3] Å, frame");
     EXPECT_DIAGS_ON(T, "d = displacement(particle(resname='GTP'), particle(name='MG'))\n",
@@ -628,7 +640,7 @@ UTEST_F(vial_check, building_and_joining) {
     EXPECT_TYPE("c = concatenate([zeros((4, 3)), zeros((2, 3))])\n", 1, "float[6][3], static");
     EXPECT_DIAGS("c = concatenate([zeros((4, 3)), zeros((4, 2))])\n", "E0309 1: `float[4][3]` and `float[4][2]` differ in dimension 1\n");
     EXPECT_TYPE_ON(T, "ab = concatenate([residue(id=1..4, chain='A'), residue(id=1..4, chain='B')])\n", 1, "set[8], static");
-    EXPECT_TYPE_ON(T, "a, b = common(residue(chain='A', kind='amino_acid'), residue(chain='B', kind='amino_acid'), by='id')\n", 1,
+    EXPECT_TYPE_ON(T, "a, b = common(residue(chain='A', kind='amino_acid'), residue(chain='B', kind='amino_acid'), match='id')\n", 1,
         "set[424] and set[424], static");
     EXPECT_TYPE("w, v = eigh(eye(3) * 1 nm)\n", 1, "float[3] nm and float[3][3], static");
     EXPECT_DIAGS("d = det(zeros((3, 2)))\n", "E0310 1: `det` needs a square matrix; this is `float[3][2]`\n");
@@ -675,7 +687,7 @@ UTEST_F(vial_check, prelude_defs) {
         "W0608 2: `closest_pair` pairs every point with itself, so the shortest distance is zero; distinct=True leaves those pairs out\n");
     EXPECT_DIAGS_ON(T, "d = distance(particle(name='MG'), particle(name='MG'), between='nearest')\n",
         "E0314 1: between= takes 'closest' or 'farthest'\n");
-    EXPECT_DIAGS_ON(T, "g = gyration(protein, weights='charge')\n", "E0314 1: weights= takes 'mass' or None\n");
+    EXPECT_DIAGS_ON(T, "g = gyration(protein, weights='charge')\n", "E0313 1: weights= takes 'mass', None, or one number per point, float[n]; this is str\n");
 }
 
 UTEST_F(vial_check, comprehensions) {
@@ -782,6 +794,7 @@ UTEST_F(vial_check, stages) {
     EXPECT_TYPE_ON(P, WITH("s = smooth(ends, 5)\n"), 3, u8"float Å, trajectory, per frame");
     EXPECT_TYPE_ON(P, WITH("v = derivative(ends)\n"), 3, u8"float Å/ps, trajectory, per frame");
     EXPECT_TYPE_ON(P, WITH("h = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))\n"), 3, "float[32], trajectory");
+    EXPECT_TYPE_ON(P, WITH("h = histogram(ends, axis='frame', bins=32, range=0.0..50.0)\n"), 3, "float[32], trajectory");
     EXPECT_TYPE_ON(P, WITH("a = autocorrelation(ends, max_lag=10)\n"), 3, "float[11], trajectory");
     EXPECT_TYPE_ON(P, WITH("f = at(ends, frame=0)\n"), 3, u8"float Å, static");
     EXPECT_STREQ("E0405 3\n", diags_frames(WITH("f = at(ends, frame=38)\n"), P, 38, utest_fixture->alloc));
@@ -807,7 +820,7 @@ UTEST_F(vial_check, drawings) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);
     EXPECT_TYPE_ON(T, "l = line(particle(resname='GTP').com, particle(name='MG'))\n", 1, "drawing, frame");
-    EXPECT_TYPE_ON(T, "l = line(residue(chain='A').com, particle(name='MG'), label=1.0)\n", 1, "drawing[442], frame");
+    EXPECT_TYPE_ON(T, "l = line(residue(chain='A').com, particle(name='MG'), text=1.0)\n", 1, "drawing[442], frame");
     EXPECT_TYPE_ON(T, "s = sphere(particle(name='MG'), 3.0) + marker([0.0, 0.0, 0.0])\n", 1, "drawing, frame");
     EXPECT_TYPE_ON(T, "a = arrow([0.0, 0.0, 0.0], direction=[0.0, 0.0, 1.0], length=5.0)\n", 1, "drawing, static");
     EXPECT_TYPE_ON(T, "h = highlight(residue(chain='A'))\n", 1, "drawing[442], static");
@@ -889,14 +902,14 @@ UTEST_F(vial_check, w0605) {
     ASSERT_TRUE(T != NULL);
     EXPECT_DIAGS_ON(T, "a = residue(id=1..4, chain='A').com\nb = residue(id=1..4, chain='B').com\nd = a - b\n",
         "W0605 3: dimensions of 4 that run over different units are paired by position: 0 is MET1/A against MET1/B;"
-        " common(a, b, by='id') pairs them by id\n");
+        " common(a, b, match='id') pairs them by id\n");
     EXPECT_DIAGS_ON(T, "c = residue(chain='A').com\nd = c[1:5] - c[0:4]\n", "");
     EXPECT_DIAGS_ON(T, "r = residue(id=1..4, chain='A')\ns = residue(id=1..4, chain='A')\nd = r.com - s.com\n", "");
-    EXPECT_DIAGS_ON(T, "a, b = common(residue(id=1..4, chain='A'), residue(id=1..4, chain='B'), by='id')\nd = distance(a.com, b.com)\n", "");
+    EXPECT_DIAGS_ON(T, "a, b = common(residue(id=1..4, chain='A'), residue(id=1..4, chain='B'), match='id')\nd = distance(a.com, b.com)\n", "");
     EXPECT_DIAGS_ON(T, "g = particle(resname='GTP')\nd = distance(g[0:3].xyz, g[3:6].xyz)\n", "");
     EXPECT_DIAGS_ON(T, "d = distance(particle(name='CA', resid=1..4, chain='A').xyz, particle(name='CB', resid=1..4, chain='A').xyz)\n",
         "W0605 1: dimensions of 4 that run over different units are paired by position: 0 is CA/MET1/A against CB/MET1/A;"
-        " common(a, b, by='id') pairs them by id\n");
+        " common(a, b, match='id') pairs them by id\n");
 }
 
 UTEST_F(vial_check, outputs_and_hover) {

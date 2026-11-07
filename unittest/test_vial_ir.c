@@ -105,6 +105,9 @@ static bool vial_ir__start(vial_ir__run_t* r, const char* src, const md_system_t
     r->prog = md_vial_compile(str_from_cstr(src), &desc, r->alloc);
     const vial_ir_t* ir = md_vial__run_ir(r->prog);
     if (!ir) {
+        const md_vial_diagnostic_t* dg;
+        const size_t ndg = md_vial_diagnostics(r->prog, &dg);
+        for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
         const vial_ir_t* lowered = md_vial__ir(r->prog);
         printf("not lowered: %s\n", md_array_size(lowered->failures) ? lowered->failures[0].what : "does not inline");
         return false;
@@ -302,6 +305,70 @@ static double vial_ir__num(const vial_val_t* v) {
 static vial_ssa_t vial_ir__output(const vial_ir_t* ir, const char* name) {
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (str_eq(ir->outputs[i].name, str_from_cstr(name))) return ir->outputs[i].value;
     return 0;
+}
+
+// weights= means the same everywhere: 'mass', None, or one number per point, so the array forms give what the words give
+UTEST(vial_ir, weights_uniform) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(vial_test_run('P'), 2);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+    const char* src =
+        "s   = residue[3]\n"
+        "ref = at(s.xyz, frame=0)\n"
+        "c1  = com(s)[0]\n"
+        "c2  = com(s, weights=mass(s))[0]\n"
+        "c3  = com(s, weights=None)[0]\n"
+        "c4  = com(s, weights=ones(count(s)))[0]\n"
+        "g1  = gyration(s)\n"
+        "g2  = gyration(s, weights=mass(s))\n"
+        "g3  = gyration(s, weights=None)\n"
+        "g4  = gyration(s, weights=ones(count(s)))\n"
+        "r1  = rmsd(s, ref)\n"
+        "r2  = rmsd(s, ref, weights=ones(count(s)))\n"
+        "r3  = rmsd(s, ref, weights='mass')\n"
+        "r4  = rmsd(s, ref, weights=mass(s))\n"
+        "f1  = fit(s.xyz, ref, weights='mass')[0, 0]\n"
+        "f2  = fit(s.xyz, ref, weights=mass(s))[0, 0]\n"
+        "w1  = weight(s)[0]\n"
+        "w2  = mass(s)[0]\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    ASSERT_EQ(0u, (unsigned)ndg);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 2}, alloc);
+    ASSERT_TRUE(e != NULL);
+    const bool ran = md_vial_eval_run(e);
+    const md_vial_diagnostic_t* ed;
+    const size_t ned = md_vial_eval_diagnostics(e, &ed);
+    for (size_t i = 0; i < ned; ++i) printf("%.5s %.*s\n", ed[i].code, (int)ed[i].message.len, ed[i].message.ptr);
+    ASSERT_TRUE(ran);
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    static const char* pairs[][2] = {{"c1", "c2"}, {"c3", "c4"}, {"g1", "g2"}, {"g3", "g4"}, {"r1", "r2"}, {"r3", "r4"}, {"f1", "f2"}, {"w1", "w2"}};
+    for (size_t q = 0; q < ARRAY_SIZE(pairs); ++q) {
+        char pa[32], pb[32];
+        snprintf(pa, sizeof(pa), "script/%s", pairs[q][0]);
+        snprintf(pb, sizeof(pb), "script/%s", pairs[q][1]);
+        const md_attribute_t* a = md_attributes_find(at, str_from_cstr(pa));
+        const md_attribute_t* b = md_attributes_find(at, str_from_cstr(pb));
+        ASSERT_TRUE(a && b && a->data && b->data);
+        const size_t n = a->format.rank ? a->format.shape[0] : 1;
+        ASSERT_EQ(n, b->format.rank ? b->format.shape[0] : 1);
+        for (size_t f = 0; f < n; ++f) {
+            const float va = ((const float*)a->data)[f], vb = ((const float*)b->data)[f];
+            if (fabsf(va - vb) > 1e-4f) printf("%s and %s differ at %zu: %g and %g\n", pairs[q][0], pairs[q][1], f, va, vb);
+            EXPECT_NEAR(va, vb, 1e-4);
+        }
+    }
+    // Different weights give a different number
+    const md_attribute_t* g1 = md_attributes_find(at, STR_LIT("script/g1"));
+    const md_attribute_t* g3 = md_attributes_find(at, STR_LIT("script/g3"));
+    ASSERT_TRUE(g1 && g3);
+    EXPECT_GT(fabsf(((const float*)g1->data)[0] - ((const float*)g3->data)[0]), 1e-4f);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
 }
 
 // A for is unrolled: its body runs once per element, what it binds carries from turn to turn and out of the loop,
@@ -843,7 +910,7 @@ UTEST(vial_ir, draw) {
         "w  = within(4.0, of=ca[0])\n"
         "p  = ca.xyz\n"
         "n  = count(ca)\n"
-        "both = line(ca[0], ca[1], label='x') + sphere(ca[2], 2.0)\n"
+        "both = line(ca[0], ca[1], text='x') + sphere(ca[2], 2.0)\n"
         "rs = residue()\n"
         "dc = distance(rs[0:3], ca[4], between='closest')\n"
         "dm = distance(rs[:, None], rs, between='closest')\n"
@@ -2316,6 +2383,7 @@ UTEST(vial_ir, volumes) {
         "d  = density(particle(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25)\n"
         "ds = density(particle(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25, sigma=6.0)\n"
         "dc = density(particle(name='CA'), samples=1)\n"
+        "dm = density(particle(name='CA'), samples=1, weights='mass')\n"
         "n  = max(s)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
@@ -2332,6 +2400,9 @@ UTEST(vial_ir, volumes) {
     EXPECT_STREQ("float[48][48][48] count/Å³", os->type);
     EXPECT_STREQ("float[24][16][16] u/Å³", ow->type);
     EXPECT_STREQ("float[56][56][56] count/Å³", od->type);
+    const md_vial_output_t* om = vial_ir__pub(prog, "dm");
+    ASSERT_TRUE(om != NULL);
+    EXPECT_STREQ(u8"float[n][n][n] u/Å³", om->type);     // weights='mass' as everywhere: the masses' unit per Å³
     EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY, os->stage);
     EXPECT_EQ((uint32_t)(MD_VIAL_OUTPUT_VOLUME | MD_VIAL_OUTPUT_SDF), os->flags);
     EXPECT_EQ((uint32_t)MD_VIAL_OUTPUT_VOLUME, od->flags);
@@ -2471,7 +2542,7 @@ UTEST(vial_ir, mcs) {
         "r = rmsd(b.xyz, a.xyz)\n"
         "phe = residue('PHE')\n"
         "tyr = residue('TYR')\n"
-        "c = mcs(phe[0], tyr[0], by='element')\n";
+        "c = mcs(phe[0], tyr[0], match='element')\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     const md_vial_diagnostic_t* d;
     const size_t nd = md_vial_diagnostics(prog, &d);
@@ -2491,7 +2562,8 @@ UTEST(vial_ir, mcs) {
     struct { const char* src; const char* code; } bad[] = {
         {"m = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
         {"m = mcs(residue('PHE'), residue('TYR'))\n", "E0313"},
-        {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='colour')\n", "E0313"},
+        {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), match='colour')\n", "E0313"},
+        {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='element')\n", "E0202"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(bad); ++i) {
         md_vial_program_t* p = md_vial_compile(str_from_cstr(bad[i].src), &(md_vial_compile_desc_t){.sys = sys}, alloc);

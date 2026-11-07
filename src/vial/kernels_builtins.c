@@ -262,12 +262,54 @@ static void* k_alloc64(vial_kctx_t* k, size_t bytes) {
     return (void*)(((uintptr_t)p + 63) & ~(uintptr_t)63);
 }
 
+// weights= as every built-in takes it: 'mass' (the default where by_mass_default), None, or one number per point.
+// Fills w for n points whose particles are ids (NULL when not known); false with the failure reported.
+static bool k_weights(vial_kctx_t* k, const vial_val_t* weights, bool by_mass_default, const char* fname, const uint32_t* ids, uint32_t n,
+                      float* w, bool* any) {
+    const md_system_t* sys = k->in->msys;
+    const bool by_mass = weights ? str_is(weights, "mass") : by_mass_default;
+    *any = by_mass || (weights && weights->dtype != VIAL_DT_NONE && weights->dtype != VIAL_DT_STR);
+    if (by_mass) {
+        if (!ids || !sys) return vial_rt_fail(k, "R0103", "%s by mass needs points whose particles are known; write weights=None", fname);
+        const float* ms = k_masses(k);
+        for (uint32_t q = 0; q < n; ++q) w[q] = k_mass(ms, sys, (size_t)ids[q]);
+        return true;
+    }
+    if (!*any) { for (uint32_t q = 0; q < n; ++q) w[q] = 1.0f; return true; }
+    if (!is_num(weights->dtype) || vial_val_count(weights) != n) {
+        return vial_rt_fail(k, "R0103", "weights= of %s has one number per point: %u, not %zu", fname, n, vial_val_count(weights));
+    }
+    for (uint32_t q = 0; q < n; ++q) w[q] = vial_val_is_missing(weights, q) ? 0.0f : (float)num_at(weights, q);
+    return true;
+}
+
+// weight(p, weights): one weight per point, as weights= means it
+static bool k_weight(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* weights, vial_val_t* out) {
+    if (!pv) return vial_rt_fail(k, "R0103", "a missing argument");
+    uint32_t n;
+    const uint32_t* ids = NULL;
+    if (pv->dtype == VIAL_DT_SET) {
+        if (pv->ndim) return vial_rt_fail(k, "R0103", "weight takes one set");
+        n = vial_sets_size(pv->sets, 0);
+        ids = vial_sets_items(pv->sets, 0);
+    } else {
+        vial_val_t p;
+        if (!points(k, pv, &p)) return false;
+        if (p.ndim != 2) return vial_rt_fail(k, "R0103", "weight takes one group of points");
+        n = p.dims[0];
+        if (p.origin && vial_sets_size(p.origin, 0) == n) ids = vial_sets_items(p.origin, 0);
+    }
+    vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, 1, &n, &o)) return false;
+    bool any;
+    if (!k_weights(k, weights, true, "weight", ids, n, (float*)o.data, &any)) return false;
+    *out = o;
+    return true;
+}
+
 // The centre of mass of each set or group of points; periodic-aware
 static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights, vial_val_t* out) {
     if (!s) return vial_rt_fail(k, "R0103", "a missing argument");
-    const bool by_mass = !weights || str_is(weights, "mass");
     const md_unitcell_t cell = frame_cell(k);
-    const md_system_t* sys = k->in->msys;
     if (s->dtype == VIAL_DT_SET) {
         const float* xyz = frame_xyz(k);
         if (!xyz) return false;
@@ -282,15 +324,13 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
             if (!n) { for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * i + c, k->alloc); continue; }
             // Gathered, so mdlib's packed kernel runs over contiguous positions and weights
             vec3_t* g = k_alloc64(k, n * sizeof(vec3_t));
-            float* w = by_mass && sys ? md_alloc(k->alloc, n * sizeof(float)) : NULL;
+            float* w = md_alloc(k->alloc, n * sizeof(float));
+            bool any;
             if (!gather_xyz((float*)g, xyz, k->in->frame->num_atoms, (const uint32_t*)idx, n)) {
                 return vial_rt_fail(k, "R0103", "a particle is beyond the frame's %zu", k->in->frame->num_atoms);
             }
-            if (w) {
-                const float* ms = k_masses(k);
-                for (uint32_t q = 0; q < n; ++q) w[q] = k_mass(ms, sys, (size_t)idx[q]);
-            }
-            const vec3_t c = md_util_com_compute(g, w, NULL, n, &cell);
+            if (!k_weights(k, weights, true, "com", (const uint32_t*)idx, n, w, &any)) return false;
+            const vec3_t c = md_util_com_compute(g, any ? w : NULL, NULL, n, &cell);
             float* O = (float*)o.data + 3 * i;
             O[0] = c.x; O[1] = c.y; O[2] = c.z;
         }
@@ -304,13 +344,11 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
     const size_t groups = vial_val_count(&p) / (3 * (size_t)(n ? n : 1));
     vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, p.ndim - 1, p.dims, &o)) return false;
     o.dims[p.ndim - 2] = 3;
-    float* w = NULL;
-    if (by_mass) {
-        if (!p.origin || !sys || vial_sets_size(p.origin, 0) != n) return vial_rt_fail(k, "R0103", "com by mass of points whose particles are not known; write weights=None");
-        w = md_alloc(k->alloc, n * sizeof(float));
-        const float* ms = k_masses(k);
-        for (uint32_t q = 0; q < n; ++q) w[q] = k_mass(ms, sys, vial_sets_items(p.origin, 0)[q]);
-    }
+    float* w = md_alloc(k->alloc, (n ? n : 1) * sizeof(float));
+    bool any;
+    const uint32_t* ids = p.origin && vial_sets_size(p.origin, 0) == n ? vial_sets_items(p.origin, 0) : NULL;
+    if (!k_weights(k, weights, true, "com", ids, n, w, &any)) return false;
+    if (!any) w = NULL;
     // Each group copied to one aligned buffer, for the same grouping of its sum (k_alloc64)
     vec3_t* buf = n ? k_alloc64(k, n * sizeof(vec3_t)) : NULL;
     for (size_t g = 0; g < groups; ++g) {
@@ -1656,11 +1694,13 @@ static bool k_fit(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* rv, co
     if (p.ndim != 2 || r.ndim != 2) return vial_rt_fail(k, "R0103", "fit takes one group of points each");
     const uint32_t n = p.dims[0];
     if (r.dims[0] != n) return vial_rt_fail(k, "R0103", "fit pairs %u points with %u", n, r.dims[0]);
-    const bool by_mass = str_is(weights, "mass");
-    const md_system_t* sys = k->in->msys;
     // The rows that fit, and their weights
     uint8_t* use = md_alloc(k->alloc, n ? n : 1);
     double* w = md_alloc(k->alloc, (n ? n : 1) * sizeof(double));
+    float* wf = md_alloc(k->alloc, (n ? n : 1) * sizeof(float));
+    bool any;
+    const uint32_t* pids = p.origin && vial_sets_size(p.origin, 0) == n ? vial_sets_items(p.origin, 0) : NULL;
+    if (!k_weights(k, weights, false, "fit", pids, n, wf, &any)) return false;
     for (uint32_t i = 0; i < n; ++i) {
         const uint32_t particle = p.origin ? vial_sets_items(p.origin, 0)[i] : 0;
         use[i] = 1;
@@ -1671,11 +1711,7 @@ static bool k_fit(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* rv, co
             const uint32_t* oi = vial_sets_items(on->sets, 0);
             for (uint32_t q = 0; q < m && !use[i]; ++q) use[i] = oi[q] == particle;
         }
-        w[i] = 1.0;
-        if (by_mass) {
-            if (!p.origin || !sys) return vial_rt_fail(k, "R0103", "fit by mass needs points whose particles are known");
-            w[i] = k_mass(k_masses(k), sys, particle);
-        }
+        w[i] = wf[i];
     }
     double cp[3] = {0}, cr[3] = {0}, ws = 0.0;
     for (uint32_t i = 0; i < n; ++i) {
@@ -2148,10 +2184,10 @@ static bool core_prim(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* ou
 static bool k_primitive(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_val_t* out) {
     static const struct { const char* name; vial_prim_kind_t kind; const char* params[4]; uint8_t kinds[4]; uint32_t np; int label; } tab[] = {
         {"marker",    VIAL_PRIM_MARKER,    {"p"},                            {VX_KIND_POINT}, 1, -1},
-        {"line",      VIAL_PRIM_LINE,      {"a", "b", "label"},              {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 3, 2},
+        {"line",      VIAL_PRIM_LINE,      {"a", "b", "text"},              {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 3, 2},
         {"arrow",     VIAL_PRIM_ARROW,     {"a", "b", "direction", "length"}, {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 4, -1},
         {"sphere",    VIAL_PRIM_SPHERE,    {"c", "r"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, -1},
-        {"arc",       VIAL_PRIM_ARC,       {"c", "a", "b", "label"},         {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 4, 3},
+        {"arc",       VIAL_PRIM_ARC,       {"c", "a", "b", "text"},         {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 4, 3},
         {"disk",      VIAL_PRIM_DISK,      {"c", "n", "r"},                  {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT}, 3, -1},
         {"text",      VIAL_PRIM_LABEL,     {"p", "x"},                       {VX_KIND_POINT, VX_KIND_FLOAT}, 2, 1},
         {"highlight", VIAL_PRIM_HIGHLIGHT, {"s"},                            {VX_KIND_SET}, 1, -1},
@@ -2766,8 +2802,11 @@ static bool k_histogram(vial_kctx_t* k, const vial_val_t* x, const vial_val_t* b
     const double bd = num_at(bins, 0);
     if (!(bd >= 1.0) || !vial_k_room(k, bd > 1e18 ? SIZE_MAX : (size_t)bd)) return bd >= 1.0 ? false : vial_rt_fail(k, "R0103", "bins= is at least 1");
     const uint32_t nb = (uint32_t)bd;
-    if (!range || range->dtype != VIAL_DT_TUPLE || range->num_elems != 2) return vial_rt_fail(k, "R0103", "range= is (lo, hi)");
-    const double lo = num_at(&range->elems[0], 0), hi = num_at(&range->elems[1], 0);
+    if (!range || !((range->dtype == VIAL_DT_TUPLE && range->num_elems == 2) || range->dtype == VIAL_DT_RANGE)) {
+        return vial_rt_fail(k, "R0103", "range= is lo..hi or (lo, hi)");
+    }
+    const double lo = range->dtype == VIAL_DT_RANGE ? ((const double*)range->data)[0] : num_at(&range->elems[0], 0);
+    const double hi = range->dtype == VIAL_DT_RANGE ? ((const double*)range->data)[1] : num_at(&range->elems[1], 0);
     vial_val_t o; if (!vial_k_make(k, VIAL_DT_FLOAT, 1, &nb, &o)) return false;
     double* c = md_alloc(k->alloc, (nb ? nb : 1) * sizeof(double));
     memset(c, 0, nb * sizeof(double));
@@ -2885,6 +2924,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     #define IS(s) (name[0] == (s)[0] && strcmp(name, s) == 0)
     if (IS("xyz")) return vial_k_positions(k, arg(&ba, "s", 0), out);   // s.xyz
     if (IS("com")) return k_com(k, arg(&ba, "s", 0), arg(&ba, "weights", 1), out);
+    if (IS("weight")) return k_weight(k, arg(&ba, "p", 0), arg(&ba, "weights", 1), out);
     if (IS("displacement")) return k_displacement(k, arg(&ba, "a", 0), arg(&ba, "b", 1), out);
     if (IS("angle")) return k_angle(k, &ba, 3, out);
     if (IS("dihedral")) return k_angle(k, &ba, 4, out);

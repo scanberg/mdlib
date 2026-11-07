@@ -22,7 +22,7 @@ static const vial_builtin_t builtins[] = {
     {"protein", SET}, {"nucleic", SET}, {"water", SET}, {"ion", SET}, {"lipid", SET}, {"backbone", SET},
     {"sidechain", SET}, {"nucleobase", SET}, {"nucleoside", SET}, {"system", SET | F},
     // Geometry and structure
-    {"mass", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
+    {"mass", F}, {"weight", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
     {"displacement", F}, {"closest_pair", F}, {"farthest_pair", F}, {"angle", F}, {"dihedral", F}, {"within", F},
     {"fit", F},
     // Reductions
