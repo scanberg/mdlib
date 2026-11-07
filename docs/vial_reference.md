@@ -815,7 +815,7 @@ Reductions remove dimensions, math works elementwise, and the array functions sa
 | `exp`, `log`, `log10` | no unit | no unit |
 | `sin`, `cos`, `tan` | an angle | no unit |
 | `asin`, `acos`, `atan`, `atan2(y, x)` | no unit | degrees |
-| `dot(u, v)` | arrays whose last dimensions match | the sum of products over the last dimension, row by row; NumPy calls it `vecdot` |
+| `dot(u, v)` | arrays whose last dimensions match | **not NumPy's `dot`**: the sum of products over the last dimension, row by row, so `dot(a, b)` on two `float[n][3]` is `float[n]`, one dot product per row. NumPy calls this `vecdot`; its `dot` of two matrices is `a @ b` here |
 | `a @ b` | matrices and vectors | the matrix product, as NumPy's `matmul` |
 | `cross(u, v)` | last dimension 3 | the cross product, row by row |
 | `norm(v, axis=-1)`, `normalize(v)` | any float array | the length over a dimension; v divided by it |
@@ -956,7 +956,7 @@ bad   = reshape(res_a.com, (400, 3))                     # error E0307: 1,299 va
 | --- | --- |
 | `a and b`, `a or b`, `not a` | intersection, union, and complement within the scope; an array of sets with one set is taken set by set |
 | `any(arr, axis=)`, `all(arr, axis=)` | the union, or the intersection, of an array of sets along a dimension; the reductions of `or` and `and`. There is no `union()` |
-| `particle(x)` | the particles of a set or an array of sets, as one set |
+| `particle(x)` | the particles of a set or an array of sets, as one set: the plain union, `any(rs)` for an array, which never reaches outside what it is given. `residue(x)` and the other grouping selectors do reach out, to the whole units that touch x |
 | `count(s)` | `int`: the number of particles |
 
 ```python
@@ -1098,7 +1098,7 @@ far  = mcs(particle(resname='GTP'), particle(resname='VLB'))   # error E0321: 13
 
 ## Outputs: what is published and how
 
-Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not. `__all__` is reserved, and binding it is an error: it is kept for an explicit list of what is published, as Python has it.
+Every top-level name bound to a number or a set is published under `script/<name>`, and a name starting with `_` is not. A script that binds `__all__` publishes exactly the names it lists, as Python exports them: `__all__ = ['d', 'rg']` is a list of strings, each a name the script binds at top level (E0201 otherwise), and it may come before them. Then `_` means nothing, and a name left out is held to nothing a published value must be, so a value whose length changes per frame may stay unlisted instead of being renamed. `__all__` itself is not published, and hover shows every name either way.
 
 | Value | Published as | Alongside |
 | --- | --- | --- |
@@ -1135,6 +1135,15 @@ ends  = distance(ca[0], ca[14])                        # published: a series of 
 h     = histogram(ends, axis='frame', bins=32, range=(0.0, 50.0))   # published: a curve with its bin edges
 _c    = ca.xyz
 dm    = distance(_c[:, None], _c[None, :])             # -> float[15][15] Å, frame: a matrix per frame
+```
+
+```python
+# on P
+ca   = particle(name='CA')
+ends = distance(ca[0], ca[14])
+near = residue(within(5.0, of=ca[0]))
+rows = distance(near.com, ca[0])                       # -> float[?] Å, frame: unlisted below, so it need not be a series
+__all__ = ['ends', 'near']                             # published: ends and near; ca and rows stay for hover
 ```
 
 ## Drawing: what hover shows

@@ -56,7 +56,13 @@ typedef struct vial_types_t {
     // The script's own built-in calls, by node id of its tree: the parameters the call binds against, recorded before
     // its arguments are, so that a call being typed has them; for completion
     struct vx_sig_t* sigs;      // md_array, from the top level's
+    // __all__: when the script binds it, exactly the names it lists are published
+    bool            has_all;
+    str_t*          all;        // md_array
 } vial_types_t;
+
+// Whether a top-level name is published: listed in __all__ when the script has one, else not starting with _
+bool vial_types_published(const vial_types_t* t, str_t name);
 
 // Types the top-level statements of c's tree in order. Runs after vial_check_names.
 void vial_check_types(vial_check_t* c, vial_types_t* out);

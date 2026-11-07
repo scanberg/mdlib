@@ -767,7 +767,8 @@ void vx_emit_finish(infer_t* x) {
             const md_vial_span_t sp = t->nodes[nn].span;
             const str_t name = {x->c->src.ptr + sp.beg, sp.end - sp.beg};
             if (!v || !name.len) continue;
-            md_array_push(ir->outputs, ((vial_ir_output_t){.name = name, .value = v, .span = sp}), ir->alloc);
+            const bool hidden = !vial_types_published(x->out, name);
+            md_array_push(ir->outputs, ((vial_ir_output_t){.name = name, .value = v, .span = sp, .hidden = hidden}), ir->alloc);
         }
     }
 }

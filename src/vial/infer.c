@@ -1824,7 +1824,7 @@ void vx_frame_return(infer_t* x, vial_node_id at, const T* t) {
 static void check_published(infer_t* x, vial_node_id target, const T* t) {
     if (x->frame || kind_of(x, target) != VIAL_N_NAME || vial_type_is_error(t)) return;
     const str_t name = text(x, target);
-    if (name.len && name.ptr[0] == '_') return;
+    if (!vial_types_published(x->out, name)) return;
     const bool publishable = t->dtype == VIAL_DT_BOOL || t->dtype == VIAL_DT_INT || t->dtype == VIAL_DT_FLOAT ||
                              t->dtype == VIAL_DT_FLOAT64 || t->dtype == VIAL_DT_SET;
     if (!publishable || t->dtype == VIAL_DT_SET) return;
@@ -1964,6 +1964,46 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
     }
 }
 
+// __all__ = ['a', 'b']: exactly the names it lists are published, as Python exports them. A list of strings, each a
+// name the script binds at top level. Read before the statements, so that what it leaves out is not held to what a
+// published value must be (E0401); that each name is bound is checked after them, since Python lets it come first.
+static void read_all(infer_t* x, bool before) {
+    const vial_node_id root = x->t->root;
+    for (uint32_t i = 0; i < num_children(x, root); ++i) {
+        const vial_node_id s = child(x, root, i);
+        if (kind_of(x, s) != VIAL_N_ASSIGN || num_children(x, s) != 2) continue;
+        const vial_node_id target = child(x, s, 0), value = child(x, s, 1);
+        if (kind_of(x, target) != VIAL_N_NAME || !str_eq(text(x, target), STR_LIT("__all__"))) continue;
+        const vial_node_kind_t vk = kind_of(x, value);
+        if (vk != VIAL_N_LIST && vk != VIAL_N_TUPLE) {
+            if (before) diag(x, "E0313", value, "`__all__` is a list of the published names, as strings: __all__ = ['d', 'rg']");
+            return;
+        }
+        bool ok = true;
+        str_t* all = NULL;
+        for (uint32_t k = 0; k < num_children(x, value); ++k) {
+            const vial_node_id item = child(x, value, k);
+            if (kind_of(x, item) != VIAL_N_STRING) {
+                if (before) diag(x, "E0313", item, "`__all__` lists names as strings: __all__ = ['d', 'rg']");
+                ok = false;
+                continue;
+            }
+            const str_t name = string_value(x, item);
+            if (!before) {
+                const uint32_t sym = vial_names_lookup_top(x->n, name);
+                if (!sym || x->n->symbols[sym].kind != VIAL_SYM_GLOBAL) {
+                    diag(x, "E0201", item, "`__all__` lists '%.*s', which the script does not bind at top level", (int)name.len, name.ptr);
+                    ok = false;
+                }
+                continue;
+            }
+            md_array_push(all, name, x->alloc);
+        }
+        if (before && ok) { x->out->has_all = true; x->out->all = all; }
+        return;
+    }
+}
+
 void vial_check_types(vial_check_t* c, vial_types_t* out) {
     const size_t num = md_array_size(c->tree->nodes);
     const size_t nsym = md_array_size(c->names.symbols);
@@ -1991,7 +2031,16 @@ void vial_check_types(vial_check_t* c, vial_types_t* out) {
         vx_sizes_ssa(&x, out, num, nsym);
     }
     const vial_node_id root = c->tree->root;
+    read_all(&x, true);
     for (uint32_t i = 0; i < num_children(&x, root); ++i) check_stmt(&x, child(&x, root, i));
+    read_all(&x, false);
     if (c->ir) vx_emit_finish(&x);
     vial_diags_sort(c->diags);
+}
+
+bool vial_types_published(const vial_types_t* t, str_t name) {
+    if (!name.len) return false;
+    if (!t->has_all) return name.ptr[0] != '_';
+    for (size_t i = 0; i < md_array_size(t->all); ++i) if (str_eq(t->all[i], name)) return true;
+    return false;
 }

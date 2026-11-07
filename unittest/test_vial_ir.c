@@ -307,6 +307,39 @@ static vial_ssa_t vial_ir__output(const vial_ir_t* ir, const char* name) {
     return 0;
 }
 
+// __all__: exactly the names it lists are published; the others stay for hover, as _names do
+UTEST(vial_ir, all_publishes) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const char* src = "ca = particle(name='CA')\nd = distance(ca[0], ca[14])\n_h = d * 2\nshown_too = _h + 1\n__all__ = ['d', '_h']\n";
+    md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, NULL));
+    const md_vial_output_t* o;
+    const size_t n = md_vial_outputs(prog, &o);
+    bool d = false, h = false, s = false, ca = false, all = false;
+    for (size_t i = 0; i < n; ++i) {
+        d = d || str_eq(o[i].name, STR_LIT("d"));
+        h = h || str_eq(o[i].name, STR_LIT("_h"));
+        s = s || str_eq(o[i].name, STR_LIT("shown_too"));
+        ca = ca || str_eq(o[i].name, STR_LIT("ca"));
+        all = all || str_eq(o[i].name, STR_LIT("__all__"));
+    }
+    EXPECT_TRUE(d);
+    EXPECT_TRUE(h);         // listed, so published despite its _
+    EXPECT_FALSE(s);
+    EXPECT_FALSE(ca);
+    EXPECT_FALSE(all);
+    const vial_ir_t* ir = md_vial__run_ir(prog);
+    ASSERT_TRUE(ir != NULL);
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
+        const bool listed = str_eq(ir->outputs[i].name, STR_LIT("d")) || str_eq(ir->outputs[i].name, STR_LIT("_h"));
+        EXPECT_EQ(!listed, ir->outputs[i].hidden);
+    }
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 // pi, prod, median, percentile, cumsum, sort and argsort: NumPy's answers on small arrays
 UTEST(vial_ir, more_builtins) {
     vial_ir__run_t r;

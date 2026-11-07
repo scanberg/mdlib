@@ -56,7 +56,12 @@ UTEST_F(vial_check, top_level_bindings) {
     EXPECT_DIAGS("x = 0\nc = True\nif c:\n    x = 1\n", "E0305 4: `x` is already bound on line 1\n");
     // A top-level loop's variable belongs to the loop
     EXPECT_DIAGS("for r in range(3):\n    q = r\nfor r in range(4):\n    q = r\n", "");
-    EXPECT_DIAGS("__all__ = ['x']\n", "E0801 1: `__all__` is reserved: a later version may list the published names with it\n");
+    // __all__ lists the published names, as strings, each bound at top level
+    EXPECT_DIAGS("x = 1\ny = 2\n__all__ = ['x']\n", "");
+    EXPECT_DIAGS("__all__ = ['x']\nx = 1\n", "");
+    EXPECT_DIAGS("__all__ = ['x']\n", "E0201 1: `__all__` lists 'x', which the script does not bind at top level\n");
+    EXPECT_DIAGS("x = 1\n__all__ = [x]\n", "E0313 2: `__all__` lists names as strings: __all__ = ['d', 'rg']\n");
+    EXPECT_DIAGS("x = 1\n__all__ = 'x'\n", "E0313 2: `__all__` is a list of the published names, as strings: __all__ = ['d', 'rg']\n");
 }
 
 UTEST_F(vial_check, visibility) {
@@ -498,6 +503,10 @@ UTEST_F(vial_check, selector_diagnostics) {
     EXPECT_DIAGS_ON(T, "s = chain.polymer[0]\n",
         "E0201 1: `.polymer` is not a view: a strand is a part of a polymer kind, and the parts within a set are .part[i] or .part(kind='polymer')\n");
     EXPECT_TYPE_ON(T, "s = part(kind='polymer', chain='B')\n", 1, "set[1], static");
+    // What __all__ leaves out is not published, so it need not keep its shape (E0401)
+    EXPECT_DIAGS_ON(T, "near = residue(within(5.0, of=particle(resname='GTP')))\nd = distance(near.com, particle(name='MG'))\n__all__ = ['d']\n",
+        "E0401 2: `d` has a different length in each frame, so it cannot be published as a series; reduce it, or name it _d | _d\n");
+    EXPECT_DIAGS_ON(T, "near = residue(within(5.0, of=particle(resname='GTP')))\nd = distance(near.com, particle(name='MG'))\n__all__ = ['near']\n", "");
     EXPECT_TYPE_ON(P, "l = label(residue)[0]\n", 1, "str, static = 'ALA1'");
     EXPECT_TYPE_ON(P, "l = label(part)[0]\n", 1, "str, static = 'peptide1'");
 }

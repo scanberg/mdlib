@@ -149,10 +149,6 @@ static bool rebinds(const resolver_t* r, uint32_t existing) {
 
 static void bind_top(resolver_t* r, vial_node_id name_node, vial_sym_kind_t kind) {
     const str_t name = text(r, name_node);
-    if (str_eq(name, STR_LIT("__all__"))) {
-        diag(r, "E0801", name_node, "`__all__` is reserved: a later version may list the published names with it");
-        return;
-    }
     const uint32_t existing = scope_find(r, 0, name);
     if (existing && (r->n->symbols[existing].kind == VIAL_SYM_GLOBAL || r->n->symbols[existing].kind == VIAL_SYM_DEF)) {
         if (rebinds(r, existing)) {
@@ -838,4 +834,11 @@ void vial_check_names(vial_check_t* c) {
 const vial_symbol_t* vial_names_symbol(const vial_names_t* n, vial_node_id id) {
     if (id >= md_array_size(n->ref) || !n->ref[id]) return NULL;
     return &n->symbols[n->ref[id]];
+}
+
+uint32_t vial_names_lookup_top(const vial_names_t* n, str_t name) {
+    if (!md_array_size(n->scopes)) return 0;
+    const vial_scope_t* s = &n->scopes[0];
+    const uint32_t* v = s->names.num_buckets ? md_hashmap_get((md_hashmap32_t*)&s->names, name_key(name)) : NULL;
+    return v && str_eq(n->symbols[*v].name, name) ? *v : 0;
 }

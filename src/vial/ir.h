@@ -129,6 +129,7 @@ typedef struct vial_ir_output_t {
     str_t           name;
     vial_ssa_t      value;
     md_vial_span_t  span;
+    bool            hidden;     // not published: a name starting with _, or one __all__ leaves out; hover still shows it
 } vial_ir_output_t;
 
 // What could not be lowered yet: the program checks, but cannot be evaluated

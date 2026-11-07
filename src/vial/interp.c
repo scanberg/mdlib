@@ -147,8 +147,7 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     // What the outputs need, but a hidden name's (_x): nothing reads it but hover, which evaluates for itself, so a
     // matrix bound to _dm and only reduced is never built
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
-        const str_t nm = ir->outputs[i].name;
-        if (nm.len && nm.ptr[0] == '_') continue;
+        if (ir->outputs[i].hidden) continue;
         md_array_push(roots, ir->outputs[i].value, in->alloc);
     }
     vial_interp_only(in, roots, md_array_size(roots));

@@ -258,7 +258,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
         // What is live: every output but the hidden ones and those taken over
         for (size_t k = 0; md_array_size(e->held) && k < md_array_size(ir->outputs); ++k) {
             const str_t nm = ir->outputs[k].name;
-            if (!nm.len || nm.ptr[0] == '_') continue;
+            if (ir->outputs[k].hidden) continue;
             bool held = false;
             for (size_t h = 0; h < md_array_size(e->held) && !held; ++h) held = str_eq(e->held[h].desc.label, nm);
             if (!held) md_array_push(roots, ir->outputs[k].value, arena);
@@ -402,7 +402,7 @@ static void prepare(md_vial_eval_t* e) {
     if (nf <= 0) return;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
-        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        if (o->hidden) continue;
         const uint32_t op = ir->values[o->value].op;
         if (op == VIAL_IR_NO_OP || !in->live[op] || in->op_class[op] != VIAL_OP_PER_FRAME) continue;
         const vial_type_t* t = &ir->values[o->value].type;
@@ -489,7 +489,7 @@ static void publish(md_vial_eval_t* e) {
     const vial_ir_t* ir = e->ir;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
-        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        if (o->hidden) continue;
         const vial_type_t* t = &ir->values[o->value].type;
         const md_attribute_type_t at = attr_type(t->dtype);
         const vial_volume_t* vol = vial_interp_volume(&e->in, o->value);
@@ -546,7 +546,7 @@ static void publish_periods(md_vial_eval_t* e) {
     const vial_ir_t* ir = e->ir;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
-        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        if (o->hidden) continue;
         const vial_type_t* t = &ir->values[o->value].type;
         if (!(t->flags & VIAL_TYPE_PERIODIC) || !(t->period_end > t->period_beg)) continue;
         const md_unit_t unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none();
@@ -575,7 +575,7 @@ static void publish_labels(md_vial_eval_t* e) {
     if (!ir->descs) return;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
-        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        if (o->hidden) continue;
         const vial_type_t* t = &ir->values[o->value].type;
         if (t->ndim != 1 || t->dtype == VIAL_DT_SET || t->dims[0].kind != VIAL_EXT_STATIC) continue;
         const uint32_t dsc = t->dims[0].desc;
@@ -609,7 +609,7 @@ static void publish_ranges(md_vial_eval_t* e) {
     const vial_ir_t* ir = e->ir;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
-        if (!o->name.len || o->name.ptr[0] == '_') continue;
+        if (o->hidden) continue;
         uint32_t op = ir->values[o->value].op;
         if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_ELEM && ir->ops[op].num_args) op = ir->values[ir->args[ir->ops[op].arg_beg]].op;
         if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_BUILTIN || strcmp(vial_builtin_at(ir->ops[op].aux)->name, "histogram")) continue;
