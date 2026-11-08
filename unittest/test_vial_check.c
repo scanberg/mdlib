@@ -773,6 +773,16 @@ UTEST_F(vial_check, more_builtins) {
     EXPECT_DIAGS("pi = 3\n", "W0201 1: `pi` now names a variable; the built-in is hidden from here on\n");
 }
 
+// A def that returns a tuple is not mapped over arrays yet: said, rather than an IR that does not verify (found by the fuzzer)
+UTEST_F(vial_check, mapped_tuple) {
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(P != NULL);
+    EXPECT_DIAGS_ON(P, "def two(r: group):\n    return (r.com, gyration(r))\nt = two(residue)\n",
+        "E0801 3: `two` returns a tuple, and a def that does is not mapped over arrays yet: call it on one group, or return one value and call it "
+        "once per value\n");
+    EXPECT_DIAGS_ON(P, "def two(r: group):\n    return (r.com, gyration(r))\nc, n = two(residue[0])\n", "");
+}
+
 UTEST_F(vial_check, w0607) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);

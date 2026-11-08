@@ -365,6 +365,12 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
     if (vial_type_is_error(&result)) return result;
     if (loop.ndim == 0 && call && x->t == x->c->tree && !x->frame) vx_set_value(x, call, rv);
     else if (loop.ndim == 0 && call) vx_set_value(x, call, rv);
+    if (loop.ndim && result.dtype == VIAL_DT_TUPLE) {
+        // The map stacks one value per call; a tuple would be a tuple of stacks, which is not lowered yet
+        vx_diag_fix(x, "E0801", call, NULL, "`%s` returns a tuple, and a def that does is not mapped over arrays yet: call it on one group, "
+            "or return one value and call it once per value", g->fname);
+        return err();
+    }
     T t2;
     if (!with_loop(x, call, &loop, &result, &t2)) return err();
     if (x->ir) {
