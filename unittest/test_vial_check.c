@@ -774,6 +774,17 @@ UTEST_F(vial_check, more_builtins) {
 }
 
 // A def that returns a tuple is not mapped over arrays yet: said, rather than an IR that does not verify (found by the fuzzer)
+// A fold's state keeps its shape, for int states too (found by the fuzzer)
+UTEST_F(vial_check, fold_int_shape) {
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(P != NULL);
+    EXPECT_DIAGS_ON(P, "ca = particle(name='CA')\nends = distance(ca[0], ca[14])\ndef step(state, x):\n    return [where(x > 30.0, state + 1, 0)]\n"
+        "run = fold(step, ends, init=0)\n",
+        "E0315 5: the step returns int[1]; init is int, and a fold's state keeps its type\n");
+    EXPECT_DIAGS_ON(P, "ca = particle(name='CA')\nends = distance(ca[0], ca[14])\ndef step(state, x):\n    return where(x > 30.0, state + 1, 0)\n"
+        "run = fold(step, ends, init=0)\n", "");
+}
+
 UTEST_F(vial_check, mapped_tuple) {
     const md_system_t* P = vial_test_system('P');
     ASSERT_TRUE(P != NULL);

@@ -544,14 +544,17 @@ static T call_fold(infer_t* x, vial_node_id call) {
         x->ir->insert = saved;
     }
     if (vial_type_is_error(&r)) return err();
-    bool same = r.dtype == init.dtype && r.ndim == init.ndim && r.unit_kind == init.unit_kind &&
-                (r.unit_kind != VIAL_UNIT_KNOWN || md_unit_base_equal(r.unit, init.unit) || (md_unit_is_none(r.unit) && md_unit_is_none(init.unit)));
+    // The same dtype and shape; the same unit too, except that an int state, a count, takes an int step's (found by
+    // the fuzzer: the int exception once waived the shape as well, so a step returning int[1] on init=0 ran as int)
+    bool same = r.dtype == init.dtype && r.ndim == init.ndim;
     for (uint8_t k = 0; same && k < r.ndim; ++k) {
         vial_extent_t e;
         same = vx_extent_join(r.dims[k], init.dims[k], &e) && !(r.dims[k].kind == VIAL_EXT_STATIC && init.dims[k].kind == VIAL_EXT_STATIC &&
                r.dims[k].n != init.dims[k].n);
     }
-    if (!same && !(r.dtype == VIAL_DT_INT && init.dtype == VIAL_DT_INT)) {
+    const bool same_unit = r.unit_kind == init.unit_kind &&
+                           (r.unit_kind != VIAL_UNIT_KNOWN || md_unit_base_equal(r.unit, init.unit) || (md_unit_is_none(r.unit) && md_unit_is_none(init.unit)));
+    if (!same || (!same_unit && !(r.dtype == VIAL_DT_INT && init.dtype == VIAL_DT_INT))) {
         T rr = r, ii = init;
         rr.flags = 0; ii.flags = 0;
         vx_diag_fix(x, "E0315", call, NULL, "the step returns %s; init is %s, and a fold's state keeps its type", vx_tstr(&rr), vx_tstr(&ii));
