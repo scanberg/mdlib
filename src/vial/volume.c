@@ -27,69 +27,116 @@ bool vial_k_positions(vial_kctx_t* k, const vial_val_t* s, vial_val_t* out);
 
 // ### CORRESPONDENCE ###
 
-// The particles matched in the first of k alike structures, taken at the same positions in each: set[k][w], flat,
-// one particle each. NULL when a matched particle is not in the first structure.
-static vial_sets_t* mcs_expand(const vial_sets_t* structs, const int32_t* matched, uint32_t w, md_allocator_i* alloc) {
-    const uint32_t k = structs->count, n0 = vial_sets_size(structs, 0);
-    const uint32_t* first = vial_sets_items(structs, 0);
-    int32_t* all = md_alloc(alloc, ((size_t)k * w + 1) * sizeof(int32_t));
-    for (uint32_t j = 0; j < w; ++j) {
-        // Its position in the first structure: sets are ascending
-        uint32_t lo = 0, hi = n0;
-        while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if ((int32_t)first[mid] < matched[j]) lo = mid + 1; else hi = mid; }
-        if (lo >= n0 || (int32_t)first[lo] != matched[j]) return NULL;
-        for (uint32_t i = 0; i < k; ++i) {
-            if (lo >= vial_sets_size(structs, i)) return NULL;
-            all[(size_t)i * w + j] = (int32_t)vial_sets_items(structs, i)[lo];
-        }
+// Whether two structures are alike: as many particles, of the same elements, or names where an element is not known
+static bool alike_structures(const md_system_t* sys, const uint32_t* a, const uint32_t* b, uint32_t n) {
+    for (uint32_t i = 0; i < n; ++i) {
+        if (a[i] >= sys->atom.count || b[i] >= sys->atom.count) return false;
+        const md_atomic_number_t za = md_atom_atomic_number(&sys->atom, a[i]), zb = md_atom_atomic_number(&sys->atom, b[i]);
+        if ((za && zb) ? za != zb : !str_eq(md_atom_name(&sys->atom, a[i]), md_atom_name(&sys->atom, b[i]))) return false;
     }
-    return vial_sets_particles(all, k * w, alloc);
+    return true;
 }
 
-bool vial_mcs(vial_mcs_t* out, const md_system_t* sys, const vial_sets_t* a, const vial_sets_t* b, bool by_name, const float* xyz,
-              md_allocator_i* alloc) {
+// The position of atom in an ascending set, or -1
+static int pos_in(const uint32_t* items, uint32_t n, int32_t atom) {
+    uint32_t lo = 0, hi = n;
+    while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if ((int32_t)items[mid] < atom) lo = mid + 1; else hi = mid; }
+    return lo < n && (int32_t)items[lo] == atom ? (int)lo : -1;
+}
+
+// One structure's mapping onto the first, as positions: col_of[p] for each particle position p of the first is the
+// position in the structure that plays its part, or -1. Shared by alike structures.
+typedef struct mcs_map_t {
+    uint32_t    first_of;   // the structure it was found on
+    int32_t*    col_of;     // [n0]
+    size_t      pairs, heavy;
+    bool        incomplete;
+} mcs_map_t;
+
+bool vial_mcs(vial_mcs_t* out, const md_system_t* sys, const vial_sets_t* st, bool by_name, const float* xyz, md_allocator_i* alloc) {
     memset(out, 0, sizeof(*out));
-    if (!sys || !a || !b || !a->count || !b->count) return false;
-    const md_mcs_desc_t d = {
-        .a = {.sys = sys, .atoms = (const int32_t*)vial_sets_items(a, 0), .count = vial_sets_size(a, 0), .xyz = (const vec3_t*)xyz},
-        .b = {.sys = sys, .atoms = (const int32_t*)vial_sets_items(b, 0), .count = vial_sets_size(b, 0), .xyz = (const vec3_t*)xyz},
-        .flags = by_name ? MD_MCS_FLAG_BY_NAME : 0,
-    };
-    md_mcs_result_t r;
-    if (!md_mcs(&r, &d, md_get_heap_allocator())) return false;
-    out->width = (uint32_t)r.count;
-    out->a_rows = a->single ? 0 : a->count;
-    out->b_rows = b->single ? 0 : b->count;
-    out->a = out->a_rows ? mcs_expand(a, r.a, out->width, alloc) : vial_sets_particles(r.a, out->width, alloc);
-    out->b = out->b_rows ? mcs_expand(b, r.b, out->width, alloc) : vial_sets_particles(r.b, out->width, alloc);
-    if (!out->a || !out->b) { md_mcs_result_free(&r); return false; }
-    out->b->root = vial_sets_root(out->a);     // paired by mcs, as common() pairs: no W0605
-    out->a_heavy = r.a_heavy;
-    out->b_heavy = r.b_heavy;
-    out->incomplete = r.incomplete;
-    out->rmsd = r.rmsd;
-    md_mcs_result_free(&r);
+    if (!sys || !st || !st->count) return false;
+    const uint32_t k = st->count, n0 = vial_sets_size(st, 0);
+    const uint32_t* first = vial_sets_items(st, 0);
+    mcs_map_t* maps = md_alloc(alloc, k * sizeof(mcs_map_t));
+    uint32_t num_maps = 0;
+    uint32_t* map_of = md_alloc(alloc, k * sizeof(uint32_t));
+    uint8_t* in_all = md_alloc(alloc, (n0 ? n0 : 1));
+    memset(in_all, 1, n0);
+    for (uint32_t i = 0; i < k; ++i) {
+        const uint32_t n = vial_sets_size(st, i);
+        const uint32_t* items = vial_sets_items(st, i);
+        // An alike structure already mapped: the same positions
+        uint32_t m = UINT32_MAX;
+        for (uint32_t q = 0; q < num_maps && m == UINT32_MAX; ++q) {
+            const uint32_t f = maps[q].first_of;
+            if (vial_sets_size(st, f) == n && alike_structures(sys, vial_sets_items(st, f), items, n)) m = q;
+        }
+        if (m == UINT32_MAX) {
+            const md_mcs_desc_t d = {
+                .a = {.sys = sys, .atoms = (const int32_t*)first, .count = n0, .xyz = (const vec3_t*)xyz},
+                .b = {.sys = sys, .atoms = (const int32_t*)items, .count = n, .xyz = (const vec3_t*)xyz},
+                .flags = by_name ? MD_MCS_FLAG_BY_NAME : 0,
+            };
+            md_mcs_result_t r;
+            if (!md_mcs(&r, &d, md_get_heap_allocator())) return false;
+            mcs_map_t* mp = &maps[num_maps];
+            mp->first_of = i;
+            mp->col_of = md_alloc(alloc, (n0 ? n0 : 1) * sizeof(int32_t));
+            for (uint32_t p = 0; p < n0; ++p) mp->col_of[p] = -1;
+            for (size_t j = 0; j < r.count; ++j) {
+                const int pa = pos_in(first, n0, r.a[j]), pb = pos_in(items, n, r.b[j]);
+                if (pa >= 0 && pb >= 0) mp->col_of[pa] = pb;
+            }
+            mp->pairs = r.count;
+            mp->heavy = r.a_heavy < r.b_heavy ? r.a_heavy : r.b_heavy;
+            mp->incomplete = r.incomplete;
+            if (i == 0) out->first_heavy = r.a_heavy;
+            md_mcs_result_free(&r);
+            m = num_maps++;
+            if (i && (!out->least_at || mp->pairs < out->least_common)) { out->least_at = i + 1; out->least_common = mp->pairs; out->least_heavy = mp->heavy; }
+            out->incomplete = out->incomplete || mp->incomplete;
+        }
+        map_of[i] = m;
+        for (uint32_t p = 0; p < n0; ++p) if (maps[m].col_of[p] < 0) in_all[p] = 0;
+    }
+    // The columns: the first's particles every structure has a part for, ascending; then each row
+    uint32_t w = 0;
+    for (uint32_t p = 0; p < n0; ++p) w += in_all[p];
+    int32_t* flat = md_alloc(alloc, ((size_t)k * w + 1) * sizeof(int32_t));
+    for (uint32_t i = 0; i < k; ++i) {
+        const uint32_t* items = vial_sets_items(st, i);
+        const mcs_map_t* mp = &maps[map_of[i]];
+        uint32_t c = 0;
+        for (uint32_t p = 0; p < n0; ++p) if (in_all[p]) flat[(size_t)i * w + c++] = (int32_t)items[mp->col_of[p]];
+    }
+    out->rows = vial_sets_particles(flat, k * w, alloc);
+    out->k = k;
+    out->width = w;
     return true;
 }
 
 static const vial_val_t* varg_k(const vial_val_t* const* args, const str_t* names, uint32_t n, const char* name, uint32_t pos);
 
 bool vial_k_mcs(vial_kctx_t* k, const vial_val_t* const* args, const str_t* names, uint32_t n, const float* xyz, vial_val_t* out) {
-    const vial_val_t* a = varg_k(args, names, n, "a", 0);
-    const vial_val_t* b = varg_k(args, names, n, "b", 1);
-    const vial_val_t* by = varg_k(args, names, n, "match", 2);
-    if (!a || !b || a->dtype != VIAL_DT_SET || b->dtype != VIAL_DT_SET || !a->sets || !b->sets || !a->sets->count || !b->sets->count) {
-        return vial_rt_fail(k, "R0103", "mcs takes two sets, or arrays of alike structures");
+    // Every positional argument is structures; match= and least= are named
+    const vial_sets_t* parts[64];
+    uint32_t np = 0;
+    const vial_val_t* by = NULL;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (names && names[i].len) { if (str_eq(names[i], STR_LIT("match"))) by = args[i]; continue; }
+        if (!args[i] || args[i]->dtype != VIAL_DT_SET || !args[i]->sets || !args[i]->sets->count) return vial_rt_fail(k, "R0103", "mcs takes sets, or arrays of sets");
+        if (np < 64) parts[np++] = args[i]->sets;
     }
+    if (!np) return vial_rt_fail(k, "R0103", "mcs takes at least one structure");
+    const vial_sets_t* st = np == 1 ? parts[0] : vial_sets_concat(parts, np, k->alloc);
     const bool by_name = by && by->dtype == VIAL_DT_STR && by->data && str_eq(*(const str_t*)by->data, STR_LIT("name"));
     vial_mcs_t m;
-    if (!vial_mcs(&m, k->in->msys, a->sets, b->sets, by_name, xyz, k->alloc)) return vial_rt_fail(k, "R0103", "mcs: the sets are too large to search, or the structures are not alike");
-    vial_val_t* el = md_alloc(k->alloc, 2 * sizeof(vial_val_t));
-    el[0] = vial_val_sets(m.a);
-    el[1] = vial_val_sets(m.b);
-    if (m.a_rows) { el[0].ndim = 2; el[0].dims[0] = m.a_rows; el[0].dims[1] = m.width; }
-    if (m.b_rows) { el[1].ndim = 2; el[1].dims[0] = m.b_rows; el[1].dims[1] = m.width; }
-    *out = (vial_val_t){.dtype = VIAL_DT_TUPLE, .elems = el, .num_elems = 2};
+    if (!vial_mcs(&m, k->in->msys, st, by_name, xyz, k->alloc)) return vial_rt_fail(k, "R0103", "mcs: a structure is too large to search");
+    *out = vial_val_sets(m.rows);
+    out->ndim = 2;
+    out->dims[0] = m.k;
+    out->dims[1] = m.width;
     return true;
 }
 

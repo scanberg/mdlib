@@ -121,6 +121,8 @@ vial_sets_t* vial_sets_pick_particles(const vial_sets_t* a, uint32_t i, const ui
 // pos[0..m), counted from the end when negative, each with only the particles it shares with the set; skip[j] (may be
 // NULL) leaves entry j empty. a->count * m sets, set i's entries together. *outside counts the sets that lack a unit at
 // some position, whose entries there are empty. The level and units of u where every entry is a whole unit of it.
+// The sets of several arrays one after the other, as one array (single sets count as one each)
+vial_sets_t* vial_sets_concat(const vial_sets_t* const* parts, uint32_t n, md_allocator_i* alloc);
 vial_sets_t* vial_sets_units_at(const vial_sets_t* a, const vial_sets_t* u, const int64_t* pos, const bool* skip, uint32_t m,
                                 uint32_t* outside, md_allocator_i* alloc);
 

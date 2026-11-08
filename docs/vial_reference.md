@@ -982,9 +982,9 @@ bend   = angle(ala_n, ala_ca, ala_c)                   # -> float[60] °: each s
 | --- | --- |
 | `smiles(pattern, scope=None, level='molecule', mode='unique')` | `set[k]`: one set per match |
 | `smiles_atoms(pattern, ...)` | `set[k][w]`: one particle per pattern atom, in pattern order; only the atoms tagged with a class such as `[C:1]` when the pattern has classes, in class order |
-| `mcs(a, b, match='element', least=0.5)` | `set[w]` and `set[w]`: which particles of b play the part of which of a, structures that are not the same (a mutant, GTP and GDP, the rings of PHE and TYR), as two arrays of one particle each, a's ascending and b's paired with them by position. Given arrays of alike structures, `set[k]`, the mapping is found between the first of each and applied to every structure by position: `set[k][w]`, a row per structure, which `sdf` takes and `concatenate` joins |
+| `mcs(*structures, match='element', least=0.5)` | `set[k][w]`: which particles of each structure play the parts of which of the first, structures that are not the same (a mutant, GTP and GDP, the rings of PHE and TYR). Every positional argument is a set or an array of sets; every structure, in order, is matched onto the first, and the columns are the first's particles that all of them have a part for, ascending. `mcs(gtp, gdp)` is `set[2][28]`, `mcs(phe, tyr)` with four of each `set[8][w]`, `mcs(residue[0:5])` the five residues on what they share. Alike structures share one mapping, found once. What `sdf` takes as structures |
 
-`mcs` finds the largest set of heavy atoms the two have in common, connected, alike by element (or by element and name, `match='name'`), with the same bonds both ways round, whatever their orders; hydrogens are left out. Two polymers, two residues or more of amino acids or nucleotides each, are matched residue by residue: the residues aligned by name in order, a pair of one name by atom name and a pair of two names as a graph. Anything else is matched as one graph, exactly, which takes microseconds for residues and less than a millisecond for a ligand of 60 heavy atoms; more than 1024 heavy atoms is too many (E0321), and a search that gives up keeps the largest it found (W0408). The bonds alone do not tell symmetric atoms apart, the oxygens of a phosphate or the sides of a ring: of the mappings they allow, evaluation keeps the one that fits best at frame 0. Fewer than `least` of the smaller structure's heavy atoms in common is E0321: any two molecules have a few carbons in common. b's array pairs with a's without W0605, as `common()`'s do.
+`mcs` finds the largest set of heavy atoms a structure and the first have in common, connected, alike by element (or by element and name, `match='name'`), with the same bonds both ways round, whatever their orders; hydrogens are left out. Two polymers, two residues or more of amino acids or nucleotides each, are matched residue by residue: the residues aligned by name in order, a pair of one name by atom name and a pair of two names as a graph. Anything else is matched as one graph, exactly, which takes microseconds for residues and less than a millisecond for a ligand of 60 heavy atoms; more than 1024 heavy atoms is too many (E0321), and a search that gives up keeps the largest it found (W0408). The bonds alone do not tell symmetric atoms apart, the oxygens of a phosphate or the sides of a ring: of the mappings they allow, evaluation keeps the one that fits best at frame 0. Fewer than `least` of the smaller structure's heavy atoms in common with the first is E0321: any two molecules have a few carbons in common. Rows of one array pair without W0605, as slices of one array do, so `rmsd(m[1].xyz, m[0].xyz)` is the deviation of the second from the first.
 
 `level` is where a match may lie: within a `'molecule'`, a `'residue'` or a `'part'`. `mode` is `'unique'`, one match per distinct set of atoms, or of tagged atoms when the pattern has classes; `'all'`, every mapping; `'one_per_unit'`; or `'disjoint'`, which keeps the first of overlapping matches. Matches may overlap, and the compiler knows where. A hydrogen in a pattern is mapped onto one hydrogen of its atom, never searched.
 
@@ -1072,7 +1072,7 @@ A volume is a density on a grid, added up over the frames: `sdf` in the frame of
 - **The grid** follows from what it covers: `samples` per Å along each axis, each axis rounded up to a multiple of 8, so a pocket and a whole box are sampled alike. A grid of more than 512³ voxels is sampled coarser to fit, with W0407 saying how. Extents, samples, box and sigma are known when compiling, so the type has the grid's extents. Over the unit cell, the grid is frame 0's cell, known when evaluating: its extents print as letters. A cell that changes keeps its voxels, in fractional coordinates.
 - **The value** is absolute: particles per Å³, or with `weights=` (`'mass'`, or one number per point, such as `charge(...)`) the weights' unit per Å³. Beside `script/<name>` go `/origin` and `/basis`, Å, the corner of voxel `[0][0][0]` and one step along each index, in the volume's frame; `/bulk`, the same particles' density over the unit cell, in the volume's unit, so ρ/ρ_bulk is one division; and `/samples`, what was added. `[i][j][k]` runs along x, y and z of the volume's frame, k fastest.
 - **sdf**: `structures` is static, and pairs particle by particle: a set or an array of sets alike, as many particles, of the same elements, or names where an element is not known, in the order of their particles (E0320); or `set[k][w]`, k structures whose column j plays one part in each, as `smiles_atoms` and `mcs` give them, columns alike. They are fitted onto `ref=`, static positions of one structure in that order, by default the first structure at frame 0. Everything else about an sdf is a keyword with a default: the call is `sdf(structures, target, extent)` until it needs more. The volume's frame is the reference's centre of mass and principal axes; a structure that spreads over too much of the cell to place in a frame is left out of it. A structure's own particles are never its target. Drawing an sdf draws each structure with the pose that places the volume on it.
-- **Structures of different kinds**, PHE and TYR, a ligand and its analogue, are joined by what they have in common: `a, b = mcs(phe, tyr)` maps arrays of structures column for column, and `sdf(concatenate((a, b)), ...)` fits them all on those columns. A structure's atoms beyond the common ones are not fitted, and count as target where the target set holds them.
+- **Structures of different kinds**, PHE and TYR, a ligand and its analogue, are joined by what they have in common: `sdf(mcs(phe, tyr), ...)` fits them all on the columns `mcs` gives. A structure's atoms beyond the common ones are not fitted, and count as target where the target set holds them.
 - `target` and `points` are one set or points, `float[n][3]` Å: `molecule(water).com` maps where the waters' centres are rather than every atom of them. `sigma=` smooths the volume at the end with a Gaussian of that width, Å.
 - A volume is added up at the top level of a script: one inside a comprehension or a def mapped over groups would be an array of volumes, which is not supported yet (E0406). Over a plot period it is made again from the period's frames, read again, since nothing is kept per frame.
 
@@ -1085,19 +1085,19 @@ sm   = sdf(ala, o, (6.0, 4.0, 3.0), samples=2, weights=mass(o))   # -> float[24]
 cv   = density(particle(name='CA'), samples=1)       # -> float[a][b][c] count/Å³, trajectory: over the cell
 box  = density(o, box=((0.0, 0.0, 0.0), (40.0, 40.0, 40.0)), sigma=0.5)   # -> float[160][160][160] count/Å³, trajectory
 odd  = sdf(residue[0:5], o, 6.0)                     # error E0320: the first residue is not like the others
-a, b = mcs(residue[1], residue[14])                  # -> set[5] and set[5]: the last residue has its OXT besides
-pair = sdf([a, b], o, 6.0)                             # -> float[48][48][48] count/Å³, trajectory: two structures, column by column
-ma, mb = mcs(ala, residue[14:15])                    # -> set[4][5] and set[1][5]: the heavy atoms the last residue shares, column for column
-kin  = sdf(concatenate((ma, mb)), o, 6.0)            # -> float[48][48][48] count/Å³, trajectory: five structures on their common atoms
+m    = mcs(residue[1], residue[14])                  # -> set[2][5]: the last residue has its OXT besides
+pair = sdf(m, o, 6.0)                                  # -> float[48][48][48] count/Å³, trajectory: two structures, column by column
+kin  = sdf(mcs(ala, residue[14:15]), o, 6.0)         # -> float[48][48][48] count/Å³, trajectory: five structures on the heavy atoms they share
 ```
 
 ```python
 # on T
 phe  = residue('PHE')[0:4]
 tyr  = residue('TYR')[0:4]
-r1, r2 = mcs(particle(resname='GTP'), particle(resname='GDP'))   # -> set[28] and set[28]: all of GDP
-dev  = rmsd(r2.xyz, r1.xyz)                            # -> float Å, frame
-pair = mcs(phe[0], tyr[0], match='element')            # -> (set[11], set[11])
+m    = mcs(particle(resname='GTP'), particle(resname='GDP'))   # -> set[2][28]: all of GDP, row 1, on GTP's atoms, row 0
+dev  = rmsd(m[1].xyz, m[0].xyz)                        # -> float Å, frame
+pair = mcs(phe[0], tyr[0], match='element')            # -> set[2][11]
+aro  = mcs(phe, tyr, residue('TRP')[0:2])              # -> set[10][10]: what all three kinds share, a row each
 far  = mcs(particle(resname='GTP'), particle(resname='VLB'))   # error E0321: 13 heavy atoms in common of 32 and 59
 ```
 

@@ -195,14 +195,14 @@ static void free_volumes(vial_interp_t* in) {
     }
 }
 
-// mcs(a, b): its mapping, of the symmetric ones the bonds allow the one that fits best at frame 0, read in a step of its
-// own as at() reads its frame; from the bonds alone where there is no frame to read
+// mcs(*structures): its mappings, of the symmetric ones the bonds allow the one that fits best at frame 0, read in a step
+// of its own as at() reads its frame; from the bonds alone where there is no frame to read
 static bool eval_mcs(vial_interp_t* in, uint32_t opi) {
     const vial_ir_t* ir = in->ir;
     const vial_ir_op_t* op = &ir->ops[opi];
     vial_kctx_t k = {.in = in, .op = op, .type = &ir->values[op->result].type, .alloc = in->alloc, .map_index = -1};
-    const vial_val_t* av[8] = {0};
-    if (op->num_args > 8) return vial_rt_fail(&k, "R0103", "mcs with more than 8 arguments");
+    const vial_val_t* av[66] = {0};
+    if (op->num_args > 66) return vial_rt_fail(&k, "R0103", "mcs with more than 64 structures");
     for (uint32_t i = 0; i < op->num_args; ++i) {
         const vial_ssa_t a = ir->args[op->arg_beg + i];
         if (a && !in->state[a]) return false;

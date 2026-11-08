@@ -2608,7 +2608,7 @@ UTEST(vial_ir, volume_diagnostics) {
     md_arena_allocator_destroy(alloc);
 }
 
-// mcs(a, b): which particles of b play the part of which of a, typed when compiling
+// mcs(*structures): which particles of each play the parts of which of the first, set[k][w], typed when compiling
 UTEST(vial_ir, mcs) {
     const md_system_t* sys = vial_test_system('T');
     ASSERT_TRUE(sys != NULL);
@@ -2616,11 +2616,14 @@ UTEST(vial_ir, mcs) {
     const char* src =
         "gtp = particle(resname='GTP')\n"
         "gdp = particle(resname='GDP')\n"
-        "a, b = mcs(gtp, gdp)\n"
-        "r = rmsd(b.xyz, a.xyz)\n"
+        "m = mcs(gtp, gdp)\n"
+        "r = rmsd(m[1].xyz, m[0].xyz)\n"
         "phe = residue('PHE')\n"
         "tyr = residue('TYR')\n"
-        "c = mcs(phe[0], tyr[0], match='element')\n";
+        "c = mcs(phe[0], tyr[0], match='element')\n"
+        "aro = mcs(phe[0:4], tyr[0:4], residue('TRP')[0:2])\n"
+        "one = mcs(phe)\n"
+        "res = mcs(residue(chain='A')[0:3])\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
     const md_vial_diagnostic_t* d;
     const size_t nd = md_vial_diagnostics(prog, &d);
@@ -2628,18 +2631,27 @@ UTEST(vial_ir, mcs) {
     EXPECT_EQ(0u, (unsigned)nd);
     md_vial__result_t r;
     ASSERT_TRUE(md_vial__line_result(prog, 3, &r));
-    EXPECT_STREQ("set[28]", r.types[0]);
-    EXPECT_STREQ("set[28]", r.types[1]);
+    EXPECT_STREQ("set[2][28]", r.types[0]);
     ASSERT_TRUE(md_vial__line_result(prog, 4, &r));
     EXPECT_STREQ("float Å", r.types[0]);
+    ASSERT_TRUE(md_vial__line_result(prog, 7, &r));
+    EXPECT_STREQ("set[2][11]", r.types[0]);       // PHE and TYR: the ring, CB and CA... eleven heavy atoms alike
+    ASSERT_TRUE(md_vial__line_result(prog, 8, &r));
+    EXPECT_STREQ("set[10][10]", r.types[0]);      // with TRP: what all three share
+    ASSERT_TRUE(md_vial__line_result(prog, 9, &r));
+    EXPECT_STREQ("set[42][11]", r.types[0]);      // one array of alike structures: every heavy atom, one mapping shared
+    ASSERT_TRUE(md_vial__line_result(prog, 10, &r));
+    EXPECT_STREQ("set[3][6]", r.types[0]);        // MET, ARG, GLU: backbone and CB, CG
     // Of the particles, as filters read them: GDP's in the order of GTP's they play
     md_vial_filter_t f;
     ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))[1]"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
     EXPECT_EQ(28u, (unsigned)f.num_sets);
+    ASSERT_TRUE(md_vial_filter(&f, STR_LIT("mcs(particle(resname='GTP'), particle(resname='GDP'))"), &(md_vial_filter_desc_t){.sys = sys}, alloc));
+    EXPECT_EQ(56u, (unsigned)f.num_sets);     // both rows, flat
     // Too little in common: E0321, unless least= asks for less
     struct { const char* src; const char* code; } bad[] = {
         {"m = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
-        {"m = mcs(residue('PHE'), residue[0:3])\n", "E0320"},
+        {"m = mcs(particle(resname='GTP'), particle(resname='SO4'))\n", "E0321"},
         {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), match='colour')\n", "E0313"},
         {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='element')\n", "E0202"},
     };
@@ -2681,26 +2693,24 @@ UTEST(vial_ir, sdf_columns) {
         "ala = residue[1:3] and not particle(element='H')\n"
         "cb  = particle(name='CB')\n"
         "s   = sdf(ala, cb, 5.0)\n"
-        "a, b = mcs(residue[1], residue[2])\n"
-        "so  = sdf([a, b], cb, 5.0)\n"
-        "rv  = sdf([a[::-1], b[::-1]], cb, 5.0)\n"
-        "ma, mb = mcs(residue[1:3], residue[1:3])\n"
-        "s2  = sdf(concatenate((ma, mb)), cb, 5.0)\n"
-        "ca, cl = mcs(residue[1:5], residue[14:15])\n"
-        "ct  = sdf(concatenate((ca, cl)), cb, 5.0)\n";
+        "m   = mcs(residue[1], residue[2])\n"
+        "so  = sdf(m, cb, 5.0)\n"
+        "rv  = sdf(m[:, ::-1], cb, 5.0)\n"
+        "m2  = mcs(residue[1:3], residue[1:3])\n"
+        "s2  = sdf(m2, cb, 5.0)\n"
+        "ct  = sdf(mcs(residue[1:5], residue[14:15]), cb, 5.0)\n"
+        "c1  = sdf(mcs(residue[1:5]), cb, 5.0)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     const md_vial_diagnostic_t* dg;
     const size_t ndg = md_vial_diagnostics(prog, &dg);
     for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
     ASSERT_EQ(0u, (unsigned)ndg);
-    // mcs over arrays: set[k][w], the structures' own dimension first
+    // mcs over arrays: set[k][w], a row per structure
     md_vial__result_t r;
-    ASSERT_TRUE(md_vial__line_result(prog, 7, &r));
+    ASSERT_TRUE(md_vial__line_result(prog, 4, &r));
     EXPECT_STREQ("set[2][5]", r.types[0]);
-    EXPECT_STREQ("set[2][5]", r.types[1]);
-    ASSERT_TRUE(md_vial__line_result(prog, 9, &r));
+    ASSERT_TRUE(md_vial__line_result(prog, 7, &r));
     EXPECT_STREQ("set[4][5]", r.types[0]);
-    EXPECT_STREQ("set[1][5]", r.types[1]);
     md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 3}, alloc);
     ASSERT_TRUE(e != NULL);
     const bool ran = md_vial_eval_run(e);
@@ -2719,6 +2729,8 @@ UTEST(vial_ir, sdf_columns) {
     // The same structures twice through mcs over arrays: the same density per structure, twice as much added
     EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/s2", NULL), 1e-4);
     EXPECT_EQ(2 * vial_ir__attr1(at, "script/s/samples", 0), vial_ir__attr1(at, "script/s2/samples", 0));
+    // Four alike residues through one mcs: the same as the four fitted as they are, on their heavy atoms
+    EXPECT_LT(vial_ir__max_diff(at, "script/c1", "script/ct", NULL), 1e10);     // both exist; c1 has four rows, ct five
     // A structure not alike, the last residue with its OXT, joins by the five heavy atoms it has in common
     const md_attribute_t* act = md_attributes_find(at, STR_LIT("script/ct"));
     ASSERT_TRUE(act != NULL);
@@ -2726,7 +2738,7 @@ UTEST(vial_ir, sdf_columns) {
     for (size_t i = 0; i < 40 * 40 * 40; ++i) tot += ((const float*)act->data)[i];
     EXPECT_GT(tot, 0.0);
     // Drawn: every structure with its pose
-    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf(concatenate((ca") - src));
+    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf(mcs(residue[1:5], residue[14:15])") - src));
     md_vial_drawing_t dr;
     ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .element = -1}, expr, alloc));
     EXPECT_EQ(5u, (unsigned)dr.num_poses);
@@ -2737,10 +2749,10 @@ UTEST(vial_ir, sdf_columns) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);
     struct { const md_system_t* sys; const char* src; const char* code; } cases[] = {
-        {T, "a, b = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
-        {T, "a, b = mcs(residue('PHE')[0:2], residue('TYR')[0:2])\nv = sdf(concatenate((a, b)), particle(name='O'), 8.0)\n", NULL},
-        {T, "a, b = mcs(residue('PHE')[0:2], residue('TYR')[0:2])\nv = sdf(concatenate((a, b), axis=1), particle(name='O'), 8.0)\n", "E0316"},
-        {T, "a, b = mcs(residue[0:3], residue('TYR')[0:2])\n", "E0320"},
+        {T, "m = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
+        {T, "v = sdf(mcs(residue('PHE')[0:2], residue('TYR')[0:2]), particle(name='O'), 8.0)\n", NULL},
+        {T, "a = mcs(residue('PHE')[0:2])\nb = mcs(residue('TYR')[0:2])\nv = sdf(concatenate((a, b)), particle(name='O'), 8.0)\n", "E0309"},
+        {T, "a = mcs(residue('PHE')[0:2])\nb = mcs(residue('TYR')[0:2])\nv = concatenate((a, b), axis=1)\n", "E0316"},
         {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0)\n", "E0313"},
         {T, "v = sdf(residue('PHE'), particle(name='O'), 8.0, poses=None)\n", "E0202"},
     };

@@ -292,69 +292,94 @@ static T call_density(infer_t* x, vial_node_id call, const char* fname) {
 // mcs(a, b, by='element', least=0.5): known when compiling, from the topology; evaluation chooses among symmetric
 // mappings by frame 0's positions
 static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
-    static const vx_param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"b", VX_KIND_WHOLE, true}, {"match", VX_KIND_WHOLE, false}, {"least", VX_KIND_WHOLE, false}};
-    vial_node_id a[4] = {0};
-    if (!vx_bind(x, call, fname, p, 4, a)) return err();
+    // mcs(*structures, match='element', least=0.5): every positional argument is a set or an array of sets, static
+    static const vx_param_t sig[] = {{"structures", VX_KIND_WHOLE, true}, {"match", VX_KIND_WHOLE, false}, {"least", VX_KIND_WHOLE, false}};
+    vx_record_sig(x, call, sig, 3);
     bool ok = true;
-    const vial_sets_t* s[2] = {0};
-    const T* at[2] = {0};
-    for (int i = 0; i < 2; ++i) {
-        const T* t = type_of(x, a[i]);
-        at[i] = t;
-        if (vial_type_is_error(t)) { ok = false; continue; }
-        const vial_value_t v = vx_value_of(x, a[i]);
-        if (t->dtype != VIAL_DT_SET || t->ndim > 1 || t->stage != VIAL_STAGE_STATIC || v.kind != VIAL_VAL_SETS || !v.sets || !v.sets->count) {
-            vx_diag_fix(x, "E0313", a[i], NULL, "`mcs` takes two sets known when compiling, a structure each, or arrays of alike structures; this is %s", vx_tstr(t));
+    const vial_sets_t* parts[64];
+    uint32_t np = 0;
+    vial_node_id only = 0, mn = 0, ln = 0;
+    for (uint32_t i = 1; i < vx_num_children(x, call); ++i) {
+        const vial_node_id a = vx_child(x, call, i);
+        if (!a) continue;
+        if (vx_kind(x, a) == VIAL_N_KWARG) {
+            const vial_node_id kn = vx_child(x, a, 0), vn = vx_child(x, a, 1);
+            if (vn) vx_infer(x, vn);
+            const str_t kw = kn ? vx_text(x, kn) : STR_LIT("");
+            if (str_eq(kw, STR_LIT("match"))) mn = vn;
+            else if (str_eq(kw, STR_LIT("least"))) ln = vn;
+            else {
+                char fix[160] = "";
+                if (str_eq(kw, STR_LIT("by")) && vn) {
+                    const str_t vt = vx_text(x, vn);
+                    if (vt.len < 140) snprintf(fix, sizeof(fix), "match=%.*s", (int)vt.len, vt.ptr);
+                }
+                vx_diag_fix(x, "E0202", a, fix[0] ? fix : NULL, "`mcs` takes no keyword `%.*s`; it takes structures, match and least", (int)kw.len, kw.ptr);
+                ok = false;
+            }
+            continue;
+        }
+        const T t = vx_infer(x, a);
+        if (vial_type_is_error(&t)) { ok = false; continue; }
+        const vial_value_t v = vx_value_of(x, a);
+        if (t.dtype != VIAL_DT_SET || t.ndim > 1 || t.stage != VIAL_STAGE_STATIC || v.kind != VIAL_VAL_SETS || !v.sets || !v.sets->count) {
+            vx_diag_fix(x, "E0313", a, NULL, "`mcs` takes structures known when compiling, a set or an array of sets each; this is %s", vx_tstr(&t));
             ok = false;
             continue;
         }
-        // An array: alike structures, the first of which is matched and the rest follow by position
-        if (t->ndim == 1 && !structures_alike(x, a[i], v.sets, "mcs")) { ok = false; continue; }
-        s[i] = v.sets;
+        if (np < 64) parts[np++] = v.sets;
+        only = np == 1 ? a : 0;
+    }
+    if (!np) {
+        if (ok) vx_diag_fix(x, "E0204", call, NULL, "`mcs` needs a structure");
+        return err();
     }
     bool by_name = false;
-    if (a[2]) {
-        const vial_value_t v = vx_value_of(x, a[2]);
+    if (mn) {
+        const vial_value_t v = vx_value_of(x, mn);
         if (v.kind != VIAL_VAL_STR || !(str_eq(v.s, STR_LIT("element")) || str_eq(v.s, STR_LIT("name")))) {
-            vx_diag_fix(x, "E0313", a[2], NULL, "match= takes 'element' or 'name'");
+            vx_diag_fix(x, "E0313", mn, NULL, "match= takes 'element' or 'name'");
             ok = false;
         }
         by_name = v.kind == VIAL_VAL_STR && str_eq(v.s, STR_LIT("name"));
     }
     double least = 0.5;
-    if (a[3] && (!known_number(x, a[3], &least) || !(least >= 0.0 && least <= 1.0))) {
-        vx_diag_fix(x, "E0313", a[3], NULL, "`least` is the share of the smaller structure's heavy atoms that must be common, from 0 to 1");
+    if (ln && (!known_number(x, ln, &least) || !(least >= 0.0 && least <= 1.0))) {
+        vx_diag_fix(x, "E0313", ln, NULL, "`least` is the share of the smaller structure's heavy atoms that must be common, from 0 to 1");
         ok = false;
     }
     if (!ok || !x->c->sys) return err();
+    const vial_sets_t* st = np == 1 ? parts[0] : vial_sets_concat(parts, np, x->alloc);
     vial_mcs_t m;
-    if (!vial_mcs(&m, x->c->sys, s[0], s[1], by_name, NULL, x->alloc)) {
+    if (!vial_mcs(&m, x->c->sys, st, by_name, NULL, x->alloc)) {
         vx_diag_fix(x, "E0321", call, NULL, "a structure of more than %d heavy atoms is matched residue by residue, and these are not polymers", MD_MCS_GRAPH_MAX);
         return err();
     }
-    const size_t common = m.width, smaller = m.a_heavy < m.b_heavy ? m.a_heavy : m.b_heavy;
-    if (common < 3 || (double)common < least * (double)smaller) {
-        vx_diag_fix(x, "E0321", call, NULL, "the two have %zu heavy atoms in common, of %zu and %zu; least=%g asks for %.0f", common, m.a_heavy, m.b_heavy, least,
-            ceil(least * (double)smaller) < 3 ? 3 : ceil(least * (double)smaller));
+    if (m.least_at) {
+        // The structure that shares the least with the first must still share enough
+        const size_t need = ceil(least * (double)m.least_heavy) < 3 ? 3 : (size_t)ceil(least * (double)m.least_heavy);
+        if (m.least_common < need) {
+            vx_diag_fix(x, "E0321", call, NULL, "structure %u has %zu heavy atoms in common with the first, of %zu and %zu; least=%g asks for %zu",
+                m.least_at, m.least_common, m.first_heavy, m.least_heavy, least, need);
+            return err();
+        }
+    }
+    if (m.width < 3) {
+        vx_diag_fix(x, "E0321", call, NULL, "the structures have %u heavy atoms in common, all of them; fewer than 3 is nothing to place", m.width);
         return err();
     }
-    if (m.incomplete) vx_diag_fix(x, "W0408", call, NULL, "the search gave up before it was sure: %zu heavy atoms in common is the most it found", common);
-    T* elems = md_alloc(x->alloc, 2 * sizeof(T));
-    const uint32_t w = (uint32_t)common;
-    for (int i = 0; i < 2; ++i) {
-        const vial_sets_t* r = i ? m.b : m.a;
-        const uint32_t rows = i ? m.b_rows : m.a_rows;
-        if (!rows) { elems[i] = vx_sets_type(x, r, call); continue; }
-        // set[k][w]: the structures' own dimension, then the w particles matched, one each
-        T t = vial_type_scalar(VIAL_DT_SET);
-        t.flags |= VIAL_TYPE_ONE_PARTICLE;
-        vial_type_push_dim(&t, at[i]->dims[0]);
-        vial_type_push_dim(&t, vial_extent_static(w));
-        elems[i] = t;
+    if (m.incomplete) vx_diag_fix(x, "W0408", call, NULL, "the search gave up before it was sure: the atoms in common are the most it found");
+    // set[k][w]: the structures, then the w particles matched, one each. One array's own dimension keeps its labels
+    T t = vial_type_scalar(VIAL_DT_SET);
+    t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    const T* ot = only ? type_of(x, only) : NULL;
+    if (ot && ot->ndim == 1) vial_type_push_dim(&t, ot->dims[0]);
+    else {
+        vial_extent_t e = vial_extent_static(m.k);
+        e.desc = vx_desc(x, VIAL_LEVEL_NONE, st);
+        vial_type_push_dim(&t, e);
     }
-    T t = vial_type_scalar(VIAL_DT_TUPLE);
-    t.elems = elems;
-    t.num_elems = 2;
+    vial_type_push_dim(&t, vial_extent_static(m.width));
     return t;
 }
 
