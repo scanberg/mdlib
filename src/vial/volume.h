@@ -127,9 +127,14 @@ void vial_volume_free(vial_volume_t* vol);
 // ascending order and b's paired with them by position, b's pairing with a's without W0605. With xyz, the positions of
 // every particle, of the mappings the bonds allow the one of least RMSD; without, the first. The check makes it
 // without positions, evaluation with frame 0's, so the two differ at most by symmetric particles of b.
+// a and b are one structure each, or arrays of alike structures (as many particles, in the same order): the mapping is
+// found between the first of each and applied to every structure by position, so an array gives set[k][w], k rows of
+// the w particles matched, column for column.
 typedef struct vial_mcs_t {
     vial_sets_t*    a;
     vial_sets_t*    b;
+    uint32_t        width;              // the particles matched, w
+    uint32_t        a_rows, b_rows;     // the structures of each, k: 0 for one set, which gives set[w] rather than set[1][w]
     size_t          a_heavy, b_heavy;
     bool            incomplete;
     double          rmsd;

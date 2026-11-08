@@ -880,7 +880,12 @@ static T call_concatenate(infer_t* x, vial_node_id call) {
     uint32_t total = t.dims[ax].n;
     vial_sets_t* joined = NULL;
     const vial_value_t v0 = value(x, vx_child(x, a[0], 0));
-    bool sets_known = t.dtype == VIAL_DT_SET && t.ndim == 1 && v0.kind == VIAL_VAL_SETS;
+    bool sets_known = t.dtype == VIAL_DT_SET && (t.ndim == 1 || (t.ndim == 2 && ax == 0)) && v0.kind == VIAL_VAL_SETS;
+    if (t.dtype == VIAL_DT_SET && t.ndim == 2 && ax != 0) {
+        vx_diag_fix(x, "E0316", a[1] ? a[1] : a[0], NULL, "`concatenate` joins arrays of sets along their first dimension");
+        return err();
+    }
+    bool one_each = t.flags & VIAL_TYPE_ONE_PARTICLE;
     for (uint32_t i = 1; i < n; ++i) {
         const vial_node_id in = vx_child(x, a[0], i);
         const T b = type_of(x, in);
@@ -907,10 +912,12 @@ static T call_concatenate(infer_t* x, vial_node_id call) {
         join_stage(&t, &b);
         const vial_value_t bv = value(x, in);
         sets_known = sets_known && bv.kind == VIAL_VAL_SETS;
+        one_each = one_each && (b.flags & VIAL_TYPE_ONE_PARTICLE);
     }
     t.dims[ax] = static_n ? vial_extent_static(total) :
         (vial_extent_t){.kind = t.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)call};
     t.flags &= ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY);
+    if (one_each) t.flags |= VIAL_TYPE_ONE_PARTICLE;    // set[k][w] of one particle each joined stays so
     if (sets_known && static_n && t.stage == VIAL_STAGE_STATIC) {
         // The sets one after the other: a new array, its units of no one level
         uint32_t w = 0;

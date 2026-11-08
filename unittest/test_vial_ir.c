@@ -2639,7 +2639,7 @@ UTEST(vial_ir, mcs) {
     // Too little in common: E0321, unless least= asks for less
     struct { const char* src; const char* code; } bad[] = {
         {"m = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
-        {"m = mcs(residue('PHE'), residue('TYR'))\n", "E0313"},
+        {"m = mcs(residue('PHE'), residue[0:3])\n", "E0320"},
         {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), match='colour')\n", "E0313"},
         {"m = mcs(particle(resname='GTP'), particle(resname='GDP'), by='element')\n", "E0202"},
     };
@@ -2670,9 +2670,9 @@ static double vial_ir__max_diff(const md_attributes_t* at, const char* p, const 
     return d;
 }
 
-// An sdf over structures paired column by column, and over kinds of structure placed on the first kind's reference:
-// what is alike gives what one kind gives
-UTEST(vial_ir, sdf_kinds) {
+// An sdf over structures paired column by column: what mcs gives for one pair, and for arrays of alike structures,
+// which it maps column for column, so structures of different kinds join through concatenate
+UTEST(vial_ir, sdf_columns) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);
     ASSERT_GT(vial_test_run('P'), 3);
@@ -2684,20 +2684,30 @@ UTEST(vial_ir, sdf_kinds) {
         "a, b = mcs(residue[1], residue[2])\n"
         "so  = sdf([a, b], cb, 5.0)\n"
         "rv  = sdf([a[::-1], b[::-1]], cb, 5.0)\n"
-        "s2  = sdf((ala, ala), cb, 5.0)\n"
-        "sp  = sdf((ala, ala), cb, 5.0, poses=(None, (eye(3), zeros(3, unit='Å'))))\n"
-        "ct  = sdf((residue[1:5], residue[14:15]), cb, 5.0)\n";
+        "ma, mb = mcs(residue[1:3], residue[1:3])\n"
+        "s2  = sdf(concatenate((ma, mb)), cb, 5.0)\n"
+        "ca, cl = mcs(residue[1:5], residue[14:15])\n"
+        "ct  = sdf(concatenate((ca, cl)), cb, 5.0)\n";
     md_vial_program_t* prog = md_vial_compile(str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = STR_LIT("run")}, alloc);
     const md_vial_diagnostic_t* dg;
     const size_t ndg = md_vial_diagnostics(prog, &dg);
     for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
     ASSERT_EQ(0u, (unsigned)ndg);
+    // mcs over arrays: set[k][w], the structures' own dimension first
+    md_vial__result_t r;
+    ASSERT_TRUE(md_vial__line_result(prog, 7, &r));
+    EXPECT_STREQ("set[2][5]", r.types[0]);
+    EXPECT_STREQ("set[2][5]", r.types[1]);
+    ASSERT_TRUE(md_vial__line_result(prog, 9, &r));
+    EXPECT_STREQ("set[4][5]", r.types[0]);
+    EXPECT_STREQ("set[1][5]", r.types[1]);
     md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = STR_LIT("run"), .num_threads = 3}, alloc);
     ASSERT_TRUE(e != NULL);
-    ASSERT_TRUE(md_vial_eval_run(e));
+    const bool ran = md_vial_eval_run(e);
     const md_vial_diagnostic_t* rd;
     const size_t nr = md_vial_eval_diagnostics(e, &rd);
     for (size_t i = 0; i < nr; ++i) printf("%.5s %.*s\n", rd[i].code, (int)rd[i].message.len, rd[i].message.ptr);
+    ASSERT_TRUE(ran);
     EXPECT_EQ(0u, (unsigned)nr);
     const md_attributes_t* at = md_vial_eval_attributes(e);
     size_t n = 0;
@@ -2706,18 +2716,17 @@ UTEST(vial_ir, sdf_kinds) {
     EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/so", &n), 1e-6);
     EXPECT_EQ(40u * 40u * 40u, (unsigned)n);
     EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/rv", NULL), 2e-4);    // the fits sum in another order
-    // The same kind twice: placed on itself, the same density per structure, twice as much added
+    // The same structures twice through mcs over arrays: the same density per structure, twice as much added
     EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/s2", NULL), 1e-4);
-    EXPECT_LT(vial_ir__max_diff(at, "script/s", "script/sp", NULL), 1e-4);
     EXPECT_EQ(2 * vial_ir__attr1(at, "script/s/samples", 0), vial_ir__attr1(at, "script/s2/samples", 0));
-    // A kind not alike, the last residue with its OXT, placed by the five heavy atoms it has in common
+    // A structure not alike, the last residue with its OXT, joins by the five heavy atoms it has in common
     const md_attribute_t* act = md_attributes_find(at, STR_LIT("script/ct"));
     ASSERT_TRUE(act != NULL);
     double tot = 0;
     for (size_t i = 0; i < 40 * 40 * 40; ++i) tot += ((const float*)act->data)[i];
     EXPECT_GT(tot, 0.0);
-    // Drawn: every structure of every kind with its pose
-    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf((residue") - src));
+    // Drawn: every structure with its pose
+    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sdf(concatenate((ca") - src));
     md_vial_drawing_t dr;
     ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = STR_LIT("run"), .frame = 3, .element = -1}, expr, alloc));
     EXPECT_EQ(5u, (unsigned)dr.num_poses);
@@ -2728,11 +2737,12 @@ UTEST(vial_ir, sdf_kinds) {
     const md_system_t* T = vial_test_system('T');
     ASSERT_TRUE(T != NULL);
     struct { const md_system_t* sys; const char* src; const char* code; } cases[] = {
-        {T, "v = sdf((particle(resname='GTP'), particle(resname='VLB')), particle(name='O'), 8.0)\n", "E0321"},
-        {T, "v = sdf((residue('PHE')[0:2], residue('TYR')[0:2]), particle(name='O'), 8.0)\n", NULL},
-        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, poses=(None, eye(3)))\n", "E0313"},
-        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, poses=((eye(3), zeros(3)), None))\n", "E0313"},
-        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0, ref=(None,))\n", "E0313"},
+        {T, "a, b = mcs(particle(resname='GTP'), particle(resname='VLB'))\n", "E0321"},
+        {T, "a, b = mcs(residue('PHE')[0:2], residue('TYR')[0:2])\nv = sdf(concatenate((a, b)), particle(name='O'), 8.0)\n", NULL},
+        {T, "a, b = mcs(residue('PHE')[0:2], residue('TYR')[0:2])\nv = sdf(concatenate((a, b), axis=1), particle(name='O'), 8.0)\n", "E0316"},
+        {T, "a, b = mcs(residue[0:3], residue('TYR')[0:2])\n", "E0320"},
+        {T, "v = sdf((residue('PHE'), residue('TYR')), particle(name='O'), 8.0)\n", "E0313"},
+        {T, "v = sdf(residue('PHE'), particle(name='O'), 8.0, poses=None)\n", "E0202"},
     };
     for (size_t i = 0; i < ARRAY_SIZE(cases); ++i) {
         md_vial_program_t* p = md_vial_compile(str_from_cstr(cases[i].src), &(md_vial_compile_desc_t){.sys = cases[i].sys}, alloc);

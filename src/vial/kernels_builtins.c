@@ -1443,9 +1443,34 @@ static bool k_concatenate(vial_kctx_t* k, const vial_val_t* items, const vial_va
     }
     const uint8_t dt = k->type->dtype;
     if (dt == VIAL_DT_SET) {
-        if (nd != 1) return vial_rt_fail(k, "R0103", "concatenate of sets joins one dimension");
-        return vial_k_stack(&(vial_kctx_t){.in = k->in, .op = k->op, .type = &(vial_type_t){.dtype = VIAL_DT_SET}, .alloc = k->alloc, .map_index = -1},
-                            e, n, out) && (out->ndim = 1, out->dims[0] = dims[0], true);
+        // Sets are stored flat, row-major, so joining along the first dimension appends them, whatever each one's count
+        if (ax != 0 || nd > 2) return vial_rt_fail(k, "R0103", "concatenate of sets joins the first dimension");
+        uint32_t count = 0, total = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (!e[i].sets) return vial_rt_fail(k, "R0103", "concatenate of sets without sets");
+            count += e[i].sets->count;
+            total += e[i].sets->offset[e[i].sets->count];
+        }
+        vial_sets_t* s = md_alloc(k->alloc, sizeof(vial_sets_t));
+        memset(s, 0, sizeof(*s));
+        s->count = count;
+        s->offset = md_alloc(k->alloc, ((size_t)count + 1) * sizeof(uint32_t));
+        s->idx = md_alloc(k->alloc, ((size_t)total + 1) * sizeof(uint32_t));
+        s->offset[0] = 0;
+        uint32_t c = 0, at = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            const vial_sets_t* q = e[i].sets;
+            for (uint32_t j = 0; j < q->count; ++j) {
+                const uint32_t sz = vial_sets_size(q, j);
+                memcpy(s->idx + at, vial_sets_items(q, j), sz * sizeof(uint32_t));
+                at += sz;
+                s->offset[++c] = at;
+            }
+        }
+        *out = vial_val_sets(s);
+        out->ndim = nd;
+        memcpy(out->dims, dims, nd * sizeof(uint32_t));
+        return true;
     }
     vial_val_t o; if (!vial_k_make(k, dt, nd, dims, &o)) return false;
     const size_t es = vial_dtype_size(dt);

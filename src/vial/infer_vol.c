@@ -130,14 +130,15 @@ static void grid(infer_t* x, vial_node_id call, const double len[3], double samp
 
 // The structures of an sdf: alike, particle by particle, as v1 has them: as many particles, of the same elements, or
 // of the same names where an element is not known
-static bool structures_alike(infer_t* x, vial_node_id n, const vial_sets_t* s) {
+static bool structures_alike(infer_t* x, vial_node_id n, const vial_sets_t* s, const char* fname) {
     const md_system_t* sys = x->c->sys;
     const uint32_t n0 = vial_sets_size(s, 0);
     const uint32_t* a0 = vial_sets_items(s, 0);
+    const char* how = fname[0] == 's' ? "fitted" : "matched";
     for (uint32_t i = 1; i < s->count; ++i) {
         if (vial_sets_size(s, i) != n0) {
-            vx_diag_fix(x, "E0320", n, NULL, "the structures of `sdf` are fitted particle by particle; structure %u has %u particles and the first %u",
-                i, vial_sets_size(s, i), n0);
+            vx_diag_fix(x, "E0320", n, NULL, "the structures of `%s` are %s particle by particle; structure %u has %u particles and the first %u",
+                fname, how, i, vial_sets_size(s, i), n0);
             return false;
         }
         if (!sys) continue;
@@ -149,8 +150,8 @@ static bool structures_alike(infer_t* x, vial_node_id n, const vial_sets_t* s) {
             const bool same = (zp && zq) ? zp == zq : str_eq(md_atom_name(&sys->atom, p), md_atom_name(&sys->atom, q));
             if (same) continue;
             const str_t np = md_atom_name(&sys->atom, p), nq = md_atom_name(&sys->atom, q);
-            vx_diag_fix(x, "E0320", n, NULL, "the structures of `sdf` are fitted particle by particle; particle %u of structure %u is %.*s, and of the first %.*s",
-                k, i, (int)np.len, np.ptr, (int)nq.len, nq.ptr);
+            vx_diag_fix(x, "E0320", n, NULL, "the structures of `%s` are %s particle by particle; particle %u of structure %u is %.*s, and of the first %.*s",
+                fname, how, k, i, (int)np.len, np.ptr, (int)nq.len, nq.ptr);
             return false;
         }
     }
@@ -164,14 +165,13 @@ static bool alike(const md_system_t* sys, uint32_t p, uint32_t q) {
     return (zp && zq) ? zp == zq : str_eq(md_atom_name(&sys->atom, p), md_atom_name(&sys->atom, q));
 }
 
-// One kind of an sdf's structures: a set, an array of sets alike, or set[k][w] whose columns are alike, static; its
-// first structure's particles as a set into *first, when they are known
-static bool kind_ok(infer_t* x, vial_node_id at, const T* t, const vial_value_t* v, const vial_sets_t** first) {
-    *first = NULL;
+// An sdf's structures: a set, an array of sets alike, or set[k][w] whose columns are alike, static
+static bool structures_ok(infer_t* x, vial_node_id at, const T* t, const vial_value_t* v) {
     if (vial_type_is_error(t)) return false;
     const bool ordered = t->dtype == VIAL_DT_SET && t->ndim == 2 && (t->flags & VIAL_TYPE_ONE_PARTICLE);
     if (t->dtype != VIAL_DT_SET || (t->ndim > 1 && !ordered)) {
-        vx_diag_fix(x, "E0313", at, NULL, "the structures of `sdf` are a set, an array of sets, set[k][w] of one particle each, or a tuple of kinds of them; this is %s", vx_tstr(t));
+        vx_diag_fix(x, "E0313", at, NULL, "the structures of `sdf` are a set, an array of alike sets, or set[k][w] of one particle each, as mcs and "
+            "smiles_atoms give them; this is %s", vx_tstr(t));
         return false;
     }
     if (t->stage != VIAL_STAGE_STATIC) {
@@ -180,11 +180,7 @@ static bool kind_ok(infer_t* x, vial_node_id at, const T* t, const vial_value_t*
     }
     if (v->kind != VIAL_VAL_SETS || !v->sets || !v->sets->count) return true;
     const vial_sets_t* s = v->sets;
-    if (!ordered) {
-        if (!structures_alike(x, at, s)) return false;
-        *first = vial_sets_one(vial_sets_items(s, 0), vial_sets_size(s, 0), x->alloc);
-        return true;
-    }
+    if (!ordered) return structures_alike(x, at, s, "sdf");
     const uint32_t w = t->dims[1].kind == VIAL_EXT_STATIC ? t->dims[1].n : 0;
     if (!w || s->count % w) return true;
     const md_system_t* sys = x->c->sys;
@@ -198,10 +194,6 @@ static bool kind_ok(infer_t* x, vial_node_id at, const T* t, const vial_value_t*
             return false;
         }
     }
-    uint32_t* row = md_alloc(x->alloc, (w + 1) * sizeof(uint32_t));
-    for (uint32_t j = 0; j < w; ++j) row[j] = vial_sets_items(s, j)[0];
-    for (uint32_t i = 1; i < w; ++i) { const uint32_t r = row[i]; uint32_t j = i; while (j > 0 && row[j - 1] > r) { row[j] = row[j - 1]; --j; } row[j] = r; }
-    *first = vial_sets_one(row, w, x->alloc);
     return true;
 }
 
@@ -220,19 +212,6 @@ static bool ref_ok(infer_t* x, vial_node_id at) {
     return true;
 }
 
-// A pose of a kind: None, or (R, t), float[3][3] and float[3], static
-static bool pose_ok(infer_t* x, vial_node_id at) {
-    if (!at || is_none(x, at)) return true;
-    const T* t = type_of(x, at);
-    if (vial_type_is_error(t)) return false;
-    const bool ok = t->dtype == VIAL_DT_TUPLE && t->num_elems == 2 && t->stage == VIAL_STAGE_STATIC &&
-                    t->elems[0].ndim == 2 && t->elems[0].dims[0].kind == VIAL_EXT_STATIC && t->elems[0].dims[0].n == 3 &&
-                    t->elems[0].dims[1].kind == VIAL_EXT_STATIC && t->elems[0].dims[1].n == 3 &&
-                    t->elems[1].ndim == 1 && t->elems[1].dims[0].kind == VIAL_EXT_STATIC && t->elems[1].dims[0].n == 3;
-    if (!ok) vx_diag_fix(x, "E0313", at, NULL, "a pose is (R, t), float[3][3] and float[3] Å, static, that places a kind's reference on the first's: x = R @ y + t; this is %s", vx_tstr(t));
-    return ok;
-}
-
 static T volume_type(const uint32_t dims[3], bool known, vial_node_id call, md_unit_t unit, const T* from) {
     T t = vial_type_scalar(VIAL_DT_FLOAT);
     for (int a = 0; a < 3; ++a) {
@@ -248,71 +227,14 @@ static T volume_type(const uint32_t dims[3], bool known, vial_node_id call, md_u
 static T call_sdf(infer_t* x, vial_node_id call, const char* fname) {
     static const vx_param_t p[] = {{"structures", VX_KIND_WHOLE, true}, {"target", VX_KIND_WHOLE, true}, {"extent", VX_KIND_WHOLE, true},
                                    {"samples", VX_KIND_WHOLE, false}, {"ref", VX_KIND_WHOLE, false}, {"weights", VX_KIND_WHOLE, false},
-                                   {"sigma", VX_KIND_WHOLE, false}, {"poses", VX_KIND_WHOLE, false}};
-    vial_node_id a[8] = {0};
-    if (!vx_bind(x, call, fname, p, 8, a)) return err();
+                                   {"sigma", VX_KIND_WHOLE, false}};
+    vial_node_id a[7] = {0};
+    if (!vx_bind(x, call, fname, p, 7, a)) return err();
     bool ok = true;
-    // The structures: static, so the particles fitted are the same in every frame; one kind, or a tuple of kinds
-    const T* st = type_of(x, a[0]);
-    enum { MAX_KINDS = 64 };
-    const vial_sets_t* firsts[MAX_KINDS] = {0};
-    uint32_t nk = 1;
-    const bool literal = vx_kind(x, a[0]) == VIAL_N_TUPLE;
-    if (vial_type_is_error(st)) {
-        ok = false;
-    } else if (st->dtype == VIAL_DT_TUPLE) {
-        nk = st->num_elems;
-        if (!nk || nk > MAX_KINDS) {
-            vx_diag_fix(x, "E0313", a[0], NULL, "the kinds of structure of `sdf` are 1 to %d", MAX_KINDS);
-            ok = false;
-        }
-        for (uint32_t i = 0; ok && i < nk; ++i) {
-            const vial_node_id c = literal ? vx_child(x, a[0], i) : 0;
-            const vial_value_t v = c ? vx_value_of(x, c) : (vial_value_t){0};
-            if (!kind_ok(x, c ? c : a[0], &st->elems[i], &v, &firsts[i])) ok = false;
-        }
-    } else {
-        const vial_value_t v = vx_value_of(x, a[0]);
-        if (!kind_ok(x, a[0], st, &v, &firsts[0])) ok = false;
-    }
-    // A reference per kind, and a pose per kind but the first
-    if (a[4] && vx_kind(x, a[4]) == VIAL_N_TUPLE && type_of(x, a[4])->dtype == VIAL_DT_TUPLE) {
-        if (vx_num_children(x, a[4]) != nk) { vx_diag_fix(x, "E0313", a[4], NULL, "ref= gives one reference per kind, %u", nk); ok = false; }
-        for (uint32_t i = 0; ok && i < nk; ++i) if (!ref_ok(x, vx_child(x, a[4], i))) ok = false;
-    } else if (!ref_ok(x, a[4])) {
-        ok = false;
-    }
-    bool posed[MAX_KINDS] = {0};
-    if (a[7] && !is_none(x, a[7])) {
-        if (vx_kind(x, a[7]) != VIAL_N_TUPLE || vx_num_children(x, a[7]) != nk) {
-            vx_diag_fix(x, "E0313", a[7], NULL, "poses= is a tuple of a pose per kind, %u, the first None", nk);
-            ok = false;
-        } else {
-            for (uint32_t i = 0; i < nk; ++i) {
-                const vial_node_id c = vx_child(x, a[7], i);
-                if (i == 0 && !is_none(x, c)) { vx_diag_fix(x, "E0313", c, NULL, "the first kind is where the others are placed: its pose is None"); ok = false; }
-                else if (!pose_ok(x, c)) ok = false;
-                posed[i] = !is_none(x, c);
-            }
-        }
-    }
-    // What each kind has in common with the first: enough to place it, or a pose given
-    for (uint32_t i = 1; ok && i < nk; ++i) {
-        if (posed[i] || !firsts[0] || !firsts[i] || !x->c->sys) continue;
-        vial_mcs_t m;
-        const vial_node_id at = literal ? vx_child(x, a[0], i) : a[0];
-        if (!vial_mcs(&m, x->c->sys, firsts[0], firsts[i], false, NULL, x->alloc)) {
-            vx_diag_fix(x, "E0321", at, NULL, "kind %u of `sdf` is too large to find what it has in common with the first; give poses=", i);
-            ok = false;
-            continue;
-        }
-        const size_t common = m.a->count, smaller = m.a_heavy < m.b_heavy ? m.a_heavy : m.b_heavy;
-        if (common < 3 || 2 * common < smaller) {
-            vx_diag_fix(x, "E0321", at, NULL, "kind %u of `sdf` has %zu heavy atoms in common with the first, of %zu and %zu: too little to place it; give poses=",
-                i, common, m.b_heavy, m.a_heavy);
-            ok = false;
-        }
-    }
+    // The structures: static, so the particles fitted are the same in every frame
+    const vial_value_t sv = vx_value_of(x, a[0]);
+    if (!structures_ok(x, a[0], type_of(x, a[0]), &sv)) ok = false;
+    if (!ref_ok(x, a[4])) ok = false;
     if (!target_ok(x, a[1], fname, "target")) ok = false;
     double ext[3];
     if (!three_lengths(x, a[2], ext) || !(ext[0] > 0.0 && ext[1] > 0.0 && ext[2] > 0.0)) {
@@ -375,15 +297,19 @@ static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
     if (!vx_bind(x, call, fname, p, 4, a)) return err();
     bool ok = true;
     const vial_sets_t* s[2] = {0};
+    const T* at[2] = {0};
     for (int i = 0; i < 2; ++i) {
         const T* t = type_of(x, a[i]);
+        at[i] = t;
         if (vial_type_is_error(t)) { ok = false; continue; }
         const vial_value_t v = vx_value_of(x, a[i]);
-        if (t->dtype != VIAL_DT_SET || t->ndim != 0 || t->stage != VIAL_STAGE_STATIC || v.kind != VIAL_VAL_SETS || !v.sets || v.sets->count != 1) {
-            vx_diag_fix(x, "E0313", a[i], NULL, "`mcs` takes two sets known when compiling, a structure each; this is %s", vx_tstr(t));
+        if (t->dtype != VIAL_DT_SET || t->ndim > 1 || t->stage != VIAL_STAGE_STATIC || v.kind != VIAL_VAL_SETS || !v.sets || !v.sets->count) {
+            vx_diag_fix(x, "E0313", a[i], NULL, "`mcs` takes two sets known when compiling, a structure each, or arrays of alike structures; this is %s", vx_tstr(t));
             ok = false;
             continue;
         }
+        // An array: alike structures, the first of which is matched and the rest follow by position
+        if (t->ndim == 1 && !structures_alike(x, a[i], v.sets, "mcs")) { ok = false; continue; }
         s[i] = v.sets;
     }
     bool by_name = false;
@@ -406,7 +332,7 @@ static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
         vx_diag_fix(x, "E0321", call, NULL, "a structure of more than %d heavy atoms is matched residue by residue, and these are not polymers", MD_MCS_GRAPH_MAX);
         return err();
     }
-    const size_t common = m.a->count, smaller = m.a_heavy < m.b_heavy ? m.a_heavy : m.b_heavy;
+    const size_t common = m.width, smaller = m.a_heavy < m.b_heavy ? m.a_heavy : m.b_heavy;
     if (common < 3 || (double)common < least * (double)smaller) {
         vx_diag_fix(x, "E0321", call, NULL, "the two have %zu heavy atoms in common, of %zu and %zu; least=%g asks for %.0f", common, m.a_heavy, m.b_heavy, least,
             ceil(least * (double)smaller) < 3 ? 3 : ceil(least * (double)smaller));
@@ -414,8 +340,18 @@ static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
     }
     if (m.incomplete) vx_diag_fix(x, "W0408", call, NULL, "the search gave up before it was sure: %zu heavy atoms in common is the most it found", common);
     T* elems = md_alloc(x->alloc, 2 * sizeof(T));
-    elems[0] = vx_sets_type(x, m.a, call);
-    elems[1] = vx_sets_type(x, m.b, call);
+    const uint32_t w = (uint32_t)common;
+    for (int i = 0; i < 2; ++i) {
+        const vial_sets_t* r = i ? m.b : m.a;
+        const uint32_t rows = i ? m.b_rows : m.a_rows;
+        if (!rows) { elems[i] = vx_sets_type(x, r, call); continue; }
+        // set[k][w]: the structures' own dimension, then the w particles matched, one each
+        T t = vial_type_scalar(VIAL_DT_SET);
+        t.flags |= VIAL_TYPE_ONE_PARTICLE;
+        vial_type_push_dim(&t, at[i]->dims[0]);
+        vial_type_push_dim(&t, vial_extent_static(w));
+        elems[i] = t;
+    }
     T t = vial_type_scalar(VIAL_DT_TUPLE);
     t.elems = elems;
     t.num_elems = 2;
