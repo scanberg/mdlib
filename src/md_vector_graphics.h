@@ -53,6 +53,14 @@ typedef enum md_vg_fill_rule_t {
     MD_VG_FILL_RULE_EVEN_ODD,
 } md_vg_fill_rule_t;
 
+// Which point of a line of text its x is: its start, its middle or its end (SVG text-anchor). The
+// viewer's own font metrics do the aligning, so text stays aligned in a font the writer cannot measure.
+typedef enum md_vg_text_anchor_t {
+    MD_VG_TEXT_ANCHOR_START = 0,
+    MD_VG_TEXT_ANCHOR_MIDDLE,
+    MD_VG_TEXT_ANCHOR_END,
+} md_vg_text_anchor_t;
+
 typedef struct md_vg_style_t {
     md_vg_paint_t fill;
     md_vg_paint_t stroke;
@@ -137,6 +145,7 @@ typedef struct md_vg_cmd_t {
             float font_size;
             uint32_t text_offset;
             uint32_t text_len;
+            uint32_t anchor;    // md_vg_text_anchor_t
         } text;
     } data;
 } md_vg_cmd_t;
@@ -263,6 +272,8 @@ void md_vg_add_bezier_cubic_styled(md_vg_scene_t* scene, vec2_t p0, vec2_t p1, v
 
 void md_vg_add_text(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_str_t text);
 void md_vg_add_text_styled(md_vg_scene_t* scene, vec2_t pos, float font_size, const md_vg_style_t* style, md_str_t text);
+// pos.y is the top of the text, as for md_vg_add_text; pos.x is the point the anchor names
+void md_vg_add_text_anchored(md_vg_scene_t* scene, vec2_t pos, float font_size, md_vg_color_t color, md_vg_text_anchor_t anchor, md_str_t text);
 
 void md_vg_path_clear(md_vg_scene_t* scene);
 void md_vg_path_move_to(md_vg_scene_t* scene, vec2_t pos);
