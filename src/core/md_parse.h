@@ -174,11 +174,11 @@ static MD_FORCE_INLINE bool md_parse_fixed_f32(float* out, md_str_t field, size_
     // and no store to forward from.
     uint64_t w;
     if (width == 8) {
-        MD_MEMCPY(&w, field.ptr, 8);
+        md_memcpy(&w, field.ptr, 8);
     } else if (width >= 4) {
         uint32_t lo, hi;
-        MD_MEMCPY(&lo, field.ptr, 4);
-        MD_MEMCPY(&hi, field.ptr + width - 4, 4);
+        md_memcpy(&lo, field.ptr, 4);
+        md_memcpy(&hi, field.ptr + width - 4, 4);
         w = ((uint64_t)hi << 32) | ((uint64_t)lo << (8 * (8 - width))) | (0x2020202020202020ull >> (8 * width));
     } else {
         w = 0x2020202020202020ull;

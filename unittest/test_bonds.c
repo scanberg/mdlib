@@ -363,7 +363,7 @@ static bool delta_fixture_init(delta_fixture_t* f) {
     if (!md_util_system_infer(&f->sys, &f->ref, MD_UTIL_INFER_ALL, NULL)) return false;
     f->st = f->ref;
     f->st.xyz = md_alloc(f->alloc, sizeof(vec3_t) * f->ref.num_atoms);
-    MD_MEMCPY(f->st.xyz, f->ref.xyz, sizeof(vec3_t) * f->ref.num_atoms);
+    md_memcpy(f->st.xyz, f->ref.xyz, sizeof(vec3_t) * f->ref.num_atoms);
     return true;
 }
 

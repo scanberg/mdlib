@@ -81,7 +81,7 @@ UTEST(trr, run_matches_reference) {
     const md_attribute_t* pos = md_attributes_find(t, MD_STR_LIT("run/tryptophan/atom/position"));
     md_attribute_slice_t one = md_attribute_slice_2(7, 11);
     ASSERT_EQ(3u, md_attribute_extract_f32(one_xyz, 3, pos, one, md_unit_none()));
-    EXPECT_EQ(0, MD_MEMCMP(full, one_xyz, sizeof(full)));
+    EXPECT_EQ(0, md_memcmp(full, one_xyz, sizeof(full)));
 
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
@@ -132,7 +132,7 @@ static void trr_put_i32(md_file_t file, int32_t v) {
 
 static void trr_put_f32(md_file_t file, float v) {
     int32_t i;
-    MD_MEMCPY(&i, &v, 4);
+    md_memcpy(&i, &v, 4);
     trr_put_i32(file, i);
 }
 

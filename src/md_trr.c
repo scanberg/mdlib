@@ -300,7 +300,7 @@ static bool write_cache(const trr_cache_t* cache, md_str_t path, const md_file_i
 // What the file is, from its cache when that is current and from a scan otherwise (writing the
 // cache unless told not to). path must be canonical; every array is allocated from alloc.
 static bool trr_index_load(trr_cache_t* cache, md_str_t path, uint32_t flags, md_allocator_i* alloc) {
-    MD_MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
@@ -317,7 +317,7 @@ static bool trr_index_load(trr_cache_t* cache, md_str_t path, uint32_t flags, md
         goto done;
     }
 
-    MD_MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
     md_array(int64_t)  offsets  = 0;
     md_array(double)   times    = 0;
     md_array(int64_t)  steps    = 0;

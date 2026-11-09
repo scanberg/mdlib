@@ -258,9 +258,9 @@ static MD_FORCE_INLINE uint64_t extract_bits_be_raw_57(const uint8_t* base, size
     size_t bit_in_byte = bit_offset & 7;
 
     uint64_t raw;
-    MD_MEMCPY(&raw, base + byte_offset, sizeof(raw));
+    md_memcpy(&raw, base + byte_offset, sizeof(raw));
 #if __LITTLE_ENDIAN__
-    raw = MD_BSWAP64(raw);
+    raw = md_bswap64(raw);
 #endif
     return (raw << bit_in_byte) >> (64 - bit_length);
 }
@@ -272,10 +272,10 @@ static MD_FORCE_INLINE uint64_t extract_bits_be_raw_64(const uint8_t* base, size
     size_t bit_in_byte = bit_offset & 7;
 
     uint64_t raw[2];
-    MD_MEMCPY(raw, base + byte_offset, sizeof(raw));
+    md_memcpy(raw, base + byte_offset, sizeof(raw));
 #if __LITTLE_ENDIAN__
-    raw[0] = MD_BSWAP64(raw[0]);
-    raw[1] = MD_BSWAP64(raw[1]);
+    raw[0] = md_bswap64(raw[0]);
+    raw[1] = md_bswap64(raw[1]);
 #endif
     // raw[1] >> (64 - bit_in_byte) in two steps, as a shift by 64 (bit_in_byte 0) is undefined
     uint64_t combined = (raw[0] << bit_in_byte) | ((raw[1] >> 1) >> (63 - bit_in_byte));
@@ -292,10 +292,10 @@ static MD_FORCE_INLINE void extract_bits_be_raw_121(uint64_t out[2], const uint8
     int    shift_right = (int)(128 - bit_length);
 
     uint64_t raw[2];
-    MD_MEMCPY(raw, base + byte_offset, sizeof(raw));
+    md_memcpy(raw, base + byte_offset, sizeof(raw));
 #if __LITTLE_ENDIAN__
-    raw[0] = MD_BSWAP64(raw[0]);
-    raw[1] = MD_BSWAP64(raw[1]);
+    raw[0] = md_bswap64(raw[0]);
+    raw[1] = md_bswap64(raw[1]);
 #endif
     uint64_t hi = (raw[0] << bit_in_byte);
     // raw[0] >> (64 - bit_in_byte) in two steps, as a shift by 64 (bit_in_byte 0) is undefined
@@ -310,9 +310,9 @@ static MD_FORCE_INLINE uint32_t extract_bits_be_raw_25(const uint8_t* base, size
     size_t bit_in_byte = bit_offset & 7;
 
     uint32_t raw;
-    MD_MEMCPY(&raw, base + byte_offset, sizeof(raw));
+    md_memcpy(&raw, base + byte_offset, sizeof(raw));
 #if __LITTLE_ENDIAN__
-    raw = MD_BSWAP32(raw);
+    raw = md_bswap32(raw);
 #endif
     return (raw << bit_in_byte) >> (32 - bit_length);
 }
@@ -323,7 +323,7 @@ static MD_FORCE_INLINE uint32_t extract_bits_be_raw_25(const uint8_t* base, size
 // y = q/z) formulation.
 static MD_FORCE_INLINE v4i_t unpack_coord64(uint64_t w, const unpack_data_t* unpack) {
     uint64_t t = ((w << unpack->bit.sml_shift) & (~0xFFull)) | (w & unpack->bit.part_mask);
-    uint64_t v = MD_BSWAP64(t) >> unpack->bit.big_shift;
+    uint64_t v = md_bswap64(t) >> unpack->bit.big_shift;
 
     uint32_t x  = (uint32_t)DIV(v, &unpack->div_zy);
     uint64_t yz = (uint64_t)DIV(v, &unpack->div_z);
@@ -340,8 +340,8 @@ static MD_FORCE_INLINE v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t*
     // w[0] is the still-shifted upper portion (see extract_bits_be_raw_121),
     // w[1] is the right-justified lower 64 bits but stored big-endian.
     uint64_t hi = ((w[1] << unpack->bit.sml_shift) & (~0xFFull)) | (w[1] & unpack->bit.part_mask);
-    hi = MD_BSWAP64(hi) >> unpack->bit.big_shift;
-    uint64_t lo = MD_BSWAP64(w[0]);
+    hi = md_bswap64(hi) >> unpack->bit.big_shift;
+    uint64_t lo = md_bswap64(w[0]);
 
 #ifdef HAS_INT128_T
     __uint128_t v = (__uint128_t)lo | ((__uint128_t)hi << 64);
@@ -365,8 +365,8 @@ static MD_FORCE_INLINE v4i_t unpack_coord128(uint64_t w[2], const unpack_data_t*
     uint32_t nums[4]  = {0};
     uint32_t limbs[4] = {0};
 
-    MD_MEMCPY(limbs + 0, &lo, sizeof(uint32_t) * 2);
-    MD_MEMCPY(limbs + 2, &hi, sizeof(uint32_t) * 2);
+    md_memcpy(limbs + 0, &lo, sizeof(uint32_t) * 2);
+    md_memcpy(limbs + 2, &hi, sizeof(uint32_t) * 2);
 
     const int num_limbs = (num_of_bytes + 3) / 4;
     for (int i = 2; i > 0; --i) {
@@ -411,7 +411,7 @@ static v4i_t extract_and_unpack_plain(const uint8_t* base, size_t bit_offset, si
     }
     const uint64_t w = bit_length <= 57 ? extract_bits_be_raw_57(base, bit_offset, bit_length) : extract_bits_be_raw_64(base, bit_offset, bit_length);
     const uint64_t t = ((w << unpack->bit.sml_shift) & (~0xFFull)) | (w & unpack->bit.part_mask);
-    const uint64_t v = MD_BSWAP64(t) >> unpack->bit.big_shift;
+    const uint64_t v = md_bswap64(t) >> unpack->bit.big_shift;
     const uint64_t zy = (uint64_t)unpack->size_y * unpack->size_z;
     const uint64_t x  = v / zy;
     const uint64_t q  = v - x * zy;
@@ -450,7 +450,7 @@ static MD_FORCE_INLINE v4i_t extract_ints3(const uint8_t* base, size_t bit_offse
 static MD_FORCE_INLINE v4i_t extract_small(const uint8_t* base, size_t bit_offset, xtc_small_t p) {
     const uint64_t w  = extract_bits_be_raw_57(base, bit_offset, p.num_of_bits);
     const uint64_t t  = ((w << p.sml_shift) & ~0xFFull) | (w & p.part_mask);
-    const uint64_t v  = MD_BSWAP64(t) >> p.big_shift;
+    const uint64_t v  = md_bswap64(t) >> p.big_shift;
     const uint64_t x  = libdivide_mullhi_u64(v, p.m2);
     const uint64_t yz = libdivide_mullhi_u64(v, p.m1);
     return v4i_set((uint32_t)x, (uint32_t)(yz - x * p.size), (uint32_t)(v - yz * p.size), 0);
@@ -478,7 +478,7 @@ static bool xtc_big_magic(uint64_t* m, uint32_t* sh, uint64_t d) {
 static MD_FORCE_INLINE v4i_t extract_big(const uint8_t* base, size_t bit_offset, const unpack_data_t* unpack, const xtc_big_div_t* div) {
     const uint64_t w  = extract_bits_be_raw_57(base, bit_offset, unpack->bit.num_of_bits);
     const uint64_t t  = ((w << unpack->bit.sml_shift) & ~0xFFull) | (w & unpack->bit.part_mask);
-    const uint64_t v  = MD_BSWAP64(t) >> unpack->bit.big_shift;
+    const uint64_t v  = md_bswap64(t) >> unpack->bit.big_shift;
     const uint64_t x  = libdivide_mullhi_u64(v, div->m_zy) >> div->sh_zy;
     const uint64_t yz = libdivide_mullhi_u64(v, div->m_z)  >> div->sh_z;
     return v4i_set((uint32_t)x, (uint32_t)(yz - x * unpack->size_y), (uint32_t)(v - yz * unpack->size_z), 0);
@@ -789,7 +789,7 @@ static MD_FORCE_INLINE bool xtc_decode_coords(const uint8_t* stream, uint64_t nu
 
 done:
     if (atom_idx > tail_beg) {
-        MD_MEMCPY(out_coords + (size_t)tail_beg * 3, tail, (size_t)(atom_idx - tail_beg) * 3 * sizeof(float));
+        md_memcpy(out_coords + (size_t)tail_beg * 3, tail, (size_t)(atom_idx - tail_beg) * 3 * sizeof(float));
     }
     return atom_idx == natoms;
 }
@@ -983,7 +983,7 @@ static bool write_cache(const xtc_cache_t* cache, md_str_t path, const md_file_i
 // What the file is, from its cache when that is current and from a scan otherwise (writing the
 // cache unless told not to). path must be canonical; every array is allocated from alloc.
 static bool xtc_index_load(xtc_cache_t* cache, md_str_t path, uint32_t flags, md_allocator_i* alloc) {
-    MD_MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
@@ -1011,7 +1011,7 @@ static bool xtc_index_load(xtc_cache_t* cache, md_str_t path, uint32_t flags, md
         goto done;
     }
 
-    MD_MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
     cache->header.num_atoms = xtc_header.natoms;
 
     md_array(int64_t) offsets = 0;
@@ -1072,7 +1072,7 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
     // The decoder reads the bit stream a word at a time and may look past the end of the frame.
     uint8_t* frame_data = md_temp_alloc(temp, MD_ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES);
     if (frame_data) {
-        MD_MEMSET(frame_data + frame_size, 0, MD_ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES - frame_size);
+        md_memset(frame_data + frame_size, 0, MD_ALIGN_TO(frame_size, 16) + MD_XTC_STREAM_GUARD_BYTES - frame_size);
     }
     // Through io: inside an extraction context the file stays open from frame to frame, which is
     // what makes streaming from a cluster's file server bearable. Without one it is opened here.
@@ -1091,7 +1091,7 @@ static size_t xtc_position_provider(void* dst, size_t cap, const md_attribute_t*
             // One atom: the stream is not seekable, so the frame is decoded and one value kept.
             float* xyz = md_temp_alloc(temp, num_atoms * 3 * sizeof(float));
             if (xyz && xtc_decode_frame_data_scaled(frame_data, frame_size, NULL, xyz, num_atoms, 10.0f)) {
-                MD_MEMCPY(dst, xyz + (size_t)slice->idx[1] * 3, 3 * sizeof(float));
+                md_memcpy(dst, xyz + (size_t)slice->idx[1] * 3, 3 * sizeof(float));
                 written = cap;
             }
         }

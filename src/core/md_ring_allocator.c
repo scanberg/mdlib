@@ -72,7 +72,7 @@ void* ring_realloc(struct md_allocator_o* inst, void* ptr, size_t old_size, size
         }
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         void* new_ptr = ring_push(ring, new_size, alignment);
-        MD_MEMCPY(new_ptr, ptr, old_size);
+        md_memcpy(new_ptr, ptr, old_size);
         return new_ptr;
     }
 

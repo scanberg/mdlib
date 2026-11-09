@@ -245,7 +245,7 @@ static inline mmcif_entity_t* mmcif_entity_find_or_create(md_array(mmcif_entity_
 // as "this atom has no value" without confusing it with a real zero.
 static inline bool float_bits_nan(float v) {
     uint32_t u;
-    MD_MEMCPY(&u, &v, sizeof(u));
+    md_memcpy(&u, &v, sizeof(u));
     return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0;
 }
 
@@ -458,7 +458,7 @@ static bool mmcif_parse_section(mmcif_section_t* sec, mmcif_parse_state_t* state
     MD_ASSERT(sec);
     MD_ASSERT(state);
     MD_ASSERT(alloc);
-    MD_MEMSET(sec, 0, sizeof(*sec));
+    md_memset(sec, 0, sizeof(*sec));
 
     if (state->in_loop) {
         // --------------- Collect headers ---------------
@@ -1229,7 +1229,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
 
     mmcif_atom_site_cols_t cols = {0};
     int* table = cols.table;
-    MD_MEMSET(table, -1, sizeof(cols.table));
+    md_memset(table, -1, sizeof(cols.table));
     size_t num_cols = 0;
 
     // Read category headers
@@ -1266,7 +1266,7 @@ static bool mmcif_parse_atom_site(md_array(mmcif_atom_site_entry_t)* atom_entrie
     // One token per column of a row. A file carries as many _atom_site columns as its producer chose to write, so
     // the row is sized by them rather than by a fixed bound.
     md_str_t* tok = md_alloc(alloc, sizeof(md_str_t) * (num_cols + MMCIF_SPLIT_SLACK));
-    MD_MEMSET(tok, 0, sizeof(md_str_t) * (num_cols + MMCIF_SPLIT_SLACK));
+    md_memset(tok, 0, sizeof(md_str_t) * (num_cols + MMCIF_SPLIT_SLACK));
 
     // Where the tokenizer has nothing of a line left, the rows which follow are read in blocks (mmcif_rows_from_blocks),
     // up to a line which is not a row of its own: that line is the tokenizer's, given back to it whole, which reads it
@@ -1534,11 +1534,11 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             uint32_t symbol_word = 0;
             MD_STATIC_ASSERT(sizeof(entry->label_asym_id) == 8 && sizeof(entry->label_comp_id) == 8 && sizeof(entry->label_entity_id) == 8 &&
                           sizeof(entry->label_atom_id) == 8 && sizeof(entry->type_symbol) == 3, "Fields of 8 characters (a word), the symbol of 3");
-            MD_MEMCPY(&asym,   entry->label_asym_id,   8);
-            MD_MEMCPY(&comp,   entry->label_comp_id,   8);
-            MD_MEMCPY(&entity, entry->label_entity_id, 8);
-            MD_MEMCPY(&name,   entry->label_atom_id,   8);
-            MD_MEMCPY(&symbol_word, entry->type_symbol, 3);
+            md_memcpy(&asym,   entry->label_asym_id,   8);
+            md_memcpy(&comp,   entry->label_comp_id,   8);
+            md_memcpy(&entity, entry->label_entity_id, 8);
+            md_memcpy(&name,   entry->label_atom_id,   8);
+            md_memcpy(&symbol_word, entry->type_symbol, 3);
             const int seq_id = entry->label_seq_id != INT32_MIN ? entry->label_seq_id : entry->auth_seq_id;
 
             if (!have_prev || entity != prev_entity) {

@@ -107,7 +107,7 @@ static bool hd_write(const hd_case_t* c) {
             if (!inside) continue;
             double tmp = hd_value(flat);   // converted in place: a double holds every type here
             H5Tconvert(H5T_NATIVE_DOUBLE, type, 1, &tmp, NULL, H5P_DEFAULT);
-            MD_MEMCPY(raw + e * elem, &tmp, elem);
+            md_memcpy(raw + e * elem, &tmp, elem);
         }
         const hsize_t offset[4] = {0};
         uint32_t mask = 0xffffffffu;
@@ -115,7 +115,7 @@ static bool hd_write(const hd_case_t* c) {
             // Shuffle is filter 0 and deflate filter 1: the bytes shuffled, deflate marked as skipped
             uint8_t* shuffled = malloc(chunk_elems * elem);
             for (size_t b = 0; b < elem; ++b) for (size_t e = 0; e < chunk_elems; ++e) shuffled[b * chunk_elems + e] = raw[e * elem + b];
-            MD_MEMCPY(raw, shuffled, chunk_elems * elem);
+            md_memcpy(raw, shuffled, chunk_elems * elem);
             free(shuffled);
             mask = 1u << 1;
         }

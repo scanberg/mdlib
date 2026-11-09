@@ -845,7 +845,7 @@ static void dssp_assign(md_secondary_structure_t out_secondary_structure[], cons
 
     // ---- Final resolution: convert flags to enum with priority ----
     // Priority: HELIX (PI > 310 > ALPHA) > SHEET > BRIDGE > TURN > BEND > COIL
-    MD_MEMSET(out_secondary_structure, 0, sizeof(md_secondary_structure_t) * backbone_segment_count);
+    md_memset(out_secondary_structure, 0, sizeof(md_secondary_structure_t) * backbone_segment_count);
 
     for (size_t i = 0; i < backbone_segment_count; ++i) {
         uint32_t f = ss_flags[i];
@@ -905,7 +905,7 @@ static void dssp(md_secondary_structure_t out_secondary_structure[], size_t capa
     }
 
 	// Safe to set to zero, as we will only be comparing energies (which are negative)
-	MD_MEMSET(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
+	md_memset(res_hbonds, 0, sizeof(dssp_res_hbonds_t) * backbone_segment_count);
 
     if (num_trace < backbone_segment_count) {
         dssp_atomistic_bonds(res_hbonds, &sheet_candidates, res_bend, xyz, cell, backbone, num_trace, temp);

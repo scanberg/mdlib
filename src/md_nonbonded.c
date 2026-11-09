@@ -36,7 +36,7 @@ static double ewald_coefficient(double rc, double rtol) {
 
 bool md_nb_potential_init(md_nb_potential_t* pot, const md_nb_desc_t* desc) {
     if (!pot || !desc) return false;
-    MD_MEMSET(pot, 0, sizeof(md_nb_potential_t));
+    md_memset(pot, 0, sizeof(md_nb_potential_t));
 
     // Lennard-Jones
     if (!(desc->lj_cutoff > 0)) {
@@ -156,7 +156,7 @@ double md_nb_coulomb_energy(const md_nb_potential_t* pot, double qq, double r2) 
 
 bool md_nb_potential_init_from_tpr(md_nb_potential_t* pot, const md_tpr_data_t* tpr) {
     if (!pot || !tpr) return false;
-    MD_MEMSET(pot, 0, sizeof(md_nb_potential_t));
+    md_memset(pot, 0, sizeof(md_nb_potential_t));
     const md_tpr_nonbonded_t* nb = &tpr->nonbonded;
     if (!nb->valid) {
         MD_LOG_INFO("Non-bonded potential: the tpr has no readable simulation parameters");
@@ -261,12 +261,12 @@ void md_nb_forcefield_free(md_nb_forcefield_t* ff) {
     if (ff->excl_base) md_free(a, ff->excl_base, sizeof(uint32_t) * MD_MAX(ff->num_mol_types, 1));
     if (ff->excl_off)  md_free(a, ff->excl_off, sizeof(uint32_t) * MD_MAX(ff->excl_off_count, 1));
     if (ff->excl)      md_free(a, ff->excl,     sizeof(uint32_t) * MD_MAX(ff->excl_count, 1));
-    MD_MEMSET(ff, 0, sizeof(md_nb_forcefield_t));
+    md_memset(ff, 0, sizeof(md_nb_forcefield_t));
 }
 
 bool md_nb_forcefield_init_from_tpr(md_nb_forcefield_t* ff, const md_tpr_data_t* tpr, md_allocator_i* alloc) {
     if (!ff || !tpr || !alloc) return false;
-    MD_MEMSET(ff, 0, sizeof(md_nb_forcefield_t));
+    md_memset(ff, 0, sizeof(md_nb_forcefield_t));
     if (!md_nb_potential_init_from_tpr(&ff->potential, tpr)) return false;
     if (tpr->num_atoms > UINT32_MAX - 1) return false;
 
@@ -307,8 +307,8 @@ bool md_nb_forcefield_init_from_tpr(md_nb_forcefield_t* ff, const md_tpr_data_t*
         }
         ff->off_base[t] = (uint32_t)num_off;
         ff->excl_base[t] = (uint32_t)num_excl;
-        MD_MEMCPY(ff->excl_off + num_off, mt->excl_offset, sizeof(uint32_t) * (mt->num_atoms + 1));
-        MD_MEMCPY(ff->excl + num_excl, mt->excl, sizeof(uint32_t) * mt->excl_offset[mt->num_atoms]);
+        md_memcpy(ff->excl_off + num_off, mt->excl_offset, sizeof(uint32_t) * (mt->num_atoms + 1));
+        md_memcpy(ff->excl + num_excl, mt->excl, sizeof(uint32_t) * mt->excl_offset[mt->num_atoms]);
         num_off  += mt->num_atoms + 1;
         num_excl += mt->excl_offset[mt->num_atoms];
     }

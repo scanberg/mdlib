@@ -50,11 +50,11 @@ static void put(buf_t* b, const void* p, size_t n) {
         b->cap = (b->size + n) * 2 + 1024;
         b->data = realloc(b->data, b->cap);
     }
-    MD_MEMCPY(b->data + b->size, p, n);
+    md_memcpy(b->data + b->size, p, n);
     b->size += n;
 }
-static void put_u32(buf_t* b, uint32_t v) { v = MD_BSWAP32(v); put(b, &v, 4); }
-static void put_u64(buf_t* b, uint64_t v) { v = MD_BSWAP64(v); put(b, &v, 8); }
+static void put_u32(buf_t* b, uint32_t v) { v = md_bswap32(v); put(b, &v, 4); }
+static void put_u64(buf_t* b, uint64_t v) { v = md_bswap64(v); put(b, &v, 8); }
 static void put_name(buf_t* b, const char* s) {
     const size_t n = strlen(s);
     put_u32(b, (uint32_t)n);
@@ -63,8 +63,8 @@ static void put_name(buf_t* b, const char* s) {
     put(b, zero, (4 - n % 4) % 4);
 }
 static void put_value(buf_t* b, int type, double v) {
-    if (type == NC_FLOAT_) { float f = (float)v; uint32_t u; MD_MEMCPY(&u, &f, 4); put_u32(b, u); }
-    else if (type == NC_DOUBLE_) { uint64_t u; MD_MEMCPY(&u, &v, 8); put_u64(b, u); }
+    if (type == NC_FLOAT_) { float f = (float)v; uint32_t u; md_memcpy(&u, &f, 4); put_u32(b, u); }
+    else if (type == NC_DOUBLE_) { uint64_t u; md_memcpy(&u, &v, 8); put_u64(b, u); }
     else { put_u32(b, (uint32_t)(int32_t)v); }
 }
 static size_t type_size(int type) { return type == NC_DOUBLE_ ? 8 : type == NC_CHAR_ ? 1 : 4; }
@@ -523,7 +523,7 @@ UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
     char other[8192];
     snprintf(other, sizeof(other), "%s", prmtop_text);
     char* name = strstr(other, "HO1 ");
-    MD_MEMCPY(name, "XX1 ", 4);
+    md_memcpy(name, "XX1 ", 4);
     ASSERT_TRUE(write_text(path, other));
     EXPECT_FALSE(md_amber_prmtop_system_supplement_from_file(&sys, path));
     EXPECT_EQ(8u, sys.bond.count);

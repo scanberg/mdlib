@@ -192,7 +192,7 @@ UTEST(gto, sph_to_cart_matrix_matches_dense) {
     double* e   = md_temp_alloc_zero_array(temp, double, n_sph);
     double* col = md_temp_alloc_zero_array(temp, double, n_cart);
     for (size_t r = 0; r < n_sph; ++r) {
-        MD_MEMSET(e, 0, sizeof(double) * n_sph);
+        md_memset(e, 0, sizeof(double) * n_sph);
         e[r] = 1.0;
         md_gto_sph_to_cart_vector(col, e, &basis);
         for (size_t c = 0; c < n_cart; ++c) T[r * n_cart + c] = col[c];
@@ -411,8 +411,8 @@ UTEST(gto, evaluate_grid) {
 
     md_grid_extract_points((float*)ref_points, &ref_grid);
 
-    MD_MEMSET(grid_data, 0, sizeof(float) * num_points);
-    MD_MEMSET(ref_data,  0, sizeof(float) * num_points);
+    md_memset(grid_data, 0, sizeof(float) * num_points);
+    md_memset(ref_data,  0, sizeof(float) * num_points);
 
     md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
     md_gto_xyz_evaluate(ref_data, (float*)ref_points, num_points, 0, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
@@ -464,13 +464,13 @@ static double compare_vlx_and_cube_cpu(const float* atom_xyz, const md_gto_basis
     mat4_t M = md_grid_index_to_world(&grid);
 
     float* psi  = md_temp_alloc_array(temp, float, count);
-    MD_MEMSET(psi, 0, sizeof(float) * count);
+    md_memset(psi, 0, sizeof(float) * count);
     vec3_t* xyz = md_temp_alloc_array(temp, vec3_t, count);
     md_grid_extract_points((float*)xyz, &grid);
 
     md_gto_xyz_evaluate(psi, (float*)xyz, count, sizeof(vec3_t), gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
-    MD_MEMSET(grid_data, 0, sizeof(float) * md_grid_num_points(&grid));
+    md_memset(grid_data, 0, sizeof(float) * md_grid_num_points(&grid));
 
     md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
@@ -735,7 +735,7 @@ UTEST(gto, h2o_lumo_gpu) {
 // where isfinite() may be folded to true and comparisons with NaN never fail.
 static bool gto_test_is_finite(float x) {
     uint32_t u;
-    MD_MEMCPY(&u, &x, sizeof(u));
+    md_memcpy(&u, &x, sizeof(u));
     return (u & 0x7F800000u) != 0x7F800000u;
 }
 
@@ -743,7 +743,7 @@ static bool gto_test_is_finite(float x) {
 // correct values left over from an earlier launch.
 static void gto_test_poison(md_gpu_stream_t stream, md_gpu_texture_t tex, float* host_nan, size_t num_vox) {
     const uint32_t qnan = 0x7FC00000u;
-    for (size_t v = 0; v < num_vox; ++v) MD_MEMCPY(&host_nan[v], &qnan, sizeof(qnan));
+    for (size_t v = 0; v < num_vox; ++v) md_memcpy(&host_nan[v], &qnan, sizeof(qnan));
     md_gpu_upload_texture(stream, tex, NULL, host_nan, sizeof(float) * num_vox);
 }
 
@@ -826,7 +826,7 @@ UTEST(gto, density_gpu_algorithms_agree) {
         md_gpu_stream_sync(stream);
         const float* g = (const float*)rb.cpu;
         if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
-            MD_MEMCPY(ref, g, sizeof(float) * num_vox);
+            md_memcpy(ref, g, sizeof(float) * num_vox);
             for (size_t v = 0; v < num_vox; ++v) {
                 ASSERT_TRUE(gto_test_is_finite(ref[v]));
                 ref_max = MD_MAX(ref_max, fabs(ref[v]));
@@ -951,7 +951,7 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
             md_gto_gpu_orbital_launch(stream, &od);                                                    \
             md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);                                       \
             md_gpu_stream_sync(stream);                                                                \
-            MD_MEMCPY((dst), rb.cpu, sizeof(float) * num_vox);                                            \
+            md_memcpy((dst), rb.cpu, sizeof(float) * num_vox);                                            \
         } while (0)
 
     typedef struct { md_gto_gpu_orbital_algo_t algo; bool exact; const char* name; } cfg_t;
@@ -989,7 +989,7 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
     {
         const size_t count = 10;
         float* one = (float*)md_temp_alloc_array(temp, float, num_vox);
-        MD_MEMSET(ref, 0, sizeof(float) * num_vox);
+        md_memset(ref, 0, sizeof(float) * num_vox);
         for (size_t m = 0; m < count; ++m) {
             RUN_ORBITALS(one, m, 1, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, false, 0);
             for (size_t v = 0; v < num_vox; ++v) ref[v] += w[m] * one[v];

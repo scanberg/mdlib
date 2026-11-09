@@ -18,10 +18,10 @@ void md_handle_pool_init(md_handle_pool_t* pool, int count, md_allocator_i* allo
 	// allocator happened to hand over. A generation drawn from uninitialised memory still makes
 	// a unique-looking id, which is why this survived - but it defeats the one thing the
 	// generation is for, recognising a handle whose slot has since been reused.
-	MD_MEMSET(pool->gen_counters, 0, gen_counters_size);
+	md_memset(pool->gen_counters, 0, gen_counters_size);
 	size_t free_queue_size = sizeof(int) * (size_t)count;
 	pool->free_queue = (int*)md_alloc(alloc, free_queue_size);
-	MD_MEMSET(pool->free_queue, 0, free_queue_size);
+	md_memset(pool->free_queue, 0, free_queue_size);
 	for (int i = pool->size-1; i >= 1; i--) {
 		pool->free_queue[pool->queue_top++] = i;
 	}
@@ -33,7 +33,7 @@ void md_handle_pool_free(md_handle_pool_t* pool, md_allocator_i* alloc) {
 	MD_ASSERT(pool->gen_counters);
 	md_free(alloc, pool->free_queue, sizeof(int) * (pool->size-1));
 	md_free(alloc, pool->gen_counters, sizeof(uint32_t) * pool->size);
-	MD_MEMSET(pool, 0, sizeof(md_handle_pool_t));
+	md_memset(pool, 0, sizeof(md_handle_pool_t));
 }
 
 uint32_t md_handle_pool_alloc_slot(md_handle_pool_t* pool) {

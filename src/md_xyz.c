@@ -160,7 +160,7 @@ static bool xyz_extended_columns(uint32_t* flags, md_str_t comment) {
 static bool xyz_parse_fortran_f64(double* out, md_str_t tok) {
     char buf[64];
     if (tok.len >= sizeof(buf)) return false;
-    MD_MEMCPY(buf, tok.ptr, tok.len);
+    md_memcpy(buf, tok.ptr, tok.len);
     for (size_t i = 0; i < tok.len; ++i) {
         if (buf[i] == 'D' || buf[i] == 'd') buf[i] = 'e';
     }
@@ -336,7 +336,7 @@ static inline bool extract_extxyz_cell(float cell[3][3], md_str_t line) {
         }
         val[i] = (float)parse_float(tok[i]);
     }
-    MD_MEMSET(cell, 0, sizeof(float) * 9);
+    md_memset(cell, 0, sizeof(float) * 9);
     if (num_tok == 3) {
         // The diagonal
         for (size_t i = 0; i < 3; ++i) cell[i][i] = val[i];
@@ -647,7 +647,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
         }
         md_array_free(data->models, alloc);
     }
-    MD_MEMSET(data, 0, sizeof(md_xyz_data_t));
+    md_memset(data, 0, sizeof(md_xyz_data_t));
 }
 
 // The bonds of Tinker's connectivity, of the atoms [beg, end) of data: each pair once (it is given by both its atoms),
@@ -713,7 +713,7 @@ typedef struct xyz_builder_t {
 } xyz_builder_t;
 
 static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_state_t* state, size_t num_atoms, const float cell[3][3], md_allocator_i* temp) {
-    MD_MEMSET(b, 0, sizeof(*b));
+    md_memset(b, 0, sizeof(*b));
     b->sys = sys;
     b->state = state;
     b->type_map.allocator = temp;
@@ -736,7 +736,7 @@ static void xyz_builder_begin(xyz_builder_t* b, md_system_t* sys, md_system_stat
 static void xyz_builder_add(xyz_builder_t* b, const md_xyz_coordinate_t* c) {
     md_system_t* sys = b->sys;
     uint32_t sym_word;
-    MD_MEMCPY(&sym_word, c->element_symbol, sizeof(sym_word));
+    md_memcpy(&sym_word, c->element_symbol, sizeof(sym_word));
     const uint64_t key = ((uint64_t)sym_word << 32) | (uint32_t)c->atomic_number;
     const size_t slot = (size_t)((key * 0x9E3779B97F4A7C15ull) >> 60);
     md_particle_type_idx_t type;
@@ -848,7 +848,7 @@ static bool xyz_system_load(md_system_t* sys, md_system_state_t* state, md_reade
     for (size_t i = 0; i < count; ++i) {
         md_str_t line;
         md_xyz_coordinate_t coord;
-        MD_MEMSET(coord.element_symbol, 0, sizeof(coord.element_symbol));
+        md_memset(coord.element_symbol, 0, sizeof(coord.element_symbol));
         coord.atomic_number = 0;
         if (!md_reader_extract_line(reader, &line) || !extract_coord(&coord, line, flags)) {
             MD_LOG_ERROR("Parse XYZ, Failed to parse coordinate");
@@ -952,7 +952,7 @@ static bool write_cache(const xyz_cache_t* cache, md_str_t path, const md_file_i
 // header of each model and skips its atom lines.
 // From alloc; the scan's scratch keeps clear of avoid, which is what alloc was made from.
 static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, md_str_t filename, md_run_flags_t run_flags, md_allocator_i* alloc, md_allocator_i* avoid) {
-    MD_MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_READ)) {
@@ -985,7 +985,7 @@ static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, md_str_t
         result = true;
         goto done;
     }
-    MD_MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
 
     md_array(int64_t) offsets = 0;
     md_array(float)   cells   = 0;
@@ -1025,8 +1025,8 @@ static bool xyz_index_load(xyz_cache_t* cache, uint32_t* out_xyz_flags, md_str_t
     cache->header.num_frames = num_frames;
     cache->offsets = md_alloc(alloc, sizeof(int64_t) * (num_frames + 1));
     cache->cells   = md_alloc(alloc, sizeof(float) * 9 * num_frames);
-    MD_MEMCPY(cache->offsets, offsets, sizeof(int64_t) * num_frames);
-    MD_MEMCPY(cache->cells, cells, sizeof(float) * 9 * num_frames);
+    md_memcpy(cache->offsets, offsets, sizeof(int64_t) * num_frames);
+    md_memcpy(cache->cells, cells, sizeof(float) * 9 * num_frames);
     // The last frame ends with its last atom line
     cache->offsets[num_frames] = MD_MIN(filesize, frames_end);
 

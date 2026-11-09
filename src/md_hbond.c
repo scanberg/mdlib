@@ -358,7 +358,7 @@ void md_hbond_query_free(md_hbond_query_t* q) {
     md_array_free(q->acc_nbr_off, alloc);
     md_array_free(q->acc_nbr, alloc);
     md_array_free(q->sel, alloc);
-    MD_MEMSET(q, 0, sizeof(md_hbond_query_t));
+    md_memset(q, 0, sizeof(md_hbond_query_t));
 }
 
 static bool apply_override(uint8_t* role, const md_bitset_t* set, uint8_t bit, size_t N) {
@@ -398,7 +398,7 @@ static void build_exclusions(md_hbond_query_t* q, const md_system_t* sys, const 
     const size_t N = q->num_atoms;
     md_allocator_i* alloc = q->alloc;
     uint8_t* depth = md_alloc(temp_alloc, N);
-    MD_MEMSET(depth, 0, N);
+    md_memset(depth, 0, N);
     md_array(uint32_t) queue = 0;
     md_array(uint32_t) row   = 0;
     const uint32_t depth_limit = MD_MIN(max_bonds, 254) + 1;
@@ -439,7 +439,7 @@ static void build_exclusions(md_hbond_query_t* q, const md_system_t* sys, const 
 
 bool md_hbond_query_init(md_hbond_query_t* q, const md_hbond_desc_t* desc, const md_system_t* sys, md_allocator_i* alloc) {
     MD_ASSERT(q);
-    MD_MEMSET(q, 0, sizeof(md_hbond_query_t));
+    md_memset(q, 0, sizeof(md_hbond_query_t));
     if (!sys || !alloc) {
         MD_LOG_ERROR("Hydrogen bonds: missing system or allocator");
         return false;
@@ -512,14 +512,14 @@ bool md_hbond_query_init(md_hbond_query_t* q, const md_hbond_desc_t* desc, const
 
     if (params.exclude_bonds > 0 && q->num_donors && q->num_acceptors && sys->bond.conn.offset) {
         uint8_t* is_acc = md_alloc(temp_alloc, MD_MAX(N, 1));
-        MD_MEMSET(is_acc, 0, N);
+        md_memset(is_acc, 0, N);
         for (size_t k = 0; k < q->num_acceptors; ++k) is_acc[q->acceptor[k]] = 1;
         build_exclusions(q, sys, is_acc, params.exclude_bonds, temp_alloc);
     }
 
     if (desc && desc->set_a) {
         md_array_resize(q->sel, N, alloc);
-        MD_MEMSET(q->sel, 0, N);
+        md_memset(q->sel, 0, N);
         if (!mark_selection(q->sel, desc->set_a, 1, N)) goto done;
         if (desc->set_b && !mark_selection(q->sel, desc->set_b, 2, N)) goto done;
         q->flags |= MD_HBOND_FLAG_SELECTION;
@@ -773,7 +773,7 @@ static void mark_near_seeds(uint8_t* out_hit, const vec3_t* pts, size_t num_pts,
 
     const size_t num_cells = (size_t)n[0] * n[1] * n[2];
     uint64_t* occ = md_alloc(arena, sizeof(uint64_t) * ((num_cells + 63) / 64));
-    MD_MEMSET(occ, 0, sizeof(uint64_t) * ((num_cells + 63) / 64));
+    md_memset(occ, 0, sizeof(uint64_t) * ((num_cells + 63) / 64));
     for (size_t k = 0; k < num_pts; ++k) {
         if (!is_seed[k]) continue;
         for (int dz = -1; dz <= 1; ++dz) {
@@ -839,12 +839,12 @@ void md_hbond_set_free(md_hbond_set_t* set) {
         md_free(set->alloc, set->dist_ha,   sizeof(float) * set->count);
         md_free(set->alloc, set->angle_dha, sizeof(float) * set->count);
     }
-    MD_MEMSET(set, 0, sizeof(md_hbond_set_t));
+    md_memset(set, 0, sizeof(md_hbond_set_t));
 }
 
 bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const md_system_state_t* state, md_allocator_i* alloc) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(md_hbond_set_t));
+    md_memset(out, 0, sizeof(md_hbond_set_t));
     if (!q || !q->alloc || !state || !alloc) {
         MD_LOG_ERROR("Hydrogen bonds: missing query, state or allocator");
         return false;
@@ -897,16 +897,16 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
             num_seed += acc_active[k];
         }
     } else {
-        MD_MEMSET(don_active, 1, nd);
-        MD_MEMSET(acc_active, 1, na);
+        md_memset(don_active, 1, nd);
+        md_memset(acc_active, 1, na);
         num_seed = nd + na;
     }
 
     if (q->sel && compete && num_seed > 0) {
         if (2 * num_seed > nd + na) {
             // Most of the system: the shell would be all of it anyway
-            MD_MEMSET(don_active, 1, nd);
-            MD_MEMSET(acc_active, 1, na);
+            md_memset(don_active, 1, nd);
+            md_memset(acc_active, 1, na);
         } else {
             // The search points of every candidate, donors first
             vec3_t* pts = md_alloc(arena, sizeof(vec3_t) * (nd + na));
@@ -917,8 +917,8 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
             for (size_t k = 0; k < na; ++k) pts[nd + k] = xyz[q->acceptor[k]];
 
             uint8_t* is_seed = md_alloc(arena, nd + na);
-            MD_MEMCPY(is_seed, don_active, nd);
-            MD_MEMCPY(is_seed + nd, acc_active, na);
+            md_memcpy(is_seed, don_active, nd);
+            md_memcpy(is_seed + nd, acc_active, na);
 
             uint8_t* hit = md_alloc(arena, nd + na);
             mark_near_seeds(hit, pts, nd + na, is_seed, 3.0f * radius, cell, arena);
@@ -990,8 +990,8 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
     if (compete && num_edges) {
         uint32_t* h_deg = md_alloc(arena, sizeof(uint32_t) * nd);
         uint32_t* a_deg = md_alloc(arena, sizeof(uint32_t) * na);
-        MD_MEMSET(h_deg, 0, sizeof(uint32_t) * nd);
-        MD_MEMSET(a_deg, 0, sizeof(uint32_t) * na);
+        md_memset(h_deg, 0, sizeof(uint32_t) * nd);
+        md_memset(a_deg, 0, sizeof(uint32_t) * na);
         for (size_t k = 0; k < num_edges; ++k) {
             h_deg[edges[k].donor] += 1;
             a_deg[edges[k].acc]   += 1;
@@ -1082,7 +1082,7 @@ bool md_hbond_query_eval(md_hbond_set_t* out, const md_hbond_query_t* q, const m
 
 bool md_hbond_compute(md_hbond_set_t* out, const md_hbond_desc_t* desc, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(md_hbond_set_t));
+    md_memset(out, 0, sizeof(md_hbond_set_t));
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_hbond_query_t q;
     bool result = md_hbond_query_init(&q, desc, sys, md_temp_allocator(temp)) && md_hbond_query_eval(out, &q, state, alloc);

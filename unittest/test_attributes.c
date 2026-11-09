@@ -19,13 +19,13 @@
 // producer's and the consumer's business, and this test is the consumer.
 static bool is_nan_f32(float v) {
     uint32_t bits;
-    MD_MEMCPY(&bits, &v, sizeof(bits));
+    md_memcpy(&bits, &v, sizeof(bits));
     return (bits & 0x7fffffffu) > 0x7f800000u;
 }
 
 static bool is_nan_f64(double v) {
     uint64_t bits;
-    MD_MEMCPY(&bits, &v, sizeof(bits));
+    md_memcpy(&bits, &v, sizeof(bits));
     return (bits & 0x7fffffffffffffffull) > 0x7ff0000000000000ull;
 }
 
@@ -1383,7 +1383,7 @@ UTEST(attributes, alias_of_a_virtual_attribute_reads_through_its_provider) {
 
     // And through a slice, which takes the same path.
     md_attribute_slice_t all = md_attribute_slice_all();
-    MD_MEMSET(dst, 0, sizeof(dst));
+    md_memset(dst, 0, sizeof(dst));
     EXPECT_EQ(md_attribute_extract_f32(dst, MD_COUNTOF(dst), md_attributes_get(&t, beta), all, md_unit_none()), 4u);
     EXPECT_NEAR(dst[2], 2.5f, 1.0e-6f);
 

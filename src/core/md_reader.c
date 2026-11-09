@@ -15,7 +15,7 @@ bool md_reader_init(md_reader_i* r, const md_reader_vtable_t* vt, size_t cap, in
     MD_ASSERT(r);
     MD_ASSERT(vt && vt->read);
     MD_ASSERT(alloc);
-    MD_MEMSET(r, 0, sizeof(*r));
+    md_memset(r, 0, sizeof(*r));
     if (cap == 0) cap = MD_READER_DEFAULT_CAPACITY;
     r->mem = (char*)md_alloc(alloc, cap + MD_READER_PADDING);
     if (!r->mem) {
@@ -23,7 +23,7 @@ bool md_reader_init(md_reader_i* r, const md_reader_vtable_t* vt, size_t cap, in
         return false;
     }
     // The padding is read, never written: what it holds is never part of a line, but it is defined
-    MD_MEMSET(r->mem + cap, 0, MD_READER_PADDING);
+    md_memset(r->mem + cap, 0, MD_READER_PADDING);
     r->buf = r->cur = r->end = r->mem;
     r->cap = cap;
     r->vt = vt;
@@ -35,7 +35,7 @@ bool md_reader_init(md_reader_i* r, const md_reader_vtable_t* vt, size_t cap, in
 void md_reader_free(md_reader_i* r) {
     MD_ASSERT(r);
     if (r->mem) md_free(r->alloc, r->mem, r->cap + MD_READER_PADDING);
-    MD_MEMSET(r, 0, sizeof(*r));
+    md_memset(r, 0, sizeof(*r));
 }
 
 // Keeps what is not taken at the start of the buffer, and returns the room after it: 0 at the end of the source, for a
@@ -225,7 +225,7 @@ static const md_reader_vtable_t file_vtable = {
 bool md_file_reader_init(md_file_reader_t* fr, md_file_t file, size_t cap, struct md_allocator_i* alloc) {
     MD_ASSERT(fr);
     if (!md_file_valid(file)) {
-        MD_MEMSET(fr, 0, sizeof(*fr));
+        md_memset(fr, 0, sizeof(*fr));
         return false;
     }
     if (!md_reader_init(&fr->r, &file_vtable, cap, (int64_t)md_file_size(file), alloc)) {
@@ -245,7 +245,7 @@ bool md_file_reader_open(md_file_reader_t* fr, md_str_t path, size_t cap, struct
     // at once, which on Windows a synchronous one would serialize
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ | MD_FILE_CONCURRENT | MD_FILE_SEQUENTIAL)) {
-        MD_MEMSET(fr, 0, sizeof(*fr));
+        md_memset(fr, 0, sizeof(*fr));
         return false;
     }
     if (!md_file_reader_init(fr, file, cap, alloc)) {
@@ -260,5 +260,5 @@ void md_file_reader_close(md_file_reader_t* fr) {
     MD_ASSERT(fr);
     if (fr->owns_file) md_file_close(&fr->file);
     md_reader_free(&fr->r);
-    MD_MEMSET(fr, 0, sizeof(*fr));
+    md_memset(fr, 0, sizeof(*fr));
 }

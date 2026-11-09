@@ -250,7 +250,7 @@ UTEST(mmcif, assembly_key_value) {
     const md_urange_t ir = md_assembly_group_inst_range(a, 0);
     EXPECT_EQ(sys.instance.count, ir.end - ir.beg);
     const mat4_t I = mat4_ident();
-    EXPECT_EQ(0, MD_MEMCMP(&I, &a->oper_transform[0], sizeof(mat4_t)));
+    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[0], sizeof(mat4_t)));
     md_system_free(&sys);
     md_system_state_free(&state);
 }

@@ -705,7 +705,7 @@ static inline bool validate_context(void) {
 // written, into the next buffer of the ring (UBO_RING), which is then the one bound
 static void ubo_write(uint32_t offset, uint32_t size, const void* data) {
     MD_ASSERT(offset + size <= UBO_SIZE);
-    MD_MEMCPY(ctx.ubo_data + offset, data, size);
+    md_memcpy(ctx.ubo_data + offset, data, size);
     const GLuint buf = ctx.ubo[ctx.ubo_next];
     ctx.ubo_next = (ctx.ubo_next + 1) % UBO_RING;
     glBindBuffer(GL_UNIFORM_BUFFER, buf);
@@ -765,7 +765,7 @@ static inline void gl_buffer_clear(gl_buffer_t buf) {
         MD_LOG_ERROR("Failed to map buffer");
         return;
     }
-    MD_MEMSET(ptr, 0, buf.size);
+    md_memset(ptr, 0, buf.size);
     glUnmapBuffer(GL_ARRAY_BUFFER);
     //    }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -819,7 +819,7 @@ static void blocks_init(prim_blocks_t* blocks, uint32_t prim_count, uint32_t str
     blocks->stride = stride;
     if (keep_atoms) {
         blocks->atoms = md_alloc(alloc, (size_t)prim_count * stride * sizeof(uint32_t));
-        MD_MEMSET(blocks->atoms, 0xFF, (size_t)prim_count * stride * sizeof(uint32_t));    // PRIM_ATOM_NONE
+        md_memset(blocks->atoms, 0xFF, (size_t)prim_count * stride * sizeof(uint32_t));    // PRIM_ATOM_NONE
     }
 }
 
@@ -858,7 +858,7 @@ static void blocks_adjacency(prim_blocks_t* blocks, uint32_t n) {
     if (n == 0) return;
     md_allocator_i* alloc = md_get_heap_allocator();
     uint32_t* offset = md_alloc(alloc, (n + 1) * sizeof(uint32_t));
-    MD_MEMSET(offset, 0, (n + 1) * sizeof(uint32_t));
+    md_memset(offset, 0, (n + 1) * sizeof(uint32_t));
     const size_t slots = (size_t)blocks->prim_count * blocks->stride;
     for (size_t i = 0; i < slots; ++i) {
         const uint32_t a = blocks->atoms[i];
@@ -886,7 +886,7 @@ static void marked_free(marked_t* m) {
     if (m->prefix) md_free(alloc, m->prefix, (m->word_count + 1) * sizeof(uint32_t));
     if (m->atoms)  md_free(alloc, m->atoms,  m->n * sizeof(uint32_t));
     if (m->cps)    md_free(alloc, m->cps,    m->cp_capacity * sizeof(uint32_t));
-    MD_MEMSET(m, 0, sizeof(marked_t));
+    md_memset(m, 0, sizeof(marked_t));
 }
 
 // Atoms before atom i which are marked
@@ -975,7 +975,7 @@ static void backbone_bounds_free(backbone_bounds_t* bounds) {
         md_free(alloc, bounds->chain_sphere, bounds->chain_count * sizeof(vec4_t));
         md_free(alloc, bounds->chain_offset, (bounds->chain_count + 1) * sizeof(uint32_t));
     }
-    MD_MEMSET(bounds, 0, sizeof(backbone_bounds_t));
+    md_memset(bounds, 0, sizeof(backbone_bounds_t));
 }
 
 // The spheres of the chains from the positions of their control points (ca_xyz)
@@ -1166,7 +1166,7 @@ void md_gl_mol_set_atom_flags(md_gl_mol_t handle, uint32_t offset, uint32_t coun
         // Kept on the CPU too, for the draws with an atom mask (MARKS)
         if (!mol->atom_flags) {
             mol->atom_flags = md_alloc(md_get_heap_allocator(), mol->atom_count * sizeof(uint8_t));
-            MD_MEMSET(mol->atom_flags, 0, mol->atom_count * sizeof(uint8_t));
+            md_memset(mol->atom_flags, 0, mol->atom_count * sizeof(uint8_t));
         }
         for (uint32_t i = 0; i < count; ++i) {
             mol->atom_flags[offset + i] = flag_data[byte_stride * i];
@@ -1719,7 +1719,7 @@ void md_gl_shutdown(void) {
     if (ctx.vao) glDeleteVertexArrays(1, &ctx.vao);
     if (ctx.fbo) glDeleteFramebuffers(1, &ctx.fbo);
     if (ctx.ubo[0]) glDeleteBuffers(UBO_RING, ctx.ubo);
-    MD_MEMSET(ctx.ubo, 0, sizeof(ctx.ubo));
+    md_memset(ctx.ubo, 0, sizeof(ctx.ubo));
     for (uint32_t i = 0; i < GL_TEXTURE_COUNT; ++i) {
         if (ctx.texture[i].id) glDeleteTextures(1, &ctx.texture[i].id);
     }
@@ -2134,7 +2134,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
     // region of the frame's chemistry has its own flags
     uint32_t* pairs = md_alloc(alloc, 2 * MD_MAX(bond_count, 1) * sizeof(uint32_t));
     uint32_t* flags = md_alloc(alloc, MD_MAX(bond_count, 1) * sizeof(uint32_t));
-    MD_MEMCPY(pairs, sys->bond.pairs, 2 * sys_bond_count * sizeof(uint32_t));
+    md_memcpy(pairs, sys->bond.pairs, 2 * sys_bond_count * sizeof(uint32_t));
     for (uint32_t i = 0; i < sys_bond_count; ++i) flags[i] = (uint32_t)sys->bond.flags[i];
     if (delta) {
         md_bitset_iter_t it = md_bitset_iter(delta->broken);
@@ -2156,7 +2156,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
     uint8_t* region = NULL;     // [atom_count] Atoms of the region of the frame's chemistry
     if (chem && chem->num_atoms) {
         region = md_alloc(alloc, MD_MAX(atom_count, 1));
-        MD_MEMSET(region, 0, MD_MAX(atom_count, 1));
+        md_memset(region, 0, MD_MAX(atom_count, 1));
         for (size_t k = 0; k < chem->num_atoms; ++k) {
             const int32_t a = chem->atom_idx[k];
             if (a < 0 || (uint32_t)a >= atom_count) continue;
@@ -2176,7 +2176,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
     uint32_t* order      = md_alloc(alloc, MD_MAX(mol_bond_count, 1) * sizeof(uint32_t));
     uint32_t* ref        = md_alloc(alloc, 4 * MD_MAX(bond_count, 1) * sizeof(uint32_t));
 
-    MD_MEMSET(adj_offset, 0, (atom_count + 1) * sizeof(uint32_t));
+    md_memset(adj_offset, 0, (atom_count + 1) * sizeof(uint32_t));
     for (uint32_t i = 0; i < bond_count; ++i) {
         const uint32_t a = pairs[2 * i + 0];
         const uint32_t b = pairs[2 * i + 1];
@@ -2189,7 +2189,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
         adj_offset[i + 1] += adj_offset[i];
     }
     uint32_t* cursor = md_alloc(alloc, MD_MAX(atom_count, 1) * sizeof(uint32_t));
-    MD_MEMCPY(cursor, adj_offset, atom_count * sizeof(uint32_t));
+    md_memcpy(cursor, adj_offset, atom_count * sizeof(uint32_t));
     for (uint32_t i = 0; i < bond_count; ++i) {
         const uint32_t a = pairs[2 * i + 0];
         const uint32_t b = pairs[2 * i + 1];
@@ -2212,7 +2212,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
     md_ring_t* own_rings = NULL;
     if (chem_ring_count) {
         own_rings = md_alloc(alloc, ring_count * sizeof(md_ring_t));
-        if (sys_ring_count) MD_MEMCPY(own_rings, sys->ring.rings, sys_ring_count * sizeof(md_ring_t));
+        if (sys_ring_count) md_memcpy(own_rings, sys->ring.rings, sys_ring_count * sizeof(md_ring_t));
         for (uint32_t r = 0; r < sys_ring_count; ++r) {
             md_ring_t* ring = &own_rings[r];
             for (uint32_t k = 0; k < ring->count; ++k) {
@@ -2220,7 +2220,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
                 if (a >= 0 && (uint32_t)a < atom_count && region[a]) ring->flags = MD_RING_FLAG_NONE;
             }
         }
-        MD_MEMCPY(own_rings + sys_ring_count, chem->ring.rings, chem_ring_count * sizeof(md_ring_t));
+        md_memcpy(own_rings + sys_ring_count, chem->ring.rings, chem_ring_count * sizeof(md_ring_t));
         rings = own_rings;
     }
 
@@ -2242,16 +2242,16 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
 
     // The circles first: the bonds they cover need no dashed partner
     uint8_t* covered = md_alloc(alloc, MD_MAX(bond_count, 1) * sizeof(uint8_t));
-    MD_MEMSET(covered, 0, MD_MAX(bond_count, 1) * sizeof(uint8_t));
+    md_memset(covered, 0, MD_MAX(bond_count, 1) * sizeof(uint8_t));
     const uint32_t ring_entry_count = compute_aromatic_rings(NULL, NULL, &in);
     const size_t   ring_entry_bytes = MD_MAX(ring_entry_count, 1) * RING_ENTRY_U32 * sizeof(uint32_t);
     uint32_t* ring_entry = md_alloc(alloc, ring_entry_bytes);
-    MD_MEMSET(ring_entry, 0, ring_entry_bytes);
+    md_memset(ring_entry, 0, ring_entry_bytes);
     compute_aromatic_rings(ring_entry, covered, &in);
 
     const uint32_t partner_count = compute_bond_partners(NULL, covered, &in);
     uint32_t* partner = md_alloc(alloc, MD_MAX(partner_count, 1) * 4 * sizeof(uint32_t));
-    MD_MEMSET(partner, 0, MD_MAX(partner_count, 1) * 4 * sizeof(uint32_t));
+    md_memset(partner, 0, MD_MAX(partner_count, 1) * 4 * sizeof(uint32_t));
     compute_bond_partners(partner, covered, &in);
 
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_ORDER]);
@@ -2259,7 +2259,7 @@ void md_gl_mol_set_bond_orders(md_gl_mol_t handle, const md_system_t* sys, const
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_BOND_PARTNER]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_AROMATIC_RING]);
     // The bonds past those given: plain (KIND_PLAIN, 0)
-    if (mol_bond_count > bond_count) MD_MEMSET(order + bond_count, 0, (mol_bond_count - bond_count) * sizeof(uint32_t));
+    if (mol_bond_count > bond_count) md_memset(order + bond_count, 0, (mol_bond_count - bond_count) * sizeof(uint32_t));
     mol->buffer[GL_BUFFER_BOND_ORDER]     = gl_buffer_create(mol_bond_count * sizeof(uint32_t), order, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_BOND_ORDER_REF] = gl_buffer_create(MD_MAX(entries, 1) * 4 * sizeof(uint32_t), ref, GL_STATIC_DRAW);
     mol->buffer[GL_BUFFER_BOND_PARTNER]   = gl_buffer_create(MD_MAX(partner_count, 1) * 4 * sizeof(uint32_t), partner, GL_STATIC_DRAW);
@@ -2346,7 +2346,7 @@ void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
     // The segment of each residue in the protein backbone (-1 for none) and the range of each segment
     const md_protein_backbone_data_t* bb = &sys->protein_backbone;
     int32_t* res_seg = md_temp_alloc(temp, res_count * sizeof(int32_t));
-    MD_MEMSET(res_seg, -1, res_count * sizeof(int32_t));
+    md_memset(res_seg, -1, res_count * sizeof(int32_t));
     uint32_t* seg_beg = NULL;
     uint32_t* seg_end = NULL;
     if (bb->range.count > 0 && bb->range.offset && bb->segment.count > 0 && bb->segment.atoms && bb->segment.res_idx) {
@@ -2416,8 +2416,8 @@ void md_gl_mol_set_chain_gaps(md_gl_mol_t handle, const md_system_t* sys) {
     const uint32_t total = trace_count + link_count;
     if (total > 0) {
         // The links after the traces
-        MD_MEMCPY(trace + 4 * trace_count, link, link_count * 4 * sizeof(uint32_t));
-        MD_MEMCPY(trace_res + trace_count, link_res, link_count * sizeof(uint32_t));
+        md_memcpy(trace + 4 * trace_count, link, link_count * 4 * sizeof(uint32_t));
+        md_memcpy(trace_res + trace_count, link_res, link_count * sizeof(uint32_t));
         mol->buffer[GL_BUFFER_CHAIN_GAP]      = gl_buffer_create(total * 4 * sizeof(uint32_t), trace, GL_STATIC_DRAW);
         mol->buffer[GL_BUFFER_CHAIN_GAP_RES] = gl_buffer_create(total * sizeof(uint32_t), trace_res, GL_STATIC_DRAW);
         mol->gap_trace_count = trace_count;
@@ -2523,10 +2523,10 @@ static void mol_set_backbone(molecule_t* mol, uint32_t cp_count, uint32_t chain_
     bounds->chain_sphere = md_alloc(alloc, chain_count * sizeof(vec4_t));
     bounds->ca_atom_idx  = md_alloc(alloc, cp_count * sizeof(uint32_t));
     bounds->ca_xyz       = md_alloc(alloc, cp_count * sizeof(vec3_t));
-    MD_MEMCPY(bounds->chain_offset, chain_offset, (chain_count + 1) * sizeof(uint32_t));
-    MD_MEMCPY(bounds->ca_atom_idx, bounds_atom, cp_count * sizeof(uint32_t));
-    MD_MEMSET(bounds->chain_sphere, 0, chain_count * sizeof(vec4_t));
-    MD_MEMSET(bounds->ca_xyz, 0, cp_count * sizeof(vec3_t));
+    md_memcpy(bounds->chain_offset, chain_offset, (chain_count + 1) * sizeof(uint32_t));
+    md_memcpy(bounds->ca_atom_idx, bounds_atom, cp_count * sizeof(uint32_t));
+    md_memset(bounds->chain_sphere, 0, chain_count * sizeof(vec4_t));
+    md_memset(bounds->ca_xyz, 0, cp_count * sizeof(vec3_t));
     bounds->valid = false;
 
     // The control points as primitives of their atoms (SUBSETS)
@@ -2653,7 +2653,7 @@ md_gl_mol_t md_gl_mol_create_particles(uint32_t count) {
         return handle;
     }
     molecule_t* gl_mol = ctx.molecules + md_handle_index(id);
-    MD_MEMSET(gl_mol, 0, sizeof(molecule_t));
+    md_memset(gl_mol, 0, sizeof(molecule_t));
     gl_mol->id = id;
     handle.id = id;
 
@@ -2686,7 +2686,7 @@ static void derived_free(molecule_t* mol) {
         md_free(alloc, mol->derived.atom,   MD_MAX(mol->derived.atom_count, 1) * sizeof(uint32_t));
         md_free(alloc, mol->derived.weight, MD_MAX(mol->derived.atom_count, 1) * sizeof(float));
     }
-    MD_MEMSET(&mol->derived, 0, sizeof(mol->derived));
+    md_memset(&mol->derived, 0, sizeof(mol->derived));
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_DERIVED_DATA]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_DERIVED_ATOM]);
     gl_buffer_conditional_delete(&mol->buffer[GL_BUFFER_DERIVED_WEIGHT]);
@@ -3069,7 +3069,7 @@ void md_gl_mol_destroy(md_gl_mol_t handle) {
         blocks_free(&mol->slab_blocks);
         blocks_free(&mol->cp_blocks);
         if (mol->scratch_bits) md_free(md_get_heap_allocator(), mol->scratch_bits, MD_DIV_UP(mol->atom_count, 64) * sizeof(uint64_t));
-        MD_MEMSET(mol, 0, sizeof(molecule_t));
+        md_memset(mol, 0, sizeof(molecule_t));
         md_handle_pool_free_slot(&ctx.molecule_pool, handle.id);
     }
 }
@@ -3123,7 +3123,7 @@ void md_gl_rep_destroy(md_gl_rep_t handle) {
         gl_buffer_conditional_delete(&rep->weak_bond_weight);
         gl_buffer_conditional_delete(&rep->weak_bond_kind);
         blocks_free(&rep->weak_bond_blocks);
-        MD_MEMSET(rep, 0, sizeof(representation_t));
+        md_memset(rep, 0, sizeof(representation_t));
         md_handle_pool_free_slot(&ctx.representation_pool, handle.id);
     }
 }
@@ -3271,7 +3271,7 @@ static void u32_reserve(uint32_t** arr, uint32_t* capacity, uint32_t need) {
     const uint32_t cap = MD_MAX(need, *capacity + *capacity / 2);
     uint32_t* mem = md_alloc(alloc, cap * sizeof(uint32_t));
     if (*arr) {
-        MD_MEMCPY(mem, *arr, *capacity * sizeof(uint32_t));
+        md_memcpy(mem, *arr, *capacity * sizeof(uint32_t));
         md_free(alloc, *arr, *capacity * sizeof(uint32_t));
     }
     *arr = mem;
@@ -3310,7 +3310,7 @@ static void subset_free(subset_t* s) {
         if (s->list[k].prims) md_free(alloc, s->list[k].prims, s->list[k].capacity * sizeof(uint32_t));
     }
     gl_buffer_conditional_delete(&s->gpu);
-    MD_MEMSET(s, 0, sizeof(subset_t));
+    md_memset(s, 0, sizeof(subset_t));
 }
 
 md_gl_subset_t md_gl_subset_create(md_gl_mol_t mol_handle) {
@@ -3327,7 +3327,7 @@ md_gl_subset_t md_gl_subset_create(md_gl_mol_t mol_handle) {
         return handle;
     }
     subset_t* s = ctx.subsets + md_handle_index(id);
-    MD_MEMSET(s, 0, sizeof(subset_t));
+    md_memset(s, 0, sizeof(subset_t));
     s->id = id;
     s->mol_id = mol_handle.id;
     for (int k = 0; k < SUBSET_KIND_COUNT; ++k) {
@@ -3423,7 +3423,7 @@ static uint64_t* subset_bits_set(molecule_t* mol, const subset_t* s) {
     if (!mol->scratch_bits) {
         const size_t bytes = MD_DIV_UP(mol->atom_count, 64) * sizeof(uint64_t);
         mol->scratch_bits = md_alloc(md_get_heap_allocator(), MD_MAX(bytes, sizeof(uint64_t)));
-        MD_MEMSET(mol->scratch_bits, 0, MD_MAX(bytes, sizeof(uint64_t)));
+        md_memset(mol->scratch_bits, 0, MD_MAX(bytes, sizeof(uint64_t)));
     }
     for (uint32_t i = 0; i < s->atom_count; ++i) {
         const uint32_t a = s->atoms[i];
@@ -3491,7 +3491,7 @@ static const prim_blocks_t* mol_kind_atoms(molecule_t* mol, int kind) {
     const uint32_t n = b->prim_count;
     const size_t slots = (size_t)n * b->stride;
     b->atoms = md_alloc(heap, slots * sizeof(uint32_t));
-    MD_MEMSET(b->atoms, 0xFF, slots * sizeof(uint32_t));   // PRIM_ATOM_NONE
+    md_memset(b->atoms, 0xFF, slots * sizeof(uint32_t));   // PRIM_ATOM_NONE
     md_temp_scope_t temp = md_temp_begin();
     switch (kind) {
     case SUBSET_BONDS:
@@ -3899,7 +3899,7 @@ static bool box_out_of_view(const view_frame_t* f, const mat4_t* T, vec3_t lo, v
 
 static inline mat4_t instance_transform(const float* transforms, uint32_t i) {
     mat4_t T;
-    MD_MEMCPY(&T, transforms + 16 * i, sizeof(mat4_t));
+    md_memcpy(&T, transforms + 16 * i, sizeof(mat4_t));
     return T;
 }
 
@@ -4045,7 +4045,7 @@ static void subset_upload(subset_t* s, const molecule_t* mol, uint32_t lists) {
         if (!(uploaded & (1u << i))) continue;
         const int k = list_subset_kind[i];
         if (k < 0) {
-            MD_MEMCPY(data + at, s->atoms, count[i] * sizeof(uint32_t));
+            md_memcpy(data + at, s->atoms, count[i] * sizeof(uint32_t));
         } else if (k == SUBSET_CPS) {
             // Each with whether its neighbours are out of the subset, where the backbone is closed (backbone.vert)
             const subset_list_t* cps = s->list + SUBSET_CPS;
@@ -4056,7 +4056,7 @@ static void subset_upload(subset_t* s, const molecule_t* mol, uint32_t lists) {
                 data[at + j] = c | (prev_in ? 0 : CP_PREV_OUT) | (next_in ? 0 : CP_NEXT_OUT);
             }
         } else {
-            MD_MEMCPY(data + at, s->list[k].prims, count[i] * sizeof(uint32_t));
+            md_memcpy(data + at, s->list[k].prims, count[i] * sizeof(uint32_t));
         }
         at += count[i];
     }
@@ -4190,7 +4190,7 @@ typedef struct {
 // The copies of an op in view, pushed to the instance data (in groups of the levels of detail of the chains for the
 // backbone), and with an atom mask the lists it draws from
 static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* mol, const representation_t* rep, prep_ctx_t* pc) {
-    MD_MEMSET(prep, 0, sizeof(op_prep_t));
+    md_memset(prep, 0, sizeof(op_prep_t));
     md_allocator_i* alloc = pc->alloc;
     const md_gl_copies_t* inst = &op->copies;
     const uint32_t count = (inst->count && inst->transforms) ? inst->count : 1;
@@ -4269,7 +4269,7 @@ static void prepare_op(op_prep_t* prep, const md_gl_draw_op_t* op, molecule_t* m
 
             uint32_t g = 0;
             for (; g < group_count; ++g) {
-                if (groups[g].key == key && groups[g].mirrored == mirrored && (groups[g].chain_lod == lod || MD_MEMCMP(groups[g].chain_lod, lod, chain_count) == 0)) break;
+                if (groups[g].key == key && groups[g].mirrored == mirrored && (groups[g].chain_lod == lod || md_memcmp(groups[g].chain_lod, lod, chain_count) == 0)) break;
             }
             if (g == group_count) {
                 groups[g] = (bb_group_t){.chain_lod = lod, .key = key, .mirrored = mirrored};
@@ -4350,8 +4350,8 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
     MD_ASSERT(ubo_data);
     MD_ASSERT(args);
 
-    MD_MEMCPY(&ubo_data->view_transform.world_to_view, args->view_transform.view_matrix, sizeof(mat4_t));
-    MD_MEMCPY(&ubo_data->view_transform.view_to_clip,  args->view_transform.proj_matrix, sizeof(mat4_t));
+    md_memcpy(&ubo_data->view_transform.world_to_view, args->view_transform.view_matrix, sizeof(mat4_t));
+    md_memcpy(&ubo_data->view_transform.view_to_clip,  args->view_transform.proj_matrix, sizeof(mat4_t));
 
     ubo_data->view_transform.world_to_clip = mat4_mul(ubo_data->view_transform.view_to_clip, ubo_data->view_transform.world_to_view);
     ubo_data->view_transform.world_to_view_normal = mat4_transpose(mat4_inverse(ubo_data->view_transform.world_to_view));

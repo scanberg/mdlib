@@ -444,8 +444,8 @@ static size_t count_components(size_t num_atoms, const md_smiles_bond_t* bonds, 
 bool md_smiles_parse(md_smiles_t* out, md_str_t str, struct md_allocator_i* alloc, md_smiles_error_t* err) {
     MD_ASSERT(out);
     MD_ASSERT(alloc);
-    MD_MEMSET(out, 0, sizeof(md_smiles_t));
-    if (err) MD_MEMSET(err, 0, sizeof(md_smiles_error_t));
+    md_memset(out, 0, sizeof(md_smiles_t));
+    if (err) md_memset(err, 0, sizeof(md_smiles_error_t));
 
     parser_t p = {
         .str   = str.ptr,
@@ -498,5 +498,5 @@ void md_smiles_free(md_smiles_t* smiles) {
         md_array_free(smiles->atoms, smiles->alloc);
         md_array_free(smiles->bonds, smiles->alloc);
     }
-    MD_MEMSET(smiles, 0, sizeof(md_smiles_t));
+    md_memset(smiles, 0, sizeof(md_smiles_t));
 }

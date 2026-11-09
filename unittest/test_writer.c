@@ -84,7 +84,7 @@ UTEST(writer, str_writer_growth) {
     // A format larger than anything buffered so far
     md_str_writer_reset(&sw);
     char big[5000];
-    MD_MEMSET(big, 'a', sizeof(big) - 1);
+    md_memset(big, 'a', sizeof(big) - 1);
     big[sizeof(big) - 1] = '\0';
     md_str_writer_fmt(&sw, "<%s>", big);
     str = md_str_writer_to_str(&sw);
@@ -227,7 +227,7 @@ UTEST(writer, fill_and_reserve) {
 
     char* p = md_writer_reserve(&sw.w, 4096);
     ASSERT_TRUE(p != NULL);
-    MD_MEMCPY(p, "0123456789", 10);
+    md_memcpy(p, "0123456789", 10);
     md_writer_commit(&sw.w, 10);
     str = md_str_writer_to_str(&sw);
     EXPECT_EQ((size_t)1010, str.len);
@@ -241,7 +241,7 @@ UTEST(writer, fill_and_reserve) {
 // Everything the file test writes, to whichever writer
 static void produce_file_content(md_writer_i* w) {
     char block[100];
-    MD_MEMSET(block, '#', sizeof(block));
+    md_memset(block, '#', sizeof(block));
     for (int i = 0; i < 300; ++i) {
         if (i % 7 == 0) {
             md_writef(w, "%d:%s\n", i, "a line which is longer than the staging buffer of sixteen bytes");
@@ -296,7 +296,7 @@ static void capture_log(struct md_logger_o* inst, md_log_type_t type, const char
 
 UTEST(writer, log_writer) {
     md_logger_i logger = { NULL, capture_log };
-    MD_MEMSET(&log_capture, 0, sizeof(log_capture));
+    md_memset(&log_capture, 0, sizeof(log_capture));
     md_log_register(&logger);
 
     // 15 bytes of buffer: lines are logged as they complete, a longer one in pieces, the last one when closed

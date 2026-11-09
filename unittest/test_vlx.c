@@ -193,7 +193,7 @@ UTEST(vlx, minimal_example) {
 
 	// Allocate data for storing the result
 	float* vol_data = (float*)md_alloc(arena, sizeof(float) * vol_dim * vol_dim * vol_dim);
-	MD_MEMSET(vol_data, 0, sizeof(float) * vol_dim * vol_dim * vol_dim);
+	md_memset(vol_data, 0, sizeof(float) * vol_dim * vol_dim * vol_dim);
 
 	// Setup the grid structure that control how we aim to sample over space
 	md_grid_t grid = (md_grid_t) {
@@ -329,7 +329,7 @@ UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
 
 	// D = sum over molecular orbitals of occ_i * c_i c_i^T, which is the definition and not a
 	// restatement of the provider: it reads the same two attributes any consumer would.
-	MD_MEMSET(ref, 0, sizeof(double) * plane);
+	md_memset(ref, 0, sizeof(double) * plane);
 	double occ_sum = 0.0;
 	for (size_t mo = 0; mo < num_mo; ++mo) {
 		occ_sum += occ[mo];

@@ -71,8 +71,8 @@ static void br_init(br_t* r, const uint64_t* stream, size_t num_qwords) {
     r->data   = load_qword(stream + 0);
     r->next   = load_qword(stream + 1);
 #if __LITTLE_ENDIAN__
-    r->data   = MD_BSWAP64(r->data);
-    r->next   = MD_BSWAP64(r->next);
+    r->data   = md_bswap64(r->data);
+    r->next   = md_bswap64(r->next);
 #endif
     r->cache_bits = 128;
     r->stream_size = (uint32_t)num_qwords - 2;
@@ -91,7 +91,7 @@ static inline void br_load_next(br_t* r) {
         r->stream_size -= 1;
         uint64_t data = load_qword(r->stream++);
 #if __LITTLE_ENDIAN__
-        data = MD_BSWAP64(data);
+        data = md_bswap64(data);
 #endif
         if (r->cache_bits < 64) {
             // Fill in missing bits
@@ -109,7 +109,7 @@ static inline void br_load_next(br_t* r) {
     r->stream_size -= 1;
 
 #if __LITTLE_ENDIAN__
-    data = MD_BSWAP64(data);
+    data = md_bswap64(data);
 #endif
 
     // Always perform unified update
@@ -141,7 +141,7 @@ static inline uint64_t br_read(br_t* r, size_t num_bits) {
         r->stream_size -= 1;
         uint64_t data = load_qword(r->stream++);
 #if __LITTLE_ENDIAN__
-        data = MD_BSWAP64(data);
+        data = md_bswap64(data);
 #endif
         // Fill in missing bits
         if (r->cache_bits < 64) {
@@ -248,15 +248,15 @@ UTEST(xtc, decode_bits) {
         uint64_t next = MD_ALIGN_TO(num_of_bits, 8);
         uint64_t u = br_peek(&r, num_of_bits);
         uint64_t l = u << sml_shift;
-        uint64_t j = MD_BSWAP64(u);
-        uint64_t m = MD_BSWAP64(l);
+        uint64_t j = md_bswap64(u);
+        uint64_t m = md_bswap64(l);
         uint64_t k = j >> big_shift;
 
         uint64_t w = br_read(&r, num_of_bits);
         // Remove unnecessary masking by directly applying shifts
         uint64_t t = (w << sml_shift) & ~0xFFull | (w & part_mask);
         // Byte-swap and shift to align the result correctly
-        uint64_t q = MD_BSWAP64(t) >> big_shift;
+        uint64_t q = md_bswap64(t) >> big_shift;
 
         EXPECT_EQ(v, q);
         if (v != q) {
@@ -702,7 +702,7 @@ UTEST(xtc, script_evaluates_along_the_run) {
     const md_attribute_t* da = md_attributes_find(md_script_eval_attributes(a), MD_STR_LIT("script/d"));
     const md_attribute_t* db = md_attributes_find(md_script_eval_attributes(b), MD_STR_LIT("script/d"));
     ASSERT_TRUE(da && db);
-    EXPECT_EQ(0, MD_MEMCMP(da->data, db->data, md_attribute_byte_size(&da->format)));
+    EXPECT_EQ(0, md_memcmp(da->data, db->data, md_attribute_byte_size(&da->format)));
 
     md_script_eval_free(a);
     md_script_eval_free(b);

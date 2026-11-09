@@ -1753,7 +1753,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glClearNamedBufferData(ctx.visibility_buf.id,     GL_RG32UI, GL_RG,  GL_UNSIGNED_INT, &vis_clear_val);
     glNamedBufferSubData(ctx.draw_ind_param_buf.id, 0, sizeof(DrawParameters), &draw_param);
 
-    MD_MEMSET(ctx.debug_data, 0, sizeof(DebugData));
+    md_memset(ctx.debug_data, 0, sizeof(DebugData));
 
     GL_POP_GPU_SECTION();
 }

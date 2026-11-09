@@ -317,14 +317,14 @@ UTEST(os, file_read_seek_tell_size) {
     EXPECT_STREQ(buf, "he");
 
     EXPECT_TRUE(md_file_seek(file, 0, MD_FILE_BEG));
-    MD_MEMSET(buf, 0, sizeof(buf));
+    md_memset(buf, 0, sizeof(buf));
     EXPECT_EQ(md_file_read(file, buf, 5), 5);
     EXPECT_STREQ(buf, "hello");
     EXPECT_EQ(md_file_tell(file), 5);
 
     EXPECT_TRUE(md_file_seek(file, -2, MD_FILE_END));
     EXPECT_EQ(md_file_tell(file), 3);
-    MD_MEMSET(buf, 0, sizeof(buf));
+    md_memset(buf, 0, sizeof(buf));
     EXPECT_EQ(md_file_read(file, buf, 2), 2);
     EXPECT_STREQ(buf, "lo");
 

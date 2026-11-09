@@ -173,7 +173,7 @@ typedef enum cdf_parse_result_t {
 } cdf_parse_result_t;
 
 static cdf_parse_result_t cdf_parse_buffer(cdf_t* cdf, const uint8_t* data, size_t size, md_allocator_i* alloc) {
-    MD_MEMSET(cdf, 0, sizeof(*cdf));
+    md_memset(cdf, 0, sizeof(*cdf));
     if (size >= 8 && memcmp(data, "\211HDF\r\n\032\n", 8) == 0) return CDF_PARSE_HDF5;
     if (size < 4 || data[0] != 'C' || data[1] != 'D' || data[2] != 'F') return CDF_PARSE_NOT_CDF;
     const uint32_t version = data[3];
@@ -221,7 +221,7 @@ static cdf_parse_result_t cdf_parse_buffer(cdf_t* cdf, const uint8_t* data, size
     const cdf_var_t* first_record_var = NULL;
     for (uint64_t i = 0; i < num_var; ++i) {
         cdf_var_t* v = &cdf->var[i];
-        MD_MEMSET(v, 0, sizeof(*v));
+        md_memset(v, 0, sizeof(*v));
         v->name = cdf_read_name(&c);
         const uint64_t rank = cdf_read_count(&c);
         if (!md_xdr_ok(&c.xdr)) goto fail;
@@ -400,7 +400,7 @@ typedef struct amber_layout_t {
 // the section absent when the variable is not there; false and logged when it is there but not as the
 // convention has it.
 static bool amber_section(amber_section_t* out, const cdf_t* cdf, const char* name, bool restart, int frame_dim, const int inner[], size_t num_inner, md_str_t path) {
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     const cdf_var_t* v = cdf_find_var(cdf, name);
     if (!v) return true;
 
@@ -451,7 +451,7 @@ static uint64_t amber_section_frames(const amber_section_t* s, uint64_t file_siz
 }
 
 static bool amber_layout(amber_layout_t* out, const cdf_t* cdf, md_str_t path) {
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     out->kind = amber_kind(cdf);
     if (out->kind == MD_AMBER_NETCDF_NONE) {
         MD_LOG_ERROR("Amber NetCDF: '" MD_STR_FMT "' is NetCDF but does not follow the Amber convention (no Conventions \"AMBER\" or \"AMBERRESTART\")", MD_STR_ARG(path));
@@ -549,7 +549,7 @@ static md_amber_netcdf_kind_t amber_open(amber_layout_t* layout, md_file_t* out_
     }
     if (quiet) {
         // The kind alone, without validating the rest
-        MD_MEMSET(layout, 0, sizeof(*layout));
+        md_memset(layout, 0, sizeof(*layout));
         layout->kind = amber_kind(&cdf);
         const int atom = cdf_find_dim(&cdf, "atom");
         layout->num_atoms = atom >= 0 ? (size_t)cdf.dim[atom].len : 0;
@@ -631,7 +631,7 @@ static void amber_convert_f32(float* out, const uint8_t* raw, uint32_t type, siz
     case CDF_DOUBLE: for (size_t i = 0; i < count; ++i) out[i] = (float)(md_xdr_load_f64(raw + i * 8) * scale); break;
     case CDF_INT:    for (size_t i = 0; i < count; ++i) out[i] = (float)((double)md_xdr_load_i32(raw + i * 4) * scale); break;
     case CDF_SHORT:  for (size_t i = 0; i < count; ++i) out[i] = (float)((double)(int16_t)((raw[i * 2] << 8) | raw[i * 2 + 1]) * scale); break;
-    default:         MD_MEMSET(out, 0, count * sizeof(float)); break;
+    default:         md_memset(out, 0, count * sizeof(float)); break;
     }
 }
 
@@ -874,7 +874,7 @@ bool md_amber_netcdf_system_publish_run(md_system_t* sys, md_str_t filename, md_
 
     // ## Cells
     float* boxes = md_alloc(arena, F * 9 * sizeof(float));
-    MD_MEMSET(boxes, 0, F * 9 * sizeof(float));
+    md_memset(boxes, 0, F * 9 * sizeof(float));
     if (layout.cell_lengths.present) {
         double* lengths = md_alloc(arena, F * 3 * sizeof(double));
         double* angles  = layout.cell_angles.present ? md_alloc(arena, F * 3 * sizeof(double)) : NULL;

@@ -173,7 +173,7 @@ typedef struct psf_data_t {
 } psf_data_t;
 
 static bool psf_read(psf_data_t* d, md_str_t path, md_allocator_i* alloc) {
-    MD_MEMSET(d, 0, sizeof(*d));
+    md_memset(d, 0, sizeof(*d));
     md_str_t text = md_load_textfile(path, alloc);
     if (!psf_is_header(text)) {
         MD_LOG_ERROR("PSF: '" MD_STR_FMT "' does not start with 'PSF'", MD_STR_ARG(path));

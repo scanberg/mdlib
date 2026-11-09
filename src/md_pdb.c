@@ -121,10 +121,10 @@ typedef enum {
 static MD_FORCE_INLINE uint64_t pdb_line_head(md_str_t line) {
     uint64_t w;
     if (line.len >= 8) {
-        MD_MEMCPY(&w, line.ptr, 8);
+        md_memcpy(&w, line.ptr, 8);
     } else {
         w = 0x2020202020202020ull;
-        MD_MEMCPY(&w, line.ptr, line.len);
+        md_memcpy(&w, line.ptr, line.len);
     }
     return w;
 }
@@ -329,7 +329,7 @@ static void pdb_assemblies(md_system_t* sys, const pdb_extras_t* x, md_allocator
             const mat4_t M = x->transforms[group->transform_offset + t];
             size_t k = 0;
             for (; k < md_array_size(transform); ++k) {
-                if (MD_MEMCMP(&transform[k], &M, sizeof(mat4_t)) == 0) break;
+                if (md_memcmp(&transform[k], &M, sizeof(mat4_t)) == 0) break;
             }
             if (k == md_array_size(transform)) {
                 char buf[16];
@@ -426,7 +426,7 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
     uint32_t* order = md_alloc(temp_arena, num_keys * sizeof(uint32_t));
     md_util_argsort_radix_u64(order, key, num_keys);
     uint8_t* keep = md_alloc(temp_arena, num_keys);
-    MD_MEMSET(keep, 0, num_keys);
+    md_memset(keep, 0, num_keys);
     size_t num_bonds = 0;
     for (size_t i = 0; i < num_keys; ++i) {
         if (i == 0 || key[order[i]] != key[order[i - 1]]) {
@@ -506,14 +506,14 @@ typedef struct pdb_res_fields_t {
 static MD_FORCE_INLINE pdb_res_fields_t pdb_res_fields(md_str_t line) {
     pdb_res_fields_t f;
     if (line.len >= PDB_RES_FIELDS_END) {
-        MD_MEMCPY(&f.lo, line.ptr + PDB_RES_FIELDS_BEG, 8);
-        MD_MEMCPY(&f.hi, line.ptr + PDB_RES_FIELDS_BEG + 8, 2);
+        md_memcpy(&f.lo, line.ptr + PDB_RES_FIELDS_BEG, 8);
+        md_memcpy(&f.hi, line.ptr + PDB_RES_FIELDS_BEG + 8, 2);
     } else {
         char c[PDB_RES_FIELDS_END - PDB_RES_FIELDS_BEG];
-        MD_MEMSET(c, ' ', sizeof(c));
-        if (line.len > PDB_RES_FIELDS_BEG) MD_MEMCPY(c, line.ptr + PDB_RES_FIELDS_BEG, line.len - PDB_RES_FIELDS_BEG);
-        MD_MEMCPY(&f.lo, c, 8);
-        MD_MEMCPY(&f.hi, c + 8, 2);
+        md_memset(c, ' ', sizeof(c));
+        if (line.len > PDB_RES_FIELDS_BEG) md_memcpy(c, line.ptr + PDB_RES_FIELDS_BEG, line.len - PDB_RES_FIELDS_BEG);
+        md_memcpy(&f.lo, c, 8);
+        md_memcpy(&f.hi, c + 8, 2);
     }
     return f;
 }
@@ -531,10 +531,10 @@ static MD_FORCE_INLINE char pdb_res_fields_chain(const pdb_res_fields_t* f) {
 static MD_FORCE_INLINE md_label_t pdb_label(md_str_t line, size_t offset, size_t width) {
     uint32_t w = 0x20202020u;
     if (line.len >= offset + width) {
-        if (width == 4) MD_MEMCPY(&w, line.ptr + offset, 4);
-        else            { uint16_t h; MD_MEMCPY(&h, line.ptr + offset, 2); w = 0x20200000u | h; }
+        if (width == 4) md_memcpy(&w, line.ptr + offset, 4);
+        else            { uint16_t h; md_memcpy(&h, line.ptr + offset, 2); w = 0x20200000u | h; }
     } else if (line.len > offset) {
-        MD_MEMCPY(&w, line.ptr + offset, line.len - offset);
+        md_memcpy(&w, line.ptr + offset, line.len - offset);
     }
     // 0x80 in every byte above ' ': its low 7 bits are, or its high bit is set (no borrow crosses a byte)
     const uint32_t mark = (((w | 0x80808080u) - 0x21212121u) | w) & 0x80808080u;
@@ -543,7 +543,7 @@ static MD_FORCE_INLINE md_label_t pdb_label(md_str_t line, size_t offset, size_t
         const uint32_t lo = md_ctz32(mark) >> 3;
         const uint32_t hi = (31 - md_clz32(mark)) >> 3;
         const uint64_t v = ((uint64_t)w >> (8 * lo)) & ((UINT64_C(1) << (8 * (hi - lo + 1))) - 1);
-        MD_MEMCPY(lbl.buf, &v, sizeof(v));
+        md_memcpy(lbl.buf, &v, sizeof(v));
     }
     return lbl;
 }
@@ -660,7 +660,7 @@ typedef struct pdb_piece_t {
 
 static inline uint32_t pdb_f32_bits(float x) {
     uint32_t u;
-    MD_MEMCPY(&u, &x, sizeof(u));
+    md_memcpy(&u, &x, sizeof(u));
     return u;
 }
 
@@ -787,10 +787,10 @@ static MD_FORCE_INLINE float pdb_field_cached(pdb_field_cache_t* cache, md_str_t
     const size_t width = end - beg + 1;
     uint64_t raw = 0;
     if (line.len >= end) {
-        MD_MEMCPY(&raw, line.ptr + beg - 1, width);
+        md_memcpy(&raw, line.ptr + beg - 1, width);
         raw |= (uint64_t)width << 56;                               // and how much of it there is
     } else {
-        if (line.len >= beg) MD_MEMCPY(&raw, line.ptr + beg - 1, line.len - beg + 1);     // The end of a shorter line
+        if (line.len >= beg) md_memcpy(&raw, line.ptr + beg - 1, line.len - beg + 1);     // The end of a shorter line
         raw |= (uint64_t)(line.len - MD_MIN(line.len, beg - 1)) << 56;
     }
     if (raw == cache->raw) return cache->value;
@@ -813,7 +813,7 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
         piece->unassigned = false;
         types->count = 0;
         types->overflow = false;
-        if (L->atoms && piece->num_atoms) MD_MEMSET(types->slot, 0, sizeof(types->slot));
+        if (L->atoms && piece->num_atoms) md_memset(types->slot, 0, sizeof(types->slot));
 
         // The type of the atom before, which the next often shares (a water's hydrogens, an ion after another)
         uint64_t prev_key = 0;
@@ -888,11 +888,11 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             uint64_t lo = 0, hi = UINT64_MAX;
             if (line.len >= 66) {
                 uint32_t mid, charge = 0;
-                MD_MEMCPY(&lo, line.ptr + 54, 8);
-                MD_MEMCPY(&mid, line.ptr + 62, 4);
+                md_memcpy(&lo, line.ptr + 54, 8);
+                md_memcpy(&mid, line.ptr + 62, 4);
                 if (line.len >= 80) {
                     uint16_t h;
-                    MD_MEMCPY(&h, line.ptr + 78, 2);
+                    md_memcpy(&h, line.ptr + 78, 2);
                     charge = 0x20000u | h;
                 } else if (line.len == 79) {
                     charge = 0x10000u | (uint8_t)line.ptr[78];
@@ -920,7 +920,7 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                     col_varies[k] = true;
                     any_varies = true;
                     float first_value;
-                    MD_MEMCPY(&first_value, &col_first[k], sizeof(first_value));
+                    md_memcpy(&first_value, &col_first[k], sizeof(first_value));
                     for (size_t i = piece->first_atom; i < atom; ++i) L->column[k][i] = first_value;
                 }
                 L->column[k][atom] = col[k];
@@ -1145,13 +1145,13 @@ static int64_t pdb_tail(md_reader_i* src, int64_t from) {
 static void pdb_first_model(pdb_load_t* L) {
     const size_t beg = L->model_beg;
     const size_t n = L->num_atoms - beg;
-    MD_MEMMOVE(L->state->xyz,         L->state->xyz + beg,         n * sizeof(vec3_t));
-    MD_MEMMOVE(L->sys->atom.type_idx, L->sys->atom.type_idx + beg, n * sizeof(md_particle_type_idx_t));
-    MD_MEMMOVE(L->sys->atom.flags,    L->sys->atom.flags + beg,    n * sizeof(md_atom_flags_t));
-    MD_MEMMOVE(L->serial,             L->serial + beg,             n * sizeof(int32_t));
-    if (L->unassigned) MD_MEMMOVE(L->atom_name, L->atom_name + beg, n * sizeof(md_label_t));
+    md_memmove(L->state->xyz,         L->state->xyz + beg,         n * sizeof(vec3_t));
+    md_memmove(L->sys->atom.type_idx, L->sys->atom.type_idx + beg, n * sizeof(md_particle_type_idx_t));
+    md_memmove(L->sys->atom.flags,    L->sys->atom.flags + beg,    n * sizeof(md_atom_flags_t));
+    md_memmove(L->serial,             L->serial + beg,             n * sizeof(int32_t));
+    if (L->unassigned) md_memmove(L->atom_name, L->atom_name + beg, n * sizeof(md_label_t));
     for (int c = 0; c < PDB_NUM_COLUMNS; ++c) {
-        if (L->col_varies[c]) MD_MEMMOVE(L->column[c], L->column[c] + beg, n * sizeof(float));
+        if (L->col_varies[c]) md_memmove(L->column[c], L->column[c] + beg, n * sizeof(float));
     }
     // The residue of the first atom of the model, which may have begun before it
     pdb_residue_start_t* rs = L->res_starts;
@@ -1167,7 +1167,7 @@ static void pdb_first_model(pdb_load_t* L) {
         first.atom = 0;
         md_array_push(L->res_starts, first, L->temp);     // Room for one more
         rs = L->res_starts;
-        MD_MEMMOVE(rs + 1, rs, k * sizeof(pdb_residue_start_t));
+        md_memmove(rs + 1, rs, k * sizeof(pdb_residue_start_t));
         rs[0] = first;
         k += 1;
     }
@@ -1186,7 +1186,7 @@ static void pdb_fill_columns(void* arg, uint32_t beg, uint32_t end, uint32_t thr
         for (int c = 0; c < PDB_NUM_COLUMNS; ++c) {
             if (!L->col_varies[c] || run->col_varies[c]) continue;
             float v;
-            MD_MEMCPY(&v, &run->col_first[c], sizeof(v));
+            md_memcpy(&v, &run->col_first[c], sizeof(v));
             for (size_t i = run->first_atom; i < run_end; ++i) L->column[c][i] = v;
         }
     }
@@ -1263,8 +1263,8 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
     PDB_ROOM(sys->atom.type_idx, capacity, sys->alloc);
     PDB_ROOM(sys->atom.flags, capacity, sys->alloc);
     if (capacity) {
-        MD_MEMSET(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
-        MD_MEMSET(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
+        md_memset(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
+        md_memset(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
     }
     pdb_lap(L, PDB_PHASE_ATOMS, &t);
 
@@ -1495,12 +1495,12 @@ static bool write_cache(const pdb_cache_t* cache, md_str_t path, const md_file_i
 // nothing else but the first CRYST1's: a model begins at its MODEL record, and its atoms are those the system has of
 // it (the first alternate locations, pdb_line_kind), up to its ENDMDL record or the next MODEL record.
 static bool pdb_index_load(pdb_cache_t* cache, md_str_t filename, md_run_flags_t flags, md_allocator_i* alloc) {
-    MD_MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
 
     if (try_read_cache(cache, filename, alloc)) {
         return true;
     }
-    MD_MEMSET(cache, 0, sizeof(*cache));
+    md_memset(cache, 0, sizeof(*cache));
 
     // The file as it is before the scan is what the cache is stamped with
     md_file_info_t scanned = { 0 };
@@ -1568,7 +1568,7 @@ static bool pdb_index_load(pdb_cache_t* cache, md_str_t filename, md_run_flags_t
     cache->header.num_atoms = num_atoms;
     cache->header.num_frames = num_models;
     cache->frame_offsets = md_alloc(alloc, (num_models + 1) * sizeof(int64_t));
-    MD_MEMCPY(cache->frame_offsets, model_offset, num_models * sizeof(int64_t));
+    md_memcpy(cache->frame_offsets, model_offset, num_models * sizeof(int64_t));
     cache->frame_offsets[num_models] = (int64_t)scanned.size;
     if (extras.has_cell) {
         cache->cell = extras.cell;
@@ -1672,7 +1672,7 @@ bool md_pdb_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run
     for (size_t i = 0; i < F; ++i) {
         times[i] = (double)i;
         sizes[i] = index.frame_offsets[i + 1] - index.frame_offsets[i];
-        MD_MEMCPY(boxes + i * 9, A, sizeof(A));
+        md_memcpy(boxes + i * 9, A, sizeof(A));
     }
 
     const md_attribute_virtual_t virt = { .provider = pdb_position_provider, .user_data = sys };

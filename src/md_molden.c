@@ -399,14 +399,14 @@ static bool molden_parse_mo(molden_t* molden, md_reader_i* reader, size_t num_ao
         if (is_key) {
             if (have_orb && num_coeff > 0) {
                 md_array_push(molden->orbital, orb, molden->alloc);
-                MD_MEMSET(&orb, 0, sizeof(orb));
+                md_memset(&orb, 0, sizeof(orb));
                 have_orb  = false;
                 num_coeff = 0;
             }
             if (!have_orb) {
                 orb = (molden_orbital_t){0};
                 orb.coefficient = (double*)md_alloc(molden->alloc, sizeof(double) * num_ao);
-                MD_MEMSET(orb.coefficient, 0, sizeof(double) * num_ao);
+                md_memset(orb.coefficient, 0, sizeof(double) * num_ao);
                 have_orb = true;
             }
 
@@ -684,7 +684,7 @@ static bool molden_normalise_basis(molden_t* molden) {
 }
 
 static bool molden_gto_basis_extract(md_gto_basis_t* out, const molden_t* molden, md_allocator_i* alloc) {
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     const size_t num_shells = md_array_size(molden->shell);
     if (num_shells == 0) {
         return false;
@@ -1090,8 +1090,8 @@ static bool molden_system_begin(md_system_t* sys, md_system_state_t* state, cons
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
-    MD_MEMSET(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
-    MD_MEMSET(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
+    md_memset(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
+    md_memset(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
 
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 

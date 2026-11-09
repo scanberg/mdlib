@@ -556,7 +556,7 @@ static void xyz_run_check(int* utest_result, md_str_t path, const run_ref_t* ref
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     EXPECT_TRUE(run_extract_one(&got, &sys, XYZ_RUN, 0));
-    EXPECT_EQ(0, MD_MEMCMP(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, md_memcmp(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
 
 done:
     md_system_free(&sys);

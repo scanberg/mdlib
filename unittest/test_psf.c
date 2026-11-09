@@ -81,13 +81,13 @@ UTEST(namdbin, coordinates_in_either_byte_order) {
         md_file_t f = {0};
         ASSERT_TRUE(md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
         uint32_t n = 3;
-        if (swap) n = MD_BSWAP32(n);
+        if (swap) n = md_bswap32(n);
         md_file_write(f, &n, 4);
         for (int i = 0; i < 9; ++i) {
             double v = 1.5 * i - 4.0;
             uint64_t u;
-            MD_MEMCPY(&u, &v, 8);
-            if (swap) u = MD_BSWAP64(u);
+            md_memcpy(&u, &v, 8);
+            if (swap) u = md_bswap64(u);
             md_file_write(f, &u, 8);
         }
         md_file_close(&f);

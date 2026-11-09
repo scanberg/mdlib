@@ -106,7 +106,7 @@ static inline vec4_t md_coord_stream_load_vec4(const md_coord_stream_t* s, size_
     } else {
         const char* p = (const char*)s->aos.base + src * s->aos.stride;
         vec4_t v = {0};
-        MD_MEMCPY(&v, p, sizeof(float) * 3);
+        md_memcpy(&v, p, sizeof(float) * 3);
         return v;
     }
 }
@@ -130,7 +130,7 @@ void md_spatial_acc_free(md_spatial_acc_t* acc) {
             if (acc->tier_base[t]) md_array_free(acc->tier_base[t], acc->alloc);
         }
     }
-    MD_MEMSET(acc, 0, sizeof(md_spatial_acc_t));
+    md_memset(acc, 0, sizeof(md_spatial_acc_t));
 }
 
 static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
@@ -148,7 +148,7 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
     }
     acc->num_tiers = 0;
     acc->cell_ext = 0.0;
-    MD_MEMSET(acc->top_dim, 0, sizeof(acc->top_dim));
+    md_memset(acc->top_dim, 0, sizeof(acc->top_dim));
 
     acc->num_cells = 0;
     acc->num_elems = 0;
@@ -156,10 +156,10 @@ static void md_spatial_acc_reset(md_spatial_acc_t* acc) {
     acc->G00 = acc->G11 = acc->G22 = 0.0f;
     acc->H01 = acc->H02 = acc->H12 = 0.0f;
 
-    MD_MEMSET(acc->cell_dim,  0, sizeof(acc->cell_dim));
+    md_memset(acc->cell_dim,  0, sizeof(acc->cell_dim));
 
 	acc->flags = 0;
-	MD_MEMSET(acc->origin, 0, sizeof(acc->origin));
+	md_memset(acc->origin, 0, sizeof(acc->origin));
 }
 
 // ### CELL INDEX ###
@@ -259,7 +259,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
         ++L;
     }
     acc->num_tiers = L;
-    MD_MEMCPY(acc->top_dim, top_dim, sizeof(top_dim));
+    md_memcpy(acc->top_dim, top_dim, sizeof(top_dim));
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(acc->alloc);
     elem_t*   buf[2] = {
@@ -274,7 +274,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
     const ivec4_t icell_max = ivec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0);
 
     float val;
-    MD_MEMSET(&val, 0xFF, sizeof(val));
+    md_memset(&val, 0xFF, sizeof(val));
     const uint32_t flags = acc->flags;
     const vec4_t pbc_mask = vec4_set((flags & MD_UNITCELL_PBC_X) ? val : 0, (flags & MD_UNITCELL_PBC_Y) ? val : 0, (flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
     const vec4_t origin = vec4_set(acc->origin[0], acc->origin[1], acc->origin[2], 0);
@@ -298,7 +298,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
     for (uint32_t pass = 0; pass <= num_local_passes; ++pass) {
         const bool top_pass = pass == num_local_passes;
         const size_t num_buckets = top_pass ? num_top : 4096;
-        MD_MEMSET(hist, 0, (num_buckets + 1) * sizeof(uint32_t));
+        md_memset(hist, 0, (num_buckets + 1) * sizeof(uint32_t));
 
         for (size_t i = 0; i < N; ++i) {
             uint32_t c[3];
@@ -332,10 +332,10 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
             md_array_resize(acc->elem_z,   alloc_len, acc->alloc);
             md_array_resize(acc->elem_idx, alloc_len, acc->alloc);
             // The padding is read (masked) by the vectorized loops
-            MD_MEMSET(acc->elem_x + N, 0, (alloc_len - N) * sizeof(float));
-            MD_MEMSET(acc->elem_y + N, 0, (alloc_len - N) * sizeof(float));
-            MD_MEMSET(acc->elem_z + N, 0, (alloc_len - N) * sizeof(float));
-            MD_MEMSET(acc->elem_idx + N, 0, (alloc_len - N) * sizeof(uint32_t));
+            md_memset(acc->elem_x + N, 0, (alloc_len - N) * sizeof(float));
+            md_memset(acc->elem_y + N, 0, (alloc_len - N) * sizeof(float));
+            md_memset(acc->elem_z + N, 0, (alloc_len - N) * sizeof(float));
+            md_memset(acc->elem_idx + N, 0, (alloc_len - N) * sizeof(uint32_t));
             for (size_t i = 0; i < N; ++i) {
                 const elem_t e = buf[src][i];
                 const uint32_t dst = hist[digit[i]]++;
@@ -354,8 +354,8 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
     //    differs from it in the top node. Each node records the index of its first child as its base when it starts.
     md_array_resize(acc->top_mask, num_top, acc->alloc);
     md_array_resize(acc->top_base, num_top, acc->alloc);
-    MD_MEMSET(acc->top_mask, 0, num_top * sizeof(uint64_t));
-    MD_MEMSET(acc->top_base, 0, num_top * sizeof(uint32_t));
+    md_memset(acc->top_mask, 0, num_top * sizeof(uint64_t));
+    md_memset(acc->top_base, 0, num_top * sizeof(uint32_t));
     md_array_shrink(acc->cell_off, 0);
 
     uint32_t prev[3] = {0};
@@ -395,7 +395,7 @@ static void build_cells(md_spatial_acc_t* acc, const md_coord_stream_t* coords, 
 
         md_array_push(acc->cell_off, (uint32_t)k, acc->alloc);
         num_occ += 1;
-        MD_MEMCPY(prev, c, sizeof(prev));
+        md_memcpy(prev, c, sizeof(prev));
     }
     md_array_push(acc->cell_off, (uint32_t)N, acc->alloc);
     acc->num_cells = num_occ;
@@ -445,7 +445,7 @@ static inline uint64_t occupancy_hash(uint64_t x) {
 // sharing its cell with k - 1 others of the subset sees about 1 + (k - 1) / f. The cells are counted in an
 // open-addressing table of cap slots (a power of two, at least twice m): one pass over the points, not a sort.
 static double occupancy_at(const vec4_t* pos, size_t m, vec4_t lo, double ext, double f, uint64_t* slot_key, uint32_t* slot_count, size_t cap) {
-    MD_MEMSET(slot_key, 0, cap * sizeof(uint64_t));
+    md_memset(slot_key, 0, cap * sizeof(uint64_t));
     const float inv = (float)(1.0 / ext);
     const size_t mask = cap - 1;
     for (size_t i = 0; i < m; ++i) {
@@ -522,8 +522,8 @@ static double cell_ext_from_occupancy(const md_coord_stream_t* coords, double cu
 static void store_frame(md_spatial_acc_t* acc, double A[3][3], double I[3][3], vec4_t origin, uint32_t flags,
                         const uint32_t cell_dim[3], const float inv_cell_ext[3],
                         double G00, double G11, double G22, double H01, double H02, double H12) {
-    MD_MEMCPY(acc->cell_dim,  cell_dim,  sizeof(acc->cell_dim));
-    MD_MEMCPY(acc->inv_cell_ext, inv_cell_ext, sizeof(acc->inv_cell_ext));
+    md_memcpy(acc->cell_dim,  cell_dim,  sizeof(acc->cell_dim));
+    md_memcpy(acc->inv_cell_ext, inv_cell_ext, sizeof(acc->inv_cell_ext));
 
     acc->G00 = (float)G00;
     acc->G11 = (float)G11;
@@ -1211,7 +1211,7 @@ typedef struct node_cache_t {
 } node_cache_t;
 
 static inline void node_cache_init(node_cache_t* cache) {
-    MD_MEMSET(cache->key, 0xFF, sizeof(cache->key));
+    md_memset(cache->key, 0xFF, sizeof(cache->key));
 }
 
 // The elements of the cell at c (within the grid), an empty range for an empty cell
@@ -1257,7 +1257,7 @@ typedef struct cell_iter_t {
 
 static inline cell_iter_t cell_iter(const md_spatial_acc_t* acc) {
     cell_iter_t it;
-    MD_MEMSET(&it, 0, sizeof(it));
+    md_memset(&it, 0, sizeof(it));
     it.acc = acc;
     it.depth = acc->num_tiers + 1;
     it.top_end = (size_t)acc->top_dim[0] * acc->top_dim[1] * acc->top_dim[2];
@@ -1473,7 +1473,7 @@ static MD_FORCE_INLINE void external_pairs(const md_spatial_acc_t* acc, const md
     node_cache_init(&cache);
 
     vec4_t fract_mask;
-    MD_MEMCPY(&fract_mask, &g.pbc, sizeof(fract_mask));
+    md_memcpy(&fract_mask, &g.pbc, sizeof(fract_mask));
     const vec4_t fcell_dim = vec4_set((float)acc->cell_dim[0], (float)acc->cell_dim[1], (float)acc->cell_dim[2], 0);
 
     for (size_t pt = 0; pt < ext->count; ++pt) {

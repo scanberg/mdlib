@@ -71,13 +71,13 @@ typedef struct dcd_t {
 // ==================== Byte-swap helpers ====================
 
 static inline int32_t dcd_swap32(int32_t v, bool swap) {
-    return swap ? (int32_t)MD_BSWAP32((uint32_t)v) : v;
+    return swap ? (int32_t)md_bswap32((uint32_t)v) : v;
 }
 
 static inline void dcd_swap32_array(int32_t* data, int count, bool swap) {
     if (!swap) return;
     for (int i = 0; i < count; ++i) {
-        data[i] = MD_BSWAP32(data[i]);
+        data[i] = md_bswap32(data[i]);
     }
 }
 
@@ -85,13 +85,13 @@ static inline void dcd_swap32_array(int32_t* data, int count, bool swap) {
 static inline int64_t dcd_load_marker(const uint8_t* p, int marker, bool rev) {
     if (marker == 8) {
         uint64_t u;
-        MD_MEMCPY(&u, p, 8);
-        if (rev) u = MD_BSWAP64(u);
+        md_memcpy(&u, p, 8);
+        if (rev) u = md_bswap64(u);
         return (int64_t)u;
     }
     uint32_t u;
-    MD_MEMCPY(&u, p, 4);
-    if (rev) u = MD_BSWAP32(u);
+    md_memcpy(&u, p, 4);
+    if (rev) u = md_bswap32(u);
     return (int32_t)u;
 }
 
@@ -132,7 +132,7 @@ static void dcd_compute_frame_sizes(const dcd_file_header_t* h,
 // When nfixed > 0, allocates out->free_indices from alloc.
 static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_allocator_i* alloc) {
     MD_ASSERT(md_file_valid(file) && out && alloc);
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
 
     // The very first bytes are a Fortran record marker that must equal 84: 4 bytes of it, or 8 in a file written
     // with 64 bit markers. If they compare as 84 when swapped, the file uses reverse endianness.
@@ -185,11 +185,11 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
     // Extract the integer fields packed into the 84-byte block.
     // Offsets are relative to the start of hdrbuf (i.e. 4 bytes after the initial marker).
     int32_t nset, istart, nsavc, namnf, charmm_version;
-    MD_MEMCPY(&nset,           hdrbuf +  4, 4);
-    MD_MEMCPY(&istart,         hdrbuf +  8, 4);
-    MD_MEMCPY(&nsavc,          hdrbuf + 12, 4);
-    MD_MEMCPY(&namnf,          hdrbuf + 36, 4);
-    MD_MEMCPY(&charmm_version, hdrbuf + 80, 4);
+    md_memcpy(&nset,           hdrbuf +  4, 4);
+    md_memcpy(&istart,         hdrbuf +  8, 4);
+    md_memcpy(&nsavc,          hdrbuf + 12, 4);
+    md_memcpy(&namnf,          hdrbuf + 36, 4);
+    md_memcpy(&charmm_version, hdrbuf + 80, 4);
     nset           = dcd_swap32(nset,           rev);
     istart         = dcd_swap32(istart,         rev);
     nsavc          = dcd_swap32(nsavc,          rev);
@@ -202,8 +202,8 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
         charmm = DCD_IS_CHARMM;
 
         int32_t has_extra, has_4dims;
-        MD_MEMCPY(&has_extra, hdrbuf + 44, 4);
-        MD_MEMCPY(&has_4dims, hdrbuf + 48, 4);
+        md_memcpy(&has_extra, hdrbuf + 44, 4);
+        md_memcpy(&has_4dims, hdrbuf + 48, 4);
         has_extra = dcd_swap32(has_extra, rev);
         has_4dims = dcd_swap32(has_4dims, rev);
 
@@ -217,16 +217,16 @@ static bool dcd_parse_file_header(md_file_t file, dcd_file_header_t* out, md_all
     double delta = 0.0;
     if (charmm & DCD_IS_CHARMM) {
         uint32_t raw;
-        MD_MEMCPY(&raw, hdrbuf + 40, 4);
-        if (rev) raw = MD_BSWAP32(raw);
+        md_memcpy(&raw, hdrbuf + 40, 4);
+        if (rev) raw = md_bswap32(raw);
         float fdelta;
-        MD_MEMCPY(&fdelta, &raw, 4);
+        md_memcpy(&fdelta, &raw, 4);
         delta = (double)fdelta;
     } else {
         uint64_t raw;
-        MD_MEMCPY(&raw, hdrbuf + 40, 8);
-        if (rev) raw = MD_BSWAP64(raw);
-        MD_MEMCPY(&delta, &raw, 8);
+        md_memcpy(&raw, hdrbuf + 40, 8);
+        if (rev) raw = md_bswap64(raw);
+        md_memcpy(&delta, &raw, 8);
     }
 
     // Title block: [int32: size][size bytes: titles][int32: size]
@@ -516,9 +516,9 @@ static bool dcd_read_frame_at(md_file_t file,
             if (rev) {
                 for (int i = 0; i < 6; ++i) {
                     uint64_t tmp;
-                    MD_MEMCPY(&tmp, &uc[i], 8);
-                    tmp = MD_BSWAP64(tmp);
-                    MD_MEMCPY(&uc[i], &tmp, 8);
+                    md_memcpy(&tmp, &uc[i], 8);
+                    tmp = md_bswap64(tmp);
+                    md_memcpy(&uc[i], &tmp, 8);
                 }
             }
             if (out_unitcell)
@@ -600,7 +600,7 @@ done:
 // they were taken, the first frame in full (which the fixed atoms of every later frame take their
 // positions from). Allocated from alloc.
 static bool dcd_index_load(dcd_t* dcd, md_str_t path, md_allocator_i* alloc) {
-    MD_MEMSET(dcd, 0, sizeof(*dcd));
+    md_memset(dcd, 0, sizeof(*dcd));
 
     md_file_t file = {0};
     if (!md_file_open(&file, path, MD_FILE_READ)) {
@@ -719,16 +719,16 @@ static const void* dcd_resident(const md_attributes_t* attributes, md_str_t run,
 
 static inline float dcd_load_f32(const uint8_t* p, bool rev) {
     uint32_t u;
-    MD_MEMCPY(&u, p, 4);
-    if (rev) u = MD_BSWAP32(u);
+    md_memcpy(&u, p, 4);
+    if (rev) u = md_bswap32(u);
     float f;
-    MD_MEMCPY(&f, &u, 4);
+    md_memcpy(&f, &u, 4);
     return f;
 }
 
 static inline int32_t dcd_load_i32(const uint8_t* p, bool rev) {
     int32_t v;
-    MD_MEMCPY(&v, p, 4);
+    md_memcpy(&v, p, 4);
     return dcd_swap32(v, rev);
 }
 
@@ -803,7 +803,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
     if (raw && xyz && md_attribute_io_read_at(io, file_path, offsets[frame], raw, skip + 3 * record) == skip + 3 * record) {
         bool ok = true;
         if (!all_atoms) {
-            MD_MEMCPY(xyz, first_frame, N * 3 * sizeof(float));
+            md_memcpy(xyz, first_frame, N * 3 * sizeof(float));
         }
         for (size_t d = 0; d < 3 && ok; ++d) {
             const uint8_t* rec = raw + skip + d * record;
@@ -829,9 +829,9 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
             bool rotated = false;
             for (int i = 0; i < 6; ++i) {
                 uint64_t u;
-                MD_MEMCPY(&u, raw + marker + i * 8, 8);
-                if (rev) u = MD_BSWAP64(u);
-                MD_MEMCPY(&uc[i], &u, 8);
+                md_memcpy(&u, raw + marker + i * 8, 8);
+                if (rev) u = md_bswap64(u);
+                md_memcpy(&uc[i], &u, 8);
             }
             dcd_unitcell_from_params(uc, layout[DCD_LAYOUT_VERSION], R, &rotated);
             if (rotated) {
@@ -846,7 +846,7 @@ static size_t dcd_position_provider(void* dst, size_t cap, const md_attribute_t*
         }
         if (ok) {
             if (count != N) {
-                MD_MEMCPY(dst, xyz + first * 3, 3 * sizeof(float));
+                md_memcpy(dst, xyz + first * 3, 3 * sizeof(float));
             }
             written = cap;
         }
@@ -891,18 +891,18 @@ static size_t dcd_cell_provider(void* dst, size_t cap, const md_attribute_t* att
         double uc[6];
         for (int i = 0; i < 6; ++i) {
             uint64_t u;
-            MD_MEMCPY(&u, raw + marker + i * 8, 8);
-            if (rev) u = MD_BSWAP64(u);
-            MD_MEMCPY(&uc[i], &u, 8);
+            md_memcpy(&u, raw + marker + i * 8, 8);
+            if (rev) u = md_bswap64(u);
+            md_memcpy(&uc[i], &u, 8);
         }
         const md_unitcell_t cell = dcd_unitcell_from_params(uc, layout[DCD_LAYOUT_VERSION], NULL, NULL);
         md_unitcell_A_extract_float(A, &cell);
     }
     // A block of another size carries no cell known here: the frame has none.
     if (slice->num_idx == 1) {
-        MD_MEMCPY(dst, A, sizeof(A));
+        md_memcpy(dst, A, sizeof(A));
     } else {
-        MD_MEMCPY(dst, A[slice->idx[1]], sizeof(A[0]));
+        md_memcpy(dst, A[slice->idx[1]], sizeof(A[0]));
     }
     return cap;
 }
@@ -942,7 +942,7 @@ bool md_dcd_system_publish_run(md_system_t* sys, md_str_t filename, md_str_t run
         md_unitcell_A_extract_float(A, &sys->reference.unitcell);
         boxes = md_alloc(arena, F * 9 * sizeof(float));
         for (size_t i = 0; i < F; ++i) {
-            MD_MEMCPY(boxes + i * 9, A, sizeof(A));
+            md_memcpy(boxes + i * 9, A, sizeof(A));
         }
     }
 

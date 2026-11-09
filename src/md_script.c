@@ -924,7 +924,7 @@ static int dim_size(const int dim[MAX_NUM_DIMS]) {
 
 static void dim_flatten(int dim[MAX_NUM_DIMS]) {
     int size = dim_size(dim);
-    MD_MEMSET(dim, 0, sizeof(int) * MAX_NUM_DIMS);
+    md_memset(dim, 0, sizeof(int) * MAX_NUM_DIMS);
     dim[0] = size;
 }
 
@@ -940,11 +940,11 @@ static void dim_prune_leading_ones(int dim[MAX_NUM_DIMS]) {
 }
 
 static bool type_info_equal(type_info_t a, type_info_t b) {
-    return MD_MEMCMP(&a, &b, sizeof(type_info_t)) == 0;
+    return md_memcmp(&a, &b, sizeof(type_info_t)) == 0;
 }
 
 static bool is_undefined_type(type_info_t ti) {
-    return MD_MEMCMP(&ti, &(type_info_t){0}, sizeof(type_info_t)) == 0;
+    return md_memcmp(&ti, &(type_info_t){0}, sizeof(type_info_t)) == 0;
 }
 
 static bool is_array(type_info_t ti) {
@@ -1080,7 +1080,7 @@ static bool is_type_equivalent(type_info_t a, type_info_t b) {
         if (a.dim[i] == 0) a.dim[i] = 1;
         if (b.dim[i] == 0) b.dim[i] = 1;
     }
-    return MD_MEMCMP(&a, &b, sizeof(type_info_t)) == 0;
+    return md_memcmp(&a, &b, sizeof(type_info_t)) == 0;
 }
 
 static bool is_type_position_compatible(type_info_t type) {
@@ -1211,7 +1211,7 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
             return false;
         }
         // @NOTE (Robin): This can be a VERY wasteful operation most times as the memory will be overwritten anyways.
-        MD_MEMSET(data->ptr, 0, bytes);
+        md_memset(data->ptr, 0, bytes);
     }
     data->size = bytes;
     data->type = type;
@@ -1248,11 +1248,11 @@ static inline float* data_weight_at(const data_t* d, size_t byte_offset) {
 
 // Copies bytes of values from src at src_offset to dst at dst_offset, and the weights beside them
 static void copy_data_block(data_t* dst, size_t dst_offset, const data_t* src, size_t src_offset, size_t bytes) {
-    MD_MEMCPY((char*)dst->ptr + dst_offset, (const char*)src->ptr + src_offset, bytes);
+    md_memcpy((char*)dst->ptr + dst_offset, (const char*)src->ptr + src_offset, bytes);
     if (dst->weight) {
         float* w = data_weight_at(dst, dst_offset);
         if (src->weight) {
-            MD_MEMCPY(w, data_weight_at(src, src_offset), bytes);
+            md_memcpy(w, data_weight_at(src, src_offset), bytes);
         } else {
             for (size_t i = 0; i < bytes / sizeof(float); ++i) w[i] = 1.0f;
         }
@@ -1264,8 +1264,8 @@ static bondset_t bondset_copy(bondset_t s, md_allocator_i* alloc) {
     if (s.num_extra) {
         md_atom_pair_t*  pair  = md_alloc(alloc, sizeof(md_atom_pair_t)  * s.num_extra);
         md_bond_flags_t* flags = md_alloc(alloc, sizeof(md_bond_flags_t) * s.num_extra);
-        MD_MEMCPY(pair,  s.extra_pair,  sizeof(md_atom_pair_t)  * s.num_extra);
-        MD_MEMCPY(flags, s.extra_flags, sizeof(md_bond_flags_t) * s.num_extra);
+        md_memcpy(pair,  s.extra_pair,  sizeof(md_atom_pair_t)  * s.num_extra);
+        md_memcpy(flags, s.extra_flags, sizeof(md_bond_flags_t) * s.num_extra);
         r.extra_pair  = pair;
         r.extra_flags = flags;
     }
@@ -1278,7 +1278,7 @@ static void bondset_free(bondset_t* s, md_allocator_i* alloc) {
         md_free(alloc, (void*)s->extra_pair,  sizeof(md_atom_pair_t)  * s->num_extra);
         md_free(alloc, (void*)s->extra_flags, sizeof(md_bond_flags_t) * s->num_extra);
     }
-    MD_MEMSET(s, 0, sizeof(bondset_t));
+    md_memset(s, 0, sizeof(bondset_t));
 }
 
 // Whether the values of a type carry a payload of their own (copy_values_deep)
@@ -1776,7 +1776,7 @@ static inline bool is_identifier_procedure(md_str_t ident) {
 
 static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t token) {
     ast_node_t* node = md_alloc(ir->arena, sizeof(ast_node_t));
-    MD_MEMSET(node, 0, sizeof(ast_node_t));
+    md_memset(node, 0, sizeof(ast_node_t));
     node->type = type;
     node->token = token;
     node->data.unit[0] = md_unit_none();
@@ -1789,7 +1789,7 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
 // Copies the contents of src into dst, a node of its own: dst keeps its index
 static void copy_node_contents(ast_node_t* dst, const ast_node_t* src) {
     const uint32_t index = dst->index;
-    MD_MEMCPY(dst, src, sizeof(ast_node_t));
+    md_memcpy(dst, src, sizeof(ast_node_t));
     dst->index = index;
 }
 
@@ -2627,7 +2627,7 @@ static void summarize_data(md_writer_i* w, data_t data, int subidx) {
             md_writef(w, "%d rings:", len);
             md_temp_scope_t temp = md_temp_begin_avoid(md_writer_allocator(w));
             bool* done = md_temp_alloc(temp, sizeof(bool) * len);
-            MD_MEMSET(done, 0, sizeof(bool) * len);
+            md_memset(done, 0, sizeof(bool) * len);
             int shown = 0;
             for (int i = 0; i < len && shown < 6; ++i) {
                 int best = -1, best_count = 0;
@@ -3326,7 +3326,7 @@ ast_node_t* parse_array_subscript(parse_context_t* ctx) {
                 copy_node_contents(node_copy, node);
 
                 const uint32_t index = node->index;
-                MD_MEMSET(node, 0, sizeof(ast_node_t));
+                md_memset(node, 0, sizeof(ast_node_t));
                 node->index = index;
                 node->type = AST_ARRAY_SUBSCRIPT;
                 node->token = token;
@@ -3564,7 +3564,7 @@ typedef struct proc_args_t {
 static bool proc_args_evaluate(proc_args_t* pa, const procedure_t* proc, ast_node_t** const args, size_t num_args, eval_context_t* ctx) {
     MD_ASSERT(pa);
     MD_ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
-    MD_MEMSET(pa, 0, sizeof(proc_args_t));
+    md_memset(pa, 0, sizeof(proc_args_t));
     pa->nodes = args;
     pa->count = num_args;
 
@@ -3585,7 +3585,7 @@ static bool proc_args_evaluate(proc_args_t* pa, const procedure_t* proc, ast_nod
                 result = false;
                 break;
             }
-            MD_MEMCPY(&pa->data[i], &args[i]->data, sizeof(data_t));
+            md_memcpy(&pa->data[i], &args[i]->data, sizeof(data_t));
         } else if (!evaluate_node_alloc(&pa->data[i], args[i], ctx, ctx->temp_alloc)) {
             // Only used as arguments, so the data goes in the temp alloc
             result = false;
@@ -3854,7 +3854,7 @@ static bool evaluate_transpose(data_t* dst, const ast_node_t* node, eval_context
         const char* src_base = data.ptr;
         for (size_t col = 0; col < num_col; ++col) {
             for (size_t row = 0; row < num_row; ++row) {
-                MD_MEMCPY(dst_base + (col * num_row + row) * num_bytes, src_base + (row * num_col + col) * num_bytes, num_bytes);
+                md_memcpy(dst_base + (col * num_row + row) * num_bytes, src_base + (row * num_col + col) * num_bytes, num_bytes);
             }
         }
         return true;
@@ -4046,7 +4046,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
                     .data = md_alloc(ctx->alloc, sizeof(data_t)),
                     .mol_ctx = ctx->mol_ctx,
                 };
-                MD_MEMSET(id.data, 0, sizeof(data_t));
+                md_memset(id.data, 0, sizeof(data_t));
                 if (dst && dst->ptr) {
                     *id.data = child->data;
                     id.data->ptr = (char*)dst->ptr + stride * i;
@@ -4162,7 +4162,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
 
     // @NOTE: This is a bit of a hack, we should not need to allocate the subscript ranges here
     // It is just to serve the poor design of the current propagation of array subscripts in the context
-    MD_MEMCPY(idx_ranges, node->subscript_ranges, sizeof(irange_t) * node->subscript_dim);
+    md_memcpy(idx_ranges, node->subscript_ranges, sizeof(irange_t) * node->subscript_dim);
 
     if (ext_ranges) {
         // The ranges from outside may cover fewer dimensions: those beyond are taken as they are subscripted here
@@ -4178,7 +4178,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
 
         }
     } else {
-        MD_MEMCPY(idx_ranges, node->subscript_ranges, sizeof(irange_t) * node->subscript_dim);
+        md_memcpy(idx_ranges, node->subscript_ranges, sizeof(irange_t) * node->subscript_dim);
     }
     ctx->subscript_ranges = idx_ranges;
 
@@ -5180,7 +5180,7 @@ typedef struct attr_read_info_t {
 
 static attr_readable_t attr_readable(const md_attributes_t* attributes, const md_attribute_t* attr, attr_read_info_t* info) {
     MD_ASSERT(attributes && attr && info);
-    MD_MEMSET(info, 0, sizeof(*info));
+    md_memset(info, 0, sizeof(*info));
 
     if (!(attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
         return ATTR_NOT_TEMPORAL;
@@ -5369,7 +5369,7 @@ static bool static_check_attribute_pattern(ast_node_t* node, token_t tok, md_str
         const md_attribute_t* a = md_attributes_get(attributes, members[i].id);
         type_info_t t = { .base_type = TYPE_FLOAT, .dim = { (int)num } };
         attr_value_dims(t.dim, 1, a);
-        if (MD_MEMCMP(t.dim, type.dim, sizeof(type.dim)) != 0 || !md_unit_equal(a->unit, first->unit)) {
+        if (md_memcmp(t.dim, type.dim, sizeof(type.dim)) != 0 || !md_unit_equal(a->unit, first->unit)) {
             char ta[64], tb[64], ua[32], ub[32];
             type_info_t one_a = type, one_b = t;
             // What one member is: a scalar prints as float
@@ -5535,7 +5535,7 @@ static bool static_check_flatten(ast_node_t* node, eval_context_t* ctx) {
 
     // @NOTE: Flatten conceptually flattens the dimensions into a one dimensional array
     node->data = arg->data;
-    MD_MEMSET(node->data.type.dim, 0, sizeof(int) * MAX_NUM_DIMS);
+    md_memset(node->data.type.dim, 0, sizeof(int) * MAX_NUM_DIMS);
     if (arg->data.type.dim[0] == -1) {
         node->data.type.dim[0] = -1;
     } else {
@@ -6420,7 +6420,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     contexts = (md_bitset_t*)rhs->data.ptr;
                 } else {
                     md_array_resize(contexts, num_contexts, ctx->compile_ir->arena);
-                    MD_MEMSET(contexts, 0, num_contexts * sizeof(md_bitset_t));
+                    md_memset(contexts, 0, num_contexts * sizeof(md_bitset_t));
                     rhs->data.ptr = contexts;
                     rhs->data.size = num_contexts * sizeof(md_bitset_t);
                     rhs->data.alloc = ctx->compile_ir->arena;
@@ -6488,7 +6488,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     node->data.type = node->lhs_context_types[0];
                     if (node->data.type.base_type == TYPE_ATOMSET) {
                         // This is a flattening of the dimensions
-                        MD_MEMSET(node->data.type.dim, 0, sizeof(node->data.type.dim));
+                        md_memset(node->data.type.dim, 0, sizeof(node->data.type.dim));
                         node->data.type.dim[0] = (int)arr_len;
                     } else {
                         node->data.type.dim[0] = (int)arr_len;
@@ -7037,7 +7037,7 @@ static float* script_attr_storage(md_attributes_t* attributes, md_allocator_i* a
         MD_LOG_DEBUG("Script eval: could not publish attribute '"MD_STR_FMT"', falling back to plain storage", MD_STR_ARG(desc.path));
         const size_t bytes = md_attribute_element_count(&desc.format) * sizeof(float);
         ptr = md_alloc(alloc, bytes);
-        MD_MEMSET(ptr, 0, bytes);
+        md_memset(ptr, 0, bytes);
     }
     return ptr;
 }
@@ -7165,7 +7165,7 @@ static void init_property(eval_property_t* prop, md_attributes_t* attributes, md
     // The kind alone: what is evaluated, and how it is kept
     const md_script_property_flags_t kind = flags & (MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME);
 
-    MD_MEMSET(prop, 0, sizeof(eval_property_t));
+    md_memset(prop, 0, sizeof(eval_property_t));
     prop->ident = ident;
     prop->kind  = kind;
     md_mutex_init(&prop->accum_mutex);
@@ -7390,8 +7390,8 @@ static void clear_property(eval_property_t* prop) {
     }
     if (prop->sum_values) {
         // Distribution: nothing accumulated. The weights go back to their 1.0 default, not 0, so values / weights is 0
-        MD_MEMSET(prop->sum_values,  0, prop->num_values * sizeof(double));
-        MD_MEMSET(prop->sum_weights, 0, prop->num_values * sizeof(double));
+        md_memset(prop->sum_values,  0, prop->num_values * sizeof(double));
+        md_memset(prop->sum_weights, 0, prop->num_values * sizeof(double));
         fill_float(prop->weights, prop->num_values, 1.0f);
     }
     if (prop->range) {
@@ -7435,8 +7435,8 @@ static void slot_add_frame(md_script_eval_t* eval, eval_slot_t* s, uint32_t f, c
         md_bitmask_clear_bit(&s->included, f);
         if (s->count == 0) {
             // What is taken out is never quite what was added, in floating point: empty is zero, exactly
-            MD_MEMSET(s->sum_values, 0, s->num_values * sizeof(double));
-            if (s->sum_weights) MD_MEMSET(s->sum_weights, 0, s->num_values * sizeof(double));
+            md_memset(s->sum_values, 0, s->num_values * sizeof(double));
+            if (s->sum_weights) md_memset(s->sum_weights, 0, s->num_values * sizeof(double));
         } else {
             for (size_t i = 0; i < s->num_values; ++i) s->sum_values[i] -= values[i];
             if (s->sum_weights) {
@@ -7570,7 +7570,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, md_s
         }
 
         // What the properties still to do need evaluated, and nothing else
-        MD_MEMSET(needed, 0, num_expr);
+        md_memset(needed, 0, num_expr);
         for (size_t p = 0; p < num_props; ++p) {
             if (!todo[p]) continue;
             const uint8_t* row = eval->needs + p * num_expr;
@@ -7589,7 +7589,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, md_s
         md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = NULL;
         log = (eval_log_t){ .alloc = temp_alloc };     // its arrays went with the reset
-		MD_MEMSET(&ctx.spatial_acc, 0, sizeof(ctx.spatial_acc));
+		md_memset(&ctx.spatial_acc, 0, sizeof(ctx.spatial_acc));
         ctx.spatial_acc_cutoff = 0.0;
 
         for (size_t i = 0; i < num_expr; ++i) {
@@ -7646,7 +7646,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, md_s
             if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 const uint32_t size = (uint32_t)prop_data[p]->type.dim[0];
                 MD_ASSERT(size == prop->count);
-                MD_MEMCPY(prop->values + (size_t)f_idx * size, values, size * sizeof(float));
+                md_memcpy(prop->values + (size_t)f_idx * size, values, size * sizeof(float));
 
                 float min, max, mean, var;
                 compute_min_max_mean_variance(&min, &max, &mean, &var, values, size);
@@ -7676,8 +7676,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_system_t* sys, md_s
                 md_mutex_unlock(&prop->accum_mutex);
             } else if (prop->frame_values) {
                 MD_ASSERT(prop_data[p]->weight);
-                MD_MEMCPY(prop->frame_values  + (size_t)f_idx * prop->num_values, values,                prop->num_values * sizeof(float));
-                MD_MEMCPY(prop->frame_weights + (size_t)f_idx * prop->num_values, prop_data[p]->weight, prop->num_values * sizeof(float));
+                md_memcpy(prop->frame_values  + (size_t)f_idx * prop->num_values, values,                prop->num_values * sizeof(float));
+                md_memcpy(prop->frame_weights + (size_t)f_idx * prop->num_values, prop_data[p]->weight, prop->num_values * sizeof(float));
             }
         }
 
@@ -7824,7 +7824,7 @@ static inline bool validate_eval(const md_script_eval_t* eval) {
 static void reset_ir(md_script_ir_t* ir) {
     md_allocator_i* arena = ir->arena;
     md_arena_allocator_reset(ir->arena);
-    MD_MEMSET(ir, 0, sizeof(md_script_ir_t));
+    md_memset(ir, 0, sizeof(md_script_ir_t));
     ir->magic = SCRIPT_IR_MAGIC;
     ir->arena = arena;
 }
@@ -7832,7 +7832,7 @@ static void reset_ir(md_script_ir_t* ir) {
 static md_script_ir_t* create_ir(md_allocator_i* alloc) {
     md_script_ir_t* ir = md_alloc(alloc, sizeof(md_script_ir_t));
     md_allocator_i* arena = md_arena_allocator_create(alloc, MD_MEGABYTES(1));
-    MD_MEMSET(ir, 0, sizeof(md_script_ir_t));
+    md_memset(ir, 0, sizeof(md_script_ir_t));
     ir->magic = SCRIPT_IR_MAGIC;
     ir->arena = arena;
     return ir;
@@ -8085,7 +8085,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, md_str_t src, const md
     // their arguments (residue(), the backbone of ramachandran()), so a property over another topology is another.
     if (ir->compile_success) {
         uint64_t* memo = md_temp_alloc_array(temp_scope, uint64_t, MD_MAX(md_array_size(ir->nodes), 1));
-        MD_MEMSET(memo, 0, md_array_size(ir->nodes) * sizeof(uint64_t));
+        md_memset(memo, 0, md_array_size(ir->nodes) * sizeof(uint64_t));
         const uint64_t seed = md_hash64(&sys->topology_version, sizeof(sys->topology_version), sys->atom.count);
         for (size_t i = 0; i < md_array_size(ir->property_names); ++i) {
             const identifier_t* decl = find_ir_identifier(ir, ir->property_names[i]);
@@ -8183,7 +8183,7 @@ void md_script_ir_free(md_script_ir_t* ir) {
     if (validate_ir(ir)) {
         md_allocator_i* alloc = md_arena_allocator_backing(ir->arena);
         md_arena_allocator_destroy(ir->arena);
-        MD_MEMSET(ir, 0, sizeof(md_script_ir_t));
+        md_memset(ir, 0, sizeof(md_script_ir_t));
         md_free(alloc, ir, sizeof(md_script_ir_t));
     }
 }
@@ -8522,7 +8522,7 @@ int md_script_vis_ref_dim(const md_script_ir_t* ir, md_script_vis_ref_t ref) {
 static md_script_eval_t* create_eval(md_allocator_i* alloc) {
     md_allocator_i* arena = md_arena_allocator_create(alloc, MD_MEGABYTES(1));
     md_script_eval_t* eval = md_alloc(arena, sizeof(md_script_eval_t));
-    MD_MEMSET(eval, 0, sizeof(md_script_eval_t));
+    md_memset(eval, 0, sizeof(md_script_eval_t));
     eval->magic = SCRIPT_EVAL_MAGIC;
     eval->arena = arena;
     return eval;
@@ -8556,10 +8556,10 @@ static void slot_take(md_script_eval_t* eval, eval_slot_t* s, uint64_t key, uint
     if (!prop->frame_values) {
         md_allocator_i* heap = md_get_heap_allocator();
         s->sum_values = md_alloc(heap, s->num_values * sizeof(double));
-        MD_MEMSET(s->sum_values, 0, s->num_values * sizeof(double));
+        md_memset(s->sum_values, 0, s->num_values * sizeof(double));
         if (prop->kind == MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
             s->sum_weights = md_alloc(heap, s->num_values * sizeof(double));
-            MD_MEMSET(s->sum_weights, 0, s->num_values * sizeof(double));
+            md_memset(s->sum_weights, 0, s->num_values * sizeof(double));
         }
     }
     s->version = next_version(eval);
@@ -8640,7 +8640,7 @@ static void compute_needs(md_script_eval_t* eval, const md_script_ir_t* ir) {
 
     md_temp_scope_t temp = md_temp_begin_avoid(eval->arena);
     uint8_t* target_needs = md_temp_alloc_array(temp, uint8_t, MD_MAX(num_targets * num_targets, 1));
-    MD_MEMSET(target_needs, 0, num_targets * num_targets);
+    md_memset(target_needs, 0, num_targets * num_targets);
     for (size_t t = 0; t < num_targets; ++t) {
         uint8_t* row = target_needs + t * num_targets;
         row[t] = 1;
@@ -8656,10 +8656,10 @@ static void compute_needs(md_script_eval_t* eval, const md_script_ir_t* ir) {
         uint8_t* row = eval->needs + p * num_targets;
         const int t = target_assigning(ir, ir->property_names[p]);
         if (t >= 0) {
-            MD_MEMCPY(row, target_needs + (size_t)t * num_targets, num_targets);
+            md_memcpy(row, target_needs + (size_t)t * num_targets, num_targets);
         } else {
             // Cannot happen for a property of the IR; if it did, everything is evaluated as before
-            MD_MEMSET(row, 1, num_targets);
+            md_memset(row, 1, num_targets);
         }
     }
     md_temp_end(temp);
@@ -8780,7 +8780,7 @@ static md_script_eval_t* eval_create(const md_script_ir_t* ir, const md_script_e
     }
 
     eval->slots = md_alloc(eval->arena, MD_SCRIPT_EVAL_MAX_SLOTS * sizeof(eval_slot_t));
-    MD_MEMSET(eval->slots, 0, MD_SCRIPT_EVAL_MAX_SLOTS * sizeof(eval_slot_t));
+    md_memset(eval->slots, 0, MD_SCRIPT_EVAL_MAX_SLOTS * sizeof(eval_slot_t));
     for (size_t i = 0; i < MD_SCRIPT_EVAL_MAX_SLOTS; ++i) {
         md_mutex_init(&eval->slots[i].lock);
     }
@@ -8796,22 +8796,22 @@ md_script_eval_t* md_script_eval_create_desc(const md_script_ir_t* ir, const md_
 
 // Copies what src holds into dst, a property of the same kind and shape: its values and the frames they are of
 static void adopt_property(eval_property_t* dst, const eval_property_t* src, size_t num_frames) {
-    MD_MEMCPY(dst->values, src->values, dst->num_values * sizeof(float));
+    md_memcpy(dst->values, src->values, dst->num_values * sizeof(float));
     if (dst->weights && src->weights) {
-        MD_MEMCPY(dst->weights, src->weights, dst->num_values * sizeof(float));
+        md_memcpy(dst->weights, src->weights, dst->num_values * sizeof(float));
     }
     if (dst->sum_values && src->sum_values) {
-        MD_MEMCPY(dst->sum_values,  src->sum_values,  dst->num_values * sizeof(double));
-        MD_MEMCPY(dst->sum_weights, src->sum_weights, dst->num_values * sizeof(double));
+        md_memcpy(dst->sum_values,  src->sum_values,  dst->num_values * sizeof(double));
+        md_memcpy(dst->sum_weights, src->sum_weights, dst->num_values * sizeof(double));
     }
     if (dst->mean && src->mean) {
-        MD_MEMCPY(dst->mean, src->mean, num_frames * sizeof(float));
-        MD_MEMCPY(dst->var,  src->var,  num_frames * sizeof(float));
-        MD_MEMCPY(dst->ext,  src->ext,  num_frames * sizeof(vec2_t));
+        md_memcpy(dst->mean, src->mean, num_frames * sizeof(float));
+        md_memcpy(dst->var,  src->var,  num_frames * sizeof(float));
+        md_memcpy(dst->ext,  src->ext,  num_frames * sizeof(vec2_t));
     }
     if (dst->frame_values && src->frame_values) {
-        MD_MEMCPY(dst->frame_values,  src->frame_values,  num_frames * dst->num_values * sizeof(float));
-        MD_MEMCPY(dst->frame_weights, src->frame_weights, num_frames * dst->num_values * sizeof(float));
+        md_memcpy(dst->frame_values,  src->frame_values,  num_frames * dst->num_values * sizeof(float));
+        md_memcpy(dst->frame_weights, src->frame_weights, num_frames * dst->num_values * sizeof(float));
     }
     if (dst->range && src->range) {
         *dst->range = *src->range;
@@ -8896,8 +8896,8 @@ md_script_eval_t* md_script_eval_create_from(const md_script_eval_t* prev, const
                 if (held) {
                     md_bitmask_assign(&dst->included, md_bitmask_view(&src->included));
                     dst->count = src->count;
-                    MD_MEMCPY(dst->sum_values, src->sum_values, dst->num_values * sizeof(double));
-                    if (dst->sum_weights) MD_MEMCPY(dst->sum_weights, src->sum_weights, dst->num_values * sizeof(double));
+                    md_memcpy(dst->sum_values, src->sum_values, dst->num_values * sizeof(double));
+                    if (dst->sum_weights) md_memcpy(dst->sum_weights, src->sum_weights, dst->num_values * sizeof(double));
                 }
             } else {
                 // Kept per frame: it holds what it wants of the frames its property holds
@@ -8934,8 +8934,8 @@ void md_script_eval_clear_data(md_script_eval_t* eval) {
         if (s->active) {
             md_bitmask_clear(&s->included);
             s->count = 0;
-            if (s->sum_values)  MD_MEMSET(s->sum_values,  0, s->num_values * sizeof(double));
-            if (s->sum_weights) MD_MEMSET(s->sum_weights, 0, s->num_values * sizeof(double));
+            if (s->sum_values)  md_memset(s->sum_values,  0, s->num_values * sizeof(double));
+            if (s->sum_weights) md_memset(s->sum_weights, 0, s->num_values * sizeof(double));
             s->version = next_version(eval);
         }
         md_mutex_unlock(&s->lock);
@@ -8995,7 +8995,7 @@ bool md_script_eval_plan(md_script_eval_plan_t* out_plans, size_t cap, md_bitset
     if (lock) md_mutex_lock(lock);
     for (size_t i = 0; i < md_array_size(ir->property_names); ++i) {
         md_script_eval_plan_t* plan = &out_plans[i];
-        MD_MEMSET(plan, 0, sizeof(*plan));
+        md_memset(plan, 0, sizeof(*plan));
         const uint64_t fingerprint = i < md_array_size(ir->property_fingerprints) ? ir->property_fingerprints[i] : 0;
         const int j = have ? taken_over_from(eval, fingerprint, num_frames) : -1;
         if (j < 0) {
@@ -9218,8 +9218,8 @@ bool md_script_eval_slot_extract(md_script_eval_slot_info_t* out_info, float* ou
 
     double* sum_values  = md_temp_alloc_array(temp, double, n);
     double* sum_weights = md_temp_alloc_array(temp, double, n);
-    MD_MEMSET(sum_values,  0, n * sizeof(double));
-    MD_MEMSET(sum_weights, 0, n * sizeof(double));
+    md_memset(sum_values,  0, n * sizeof(double));
+    md_memset(sum_weights, 0, n * sizeof(double));
     md_bitset_iter_t it = md_bitset_iter(frames);
     while (md_bitset_iter_next(&it)) {
         const float* values  = prop->frame_values  + (size_t)it.idx * n;
@@ -9509,7 +9509,7 @@ typedef struct filter_eval_t {
 } filter_eval_t;
 
 static bool filter_begin(filter_eval_t* f, md_filter_result_t* res, md_str_t expr, const md_filter_context_t* ctx, uint32_t eval_flags, md_allocator_i* temp_alloc) {
-    MD_MEMSET(res, 0, sizeof(*res));
+    md_memset(res, 0, sizeof(*res));
     if (!ctx || !ctx->sys) {
         md_snprintf(res->error, sizeof(res->error), "No system to pick atoms from");
         return false;
@@ -10031,7 +10031,7 @@ bool md_script_vis_eval_string(md_script_vis_t* vis, md_str_t expr, const md_scr
 void md_script_vis_init(md_script_vis_t* vis, md_allocator_i* alloc) {
     MD_ASSERT(vis);
     MD_ASSERT(alloc);
-    MD_MEMSET(vis, 0, sizeof(md_script_vis_t));
+    md_memset(vis, 0, sizeof(md_script_vis_t));
     vis->magic = VIS_MAGIC;
     vis->alloc = alloc;
 }
@@ -10068,7 +10068,7 @@ bool md_script_vis_free(md_script_vis_t* vis) {
 
         md_bitset_free(&vis->atom_mask, vis->alloc);
     }
-    MD_MEMSET(vis, 0, sizeof(md_script_vis_t));
+    md_memset(vis, 0, sizeof(md_script_vis_t));
     return true;
 }
 
@@ -10105,7 +10105,7 @@ bool md_script_vis_clear(md_script_vis_t* vis) {
     md_bitset_free(&vis->atom_mask, vis->alloc);
 
     md_allocator_i* alloc = vis->alloc;
-    MD_MEMSET(vis, 0, sizeof(md_script_vis_t));
+    md_memset(vis, 0, sizeof(md_script_vis_t));
     vis->magic = VIS_MAGIC;
     vis->alloc = alloc;
     return true;

@@ -774,7 +774,7 @@ static inline size_t md_word_zero_byte(uint64_t v) {
 
 static inline uint64_t md_label_key(md_label_t lbl) {
     uint64_t v;
-    MD_MEMCPY(&v, lbl.buf, sizeof(v));
+    md_memcpy(&v, lbl.buf, sizeof(v));
     return v;
 }
 
@@ -784,7 +784,7 @@ static inline size_t md_label_len(const md_label_t* lbl) {
 
 static inline size_t md_label16_len(const md_label16_t* lbl) {
     uint64_t v[2];
-    MD_MEMCPY(v, lbl->buf, sizeof(v));
+    md_memcpy(v, lbl->buf, sizeof(v));
     const size_t n = md_word_zero_byte(v[0]);
     return n < 8 ? n : 8 + md_word_zero_byte(v[1]);
 }
@@ -814,7 +814,7 @@ static inline bool label_empty(md_label_t lbl) {
 static inline md_label_t make_label(md_str_t str) {
     md_label_t lbl = {0};
     if (str.ptr) {
-        MD_MEMCPY(lbl.buf, str.ptr, MD_MIN(str.len, sizeof(lbl.buf)));
+        md_memcpy(lbl.buf, str.ptr, MD_MIN(str.len, sizeof(lbl.buf)));
     }
     return lbl;
 }
@@ -823,7 +823,7 @@ static inline md_label_t make_label(md_str_t str) {
 static inline md_label16_t make_label16(md_str_t str) {
     md_label16_t lbl = {0};
     if (str.ptr) {
-        MD_MEMCPY(lbl.buf, str.ptr, MD_MIN(str.len, sizeof(lbl.buf)));
+        md_memcpy(lbl.buf, str.ptr, MD_MIN(str.len, sizeof(lbl.buf)));
     }
     return lbl;
 }
@@ -847,7 +847,7 @@ static inline void md_index_data_free (md_index_data_t* data) {
         md_array_free(data->indices,  data->alloc);
     }
 #if MD_DEBUG
-    MD_MEMSET(data, 0, sizeof(md_index_data_t));
+    md_memset(data, 0, sizeof(md_index_data_t));
 #endif
 }
 
@@ -954,7 +954,7 @@ static inline void md_ring_data_free(md_ring_data_t* data, struct md_allocator_i
         md_array_free(data->rings, alloc);
     }
 #if MD_DEBUG
-    MD_MEMSET(data, 0, sizeof(md_ring_data_t));
+    md_memset(data, 0, sizeof(md_ring_data_t));
 #endif
 }
 
@@ -975,7 +975,7 @@ static inline size_t md_ring_data_push(md_ring_data_t* data, const int32_t* atom
     MD_ASSERT(atoms);
     MD_ASSERT(MD_RING_MIN_SIZE <= count && count <= MD_RING_MAX_SIZE);
     md_ring_t ring = {0};
-    MD_MEMCPY(ring.atoms, atoms, count * sizeof(int32_t));
+    md_memcpy(ring.atoms, atoms, count * sizeof(int32_t));
     ring.count = (uint16_t)count;
     ring.flags = (uint16_t)flags;
     md_array_push(data->rings, ring, alloc);

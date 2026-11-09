@@ -192,7 +192,7 @@ static const char* coord_field_name[] = {
 #endif
 
 static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_format, char* err_buf, size_t err_cap) {
-	MD_MEMSET(mappings, -1, sizeof(int) * ATOM_FIELD_COUNT);
+	md_memset(mappings, -1, sizeof(int) * ATOM_FIELD_COUNT);
 
 	md_str_t str = md_str_trim(md_str_from_cstr(atom_format));
 	if (md_str_empty(str)) {
@@ -699,7 +699,7 @@ static bool lammps_header_line(md_lammps_data_t* data, md_str_t content) {
 static void lammps_types_init(md_lammps_data_t* data, md_allocator_i* alloc) {
 	if (data->particle_types || data->num_particle_types == 0) return;
 	md_array_resize(data->particle_types, data->num_particle_types, alloc);
-	MD_MEMSET(data->particle_types, 0, md_array_bytes(data->particle_types));
+	md_memset(data->particle_types, 0, md_array_bytes(data->particle_types));
 	for (size_t i = 0; i < data->num_particle_types; ++i) {
 		data->particle_types[i].id = (int32_t)(i + 1);
 	}
@@ -746,7 +746,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_reader_i* reader, co
 		return false;
 	}
 
-	MD_MEMSET(data, 0, sizeof(md_lammps_data_t));
+	md_memset(data, 0, sizeof(md_lammps_data_t));
 
 	md_str_copy_to_char_buf(data->title, sizeof(data->title), md_str_trim(line));
 
@@ -939,7 +939,7 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	if (data->dihedrals) md_array_free(data->dihedrals, alloc);
 	if (data->impropers) md_array_free(data->impropers, alloc);
 	if (data->particle_types) md_array_free(data->particle_types, alloc);
-	MD_MEMSET(data, 0, sizeof(md_lammps_data_t));
+	md_memset(data, 0, sizeof(md_lammps_data_t));
 }
 
 
@@ -1335,7 +1335,7 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_reader_i* reader) {
 	}
 
 	if (box_bounds) {
-		MD_MEMSET(box_bounds, 0, sizeof(*box_bounds));
+		md_memset(box_bounds, 0, sizeof(*box_bounds));
 		if (general) {
 			box_bounds->general = true;
 			for (size_t i = 0; i < 3; ++i) {
@@ -1434,7 +1434,7 @@ static bool parse_coord_mappings(coord_mappings_t* mappings, md_str_t str) {
 		return false;
 	}
 
-	MD_MEMSET(mappings, -1, sizeof(coord_mappings_t));
+	md_memset(mappings, -1, sizeof(coord_mappings_t));
 	mappings->flags = COORD_FLAG_NONE;
 
 	static const struct { const char* name[3]; int flags; bool wrapped; } kinds[] = {
@@ -1529,7 +1529,7 @@ static md_unitcell_t lammps_cell_from_bounds(const box_bounds_t* bb, double lo[3
 		lo[2] = zlo;
 	}
 	if (R) {
-		MD_MEMSET(R, 0, sizeof(double) * 9);
+		md_memset(R, 0, sizeof(double) * 9);
 		R[0][0] = R[1][1] = R[2][2] = 1.0;
 	}
 	return md_unitcell_from_basis_parameters(xhi - xlo, yhi - ylo, zhi - zlo, bb->xy, bb->xz, bb->yz);
@@ -1796,12 +1796,12 @@ static bool write_cache(const lammps_cache_t* cache, md_str_t path, const md_fil
 // the file when that is current, from a scan of the file otherwise (writing the cache unless told
 // not to). From alloc; the scan's scratch keeps clear of avoid, which is what alloc was made from.
 static bool lammps_index_load(lammps_cache_t* cache, md_str_t filename, md_run_flags_t flags, md_allocator_i* alloc, md_allocator_i* avoid) {
-	MD_MEMSET(cache, 0, sizeof(*cache));
+	md_memset(cache, 0, sizeof(*cache));
 
 	if (try_read_cache(cache, filename, alloc)) {
 		return true;
 	}
-	MD_MEMSET(cache, 0, sizeof(*cache));
+	md_memset(cache, 0, sizeof(*cache));
 
 	// The file as it is before the scan is what the cache is stamped with
 	md_file_info_t scanned = {0};
@@ -1875,7 +1875,7 @@ static size_t lammps_position_provider(void* dst, size_t cap, const md_attribute
 		size_t num_atoms = 0;
 		if (lammps_decode_frame_text(&mappings, (md_str_t){ text, frame_size }, &num_atoms, NULL, xyz + 0, xyz + 1, xyz + 2, 3) && num_atoms == N) {
 			if (count != N) {
-				MD_MEMCPY(dst, xyz + first * 3, 3 * sizeof(float));
+				md_memcpy(dst, xyz + first * 3, 3 * sizeof(float));
 			}
 			written = cap;
 		}

@@ -2412,7 +2412,7 @@ static int _normalize(data_t* dst, data_t arg[], eval_context_t* ctx) {
             len2 += (double)val[i] * (double)val[i];
         }
         if (len2 < DBL_EPSILON) {
-            MD_MEMSET(dst->ptr, 0, dst->size);
+            md_memset(dst->ptr, 0, dst->size);
             return 0;
         }
         double scl = 1.0 / sqrt(len2);
@@ -3526,7 +3526,7 @@ static bool ring_pattern_query(md_match_query_t* query, md_str_t pattern, bool r
     // Hydrogens written as atoms of their own ([H]C) are hydrogen counts, not ring atoms
     const size_t n = query->num_atoms;
     uint32_t* degree = md_alloc(ctx->temp_alloc, sizeof(uint32_t) * MD_MAX(n, 1));
-    MD_MEMSET(degree, 0, sizeof(uint32_t) * MD_MAX(n, 1));
+    md_memset(degree, 0, sizeof(uint32_t) * MD_MAX(n, 1));
     size_t num_heavy = 0;
     for (size_t i = 0; i < n; ++i) {
         const md_match_atom_t* a = &query->atoms[i];
@@ -3596,7 +3596,7 @@ static int ring_select(md_array(uint32_t)* out_ring, data_t arg[], bool report, 
         const md_str_t* patterns = as_string_arr(arg[0]);
         const size_t num_patterns = element_count(arg[0]);
         has_pattern = md_alloc(ctx->temp_alloc, MD_MAX(num_rings, 1));
-        MD_MEMSET(has_pattern, 0, MD_MAX(num_rings, 1));
+        md_memset(has_pattern, 0, MD_MAX(num_rings, 1));
         // The rings as the units to match within
         md_bitset_t* units = md_alloc(ctx->temp_alloc, sizeof(md_bitset_t) * MD_MAX(num_rings, 1));
         for (size_t r = 0; r < num_rings; ++r) {
@@ -4650,7 +4650,7 @@ static int _fill_molecule(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const size_t num_mols = md_system_molecule_count(sys);
     if (num_mols && sys->molecule.atom_slot) {
         uint8_t* taken = (uint8_t*)md_alloc(ctx->temp_alloc, num_mols);
-        MD_MEMSET(taken, 0, num_mols);
+        md_memset(taken, 0, num_mols);
         md_bitset_iter_t it = md_bitset_iter(*src_bf);
         while (md_bitset_iter_next(&it)) {
             if (it.idx >= sys->atom.count) break;
@@ -4765,7 +4765,7 @@ static int _glycan(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (num_res && md_system_part_count(sys)) {
         // The residues with a sugar ring
         uint8_t* sugar = (uint8_t*)md_alloc(ctx->temp_alloc, num_res);
-        MD_MEMSET(sugar, 0, num_res);
+        md_memset(sugar, 0, num_res);
         const size_t num_rings = md_ring_data_count(&sys->ring);
         for (size_t r = 0; r < num_rings; ++r) {
             if (!(md_system_ring_flags(sys, r) & MD_RING_FLAG_SUGAR)) continue;
@@ -4916,7 +4916,7 @@ static int distance_extent(data_t* dst, data_t arg[], eval_context_t* ctx, bool 
             MD_ASSERT(!dst || dst->size == 0 || is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             out = as_float_arr(*dst);
             out_len = type_info_total_element_count(dst->type);
-            MD_MEMSET(out, 0, out_len * sizeof(float));
+            md_memset(out, 0, out_len * sizeof(float));
         }
 
         size_t beg = 0;
@@ -5045,8 +5045,8 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_util_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->cur_state->unitcell);
         if (dst && dst_arr != as_float_arr(*dst)) {
             const size_t n = MD_MIN(dst->size / sizeof(float), a_len * b_len);
-            MD_MEMCPY(dst->ptr, dst_arr, n * sizeof(float));
-            MD_MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
+            md_memcpy(dst->ptr, dst_arr, n * sizeof(float));
+            md_memset((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
         }
         if (ctx->vis) {
             if (ctx->subscript_ranges) {
@@ -5753,7 +5753,7 @@ static plane_rings_t plane_rings_build(const md_system_t* sys, md_allocator_i* a
     const size_t N = sys->atom.count;
     if (num_rings == 0 || N == 0) return pr;
     pr.off = md_alloc(alloc, sizeof(uint32_t) * (N + 1));
-    MD_MEMSET(pr.off, 0, sizeof(uint32_t) * (N + 1));
+    md_memset(pr.off, 0, sizeof(uint32_t) * (N + 1));
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(&sys->ring, r);
         const size_t n = md_ring_size(&sys->ring, r);
@@ -5762,7 +5762,7 @@ static plane_rings_t plane_rings_build(const md_system_t* sys, md_allocator_i* a
     for (size_t i = 0; i < N; ++i) pr.off[i + 1] += pr.off[i];
     pr.ring = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(pr.off[N], 1));
     uint32_t* fill = md_alloc(alloc, sizeof(uint32_t) * N);
-    MD_MEMCPY(fill, pr.off, sizeof(uint32_t) * N);
+    md_memcpy(fill, pr.off, sizeof(uint32_t) * N);
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(&sys->ring, r);
         const size_t n = md_ring_size(&sys->ring, r);
@@ -5854,7 +5854,7 @@ static void plane_from_points(plane_t* out, const vec4_t* xyzw, size_t count, ve
 }
 
 static void plane_fit(plane_t* out, const int32_t* idx, size_t count, int64_t ring, const eval_context_t* ctx, md_allocator_i* temp) {
-    MD_MEMSET(out, 0, sizeof(plane_t));
+    md_memset(out, 0, sizeof(plane_t));
     out->count = (int)count;
     if (count < 3) return;
     const md_system_t* sys = ctx->sys;
@@ -5949,7 +5949,7 @@ static int _plane_groups(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst && ctx->backchannel) {
         // Evaluated within the static check, for a procedure asking about its argument (centroid() its length):
         // there are no coordinates there, only the shape
-        MD_MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
+        md_memset(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
         return 0;
     }
 
@@ -6012,7 +6012,7 @@ static int _plane_points(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst && ctx->backchannel) {
         // Evaluated within the static check, for a procedure asking about its argument: the shape only
-        MD_MEMSET(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
+        md_memset(dst->ptr, 0, element_count(*dst) * sizeof(plane_t));
         return 0;
     }
 
@@ -6191,7 +6191,7 @@ static int _pucker_rings(data_t* dst, data_t arg[], eval_context_t* ctx) {
     for (size_t g = beg; g < vend; ++g) {
         const int64_t r = pucker_group_ring(&pr, &groups[g], ctx, temp_alloc);
         if (r < 0) {
-            if (out) MD_MEMSET(&out[g], 0, sizeof(pucker_rec_t));
+            if (out) md_memset(&out[g], 0, sizeof(pucker_rec_t));
             continue;
         }
         int32_t order[MD_RING_MAX_SIZE];
@@ -6201,7 +6201,7 @@ static int _pucker_rings(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (out) {
             if (ctx->backchannel) {
                 // The static check asking about the argument of an accessor: the shape only
-                MD_MEMSET(&out[g], 0, sizeof(pucker_rec_t));
+                md_memset(&out[g], 0, sizeof(pucker_rec_t));
                 out[g].cp.size = (uint32_t)n;
                 out[g].size = (uint8_t)n;
                 out[g].anchored = anchored;
@@ -6262,7 +6262,7 @@ static int _pucker_atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         pucker_rec_t* out = (pucker_rec_t*)dst->ptr;
         if (ctx->backchannel) {
-            MD_MEMSET(out, 0, sizeof(pucker_rec_t));
+            md_memset(out, 0, sizeof(pucker_rec_t));
             out->cp.size = (uint32_t)n;
             out->size = (uint8_t)n;
             out->anchored = true;
@@ -6555,8 +6555,8 @@ static int _coordinate(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_array(vec3_t) pos = coordinate_extract(arg[0], ctx);
             // As for coord_x: what fits is written and the rest zeroed
             const size_t bytes = MD_MIN(dst->size, md_array_bytes(pos));
-            MD_MEMCPY(dst->ptr, pos, bytes);
-            MD_MEMSET((char*)dst->ptr + bytes, 0, dst->size - bytes);
+            md_memcpy(dst->ptr, pos, bytes);
+            md_memset((char*)dst->ptr + bytes, 0, dst->size - bytes);
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
@@ -6578,7 +6578,7 @@ static int _coordinate_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
             const size_t n = MD_MIN(dst->size / sizeof(float), md_array_size(pos));
-            MD_MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
+            md_memset((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
             for (size_t i = 0; i < n; ++i) {
                 x[i] = pos[i].x;
             }
@@ -6603,7 +6603,7 @@ static int _coordinate_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
             const size_t n = MD_MIN(dst->size / sizeof(float), md_array_size(pos));
-            MD_MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
+            md_memset((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
             for (size_t i = 0; i < n; ++i) {
                 y[i] = pos[i].y;
             }
@@ -6628,7 +6628,7 @@ static int _coordinate_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
             const size_t n = MD_MIN(dst->size / sizeof(float), md_array_size(pos));
-            MD_MEMSET((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
+            md_memset((char*)dst->ptr + n * sizeof(float), 0, dst->size - n * sizeof(float));
             for (size_t i = 0; i < n; ++i) {
                 z[i] = pos[i].z;
             }
@@ -6653,7 +6653,7 @@ static int _coordinate_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
             const size_t n = MD_MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
-            MD_MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
+            md_memset((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
             for (size_t i = 0; i < n; ++i) {
                 xy[i] = (vec2_t){pos[i].x, pos[i].y};
             }
@@ -6678,7 +6678,7 @@ static int _coordinate_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
             const size_t n = MD_MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
-            MD_MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
+            md_memset((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
             for (size_t i = 0; i < n; ++i) {
                 xz[i] = (vec2_t){pos[i].x, pos[i].z};
             }
@@ -6703,7 +6703,7 @@ static int _coordinate_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Laid out [context][N] when evaluated in a context, where an argument whose length varies over frames can
             // have another length than the one fixed at compile time: what fits is written and the rest zeroed
             const size_t n = MD_MIN(dst->size / sizeof(vec2_t), md_array_size(pos));
-            MD_MEMSET((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
+            md_memset((char*)dst->ptr + n * sizeof(vec2_t), 0, dst->size - n * sizeof(vec2_t));
             for (size_t i = 0; i < n; ++i) {
                 yz[i] = (vec2_t){pos[i].y, pos[i].z};
             }
@@ -7938,7 +7938,7 @@ static int _contacts(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // Evaluated within the static check, for a procedure which is asking about its argument (degree asks for the
         // number of groups). The shape is known without searching, and a search here would stall the compilation.
         md_contact_set_t* set = (md_contact_set_t*)dst->ptr;
-        MD_MEMSET(set, 0, sizeof(md_contact_set_t));
+        md_memset(set, 0, sizeof(md_contact_set_t));
         set->num_a = (uint32_t)element_count(arg[0]);
         set->num_b = is_absent_type(arg[1].type) ? set->num_a : (uint32_t)element_count(arg[1]);
         set->flags = is_absent_type(arg[1].type) ? MD_CONTACT_FLAG_SELF : MD_CONTACT_FLAG_NONE;
@@ -8035,7 +8035,7 @@ static int _degree_contact(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
     float* out = as_float_arr(*dst);
     const size_t len = element_count(*dst);
-    MD_MEMSET(out, 0, len * sizeof(float));
+    md_memset(out, 0, len * sizeof(float));
     if (set) {
         const bool self = set->flags & MD_CONTACT_FLAG_SELF;
         for (size_t k = 0; k < set->count; ++k) {
@@ -8168,7 +8168,7 @@ static void bond_extras_tidy(bond_extras_t* e, md_allocator_i* temp) {
     }
     qsort(k, n, sizeof(bond_keyed_t), compare_bond_key);
     md_bond_flags_t* flags = md_alloc(temp, sizeof(md_bond_flags_t) * n);
-    MD_MEMCPY(flags, e->flags, sizeof(md_bond_flags_t) * n);
+    md_memcpy(flags, e->flags, sizeof(md_bond_flags_t) * n);
     size_t w = 0;
     for (size_t i = 0; i < n; ++i) {
         if (w > 0 && e->key[w - 1] == k[i].key) continue;
@@ -8302,7 +8302,7 @@ static bool bond_origin_mask(uint32_t* out, data_t arg, int arg_idx, bool report
 }
 
 static bool bond_filter_parse(bond_filter_t* f, const data_t arg[], bool report, eval_context_t* ctx) {
-    MD_MEMSET(f, 0, sizeof(bond_filter_t));
+    md_memset(f, 0, sizeof(bond_filter_t));
     if (!is_absent_type(arg[2].type)) {
         size_t count = 0;
         const md_bond_kind_name_t* table = md_bond_kind_names(&count);
@@ -8649,7 +8649,7 @@ static int _bond_delta(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const md_system_t* sys = ctx->sys;
     const uint32_t total = bond_total(sys);
     bond_delta_value_t* val = (bond_delta_value_t*)dst->ptr;
-    MD_MEMSET(val, 0, sizeof(bond_delta_value_t));
+    md_memset(val, 0, sizeof(bond_delta_value_t));
     // Asked about within the static check (the shape only): no search
     if (ctx->backchannel) return 0;
 

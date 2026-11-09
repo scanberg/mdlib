@@ -222,12 +222,12 @@ static inline bool md_fifo_raw_set_capacity_impl(void* data_addr, size_t* capaci
 
         if (*size) {
             if (*tail < *head) {
-                MD_MEMCPY(new_data, (uint8_t*)(*data) + (*tail) * item_size, (*size) * item_size);
+                md_memcpy(new_data, (uint8_t*)(*data) + (*tail) * item_size, (*size) * item_size);
             } else {
                 const size_t old_capacity = *capacity;
                 const size_t right_count = old_capacity - *tail;
-                MD_MEMCPY(new_data, (uint8_t*)(*data) + (*tail) * item_size, right_count * item_size);
-                MD_MEMCPY((uint8_t*)new_data + right_count * item_size, *data, (*head) * item_size);
+                md_memcpy(new_data, (uint8_t*)(*data) + (*tail) * item_size, right_count * item_size);
+                md_memcpy((uint8_t*)new_data + right_count * item_size, *data, (*head) * item_size);
             }
         }
     }
@@ -268,7 +268,7 @@ static inline bool md_fifo_raw_push_impl(void* data_addr, size_t* capacity, size
     }
 
     void** data = (void**)data_addr;
-    MD_MEMCPY((uint8_t*)(*data) + (*head) * item_size, item, item_size);
+    md_memcpy((uint8_t*)(*data) + (*head) * item_size, item, item_size);
     *head = (*head + 1) & (*capacity - 1);
     *size += 1;
     return true;

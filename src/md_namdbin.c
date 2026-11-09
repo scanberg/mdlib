@@ -15,7 +15,7 @@ static bool namdbin_header(md_file_t file, size_t* out_atoms, bool* out_swap) {
     const uint64_t size = (uint64_t)md_file_size(file);
     uint32_t n = 0;
     if (size < 4 + 24 || md_file_read_at(file, 0, &n, 4) != 4) return false;
-    const uint32_t swapped = MD_BSWAP32(n);
+    const uint32_t swapped = md_bswap32(n);
     if (n > 0 && (uint64_t)n * 24 + 4 == size) {
         *out_atoms = n;
         *out_swap = false;
@@ -75,10 +75,10 @@ bool md_namdbin_state_init_from_file(md_system_state_t* state, md_str_t filename
     float* out = (float*)state->xyz;
     for (size_t i = 0; i < 3 * N; ++i) {
         uint64_t u;
-        MD_MEMCPY(&u, &xyz[i], 8);
-        if (swap) u = MD_BSWAP64(u);
+        md_memcpy(&u, &xyz[i], 8);
+        if (swap) u = md_bswap64(u);
         double v;
-        MD_MEMCPY(&v, &u, 8);
+        md_memcpy(&v, &u, 8);
         out[i] = (float)v;
     }
     state->num_atoms = N;

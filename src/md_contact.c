@@ -42,7 +42,7 @@ static void build_exclusions(md_contact_pairs_t* p, const md_system_t* sys, uint
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     uint8_t* depth = md_alloc(temp_alloc, N);    // 0 = not reached, otherwise 1 + number of bonds
-    MD_MEMSET(depth, 0, N);
+    md_memset(depth, 0, N);
     md_array(uint32_t) visited = 0;
     md_array(uint32_t) queue   = 0;
     md_array(uint32_t) partner = 0;
@@ -99,7 +99,7 @@ static void build_exclusions(md_contact_pairs_t* p, const md_system_t* sys, uint
 
     const size_t total = md_array_size(partner);
     uint32_t* atoms = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(total, 1));
-    if (total) MD_MEMCPY(atoms, partner, sizeof(uint32_t) * total);
+    if (total) md_memcpy(atoms, partner, sizeof(uint32_t) * total);
 
     p->excl_off  = off;
     p->excl_atom = atoms;
@@ -129,12 +129,12 @@ void md_contact_pairs_free(md_contact_pairs_t* p) {
     if (p->excl_atom) md_free(alloc, p->excl_atom, sizeof(uint32_t) * MD_MAX(p->excl_off[N], 1));
     if (p->excl_off)  md_free(alloc, p->excl_off, sizeof(uint32_t) * (N + 1));
     if (p->label)     md_free(alloc, p->label, sizeof(uint32_t) * MD_MAX(N, 1));
-    MD_MEMSET(p, 0, sizeof(md_contact_pairs_t));
+    md_memset(p, 0, sizeof(md_contact_pairs_t));
 }
 
 bool md_contact_pairs_init(md_contact_pairs_t* p, const md_contact_pairs_desc_t* desc, const md_system_t* sys, md_allocator_i* alloc) {
     MD_ASSERT(p);
-    MD_MEMSET(p, 0, sizeof(md_contact_pairs_t));
+    md_memset(p, 0, sizeof(md_contact_pairs_t));
     if (!desc || !desc->set_a || !sys || !alloc) {
         MD_LOG_ERROR("Contact pairs: missing set, system or allocator");
         return false;
@@ -155,13 +155,13 @@ bool md_contact_pairs_init(md_contact_pairs_t* p, const md_contact_pairs_desc_t*
 
     if (desc->particle_label && p->num_atoms) {
         p->label = md_alloc(alloc, sizeof(uint32_t) * p->num_atoms);
-        MD_MEMCPY(p->label, desc->particle_label, sizeof(uint32_t) * p->num_atoms);
+        md_memcpy(p->label, desc->particle_label, sizeof(uint32_t) * p->num_atoms);
     }
 
     if (desc->exclude_bonds > 0 && sys->bond.conn.offset && p->num_atoms) {
         md_temp_scope_t temp = md_temp_begin_avoid(alloc);
         uint8_t* is_member = md_alloc(md_temp_allocator(temp), p->num_atoms);
-        MD_MEMSET(is_member, 0, p->num_atoms);
+        md_memset(is_member, 0, p->num_atoms);
         for (size_t k = 0; k < p->num_a_atoms; ++k) is_member[p->a_atoms[k]] = 1;
         for (size_t k = 0; k < p->num_b_atoms; ++k) is_member[p->b_atoms[k]] = 1;
         build_exclusions(p, sys, desc->exclude_bonds, is_member, alloc);
@@ -266,7 +266,7 @@ bool md_contact_pairs_for_each(const md_contact_pairs_t* p, const md_system_stat
 static bool build_membership(uint32_t** out_off, uint32_t** out_grp, md_bitset_t* out_union,
                              const md_bitset_t* groups, size_t num_groups, uint32_t num_atoms, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
     uint32_t* off = md_alloc(alloc, sizeof(uint32_t) * (num_atoms + 1));
-    MD_MEMSET(off, 0, sizeof(uint32_t) * (num_atoms + 1));
+    md_memset(off, 0, sizeof(uint32_t) * (num_atoms + 1));
     md_bitmask_t uni = md_bitmask_create(0, num_atoms, temp_alloc);
 
     for (size_t g = 0; g < num_groups; ++g) {
@@ -293,7 +293,7 @@ static bool build_membership(uint32_t** out_off, uint32_t** out_grp, md_bitset_t
 
     // Fill in group order, which leaves every row sorted
     uint32_t* cursor = md_alloc(temp_alloc, sizeof(uint32_t) * MD_MAX(num_atoms, 1));
-    if (num_atoms) MD_MEMCPY(cursor, off, sizeof(uint32_t) * num_atoms);
+    if (num_atoms) md_memcpy(cursor, off, sizeof(uint32_t) * num_atoms);
     for (size_t g = 0; g < num_groups; ++g) {
         md_bitset_iter_t it = md_bitset_iter(groups[g]);
         while (md_bitset_iter_next(&it)) {
@@ -323,12 +323,12 @@ void md_contact_query_free(md_contact_query_t* q) {
     if (q->parent) md_free(alloc, q->parent, sizeof(uint32_t) * MD_MAX(q->num_a, 1));
     if (q->type)   md_free(alloc, q->type, sizeof(uint32_t) * MD_MAX(N, 1));
     if (q->type_cutoff) md_free(alloc, q->type_cutoff, sizeof(float) * MD_MAX((size_t)q->num_types * q->num_types, 1));
-    MD_MEMSET(q, 0, sizeof(md_contact_query_t));
+    md_memset(q, 0, sizeof(md_contact_query_t));
 }
 
 bool md_contact_query_init(md_contact_query_t* q, const md_contact_desc_t* desc, const md_system_t* sys, md_allocator_i* alloc) {
     MD_ASSERT(q);
-    MD_MEMSET(q, 0, sizeof(md_contact_query_t));
+    md_memset(q, 0, sizeof(md_contact_query_t));
     if (!desc || !sys || !alloc) {
         MD_LOG_ERROR("Contact query: missing description, system or allocator");
         return false;
@@ -383,7 +383,7 @@ bool md_contact_query_init(md_contact_query_t* q, const md_contact_desc_t* desc,
 
     if (self && desc->group_parent && q->num_a) {
         q->parent = md_alloc(alloc, sizeof(uint32_t) * q->num_a);
-        MD_MEMCPY(q->parent, desc->group_parent, sizeof(uint32_t) * q->num_a);
+        md_memcpy(q->parent, desc->group_parent, sizeof(uint32_t) * q->num_a);
     }
 
     md_bitset_t set_a = {0};
@@ -398,13 +398,13 @@ bool md_contact_query_init(md_contact_query_t* q, const md_contact_desc_t* desc,
         const uint32_t T = desc->num_types;
         q->num_types = T;
         q->type = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(N, 1));
-        if (N) MD_MEMCPY(q->type, desc->particle_type, sizeof(uint32_t) * N);
+        if (N) md_memcpy(q->type, desc->particle_type, sizeof(uint32_t) * N);
         q->type_cutoff = md_alloc(alloc, sizeof(float) * T * T);
-        MD_MEMCPY(q->type_cutoff, desc->type_cutoff, sizeof(float) * T * T);
+        md_memcpy(q->type_cutoff, desc->type_cutoff, sizeof(float) * T * T);
 
         // Only the types which are present bound the search
         uint8_t* present = md_alloc(temp_alloc, T);
-        MD_MEMSET(present, 0, T);
+        md_memset(present, 0, T);
         for (uint32_t k = 0; k < N; ++k) {
             const bool member = (q->a_off[k + 1] > q->a_off[k]) || (q->b_off && q->b_off[k + 1] > q->b_off[k]);
             if (!member) continue;
@@ -423,7 +423,7 @@ bool md_contact_query_init(md_contact_query_t* q, const md_contact_desc_t* desc,
     } else if (desc->criterion == MD_CONTACT_CRITERION_RADII) {
         q->radius = md_alloc(alloc, sizeof(float) * MD_MAX(N, 1));
         if (desc->atom_radius) {
-            MD_MEMCPY(q->radius, desc->atom_radius, sizeof(float) * N);
+            md_memcpy(q->radius, desc->atom_radius, sizeof(float) * N);
         } else if (N) {
             md_atom_extract_radii(q->radius, 0, N, &sys->atom);
         }
@@ -543,12 +543,12 @@ void md_contact_set_free(md_contact_set_t* set) {
         md_free(set->alloc, set->atom_pairs, sizeof(uint32_t) * set->count);
         md_free(set->alloc, set->d_min, sizeof(float) * set->count);
     }
-    MD_MEMSET(set, 0, sizeof(md_contact_set_t));
+    md_memset(set, 0, sizeof(md_contact_set_t));
 }
 
 bool md_contact_query_eval(md_contact_set_t* out, const md_contact_query_t* q, const md_system_state_t* state, md_allocator_i* alloc) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(md_contact_set_t));
+    md_memset(out, 0, sizeof(md_contact_set_t));
     if (!q || !q->alloc || !state || !alloc) {
         MD_LOG_ERROR("Contact evaluation: missing query, state or allocator");
         return false;
@@ -598,7 +598,7 @@ bool md_contact_query_eval(md_contact_set_t* out, const md_contact_query_t* q, c
 
 bool md_contact_compute(md_contact_set_t* out, const md_contact_desc_t* desc, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(md_contact_set_t));
+    md_memset(out, 0, sizeof(md_contact_set_t));
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_contact_query_t q;
     bool result = md_contact_query_init(&q, desc, sys, md_temp_allocator(temp)) && md_contact_query_eval(out, &q, state, alloc);
@@ -662,7 +662,7 @@ bool md_contact_unit_adjacency_from_bonds(uint32_t** out_off, uint32_t** out_adj
 
     uint32_t* off = md_alloc(alloc, sizeof(uint32_t) * (num_units + 1));
     uint32_t* adj = md_alloc(alloc, sizeof(uint32_t) * MD_MAX(num_edges, 1));
-    MD_MEMSET(off, 0, sizeof(uint32_t) * (num_units + 1));
+    md_memset(off, 0, sizeof(uint32_t) * (num_units + 1));
     for (size_t e = 0; e < num_edges; ++e) {
         off[(edge[e] >> 32) + 1] += 1;
         adj[e] = (uint32_t)(edge[e] & 0xFFFFFFFFu);     // Sorted by (from, to): the rows come out in order
@@ -690,7 +690,7 @@ void md_contact_region_set_free(md_contact_region_set_t* set) {
         }
         if (set->num_pairs) md_free(set->alloc, set->region, sizeof(uint32_t) * set->num_pairs);
     }
-    MD_MEMSET(set, 0, sizeof(md_contact_region_set_t));
+    md_memset(set, 0, sizeof(md_contact_region_set_t));
 }
 
 // The units within reach steps of u in its body, u included, written to out (an md_array which is cleared first).
@@ -760,7 +760,7 @@ static bool units_valid(const md_contact_units_t* units, size_t expected) {
 
 bool md_contact_regions(md_contact_region_set_t* out, const md_contact_set_t* contacts, const md_contact_units_t* units_a, const md_contact_units_t* units_b, uint32_t reach, md_allocator_i* alloc) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(md_contact_region_set_t));
+    md_memset(out, 0, sizeof(md_contact_region_set_t));
     if (!contacts || !alloc) {
         MD_LOG_ERROR("Contact regions: missing contact set or allocator");
         return false;
@@ -794,8 +794,8 @@ bool md_contact_regions(md_contact_region_set_t* out, const md_contact_set_t* co
 
     uint32_t* stamp_a = md_alloc(temp_alloc, sizeof(uint32_t) * MD_MAX(units_a->count, 1));
     uint32_t* stamp_b = self ? stamp_a : md_alloc(temp_alloc, sizeof(uint32_t) * MD_MAX(units_b->count, 1));
-    MD_MEMSET(stamp_a, 0, sizeof(uint32_t) * MD_MAX(units_a->count, 1));
-    if (!self) MD_MEMSET(stamp_b, 0, sizeof(uint32_t) * MD_MAX(units_b->count, 1));
+    md_memset(stamp_a, 0, sizeof(uint32_t) * MD_MAX(units_a->count, 1));
+    if (!self) md_memset(stamp_b, 0, sizeof(uint32_t) * MD_MAX(units_b->count, 1));
     uint32_t stamp_value = 0;
 
     md_array(uint32_t) near_x = 0;
@@ -834,8 +834,8 @@ bool md_contact_regions(md_contact_region_set_t* out, const md_contact_set_t* co
     out->units_j    = md_alloc(alloc, sizeof(uint32_t) * num_regions);
     out->atom_pairs = md_alloc(alloc, sizeof(uint32_t) * num_regions);
     out->d_min      = md_alloc(alloc, sizeof(float) * num_regions);
-    MD_MEMSET(out->unit_pairs, 0, sizeof(uint32_t) * num_regions);
-    MD_MEMSET(out->atom_pairs, 0, sizeof(uint32_t) * num_regions);
+    md_memset(out->unit_pairs, 0, sizeof(uint32_t) * num_regions);
+    md_memset(out->atom_pairs, 0, sizeof(uint32_t) * num_regions);
     for (uint32_t r = 0; r < num_regions; ++r) out->d_min[r] = FLT_MAX;
 
     // The units on each side, as (region, unit) keys
@@ -866,8 +866,8 @@ bool md_contact_regions(md_contact_region_set_t* out, const md_contact_set_t* co
             md_array_push(side_j, ((uint64_t)r << 32) | y, temp_alloc);
         }
     }
-    MD_MEMSET(out->units_i, 0, sizeof(uint32_t) * num_regions);
-    MD_MEMSET(out->units_j, 0, sizeof(uint32_t) * num_regions);
+    md_memset(out->units_i, 0, sizeof(uint32_t) * num_regions);
+    md_memset(out->units_j, 0, sizeof(uint32_t) * num_regions);
     const size_t ni = sort_unique_u64(side_i, md_array_size(side_i));
     const size_t nj = sort_unique_u64(side_j, md_array_size(side_j));
     for (size_t k = 0; k < ni; ++k) out->units_i[side_i[k] >> 32] += 1;

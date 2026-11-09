@@ -298,7 +298,7 @@ md_json_t* md_json_parse(md_str_t text, md_allocator_i* alloc, md_json_error_t* 
             e.at  = beg;
             goto fail;
         }
-        MD_MEMSET(doc, 0, sizeof(md_json_t));
+        md_memset(doc, 0, sizeof(md_json_t));
         tok_t* tok = (tok_t*)(doc + 1);
         tok[0] = none_tok;
 

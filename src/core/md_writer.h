@@ -153,7 +153,7 @@ char* md_writer_reserve_slow(md_writer_i* w, size_t n);
 static inline void md_write(md_writer_i* w, const void* data, size_t len) {
     MD_ASSERT(w);
     if (len <= (size_t)(w->end - w->cur)) {
-        if (len) MD_MEMCPY(w->cur, data, len);
+        if (len) md_memcpy(w->cur, data, len);
         w->cur += len;
     } else {
         md_writer_write_slow(w, data, len);

@@ -9,7 +9,7 @@
 
 UTEST(intrinsics, memset) {
     char data[131];
-    MD_MEMSET(data, 4, sizeof(data));
+    md_memset(data, 4, sizeof(data));
 
     for (int i = 0; i < MD_COUNTOF(data); ++i) {
         EXPECT_EQ(data[i], 4);
@@ -22,7 +22,7 @@ UTEST(intrinsics, memcpy) {
     for (int i = 0; i < MD_COUNTOF(a); ++i) {
         a[i] = i;
     }
-    MD_MEMCPY(b, a, sizeof(b));
+    md_memcpy(b, a, sizeof(b));
 
     for (int i = 0; i < MD_COUNTOF(a); ++i) {
         EXPECT_EQ(a[i], b[i]);

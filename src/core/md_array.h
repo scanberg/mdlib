@@ -67,12 +67,12 @@ typedef struct md_array_header_t {
 
 #define md_array_push_array(a, items, n, alloc) \
     __pragma(warning(suppress:6011 6387)) \
-    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), MD_MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
+    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), md_memcpy((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 
 #else
 #define md_array_push(a, item, alloc) (md_array_ensure((a), md_array_size(a) + 1, alloc), MD_ASSUME((a) != NULL), (a)[md_array_header(a)->size++] = item)
 #define md_array_push_no_grow(a, item)  (a)[md_array_header(a)->size++] = (item)
-#define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), MD_MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
+#define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MD_ASSUME((a) != NULL), md_memcpy((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 #endif
 #define md_array_free(a, alloc)         ((a) ? (*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__) : 0)
 
@@ -173,7 +173,7 @@ typedef struct md_array_header_t {
 #define MD_ARRAY_RAW_PUSH_ARRAY(capacity, size, data, items, count, alloc) \
     do {                                                                     \
         void* _md_dst = MD_ARRAY_RAW_EXTEND((capacity), (size), (data), (count), (alloc)); \
-        if (_md_dst) MD_MEMCPY(_md_dst, (items), (count) * sizeof(*(data)));    \
+        if (_md_dst) md_memcpy(_md_dst, (items), (count) * sizeof(*(data)));    \
     } while (0)
 
 #define MD_ARRAY_RAW_SWAP_BACK_AND_POP(data, size, idx) \
@@ -413,7 +413,7 @@ static inline bool md_array_raw_push_impl(void* data_addr, size_t* capacity, siz
     }
 
     void** data = (void**)data_addr;
-    MD_MEMCPY((uint8_t*)(*data) + (*size) * item_size, item, item_size);
+    md_memcpy((uint8_t*)(*data) + (*size) * item_size, item, item_size);
     *size += 1;
     return true;
 }

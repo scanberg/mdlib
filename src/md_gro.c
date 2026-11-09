@@ -154,7 +154,7 @@ static MD_FORCE_INLINE bool gro_parse_coordinates_w8(float xyz[3], float vel[3],
 // NAN, by its bits: mdlib builds with fast math
 static inline bool gro_absent(float v) {
     uint32_t u;
-    MD_MEMCPY(&u, &v, sizeof(u));
+    md_memcpy(&u, &v, sizeof(u));
     return (u & 0x7FFFFFFFu) > 0x7F800000u;
 }
 
@@ -169,13 +169,13 @@ typedef struct gro_res_fields_t {
 static MD_FORCE_INLINE gro_res_fields_t gro_res_fields(md_str_t line) {
     gro_res_fields_t f = { 0, 0, (uint16_t)MD_MIN(line.len, GRO_RES_FIELDS) };
     if (line.len >= GRO_RES_FIELDS) {
-        MD_MEMCPY(&f.lo, line.ptr, 8);
-        MD_MEMCPY(&f.hi, line.ptr + 8, 2);
+        md_memcpy(&f.lo, line.ptr, 8);
+        md_memcpy(&f.hi, line.ptr + 8, 2);
     } else if (line.len) {
         char c[GRO_RES_FIELDS] = {0};
-        MD_MEMCPY(c, line.ptr, line.len);
-        MD_MEMCPY(&f.lo, c, 8);
-        MD_MEMCPY(&f.hi, c + 8, 2);
+        md_memcpy(c, line.ptr, line.len);
+        md_memcpy(&f.lo, c, 8);
+        md_memcpy(&f.hi, c + 8, 2);
     }
     return f;
 }
@@ -190,7 +190,7 @@ static MD_FORCE_INLINE bool gro_res_fields_eq(gro_res_fields_t a, gro_res_fields
 static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
     if (line.len >= offset + 8) {
         uint64_t w;
-        MD_MEMCPY(&w, line.ptr + offset, 8);
+        md_memcpy(&w, line.ptr + offset, 8);
         const uint64_t field = 0x8080808080ull;                             // the high bits of its 5 bytes
         const uint64_t x = w & 0x7F7F7F7F7F7F7F7Full;
         // 0x80 in each byte at or above ' ' (or with its high bit set): none below it, no control character
@@ -202,7 +202,7 @@ static MD_FORCE_INLINE md_label_t gro_label5(md_str_t line, size_t offset) {
                 const uint32_t lo = md_ctz64(mark) >> 3;
                 const uint32_t hi = (63 - md_clz64(mark)) >> 3;
                 const uint64_t v = (w >> (8 * lo)) & (~UINT64_C(0) >> (64 - 8 * (hi - lo + 1)));
-                MD_MEMCPY(lbl.buf, &v, sizeof(v));
+                md_memcpy(lbl.buf, &v, sizeof(v));
             }
             return lbl;
         }
@@ -363,7 +363,7 @@ static void gro_place_residues(void* arg, uint32_t beg, uint32_t end, uint32_t t
     gro_load_t* L = (gro_load_t*)arg;
     for (uint32_t p = beg; p < end; ++p) {
         const gro_piece_t* piece = &L->pieces[p];
-        MD_MEMCPY(L->res + piece->first_res, L->pass_res + piece->first_line, piece->num_res * sizeof(gro_residue_start_t));
+        md_memcpy(L->res + piece->first_res, L->pass_res + piece->first_line, piece->num_res * sizeof(gro_residue_start_t));
     }
 }
 
@@ -498,8 +498,8 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         const size_t capacity = MD_ROUND_UP(num_atoms, 16);
         md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
         md_array_resize(sys->atom.flags, capacity, sys->alloc);
-        MD_MEMSET(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
-        MD_MEMSET(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
+        md_memset(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
+        md_memset(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
         sys->atom.count = num_atoms;
         md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
     }
@@ -541,7 +541,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
             if (L.atom_beg < num_atoms) {
                 const md_str_t last = md_text_line_before(block.ptr, taken);
                 const size_t n = MD_MIN(last.len, sizeof(prev_res));
-                MD_MEMCPY(prev_res, last.ptr, n);
+                md_memcpy(prev_res, last.ptr, n);
                 L.prev = (md_str_t){ prev_res, n };
             }
         }

@@ -93,7 +93,7 @@ static inline size_t packed_row_offset(size_t row, size_t n) {
 
 static void* aligned_alloc_zero(size_t bytes) {
     void* ptr = md_fft_alloc(bytes);
-    if (ptr) MD_MEMSET(ptr, 0, bytes);
+    if (ptr) md_memset(ptr, 0, bytes);
     return ptr;
 }
 
@@ -296,7 +296,7 @@ md_gisaxs_t* md_gisaxs_create(const md_gisaxs_input_t* in, const md_gisaxs_param
     const bool   use_range = params->z_max > params->z_min;
 
     md_gisaxs_t* ctx = (md_gisaxs_t*)md_alloc(alloc, sizeof(md_gisaxs_t));
-    MD_MEMSET(ctx, 0, sizeof(md_gisaxs_t));
+    md_memset(ctx, 0, sizeof(md_gisaxs_t));
     ctx->alloc = alloc;
     ctx->box_x = in->box_x;
     ctx->box_y = in->box_y;
@@ -559,7 +559,7 @@ void md_gisaxs_destroy(md_gisaxs_t* ctx) {
 
 void md_gisaxs_get_info(const md_gisaxs_t* ctx, md_gisaxs_info_t* info) {
     if (!info) return;
-    MD_MEMSET(info, 0, sizeof(md_gisaxs_info_t));
+    md_memset(info, 0, sizeof(md_gisaxs_info_t));
     if (!ctx) return;
     info->nx = ctx->nx;
     info->ny = ctx->ny;
@@ -625,7 +625,7 @@ void md_gisaxs_compute_slices(md_gisaxs_t* ctx, size_t beg, size_t end, void* sc
     float* fft_scratch = spec + spec_floats(ctx);
 
     for (size_t k = beg; k < end; ++k) {
-        MD_MEMSET(grids, 0, sizeof(float) * C * grid_floats(ctx));
+        md_memset(grids, 0, sizeof(float) * C * grid_floats(ctx));
 
         // Particles with u in (k - 2, k + 2] contribute to slice k (floor(u) in [k-2, k+1])
         const float u_lo = (float)k - 2.0f;
@@ -711,7 +711,7 @@ void md_gisaxs_compute_rings(md_gisaxs_t* ctx, size_t beg, size_t end) {
     double* acc = (double*)md_fft_alloc(sizeof(double) * ctx->packed_size);
 
     for (size_t r = beg; r < end; ++r) {
-        MD_MEMSET(acc, 0, sizeof(double) * ctx->packed_size);
+        md_memset(acc, 0, sizeof(double) * ctx->packed_size);
         const uint32_t p_beg = ctx->ring_offset[r];
         const uint32_t p_end = ctx->ring_offset[r + 1];
         for (uint32_t p = p_beg; p < p_end; ++p) {
@@ -994,7 +994,7 @@ void md_gisaxs_evaluate_range(const md_gisaxs_t* ctx, const md_gisaxs_model_t* m
         float* dst = out + iq * R;
         const double q = qz[iq] - p;             // exit, upward (ambient)
         if (q < 0.0) {                           // Below the horizon
-            MD_MEMSET(dst, 0, sizeof(float) * R);
+            md_memset(dst, 0, sizeof(float) * R);
             continue;
         }
         field_compute(&ff, X, &st, q);

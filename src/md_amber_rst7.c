@@ -157,7 +157,7 @@ bool md_amber_rst7_state_init_from_file(md_system_state_t* state, md_str_t filen
     }
 
     if (!md_system_state_init(state, N)) goto done;
-    MD_MEMCPY(state->xyz, xyz, 3 * N * sizeof(float));
+    md_memcpy(state->xyz, xyz, 3 * N * sizeof(float));
     state->num_atoms = N;
     state->unitcell = cell;
     result = true;

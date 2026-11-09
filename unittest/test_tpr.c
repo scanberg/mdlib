@@ -297,7 +297,7 @@ UTEST(tpr, corrupt) {
     uint8_t* bad = md_alloc(heap, size);
     uint32_t seed = 12345;
     for (int k = 0; k < 400; ++k) {
-        MD_MEMCPY(bad, buf, size);
+        md_memcpy(bad, buf, size);
         seed = seed * 1664525u + 1013904223u;
         const size_t pos = 100 + (seed >> 8) % (size - 100);
         bad[pos] ^= (uint8_t)(0x80 | (seed & 0x7F));

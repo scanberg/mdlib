@@ -161,7 +161,7 @@ void md_unitcell_extract_basis_parameters(double* out_x, double* out_y, double* 
 void md_unitcell_I_extract_double(double out_I[3][3], const md_unitcell_t* cell) {
     if (cell) {
         if (!cell->flags) {
-            MD_MEMSET(out_I, 0, sizeof(double) * 9);
+            md_memset(out_I, 0, sizeof(double) * 9);
             return;
         }
 

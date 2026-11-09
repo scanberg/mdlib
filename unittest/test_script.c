@@ -5082,9 +5082,9 @@ UTEST_F(script, distribution_weights_accumulate) {
             sum_v   = md_alloc(alloc, num_bins * sizeof(double));
             sum_w   = md_alloc(alloc, num_bins * sizeof(double));
             first_w = md_alloc(alloc, num_bins * sizeof(float));
-            MD_MEMSET(sum_v, 0, num_bins * sizeof(double));
-            MD_MEMSET(sum_w, 0, num_bins * sizeof(double));
-            MD_MEMCPY(first_w, p->weights, num_bins * sizeof(float));
+            md_memset(sum_v, 0, num_bins * sizeof(double));
+            md_memset(sum_w, 0, num_bins * sizeof(double));
+            md_memcpy(first_w, p->weights, num_bins * sizeof(float));
         }
         for (size_t i = 0; i < num_bins; ++i) {
             sum_v[i] += p->values[i];
@@ -7134,7 +7134,7 @@ UTEST(script, bondsets) {
         data_t d = {0};
         ASSERT_TRUE(evaluate_node_alloc(&d, ident->node, &ctx, alloc));
         md_vm_arena_reset(scratch);
-        MD_MEMSET(md_vm_arena_push(scratch, MD_MEGABYTES(4)), 0xFF, MD_MEGABYTES(4));
+        md_memset(md_vm_arena_push(scratch, MD_MEGABYTES(4)), 0xFF, MD_MEGABYTES(4));
         ASSERT_EQ(TYPE_BONDSET, d.type.base_type);
         ASSERT_EQ(1, (int)element_count(d));
         // Two bonds apart from one another, Mg-O1 and Cu-Cu: words of their own
@@ -7258,7 +7258,7 @@ UTEST(script, bond_delta) {
     // The proton moved to the second water
     md_system_state_t st = ref;
     st.xyz = md_alloc(alloc, sizeof(vec3_t) * ref.num_atoms);
-    MD_MEMCPY(st.xyz, ref.xyz, sizeof(vec3_t) * ref.num_atoms);
+    md_memcpy(st.xyz, ref.xyz, sizeof(vec3_t) * ref.num_atoms);
     st.xyz[1] = vec3_set(1.80f, 0.0f, 0.0f);
     EXPECT_EQ(1, bondset_count_of(ir, "f", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "b", &sys, &st, alloc));

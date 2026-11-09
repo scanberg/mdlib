@@ -40,7 +40,7 @@ static inline md_array(ref_comp_t) read_components(md_str_t path, md_allocator_i
     char buf[256];
     while (md_str_extract_line(&line, &text)) {
         if (line.len == 0 || line.ptr[0] == '#' || line.len >= sizeof(buf)) continue;
-        MD_MEMCPY(buf, line.ptr, line.len);
+        md_memcpy(buf, line.ptr, line.len);
         buf[line.len] = '\0';
         if (!strncmp(buf, "COMP ", 5)) {
             ref_comp_t c = { 0 };
@@ -78,7 +78,7 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     md_particle_type_add(&sys->atom.type, MD_STR_LIT(""), (md_str_t){0}, 0, 0, 0, 0, 0, alloc);
     md_array_resize(sys->atom.type_idx, (size_t)n, alloc);
     md_array_resize(sys->atom.flags, (size_t)n, alloc);
-    MD_MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
+    md_memset(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     md_system_state_init(st, n);
     for (int i = 0; i < na; ++i) {
         if (map[i] < 0) continue;

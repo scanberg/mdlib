@@ -96,7 +96,7 @@ static md_str_t prmtop_next_line(md_str_t* text) {
 
 // Finds the blocks of the file. The values are left where they are, read when asked for.
 static bool prmtop_parse(prmtop_t* top, md_str_t text, md_allocator_i* alloc, md_str_t path) {
-    MD_MEMSET(top, 0, sizeof(*top));
+    md_memset(top, 0, sizeof(*top));
     const char* text_end = text.ptr + text.len;
     prmtop_block_t* cur = NULL;
     const char* data_beg = NULL;
@@ -253,7 +253,7 @@ typedef struct prmtop_data_t {
 } prmtop_data_t;
 
 static bool prmtop_read(prmtop_data_t* d, md_str_t path, md_allocator_i* alloc) {
-    MD_MEMSET(d, 0, sizeof(*d));
+    md_memset(d, 0, sizeof(*d));
     const md_str_t text = md_load_textfile(path, alloc);
     if (md_str_empty(text)) {
         MD_LOG_ERROR("Amber topology: cannot read '" MD_STR_FMT "'", MD_STR_ARG(path));

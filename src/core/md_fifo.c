@@ -20,7 +20,7 @@ md_fifo_t md_fifo_create(size_t capacity, md_allocator_i* alloc) {
     MD_FIFO_RAW_ENSURE(fifo.capacity, fifo.size, fifo.head, fifo.tail, fifo.data, MD_MAX((size_t)16, capacity), fifo.alloc);
 
 #if MD_DEBUG
-    MD_MEMSET(fifo.data, 0, sizeof(int) * fifo.capacity);
+    md_memset(fifo.data, 0, sizeof(int) * fifo.capacity);
 #endif
 
     return fifo;
@@ -31,7 +31,7 @@ void md_fifo_free(md_fifo_t* fifo) {
     MD_ASSERT(fifo->alloc);
 
     MD_FIFO_RAW_FREE(fifo->capacity, fifo->size, fifo->head, fifo->tail, fifo->data, fifo->alloc);
-    MD_MEMSET(fifo, 0, sizeof(*fifo));
+    md_memset(fifo, 0, sizeof(*fifo));
 }
 
 void md_fifo_clear(md_fifo_t* fifo) {
@@ -41,7 +41,7 @@ void md_fifo_clear(md_fifo_t* fifo) {
 
 #if MD_DEBUG
     if (fifo->data) {
-        MD_MEMSET(fifo->data, 0, sizeof(int) * fifo->capacity);
+        md_memset(fifo->data, 0, sizeof(int) * fifo->capacity);
     }
 #endif
 }

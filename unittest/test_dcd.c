@@ -21,7 +21,7 @@ typedef struct dcd_writer_t {
 } dcd_writer_t;
 
 static void dcd_put_u32(dcd_writer_t* w, uint32_t u) {
-    if (w->rev) u = MD_BSWAP32(u);
+    if (w->rev) u = md_bswap32(u);
     md_file_write(w->file, &u, 4);
 }
 
@@ -29,14 +29,14 @@ static void dcd_put_i32(dcd_writer_t* w, int32_t v) { dcd_put_u32(w, (uint32_t)v
 
 static void dcd_put_f32(dcd_writer_t* w, float f) {
     uint32_t u;
-    MD_MEMCPY(&u, &f, 4);
+    md_memcpy(&u, &f, 4);
     dcd_put_u32(w, u);
 }
 
 static void dcd_put_f64(dcd_writer_t* w, double d) {
     uint64_t u;
-    MD_MEMCPY(&u, &d, 8);
-    if (w->rev) u = MD_BSWAP64(u);
+    md_memcpy(&u, &d, 8);
+    if (w->rev) u = md_bswap64(u);
     md_file_write(w->file, &u, 8);
 }
 
@@ -44,7 +44,7 @@ static void dcd_put_f64(dcd_writer_t* w, double d) {
 static void dcd_put_marker(dcd_writer_t* w, int64_t n) {
     if (w->marker == 8) {
         uint64_t u = (uint64_t)n;
-        if (w->rev) u = MD_BSWAP64(u);
+        if (w->rev) u = md_bswap64(u);
         md_file_write(w->file, &u, 8);
     } else {
         dcd_put_i32(w, (int32_t)n);
@@ -90,21 +90,21 @@ static bool dcd_write(md_str_t path, const dcd_spec_t* s) {
     }
     for (int i = 1; i < 21; ++i) {
         uint32_t u = (uint32_t)ints[i];
-        if (s->rev) u = MD_BSWAP32(u);
-        MD_MEMCPY(hdr + i * 4, &u, 4);
+        if (s->rev) u = md_bswap32(u);
+        md_memcpy(hdr + i * 4, &u, 4);
     }
-    MD_MEMCPY(hdr, "CORD", 4);
+    md_memcpy(hdr, "CORD", 4);
     if (s->charmm) {
         const float d = (float)s->delta;
         uint32_t u;
-        MD_MEMCPY(&u, &d, 4);
-        if (s->rev) u = MD_BSWAP32(u);
-        MD_MEMCPY(hdr + 40, &u, 4);
+        md_memcpy(&u, &d, 4);
+        if (s->rev) u = md_bswap32(u);
+        md_memcpy(hdr + 40, &u, 4);
     } else {
         uint64_t u;
-        MD_MEMCPY(&u, &s->delta, 8);
-        if (s->rev) u = MD_BSWAP64(u);
-        MD_MEMCPY(hdr + 40, &u, 8);
+        md_memcpy(&u, &s->delta, 8);
+        if (s->rev) u = md_bswap64(u);
+        md_memcpy(hdr + 40, &u, 8);
     }
     dcd_put_marker(&w, 84);
     md_file_write(w.file, hdr, 84);
@@ -112,8 +112,8 @@ static bool dcd_write(md_str_t path, const dcd_spec_t* s) {
 
     // One title line
     char title[80];
-    MD_MEMSET(title, ' ', sizeof(title));
-    MD_MEMCPY(title, "md_unittest", 11);
+    md_memset(title, ' ', sizeof(title));
+    md_memcpy(title, "md_unittest", 11);
     dcd_put_marker(&w, 84);
     dcd_put_i32(&w, 1);
     md_file_write(w.file, title, 80);

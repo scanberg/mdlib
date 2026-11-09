@@ -38,7 +38,7 @@ static void pot_copy_symbol(char dst[4], md_str_t tok, int line) {
     if (tok.len > 3) {
         MD_LOG_INFO("POT: line %i: element symbol '%.*s' is longer than 3 characters and was truncated", line, (int)tok.len, tok.ptr);
     }
-    MD_MEMCPY(dst, tok.ptr, len);
+    md_memcpy(dst, tok.ptr, len);
     dst[len] = '\0';
 }
 
@@ -73,7 +73,7 @@ bool md_pot_parse_str(md_pot_t* pot, md_str_t str, md_allocator_i* alloc) {
         return false;
     }
 
-    MD_MEMSET(pot, 0, sizeof(md_pot_t));
+    md_memset(pot, 0, sizeof(md_pot_t));
 
     section_t section = SECTION_NONE;
     bool in_xyz = false;    // Set once the 'xyz:' directive has been seen within @environment
@@ -312,5 +312,5 @@ void md_pot_free(md_pot_t* pot, md_allocator_i* alloc) {
     }
     md_array_free(pot->strings, alloc);
 
-    MD_MEMSET(pot, 0, sizeof(md_pot_t));
+    md_memset(pot, 0, sizeof(md_pot_t));
 }

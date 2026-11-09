@@ -62,7 +62,7 @@ static size_t h5_attr_text(hid_t obj, const char* name, char* buf, size_t cap) {
             char* s = NULL;
             if (H5Aread(a, mt, &s) >= 0 && s) {
                 len = MD_MIN(strlen(s), cap - 1);
-                MD_MEMCPY(buf, s, len);
+                md_memcpy(buf, s, len);
                 H5free_memory(s);
             }
             H5Tclose(mt);
@@ -327,7 +327,7 @@ bool md_amber_nc4_state_init_from_file(md_system_state_t* state, md_str_t filena
 
     if (ok) ok = md_system_state_init(state, N);
     if (ok) {
-        MD_MEMCPY(state->xyz, xyz, N * 3 * sizeof(float));
+        md_memcpy(state->xyz, xyz, N * 3 * sizeof(float));
         state->num_atoms = N;
         state->unitcell = cell;
     }
@@ -461,7 +461,7 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, md_str_t filename, md_str
 
     // ## Cells, zero without a box
     float* boxes = md_alloc(arena, F * 9 * sizeof(float));
-    MD_MEMSET(boxes, 0, F * 9 * sizeof(float));
+    md_memset(boxes, 0, F * 9 * sizeof(float));
     for (size_t f = 0; lengths && f < F; ++f) {
         const md_unitcell_t cell = nc4_cell(lengths + f * 3, angles ? angles + f * 3 : NULL);
         md_unitcell_A_extract_float((float(*)[3])(boxes + f * 9), &cell);
@@ -475,11 +475,11 @@ bool md_amber_nc4_system_publish_run(md_system_t* sys, md_str_t filename, md_str
         const size_t size = sizeof(nc4_source_t) + (size_t)direct[k]->size;
         nc4_source_t* src = md_attributes_alloc_user_data(&sys->attributes, size);
         if (!src) goto done;
-        MD_MEMSET(src, 0, size);
+        md_memset(src, 0, size);
         src->scale = scale[k];
         md_str_copy_to_char_buf(src->dataset, sizeof(src->dataset), md_str_from_cstr(names[k]));
         md_str_copy_to_char_buf(src->path, sizeof(src->path), spath);
-        MD_MEMCPY(src + 1, direct[k], (size_t)direct[k]->size);
+        md_memcpy(src + 1, direct[k], (size_t)direct[k]->size);
         virt[k] = (md_attribute_virtual_t){ .provider = nc4_provider, .user_data = src, .user_data_size = size };
     }
 

@@ -61,7 +61,7 @@ static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, size_t old_
         // Realloc
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         void* new_ptr = linear_push(linear, new_size, alignment);
-        MD_MEMCPY(new_ptr, ptr, old_size);
+        md_memcpy(new_ptr, ptr, old_size);
         return new_ptr;
     }
 

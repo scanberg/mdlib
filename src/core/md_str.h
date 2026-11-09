@@ -116,7 +116,7 @@ static inline bool md_str_eq(md_str_t str_a, md_str_t str_b) {
     if (str_a.len != str_b.len) return false;
     if (str_a.len == 0) return true;
     if (str_a.ptr[0] != str_b.ptr[0]) return false;
-    return MD_MEMCMP(str_a.ptr, str_b.ptr, str_a.len) == 0;
+    return md_memcmp(str_a.ptr, str_b.ptr, str_a.len) == 0;
 }
 
 static inline bool md_str_eq_ignore_case(md_str_t str_a, md_str_t str_b) {
@@ -132,7 +132,7 @@ static inline bool md_str_eq_ignore_case(md_str_t str_a, md_str_t str_b) {
 static inline bool md_str_eq_n(md_str_t str_a, md_str_t str_b, size_t n) {
     const size_t len = MD_MIN(str_a.len, n);
     if (len != MD_MIN(str_b.len, n)) return false;
-    return len == 0 || MD_MEMCMP(str_a.ptr, str_b.ptr, len) == 0;
+    return len == 0 || md_memcmp(str_a.ptr, str_b.ptr, len) == 0;
 }
 
 static inline bool md_str_eq_n_ignore_case(md_str_t str_a, md_str_t str_b, size_t n) {
@@ -194,11 +194,11 @@ static inline int md_str_cmp_lex(md_str_t a, md_str_t b) {
 }
 
 static inline bool md_str_begins_with(md_str_t str, md_str_t prefix) {
-    return str.len >= prefix.len && (prefix.len == 0 || MD_MEMCMP(str.ptr, prefix.ptr, prefix.len) == 0);
+    return str.len >= prefix.len && (prefix.len == 0 || md_memcmp(str.ptr, prefix.ptr, prefix.len) == 0);
 }
 
 static inline bool md_str_ends_with(md_str_t str, md_str_t suffix) {
-    return str.len >= suffix.len && (suffix.len == 0 || MD_MEMCMP(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0);
+    return str.len >= suffix.len && (suffix.len == 0 || md_memcmp(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0);
 }
 
 size_t md_str_count_equal_chars(md_str_t a, md_str_t b);
@@ -364,7 +364,7 @@ static inline size_t md_str_copy_to_char_buf(char* buf, size_t cap, md_str_t str
     MD_ASSERT(buf);
     if (cap == 0) return 0;
     const size_t len = MD_MIN(str.len, cap - 1);
-    if (len) MD_MEMCPY(buf, str.ptr, len);
+    if (len) md_memcpy(buf, str.ptr, len);
     buf[len] = '\0';
     return len;
 }

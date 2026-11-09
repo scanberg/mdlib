@@ -45,11 +45,11 @@ typedef struct {
 
 static void bench_gto_free(bench_gto_t* b) {
     if (b->arena) md_arena_allocator_destroy(b->arena);
-    MD_MEMSET(b, 0, sizeof(*b));
+    md_memset(b, 0, sizeof(*b));
 }
 
 static bool bench_gto_load(bench_gto_t* b) {
-    MD_MEMSET(b, 0, sizeof(*b));
+    md_memset(b, 0, sizeof(*b));
     b->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = b->arena };
     md_system_state_t state = { .alloc = b->arena };
@@ -77,7 +77,7 @@ static bool bench_gto_load(bench_gto_t* b) {
     vec3_t lo = vec3_set1(FLT_MAX), hi = vec3_set1(-FLT_MAX);
     for (size_t i = 0; i < b->num_atoms; ++i) {
         const vec3_t p = vec3_set((float)(xyz[3 * i + 0] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 1] * BENCH_ANGSTROM_TO_BOHR), (float)(xyz[3 * i + 2] * BENCH_ANGSTROM_TO_BOHR));
-        MD_MEMCPY(b->atom_xyz + 3 * i, p.elem, sizeof(float) * 3);
+        md_memcpy(b->atom_xyz + 3 * i, p.elem, sizeof(float) * 3);
         lo = vec3_min(lo, p);
         hi = vec3_max(hi, p);
     }
@@ -147,7 +147,7 @@ UBENCH_EX(gto, mo_cpu) {
 
     const md_grid_t grid = bench_cpu_grid(&b);
     float* out = md_arena_allocator_push(b.arena, sizeof(float) * md_grid_num_points(&grid));
-    MD_MEMSET(out, 0, sizeof(float) * md_grid_num_points(&grid));
+    md_memset(out, 0, sizeof(float) * md_grid_num_points(&grid));
     int slice_off[3];
     bench_cpu_slice_offset(slice_off, &grid);
 
@@ -190,7 +190,7 @@ typedef struct {
 } bench_density_cpu_t;
 
 static void bench_density_cpu_init(bench_density_cpu_t* c, const bench_gto_t* b) {
-    MD_MEMSET(c, 0, sizeof(*c));
+    md_memset(c, 0, sizeof(*c));
     for (uint32_t l = 0; l <= MD_GTO_MAX_ANGULAR_MOMENTUM; ++l) {
         for (uint32_t i = 0; i < md_gto_num_cart_ao(l); ++i) {
             int x, y, z;
@@ -308,7 +308,7 @@ UBENCH_EX(gto, density_cpu) {
 
     const md_grid_t grid = bench_cpu_grid(&b);
     float* out = md_arena_allocator_push(b.arena, sizeof(float) * md_grid_num_points(&grid));
-    MD_MEMSET(out, 0, sizeof(float) * md_grid_num_points(&grid));
+    md_memset(out, 0, sizeof(float) * md_grid_num_points(&grid));
     int slice_off[3];
     bench_cpu_slice_offset(slice_off, &grid);
 
@@ -351,12 +351,12 @@ static void bench_gpu_free(bench_gpu_t* g) {
         md_gto_gpu_shutdown();
         md_gpu_device_destroy(g->device);
     }
-    MD_MEMSET(g, 0, sizeof(*g));
+    md_memset(g, 0, sizeof(*g));
 }
 
 // False, with nothing left allocated, when there is no usable device
 static bool bench_gpu_init(bench_gpu_t* g, const bench_gto_t* b) {
-    MD_MEMSET(g, 0, sizeof(*g));
+    md_memset(g, 0, sizeof(*g));
     g->device = md_gpu_device_create(NULL);
     if (!g->device) return false;
     g->stream = md_gpu_stream_default(g->device, MD_GPU_STREAM_COMPUTE);

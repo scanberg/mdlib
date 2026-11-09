@@ -93,7 +93,7 @@ bool md_str_find_str(size_t* loc, md_str_t haystack, md_str_t needle) {
     for (const char* c = h_beg; c <= last; ++c) {
         c = (const char*)memchr(c, needle.ptr[0], (size_t)(last - c) + 1);
         if (!c) break;
-        if (MD_MEMCMP(c, needle.ptr, needle.len) == 0) {
+        if (md_memcmp(c, needle.ptr, needle.len) == 0) {
             if (loc) *loc = (size_t)(c - h_beg);
             return true;
         }
@@ -130,7 +130,7 @@ md_str_t md_load_textfile(md_str_t filename, struct md_allocator_i* alloc) {
 md_str_t md_str_alloc(size_t len, struct md_allocator_i* alloc) {
     MD_ASSERT(alloc);
     char* mem = md_alloc(alloc, len + 1);
-    MD_MEMSET(mem, 0, len + 1);
+    md_memset(mem, 0, len + 1);
     md_str_t str = {mem, len};
     return str;
 }
@@ -146,7 +146,7 @@ md_str_t md_str_copy(const md_str_t str, md_allocator_i* alloc) {
     if (str.ptr && str.len > 0) {
         char* data = md_alloc(alloc, str.len + 1);
         data[str.len] = '\0';
-        MD_MEMCPY(data, str.ptr, str.len);
+        md_memcpy(data, str.ptr, str.len);
         result.ptr = data;
         result.len = str.len;
     }
@@ -160,7 +160,7 @@ md_str_t md_str_copy_cstr(const char* cstr, md_allocator_i* alloc) {
         size_t len = strlen(cstr);
         char* data = md_alloc(alloc, len + 1);
         data[len] = '\0';
-        MD_MEMCPY(data, cstr, len);
+        md_memcpy(data, cstr, len);
         result.ptr = data;
         result.len = len;
     }
@@ -173,7 +173,7 @@ md_str_t md_str_copy_cstrn(const char* cstr, size_t len, md_allocator_i* alloc) 
     if (cstr) {
         char* data = md_alloc(alloc, len + 1);
         data[len] = '\0';
-        MD_MEMCPY(data, cstr, len);
+        md_memcpy(data, cstr, len);
         result.ptr = data;
         result.len = len;
     }

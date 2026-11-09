@@ -159,14 +159,14 @@ extern "C" {
 
 static inline md_vg_paint_t md_vg_paint_none(void) {
     md_vg_paint_t paint;
-    MD_MEMSET(&paint, 0, sizeof(paint));
+    md_memset(&paint, 0, sizeof(paint));
         paint.type = MD_VG_PAINT_NONE;
     return paint;
 }
 
 static inline md_vg_paint_t md_vg_paint_color(md_vg_color_t color) {
     md_vg_paint_t paint;
-    MD_MEMSET(&paint, 0, sizeof(paint));
+    md_memset(&paint, 0, sizeof(paint));
     paint.type = MD_VG_PAINT_COLOR;
     paint.data.color = color;
     return paint;
@@ -174,7 +174,7 @@ static inline md_vg_paint_t md_vg_paint_color(md_vg_color_t color) {
 
 static inline md_vg_paint_t md_vg_paint_linear_gradient(vec2_t p0, vec2_t p1, md_vg_color_t col0, md_vg_color_t col1) {
     md_vg_paint_t paint;
-    MD_MEMSET(&paint, 0, sizeof(paint));
+    md_memset(&paint, 0, sizeof(paint));
     paint.type = MD_VG_PAINT_LINEAR_GRADIENT;
     paint.data.linear_gradient.p0 = p0;
     paint.data.linear_gradient.p1 = p1;
@@ -185,7 +185,7 @@ static inline md_vg_paint_t md_vg_paint_linear_gradient(vec2_t p0, vec2_t p1, md
 
 static inline md_vg_style_t md_vg_style_default(void) {
     md_vg_style_t style;
-    MD_MEMSET(&style, 0, sizeof(style));
+    md_memset(&style, 0, sizeof(style));
     style.fill.type = MD_VG_PAINT_NONE;
     style.stroke.type = MD_VG_PAINT_NONE;
     style.stroke_width = 1.0f;

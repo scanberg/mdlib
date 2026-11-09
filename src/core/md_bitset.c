@@ -201,7 +201,7 @@ md_bitset_t md_bitset_from_words(const uint64_t* words, size_t num_words, uint32
 
     const size_t nw = last - first + 1;
     uint64_t* dst = alloc_words(alloc, nw);
-    MD_MEMCPY(dst, words + first, nw * sizeof(uint64_t));
+    md_memcpy(dst, words + first, nw * sizeof(uint64_t));
     r.words = dst;
     return r;
 }
@@ -444,7 +444,7 @@ void md_bitset_pack(md_bitset_gpu_t* out_sets, uint64_t* out_words, const md_bit
         if (s.words) {
             const size_t nw = md_bitset_num_words(s);
             MD_ASSERT(off + nw < MD_BITSET_RUN);
-            MD_MEMCPY(out_words + off, s.words, nw * sizeof(uint64_t));
+            md_memcpy(out_words + off, s.words, nw * sizeof(uint64_t));
             g.word_off = (uint32_t)off;
             off += nw;
         }
@@ -519,7 +519,7 @@ static inline bool fits_v1(md_bitset_t s) {
 }
 
 static void serial_info(serial_info_t* info, md_bitset_t s) {
-    MD_MEMSET(info, 0, sizeof(*info));
+    md_memset(info, 0, sizeof(*info));
     if (md_bitset_empty(s)) return;
     info->beg_blk = s.beg / BLOCK_BITS;
     info->end_blk = (s.end - 1) / BLOCK_BITS;
@@ -537,7 +537,7 @@ static void serial_info(serial_info_t* info, md_bitset_t s) {
 // V1: writes the blocks of s, uncompressed, to raw (info->input_size bytes, zeroed)
 static void write_blocks(uint8_t* raw, const serial_info_t* info, md_bitset_t s) {
     const uint16_t count = (uint16_t)info->block_count;
-    MD_MEMCPY(raw, &count, sizeof(count));
+    md_memcpy(raw, &count, sizeof(count));
     uint8_t* block_indices = raw + sizeof(uint16_t);
     uint8_t* block_data = block_indices + info->block_count * sizeof(uint16_t);
 
@@ -550,17 +550,17 @@ static void write_blocks(uint8_t* raw, const serial_info_t* info, md_bitset_t s)
         if (block_full(w)) {
             idx |= V1_FLAG_ALL_SET;
         } else {
-            MD_MEMCPY(block_data + data_pos, w, sizeof(w));
+            md_memcpy(block_data + data_pos, w, sizeof(w));
             data_pos += sizeof(w);
         }
-        MD_MEMCPY(block_indices + index_pos * sizeof(uint16_t), &idx, sizeof(idx));
+        md_memcpy(block_indices + index_pos * sizeof(uint16_t), &idx, sizeof(idx));
         index_pos += 1;
     }
     MD_ASSERT(index_pos == info->block_count);
     MD_ASSERT(data_pos == info->block_data_bytes);
 }
 
-static inline uint16_t get_u16(const uint8_t* src) { uint16_t v; MD_MEMCPY(&v, src, sizeof(v)); return v; }
+static inline uint16_t get_u16(const uint8_t* src) { uint16_t v; md_memcpy(&v, src, sizeof(v)); return v; }
 
 // V1: reads the blocks written by write_blocks
 static bool read_blocks(md_bitset_t* dst, const uint8_t* data, size_t size, md_allocator_i* alloc) {
@@ -596,7 +596,7 @@ static bool read_blocks(md_bitset_t* dst, const uint8_t* data, size_t size, md_a
             md_bitmask_set_range(&m, base, base + BLOCK_BITS);
         } else {
             uint64_t w[BLOCK_WORDS];
-            MD_MEMCPY(w, blk_data, sizeof(w));
+            md_memcpy(w, blk_data, sizeof(w));
             blk_data += sizeof(w);
             // Not a tidy set (its span is the block's), which the operations of a mask do not need
             const md_bitset_t block = {base, base + BLOCK_BITS, w};
@@ -630,22 +630,22 @@ static size_t v2_blocks(uint8_t* raw, md_bitset_t s) {
                 if (block_empty(w)) { run_pos = SIZE_MAX; continue; }
                 if (block_full(w)) {
                     if (run_pos != SIZE_MAX && run_next == blk) {
-                        if (pass == 1 && raw) { uint32_t c; MD_MEMCPY(&c, entries + run_pos, sizeof(c)); c += 1; MD_MEMCPY(entries + run_pos, &c, sizeof(c)); }
+                        if (pass == 1 && raw) { uint32_t c; md_memcpy(&c, entries + run_pos, sizeof(c)); c += 1; md_memcpy(entries + run_pos, &c, sizeof(c)); }
                         run_next = blk + 1;
                         continue;
                     }
                     if (pass == 1 && raw) {
                         const uint32_t v = blk | V2_FLAG_ALL_SET, c = 1;
-                        MD_MEMCPY(entries + e_pos, &v, sizeof(v));
-                        MD_MEMCPY(entries + e_pos + sizeof(v), &c, sizeof(c));
+                        md_memcpy(entries + e_pos, &v, sizeof(v));
+                        md_memcpy(entries + e_pos + sizeof(v), &c, sizeof(c));
                     }
                     run_pos = e_pos + sizeof(uint32_t);
                     run_next = blk + 1;
                     e_pos += 2 * sizeof(uint32_t);
                 } else {
                     if (pass == 1 && raw) {
-                        MD_MEMCPY(entries + e_pos, &blk, sizeof(blk));
-                        MD_MEMCPY(data + d_pos, w, sizeof(w));
+                        md_memcpy(entries + e_pos, &blk, sizeof(blk));
+                        md_memcpy(data + d_pos, w, sizeof(w));
                     }
                     run_pos = SIZE_MAX;
                     e_pos += sizeof(uint32_t);
@@ -657,7 +657,7 @@ static size_t v2_blocks(uint8_t* raw, md_bitset_t s) {
         entry_bytes = e_pos;
         data_bytes = d_pos;
     }
-    if (raw) MD_MEMCPY(raw, &num_entries, sizeof(num_entries));
+    if (raw) md_memcpy(raw, &num_entries, sizeof(num_entries));
     const size_t size = sizeof(uint32_t) + entry_bytes + data_bytes;
     return num_entries ? (size > SERIAL_MIN_INPUT_SIZE ? size : SERIAL_MIN_INPUT_SIZE) : 0;
 }
@@ -665,7 +665,7 @@ static size_t v2_blocks(uint8_t* raw, md_bitset_t s) {
 static bool v2_read(md_bitset_t* dst, const uint8_t* data, size_t size, md_allocator_i* alloc) {
     if (size < sizeof(uint32_t)) return false;
     uint32_t num_entries;
-    MD_MEMCPY(&num_entries, data, sizeof(num_entries));
+    md_memcpy(&num_entries, data, sizeof(num_entries));
     if (num_entries == 0) return false;
 
     // The entries first: their extent, and where the data starts
@@ -675,14 +675,14 @@ static bool v2_read(md_bitset_t* dst, const uint8_t* data, size_t size, md_alloc
     for (uint32_t i = 0; i < num_entries; ++i) {
         uint32_t v;
         if (pos + sizeof(v) > size) return false;
-        MD_MEMCPY(&v, data + pos, sizeof(v));
+        md_memcpy(&v, data + pos, sizeof(v));
         pos += sizeof(v);
         const uint32_t blk = v & V2_IDX_MASK;
         uint64_t count = 1;
         if (v & V2_FLAG_ALL_SET) {
             uint32_t c;
             if (pos + sizeof(c) > size) return false;
-            MD_MEMCPY(&c, data + pos, sizeof(c));
+            md_memcpy(&c, data + pos, sizeof(c));
             pos += sizeof(c);
             if (c == 0) return false;
             count = c;
@@ -705,17 +705,17 @@ static bool v2_read(md_bitset_t* dst, const uint8_t* data, size_t size, md_alloc
     pos = sizeof(uint32_t);
     for (uint32_t i = 0; i < num_entries; ++i) {
         uint32_t v;
-        MD_MEMCPY(&v, data + pos, sizeof(v));
+        md_memcpy(&v, data + pos, sizeof(v));
         pos += sizeof(v);
         const uint32_t base = (v & V2_IDX_MASK) * BLOCK_BITS;
         if (v & V2_FLAG_ALL_SET) {
             uint32_t c;
-            MD_MEMCPY(&c, data + pos, sizeof(c));
+            md_memcpy(&c, data + pos, sizeof(c));
             pos += sizeof(c);
             md_bitmask_set_range(&m, base, (uint32_t)MD_MIN((uint64_t)base + (uint64_t)c * BLOCK_BITS, (uint64_t)MAX_INDEX));
         } else {
             uint64_t w[BLOCK_WORDS];
-            MD_MEMCPY(w, blk_data, sizeof(w));
+            md_memcpy(w, blk_data, sizeof(w));
             blk_data += sizeof(w);
             // Not a tidy set (its span is the block's), which the operations of a mask do not need
             const md_bitset_t block = {base, (uint32_t)MD_MIN((uint64_t)base + BLOCK_BITS, (uint64_t)MAX_INDEX), w};
@@ -765,8 +765,8 @@ size_t md_bitset_serialize(void* dst, md_bitset_t s) {
         } else {
             v2_blocks(raw, s);
             const uint32_t raw_size32 = (uint32_t)raw_size;
-            MD_MEMCPY(out, v2_magic, V2_MAGIC_SIZE);
-            MD_MEMCPY(out + V2_MAGIC_SIZE, &raw_size32, sizeof(raw_size32));
+            md_memcpy(out, v2_magic, V2_MAGIC_SIZE);
+            md_memcpy(out + V2_MAGIC_SIZE, &raw_size32, sizeof(raw_size32));
             out += V2_HEADER_SIZE;
         }
         const int lz_bytes = fastlz_compress_level(2, raw, (int)raw_size, out);
@@ -779,7 +779,7 @@ size_t md_bitset_serialize(void* dst, md_bitset_t s) {
 static bool deserialize_v2(md_bitset_t* dst, const uint8_t* src, size_t num_bytes, md_allocator_i* alloc) {
     if (num_bytes <= V2_HEADER_SIZE) return false;
     uint32_t raw_size;
-    MD_MEMCPY(&raw_size, src + V2_MAGIC_SIZE, sizeof(raw_size));
+    md_memcpy(&raw_size, src + V2_MAGIC_SIZE, sizeof(raw_size));
     if (raw_size < SERIAL_MIN_INPUT_SIZE || raw_size > INT32_MAX) return false;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
@@ -830,7 +830,7 @@ bool md_bitset_deserialize(md_bitset_t* dst, const void* src, size_t num_bytes, 
     bool result = false;
     uint8_t* in = (uint8_t*)md_temp_alloc_zero(temp, num_bytes + 8);
     if (in) {
-        MD_MEMCPY(in, src, num_bytes);
+        md_memcpy(in, src, num_bytes);
         result = deserialize(dst, in, num_bytes, alloc);
     }
     md_temp_end(temp);
@@ -857,7 +857,7 @@ void md_bitmask_init(md_bitmask_t* m, uint32_t beg, uint32_t end, md_allocator_i
     MD_ASSERT(m);
     MD_ASSERT(alloc);
     MD_ASSERT(end <= MAX_INDEX);
-    MD_MEMSET(m, 0, sizeof(*m));
+    md_memset(m, 0, sizeof(*m));
     m->alloc = alloc;
     if (beg < end) {
         m->beg = beg;
@@ -877,7 +877,7 @@ void md_bitmask_free(md_bitmask_t* m) {
         MD_ASSERT(m->alloc);
         md_free(m->alloc, m->words, (size_t)m->cap * sizeof(uint64_t));
     }
-    MD_MEMSET(m, 0, sizeof(*m));
+    md_memset(m, 0, sizeof(*m));
 }
 
 // Make the allocation cover the words [w0, w1) (within the domain), keeping the written words
@@ -904,7 +904,7 @@ static void mask_alloc(md_bitmask_t* m, uint32_t w0, uint32_t w1) {
     uint64_t* words = (uint64_t*)md_alloc(m->alloc, (size_t)cap * sizeof(uint64_t));
     MD_ASSERT(words);
     if (m->lo < m->hi) {
-        MD_MEMCPY(words + (m->lo - g0), m->words + (m->lo - m->g0), (size_t)(m->hi - m->lo) * sizeof(uint64_t));
+        md_memcpy(words + (m->lo - g0), m->words + (m->lo - m->g0), (size_t)(m->hi - m->lo) * sizeof(uint64_t));
     }
     if (m->words) {
         md_free(m->alloc, m->words, (size_t)m->cap * sizeof(uint64_t));
@@ -919,17 +919,17 @@ static void mask_touch(md_bitmask_t* m, uint32_t w0, uint32_t w1) {
     if (m->lo < m->hi && m->lo <= w0 && w1 <= m->hi) return;
     mask_alloc(m, w0, w1);
     if (m->lo >= m->hi) {
-        MD_MEMSET(&W(m, w0), 0, (size_t)(w1 - w0) * sizeof(uint64_t));
+        md_memset(&W(m, w0), 0, (size_t)(w1 - w0) * sizeof(uint64_t));
         m->lo = w0;
         m->hi = w1;
         return;
     }
     if (w0 < m->lo) {
-        MD_MEMSET(&W(m, w0), 0, (size_t)(m->lo - w0) * sizeof(uint64_t));
+        md_memset(&W(m, w0), 0, (size_t)(m->lo - w0) * sizeof(uint64_t));
         m->lo = w0;
     }
     if (w1 > m->hi) {
-        MD_MEMSET(&W(m, m->hi), 0, (size_t)(w1 - m->hi) * sizeof(uint64_t));
+        md_memset(&W(m, m->hi), 0, (size_t)(w1 - m->hi) * sizeof(uint64_t));
         m->hi = w1;
     }
 }

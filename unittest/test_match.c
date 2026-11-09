@@ -413,7 +413,7 @@ UTEST(match, modes) {
     ASSERT_EQ(10, (int)res.count);
     for (size_t i = 0; i < res.count; ++i) {
         for (size_t j = i + 1; j < res.count; ++j) {
-            EXPECT_NE(0, MD_MEMCMP(res.atom_idx + i * res.width, res.atom_idx + j * res.width, sizeof(int32_t) * res.width));
+            EXPECT_NE(0, md_memcmp(res.atom_idx + i * res.width, res.atom_idx + j * res.width, sizeof(int32_t) * res.width));
         }
     }
     md_match_result_free(&res);

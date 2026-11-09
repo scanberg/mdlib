@@ -51,7 +51,7 @@ static int compare_component(const md_system_t* sys, const int* map, const ref_c
     int errors = 0;
 
     uint8_t* aromatic_atom = md_alloc(alloc, n + 1);
-    MD_MEMSET(aromatic_atom, 0, n + 1);
+    md_memset(aromatic_atom, 0, n + 1);
     for (size_t b = 0; b < sys->bond.count; ++b) {
         if (sys->bond.flags[b] & MD_BOND_FLAG_AROMATIC) aromatic_atom[sys->bond.pairs[b].idx[0]] = aromatic_atom[sys->bond.pairs[b].idx[1]] = 1;
     }
@@ -91,15 +91,15 @@ static int compare_component(const md_system_t* sys, const int* map, const ref_c
     }
 
     int* h_ref = md_alloc(alloc, sizeof(int) * (na + 1));
-    MD_MEMSET(h_ref, 0, sizeof(int) * (na + 1));
+    md_memset(h_ref, 0, sizeof(int) * (na + 1));
     for (int r = 0; r < nb; ++r) {
         if (c->atom[c->bond[r].i].z == 1) h_ref[c->bond[r].j] += 1;
         if (c->atom[c->bond[r].j].z == 1) h_ref[c->bond[r].i] += 1;
     }
     int* sum_ref = md_alloc(alloc, sizeof(int) * (n + 1));
     int* sum_our = md_alloc(alloc, sizeof(int) * (n + 1));
-    MD_MEMSET(sum_ref, 0, sizeof(int) * (n + 1));
-    MD_MEMSET(sum_our, 0, sizeof(int) * (n + 1));
+    md_memset(sum_ref, 0, sizeof(int) * (n + 1));
+    md_memset(sum_our, 0, sizeof(int) * (n + 1));
     for (int i = 0; i < na; ++i) {
         const int a = map[i];
         if (a < 0 || c->atom[i].z == 1) continue;
@@ -272,7 +272,7 @@ UTEST_F(chem, given_orders_and_rerun) {
     build_component(&sys, &st, map, c, false, false);
     ASSERT_TRUE(md_chem_perceive(&sys, &st, MD_CHEM_FLAG_NONE));
     md_bond_flags_t* first = md_alloc(alloc, sizeof(md_bond_flags_t) * sys.bond.count);
-    MD_MEMCPY(first, sys.bond.flags, sizeof(md_bond_flags_t) * sys.bond.count);
+    md_memcpy(first, sys.bond.flags, sizeof(md_bond_flags_t) * sys.bond.count);
     ASSERT_TRUE(md_chem_perceive(&sys, &st, MD_CHEM_FLAG_NONE));
     EXPECT_EQ(0, memcmp(first, sys.bond.flags, sizeof(md_bond_flags_t) * sys.bond.count));
 
@@ -914,7 +914,7 @@ typedef struct delta_fixture_chem_t {
 } delta_fixture_chem_t;
 
 static void delta_load(delta_fixture_chem_t* f, const char* before, const char* after) {
-    MD_MEMSET(f, 0, sizeof(*f));
+    md_memset(f, 0, sizeof(*f));
     f->alloc = md_vm_arena_create(MD_GIGABYTES(1));
     f->before = (md_system_t){ .alloc = f->alloc };
     f->after  = (md_system_t){ .alloc = f->alloc };

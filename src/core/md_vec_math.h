@@ -263,12 +263,12 @@ MD_VEC_INLINE vec2_t vec2_set1(float x) {
 
 MD_VEC_INLINE vec2_t vec2_load(const float* ptr) {
     vec2_t v;
-    MD_MEMCPY(v.elem, ptr, sizeof(vec2_t));
+    md_memcpy(v.elem, ptr, sizeof(vec2_t));
     return v;
 }
 
 MD_VEC_INLINE void vec2_store(float* ptr, vec2_t v) {
-    MD_MEMCPY(ptr, v.elem, sizeof(vec2_t));
+    md_memcpy(ptr, v.elem, sizeof(vec2_t));
 }
 
 MD_VEC_INLINE vec2_t vec2_from_vec3(vec3_t v) {
@@ -380,12 +380,12 @@ MD_VEC_INLINE vec3_t vec3_set1(float x) {
 
 MD_VEC_INLINE vec3_t vec3_load(const float* v) {
     vec3_t r;
-    MD_MEMCPY(r.elem, v, sizeof(vec3_t));
+    md_memcpy(r.elem, v, sizeof(vec3_t));
     return r;
 }
 
 MD_VEC_INLINE void vec3_store(float* v, vec3_t r) {
-    MD_MEMCPY(v, r.elem, sizeof(vec3_t));
+    md_memcpy(v, r.elem, sizeof(vec3_t));
 }
 
 MD_VEC_INLINE vec3_t vec3_fract(vec3_t v) {
@@ -625,12 +625,12 @@ MD_VEC_INLINE vec4_t vec4_set1(float v) {
 
 MD_VEC_INLINE vec4_t vec4_load(const float* ptr) {
     vec4_t v;
-    MD_MEMCPY(v.elem, ptr, sizeof(vec4_t));
+    md_memcpy(v.elem, ptr, sizeof(vec4_t));
     return v;
 }
 
 MD_VEC_INLINE void vec4_store(float* ptr, vec4_t v) {
-    MD_MEMCPY(ptr, v.elem, sizeof(vec4_t));
+    md_memcpy(ptr, v.elem, sizeof(vec4_t));
 }
 
 MD_VEC_INLINE vec4_t vec4_from_float(float v) {
@@ -1086,7 +1086,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_eq(vec4_t a, vec4_t b) {
     r.m128 = md_mm_cmpeq_ps(a.m128, b.m128);
 #else
     float mask;
-    MD_MEMSET(&mask, 0xFF, sizeof(mask));
+    md_memset(&mask, 0xFF, sizeof(mask));
     r.x = (a.x == b.x) ? mask : 0.0f;
     r.y = (a.y == b.y) ? mask : 0.0f;
     r.z = (a.z == b.z) ? mask : 0.0f;
@@ -1101,7 +1101,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_lt(vec4_t a, vec4_t b) {
     r.m128 = md_mm_cmplt_ps(a.m128, b.m128);
 #else
     float mask;
-    MD_MEMSET(&mask, 0xFF, sizeof(mask));
+    md_memset(&mask, 0xFF, sizeof(mask));
     r.x = (a.x < b.x) ? mask : 0.0f;
     r.y = (a.y < b.y) ? mask : 0.0f;
     r.z = (a.z < b.z) ? mask : 0.0f;
@@ -1116,7 +1116,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_le(vec4_t a, vec4_t b) {
     r.m128 = md_mm_cmple_ps(a.m128, b.m128);
 #else
     float mask;
-    MD_MEMSET(&mask, 0xFF, sizeof(mask));
+    md_memset(&mask, 0xFF, sizeof(mask));
     r.x = (a.x <= b.x) ? mask : 0.0f;
     r.y = (a.y <= b.y) ? mask : 0.0f;
     r.z = (a.z <= b.z) ? mask : 0.0f;
@@ -1131,7 +1131,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_gt(vec4_t a, vec4_t b) {
     r.m128 = md_mm_cmpgt_ps(a.m128, b.m128);
 #else
     float mask;
-    MD_MEMSET(&mask, 0xFF, sizeof(mask));
+    md_memset(&mask, 0xFF, sizeof(mask));
     r.x = (a.x > b.x) ? mask : 0.0f;
     r.y = (a.y > b.y) ? mask : 0.0f;
     r.z = (a.z > b.z) ? mask : 0.0f;
@@ -1146,7 +1146,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_ge(vec4_t a, vec4_t b) {
     r.m128 = md_mm_cmpge_ps(a.m128, b.m128);
 #else
     float mask;
-    MD_MEMSET(&mask, 0xFF, sizeof(mask));
+    md_memset(&mask, 0xFF, sizeof(mask));
     r.x = (a.x >= b.x) ? mask : 0.0f;
     r.y = (a.y >= b.y) ? mask : 0.0f;
     r.z = (a.z >= b.z) ? mask : 0.0f;
@@ -1171,8 +1171,8 @@ MD_VEC_INLINE vec4_t vec4_and(vec4_t a, vec4_t b) {
     r.m128 = md_mm_and_ps(a.m128, b.m128);
 #else
     uint32_t a_u32[4], b_u32[4];
-	MD_MEMCPY(a_u32, &a, sizeof(uint32_t) * 4);
-	MD_MEMCPY(b_u32, &b, sizeof(uint32_t) * 4);
+	md_memcpy(a_u32, &a, sizeof(uint32_t) * 4);
+	md_memcpy(b_u32, &b, sizeof(uint32_t) * 4);
 
     uint32_t r_u32[4] = {
         a_u32[0] & b_u32[0],
@@ -1181,7 +1181,7 @@ MD_VEC_INLINE vec4_t vec4_and(vec4_t a, vec4_t b) {
         a_u32[3] & b_u32[3],
     };
 
-	MD_MEMCPY(&r, r_u32, sizeof(uint32_t) * 4);
+	md_memcpy(&r, r_u32, sizeof(uint32_t) * 4);
 #endif
     return r;
 }
@@ -1192,8 +1192,8 @@ MD_VEC_INLINE vec4_t vec4_or(vec4_t a, vec4_t b) {
     r.m128 = md_mm_or_ps(a.m128, b.m128);
 #else
     uint32_t a_u32[4], b_u32[4];
-    MD_MEMCPY(a_u32, &a, sizeof(uint32_t) * 4);
-    MD_MEMCPY(b_u32, &b, sizeof(uint32_t) * 4);
+    md_memcpy(a_u32, &a, sizeof(uint32_t) * 4);
+    md_memcpy(b_u32, &b, sizeof(uint32_t) * 4);
 
     uint32_t r_u32[4] = {
         a_u32[0] | b_u32[0],
@@ -1202,7 +1202,7 @@ MD_VEC_INLINE vec4_t vec4_or(vec4_t a, vec4_t b) {
         a_u32[3] | b_u32[3],
     };
 
-    MD_MEMCPY(&r, r_u32, sizeof(uint32_t) * 4);
+    md_memcpy(&r, r_u32, sizeof(uint32_t) * 4);
 #endif
     return r;
 }
@@ -1210,7 +1210,7 @@ MD_VEC_INLINE vec4_t vec4_or(vec4_t a, vec4_t b) {
 // Construct a blend mask
 MD_VEC_INLINE vec4_t vec4_mask(bool x, bool y, bool z, bool w) {
     float val;
-    MD_MEMSET(&val, 0xFF, sizeof(val));
+    md_memset(&val, 0xFF, sizeof(val));
     vec4_t r = {
         x ? val : 0.0f,
         y ? val : 0.0f,
@@ -1574,16 +1574,16 @@ MD_VEC_INLINE mat3_t mat3_ident(void) {
 
 MD_VEC_INLINE mat3_t mat3_load(const float* ptr) {
     mat3_t M;
-    MD_MEMCPY(M.elem, ptr, sizeof(mat3_t));
+    md_memcpy(M.elem, ptr, sizeof(mat3_t));
     return M;
 }
 
 MD_VEC_INLINE void mat3_store(float* ptr, mat3_t M) {
-    MD_MEMCPY(ptr, M.elem, sizeof(mat3_t));
+    md_memcpy(ptr, M.elem, sizeof(mat3_t));
 }
 
 MD_VEC_INLINE bool mat3_equal(mat3_t A, mat3_t B) {
-    return MD_MEMCMP(A.elem, B.elem, sizeof(mat3_t)) == 0;
+    return md_memcmp(A.elem, B.elem, sizeof(mat3_t)) == 0;
 }
 
 MD_VEC_INLINE mat3_t mat3_from_mat4(mat4_t M) {
@@ -1763,12 +1763,12 @@ MD_VEC_INLINE dvec2_t dvec2_set1(double s) {
 
 MD_VEC_INLINE dvec2_t dvec2_load(const double* ptr) {
     dvec2_t v;
-    MD_MEMCPY(&v, ptr, sizeof(dvec2_t));
+    md_memcpy(&v, ptr, sizeof(dvec2_t));
     return v;
 }
 
 MD_VEC_INLINE void dvec2_store(double* ptr, dvec2_t v) {
-    MD_MEMCPY(ptr, &v, sizeof(dvec2_t));
+    md_memcpy(ptr, &v, sizeof(dvec2_t));
 }
 
 MD_VEC_INLINE double dvec2_dot(dvec2_t a, dvec2_t b) {
@@ -1800,12 +1800,12 @@ MD_VEC_INLINE dvec3_t dvec3_set1(double s) {
 
 MD_VEC_INLINE dvec3_t dvec3_load(const double* ptr) {
     dvec3_t v;
-    MD_MEMCPY(&v, ptr, sizeof(dvec3_t));
+    md_memcpy(&v, ptr, sizeof(dvec3_t));
     return v;
 }
 
 MD_VEC_INLINE void dvec3_store(double* ptr, dvec3_t v) {
-    MD_MEMCPY(ptr, &v, sizeof(dvec3_t));
+    md_memcpy(ptr, &v, sizeof(dvec3_t));
 }
 
 MD_VEC_INLINE double dvec3_dot(dvec3_t a, dvec3_t b) {
@@ -1901,12 +1901,12 @@ MD_VEC_INLINE dvec4_t dvec4_set1(double s) {
 
 MD_VEC_INLINE dvec4_t dvec4_load(const double* ptr) {
     dvec4_t v;
-    MD_MEMCPY(&v, ptr, sizeof(dvec4_t));
+    md_memcpy(&v, ptr, sizeof(dvec4_t));
     return v;
 }
 
 MD_VEC_INLINE void dvec4_store(double* ptr, dvec4_t v) {
-    MD_MEMCPY(ptr, &v, sizeof(dvec4_t));
+    md_memcpy(ptr, &v, sizeof(dvec4_t));
 }
 
 MD_VEC_INLINE double dvec4_dot(dvec4_t a, dvec4_t b) {
@@ -2007,12 +2007,12 @@ MD_VEC_INLINE mat4_t mat4_ident(void) {
 
 MD_VEC_INLINE mat4_t mat4_load(const float* ptr) {
     mat4_t M;
-    MD_MEMCPY(M.elem, ptr, sizeof(mat4_t));
+    md_memcpy(M.elem, ptr, sizeof(mat4_t));
     return M;
 }
 
 MD_VEC_INLINE void mat4_store(float* ptr, mat4_t M) {
-    MD_MEMCPY(ptr, M.elem, sizeof(mat4_t));
+    md_memcpy(ptr, M.elem, sizeof(mat4_t));
 }
 
 MD_VEC_INLINE mat4_t mat4_from_mat3(const mat3_t M) {

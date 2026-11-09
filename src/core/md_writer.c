@@ -40,7 +40,7 @@ static inline bool has_buffer(const md_writer_i* w) {
 void md_writer_init(md_writer_i* w, const md_writer_vtable_t* vt, char* buf, size_t cap) {
     MD_ASSERT(w);
     MD_ASSERT(vt && vt->drain);
-    MD_MEMSET(w, 0, sizeof(md_writer_i));
+    md_memset(w, 0, sizeof(md_writer_i));
     w->vt = vt;
     if (buf && cap) {
         w->buf = w->cur = buf;
@@ -94,13 +94,13 @@ void md_write_fill(md_writer_i* w, char c, size_t count) {
     while (count > 0) {
         const size_t n = MD_MIN(room(w), count);
         if (n > 0) {
-            MD_MEMSET(w->cur, c, n);
+            md_memset(w->cur, c, n);
             w->cur += n;
             count -= n;
         } else {
             char block[64];
             const size_t m = MD_MIN(sizeof(block), count);
-            MD_MEMSET(block, c, m);
+            md_memset(block, c, m);
             md_writer_write_slow(w, block, m);
             count -= m;
         }
@@ -257,7 +257,7 @@ static bool str_drain(md_writer_i* w, const char* data, size_t len) {
     if (room(w) < len && !str_grow(w, len)) {
         return false;
     }
-    MD_MEMCPY(w->cur, data, len);
+    md_memcpy(w->cur, data, len);
     w->cur += len;
     return true;
 }
@@ -281,7 +281,7 @@ void md_str_writer_free(md_str_writer_t* sw) {
         MD_ASSERT(sw->w.alloc);
         md_free(sw->w.alloc, sw->w.buf, str_alloc_size(&sw->w));
     }
-    MD_MEMSET(sw, 0, sizeof(md_str_writer_t));
+    md_memset(sw, 0, sizeof(md_str_writer_t));
 }
 
 void md_str_writer_vfmt(md_str_writer_t* sw, const char* format, va_list args) {
@@ -336,7 +336,7 @@ static bool buf_drain(md_writer_i* w, const char* data, size_t len) {
     // Keeps what fits. The rest is dropped, but counted
     const size_t n = MD_MIN(room(w), len);
     if (n > 0) {
-        MD_MEMCPY(w->cur, data, n);
+        md_memcpy(w->cur, data, n);
         w->cur += n;
     }
     if (n < len) {
@@ -390,7 +390,7 @@ static bool file_drain(md_writer_i* w, const char* data, size_t len) {
     if (len > 0) {
         if (len < (size_t)(w->end - w->buf)) {
             // Small enough to be buffered until the next drain
-            MD_MEMCPY(w->cur, data, len);
+            md_memcpy(w->cur, data, len);
             w->cur += len;
         } else {
             ok = (md_file_write(fw->file, data, len) == len) && ok;
@@ -428,7 +428,7 @@ bool md_file_writer_close(md_file_writer_t* fw) {
     if (fw->w.alloc && has_buffer(&fw->w)) {
         md_free(fw->w.alloc, fw->w.buf, (size_t)(fw->w.end - fw->w.buf));
     }
-    MD_MEMSET(fw, 0, sizeof(md_file_writer_t));
+    md_memset(fw, 0, sizeof(md_file_writer_t));
     return ok;
 }
 
@@ -455,7 +455,7 @@ static void log_lines(md_log_writer_t* lw, bool all) {
     const size_t consumed = (size_t)(line - w->buf);
     if (consumed > 0) {
         const size_t rest = (size_t)(w->cur - line);
-        MD_MEMMOVE(w->buf, line, rest);
+        md_memmove(w->buf, line, rest);
         w->cur = w->buf + rest;
         w->drained += consumed;
     }
@@ -471,7 +471,7 @@ static bool log_drain(md_writer_i* w, const char* data, size_t len) {
             log_lines(lw, true);
         }
         const size_t n = MD_MIN(room(w), len);
-        MD_MEMCPY(w->cur, data, n);
+        md_memcpy(w->cur, data, n);
         w->cur += n;
         data += n;
         len -= n;
@@ -509,5 +509,5 @@ void md_log_writer_close(md_log_writer_t* lw) {
     if (lw->w.alloc && has_buffer(&lw->w)) {
         md_free(lw->w.alloc, lw->w.buf, (size_t)(lw->w.end - lw->w.buf) + 1);
     }
-    MD_MEMSET(lw, 0, sizeof(md_log_writer_t));
+    md_memset(lw, 0, sizeof(md_log_writer_t));
 }

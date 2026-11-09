@@ -103,7 +103,7 @@ static md_str_t trexio_read_str_attr(hid_t loc, const char* name, md_allocator_i
         if (size > 0) {
             char* buf = md_alloc(alloc, size + 1);
             if (buf) {
-                MD_MEMSET(buf, 0, size + 1);
+                md_memset(buf, 0, size + 1);
                 if (H5Aread(attr, type, buf) >= 0) {
                     result = md_str_copy_cstrn(buf, strnlen(buf, size), alloc);
                 }
@@ -186,7 +186,7 @@ static size_t trexio_read_str_dataset(md_str_t dst[], size_t cap, hid_t loc, con
             H5Tset_size(mem_type, H5T_VARIABLE);
             char** raw = (char**)md_alloc(alloc, sizeof(char*) * cap);
             if (raw) {
-                MD_MEMSET(raw, 0, sizeof(char*) * cap);
+                md_memset(raw, 0, sizeof(char*) * cap);
                 if (H5Dread(dset, mem_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, raw) >= 0) {
                     for (size_t i = 0; i < cap; ++i) {
                         dst[i] = raw[i] ? md_str_copy_cstr(raw[i], alloc) : (md_str_t){0};
@@ -199,7 +199,7 @@ static size_t trexio_read_str_dataset(md_str_t dst[], size_t cap, hid_t loc, con
             const size_t size = H5Tget_size(file_type);
             char* raw = (size > 0) ? (char*)md_alloc(alloc, size * cap + 1) : NULL;
             if (raw) {
-                MD_MEMSET(raw, 0, size * cap + 1);
+                md_memset(raw, 0, size * cap + 1);
                 if (H5Dread(dset, file_type, H5S_ALL, H5S_ALL, H5P_DEFAULT, raw) >= 0) {
                     for (size_t i = 0; i < cap; ++i) {
                         dst[i] = md_str_copy_cstrn(raw + i * size, strnlen(raw + i * size, size), alloc);
@@ -299,7 +299,7 @@ static bool trexio_read_nucleus(trexio_t* trexio, hid_t file) {
         && trexio_read_dataset(charge, group, "nucleus_charge", H5T_NATIVE_DOUBLE, trexio->num_atoms)
         && trexio_read_dataset(coord,  group, "nucleus_coord",  H5T_NATIVE_DOUBLE, trexio->num_atoms * 3)) {
 
-        MD_MEMSET(label, 0, sizeof(md_str_t) * trexio->num_atoms);
+        md_memset(label, 0, sizeof(md_str_t) * trexio->num_atoms);
         trexio_read_str_dataset(label, trexio->num_atoms, group, "nucleus_label", trexio->alloc);
 
         for (size_t i = 0; i < trexio->num_atoms; ++i) {
@@ -473,7 +473,7 @@ static bool trexio_read_basis(trexio_t* trexio, hid_t file) {
                 offset += trexio->shell_prim_count[s];
             }
             uint32_t* cursor = (uint32_t*)md_alloc(trexio->alloc, sizeof(uint32_t) * trexio->num_shells);
-            MD_MEMSET(cursor, 0, sizeof(uint32_t) * trexio->num_shells);
+            md_memset(cursor, 0, sizeof(uint32_t) * trexio->num_shells);
             for (size_t p = 0; p < trexio->num_prims; ++p) {
                 const size_t s = (size_t)shell_index[p];
                 const size_t k = trexio->shell_prim_offset[s] + cursor[s]++;
@@ -551,9 +551,9 @@ static void trexio_read_mo(trexio_t* trexio, hid_t file) {
     md_array_resize(trexio->mo_occupation, trexio->num_mo, trexio->alloc);
     md_array_resize(trexio->mo_energy,     trexio->num_mo, trexio->alloc);
     md_array_resize(trexio->mo_spin,       trexio->num_mo, trexio->alloc);
-    MD_MEMSET(trexio->mo_occupation, 0, sizeof(double)  * trexio->num_mo);
-    MD_MEMSET(trexio->mo_energy,     0, sizeof(double)  * trexio->num_mo);
-    MD_MEMSET(trexio->mo_spin,       0, sizeof(int64_t) * trexio->num_mo);
+    md_memset(trexio->mo_occupation, 0, sizeof(double)  * trexio->num_mo);
+    md_memset(trexio->mo_energy,     0, sizeof(double)  * trexio->num_mo);
+    md_memset(trexio->mo_spin,       0, sizeof(int64_t) * trexio->num_mo);
 
     if (!trexio_has(group, "mo_occupation") || !trexio_read_dataset(trexio->mo_occupation, group, "mo_occupation", H5T_NATIVE_DOUBLE, trexio->num_mo)) {
         md_array_free(trexio->mo_occupation, trexio->alloc);
@@ -570,7 +570,7 @@ static void trexio_read_mo(trexio_t* trexio, hid_t file) {
 
     if (trexio_has(group, "mo_symmetry")) {
         md_array_resize(trexio->mo_symmetry, trexio->num_mo, trexio->alloc);
-        MD_MEMSET(trexio->mo_symmetry, 0, sizeof(md_str_t) * trexio->num_mo);
+        md_memset(trexio->mo_symmetry, 0, sizeof(md_str_t) * trexio->num_mo);
         if (trexio_read_str_dataset(trexio->mo_symmetry, trexio->num_mo, group, "mo_symmetry", trexio->alloc) != trexio->num_mo) {
             md_array_free(trexio->mo_symmetry, trexio->alloc);
             trexio->mo_symmetry = NULL;
@@ -685,7 +685,7 @@ static size_t trexio_num_cart_ao(const trexio_t* trexio) {
 }
 
 static bool trexio_gto_basis_extract(md_gto_basis_t* out, const trexio_t* trexio, md_allocator_i* alloc) {
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     if (trexio->num_shells == 0) {
         return false;
     }
@@ -736,7 +736,7 @@ static bool trexio_orbital_to_cartesian(double* dst, const trexio_t* trexio, siz
         scratch[perm[k]] = trexio->mo_coefficient[i * num_ao + k] * factor[k];
     }
     if (trexio->cartesian) {
-        MD_MEMCPY(dst, scratch, sizeof(double) * num_ao);
+        md_memcpy(dst, scratch, sizeof(double) * num_ao);
         return true;
     }
     return md_qm_sph_to_cart_coefficients(dst, scratch, 1, cart_basis) == 1;
@@ -918,8 +918,8 @@ static bool trexio_system_begin(md_system_t* sys, md_system_state_t* state, cons
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
     md_array_resize(sys->atom.flags,    capacity, sys->alloc);
-    MD_MEMSET(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
-    MD_MEMSET(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
+    md_memset(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
+    md_memset(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
 
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 

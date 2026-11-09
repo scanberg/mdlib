@@ -374,7 +374,7 @@ vial_sets_t* vial_sets_boolop_each(const vial_sets_t* arr, const vial_sets_t* on
     vial_sets_t* s = sets_new(arr->count, total, alloc);
     uint32_t at = 0;
     for (uint32_t i = 0; i < arr->count; ++i) {
-        MD_MEMCPY(s->idx + at, parts[i]->idx, parts[i]->offset[1] * sizeof(uint32_t));
+        md_memcpy(s->idx + at, parts[i]->idx, parts[i]->offset[1] * sizeof(uint32_t));
         at += parts[i]->offset[1];
         s->offset[i + 1] = at;
     }

@@ -361,7 +361,7 @@ size_t md_gto_sph_to_cart_matrix(double* out_cart, const double* in_sph, const m
 
         // Pass 2: left-multiply by T_I^T, accumulating into the output rows.
         for (int a = 0; a < ncrt_i; ++a) {
-            MD_MEMSET(out_cart + (cart_off[si] + (size_t)a) * n_cart, 0, sizeof(double) * n_cart);
+            md_memset(out_cart + (cart_off[si] + (size_t)a) * n_cart, 0, sizeof(double) * n_cart);
         }
 
         for (int p = 0; p < nsph_i; ++p) {
@@ -451,7 +451,7 @@ static void gto_s2c_blocks(void* arg, uint32_t b_beg, uint32_t b_end, uint32_t t
                 const uint32_t l    = c->shells[si].l;
                 const int      nsph = (int)md_gto_num_sph_ao(l);
                 const int      ncrt = (int)md_gto_num_cart_ao(l);
-                MD_MEMSET(acc, 0, sizeof(double) * (size_t)ncrt * GTO_S2C_NB);
+                md_memset(acc, 0, sizeof(double) * (size_t)ncrt * GTO_S2C_NB);
                 for (int s = 0; s < nsph; ++s) {
                     const size_t  a   = (size_t)c->sph_off[si] + (size_t)s;
                     const double* src = c->in + (size_t)(c->perm ? c->perm[a] : (int)a) * c->ao_stride + m0 * c->mo_stride;
@@ -492,7 +492,7 @@ size_t md_gto_sph_to_cart_orbitals(double* out_cart, const double* in_sph, size_
     }
 
     gto_s2c_entries_t ent[(MD_GTO_MAX_ANGULAR_MOMENTUM + 1) * GTO_MAX_SPH_PER_SHELL];
-    MD_MEMSET(ent, 0, sizeof(ent));
+    md_memset(ent, 0, sizeof(ent));
     for (int l = 0; l <= MD_GTO_MAX_ANGULAR_MOMENTUM; ++l) {
         for (int s = 0; s < (int)md_gto_num_sph_ao((uint32_t)l); ++s) {
             gto_s2c_entries_t* e = ent + l * GTO_MAX_SPH_PER_SHELL + s;
@@ -628,7 +628,7 @@ static void gto_dm_tiles(void* arg, uint32_t t_beg, uint32_t t_end, uint32_t thr
     for (uint32_t t = t_beg; t < t_end; ++t) {
         const size_t i0 = (size_t)c->tiles[2 * t] * NB, j0 = (size_t)c->tiles[2 * t + 1] * NB;
         const size_t ni = MD_MIN(NB, n - i0), nj = MD_MIN(NB, n - j0);
-        MD_MEMSET(T, 0, sizeof(double) * NB * NB);
+        md_memset(T, 0, sizeof(double) * NB * NB);
         for (size_t k0 = 0; k0 < c->num_mo; k0 += KC) {
             const size_t kc = MD_MIN(KC, c->num_mo - k0);
             gto_dm_pack(A, c, k0, kc, i0, ni, GTO_DM_MR, true);
@@ -681,7 +681,7 @@ bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, 
 
     bool ok = true;
     if (nk == 0) {
-        MD_MEMSET(D, 0, sizeof(double) * num_ao * num_ao);
+        md_memset(D, 0, sizeof(double) * num_ao * num_ao);
     } else {
         // Over the executor when it is large; small products on the calling thread alone
         const md_executor_t* ex = (double)nk * (double)num_ao * (double)num_ao > 4.0e8 ? executor : NULL;
@@ -1021,7 +1021,7 @@ static void gto_build_sparse_pairs(
     // cgto_order[new_idx] = original_idx after the sort.
     //md_util_sort_spatial_xyz(list->cgto_order, (const float*)cgto_xyzr, sizeof(vec4_t), num_cgtos);
 
-    //MD_MEMSET(list->batches, 0, sizeof(gto_batch_t) * num_batches);
+    //md_memset(list->batches, 0, sizeof(gto_batch_t) * num_batches);
 
     for (size_t i = 0; i < num_cgtos; i++) {
         const float* vi = (const float*)&cgto_xyzr[i];
@@ -1105,7 +1105,7 @@ static size_t gto_derivative_layout(gto_dshell_t* dshell, uint32_t* minus_ao, ui
 bool md_gto_basis_derivative(md_gto_basis_t* out, const md_gto_basis_t* basis, md_allocator_i* alloc) {
     MD_ASSERT(out);
     MD_ASSERT(alloc);
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     if (!basis || basis->num_shells == 0) return false;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
@@ -1207,7 +1207,7 @@ size_t md_gto_orbital_gradients(double* out, size_t* out_num_ao, const double* c
         }
     }
 
-    MD_MEMSET(out, 0, sizeof(double) * 3 * num_mo * nd);
+    md_memset(out, 0, sizeof(double) * 3 * num_mo * nd);
     for (size_t m = 0; m < num_mo; ++m) {
         const double* cm = coeff + m * mo_stride;
         for (size_t a = 0; a < na; ++a) {
@@ -2091,14 +2091,14 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, const md_gto_
     uint8_t* dst = (uint8_t*)md_gpu_upload_begin(stream, buf, (size_t)L->total_size);
     bool success = false;
     if (dst) {
-        MD_MEMCPY(dst + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
-        MD_MEMCPY(dst + L->off_cgto_r,        cgto_r,        sz_r);
-        MD_MEMCPY(dst + L->off_cgto_off_len,  cgto_off_len,  sz_off_len);
-        MD_MEMCPY(dst + L->off_pgto,          pgto,          sz_pgto);
-        MD_MEMCPY(dst + L->off_shell_atom_idx, shell_atom_idx, sizeof(uint32_t) * 1 * L->num_shells);
-        MD_MEMCPY(dst + L->off_shell_r,        shell_r,        sizeof(float)    * 1 * L->num_shells);
-        MD_MEMCPY(dst + L->off_shell_info,     shell_info,     sizeof(uint32_t) * 4 * L->num_shells);
-        MD_MEMCPY(dst + L->off_shell_prim,     shell_prim,     sizeof(float)    * 2 * L->num_shell_prims);
+        md_memcpy(dst + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
+        md_memcpy(dst + L->off_cgto_r,        cgto_r,        sz_r);
+        md_memcpy(dst + L->off_cgto_off_len,  cgto_off_len,  sz_off_len);
+        md_memcpy(dst + L->off_pgto,          pgto,          sz_pgto);
+        md_memcpy(dst + L->off_shell_atom_idx, shell_atom_idx, sizeof(uint32_t) * 1 * L->num_shells);
+        md_memcpy(dst + L->off_shell_r,        shell_r,        sizeof(float)    * 1 * L->num_shells);
+        md_memcpy(dst + L->off_shell_info,     shell_info,     sizeof(uint32_t) * 4 * L->num_shells);
+        md_memcpy(dst + L->off_shell_prim,     shell_prim,     sizeof(float)    * 2 * L->num_shell_prims);
         success = md_gpu_upload_end(stream);
     } else {
         MD_LOG_ERROR("md_gto_gpu_basis_create: upload failed: %s", md_gpu_last_error());
@@ -2242,7 +2242,7 @@ md_gto_gpu_dmat_t md_gto_gpu_dmat_create(md_gpu_stream_t stream, const md_gto_gp
             acc += nc;
         }
         // the tile pairs of the shell pairs that meet (centres no further apart than their radii, plus margin)
-        MD_MEMSET(on, 0, (size_t)nt * nt);
+        md_memset(on, 0, (size_t)nt * nt);
         for (uint32_t s = 0; s < ns; ++s) {
             if (!(shell_r[s] > 0.0f)) continue;
             const float* p = dm->xyz + 3 * shell_atom_idx[s];
@@ -2424,7 +2424,7 @@ bool md_gto_gpu_dmat_build_columns(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm,
 
 void md_gto_gpu_dmat_view(md_gto_gpu_dmat_view_t* out, md_gto_gpu_dmat_t dm) {
     if (!out) return;
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     if (!dm) return;
     out->num_ao = dm->num_ao;
     out->nt = dm->nt;
@@ -2469,7 +2469,7 @@ bool md_gto_gpu_dmat_set_matrix(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, co
 
 void md_gto_gpu_dmat_info(md_gto_gpu_dmat_info_t* out, md_gto_gpu_dmat_t dm) {
     if (!out) return;
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     if (!dm) return;
     out->num_ao = dm->num_ao;
     out->num_tiles = (size_t)dm->num_tiles;
@@ -2486,7 +2486,7 @@ void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t at
     MD_ASSERT(dst_atom_xyzw && atom_xyz);
     const size_t stride = atom_xyz_stride == 0 ? sizeof(float) * 3 : atom_xyz_stride;
     if (stride == 16) {
-        MD_MEMCPY(dst_atom_xyzw, atom_xyz, sizeof(float) * 4 * num_atoms);
+        md_memcpy(dst_atom_xyzw, atom_xyz, sizeof(float) * 4 * num_atoms);
     } else {
         for (size_t i = 0; i < num_atoms; ++i) {
             const float* ap = (const float*)((const uint8_t*)atom_xyz + i * stride);
@@ -2824,7 +2824,7 @@ static void gto_gemm_auto_config(uint32_t* gm, int32_t* small_n) {
 }
 
 static bool gto_gemm_config(gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc) {
-    MD_MEMSET(cfg, 0, sizeof(*cfg));
+    md_memset(cfg, 0, sizeof(*cfg));
     uint32_t gm = desc->gemm_tile;
     int32_t  sn = desc->gemm_small_block;
     uint32_t agm; int32_t asn;
@@ -2854,7 +2854,7 @@ static bool gto_gemm_config(gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t
 // Fills the parts of the GEMM-path argument block shared by density and orbitals.
 static void gto_gemm_args_init(gto_density_gemm_args_t* a, const md_grid_t* grid, const float sample_offset[3],
                                md_gto_gpu_basis_t gb, md_gpu_addr_t atom_xyz, md_gto_op_t op, md_gpu_storage_tex_t out) {
-    MD_MEMSET(a, 0, sizeof(*a));
+    md_memset(a, 0, sizeof(*a));
     const md_gto_basis_layout_t* L = &gb->layout;
     const md_gpu_addr_t base = gb->buffer;
     gto_fill_common_args(&a->world_to_model, &a->index_to_world, &a->step, &a->grid_dim, grid, sample_offset);
@@ -2897,7 +2897,7 @@ typedef struct gto_gemm_pending_t {
 /* Pass 0: per-block counts, copied to the host to plan the batches. False when there is nothing to do or it
    could not be issued (logged). */
 static bool gto_gemm_count(gto_gemm_pending_t* p, md_gpu_stream_t stream, const gto_density_gemm_args_t* ap, size_t scratch_bytes, bool pregather_D, const gto_gemm_cfg_t* cfgp) {
-    MD_MEMSET(p, 0, sizeof(*p));
+    md_memset(p, 0, sizeof(*p));
     if (!gto_density_gemm_kernels(gto_shape_of_dim(ap->grid_dim.z))) {
         MD_LOG_ERROR("md_gto: GEMM-path kernels not available (md_gto_gpu_initialize not called?)");
         return false;
@@ -4559,7 +4559,7 @@ bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const md_attributes_t*
         return false;
     }
 
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
 
     size_t num_atom_idx = 0, num_offset = 0, num_count = 0, num_angl = 0;
     const uint32_t* atom_idx = (const uint32_t*)gto_attr_column(&num_atom_idx, attributes, MD_STR_LIT("basis/shell/atom_index"),        MD_ATTRIBUTE_TYPE_U32);
@@ -4601,7 +4601,7 @@ bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const md_attributes_t*
         if ((size_t)offset[i] + (size_t)count[i] > num_primitives) {
             MD_LOG_ERROR("Shell %zu spans primitives [%u,%u) beyond the %zu published", i, offset[i], offset[i] + count[i], num_primitives);
             md_array_free(out->shells, alloc);
-            MD_MEMSET(out, 0, sizeof(*out));
+            md_memset(out, 0, sizeof(*out));
             return false;
         }
         out->shells[i] = (md_gto_shell_t){
@@ -4614,8 +4614,8 @@ bool md_gto_basis_extract_attributes(md_gto_basis_t* out, const md_attributes_t*
 
     md_array_resize(out->alpha, num_primitives, alloc);
     md_array_resize(out->coeff, num_primitives, alloc);
-    MD_MEMCPY(out->alpha, alpha, num_primitives * sizeof(float));
-    MD_MEMCPY(out->coeff, coeff, num_primitives * sizeof(float));
+    md_memcpy(out->alpha, alpha, num_primitives * sizeof(float));
+    md_memcpy(out->coeff, coeff, num_primitives * sizeof(float));
 
     out->num_shells     = (uint32_t)num_shells;
     out->num_primitives = (uint32_t)num_primitives;
@@ -4628,5 +4628,5 @@ void md_gto_basis_free(md_gto_basis_t* basis, md_allocator_i* alloc) {
     md_array_free(basis->shells, alloc);
     md_array_free(basis->alpha,  alloc);
     md_array_free(basis->coeff,  alloc);
-    MD_MEMSET(basis, 0, sizeof(*basis));
+    md_memset(basis, 0, sizeof(*basis));
 }

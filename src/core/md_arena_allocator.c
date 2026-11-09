@@ -98,7 +98,7 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         // ptr is not the last allocation or the new size did not fit into the existing page.
         void* new_ptr = arena_push(arena, new_size, alignment);
-        MD_MEMCPY(new_ptr, ptr, old_size);
+        md_memcpy(new_ptr, ptr, old_size);
         return new_ptr;
     }
     // Alloc
@@ -147,7 +147,7 @@ void* md_arena_allocator_push_zero(struct md_allocator_i* alloc, size_t size) {
     VALIDATE_AND_EXTRACT_ARENA(alloc);
     size_t alignment = size <= 2 ? size : DEFAULT_ALIGNMENT;
     void* mem = arena_push(arena, size, alignment);
-    MD_MEMSET(mem, 0, size);
+    md_memset(mem, 0, size);
     return mem;
 }
 
@@ -262,7 +262,7 @@ static void* vm_arena_realloc(struct md_allocator_o* inst, void* ptr, size_t old
         }
         void* new_ptr = vm_push(arena, new_size, arena->align);
         if (new_ptr) {
-            MD_MEMCPY(new_ptr, ptr, MD_MIN(old_size, new_size));
+            md_memcpy(new_ptr, ptr, MD_MIN(old_size, new_size));
         }
         return new_ptr;
     }
@@ -327,7 +327,7 @@ void* md_vm_arena_push(struct md_allocator_i* alloc, size_t size) {
 void* md_vm_arena_push_zero(struct md_allocator_i* alloc, size_t size) {
     VALIDATE_AND_EXTRACT_VM_ARENA(alloc)
     void* mem = vm_push(arena, size, arena->align);
-    MD_MEMSET(mem, 0, size);
+    md_memset(mem, 0, size);
     return mem;
 }
 

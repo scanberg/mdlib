@@ -19,7 +19,7 @@
 void md_flow_graph_init(md_flow_graph_t* graph, uint32_t num_columns, struct md_allocator_i* alloc) {
     MD_ASSERT(graph);
     MD_ASSERT(alloc);
-    MD_MEMSET(graph, 0, sizeof(md_flow_graph_t));
+    md_memset(graph, 0, sizeof(md_flow_graph_t));
     graph->num_columns = num_columns;
     graph->alloc = alloc;
 }
@@ -30,7 +30,7 @@ void md_flow_graph_free(md_flow_graph_t* graph) {
         md_array_free(graph->nodes, graph->alloc);
         md_array_free(graph->links, graph->alloc);
     }
-    MD_MEMSET(graph, 0, sizeof(md_flow_graph_t));
+    md_memset(graph, 0, sizeof(md_flow_graph_t));
 }
 
 void md_flow_graph_clear(md_flow_graph_t* graph) {
@@ -120,7 +120,7 @@ const char* md_flow_result_str(md_flow_result_t result) {
 // quadratic md_flow_node_is_leaf() when the answer is needed for the whole graph.
 static void flow_mark_internal(bool* out_has_children, const md_flow_graph_t* graph) {
     const size_t count = md_array_size(graph->nodes);
-    MD_MEMSET(out_has_children, 0, sizeof(bool) * count);
+    md_memset(out_has_children, 0, sizeof(bool) * count);
     for (size_t i = 0; i < count; ++i) {
         const uint32_t parent = graph->nodes[i].parent;
         if (parent != MD_FLOW_INVALID_INDEX) {
@@ -231,7 +231,7 @@ md_flow_result_t md_flow_graph_validate(const md_flow_graph_t* graph, float eps)
 void md_flow_cut_init(md_flow_cut_t* cut, struct md_allocator_i* alloc) {
     MD_ASSERT(cut);
     MD_ASSERT(alloc);
-    MD_MEMSET(cut, 0, sizeof(md_flow_cut_t));
+    md_memset(cut, 0, sizeof(md_flow_cut_t));
     md_bitmask_init(&cut->expanded, 0, MD_BITSET_MAX_INDEX, alloc);  // words are allocated as nodes are expanded
     cut->other_max = 1.0f;      // uncapped unless the caller says otherwise
     cut->alloc = alloc;
@@ -246,7 +246,7 @@ void md_flow_cut_free(md_flow_cut_t* cut) {
         md_array_free(cut->other,   cut->alloc);
         md_array_free(cut->other_count, cut->alloc);
     }
-    MD_MEMSET(cut, 0, sizeof(md_flow_cut_t));
+    md_memset(cut, 0, sizeof(md_flow_cut_t));
 }
 
 void md_flow_cut_set_expanded(md_flow_cut_t* cut, uint32_t node_idx, bool expanded) {
@@ -574,7 +574,7 @@ md_flow_layout_params_t md_flow_layout_params_default(void) {
 void md_flow_layout_init(md_flow_layout_t* layout, struct md_allocator_i* alloc) {
     MD_ASSERT(layout);
     MD_ASSERT(alloc);
-    MD_MEMSET(layout, 0, sizeof(md_flow_layout_t));
+    md_memset(layout, 0, sizeof(md_flow_layout_t));
     layout->alloc = alloc;
 }
 
@@ -586,7 +586,7 @@ void md_flow_layout_free(md_flow_layout_t* layout) {
         md_array_free(layout->bands,   layout->alloc);
         md_array_free(layout->order,   layout->alloc);
     }
-    MD_MEMSET(layout, 0, sizeof(md_flow_layout_t));
+    md_memset(layout, 0, sizeof(md_flow_layout_t));
 }
 
 // Stable insertion sort over an index array, keyed by a parallel float array. Columns and bands

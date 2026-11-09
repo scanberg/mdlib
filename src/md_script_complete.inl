@@ -89,7 +89,7 @@ static md_array(token_t) completion_tokenize(md_str_t str, md_allocator_i* alloc
 
 // Follows the tokens of the statement that ends at the last of them
 static void completion_scan(completion_context_t* ctx, const token_t* tokens, size_t count) {
-    MD_MEMSET(ctx, 0, sizeof(*ctx));
+    md_memset(ctx, 0, sizeof(*ctx));
     ctx->lhs = true;
 
     size_t beg = count;
@@ -109,7 +109,7 @@ static void completion_scan(completion_context_t* ctx, const token_t* tokens, si
             ctx->depth += 1;
             completion_frame_t* frame = completion_top(ctx);
             if (frame) {
-                MD_MEMSET(frame, 0, sizeof(*frame));
+                md_memset(frame, 0, sizeof(*frame));
                 frame->open = type;
                 if (type == '(' && i > beg && tokens[i - 1].type == TOKEN_IDENT) {
                     frame->callee = tokens[i - 1].str;
@@ -222,7 +222,7 @@ static md_array(md_str_t) completion_domain_values(value_domain_t domain, const 
         if (sys && sys->atom.type.name) {
             if (atoms && sys->atom.type_idx) {
                 bool* present = (bool*)md_alloc(alloc, sys->atom.type.count + 1);
-                MD_MEMSET(present, 0, sys->atom.type.count + 1);
+                md_memset(present, 0, sys->atom.type.count + 1);
                 for (md_bitset_iter_t it = md_bitset_iter(*atoms); md_bitset_iter_next(&it);) {
                     if (it.idx < sys->atom.count && sys->atom.type_idx[it.idx] < sys->atom.type.count) {
                         present[sys->atom.type_idx[it.idx]] = true;
@@ -427,9 +427,9 @@ static void completion_push(md_array(md_script_completion_t)* items, md_script_c
     } else {
         const size_t len = pre.len + label.len + post.len;
         char* buf = md_alloc(alloc, len + 1);
-        if (pre.len)   MD_MEMCPY(buf, pre.ptr, pre.len);
-        if (label.len) MD_MEMCPY(buf + pre.len, label.ptr, label.len);
-        if (post.len)  MD_MEMCPY(buf + pre.len + label.len, post.ptr, post.len);
+        if (pre.len)   md_memcpy(buf, pre.ptr, pre.len);
+        if (label.len) md_memcpy(buf + pre.len, label.ptr, label.len);
+        if (post.len)  md_memcpy(buf + pre.len + label.len, post.ptr, post.len);
         buf[len] = '\0';
         item.text = (md_str_t){buf, len};
     }

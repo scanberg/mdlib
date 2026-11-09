@@ -65,7 +65,7 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
         MD_LOG_DEBUG("CSV: potential memory leak, csv structure was not empty");
     }
 
-    MD_MEMSET(csv, 0, sizeof(md_csv_t));
+    md_memset(csv, 0, sizeof(md_csv_t));
 
     size_t pos = 0;
     const char delim = md_str_find_char(&pos, line, ',') ? ',' : md_str_find_char(&pos, line, ';') ? ';' : md_str_find_char(&pos, line, '\t') ? '\t' : ',';
@@ -224,7 +224,7 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
     for (size_t i = 0; i < md_array_size(csv->field_values); ++i) {
         md_array_free(csv->field_values[i], alloc);
     }
-    MD_MEMSET(csv, 0, sizeof(md_csv_t));
+    md_memset(csv, 0, sizeof(md_csv_t));
 }
 
 // ### RUN ###

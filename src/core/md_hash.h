@@ -149,7 +149,7 @@ do {                                                                            
 
 // Clears the hash table. This does not free any memory. The array will keep the same number of
 // buckets, but all the keys and values will be erased.
-#define md_hashmap_clear(h) (MD_MEMSET((h)->keys, 0xFF, (h)->num_buckets * sizeof(*(h)->keys)), (h)->num_used = 0)
+#define md_hashmap_clear(h) (md_memset((h)->keys, 0xFF, (h)->num_buckets * sizeof(*(h)->keys)), (h)->num_used = 0)
 
 #define md_hashmap_free(h) (md_hashmap__free((uint64_t **)&(h)->keys, &(h)->num_used, &(h)->num_buckets, (void **)&(h)->values, sizeof(*(h)->values), (h)->allocator, __FILE__, __LINE__))
 #define md_hashset_free(h) (md_hashmap__free((uint64_t **)&(h)->keys, &(h)->num_used, &(h)->num_buckets, NULL, 0, (h)->allocator, __FILE__, __LINE__))
@@ -307,7 +307,7 @@ static inline void md_hashmap__grow_to(uint64_t **keys_ptr, uint32_t *num_used_p
     // (new_buckets + 1) for the default value and key which is stored at [-1]
     const size_t to_alloc = new_buckets * (sizeof(uint64_t) + value_bytes);
     uint64_t *new_keys = (uint64_t*)allocator->realloc(allocator->inst, 0, 0, to_alloc, file, line);
-    MD_MEMSET(new_keys, 0xFF, new_buckets * sizeof(uint64_t));
+    md_memset(new_keys, 0xFF, new_buckets * sizeof(uint64_t));
     void *new_values = new_keys + new_buckets;
     uint32_t new_elements = 0;
 
@@ -316,7 +316,7 @@ static inline void md_hashmap__grow_to(uint64_t **keys_ptr, uint32_t *num_used_p
             const uint32_t new_i = md_hashmap__add_no_grow(new_keys, new_buckets, keys[i]);
             new_keys[new_i] = keys[i];
             if (value_bytes) {
-                MD_MEMCPY((char *)new_values + new_i * value_bytes, (char *)values + i * value_bytes, value_bytes);
+                md_memcpy((char *)new_values + new_i * value_bytes, (char *)values + i * value_bytes, value_bytes);
             }
             ++new_elements;
         }
@@ -349,7 +349,7 @@ static inline void md_hashmap__copy(uint64_t **keys_ptr, uint32_t num_buckets, v
         *values_ptr = *keys_ptr + num_buckets;
     }
 
-    MD_MEMCPY(*keys_ptr, old_keys, size);
+    md_memcpy(*keys_ptr, old_keys, size);
 }
 
 #ifdef __cplusplus

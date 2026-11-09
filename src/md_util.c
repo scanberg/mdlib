@@ -756,7 +756,7 @@ static bool is_sorted_u64(const uint64_t* data, size_t count) {
 }
 
 static void radix_hist_u32(uint32_t hist[256][4], const uint32_t* keys, size_t count) {
-    MD_MEMSET(hist, 0, sizeof(uint32_t) * 256 * 4);
+    md_memset(hist, 0, sizeof(uint32_t) * 256 * 4);
     for (size_t i = 0; i < count; ++i) {
         const uint32_t k = keys[i];
         hist[(k >>  0) & 255][0]++;
@@ -767,7 +767,7 @@ static void radix_hist_u32(uint32_t hist[256][4], const uint32_t* keys, size_t c
 }
 
 static void radix_hist_u64(uint32_t hist[256][8], const uint64_t* keys, size_t count) {
-    MD_MEMSET(hist, 0, sizeof(uint32_t) * 256 * 8);
+    md_memset(hist, 0, sizeof(uint32_t) * 256 * 8);
     for (size_t i = 0; i < count; ++i) {
         const uint64_t k = keys[i];
         hist[(k >>  0) & 255][0]++;
@@ -855,7 +855,7 @@ static void sort_radix_u32(uint32_t* data, size_t count, md_temp_scope_t temp) {
 
     // An odd number of passes leaves the keys in the scratch
     if (src != data) {
-        MD_MEMCPY(data, src, count * sizeof(uint32_t));
+        md_memcpy(data, src, count * sizeof(uint32_t));
     }
 }
 
@@ -882,7 +882,7 @@ static void sort_radix_u64(uint64_t* data, size_t count, md_temp_scope_t temp) {
     }
 
     if (src != data) {
-        MD_MEMCPY(data, src, count * sizeof(uint64_t));
+        md_memcpy(data, src, count * sizeof(uint64_t));
     }
 }
 
@@ -1008,7 +1008,7 @@ static md_array(uint64_t) make_bitfield(size_t num_bits, md_allocator_i* alloc) 
         return NULL;
     }
     md_array(uint64_t) bits = md_array_create(uint64_t, num_elem, alloc);
-    MD_MEMSET(bits, 0, md_array_bytes(bits));
+    md_memset(bits, 0, md_array_bytes(bits));
     return bits;
 }
 
@@ -1016,7 +1016,7 @@ static void bitfield_set_all(uint64_t* bits, size_t num_bits) {
     // No bits is a NULL bitfield (make_bitfield), which memset must not be handed even for zero bytes
     if (num_bits == 0) return;
     size_t num_bytes = MD_DIV_UP(num_bits, 8);
-    MD_MEMSET(bits, 0xFF, num_bytes);
+    md_memset(bits, 0xFF, num_bytes);
 }
 
 static inline bool bitfield_test_bit(const uint64_t* bits, int64_t idx) {
@@ -1376,7 +1376,7 @@ static bool water_heuristic(const md_element_t elements[], size_t size) {
 
 static inline bool cmp(md_str_t str, const char* ref, int len) {
     // We compare against len + 1 to include the zero terminator character
-    return MD_MEMCMP(str.ptr, ref, len + 1) == 0;
+    return md_memcmp(str.ptr, ref, len + 1) == 0;
 }
 
 static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, const md_atom_data_t* atom_data, md_urange_t atom_range) {
@@ -1387,7 +1387,7 @@ static bool md_util_amino_acid_atoms_extract(md_amino_acid_atoms_t* out_atoms, c
     static const uint32_t all_bits = 1 | 2 | 4 | 8 | 16 | 32;
     uint32_t bits = 0;
     md_amino_acid_atoms_t aa;
-	MD_MEMSET(&aa, -1, sizeof(md_amino_acid_atoms_t));
+	md_memset(&aa, -1, sizeof(md_amino_acid_atoms_t));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         md_str_t id = md_atom_name(atom_data, i);
         if (md_str_empty(id)) continue;
@@ -1447,7 +1447,7 @@ static bool md_util_nucleic_acid_atoms_extract(md_nucleic_acid_atoms_t* out_atom
     uint32_t bits = 0;
     uint32_t primed = 0; // The slots taken by a primed name, which no other atom takes back
     md_nucleic_acid_atoms_t na;
-	MD_MEMSET(&na, -1, sizeof(md_nucleic_acid_atoms_t));
+	md_memset(&na, -1, sizeof(md_nucleic_acid_atoms_t));
     for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
         md_str_t id = md_atom_name(atom_data, i);
         if (md_str_empty(id)) continue;
@@ -1709,7 +1709,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
     if (!backbone_angles) return false;
     if (capacity == 0) return false;
 
-    MD_MEMSET(backbone_angles, 0, sizeof(md_backbone_angles_t) * capacity);
+    md_memset(backbone_angles, 0, sizeof(md_backbone_angles_t) * capacity);
 
     if (!backbone) return false;
     if (!xyz) return false;
@@ -1853,7 +1853,7 @@ static char ramachandran_residue(const md_system_t* sys, const md_protein_backbo
 
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const md_system_t* sys) {
     MD_ASSERT(ramachandran_types);
-    MD_MEMSET(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
+    md_memset(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
 
     if (capacity == 0) return false;
 
@@ -2053,7 +2053,7 @@ static inline size_t extract_neighborhood(md_atom_idx_t out_idx[], size_t out_ca
     MD_ASSERT(out_cap > 0);
 
 #if MD_DEBUG
-    MD_MEMSET(out_idx, -1, sizeof(md_atom_idx_t) * out_cap);
+    md_memset(out_idx, -1, sizeof(md_atom_idx_t) * out_cap);
 #endif
 
     size_t out_len = 0;
@@ -2120,7 +2120,7 @@ static graph_t smiles_to_graph(md_str_t smiles_str, md_util_match_flags_t flags,
         int hub = -1;
         int order = 0;
 
-        MD_MEMSET(bridge_idx, -1, sizeof(bridge_idx));
+        md_memset(bridge_idx, -1, sizeof(bridge_idx));
 
         for (size_t i = 0; i < num_nodes; ++i) {
             const md_smiles_node_t* node = &nodes[i];
@@ -2368,7 +2368,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
     if (!type || !resname) {
         MD_LOG_DEBUG("No atom type or atom resname were given, will default to covalent order of 1 for all bonds.");
         MD_STATIC_ASSERT(sizeof(md_order_t) == 1, "Incorrect size of md_order_t");
-        MD_MEMSET(bond_order, 1, md_array_bytes(bond_order));
+        md_memset(bond_order, 1, md_array_bytes(bond_order));
         return true;
     }
     
@@ -2592,8 +2592,8 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
     uint8_t  element_min_connectivity[128];
     uint8_t  element_max_connectivity[128];
 
-    MD_MEMSET(element_min_connectivity, 255, sizeof(element_min_connectivity));
-    MD_MEMSET(element_max_connectivity,   0, sizeof(element_max_connectivity));
+    md_memset(element_min_connectivity, 255, sizeof(element_min_connectivity));
+    md_memset(element_max_connectivity,   0, sizeof(element_max_connectivity));
 
     for (size_t i = 0; i < MD_COUNTOF(functional_group_patterns); ++i) {
         graph_t graph = smiles_to_graph(functional_group_patterns[i], 0, temp_arena);
@@ -3266,7 +3266,7 @@ static float metallic_shell(const uint32_t hist[METALLIC_HIST_BINS]) {
 static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* out_pairs, const md_system_state_t* state, const md_system_t* sys,
                                   const md_atomic_number_t* atomic_nr, const float* radius, const uint32_t* contacts, md_allocator_i* temp_arena) {
     const size_t num_atoms = state->num_atoms;
-    MD_MEMSET(out_metallic, 0, num_atoms);
+    md_memset(out_metallic, 0, num_atoms);
 
     md_array(int) metals = 0;
     float max_rad = 0.0f;
@@ -3301,7 +3301,7 @@ static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* 
     const size_t num_pairs = md_array_size(pairs);
 
     uint32_t* neighbors = md_alloc(temp_arena, sizeof(uint32_t) * num_atoms);
-    MD_MEMSET(neighbors, 0, sizeof(uint32_t) * num_atoms);
+    md_memset(neighbors, 0, sizeof(uint32_t) * num_atoms);
     for (size_t k = 0; k < num_pairs; ++k) {
         neighbors[pairs[k].atom_i] += 1;
         neighbors[pairs[k].atom_j] += 1;
@@ -3312,7 +3312,7 @@ static void infer_metallic_phases(uint8_t* out_metallic, md_array(bond_pair_t)* 
     }
     // The edges, corners and adatoms: in the shell of a metallic atom of the core
     uint8_t* edge = md_alloc(temp_arena, num_atoms);
-    MD_MEMSET(edge, 0, num_atoms);
+    md_memset(edge, 0, num_atoms);
     for (size_t k = 0; k < num_pairs; ++k) {
         const int i = pairs[k].atom_i;
         const int j = pairs[k].atom_j;
@@ -3537,7 +3537,7 @@ static martini_votes_t martini_votes(const md_system_t* sys, md_str_t (*label)(c
     // The residues of the database of a name, by the name's word: a system has few names (the amino acids, a few
     // lipids), whose binary searches through the database are done once
     struct { uint64_t key; uint16_t beg, end; } found[256];
-    MD_MEMSET(found, 0, sizeof(found));
+    md_memset(found, 0, sizeof(found));
     for (size_t res_idx = res_beg; res_idx < res_end; ++res_idx) {
         const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         const size_t n = range.end - range.beg;
@@ -3603,7 +3603,7 @@ static martini_system_t martini_system_ex(const md_system_t* sys, md_str_t (*lab
         // A count of each chunk, summed: exact, whichever thread had which
         md_temp_scope_t temp = md_temp_begin();
         martini_vote_task_t task = { sys, label, data, md_temp_alloc(temp, num_chunks * sizeof(martini_votes_t)) };
-        MD_MEMSET(task.chunk, 0, num_chunks * sizeof(martini_votes_t));
+        md_memset(task.chunk, 0, num_chunks * sizeof(martini_votes_t));
         md_parallel_for(ex, (uint32_t)num_chunks, 1, martini_vote_chunks, &task);
         for (size_t c = 0; c < num_chunks; ++c) {
             for (int k = 0; k < 3; ++k) v.votes[k] += task.chunk[c].votes[k];
@@ -3957,8 +3957,8 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
     md_atom_pair_t*  noncovalent_pairs = md_temp_alloc_array(temp_scope, md_atom_pair_t,  MD_MAX(num_noncovalent, 1));
     md_bond_flags_t* noncovalent_flags = md_temp_alloc_array(temp_scope, md_bond_flags_t, MD_MAX(num_noncovalent, 1));
     if (num_noncovalent) {
-        MD_MEMCPY(noncovalent_pairs, bond->pairs + bond->count, sizeof(md_atom_pair_t)  * num_noncovalent);
-        MD_MEMCPY(noncovalent_flags, bond->flags + bond->count, sizeof(md_bond_flags_t) * num_noncovalent);
+        md_memcpy(noncovalent_pairs, bond->pairs + bond->count, sizeof(md_atom_pair_t)  * num_noncovalent);
+        md_memcpy(noncovalent_flags, bond->flags + bond->count, sizeof(md_bond_flags_t) * num_noncovalent);
     }
 
     md_bond_data_clear(bond);
@@ -4004,7 +4004,7 @@ void md_util_infer_covalent_bonds(md_bond_data_t* bond, const md_system_state_t*
         }
 
         int* comp_id = md_temp_alloc_array(temp_scope, int, num_atoms);
-        MD_MEMSET(comp_id, -1, sizeof(int) * num_atoms);
+        md_memset(comp_id, -1, sizeof(int) * num_atoms);
         size_t num_res = md_system_residue_count(sys);
 
         for (size_t i = 0; i < num_res; ++i) {
@@ -4361,7 +4361,7 @@ void md_util_system_infer_covalent_bonds(md_system_t* sys, const md_system_state
     if (md_array_size(sys->atom.flags) < sys->atom.count) {
         const size_t size = md_array_size(sys->atom.flags);
         md_array_resize(sys->atom.flags, sys->atom.count, sys->alloc);
-        MD_MEMSET(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
+        md_memset(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
     }
     for (size_t i = 0; i < sys->atom.count; ++i) {
         sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~(uint32_t)MD_ATOM_FLAG_METALLIC);
@@ -4488,7 +4488,7 @@ void md_bond_delta_free(md_bond_delta_t* delta, md_allocator_i* alloc) {
     md_bitset_free(&delta->broken, alloc);
     if (delta->formed_pair)  md_free(alloc, delta->formed_pair,  sizeof(md_atom_pair_t)  * delta->num_formed);
     if (delta->formed_flags) md_free(alloc, delta->formed_flags, sizeof(md_bond_flags_t) * delta->num_formed);
-    MD_MEMSET(delta, 0, sizeof(md_bond_delta_t));
+    md_memset(delta, 0, sizeof(md_bond_delta_t));
 }
 
 bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_system_state_t* state, const md_bond_delta_desc_t* desc, md_allocator_i* alloc) {
@@ -4497,7 +4497,7 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
     MD_ASSERT(state);
     MD_ASSERT(desc);
     MD_ASSERT(alloc);
-    MD_MEMSET(out, 0, sizeof(md_bond_delta_t));
+    md_memset(out, 0, sizeof(md_bond_delta_t));
 
     const size_t num_atoms = sys->atom.count;
     if (!state->xyz || state->num_atoms != num_atoms || num_atoms == 0) return false;
@@ -4514,7 +4514,7 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
 
     delta_atoms_t atoms = { .sys = sys };
     atoms.res_water = md_temp_alloc_array(temp, int8_t, MD_MAX(sys->residue.count, 1));
-    MD_MEMSET(atoms.res_water, -1, MD_MAX(sys->residue.count, 1));
+    md_memset(atoms.res_water, -1, MD_MAX(sys->residue.count, 1));
 
     // ## The bonds of the graph which touch the scope: broken beyond the band, and stretched beyond the cutoff
     // (they no longer count against what their atoms can take)
@@ -4667,8 +4667,8 @@ bool md_util_bond_delta(md_bond_delta_t* out, const md_system_t* sys, const md_s
         }
         int* num_cov   = md_temp_alloc_array(temp, int, num_ends);
         int* num_coord = md_temp_alloc_array(temp, int, num_ends);
-        MD_MEMSET(num_cov,   0, sizeof(int) * num_ends);
-        MD_MEMSET(num_coord, 0, sizeof(int) * num_ends);
+        md_memset(num_cov,   0, sizeof(int) * num_ends);
+        md_memset(num_coord, 0, sizeof(int) * num_ends);
 
         for (size_t e = 0; e < num_ends; ++e) {
             const uint32_t a = ends[e];
@@ -5088,12 +5088,12 @@ bool md_util_system_infer_residue_flags(md_system_t* sys) {
     if (md_array_size(sys->residue.flags) < sys->residue.count) {
         const size_t size = md_array_size(sys->residue.flags);
         md_array_resize(sys->residue.flags, sys->residue.count, sys->alloc);
-        MD_MEMSET(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
+        md_memset(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
     }
     if (md_array_size(sys->atom.flags) < sys->atom.count) {
         const size_t size = md_array_size(sys->atom.flags);
         md_array_resize(sys->atom.flags, sys->atom.count, sys->alloc);
-        MD_MEMSET(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
+        md_memset(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
     }
 
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
@@ -5206,7 +5206,7 @@ static void clear_chains(md_system_t* sys, md_allocator_i* alloc) {
     md_array_free(sys->chain.run_offset, alloc);
     md_array_free(sys->chain.run, alloc);
     md_array_free(sys->chain.res_chain, alloc);
-    MD_MEMSET(&sys->chain, 0, sizeof(sys->chain));
+    md_memset(&sys->chain, 0, sizeof(sys->chain));
 }
 
 static bool polymer_chain_ends_between(const md_system_t* sys, size_t a, size_t b);
@@ -5217,7 +5217,7 @@ static void clear_instances(md_system_t* sys, md_allocator_i* alloc) {
     md_array_free(sys->instance.res_offset, alloc);
     md_array_free(sys->instance.part_type_idx, alloc);
     md_array_free(sys->instance.mol_type_idx, alloc);
-    MD_MEMSET(&sys->instance, 0, sizeof(sys->instance));
+    md_memset(&sys->instance, 0, sizeof(sys->instance));
 }
 
 bool md_util_system_instances_from_chain_ids(md_system_t* sys, const md_str_t res_chain_id[], const bool res_unit_begins[]) {
@@ -5309,7 +5309,7 @@ bool md_util_system_infer_chains(md_system_t* sys) {
         for (size_t c = 0; c < sys->chain.count; ++c) count[c + 1] += count[c];
         md_urange_t* sorted = md_temp_alloc_array(temp, md_urange_t, MD_MAX(1, num_runs));
         uint32_t* fill = md_temp_alloc_array(temp, uint32_t, sys->chain.count);
-        MD_MEMCPY(fill, count, sizeof(uint32_t) * sys->chain.count);
+        md_memcpy(fill, count, sizeof(uint32_t) * sys->chain.count);
         for (size_t r = 0; r < num_runs; ++r) sorted[fill[run_chain[r]]++] = runs[r];
 
         md_array_resize(sys->chain.run_offset, sys->chain.count + 1, alloc);
@@ -5473,7 +5473,7 @@ bool md_util_system_infer_parts(md_system_t* sys) {
     for (size_t c = 0; c < num_res; ++c) last_bonded_before[c] = -1;
     if (sys->bond.count > 0) {
         md_residue_idx_t* atom_res = md_temp_alloc_array(temp, md_residue_idx_t, MD_MAX(1, sys->atom.count));
-        MD_MEMSET(atom_res, -1, sizeof(md_residue_idx_t) * sys->atom.count);
+        md_memset(atom_res, -1, sizeof(md_residue_idx_t) * sys->atom.count);
         for (size_t c = 0; c < num_res; ++c) {
             const md_urange_t r = md_system_residue_atom_range(sys, c);
             for (uint32_t a = r.beg; a < r.end && a < sys->atom.count; ++a) atom_res[a] = (md_residue_idx_t)c;
@@ -5621,7 +5621,7 @@ static inline bool has_ring(const md_ring_data_t* ring_data, const int* ring, in
 
 #define SORT_RING_PRINT 0
 
-// This is a specialized deterministic sort function for reordering the indices of a ring in a particular way such that it can be subjected to MD_MEMCMP
+// This is a specialized deterministic sort function for reordering the indices of a ring in a particular way such that it can be subjected to md_memcmp
 static void sort_ring(int* arr, int n) {
     MD_ASSERT(n >= 0);
     if (n == 0) return;
@@ -5653,7 +5653,7 @@ static void sort_ring(int* arr, int n) {
         for (int i = 0; i < lowest_idx; ++i) {
             buf[j++] = arr[i];
         }
-        MD_MEMCPY(arr, buf, sizeof(*arr) * n);
+        md_memcpy(arr, buf, sizeof(*arr) * n);
         md_temp_end(temp);
     }
 
@@ -5707,7 +5707,7 @@ static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* b
 
     // The rings of each atom
     uint32_t* off = md_alloc(temp_arena, (num_atoms + 1) * sizeof(uint32_t));
-    MD_MEMSET(off, 0, (num_atoms + 1) * sizeof(uint32_t));
+    md_memset(off, 0, (num_atoms + 1) * sizeof(uint32_t));
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(rings, r);
         const size_t n = md_ring_size(rings, r);
@@ -5716,7 +5716,7 @@ static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* b
     for (size_t i = 0; i < num_atoms; ++i) off[i + 1] += off[i];
     uint32_t* idx = md_alloc(temp_arena, MD_MAX(off[num_atoms], 1) * sizeof(uint32_t));
     uint32_t* fill = md_alloc(temp_arena, num_atoms * sizeof(uint32_t));
-    MD_MEMCPY(fill, off, num_atoms * sizeof(uint32_t));
+    md_memcpy(fill, off, num_atoms * sizeof(uint32_t));
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(rings, r);
         const size_t n = md_ring_size(rings, r);
@@ -5724,7 +5724,7 @@ static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* b
     }
 
     uint8_t* removed = md_alloc(temp_arena, num_rings);
-    MD_MEMSET(removed, 0, num_rings);
+    md_memset(removed, 0, num_rings);
     size_t removed_count = 0;
 
     for (size_t r = 0; r < num_rings; ++r) {
@@ -5752,7 +5752,7 @@ static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* b
         int num_bonds = 0;
         uint64_t basis[ENVELOPE_MAX_BONDS][ENVELOPE_WORDS];   // basis[p]: the row whose lowest bit is p
         uint8_t  has_row[ENVELOPE_MAX_BONDS];
-        MD_MEMSET(has_row, 0, sizeof(has_row));
+        md_memset(has_row, 0, sizeof(has_row));
         bool valid = true;
         bool envelope = false;
         for (int c = 0; c <= num_cand && valid; ++c) {
@@ -5783,7 +5783,7 @@ static void remove_envelope_rings(md_ring_data_t* rings, const md_bond_data_t* b
             if (self) {
                 envelope = p < 0;
             } else if (p >= 0) {
-                MD_MEMCPY(basis[p], v, sizeof(v));
+                md_memcpy(basis[p], v, sizeof(v));
                 has_row[p] = 1;
             }
         }
@@ -5824,7 +5824,7 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
     depth_t* depth = md_temp_alloc_zero_array(temp, depth_t, num_atoms);
     mark_t*  mark  = md_temp_alloc_zero_array(temp, mark_t, num_atoms);
     pred_t*  pred  = md_temp_alloc_zero_array(temp, pred_t, num_atoms);
-    MD_MEMSET(pred, -1, num_atoms * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
+    md_memset(pred, -1, num_atoms * sizeof(pred_t));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
 
     // The capacity is arbitrary here, but will be resized if needed.
     md_fifo_t queue = md_fifo_create(64, temp_arena);
@@ -5921,7 +5921,7 @@ static void find_rings(md_ring_data_t* out, const md_bond_data_t* bond, size_t n
                         }
 
                         // @TODO: Implement a custom sort for rings such that the indices within a ring
-                        // Are predictable and can be easily MD_MEMCMP or hashed
+                        // Are predictable and can be easily md_memcmp or hashed
                         // But does not violate the sequential indexing such that it can be iterated
                         sort_ring(ring, len);
                         uint64_t key = md_hash64(ring, len * sizeof(*ring), 0);
@@ -6087,7 +6087,7 @@ static void sugar_canonical_order(int32_t* ring, int n, int ring_o, int anomeric
     int32_t tmp[MD_RING_MAX_SIZE];
     const int step = anomeric == (ring_o + 1) % n ? 1 : n - 1;
     for (int k = 0; k < n; ++k) tmp[k] = ring[(ring_o + k * step) % n];
-    MD_MEMCPY(ring, tmp, n * sizeof(int32_t));
+    md_memcpy(ring, tmp, n * sizeof(int32_t));
 }
 
 void md_util_system_infer_ring_flags(md_system_t* sys) {
@@ -6100,7 +6100,7 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
     // Bonds in more than one ring make those rings fused
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     uint8_t* bond_rings = md_temp_alloc(temp, MD_MAX(sys->bond.count, 1));
-    MD_MEMSET(bond_rings, 0, MD_MAX(sys->bond.count, 1));
+    md_memset(bond_rings, 0, MD_MAX(sys->bond.count, 1));
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* ring = md_ring_atoms(&sys->ring, r);
         const size_t n = md_ring_size(&sys->ring, r);
@@ -6139,7 +6139,7 @@ void md_util_system_infer_ring_flags(md_system_t* sys) {
     // bond with another is of a fused aromatic system (naphthalene), one fused only to rings which are not aromatic
     // keeps a sextet of its own (tetralin)
     uint8_t* bond_aromatic = md_temp_alloc(temp, MD_MAX(sys->bond.count, 1));
-    MD_MEMSET(bond_aromatic, 0, MD_MAX(sys->bond.count, 1));
+    md_memset(bond_aromatic, 0, MD_MAX(sys->bond.count, 1));
     for (size_t r = 0; r < num_rings; ++r) {
         if (!(md_ring_flags(&sys->ring, r) & MD_RING_FLAG_AROMATIC)) continue;
         const int32_t* ring = md_ring_atoms(&sys->ring, r);
@@ -6281,8 +6281,8 @@ size_t md_util_system_infer_elastic_bonds(md_system_t* sys) {
     // The links of the chains first: they say where a chain begins and ends, which the bond closing a cyclic one needs
     uint8_t* has_prev = md_alloc(arena, C);
     uint8_t* has_next = md_alloc(arena, C);
-    MD_MEMSET(has_prev, 0, C);
-    MD_MEMSET(has_next, 0, C);
+    md_memset(has_prev, 0, C);
+    md_memset(has_next, 0, C);
     int32_t* chain = md_alloc(arena, sizeof(int32_t) * C);
     for (size_t ci = 0; ci < C; ++ci) chain[ci] = (int32_t)ci;
     md_array(uint32_t) candidates = 0;
@@ -6765,7 +6765,7 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
             link_graph.count = num_held + num_links;
             md_array_resize(link_graph.pairs, link_graph.count, temp_arena);
             md_array_resize(link_graph.flags, link_graph.count, temp_arena);
-            MD_MEMSET(link_graph.flags, 0, sizeof(md_bond_flags_t) * link_graph.count);
+            md_memset(link_graph.flags, 0, sizeof(md_bond_flags_t) * link_graph.count);
             size_t n = 0;
             for (size_t b = 0; b < sys->bond.count; ++b) {
                 if (!bond_holds_molecule(sys, b)) continue;
@@ -6773,7 +6773,7 @@ bool md_util_system_infer_molecules(md_system_t* sys) {
                 if (sys->bond.flags) link_graph.flags[n] = sys->bond.flags[b];
                 n += 1;
             }
-            if (num_links) MD_MEMCPY(link_graph.pairs + n, links, sizeof(md_atom_pair_t) * num_links);
+            if (num_links) md_memcpy(link_graph.pairs + n, links, sizeof(md_atom_pair_t) * num_links);
             md_bond_build_connectivity(&link_graph, atom_count, temp_arena);
             graph = &link_graph;
         }
@@ -7031,7 +7031,7 @@ static bool pattern_match_any(const char* patterns, const char* str) {
         while (*end && *end != '|') ++end;
         const size_t len = (size_t)(end - beg);
         if (len < sizeof(buf)) {
-            MD_MEMCPY(buf, beg, len);
+            md_memcpy(buf, beg, len);
             buf[len] = '\0';
             if (pattern_match(buf, str)) return true;
         }
@@ -7158,7 +7158,7 @@ static void infer_apply_templates(void* arg, uint32_t beg, uint32_t end, uint32_
         const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
         const md_urange_t from = md_system_residue_atom_range(sys, tmpl->res_idx);
         const size_t res_size = range.end - range.beg;
-        MD_MEMCPY(sys->atom.type_idx + range.beg, sys->atom.type_idx + from.beg, res_size * sizeof(md_particle_type_idx_t));
+        md_memcpy(sys->atom.type_idx + range.beg, sys->atom.type_idx + from.beg, res_size * sizeof(md_particle_type_idx_t));
         if (sys->atom.flags) {
             for (size_t k = 0; k < res_size; ++k) sys->atom.flags[range.beg + k] |= t->roles[tmpl->role_offset + k];
         }
@@ -7446,7 +7446,7 @@ void md_util_system_augment_particle_types(md_system_t* sys) {
     md_hashmap32_t found = { .allocator = md_temp_allocator(temp) };
     uint32_t* slot_run   = md_temp_alloc_array(temp, uint32_t, num_types + 1);
     uint32_t* slot_entry = md_temp_alloc_array(temp, uint32_t, num_types + 1);     // The entry + 1, 0 for none
-    MD_MEMSET(slot_run, 0, (num_types + 1) * sizeof(uint32_t));
+    md_memset(slot_run, 0, (num_types + 1) * sizeof(uint32_t));
     uint32_t run = 0;
     md_str_t run_name = {0};
     uint64_t run_key = 0;
@@ -7520,7 +7520,7 @@ void md_util_mask_grow_by_bonds(md_bitmask_t* mask, const md_system_t* sys, size
     // Zero means 'not reached'. Temp memory is not cleared, so this has to be, or the walk depends on what the
     // allocator handed out last: fresh pages happen to be zero, reused ones are not.
     uint8_t* depth = md_temp_alloc_array(temp_scope, uint8_t, sys->atom.count);
-    MD_MEMSET(depth, 0, sys->atom.count * sizeof(uint8_t));
+    md_memset(depth, 0, sys->atom.count * sizeof(uint8_t));
 
     {
         md_bitset_iter_t it = md_bitmask_iter(mask);
@@ -7686,8 +7686,8 @@ void md_util_aabb_compute(float out_aabb_min[3], float out_aabb_max[3], const ve
         aabb_max = vec4_max(aabb_max, vec4_add(c, r));
     }
 
-    MD_MEMCPY(out_aabb_min, &aabb_min, sizeof(float) * 3);
-    MD_MEMCPY(out_aabb_max, &aabb_max, sizeof(float) * 3);
+    md_memcpy(out_aabb_min, &aabb_min, sizeof(float) * 3);
+    md_memcpy(out_aabb_max, &aabb_max, sizeof(float) * 3);
 }
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional), indices are used to select a subset of points
@@ -7710,8 +7710,8 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
             aabb_max = vec4_max(aabb_max, vec4_add(xyzr, r));
         }
     }
-    MD_MEMCPY(out_aabb_min, &aabb_min, sizeof(float) * 3);
-    MD_MEMCPY(out_aabb_max, &aabb_max, sizeof(float) * 3);
+    md_memcpy(out_aabb_min, &aabb_min, sizeof(float) * 3);
+    md_memcpy(out_aabb_max, &aabb_max, sizeof(float) * 3);
 }
 
 
@@ -7793,9 +7793,9 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
         max_ext = vec4_max(max_ext, vec4_add1(p, r));
     }
 
-    MD_MEMCPY(out_basis,   &basis,   sizeof(mat3_t));
-    MD_MEMCPY(out_ext_min, &min_ext, sizeof(vec3_t));
-    MD_MEMCPY(out_ext_max, &max_ext, sizeof(vec3_t));
+    md_memcpy(out_basis,   &basis,   sizeof(mat3_t));
+    md_memcpy(out_ext_min, &min_ext, sizeof(vec3_t));
+    md_memcpy(out_ext_max, &max_ext, sizeof(vec3_t));
 }
 
 void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
@@ -7877,9 +7877,9 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
         max_ext = vec4_max(max_ext, vec4_add(p, r));
     }
 
-    MD_MEMCPY(out_basis,   &basis,   sizeof(mat3_t));
-    MD_MEMCPY(out_ext_min, &min_ext, sizeof(vec3_t));
-    MD_MEMCPY(out_ext_max, &max_ext, sizeof(vec3_t));
+    md_memcpy(out_basis,   &basis,   sizeof(mat3_t));
+    md_memcpy(out_ext_min, &min_ext, sizeof(vec3_t));
+    md_memcpy(out_ext_max, &max_ext, sizeof(vec3_t));
 }
 
 #define TRIG_ATAN2_R2_THRESHOLD 1.0e-8
@@ -9068,8 +9068,8 @@ static void com_packed(float out_com[3], const vec3_t* in_xyz, const float* in_w
     float tail_w[8]  = {0};
     const size_t body = MD_ROUND_DOWN(count, 8);
     if (body < count) {
-        MD_MEMCPY(tail_f, f + body * 3, (count - body) * 3 * sizeof(float));
-        if (in_w) MD_MEMCPY(tail_w, in_w + body, (count - body) * sizeof(float));
+        md_memcpy(tail_f, f + body * 3, (count - body) * 3 * sizeof(float));
+        if (in_w) md_memcpy(tail_w, in_w + body, (count - body) * sizeof(float));
     }
     for (; i < count; i += 8) {
         const float* g = i < body ? f + i * 3 : tail_f;
@@ -9198,7 +9198,7 @@ static void com_pbc_ortho_packed(float out_com[3], const vec3_t* in_xyz, const f
         const size_t rest = count - i;
         float tf[24] = {0};
         float tw[8]  = {0};
-        MD_MEMCPY(tf, f + i * 3, rest * 3 * sizeof(float));
+        md_memcpy(tf, f + i * 3, rest * 3 * sizeof(float));
         for (size_t q = 0; q < rest; ++q) tw[q] = in_w ? in_w[i + q] : 1.0f;
         md_xv w[XYZ_GROUP_VECS];
         xyz_lane_spread(w, tw);
@@ -10163,7 +10163,7 @@ static void com_vec4(float out_com[3], const vec4_t* in_xyzw, const int32_t* in_
     }
 
     acc = vec4_div(acc, vec4_splat_w(acc));
-    MD_MEMCPY(out_com, &acc, sizeof(float) * 3);
+    md_memcpy(out_com, &acc, sizeof(float) * 3);
 }
 
 static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
@@ -10405,7 +10405,7 @@ typedef struct dist_cell_t {
 } dist_cell_t;
 
 static void dist_cell_init(dist_cell_t* c, const md_unitcell_t* cell, float coord_scale) {
-    MD_MEMSET(c, 0, sizeof(*c));
+    md_memset(c, 0, sizeof(*c));
     const uint32_t flags = cell ? (uint32_t)cell->flags : 0;
     const bool pbc[3] = {
         (flags & MD_UNITCELL_PBC_X) != 0,
@@ -10451,7 +10451,7 @@ static void dist_cell_init(dist_cell_t* c, const md_unitcell_t* cell, float coor
     // The rows of the inverse of the basis, completed by a unit vector along each axis without a period. A lattice
     // vector A n has n_i = r_i . A n, so |n_i| <= |r_i| |A n|.
     double M[3][3];
-    MD_MEMCPY(M, A, sizeof(M));
+    md_memcpy(M, A, sizeof(M));
     for (int i = 0; i < 3; ++i) {
         if (M[i][i] == 0.0) {
             M[i][0] = M[i][1] = M[i][2] = 0.0;
@@ -11808,10 +11808,10 @@ bool md_util_interpolate_linear(vec3_t* out_xyz, const vec3_t* const in_xyz[2], 
                 lerp_xyz8(dst + i * 3, src0 + i * 3, src1 + i * 3, ext, inv, ortho, t);
             } else {
                 float a[24] = {0}, b[24] = {0}, r[24];
-                MD_MEMCPY(a, src0 + i * 3, n * sizeof(vec3_t));
-                MD_MEMCPY(b, src1 + i * 3, n * sizeof(vec3_t));
+                md_memcpy(a, src0 + i * 3, n * sizeof(vec3_t));
+                md_memcpy(b, src1 + i * 3, n * sizeof(vec3_t));
                 lerp_xyz8(r, a, b, ext, inv, ortho, t);
-                MD_MEMCPY(dst + i * 3, r, n * sizeof(vec3_t));
+                md_memcpy(dst + i * 3, r, n * sizeof(vec3_t));
             }
             i += n;
         }
@@ -11908,11 +11908,11 @@ bool md_util_interpolate_cubic_weighted(vec3_t* out_xyz, const vec3_t* const in_
             } else {
                 float stage[4][24] = {0}, r[24];
                 for (int k = 0; k < 4; ++k) {
-                    MD_MEMCPY(stage[k], src[k] + i * 3, n * sizeof(vec3_t));
+                    md_memcpy(stage[k], src[k] + i * 3, n * sizeof(vec3_t));
                 }
                 const float* const g[4] = { stage[0], stage[1], stage[2], stage[3] };
                 cubic_xyz8(r, g, ext, inv, ortho, xw);
-                MD_MEMCPY(dst + i * 3, r, n * sizeof(vec3_t));
+                md_memcpy(dst + i * 3, r, n * sizeof(vec3_t));
             }
             i += n;
         }
@@ -11981,7 +11981,7 @@ static md_atom_idx_t amino_acid_backbone_bead(const md_system_t* sys, size_t res
 static bool nucleotide_backbone_beads(md_nucleic_acid_atoms_t* out, const md_system_t* sys, size_t res_idx) {
     if (md_system_residue_kind(sys, res_idx) != MD_RESIDUE_KIND_NUCLEOTIDE) return false;
     md_nucleic_acid_atoms_t na;
-    MD_MEMSET(&na, -1, sizeof(na));
+    md_memset(&na, -1, sizeof(na));
     const md_urange_t range = md_system_residue_atom_range(sys, res_idx);
     for (uint32_t i = range.beg; i < range.end; ++i) {
         if (!(md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_BACKBONE) || md_atom_particle_kind(&sys->atom, i) != MD_PARTICLE_BEAD) continue;
@@ -12328,7 +12328,7 @@ static void protein_backbones_from_bonds(md_system_t* sys, const md_system_state
 
     // Taken best first where N, CA and C are free; the residue whose N, CA or C an atom is, -1 for none
     int32_t* residue_of = md_temp_alloc_array(temp, int32_t, num_atoms);
-    MD_MEMSET(residue_of, -1, sizeof(int32_t) * num_atoms);
+    md_memset(residue_of, -1, sizeof(int32_t) * num_atoms);
     uint64_t* by_ca = md_temp_alloc_array(temp, uint64_t, num_matches);
     size_t num = 0;
     for (size_t k = 0; k < num_matches; ++k) {
@@ -12357,8 +12357,8 @@ static void protein_backbones_from_bonds(md_system_t* sys, const md_system_state
     // Residue v follows u when the C of u is bonded to the N of v
     int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
     int32_t* next = md_temp_alloc_array(temp, int32_t, num);
-    MD_MEMSET(prev, -1, sizeof(int32_t) * num);
-    MD_MEMSET(next, -1, sizeof(int32_t) * num);
+    md_memset(prev, -1, sizeof(int32_t) * num);
+    md_memset(next, -1, sizeof(int32_t) * num);
     for (size_t u = 0; u < num; ++u) {
         md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)res_atoms[u].c);
         for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
@@ -12405,7 +12405,7 @@ static void nucleic_backbones_from_bonds(md_system_t* sys, size_t min_length, md
 
     // The residue whose P an atom is, -1 for none
     int32_t* residue_of_p = md_temp_alloc_array(temp, int32_t, num_atoms);
-    MD_MEMSET(residue_of_p, -1, sizeof(int32_t) * num_atoms);
+    md_memset(residue_of_p, -1, sizeof(int32_t) * num_atoms);
     md_nucleic_acid_atoms_t* res_atoms = md_temp_alloc_array(temp, md_nucleic_acid_atoms_t, res.count);
     size_t num = 0;
     for (size_t k = 0; k < res.count; ++k) {
@@ -12428,8 +12428,8 @@ static void nucleic_backbones_from_bonds(md_system_t* sys, size_t min_length, md
     // Residue v follows u when the O3' of u is bonded to the P of v
     int32_t* prev = md_temp_alloc_array(temp, int32_t, num);
     int32_t* next = md_temp_alloc_array(temp, int32_t, num);
-    MD_MEMSET(prev, -1, sizeof(int32_t) * num);
-    MD_MEMSET(next, -1, sizeof(int32_t) * num);
+    md_memset(prev, -1, sizeof(int32_t) * num);
+    md_memset(next, -1, sizeof(int32_t) * num);
     for (size_t u = 0; u < num; ++u) {
         md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)res_atoms[u].o3);
         for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
@@ -12696,7 +12696,7 @@ static void record_lipid(md_system_t* sys, const int32_t* residues, size_t num_r
 // one after the other. in_lipid[c] for each residue of the molecule.
 static void lipid_extent(uint8_t* in_lipid, const md_system_t* sys, const lipid_mol_t* mol, const uint8_t* has_tail, md_allocator_i* temp_arena) {
     const int32_t nc = mol->num_residues;
-    MD_MEMSET(in_lipid, 1, (size_t)nc);
+    md_memset(in_lipid, 1, (size_t)nc);
     if (nc < 2) return;
 
     // The bonds between the residues, each pair once
@@ -12725,14 +12725,14 @@ static void lipid_extent(uint8_t* in_lipid, const md_system_t* sys, const lipid_
     int32_t* adj = md_alloc(temp_arena, 2 * num_edges * sizeof(int32_t));
     int32_t* queue = md_alloc(temp_arena, (size_t)nc * sizeof(int32_t));
     uint8_t* alive = md_alloc(temp_arena, (size_t)nc);
-    MD_MEMSET(deg, 0, (size_t)nc * sizeof(int32_t));
+    md_memset(deg, 0, (size_t)nc * sizeof(int32_t));
     for (size_t e = 0; e < num_edges; ++e) {
         deg[edges[e] >> 32] += 1;
         deg[edges[e] & 0xFFFFFFFF] += 1;
     }
     off[0] = 0;
     for (int32_t c = 0; c < nc; ++c) off[c + 1] = off[c] + deg[c];
-    MD_MEMSET(deg, 0, (size_t)nc * sizeof(int32_t));
+    md_memset(deg, 0, (size_t)nc * sizeof(int32_t));
     for (size_t e = 0; e < num_edges; ++e) {
         const int32_t a = (int32_t)(edges[e] >> 32), b = (int32_t)(edges[e] & 0xFFFFFFFF);
         adj[off[a] + deg[a]++] = b;
@@ -12838,7 +12838,7 @@ static void infer_lipid_molecule(md_system_t* sys, const lipid_mol_t* mol, const
         head[k] = -1;
         tail[k] = 0;
     }
-    MD_MEMSET(has_tail, 0, nc);
+    md_memset(has_tail, 0, nc);
 
     // The connected apolar parts and what they hang off. The atoms of a part are part_atoms[beg, end), in the order
     // they were reached.
@@ -13137,7 +13137,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
     if (md_array_size(sys->atom.flags) < sys->atom.count) {
         const size_t size = md_array_size(sys->atom.flags);
         md_array_resize(sys->atom.flags, sys->atom.count, alloc);
-        MD_MEMSET(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
+        md_memset(sys->atom.flags + size, 0, (sys->atom.count - size) * sizeof(md_atom_flags_t));
     }
     for (size_t i = 0; i < sys->atom.count; ++i) sys->atom.flags[i] &= ~MD_ATOM_FLAG_LIPID_TAIL;
     // Without bonds every lipid by name is a molecule of its own residue, without heads and tails
@@ -13147,7 +13147,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
     if (md_array_size(sys->residue.flags) < sys->residue.count) {
         const size_t size = md_array_size(sys->residue.flags);
         md_array_resize(sys->residue.flags, sys->residue.count, alloc);
-        MD_MEMSET(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
+        md_memset(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
     }
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
@@ -13160,7 +13160,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
         if (!(md_system_ring_flags(sys, r) & MD_RING_FLAG_FUSED)) continue;
         if (!in_fused_ring) {
             in_fused_ring = md_alloc(temp_arena, sys->atom.count);
-            MD_MEMSET(in_fused_ring, 0, sys->atom.count);
+            md_memset(in_fused_ring, 0, sys->atom.count);
         }
         const int32_t* atoms = md_ring_atoms(&sys->ring, r);
         const size_t n = md_ring_size(&sys->ring, r);
@@ -13193,7 +13193,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
     // The residues of each molecule, ascending, after one another
     int32_t* count = md_alloc(temp_arena, num_residues * sizeof(int32_t));
     int32_t* start = md_alloc(temp_arena, num_residues * sizeof(int32_t));
-    MD_MEMSET(count, 0, num_residues * sizeof(int32_t));
+    md_memset(count, 0, num_residues * sizeof(int32_t));
     size_t num_members = 0;
     for (size_t c = 0; c < num_residues; ++c) {
         if (root[c] < 0) continue;
@@ -13207,7 +13207,7 @@ bool md_util_system_infer_lipids(md_system_t* sys) {
         start[c] = pos;
         if (root[c] == (int32_t)c) pos += count[c];
     }
-    MD_MEMSET(count, 0, num_residues * sizeof(int32_t));
+    md_memset(count, 0, num_residues * sizeof(int32_t));
     for (size_t c = 0; c < num_residues; ++c) {
         if (root[c] < 0) continue;
         const int32_t r = root[c];
@@ -13362,7 +13362,7 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
         if (md_array_size(sys->residue.flags) < sys->residue.count) {
             const size_t size = md_array_size(sys->residue.flags);
             md_array_resize(sys->residue.flags, sys->residue.count, alloc);
-            MD_MEMSET(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
+            md_memset(sys->residue.flags + size, 0, (sys->residue.count - size) * sizeof(md_residue_flags_t));
         }
         for (size_t i = 0; i < sys->residue.count; ++i) {
             sys->residue.flags[i] = (md_residue_flags_t)((uint32_t)sys->residue.flags[i] & ~(uint32_t)(MD_RESIDUE_FLAG_BREAK_BEFORE | MD_RESIDUE_FLAG_BREAK_AFTER));
@@ -13390,7 +13390,7 @@ bool md_util_system_infer_backbones(md_system_t* sys, const md_system_state_t* s
                         // A coarse grained residue: its backbone bead, a segment of a trace
                         const md_atom_idx_t bead = amino_acid_backbone_bead(sys, res_idx);
                         if (bead >= 0) {
-                            MD_MEMSET(&atoms, -1, sizeof(atoms));
+                            md_memset(&atoms, -1, sizeof(atoms));
                             atoms.ca = bead;
                             has_backbone_atoms = true;
                         }
@@ -13550,7 +13550,7 @@ bool md_util_system_infer(md_system_t* sys, const md_system_state_t* state, md_i
 
     if (!sys->atom.flags) {
         md_array_resize(sys->atom.flags, sys->atom.count, alloc);
-        MD_MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
+        md_memset(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     }
 
     if (flags & MD_UTIL_INFER_COLOR_BIT) {
@@ -13667,7 +13667,7 @@ bool md_util_system_infer_prepare(md_util_infer_work_t* work, const md_system_t*
     MD_ASSERT(work);
     MD_ASSERT(sys);
     MD_ASSERT(alloc);
-    MD_MEMSET(work, 0, sizeof(*work));
+    md_memset(work, 0, sizeof(*work));
 
     // The core and the counts, shared. Not what is the system's alone: its description, its force field, its attributes
     // (which its owner may add to meanwhile).
@@ -13675,9 +13675,9 @@ bool md_util_system_infer_prepare(md_util_infer_work_t* work, const md_system_t*
     work->sys.alloc = alloc;
     work->sys.nonbonded = NULL;
     work->sys.description = (md_str_t){0};
-    MD_MEMSET(&work->sys.attributes, 0, sizeof(work->sys.attributes));
+    md_memset(&work->sys.attributes, 0, sizeof(work->sys.attributes));
     work->sys.attributes.alloc = alloc;
-    MD_MEMSET(&work->sys.reference, 0, sizeof(work->sys.reference));
+    md_memset(&work->sys.reference, 0, sizeof(work->sys.reference));
     work->base_version = sys->topology_version;
 
     // The types of the atoms, which the owner may change meanwhile (a color, a radius): a few of them
@@ -13749,7 +13749,7 @@ bool md_util_system_infer_publish(md_system_t* sys, md_util_infer_work_t* work) 
     sys->reference = work->sys.reference;
 
     // Of its own: the work's attributes go with it
-    MD_MEMSET(work, 0, sizeof(*work));
+    md_memset(work, 0, sizeof(*work));
     md_system_topology_changed(sys);
     return true;
 }

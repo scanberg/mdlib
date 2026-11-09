@@ -201,7 +201,7 @@ md_topo_gpu_context_t* md_topo_gpu_context_create(md_gpu_device_t device, uint32
 
     struct md_topo_gpu_context* ctx = (struct md_topo_gpu_context*)md_alloc(md_get_heap_allocator(), sizeof(struct md_topo_gpu_context));
     if (!ctx) return NULL;
-    MD_MEMSET(ctx, 0, sizeof(*ctx));
+    md_memset(ctx, 0, sizeof(*ctx));
 
     ctx->device     = device;
     ctx->num_points = dim_x * dim_y * dim_z;
@@ -389,7 +389,7 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
     if (num_vertices == 0) return false;
 
     md_allocator_i* alloc = out_graph->alloc;
-    MD_MEMSET(out_graph, 0, sizeof(*out_graph));
+    md_memset(out_graph, 0, sizeof(*out_graph));
     out_graph->alloc        = alloc;
     out_graph->num_vertices = num_vertices;
     out_graph->num_edges    = num_edges;
@@ -412,7 +412,7 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
 
     if (num_edges > 0) {
         out_graph->edges = (md_topo_edge_t*)md_alloc(alloc, num_edges * sizeof(md_topo_edge_t));
-        MD_MEMCPY(out_graph->edges, ctx->host_edges.cpu, num_edges * sizeof(md_topo_edge_t));
+        md_memcpy(out_graph->edges, ctx->host_edges.cpu, num_edges * sizeof(md_topo_edge_t));
     }
 
     return true;
@@ -815,7 +815,7 @@ bool md_topo_compute_extremum_graph_GPU(md_topo_extremum_graph_t* out_graph, uin
     delete_buffer(edge_count_buf);
     
     // Fill output structure
-    MD_MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
+    md_memset(out_graph, 0, sizeof(md_topo_extremum_graph_t));
     out_graph->num_vertices = num_vertices;
     out_graph->vertices     = vertices;
     out_graph->types        = types_out;
@@ -871,10 +871,10 @@ void md_topo_simplify(md_topo_extremum_graph_t* out_graph, const md_topo_extremu
     md_array(md_topo_edge_t)  edge        = md_array_create(md_topo_edge_t, in_graph->num_edges,    temp_alloc);
     md_array(md_array(int))   vertex_adj  = md_array_create(md_array(int),  in_graph->num_vertices, temp_alloc);
 
-    MD_MEMCPY(vertex_type, in_graph->types,    in_graph->num_vertices * sizeof(int));
-    MD_MEMCPY(vertex,      in_graph->vertices, in_graph->num_vertices * sizeof(md_topo_vert_t));
-    MD_MEMSET(vertex_adj,  0,                  in_graph->num_vertices * sizeof(md_array(int)));
-    MD_MEMCPY(edge,        in_graph->edges,    in_graph->num_edges    * sizeof(md_topo_edge_t));
+    md_memcpy(vertex_type, in_graph->types,    in_graph->num_vertices * sizeof(int));
+    md_memcpy(vertex,      in_graph->vertices, in_graph->num_vertices * sizeof(md_topo_vert_t));
+    md_memset(vertex_adj,  0,                  in_graph->num_vertices * sizeof(md_array(int)));
+    md_memcpy(edge,        in_graph->edges,    in_graph->num_edges    * sizeof(md_topo_edge_t));
 
     // Build adjacency
     for (size_t i = 0; i < md_array_size(edge); ++i) {
@@ -961,7 +961,7 @@ void md_topo_simplify(md_topo_extremum_graph_t* out_graph, const md_topo_extremu
     // Build compact remap: surviving vertices get sequential indices
     uint32_t num_vertices = 0;
     md_array(int) vertex_remap = md_array_create(int, md_array_size(vertex), temp_alloc);
-    MD_MEMSET(vertex_remap, -1, md_array_bytes(vertex_remap));
+    md_memset(vertex_remap, -1, md_array_bytes(vertex_remap));
     for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
         if (vertex_type[i] == 0) continue;
         vertex_remap[i] = (int)num_vertices++;
@@ -1006,7 +1006,7 @@ done:
 
 void md_topo_count_vertex_types(uint32_t out_counts[MD_TOPO_NUM_TYPES], const md_topo_extremum_graph_t* graph) {
     if (!graph || !out_counts) return;
-    MD_MEMSET(out_counts, 0, sizeof(uint32_t) * MD_TOPO_NUM_TYPES);
+    md_memset(out_counts, 0, sizeof(uint32_t) * MD_TOPO_NUM_TYPES);
     for (uint32_t i = 0; i < graph->num_vertices; ++i) {
         md_topo_critical_point_type_t type = graph->types[i];
         if (0 <= type && type < MD_TOPO_NUM_TYPES) {
@@ -1022,14 +1022,14 @@ void md_topo_extremum_graph_free(md_topo_extremum_graph_t* graph) {
         if (graph->types)    md_free(alloc, graph->types,    graph->num_vertices * sizeof(md_topo_critical_point_type_t));
         if (graph->edges)    md_free(alloc, graph->edges,    graph->num_edges    * sizeof(md_topo_edge_t));
         if (graph->vertices_f64) md_free(alloc, graph->vertices_f64, graph->num_vertices * sizeof(md_topo_vert_f64_t));
-        MD_MEMSET(graph, 0, sizeof(md_topo_extremum_graph_t));
+        md_memset(graph, 0, sizeof(md_topo_extremum_graph_t));
         graph->alloc = alloc;
     }
 }
 
 void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_topo_extremum_graph_t* src_graph) {
     md_allocator_i* alloc = out_graph->alloc ? out_graph->alloc : md_get_heap_allocator();
-    MD_MEMSET(out_graph, 0, sizeof(md_topo_extremum_graph_t));
+    md_memset(out_graph, 0, sizeof(md_topo_extremum_graph_t));
     out_graph->alloc        = alloc;
     out_graph->num_vertices = src_graph->num_vertices;
     out_graph->num_edges    = src_graph->num_edges;
@@ -1038,12 +1038,12 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
     out_graph->types    = (md_topo_critical_point_type_t*)md_alloc(alloc, src_graph->num_vertices * sizeof(md_topo_critical_point_type_t));
     out_graph->edges    = (md_topo_edge_t*)md_alloc(alloc, src_graph->num_edges * sizeof(md_topo_edge_t));
 
-    MD_MEMCPY(out_graph->vertices, src_graph->vertices, src_graph->num_vertices * sizeof(md_topo_vert_t));
-    MD_MEMCPY(out_graph->types,    src_graph->types,    src_graph->num_vertices * sizeof(md_topo_critical_point_type_t));
-    MD_MEMCPY(out_graph->edges,    src_graph->edges,    src_graph->num_edges    * sizeof(md_topo_edge_t));
+    md_memcpy(out_graph->vertices, src_graph->vertices, src_graph->num_vertices * sizeof(md_topo_vert_t));
+    md_memcpy(out_graph->types,    src_graph->types,    src_graph->num_vertices * sizeof(md_topo_critical_point_type_t));
+    md_memcpy(out_graph->edges,    src_graph->edges,    src_graph->num_edges    * sizeof(md_topo_edge_t));
     if (src_graph->vertices_f64) {
         out_graph->vertices_f64 = (md_topo_vert_f64_t*)md_alloc(alloc, src_graph->num_vertices * sizeof(md_topo_vert_f64_t));
-        MD_MEMCPY(out_graph->vertices_f64, src_graph->vertices_f64, src_graph->num_vertices * sizeof(md_topo_vert_f64_t));
+        md_memcpy(out_graph->vertices_f64, src_graph->vertices_f64, src_graph->num_vertices * sizeof(md_topo_vert_f64_t));
     }
 }
 
@@ -1994,7 +1994,7 @@ static void cpg_point_trace(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const doubl
     if (!inside) {
         int ns = 0;
         const int n = cpg_local_aos(ctx, sc, x, CPG_TRACE_BOX, &ns, true);
-        MD_MEMCPY(sc->tc_c, x, sizeof(double) * 3);
+        md_memcpy(sc->tc_c, x, sizeof(double) * 3);
         sc->tc_valid = true;
         sc->tc_direct = (size_t)n * n > CPG_TRACE_BLOCK;
         if (sc->tc_direct) {
@@ -2006,8 +2006,8 @@ static void cpg_point_trace(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const doubl
             sc->tc_cap = MD_MAX((size_t)n * n, (size_t)256 * 256);
             sc->tc_B = (double*)md_alloc(heap, sizeof(double) * sc->tc_cap);
         }
-        MD_MEMCPY(sc->tc_L, sc->L, sizeof(int) * n);
-        MD_MEMCPY(sc->tc_shells, sc->shells, sizeof(int) * ns);
+        md_memcpy(sc->tc_L, sc->L, sizeof(int) * n);
+        md_memcpy(sc->tc_shells, sc->shells, sizeof(int) * ns);
         for (int i = 0; i < n; ++i) {     // the upper triangle (read as symmetric below)
             const double* row = ctx->D + (size_t)sc->tc_L[i] * ctx->nao;
             double* b = sc->tc_B + (size_t)i * n;
@@ -2294,7 +2294,7 @@ typedef struct cpg_worker_t {
 // below rho_min, -1 if Newton failed.
 static int cpg_polish_root(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const cpg_box_t* box, cpg_cp_t* out_cp) {
     cpg_cp_t cp = {0};
-    MD_MEMCPY(cp.x, box->c, sizeof(cp.x));
+    md_memcpy(cp.x, box->c, sizeof(cp.x));
     if (!cpg_newton(ctx, sc, cp.x, &cp.rho, cp.ev, cp.evec)) return -1;
     // Ownership is decided on the ROOT, not per cube: a CP on a shared face or corner (common by
     // symmetry, e.g. a ring CP at the origin) is polished by several cubes whose Newton results differ in
@@ -2323,7 +2323,7 @@ static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
     for (int s = 0; s < 8; ++s) {
         const double d[3] = { (s & 1) ? hc : -hc, (s & 2) ? hc : -hc, (s & 4) ? hc : -hc };
         cpg_eval_t C;
-        MD_MEMSET(&C, 0, sizeof(C));
+        md_memset(&C, 0, sizeof(C));
         for (int i = 0; i < 3; ++i) {
             double gi = P->g[i];
             for (int j = 0; j < 3; ++j) {
@@ -2339,9 +2339,9 @@ static uint32_t cpg_child_mask(const cpg_eval_t* P, double h) {
             C.quadT[i] = 0.25 * P->quadT[i];      // 1/2 sum |T| hc^2
             C.r[i] = P->r[i];
         }
-        MD_MEMCPY(C.T, P->T, sizeof(C.T));           // a quadratic re-centred: the same T (the exact quadratic test uses it)
+        md_memcpy(C.T, P->T, sizeof(C.T));           // a quadratic re-centred: the same T (the exact quadratic test uses it)
         double val[3], vec[3][3], M[3][3];
-        MD_MEMCPY(M, C.A, sizeof(M));
+        md_memcpy(M, C.A, sizeof(M));
         cpg_eigen_sym3(val, vec, M);
         if (!cpg_exclude(&C, hc, val, vec)) mask |= 1u << s;
     }
@@ -2555,7 +2555,7 @@ static double cpg_pad_bound(const cpg_ctx_t* ctx, double pad, const double* M, i
 }
 
 static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
-    MD_MEMSET(R, 0, sizeof(*R));
+    md_memset(R, 0, sizeof(*R));
     R->desc = desc;
     R->heap = md_get_heap_allocator();
     R->prog.out = desc->progress;
@@ -2565,7 +2565,7 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     const md_gto_basis_t* basis = desc->basis;
 
     cpg_ctx_t* ctx = (cpg_ctx_t*)md_alloc(heap, sizeof(cpg_ctx_t));
-    MD_MEMSET(ctx, 0, sizeof(*ctx));
+    md_memset(ctx, 0, sizeof(*ctx));
     R->ctx = ctx;
     cpg_init_tables(ctx);
     ctx->eps = desc->rho_min > 0.0 ? desc->rho_min : 1.0e-4;
@@ -2617,7 +2617,7 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     const int NS = ctx->nshell;
 
     R->workers = (cpg_worker_t*)md_alloc(heap, sizeof(cpg_worker_t) * nthreads);
-    MD_MEMSET(R->workers, 0, sizeof(cpg_worker_t) * nthreads);
+    md_memset(R->workers, 0, sizeof(cpg_worker_t) * nthreads);
     for (int t = 0; t < nthreads; ++t) {
         R->workers[t].ctx = ctx;
         R->workers[t].cancel = desc->cancel;
@@ -2680,7 +2680,7 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     // the Hessian there (the pairs it is in, both orders): its tail weights tw. Every shell at once, each
     // below tau: the global tails.
     double* Ri = (double*)md_alloc(heap, sizeof(double) * 3 * (size_t)N);
-    MD_MEMSET(Ri, 0, sizeof(double) * 3 * (size_t)N);
+    md_memset(Ri, 0, sizeof(double) * 3 * (size_t)N);
     for (int i = 0; i < N; ++i) {
         const double* Drow = ctx->D + (size_t)i * N;
         double r0 = 0.0, r1 = 0.0, r2 = 0.0;
@@ -2746,7 +2746,7 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     const int ntiles = (N + CPG_DTILE - 1) / CPG_DTILE;
     const int ntw = (ntiles + 63) / 64;
     uint64_t* tile_need = (uint64_t*)md_alloc(heap, sizeof(uint64_t) * (size_t)ntiles * ntw);
-    MD_MEMSET(tile_need, 0, sizeof(uint64_t) * (size_t)ntiles * ntw);
+    md_memset(tile_need, 0, sizeof(uint64_t) * (size_t)ntiles * ntw);
     R->tile_need = tile_need;
     R->ntiles = ntiles;
     R->tile_words = ntw;
@@ -2789,7 +2789,7 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     double* M  = by_key ? (double*)md_alloc(heap, sizeof(double) * (size_t)K * K) : NULL;
     double* T0 = (double*)md_alloc(heap, sizeof(double) * NT);
     if (by_key) {
-        MD_MEMSET(M, 0, sizeof(double) * (size_t)K * K);
+        md_memset(M, 0, sizeof(double) * (size_t)K * K);
         for (int i = 0; i < N; ++i) {
             double* Mi = M + (size_t)ao_key[i] * K;
             for (int j = 0; j < N; ++j) Mi[ao_key[j]] += fabs(ctx->D[(size_t)i * N + j]);
@@ -3152,7 +3152,7 @@ static bool cpg_run_finish(cpg_run_t* R, md_topo_extremum_graph_t* out_graph, md
         if (ne > 0) {
             out_graph->num_edges = (uint32_t)ne;
             out_graph->edges = (md_topo_edge_t*)md_alloc(galloc, sizeof(md_topo_edge_t) * ne);
-            MD_MEMCPY(out_graph->edges, edges, sizeof(md_topo_edge_t) * ne);
+            md_memcpy(out_graph->edges, edges, sizeof(md_topo_edge_t) * ne);
         }
     }
     info->complete = (nu == 0) && !info->cancelled;
@@ -4056,7 +4056,7 @@ static bool cpg_trace_gpu(cpg_run_t* R, const cpg_cp_t* cps, int ncp, const int*
     uint32_t n_cap = (uint32_t)MD_MIN((uint32_t)R->ctx->nao, MD_MAX(R->info.local_ao_bound, 1u));
     n_cap = (uint32_t)MD_MIN((uint64_t)n_cap, CPG_TRACE_SCRATCH / ((uint64_t)S * (sizeof(uint32_t) + 4 * sizeof(float))));
     cpg_gpu_slot_t* hs = (cpg_gpu_slot_t*)md_alloc(heap, sizeof(cpg_gpu_slot_t) * S);
-    MD_MEMSET(hs, 0, sizeof(cpg_gpu_slot_t) * S);
+    md_memset(hs, 0, sizeof(cpg_gpu_slot_t) * S);
     for (uint32_t s = 0; s < S; ++s) hs[s].info[0] = -1;
     const uint32_t q0[2] = { 0, 0 };
 

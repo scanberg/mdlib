@@ -220,7 +220,7 @@ static void gto_int_hermite_recurse(double* R, int L, const double* base, double
         }
         double* tmp = cur; cur = nxt; nxt = tmp;
     }
-    MD_MEMCPY(R, nxt, sizeof(double) * md_gto_int_num_hermite((uint32_t)L));
+    md_memcpy(R, nxt, sizeof(double) * md_gto_int_num_hermite((uint32_t)L));
 }
 
 static void gto_int_hermite_R(double* R, int L, double p, double x, double y, double z, const double* boys_tab) {
@@ -246,7 +246,7 @@ static void gto_int_hermite_R(double* R, int L, double p, double x, double y, do
 typedef double gto_int_E_t[MD_GTO_MAX_ANGULAR_MOMENTUM + 1][MD_GTO_MAX_ANGULAR_MOMENTUM + 1][MD_GTO_INT_MAX_ORDER + 1];
 
 static void gto_int_hermite_E(gto_int_E_t E, int la, int lb, double p, double PA, double PB, double K) {
-    MD_MEMSET(E, 0, sizeof(gto_int_E_t));
+    md_memset(E, 0, sizeof(gto_int_E_t));
     const double o2p = 0.5 / p;
     E[0][0][0] = K;
     for (int i = 0; i <= la; ++i) {
@@ -356,7 +356,7 @@ static int gto_int_item_moments(double* c, const md_gto_int_charges_t* q, uint32
         return (int)L;
     }
     const uint32_t k = it - q->num_gaussians;
-    MD_MEMSET(c, 0, sizeof(double) * 10);
+    md_memset(c, 0, sizeof(double) * 10);
     c[0] = q->point_charge[k];
     int L = 0;
     if (q->point_dipole) {
@@ -408,7 +408,7 @@ static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_al
             for (int k = 0; k < 3; ++k) { lo[k] = MD_MIN(lo[k], x[k]); hi[k] = MD_MAX(hi[k], x[k]); }
         }
         const double O[3] = { 0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]) };
-        MD_MEMCPY(nodes[ni].center, O, sizeof(O));
+        md_memcpy(nodes[ni].center, O, sizeof(O));
 
         const bool splittable = (hi[0] > lo[0] || hi[1] > lo[1] || hi[2] > lo[2]);
         if (end - beg <= GTO_INT_FAR_LEAF || !splittable || depth[ni] >= GTO_INT_FAR_MAX_DEPTH) continue;
@@ -422,12 +422,12 @@ static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_al
         uint32_t off[8], run = beg;
         for (int o = 0; o < 8; ++o) { off[o] = run; run += count[o]; }
         uint32_t w[8];
-        MD_MEMCPY(w, off, sizeof(w));
+        md_memcpy(w, off, sizeof(w));
         for (uint32_t i = beg; i < end; ++i) {
             const double* x = gto_int_item_xyz(q, item[i]);
             scratch[w[(x[0] > O[0]) | ((x[1] > O[1]) << 1) | ((x[2] > O[2]) << 2)]++] = item[i];
         }
-        MD_MEMCPY(item + beg, scratch + beg, sizeof(uint32_t) * (end - beg));
+        md_memcpy(item + beg, scratch + beg, sizeof(uint32_t) * (end - beg));
 
         const uint32_t first = (uint32_t)md_array_size(nodes);
         uint32_t num = 0;
@@ -474,8 +474,8 @@ static bool gto_int_far_field_build(md_gto_int_charges_t* q, double theta, md_al
         if (node) md_free(alloc, node, sizeof(md_gto_int_node_t) * num_nodes);
         goto done;
     }
-    MD_MEMSET(M, 0, sizeof(double) * nh * num_nodes);
-    MD_MEMCPY(node, nodes, sizeof(md_gto_int_node_t) * num_nodes);
+    md_memset(M, 0, sizeof(double) * nh * num_nodes);
+    md_memcpy(node, nodes, sizeof(md_gto_int_node_t) * num_nodes);
 
     // Children come after their parent, so in reverse every child is complete before its parent
     for (uint32_t ni = num_nodes; ni-- > 0; ) {
@@ -534,7 +534,7 @@ static inline uint64_t gto_int_mix_key(uint64_t x) {
 
 static inline uint32_t gto_int_float_bits(float f) {
     uint32_t u;
-    MD_MEMCPY(&u, &f, sizeof(u));
+    md_memcpy(&u, &f, sizeof(u));
     return u;
 }
 
@@ -854,7 +854,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                 out->exponent[dst]       = gauss[g].p;
                 out->bound[dst]          = bound[g];
                 out->coeff_offset[dst]   = (uint32_t)coeff_next[L];
-                MD_MEMCPY(out->coeff + coeff_next[L], scratch_coeff + gauss[g].coeff_offset, sizeof(double) * nh);
+                md_memcpy(out->coeff + coeff_next[L], scratch_coeff + gauss[g].coeff_offset, sizeof(double) * nh);
                 coeff_next[L] += nh;
             }
         }
@@ -879,7 +879,7 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
     if (!desc) {
         return false;
     }
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
 
     const bool has_density = desc->basis && desc->density_matrix && desc->basis->num_shells > 0;
     if (has_density) {
@@ -931,7 +931,7 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
                 md_gto_int_charges_free(out, alloc);
                 return false;
             }
-            MD_MEMCPY(out->point_dipole, desc->point_dipole, sizeof(double) * 3 * desc->num_points);
+            md_memcpy(out->point_dipole, desc->point_dipole, sizeof(double) * 3 * desc->num_points);
         }
         if (desc->point_quadrupole && gto_int_any_nonzero(desc->point_quadrupole, desc->num_points * 6)) {
             out->point_quadrupole = md_alloc(alloc, sizeof(double) * 6 * desc->num_points);
@@ -939,7 +939,7 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
                 md_gto_int_charges_free(out, alloc);
                 return false;
             }
-            MD_MEMCPY(out->point_quadrupole, desc->point_quadrupole, sizeof(double) * 6 * desc->num_points);
+            md_memcpy(out->point_quadrupole, desc->point_quadrupole, sizeof(double) * 6 * desc->num_points);
         }
     } else if (desc->point_dipole || desc->point_quadrupole) {
         MD_LOG_ERROR("md_gto_int_charges_init: point multipoles given without points");
@@ -971,7 +971,7 @@ void md_gto_int_charges_free(md_gto_int_charges_t* q, md_allocator_i* alloc) {
     if (q->node)             md_free(alloc, q->node,             sizeof(md_gto_int_node_t) * q->num_nodes);
     if (q->node_multipole)   md_free(alloc, q->node_multipole,   sizeof(double) * md_gto_int_num_hermite(q->far_field_order) * q->num_nodes);
     if (q->item)             md_free(alloc, q->item,             sizeof(uint32_t) * ((size_t)q->num_gaussians + q->num_points));
-    MD_MEMSET(q, 0, sizeof(*q));
+    md_memset(q, 0, sizeof(*q));
 }
 
 // Work of one gaussian at one voxel, in recursion steps: the recursion itself (C(L+4,4) updates),
@@ -1664,7 +1664,7 @@ static bool gto_int_gpu_far_layout(const md_gto_int_gpu_charges* g, char* dst, c
     for (uint32_t L = 0; L <= MD_GTO_INT_MAX_ORDER; ++L) next[L] = q->order_offset[L];
     uint32_t next_point = 0;
     for (uint32_t i = 0; i < n; ++i) {
-        MD_MEMCPY(prefix + (size_t)i * nr, count, sizeof(uint32_t) * nr);
+        md_memcpy(prefix + (size_t)i * nr, count, sizeof(uint32_t) * nr);
         const uint32_t it = q->item[i];
         if (it < ng) {
             const uint32_t L = gto_int_order_of_gaussian(q, it);
@@ -1687,7 +1687,7 @@ static bool gto_int_gpu_far_layout(const md_gto_int_gpu_charges* g, char* dst, c
             count[nr - 1]++;
         }
     }
-    MD_MEMCPY(prefix + (size_t)n * nr, count, sizeof(uint32_t) * nr);
+    md_memcpy(prefix + (size_t)n * nr, count, sizeof(uint32_t) * nr);
 
     float*    geom  = (float*)(dst + g->off_node_geom);
     uint32_t* link  = (uint32_t*)(dst + g->off_node_link);
@@ -1730,11 +1730,11 @@ md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, c
 
     md_gto_int_gpu_charges* g = md_alloc(md_get_heap_allocator(), sizeof(md_gto_int_gpu_charges));
     if (!g) return NULL;
-    MD_MEMSET(g, 0, sizeof(*g));
+    md_memset(g, 0, sizeof(*g));
     g->num_gaussians = q->num_gaussians;
     g->num_points    = q->num_points;
     g->max_order     = q->max_order;
-    MD_MEMCPY(g->order_offset, q->order_offset, sizeof(g->order_offset));
+    md_memcpy(g->order_offset, q->order_offset, sizeof(g->order_offset));
     {
         uint32_t run = 0;
         for (uint32_t L = 0; L <= MD_GTO_INT_MAX_ORDER; ++L) {
@@ -1800,7 +1800,7 @@ md_gto_int_gpu_charges_t md_gto_int_gpu_charges_create(md_gpu_stream_t stream, c
         md_free(md_get_heap_allocator(), g, sizeof(*g));
         return NULL;
     }
-    MD_MEMSET(dst, 0, g->size);
+    md_memset(dst, 0, g->size);
 
     // The table the kernel's Boys function interpolates in, from the double precision one here.
     {

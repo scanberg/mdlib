@@ -258,7 +258,7 @@ static void rd_reals(tpr_reader_t* r, float* dst, size_t count) {
     const uint8_t* p = (count <= SIZE_MAX / size) ? md_xdr_take(&r->xdr, count * size) : NULL;
     if (!p) {
         rd_fail(r);
-        MD_MEMSET(dst, 0, count * sizeof(float));
+        md_memset(dst, 0, count * sizeof(float));
         return;
     }
     if (r->dbl) {
@@ -761,11 +761,11 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, md_str_t version_strin
         data->str_data = md_alloc(alloc, total + 1);
         data->str_size = total + 1;
         char* dst = data->str_data;
-        MD_MEMCPY(dst, version_string.ptr, version_string.len);
+        md_memcpy(dst, version_string.ptr, version_string.len);
         data->version_string = (md_str_t){ dst, version_string.len };
         dst += version_string.len;
         for (size_t i = 0; i < count; ++i) {
-            MD_MEMCPY(dst, views[i].ptr, views[i].len);
+            md_memcpy(dst, views[i].ptr, views[i].len);
             views[i].ptr = dst;
             dst += views[i].len;
         }
@@ -806,7 +806,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, md_str_t version_strin
         }
         data->lj = md_array_create(md_tpr_lj_t, num_pairs, alloc);
         data->num_nb_types = num_nb_types;
-        if (num_pairs) MD_MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
+        if (num_pairs) md_memset(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
         bool all_lj = num_pairs > 0;
 
         for (size_t i = 0; i < num_types && rd_ok(r); ++i) {
@@ -831,7 +831,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, md_str_t version_strin
         data->nb_is_lj = all_lj;
         if (!all_lj && num_pairs) {
             // A table of mixed or other forms is not Lennard-Jones: leave nothing half filled in
-            MD_MEMSET(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
+            md_memset(data->lj, 0, num_pairs * sizeof(md_tpr_lj_t));
         }
     }
 
@@ -843,7 +843,7 @@ static void rd_mtop(tpr_reader_t* r, md_tpr_data_t* data, md_str_t version_strin
             return;
         }
         data->moltypes = md_array_create(md_tpr_moltype_t, count, alloc);
-        if (count) MD_MEMSET(data->moltypes, 0, count * sizeof(md_tpr_moltype_t));
+        if (count) md_memset(data->moltypes, 0, count * sizeof(md_tpr_moltype_t));
         data->num_moltypes = count;
         for (size_t i = 0; i < count && rd_ok(r); ++i) {
             rd_moltype(r, &data->moltypes[i], &symtab, alloc);
@@ -1125,7 +1125,7 @@ static void rd_ir_nonbonded(tpr_reader_t* r, md_tpr_nonbonded_t* nb) {
 bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t size, md_allocator_i* alloc) {
     MD_ASSERT(data);
     MD_ASSERT(alloc);
-    MD_MEMSET(data, 0, sizeof(md_tpr_data_t));
+    md_memset(data, 0, sizeof(md_tpr_data_t));
     data->pbc = MD_TPR_PBC_UNSET;
 
     if (!buffer || size == 0) {
@@ -1226,7 +1226,7 @@ bool md_tpr_data_parse_buffer(md_tpr_data_t* data, const void* buffer, size_t si
     if (has_box) {
         float box[9];
         rd_reals(&body, box, 9);
-        MD_MEMCPY(data->box, box, sizeof(box));
+        md_memcpy(data->box, box, sizeof(box));
         data->has_box = true;
         if (version >= tpxv_Pre96Version51) skip_reals(&body, 9);  // Relative box
         skip_reals(&body, 9);                                       // Box velocity
@@ -1344,7 +1344,7 @@ void md_tpr_data_free(md_tpr_data_t* data, md_allocator_i* alloc) {
     if (data->str_data) {
         md_free(alloc, data->str_data, data->str_size);
     }
-    MD_MEMSET(data, 0, sizeof(md_tpr_data_t));
+    md_memset(data, 0, sizeof(md_tpr_data_t));
     data->pbc = MD_TPR_PBC_UNSET;
 }
 
@@ -1479,8 +1479,8 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MD_MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MD_MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
+    md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
     sys->atom.type.count = 0;
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
@@ -1499,7 +1499,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         size_t num_inferred = 0;    // ... with one inferred here
         size_t num_types_inferred = 0;
         size_t* mt_counts = md_temp_alloc_array(temp, size_t, 3 * (data->num_moltypes + 1));
-        MD_MEMSET(mt_counts, 0, 3 * (data->num_moltypes + 1) * sizeof(size_t));
+        md_memset(mt_counts, 0, 3 * (data->num_moltypes + 1) * sizeof(size_t));
 
         // What an inference gives, by what it is of: once per molecule type atom is once per atom where every molecule
         // is a type of its own (as many coarse grained systems are written), and the same few names and masses then make
@@ -1511,10 +1511,10 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const md_tpr_moltype_t* mt = &data->moltypes[t];
             moltype_z[t] = md_temp_alloc_array(temp, md_atomic_number_t, mt->num_atoms + 1);
             moltype_inferred[t] = md_temp_alloc_array(temp, bool, mt->num_atoms + 1);
-            MD_MEMSET(moltype_inferred[t], 0, (mt->num_atoms + 1) * sizeof(bool));
+            md_memset(moltype_inferred[t], 0, (mt->num_atoms + 1) * sizeof(bool));
 
             uint32_t* res_size = md_temp_alloc_array(temp, uint32_t, mt->num_residues + 1);
-            MD_MEMSET(res_size, 0, (mt->num_residues + 1) * sizeof(uint32_t));
+            md_memset(res_size, 0, (mt->num_residues + 1) * sizeof(uint32_t));
             for (size_t i = 0; i < mt->num_atoms; ++i) {
                 res_size[mt->atoms[i].residue] += 1;
             }

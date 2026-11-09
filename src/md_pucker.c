@@ -97,7 +97,7 @@ static inline double wrap360(double a) {
 
 bool md_pucker_cremer_pople(md_pucker_t* out, const vec3_t* xyz, size_t count) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(md_pucker_t));
+    md_memset(out, 0, sizeof(md_pucker_t));
     if (!xyz || count < 5 || count > 7) return false;
     const int N = (int)count;
 
@@ -361,7 +361,7 @@ size_t md_pucker_ring_order(int32_t* out, bool* out_anchored, const md_system_t*
     if (n == 0 || n > MD_RING_MAX_SIZE) return 0;
 
     if (md_system_ring_flags(sys, ring_idx) & MD_RING_FLAG_SUGAR) {
-        MD_MEMCPY(out, ring, n * sizeof(int32_t));
+        md_memcpy(out, ring, n * sizeof(int32_t));
         if (out_anchored) *out_anchored = true;
         return n;
     }
@@ -521,7 +521,7 @@ static bool compute_ring(md_pucker_ring_t* r, const md_system_t* sys, const md_s
 
 bool md_pucker_ring(md_pucker_ring_t* out, const md_system_t* sys, const md_system_state_t* state, size_t ring_idx) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(md_pucker_ring_t));
+    md_memset(out, 0, sizeof(md_pucker_ring_t));
     if (!sys || !state || !state->xyz || ring_idx >= md_ring_data_count(&sys->ring)) return false;
     const size_t n = md_ring_size(&sys->ring, ring_idx);
     if (n < 5 || n > 7) return false;
@@ -536,9 +536,9 @@ bool md_pucker_ring(md_pucker_ring_t* out, const md_system_t* sys, const md_syst
 
 bool md_pucker_ring_atoms(md_pucker_ring_t* out, const md_system_t* sys, const md_system_state_t* state, const int32_t* atoms, size_t count) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(md_pucker_ring_t));
+    md_memset(out, 0, sizeof(md_pucker_ring_t));
     if (!sys || !state || !state->xyz || !atoms || count < 5 || count > 7) return false;
-    MD_MEMCPY(out->atoms, atoms, count * sizeof(int32_t));
+    md_memcpy(out->atoms, atoms, count * sizeof(int32_t));
     out->size = (uint8_t)count;
     out->anchored = true;
     out->has_pseudo = count == 5;

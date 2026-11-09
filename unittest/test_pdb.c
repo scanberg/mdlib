@@ -90,7 +90,7 @@ UTEST(pdb, assemblies) {
     EXPECT_EQ(3, ir.end - ir.beg);
     EXPECT_EQ(60, md_assembly_copy_count(a, 0));
     const mat4_t I = mat4_ident();
-    EXPECT_EQ(0, MD_MEMCMP(&I, &a->oper_transform[a->oper[0]], sizeof(mat4_t)));
+    EXPECT_EQ(0, md_memcmp(&I, &a->oper_transform[a->oper[0]], sizeof(mat4_t)));
     md_vm_arena_destroy(alloc);
 }
 
@@ -412,7 +412,7 @@ UTEST(pdb, run_matches_reference) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     ASSERT_TRUE(run_extract_one(&got, &sys, PDB_RUN, 0));
-    EXPECT_EQ(0, MD_MEMCMP(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, md_memcmp(sys_state.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
 
     // One atom of one model: the text is read up to that atom and no further.
     float xyz[3];
@@ -460,7 +460,7 @@ UTEST(pdb, run_alternate_locations) {
     md_system_state_t got = {.alloc = arena};
     md_system_state_init(&got, sys.atom.count);
     ASSERT_TRUE(run_extract_one(&got, &sys, MD_STR_LIT("run/alt"), 0));
-    EXPECT_EQ(0, MD_MEMCMP(st.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
+    EXPECT_EQ(0, md_memcmp(st.xyz, got.xyz, sys.atom.count * sizeof(vec3_t)));
     ASSERT_TRUE(run_extract_one(&got, &sys, MD_STR_LIT("run/alt"), 1));
     EXPECT_EQ(1.5f, got.xyz[0].x);
     EXPECT_EQ(2.5f, got.xyz[1].x);     // the A location of the CA

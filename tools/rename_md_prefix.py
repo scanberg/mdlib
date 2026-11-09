@@ -36,6 +36,13 @@ FN_MACROS = ['ALIGNAS', 'TYPEOF', 'ARRAY_SIZE', 'TYPE_COMPATIBLE', 'IS_POW2', 'A
              'RAD_TO_DEG', 'KILOBYTES', 'MEGABYTES', 'GIGABYTES', 'CONCAT', 'CONCAT_INTERNAL', 'STRINGIFY',
              'STRINGIFY_VAL', 'ASSERT', 'DEBUG_BREAK', 'ENUM_FLAGS']
 SPECIAL = {'ARRAY_SIZE': 'MD_COUNTOF'}      # MD_ARRAY_SIZE is md_array.h's, for its dynamic arrays
+# Aliases of a function or intrinsic are named like functions: a call behaves exactly as a function call (each
+# argument evaluated once, nothing compiled away), unlike MD_MIN or MD_ASSERT, whose capitals say they do not.
+# The MD_ spellings are those of the first version of this rename, mapped too so that it runs on either base.
+ALIASES = {'MEMCPY': 'md_memcpy', 'MEMSET': 'md_memset', 'MEMMOVE': 'md_memmove', 'MEMCMP': 'md_memcmp',
+           'BSWAP16': 'md_bswap16', 'BSWAP32': 'md_bswap32', 'BSWAP64': 'md_bswap64', 'DEBUG_BREAK': 'md_debug_break'}
+SPECIAL.update(ALIASES)
+INTERMEDIATE = {'MD_' + k: v for k, v in ALIASES.items()}
 CPP_ONLY = {'defer': 'MD_DEFER', 'ExitScopeHelp': 'md_defer_helper', 'array_size_impl': 'md_array_size_impl'}
 
 # md_str.h: the type, the macros, and every function it declares, str_ or not
@@ -59,7 +66,8 @@ PROSE = {'MIN', 'MAX', 'PI', 'TWO_PI', 'DEBUG', 'RELEASE', 'CLAMP', 'CONCAT', 'S
 NEW = {}
 for n in FUNCS + STR_TYPES + STR_FUNCS: NEW[n] = 'md_' + n
 for n in OBJ_MACROS + FN_MACROS + STR_OBJ_MACROS + STR_FN_MACROS: NEW[n] = SPECIAL.get(n, 'MD_' + n)
-FN = set(FN_MACROS) | set(STR_FN_MACROS) | set(STR_FUNCS)     # renamed where called or on a directive line
+NEW.update(INTERMEDIATE)
+FN = set(FN_MACROS) | set(STR_FN_MACROS) | set(STR_FUNCS) | {'MD_DEBUG_BREAK'}   # renamed where called or on a directive line
 
 EXT = ('.c', '.h', '.inl', '.cpp', '.hpp', '.m', '.mm')
 # Vendored, self-contained sources that do not include md_common.h: their names are their own

@@ -222,7 +222,7 @@ md_attribute_id_t md_qm_publish_column(md_system_t* sys, md_str_t path, md_str_t
     const size_t   elem_size = md_attribute_type_size(type);
     const uint8_t* src       = (const uint8_t*)base;
     for (size_t i = 0; i < count; ++i) {
-        MD_MEMCPY(dst + i * elem_size, src + i * stride, elem_size);
+        md_memcpy(dst + i * elem_size, src + i * stride, elem_size);
     }
     return id;
 }
@@ -524,7 +524,7 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const dve
     }
 
     const size_t num_ao = md_gto_basis_num_ao(basis);
-    MD_MEMSET(out, 0, sizeof(double) * num_ao * num_ao);
+    md_memset(out, 0, sizeof(double) * num_ao * num_ao);
 
     // Shell offsets into the AO axis, so the pair loop below can start anywhere.
     md_temp_scope_t temp = md_temp_begin();
@@ -583,7 +583,7 @@ size_t md_qm_compute_overlap(double* out, const md_gto_basis_t* basis, const dve
             for (int k = 0; k < 3; ++k) r2 += (Av[k] - Bv[k]) * (Av[k] - Bv[k]);
 
             double blk[NC][NC];
-            MD_MEMSET(blk, 0, sizeof(blk));
+            md_memset(blk, 0, sizeof(blk));
             for (uint32_t p = 0; p < a->num_primitives; ++p) {
                 const double alpha_a = basis->alpha[a->primitive_offset + p];
                 const double coeff_a = basis->coeff[a->primitive_offset + p];
@@ -773,7 +773,7 @@ static size_t qm_density_combine(void* dst, size_t cap, const md_attribute_t* at
     if (md_attribute_same_data(alpha, beta)) {
         const double scale = 1.0 + beta_scale;
         if (scale == 0.0) {
-            MD_MEMSET(out, 0, sizeof(double) * cap);
+            md_memset(out, 0, sizeof(double) * cap);
             return cap;
         }
         if (md_attribute_extract_io_f64(out, cap, alpha, md_attribute_slice_all(), md_unit_none(), io) != cap) {
@@ -1149,7 +1149,7 @@ size_t md_qm_kinetic_orbitals(double** out_rows, double** out_weights, size_t* o
     *out_rows = NULL;
     *out_weights = NULL;
     *out_num_ao = 0;
-    MD_MEMSET(out_basis, 0, sizeof(*out_basis));
+    md_memset(out_basis, 0, sizeof(*out_basis));
     if (!md_str_eq(density_path, MD_STR_LIT("orbital/alpha/density")) && !md_str_eq(density_path, MD_STR_LIT("orbital/beta/density")) &&
         !md_str_eq(density_path, MD_STR_LIT("orbital/total/density"))) {
         return 0;
@@ -1298,7 +1298,7 @@ size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, si
         }
     } else if (ok) {
         // a spin without occupied orbitals has no density: zero, not a failure
-        MD_MEMSET(t, 0, sizeof(double) * count * 6);
+        md_memset(t, 0, sizeof(double) * count * 6);
         if (an) ok = qm_elf_terms(rho_a, g2_a, tau_a, xyz, count, stride, sys, MD_STR_LIT("orbital/alpha/density"), atom_xyz, atom_xyz_stride, alloc);
         if (ok && bn) ok = qm_elf_terms(rho_b, g2_b, tau_b, xyz, count, stride, sys, MD_STR_LIT("orbital/beta/density"), atom_xyz, atom_xyz_stride, alloc);
         for (size_t i = 0; ok && i < count; ++i) {

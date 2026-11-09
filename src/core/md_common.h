@@ -14,8 +14,10 @@
 #   endif
 #endif
 
-// Everything here is prefixed MD_ (macros) or md_ (functions): mdlib is included into other projects, where an
-// unprefixed MIN, PI or DEBUG would collide with theirs. Nothing is behind an #ifndef guard either - a guard
+// Everything here is prefixed: mdlib is included into other projects, where an unprefixed MIN, PI or DEBUG would
+// collide with theirs. md_ for what is called like a function and behaves like one - functions, and macros that are
+// only another name for one (md_memcpy, md_bswap32) - and MD_ for macros that do not: MD_MIN evaluates an argument
+// twice, MD_ASSERT's expression is gone in a release build, MD_COUNTOF wants an array, MD_PI is a constant. Nothing is behind an #ifndef guard either - a guard
 // silently adopts whatever definition came first - except MD_ASSERT, which a project may define before including
 // this to route assertions to its own handler.
 
@@ -109,9 +111,9 @@
 #define MD_DEG_TO_RAD(x) ((x)*(MD_PI / 180.0))
 #define MD_RAD_TO_DEG(x) ((x)*(180.0 / MD_PI))
 
-#define MD_KILOBYTES(x) (x * 1024LL)
-#define MD_MEGABYTES(x) (x * 1024LL * 1024LL)
-#define MD_GIGABYTES(x) (x * 1024LL * 1024LL * 1024LL)
+#define MD_KILOBYTES(x) ((x) * 1024LL)
+#define MD_MEGABYTES(x) ((x) * 1024LL * 1024LL)
+#define MD_GIGABYTES(x) ((x) * 1024LL * 1024LL * 1024LL)
 
 #define MD_CONCAT_INTERNAL(x, y) x##y
 #define MD_CONCAT(x, y) MD_CONCAT_INTERNAL(x, y)
@@ -219,28 +221,28 @@ extern "C" {
 #pragma intrinsic(__popcnt64)
 #endif
 
-#define MD_MEMCPY  memcpy
-#define MD_MEMSET  memset
-#define MD_MEMMOVE memmove
-#define MD_MEMCMP  memcmp
-#define MD_BSWAP16 _byteswap_ushort
-#define MD_BSWAP32 _byteswap_ulong
-#define MD_BSWAP64 _byteswap_uint64
-#define MD_DEBUG_BREAK() __debugbreak()
+#define md_memcpy  memcpy
+#define md_memset  memset
+#define md_memmove memmove
+#define md_memcmp  memcmp
+#define md_bswap16 _byteswap_ushort
+#define md_bswap32 _byteswap_ulong
+#define md_bswap64 _byteswap_uint64
+#define md_debug_break() __debugbreak()
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 
-#define MD_MEMCPY   __builtin_memcpy
-#define MD_MEMSET   __builtin_memset
-#define MD_MEMMOVE  __builtin_memmove
-#define MD_MEMCMP   __builtin_memcmp
-#define MD_BSWAP16  __builtin_bswap16
-#define MD_BSWAP32  __builtin_bswap32
-#define MD_BSWAP64  __builtin_bswap64
+#define md_memcpy   __builtin_memcpy
+#define md_memset   __builtin_memset
+#define md_memmove  __builtin_memmove
+#define md_memcmp   __builtin_memcmp
+#define md_bswap16  __builtin_bswap16
+#define md_bswap32  __builtin_bswap32
+#define md_bswap64  __builtin_bswap64
 #if defined(__x86_64__) || defined(__i386__)
-#   define MD_DEBUG_BREAK() __asm__ volatile("int3")
+#   define md_debug_break() __asm__ volatile("int3")
 #else
-#   define MD_DEBUG_BREAK() __builtin_trap()
+#   define md_debug_break() __builtin_trap()
 #endif
 
 #endif

@@ -43,7 +43,7 @@ typedef struct {
 } int_test_qm_t;
 
 static bool int_test_extract(int_test_qm_t* out, const qm_test_t* t) {
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     if (!qm_test_basis(&out->basis, t)) return false;
     out->num_ao = md_gto_basis_num_ao(&out->basis);
 
@@ -228,7 +228,7 @@ UTEST(gto_int, point_multipoles_match_a_charge_cluster) {
         for (int k = 0; k < 3; ++k) {
             float st[4][3];
             const float off[4] = { -2 * step, -step, step, 2 * step };
-            for (int j = 0; j < 4; ++j) { MD_MEMCPY(st[j], pts[i], sizeof(st[j])); st[j][k] += off[j]; }
+            for (int j = 0; j < 4; ++j) { md_memcpy(st[j], pts[i], sizeof(st[j])); st[j][k] += off[j]; }
             double Vs[4];
             md_gto_int_potential_xyz(Vs, NULL, &st[0][0], 4, 0, &full);
             const double dVdx = (Vs[0] - 8.0 * Vs[1] + 8.0 * Vs[2] - Vs[3]) / (12.0 * (double)step);
@@ -410,7 +410,7 @@ UTEST(gto_int, field_is_minus_gradient) {
         for (int k = 0; k < 3; ++k) {
             float st[4][3];
             const float off[4] = { -2 * h, -h, h, 2 * h };
-            for (int s = 0; s < 4; ++s) { MD_MEMCPY(st[s], c, sizeof(c)); st[s][k] += off[s]; }
+            for (int s = 0; s < 4; ++s) { md_memcpy(st[s], c, sizeof(c)); st[s][k] += off[s]; }
             double Vs[4];
             md_gto_int_potential_xyz(Vs, NULL, &st[0][0], 4, 0, &q);
             // fourth order central difference
@@ -439,13 +439,13 @@ typedef struct {
 
 static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int n, float spacing, md_allocator_i* alloc) {
     const size_t copies = (size_t)n * n * n;
-    MD_MEMSET(c, 0, sizeof(*c));
+    md_memset(c, 0, sizeof(*c));
     c->num_atoms = m->num_atoms * copies;
     c->num_ao    = m->num_ao * copies;
     c->atom_xyz  = (float*)md_alloc(alloc, sizeof(float) * 3 * c->num_atoms);
     c->atom_z    = (double*)md_alloc(alloc, sizeof(double) * c->num_atoms);
     c->D         = (double*)md_alloc(alloc, sizeof(double) * c->num_ao * c->num_ao);
-    MD_MEMSET(c->D, 0, sizeof(double) * c->num_ao * c->num_ao);
+    md_memset(c->D, 0, sizeof(double) * c->num_ao * c->num_ao);
     c->basis.num_shells     = (uint32_t)(m->basis.num_shells * copies);
     c->basis.num_primitives = m->basis.num_primitives;
     c->basis.alpha          = m->basis.alpha;
@@ -476,7 +476,7 @@ static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int 
         // sum over the same distribution.
         const size_t a0 = ci * m->num_ao;
         for (size_t i = 0; i < m->num_ao; ++i) {
-            MD_MEMCPY(c->D + (a0 + i) * c->num_ao + a0, m->D + i * m->num_ao, sizeof(double) * m->num_ao);
+            md_memcpy(c->D + (a0 + i) * c->num_ao + a0, m->D + i * m->num_ao, sizeof(double) * m->num_ao);
         }
     }
 }
@@ -510,7 +510,7 @@ UTEST(gto_int, far_field_matches_exact) {
     {
         const uint32_t n = far.num_gaussians + far.num_points;
         uint8_t* seen = (uint8_t*)md_alloc(t.alloc, n);
-        MD_MEMSET(seen, 0, n);
+        md_memset(seen, 0, n);
         for (uint32_t i = 0; i < n; ++i) { ASSERT_LT(far.item[i], n); seen[far.item[i]]++; }
         for (uint32_t i = 0; i < n; ++i) EXPECT_EQ(1, seen[i]);
         EXPECT_EQ(0u, far.node[0].item_begin);
@@ -724,7 +724,7 @@ static bool int_test_gpu_grid(float* out, md_gpu_stream_t stream, const md_gto_i
     if (!md_gto_int_gpu_potential_launch(stream, &desc)) return false;
     md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
     md_gpu_stream_sync(stream);
-    MD_MEMCPY(out, rb.cpu, sizeof(float) * nv);
+    md_memcpy(out, rb.cpu, sizeof(float) * nv);
 
     md_gto_int_gpu_charges_destroy(stream, gq);
     md_gpu_free(stream, rb.gpu);
@@ -739,7 +739,7 @@ static double int_test_compare(const float* gpu, const float* cpu, size_t n) {
     double worst = 0.0;
     for (size_t i = 0; i < n; ++i) {
         uint32_t u;
-        MD_MEMCPY(&u, &gpu[i], sizeof(u));
+        md_memcpy(&u, &gpu[i], sizeof(u));
         if ((u & 0x7F800000u) == 0x7F800000u) return DBL_MAX;   // not finite (fast-math safe test)
         worst = MD_MAX(worst, fabs((double)gpu[i] - (double)cpu[i]) / MD_MAX(1.0, fabs((double)cpu[i])));
     }
@@ -838,7 +838,7 @@ static bool int_test_gpu_xyz(float* out, md_gpu_stream_t stream, const md_gto_in
     md_gto_int_gpu_charges_t gq = md_gto_int_gpu_charges_create(stream, q);
     if (!pts.gpu || !res.gpu || !rb.cpu || !gq) return false;
     void* dst = md_gpu_upload_begin(stream, pts.gpu, bytes);
-    MD_MEMCPY(dst, xyz, bytes);
+    md_memcpy(dst, xyz, bytes);
     md_gpu_upload_end(stream);
 
     md_gto_int_gpu_potential_xyz_desc_t desc = {
@@ -848,7 +848,7 @@ static bool int_test_gpu_xyz(float* out, md_gpu_stream_t stream, const md_gto_in
     if (!md_gto_int_gpu_potential_xyz_launch(stream, &desc)) return false;
     md_gpu_copy(stream, rb.gpu, res.gpu, sizeof(float) * n);
     md_gpu_stream_sync(stream);
-    MD_MEMCPY(out, rb.cpu, sizeof(float) * n);
+    md_memcpy(out, rb.cpu, sizeof(float) * n);
 
     md_gto_int_gpu_charges_destroy(stream, gq);
     md_gpu_free(stream, pts.gpu);
@@ -1064,7 +1064,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     ASSERT_TRUE(md_gto_int_gpu_potential_launch(stream, &desc));
     md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
     md_gpu_stream_sync(stream);
-    MD_MEMCPY(gpu, rb.cpu, sizeof(float) * nv);
+    md_memcpy(gpu, rb.cpu, sizeof(float) * nv);
     // relative to max(1, |V|), as the other GPU tests: next to a nucleus the potential is tens of au,
     // and float is what limits it there
     const double worst = int_test_compare(gpu, ref, nv);
@@ -1073,7 +1073,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
 
     // A mask of every other brick's one voxel: those bricks gain the potential once more, whole
     uint8_t* mask = (uint8_t*)md_alloc(t.alloc, nv);
-    MD_MEMSET(mask, 0, nv);
+    md_memset(mask, 0, nv);
     for (int z = 0; z < grid.dim[2]; ++z) for (int y = 0; y < grid.dim[1]; ++y) for (int x = 0; x < grid.dim[0]; ++x) {
         if (((x / 4 + y / 4 + z / 4) & 1) == 0 && x % 4 == 1 && y % 4 == 2 && z % 4 == 3) mask[((size_t)z * grid.dim[1] + y) * grid.dim[0] + x] = 1;
     }
@@ -1172,7 +1172,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
         md_gpu_mem_t vbuf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * NP);
         md_gpu_mem_t vrb  = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * NP);
         ASSERT_TRUE(pbuf.gpu && vbuf.gpu && vrb.cpu);
-        MD_MEMCPY(md_gpu_upload_begin(stream, pbuf.gpu, sizeof(pts)), pts, sizeof(pts));
+        md_memcpy(md_gpu_upload_begin(stream, pbuf.gpu, sizeof(pts)), pts, sizeof(pts));
         md_gpu_upload_end(stream);
         md_gto_int_gpu_potential_xyz_desc_t xd = {
             .charges = gq, .xyz = pbuf.gpu, .num_xyz = NP, .out_potential = vbuf.gpu, .work_per_dispatch = 1u << 20,

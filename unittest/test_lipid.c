@@ -239,7 +239,7 @@ static bool lipid_system_from_smiles_residues(md_system_t* sys, const char* cons
     md_particle_type_add(&sys->atom.type, MD_STR_LIT(""), (md_str_t){0}, 0, 0, 0, 0, 0, alloc);
     md_array_resize(sys->atom.type_idx, n, alloc);
     md_array_resize(sys->atom.flags, n, alloc);
-    MD_MEMSET(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
+    md_memset(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     for (size_t i = 0; i < n; ++i) {
         const md_atomic_number_t z = g.atoms[i].z;
         char name[8];

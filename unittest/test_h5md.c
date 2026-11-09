@@ -35,7 +35,7 @@ typedef struct h5md_test_t {
 } h5md_test_t;
 
 static bool h5md_test_load(h5md_test_t* t, const char* path) {
-    MD_MEMSET(t, 0, sizeof(*t));
+    md_memset(t, 0, sizeof(*t));
     t->arena = md_vm_arena_create(MD_GIGABYTES(1));
     t->sys.alloc = t->arena;
     t->state.alloc = t->arena;

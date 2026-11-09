@@ -97,8 +97,8 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     const size_t capacity = MD_ROUND_UP(N, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
     md_array_resize(sys->atom.flags, capacity, alloc);
-    MD_MEMSET(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    MD_MEMSET(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
+    md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
+    md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
     sys->atom.type.count = 0;
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
@@ -264,15 +264,15 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
             count += 1;
         }
         if (num_noncovalent) {
-            MD_MEMCPY(pairs + count, sys->bond.pairs + old_count, num_noncovalent * sizeof(md_atom_pair_t));
-            MD_MEMCPY(flags + count, sys->bond.flags + old_count, num_noncovalent * sizeof(md_bond_flags_t));
+            md_memcpy(pairs + count, sys->bond.pairs + old_count, num_noncovalent * sizeof(md_atom_pair_t));
+            md_memcpy(flags + count, sys->bond.flags + old_count, num_noncovalent * sizeof(md_bond_flags_t));
         }
         md_bond_data_clear(&sys->bond);
         md_array_resize(sys->bond.pairs, count + num_noncovalent, sys->alloc);
         md_array_resize(sys->bond.flags, count + num_noncovalent, sys->alloc);
         if (count + num_noncovalent) {
-            MD_MEMCPY(sys->bond.pairs, pairs, (count + num_noncovalent) * sizeof(md_atom_pair_t));
-            MD_MEMCPY(sys->bond.flags, flags, (count + num_noncovalent) * sizeof(md_bond_flags_t));
+            md_memcpy(sys->bond.pairs, pairs, (count + num_noncovalent) * sizeof(md_atom_pair_t));
+            md_memcpy(sys->bond.flags, flags, (count + num_noncovalent) * sizeof(md_bond_flags_t));
         }
         sys->bond.count = count;
         sys->bond.noncovalent_count = num_noncovalent;

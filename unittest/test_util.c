@@ -1049,7 +1049,7 @@ static void check_bonds_against_topology(int* utest_result, const md_system_t* s
 // the bonds are theirs, and inference adds that one.
 UTEST(util, martini3_peptide_bonds) {
     int topology[MD_COUNTOF(martini3_peptide_topology) + 1][2];
-    MD_MEMCPY(topology, martini3_peptide_topology, sizeof(martini3_peptide_topology));
+    md_memcpy(topology, martini3_peptide_topology, sizeof(martini3_peptide_topology));
     topology[MD_COUNTOF(martini3_peptide_topology)][0] = 23;
     topology[MD_COUNTOF(martini3_peptide_topology)][1] = 25;
 
@@ -2082,7 +2082,7 @@ UTEST(util, pbc_deperiodize_self) {
 
     // Already consistent input must be left alone
     vec4_t again[PBC_NP];
-    MD_MEMCPY(again, pts, sizeof(pts));
+    md_memcpy(again, pts, sizeof(pts));
     vec3_t com2 = {0};
     ASSERT_TRUE(md_util_deperiodize_self_vec4(again, PBC_NP, &cell, &com2));
     for (int i = 0; i < PBC_NP; ++i) {
@@ -4201,7 +4201,7 @@ UTEST(util, packed_kernels_any_alignment) {
         // Periodic COM of a cloud well inside the cell is its plain mean, weighted or not
         vec3_t near_center[N];
         for (int i = 0; i < N; ++i) near_center[i] = vec3_add(vec3_set(5, 6, 7), vec3_mul1(vec3_sub(a[i], vec3_set(5, 6, 7)), 0.1f));
-        MD_MEMCPY(o, near_center, sizeof(near_center));
+        md_memcpy(o, near_center, sizeof(near_center));
         const vec3_t pc  = md_util_com_compute(o, NULL, NULL, N, &cell);
         const vec3_t pcw = md_util_com_compute(o, w,    NULL, N, &cell);
         const vec3_t mc  = md_util_com_compute(o, NULL, NULL, N, NULL);
@@ -4249,7 +4249,7 @@ UTEST(util, packed_kernels_any_alignment) {
         EXPECT_EQ(-1.0f, base_o[off + N].x);
 
         // Wrapping
-        MD_MEMCPY(o, b, N * sizeof(vec3_t));
+        md_memcpy(o, b, N * sizeof(vec3_t));
         ASSERT_TRUE(md_util_pbc(o, NULL, N, &cell));
         for (int i = 0; i < N; ++i) {
             for (int k = 0; k < 3; ++k) {
@@ -4531,14 +4531,14 @@ UTEST(util, ramachandran_classify) {
 
     // A guard on each side of the buffer catches a write outside it
     md_ramachandran_type_t buf[1 + 9 + 1];
-    MD_MEMSET(buf, 0xAB, sizeof(buf));
+    md_memset(buf, 0xAB, sizeof(buf));
     EXPECT_TRUE(md_util_backbone_ramachandran_classify(buf + 1, 9, &sys));
     EXPECT_EQ(0xAB, buf[0]);
     EXPECT_EQ(0xAB, buf[10]);
     for (int i = 0; i < 9; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
 
     // A capacity short of the segments: the last type written is still decided by the segment after it
-    MD_MEMSET(buf, 0xAB, sizeof(buf));
+    md_memset(buf, 0xAB, sizeof(buf));
     EXPECT_TRUE(md_util_backbone_ramachandran_classify(buf + 1, 4, &sys));
     EXPECT_EQ(0xAB, buf[0]);
     for (int i = 0; i < 4; ++i) EXPECT_EQ(expected[i], buf[1 + i]);
@@ -4574,7 +4574,7 @@ static size_t xyz_text_of(md_str_t* out, int32_t* xyz_to_sys, const md_system_t*
 // The segment of each atom which is the CA (C4') of one, -1 for none
 static int32_t* segment_of_atom(size_t num_atoms, md_allocator_i* alloc) {
     int32_t* seg = md_alloc(alloc, sizeof(int32_t) * num_atoms);
-    MD_MEMSET(seg, -1, sizeof(int32_t) * num_atoms);
+    md_memset(seg, -1, sizeof(int32_t) * num_atoms);
     return seg;
 }
 
@@ -4602,7 +4602,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
 
     // An atom of the reference as an atom of the XYZ
     int32_t* to_xyz = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
-    MD_MEMSET(to_xyz, -1, sizeof(int32_t) * ref.atom.count);
+    md_memset(to_xyz, -1, sizeof(int32_t) * ref.atom.count);
     for (size_t k = 0; k < num_xyz; ++k) to_xyz[xyz_to_ref[k]] = (int32_t)k;
 #define X(a) ((a) < 0 ? -1 : to_xyz[a])
 #define SEG(a) (X(a) < 0 ? -1 : seg[X(a)])
@@ -4652,7 +4652,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
                 // (LYS 156 of 9gfu)
                 const bool truncated = rb->segment.atoms[j].cb < 0 && rama_ref[j] != MD_RAMACHANDRAN_TYPE_GLYCINE;
                 same_rama += rama[s] == rama_ref[j] || (truncated && rama[s] == MD_RAMACHANDRAN_TYPE_GLYCINE);
-                same_ss += !compare_secondary_structure || MD_MEMCMP(&ss[s], &ss_ref[j], sizeof(md_secondary_structure_t)) == 0;
+                same_ss += !compare_secondary_structure || md_memcmp(&ss[s], &ss_ref[j], sizeof(md_secondary_structure_t)) == 0;
             }
             EXPECT_EQ(rb->segment.count, same_rama);
             EXPECT_EQ(rb->segment.count, same_ss);

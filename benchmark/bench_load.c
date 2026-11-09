@@ -119,7 +119,7 @@ static bool bench_pool_for(void* user, uint32_t count, uint32_t grain, md_range_
 }
 
 static void bench_pool_init(bench_pool_t* pool, uint32_t num_threads) {
-    MD_MEMSET(pool, 0, sizeof(*pool));
+    md_memset(pool, 0, sizeof(*pool));
     pool->num_workers = num_threads > 1 ? MD_MIN(num_threads, MAX_THREADS) - 1 : 0;
     pool->ex = (md_executor_t){ .parallel_for = bench_pool_for, .user = pool, .num_threads = pool->num_workers + 1 };
     md_semaphore_init(&pool->done, 0);
@@ -192,7 +192,7 @@ typedef BOOL (WINAPI *prefetch_fn)(HANDLE, ULONG_PTR, bench_memory_range_t*, ULO
 #endif
 
 static bool map_file(mapped_file_t* m, const char* path, bool prefetch) {
-    MD_MEMSET(m, 0, sizeof(*m));
+    md_memset(m, 0, sizeof(*m));
 #if MD_PLATFORM_WINDOWS
     wchar_t wpath[1024];
     if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, (int)MD_COUNTOF(wpath))) return false;
@@ -241,7 +241,7 @@ static void unmap_file(mapped_file_t* m) {
     munmap((void*)m->text.ptr, m->text.len);
     close(m->fd);
 #endif
-    MD_MEMSET(m, 0, sizeof(*m));
+    md_memset(m, 0, sizeof(*m));
 }
 
 static bool load(md_system_t* sys, md_system_state_t* st, md_str_t path, md_str_t text, bool gro, const md_executor_t* ex) {

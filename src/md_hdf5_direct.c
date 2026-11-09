@@ -217,11 +217,11 @@ static size_t direct_row_length(const md_hdf5_direct_t* d) {
     return n;
 }
 
-static inline uint16_t direct_load16(const uint8_t* p, bool swap) { uint16_t u; MD_MEMCPY(&u, p, 2); return swap ? MD_BSWAP16(u) : u; }
-static inline uint32_t direct_load32(const uint8_t* p, bool swap) { uint32_t u; MD_MEMCPY(&u, p, 4); return swap ? MD_BSWAP32(u) : u; }
-static inline uint64_t direct_load64(const uint8_t* p, bool swap) { uint64_t u; MD_MEMCPY(&u, p, 8); return swap ? MD_BSWAP64(u) : u; }
-static inline float    direct_f32(uint32_t u) { float f; MD_MEMCPY(&f, &u, 4); return f; }
-static inline double   direct_f64(uint64_t u) { double f; MD_MEMCPY(&f, &u, 8); return f; }
+static inline uint16_t direct_load16(const uint8_t* p, bool swap) { uint16_t u; md_memcpy(&u, p, 2); return swap ? md_bswap16(u) : u; }
+static inline uint32_t direct_load32(const uint8_t* p, bool swap) { uint32_t u; md_memcpy(&u, p, 4); return swap ? md_bswap32(u) : u; }
+static inline uint64_t direct_load64(const uint8_t* p, bool swap) { uint64_t u; md_memcpy(&u, p, 8); return swap ? md_bswap64(u) : u; }
+static inline float    direct_f32(uint32_t u) { float f; md_memcpy(&f, &u, 4); return f; }
+static inline double   direct_f64(uint64_t u) { double f; md_memcpy(&f, &u, 8); return f; }
 
 // One loop per type: what a frame costs after it is inflated is mostly this
 #define DIRECT_CONVERT(SIZE, EXPR) \
@@ -236,9 +236,9 @@ static void direct_convert(float* out, const uint8_t* raw, size_t count, const m
     switch (d->type) {
     case DIRECT_F32:
         if (!swap && scale == 1.0) {
-            MD_MEMCPY(out, raw, count * sizeof(float));
+            md_memcpy(out, raw, count * sizeof(float));
         } else if (!swap) {
-            for (size_t i = 0; i < count; ++i) { float f; MD_MEMCPY(&f, raw + i * 4, 4); out[i] = (float)(f * scale); }
+            for (size_t i = 0; i < count; ++i) { float f; md_memcpy(&f, raw + i * 4, 4); out[i] = (float)(f * scale); }
         } else {
             DIRECT_CONVERT(4, direct_f32(direct_load32(p, true)));
         }
@@ -252,7 +252,7 @@ static void direct_convert(float* out, const uint8_t* raw, size_t count, const m
     case DIRECT_U32: DIRECT_CONVERT(4, direct_load32(p, swap)); break;
     case DIRECT_I64: DIRECT_CONVERT(8, (int64_t)direct_load64(p, swap)); break;
     case DIRECT_U64: DIRECT_CONVERT(8, direct_load64(p, swap)); break;
-    default: MD_MEMSET(out, 0, count * sizeof(float)); break;
+    default: md_memset(out, 0, count * sizeof(float)); break;
     }
 }
 
@@ -260,7 +260,7 @@ static void direct_convert(float* out, const uint8_t* raw, size_t count, const m
 
 static void direct_unshuffle(uint8_t* dst, const uint8_t* src, size_t bytes, size_t elem) {
     if (elem <= 1 || bytes < elem) {
-        MD_MEMCPY(dst, src, bytes);
+        md_memcpy(dst, src, bytes);
         return;
     }
     const size_t n = bytes / elem;
@@ -283,14 +283,14 @@ static void direct_unshuffle(uint8_t* dst, const uint8_t* src, size_t bytes, siz
         }
     }
     // What does not fill an element is stored as it is
-    MD_MEMCPY(dst + n * elem, src + n * elem, bytes - n * elem);
+    md_memcpy(dst + n * elem, src + n * elem, bytes - n * elem);
 }
 
 static bool direct_inflate(uint8_t* dst, size_t* dst_len, size_t cap, const uint8_t* src, size_t src_len) {
     // A chunk is at most 4 GB, which is what zlib's counters hold
     if (src_len > UINT32_MAX || cap > UINT32_MAX) return false;
     z_stream z;
-    MD_MEMSET(&z, 0, sizeof(z));
+    md_memset(&z, 0, sizeof(z));
     if (inflateInit(&z) != Z_OK) return false;
     z.next_in   = (Bytef*)src;
     z.avail_in  = (uInt)src_len;
@@ -449,7 +449,7 @@ static bool direct_decode(uint8_t* out, size_t out_bytes, const uint8_t* stored,
         }
     }
     if (len != out_bytes) return false;
-    if (cur != out) MD_MEMCPY(out, cur, len);
+    if (cur != out) md_memcpy(out, cur, len);
     return true;
 }
 
@@ -526,7 +526,7 @@ static bool direct_read_hdf5(float* out, const md_hdf5_direct_t* d, md_str_t pat
         md_hdf5_unlock(lock);
     }
     if (ok) {
-        if (buf != out) MD_MEMCPY(out, buf + skip, count * sizeof(float));
+        if (buf != out) md_memcpy(out, buf + skip, count * sizeof(float));
         if (scale != 1.0) for (size_t i = 0; i < count; ++i) out[i] = (float)(out[i] * scale);
     }
     md_temp_end(temp);

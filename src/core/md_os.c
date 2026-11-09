@@ -238,7 +238,7 @@ static size_t normalize_path(char* buf, size_t cap, size_t len) {
             }
         } else {
             // The write cursor never overtakes the read cursor, so this stays in bounds
-            MD_MEMMOVE(buf + w, buf + r, comp_len);
+            md_memmove(buf + w, buf + r, comp_len);
             w += comp_len;
             buf[w++] = '/';
         }
@@ -264,7 +264,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
     if (len + 1 > sizeof(tmp)) {
         return len;
     }
-    MD_MEMCPY(tmp, buf, len);
+    md_memcpy(tmp, buf, len);
     tmp[len] = '\0';
 
     size_t split = len;
@@ -281,7 +281,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
                 free(res);
                 return len;
             }
-            MD_MEMCPY(buf, res, res_len);
+            md_memcpy(buf, res, res_len);
             free(res);
 
             size_t w = res_len;
@@ -289,7 +289,7 @@ static size_t resolve_existing_prefix(char* buf, size_t cap, size_t len) {
                 if (w > 0 && buf[w - 1] != '/') {
                     buf[w++] = '/';
                 }
-                MD_MEMCPY(buf + w, tmp + split, tail_len);
+                md_memcpy(buf + w, tmp + split, tail_len);
                 w += tail_len;
             }
             buf[w] = '\0';
@@ -365,7 +365,7 @@ static size_t fullpath(char* buf, size_t cap, md_str_t path) {
             free(res);
             return 0;
         }
-        MD_MEMCPY(buf, res, len);
+        md_memcpy(buf, res, len);
         buf[len] = '\0';
         free(res);
     } else if (errno == ENOENT || errno == ENOTDIR) {
@@ -683,15 +683,15 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, md_str_t from, md_s
     char* dst = out_buf;
     if (up_count) {
         for (size_t i = 0; i < up_count; ++i) {
-            MD_MEMCPY(dst, "../", 3);
+            md_memcpy(dst, "../", 3);
             dst += 3;
         }
     } else {
-        MD_MEMCPY(dst, "./", 2);
+        md_memcpy(dst, "./", 2);
         dst += 2;
     }
     if (rel_to.len) {
-        MD_MEMCPY(dst, rel_to.ptr, rel_to.len);
+        md_memcpy(dst, rel_to.ptr, rel_to.len);
         dst += rel_to.len;
     }
     *dst = '\0';
@@ -937,7 +937,7 @@ bool md_file_info_extract(md_file_t file, md_file_info_t* out_info) {
         return false;
     }
 
-    MD_MEMSET(out_info, 0, sizeof(md_file_info_t));
+    md_memset(out_info, 0, sizeof(md_file_info_t));
 
     if (!md_file_valid(file)) {
         MD_LOG_ERROR("md_file_info_extract: file was invalid");
@@ -977,7 +977,7 @@ bool md_file_info_extract_from_path(md_str_t filename, md_file_info_t* out_info)
         return false;
     }
 
-    MD_MEMSET(out_info, 0, sizeof(md_file_info_t));
+    md_memset(out_info, 0, sizeof(md_file_info_t));
 
     if (!filename.ptr || filename.len == 0) {
         MD_LOG_ERROR("md_file_info_extract_from_path: filename was empty");
@@ -1204,7 +1204,7 @@ bool md_file_close(md_file_t* file) {
         return false;
     }
 #endif
-	MD_MEMSET(file, 0, sizeof(md_file_t));
+	md_memset(file, 0, sizeof(md_file_t));
     return true;
 }
 
@@ -2114,7 +2114,7 @@ bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
     if (ret != KERN_SUCCESS) {
         MD_LOG_ERROR("Failed to initialize semaphore");
     }
-    MD_MEMCPY(semaphore, &sema, sizeof(semaphore_t));
+    md_memcpy(semaphore, &sema, sizeof(semaphore_t));
     return ret == KERN_SUCCESS;
 #endif
 }
@@ -2126,7 +2126,7 @@ bool md_semaphore_destroy(md_semaphore_t* semaphore) {
     return sem_destroy((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MD_MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     mach_port_t self = mach_task_self();
     return semaphore_destroy(self, sema) == KERN_SUCCESS;
 #endif
@@ -2139,7 +2139,7 @@ bool md_semaphore_aquire(md_semaphore_t* semaphore) {
     return sem_wait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MD_MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     return semaphore_wait(sema) == KERN_SUCCESS;
 #endif
 }
@@ -2151,7 +2151,7 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
     return sem_trywait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MD_MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     mach_timespec_t mts;
     mts.tv_sec = 0;
     mts.tv_nsec = 0;
@@ -2199,7 +2199,7 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
     return sem_post((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
-    MD_MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    md_memcpy(&sema, semaphore, sizeof(semaphore_t));
     return semaphore_signal(sema) == KERN_SUCCESS;
 #endif
 }
@@ -2245,7 +2245,7 @@ bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
 // Returns system information such as core counts and RAM. See md_os_info_t in header.
 bool md_os_sys_info_query(md_os_sys_info_t* info) {
     if (!info) return false;
-    MD_MEMSET(info, 0, sizeof(md_os_sys_info_t));
+    md_memset(info, 0, sizeof(md_os_sys_info_t));
 
 #if MD_PLATFORM_WINDOWS
 

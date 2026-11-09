@@ -69,7 +69,7 @@ static size_t amber_term(amber_table_t* t, md_str_t name) {
         if (strcmp(t->terms[i].slug, slug) == 0) return i;
     }
     amber_term_t term = { .name = md_str_copy(name, t->alloc) };
-    MD_MEMCPY(term.slug, slug, sizeof(slug));
+    md_memcpy(term.slug, slug, sizeof(slug));
     // Rows recorded before the term appeared lack it
     for (size_t r = 0; r < md_array_size(t->time); ++r) md_array_push(term.values, NAN, t->alloc);
     md_array_push(t->terms, term, t->alloc);
@@ -364,9 +364,9 @@ bool md_amber_energy_file_is_mden(md_str_t filename) {
 static md_str_t amber_join(char* buf, size_t cap, md_str_t a, const char* b) {
     const size_t b_len = strlen(b);
     if (a.len + 1 + b_len + 1 > cap) return (md_str_t){0};
-    MD_MEMCPY(buf, a.ptr, a.len);
+    md_memcpy(buf, a.ptr, a.len);
     buf[a.len] = '/';
-    MD_MEMCPY(buf + a.len + 1, b, b_len);
+    md_memcpy(buf + a.len + 1, b, b_len);
     buf[a.len + 1 + b_len] = '\0';
     return (md_str_t){buf, a.len + 1 + b_len};
 }

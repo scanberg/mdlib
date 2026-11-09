@@ -33,7 +33,7 @@ static const size_t attr_type_size[MD_ATTRIBUTE_TYPE_COUNT] = {
 // producer's and the consumer's business, and the table only has to avoid destroying it.
 static inline uint32_t attr_f32_bits(float v) {
     uint32_t u;
-    MD_MEMCPY(&u, &v, sizeof(u));
+    md_memcpy(&u, &v, sizeof(u));
     return u;
 }
 
@@ -173,7 +173,7 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
                                                                                                     \
     size_t result = count;                                                                          \
     if (as_stored) {                                                                                \
-        MD_MEMCPY(dst, src, count * sizeof(DST_T));                                                    \
+        md_memcpy(dst, src, count * sizeof(DST_T));                                                    \
     } else {                                                                                        \
         /* The scale is applied in double and narrowed once, at the end. */                         \
         switch (attr->format.type) {                                                                \
@@ -266,7 +266,7 @@ bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t*
 
     // Slicing picks values and never splits one, so only the index axes change.
     const md_attribute_format_t* fmt = &attr->format;
-    MD_MEMSET(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     out->type       = fmt->type;
     out->components = fmt->components;
     out->rank       = fmt->rank - slice.num_idx;
@@ -348,7 +348,7 @@ bool md_attribute_read_stored(void* dst, const md_attribute_t* attr, md_attribut
         return false;
     }
     const size_t type_size = md_attribute_type_size(attr->format.type);
-    MD_MEMCPY(dst, (const uint8_t*)attr->data + first * type_size, count * type_size);
+    md_memcpy(dst, (const uint8_t*)attr->data + first * type_size, count * type_size);
     return true;
 }
 
@@ -432,7 +432,7 @@ static void attr_id_index_rebuild(md_attributes_t* attributes) {
             return;
         }
     }
-    MD_MEMSET(attributes->id_index, 0, cap * sizeof(uint32_t));
+    md_memset(attributes->id_index, 0, cap * sizeof(uint32_t));
     const size_t mask = cap - 1;
     for (size_t i = 0; i < count; ++i) {
         size_t slot = (size_t)attributes->attr[i].id & mask;
@@ -518,11 +518,11 @@ static const md_attribute_t* attr_axis_above(const md_attributes_t* attributes, 
                 MD_LOG_ERROR("Attribute path '" MD_STR_FMT "' is too long to search for a frame axis", MD_STR_ARG(path));
                 return NULL;
             }
-            MD_MEMCPY(buf, group.ptr, group.len);
+            md_memcpy(buf, group.ptr, group.len);
             len = group.len;
             buf[len++] = '/';
         }
-        MD_MEMCPY(buf + len, "time", 4);
+        md_memcpy(buf + len, "time", 4);
         len += 4;
 
         const md_attribute_t* axis = md_attributes_find(attributes, (md_str_t){buf, len});
@@ -584,7 +584,7 @@ static void attr_insert_at(md_attributes_t* attributes, size_t idx, const md_att
 
     size_t count = md_array_size(attributes->attr);
     if (idx + 1 < count) {
-        MD_MEMMOVE(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
+        md_memmove(attributes->attr + idx + 1, attributes->attr + idx, (count - 1 - idx) * sizeof(md_attribute_t));
     }
     attributes->attr[idx] = *attr;
     attributes->num_aliases += md_attribute_is_alias(attr) ? 1 : 0;
@@ -631,7 +631,7 @@ void md_attributes_free(md_attributes_t* attributes) {
         md_array_free(attributes->str_offset, alloc);
         md_array_free(attributes->str_index,  alloc);
     }
-    MD_MEMSET(attributes, 0, sizeof(md_attributes_t));
+    md_memset(attributes, 0, sizeof(md_attributes_t));
 }
 
 size_t md_attributes_count(const md_attributes_t* attributes) {
@@ -719,7 +719,7 @@ static bool attr_str_index_reserve(md_attributes_t* attributes, size_t needed) {
         attributes->str_index = old_index;
         return false;
     }
-    MD_MEMSET(attributes->str_index, 0, sizeof(uint32_t) * new_cap);
+    md_memset(attributes->str_index, 0, sizeof(uint32_t) * new_cap);
 
     const size_t num_entries = md_array_size(attributes->str_offset) - 1;
     for (uint32_t h = 0; h < (uint32_t)num_entries; ++h) {
@@ -925,9 +925,9 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
                 handles[i] = attr_str_intern(attributes, values[i]);
             }
         } else if (desc->data) {
-            MD_MEMCPY(storage, desc->data, required);
+            md_memcpy(storage, desc->data, required);
         } else if (!uninitialized) {
-            MD_MEMSET(storage, 0, required);
+            md_memset(storage, 0, required);
         }
     }
 
@@ -1088,7 +1088,7 @@ static void attr_remove_at(md_attributes_t* attributes, size_t idx) {
 
     size_t count = md_array_size(attributes->attr);
     if (idx + 1 < count) {
-        MD_MEMMOVE(attributes->attr + idx, attributes->attr + idx + 1, (count - 1 - idx) * sizeof(md_attribute_t));
+        md_memmove(attributes->attr + idx, attributes->attr + idx + 1, (count - 1 - idx) * sizeof(md_attribute_t));
     }
     md_array_pop(attributes->attr);
     attr_id_index_rebuild(attributes);
@@ -1474,9 +1474,9 @@ const md_attribute_t* md_attributes_find_in(const md_attributes_t* attributes, m
         MD_LOG_ERROR("Attribute path '" MD_STR_FMT "/" MD_STR_FMT "' is too long", MD_STR_ARG(group), MD_STR_ARG(leaf));
         return NULL;
     }
-    MD_MEMCPY(buf, group.ptr, group.len);
+    md_memcpy(buf, group.ptr, group.len);
     buf[group.len] = '/';
-    MD_MEMCPY(buf + group.len + 1, leaf.ptr, leaf.len);
+    md_memcpy(buf + group.len + 1, leaf.ptr, leaf.len);
     return md_attributes_find(attributes, (md_str_t){buf, group.len + 1 + leaf.len});
 }
 
@@ -1623,7 +1623,7 @@ static void attr_io_close_slot(md_attribute_io_t* io, size_t i) {
     if (io->slot[i].hash) {
         md_file_close(&io->slot[i].file);
         md_str_free(io->slot[i].path, io->alloc);
-        MD_MEMSET(&io->slot[i], 0, sizeof(io->slot[i]));
+        md_memset(&io->slot[i], 0, sizeof(io->slot[i]));
     }
 }
 
@@ -1633,7 +1633,7 @@ void md_attribute_io_close_all(md_attribute_io_t* io) {
     }
     for (size_t i = 0; i < MD_ATTRIBUTE_IO_MAX_BLOCKS; ++i) {
         if (io->block[i].data) md_free(md_get_heap_allocator(), io->block[i].data, io->block[i].capacity);
-        MD_MEMSET(&io->block[i], 0, sizeof(io->block[i]));
+        md_memset(&io->block[i], 0, sizeof(io->block[i]));
     }
 }
 
@@ -1641,7 +1641,7 @@ md_attribute_io_t* md_attribute_io_create(const struct md_executor_t* executor, 
     MD_ASSERT(alloc);
     md_attribute_io_t* io = md_alloc(alloc, sizeof(md_attribute_io_t));
     if (!io) return NULL;
-    MD_MEMSET(io, 0, sizeof(*io));
+    md_memset(io, 0, sizeof(*io));
     io->alloc = alloc;
     io->executor = executor;
     return io;
@@ -1690,7 +1690,7 @@ void* md_attribute_io_block(md_attribute_io_t* io, uint64_t key, size_t bytes, b
     // The least recently used slot, grown when it is too small for the block
     if (io->block[lru].capacity < bytes) {
         if (io->block[lru].data) md_free(md_get_heap_allocator(), io->block[lru].data, io->block[lru].capacity);
-        MD_MEMSET(&io->block[lru], 0, sizeof(io->block[lru]));
+        md_memset(&io->block[lru], 0, sizeof(io->block[lru]));
         io->block[lru].data = md_alloc(md_get_heap_allocator(), bytes);
         if (!io->block[lru].data) return NULL;
         io->block[lru].capacity = bytes;
