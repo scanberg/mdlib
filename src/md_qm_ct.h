@@ -64,9 +64,9 @@ extern "C" {
 // C:   {M,A} with M <= A, the orbitals as rows. Out: {M,A}, the same rows in the Lowdin basis.
 // Orbitals that are linearly dependent within round off (C^T C singular) are rejected: false.
 //
-// Cost: two products of M x M x A and one M x M symmetric eigendecomposition, which dominates. Do it
-// once per geometry; every excited state reuses the result. The products run on 'executor' (NULL:
-// the calling thread); the eigendecomposition is serial for now (md_linalg_sym_eigen).
+// Cost: two products of M x M x A and one M x M symmetric eigendecomposition. Do it once per
+// geometry; every excited state reuses the result. All of it runs on 'executor' (NULL: the calling
+// thread).
 bool md_qm_lowdin_orbitals(double* out_C_lowdin, const double* C, size_t num_mo, size_t num_ao,
                            const struct md_executor_t* executor);
 

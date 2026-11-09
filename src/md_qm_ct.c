@@ -9,80 +9,11 @@
 #include <float.h>
 #include <math.h>
 
-// ---------------------------------------------------------------------------
-// C = A^T B, all row major: A is {k,m}, B is {k,n}, C is {m,n}.
-//
-// The one product kernel here. Every product this file needs fits it once its operands are read
-// the right way round, and in this form both operands are read along their rows: the inner loop
-// is an outer product of four entries of a row of A with eight of a row of B, which a compiler
-// keeps in registers. Blocked over n and k so the slab of B in use stays in cache; parallel over
-// tiles of the rows of C, each written by exactly one piece.
-// ---------------------------------------------------------------------------
-
-enum { GEMM_MR = 4, GEMM_NR = 8, GEMM_KB = 256, GEMM_NB = 512 };
-
-typedef struct gemm_tn_args_t {
-    double* C;
-    const double* A;
-    const double* B;
-    size_t m, n, k;
-} gemm_tn_args_t;
-
-static void gemm_tn_rows(void* user, uint32_t beg, uint32_t end, uint32_t thread_idx) {
-    (void)thread_idx;
-    const gemm_tn_args_t* g = (const gemm_tn_args_t*)user;
-    const size_t m = g->m, n = g->n, k = g->k;
-    const size_t i_beg = (size_t)beg * GEMM_MR;
-    const size_t i_end = MD_MIN(m, (size_t)end * GEMM_MR);
-
-    for (size_t i = i_beg; i < i_end; ++i) {
-        md_memset(g->C + i * n, 0, sizeof(double) * n);
-    }
-
-    for (size_t j0 = 0; j0 < n; j0 += GEMM_NB) {
-        const size_t j1 = MD_MIN(n, j0 + GEMM_NB);
-        for (size_t k0 = 0; k0 < k; k0 += GEMM_KB) {
-            const size_t k1 = MD_MIN(k, k0 + GEMM_KB);
-            for (size_t i = i_beg; i < i_end; i += GEMM_MR) {
-                const size_t mr = MD_MIN((size_t)GEMM_MR, i_end - i);
-                for (size_t j = j0; j < j1; j += GEMM_NR) {
-                    const size_t nr = MD_MIN((size_t)GEMM_NR, j1 - j);
-                    double acc[GEMM_MR][GEMM_NR] = {{0}};
-                    if (mr == GEMM_MR && nr == GEMM_NR) {
-                        for (size_t p = k0; p < k1; ++p) {
-                            const double* a = g->A + p * m + i;
-                            const double* b = g->B + p * n + j;
-                            for (int r = 0; r < GEMM_MR; ++r) {
-                                for (int c = 0; c < GEMM_NR; ++c) {
-                                    acc[r][c] += a[r] * b[c];
-                                }
-                            }
-                        }
-                    } else {
-                        for (size_t p = k0; p < k1; ++p) {
-                            const double* a = g->A + p * m + i;
-                            const double* b = g->B + p * n + j;
-                            for (size_t r = 0; r < mr; ++r) {
-                                for (size_t c = 0; c < nr; ++c) {
-                                    acc[r][c] += a[r] * b[c];
-                                }
-                            }
-                        }
-                    }
-                    for (size_t r = 0; r < mr; ++r) {
-                        double* dst = g->C + (i + r) * n + j;
-                        for (size_t c = 0; c < nr; ++c) dst[c] += acc[r][c];
-                    }
-                }
-            }
-        }
-    }
-}
-
+// C = A^T B, all row major: A is {k,m}, B is {k,n}, C is {m,n}. A row major array is the column major
+// array of its transpose, so this is the column major C^T = B^T A: B as stored (n x k, ld n) times A as
+// stored (m x k, ld m) transposed. md_linalg_gemm, the one product kernel of mdlib.
 static bool gemm_tn(double* C, const double* A, const double* B, size_t m, size_t n, size_t k, const md_executor_t* ex) {
-    gemm_tn_args_t args = { C, A, B, m, n, k };
-    const uint32_t tiles = (uint32_t)((m + GEMM_MR - 1) / GEMM_MR);
-    return md_parallel_for(ex, tiles, 4, gemm_tn_rows, &args);
+    return md_linalg_gemm(false, true, n, m, k, 1.0, B, n, A, m, 0.0, C, n, ex);
 }
 
 static void transpose(double* out, const double* in, size_t rows, size_t cols) {
@@ -148,7 +79,7 @@ bool md_qm_lowdin_orbitals(double* out, const double* C, size_t num_mo, size_t n
     }
 
     // G = V diag(w) V^T, eigenvector j as row j of G afterwards
-    if (!md_linalg_sym_eigen(G, w, M)) {
+    if (!md_linalg_sym_eigen_ex(G, w, M, ex)) {
         MD_LOG_ERROR("Lowdin orbitals: the eigendecomposition did not converge");
         goto done;
     }
