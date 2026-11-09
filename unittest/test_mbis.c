@@ -17,7 +17,8 @@
 // MBIS against an INDEPENDENT implementation: the reference values below come from a numpy MBIS (the fixed
 // point of Verstraelen et al. 2016, same initial guess) on PySCF's own molecular grid (Treutler radial,
 // Lebedev angular, Becke partition) and PySCF's own density evaluation from the same Molden files, converged
-// in the grid (levels 3, 5 and 7 agree to 1e-6). It shares nothing with md_mbis.c but the definition.
+// in the grid (levels 3, 5 and 7 agree to 1e-6): tools/mbis_reference.py. It shares nothing with md_mbis.c but the
+// definition.
 
 typedef struct mbis_test_input_t {
     qm_test_t       t;
@@ -101,6 +102,7 @@ UTEST(mbis, converges_with_the_grid) {
     md_mbis_desc_t desc = mbis_test_desc(&in);
     desc.radial_points = 100;
     desc.angular_order = 47;
+    desc.threshold = 1.0e-9;   // the grid is what is tested: the iterations converged well beyond it
     md_mbis_result_t r;
     ASSERT_TRUE(md_mbis_compute(&r, &desc, md_get_heap_allocator()));
     EXPECT_NEAR(10.0, r.electron_count, 1.0e-6);
@@ -182,6 +184,35 @@ UTEST(mbis, executor_does_not_change_the_result) {
     }
     md_mbis_result_free(&ref, md_get_heap_allocator());
     qm_test_free(&in.t);
+}
+
+// Started from its own answer, a run is converged at once and lands where it started; the pro-atoms of other atoms
+// are refused rather than used.
+UTEST(mbis, warm_start) {
+    mbis_test_input_t in, other;
+    ASSERT_TRUE(mbis_test_load(&in, MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"));
+    ASSERT_TRUE(mbis_test_load(&other, MD_UNITTEST_DATA_DIR "/molden/oh_631gs_uhf.molden"));
+    md_mbis_desc_t desc = mbis_test_desc(&in);
+    md_mbis_result_t cold, warm, foreign;
+    ASSERT_TRUE(md_mbis_compute(&cold, &desc, md_get_heap_allocator()));
+    desc.initial = &cold;
+    ASSERT_TRUE(md_mbis_compute(&warm, &desc, md_get_heap_allocator()));
+    EXPECT_TRUE(warm.converged);
+    EXPECT_LE(warm.iterations, 3u);
+    EXPECT_LT(warm.iterations, cold.iterations);
+    for (size_t i = 0; i < 3; ++i) EXPECT_NEAR(cold.charge[i], warm.charge[i], 2.0e-6);
+
+    const md_mbis_desc_t od = mbis_test_desc(&other);
+    ASSERT_TRUE(md_mbis_compute(&foreign, &od, md_get_heap_allocator()));
+    desc.initial = &foreign;   // OH: two atoms, three shells
+    md_mbis_result_t r;
+    EXPECT_FALSE(md_mbis_compute(&r, &desc, md_get_heap_allocator()));
+
+    md_mbis_result_free(&cold, md_get_heap_allocator());
+    md_mbis_result_free(&warm, md_get_heap_allocator());
+    md_mbis_result_free(&foreign, md_get_heap_allocator());
+    qm_test_free(&in.t);
+    qm_test_free(&other.t);
 }
 
 UTEST(mbis, refuses_incomplete_input_and_stops_when_cancelled) {

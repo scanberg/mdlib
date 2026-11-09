@@ -22,18 +22,22 @@
 // Mulliken or Lowdin, which partition the basis functions rather than space.
 //
 // QUADRATURE
-// Becke's multicentre scheme: per atom a Mura-Knowles radial grid times a Gauss-Legendre (cos theta)
-// x uniform (phi) product grid on the sphere, the atoms' grids partitioned by Stratmann-Scuseria-
-// Frisch cell functions. The density is evaluated ONCE on that grid, from the AO density matrix in
-// double with the basis' shells screened per batch of points; the iterations then only touch the
-// stored masses (quadrature weight x density) and the pro-atoms. Points of negligible density are
-// dropped before the iterations: what they hold is below 1e-10 e an atom.
+// Becke's multicentre scheme: per atom a Mura-Knowles radial grid times a Lebedev grid on the sphere (coarser close
+// to the nucleus), the atoms' grids partitioned by Stratmann-Scuseria-Frisch cell functions. The density is
+// evaluated ONCE on that grid, from the AO density matrix in double, batch by batch of nearby points with the
+// shells screened per batch and per point; the iterations then only touch the stored masses (quadrature weight x
+// density) and the pro-atoms. Points of negligible density are dropped: what they hold is below 1e-10 e an atom.
+//
+// ITERATIONS
+// The fixed point with Anderson acceleration, first on a coarse grid (half the radial points) and then on the full
+// one. Started from 'initial' (the last frame's partition, say) it skips the coarse grid.
 //
 // COST
-// Linear in the atoms for a large system: per atom ~1e4 points of significant density (12 bytes each), the density
-// evaluated once at each (the AOs within reach, phi^T D phi over them), then ~20-30 accelerated iterations, each a
-// sum over the pro-atoms within reach of every point. Measured, double precision, two threads: water 0.04 s,
-// glycine/def2-SVP 0.8 s, (H2O)40/6-31G* (120 atoms, 760 AOs) 23 s, two thirds of it in the iterations.
+// Linear in the atoms: per atom ~1e4 points (12 bytes each), the density evaluated once at each, then ~10 full and
+// ~18 coarse iterations, each a sum over the pro-atoms within reach of every point. Measured, two threads (scales
+// with the executor's threads): water 0.05 s, glycine/def2-SVP 0.4 s; boxes of water at protein density and AO
+// count (def2-SVP, superposed densities): 375 atoms/3125 AOs 26 s, 1029 atoms/8575 AOs 91 s, of which ~60% the
+// density and cell weights, ~40% the iterations; a second frame started from the first 82 s.
 //
 // THE RESULT IS THE PARTITION, NOT JUST THE CHARGES
 // The fitted shells define w_A(r) anywhere, analytically: whatever else is to be partitioned the
@@ -68,6 +72,8 @@ typedef struct md_mbis_desc_t {
     double          threshold;         // largest change in a shell population (e) or relative width per iteration [1e-8]
     uint32_t        max_iterations;    // [1000]
 
+    const struct md_mbis_result_t* initial;  // optional: pro-atoms to start from, a previous result for the same
+                                       // atoms (the last frame's, say); NULL: the guess of Verstraelen et al.
     const struct md_executor_t* executor;   // NULL: the calling thread. The result does not depend on it.
     volatile int32_t* cancel;          // optional: set non-zero from another thread to stop (md_mbis_compute returns false)
     volatile float*   progress;        // optional: 0 to 1, for a progress display. An estimate that never goes back:
